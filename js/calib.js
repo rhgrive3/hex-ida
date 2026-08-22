@@ -19,7 +19,11 @@ const GROUP_CAP = {
 };
 
 function damp(nth) { return 1 / (1 + nth * 1.2); }
-function likelihoodRatio(value) { const n = Number(value); return Number.isFinite(n) ? n : 1; }
+function likelihoodRatio(value) {
+  const raw = value === 0 ? 0 : (value || 1);
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : 1;
+}
 function boundedStrength(value) {
   if (value == null) return 1;
   const n = Number(value);
