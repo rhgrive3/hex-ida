@@ -79,7 +79,11 @@ export async function validateRebuildOutput(plan, materialized, options = {}) {
   const original = await sourceBytes(options.original || new Uint8Array());
   const output = materialized.bytes;
   const failures = [];
-  if (options.original && !unchangedRegions(original, output, materialized.touched)) failures.push({ validator: 'unchanged-regions', reason: 'promised-unchanged-region-differed' });
+  if (options.original) {
+    if (!unchangedRegions(original, output, materialized.touched)) failures.push({ validator: 'unchanged-regions', reason: 'promised-unchanged-region-differed' });
+  } else if (plan.requiredValidators.includes('unchanged-regions')) {
+    failures.push({ validator: 'unchanged-regions', reason: 'original-source-unavailable' });
+  }
   if (typeof options.loaderReparse === 'function') {
     try { const result = await options.loaderReparse(output); if (result?.status === 'unsupported' || result?.ok === false) failures.push({ validator: 'loader-reparse', reason: result.reason || 'loader-rejected-output' }); }
     catch (error) { failures.push({ validator: 'loader-reparse', reason: error.message }); }
