@@ -23,7 +23,8 @@ function memoryTouchesSelf(insn, isSelf, offset, kind = null) {
 
 export function verifyAccessor(model, hyp, opts) {
   const o = opts || {};
-  const max = o.maxInstructions || 40;
+  const configuredMax = Number(o.maxInstructions);
+  const max = Number.isFinite(configuredMax) && configuredMax > 0 ? Math.floor(configuredMax) : 40;
   const out = {
     getter: false, setter: false,
     offset: null, size: null, row: null, address: null,
