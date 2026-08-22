@@ -72,11 +72,11 @@ export function importList(symbols, program, limit = 4000) {
   if (!symbols || !symbols.symbolCount) return [];
   limit = finiteOr(limit, 4000);
   const seen = new Map();
-  kinds: for (const kind of [SYM_STUB, SYM_POINTER]) {
+  for (const kind of [SYM_STUB, SYM_POINTER]) {
     for (const s of symbols.symbolList({ kind, max: limit })) {
       const key = s.name;
       if (!seen.has(key)) {
-        if (seen.size >= limit) break kinds;
+        if (seen.size >= limit) continue;
         const fw = frameworkOf(s.name);
         seen.set(key, {
           name: s.name,
@@ -89,6 +89,7 @@ export function importList(symbols, program, limit = 4000) {
         });
       }
       const e = seen.get(key);
+      if (!e) continue;
       if (program) e.calls += program.callCountOf(s.addr);
       if (kind === SYM_STUB) { e.addr = s.addr; e.stub = true; }
     }
