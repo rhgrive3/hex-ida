@@ -87,7 +87,10 @@ export function runtimeEvidenceItems(runtimeResult, opts) {
   if (strength <= 0) return [];
   const seen = new Set();
   for (const t of touched) {
-    const key = 'field:' + String(t.address != null ? t.address : t.offset != null ? t.offset : t.key);
+    if (!t || typeof t !== 'object') continue;
+    const identity = t.address != null ? t.address : t.offset != null ? t.offset : t.key;
+    if (identity == null) continue;
+    const key = 'field:' + String(identity);
     if (seen.has(key)) continue;
     seen.add(key);
     out.push({
@@ -97,7 +100,10 @@ export function runtimeEvidenceItems(runtimeResult, opts) {
     });
   }
   for (const b of branches) {
-    const key = 'branch:' + String(b.address != null ? b.address : b.row);
+    if (!b || typeof b !== 'object') continue;
+    const identity = b.address != null ? b.address : b.row;
+    if (identity == null) continue;
+    const key = 'branch:' + String(identity);
     if (seen.has(key)) continue;
     seen.add(key);
     out.push({
