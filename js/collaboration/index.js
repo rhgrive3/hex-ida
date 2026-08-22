@@ -10,7 +10,9 @@ function clone(value) {
   if (typeof structuredClone === 'function') return structuredClone(value);
   if (value == null || typeof value !== 'object') return value;
   if (Array.isArray(value)) return value.map(clone);
-  const out = {}; for (const [key, item] of Object.entries(value)) out[key] = clone(item); return out;
+  const out = {};
+  for (const [key, item] of Object.entries(value)) Object.defineProperty(out, key, { value: clone(item), enumerable: true, configurable: true, writable: true });
+  return out;
 }
 function list(value) { return [...new Set((Array.isArray(value) ? value : []).map(String).filter(Boolean))].sort(); }
 function factKey(target, kind) { return `${target}\u0000${kind}`; }
