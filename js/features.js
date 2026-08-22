@@ -55,7 +55,7 @@ const FEATURES = [
     re: /inventory|item_?id|equipment|equip|consume|material|アイテム|装備|所持|素材|消費|倉庫/i,
   },
   {
-    id: 'quest', ja: 'クエスト・ステージ', en: 'Quests and stages',
+    id: 'quest', ja: 'クエスト・ステージ', en: 'Quests',
     re: /quest|stage|mission|chapter|dungeon|area_?id|difficulty|クエスト|ステージ|ミッション|章|難易度|挑戦/i,
   },
   {
@@ -172,7 +172,10 @@ function strength(text, weak) {
  * @param {number} perFeature 機能あたりの上限
  */
 export function groupByFeature(strings, perFeature = 200) {
-  const limit = Math.max(0, Math.floor(Number(perFeature) || 0));
+  const requestedLimit = Number(perFeature);
+  const limit = Number.isFinite(requestedLimit)
+    ? Math.max(0, Math.floor(requestedLimit || 0))
+    : 200;
   const buckets = new Map();
   for (const f of FEATURES) buckets.set(f.id, []);
 
