@@ -30,8 +30,11 @@ export class FunctionMatchIndex {
     const fp = input?.schema === 'hex.function-fingerprint' || input?.schema === 'hex.function-fingerprint-fast'
       ? input
       : fingerprintFunctionFast(input);
-    const maxCandidates = Math.max(1, options.maxCandidates ?? 128);
-    const maxBucketScan = Math.max(maxCandidates, options.maxBucketScan ?? 1024);
+    const rawMaxCandidates = Number(options.maxCandidates ?? 128);
+    const maxCandidates = Number.isFinite(rawMaxCandidates) && rawMaxCandidates > 0 ? Math.max(1, Math.floor(rawMaxCandidates)) : 128;
+    const rawMaxBucketScan = Number(options.maxBucketScan ?? 1024);
+    const boundedBucketScan = Number.isFinite(rawMaxBucketScan) && rawMaxBucketScan > 0 ? Math.max(1, Math.floor(rawMaxBucketScan)) : 1024;
+    const maxBucketScan = Math.max(maxCandidates, boundedBucketScan);
     const tokenBuckets = coarseTokens(fp).map((token) => ({token,bucket:this.buckets.get(token)})).filter((x) => x.bucket?.length).sort((a,b) => a.bucket.length - b.bucket.length);
     if (!tokenBuckets.length) return [];
     const exact = tokenBuckets.find((x) => x.token.startsWith('nb:') && x.bucket.length <= maxCandidates);
