@@ -25,11 +25,16 @@ function isAppleSystemLibrary(value) {
   return false;
 }
 
+function boundedConfidence(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : 0;
+}
+
 export function classifyFunction(input = {}, context = {}) {
   const fp = fingerprintFunction(input);
   const evidence = [];
   const signature = context.signature?.classification && FUNCTION_CLASSES.includes(context.signature.classification) ? context.signature : null;
-  const signatureConfidence = Number(signature?.confidence ?? 0);
+  const signatureConfidence = boundedConfidence(signature?.confidence ?? 0);
   const signatureExact = signature?.exact === true || ['exact','normalized-identical'].includes(signature?.identity);
   if (signature && signatureExact && signatureConfidence >= 0.9) {
     return { classification:signature.classification, confidence:signatureConfidence, evidence:['signature:'+(signature.library||signature.name||'known')], hardSuppress:true };
@@ -40,9 +45,10 @@ export function classifyFunction(input = {}, context = {}) {
   if (GENERATED.some((rx) => rx.test(name))) return { classification:'GENERATED', confidence:0.9, evidence:['compiler-generated-name'], hardSuppress:true };
   if (RUNTIME_NAMES.some((rx) => rx.test(name))) return { classification:'RUNTIME', confidence:0.88, evidence:['runtime-symbol-name'], hardSuppress:true };
   const runtimeImports = fp.imports.filter((x) => RUNTIME_IMPORTS.some((rx) => rx.test(String(x))));
-  if (context.vendor?.confidence >= 0.8) {
+  const vendorConfidence = boundedConfidence(context.vendor?.confidence ?? 0);
+  if (context.vendor && vendorConfidence >= 0.8) {
     const classification = FUNCTION_CLASSES.includes(context.vendor.classification) ? context.vendor.classification : context.vendor.kind === 'runtime' ? 'RUNTIME' : context.vendor.kind === 'library' ? 'LIBRARY' : 'SDK';
-    return { classification, confidence: context.vendor.confidence, evidence: context.vendor.evidence || [], hardSuppress:true };
+    return { classification, confidence: vendorConfidence, evidence: context.vendor.evidence || [], hardSuppress:true };
   }
   let appScore = 0;
   if (fp.objc.class && !context.vendor) { appScore += 0.22; evidence.push('custom-objc-type'); }
@@ -68,7 +74,7 @@ export function applicationCodeScore(input = {}, context = {}) {
   const penalties = { SYSTEM:0.7, RUNTIME:0.7, SDK:0.65, LIBRARY:0.65, GENERATED:0.75 };
   const hard = cls.hardSuppress === true && cls.confidence >= 0.8;
   score -= hard ? (penalties[cls.classification] || 0) : (['SYSTEM','RUNTIME','SDK','LIBRARY','GENERATED'].includes(cls.classification) ? 0.08 * Math.max(0,Math.min(1,cls.confidence || 0)) : 0);
-  if (context.vendor?.confidence >= 0.8 && cls.classification !== 'APPLICATION') score -= 0.15;
+  if (boundedConfidence(context.vendor?.confidence ?? 0) >= 0.8 && cls.classification !== 'APPLICATION') score -= 0.15;
   return Math.max(0, Math.min(1, score));
 }
 
