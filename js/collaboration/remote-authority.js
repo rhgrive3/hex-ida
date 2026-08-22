@@ -114,7 +114,7 @@ export class RemoteCollaborationGate {
     if (envelope.sessionIdentity !== this.sessionIdentity) return { ok: false, reason: 'remote-wrong-session' };
     if (!validSequence(envelope.sequence)) return { ok: false, reason: 'remote-sequence-invalid' };
     if (this.revokedActors.has(envelope.actorIdentity)) return { ok: false, reason: 'remote-actor-revoked' };
-    const permissions = this.allowedActors[envelope.actorIdentity];
+    const permissions = Object.hasOwn(this.allowedActors, envelope.actorIdentity) ? this.allowedActors[envelope.actorIdentity] : null;
     if (!permissions) return { ok: false, reason: 'remote-actor-unauthorized' };
     if (this.seenMessages.has(envelope.messageId) || this.seenEnvelopeIds.has(envelope.envelopeId)) return { ok: false, reason: 'remote-replay-or-duplicate' };
     const previous = this.lastSequenceByActor.get(envelope.actorIdentity);
