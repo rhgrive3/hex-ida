@@ -39,13 +39,26 @@ function safeSnapshot(value) {
 }
 
 function finitePositive(value, fallback) { const n = Number(value); return Number.isFinite(n) && n > 0 ? n : fallback; }
+function strictIntegerBigInt(value, message = 'integer value is invalid') {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value)) throw new TypeError(message);
+    return BigInt(value);
+  }
+  if (typeof value === 'string') {
+    const text = value.trim();
+    if (!text || !/^[+-]?(?:0[xX][0-9a-fA-F]+|[0-9]+)$/.test(text)) throw new TypeError(message);
+    try { return BigInt(text); } catch { throw new TypeError(message); }
+  }
+  throw new TypeError(message);
+}
 function normalizeRanges(value) {
   if (!Array.isArray(value)) return [];
   const out = [];
   for (const range of value) {
     try {
-      const start = BigInt(range.start ?? range.address ?? range.vmAddr);
-      const size = BigInt(range.size ?? range.length ?? 0);
+      const start = strictIntegerBigInt(range.start ?? range.address ?? range.vmAddr, 'plugin read range start must be an integer');
+      const size = strictIntegerBigInt(range.size ?? range.length ?? 0, 'plugin read range size must be an integer');
       if (size > 0n) out.push({ start, end: start + size });
     } catch { /* malformed ranges grant nothing */ }
   }
@@ -66,7 +79,7 @@ function makeReadCapability(context, pluginScope = null, record = null) {
   const totalLimit = Math.floor(finitePositive(policy.maxTotalReadBytes, DEFAULT_READ_TOTAL_BYTES));
   let total = 0;
   return async (address, length) => {
-    let at; try { at = BigInt(address); } catch { throw new TypeError('plugin read address must be an integer'); }
+    const at = strictIntegerBigInt(address, 'plugin read address must be an integer');
     const bytes = Number(length);
     if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > perCall) throw new RangeError(`plugin read exceeds per-call limit (${perCall} bytes)`);
     if (total + bytes > totalLimit) throw new RangeError(`plugin read exceeds total budget (${totalLimit} bytes)`);
