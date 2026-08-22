@@ -69,7 +69,9 @@ export function utf8Len(buf, index) {
 }
 
 export function isExactFunctionSeed(seed) {
-  if (!seed || Number(seed.confidence ?? 0) < 0.9) return false;
+  if (!seed) return false;
+  const confidence = Number(seed.confidence ?? 0);
+  if (!Number.isFinite(confidence) || confidence < 0.9) return false;
   if (seed.exactFunctionStart === true) return true;
   const sources = new Set([seed.source, ...(seed.sources || [])]);
   return [...sources].some((s) => ['entrypoint', 'export', 'exception', 'unwind', 'function_starts', 'tls-callback', 'guard-cf'].includes(s));
