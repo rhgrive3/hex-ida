@@ -416,14 +416,14 @@ function downgradeForMissingDecoder(model) {
 
 export function architectureMaturity(architecture, options = {}) {
   const id = normalizeArchitectureCapabilityId(architecture);
-  const profile = ARCHITECTURE_PROFILES[id];
+  const profile = Object.prototype.hasOwnProperty.call(ARCHITECTURE_PROFILES, id) ? ARCHITECTURE_PROFILES[id] : null;
   const base = materialize('architecture', id, profile, profile?.limitations || ['unknown-architecture']);
   return options.decoderAvailable === false ? downgradeForMissingDecoder(base) : base;
 }
 
 export function formatMaturity(format) {
   const id = normalizeFormatCapabilityId(format);
-  const profile = FORMAT_PROFILES[id];
+  const profile = Object.prototype.hasOwnProperty.call(FORMAT_PROFILES, id) ? FORMAT_PROFILES[id] : null;
   return materialize('format', id, profile, profile?.limitations || ['unknown-format']);
 }
 
@@ -438,7 +438,7 @@ export function normalizeManagedCapabilityId(value) {
 
 export function managedMaturity(frontend) {
   const id = normalizeManagedCapabilityId(frontend);
-  const profile = MANAGED_PROFILES[id];
+  const profile = Object.prototype.hasOwnProperty.call(MANAGED_PROFILES, id) ? MANAGED_PROFILES[id] : null;
   return materialize('managed', id, profile, profile?.limitations || ['managed-frontend-unsupported']);
 }
 
