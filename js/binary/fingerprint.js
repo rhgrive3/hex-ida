@@ -57,14 +57,19 @@ function functionFingerprintResult(bytes, fn) {
   };
 }
 
+function byteCountOption(value, fallback, minimum = 1) {
+  const n = Number(value);
+  return Number.isSafeInteger(n) && n > 0 ? Math.max(minimum, n) : fallback;
+}
+
 /**
  * Keep the historical synchronous API for resident BinaryImage instances while
  * allowing source-backed images to perform the same bounded read asynchronously.
  * Callers that need to support both forms may simply `await` the result.
  */
 export function fingerprintFunction(image, fn, opts = {}) {
-  const maxBytes = Math.max(16, opts.maxBytes || 1 << 20);
-  let size = fn.size == null ? BigInt(opts.fallbackBytes || 64) : BigInt(fn.size);
+  const maxBytes = byteCountOption(opts.maxBytes, 1 << 20, 16);
+  let size = fn.size == null ? BigInt(byteCountOption(opts.fallbackBytes, 64)) : BigInt(fn.size);
   if (size <= 0n) return null;
   if (size > BigInt(maxBytes)) size = BigInt(maxBytes);
   const length = Number(size);
