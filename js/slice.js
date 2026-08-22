@@ -19,6 +19,12 @@ import { OP, VK } from './ir.js';
 
 const DEFAULT_LIMIT = 400;
 
+function positiveLimit(value, fallback, minimum = 1) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return Math.max(minimum, Math.floor(n));
+}
+
 export function memoryOrigins(node, opts = {}) {
   const maxNodes=Math.max(1,Math.min(10000,Number(opts.maxNodes)||1024));
   const maxEdges=Math.max(1,Math.min(20000,Number(opts.maxEdges)||2048));
@@ -40,7 +46,7 @@ export function memoryOrigins(node, opts = {}) {
 
 export function backwardSlice(ir, seed, opts) {
   const o = opts || {};
-  const limit = o.limit || DEFAULT_LIMIT;
+  const limit = positiveLimit(o.limit, DEFAULT_LIMIT);
   const throughMemory = o.throughMemory !== false;
   const seenInst = new Set();
   const seenValue = new Set();
@@ -97,7 +103,7 @@ function memoryNodeContainsStore(node, store, seen = new Set()) {
 
 export function forwardSlice(ir, seed, opts) {
   const o = opts || {};
-  const limit = o.limit || DEFAULT_LIMIT;
+  const limit = positiveLimit(o.limit, DEFAULT_LIMIT);
   const seenInst = new Set();
   const instructions = [];
   const stack = [];
@@ -230,7 +236,7 @@ const WEIGHT = {
 
 export function causalChain(ir, seed, opts) {
   const o = opts || {};
-  const limit = Math.max(2, o.limit || 8);
+  const limit = positiveLimit(o.limit, 8, 2);
   const chain = valueChain(ir, seed, Object.assign({}, o, { limit: o.sliceLimit || DEFAULT_LIMIT }));
   const steps = chain.steps;
   if (steps.length <= limit) return { steps, elided: 0, truncated: chain.truncated, memoryAmbiguous:chain.memoryAmbiguous, memoryAlternatives:chain.memoryAlternatives };
