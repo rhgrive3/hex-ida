@@ -55,7 +55,7 @@ const FEATURES = [
     re: /inventory|item_?id|equipment|equip|consume|material|アイテム|装備|所持|素材|消費|倉庫/i,
   },
   {
-    id: 'quest', ja: 'クエスト・ステージ', en: 'Quests',
+    id: 'quest', ja: 'クエスト・ステージ', en: 'Quests and stages',
     re: /quest|stage|mission|chapter|dungeon|area_?id|difficulty|クエスト|ステージ|ミッション|章|難易度|挑戦/i,
   },
   {
