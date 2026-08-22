@@ -32,19 +32,28 @@ async function handleFor(architecture, decodeProfile = null) {
   const rc = M.ccall('cs_open', 'number', ['number', 'number', 'pointer'], [arch, mode, hp]);
   if (rc !== 0) { M._free(hp); throw new Error(`Capstone cannot open ${architecture} (error ${rc})`); }
   const handle = M.getValue(hp, 'i32');
-  M.ccall('cs_option', 'number', ['number', 'number', 'number'], [handle, M.OPT_SKIPDATA, M.OPT_ON]);
-  if (architecture === 'x86_64') {
-    globalThis.HexX86CapstoneStructured.verifyVersion(M);
-    const detailRc = M.ccall('cs_option', 'number', ['number', 'number', 'number'], [handle, M.OPT_DETAIL, M.OPT_ON]);
-    if (detailRc !== 0) throw new Error(`Capstone cannot enable x86 detail (error ${detailRc})`);
-  } else if (architecture === 'riscv64') {
-    globalThis.HexRiscv64CapstoneStructured.verifyVersion(M);
-    const detailRc = M.ccall('cs_option', 'number', ['number', 'number', 'number'], [handle, M.OPT_DETAIL, M.OPT_ON]);
-    if (detailRc !== 0) throw new Error(`Capstone cannot enable RISC-V detail (error ${detailRc})`);
+  let out = 0;
+  try {
+    M.ccall('cs_option', 'number', ['number', 'number', 'number'], [handle, M.OPT_SKIPDATA, M.OPT_ON]);
+    if (architecture === 'x86_64') {
+      globalThis.HexX86CapstoneStructured.verifyVersion(M);
+      const detailRc = M.ccall('cs_option', 'number', ['number', 'number', 'number'], [handle, M.OPT_DETAIL, M.OPT_ON]);
+      if (detailRc !== 0) throw new Error(`Capstone cannot enable x86 detail (error ${detailRc})`);
+    } else if (architecture === 'riscv64') {
+      globalThis.HexRiscv64CapstoneStructured.verifyVersion(M);
+      const detailRc = M.ccall('cs_option', 'number', ['number', 'number', 'number'], [handle, M.OPT_DETAIL, M.OPT_ON]);
+      if (detailRc !== 0) throw new Error(`Capstone cannot enable RISC-V detail (error ${detailRc})`);
+    }
+    out = M._malloc(4);
+    const state = { M, hp, handle, out };
+    handles.set(handleKey, state);
+    return state;
+  } catch (error) {
+    if (out) M._free(out);
+    try { M.ccall('cs_close', 'number', ['pointer'], [hp]); } catch { /* preserve initialization failure */ }
+    M._free(hp);
+    throw error;
   }
-  const state = { M, hp, handle, out: M._malloc(4) };
-  handles.set(handleKey, state);
-  return state;
 }
 
 self.onmessage = async (event) => {
