@@ -45,6 +45,7 @@ const FRAMEWORK_HINTS = [
   [/^_?ptrace$|^_?sysctl$/, 'libSystem（デバッガ検出に使われることがある）', 'antidebug'],
 ];
 
+// Malformed external bounds must not disable collection caps.
 function finiteOr(value, fallback) {
   const n = Number(value);
   return Number.isFinite(n) ? n : fallback;
