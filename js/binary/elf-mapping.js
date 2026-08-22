@@ -1,4 +1,6 @@
 export function safeELFNumber(value) {
+  if (typeof value !== 'number' && typeof value !== 'bigint' && typeof value !== 'string') return null;
+  if (typeof value === 'string' && value.trim() === '') return null;
   const n = Number(value);
   return Number.isSafeInteger(n) && n >= 0 ? n : null;
 }
