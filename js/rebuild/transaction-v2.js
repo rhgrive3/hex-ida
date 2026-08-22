@@ -39,6 +39,16 @@ function positiveSafe(value, fallback, max, code) {
   return n;
 }
 
+function explicitBigInt(value, code) {
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value)) throw new TypeError(code);
+    return BigInt(value);
+  }
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'string' && value.trim()) return BigInt(value);
+  throw new TypeError(code);
+}
+
 function requiredValidators(impact, additional = [], requireIndependentOracle = false) {
   const set = new Set(['source-precondition', 'structure', 'loader-reparse', 'unchanged-regions', 'evidence']);
   if (impact.layoutMoving) set.add('layout');
@@ -55,7 +65,7 @@ function requiredValidators(impact, additional = [], requireIndependentOracle = 
 export function createRebuildTransaction(input = {}) {
   if (!Array.isArray(input.operations) || input.operations.length === 0) throw new TypeError('rebuild-v2-operations-required');
   const operations = input.operations.map((operation, index) => {
-    const offset = BigInt(operation.offset ?? operation.fileOffset ?? -1);
+    const offset = explicitBigInt(operation.offset ?? operation.fileOffset ?? -1, 'rebuild-v2-offset-invalid');
     if (offset < 0n) throw new TypeError('rebuild-v2-offset-invalid');
     const before = toBytes(operation.before ?? []);
     const after = toBytes(operation.after ?? []);
