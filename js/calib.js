@@ -19,14 +19,27 @@ const GROUP_CAP = {
 };
 
 function damp(nth) { return 1 / (1 + nth * 1.2); }
-function likelihoodRatio(value) { return value === 0 ? 0 : (value || 1); }
+function likelihoodRatio(value) { const n = Number(value); return Number.isFinite(n) ? n : 1; }
+function boundedStrength(value) {
+  if (value == null) return 1;
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : 0;
+}
+function nonNegativeFinite(value, fallback) {
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
 const LN = Math.log;
 
 export function groupedFusion(items, opts) {
   const o = opts || {};
-  const absent = o.absent != null ? o.absent : 40;
-  const n = Math.max(2, (o.candidates != null ? o.candidates : 200) + absent);
-  const prior = o.prior != null ? Math.max(1e-9, Math.min(0.5, o.prior)) : 1 / n;
+  const absent = o.absent != null ? nonNegativeFinite(o.absent, 40) : 40;
+  const candidates = o.candidates != null ? nonNegativeFinite(o.candidates, 200) : 200;
+  const n = Math.max(2, candidates + absent);
+  const requestedPrior = Number(o.prior);
+  const prior = o.prior != null && Number.isFinite(requestedPrior)
+    ? Math.max(1e-9, Math.min(0.5, requestedPrior))
+    : 1 / n;
   let logOdds = LN(prior / (1 - prior));
   const byGroup = new Map();
   const counted = new Map();
@@ -34,8 +47,8 @@ export function groupedFusion(items, opts) {
   let verified = 0;
 
   const sorted = (items || []).filter((x) => x && x.code).slice().sort((a, b) => {
-    const ea = Math.abs(LN(Math.max(1e-6, likelihoodRatio(a.lr))) * (a.strength == null ? 1 : a.strength));
-    const eb = Math.abs(LN(Math.max(1e-6, likelihoodRatio(b.lr))) * (b.strength == null ? 1 : b.strength));
+    const ea = Math.abs(LN(Math.max(1e-6, likelihoodRatio(a.lr))) * boundedStrength(a.strength));
+    const eb = Math.abs(LN(Math.max(1e-6, likelihoodRatio(b.lr))) * boundedStrength(b.strength));
     return eb - ea;
   });
 
@@ -43,7 +56,7 @@ export function groupedFusion(items, opts) {
     const group = groupOf(item);
     const nth = counted.get(group) || 0;
     counted.set(group, nth + 1);
-    let delta = LN(Math.max(1e-6, likelihoodRatio(item.lr))) * (item.strength == null ? 1 : item.strength);
+    let delta = LN(Math.max(1e-6, likelihoodRatio(item.lr))) * boundedStrength(item.strength);
     if (delta > 0) delta *= damp(nth);
     const cap = LN(GROUP_CAP[group] != null ? GROUP_CAP[group] : 20);
     const already = byGroup.get(group) || 0;
