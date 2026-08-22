@@ -13,7 +13,12 @@
 
   function asBigInt(value) {
     if (value == null) return null;
-    try { return BigInt(value); } catch { return null; }
+    if (typeof value === 'bigint') return value;
+    if (typeof value === 'number') return Number.isSafeInteger(value) ? BigInt(value) : null;
+    if (typeof value !== 'string') return null;
+    const text = value.trim();
+    if (!text || !/^(?:[+-]?[0-9]+|0[xX][0-9a-fA-F]+)$/.test(text)) return null;
+    try { return BigInt(text); } catch { return null; }
   }
 
   function create(options) {
