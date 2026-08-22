@@ -7,6 +7,13 @@ import { findValueUpdates, constantComparisons, regKeyOf, selfRegisters } from '
 const ARG2 = 'x2';
 export { selfRegisters };
 
+function explicitBigInt(value) {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number') return Number.isSafeInteger(value) ? BigInt(value) : null;
+  if (typeof value !== 'string' || !value.trim()) return null;
+  try { return BigInt(value.trim()); } catch { return null; }
+}
+
 function memoryTouchesSelf(insn, isSelf, offset, kind = null) {
   const m = insn?.memory;
   if (!m || m.indexed || m.disp == null || m.stack) return false;
@@ -23,7 +30,8 @@ export function verifyAccessor(model, hyp, opts) {
     exclusive: false, instructions: 0, otherOffsets: 0,
   };
   if (!model || !hyp || hyp.offset == null) return out;
-  const offset = typeof hyp.offset === 'bigint' ? hyp.offset : BigInt(hyp.offset);
+  const offset = explicitBigInt(hyp.offset);
+  if (offset == null) return out;
   out.offset = offset;
 
   const insns = model.instructions || [];
@@ -108,9 +116,9 @@ function controlBoundary(insn) {
 /** Count how self+offset is used, preserving only proven same-control-path guards. */
 export function fieldUse(model, offset, opts) {
   const o = opts || {};
-  const want = typeof offset === 'bigint' ? offset : BigInt(offset);
+  const want = explicitBigInt(offset);
   const out = { loads: 0, stores: 0, rmw: [], compares: [], sites: [], self: false };
-  if (!model) return out;
+  if (!model || want == null) return out;
   const insns = model.instructions || [];
   const { isSelf: selfAt } = selfRegisters(model);
   const selfOnly = o.selfOnly !== false;
