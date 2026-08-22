@@ -45,6 +45,11 @@ const FRAMEWORK_HINTS = [
   [/^_?ptrace$|^_?sysctl$/, 'libSystem（デバッガ検出に使われることがある）', 'antidebug'],
 ];
 
+function finiteOr(value, fallback) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
 /** その名前がどのライブラリのものか（推測）。 */
 export function frameworkOf(name) {
   if (!name) return null;
@@ -65,11 +70,13 @@ export function frameworkOf(name) {
  */
 export function importList(symbols, program, limit = 4000) {
   if (!symbols || !symbols.symbolCount) return [];
+  limit = finiteOr(limit, 4000);
   const seen = new Map();
-  for (const kind of [SYM_STUB, SYM_POINTER]) {
+  kinds: for (const kind of [SYM_STUB, SYM_POINTER]) {
     for (const s of symbols.symbolList({ kind, max: limit })) {
       const key = s.name;
       if (!seen.has(key)) {
+        if (seen.size >= limit) break kinds;
         const fw = frameworkOf(s.name);
         seen.set(key, {
           name: s.name,
@@ -109,6 +116,7 @@ export function importsByFramework(imports) {
  */
 export function exportList(symbols, limit = 4000) {
   if (!symbols || !symbols.symbolCount) return [];
+  limit = finiteOr(limit, 4000);
   const out = [];
   for (let i = 0; i < symbols.addrs.length && out.length < limit; i++) {
     if (symbols.kinds[i] !== 0) continue;
@@ -139,8 +147,8 @@ export function exportList(symbols, limit = 4000) {
  */
 export function findGlobals(symbols, program, regions, opts) {
   const o = opts || {};
-  const limit = o.limit || 300;
-  const minRefs = o.minRefs || 2;
+  const limit = finiteOr(o.limit || 300, 300);
+  const minRefs = finiteOr(o.minRefs || 2, 2);
   const dataRegions = (regions || []).filter((r) =>
     !r.exec && (r.declaredSize ?? r.size ?? 0n) > 0n &&
     /__data|__bss|__common|__const|__cfstring|__objc_(ivar|const|data)/.test(r.section || ''));
