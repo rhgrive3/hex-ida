@@ -7,6 +7,11 @@ const BIG_OBJECT = 0x80;
 const BIG_RATIO = 0.25;
 const ROLE_MARGIN = 1.25;
 
+function boundedLimit(value, fallback) {
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : fallback;
+}
+
 function identityArray(scan, amount = false) {
   if (!scan) return null;
   return amount
@@ -180,16 +185,18 @@ export function roleOf(folded, offset) {
 }
 
 export function resources(folded, limit = 12) {
+  const safeLimit = boundedLimit(limit, 12);
   const roles = assignRoles(folded), out = [];
   for (const e of folded.values()) {
     const r = roles.get(e.key);
     if (r?.role === 'resource') out.push(Object.assign({}, e, { score: r.resource, role: 'resource', roles: r, complete: folded.complete !== false }));
   }
   out.sort((a, b) => b.score - a.score || (b.decreases + b.increases) - (a.decreases + a.increases));
-  return out.slice(0, limit);
+  return out.slice(0, safeLimit);
 }
 
 export function damageSources(folded, res, limit = 12) {
+  const safeLimit = boundedLimit(limit, 12);
   const resourceKeys = new Set();
   for (const r of res || []) { resourceKeys.add(r.key); resourceKeys.add(String(r.offset)); }
   const roles = assignRoles(folded), out = [];
@@ -200,7 +207,7 @@ export function damageSources(folded, res, limit = 12) {
     if (score > 0) out.push(Object.assign({}, e, { score, role: 'damage-source', roles: r, complete: folded.complete !== false }));
   }
   out.sort((a, b) => b.score - a.score || b.usedAsAmount - a.usedAsAmount);
-  return out.slice(0, limit);
+  return out.slice(0, safeLimit);
 }
 
 export function evidenceFor(folded, offset, goalId) {
@@ -231,12 +238,13 @@ export function evidenceFor(folded, offset, goalId) {
 }
 
 export function byGoal(folded, goalId, limit = 8) {
+  const safeLimit = boundedLimit(limit, 8);
   const res = resources(folded, 24);
   switch (goalId) {
-    case 'attack': case 'damage': return damageSources(folded, res, limit);
-    case 'hp': case 'stamina': return res.filter((e) => e.crossObject > 0 || e.amountFromCall > 0).slice(0, limit);
-    case 'money': case 'score': return res.filter((e) => e.crossObject === 0).slice(0, limit);
-    case 'level': case 'item': return res.slice(0, limit);
+    case 'attack': case 'damage': return damageSources(folded, res, safeLimit);
+    case 'hp': case 'stamina': return res.filter((e) => e.crossObject > 0 || e.amountFromCall > 0).slice(0, safeLimit);
+    case 'money': case 'score': return res.filter((e) => e.crossObject === 0).slice(0, safeLimit);
+    case 'level': case 'item': return res.slice(0, safeLimit);
     default: return [];
   }
 }
