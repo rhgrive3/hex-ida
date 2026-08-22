@@ -172,7 +172,10 @@ function strength(text, weak) {
  * @param {number} perFeature 機能あたりの上限
  */
 export function groupByFeature(strings, perFeature = 200) {
-  const limit = Math.max(0, Math.floor(Number(perFeature) || 0));
+  const requestedLimit = Number(perFeature);
+  const limit = Number.isFinite(requestedLimit)
+    ? Math.max(0, Math.floor(requestedLimit || 0))
+    : 200;
   const buckets = new Map();
   for (const f of FEATURES) buckets.set(f.id, []);
 
