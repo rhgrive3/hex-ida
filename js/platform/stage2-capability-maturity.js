@@ -14,6 +14,7 @@ const FORMAT_PROFILES = Object.freeze({
 const FORMAT_STATIC_LEVEL = Object.freeze({ macho: 'F5', elf: 'F4', pe: 'F4' });
 
 function freeze(value) { return Object.freeze(value); }
+function profileValue(table, id) { return Object.prototype.hasOwnProperty.call(table, id) ? table[id] : null; }
 function supportedProof(proof, statusPrefix) { return typeof proof?.status === 'string' && proof.status.startsWith(statusPrefix); }
 function includesAll(values, expected) {
   const set = new Set(Array.isArray(values) ? values.map(String) : values == null ? [] : [String(values)]);
@@ -28,7 +29,7 @@ function exactStage1ProfileProof(proof, expectedProfiles, level) {
 
 function stage1ArchitectureBase(architecture, options = {}) {
   const base = architectureMaturity(architecture, options);
-  const profileId = ARCH_PROFILE[base.id];
+  const profileId = profileValue(ARCH_PROFILE, base.id);
   if (!profileId || !exactStage1ProfileProof(options.stage1Proof, [profileId], 'A6')) return base;
   const limitations = (base.limitations || []).filter((item) => ![
     'exact-machine-effects-partial-coverage',
@@ -60,7 +61,7 @@ function stage1ArchitectureBase(architecture, options = {}) {
 
 export function stage2ArchitectureMaturity(architecture, options = {}) {
   const base = stage1ArchitectureBase(architecture, options);
-  const profileId = ARCH_PROFILE[base.id];
+  const profileId = profileValue(ARCH_PROFILE, base.id);
   const runtimeSupported = supportedProof(options.runtimeProof, 'supported-for-exact-provider-profile')
     && options.runtimeProof?.targetProfileId === profileId;
   if (!runtimeSupported || base.fullySatisfiedLevel !== 'A6') return base;
@@ -100,8 +101,8 @@ export function stage2ManagedMaturity(frontend, options = {}) {
 
 function stage1FormatBase(format, options = {}) {
   const base = formatMaturity(format);
-  const profiles = FORMAT_PROFILES[base.id];
-  const targetLevel = FORMAT_STATIC_LEVEL[base.id];
+  const profiles = profileValue(FORMAT_PROFILES, base.id);
+  const targetLevel = profileValue(FORMAT_STATIC_LEVEL, base.id);
   if (!profiles || !targetLevel || !exactStage1ProfileProof(options.stage1Proof, profiles, targetLevel)) return base;
   const features = { ...base.features, importsExportsRelocations: 'supported', functionDebugUnwind: 'supported' };
   if (base.id === 'macho') features.runtimeLanguageMetadata = 'supported';
@@ -126,7 +127,7 @@ function stage1FormatBase(format, options = {}) {
 
 export function stage2FormatMaturity(format, options = {}) {
   const base = stage1FormatBase(format, options);
-  const profiles = FORMAT_PROFILES[base.id] || [];
+  const profiles = profileValue(FORMAT_PROFILES, base.id) || [];
   const rebuildSupported = supportedProof(options.rebuildProof, 'supported-for-exact-rebuild-profile')
     && options.rebuildProof?.format === base.id
     && options.rebuildProof?.formatCoverageComplete === true
