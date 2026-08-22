@@ -11,6 +11,11 @@ function boundedStrength(v) {
   if (v == null || !Number.isFinite(Number(v))) return 0;
   return Math.max(0, Math.min(1, Number(v)));
 }
+function boundedLikelihoodRatio(value, fallback) {
+  if (value == null) return fallback;
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.max(1, n) : fallback;
+}
 function isExplicitSemanticProof(f, e) {
   const grade=String(f?.proofGrade || e?.proofGrade || f?.grade || e?.grade || '').toLowerCase();
   return f?.verified === true || e?.verified === true || !!(f?.verificationOrigin || e?.verificationOrigin)
@@ -34,7 +39,7 @@ export function semanticEvidenceItems(facts, opts) {
   const o = opts || {};
   const seen = new Set();
   const out = [];
-  const lr = o.lr != null ? Math.max(1, Number(o.lr)) : 8;
+  const lr = boundedLikelihoodRatio(o.lr, 8);
   for (const f of facts || []) {
     for (const e of f && f.evidence || []) {
       if (!e) continue;
@@ -77,7 +82,7 @@ export function runtimeEvidenceItems(runtimeResult, opts) {
   const out = [];
   const touched = runtimeResult.touchedFields || runtimeResult.modifiedFields || [];
   const branches = runtimeResult.takenBranches || [];
-  const lr = o.lr != null ? Math.max(1, Number(o.lr)) : 18;
+  const lr = boundedLikelihoodRatio(o.lr, 18);
   const strength = boundedStrength(o.strength == null ? 1 : o.strength);
   if (strength <= 0) return [];
   const seen = new Set();
