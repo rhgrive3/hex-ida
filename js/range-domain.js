@@ -3,20 +3,34 @@ function validBits(bits) {
   return Number.isInteger(n) && n > 0 && n <= 64 ? n : 64;
 }
 
+function strictBigInt(value) {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value)) throw new TypeError('integer value must be a safe integer');
+    return BigInt(value);
+  }
+  if (typeof value === 'string') {
+    const text = value.trim();
+    if (!text) throw new TypeError('integer value must not be blank');
+    try { return BigInt(text); } catch { throw new TypeError('integer value must be an integer string'); }
+  }
+  throw new TypeError('integer value must be bigint, safe integer number, or integer string');
+}
+
 export function normalizedSignedness(signed) {
   return signed === true ? true : signed === false ? false : null;
 }
 
 export function normalizeIntegerValue(value, bits = 64, signed = false) {
   const width = validBits(bits);
-  const raw = BigInt.asUintN(width, BigInt(value));
+  const raw = BigInt.asUintN(width, strictBigInt(value));
   return signed === true ? BigInt.asIntN(width, raw) : raw;
 }
 
 export function rangeWithDomain(min, max, bits = 64, signed = null) {
   return {
-    min: BigInt(min),
-    max: BigInt(max),
+    min: strictBigInt(min),
+    max: strictBigInt(max),
     bits: validBits(bits),
     signed: normalizedSignedness(signed),
   };
@@ -34,7 +48,13 @@ export function normalizeRangeDomain(range, bits, signed) {
   const srcSigned = normalizedSignedness(range.signed);
   const dstSigned = normalizedSignedness(signed);
   if (srcBits !== width) return null;
-  const min = BigInt(range.min), max = BigInt(range.max);
+  let min, max;
+  try {
+    min = strictBigInt(range.min);
+    max = strictBigInt(range.max);
+  } catch {
+    return null;
+  }
   if (min > max) return null;
   if (srcSigned == null || dstSigned == null) {
     return srcSigned === dstSigned ? rangeWithDomain(min, max, width, dstSigned) : null;
