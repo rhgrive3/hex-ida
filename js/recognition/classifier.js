@@ -74,7 +74,7 @@ export function applicationCodeScore(input = {}, context = {}) {
   const penalties = { SYSTEM:0.7, RUNTIME:0.7, SDK:0.65, LIBRARY:0.65, GENERATED:0.75 };
   const hard = cls.hardSuppress === true && cls.confidence >= 0.8;
   score -= hard ? (penalties[cls.classification] || 0) : (['SYSTEM','RUNTIME','SDK','LIBRARY','GENERATED'].includes(cls.classification) ? 0.08 * Math.max(0,Math.min(1,cls.confidence || 0)) : 0);
-  if (context.vendor?.confidence >= 0.8 && cls.classification !== 'APPLICATION') score -= 0.15;
+  if (boundedConfidence(context.vendor?.confidence ?? 0) >= 0.8 && cls.classification !== 'APPLICATION') score -= 0.15;
   return Math.max(0, Math.min(1, score));
 }
 
