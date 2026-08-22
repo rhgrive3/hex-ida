@@ -17,6 +17,10 @@ function positive(value, fallback, max, code) {
   return n;
 }
 
+function validSequence(value) {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
 function list(value) {
   return [...new Set((Array.isArray(value) ? value : []).map(String).filter(Boolean))].sort();
 }
@@ -47,8 +51,8 @@ export function createRemoteCollaborationEnvelope(input = {}) {
   const actorIdentity = required(input.actorIdentity, 'remote-actor-identity-required');
   const deviceIdentity = required(input.deviceIdentity, 'remote-device-identity-required');
   const messageId = required(input.messageId, 'remote-message-id-required');
-  const sequence = Number(input.sequence);
-  if (!Number.isSafeInteger(sequence) || sequence < 0) throw new TypeError('remote-sequence-invalid');
+  const sequence = input.sequence;
+  if (!validSequence(sequence)) throw new TypeError('remote-sequence-invalid');
   if (!Array.isArray(input.operations) || input.operations.length === 0) throw new TypeError('remote-operations-required');
   const operations = input.operations.map((operation) => createProjectOperation({
     ...operation,
@@ -108,6 +112,7 @@ export class RemoteCollaborationGate {
     if (envelope.projectIdentity !== this.projectIdentity) return { ok: false, reason: 'remote-wrong-project' };
     if ((envelope.binaryIdentity ?? null) !== this.binaryIdentity) return { ok: false, reason: 'remote-wrong-binary' };
     if (envelope.sessionIdentity !== this.sessionIdentity) return { ok: false, reason: 'remote-wrong-session' };
+    if (!validSequence(envelope.sequence)) return { ok: false, reason: 'remote-sequence-invalid' };
     if (this.revokedActors.has(envelope.actorIdentity)) return { ok: false, reason: 'remote-actor-revoked' };
     const permissions = this.allowedActors[envelope.actorIdentity];
     if (!permissions) return { ok: false, reason: 'remote-actor-unauthorized' };
