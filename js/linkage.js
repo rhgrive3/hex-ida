@@ -72,10 +72,11 @@ export function importList(symbols, program, limit = 4000) {
   if (!symbols || !symbols.symbolCount) return [];
   limit = finiteOr(limit, 4000);
   const seen = new Map();
-  for (const kind of [SYM_STUB, SYM_POINTER]) {
+  kinds: for (const kind of [SYM_STUB, SYM_POINTER]) {
     for (const s of symbols.symbolList({ kind, max: limit })) {
       const key = s.name;
       if (!seen.has(key)) {
+        if (seen.size >= limit) break kinds;
         const fw = frameworkOf(s.name);
         seen.set(key, {
           name: s.name,
