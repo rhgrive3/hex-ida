@@ -1,8 +1,18 @@
 /* Binary patching and the small ARM64 patch assembler. */
 import { parseOperands } from './arm64.js';
 
-function integerBigInt(value, name) { try { return BigInt(value); } catch { throw new TypeError(`${name} must be an integer`); } }
-function canonicalAddress(value) { try { return BigInt(value).toString(); } catch { return null; } }
+function integerBigInt(value, name) {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value)) throw new TypeError(`${name} must be an integer`);
+    return BigInt(value);
+  }
+  if (typeof value === 'string' && value.trim()) {
+    try { return BigInt(value.trim()); } catch { /* handled below */ }
+  }
+  throw new TypeError(`${name} must be an integer`);
+}
+function canonicalAddress(value) { try { return integerBigInt(value, 'address').toString(); } catch { return null; } }
 
 export class PatchSet {
   constructor() { this.items = new Map(); }
@@ -119,11 +129,19 @@ export function isHexBytes(text) { const raw = String(text || '').trim(); if (!r
 
 export function validatePatchRange(region, addr, length, fileSize, instruction = true) {
   if (!region) return { error: 'コードのセクションが見つかりません。' };
-  const a = BigInt(addr); const n = Number(length);
+  let a;
+  try { a = integerBigInt(addr, 'address'); } catch { return { error: 'アドレスが不正です。' }; }
+  const n = Number(length);
   if (!Number.isSafeInteger(n) || n <= 0) return { error: '書き換える長さが不正です。' };
   if (instruction && ((a - region.vmAddr) % 4n !== 0n || n !== 4)) return { error: '命令の位置と長さは 4 バイト境界で指定してください。' };
   const rel = a - region.vmAddr; if (rel < 0n || rel + BigInt(n) > region.size) return { error: 'アドレスがコードのセクション範囲外です。' };
-  const offset = region.fileOffset + rel; if (offset < 0n || (fileSize != null && offset + BigInt(n) > BigInt(fileSize))) return { error: '書き換え位置がファイル範囲外です。' };
+  const offset = region.fileOffset + rel;
+  let totalSize = null;
+  if (fileSize != null) {
+    try { totalSize = integerBigInt(fileSize, 'fileSize'); } catch { return { error: 'ファイルサイズが不正です。' }; }
+    if (totalSize < 0n) return { error: 'ファイルサイズが不正です。' };
+  }
+  if (offset < 0n || (totalSize != null && offset + BigInt(n) > totalSize)) return { error: '書き換え位置がファイル範囲外です。' };
   return { ok: true, fileOffset: offset };
 }
 export function hexOf(bytes) { return Array.from(bytes).map((b) => b.toString(16).padStart(2, '0').toUpperCase()).join(' '); }
