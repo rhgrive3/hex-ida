@@ -10,6 +10,11 @@ export const SYM_DEFINED = 0;   // このファイルの中で定義された名
 export const SYM_STUB = 1;      // 外部ライブラリへの中継地点 (__stubs)
 export const SYM_POINTER = 2;   // 外部関数のアドレスを入れる箱 (__got など)
 
+function finiteListMax(value, fallback = 50000) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
 export class SymbolIndex {
   constructor(result) {
     const r = result || {};
@@ -275,10 +280,11 @@ export class SymbolIndex {
 
   /** 関数の一覧を作る。名前があれば付ける。region で範囲を絞る。 */
   functionList(region, max = 50000) {
+    const resultMax = finiteListMax(max);
     const out = [];
     const lo = region ? region.vmAddr : 0n;
     const hi = region ? region.vmAddr + region.size : null;
-    for (let i = 0; i < this.funcs.length && out.length < max; i++) {
+    for (let i = 0; i < this.funcs.length && out.length < resultMax; i++) {
       const a = this.funcs[i];
       if (a < lo) continue;
       if (hi != null && a >= hi) break;
@@ -296,10 +302,11 @@ export class SymbolIndex {
 
   /** 名前つきシンボルの一覧（範囲つき、種類で絞れる）。 */
   symbolList({ region, kind, max = 50000 } = {}) {
+    const resultMax = finiteListMax(max);
     const out = [];
     const lo = region ? region.vmAddr : null;
     const hi = region ? region.vmAddr + region.size : null;
-    for (let i = 0; i < this.addrs.length && out.length < max; i++) {
+    for (let i = 0; i < this.addrs.length && out.length < resultMax; i++) {
       const a = this.addrs[i];
       if (lo != null && (a < lo || a >= hi)) continue;
       if (kind != null && this.kinds[i] !== kind) continue;
