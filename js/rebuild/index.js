@@ -5,6 +5,12 @@ export const REBUILD_PLAN_VERSION = 'hex-rebuild-plan-v1';
 export const REBUILD_LEVELS = Object.freeze(['R0', 'R1', 'R2', 'R3', 'R4', 'R5']);
 
 function required(value, code) { const text = String(value ?? '').trim(); if (!text) throw new TypeError(code); return text; }
+function explicitBigInt(value, code) {
+  if (typeof value === 'number') { if (!Number.isSafeInteger(value)) throw new TypeError(code); return BigInt(value); }
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'string' && value.trim()) return BigInt(value);
+  throw new TypeError(code);
+}
 function bytes(value) { if (value instanceof Uint8Array) return value; if (value instanceof ArrayBuffer) return new Uint8Array(value); if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength); if (Array.isArray(value)) return Uint8Array.from(value); throw new TypeError('rebuild-bytes-required'); }
 function hashBytes(value) { return `bytes:${stableDigest(Array.from(bytes(value)))}`; }
 function clone(value) { if (typeof structuredClone === 'function') return structuredClone(value); if (Array.isArray(value)) return value.map(clone); if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, clone(item)])); return value; }
@@ -26,7 +32,7 @@ export function createRebuildPlan(input = {}) {
   const loaderVersion = required(input.loaderVersion || 'n/a', 'rebuild-loader-version-required');
   if (!Array.isArray(input.operations)) throw new TypeError('rebuild-operations-required');
   const operations = input.operations.map((operation) => {
-    const offset = BigInt(operation.offset ?? operation.fileOffset);
+    const offset = explicitBigInt(operation.offset ?? operation.fileOffset, 'rebuild-operation-offset-invalid');
     const before = bytes(operation.before || []), after = bytes(operation.after || []);
     if (offset < 0n || !before.length || before.length !== after.length) throw new TypeError('rebuild-operation-same-size-precondition-required');
     return { id: String(operation.id || `operation:${stableDigest({ offset: offset.toString(), before: Array.from(before), after: Array.from(after) })}`), offset: offset.toString(), before: Array.from(before), after: Array.from(after), address: operation.address == null ? null : String(operation.address), provenance: clone(operation.provenance || { source: 'local-patch' }) };
@@ -79,7 +85,11 @@ export async function validateRebuildOutput(plan, materialized, options = {}) {
   const original = await sourceBytes(options.original || new Uint8Array());
   const output = materialized.bytes;
   const failures = [];
-  if (options.original && !unchangedRegions(original, output, materialized.touched)) failures.push({ validator: 'unchanged-regions', reason: 'promised-unchanged-region-differed' });
+  if (options.original) {
+    if (!unchangedRegions(original, output, materialized.touched)) failures.push({ validator: 'unchanged-regions', reason: 'promised-unchanged-region-differed' });
+  } else if (plan.requiredValidators.includes('unchanged-regions')) {
+    failures.push({ validator: 'unchanged-regions', reason: 'original-source-unavailable' });
+  }
   if (typeof options.loaderReparse === 'function') {
     try { const result = await options.loaderReparse(output); if (result?.status === 'unsupported' || result?.ok === false) failures.push({ validator: 'loader-reparse', reason: result.reason || 'loader-rejected-output' }); }
     catch (error) { failures.push({ validator: 'loader-reparse', reason: error.message }); }
