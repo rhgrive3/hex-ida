@@ -19,6 +19,7 @@ const GROUP_CAP = {
 };
 
 function damp(nth) { return 1 / (1 + nth * 1.2); }
+function likelihoodRatio(value) { return value === 0 ? 0 : (value || 1); }
 const LN = Math.log;
 
 export function groupedFusion(items, opts) {
@@ -33,8 +34,8 @@ export function groupedFusion(items, opts) {
   let verified = 0;
 
   const sorted = (items || []).filter((x) => x && x.code).slice().sort((a, b) => {
-    const ea = Math.abs(LN(Math.max(1e-6, a.lr || 1)) * (a.strength == null ? 1 : a.strength));
-    const eb = Math.abs(LN(Math.max(1e-6, b.lr || 1)) * (b.strength == null ? 1 : b.strength));
+    const ea = Math.abs(LN(Math.max(1e-6, likelihoodRatio(a.lr))) * (a.strength == null ? 1 : a.strength));
+    const eb = Math.abs(LN(Math.max(1e-6, likelihoodRatio(b.lr))) * (b.strength == null ? 1 : b.strength));
     return eb - ea;
   });
 
@@ -42,7 +43,7 @@ export function groupedFusion(items, opts) {
     const group = groupOf(item);
     const nth = counted.get(group) || 0;
     counted.set(group, nth + 1);
-    let delta = LN(Math.max(1e-6, item.lr || 1)) * (item.strength == null ? 1 : item.strength);
+    let delta = LN(Math.max(1e-6, likelihoodRatio(item.lr))) * (item.strength == null ? 1 : item.strength);
     if (delta > 0) delta *= damp(nth);
     const cap = LN(GROUP_CAP[group] != null ? GROUP_CAP[group] : 20);
     const already = byGroup.get(group) || 0;
