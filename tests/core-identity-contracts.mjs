@@ -41,6 +41,28 @@ assert.ok(createEntityId({ binaryId: binaryA, sliceId: slice, kind: 'value', ide
 assert.ok(createEvidenceId({ binaryId: binaryA, kind: 'semantic', identity: { value: 1 } }).startsWith('evidence_'));
 assert.ok(createRuntimeSessionId({ binaryId: binaryA, provider: 'fake', targetIdentity: { pid: 123 }, sessionNonce: 'run-1' }).startsWith('runtime_'));
 
+const unsafeRoundedIdentity = Number(9007199254740993n);
+assert.equal(unsafeRoundedIdentity, 9007199254740992, 'counterexample must demonstrate IEEE-754 rounding');
+assert.throws(
+  () => createFunctionId({ binaryId: binaryA, sliceId: slice, canonicalStartIdentity: unsafeRoundedIdentity }),
+  /identity-unsafe-number/,
+  'canonical identities must reject unsafe integer Numbers instead of minting an ID for a rounded value',
+);
+assert.doesNotThrow(
+  () => createFunctionId({ binaryId: binaryA, sliceId: slice, canonicalStartIdentity: 9007199254740993n }),
+  'bigint canonical identities must retain exact large integers',
+);
+assert.throws(
+  () => createVmOperationId({ binaryId: binaryA, sliceId: slice, vm: 'dex', methodId: 'm1', operationOffset: Infinity, semanticVersion: '1' }),
+  /identity-non-finite-number/,
+  'non-finite canonical operation offsets must be rejected',
+);
+assert.throws(
+  () => createRuntimeSessionId({ binaryId: binaryA, provider: 'fake', targetIdentity: { pid: 1, generation: unsafeRoundedIdentity }, sessionNonce: 'run-unsafe' }),
+  /identity-unsafe-number/,
+  'unsafe Numbers nested inside structured canonical identities must be rejected',
+);
+
 const artifactIdentity = {
   binaryId: binaryA,
   sliceId: slice,
