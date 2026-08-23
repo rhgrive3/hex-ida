@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { stableDigest } from '../../js/core/identity/index.js';
 import {
+  INDEPENDENT_ORACLE_RESULT_SCHEMA,
   createRebuildTransaction,
   materializeRebuildTransaction,
   publishRebuildTransaction,
@@ -10,6 +11,19 @@ import {
 
 const source = Uint8Array.from([1, 2, 3, 4]);
 const sourceHash = `bytes:${stableDigest(Array.from(source))}`;
+function independentEvidence(output, ok = true, extra = {}) {
+  return {
+    schemaVersion: INDEPENDENT_ORACLE_RESULT_SCHEMA,
+    ok,
+    status: ok ? 'passed' : 'rejected',
+    oracleIdentity: 'external:test-reparser',
+    oracleVersion: 'test-reparser/1.0.0',
+    oracleSource: 'tests/stage2/rebuild-transaction.test.mjs:test-reparser',
+    sourceDigest: sourceHash,
+    outputDigest: `bytes:${stableDigest(Array.from(output))}`,
+    ...extra,
+  };
+}
 function transactionFor(format) {
   return createRebuildTransaction({
     binaryId: `binary:${format}:test`,
@@ -57,7 +71,7 @@ const external = {
 const missingRelocation = await validateRebuildTransaction(transaction, materialized, {
   original: source,
   loaderReparse: () => ({ ok: true }),
-  independentOracle: () => ({ ok: true }),
+  independentOracle: ({ output }) => independentEvidence(output),
   validators: { ...external, relocations: undefined },
 });
 assert.equal(missingRelocation.status, 'invalid');
@@ -69,7 +83,7 @@ assert.equal(relocationFailure.reason, 'required-validator-unavailable');
 const validation = await validateRebuildTransaction(transaction, materialized, {
   original: source,
   loaderReparse: ({ output }) => ({ ok: output.length === 5 }),
-  independentOracle: ({ output }) => ({ ok: output[1] === 9 && output[2] === 8 }),
+  independentOracle: ({ output }) => independentEvidence(output, output[1] === 9 && output[2] === 8),
   validators: external,
 });
 assert.equal(validation.status, 'valid');
@@ -82,7 +96,7 @@ let independentCalls = 0;
 const countedValidation = await validateRebuildTransaction(transaction, materialized, {
   original: source,
   loaderReparse: () => ({ ok: true }),
-  independentOracle: () => { independentCalls += 1; return { ok: true }; },
+  independentOracle: ({ output }) => { independentCalls += 1; return independentEvidence(output); },
   validators: external,
 });
 assert.equal(countedValidation.status, 'valid');
@@ -91,13 +105,13 @@ assert.equal(independentCalls, 1, 'independent parser must execute exactly once'
 const tamperedOutput = { ...materialized, bytes: Uint8Array.from(materialized.bytes) };
 tamperedOutput.bytes[1] = 0;
 assert.equal((await validateRebuildTransaction(transaction, tamperedOutput, {
-  original: source, loaderReparse: () => ({ ok: true }), independentOracle: () => ({ ok: true }), validators: external,
+  original: source, loaderReparse: () => ({ ok: true }), independentOracle: ({ output }) => independentEvidence(output), validators: external,
 })).reason, 'rebuild-v2-materialization-identity-invalid');
 
 const tamperedMappings = { ...materialized, mappings: materialized.mappings.map((item) => ({ ...item })) };
 tamperedMappings.mappings[0].outputOffset += 1;
 assert.equal((await validateRebuildTransaction(transaction, tamperedMappings, {
-  original: source, loaderReparse: () => ({ ok: true }), independentOracle: () => ({ ok: true }), validators: external,
+  original: source, loaderReparse: () => ({ ok: true }), independentOracle: ({ output }) => independentEvidence(output), validators: external,
 })).reason, 'rebuild-v2-materialization-identity-invalid');
 
 const loaderAndOracle = () => ({ ok: true });
@@ -108,7 +122,7 @@ assert.equal((await validateRebuildTransaction(transaction, materialized, {
 const wrongFormat = await validateRebuildTransaction(transaction, materialized, {
   original: source,
   loaderReparse: () => ({ ok: true, format: 'elf' }),
-  independentOracle: () => ({ ok: true }),
+  independentOracle: ({ output }) => independentEvidence(output),
   validators: external,
 });
 assert.equal(wrongFormat.status, 'invalid');
@@ -117,7 +131,7 @@ assert.equal(wrongFormat.validators.find((item) => item.validator === 'loader-re
 const relocationMismatch = await validateRebuildTransaction(transaction, materialized, {
   original: source,
   loaderReparse: () => ({ ok: true }),
-  independentOracle: () => ({ ok: true }),
+  independentOracle: ({ output }) => independentEvidence(output),
   validators: { ...external, relocations: () => ({ ok: true, bindingIntegrity: false }) },
 });
 assert.equal(relocationMismatch.status, 'invalid');
@@ -130,7 +144,7 @@ const boundTransaction = createRebuildTransaction({
 const boundMaterialized = await materializeRebuildTransaction(boundTransaction, source, { maxOutputBytes: 1024 });
 const boundExternal = { ...external, relocations: () => ({ ok: true, checked: 1 }) };
 assert.equal((await validateRebuildTransaction(boundTransaction, boundMaterialized, {
-  original: source, loaderReparse: () => ({ ok: true }), independentOracle: () => ({ ok: true }), validators: boundExternal,
+  original: source, loaderReparse: () => ({ ok: true }), independentOracle: ({ output }) => independentEvidence(output), validators: boundExternal,
 })).status, 'valid');
 const badBindingTransaction = createRebuildTransaction({
   ...transactionFor('elf'),
@@ -138,12 +152,57 @@ const badBindingTransaction = createRebuildTransaction({
 });
 const badBindingMaterialized = await materializeRebuildTransaction(badBindingTransaction, source, { maxOutputBytes: 1024 });
 assert.equal((await validateRebuildTransaction(badBindingTransaction, badBindingMaterialized, {
-  original: source, loaderReparse: () => ({ ok: true }), independentOracle: () => ({ ok: true }), validators: boundExternal,
+  original: source, loaderReparse: () => ({ ok: true }), independentOracle: ({ output }) => independentEvidence(output), validators: boundExternal,
 })).reason, 'rebuild-v2-materialization-identity-invalid');
 
 assert.equal((await validateRebuildTransaction(transaction, materialized, {
-  loaderReparse: () => ({ ok: true }), independentOracle: () => ({ ok: true }), validators: external,
+  loaderReparse: () => ({ ok: true }), independentOracle: ({ output }) => independentEvidence(output), validators: external,
 })).reason, 'rebuild-v2-original-source-required');
+
+// Distinct wrappers around one implementation are the self-oracle counterexample:
+// function identity alone cannot prove that a second parser exists. The F6
+// contract must reject this result before any profile can be promoted.
+const sharedSelfOracle = () => ({ ok: true });
+const wrappedSelfOracle = await validateRebuildTransaction(transaction, materialized, {
+  original: source,
+  loaderReparse: (context) => sharedSelfOracle(context),
+  independentOracle: (context) => sharedSelfOracle(context),
+  validators: external,
+});
+assert.equal(wrappedSelfOracle.status, 'invalid');
+assert.equal(wrappedSelfOracle.validators.find((item) => item.validator === 'independent-differential').reason, 'independent-oracle-contract-invalid');
+
+for (const [field, reason] of [
+  ['oracleIdentity', 'independent-oracle-identity-required'],
+  ['oracleVersion', 'independent-oracle-version-required'],
+  ['oracleSource', 'independent-oracle-source-required'],
+  ['sourceDigest', 'independent-oracle-source-digest-required'],
+  ['outputDigest', 'independent-oracle-output-digest-required'],
+]) {
+  const incomplete = independentEvidence(materialized.bytes);
+  delete incomplete[field];
+  const rejected = await validateRebuildTransaction(transaction, materialized, {
+    original: source,
+    loaderReparse: () => ({ ok: true }),
+    independentOracle: () => incomplete,
+    validators: external,
+  });
+  assert.equal(rejected.validators.find((item) => item.validator === 'independent-differential').reason, reason, field);
+}
+const sameIdentity = await validateRebuildTransaction(transaction, materialized, {
+  original: source,
+  loaderReparse: () => ({ ok: true }),
+  independentOracle: ({ output }) => independentEvidence(output, true, { oracleIdentity: transaction.loaderVersion }),
+  validators: external,
+});
+assert.equal(sameIdentity.validators.find((item) => item.validator === 'independent-differential').reason, 'independent-oracle-identity-not-distinct');
+const wrongDigest = await validateRebuildTransaction(transaction, materialized, {
+  original: source,
+  loaderReparse: () => ({ ok: true }),
+  independentOracle: ({ output }) => independentEvidence(output, true, { outputDigest: sourceHash }),
+  validators: external,
+});
+assert.equal(wrongDigest.validators.find((item) => item.validator === 'independent-differential').reason, 'independent-oracle-output-digest-mismatch');
 
 assert.equal((await publishRebuildTransaction(materialized, validation)).reason, 'rebuild-v2-atomic-promotion-required');
 assert.equal((await publishRebuildTransaction(materialized, validation, { atomicPromote: async () => ({ atomic: true }) })).reason, 'rebuild-v2-publication-not-atomic');
