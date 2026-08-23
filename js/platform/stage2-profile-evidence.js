@@ -1,6 +1,7 @@
 import { deepFreeze, stableDigest } from '../core/identity/index.js';
 
 export const STAGE2_PROFILE_EVIDENCE_SCHEMA = 'hex-stage2-profile-evidence/v2';
+export const STAGE2_DENOMINATOR_LOCK_SCHEMA = 'hex-stage2-profile-denominators/v1';
 export const STAGE2_PROFILE_EVIDENCE_IDS = Object.freeze([
   'S1-A2-NATIVE',
   'S2-A7-NATIVE',
@@ -43,6 +44,90 @@ function payload(record) {
 }
 function identity(record) { return `stage2-profile-evidence:${stableDigest(payload(record))}`; }
 
+function scopeLockHash(scope) { return `stage2-scope-lock:${stableDigest(scope)}`; }
+function denominatorItemPayload(item) {
+  return {
+    id: item.id,
+    profiles: item.profiles,
+    unitIds: item.unitIds,
+    inventoryRefs: item.inventoryRefs,
+    inventoryHash: item.inventoryHash,
+  };
+}
+function denominatorItemHash(item) { return `stage2-denominator-item:${stableDigest(denominatorItemPayload(item))}`; }
+function denominatorLockPayload(lock) {
+  return {
+    schemaVersion: lock.schemaVersion,
+    scopeVersion: lock.scopeVersion,
+    scopeLockHash: lock.scopeLockHash,
+    items: lock.items,
+  };
+}
+function denominatorLockHash(lock) { return `stage2-denominator-lock:${stableDigest(denominatorLockPayload(lock))}`; }
+function expectedInventoryHash(refs, resolveInventoryIdentity) {
+  const identities = refs.map((ref) => [ref, String(resolveInventoryIdentity(ref) || '')]);
+  if (identities.some(([, value]) => !value)) throw new TypeError('stage2-denominator-inventory-ref-unresolved');
+  return `stage2-denominator-inventory:${stableDigest(identities)}`;
+}
+
+export function createStage2DenominatorLock(input = {}, { scope, resolveInventoryIdentity } = {}) {
+  if (!scope || typeof scope !== 'object' || Array.isArray(scope)) throw new TypeError('stage2-denominator-scope-required');
+  if (typeof resolveInventoryIdentity !== 'function') throw new TypeError('stage2-denominator-inventory-resolver-required');
+  const items = {};
+  for (const id of STAGE2_PROFILE_EVIDENCE_IDS) {
+    const source = input.items?.[id] || {};
+    const profiles = sorted(source.profiles);
+    const unitIds = sorted(source.unitIds);
+    const inventoryRefs = sorted(source.inventoryRefs);
+    const item = {
+      id: `stage2-denominator:${id}:v1`,
+      profiles: Object.freeze(profiles),
+      unitIds: Object.freeze(unitIds),
+      inventoryRefs: Object.freeze(inventoryRefs),
+      inventoryHash: expectedInventoryHash(inventoryRefs, resolveInventoryIdentity),
+    };
+    items[id] = deepFreeze({ ...item, lockHash: denominatorItemHash(item) });
+  }
+  const lock = {
+    schemaVersion: STAGE2_DENOMINATOR_LOCK_SCHEMA,
+    scopeVersion: String(scope.scopeVersion || ''),
+    scopeLockHash: scopeLockHash(scope),
+    items: deepFreeze(items),
+  };
+  return deepFreeze({ ...lock, lockHash: denominatorLockHash(lock) });
+}
+
+export function validateStage2DenominatorLock(lock, { scope, resolveInventoryIdentity } = {}) {
+  if (!lock || lock.schemaVersion !== STAGE2_DENOMINATOR_LOCK_SCHEMA) return { ok: false, reason: 'stage2-denominator-lock-schema-invalid' };
+  if (!scope || typeof scope !== 'object' || Array.isArray(scope)) return { ok: false, reason: 'stage2-denominator-scope-required' };
+  if (typeof resolveInventoryIdentity !== 'function') return { ok: false, reason: 'stage2-denominator-inventory-resolver-required' };
+  if (lock.scopeVersion !== scope.scopeVersion || lock.scopeLockHash !== scopeLockHash(scope)) return { ok: false, reason: 'stage2-denominator-scope-lock-mismatch' };
+  const failures = [];
+  const itemIds = sorted(Object.keys(lock.items || {}));
+  if (!same(itemIds, STAGE2_PROFILE_EVIDENCE_IDS)) failures.push('denominator-item-set-mismatch');
+  for (const id of STAGE2_PROFILE_EVIDENCE_IDS) {
+    const item = lock.items?.[id];
+    if (!item || typeof item !== 'object' || Array.isArray(item)) { failures.push(`${id}:denominator-lock-missing`); continue; }
+    const profiles = sorted(item.profiles);
+    const unitIds = sorted(item.unitIds);
+    const inventoryRefs = sorted(item.inventoryRefs);
+    if (item.id !== `stage2-denominator:${id}:v1`) failures.push(`${id}:denominator-id-invalid`);
+    if (!same(profiles, EXPECTED_PROFILES[id])) failures.push(`${id}:denominator-profile-set-mismatch`);
+    if (unitIds.length === 0 || unitIds.length !== (Array.isArray(item.unitIds) ? item.unitIds.length : -1)) failures.push(`${id}:denominator-units-invalid`);
+    for (const profile of EXPECTED_PROFILES[id]) {
+      if (!unitIds.some((unitId) => unitId.startsWith(`${profile}:`))) failures.push(`${id}:denominator-profile-units-missing:${profile}`);
+    }
+    if (inventoryRefs.length === 0 || inventoryRefs.length !== (Array.isArray(item.inventoryRefs) ? item.inventoryRefs.length : -1)) failures.push(`${id}:denominator-inventory-refs-invalid`);
+    let inventoryHash = null;
+    try { inventoryHash = expectedInventoryHash(inventoryRefs, resolveInventoryIdentity); }
+    catch { failures.push(`${id}:denominator-inventory-ref-unresolved`); }
+    if (inventoryHash && item.inventoryHash !== inventoryHash) failures.push(`${id}:denominator-inventory-stale`);
+    if (item.lockHash !== denominatorItemHash({ ...item, profiles, unitIds, inventoryRefs })) failures.push(`${id}:denominator-item-lock-mismatch`);
+  }
+  if (lock.lockHash !== denominatorLockHash(lock)) failures.push('denominator-root-lock-mismatch');
+  return { ok: failures.length === 0, reason: failures.length ? 'stage2-denominator-lock-invalid' : null, failures, lockHash: lock.lockHash || null };
+}
+
 export function createStage2ProfileEvidence(input = {}) {
   const items = {};
   for (const id of STAGE2_PROFILE_EVIDENCE_IDS) {
@@ -81,13 +166,19 @@ export function validateStage2ProfileEvidence(record, expected = {}) {
   if (record.evidenceId !== identity(record)) return { ok: false, reason: 'stage2-profile-evidence-tampered' };
   if (expected.commitSha && record.commitSha !== String(expected.commitSha).toLowerCase()) return { ok: false, reason: 'stage2-profile-evidence-stale-commit' };
   if (expected.treeSha && record.treeSha !== String(expected.treeSha).toLowerCase()) return { ok: false, reason: 'stage2-profile-evidence-stale-tree' };
-  if (!expected.denominators || typeof expected.denominators !== 'object' || Array.isArray(expected.denominators)) return { ok: false, reason: 'stage2-profile-evidence-denominator-lock-required' };
+  if (!expected.denominatorLock || typeof expected.denominatorLock !== 'object' || Array.isArray(expected.denominatorLock)) return { ok: false, reason: 'stage2-profile-evidence-denominator-lock-required' };
+  const denominatorLock = validateStage2DenominatorLock(expected.denominatorLock, {
+    scope: expected.scope,
+    resolveInventoryIdentity: expected.resolveInventoryIdentity,
+  });
+  if (!denominatorLock.ok) return { ok: false, reason: denominatorLock.reason, failures: denominatorLock.failures || [] };
+  const denominators = expected.denominatorLock.items;
   const failures = [];
   for (const id of STAGE2_PROFILE_EVIDENCE_IDS) {
     const item = record.items?.[id];
     const expectedProfiles = EXPECTED_PROFILES[id];
     if (!item) { failures.push(`${id}:missing`); continue; }
-    const denominator = expected.denominators[id];
+    const denominator = denominators[id];
     if (!denominator || typeof denominator !== 'object' || !Array.isArray(denominator.unitIds) || denominator.unitIds.length === 0) {
       failures.push(`${id}:denominator-lock-missing`);
       continue;

@@ -3,7 +3,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { validatePhysicalIPadEvidence } from '../../../js/platform/physical-ipad-evidence.js';
-import { STAGE2_PROFILE_EVIDENCE_IDS, validateStage2ProfileEvidence } from '../../../js/platform/stage2-profile-evidence.js';
+import { STAGE2_PROFILE_EVIDENCE_IDS, validateStage2DenominatorLock, validateStage2ProfileEvidence } from '../../../js/platform/stage2-profile-evidence.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const REPORT_PATH = path.join(ROOT, 'reports/stage2/stage2-verdict.json');
@@ -106,14 +106,29 @@ function physicalEvidenceResult({ finalMode, evidencePath, headSha, treeSha, bui
   return { required: true, status: checked.ok ? 'passed' : 'failed', reason: checked.reason || null, evidenceId: checked.evidenceId || loaded.record.evidenceId || null };
 }
 
-function profileEvidenceResult({ finalMode, evidencePath, headSha, treeSha }) {
+function inventoryIdentityAtHead(ref) {
+  const value = String(ref || '');
+  if (!value || path.isAbsolute(value) || value.includes('\\') || value.split('/').includes('..')) return null;
+  const resolved = git(['rev-parse', `HEAD:${value}`], true);
+  return resolved.status === 0 && /^[0-9a-f]{40}$/.test(resolved.stdout) ? resolved.stdout : null;
+}
+
+function profileEvidenceResult({ finalMode, evidencePath, headSha, treeSha, scope }) {
   const loaded = readEvidenceJson(finalMode, evidencePath, 'stage2-profile-evidence-required', 'stage2-profile-evidence-file-missing', 'stage2-profile-evidence-json-invalid');
   if (loaded.status !== 'loaded') return loaded;
   if (!fs.existsSync(DENOMINATOR_PATH)) return { required: true, status: 'failed', reason: 'stage2-profile-denominator-lock-missing', failures: [] };
   let denominatorLock;
   try { denominatorLock = JSON.parse(fs.readFileSync(DENOMINATOR_PATH, 'utf8')); }
   catch (error) { return { required: true, status: 'failed', reason: 'stage2-profile-denominator-lock-invalid', failures: [String(error?.message || error)] }; }
-  const checked = validateStage2ProfileEvidence(loaded.record, { commitSha: headSha, treeSha, denominators: denominatorLock.items });
+  const lockChecked = validateStage2DenominatorLock(denominatorLock, { scope, resolveInventoryIdentity: inventoryIdentityAtHead });
+  if (!lockChecked.ok) return { required: true, status: 'failed', reason: lockChecked.reason, failures: lockChecked.failures || [] };
+  const checked = validateStage2ProfileEvidence(loaded.record, {
+    commitSha: headSha,
+    treeSha,
+    denominatorLock,
+    scope,
+    resolveInventoryIdentity: inventoryIdentityAtHead,
+  });
   return {
     required: true,
     status: checked.ok ? 'passed' : 'failed',
@@ -167,7 +182,7 @@ export function verifyStage2({ expectedSha = null, finalMode = false, physicalEv
   if (full) commands.push(npm('check'));
   const commandResults = commands.map(run);
   const physical = physicalEvidenceResult({ finalMode, evidencePath: physicalEvidencePath, headSha, treeSha, buildIdentity });
-  const profiles = profileEvidenceResult({ finalMode, evidencePath: profileEvidencePath, headSha, treeSha });
+  const profiles = profileEvidenceResult({ finalMode, evidencePath: profileEvidencePath, headSha, treeSha, scope: structural.scope });
   const ledger = effectiveLedger(structural, { headSha, treeSha, sourceAudit, commands: commandResults, physical, profiles, full });
 
   const failures = [];
