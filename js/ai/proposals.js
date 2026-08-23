@@ -181,7 +181,16 @@ function canonicalIdentity(value, stack = new Set()) {
     if (value instanceof Set) {
       return `e[${Array.from(value.values()).map((item) => canonicalIdentity(item, stack)).join(',')}]`;
     }
-    if (Array.isArray(value)) return `a[${value.map((item) => canonicalIdentity(item, stack)).join(',')}]`;
+    if (Array.isArray(value)) {
+      // Sparse holes are state, not shorthand for missing array elements.
+      const items = [];
+      for (let index = 0; index < value.length; index++) {
+        items.push(Object.prototype.hasOwnProperty.call(value, index)
+          ? `p${canonicalIdentity(value[index], stack)}`
+          : 'h');
+      }
+      return `a[${items.join(',')}]`;
+    }
     // Own keys only, and `__proto__` among them is data here, not a mutation:
     // it is read with Object.keys/direct access and never assigned onto a
     // result object, so it cannot reach a prototype.
