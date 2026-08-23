@@ -1,4 +1,8 @@
 export function createSchedulerEventBuffer({ capacity = 128 } = {}) {
+  const numericString = typeof capacity === 'string' && /^[+-]?\d+$/.test(capacity.trim());
+  if (typeof capacity !== 'number' && typeof capacity !== 'bigint' && !numericString) {
+    throw new RangeError("capacity must be an integer in [1, 4096]");
+  }
   const cap = Number(capacity);
   if (!Number.isSafeInteger(cap) || cap < 1 || cap > 4096) {
     throw new RangeError("capacity must be an integer in [1, 4096]");
