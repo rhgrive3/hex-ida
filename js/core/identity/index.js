@@ -277,8 +277,26 @@ export function canonicalAddress(value) {
   }
 }
 
+function validateCanonicalIdentityNumbers(value, seen = new WeakSet()) {
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) fail('identity-non-finite-number');
+    if (Number.isInteger(value) && !Number.isSafeInteger(value)) fail('identity-unsafe-number');
+    return;
+  }
+  if (value == null || typeof value !== 'object' || ArrayBuffer.isView(value) || value instanceof ArrayBuffer || value instanceof Date) return;
+  if (seen.has(value)) return;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    for (const item of value) validateCanonicalIdentityNumbers(item, seen);
+  } else {
+    for (const key of Object.keys(value)) validateCanonicalIdentityNumbers(value[key], seen);
+  }
+  seen.delete(value);
+}
+
 function normalizeIdentity(value, code) {
   if (value == null) fail(code);
+  validateCanonicalIdentityNumbers(value);
   if (typeof value === 'bigint' || typeof value === 'number') return String(value);
   if (typeof value === 'string') return nonEmpty(value, code);
   return jsonSafe(value);
