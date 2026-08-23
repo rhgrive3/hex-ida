@@ -5,7 +5,7 @@ export const AI_STYLES = Object.freeze(['beginner', 'analyst']);
 export const AI_SCOPES = Object.freeze(['auto', 'selection', 'function', 'neighborhood', 'binary', 'project', 'runtime']);
 export const EVIDENCE_STATUSES = Object.freeze(['verified', 'supported', 'hypothesis', 'unknown']);
 export const HYPOTHESIS_STATUSES = Object.freeze(['open', 'supported', 'rejected', 'verified']);
-export const PROPOSAL_STATUSES = Object.freeze(['pending', 'approved', 'rejected', 'applied', 'failed']);
+export const PROPOSAL_STATUSES = Object.freeze(['pending', 'approved', 'applying', 'rejected', 'applied', 'failed']);
 export const AI_ACTION_KINDS = Object.freeze([
   'open-function', 'open-address', 'show-xrefs', 'show-callers', 'show-callees',
   'show-cfg', 'show-pseudocode', 'open-evidence', 'trace-value', 'run-agent', 'review-proposal',
