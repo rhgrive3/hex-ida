@@ -30,6 +30,7 @@ assert.equal(adapter.sandbox.emulator.breakpoints.has(String(0x1008n)), true);
 
 await adapter.setBreakpoint({ id:'move:1', address:0x1008n, enabled:false });
 assert.equal(adapter.sandbox.emulator.breakpoints.has(String(0x1008n)), false, 'disabling a breakpoint must remove its physical address');
+assert.equal(adapter.sandbox.emulator.breakpoints.size, 0, 'disabled logical state must leave no stale physical address');
 assert.equal((await adapter.listBreakpoints())[0].enabled, false);
 
 await adapter.disconnect();
