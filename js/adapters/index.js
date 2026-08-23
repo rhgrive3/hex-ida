@@ -245,7 +245,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     const allBranches = result.takenBranches || [];
     const branches = allBranches.slice(this.branchCursor); this.branchCursor = allBranches.length;
     for (const e of trace) {
-      if (e?.type === 'call') continue;
+      if (e?.type === 'call') continue; // emitted below once, with resolved target
       this.traceBuffer.push({ type:'instruction', address:e.addr, text:e.text });
     }
     for (const e of branches) this.traceBuffer.push({ type:'branch', ...e });
