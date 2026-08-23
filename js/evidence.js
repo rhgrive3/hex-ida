@@ -419,6 +419,15 @@ export function evidenceKind(code) {
   return e ? e.kind : 'inference';
 }
 
+function finiteStrength(value, fallback = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : fallback;
+}
+function finitePositiveLr(value, fallback = 1) {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
 /**
  * 証拠 1 件。
  * @param {string} code    EVIDENCE の鍵
@@ -427,12 +436,13 @@ export function evidenceKind(code) {
  */
 export function evidence(code, strength, detail, lr) {
   const info = EVIDENCE[code];
-  const s = strength == null ? 1 : Math.max(0, Math.min(1, strength));
+  const s = strength == null ? 1 : finiteStrength(strength, 0);
+  const fallbackLr = finitePositiveLr(info?.lr, 1);
   return {
     code,
     strength: s,
     // 実測から作った尤度比があれば、表の既定値より優先する
-    lr: lr != null && lr > 0 ? lr : (info ? info.lr : 1),
+    lr: finitePositiveLr(lr, fallbackLr),
     family: info ? info.family : FAMILY.CONTEXT,
     kind: info ? info.kind : 'inference',
     id: !!(info && info.id),
@@ -584,7 +594,11 @@ export function fuse(items, opts) {
     const eb = Math.abs(LN(Math.max(1e-6, b.lr)) * b.strength);
     return eb - ea;
   };
-  const all = (items || []).filter((x) => x && x.code);
+  const all = (items || []).filter((x) => x && x.code).map((x) => ({
+    ...x,
+    strength: finiteStrength(x.strength, x.strength == null ? 1 : 0),
+    lr: finitePositiveLr(x.lr, 1),
+  }));
   /*
    * 目的に結びつける証拠を先に処理する。そのあとで、裏打ちの証拠を
    * 「結びつきがどれだけ強いか」に応じて割り引く。順番に意味がある。

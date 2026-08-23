@@ -6,6 +6,21 @@ import { RuntimeEvidenceBridge } from './evidence-bridge.js';
 
 const TERMINATIONS = Object.freeze(['return', 'halted', 'paused', 'fault', 'unsupported', 'timeout', 'cancelled', 'exception']);
 
+function ownedClone(value) {
+  if (typeof structuredClone === 'function') return structuredClone(value);
+  if (value == null || typeof value !== 'object') return value;
+  if (Array.isArray(value)) return value.map(ownedClone);
+  if (value instanceof Uint8Array) return new Uint8Array(value);
+  if (value instanceof ArrayBuffer) return value.slice(0);
+  if (ArrayBuffer.isView(value)) return new value.constructor(value);
+  if (value instanceof Date) return new Date(value.getTime());
+  const out = {};
+  for (const [key, item] of Object.entries(value)) {
+    Object.defineProperty(out, key, { value: ownedClone(item), enumerable: true, configurable: true, writable: true });
+  }
+  return out;
+}
+
 function terminationOf(result = {}) {
   const raw = String(result.termination ?? result.stop?.kind ?? result.status ?? 'paused').toLowerCase();
   if (TERMINATIONS.includes(raw)) return raw;
@@ -150,8 +165,9 @@ export class EmulatorProvider {
       });
       const resolution = runOptions.resolution ?? null;
       const evidenceNodes = events.map((event) => evidence.eventToEvidence(event, resolution, { binaryId: request.binaryId ?? request.binaryHash ?? null, semanticKind: 'emulator-observation' }));
-      lastRun = deepFreeze({ input, options: { maxSteps, timeoutMs }, termination, completeness, raw: raw ?? null, eventIds: events.map((event) => event.eventId) });
-      return deepFreeze({ termination, completeness, raw: raw ?? null, batch, evidence: evidenceNodes, recording: lastRun });
+      const ownedRaw = ownedClone(raw ?? null);
+      lastRun = deepFreeze({ input: ownedClone(input), options: { maxSteps, timeoutMs }, termination, completeness, raw: ownedRaw, eventIds: events.map((event) => event.eventId) });
+      return deepFreeze({ termination, completeness, raw: ownedClone(ownedRaw), batch, evidence: evidenceNodes, recording: lastRun });
     };
 
     const emulator = Object.freeze({

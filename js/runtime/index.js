@@ -32,6 +32,19 @@ function launchOptionsForTrace(functionAddress, options) {
   return launch;
 }
 
+function runtimePositiveInteger(value, name, max = Number.MAX_SAFE_INTEGER) {
+  if (typeof value !== 'number' && !(typeof value === 'string' && value.trim() !== '')) {
+    throw new DebugAdapterError(`invalid-${name}`, `${name} must be a positive safe integer`);
+  }
+  const n = Number(value);
+  if (!Number.isSafeInteger(n) || n < 1 || n > max) throw new DebugAdapterError(`invalid-${name}`, `${name} must be a positive safe integer`);
+  return n;
+}
+
+function runtimeTimeout(value) {
+  return value == null ? undefined : runtimePositiveInteger(value, 'timeoutMs', 60000);
+}
+
 function isReplayable(adapter, observation = null, trace = null) {
   if (adapter?.capabilities?.replay) return true;
   if (observation?.recordingId || observation?.recording || trace?.recordingId || trace?.recording) return true;
@@ -56,8 +69,6 @@ export class RuntimeAnalysisPlatform {
     if (name) return this.adapters.get(String(name)) || null;
     const session = this.sessions.current;
     if (session) return session.adapter;
-    // Prefer local only when it actually exists; otherwise insertion order is
-    // deterministic and lets symbolic-only configurations start successfully.
     return this.adapters.get('local') || this.adapters.values().next().value || null;
   }
   createRemote(name, transport, options = {}) {
@@ -123,6 +134,7 @@ export class RuntimeAnalysisPlatform {
     const requestedAddress = asAddress(functionAddress);
     const launchSpec = launchOptionsForTrace(requestedAddress,options);
     const operation = operationController(session,options.signal);
+    const timeoutBudget = runtimeTimeout(options.timeoutMs);
     let observation = { stop:null, returnValue:null, branches:[] }, trace;
     const started = Date.now();
     try {
@@ -134,12 +146,12 @@ export class RuntimeAnalysisPlatform {
         throw new DebugAdapterError('unsupported','adapter cannot launch, attach, or trace an existing target');
       }
       if (adapter.capabilities.resume) {
-        observation = await adapter.resume({ maxSteps:options.maxSteps ?? 20000, timeoutMs:options.timeoutMs, signal:operation.signal }) || observation;
+        observation = await adapter.resume({ maxSteps:options.maxSteps ?? 20000, timeoutMs:timeoutBudget, signal:operation.signal }) || observation;
       }
       if (observation.trace) trace = observation.trace;
       else {
         if (!adapter.capabilities.traceFunction) throw new DebugAdapterError('unsupported','adapter does not provide function tracing');
-        const timeoutMs = options.timeoutMs == null ? undefined : Math.max(1, Number(options.timeoutMs) - (Date.now() - started));
+        const timeoutMs = timeoutBudget == null ? undefined : Math.max(1, timeoutBudget - (Date.now() - started));
         trace = await adapter.trace({ limit:boundedInteger(options.limit,4096,1,50000,'limit'), timeoutMs, signal:operation.signal });
       }
     } finally { operation.release(); }
@@ -156,9 +168,7 @@ export class RuntimeAnalysisPlatform {
   }
   async readRuntimeField(address, size = 8) {
     const session = this.currentSession();
-    const n = Number(size == null ? 8 : size);
-    if (!Number.isSafeInteger(n) || n < 1) throw new DebugAdapterError('invalid-size','runtime field size must be a positive safe integer');
-    if (n > 4096) throw new DebugAdapterError('too-large','runtime field read exceeds 4096 bytes');
+    const n = runtimePositiveInteger(size == null ? 8 : size, 'size', 4096);
     const bytes = await session.adapter.readMemory(address, n);
     if (!(bytes instanceof Uint8Array) || bytes.length !== n) throw new DebugAdapterError('short-read',`runtime field read returned ${bytes && bytes.length || 0} of ${n} bytes`);
     const replayable=isReplayable(session.adapter);
