@@ -1,4 +1,4 @@
-import { canonicalAddress, deepFreeze, jsonSafe, stableStringify } from './index.js';
+import { canonicalAddress, deepFreeze, jsonSafe, stableStringify, validateCanonicalIdentityNumbers } from './index.js';
 
 export const ORIGIN_SCHEMA_VERSION = 1;
 const CANONICAL_ORIGIN_SETS = new WeakSet();
@@ -22,6 +22,11 @@ function bigintValue(value, code) {
 function uniqueSorted(values) {
   const byKey = new Map(values.map((value) => [stableStringify(value), value]));
   return [...byKey.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([, value]) => value);
+}
+// Provenance payloads must be validated before jsonSafe can erase or round numeric evidence.
+function exactJson(value) {
+  validateCanonicalIdentityNumbers(value);
+  return jsonSafe(value);
 }
 
 function byteRange(range) {
@@ -66,7 +71,7 @@ export function createTransformRecord(input = {}) {
     ruleId,
     consumedEntityIds: uniqueSorted(stringList(input.consumedEntityIds, 'origin-invalid-consumed-ids')),
     producedEntityIds: uniqueSorted(stringList(input.producedEntityIds, 'origin-invalid-produced-ids')),
-    preconditions: jsonSafe(input.preconditions ?? []),
+    preconditions: exactJson(input.preconditions ?? []),
     proofKind,
     timestampOrBuildId: input.timestampOrBuildId == null ? null : String(input.timestampOrBuildId),
   });
@@ -85,7 +90,7 @@ export function createOriginSet(input = {}) {
     virtualRanges,
     instructionIds: uniqueSorted(stringList(input.instructionIds, 'origin-invalid-instruction-ids')),
     operationIds: uniqueSorted(stringList(input.operationIds ?? input.bytecodeOperationIds, 'origin-invalid-operation-ids')),
-    sourceLocations: uniqueSorted((input.sourceLocations || []).map((value) => jsonSafe(value))),
+    sourceLocations: uniqueSorted((input.sourceLocations || []).map(exactJson)),
     parentEntityIds: uniqueSorted(stringList(input.parentEntityIds, 'origin-invalid-parent-ids')),
     transforms,
   };
