@@ -1,6 +1,6 @@
 import { deepFreeze, stableDigest } from '../core/identity/index.js';
 
-export const STAGE2_PROFILE_EVIDENCE_SCHEMA = 'hex-stage2-profile-evidence/v1';
+export const STAGE2_PROFILE_EVIDENCE_SCHEMA = 'hex-stage2-profile-evidence/v2';
 export const STAGE2_PROFILE_EVIDENCE_IDS = Object.freeze([
   'S1-A2-NATIVE',
   'S2-A7-NATIVE',
@@ -27,6 +27,11 @@ const EXPECTED_PROFILES = Object.freeze({
 
 function sorted(value) { return [...new Set((Array.isArray(value) ? value : []).map(String).filter(Boolean))].sort(); }
 function includesAll(values, expected) { const set = new Set(values); return expected.every((item) => set.has(item)); }
+function same(values, expected) { const left = sorted(values); const right = sorted(expected); return left.length === right.length && left.every((item, index) => item === right[index]); }
+function evidenceMap(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [String(key), String(item || '')]));
+}
 function payload(record) {
   return {
     schemaVersion: record.schemaVersion,
@@ -44,14 +49,18 @@ export function createStage2ProfileEvidence(input = {}) {
     const source = input.items?.[id] || {};
     items[id] = deepFreeze({
       profileIds: Object.freeze(sorted(source.profileIds)),
-      denominatorComplete: source.denominatorComplete === true,
-      exactHead: source.exactHead === true,
-      realFixture: source.realFixture === true,
-      independentOracle: source.independentOracle === true,
-      capabilityOrValidatorCoverageComplete: source.capabilityOrValidatorCoverageComplete === true,
-      negativeTests: source.negativeTests === true,
+      candidateCommitSha: String(source.candidateCommitSha || '').toLowerCase(),
+      candidateTreeSha: String(source.candidateTreeSha || '').toLowerCase(),
+      denominatorId: String(source.denominatorId || ''),
+      denominatorLockHash: String(source.denominatorLockHash || '').toLowerCase(),
+      coveredUnitIds: Object.freeze(sorted(source.coveredUnitIds)),
+      unitEvidence: deepFreeze(evidenceMap(source.unitEvidence)),
+      realFixtureIdentities: Object.freeze(sorted(source.realFixtureIdentities)),
+      negativeTestIdentities: Object.freeze(sorted(source.negativeTestIdentities)),
       evidenceIdentities: Object.freeze(sorted(source.evidenceIdentities)),
       providerProfileIds: Object.freeze(sorted(source.providerProfileIds)),
+      implementationIdentity: String(source.implementationIdentity || ''),
+      independentOracleIdentities: Object.freeze(sorted(source.independentOracleIdentities)),
     });
   }
   const record = {
@@ -72,20 +81,28 @@ export function validateStage2ProfileEvidence(record, expected = {}) {
   if (record.evidenceId !== identity(record)) return { ok: false, reason: 'stage2-profile-evidence-tampered' };
   if (expected.commitSha && record.commitSha !== String(expected.commitSha).toLowerCase()) return { ok: false, reason: 'stage2-profile-evidence-stale-commit' };
   if (expected.treeSha && record.treeSha !== String(expected.treeSha).toLowerCase()) return { ok: false, reason: 'stage2-profile-evidence-stale-tree' };
+  if (!expected.denominators || typeof expected.denominators !== 'object' || Array.isArray(expected.denominators)) return { ok: false, reason: 'stage2-profile-evidence-denominator-lock-required' };
   const failures = [];
   for (const id of STAGE2_PROFILE_EVIDENCE_IDS) {
     const item = record.items?.[id];
     const expectedProfiles = EXPECTED_PROFILES[id];
     if (!item) { failures.push(`${id}:missing`); continue; }
+    const denominator = expected.denominators[id];
+    if (!denominator || typeof denominator !== 'object' || !Array.isArray(denominator.unitIds) || denominator.unitIds.length === 0) {
+      failures.push(`${id}:denominator-lock-missing`);
+      continue;
+    }
     const profiles = sorted(item.profileIds);
     if (!includesAll(profiles, expectedProfiles)) failures.push(`${id}:profile-denominator-incomplete`);
-    if (item.denominatorComplete !== true) failures.push(`${id}:denominator-not-complete`);
-    if (item.exactHead !== true) failures.push(`${id}:not-exact-head`);
-    if (item.realFixture !== true) failures.push(`${id}:real-fixture-missing`);
-    if (item.capabilityOrValidatorCoverageComplete !== true) failures.push(`${id}:coverage-incomplete`);
-    if (item.negativeTests !== true) failures.push(`${id}:negative-tests-missing`);
+    if (item.candidateCommitSha !== record.commitSha || item.candidateTreeSha !== record.treeSha) failures.push(`${id}:not-exact-head`);
+    if (item.denominatorId !== denominator.id || item.denominatorLockHash !== denominator.lockHash) failures.push(`${id}:denominator-lock-mismatch`);
+    if (!same(item.coveredUnitIds, denominator.unitIds)) failures.push(`${id}:denominator-not-complete`);
+    for (const unitId of denominator.unitIds) if (!item.unitEvidence || typeof item.unitEvidence[unitId] !== 'string' || !item.unitEvidence[unitId]) failures.push(`${id}:unit-evidence-missing:${unitId}`);
+    if (!Array.isArray(item.realFixtureIdentities) || item.realFixtureIdentities.length === 0) failures.push(`${id}:real-fixture-missing`);
+    if (!Array.isArray(item.negativeTestIdentities) || item.negativeTestIdentities.length === 0) failures.push(`${id}:negative-tests-missing`);
     if (!Array.isArray(item.evidenceIdentities) || item.evidenceIdentities.length === 0) failures.push(`${id}:evidence-identity-missing`);
-    if (id.startsWith('S2-F6-') && item.independentOracle !== true) failures.push(`${id}:independent-oracle-missing`);
+    if (!item.implementationIdentity) failures.push(`${id}:implementation-identity-missing`);
+    if ((id === 'S1-A2-NATIVE' || id.startsWith('S2-F6-')) && (!Array.isArray(item.independentOracleIdentities) || item.independentOracleIdentities.length === 0 || item.independentOracleIdentities.includes(item.implementationIdentity))) failures.push(`${id}:independent-oracle-missing`);
     if ((id === 'S2-A7-NATIVE' || id.startsWith('S2-M6-')) && (!Array.isArray(item.providerProfileIds) || item.providerProfileIds.length === 0)) failures.push(`${id}:provider-profile-missing`);
   }
   return { ok: failures.length === 0, reason: failures.length ? 'stage2-profile-evidence-incomplete' : null, failures, evidenceId: record.evidenceId };

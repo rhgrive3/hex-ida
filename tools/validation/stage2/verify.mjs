@@ -9,6 +9,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../.
 const REPORT_PATH = path.join(ROOT, 'reports/stage2/stage2-verdict.json');
 const SCOPE_PATH = path.join(ROOT, 'tools/validation/stage2/completion-scope.lock.json');
 const LEDGER_PATH = path.join(ROOT, 'tools/validation/stage2/closure-ledger.json');
+const DENOMINATOR_PATH = path.join(ROOT, 'tools/validation/stage2/profile-denominators.lock.json');
 const OUTPUT_LIMIT = 7000;
 const REQUIRED_LEDGER_IDS = Object.freeze([
   ...STAGE2_PROFILE_EVIDENCE_IDS,
@@ -108,7 +109,11 @@ function physicalEvidenceResult({ finalMode, evidencePath, headSha, treeSha, bui
 function profileEvidenceResult({ finalMode, evidencePath, headSha, treeSha }) {
   const loaded = readEvidenceJson(finalMode, evidencePath, 'stage2-profile-evidence-required', 'stage2-profile-evidence-file-missing', 'stage2-profile-evidence-json-invalid');
   if (loaded.status !== 'loaded') return loaded;
-  const checked = validateStage2ProfileEvidence(loaded.record, { commitSha: headSha, treeSha });
+  if (!fs.existsSync(DENOMINATOR_PATH)) return { required: true, status: 'failed', reason: 'stage2-profile-denominator-lock-missing', failures: [] };
+  let denominatorLock;
+  try { denominatorLock = JSON.parse(fs.readFileSync(DENOMINATOR_PATH, 'utf8')); }
+  catch (error) { return { required: true, status: 'failed', reason: 'stage2-profile-denominator-lock-invalid', failures: [String(error?.message || error)] }; }
+  const checked = validateStage2ProfileEvidence(loaded.record, { commitSha: headSha, treeSha, denominators: denominatorLock.items });
   return {
     required: true,
     status: checked.ok ? 'passed' : 'failed',
