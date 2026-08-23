@@ -94,8 +94,8 @@
         "tools/validation/machine-effects/a2-denominator.mjs",
         "tools/validation/stage2/build-profile-denominator-inventory.mjs"
       ],
-      "inventoryHash": "stage2-denominator-inventory:e2eef378b48ef5341fc0530de6300b19",
-      "lockHash": "stage2-denominator-item:74075acd658beb2a8ab11438241792fb"
+      "inventoryHash": "stage2-denominator-inventory:cd8aa2e8445ef021eae247c70e0b4bf4",
+      "lockHash": "stage2-denominator-item:894452149166ba94fb2d5d744b7b6209"
     },
     "S2-A7-NATIVE": {
       "id": "stage2-denominator:S2-A7-NATIVE:v1",
@@ -545,5 +545,5 @@
       "lockHash": "stage2-denominator-item:6b09d6c99473d100a82dba4276faccc9"
     }
   },
-  "lockHash": "stage2-denominator-lock:227031445dea474e171f19986a676261"
+  "lockHash": "stage2-denominator-lock:7b8ef2d13a8126d46e86614c59b4b40f"
 }
