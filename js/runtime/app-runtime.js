@@ -108,10 +108,10 @@ export function runtimeEvidenceForApp(app, functionAddress = null) {
 export async function traceAppFunction(app, functionAddress, options = {}) {
   const platform = await runtimePlatformForApp(app);
   return platform.traceFunction(functionAddress, {
+    ...options,
     maxSteps: options.maxSteps ?? 12000,
     timeoutMs: options.timeoutMs ?? 1500,
     limit: options.limit ?? 4096,
-    ...options,
   });
 }
 
