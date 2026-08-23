@@ -24,13 +24,19 @@ const DEFAULT_LIMITS = Object.freeze({
   queueOperations: 100000,
 });
 
+function nonNegativeSafeInteger(value, code) {
+  const type = typeof value;
+  if ((type !== 'number' && type !== 'bigint' && type !== 'string') || (type === 'string' && !value.trim())) {
+    throw new TypeError(code);
+  }
+  const n = Number(value);
+  if (!Number.isSafeInteger(n) || n < 0) throw new TypeError(code);
+  return n;
+}
+
 function validateLimit(value, name) {
   if (value === undefined || value === null) return undefined;
-  const n = Number(value);
-  if (!Number.isFinite(n) || n < 0 || !Number.isSafeInteger(n)) {
-    throw new TypeError(`budget-limit-invalid:${name}`);
-  }
-  return n;
+  return nonNegativeSafeInteger(value, `budget-limit-invalid:${name}`);
 }
 
 export class ResourceBudget {
@@ -76,8 +82,7 @@ export class ResourceBudget {
 
   consume(resource, amount = 1) {
     this.checkCancelled();
-    const n = Number(amount);
-    if (!Number.isFinite(n) || n < 0) throw new TypeError('budget-consumption-invalid');
+    const n = nonNegativeSafeInteger(amount, 'budget-consumption-invalid');
 
     // Preflight check across local and all ancestors
     let curr = this;
