@@ -1,10 +1,15 @@
-import { deepFreeze, jsonSafe, stableDigest } from './index.js';
+import { deepFreeze, jsonSafe, stableDigest, validateCanonicalIdentityNumbers } from './index.js';
 
 function fail(code) { throw new TypeError(code); }
 function required(value, code) {
   const text = String(value ?? '').trim();
   if (!text) fail(code);
   return text;
+}
+function exactRevision(value, fallback, code) {
+  const resolved = value ?? fallback;
+  if (typeof resolved === 'number' && !Number.isSafeInteger(resolved)) fail(code);
+  return required(resolved, code);
 }
 function sortedStrings(value, code) {
   if (value == null) return [];
@@ -29,9 +34,11 @@ export function createDeterminismMetadata(input = {}) {
 
 export function createAnalysisSnapshot(input = {}) {
   const binaryId = required(input.binaryId, 'snapshot-binary-id-required');
-  const projectRevision = required(input.projectRevision ?? '0', 'snapshot-project-revision-required');
-  const analysisEpoch = required(input.analysisEpoch ?? '0', 'snapshot-analysis-epoch-required');
-  const artifactVersions = jsonSafe(input.artifactVersions ?? {});
+  const projectRevision = exactRevision(input.projectRevision, '0', 'snapshot-project-revision-invalid');
+  const analysisEpoch = exactRevision(input.analysisEpoch, '0', 'snapshot-analysis-epoch-invalid');
+  const artifactVersionInput = input.artifactVersions ?? {};
+  validateCanonicalIdentityNumbers(artifactVersionInput);
+  const artifactVersions = jsonSafe(artifactVersionInput);
   const snapshotId = input.snapshotId == null
     ? `snapshot_${stableDigest({ binaryId, projectRevision, analysisEpoch, artifactVersions })}`
     : required(input.snapshotId, 'snapshot-id-required');

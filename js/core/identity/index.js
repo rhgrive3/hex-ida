@@ -113,12 +113,14 @@ export async function createBinaryId(content) {
 }
 
 export function createSliceId(input = {}) {
+  const sourceRange = input.sourceRange == null ? null : input.sourceRange;
+  if (sourceRange != null) validateCanonicalIdentityNumbers(sourceRange);
   return typedId('slice', {
     binaryId: nonEmpty(input.binaryId, 'slice-binary-id-required'),
     containerId: input.containerId == null ? null : String(input.containerId),
     index: nonNegativeInteger(input.index, 0, 'slice-index-invalid'),
     architecture: input.architecture == null ? null : String(input.architecture),
-    sourceRange: input.sourceRange == null ? null : jsonSafe(input.sourceRange),
+    sourceRange: sourceRange == null ? null : jsonSafe(sourceRange),
   });
 }
 
@@ -277,7 +279,7 @@ export function canonicalAddress(value) {
   }
 }
 
-function validateCanonicalIdentityNumbers(value, seen = new WeakSet()) {
+export function validateCanonicalIdentityNumbers(value, seen = new WeakSet()) {
   if (typeof value === 'number') {
     if (!Number.isFinite(value)) fail('identity-non-finite-number');
     if (Number.isInteger(value) && !Number.isSafeInteger(value)) fail('identity-unsafe-number');
