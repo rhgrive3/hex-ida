@@ -220,6 +220,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     }
   }
   async stepInto() {
+    if (this.activeRun) throw new DebugAdapterError('already-running', 'local sandbox already has an active run');
     const sandbox = this.ensureSandbox(); const before = cloneRegisters(sandbox.emulator); const raw = await sandbox.step();
     const after = cloneRegisters(sandbox.emulator); const event = { type:'instruction', address:before.pc, addr:before.pc, text:raw.text, ok:raw.ok, reason:raw.reason };
     this.traceBuffer.push(event);
