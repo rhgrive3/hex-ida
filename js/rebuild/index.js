@@ -80,25 +80,95 @@ function unchangedRegions(original, output, touched) {
   return true;
 }
 
+function validatorResult(validator, status, reason = null) {
+  return { validator, status, ...(reason ? { reason } : {}) };
+}
+
+async function runValidatorOracle(name, output, plan, materialized, options) {
+  const oracle = options.validators?.[name];
+  if (typeof oracle !== 'function') return validatorResult(name, 'unavailable', 'validator-oracle-unavailable');
+  try {
+    const result = await oracle(output, { plan, materialized });
+    if (result === true || result?.ok === true || result?.status === 'passed' || result?.status === 'valid') return validatorResult(name, 'passed');
+    return validatorResult(name, 'failed', result?.reason || 'validator-rejected-output');
+  } catch (error) {
+    return validatorResult(name, 'failed', error?.message || String(error));
+  }
+}
+
 export async function validateRebuildOutput(plan, materialized, options = {}) {
   if (!materialized || materialized.status !== 'materialized') return { status: 'invalid', reason: 'materialization-not-complete', planId: plan?.planId || null };
-  const original = await sourceBytes(options.original || new Uint8Array());
   const output = materialized.bytes;
-  const failures = [];
-  if (options.original) {
-    if (!unchangedRegions(original, output, materialized.touched)) failures.push({ validator: 'unchanged-regions', reason: 'promised-unchanged-region-differed' });
-  } else if (plan.requiredValidators.includes('unchanged-regions')) {
-    failures.push({ validator: 'unchanged-regions', reason: 'original-source-unavailable' });
+  const required = Array.isArray(plan?.requiredValidators) ? plan.requiredValidators : [];
+  const results = new Map();
+
+  const sourcePreconditionPassed = materialized.planId === plan.planId
+    && typeof materialized.sourceHash === 'string'
+    && materialized.sourceHash === plan.sourceHash;
+  results.set('source-precondition', validatorResult('source-precondition', sourcePreconditionPassed ? 'passed' : 'failed', sourcePreconditionPassed ? null : 'materialized-source-precondition-unproven'));
+
+  let structurePassed = false;
+  try {
+    const outputBytes = bytes(output);
+    const touched = Array.isArray(materialized.touched) ? materialized.touched : null;
+    structurePassed = !!touched && hashBytes(outputBytes) === materialized.outputHash
+      && touched.every((range) => Number.isSafeInteger(range?.offset) && Number.isSafeInteger(range?.length) && range.offset >= 0 && range.length >= 0 && range.offset <= outputBytes.length && range.length <= outputBytes.length - range.offset);
+  } catch {}
+  results.set('structure', validatorResult('structure', structurePassed ? 'passed' : 'failed', structurePassed ? null : 'materialized-structure-invalid'));
+
+  if (options.original != null) {
+    try {
+      const original = await sourceBytes(options.original);
+      const passed = unchangedRegions(original, output, materialized.touched || []);
+      results.set('unchanged-regions', validatorResult('unchanged-regions', passed ? 'passed' : 'failed', passed ? null : 'promised-unchanged-region-differed'));
+    } catch (error) {
+      results.set('unchanged-regions', validatorResult('unchanged-regions', 'failed', error?.message || String(error)));
+    }
+  } else {
+    results.set('unchanged-regions', validatorResult('unchanged-regions', 'unavailable', 'original-source-unavailable'));
   }
+
   if (typeof options.loaderReparse === 'function') {
-    try { const result = await options.loaderReparse(output); if (result?.status === 'unsupported' || result?.ok === false) failures.push({ validator: 'loader-reparse', reason: result.reason || 'loader-rejected-output' }); }
-    catch (error) { failures.push({ validator: 'loader-reparse', reason: error.message }); }
-  } else if (plan.requiredValidators.includes('loader-reparse')) failures.push({ validator: 'loader-reparse', reason: 'loader-reparse-oracle-unavailable' });
-  if (typeof options.independentOracle === 'function') {
-    try { const result = await options.independentOracle(output); if (result?.ok === false || result?.status === 'rejected') failures.push({ validator: 'independent-differential', reason: result.reason || 'independent-oracle-rejected-output' }); }
-    catch (error) { failures.push({ validator: 'independent-differential', reason: error.message }); }
+    try {
+      const result = await options.loaderReparse(output);
+      const passed = result?.status !== 'unsupported' && result?.ok !== false;
+      results.set('loader-reparse', validatorResult('loader-reparse', passed ? 'passed' : 'failed', passed ? null : (result?.reason || 'loader-rejected-output')));
+    } catch (error) {
+      results.set('loader-reparse', validatorResult('loader-reparse', 'failed', error?.message || String(error)));
+    }
+  } else {
+    results.set('loader-reparse', validatorResult('loader-reparse', 'unavailable', 'loader-reparse-oracle-unavailable'));
   }
-  return { status: failures.length ? 'invalid' : 'valid', planId: plan.planId, outputHash: materialized.outputHash, validators: plan.requiredValidators.map((validator) => ({ validator, status: failures.some((failure) => failure.validator === validator) ? 'failed' : 'passed' })), failures, signatureConsequences: { status: plan.impact.signature ? 'changed-or-unknown' : 'unchanged-by-declared-operation' }, independentDifferential: options.independentOracle ? 'executed' : 'unavailable' };
+
+  for (const validator of required) {
+    if (results.has(validator)) continue;
+    results.set(validator, await runValidatorOracle(validator, output, plan, materialized, options));
+  }
+
+  let independentDifferential = 'unavailable';
+  if (typeof options.independentOracle === 'function') {
+    try {
+      const result = await options.independentOracle(output);
+      independentDifferential = result?.ok === false || result?.status === 'rejected' ? 'failed' : 'executed';
+      if (independentDifferential === 'failed') results.set('independent-differential', validatorResult('independent-differential', 'failed', result?.reason || 'independent-oracle-rejected-output'));
+    } catch (error) {
+      independentDifferential = 'failed';
+      results.set('independent-differential', validatorResult('independent-differential', 'failed', error?.message || String(error)));
+    }
+  }
+
+  const validators = required.map((validator) => results.get(validator) || validatorResult(validator, 'unavailable', 'validator-not-run'));
+  const failures = validators.filter((entry) => entry.status !== 'passed').map((entry) => ({ validator: entry.validator, reason: entry.reason || `validator-${entry.status}` }));
+  const valid = validators.length === required.length && validators.every((entry) => entry.status === 'passed');
+  return {
+    status: valid ? 'valid' : 'invalid',
+    planId: plan.planId,
+    outputHash: materialized.outputHash,
+    validators,
+    failures,
+    signatureConsequences: { status: plan.impact.signature ? 'changed-or-unknown' : 'unchanged-by-declared-operation' },
+    independentDifferential,
+  };
 }
 
 export async function publishRebuildOutput(materialized, validation, options = {}) {
