@@ -1,12 +1,20 @@
 import { DebugAdapterError } from '../debug/adapter.js';
 import { RuntimeProviderSession, createRuntimeProviderDescriptor } from './provider.js';
 import { RuntimeEventNormalizer } from './events.js';
-import { InterventionLedger } from './evidence-bridge.js';
+import { createInterventionRecord, InterventionLedger } from './evidence-bridge.js';
 import { normalizeRuntimeModuleBinding } from './module-binding.js';
 
 function requiredMethod(backend, method, capability) {
   if (typeof backend?.[method] !== 'function') throw new DebugAdapterError('unsupported', `instrumentation backend does not support ${capability || method}`);
   return backend[method].bind(backend);
+}
+
+function validateInterventionDraft(ledger, input) {
+  const record = createInterventionRecord(input);
+  for (const parent of record.parentInterventionIds) {
+    if (!ledger.get(parent)) throw new DebugAdapterError('runtime-intervention-parent-missing', `intervention parent not found: ${parent}`);
+  }
+  return record;
 }
 
 function moduleKey(module, index) {
@@ -117,33 +125,33 @@ export class InstrumentationProvider {
       capabilities: this._descriptor.capabilities,
       installProbe: async (spec, callOptions = {}) => {
         const install = requiredMethod(this.backend, 'installProbe', 'probe installation');
-        const result = await install(spec, callOptions);
-        const intervention = interventions.add({
+        const draft = validateInterventionDraft(interventions, {
           runtimeSessionId: session.runtimeSessionId,
           providerId: session.providerId,
           kind: 'probe-install',
           target: spec,
           requestedChange: { install: true },
-          acknowledgedResult: result,
           parentInterventionIds: callOptions.parentInterventionIds ?? [],
         });
+        const result = await install(spec, callOptions);
+        const intervention = interventions.add({ ...draft, acknowledgedResult: result });
         const handle = probeHandle(result);
         if (handle != null) probes.set(handle, intervention.interventionId);
         return { result, intervention };
       },
       removeProbe: async (handle, callOptions = {}) => {
         const remove = requiredMethod(this.backend, 'removeProbe', 'probe removal');
-        const result = await remove(handle, callOptions);
         const parent = probes.get(String(handle));
-        const intervention = interventions.add({
+        const draft = validateInterventionDraft(interventions, {
           runtimeSessionId: session.runtimeSessionId,
           providerId: session.providerId,
           kind: 'probe-remove',
           target: { handle: String(handle) },
           requestedChange: { remove: true },
-          acknowledgedResult: result,
           parentInterventionIds: [...new Set([...(callOptions.parentInterventionIds ?? []), ...(parent ? [parent] : [])])],
         });
+        const result = await remove(handle, callOptions);
+        const intervention = interventions.add({ ...draft, acknowledgedResult: result });
         probes.delete(String(handle));
         return { result, intervention };
       },
@@ -151,16 +159,16 @@ export class InstrumentationProvider {
         const install = typeof this.backend.intercept === 'function'
           ? this.backend.intercept.bind(this.backend)
           : requiredMethod(this.backend, 'installProbe', 'interception');
-        const result = await install(spec, callOptions);
-        const intervention = interventions.add({
+        const draft = validateInterventionDraft(interventions, {
           runtimeSessionId: session.runtimeSessionId,
           providerId: session.providerId,
           kind: 'interceptor-install',
           target: spec,
           requestedChange: { install: true },
-          acknowledgedResult: result,
           parentInterventionIds: callOptions.parentInterventionIds ?? [],
         });
+        const result = await install(spec, callOptions);
+        const intervention = interventions.add({ ...draft, acknowledgedResult: result });
         const handle = probeHandle(result);
         if (handle != null) probes.set(handle, intervention.interventionId);
         return { result, intervention };
@@ -169,16 +177,16 @@ export class InstrumentationProvider {
         const authorized = await this.#authorizeMutation('function-replacement', { target, replacement }, callOptions);
         if (!authorized) throw new DebugAdapterError('permission-denied', 'instrumentation replacement requires provider-authorized mutation capability');
         const replace = requiredMethod(this.backend, 'replace', 'function replacement');
-        const result = await replace(target, replacement, callOptions);
-        const intervention = interventions.add({
+        const draft = validateInterventionDraft(interventions, {
           runtimeSessionId: session.runtimeSessionId,
           providerId: session.providerId,
           kind: 'function-replacement',
           target,
           requestedChange: replacement,
-          acknowledgedResult: result,
           parentInterventionIds: callOptions.parentInterventionIds ?? [],
         });
+        const result = await replace(target, replacement, callOptions);
+        const intervention = interventions.add({ ...draft, acknowledgedResult: result });
         return { result, intervention };
       },
       readMemory: async (...args) => requiredMethod(this.backend, 'readMemory', 'memory read')(...args),
@@ -186,16 +194,16 @@ export class InstrumentationProvider {
         const authorized = await this.#authorizeMutation('memory-write', { address, byteLength: bytes?.byteLength ?? bytes?.length ?? null }, callOptions);
         if (!authorized) throw new DebugAdapterError('permission-denied', 'instrumentation memory write requires provider-authorized mutation capability');
         const write = requiredMethod(this.backend, 'writeMemory', 'memory write');
-        const result = await write(address, bytes, callOptions);
-        const intervention = interventions.add({
+        const draft = validateInterventionDraft(interventions, {
           runtimeSessionId: session.runtimeSessionId,
           providerId: session.providerId,
           kind: 'memory-write',
           target: { address },
           requestedChange: { bytes },
-          acknowledgedResult: result,
           parentInterventionIds: callOptions.parentInterventionIds ?? [],
         });
+        const result = await write(address, bytes, callOptions);
+        const intervention = interventions.add({ ...draft, acknowledgedResult: result });
         return { result, intervention };
       },
       getObjCRuntimeInfo: async (...args) => requiredMethod(this.backend, 'getObjCRuntimeInfo', 'Objective-C runtime metadata')(...args),

@@ -12,6 +12,12 @@ function sessionSafe(value) {
   }
 }
 
+function eventEpoch(value) {
+  if (typeof value !== 'number' && !(typeof value === 'string' && value.trim() !== '')) return null;
+  const n = Number(value);
+  return Number.isSafeInteger(n) && n >= 1 ? n : null;
+}
+
 export class DebugSession {
   constructor(adapter, options = {}) {
     if (!adapter) throw new DebugAdapterError('adapter','DebugSession requires an adapter');
@@ -65,13 +71,17 @@ export class DebugSession {
   }
   acceptEvent(event) {
     if (this.closed) return false;
-    if (event && event.epoch != null && Number(event.epoch) !== this.epoch) return false;
+    if (event && event.epoch != null) {
+      const epoch = eventEpoch(event.epoch);
+      if (epoch == null || epoch !== this.epoch) return false;
+    }
     if (event) this.traces.push(event);
     return true;
   }
   newEpoch() {
-    this.epoch++;
-    if (typeof this.adapter.setEpoch === 'function') this.adapter.setEpoch(this.epoch); else if (typeof this.adapter.nextEpoch === 'function') this.adapter.nextEpoch();
+    const next = this.epoch + 1;
+    if (typeof this.adapter.setEpoch === 'function') this.adapter.setEpoch(next); else if (typeof this.adapter.nextEpoch === 'function') this.adapter.nextEpoch();
+    this.epoch = next;
     this.cancelAll('session-epoch-changed'); this.traces.clear(); return this.epoch;
   }
   controller() { const c=new AbortController(); this.controllers.add(c); c.signal.addEventListener('abort',()=>this.controllers.delete(c),{once:true}); return c; }

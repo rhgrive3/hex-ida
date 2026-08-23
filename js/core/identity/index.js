@@ -13,6 +13,7 @@ function nonEmpty(value, code) {
 
 function nonNegativeInteger(value, fallback, code) {
   if (value == null) return fallback;
+  if (typeof value !== 'number' && !(typeof value === 'string' && value.trim() !== '')) fail(code);
   const number = Number(value);
   if (!Number.isSafeInteger(number) || number < 0) fail(code);
   return number;
@@ -146,21 +147,6 @@ export function createArtifactId(input = {}) {
   });
 }
 
-/**
- * Records where `jsonSafe()` had to change a value's type.
- *
- * `jsonSafe()` is deliberately lossy: it exists to make anything JSON-encodable
- * for a digest. A BigInt becomes a bare decimal string, a Date becomes an ISO
- * string, a non-finite number becomes null. That is fine for encoding, but it
- * means two identities that JavaScript tells apart can hash the same -- an
- * `identity` of `1n` and of `'1'` produced the same entity id (#1283).
- *
- * Rather than change `jsonSafe()`, which would move every id in the product,
- * this walks the same value and reports the paths whose type the encoding could
- * not carry. Nothing lossy in the value means `null`, so identities that were
- * already unambiguous keep exactly the id they have today; only the ones that
- * were colliding gain a distinguishing dimension.
- */
 export function lossyTypeWitness(value, path = '', seen = new WeakSet(), out = []) {
   const type = typeof value;
   if (type === 'bigint') out.push([path, 'bigint']);
@@ -188,8 +174,6 @@ export function createEntityId(input = {}) {
     sliceId: input.sliceId == null ? null : String(input.sliceId),
     kind: nonEmpty(input.kind, 'entity-kind-required'),
     identity: jsonSafe(input.identity),
-    // Absent for every identity `jsonSafe()` can carry without changing a
-    // type, so those ids are exactly what they were before (#1283).
     ...(witness ? { identityTypes: witness } : {}),
   });
 }
@@ -252,11 +236,13 @@ export function createMemoryRegionId(input = {}) {
 }
 
 export function createEvidenceId(input = {}) {
+  const witness = lossyTypeWitness(input.identity);
   return typedId('evidence', {
     binaryId: input.binaryId == null ? null : String(input.binaryId),
     kind: nonEmpty(input.kind ?? 'evidence', 'evidence-kind-required'),
     sourceId: input.sourceId == null ? null : String(input.sourceId),
     identity: jsonSafe(input.identity),
+    ...(witness ? { identityTypes: witness } : {}),
   });
 }
 

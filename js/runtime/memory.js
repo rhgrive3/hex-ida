@@ -1,4 +1,4 @@
-import { asAddress, boundedInteger, DebugAdapterError } from '../debug/adapter.js';
+import { asAddress, DebugAdapterError } from '../debug/adapter.js';
 
 export const MEMORY_KINDS = Object.freeze(['object','stack','heap','global','mapped','mmio','unknown']);
 export const RUNTIME_HEAP_BASE = 0x0000620000000000n;
@@ -12,7 +12,16 @@ function normalizePermissions(value) {
 }
 
 function strictSize(value, fallback, max, name) {
-  const n = value == null ? fallback : Number(value);
+  const candidate = value == null ? fallback : value;
+  let n;
+  if (typeof candidate === 'number') n = candidate;
+  else if (typeof candidate === 'string') {
+    const text = candidate.trim();
+    if (!/^\d+$/.test(text)) throw new MemoryAccessError('invalid-size', `${name} must be a positive safe integer`, { value });
+    n = Number(text);
+  } else {
+    throw new MemoryAccessError('invalid-size', `${name} must be a positive safe integer`, { value });
+  }
   if (!Number.isSafeInteger(n) || n < 1) throw new MemoryAccessError('invalid-size', `${name} must be a positive safe integer`, { value });
   if (n > max) throw new MemoryAccessError('too-large', `${name} exceeds ${max} bytes`, { value:n, max });
   return n;
@@ -33,8 +42,7 @@ export class MemoryRegion {
     this.objectId = spec.objectId == null ? null : String(spec.objectId).slice(0, 256);
   }
   contains(address, size = 1) {
-    const a = asAddress(address); const n = BigInt(size);
-    if (n < 0n) return false;
+    const a = asAddress(address); const n = BigInt(strictSize(size, 1, MAX_REGION_SIZE, 'memory size'));
     return a >= this.start && a + n <= this.end;
   }
   toJSON() { return { start:this.start, size:this.size, kind:this.kind, name:this.name, permissions:this.permissions, objectId:this.objectId }; }
@@ -42,7 +50,7 @@ export class MemoryRegion {
 
 export class RuntimeMemoryMap {
   constructor(regions = [], options = {}) {
-    this.maxTransfer = boundedInteger(options.maxTransfer, 1024 * 1024, 1, MAX_TRANSFER, 'maxTransfer');
+    this.maxTransfer = strictSize(options.maxTransfer, 1024 * 1024, MAX_TRANSFER, 'maxTransfer');
     this.regions = [];
     for (const region of regions) this.map(region);
   }

@@ -5,9 +5,18 @@ const states = new WeakMap();
 function currentFileToken(app) {
   return app?.store?.get?.('fileInfo') || null;
 }
+function strictSliceIndex(value) {
+  if (value == null) return -1;
+  if (typeof value === 'number') return Number.isSafeInteger(value) && value >= 0 ? value : -1;
+  if (typeof value !== 'string') return -1;
+  const text = value.trim();
+  if (!/^\d+$/.test(text)) return -1;
+  const index = Number(text);
+  return Number.isSafeInteger(index) ? index : -1;
+}
 function activeSliceIdentity(app) {
   const info=currentFileToken(app);
-  const index=Number(app?.store?.get?.('sliceIndex') ?? -1);
+  const index=strictSliceIndex(app?.store?.get?.('sliceIndex'));
   const slice=index>=0 ? info?.slices?.[index] : null;
   const detail=slice?.info || {};
   const arch=String(slice?.capability?.architecture || detail.architecture || detail.cpuSub || detail.cpu || app?.store?.get?.('architecture') || 'unknown');
@@ -22,6 +31,12 @@ async function binaryHashOf(app) {
     try { return await app.backend.ensureContentHash(); } catch { return null; }
   }
   return null;
+}
+function strictAddress(value) {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number') return Number.isSafeInteger(value) ? BigInt(value) : null;
+  if (typeof value !== 'string' || value.trim() === '') return null;
+  try { return BigInt(value.trim()); } catch { return null; }
 }
 export async function runtimeIdentityForApp(app) {
   const contentHash=await binaryHashOf(app);
@@ -98,20 +113,21 @@ export function runtimeEvidenceForApp(app, functionAddress = null) {
   if (!state || state.fileToken !== currentFileToken(app) || state.identity?.sliceIdentity !== sliceIdentity) return [];
   const evidence = (Array.isArray(state.platform?.evidence) ? state.platform.evidence : []).filter((item)=>item?.sliceIdentity===sliceIdentity && item?.binaryHash===state.identity?.contentHash);
   if (functionAddress == null) return evidence.slice();
-  let address;
-  try { address = BigInt(functionAddress); } catch { return []; }
+  const address = strictAddress(functionAddress);
+  if (address == null) return [];
   return evidence.filter((item) => {
-    try { return item?.function != null && BigInt(item.function) === address; } catch { return false; }
+    const candidate = item?.function == null ? null : strictAddress(item.function);
+    return candidate != null && candidate === address;
   });
 }
 
 export async function traceAppFunction(app, functionAddress, options = {}) {
   const platform = await runtimePlatformForApp(app);
   return platform.traceFunction(functionAddress, {
+    ...options,
     maxSteps: options.maxSteps ?? 12000,
     timeoutMs: options.timeoutMs ?? 1500,
     limit: options.limit ?? 4096,
-    ...options,
   });
 }
 
