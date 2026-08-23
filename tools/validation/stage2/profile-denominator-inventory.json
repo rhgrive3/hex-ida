@@ -1,0 +1,511 @@
+{
+  "schemaVersion": "hex-stage2-profile-denominator-inventory/v1",
+  "generatedFrom": [
+    "tests/machine-effects/a2-denominator-inventory.json",
+    "tools/validation/phase12/denominator-inventory.json"
+  ],
+  "items": {
+    "S1-A2-NATIVE": {
+      "profiles": [
+        "arm64:a64",
+        "arm64e:a64+pac",
+        "riscv64:rv64imc",
+        "x86_64:long-64"
+      ],
+      "unitIds": [
+        "arm64:a64:all-decoder-encodings-and-aliases",
+        "arm64:a64:effect-family:control",
+        "arm64:a64:effect-family:fallback-unmatched-decoder-family",
+        "arm64:a64:effect-family:flags",
+        "arm64:a64:effect-family:fp",
+        "arm64:a64:effect-family:integer",
+        "arm64:a64:effect-family:memory",
+        "arm64:a64:effect-family:simd",
+        "arm64:a64:effect-family:system",
+        "arm64e:a64+pac:alias:baseline-a64-delegation",
+        "arm64e:a64+pac:all-a64-decoder-encodings-and-aliases",
+        "arm64e:a64+pac:all-pac-decoder-encodings-and-aliases",
+        "arm64e:a64+pac:effect-family:fallback-unmatched-decoder-family",
+        "arm64e:a64+pac:effect-family:pointer-authentication",
+        "arm64e:a64+pac:explicit-case:pac-missing-structured-operands",
+        "arm64e:a64+pac:pac-mnemonic:autda",
+        "arm64e:a64+pac:pac-mnemonic:autdb",
+        "arm64e:a64+pac:pac-mnemonic:autdza",
+        "arm64e:a64+pac:pac-mnemonic:autdzb",
+        "arm64e:a64+pac:pac-mnemonic:autia",
+        "arm64e:a64+pac:pac-mnemonic:autia1716",
+        "arm64e:a64+pac:pac-mnemonic:autiasp",
+        "arm64e:a64+pac:pac-mnemonic:autib",
+        "arm64e:a64+pac:pac-mnemonic:autib1716",
+        "arm64e:a64+pac:pac-mnemonic:autibsp",
+        "arm64e:a64+pac:pac-mnemonic:autiza",
+        "arm64e:a64+pac:pac-mnemonic:autizb",
+        "arm64e:a64+pac:pac-mnemonic:blraa",
+        "arm64e:a64+pac:pac-mnemonic:blraaz",
+        "arm64e:a64+pac:pac-mnemonic:blrab",
+        "arm64e:a64+pac:pac-mnemonic:blrabz",
+        "arm64e:a64+pac:pac-mnemonic:braa",
+        "arm64e:a64+pac:pac-mnemonic:braaz",
+        "arm64e:a64+pac:pac-mnemonic:brab",
+        "arm64e:a64+pac:pac-mnemonic:brabz",
+        "arm64e:a64+pac:pac-mnemonic:pacda",
+        "arm64e:a64+pac:pac-mnemonic:pacdb",
+        "arm64e:a64+pac:pac-mnemonic:pacdza",
+        "arm64e:a64+pac:pac-mnemonic:pacdzb",
+        "arm64e:a64+pac:pac-mnemonic:pacga",
+        "arm64e:a64+pac:pac-mnemonic:pacia",
+        "arm64e:a64+pac:pac-mnemonic:pacia1716",
+        "arm64e:a64+pac:pac-mnemonic:paciasp",
+        "arm64e:a64+pac:pac-mnemonic:pacib",
+        "arm64e:a64+pac:pac-mnemonic:pacib1716",
+        "arm64e:a64+pac:pac-mnemonic:pacibsp",
+        "arm64e:a64+pac:pac-mnemonic:paciza",
+        "arm64e:a64+pac:pac-mnemonic:pacizb",
+        "arm64e:a64+pac:pac-mnemonic:retaa",
+        "arm64e:a64+pac:pac-mnemonic:retab",
+        "arm64e:a64+pac:pac-mnemonic:xpacd",
+        "arm64e:a64+pac:pac-mnemonic:xpaci",
+        "arm64e:a64+pac:pac-mnemonic:xpaclri",
+        "riscv64:rv64imc:all-valid-32-bit-and-compressed-encodings",
+        "riscv64:rv64imc:effect-family:control",
+        "riscv64:rv64imc:effect-family:fallback-unmatched-decoder-family",
+        "riscv64:rv64imc:effect-family:hint",
+        "riscv64:rv64imc:effect-family:integer",
+        "riscv64:rv64imc:effect-family:memory",
+        "riscv64:rv64imc:effect-family:muldiv",
+        "riscv64:rv64imc:effect-family:system",
+        "riscv64:rv64imc:effect-family:system:ebreak",
+        "riscv64:rv64imc:effect-family:system:ecall",
+        "riscv64:rv64imc:effect-family:system:fence",
+        "riscv64:rv64imc:effect-family:system:fence.i",
+        "x86_64:long-64:all-decoder-encodings-prefixes-and-aliases",
+        "x86_64:long-64:effect-family:atomic",
+        "x86_64:long-64:effect-family:control",
+        "x86_64:long-64:effect-family:fallback-unmatched-decoder-family",
+        "x86_64:long-64:effect-family:fp",
+        "x86_64:long-64:effect-family:integer",
+        "x86_64:long-64:effect-family:lea",
+        "x86_64:long-64:effect-family:memory",
+        "x86_64:long-64:effect-family:simd",
+        "x86_64:long-64:effect-family:string",
+        "x86_64:long-64:effect-family:system"
+      ],
+      "inventoryRefs": [
+        "tests/machine-effects/a2-denominator-inventory.json",
+        "tools/validation/machine-effects/a2-denominator.mjs",
+        "tools/validation/stage2/build-profile-denominator-inventory.mjs"
+      ]
+    },
+    "S2-A7-NATIVE": {
+      "profiles": [
+        "arm64:a64",
+        "arm64e:a64+pac",
+        "riscv64:rv64imc",
+        "x86_64:long-64"
+      ],
+      "unitIds": [
+        "arm64:a64:attach",
+        "arm64:a64:breakpointAddress",
+        "arm64:a64:cancel",
+        "arm64:a64:connect",
+        "arm64:a64:disconnect",
+        "arm64:a64:modules",
+        "arm64:a64:pause",
+        "arm64:a64:readMemory",
+        "arm64:a64:readRegisters",
+        "arm64:a64:removeBreakpoint",
+        "arm64:a64:resume",
+        "arm64:a64:stepInto",
+        "arm64:a64:threads",
+        "arm64:a64:writeMemory",
+        "arm64e:a64+pac:attach",
+        "arm64e:a64+pac:breakpointAddress",
+        "arm64e:a64+pac:cancel",
+        "arm64e:a64+pac:connect",
+        "arm64e:a64+pac:disconnect",
+        "arm64e:a64+pac:modules",
+        "arm64e:a64+pac:pause",
+        "arm64e:a64+pac:readMemory",
+        "arm64e:a64+pac:readRegisters",
+        "arm64e:a64+pac:removeBreakpoint",
+        "arm64e:a64+pac:resume",
+        "arm64e:a64+pac:stepInto",
+        "arm64e:a64+pac:threads",
+        "arm64e:a64+pac:writeMemory",
+        "riscv64:rv64imc:attach",
+        "riscv64:rv64imc:breakpointAddress",
+        "riscv64:rv64imc:cancel",
+        "riscv64:rv64imc:connect",
+        "riscv64:rv64imc:disconnect",
+        "riscv64:rv64imc:modules",
+        "riscv64:rv64imc:pause",
+        "riscv64:rv64imc:readMemory",
+        "riscv64:rv64imc:readRegisters",
+        "riscv64:rv64imc:removeBreakpoint",
+        "riscv64:rv64imc:resume",
+        "riscv64:rv64imc:stepInto",
+        "riscv64:rv64imc:threads",
+        "riscv64:rv64imc:writeMemory",
+        "x86_64:long-64:attach",
+        "x86_64:long-64:breakpointAddress",
+        "x86_64:long-64:cancel",
+        "x86_64:long-64:connect",
+        "x86_64:long-64:disconnect",
+        "x86_64:long-64:modules",
+        "x86_64:long-64:pause",
+        "x86_64:long-64:readMemory",
+        "x86_64:long-64:readRegisters",
+        "x86_64:long-64:removeBreakpoint",
+        "x86_64:long-64:resume",
+        "x86_64:long-64:stepInto",
+        "x86_64:long-64:threads",
+        "x86_64:long-64:writeMemory"
+      ],
+      "inventoryRefs": [
+        "js/runtime/authority.js",
+        "js/runtime/stage2.js",
+        "tests/stage2/runtime-authority.test.mjs",
+        "tools/validation/stage2/build-profile-denominator-inventory.mjs"
+      ]
+    },
+    "S2-M6-WASM": {
+      "profiles": [
+        "managed:wasm:m6"
+      ],
+      "unitIds": [
+        "managed:wasm:m6:bounded-runtime-state",
+        "managed:wasm:m6:container-and-version-profile",
+        "managed:wasm:m6:metadata-denominator",
+        "managed:wasm:m6:negative-corpus",
+        "managed:wasm:m6:opcode-denominator",
+        "managed:wasm:m6:provider-and-module-binding",
+        "managed:wasm:m6:real-compiled-fixture",
+        "managed:wasm:m6:runtime:backtrace",
+        "managed:wasm:m6:runtime:cancel",
+        "managed:wasm:m6:runtime:connect",
+        "managed:wasm:m6:runtime:disconnect",
+        "managed:wasm:m6:runtime:modules",
+        "managed:wasm:m6:runtime:pause",
+        "managed:wasm:m6:runtime:readMemory",
+        "managed:wasm:m6:runtime:readRegisters",
+        "managed:wasm:m6:runtime:resume",
+        "managed:wasm:m6:runtime:stepInto",
+        "managed:wasm:m6:runtime:threads"
+      ],
+      "inventoryRefs": [
+        "js/managed/runtime-binding.js",
+        "js/managed/wasm/parser.js",
+        "tests/phase11/wasm/wasm-adversarial.test.mjs",
+        "tests/stage2/fixtures/managed-real/manifest.json",
+        "tests/stage2/managed-runtime.test.mjs",
+        "tools/validation/stage2/build-profile-denominator-inventory.mjs"
+      ]
+    },
+    "S2-M6-DEX": {
+      "profiles": [
+        "managed:dex:m6"
+      ],
+      "unitIds": [
+        "managed:dex:m6:bounded-runtime-state",
+        "managed:dex:m6:container-and-version-profile",
+        "managed:dex:m6:metadata-denominator",
+        "managed:dex:m6:negative-corpus",
+        "managed:dex:m6:opcode-denominator",
+        "managed:dex:m6:provider-and-module-binding",
+        "managed:dex:m6:real-compiled-fixture",
+        "managed:dex:m6:runtime:backtrace",
+        "managed:dex:m6:runtime:cancel",
+        "managed:dex:m6:runtime:connect",
+        "managed:dex:m6:runtime:disconnect",
+        "managed:dex:m6:runtime:modules",
+        "managed:dex:m6:runtime:pause",
+        "managed:dex:m6:runtime:readMemory",
+        "managed:dex:m6:runtime:readRegisters",
+        "managed:dex:m6:runtime:resume",
+        "managed:dex:m6:runtime:stepInto",
+        "managed:dex:m6:runtime:threads"
+      ],
+      "inventoryRefs": [
+        "js/managed/dex/parser.js",
+        "js/managed/runtime-binding.js",
+        "tests/phase11/dex/dex-adversarial.test.mjs",
+        "tests/stage2/fixtures/managed-real/manifest.json",
+        "tests/stage2/managed-runtime.test.mjs",
+        "tools/validation/stage2/build-profile-denominator-inventory.mjs"
+      ]
+    },
+    "S2-M6-CIL": {
+      "profiles": [
+        "managed:cil:m6"
+      ],
+      "unitIds": [
+        "managed:cil:m6:bounded-runtime-state",
+        "managed:cil:m6:container-and-version-profile",
+        "managed:cil:m6:metadata-denominator",
+        "managed:cil:m6:negative-corpus",
+        "managed:cil:m6:opcode-denominator",
+        "managed:cil:m6:provider-and-module-binding",
+        "managed:cil:m6:real-compiled-fixture",
+        "managed:cil:m6:runtime:backtrace",
+        "managed:cil:m6:runtime:cancel",
+        "managed:cil:m6:runtime:connect",
+        "managed:cil:m6:runtime:disconnect",
+        "managed:cil:m6:runtime:modules",
+        "managed:cil:m6:runtime:pause",
+        "managed:cil:m6:runtime:readMemory",
+        "managed:cil:m6:runtime:readRegisters",
+        "managed:cil:m6:runtime:resume",
+        "managed:cil:m6:runtime:stepInto",
+        "managed:cil:m6:runtime:threads"
+      ],
+      "inventoryRefs": [
+        "js/managed/cil/parser.js",
+        "js/managed/runtime-binding.js",
+        "tests/phase11/cil/cil-adversarial.test.mjs",
+        "tests/stage2/fixtures/managed-real/manifest.json",
+        "tests/stage2/managed-runtime.test.mjs",
+        "tools/validation/stage2/build-profile-denominator-inventory.mjs"
+      ]
+    },
+    "S2-M6-JVM": {
+      "profiles": [
+        "managed:jvm:m6"
+      ],
+      "unitIds": [
+        "managed:jvm:m6:bounded-runtime-state",
+        "managed:jvm:m6:container-and-version-profile",
+        "managed:jvm:m6:metadata-denominator",
+        "managed:jvm:m6:negative-corpus",
+        "managed:jvm:m6:opcode-denominator",
+        "managed:jvm:m6:provider-and-module-binding",
+        "managed:jvm:m6:real-compiled-fixture",
+        "managed:jvm:m6:runtime:backtrace",
+        "managed:jvm:m6:runtime:cancel",
+        "managed:jvm:m6:runtime:connect",
+        "managed:jvm:m6:runtime:disconnect",
+        "managed:jvm:m6:runtime:modules",
+        "managed:jvm:m6:runtime:pause",
+        "managed:jvm:m6:runtime:readMemory",
+        "managed:jvm:m6:runtime:readRegisters",
+        "managed:jvm:m6:runtime:resume",
+        "managed:jvm:m6:runtime:stepInto",
+        "managed:jvm:m6:runtime:threads"
+      ],
+      "inventoryRefs": [
+        "js/managed/jvm/parser.js",
+        "js/managed/runtime-binding.js",
+        "tests/phase11/jvm/jvm-adversarial.test.mjs",
+        "tests/stage2/fixtures/managed-real/manifest.json",
+        "tests/stage2/managed-runtime.test.mjs",
+        "tools/validation/stage2/build-profile-denominator-inventory.mjs"
+      ]
+    },
+    "S2-F6-MACHO": {
+      "profiles": [
+        "macho:64"
+      ],
+      "unitIds": [
+        "macho:64:atomic-publication",
+        "macho:64:branch-ranges",
+        "macho:64:imports-and-exports",
+        "macho:64:independent-differential-oracle",
+        "macho:64:layout-and-structure",
+        "macho:64:loader-reparse",
+        "macho:64:negative-validator-corpus",
+        "macho:64:real-fixture",
+        "macho:64:relocations-and-bindings",
+        "macho:64:signature-consequence",
+        "macho:64:transaction-identity",
+        "macho:64:unwind-and-debug"
+      ],
+      "inventoryRefs": [
+        "js/rebuild/transaction-v2.js",
+        "tests/stage2/independent-oracle.test.mjs",
+        "tests/stage2/rebuild-transaction.test.mjs",
+        "tools/validation/rebuild-independent-oracle.mjs",
+        "tools/validation/stage2/build-profile-denominator-inventory.mjs"
+      ]
+    },
+    "S2-F6-ELF": {
+      "profiles": [
+        "elf:64"
+      ],
+      "unitIds": [
+        "elf:64:atomic-publication",
+        "elf:64:branch-ranges",
+        "elf:64:imports-and-exports",
+        "elf:64:independent-differential-oracle",
+        "elf:64:layout-and-structure",
+        "elf:64:loader-reparse",
+        "elf:64:negative-validator-corpus",
+        "elf:64:real-fixture",
+        "elf:64:relocations-and-bindings",
+        "elf:64:signature-consequence",
+        "elf:64:transaction-identity",
+        "elf:64:unwind-and-debug"
+      ],
+      "inventoryRefs": [
+        "js/rebuild/transaction-v2.js",
+        "tests/stage2/independent-oracle.test.mjs",
+        "tests/stage2/rebuild-transaction.test.mjs",
+        "tools/validation/rebuild-independent-oracle.mjs",
+        "tools/validation/stage2/build-profile-denominator-inventory.mjs"
+      ]
+    },
+    "S2-F6-PE": {
+      "profiles": [
+        "pe:pe32",
+        "pe:pe32+"
+      ],
+      "unitIds": [
+        "pe:pe32+:atomic-publication",
+        "pe:pe32+:branch-ranges",
+        "pe:pe32+:imports-and-exports",
+        "pe:pe32+:independent-differential-oracle",
+        "pe:pe32+:layout-and-structure",
+        "pe:pe32+:loader-reparse",
+        "pe:pe32+:negative-validator-corpus",
+        "pe:pe32+:real-fixture",
+        "pe:pe32+:relocations-and-bindings",
+        "pe:pe32+:signature-consequence",
+        "pe:pe32+:transaction-identity",
+        "pe:pe32+:unwind-and-debug",
+        "pe:pe32:atomic-publication",
+        "pe:pe32:branch-ranges",
+        "pe:pe32:imports-and-exports",
+        "pe:pe32:independent-differential-oracle",
+        "pe:pe32:layout-and-structure",
+        "pe:pe32:loader-reparse",
+        "pe:pe32:negative-validator-corpus",
+        "pe:pe32:real-fixture",
+        "pe:pe32:relocations-and-bindings",
+        "pe:pe32:signature-consequence",
+        "pe:pe32:transaction-identity",
+        "pe:pe32:unwind-and-debug"
+      ],
+      "inventoryRefs": [
+        "js/rebuild/transaction-v2.js",
+        "tests/stage2/independent-oracle.test.mjs",
+        "tests/stage2/rebuild-transaction.test.mjs",
+        "tools/validation/rebuild-independent-oracle.mjs",
+        "tools/validation/stage2/build-profile-denominator-inventory.mjs"
+      ]
+    },
+    "S2-P12-KNOWLEDGE": {
+      "profiles": [
+        "knowledge-packages:v1"
+      ],
+      "unitIds": [
+        "knowledge-packages:v1:knowledge.behavior.dependency-pinning",
+        "knowledge-packages:v1:knowledge.behavior.provider-output",
+        "knowledge-packages:v1:knowledge.behavior.recognition-outcomes",
+        "knowledge-packages:v1:knowledge.external-confirmation-authority",
+        "knowledge-packages:v1:knowledge.package-envelope.default-limits",
+        "knowledge-packages:v1:knowledge.package-envelope.dependency-canonical-order",
+        "knowledge-packages:v1:knowledge.package-envelope.dependency-identity",
+        "knowledge-packages:v1:knowledge.package-envelope.format-version",
+        "knowledge-packages:v1:knowledge.package-envelope.input-byte-budget",
+        "knowledge-packages:v1:knowledge.package-envelope.legacy-knowledge-compatibility",
+        "knowledge-packages:v1:knowledge.package-envelope.manifest-version",
+        "knowledge-packages:v1:knowledge.package-envelope.provider-output-schema",
+        "knowledge-packages:v1:knowledge.package-envelope.required-envelope-fields",
+        "knowledge-packages:v1:knowledge.provider-output.completeness-classes",
+        "knowledge-packages:v1:knowledge.provider-output.entry-fallback",
+        "knowledge-packages:v1:knowledge.provider-output.provenance-and-identity",
+        "knowledge-packages:v1:knowledge.recognition.algorithm-version",
+        "knowledge-packages:v1:knowledge.recognition.explicit-local-promotion",
+        "knowledge-packages:v1:knowledge.recognition.match-tiers",
+        "knowledge-packages:v1:knowledge.recognition.outcome-classes",
+        "knowledge-packages:v1:knowledge.recognition.package-kinds",
+        "knowledge-packages:v1:knowledge.recognition.unique-claim-gate"
+      ],
+      "inventoryRefs": [
+        "tools/validation/phase12/denominator-inventory.json",
+        "tools/validation/phase12/denominator.mjs",
+        "tools/validation/stage2/build-profile-denominator-inventory.mjs"
+      ]
+    },
+    "S2-P12-RULES": {
+      "profiles": [
+        "capability-rules:v1"
+      ],
+      "unitIds": [
+        "capability-rules:v1:rules.ai-capability-minting",
+        "capability-rules:v1:rules.behavior-dependency-order-and-cycle",
+        "capability-rules:v1:rules.behavior-result-classes",
+        "capability-rules:v1:rules.default-scope",
+        "capability-rules:v1:rules.default-version",
+        "capability-rules:v1:rules.expression-operators",
+        "capability-rules:v1:rules.language-version",
+        "capability-rules:v1:rules.package-kinds",
+        "capability-rules:v1:rules.package-payload-fallback",
+        "capability-rules:v1:rules.result-completeness-classes",
+        "capability-rules:v1:rules.result-dependency-classes",
+        "capability-rules:v1:rules.result-verdict-classes",
+        "capability-rules:v1:rules.scope-registry"
+      ],
+      "inventoryRefs": [
+        "tools/validation/phase12/denominator-inventory.json",
+        "tools/validation/phase12/denominator.mjs",
+        "tools/validation/stage2/build-profile-denominator-inventory.mjs"
+      ]
+    },
+    "S2-P12-PATTERNS": {
+      "profiles": [
+        "patterns:read-only-v1"
+      ],
+      "unitIds": [
+        "patterns:read-only-v1:patterns.behavior-value-classes",
+        "patterns:read-only-v1:patterns.evaluator-result-classes",
+        "patterns:read-only-v1:patterns.expression-operators",
+        "patterns:read-only-v1:patterns.grammar-type-kinds",
+        "patterns:read-only-v1:patterns.language-version",
+        "patterns:read-only-v1:patterns.mutation",
+        "patterns:read-only-v1:patterns.network-and-arbitrary-javascript",
+        "patterns:read-only-v1:patterns.primitive-registry",
+        "patterns:read-only-v1:patterns.snapshot-binding",
+        "patterns:read-only-v1:patterns.support-truth",
+        "patterns:read-only-v1:patterns.textual-address-space-fallback",
+        "patterns:read-only-v1:patterns.textual-pointer-fallback",
+        "patterns:read-only-v1:patterns.textual-struct-grammar",
+        "patterns:read-only-v1:patterns.value-provenance",
+        "patterns:read-only-v1:patterns.value-type-kinds"
+      ],
+      "inventoryRefs": [
+        "tools/validation/phase12/denominator-inventory.json",
+        "tools/validation/phase12/denominator.mjs",
+        "tools/validation/stage2/build-profile-denominator-inventory.mjs"
+      ]
+    },
+    "S2-P12-COLLAB-REMOTE": {
+      "profiles": [
+        "collaboration:remote-security-v1"
+      ],
+      "unitIds": [
+        "collaboration:remote-security-v1:remote.behavior.operation-and-conflict-classes",
+        "collaboration:remote-security-v1:remote.behavior.security-gate",
+        "collaboration:remote-security-v1:remote.checkpoint.schema-version",
+        "collaboration:remote-security-v1:remote.conflict-classes",
+        "collaboration:remote-security-v1:remote.delivery-result-classes",
+        "collaboration:remote-security-v1:remote.derived-analysis-egress",
+        "collaboration:remote-security-v1:remote.envelope.schema-version",
+        "collaboration:remote-security-v1:remote.gate.schema-version",
+        "collaboration:remote-security-v1:remote.gate.supported-schema-fallbacks",
+        "collaboration:remote-security-v1:remote.operation-result-classes",
+        "collaboration:remote-security-v1:remote.operation.action-classes",
+        "collaboration:remote-security-v1:remote.operation.envelope-fields",
+        "collaboration:remote-security-v1:remote.operation.meaningful-fact-classes",
+        "collaboration:remote-security-v1:remote.operation.schema-version",
+        "collaboration:remote-security-v1:remote.remote-canonical-transport",
+        "collaboration:remote-security-v1:remote.security.egress-classes",
+        "collaboration:remote-security-v1:remote.security.rejection-classes",
+        "collaboration:remote-security-v1:remote.security.transport-proof-classes"
+      ],
+      "inventoryRefs": [
+        "tools/validation/phase12/denominator-inventory.json",
+        "tools/validation/phase12/denominator.mjs",
+        "tools/validation/stage2/build-profile-denominator-inventory.mjs"
+      ]
+    }
+  }
+}
