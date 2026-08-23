@@ -1,4 +1,4 @@
-import { deepFreeze, jsonSafe, stableDigest } from './index.js';
+import { deepFreeze, jsonSafe, stableDigest, validateCanonicalIdentityNumbers } from './index.js';
 
 function fail(code) { throw new TypeError(code); }
 function required(value, code) {
@@ -36,7 +36,9 @@ export function createAnalysisSnapshot(input = {}) {
   const binaryId = required(input.binaryId, 'snapshot-binary-id-required');
   const projectRevision = exactRevision(input.projectRevision, '0', 'snapshot-project-revision-invalid');
   const analysisEpoch = exactRevision(input.analysisEpoch, '0', 'snapshot-analysis-epoch-invalid');
-  const artifactVersions = jsonSafe(input.artifactVersions ?? {});
+  const artifactVersionInput = input.artifactVersions ?? {};
+  validateCanonicalIdentityNumbers(artifactVersionInput);
+  const artifactVersions = jsonSafe(artifactVersionInput);
   const snapshotId = input.snapshotId == null
     ? `snapshot_${stableDigest({ binaryId, projectRevision, analysisEpoch, artifactVersions })}`
     : required(input.snapshotId, 'snapshot-id-required');
