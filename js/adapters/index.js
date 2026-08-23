@@ -72,7 +72,7 @@ function remoteRegisters(result) {
     if (name.length > 64) throw new DebugAdapterError('malformed-remote', 'remote register name is too long');
     if (typeof value === 'string' && value.length > 128) throw new DebugAdapterError('malformed-remote', 'remote register value is too long');
     if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'bigint' && value != null) throw new DebugAdapterError('malformed-remote', 'remote register value must be scalar');
-    out[name] = value;
+    Object.defineProperty(out, name, { value, enumerable:true, configurable:true, writable:true });
   }
   return out;
 }
