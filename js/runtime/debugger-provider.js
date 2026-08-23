@@ -56,39 +56,46 @@ export class DebuggerProvider extends DebugAdapterRuntimeProvider {
       return event;
     };
 
-    if (typeof this.adapter.onEvent === 'function') {
-      const maybe = this.adapter.onEvent(ingest);
-      if (maybe != null && typeof maybe !== 'function') throw new DebugAdapterError('event-subscription', 'debugger adapter onEvent must return an unsubscribe function');
-      unsubscribe = maybe || null;
+    try {
+      if (typeof this.adapter.onEvent === 'function') {
+        const maybe = this.adapter.onEvent(ingest);
+        if (maybe != null && typeof maybe !== 'function') throw new DebugAdapterError('event-subscription', 'debugger adapter onEvent must return an unsubscribe function');
+        unsubscribe = maybe || null;
+      }
+    } catch (error) {
+      try { await session.close(); } catch {}
+      throw error;
     }
 
     const originalDebugger = session.facets.debugger;
     const debuggerFacet = Object.freeze({
       ...originalDebugger,
       writeRegister: async (name, value, callOptions = {}) => {
-        const raw = await this.adapter.writeRegister(name, value, callOptions);
-        const intervention = interventions.add({
+        const draft = {
           runtimeSessionId: session.runtimeSessionId,
           providerId: session.providerId,
           kind: 'register-write',
           target: { register: String(name) },
           requestedChange: { value },
-          acknowledgedResult: raw,
           parentInterventionIds: callOptions.parentInterventionIds ?? [],
-        });
+        };
+        interventions.validate(draft);
+        const raw = await this.adapter.writeRegister(name, value, callOptions);
+        const intervention = interventions.add({ ...draft, acknowledgedResult: raw });
         return { result: raw, intervention };
       },
       writeMemory: async (address, bytes, callOptions = {}) => {
-        const raw = await this.adapter.writeMemory(address, bytes, callOptions);
-        const intervention = interventions.add({
+        const draft = {
           runtimeSessionId: session.runtimeSessionId,
           providerId: session.providerId,
           kind: 'memory-write',
           target: { address },
           requestedChange: { bytes },
-          acknowledgedResult: raw,
           parentInterventionIds: callOptions.parentInterventionIds ?? [],
-        });
+        };
+        interventions.validate(draft);
+        const raw = await this.adapter.writeMemory(address, bytes, callOptions);
+        const intervention = interventions.add({ ...draft, acknowledgedResult: raw });
         return { result: raw, intervention };
       },
       events: Object.freeze({
@@ -114,8 +121,6 @@ export class DebuggerProvider extends DebugAdapterRuntimeProvider {
     session.newProviderEpoch = (reason = 'debugger-provider-epoch-changed') => {
       const next = session.newEpoch(reason);
       normalizer.resetEpoch(next);
-      if (typeof this.adapter.setEpoch === 'function') this.adapter.setEpoch(next);
-      else if (typeof this.adapter.nextEpoch === 'function') this.adapter.nextEpoch();
       return next;
     };
     return session;
