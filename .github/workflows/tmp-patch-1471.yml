@@ -24,3 +24,4 @@ jobs:
           git diff --cached --check
           git commit -m "fix(program): bound public query limits (#1471)"
           git push origin HEAD:fix/program-query-limits-1471
+# retrigger
