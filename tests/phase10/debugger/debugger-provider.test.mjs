@@ -82,3 +82,85 @@ test('P10.7 epoch changes cancel in-flight operations and reject old events', as
   assert.ok(session.facets.debugger.events.ingest({ type: 'paused', epoch: 2, streamId: 'debugger', sequence: 1 }));
   await session.close();
 });
+
+test('P10.7 invalid event subscription closes the partially opened provider session', async () => {
+  class InvalidSubscriptionAdapter extends EventAdapter {
+    onEvent() { return 123; }
+  }
+  const adapter = new InvalidSubscriptionAdapter();
+  const provider = new DebuggerProvider(adapter, { id: 'invalid-subscription-provider' });
+  await assert.rejects(
+    () => provider.openSession({ binaryId, targetIdentity: 'fixture', sessionNonce: 'debug:invalid-subscription' }),
+    (error) => error?.code === 'event-subscription',
+  );
+  assert.equal(provider.activeSession, null);
+  assert.equal(adapter.connected, false);
+});
+
+test('P10.7 invalid intervention parent is rejected before debugger mutation', async () => {
+  class CountingAdapter extends EventAdapter {
+    constructor() {
+      super();
+      this.registerWrites = 0;
+      this.memoryWrites = 0;
+    }
+    async writeRegister(name, value) {
+      this.registerWrites++;
+      return super.writeRegister(name, value);
+    }
+    async writeMemory(address, bytes) {
+      this.memoryWrites++;
+      return super.writeMemory(address, bytes);
+    }
+  }
+  const adapter = new CountingAdapter();
+  const provider = new DebuggerProvider(adapter, { id: 'atomic-mutation-provider' });
+  const session = await provider.openSession({ binaryId, targetIdentity: 'fixture', sessionNonce: 'debug:atomic-mutation' });
+
+  await assert.rejects(
+    () => session.facets.debugger.writeRegister('pc', 0x7004n, { parentInterventionIds: ['missing-parent'] }),
+    (error) => error?.code === 'runtime-intervention-parent-missing',
+  );
+  await assert.rejects(
+    () => session.facets.debugger.writeMemory(0x8000n, new Uint8Array([1]), { parentInterventionIds: ['missing-parent'] }),
+    (error) => error?.code === 'runtime-intervention-parent-missing',
+  );
+  assert.equal(adapter.registerWrites, 0);
+  assert.equal(adapter.memoryWrites, 0);
+  assert.equal(session.facets.debugger.interventions.all().length, 0);
+  await session.close();
+});
+
+test('P10.7 provider epoch commits only after adapter epoch update succeeds', async () => {
+  class EpochAdapter extends EventAdapter {
+    constructor() {
+      super();
+      this.providerEpoch = 1;
+      this.failEpochUpdate = false;
+    }
+    setEpoch(next) {
+      if (this.failEpochUpdate) throw new Error('epoch update failed');
+      this.providerEpoch = next;
+    }
+  }
+  const adapter = new EpochAdapter();
+  const provider = new DebuggerProvider(adapter, { id: 'atomic-epoch-provider' });
+  const session = await provider.openSession({ binaryId, targetIdentity: 'fixture', sessionNonce: 'debug:atomic-epoch' });
+  const controller = session.controller();
+
+  adapter.failEpochUpdate = true;
+  assert.throws(() => session.newProviderEpoch(), /epoch update failed/);
+  assert.equal(session.epoch, 1);
+  assert.equal(adapter.providerEpoch, 1);
+  assert.equal(controller.signal.aborted, false);
+  assert.ok(session.facets.debugger.events.ingest({ type: 'paused', epoch: 1, streamId: 'debugger', sequence: 1 }));
+
+  adapter.failEpochUpdate = false;
+  assert.equal(session.newProviderEpoch(), 2);
+  assert.equal(session.epoch, 2);
+  assert.equal(adapter.providerEpoch, 2);
+  assert.equal(controller.signal.aborted, true);
+  assert.equal(session.facets.debugger.events.ingest({ type: 'paused', epoch: 1, streamId: 'debugger', sequence: 2 }), null);
+  assert.ok(session.facets.debugger.events.ingest({ type: 'paused', epoch: 2, streamId: 'debugger', sequence: 1 }));
+  await session.close();
+});
