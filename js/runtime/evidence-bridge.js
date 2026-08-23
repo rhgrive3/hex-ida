@@ -32,6 +32,21 @@ function optionalSequence(value) {
   return sequence;
 }
 
+function ownedClone(value) {
+  if (typeof structuredClone === 'function') return structuredClone(value);
+  if (value == null || typeof value !== 'object') return value;
+  if (Array.isArray(value)) return value.map(ownedClone);
+  if (value instanceof Uint8Array) return new Uint8Array(value);
+  if (value instanceof ArrayBuffer) return value.slice(0);
+  if (ArrayBuffer.isView(value)) return new value.constructor(value);
+  if (value instanceof Date) return new Date(value.getTime());
+  const out = {};
+  for (const [key, item] of Object.entries(value)) {
+    Object.defineProperty(out, key, { value: ownedClone(item), enumerable: true, configurable: true, writable: true });
+  }
+  return out;
+}
+
 function completeness(value, fallback = 'partial') {
   const normalized = String(value ?? fallback);
   if (!EVIDENCE_COMPLETENESS.includes(normalized)) throw new DebugAdapterError('runtime-invalid-completeness', `invalid evidence completeness: ${normalized}`);
@@ -50,12 +65,15 @@ export function createInterventionRecord(input = {}) {
   const kind = required(input.kind, 'runtime-intervention-kind-required', 'intervention kind is required');
   const sequence = optionalSequence(input.sequence);
   const parentInterventionIds = stringArray(input.parentInterventionIds, 'parentInterventionIds');
+  const target = ownedClone(input.target ?? null);
+  const requestedChange = ownedClone(input.requestedChange ?? null);
+  const acknowledgedResult = ownedClone(input.acknowledgedResult ?? null);
   const identity = {
     runtimeSessionId,
     providerId,
     kind,
-    target: input.target ?? null,
-    requestedChange: input.requestedChange ?? null,
+    target,
+    requestedChange,
     sequence,
     parentInterventionIds,
   };
@@ -64,9 +82,9 @@ export function createInterventionRecord(input = {}) {
     runtimeSessionId,
     providerId,
     kind,
-    target: input.target ?? null,
-    requestedChange: input.requestedChange ?? null,
-    acknowledgedResult: input.acknowledgedResult ?? null,
+    target,
+    requestedChange,
+    acknowledgedResult,
     sequence,
     parentInterventionIds,
     evidenceIds: stringArray(input.evidenceIds, 'evidenceIds'),
@@ -76,13 +94,18 @@ export function createInterventionRecord(input = {}) {
 export class InterventionLedger {
   #records = new Map();
 
-  add(input) {
-    const record = createInterventionRecord(input);
-    const existing = this.#records.get(record.interventionId);
-    if (existing) return existing;
+  validate(input) {
+    const record = input?.interventionId && Object.isFrozen(input) ? input : createInterventionRecord(input);
     for (const parent of record.parentInterventionIds) {
       if (!this.#records.has(parent)) throw new DebugAdapterError('runtime-intervention-parent-missing', `intervention parent not found: ${parent}`);
     }
+    return record;
+  }
+
+  add(input) {
+    const record = this.validate(input);
+    const existing = this.#records.get(record.interventionId);
+    if (existing) return existing;
     this.#records.set(record.interventionId, record);
     return record;
   }
