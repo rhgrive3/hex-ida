@@ -5,9 +5,19 @@ export function safeELFNumber(value) {
   return Number.isSafeInteger(n) && n >= 0 ? n : null;
 }
 
+function strictELFInteger(value, label) {
+  if (typeof value === 'bigint') return value;
+  if (Number.isSafeInteger(value)) return BigInt(value);
+  if (typeof value === 'string' && value.trim() !== '') {
+    try { return BigInt(value); }
+    catch {}
+  }
+  throw new TypeError(`${label} must be a bigint, safe integer, or non-empty integer string`);
+}
+
 /** Return the file-backed suffix of the PT_LOAD that owns `va`. */
 export function mappedELFFileRangeForVa(image, va) {
-  const address = BigInt(va);
+  const address = strictELFInteger(va, 'va');
   for (const segment of image?.segments || []) {
     const start = BigInt(segment.address ?? 0);
     const fileSize = BigInt(segment.fileSize ?? 0);
@@ -23,7 +33,7 @@ export function mappedELFFileRangeForVa(image, va) {
 
 /** Require the entire VA span to remain in one file-backed PT_LOAD mapping. */
 export function mappedELFFileSpanForVa(image, va, size) {
-  const n = typeof size === 'bigint' ? size : BigInt(size);
+  const n = strictELFInteger(size, 'size');
   if (n < 0n || n > BigInt(Number.MAX_SAFE_INTEGER)) return null;
   const range = mappedELFFileRangeForVa(image, va);
   if (!range) return null;
@@ -38,8 +48,8 @@ export function mappedELFFileSpanForVa(image, va, size) {
  * provenance; sectionless images fall back to executable PT_LOAD segments.
  */
 export function executableELFRange(image, address, size = 0n, sectionIndex = null) {
-  const start = BigInt(address);
-  const extent = BigInt(size ?? 0n);
+  const start = strictELFInteger(address, 'address');
+  const extent = strictELFInteger(size ?? 0n, 'size');
   if (extent < 0n) return null;
   const fits = (owner) => {
     if (!owner?.perms?.execute) return false;
