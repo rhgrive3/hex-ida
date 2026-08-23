@@ -3,6 +3,13 @@ import { deepFreeze, stableDigest } from '../core/identity/index.js';
 export const REBUILD_TRANSACTION_SCHEMA = 'hex-rebuild-transaction-v2';
 export const REBUILD_VALIDATION_SCHEMA = 'hex-rebuild-validation-v2';
 const ATOMIC_PUBLICATION_PROTOCOLS = new Set(['temp-then-atomic-rename', 'transactional-store']);
+const REBUILD_FORMATS = new Set(['macho', 'elf', 'pe']);
+const FORMAT_PROFILES = Object.freeze({
+  macho: Object.freeze(['macho:64']),
+  elf: Object.freeze(['elf:64']),
+  pe: Object.freeze(['pe:pe32', 'pe:pe32+']),
+});
+const BYTE_HASH_RE = /^bytes:[0-9a-f]{32}$/;
 
 function required(value, code) {
   const text = String(value ?? '').trim();
@@ -11,10 +18,15 @@ function required(value, code) {
 }
 
 function toBytes(value) {
-  if (value instanceof Uint8Array) return value;
-  if (value instanceof ArrayBuffer) return new Uint8Array(value);
-  if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
-  if (Array.isArray(value)) return Uint8Array.from(value);
+  if (value instanceof Uint8Array) return new Uint8Array(value);
+  if (value instanceof ArrayBuffer) return new Uint8Array(value.slice(0));
+  if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength));
+  if (Array.isArray(value)) {
+    for (const byte of value) {
+      if (typeof byte !== 'number' || !Number.isInteger(byte) || byte < 0 || byte > 0xff) throw new TypeError('rebuild-v2-byte-invalid');
+    }
+    return Uint8Array.from(value);
+  }
   throw new TypeError('rebuild-v2-bytes-required');
 }
 
@@ -31,6 +43,96 @@ function hashBytes(value) {
 
 function sorted(value) {
   return [...new Set((Array.isArray(value) ? value : []).map(String).filter(Boolean))].sort();
+}
+
+function canonicalHash(value, code = 'rebuild-v2-source-hash-invalid') {
+  const text = required(value, code).toLowerCase();
+  if (!BYTE_HASH_RE.test(text)) throw new TypeError(code);
+  return text;
+}
+
+function optionalRecord(value, code) {
+  if (value == null) return {};
+  if (typeof value !== 'object' || Array.isArray(value)) throw new TypeError(code);
+  return clone(value);
+}
+
+function canonicalTransactionId(transaction) {
+  const payload = clone(transaction);
+  payload.transactionId = null;
+  return `rebuild-transaction:${stableDigest(payload)}`;
+}
+
+function canonicalOutputIdentity(transactionId, outputHash) {
+  return `rebuild-output:${transactionId}:${outputHash}`;
+}
+
+function validationIdentityValid(validation) {
+  try {
+    if (!validation || typeof validation.validationId !== 'string') return false;
+    const payload = clone(validation);
+    delete payload.validationId;
+    return validation.validationId === `rebuild-validation:${stableDigest(payload)}`;
+  } catch {
+    return false;
+  }
+}
+
+function safeIndex(value) {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
+function byteArrayValid(value) {
+  return Array.isArray(value) && value.every((byte) => typeof byte === 'number' && Number.isInteger(byte) && byte >= 0 && byte <= 0xff);
+}
+
+function operationShapeValid(operations) {
+  if (!Array.isArray(operations) || operations.length === 0) return false;
+  const ids = new Set();
+  let previousEnd = 0n;
+  let sizeDelta = 0;
+  try {
+    for (const operation of operations) {
+      if (!operation || typeof operation !== 'object' || Array.isArray(operation)) return false;
+      if (typeof operation.id !== 'string' || operation.id.trim() === '' || ids.has(operation.id)) return false;
+      ids.add(operation.id);
+      const offset = explicitBigInt(operation.offset, 'rebuild-v2-offset-invalid');
+      if (offset < 0n || !byteArrayValid(operation.before) || !byteArrayValid(operation.after) || (operation.before.length === 0 && operation.after.length === 0)) return false;
+      if (offset < previousEnd) return false;
+      previousEnd = offset + BigInt(operation.before.length);
+      sizeDelta += operation.after.length - operation.before.length;
+      if (!Number.isSafeInteger(sizeDelta)) return false;
+      if (!operation.provenance || typeof operation.provenance !== 'object' || Array.isArray(operation.provenance)) return false;
+    }
+  } catch {
+    return false;
+  }
+  return true;
+}
+
+function formatIdentityMismatch(result, transaction, expectedOutputHash) {
+  if (!result || typeof result !== 'object') return null;
+  const format = result.format ?? result.image?.format;
+  if (format != null && String(format).toLowerCase() !== transaction.format) return 'validator-format-mismatch';
+  const architecture = result.architecture ?? result.arch ?? result.image?.arch;
+  if (architecture != null && String(architecture).toLowerCase() !== transaction.architecture) return 'validator-architecture-mismatch';
+  const loaderVersion = result.loaderVersion ?? result.parserVersion ?? result.image?.loaderVersion;
+  if (loaderVersion != null && String(loaderVersion) !== transaction.loaderVersion) return 'validator-loader-identity-mismatch';
+  const sourceHash = result.sourceHash ?? result.inputHash ?? result.image?.sourceHash;
+  if (sourceHash != null && String(sourceHash).toLowerCase() !== transaction.sourceHash) return 'validator-source-identity-mismatch';
+  const outputHash = result.outputHash ?? result.bytesHash ?? result.image?.outputHash;
+  if (outputHash != null && String(outputHash).toLowerCase() !== expectedOutputHash) return 'validator-output-identity-mismatch';
+  return null;
+}
+
+function relocationResultFailure(result) {
+  if (!result || typeof result !== 'object') return null;
+  if (result.bindingIntegrity === false || result.bindingsMatch === false || result.relocationBindingsMatch === false) return 'relocation-binding-mismatch';
+  for (const key of ['unboundBindings', 'unresolvedBindings', 'mismatchedBindings', 'bindingMismatches', 'unresolvedRelocations']) {
+    const value = result[key];
+    if ((typeof value === 'number' && Number.isSafeInteger(value) && value > 0) || (Array.isArray(value) && value.length > 0)) return 'relocation-binding-mismatch';
+  }
+  return null;
 }
 
 function positiveSafe(value, fallback, max, code) {
@@ -65,13 +167,14 @@ function requiredValidators(impact, additional = [], requireIndependentOracle = 
 export function createRebuildTransaction(input = {}) {
   if (!Array.isArray(input.operations) || input.operations.length === 0) throw new TypeError('rebuild-v2-operations-required');
   const operations = input.operations.map((operation, index) => {
+    if (!operation || typeof operation !== 'object' || Array.isArray(operation)) throw new TypeError('rebuild-v2-operation-invalid');
     const offset = explicitBigInt(operation.offset ?? operation.fileOffset ?? -1, 'rebuild-v2-offset-invalid');
     if (offset < 0n) throw new TypeError('rebuild-v2-offset-invalid');
     const before = toBytes(operation.before ?? []);
     const after = toBytes(operation.after ?? []);
     if (before.length === 0 && after.length === 0) throw new TypeError('rebuild-v2-empty-operation');
     return {
-      id: required(operation.id || `operation:${index}:${stableDigest({ offset: offset.toString(), before: Array.from(before), after: Array.from(after) })}`, 'rebuild-v2-operation-id-required'),
+      id: required(operation.id ?? `operation:${index}:${stableDigest({ offset: offset.toString(), before: Array.from(before), after: Array.from(after) })}`, 'rebuild-v2-operation-id-required'),
       offset: offset.toString(),
       before: Array.from(before),
       after: Array.from(after),
@@ -88,28 +191,48 @@ export function createRebuildTransaction(input = {}) {
   }
 
   const sizeDelta = operations.reduce((sum, operation) => sum + operation.after.length - operation.before.length, 0);
+  if (!Number.isSafeInteger(sizeDelta)) throw new TypeError('rebuild-v2-size-delta-invalid');
+  const operationIds = new Set();
+  for (const operation of operations) {
+    if (operationIds.has(operation.id)) throw new TypeError('rebuild-v2-duplicate-operation-id');
+    operationIds.add(operation.id);
+  }
   const declaredImpact = input.impact || {};
+  if (typeof declaredImpact !== 'object' || Array.isArray(declaredImpact)) throw new TypeError('rebuild-v2-impact-invalid');
+  const format = required(input.format, 'rebuild-v2-format-required').toLowerCase();
+  if (!REBUILD_FORMATS.has(format)) throw new TypeError('rebuild-v2-format-unsupported');
+  const architecture = required(input.architecture, 'rebuild-v2-architecture-required').toLowerCase();
+  const sourceHash = canonicalHash(input.sourceHash);
+  const loaderVersion = required(input.loaderVersion, 'rebuild-v2-loader-version-required');
+  const expectedOriginalState = optionalRecord(input.expectedOriginalState || { sourceHash }, 'rebuild-v2-original-state-invalid');
+  if (expectedOriginalState.sourceHash != null && canonicalHash(expectedOriginalState.sourceHash) !== sourceHash) throw new TypeError('rebuild-v2-original-state-identity-mismatch');
+  expectedOriginalState.sourceHash = sourceHash;
+  const relocationBindings = input.relocationBindings ?? declaredImpact.relocationBindings ?? [];
+  if (!Array.isArray(relocationBindings)) throw new TypeError('rebuild-v2-relocation-bindings-invalid');
   const impact = {
     layoutMoving: sizeDelta !== 0 || declaredImpact.layoutMoving === true,
-    relocations: declaredImpact.relocations === true,
+    relocations: declaredImpact.relocations === true || relocationBindings.length > 0,
     branchRanges: declaredImpact.branchRanges === true,
     unwind: declaredImpact.unwind === true,
     importsExports: declaredImpact.importsExports === true,
     signature: declaredImpact.signature === true,
     sections: clone(declaredImpact.sections || []),
+    relocationBindings: clone(relocationBindings),
   };
   const requireIndependentOracle = input.requireIndependentOracle === true;
   const transaction = {
     schemaVersion: REBUILD_TRANSACTION_SCHEMA,
     transactionId: null,
     binaryId: required(input.binaryId, 'rebuild-v2-binary-id-required'),
-    sourceHash: required(input.sourceHash, 'rebuild-v2-source-hash-required'),
-    format: required(input.format, 'rebuild-v2-format-required').toLowerCase(),
-    architecture: required(input.architecture, 'rebuild-v2-architecture-required').toLowerCase(),
-    operations,
+    sourceHash,
+    format,
+    architecture,
+    loaderVersion,
+    operations: clone(operations),
     sizeDelta,
     impact,
-    expectedOriginalState: clone(input.expectedOriginalState || { sourceHash: input.sourceHash }),
+    relocationBindings: clone(relocationBindings),
+    expectedOriginalState,
     requiredValidators: requiredValidators(impact, input.additionalValidators || [], requireIndependentOracle),
     requireIndependentOracle,
     unresolvedRisks: sorted(input.unresolvedRisks),
@@ -121,13 +244,134 @@ export function createRebuildTransaction(input = {}) {
 
 async function sourceBytes(source) {
   if (typeof Blob !== 'undefined' && source instanceof Blob) return new Uint8Array(await source.arrayBuffer());
-  return toBytes(source);
+  return toBytes(source).slice();
+}
+
+function transactionIdentityValid(transaction) {
+  try {
+    if (!transaction || transaction.schemaVersion !== REBUILD_TRANSACTION_SCHEMA) return false;
+    if (!REBUILD_FORMATS.has(String(transaction.format || '').toLowerCase())) return false;
+    if (String(transaction.format).toLowerCase() !== transaction.format) return false;
+    if (!BYTE_HASH_RE.test(String(transaction.sourceHash || '').toLowerCase())) return false;
+    if (String(transaction.sourceHash).toLowerCase() !== transaction.sourceHash) return false;
+    if (!transaction.loaderVersion || !transaction.binaryId || !transaction.architecture) return false;
+    if (!operationShapeValid(transaction.operations)) return false;
+    const computedDelta = transaction.operations.reduce((sum, operation) => sum + operation.after.length - operation.before.length, 0);
+    if (!Number.isSafeInteger(transaction.sizeDelta) || transaction.sizeDelta !== computedDelta) return false;
+    if (!Array.isArray(transaction.requiredValidators) || transaction.requiredValidators.length === 0) return false;
+    if (!Array.isArray(transaction.impact?.relocationBindings)) return false;
+    if (!Array.isArray(transaction.relocationBindings) || stableDigest(transaction.relocationBindings) !== stableDigest(transaction.impact.relocationBindings)) return false;
+    if (!Array.isArray(transaction.impact?.sections)) return false;
+    if (typeof transaction.impact.layoutMoving !== 'boolean' || typeof transaction.impact.relocations !== 'boolean' || typeof transaction.impact.branchRanges !== 'boolean' || typeof transaction.impact.unwind !== 'boolean' || typeof transaction.impact.importsExports !== 'boolean' || typeof transaction.impact.signature !== 'boolean') return false;
+    if (transaction.expectedOriginalState?.sourceHash !== transaction.sourceHash) return false;
+    const expected = requiredValidators(transaction.impact, transaction.requiredValidators.filter((name) => ![
+      'source-precondition', 'structure', 'loader-reparse', 'unchanged-regions', 'evidence',
+      'layout', 'relocations', 'branch-ranges', 'unwind', 'imports-exports', 'signature-consequence', 'independent-differential',
+    ].includes(name)), transaction.requireIndependentOracle === true);
+    if (JSON.stringify(expected) !== JSON.stringify(transaction.requiredValidators)) return false;
+    if (canonicalTransactionId(transaction) !== transaction.transactionId) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function materializationIdentityValid(transaction, materialized, original) {
+  try {
+    if (!materialized || materialized.status !== 'materialized' || materialized.transactionId !== transaction.transactionId) return false;
+    if (materialized.sourceHash !== transaction.sourceHash) return false;
+    if (materialized.binaryId !== transaction.binaryId || materialized.format !== transaction.format || materialized.architecture !== transaction.architecture || materialized.loaderVersion !== transaction.loaderVersion) return false;
+    if (!Number.isSafeInteger(materialized.sourceLength) || materialized.sourceLength !== original.length) return false;
+    if (!Number.isSafeInteger(materialized.outputLength)) return false;
+    if (!Number.isSafeInteger(materialized.sizeDelta) || materialized.sizeDelta !== transaction.sizeDelta) return false;
+    if (!materialized.bytes || !ArrayBuffer.isView(materialized.bytes)) return false;
+    const output = toBytes(materialized.bytes);
+    if (materialized.outputLength !== output.length || materialized.outputLength !== materialized.sourceLength + transaction.sizeDelta) return false;
+    if (materialized.outputHash !== hashBytes(output)) return false;
+    if (materialized.outputIdentity !== canonicalOutputIdentity(transaction.transactionId, materialized.outputHash)) return false;
+    return mappingsMatchTransaction(transaction, materialized.mappings, original.length, output.length)
+      && relocationBindingsMatchMaterialization(transaction, materialized);
+  } catch {
+    return false;
+  }
+}
+
+function mappingsMatchTransaction(transaction, mappings, sourceLength, outputLength) {
+  if (!Array.isArray(mappings)) return false;
+  let sourceCursor = 0;
+  let outputCursor = 0;
+  let operationIndex = 0;
+  for (const mapping of mappings) {
+    if (!mapping || typeof mapping !== 'object' || !safeIndex(mapping.sourceOffset) || !safeIndex(mapping.outputOffset)) return false;
+    if (mapping.sourceOffset !== sourceCursor || mapping.outputOffset !== outputCursor) return false;
+    if (mapping.kind === 'unchanged') {
+      if (!safeIndex(mapping.length) || mapping.length > sourceLength - sourceCursor || mapping.length > outputLength - outputCursor) return false;
+      sourceCursor += mapping.length;
+      outputCursor += mapping.length;
+      continue;
+    }
+    if (mapping.kind !== 'operation' || operationIndex >= transaction.operations.length) return false;
+    const operation = transaction.operations[operationIndex++];
+    if (mapping.operationId !== operation.id || mapping.sourceOffset !== Number(BigInt(operation.offset))) return false;
+    if (!safeIndex(mapping.beforeLength) || !safeIndex(mapping.afterLength) || mapping.beforeLength !== operation.before.length || mapping.afterLength !== operation.after.length) return false;
+    if (mapping.beforeLength > sourceLength - sourceCursor || mapping.afterLength > outputLength - outputCursor) return false;
+    sourceCursor += mapping.beforeLength;
+    outputCursor += mapping.afterLength;
+  }
+  return operationIndex === transaction.operations.length && sourceCursor === sourceLength && outputCursor === outputLength;
+}
+
+function mappedOutputOffset(mappings, sourceOffset) {
+  for (const mapping of mappings || []) {
+    if (mapping.kind === 'unchanged' && sourceOffset >= mapping.sourceOffset && sourceOffset <= mapping.sourceOffset + mapping.length) return mapping.outputOffset + (sourceOffset - mapping.sourceOffset);
+    if (mapping.kind === 'operation' && sourceOffset === mapping.sourceOffset) return mapping.outputOffset;
+  }
+  return null;
+}
+
+function relocationBindingsMatchMaterialization(transaction, materialized) {
+  const bindings = transaction.impact?.relocationBindings || [];
+  for (const binding of bindings) {
+    if (!binding || typeof binding !== 'object' || Array.isArray(binding)) return false;
+    let sourceOffset = null;
+    try {
+      const candidate = binding.sourceOffset ?? binding.fileOffset ?? binding.offset;
+      if (candidate != null) sourceOffset = explicitBigInt(candidate, 'rebuild-v2-relocation-offset-invalid');
+    } catch {
+      return false;
+    }
+    if (sourceOffset == null || sourceOffset < 0n) continue;
+    const sourceNumber = Number(sourceOffset);
+    if (!Number.isSafeInteger(sourceNumber) || sourceNumber > materialized.sourceLength) return false;
+    const mapped = mappedOutputOffset(materialized.mappings, sourceNumber);
+    if (mapped == null) return false;
+    if (binding.outputOffset != null) {
+      try {
+        if (explicitBigInt(binding.outputOffset, 'rebuild-v2-relocation-output-offset-invalid') !== BigInt(mapped)) return false;
+      } catch {
+        return false;
+      }
+    }
+    const width = binding.width ?? binding.size ?? binding.length;
+    if (width != null) {
+      try {
+        const n = explicitBigInt(width, 'rebuild-v2-relocation-width-invalid');
+        if (n <= 0n || n > BigInt(materialized.sourceLength) - sourceOffset) return false;
+      } catch {
+        return false;
+      }
+    }
+  }
+  return true;
 }
 
 export async function materializeRebuildTransaction(transaction, source, options = {}) {
   if (!transaction || transaction.schemaVersion !== REBUILD_TRANSACTION_SCHEMA) return { status: 'rejected', reason: 'rebuild-v2-transaction-schema-invalid' };
-  const original = await sourceBytes(source);
+  if (!transactionIdentityValid(transaction)) return { status: 'rejected', reason: 'rebuild-v2-transaction-identity-invalid', transactionId: transaction.transactionId || null };
   if (options.signal?.aborted) return { status: 'cancelled', reason: 'rebuild-v2-cancelled-before-materialization', transactionId: transaction.transactionId };
+  let original;
+  try { original = await sourceBytes(source); }
+  catch (error) { return { status: 'rejected', reason: 'rebuild-v2-source-unavailable', detail: String(error?.message || error), transactionId: transaction.transactionId }; }
   const observedHash = hashBytes(original);
   if (observedHash !== transaction.sourceHash) return { status: 'rejected', reason: 'rebuild-v2-source-identity-mismatch', expected: transaction.sourceHash, observed: observedHash, transactionId: transaction.transactionId };
 
@@ -169,8 +413,14 @@ export async function materializeRebuildTransaction(transaction, source, options
   return deepFreeze({
     status: 'materialized',
     transactionId: transaction.transactionId,
+    binaryId: transaction.binaryId,
+    format: transaction.format,
+    architecture: transaction.architecture,
+    loaderVersion: transaction.loaderVersion,
     sourceHash: observedHash,
     outputHash: hashBytes(output),
+    outputIdentity: canonicalOutputIdentity(transaction.transactionId, hashBytes(output)),
+    requiredValidators: [...transaction.requiredValidators],
     sourceLength: original.length,
     outputLength: output.length,
     sizeDelta: transaction.sizeDelta,
@@ -200,7 +450,11 @@ async function executeExternal(name, fn, context) {
   if (typeof fn !== 'function') return validatorResult(name, false, false, 'required-validator-unavailable');
   try {
     const result = await fn(context);
-    if (!result || result.ok !== true) return validatorResult(name, true, false, result?.reason || 'validator-rejected', result || null);
+    if (!result || (result.ok !== true && result.status !== 'passed' && result.status !== 'valid')) return validatorResult(name, true, false, result?.reason || 'validator-rejected', result || null);
+    const identityFailure = formatIdentityMismatch(result, context.transaction, context.expectedOutputHash);
+    if (identityFailure) return validatorResult(name, true, false, identityFailure, result);
+    const relocationFailure = name === 'relocations' ? relocationResultFailure(result) : null;
+    if (relocationFailure) return validatorResult(name, true, false, relocationFailure, result);
     return validatorResult(name, true, true, null, result);
   } catch (error) {
     return validatorResult(name, true, false, String(error?.message || error));
@@ -209,12 +463,22 @@ async function executeExternal(name, fn, context) {
 
 export async function validateRebuildTransaction(transaction, materialized, options = {}) {
   if (!transaction || transaction.schemaVersion !== REBUILD_TRANSACTION_SCHEMA) return { status: 'invalid', reason: 'rebuild-v2-transaction-schema-invalid' };
+  if (!transactionIdentityValid(transaction)) return { status: 'invalid', reason: 'rebuild-v2-transaction-identity-invalid', transactionId: transaction.transactionId || null };
   if (!materialized || materialized.status !== 'materialized' || materialized.transactionId !== transaction.transactionId) return { status: 'invalid', reason: 'rebuild-v2-materialization-invalid' };
-  const original = await sourceBytes(options.original || new Uint8Array());
+  let original;
+  if (options.original == null) return { status: 'invalid', reason: 'rebuild-v2-original-source-required', transactionId: transaction.transactionId };
+  try { original = await sourceBytes(options.original); }
+  catch (error) { return { status: 'invalid', reason: 'rebuild-v2-original-source-unavailable', detail: String(error?.message || error), transactionId: transaction.transactionId }; }
+  if (!materializationIdentityValid(transaction, materialized, original)) return { status: 'invalid', reason: 'rebuild-v2-materialization-identity-invalid', transactionId: transaction.transactionId };
+  if (transaction.requireIndependentOracle === true && options.loaderReparse === options.independentOracle) {
+    return { status: 'invalid', reason: 'rebuild-v2-independent-oracle-reuses-loader', transactionId: transaction.transactionId };
+  }
   const validators = [];
   const builtins = new Map();
   const sourceMatches = hashBytes(original) === transaction.sourceHash;
-  const structureMatches = materialized.outputLength === materialized.sourceLength + transaction.sizeDelta;
+  const structureMatches = materialized.outputLength === materialized.sourceLength + transaction.sizeDelta
+    && materialized.outputHash === hashBytes(materialized.bytes)
+    && materialized.outputIdentity === canonicalOutputIdentity(transaction.transactionId, materialized.outputHash);
   const unchangedMatches = verifyUnchangedMappings(original, materialized.bytes, materialized.mappings);
   const evidenceComplete = transaction.operations.every((operation) => operation.provenance && Object.keys(operation.provenance).length > 0);
   builtins.set('source-precondition', () => validatorResult('source-precondition', true, sourceMatches, 'source-hash-mismatch'));
@@ -229,24 +493,31 @@ export async function validateRebuildTransaction(transaction, materialized, opti
     }
     const external = name === 'loader-reparse'
       ? options.loaderReparse
-      : name === 'independent-differential'
-        ? options.independentOracle
+        : name === 'independent-differential'
+          ? options.independentOracle
         : options.validators?.[name];
-    validators.push(await executeExternal(name, external, { transaction, materialized, original, output: materialized.bytes }));
+    validators.push(await executeExternal(name, external, { transaction, materialized, original, output: materialized.bytes, expectedOutputHash: materialized.outputHash }));
   }
 
   const failures = validators.filter((item) => item.status !== 'passed');
   const allExecuted = validators.every((item) => item.executed === true);
+  const independent = validators.find((item) => item.validator === 'independent-differential');
   const validation = {
     schemaVersion: REBUILD_VALIDATION_SCHEMA,
     transactionId: transaction.transactionId,
+    binaryId: transaction.binaryId,
+    format: transaction.format,
+    architecture: transaction.architecture,
+    loaderVersion: transaction.loaderVersion,
     sourceHash: transaction.sourceHash,
     outputHash: materialized.outputHash,
+    outputIdentity: canonicalOutputIdentity(transaction.transactionId, materialized.outputHash),
     requiredValidators: [...transaction.requiredValidators],
     validators,
     allRequiredExecuted: allExecuted,
     status: failures.length === 0 && allExecuted ? 'valid' : 'invalid',
     failures,
+    independentDifferential: independent ? (independent.status === 'passed' ? 'executed' : 'failed') : 'unavailable',
   };
   return deepFreeze({ ...validation, validationId: `rebuild-validation:${stableDigest(validation)}` });
 }
@@ -254,16 +525,31 @@ export async function validateRebuildTransaction(transaction, materialized, opti
 export async function publishRebuildTransaction(materialized, validation, options = {}) {
   if (!materialized || materialized.status !== 'materialized') return { status: 'rejected', reason: 'rebuild-v2-materialization-not-complete' };
   if (!validation || validation.schemaVersion !== REBUILD_VALIDATION_SCHEMA || validation.status !== 'valid' || validation.allRequiredExecuted !== true) return { status: 'rejected', reason: 'rebuild-v2-validation-not-green' };
+  if (validation.transactionId !== materialized.transactionId) return { status: 'rejected', reason: 'rebuild-v2-validation-transaction-mismatch' };
+  if (!validationIdentityValid(validation)) return { status: 'rejected', reason: 'rebuild-v2-validation-not-green' };
   if (validation.outputHash !== materialized.outputHash) return { status: 'rejected', reason: 'rebuild-v2-validation-output-mismatch' };
+  if (validation.outputIdentity !== materialized.outputIdentity) return { status: 'rejected', reason: 'rebuild-v2-validation-output-identity-mismatch' };
+  if (JSON.stringify(validation.requiredValidators) !== JSON.stringify(materialized.requiredValidators)) return { status: 'rejected', reason: 'rebuild-v2-validation-validator-set-mismatch' };
+  try {
+    if (hashBytes(materialized.bytes) !== materialized.outputHash) return { status: 'rejected', reason: 'rebuild-v2-materialization-output-tampered' };
+  } catch (error) {
+    return { status: 'rejected', reason: 'rebuild-v2-materialization-output-invalid', detail: String(error?.message || error) };
+  }
   if (typeof options.atomicPromote !== 'function') return { status: 'not-published', reason: 'rebuild-v2-atomic-promotion-required', outputHash: materialized.outputHash };
   try {
-    const result = await options.atomicPromote(materialized.bytes, { materialized, validation });
+    // The promoter receives a detached copy. A publication adapter must not be
+    // able to mutate the validated temporary output after its identity is fixed.
+    const result = await options.atomicPromote(materialized.bytes.slice(), { materialized, validation });
     if (!result || result.atomic !== true || result.committed !== true) return { status: 'rejected', reason: 'rebuild-v2-publication-not-atomic' };
     const protocol = String(result.protocol || '');
     if (!ATOMIC_PUBLICATION_PROTOCOLS.has(protocol)) return { status: 'rejected', reason: 'rebuild-v2-publication-protocol-invalid' };
     const publicationIdentity = String(result.publicationIdentity || '').trim();
     if (!publicationIdentity) return { status: 'rejected', reason: 'rebuild-v2-publication-identity-required' };
-    return deepFreeze({ status: 'published', atomic: true, committed: true, protocol, outputHash: materialized.outputHash, publicationIdentity, result: clone(result) });
+    if (result.transactionId != null && String(result.transactionId) !== materialized.transactionId) return { status: 'rejected', reason: 'rebuild-v2-publication-transaction-mismatch' };
+    if (result.outputHash != null && String(result.outputHash) !== materialized.outputHash) return { status: 'rejected', reason: 'rebuild-v2-publication-output-mismatch' };
+    const outputIdentity = canonicalOutputIdentity(materialized.transactionId, materialized.outputHash);
+    if (result.outputIdentity != null && String(result.outputIdentity) !== outputIdentity) return { status: 'rejected', reason: 'rebuild-v2-publication-output-identity-mismatch' };
+    return deepFreeze({ status: 'published', atomic: true, committed: true, protocol, transactionId: materialized.transactionId, outputHash: materialized.outputHash, outputIdentity, publicationIdentity, result: clone(result) });
   } catch (error) {
     return { status: 'rejected', reason: 'rebuild-v2-publication-failed', detail: String(error?.message || error) };
   }
@@ -273,17 +559,34 @@ export function rebuildProfileSupport({ transaction, validation, publication, pr
   const requiredCount = transaction?.requiredValidators?.length || 0;
   const executedCount = validation?.validators?.filter((item) => item.executed === true && item.status === 'passed').length || 0;
   const formatProfileIds = sorted(proof.formatProfileIds);
-  const formatCoverageComplete = proof.profileDenominatorComplete === true && formatProfileIds.length > 0;
+  const expectedProfiles = FORMAT_PROFILES[transaction?.format] || [];
+  const formatCoverageComplete = proof.profileDenominatorComplete === true
+    && formatProfileIds.length > 0
+    && expectedProfiles.every((profile) => formatProfileIds.includes(profile));
+  const outputIdentity = transaction?.transactionId && validation?.outputHash
+    ? canonicalOutputIdentity(transaction.transactionId, validation.outputHash)
+    : null;
   const exact = transaction?.schemaVersion === REBUILD_TRANSACTION_SCHEMA
+    && transactionIdentityValid(transaction)
     && validation?.schemaVersion === REBUILD_VALIDATION_SCHEMA
+    && validationIdentityValid(validation)
     && validation.status === 'valid'
     && validation.allRequiredExecuted === true
     && executedCount === requiredCount
+    && validation.transactionId === transaction.transactionId
+    && validation.sourceHash === transaction.sourceHash
+    && JSON.stringify(validation.requiredValidators) === JSON.stringify(transaction.requiredValidators)
+    && validation.outputIdentity === outputIdentity
     && publication?.status === 'published'
     && publication.atomic === true
     && publication.committed === true
+    && publication.transactionId === transaction.transactionId
+    && publication.outputHash === validation.outputHash
+    && publication.outputIdentity === outputIdentity
     && ATOMIC_PUBLICATION_PROTOCOLS.has(publication.protocol)
     && !!publication.publicationIdentity
+    && transaction.requiredValidators.includes('loader-reparse')
+    && transaction.requiredValidators.includes('independent-differential')
     && proof.exactHead === true
     && proof.negativeValidatorTest === true
     && proof.staleIdentityTest === true
@@ -299,6 +602,7 @@ export function rebuildProfileSupport({ transaction, validation, publication, pr
     executedValidatorCount: executedCount,
     formatProfileIds,
     formatCoverageComplete,
+    outputIdentity,
     status: exact ? 'supported-for-exact-rebuild-profile' : 'unsupported',
     authority: exact ? 'L4-validated-atomic-publication' : 'L3-plan-only',
   });

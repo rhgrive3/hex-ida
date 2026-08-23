@@ -34,6 +34,16 @@ const materialized = await materializeRebuildTransaction(transaction, source, { 
 assert.equal(materialized.status, 'materialized');
 assert.deepEqual([...materialized.bytes], [1, 9, 8, 3, 4]);
 assert.equal(materialized.outputLength, 5);
+assert.equal(materialized.binaryId, transaction.binaryId);
+assert.equal(materialized.format, transaction.format);
+assert.equal(materialized.loaderVersion, transaction.loaderVersion);
+assert.equal(materialized.outputIdentity, `rebuild-output:${transaction.transactionId}:${materialized.outputHash}`);
+
+assert.throws(() => transactionFor('unknown'), /format-unsupported/);
+assert.throws(() => createRebuildTransaction({
+  binaryId: 'binary:macho:test', sourceHash, format: 'macho', architecture: 'arm64', loaderVersion: 'loader:macho:test',
+  operations: [{ id: 'bad-byte', offset: 0, before: [2], after: [256], provenance: { source: 'test' } }],
+}), /byte-invalid/);
 
 const external = {
   layout: ({ materialized }) => ({ ok: materialized.outputLength === 5 }),
@@ -66,6 +76,74 @@ assert.equal(validation.status, 'valid');
 assert.equal(validation.allRequiredExecuted, true);
 assert.equal(validation.validators.every((item) => item.executed && item.status === 'passed'), true);
 assert.equal(validation.validators.find((item) => item.validator === 'evidence').reason, null);
+assert.equal(validation.outputIdentity, `rebuild-output:${transaction.transactionId}:${materialized.outputHash}`);
+
+let independentCalls = 0;
+const countedValidation = await validateRebuildTransaction(transaction, materialized, {
+  original: source,
+  loaderReparse: () => ({ ok: true }),
+  independentOracle: () => { independentCalls += 1; return { ok: true }; },
+  validators: external,
+});
+assert.equal(countedValidation.status, 'valid');
+assert.equal(independentCalls, 1, 'independent parser must execute exactly once');
+
+const tamperedOutput = { ...materialized, bytes: Uint8Array.from(materialized.bytes) };
+tamperedOutput.bytes[1] = 0;
+assert.equal((await validateRebuildTransaction(transaction, tamperedOutput, {
+  original: source, loaderReparse: () => ({ ok: true }), independentOracle: () => ({ ok: true }), validators: external,
+})).reason, 'rebuild-v2-materialization-identity-invalid');
+
+const tamperedMappings = { ...materialized, mappings: materialized.mappings.map((item) => ({ ...item })) };
+tamperedMappings.mappings[0].outputOffset += 1;
+assert.equal((await validateRebuildTransaction(transaction, tamperedMappings, {
+  original: source, loaderReparse: () => ({ ok: true }), independentOracle: () => ({ ok: true }), validators: external,
+})).reason, 'rebuild-v2-materialization-identity-invalid');
+
+const loaderAndOracle = () => ({ ok: true });
+assert.equal((await validateRebuildTransaction(transaction, materialized, {
+  original: source, loaderReparse: loaderAndOracle, independentOracle: loaderAndOracle, validators: external,
+})).reason, 'rebuild-v2-independent-oracle-reuses-loader');
+
+const wrongFormat = await validateRebuildTransaction(transaction, materialized, {
+  original: source,
+  loaderReparse: () => ({ ok: true, format: 'elf' }),
+  independentOracle: () => ({ ok: true }),
+  validators: external,
+});
+assert.equal(wrongFormat.status, 'invalid');
+assert.equal(wrongFormat.validators.find((item) => item.validator === 'loader-reparse').reason, 'validator-format-mismatch');
+
+const relocationMismatch = await validateRebuildTransaction(transaction, materialized, {
+  original: source,
+  loaderReparse: () => ({ ok: true }),
+  independentOracle: () => ({ ok: true }),
+  validators: { ...external, relocations: () => ({ ok: true, bindingIntegrity: false }) },
+});
+assert.equal(relocationMismatch.status, 'invalid');
+assert.equal(relocationMismatch.validators.find((item) => item.validator === 'relocations').reason, 'relocation-binding-mismatch');
+
+const boundTransaction = createRebuildTransaction({
+  ...transactionFor('elf'),
+  relocationBindings: [{ id: 'reloc:tail', sourceOffset: 3, outputOffset: 4, width: 1 }],
+});
+const boundMaterialized = await materializeRebuildTransaction(boundTransaction, source, { maxOutputBytes: 1024 });
+const boundExternal = { ...external, relocations: () => ({ ok: true, checked: 1 }) };
+assert.equal((await validateRebuildTransaction(boundTransaction, boundMaterialized, {
+  original: source, loaderReparse: () => ({ ok: true }), independentOracle: () => ({ ok: true }), validators: boundExternal,
+})).status, 'valid');
+const badBindingTransaction = createRebuildTransaction({
+  ...transactionFor('elf'),
+  relocationBindings: [{ id: 'reloc:tail', sourceOffset: 3, outputOffset: 3, width: 1 }],
+});
+const badBindingMaterialized = await materializeRebuildTransaction(badBindingTransaction, source, { maxOutputBytes: 1024 });
+assert.equal((await validateRebuildTransaction(badBindingTransaction, badBindingMaterialized, {
+  original: source, loaderReparse: () => ({ ok: true }), independentOracle: () => ({ ok: true }), validators: boundExternal,
+})).reason, 'rebuild-v2-materialization-identity-invalid');
+
+assert.equal((await validateRebuildTransaction(transaction, materialized, {
+  loaderReparse: () => ({ ok: true }), independentOracle: () => ({ ok: true }), validators: external,
+})).reason, 'rebuild-v2-original-source-required');
 
 assert.equal((await publishRebuildTransaction(materialized, validation)).reason, 'rebuild-v2-atomic-promotion-required');
 assert.equal((await publishRebuildTransaction(materialized, validation, { atomicPromote: async () => ({ atomic: true }) })).reason, 'rebuild-v2-publication-not-atomic');
@@ -75,6 +153,9 @@ const publication = await publishRebuildTransaction(materialized, validation, { 
 assert.equal(publication.status, 'published');
 assert.equal(publication.atomic, true);
 assert.equal(publication.committed, true);
+assert.equal(publication.outputIdentity, materialized.outputIdentity);
+assert.equal((await publishRebuildTransaction(materialized, { ...validation, transactionId: 'rebuild-transaction:stale' }, { atomicPromote: async () => ({ atomic: true, committed: true, protocol: 'transactional-store', publicationIdentity: 'x' }) })).reason, 'rebuild-v2-validation-transaction-mismatch');
+assert.equal((await publishRebuildTransaction(materialized, validation, { atomicPromote: async () => ({ atomic: true, committed: true, protocol: 'transactional-store', publicationIdentity: 'x', outputIdentity: 'wrong' }) })).reason, 'rebuild-v2-publication-output-identity-mismatch');
 
 const incompleteTruth = rebuildProfileSupport({ transaction, validation, publication, proof: { exactHead: true, negativeValidatorTest: true, staleIdentityTest: true } });
 assert.equal(incompleteTruth.status, 'unsupported', 'one green operation must not promote a whole format F6 profile');
