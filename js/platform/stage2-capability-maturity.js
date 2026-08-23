@@ -1,6 +1,8 @@
 import { architectureMaturity, formatMaturity, managedMaturity, phase12Maturity } from './capability-maturity.js';
 import { isValidatedStage2CapabilityProof } from './stage2-profile-evidence.js';
 import { isValidatedRemoteCollaborationSupport } from '../collaboration/remote-authority.js';
+import { isValidatedRuntimeProfileSupport } from '../runtime/authority.js';
+import { isValidatedManagedRuntimeProfileSupport } from '../managed/runtime-binding.js';
 
 const ARCH_PROFILE = Object.freeze({
   arm64: 'arm64:a64',
@@ -67,7 +69,7 @@ function stage1ArchitectureBase(architecture, options = {}) {
 export function stage2ArchitectureMaturity(architecture, options = {}) {
   const base = stage1ArchitectureBase(architecture, options);
   const profileId = profileValue(ARCH_PROFILE, base.id);
-  const runtimeSupported = supportedProof(options.runtimeProof, 'supported-for-exact-provider-profile')
+  const runtimeSupported = isValidatedRuntimeProfileSupport(options.runtimeProof)
     && options.runtimeProof?.targetProfileId === profileId
     && profileEvidenceProof(options.profileProof ?? options.profileProofs?.['S2-A7-NATIVE'], 'S2-A7-NATIVE', [profileId]);
   if (!runtimeSupported || base.fullySatisfiedLevel !== 'A6') return base;
@@ -88,7 +90,7 @@ export function stage2ArchitectureMaturity(architecture, options = {}) {
 export function stage2ManagedMaturity(frontend, options = {}) {
   const base = managedMaturity(frontend);
   const expectedTarget = `managed:${base.id}:m6`;
-  const runtimeSupported = supportedProof(options.runtimeProof, 'supported-for-exact-provider-profile')
+  const runtimeSupported = isValidatedManagedRuntimeProfileSupport(options.runtimeProof)
     && options.runtimeProof?.frontendId === base.id
     && options.runtimeProof?.targetProfileId === expectedTarget
     && profileEvidenceProof(options.profileProof ?? options.profileProofs?.[`S2-M6-${base.id.toUpperCase()}`], `S2-M6-${base.id.toUpperCase()}`, [expectedTarget]);
