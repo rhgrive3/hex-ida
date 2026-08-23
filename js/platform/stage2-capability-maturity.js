@@ -1,4 +1,5 @@
 import { architectureMaturity, formatMaturity, managedMaturity, phase12Maturity } from './capability-maturity.js';
+import { isValidatedStage2CapabilityProof } from './stage2-profile-evidence.js';
 
 const ARCH_PROFILE = Object.freeze({
   arm64: 'arm64:a64',
@@ -25,6 +26,9 @@ function exactStage1ProfileProof(proof, expectedProfiles, level) {
     && proof?.exactHead === true
     && proof?.fullySatisfiedLevel === level
     && includesAll(proof?.profileIds, expectedProfiles);
+}
+function profileEvidenceProof(proof, itemId, profileIds) {
+  return isValidatedStage2CapabilityProof(proof, { itemId, profileIds });
 }
 
 function stage1ArchitectureBase(architecture, options = {}) {
@@ -63,7 +67,8 @@ export function stage2ArchitectureMaturity(architecture, options = {}) {
   const base = stage1ArchitectureBase(architecture, options);
   const profileId = profileValue(ARCH_PROFILE, base.id);
   const runtimeSupported = supportedProof(options.runtimeProof, 'supported-for-exact-provider-profile')
-    && options.runtimeProof?.targetProfileId === profileId;
+    && options.runtimeProof?.targetProfileId === profileId
+    && profileEvidenceProof(options.profileProof ?? options.profileProofs?.['S2-A7-NATIVE'], 'S2-A7-NATIVE', [profileId]);
   if (!runtimeSupported || base.fullySatisfiedLevel !== 'A6') return base;
   const limitations = (base.limitations || []).filter((item) => item !== 'runtime-debug-patch-validation-incomplete');
   return freeze({
@@ -84,7 +89,8 @@ export function stage2ManagedMaturity(frontend, options = {}) {
   const expectedTarget = `managed:${base.id}:m6`;
   const runtimeSupported = supportedProof(options.runtimeProof, 'supported-for-exact-provider-profile')
     && options.runtimeProof?.frontendId === base.id
-    && options.runtimeProof?.targetProfileId === expectedTarget;
+    && options.runtimeProof?.targetProfileId === expectedTarget
+    && profileEvidenceProof(options.profileProof ?? options.profileProofs?.[`S2-M6-${base.id.toUpperCase()}`], `S2-M6-${base.id.toUpperCase()}`, [expectedTarget]);
   if (!runtimeSupported) return base;
   return freeze({
     ...base,
@@ -131,7 +137,8 @@ export function stage2FormatMaturity(format, options = {}) {
   const rebuildSupported = supportedProof(options.rebuildProof, 'supported-for-exact-rebuild-profile')
     && options.rebuildProof?.format === base.id
     && options.rebuildProof?.formatCoverageComplete === true
-    && includesAll(options.rebuildProof?.formatProfileIds, profiles);
+    && includesAll(options.rebuildProof?.formatProfileIds, profiles)
+    && profileEvidenceProof(options.profileProof ?? options.profileProofs?.[`S2-F6-${base.id.toUpperCase()}`], `S2-F6-${base.id.toUpperCase()}`, profiles);
   if (!rebuildSupported) return base;
   const features = freeze({ ...base.features, validatedRebuildPatch: 'supported' });
   const limitations = freeze((base.limitations || []).filter((item) => item !== 'validated-rebuild-patch-unsupported'));
@@ -153,22 +160,29 @@ export function stage2FormatMaturity(format, options = {}) {
 
 export function stage2Phase12Maturity(options = {}) {
   const base = phase12Maturity();
+  const proofs = options.profileProofs || {};
   const knowledge = options.knowledgeProof?.deterministic === true
     && options.knowledgeProof?.authorityNegativeTests === true
     && options.knowledgeProof?.dependencyIdentityTests === true
     && options.knowledgeProof?.invalidationTests === true
-    && options.knowledgeProof?.providerBoundaryTests === true;
+    && options.knowledgeProof?.providerBoundaryTests === true
+    && profileEvidenceProof(proofs['S2-P12-KNOWLEDGE'], 'S2-P12-KNOWLEDGE', ['knowledge-packages:v1']);
   const rules = options.rulesProof?.deterministic === true
     && options.rulesProof?.partialPropagationTests === true
     && options.rulesProof?.dependencyTests === true
     && options.rulesProof?.requiredFeatureTests === true
-    && options.rulesProof?.resourceBudgetTests === true;
+    && options.rulesProof?.resourceBudgetTests === true
+    && profileEvidenceProof(proofs['S2-P12-RULES'], 'S2-P12-RULES', ['capability-rules:v1']);
   const patterns = options.patternProof?.deterministic === true
     && options.patternProof?.bounded === true
     && options.patternProof?.noArbitraryJavaScript === true
-    && options.patternProof?.truncationTests === true;
-  const collaboration = supportedProof(options.remoteCollaborationProof, 'supported-for-exact-security-profile');
-  const rebuild = supportedProof(options.rebuildProof, 'supported-for-exact-rebuild-profile') && options.rebuildProof?.formatCoverageComplete === true;
+    && options.patternProof?.truncationTests === true
+    && profileEvidenceProof(proofs['S2-P12-PATTERNS'], 'S2-P12-PATTERNS', ['patterns:read-only-v1']);
+  const collaboration = supportedProof(options.remoteCollaborationProof, 'supported-for-exact-security-profile')
+    && profileEvidenceProof(proofs['S2-P12-COLLAB-REMOTE'], 'S2-P12-COLLAB-REMOTE', ['collaboration:remote-security-v1']);
+  const rebuild = supportedProof(options.rebuildProof, 'supported-for-exact-rebuild-profile')
+    && options.rebuildProof?.formatCoverageComplete === true
+    && ['S2-F6-MACHO', 'S2-F6-ELF', 'S2-F6-PE'].every((id) => profileEvidenceProof(proofs[id], id, id === 'S2-F6-PE' ? ['pe:pe32', 'pe:pe32+'] : [id === 'S2-F6-MACHO' ? 'macho:64' : 'elf:64']));
   return freeze({
     knowledgePackages: knowledge ? freeze({ status: 'supported', authority: 'local-promotion-only', limitations: freeze([]) }) : base.knowledgePackages,
     capabilityRules: rules ? freeze({ status: 'supported', authority: 'deterministic-evidence-only', limitations: freeze([]) }) : base.capabilityRules,
@@ -184,10 +198,11 @@ export function stage2SupportMatrix(options = {}) {
   const runtimeProofs = options.runtimeProofs || {};
   const managedRuntimeProofs = options.managedRuntimeProofs || {};
   const rebuildProofs = options.rebuildProofs || {};
+  const profileProofs = options.profileProofs || {};
   return freeze({
-    architectures: freeze(['arm64', 'arm64e', 'x86_64', 'riscv64'].map((id) => stage2ArchitectureMaturity(id, { ...(options.architectureOptions?.[id] || {}), stage1Proof: stage1ArchitectureProofs[id], runtimeProof: runtimeProofs[id] }))),
-    formats: freeze(['macho', 'elf', 'pe'].map((id) => stage2FormatMaturity(id, { stage1Proof: stage1FormatProofs[id], rebuildProof: rebuildProofs[id] }))),
-    managed: freeze(['wasm', 'dex', 'cil', 'jvm'].map((id) => stage2ManagedMaturity(id, { runtimeProof: managedRuntimeProofs[id] }))),
-    phase12: stage2Phase12Maturity(options.phase12 || {}),
+    architectures: freeze(['arm64', 'arm64e', 'x86_64', 'riscv64'].map((id) => stage2ArchitectureMaturity(id, { ...(options.architectureOptions?.[id] || {}), stage1Proof: stage1ArchitectureProofs[id], runtimeProof: runtimeProofs[id], profileProofs }))),
+    formats: freeze(['macho', 'elf', 'pe'].map((id) => stage2FormatMaturity(id, { stage1Proof: stage1FormatProofs[id], rebuildProof: rebuildProofs[id], profileProofs }))),
+    managed: freeze(['wasm', 'dex', 'cil', 'jvm'].map((id) => stage2ManagedMaturity(id, { runtimeProof: managedRuntimeProofs[id], profileProofs }))),
+    phase12: stage2Phase12Maturity({ ...(options.phase12 || {}), profileProofs }),
   });
 }
