@@ -20,6 +20,66 @@ assert.ok(Array.isArray(xrefs.results));
 assert.equal(xrefs.cancelled, false);
 console.log('classic worker harness regression passed');
 
+// #1661: a direct BL target is a future provenance boundary even when
+// function-start metadata is missing, but the immediate call fallthrough must
+// retain callee-saved address provenance.
+{
+  const K = { CALL: 1, INDCALL: 2, CONDBR: 3, BRANCH: 4, RET: 5, TRAP: 6 };
+  const words = {
+    KIND: K,
+    branchImm26() { return 0x1010n; },
+    condBranchTarget() { return null; },
+  };
+  const provenance = globalThis.AddressProvenance.create({
+    words,
+    functionStarts: [],
+    rangeStart: 0x1000n,
+    rangeEnd: 0x1100n,
+    pairWindow: 16,
+  });
+  provenance.note(0, 0x3000n, 0);
+  provenance.note(19, 0x4000n, 0);
+  provenance.note(30, 0x5000n, 0);
+  const call = provenance.control(0, 0x1004n, K.CALL);
+  assert.equal(call.target, 0x1010n);
+  assert.equal(provenance.base(0, 1), null, 'CALL must still kill caller-saved provenance');
+  assert.equal(provenance.base(30, 1), null, 'BL must still kill link-register provenance');
+  assert.equal(provenance.base(19, 1), 0x4000n, 'callee-saved provenance must survive call fallthrough');
+  assert.equal(provenance.pendingEntries, 1, 'forward direct call target must be reserved as a boundary');
+  assert.equal(provenance.enter(0x1008n), false, 'ordinary call fallthrough is not a function boundary');
+  assert.equal(provenance.base(19, 2), 0x4000n);
+  assert.equal(provenance.enter(0x1010n), true, 'direct call target must become a boundary without metadata');
+  assert.equal(provenance.base(19, 3), null, 'caller provenance must not leak into the direct callee');
+
+  const nonForwardWords = {
+    KIND: K,
+    branchImm26(_word, pc) { return pc - 4n; },
+    condBranchTarget() { return null; },
+  };
+  const nonForward = globalThis.AddressProvenance.create({
+    words: nonForwardWords,
+    functionStarts: [],
+    rangeStart: 0x1000n,
+    rangeEnd: 0x1100n,
+  });
+  nonForward.control(0, 0x1010n, K.CALL);
+  assert.equal(nonForward.pendingEntries, 0, 'backward call targets must not create future scan boundaries');
+
+  const outOfRangeWords = {
+    KIND: K,
+    branchImm26() { return 0x1200n; },
+    condBranchTarget() { return null; },
+  };
+  const outOfRange = globalThis.AddressProvenance.create({
+    words: outOfRangeWords,
+    functionStarts: [],
+    rangeStart: 0x1000n,
+    rangeEnd: 0x1100n,
+  });
+  outOfRange.control(0, 0x1004n, K.CALL);
+  assert.equal(outOfRange.pendingEntries, 0, 'out-of-range call targets must not create local scan boundaries');
+}
+
 function fileFromWords(name, words) {
   const raw = new Uint8Array(words.length * 4);
   const dv = new DataView(raw.buffer);
