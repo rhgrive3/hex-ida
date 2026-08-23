@@ -32,7 +32,7 @@ export async function parseELFSource(input, opts = {}, prefix = null, rangeOptio
   const source = asByteSource(input, opts.source || {});
   const ranges = withSignal(rangeOptions, opts.signal);
   const magic = prefix || await readPrefix(source, opts.signal);
-  const image = await parseSourceRanges(source, parseELF, {}, withInitial(magic, ranges));
+  const image = await parseSourceRanges(source, parseELF, opts, withInitial(magic, ranges));
   return withStrings(image, source, opts);
 }
 
@@ -40,7 +40,7 @@ export async function parsePESource(input, opts = {}, prefix = null, rangeOption
   const source = asByteSource(input, opts.source || {});
   const ranges = withSignal(rangeOptions, opts.signal);
   const magic = prefix || await readPrefix(source, opts.signal);
-  const image = await parseSourceRanges(source, parsePE, {}, withInitial(magic, ranges));
+  const image = await parseSourceRanges(source, parsePE, opts, withInitial(magic, ranges));
   return withStrings(image, source, opts);
 }
 
