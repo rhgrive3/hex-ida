@@ -88,6 +88,11 @@ assert.equal(directAapcs.registerRole(18).id, "x18");
 assert.equal(directAapcs.registerRole(19).id, "saved");
 assert.equal(directAapcs.registerRole(29).id, "fp");
 assert.equal(directAapcs.registerRole(30).id, "lr");
+for (const invalid of ["1", -1, 1.5, NaN, Infinity, -Infinity, 32, 99, null, undefined]) {
+  assert.equal(directAapcs.registerRole(invalid).id, "gp", `invalid register number must remain generic: ${String(invalid)}`);
+}
+assert.equal(directAapcs.registerRole("invalid", true, false).id, "sp", "explicit SP role must keep precedence");
+assert.equal(directAapcs.registerRole("invalid", false, true).id, "zr", "explicit ZR role must keep precedence");
 console.log("  ok 4 register role corpus");
 
 // 5. Public facade smoke coverage
