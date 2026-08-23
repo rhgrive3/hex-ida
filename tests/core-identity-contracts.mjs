@@ -7,6 +7,7 @@ import {
 import { createOriginSet, mergeOriginSets, createTransformRecord } from '../js/core/identity/origin.js';
 import { createAnalysisSnapshot, createDeterminismMetadata } from '../js/core/identity/snapshot.js';
 
+// Stable identity exactness regressions live in this contract suite.
 const bytes = new TextEncoder().encode('same binary content');
 const binaryA = await createBinaryId(bytes);
 const binaryB = await createBinaryId(bytes.slice());
