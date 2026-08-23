@@ -1,0 +1,26 @@
+name: Temporary patch 1455
+on:
+  push:
+    branches: [fix/evidence-finite-1455]
+    paths: [.github/workflows/tmp-patch-1455.yml]
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/evidence-finite-1455
+          fetch-depth: 0
+      - run: |
+          python3 tools/tmp-patch-1455.py
+          node --check js/evidence.js
+      - run: |
+          rm .github/workflows/tmp-patch-1455.yml tools/tmp-patch-1455.py
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add js/evidence.js .github/workflows/tmp-patch-1455.yml tools/tmp-patch-1455.py
+          git diff --cached --check
+          git commit -m "fix(evidence): keep fusion inputs finite (#1455)"
+          git push origin HEAD:fix/evidence-finite-1455
