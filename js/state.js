@@ -34,7 +34,8 @@ export class Store {
   get(key) { return this.state[key]; }
   set(patch) {
     let changed = false;
-    for (const k in patch) {
+    // Apply only properties explicitly provided by the patch.
+    for (const k of Object.keys(patch)) {
       if (this.state[k] !== patch[k]) { this.state[k] = patch[k]; changed = true; }
     }
     if (changed) for (const fn of this.listeners) fn(this.state, patch);
