@@ -5,9 +5,18 @@ const states = new WeakMap();
 function currentFileToken(app) {
   return app?.store?.get?.('fileInfo') || null;
 }
+function strictSliceIndex(value) {
+  if (value == null) return -1;
+  if (typeof value === 'number') return Number.isSafeInteger(value) && value >= 0 ? value : -1;
+  if (typeof value !== 'string') return -1;
+  const text = value.trim();
+  if (!/^\d+$/.test(text)) return -1;
+  const index = Number(text);
+  return Number.isSafeInteger(index) ? index : -1;
+}
 function activeSliceIdentity(app) {
   const info=currentFileToken(app);
-  const index=Number(app?.store?.get?.('sliceIndex') ?? -1);
+  const index=strictSliceIndex(app?.store?.get?.('sliceIndex'));
   const slice=index>=0 ? info?.slices?.[index] : null;
   const detail=slice?.info || {};
   const arch=String(slice?.capability?.architecture || detail.architecture || detail.cpuSub || detail.cpu || app?.store?.get?.('architecture') || 'unknown');
