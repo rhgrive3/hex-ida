@@ -113,8 +113,10 @@
       if (pc == null) { clear(); return { barrier: true, target: null }; }
       const K = words.KIND;
       if (kind === K.CALL || kind === K.INDCALL) {
+        const target = kind === K.CALL ? words.branchImm26(word, pc) : null;
+        if (kind === K.CALL) markForwardEntry(target, pc);
         killCallClobbered();
-        return { barrier: false, call: true, target: kind === K.CALL ? words.branchImm26(word, pc) : null };
+        return { barrier: false, call: true, target };
       }
       if (kind === K.CONDBR) {
         const target = words.condBranchTarget(word, pc);
