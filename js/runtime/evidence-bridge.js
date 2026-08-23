@@ -21,6 +21,10 @@ function stringArray(value, name) {
 
 function optionalSequence(value) {
   if (value == null) return null;
+  const type = typeof value;
+  if ((type !== 'number' && type !== 'bigint' && type !== 'string') || (type === 'string' && !value.trim())) {
+    throw new DebugAdapterError('runtime-invalid-intervention-sequence', 'intervention sequence must be a non-negative safe integer');
+  }
   const sequence = Number(value);
   if (!Number.isSafeInteger(sequence) || sequence < 0) {
     throw new DebugAdapterError('runtime-invalid-intervention-sequence', 'intervention sequence must be a non-negative safe integer');
@@ -45,6 +49,7 @@ export function createInterventionRecord(input = {}) {
   const providerId = required(input.providerId, 'runtime-provider-required', 'intervention requires providerId');
   const kind = required(input.kind, 'runtime-intervention-kind-required', 'intervention kind is required');
   const sequence = optionalSequence(input.sequence);
+  const parentInterventionIds = stringArray(input.parentInterventionIds, 'parentInterventionIds');
   const identity = {
     runtimeSessionId,
     providerId,
@@ -52,7 +57,7 @@ export function createInterventionRecord(input = {}) {
     target: input.target ?? null,
     requestedChange: input.requestedChange ?? null,
     sequence,
-    parentInterventionIds: input.parentInterventionIds ?? [],
+    parentInterventionIds,
   };
   return deepFreeze({
     interventionId: String(input.interventionId || `intervention_${stableDigest(identity)}`),
@@ -63,7 +68,7 @@ export function createInterventionRecord(input = {}) {
     requestedChange: input.requestedChange ?? null,
     acknowledgedResult: input.acknowledgedResult ?? null,
     sequence,
-    parentInterventionIds: stringArray(input.parentInterventionIds, 'parentInterventionIds'),
+    parentInterventionIds,
     evidenceIds: stringArray(input.evidenceIds, 'evidenceIds'),
   });
 }
