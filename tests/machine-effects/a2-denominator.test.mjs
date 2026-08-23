@@ -15,9 +15,14 @@ assert.equal(validation.valid, true);
 assert.equal(validation.architectureCount, 4);
 assert.equal(validation.fullIsaCoverageIncluded, false);
 assert.equal(validation.explicitDecoderGapCount >= 4, true);
+assert.equal(validation.blockingGapCount > validation.explicitDecoderGapCount, true);
+assert.equal(validation.terminalEligible, false, 'partial and unsupported in-profile effect families remain blocking gaps');
+assert.ok(validation.blockingGaps.includes('arm64:a64:all-decoder-encodings-and-aliases'));
+assert.ok(validation.blockingGaps.includes('x86_64:long-64:effect-family:atomic'));
 
 const report = a2DenominatorReport(inventory);
 assert.equal(report.validation.valid, true);
+assert.equal(report.schemaVersion, 'machine-effects-a2-denominator-report/v2');
 assert.equal(report.scope.percentagePolicy.includes('not-emitted'), true);
 
 const arm64e = inventory.architectures.find((architecture) => architecture.id === 'arm64e');

@@ -161,12 +161,22 @@ export function validateA2DenominatorInventory(inventory = loadA2DenominatorInve
     }
   }
 
+  const blockingGaps = inventory.architectures.flatMap((architecture) => [
+    ...architecture.decoder.missingUnits,
+    ...(architecture.effectRegistry.families || [])
+      .filter((unit) => unit.status !== 'exact' && !(architecture.id === 'riscv64' && unit.id === 'fallback-unmatched-decoder-family'))
+      .map((unit) => `${architecture.profileId}:effect-family:${unit.id}`),
+    ...(architecture.exclusions || []).filter((unit) => unit.status !== 'exact').map((unit) => `${architecture.profileId}:explicit-case:${unit.id}`),
+  ]).sort();
   return Object.freeze({
     valid: true,
     schemaVersion: inventory.schemaVersion,
     architectureCount: inventory.architectures.length,
     familyUnitCount: inventory.architectures.reduce((count, architecture) => count + architecture.effectRegistry.families.length, 0),
     explicitDecoderGapCount: inventory.architectures.reduce((count, architecture) => count + architecture.decoder.missingUnits.length, 0),
+    blockingGapCount: blockingGaps.length,
+    blockingGaps: Object.freeze(blockingGaps),
+    terminalEligible: inventory.scope.fullIsaCoverageIncluded === true && blockingGaps.length === 0,
     fullIsaCoverageIncluded: false,
   });
 }
@@ -174,7 +184,7 @@ export function validateA2DenominatorInventory(inventory = loadA2DenominatorInve
 export function a2DenominatorReport(inventory = loadA2DenominatorInventory()) {
   const validation = validateA2DenominatorInventory(inventory);
   return Object.freeze({
-    schemaVersion: 'machine-effects-a2-denominator-report/v1',
+    schemaVersion: 'machine-effects-a2-denominator-report/v2',
     oracleRole: inventory.oracleRole,
     scope: inventory.scope,
     validation,
