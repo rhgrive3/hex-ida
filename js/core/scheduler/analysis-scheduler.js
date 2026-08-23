@@ -16,12 +16,16 @@ export {
   SchedulerDependencyIdentityError,
 };
 
+function strictSafeInteger(value, fallback, code, min = 0) {
+  const raw = value == null ? fallback : value;
+  if (typeof raw !== 'number' && !(typeof raw === 'string' && raw.trim() !== '')) throw new TypeError(code);
+  const n = Number(raw);
+  if (!Number.isSafeInteger(n) || n < min) throw new TypeError(code);
+  return n;
+}
 function priorityValue(value) {
   if (typeof value === 'string' && Object.hasOwn(ANALYSIS_PRIORITY, value)) return ANALYSIS_PRIORITY[value];
-  if (typeof value === 'string' && value.trim() === '') throw new TypeError('analysis-priority-invalid');
-  const n = Number(value ?? ANALYSIS_PRIORITY.current);
-  if (!Number.isSafeInteger(n) || n < 0) throw new TypeError('analysis-priority-invalid');
-  return n;
+  return strictSafeInteger(value, ANALYSIS_PRIORITY.current, 'analysis-priority-invalid');
 }
 function abortError(signal) { return signal?.reason ?? new DOMException('Aborted', 'AbortError'); }
 function sameStrings(a, b) { return a.length === b.length && a.every((value, index) => value === b[index]); }
@@ -35,7 +39,9 @@ function canonicalDependencies(request, artifactId) {
   }
   const dependencies = [...byId.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([, dependency]) => dependency);
   const actual = dependencies.map((dependency) => String(dependency.descriptor.artifactId));
-  const expected = [...(request.descriptor?.upstreamArtifactIds || [])].map(String).sort();
+  const upstream = request.descriptor?.upstreamArtifactIds;
+  if (upstream != null && !Array.isArray(upstream)) throw new SchedulerDependencyIdentityError(artifactId, [String(upstream)], actual);
+  const expected = (upstream || []).map(String).sort();
   if (!sameStrings(expected, actual)) throw new SchedulerDependencyIdentityError(artifactId, expected, actual);
   return dependencies;
 }
@@ -69,8 +75,8 @@ export class AnalysisScheduler {
   constructor({ store, maxConcurrency=2, starvationInterval=8, defaultBudget={}, onEvent=null }={}) {
     if (!store) throw new TypeError('artifact-store-required');
     if (!Number.isSafeInteger(maxConcurrency) || maxConcurrency <= 0) throw new TypeError('scheduler-max-concurrency-invalid');
-    if (!Number.isSafeInteger(Number(starvationInterval)) || Number(starvationInterval) <= 0) throw new TypeError('scheduler-starvation-interval-invalid');
-    this.store=store; this.maxConcurrency=maxConcurrency; this.starvationInterval=Number(starvationInterval); this.defaultBudget=defaultBudget;
+    const normalizedStarvationInterval = strictSafeInteger(starvationInterval, 8, 'scheduler-starvation-interval-invalid', 1);
+    this.store=store; this.maxConcurrency=maxConcurrency; this.starvationInterval=normalizedStarvationInterval; this.defaultBudget=defaultBudget;
     this.onEvent = typeof onEvent === 'function' ? onEvent : null;
     this.seq = 0;
     this.inflight=new Map(); this.running=0; this.dispatchEpoch=0; this.dag=new Map(); this.dagEdgeCount=0; this.states=new Map(); this.activeConsumers=0;

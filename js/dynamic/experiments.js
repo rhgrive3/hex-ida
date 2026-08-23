@@ -9,10 +9,29 @@ function uniqBig(values) {
   return out;
 }
 
+function numericPrimitive(value, name) {
+  if (typeof value === 'number') return value;
+  if (typeof value === 'string' && value.trim() !== '') return Number(value);
+  throw new DebugAdapterError('invalid-number', `${name} must be an integer`);
+}
+
 function integerInRange(value, fallback, min, max, name) {
-  const n = value == null ? fallback : Number(value);
+  const n = value == null ? fallback : numericPrimitive(value, name);
   if (!Number.isSafeInteger(n) || n < min || n > max) throw new DebugAdapterError('invalid-number', `${name} must be an integer in ${min}..${max}`);
   return n;
+}
+
+function executionBound(value, fallback, max, name) {
+  const n = value == null ? fallback : numericPrimitive(value, name);
+  if (!Number.isSafeInteger(n) || n < 1 || n > max) throw new DebugAdapterError('invalid-number', `${name} must be an integer in 1..${max}`);
+  return n;
+}
+
+function strictMachineInteger(value) {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number') return Number.isSafeInteger(value) ? BigInt(value) : null;
+  if (typeof value !== 'string' || value.trim() === '') return null;
+  try { return BigInt(value.trim()); } catch { return null; }
 }
 
 function normalizeInteger(value, bits, signed) {
@@ -77,8 +96,6 @@ export function compileExperiment(hypothesis, options = {}) {
   const signed = hypothesis.signed !== false;
   const objectBase = asAddress(options.objectBase ?? hypothesis.objectBase ?? 0x600000001000n, 'objectBase');
   const initial = normalizeInteger(hypothesis.initial ?? options.initial ?? 100, fieldBits, signed);
-  // AArch64 passes x0..x7 in registers; later scalar arguments live in the
-  // caller stack argument area. Keep a bounded upper limit for generated tests.
   const argIndex = integerInRange(hypothesis.argumentIndex, 1, 0, 31, 'argumentIndex');
   const pointerInput = hypothesis.argumentKind === 'pointer' || hypothesis.pointer === true;
   const inputs = options.inputs || generateDifferentialInputs({ bits:fieldSize <= 4 ? 32 : 64, signed, boundary:hypothesis.boundary ?? hypothesis.clampMin ?? hypothesis.clampMax, pointer:pointerInput, limit:options.limit ?? 12 });
@@ -132,7 +149,10 @@ export function compareExpected(caseSpec, observation) {
   }
   if (expected.returnValue != null) {
     if (observation == null || observation.returnValue == null) return { status:'inconclusive', reason:'return-value-not-observed', expected:expected.returnValue };
-    return BigInt(observation.returnValue) === BigInt(expected.returnValue)
+    const observed = strictMachineInteger(observation.returnValue);
+    const wanted = strictMachineInteger(expected.returnValue);
+    if (observed == null || wanted == null) return { status:'inconclusive', reason:'return-value-not-an-integer', observed:observation.returnValue, expected:expected.returnValue };
+    return observed === wanted
       ? { status:'supported', reason:'return-value-matches', observed:observation.returnValue, expected:expected.returnValue }
       : { status:'contradicted', reason:'return-value-mismatch', observed:observation.returnValue, expected:expected.returnValue };
   }
@@ -159,6 +179,8 @@ export class HypothesisVerifier {
   constructor(adapter, evidenceFactory = null) { this.adapter = adapter; this.evidenceFactory = evidenceFactory; }
   async verify(experiment, options = {}) {
     const results = []; const maxCases = boundedInteger(options.maxCases, experiment.cases.length, 1, 64, 'maxCases');
+    const maxSteps = executionBound(options.maxSteps, 20000, 1000000, 'maxSteps');
+    const timeoutMs = options.timeoutMs == null ? undefined : executionBound(options.timeoutMs, undefined, 60000, 'timeoutMs');
     const planned = experiment.cases.length;
     const reasons = [];
     if (maxCases < planned) reasons.push('max-cases');
@@ -171,7 +193,7 @@ export class HypothesisVerifier {
         const objectMemory = (testCase.initialState.fields || []).map((f) => ({ offset:f.offset, size:f.size, value:f.value }));
         try {
           await this.adapter.launch({ address:experiment.functionAddress, arguments:testCase.input.arguments, objectBase:testCase.initialState.objectBase, objectMemory, watch:testCase.watch, memoryMappings:options.memoryMappings || [], globals:options.globals || [], maxObjectSize:options.maxObjectSize, traceMemoryReads:!!options.traceMemoryReads }, { signal:options.signal });
-          observation = await this.adapter.resume({ maxSteps:options.maxSteps ?? 20000, timeoutMs:options.timeoutMs, signal:options.signal });
+          observation = await this.adapter.resume({ maxSteps, timeoutMs, signal:options.signal });
         } catch (error) {
           const code = String(error && error.code || '');
           const kind = code === 'unsupported' ? 'unsupported' : code === 'timeout' ? 'timeout' : code === 'cancelled' || code === 'stale-request' ? 'cancelled' :

@@ -5,6 +5,18 @@ function bigintOrNull(v) {
   return typeof v === 'bigint' ? v : BigInt(v);
 }
 
+function strictBigIntOrNull(value) {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number') return Number.isSafeInteger(value) ? BigInt(value) : null;
+  if (typeof value !== 'string' || value.trim() === '') return null;
+  try { return BigInt(value.trim()); } catch { return null; }
+}
+
+function finiteConfidence(value, fallback = 0.5) {
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : fallback;
+}
+
 function normalizePerms(p) {
   if (!p) return { read: false, write: false, execute: false };
   return { read: !!p.read, write: !!p.write, execute: !!p.execute };
@@ -76,7 +88,8 @@ export class BinaryImage {
   }
 
   addressToOffset(address) {
-    const a = BigInt(address);
+    const a = strictBigIntOrNull(address);
+    if (a === null) return null;
     const owner = this._virtualMappingAt(a);
     if (!owner) return null;
     const delta = a - owner.address;
@@ -88,7 +101,8 @@ export class BinaryImage {
   }
 
   offsetToAddress(offset) {
-    const o = BigInt(offset);
+    const o = strictBigIntOrNull(offset);
+    if (o === null) return null;
     const candidates = [];
     for (const s of this.sections) {
       if (s.address === 0n || !inRange(o, s.fileOffset, s.fileSize)) continue;
@@ -114,12 +128,14 @@ export class BinaryImage {
   }
 
   sectionAt(address) {
-    const a = BigInt(address);
+    const a = strictBigIntOrNull(address);
+    if (a === null) return null;
     return this.sections.find((s) => inRange(a, s.address, s.size)) || null;
   }
 
   segmentAt(address) {
-    const a = BigInt(address);
+    const a = strictBigIntOrNull(address);
+    if (a === null) return null;
     return this.segments.find((s) => inRange(a, s.address, s.size)) || null;
   }
 
@@ -154,7 +170,7 @@ export class BinaryImage {
   }
 
   resolveVirtualMapping(address) {
-    const a = (() => { try { return BigInt(address); } catch { return null; } })();
+    const a = strictBigIntOrNull(address);
     if (a === null) return null;
     const owner = this._virtualMappingAt(a);
     if (!owner) return null;
@@ -172,12 +188,9 @@ export class BinaryImage {
   _virtualReadPlan(address, size) {
     let current;
     let remaining;
-    try {
-      current = BigInt(address);
-      remaining = typeof size === 'bigint' ? size : BigInt(size);
-    } catch {
-      return null;
-    }
+    current = strictBigIntOrNull(address);
+    remaining = strictBigIntOrNull(size);
+    if (current === null || remaining === null) return null;
     if (current < 0n || remaining < 0n || remaining > BigInt(Number.MAX_SAFE_INTEGER)) return null;
     if (remaining === 0n) return [];
     const chunks = [];
@@ -287,7 +300,7 @@ export class BinaryImage {
       if (Array.isArray(v)) return v.map(convert);
       if (v && typeof v === 'object') {
         const out = {};
-        for (const [k, x] of Object.entries(v)) out[k] = convert(x);
+        for (const [k, x] of Object.entries(v)) Object.defineProperty(out, k, { value: convert(x), enumerable: true, configurable: true, writable: true });
         return out;
       }
       return v;
@@ -309,7 +322,7 @@ export class BinaryImage {
 
 export function functionSeed(address, opts = {}) {
   const source = opts.source || 'heuristic';
-  const confidence = Math.max(0, Math.min(1, Number(opts.confidence ?? 0.5)));
+  const confidence = finiteConfidence(opts.confidence, 0.5);
   const size = opts.size == null ? null : BigInt(opts.size);
   const end = opts.end == null ? null : BigInt(opts.end);
   const hasExtent = size != null || end != null;
@@ -320,7 +333,7 @@ export function functionSeed(address, opts = {}) {
     functionStartEvidence: opts.functionStartEvidence || null,
     extentSource: opts.extentSource || (hasExtent ? source : null),
     extentConfidence: opts.extentConfidence == null ? (hasExtent ? confidence : null)
-      : Math.max(0, Math.min(1, Number(opts.extentConfidence))),
+      : finiteConfidence(opts.extentConfidence, 0.5),
     extentInherited: !!opts.extentInherited,
     callingConvention: opts.callingConvention || null,
     abiMetadata: opts.abiMetadata == null ? null : { ...opts.abiMetadata },
@@ -332,7 +345,7 @@ export function mergeFunctionSeeds(input, context = {}) {
   const m = new Map();
   for (const f0 of input || []) {
     if (f0 == null || f0.address == null) continue;
-    const f = { ...f0, address: BigInt(f0.address) };
+    const f = { ...f0, address: BigInt(f0.address), confidence: finiteConfidence(f0.confidence, 0.5), extentConfidence: f0.extentConfidence == null ? null : finiteConfidence(f0.extentConfidence, 0.5) };
     if ((f.size != null || f.end != null) && !f.extentSource) f.extentSource = f.source || 'unknown';
     if ((f.size != null || f.end != null) && f.extentConfidence == null) f.extentConfidence = Number(f.confidence ?? 0);
     const k = f.address.toString();

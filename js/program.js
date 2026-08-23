@@ -122,6 +122,13 @@ function completeness(array, capped, source, queryLimited = false, unavailableRe
   return array;
 }
 
+function queryLimit(value, fallback) {
+  if (value == null) return fallback;
+  if (typeof value !== 'number' && !(typeof value === 'string' && value.trim() !== '')) return fallback;
+  const n = Number(value);
+  return Number.isSafeInteger(n) && n >= 0 ? n : fallback;
+}
+
 export class ProgramIndex {
   constructor(scan, symbols, region) {
     const s = scan || {};
@@ -223,6 +230,7 @@ export class ProgramIndex {
     return { start: fn.start, end: fn.end != null ? fn.end : (owner ? BigInt(owner.vmAddr) + BigInt(owner.size) : null), region:owner };
   }
   callSitesTo(target, limit = 500) {
+    limit = queryLimit(limit, 500);
     const order = this._callToOrder(), out = [];
     let i = lowerBound(this.callTo, order, target), queryLimited = false;
     for (; i < order.length; i++) {
@@ -234,6 +242,7 @@ export class ProgramIndex {
     return completeness(out, this.callsCapped, 'calls', queryLimited, this.queryIncompleteReason);
   }
   callersOf(target, limit = 200) {
+    limit = queryLimit(limit, 200);
     const seen = new Map();
     const sites = this.callSitesTo(target, Math.max(0, limit * 4));
     let queryLimited = sites.complete !== true;
@@ -248,6 +257,7 @@ export class ProgramIndex {
     return completeness(Array.from(seen.values()), this.callsCapped, 'calls', queryLimited, this.queryIncompleteReason);
   }
   calleesOf(start, end, limit = 200) {
+    limit = queryLimit(limit, 200);
     const out = new Map(); let i = lowerBoundDirect(this.callFrom, start), queryLimited = false;
     for (; i < this.callFrom.length; i++) {
       const from = this.callFrom[i]; if (end != null && from >= end) break;
@@ -266,6 +276,7 @@ export class ProgramIndex {
     return n;
   }
   refSitesTo(addr, span = 1n, limit = 500) {
+    limit = queryLimit(limit, 500);
     const order = this._refToOrder(), out = []; let i = lowerBound(this.refTo, order, addr), queryLimited = false;
     const hi = addr + (span > 0n ? span : 1n);
     for (; i < order.length; i++) {
@@ -276,6 +287,7 @@ export class ProgramIndex {
     return completeness(out, this.refsCapped, 'refs', queryLimited, this.queryIncompleteReason);
   }
   functionsReferencing(addr, span = 1n, limit = 200) {
+    limit = queryLimit(limit, 200);
     const seen = new Map();
     const refs = this.refSitesTo(addr, span, Math.max(0, limit * 4));
     let queryLimited = refs.complete !== true;
@@ -290,6 +302,7 @@ export class ProgramIndex {
     return completeness(Array.from(seen.values()), this.refsCapped, 'refs', queryLimited, this.queryIncompleteReason);
   }
   refsFrom(start, end, limit = 400) {
+    limit = queryLimit(limit, 400);
     const out = []; let i = lowerBoundDirect(this.refFrom, start), queryLimited = false;
     for (; i < this.refFrom.length; i++) {
       const from = this.refFrom[i]; if (end != null && from >= end) break;
@@ -330,6 +343,7 @@ export class ProgramIndex {
     return stats;
   }
   mostCalled(limit = 20) {
+    limit = queryLimit(limit, 20);
     const counts = new Map();
     for (let i = 0; i < this.callTo.length; i++) { const key = this.callTo[i].toString(); counts.set(key, (counts.get(key) || 0) + 1); }
     const out = []; for (const [key, n] of counts) out.push({ addr: BigInt(key), count: n });
