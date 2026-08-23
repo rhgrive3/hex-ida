@@ -6,6 +6,9 @@ import {
   validateManagedRuntimeObservation,
   validateManagedRuntimeState,
 } from '../../js/managed/runtime-binding.js';
+import { validatedCapabilityProofFixture } from './helpers/profile-proof-fixture.mjs';
+
+const { proofs: profileProofs } = validatedCapabilityProofFixture();
 
 const frontends = ['wasm', 'dex', 'cil', 'jvm'];
 const requiredCapabilities = ['connect', 'disconnect', 'pause', 'resume', 'stepInto', 'readRegisters', 'readMemory', 'threads', 'modules', 'backtrace', 'cancel'];
@@ -79,6 +82,7 @@ for (const frontendId of frontends) {
     providerCapabilities,
     requiredCapabilities,
     proof: runtimeProofFlags,
+    profileProof: profileProofs[`S2-M6-${frontendId.toUpperCase()}`],
   });
   assert.equal(runtimeProfileProof.status, 'supported-for-exact-provider-profile');
   const support = managedRuntimeProfileSupport({ binding, runtimeProfileProof, proof: managedProof });

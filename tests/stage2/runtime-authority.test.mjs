@@ -6,6 +6,9 @@ import {
   runtimeProfileSupport,
   validateRuntimeObservation,
 } from '../../js/runtime/authority.js';
+import { validatedCapabilityProofFixture } from './helpers/profile-proof-fixture.mjs';
+
+const { proofs: profileProofs } = validatedCapabilityProofFixture();
 
 const binding = createRuntimeAuthorityBinding({
   providerIdentity: 'provider:lldb:test',
@@ -80,13 +83,15 @@ const support = runtimeProfileSupport({
   providerCapabilities,
   requiredCapabilities,
   proof: fullProof,
+  profileProof: profileProofs['S2-A7-NATIVE'],
 });
 assert.equal(support.status, 'supported-for-exact-provider-profile');
 assert.equal(support.targetProfileId, targetProfileId);
-assert.equal(runtimeProfileSupport({ binding, providerProfileId: 'native:lldb-compatible-v1:test', targetProfileId, providerCapabilities, requiredCapabilities, proof: { ...fullProof, headSha: null } }).reason, 'runtime-proof-exact-identity-required');
+assert.equal(runtimeProfileSupport({ binding, providerProfileId: 'native:lldb-compatible-v1:test', targetProfileId, providerCapabilities, requiredCapabilities, proof: { ...fullProof, headSha: null }, profileProof: profileProofs['S2-A7-NATIVE'] }).reason, 'runtime-proof-exact-identity-required');
 const currentHeadProof = { ...fullProof, headSha: binding.commitSha, treeSha: binding.treeSha };
-assert.equal(runtimeProfileSupport({ binding, providerProfileId: 'native:lldb-compatible-v1:test', targetProfileId, providerCapabilities, requiredCapabilities, proof: currentHeadProof, expectedHeadSha: binding.commitSha, expectedTreeSha: binding.treeSha }).status, 'supported-for-exact-provider-profile');
-assert.equal(runtimeProfileSupport({ binding, providerProfileId: 'native:lldb-compatible-v1:test', targetProfileId, providerCapabilities, requiredCapabilities, proof: { ...currentHeadProof, headSha: 'c'.repeat(40) }, expectedHeadSha: binding.commitSha }).reason, 'runtime-proof-stale-head');
+assert.equal(runtimeProfileSupport({ binding, providerProfileId: 'native:lldb-compatible-v1:test', targetProfileId, providerCapabilities, requiredCapabilities, proof: currentHeadProof, expectedHeadSha: binding.commitSha, expectedTreeSha: binding.treeSha, profileProof: profileProofs['S2-A7-NATIVE'] }).status, 'supported-for-exact-provider-profile');
+assert.equal(runtimeProfileSupport({ binding, providerProfileId: 'native:lldb-compatible-v1:test', targetProfileId, providerCapabilities, requiredCapabilities, proof: { ...currentHeadProof, headSha: 'c'.repeat(40) }, expectedHeadSha: binding.commitSha, profileProof: profileProofs['S2-A7-NATIVE'] }).reason, 'runtime-proof-stale-head');
+assert.equal(runtimeProfileSupport({ binding, providerProfileId: 'native:lldb-compatible-v1:test', targetProfileId, providerCapabilities, requiredCapabilities, proof: currentHeadProof, profileProof: { ...profileProofs['S2-A7-NATIVE'] } }).status, 'partial', 'copied profile evidence must lose promotion authority');
 assert.equal(runtimeProfileSupport({ binding, providerProfileId: 'native:replay-v1:test', targetProfileId, providerCapabilities, requiredCapabilities, proof: fullProof }).reason, 'runtime-provider-profile-mismatch', 'a different provider profile cannot reuse this authority binding');
 assert.equal(runtimeProfileSupport({ binding, providerProfileId: 'evil-provider', targetProfileId: 'not-an-arch', providerCapabilities, requiredCapabilities, proof: fullProof }).status, 'partial', 'unknown provider and architecture labels cannot promote A7');
 assert.equal(runtimeProfileSupport({ binding, providerProfileId: 'native:lldb-compatible-v1:test', targetProfileId, providerCapabilities, requiredCapabilities }).status, 'partial', 'capabilities without proof must not promote A7');

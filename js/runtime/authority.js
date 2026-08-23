@@ -1,5 +1,6 @@
 import { deepFreeze, stableDigest } from '../core/identity/index.js';
 import { DEBUG_CAPABILITIES } from '../debug/adapter.js';
+import { isValidatedStage2CapabilityProof } from '../platform/stage2-profile-evidence.js';
 
 export const RUNTIME_AUTHORITY_SCHEMA = 'hex-runtime-authority/v1';
 export const RUNTIME_OBSERVATION_SCHEMA = 'hex-runtime-observation/v1';
@@ -14,6 +15,7 @@ const PROVIDER_PROFILE_PATTERNS = Object.freeze([
   /^managed:(?:wasm|dex|cil|jvm):provider-bound-runtime-v1(?::[a-z0-9][a-z0-9._-]{0,63})?$/i,
 ]);
 const MANAGED_TARGET_PROFILE = /^managed:(?:wasm|dex|cil|jvm):m6$/;
+const VALID_RUNTIME_PROFILE_SUPPORT = new WeakSet();
 const BINDING_FIELDS = Object.freeze([
   'schemaVersion', 'providerIdentity', 'providerProfileId', 'providerVersion',
   'runtimeInstanceIdentity', 'targetIdentity', 'targetProfileId',
@@ -292,6 +294,7 @@ export function runtimeProfileSupport({
   expectedHeadSha = null,
   expectedTreeSha = null,
   expectedBuildIdentity = null,
+  profileProof = null,
 } = {}) {
   const canonical = canonicalBinding(binding || {}, { throwOnError: false });
   const hasBinding = canonical != null;
@@ -310,6 +313,14 @@ export function runtimeProfileSupport({
   if (!hasBinding) reason = 'runtime-binding-identity-invalid';
   else if (!normalizedProviderProfileId || !normalizedTargetProfileId) reason = 'runtime-profile-identity-required';
   else reason = mismatchReason(canonical, normalizedProviderProfileId, normalizedTargetProfileId, expectedBuildIdentity, proof);
+
+  const managedMatch = normalizedTargetProfileId?.match(/^managed:(wasm|dex|cil|jvm):m6$/) || null;
+  const profileItemId = managedMatch ? `S2-M6-${managedMatch[1].toUpperCase()}` : 'S2-A7-NATIVE';
+  const profileEvidenceComplete = normalizedTargetProfileId
+    && isValidatedStage2CapabilityProof(profileProof, { itemId: profileItemId, profileIds: [normalizedTargetProfileId] })
+    && profileProof.commitSha === canonical?.commitSha
+    && profileProof.treeSha === canonical?.treeSha;
+  if (!reason && !profileEvidenceComplete) reason = 'runtime-profile-evidence-required';
 
   // A profile proof is only current when its head/tree agrees with both the
   // authority record and any caller-supplied expected revision.  A boolean
@@ -331,7 +342,7 @@ export function runtimeProfileSupport({
     && proofComplete
     && !reason
     && canonical.buildIdentity != null;
-  return Object.freeze({
+  const result = Object.freeze({
     status: proven ? 'supported-for-exact-provider-profile' : hasBinding ? 'partial' : 'unavailable',
     bindingId: hasBinding ? canonical.bindingId : null,
     providerIdentity: hasBinding ? canonical.providerIdentity : null,
@@ -346,4 +357,10 @@ export function runtimeProfileSupport({
     reason,
     authority: proven ? 'runtime-evidence-bound' : 'none',
   });
+  if (proven) VALID_RUNTIME_PROFILE_SUPPORT.add(result);
+  return result;
+}
+
+export function isValidatedRuntimeProfileSupport(value) {
+  return !!value && VALID_RUNTIME_PROFILE_SUPPORT.has(value) && value.status === 'supported-for-exact-provider-profile';
 }

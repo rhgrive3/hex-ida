@@ -1,9 +1,10 @@
 import { deepFreeze, stableDigest } from '../core/identity/index.js';
-import { RUNTIME_AUTHORITY_SCHEMA, createRuntimeAuthorityBinding, validateRuntimeObservation } from '../runtime/authority.js';
+import { RUNTIME_AUTHORITY_SCHEMA, createRuntimeAuthorityBinding, isValidatedRuntimeProfileSupport, validateRuntimeObservation } from '../runtime/authority.js';
 
 export const MANAGED_RUNTIME_BINDING_SCHEMA = 'hex-managed-runtime-binding/v1';
 const FRONTENDS = new Set(['wasm', 'dex', 'cil', 'jvm']);
 const MANAGED_RUNTIME_PROVIDER_PROFILE_VERSION = 'provider-bound-runtime-v1';
+const VALID_MANAGED_RUNTIME_SUPPORT = new WeakSet();
 
 // Keep this denominator at the managed boundary.  The generic runtime
 // authority can validate an arbitrary capability subset, but M6 cannot be
@@ -158,6 +159,7 @@ export function validateManagedRuntimeObservation(binding, observation, options 
 export function managedRuntimeProfileSupport({ binding, runtimeProfileProof = null, proof = {} } = {}) {
   const valid = isManagedRuntimeBinding(binding);
   const runtimeBound = valid
+    && isValidatedRuntimeProfileSupport(runtimeProfileProof)
     && runtimeProfileProof?.status === 'supported-for-exact-provider-profile'
     && runtimeProfileProof?.bindingId === binding.runtime.bindingId
     && runtimeProfileProof?.targetProfileId === binding.targetProfileId
@@ -179,7 +181,7 @@ export function managedRuntimeProfileSupport({ binding, runtimeProfileProof = nu
     && proof.frontendProviderTests === true
     && proof.profileDenominatorComplete === true;
   const proven = valid && runtimeBound && proofComplete;
-  return Object.freeze({
+  const result = Object.freeze({
     frontendId: valid ? binding.frontendId : null,
     targetProfileId: valid ? binding.targetProfileId : null,
     runtimeImplementation: valid ? binding.runtimeImplementation : null,
@@ -190,4 +192,10 @@ export function managedRuntimeProfileSupport({ binding, runtimeProfileProof = nu
     status: proven ? 'supported-for-exact-provider-profile' : valid ? 'partial' : 'unavailable',
     authority: proven ? 'runtime-evidence-bound' : 'none',
   });
+  if (proven) VALID_MANAGED_RUNTIME_SUPPORT.add(result);
+  return result;
+}
+
+export function isValidatedManagedRuntimeProfileSupport(value) {
+  return !!value && VALID_MANAGED_RUNTIME_SUPPORT.has(value) && value.status === 'supported-for-exact-provider-profile';
 }
