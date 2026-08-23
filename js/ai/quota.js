@@ -19,6 +19,19 @@ function finiteInt(value, fallback = 0) {
   return Number.isFinite(n) ? Math.max(0, Math.floor(n)) : fallback;
 }
 
+function hasOwn(object, key) {
+  return Object.prototype.hasOwnProperty.call(object, key);
+}
+
+function setOwn(object, key, value) {
+  Object.defineProperty(object, key, {
+    value,
+    enumerable: true,
+    configurable: true,
+    writable: true,
+  });
+}
+
 function normalizedSession(raw, windowStarted) {
   if (!raw || Number(raw.windowStarted) !== windowStarted) return { windowStarted, count: 0 };
   return { windowStarted, count: finiteInt(raw.count) };
@@ -43,10 +56,10 @@ export function normalizeQuotaState(raw, now = Date.now(), config = AI_QUOTA) {
     for (const [token, lease] of Object.entries(raw.leases)) {
       const expiresAt = finiteInt(lease?.expiresAt);
       if (!token || expiresAt <= t) continue;
-      leases[token] = {
+      setOwn(leases, token, {
         sessionId: normalizeQuotaSessionId(lease?.sessionId),
         expiresAt,
-      };
+      });
     }
   }
   return { windowStarted, count, sessions, leases };
@@ -103,7 +116,7 @@ export function acquireQuotaState(raw, request = {}, config = AI_QUOTA) {
 
   const token = String(request.token || '').trim();
   if (!token) throw new TypeError('quota acquisition requires a lease token');
-  const existingLease = state.leases[token];
+  const existingLease = hasOwn(state.leases, token) ? state.leases[token] : null;
   if (existingLease) {
     return {
       state,
@@ -118,13 +131,8 @@ export function acquireQuotaState(raw, request = {}, config = AI_QUOTA) {
   }
   state.count++;
   session.count++;
-  Object.defineProperty(state.sessions, sessionId, {
-    value: session,
-    enumerable: true,
-    configurable: true,
-    writable: true,
-  });
-  state.leases[token] = { sessionId, expiresAt: now + leaseMs };
+  setOwn(state.sessions, sessionId, session);
+  setOwn(state.leases, token, { sessionId, expiresAt: now + leaseMs });
   return {
     state,
     result: {
@@ -141,7 +149,7 @@ export function acquireQuotaState(raw, request = {}, config = AI_QUOTA) {
 export function releaseQuotaState(raw, token, now = Date.now(), config = AI_QUOTA) {
   const state = normalizeQuotaState(raw, now, config);
   const key = String(token || '').trim();
-  const released = !!(key && state.leases[key]);
+  const released = !!(key && hasOwn(state.leases, key));
   if (released) delete state.leases[key];
   return { state, released };
 }
