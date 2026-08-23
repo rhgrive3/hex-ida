@@ -105,7 +105,7 @@ export function decodeSchema(words, base) {
     const as = addSubImm(w);
     if (as) {
       if (!as.sub && as.d === as.n && as.imm > 0) bumped.push({ reg: as.d, imm: as.imm, row: i, loop: flow.loopOf[i] });
-      konst[as.d] = 0; known[as.d] = 0;
+      konst[as.d] = 0n; known[as.d] = 0;
       if (as.d === 0) lastCall = -1;
       continue;
     }
