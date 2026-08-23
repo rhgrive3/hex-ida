@@ -866,18 +866,13 @@
         {
           "id": "remote.remote-canonical-transport",
           "classification": "BLOCKING_GAP",
-          "reason": "Remote canonical transport has no exact security-profile proof at this head; the missing replay, identity, authorization, transport, privacy, convergence, revocation, and out-of-order evidence blocks closure.",
+          "reason": "Remote canonical transport now rejects caller-minted boolean claims, but no validated exact-head security-profile evidence and active transport verifier are available at this head.",
           "gapKind": "PROOF_ABSENCE",
           "requiredProof": [
-            "exactHead",
-            "replayTests",
-            "identityTests",
-            "authorizationTests",
-            "transportSecurityTests",
-            "privacyTests",
-            "convergenceTests",
-            "revocationTests",
-            "outOfOrderTests"
+            "validatedStage2CapabilityProof",
+            "exactCommitSha",
+            "exactTreeSha",
+            "activeTransportProofVerifier"
           ],
           "check": {
             "type": "all",
@@ -887,15 +882,10 @@
                 "path": "js/collaboration/remote-authority.js",
                 "markers": [
                   "status: ready ? 'supported-for-exact-security-profile' : 'unsupported'",
-                  "proof.exactHead === true",
-                  "proof.replayTests === true",
-                  "proof.identityTests === true",
-                  "proof.authorizationTests === true",
-                  "proof.transportSecurityTests === true",
-                  "proof.privacyTests === true",
-                  "proof.convergenceTests === true",
-                  "proof.revocationTests === true",
-                  "proof.outOfOrderTests === true"
+                  "isValidatedStage2CapabilityProof(profileProof",
+                  "profileProof.commitSha === commitSha",
+                  "profileProof.treeSha === treeSha",
+                  "typeof gate.verifyTransportProof === 'function'"
                 ]
               },
               {

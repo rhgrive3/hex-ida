@@ -1,9 +1,11 @@
 import { deepFreeze, jsonSafe, stableDigest } from '../core/identity/index.js';
+import { isValidatedStage2CapabilityProof } from '../platform/stage2-profile-evidence.js';
 import { CHANGELOG_SCHEMA_VERSION, ChangeLog, createProjectOperation } from './index.js';
 import { applyRemoteEnvelopeQueued } from './remote-delivery.js';
 
 export const REMOTE_COLLAB_SCHEMA = 'hex-remote-collaboration-envelope/v1';
 export const REMOTE_GATE_SCHEMA = 'hex-remote-collaboration-gate/v1';
+export const REMOTE_SECURITY_PROFILE_ID = 'collaboration:remote-security-v1';
 
 function required(value, code) {
   const text = String(value ?? '').trim();
@@ -194,21 +196,29 @@ export class RemoteCollaborationChannel {
   }
 }
 
-export function remoteCollaborationSupport({ gate, securityProfileId = null, proof = {} } = {}) {
+export function remoteCollaborationSupport({
+  gate,
+  profileProof = null,
+  expectedCommitSha = null,
+  expectedTreeSha = null,
+} = {}) {
+  const commitSha = String(expectedCommitSha || '').toLowerCase();
+  const treeSha = String(expectedTreeSha || '').toLowerCase();
+  const exactIdentity = /^[0-9a-f]{40}$/.test(commitSha) && /^[0-9a-f]{40}$/.test(treeSha);
+  const brandedProfile = isValidatedStage2CapabilityProof(profileProof, {
+    itemId: 'S2-P12-COLLAB-REMOTE',
+    profileIds: [REMOTE_SECURITY_PROFILE_ID],
+  });
   const ready = gate instanceof RemoteCollaborationGate
-    && !!String(securityProfileId || '').trim()
-    && proof.exactHead === true
-    && proof.replayTests === true
-    && proof.identityTests === true
-    && proof.authorizationTests === true
-    && proof.transportSecurityTests === true
-    && proof.privacyTests === true
-    && proof.convergenceTests === true
-    && proof.revocationTests === true
-    && proof.outOfOrderTests === true;
+    && typeof gate.verifyTransportProof === 'function'
+    && exactIdentity
+    && brandedProfile
+    && profileProof.commitSha === commitSha
+    && profileProof.treeSha === treeSha;
   return Object.freeze({
     status: ready ? 'supported-for-exact-security-profile' : 'unsupported',
-    securityProfileId: securityProfileId == null ? null : String(securityProfileId),
+    securityProfileId: ready ? REMOTE_SECURITY_PROFILE_ID : null,
     authority: ready ? 'remote-authorized-canonical-operations' : 'none',
+    evidenceId: ready ? profileProof.evidenceId : null,
   });
 }
