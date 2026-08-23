@@ -60,10 +60,17 @@ function safeArray(value, code) {
   if (!Array.isArray(value)) fail(code);
   return value;
 }
+function numericPrimitive(value, code) {
+  if (typeof value !== 'number' && typeof value !== 'string') fail(code);
+  if (typeof value === 'string' && !value.trim()) fail(code);
+  const n = Number(value);
+  if (!Number.isFinite(n)) fail(code);
+  return n;
+}
 function confidence(value) {
   if (value == null) return null;
-  const n = Number(value);
-  if (!Number.isFinite(n) || n < 0 || n > 1) fail('evidence-invalid-confidence');
+  const n = numericPrimitive(value, 'evidence-invalid-confidence');
+  if (n < 0 || n > 1) fail('evidence-invalid-confidence');
   return n;
 }
 function enumValue(value, allowed, fallback, code) {
@@ -179,10 +186,10 @@ export class EvidenceGraph {
   }
 
   addNode(input) {
-    if (this.#nodes.size >= this.#maxNodes && !this.#nodes.has(input?.id)) {
+    const node = createEvidenceNode(input);
+    if (this.#nodes.size >= this.#maxNodes && !this.#nodes.has(node.id)) {
       fail('evidence-graph-node-budget-exceeded');
     }
-    const node = createEvidenceNode(input);
     const existing = this.#nodes.get(node.id);
     if (existing) {
       if (!equalValue(existing, node)) fail('evidence-id-conflict');
@@ -274,7 +281,7 @@ export class EvidenceGraph {
 
   static fromJSON(value, options = {}) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) fail('evidence-invalid-graph');
-    if (value.schemaVersion != null && Number(value.schemaVersion) !== 1) fail('evidence-schema-mismatch');
+    if (value.schemaVersion != null && numericPrimitive(value.schemaVersion, 'evidence-schema-mismatch') !== 1) fail('evidence-schema-mismatch');
     if (!Array.isArray(value.nodes) || !Array.isArray(value.edges)) fail('evidence-invalid-graph');
     return new EvidenceGraph({ nodes: value.nodes, edges: value.edges }, options);
   }
