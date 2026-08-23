@@ -72,7 +72,8 @@ export async function parseMachOSource(input, opts = {}, prefix = null, rangeOpt
     all.push({ cpu, subtype, offset, size });
   }
   const valid = all.filter((slice) => slice.size > 0n && slice.offset <= source.size && slice.size <= source.size - slice.offset);
-  const requestedIndex = opts.sliceIndex == null ? null : Number(opts.sliceIndex);
+  const sliceIndex = opts.sliceIndex;
+  const requestedIndex = sliceIndex == null ? null : ((typeof sliceIndex === 'number' || (typeof sliceIndex === 'string' && sliceIndex.trim() !== '')) ? Number(sliceIndex) : NaN);
   if (requestedIndex != null && (!Number.isSafeInteger(requestedIndex) || requestedIndex < 0 || requestedIndex >= all.length)) {
     throw new Error(`requested Mach-O slice index ${opts.sliceIndex} is not present in the universal binary`);
   }
