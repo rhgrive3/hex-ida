@@ -25,6 +25,9 @@ const EXPECTED_PROFILES = Object.freeze({
   'S2-P12-PATTERNS': Object.freeze(['patterns:read-only-v1']),
   'S2-P12-COLLAB-REMOTE': Object.freeze(['collaboration:remote-security-v1']),
 });
+const VALID_PROFILE_VALIDATIONS = new WeakSet();
+const VALID_PROFILE_RECORDS = new WeakMap();
+const VALID_CAPABILITY_PROOFS = new WeakSet();
 
 function sorted(value) { return [...new Set((Array.isArray(value) ? value : []).map(String).filter(Boolean))].sort(); }
 function includesAll(values, expected) { const set = new Set(values); return expected.every((item) => set.has(item)); }
@@ -196,5 +199,41 @@ export function validateStage2ProfileEvidence(record, expected = {}) {
     if ((id === 'S1-A2-NATIVE' || id.startsWith('S2-F6-')) && (!Array.isArray(item.independentOracleIdentities) || item.independentOracleIdentities.length === 0 || item.independentOracleIdentities.includes(item.implementationIdentity))) failures.push(`${id}:independent-oracle-missing`);
     if ((id === 'S2-A7-NATIVE' || id.startsWith('S2-M6-')) && (!Array.isArray(item.providerProfileIds) || item.providerProfileIds.length === 0)) failures.push(`${id}:provider-profile-missing`);
   }
-  return { ok: failures.length === 0, reason: failures.length ? 'stage2-profile-evidence-incomplete' : null, failures, evidenceId: record.evidenceId };
+  const result = Object.freeze({ ok: failures.length === 0, reason: failures.length ? 'stage2-profile-evidence-incomplete' : null, failures: Object.freeze(failures), evidenceId: record.evidenceId });
+  if (result.ok) {
+    VALID_PROFILE_VALIDATIONS.add(result);
+    VALID_PROFILE_RECORDS.set(result, record);
+  }
+  return result;
+}
+
+export function createStage2CapabilityProofs(validation) {
+  if (!validation || !VALID_PROFILE_VALIDATIONS.has(validation)) throw new TypeError('stage2-profile-validation-authority-required');
+  const record = VALID_PROFILE_RECORDS.get(validation);
+  const proofs = {};
+  for (const id of STAGE2_PROFILE_EVIDENCE_IDS) {
+    const item = record.items[id];
+    const proof = deepFreeze({
+      authority: 'validated-stage2-profile-evidence',
+      itemId: id,
+      evidenceId: record.evidenceId,
+      commitSha: record.commitSha,
+      treeSha: record.treeSha,
+      profileIds: item.profileIds,
+      denominatorId: item.denominatorId,
+      denominatorLockHash: item.denominatorLockHash,
+      providerProfileIds: item.providerProfileIds,
+      implementationIdentity: item.implementationIdentity,
+      independentOracleIdentities: item.independentOracleIdentities,
+    });
+    VALID_CAPABILITY_PROOFS.add(proof);
+    proofs[id] = proof;
+  }
+  return deepFreeze(proofs);
+}
+
+export function isValidatedStage2CapabilityProof(proof, { itemId, profileIds = [] } = {}) {
+  if (!proof || !VALID_CAPABILITY_PROOFS.has(proof) || proof.authority !== 'validated-stage2-profile-evidence') return false;
+  if (itemId && proof.itemId !== itemId) return false;
+  return includesAll(sorted(proof.profileIds), sorted(profileIds));
 }
