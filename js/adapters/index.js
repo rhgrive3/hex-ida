@@ -101,6 +101,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     this.memoryMap = null;
     this.breakpoints = new Map();
     this.traceBuffer = new TraceRingBuffer(options.trace || {});
+    this.traceState = { suppressMemory:false };
     this.epoch = 0;
     this.launchGeneration = 0;
     this.initialRegisters = null;
@@ -110,7 +111,6 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     this.activeRun = null;
     this.traceCursor = 0;
     this.branchCursor = 0;
-    this._suppressMemoryTrace = false;
   }
   async launch(spec = {}) {
     this.require('launch');
@@ -125,6 +125,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     const launchGeneration = ++this.launchGeneration;
     const sandbox = createFunctionSandbox(this.io, { objectBase, maxObjectSize:spec.maxObjectSize });
     const traceBuffer = new TraceRingBuffer(this.options.trace || {});
+    const traceState = { suppressMemory:false };
     const emu = sandbox.emulator;
     emu.heap = heapBase;
     let initializing = true;
@@ -132,14 +133,14 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     emu.load = async (addr,size) => {
       const region = memoryMap.assert(addr,size,'read');
       const value = await rawLoad(addr,size);
-      if (!initializing && spec.traceMemoryReads && !this._suppressMemoryTrace) traceBuffer.push({ type:'memory-read', address:BigInt(addr), size, region:region.kind, value });
+      if (!initializing && spec.traceMemoryReads && !traceState.suppressMemory) traceBuffer.push({ type:'memory-read', address:BigInt(addr), size, region:region.kind, value });
       return value;
     };
     emu.store = async (addr,size,value) => {
       const region = memoryMap.assert(addr,size,'write');
       const before = await rawLoad(addr,size);
       await rawStore(addr,size,value);
-      if (!initializing && !this._suppressMemoryTrace) traceBuffer.push({ type:'memory-write', address:BigInt(addr), size, region:region.kind, before, after:BigInt.asUintN(size * 8, BigInt(value)) });
+      if (!initializing && !traceState.suppressMemory) traceBuffer.push({ type:'memory-write', address:BigInt(addr), size, region:region.kind, before, after:BigInt.asUintN(size * 8, BigInt(value)) });
     };
     await sandbox.setup(address, {
       args:spec.arguments || spec.args || [], registers:spec.registers || {}, objectBase, objectAsArg0:spec.objectAsArg0,
@@ -161,6 +162,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     this.memoryMap = memoryMap;
     this.sandbox = sandbox;
     this.traceBuffer = traceBuffer;
+    this.traceState = traceState;
     this.cancelled = false; this.running = false; this.traceCursor = 0; this.branchCursor = 0; this.epoch++;
     this.initialRegisters = initialRegisters;
     this.lastResult = null;
@@ -174,7 +176,8 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
       this.activeRun.sandbox.emulator.stopped = 'cancelled';
       this.activeRun = null;
     }
-    this.cancelled = true; this.running = false; this.sandbox = null; this.memoryMap = null; this.initialRegisters = null; this.lastResult = null; this.traceBuffer.clear();
+    this.cancelled = true; this.running = false; this.sandbox = null; this.memoryMap = null; this.initialRegisters = null; this.lastResult = null;
+    this.traceBuffer = new TraceRingBuffer(this.options.trace || {}); this.traceState = { suppressMemory:false }; this.traceCursor = 0; this.branchCursor = 0;
     return super.disconnect();
   }
   async pause() {
@@ -290,13 +293,18 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     return { register:name, value:name === 'pc' ? sandbox.emulator.pc : sandbox.getRegister(name) };
   }
   async readMemory(address,size) {
-    this.require('readMemory'); const sandbox = this.ensureSandbox(); const n = Number(size == null ? 8 : size);
+    this.require('readMemory');
+    const sandbox = this.ensureSandbox(); const epoch = this.epoch; const memoryMap = this.memoryMap; const n = Number(size == null ? 8 : size);
     if (!Number.isSafeInteger(n) || n < 1) throw new DebugAdapterError('invalid-size','memory read size must be a positive safe integer');
     if (n > 1024*1024) throw new DebugAdapterError('too-large','memory read exceeds 1 MiB');
-    this.memoryMap.assert(address,n,'read'); return sandbox.emulator.dump(asAddress(address),n);
+    const start = asAddress(address); memoryMap.assert(start,n,'read');
+    const bytes = await sandbox.emulator.dump(start,n);
+    if (sandbox !== this.sandbox || epoch !== this.epoch) throw new DebugAdapterError('stale-request','memory read was invalidated by a newer launch or session change', { requestEpoch:epoch, currentEpoch:this.epoch });
+    return bytes;
   }
   async writeMemory(address,bytes) {
-    this.require('writeMemory'); const sandbox = this.ensureSandbox();
+    this.require('writeMemory');
+    const sandbox = this.ensureSandbox(); const epoch = this.epoch; const memoryMap = this.memoryMap; const traceState = this.traceState;
     let data;
     if (bytes instanceof Uint8Array) data = bytes;
     else {
@@ -306,15 +314,16 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     }
     if (data.length > 256*1024) throw new DebugAdapterError('too-large','memory write exceeds 256 KiB');
     if (!data.length) return { written:0 };
-    const start = asAddress(address); this.memoryMap.assert(start,data.length,'write'); const emu = sandbox.emulator;
-    this._suppressMemoryTrace = true;
+    const start = asAddress(address); memoryMap.assert(start,data.length,'write'); const emu = sandbox.emulator;
+    traceState.suppressMemory = true;
     try {
       for (let i=0;i<data.length;i+=8) {
         const n=Math.min(8,data.length-i); let value=0n;
         for(let j=n-1;j>=0;j--) value=(value<<8n)|BigInt(data[i+j]);
         await emu.store(start+BigInt(i),n,value);
+        if (sandbox !== this.sandbox || epoch !== this.epoch) throw new DebugAdapterError('stale-request','memory write was invalidated by a newer launch or session change', { requestEpoch:epoch, currentEpoch:this.epoch });
       }
-    } finally { this._suppressMemoryTrace = false; }
+    } finally { traceState.suppressMemory = false; }
     return { written:data.length };
   }
   async getThreads() { return [{ id:'sandbox:0', name:'sandbox', state:this.running ? 'running':'stopped' }]; }
