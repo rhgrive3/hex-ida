@@ -2,6 +2,7 @@ import { deepFreeze, stableDigest } from '../core/identity/index.js';
 
 export const REBUILD_TRANSACTION_SCHEMA = 'hex-rebuild-transaction-v2';
 export const REBUILD_VALIDATION_SCHEMA = 'hex-rebuild-validation-v2';
+export const INDEPENDENT_ORACLE_RESULT_SCHEMA = 'hex-rebuild-independent-oracle-result-v1';
 const ATOMIC_PUBLICATION_PROTOCOLS = new Set(['temp-then-atomic-rename', 'transactional-store']);
 const REBUILD_FORMATS = new Set(['macho', 'elf', 'pe']);
 const FORMAT_PROFILES = Object.freeze({
@@ -132,6 +133,27 @@ function relocationResultFailure(result) {
     const value = result[key];
     if ((typeof value === 'number' && Number.isSafeInteger(value) && value > 0) || (Array.isArray(value) && value.length > 0)) return 'relocation-binding-mismatch';
   }
+  return null;
+}
+
+function independentOracleResultFailure(result, context) {
+  if (!result || typeof result !== 'object' || Array.isArray(result)) return 'independent-oracle-result-invalid';
+  if (result.schemaVersion !== INDEPENDENT_ORACLE_RESULT_SCHEMA) return 'independent-oracle-contract-invalid';
+  for (const [field, reason] of [
+    ['oracleIdentity', 'independent-oracle-identity-required'],
+    ['oracleVersion', 'independent-oracle-version-required'],
+    ['oracleSource', 'independent-oracle-source-required'],
+    ['sourceDigest', 'independent-oracle-source-digest-required'],
+    ['outputDigest', 'independent-oracle-output-digest-required'],
+  ]) {
+    if (typeof result[field] !== 'string' || result[field].trim() === '') return reason;
+  }
+  const loaderIdentity = String(context.transaction.loaderVersion || '').trim();
+  if (result.oracleIdentity === loaderIdentity || result.oracleVersion === loaderIdentity || result.oracleSource === loaderIdentity) {
+    return 'independent-oracle-identity-not-distinct';
+  }
+  if (result.sourceDigest !== context.transaction.sourceHash) return 'independent-oracle-source-digest-mismatch';
+  if (result.outputDigest !== context.expectedOutputHash) return 'independent-oracle-output-digest-mismatch';
   return null;
 }
 
@@ -451,6 +473,10 @@ async function executeExternal(name, fn, context) {
   try {
     const result = await fn(context);
     if (!result || (result.ok !== true && result.status !== 'passed' && result.status !== 'valid')) return validatorResult(name, true, false, result?.reason || 'validator-rejected', result || null);
+    if (name === 'independent-differential') {
+      const contractFailure = independentOracleResultFailure(result, context);
+      if (contractFailure) return validatorResult(name, true, false, contractFailure, result);
+    }
     const identityFailure = formatIdentityMismatch(result, context.transaction, context.expectedOutputHash);
     if (identityFailure) return validatorResult(name, true, false, identityFailure, result);
     const relocationFailure = name === 'relocations' ? relocationResultFailure(result) : null;
