@@ -16,7 +16,7 @@ const FORMAT_STATIC_LEVEL = Object.freeze({ macho: 'F5', elf: 'F4', pe: 'F4' });
 
 function freeze(value) { return Object.freeze(value); }
 function profileValue(table, id) { return Object.prototype.hasOwnProperty.call(table, id) ? table[id] : null; }
-function supportedProof(proof, statusPrefix) { return typeof proof?.status === 'string' && proof.status.startsWith(statusPrefix); }
+function supportedProof(proof, expectedStatus) { return proof?.status === expectedStatus; }
 function includesAll(values, expected) {
   const set = new Set(Array.isArray(values) ? values.map(String) : values == null ? [] : [String(values)]);
   return expected.every((item) => set.has(item));

@@ -14,6 +14,7 @@ assert.throws(() => createStage2CapabilityProofs({ ...validation }), /validation
 const arm64Stage1 = { status: 'stage1-proven', exactHead: true, fullySatisfiedLevel: 'A6', profileIds: ['arm64:a64'] };
 const arm64Runtime = { status: 'supported-for-exact-provider-profile', targetProfileId: 'arm64:a64' };
 assert.notEqual(stage2ArchitectureMaturity('arm64', { stage1Proof: arm64Stage1, runtimeProof: arm64Runtime }).level, 'A7', 'status strings without validated profile evidence must not promote A7');
+assert.notEqual(stage2ArchitectureMaturity('arm64', { stage1Proof: arm64Stage1, runtimeProof: { ...arm64Runtime, status: 'supported-for-exact-provider-profile-fabricated' }, profileProof: proofs['S2-A7-NATIVE'] }).level, 'A7', 'a status suffix must not promote A7');
 const arm64 = stage2ArchitectureMaturity('arm64', { stage1Proof: arm64Stage1, runtimeProof: arm64Runtime, profileProof: proofs['S2-A7-NATIVE'] });
 assert.equal(arm64.level, 'A7');
 assert.equal(arm64.status, 'supported');
