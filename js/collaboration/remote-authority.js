@@ -44,6 +44,11 @@ function authorized(permissions, operation) {
   return permissions.includes(combined) || (permissions.includes(fact) && permissions.includes(action));
 }
 
+function envelopeIdentity(envelope) {
+  const { envelopeId, ...payload } = envelope;
+  return `remote-envelope:${stableDigest(payload)}`;
+}
+
 export function createRemoteCollaborationEnvelope(input = {}) {
   const projectIdentity = required(input.projectIdentity, 'remote-project-identity-required');
   const binaryIdentity = input.binaryIdentity == null ? null : required(input.binaryIdentity, 'remote-binary-identity-invalid');
@@ -85,7 +90,7 @@ export function createRemoteCollaborationEnvelope(input = {}) {
       derivedDataOnly: input.egress?.derivedDataOnly !== false,
     },
   };
-  return deepFreeze({ ...envelope, envelopeId: `remote-envelope:${stableDigest(envelope)}` });
+  return deepFreeze({ ...envelope, envelopeId: envelopeIdentity(envelope) });
 }
 
 export class RemoteCollaborationGate {
@@ -113,6 +118,7 @@ export class RemoteCollaborationGate {
     if ((envelope.binaryIdentity ?? null) !== this.binaryIdentity) return { ok: false, reason: 'remote-wrong-binary' };
     if (envelope.sessionIdentity !== this.sessionIdentity) return { ok: false, reason: 'remote-wrong-session' };
     if (!validSequence(envelope.sequence)) return { ok: false, reason: 'remote-sequence-invalid' };
+    if (typeof envelope.envelopeId !== 'string' || envelope.envelopeId !== envelopeIdentity(envelope)) return { ok: false, reason: 'remote-envelope-identity-mismatch' };
     if (this.revokedActors.has(envelope.actorIdentity)) return { ok: false, reason: 'remote-actor-revoked' };
     const permissions = Object.hasOwn(this.allowedActors, envelope.actorIdentity) ? this.allowedActors[envelope.actorIdentity] : null;
     if (!permissions) return { ok: false, reason: 'remote-actor-unauthorized' };
