@@ -182,7 +182,7 @@ function canonicalIdentity(value, stack = new Set()) {
       return `e[${Array.from(value.values()).map((item) => canonicalIdentity(item, stack)).join(',')}]`;
     }
     if (Array.isArray(value)) {
-      // Sparse holes are state, not shorthand for missing array elements.
+      // Preserve sparse holes explicitly so array length/state changes cannot alias.
       const items = [];
       for (let index = 0; index < value.length; index++) {
         items.push(Object.prototype.hasOwnProperty.call(value, index)
