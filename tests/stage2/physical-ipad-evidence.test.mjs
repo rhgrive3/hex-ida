@@ -15,6 +15,9 @@ const checks = {
   memoryBudget: true,
   phase12UiPath: true,
 };
+const fixtureIdentity = 'artifact:reports/stage2/fixture.bin@sha256:' + '3'.repeat(64);
+const scenarioEvidenceIdentity = 'artifact:reports/stage2/ipad-output.json@sha256:' + '4'.repeat(64);
+const resolveEvidenceIdentity = (identity) => [fixtureIdentity, scenarioEvidenceIdentity].includes(identity) ? identity : null;
 const record = createPhysicalIPadEvidence({
   commitSha,
   treeSha,
@@ -25,18 +28,20 @@ const record = createPhysicalIPadEvidence({
   webKitVersion: 'test',
   testedAt: '2026-08-22T00:00:00Z',
   attestedBy: 'test-harness-human-attestation-shape',
-  fixtureIdentity: 'fixture:test',
+  fixtureIdentity,
+  scenarioEvidenceIdentity,
   checks,
 });
-assert.equal(validatePhysicalIPadEvidence(record, { commitSha, treeSha, buildIdentity: 'build:test' }).ok, true);
-assert.equal(validatePhysicalIPadEvidence(record, { commitSha: '3'.repeat(40) }).reason, 'ipad-evidence-stale-commit');
+assert.equal(validatePhysicalIPadEvidence(record, { commitSha, treeSha, buildIdentity: 'build:test', resolveEvidenceIdentity }).ok, true);
+assert.equal(validatePhysicalIPadEvidence(record, { commitSha: '3'.repeat(40), resolveEvidenceIdentity }).reason, 'ipad-evidence-stale-commit');
 const missing = createPhysicalIPadEvidence({ ...record, checks: { ...checks, cancellation: false } });
-assert.equal(validatePhysicalIPadEvidence(missing, { commitSha, treeSha }).reason, 'ipad-evidence-required-check-missing');
+assert.equal(validatePhysicalIPadEvidence(missing, { commitSha, treeSha, resolveEvidenceIdentity }).reason, 'ipad-evidence-required-check-missing');
 const tampered = JSON.parse(JSON.stringify(record));
 tampered.deviceModel = 'iPad Pro altered-after-attestation';
-assert.equal(validatePhysicalIPadEvidence(tampered, { commitSha, treeSha }).reason, 'ipad-evidence-tampered');
+assert.equal(validatePhysicalIPadEvidence(tampered, { commitSha, treeSha, resolveEvidenceIdentity }).reason, 'ipad-evidence-tampered');
 const malformedTime = { ...record, testedAt: 'not-a-date' };
-assert.equal(validatePhysicalIPadEvidence(malformedTime, { commitSha, treeSha }).reason, 'ipad-evidence-tested-at-invalid');
+assert.equal(validatePhysicalIPadEvidence(malformedTime, { commitSha, treeSha, resolveEvidenceIdentity }).reason, 'ipad-evidence-tested-at-invalid');
 const missingDevice = { ...record, deviceModel: '' };
-assert.equal(validatePhysicalIPadEvidence(missingDevice, { commitSha, treeSha }).reason, 'ipad-evidence-deviceModel-invalid');
+assert.equal(validatePhysicalIPadEvidence(missingDevice, { commitSha, treeSha, resolveEvidenceIdentity }).reason, 'ipad-evidence-deviceModel-invalid');
+assert.equal(validatePhysicalIPadEvidence(record, { commitSha, treeSha, resolveEvidenceIdentity: () => null }).reason, 'ipad-evidence-fixture-unresolved');
 console.log('[stage2] physical iPad evidence contract tests passed');

@@ -113,7 +113,12 @@ function readEvidenceJson(finalMode, evidencePath, requiredReason, missingReason
 function physicalEvidenceResult({ finalMode, evidencePath, headSha, treeSha, buildIdentity }) {
   const loaded = readEvidenceJson(finalMode, evidencePath, 'physical-ipad-evidence-required', 'physical-ipad-evidence-file-missing', 'physical-ipad-evidence-json-invalid');
   if (loaded.status !== 'loaded') return loaded;
-  const checked = validatePhysicalIPadEvidence(loaded.record, { commitSha: headSha, treeSha, ...(buildIdentity ? { buildIdentity } : {}) });
+  const checked = validatePhysicalIPadEvidence(loaded.record, {
+    commitSha: headSha,
+    treeSha,
+    ...(buildIdentity ? { buildIdentity } : {}),
+    resolveEvidenceIdentity: evidenceIdentityAtHead,
+  });
   return { required: true, status: checked.ok ? 'passed' : 'failed', reason: checked.reason || null, evidenceId: checked.evidenceId || loaded.record.evidenceId || null };
 }
 
