@@ -9,6 +9,30 @@ function required(value, code, message) {
   return text;
 }
 
+function ownedClone(value) {
+  if (typeof structuredClone === 'function') return structuredClone(value);
+  if (value == null || typeof value !== 'object') return value;
+  if (Array.isArray(value)) return value.map(ownedClone);
+  if (value instanceof Uint8Array) return new Uint8Array(value);
+  if (value instanceof ArrayBuffer) return value.slice(0);
+  if (ArrayBuffer.isView(value)) return new value.constructor(value);
+  if (value instanceof Date) return new Date(value.getTime());
+  const out = {};
+  for (const [key, item] of Object.entries(value)) {
+    Object.defineProperty(out, key, { value: ownedClone(item), enumerable: true, configurable: true, writable: true });
+  }
+  return out;
+}
+
+function droppedCount(value) {
+  if (typeof value !== 'number' && !(typeof value === 'string' && value.trim() !== '')) {
+    throw new DebugAdapterError('trace-invalid-dropped-count', 'trace dropped count must be a non-negative safe integer');
+  }
+  const n = Number(value);
+  if (!Number.isSafeInteger(n) || n < 0) throw new DebugAdapterError('trace-invalid-dropped-count', 'trace dropped count must be a non-negative safe integer');
+  return n;
+}
+
 function normalizeRecording(recording = {}, options = {}) {
   if (!recording || typeof recording !== 'object' || Array.isArray(recording)) throw new DebugAdapterError('trace-invalid-recording', 'trace recording must be an object');
   const maxEvents = boundedInteger(options.maxEvents, 100000, 1, 1000000, 'maxEvents');
@@ -16,8 +40,7 @@ function normalizeRecording(recording = {}, options = {}) {
   const events = Array.isArray(recording.events) ? recording.events : Array.isArray(recording.trace?.events) ? recording.trace.events : [];
   if (events.length > maxEvents) throw new DebugAdapterError('resource-limit', `trace recording exceeds event limit (${maxEvents})`);
   if (stableStringify(recording).length * 2 > maxBytes) throw new DebugAdapterError('resource-limit', `trace recording exceeds byte limit (${maxBytes})`);
-  const dropped = Number(recording.dropped ?? recording.trace?.dropped ?? 0);
-  if (!Number.isSafeInteger(dropped) || dropped < 0) throw new DebugAdapterError('trace-invalid-dropped-count', 'trace dropped count must be a non-negative safe integer');
+  const dropped = droppedCount(recording.dropped ?? recording.trace?.dropped ?? 0);
   const truncated = recording.truncated === true || recording.trace?.truncated === true || dropped > 0;
   return deepFreeze({
     recordingId: required(recording.recordingId ?? recording.id ?? `trace:${recording.sourceProvider ?? 'unknown'}`, 'trace-recording-id-required', 'trace recording id is required'),
@@ -29,12 +52,12 @@ function normalizeRecording(recording = {}, options = {}) {
     architecture: recording.architecture ?? null,
     platform: recording.platform ?? null,
     processKey: recording.processKey ?? null,
-    modules: Array.isArray(recording.modules) ? recording.modules.slice() : [],
-    events: events.slice(),
-    interventions: Array.isArray(recording.interventions) ? recording.interventions.slice() : [],
+    modules: ownedClone(Array.isArray(recording.modules) ? recording.modules : []),
+    events: ownedClone(events),
+    interventions: ownedClone(Array.isArray(recording.interventions) ? recording.interventions : []),
     dropped,
     completeness: truncated ? 'truncated' : String(recording.completeness ?? 'bounded'),
-    sourceProvenance: recording.sourceProvenance ?? recording.provenance ?? null,
+    sourceProvenance: ownedClone(recording.sourceProvenance ?? recording.provenance ?? null),
   });
 }
 
