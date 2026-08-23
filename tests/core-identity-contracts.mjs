@@ -29,6 +29,21 @@ assert.equal(safeHostile.__proto__, '7');
 
 const slice = createSliceId({ binaryId: binaryA, index: 0, architecture: 'arm64' });
 assert.equal(slice, createSliceId({ architecture: 'arm64', index: 0, binaryId: binaryA }), 'slice id must be deterministic');
+const unsafeSliceOffset = Number(9007199254740993n);
+assert.throws(
+  () => createSliceId({ binaryId: binaryA, index: 0, architecture: 'arm64', sourceRange: { offset: Infinity } }),
+  /identity-non-finite-number/,
+  'slice source ranges must not erase non-finite numeric components before hashing',
+);
+assert.throws(
+  () => createSliceId({ binaryId: binaryA, index: 0, architecture: 'arm64', sourceRange: { offset: unsafeSliceOffset } }),
+  /identity-unsafe-number/,
+  'slice source ranges must reject unsafe integer Numbers',
+);
+assert.doesNotThrow(
+  () => createSliceId({ binaryId: binaryA, index: 0, architecture: 'arm64', sourceRange: { offset: 9007199254740993n } }),
+  'slice source ranges must retain exact large bigint components',
+);
 const image = createImageId({ binaryId: binaryA, sliceId: slice, loaderId: 'macho', imageBase: 0x100000000n });
 assert.equal(image, createImageId({ imageBase: '0x100000000', loaderId: 'macho', sliceId: slice, binaryId: binaryA }));
 
