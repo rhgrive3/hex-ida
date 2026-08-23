@@ -7,6 +7,7 @@ import {
 } from '../../js/platform/stage2-capability-maturity.js';
 import { createStage2CapabilityProofs } from '../../js/platform/stage2-profile-evidence.js';
 import { validatedCapabilityProofFixture } from './helpers/profile-proof-fixture.mjs';
+import { RemoteCollaborationGate, remoteCollaborationSupport } from '../../js/collaboration/remote-authority.js';
 
 const { validation, proofs } = validatedCapabilityProofFixture();
 assert.throws(() => createStage2CapabilityProofs({ ...validation }), /validation-authority-required/, 'a copied validation result has no promotion authority');
@@ -45,18 +46,30 @@ assert.equal(pe.features.validatedRebuildPatch, 'supported');
 assert.equal(pe.fullySatisfiedLevel, 'F4', 'PE cannot claim cumulative F6 while F5 remains unsupported');
 assert.equal(pe.status, 'partial');
 
+const remoteCollaborationProof = remoteCollaborationSupport({
+  gate: new RemoteCollaborationGate({
+    projectIdentity: 'project:capability-test',
+    sessionIdentity: 'session:capability-test',
+    allowedActors: {},
+    verifyTransportProof: () => true,
+  }),
+  profileProof: proofs['S2-P12-COLLAB-REMOTE'],
+  expectedCommitSha: 'a'.repeat(40),
+  expectedTreeSha: 'b'.repeat(40),
+});
 const phase12 = stage2Phase12Maturity({
   profileProofs: proofs,
   knowledgeProof: { deterministic: true, authorityNegativeTests: true, dependencyIdentityTests: true, invalidationTests: true, providerBoundaryTests: true },
   rulesProof: { deterministic: true, partialPropagationTests: true, dependencyTests: true, requiredFeatureTests: true, resourceBudgetTests: true },
   patternProof: { deterministic: true, bounded: true, noArbitraryJavaScript: true, truncationTests: true },
-  remoteCollaborationProof: { status: 'supported-for-exact-security-profile' },
+  remoteCollaborationProof,
   rebuildProof: machoRebuild,
 });
 assert.equal(phase12.knowledgePackages.status, 'supported');
 assert.equal(phase12.capabilityRules.status, 'supported');
 assert.equal(phase12.patterns.status, 'supported');
 assert.equal(phase12.collaboration.status, 'supported');
+assert.notEqual(stage2Phase12Maturity({ profileProofs: proofs, remoteCollaborationProof: { ...remoteCollaborationProof } }).collaboration.status, 'supported', 'copied remote support cannot retain transport authority');
 assert.equal(phase12.rebuild.status, 'supported');
 assert.equal(stage2Phase12Maturity({ rulesProof: { deterministic: true, partialPropagationTests: true } }).capabilityRules.status, 'partial');
 console.log('[stage2] profile-bound capability promotion tests passed');

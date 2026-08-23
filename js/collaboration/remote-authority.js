@@ -6,6 +6,7 @@ import { applyRemoteEnvelopeQueued } from './remote-delivery.js';
 export const REMOTE_COLLAB_SCHEMA = 'hex-remote-collaboration-envelope/v1';
 export const REMOTE_GATE_SCHEMA = 'hex-remote-collaboration-gate/v1';
 export const REMOTE_SECURITY_PROFILE_ID = 'collaboration:remote-security-v1';
+const VALID_REMOTE_COLLABORATION_SUPPORT = new WeakSet();
 
 function required(value, code) {
   const text = String(value ?? '').trim();
@@ -215,10 +216,16 @@ export function remoteCollaborationSupport({
     && brandedProfile
     && profileProof.commitSha === commitSha
     && profileProof.treeSha === treeSha;
-  return Object.freeze({
+  const result = Object.freeze({
     status: ready ? 'supported-for-exact-security-profile' : 'unsupported',
     securityProfileId: ready ? REMOTE_SECURITY_PROFILE_ID : null,
     authority: ready ? 'remote-authorized-canonical-operations' : 'none',
     evidenceId: ready ? profileProof.evidenceId : null,
   });
+  if (ready) VALID_REMOTE_COLLABORATION_SUPPORT.add(result);
+  return result;
+}
+
+export function isValidatedRemoteCollaborationSupport(value) {
+  return !!value && VALID_REMOTE_COLLABORATION_SUPPORT.has(value) && value.status === 'supported-for-exact-security-profile';
 }

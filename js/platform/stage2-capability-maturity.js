@@ -1,5 +1,6 @@
 import { architectureMaturity, formatMaturity, managedMaturity, phase12Maturity } from './capability-maturity.js';
 import { isValidatedStage2CapabilityProof } from './stage2-profile-evidence.js';
+import { isValidatedRemoteCollaborationSupport } from '../collaboration/remote-authority.js';
 
 const ARCH_PROFILE = Object.freeze({
   arm64: 'arm64:a64',
@@ -178,7 +179,7 @@ export function stage2Phase12Maturity(options = {}) {
     && options.patternProof?.noArbitraryJavaScript === true
     && options.patternProof?.truncationTests === true
     && profileEvidenceProof(proofs['S2-P12-PATTERNS'], 'S2-P12-PATTERNS', ['patterns:read-only-v1']);
-  const collaboration = supportedProof(options.remoteCollaborationProof, 'supported-for-exact-security-profile')
+  const collaboration = isValidatedRemoteCollaborationSupport(options.remoteCollaborationProof)
     && profileEvidenceProof(proofs['S2-P12-COLLAB-REMOTE'], 'S2-P12-COLLAB-REMOTE', ['collaboration:remote-security-v1']);
   const rebuild = supportedProof(options.rebuildProof, 'supported-for-exact-rebuild-profile')
     && options.rebuildProof?.formatCoverageComplete === true
