@@ -34,7 +34,7 @@ export class Store {
   get(key) { return this.state[key]; }
   set(patch) {
     let changed = false;
-    // Only apply properties explicitly provided by the patch.
+    // Apply only properties explicitly provided by the patch.
     for (const k of Object.keys(patch)) {
       if (this.state[k] !== patch[k]) { this.state[k] = patch[k]; changed = true; }
     }
