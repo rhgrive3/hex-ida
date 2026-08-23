@@ -41,6 +41,17 @@
       "real": true,
       "producer": "clang-18+lld-link",
       "flags": ["-O0", "-fno-stack-protector", "-fno-omit-frame-pointer", "-nostdlib", "-fuse-ld=lld", "/entry:p5_vertical_seed", "/subsystem:console", "/nodefaultlib", "/fixed", "/base:0x400000", "/Brepro"]
+    },
+    {
+      "id": "phase12-vertical-macho64-object",
+      "path": "tests/phase12/rebuild/fixtures/vertical-macho-x86_64.o",
+      "sha256": "d4325809424c713392e932ca04a4f543ba420f40c61569500db6c767568f759d",
+      "format": "macho",
+      "architecture": "x86_64",
+      "profile": "macho:64",
+      "real": true,
+      "producer": "clang-18",
+      "flags": ["--target=x86_64-apple-macos", "-O0", "-fno-stack-protector", "-c"]
     }
   ]
 }

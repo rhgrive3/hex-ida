@@ -107,10 +107,12 @@ for (const fixture of manifest.fixtures) {
   const image = inspectFormatSafeImage(bytes);
   assert.equal(image.format, fixture.format, `${fixture.id}: format identity`);
   assert.equal(image.architecture, fixture.architecture, `${fixture.id}: architecture identity`);
-  assert.equal(fixture.profile, fixture.format === 'elf' ? 'elf:64' : fixture.architecture === 'x86' ? 'pe:pe32' : 'pe:pe32+');
+  assert.equal(fixture.profile, fixture.format === 'elf' ? 'elf:64' : fixture.format === 'macho' ? 'macho:64' : fixture.architecture === 'x86' ? 'pe:pe32' : 'pe:pe32+');
   const mutation = fixture.format === 'elf'
     ? { kind: 'elf-comment', tag: 'Hex F6 real rebuild v1' }
-    : { kind: 'pe-timestamp', timestamp: fixture.architecture === 'x86' ? 0x65f6a246 : 0x65f6a245 };
+    : fixture.format === 'macho'
+      ? { kind: 'macho-min-version', version: 0x000a0500 }
+      : { kind: 'pe-timestamp', timestamp: fixture.architecture === 'x86' ? 0x65f6a246 : 0x65f6a245 };
   const transaction = createFormatSafeRebuildTransaction({
     binaryId: `fixture:${fixture.id}`,
     source: bytes,
@@ -162,9 +164,10 @@ for (const fixture of manifest.fixtures) {
   proofRows.push({ fixture: fixture.id, format: fixture.format, architecture: fixture.architecture, sourceSha256: fixture.sha256, outputDigest: materialized.outputHash, mutation: transaction.expectedOriginalState.formatSafe.kind });
 }
 
-assert.deepEqual(proofRows.map((row) => row.architecture).sort(), ['x86', 'x86_64', 'x86_64']);
-assert.deepEqual(manifest.fixtures.map((fixture) => fixture.profile).sort(), ['elf:64', 'pe:pe32', 'pe:pe32+']);
+assert.deepEqual(proofRows.map((row) => row.architecture).sort(), ['x86', 'x86_64', 'x86_64', 'x86_64']);
+assert.deepEqual(manifest.fixtures.map((fixture) => fixture.profile).sort(), ['elf:64', 'macho:64', 'pe:pe32', 'pe:pe32+']);
 assert.equal(proofRows.filter((row) => row.format === 'elf').length, 1);
+assert.equal(proofRows.filter((row) => row.format === 'macho').length, 1);
 assert.equal(proofRows.filter((row) => row.format === 'pe').length, 2);
 
 // A no-op and a synthetic label are both rejected before they can become proof.
@@ -185,6 +188,16 @@ assert.throws(() => createFormatSafeRebuildTransaction({
 assert.throws(() => createFormatSafeRebuildTransaction({
   binaryId: 'negative:synthetic', source: Uint8Array.from([0x7f, 0x45, 0x4c, 0x46]), format: 'elf', architecture: 'x86_64', loaderVersion, mutation: { kind: 'elf-comment', tag: 'fake' },
 }), /format-safe-elf-header-truncated|format-safe-image-format-unrecognized/);
+const machoFixture = manifest.fixtures.find((fixture) => fixture.format === 'macho');
+const machoBytes = fixtureBytes(machoFixture);
+const machoImage = inspectFormatSafeImage(machoBytes);
+const originalMinVersion = new DataView(machoBytes.buffer, machoBytes.byteOffset, machoBytes.byteLength).getUint32(machoImage.target.offset, true);
+assert.throws(() => createFormatSafeRebuildTransaction({
+  binaryId: 'negative:macho-no-op', source: machoBytes, format: 'macho', architecture: 'x86_64', loaderVersion, mutation: { kind: 'macho-min-version', version: originalMinVersion },
+}), /format-safe-mutation-no-change/);
+assert.throws(() => createFormatSafeRebuildTransaction({
+  binaryId: 'negative:macho-architecture-swap', source: machoBytes, format: 'macho', architecture: 'arm64', loaderVersion, mutation: { kind: 'macho-min-version', version: 0x000a0500 },
+}), /format-safe-source-identity-mismatch/);
 
 const elfFixture = manifest.fixtures.find((fixture) => fixture.format === 'elf');
 const elfBytes = fixtureBytes(elfFixture);

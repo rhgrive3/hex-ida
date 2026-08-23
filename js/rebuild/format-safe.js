@@ -5,10 +5,11 @@ import { createRebuildTransaction } from './transaction-v2.js';
  * Small, deliberately conservative format-aware rebuild adapter.
  *
  * The transaction engine is intentionally format agnostic.  This adapter is
- * the production contract for the two metadata-only mutations that F6 can
+ * the production contract for the three metadata-only mutations that F6 can
  * prove without relocating code or re-encoding loader state:
  *   - ELF64 .comment contents (a non-allocatable section), and
  *   - the PE COFF timestamp (a fixed-width file-header field).
+ *   - a Mach-O 64 LC_VERSION_MIN_MACOSX version field.
  *
  * It does not claim support for section growth, instruction rewriting,
  * relocation updates, signatures, or Mach-O.  Unsupported images fail closed.
@@ -19,6 +20,11 @@ export const FORMAT_SAFE_REBUILD_SCHEMA = 'hex-format-safe-rebuild/v1';
 const ELF_MAGIC = [0x7f, 0x45, 0x4c, 0x46];
 const PE_MAGIC = [0x4d, 0x5a];
 const PE_SIGNATURE = [0x50, 0x45, 0x00, 0x00];
+const MACHO64_MAGIC = 0xfeedfacf;
+const MACHO_X86_64_CPU = 0x01000007;
+const MACHO_ARM64_CPU = 0x0100000c;
+const MACHO64_HEADER_SIZE = 32;
+const LC_VERSION_MIN_MACOSX = 0x24;
 const ELF_X86_64_MACHINE = 0x3e;
 const PE_I386_MACHINE = 0x14c;
 const PE_AMD64_MACHINE = 0x8664;
@@ -243,8 +249,52 @@ function parsePe(bytes) {
   };
 }
 
+function parseMacho(bytes) {
+  if (bytes.length > MAX_FORMAT_IMAGE_BYTES) fail('format-safe-image-budget-exceeded');
+  ensureRange(bytes, 0, MACHO64_HEADER_SIZE, 'format-safe-macho64-header-truncated');
+  if (u32(bytes, 0) !== MACHO64_MAGIC) fail('format-safe-macho64-little-endian-required');
+  const cpuType = u32(bytes, 4);
+  const architecture = cpuType === MACHO_X86_64_CPU ? 'x86_64' : cpuType === MACHO_ARM64_CPU ? 'arm64' : null;
+  if (!architecture) fail('format-safe-macho-architecture-unsupported');
+  const header = {
+    cpuType,
+    cpuSubtype: u32(bytes, 8),
+    fileType: u32(bytes, 12),
+    loadCommandCount: u32(bytes, 16),
+    loadCommandsSize: u32(bytes, 20),
+    flags: u32(bytes, 24),
+    reserved: u32(bytes, 28),
+  };
+  ensureRange(bytes, MACHO64_HEADER_SIZE, header.loadCommandsSize, 'format-safe-macho-load-commands-range-invalid');
+  const commandsEnd = MACHO64_HEADER_SIZE + header.loadCommandsSize;
+  const loadCommands = [];
+  let offset = MACHO64_HEADER_SIZE;
+  let target = null;
+  for (let index = 0; index < header.loadCommandCount; index++) {
+    ensureRange(bytes, offset, 8, 'format-safe-macho-load-command-truncated');
+    const command = u32(bytes, offset);
+    const size = u32(bytes, offset + 4);
+    if (size < 8 || size % 8 !== 0 || offset > commandsEnd - size) fail('format-safe-macho-load-command-size-invalid');
+    const entry = { index, command, offset, size, digest: stableDigest(Array.from(bytes.slice(offset, offset + size))) };
+    if (command === LC_VERSION_MIN_MACOSX) {
+      if (size !== 16 || target) fail('format-safe-macho-version-command-invalid');
+      target = { name: 'LC_VERSION_MIN_MACOSX.version', command, commandIndex: index, offset: offset + 8, size: 4, data: bytes.slice(offset + 8, offset + 12), originalVersion: u32(bytes, offset + 8), sdkVersion: u32(bytes, offset + 12) };
+      entry.digest = bytesDigestMasked(bytes.slice(offset, offset + size), 8, 4);
+    }
+    loadCommands.push(entry);
+    offset += size;
+  }
+  if (offset !== commandsEnd) fail('format-safe-macho-load-command-count-invalid');
+  if (!target) fail('format-safe-macho-version-target-unavailable');
+  return {
+    format: 'macho', architecture, header, loadCommands, sections: [], target,
+    maskedFileDigest: bytesDigestMasked(bytes, target.offset, target.size),
+  };
+}
+
 function parseImage(value) {
   const bytes = bytesOf(value);
+  if (bytes.length >= 4 && u32(bytes, 0) === MACHO64_MAGIC) return parseMacho(bytes);
   if (hasPrefix(bytes, ELF_MAGIC)) return parseElf(bytes);
   if (hasPrefix(bytes, PE_MAGIC)) return parsePe(bytes);
   fail('format-safe-image-format-unrecognized');
@@ -276,6 +326,7 @@ function snapshot(image) {
   if (image.format === 'elf') {
     return { ...base, header: image.header, programHeadersDigest: image.programHeadersDigest, sectionTableDigest: image.sectionTableDigest };
   }
+  if (image.format === 'macho') return { ...base, header: image.header, loadCommands: image.loadCommands };
   return { ...base, header: { ...image.header, timestamp: null } };
 }
 
@@ -283,6 +334,7 @@ function expectedArchitecture(format, architecture) {
   const normalized = String(architecture || '').toLowerCase();
   if (format === 'elf' && normalized === 'x86_64') return normalized;
   if (format === 'pe' && ['x86', 'x86_64'].includes(normalized)) return normalized;
+  if (format === 'macho' && ['x86_64', 'arm64'].includes(normalized)) return normalized;
   fail('format-safe-architecture-unsupported');
 }
 
@@ -311,7 +363,7 @@ export function createFormatSafeRebuildTransaction(input = {}) {
   const source = bytesOf(input.source);
   if (source.length === 0 || source.length > MAX_FORMAT_IMAGE_BYTES) fail('format-safe-source-budget-invalid');
   const format = String(input.format || '').toLowerCase();
-  if (!['elf', 'pe'].includes(format)) fail('format-safe-format-unsupported');
+  if (!['elf', 'macho', 'pe'].includes(format)) fail('format-safe-format-unsupported');
   const architecture = expectedArchitecture(format, input.architecture);
   const image = parseImage(source);
   if (image.format !== format || image.architecture !== architecture) fail('format-safe-source-identity-mismatch');
@@ -330,6 +382,16 @@ export function createFormatSafeRebuildTransaction(input = {}) {
     if (!changed(before, after)) fail('format-safe-mutation-no-change');
     operation = { id: 'format-safe:elf:.comment', offset: image.target.offset, before, after, provenance: { source: 'format-safe-rebuild-adapter', schema: FORMAT_SAFE_REBUILD_SCHEMA, mutationKind: mutation.kind, section: '.comment', tag } };
     safeState = { schema: FORMAT_SAFE_REBUILD_SCHEMA, kind: mutation.kind, section: '.comment', offset: image.target.offset, size: image.target.size, replacementDigest: digestBytes(after) };
+  } else if (mutation.kind === 'macho-min-version') {
+    if (format !== 'macho') fail('format-safe-mutation-format-mismatch');
+    const version = Number(mutation.version);
+    if (!Number.isSafeInteger(version) || version < 0 || version > 0xffffffff) fail('format-safe-macho-version-invalid');
+    const before = image.target.data;
+    const after = new Uint8Array(4);
+    new DataView(after.buffer).setUint32(0, version, true);
+    if (!changed(before, after)) fail('format-safe-mutation-no-change');
+    operation = { id: 'format-safe:macho:min-version', offset: image.target.offset, before, after, provenance: { source: 'format-safe-rebuild-adapter', schema: FORMAT_SAFE_REBUILD_SCHEMA, mutationKind: mutation.kind, command: image.target.name, version } };
+    safeState = { schema: FORMAT_SAFE_REBUILD_SCHEMA, kind: mutation.kind, command: image.target.name, commandIndex: image.target.commandIndex, offset: image.target.offset, size: 4, originalVersion: image.target.originalVersion, replacementVersion: version, sdkVersion: image.target.sdkVersion };
   } else if (mutation.kind === 'pe-timestamp') {
     if (format !== 'pe') fail('format-safe-mutation-format-mismatch');
     const timestamp = Number(mutation.timestamp);
@@ -386,6 +448,8 @@ export function validateFormatSafeMutation({ transaction, original, output } = {
     if (!safeState || safeState.schema !== FORMAT_SAFE_REBUILD_SCHEMA || safeState.offset !== offset || safeState.size !== operation.after.length) return reject('format-safe-state-missing');
     if (safeState.kind === 'elf-comment') {
       if (format !== 'elf' || safeState.section !== '.comment' || sourceImage.target.name !== '.comment' || digestBytes(operation.after) !== safeState.replacementDigest) return reject('format-safe-elf-state-mismatch');
+    } else if (safeState.kind === 'macho-min-version') {
+      if (format !== 'macho' || safeState.command !== 'LC_VERSION_MIN_MACOSX.version' || sourceImage.target.commandIndex !== safeState.commandIndex || sourceImage.target.originalVersion !== safeState.originalVersion || outputImage.target.originalVersion !== safeState.replacementVersion || sourceImage.target.sdkVersion !== safeState.sdkVersion || outputImage.target.sdkVersion !== safeState.sdkVersion) return reject('format-safe-macho-state-mismatch');
     } else if (safeState.kind === 'pe-timestamp') {
       if (format !== 'pe' || safeState.field !== 'COFF.TimeDateStamp' || sourceImage.header.timestamp !== safeState.originalTimestamp || outputImage.header.timestamp !== safeState.replacementTimestamp) return reject('format-safe-pe-state-mismatch');
     } else return reject('format-safe-state-kind-unsupported');

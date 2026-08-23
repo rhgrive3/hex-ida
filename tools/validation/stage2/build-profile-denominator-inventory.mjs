@@ -76,11 +76,9 @@ for (const [format, profiles] of Object.entries({ macho: ['macho:64'], elf: ['el
     'tools/validation/rebuild-independent-oracle.mjs',
     'tests/stage2/rebuild-transaction.test.mjs',
     'tests/stage2/independent-oracle.test.mjs',
-    ...(format === 'macho' ? [] : [
-      'js/rebuild/format-safe.js',
-      'tests/phase12/rebuild/f6-real-fixtures.test.mjs',
-      'tests/phase12/rebuild/fixtures/manifest.json',
-    ]),
+    'js/rebuild/format-safe.js',
+    'tests/phase12/rebuild/f6-real-fixtures.test.mjs',
+    'tests/phase12/rebuild/fixtures/manifest.json',
   ]);
 }
 

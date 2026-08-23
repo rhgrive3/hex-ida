@@ -319,7 +319,10 @@
         "macho:64:unwind-and-debug"
       ],
       "inventoryRefs": [
+        "js/rebuild/format-safe.js",
         "js/rebuild/transaction-v2.js",
+        "tests/phase12/rebuild/f6-real-fixtures.test.mjs",
+        "tests/phase12/rebuild/fixtures/manifest.json",
         "tests/stage2/independent-oracle.test.mjs",
         "tests/stage2/rebuild-transaction.test.mjs",
         "tools/validation/rebuild-independent-oracle.mjs",
