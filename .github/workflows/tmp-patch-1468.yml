@@ -1,0 +1,26 @@
+name: Temporary patch 1468
+on:
+  push:
+    branches: [fix/schema-movwide-1468]
+    paths: [.github/workflows/tmp-patch-1468.yml]
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/schema-movwide-1468
+          fetch-depth: 0
+      - run: |
+          python3 tools/tmp-patch-1468.py
+          node --check js/schema.js
+      - run: |
+          rm .github/workflows/tmp-patch-1468.yml tools/tmp-patch-1468.py
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add js/schema.js .github/workflows/tmp-patch-1468.yml tools/tmp-patch-1468.py
+          git diff --cached --check
+          git commit -m "fix(schema): preserve AArch64 move-wide constants (#1468)"
+          git push origin HEAD:fix/schema-movwide-1468
