@@ -121,6 +121,7 @@ export function validateDescriptorRecord(record, descriptor) {
     if ((actual ?? null) !== (expected ?? null)) mismatches.push(name);
   };
   compare('artifactId', record.artifactId, descriptor.artifactId);
+  compare('artifactKind', record.artifactKind, descriptor.artifactKind);
   compare('producerId', record.producerId, descriptor.producerId);
   compare('producerVersion', record.producerVersion, descriptor.producerVersion);
   compare('binaryId', record.binaryId, descriptor.binaryId);
