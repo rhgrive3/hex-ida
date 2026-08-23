@@ -1,0 +1,902 @@
+{
+  "schemaVersion": "phase12-denominator-inventory/v1",
+  "phase": 12,
+  "baseline": {
+    "commit": "d6267c43afbec417a471bb058585cc451f7ba089",
+    "tree": "b4a6fc0c3a8aba7f08a17f4c36061d3ed5179ae7"
+  },
+  "promotionPolicy": "inventory-records-current-production-truth-and-does-not-promote-support",
+  "truth": {
+    "source": "js/platform/capability-maturity.js",
+    "function": "phase12Maturity",
+    "expected": {
+      "knowledgePackages": {
+        "status": "partial",
+        "authority": "suggestion-only",
+        "limitations": [
+          "legacy-v2-compatibility-adapter",
+          "package-derived-facts-require-local-promotion"
+        ]
+      },
+      "capabilityRules": {
+        "status": "partial",
+        "authority": "deterministic-evidence-only",
+        "limitations": [
+          "partial-upstream-propagates",
+          "no-ai-capability-minting"
+        ]
+      },
+      "collaboration": {
+        "status": "partial",
+        "authority": "local-canonical-only",
+        "limitations": [
+          "remote-security-gate-required",
+          "derived-analysis-excluded"
+        ]
+      },
+      "patterns": {
+        "status": "partial",
+        "authority": "read-only-bounded",
+        "limitations": [
+          "no-arbitrary-javascript",
+          "no-loader-semantic-mutation"
+        ]
+      }
+    }
+  },
+  "categories": [
+    {
+      "id": "knowledge",
+      "label": "Knowledge package envelope, dependencies, and recognition",
+      "units": [
+        {
+          "id": "knowledge.package-envelope.format-version",
+          "classification": "EXACT",
+          "check": {
+            "type": "export-value",
+            "module": "js/phase12/package-envelope.js",
+            "export": "PACKAGE_ENVELOPE_VERSION",
+            "expected": "hex-phase12-package-envelope-v1"
+          }
+        },
+        {
+          "id": "knowledge.package-envelope.manifest-version",
+          "classification": "EXACT",
+          "check": {
+            "type": "export-value",
+            "module": "js/phase12/package-envelope.js",
+            "export": "PACKAGE_SCHEMA_VERSION",
+            "expected": 1
+          }
+        },
+        {
+          "id": "knowledge.package-envelope.provider-output-schema",
+          "classification": "EXACT",
+          "check": {
+            "type": "export-value",
+            "module": "js/phase12/package-envelope.js",
+            "export": "PHASE12_PROVIDER_OUTPUT_SCHEMA",
+            "expected": "provider-v1"
+          }
+        },
+        {
+          "id": "knowledge.package-envelope.input-byte-budget",
+          "classification": "EXACT",
+          "check": {
+            "type": "export-value",
+            "module": "js/phase12/package-envelope.js",
+            "export": "MAX_PACKAGE_INPUT_BYTES",
+            "expected": 33554432
+          }
+        },
+        {
+          "id": "knowledge.package-envelope.default-limits",
+          "classification": "EXACT",
+          "check": {
+            "type": "export-value",
+            "module": "js/phase12/package-envelope.js",
+            "export": "DEFAULT_PACKAGE_LIMITS",
+            "expected": {
+              "maxDepth": 64,
+              "maxStrings": 200000,
+              "maxStringBytes": 4194304,
+              "maxTokens": 2000000,
+              "maxEntries": 1000000
+            }
+          }
+        },
+        {
+          "id": "knowledge.package-envelope.required-envelope-fields",
+          "classification": "EXACT",
+          "check": {
+            "type": "source-includes",
+            "path": "js/phase12/package-envelope.js",
+            "markers": [
+              "format: PACKAGE_ENVELOPE_VERSION",
+              "manifestVersion: PACKAGE_SCHEMA_VERSION",
+              "packageId",
+              "packageVersion",
+              "kind",
+              "dependencies",
+              "payload",
+              "envelope.contentHash = packageContentIdentity(envelope)"
+            ]
+          }
+        },
+        {
+          "id": "knowledge.package-envelope.dependency-identity",
+          "classification": "EXACT",
+          "check": {
+            "type": "source-includes",
+            "path": "js/phase12/package-envelope.js",
+            "markers": [
+              "package-dependency-content-identity-required",
+              "package-dependency-version-required",
+              "package-dependency-not-pinned",
+              "found.contentHash !== dependency.contentHash",
+              "String(found.packageVersion) !== dependency.packageVersion"
+            ]
+          }
+        },
+        {
+          "id": "knowledge.package-envelope.dependency-canonical-order",
+          "classification": "EXACT",
+          "check": {
+            "type": "source-includes",
+            "path": "js/phase12/package-envelope.js",
+            "markers": [
+              "sort((a, b) => a.packageId.localeCompare(b.packageId) || a.contentHash.localeCompare(b.contentHash))"
+            ]
+          }
+        },
+        {
+          "id": "knowledge.package-envelope.legacy-knowledge-compatibility",
+          "classification": "EXACT",
+          "check": {
+            "type": "source-includes",
+            "path": "js/phase12/package-envelope.js",
+            "markers": [
+              "input?.format === 'hex-knowledge-pack'",
+              "requiredSemanticVersions: { knowledge: '3', signature: String(input.version) }",
+              "kind: 'knowledge'"
+            ]
+          }
+        },
+        {
+          "id": "knowledge.provider-output.entry-fallback",
+          "classification": "EXACT",
+          "check": {
+            "type": "source-includes",
+            "path": "js/phase12/package-envelope.js",
+            "markers": [
+              "const entries = Array.isArray(value.items) ? value.items : Array.isArray(value.results) ? value.results : [];"
+            ]
+          }
+        },
+        {
+          "id": "knowledge.provider-output.completeness-classes",
+          "classification": "EXACT",
+          "check": {
+            "type": "source-collection",
+            "path": "js/phase12/package-envelope.js",
+            "start": "if (![",
+            "end": "].includes(value.completeness))",
+            "regex": "'([^']+)'",
+            "expected": ["complete", "partial", "truncated"]
+          }
+        },
+        {
+          "id": "knowledge.provider-output.provenance-and-identity",
+          "classification": "EXACT",
+          "check": {
+            "type": "source-includes",
+            "path": "js/phase12/package-envelope.js",
+            "markers": [
+              "provider-output-provenance-required",
+              "provider-output-item-identity-required",
+              "provider-output-item-target-mismatch",
+              "value.unique === true"
+            ]
+          }
+        },
+        {
+          "id": "knowledge.recognition.algorithm-version",
+          "classification": "EXACT",
+          "check": {
+            "type": "export-value",
+            "module": "js/knowledge/phase12-recognition.js",
+            "export": "RECOGNITION_ALGORITHM_VERSION",
+            "expected": "hex-recognition-phase12-v1"
+          }
+        },
+        {
+          "id": "knowledge.recognition.match-tiers",
+          "classification": "EXACT",
+          "check": {
+            "type": "export-value",
+            "module": "js/knowledge/phase12-recognition.js",
+            "export": "MATCH_TIERS",
+            "expected": ["exact-content", "relocation-normalized", "structural", "semantic", "capability"]
+          }
+        },
+        {
+          "id": "knowledge.recognition.package-kinds",
+          "classification": "EXACT",
+          "check": {
+            "type": "source-collection",
+            "path": "js/knowledge/phase12-recognition.js",
+            "start": "if (![",
+            "end": "].includes(envelope.kind))",
+            "regex": "'([^']+)'",
+            "expected": ["knowledge", "mixed"]
+          }
+        },
+        {
+          "id": "knowledge.recognition.outcome-classes",
+          "classification": "EXACT",
+          "check": {
+            "type": "source-includes",
+            "path": "js/knowledge/phase12-recognition.js",
+            "markers": [
+              "status: 'no-match'",
+              "status: ambiguous ? 'ambiguous' : 'suggestion'",
+              "completeness: candidateSearchTruncated ? 'partial' : 'complete'",
+              "candidateSearchTruncated",
+              "unique: !ambiguous",
+              "authority: 'L2-suggestion'"
+            ]
+          }
+        },
+        {
+          "id": "knowledge.recognition.unique-claim-gate",
+          "classification": "EXACT",
+          "check": {
+            "type": "source-includes",
+            "path": "js/knowledge/phase12-recognition.js",
+            "markers": [
+              "result.unique === true",
+              "result.candidateSearchTruncated !== true",
+              "result.completeness === 'complete'",
+              "result.conflictingFeatures.length === 0"
+            ]
+          }
+        },
+        {
+          "id": "knowledge.recognition.explicit-local-promotion",
+          "classification": "EXACT",
+          "check": {
+            "type": "source-includes",
+            "path": "js/knowledge/phase12-recognition.js",
+            "markers": [
+              "token.approved !== true",
+              "token.targetMatchId !== result.id",
+              "result.candidateSearchTruncated || result.status === 'ambiguous'",
+              "confirmation: 'user-confirmed'",
+              "authority: 'L4-local-canonical'"
+            ]
+          }
+        },
+        {
+          "id": "knowledge.behavior.dependency-pinning",
+          "classification": "EXACT",
+          "check": {
+            "type": "behavior",
+            "id": "knowledge-dependency-pinning",
+            "expected": ["exact-resolution", "wrong-hash-rejected", "wrong-version-rejected"]
+          }
+        },
+        {
+          "id": "knowledge.behavior.provider-output",
+          "classification": "EXACT",
+          "check": {
+            "type": "behavior",
+            "id": "knowledge-provider-output",
+            "expected": ["items", "results", "complete", "partial", "truncated", "incomplete-unique-rejected"]
+          }
+        },
+        {
+          "id": "knowledge.behavior.recognition-outcomes",
+          "classification": "EXACT",
+          "check": {
+            "type": "behavior",
+            "id": "knowledge-recognition-outcomes",
+            "expected": ["suggestion", "ambiguous", "truncated-partial", "no-unique-claim", "local-promotion"]
+          }
+        },
+        {
+          "id": "knowledge.external-confirmation-authority",
+          "classification": "PREEXISTING_NORMATIVE_EXCLUSION",
+          "reason": "External confirmation is retained as recognition metadata only; production promotion still requires an explicit local approval token and produces local canonical authority.",
+          "check": {
+            "type": "source-includes",
+            "path": "js/knowledge/phase12-recognition.js",
+            "markers": [
+              "externalConfirmation: input.externalConfirmation || null",
+              "authority: 'L2-suggestion'",
+              "authority: 'L4-local-canonical'"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "rules",
+      "label": "Capability rule grammar and evidence result classes",
+      "units": [
+        {
+          "id": "rules.language-version",
+          "classification": "EXACT",
+          "check": {
+            "type": "export-value",
+            "module": "js/knowledge/phase12-rules.js",
+            "export": "CAPABILITY_RULE_LANGUAGE_VERSION",
+            "expected": "hex-capability-rule-language-v1"
+          }
+        },
+        {
+          "id": "rules.scope-registry",
+          "classification": "EXACT",
+          "check": {
+            "type": "export-value",
+            "module": "js/knowledge/phase12-rules.js",
+            "export": "CAPABILITY_SCOPES",
+            "expected": ["instruction", "basic-block", "function", "module", "runtime"]
+          }
+        },
+        {
+          "id": "rules.expression-operators",
+          "classification": "EXACT",
+          "check": {
+            "type": "source-collection",
+            "path": "js/knowledge/phase12-rules.js",
+            "start": "const allowed = new Set([",
+            "end": "]);",
+            "regex": "'([^']+)'",
+            "expected": ["all", "any", "not", "exists", "equals", "in", "contains", "gte", "lte", "gt", "lt"]
+          }
+        },
+        {
+          "id": "rules.default-scope",
+          "classification": "EXACT",
+          "check": {
+            "type": "source-includes",
+            "path": "js/knowledge/phase12-rules.js",
+            "markers": ["const scope = input.scope || 'function';"]
+          }
+        },
+        {
+          "id": "rules.default-version",
+          "classification": "EXACT",
+          "check": {
+            "type": "source-includes",
+            "path": "js/knowledge/phase12-rules.js",
+            "markers": ["const version = required(input.version || '1', 'capability-rule-version-required');"]
+          }
+        },
+        {
+          "id": "rules.package-kinds",
+          "classification": "EXACT",
+          "check": {
+            "type": "source-collection",
+            "path": "js/knowledge/phase12-rules.js",
+            "start": "if (![",
+            "end": "].includes(envelope.kind))",
+            "regex": "'([^']+)'",
+            "expected": ["capability-rules", "mixed"]
+          }
+        },
+        {
+          "id": "rules.package-payload-fallback",
+          "classification": "EXACT",
+          "check": {
+            "type": "source-includes",
+            "path": "js/knowledge/phase12-rules.js",
+            "markers": ["const rules = envelope.payload.rules || envelope.payload;"]
+          }
+        },
+        {
+          "id": "rules.result-verdict-classes",
+          "classification": "EXACT",
+          "check": {
+            "type": "source-includes",
+            "path": "js/knowledge/phase12-rules.js",
+            "markers": [
+              "? 'partial' : result.value ? 'supported' : 'not-detected'",
+              "verdict === 'supported' || verdict === 'not-detected'",
+              "confirmed: false",
+              "authority: 'L2-evidence'"
+            ]
+          }
+        },
+        {
+          "id": "rules.result-dependency-classes",
+          "classification": "EXACT",
+          "check": {
+            "type": "source-includes",
+            "path": "js/knowledge/phase12-rules.js",
+            "markers": [
+              "dependency-missing:${id}",
+              "dependency-partial:${id}",
+              "dependency-not-supported:${id}",
+              "capability-rule-dependency-incomplete",
+              "capability-rule-dependency-not-supported",
+              "capability-rule-required-feature-missing"
+            ]
+          }
+        },
+        {
+          "id": "rules.result-completeness-classes",
+          "classification": "EXACT",
+          "check": {
+            "type": "source-includes",
+            "path": "js/knowledge/phase12-rules.js",
+            "markers": [
+              "completeness: verdict === 'supported' || verdict === 'not-detected' ? 'complete' : 'partial'",
+              "upstream-analysis-incomplete"
+            ]
+          }
+        },
+        {
+          "id": "rules.behavior-result-classes",
+          "classification": "EXACT",
+          "check": {
+            "type": "behavior",
+            "id": "rules-result-classes",
+            "expected": ["supported", "not-detected", "partial", "required-feature-missing", "dependency-missing"]
+          }
+        },
+        {
+          "id": "rules.behavior-dependency-order-and-cycle",
+          "classification": "EXACT",
+          "check": {
+            "type": "behavior",
+            "id": "rules-dependency-order",
+            "expected": ["dependency-first", "cycle-rejected", "missing-dependency-rejected"]
+          }
+        },
+        {
+          "id": "rules.ai-capability-minting",
+          "classification": "PREEXISTING_NORMATIVE_EXCLUSION",
+          "reason": "Capability-rule results remain L2 evidence with confirmed=false; no AI or rule evaluation path mints an L4 capability fact.",
+          "check": {
+            "type": "source-includes",
+            "path": "js/knowledge/phase12-rules.js",
+            "markers": ["confirmed: false", "authority: 'L2-evidence'"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "patterns",
+      "label": "Declarative pattern grammar and bounded value classes",
+      "units": [
+        {
+          "id": "patterns.language-version",
+          "classification": "EXACT",
+          "check": {
+            "type": "export-value",
+            "module": "js/pattern/index.js",
+            "export": "PATTERN_LANGUAGE_VERSION",
+            "expected": "hex-pattern-language-v1"
+          }
+        },
+        {
+          "id": "patterns.primitive-registry",
+          "classification": "EXACT",
+          "check": {
+            "type": "source-collection",
+            "path": "js/pattern/index.js",
+            "start": "const PRIMITIVES = new Map([",
+            "end": "]);",
+            "regex": "\\['([^']+)'",
+            "expected": ["u8", "i8", "u16le", "u16be", "i16le", "i16be", "u32le", "u32be", "i32le", "i32be", "u64le", "u64be", "i64le", "i64be", "f32le", "f32be", "f64le", "f64be"]
+          }
+        },
+        {
+          "id": "patterns.expression-operators",
+          "classification": "EXACT",
+          "check": {
+            "type": "source-includes",
+            "path": "js/pattern/index.js",
+            "markers": ["if (!['const', 'ref', 'eq', 'ne', 'lt', 'lte', 'gt', 'gte', 'and', 'or', 'not'].includes(op))"]
+          }
+        },
+        {
+          "id": "patterns.grammar-type-kinds",
+          "classification": "EXACT",
+          "check": {
+            "type": "source-collection",
+            "path": "js/pattern/index.js",
+            "start": "function validateType(type, depth = 0, names = new Set())",
+            "end": "export function typeCheckPattern(parsed)",
+            "regex": "type\\.kind === '([^']+)'",
+            "expected": ["primitive", "named", "struct", "array", "pointer", "offset", "conditional", "union", "enum", "bitfield"]
+          }
+        },
+        {
+          "id": "patterns.value-type-kinds",
+          "classification": "EXACT",
+          "check": {
+            "type": "source-collection",
+            "path": "js/pattern/index.js",
+            "start": "function readType(type, offset, space, ctx, values, depth = 0)",
+            "end": "export function evaluatePattern(compiled, byteSource, options = {})",
+            "regex": "type\\.kind === '([^']+)'",
+            "expected": ["primitive", "named", "enum", "bitfield", "conditional", "pointer", "offset", "array", "union", "struct"]
+          }
+        },
+        {
+          "id": "patterns.textual-struct-grammar",
+          "classification": "EXACT",
+          "check": {
+            "type": "source-includes",
+            "path": "js/pattern/index.js",
+            "markers": [
+              "take('identifier', 'struct')",
+              "take('identifier').value",
+              "take(':')",
+              "take(';')",
+              "take('}')",
+              "take('eof')"
+            ]
+          }
+        },
+        {
+          "id": "patterns.textual-pointer-fallback",
+          "classification": "EXACT",
+          "check": {
+            "type": "source-includes",
+            "path": "js/pattern/index.js",
+            "markers": ["base === 'ptr' || base === 'pointer' ? 'pointer' : 'offset'"]
+          }
+        },
+        {
+          "id": "patterns.textual-address-space-fallback",
+          "classification": "EXACT",
+          "check": {
+            "type": "source-includes",
+            "path": "js/pattern/index.js",
+            "markers": ["space: 'file'", "targetAddressSpace: options.targetAddressSpace || 'file'"]
+          }
+        },
+        {
+          "id": "patterns.evaluator-result-classes",
+          "classification": "EXACT",
+          "check": {
+            "type": "source-includes",
+            "path": "js/pattern/index.js",
+            "markers": [
+              "return { status: 'partial'",
+              "return { status: 'complete'",
+              "reason: result.reason || budget.stopped.reason"
+            ]
+          }
+        },
+        {
+          "id": "patterns.value-provenance",
+          "classification": "EXACT",
+          "check": {
+            "type": "source-includes",
+            "path": "js/pattern/index.js",
+            "markers": [
+              "function provenance(ctx, offset, length, space = 'file')",
+              "patternId: ctx.patternId",
+              "snapshotId: ctx.source.snapshotId",
+              "out.dereference = () =>",
+              "out.expand = (index) =>"
+            ]
+          }
+        },
+        {
+          "id": "patterns.snapshot-binding",
+          "classification": "EXACT",
+          "check": {
+            "type": "source-includes",
+            "path": "js/pattern/index.js",
+            "markers": ["if (pattern.snapshotId && pattern.snapshotId !== source.snapshotId) throw new Error('pattern-source-snapshot-mismatch');"]
+          }
+        },
+        {
+          "id": "patterns.behavior-value-classes",
+          "classification": "EXACT",
+          "check": {
+            "type": "behavior",
+            "id": "patterns-value-classes",
+            "expected": ["complete", "partial", "primitive", "array-lazy", "provenance", "snapshot-mismatch"]
+          }
+        },
+        {
+          "id": "patterns.support-truth",
+          "classification": "EXACT",
+          "check": {
+            "type": "behavior",
+            "id": "patterns-support-truth",
+            "expected": ["parser-supported", "evaluator-bounded", "authority-l2-evidence"]
+          }
+        },
+        {
+          "id": "patterns.mutation",
+          "classification": "PREEXISTING_NORMATIVE_EXCLUSION",
+          "reason": "Pattern language is read-only in the current production truth; it cannot mutate the binary or project canonical state.",
+          "check": {
+            "type": "source-includes",
+            "path": "js/pattern/index.js",
+            "markers": ["mutation: 'unsupported'", "authority: 'L2-evidence'"]
+          }
+        },
+        {
+          "id": "patterns.network-and-arbitrary-javascript",
+          "classification": "PREEXISTING_NORMATIVE_EXCLUSION",
+          "reason": "Pattern evaluation has no network or ambient JavaScript execution authority; both dimensions remain explicitly unsupported.",
+          "check": {
+            "type": "source-includes",
+            "path": "js/pattern/index.js",
+            "markers": ["network: 'unsupported'", "arbitraryJavaScript: 'unsupported'"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "remote-collaboration",
+      "label": "Remote operation, security gate, delivery, and conflict classes",
+      "units": [
+        {
+          "id": "remote.operation.schema-version",
+          "classification": "EXACT",
+          "check": {
+            "type": "export-value",
+            "module": "js/collaboration/index.js",
+            "export": "CHANGELOG_SCHEMA_VERSION",
+            "expected": "hex-project-operation-v1"
+          }
+        },
+        {
+          "id": "remote.checkpoint.schema-version",
+          "classification": "EXACT",
+          "check": {
+            "type": "export-value",
+            "module": "js/collaboration/index.js",
+            "export": "CHECKPOINT_SCHEMA_VERSION",
+            "expected": "hex-project-checkpoint-v1"
+          }
+        },
+        {
+          "id": "remote.envelope.schema-version",
+          "classification": "EXACT",
+          "check": {
+            "type": "export-value",
+            "module": "js/collaboration/remote-authority.js",
+            "export": "REMOTE_COLLAB_SCHEMA",
+            "expected": "hex-remote-collaboration-envelope/v1"
+          }
+        },
+        {
+          "id": "remote.gate.schema-version",
+          "classification": "EXACT",
+          "check": {
+            "type": "export-value",
+            "module": "js/collaboration/remote-authority.js",
+            "export": "REMOTE_GATE_SCHEMA",
+            "expected": "hex-remote-collaboration-gate/v1"
+          }
+        },
+        {
+          "id": "remote.operation.envelope-fields",
+          "classification": "EXACT",
+          "check": {
+            "type": "source-includes",
+            "path": "js/collaboration/remote-authority.js",
+            "markers": [
+              "operationSchemaVersion: CHANGELOG_SCHEMA_VERSION",
+              "projectIdentity",
+              "sessionIdentity",
+              "actorIdentity",
+              "deviceIdentity",
+              "messageId",
+              "sequence",
+              "operations",
+              "envelopeId: envelopeIdentity(envelope)"
+            ]
+          }
+        },
+        {
+          "id": "remote.operation.action-classes",
+          "classification": "EXACT",
+          "check": {
+            "type": "source-includes",
+            "path": "js/collaboration/index.js",
+            "markers": [
+              "action || 'set'",
+              "operation.action === 'remove'",
+              "operation.action === 'resolve'",
+              "operation.action !== 'resurrect'"
+            ]
+          }
+        },
+        {
+          "id": "remote.operation.meaningful-fact-classes",
+          "classification": "EXACT",
+          "check": {
+            "type": "source-collection",
+            "path": "js/collaboration/index.js",
+            "start": "const MEANINGFUL_FACTS = new Set([",
+            "end": "]);",
+            "regex": "'([^']+)'",
+            "expected": ["name", "type", "struct", "confirmation", "patch"]
+          }
+        },
+        {
+          "id": "remote.operation-result-classes",
+          "classification": "EXACT",
+          "check": {
+            "type": "source-includes",
+            "path": "js/collaboration/index.js",
+            "markers": [
+              "status: 'rejected'",
+              "status: 'unresolved'",
+              "status: 'duplicate'",
+              "status: 'conflict'",
+              "status: 'applied'",
+              "status: unresolved.length ? 'applied-with-unresolved' : 'applied'"
+            ]
+          }
+        },
+        {
+          "id": "remote.conflict-classes",
+          "classification": "EXACT",
+          "check": {
+            "type": "source-includes",
+            "path": "js/collaboration/index.js",
+            "markers": [
+              "type: 'stale-precondition'",
+              "type: 'meaningful-conflict'",
+              "reason: 'tombstone-protects-state'",
+              "reason: 'stale-before-fingerprint'",
+              "reason: 'missing-causal-parent'"
+            ]
+          }
+        },
+        {
+          "id": "remote.gate.supported-schema-fallbacks",
+          "classification": "EXACT",
+          "check": {
+            "type": "source-includes",
+            "path": "js/collaboration/remote-authority.js",
+            "markers": [
+              "input.supportedEnvelopeSchemas || [REMOTE_COLLAB_SCHEMA]",
+              "input.supportedOperationSchemas || [CHANGELOG_SCHEMA_VERSION]"
+            ]
+          }
+        },
+        {
+          "id": "remote.security.transport-proof-classes",
+          "classification": "EXACT",
+          "check": {
+            "type": "source-includes",
+            "path": "js/collaboration/remote-authority.js",
+            "markers": [
+              "authenticated: input.transportProof?.authenticated === true",
+              "confidentiality: input.transportProof?.confidentiality === 'verified' ? 'verified' : 'unverified'",
+              "integrity: input.transportProof?.integrity === 'verified' ? 'verified' : 'unverified'",
+              "remote-transport-security-unverified",
+              "remote-transport-proof-rejected"
+            ]
+          }
+        },
+        {
+          "id": "remote.security.egress-classes",
+          "classification": "EXACT",
+          "check": {
+            "type": "source-includes",
+            "path": "js/collaboration/remote-authority.js",
+            "markers": [
+              "userAuthorized: input.egress?.userAuthorized === true",
+              "rawBinaryBytes: input.egress?.rawBinaryBytes === true",
+              "derivedDataOnly: input.egress?.derivedDataOnly !== false",
+              "remote-egress-user-authorization-required",
+              "remote-raw-binary-egress-forbidden"
+            ]
+          }
+        },
+        {
+          "id": "remote.security.rejection-classes",
+          "classification": "EXACT",
+          "check": {
+            "type": "source-collection",
+            "path": "js/collaboration/remote-authority.js",
+            "start": "validate(envelope) {",
+            "end": "\n  }\n\n  accept(envelope)",
+            "regex": "reason: '([^']+)'",
+            "expected": [
+              "remote-envelope-schema-unsupported",
+              "remote-operation-schema-unsupported",
+              "remote-wrong-project",
+              "remote-wrong-binary",
+              "remote-wrong-session",
+              "remote-sequence-invalid",
+              "remote-envelope-identity-mismatch",
+              "remote-actor-revoked",
+              "remote-actor-unauthorized",
+              "remote-replay-or-duplicate",
+              "remote-stale-sequence",
+              "remote-batch-budget-exceeded",
+              "remote-message-budget-exceeded",
+              "remote-transport-security-unverified",
+              "remote-transport-proof-rejected",
+              "remote-egress-user-authorization-required",
+              "remote-raw-binary-egress-forbidden",
+              "remote-operation-scope-mismatch",
+              "remote-operation-actor-binding-mismatch",
+              "remote-operation-provenance-invalid",
+              "remote-operation-not-authorized"
+            ]
+          }
+        },
+        {
+          "id": "remote.delivery-result-classes",
+          "classification": "EXACT",
+          "check": {
+            "type": "source-includes",
+            "path": "js/collaboration/remote-delivery.js",
+            "markers": [
+              "status: 'rejected'",
+              "status: unresolvedOperationIds.length ? 'accepted-with-pending-dependencies' : 'applied'",
+              "unresolvedOperationIds"
+            ]
+          }
+        },
+        {
+          "id": "remote.behavior.operation-and-conflict-classes",
+          "classification": "EXACT",
+          "check": {
+            "type": "behavior",
+            "id": "remote-operation-classes",
+            "expected": ["applied", "duplicate", "conflict", "unresolved", "rejected", "tombstone"]
+          }
+        },
+        {
+          "id": "remote.behavior.security-gate",
+          "classification": "EXACT",
+          "check": {
+            "type": "behavior",
+            "id": "remote-security-gate",
+            "expected": ["default-unverified-rejected", "secure-authorized-accepted", "replay-rejected", "raw-egress-rejected"]
+          }
+        },
+        {
+          "id": "remote.remote-canonical-transport",
+          "classification": "PREEXISTING_NORMATIVE_EXCLUSION",
+          "reason": "Remote transport remains unsupported until an exact security profile and its replay, identity, authorization, transport, privacy, convergence, revocation, and out-of-order proofs are supplied.",
+          "check": {
+            "type": "source-includes",
+            "path": "js/collaboration/remote-authority.js",
+            "markers": [
+              "status: ready ? 'supported-for-exact-security-profile' : 'unsupported'",
+              "proof.exactHead === true",
+              "proof.replayTests === true",
+              "proof.identityTests === true",
+              "proof.authorizationTests === true",
+              "proof.transportSecurityTests === true",
+              "proof.privacyTests === true",
+              "proof.convergenceTests === true",
+              "proof.revocationTests === true",
+              "proof.outOfOrderTests === true"
+            ]
+          }
+        },
+        {
+          "id": "remote.derived-analysis-egress",
+          "classification": "PREEXISTING_NORMATIVE_EXCLUSION",
+          "reason": "Derived analysis is excluded from the current remote canonical collaboration claim; only explicitly authorized derived-data-only egress may pass the gate.",
+          "check": {
+            "type": "truth-entry",
+            "module": "js/platform/capability-maturity.js",
+            "export": "phase12Maturity",
+            "path": "collaboration.limitations",
+            "expected": ["remote-security-gate-required", "derived-analysis-excluded"]
+          }
+        }
+      ]
+    }
+  ]
+}
