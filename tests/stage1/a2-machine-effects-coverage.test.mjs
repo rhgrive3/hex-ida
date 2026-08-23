@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 import { parseOperands } from '../../js/arm64.js';
-import { createMachineEffectBundle } from '../../js/semantics/effects/index.js';
+import {
+  createBitVectorValue,
+  createMachineEffectBundle,
+  createMachineOperation,
+  createRegisterValue,
+} from '../../js/semantics/effects/index.js';
 import '../../js/targets/architecture/index.js';
 import {
   MACHINE_EFFECTS_COVERAGE_SCHEMA,
@@ -12,6 +17,7 @@ import {
 function arm64Instruction(instructionId, mnemonic, operands = '', extra = {}) {
   return {
     instructionId,
+    architectureId: 'arm64',
     mnemonic,
     operands,
     ops: parseOperands(operands),
@@ -33,6 +39,7 @@ function arm64Instruction(instructionId, mnemonic, operands = '', extra = {}) {
 
 const exact = arm64Instruction('stage1-arm64-exact', 'b', '#0x5000', { branchTarget: 0x5000n });
 const unsupported = arm64Instruction('stage1-arm64-unsupported', 'stage1_unsupported_opcode');
+const architectureSwap = { ...exact, architectureId: 'x86_64' };
 
 {
   const result = classifyMachineEffectsCoverage('arm64', exact);
@@ -46,6 +53,53 @@ const unsupported = arm64Instruction('stage1-arm64-unsupported', 'stage1_unsuppo
   const result = classifyMachineEffectsCoverage('arm64', unsupported);
   assert.equal(result.status, 'unsupported');
   assert.equal(result.reason, 'machine-effects-not-lifted');
+}
+
+{
+  const result = classifyMachineEffectsCoverage('arm64', architectureSwap);
+  assert.equal(result.status, 'error');
+  assert.equal(result.reason, 'machine-effects-input-architecture-mismatch', 'a decoded instruction from another architecture must not be promoted by the ARM64 lifter');
+}
+
+{
+  const forgedPlugin = {
+    id: 'arm64',
+    modes: () => ['a64'],
+    liftExact(decoded) {
+      return createMachineEffectBundle({
+        instructionId: decoded.instructionId,
+        architectureId: 'x86_64',
+        mode: 'a64',
+        operations: [createMachineOperation({
+          kind: 'register-write',
+          register: createRegisterValue('x0', 64),
+          value: createBitVectorValue(64, 1n),
+        })],
+        controlEffect: { kind: 'fallthrough' },
+        possibleFaults: [],
+        origin: { instructionIds: [decoded.instructionId] },
+        completeness: 'exact',
+      });
+    },
+  };
+  const result = classifyMachineEffectsCoverage(forgedPlugin, {
+    instructionId: 'stage1-forged-evidence',
+    architectureId: 'arm64',
+    mode: 'a64',
+  });
+  assert.equal(result.status, 'error');
+  assert.equal(result.reason, 'machine-effects-bundle-architecture-mismatch', 'a forged exact bundle must not cross an architecture boundary');
+}
+
+{
+  const arm64eBase = classifyMachineEffectsCoverage('arm64e', arm64Instruction('stage1-arm64e-base', 'b', '#0x5000', { architectureId: 'arm64e' }));
+  assert.equal(arm64eBase.status, 'covered', 'ARM64e baseline effects may delegate to the canonical ARM64 semantic engine');
+  const arm64ePac = classifyMachineEffectsCoverage('arm64e', {
+    instructionId: 'stage1-arm64e-pac', architectureId: 'arm64e', mnemonic: 'paciasp', operands: '', ops: [], mode: 'arm64e', address: 0x4000n,
+    origin: { instructionIds: ['stage1-arm64e-pac'] },
+  });
+  assert.equal(arm64ePac.status, 'covered');
+  assert.equal(arm64ePac.completeness, 'exact-with-intrinsic');
 }
 
 {
@@ -69,6 +123,13 @@ const unsupported = arm64Instruction('stage1-arm64-unsupported', 'stage1_unsuppo
     error: 0,
   });
   assert.equal(result.classifications.length, result.denominatorCount);
+}
+
+{
+  const result = measureMachineEffectsCoverage('arm64', [exact, architectureSwap]);
+  assert.equal(result.denominatorCount, 2, 'identity failures remain in the measured denominator');
+  assert.equal(result.exactCount, 1);
+  assert.equal(result.errorCount, 1);
 }
 
 {
@@ -127,7 +188,7 @@ const unsupported = arm64Instruction('stage1-arm64-unsupported', 'stage1_unsuppo
 
 {
   const failingPlugin = {
-    id: 'stage1-failing',
+    id: 'arm64',
     semanticVersion: '1',
     modes: () => ['test'],
     capabilities: { exactEffects: 'partial' },
