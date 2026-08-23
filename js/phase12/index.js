@@ -10,3 +10,4 @@ export * from '../collaboration/remote-delivery.js';
 export * from '../pattern/index.js';
 export * from '../rebuild/index.js';
 export * from '../rebuild/transaction-v2.js';
+export * from '../rebuild/format-safe.js';
