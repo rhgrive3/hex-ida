@@ -1,0 +1,230 @@
+name: Temporary open issue patches
+
+on:
+  push:
+    branches: [fix/all-open-issues-20260823]
+    paths: [.github/workflows/temporary-open-issue-patches.yml]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/all-open-issues-20260823
+          fetch-depth: 0
+      - name: Apply exact source patches
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          def read(path):
+              return Path(path).read_text()
+          def write(path, text):
+              Path(path).write_text(text)
+          def replace_once(text, old, new, label):
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected one exact match, found {count}')
+              return text.replace(old, new, 1)
+          def sub_once(text, pattern, replacement, label, flags=0):
+              out, count = re.subn(pattern, replacement, text, count=1, flags=flags)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected one regex match, found {count}')
+              return out
+
+          # #1455: keep evidence fusion finite at both public boundaries.
+          path='js/evidence.js'; text=read(path)
+          marker="""export function evidenceKind(code) {
+            const e = EVIDENCE[code];
+            return e ? e.kind : 'inference';
+          }
+"""
+          replacement=marker+"""
+          function finiteStrength(value, fallback = 0) {
+            const n = Number(value);
+            return Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : fallback;
+          }
+          function finitePositiveLr(value, fallback = 1) {
+            const n = Number(value);
+            return Number.isFinite(n) && n > 0 ? n : fallback;
+          }
+"""
+          text=replace_once(text,marker,replacement,'evidence helpers')
+          text=replace_once(text,
+            "  const s = strength == null ? 1 : Math.max(0, Math.min(1, strength));\n",
+            "  const s = strength == null ? 1 : finiteStrength(strength, 0);\n  const fallbackLr = finitePositiveLr(info?.lr, 1);\n",
+            'evidence strength')
+          text=replace_once(text,
+            "    lr: lr != null && lr > 0 ? lr : (info ? info.lr : 1),\n",
+            "    lr: finitePositiveLr(lr, fallbackLr),\n",
+            'evidence lr')
+          text=replace_once(text,
+            "  const all = (items || []).filter((x) => x && x.code);\n",
+            "  const all = (items || []).filter((x) => x && x.code).map((x) => ({\n    ...x,\n    strength: finiteStrength(x.strength, x.strength == null ? 1 : 0),\n    lr: finitePositiveLr(x.lr, 1),\n  }));\n",
+            'fuse public-boundary normalization')
+          write(path,text)
+
+          # #1468: preserve move-wide constants as 64-bit BigInt and only expose safe factors.
+          path='js/schema.js'; text=read(path)
+          text=replace_once(text,
+            "  if (opc === 2) return { d: rd(w), kind: 'movz', value: imm16 * 2 ** shift };\n",
+            "  if (opc === 2) return { d: rd(w), kind: 'movz', value: BigInt(imm16) << BigInt(shift) };\n",
+            'schema movz bigint')
+          text=replace_once(text,
+            "  const konst = new Int32Array(32).fill(0);\n",
+            "  const konst = new BigUint64Array(32);\n",
+            'schema constant storage')
+          text=replace_once(text,
+            "      else if (known[mw.d]) konst[mw.d] |= mw.imm16 * 2 ** mw.shift;\n",
+            "      else if (known[mw.d]) {\n        const lane = 0xffffn << BigInt(mw.shift);\n        konst[mw.d] = (konst[mw.d] & ~lane) | (BigInt(mw.imm16) << BigInt(mw.shift));\n      }\n",
+            'schema movk bigint')
+          text=sub_once(text,
+            r"(const k = known\[other\] \? konst\[other\] : null;\n\s*)if \(k\) last\.mul = k;",
+            r"\1const safeK = k != null && k <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(k) : null;\n          if (safeK) last.mul = safeK;",
+            'schema safe multiplier')
+          write(path,text)
+
+          # #1471: every public ProgramIndex query gets a finite non-negative limit.
+          path='js/program.js'; text=read(path)
+          marker='function entryFromBounds('
+          if text.count(marker) != 1: raise SystemExit('program queryLimit insertion marker mismatch')
+          helper="""function queryLimit(value, fallback) {
+            if (value == null) return fallback;
+            if (typeof value !== 'number' && !(typeof value === 'string' && value.trim() !== '')) return fallback;
+            const n = Number(value);
+            return Number.isSafeInteger(n) && n >= 0 ? n : fallback;
+          }
+
+          """
+          text=text.replace(marker, helper+marker, 1)
+          for signature, default in [
+            ('callSitesTo(target, limit = 500)',500),
+            ('callersOf(target, limit = 200)',200),
+            ('calleesOf(start, end, limit = 200)',200),
+            ('refSitesTo(addr, span = 1n, limit = 500)',500),
+            ('functionsReferencing(addr, span = 1n, limit = 200)',200),
+            ('refsFrom(start, end, limit = 400)',400),
+            ('mostCalled(limit = 20)',20),
+          ]:
+              old=f'  {signature} {{\n'
+              new=old+f'    limit = queryLimit(limit, {default});\n'
+              text=replace_once(text,old,new,f'program {signature}')
+          write(path,text)
+
+          # #1516/#1517/#1518: JSON projection, confidence, and public address boundaries.
+          path='js/binary/model.js'; text=read(path)
+          marker="""function bigintOrNull(v) {
+            if (v == null) return null;
+            return typeof v === 'bigint' ? v : BigInt(v);
+          }
+"""
+          addition=marker+"""
+          function strictBigIntOrNull(value) {
+            if (typeof value === 'bigint') return value;
+            if (typeof value === 'number') return Number.isSafeInteger(value) ? BigInt(value) : null;
+            if (typeof value !== 'string' || value.trim() === '') return null;
+            try { return BigInt(value.trim()); } catch { return null; }
+          }
+
+          function finiteConfidence(value, fallback = 0.5) {
+            const n = Number(value);
+            return Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : fallback;
+          }
+"""
+          text=replace_once(text,marker,addition,'model helpers')
+          text=replace_once(text,"  addressToOffset(address) {\n    const a = BigInt(address);\n",
+            "  addressToOffset(address) {\n    const a = strictBigIntOrNull(address);\n    if (a === null) return null;\n",'model addressToOffset')
+          text=replace_once(text,"  offsetToAddress(offset) {\n    const o = BigInt(offset);\n",
+            "  offsetToAddress(offset) {\n    const o = strictBigIntOrNull(offset);\n    if (o === null) return null;\n",'model offsetToAddress')
+          text=replace_once(text,"  sectionAt(address) {\n    const a = BigInt(address);\n",
+            "  sectionAt(address) {\n    const a = strictBigIntOrNull(address);\n    if (a === null) return null;\n",'model sectionAt')
+          text=replace_once(text,"  segmentAt(address) {\n    const a = BigInt(address);\n",
+            "  segmentAt(address) {\n    const a = strictBigIntOrNull(address);\n    if (a === null) return null;\n",'model segmentAt')
+          text=replace_once(text,
+            "  resolveVirtualMapping(address) {\n    const a = (() => { try { return BigInt(address); } catch { return null; } })();\n",
+            "  resolveVirtualMapping(address) {\n    const a = strictBigIntOrNull(address);\n",
+            'model resolveVirtualMapping')
+          old="""    try {
+              current = BigInt(address);
+              remaining = typeof size === 'bigint' ? size : BigInt(size);
+            } catch {
+              return null;
+            }
+"""
+          new="""    current = strictBigIntOrNull(address);
+            remaining = strictBigIntOrNull(size);
+            if (current === null || remaining === null) return null;
+"""
+          text=replace_once(text,old,new,'model virtual read input')
+          text=replace_once(text,
+            "        for (const [k, x] of Object.entries(v)) out[k] = convert(x);\n",
+            "        for (const [k, x] of Object.entries(v)) Object.defineProperty(out, k, { value: convert(x), enumerable: true, configurable: true, writable: true });\n",
+            'model proto-safe JSON')
+          text=replace_once(text,
+            "  const confidence = Math.max(0, Math.min(1, Number(opts.confidence ?? 0.5)));\n",
+            "  const confidence = finiteConfidence(opts.confidence, 0.5);\n",
+            'model seed confidence')
+          text=replace_once(text,
+            "      : Math.max(0, Math.min(1, Number(opts.extentConfidence))),\n",
+            "      : finiteConfidence(opts.extentConfidence, 0.5),\n",
+            'model extent confidence')
+          text=replace_once(text,
+            "    const f = { ...f0, address: BigInt(f0.address) };\n",
+            "    const f = { ...f0, address: BigInt(f0.address), confidence: finiteConfidence(f0.confidence, 0.5), extentConfidence: f0.extentConfidence == null ? null : finiteConfidence(f0.extentConfidence, 0.5) };\n",
+            'model merge confidence')
+          write(path,text)
+
+          # #1573/#1575: scheduler numeric and dependency identity boundaries.
+          path='js/core/scheduler/analysis-scheduler.js'; text=read(path)
+          old="""function priorityValue(value) {
+            if (typeof value === 'string' && Object.hasOwn(ANALYSIS_PRIORITY, value)) return ANALYSIS_PRIORITY[value];
+            if (typeof value === 'string' && value.trim() === '') throw new TypeError('analysis-priority-invalid');
+            const n = Number(value ?? ANALYSIS_PRIORITY.current);
+            if (!Number.isSafeInteger(n) || n < 0) throw new TypeError('analysis-priority-invalid');
+            return n;
+          }
+"""
+          new="""function strictSafeInteger(value, fallback, code, min = 0) {
+            const raw = value == null ? fallback : value;
+            if (typeof raw !== 'number' && !(typeof raw === 'string' && raw.trim() !== '')) throw new TypeError(code);
+            const n = Number(raw);
+            if (!Number.isSafeInteger(n) || n < min) throw new TypeError(code);
+            return n;
+          }
+          function priorityValue(value) {
+            if (typeof value === 'string' && Object.hasOwn(ANALYSIS_PRIORITY, value)) return ANALYSIS_PRIORITY[value];
+            return strictSafeInteger(value, ANALYSIS_PRIORITY.current, 'analysis-priority-invalid');
+          }
+"""
+          text=replace_once(text,old,new,'scheduler priority')
+          text=replace_once(text,
+            "  const expected = [...(request.descriptor?.upstreamArtifactIds || [])].map(String).sort();\n",
+            "  const upstream = request.descriptor?.upstreamArtifactIds;\n  if (upstream != null && !Array.isArray(upstream)) throw new SchedulerDependencyIdentityError(artifactId, [String(upstream)], actual);\n  const expected = (upstream || []).map(String).sort();\n",
+            'scheduler upstream ids')
+          text=replace_once(text,
+            "    if (!Number.isSafeInteger(Number(starvationInterval)) || Number(starvationInterval) <= 0) throw new TypeError('scheduler-starvation-interval-invalid');\n    this.store=store; this.maxConcurrency=maxConcurrency; this.starvationInterval=Number(starvationInterval); this.defaultBudget=defaultBudget;\n",
+            "    const normalizedStarvationInterval = strictSafeInteger(starvationInterval, 8, 'scheduler-starvation-interval-invalid', 1);\n    this.store=store; this.maxConcurrency=maxConcurrency; this.starvationInterval=normalizedStarvationInterval; this.defaultBudget=defaultBudget;\n",
+            'scheduler starvation interval')
+          write(path,text)
+          PY
+          node --check js/evidence.js
+          node --check js/schema.js
+          node --check js/program.js
+          node --check js/binary/model.js
+          node --check js/core/scheduler/analysis-scheduler.js
+      - name: Commit patches and remove temporary workflow
+        shell: bash
+        run: |
+          rm .github/workflows/temporary-open-issue-patches.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add js/evidence.js js/schema.js js/program.js js/binary/model.js js/core/scheduler/analysis-scheduler.js .github/workflows/temporary-open-issue-patches.yml
+          git diff --cached --check
+          git commit -m "fix: apply remaining large-file issue patches"
+          git push origin HEAD:fix/all-open-issues-20260823
