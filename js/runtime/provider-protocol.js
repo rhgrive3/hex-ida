@@ -16,16 +16,21 @@ function byteSize(value) {
   return typeof TextEncoder !== 'undefined' ? new TextEncoder().encode(json).byteLength : json.length * 2;
 }
 
-function positiveId(value, name = 'id') {
+function protocolInteger(value, name, min = 1) {
+  if (typeof value !== 'number' && !(typeof value === 'string' && value.trim() !== '')) {
+    throw new DebugAdapterError('malformed-provider-data', `${name} must be a positive safe integer`);
+  }
   const n = Number(value);
-  if (!Number.isSafeInteger(n) || n < 1) throw new DebugAdapterError('malformed-provider-data', `${name} must be a positive safe integer`);
+  if (!Number.isSafeInteger(n) || n < min) throw new DebugAdapterError('malformed-provider-data', `${name} must be a positive safe integer`);
   return n;
 }
 
+function positiveId(value, name = 'id') {
+  return protocolInteger(value, name, 1);
+}
+
 function epoch(value) {
-  const n = Number(value);
-  if (!Number.isSafeInteger(n) || n < 1) throw new DebugAdapterError('malformed-provider-data', 'provider epoch must be a positive safe integer');
-  return n;
+  return protocolInteger(value, 'provider epoch', 1);
 }
 
 function facet(value) {

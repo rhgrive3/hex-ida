@@ -4,7 +4,13 @@ import { GROUP } from '../evidence.js';
 function nowIso() { return new Date().toISOString(); }
 function safeConfidence(value, fallback = 0.5) { const n=Number(value); return Number.isFinite(n) ? Math.max(0,Math.min(1,n)) : fallback; }
 function idPart(value) { return String(value == null ? '' : value).replace(/[^a-zA-Z0-9_.:-]/g,'_').slice(0,160); }
-function sameAddress(a,b) { try { return BigInt(a) === BigInt(b); } catch { return false; } }
+function addressValue(value) {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number') return Number.isSafeInteger(value) ? BigInt(value) : null;
+  if (typeof value !== 'string' || value.trim() === '') return null;
+  try { return BigInt(value.trim()); } catch { return null; }
+}
+function sameAddress(a,b) { const left=addressValue(a); const right=addressValue(b); return left != null && right != null && left === right; }
 const VERDICT_PRIORITY = Object.freeze({ unsupported:0, inconclusive:1, supported:2, confirmed:3, contradicted:4 });
 function verdictPriority(value) { return VERDICT_PRIORITY[value] ?? 1; }
 
@@ -34,9 +40,6 @@ export function evidenceFromExperiment({ experiment, testCase, observation, comp
 }
 
 function attachFactExtractionMetadata(facts, metadata) {
-  // Preserve the original Array API (`map`, `some`, `length`, iteration) while
-  // exposing the new completeness contract. `facts` is non-enumerable so JSON
-  // serialization remains the historical plain array and cannot become cyclic.
   Object.defineProperty(facts, 'facts', { value:facts, enumerable:false, configurable:false, writable:false });
   for (const [key, value] of Object.entries(metadata)) {
     Object.defineProperty(facts, key, { value, enumerable:false, configurable:false, writable:false });
@@ -82,12 +85,11 @@ export function traceToSemanticFacts(trace, context = {}) {
 }
 
 export function compareRuntimeDispatch(staticTargets, runtimeEvent) {
-  const candidates = (Array.isArray(staticTargets) ? staticTargets : [staticTargets]).filter((v) => v != null).map((v) => {
-    try { return typeof v === 'bigint' ? v : BigInt(v); } catch { return null; }
-  }).filter((v) => v != null);
+  const candidates = (Array.isArray(staticTargets) ? staticTargets : [staticTargets]).filter((v) => v != null).map(addressValue).filter((v) => v != null);
   const observedRaw = runtimeEvent && (runtimeEvent.imp ?? runtimeEvent.witnessTarget ?? runtimeEvent.vtableTarget ?? runtimeEvent.target);
   if (observedRaw == null) return { status:'inconclusive', observed:null, candidates };
-  let observed; try { observed = typeof observedRaw === 'bigint' ? observedRaw : BigInt(observedRaw); } catch { return { status:'inconclusive', observed:null, candidates }; }
+  const observed = addressValue(observedRaw);
+  if (observed == null) return { status:'inconclusive', observed:null, candidates };
   if (!candidates.length) return { status:'inconclusive', observed, candidates, reason:'runtime-target-observed-without-static-candidate' };
   return candidates.some((c) => c === observed)
     ? { status:'supported', observed, candidates, reason:'runtime-target-matches-static-candidate' }
