@@ -108,7 +108,7 @@ export class ByteView {
 
   cstring(offset, max = 1 << 20) {
     const o = this.check(offset, 0);
-    const end = Math.min(this.length, o + Math.max(0, finiteBound(max, 1 << 20)));
+    const end = Math.min(this.length, o + Math.max(0, Math.floor(finiteBound(max, 1 << 20))));
     let raw;
     if (this.view) {
       const span = this.bytes.subarray(o, end);
