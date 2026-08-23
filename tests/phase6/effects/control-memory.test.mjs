@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { architecturePluginV2 } from '../../../js/targets/architecture/index.js';
+import { classifyMachineEffectsCoverage } from '../../../js/targets/architecture/coverage.js';
 import { evaluateBundle, liftBytes, s64, u64 } from './helpers.mjs';
 
 function bType(funct3, rs1, rs2, offset) {
@@ -167,4 +168,14 @@ test('fence records its exact predecessor and successor sets', () => {
   assert.ok(barrier);
   assert.deepEqual(barrier.scope.predecessor, ['read', 'write']);
   assert.deepEqual(barrier.scope.successor, ['read', 'write']);
+});
+
+test('FENCE.I remains unsupported outside the frozen RV64IMC profile', () => {
+  // FENCE.I is the Zifencei extension, not the profile's I/M/C contract.
+  const { decoded, bundle } = liftBytes([0x0f, 0x10, 0x00, 0x00]);
+  assert.equal(decoded.fields.supported, false);
+  assert.equal(decoded.fields.extension, 'Zifencei');
+  assert.equal(decoded.fields.reason, 'riscv64-zifencei-outside-phase6-profile');
+  assert.equal(bundle, null, 'out-of-profile FENCE.I must never become an exact MachineEffects bundle');
+  assert.equal(classifyMachineEffectsCoverage('riscv64', decoded).status, 'unsupported');
 });

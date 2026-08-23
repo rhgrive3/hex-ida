@@ -174,7 +174,7 @@ function decodeUncompressed(word) {
     }
     case 0x0f: {
       if (funct3 === 0) return { ...base, op: 'fence', format: 'I', predecessor: bits(word, 27, 24), successor: bits(word, 23, 20), fenceMode: bits(word, 31, 28) };
-      if (funct3 === 1) return { ...base, op: 'fence.i', format: 'I', extension: 'Zifencei' };
+      if (funct3 === 1) return unsupported('riscv64-zifencei-outside-phase6-profile', { opcode, funct3, extension: 'Zifencei' });
       return unsupported('riscv64-reserved-misc-mem-funct3', { opcode, funct3 });
     }
     case 0x73: {
