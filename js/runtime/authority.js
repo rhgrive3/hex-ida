@@ -2,12 +2,51 @@ import { deepFreeze, stableDigest } from '../core/identity/index.js';
 import { DEBUG_CAPABILITIES } from '../debug/adapter.js';
 
 export const RUNTIME_AUTHORITY_SCHEMA = 'hex-runtime-authority/v1';
+export const RUNTIME_OBSERVATION_SCHEMA = 'hex-runtime-observation/v1';
 const DEBUG_CAPABILITY_SET = new Set(DEBUG_CAPABILITIES);
 
+// These are the locked Stage 2 profiles.  A runtime proof is an authority
+// boundary, so accepting an arbitrary caller supplied profile label would let
+// a provider mint a new profile merely by naming it.
+const NATIVE_TARGET_PROFILES = new Set(['arm64:a64', 'arm64e:a64+pac', 'x86_64:long-64', 'riscv64:rv64imc']);
+const PROVIDER_PROFILE_PATTERNS = Object.freeze([
+  /^native:(?:remote-debug|lldb-compatible|frida-compatible|replay)-v1(?::[a-z0-9][a-z0-9._-]{0,63})?$/i,
+  /^managed:(?:wasm|dex|cil|jvm):provider-bound-runtime-v1(?::[a-z0-9][a-z0-9._-]{0,63})?$/i,
+]);
+const MANAGED_TARGET_PROFILE = /^managed:(?:wasm|dex|cil|jvm):m6$/;
+const BINDING_FIELDS = Object.freeze([
+  'schemaVersion', 'providerIdentity', 'providerProfileId', 'providerVersion',
+  'runtimeInstanceIdentity', 'targetIdentity', 'targetProfileId',
+  'architectureProfileId', 'binaryIdentity', 'buildIdentity',
+  'runtimeBuildIdentity', 'moduleIdentity', 'loadMappingIdentity',
+  'sessionIdentity', 'capabilityVersion', 'commitSha', 'treeSha', 'epoch',
+]);
+const OBSERVATION_FIELDS = Object.freeze([
+  'schemaVersion', 'bindingId', 'providerIdentity', 'providerProfileId',
+  'providerVersion', 'runtimeInstanceIdentity', 'targetIdentity',
+  'targetProfileId', 'architectureProfileId', 'binaryIdentity',
+  'buildIdentity', 'runtimeBuildIdentity', 'moduleIdentity',
+  'loadMappingIdentity', 'sessionIdentity', 'capabilityVersion', 'commitSha',
+  'treeSha', 'epoch', 'sequence', 'observedAt', 'kind', 'payload', 'authority',
+]);
+
 function required(value, code) {
-  const text = String(value ?? '').trim();
+  if (typeof value !== 'string') throw new TypeError(code);
+  const text = value.trim();
   if (!text) throw new TypeError(code);
   return text;
+}
+
+function optional(value, code) {
+  if (value == null) return null;
+  return required(value, code);
+}
+
+function identityAlias(input, primary, alias, code) {
+  const first = input[primary] == null ? null : required(input[primary], code);
+  const second = input[alias] == null ? null : required(input[alias], code);
+  if (first != null && second != null && first !== second) throw new TypeError('runtime-identity-alias-mismatch');
+  return first ?? second;
 }
 
 function numericPrimitive(value, code) {
@@ -42,39 +81,116 @@ function capabilityList(value) {
   return out;
 }
 
-export function createRuntimeAuthorityBinding(input = {}) {
-  const binding = {
+function bindingPayload(input = {}) {
+  const targetProfileId = identityAlias(input, 'targetProfileId', 'architectureProfileId', 'runtime-target-profile-required');
+  const buildIdentity = identityAlias(input, 'buildIdentity', 'runtimeBuildIdentity', 'runtime-build-identity-invalid');
+  return {
     schemaVersion: RUNTIME_AUTHORITY_SCHEMA,
     providerIdentity: required(input.providerIdentity, 'runtime-provider-identity-required'),
+    providerProfileId: optional(input.providerProfileId, 'runtime-provider-profile-invalid'),
+    providerVersion: optional(input.providerVersion, 'runtime-provider-version-invalid'),
     runtimeInstanceIdentity: required(input.runtimeInstanceIdentity, 'runtime-instance-identity-required'),
     targetIdentity: required(input.targetIdentity ?? input.processIdentity, 'runtime-target-identity-required'),
+    targetProfileId,
+    architectureProfileId: targetProfileId,
     binaryIdentity: required(input.binaryIdentity ?? input.binaryHash, 'runtime-binary-identity-required'),
+    buildIdentity,
+    runtimeBuildIdentity: buildIdentity,
     moduleIdentity: required(input.moduleIdentity, 'runtime-module-identity-required'),
     loadMappingIdentity: required(input.loadMappingIdentity, 'runtime-load-mapping-identity-required'),
     sessionIdentity: required(input.sessionIdentity ?? input.sessionId, 'runtime-session-identity-required'),
     capabilityVersion: required(input.capabilityVersion, 'runtime-capability-version-required'),
+    commitSha: optional(input.commitSha ?? input.sourceCommitSha, 'runtime-commit-identity-invalid'),
+    treeSha: optional(input.treeSha ?? input.sourceTreeSha, 'runtime-tree-identity-invalid'),
     epoch: uint(input.epoch ?? 0, 'runtime-epoch-invalid'),
   };
-  return deepFreeze({ ...binding, bindingId: `runtime-binding:${stableDigest(binding)}` });
+}
+
+function bindingIdFor(binding) {
+  const payload = {};
+  for (const field of BINDING_FIELDS) if (field !== 'schemaVersion' || binding[field] != null) payload[field] = binding[field];
+  return `runtime-binding:${stableDigest(payload)}`;
+}
+
+function canonicalBinding(input, { throwOnError = true } = {}) {
+  try {
+    if (!input || typeof input !== 'object' || Array.isArray(input)) throw new TypeError('runtime-binding-schema-invalid');
+    if (input.schemaVersion != null && input.schemaVersion !== RUNTIME_AUTHORITY_SCHEMA) throw new TypeError('runtime-binding-schema-invalid');
+    const binding = bindingPayload(input);
+    const expectedId = bindingIdFor(binding);
+    if (input.schemaVersion === RUNTIME_AUTHORITY_SCHEMA && input.bindingId !== expectedId) throw new TypeError('runtime-binding-identity-invalid');
+    return deepFreeze({ ...binding, bindingId: expectedId });
+  } catch (error) {
+    if (throwOnError) throw error;
+    return null;
+  }
+}
+
+function observationIdentity(observation) {
+  const payload = {};
+  for (const field of OBSERVATION_FIELDS) payload[field] = observation[field];
+  return `runtime-observation:${stableDigest(payload)}`;
+}
+
+function profileAllowed(value) {
+  const text = String(value ?? '').trim();
+  return PROVIDER_PROFILE_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+function targetProfileAllowed(value) {
+  const text = String(value ?? '').trim();
+  return NATIVE_TARGET_PROFILES.has(text) || MANAGED_TARGET_PROFILE.test(text);
+}
+
+function mismatchReason(binding, providerProfileId, targetProfileId, expectedBuildIdentity, proof = {}) {
+  const boundProviderProfileId = binding.providerProfileId;
+  const boundTargetProfileId = binding.targetProfileId;
+  const proofProviderProfileId = proof.providerProfileId == null ? null : String(proof.providerProfileId).trim();
+  const proofTargetProfileId = proof.targetProfileId == null ? null : String(proof.targetProfileId).trim();
+  const proofProviderIdentity = proof.providerIdentity == null ? null : String(proof.providerIdentity).trim();
+  const proofBuildIdentity = proof.buildIdentity ?? proof.runtimeBuildIdentity ?? null;
+  if (!profileAllowed(providerProfileId)) return 'runtime-provider-profile-unsupported';
+  if (!targetProfileAllowed(targetProfileId)) return 'runtime-target-profile-unsupported';
+  if (boundProviderProfileId !== providerProfileId) return 'runtime-provider-profile-mismatch';
+  if (boundTargetProfileId !== targetProfileId) return 'runtime-target-profile-mismatch';
+  if (proofProviderProfileId != null && proofProviderProfileId !== providerProfileId) return 'runtime-proof-provider-profile-mismatch';
+  if (proofTargetProfileId != null && proofTargetProfileId !== targetProfileId) return 'runtime-proof-target-profile-mismatch';
+  if (proofProviderIdentity != null && proofProviderIdentity !== binding.providerIdentity) return 'runtime-proof-provider-identity-mismatch';
+  if (expectedBuildIdentity != null && binding.buildIdentity !== String(expectedBuildIdentity)) return 'runtime-build-identity-mismatch';
+  if (proofBuildIdentity != null && String(proofBuildIdentity) !== binding.buildIdentity) return 'runtime-proof-build-identity-mismatch';
+  return null;
+}
+
+export function createRuntimeAuthorityBinding(input = {}) {
+  // The factory creates a new authority record.  A caller may spread an
+  // existing record while advancing an epoch or replacing a session, so an
+  // old schema/id pair is input metadata rather than an assertion here.
+  return canonicalBinding({ ...input, schemaVersion: undefined, bindingId: undefined });
 }
 
 export function createRuntimeObservation(input = {}) {
-  const binding = input.binding?.schemaVersion === RUNTIME_AUTHORITY_SCHEMA
-    ? input.binding
-    : createRuntimeAuthorityBinding(input.binding || input);
+  const binding = canonicalBinding(input.binding || input);
   const sequence = uint(input.sequence, 'runtime-observation-sequence-invalid');
   const observedAt = required(input.observedAt ?? input.timestamp, 'runtime-observation-timestamp-required');
   const observation = {
-    schemaVersion: 'hex-runtime-observation/v1',
+    schemaVersion: RUNTIME_OBSERVATION_SCHEMA,
     bindingId: binding.bindingId,
     providerIdentity: binding.providerIdentity,
+    providerProfileId: binding.providerProfileId,
+    providerVersion: binding.providerVersion,
     runtimeInstanceIdentity: binding.runtimeInstanceIdentity,
     targetIdentity: binding.targetIdentity,
+    targetProfileId: binding.targetProfileId,
+    architectureProfileId: binding.architectureProfileId,
     binaryIdentity: binding.binaryIdentity,
+    buildIdentity: binding.buildIdentity,
+    runtimeBuildIdentity: binding.runtimeBuildIdentity,
     moduleIdentity: binding.moduleIdentity,
     loadMappingIdentity: binding.loadMappingIdentity,
     sessionIdentity: binding.sessionIdentity,
     capabilityVersion: binding.capabilityVersion,
+    commitSha: binding.commitSha,
+    treeSha: binding.treeSha,
     epoch: binding.epoch,
     sequence,
     observedAt,
@@ -82,28 +198,30 @@ export function createRuntimeObservation(input = {}) {
     payload: clone(input.payload ?? null),
     authority: 'runtime-evidence',
   };
-  return deepFreeze({ ...observation, observationId: `runtime-observation:${stableDigest(observation)}` });
+  return deepFreeze({ ...observation, observationId: observationIdentity(observation) });
 }
 
 export function validateRuntimeObservation(bindingInput, observation, options = {}) {
-  const binding = bindingInput?.schemaVersion === RUNTIME_AUTHORITY_SCHEMA
-    ? bindingInput
-    : createRuntimeAuthorityBinding(bindingInput || {});
-  if (!observation || observation.schemaVersion !== 'hex-runtime-observation/v1') return { ok: false, reason: 'runtime-observation-schema-invalid' };
-  const identityKeys = ['bindingId', 'providerIdentity', 'runtimeInstanceIdentity', 'targetIdentity', 'binaryIdentity', 'moduleIdentity', 'loadMappingIdentity', 'sessionIdentity', 'capabilityVersion', 'epoch'];
+  const binding = canonicalBinding(bindingInput || {}, { throwOnError: false });
+  if (!binding) return { ok: false, reason: 'runtime-binding-identity-invalid' };
+  if (!observation || typeof observation !== 'object' || observation.schemaVersion !== RUNTIME_OBSERVATION_SCHEMA) return { ok: false, reason: 'runtime-observation-schema-invalid' };
+  if (observation.authority !== 'runtime-evidence') return { ok: false, reason: 'runtime-observation-authority-invalid' };
+  const identityKeys = ['bindingId', 'providerIdentity', 'providerProfileId', 'providerVersion', 'runtimeInstanceIdentity', 'targetIdentity', 'targetProfileId', 'architectureProfileId', 'binaryIdentity', 'buildIdentity', 'runtimeBuildIdentity', 'moduleIdentity', 'loadMappingIdentity', 'sessionIdentity', 'capabilityVersion', 'commitSha', 'treeSha', 'epoch'];
   for (const key of identityKeys) {
     if (observation[key] !== binding[key]) return { ok: false, reason: `runtime-observation-${key}-mismatch`, expected: binding[key], observed: observation[key] };
   }
+  if (typeof observation.sequence !== 'number' || !Number.isSafeInteger(observation.sequence) || observation.sequence < 0) return { ok: false, reason: 'runtime-observation-sequence-invalid' };
+  if (typeof observation.observedAt !== 'string' || !observation.observedAt.trim()) return { ok: false, reason: 'runtime-observation-timestamp-required' };
+  if (typeof observation.kind !== 'string' || !observation.kind.trim()) return { ok: false, reason: 'runtime-observation-kind-required' };
+  if (observation.observationId !== observationIdentity(observation)) return { ok: false, reason: 'runtime-observation-identity-invalid' };
   const minimumSequence = options.minimumSequence == null ? 0 : uint(options.minimumSequence, 'runtime-minimum-sequence-invalid');
-  if (!Number.isSafeInteger(observation.sequence) || observation.sequence < minimumSequence) return { ok: false, reason: 'runtime-observation-stale-sequence' };
+  if (observation.sequence < minimumSequence) return { ok: false, reason: 'runtime-observation-stale-sequence' };
   return { ok: true, binding, observation };
 }
 
 export class RuntimeAuthorityTracker {
   constructor(bindingInput, options = {}) {
-    this.binding = bindingInput?.schemaVersion === RUNTIME_AUTHORITY_SCHEMA
-      ? bindingInput
-      : createRuntimeAuthorityBinding(bindingInput || {});
+    this.binding = canonicalBinding(bindingInput || {});
     this.lastSequence = -1;
     this.closed = false;
     this.maxObservations = boundedCount(options.maxObservations, 1024, 4096, 'runtime-max-observations-invalid');
@@ -112,7 +230,12 @@ export class RuntimeAuthorityTracker {
 
   accept(input) {
     if (this.closed) return Object.freeze({ status: 'rejected', reason: 'runtime-tracker-closed' });
-    const observation = input?.schemaVersion === 'hex-runtime-observation/v1' ? input : createRuntimeObservation({ ...input, binding: this.binding });
+    let observation;
+    try {
+      observation = input?.schemaVersion === RUNTIME_OBSERVATION_SCHEMA ? input : createRuntimeObservation({ ...input, binding: this.binding });
+    } catch (error) {
+      return Object.freeze({ status: 'rejected', reason: error?.message || 'runtime-observation-invalid' });
+    }
     const checked = validateRuntimeObservation(this.binding, observation, { minimumSequence: this.lastSequence + 1 });
     if (!checked.ok) return Object.freeze({ status: 'rejected', reason: checked.reason });
     this.lastSequence = observation.sequence;
@@ -151,8 +274,19 @@ export class RuntimeAuthorityTracker {
   }
 }
 
-export function runtimeProfileSupport({ binding, providerProfileId = null, targetProfileId = null, providerCapabilities = {}, requiredCapabilities = [], proof = {} } = {}) {
-  const hasBinding = binding?.schemaVersion === RUNTIME_AUTHORITY_SCHEMA;
+export function runtimeProfileSupport({
+  binding,
+  providerProfileId = null,
+  targetProfileId = null,
+  providerCapabilities = {},
+  requiredCapabilities = [],
+  proof = {},
+  expectedHeadSha = null,
+  expectedTreeSha = null,
+  expectedBuildIdentity = null,
+} = {}) {
+  const canonical = canonicalBinding(binding || {}, { throwOnError: false });
+  const hasBinding = canonical != null;
   const declared = capabilityList(requiredCapabilities);
   const missing = declared.filter((key) => providerCapabilities[key] !== true);
   const proofComplete = proof.exactHead === true
@@ -164,20 +298,40 @@ export function runtimeProfileSupport({ binding, providerProfileId = null, targe
     && proof.mutationAuthorityTests === true;
   const normalizedProviderProfileId = providerProfileId == null ? null : String(providerProfileId).trim();
   const normalizedTargetProfileId = targetProfileId == null ? null : String(targetProfileId).trim();
+  let reason = null;
+  if (!hasBinding) reason = 'runtime-binding-identity-invalid';
+  else if (!normalizedProviderProfileId || !normalizedTargetProfileId) reason = 'runtime-profile-identity-required';
+  else reason = mismatchReason(canonical, normalizedProviderProfileId, normalizedTargetProfileId, expectedBuildIdentity, proof);
+
+  // A profile proof is only current when its head/tree agrees with both the
+  // authority record and any caller-supplied expected revision.  A boolean
+  // exactHead flag alone is not an identity.
+  if (!reason && hasBinding) {
+    const proofHeadSha = proof.headSha ?? proof.commitSha ?? null;
+    const proofTreeSha = proof.treeSha ?? null;
+    const expectedHead = expectedHeadSha ?? proof.expectedHeadSha ?? null;
+    const expectedTree = expectedTreeSha ?? proof.expectedTreeSha ?? null;
+    if (expectedHead != null && (canonical.commitSha !== String(expectedHead) || proofHeadSha == null || String(proofHeadSha) !== String(expectedHead))) reason = 'runtime-proof-stale-head';
+    else if (expectedTree != null && (canonical.treeSha !== String(expectedTree) || proofTreeSha == null || String(proofTreeSha) !== String(expectedTree))) reason = 'runtime-proof-stale-tree';
+    else if (canonical.commitSha != null && proofHeadSha != null && String(proofHeadSha) !== canonical.commitSha) reason = 'runtime-proof-stale-head';
+    else if (canonical.treeSha != null && proofTreeSha != null && String(proofTreeSha) !== canonical.treeSha) reason = 'runtime-proof-stale-tree';
+  }
   const proven = hasBinding
-    && !!normalizedProviderProfileId
-    && !!normalizedTargetProfileId
     && declared.length > 0
     && missing.length === 0
-    && proofComplete;
+    && proofComplete
+    && !reason
+    && canonical.buildIdentity != null;
   return Object.freeze({
     status: proven ? 'supported-for-exact-provider-profile' : hasBinding ? 'partial' : 'unavailable',
-    bindingId: hasBinding ? binding.bindingId : null,
+    bindingId: hasBinding ? canonical.bindingId : null,
     providerProfileId: normalizedProviderProfileId || null,
     targetProfileId: normalizedTargetProfileId || null,
     requiredCapabilities: Object.freeze(declared),
     missingCapabilities: Object.freeze(missing),
     proofComplete,
+    buildIdentity: hasBinding ? canonical.buildIdentity : null,
+    reason,
     authority: proven ? 'runtime-evidence-bound' : 'none',
   });
 }
