@@ -15,6 +15,11 @@ function safeNumber(value) {
   return Number(value);
 }
 
+function finiteLimit(value, fallback) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
 function align(value, alignment) {
   return Math.ceil(value / alignment) * alignment;
 }
@@ -70,12 +75,14 @@ export function parseAarch64GnuProperty(input, options = {}) {
   let phnum = bits === 64 ? r.u16(56) : r.u16(44);
   const phoffNumber = safeNumber(phoff);
   const minPh = bits === 64 ? 56 : 32;
+  const maxProgramHeaders = finiteLimit(options.maxProgramHeaders ?? 4096, 4096);
+  const maxPropertyBytes = finiteLimit(options.maxPropertyBytes ?? 1024 * 1024, 1024 * 1024);
   const warnings = [];
   if (phnum === PN_XNUM) {
     warnings.push('extended ELF program-header count is not re-read by the bounded GNU property parser');
     return defaultResult({ loaderPolicy:'unknown', btiRequested:null, pacRequested:null, warnings:Object.freeze(warnings) });
   }
-  if (phoffNumber == null || phentsize < minPh || phnum > (options.maxProgramHeaders ?? 4096)
+  if (phoffNumber == null || phentsize < minPh || phnum > maxProgramHeaders
       || !boundedSpan(phoffNumber, phnum * phentsize, bytes.byteLength)) {
     warnings.push('ELF program-header table is unavailable or outside bounded input');
     return defaultResult({ loaderPolicy:'unknown', btiRequested:null, pacRequested:null, warnings:Object.freeze(warnings) });
@@ -89,7 +96,7 @@ export function parseAarch64GnuProperty(input, options = {}) {
     if (type !== PT_GNU_PROPERTY) continue;
     const offset = safeNumber(bits === 64 ? r.u64(p + 8) : BigInt(r.u32(p + 4)));
     const filesz = safeNumber(bits === 64 ? r.u64(p + 32) : BigInt(r.u32(p + 16)));
-    if (offset == null || filesz == null || filesz > (options.maxPropertyBytes ?? 1024 * 1024)
+    if (offset == null || filesz == null || filesz > maxPropertyBytes
         || !boundedSpan(offset, filesz, bytes.byteLength)) {
       warnings.push(`PT_GNU_PROPERTY ${index} is outside bounded input`);
       continue;
