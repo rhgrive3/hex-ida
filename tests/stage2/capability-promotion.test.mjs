@@ -10,6 +10,7 @@ import { validatedCapabilityProofFixture } from './helpers/profile-proof-fixture
 import { RemoteCollaborationGate, remoteCollaborationSupport } from '../../js/collaboration/remote-authority.js';
 import { createRuntimeAuthorityBinding, runtimeProfileSupport } from '../../js/runtime/authority.js';
 import { createManagedRuntimeBinding, managedRuntimeProfileSupport } from '../../js/managed/runtime-binding.js';
+import { validatedRebuildSupportFixture } from './helpers/rebuild-proof-fixture.mjs';
 
 const { validation, proofs } = validatedCapabilityProofFixture();
 assert.throws(() => createStage2CapabilityProofs({ ...validation }), /validation-authority-required/, 'a copied validation result has no promotion authority');
@@ -71,16 +72,19 @@ assert.notEqual(stage2ManagedMaturity('jvm', { runtimeProof: { ...jvmRuntime, fr
 
 const machoStage1 = { status: 'stage1-proven', exactHead: true, fullySatisfiedLevel: 'F5', profileIds: ['macho:64'] };
 const machoRebuild = { status: 'supported-for-exact-rebuild-profile', format: 'macho', formatCoverageComplete: true, formatProfileIds: ['macho:64'] };
-const macho = stage2FormatMaturity('macho', { stage1Proof: machoStage1, rebuildProof: machoRebuild, profileProof: proofs['S2-F6-MACHO'] });
+const validatedMachoRebuild = await validatedRebuildSupportFixture('macho', proofs['S2-F6-MACHO']);
+const macho = stage2FormatMaturity('macho', { stage1Proof: machoStage1, rebuildProof: validatedMachoRebuild, profileProof: proofs['S2-F6-MACHO'] });
 assert.equal(macho.level, 'F6');
 assert.equal(macho.status, 'supported');
 assert.equal(macho.features.validatedRebuildPatch, 'supported');
+assert.notEqual(stage2FormatMaturity('macho', { stage1Proof: machoStage1, rebuildProof: { ...validatedMachoRebuild }, profileProof: proofs['S2-F6-MACHO'] }).level, 'F6', 'copied rebuild support must not retain publication authority');
 assert.notEqual(stage2FormatMaturity('macho', { stage1Proof: { verdict: 'READY' }, rebuildProof: machoRebuild }).level, 'F6');
 assert.notEqual(stage2FormatMaturity('macho', { stage1Proof: machoStage1, rebuildProof: { ...machoRebuild, formatCoverageComplete: false } }).level, 'F6');
 
 const peStage1 = { status: 'stage1-proven', exactHead: true, fullySatisfiedLevel: 'F4', profileIds: ['pe:pe32', 'pe:pe32+'] };
 const peRebuild = { status: 'supported-for-exact-rebuild-profile', format: 'pe', formatCoverageComplete: true, formatProfileIds: ['pe:pe32', 'pe:pe32+'] };
-const pe = stage2FormatMaturity('pe', { stage1Proof: peStage1, rebuildProof: peRebuild, profileProof: proofs['S2-F6-PE'] });
+const validatedPeRebuild = await validatedRebuildSupportFixture('pe', proofs['S2-F6-PE']);
+const pe = stage2FormatMaturity('pe', { stage1Proof: peStage1, rebuildProof: validatedPeRebuild, profileProof: proofs['S2-F6-PE'] });
 assert.equal(pe.features.validatedRebuildPatch, 'supported');
 assert.equal(pe.fullySatisfiedLevel, 'F4', 'PE cannot claim cumulative F6 while F5 remains unsupported');
 assert.equal(pe.status, 'partial');
@@ -102,7 +106,7 @@ const phase12 = stage2Phase12Maturity({
   rulesProof: { deterministic: true, partialPropagationTests: true, dependencyTests: true, requiredFeatureTests: true, resourceBudgetTests: true },
   patternProof: { deterministic: true, bounded: true, noArbitraryJavaScript: true, truncationTests: true },
   remoteCollaborationProof,
-  rebuildProof: machoRebuild,
+  rebuildProof: validatedMachoRebuild,
 });
 assert.equal(phase12.knowledgePackages.status, 'supported');
 assert.equal(phase12.capabilityRules.status, 'supported');

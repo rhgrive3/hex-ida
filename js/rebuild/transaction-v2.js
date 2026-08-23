@@ -12,6 +12,7 @@ const FORMAT_PROFILES = Object.freeze({
   pe: Object.freeze(['pe:pe32', 'pe:pe32+']),
 });
 const BYTE_HASH_RE = /^bytes:[0-9a-f]{32}$/;
+const VALID_REBUILD_PROFILE_SUPPORT = new WeakSet();
 
 function required(value, code) {
   const text = String(value ?? '').trim();
@@ -627,7 +628,7 @@ export function rebuildProfileSupport({ transaction, validation, publication, pr
     && proof.realFixture === true
     && formatCoverageComplete
     && exactCandidateIdentity;
-  return deepFreeze({
+  const result = deepFreeze({
     format: transaction?.format || null,
     architecture: transaction?.architecture || null,
     operationClass: transaction?.sizeDelta === 0 ? 'same-size' : transaction?.sizeDelta > 0 ? 'growth' : 'shrink',
@@ -639,4 +640,10 @@ export function rebuildProfileSupport({ transaction, validation, publication, pr
     status: exact ? 'supported-for-exact-rebuild-profile' : 'unsupported',
     authority: exact ? 'L4-validated-atomic-publication' : 'L3-plan-only',
   });
+  if (exact) VALID_REBUILD_PROFILE_SUPPORT.add(result);
+  return result;
+}
+
+export function isValidatedRebuildProfileSupport(value) {
+  return !!value && VALID_REBUILD_PROFILE_SUPPORT.has(value) && value.status === 'supported-for-exact-rebuild-profile';
 }

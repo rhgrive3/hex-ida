@@ -3,6 +3,7 @@ import { isValidatedStage2CapabilityProof } from './stage2-profile-evidence.js';
 import { isValidatedRemoteCollaborationSupport } from '../collaboration/remote-authority.js';
 import { isValidatedRuntimeProfileSupport } from '../runtime/authority.js';
 import { isValidatedManagedRuntimeProfileSupport } from '../managed/runtime-binding.js';
+import { isValidatedRebuildProfileSupport } from '../rebuild/transaction-v2.js';
 
 const ARCH_PROFILE = Object.freeze({
   arm64: 'arm64:a64',
@@ -137,7 +138,7 @@ function stage1FormatBase(format, options = {}) {
 export function stage2FormatMaturity(format, options = {}) {
   const base = stage1FormatBase(format, options);
   const profiles = profileValue(FORMAT_PROFILES, base.id) || [];
-  const rebuildSupported = supportedProof(options.rebuildProof, 'supported-for-exact-rebuild-profile')
+  const rebuildSupported = isValidatedRebuildProfileSupport(options.rebuildProof)
     && options.rebuildProof?.format === base.id
     && options.rebuildProof?.formatCoverageComplete === true
     && includesAll(options.rebuildProof?.formatProfileIds, profiles)
@@ -183,7 +184,7 @@ export function stage2Phase12Maturity(options = {}) {
     && profileEvidenceProof(proofs['S2-P12-PATTERNS'], 'S2-P12-PATTERNS', ['patterns:read-only-v1']);
   const collaboration = isValidatedRemoteCollaborationSupport(options.remoteCollaborationProof)
     && profileEvidenceProof(proofs['S2-P12-COLLAB-REMOTE'], 'S2-P12-COLLAB-REMOTE', ['collaboration:remote-security-v1']);
-  const rebuild = supportedProof(options.rebuildProof, 'supported-for-exact-rebuild-profile')
+  const rebuild = isValidatedRebuildProfileSupport(options.rebuildProof)
     && options.rebuildProof?.formatCoverageComplete === true
     && ['S2-F6-MACHO', 'S2-F6-ELF', 'S2-F6-PE'].every((id) => profileEvidenceProof(proofs[id], id, id === 'S2-F6-PE' ? ['pe:pe32', 'pe:pe32+'] : [id === 'S2-F6-MACHO' ? 'macho:64' : 'elf:64']));
   return freeze({
