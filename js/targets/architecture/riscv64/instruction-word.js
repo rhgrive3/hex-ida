@@ -173,7 +173,27 @@ function decodeUncompressed(word) {
       return unsupported('riscv64-reserved-op-32-encoding', { opcode, funct3, funct7 });
     }
     case 0x0f: {
-      if (funct3 === 0) return { ...base, op: 'fence', format: 'I', predecessor: bits(word, 27, 24), successor: bits(word, 23, 20), fenceMode: bits(word, 31, 28) };
+      if (funct3 === 0) {
+        const predecessor = bits(word, 27, 24);
+        const successor = bits(word, 23, 20);
+        const fenceMode = bits(word, 31, 28);
+        // FENCE's rd/rs1 fields are reserved and must be zero.  The only
+        // standard fm values in the frozen RV64IMC profile are the base
+        // FENCE (0000) and the canonical FENCE.TSO tuple (1000,RW,RW).
+        // Treating other bit patterns as an ordinary barrier would turn
+        // reserved encodings into falsely exact MachineEffects.
+        if (rd !== 'x0' || rs1 !== 'x0') {
+          return unsupported('riscv64-reserved-fence-registers', {
+            opcode, funct3, rd, rs1, predecessor, successor, fenceMode,
+          });
+        }
+        if (fenceMode !== 0 && !(fenceMode === 0b1000 && predecessor === 0b0011 && successor === 0b0011)) {
+          return unsupported('riscv64-reserved-fence-mode', {
+            opcode, funct3, rd, rs1, predecessor, successor, fenceMode,
+          });
+        }
+        return { ...base, op: 'fence', format: 'I', predecessor, successor, fenceMode };
+      }
       if (funct3 === 1) return unsupported('riscv64-zifencei-outside-phase6-profile', { opcode, funct3, extension: 'Zifencei' });
       return unsupported('riscv64-reserved-misc-mem-funct3', { opcode, funct3 });
     }

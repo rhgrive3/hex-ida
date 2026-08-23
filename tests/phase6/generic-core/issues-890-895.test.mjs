@@ -79,9 +79,9 @@ test('FENCE.TSO requires the full canonical fm/pred/succ tuple (#895)', () => {
   const reservedSucc = fence({ fenceMode:0b1000, predecessor:0b0011, successor:0b0010 }, 'fence-reserved-succ');
   const reservedPred = fence({ fenceMode:0b1000, predecessor:0b0001, successor:0b0011 }, 'fence-reserved-pred');
   const otherFm = fence({ fenceMode:0b0111, predecessor:0b0011, successor:0b0011 }, 'fence-other-fm');
-  const mode = (bundle) => bundle.operations.find((op) => op.kind === 'barrier').scope.fenceMode;
+  const mode = (bundle) => bundle?.operations.find((op) => op.kind === 'barrier').scope.fenceMode;
   assert.equal(mode(canonical), 'tso');
-  assert.equal(mode(reservedSucc), 'normal');
-  assert.equal(mode(reservedPred), 'normal');
-  assert.equal(mode(otherFm), 'normal');
+  assert.equal(reservedSucc, null, 'non-canonical FENCE.TSO successor is reserved');
+  assert.equal(reservedPred, null, 'non-canonical FENCE.TSO predecessor is reserved');
+  assert.equal(otherFm, null, 'non-standard fm is reserved');
 });
