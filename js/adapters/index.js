@@ -210,16 +210,16 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     return { register:name, value:name === 'pc' ? sandbox.emulator.pc : sandbox.getRegister(name) };
   }
   async readMemory(address,size) {
-    this.require('readMemory'); const n = Number(size == null ? 8 : size);
+    this.require('readMemory'); const sandbox = this.ensureSandbox(); const n = Number(size == null ? 8 : size);
     if (!Number.isSafeInteger(n) || n < 1) throw new DebugAdapterError('invalid-size','memory read size must be a positive safe integer');
     if (n > 1024*1024) throw new DebugAdapterError('too-large','memory read exceeds 1 MiB');
-    this.memoryMap.assert(address,n,'read'); return this.ensureSandbox().emulator.dump(asAddress(address),n);
+    this.memoryMap.assert(address,n,'read'); return sandbox.emulator.dump(asAddress(address),n);
   }
   async writeMemory(address,bytes) {
-    this.require('writeMemory'); const data = bytes instanceof Uint8Array ? bytes : Uint8Array.from(bytes || []);
+    this.require('writeMemory'); const sandbox = this.ensureSandbox(); const data = bytes instanceof Uint8Array ? bytes : Uint8Array.from(bytes || []);
     if (data.length > 256*1024) throw new DebugAdapterError('too-large','memory write exceeds 256 KiB');
     if (!data.length) return { written:0 };
-    const start = asAddress(address); this.memoryMap.assert(start,data.length,'write'); const emu = this.ensureSandbox().emulator;
+    const start = asAddress(address); this.memoryMap.assert(start,data.length,'write'); const emu = sandbox.emulator;
     this._suppressMemoryTrace = true;
     try {
       for (let i=0;i<data.length;i+=8) {
@@ -245,7 +245,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     const allBranches = result.takenBranches || [];
     const branches = allBranches.slice(this.branchCursor); this.branchCursor = allBranches.length;
     for (const e of trace) {
-      if (e?.type === 'call') continue; // emitted below once, with resolved target
+      if (e?.type === 'call') continue;
       this.traceBuffer.push({ type:'instruction', address:e.addr, text:e.text });
     }
     for (const e of branches) this.traceBuffer.push({ type:'branch', ...e });
