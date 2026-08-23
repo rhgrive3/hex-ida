@@ -279,7 +279,7 @@ export function canonicalAddress(value) {
   }
 }
 
-function validateCanonicalIdentityNumbers(value, seen = new WeakSet()) {
+export function validateCanonicalIdentityNumbers(value, seen = new WeakSet()) {
   if (typeof value === 'number') {
     if (!Number.isFinite(value)) fail('identity-non-finite-number');
     if (Number.isInteger(value) && !Number.isSafeInteger(value)) fail('identity-unsafe-number');
