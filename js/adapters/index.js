@@ -88,7 +88,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     super({ id:options.id || 'local-function-sandbox', kind:'local-sandbox', capabilities:{
       launch:true,pause:true,resume:true,stepInto:true,breakpointAddress:true,removeBreakpoint:true,listBreakpoints:true,readRegisters:true,writeRegister:true,
       readMemory:true,writeMemory:true,threads:true,modules:true,backtrace:true,evaluate:true,
-      traceFunction:true,traceCall:true,traceReturn:true,traceBranch:true,traceMemoryWrite:true,cancel:true,replay:true
+      traceFunction:true,traceCall:true,traceReturn:true,traceBranch:true,traceMemoryWrite:true,cancel:true
     }});
     this.io = io || {};
     this.options = options;
@@ -111,40 +111,42 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     const objectBase = spec.objectBase == null ? DEFAULT_OBJECT_BASE : asAddress(spec.objectBase);
     const heapBase = spec.heapBase == null ? RUNTIME_HEAP_BASE : asAddress(spec.heapBase,'heapBase');
     const heapSize = boundedInteger(spec.heapSize, RUNTIME_HEAP_SIZE, 0x1000, 16 * 1024 * 1024, 'heapSize');
-    this.memoryMap = spec.memoryMap instanceof RuntimeMemoryMap ? spec.memoryMap : createSandboxMemoryMap({
+    const memoryMap = spec.memoryMap instanceof RuntimeMemoryMap ? spec.memoryMap : createSandboxMemoryMap({
       objectBase, objectSize:boundedInteger(spec.maxObjectSize, 0x10000, 0x100, 16 * 1024 * 1024, 'maxObjectSize'),
       stackTop:STACK_TOP, heapBase, heapSize, globals:spec.globals || [], mappings:spec.memoryMappings || []
     });
-    this.sandbox = createFunctionSandbox(this.io, { objectBase, maxObjectSize:spec.maxObjectSize });
-    const emu = this.sandbox.emulator;
+    const sandbox = createFunctionSandbox(this.io, { objectBase, maxObjectSize:spec.maxObjectSize });
+    const emu = sandbox.emulator;
     emu.heap = heapBase;
+    let initializing = true;
     const rawLoad = emu.load.bind(emu), rawStore = emu.store.bind(emu);
     emu.load = async (addr,size) => {
-      const region = this.memoryMap.assert(addr,size,'read');
+      const region = memoryMap.assert(addr,size,'read');
       const value = await rawLoad(addr,size);
-      if (spec.traceMemoryReads && !this._suppressMemoryTrace) this.traceBuffer.push({ type:'memory-read', address:BigInt(addr), size, region:region.kind, value });
+      if (!initializing && spec.traceMemoryReads && !this._suppressMemoryTrace) this.traceBuffer.push({ type:'memory-read', address:BigInt(addr), size, region:region.kind, value });
       return value;
     };
     emu.store = async (addr,size,value) => {
-      const region = this.memoryMap.assert(addr,size,'write');
+      const region = memoryMap.assert(addr,size,'write');
       const before = await rawLoad(addr,size);
       await rawStore(addr,size,value);
-      if (!this._suppressMemoryTrace) this.traceBuffer.push({ type:'memory-write', address:BigInt(addr), size, region:region.kind, before, after:BigInt.asUintN(size * 8, BigInt(value)) });
+      if (!initializing && !this._suppressMemoryTrace) this.traceBuffer.push({ type:'memory-write', address:BigInt(addr), size, region:region.kind, before, after:BigInt.asUintN(size * 8, BigInt(value)) });
     };
-    this.traceBuffer.clear(); this.cancelled = false; this.running = false; this.traceCursor = 0; this.branchCursor = 0; this.epoch++;
-    await this.sandbox.setup(address, {
+    await sandbox.setup(address, {
       args:spec.arguments || spec.args || [], registers:spec.registers || {}, objectBase, objectAsArg0:spec.objectAsArg0,
       objectMemory:spec.objectMemory || spec.fakeObject || [], stackMemory:spec.stack || spec.stackMemory || [], watch:spec.watch || [],
       breakpoints:[...this.breakpoints.values()].filter((b) => b.enabled && b.address != null).map((b) => b.address)
     });
-    this._suppressMemoryTrace = true;
-    try {
-      for (const item of spec.heap || []) await emu.store(asAddress(item.address), Number(item.size || 8), BigInt(item.value || 0));
-      for (const item of spec.globalValues || []) await emu.store(asAddress(item.address), Number(item.size || 8), BigInt(item.value || 0));
-    } finally { this._suppressMemoryTrace = false; }
-    this.traceBuffer.clear();
-    this.initialRegisters = cloneRegisters(emu);
-    return { launched:true, address, epoch:this.epoch, memory:this.memoryMap.snapshot(), capabilities:this.capabilities };
+    for (const item of spec.heap || []) await emu.store(asAddress(item.address), Number(item.size || 8), BigInt(item.value || 0));
+    for (const item of spec.globalValues || []) await emu.store(asAddress(item.address), Number(item.size || 8), BigInt(item.value || 0));
+    const initialRegisters = cloneRegisters(emu);
+    initializing = false;
+    this.memoryMap = memoryMap;
+    this.sandbox = sandbox;
+    this.traceBuffer.clear(); this.cancelled = false; this.running = false; this.traceCursor = 0; this.branchCursor = 0; this.epoch++;
+    this.initialRegisters = initialRegisters;
+    this.lastResult = null;
+    return { launched:true, address, epoch:this.epoch, memory:memoryMap.snapshot(), capabilities:this.capabilities };
   }
   ensureSandbox() { if (!this.sandbox) throw new DebugAdapterError('not-launched', 'launch a function before using the local sandbox'); return this.sandbox; }
   async disconnect() {
@@ -152,6 +154,13 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     return super.disconnect();
   }
   async pause() { this.cancelled = true; return { paused:true }; }
+  async cancel() {
+    this.require('cancel');
+    const running = this.running;
+    this.cancelled = true;
+    if (running && this.sandbox) this.sandbox.emulator.stopped = 'cancelled';
+    return { cancelled:running };
+  }
   async resume(options = {}) {
     const sandbox = this.ensureSandbox(); this.cancelled = !!(options.signal && options.signal.aborted);
     const maxSteps = boundedInteger(options.maxSteps, 20000, 1, 1000000, 'maxSteps');
@@ -189,15 +198,28 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     this.traceCursor = (sandbox.emulator.trace || []).length;
     return { ...raw, state:sandbox.state(), registerDelta:registerDelta(before,after), stop:classifyStop({ stopped:sandbox.emulator.stopped }) };
   }
+  _hasEnabledAddressBreakpoint(address) {
+    for (const candidate of this.breakpoints.values()) {
+      if (candidate.kind === 'address' && candidate.enabled && candidate.address === address) return true;
+    }
+    return false;
+  }
   async setBreakpoint(spec) {
     const bp = normalizeBreakpoint(spec);
     if (bp.kind !== 'address') return super.setBreakpoint(bp);
-    this.require('breakpointAddress'); this.breakpoints.set(bp.id,bp); if (this.sandbox && bp.enabled) this.sandbox.addBreakpoint(bp.address); return bp;
+    this.require('breakpointAddress');
+    const previous = this.breakpoints.get(bp.id);
+    this.breakpoints.set(bp.id,bp);
+    if (this.sandbox && previous?.kind === 'address' && previous.address != null && !this._hasEnabledAddressBreakpoint(previous.address)) this.sandbox.removeBreakpoint(previous.address);
+    if (this.sandbox && bp.enabled) this.sandbox.addBreakpoint(bp.address);
+    return bp;
   }
   async removeBreakpoint(id) {
     this.require('removeBreakpoint');
     const key = typeof id === 'object' ? id.id : String(id); const bp = this.breakpoints.get(key); if (!bp) return false;
-    if (this.sandbox && bp.address != null) this.sandbox.removeBreakpoint(bp.address); this.breakpoints.delete(key); return true;
+    this.breakpoints.delete(key);
+    if (this.sandbox && bp.address != null && !this._hasEnabledAddressBreakpoint(bp.address)) this.sandbox.removeBreakpoint(bp.address);
+    return true;
   }
   async listBreakpoints() { this.require('listBreakpoints'); return [...this.breakpoints.values()]; }
   async readRegisters() { this.require('readRegisters'); return cloneRegisters(this.ensureSandbox().emulator); }
@@ -265,6 +287,10 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     const traceSnapshot = this.traceBuffer.snapshot();
     const loads = traceSnapshot.events.filter((e) => e.type === 'memory-read');
     const stores = traceSnapshot.events.filter((e) => e.type === 'memory-write');
+    const sourceTrace = result.traceMeta || {};
+    const sourceDropped = Number.isSafeInteger(Number(sourceTrace.dropped)) && Number(sourceTrace.dropped) > 0 ? Number(sourceTrace.dropped) : 0;
+    const sourceTruncated = sourceTrace.truncated === true || sourceDropped > 0;
+    const incomplete = sourceTruncated || traceSnapshot.dropped > 0 || Number(result.steps || 0) > fullTrace.length;
     return {
       engine:'local-function-sandbox', epoch:this.epoch, returnValue:result.returnValue, stop,
       registerDelta:registerDelta(this.initialRegisters || {}, finalRegisters), memoryDelta:result.touchedFields || [],
@@ -272,7 +298,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
       branches, calls, returns, loads, stores,
       exception:stop.kind === 'exception' ? stop.message : null, fault:stop.kind === 'fault' ? stop.message : null,
       unsupported:stop.kind === 'unsupported' ? stop.message : null, timeout:stop.kind === 'timeout', steps:result.steps,
-      trace:{ ...traceSnapshot, incomplete:Number(result.steps || 0) > fullTrace.length }, reproducible:true
+      trace:{ ...traceSnapshot, incomplete, sourceTruncated, sourceDropped, sourceLimit:sourceTrace.limit ?? null }, reproducible:true
     };
   }
 }
@@ -282,9 +308,16 @@ export class EmulatorAdapter extends LocalFunctionSandboxAdapter {
 }
 
 export class SymbolicAdapter extends DebugAdapter {
-  constructor(options = {}) { super({ id:options.id || 'symbolic', kind:'symbolic', capabilities:{ launch:true,evaluate:true,replay:true } }); this.ir = null; this.options = options; this.result = null; }
-  async launch(spec = {}) { this.ir = spec.ir; if (!this.ir) throw new DebugAdapterError('missing-ir','symbolic adapter requires Semantic IR'); this.result = symbolicExecute(this.ir, spec.options || this.options); return this.result; }
-  async evaluate() { return this.result; }
+  constructor(options = {}) { super({ id:options.id || 'symbolic', kind:'symbolic', capabilities:{ launch:true,evaluate:true } }); this.ir = null; this.options = options; this.result = null; }
+  async launch(spec = {}) {
+    const ir = spec.ir;
+    if (!ir) { this.ir = null; this.result = null; throw new DebugAdapterError('missing-ir','symbolic adapter requires Semantic IR'); }
+    let result;
+    try { result = symbolicExecute(ir, spec.options || this.options); }
+    catch (error) { this.ir = null; this.result = null; throw error; }
+    this.ir = ir; this.result = result; return result;
+  }
+  async evaluate() { if (!this.result) throw new DebugAdapterError('not-launched','launch symbolic analysis before evaluate'); return this.result; }
 }
 
 export class RemoteDebugAdapter extends DebugAdapter {
@@ -332,14 +365,14 @@ export class RemoteDebugAdapter extends DebugAdapter {
 }
 
 export class LLDBCompatibleAdapter extends RemoteDebugAdapter {
-  constructor(transport, options = {}) { super(transport,{ ...options,id:options.id||'lldb-compatible',kind:'lldb-compatible',capabilities:{ attach:true,launch:true,pause:true,resume:true,stepInto:true,stepOver:true,stepOut:true,breakpointAddress:true,breakpointFunction:true,breakpointConditional:true,watchpointMemory:true,removeBreakpoint:true,listBreakpoints:true,readRegisters:true,writeRegister:true,readMemory:true,writeMemory:true,threads:true,modules:true,backtrace:true,evaluate:true,traceFunction:true,cancel:true,...options.capabilities } }); }
+  constructor(transport, options = {}) { super(transport,{ ...options,id:options.id||'lldb-compatible',kind:'lldb-compatible',capabilities:{ attach:true,launch:true,pause:true,resume:true,stepInto:true,stepOver:true,stepOut:true,breakpointAddress:true,breakpointFunction:true,breakpointConditional:true,watchpointMemory:true,removeBreakpoint:true,listBreakpoints:true,readRegisters:true,writeRegister:true,readMemory:true,writeMemory:true,threads:true,modules:true,backtrace:true,evaluate:true,traceFunction:true,...options.capabilities,cancel:false } }); }
 }
 export class FridaCompatibleAdapter extends RemoteDebugAdapter {
-  constructor(transport, options = {}) { super(transport,{ ...options,id:options.id||'frida-compatible',kind:'frida-compatible',capabilities:{ attach:true,launch:true,pause:true,resume:true,breakpointAddress:true,breakpointFunction:true,removeBreakpoint:true,listBreakpoints:true,readRegisters:true,readMemory:true,writeMemory:true,threads:true,modules:true,backtrace:true,evaluate:true,traceFunction:true,traceCall:true,traceReturn:true,traceBranch:true,traceMemoryWrite:true,traceMemoryRead:true,objcRuntime:true,swiftRuntime:true,cancel:true,...options.capabilities } }); }
+  constructor(transport, options = {}) { super(transport,{ ...options,id:options.id||'frida-compatible',kind:'frida-compatible',capabilities:{ attach:true,launch:true,pause:true,resume:true,breakpointAddress:true,breakpointFunction:true,removeBreakpoint:true,listBreakpoints:true,readRegisters:true,readMemory:true,writeMemory:true,threads:true,modules:true,backtrace:true,evaluate:true,traceFunction:true,traceCall:true,traceReturn:true,traceBranch:true,traceMemoryWrite:true,traceMemoryRead:true,objcRuntime:true,swiftRuntime:true,...options.capabilities,cancel:false } }); }
 }
 
 export class ReplayAdapter extends DebugAdapter {
-  constructor(recording = {}, options = {}) { super({ id:options.id||'replay',kind:'replay',capabilities:{ launch:true,readRegisters:true,readMemory:true,threads:true,modules:true,backtrace:true,traceFunction:true,replay:true } }); this.recording=recording; }
+  constructor(recording = {}, options = {}) { super({ id:options.id||'replay',kind:'replay',capabilities:{ launch:true,readRegisters:true,readMemory:true,threads:true,modules:true,backtrace:true,traceFunction:true } }); this.recording=recording; }
   async launch(){return { replay:true, metadata:this.recording.metadata||null }}
   async readRegisters(){return remoteRegisters(this.recording.registers||{})}
   async readMemory(address,size){const n=Number(size==null?1:size); if(!Number.isSafeInteger(n)||n<1) throw new DebugAdapterError('invalid-size','replay memory read size must be a positive safe integer'); if(n>1024*1024) throw new DebugAdapterError('too-large','replay memory read exceeds 1 MiB'); const key=String(asAddress(address)); const bytes=this.recording.memory&&this.recording.memory[key]; if(!bytes)throw new DebugAdapterError('replay-miss',`recording has no memory at ${key}`); return remoteBytes(bytes,n)}
