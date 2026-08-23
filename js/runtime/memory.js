@@ -65,6 +65,7 @@ export class RuntimeMemoryMap {
     return this.regions.find((r) => r.contains(a, n)) || null;
   }
   assert(address, size, access = 'read') {
+    if (access !== 'read' && access !== 'write' && access !== 'execute') throw new MemoryAccessError('invalid-access', `unsupported memory access: ${access}`, { access });
     const a = asAddress(address); const n = strictSize(size, 1, this.maxTransfer, 'memory size');
     const region = this.find(a, n);
     if (!region) throw new MemoryAccessError('oob', `unmapped ${access} at 0x${a.toString(16)}`, { address:a, size:n, access });
