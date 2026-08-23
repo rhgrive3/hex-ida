@@ -28,9 +28,13 @@ function utf16At(bytes,p,end){
   if(u>=0xdc00&&u<=0xdfff) return null;
   return {cp:u,bytes:2};
 }
+function finiteOption(value,fallback){
+  const candidate=value||fallback, n=Number(candidate);
+  return Number.isFinite(n)?n:fallback;
+}
 
 export function scanStrings(image, opts = {}) {
-  const min=Math.max(2,opts.minLength||4), max=Math.max(min,opts.maxLength||4096);
+  const min=Math.max(2,finiteOption(opts.minLength,4)), max=Math.max(min,finiteOption(opts.maxLength,4096));
   const includeUtf16=opts.utf16!==false, includeExecutable=!!opts.includeExecutable;
   const bytes=image.bytes; if(!bytes) return [];
   const ranges=[];
