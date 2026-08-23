@@ -107,9 +107,13 @@ export function parseCil(bytes, options = {}) {
     }
   }
 
-  // Scan method bodies after CLI metadata streams
+  // CLI method bodies are stored in PE sections independently of the metadata
+  // root.  In particular, ordinary compiler output commonly places the code
+  // section before the BSJB metadata stream, so scanning only after the root
+  // misses valid assemblies.  Keep the lightweight structural scan bounded by
+  // the binary and validate candidate headers/opcodes below.
   const methodBodies = [];
-  const startScan = bsjbOffset >= 0 ? bsjbOffset + 0x60 : 0x100;
+  const startScan = 0;
   for (let p = startScan; p <= u8.length - 4; p++) {
     const headerByte = u8[p];
     if ((headerByte & 0x03) === 0x02) {
@@ -139,6 +143,13 @@ export function parseCil(bytes, options = {}) {
       const localVarSigTok = view.getUint32(p + 8, true);
       if (headerSize === 12 && codeSize > 0 && codeSize < 0x100000 && p + headerSize + codeSize <= u8.length) {
         const bytecode = u8.subarray(p + headerSize, p + headerSize + codeSize);
+        // Metadata and resource bytes can look like a fat header when the
+        // executable section is scanned.  A method body must contain a ret
+        // opcode; rejecting candidates without one keeps the broad scan from
+        // turning arbitrary metadata into methods.
+        if (!bytecode.some((byte) => byte === 0x2a)) {
+          continue;
+        }
         const exceptionClauses = [];
 
         if (flags & 0x08) { // Extra data section (Exception handlers)
