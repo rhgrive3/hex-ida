@@ -23,6 +23,12 @@ async function binaryHashOf(app) {
   }
   return null;
 }
+function strictAddress(value) {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number') return Number.isSafeInteger(value) ? BigInt(value) : null;
+  if (typeof value !== 'string' || value.trim() === '') return null;
+  try { return BigInt(value.trim()); } catch { return null; }
+}
 export async function runtimeIdentityForApp(app) {
   const contentHash=await binaryHashOf(app);
   const sliceIdentity=activeSliceIdentity(app);
@@ -98,20 +104,21 @@ export function runtimeEvidenceForApp(app, functionAddress = null) {
   if (!state || state.fileToken !== currentFileToken(app) || state.identity?.sliceIdentity !== sliceIdentity) return [];
   const evidence = (Array.isArray(state.platform?.evidence) ? state.platform.evidence : []).filter((item)=>item?.sliceIdentity===sliceIdentity && item?.binaryHash===state.identity?.contentHash);
   if (functionAddress == null) return evidence.slice();
-  let address;
-  try { address = BigInt(functionAddress); } catch { return []; }
+  const address = strictAddress(functionAddress);
+  if (address == null) return [];
   return evidence.filter((item) => {
-    try { return item?.function != null && BigInt(item.function) === address; } catch { return false; }
+    const candidate = item?.function == null ? null : strictAddress(item.function);
+    return candidate != null && candidate === address;
   });
 }
 
 export async function traceAppFunction(app, functionAddress, options = {}) {
   const platform = await runtimePlatformForApp(app);
   return platform.traceFunction(functionAddress, {
+    ...options,
     maxSteps: options.maxSteps ?? 12000,
     timeoutMs: options.timeoutMs ?? 1500,
     limit: options.limit ?? 4096,
-    ...options,
   });
 }
 
