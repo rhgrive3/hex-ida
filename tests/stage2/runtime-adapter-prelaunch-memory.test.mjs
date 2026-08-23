@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { LocalFunctionSandboxAdapter } from '../../js/adapters/index.js';
 import { DebugAdapterError } from '../../js/debug/adapter.js';
 
+// Regression for #1649: memory operations before launch must preserve the typed adapter state.
 function isNotLaunched(error) {
   return error instanceof DebugAdapterError && error.code === 'not-launched';
 }
