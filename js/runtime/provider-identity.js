@@ -16,6 +16,9 @@ function optionalText(value) {
 
 function safeSequence(value, name = 'sequence') {
   if (value == null) return null;
+  if (typeof value !== 'number' && !(typeof value === 'string' && value.trim() !== '')) {
+    throw new DebugAdapterError('invalid-sequence', `${name} must be a non-negative safe integer`);
+  }
   const n = Number(value);
   if (!Number.isSafeInteger(n) || n < 0) throw new DebugAdapterError('invalid-sequence', `${name} must be a non-negative safe integer`);
   return n;
@@ -27,10 +30,31 @@ function positiveSize(value, name = 'runtimeSize') {
   return n;
 }
 
+function ownedClone(value) {
+  if (typeof structuredClone === 'function') return structuredClone(value);
+  if (value == null || typeof value !== 'object') return value;
+  if (value instanceof Uint8Array) return new Uint8Array(value);
+  if (value instanceof ArrayBuffer) return value.slice(0);
+  if (ArrayBuffer.isView(value)) return new value.constructor(value);
+  if (Array.isArray(value)) return value.map(ownedClone);
+  if (value instanceof Date) return new Date(value.getTime());
+  const out = {};
+  for (const [key, item] of Object.entries(value)) {
+    Object.defineProperty(out, key, { value: ownedClone(item), enumerable: true, configurable: true, writable: true });
+  }
+  return out;
+}
+
 function freezeEvidenceIds(value) {
   if (value == null) return Object.freeze([]);
   if (!Array.isArray(value)) throw new DebugAdapterError('invalid-evidence-ids', 'evidence ids must be an array');
   return Object.freeze([...new Set(value.map(String).filter(Boolean))].sort());
+}
+
+function freezeEntityIds(value) {
+  if (value == null) return Object.freeze([]);
+  if (!Array.isArray(value)) throw new DebugAdapterError('invalid-target-entity-ids', 'target entity ids must be an array');
+  return Object.freeze(value.map(String).filter(Boolean));
 }
 
 export function createRuntimeProviderSessionId(input = {}) {
@@ -81,7 +105,7 @@ function normalizeBinding(input, runtimeSessionId, generation) {
     binaryId: optionalText(input.binaryId),
     sliceId: optionalText(input.sliceId),
     imageId: optionalText(input.imageId),
-    buildIdentity: input.buildIdentity == null ? null : input.buildIdentity,
+    buildIdentity: input.buildIdentity == null ? null : ownedClone(input.buildIdentity),
     loadedSequence: safeSequence(input.loadedSequence, 'loadedSequence'),
     unloadedSequence: safeSequence(input.unloadedSequence, 'unloadedSequence'),
     identityState,
@@ -115,8 +139,8 @@ export class RuntimeModuleBindingTable {
       throw new DebugAdapterError('module-binding-already-loaded', `runtime module binding is already loaded: ${bindingKey}`, { bindingKey, generation: active.generation });
     }
     const generation = (this.#generation.get(bindingKey) || 0) + 1;
-    this.#generation.set(bindingKey, generation);
     const binding = normalizeBinding({ ...input, bindingKey }, this.runtimeSessionId, generation);
+    this.#generation.set(bindingKey, generation);
     this.#active.set(bindingKey, binding);
     this.#history.push(binding);
     return binding;
@@ -226,7 +250,7 @@ export function createRuntimeAddressResolution(input = {}) {
     sliceId: optionalText(input.sliceId),
     imageId: optionalText(input.imageId),
     staticAddress,
-    targetEntityIds: Object.freeze([...(input.targetEntityIds || [])].map(String).filter(Boolean)),
+    targetEntityIds: freezeEntityIds(input.targetEntityIds),
     state,
     method: optionalText(input.method),
     evidenceIds: freezeEvidenceIds(input.evidenceIds),
