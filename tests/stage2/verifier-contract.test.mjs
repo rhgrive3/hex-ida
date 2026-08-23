@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict';
-import { minimumVerdictCounts } from '../../tools/validation/stage2/verify.mjs';
+import { minimumVerdictCounts, stage2KnownDenominatorGaps } from '../../tools/validation/stage2/verify.mjs';
+
+const knownGaps = stage2KnownDenominatorGaps();
+assert.ok(knownGaps.includes('arm64:a64:all-decoder-encodings-and-aliases'));
+assert.ok(knownGaps.includes('x86_64:long-64:effect-family:atomic'));
 
 const passed = (command) => ({ command, status: 'passed' });
 const complete = minimumVerdictCounts({

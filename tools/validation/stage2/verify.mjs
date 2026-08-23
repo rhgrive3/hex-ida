@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { validatePhysicalIPadEvidence } from '../../../js/platform/physical-ipad-evidence.js';
 import { stableDigest } from '../../../js/core/identity/index.js';
 import { STAGE2_PROFILE_EVIDENCE_IDS, validateStage2DenominatorLock, validateStage2ProfileEvidence } from '../../../js/platform/stage2-profile-evidence.js';
+import { a2DenominatorReport } from '../machine-effects/a2-denominator.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const REPORT_PATH = path.join(ROOT, 'reports/stage2/stage2-verdict.json');
@@ -163,6 +164,11 @@ function evidenceIdentityAtHead(identity) {
   return digest === artifactMatch[2] ? value : null;
 }
 
+export function stage2KnownDenominatorGaps() {
+  const a2 = a2DenominatorReport().validation;
+  return Object.freeze(a2.terminalEligible === true ? [] : [...(a2.blockingGaps || [])]);
+}
+
 function profileEvidenceResult({ finalMode, evidencePath, headSha, treeSha, scope }) {
   const loaded = readEvidenceJson(finalMode, evidencePath, 'stage2-profile-evidence-required', 'stage2-profile-evidence-file-missing', 'stage2-profile-evidence-json-invalid');
   if (loaded.status !== 'loaded') return loaded;
@@ -176,6 +182,13 @@ function profileEvidenceResult({ finalMode, evidencePath, headSha, treeSha, scop
     resolveDenominatorUnitIds: denominatorUnitIdsAtHead,
   });
   if (!lockChecked.ok) return { required: true, status: 'failed', reason: lockChecked.reason, failures: lockChecked.failures || [] };
+  const knownDenominatorGaps = stage2KnownDenominatorGaps();
+  if (knownDenominatorGaps.length) return {
+    required: true,
+    status: 'failed',
+    reason: 'stage2-known-implementation-denominator-incomplete',
+    failures: knownDenominatorGaps,
+  };
   const checked = validateStage2ProfileEvidence(loaded.record, {
     commitSha: headSha,
     treeSha,
