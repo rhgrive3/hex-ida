@@ -21,7 +21,7 @@ function moveWide(w) {
   const opc = (w >>> 29) & 3;
   const shift = ((w >>> 21) & 3) * 16;
   const imm16 = (w >>> 5) & 0xffff;
-  if (opc === 2) return { d: rd(w), kind: 'movz', value: imm16 * 2 ** shift };
+  if (opc === 2) return { d: rd(w), kind: 'movz', value: BigInt(imm16) << BigInt(shift) };
   if (opc === 3) return { d: rd(w), kind: 'movk', imm16, shift };
   return null;
 }
@@ -71,7 +71,7 @@ function writesRegister(w, reg) {
 }
 
 export function decodeSchema(words, base) {
-  const konst = new Int32Array(32).fill(0);
+  const konst = new BigUint64Array(32);
   const known = new Uint8Array(32);
   const bumped = [], loops = [], fixed = [], scales = [], cmps = [];
   const flow = controlContext(words, base);
@@ -85,7 +85,10 @@ export function decodeSchema(words, base) {
     const mw = moveWide(w);
     if (mw) {
       if (mw.kind === 'movz') { konst[mw.d] = mw.value; known[mw.d] = 1; }
-      else if (known[mw.d]) konst[mw.d] |= mw.imm16 * 2 ** mw.shift;
+      else if (known[mw.d]) {
+        const lane = 0xffffn << BigInt(mw.shift);
+        konst[mw.d] = (konst[mw.d] & ~lane) | (BigInt(mw.imm16) << BigInt(mw.shift));
+      }
       if (mw.d === 0) lastCall = -1;
       continue;
     }
@@ -140,7 +143,8 @@ export function decodeSchema(words, base) {
       if (last.mul == null && i - last.row <= 6 && last.block === flow.blockOf[i] && (rn(w) === last.loadedReg || rm(w) === last.loadedReg)) {
         const other = rn(w) === last.loadedReg ? rm(w) : rn(w);
         const k = known[other] ? konst[other] : null;
-        if (k) last.mul = k;
+        const safeK = k != null && k <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(k) : null;
+          if (safeK) last.mul = safeK;
       }
       if (rd(w) === 0) lastCall = -1;
       continue;
