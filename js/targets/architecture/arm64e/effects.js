@@ -99,6 +99,13 @@ function splitOperands(text) {
 }
 
 function operandList(decoded) {
+  // Structured ARM64 decoders use `operands` when they publish a canonical
+  // operand array, while the shared A64 path commonly carries the parsed
+  // representation in `ops`. Prefer a non-empty canonical array, but do not
+  // discard a structured `ops` array merely because an adapter supplied an
+  // empty `operands` placeholder.
+  if (Array.isArray(decoded?.operands) && decoded.operands.length > 0) return decoded.operands;
+  if (Array.isArray(decoded?.ops)) return decoded.ops;
   if (Array.isArray(decoded?.operands)) return decoded.operands;
   if (typeof decoded?.operands === 'string') return splitOperands(decoded.operands);
   return splitOperands(decoded?.opStr ?? decoded?.op_str ?? decoded?.operandString ?? decoded?.args);
@@ -115,6 +122,25 @@ function operandRegisterId(operand) {
   if (id === 'fp') id = 'x29';
   if (/^x(?:[0-9]|[12][0-9]|30)$/.test(id) || id === 'sp') return id;
   return null;
+}
+
+// Pointer-authentication encodings operate on 64-bit X-register views.  A
+// structured decoder may retain a register identity while separately carrying
+// a W-register width; accepting that combination would create a false exact
+// PAC effect with 64-bit reads/writes.  Textual operands have already rejected
+// W-register spellings above, so an absent width remains compatible with the
+// Capstone operand-string adapter.
+function pointerRegisterId(operand) {
+  const registerId = operandRegisterId(operand);
+  if (!registerId) return null;
+  if (operand == null || typeof operand !== 'object' || Array.isArray(operand)) return registerId;
+  const explicitWidth = operand.bits
+    ?? operand.widthBits
+    ?? operand.value?.bits
+    ?? operand.value?.widthBits;
+  if (explicitWidth == null) return registerId;
+  const widthBits = Number(explicitWidth);
+  return Number.isInteger(widthBits) && widthBits === POINTER_BITS ? registerId : null;
 }
 
 function instructionIdOf(decoded, context) {
@@ -187,7 +213,7 @@ function modifierInput(operations, descriptor, operands, operandIndex, prefix) {
     return { value: createBitVectorValue(POINTER_BITS, 0n), metadata: { kind: 'constant-zero' } };
   }
   const registerId = descriptor.modifier === 'operand'
-    ? operandRegisterId(operands[operandIndex])
+    ? pointerRegisterId(operands[operandIndex])
     : descriptor.modifier;
   if (!registerId) return null;
   return {
@@ -277,7 +303,7 @@ function transformPointer(decoded, context, instructionId, descriptor, transform
   const operands = operandList(decoded);
   const destination = descriptor.destination && descriptor.destination !== 'operand'
     ? descriptor.destination
-    : operandRegisterId(operands[0]);
+    : pointerRegisterId(operands[0]);
   const modifierIndex = descriptor.destination && descriptor.destination !== 'operand' ? 0 : 1;
   if (!destination) return partialMissing(decoded, context, instructionId, `${transform}: destination register is unavailable`);
 
@@ -320,7 +346,7 @@ function transformPointer(decoded, context, instructionId, descriptor, transform
 
 function stripPointer(decoded, context, instructionId, descriptor) {
   const operands = operandList(decoded);
-  const destination = descriptor.destination === 'operand' ? operandRegisterId(operands[0]) : descriptor.destination;
+  const destination = descriptor.destination === 'operand' ? pointerRegisterId(operands[0]) : descriptor.destination;
   if (!destination) return partialMissing(decoded, context, instructionId, 'strip: destination register is unavailable');
 
   const operations = [];
@@ -357,9 +383,9 @@ function stripPointer(decoded, context, instructionId, descriptor) {
 
 function genericCode(decoded, context, instructionId) {
   const operands = operandList(decoded);
-  const destination = operandRegisterId(operands[0]);
-  const valueRegister = operandRegisterId(operands[1]);
-  const modifierRegister = operandRegisterId(operands[2]);
+  const destination = pointerRegisterId(operands[0]);
+  const valueRegister = pointerRegisterId(operands[1]);
+  const modifierRegister = pointerRegisterId(operands[2]);
   if (!destination || !valueRegister || !modifierRegister) {
     return partialMissing(decoded, context, instructionId, 'pacga: destination, value, or modifier register is unavailable');
   }
@@ -397,7 +423,7 @@ function genericCode(decoded, context, instructionId) {
 
 function authenticateControlTarget(decoded, context, instructionId, descriptor, controlKind) {
   const operands = operandList(decoded);
-  const targetRegister = controlKind === 'return' ? 'x30' : operandRegisterId(operands[0]);
+  const targetRegister = controlKind === 'return' ? 'x30' : pointerRegisterId(operands[0]);
   const modifierIndex = controlKind === 'return' ? 0 : 1;
   const effectiveDescriptor = controlKind === 'return' ? { ...descriptor, modifier: 'sp' } : descriptor;
   if (!targetRegister) {
