@@ -1,0 +1,26 @@
+name: Temporary patch 1471
+on:
+  push:
+    branches: [fix/program-query-limits-1471]
+    paths: [.github/workflows/tmp-patch-1471.yml]
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/program-query-limits-1471
+          fetch-depth: 0
+      - run: |
+          python3 tools/tmp-patch-1471.py
+          node --check js/program.js
+      - run: |
+          rm .github/workflows/tmp-patch-1471.yml tools/tmp-patch-1471.py
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add js/program.js .github/workflows/tmp-patch-1471.yml tools/tmp-patch-1471.py
+          git diff --cached --check
+          git commit -m "fix(program): bound public query limits (#1471)"
+          git push origin HEAD:fix/program-query-limits-1471
