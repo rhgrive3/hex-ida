@@ -16,7 +16,7 @@ export class NavigationHistory {
   }
 
   reset(entry) {
-    this.entries = entry ? [entry] : [];
+    this.entries = entry && this.limit > 0 ? [entry] : [];
     this.index = this.entries.length - 1;
     this.onChange(this.snapshot());
   }
