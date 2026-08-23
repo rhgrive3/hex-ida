@@ -27,8 +27,10 @@ for (const id of STAGE2_PROFILE_EVIDENCE_IDS) {
   const unitIds = profiles[id].map((profile) => `${profile}:required-unit`);
   denominatorInputs[id] = { profiles: profiles[id], unitIds, inventoryRefs: ['js/platform/stage2-profile-evidence.js'] };
 }
-const denominatorLock = createStage2DenominatorLock({ items: denominatorInputs }, { scope, resolveInventoryIdentity });
-assert.equal(validateStage2DenominatorLock(denominatorLock, { scope, resolveInventoryIdentity }).ok, true);
+const resolveDenominatorUnitIds = (id) => denominatorInputs[id]?.unitIds || [];
+const denominatorLock = createStage2DenominatorLock({ items: denominatorInputs }, { scope, resolveInventoryIdentity, resolveDenominatorUnitIds });
+assert.equal(validateStage2DenominatorLock(denominatorLock, { scope, resolveInventoryIdentity, resolveDenominatorUnitIds }).ok, true);
+const knownEvidence = new Set();
 for (const id of STAGE2_PROFILE_EVIDENCE_IDS) {
   const denominator = denominatorLock.items[id];
   const unitIds = denominator.unitIds;
@@ -47,10 +49,16 @@ for (const id of STAGE2_PROFILE_EVIDENCE_IDS) {
     implementationIdentity: `implementation:${id}`,
     independentOracleIdentities: id === 'S1-A2-NATIVE' || id.startsWith('S2-F6-') ? [`oracle:${id}:independent`] : [],
   };
+  for (const value of Object.values(items[id].unitEvidence)) knownEvidence.add(value);
+  for (const key of ['realFixtureIdentities', 'negativeTestIdentities', 'evidenceIdentities', 'independentOracleIdentities']) {
+    for (const value of items[id][key]) knownEvidence.add(value);
+  }
+  knownEvidence.add(items[id].implementationIdentity);
 }
 
 const record = createStage2ProfileEvidence({ commitSha, treeSha, generatedAt: '2026-08-22T00:00:00Z', items });
-const expected = { commitSha, treeSha, denominatorLock, scope, resolveInventoryIdentity };
+const resolveEvidenceIdentity = (identity) => knownEvidence.has(identity) ? identity : null;
+const expected = { commitSha, treeSha, denominatorLock, scope, resolveInventoryIdentity, resolveDenominatorUnitIds, resolveEvidenceIdentity };
 const checked = validateStage2ProfileEvidence(record, expected);
 assert.equal(checked.ok, true, JSON.stringify(checked.failures));
 
@@ -77,13 +85,27 @@ assert.equal(validateStage2ProfileEvidence(record, { commitSha, treeSha }).reaso
 
 const reducedInputs = structuredClone(denominatorInputs);
 reducedInputs['S1-A2-NATIVE'].unitIds = reducedInputs['S1-A2-NATIVE'].unitIds.filter((unitId) => !unitId.startsWith('x86_64:long-64:'));
-const reducedLock = createStage2DenominatorLock({ items: reducedInputs }, { scope, resolveInventoryIdentity });
-const reducedCheck = validateStage2DenominatorLock(reducedLock, { scope, resolveInventoryIdentity });
-assert.equal(reducedCheck.ok, false, 'a freshly re-hashed denominator still cannot omit a locked profile');
-assert.ok(reducedCheck.failures.includes('S1-A2-NATIVE:denominator-profile-units-missing:x86_64:long-64'));
+assert.throws(
+  () => createStage2DenominatorLock({ items: reducedInputs }, { scope, resolveInventoryIdentity, resolveDenominatorUnitIds }),
+  /stage2-denominator-unit-set-mismatch:S1-A2-NATIVE/,
+  'a freshly re-hashed denominator still cannot omit a canonical unit',
+);
+
+const inventedInputs = structuredClone(denominatorInputs);
+inventedInputs['S1-A2-NATIVE'].unitIds.push('arm64:a64:invented-unit');
+assert.throws(
+  () => createStage2DenominatorLock({ items: inventedInputs }, { scope, resolveInventoryIdentity, resolveDenominatorUnitIds }),
+  /stage2-denominator-unit-set-mismatch:S1-A2-NATIVE/,
+  'invented units cannot enter a freshly hashed denominator',
+);
+
+const unresolvedEvidenceItems = structuredClone(items);
+unresolvedEvidenceItems['S2-M6-JVM'].realFixtureIdentities = ['fabricated:fixture'];
+const unresolvedEvidence = createStage2ProfileEvidence({ commitSha, treeSha, generatedAt: '2026-08-22T00:00:00Z', items: unresolvedEvidenceItems });
+assert.equal(validateStage2ProfileEvidence(unresolvedEvidence, expected).ok, false, 'arbitrary evidence labels cannot prove a profile');
 
 inventoryIdentities.set('js/platform/stage2-profile-evidence.js', 'b'.repeat(40));
-const staleInventory = validateStage2DenominatorLock(denominatorLock, { scope, resolveInventoryIdentity });
+const staleInventory = validateStage2DenominatorLock(denominatorLock, { scope, resolveInventoryIdentity, resolveDenominatorUnitIds });
 assert.equal(staleInventory.ok, false, 'production inventory changes must invalidate denominator evidence');
 assert.ok(staleInventory.failures.includes('S1-A2-NATIVE:denominator-inventory-stale'));
 console.log('[stage2] per-profile evidence contract tests passed');

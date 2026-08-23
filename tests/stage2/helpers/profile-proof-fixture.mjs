@@ -28,8 +28,10 @@ export function validatedCapabilityProofFixture() {
     unitIds: profiles[id].map((profile) => `${profile}:required-unit`),
     inventoryRefs: [inventoryRef],
   };
-  const denominatorLock = createStage2DenominatorLock(denominatorInputs, { scope, resolveInventoryIdentity });
+  const resolveDenominatorUnitIds = (id) => denominatorInputs.items[id]?.unitIds || [];
+  const denominatorLock = createStage2DenominatorLock(denominatorInputs, { scope, resolveInventoryIdentity, resolveDenominatorUnitIds });
   const items = {};
+  const knownEvidence = new Set();
   for (const id of STAGE2_PROFILE_EVIDENCE_IDS) {
     const denominator = denominatorLock.items[id];
     items[id] = {
@@ -42,9 +44,15 @@ export function validatedCapabilityProofFixture() {
       providerProfileIds: id === 'S2-A7-NATIVE' || id.startsWith('S2-M6-') ? [`provider:${id}`] : [],
       independentOracleIdentities: id === 'S1-A2-NATIVE' || id.startsWith('S2-F6-') ? [`oracle:${id}:independent`] : [],
     };
+    for (const value of Object.values(items[id].unitEvidence)) knownEvidence.add(value);
+    for (const key of ['realFixtureIdentities', 'negativeTestIdentities', 'evidenceIdentities', 'independentOracleIdentities']) {
+      for (const value of items[id][key]) knownEvidence.add(value);
+    }
+    knownEvidence.add(items[id].implementationIdentity);
   }
   const record = createStage2ProfileEvidence({ commitSha, treeSha, generatedAt: '2026-08-22T00:00:00Z', items });
-  const validation = validateStage2ProfileEvidence(record, { commitSha, treeSha, denominatorLock, scope, resolveInventoryIdentity });
+  const resolveEvidenceIdentity = (identity) => knownEvidence.has(identity) ? identity : null;
+  const validation = validateStage2ProfileEvidence(record, { commitSha, treeSha, denominatorLock, scope, resolveInventoryIdentity, resolveDenominatorUnitIds, resolveEvidenceIdentity });
   if (!validation.ok) throw new Error(`profile proof fixture invalid: ${validation.failures.join(',')}`);
   return { validation, proofs: createStage2CapabilityProofs(validation) };
 }

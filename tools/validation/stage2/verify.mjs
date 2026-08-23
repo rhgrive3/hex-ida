@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { validatePhysicalIPadEvidence } from '../../../js/platform/physical-ipad-evidence.js';
@@ -11,6 +12,7 @@ const REPORT_PATH = path.join(ROOT, 'reports/stage2/stage2-verdict.json');
 const SCOPE_PATH = path.join(ROOT, 'tools/validation/stage2/completion-scope.lock.json');
 const LEDGER_PATH = path.join(ROOT, 'tools/validation/stage2/closure-ledger.json');
 const DENOMINATOR_PATH = path.join(ROOT, 'tools/validation/stage2/profile-denominators.lock.json');
+const DENOMINATOR_INVENTORY_PATH = path.join(ROOT, 'tools/validation/stage2/profile-denominator-inventory.json');
 const OUTPUT_LIMIT = 7000;
 const REQUIRED_LEDGER_IDS = Object.freeze([
   ...STAGE2_PROFILE_EVIDENCE_IDS,
@@ -114,11 +116,51 @@ function physicalEvidenceResult({ finalMode, evidencePath, headSha, treeSha, bui
   return { required: true, status: checked.ok ? 'passed' : 'failed', reason: checked.reason || null, evidenceId: checked.evidenceId || loaded.record.evidenceId || null };
 }
 
-function inventoryIdentityAtHead(ref) {
+function safeRelativePath(ref) {
   const value = String(ref || '');
-  if (!value || path.isAbsolute(value) || value.includes('\\') || value.split('/').includes('..')) return null;
+  return value && !path.isAbsolute(value) && !value.includes('\\') && !value.split('/').includes('..') ? value : null;
+}
+
+function loadDenominatorInventory() {
+  if (!fs.existsSync(DENOMINATOR_INVENTORY_PATH)) return null;
+  try { return JSON.parse(fs.readFileSync(DENOMINATOR_INVENTORY_PATH, 'utf8')); }
+  catch { return null; }
+}
+
+function inventoryIdentityAtHead(ref, itemId) {
+  const value = safeRelativePath(ref);
+  const canonical = loadDenominatorInventory()?.items?.[itemId];
+  if (!value || !canonical || !Array.isArray(canonical.inventoryRefs) || !canonical.inventoryRefs.includes(value)) return null;
   const resolved = git(['rev-parse', `HEAD:${value}`], true);
   return resolved.status === 0 && /^[0-9a-f]{40}$/.test(resolved.stdout) ? resolved.stdout : null;
+}
+
+function denominatorUnitIdsAtHead(itemId, inventoryRefs) {
+  const item = loadDenominatorInventory()?.items?.[itemId];
+  if (!item || !Array.isArray(item.unitIds) || !Array.isArray(item.inventoryRefs)) return [];
+  const left = [...new Set((inventoryRefs || []).map(String))].sort();
+  const right = [...new Set(item.inventoryRefs.map(String))].sort();
+  if (left.length !== right.length || left.some((value, index) => value !== right[index])) return [];
+  return item.unitIds;
+}
+
+function evidenceIdentityAtHead(identity) {
+  const value = String(identity || '');
+  const gitMatch = /^git:([^@]+)@([0-9a-f]{40})$/.exec(value);
+  if (gitMatch) {
+    const relative = safeRelativePath(gitMatch[1]);
+    if (!relative) return null;
+    const resolved = git(['rev-parse', `HEAD:${relative}`], true);
+    return resolved.status === 0 && resolved.stdout === gitMatch[2] ? value : null;
+  }
+  const artifactMatch = /^artifact:([^@]+)@sha256:([0-9a-f]{64})$/.exec(value);
+  if (!artifactMatch) return null;
+  const relative = safeRelativePath(artifactMatch[1]);
+  if (!relative) return null;
+  const resolved = path.join(ROOT, relative);
+  if (!fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) return null;
+  const digest = createHash('sha256').update(fs.readFileSync(resolved)).digest('hex');
+  return digest === artifactMatch[2] ? value : null;
 }
 
 function profileEvidenceResult({ finalMode, evidencePath, headSha, treeSha, scope }) {
@@ -128,7 +170,11 @@ function profileEvidenceResult({ finalMode, evidencePath, headSha, treeSha, scop
   let denominatorLock;
   try { denominatorLock = JSON.parse(fs.readFileSync(DENOMINATOR_PATH, 'utf8')); }
   catch (error) { return { required: true, status: 'failed', reason: 'stage2-profile-denominator-lock-invalid', failures: [String(error?.message || error)] }; }
-  const lockChecked = validateStage2DenominatorLock(denominatorLock, { scope, resolveInventoryIdentity: inventoryIdentityAtHead });
+  const lockChecked = validateStage2DenominatorLock(denominatorLock, {
+    scope,
+    resolveInventoryIdentity: inventoryIdentityAtHead,
+    resolveDenominatorUnitIds: denominatorUnitIdsAtHead,
+  });
   if (!lockChecked.ok) return { required: true, status: 'failed', reason: lockChecked.reason, failures: lockChecked.failures || [] };
   const checked = validateStage2ProfileEvidence(loaded.record, {
     commitSha: headSha,
@@ -136,6 +182,8 @@ function profileEvidenceResult({ finalMode, evidencePath, headSha, treeSha, scop
     denominatorLock,
     scope,
     resolveInventoryIdentity: inventoryIdentityAtHead,
+    resolveDenominatorUnitIds: denominatorUnitIdsAtHead,
+    resolveEvidenceIdentity: evidenceIdentityAtHead,
   });
   return {
     required: true,

@@ -28,6 +28,18 @@ on:
         description: Repository path to physical iPad evidence JSON for final COMPLETE proof
         required: false
         type: string
+      profile_evidence_path:
+        description: Repository path to exact candidate Stage 2 profile evidence JSON
+        required: false
+        type: string
+      expect_main_sha:
+        description: Exact origin/main SHA used for candidate merge-tree verification
+        required: false
+        type: string
+      release_blocking_issue_count:
+        description: Independently audited release-blocking issue count
+        required: false
+        type: number
       build_identity:
         description: Exact build identity expected by the physical evidence record
         required: false
@@ -102,7 +114,11 @@ jobs:
         run: |
           args=(--expect-sha "${{ inputs.expect_sha }}" --full)
           if [[ "${{ inputs.final }}" == "true" ]]; then
-            args+=(--final --physical-evidence "${{ inputs.physical_evidence_path }}")
+            args+=(--final
+              --physical-evidence "${{ inputs.physical_evidence_path }}"
+              --profile-evidence "${{ inputs.profile_evidence_path }}"
+              --expect-main-sha "${{ inputs.expect_main_sha }}"
+              --release-blocking-issue-count "${{ inputs.release_blocking_issue_count }}")
             if [[ -n "${{ inputs.build_identity }}" ]]; then args+=(--build-identity "${{ inputs.build_identity }}"); fi
           fi
           node tools/validation/stage2/verify.mjs "${args[@]}"
