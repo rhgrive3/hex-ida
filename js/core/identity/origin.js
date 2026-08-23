@@ -10,8 +10,13 @@ function stringList(values, code) {
   return values.map((value) => String(value)).filter(Boolean);
 }
 function bigintValue(value, code) {
-  if (typeof value === 'string' && !value.trim()) fail(code);
-  try { return typeof value === 'bigint' ? value : BigInt(value); }
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value)) fail(code);
+    return BigInt(value);
+  }
+  if (typeof value !== 'string' || !value.trim()) fail(code);
+  try { return BigInt(value.trim()); }
   catch { fail(code); }
 }
 function uniqueSorted(values) {
