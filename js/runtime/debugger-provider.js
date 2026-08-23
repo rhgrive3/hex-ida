@@ -1,13 +1,21 @@
 import { DebugAdapterError } from '../debug/adapter.js';
 import { DebugAdapterRuntimeProvider } from './provider.js';
 import { RuntimeEventNormalizer } from './events.js';
-import { InterventionLedger } from './evidence-bridge.js';
+import { createInterventionRecord, InterventionLedger } from './evidence-bridge.js';
 import { normalizeRuntimeModuleBinding } from './module-binding.js';
 
 function moduleFields(event) {
   const payload = event?.payload && typeof event.payload === 'object' ? event.payload : {};
   const module = payload.module && typeof payload.module === 'object' ? payload.module : payload;
   return module;
+}
+
+function validateInterventionDraft(ledger, input) {
+  const record = createInterventionRecord(input);
+  for (const parent of record.parentInterventionIds) {
+    if (!ledger.get(parent)) throw new DebugAdapterError('runtime-intervention-parent-missing', `intervention parent not found: ${parent}`);
+  }
+  return record;
 }
 
 export class DebuggerProvider extends DebugAdapterRuntimeProvider {
@@ -71,29 +79,27 @@ export class DebuggerProvider extends DebugAdapterRuntimeProvider {
     const debuggerFacet = Object.freeze({
       ...originalDebugger,
       writeRegister: async (name, value, callOptions = {}) => {
-        const draft = {
+        const draft = validateInterventionDraft(interventions, {
           runtimeSessionId: session.runtimeSessionId,
           providerId: session.providerId,
           kind: 'register-write',
           target: { register: String(name) },
           requestedChange: { value },
           parentInterventionIds: callOptions.parentInterventionIds ?? [],
-        };
-        interventions.validate(draft);
+        });
         const raw = await this.adapter.writeRegister(name, value, callOptions);
         const intervention = interventions.add({ ...draft, acknowledgedResult: raw });
         return { result: raw, intervention };
       },
       writeMemory: async (address, bytes, callOptions = {}) => {
-        const draft = {
+        const draft = validateInterventionDraft(interventions, {
           runtimeSessionId: session.runtimeSessionId,
           providerId: session.providerId,
           kind: 'memory-write',
           target: { address },
           requestedChange: { bytes },
           parentInterventionIds: callOptions.parentInterventionIds ?? [],
-        };
-        interventions.validate(draft);
+        });
         const raw = await this.adapter.writeMemory(address, bytes, callOptions);
         const intervention = interventions.add({ ...draft, acknowledgedResult: raw });
         return { result: raw, intervention };
@@ -119,9 +125,13 @@ export class DebuggerProvider extends DebugAdapterRuntimeProvider {
       return originalClose();
     };
     session.newProviderEpoch = (reason = 'debugger-provider-epoch-changed') => {
-      const next = session.newEpoch(reason);
-      normalizer.resetEpoch(next);
-      return next;
+      if (session.closed) throw new DebugAdapterError('runtime-session-closed', 'runtime provider session is closed');
+      const next = session.epoch + 1;
+      if (typeof this.adapter.setEpoch === 'function') this.adapter.setEpoch(next);
+      else if (typeof this.adapter.nextEpoch === 'function') this.adapter.nextEpoch();
+      const committed = session.newEpoch(reason);
+      normalizer.resetEpoch(committed);
+      return committed;
     };
     return session;
   }
