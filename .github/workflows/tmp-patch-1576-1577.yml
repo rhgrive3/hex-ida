@@ -1,0 +1,26 @@
+name: Temporary patch 1576 1577
+on:
+  push:
+    branches: [fix/artifact-contracts-clean]
+    paths: [.github/workflows/tmp-patch-1576-1577.yml]
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/artifact-contracts-clean
+          fetch-depth: 0
+      - run: |
+          python3 tools/tmp-patch-1576-1577.py
+          node --check js/core/artifacts/contracts.js
+      - run: |
+          rm .github/workflows/tmp-patch-1576-1577.yml tools/tmp-patch-1576-1577.py
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add js/core/artifacts/contracts.js .github/workflows/tmp-patch-1576-1577.yml tools/tmp-patch-1576-1577.py
+          git diff --cached --check
+          git commit -m "fix(artifacts): preserve typed key identity and validate completeness (#1576 #1577)"
+          git push origin HEAD:fix/artifact-contracts-clean
