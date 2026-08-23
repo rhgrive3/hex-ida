@@ -146,6 +146,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     for (const item of spec.globalValues || []) await emu.store(asAddress(item.address), Number(item.size || 8), BigInt(item.value || 0));
     const initialRegisters = cloneRegisters(emu);
     initializing = false;
+    if (this.running && this.sandbox) this.sandbox.emulator.stopped = 'stale-request';
     this.memoryMap = memoryMap;
     this.sandbox = sandbox;
     this.traceBuffer.clear(); this.cancelled = false; this.running = false; this.traceCursor = 0; this.branchCursor = 0; this.epoch++;
@@ -167,7 +168,10 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     return { cancelled:running };
   }
   async resume(options = {}) {
-    const sandbox = this.ensureSandbox(); this.cancelled = !!(options.signal && options.signal.aborted);
+    const sandbox = this.ensureSandbox();
+    if (this.running) throw new DebugAdapterError('already-running', 'local sandbox already has an active run');
+    const runEpoch = this.epoch;
+    this.cancelled = !!(options.signal && options.signal.aborted);
     const maxSteps = boundedInteger(options.maxSteps, 20000, 1, 1000000, 'maxSteps');
     const timeoutMs = options.timeoutMs == null ? null : boundedInteger(options.timeoutMs, 2000, 10, 30000, 'timeoutMs');
     const started = Date.now();
@@ -181,9 +185,12 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
         else if (timeoutMs != null && Date.now() - started >= timeoutMs) sandbox.emulator.stopped = 'timeout';
         if (options.onProgress) options.onProgress(n);
       } });
+      if (sandbox !== this.sandbox || runEpoch !== this.epoch) {
+        throw new DebugAdapterError('stale-run', 'local sandbox run was invalidated by a newer launch or session change', { runEpoch, currentEpoch:this.epoch });
+      }
       this.lastResult = this._normalizeResult(result); return this.lastResult;
     } finally {
-      this.running = false;
+      if (sandbox === this.sandbox && runEpoch === this.epoch) this.running = false;
       if (options.signal) options.signal.removeEventListener('abort', onAbort);
     }
   }
@@ -372,7 +379,7 @@ export class RemoteDebugAdapter extends DebugAdapter {
   async getThreads(){return remoteArray(await this.call('getThreads'),'threads',REMOTE_ARRAY_LIMITS.threads,'threads')}
   async getModules(){return remoteArray(await this.call('getModules'),'modules',REMOTE_ARRAY_LIMITS.modules,'modules')}
   async getBacktrace(threadId){return remoteArray(await this.call('getBacktrace',{threadId}),'frames',REMOTE_ARRAY_LIMITS.backtrace,'backtrace')}
-  evaluate(expression,context){return this.call('evaluate',{expression:String(expression).slice(0,4096),context})}
+  evaluate(expression,context){const text=String(expression); if(text.length>4096)throw new DebugAdapterError('too-large','remote evaluate expression exceeds 4096 characters'); return this.call('evaluate',{expression:text,context})}
   async trace(options={}){const {signal,...params}=options||{};return remoteTrace(await this.call('trace',params,{signal}))}
   watchMemory(spec){return this.call('watchMemory',normalizeBreakpoint({...spec,kind:'memory'}))}
   getObjCRuntimeInfo(request={}){this.require('objcRuntime'); return this.protocol.request('objcRuntime',request,{epoch:this.epoch})}
