@@ -170,21 +170,45 @@ assert.throws(
   /snapshot-analysis-epoch-invalid/,
   'snapshot analysis epochs must reject non-finite numeric values',
 );
+assert.throws(
+  () => createAnalysisSnapshot({
+    binaryId: binaryA,
+    projectRevision: '1',
+    analysisEpoch: '1',
+    artifactVersions: { [artifactId]: Infinity },
+    createdAt: '2026-08-24T00:00:00.000Z',
+  }),
+  /identity-non-finite-number/,
+  'snapshot artifact versions must not erase non-finite numeric components before hashing',
+);
+assert.throws(
+  () => createAnalysisSnapshot({
+    binaryId: binaryA,
+    projectRevision: '1',
+    analysisEpoch: '1',
+    artifactVersions: { [artifactId]: unsafeSnapshotRevision },
+    createdAt: '2026-08-24T00:00:00.000Z',
+  }),
+  /identity-unsafe-number/,
+  'snapshot artifact versions must reject unsafe integer Numbers',
+);
 const exactLargeSnapshot = createAnalysisSnapshot({
   binaryId: binaryA,
   projectRevision: 9007199254740993n,
   analysisEpoch: 9007199254740995n,
+  artifactVersions: { [artifactId]: 9007199254740997n },
   createdAt: '2026-08-24T00:00:00.000Z',
 });
 const exactLargeSnapshotFromStrings = createAnalysisSnapshot({
   binaryId: binaryA,
   projectRevision: '9007199254740993',
   analysisEpoch: '9007199254740995',
+  artifactVersions: { [artifactId]: '9007199254740997' },
   createdAt: 'different-time',
 });
 assert.equal(exactLargeSnapshot.projectRevision, '9007199254740993');
 assert.equal(exactLargeSnapshot.analysisEpoch, '9007199254740995');
 assert.equal(exactLargeSnapshot.snapshotId, exactLargeSnapshotFromStrings.snapshotId,
-  'bigint and exact string snapshot revisions must preserve the same exact identity');
+  'bigint and exact string snapshot state must preserve the same exact identity');
 
 console.log('core identity contracts: ok');
