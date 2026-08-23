@@ -117,6 +117,44 @@ const transform = createTransformRecord({
   passId: 'fold', passVersion: '1', ruleId: 'add-zero', consumedEntityIds: ['e1'], producedEntityIds: ['e2'],
   preconditions: ['rhs-is-zero'], proofKind: 'algebraic', timestampOrBuildId: 'build-1',
 });
+const unsafeProvenanceNumber = Number(9007199254740993n);
+assert.throws(
+  () => createTransformRecord({
+    passId: 'fold', passVersion: '1', ruleId: 'bounded-fold', proofKind: 'range',
+    preconditions: [{ bound: Infinity }],
+  }),
+  /identity-non-finite-number/,
+  'transform preconditions must not erase non-finite numeric proof components',
+);
+assert.throws(
+  () => createTransformRecord({
+    passId: 'fold', passVersion: '1', ruleId: 'bounded-fold', proofKind: 'range',
+    preconditions: [{ bound: unsafeProvenanceNumber }],
+  }),
+  /identity-unsafe-number/,
+  'transform preconditions must reject unsafe integer Numbers',
+);
+assert.doesNotThrow(
+  () => createTransformRecord({
+    passId: 'fold', passVersion: '1', ruleId: 'bounded-fold', proofKind: 'range',
+    preconditions: [{ bound: 9007199254740993n }],
+  }),
+  'transform preconditions must retain exact bigint proof components',
+);
+assert.throws(
+  () => createOriginSet({ sourceLocations: [{ file: 'a.c', line: Infinity }] }),
+  /identity-non-finite-number/,
+  'source provenance must not erase non-finite numeric location components',
+);
+assert.throws(
+  () => createOriginSet({ sourceLocations: [{ file: 'a.c', line: unsafeProvenanceNumber }] }),
+  /identity-unsafe-number/,
+  'source provenance must reject unsafe integer Numbers',
+);
+const exactSourceLocation = createOriginSet({ sourceLocations: [{ file: 'a.c', line: 9007199254740993n }] });
+assert.deepEqual(exactSourceLocation.sourceLocations, [{ file: 'a.c', line: '9007199254740993' }],
+  'source provenance must serialize exact bigint components without loss');
+
 const left = createOriginSet({
   byteRanges: [{ binaryId: binaryA, offset: 10n, length: 4n }],
   virtualRanges: [{ imageId: image, address: 0x100001000n, length: 4n }],
@@ -149,6 +187,29 @@ const determinism = createDeterminismMetadata({
   engineBuild: 'test-build', schemaVersion: '1', passVersions: { ssa: '2' }, targetSemanticVersions: { arm64: '1' },
   optionsHash: 'opts', inputArtifactIds: ['input-b','input-a'], outputArtifactId: artifactId,
 });
+assert.throws(
+  () => createDeterminismMetadata({
+    engineBuild: 'test-build', schemaVersion: '1', passVersions: { ssa: Infinity }, targetSemanticVersions: { arm64: '1' },
+    optionsHash: 'opts', inputArtifactIds: [], outputArtifactId: artifactId,
+  }),
+  /identity-non-finite-number/,
+  'determinism pass versions must not erase non-finite numeric components',
+);
+assert.throws(
+  () => createDeterminismMetadata({
+    engineBuild: 'test-build', schemaVersion: '1', passVersions: { ssa: '2' }, targetSemanticVersions: { arm64: unsafeProvenanceNumber },
+    optionsHash: 'opts', inputArtifactIds: [], outputArtifactId: artifactId,
+  }),
+  /identity-unsafe-number/,
+  'determinism target semantic versions must reject unsafe integer Numbers',
+);
+const exactDeterminism = createDeterminismMetadata({
+  engineBuild: 'test-build', schemaVersion: '1', passVersions: { ssa: 9007199254740993n }, targetSemanticVersions: { arm64: 9007199254740995n },
+  optionsHash: 'opts', inputArtifactIds: [], outputArtifactId: artifactId,
+});
+assert.deepEqual(exactDeterminism.passVersions, { ssa: '9007199254740993' });
+assert.deepEqual(exactDeterminism.targetSemanticVersions, { arm64: '9007199254740995' });
+
 const snapshot = createAnalysisSnapshot({
   binaryId: binaryA, projectRevision: '7', artifactVersions: { [artifactId]: '2' }, analysisEpoch: '11', createdAt: '2026-08-16T00:00:00.000Z',
 });
