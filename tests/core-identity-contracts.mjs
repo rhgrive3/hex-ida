@@ -142,4 +142,33 @@ assert.equal(snapshot.snapshotId, createAnalysisSnapshot({ binaryId: binaryA, pr
   'snapshot identity must be based on analysis state, not wall-clock metadata');
 assert.doesNotThrow(() => JSON.stringify({ determinism, snapshot }));
 
+const unsafeSnapshotRevision = Number(9007199254740993n);
+assert.equal(unsafeSnapshotRevision, 9007199254740992, 'snapshot counterexample must demonstrate IEEE-754 rounding');
+assert.throws(
+  () => createAnalysisSnapshot({ binaryId: binaryA, projectRevision: unsafeSnapshotRevision, analysisEpoch: 1, createdAt: '2026-08-24T00:00:00.000Z' }),
+  /snapshot-project-revision-invalid/,
+  'snapshot project revisions supplied as Numbers must be safe integers',
+);
+assert.throws(
+  () => createAnalysisSnapshot({ binaryId: binaryA, projectRevision: 1, analysisEpoch: Infinity, createdAt: '2026-08-24T00:00:00.000Z' }),
+  /snapshot-analysis-epoch-invalid/,
+  'snapshot analysis epochs must reject non-finite numeric values',
+);
+const exactLargeSnapshot = createAnalysisSnapshot({
+  binaryId: binaryA,
+  projectRevision: 9007199254740993n,
+  analysisEpoch: 9007199254740995n,
+  createdAt: '2026-08-24T00:00:00.000Z',
+});
+const exactLargeSnapshotFromStrings = createAnalysisSnapshot({
+  binaryId: binaryA,
+  projectRevision: '9007199254740993',
+  analysisEpoch: '9007199254740995',
+  createdAt: 'different-time',
+});
+assert.equal(exactLargeSnapshot.projectRevision, '9007199254740993');
+assert.equal(exactLargeSnapshot.analysisEpoch, '9007199254740995');
+assert.equal(exactLargeSnapshot.snapshotId, exactLargeSnapshotFromStrings.snapshotId,
+  'bigint and exact string snapshot revisions must preserve the same exact identity');
+
 console.log('core identity contracts: ok');
