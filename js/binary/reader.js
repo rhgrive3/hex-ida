@@ -24,6 +24,18 @@ function finiteBound(value, fallback) {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function byteIndex(value) {
+  if (typeof value === 'bigint') {
+    return value >= 0n && value <= MAX_SAFE_BIGINT ? Number(value) : null;
+  }
+  if (typeof value === 'number') return Number.isSafeInteger(value) && value >= 0 ? value : null;
+  if (typeof value === 'string' && value.trim() !== '') {
+    const n = Number(value);
+    return Number.isSafeInteger(n) && n >= 0 ? n : null;
+  }
+  return null;
+}
+
 export class BinaryReadError extends Error {
   constructor(message, offset = null) {
     let shown = null;
@@ -55,12 +67,12 @@ export class ByteView {
   }
 
   check(offset, size = 1) {
-    const o = Number(offset);
-    const n = Number(size);
-    const ob = Number.isSafeInteger(o) && o >= 0 ? BigInt(o) : -1n;
-    const nb = Number.isSafeInteger(n) && n >= 0 ? BigInt(n) : -1n;
+    const o = byteIndex(offset);
+    const n = byteIndex(size);
+    const ob = o == null ? -1n : BigInt(o);
+    const nb = n == null ? -1n : BigInt(n);
     if (ob < 0n || nb < 0n || ob > this.lengthBigInt || nb > this.lengthBigInt - ob) {
-      throw new BinaryReadError(`read outside file (${n} bytes)`, this.base + (ob >= 0n ? ob : 0n));
+      throw new BinaryReadError(`read outside file (${n ?? String(size)} bytes)`, this.base + (ob >= 0n ? ob : 0n));
     }
     return o;
   }
@@ -83,12 +95,14 @@ export class ByteView {
 
   slice(offset, size) {
     const o = this.check(offset, size);
-    return this.bytes.subarray(o, o + Number(size));
+    const n = byteIndex(size);
+    return this.bytes.subarray(o, o + n);
   }
 
   subview(offset, size = this.length - Number(offset), opts = {}) {
     const o = this.check(offset, size);
-    return new ByteView(this.bytes.subarray(o, o + Number(size)), {
+    const n = byteIndex(size);
+    return new ByteView(this.bytes.subarray(o, o + n), {
       littleEndian: opts.littleEndian ?? this.littleEndian,
       base: this.base + BigInt(o),
     });
@@ -129,8 +143,8 @@ export class ByteView {
 
   _lebEnd(end) {
     if (end == null) return this.length;
-    const n = Number(end);
-    if (!Number.isSafeInteger(n) || n < 0 || BigInt(n) > this.lengthBigInt)
+    const n = byteIndex(end);
+    if (n == null || BigInt(n) > this.lengthBigInt)
       throw new BinaryReadError('invalid bounded substream end', this.base);
     return n;
   }
