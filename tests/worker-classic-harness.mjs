@@ -41,6 +41,7 @@ console.log('classic worker harness regression passed');
   provenance.note(19, 0x4000n, 0);
   provenance.note(30, 0x5000n, 0);
   const call = provenance.control(0, 0x1004n, K.CALL);
+  assert.equal(call.call, true, 'direct BL must retain call classification while reserving its target boundary');
   assert.equal(call.target, 0x1010n);
   assert.equal(provenance.base(0, 1), null, 'CALL must still kill caller-saved provenance');
   assert.equal(provenance.base(30, 1), null, 'BL must still kill link-register provenance');
