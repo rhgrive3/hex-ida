@@ -26,6 +26,7 @@ const managedProof = {
   stateBudgetTests: true,
   runtimeDisagreementPreservesStaticTruth: true,
   frontendProviderTests: true,
+  profileDenominatorComplete: true,
 };
 
 for (const frontendId of frontends) {
@@ -50,13 +51,19 @@ for (const frontendId of frontends) {
 
   assert.equal(binding.targetProfileId, `managed:${frontendId}:m6`);
   assert.equal(validateManagedRuntimeState(binding, { threads: [{ frames: [{ moduleIdentity: binding.runtimeModuleIdentity, locals: [1], operandStack: [2] }] }] }).ok, true);
-  assert.equal(validateManagedRuntimeState(binding, { threads: [{ frames: [{ moduleIdentity: binding.runtimeModuleIdentity, locals: [1, 2, 3] }] }] }).reason, 'managed-runtime-local-budget-exceeded');
-  assert.equal(validateManagedRuntimeState(binding, { threads: [{ frames: [{ moduleIdentity: 'wrong' }] }] }).reason, 'managed-runtime-frame-module-mismatch');
+  assert.equal(validateManagedRuntimeState(binding, { threads: [{ frames: [{ moduleIdentity: binding.runtimeModuleIdentity, locals: [1, 2, 3], operandStack: [] }] }] }).reason, 'managed-runtime-local-budget-exceeded');
+  assert.equal(validateManagedRuntimeState(binding, { threads: [{ frames: [{ moduleIdentity: 'wrong', locals: [], operandStack: [] }] }] }).reason, 'managed-runtime-frame-module-mismatch');
+  assert.equal(validateManagedRuntimeState(binding, {}).reason, 'managed-runtime-threads-required');
+  assert.equal(validateManagedRuntimeState(binding, { threads: [{ frames: [{ locals: [], operandStack: [] }] }] }).reason, 'managed-runtime-frame-module-required');
 
   const observation = createRuntimeObservation({ binding: binding.runtime, sequence: 1, observedAt: '2026-08-22T00:00:00Z', kind: 'managed-frame', payload: { moduleIdentity: binding.runtimeModuleIdentity } });
   assert.equal(validateManagedRuntimeObservation(binding, observation).ok, true);
   const wrongObservation = createRuntimeObservation({ binding: binding.runtime, sequence: 2, observedAt: '2026-08-22T00:00:01Z', kind: 'managed-frame', payload: { moduleIdentity: 'other' } });
   assert.equal(validateManagedRuntimeObservation(binding, wrongObservation).reason, 'managed-runtime-observation-module-mismatch');
+  const missingModuleObservation = createRuntimeObservation({ binding: binding.runtime, sequence: 3, observedAt: '2026-08-22T00:00:02Z', kind: 'managed-frame' });
+  assert.equal(validateManagedRuntimeObservation(binding, missingModuleObservation).reason, 'managed-runtime-observation-payload-invalid');
+  const tamperedObservation = { ...observation, payload: { moduleIdentity: binding.runtimeModuleIdentity, altered: true } };
+  assert.equal(validateManagedRuntimeObservation(binding, tamperedObservation).reason, 'managed-runtime-observation-tampered');
 
   const runtimeProfileProof = runtimeProfileSupport({
     binding: binding.runtime,
@@ -73,6 +80,9 @@ for (const frontendId of frontends) {
   assert.equal(support.status, 'supported-for-exact-provider-profile');
   assert.equal(managedRuntimeProfileSupport({ binding, runtimeProfileProof: { ...runtimeProfileProof, bindingId: 'wrong' }, proof: managedProof }).status, 'partial');
   assert.equal(managedRuntimeProfileSupport({ binding, runtimeProfileProof: { ...runtimeProfileProof, targetProfileId: 'managed:other:m6' }, proof: managedProof }).status, 'partial', 'proof from another managed frontend must not be reusable');
+  assert.equal(managedRuntimeProfileSupport({ binding, runtimeProfileProof: { ...runtimeProfileProof, providerProfileId: `managed:other:provider-bound-runtime-v1` }, proof: managedProof }).status, 'partial', 'provider profile from another managed frontend must not be reusable');
+  assert.equal(managedRuntimeProfileSupport({ binding, runtimeProfileProof: { ...runtimeProfileProof, providerIdentity: 'provider:other:test' }, proof: managedProof }).status, 'partial', 'proof from another provider identity must not be reusable');
+  assert.equal(managedRuntimeProfileSupport({ binding, runtimeProfileProof: { ...runtimeProfileProof, requiredCapabilities: runtimeProfileProof.requiredCapabilities.slice(1) }, proof: managedProof }).status, 'partial', 'a reduced provider denominator must not promote M6');
   assert.equal(managedRuntimeProfileSupport({ binding, runtimeProfileProof, proof: { ...managedProof, frontendProviderTests: false } }).status, 'partial');
 }
 
@@ -80,4 +90,8 @@ assert.throws(() => createManagedRuntimeBinding({
   frontendId: 'jvm', runtimeImplementation: 'x', runtimeVersion: '1', staticModuleIdentity: 'a', runtimeModuleIdentity: 'b',
   providerIdentity: 'p', runtimeInstanceIdentity: 'r', targetIdentity: 't', binaryIdentity: 'bin', loadMappingIdentity: 'map', sessionIdentity: 's', capabilityVersion: '1',
 }), /module-identity-mismatch/);
+assert.throws(() => createManagedRuntimeBinding({
+  frontendId: 'jvm', runtimeImplementation: 'x', runtimeVersion: '1', staticModuleIdentity: 'a', runtimeModuleIdentity: 'a',
+  providerProfileId: 'managed:attacker:provider-bound-runtime-v1', providerIdentity: 'p', runtimeInstanceIdentity: 'r', targetIdentity: 't', binaryIdentity: 'bin', loadMappingIdentity: 'map', sessionIdentity: 's', capabilityVersion: '1',
+}), /provider-profile-mismatch/);
 console.log('[stage2] managed runtime binding tests passed for wasm/dex/cil/jvm');
