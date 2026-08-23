@@ -117,9 +117,10 @@ export class DebugAdapter {
     const keys = requested instanceof Set ? [...requested] : Array.isArray(requested) ? requested : Object.keys(requested);
     const out = {};
     for (const key of keys) {
-      if (!DEBUG_CAPABILITIES.includes(key)) { out[key] = false; continue; }
-      const method = capabilityMethod(key);
-      out[key] = !!this.capabilities[key] && (!method || typeof this[method] === 'function');
+      const value = DEBUG_CAPABILITIES.includes(key)
+        ? !!this.capabilities[key] && (!capabilityMethod(key) || typeof this[capabilityMethod(key)] === 'function')
+        : false;
+      Object.defineProperty(out, key, { value, enumerable: true, configurable: true, writable: true });
     }
     return Object.freeze(out);
   }
