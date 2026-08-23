@@ -1,5 +1,5 @@
 {
-  "schemaVersion": "phase12-denominator-inventory/v1",
+  "schemaVersion": "phase12-denominator-inventory/v2",
   "phase": 12,
   "baseline": {
     "commit": "d6267c43afbec417a471bb058585cc451f7ba089",
@@ -865,22 +865,44 @@
         },
         {
           "id": "remote.remote-canonical-transport",
-          "classification": "PREEXISTING_NORMATIVE_EXCLUSION",
-          "reason": "Remote transport remains unsupported until an exact security profile and its replay, identity, authorization, transport, privacy, convergence, revocation, and out-of-order proofs are supplied.",
+          "classification": "BLOCKING_GAP",
+          "reason": "Remote canonical transport has no exact security-profile proof at this head; the missing replay, identity, authorization, transport, privacy, convergence, revocation, and out-of-order evidence blocks closure.",
+          "gapKind": "PROOF_ABSENCE",
+          "requiredProof": [
+            "exactHead",
+            "replayTests",
+            "identityTests",
+            "authorizationTests",
+            "transportSecurityTests",
+            "privacyTests",
+            "convergenceTests",
+            "revocationTests",
+            "outOfOrderTests"
+          ],
           "check": {
-            "type": "source-includes",
-            "path": "js/collaboration/remote-authority.js",
-            "markers": [
-              "status: ready ? 'supported-for-exact-security-profile' : 'unsupported'",
-              "proof.exactHead === true",
-              "proof.replayTests === true",
-              "proof.identityTests === true",
-              "proof.authorizationTests === true",
-              "proof.transportSecurityTests === true",
-              "proof.privacyTests === true",
-              "proof.convergenceTests === true",
-              "proof.revocationTests === true",
-              "proof.outOfOrderTests === true"
+            "type": "all",
+            "checks": [
+              {
+                "type": "source-includes",
+                "path": "js/collaboration/remote-authority.js",
+                "markers": [
+                  "status: ready ? 'supported-for-exact-security-profile' : 'unsupported'",
+                  "proof.exactHead === true",
+                  "proof.replayTests === true",
+                  "proof.identityTests === true",
+                  "proof.authorizationTests === true",
+                  "proof.transportSecurityTests === true",
+                  "proof.privacyTests === true",
+                  "proof.convergenceTests === true",
+                  "proof.revocationTests === true",
+                  "proof.outOfOrderTests === true"
+                ]
+              },
+              {
+                "type": "behavior",
+                "id": "remote-canonical-transport",
+                "expected": ["unsupported-without-profile-proof"]
+              }
             ]
           }
         },
