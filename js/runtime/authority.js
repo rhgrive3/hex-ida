@@ -10,14 +10,20 @@ function required(value, code) {
   return text;
 }
 
+function numericPrimitive(value, code) {
+  if (typeof value === 'number') return value;
+  if (typeof value === 'string' && value.trim() !== '') return Number(value);
+  throw new TypeError(code);
+}
+
 function uint(value, code) {
-  const n = Number(value);
+  const n = numericPrimitive(value, code);
   if (!Number.isSafeInteger(n) || n < 0) throw new TypeError(code);
   return n;
 }
 
 function boundedCount(value, fallback, max, code) {
-  const n = value == null ? fallback : Number(value);
+  const n = value == null ? fallback : numericPrimitive(value, code);
   if (!Number.isSafeInteger(n) || n < 1 || n > max) throw new TypeError(code);
   return n;
 }
