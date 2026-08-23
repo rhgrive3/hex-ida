@@ -9,6 +9,16 @@ function nonNegativeOffset(value, label = 'offset') {
   return BigInt(value);
 }
 
+function integerValue(value, label = 'value') {
+  if (typeof value === 'bigint') return value;
+  if (Number.isSafeInteger(value)) return BigInt(value);
+  if (typeof value === 'string' && value.trim() !== '') {
+    try { return BigInt(value); }
+    catch {}
+  }
+  throw new TypeError(`${label} must be a bigint, safe integer, or non-empty integer string`);
+}
+
 export class BinaryReadError extends Error {
   constructor(message, offset = null) {
     let shown = null;
@@ -162,20 +172,20 @@ export class ByteView {
 }
 
 export function align(value, alignment) {
-  const v = BigInt(value);
-  const a = BigInt(alignment);
+  const v = integerValue(value, 'value');
+  const a = integerValue(alignment, 'alignment');
   if (a <= 0n) return v;
   return (v + a - 1n) / a * a;
 }
 
 export function inRange(value, start, size) {
-  const v = BigInt(value);
-  const s = BigInt(start);
-  const n = BigInt(size);
+  const v = integerValue(value, 'value');
+  const s = integerValue(start, 'start');
+  const n = integerValue(size, 'size');
   return n > 0n && v >= s && v < s + n;
 }
 
 export function hex(value) {
   if (value == null) return null;
-  return '0x' + BigInt(value).toString(16).toUpperCase();
+  return '0x' + integerValue(value, 'value').toString(16).toUpperCase();
 }
