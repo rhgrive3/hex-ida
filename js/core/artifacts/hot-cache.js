@@ -37,7 +37,7 @@ export class ArtifactHotCache {
 
   put(artifactId, value, sizeBytes) {
     const id = String(artifactId);
-    const size = Number(sizeBytes ?? 0);
+    const size = sizeBytes ?? 0;
     if (!Number.isSafeInteger(size) || size < 0) throw new TypeError('artifact-hot-cache-size-invalid');
     if (this.entries.has(id)) {
       this.delete(id, false);
