@@ -95,14 +95,12 @@ export class ByteView {
 
   slice(offset, size) {
     const o = this.check(offset, size);
-    const n = byteIndex(size);
-    return this.bytes.subarray(o, o + n);
+    return this.bytes.subarray(o, o + Number(size));
   }
 
   subview(offset, size = this.length - Number(offset), opts = {}) {
     const o = this.check(offset, size);
-    const n = byteIndex(size);
-    return new ByteView(this.bytes.subarray(o, o + n), {
+    return new ByteView(this.bytes.subarray(o, o + Number(size)), {
       littleEndian: opts.littleEndian ?? this.littleEndian,
       base: this.base + BigInt(o),
     });
@@ -143,8 +141,8 @@ export class ByteView {
 
   _lebEnd(end) {
     if (end == null) return this.length;
-    const n = byteIndex(end);
-    if (n == null || BigInt(n) > this.lengthBigInt)
+    const n = Number(end);
+    if (!Number.isSafeInteger(n) || n < 0 || BigInt(n) > this.lengthBigInt)
       throw new BinaryReadError('invalid bounded substream end', this.base);
     return n;
   }
