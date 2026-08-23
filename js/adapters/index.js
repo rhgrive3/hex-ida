@@ -106,6 +106,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     this.lastResult = null;
     this.cancelled = false;
     this.running = false;
+    this.activeRun = null;
     this.traceCursor = 0;
     this.branchCursor = 0;
     this._suppressMemoryTrace = false;
@@ -121,6 +122,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
       stackTop:STACK_TOP, heapBase, heapSize, globals:spec.globals || [], mappings:spec.memoryMappings || []
     });
     const sandbox = createFunctionSandbox(this.io, { objectBase, maxObjectSize:spec.maxObjectSize });
+    const traceBuffer = new TraceRingBuffer(this.options.trace || {});
     const emu = sandbox.emulator;
     emu.heap = heapBase;
     let initializing = true;
@@ -128,14 +130,14 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     emu.load = async (addr,size) => {
       const region = memoryMap.assert(addr,size,'read');
       const value = await rawLoad(addr,size);
-      if (!initializing && spec.traceMemoryReads && !this._suppressMemoryTrace) this.traceBuffer.push({ type:'memory-read', address:BigInt(addr), size, region:region.kind, value });
+      if (!initializing && spec.traceMemoryReads && !this._suppressMemoryTrace) traceBuffer.push({ type:'memory-read', address:BigInt(addr), size, region:region.kind, value });
       return value;
     };
     emu.store = async (addr,size,value) => {
       const region = memoryMap.assert(addr,size,'write');
       const before = await rawLoad(addr,size);
       await rawStore(addr,size,value);
-      if (!initializing && !this._suppressMemoryTrace) this.traceBuffer.push({ type:'memory-write', address:BigInt(addr), size, region:region.kind, before, after:BigInt.asUintN(size * 8, BigInt(value)) });
+      if (!initializing && !this._suppressMemoryTrace) traceBuffer.push({ type:'memory-write', address:BigInt(addr), size, region:region.kind, before, after:BigInt.asUintN(size * 8, BigInt(value)) });
     };
     await sandbox.setup(address, {
       args:spec.arguments || spec.args || [], registers:spec.registers || {}, objectBase, objectAsArg0:spec.objectAsArg0,
@@ -146,51 +148,74 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     for (const item of spec.globalValues || []) await emu.store(asAddress(item.address), Number(item.size || 8), BigInt(item.value || 0));
     const initialRegisters = cloneRegisters(emu);
     initializing = false;
-    if (this.running && this.sandbox) this.sandbox.emulator.stopped = 'stale-request';
+    if (this.activeRun) {
+      this.activeRun.cancelled = true;
+      this.activeRun.sandbox.emulator.stopped = 'stale-request';
+      this.activeRun = null;
+    }
     this.memoryMap = memoryMap;
     this.sandbox = sandbox;
-    this.traceBuffer.clear(); this.cancelled = false; this.running = false; this.traceCursor = 0; this.branchCursor = 0; this.epoch++;
+    this.traceBuffer = traceBuffer;
+    this.cancelled = false; this.running = false; this.traceCursor = 0; this.branchCursor = 0; this.epoch++;
     this.initialRegisters = initialRegisters;
     this.lastResult = null;
     return { launched:true, address, epoch:this.epoch, memory:memoryMap.snapshot(), capabilities:this.capabilities };
   }
   ensureSandbox() { if (!this.sandbox) throw new DebugAdapterError('not-launched', 'launch a function before using the local sandbox'); return this.sandbox; }
   async disconnect() {
+    if (this.activeRun) {
+      this.activeRun.cancelled = true;
+      this.activeRun.sandbox.emulator.stopped = 'cancelled';
+      this.activeRun = null;
+    }
     this.cancelled = true; this.running = false; this.sandbox = null; this.memoryMap = null; this.initialRegisters = null; this.lastResult = null; this.traceBuffer.clear();
     return super.disconnect();
   }
-  async pause() { this.cancelled = true; return { paused:true }; }
+  async pause() {
+    this.cancelled = true;
+    if (this.activeRun) { this.activeRun.cancelled = true; this.activeRun.sandbox.emulator.stopped = 'cancelled'; }
+    return { paused:true };
+  }
   async cancel() {
     this.require('cancel');
-    const running = this.running;
+    const run = this.activeRun;
     this.cancelled = true;
-    if (running && this.sandbox) this.sandbox.emulator.stopped = 'cancelled';
-    return { cancelled:running };
+    if (run) { run.cancelled = true; run.sandbox.emulator.stopped = 'cancelled'; }
+    return { cancelled:!!run };
   }
   async resume(options = {}) {
     const sandbox = this.ensureSandbox();
-    if (this.running) throw new DebugAdapterError('already-running', 'local sandbox already has an active run');
-    const runEpoch = this.epoch;
-    this.cancelled = !!(options.signal && options.signal.aborted);
+    if (this.activeRun) throw new DebugAdapterError('already-running', 'local sandbox already has an active run');
+    const run = { sandbox, epoch:this.epoch, cancelled:!!(options.signal && options.signal.aborted) };
+    this.activeRun = run;
+    this.cancelled = run.cancelled;
     const maxSteps = boundedInteger(options.maxSteps, 20000, 1, 1000000, 'maxSteps');
     const timeoutMs = options.timeoutMs == null ? null : boundedInteger(options.timeoutMs, 2000, 10, 30000, 'timeoutMs');
     const started = Date.now();
-    const onAbort = () => { this.cancelled = true; };
+    const onAbort = () => {
+      run.cancelled = true;
+      run.sandbox.emulator.stopped = 'cancelled';
+      if (this.activeRun === run) this.cancelled = true;
+    };
     if (options.signal && !options.signal.aborted) options.signal.addEventListener('abort', onAbort, { once:true });
-    if (this.cancelled) sandbox.emulator.stopped = 'cancelled';
+    if (run.cancelled) sandbox.emulator.stopped = 'cancelled';
     this.running = true;
     try {
       const result = await sandbox.run({ maxSteps, onProgress:(n) => {
-        if (this.cancelled) sandbox.emulator.stopped = 'cancelled';
+        if (run.cancelled) sandbox.emulator.stopped = 'cancelled';
         else if (timeoutMs != null && Date.now() - started >= timeoutMs) sandbox.emulator.stopped = 'timeout';
         if (options.onProgress) options.onProgress(n);
       } });
-      if (sandbox !== this.sandbox || runEpoch !== this.epoch) {
-        throw new DebugAdapterError('stale-run', 'local sandbox run was invalidated by a newer launch or session change', { runEpoch, currentEpoch:this.epoch });
+      if (this.activeRun !== run || sandbox !== this.sandbox || run.epoch !== this.epoch) {
+        throw new DebugAdapterError('stale-run', 'local sandbox run was invalidated by a newer launch or session change', { runEpoch:run.epoch, currentEpoch:this.epoch });
       }
       this.lastResult = this._normalizeResult(result); return this.lastResult;
     } finally {
-      if (sandbox === this.sandbox && runEpoch === this.epoch) this.running = false;
+      if (this.activeRun === run) {
+        this.activeRun = null;
+        this.running = false;
+        this.cancelled = run.cancelled;
+      }
       if (options.signal) options.signal.removeEventListener('abort', onAbort);
     }
   }
