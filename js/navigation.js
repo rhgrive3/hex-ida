@@ -16,7 +16,8 @@ export class NavigationHistory {
   }
 
   reset(entry) {
-    this.entries = entry ? [entry] : [];
+    // Keep reset() consistent with visit(): a zero-sized history retains nothing.
+    this.entries = entry && this.limit > 0 ? [entry] : [];
     this.index = this.entries.length - 1;
     this.onChange(this.snapshot());
   }
