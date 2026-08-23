@@ -14,7 +14,18 @@ assert.deepEqual(PHASE12_DENOMINATOR_CATEGORIES, ['knowledge', 'rules', 'pattern
 assert.equal(checked.categoryCount, 4);
 assert.equal(checked.unitCount, 68);
 assert.equal(checked.exactCount, 62);
-assert.equal(checked.exclusionCount, 6);
+assert.equal(checked.exclusionCount, 5);
+assert.equal(checked.nonExactCount, 6);
+assert.equal(checked.blockingGapCount, 1);
+assert.equal(checked.terminalEligible, false);
+assert.deepEqual(checked.normativeExclusions, [
+  'knowledge.external-confirmation-authority',
+  'patterns.mutation',
+  'patterns.network-and-arbitrary-javascript',
+  'remote.derived-analysis-egress',
+  'rules.ai-capability-minting',
+]);
+assert.deepEqual(checked.blockingGaps, ['remote.remote-canonical-transport']);
 assert.deepEqual(checked.remainingGaps, [
   'knowledge.external-confirmation-authority',
   'patterns.mutation',
@@ -24,17 +35,22 @@ assert.deepEqual(checked.remainingGaps, [
   'rules.ai-capability-minting',
 ]);
 assert.equal(checked.promotion.allowed, false);
+assert.equal(checked.promotion.reason, 'inventory-does-not-promote-support');
 
 for (const category of inventory.categories) {
   for (const unit of category.units) assert.ok(
-    unit.classification === 'EXACT' || unit.classification === 'PREEXISTING_NORMATIVE_EXCLUSION',
-    `${unit.id} must be exact or an explicit preexisting exclusion`,
+    unit.classification === 'EXACT'
+      || unit.classification === 'PREEXISTING_NORMATIVE_EXCLUSION'
+      || unit.classification === 'BLOCKING_GAP',
+    `${unit.id} must be exact, a blocking gap, or an explicit preexisting exclusion`,
   );
 }
 
 const report = phase12DenominatorReport(inventory);
-assert.equal(report.schemaVersion, 'phase12-denominator-report/v1');
+assert.equal(report.schemaVersion, 'phase12-denominator-report/v2');
 assert.equal(report.valid, true);
+assert.equal(report.terminalEligible, false);
+assert.equal(report.blockingGapCount, 1);
 assert.equal(report.promotion.allowed, false);
 
 function copy() { return structuredClone(inventory); }
@@ -68,11 +84,17 @@ assert.equal(shrinkFailure.ok, false);
 assert.ok(shrinkFailure.failures.includes('knowledge:unit-set-invalid'));
 assert.ok(shrinkFailure.failures.includes('knowledge.recognition.match-tiers:required-unit-missing'));
 
-const exclusionPromotion = copy();
-unit('remote.remote-canonical-transport', exclusionPromotion).classification = 'EXACT';
-const promotionFailure = validatePhase12DenominatorInventory(exclusionPromotion);
+const gapAsExclusion = copy();
+unit('remote.remote-canonical-transport', gapAsExclusion).classification = 'PREEXISTING_NORMATIVE_EXCLUSION';
+const promotionFailure = validatePhase12DenominatorInventory(gapAsExclusion);
 assert.equal(promotionFailure.ok, false);
 assert.ok(promotionFailure.failures.includes('remote.remote-canonical-transport:classification-invalid'));
+
+const exclusionAsGap = copy();
+unit('rules.ai-capability-minting', exclusionAsGap).classification = 'BLOCKING_GAP';
+const exclusionFailure = validatePhase12DenominatorInventory(exclusionAsGap);
+assert.equal(exclusionFailure.ok, false);
+assert.ok(exclusionFailure.failures.includes('rules.ai-capability-minting:classification-invalid'));
 
 const truthDrift = copy();
 truthDrift.truth.expected.collaboration.status = 'supported';

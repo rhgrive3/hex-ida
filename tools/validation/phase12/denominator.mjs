@@ -14,8 +14,8 @@ import { stableStringify } from '../../../js/core/identity/index.js';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const ROOT = path.resolve(HERE, '../../..');
 export const DEFAULT_INVENTORY_PATH = path.join(HERE, 'denominator-inventory.json');
-export const PHASE12_DENOMINATOR_SCHEMA = 'phase12-denominator-inventory/v1';
-export const PHASE12_DENOMINATOR_REPORT_SCHEMA = 'phase12-denominator-report/v1';
+export const PHASE12_DENOMINATOR_SCHEMA = 'phase12-denominator-inventory/v2';
+export const PHASE12_DENOMINATOR_REPORT_SCHEMA = 'phase12-denominator-report/v2';
 
 export const PHASE12_DENOMINATOR_CATEGORIES = Object.freeze([
   'knowledge',
@@ -113,13 +113,16 @@ const REQUIRED_UNITS = Object.freeze({
   ]),
 });
 
-const REQUIRED_EXCLUSIONS = Object.freeze(new Set([
+const REQUIRED_NORMATIVE_EXCLUSIONS = Object.freeze(new Set([
   'knowledge.external-confirmation-authority',
   'rules.ai-capability-minting',
   'patterns.mutation',
   'patterns.network-and-arbitrary-javascript',
-  'remote.remote-canonical-transport',
   'remote.derived-analysis-egress',
+]));
+
+const REQUIRED_BLOCKING_GAPS = Object.freeze(new Set([
+  'remote.remote-canonical-transport',
 ]));
 
 const EXPECTED_TRUTH = Object.freeze({
@@ -360,6 +363,13 @@ function behaviorRemoteSecurityGate() {
   return observed;
 }
 
+function behaviorRemoteCanonicalTransport() {
+  const support = remote.remoteCollaborationSupport();
+  const observed = new Set();
+  if (support.status === 'unsupported' && support.authority === 'none') observed.add('unsupported-without-profile-proof');
+  return observed;
+}
+
 const BEHAVIORS = Object.freeze({
   'knowledge-dependency-pinning': behaviorDependencyPinning,
   'knowledge-provider-output': behaviorProviderOutput,
@@ -370,6 +380,7 @@ const BEHAVIORS = Object.freeze({
   'patterns-support-truth': behaviorPatternSupportTruth,
   'remote-operation-classes': behaviorRemoteOperationClasses,
   'remote-security-gate': behaviorRemoteSecurityGate,
+  'remote-canonical-transport': behaviorRemoteCanonicalTransport,
 });
 
 function checkBehavior(check, failures, id) {
@@ -388,12 +399,19 @@ function checkUnit(unit, root, failures) {
   const id = unit?.id || '<missing-unit>';
   const check = unit?.check;
   if (!check || typeof check !== 'object' || Array.isArray(check)) { failures.push(`${id}:check-required`); return; }
-  if (check.type === 'source-includes') checkSourceIncludes(check, root, failures, id);
+  if (check.type === 'all') {
+    if (!Array.isArray(check.checks) || check.checks.length === 0) failures.push(`${id}:composite-checks-required`);
+    else for (const nested of check.checks) checkUnit({ id, check: nested }, root, failures);
+  } else if (check.type === 'source-includes') checkSourceIncludes(check, root, failures, id);
   else if (check.type === 'source-collection') checkSourceCollection(check, root, failures, id);
   else if (check.type === 'export-value') checkExportValue(check, failures, id);
   else if (check.type === 'truth-entry') checkTruthEntry(check, failures, id);
   else if (check.type === 'behavior') checkBehavior(check, failures, id);
   else failures.push(`${id}:check-type-unsupported:${check.type}`);
+}
+
+function containsBehavior(check) {
+  return check?.type === 'behavior' || (check?.type === 'all' && (check.checks || []).some(containsBehavior));
 }
 
 export function loadPhase12DenominatorInventory(file = DEFAULT_INVENTORY_PATH) {
@@ -422,12 +440,20 @@ export function validatePhase12DenominatorInventory(inventory = loadPhase12Denom
     for (const unit of units) {
       if (!unit?.id || seen.has(unit.id)) { failures.push(`${unit?.id || '<missing-unit>'}:unit-id-duplicate-or-missing`); continue; }
       seen.add(unit.id);
-      const expectedExclusion = REQUIRED_EXCLUSIONS.has(unit.id);
-      const expectedClassification = expectedExclusion ? 'PREEXISTING_NORMATIVE_EXCLUSION' : 'EXACT';
+      const expectedExclusion = REQUIRED_NORMATIVE_EXCLUSIONS.has(unit.id);
+      const expectedBlockingGap = REQUIRED_BLOCKING_GAPS.has(unit.id);
+      const expectedClassification = expectedBlockingGap
+        ? 'BLOCKING_GAP'
+        : expectedExclusion ? 'PREEXISTING_NORMATIVE_EXCLUSION' : 'EXACT';
       if (unit.classification !== expectedClassification) failures.push(`${unit.id}:classification-invalid`);
       if (expectedExclusion) {
         if (typeof unit.reason !== 'string' || unit.reason.trim().length < 24) failures.push(`${unit.id}:exclusion-reason-required`);
-        if (unit.check?.type === 'behavior') failures.push(`${unit.id}:exclusion-cannot-use-behavior-only-check`);
+        if (containsBehavior(unit.check)) failures.push(`${unit.id}:exclusion-cannot-use-behavior-check`);
+      }
+      if (expectedBlockingGap) {
+        if (typeof unit.reason !== 'string' || unit.reason.trim().length < 24) failures.push(`${unit.id}:blocking-gap-reason-required`);
+        if (unit.gapKind !== 'PROOF_ABSENCE') failures.push(`${unit.id}:blocking-gap-kind-invalid`);
+        if (!Array.isArray(unit.requiredProof) || unit.requiredProof.length === 0) failures.push(`${unit.id}:blocking-gap-proof-requirements-missing`);
       }
       checkUnit(unit, root, failures);
     }
@@ -443,7 +469,9 @@ export function validatePhase12DenominatorInventory(inventory = loadPhase12Denom
       if (!equal(observedTruth?.[key], expected)) failures.push(`production-phase12-truth-drift:${key}`);
     }
   }
-  const remainingGaps = categories.flatMap((category) => (category.units || []).filter((unit) => unit.classification === 'PREEXISTING_NORMATIVE_EXCLUSION').map((unit) => unit.id)).sort();
+  const normativeExclusions = categories.flatMap((category) => (category.units || []).filter((unit) => unit.classification === 'PREEXISTING_NORMATIVE_EXCLUSION').map((unit) => unit.id)).sort();
+  const blockingGaps = categories.flatMap((category) => (category.units || []).filter((unit) => unit.classification === 'BLOCKING_GAP').map((unit) => unit.id)).sort();
+  const remainingGaps = [...normativeExclusions, ...blockingGaps].sort();
   return Object.freeze({
     ok: failures.length === 0,
     reason: failures.length ? 'phase12-denominator-inventory-invalid' : null,
@@ -451,7 +479,12 @@ export function validatePhase12DenominatorInventory(inventory = loadPhase12Denom
     categoryCount: categories.length,
     unitCount: seen.size,
     exactCount: seen.size - remainingGaps.length,
-    exclusionCount: remainingGaps.length,
+    exclusionCount: normativeExclusions.length,
+    nonExactCount: remainingGaps.length,
+    blockingGapCount: blockingGaps.length,
+    terminalEligible: failures.length === 0 && blockingGaps.length === 0,
+    normativeExclusions: Object.freeze(normativeExclusions),
+    blockingGaps: Object.freeze(blockingGaps),
     remainingGaps: Object.freeze(remainingGaps),
     promotion: Object.freeze({ allowed: false, reason: 'inventory-does-not-promote-support' }),
   });
@@ -467,6 +500,11 @@ export function phase12DenominatorReport(inventory = loadPhase12DenominatorInven
     unitCount: validation.unitCount,
     exactCount: validation.exactCount,
     exclusionCount: validation.exclusionCount,
+    nonExactCount: validation.nonExactCount,
+    blockingGapCount: validation.blockingGapCount,
+    terminalEligible: validation.terminalEligible,
+    normativeExclusions: validation.normativeExclusions,
+    blockingGaps: validation.blockingGaps,
     remainingGaps: validation.remainingGaps,
     promotion: validation.promotion,
     failures: validation.failures,
