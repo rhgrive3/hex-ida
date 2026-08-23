@@ -36,6 +36,14 @@ function readNtbs(bytes, start, end) {
   return { value:text, next:stop + 1 };
 }
 
+function strictAddress(value) {
+  if (value == null) return 0n;
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number') return Number.isSafeInteger(value) ? BigInt(value) : null;
+  if (typeof value !== 'string' || value.trim() === '') return null;
+  try { return BigInt(value.trim()); } catch { return null; }
+}
+
 export function normalizeRiscvIsaString(input) {
   const canonical = String(input ?? '').trim().toLowerCase();
   const match = /^rv(32|64)([a-z0-9]+(?:_[a-z0-9]+)*)$/.exec(canonical);
@@ -127,7 +135,8 @@ export function resolveRiscvIsaProfile(metadata, address, options = {}) {
   });
   if (!metadata || typeof metadata !== 'object') return options.allowAssumed === false ? null : fallback;
   let selected = null;
-  const target = BigInt(address ?? 0);
+  const target = strictAddress(address);
+  if (target === null) return options.allowAssumed === false ? null : fallback;
   const containingSection = (metadata.sections || []).find((section) => {
     try { return target >= BigInt(section.start) && target < BigInt(section.end); }
     catch { return false; }
