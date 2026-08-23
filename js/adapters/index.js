@@ -102,6 +102,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     this.breakpoints = new Map();
     this.traceBuffer = new TraceRingBuffer(options.trace || {});
     this.epoch = 0;
+    this.launchGeneration = 0;
     this.initialRegisters = null;
     this.lastResult = null;
     this.cancelled = false;
@@ -121,6 +122,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
       objectBase, objectSize:boundedInteger(spec.maxObjectSize, 0x10000, 0x100, 16 * 1024 * 1024, 'maxObjectSize'),
       stackTop:STACK_TOP, heapBase, heapSize, globals:spec.globals || [], mappings:spec.memoryMappings || []
     });
+    const launchGeneration = ++this.launchGeneration;
     const sandbox = createFunctionSandbox(this.io, { objectBase, maxObjectSize:spec.maxObjectSize });
     const traceBuffer = new TraceRingBuffer(this.options.trace || {});
     const emu = sandbox.emulator;
@@ -148,6 +150,9 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     for (const item of spec.globalValues || []) await emu.store(asAddress(item.address), Number(item.size || 8), BigInt(item.value || 0));
     const initialRegisters = cloneRegisters(emu);
     initializing = false;
+    if (launchGeneration !== this.launchGeneration) {
+      throw new DebugAdapterError('stale-launch', 'local sandbox launch was invalidated by a newer launch or disconnect', { launchGeneration, currentGeneration:this.launchGeneration });
+    }
     if (this.activeRun) {
       this.activeRun.cancelled = true;
       this.activeRun.sandbox.emulator.stopped = 'stale-request';
@@ -163,6 +168,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
   }
   ensureSandbox() { if (!this.sandbox) throw new DebugAdapterError('not-launched', 'launch a function before using the local sandbox'); return this.sandbox; }
   async disconnect() {
+    this.launchGeneration++;
     if (this.activeRun) {
       this.activeRun.cancelled = true;
       this.activeRun.sandbox.emulator.stopped = 'cancelled';
@@ -185,8 +191,8 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
   }
   async resume(options = {}) {
     const sandbox = this.ensureSandbox();
-    if (this.activeRun) throw new DebugAdapterError('already-running', 'local sandbox already has an active run');
-    const run = { sandbox, epoch:this.epoch, cancelled:!!(options.signal && options.signal.aborted) };
+    if (this.activeRun) throw new DebugAdapterError('already-running', 'local sandbox already has an active execution');
+    const run = { sandbox, epoch:this.epoch, cancelled:!!(options.signal && options.signal.aborted), kind:'resume' };
     this.activeRun = run;
     this.cancelled = run.cancelled;
     const maxSteps = boundedInteger(options.maxSteps, 20000, 1, 1000000, 'maxSteps');
@@ -220,21 +226,35 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     }
   }
   async stepInto() {
-    if (this.activeRun) throw new DebugAdapterError('already-running', 'local sandbox already has an active run');
-    const sandbox = this.ensureSandbox(); const before = cloneRegisters(sandbox.emulator); const raw = await sandbox.step();
-    const after = cloneRegisters(sandbox.emulator); const event = { type:'instruction', address:before.pc, addr:before.pc, text:raw.text, ok:raw.ok, reason:raw.reason };
-    this.traceBuffer.push(event);
-    if (isConditionalBranch(raw.text)) {
-      this.traceBuffer.push({ type:'branch', address:before.pc, text:raw.text, next:after.pc, taken:after.pc !== before.pc + 4n });
-      this.branchCursor++;
+    const sandbox = this.ensureSandbox();
+    if (this.activeRun) throw new DebugAdapterError('already-running', 'local sandbox already has an active execution');
+    const run = { sandbox, epoch:this.epoch, cancelled:false, kind:'step' };
+    this.activeRun = run;
+    this.running = true;
+    try {
+      const before = cloneRegisters(sandbox.emulator); const raw = await sandbox.step();
+      if (this.activeRun !== run || sandbox !== this.sandbox || run.epoch !== this.epoch) {
+        throw new DebugAdapterError('stale-run', 'local sandbox step was invalidated by a newer launch or session change', { runEpoch:run.epoch, currentEpoch:this.epoch });
+      }
+      const after = cloneRegisters(sandbox.emulator); const event = { type:'instruction', address:before.pc, addr:before.pc, text:raw.text, ok:raw.ok, reason:raw.reason };
+      this.traceBuffer.push(event);
+      if (isConditionalBranch(raw.text)) {
+        this.traceBuffer.push({ type:'branch', address:before.pc, text:raw.text, next:after.pc, taken:after.pc !== before.pc + 4n });
+        this.branchCursor++;
+      }
+      const freshTrace = (sandbox.emulator.trace || []).slice(this.traceCursor);
+      const directCalls = callsFromTrace(freshTrace.filter((e) => e?.type === 'call'));
+      if (directCalls.length) for (const call of directCalls) this.traceBuffer.push(call);
+      else for (const call of callsFromTrace([event])) this.traceBuffer.push(call);
+      for (const ret of returnsFromTrace([event])) this.traceBuffer.push(ret);
+      this.traceCursor = (sandbox.emulator.trace || []).length;
+      return { ...raw, state:sandbox.state(), registerDelta:registerDelta(before,after), stop:classifyStop({ stopped:sandbox.emulator.stopped }) };
+    } finally {
+      if (this.activeRun === run) {
+        this.activeRun = null;
+        this.running = false;
+      }
     }
-    const freshTrace = (sandbox.emulator.trace || []).slice(this.traceCursor);
-    const directCalls = callsFromTrace(freshTrace.filter((e) => e?.type === 'call'));
-    if (directCalls.length) for (const call of directCalls) this.traceBuffer.push(call);
-    else for (const call of callsFromTrace([event])) this.traceBuffer.push(call);
-    for (const ret of returnsFromTrace([event])) this.traceBuffer.push(ret);
-    this.traceCursor = (sandbox.emulator.trace || []).length;
-    return { ...raw, state:sandbox.state(), registerDelta:registerDelta(before,after), stop:classifyStop({ stopped:sandbox.emulator.stopped }) };
   }
   _hasEnabledAddressBreakpoint(address) {
     for (const candidate of this.breakpoints.values()) {
