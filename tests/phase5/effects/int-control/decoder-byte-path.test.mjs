@@ -93,6 +93,21 @@ test('real Capstone bytes feed structured x86 integer/control MachineEffects', a
     assert.equal(ret.instructionFamily,'ret');
     assert.equal(ret.length,1);
     assert.equal(effects(ret,'p5-1:bytes:ret').controlEffect.kind,'return');
+
+    for (const [bytes, family, flag] of [
+      [[0xf8], 'clc', 'CF'],
+      [[0xf9], 'stc', 'CF'],
+      [[0xf5], 'cmc', 'CF'],
+      [[0xfc], 'cld', 'DF'],
+      [[0xfd], 'std', 'DF'],
+    ]) {
+      const decoded = one(session, bytes, 0x6100n + BigInt(bytes[0]));
+      assert.equal(decoded.instructionFamily, family);
+      assert.equal(decoded.detail.operandCount, 0);
+      const bundle = effects(decoded, `p5-1:bytes:${family}`);
+      assert.equal(bundle.completeness, 'exact');
+      assert.equal(flagWrites(bundle, flag).length, 1);
+    }
   } finally {
     session.close();
   }
