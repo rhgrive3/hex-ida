@@ -49,6 +49,7 @@ console.log('classic worker harness regression passed');
   assert.equal(provenance.enter(0x1008n), false, 'ordinary call fallthrough is not a function boundary');
   assert.equal(provenance.base(19, 2), 0x4000n);
   assert.equal(provenance.enter(0x1010n), true, 'direct call target must become a boundary without metadata');
+  assert.equal(provenance.pendingEntries, 0, 'entered direct call target must consume its pending boundary');
   assert.equal(provenance.base(19, 3), null, 'caller provenance must not leak into the direct callee');
 
   const nonForwardWords = {
