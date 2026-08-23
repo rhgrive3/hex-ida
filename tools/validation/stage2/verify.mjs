@@ -110,13 +110,28 @@ function readEvidenceJson(finalMode, evidencePath, requiredReason, missingReason
   catch (error) { return { required: true, status: 'failed', reason: invalidReason, detail: String(error?.message || error) }; }
 }
 
-function physicalEvidenceResult({ finalMode, evidencePath, headSha, treeSha, buildIdentity }) {
+export function stage2CanonicalBuildIdentity() {
+  const release = JSON.parse(fs.readFileSync(path.join(ROOT, 'userscript/release-version.json'), 'utf8'));
+  if (!/^[0-9a-f]{64}$/.test(String(release.releaseIdentity || ''))) throw new TypeError('stage2-release-identity-invalid');
+  if (!/^[0-9a-f]{24}$/.test(String(release.buildId || ''))) throw new TypeError('stage2-build-id-invalid');
+  if (!Number.isSafeInteger(release.serial) || release.serial < 1) throw new TypeError('stage2-release-serial-invalid');
+  return `userscript-release:${release.releaseIdentity}:build:${release.buildId}:serial:${release.serial}`;
+}
+
+function physicalEvidenceResult({ finalMode, evidencePath, headSha, treeSha, requestedBuildIdentity }) {
+  const buildIdentity = stage2CanonicalBuildIdentity();
+  if (requestedBuildIdentity != null && String(requestedBuildIdentity) !== buildIdentity) return {
+    required: finalMode,
+    status: 'failed',
+    reason: 'physical-ipad-requested-build-identity-mismatch',
+    expectedBuildIdentity: buildIdentity,
+  };
   const loaded = readEvidenceJson(finalMode, evidencePath, 'physical-ipad-evidence-required', 'physical-ipad-evidence-file-missing', 'physical-ipad-evidence-json-invalid');
   if (loaded.status !== 'loaded') return loaded;
   const checked = validatePhysicalIPadEvidence(loaded.record, {
     commitSha: headSha,
     treeSha,
-    ...(buildIdentity ? { buildIdentity } : {}),
+    buildIdentity,
     resolveEvidenceIdentity: evidenceIdentityAtHead,
   });
   return { required: true, status: checked.ok ? 'passed' : 'failed', reason: checked.reason || null, evidenceId: checked.evidenceId || loaded.record.evidenceId || null };
@@ -282,7 +297,7 @@ export function verifyStage2({ expectedSha = null, expectedMainSha = null, final
 
   const structural = validateScopeAndLedger(headSha);
   const sourceAudit = auditStage2Source();
-  const physical = physicalEvidenceResult({ finalMode, evidencePath: physicalEvidencePath, headSha, treeSha, buildIdentity });
+  const physical = physicalEvidenceResult({ finalMode, evidencePath: physicalEvidencePath, headSha, treeSha, requestedBuildIdentity: buildIdentity });
   const profiles = profileEvidenceResult({ finalMode, evidencePath: profileEvidencePath, headSha, treeSha, scope: structural.scope });
   const candidateMerge = candidateMergeResult({ finalMode, headSha, treeSha, expectedMainSha });
   const preflightBlocked = finalMode && (

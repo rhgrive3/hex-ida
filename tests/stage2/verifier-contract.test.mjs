@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
-import { minimumVerdictCounts, stage2KnownDenominatorGaps } from '../../tools/validation/stage2/verify.mjs';
+import { minimumVerdictCounts, stage2CanonicalBuildIdentity, stage2KnownDenominatorGaps } from '../../tools/validation/stage2/verify.mjs';
 
 const knownGaps = stage2KnownDenominatorGaps();
 assert.ok(knownGaps.includes('arm64:a64:all-decoder-encodings-and-aliases'));
 assert.ok(knownGaps.includes('x86_64:long-64:effect-family:atomic'));
+assert.match(stage2CanonicalBuildIdentity(), /^userscript-release:[0-9a-f]{64}:build:[0-9a-f]{24}:serial:\d+$/);
 
 const passed = (command) => ({ command, status: 'passed' });
 const complete = minimumVerdictCounts({
