@@ -5,7 +5,7 @@ import { DEBUG_PROTOCOL_VERSION } from '../../js/debug/adapter.js';
 import { encodeWireValue } from '../../js/debug/remote-protocol.js';
 
 class LoopbackTransport {
-  constructor() { this.listener = null; this.connectCount = 0; }
+  constructor() { this.listener = null; this.connectCount = 0; this.closeCount = 0; }
   onMessage(fn) {
     this.listener = fn;
     return () => { if (this.listener === fn) this.listener = null; };
@@ -30,6 +30,7 @@ class LoopbackTransport {
     });
     queueMicrotask(() => this.listener?.(response));
   }
+  close() { this.closeCount++; }
   emit(event, epoch = 0) {
     const packet = encodeWireValue({
       version:DEBUG_PROTOCOL_VERSION,
@@ -47,11 +48,13 @@ const lifecycleAdapter = new RemoteDebugAdapter(lifecycleTransport, { capabiliti
 const provider = new DebugAdapterRuntimeProvider(lifecycleAdapter);
 const first = await provider.openSession({ processKey:'first' });
 await first.close();
+assert.equal(lifecycleTransport.closeCount, 0, 'closing one runtime session must not permanently destroy a reusable transport');
 const second = await provider.openSession({ processKey:'second' });
 assert.equal(lifecycleTransport.connectCount, 2, 'the same remote adapter must support a second sequential runtime session');
 const bytes = await lifecycleAdapter.readMemory(0x1000n, 2);
 assert.deepEqual([...bytes], [0x12, 0x34], 'nested protocol-native Uint8Array memory results must be accepted');
 await second.close();
+assert.equal(lifecycleTransport.closeCount, 0, 'ordinary sequential session shutdown must preserve the transport lifecycle');
 
 const eventTransport = new LoopbackTransport();
 const eventAdapter = new RemoteDebugAdapter(eventTransport);
