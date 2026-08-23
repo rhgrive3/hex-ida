@@ -29,7 +29,9 @@ export function normalizeQuotaState(raw, now = Date.now(), config = AI_QUOTA) {
   const windowMs = finiteInt(config.windowMs, AI_QUOTA.windowMs) || AI_QUOTA.windowMs;
   let windowStarted = finiteInt(raw?.windowStarted, t);
   let count = finiteInt(raw?.count);
-  let sessions = raw?.sessions && typeof raw.sessions === 'object' ? { ...raw.sessions } : {};
+  let sessions = raw?.sessions && typeof raw.sessions === 'object'
+    ? Object.fromEntries(Object.entries(raw.sessions))
+    : {};
   if (t < windowStarted || t - windowStarted >= windowMs) {
     windowStarted = t;
     count = 0;
@@ -116,7 +118,12 @@ export function acquireQuotaState(raw, request = {}, config = AI_QUOTA) {
   }
   state.count++;
   session.count++;
-  state.sessions[sessionId] = session;
+  Object.defineProperty(state.sessions, sessionId, {
+    value: session,
+    enumerable: true,
+    configurable: true,
+    writable: true,
+  });
   state.leases[token] = { sessionId, expiresAt: now + leaseMs };
   return {
     state,
