@@ -11,6 +11,10 @@ function exactRevision(value, fallback, code) {
   if (typeof resolved === 'number' && !Number.isSafeInteger(resolved)) fail(code);
   return required(resolved, code);
 }
+function exactJson(value) {
+  validateCanonicalIdentityNumbers(value);
+  return jsonSafe(value);
+}
 function sortedStrings(value, code) {
   if (value == null) return [];
   if (!Array.isArray(value)) fail(code);
@@ -18,8 +22,8 @@ function sortedStrings(value, code) {
 }
 
 export function createDeterminismMetadata(input = {}) {
-  const passVersions = input.passVersions == null ? {} : jsonSafe(input.passVersions);
-  const targetSemanticVersions = input.targetSemanticVersions == null ? {} : jsonSafe(input.targetSemanticVersions);
+  const passVersions = exactJson(input.passVersions ?? {});
+  const targetSemanticVersions = exactJson(input.targetSemanticVersions ?? {});
   return deepFreeze({
     engineBuild: required(input.engineBuild, 'determinism-engine-build-required'),
     schemaVersion: required(input.schemaVersion, 'determinism-schema-version-required'),
@@ -36,9 +40,7 @@ export function createAnalysisSnapshot(input = {}) {
   const binaryId = required(input.binaryId, 'snapshot-binary-id-required');
   const projectRevision = exactRevision(input.projectRevision, '0', 'snapshot-project-revision-invalid');
   const analysisEpoch = exactRevision(input.analysisEpoch, '0', 'snapshot-analysis-epoch-invalid');
-  const artifactVersionInput = input.artifactVersions ?? {};
-  validateCanonicalIdentityNumbers(artifactVersionInput);
-  const artifactVersions = jsonSafe(artifactVersionInput);
+  const artifactVersions = exactJson(input.artifactVersions ?? {});
   const snapshotId = input.snapshotId == null
     ? `snapshot_${stableDigest({ binaryId, projectRevision, analysisEpoch, artifactVersions })}`
     : required(input.snapshotId, 'snapshot-id-required');
