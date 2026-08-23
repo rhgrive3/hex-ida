@@ -1,0 +1,135 @@
+{
+  "schemaVersion": "machine-effects-a2-denominator/v1",
+  "oracleRole": "production-effect-registry-denominator-with-explicit-profile-gaps",
+  "scope": {
+    "lockedProfiles": ["arm64:a64", "arm64e:a64+pac", "x86_64:long-64", "riscv64:rv64imc"],
+    "unitGranularity": "production-decoder-effect-family",
+    "fullIsaCoverageIncluded": false,
+    "percentagePolicy": "not-emitted; this denominator exposes registry units and explicit exclusions, not ISA percentages",
+    "missingUnitPolicy": "blocking-and-explicit"
+  },
+  "architectures": [
+    {
+      "id": "arm64",
+      "profileId": "arm64:a64",
+      "decoder": {
+        "provider": "capstone/backend",
+        "contract": "external",
+        "enumerationStatus": "excluded",
+        "reason": "The production Capstone bridge does not expose a finite A64 instruction-family registry for this inventory.",
+        "missingUnits": ["arm64:a64:all-decoder-encodings-and-aliases"]
+      },
+      "effectRegistry": {
+        "source": "js/targets/architecture/arm64/effects/index.js",
+        "export": "arm64MachineEffectFamilies",
+        "families": [
+          { "id": "flags", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "Condition-code families contain operand/encoding forms that remain partial." },
+          { "id": "control", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "Control families remain partial when targets, operands, or link addresses are unavailable." },
+          { "id": "memory", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "Memory families include constrained-unpredictable forms and implementation-defined prefetch effects." },
+          { "id": "simd", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "SIMD registry includes unsupported/scalable-vector and unresolved operand shapes." },
+          { "id": "fp", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "FP registry includes unavailable encoded immediates and unsupported forms." },
+          { "id": "integer", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "Integer registry contains operand, range, and encoding forms that fail closed as partial." },
+          { "id": "system", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "System families include environment traps, cache maintenance, and unknown hints." },
+          { "id": "fallback-unmatched-decoder-family", "status": "excluded", "coverage": "unsupported", "preexisting": true, "reason": "Unclaimed decoder families return null and must remain unsupported." }
+        ]
+      }
+    },
+    {
+      "id": "arm64e",
+      "profileId": "arm64e:a64+pac",
+      "decoder": {
+        "provider": "capstone/backend",
+        "contract": "external",
+        "enumerationStatus": "excluded",
+        "reason": "The production Capstone bridge does not expose a finite A64+PAC instruction-family registry for this inventory.",
+        "missingUnits": ["arm64e:a64+pac:all-a64-decoder-encodings-and-aliases", "arm64e:a64+pac:all-pac-decoder-encodings-and-aliases"]
+      },
+      "aliases": [
+        { "id": "baseline-a64-delegation", "kind": "delegation", "sourceArchitecture": "arm64", "status": "excluded", "preexisting": true, "reason": "Ordinary A64 is delegated to ARM64 and inherits its explicit exclusions." }
+      ],
+      "pointerAuthenticationMnemonics": [
+        "pacia", "pacib", "pacda", "pacdb", "paciza", "pacizb", "pacdza", "pacdzb", "paciasp", "pacibsp", "pacia1716", "pacib1716",
+        "autia", "autib", "autda", "autdb", "autiza", "autizb", "autdza", "autdzb", "autiasp", "autibsp", "autia1716", "autib1716",
+        "xpaci", "xpacd", "xpaclri", "pacga", "braa", "brab", "braaz", "brabz", "blraa", "blrab", "blraaz", "blrabz", "retaa", "retab"
+      ],
+      "effectRegistry": {
+        "source": "js/targets/architecture/arm64e/effects.js",
+        "export": "arm64eMachineEffectFamilies",
+        "families": [
+          { "id": "pointer-authentication", "status": "exact", "coverage": "exact-with-intrinsic", "preexisting": true, "oracle": "arm-architecture-reference-manual-pointer-authentication", "reason": "Valid structured PAC forms are lifted with explicit key/state intrinsics." },
+          { "id": "fallback-unmatched-decoder-family", "status": "excluded", "coverage": "unsupported", "preexisting": true, "reason": "Non-PAC forms delegate to the ARM64 registry; unclaimed forms return null." }
+        ]
+      },
+      "exclusions": [
+        { "id": "pac-missing-structured-operands", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "PAC forms without required destination/modifier/address evidence remain partial." }
+      ]
+    },
+    {
+      "id": "x86_64",
+      "profileId": "x86_64:long-64",
+      "decoder": {
+        "provider": "capstone/backend",
+        "contract": "external-structured-v1",
+        "contractVersion": "x86-64-decoded-instruction/v1",
+        "semanticVersion": "capstone-5-x86-structured-v1",
+        "enumerationStatus": "excluded",
+        "reason": "The production Capstone bridge does not expose a finite long-64 instruction-family registry for this inventory.",
+        "missingUnits": ["x86_64:long-64:all-decoder-encodings-prefixes-and-aliases"]
+      },
+      "effectRegistry": {
+        "source": "js/targets/architecture/x86_64/effects/index.js",
+        "export": "x86MachineEffectFamilies",
+        "families": [
+          { "id": "control", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "Control forms remain partial when structured targets or stack state are unavailable." },
+          { "id": "memory", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "Memory forms include locked ordering and deferred operand shapes." },
+          { "id": "lea", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "LEA fails closed for unsupported address/operand shapes." },
+          { "id": "integer", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "Integer forms include deferred memory and implicit-state shapes." },
+          { "id": "string", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "Repeated string effects exceed the frozen generic contract." },
+          { "id": "atomic", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "Locked and wide atomic effects remain explicitly partial." },
+          { "id": "fp", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "x87/environment-dependent forms remain partial." },
+          { "id": "simd", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "EVEX and unresolved vector state remain partial." },
+          { "id": "system", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "Fences, privileged, timestamp, and environment effects remain partial." },
+          { "id": "fallback-unmatched-decoder-family", "status": "excluded", "coverage": "unsupported", "preexisting": true, "reason": "Unclaimed or detail-unavailable decoder families return null and must remain unsupported." }
+        ]
+      }
+    },
+    {
+      "id": "riscv64",
+      "profileId": "riscv64:rv64imc",
+      "decoder": {
+        "provider": "capstone/backend",
+        "contract": "external-structured-v1",
+        "contractVersion": "riscv64-decoded-instruction/v1",
+        "semanticVersion": "capstone-5-riscv64-word-exact-v1",
+        "enumerationStatus": "excluded",
+        "reason": "The instruction-word decoder exposes family-level maps, not a complete per-encoding RV64IMC denominator.",
+        "missingUnits": ["riscv64:rv64imc:all-valid-32-bit-and-compressed-encodings"]
+      },
+      "effectRegistry": {
+        "source": "js/targets/architecture/riscv64/effects/index.js",
+        "export": "riscv64MachineEffectFamilies",
+        "families": [
+          { "id": "hint", "status": "exact", "coverage": "exact", "preexisting": true, "oracle": "riscv-unprivileged-isa-rvc", "reason": "RVC architectural hints are explicit state-preserving no-ops." },
+          { "id": "control", "status": "exact", "coverage": "exact", "preexisting": true, "oracle": "riscv-unprivileged-isa-rv64i", "reason": "Supported branches and jumps have structured exact effects." },
+          { "id": "memory", "status": "exact", "coverage": "exact", "preexisting": true, "oracle": "riscv-unprivileged-isa-rv64i", "reason": "Profile load/store families are structurally lifted with explicit faults." },
+          { "id": "muldiv", "status": "exact", "coverage": "exact", "preexisting": true, "oracle": "riscv-unprivileged-isa-m", "reason": "M multiply/divide edge cases are represented explicitly." },
+          { "id": "integer", "status": "exact", "coverage": "exact", "preexisting": true, "oracle": "riscv-unprivileged-isa-rv64i", "reason": "RV64I integer, compare, shift, and W-result families are structurally lifted." },
+          {
+            "id": "system",
+            "status": "excluded",
+            "coverage": "partial",
+            "preexisting": true,
+            "reason": "FENCE is exact, but ECALL/EBREAK retain unknown execution-environment effects.",
+            "subunits": [
+              { "id": "fence", "status": "exact", "coverage": "exact", "preexisting": true, "oracle": "riscv-unprivileged-isa-fence" },
+              { "id": "ecall", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "Execution-environment effects are outside the binary." },
+              { "id": "ebreak", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "Execution-environment effects are outside the binary." },
+              { "id": "fence.i", "status": "excluded", "coverage": "unsupported", "preexisting": true, "reason": "Zifencei is outside the frozen RV64IMC profile." }
+            ]
+          },
+          { "id": "fallback-unmatched-decoder-family", "status": "excluded", "coverage": "unsupported", "preexisting": true, "reason": "Unsupported extensions/reserved encodings return null and remain explicit unsupported." }
+        ]
+      }
+    }
+  ]
+}

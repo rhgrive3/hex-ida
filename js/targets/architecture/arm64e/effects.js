@@ -77,6 +77,19 @@ const AUTH_RETURN = Object.freeze({
   retab: { key: 'ib' },
 });
 
+// This is the production pointer-authentication family registry.  Keep the
+// list beside the dispatch tables so denominator/audit code cannot silently
+// omit a newly supported alias.
+const ARM64E_POINTER_AUTHENTICATION_MNEMONICS = Object.freeze([
+  ...Object.keys(SIGN),
+  ...Object.keys(AUTH),
+  ...Object.keys(STRIP),
+  'pacga',
+  ...Object.keys(AUTH_BRANCH),
+  ...Object.keys(AUTH_CALL),
+  ...Object.keys(AUTH_RETURN),
+]);
+
 function mnemonicOf(decoded) {
   return String(decoded?.mnemonic ?? decoded?.opcode ?? '').trim().toLowerCase();
 }
@@ -463,6 +476,14 @@ export function isArm64ePointerAuthenticationInstruction(decoded) {
     || Object.hasOwn(AUTH_BRANCH, mnemonic)
     || Object.hasOwn(AUTH_CALL, mnemonic)
     || Object.hasOwn(AUTH_RETURN, mnemonic);
+}
+
+export function arm64ePointerAuthenticationMnemonics() {
+  return ARM64E_POINTER_AUTHENTICATION_MNEMONICS;
+}
+
+export function arm64eMachineEffectFamilies() {
+  return Object.freeze(['pointer-authentication']);
 }
 
 export function liftArm64eEffects(decoded, context = {}) {
