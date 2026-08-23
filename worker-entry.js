@@ -139,10 +139,10 @@ async function protectedRuntime(request, env, url) {
   const token = raw.startsWith('Bearer ') ? raw.slice(7) : '';
   const payload = await verifyRuntimeSession(token, decodeBase64URL(RUNTIME_BUILD.signingKey));
   if (!payload || payload.bid !== buildId) return json({ error: 'invalid-or-expired-session' }, 403);
-  const consumed = await runtimeState(env).consume({ sessionId: payload.sid, requestId: payload.rid });
-  if (!consumed.ok) return json({ error: consumed.reason }, 403);
   const response = await asset(env, url, RUNTIME_BUILD.manifest.assetPath);
   if (!response.ok) return json({ error: 'runtime-unavailable' }, 503);
+  const consumed = await runtimeState(env).consume({ sessionId: payload.sid, requestId: payload.rid });
+  if (!consumed.ok) return json({ error: consumed.reason }, 403);
   const headers = new Headers(securityHeaders()); headers.set('content-type', 'application/octet-stream'); headers.set('content-length', String(RUNTIME_BUILD.manifest.byteLength)); headers.set('cache-control', 'private, max-age=120'); headers.set('x-hex-runtime-build', buildId);
   if (origin && CHATGPT_ORIGINS.has(origin)) { headers.set('access-control-allow-origin', origin); headers.set('vary', 'Origin'); }
   return new Response(response.body, { status: 200, headers });
