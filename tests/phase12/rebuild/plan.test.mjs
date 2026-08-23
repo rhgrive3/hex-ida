@@ -13,7 +13,7 @@ assert.ok(plan.requiredValidators.includes('loader-reparse'));
 const materialized = await materializeRebuildPlan(plan, source);
 assert.equal(materialized.status, 'materialized');
 assert.deepEqual([...materialized.bytes], [1, 9, 3, 4, 5]);
-const validation = await validateRebuildOutput(plan, materialized, { original: source, loaderReparse: (bytes) => ({ ok: bytes[1] === 9 }) });
+const validation = await validateRebuildOutput(plan, materialized, { original: source, loaderReparse: (bytes) => ({ ok: bytes[1] === 9 }), validators: { evidence: () => ({ ok: true }) } });
 assert.equal(validation.status, 'valid');
 assert.equal((await publishRebuildOutput(materialized, validation)).status, 'not-published');
 let promoted = null;
