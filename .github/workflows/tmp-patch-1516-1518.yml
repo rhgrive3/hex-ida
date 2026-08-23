@@ -1,0 +1,26 @@
+name: Temporary patch 1516 1518
+on:
+  push:
+    branches: [fix/binary-model-boundaries-1516-1518]
+    paths: [.github/workflows/tmp-patch-1516-1518.yml]
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/binary-model-boundaries-1516-1518
+          fetch-depth: 0
+      - run: |
+          python3 tools/tmp-patch-1516-1518.py
+          node --check js/binary/model.js
+      - run: |
+          rm .github/workflows/tmp-patch-1516-1518.yml tools/tmp-patch-1516-1518.py
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add js/binary/model.js .github/workflows/tmp-patch-1516-1518.yml tools/tmp-patch-1516-1518.py
+          git diff --cached --check
+          git commit -m "fix(binary): harden model JSON, confidence, and address boundaries (#1516 #1517 #1518)"
+          git push origin HEAD:fix/binary-model-boundaries-1516-1518
