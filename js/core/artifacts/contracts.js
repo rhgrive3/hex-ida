@@ -42,7 +42,7 @@ function sortedStrings(values) {
  * wrapper object, so an ordinary object is not allowed to present the same
  * shape: its own keys are escaped on the way in (see `escapeKey`).
  */
-const RESERVED_TAGS = Object.freeze(['$map', '$set', '$bigint']);
+const RESERVED_TAGS = Object.freeze(['$map', '$set', '$bigint', '$date', '$bytes']);
 
 /**
  * Escapes an ordinary object key so it can never collide with a reserved tag.
@@ -69,9 +69,9 @@ export function canonicalArtifactKeyValue(value, seen = new WeakSet()) {
   if (typeof value === 'undefined' || typeof value === 'function' || typeof value === 'symbol') {
     throw new ArtifactError('artifact-key-invalid-type', `Artifact key values must be JSON-serializable, received ${typeof value}`);
   }
-  if (ArrayBuffer.isView(value)) return Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength));
-  if (value instanceof ArrayBuffer) return Array.from(new Uint8Array(value));
-  if (value instanceof Date) return value.toISOString();
+  if (ArrayBuffer.isView(value)) return { $bytes: Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength)) };
+  if (value instanceof ArrayBuffer) return { $bytes: Array.from(new Uint8Array(value)) };
+  if (value instanceof Date) return { $date: value.toISOString() };
   if (typeof value !== 'object') return String(value);
   if (seen.has(value)) throw new ArtifactError('artifact-key-cyclic-value');
   seen.add(value);
@@ -234,6 +234,7 @@ export function validateArtifactRecord(record, payloadBytes, expected = {}) {
   if (record.artifactContractVersion !== ARTIFACT_CONTRACT_VERSION) throw new ArtifactCorruptionError('artifact-contract-version-mismatch');
   if (!record.artifactId || !record.producerId || !record.producerVersion) throw new ArtifactCorruptionError('artifact-record-required-field-missing');
   if (record.payloadEncoding !== ARTIFACT_PAYLOAD_ENCODING || record.payloadEncodingVersion !== 1) throw new ArtifactCorruptionError('artifact-payload-encoding-unsupported');
+  if (!COMPLETENESS.has(record.completeness)) throw new ArtifactCorruptionError('artifact-completeness-invalid');
   if (record.completeness !== 'complete' && expected.allowIncomplete !== true) throw new ArtifactCorruptionError('artifact-incomplete');
   let bytes;
   try { bytes = normalizeArtifactPayloadBytes(payloadBytes, { allowMissing:true }); }
