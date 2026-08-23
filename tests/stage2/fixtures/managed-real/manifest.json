@@ -1,0 +1,33 @@
+{
+  "schemaVersion": "hex-stage2-managed-real-fixtures/v1",
+  "fixtures": [
+    {
+      "id": "wasm-clang18-add",
+      "frontendId": "wasm",
+      "path": "wasm/managed_fixture.wasm",
+      "source": "wasm/managed_fixture.c",
+      "size": 80,
+      "sha256": "6f1b5f76fa61bf7429c8e2e83cdb9a7ec9bb182e679165522eaa7e644f72174c",
+      "compiler": "clang-18 --target=wasm32 --no-entry --strip-all -Oz"
+    },
+    {
+      "id": "cil-dotnet10-add",
+      "frontendId": "cil",
+      "path": "cil/ManagedFixture.dll",
+      "source": "cil/ManagedFixture.cs",
+      "project": "cil/ManagedFixture.csproj",
+      "size": 3584,
+      "sha256": "3d42c1689fc34179ebf1af9563a6157a21d8d0d92ee7b6362a518070ee5c9e3f",
+      "compiler": "dotnet SDK 10.0.200 (Deterministic, DebugType=None)"
+    },
+    {
+      "id": "jvm-javac11-add",
+      "frontendId": "jvm",
+      "path": "jvm/ManagedFixture.class",
+      "source": "jvm/ManagedFixture.java",
+      "size": 173,
+      "sha256": "90ddd1d3fc2e7bcffdcd4a702ca9da6c0d6fa0a0ccd11818bd637785a6771e36",
+      "compiler": "javac 11.0.14.1 -source 8 -target 8 -g:none"
+    }
+  ]
+}
