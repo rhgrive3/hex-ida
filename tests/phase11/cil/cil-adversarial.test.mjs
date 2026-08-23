@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { parseCil, readCompressedInt } from '../../../js/managed/cil/parser.js';
+import { parseCil, probeCil, readCompressedInt } from '../../../js/managed/cil/parser.js';
 
 console.log('[phase11] running cil adversarial tests...');
 
@@ -25,7 +25,13 @@ assert.equal(compiled.methodBodies[0].headerOffset, 0x250);
 
 const noCliDirectory = new Uint8Array(realCil);
 noCliDirectory.fill(0, 0x168, 0x170);
-assert.throws(() => parseCil(noCliDirectory), /cil-cli-directory-missing/);
+assert.equal(probeCil(noCliDirectory).supported, false);
+assert.throws(() => parseCil(noCliDirectory), /cil-unsupported-binary/);
+
+const nativePeWithFalseMetadata = new Uint8Array(noCliDirectory);
+nativePeWithFalseMetadata.set([0x42, 0x53, 0x4a, 0x42], 0x400);
+assert.equal(probeCil(nativePeWithFalseMetadata).supported, false);
+assert.throws(() => parseCil(nativePeWithFalseMetadata), /cil-unsupported-binary/);
 
 const falseBody = new Uint8Array([0x12, 0x02, 0x03, 0x58, 0x2a]);
 for (const [label, offset] of [['metadata', 0x3f0], ['resource', 0x820]]) {

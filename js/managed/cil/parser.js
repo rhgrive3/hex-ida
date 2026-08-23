@@ -301,20 +301,29 @@ function parseMethodBody(bytes, view, offset) {
 export function probeCil(bytes) {
   if (!bytes || bytes.length < 64) return { supported: false, confidence: 0, reason: 'too-small' };
   const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-  
-  // Direct metadata signature check: 'BSJB' (0x42534a42)
-  for (let i = 0; i <= u8.length - 4; i += 4) {
-    if (u8[i] === 0x42 && u8[i + 1] === 0x53 && u8[i + 2] === 0x4a && u8[i + 3] === 0x42) {
-      return { supported: true, confidence: 1.0, formatVersion: 'cli-ecma-335', vmSpecEdition: 'clr-v4' };
+
+  // A PE image is CLI only when its optional-header CLI directory resolves
+  // through a section to a structurally valid CLI header and metadata root.
+  // Never let an unrelated BSJB byte sequence promote a native PE image.
+  if (u8[0] === 0x4d && u8[1] === 0x5a) {
+    try {
+      const view = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+      const layout = readPeCliLayout(u8, view);
+      if (layout?.cliPresent) {
+        parseMetadataRoot(u8, view, layout.metadataOffset, layout.metadataSize);
+        return { supported: true, confidence: 1.0, formatVersion: 'pe-cli', vmSpecEdition: 'clr-v4' };
+      }
+      return { supported: false, confidence: 0, reason: layout?.cliPresent === false ? 'cli-directory-missing' : 'invalid-pe-cli' };
+    } catch {
+      return { supported: false, confidence: 0, reason: 'malformed-pe-cli' };
     }
   }
 
-  // DOS header 'MZ'
-  if (u8[0] === 0x4d && u8[1] === 0x5a) {
-    const view = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
-    const peOff = view.getUint32(0x3c, true);
-    if (peOff + 4 <= u8.length && u8[peOff] === 0x50 && u8[peOff + 1] === 0x45) {
-      return { supported: true, confidence: 0.9, formatVersion: 'pe-cli', vmSpecEdition: 'clr-v4' };
+  // Retain raw metadata-root compatibility for the deliberately minimal
+  // Phase 11 fixture. Real PE images are handled exclusively above.
+  for (let i = 0; i <= u8.length - 4; i += 4) {
+    if (u8[i] === 0x42 && u8[i + 1] === 0x53 && u8[i + 2] === 0x4a && u8[i + 3] === 0x42) {
+      return { supported: true, confidence: 0.9, formatVersion: 'cli-ecma-335', vmSpecEdition: 'clr-v4' };
     }
   }
 

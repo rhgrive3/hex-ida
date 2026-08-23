@@ -77,6 +77,7 @@ for (const fixture of manifest.fixtures) {
     runtimeInstanceIdentity: `fixture-runtime:${fixture.sha256}`,
     targetIdentity: `fixture-target:${fixture.sha256}`,
     binaryIdentity: `sha256:${fixture.sha256}`,
+    buildIdentity: `managed-fixture-build:sha256:${fixture.sha256}`,
     loadMappingIdentity: `fixture-mapping:${fixture.sha256}`,
     sessionIdentity: `fixture-session:${fixture.sha256}`,
     capabilityVersion: 'managed-fixture-provider/v1',
