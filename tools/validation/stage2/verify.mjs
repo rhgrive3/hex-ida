@@ -164,7 +164,7 @@ function candidateMergeResult({ finalMode, headSha, treeSha, expectedMainSha }) 
   return { required: true, status: 'passed', reason: null, currentMainSha, candidateMergeTree };
 }
 
-function minimumVerdictCounts({ structural, sourceAudit, commands, profiles, physical, ledger, generatedOutput, candidateMerge, releaseBlockingIssueCount }) {
+export function minimumVerdictCounts({ structural, sourceAudit, commands, profiles, physical, ledger, generatedOutput, candidateMerge, releaseBlockingIssueCount }) {
   const profileFailures = Array.isArray(profiles.failures) ? profiles.failures : [];
   const failedCommands = commands.filter((result) => result.status !== 'passed').length;
   const stage2Passed = commandPassed(commands, 'tests/stage2/run.mjs');
