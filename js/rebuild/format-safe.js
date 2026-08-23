@@ -115,7 +115,9 @@ function elfSections(bytes, header) {
     const alignment = u64(bytes, offset + 48);
     const entrySize = u64(bytes, offset + 56);
     if (type === 8) {
-      if (fileOffset > bytes.length || size !== 0) fail('format-safe-elf-nobits-file-range-invalid');
+      // SHT_NOBITS sections (normally .bss) have a memory size but occupy no
+      // bytes in the file.  Only the notional file offset is bounded.
+      if (fileOffset > bytes.length) fail('format-safe-elf-nobits-file-range-invalid');
     } else ensureRange(bytes, fileOffset, size, 'format-safe-elf-section-range-invalid');
     sections.push({
       index,
@@ -311,7 +313,7 @@ export function createFormatSafeRebuildTransaction(input = {}) {
   const format = String(input.format || '').toLowerCase();
   if (!['elf', 'pe'].includes(format)) fail('format-safe-format-unsupported');
   const architecture = expectedArchitecture(format, input.architecture);
-  const image = parseImage(source, format);
+  const image = parseImage(source);
   if (image.format !== format || image.architecture !== architecture) fail('format-safe-source-identity-mismatch');
   const mutation = input.mutation;
   if (!mutation || typeof mutation !== 'object' || Array.isArray(mutation)) fail('format-safe-mutation-required');
@@ -368,8 +370,8 @@ export function validateFormatSafeMutation({ transaction, original, output } = {
     if (!transaction || transaction.schemaVersion !== 'hex-rebuild-transaction-v2') return reject('format-safe-transaction-invalid');
     const format = String(transaction.format || '').toLowerCase();
     const architecture = expectedArchitecture(format, transaction.architecture);
-    const sourceImage = parseImage(source, format);
-    const outputImage = parseImage(candidate, format);
+    const sourceImage = parseImage(source);
+    const outputImage = parseImage(candidate);
     if (sourceImage.format !== format || outputImage.format !== format || sourceImage.architecture !== architecture || outputImage.architecture !== architecture) return reject('format-safe-format-identity-mismatch');
     if (transaction.operations?.length !== 1) return reject('format-safe-operation-count-invalid');
     const operation = transaction.operations[0];

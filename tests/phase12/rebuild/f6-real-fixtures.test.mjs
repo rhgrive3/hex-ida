@@ -34,7 +34,7 @@ const loaderVersion = 'hex-loader:openBinary:v1';
 
 assert.equal(manifest.schemaVersion, 'f6-real-rebuild-fixtures/v1');
 assert.equal(sourceSha256, manifest.provenance.sourceSha256);
-assert.equal(manifest.provenance.policy.includes('synthetic'), true);
+assert.equal(manifest.provenance.policy, 'tracked compiler-produced fixture; no synthetic or unchanged-copy proof');
 
 const oracleTool = inspectLlvmReadobj();
 assert.equal(oracleTool.available, true, `llvm-readobj is required: ${oracleTool.reason || 'unavailable'}`);
@@ -47,6 +47,37 @@ function fixtureBytes(fixture) {
   assert.equal(fixture.real, true, `${fixture.id}: fixture must be explicitly compiler-produced`);
   assert.equal(fixture.producer.includes('clang'), true, `${fixture.id}: missing compiler provenance`);
   return bytes;
+}
+
+function appendNonZeroNobitsSection(value) {
+  const bytes = new Uint8Array(value);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const sectionTableOffset = Number(view.getBigUint64(40, true));
+  const sectionHeaderSize = view.getUint16(58, true);
+  const sectionCount = view.getUint16(60, true);
+  const sectionNameIndex = view.getUint16(62, true);
+  assert.equal(sectionHeaderSize, 64);
+  assert.equal(sectionTableOffset + sectionCount * sectionHeaderSize, bytes.length);
+  const namesHeader = sectionTableOffset + sectionNameIndex * sectionHeaderSize;
+  const namesOffset = Number(view.getBigUint64(namesHeader + 24, true));
+  const namesSize = Number(view.getBigUint64(namesHeader + 32, true));
+  const sectionName = new TextEncoder().encode('.bss\0');
+  assert.equal(namesOffset + namesSize + sectionName.length, sectionTableOffset);
+
+  const extended = new Uint8Array(bytes.length + sectionHeaderSize);
+  extended.set(bytes);
+  extended.set(sectionName, namesOffset + namesSize);
+  const output = new DataView(extended.buffer);
+  output.setBigUint64(namesHeader + 32, BigInt(namesSize + sectionName.length), true);
+  output.setUint16(60, sectionCount + 1, true);
+  const header = sectionTableOffset + sectionCount * sectionHeaderSize;
+  output.setUint32(header, namesSize, true);
+  output.setUint32(header + 4, 8, true); // SHT_NOBITS
+  output.setBigUint64(header + 8, 3n, true); // SHF_WRITE | SHF_ALLOC
+  output.setBigUint64(header + 24, BigInt(extended.length), true);
+  output.setBigUint64(header + 32, 16n, true);
+  output.setBigUint64(header + 48, 4n, true);
+  return extended;
 }
 
 function loaderReparse({ transaction, original, output, expectedOutputHash }) {
@@ -157,6 +188,9 @@ assert.throws(() => createFormatSafeRebuildTransaction({
 
 const elfFixture = manifest.fixtures.find((fixture) => fixture.format === 'elf');
 const elfBytes = fixtureBytes(elfFixture);
+const elfWithBss = inspectFormatSafeImage(appendNonZeroNobitsSection(elfBytes));
+assert.equal(elfWithBss.format, 'elf');
+assert.equal(elfWithBss.snapshot.sections.find((section) => section.name === '.bss')?.size, 16);
 const elfTransaction = createFormatSafeRebuildTransaction({
   binaryId: 'negative:tamper', source: elfBytes, format: 'elf', architecture: 'x86_64', loaderVersion, mutation: { kind: 'elf-comment', tag: 'Hex F6 tamper probe' },
 });
