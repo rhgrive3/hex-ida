@@ -64,7 +64,7 @@ export function validateProviderPacket(input) {
   if (packet.type === 'hello' || packet.type === 'hello-ack') {
     if (typeof packet.providerId !== 'string' || !packet.providerId.trim()) throw new DebugAdapterError('malformed-provider-data', 'provider hello requires providerId');
     if (typeof packet.providerVersion !== 'string' || !packet.providerVersion.trim()) throw new DebugAdapterError('malformed-provider-data', 'provider hello requires providerVersion');
-    normalizeFacetList(packet.facets || []);
+    packet.facets = normalizeFacetList(packet.facets || []);
     return packet;
   }
 
