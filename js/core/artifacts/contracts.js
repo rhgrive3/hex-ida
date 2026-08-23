@@ -188,9 +188,20 @@ export function artifactPayloadChecksum(bytes) {
   return stableDigest(Array.from(view));
 }
 
+function normalizeArtifactPayloadBytes(value, { allowMissing = false } = {}) {
+  if (value == null) {
+    if (allowMissing) return new Uint8Array(0);
+    throw new ArtifactError('artifact-payload-bytes-invalid', 'Artifact payload bytes must be a byte container');
+  }
+  if (value instanceof Uint8Array) return value;
+  if (value instanceof ArrayBuffer) return new Uint8Array(value);
+  if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  throw new ArtifactError('artifact-payload-bytes-invalid', 'Artifact payload bytes must be a Uint8Array, ArrayBuffer, or ArrayBufferView');
+}
+
 export function createArtifactRecord(descriptor, payloadBytes, metadata = {}) {
   if (!descriptor?.artifactId) throw new ArtifactError('artifact-descriptor-required');
-  const bytes = payloadBytes instanceof Uint8Array ? payloadBytes : new Uint8Array(payloadBytes);
+  const bytes = normalizeArtifactPayloadBytes(payloadBytes);
   const completeness = metadata.completeness ?? 'complete';
   if (!COMPLETENESS.has(completeness)) throw new ArtifactError('artifact-completeness-invalid');
   return deepFreeze({
@@ -224,7 +235,9 @@ export function validateArtifactRecord(record, payloadBytes, expected = {}) {
   if (!record.artifactId || !record.producerId || !record.producerVersion) throw new ArtifactCorruptionError('artifact-record-required-field-missing');
   if (record.payloadEncoding !== ARTIFACT_PAYLOAD_ENCODING || record.payloadEncodingVersion !== 1) throw new ArtifactCorruptionError('artifact-payload-encoding-unsupported');
   if (record.completeness !== 'complete' && expected.allowIncomplete !== true) throw new ArtifactCorruptionError('artifact-incomplete');
-  const bytes = payloadBytes instanceof Uint8Array ? payloadBytes : new Uint8Array(payloadBytes ?? 0);
+  let bytes;
+  try { bytes = normalizeArtifactPayloadBytes(payloadBytes, { allowMissing:true }); }
+  catch (error) { throw new ArtifactCorruptionError('artifact-payload-malformed', 'Artifact payload bytes must be a byte container', { cause:String(error) }); }
   if (bytes.byteLength !== record.payloadSize) throw new ArtifactCorruptionError('artifact-payload-truncated');
   if (artifactPayloadChecksum(bytes) !== record.payloadChecksum) throw new ArtifactCorruptionError('artifact-payload-checksum-mismatch');
   if (expected.artifactId && record.artifactId !== expected.artifactId) throw new ArtifactCorruptionError('artifact-id-mismatch');
