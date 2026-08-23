@@ -72,7 +72,7 @@ function remoteRegisters(result) {
     if (name.length > 64) throw new DebugAdapterError('malformed-remote', 'remote register name is too long');
     if (typeof value === 'string' && value.length > 128) throw new DebugAdapterError('malformed-remote', 'remote register value is too long');
     if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'bigint' && value != null) throw new DebugAdapterError('malformed-remote', 'remote register value must be scalar');
-    out[name] = value;
+    Object.defineProperty(out, name, { value, enumerable:true, configurable:true, writable:true });
   }
   return out;
 }
@@ -295,7 +295,7 @@ export class RemoteDebugAdapter extends DebugAdapter {
     this.capabilities = normalizeCapabilities(negotiated); this.connected = true; return { adapter:this.id, capabilities:this.capabilities, remote:hello || null };
   }
   async disconnect() { if (this.connected) { try { await this.protocol.request('disconnect',{}, { epoch:this.epoch, timeoutMs:1000 }); } catch {} } this.connected=false; this.protocol.close(); this.eventListeners.clear(); return { disconnected:true }; }
-  setEpoch(epoch) { this.epoch = Number(epoch); this.protocol.setEpoch(this.epoch); return this.epoch; }
+  setEpoch(epoch) { const next = Number(epoch); this.protocol.setEpoch(next); this.epoch = next; return this.epoch; }
   nextEpoch() { return this.setEpoch(this.epoch + 1); }
   onEvent(fn) { this.eventListeners.add(fn); return () => this.eventListeners.delete(fn); }
   call(method, params = {}, options = {}) {
