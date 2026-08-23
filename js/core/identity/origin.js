@@ -23,6 +23,7 @@ function uniqueSorted(values) {
   const byKey = new Map(values.map((value) => [stableStringify(value), value]));
   return [...byKey.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([, value]) => value);
 }
+// Provenance payloads must be validated before jsonSafe can erase or round numeric evidence.
 function exactJson(value) {
   validateCanonicalIdentityNumbers(value);
   return jsonSafe(value);
