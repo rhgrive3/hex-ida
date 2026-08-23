@@ -28,6 +28,9 @@ function required(value, code, message) {
 
 function safeInteger(value, fallback, name, { min = 0 } = {}) {
   if (value == null) return fallback;
+  if (typeof value !== 'number' && !(typeof value === 'string' && value.trim() !== '')) {
+    throw new DebugAdapterError('runtime-invalid-event-integer', `${name} must be a safe integer >= ${min}`);
+  }
   const n = Number(value);
   if (!Number.isSafeInteger(n) || n < min) throw new DebugAdapterError('runtime-invalid-event-integer', `${name} must be a safe integer >= ${min}`);
   return n;
@@ -61,7 +64,7 @@ function normalizeMode(value) {
 
 function dedupeIdentity(input) {
   if (input.providerEventId != null) return `provider:${String(input.providerEventId)}`;
-  if (input.streamId != null && input.sequence != null) return `stream:${String(input.streamId)}:${Number(input.sequence)}`;
+  if (input.streamId != null && input.sequence != null) return `stream:${String(input.streamId)}:${input.sequence}`;
   return null;
 }
 
@@ -235,7 +238,8 @@ export class RuntimeEventNormalizer {
       return null;
     }
     const event = input?.runtimeSessionId ? createRuntimeEvent(input) : normalizeLegacyRuntimeEvent(input, this.context);
-    if (event.sessionEpoch !== Number(this.context.sessionEpoch ?? event.sessionEpoch)) return null;
+    const contextEpoch = safeInteger(this.context.sessionEpoch, event.sessionEpoch, 'sessionEpoch', { min: 1 });
+    if (event.sessionEpoch !== contextEpoch) return null;
     const dedupe = dedupeIdentity(event);
     const scoped = dedupe ? `${event.sessionEpoch}:${dedupe}` : null;
     if (scoped && this.#seen.has(scoped)) return null;
