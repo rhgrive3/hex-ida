@@ -56,7 +56,12 @@ function remoteArray(result, key, max, name) {
   return value.slice();
 }
 function remoteBytes(result, expected) {
-  const source = result instanceof Uint8Array ? [...result] : Array.isArray(result) ? result : result && Array.isArray(result.bytes) ? result.bytes : null;
+  const nested = result && result.bytes;
+  const source = result instanceof Uint8Array ? [...result]
+    : Array.isArray(result) ? result
+    : nested instanceof Uint8Array ? [...nested]
+    : Array.isArray(nested) ? nested
+    : null;
   if (!source) throw new DebugAdapterError('malformed-remote', 'remote memory response must contain bytes');
   if (source.length !== expected) throw new DebugAdapterError('short-read', `remote memory read returned ${source.length} of ${expected} bytes`);
   for (const byte of source) if (!Number.isInteger(byte) || byte < 0 || byte > 255) throw new DebugAdapterError('malformed-remote', 'remote memory response contains an invalid byte');
@@ -325,7 +330,10 @@ export class RemoteDebugAdapter extends DebugAdapter {
     super({ id:options.id || 'remote-debug', kind:options.kind || 'remote', capabilities:options.capabilities || {} });
     this.protocol = new RemoteProtocolClient(transport, options.protocol || {}); this.epoch = 0; this.eventListeners = new Set();
     this.allowedCapabilities = this.capabilities;
-    this.protocol.onEvent((event) => { if (event.epoch === this.epoch) for (const fn of this.eventListeners) fn(event); });
+    this.protocol.onEvent((event) => {
+      if (event.epoch !== this.epoch) return;
+      for (const fn of this.eventListeners) { try { fn(event); } catch { /* listener isolation */ } }
+    });
   }
   async connect(options = {}) {
     const hello = await this.protocol.request('connect', { client:'hex', requestedVersion:1, options }, { epoch:this.epoch });
@@ -334,7 +342,14 @@ export class RemoteDebugAdapter extends DebugAdapter {
     for (const [key, allowed] of Object.entries(this.allowedCapabilities)) negotiated[key] = key === 'connect' || key === 'disconnect' ? !!allowed : !!allowed && !!advertised[key];
     this.capabilities = normalizeCapabilities(negotiated); this.connected = true; return { adapter:this.id, capabilities:this.capabilities, remote:hello || null };
   }
-  async disconnect() { if (this.connected) { try { await this.protocol.request('disconnect',{}, { epoch:this.epoch, timeoutMs:1000 }); } catch {} } this.connected=false; this.protocol.close(); this.eventListeners.clear(); return { disconnected:true }; }
+  async disconnect() {
+    const wasConnected = this.connected;
+    if (wasConnected) { try { await this.protocol.request('disconnect',{}, { epoch:this.epoch, timeoutMs:1000 }); } catch {} }
+    this.connected = false;
+    this.eventListeners.clear();
+    if (wasConnected) this.nextEpoch();
+    return { disconnected:true };
+  }
   setEpoch(epoch) { const next = Number(epoch); this.protocol.setEpoch(next); this.epoch = next; return this.epoch; }
   nextEpoch() { return this.setEpoch(this.epoch + 1); }
   onEvent(fn) { this.eventListeners.add(fn); return () => this.eventListeners.delete(fn); }
