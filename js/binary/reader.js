@@ -19,6 +19,11 @@ function integerValue(value, label = 'value') {
   throw new TypeError(`${label} must be a bigint, safe integer, or non-empty integer string`);
 }
 
+function finiteBound(value, fallback) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
 export class BinaryReadError extends Error {
   constructor(message, offset = null) {
     let shown = null;
@@ -103,7 +108,7 @@ export class ByteView {
 
   cstring(offset, max = 1 << 20) {
     const o = this.check(offset, 0);
-    const end = Math.min(this.length, o + Math.max(0, Number(max)));
+    const end = Math.min(this.length, o + Math.max(0, finiteBound(max, 1 << 20)));
     let raw;
     if (this.view) {
       const span = this.bytes.subarray(o, end);
@@ -134,10 +139,11 @@ export class ByteView {
     const start = this.check(offset, 0);
     const hardEnd = this._lebEnd(end);
     if (start > hardEnd) throw new BinaryReadError('ULEB128 starts outside bounded substream', this.base + BigInt(start));
+    const byteLimit = finiteBound(maxBytes, 10);
     let p = start;
     let value = 0n;
     let shift = 0n;
-    for (let i = 0; i < maxBytes; i++, p++) {
+    for (let i = 0; i < byteLimit; i++, p++) {
       if (p >= hardEnd) throw new BinaryReadError('ULEB128 crosses bounded substream', this.base + BigInt(p));
       this.check(p, 1);
       const b = this.u8(p);
@@ -152,11 +158,12 @@ export class ByteView {
     const start = this.check(offset, 0);
     const hardEnd = this._lebEnd(end);
     if (start > hardEnd) throw new BinaryReadError('SLEB128 starts outside bounded substream', this.base + BigInt(start));
+    const byteLimit = finiteBound(maxBytes, 10);
     let p = start;
     let value = 0n;
     let shift = 0n;
     let b = 0;
-    for (let i = 0; i < maxBytes; i++, p++) {
+    for (let i = 0; i < byteLimit; i++, p++) {
       if (p >= hardEnd) throw new BinaryReadError('SLEB128 crosses bounded substream', this.base + BigInt(p));
       this.check(p, 1);
       b = this.u8(p);
