@@ -1,4 +1,5 @@
 import { deepFreeze, stableDigest } from '../core/identity/index.js';
+import { isValidatedStage2CapabilityProof } from '../platform/stage2-profile-evidence.js';
 
 export const REBUILD_TRANSACTION_SCHEMA = 'hex-rebuild-transaction-v2';
 export const REBUILD_VALIDATION_SCHEMA = 'hex-rebuild-validation-v2';
@@ -581,14 +582,19 @@ export async function publishRebuildTransaction(materialized, validation, option
   }
 }
 
-export function rebuildProfileSupport({ transaction, validation, publication, proof = {} } = {}) {
+export function rebuildProfileSupport({ transaction, validation, publication, proof = {}, profileProof = null, expectedCommitSha = null, expectedTreeSha = null } = {}) {
   const requiredCount = transaction?.requiredValidators?.length || 0;
   const executedCount = validation?.validators?.filter((item) => item.executed === true && item.status === 'passed').length || 0;
-  const formatProfileIds = sorted(proof.formatProfileIds);
   const expectedProfiles = FORMAT_PROFILES[transaction?.format] || [];
-  const formatCoverageComplete = proof.profileDenominatorComplete === true
-    && formatProfileIds.length > 0
-    && expectedProfiles.every((profile) => formatProfileIds.includes(profile));
+  const itemId = transaction?.format ? `S2-F6-${String(transaction.format).toUpperCase()}` : null;
+  const formatCoverageComplete = itemId != null && isValidatedStage2CapabilityProof(profileProof, { itemId, profileIds: expectedProfiles });
+  const formatProfileIds = formatCoverageComplete ? sorted(profileProof.profileIds) : [];
+  const expectedCommit = String(expectedCommitSha || '').toLowerCase();
+  const expectedTree = String(expectedTreeSha || '').toLowerCase();
+  const exactCandidateIdentity = /^[0-9a-f]{40}$/.test(expectedCommit)
+    && /^[0-9a-f]{40}$/.test(expectedTree)
+    && profileProof?.commitSha === expectedCommit
+    && profileProof?.treeSha === expectedTree;
   const outputIdentity = transaction?.transactionId && validation?.outputHash
     ? canonicalOutputIdentity(transaction.transactionId, validation.outputHash)
     : null;
@@ -619,7 +625,8 @@ export function rebuildProfileSupport({ transaction, validation, publication, pr
     && proof.formatSpecificValidatorTests === true
     && proof.atomicInterruptionTest === true
     && proof.realFixture === true
-    && formatCoverageComplete;
+    && formatCoverageComplete
+    && exactCandidateIdentity;
   return deepFreeze({
     format: transaction?.format || null,
     architecture: transaction?.architecture || null,

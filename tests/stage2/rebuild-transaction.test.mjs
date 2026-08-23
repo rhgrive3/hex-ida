@@ -8,6 +8,9 @@ import {
   rebuildProfileSupport,
   validateRebuildTransaction,
 } from '../../js/rebuild/transaction-v2.js';
+import { validatedCapabilityProofFixture } from './helpers/profile-proof-fixture.mjs';
+
+const { proofs: profileProofs } = validatedCapabilityProofFixture();
 
 const source = Uint8Array.from([1, 2, 3, 4]);
 const sourceHash = `bytes:${stableDigest(Array.from(source))}`;
@@ -227,9 +230,14 @@ const truth = rebuildProfileSupport({ transaction, validation, publication, proo
   realFixture: true,
   profileDenominatorComplete: true,
   formatProfileIds: ['macho:64'],
-} });
+}, profileProof: profileProofs['S2-F6-MACHO'], expectedCommitSha: 'a'.repeat(40), expectedTreeSha: 'b'.repeat(40) });
 assert.equal(truth.status, 'supported-for-exact-rebuild-profile');
 assert.equal(truth.formatCoverageComplete, true);
+const forgedProfileProof = rebuildProfileSupport({ transaction, validation, publication, proof: {
+  exactHead: true, negativeValidatorTest: true, staleIdentityTest: true, formatSpecificValidatorTests: true,
+  atomicInterruptionTest: true, realFixture: true, profileDenominatorComplete: true, formatProfileIds: ['macho:64'],
+}, profileProof: { ...profileProofs['S2-F6-MACHO'] }, expectedCommitSha: 'a'.repeat(40), expectedTreeSha: 'b'.repeat(40) });
+assert.equal(forgedProfileProof.status, 'unsupported', 'a copied or caller-fabricated denominator proof must not promote F6');
 
 for (const format of ['macho', 'elf', 'pe']) {
   const tx = transactionFor(format);
