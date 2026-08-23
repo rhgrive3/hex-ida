@@ -24,13 +24,26 @@ function normalizeFacetNames(value) {
   return Object.freeze(out.sort());
 }
 
+function ownedClone(value) {
+  if (typeof structuredClone === 'function') return structuredClone(value);
+  if (value == null || typeof value !== 'object') return value;
+  if (Array.isArray(value)) return value.map(ownedClone);
+  if (value instanceof Uint8Array) return new Uint8Array(value);
+  if (value instanceof ArrayBuffer) return value.slice(0);
+  const out = {};
+  for (const [key, item] of Object.entries(value)) {
+    Object.defineProperty(out, key, { value: ownedClone(item), enumerable: true, configurable: true, writable: true });
+  }
+  return out;
+}
+
 export function createRuntimeProviderDescriptor(input = {}) {
   return deepFreeze({
     id: required(input.id, 'runtime-provider-id-required', 'runtime provider id is required'),
     version: String(input.version ?? '1'),
     kind: String(input.kind ?? 'generic'),
     facets: normalizeFacetNames(input.facets),
-    capabilities: input.capabilities && typeof input.capabilities === 'object' ? { ...input.capabilities } : {},
+    capabilities: input.capabilities && typeof input.capabilities === 'object' ? ownedClone(input.capabilities) : {},
   });
 }
 
@@ -46,9 +59,6 @@ export class RuntimeProviderSession {
       sessionNonce: request.sessionNonce ?? request.startedAt ?? `${Date.now()}:${Math.random()}`,
     });
     this.target = createRuntimeTargetBinding({
-      runtimeSessionId: this.runtimeSessionId,
-      providerId: this.providerId,
-      providerVersion: this.providerVersion,
       processKey: request.processKey,
       platform: request.platform,
       architecture: request.architecture,
@@ -57,6 +67,9 @@ export class RuntimeProviderSession {
       startedAt: request.startedAt,
       bindingEvidenceIds: request.bindingEvidenceIds,
       ...target,
+      runtimeSessionId: this.runtimeSessionId,
+      providerId: this.providerId,
+      providerVersion: this.providerVersion,
     });
     this.facets = Object.freeze({ ...facets });
     this.modules = new RuntimeModuleBindingTable(this.runtimeSessionId);
