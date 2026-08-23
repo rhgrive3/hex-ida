@@ -82,7 +82,8 @@ export class PagedArtifactReader {
     const index = nonNegativeBigInt(pageIndex, 'page index');
     const count = this.pageCount();
     if (index >= count) throw new RangeError('page index outside source');
-    const bytes = await this.#page(index, { signal });
+    const cachedBytes = await this.#page(index, { signal });
+    const bytes = cachedBytes.slice();
     const offset = index * BigInt(this.pageSize);
     return Object.freeze({
       pageId:this.pageIdentity(index), pageIndex:index, offset, length:bytes.byteLength, bytes,
