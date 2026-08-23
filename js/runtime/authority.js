@@ -42,6 +42,14 @@ function optional(value, code) {
   return required(value, code);
 }
 
+function optionalSha(value, code) {
+  const text = optional(value, code);
+  if (text == null) return null;
+  const normalized = text.toLowerCase();
+  if (!/^[0-9a-f]{40}$/.test(normalized)) throw new TypeError(code);
+  return normalized;
+}
+
 function identityAlias(input, primary, alias, code) {
   const first = input[primary] == null ? null : required(input[primary], code);
   const second = input[alias] == null ? null : required(input[alias], code);
@@ -100,8 +108,8 @@ function bindingPayload(input = {}) {
     loadMappingIdentity: required(input.loadMappingIdentity, 'runtime-load-mapping-identity-required'),
     sessionIdentity: required(input.sessionIdentity ?? input.sessionId, 'runtime-session-identity-required'),
     capabilityVersion: required(input.capabilityVersion, 'runtime-capability-version-required'),
-    commitSha: optional(input.commitSha ?? input.sourceCommitSha, 'runtime-commit-identity-invalid'),
-    treeSha: optional(input.treeSha ?? input.sourceTreeSha, 'runtime-tree-identity-invalid'),
+    commitSha: optionalSha(input.commitSha ?? input.sourceCommitSha, 'runtime-commit-identity-invalid'),
+    treeSha: optionalSha(input.treeSha ?? input.sourceTreeSha, 'runtime-tree-identity-invalid'),
     epoch: uint(input.epoch ?? 0, 'runtime-epoch-invalid'),
   };
 }
@@ -311,10 +319,11 @@ export function runtimeProfileSupport({
     const proofTreeSha = proof.treeSha ?? null;
     const expectedHead = expectedHeadSha ?? proof.expectedHeadSha ?? null;
     const expectedTree = expectedTreeSha ?? proof.expectedTreeSha ?? null;
-    if (expectedHead != null && (canonical.commitSha !== String(expectedHead) || proofHeadSha == null || String(proofHeadSha) !== String(expectedHead))) reason = 'runtime-proof-stale-head';
-    else if (expectedTree != null && (canonical.treeSha !== String(expectedTree) || proofTreeSha == null || String(proofTreeSha) !== String(expectedTree))) reason = 'runtime-proof-stale-tree';
-    else if (canonical.commitSha != null && proofHeadSha != null && String(proofHeadSha) !== canonical.commitSha) reason = 'runtime-proof-stale-head';
-    else if (canonical.treeSha != null && proofTreeSha != null && String(proofTreeSha) !== canonical.treeSha) reason = 'runtime-proof-stale-tree';
+    if (canonical.commitSha == null || canonical.treeSha == null || proofHeadSha == null || proofTreeSha == null) reason = 'runtime-proof-exact-identity-required';
+    else if (String(proofHeadSha).toLowerCase() !== canonical.commitSha) reason = 'runtime-proof-stale-head';
+    else if (String(proofTreeSha).toLowerCase() !== canonical.treeSha) reason = 'runtime-proof-stale-tree';
+    else if (expectedHead != null && (canonical.commitSha !== String(expectedHead).toLowerCase() || String(proofHeadSha).toLowerCase() !== String(expectedHead).toLowerCase())) reason = 'runtime-proof-stale-head';
+    else if (expectedTree != null && (canonical.treeSha !== String(expectedTree).toLowerCase() || String(proofTreeSha).toLowerCase() !== String(expectedTree).toLowerCase())) reason = 'runtime-proof-stale-tree';
   }
   const proven = hasBinding
     && declared.length > 0
@@ -325,12 +334,15 @@ export function runtimeProfileSupport({
   return Object.freeze({
     status: proven ? 'supported-for-exact-provider-profile' : hasBinding ? 'partial' : 'unavailable',
     bindingId: hasBinding ? canonical.bindingId : null,
+    providerIdentity: hasBinding ? canonical.providerIdentity : null,
     providerProfileId: normalizedProviderProfileId || null,
     targetProfileId: normalizedTargetProfileId || null,
     requiredCapabilities: Object.freeze(declared),
     missingCapabilities: Object.freeze(missing),
     proofComplete,
     buildIdentity: hasBinding ? canonical.buildIdentity : null,
+    commitSha: hasBinding ? canonical.commitSha : null,
+    treeSha: hasBinding ? canonical.treeSha : null,
     reason,
     authority: proven ? 'runtime-evidence-bound' : 'none',
   });

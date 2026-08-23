@@ -73,21 +73,29 @@ export function createManagedRuntimeBinding(input = {}) {
   const frontendId = required(input.frontendId, 'managed-runtime-frontend-required').toLowerCase();
   if (!FRONTENDS.has(frontendId)) throw new TypeError('managed-runtime-frontend-unsupported');
   const targetProfileId = managedRuntimeTargetProfileId(frontendId);
-  if (input.providerProfileId != null && required(input.providerProfileId, 'managed-runtime-provider-profile-required') !== managedRuntimeProviderProfileId(frontendId)) {
+  const providerProfileId = managedRuntimeProviderProfileId(frontendId);
+  if (input.providerProfileId != null && required(input.providerProfileId, 'managed-runtime-provider-profile-required') !== providerProfileId) {
     throw new TypeError('managed-runtime-provider-profile-mismatch');
   }
+  const buildIdentity = required(input.buildIdentity, 'managed-runtime-build-identity-required');
   const staticModuleIdentity = required(input.staticModuleIdentity, 'managed-runtime-static-module-required');
   const runtimeModuleIdentity = required(input.runtimeModuleIdentity, 'managed-runtime-module-required');
   if (staticModuleIdentity !== runtimeModuleIdentity) throw new TypeError('managed-runtime-module-identity-mismatch');
   const runtime = createRuntimeAuthorityBinding({
     providerIdentity: input.providerIdentity,
+    providerProfileId,
+    providerVersion: input.providerVersion ?? input.runtimeVersion,
     runtimeInstanceIdentity: input.runtimeInstanceIdentity,
     targetIdentity: input.targetIdentity,
+    targetProfileId,
     binaryIdentity: input.binaryIdentity,
+    buildIdentity,
     moduleIdentity: runtimeModuleIdentity,
     loadMappingIdentity: input.loadMappingIdentity,
     sessionIdentity: input.sessionIdentity,
     capabilityVersion: input.capabilityVersion,
+    commitSha: input.commitSha,
+    treeSha: input.treeSha,
     epoch: input.epoch ?? 0,
   });
   const binding = {
@@ -154,9 +162,12 @@ export function managedRuntimeProfileSupport({ binding, runtimeProfileProof = nu
     && runtimeProfileProof?.bindingId === binding.runtime.bindingId
     && runtimeProfileProof?.targetProfileId === binding.targetProfileId
     && runtimeProfileProof?.providerProfileId === managedRuntimeProviderProfileId(binding.frontendId)
-    && (runtimeProfileProof?.providerIdentity == null || runtimeProfileProof.providerIdentity === binding.runtime.providerIdentity)
+    && runtimeProfileProof?.providerIdentity === binding.runtime.providerIdentity
     && (runtimeProfileProof?.frontendId == null || runtimeProfileProof.frontendId === binding.frontendId)
     && includesAll(runtimeProfileProof?.requiredCapabilities, MANAGED_RUNTIME_REQUIRED_CAPABILITIES)
+    && runtimeProfileProof?.buildIdentity === binding.runtime.buildIdentity
+    && runtimeProfileProof?.commitSha === binding.runtime.commitSha
+    && runtimeProfileProof?.treeSha === binding.runtime.treeSha
     && Array.isArray(runtimeProfileProof?.missingCapabilities)
     && runtimeProfileProof.missingCapabilities.length === 0;
   const proofComplete = valid

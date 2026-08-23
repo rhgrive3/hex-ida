@@ -64,6 +64,8 @@ const requiredCapabilities = [
 const providerCapabilities = Object.fromEntries(requiredCapabilities.map((name) => [name, true]));
 const fullProof = {
   exactHead: true,
+  headSha: binding.commitSha,
+  treeSha: binding.treeSha,
   identityNegativeTests: true,
   staleEventTests: true,
   lifecycleTests: true,
@@ -81,6 +83,7 @@ const support = runtimeProfileSupport({
 });
 assert.equal(support.status, 'supported-for-exact-provider-profile');
 assert.equal(support.targetProfileId, targetProfileId);
+assert.equal(runtimeProfileSupport({ binding, providerProfileId: 'native:lldb-compatible-v1:test', targetProfileId, providerCapabilities, requiredCapabilities, proof: { ...fullProof, headSha: null } }).reason, 'runtime-proof-exact-identity-required');
 const currentHeadProof = { ...fullProof, headSha: binding.commitSha, treeSha: binding.treeSha };
 assert.equal(runtimeProfileSupport({ binding, providerProfileId: 'native:lldb-compatible-v1:test', targetProfileId, providerCapabilities, requiredCapabilities, proof: currentHeadProof, expectedHeadSha: binding.commitSha, expectedTreeSha: binding.treeSha }).status, 'supported-for-exact-provider-profile');
 assert.equal(runtimeProfileSupport({ binding, providerProfileId: 'native:lldb-compatible-v1:test', targetProfileId, providerCapabilities, requiredCapabilities, proof: { ...currentHeadProof, headSha: 'c'.repeat(40) }, expectedHeadSha: binding.commitSha }).reason, 'runtime-proof-stale-head');

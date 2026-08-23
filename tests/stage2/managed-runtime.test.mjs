@@ -10,8 +10,12 @@ import {
 const frontends = ['wasm', 'dex', 'cil', 'jvm'];
 const requiredCapabilities = ['connect', 'disconnect', 'pause', 'resume', 'stepInto', 'readRegisters', 'readMemory', 'threads', 'modules', 'backtrace', 'cancel'];
 const providerCapabilities = Object.fromEntries(requiredCapabilities.map((name) => [name, true]));
+const commitSha = 'a'.repeat(40);
+const treeSha = 'b'.repeat(40);
 const runtimeProofFlags = {
   exactHead: true,
+  headSha: commitSha,
+  treeSha,
   identityNegativeTests: true,
   staleEventTests: true,
   lifecycleTests: true,
@@ -37,6 +41,9 @@ for (const frontendId of frontends) {
     staticModuleIdentity: `managed-module:${frontendId}:1`,
     runtimeModuleIdentity: `managed-module:${frontendId}:1`,
     providerIdentity: `provider:${frontendId}:test`,
+    buildIdentity: `build:${frontendId}:test`,
+    commitSha,
+    treeSha,
     runtimeInstanceIdentity: `runtime:${frontendId}:1`,
     targetIdentity: `process:${frontendId}:1`,
     binaryIdentity: `binary:${frontendId}:1`,
@@ -63,7 +70,7 @@ for (const frontendId of frontends) {
   const missingModuleObservation = createRuntimeObservation({ binding: binding.runtime, sequence: 3, observedAt: '2026-08-22T00:00:02Z', kind: 'managed-frame' });
   assert.equal(validateManagedRuntimeObservation(binding, missingModuleObservation).reason, 'managed-runtime-observation-payload-invalid');
   const tamperedObservation = { ...observation, payload: { moduleIdentity: binding.runtimeModuleIdentity, altered: true } };
-  assert.equal(validateManagedRuntimeObservation(binding, tamperedObservation).reason, 'managed-runtime-observation-tampered');
+  assert.equal(validateManagedRuntimeObservation(binding, tamperedObservation).reason, 'runtime-observation-identity-invalid');
 
   const runtimeProfileProof = runtimeProfileSupport({
     binding: binding.runtime,
@@ -88,10 +95,10 @@ for (const frontendId of frontends) {
 
 assert.throws(() => createManagedRuntimeBinding({
   frontendId: 'jvm', runtimeImplementation: 'x', runtimeVersion: '1', staticModuleIdentity: 'a', runtimeModuleIdentity: 'b',
-  providerIdentity: 'p', runtimeInstanceIdentity: 'r', targetIdentity: 't', binaryIdentity: 'bin', loadMappingIdentity: 'map', sessionIdentity: 's', capabilityVersion: '1',
+  providerIdentity: 'p', buildIdentity: 'build', commitSha, treeSha, runtimeInstanceIdentity: 'r', targetIdentity: 't', binaryIdentity: 'bin', loadMappingIdentity: 'map', sessionIdentity: 's', capabilityVersion: '1',
 }), /module-identity-mismatch/);
 assert.throws(() => createManagedRuntimeBinding({
   frontendId: 'jvm', runtimeImplementation: 'x', runtimeVersion: '1', staticModuleIdentity: 'a', runtimeModuleIdentity: 'a',
-  providerProfileId: 'managed:attacker:provider-bound-runtime-v1', providerIdentity: 'p', runtimeInstanceIdentity: 'r', targetIdentity: 't', binaryIdentity: 'bin', loadMappingIdentity: 'map', sessionIdentity: 's', capabilityVersion: '1',
+  providerProfileId: 'managed:attacker:provider-bound-runtime-v1', providerIdentity: 'p', buildIdentity: 'build', commitSha, treeSha, runtimeInstanceIdentity: 'r', targetIdentity: 't', binaryIdentity: 'bin', loadMappingIdentity: 'map', sessionIdentity: 's', capabilityVersion: '1',
 }), /provider-profile-mismatch/);
 console.log('[stage2] managed runtime binding tests passed for wasm/dex/cil/jvm');
