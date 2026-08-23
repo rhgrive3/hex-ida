@@ -216,7 +216,14 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     this.memoryMap.assert(address,n,'read'); return sandbox.emulator.dump(asAddress(address),n);
   }
   async writeMemory(address,bytes) {
-    this.require('writeMemory'); const sandbox = this.ensureSandbox(); const data = bytes instanceof Uint8Array ? bytes : Uint8Array.from(bytes || []);
+    this.require('writeMemory'); const sandbox = this.ensureSandbox();
+    let data;
+    if (bytes instanceof Uint8Array) data = bytes;
+    else {
+      const source = Array.from(bytes || []);
+      for (const byte of source) if (!Number.isInteger(byte) || byte < 0 || byte > 255) throw new DebugAdapterError('invalid-byte','memory write contains a non-byte value');
+      data = Uint8Array.from(source);
+    }
     if (data.length > 256*1024) throw new DebugAdapterError('too-large','memory write exceeds 256 KiB');
     if (!data.length) return { written:0 };
     const start = asAddress(address); this.memoryMap.assert(start,data.length,'write'); const emu = sandbox.emulator;
