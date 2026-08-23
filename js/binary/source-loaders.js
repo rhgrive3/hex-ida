@@ -32,7 +32,7 @@ export async function parseELFSource(input, opts = {}, prefix = null, rangeOptio
   const source = asByteSource(input, opts.source || {});
   const ranges = withSignal(rangeOptions, opts.signal);
   const magic = prefix || await readPrefix(source, opts.signal);
-  const image = await parseSourceRanges(source, parseELF, {}, withInitial(magic, ranges));
+  const image = await parseSourceRanges(source, parseELF, opts, withInitial(magic, ranges));
   return withStrings(image, source, opts);
 }
 
@@ -40,7 +40,7 @@ export async function parsePESource(input, opts = {}, prefix = null, rangeOption
   const source = asByteSource(input, opts.source || {});
   const ranges = withSignal(rangeOptions, opts.signal);
   const magic = prefix || await readPrefix(source, opts.signal);
-  const image = await parseSourceRanges(source, parsePE, {}, withInitial(magic, ranges));
+  const image = await parseSourceRanges(source, parsePE, opts, withInitial(magic, ranges));
   return withStrings(image, source, opts);
 }
 
@@ -72,7 +72,8 @@ export async function parseMachOSource(input, opts = {}, prefix = null, rangeOpt
     all.push({ cpu, subtype, offset, size });
   }
   const valid = all.filter((slice) => slice.size > 0n && slice.offset <= source.size && slice.size <= source.size - slice.offset);
-  const requestedIndex = opts.sliceIndex == null ? null : Number(opts.sliceIndex);
+  const sliceIndex = opts.sliceIndex;
+  const requestedIndex = sliceIndex == null ? null : ((typeof sliceIndex === 'number' || (typeof sliceIndex === 'string' && sliceIndex.trim() !== '')) ? Number(sliceIndex) : NaN);
   if (requestedIndex != null && (!Number.isSafeInteger(requestedIndex) || requestedIndex < 0 || requestedIndex >= all.length)) {
     throw new Error(`requested Mach-O slice index ${opts.sliceIndex} is not present in the universal binary`);
   }
