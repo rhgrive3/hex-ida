@@ -144,6 +144,17 @@ function readRegisters(bundle) {
 }
 
 {
+  const decoded = instruction('pacia', '', 0x1088n, 'structured-width-mismatch');
+  decoded.operands = [
+    { registerId: 'x2', bits: 32 },
+    { registerId: 'x3', bits: 64 },
+  ];
+  const bundle = liftArm64eEffects(decoded);
+  assert.equal(bundle.completeness, 'partial', 'PAC must not promote an explicit W-register width to an X-register effect');
+  assert.match(bundle.unknownEffects.reason, /destination register is unavailable/);
+}
+
+{
   const bundle = liftArm64eEffects(instruction('braa', 'x4', 0x1090n, 'missing-modifier'));
   assert.equal(bundle.completeness, 'partial', 'missing modifier identity must never become a zero/default modifier');
   assert.equal(bundle.controlEffect.kind, 'unknown');
