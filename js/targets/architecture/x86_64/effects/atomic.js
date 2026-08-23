@@ -24,6 +24,29 @@ function orderingPartial(ctx, family, faults, metadata = {}, detail = {}) {
     metadata:{ family:'atomic', operation:family, atomic:true, orderingMapping:'unmapped-not-seq-cst', ...metadata },
   });
 }
+
+function liftRegisterXchg(ctx) {
+  const [left, right] = ctx.operands;
+  if (ctx.operands.length !== 2 || left?.type !== 'register' || right?.type !== 'register'
+    || left.widthBits !== right.widthBits || !supportedWidth(left.widthBits)) {
+    return ctx.partial('x86-xchg-register-shape-unmodelled', ['registers']);
+  }
+
+  // Read both operands before either write. This matters for overlapping views
+  // of one physical register (for example `xchg al, ah`): sequentially reading
+  // after the first write would lose the original high/low byte.
+  const leftValue = ctx.readRegister(left);
+  const rightValue = ctx.readRegister(right);
+  if (!leftValue || !rightValue) return ctx.partial('x86-xchg-register-state-unmodelled', ['registers']);
+  if (!ctx.writeRegister(left, rightValue) || !ctx.writeRegister(right, leftValue)) {
+    return ctx.partial('x86-xchg-register-write-unmodelled', ['registers']);
+  }
+  return ctx.finish({
+    family:'atomic',
+    metadata:{ operation:'xchg', atomic:false, registerExchange:true, widthBits:left.widthBits },
+  });
+}
+
 function liftXchg(ctx) {
   if (memoryOperands(ctx.operands).length !== 1 || ctx.operands.length !== 2) return ctx.partial('x86-xchg-memory-shape-unmodelled',['memory','registers']);
   const memory = ctx.operands.find((operand) => operand.type === 'memory'), register = ctx.operands.find((operand) => operand.type === 'register');
@@ -85,6 +108,7 @@ export function liftX86AtomicEffects(instruction,context = {}) {
   if (!ATOMIC_FAMILIES.has(family)) return ctx.partial('x86-lock-prefixed-family-not-modelled-in-p5-2',['memory','registers','flags','other'],{metadata:{family:'atomic',operation:family,lockPrefix:true,lockIgnored:false}});
   if (memoryOperands(ctx.operands).length === 0) {
     if (locked) return ctx.partial('x86-lock-prefix-without-memory-operand',['memory','registers','flags','other'],{metadata:{family:'atomic',operation:family,lockPrefix:true,lockIgnored:false}});
+    if (family === 'xchg') return liftRegisterXchg(ctx);
     return null;
   }
   if (family === 'xchg') return liftXchg(ctx);

@@ -7,6 +7,36 @@ const reads=(b)=>operations(b,'memory-read'),writes=(b)=>operations(b,'memory-wr
 function assertAtomicPair(bundle){assert.equal(reads(bundle).length,1);assert.equal(writes(bundle).length,1);assert.equal(reads(bundle)[0].access.atomic,true);assert.equal(writes(bundle)[0].access.atomic,true);assert.equal(reads(bundle)[0].access.ordering,'seq-cst');assert.equal(writes(bundle)[0].access.ordering,'seq-cst');assert.deepEqual(reads(bundle)[0].access.addressExpr,writes(bundle)[0].access.addressExpr);assert.equal(reads(bundle)[0].metadata.rmwId,writes(bundle)[0].metadata.rmwId);}
 test('LOCK ADD maps proven locked ordering to generic seq-cst',()=>{const{bundle}=lift({family:'add',prefixes:[0xf0],operands:[mem({base:'rax',widthBits:64,access:'read-write'}),reg('rbx',64,'read')]});assert.equal(bundle.completeness,'exact-with-intrinsic');assertAtomicPair(bundle);assert.equal(bundle.metadata.orderingMapping,'seq-cst');assert.match(bundle.metadata.orderingAuthority,/Intel SDM Vol\.3/);assert.equal(bundle.metadata.orderingScope,'proven-atomic-rmw-only');});
 test('memory XCHG implicit atomicity maps to generic seq-cst',()=>{const{bundle}=lift({family:'xchg',operands:[mem({base:'rax',widthBits:64,access:'read-write'}),reg('rcx',64,'read-write')]});assert.equal(bundle.completeness,'exact');assertAtomicPair(bundle);assert.equal(bundle.metadata.implicitAtomicWithoutLock,true);assert.equal(bundle.metadata.explicitLockPrefix,false);assert.equal(bundle.metadata.orderingMapping,'seq-cst');assert.ok(operations(bundle,'register-write').some((op)=>op.register.registerId==='rcx'));});
+test('register XCHG is exact and snapshots both values before writing',()=>{
+  const {bundle}=lift({family:'xchg',operands:[reg('rax',64,'read-write'),reg('rbx',64,'read-write')]});
+  assert.equal(bundle.completeness,'exact');
+  assert.equal(bundle.metadata.registerExchange,true);
+  assert.equal(bundle.metadata.atomic,false);
+  assert.equal(reads(bundle).length,0);
+  assert.equal(writes(bundle).length,0);
+  const registerReads=operations(bundle,'register-read');
+  const registerWrites=operations(bundle,'register-write');
+  assert.deepEqual(registerReads.map((op)=>op.register.registerId),['rax','rbx']);
+  assert.deepEqual(registerWrites.map((op)=>op.register.registerId),['rax','rbx']);
+  assert.deepEqual(registerWrites.map((op)=>op.value.temporaryId),[registerReads[1].value.temporaryId,registerReads[0].value.temporaryId]);
+});
+test('register XCHG preserves original overlapping byte views',()=>{
+  const {bundle}=lift({family:'xchg',operands:[reg('al',8,'read-write'),reg('ah',8,'read-write')]});
+  assert.equal(bundle.completeness,'exact');
+  const registerReads=operations(bundle,'register-read');
+  const registerWrites=operations(bundle,'register-write');
+  assert.deepEqual(registerReads.slice(0,2).map((op)=>op.metadata.view),['al','ah']);
+  assert.deepEqual(registerWrites.map((op)=>op.metadata.view),['al','ah']);
+  assert.deepEqual(registerWrites.map((op)=>op.value.kind),['temporary','temporary']);
+});
+test('register XCHG rejects mismatched-width and LOCK-prefixed register forms',()=>{
+  const mismatched=liftX86MachineEffects(decoded({family:'xchg',operands:[reg('rax',64,'read-write'),reg('ecx',32,'read-write')]}));
+  assert.equal(mismatched.completeness,'partial');
+  assert.equal(mismatched.unknownEffects.reason,'x86-xchg-register-shape-unmodelled');
+  const locked=liftX86MachineEffects(decoded({family:'xchg',prefixes:[0xf0],operands:[reg('rax',64,'read-write'),reg('rbx',64,'read-write')]}));
+  assert.equal(locked.completeness,'partial');
+  assert.equal(locked.unknownEffects.reason,'x86-lock-prefix-without-memory-operand');
+});
 test('XADD without LOCK preserves old destination in source without ordering overclaim',()=>{const{bundle}=lift({family:'xadd',operands:[mem({base:'rax',widthBits:32,access:'read-write'}),reg('ecx',32,'read-write')]});assert.equal(reads(bundle)[0].access.atomic,false);assert.equal(writes(bundle)[0].access.atomic,false);assert.equal(reads(bundle)[0].access.ordering,undefined);assert.equal(writes(bundle)[0].access.ordering,undefined);assert.equal(bundle.metadata.sourceReceivesOldDestination,true);const sourceWrite=operations(bundle,'register-write').find((op)=>op.metadata.view==='ecx');assert.ok(sourceWrite);const transfer=operations(bundle,'value').find((op)=>op.opcode==='zext'&&op.metadata.fromBits===32&&op.metadata.toBits===64&&op.inputs?.[0]?.temporaryId===reads(bundle)[0].value.temporaryId);assert.ok(transfer);assert.deepEqual(sourceWrite.value,transfer.outputs[0]);assert.ok(operations(bundle,'flag-write').length>=6);});
 test('LOCK XADD same-address atomic RMW uses generic seq-cst',()=>{const{bundle}=lift({family:'xadd',prefixes:[0xf0],operands:[mem({base:'rdi',displacement:8n,widthBits:64,access:'read-write'}),reg('rax',64,'read-write')]});assert.equal(bundle.completeness,'exact-with-intrinsic');assertAtomicPair(bundle);assert.equal(bundle.metadata.orderingMapping,'seq-cst');assert.equal(bundle.metadata.sourceReceivesOldDestination,true);});
 test('CMPXCHG success/failure contract is conditional',()=>{const{bundle}=lift({family:'cmpxchg',operands:[mem({base:'rdi',widthBits:64,access:'read-write'}),reg('rcx',64,'read')]});assert.equal(bundle.completeness,'partial');assert.equal(bundle.metadata.conditional,true);assert.equal(bundle.metadata.atomic,false);const success=operations(bundle,'value').find((op)=>op.metadata.semantic==='x86-cmpxchg-success'),memoryResult=operations(bundle,'value').find((op)=>op.metadata.semantic==='x86-cmpxchg-memory-result'),acc=operations(bundle,'value').find((op)=>op.metadata.semantic==='x86-cmpxchg-accumulator-result');assert.ok(success&&memoryResult&&acc);assert.equal(memoryResult.metadata.successPath,'source-to-destination');assert.equal(memoryResult.metadata.failurePath,'destination-unchanged');assert.equal(acc.metadata.failurePath,'old-destination-to-accumulator');assert.equal(writes(bundle)[0].metadata.conditionalWrite,true);assert.equal(writes(bundle)[0].metadata.failurePathArchitecturalWrite,false);assert.equal(writes(bundle)[0].metadata.representationIsConservativeMayWrite,true);});

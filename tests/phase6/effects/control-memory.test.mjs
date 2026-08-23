@@ -170,6 +170,29 @@ test('fence records its exact predecessor and successor sets', () => {
   assert.deepEqual(barrier.scope.successor, ['read', 'write']);
 });
 
+test('reserved FENCE fields fail closed instead of becoming exact barriers', () => {
+  // The base encoding reserves rd and rs1, and only fm=0000 or the complete
+  // FENCE.TSO tuple is standard in RV64IMC. These nearby words must not share
+  // the exact barrier semantics of canonical FENCE.
+  const cases = [
+    { name: 'nonzero rd', bytes: [0x8f, 0x00, 0x30, 0x03], reason: 'riscv64-reserved-fence-registers' },
+    { name: 'nonzero rs1', bytes: [0x0f, 0x80, 0x30, 0x03], reason: 'riscv64-reserved-fence-registers' },
+    { name: 'reserved fm', bytes: [0x0f, 0x00, 0x30, 0x13], reason: 'riscv64-reserved-fence-mode' },
+    { name: 'noncanonical FENCE.TSO successor', bytes: [0x0f, 0x00, 0x20, 0x83], reason: 'riscv64-reserved-fence-mode' },
+  ];
+  for (const item of cases) {
+    const { decoded, bundle } = liftBytes(item.bytes);
+    assert.equal(decoded.fields.supported, false, item.name);
+    assert.equal(decoded.fields.reason, item.reason, item.name);
+    assert.equal(bundle, null, `${item.name} must not produce exact MachineEffects`);
+  }
+
+  const tso = liftBytes([0x0f, 0x00, 0x30, 0x83]);
+  assert.equal(tso.decoded.fields.supported, true);
+  assert.equal(tso.bundle.completeness, 'exact');
+  assert.equal(tso.bundle.operations.find((operation) => operation.kind === 'barrier').scope.fenceMode, 'tso');
+});
+
 test('FENCE.I remains unsupported outside the frozen RV64IMC profile', () => {
   // FENCE.I is the Zifencei extension, not the profile's I/M/C contract.
   const { decoded, bundle } = liftBytes([0x0f, 0x10, 0x00, 0x00]);
