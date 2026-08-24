@@ -69,6 +69,9 @@ const items = {
   'S2-A7-NATIVE': item(nativeProfiles, units(nativeProfiles, nativeRuntimeCapabilities), [
     'js/runtime/authority.js', 'js/runtime/stage2.js', 'tests/stage2/runtime-authority.test.mjs',
     'tools/validation/stage2/a7-lldb-real-fixture.mjs', 'tests/stage2/a7-lldb-real-fixture.test.mjs',
+    'tools/validation/stage2/a7-cross-target-real-fixtures.mjs', 'tests/stage2/a7-cross-target-real-fixtures.test.mjs',
+    'tests/stage2/fixtures/a7-runtime/aarch64-a64.S', 'tests/stage2/fixtures/a7-runtime/aarch64-pac.S',
+    'tests/stage2/fixtures/a7-runtime/riscv64-rv64imc.S',
   ]),
 };
 
