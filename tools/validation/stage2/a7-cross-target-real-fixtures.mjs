@@ -231,6 +231,20 @@ def wait_for(predicate, timeout=3.0):
         time.sleep(0.01)
     return last
 
+def wait_for_process_event(listener, predicate, timeout=3.0):
+    deadline = time.time() + timeout
+    event = lldb.SBEvent()
+    last = lldb.eStateInvalid
+    while time.time() < deadline:
+        if not listener.WaitForEvent(1, event):
+            continue
+        if not lldb.SBProcess.EventIsProcessEvent(event):
+            continue
+        last = lldb.SBProcess.GetStateFromEvent(event)
+        if predicate(last):
+            return last
+    return last
+
 def current_frame():
     thread = process.GetSelectedThread()
     if not thread.IsValid() and process.GetNumThreads() > 0:
@@ -296,20 +310,23 @@ try:
     }
 
     before_operand = operand
+    pause_listener = lldb.SBListener('a7-cross-pause')
+    if not pause_listener.StartListeningForEvents(process.GetBroadcaster(), lldb.SBProcess.eBroadcastBitStateChanged):
+        fail('pause-listener-register-failed')
     debugger.SetAsync(True)
     continue_error = process.Continue()
     if not continue_error.Success():
         fail('pause-continue-failed:' + str(continue_error))
-    running_state = wait_for(lldb.SBDebugger.StateIsRunningState)
+    running_state = wait_for_process_event(pause_listener, lldb.SBDebugger.StateIsRunningState)
     if not lldb.SBDebugger.StateIsRunningState(running_state):
-        fail('pause-running-not-observed')
+        fail('pause-running-event-not-observed:' + state_name(running_state))
     time.sleep(0.05)
     stop_error = process.Stop()
     if not stop_error.Success():
         fail('pause-stop-failed:' + str(stop_error))
-    stopped_state = wait_for(lldb.SBDebugger.StateIsStoppedState)
+    stopped_state = wait_for_process_event(pause_listener, lldb.SBDebugger.StateIsStoppedState)
     if not lldb.SBDebugger.StateIsStoppedState(stopped_state):
-        fail('pause-stop-not-observed')
+        fail('pause-stopped-event-not-observed:' + state_name(stopped_state))
     thread, frame = current_frame()
     pause_pc = reg(frame, 'pc')
     pause_sp = reg(frame, 'sp')
@@ -324,6 +341,9 @@ try:
     }
 
     debugger.SetAsync(False)
+    cancel_listener = lldb.SBListener('a7-cross-cancel')
+    if not cancel_listener.StartListeningForEvents(process.GetBroadcaster(), lldb.SBProcess.eBroadcastBitStateChanged):
+        fail('cancel-listener-register-failed')
     input_error = debugger.SetInputString('process continue\\n')
     if not input_error.Success():
         fail('cancel-input-failed:' + str(input_error))
@@ -336,17 +356,17 @@ try:
             holder['exception'] = repr(exc)
     worker = threading.Thread(target=run_interpreter, daemon=True)
     worker.start()
-    running_state = wait_for(lldb.SBDebugger.StateIsRunningState)
+    running_state = wait_for_process_event(cancel_listener, lldb.SBDebugger.StateIsRunningState)
     if not lldb.SBDebugger.StateIsRunningState(running_state):
-        fail('cancel-inflight-running-not-observed')
+        fail('cancel-inflight-running-event-not-observed:' + state_name(running_state))
     if not interpreter.InterruptCommand():
         fail('cancel-interrupt-not-accepted')
     worker.join(3.0)
     if worker.is_alive():
         fail('cancel-command-not-settled')
-    stopped_state = wait_for(lldb.SBDebugger.StateIsStoppedState)
+    stopped_state = wait_for_process_event(cancel_listener, lldb.SBDebugger.StateIsStoppedState)
     if not lldb.SBDebugger.StateIsStoppedState(stopped_state):
-        fail('cancel-target-not-stopped')
+        fail('cancel-target-stopped-event-not-observed:' + state_name(stopped_state))
     thread, frame = current_frame()
     cancel_pc = reg(frame, 'pc')
     cancel_operand = reg(frame, REGISTER)
