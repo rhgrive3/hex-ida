@@ -80,8 +80,8 @@ export class ScopeController {
 }
 
 export function initialScope(snapshot) {
-  if (snapshot?.selection?.start) return 'selection';
-  if (snapshot?.currentFunction?.address) return 'function';
+  if (snapshot?.selection?.start != null) return 'selection';
+  if (snapshot?.currentFunction?.address != null) return 'function';
   return snapshot?.projectIdentity && !snapshot?.binaryId ? 'project' : 'binary';
 }
 
