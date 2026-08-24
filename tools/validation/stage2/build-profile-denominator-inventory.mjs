@@ -57,6 +57,10 @@ const items = {
     'tools/validation/machine-effects/a2-denominator.mjs',
     'tools/validation/machine-effects/riscv64-rv64imc-denominator.mjs',
     'tests/machine-effects/riscv64-rv64imc-denominator.test.mjs',
+    'tools/validation/machine-effects/x86-capstone-registry.mjs',
+    'tests/machine-effects/x86-capstone-registry.test.mjs',
+    'tools/validation/machine-effects/x86-long64-lea-denominator.mjs',
+    'tests/machine-effects/x86-long64-lea-denominator.test.mjs',
   ]),
   'S2-A7-NATIVE': item(nativeProfiles, units(nativeProfiles, nativeRuntimeCapabilities), [
     'js/runtime/authority.js', 'js/runtime/stage2.js', 'tests/stage2/runtime-authority.test.mjs',
