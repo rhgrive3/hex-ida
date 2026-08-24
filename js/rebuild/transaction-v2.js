@@ -21,6 +21,14 @@ export const F6_UNIMPLEMENTED_OPERATION_UNITS = Object.freeze([
   'layout-and-structure', 'relocations-and-bindings', 'branch-ranges',
   'unwind-and-debug', 'imports-and-exports', 'signature-consequence',
 ]);
+// These are evaluator-level bounded capabilities, not replacements for the
+// locked profile-wide F6 units above.  A capability can close only when its
+// exact production operation, loader reparse, and independent oracle evidence
+// are present; the parent unit remains blocking until the complete matrix is
+// implemented.
+export const F6_BOUNDED_OPERATION_CELLS = Object.freeze([
+  'elf:64:layout-and-structure:terminal-sht-nobits-append',
+]);
 const BYTE_HASH_RE = /^bytes:[0-9a-f]{32}$/;
 const VALID_REBUILD_PROFILE_SUPPORT = new WeakSet();
 
@@ -195,6 +203,10 @@ function f6Cell(profileId, unit, status, reason = null, evidence = null) {
   return Object.freeze({ id: `${profileId}:${unit}`, unit, status, reason, evidence });
 }
 
+function f6BoundedOperationCell(id, parentUnit, operation, status, reason = null, evidence = null) {
+  return Object.freeze({ id, parentUnit, operation, status, reason, evidence });
+}
+
 export function f6KnownImplementationGaps() {
   return Object.freeze(F6_REBUILD_PROFILES.flatMap((profileId) => F6_UNIMPLEMENTED_OPERATION_UNITS.map((unit) => `${profileId}:${unit}`)));
 }
@@ -232,10 +244,11 @@ export function evaluateF6RebuildDenominator({ transaction, validation, publicat
   const profileId = f6ProfileId(transaction);
   const prefix = profileId || `${transaction?.format || 'unknown'}:unknown`;
   const cells = {};
+  const boundedOperationCells = {};
   const add = (unit, status, reason = null, evidence = null) => { cells[unit] = f6Cell(prefix, unit, status, reason, evidence); };
   if (!profileId) {
     for (const unit of F6_REBUILD_UNITS) add(unit, 'blocking', 'f6-profile-unsupported');
-    return Object.freeze({ status: 'blocked', profileId: null, cells: Object.freeze(cells), closedUnitIds: Object.freeze([]), blockingUnitIds: Object.freeze(F6_REBUILD_UNITS.map((unit) => `${prefix}:${unit}`)), blockers: Object.freeze(['f6-profile-unsupported']) });
+    return Object.freeze({ status: 'blocked', profileId: null, cells: Object.freeze(cells), boundedOperationCells: Object.freeze(boundedOperationCells), boundedOperationClosedIds: Object.freeze([]), boundedOperationBlockingIds: Object.freeze([]), closedUnitIds: Object.freeze([]), blockingUnitIds: Object.freeze(F6_REBUILD_UNITS.map((unit) => `${prefix}:${unit}`)), blockers: Object.freeze(['f6-profile-unsupported']) });
   }
 
   const validationPassed = transactionIdentityValid(transaction)
@@ -244,9 +257,37 @@ export function evaluateF6RebuildDenominator({ transaction, validation, publicat
     && validation?.transactionId === transaction?.transactionId
     && rebuildIdentityMatches(validation, transaction)
     && validationIdentityValid(validation);
+  const publicationComplete = publication?.status === 'published'
+    && publication.atomic === true
+    && publication.committed === true
+    && publication.transactionId === transaction?.transactionId
+    && publication.outputHash === validation?.outputHash
+    && publication.outputIdentity === validation?.outputIdentity
+    && ATOMIC_PUBLICATION_PROTOCOLS.has(publication.protocol)
+    && !!publication.publicationIdentity;
   add('transaction-identity', validationPassed ? 'closed' : 'blocking', validationPassed ? null : 'f6-transaction-identity-unproven', validationPassed ? 'transaction-v2-validation-identity' : null);
 
   for (const unit of F6_UNIMPLEMENTED_OPERATION_UNITS) add(unit, 'blocking', `f6-${unit}-adapter-unimplemented`);
+  const boundedLayoutProof = validationPassed
+    && publicationComplete
+    && proof.realFixture === true
+    && proof.realFixtureEvidence === true
+    && proof.negativeValidatorTest === true
+    && proof.staleIdentityTest === true
+    && proof.truncationTest === true
+    && proof.wrongIdentityTest === true
+    && elfLayoutEvidenceValid(transaction, validation);
+  if (profileId === 'elf:64') {
+    const boundedId = F6_BOUNDED_OPERATION_CELLS[0];
+    boundedOperationCells[boundedId] = f6BoundedOperationCell(
+      boundedId,
+      'layout-and-structure',
+      'elf-add-nobits-section',
+      boundedLayoutProof ? 'closed' : 'blocking',
+      boundedLayoutProof ? null : 'f6-bounded-elf-layout-proof-incomplete',
+      boundedLayoutProof ? 'format-safe-elf-add-nobits-section+hex-loader-reparse+llvm-readobj-independent-oracle+atomic-publication' : null,
+    );
+  }
   if (profileId === 'elf:64' && elfLayoutEvidenceValid(transaction, validation)) {
     add('layout-and-structure', 'blocking', 'f6-layout-and-structure-profile-matrix-incomplete', 'elf64-terminal-section-table-nobits-adapter+llvm-readobj-section-oracle');
   }
@@ -256,14 +297,6 @@ export function evaluateF6RebuildDenominator({ transaction, validation, publicat
   const independent = validation?.validators?.find((item) => item.validator === 'independent-differential');
   add('independent-differential-oracle', independent?.status === 'passed' && validation?.independentDifferential === 'executed' ? 'closed' : 'blocking', independent?.status === 'passed' && validation?.independentDifferential === 'executed' ? null : 'f6-independent-oracle-unproven', independent?.status === 'passed' ? 'independent-oracle-contract' : null);
 
-  const publicationComplete = publication?.status === 'published'
-    && publication.atomic === true
-    && publication.committed === true
-    && publication.transactionId === transaction?.transactionId
-    && publication.outputHash === validation?.outputHash
-    && publication.outputIdentity === validation?.outputIdentity
-    && ATOMIC_PUBLICATION_PROTOCOLS.has(publication.protocol)
-    && !!publication.publicationIdentity;
   add('atomic-publication', publicationComplete ? 'closed' : 'blocking', publicationComplete ? null : 'f6-atomic-publication-unproven', publicationComplete ? 'transaction-v2-publication-identity' : null);
   add('real-fixture', proof.realFixture === true && proof.realFixtureEvidence === true ? 'closed' : 'blocking', proof.realFixture === true && proof.realFixtureEvidence === true ? null : 'f6-real-fixture-evidence-unproven', proof.realFixture === true && proof.realFixtureEvidence === true ? 'compiler-produced-fixture' : null);
   const negativeEvidence = proof.negativeValidatorTest === true
@@ -273,12 +306,18 @@ export function evaluateF6RebuildDenominator({ transaction, validation, publicat
   add('negative-validator-corpus', negativeEvidence ? 'closed' : 'blocking', negativeEvidence ? null : 'f6-negative-validator-evidence-incomplete', negativeEvidence ? 'tamper-truncation-identity-negative-corpus' : null);
 
   const entries = Object.values(cells);
+  const boundedEntries = Object.values(boundedOperationCells);
   const closedUnitIds = entries.filter((item) => item.status === 'closed').map((item) => item.id);
   const blockingUnitIds = entries.filter((item) => item.status !== 'closed').map((item) => item.id);
+  const boundedOperationClosedIds = boundedEntries.filter((item) => item.status === 'closed').map((item) => item.id);
+  const boundedOperationBlockingIds = boundedEntries.filter((item) => item.status !== 'closed').map((item) => item.id);
   return Object.freeze({
     status: blockingUnitIds.length === 0 ? 'closed' : 'blocked',
     profileId,
     cells: Object.freeze(cells),
+    boundedOperationCells: Object.freeze(boundedOperationCells),
+    boundedOperationClosedIds: Object.freeze(boundedOperationClosedIds),
+    boundedOperationBlockingIds: Object.freeze(boundedOperationBlockingIds),
     closedUnitIds: Object.freeze(closedUnitIds),
     blockingUnitIds: Object.freeze(blockingUnitIds),
     blockers: Object.freeze(entries.filter((item) => item.status !== 'closed').map((item) => item.reason)),

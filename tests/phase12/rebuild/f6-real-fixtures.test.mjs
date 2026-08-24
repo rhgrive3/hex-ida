@@ -238,6 +238,21 @@ assert.equal(layoutStatus.cells['layout-and-structure'].status, 'blocking');
 assert.equal(layoutStatus.cells['layout-and-structure'].reason, 'f6-layout-and-structure-profile-matrix-incomplete');
 assert.equal(layoutStatus.cells['layout-and-structure'].evidence, 'elf64-terminal-section-table-nobits-adapter+llvm-readobj-section-oracle');
 assert.equal(layoutStatus.blockingUnitIds.includes('elf:64:layout-and-structure'), true);
+const boundedLayoutCell = layoutStatus.boundedOperationCells['elf:64:layout-and-structure:terminal-sht-nobits-append'];
+assert.equal(boundedLayoutCell.status, 'closed', 'the exact ELF SHT_NOBITS operation is independently proven');
+assert.equal(boundedLayoutCell.parentUnit, 'layout-and-structure');
+assert.equal(boundedLayoutCell.operation, 'elf-add-nobits-section');
+assert.equal(layoutStatus.boundedOperationClosedIds.includes(boundedLayoutCell.id), true);
+assert.equal(layoutStatus.boundedOperationBlockingIds.includes(boundedLayoutCell.id), false);
+assert.equal(boundedLayoutCell.evidence, 'format-safe-elf-add-nobits-section+hex-loader-reparse+llvm-readobj-independent-oracle+atomic-publication');
+const incompleteLayoutStatus = evaluateF6RebuildDenominator({
+  transaction: layoutTransaction,
+  validation: layoutValidation,
+  publication: layoutPublication,
+  proof: { realFixture: true, realFixtureEvidence: true },
+});
+assert.equal(incompleteLayoutStatus.boundedOperationCells[boundedLayoutCell.id].status, 'blocking', 'bounded capability must fail closed without the complete negative corpus');
+assert.equal(incompleteLayoutStatus.boundedOperationCells[boundedLayoutCell.id].reason, 'f6-bounded-elf-layout-proof-incomplete');
 assert.equal(f6KnownImplementationGaps().includes('elf:64:layout-and-structure'), true);
 assert.equal(f6KnownImplementationGaps().length, 24, 'a single proven operation must not close a format-wide layout cell');
 assert.throws(() => createFormatSafeRebuildTransaction({
