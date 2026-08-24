@@ -19,6 +19,17 @@ export const ARM64_A64_FLAG_ENCODING_FAMILIES = Object.freeze([
 ]);
 
 const CONDITIONS = 16;
+export const ARM64_A64_FLAGS_EXPECTED = Object.freeze({
+  encodingFamilyCount:12,
+  encodingCaseCount:15232,
+  conditionCount:16,
+  familyCaseCounts:Object.freeze({
+    'cmn-shifted-register':352, 'cmn-extended-register':144, 'cmn-immediate':80,
+    'cmp-shifted-register':352, 'cmp-extended-register':144, 'cmp-immediate':80,
+    'tst-shifted-register':448, 'tst-logical-immediate':11392,
+    'ccmn-register':576, 'ccmn-immediate':544, 'ccmp-register':576, 'ccmp-immediate':544,
+  }),
+});
 
 function highestSetBit(value) {
   for (let bit = 6; bit >= 0; bit--) if (value & (1 << bit)) return bit;
@@ -112,16 +123,25 @@ export function validateArm64A64FlagsDenominator() {
   }
   let encodingCaseCount = 0;
   const observed = new Set();
+  const familyCaseCounts = {};
   for (const item of arm64A64FlagEncodingCases()) {
     const family = classifyArm64A64FlagEncoding(item.word);
     if (!family) throw new Error(`arm64-flags-denominator-case-unowned:${item.id}`);
     observed.add(family.id);
+    familyCaseCounts[family.id] = (familyCaseCounts[family.id] || 0) + 1;
     encodingCaseCount++;
   }
   if (observed.size !== ARM64_A64_FLAG_ENCODING_FAMILIES.length) throw new Error('arm64-flags-denominator-family-unobserved');
+  if (CONDITIONS !== ARM64_A64_FLAGS_EXPECTED.conditionCount
+    || ARM64_A64_FLAG_ENCODING_FAMILIES.length !== ARM64_A64_FLAGS_EXPECTED.encodingFamilyCount
+    || encodingCaseCount !== ARM64_A64_FLAGS_EXPECTED.encodingCaseCount
+    || JSON.stringify(familyCaseCounts) !== JSON.stringify(ARM64_A64_FLAGS_EXPECTED.familyCaseCounts)) {
+    throw new Error('arm64-flags-denominator-cardinality-drift');
+  }
   return Object.freeze({
     valid:true, schemaVersion:ARM64_A64_FLAGS_DENOMINATOR_SCHEMA, denominatorId:ARM64_A64_FLAGS_DENOMINATOR_ID,
     profileId:'arm64:a64', encodingFamilyCount:ARM64_A64_FLAG_ENCODING_FAMILIES.length, encodingCaseCount,
+    conditionCount:CONDITIONS, familyCaseCounts:Object.freeze(familyCaseCounts),
     oracleIds:Object.freeze(['arm-a-profile-a64-data-processing-encoding-tables','deployed-capstone-5-arm64','llvm-mc-18-aarch64-disassembler']),
   });
 }

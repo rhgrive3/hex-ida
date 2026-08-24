@@ -6,6 +6,7 @@ import { parseOperands } from '../../js/arm64.js';
 import { liftArm64MachineEffects } from '../../js/targets/architecture/arm64/effects/index.js';
 import {
   ARM64_A64_FLAGS_DENOMINATOR_ID,
+  ARM64_A64_FLAGS_EXPECTED,
   arm64A64FlagEncodingCases,
   classifyArm64A64FlagEncoding,
   validateArm64A64FlagsDenominator,
@@ -13,10 +14,57 @@ import {
 import { createCapstoneArm64Session } from './helpers/arm64-capstone-session.mjs';
 
 function bytes32(word) { const value=Number(word)>>>0; return Uint8Array.of(value&255,(value>>>8)&255,(value>>>16)&255,value>>>24); }
+function temporaryId(value) { return value?.kind === 'temporary' ? value.temporaryId : null; }
+function verifyNzcvDataflow(effects, operation, caseId) {
+  const values = effects.operations.filter((item) => item.kind === 'value');
+  const producer = new Map(values.flatMap((item) => item.outputs.map((output) => [temporaryId(output), item])));
+  const writes = Object.fromEntries(effects.operations.filter((item) => item.kind === 'flag-write').map((item) => [item.flag.flagId.slice(-1), item]));
+  assert.deepEqual(Object.keys(writes).sort(), ['C','N','V','Z'], `${caseId}: exact NZCV write set`);
+  const conditional = operation === 'ccmp' || operation === 'ccmn';
+  const candidates = {};
+  for (const flag of ['N','Z','C','V']) {
+    if (!conditional) { candidates[flag] = writes[flag].value; continue; }
+    const select = producer.get(temporaryId(writes[flag].value));
+    assert.equal(select?.opcode, 'select', `${caseId}:${flag}: conditional flag select`);
+    assert.equal(select.metadata.condition, effects.metadata.condition, `${caseId}:${flag}: condition identity`);
+    assert.equal(select.metadata.flag, flag, `${caseId}:${flag}: flag identity`);
+    const fallbackBit = (effects.metadata.fallbackNzcv >>> ({N:3,Z:2,C:1,V:0}[flag])) & 1;
+    assert.deepEqual(select.inputs[2], { kind:'bitvector', widthBits:1, value:String(fallbackBit) }, `${caseId}:${flag}: fallback NZCV bit`);
+    candidates[flag] = select.inputs[1];
+  }
+  if (operation === 'tst') {
+    const and = values.find((item) => item.opcode === 'and');
+    assert.ok(and, `${caseId}: TST result must be AND`);
+    assert.equal(producer.get(temporaryId(candidates.N))?.opcode, 'extract-bit', `${caseId}: N comes from result sign`);
+    assert.equal(temporaryId(producer.get(temporaryId(candidates.N)).inputs[0]), temporaryId(and.outputs[0]), `${caseId}: N uses AND result`);
+    assert.equal(producer.get(temporaryId(candidates.Z))?.opcode, 'is-zero', `${caseId}: Z comes from zero test`);
+    assert.equal(temporaryId(producer.get(temporaryId(candidates.Z)).inputs[0]), temporaryId(and.outputs[0]), `${caseId}: Z uses AND result`);
+    assert.deepEqual(candidates.C, { kind:'bitvector', widthBits:1, value:'0' }, `${caseId}: TST clears C`);
+    assert.deepEqual(candidates.V, { kind:'bitvector', widthBits:1, value:'0' }, `${caseId}: TST clears V`);
+    return;
+  }
+  const add = values.find((item) => item.opcode === 'add-with-carry');
+  assert.ok(add, `${caseId}: arithmetic flags require add-with-carry`);
+  const subtract = operation === 'cmp' || operation === 'ccmp';
+  assert.equal(add.metadata.subtract, subtract, `${caseId}: add/sub identity`);
+  assert.deepEqual(add.inputs[2], { kind:'bitvector', widthBits:1, value:subtract ? '1' : '0' }, `${caseId}: carry-in identity`);
+  const n = producer.get(temporaryId(candidates.N));
+  const z = producer.get(temporaryId(candidates.Z));
+  assert.equal(n?.opcode, 'extract-bit', `${caseId}: N comes from arithmetic sign`);
+  assert.equal(n.metadata.bit, add.metadata.widthBits - 1, `${caseId}: N sign-bit width`);
+  assert.equal(temporaryId(n.inputs[0]), temporaryId(add.outputs[0]), `${caseId}: N uses arithmetic result`);
+  assert.equal(z?.opcode, 'is-zero', `${caseId}: Z comes from arithmetic zero test`);
+  assert.equal(temporaryId(z.inputs[0]), temporaryId(add.outputs[0]), `${caseId}: Z uses arithmetic result`);
+  assert.equal(temporaryId(candidates.C), temporaryId(add.outputs[1]), `${caseId}: C uses arithmetic carry`);
+  assert.equal(temporaryId(candidates.V), temporaryId(add.outputs[2]), `${caseId}: V uses arithmetic overflow`);
+}
 
 const denominator = validateArm64A64FlagsDenominator();
 assert.equal(denominator.denominatorId, ARM64_A64_FLAGS_DENOMINATOR_ID);
 assert.equal(denominator.encodingFamilyCount, 12);
+assert.equal(denominator.encodingCaseCount, ARM64_A64_FLAGS_EXPECTED.encodingCaseCount);
+assert.equal(denominator.conditionCount, ARM64_A64_FLAGS_EXPECTED.conditionCount);
+assert.deepEqual(denominator.familyCaseCounts, ARM64_A64_FLAGS_EXPECTED.familyCaseCounts);
 
 const session = await createCapstoneArm64Session();
 let count = 0;
@@ -39,6 +87,7 @@ try {
       assert.equal(effects.completeness, 'exact', `${item.id}:${effects.unknownEffects?.reason}`);
       assert.equal(effects.metadata.family, 'flags', item.id);
       assert.deepEqual(effects.operations.filter((operation)=>operation.kind==='flag-write').map((operation)=>operation.flag.flagId).sort(), ['NZCV.C','NZCV.N','NZCV.V','NZCV.Z']);
+      verifyNzcvDataflow(effects, item.operation, item.id);
       count++;
     }
   }

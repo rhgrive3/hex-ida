@@ -96,6 +96,21 @@ for (const mutate of [
   assert.throws(() => validateA2DenominatorInventory(mutated), /a2-denominator-x86-lea-proof-identity-drift/);
 }
 
+for (const familyId of ['control', 'flags']) {
+  for (const mutate of [
+    (family) => { family.oracle = 'caller-selected-label'; },
+    (family) => { family.proof.source = 'js/targets/architecture/arm64/effects/index.js'; },
+    (family) => { family.proof.test = 'tests/machine-effects/a2-denominator.test.mjs'; },
+    (family) => { family.proof.denominatorTest = 'tests/machine-effects/a2-denominator.test.mjs'; },
+    (family) => { family.proof.denominator.encodingCaseCount -= 1; },
+  ]) {
+    const mutated = clone();
+    const family = mutated.architectures.find((architecture) => architecture.id === 'arm64').effectRegistry.families.find((item) => item.id === familyId);
+    mutate(family);
+    assert.throws(() => validateA2DenominatorInventory(mutated), new RegExp(`a2-denominator-arm64-${familyId}-proof-`));
+  }
+}
+
 {
   const mutated = clone();
   mutated.architectures.find((architecture) => architecture.id === 'riscv64').decoder.denominator.denominatorId = 'riscv64:rv64imc:unproven-denominator';

@@ -34,7 +34,15 @@
               "schemaVersion": "machine-effects-effect-unit-proof/v1",
               "source": "js/targets/architecture/arm64/effects/flags.js",
               "test": "tests/machine-effects/arm64-flags-nzcv.test.mjs",
-              "denominatorTest": "tests/machine-effects/arm64-a64-flags-denominator.test.mjs"
+              "denominatorTest": "tests/machine-effects/arm64-a64-flags-denominator.test.mjs",
+              "denominator": {
+                "schemaVersion": "arm64-a64-flags-denominator/v1",
+                "denominatorId": "arm64:a64:flags-encoding-discriminators:v1",
+                "profileId": "arm64:a64",
+                "encodingFamilyCount": 12,
+                "encodingCaseCount": 15232,
+                "oracleIds": ["arm-a-profile-a64-data-processing-encoding-tables", "deployed-capstone-5-arm64", "llvm-mc-18-aarch64-disassembler"]
+              }
             }
           },
           {
@@ -48,7 +56,15 @@
               "schemaVersion": "machine-effects-effect-unit-proof/v1",
               "source": "js/targets/architecture/arm64/effects/control.js",
               "test": "tests/machine-effects/arm64-control-flow.test.mjs",
-              "denominatorTest": "tests/machine-effects/arm64-a64-control-denominator.test.mjs"
+              "denominatorTest": "tests/machine-effects/arm64-a64-control-denominator.test.mjs",
+              "denominator": {
+                "schemaVersion": "arm64-a64-control-denominator/v1",
+                "denominatorId": "arm64:a64:control-encoding-discriminators:v1",
+                "profileId": "arm64:a64",
+                "encodingFamilyCount": 10,
+                "encodingCaseCount": 21306,
+                "oracleIds": ["arm-a-profile-a64-branch-encoding-tables", "deployed-capstone-5-arm64", "llvm-mc-18-aarch64-disassembler"]
+              }
             }
           },
           { "id": "memory", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "Memory families include constrained-unpredictable forms and implementation-defined prefetch effects." },
