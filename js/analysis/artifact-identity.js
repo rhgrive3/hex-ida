@@ -42,7 +42,7 @@ const KIND_SET = new Set(PHASE7_ARTIFACT_KINDS);
  *
  * This is the machine-readable form of the plan's change-impact table. It is
  * consulted by `dependencyClassFor` so that invalidation is neither broader
- * (FM-14) nor narrower than the real dependency edges.
+ * (FM-14) nor narrower (FM-15) than the real dependency edges.
  */
 export const PHASE7_DEPENDENCY_CLASSES = deepFreeze({
   'phase7.alias.region': ['binary', 'semantic', 'cfg', 'ssa', 'memoryssa', 'aliasOptions'],
