@@ -15,6 +15,8 @@ const STRING_FAMILIES = new Map([
   ['scasd', { kind:'scas', widthBits:32 }], ['scasq', { kind:'scas', widthBits:64 }],
 ]);
 const SEGMENT_PREFIX = new Map([[0x2e,'cs'],[0x36,'ss'],[0x3e,'ds'],[0x26,'es'],[0x64,'fs'],[0x65,'gs']]);
+const LEGACY_PREFIXES = new Set([0xf0,0xf2,0xf3,0x2e,0x36,0x3e,0x26,0x64,0x65,0x66,0x67]);
+const COMPARE_FLAGS = Object.freeze(['CF','PF','AF','ZF','SF','OF']);
 
 function legacyPrefixes(instruction) { return [...(instruction?.detail?.prefixes?.legacy || [])]; }
 function addressSizeBits(instruction) { const width = Number(instruction?.detail?.addressSizeBits || 64); return width === 32 || width === 64 ? width : null; }
@@ -33,12 +35,65 @@ function repeatKind(instruction, kind) {
   return null;
 }
 function physicalSet(values) { return new Set((values || []).map((entry) => entry?.physicalId || entry?.id).filter(Boolean)); }
+function hasVectorOperand(instruction) { return (instruction?.detail?.operands || []).some((operand) => operand?.type === 'register' && operand.register?.kind === 'vector'); }
 function ambiguousStringFormIsProven(instruction, spec) {
   if (!spec.ambiguous) return true;
-  const operands = instruction?.detail?.operands || [];
-  if (operands.some((operand) => operand?.type === 'register' && operand.register?.kind === 'vector')) return false;
+  if (hasVectorOperand(instruction)) return false;
   const reads = physicalSet(instruction?.detail?.implicitReads), writes = physicalSet(instruction?.detail?.implicitWrites);
   return (reads.has('rsi') || writes.has('rsi')) && (reads.has('rdi') || writes.has('rdi'));
+}
+function repeatedPrefixMultiplicity(instruction) {
+  const bytes = instruction?.rawBytes || [];
+  let repeat = 0, lock = 0, segment = 0, operandSize = 0, addressSize = 0;
+  for (const byte of bytes) {
+    if (!LEGACY_PREFIXES.has(byte) && !(byte >= 0x40 && byte <= 0x4f)) break;
+    if (byte === 0xf2 || byte === 0xf3) repeat++;
+    else if (byte === 0xf0) lock++;
+    else if (SEGMENT_PREFIX.has(byte)) segment++;
+    else if (byte === 0x66) operandSize++;
+    else if (byte === 0x67) addressSize++;
+  }
+  return { repeat, lock, segment, operandSize, addressSize };
+}
+function prefixStateIsProven(instruction) {
+  const legacy = legacyPrefixes(instruction);
+  if (legacy.some((prefix) => !LEGACY_PREFIXES.has(prefix))) return false;
+  const normalizedRepeat = legacy.filter((prefix) => prefix === 0xf2 || prefix === 0xf3).length;
+  const normalizedSegment = legacy.filter((prefix) => SEGMENT_PREFIX.has(prefix)).length;
+  const multiplicity = repeatedPrefixMultiplicity(instruction);
+  return normalizedRepeat <= 1 && normalizedSegment <= 1
+    && legacy.filter((prefix) => prefix === 0x66).length <= 1
+    && legacy.filter((prefix) => prefix === 0x67).length <= 1
+    && !legacy.includes(0xf0)
+    && multiplicity.repeat <= 1 && multiplicity.lock === 0 && multiplicity.segment <= 1
+    && multiplicity.operandSize <= 1 && multiplicity.addressSize <= 1;
+}
+function memoryBaseIs(operand, name) { return operand?.type === 'memory' && operand.memory?.base?.id === name && operand.memory?.index == null && Number(operand.memory?.scale) === 1 && BigInt(operand.memory?.displacement ?? 0n) === 0n; }
+function accessIs(operand, expected) { return operand?.access === expected || operand?.access === 'unknown'; }
+function registerIs(operand, name, access) { return operand?.type === 'register' && operand.register?.id === name && (!access || accessIs(operand,access)); }
+function stringOperandShapeIsProven(instruction, spec, addressBits) {
+  const operands = instruction?.detail?.operands || [], source = pointerName('source', addressBits), destination = pointerName('destination', addressBits), accumulator = accumulatorName(spec.widthBits);
+  const mem = (operand, base, access) => memoryBaseIs(operand,base) && operand.widthBits === spec.widthBits && accessIs(operand,access);
+  if (spec.kind === 'movs') return operands.length === 2 && mem(operands[0],destination,'write') && mem(operands[1],source,'read');
+  if (spec.kind === 'stos') return operands.length === 2 && mem(operands[0],destination,'write') && registerIs(operands[1],accumulator,'read');
+  if (spec.kind === 'lods') return operands.length === 2 && registerIs(operands[0],accumulator,'write') && mem(operands[1],source,'read');
+  if (spec.kind === 'cmps') return operands.length === 2 && mem(operands[0],source,'read') && mem(operands[1],destination,'read');
+  if (spec.kind === 'scas') return operands.length === 2 && registerIs(operands[0],accumulator,'read') && mem(operands[1],destination,'read');
+  return false;
+}
+function requiredImplicitState(spec, repeat) {
+  const reads = new Set(['rflags']), writes = new Set();
+  if (['movs','lods','cmps'].includes(spec.kind)) { reads.add('rsi'); writes.add('rsi'); }
+  if (['movs','stos','cmps','scas'].includes(spec.kind)) { reads.add('rdi'); writes.add('rdi'); }
+  if (spec.kind === 'stos' || spec.kind === 'scas') reads.add('rax');
+  if (spec.kind === 'lods') writes.add('rax');
+  if (spec.kind === 'cmps' || spec.kind === 'scas') writes.add('rflags');
+  if (repeat) { reads.add('rcx'); writes.add('rcx'); }
+  return { reads, writes };
+}
+function implicitStateIsProven(instruction, spec, repeat) {
+  const actualReads = physicalSet(instruction?.detail?.implicitReads), actualWrites = physicalSet(instruction?.detail?.implicitWrites), required = requiredImplicitState(spec,repeat);
+  return [...required.reads].every((name) => actualReads.has(name)) && [...required.writes].every((name) => actualWrites.has(name));
 }
 function stringMemoryOperand(role, widthBits, addressBits, segment) {
   const register = x86RegisterOperand(pointerName(role, addressBits));
@@ -59,41 +114,101 @@ function updatePointer(ctx, role, addressBits, elementBytes, directionFlag) {
   const next = ctx.valueOp('select', [directionFlag,dec,inc], addressBits, { semantic:'x86-string-direction-select', condition:'DF', truePath:'decrement', falsePath:'increment', elementBytes });
   return ctx.writeRegister(operand, next);
 }
-function repeatedStringPartial(ctx, spec, repeat, addressBits) {
-  const countName = pointerName('count', addressBits), readNames = [], writtenNames = [countName], inputs = [];
-  const countOperand = x86RegisterOperand(countName), count = countOperand ? ctx.readRegister(countOperand) : null;
-  if (count) { inputs.push(count); readNames.push(countName); }
-  inputs.push(ctx.readFlag('DF'));
-  if (['movs','lods','cmps'].includes(spec.kind)) {
-    const name = pointerName('source', addressBits), op = x86RegisterOperand(name), value = op ? ctx.readRegister(op) : null;
-    if (value) inputs.push(value); readNames.push(name); writtenNames.push(name);
-  }
-  if (['movs','stos','cmps','scas'].includes(spec.kind)) {
-    const name = pointerName('destination', addressBits), op = x86RegisterOperand(name), value = op ? ctx.readRegister(op) : null;
-    if (value) inputs.push(value); readNames.push(name); writtenNames.push(name);
-  }
+function readPhysicalRegister(ctx, name) {
+  const operand = x86RegisterOperand(name);
+  return operand ? ctx.readRegister(operand) : null;
+}
+function repeatedMemoryScope(spaces, detail) {
+  const unique = [...new Set(spaces.filter(Boolean))].sort();
+  return unique.length === 0 ? { scope:'none' } : { scope:'all', spaces:unique, detail };
+}
+function repeatedStringEffects(ctx, spec, repeat, addressBits) {
+  const elementBytes = spec.widthBits / 8, sourcePresent = ['movs','lods','cmps'].includes(spec.kind), destinationPresent = ['movs','stos','cmps','scas'].includes(spec.kind);
+  const sourceAddress = sourcePresent ? stringAddress(ctx,'source',spec,addressBits) : null, destinationAddress = destinationPresent ? stringAddress(ctx,'destination',spec,addressBits) : null;
+  if (sourcePresent && !sourceAddress) return ctx.partial('x86-repeated-string-source-address-unmodelled',['memory','registers']);
+  if (destinationPresent && !destinationAddress) return ctx.partial('x86-repeated-string-destination-address-unmodelled',['memory','registers']);
+
+  const inputs = [], registersRead = [], registersWritten = [], outputs = [], outputRoles = [];
+  const addInput = (name,value) => { if (!value) return false; inputs.push(value); registersRead.push(name); return true; };
+  const addOutput = (role,widthBits,registerName) => { outputs.push(widthBits); outputRoles.push({role,registerName}); if (registerName) registersWritten.push(registerName); };
+
+  const count = readPhysicalRegister(ctx,'rcx');
+  if (!addInput('rcx',count)) return ctx.partial('x86-repeated-string-count-unmodelled',['registers']);
+  const df = ctx.readFlag('DF'); inputs.push(df); registersRead.push('rflags');
+  if (sourcePresent && !addInput('rsi',readPhysicalRegister(ctx,'rsi'))) return ctx.partial('x86-repeated-string-source-pointer-unmodelled',['registers']);
+  if (destinationPresent && !addInput('rdi',readPhysicalRegister(ctx,'rdi'))) return ctx.partial('x86-repeated-string-destination-pointer-unmodelled',['registers']);
   if (spec.kind === 'stos' || spec.kind === 'scas') {
-    const name = accumulatorName(spec.widthBits), op = x86RegisterOperand(name), value = op ? ctx.readRegister(op) : null;
-    if (value) inputs.push(value); readNames.push(name);
+    const accumulator = x86RegisterOperand(accumulatorName(spec.widthBits)), value = accumulator ? ctx.readRegister(accumulator) : null;
+    if (!addInput('rax',value)) return ctx.partial('x86-repeated-string-accumulator-unmodelled',['registers']);
   }
-  if (spec.kind === 'lods') writtenNames.push(accumulatorName(spec.widthBits));
-  if (spec.kind === 'cmps' || spec.kind === 'scas') writtenNames.push('rflags');
-  const readsMemory = ['movs','lods','cmps','scas'].includes(spec.kind), writesMemory = spec.kind === 'movs' || spec.kind === 'stos';
-  ctx.intrinsic(`x86.${repeat}.${spec.kind}.${spec.widthBits}`, inputs, [], {
-    registersRead:readNames, registersWritten:writtenNames,
-    memoryRead:readsMemory ? { scope:'unknown', detail:{ repeated:true, elementWidthBits:spec.widthBits, directionFromDF:true, countRegister:countName } } : { scope:'none' },
-    memoryWrite:writesMemory ? { scope:'unknown', detail:{ repeated:true, elementWidthBits:spec.widthBits, directionFromDF:true, countRegister:countName } } : { scope:'none' },
-    determinism:'input-dependent', symbolicDetail:'summary-only',
-    metadata:{ boundedSummary:true, runtimeCountNotUnrolled:true, repeatKind:repeat, repeatCondition:repeat === 'repe' ? 'RCX != 0 && ZF == 1' : repeat === 'repne' ? 'RCX != 0 && ZF == 0' : 'RCX != 0', counterBehavior:'decrement once per completed element', directionBehavior:'DF=0 increment, DF=1 decrement', elementWidthBits:spec.widthBits, exactArchitecturalSummary:false },
+  if (spec.kind === 'lods' && !addInput('rax',readPhysicalRegister(ctx,'rax'))) return ctx.partial('x86-repeated-string-accumulator-state-unmodelled',['registers']);
+  if (spec.kind === 'cmps' || spec.kind === 'scas') {
+    for (const flag of COMPARE_FLAGS) { const value = ctx.readFlag(flag); inputs.push(value); }
+    registersRead.push('rflags');
+  }
+
+  addOutput('count',64,'rcx');
+  if (sourcePresent) addOutput('source-pointer',64,'rsi');
+  if (destinationPresent) addOutput('destination-pointer',64,'rdi');
+  if (spec.kind === 'lods') addOutput('accumulator',64,'rax');
+  if (spec.kind === 'cmps' || spec.kind === 'scas') for (const flag of COMPARE_FLAGS) addOutput(`flag-${flag}`,1,'rflags');
+
+  const readsMemory = sourcePresent || spec.kind === 'scas', writesMemory = spec.kind === 'movs' || spec.kind === 'stos';
+  const sourceDescriptor = sourceAddress ? Object.freeze({ role:'source', pointerPhysical:'rsi', pointerView:pointerName('source',addressBits), space:sourceAddress.space, segment:sourceAddress.metadata.segment, segmentBaseRule:sourceAddress.metadata.segmentBaseRule }) : null;
+  const destinationDescriptor = destinationAddress ? Object.freeze({ role:'destination', pointerPhysical:'rdi', pointerView:pointerName('destination',addressBits), space:destinationAddress.space, segment:'es', segmentBaseRule:destinationAddress.metadata.segmentBaseRule }) : null;
+  const perIterationSteps = Object.freeze(({
+    movs:['source-read','destination-write','pointer/count-commit'],
+    stos:['destination-write','pointer/count-commit'],
+    lods:['source-read','accumulator-write','pointer/count-commit'],
+    cmps:['source-read','destination-read','compare-flags-write','pointer/count-commit','termination-test'],
+    scas:['accumulator-read','destination-read','compare-flags-write','pointer/count-commit','termination-test'],
+  })[spec.kind].slice());
+  const iterationMemory = Object.freeze({
+    kind:'strided-runtime-count', elementWidthBits:spec.widthBits, elementBytes, addressSizeBits:addressBits, perIterationSteps,
+    direction:'DF=0 adds elementBytes; DF=1 subtracts elementBytes',
+    source:sourceDescriptor, destination:destinationDescriptor,
+    zeroCount:'no memory access', faultProgress:'only fully completed elements advance pointers/count; faulting element remains restart point',
   });
+  const readSpaces = [];
+  if (sourcePresent) readSpaces.push(sourceAddress.space);
+  if (spec.kind === 'cmps' || spec.kind === 'scas') readSpaces.push('memory');
+  const writeSpaces = writesMemory ? ['memory'] : [];
+  const continuation = repeat === 'repe'
+    ? 'after each completed comparison: remaining count != 0 && updated ZF == 1'
+    : repeat === 'repne'
+      ? 'after each completed comparison: remaining count != 0 && updated ZF == 0'
+      : 'after each completed element: remaining count != 0';
+  const flagContract = spec.kind === 'cmps' || spec.kind === 'scas'
+    ? Object.freeze({ reads:Object.freeze(['DF',...COMPARE_FLAGS]), writes:COMPARE_FLAGS, zeroCount:'all flags preserved', nonzero:'CF/PF/AF/ZF/SF/OF equal the last completed comparison; DF and unrelated flags preserved', initialZF:'does not gate the first iteration' })
+    : Object.freeze({ reads:Object.freeze(['DF']), writes:Object.freeze([]), zeroCount:'all flags preserved', nonzero:'all flags preserved' });
+  const metadata = {
+    summaryContractVersion:'x86-repeated-string-summary/v1', exactArchitecturalSummary:true, boundedSummary:true, runtimeCountNotUnrolled:true,
+    operation:spec.kind, repeatKind:repeat, repeatAliases:repeat === 'repe' ? Object.freeze(['repe','repz']) : repeat === 'repne' ? Object.freeze(['repne','repnz']) : Object.freeze(['rep']),
+    elementWidthBits:spec.widthBits, elementBytes, addressSizeBits:addressBits,
+    count:Object.freeze({ physicalRegister:'rcx', view:pointerName('count',addressBits), widthBits:addressBits, entryPredicate:'count != 0', decrement:'once after each fully completed element', zeroCount:'preserve full RCX; perform zero iterations', nonzeroWrite:addressBits === 32 ? 'write ECX after each completed element, zero-extending RCX' : 'write RCX after each completed element' }),
+    direction:Object.freeze({ flag:'DF', zeroDelta:elementBytes, oneDelta:-elementBytes, arithmeticWidthBits:addressBits, zeroCount:'pointers preserve full physical register values', nonzeroWrite:addressBits === 32 ? 'ESI/EDI writes zero-extend their physical RSI/RDI after the first completed element' : 'RSI/RDI update modulo 2^64' }),
+    termination:Object.freeze({ entry:'count != 0', continuation, normalControl:'fallthrough', zeroCount:'fallthrough with no data-memory access and no architectural state change', initialConditionFlagUsedBeforeFirstIteration:false }),
+    flags:flagContract, memory:iterationMemory,
+    accumulator:spec.kind === 'lods' ? Object.freeze({ physicalRegister:'rax', view:accumulatorName(spec.widthBits), zeroCount:'full RAX preserved', nonzero:spec.widthBits === 8 ? 'final successful AL load replaces low 8 bits and preserves upper 56 bits of RAX' : spec.widthBits === 16 ? 'final successful AX load replaces low 16 bits and preserves upper 48 bits of RAX' : spec.widthBits === 32 ? 'final successful EAX load zero-extends into full RAX' : 'final successful RAX load replaces full RAX' }) : spec.kind === 'stos' || spec.kind === 'scas' ? Object.freeze({ physicalRegister:'rax', view:accumulatorName(spec.widthBits), access:'read-only', zeroCount:'no accumulator effect' }) : null,
+    outputRoles:Object.freeze(outputRoles.map((entry) => Object.freeze(entry))),
+  };
+  const intrinsicOutputs = ctx.intrinsic(`x86.${repeat}.${spec.kind}.${spec.widthBits}`, inputs, outputs, {
+    registersRead:[...new Set(registersRead)], registersWritten:[...new Set(registersWritten)],
+    memoryRead:repeatedMemoryScope(readsMemory ? readSpaces : [],iterationMemory), memoryWrite:repeatedMemoryScope(writeSpaces,iterationMemory),
+    controlEffects:[], determinism:'input-dependent', symbolicDetail:'summary-only', metadata,
+  });
+  let cursor = 0;
+  const nextCount = intrinsicOutputs[cursor++];
+  if (!ctx.writeRegister(x86RegisterOperand('rcx'),nextCount)) return ctx.partial('x86-repeated-string-count-write-unmodelled',['registers']);
+  if (sourcePresent && !ctx.writeRegister(x86RegisterOperand('rsi'),intrinsicOutputs[cursor++])) return ctx.partial('x86-repeated-string-source-pointer-write-unmodelled',['registers']);
+  if (destinationPresent && !ctx.writeRegister(x86RegisterOperand('rdi'),intrinsicOutputs[cursor++])) return ctx.partial('x86-repeated-string-destination-pointer-write-unmodelled',['registers']);
+  if (spec.kind === 'lods' && !ctx.writeRegister(x86RegisterOperand('rax'),intrinsicOutputs[cursor++])) return ctx.partial('x86-repeated-string-accumulator-write-unmodelled',['registers']);
+  if (spec.kind === 'cmps' || spec.kind === 'scas') for (const flag of COMPARE_FLAGS) ctx.writeFlag(flag,intrinsicOutputs[cursor++],{ operation:spec.kind, repeated:true, repeatKind:repeat, zeroCountPreserves:true, finalCompletedComparison:true });
+
   const possibleFaults = [];
-  if (readsMemory) possibleFaults.push(...x86MemoryFaults('read', spec.widthBits));
-  if (writesMemory) possibleFaults.push(...x86MemoryFaults('write', spec.widthBits));
-  return ctx.partial('x86-repeated-string-effect-scope-not-fully-representable-by-frozen-p5-0-intrinsic-contract', ['memory','registers', ...(spec.kind === 'cmps' || spec.kind === 'scas' ? ['flags'] : [])], {
-    possibleFaults,
-    detail:{ repeatKind:repeat, boundedRepresentation:true, runtimeCountUnrolled:false, directionFlagAssumedClear:false, unknownMemoryScope:true },
-    metadata:{ family:'string', operation:spec.kind, elementWidthBits:spec.widthBits, addressSizeBits:addressBits, repeatKind:repeat, boundedRepresentation:true, exactIntrinsicRejected:true },
-  });
+  if (readsMemory) possibleFaults.push(...x86MemoryFaults('read',spec.widthBits));
+  if (writesMemory) possibleFaults.push(...x86MemoryFaults('write',spec.widthBits));
+  return ctx.finish({ family:'string', possibleFaults, metadata:{ operation:spec.kind, elementWidthBits:spec.widthBits, addressSizeBits:addressBits, repeatKind:repeat, repeated:true, exactRepeatedSummary:true, sourceAddress:sourceAddress?.metadata ?? null, destinationAddress:destinationAddress?.metadata ?? null } });
 }
 function liftSingleString(ctx, spec, addressBits) {
   const elementBytes = spec.widthBits / 8, df = ctx.readFlag('DF'), possibleFaults = [];
@@ -134,7 +249,10 @@ export function liftX86StringEffects(instruction, context = {}) {
   if (!spec || !ambiguousStringFormIsProven(instruction,spec)) return null;
   const ctx = createX86EffectContext(instruction,context), addressBits = addressSizeBits(ctx.instruction);
   if (!addressBits) return ctx.partial('x86-string-address-size-unmodelled',['memory','registers']);
+  if (!prefixStateIsProven(ctx.instruction)) return ctx.partial('x86-string-prefix-state-unmodelled',['memory','registers','flags'],{metadata:{family:'string',operation:spec.kind}});
   const repeat = repeatKind(ctx.instruction,spec.kind);
   if (repeat === 'unsupported-f2') return ctx.partial('x86-string-f2-repeat-prefix-not-proven-for-this-family',['memory','registers','flags'],{metadata:{family:'string',operation:spec.kind,lockIgnored:false,prefix:0xf2}});
-  return repeat ? repeatedStringPartial(ctx,spec,repeat,addressBits) : liftSingleString(ctx,spec,addressBits);
+  if (!stringOperandShapeIsProven(ctx.instruction,spec,addressBits)) return ctx.partial('x86-string-operand-shape-unmodelled',['memory','registers','flags'],{metadata:{family:'string',operation:spec.kind,addressSizeBits:addressBits,elementWidthBits:spec.widthBits}});
+  if (!implicitStateIsProven(ctx.instruction,spec,repeat)) return ctx.partial('x86-string-implicit-state-unmodelled',['registers','flags'],{metadata:{family:'string',operation:spec.kind,addressSizeBits:addressBits,elementWidthBits:spec.widthBits,repeatKind:repeat}});
+  return repeat ? repeatedStringEffects(ctx,spec,repeat,addressBits) : liftSingleString(ctx,spec,addressBits);
 }
