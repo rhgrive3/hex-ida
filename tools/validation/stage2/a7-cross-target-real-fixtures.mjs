@@ -295,14 +295,28 @@ try:
     }
 
     before_operand = operand
-    debugger.SetAsync(True)
-    continue_error = process.Continue()
-    if not continue_error.Success():
-        fail('pause-continue-failed:' + str(continue_error))
+    pause_holder = {}
+    def run_pause_continue():
+        try:
+            pause_holder['error'] = process.Continue()
+        except BaseException as exc:
+            pause_holder['exception'] = repr(exc)
+    pause_worker = threading.Thread(target=run_pause_continue, daemon=True)
+    pause_worker.start()
     time.sleep(0.05)
+    if not pause_worker.is_alive():
+        fail('pause-continue-not-inflight:' + str(pause_holder))
     stop_error = process.Stop()
     if not stop_error.Success():
         fail('pause-stop-failed:' + str(stop_error))
+    pause_worker.join(3.0)
+    if pause_worker.is_alive():
+        fail('pause-continue-not-settled')
+    if 'exception' in pause_holder:
+        fail('pause-continue-exception:' + pause_holder['exception'])
+    continue_result = pause_holder.get('error')
+    if continue_result is None or not continue_result.Success():
+        fail('pause-continue-failed:' + str(continue_result))
     stopped_state = wait_for(lldb.SBDebugger.StateIsStoppedState)
     if not lldb.SBDebugger.StateIsStoppedState(stopped_state):
         fail('pause-stop-not-observed:' + state_name(stopped_state))
@@ -314,7 +328,7 @@ try:
         fail('pause-no-execution-observed')
     result['pause'] = {
         'observed': True, 'continueAccepted': True, 'stopAccepted': True,
-        'runningObserved': True, 'runningEvidence': 'continue-success+register-progress',
+        'runningObserved': True, 'runningEvidence': 'blocking-continue-thread-alive+register-progress',
         'stoppedObserved': True, 'executionAdvanced': True,
         'processId': process.GetProcessID(), 'threadId': thread.GetThreadID(),
         'registers': {'pc': hex(pause_pc), 'sp': hex(pause_sp), REGISTER: hex(pause_operand)},
@@ -424,7 +438,7 @@ export function parseCrossTargetActiveOpsOutput(output, target, { binaryPath, pr
   if (!attach.registers?.pc || !attach.registers?.sp || !Object.prototype.hasOwnProperty.call(attach.registers, target.register)) throw new Error('a7-cross-attach-register-observation-missing');
   if (probeWord != null && String(attach.memoryProbe || '').toLowerCase() !== '0x1020304050607080') throw new Error('a7-cross-attach-memory-observation-missing');
   if (proof.operationResults?.pause !== true || pause.observed !== true || pause.runningObserved !== true || pause.stoppedObserved !== true || pause.executionAdvanced !== true || pause.continueAccepted !== true || pause.stopAccepted !== true) throw new Error('a7-cross-pause-not-observed');
-  if (pause.runningEvidence !== 'continue-success+register-progress') throw new Error('a7-cross-pause-running-evidence-missing');
+  if (pause.runningEvidence !== 'blocking-continue-thread-alive+register-progress') throw new Error('a7-cross-pause-running-evidence-missing');
   if (pause.processId !== attach.processId || !pause.registers?.pc || !Object.prototype.hasOwnProperty.call(pause.registers, target.register)) throw new Error('a7-cross-pause-session-identity-mismatch');
   if (proof.operationResults?.cancel !== true || cancel.observed !== true || cancel.inFlightObserved !== true || cancel.interruptAccepted !== true || cancel.executionAdvanced !== true) throw new Error('a7-cross-cancel-not-observed');
   if (cancel.inFlightEvidence !== 'blocking-command-thread-alive') throw new Error('a7-cross-cancel-inflight-evidence-missing');
