@@ -1,6 +1,6 @@
 /* Regression tests for the incremental IR -> dataflow migration. */
 import { buildSemanticModel } from '../js/blocks.js';
-import { findValueUpdates, findValueUpdatesLegacy } from '../js/dataflow.js';
+import { findValueUpdates, findValueUpdatesLegacy, traceOrigin } from '../js/dataflow.js';
 import { irFor, irText, readModifyWrite, OP, MK } from '../js/ir.js';
 
 let passed = 0;
@@ -139,6 +139,42 @@ test('unknown indexed store after a load does not erase earlier provenance', () 
   const load = ir.instructions.find((i) => i.op === OP.LOAD && i.row === 1);
   ok(load && load.reachingStore, 'the later unknown write cannot travel backward in time');
   eq(load.reachingStore.row, 0);
+});
+
+test('legacy traceOrigin applies MOVZ shift before reporting a constant', () => {
+  const model = modelOf([
+    'movz x8, #1, lsl #16',
+    'ret',
+  ]);
+  const origin = traceOrigin(model, 1, 'x8');
+  ok(origin && origin.kind === 'imm', 'MOVZ remains a proven immediate');
+  eq(origin.value, 0x10000n, 'MOVZ shift is part of the completed value');
+});
+
+test('legacy traceOrigin applies MOVN inversion at destination width', () => {
+  const x = modelOf([
+    'movn x8, #0',
+    'ret',
+  ]);
+  const wx = modelOf([
+    'movn w8, #0',
+    'ret',
+  ]);
+  eq(traceOrigin(x, 1, 'x8')?.value, 0xffffffffffffffffn, 'X-form MOVN');
+  eq(traceOrigin(wx, 1, 'x8')?.value, 0xffffffffn, 'W-form MOVN');
+});
+
+test('legacy traceOrigin never treats a standalone MOVK immediate as the completed value', () => {
+  const model = modelOf([
+    'movz x8, #0x5678',
+    'movk x8, #0x1234, lsl #16',
+    'ret',
+  ]);
+  const origin = traceOrigin(model, 2, 'x8');
+  ok(origin, 'MOVK origin is still reported conservatively');
+  eq(origin.kind, 'computed', 'MOVK must not become a false proven immediate');
+  eq(origin.op, 'movk');
+  ok(origin.imm !== 0x12345678n, 'MOVK does not invent a reconstructed constant');
 });
 
 process.stdout.write('\n' + passed + ' passed, ' + failures.length + ' failed\n');
