@@ -125,7 +125,7 @@ async function pointerTable(get, range, budget, parse) {
     try { const item = await parse(address); if (item) items.push(item); } catch { /* malformed entry is not evidence */ }
   }
   const capped = declared > budget;
-  return { items, completeness: { present: true, declared, scanned, parsed: items.length, capped, unreadableSlots, complete: !capped && unreadableSlots === 0 } };
+  return { items, completeness: { present: true, declared, scanned, parsed: items.length, capped, unreadableSlots, complete: !capped && unreadableSlots === 0 && items.length === scanned } };
 }
 
 export async function parseObjcExtendedMetadata(read, sections = {}, opts = {}) {
