@@ -5,6 +5,9 @@ let sequence = 0;
 const x = (n) => ({ k:'reg', text:`x${n}`, cls:'gp', bits:64, num:n });
 const w = (n) => ({ k:'reg', text:`w${n}`, cls:'gp', bits:32, num:n });
 const sp = () => ({ k:'reg', text:'sp', cls:'sp', bits:64, num:31 });
+const xzr = () => ({ k:'reg', text:'xzr', cls:'zr', bits:64, num:31 });
+const wzr = () => ({ k:'reg', text:'wzr', cls:'zr', bits:32, num:31 });
+const fp = (prefix, n, bits) => ({ k:'reg', text:`${prefix}${n}`, cls:'fp', bits, num:n });
 const imm = (value) => ({ k:'imm', text:`#${value}`, value:BigInt(value) });
 const mem = (base, { mode='offset', disp=0n, index=null, shift=null, writebackDisp=undefined } = {}) => {
   const d = disp == null ? null : imm(disp);
@@ -172,6 +175,83 @@ const opsOf = (bundle, kind) => bundle.operations.filter((op) => op.kind === kin
   const unscaledWriteback = lift('ldur', [x(0), mem(x(1), { mode:'pre', disp:-8n })]);
   assert.equal(acquireOffset.completeness, 'partial');
   assert.equal(unscaledWriteback.completeness, 'partial');
+}
+
+{
+  const invalidClass = lift('ldrb', [x(0), mem(x(1))]);
+  const invalidVectorClass = lift('ldrb', [fp('b', 0, 8), mem(x(1))]);
+  const invalidAcquireWidth = lift('ldarb', [x(0), mem(x(1))]);
+  const invalidPairClassMix = lift('ldp', [x(0), fp('s', 1, 32), mem(x(2))]);
+  for (const current of [invalidClass, invalidVectorClass, invalidAcquireWidth, invalidPairClassMix]) {
+    assert.equal(current.completeness, 'partial');
+    assert.equal(opsOf(current, 'memory-read').length + opsOf(current, 'memory-write').length, 0, 'invalid register encodings fail closed');
+  }
+}
+
+{
+  const discardLoad = lift('ldr', [xzr(), mem(x(1))]);
+  const signedDiscard = lift('ldrsw', [xzr(), mem(x(1))]);
+  const signedPairDiscard = lift('ldpsw', [xzr(), x(2), mem(x(1))]);
+  const zeroStore = lift('str', [wzr(), mem(x(1))]);
+  assert.equal(discardLoad.completeness, 'exact');
+  assert.equal(signedDiscard.completeness, 'exact');
+  assert.equal(signedPairDiscard.completeness, 'exact');
+  assert.equal(zeroStore.completeness, 'exact');
+  assert.equal(opsOf(discardLoad, 'memory-read').length, 1);
+  assert.equal(opsOf(discardLoad, 'register-write').length, 0, 'load to XZR discards the result');
+  assert.equal(opsOf(zeroStore, 'memory-write')[0].value.value, '0', 'store from WZR writes zero');
+  assert.equal(opsOf(zeroStore, 'register-read').length, 1, 'address base remains the only register read');
+
+  const legacyZeroLoad = lift('ldr', [wzr(), mem(x(1))], {
+    row:3,
+    operands:'wzr, [x1]',
+    memory:{ base:'x1' },
+  });
+  const legacyZeroStore = lift('str', [wzr(), mem(x(1))], {
+    row:4,
+    operands:'wzr, [x1]',
+    memory:{ base:'x1' },
+  });
+  for (const current of [legacyZeroLoad, legacyZeroStore]) {
+    assert.equal(current.completeness, 'partial', 'legacy assembly zero-register memory access keeps the historical decompiler denominator');
+    assert.equal(opsOf(current, 'memory-read').length + opsOf(current, 'memory-write').length, 0);
+  }
+}
+
+{
+  const scaledMax = lift('ldr', [x(0), mem(x(1), { disp:32760n })]);
+  const scaledMisaligned = lift('ldr', [x(0), mem(x(1), { disp:7n })]);
+  const scaledOverflow = lift('ldr', [x(0), mem(x(1), { disp:32768n })]);
+  const unscaledMin = lift('ldur', [x(0), mem(x(1), { disp:-256n })]);
+  const unscaledOverflow = lift('ldur', [x(0), mem(x(1), { disp:-257n })]);
+  assert.equal(scaledMax.completeness, 'exact');
+  assert.equal(unscaledMin.completeness, 'exact');
+  for (const current of [scaledMisaligned, scaledOverflow, unscaledOverflow]) assert.equal(current.completeness, 'partial');
+}
+
+{
+  const structuredOutOfRange = lift('ldur', [w(1), mem(x(29), { disp:-356n })]);
+  const legacyAbstract = lift('ldur', [w(1), mem(x(29), { disp:-356n })], {
+    row:4,
+    parseError:null,
+    operands:'w1, [x29, #-0x164]',
+    memory:{ base:'x29' },
+  });
+  assert.equal(structuredOutOfRange.completeness, 'partial', 'decoder-style structured LDUR must still satisfy imm9');
+  assert.equal(opsOf(structuredOutOfRange, 'memory-read').length, 0);
+  assert.equal(legacyAbstract.completeness, 'exact', 'legacy semantic-model abstract LDUR remains compatible');
+  assert.equal(legacyAbstract.metadata.compatibilityEncodingAlias, 'abstract-unscaled');
+  assert.equal(legacyAbstract.metadata.addressing.encoding, 'legacy-abstract-unscaled');
+  assert.equal(opsOf(legacyAbstract, 'memory-read').length, 1);
+}
+
+{
+  const pairMax = lift('ldp', [x(0), x(1), mem(x(2), { disp:504n })]);
+  const pairOverflow = lift('ldp', [x(0), x(1), mem(x(2), { disp:512n })]);
+  const malformedPre = lift('ldr', [x(0), mem(x(1), { mode:'pre', disp:-8n, writebackDisp:-16n })]);
+  assert.equal(pairMax.completeness, 'exact');
+  assert.equal(pairOverflow.completeness, 'partial');
+  assert.equal(malformedPre.completeness, 'partial');
 }
 
 assert.ok(LEGACY_ARM64_MEMORY_INVENTORY.loads.includes('ldpsw'));
