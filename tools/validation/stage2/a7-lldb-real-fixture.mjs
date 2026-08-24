@@ -269,9 +269,13 @@ try:
             fail('pause-process-terminated:' + state_name(state))
         if lldb.SBDebugger.StateIsStoppedState(state):
             continue_error = process.Continue()
-            if not continue_error.Success():
-                fail('pause-continue-failed:' + str(continue_error))
-            pause_continue_accepted = True
+            if continue_error.Success():
+                pause_continue_accepted = True
+            else:
+                running_after_continue_error = wait_for(lambda value: value == lldb.eStateRunning, timeout=0.25)
+                if running_after_continue_error != lldb.eStateRunning:
+                    fail('pause-continue-failed:' + str(continue_error))
+                pause_running_observed = True
         running_state = wait_for(lambda value: value == lldb.eStateRunning, timeout=0.5)
         if running_state != lldb.eStateRunning:
             state = process.GetState()
