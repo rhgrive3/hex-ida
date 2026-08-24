@@ -34,6 +34,12 @@ on:
 permissions:
   contents: read
 
+# Only the newest commit on a PR needs exact head + merge-tree proof. Manual
+# exact-candidate dispatches remain isolated because their group uses run_id.
+concurrency:
+  group: stage1-analysis-truth-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   head:
     if: github.event_name == 'pull_request'
@@ -91,4 +97,3 @@ jobs:
         env:
           VERIFY_SHA: ${{ inputs.expect_sha }}
         run: node tools/validation/stage1/verify.mjs --expect-sha "$VERIFY_SHA"
-
