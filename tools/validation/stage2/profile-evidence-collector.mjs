@@ -10,6 +10,8 @@ import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { a2DenominatorReport } from '../machine-effects/a2-denominator.mjs';
+import { phase12DenominatorReport } from '../phase12/denominator.mjs';
+import { f6KnownImplementationGaps } from '../../../js/rebuild/transaction-v2.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const INVENTORY_PATH = path.join(ROOT, 'tools/validation/stage2/profile-denominator-inventory.json');
@@ -90,6 +92,10 @@ export function inspectProfileEvidencePrerequisites() {
   const failures = [];
   const a2 = a2DenominatorReport().validation;
   if (a2.terminalEligible !== true) failures.push(...(a2.blockingGaps || []).map((gap) => `known-a2-gap:${gap}`));
+  failures.push(...f6KnownImplementationGaps().map((gap) => `known-f6-gap:${gap}`));
+  const phase12 = phase12DenominatorReport();
+  if (phase12.valid !== true) failures.push('phase12-denominator-invalid');
+  else if (phase12.terminalEligible !== true) failures.push(...(phase12.blockingGaps || []).map((gap) => `known-phase12-gap:${gap}`));
   const managed = managedFixtureMap();
   if (!managed.has('dex')) failures.push('missing-real-compiled-fixture:dex');
   const f6 = f6FixtureMap();

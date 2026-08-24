@@ -22,5 +22,7 @@ for (const rule of Object.values(PROFILE_UNIT_PROOF_RULES)) {
 const prerequisites = inspectProfileEvidencePrerequisites();
 if (!prerequisites.managed.has('dex')) assert.ok(prerequisites.failures.includes('missing-real-compiled-fixture:dex'));
 if (prerequisites.failures.some((failure) => failure.startsWith('known-a2-gap:'))) assert.equal(prerequisites.ok, false, 'known A2 denominator gaps block collection');
+assert.ok(prerequisites.failures.includes('known-f6-gap:macho:64:layout-and-structure'), 'known F6 implementation gaps block collection');
+assert.ok(prerequisites.failures.includes('known-phase12-gap:remote.remote-canonical-transport'), 'known Phase12 transport gaps block collection');
 if (prerequisites.f6.missing.length) assert.equal(prerequisites.ok, false, 'missing F6 real fixtures block collection');
 console.log('[stage2] profile evidence producer boundary tests passed');
