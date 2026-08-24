@@ -78,8 +78,12 @@ function normalizeOperand(input, index) {
   const widthBits = input.widthBits == null ? null : integer(input.widthBits, 'x86-decoded-instruction-invalid-operand-width', { min:1, max:4096 });
   const common = { index, type, access:accessOf(input.access), ...(widthBits == null ? {} : { widthBits }) };
   if (type === 'register') {
-    const register = registerOf(input.register ?? input.registerId ?? input.name, 'x86-decoded-instruction-unknown-register', { decoderRegisterCode:input.registerCode ?? input.register?.decoderRegisterCode, widthBits });
-    if (widthBits != null && widthBits !== register.viewBits) throw new TypeError('x86-decoded-instruction-register-width-mismatch');
+    let register = registerOf(input.register ?? input.registerId ?? input.name, 'x86-decoded-instruction-unknown-register', { decoderRegisterCode:input.registerCode ?? input.register?.decoderRegisterCode, widthBits });
+    if (widthBits != null && widthBits !== register.viewBits) {
+      if (register.kind === 'opmask' && register.physicalBits === 64 && widthBits <= 64) {
+        register = Object.freeze({ ...register, viewBits:widthBits, writePolicy:'decoder-dependent-opmask-width', decoderNarrowView:true });
+      } else throw new TypeError('x86-decoded-instruction-register-width-mismatch');
+    }
     return Object.freeze({ ...common, widthBits:register.viewBits, register });
   }
   if (type === 'immediate') {
