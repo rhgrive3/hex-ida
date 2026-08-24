@@ -139,3 +139,4 @@ const index = buildObjcRuntimeIndex(model);
 }
 
 console.log('objc-runtime: ok');
+// Re-run CI from the synchronized generated userscript head.
