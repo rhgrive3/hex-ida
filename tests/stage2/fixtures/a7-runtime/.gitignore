@@ -1,0 +1,3 @@
+# Python imports sitecustomize.py from this fixture directory during A7 provider proofs.
+# Keep interpreter bytecode caches out of strict proof worktree cleanliness checks.
+__pycache__/
