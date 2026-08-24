@@ -90,7 +90,8 @@ export async function runIsolatedGateBatch({
       git(root, ['worktree', 'add', '--detach', '--quiet', cwd, headSha]);
       worktrees.push(cwd);
       const worktreeNodeModules = path.join(cwd, 'node_modules');
-      if (fs.existsSync(nodeModules) && !fs.existsSync(worktreeNodeModules)) {
+      if (fs.existsSync(nodeModules)) {
+        fs.rmSync(worktreeNodeModules, { recursive: true, force: true });
         fs.symlinkSync(nodeModules, worktreeNodeModules, process.platform === 'win32' ? 'junction' : 'dir');
       }
     }
