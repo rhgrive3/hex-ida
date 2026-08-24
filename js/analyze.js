@@ -456,6 +456,11 @@ export function describeFunction(res, name) {
   if (res.hasTrap) notes.push('「ここには来ないはず」という停止命令');
   if (notes.length) lines.push(notes.join('、') + ' が出てきます。');
   if (res.dataRows > 0) lines.push('命令として読めない 4 バイトが ' + res.dataRows + ' 行あります。定数や飛び先表などのデータが混ざっています。');
-  if (res.truncated) lines.push('※ 大きすぎるため、先頭から ' + MAX_INSTRUCTIONS.toLocaleString() + ' 命令ぶんだけを見ています。');
+  if (res.truncated) {
+    const analyzedRows = Number.isFinite(res.analyzedRows) && res.analyzedRows > 0
+      ? Math.floor(res.analyzedRows)
+      : MAX_INSTRUCTIONS;
+    lines.push('※ 大きすぎるため、先頭から ' + analyzedRows.toLocaleString() + ' 命令ぶんだけを見ています。');
+  }
   return lines;
 }
