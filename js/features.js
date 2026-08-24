@@ -165,6 +165,19 @@ function strength(text, weak) {
   return Math.max(0.1, Math.min(0.95, score));
 }
 
+function featureRetentionLimit(value, fallback = 200) {
+  if (value == null) return fallback;
+  if (typeof value === 'boolean') throw new TypeError('perFeature must be a non-negative finite number');
+  if (typeof value === 'string' && !value.trim())
+    throw new TypeError('perFeature must be a non-negative finite number');
+  if (typeof value !== 'number' && typeof value !== 'string')
+    throw new TypeError('perFeature must be a non-negative finite number');
+  const requested = Number(value);
+  return Number.isFinite(requested)
+    ? Math.max(0, Math.floor(requested || 0))
+    : fallback;
+}
+
 /**
  * 文字列の一覧を機能ごとに束ねる。
  *
@@ -172,10 +185,7 @@ function strength(text, weak) {
  * @param {number} perFeature 機能あたりの上限
  */
 export function groupByFeature(strings, perFeature = 200) {
-  const requestedLimit = Number(perFeature);
-  const limit = Number.isFinite(requestedLimit)
-    ? Math.max(0, Math.floor(requestedLimit || 0))
-    : 200;
+  const limit = featureRetentionLimit(perFeature);
   const buckets = new Map();
   for (const f of FEATURES) buckets.set(f.id, []);
 

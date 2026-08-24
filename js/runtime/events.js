@@ -119,9 +119,12 @@ export function createRuntimeEvent(input = {}) {
 }
 
 export function normalizeLegacyRuntimeEvent(input, context = {}) {
-  const source = input && input.type === 'event' && input.event ? input.event : input;
+  const protocolEnvelope = input && input.type === 'event' && typeof input.event === 'string';
+  const source = protocolEnvelope
+    ? (input.data && typeof input.data === 'object' && !Array.isArray(input.data) ? input.data : {})
+    : (input && input.type === 'event' && input.event ? input.event : input);
   if (!source || typeof source !== 'object') throw new DebugAdapterError('runtime-invalid-event', 'legacy runtime event must be an object');
-  const legacyType = String(source.kind ?? source.type ?? 'trace-marker');
+  const legacyType = protocolEnvelope ? input.event : String(source.kind ?? source.type ?? 'trace-marker');
   const kindMap = {
     branch: 'basic-block',
     trace: 'trace-marker',
@@ -130,26 +133,27 @@ export function normalizeLegacyRuntimeEvent(input, context = {}) {
     'stream-truncated': 'gap',
   };
   const kind = RUNTIME_EVENT_KINDS.includes(legacyType) ? legacyType : (kindMap[legacyType] || 'trace-marker');
-  const truncated = source.truncated === true || legacyType === 'stream-truncated';
+  const truncated = input?.truncated === true || source.truncated === true || legacyType === 'stream-truncated';
+  const envelopeValue = (key) => protocolEnvelope && input[key] != null ? input[key] : source[key];
   return createRuntimeEvent({
     runtimeSessionId: context.runtimeSessionId,
     providerId: context.providerId,
     providerVersion: context.providerVersion,
-    sessionEpoch: source.epoch ?? context.sessionEpoch ?? 1,
-    streamId: source.streamId ?? context.streamId,
-    sequence: source.sequence,
-    providerEventId: source.providerEventId ?? source.id,
-    timestamp: source.timestamp,
-    processKey: source.processKey ?? context.processKey,
-    threadKey: source.threadKey,
-    moduleBindingKey: source.moduleBindingKey,
-    moduleGeneration: source.moduleGeneration,
+    sessionEpoch: envelopeValue('epoch') ?? context.sessionEpoch ?? 1,
+    streamId: envelopeValue('streamId') ?? context.streamId,
+    sequence: envelopeValue('sequence'),
+    providerEventId: envelopeValue('providerEventId') ?? envelopeValue('id'),
+    timestamp: envelopeValue('timestamp'),
+    processKey: envelopeValue('processKey') ?? context.processKey,
+    threadKey: envelopeValue('threadKey'),
+    moduleBindingKey: envelopeValue('moduleBindingKey'),
+    moduleGeneration: envelopeValue('moduleGeneration'),
     kind,
-    payload: source.payload ?? source,
-    observationMode: source.observationMode ?? context.observationMode ?? 'observed',
-    completeness: source.completeness ?? (truncated ? 'truncated' : context.completeness ?? 'partial'),
-    predecessorIds: source.predecessorIds,
-    interventionIds: source.interventionIds,
+    payload: protocolEnvelope ? (input.data ?? {}) : (source.payload ?? source),
+    observationMode: envelopeValue('observationMode') ?? context.observationMode ?? 'observed',
+    completeness: envelopeValue('completeness') ?? (truncated ? 'truncated' : context.completeness ?? 'partial'),
+    predecessorIds: envelopeValue('predecessorIds'),
+    interventionIds: envelopeValue('interventionIds'),
   });
 }
 

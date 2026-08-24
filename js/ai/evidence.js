@@ -151,8 +151,8 @@ export class EvidenceStore {
     }
     const sourceBinding = String(input.sourceBinding ?? sourceRef?.bindingKey ?? '');
     const identity = JSON.stringify(jsonSafe([
-      input.sourceTool || 'unknown', input.sourceId || null, sourceBinding || null, input.address || null,
-      input.functionAddress || null, input.kind || 'observation', input.title || '',
+      input.sourceTool || 'unknown', input.sourceId || null, sourceBinding || null, input.address ?? null,
+      input.functionAddress ?? null, input.kind || 'observation', input.title || '',
     ]));
     // The automatic id is a permanent record key: proposals, verification and
     // navigation all resolve evidence through it, and `add()` merges into an
