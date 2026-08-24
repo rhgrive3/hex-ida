@@ -267,31 +267,30 @@ try:
         state = process.GetState()
         if state in (lldb.eStateExited, lldb.eStateDetached, lldb.eStateInvalid):
             fail('pause-process-terminated:' + state_name(state))
-        if lldb.SBDebugger.StateIsStoppedState(state):
+        if not pause_continue_accepted:
+            if not lldb.SBDebugger.StateIsStoppedState(state):
+                time.sleep(0.01)
+                continue
             continue_error = process.Continue()
-            if continue_error.Success():
-                pause_continue_accepted = True
-            else:
-                running_after_continue_error = wait_for(lambda value: value == lldb.eStateRunning, timeout=0.25)
-                if running_after_continue_error != lldb.eStateRunning:
-                    fail('pause-continue-failed:' + str(continue_error))
-                pause_running_observed = True
-        running_state = wait_for(lambda value: value == lldb.eStateRunning, timeout=0.5)
-        if running_state != lldb.eStateRunning:
+            if not continue_error.Success():
+                fail('pause-continue-failed:' + str(continue_error))
+            pause_continue_accepted = True
+        running_state = wait_for(lambda value: value == lldb.eStateRunning, timeout=0.25)
+        if running_state == lldb.eStateRunning:
+            pause_running_observed = True
+        else:
             state = process.GetState()
             if state in (lldb.eStateExited, lldb.eStateDetached, lldb.eStateInvalid):
                 fail('pause-process-terminated:' + state_name(state))
-            continue
-        pause_running_observed = True
-        time.sleep(0.01)
-        if process.GetState() != lldb.eStateRunning:
-            continue
+            if not pause_running_observed:
+                continue
         stop_error = process.Stop()
         if not stop_error.Success():
             state = process.GetState()
-            if lldb.SBDebugger.StateIsStoppedState(state):
-                continue
-            fail('pause-stop-failed:' + str(stop_error))
+            if state in (lldb.eStateExited, lldb.eStateDetached, lldb.eStateInvalid):
+                fail('pause-process-terminated:' + state_name(state))
+            time.sleep(0.01)
+            continue
         pause_stop_accepted = True
         stopped_state = wait_for(lldb.SBDebugger.StateIsStoppedState, timeout=0.5)
         if not lldb.SBDebugger.StateIsStoppedState(stopped_state):
