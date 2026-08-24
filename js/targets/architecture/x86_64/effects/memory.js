@@ -66,7 +66,7 @@ function atomicOrderingPartial(ctx, family, possibleFaults, metadata = {}, detai
     detail:{
       atomicity:'represented-by-MemoryAccess.atomic',
       ordering:'intentionally-unmapped',
-      reason:'x86 locked-operation ordering is stronger/more specific than the frozen generic mapping can prove here',
+      reason:'x86 locked-operation ordering is stronger/more-specific than the frozen generic mapping can prove here',
       ...detail,
     },
     metadata:{
@@ -179,7 +179,7 @@ function liftCrossLaneShiftRotate(ctx, family) {
   const faults = x86MemoryFaults('read-write',destination.widthBits);
   if (count.knownCount === 0) {
     return ctx.finish({
-      family:'memory', possibleFaults:faults,
+      family:'memory', possibleFaults:x86MemoryFaults('read',destination.widthBits),
       metadata:{operation:family,widthBits:destination.widthBits,effectiveCount:0,flagsPreserved:true,destinationPreserved:true,memoryReadForFaultSemantics:true,rmwId:relationshipId,address:address.metadata},
     });
   }
@@ -190,13 +190,21 @@ function liftCrossLaneShiftRotate(ctx, family) {
   if (rotate) emitX86RotateFlags(ctx,operation,result,count.value,destination.widthBits,{knownCount:count.knownCount});
   else emitX86ShiftFlags(ctx,operation,value,result,count.value,destination.widthBits,{knownCount:count.knownCount});
   if (count.knownCount == null) {
-    const zero = ctx.valueOp('is-zero',[count.value],1,{widthBits:8,semantic:'x86-effective-count-zero'});
-    const selected = ctx.valueOp('select',[zero,value,result],destination.widthBits,{semantic:'x86-memory-shift-count-dependent-result',zeroCountPreservesDestination:true});
-    ctx.writeMemory(address.expression,destination.widthBits,selected,memoryConfig(address,{operation:family,rmwId:relationshipId,rmwPhase:'conditional-write-overapproximation',sameInstructionRelationship:true,conditionalWrite:true,writeCondition:'effective count != 0',representationIsConservativeMayWrite:true}));
-    return ctx.partial('x86-variable-count-memory-shift-conditional-write-not-exactly-representable',['memory'],{
-      possibleFaults:faults,
-      detail:{valueAndFlags:'exact',zeroCount:'destination and flags preserved',memoryWrite:'generic MachineEffects has no conditional memory-write operation; emitted selected-value write is a conservative may-write'},
-      metadata:{family:'memory',operation:family,widthBits:destination.widthBits,effectiveCount:null,rmwId:relationshipId,sameCanonicalAddress:true,address:address.metadata},
+    ctx.intrinsic('x86.memory.conditional-rmw-write',[count.value,result],[],{
+      determinism:'input-dependent', symbolicDetail:'summary-only',
+      memoryWrite:{ scope:'accesses', accesses:[{
+        space:address.space, addressExpr:address.expression, widthBits:destination.widthBits, endian:'little',
+      }] },
+      metadata:{
+        operation:family, widthBits:destination.widthBits, conditionalWrite:true,
+        writeCondition:'effective count != 0', conditionInputIndex:0, writeValueInputIndex:1,
+        zeroCountPreservesDestination:true, rmwId:relationshipId, sameInstructionRelationship:true,
+        exactArchitecturalSummary:true, address:address.metadata,
+      },
+    });
+    return ctx.finish({
+      family:'memory', possibleFaults:faults,
+      metadata:{operation:family,widthBits:destination.widthBits,effectiveCount:null,conditionalWrite:true,writeCondition:'effective count != 0',rmwId:relationshipId,sameCanonicalAddress:true,address:address.metadata},
     });
   }
   ctx.writeMemory(address.expression,destination.widthBits,result,memoryConfig(address,{operation:family,rmwId:relationshipId,rmwPhase:'write',sameInstructionRelationship:true}));
@@ -271,18 +279,34 @@ function liftMove(ctx, family) {
     if ((family === 'movzx' || family === 'movsx') && destination.widthBits <= source.widthBits) {
       return ctx.partial(`x86-${family}-extension-width-invalid`, ['memory','registers']);
     }
-    if (family === 'movsxd' && (source.widthBits !== 32 || destination.widthBits !== 64)) {
-      return ctx.partial('x86-movsxd-memory-width-invalid', ['memory','registers']);
+    let sourceWidthBits = source.widthBits;
+    if (family === 'movsxd') {
+      if (![16,32,64].includes(destination.widthBits)) {
+        return ctx.partial('x86-movsxd-memory-width-invalid', ['memory','registers']);
+      }
+      const architecturalSourceWidthBits = destination.widthBits === 64 ? 32 : destination.widthBits;
+      const capstone16BitWidthQuirk = destination.widthBits === 16
+        && source.widthBits === 32
+        && [...ctx.instruction.detail.prefixes.legacy].includes(0x66)
+        && ((ctx.instruction.detail.prefixes.rex ?? 0) & 0x08) === 0;
+      if (source.widthBits !== architecturalSourceWidthBits && !capstone16BitWidthQuirk) {
+        return ctx.partial('x86-movsxd-memory-width-invalid', ['memory','registers']);
+      }
+      sourceWidthBits = architecturalSourceWidthBits;
     }
-    const read = readMemoryOperand(ctx, source, { operation:family, direction:'load' });
+    const effectiveSource = sourceWidthBits === source.widthBits ? source : Object.freeze({ ...source, widthBits:sourceWidthBits });
+    const read = readMemoryOperand(ctx, effectiveSource, {
+      operation:family, direction:'load',
+      ...(sourceWidthBits === source.widthBits ? {} : { decoderWidthBits:source.widthBits, architecturalWidthBits:sourceWidthBits }),
+    });
     if (!read) return ctx.partial(`x86-${family}-load-address-unmodelled`, ['memory','registers']);
     const signed = family === 'movsx' || family === 'movsxd';
-    const value = ctx.coerce(read.value, source.widthBits, destination.widthBits, signed);
+    const value = ctx.coerce(read.value, sourceWidthBits, destination.widthBits, signed);
     if (!ctx.writeRegister(destination, value)) return ctx.partial(`x86-${family}-load-destination-unmodelled`, ['registers']);
     return ctx.finish({
       family:'memory',
-      possibleFaults:x86MemoryFaults('read', source.widthBits),
-      metadata:{ operation:family, direction:'load', memoryWidthBits:source.widthBits, destinationWidthBits:destination.widthBits, address:read.address.metadata },
+      possibleFaults:x86MemoryFaults('read', sourceWidthBits),
+      metadata:{ operation:family, direction:'load', memoryWidthBits:sourceWidthBits, destinationWidthBits:destination.widthBits, address:read.address.metadata },
     });
   }
 
