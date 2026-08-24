@@ -67,6 +67,10 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - name: Install active native proof providers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-18 lld-18 llvm-18 lldb-18 qemu-user
       - run: npm ci --no-audit --no-fund
       - name: Verify exact Stage 2 head
         env:
@@ -89,6 +93,10 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - name: Install active native proof providers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-18 lld-18 llvm-18 lldb-18 qemu-user
       - run: npm ci --no-audit --no-fund
       - name: Verify exact candidate merge tree
         env:
@@ -108,6 +116,10 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - name: Install active native proof providers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-18 lld-18 llvm-18 lldb-18 qemu-user
       - run: npm ci --no-audit --no-fund
       - name: Verify exact Stage 2 product
         shell: bash

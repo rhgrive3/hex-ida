@@ -66,8 +66,10 @@ function symbolValue(readobj, name) {
 }
 function executable(command) {
   for (const prefix of ['/usr/bin/', '/usr/local/bin/']) {
-    const candidate = `${prefix}${command}`;
-    if (fs.existsSync(candidate)) return candidate;
+    for (const name of [command, `${command}-18`]) {
+      const candidate = `${prefix}${name}`;
+      if (fs.existsSync(candidate)) return candidate;
+    }
   }
   return command;
 }

@@ -107,7 +107,11 @@ export function parseLldbOutput(output, { fixturePath = A7_LLDB_FIXTURE_PATH, en
   return Object.freeze({ pid: Number(process[1]), threadId: Number(thread[1]), modulePath, rip, rsp, targetProfileId: TARGET_PROFILE });
 }
 
-export function collectA7X86LldbProof({ lldb = process.env.LLDB || 'lldb', clang = 'clang', readobj = 'llvm-readobj-18' } = {}) {
+export function collectA7X86LldbProof({
+  lldb = process.env.LLDB || (fs.existsSync('/usr/bin/lldb') ? '/usr/bin/lldb' : '/usr/bin/lldb-18'),
+  clang = fs.existsSync('/usr/bin/clang') ? '/usr/bin/clang' : '/usr/bin/clang-18',
+  readobj = fs.existsSync('/usr/bin/llvm-readobj-18') ? '/usr/bin/llvm-readobj-18' : 'llvm-readobj',
+} = {}) {
   const clean = git(['status', '--porcelain', '--untracked-files=all']);
   if (clean) throw new Error('a7-lldb-proof-worktree-dirty');
   const currentCommitSha = git(['rev-parse', 'HEAD']);
