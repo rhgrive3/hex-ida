@@ -25,6 +25,7 @@ export class AIRuntime {
     this.hypothesisStore = options.hypothesisStore || new HypothesisStore(this.evidenceStore);
     this.proposalStore = options.proposalStore || new ProposalStore({ evidenceStore: this.evidenceStore, binding: () => proposalBinding(this.localContext) });
     this.initialStores = { evidenceStore: this.evidenceStore, hypothesisStore: this.hypothesisStore, proposalStore: this.proposalStore };
+    this.initialStoresExplicit = options.evidenceStore != null || options.hypothesisStore != null || options.proposalStore != null;
     this.storeNamespaces = new Map();
     this.contextBroker = options.contextBroker || new ContextBroker(this.localContext, options.contextOptions);
     this.planner = options.planner === false ? null : (options.planner || planAnalysisGoal);
@@ -37,9 +38,10 @@ export class AIRuntime {
     const key = `${binaryId == null ? '<none>' : String(binaryId)}::${String(session.id)}`;
     let stores = this.storeNamespaces.get(key);
     if (stores) return stores;
-    if (this.storeNamespaces.size === 0) stores = this.initialStores;
+    const hasPersistedState = (session.confirmedFindings?.length || 0) > 0 || (session.hypotheses?.length || 0) > 0;
+    if (this.storeNamespaces.size === 0 && (this.initialStoresExplicit || !hasPersistedState)) stores = this.initialStores;
     else {
-      const evidenceStore = new EvidenceStore(session.confirmedFindings || []);
+      const evidenceStore = EvidenceStore.fromPersistedConfirmed(session.confirmedFindings || []);
       const hypothesisStore = new HypothesisStore(evidenceStore, session.hypotheses || []);
       stores = { evidenceStore, hypothesisStore, proposalStore: new ProposalStore({ evidenceStore, binding: () => proposalBinding(this.localContext) }) };
     }
