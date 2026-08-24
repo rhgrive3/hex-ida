@@ -174,7 +174,7 @@ export function collectProfileEvidence({ expectedCommitSha, expectedTreeSha, out
     }
     items[itemId] = { profileIds: denominator.profiles, unitIds: denominator.unitIds, providerProfileIds: rule.providerProfileIds, sourceIdentities, testIdentities, realFixtureIdentities, unitEvidence };
   }
-  const run = { schemaVersion: PROFILE_EVIDENCE_RUN_SCHEMA, runId, candidateCommitSha: head.commitSha, candidateTreeSha: head.treeSha, generatedAt: new Date().toISOString(), commands: commands.map(({ stdout, stderr, ...summary }) => ({ ...summary, outputIdentity: commandOutputIdentities.get(summary.id), stdoutDigest: `sha256:${sha256(stdout)}`, stderrDigest: `sha256:${sha256(stderr)}`, proofMarker: summary.id === 'm6-real-fixtures' ? 'deterministic real managed fixtures passed for wasm/cil/jvm' : summary.id === 'f6-real-rebuild' ? 'F6_REAL_REBUILD_PROOF=' : null })), items, files };
+  const run = { schemaVersion: PROFILE_EVIDENCE_RUN_SCHEMA, runId, candidateCommitSha: head.commitSha, candidateTreeSha: head.treeSha, generatedAt: new Date().toISOString(), commands: commands.map(({ stdout, stderr, ...summary }) => ({ ...summary, outputIdentity: commandOutputIdentities.get(summary.id), stdoutDigest: `sha256:${sha256(stdout)}`, stderrDigest: `sha256:${sha256(stderr)}`, proofMarker: summary.id === 'm6-real-fixtures' ? 'deterministic real managed fixtures passed for wasm/dex/cil/jvm' : summary.id === 'f6-real-rebuild' ? 'F6_REAL_REBUILD_PROOF=' : null })), items, files };
   writeRun(destination, run);
   return Object.freeze({ outputDir: destination, run });
 }
