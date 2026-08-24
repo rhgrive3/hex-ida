@@ -48,16 +48,21 @@ for (const proof of run.proofs) {
   assert.equal(proof.activeOperations.pause.continueAccepted, true);
   assert.equal(proof.activeOperations.pause.stopAccepted, true);
   assert.equal(proof.activeOperations.pause.runningObserved, true);
-  assert.equal(proof.activeOperations.pause.runningEvidence, 'blocking-command-thread-alive+register-progress');
+  assert.equal(proof.activeOperations.pause.runningEvidence, 'provider-running-state-event+register-progress');
   assert.equal(proof.activeOperations.pause.stoppedObserved, true);
   assert.equal(proof.activeOperations.pause.executionAdvanced, true);
+  assert.equal(proof.activeOperations.pause.stopIdAdvanced, true);
+  assert.ok(proof.activeOperations.pause.stopIdAfter > proof.activeOperations.pause.stopIdBefore);
   assert.equal(proof.activeOperations.cancel.processId, proof.activeOperations.attach.processId);
   assert.equal(proof.activeOperations.cancel.inFlightObserved, true);
-  assert.equal(proof.activeOperations.cancel.inFlightEvidence, 'blocking-command-thread-alive');
+  assert.equal(proof.activeOperations.cancel.inFlightEvidence, 'provider-running-state-event');
   assert.equal(proof.activeOperations.cancel.executionAdvanced, true);
   assert.equal(proof.activeOperations.cancel.interruptAccepted, true);
-  assert.equal(proof.activeOperations.cancel.commandSettled, true);
+  assert.equal(proof.activeOperations.cancel.operationSettled, true);
+  assert.equal(proof.activeOperations.cancel.stopIdAdvanced, true);
+  assert.ok(proof.activeOperations.cancel.stopIdAfter > proof.activeOperations.cancel.stopIdBefore);
   assert.equal(proof.activeOperations.cancel.settlement, 'cancelled');
+  assert.equal(proof.activeOperations.cancel.providerDisposition, 'async-process-interrupt');
   assert.equal(proof.activeOperations.cancel.lateResultRejected, true);
   assert.equal(proof.activeOperations.cancel.lateStateStable, true);
   assert.match(proof.fixture.sourceSha256, /^[0-9a-f]{64}$/);
@@ -94,8 +99,8 @@ function activeMarker(overrides = {}) {
   const value = {
     kind:'active-provider-operations',
     attach:{ observed:true, transport:'gdb-remote', processId:1, targetTriple:'aarch64-unknown-linux-gnu', modulePath:'/tmp/fixture', threadId:2, registers:{ pc:'0x1000', sp:'0x2000', x0:'0x1' }, memoryProbe:'0x1020304050607080', state:'stopped' },
-    pause:{ observed:true, continueAccepted:true, stopAccepted:true, runningObserved:true, runningEvidence:'blocking-command-thread-alive+register-progress', stoppedObserved:true, executionAdvanced:true, processId:1, threadId:2, registers:{ pc:'0x1004', sp:'0x2000', x0:'0x10' }, state:'stopped' },
-    cancel:{ observed:true, inFlightObserved:true, inFlightEvidence:'blocking-command-thread-alive', executionAdvanced:true, interruptAccepted:true, commandSettled:true, processId:1, threadId:2, settlement:'cancelled', providerDisposition:'interrupted-command', lateResultRejected:true, lateStateStable:true, registers:{ pc:'0x1008', x0:'0x20' }, state:'stopped' },
+    pause:{ observed:true, continueAccepted:true, stopAccepted:true, runningObserved:true, runningEvidence:'provider-running-state-event+register-progress', stoppedObserved:true, executionAdvanced:true, stopIdAdvanced:true, stopIdBefore:1, stopIdAfter:2, processId:1, threadId:2, registers:{ pc:'0x1004', sp:'0x2000', x0:'0x10' }, state:'stopped' },
+    cancel:{ observed:true, inFlightObserved:true, inFlightEvidence:'provider-running-state-event', executionAdvanced:true, interruptAccepted:true, operationSettled:true, stopIdAdvanced:true, stopIdBefore:2, stopIdAfter:3, processId:1, threadId:2, settlement:'cancelled', providerDisposition:'async-process-interrupt', lateResultRejected:true, lateStateStable:true, registers:{ pc:'0x1008', x0:'0x20' }, state:'stopped' },
     operationResults:{ attach:true, pause:true, cancel:true },
     ...overrides,
   };
@@ -110,8 +115,9 @@ assert.throws(() => parseCrossTargetActiveOpsOutput(activeMarker({
   attach:{ observed:true, transport:'gdb-remote', processId:1, targetTriple:'aarch64-linux-gnu', modulePath:'/tmp/wrong', threadId:2, registers:{ pc:'0x1', sp:'0x2', x0:'0x3' }, memoryProbe:'0x1020304050607080' },
 }), target, { binaryPath:'/tmp/fixture', probeWord:0x2000n }), /attach-module-identity-mismatch/);
 assert.throws(() => parseCrossTargetActiveOpsOutput(activeMarker({ advertisedCapabilities:{ cancel:true }, cancel:{ observed:false } }), target, { binaryPath:'/tmp/fixture', probeWord:0x2000n }), /cancel-not-observed/, 'capability advertisement without active cancellation is not proof');
-assert.throws(() => parseCrossTargetActiveOpsOutput(activeMarker({ cancel:{ observed:true, inFlightObserved:true, inFlightEvidence:'blocking-command-thread-alive', executionAdvanced:true, interruptAccepted:true, commandSettled:true, processId:999, threadId:2, settlement:'cancelled', providerDisposition:'interrupted-command', lateResultRejected:true, lateStateStable:true, registers:{ pc:'0x1', x0:'0x2' } } }), target, { binaryPath:'/tmp/fixture', probeWord:0x2000n }), /cancel-session-identity-mismatch/);
-assert.throws(() => parseCrossTargetActiveOpsOutput(activeMarker({ pause:{ observed:true, continueAccepted:true, stopAccepted:true, runningObserved:true, runningEvidence:'static-capability-flag', stoppedObserved:true, executionAdvanced:true, processId:1, threadId:2, registers:{ pc:'0x1004', sp:'0x2000', x0:'0x10' } } }), target, { binaryPath:'/tmp/fixture', probeWord:0x2000n }), /pause-running-evidence-missing/);
+assert.throws(() => parseCrossTargetActiveOpsOutput(activeMarker({ cancel:{ observed:true, inFlightObserved:true, inFlightEvidence:'provider-running-state-event', executionAdvanced:true, interruptAccepted:true, operationSettled:true, stopIdAdvanced:true, stopIdBefore:2, stopIdAfter:3, processId:999, threadId:2, settlement:'cancelled', providerDisposition:'async-process-interrupt', lateResultRejected:true, lateStateStable:true, registers:{ pc:'0x1', x0:'0x2' } } }), target, { binaryPath:'/tmp/fixture', probeWord:0x2000n }), /cancel-session-identity-mismatch/);
+assert.throws(() => parseCrossTargetActiveOpsOutput(activeMarker({ pause:{ observed:true, continueAccepted:true, stopAccepted:true, runningObserved:true, runningEvidence:'static-capability-flag', stoppedObserved:true, executionAdvanced:true, stopIdAdvanced:true, stopIdBefore:1, stopIdAfter:2, processId:1, threadId:2, registers:{ pc:'0x1004', sp:'0x2000', x0:'0x10' } } }), target, { binaryPath:'/tmp/fixture', probeWord:0x2000n }), /pause-running-evidence-missing/);
+assert.throws(() => parseCrossTargetActiveOpsOutput(activeMarker({ cancel:{ observed:true, inFlightObserved:true, inFlightEvidence:'provider-running-state-event', executionAdvanced:true, interruptAccepted:true, operationSettled:false, stopIdAdvanced:true, stopIdBefore:2, stopIdAfter:3, processId:1, threadId:2, settlement:'cancelled', providerDisposition:'async-process-interrupt', lateResultRejected:true, lateStateStable:true, registers:{ pc:'0x1008', x0:'0x20' } } }), target, { binaryPath:'/tmp/fixture', probeWord:0x2000n }), /cancel-settlement-missing/, 'unsettled async interrupt cannot prove cancel');
 
 console.log(`A7_CROSS_TARGET_PROVIDER_PROOF=${JSON.stringify(run)}`);
 console.log('[stage2] active AArch64/PAC/RV64 LLDB remote provider proofs passed');
