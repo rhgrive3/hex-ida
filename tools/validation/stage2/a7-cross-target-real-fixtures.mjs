@@ -33,17 +33,20 @@ export const A7_CROSS_TARGETS = Object.freeze([
   Object.freeze({
     targetProfileId:'arm64:a64', sourcePath:'tests/stage2/fixtures/a7-runtime/aarch64-a64.S',
     targetTriple:'aarch64-linux-gnu', qemu:'qemu-aarch64', qemuCpuArgs:Object.freeze(['-cpu','max']),
-    lldbArchitecture:'aarch64', register:'x0', breakOffset:4, llvmMachine:'EM_AARCH64',
+    lldbArchitecture:'aarch64', register:'x0', rspRegisterNumber:0, rspSpRegisterNumber:31, rspPcRegisterNumber:32,
+    breakOffset:4, llvmMachine:'EM_AARCH64',
   }),
   Object.freeze({
     targetProfileId:'arm64e:a64+pac', sourcePath:'tests/stage2/fixtures/a7-runtime/aarch64-pac.S',
     targetTriple:'aarch64-linux-gnu', qemu:'qemu-aarch64', qemuCpuArgs:Object.freeze(['-cpu','max']),
-    lldbArchitecture:'aarch64', register:'x0', breakOffset:8, llvmMachine:'EM_AARCH64', pac:true,
+    lldbArchitecture:'aarch64', register:'x0', rspRegisterNumber:0, rspSpRegisterNumber:31, rspPcRegisterNumber:32,
+    breakOffset:8, llvmMachine:'EM_AARCH64', pac:true,
   }),
   Object.freeze({
     targetProfileId:'riscv64:rv64imc', sourcePath:'tests/stage2/fixtures/a7-runtime/riscv64-rv64imc.S',
     targetTriple:'riscv64-linux-gnu', qemu:'qemu-riscv64', qemuCpuArgs:Object.freeze([]),
-    lldbArchitecture:'riscv64', register:'a0', breakOffset:2, llvmMachine:'EM_RISCV', rv64imc:true,
+    lldbArchitecture:'riscv64', register:'a0', rspRegisterNumber:10, rspSpRegisterNumber:2, rspPcRegisterNumber:32,
+    breakOffset:2, llvmMachine:'EM_RISCV', rv64imc:true,
   }),
 ]);
 
@@ -174,6 +177,7 @@ function crossActiveOpsPython(target, fixture, port, qemuPid) {
 import json
 import lldb
 import os
+import re
 import signal
 import threading
 import time
@@ -183,6 +187,9 @@ PORT = ${port}
 QEMU_PID = ${qemuPid}
 PROBE = ${fixture.probeWord.toString()}
 REGISTER = ${JSON.stringify(target.register)}
+RSP_REGISTER_NUMBER = ${target.rspRegisterNumber}
+RSP_SP_REGISTER_NUMBER = ${target.rspSpRegisterNumber}
+RSP_PC_REGISTER_NUMBER = ${target.rspPcRegisterNumber}
 ARCH = ${JSON.stringify(target.lldbArchitecture)}
 MARKER = ${JSON.stringify('A7_CROSS_ACTIVE_OPS')}
 
@@ -239,6 +246,24 @@ def reg(frame, name):
     if not value.IsValid(): fail('register-missing:' + name)
     return value.GetValueAsUnsigned()
 
+def rsp_register(number, code):
+    command_result = lldb.SBCommandReturnObject()
+    debugger.GetCommandInterpreter().HandleCommand('process plugin packet send p' + format(number, 'x'), command_result)
+    if not command_result.Succeeded():
+        fail(code + '-rsp-command-failed:' + (command_result.GetError() or 'unknown'))
+    output = (command_result.GetOutput() or '') + '\\n' + (command_result.GetError() or '')
+    match = re.search(r'response:\\s*([0-9A-Fa-f]+)', output)
+    if not match:
+        fail(code + '-rsp-response-missing:' + repr(output))
+    payload = match.group(1)
+    if payload.startswith('E') or len(payload) != 16:
+        fail(code + '-rsp-response-invalid:' + payload)
+    try:
+        raw = bytes.fromhex(payload)
+    except ValueError:
+        fail(code + '-rsp-response-nonhex:' + payload)
+    return int.from_bytes(raw, byteorder='little', signed=False)
+
 def module_path(target):
     module = target.GetModuleAtIndex(0)
     if not module.IsValid(): fail('module-missing')
@@ -280,16 +305,23 @@ try:
     if not lldb.SBDebugger.StateIsStoppedState(process.GetState()): fail('remote-attach-not-stopped')
     triple = target.GetTriple() or ''
     if ARCH not in triple: fail('remote-target-architecture-mismatch:' + triple)
+    if target.GetByteOrder() != lldb.eByteOrderLittle: fail('remote-target-byte-order-mismatch')
     observed_module = module_path(target)
     if observed_module != os.path.realpath(FIXTURE): fail('remote-module-mismatch')
     thread, frame = current_frame()
+    attached_thread_id = thread.GetThreadID()
     pc = reg(frame, 'pc')
     sp = reg(frame, 'sp')
     operand = reg(frame, REGISTER)
+    rsp_pc = rsp_register(RSP_PC_REGISTER_NUMBER, 'attach-pc')
+    rsp_sp = rsp_register(RSP_SP_REGISTER_NUMBER, 'attach-sp')
+    rsp_operand = rsp_register(RSP_REGISTER_NUMBER, 'attach-operand')
+    if rsp_pc != pc or rsp_sp != sp or rsp_operand != operand:
+        fail('remote-rsp-register-cross-check-mismatch')
     memory_error = lldb.SBError()
     probe_value = process.ReadUnsignedFromMemory(PROBE, 8, memory_error)
     if not memory_error.Success() or probe_value != 0x1020304050607080: fail('remote-memory-mismatch')
-    result['attach'] = {'observed': True, 'transport': 'gdb-remote', 'processId': attached_pid, 'qemuHostPid': QEMU_PID, 'targetTriple': triple, 'modulePath': observed_module, 'threadId': thread.GetThreadID(), 'registers': {'pc': hex(pc), 'sp': hex(sp), REGISTER: hex(operand)}, 'memoryProbe': hex(probe_value), 'state': state_name(process.GetState())}
+    result['attach'] = {'observed': True, 'transport': 'gdb-remote', 'registerTransport': 'SBFrame+gdb-remote-packet', 'processId': attached_pid, 'qemuHostPid': QEMU_PID, 'targetTriple': triple, 'modulePath': observed_module, 'threadId': attached_thread_id, 'registers': {'pc': hex(pc), 'sp': hex(sp), REGISTER: hex(operand)}, 'memoryProbe': hex(probe_value), 'state': state_name(process.GetState())}
 
     before_operand = operand
     pause_stop_id_before = process.GetStopID(False)
@@ -302,12 +334,11 @@ try:
     signal_qemu_and_wait(listener, 'pause')
     pause_stop_id_after = process.GetStopID(False)
     if pause_stop_id_after <= pause_stop_id_before: fail('pause-stop-id-not-advanced')
-    thread, frame = current_frame()
-    pause_pc = reg(frame, 'pc')
-    pause_sp = reg(frame, 'sp')
-    pause_operand = reg(frame, REGISTER)
+    pause_pc = rsp_register(RSP_PC_REGISTER_NUMBER, 'pause-pc')
+    pause_sp = rsp_register(RSP_SP_REGISTER_NUMBER, 'pause-sp')
+    pause_operand = rsp_register(RSP_REGISTER_NUMBER, 'pause-operand')
     if pause_operand == before_operand: fail('pause-no-execution-observed')
-    result['pause'] = {'observed': True, 'continueAccepted': True, 'interruptIssued': True, 'runningObserved': True, 'runningEvidence': 'provider-running-state-event+qemu-sigint+register-progress', 'stoppedObserved': True, 'executionAdvanced': True, 'stopIdAdvanced': True, 'stopIdBefore': pause_stop_id_before, 'stopIdAfter': pause_stop_id_after, 'processId': process.GetProcessID(), 'qemuHostPid': QEMU_PID, 'threadId': thread.GetThreadID(), 'providerDisposition': 'qemu-user-sigint-observed-by-lldb', 'registers': {'pc': hex(pause_pc), 'sp': hex(pause_sp), REGISTER: hex(pause_operand)}, 'state': state_name(process.GetState())}
+    result['pause'] = {'observed': True, 'continueAccepted': True, 'interruptIssued': True, 'runningObserved': True, 'runningEvidence': 'provider-running-state-event+qemu-sigint+register-progress', 'stoppedObserved': True, 'executionAdvanced': True, 'stopIdAdvanced': True, 'stopIdBefore': pause_stop_id_before, 'stopIdAfter': pause_stop_id_after, 'processId': process.GetProcessID(), 'qemuHostPid': QEMU_PID, 'threadId': attached_thread_id, 'providerDisposition': 'qemu-user-sigint-observed-by-lldb', 'registerTransport': 'lldb-gdb-remote-packet', 'registers': {'pc': hex(pause_pc), 'sp': hex(pause_sp), REGISTER: hex(pause_operand)}, 'state': state_name(process.GetState())}
 
     cancel_before_operand = pause_operand
     cancel_stop_id_before = process.GetStopID(False)
@@ -332,18 +363,16 @@ try:
     if not lldb.SBDebugger.StateIsStoppedState(stopped_state): fail('cancel-target-not-stopped:' + state_name(stopped_state))
     cancel_stop_id_after = process.GetStopID(False)
     if cancel_stop_id_after <= cancel_stop_id_before: fail('cancel-stop-id-not-advanced')
-    thread, frame = current_frame()
-    cancel_pc = reg(frame, 'pc')
-    cancel_operand = reg(frame, REGISTER)
+    cancel_pc = rsp_register(RSP_PC_REGISTER_NUMBER, 'cancel-pc')
+    cancel_operand = rsp_register(RSP_REGISTER_NUMBER, 'cancel-operand')
     if cancel_operand == cancel_before_operand: fail('cancel-no-execution-observed')
     first_state = process.GetState()
     time.sleep(0.10)
-    thread2, frame2 = current_frame()
-    late_pc = reg(frame2, 'pc')
-    late_operand = reg(frame2, REGISTER)
+    late_pc = rsp_register(RSP_PC_REGISTER_NUMBER, 'cancel-late-pc')
+    late_operand = rsp_register(RSP_REGISTER_NUMBER, 'cancel-late-operand')
     late_state = process.GetState()
     if first_state != late_state or cancel_pc != late_pc or cancel_operand != late_operand: fail('cancel-late-success-observed')
-    result['cancel'] = {'observed': True, 'inFlightObserved': True, 'inFlightEvidence': 'blocking-continue-thread-alive+provider-running-state-event', 'executionAdvanced': True, 'interruptIssued': True, 'operationSettled': True, 'continueSettled': True, 'processId': process.GetProcessID(), 'qemuHostPid': QEMU_PID, 'threadId': thread.GetThreadID(), 'settlement': 'cancelled', 'providerDisposition': 'qemu-user-sigint-observed-by-lldb', 'stopIdAdvanced': True, 'stopIdBefore': cancel_stop_id_before, 'stopIdAfter': cancel_stop_id_after, 'lateResultRejected': True, 'lateStateStable': True, 'continueResult': str(cancel_holder.get('result')), 'registers': {'pc': hex(cancel_pc), REGISTER: hex(cancel_operand)}, 'state': state_name(late_state)}
+    result['cancel'] = {'observed': True, 'inFlightObserved': True, 'inFlightEvidence': 'blocking-continue-thread-alive+provider-running-state-event', 'executionAdvanced': True, 'interruptIssued': True, 'operationSettled': True, 'continueSettled': True, 'processId': process.GetProcessID(), 'qemuHostPid': QEMU_PID, 'threadId': attached_thread_id, 'settlement': 'cancelled', 'providerDisposition': 'qemu-user-sigint-observed-by-lldb', 'registerTransport': 'lldb-gdb-remote-packet', 'stopIdAdvanced': True, 'stopIdBefore': cancel_stop_id_before, 'stopIdAfter': cancel_stop_id_after, 'lateResultRejected': True, 'lateStateStable': True, 'continueResult': str(cancel_holder.get('result')), 'registers': {'pc': hex(cancel_pc), REGISTER: hex(cancel_operand)}, 'state': state_name(late_state)}
     result['operationResults'] = {'attach': True, 'pause': True, 'cancel': True}
 except BaseException as exc:
     result['error'] = str(exc)
@@ -392,19 +421,19 @@ export function parseCrossTargetActiveOpsOutput(output, target, { binaryPath, pr
   if (qemuPid != null && attach.qemuHostPid !== qemuPid) throw new Error('a7-cross-attach-qemu-identity-mismatch');
   if (!String(attach.targetTriple || '').includes(target.lldbArchitecture)) throw new Error('a7-cross-attach-target-identity-mismatch');
   if (binaryPath != null && path.resolve(String(attach.modulePath || '')) !== path.resolve(binaryPath)) throw new Error('a7-cross-attach-module-identity-mismatch');
-  if (!attach.registers?.pc || !attach.registers?.sp || !Object.prototype.hasOwnProperty.call(attach.registers, target.register)) throw new Error('a7-cross-attach-register-observation-missing');
+  if (attach.registerTransport !== 'SBFrame+gdb-remote-packet' || !attach.registers?.pc || !attach.registers?.sp || !Object.prototype.hasOwnProperty.call(attach.registers, target.register)) throw new Error('a7-cross-attach-register-observation-missing');
   if (probeWord != null && String(attach.memoryProbe || '').toLowerCase() !== '0x1020304050607080') throw new Error('a7-cross-attach-memory-observation-missing');
   if (proof.operationResults?.pause !== true || pause.observed !== true || pause.runningObserved !== true || pause.stoppedObserved !== true || pause.executionAdvanced !== true || pause.continueAccepted !== true || pause.interruptIssued !== true || pause.stopIdAdvanced !== true) throw new Error('a7-cross-pause-not-observed');
-  if (pause.runningEvidence !== 'provider-running-state-event+qemu-sigint+register-progress' || pause.providerDisposition !== 'qemu-user-sigint-observed-by-lldb') throw new Error('a7-cross-pause-running-evidence-missing');
+  if (pause.runningEvidence !== 'provider-running-state-event+qemu-sigint+register-progress' || pause.providerDisposition !== 'qemu-user-sigint-observed-by-lldb' || pause.registerTransport !== 'lldb-gdb-remote-packet') throw new Error('a7-cross-pause-running-evidence-missing');
   if (qemuPid != null && pause.qemuHostPid !== qemuPid) throw new Error('a7-cross-pause-qemu-identity-mismatch');
   if (!Number.isSafeInteger(pause.stopIdBefore) || !Number.isSafeInteger(pause.stopIdAfter) || pause.stopIdAfter <= pause.stopIdBefore) throw new Error('a7-cross-pause-stop-id-evidence-missing');
-  if (pause.processId !== attach.processId || !pause.registers?.pc || !Object.prototype.hasOwnProperty.call(pause.registers, target.register)) throw new Error('a7-cross-pause-session-identity-mismatch');
+  if (pause.processId !== attach.processId || pause.threadId !== attach.threadId || !pause.registers?.pc || !Object.prototype.hasOwnProperty.call(pause.registers, target.register)) throw new Error('a7-cross-pause-session-identity-mismatch');
   if (proof.operationResults?.cancel !== true || cancel.observed !== true || cancel.inFlightObserved !== true || cancel.interruptIssued !== true || cancel.executionAdvanced !== true) throw new Error('a7-cross-cancel-not-observed');
   if (cancel.inFlightEvidence !== 'blocking-continue-thread-alive+provider-running-state-event') throw new Error('a7-cross-cancel-inflight-evidence-missing');
-  if (cancel.operationSettled !== true || cancel.continueSettled !== true || cancel.stopIdAdvanced !== true || cancel.settlement !== 'cancelled' || cancel.providerDisposition !== 'qemu-user-sigint-observed-by-lldb' || cancel.lateResultRejected !== true || cancel.lateStateStable !== true) throw new Error('a7-cross-cancel-settlement-missing');
+  if (cancel.operationSettled !== true || cancel.continueSettled !== true || cancel.stopIdAdvanced !== true || cancel.settlement !== 'cancelled' || cancel.providerDisposition !== 'qemu-user-sigint-observed-by-lldb' || cancel.registerTransport !== 'lldb-gdb-remote-packet' || cancel.lateResultRejected !== true || cancel.lateStateStable !== true) throw new Error('a7-cross-cancel-settlement-missing');
   if (qemuPid != null && cancel.qemuHostPid !== qemuPid) throw new Error('a7-cross-cancel-qemu-identity-mismatch');
   if (!Number.isSafeInteger(cancel.stopIdBefore) || !Number.isSafeInteger(cancel.stopIdAfter) || cancel.stopIdAfter <= cancel.stopIdBefore) throw new Error('a7-cross-cancel-stop-id-evidence-missing');
-  if (cancel.processId !== attach.processId || !cancel.registers?.pc || !Object.prototype.hasOwnProperty.call(cancel.registers, target.register)) throw new Error('a7-cross-cancel-session-identity-mismatch');
+  if (cancel.processId !== attach.processId || cancel.threadId !== attach.threadId || !cancel.registers?.pc || !Object.prototype.hasOwnProperty.call(cancel.registers, target.register)) throw new Error('a7-cross-cancel-session-identity-mismatch');
   return Object.freeze({ ...proof, operationResults:Object.freeze({ attach:true, pause:true, cancel:true }), capabilityResults:capabilityMap(A7_CROSS_ACTIVE_OPERATION_CAPABILITIES) });
 }
 
