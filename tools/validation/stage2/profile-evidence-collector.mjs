@@ -25,15 +25,21 @@ export const PROFILE_EVIDENCE_RUN_ROOT = 'reports/stage2/profile-evidence-runs';
 
 const RULES = Object.freeze({
   'S2-A7-NATIVE': Object.freeze({
-    providerProfileIds: ['native:lldb-compatible-v1:test'],
-    sourceRefs: ['js/runtime/authority.js', 'js/platform/stage2-profile-evidence.js', 'tools/validation/stage2/a7-lldb-real-fixture.mjs'],
-    testRefs: ['tests/stage2/runtime-authority.test.mjs', 'tests/stage2/capability-promotion.test.mjs', 'tests/stage2/a7-lldb-real-fixture.test.mjs'],
+    providerProfileIds: ['native:lldb-compatible-v1:host', 'native:remote-debug-v1:qemu-lldb'],
+    sourceRefs: ['js/runtime/authority.js', 'js/platform/stage2-profile-evidence.js', 'tools/validation/stage2/a7-lldb-real-fixture.mjs', 'tools/validation/stage2/a7-cross-target-real-fixtures.mjs'],
+    testRefs: ['tests/stage2/runtime-authority.test.mjs', 'tests/stage2/capability-promotion.test.mjs', 'tests/stage2/a7-lldb-real-fixture.test.mjs', 'tests/stage2/a7-cross-target-real-fixtures.test.mjs'],
     requiredProfileIds: ['arm64:a64', 'arm64e:a64+pac', 'x86_64:long-64', 'riscv64:rv64imc'],
     realFixtureRefsByProfile: Object.freeze({
+      'arm64:a64': Object.freeze(['tests/stage2/fixtures/a7-runtime/aarch64-a64.S']),
+      'arm64e:a64+pac': Object.freeze(['tests/stage2/fixtures/a7-runtime/aarch64-pac.S']),
       'x86_64:long-64': Object.freeze(['tests/phase5/corpus/fixtures/vertical-sysv-amd64.elf']),
+      'riscv64:rv64imc': Object.freeze(['tests/stage2/fixtures/a7-runtime/riscv64-rv64imc.S']),
     }),
-    providerProofCommandIdsByProfile: Object.freeze({ 'x86_64:long-64': 'a7-lldb-real-fixture' }),
-    commandIds: ['a7-runtime-authority', 'a7-capability-promotion', 'a7-lldb-real-fixture'],
+    providerProofCommandIdsByProfile: Object.freeze({
+      'arm64:a64':'a7-cross-target-real-fixtures', 'arm64e:a64+pac':'a7-cross-target-real-fixtures',
+      'x86_64:long-64':'a7-lldb-real-fixture', 'riscv64:rv64imc':'a7-cross-target-real-fixtures',
+    }),
+    commandIds: ['a7-runtime-authority', 'a7-capability-promotion', 'a7-lldb-real-fixture', 'a7-cross-target-real-fixtures'],
   }),
   'S2-M6-WASM': Object.freeze({ providerProfileIds: ['managed:wasm:provider-bound-runtime-v1:test'], sourceRefs: ['js/managed/wasm/parser.js', 'js/managed/runtime-binding.js'], testRefs: ['tests/stage2/managed-runtime.test.mjs', 'tests/stage2/managed-real-fixtures.test.mjs'], commandIds: ['m6-managed-runtime', 'm6-real-fixtures'] }),
   'S2-M6-DEX': Object.freeze({ providerProfileIds: ['managed:dex:provider-bound-runtime-v1:test'], sourceRefs: ['js/managed/dex/parser.js', 'js/managed/runtime-binding.js'], testRefs: ['tests/stage2/managed-runtime.test.mjs', 'tests/stage2/managed-real-fixtures.test.mjs'], commandIds: ['m6-managed-runtime', 'm6-real-fixtures'] }),
@@ -223,6 +229,7 @@ export function collectProfileEvidence({ expectedCommitSha, expectedTreeSha, out
     runCanonical('a7-runtime-authority', ['tests/stage2/runtime-authority.test.mjs']),
     runCanonical('a7-capability-promotion', ['tests/stage2/capability-promotion.test.mjs']),
     runCanonical('a7-lldb-real-fixture', ['tests/stage2/a7-lldb-real-fixture.test.mjs']),
+    runCanonical('a7-cross-target-real-fixtures', ['tests/stage2/a7-cross-target-real-fixtures.test.mjs']),
     runCanonical('m6-managed-runtime', ['tests/stage2/managed-runtime.test.mjs']),
     runCanonical('m6-real-fixtures', ['tests/stage2/managed-real-fixtures.test.mjs']),
     runCanonical('f6-real-rebuild', ['tests/phase12/rebuild/f6-real-fixtures.test.mjs']),
@@ -232,6 +239,7 @@ export function collectProfileEvidence({ expectedCommitSha, expectedTreeSha, out
   ];
   const commandProofMarkers = Object.freeze({
     'a7-lldb-real-fixture': '[stage2] bounded x86 LLDB A7 provider proof passed; four-profile promotion remains blocked',
+    'a7-cross-target-real-fixtures': '[stage2] active AArch64/PAC/RV64 LLDB remote provider proofs passed',
     'm6-real-fixtures': 'deterministic real managed fixtures passed for wasm/dex/cil/jvm',
     'f6-real-rebuild': 'F6_REAL_REBUILD_PROOF=',
     'p12-knowledge': '[phase12] package/provenance/recognition tests passed',

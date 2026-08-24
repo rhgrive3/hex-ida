@@ -41,6 +41,15 @@ assert.deepEqual(a7Rule.requiredProfileIds, ['arm64:a64', 'arm64e:a64+pac', 'x86
 assert.deepEqual(a7Rule.realFixtureRefsByProfile['x86_64:long-64'], ['tests/phase5/corpus/fixtures/vertical-sysv-amd64.elf']);
 assert.equal(a7Rule.providerProofCommandIdsByProfile['x86_64:long-64'], 'a7-lldb-real-fixture');
 assert.ok(a7Rule.commandIds.includes('a7-lldb-real-fixture'));
+for (const [profileId, fixture] of [
+  ['arm64:a64', 'tests/stage2/fixtures/a7-runtime/aarch64-a64.S'],
+  ['arm64e:a64+pac', 'tests/stage2/fixtures/a7-runtime/aarch64-pac.S'],
+  ['riscv64:rv64imc', 'tests/stage2/fixtures/a7-runtime/riscv64-rv64imc.S'],
+]) {
+  assert.deepEqual(a7Rule.realFixtureRefsByProfile[profileId], [fixture]);
+  assert.equal(a7Rule.providerProofCommandIdsByProfile[profileId], 'a7-cross-target-real-fixtures');
+}
+assert.ok(a7Rule.commandIds.includes('a7-cross-target-real-fixtures'));
 
 const prerequisites = inspectProfileEvidencePrerequisites();
 assert.equal(prerequisites.managed.has('dex'), true, 'canonical real DEX fixture is present');
@@ -48,12 +57,10 @@ assert.equal(prerequisites.failures.includes('missing-real-compiled-fixture:dex'
 if (prerequisites.failures.some((failure) => failure.startsWith('known-a2-gap:'))) assert.equal(prerequisites.ok, false, 'known A2 denominator gaps block collection');
 assert.ok(prerequisites.failures.includes('known-f6-gap:macho:64:layout-and-structure'), 'known F6 implementation gaps block collection');
 assert.ok(prerequisites.failures.includes('known-phase12-gap:remote.remote-canonical-transport'), 'known Phase12 transport gaps block collection');
-for (const profileId of ['arm64:a64', 'arm64e:a64+pac', 'riscv64:rv64imc']) {
-  assert.ok(prerequisites.failures.includes(`missing-real-profile-fixture:S2-A7-NATIVE:${profileId}`), `A7 ${profileId}: real target fixture cannot be deferred until publication`);
-  assert.ok(prerequisites.failures.includes(`missing-active-provider-proof:S2-A7-NATIVE:${profileId}`), `A7 ${profileId}: active provider proof cannot be deferred until publication`);
+for (const profileId of a7Rule.requiredProfileIds) {
+  assert.equal(prerequisites.failures.includes(`missing-real-profile-fixture:S2-A7-NATIVE:${profileId}`), false, `A7 ${profileId}: real target fixture is bound`);
+  assert.equal(prerequisites.failures.includes(`missing-active-provider-proof:S2-A7-NATIVE:${profileId}`), false, `A7 ${profileId}: active provider command is bound`);
 }
-assert.equal(prerequisites.failures.includes('missing-real-profile-fixture:S2-A7-NATIVE:x86_64:long-64'), false, 'bounded x86 LLDB proof binds a real fixture');
-assert.equal(prerequisites.failures.includes('missing-active-provider-proof:S2-A7-NATIVE:x86_64:long-64'), false, 'bounded x86 LLDB proof binds an active provider command');
 for (const itemId of STAGE2_PROFILE_EVIDENCE_IDS.filter((id) => !Object.hasOwn(PROFILE_UNIT_PROOF_RULES, id))) {
   assert.ok(prerequisites.failures.includes(`missing-profile-proof-rule:${itemId}`), `${itemId}: missing canonical rule blocks partial publication`);
 }
