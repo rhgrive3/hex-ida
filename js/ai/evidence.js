@@ -105,6 +105,15 @@ export class EvidenceStore {
     for (const evidence of initial) this.add(evidence);
   }
 
+  restorePersistedConfirmed(initial = []) {
+    for (const evidence of Array.isArray(initial) ? initial : []) {
+      // Only the runtime-owned persisted-confirmed path may restore deterministic
+      // verification authority. Ordinary constructor/add callers remain untrusted.
+      this.add(evidence, evidence?.status === 'verified' ? DETERMINISTIC_VERIFICATION : null);
+    }
+    return this;
+  }
+
   setObservationStore(store) {
     this.observationStore = store || null;
     if (this.observationStore) {
