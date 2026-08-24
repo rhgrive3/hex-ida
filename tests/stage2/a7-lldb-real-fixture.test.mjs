@@ -63,22 +63,24 @@ assert.ok(proof.activeOperations.pause.cpuTicksAfter > proof.activeOperations.pa
 assert.ok(proof.activeOperations.pause.stopIdAfter > proof.activeOperations.pause.stopIdBefore);
 assert.equal(proof.activeOperations.cancel.processId, proof.activeOperations.attach.attachedPid);
 assert.equal(proof.activeOperations.cancel.inFlightObserved, true);
-assert.equal(proof.activeOperations.cancel.inFlightEvidence, 'blocking-command-thread-alive+exact-host-process-cpu-progress');
+assert.equal(proof.activeOperations.cancel.inFlightEvidence, 'async-continue+exact-host-process-cpu-progress-before-cancel');
 assert.equal(proof.activeOperations.cancel.executionEvidence, 'exact-host-process-cpu-ticks-during-provider-running-window');
 assert.equal(proof.activeOperations.cancel.executionAdvanced, true);
 assert.equal(proof.activeOperations.cancel.interruptAccepted, true);
-assert.equal(proof.activeOperations.cancel.commandSettled, true);
+assert.equal(proof.activeOperations.cancel.operationSettled, true);
 assert.equal(proof.activeOperations.cancel.stopIdAdvanced, true);
 assert.ok(proof.activeOperations.cancel.cpuTicksAfter > proof.activeOperations.cancel.cpuTicksBefore);
 assert.ok(proof.activeOperations.cancel.stopIdAfter > proof.activeOperations.cancel.stopIdBefore);
 assert.equal(proof.activeOperations.cancel.settlement, 'cancelled');
+assert.equal(proof.activeOperations.cancel.providerDisposition, 'lldb-async-interrupt-observed');
 assert.equal(proof.activeOperations.cancel.lateResultRejected, true);
 assert.equal(proof.activeOperations.cancel.lateStateStable, true);
 assert.equal(proof.activeOperations.cancel.lateStopIdStable, true);
 assert.equal(proof.activeOperations.cancel.lateProcessInstanceStable, true);
 assert.ok(proof.closedChecks.includes('lldb-real-process-attach-observed'));
 assert.ok(proof.closedChecks.includes('lldb-running-target-pause-observed'));
-assert.ok(proof.closedChecks.includes('lldb-inflight-command-cancel-observed'));
+assert.ok(proof.closedChecks.includes('lldb-active-process-cancel-observed'));
+assert.ok(proof.closedChecks.includes('lldb-cancel-operation-settled'));
 assert.match(proof.fixture.sourceSha256, /^[0-9a-f]{64}$/);
 assert.match(proof.independentOracle.outputSha256, /^[0-9a-f]{64}$/);
 assert.match(proof.independentOracle.executableIdentity.path, /(?:^|\/)(?:llvm-readobj-18|llvm-readobj)$/);
@@ -121,13 +123,14 @@ function activeMarker(overrides = {}) {
     },
     cancel:{
       observed:true, inFlightObserved:true,
-      inFlightEvidence:'blocking-command-thread-alive+exact-host-process-cpu-progress',
+      inFlightEvidence:'async-continue+exact-host-process-cpu-progress-before-cancel',
       executionEvidence:'exact-host-process-cpu-ticks-during-provider-running-window',
-      executionWindow:'after-command-continue-before-cancel-interrupt',
-      executionAdvanced:true, interruptAccepted:true, commandSettled:true, processId:101,
+      executionWindow:'after-continue-before-cancel-interrupt',
+      progressTransport:'linux-proc-stat+lldb-stop-id',
+      executionAdvanced:true, interruptAccepted:true, operationSettled:true, processId:101,
       cpuTicksBefore:2, cpuTicksAfter:3, processStartTimeTicks:4242,
       stopIdBefore:2, stopIdAfter:3, stopIdAdvanced:true,
-      settlement:'cancelled', providerDisposition:'interrupted-command', lateResultRejected:true,
+      settlement:'cancelled', providerDisposition:'lldb-async-interrupt-observed', lateResultRejected:true,
       lateStateStable:true, lateStopIdStable:true, lateProcessInstanceStable:true, state:'stopped',
     },
     operationResults:{ attach:true, pause:true, cancel:true },
@@ -149,12 +152,12 @@ assert.throws(() => parseLldbActiveOpsOutput(activeMarker({
 assert.throws(() => parseLldbActiveOpsOutput(activeMarker({
   cancel:{
     observed:true, inFlightObserved:true,
-    inFlightEvidence:'blocking-command-thread-alive+exact-host-process-cpu-progress',
+    inFlightEvidence:'async-continue+exact-host-process-cpu-progress-before-cancel',
     executionEvidence:'exact-host-process-cpu-ticks-during-provider-running-window',
-    executionAdvanced:true, interruptAccepted:true, commandSettled:false, processId:101,
+    executionAdvanced:true, interruptAccepted:true, operationSettled:false, processId:101,
     cpuTicksBefore:2, cpuTicksAfter:3, processStartTimeTicks:4242,
     stopIdBefore:2, stopIdAfter:3, stopIdAdvanced:true,
-    settlement:'cancelled', providerDisposition:'interrupted-command', lateResultRejected:true,
+    settlement:'cancelled', providerDisposition:'lldb-async-interrupt-observed', lateResultRejected:true,
     lateStateStable:true, lateStopIdStable:true, lateProcessInstanceStable:true,
   },
 }), { fixturePath:'/tmp/fixture', probeWord:0x2000n }), /cancel-settlement-missing/);
@@ -179,11 +182,11 @@ assert.throws(() => parseLldbActiveOpsOutput(activeMarker({
 assert.throws(() => parseLldbActiveOpsOutput(activeMarker({
   cancel:{
     observed:true, inFlightObserved:true,
-    inFlightEvidence:'blocking-command-thread-alive+exact-host-process-cpu-progress', executionEvidence:'exact-host-process-cpu-ticks-during-provider-running-window',
-    executionAdvanced:true, interruptAccepted:true, commandSettled:true, processId:101,
+    inFlightEvidence:'async-continue+exact-host-process-cpu-progress-before-cancel', executionEvidence:'exact-host-process-cpu-ticks-during-provider-running-window',
+    executionAdvanced:true, interruptAccepted:true, operationSettled:true, processId:101,
     cpuTicksBefore:2, cpuTicksAfter:3, processStartTimeTicks:4242,
     stopIdBefore:3, stopIdAfter:3, stopIdAdvanced:true,
-    settlement:'cancelled', providerDisposition:'interrupted-command', lateResultRejected:true,
+    settlement:'cancelled', providerDisposition:'lldb-async-interrupt-observed', lateResultRejected:true,
     lateStateStable:true, lateStopIdStable:true, lateProcessInstanceStable:true,
   },
 }), { fixturePath:'/tmp/fixture', probeWord:0x2000n }), /cancel-stop-id-evidence-missing/);
