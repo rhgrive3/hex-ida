@@ -110,22 +110,26 @@ async function parseCategory(get, address, classByAddress) {
 async function pointerTable(get, range, budget, parse) {
   const items = [];
   if (!range || range.vmAddr == null || !range.size) {
-    return { items, completeness: { present: false, declared: 0, scanned: 0, parsed: 0, capped: false, unreadableSlots: 0, complete: true } };
+    return { items, completeness: { present: false, declared: 0, scanned: 0, parsed: 0, capped: false, unreadableSlots: 0, unresolvedEntries: 0, complete: true } };
   }
   const declared = Math.max(0, Math.floor(Number(range.size) / PTR));
   const count = Math.min(declared, budget);
-  let scanned = 0, unreadableSlots = 0;
+  let scanned = 0, unreadableSlots = 0, unresolvedEntries = 0;
   for (let i = 0; i < count; i++) {
     const slot = BigInt(range.vmAddr) + BigInt(i * PTR);
     const raw = await get(slot, PTR);
     if (!raw) { unreadableSlots++; continue; }
     scanned++;
     const address = await decodedPointer(get, u64(raw), slot);
-    if (address == null) continue;
-    try { const item = await parse(address); if (item) items.push(item); } catch { /* malformed entry is not evidence */ }
+    if (address == null) { unresolvedEntries++; continue; }
+    try {
+      const item = await parse(address);
+      if (item) items.push(item);
+      else unresolvedEntries++;
+    } catch { unresolvedEntries++; }
   }
   const capped = declared > budget;
-  return { items, completeness: { present: true, declared, scanned, parsed: items.length, capped, unreadableSlots, complete: !capped && unreadableSlots === 0 } };
+  return { items, completeness: { present: true, declared, scanned, parsed: items.length, capped, unreadableSlots, unresolvedEntries, complete: !capped && unreadableSlots === 0 && unresolvedEntries === 0 } };
 }
 
 export async function parseObjcExtendedMetadata(read, sections = {}, opts = {}) {
