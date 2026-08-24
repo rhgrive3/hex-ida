@@ -17,7 +17,7 @@ test('register and structured-memory indirect JMP are explicit', () => {
   const register = lift('jmp', [reg('rax','read')]);
   assert.equal(register.controlEffect.kind, 'indirect');
   assert.equal(registerReads(register,'rax').length, 1);
-  assert.equal(register.possibleFaults.length, 0);
+  assert.equal(register.possibleFaults.some((fault) => fault.kind === 'control-transfer-fault'), true);
 
   const memory = lift('jmp', [mem(64, { base:'rax' })]);
   assert.equal(memory.controlEffect.kind, 'indirect');
@@ -45,14 +45,22 @@ test('Jcc has explicit condition, target, and exact variable-length fallthrough'
   assert.equal(bundle.metadata.conditionCode, 'e');
 });
 
-test('JRCXZ/JECXZ/JCXZ use the appropriate count register, not RFLAGS', () => {
-  for (const [family,physical] of [['jrcxz','rcx'],['jecxz','rcx'],['jcxz','rcx']]) {
-    const bundle = lift(family, [imm(0x1100n)], { conditionCode:null });
-    assert.equal(bundle.controlEffect.kind, 'conditional-branch');
-    assert.equal(flagReads(bundle).length, 0);
-    assert.equal(registerReads(bundle,physical).length, 1);
-    assert.equal(bundle.metadata.conditionKind, 'count-register');
-  }
+test('JRCXZ/JECXZ use long-mode address-size count registers and JCXZ fails closed', () => {
+  const jrcxz = lift('jrcxz', [imm(0x1100n)], { conditionCode:null });
+  assert.equal(jrcxz.controlEffect.kind, 'conditional-branch');
+  assert.equal(flagReads(jrcxz).length, 0);
+  assert.equal(registerReads(jrcxz,'rcx').length, 1);
+  assert.equal(jrcxz.metadata.conditionKind, 'count-register');
+
+  const jecxz = lift('jecxz', [imm(0x1100n)], { conditionCode:null, prefixes:[0x67] });
+  assert.equal(jecxz.controlEffect.kind, 'conditional-branch');
+  assert.equal(flagReads(jecxz).length, 0);
+  assert.equal(registerReads(jecxz,'rcx').length, 1);
+  assert.equal(jecxz.metadata.countRegister, 'ecx');
+
+  const jcxz = lift('jcxz', [imm(0x1100n)], { conditionCode:null });
+  assert.equal(jcxz.completeness, 'partial');
+  assert.equal(jcxz.unknownEffects.reason, 'x86-jcxz-illegal-in-long-64');
 });
 
 test('CALL models only architectural transfer, return address, RSP, and stack store', () => {
@@ -83,7 +91,7 @@ test('indirect CALL resolves register before RSP mutation and memory target thro
   const memory = lift('call', [mem(64, { base:'rax' })], { address:0x3000n, length:2 });
   assert.equal(memoryReads(memory).length, 1);
   assert.equal(memoryWrites(memory).length, 1);
-  assert.equal(memory.possibleFaults.length, 2);
+  assert.equal(memory.possibleFaults.length, 3);
   assert.equal(memory.metadata.memoryIndirect, true);
 });
 
