@@ -38,7 +38,7 @@ for (const itemId of ['S2-F6-MACHO', 'S2-F6-ELF', 'S2-F6-PE']) {
 }
 const a7Rule = PROFILE_UNIT_PROOF_RULES['S2-A7-NATIVE'];
 assert.deepEqual(a7Rule.requiredProfileIds, ['arm64:a64', 'arm64e:a64+pac', 'x86_64:long-64', 'riscv64:rv64imc']);
-assert.deepEqual(a7Rule.realFixtureRefsByProfile['x86_64:long-64'], ['tests/phase5/corpus/fixtures/vertical-sysv-amd64.elf']);
+assert.deepEqual(a7Rule.realFixtureRefsByProfile['x86_64:long-64'], ['tests/stage2/fixtures/a7-runtime/x86_64-long64.S']);
 assert.equal(a7Rule.providerProofCommandIdsByProfile['x86_64:long-64'], 'a7-lldb-real-fixture');
 assert.ok(a7Rule.commandIds.includes('a7-lldb-real-fixture'));
 for (const [profileId, fixture] of [

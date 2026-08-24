@@ -32,7 +32,7 @@ const RULES = Object.freeze({
     realFixtureRefsByProfile: Object.freeze({
       'arm64:a64': Object.freeze(['tests/stage2/fixtures/a7-runtime/aarch64-a64.S']),
       'arm64e:a64+pac': Object.freeze(['tests/stage2/fixtures/a7-runtime/aarch64-pac.S']),
-      'x86_64:long-64': Object.freeze(['tests/phase5/corpus/fixtures/vertical-sysv-amd64.elf']),
+      'x86_64:long-64': Object.freeze(['tests/stage2/fixtures/a7-runtime/x86_64-long64.S']),
       'riscv64:rv64imc': Object.freeze(['tests/stage2/fixtures/a7-runtime/riscv64-rv64imc.S']),
     }),
     providerProofCommandIdsByProfile: Object.freeze({
@@ -238,7 +238,7 @@ export function collectProfileEvidence({ expectedCommitSha, expectedTreeSha, out
     runCanonical('p12-patterns', ['tests/phase12/pattern/evaluator.test.mjs']),
   ];
   const commandProofMarkers = Object.freeze({
-    'a7-lldb-real-fixture': '[stage2] bounded x86 LLDB A7 provider proof passed; four-profile promotion remains blocked',
+    'a7-lldb-real-fixture': '[stage2] active x86 LLDB A7 provider proof passed; canonical evidence assembly remains required',
     'a7-cross-target-real-fixtures': '[stage2] active AArch64/PAC/RV64 LLDB remote provider proofs passed',
     'm6-real-fixtures': 'deterministic real managed fixtures passed for wasm/dex/cil/jvm',
     'f6-real-rebuild': 'F6_REAL_REBUILD_PROOF=',

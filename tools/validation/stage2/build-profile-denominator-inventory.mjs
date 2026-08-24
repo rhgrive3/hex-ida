@@ -73,7 +73,7 @@ const items = {
     'tools/validation/stage2/a7-lldb-real-fixture.mjs', 'tests/stage2/a7-lldb-real-fixture.test.mjs',
     'tools/validation/stage2/a7-cross-target-real-fixtures.mjs', 'tests/stage2/a7-cross-target-real-fixtures.test.mjs',
     'tests/stage2/fixtures/a7-runtime/aarch64-a64.S', 'tests/stage2/fixtures/a7-runtime/aarch64-pac.S',
-    'tests/stage2/fixtures/a7-runtime/riscv64-rv64imc.S',
+    'tests/stage2/fixtures/a7-runtime/riscv64-rv64imc.S', 'tests/stage2/fixtures/a7-runtime/x86_64-long64.S',
   ]),
 };
 
