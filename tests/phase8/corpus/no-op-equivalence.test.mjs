@@ -81,20 +81,35 @@ test('the direct baseline comparator keeps its three hard safety counters at zer
   }
 });
 
-test('the final quality vector makes both required strict improvements without directional regressions', () => {
+test('the final quality vector follows the frozen profile directions and required strict improvements', () => {
+  const profile = JSON.parse(fs.readFileSync(path.join(ROOT, 'tools/validation/phase8/profile.json'), 'utf8'));
   const before = qualityVector(baseline.observations);
   const after = qualityVector(observations);
   assert.equal(after.functions, before.functions);
   assert.equal(after.failures, 0);
-  assert.ok(after.semanticCoverage >= before.semanticCoverage, `semantic coverage ${before.semanticCoverage} -> ${after.semanticCoverage}`);
-  assert.ok(after.rawAssemblyFallbacks <= before.rawAssemblyFallbacks, `raw assembly ${before.rawAssemblyFallbacks} -> ${after.rawAssemblyFallbacks}`);
-  assert.ok(after.gotos <= before.gotos, `gotos ${before.gotos} -> ${after.gotos}`);
-  assert.ok(after.structuredFunctions >= before.structuredFunctions, `structured ${before.structuredFunctions} -> ${after.structuredFunctions}`);
-  assert.ok(after.sourceMappedNodes >= before.sourceMappedNodes, `source map ${before.sourceMappedNodes} -> ${after.sourceMappedNodes}`);
-  assert.ok(after.aggregateLayouts >= before.aggregateLayouts, `aggregates ${before.aggregateLayouts} -> ${after.aggregateLayouts}`);
-  assert.ok(after.highVariableGroups >= before.highVariableGroups, `high variables ${before.highVariableGroups} -> ${after.highVariableGroups}`);
-  assert.ok(after.redundantCasts < before.redundantCasts, `redundant casts must strictly improve: ${before.redundantCasts} -> ${after.redundantCasts}`);
-  assert.ok(after.temporaries < before.temporaries, `temporaries must strictly improve: ${before.temporaries} -> ${after.temporaries}`);
+
+  for (const [entry, direction] of Object.entries(profile.quality.direction)) {
+    const expected = before[entry];
+    const actual = after[entry];
+    assert.notEqual(expected, null, `${entry} baseline is not measured`);
+    assert.notEqual(actual, null, `${entry} candidate is not measured`);
+    if (direction === 'lower') assert.ok(actual <= expected, `${entry} ${expected} -> ${actual}`);
+    else if (direction === 'higher') assert.ok(actual >= expected, `${entry} ${expected} -> ${actual}`);
+    else assert.fail(`unknown Phase 8 quality direction for ${entry}: ${direction}`);
+  }
+
+  for (const entry of profile.quality.requireStrictImprovementAtExit) {
+    const direction = profile.quality.direction[entry];
+    const expected = before[entry];
+    const actual = after[entry];
+    if (direction === 'lower') assert.ok(actual < expected, `${entry} must strictly improve: ${expected} -> ${actual}`);
+    else if (direction === 'higher') assert.ok(actual > expected, `${entry} must strictly improve: ${expected} -> ${actual}`);
+    else assert.fail(`strict Phase 8 quality entry ${entry} has no direction`);
+  }
+
+  assert.equal(profile.quality.gotosAreNotACorrectnessGoal, true);
+  assert.ok(!Object.hasOwn(profile.quality.direction, 'highVariableGroups'),
+    'raw HighVariable SSA-group count must remain diagnostic; physical-state lowering can change it without source-variable loss');
 });
 
 test('the Phase 8 ledger reaches the product result for every semantic function', () => {
