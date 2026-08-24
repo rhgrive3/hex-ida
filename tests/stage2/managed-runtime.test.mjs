@@ -65,6 +65,7 @@ for (const frontendId of frontends) {
   assert.equal(validateManagedRuntimeState(binding, { threads: [{ frames: [{ moduleIdentity: 'wrong', locals: [], operandStack: [] }] }] }).reason, 'managed-runtime-frame-module-mismatch');
   assert.equal(validateManagedRuntimeState(binding, {}).reason, 'managed-runtime-threads-required');
   assert.equal(validateManagedRuntimeState(binding, { threads: [{ frames: [{ locals: [], operandStack: [] }] }] }).reason, 'managed-runtime-frame-module-required');
+  assert.equal(validateManagedRuntimeState(binding, { threads: ['forged-thread'] }).reason, 'managed-runtime-thread-invalid', 'non-object managed threads cannot satisfy bounded runtime evidence');
 
   const observation = createRuntimeObservation({ binding: binding.runtime, sequence: 1, observedAt: '2026-08-22T00:00:00Z', kind: 'managed-frame', payload: { moduleIdentity: binding.runtimeModuleIdentity } });
   assert.equal(validateManagedRuntimeObservation(binding, observation).ok, true);

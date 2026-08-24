@@ -92,7 +92,25 @@
       ],
       "inventoryRefs": [
         "tests/machine-effects/a2-denominator-inventory.json",
+        "tests/machine-effects/arm64-a64-control-denominator.test.mjs",
+        "tests/machine-effects/arm64-a64-flags-denominator.test.mjs",
+        "tests/machine-effects/arm64-a64-fp-denominator.test.mjs",
+        "tests/machine-effects/arm64-a64-integer-denominator.test.mjs",
+        "tests/machine-effects/arm64-a64-system-denominator.test.mjs",
+        "tests/machine-effects/arm64e-pac-denominator.test.mjs",
+        "tests/machine-effects/riscv64-rv64imc-denominator.test.mjs",
+        "tests/machine-effects/x86-capstone-registry.test.mjs",
+        "tests/machine-effects/x86-long64-lea-denominator.test.mjs",
         "tools/validation/machine-effects/a2-denominator.mjs",
+        "tools/validation/machine-effects/arm64-a64-control-denominator.mjs",
+        "tools/validation/machine-effects/arm64-a64-flags-denominator.mjs",
+        "tools/validation/machine-effects/arm64-a64-fp-denominator.mjs",
+        "tools/validation/machine-effects/arm64-a64-integer-denominator.mjs",
+        "tools/validation/machine-effects/arm64-a64-system-denominator.mjs",
+        "tools/validation/machine-effects/arm64e-pac-denominator.mjs",
+        "tools/validation/machine-effects/riscv64-rv64imc-denominator.mjs",
+        "tools/validation/machine-effects/x86-capstone-registry.mjs",
+        "tools/validation/machine-effects/x86-long64-lea-denominator.mjs",
         "tools/validation/stage2/build-profile-denominator-inventory.mjs"
       ]
     },
@@ -164,7 +182,16 @@
       "inventoryRefs": [
         "js/runtime/authority.js",
         "js/runtime/stage2.js",
+        "tests/stage2/a7-cross-target-real-fixtures.test.mjs",
+        "tests/stage2/a7-lldb-real-fixture.test.mjs",
+        "tests/stage2/fixtures/a7-runtime/aarch64-a64.S",
+        "tests/stage2/fixtures/a7-runtime/aarch64-pac.S",
+        "tests/stage2/fixtures/a7-runtime/riscv64-rv64imc.S",
+        "tests/stage2/fixtures/a7-runtime/x86_64-long64.S",
         "tests/stage2/runtime-authority.test.mjs",
+        "tools/validation/stage2/a7-cross-target-real-fixtures.mjs",
+        "tools/validation/stage2/a7-lldb-real-fixture.mjs",
+        "tools/validation/stage2/a7-profile-contract.mjs",
         "tools/validation/stage2/build-profile-denominator-inventory.mjs"
       ]
     },
@@ -511,6 +538,10 @@
         "collaboration:remote-security-v1:remote.security.transport-proof-classes"
       ],
       "inventoryRefs": [
+        "js/collaboration/remote-authority.js",
+        "js/collaboration/remote-transport.js",
+        "tests/stage2/remote-canonical-transport.test.mjs",
+        "tests/stage2/remote-collaboration.test.mjs",
         "tools/validation/phase12/denominator-inventory.json",
         "tools/validation/phase12/denominator.mjs",
         "tools/validation/stage2/build-profile-denominator-inventory.mjs"

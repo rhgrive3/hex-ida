@@ -58,11 +58,14 @@ function guarded(value) {
 }
 
 {
-  const unknown = liftArm64ControlEffects(instruction('br', 'x3'));
-  assert.equal(unknown.completeness, 'partial', 'missing guarded-page evidence must not guess a BR BTYPE');
-  assert.equal(btypeValue(unknown), null, 'unknown BR BTYPE is an explicit unknown-width state write');
-  assert.ok(unknown.unknownEffects.categories.includes('registers'));
-  assert.match(unknown.operations.find((operation) => operation.kind === 'unknown')?.reason || '', /guarded-state-unavailable/);
+  const symbolic = liftArm64ControlEffects(instruction('br', 'x3'));
+  assert.equal(symbolic.completeness, 'exact', 'unobserved guarded-page state remains an explicit semantic input');
+  assert.equal(btypeValue(symbolic), null, 'symbolic BR BTYPE must not invent a concrete guarded-page value');
+  const guardRead = symbolic.operations.find((operation) => operation.kind === 'register-read' && operation.register.registerId === 'arm64.exec-page.guarded');
+  const select = symbolic.operations.find((operation) => operation.kind === 'value' && operation.opcode === 'select');
+  assert.ok(guardRead, 'BR must read the canonical runtime mapped-page guarded state');
+  assert.deepEqual(select?.inputs.slice(1).map((value) => Number(value.value)), [3,1], 'guarded and unguarded BTYPE outcomes stay explicit');
+  assert.equal(symbolic.unknownEffects, undefined);
 }
 
 {
@@ -116,6 +119,12 @@ function guarded(value) {
   const guardedBundle = ARM64E_ARCHITECTURE.liftExact(guardedBranch, guarded(true));
   assert.equal(guardedBundle.completeness, 'exact-with-intrinsic');
   assert.equal(btypeValue(guardedBundle), 3, 'authenticated BR uses the same guarded-page rule');
+
+  const symbolicBranch = instruction('braa', 'x4, x5', { mode:'arm64e' });
+  const symbolicBundle = ARM64E_ARCHITECTURE.liftExact(symbolicBranch);
+  assert.equal(symbolicBundle.completeness, 'exact-with-intrinsic');
+  assert.ok(symbolicBundle.operations.some((operation) => operation.kind === 'register-read'
+    && operation.register.registerId === 'arm64.exec-page.guarded'), 'authenticated BR retains mapped-page state as a symbolic input');
 
   const call = instruction('blraaz', 'x6', { mode:'arm64e' });
   const callBundle = ARM64E_ARCHITECTURE.liftExact(call);

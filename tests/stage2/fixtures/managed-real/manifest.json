@@ -11,6 +11,15 @@
       "compiler": "clang-18 --target=wasm32 --no-entry --strip-all -Oz"
     },
     {
+      "id": "dex-d8-8.3.37-add",
+      "frontendId": "dex",
+      "path": "dex/ManagedFixture.dex",
+      "source": "dex/ManagedFixture.java",
+      "size": 608,
+      "sha256": "746d83061f148e27da0c5ef0ebdde853386424a9239974e0bee989b6838b0cfb",
+      "compiler": "D8 8.3.37 (R8 build 3ccc501316db4344828180e7152a4adb97522bf8; javac 11.0.14.1 -source 8 -target 8 -g:none; min-api 21)"
+    },
+    {
       "id": "cil-dotnet10-add",
       "frontendId": "cil",
       "path": "cil/ManagedFixture.dll",

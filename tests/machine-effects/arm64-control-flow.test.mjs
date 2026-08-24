@@ -66,6 +66,14 @@ function registerWrites(bundle) { return bundle.operations.filter((operation) =>
 }
 
 {
+  for (const mnemonic of ['br','blr','ret']) {
+    const bundle = lift(mnemonic, 'xzr');
+    assert.equal(bundle.completeness, 'exact');
+    assert.deepEqual(bundle.possibleFaults, [], `${mnemonic.toUpperCase()} XZR has the fixed aligned target zero`);
+  }
+}
+
+{
   const bundle = lift('b.eq', '#0x7000', { branchTarget: 0x7000n, address: 0x4300n });
   assert.equal(bundle.completeness, 'exact');
   assert.equal(bundle.controlEffect.kind, 'conditional-branch');

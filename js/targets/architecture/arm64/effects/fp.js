@@ -25,6 +25,9 @@ const FP_COMPARE = new Set(['fcmp','fcmpe','fccmp','fccmpe']);
 const FP_BITWISE = new Set(['fmov','fabs','fneg']);
 const FP_SELECT = new Set(['fcsel']);
 const OWNED = new Set([...FP_ENV_INTRINSICS, ...FP_COMPARE, ...FP_BITWISE, ...FP_SELECT]);
+export const ARM64_FP_EFFECT_MNEMONICS = Object.freeze(new Set(OWNED));
+const FP_TERNARY = new Set(['fmadd','fmsub','fnmadd','fnmsub']);
+const FP_BINARY = new Set(['fadd','fsub','fmul','fdiv','fmax','fmin','fmaxnm','fminnm','frecps','frsqrts']);
 
 const FLOAT_FORMAT = Object.freeze({
   16: 'ieee754-binary16',
@@ -125,14 +128,37 @@ function temp(id, valueType) {
 
 function appendRegisterRead(operations, op, valueType, id) {
   const widthBits = valueType?.widthBits || scalarWidth(op);
+  if (op?.k === 'reg' && op.cls === 'zr' && widthBits && valueType?.kind === 'bitvector') {
+    return createBitVectorValue(widthBits, 0n);
+  }
   const physicalId = physicalRegisterId(op);
   if (!physicalId || !widthBits || !valueType) return null;
 
   if (op?.cls !== 'fp' && op?.cls !== 'vec') {
-    const reg = registerValue(op, widthBits);
-    if (!reg) return null;
-    const value = temp(id, valueType);
-    operations.push(createMachineOperation({ kind: 'register-read', register: reg, value }));
+    if (op?.cls !== 'gp') return null;
+    const viewBits = scalarWidth(op);
+    if ((viewBits !== 32 && viewBits !== 64) || widthBits > viewBits || valueType.kind !== 'bitvector') return null;
+    const physical = temp(`${id}:physical`, bitType(64));
+    operations.push(createMachineOperation({
+      kind: 'register-read', register: createRegisterValue(physicalId, 64, { view:physicalId }), value:physical,
+      metadata: { architecturalViewRead:String(op.text || physicalId).toLowerCase(), physicalWidthBits:64 },
+    }));
+    let value = physical;
+    if (viewBits < 64) {
+      value = temp(`${id}:view`, bitType(viewBits));
+      operations.push(createMachineOperation({
+        kind:'value', opcode:'truncate', inputs:[physical], outputs:[value],
+        metadata:{ purpose:'arm64-gp-register-view', fromBits:64, toBits:viewBits, readPolicy:'low-bits' },
+      }));
+    }
+    if (widthBits < viewBits) {
+      const narrowed = temp(id, valueType);
+      operations.push(createMachineOperation({
+        kind:'value', opcode:'truncate', inputs:[value], outputs:[narrowed],
+        metadata:{ purpose:'arm64-fp-transfer-width', fromBits:viewBits, toBits:widthBits },
+      }));
+      value = narrowed;
+    }
     return value;
   }
 
@@ -270,6 +296,52 @@ function immediateValue(op, widthBits, asFloat) {
   return createBitVectorValue(widthBits, value);
 }
 
+export function decodeArm64FpImmediate(imm8Value, widthBits) {
+  const imm8 = Number(imm8Value);
+  const shape = { 16:[5,10], 32:[8,23], 64:[11,52] }[widthBits];
+  if (!shape || !Number.isInteger(imm8) || imm8 < 0 || imm8 > 0xff) return null;
+  const [exponentBits,fractionBits] = shape;
+  const sign = (imm8 >>> 7) & 1;
+  const b6 = (imm8 >>> 6) & 1;
+  const repeated = b6 ? (1 << (exponentBits - 3)) - 1 : 0;
+  const exponent = ((b6 ^ 1) << (exponentBits - 1)) | (repeated << 2) | ((imm8 >>> 4) & 3);
+  const fraction = BigInt(imm8 & 0xf) << BigInt(fractionBits - 4);
+  return (BigInt(sign) << BigInt(widthBits - 1)) | (BigInt(exponent) << BigInt(fractionBits)) | fraction;
+}
+
+function fpBitsAsNumber(bitsValue, widthBits) {
+  const bits = BigInt(bitsValue);
+  const [exponentBits,fractionBits] = { 16:[5,10], 32:[8,23], 64:[11,52] }[widthBits] || [];
+  if (!exponentBits) return null;
+  const sign = Number((bits >> BigInt(widthBits - 1)) & 1n) ? -1 : 1;
+  const exponentMask = (1n << BigInt(exponentBits)) - 1n;
+  const exponent = Number((bits >> BigInt(fractionBits)) & exponentMask);
+  const fractionMask = (1n << BigInt(fractionBits)) - 1n;
+  const fraction = Number(bits & fractionMask) / (2 ** fractionBits);
+  return sign * (1 + fraction) * (2 ** (exponent - ((1 << (exponentBits - 1)) - 1)));
+}
+
+export function arm64FpImmediateBitPattern(op, widthBits) {
+  if (!op || op.k !== 'imm') return null;
+  if (op.bitPattern != null) {
+    let candidate;
+    try { candidate = BigInt.asUintN(widthBits, BigInt(op.bitPattern)); } catch { return null; }
+    for (let imm8=0; imm8<256; imm8++) if (decodeArm64FpImmediate(imm8,widthBits) === candidate) return candidate;
+    return null;
+  }
+  if (op.float == null || !Number.isFinite(Number(op.float))) return null;
+  const numeric = Number(op.float);
+  let match = null;
+  for (let imm8=0; imm8<256; imm8++) {
+    const bits = decodeArm64FpImmediate(imm8,widthBits);
+    if (Object.is(fpBitsAsNumber(bits,widthBits),numeric)) {
+      if (match != null && match !== bits) return null;
+      match = bits;
+    }
+  }
+  return match;
+}
+
 function sourceValue(operations, op, valueType, id) {
   if (!op) return null;
   if (op.k === 'reg') return appendRegisterRead(operations, op, valueType, id);
@@ -298,20 +370,32 @@ function exactBitwise(instruction, context, mnemonic, ops) {
   const src = ops[1];
   const dstBits = scalarWidth(dst);
   const srcBits = scalarWidth(src) || dstBits;
-  if (!dst || !dstBits || !src || dstBits !== srcBits) {
+  const dstGp = dst?.cls === 'gp' || dst?.cls === 'zr';
+  const srcGp = src?.cls === 'gp' || src?.cls === 'zr';
+  const fpToGpHalf = mnemonic === 'fmov' && src?.cls === 'fp' && srcBits === 16 && dstGp && dstBits === 32;
+  const gpToFpHalf = mnemonic === 'fmov' && srcGp && srcBits === 32 && dst?.cls === 'fp' && dstBits === 16;
+  const sameWidthFp = dst?.cls === 'fp' && src?.cls === 'fp' && dstBits === srcBits && [16,32,64].includes(dstBits);
+  const sameWidthTransfer = mnemonic === 'fmov'
+    && ((dstGp && src?.cls === 'fp') || (dst?.cls === 'fp' && srcGp))
+    && dstBits === srcBits && [32,64].includes(dstBits);
+  const fpImmediate = mnemonic === 'fmov' && dst?.cls === 'fp' && src?.k === 'imm' && [16,32,64].includes(dstBits);
+  if (!dst || !dstBits || !src
+    || (mnemonic === 'fmov' ? !(sameWidthFp || sameWidthTransfer || fpToGpHalf || gpToFpHalf || fpImmediate) : !sameWidthFp)) {
     return partial(instruction, context, `${mnemonic}-operand-width-unavailable`, ['registers','other']);
   }
 
   const operations = [];
-  const type = bitType(dstBits);
+  const transferBits = Math.min(dstBits,srcBits);
+  const type = bitType(transferBits);
   let input;
   if (src.k === 'imm') {
-    if (src.bitPattern == null) {
+    const bitPattern = arm64FpImmediateBitPattern(src,dstBits);
+    if (bitPattern == null) {
       const unknownFloat = FLOAT_FORMAT[dstBits] ? createFloatValue(dstBits, FLOAT_FORMAT[dstBits], { semanticValue: String(src.float ?? src.text ?? 'unknown') }) : type;
       appendDestinationWrite(operations, dst, unknownFloat, `${mnemonic}:dst`);
       return partial(instruction, context, 'fp-immediate-bit-pattern-unavailable', ['other'], operations);
     }
-    input = createBitVectorValue(dstBits, BigInt.asUintN(dstBits, BigInt(src.bitPattern)));
+    input = createBitVectorValue(dstBits,bitPattern);
   } else {
     input = sourceValue(operations, src, type, `${mnemonic}:src0`);
   }
@@ -322,7 +406,15 @@ function exactBitwise(instruction, context, mnemonic, ops) {
     : mnemonic === 'fneg' ? 'arm64.fp.toggle-sign-bit'
       : 'arm64.fp.bitcopy';
   operations.push(createMachineOperation({ kind: 'value', opcode, inputs: [input], outputs: [output] }));
-  appendDestinationWrite(operations, dst, output, `${mnemonic}:dst`);
+  let destinationValue = output;
+  if (dstBits > transferBits) {
+    destinationValue = temp(`${mnemonic}:result-extended`, bitType(dstBits));
+    operations.push(createMachineOperation({
+      kind:'value', opcode:'zero-extend', inputs:[output], outputs:[destinationValue],
+      metadata:{ purpose:'arm64-fmov-half-to-w', fromBits:transferBits, toBits:dstBits },
+    }));
+  }
+  appendDestinationWrite(operations, dst, destinationValue, `${mnemonic}:dst`);
   return bundle(instruction, context, { operations, completeness: 'exact', metadata: { widthBits: dstBits } });
 }
 
@@ -332,7 +424,10 @@ function exactSelect(instruction, context, mnemonic, ops) {
   const b = ops[2];
   const width = scalarWidth(dst);
   const type = width ? floatType(width) : null;
-  if (!type || scalarWidth(a) !== width || scalarWidth(b) !== width) {
+  const condition = ops.find((op) => op?.k === 'cond')?.text;
+  if (!type || dst?.cls !== 'fp' || a?.cls !== 'fp' || b?.cls !== 'fp'
+    || scalarWidth(a) !== width || scalarWidth(b) !== width
+    || !/^(?:eq|ne|cs|hs|cc|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le|al|nv)$/.test(String(condition || '').toLowerCase())) {
     return partial(instruction, context, 'fcsel-width-or-operands-unavailable', ['registers','flags','other']);
   }
   const operations = [];
@@ -353,7 +448,7 @@ function exactSelect(instruction, context, mnemonic, ops) {
   });
   operations.push(createMachineOperation({
     kind: 'intrinsic', intrinsicId: 'arm64.fp.fcsel', effectSummary: summary,
-    metadata: { condition: ops.find((op) => op?.k === 'cond')?.text || null, widthBits: width },
+    metadata: { condition, widthBits: width },
   }));
   appendDestinationWrite(operations, dst, result, 'fcsel:dst');
   return bundle(instruction, context, { operations, completeness: 'exact-with-intrinsic', metadata: { widthBits: width } });
@@ -363,9 +458,18 @@ function compare(instruction, context, mnemonic, ops) {
   const lhs = ops[0];
   const width = scalarWidth(lhs);
   const type = width ? floatType(width) : null;
-  if (!type) return partial(instruction, context, `${mnemonic}-float-width-unavailable`, ['registers','flags','other']);
+  if (!type || lhs?.cls !== 'fp') return partial(instruction, context, `${mnemonic}-float-width-unavailable`, ['registers','flags','other']);
 
   const rhs = ops[1];
+  const condition = ops.find((op) => op?.k === 'cond')?.text;
+  const nzcv = ops.find((op,index) => index >= 2 && op?.k === 'imm' && op?.value != null)?.value;
+  const conditional = mnemonic.startsWith('fccmp');
+  const rhsIsZero = rhs?.k === 'imm' && (Number(rhs.float) === 0 || rhs.bitPattern === 0n || rhs.bitPattern === '0');
+  if ((!rhsIsZero && (rhs?.k !== 'reg' || scalarWidth(rhs) !== width))
+    || (conditional && (!/^(?:eq|ne|cs|hs|cc|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le|al|nv)$/.test(String(condition || '').toLowerCase())
+      || nzcv == null || nzcv < 0n || nzcv > 15n))) {
+    return partial(instruction, context, `${mnemonic}-operand-shape-unavailable`, ['registers','flags','other']);
+  }
   const operations = [];
   const inputs = [];
   const left = sourceValue(operations, lhs, type, `${mnemonic}:src0`);
@@ -379,9 +483,9 @@ function compare(instruction, context, mnemonic, ops) {
   inputs.push(appendNamedRegisterRead(operations, FPCR, 32, `${mnemonic}:fpcr`));
   inputs.push(appendNamedRegisterRead(operations, FPSR, 32, `${mnemonic}:fpsr`));
 
-  const nzcv = temp(`${mnemonic}:nzcv`, bitType(4));
+  const nzcvOut = temp(`${mnemonic}:nzcv`, bitType(4));
   const fpsr = temp(`${mnemonic}:fpsr-out`, bitType(32));
-  const outputs = [nzcv, fpsr];
+  const outputs = [nzcvOut, fpsr];
   const reads = [...registerIdsOf([lhs, rhs]), FPCR, FPSR];
   if (mnemonic.startsWith('fccmp')) reads.push(NZCV);
   const summary = createIntrinsicEffectSummary({
@@ -400,11 +504,11 @@ function compare(instruction, context, mnemonic, ops) {
     metadata: {
       widthBits: width,
       signalingNaN: mnemonic.endsWith('e'),
-      condition: ops.find((op) => op?.k === 'cond')?.text || null,
-      fallbackNzcv: ops.find((op, index) => index >= 2 && op?.k === 'imm' && op?.value != null)?.value ?? null,
+      condition: condition || null,
+      fallbackNzcv: nzcv ?? null,
     },
   }));
-  appendNamedRegisterWrite(operations, NZCV, 4, nzcv);
+  appendNamedRegisterWrite(operations, NZCV, 4, nzcvOut);
   appendNamedRegisterWrite(operations, FPSR, 32, fpsr);
   return bundle(instruction, context, { operations, completeness: 'exact-with-intrinsic', metadata: { widthBits: width } });
 }
@@ -423,20 +527,49 @@ function envIntrinsic(instruction, context, mnemonic, ops) {
 
   const operations = [];
   const inputs = [];
+  const fixedPoint = sourceOps.length === 2 && sourceOps[1]?.k === 'imm';
+  const fixedPointMnemonic = ['scvtf','ucvtf','fcvtzs','fcvtzu'].includes(mnemonic);
+  const expectedSources = FP_TERNARY.has(mnemonic) ? 3 : FP_BINARY.has(mnemonic) ? 2 : 1;
+  if ((sourceOps.length !== expectedSources && !(fixedPoint && expectedSources === 1)) || (fixedPoint && !fixedPointMnemonic)) {
+    return partial(instruction, context, `${mnemonic}-operand-count-unavailable`, ['registers','other'], operations);
+  }
+  const dataSources = fixedPoint ? sourceOps.slice(0,1) : sourceOps;
+  if (floatToFloat) {
+    if (dst?.cls !== 'fp' || dataSources[0]?.cls !== 'fp' || scalarWidth(dataSources[0]) === dstWidth
+      || ![16,32,64].includes(scalarWidth(dataSources[0]))) {
+      return partial(instruction, context, `${mnemonic}-conversion-width-invalid`, ['registers','other'], operations);
+    }
+  } else if (integerToFloat) {
+    if (dst?.cls !== 'fp' || !['gp','zr'].includes(dataSources[0]?.cls) || ![32,64].includes(scalarWidth(dataSources[0]))) {
+      return partial(instruction, context, `${mnemonic}-integer-source-invalid`, ['registers','other'], operations);
+    }
+  } else if (conversionToInteger) {
+    if (!['gp','zr'].includes(dst?.cls) || dataSources[0]?.cls !== 'fp' || ![16,32,64].includes(scalarWidth(dataSources[0]))) {
+      return partial(instruction, context, `${mnemonic}-conversion-operands-invalid`, ['registers','other'], operations);
+    }
+  } else if (dst?.cls !== 'fp' || dataSources.some((op)=>op?.cls !== 'fp' || scalarWidth(op) !== dstWidth)) {
+    return partial(instruction, context, `${mnemonic}-scalar-width-mismatch`, ['registers','other'], operations);
+  }
   for (let i = 0; i < sourceOps.length; i++) {
     const op = sourceOps[i];
     let valueType;
-    if (integerToFloat && i === 0) valueType = bitType(scalarWidth(op) || 64);
+    if (i > 0 && op.k === 'imm') valueType = bitType(7);
+    else if (integerToFloat && i === 0) valueType = bitType(scalarWidth(op) || 64);
     else valueType = floatType(scalarWidth(op) || dstWidth);
     if (!valueType) return partial(instruction, context, `${mnemonic}-source-type-unavailable`, ['registers','other'], operations);
     const value = sourceValue(operations, op, valueType, `${mnemonic}:src${i}`);
     if (!value) return partial(instruction, context, `${mnemonic}-source-unavailable`, ['registers','other'], operations);
-    if (op.k === 'imm' && value.kind === 'float' && value.bitPattern == null && op.float != null && op.float !== 0) {
+    if (i > 0 && op.k === 'imm') {
+      const integerWidth = integerToFloat ? scalarWidth(sourceOps[0]) : dstWidth;
+      if (op.value == null || op.value < 1n || op.value > BigInt(integerWidth || 0)) {
+        return partial(instruction, context, `${mnemonic}-fixed-point-scale-out-of-range`, ['other'], operations);
+      }
+    } else if (op.k === 'imm' && value.kind === 'float' && value.bitPattern == null && op.float != null && op.float !== 0) {
       return partial(instruction, context, `${mnemonic}-immediate-bit-pattern-unavailable`, ['other'], operations);
     }
     inputs.push(value);
   }
-  if (inputs.length === 0 && !floatToFloat) {
+  if (inputs.length === 0) {
     return partial(instruction, context, `${mnemonic}-source-unavailable`, ['registers','other'], operations);
   }
 
@@ -484,18 +617,11 @@ export function liftArm64FpEffects(instruction, context = {}) {
   const mnemonic = mnemonicOf(instruction);
   const ops = operandsOf(instruction);
 
-  if (isSve(instruction)) {
-    if (mnemonic.startsWith('f') || OWNED.has(mnemonic)) {
-      return partial(instruction, context, 'arm64-sve-scalable-vector-semantics-unsupported', ['registers','flags','other']);
-    }
-    return null;
-  }
+  if (isSve(instruction)) return null;
 
   if (ops.some(isVectorOperand)) return null;
   if (!OWNED.has(mnemonic)) {
-    return mnemonic.startsWith('f')
-      ? partial(instruction, context, `arm64-fp-instruction-unsupported:${mnemonic || 'unknown'}`, ['registers','flags','other'])
-      : null;
+    return null;
   }
 
   if (FP_BITWISE.has(mnemonic)) return exactBitwise(instruction, context, mnemonic, ops);

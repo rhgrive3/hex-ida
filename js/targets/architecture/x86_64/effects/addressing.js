@@ -77,9 +77,8 @@ function validatedComponents(instruction, memory) {
   if (!segment) return null;
 
   const ripRelative = memory.base?.physicalId === 'rip';
-  if (ripRelative && widthBits !== 64) return null;
-
   if (memory.base && !ripRelative && memory.base.viewBits !== widthBits) return null;
+  if (ripRelative && memory.base.viewBits !== widthBits) return null;
   if (memory.index && memory.index.viewBits !== widthBits) return null;
   if (memory.index?.physicalId === 'rip') return null;
 
@@ -95,10 +94,11 @@ function structuredCalculation(instruction, memory, state) {
 
   if (memory.base) {
     if (state.ripRelative) {
-      nextInstructionAddress = (BigInt(instruction.address) + BigInt(instruction.length)) & MASK64;
+      const addressMask = widthBits === 32 ? (1n << 32n) - 1n : MASK64;
+      nextInstructionAddress = (BigInt(instruction.address) + BigInt(instruction.length)) & addressMask;
       base = Object.freeze({
         kind:'next-instruction-address',
-        widthBits:64,
+        widthBits,
         value:nextInstructionAddress,
         instructionAddress:BigInt(instruction.address) & MASK64,
         instructionLength:Number(instruction.length),
@@ -188,7 +188,7 @@ export function materializeX86Address(ctx, memoryOperand) {
 
   if (memory.base) {
     if (state.ripRelative) {
-      value = ctx.constant(64, BigInt(ctx.instruction.address) + BigInt(ctx.instruction.length));
+      value = ctx.constant(widthBits, BigInt(ctx.instruction.address) + BigInt(ctx.instruction.length));
     } else {
       const operand = x86RegisterOperand(memory.base.id);
       if (!operand || operand.widthBits !== widthBits) return null;

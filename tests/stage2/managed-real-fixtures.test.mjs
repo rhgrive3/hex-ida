@@ -8,6 +8,7 @@ import { createRuntimeObservation } from '../../js/runtime/authority.js';
 import { validateManagedRuntimeObservation } from '../../js/managed/runtime-binding.js';
 import { createManagedRuntimeBinding } from '../../js/managed/runtime-binding.js';
 import { CilFrontend } from '../../js/managed/cil/frontend.js';
+import { DexFrontend } from '../../js/managed/dex/frontend.js';
 import { JvmFrontend } from '../../js/managed/jvm/frontend.js';
 import { WasmFrontend } from '../../js/managed/wasm/frontend.js';
 
@@ -16,12 +17,13 @@ const fixtureRoot = path.join(root, 'fixtures', 'managed-real');
 const manifest = JSON.parse(fs.readFileSync(path.join(fixtureRoot, 'manifest.json'), 'utf8'));
 const frontends = Object.freeze({
   wasm: WasmFrontend,
+  dex: DexFrontend,
   cil: CilFrontend,
   jvm: JvmFrontend,
 });
 
 assert.equal(manifest.schemaVersion, 'hex-stage2-managed-real-fixtures/v1');
-assert.deepEqual(manifest.fixtures.map((fixture) => fixture.frontendId), ['wasm', 'cil', 'jvm']);
+assert.deepEqual(manifest.fixtures.map((fixture) => fixture.frontendId), ['wasm', 'dex', 'cil', 'jvm']);
 
 for (const fixture of manifest.fixtures) {
   const Frontend = frontends[fixture.frontendId];
@@ -55,7 +57,7 @@ for (const fixture of manifest.fixtures) {
   for await (const method of frontend.enumerateMethods(image)) methods.push(method);
   assert.ok(methods.length >= 1, `${fixture.id}: compiled method is enumerable`);
 
-  const selectedMethod = fixture.frontendId === 'jvm'
+  const selectedMethod = fixture.frontendId === 'jvm' || fixture.frontendId === 'dex'
     ? methods.find((method) => method.name === 'add')
     : methods[0];
   assert.ok(selectedMethod, `${fixture.id}: deterministic decodable method selection`);
@@ -114,4 +116,4 @@ for (const fixture of manifest.fixtures) {
   await assert.rejects(() => frontend.open(invalid), `${fixture.id}: invalid fixture is rejected by parser`);
 }
 
-console.log('[stage2] deterministic real managed fixtures passed for wasm/cil/jvm; dex remains toolchain-blocked');
+console.log('[stage2] deterministic real managed fixtures passed for wasm/dex/cil/jvm');

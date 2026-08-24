@@ -78,14 +78,14 @@ const immFloat = (value, text = `#${value}`) => ({ k:'imm', value:null, float:va
 
 {
   const effect = liftArm64FpEffects(instruction('fmov', [fp(0,64,'d'), immFloat(1.5, '#1.5')]));
-  assert.equal(effect.completeness, 'partial', 'parsed decimal FP immediates must not be claimed bit-exact without their encoded bit pattern');
-  assert.deepEqual(effect.unknownEffects.categories, ['other']);
+  assert.equal(effect.completeness, 'exact', 'A64 FPImm8 values have a finite exact reverse mapping from Capstone decimal text');
+  const bitcopy=effect.operations.find((op)=>op.kind==='value'&&op.opcode==='arm64.fp.bitcopy');
+  assert.equal(bitcopy.inputs[0].value,'4609434218613702656');
 }
 
 {
   const effect = liftArm64FpEffects(instruction('fadd', [], 'z0.s, z1.s, z2.s'));
-  assert.equal(effect.completeness, 'partial');
-  assert.match(effect.unknownEffects.reason, /sve-scalable-vector/);
+  assert.equal(effect, null, 'SVE belongs to the preceding SIMD family and must not broaden scalar FP ownership');
 }
 
 console.log('arm64 fp MachineEffects: PASS');

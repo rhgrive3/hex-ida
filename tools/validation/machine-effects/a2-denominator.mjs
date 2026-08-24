@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import { architecturePluginV2 } from '../../../js/targets/architecture/index.js';
@@ -18,11 +19,32 @@ import {
   X86_DECODER_SEMANTIC_VERSION,
 } from '../../../js/targets/architecture/x86_64/decoded-instruction.js';
 import { riscv64MachineEffectFamilies } from '../../../js/targets/architecture/riscv64/effects/index.js';
+import {
+  RV64IMC_DECODER_DENOMINATOR_ID,
+  RV64IMC_DECODER_DENOMINATOR_SCHEMA,
+  RV64IMC_32BIT_OUT_OF_PROFILE_NEGATIVES,
+  validateRv64imcDecoderDenominator,
+} from './riscv64-rv64imc-denominator.mjs';
+import { validateArm64A64ControlDenominator } from './arm64-a64-control-denominator.mjs';
+import { validateArm64A64FlagsDenominator } from './arm64-a64-flags-denominator.mjs';
+import { validateArm64A64FpDenominator } from './arm64-a64-fp-denominator.mjs';
+import { validateArm64A64SystemDenominator } from './arm64-a64-system-denominator.mjs';
+import {
+  ARM64_A64_INTEGER_DENOMINATOR_ID,
+  ARM64_A64_INTEGER_DENOMINATOR_SCHEMA,
+  validateArm64A64IntegerDenominator,
+} from './arm64-a64-integer-denominator.mjs';
+import {
+  ARM64E_PAC_DENOMINATOR_ID,
+  ARM64E_PAC_DENOMINATOR_SCHEMA,
+  validateArm64ePacDenominator,
+} from './arm64e-pac-denominator.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '../../..');
 export const DEFAULT_A2_DENOMINATOR_PATH = path.join(ROOT, 'tests/machine-effects/a2-denominator-inventory.json');
 export const A2_DENOMINATOR_SCHEMA = 'machine-effects-a2-denominator/v1';
+const STAGE2_BASELINE_COMMIT = '3f3778e5f2bef638456da19609d616d71a3daedc';
 
 const REGISTRIES = Object.freeze({
   arm64: Object.freeze({ families: arm64MachineEffectFamilies, pac: null, profileId: 'arm64:a64', source: 'js/targets/architecture/arm64/effects/index.js', exportName: 'arm64MachineEffectFamilies', decoderContractVersion: null, decoderSemanticVersion: null }),
@@ -51,19 +73,93 @@ function assertString(value, code, detail) {
   if (typeof value !== 'string' || value.trim() === '') fail(code, detail);
 }
 
+function validateNormativeExclusion(unit, pathName) {
+  const proof = unit.normativeExclusion;
+  if (proof == null) return false;
+  if (unit.id === 'pac-missing-structured-operands') {
+    if (unit.status !== 'excluded' || unit.coverage !== 'partial' || unit.preexisting !== true
+      || proof.schemaVersion !== 'machine-effects-preexisting-normative-exclusion/v1'
+      || proof.classification !== 'PREEXISTING_NORMATIVE_EXCLUSION'
+      || proof.baselineCommit !== STAGE2_BASELINE_COMMIT
+      || proof.baselineRef !== 'js/targets/architecture/arm64e/effects.js'
+      || proof.baselineBlob !== '56a7b2bb6fa34d2d4206f5b463770e6f2726efbc'
+      || proof.scope !== 'malformed-operands-outside-validated-pac-decoder-denominator'
+      || proof.currentProofSource !== 'tools/validation/machine-effects/arm64e-pac-denominator.mjs'
+      || proof.currentProofTest !== 'tests/machine-effects/arm64e-pac-denominator.test.mjs') {
+      fail('a2-denominator-arm64e-malformed-exclusion-drift', pathName);
+    }
+    const baselineBlob = spawnSync('git', ['rev-parse', `${STAGE2_BASELINE_COMMIT}:${proof.baselineRef}`], { cwd:ROOT, encoding:'utf8' });
+    if (baselineBlob.status !== 0 || baselineBlob.stdout.trim() !== proof.baselineBlob) fail('a2-denominator-arm64e-malformed-exclusion-baseline-unresolved', pathName);
+    return true;
+  }
+  if (unit.id !== 'fence.i' || unit.status !== 'excluded' || unit.coverage !== 'unsupported' || unit.preexisting !== true) {
+    fail('a2-denominator-normative-exclusion-unit-invalid', `${pathName}:${unit.id}`);
+  }
+  if (!proof || proof.schemaVersion !== 'machine-effects-preexisting-normative-exclusion/v1'
+    || proof.classification !== 'PREEXISTING_NORMATIVE_EXCLUSION') {
+    fail('a2-denominator-normative-exclusion-proof-invalid', `${pathName}:${unit.id}`);
+  }
+  if (proof.baselineCommit !== STAGE2_BASELINE_COMMIT
+    || proof.baselineRef !== 'tools/validation/phase6/profile.json'
+    || proof.baselineBlob !== '7f8e893d4645a20a7be309f071d1b3a18653b5d1') {
+    fail('a2-denominator-normative-exclusion-baseline-drift', `${pathName}:${unit.id}`);
+  }
+  const baselineBlob = spawnSync('git', ['rev-parse', `${STAGE2_BASELINE_COMMIT}:${proof.baselineRef}`], { cwd: ROOT, encoding: 'utf8' });
+  if (baselineBlob.status !== 0 || baselineBlob.stdout.trim() !== proof.baselineBlob) {
+    fail('a2-denominator-normative-exclusion-baseline-unresolved', `${pathName}:${unit.id}`);
+  }
+  const baseline = spawnSync('git', ['show', `${STAGE2_BASELINE_COMMIT}:${proof.baselineRef}`], { cwd: ROOT, encoding: 'utf8' });
+  if (baseline.status !== 0) fail('a2-denominator-normative-exclusion-baseline-unresolved', `${pathName}:${unit.id}`);
+  let profile;
+  try { profile = JSON.parse(baseline.stdout); } catch { fail('a2-denominator-normative-exclusion-baseline-invalid', `${pathName}:${unit.id}`); }
+  if (profile.isaProfile?.id !== 'rv64imc'
+    || JSON.stringify(profile.isaProfile?.standardExtensions) !== JSON.stringify(['M', 'C'])
+    || proof.excludedExtension !== 'Zifencei') {
+    fail('a2-denominator-normative-exclusion-scope-drift', `${pathName}:${unit.id}`);
+  }
+  if (proof.currentProofSource !== 'tools/validation/machine-effects/riscv64-rv64imc-denominator.mjs'
+    || proof.currentProofTest !== 'tests/machine-effects/riscv64-rv64imc-denominator.test.mjs') {
+    fail('a2-denominator-normative-exclusion-current-proof-drift', `${pathName}:${unit.id}`);
+  }
+  const negative = RV64IMC_32BIT_OUT_OF_PROFILE_NEGATIVES.find((item) => item.id === 'zifencei-extension');
+  if (!negative || negative.word !== 0x0000100f || negative.reason !== 'riscv64-zifencei-outside-phase6-profile') {
+    fail('a2-denominator-normative-exclusion-negative-proof-invalid', `${pathName}:${unit.id}`);
+  }
+  return true;
+}
+
 function validateStatus(unit, pathName) {
   if (!unit || typeof unit !== 'object') fail('a2-denominator-unit-invalid', pathName);
   assertString(unit.id, 'a2-denominator-unit-id-required', pathName);
   if (!['exact', 'excluded'].includes(unit.status)) fail('a2-denominator-unit-status-invalid', `${pathName}:${unit.id}`);
   if (unit.status === 'exact') {
     if (!['exact', 'exact-with-intrinsic'].includes(unit.coverage)) fail('a2-denominator-exact-coverage-invalid', `${pathName}:${unit.id}`);
-    if (unit.preexisting !== true) fail('a2-denominator-exact-preexisting-evidence-required', `${pathName}:${unit.id}`);
     assertString(unit.oracle, 'a2-denominator-exact-oracle-required', `${pathName}:${unit.id}`);
+    if (unit.preexisting !== true) {
+      const proof = unit.proof;
+      if (!proof || proof.schemaVersion !== 'machine-effects-effect-unit-proof/v1') {
+        fail('a2-denominator-exact-current-proof-required', `${pathName}:${unit.id}`);
+      }
+      for (const [field, expectedPrefix] of [
+        ['source', 'js/targets/architecture/'],
+        ['test', 'tests/'],
+        ['denominatorTest', 'tests/machine-effects/'],
+      ]) {
+        if (typeof proof[field] !== 'string' || !proof[field].startsWith(expectedPrefix)) {
+          fail('a2-denominator-exact-current-proof-ref-invalid', `${pathName}:${unit.id}:${field}`);
+        }
+        const resolved = path.resolve(ROOT, proof[field]);
+        if (!resolved.startsWith(`${ROOT}${path.sep}`) || !fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) {
+          fail('a2-denominator-exact-current-proof-ref-missing', `${pathName}:${unit.id}:${field}`);
+        }
+      }
+    }
   } else {
     if (!['partial', 'unknown', 'unsupported'].includes(unit.coverage)) fail('a2-denominator-exclusion-coverage-invalid', `${pathName}:${unit.id}`);
     if (unit.preexisting !== true) fail('a2-denominator-exclusion-must-be-preexisting', `${pathName}:${unit.id}`);
     assertString(unit.reason, 'a2-denominator-exclusion-reason-required', `${pathName}:${unit.id}`);
   }
+  validateNormativeExclusion(unit, pathName);
   if (unit.subunits != null) {
     if (!Array.isArray(unit.subunits) || unit.subunits.length === 0) fail('a2-denominator-subunits-required', `${pathName}:${unit.id}`);
     const ids = new Set();
@@ -75,18 +171,82 @@ function validateStatus(unit, pathName) {
   }
 }
 
+function validateArm64FamilyProof(unit, expected, live, pathName) {
+  if (!unit || unit.status !== 'exact' || unit.coverage !== (expected.coverage || 'exact') || unit.preexisting !== false
+    || unit.oracle !== expected.oracle
+    || unit.proof?.schemaVersion !== 'machine-effects-effect-unit-proof/v1'
+    || unit.proof?.source !== expected.source
+    || unit.proof?.test !== expected.test
+    || unit.proof?.denominatorTest !== expected.denominatorTest) {
+    fail(`a2-denominator-arm64-${expected.id}-proof-identity-drift`, pathName);
+  }
+  const proof = unit.proof.denominator;
+  for (const field of ['schemaVersion','denominatorId','profileId','encodingFamilyCount','encodingCaseCount',...(expected.cardinalityFields || [])]) {
+    if (proof?.[field] !== live[field]) fail(`a2-denominator-arm64-${expected.id}-proof-denominator-drift`, `${pathName}:${field}`);
+  }
+  if (!sameSet(proof.oracleIds || [], live.oracleIds)) fail(`a2-denominator-arm64-${expected.id}-proof-denominator-drift`, `${pathName}:oracleIds`);
+}
+
+function collectStatusGaps(unit, prefix, { exempt = false } = {}) {
+  if (!unit || typeof unit !== 'object') return [];
+  const pathName = `${prefix}:${unit.id}`;
+  const gaps = [];
+  if (!exempt && unit.status !== 'exact' && unit.normativeExclusion == null) gaps.push(pathName);
+  for (const subunit of unit.subunits || []) {
+    // Keep nested unit identities aligned with the canonical profile lock,
+    // which treats subunits as a path extension of their parent family.
+    gaps.push(...collectStatusGaps(subunit, pathName));
+  }
+  return gaps;
+}
+
 function validateDecoder(architecture, pathName) {
   const decoder = architecture.decoder;
   if (!decoder || typeof decoder !== 'object') fail('a2-denominator-decoder-required', pathName);
   assertString(decoder.provider, 'a2-denominator-decoder-provider-required', pathName);
   assertString(decoder.contract, 'a2-denominator-decoder-contract-required', pathName);
-  if (decoder.enumerationStatus !== 'excluded') fail('a2-denominator-decoder-gap-must-be-explicit', pathName);
-  assertString(decoder.reason, 'a2-denominator-decoder-gap-reason-required', pathName);
-  if (!Array.isArray(decoder.missingUnits) || decoder.missingUnits.length === 0) fail('a2-denominator-decoder-missing-units-required', pathName);
+  if (!['exact', 'excluded'].includes(decoder.enumerationStatus)) fail('a2-denominator-decoder-status-invalid', pathName);
+  if (!Array.isArray(decoder.missingUnits)) fail('a2-denominator-decoder-missing-units-invalid', pathName);
+  const denominatorUnits = decoder.units == null ? decoder.missingUnits : decoder.units;
+  if (!Array.isArray(denominatorUnits) || denominatorUnits.length === 0) fail('a2-denominator-decoder-units-required', pathName);
+  if (new Set(denominatorUnits).size !== denominatorUnits.length) fail('a2-denominator-decoder-units-duplicate', pathName);
+  if (!denominatorUnits.every((unit) => typeof unit === 'string' && unit.startsWith(`${architecture.profileId}:`))) {
+    fail('a2-denominator-decoder-unit-profile-drift', pathName);
+  }
   if (new Set(decoder.missingUnits).size !== decoder.missingUnits.length) fail('a2-denominator-decoder-missing-units-duplicate', pathName);
   if (!decoder.missingUnits.every((unit) => typeof unit === 'string' && unit.startsWith(`${architecture.profileId}:`))) {
     fail('a2-denominator-decoder-missing-unit-profile-drift', pathName);
   }
+  if (decoder.enumerationStatus === 'excluded') {
+    assertString(decoder.reason, 'a2-denominator-decoder-gap-reason-required', pathName);
+    if (decoder.missingUnits.length === 0) fail('a2-denominator-decoder-missing-units-required', pathName);
+    if (decoder.denominator != null) fail('a2-denominator-excluded-decoder-cannot-claim-proof', pathName);
+    return;
+  }
+  if (decoder.missingUnits.length !== 0) fail('a2-denominator-exact-decoder-cannot-have-missing-units', pathName);
+  if (decoder.units.length !== 1 || decoder.units[0] !== 'riscv64:rv64imc:all-valid-32-bit-and-compressed-encodings') {
+    fail('a2-denominator-exact-decoder-unit-set-drift', pathName);
+  }
+  if (architecture.id !== 'riscv64') fail('a2-denominator-exact-decoder-proof-unavailable', pathName);
+  const proof = decoder.denominator;
+  if (!proof || typeof proof !== 'object') fail('a2-denominator-exact-decoder-proof-required', pathName);
+  const live = validateRv64imcDecoderDenominator();
+  if (proof.schemaVersion !== RV64IMC_DECODER_DENOMINATOR_SCHEMA || proof.schemaVersion !== live.schemaVersion) {
+    fail('a2-denominator-exact-decoder-proof-schema-drift', pathName);
+  }
+  if (proof.denominatorId !== RV64IMC_DECODER_DENOMINATOR_ID || proof.denominatorId !== live.denominatorId) {
+    fail('a2-denominator-exact-decoder-proof-identity-drift', pathName);
+  }
+  if (proof.source !== 'tools/validation/machine-effects/riscv64-rv64imc-denominator.mjs') {
+    fail('a2-denominator-exact-decoder-proof-source-drift', pathName);
+  }
+  if (proof.test !== 'tests/machine-effects/riscv64-rv64imc-denominator.test.mjs') {
+    fail('a2-denominator-exact-decoder-proof-test-drift', pathName);
+  }
+  for (const field of ['encoding32FamilyCount', 'compressedFamilyCount', 'compressedWordCount', 'discriminatorTupleCount']) {
+    if (proof[field] !== live[field]) fail('a2-denominator-exact-decoder-proof-count-drift', `${pathName}:${field}`);
+  }
+  if (!sameSet(proof.oracleIds || [], live.oracleIds)) fail('a2-denominator-exact-decoder-proof-oracle-drift', pathName);
 }
 
 export function loadA2DenominatorInventory(file = DEFAULT_A2_DENOMINATOR_PATH) {
@@ -149,6 +309,31 @@ export function validateA2DenominatorInventory(inventory = loadA2DenominatorInve
       }
     }
 
+    if (architecture.id === 'arm64') {
+      const integer = families.find((family) => family.id === 'integer');
+      const liveInteger = validateArm64A64IntegerDenominator();
+      const proof = integer?.proof;
+      const denominator = proof?.denominator;
+      if (!integer || integer.status !== 'exact' || integer.coverage !== 'exact' || integer.preexisting !== false
+        || integer.oracle !== 'arm-a-profile-a64-data-processing-encoding-tables + deployed-capstone-5-arm64 + llvm-mc-18-aarch64-disassembler'
+        || proof?.schemaVersion !== 'machine-effects-effect-unit-proof/v1'
+        || proof?.source !== 'js/targets/architecture/arm64/effects/integer.js'
+        || proof?.test !== 'tests/machine-effects/arm64-int-arithmetic.test.mjs'
+        || proof?.denominatorTest !== 'tests/machine-effects/arm64-a64-integer-denominator.test.mjs') {
+        fail('a2-denominator-arm64-integer-proof-identity-drift', pathName);
+      }
+      if (!denominator || denominator.schemaVersion !== ARM64_A64_INTEGER_DENOMINATOR_SCHEMA
+        || denominator.schemaVersion !== liveInteger.schemaVersion
+        || denominator.denominatorId !== ARM64_A64_INTEGER_DENOMINATOR_ID
+        || denominator.denominatorId !== liveInteger.denominatorId
+        || denominator.source !== 'tools/validation/machine-effects/arm64-a64-integer-denominator.mjs'
+        || denominator.encodingFamilyCount !== liveInteger.encodingFamilyCount
+        || denominator.encodingCaseCount !== liveInteger.encodingCaseCount
+        || denominator.mnemonicCount !== liveInteger.mnemonicCount
+        || !sameSet(denominator.oracleIds || [],liveInteger.oracleIds)) {
+        fail('a2-denominator-arm64-integer-live-proof-drift', pathName);
+      }
+    }
     if (architecture.id === 'arm64e') {
       const pac = architecture.pointerAuthenticationMnemonics;
       if (!Array.isArray(pac) || !sameSet(pac, live.pac())) fail('a2-denominator-pac-registry-drift');
@@ -158,15 +343,81 @@ export function validateA2DenominatorInventory(inventory = loadA2DenominatorInve
       if (!baseline || baseline.kind !== 'delegation' || baseline.sourceArchitecture !== 'arm64' || baseline.status !== 'excluded' || baseline.preexisting !== true || !baseline.reason) fail('a2-denominator-arm64e-baseline-alias-missing');
       const exclusion = architecture.exclusions?.find((item) => item?.id === 'pac-missing-structured-operands');
       if (!exclusion || exclusion.status !== 'excluded') fail('a2-denominator-pac-partial-exclusion-missing');
+      const pacDenominator = architecture.decoder?.pacDenominator;
+      const livePac = validateArm64ePacDenominator();
+      if (!pacDenominator || pacDenominator.schemaVersion !== ARM64E_PAC_DENOMINATOR_SCHEMA
+        || pacDenominator.denominatorId !== ARM64E_PAC_DENOMINATOR_ID
+        || pacDenominator.source !== 'tools/validation/machine-effects/arm64e-pac-denominator.mjs'
+        || pacDenominator.test !== 'tests/machine-effects/arm64e-pac-denominator.test.mjs'
+        || pacDenominator.encodingFamilyCount !== livePac.encodingFamilyCount
+        || pacDenominator.encodingCaseCount !== livePac.encodingCaseCount
+        || pacDenominator.mnemonicCount !== livePac.mnemonicCount
+        || !sameSet(pacDenominator.oracleIds || [],livePac.oracleIds)
+        || architecture.decoder.missingUnits.includes('arm64e:a64+pac:all-pac-decoder-encodings-and-aliases')) {
+        fail('a2-denominator-arm64e-pac-proof-drift', pathName);
+      }
+    }
+    if (architecture.id === 'riscv64') {
+      const system = families.find((family) => family.id === 'system');
+      const environmentUnits = [system, ...(system?.subunits || []).filter((unit) => ['ecall', 'ebreak'].includes(unit.id))];
+      if (environmentUnits.length !== 3) fail('a2-denominator-riscv64-environment-unit-set-drift');
+      for (const unit of environmentUnits) {
+        if (unit.status !== 'exact' || unit.coverage !== 'exact-with-intrinsic' || unit.preexisting !== false) {
+          fail('a2-denominator-riscv64-environment-exactness-drift', unit.id);
+        }
+        if (unit.proof?.source !== 'js/targets/architecture/riscv64/effects/system.js'
+          || unit.proof?.test !== 'tests/phase6/effects/control-memory.test.mjs'
+          || unit.proof?.denominatorTest !== 'tests/machine-effects/riscv64-rv64imc-denominator.test.mjs') {
+          fail('a2-denominator-riscv64-environment-proof-drift', unit.id);
+        }
+      }
+    }
+    if (architecture.id === 'x86_64') {
+      const lea = families.find((family) => family.id === 'lea');
+      if (!lea || lea.status !== 'exact' || lea.coverage !== 'exact' || lea.preexisting !== false
+        || lea.oracle !== 'intel-sdm-vol2-lea-8d-r + deployed-capstone-5-x86-long64-detail'
+        || lea.proof?.schemaVersion !== 'machine-effects-effect-unit-proof/v1'
+        || lea.proof?.source !== 'js/targets/architecture/x86_64/effects/integer.js'
+        || lea.proof?.test !== 'tests/phase5/effects/memory/addressing.test.mjs'
+        || lea.proof?.denominatorTest !== 'tests/machine-effects/x86-long64-lea-denominator.test.mjs') {
+        fail('a2-denominator-x86-lea-proof-identity-drift', pathName);
+      }
+    }
+    if (architecture.id === 'arm64') {
+      validateArm64FamilyProof(families.find((family) => family.id === 'control'), {
+        id:'control', source:'js/targets/architecture/arm64/effects/control.js',
+        test:'tests/machine-effects/arm64-control-flow.test.mjs', denominatorTest:'tests/machine-effects/arm64-a64-control-denominator.test.mjs',
+        oracle:'arm-a-profile-a64-branch-encoding-tables + deployed-capstone-5-arm64 + llvm-mc-18-aarch64-disassembler',
+      }, validateArm64A64ControlDenominator(), pathName);
+      validateArm64FamilyProof(families.find((family) => family.id === 'flags'), {
+        id:'flags', source:'js/targets/architecture/arm64/effects/flags.js',
+        test:'tests/machine-effects/arm64-flags-nzcv.test.mjs', denominatorTest:'tests/machine-effects/arm64-a64-flags-denominator.test.mjs',
+        oracle:'arm-a-profile-a64-data-processing-encoding-tables + deployed-capstone-5-arm64 + llvm-mc-18-aarch64-disassembler',
+      }, validateArm64A64FlagsDenominator(), pathName);
+      validateArm64FamilyProof(families.find((family) => family.id === 'fp'), {
+        id:'fp', source:'js/targets/architecture/arm64/effects/fp.js',
+        test:'tests/machine-effects/arm64-fp-core.test.mjs', denominatorTest:'tests/machine-effects/arm64-a64-fp-denominator.test.mjs',
+        oracle:'arm-a-profile-a64-floating-point-encoding-tables + deployed-capstone-5-arm64 + llvm-mc-18-aarch64-disassembler',
+        coverage:'exact-with-intrinsic', cardinalityFields:['mnemonicCount','fpImmediateCount'],
+      }, validateArm64A64FpDenominator(), pathName);
+      validateArm64FamilyProof(families.find((family) => family.id === 'system'), {
+        id:'system', source:'js/targets/architecture/arm64/effects/system.js',
+        test:'tests/machine-effects/arm64-system-core.test.mjs', denominatorTest:'tests/machine-effects/arm64-a64-system-denominator.test.mjs',
+        oracle:'arm-a-profile-a64-exception-and-system-encoding-tables + deployed-capstone-5-arm64 + llvm-mc-18-aarch64-disassembler',
+        coverage:'exact-with-intrinsic', cardinalityFields:['mnemonicCount','selectorCount','registerCount'],
+      }, validateArm64A64SystemDenominator(), pathName);
     }
   }
 
   const blockingGaps = inventory.architectures.flatMap((architecture) => [
     ...architecture.decoder.missingUnits,
-    ...(architecture.effectRegistry.families || [])
-      .filter((unit) => unit.status !== 'exact' && !(architecture.id === 'riscv64' && unit.id === 'fallback-unmatched-decoder-family'))
-      .map((unit) => `${architecture.profileId}:effect-family:${unit.id}`),
-    ...(architecture.exclusions || []).filter((unit) => unit.status !== 'exact').map((unit) => `${architecture.profileId}:explicit-case:${unit.id}`),
+    ...(architecture.effectRegistry.families || []).flatMap((unit) => collectStatusGaps(
+      unit,
+      `${architecture.profileId}:effect-family`,
+      { exempt: architecture.id === 'riscv64' && unit.id === 'fallback-unmatched-decoder-family' },
+    )),
+    ...(architecture.exclusions || []).flatMap((unit) => collectStatusGaps(unit, `${architecture.profileId}:explicit-case`)),
+    ...(architecture.aliases || []).flatMap((unit) => collectStatusGaps(unit, `${architecture.profileId}:alias`)),
   ]).sort();
   return Object.freeze({
     valid: true,

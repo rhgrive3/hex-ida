@@ -121,9 +121,7 @@ const REQUIRED_NORMATIVE_EXCLUSIONS = Object.freeze(new Set([
   'remote.derived-analysis-egress',
 ]));
 
-const REQUIRED_BLOCKING_GAPS = Object.freeze(new Set([
-  'remote.remote-canonical-transport',
-]));
+const REQUIRED_BLOCKING_GAPS = Object.freeze(new Set());
 
 const EXPECTED_TRUTH = Object.freeze({
   knowledgePackages: Object.freeze({
@@ -348,6 +346,7 @@ function secureEnvelope(input = {}) {
 function behaviorRemoteSecurityGate() {
   const gate = new remote.RemoteCollaborationGate({
     projectIdentity: 'remote-project', sessionIdentity: 'remote-session', allowedActors: { actor: ['fact:name', 'action:set'] },
+    verifyTransportProof: (proof) => proof.proofIdentity === 'proof',
   });
   const observed = new Set();
   const insecure = remote.createRemoteCollaborationEnvelope({

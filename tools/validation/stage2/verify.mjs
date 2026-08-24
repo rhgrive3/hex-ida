@@ -3,10 +3,16 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { validatePhysicalIPadEvidence } from '../../../js/platform/physical-ipad-evidence.js';
+import { validatePhysicalIPadEvidence, validatePhysicalIPadScenarioOutput } from '../../../js/platform/physical-ipad-evidence.js';
 import { stableDigest } from '../../../js/core/identity/index.js';
 import { STAGE2_PROFILE_EVIDENCE_IDS, validateStage2DenominatorLock, validateStage2ProfileEvidence } from '../../../js/platform/stage2-profile-evidence.js';
 import { a2DenominatorReport } from '../machine-effects/a2-denominator.mjs';
+import { phase12DenominatorReport } from '../phase12/denominator.mjs';
+import { f6KnownImplementationGaps } from '../../../js/rebuild/transaction-v2.js';
+import { PROFILE_COMMAND_PROOF_MARKERS, PROFILE_EVIDENCE_RUN_ROOT, PROFILE_UNIT_PROOF_RULES, PROFILE_UNIT_PROOF_SCHEMA } from './profile-evidence-collector.mjs';
+import { A7_PROFILE_BINDINGS, A7_PROVIDER_PROFILE_IDS, A7_UNSUPPORTED_CAPABILITIES, a7ProfileFixtureIdentity } from './a7-profile-contract.mjs';
+import { A7_CROSS_TARGETS, A7_CROSS_TARGET_PROVIDER_PROFILE, A7_REQUIRED_CAPABILITIES as A7_CROSS_REQUIRED_CAPABILITIES, A7_UNSUPPORTED_PROVIDER_CAPABILITIES } from './a7-cross-target-real-fixtures.mjs';
+import { A7_LLDB_FIXTURE_PATH, A7_X86_REQUIRED_CAPABILITIES, A7_X86_UNSUPPORTED_CAPABILITIES } from './a7-lldb-real-fixture.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const REPORT_PATH = path.join(ROOT, 'reports/stage2/stage2-verdict.json');
@@ -14,12 +20,44 @@ const SCOPE_PATH = path.join(ROOT, 'tools/validation/stage2/completion-scope.loc
 const LEDGER_PATH = path.join(ROOT, 'tools/validation/stage2/closure-ledger.json');
 const DENOMINATOR_PATH = path.join(ROOT, 'tools/validation/stage2/profile-denominators.lock.json');
 const DENOMINATOR_INVENTORY_PATH = path.join(ROOT, 'tools/validation/stage2/profile-denominator-inventory.json');
+const PHYSICAL_IPAD_FIXTURE_PATHS = new Set([
+  'tests/phase5/corpus/fixtures/vertical-sysv-amd64.elf',
+  'tests/phase5/corpus/fixtures/vertical-microsoft-x64.exe',
+  'tests/phase12/rebuild/fixtures/vertical-microsoft-x86.exe',
+]);
+const PHYSICAL_IPAD_SCENARIO_ROOT = 'reports/stage2/physical-ipad/';
 const OUTPUT_LIMIT = 7000;
 const REQUIRED_LEDGER_IDS = Object.freeze([
   ...STAGE2_PROFILE_EVIDENCE_IDS,
   'S2-IPAD-PHYSICAL',
   'S2-FINAL-AUDIT',
 ]);
+const LEDGER_SCOPE_PROFILES = Object.freeze({
+  'S2-F6-MACHO': Object.freeze(['rebuild:transaction-v2']),
+  'S2-F6-ELF': Object.freeze(['rebuild:transaction-v2']),
+  'S2-F6-PE': Object.freeze(['rebuild:transaction-v2']),
+  'S2-P12-KNOWLEDGE': Object.freeze(['knowledge-packages:v1']),
+  'S2-P12-RULES': Object.freeze(['capability-rules:v1']),
+  'S2-P12-PATTERNS': Object.freeze(['patterns:read-only-v1']),
+  'S2-P12-COLLAB-REMOTE': Object.freeze(['collaboration:local-v1', 'collaboration:remote-security-v1']),
+});
+const LEDGER_SCOPE_PROFILE = Object.freeze({
+  'S1-A2-NATIVE': 'arm64:a64 + arm64e:a64+pac + x86_64:long-64 + riscv64:rv64imc',
+  'S2-A7-NATIVE': 'native A7 provider/architecture locked profiles',
+  'S2-M6-WASM': 'managed:wasm:m6',
+  'S2-M6-DEX': 'managed:dex:m6',
+  'S2-M6-CIL': 'managed:cil:m6',
+  'S2-M6-JVM': 'managed:jvm:m6',
+  'S2-F6-MACHO': 'macho:64 F6',
+  'S2-F6-ELF': 'elf:64 F6',
+  'S2-F6-PE': 'pe:pe32 + pe:pe32+ F6',
+  'S2-P12-KNOWLEDGE': 'knowledge-packages:v1',
+  'S2-P12-RULES': 'capability-rules:v1',
+  'S2-P12-PATTERNS': 'patterns:read-only-v1',
+  'S2-P12-COLLAB-REMOTE': 'collaboration:remote-security-v1',
+  'S2-IPAD-PHYSICAL': 'physical-ipad-ipados-webkit',
+  'S2-FINAL-AUDIT': 'phase1-12 exact candidate',
+});
 
 function git(args, allowFailure = false) {
   const result = spawnSync('git', args, { cwd: ROOT, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
@@ -34,9 +72,10 @@ function parseArg(name, argv) {
   return index >= 0 ? argv[index + 1] : null;
 }
 function hasFlag(name, argv) { return argv.includes(name); }
-function parseNonNegativeInteger(name, argv) {
+export function parseNonNegativeInteger(name, argv) {
   const raw = parseArg(name, argv);
   if (raw == null) return null;
+  if (typeof raw !== 'string' || raw.trim() === '') throw new TypeError(`${name.slice(2)}-invalid`);
   const value = Number(raw);
   if (!Number.isSafeInteger(value) || value < 0) throw new TypeError(`${name.slice(2)}-invalid`);
   return value;
@@ -57,25 +96,61 @@ function run(command) {
 const node = (...args) => ({ bin: process.execPath, args });
 const npm = (...args) => ({ bin: process.platform === 'win32' ? 'npm.cmd' : 'npm', args: ['run', ...args] });
 
-function validateScopeAndLedger(headSha) {
-  const scope = JSON.parse(fs.readFileSync(SCOPE_PATH, 'utf8'));
-  const ledger = JSON.parse(fs.readFileSync(LEDGER_PATH, 'utf8'));
+export function validateScopeAndLedger(headSha, overrides = {}) {
+  const scope = overrides.scope || JSON.parse(fs.readFileSync(SCOPE_PATH, 'utf8'));
+  const ledger = overrides.ledger || JSON.parse(fs.readFileSync(LEDGER_PATH, 'utf8'));
   const errors = [];
+  if (scope.schemaVersion !== 'hex-completion-scope-lock/v1') errors.push('scope-schema-invalid');
   if (scope.growthOnly !== true) errors.push('scope-not-growth-only');
   if (!/^[0-9a-f]{40}$/.test(scope.baselineCommit || '')) errors.push('scope-baseline-commit-invalid');
   if (!/^[0-9a-f]{40}$/.test(scope.baselineTree || '')) errors.push('scope-baseline-tree-invalid');
   if (!Array.isArray(scope.requiredTargetPlatforms) || !scope.requiredTargetPlatforms.includes('physical-ipad-ipados-webkit')) errors.push('physical-ipad-missing-from-scope');
+  if (/^[0-9a-f]{40}$/.test(scope.baselineCommit || '') && /^[0-9a-f]{40}$/.test(scope.baselineTree || '')) {
+    const baselineTree = git(['rev-parse', `${scope.baselineCommit}^{tree}`], true);
+    if (baselineTree.status !== 0 || baselineTree.stdout !== scope.baselineTree) errors.push('scope-baseline-tree-mismatch');
+  }
   const ancestor = git(['merge-base', '--is-ancestor', scope.baselineCommit, headSha], true);
   if (ancestor.status !== 0) errors.push('scope-baseline-not-ancestor');
+  if (ledger.schemaVersion !== 'hex-completion-ledger/v1') errors.push('ledger-schema-invalid');
+  if (ledger.scopeVersion !== scope.scopeVersion) errors.push('ledger-scope-version-mismatch');
+  if (JSON.stringify(ledger.terminalStates) !== JSON.stringify(['PROVEN', 'PREEXISTING_NORMATIVE_EXCLUSION'])) errors.push('ledger-terminal-states-invalid');
+  if (!Array.isArray(ledger.items)) errors.push('ledger-items-invalid');
   const ids = new Set();
   for (const item of ledger.items || []) {
     if (!item.id || ids.has(item.id)) errors.push(`ledger-id-invalid:${item.id || '<missing>'}`);
     ids.add(item.id);
-    for (const ref of [...(item.implementationRefs || []), ...(item.testRefs || []), ...(item.verifierRefs || []), ...(item.supportTruthRefs || [])]) {
-      if (ref.includes('*')) continue;
-      if (!fs.existsSync(path.join(ROOT, ref))) errors.push(`ledger-ref-missing:${item.id}:${ref}`);
+    if (!REQUIRED_LEDGER_IDS.includes(item.id)) errors.push(`ledger-unexpected-id:${item.id}`);
+    if (item.stage !== (item.id === 'S1-A2-NATIVE' ? 1 : 2)) errors.push(`ledger-stage-invalid:${item.id}`);
+    for (const field of ['lane', 'sourceOfRequirement', 'owner']) {
+      if (typeof item[field] !== 'string' || !item[field].trim()) errors.push(`ledger-field-invalid:${item.id}:${field}`);
+    }
+    if (item.scopeProfile !== LEDGER_SCOPE_PROFILE[item.id]) errors.push(`ledger-scope-profile-invalid:${item.id}`);
+    const declaredProfiles = Array.isArray(item.scopeProfiles) ? [...new Set(item.scopeProfiles.map(String))].sort() : [];
+    const expectedProfiles = [...(LEDGER_SCOPE_PROFILES[item.id] || [])].sort();
+    if (JSON.stringify(declaredProfiles) !== JSON.stringify(expectedProfiles)) errors.push(`ledger-scope-profiles-invalid:${item.id}`);
+    if (item.status !== 'IN_PROGRESS' || item.proofIdentity !== null) errors.push(`ledger-declared-proof-invalid:${item.id}`);
+    for (const field of ['implementationRefs', 'testRefs', 'verifierRefs', 'supportTruthRefs']) {
+      const refs = item[field];
+      if (!Array.isArray(refs) || refs.length === 0 || new Set(refs).size !== refs.length) {
+        errors.push(`ledger-refs-invalid:${item.id}:${field}`);
+        continue;
+      }
+      for (const ref of refs) {
+        if (typeof ref !== 'string' || !safeRelativePath(ref.replace(/\*\*/g, 'placeholder'))) {
+          errors.push(`ledger-ref-invalid:${item.id}:${ref}`);
+          continue;
+        }
+        const matched = ref.includes('*')
+          ? git(['ls-files', ref], true).stdout
+          : git(['cat-file', '-e', `${headSha}:${ref}`], true).status === 0;
+        if (!matched) errors.push(`ledger-ref-missing:${item.id}:${ref}`);
+      }
     }
   }
+  const requiredPhase12Profiles = [...new Set((scope.phase12CapabilityProfiles || []).map(String).filter(Boolean))].sort();
+  const mappedPhase12Profiles = [...new Set((ledger.items || []).flatMap((item) => Array.isArray(item.scopeProfiles) ? item.scopeProfiles.map(String) : []))].sort();
+  for (const profile of requiredPhase12Profiles) if (!mappedPhase12Profiles.includes(profile)) errors.push(`phase12-profile-unmapped:${profile}`);
+  for (const profile of mappedPhase12Profiles) if (!requiredPhase12Profiles.includes(profile)) errors.push(`phase12-profile-out-of-scope:${profile}`);
   for (const id of REQUIRED_LEDGER_IDS) if (!ids.has(id)) errors.push(`ledger-required-id-missing:${id}`);
   return { ok: errors.length === 0, errors, scope, ledger, ledgerItemCount: ids.size };
 }
@@ -104,9 +179,13 @@ function auditStage2Source() {
 function readEvidenceJson(finalMode, evidencePath, requiredReason, missingReason, invalidReason) {
   if (!finalMode) return { required: false, status: 'not-evaluated-in-implementation-mode' };
   if (!evidencePath) return { required: true, status: 'failed', reason: requiredReason };
-  const resolved = path.resolve(ROOT, evidencePath);
+  const relative = safeRelativePath(evidencePath);
+  if (!relative) return { required: true, status: 'failed', reason: invalidReason, detail: 'evidence-path-must-be-repository-relative' };
+  const resolved = path.resolve(ROOT, relative);
   if (!fs.existsSync(resolved)) return { required: true, status: 'failed', reason: missingReason };
-  try { return { required: true, status: 'loaded', record: JSON.parse(fs.readFileSync(resolved, 'utf8')) }; }
+  const repositoryFile = repositoryFileAtRoot(relative);
+  if (!repositoryFile) return { required: true, status: 'failed', reason: invalidReason, detail: 'evidence-path-outside-repository-or-not-regular-file' };
+  try { return { required: true, status: 'loaded', record: JSON.parse(fs.readFileSync(repositoryFile, 'utf8')) }; }
   catch (error) { return { required: true, status: 'failed', reason: invalidReason, detail: String(error?.message || error) }; }
 }
 
@@ -132,7 +211,7 @@ function physicalEvidenceResult({ finalMode, evidencePath, headSha, treeSha, req
     commitSha: headSha,
     treeSha,
     buildIdentity,
-    resolveEvidenceIdentity: evidenceIdentityAtHead,
+    resolveEvidenceIdentity: (identity, context) => physicalEvidenceIdentityAtHead(identity, context, headSha, treeSha),
   });
   return { required: true, status: checked.ok ? 'passed' : 'failed', reason: checked.reason || null, evidenceId: checked.evidenceId || loaded.record.evidenceId || null };
 }
@@ -140,6 +219,30 @@ function physicalEvidenceResult({ finalMode, evidencePath, headSha, treeSha, req
 function safeRelativePath(ref) {
   const value = String(ref || '');
   return value && !path.isAbsolute(value) && !value.includes('\\') && !value.split('/').includes('..') ? value : null;
+}
+
+function repositoryFileAtRoot(ref) {
+  const relative = safeRelativePath(ref);
+  if (!relative) return null;
+  const resolved = path.resolve(ROOT, relative);
+  const lexicalRelative = path.relative(ROOT, resolved);
+  if (!lexicalRelative || lexicalRelative.startsWith(`..${path.sep}`) || path.isAbsolute(lexicalRelative)) return null;
+  let stat;
+  try { stat = fs.lstatSync(resolved); } catch { return null; }
+  if (!stat.isFile() || stat.isSymbolicLink()) return null;
+  let realRoot;
+  let realFile;
+  try {
+    realRoot = fs.realpathSync(ROOT);
+    realFile = fs.realpathSync(resolved);
+  } catch { return null; }
+  const realRelative = path.relative(realRoot, realFile);
+  if (!realRelative || realRelative.startsWith(`..${path.sep}`) || path.isAbsolute(realRelative)) return null;
+  return realFile;
+}
+
+export function isStage2RepositoryFile(ref) {
+  return repositoryFileAtRoot(ref) !== null;
 }
 
 function loadDenominatorInventory() {
@@ -165,10 +268,143 @@ function denominatorUnitIdsAtHead(itemId, inventoryRefs) {
   return item.unitIds;
 }
 
-function evidenceIdentityAtHead(identity) {
+function gitIdentityAtHead(identity) {
+  const match = /^git:([^@]+)@([0-9a-f]{40})$/.exec(String(identity || ''));
+  if (!match) return null;
+  const relative = safeRelativePath(match[1]);
+  if (!relative) return null;
+  const resolved = git(['rev-parse', `HEAD:${relative}`], true);
+  return resolved.status === 0 && resolved.stdout === match[2] ? identity : null;
+}
+
+function executableIdentityShape(identity, basenames) {
+  return !!identity
+    && typeof identity.path === 'string'
+    && basenames.includes(path.basename(identity.path))
+    && /^[0-9a-f]{64}$/.test(identity.sha256 || '');
+}
+
+function proofLine(stdout, prefix) {
+  const line = String(stdout || '').split('\n').find((value) => value.startsWith(`${prefix}=`));
+  if (!line) return null;
+  try { return JSON.parse(line.slice(prefix.length + 1)); } catch { return null; }
+}
+
+function a7CommandProofContentValid(commandId, output, candidateCommitSha, candidateTreeSha) {
+  if (commandId === 'a7-lldb-real-fixture') {
+    const proof = proofLine(output.stdout, 'A7_X86_LLDB_PROVIDER_PROOF');
+    const binding = A7_PROFILE_BINDINGS['x86_64:long-64'];
+    return !!proof
+      && proof.schemaVersion === 'hex-stage2-a7-lldb-provider-proof/v1'
+      && proof.status === 'exact-active-provider-observed'
+      && proof.candidateCommitSha === candidateCommitSha && proof.candidateTreeSha === candidateTreeSha
+      && proof.targetProfileId === 'x86_64:long-64'
+      && proof.providerProfileId === binding.providerProfileId
+      && proof.fixture?.path === A7_LLDB_FIXTURE_PATH
+      && proof.fixture?.sourceSha256 === binding.sourceSha256
+      && proof.fixture?.targetTriple === binding.targetTriple
+      && JSON.stringify(proof.fixture?.semantics || []) === JSON.stringify(binding.semanticMarkers)
+      && JSON.stringify(proof.closedCapabilities || []) === JSON.stringify(A7_X86_REQUIRED_CAPABILITIES)
+      && JSON.stringify(proof.unsupportedCapabilities || []) === JSON.stringify(A7_X86_UNSUPPORTED_CAPABILITIES)
+      && executableIdentityShape(proof.providerExecutableIdentities?.lldb, ['lldb', 'lldb-18'])
+      && executableIdentityShape(proof.providerExecutableIdentities?.clang, ['clang', 'clang-18'])
+      && executableIdentityShape(proof.providerExecutableIdentities?.readobj, ['llvm-readobj-18', 'llvm-readobj'])
+      && JSON.stringify(proof.independentOracle?.executableIdentity) === JSON.stringify(proof.providerExecutableIdentities.readobj)
+      && /^[0-9a-f]{64}$/.test(proof.independentOracle?.outputSha256 || '')
+      && proof.binding?.targetProfileId === proof.targetProfileId
+      && proof.binding?.providerProfileId === proof.providerProfileId;
+  }
+  if (commandId === 'a7-cross-target-real-fixtures') {
+    const run = proofLine(output.stdout, 'A7_CROSS_TARGET_PROVIDER_PROOF');
+    if (!run || run.schemaVersion !== 'hex-stage2-a7-cross-target-provider-proof/v1'
+      || run.candidateCommitSha !== candidateCommitSha || run.candidateTreeSha !== candidateTreeSha
+      || run.providerProfileId !== A7_CROSS_TARGET_PROVIDER_PROFILE) return false;
+    const executableIds = run.executableIdentities || {};
+    if (!executableIdentityShape(executableIds.lldb, ['lldb', 'lldb-18'])
+      || !executableIdentityShape(executableIds.clang, ['clang', 'clang-18'])
+      || !executableIdentityShape(executableIds.readobj, ['llvm-readobj-18', 'llvm-readobj'])
+      || !executableIdentityShape(executableIds.objdump, ['llvm-objdump-18', 'llvm-objdump'])) return false;
+    if (!Array.isArray(run.proofs) || run.proofs.length !== A7_CROSS_TARGETS.length) return false;
+    const seen = new Set();
+    for (const proof of run.proofs) {
+      const target = A7_CROSS_TARGETS.find((candidate) => candidate.targetProfileId === proof.targetProfileId);
+      const binding = A7_PROFILE_BINDINGS[proof.targetProfileId];
+      if (!target || seen.has(proof.targetProfileId) || !binding) return false;
+      seen.add(proof.targetProfileId);
+      if (proof.status !== 'exact-active-provider-observed' || proof.candidateCommitSha !== candidateCommitSha || proof.candidateTreeSha !== candidateTreeSha
+        || proof.providerProfileId !== binding.providerProfileId || proof.fixture?.sourcePath !== binding.sourcePath
+        || proof.fixture?.sourceSha256 !== binding.sourceSha256 || proof.fixture?.targetTriple !== binding.targetTriple
+        || JSON.stringify(proof.fixture?.semantics || []) !== JSON.stringify(binding.semanticMarkers)
+        || JSON.stringify(proof.closedCapabilities || []) !== JSON.stringify(A7_CROSS_REQUIRED_CAPABILITIES)
+        || JSON.stringify(proof.unsupportedCapabilities || []) !== JSON.stringify(A7_UNSUPPORTED_PROVIDER_CAPABILITIES)
+        || proof.binding?.targetProfileId !== proof.targetProfileId || proof.binding?.providerProfileId !== proof.providerProfileId
+        || !executableIdentityShape(proof.independentOracle?.executableIdentities?.readobj, ['llvm-readobj-18', 'llvm-readobj'])
+        || !executableIdentityShape(proof.independentOracle?.executableIdentities?.objdump, ['llvm-objdump-18', 'llvm-objdump'])
+        || JSON.stringify(proof.independentOracle.executableIdentities.readobj) !== JSON.stringify(executableIds.readobj)
+        || JSON.stringify(proof.independentOracle.executableIdentities.objdump) !== JSON.stringify(executableIds.objdump)
+        || !/^[0-9a-f]{64}$/.test(proof.independentOracle?.outputSha256 || '')) return false;
+    }
+    return seen.size === A7_CROSS_TARGETS.length;
+  }
+  return true;
+}
+
+function profileUnitArtifactValid(relative, context, candidateCommitSha, candidateTreeSha) {
+  const prefix = `${PROFILE_EVIDENCE_RUN_ROOT}/`;
+  if (!relative.startsWith(prefix) || relative.split('/').length !== 5 || !relative.endsWith('.json')) return false;
+  let artifact;
+  const artifactPath = repositoryFileAtRoot(relative);
+  if (!artifactPath) return false;
+  try { artifact = JSON.parse(fs.readFileSync(artifactPath, 'utf8')); } catch { return false; }
+  if (!artifact || artifact.schemaVersion !== PROFILE_UNIT_PROOF_SCHEMA || artifact.itemId !== context.itemId || artifact.unitId !== context.unitId || artifact.candidateCommitSha !== candidateCommitSha || artifact.candidateTreeSha !== candidateTreeSha || artifact.status !== 'passed') return false;
+  const rule = PROFILE_UNIT_PROOF_RULES[context.itemId];
+  if (!rule || JSON.stringify(artifact.providerProfileIds || []) !== JSON.stringify(rule.providerProfileIds)) return false;
+  if (context.itemId === 'S2-A7-NATIVE') {
+    const profileId = Object.keys(A7_PROFILE_BINDINGS).find((candidate) => context.unitId.startsWith(`${candidate}:`));
+    const expectedFixture = profileId ? a7ProfileFixtureIdentity(profileId) : null;
+    if (!profileId || JSON.stringify(artifact.realFixtureIdentities || []) !== JSON.stringify([expectedFixture])) return false;
+  }
+  const refs = (values) => values.map((ref) => `git:${ref}@${git(['rev-parse', `HEAD:${ref}`], true).stdout}`);
+  if (JSON.stringify(artifact.sourceIdentities || []) !== JSON.stringify(refs(rule.sourceRefs))) return false;
+  if (JSON.stringify(artifact.testIdentities || []) !== JSON.stringify(refs(rule.testRefs))) return false;
+  if (!Array.isArray(artifact.negativeTestIdentities) || artifact.negativeTestIdentities.length === 0 || artifact.negativeTestIdentities.some((value) => gitIdentityAtHead(value) !== value)) return false;
+  if (JSON.stringify(artifact.commandIds || []) !== JSON.stringify(rule.commandIds)) return false;
+  if (!Array.isArray(artifact.commandOutputIdentities) || artifact.commandOutputIdentities.length !== rule.commandIds.length) return false;
+  const commandIdentityById = new Map((artifact.commandIds || []).map((id, index) => [id, artifact.commandOutputIdentities[index]]));
+  const expectedIndependentOracleIdentities = (rule.independentOracleCommandIds || []).map((id) => commandIdentityById.get(id));
+  if (JSON.stringify(artifact.independentOracleIdentities || []) !== JSON.stringify(expectedIndependentOracleIdentities)) return false;
+  for (const [index, identity] of artifact.commandOutputIdentities.entries()) {
+    const commandId = artifact.commandIds[index];
+    const match = /^artifact:([^@]+)@sha256:([0-9a-f]{64})$/.exec(identity || '');
+    if (!match) return false;
+    const outputPath = safeRelativePath(match[1]);
+    const outputFile = outputPath && outputPath.startsWith(`${PROFILE_EVIDENCE_RUN_ROOT}/`) ? repositoryFileAtRoot(outputPath) : null;
+    if (!outputFile) return false;
+    const outputBytes = fs.readFileSync(outputFile);
+    if (createHash('sha256').update(outputBytes).digest('hex') !== match[2]) return false;
+    let output;
+    try { output = JSON.parse(outputBytes); } catch { return false; }
+    if (output.schemaVersion !== 'hex-stage2-profile-command-output/v1' || output.commandId !== commandId || output.candidateCommitSha !== candidateCommitSha || output.candidateTreeSha !== candidateTreeSha || output.status !== 'passed' || output.exitCode !== 0 || output.signal !== null) return false;
+    const marker = PROFILE_COMMAND_PROOF_MARKERS[commandId];
+    if (marker && (typeof output.stdout !== 'string' || !output.stdout.includes(marker))) return false;
+    if (context.itemId === 'S2-A7-NATIVE' && !a7CommandProofContentValid(commandId, output, candidateCommitSha, candidateTreeSha)) return false;
+  }
+  return Array.isArray(artifact.realFixtureIdentities) && artifact.realFixtureIdentities.length > 0;
+}
+
+function a7ProfileEvidenceMappingValid(record) {
+  const item = record?.items?.['S2-A7-NATIVE'];
+  if (!item) return false;
+  const expectedFixtures = Object.keys(A7_PROFILE_BINDINGS).map((profileId) => a7ProfileFixtureIdentity(profileId)).sort();
+  return JSON.stringify([...item.providerProfileIds].sort()) === JSON.stringify([...A7_PROVIDER_PROFILE_IDS].sort())
+    && JSON.stringify([...item.realFixtureIdentities].sort()) === JSON.stringify(expectedFixtures);
+}
+
+function evidenceIdentityAtHead(identity, context = {}, candidateCommitSha = null, candidateTreeSha = null) {
   const value = String(identity || '');
   const gitMatch = /^git:([^@]+)@([0-9a-f]{40})$/.exec(value);
   if (gitMatch) {
+    if (context.kind === 'unit' && context.requireCanonicalUnitEvidence !== false) return null;
     const relative = safeRelativePath(gitMatch[1]);
     if (!relative) return null;
     const resolved = git(['rev-parse', `HEAD:${relative}`], true);
@@ -178,15 +414,63 @@ function evidenceIdentityAtHead(identity) {
   if (!artifactMatch) return null;
   const relative = safeRelativePath(artifactMatch[1]);
   if (!relative) return null;
-  const resolved = path.join(ROOT, relative);
-  if (!fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) return null;
+  const resolved = repositoryFileAtRoot(relative);
+  if (!resolved) return null;
   const digest = createHash('sha256').update(fs.readFileSync(resolved)).digest('hex');
-  return digest === artifactMatch[2] ? value : null;
+  if (digest !== artifactMatch[2]) return null;
+  if (context.kind === 'unit' && candidateCommitSha && candidateTreeSha && !profileUnitArtifactValid(relative, context, candidateCommitSha, candidateTreeSha)) return null;
+  return value;
+}
+
+function physicalEvidenceIdentityAtHead(identity, context = {}, candidateCommitSha = null, candidateTreeSha = null) {
+  if (!physicalEvidenceArtifactPathAllowed(identity, context.kind)) return null;
+  const resolved = evidenceIdentityAtHead(identity, context, candidateCommitSha, candidateTreeSha);
+  if (!resolved || context.kind !== 'physical-ipad-scenario-output') return resolved;
+  const match = /^artifact:([^@]+)@sha256:[0-9a-f]{64}$/.exec(identity);
+  const file = match ? repositoryFileAtRoot(match[1]) : null;
+  if (!file) return null;
+  let scenario;
+  try { scenario = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; }
+  const record = context.record || {};
+  const checked = validatePhysicalIPadScenarioOutput(scenario, {
+    commitSha: candidateCommitSha,
+    treeSha: candidateTreeSha,
+    buildIdentity: record.buildIdentity,
+    runtimeIdentity: record.runtimeIdentity,
+    deviceModel: record.deviceModel,
+    iPadOSVersion: record.iPadOSVersion,
+    webKitVersion: record.webKitVersion,
+    fixtureIdentity: record.fixtureIdentity,
+  });
+  return checked.ok ? identity : null;
+}
+
+export function physicalEvidenceArtifactPathAllowed(identity, kind) {
+  const match = /^artifact:([^@]+)@sha256:[0-9a-f]{64}$/.exec(String(identity || ''));
+  const relative = match ? safeRelativePath(match[1]) : null;
+  if (!relative) return false;
+  if (kind === 'physical-ipad-fixture') return PHYSICAL_IPAD_FIXTURE_PATHS.has(relative);
+  if (kind === 'physical-ipad-scenario-output') {
+    return relative.startsWith(PHYSICAL_IPAD_SCENARIO_ROOT)
+      && relative.endsWith('.json')
+      && relative.split('/').length === 5;
+  }
+  return false;
 }
 
 export function stage2KnownDenominatorGaps() {
   const a2 = a2DenominatorReport().validation;
-  return Object.freeze(a2.terminalEligible === true ? [] : [...(a2.blockingGaps || [])]);
+  const phase12 = phase12DenominatorReport();
+  const gaps = [...f6KnownImplementationGaps(), ...A7_UNSUPPORTED_CAPABILITIES.map((capability) => `a7-unsupported-capability:${capability}`)];
+  if (a2.valid !== true) gaps.push('a2-denominator-invalid');
+  if (a2.terminalEligible !== true) gaps.push(...(a2.blockingGaps || []));
+  if (phase12.valid !== true) {
+    gaps.push('phase12-denominator-invalid');
+    gaps.push(...(phase12.failures || []).map((failure) => `phase12-denominator:${failure}`));
+  } else if (phase12.terminalEligible !== true) {
+    gaps.push(...(phase12.blockingGaps || []));
+  }
+  return Object.freeze([...new Set(gaps)].sort());
 }
 
 function profileEvidenceResult({ finalMode, evidencePath, headSha, treeSha, scope }) {
@@ -216,8 +500,17 @@ function profileEvidenceResult({ finalMode, evidencePath, headSha, treeSha, scop
     scope,
     resolveInventoryIdentity: inventoryIdentityAtHead,
     resolveDenominatorUnitIds: denominatorUnitIdsAtHead,
-    resolveEvidenceIdentity: evidenceIdentityAtHead,
+    requireCanonicalUnitEvidence: true,
+    resolveEvidenceIdentity: (identity, context) => evidenceIdentityAtHead(identity, { ...context, requireCanonicalUnitEvidence: true }, headSha, treeSha),
   });
+  if (checked.ok && !a7ProfileEvidenceMappingValid(loaded.record)) return {
+    required: true,
+    status: 'failed',
+    reason: 'stage2-profile-evidence-a7-mapping-invalid',
+    failures: ['S2-A7-NATIVE:provider-or-fixture-mapping-invalid'],
+    evidenceId: checked.evidenceId || loaded.record.evidenceId || null,
+    provenIds: Object.freeze([]),
+  };
   return {
     required: true,
     status: checked.ok ? 'passed' : 'failed',
@@ -235,6 +528,8 @@ function commandPassed(results, fragment) {
 function candidateMergeResult({ finalMode, headSha, treeSha, expectedMainSha }) {
   if (!finalMode) return { required: false, status: 'not-evaluated-in-implementation-mode', currentMainSha: null, candidateMergeTree: null };
   if (!/^[0-9a-f]{40}$/.test(String(expectedMainSha || '').toLowerCase())) return { required: true, status: 'failed', reason: 'current-main-sha-required', currentMainSha: null, candidateMergeTree: null };
+  const fetched = git(['fetch', '--quiet', 'origin', 'main'], true);
+  if (fetched.status !== 0) return { required: true, status: 'failed', reason: 'current-main-fetch-failed', currentMainSha: null, candidateMergeTree: null };
   const currentMainSha = git(['rev-parse', 'origin/main'], true).stdout;
   if (currentMainSha !== String(expectedMainSha).toLowerCase()) return { required: true, status: 'failed', reason: 'current-main-sha-mismatch', currentMainSha, candidateMergeTree: null };
   if (git(['merge-base', '--is-ancestor', currentMainSha, headSha], true).status !== 0) return { required: true, status: 'failed', reason: 'candidate-not-reconciled-with-current-main', currentMainSha, candidateMergeTree: null };
@@ -291,8 +586,9 @@ export function verifyStage2({ expectedSha = null, expectedMainSha = null, final
   const headSha = git(['rev-parse', 'HEAD']).stdout;
   const treeSha = git(['rev-parse', 'HEAD^{tree}']).stdout;
   if (!/^[0-9a-f]{40}$/.test(headSha) || !/^[0-9a-f]{40}$/.test(treeSha)) throw new Error('stage2-git-identity-invalid');
+  if (finalMode && !/^[0-9a-f]{40}$/.test(String(expectedSha || '').toLowerCase())) throw new Error('stage2-exact-head-required');
   if (expectedSha && headSha !== String(expectedSha).toLowerCase()) throw new Error(`stage2-exact-head-mismatch: expected ${expectedSha}, got ${headSha}`);
-  const dirty = git(['status', '--porcelain', '--untracked-files=no']).stdout;
+  const dirty = git(['status', '--porcelain', '--untracked-files=all']).stdout;
   if (dirty) throw new Error(`stage2-worktree-not-clean:\n${dirty}`);
 
   const structural = validateScopeAndLedger(headSha);
@@ -315,7 +611,7 @@ export function verifyStage2({ expectedSha = null, expectedMainSha = null, final
   if (finalMode) commands.push(npm('userscript:build'));
   if (full) commands.push(npm('check'));
   const commandResults = preflightBlocked ? [] : commands.map(run);
-  const generatedDirty = preflightBlocked ? '' : git(['status', '--porcelain', '--untracked-files=no']).stdout;
+  const generatedDirty = preflightBlocked ? '' : git(['status', '--porcelain', '--untracked-files=all']).stdout;
   const generatedOutput = {
     required: finalMode,
     status: !finalMode ? 'not-evaluated-in-implementation-mode' : preflightBlocked ? 'blocked-by-preflight' : generatedDirty ? 'failed' : 'passed',

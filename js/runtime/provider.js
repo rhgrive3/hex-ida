@@ -216,6 +216,7 @@ export class DebugAdapterRuntimeProvider {
     this.adapter = adapter;
     this.options = options;
     this.activeSession = null;
+    this.sessionEpoch = 0;
     this._descriptor = createRuntimeProviderDescriptor({
       id: options.id ?? `adapter:${adapter.id}`,
       version: options.version ?? '1',
@@ -229,6 +230,11 @@ export class DebugAdapterRuntimeProvider {
 
   async openSession(request = {}, options = {}) {
     if (this.activeSession && !this.activeSession.closed) throw new DebugAdapterError('adapter-in-use', 'debug adapter compatibility provider supports one live session');
+    const adapterEpoch = Number(this.adapter?.epoch);
+    const nextSessionEpoch = Math.max(
+      this.sessionEpoch + 1,
+      Number.isSafeInteger(adapterEpoch) && adapterEpoch >= 0 ? adapterEpoch + 1 : 1,
+    );
     let session;
     session = new RuntimeProviderSession({
       provider: this,
@@ -238,6 +244,12 @@ export class DebugAdapterRuntimeProvider {
         finally { if (this.activeSession === session) this.activeSession = null; }
       },
     });
+    // The provider session owns the event/request generation. Reusable remote
+    // adapters keep their own protocol counter across disconnects, so align it
+    // to the newly-created session before connect or facet publication.
+    session.epoch = nextSessionEpoch;
+    if (typeof this.adapter.setEpoch === 'function') this.adapter.setEpoch(session.epoch);
+    this.sessionEpoch = session.epoch;
     const facets = {};
     if (this._descriptor.facets.includes('debugger')) facets.debugger = debuggerFacet(this.adapter, session);
     if (this._descriptor.facets.includes('instrumentation')) facets.instrumentation = instrumentationFacet(this.adapter, session);

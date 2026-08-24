@@ -1,0 +1,36 @@
+{
+  "format": "hex-knowledge-pack",
+  "version": 2,
+  "createdAt": "2026-08-24T00:00:00.000Z",
+  "architecture": "arm64",
+  "provenance": {
+    "source": "phase12-profile-fixture",
+    "fixtureId": "knowledge-package-envelope"
+  },
+  "license": "fixture",
+  "confidence": 1,
+  "signatures": [
+    {
+      "architecture": "arm64",
+      "symbols": ["_fixture_entry"],
+      "provenance": {
+        "source": "phase12-profile-fixture",
+        "fixtureId": "knowledge-package-envelope"
+      },
+      "license": "fixture",
+      "confidence": 1
+    }
+  ],
+  "mappings": [
+    {
+      "identity": "fixture-entry",
+      "name": "FixtureEntry",
+      "provenance": {
+        "source": "phase12-profile-fixture",
+        "fixtureId": "knowledge-package-envelope"
+      },
+      "license": "fixture",
+      "confidence": 1
+    }
+  ]
+}

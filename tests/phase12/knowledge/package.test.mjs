@@ -1,7 +1,17 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createKnowledgePack } from '../../../js/signature/index.js';
 import { createPackageEnvelope, importPhase12Package, parseBoundedPackageInput, resolvePackageDependencies, validateProviderOutput } from '../../../js/phase12/package-envelope.js';
 import { createMatchResult, promoteKnowledgeSuggestion, recognitionCanClaimUnique } from '../../../js/knowledge/phase12-recognition.js';
+
+const fixturePath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../fixtures/profile-evidence/knowledge-package.json');
+const fixture = JSON.parse(fs.readFileSync(fixturePath, 'utf8'));
+const fixtureEnvelope = importPhase12Package(fixture);
+assert.equal(fixtureEnvelope.kind, 'knowledge', 'canonical profile fixture must be a real imported package input');
+assert.equal(fixtureEnvelope.requiredSemanticVersions.knowledge, '3');
+assert.equal(fixtureEnvelope.payload.signatures[0].symbols[0], '_fixture_entry');
 
 const legacy = createKnowledgePack({ architecture: 'arm64', provenance: { source: 'external', note: 'untrusted text' }, signatures: [{ architecture: 'arm64', symbols: ['_foo'] }], mappings: [{ identity: 'foo', name: 'foo' }] });
 const envelope = importPhase12Package(legacy);

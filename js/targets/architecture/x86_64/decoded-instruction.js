@@ -1,7 +1,7 @@
 import { x86RegisterDescriptor } from './registers.js';
 
 export const X86_DECODED_INSTRUCTION_CONTRACT_VERSION = 'x86-64-decoded-instruction/v1';
-export const X86_DECODER_SEMANTIC_VERSION = 'capstone-5-x86-structured-v1';
+export const X86_DECODER_SEMANTIC_VERSION = 'capstone-5-x86-structured-v2';
 export const X86_DECODE_MODES = Object.freeze(['long-64']);
 
 const OPERAND_TYPES = new Set(['register','immediate','memory','invalid']);

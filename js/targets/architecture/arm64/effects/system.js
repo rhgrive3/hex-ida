@@ -24,6 +24,26 @@ const COMMON_WRITABLE_SYSREGS = new Set([
   'tpidr_el0','fpcr','fpsr','nzcv','daif','spsel',
 ]);
 
+// An exception or implementation-defined system operation crosses an opaque
+// architectural environment boundary.  Exact-with-intrinsic is honest only
+// when that boundary carries the complete conservative footprint; it must not
+// silently preserve registers or address spaces that firmware, an exception
+// handler, or implementation-defined maintenance state may observe or change.
+const ENVIRONMENT_REGISTERS = Object.freeze([
+  ...Array.from({ length:31 }, (_unused, index) => `x${index}`),
+  'sp',
+  ...Array.from({ length:32 }, (_unused, index) => `v${index}`),
+  'NZCV.N','NZCV.Z','NZCV.C','NZCV.V','fpcr','fpsr','pstate',
+  'sys:arm64.execution-environment',
+]);
+const ENVIRONMENT_SPACES = Object.freeze(['code','io','memory','tls']);
+const ENVIRONMENT_STATE = 'sys:arm64.execution-environment';
+
+export const ARM64_SYSTEM_EFFECT_MNEMONICS = Object.freeze(new Set([
+  'nop', ...BARRIERS, ...WAITS_AND_EVENTS, 'clrex', 'bti', ...TRAPS,
+  'mrs','msr', ...MAINTENANCE, 'sys','eret','hint',
+]));
+
 function mnemonicOf(instruction) {
   return String(instruction?.mnemonic || '').trim().toLowerCase();
 }
@@ -73,7 +93,11 @@ function gpId(op) {
   if (op?.k !== 'reg' || op.cls !== 'gp') return null;
   return `x${op.num}`;
 }
+function isGpDestination(op) {
+  return op?.k === 'reg' && (op.cls === 'gp' || op.cls === 'zr');
+}
 function gpRead(operations, op, id) {
+  if (op?.k === 'reg' && op.cls === 'zr') return createBitVectorValue(Number(op.bits || 64), 0n);
   const regId = gpId(op);
   if (!regId) return null;
   const width = Number(op.bits || 64);
@@ -86,6 +110,7 @@ function gpRead(operations, op, id) {
   return value;
 }
 function gpWrite(operations, op, value) {
+  if (op?.k === 'reg' && op.cls === 'zr') return true;
   const regId = gpId(op);
   if (!regId) return false;
   const width = Number(op.bits || 64);
@@ -123,6 +148,36 @@ function completeIntrinsic({ id, inputs = [], outputs = [], registersRead = [], 
       controlEffects, determinism, symbolicDetail,
     }),
     ...(metadata ? { metadata } : {}),
+  });
+}
+function environmentIntrinsic({
+  id,
+  inputs = [],
+  outputs = [],
+  registersRead = [],
+  registersWritten = [],
+  controlEffects = [],
+  metadata = {},
+  memory = false,
+  completeEnvironment = false,
+}) {
+  const environmentRegisters = completeEnvironment ? ENVIRONMENT_REGISTERS : [ENVIRONMENT_STATE];
+  return completeIntrinsic({
+    id,
+    inputs,
+    outputs,
+    registersRead:[...environmentRegisters, ...registersRead],
+    registersWritten:[...environmentRegisters, ...registersWritten],
+    memoryRead:memory ? { scope:'all', spaces:ENVIRONMENT_SPACES } : { scope:'none' },
+    memoryWrite:memory ? { scope:'all', spaces:ENVIRONMENT_SPACES } : { scope:'none' },
+    controlEffects,
+    determinism:'nondeterministic',
+    symbolicDetail:'summary-only',
+    metadata:{
+      environmentBoundary:true,
+      ...(completeEnvironment ? { preservation:'none-assumed', conservativeFullEnvironment:true } : { opaqueEnvironmentState:ENVIRONMENT_STATE }),
+      ...metadata,
+    },
   });
 }
 function nzcvFlagId(flag) { return `NZCV.${flag}`; }
@@ -240,26 +295,27 @@ function bti(instruction, context, ops) {
 
 function trap(instruction, context, mnemonic, ops) {
   const imm = immediate(ops[0]);
-  const inputs = imm ? [imm] : [];
+  if (!imm) return partial(instruction, context, `${mnemonic}-immediate-unavailable`, ['control','faults','other']);
+  const inputs = [imm];
   const controlEffect = { kind:'trap', reason:`arm64-${mnemonic}` };
-  const operation = completeIntrinsic({
-    id:`arm64.system.${mnemonic}`,
-    inputs, outputs:[], registersRead:[], registersWritten:[],
-    memoryRead:{scope:'none'}, memoryWrite:{scope:'none'}, controlEffects:[controlEffect],
-    determinism:'input-dependent', symbolicDetail:'summary-only',
-    metadata:{ immediate:ops[0]?.value ?? null },
+  const operation = environmentIntrinsic({
+    id:`arm64.environment.${mnemonic}`,
+    inputs,
+    controlEffects:[controlEffect],
+    memory:true,
+    completeEnvironment:true,
+    metadata:{ immediate:ops[0]?.value ?? null, exceptionEntry:true },
   });
-  return partial(
-    instruction, context,
-    `${mnemonic}-exception-routing-and-pstate-effects-not-modelled`,
-    ['registers','other'], [operation], controlEffect,
-  );
+  return bundle(instruction, context, {
+    operations:[operation], controlEffect, completeness:'exact-with-intrinsic',
+    metadata:{ environmentBoundary:true, environmentFootprintComplete:true },
+  });
 }
 
 function mrs(instruction, context, ops) {
   const dst = ops[0];
   const sys = sysRegText(ops[1]);
-  if (!gpId(dst) || !sys) {
+  if (!isGpDestination(dst) || !sys) {
     return partial(instruction, context, 'mrs-operands-or-system-register-unavailable', ['registers','faults','other']);
   }
   const operations = [];
@@ -273,7 +329,7 @@ function mrs(instruction, context, ops) {
   }
   const operation = completeIntrinsic({
     id:`arm64.system.mrs.${sys}`,
-    inputs:[], outputs:[result], registersRead:[sysRegId(sys)], registersWritten:[gpId(dst)],
+    inputs:[], outputs:[result], registersRead:[sysRegId(sys)], registersWritten:gpId(dst) ? [gpId(dst)] : [],
     memoryRead:{scope:'none'}, memoryWrite:{scope:'none'}, controlEffects:[],
     determinism:(sys === 'cntvct_el0' || sys === 'cntpct_el0') ? 'nondeterministic' : 'input-dependent',
     symbolicDetail:'summary-only',
@@ -287,7 +343,15 @@ function mrs(instruction, context, ops) {
       operations, possibleFaults:[fault], completeness:'exact-with-intrinsic', metadata:{ systemRegister:sys, access:'read' },
     });
   }
-  return partial(instruction, context, `mrs-system-register-side-effects-unmodelled:${sys}`, ['faults','other'], operations, {kind:'fallthrough'}, [fault]);
+  operations[0] = environmentIntrinsic({
+    id:`arm64.environment.mrs.${sys}`,
+    outputs:[result],
+    metadata:{ systemRegister:sys, access:'read', implementationDefined:true },
+  });
+  return bundle(instruction, context, {
+    operations, possibleFaults:[fault], completeness:'exact-with-intrinsic',
+    metadata:{ systemRegister:sys, access:'read', environmentBoundary:true, environmentFootprintComplete:true },
+  });
 }
 
 function msr(instruction, context, ops) {
@@ -318,62 +382,85 @@ function msr(instruction, context, ops) {
       operations, possibleFaults:[fault], completeness:'exact-with-intrinsic', metadata:{ systemRegister:sys, access:'write' },
     });
   }
-  return partial(instruction, context, `msr-system-register-side-effects-unmodelled:${sys}`, ['faults','other'], operations, {kind:'fallthrough'}, [fault]);
+  operations[operations.length - 1] = environmentIntrinsic({
+    id:`arm64.environment.msr.${sys}`,
+    inputs:[input],
+    metadata:{ systemRegister:sys, access:'write', implementationDefined:true },
+  });
+  return bundle(instruction, context, {
+    operations, possibleFaults:[fault], completeness:'exact-with-intrinsic',
+    metadata:{ systemRegister:sys, access:'write', environmentBoundary:true, environmentFootprintComplete:true },
+  });
 }
 
 function maintenance(instruction, context, mnemonic, ops) {
   const operations = [];
   const registerOperands = ops.filter((op) => gpId(op));
   const inputs = registerOperands.map((op, index) => gpRead(operations, op, `${mnemonic}:src${index}`)).filter(Boolean);
-  const operation = completeIntrinsic({
-    id:`arm64.system.${mnemonic}`,
-    inputs, outputs:[], registersRead:registerOperands.map(gpId), registersWritten:[],
-    memoryRead:{scope:'none'}, memoryWrite:{scope:'none'}, controlEffects:[],
-    determinism:'input-dependent', symbolicDetail:'unavailable',
-    metadata:{ operation:String(ops[0]?.text || instruction?.operands || '').toLowerCase() },
+  const operation = environmentIntrinsic({
+    id:`arm64.environment.${mnemonic}`,
+    inputs,
+    registersRead:registerOperands.map(gpId),
+    memory:mnemonic === 'dc',
+    metadata:{ operation:String(ops[0]?.text || instruction?.operands || '').toLowerCase(), maintenance:true },
   });
   operations.push(operation);
-  const categories = mnemonic === 'dc' ? ['memory','other'] : ['other'];
-  return partial(instruction, context, `${mnemonic}-cache-or-translation-state-not-represented-by-machine-effects-v1`, categories, operations);
+  return bundle(instruction, context, {
+    operations,
+    possibleFaults:[{ kind:'system-instruction-trap', condition:{ kind:'architectural-access-check', operation:mnemonic } }],
+    completeness:'exact-with-intrinsic',
+    metadata:{ environmentBoundary:true, environmentFootprintComplete:true, maintenance:true },
+  });
 }
 
 function sys(instruction, context, ops) {
   const operations = [];
   const registerOperands = ops.filter((op) => gpId(op));
   const inputs = registerOperands.map((op, index) => gpRead(operations, op, `sys:src${index}`)).filter(Boolean);
-  const operation = completeIntrinsic({
-    id:'arm64.system.sys', inputs, outputs:[], registersRead:registerOperands.map(gpId), registersWritten:[],
-    memoryRead:{scope:'none'}, memoryWrite:{scope:'none'}, controlEffects:[], determinism:'input-dependent', symbolicDetail:'unavailable',
+  const operation = environmentIntrinsic({
+    id:'arm64.environment.sys', inputs,
+    registersRead:registerOperands.map(gpId),
+    memory:true,
+    completeEnvironment:true,
     metadata:{ encodingOperands:ops.map((op) => op?.text ?? (op?.value != null ? String(op.value) : null)) },
   });
   operations.push(operation);
-  return partial(instruction, context, 'generic-sys-operation-effects-not-decoded', ['memory','faults','other'], operations);
+  return bundle(instruction, context, {
+    operations,
+    possibleFaults:[{ kind:'system-instruction-trap', condition:{ kind:'architectural-access-check', operation:'sys' } }],
+    completeness:'exact-with-intrinsic',
+    metadata:{ environmentBoundary:true, environmentFootprintComplete:true },
+  });
 }
 
 function eret(instruction, context) {
-  const operation = completeIntrinsic({
-    id:'arm64.system.eret', inputs:[], outputs:[],
-    registersRead:['exception-link-register-current-el','saved-pstate-current-el'],
-    registersWritten:['pstate'],
-    memoryRead:{scope:'none'}, memoryWrite:{scope:'none'},
-    controlEffects:[{ kind:'indirect', target:{ kind:'exception-return-address' }, reason:'exception-return' }],
-    determinism:'input-dependent', symbolicDetail:'unavailable',
+  const controlEffect = { kind:'indirect', target:{ kind:'exception-return-address' }, reason:'exception-return' };
+  const operation = environmentIntrinsic({
+    id:'arm64.environment.eret',
+    controlEffects:[controlEffect],
+    memory:true,
+    completeEnvironment:true,
+    metadata:{ exceptionReturn:true },
   });
-  return partial(
-    instruction, context, 'eret-current-exception-level-and-pstate-restore-details-not-modelled',
-    ['registers','control','faults','other'], [operation],
-    { kind:'indirect', target:{ kind:'exception-return-address' }, reason:'exception-return' },
-  );
+  return bundle(instruction, context, {
+    operations:[operation], controlEffect,
+    possibleFaults:[{ kind:'illegal-exception-return', condition:{ kind:'architectural-exception-return-check' } }],
+    completeness:'exact-with-intrinsic',
+    metadata:{ environmentBoundary:true, environmentFootprintComplete:true },
+  });
 }
 
 function genericHint(instruction, context, ops) {
   const imm = immediate(ops[0]);
   if (!imm) return partial(instruction, context, 'generic-hint-immediate-unavailable', ['other']);
-  const operation = completeIntrinsic({
-    id:'arm64.system.hint', inputs:[imm], outputs:[], registersRead:[], registersWritten:[],
-    memoryRead:{scope:'none'}, memoryWrite:{scope:'none'}, controlEffects:[], determinism:'unknown', symbolicDetail:'unavailable',
+  const operation = environmentIntrinsic({
+    id:'arm64.environment.hint', inputs:[imm],
+    metadata:{ hintImmediate:String(imm.value) },
   });
-  return partial(instruction, context, 'generic-hint-encoding-not-semantically-resolved', ['other'], [operation]);
+  return bundle(instruction, context, {
+    operations:[operation], completeness:'exact-with-intrinsic',
+    metadata:{ environmentBoundary:true, environmentFootprintComplete:true },
+  });
 }
 
 export function liftArm64SystemEffects(instruction, context = {}) {

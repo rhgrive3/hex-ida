@@ -11,6 +11,44 @@ const FORMAT_PROFILES = Object.freeze({
   elf: Object.freeze(['elf:64']),
   pe: Object.freeze(['pe:pe32', 'pe:pe32+']),
 });
+export const F6_REBUILD_UNITS = Object.freeze([
+  'transaction-identity', 'layout-and-structure', 'relocations-and-bindings', 'branch-ranges',
+  'unwind-and-debug', 'imports-and-exports', 'signature-consequence', 'loader-reparse',
+  'independent-differential-oracle', 'atomic-publication', 'real-fixture', 'negative-validator-corpus',
+]);
+export const F6_REBUILD_PROFILES = Object.freeze(['macho:64', 'elf:64', 'pe:pe32', 'pe:pe32+']);
+const F6_NATIVE_INVARIANT_UNITS = Object.freeze([
+  'layout-and-structure', 'relocations-and-bindings', 'branch-ranges',
+  'unwind-and-debug', 'imports-and-exports', 'signature-consequence',
+]);
+const F6_PRESERVATION_ORACLE_IDENTITY = 'external:llvm-readobj';
+const F6_PRESERVATION_ORACLE_VERSION = 'Ubuntu LLVM version 18.1.3';
+const TRUSTED_INDEPENDENT_ORACLE_PROVIDERS = new WeakSet();
+
+// The preservation denominator accepts only the repository's registered
+// independent-provider adapter. A caller-supplied function cannot mint a
+// preservation result by copying the result schema or report fields.
+export function registerCanonicalIndependentOracleProvider(provider) {
+  if (typeof provider !== 'function') throw new TypeError('independent-oracle-provider-required');
+  TRUSTED_INDEPENDENT_ORACLE_PROVIDERS.add(provider);
+  return provider;
+}
+
+function isCanonicalIndependentOracleProvider(provider) {
+  return typeof provider === 'function' && TRUSTED_INDEPENDENT_ORACLE_PROVIDERS.has(provider);
+}
+export const F6_UNIMPLEMENTED_OPERATION_UNITS = Object.freeze([]);
+// These are evaluator-level bounded capabilities, not replacements for the
+// locked profile-wide F6 units above.  A capability can close only when its
+// exact production operation, loader reparse, and independent oracle evidence
+// are present; the parent unit remains blocking until the complete matrix is
+// implemented.
+export const F6_BOUNDED_OPERATION_CELLS = Object.freeze([
+  'elf:64:layout-and-structure:terminal-sht-nobits-append',
+  'pe:pe32:layout-and-structure:text-virtual-size-within-alignment',
+  'pe:pe32+:layout-and-structure:text-virtual-size-within-alignment',
+  'macho:64:layout-and-structure:text-section-size-within-file-gap',
+]);
 const BYTE_HASH_RE = /^bytes:[0-9a-f]{32}$/;
 const VALID_REBUILD_PROFILE_SUPPORT = new WeakSet();
 
@@ -141,6 +179,7 @@ function relocationResultFailure(result) {
 function independentOracleResultFailure(result, context) {
   if (!result || typeof result !== 'object' || Array.isArray(result)) return 'independent-oracle-result-invalid';
   if (result.schemaVersion !== INDEPENDENT_ORACLE_RESULT_SCHEMA) return 'independent-oracle-contract-invalid';
+  if (result.ok !== true || !['passed', 'valid'].includes(String(result.status || '').toLowerCase())) return 'independent-oracle-contract-invalid';
   for (const [field, reason] of [
     ['oracleIdentity', 'independent-oracle-identity-required'],
     ['oracleVersion', 'independent-oracle-version-required'],
@@ -154,9 +193,327 @@ function independentOracleResultFailure(result, context) {
   if (result.oracleIdentity === loaderIdentity || result.oracleVersion === loaderIdentity || result.oracleSource === loaderIdentity) {
     return 'independent-oracle-identity-not-distinct';
   }
+  const format = result.format ?? result.image?.format;
+  if (typeof format !== 'string' || !format.trim()) return 'independent-oracle-format-required';
+  if (format.toLowerCase() !== context.transaction.format) return 'independent-oracle-format-mismatch';
+  const architecture = result.architecture ?? result.arch ?? result.image?.arch;
+  if (typeof architecture !== 'string' || !architecture.trim()) return 'independent-oracle-architecture-required';
+  if (architecture.toLowerCase() !== context.transaction.architecture) return 'independent-oracle-architecture-mismatch';
   if (result.sourceDigest !== context.transaction.sourceHash) return 'independent-oracle-source-digest-mismatch';
   if (result.outputDigest !== context.expectedOutputHash) return 'independent-oracle-output-digest-mismatch';
+  const preservationKind = context.transaction.expectedOriginalState?.formatSafe?.kind;
+  if (['elf-comment', 'pe-timestamp', 'macho-min-version'].includes(preservationKind) && result.preservationEvidence?.complete === true) {
+    if (result.oracleIdentity !== F6_PRESERVATION_ORACLE_IDENTITY
+      || typeof result.oracleVersion !== 'string' || !result.oracleVersion.includes(F6_PRESERVATION_ORACLE_VERSION)
+      || typeof result.oracleSource !== 'string' || !/(?:^|[/\\])llvm-readobj(?:-\d+)?@sha256:[0-9a-f]{64}(?:\s|$)/.test(result.oracleSource)
+      || typeof result.oracleOutputDigest !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(result.oracleOutputDigest)) {
+      return 'independent-oracle-preservation-provider-identity-invalid';
+    }
+  }
   return null;
+}
+
+function rebuildIdentityMatches(left, right) {
+  return left?.binaryId === right?.binaryId
+    && left?.format === right?.format
+    && left?.architecture === right?.architecture
+    && left?.loaderVersion === right?.loaderVersion
+    && left?.sourceHash === right?.sourceHash;
+}
+
+function f6ProfileId(transaction) {
+  if (transaction?.format === 'macho') return transaction.architecture === 'x86_64' || transaction.architecture === 'arm64' ? 'macho:64' : null;
+  if (transaction?.format === 'elf') return transaction.architecture === 'x86_64' ? 'elf:64' : null;
+  if (transaction?.format === 'pe') return transaction.architecture === 'x86' ? 'pe:pe32' : transaction.architecture === 'x86_64' ? 'pe:pe32+' : null;
+  return null;
+}
+
+function f6Cell(profileId, unit, status, reason = null, evidence = null) {
+  return Object.freeze({ id: `${profileId}:${unit}`, unit, status, reason, evidence });
+}
+
+function f6BoundedOperationCell(id, parentUnit, operation, status, reason = null, evidence = null) {
+  return Object.freeze({ id, parentUnit, operation, status, reason, evidence });
+}
+
+export function f6KnownImplementationGaps() {
+  return Object.freeze(F6_REBUILD_PROFILES.flatMap((profileId) => F6_UNIMPLEMENTED_OPERATION_UNITS.map((unit) => `${profileId}:${unit}`)));
+}
+
+function preservationEvidenceValid(transaction, validation) {
+  const expected = transaction?.expectedOriginalState?.formatSafe;
+  const expectedImpactSection = expected?.kind === 'elf-comment'
+    ? expected.section
+    : expected?.kind === 'pe-timestamp'
+      ? expected.field
+      : null;
+  // The format-safe adapter currently represents Mach-O's command target with
+  // a null impact section. Bind that representation as well: otherwise a
+  // caller can rebind transaction/validation identities while changing the
+  // claimed affected section and still inherit a preservation proof.
+  const impactSections = transaction?.impact?.sections;
+  const impactSectionMatches = expectedImpactSection == null
+    ? Array.isArray(impactSections) && impactSections.length === 1 && impactSections[0] == null
+    : Array.isArray(impactSections) && impactSections.length === 1 && impactSections[0] === expectedImpactSection;
+  if (!['elf-comment','pe-timestamp','macho-min-version'].includes(expected?.kind)
+    || expected.signaturePolicy !== 'unsigned-input-required'
+    || !impactSectionMatches
+    || transaction?.sizeDelta !== 0
+    || transaction?.impact?.layoutMoving !== false
+    || transaction?.impact?.relocations !== false
+    || transaction?.impact?.branchRanges !== false
+    || transaction?.impact?.unwind !== false
+    || transaction?.impact?.importsExports !== false
+    || transaction?.impact?.signature !== false
+    || transaction?.impact?.relocationBindings?.length !== 0) return false;
+  const formatResult = validation?.validators?.find((item) => item.validator === 'format-invariants');
+  const oracleResult = validation?.validators?.find((item) => item.validator === 'independent-differential');
+  const local = formatResult?.detail?.preservationEvidence;
+  const independent = oracleResult?.detail?.preservationEvidence;
+  const oracleDetail = oracleResult?.detail;
+  const exactUnits = (value) => JSON.stringify(value || []) === JSON.stringify(F6_NATIVE_INVARIANT_UNITS);
+  return formatResult?.status === 'passed'
+    && oracleResult?.status === 'passed'
+    && oracleDetail?.oracleIdentity === F6_PRESERVATION_ORACLE_IDENTITY
+    && typeof oracleDetail?.oracleVersion === 'string'
+    && oracleDetail.oracleVersion.includes(F6_PRESERVATION_ORACLE_VERSION)
+    && typeof oracleDetail?.oracleSource === 'string'
+    && /(?:^|[/\\])llvm-readobj(?:-\d+)?@sha256:[0-9a-f]{64}(?:\s|$)/.test(oracleDetail.oracleSource)
+    && /^sha256:[0-9a-f]{64}$/.test(String(oracleDetail?.oracleOutputDigest || ''))
+    && local?.complete === true
+    && local?.signaturePolicy === 'unsigned-input-required'
+    && local?.unchangedBytesExceptTarget === true
+    && local?.unchangedStructure === true
+    && exactUnits(local?.units)
+    && independent?.complete === true
+    && independent?.signaturePolicy === 'unsigned-input-required'
+    && /^sha256:[0-9a-f]{64}$/.test(String(oracleResult?.detail?.oracleExecutableDigest || ''))
+    && String(oracleResult?.detail?.oracleSource || '').includes(`@${oracleResult.detail.oracleExecutableDigest} `)
+    && independent?.sourceReportDigest === independent?.outputReportDigest
+    && /^sha256:[0-9a-f]{64}$/.test(String(independent?.sourceReportDigest || ''))
+    && exactUnits(independent?.units);
+}
+
+function elfLayoutEvidenceValid(transaction, validation) {
+  const expected = transaction?.expectedOriginalState?.formatSafe;
+  if (transaction?.format !== 'elf' || transaction?.architecture !== 'x86_64'
+    || expected?.schema !== 'hex-format-safe-rebuild/v1' || expected?.kind !== 'elf-add-nobits-section'
+    || transaction?.impact?.layoutMoving !== true || transaction?.sizeDelta !== 64) return false;
+  const formatResult = validation?.validators?.find((item) => item.validator === 'format-invariants');
+  const layoutResult = validation?.validators?.find((item) => item.validator === 'layout');
+  const oracleResult = validation?.validators?.find((item) => item.validator === 'independent-differential');
+  const matches = (evidence) => evidence?.sectionCount === expected.outputSectionCount
+    && evidence?.section?.name === expected.section
+    && evidence?.section?.type === expected.type
+    && evidence?.section?.size === expected.size
+    && evidence?.section?.alignment === expected.alignment;
+  return formatResult?.status === 'passed' && layoutResult?.status === 'passed'
+    && oracleResult?.status === 'passed'
+    && matches(formatResult.detail?.layoutEvidence)
+    && matches(layoutResult.detail?.layoutEvidence)
+    && matches(oracleResult.detail?.layoutEvidence);
+}
+
+function peLayoutEvidenceValid(transaction, validation) {
+  const expected = transaction?.expectedOriginalState?.formatSafe;
+  if (transaction?.format !== 'pe' || !['x86', 'x86_64'].includes(transaction?.architecture)
+    || expected?.schema !== 'hex-format-safe-rebuild/v1' || expected?.kind !== 'pe-section-virtual-size'
+    || transaction?.impact?.layoutMoving !== true || transaction?.sizeDelta !== 0
+    || expected?.section !== '.text' || expected?.sourceSectionCount !== expected?.outputSectionCount) return false;
+  const formatResult = validation?.validators?.find((item) => item.validator === 'format-invariants');
+  const layoutResult = validation?.validators?.find((item) => item.validator === 'layout');
+  const oracleResult = validation?.validators?.find((item) => item.validator === 'independent-differential');
+  const matches = (evidence) => evidence?.sectionCount === expected.outputSectionCount
+    && evidence?.section?.index === expected.sectionIndex
+    && evidence?.section?.name === expected.section
+    && evidence?.section?.virtualAddress === expected.virtualAddress
+    && evidence?.section?.rawSize === expected.rawSize
+    && evidence?.section?.originalVirtualSize === expected.originalVirtualSize
+    && evidence?.section?.virtualSize === expected.virtualSize
+    && evidence?.section?.sectionAlignment === expected.sectionAlignment
+    && evidence?.section?.sizeOfImage === expected.outputSizeOfImage;
+  return formatResult?.status === 'passed' && layoutResult?.status === 'passed'
+    && oracleResult?.status === 'passed'
+    && matches(formatResult.detail?.layoutEvidence)
+    && matches(layoutResult.detail?.layoutEvidence)
+    && matches(oracleResult.detail?.layoutEvidence);
+}
+
+function machoLayoutEvidenceValid(transaction, validation) {
+  const expected = transaction?.expectedOriginalState?.formatSafe;
+  if (transaction?.format !== 'macho' || transaction?.architecture !== 'x86_64'
+    || expected?.schema !== 'hex-format-safe-rebuild/v1' || expected?.kind !== 'macho-section-size'
+    || transaction?.impact?.layoutMoving !== true || transaction?.sizeDelta !== 0
+    || expected?.segment !== '__TEXT' || expected?.section !== '__text'
+    || expected?.sourceSectionCount !== expected?.outputSectionCount) return false;
+  const formatResult = validation?.validators?.find((item) => item.validator === 'format-invariants');
+  const layoutResult = validation?.validators?.find((item) => item.validator === 'layout');
+  const oracleResult = validation?.validators?.find((item) => item.validator === 'independent-differential');
+  const matches = (evidence) => evidence?.sectionCount === expected.outputSectionCount
+    && evidence?.segment?.commandIndex === expected.segmentCommandIndex
+    && evidence?.segment?.name === expected.segment
+    && evidence?.segment?.fileOffset === expected.segmentFileOffset
+    && evidence?.segment?.fileSize === expected.segmentFileSize
+    && evidence?.segment?.sectionCount === expected.outputSectionCount
+    && evidence?.section?.index === expected.sectionIndex
+    && evidence?.section?.segment === expected.segment
+    && evidence?.section?.name === expected.section
+    && evidence?.section?.offset === expected.sectionOffset
+    && evidence?.section?.originalSize === expected.originalSize
+    && evidence?.section?.size === expected.size
+    && evidence?.section?.nextSectionOffset === expected.nextSectionOffset;
+  return formatResult?.status === 'passed' && layoutResult?.status === 'passed'
+    && oracleResult?.status === 'passed'
+    && matches(formatResult.detail?.layoutEvidence)
+    && matches(layoutResult.detail?.layoutEvidence)
+    && matches(oracleResult.detail?.layoutEvidence);
+}
+
+/**
+ * Evaluate F6's locked unit vocabulary against the actual v2 transaction
+ * evidence.  A generic validator result or denominator identity is not an
+ * implementation of a native rewrite class: layout growth, relocation,
+ * branch, unwind, import/export, and signature consequences remain blocking
+ * until a format-aware production adapter and focused evidence exist. The
+ * evaluator reports those blockers instead of allowing profile-level proof to
+ * promote them.
+ */
+export function evaluateF6RebuildDenominator({ transaction, validation, publication, proof = {} } = {}) {
+  const profileId = f6ProfileId(transaction);
+  const prefix = profileId || `${transaction?.format || 'unknown'}:unknown`;
+  const cells = {};
+  const boundedOperationCells = {};
+  const add = (unit, status, reason = null, evidence = null) => { cells[unit] = f6Cell(prefix, unit, status, reason, evidence); };
+  if (!profileId) {
+    for (const unit of F6_REBUILD_UNITS) add(unit, 'blocking', 'f6-profile-unsupported');
+    return Object.freeze({ status: 'blocked', profileId: null, cells: Object.freeze(cells), boundedOperationCells: Object.freeze(boundedOperationCells), boundedOperationClosedIds: Object.freeze([]), boundedOperationBlockingIds: Object.freeze([]), closedUnitIds: Object.freeze([]), blockingUnitIds: Object.freeze(F6_REBUILD_UNITS.map((unit) => `${prefix}:${unit}`)), blockers: Object.freeze(['f6-profile-unsupported']) });
+  }
+
+  const validationPassed = transactionIdentityValid(transaction)
+    && validation?.status === 'valid'
+    && validation?.allRequiredExecuted === true
+    && validation?.transactionId === transaction?.transactionId
+    && rebuildIdentityMatches(validation, transaction)
+    && validationIdentityValid(validation);
+  const publicationComplete = publication?.status === 'published'
+    && publication.atomic === true
+    && publication.committed === true
+    && publication.transactionId === transaction?.transactionId
+    && publication.outputHash === validation?.outputHash
+    && publication.outputIdentity === validation?.outputIdentity
+    && ATOMIC_PUBLICATION_PROTOCOLS.has(publication.protocol)
+    && !!publication.publicationIdentity;
+  add('transaction-identity', validationPassed ? 'closed' : 'blocking', validationPassed ? null : 'f6-transaction-identity-unproven', validationPassed ? 'transaction-v2-validation-identity' : null);
+
+  const preservationProof = validationPassed
+    && publicationComplete
+    && proof.realFixture === true
+    && proof.realFixtureEvidence === true
+    && proof.negativeValidatorTest === true
+    && proof.staleIdentityTest === true
+    && proof.truncationTest === true
+    && proof.wrongIdentityTest === true
+    && preservationEvidenceValid(transaction, validation);
+  for (const unit of F6_NATIVE_INVARIANT_UNITS) add(
+    unit,
+    preservationProof ? 'closed' : 'blocking',
+    preservationProof ? null : 'f6-preservation-profile-proof-incomplete',
+    preservationProof ? 'format-safe-unsigned-preservation+hex-whole-file-invariants+llvm-readobj-all-source-output-oracle' : null,
+  );
+  const boundedLayoutProof = validationPassed
+    && publicationComplete
+    && proof.realFixture === true
+    && proof.realFixtureEvidence === true
+    && proof.negativeValidatorTest === true
+    && proof.staleIdentityTest === true
+    && proof.truncationTest === true
+    && proof.wrongIdentityTest === true
+    && elfLayoutEvidenceValid(transaction, validation);
+  if (profileId === 'elf:64') {
+    const boundedId = F6_BOUNDED_OPERATION_CELLS[0];
+    boundedOperationCells[boundedId] = f6BoundedOperationCell(
+      boundedId,
+      'layout-and-structure',
+      'elf-add-nobits-section',
+      boundedLayoutProof ? 'closed' : 'blocking',
+      boundedLayoutProof ? null : 'f6-bounded-elf-layout-proof-incomplete',
+      boundedLayoutProof ? 'format-safe-elf-add-nobits-section+hex-loader-reparse+llvm-readobj-independent-oracle+atomic-publication' : null,
+    );
+  }
+  if (profileId === 'pe:pe32' || profileId === 'pe:pe32+') {
+    const boundedId = F6_BOUNDED_OPERATION_CELLS.find((id) => id.startsWith(`${profileId}:`));
+    const peLayoutProof = validationPassed
+      && publicationComplete
+      && proof.realFixture === true
+      && proof.realFixtureEvidence === true
+      && proof.negativeValidatorTest === true
+      && proof.staleIdentityTest === true
+      && proof.truncationTest === true
+      && proof.wrongIdentityTest === true
+      && peLayoutEvidenceValid(transaction, validation);
+    boundedOperationCells[boundedId] = f6BoundedOperationCell(
+      boundedId,
+      'layout-and-structure',
+      'pe-section-virtual-size',
+      peLayoutProof ? 'closed' : 'blocking',
+      peLayoutProof ? null : 'f6-bounded-pe-layout-proof-incomplete',
+      peLayoutProof ? 'format-safe-pe-section-virtual-size+hex-loader-reparse+llvm-readobj-independent-oracle+atomic-publication' : null,
+    );
+  }
+  if (profileId === 'macho:64') {
+    const boundedId = F6_BOUNDED_OPERATION_CELLS.find((id) => id.startsWith(`${profileId}:`));
+    const machoLayoutProof = validationPassed
+      && publicationComplete
+      && proof.realFixture === true
+      && proof.realFixtureEvidence === true
+      && proof.negativeValidatorTest === true
+      && proof.staleIdentityTest === true
+      && proof.truncationTest === true
+      && proof.wrongIdentityTest === true
+      && machoLayoutEvidenceValid(transaction, validation);
+    boundedOperationCells[boundedId] = f6BoundedOperationCell(
+      boundedId,
+      'layout-and-structure',
+      'macho-section-size',
+      machoLayoutProof ? 'closed' : 'blocking',
+      machoLayoutProof ? null : 'f6-bounded-macho-layout-proof-incomplete',
+      machoLayoutProof ? 'format-safe-macho-section-size+hex-loader-reparse+llvm-readobj-independent-oracle+atomic-publication' : null,
+    );
+  }
+  if (profileId === 'elf:64' && elfLayoutEvidenceValid(transaction, validation)) {
+    add('layout-and-structure', 'blocking', 'f6-layout-and-structure-profile-matrix-incomplete', 'elf64-terminal-section-table-nobits-adapter+llvm-readobj-section-oracle');
+  }
+
+  const loader = validation?.validators?.find((item) => item.validator === 'loader-reparse');
+  add('loader-reparse', loader?.status === 'passed' ? 'closed' : 'blocking', loader?.status === 'passed' ? null : 'f6-loader-reparse-unproven', loader?.status === 'passed' ? 'production-loader-reparse' : null);
+  const independent = validation?.validators?.find((item) => item.validator === 'independent-differential');
+  add('independent-differential-oracle', independent?.status === 'passed' && validation?.independentDifferential === 'executed' ? 'closed' : 'blocking', independent?.status === 'passed' && validation?.independentDifferential === 'executed' ? null : 'f6-independent-oracle-unproven', independent?.status === 'passed' ? 'independent-oracle-contract' : null);
+
+  add('atomic-publication', publicationComplete ? 'closed' : 'blocking', publicationComplete ? null : 'f6-atomic-publication-unproven', publicationComplete ? 'transaction-v2-publication-identity' : null);
+  add('real-fixture', proof.realFixture === true && proof.realFixtureEvidence === true ? 'closed' : 'blocking', proof.realFixture === true && proof.realFixtureEvidence === true ? null : 'f6-real-fixture-evidence-unproven', proof.realFixture === true && proof.realFixtureEvidence === true ? 'compiler-produced-fixture' : null);
+  const negativeEvidence = proof.negativeValidatorTest === true
+    && proof.staleIdentityTest === true
+    && proof.truncationTest === true
+    && proof.wrongIdentityTest === true;
+  add('negative-validator-corpus', negativeEvidence ? 'closed' : 'blocking', negativeEvidence ? null : 'f6-negative-validator-evidence-incomplete', negativeEvidence ? 'tamper-truncation-identity-negative-corpus' : null);
+
+  const entries = Object.values(cells);
+  const boundedEntries = Object.values(boundedOperationCells);
+  const closedUnitIds = entries.filter((item) => item.status === 'closed').map((item) => item.id);
+  const blockingUnitIds = entries.filter((item) => item.status !== 'closed').map((item) => item.id);
+  const boundedOperationClosedIds = boundedEntries.filter((item) => item.status === 'closed').map((item) => item.id);
+  const boundedOperationBlockingIds = boundedEntries.filter((item) => item.status !== 'closed').map((item) => item.id);
+  return Object.freeze({
+    status: blockingUnitIds.length === 0 ? 'closed' : 'blocked',
+    profileId,
+    cells: Object.freeze(cells),
+    boundedOperationCells: Object.freeze(boundedOperationCells),
+    boundedOperationClosedIds: Object.freeze(boundedOperationClosedIds),
+    boundedOperationBlockingIds: Object.freeze(boundedOperationBlockingIds),
+    closedUnitIds: Object.freeze(closedUnitIds),
+    blockingUnitIds: Object.freeze(blockingUnitIds),
+    blockers: Object.freeze(entries.filter((item) => item.status !== 'closed').map((item) => item.reason)),
+  });
 }
 
 function positiveSafe(value, fallback, max, code) {
@@ -472,6 +829,9 @@ function validatorResult(name, executed, ok, reason = null, detail = null) {
 
 async function executeExternal(name, fn, context) {
   if (typeof fn !== 'function') return validatorResult(name, false, false, 'required-validator-unavailable');
+  if (name === 'independent-differential' && context.preservationRequiresTrustedProvider && !context.independentOracleTrusted) {
+    return validatorResult(name, false, false, 'independent-oracle-provider-untrusted');
+  }
   try {
     const result = await fn(context);
     if (!result || (result.ok !== true && result.status !== 'passed' && result.status !== 'valid')) return validatorResult(name, true, false, result?.reason || 'validator-rejected', result || null);
@@ -509,6 +869,8 @@ export async function validateRebuildTransaction(transaction, materialized, opti
     && materialized.outputIdentity === canonicalOutputIdentity(transaction.transactionId, materialized.outputHash);
   const unchangedMatches = verifyUnchangedMappings(original, materialized.bytes, materialized.mappings);
   const evidenceComplete = transaction.operations.every((operation) => operation.provenance && Object.keys(operation.provenance).length > 0);
+  const preservationRequiresTrustedProvider = ['elf-comment', 'pe-timestamp', 'macho-min-version'].includes(transaction.expectedOriginalState?.formatSafe?.kind);
+  const independentOracleTrusted = isCanonicalIndependentOracleProvider(options.independentOracle);
   builtins.set('source-precondition', () => validatorResult('source-precondition', true, sourceMatches, 'source-hash-mismatch'));
   builtins.set('structure', () => validatorResult('structure', true, structureMatches, 'output-length-inconsistent'));
   builtins.set('unchanged-regions', () => validatorResult('unchanged-regions', true, unchangedMatches, 'unchanged-region-differed'));
@@ -524,7 +886,7 @@ export async function validateRebuildTransaction(transaction, materialized, opti
         : name === 'independent-differential'
           ? options.independentOracle
         : options.validators?.[name];
-    validators.push(await executeExternal(name, external, { transaction, materialized, original, output: materialized.bytes, expectedOutputHash: materialized.outputHash }));
+    validators.push(await executeExternal(name, external, { transaction, materialized, original, output: materialized.bytes, expectedOutputHash: materialized.outputHash, preservationRequiresTrustedProvider, independentOracleTrusted }));
   }
 
   const failures = validators.filter((item) => item.status !== 'passed');
@@ -555,6 +917,7 @@ export async function publishRebuildTransaction(materialized, validation, option
   if (!validation || validation.schemaVersion !== REBUILD_VALIDATION_SCHEMA || validation.status !== 'valid' || validation.allRequiredExecuted !== true) return { status: 'rejected', reason: 'rebuild-v2-validation-not-green' };
   if (validation.transactionId !== materialized.transactionId) return { status: 'rejected', reason: 'rebuild-v2-validation-transaction-mismatch' };
   if (!validationIdentityValid(validation)) return { status: 'rejected', reason: 'rebuild-v2-validation-not-green' };
+  if (!rebuildIdentityMatches(validation, materialized)) return { status: 'rejected', reason: 'rebuild-v2-validation-identity-mismatch' };
   if (validation.outputHash !== materialized.outputHash) return { status: 'rejected', reason: 'rebuild-v2-validation-output-mismatch' };
   if (validation.outputIdentity !== materialized.outputIdentity) return { status: 'rejected', reason: 'rebuild-v2-validation-output-identity-mismatch' };
   if (JSON.stringify(validation.requiredValidators) !== JSON.stringify(materialized.requiredValidators)) return { status: 'rejected', reason: 'rebuild-v2-validation-validator-set-mismatch' };
@@ -573,10 +936,20 @@ export async function publishRebuildTransaction(materialized, validation, option
     if (!ATOMIC_PUBLICATION_PROTOCOLS.has(protocol)) return { status: 'rejected', reason: 'rebuild-v2-publication-protocol-invalid' };
     const publicationIdentity = String(result.publicationIdentity || '').trim();
     if (!publicationIdentity) return { status: 'rejected', reason: 'rebuild-v2-publication-identity-required' };
-    if (result.transactionId != null && String(result.transactionId) !== materialized.transactionId) return { status: 'rejected', reason: 'rebuild-v2-publication-transaction-mismatch' };
-    if (result.outputHash != null && String(result.outputHash) !== materialized.outputHash) return { status: 'rejected', reason: 'rebuild-v2-publication-output-mismatch' };
+    if (result.transactionId == null || result.outputHash == null || result.outputIdentity == null) return { status: 'rejected', reason: 'rebuild-v2-publication-identity-incomplete' };
+    if (String(result.transactionId) !== materialized.transactionId) return { status: 'rejected', reason: 'rebuild-v2-publication-transaction-mismatch' };
+    if (String(result.outputHash) !== materialized.outputHash) return { status: 'rejected', reason: 'rebuild-v2-publication-output-mismatch' };
     const outputIdentity = canonicalOutputIdentity(materialized.transactionId, materialized.outputHash);
-    if (result.outputIdentity != null && String(result.outputIdentity) !== outputIdentity) return { status: 'rejected', reason: 'rebuild-v2-publication-output-identity-mismatch' };
+    if (String(result.outputIdentity) !== outputIdentity) return { status: 'rejected', reason: 'rebuild-v2-publication-output-identity-mismatch' };
+    for (const field of ['binaryId', 'format', 'architecture', 'loaderVersion', 'sourceHash']) {
+      if (result[field] != null) {
+        const expected = materialized[field];
+        const observed = String(result[field]);
+        if ((field === 'sourceHash' ? observed.toLowerCase() : observed) !== (field === 'sourceHash' ? String(expected).toLowerCase() : String(expected))) {
+          return { status: 'rejected', reason: 'rebuild-v2-publication-identity-mismatch' };
+        }
+      }
+    }
     return deepFreeze({ status: 'published', atomic: true, committed: true, protocol, transactionId: materialized.transactionId, outputHash: materialized.outputHash, outputIdentity, publicationIdentity, result: clone(result) });
   } catch (error) {
     return { status: 'rejected', reason: 'rebuild-v2-publication-failed', detail: String(error?.message || error) };
@@ -586,6 +959,7 @@ export async function publishRebuildTransaction(materialized, validation, option
 export function rebuildProfileSupport({ transaction, validation, publication, proof = {}, profileProof = null, expectedCommitSha = null, expectedTreeSha = null } = {}) {
   const requiredCount = transaction?.requiredValidators?.length || 0;
   const executedCount = validation?.validators?.filter((item) => item.executed === true && item.status === 'passed').length || 0;
+  const f6Denominator = evaluateF6RebuildDenominator({ transaction, validation, publication, proof });
   const expectedProfiles = FORMAT_PROFILES[transaction?.format] || [];
   const itemId = transaction?.format ? `S2-F6-${String(transaction.format).toUpperCase()}` : null;
   const formatCoverageComplete = itemId != null && isValidatedStage2CapabilityProof(profileProof, { itemId, profileIds: expectedProfiles });
@@ -607,6 +981,7 @@ export function rebuildProfileSupport({ transaction, validation, publication, pr
     && validation.allRequiredExecuted === true
     && executedCount === requiredCount
     && validation.transactionId === transaction.transactionId
+    && rebuildIdentityMatches(validation, transaction)
     && validation.sourceHash === transaction.sourceHash
     && JSON.stringify(validation.requiredValidators) === JSON.stringify(transaction.requiredValidators)
     && validation.outputIdentity === outputIdentity
@@ -626,6 +1001,7 @@ export function rebuildProfileSupport({ transaction, validation, publication, pr
     && proof.formatSpecificValidatorTests === true
     && proof.atomicInterruptionTest === true
     && proof.realFixture === true
+    && f6Denominator.status === 'closed'
     && formatCoverageComplete
     && exactCandidateIdentity;
   const result = deepFreeze({
@@ -636,6 +1012,7 @@ export function rebuildProfileSupport({ transaction, validation, publication, pr
     executedValidatorCount: executedCount,
     formatProfileIds,
     formatCoverageComplete,
+    f6Denominator,
     outputIdentity,
     status: exact ? 'supported-for-exact-rebuild-profile' : 'unsupported',
     authority: exact ? 'L4-validated-atomic-publication' : 'L3-plan-only',

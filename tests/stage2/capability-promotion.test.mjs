@@ -7,7 +7,7 @@ import {
 } from '../../js/platform/stage2-capability-maturity.js';
 import { createStage2CapabilityProofs } from '../../js/platform/stage2-profile-evidence.js';
 import { validatedCapabilityProofFixture } from './helpers/profile-proof-fixture.mjs';
-import { RemoteCollaborationGate, remoteCollaborationSupport } from '../../js/collaboration/remote-authority.js';
+import { RemoteCollaborationGate, createRemoteCollaborationEnvelope, remoteCollaborationSupport } from '../../js/collaboration/remote-authority.js';
 import { createRuntimeAuthorityBinding, runtimeProfileSupport } from '../../js/runtime/authority.js';
 import { createManagedRuntimeBinding, managedRuntimeProfileSupport } from '../../js/managed/runtime-binding.js';
 import { validatedRebuildSupportFixture } from './helpers/rebuild-proof-fixture.mjs';
@@ -26,7 +26,7 @@ const runtimeFlags = {
 };
 const nativeCapabilities = ['connect', 'disconnect', 'attach', 'pause', 'resume', 'stepInto', 'breakpointAddress', 'removeBreakpoint', 'readRegisters', 'readMemory', 'writeMemory', 'threads', 'modules', 'cancel'];
 const nativeBinding = createRuntimeAuthorityBinding({
-  providerIdentity: 'provider:capability-test', providerProfileId: 'native:lldb-compatible-v1:test', providerVersion: '1',
+  providerIdentity: 'provider:capability-test', providerProfileId: 'native:remote-debug-v1:qemu-lldb', providerVersion: '1',
   runtimeInstanceIdentity: 'runtime:capability-test', targetIdentity: 'process:capability-test', targetProfileId: 'arm64:a64',
   binaryIdentity: 'binary:capability-test', buildIdentity: 'build:capability-test', moduleIdentity: 'module:capability-test',
   loadMappingIdentity: 'mapping:capability-test', sessionIdentity: 'session:capability-test', capabilityVersion: 'debug/v1',
@@ -74,9 +74,10 @@ const machoStage1 = { status: 'stage1-proven', exactHead: true, fullySatisfiedLe
 const machoRebuild = { status: 'supported-for-exact-rebuild-profile', format: 'macho', formatCoverageComplete: true, formatProfileIds: ['macho:64'] };
 const validatedMachoRebuild = await validatedRebuildSupportFixture('macho', proofs['S2-F6-MACHO']);
 const macho = stage2FormatMaturity('macho', { stage1Proof: machoStage1, rebuildProof: validatedMachoRebuild, profileProof: proofs['S2-F6-MACHO'] });
-assert.equal(macho.level, 'F6');
-assert.equal(macho.status, 'supported');
-assert.equal(macho.features.validatedRebuildPatch, 'supported');
+assert.equal(validatedMachoRebuild.status, 'unsupported', 'generic file identity must not promote broad F6 units');
+assert.equal(macho.level, 'F5');
+assert.equal(macho.status, 'partial');
+assert.equal(macho.features.validatedRebuildPatch, 'unsupported');
 assert.notEqual(stage2FormatMaturity('macho', { stage1Proof: machoStage1, rebuildProof: { ...validatedMachoRebuild }, profileProof: proofs['S2-F6-MACHO'] }).level, 'F6', 'copied rebuild support must not retain publication authority');
 assert.notEqual(stage2FormatMaturity('macho', { stage1Proof: { verdict: 'READY' }, rebuildProof: machoRebuild }).level, 'F6');
 assert.notEqual(stage2FormatMaturity('macho', { stage1Proof: machoStage1, rebuildProof: { ...machoRebuild, formatCoverageComplete: false } }).level, 'F6');
@@ -85,17 +86,30 @@ const peStage1 = { status: 'stage1-proven', exactHead: true, fullySatisfiedLevel
 const peRebuild = { status: 'supported-for-exact-rebuild-profile', format: 'pe', formatCoverageComplete: true, formatProfileIds: ['pe:pe32', 'pe:pe32+'] };
 const validatedPeRebuild = await validatedRebuildSupportFixture('pe', proofs['S2-F6-PE']);
 const pe = stage2FormatMaturity('pe', { stage1Proof: peStage1, rebuildProof: validatedPeRebuild, profileProof: proofs['S2-F6-PE'] });
-assert.equal(pe.features.validatedRebuildPatch, 'supported');
+assert.equal(pe.features.validatedRebuildPatch, 'unsupported');
 assert.equal(pe.fullySatisfiedLevel, 'F4', 'PE cannot claim cumulative F6 while F5 remains unsupported');
 assert.equal(pe.status, 'partial');
 
+const remoteGate = new RemoteCollaborationGate({
+  projectIdentity: 'project:capability-test',
+  sessionIdentity: 'session:capability-test',
+  allowedActors: { actor: ['*'] },
+  verifyTransportProof: (proof) => proof.proofIdentity === 'tls:capability-test',
+  transportVerifierIdentity: 'oracle:S2-P12-COLLAB-REMOTE:independent',
+});
+assert.deepEqual(remoteGate.validate(createRemoteCollaborationEnvelope({
+  projectIdentity: 'project:capability-test',
+  sessionIdentity: 'session:capability-test',
+  actorIdentity: 'actor',
+  deviceIdentity: 'device:actor',
+  messageId: 'message:capability-test',
+  sequence: 1,
+  operations: [{ targetEntityId: 'entity', factKind: 'name', action: 'set', payload: 'value' }],
+  transportProof: { authenticated: true, confidentiality: 'verified', integrity: 'verified', proofIdentity: 'tls:capability-test' },
+  egress: { userAuthorized: true },
+})), { ok: true });
 const remoteCollaborationProof = remoteCollaborationSupport({
-  gate: new RemoteCollaborationGate({
-    projectIdentity: 'project:capability-test',
-    sessionIdentity: 'session:capability-test',
-    allowedActors: {},
-    verifyTransportProof: () => true,
-  }),
+  gate: remoteGate,
   profileProof: proofs['S2-P12-COLLAB-REMOTE'],
   expectedCommitSha: 'a'.repeat(40),
   expectedTreeSha: 'b'.repeat(40),
@@ -113,6 +127,6 @@ assert.equal(phase12.capabilityRules.status, 'supported');
 assert.equal(phase12.patterns.status, 'supported');
 assert.equal(phase12.collaboration.status, 'supported');
 assert.notEqual(stage2Phase12Maturity({ profileProofs: proofs, remoteCollaborationProof: { ...remoteCollaborationProof } }).collaboration.status, 'supported', 'copied remote support cannot retain transport authority');
-assert.equal(phase12.rebuild.status, 'supported');
+assert.equal(phase12.rebuild.status, 'partial', 'Phase12 rebuild projection must retain blocking F6 operation classes');
 assert.equal(stage2Phase12Maturity({ rulesProof: { deterministic: true, partialPropagationTests: true } }).capabilityRules.status, 'partial');
 console.log('[stage2] profile-bound capability promotion tests passed');

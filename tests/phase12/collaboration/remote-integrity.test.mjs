@@ -3,12 +3,14 @@ import { ChangeLog } from '../../../js/collaboration/index.js';
 import { applyRemoteEnvelopeQueued } from '../../../js/collaboration/remote-delivery.js';
 import { RemoteCollaborationGate, createRemoteCollaborationEnvelope } from '../../../js/collaboration/remote-authority.js';
 
-function gate() {
+function gate(overrides = {}) {
   return new RemoteCollaborationGate({
     projectIdentity: 'project:integrity',
     binaryIdentity: 'binary:integrity',
     sessionIdentity: 'session:integrity',
     allowedActors: { alice: ['*'] },
+    verifyTransportProof: (proof) => proof.proofIdentity === 'tls:integrity',
+    ...overrides,
   });
 }
 
@@ -29,6 +31,8 @@ function envelope() {
 
 const valid = envelope();
 assert.deepEqual(gate().validate(valid), { ok: true });
+assert.deepEqual(gate({ verifyTransportProof: null }).validate(valid), { ok: false, reason: 'remote-transport-proof-verifier-required' });
+assert.deepEqual(gate({ verifyTransportProof: () => { throw new Error('verifier-failed'); } }).validate(valid), { ok: false, reason: 'remote-transport-proof-rejected' });
 
 const changedPayload = structuredClone(valid);
 changedPayload.operations[0].payload = 'tampered';

@@ -13,7 +13,7 @@ import { x86RegisterDescriptor } from '../registers.js';
 
 export const X86_64_ARCHITECTURE_ID = 'x86_64';
 export const X86_64_MODE = 'long-64';
-export const X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION = '5.1.0-phase5-integrated';
+export const X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION = '5.2.0-stage2-x86-denominator';
 
 const X86_ATOMIC_ORDERING_AUTHORITY = 'Intel SDM Vol.3 locked-instruction total-order/no-reordering rules';
 const X86_ATOMIC_ORDERING_CONTRACT = 'x86-locked-rmw-seq-cst/v1';

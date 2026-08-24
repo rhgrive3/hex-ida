@@ -37,7 +37,10 @@ const rebuildUnits = [
 const a2Units = [];
 for (const architecture of a2.architectures) {
   const profile = architecture.profileId;
-  a2Units.push(...architecture.decoder.missingUnits);
+  // Exact decoder units remain in the canonical proof denominator even after
+  // they stop appearing in the blocking-gap projection. Older inventories use
+  // missingUnits as both the denominator and gap list, so preserve that shape.
+  a2Units.push(...(architecture.decoder.units || architecture.decoder.missingUnits));
   for (const family of architecture.effectRegistry.families || []) {
     a2Units.push(`${profile}:effect-family:${family.id}`);
     for (const subunit of family.subunits || []) a2Units.push(`${profile}:effect-family:${family.id}:${subunit.id}`);
@@ -52,9 +55,32 @@ const items = {
   'S1-A2-NATIVE': item(nativeProfiles, a2Units, [
     'tests/machine-effects/a2-denominator-inventory.json',
     'tools/validation/machine-effects/a2-denominator.mjs',
+    'tools/validation/machine-effects/riscv64-rv64imc-denominator.mjs',
+    'tests/machine-effects/riscv64-rv64imc-denominator.test.mjs',
+    'tools/validation/machine-effects/x86-capstone-registry.mjs',
+    'tests/machine-effects/x86-capstone-registry.test.mjs',
+    'tools/validation/machine-effects/x86-long64-lea-denominator.mjs',
+    'tests/machine-effects/x86-long64-lea-denominator.test.mjs',
+    'tools/validation/machine-effects/arm64-a64-control-denominator.mjs',
+    'tests/machine-effects/arm64-a64-control-denominator.test.mjs',
+    'tools/validation/machine-effects/arm64-a64-flags-denominator.mjs',
+    'tests/machine-effects/arm64-a64-flags-denominator.test.mjs',
+    'tools/validation/machine-effects/arm64-a64-integer-denominator.mjs',
+    'tests/machine-effects/arm64-a64-integer-denominator.test.mjs',
+    'tools/validation/machine-effects/arm64-a64-fp-denominator.mjs',
+    'tests/machine-effects/arm64-a64-fp-denominator.test.mjs',
+    'tools/validation/machine-effects/arm64-a64-system-denominator.mjs',
+    'tests/machine-effects/arm64-a64-system-denominator.test.mjs',
+    'tools/validation/machine-effects/arm64e-pac-denominator.mjs',
+    'tests/machine-effects/arm64e-pac-denominator.test.mjs',
   ]),
   'S2-A7-NATIVE': item(nativeProfiles, units(nativeProfiles, nativeRuntimeCapabilities), [
     'js/runtime/authority.js', 'js/runtime/stage2.js', 'tests/stage2/runtime-authority.test.mjs',
+    'tools/validation/stage2/a7-lldb-real-fixture.mjs', 'tests/stage2/a7-lldb-real-fixture.test.mjs',
+    'tools/validation/stage2/a7-cross-target-real-fixtures.mjs', 'tests/stage2/a7-cross-target-real-fixtures.test.mjs',
+    'tools/validation/stage2/a7-profile-contract.mjs',
+    'tests/stage2/fixtures/a7-runtime/aarch64-a64.S', 'tests/stage2/fixtures/a7-runtime/aarch64-pac.S',
+    'tests/stage2/fixtures/a7-runtime/riscv64-rv64imc.S', 'tests/stage2/fixtures/a7-runtime/x86_64-long64.S',
   ]),
 };
 
@@ -91,6 +117,12 @@ for (const [id, category, profile] of [
   items[id] = item([profile], phase12Category[category].map((unitId) => `${profile}:${unitId}`), [
     'tools/validation/phase12/denominator-inventory.json',
     'tools/validation/phase12/denominator.mjs',
+    ...(id === 'S2-P12-COLLAB-REMOTE' ? [
+      'js/collaboration/remote-authority.js',
+      'js/collaboration/remote-transport.js',
+      'tests/stage2/remote-collaboration.test.mjs',
+      'tests/stage2/remote-canonical-transport.test.mjs',
+    ] : []),
   ]);
 }
 

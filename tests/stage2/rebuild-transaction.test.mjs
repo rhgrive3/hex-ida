@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import { stableDigest } from '../../js/core/identity/index.js';
 import {
+  F6_REBUILD_UNITS,
   INDEPENDENT_ORACLE_RESULT_SCHEMA,
   createRebuildTransaction,
+  evaluateF6RebuildDenominator,
   materializeRebuildTransaction,
   publishRebuildTransaction,
   rebuildProfileSupport,
@@ -11,6 +13,12 @@ import {
 import { validatedCapabilityProofFixture } from './helpers/profile-proof-fixture.mjs';
 
 const { proofs: profileProofs } = validatedCapabilityProofFixture();
+
+assert.deepEqual([...F6_REBUILD_UNITS], [
+  'transaction-identity', 'layout-and-structure', 'relocations-and-bindings', 'branch-ranges',
+  'unwind-and-debug', 'imports-and-exports', 'signature-consequence', 'loader-reparse',
+  'independent-differential-oracle', 'atomic-publication', 'real-fixture', 'negative-validator-corpus',
+], 'canonical evaluator vocabulary must remain aligned with the locked F6 unit classes');
 
 const source = Uint8Array.from([1, 2, 3, 4]);
 const sourceHash = `bytes:${stableDigest(Array.from(source))}`;
@@ -24,6 +32,8 @@ function independentEvidence(output, ok = true, extra = {}) {
     oracleSource: 'tests/stage2/rebuild-transaction.test.mjs:test-reparser',
     sourceDigest: sourceHash,
     outputDigest: `bytes:${stableDigest(Array.from(output))}`,
+    format: extra.format || 'macho',
+    architecture: extra.architecture || 'arm64',
     ...extra,
   };
 }
@@ -147,7 +157,7 @@ const boundTransaction = createRebuildTransaction({
 const boundMaterialized = await materializeRebuildTransaction(boundTransaction, source, { maxOutputBytes: 1024 });
 const boundExternal = { ...external, relocations: () => ({ ok: true, checked: 1 }) };
 assert.equal((await validateRebuildTransaction(boundTransaction, boundMaterialized, {
-  original: source, loaderReparse: () => ({ ok: true }), independentOracle: ({ output }) => independentEvidence(output), validators: boundExternal,
+  original: source, loaderReparse: () => ({ ok: true }), independentOracle: ({ output }) => independentEvidence(output, true, { format: 'elf' }), validators: boundExternal,
 })).status, 'valid');
 const badBindingTransaction = createRebuildTransaction({
   ...transactionFor('elf'),
@@ -155,7 +165,7 @@ const badBindingTransaction = createRebuildTransaction({
 });
 const badBindingMaterialized = await materializeRebuildTransaction(badBindingTransaction, source, { maxOutputBytes: 1024 });
 assert.equal((await validateRebuildTransaction(badBindingTransaction, badBindingMaterialized, {
-  original: source, loaderReparse: () => ({ ok: true }), independentOracle: ({ output }) => independentEvidence(output), validators: boundExternal,
+  original: source, loaderReparse: () => ({ ok: true }), independentOracle: ({ output }) => independentEvidence(output, true, { format: 'elf' }), validators: boundExternal,
 })).reason, 'rebuild-v2-materialization-identity-invalid');
 
 assert.equal((await validateRebuildTransaction(transaction, materialized, {
@@ -192,6 +202,41 @@ for (const [field, reason] of [
   });
   assert.equal(rejected.validators.find((item) => item.validator === 'independent-differential').reason, reason, field);
 }
+for (const [field, reason] of [
+  ['format', 'independent-oracle-format-required'],
+  ['architecture', 'independent-oracle-architecture-required'],
+]) {
+  const incomplete = independentEvidence(materialized.bytes);
+  delete incomplete[field];
+  const rejected = await validateRebuildTransaction(transaction, materialized, {
+    original: source,
+    loaderReparse: () => ({ ok: true }),
+    independentOracle: () => incomplete,
+    validators: external,
+  });
+  assert.equal(rejected.validators.find((item) => item.validator === 'independent-differential').reason, reason, field);
+}
+const wrongOracleFormat = await validateRebuildTransaction(transaction, materialized, {
+  original: source,
+  loaderReparse: () => ({ ok: true }),
+  independentOracle: ({ output }) => independentEvidence(output, true, { format: 'elf' }),
+  validators: external,
+});
+assert.equal(wrongOracleFormat.validators.find((item) => item.validator === 'independent-differential').reason, 'independent-oracle-format-mismatch');
+const wrongOracleArchitecture = await validateRebuildTransaction(transaction, materialized, {
+  original: source,
+  loaderReparse: () => ({ ok: true }),
+  independentOracle: ({ output }) => independentEvidence(output, true, { architecture: 'x86_64' }),
+  validators: external,
+});
+assert.equal(wrongOracleArchitecture.validators.find((item) => item.validator === 'independent-differential').reason, 'independent-oracle-architecture-mismatch');
+const contradictoryOracleStatus = await validateRebuildTransaction(transaction, materialized, {
+  original: source,
+  loaderReparse: () => ({ ok: true }),
+  independentOracle: ({ output }) => independentEvidence(output, true, { status: 'rejected' }),
+  validators: external,
+});
+assert.equal(contradictoryOracleStatus.validators.find((item) => item.validator === 'independent-differential').reason, 'independent-oracle-contract-invalid');
 const sameIdentity = await validateRebuildTransaction(transaction, materialized, {
   original: source,
   loaderReparse: () => ({ ok: true }),
@@ -211,13 +256,65 @@ assert.equal((await publishRebuildTransaction(materialized, validation)).reason,
 assert.equal((await publishRebuildTransaction(materialized, validation, { atomicPromote: async () => ({ atomic: true }) })).reason, 'rebuild-v2-publication-not-atomic');
 assert.equal((await publishRebuildTransaction(materialized, validation, { atomicPromote: async () => ({ atomic: true, committed: true, protocol: 'unsafe-copy', publicationIdentity: 'x' }) })).reason, 'rebuild-v2-publication-protocol-invalid');
 assert.equal((await publishRebuildTransaction(materialized, validation, { atomicPromote: async () => ({ atomic: true, committed: true, protocol: 'transactional-store' }) })).reason, 'rebuild-v2-publication-identity-required');
-const publication = await publishRebuildTransaction(materialized, validation, { atomicPromote: async () => ({ atomic: true, committed: true, protocol: 'transactional-store', publicationIdentity: 'artifact:rebuilt:1' }) });
+const publication = await publishRebuildTransaction(materialized, validation, { atomicPromote: async (_bytes, { materialized: publishedMaterialized }) => ({
+  atomic: true,
+  committed: true,
+  protocol: 'transactional-store',
+  publicationIdentity: 'artifact:rebuilt:1',
+  transactionId: publishedMaterialized.transactionId,
+  outputHash: publishedMaterialized.outputHash,
+  outputIdentity: publishedMaterialized.outputIdentity,
+}) });
 assert.equal(publication.status, 'published');
 assert.equal(publication.atomic, true);
 assert.equal(publication.committed, true);
 assert.equal(publication.outputIdentity, materialized.outputIdentity);
 assert.equal((await publishRebuildTransaction(materialized, { ...validation, transactionId: 'rebuild-transaction:stale' }, { atomicPromote: async () => ({ atomic: true, committed: true, protocol: 'transactional-store', publicationIdentity: 'x' }) })).reason, 'rebuild-v2-validation-transaction-mismatch');
-assert.equal((await publishRebuildTransaction(materialized, validation, { atomicPromote: async () => ({ atomic: true, committed: true, protocol: 'transactional-store', publicationIdentity: 'x', outputIdentity: 'wrong' }) })).reason, 'rebuild-v2-publication-output-identity-mismatch');
+assert.equal((await publishRebuildTransaction(materialized, validation, { atomicPromote: async (_bytes, { materialized: publishedMaterialized }) => ({
+  atomic: true,
+  committed: true,
+  protocol: 'transactional-store',
+  publicationIdentity: 'x',
+  transactionId: publishedMaterialized.transactionId,
+  outputHash: publishedMaterialized.outputHash,
+  outputIdentity: 'wrong',
+}) })).reason, 'rebuild-v2-publication-output-identity-mismatch');
+
+assert.equal((await publishRebuildTransaction(materialized, validation, {
+  atomicPromote: async (_bytes, { materialized: publishedMaterialized }) => ({
+    atomic: true,
+    committed: true,
+    protocol: 'transactional-store',
+    publicationIdentity: 'wrong-format',
+    transactionId: publishedMaterialized.transactionId,
+    outputHash: publishedMaterialized.outputHash,
+    outputIdentity: publishedMaterialized.outputIdentity,
+    format: 'elf',
+  }),
+})).reason, 'rebuild-v2-publication-identity-mismatch');
+
+// A publication callback that reports commit without binding the persisted
+// bytes to this transaction is partial evidence, not a successful publish.
+assert.equal((await publishRebuildTransaction(materialized, validation, {
+  atomicPromote: async () => ({ atomic: true, committed: true, protocol: 'transactional-store', publicationIdentity: 'partial' }),
+})).reason, 'rebuild-v2-publication-identity-incomplete');
+
+// Recomputed validation IDs do not authorize a different binary/format. The
+// publication boundary must bind every source identity field to the materialized
+// transaction before invoking the writer.
+const forgedValidation = { ...validation, binaryId: 'binary:other' };
+forgedValidation.validationId = `rebuild-validation:${stableDigest(Object.fromEntries(Object.entries(forgedValidation).filter(([key]) => key !== 'validationId')))}`;
+assert.equal((await publishRebuildTransaction(materialized, forgedValidation, {
+  atomicPromote: async (_bytes, { materialized: publishedMaterialized }) => ({
+    atomic: true,
+    committed: true,
+    protocol: 'transactional-store',
+    publicationIdentity: 'forged',
+    transactionId: publishedMaterialized.transactionId,
+    outputHash: publishedMaterialized.outputHash,
+    outputIdentity: publishedMaterialized.outputIdentity,
+  }),
+})).reason, 'rebuild-v2-validation-identity-mismatch');
 
 const incompleteTruth = rebuildProfileSupport({ transaction, validation, publication, proof: { exactHead: true, negativeValidatorTest: true, staleIdentityTest: true } });
 assert.equal(incompleteTruth.status, 'unsupported', 'one green operation must not promote a whole format F6 profile');
@@ -231,8 +328,22 @@ const truth = rebuildProfileSupport({ transaction, validation, publication, proo
   profileDenominatorComplete: true,
   formatProfileIds: ['macho:64'],
 }, profileProof: profileProofs['S2-F6-MACHO'], expectedCommitSha: 'a'.repeat(40), expectedTreeSha: 'b'.repeat(40) });
-assert.equal(truth.status, 'supported-for-exact-rebuild-profile');
+assert.equal(truth.status, 'unsupported', 'generic validators must not promote broad F6 operation classes');
 assert.equal(truth.formatCoverageComplete, true);
+assert.equal(truth.f6Denominator.status, 'blocked');
+assert.ok(truth.f6Denominator.blockingUnitIds.some((id) => id.endsWith(':relocations-and-bindings')));
+assert.ok(truth.f6Denominator.blockingUnitIds.some((id) => id.endsWith(':branch-ranges')));
+assert.ok(truth.f6Denominator.blockingUnitIds.some((id) => id.endsWith(':unwind-and-debug')));
+assert.ok(truth.f6Denominator.blockingUnitIds.some((id) => id.endsWith(':imports-and-exports')));
+assert.ok(truth.f6Denominator.blockingUnitIds.some((id) => id.endsWith(':layout-and-structure')));
+assert.ok(truth.f6Denominator.blockingUnitIds.some((id) => id.endsWith(':signature-consequence')));
+
+const malformedDenominator = evaluateF6RebuildDenominator({ transaction, validation, publication, proof: {
+  realFixture: true, realFixtureEvidence: true, negativeValidatorTest: true, staleIdentityTest: true,
+  truncationTest: true, wrongIdentityTest: true,
+} });
+assert.equal(malformedDenominator.status, 'blocked');
+assert.ok(malformedDenominator.blockingUnitIds.some((id) => id.endsWith(':signature-consequence')));
 const forgedProfileProof = rebuildProfileSupport({ transaction, validation, publication, proof: {
   exactHead: true, negativeValidatorTest: true, staleIdentityTest: true, formatSpecificValidatorTests: true,
   atomicInterruptionTest: true, realFixture: true, profileDenominatorComplete: true, formatProfileIds: ['macho:64'],

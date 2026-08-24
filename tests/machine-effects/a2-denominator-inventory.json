@@ -23,13 +23,128 @@
         "source": "js/targets/architecture/arm64/effects/index.js",
         "export": "arm64MachineEffectFamilies",
         "families": [
-          { "id": "flags", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "Condition-code families contain operand/encoding forms that remain partial." },
-          { "id": "control", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "Control families remain partial when targets, operands, or link addresses are unavailable." },
+          {
+            "id": "flags",
+            "status": "exact",
+            "coverage": "exact",
+            "preexisting": false,
+            "oracle": "arm-a-profile-a64-data-processing-encoding-tables + deployed-capstone-5-arm64 + llvm-mc-18-aarch64-disassembler",
+            "reason": "All CMP/CMN/TST aliases and CCMN/CCMP register/immediate discriminator forms have exact NZCV effects.",
+            "proof": {
+              "schemaVersion": "machine-effects-effect-unit-proof/v1",
+              "source": "js/targets/architecture/arm64/effects/flags.js",
+              "test": "tests/machine-effects/arm64-flags-nzcv.test.mjs",
+              "denominatorTest": "tests/machine-effects/arm64-a64-flags-denominator.test.mjs",
+              "denominator": {
+                "schemaVersion": "arm64-a64-flags-denominator/v1",
+                "denominatorId": "arm64:a64:flags-encoding-discriminators:v1",
+                "profileId": "arm64:a64",
+                "encodingFamilyCount": 12,
+                "encodingCaseCount": 15232,
+                "oracleIds": ["arm-a-profile-a64-data-processing-encoding-tables", "deployed-capstone-5-arm64", "llvm-mc-18-aarch64-disassembler"]
+              }
+            }
+          },
+          {
+            "id": "control",
+            "status": "exact",
+            "coverage": "exact",
+            "preexisting": false,
+            "oracle": "arm-a-profile-a64-branch-encoding-tables + deployed-capstone-5-arm64 + llvm-mc-18-aarch64-disassembler",
+            "reason": "All A64 B/BL/B.cond/CBZ/CBNZ/TBZ/TBNZ/BR/BLR/RET discriminator forms have exact control, link, target, fault, and BTYPE effects.",
+            "proof": {
+              "schemaVersion": "machine-effects-effect-unit-proof/v1",
+              "source": "js/targets/architecture/arm64/effects/control.js",
+              "test": "tests/machine-effects/arm64-control-flow.test.mjs",
+              "denominatorTest": "tests/machine-effects/arm64-a64-control-denominator.test.mjs",
+              "denominator": {
+                "schemaVersion": "arm64-a64-control-denominator/v1",
+                "denominatorId": "arm64:a64:control-encoding-discriminators:v1",
+                "profileId": "arm64:a64",
+                "encodingFamilyCount": 10,
+                "encodingCaseCount": 21306,
+                "oracleIds": ["arm-a-profile-a64-branch-encoding-tables", "deployed-capstone-5-arm64", "llvm-mc-18-aarch64-disassembler"]
+              }
+            }
+          },
           { "id": "memory", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "Memory families include constrained-unpredictable forms and implementation-defined prefetch effects." },
           { "id": "simd", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "SIMD registry includes unsupported/scalable-vector and unresolved operand shapes." },
-          { "id": "fp", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "FP registry includes unavailable encoded immediates and unsupported forms." },
-          { "id": "integer", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "Integer registry contains operand, range, and encoding forms that fail closed as partial." },
-          { "id": "system", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "System families include environment traps, cache maintenance, and unknown hints." },
+          {
+            "id": "fp",
+            "status": "exact",
+            "coverage": "exact-with-intrinsic",
+            "preexisting": false,
+            "oracle": "arm-a-profile-a64-floating-point-encoding-tables + deployed-capstone-5-arm64 + llvm-mc-18-aarch64-disassembler",
+            "reason": "All 45 registry-owned scalar FP mnemonics are bound to 67 A64 encoding rows, including complete FPImm8, condition, fixed-point scale, type, and register discriminator domains.",
+            "proof": {
+              "schemaVersion": "machine-effects-effect-unit-proof/v1",
+              "source": "js/targets/architecture/arm64/effects/fp.js",
+              "test": "tests/machine-effects/arm64-fp-core.test.mjs",
+              "denominatorTest": "tests/machine-effects/arm64-a64-fp-denominator.test.mjs",
+              "denominator": {
+                "schemaVersion": "arm64-a64-fp-denominator/v1",
+                "denominatorId": "arm64:a64:fp-encoding-discriminators:v1",
+                "profileId": "arm64:a64",
+                "encodingFamilyCount": 67,
+                "encodingCaseCount": 8417,
+                "mnemonicCount": 45,
+                "fpImmediateCount": 256,
+                "oracleIds": ["arm-a-profile-a64-floating-point-encoding-tables", "deployed-capstone-5-arm64", "llvm-mc-18-aarch64-disassembler"]
+              }
+            }
+          },
+          {
+            "id": "integer",
+            "status": "exact",
+            "coverage": "exact",
+            "preexisting": false,
+            "oracle": "arm-a-profile-a64-data-processing-encoding-tables + deployed-capstone-5-arm64 + llvm-mc-18-aarch64-disassembler",
+            "reason": "All 83 registry-owned scalar integer mnemonics and aliases are bound to 39 A64 fixed encoding rows with complete discriminator sweeps and exact effects.",
+            "proof": {
+              "schemaVersion": "machine-effects-effect-unit-proof/v1",
+              "source": "js/targets/architecture/arm64/effects/integer.js",
+              "test": "tests/machine-effects/arm64-int-arithmetic.test.mjs",
+              "denominatorTest": "tests/machine-effects/arm64-a64-integer-denominator.test.mjs",
+              "denominator": {
+                "schemaVersion": "arm64-a64-integer-denominator/v1",
+                "denominatorId": "arm64:a64:integer-encoding-discriminators:v1",
+                "source": "tools/validation/machine-effects/arm64-a64-integer-denominator.mjs",
+                "encodingFamilyCount": 39,
+                "encodingCaseCount": 68901,
+                "mnemonicCount": 83,
+                "oracleIds": [
+                  "arm-a-profile-a64-data-processing-encoding-tables",
+                  "deployed-capstone-5-arm64",
+                  "llvm-mc-18-aarch64-disassembler"
+                ]
+              }
+            }
+          },
+          {
+            "id": "system",
+            "status": "exact",
+            "coverage": "exact-with-intrinsic",
+            "preexisting": false,
+            "oracle": "arm-a-profile-a64-exception-and-system-encoding-tables + deployed-capstone-5-arm64 + llvm-mc-18-aarch64-disassembler",
+            "reason": "All 24 registry-owned system mnemonics are bound to the complete 16-bit A64 system selector domain at alias-sensitive X0/XZR boundaries, with explicit conservative environment transitions.",
+            "proof": {
+              "schemaVersion": "machine-effects-effect-unit-proof/v1",
+              "source": "js/targets/architecture/arm64/effects/system.js",
+              "test": "tests/machine-effects/arm64-system-core.test.mjs",
+              "denominatorTest": "tests/machine-effects/arm64-a64-system-denominator.test.mjs",
+              "denominator": {
+                "schemaVersion": "arm64-a64-system-denominator/v1",
+                "denominatorId": "arm64:a64:system-encoding-discriminators:v1",
+                "profileId": "arm64:a64",
+                "encodingFamilyCount": 8,
+                "encodingCaseCount": 262330,
+                "mnemonicCount": 24,
+                "selectorCount": 65536,
+                "registerCount": 32,
+                "oracleIds": ["arm-a-profile-a64-exception-and-system-encoding-tables", "deployed-capstone-5-arm64", "llvm-mc-18-aarch64-disassembler"]
+              }
+            }
+          },
           { "id": "fallback-unmatched-decoder-family", "status": "excluded", "coverage": "unsupported", "preexisting": true, "reason": "Unclaimed decoder families return null and must remain unsupported." }
         ]
       }
@@ -41,8 +156,19 @@
         "provider": "capstone/backend",
         "contract": "external",
         "enumerationStatus": "excluded",
-        "reason": "The production Capstone bridge does not expose a finite A64+PAC instruction-family registry for this inventory.",
-        "missingUnits": ["arm64e:a64+pac:all-a64-decoder-encodings-and-aliases", "arm64e:a64+pac:all-pac-decoder-encodings-and-aliases"]
+        "reason": "Baseline A64 delegation remains incomplete; the PAC extension has a separate exact finite discriminator denominator.",
+        "units": ["arm64e:a64+pac:all-a64-decoder-encodings-and-aliases", "arm64e:a64+pac:all-pac-decoder-encodings-and-aliases"],
+        "missingUnits": ["arm64e:a64+pac:all-a64-decoder-encodings-and-aliases"],
+        "pacDenominator": {
+          "schemaVersion": "arm64e-pac-denominator/v1",
+          "denominatorId": "arm64e:a64+pac:encoding-discriminators:v1",
+          "source": "tools/validation/machine-effects/arm64e-pac-denominator.mjs",
+          "test": "tests/machine-effects/arm64e-pac-denominator.test.mjs",
+          "encodingFamilyCount": 38,
+          "encodingCaseCount": 44491,
+          "mnemonicCount": 38,
+          "oracleIds": ["arm-architecture-reference-manual-pauth-encodings", "deployed-capstone-5-arm64", "llvm-mc-18-aarch64-pauth-disassembler"]
+        }
       },
       "aliases": [
         { "id": "baseline-a64-delegation", "kind": "delegation", "sourceArchitecture": "arm64", "status": "excluded", "preexisting": true, "reason": "Ordinary A64 is delegated to ARM64 and inherits its explicit exclusions." }
@@ -61,7 +187,20 @@
         ]
       },
       "exclusions": [
-        { "id": "pac-missing-structured-operands", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "PAC forms without required destination/modifier/address evidence remain partial." }
+        {
+          "id": "pac-missing-structured-operands", "status": "excluded", "coverage": "partial", "preexisting": true,
+          "reason": "Malformed PAC records without the operands guaranteed by the validated decoder denominator fail closed and are outside its valid-encoding scope.",
+          "normativeExclusion": {
+            "schemaVersion": "machine-effects-preexisting-normative-exclusion/v1",
+            "classification": "PREEXISTING_NORMATIVE_EXCLUSION",
+            "baselineCommit": "3f3778e5f2bef638456da19609d616d71a3daedc",
+            "baselineRef": "js/targets/architecture/arm64e/effects.js",
+            "baselineBlob": "56a7b2bb6fa34d2d4206f5b463770e6f2726efbc",
+            "scope": "malformed-operands-outside-validated-pac-decoder-denominator",
+            "currentProofSource": "tools/validation/machine-effects/arm64e-pac-denominator.mjs",
+            "currentProofTest": "tests/machine-effects/arm64e-pac-denominator.test.mjs"
+          }
+        }
       ]
     },
     {
@@ -71,7 +210,7 @@
         "provider": "capstone/backend",
         "contract": "external-structured-v1",
         "contractVersion": "x86-64-decoded-instruction/v1",
-        "semanticVersion": "capstone-5-x86-structured-v1",
+        "semanticVersion": "capstone-5-x86-structured-v2",
         "enumerationStatus": "excluded",
         "reason": "The production Capstone bridge does not expose a finite long-64 instruction-family registry for this inventory.",
         "missingUnits": ["x86_64:long-64:all-decoder-encodings-prefixes-and-aliases"]
@@ -82,7 +221,20 @@
         "families": [
           { "id": "control", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "Control forms remain partial when structured targets or stack state are unavailable." },
           { "id": "memory", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "Memory forms include locked ordering and deferred operand shapes." },
-          { "id": "lea", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "LEA fails closed for unsupported address/operand shapes." },
+          {
+            "id": "lea",
+            "status": "exact",
+            "coverage": "exact",
+            "preexisting": false,
+            "oracle": "intel-sdm-vol2-lea-8d-r + deployed-capstone-5-x86-long64-detail",
+            "reason": "All long-mode LEA operand/address widths and complete REX/ModRM/SIB discriminator space have structured exact effects.",
+            "proof": {
+              "schemaVersion": "machine-effects-effect-unit-proof/v1",
+              "source": "js/targets/architecture/x86_64/effects/integer.js",
+              "test": "tests/phase5/effects/memory/addressing.test.mjs",
+              "denominatorTest": "tests/machine-effects/x86-long64-lea-denominator.test.mjs"
+            }
+          },
           { "id": "integer", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "Integer forms include deferred memory and implicit-state shapes." },
           { "id": "string", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "Repeated string effects exceed the frozen generic contract." },
           { "id": "atomic", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "Locked and wide atomic effects remain explicitly partial." },
@@ -101,9 +253,23 @@
         "contract": "external-structured-v1",
         "contractVersion": "riscv64-decoded-instruction/v1",
         "semanticVersion": "capstone-5-riscv64-word-exact-v1",
-        "enumerationStatus": "excluded",
-        "reason": "The instruction-word decoder exposes family-level maps, not a complete per-encoding RV64IMC denominator.",
-        "missingUnits": ["riscv64:rv64imc:all-valid-32-bit-and-compressed-encodings"]
+        "enumerationStatus": "exact",
+        "units": ["riscv64:rv64imc:all-valid-32-bit-and-compressed-encodings"],
+        "missingUnits": [],
+        "denominator": {
+          "schemaVersion": "riscv64-rv64imc-decoder-denominator/v1",
+          "denominatorId": "riscv64:rv64imc:decoder-denominator:v1",
+          "source": "tools/validation/machine-effects/riscv64-rv64imc-denominator.mjs",
+          "test": "tests/machine-effects/riscv64-rv64imc-denominator.test.mjs",
+          "encoding32FamilyCount": 66,
+          "compressedFamilyCount": 33,
+          "compressedWordCount": 49152,
+          "discriminatorTupleCount": 28672,
+          "oracleIds": [
+            "deployed-capstone-5.0-riscv64-detail",
+            "riscv-unprivileged-isa-rv64i-m-c-encoding-tables"
+          ]
+        }
       },
       "effectRegistry": {
         "source": "js/targets/architecture/riscv64/effects/index.js",
@@ -116,15 +282,55 @@
           { "id": "integer", "status": "exact", "coverage": "exact", "preexisting": true, "oracle": "riscv-unprivileged-isa-rv64i", "reason": "RV64I integer, compare, shift, and W-result families are structurally lifted." },
           {
             "id": "system",
-            "status": "excluded",
-            "coverage": "partial",
-            "preexisting": true,
-            "reason": "FENCE is exact, but ECALL/EBREAK retain unknown execution-environment effects.",
+            "status": "exact",
+            "coverage": "exact-with-intrinsic",
+            "preexisting": false,
+            "oracle": "riscv-unprivileged-isa-environment-call-and-breakpoint",
+            "proof": {
+              "schemaVersion": "machine-effects-effect-unit-proof/v1",
+              "source": "js/targets/architecture/riscv64/effects/system.js",
+              "test": "tests/phase6/effects/control-memory.test.mjs",
+              "denominatorTest": "tests/machine-effects/riscv64-rv64imc-denominator.test.mjs"
+            },
             "subunits": [
               { "id": "fence", "status": "exact", "coverage": "exact", "preexisting": true, "oracle": "riscv-unprivileged-isa-fence" },
-              { "id": "ecall", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "Execution-environment effects are outside the binary." },
-              { "id": "ebreak", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "Execution-environment effects are outside the binary." },
-              { "id": "fence.i", "status": "excluded", "coverage": "unsupported", "preexisting": true, "reason": "Zifencei is outside the frozen RV64IMC profile." }
+              {
+                "id": "ecall", "status": "exact", "coverage": "exact-with-intrinsic", "preexisting": false,
+                "oracle": "riscv-unprivileged-isa-environment-call",
+                "proof": {
+                  "schemaVersion": "machine-effects-effect-unit-proof/v1",
+                  "source": "js/targets/architecture/riscv64/effects/system.js",
+                  "test": "tests/phase6/effects/control-memory.test.mjs",
+                  "denominatorTest": "tests/machine-effects/riscv64-rv64imc-denominator.test.mjs"
+                }
+              },
+              {
+                "id": "ebreak", "status": "exact", "coverage": "exact-with-intrinsic", "preexisting": false,
+                "oracle": "riscv-unprivileged-isa-breakpoint",
+                "proof": {
+                  "schemaVersion": "machine-effects-effect-unit-proof/v1",
+                  "source": "js/targets/architecture/riscv64/effects/system.js",
+                  "test": "tests/phase6/effects/control-memory.test.mjs",
+                  "denominatorTest": "tests/machine-effects/riscv64-rv64imc-denominator.test.mjs"
+                }
+              },
+              {
+                "id": "fence.i",
+                "status": "excluded",
+                "coverage": "unsupported",
+                "preexisting": true,
+                "reason": "Zifencei is outside the frozen RV64IMC profile.",
+                "normativeExclusion": {
+                  "schemaVersion": "machine-effects-preexisting-normative-exclusion/v1",
+                  "classification": "PREEXISTING_NORMATIVE_EXCLUSION",
+                  "baselineCommit": "3f3778e5f2bef638456da19609d616d71a3daedc",
+                  "baselineRef": "tools/validation/phase6/profile.json",
+                  "baselineBlob": "7f8e893d4645a20a7be309f071d1b3a18653b5d1",
+                  "excludedExtension": "Zifencei",
+                  "currentProofSource": "tools/validation/machine-effects/riscv64-rv64imc-denominator.mjs",
+                  "currentProofTest": "tests/machine-effects/riscv64-rv64imc-denominator.test.mjs"
+                }
+              }
             ]
           },
           { "id": "fallback-unmatched-decoder-family", "status": "excluded", "coverage": "unsupported", "preexisting": true, "reason": "Unsupported extensions/reserved encodings return null and remain explicit unsupported." }

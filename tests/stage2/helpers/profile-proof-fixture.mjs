@@ -41,8 +41,14 @@ export function validatedCapabilityProofFixture() {
       unitEvidence: Object.fromEntries(denominator.unitIds.map((unitId) => [unitId, `evidence:${id}:${unitId}`])),
       realFixtureIdentities: [`fixture:${id}:real`], negativeTestIdentities: [`test:${id}:negative`],
       evidenceIdentities: [`evidence:${id}:aggregate`], implementationIdentity: `implementation:${id}`,
-      providerProfileIds: id === 'S2-A7-NATIVE' || id.startsWith('S2-M6-') ? [`provider:${id}`] : [],
-      independentOracleIdentities: id === 'S1-A2-NATIVE' || id.startsWith('S2-F6-') ? [`oracle:${id}:independent`] : [],
+      providerProfileIds: id === 'S2-A7-NATIVE'
+        ? ['native:lldb-compatible-v1:host', 'native:remote-debug-v1:qemu-lldb']
+        : id.startsWith('S2-M6-')
+          ? [`managed:${id.slice('S2-M6-'.length).toLowerCase()}:provider-bound-runtime-v1:test`]
+          : [],
+      independentOracleIdentities: id === 'S1-A2-NATIVE' || id.startsWith('S2-F6-') || id === 'S2-P12-COLLAB-REMOTE'
+        ? [`oracle:${id}:independent`]
+        : [],
     };
     for (const value of Object.values(items[id].unitEvidence)) knownEvidence.add(value);
     for (const key of ['realFixtureIdentities', 'negativeTestIdentities', 'evidenceIdentities', 'independentOracleIdentities']) {

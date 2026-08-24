@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { stableDigest } from '../../js/core/identity/index.js';
 import {
   STAGE2_PROFILE_EVIDENCE_IDS,
   createStage2DenominatorLock,
@@ -45,9 +46,15 @@ for (const id of STAGE2_PROFILE_EVIDENCE_IDS) {
     realFixtureIdentities: [`fixture:${id}:real`],
     negativeTestIdentities: [`test:${id}:negative`],
     evidenceIdentities: [`evidence:${id}:aggregate`],
-    providerProfileIds: id === 'S2-A7-NATIVE' || id.startsWith('S2-M6-') ? [`provider:${id}`] : [],
+    providerProfileIds: id === 'S2-A7-NATIVE'
+      ? ['native:lldb-compatible-v1:host', 'native:remote-debug-v1:qemu-lldb']
+      : id.startsWith('S2-M6-')
+        ? [`managed:${id.slice('S2-M6-'.length).toLowerCase()}:provider-bound-runtime-v1:test`]
+        : [],
     implementationIdentity: `implementation:${id}`,
-    independentOracleIdentities: id === 'S1-A2-NATIVE' || id.startsWith('S2-F6-') ? [`oracle:${id}:independent`] : [],
+    independentOracleIdentities: id === 'S1-A2-NATIVE' || id.startsWith('S2-F6-') || id === 'S2-P12-COLLAB-REMOTE'
+      ? [`oracle:${id}:independent`]
+      : [],
   };
   for (const value of Object.values(items[id].unitEvidence)) knownEvidence.add(value);
   for (const key of ['realFixtureIdentities', 'negativeTestIdentities', 'evidenceIdentities', 'independentOracleIdentities']) {
@@ -66,6 +73,12 @@ const incompleteItems = structuredClone(items);
 incompleteItems['S2-F6-PE'].coveredUnitIds = [];
 const incomplete = createStage2ProfileEvidence({ commitSha, treeSha, generatedAt: '2026-08-22T00:00:00Z', items: incompleteItems });
 assert.equal(validateStage2ProfileEvidence(incomplete, expected).reason, 'stage2-profile-evidence-incomplete');
+
+const remoteWithoutOracleItems = structuredClone(items);
+remoteWithoutOracleItems['S2-P12-COLLAB-REMOTE'].independentOracleIdentities = [];
+const remoteWithoutOracle = createStage2ProfileEvidence({ commitSha, treeSha, generatedAt: '2026-08-22T00:00:00Z', items: remoteWithoutOracleItems });
+const remoteWithoutOracleValidation = validateStage2ProfileEvidence(remoteWithoutOracle, expected);
+assert.ok(remoteWithoutOracleValidation.failures.includes('S2-P12-COLLAB-REMOTE:independent-oracle-missing'), 'remote transport proof requires an independently identified verifier');
 
 const fabricated = createStage2ProfileEvidence({
   commitSha, treeSha, generatedAt: '2026-08-22T00:00:00Z',
@@ -103,6 +116,53 @@ const unresolvedEvidenceItems = structuredClone(items);
 unresolvedEvidenceItems['S2-M6-JVM'].realFixtureIdentities = ['fabricated:fixture'];
 const unresolvedEvidence = createStage2ProfileEvidence({ commitSha, treeSha, generatedAt: '2026-08-22T00:00:00Z', items: unresolvedEvidenceItems });
 assert.equal(validateStage2ProfileEvidence(unresolvedEvidence, expected).ok, false, 'arbitrary evidence labels cannot prove a profile');
+
+const invalidProviderItems = structuredClone(items);
+invalidProviderItems['S2-M6-JVM'].providerProfileIds = ['managed:dex:provider-bound-runtime-v1:test'];
+const invalidProvider = createStage2ProfileEvidence({ commitSha, treeSha, generatedAt: '2026-08-22T00:00:00Z', items: invalidProviderItems });
+const invalidProviderCheck = validateStage2ProfileEvidence(invalidProvider, expected);
+assert.equal(invalidProviderCheck.ok, false, 'a provider profile from another managed frontend cannot prove JVM M6');
+assert.ok(invalidProviderCheck.failures.includes('S2-M6-JVM:provider-profile-invalid'));
+
+const incompleteA7Providers = structuredClone(items);
+incompleteA7Providers['S2-A7-NATIVE'].providerProfileIds = ['native:lldb-compatible-v1:host'];
+const incompleteA7 = createStage2ProfileEvidence({ commitSha, treeSha, generatedAt: '2026-08-22T00:00:00Z', items: incompleteA7Providers });
+const incompleteA7Check = validateStage2ProfileEvidence(incompleteA7, expected);
+assert.equal(incompleteA7Check.ok, false, 'A7 requires the exact host and QEMU provider set');
+assert.ok(incompleteA7Check.failures.includes('S2-A7-NATIVE:provider-profile-set-mismatch'));
+
+const rehash = (value) => `stage2-profile-evidence:${stableDigest({
+  schemaVersion: value.schemaVersion,
+  commitSha: value.commitSha,
+  treeSha: value.treeSha,
+  generatedAt: value.generatedAt,
+  items: value.items,
+})}`;
+const extraItem = structuredClone(record);
+extraItem.items.EXTRA = {};
+extraItem.evidenceId = rehash(extraItem);
+const extraItemCheck = validateStage2ProfileEvidence(extraItem, expected);
+assert.equal(extraItemCheck.ok, false, 'unknown profile evidence items cannot enter the authority record');
+assert.ok(extraItemCheck.failures.includes('stage2-profile-evidence-item-set-mismatch'));
+
+const duplicateProvider = structuredClone(record);
+duplicateProvider.items['S2-M6-JVM'].providerProfileIds.push(duplicateProvider.items['S2-M6-JVM'].providerProfileIds[0]);
+duplicateProvider.evidenceId = rehash(duplicateProvider);
+const duplicateProviderCheck = validateStage2ProfileEvidence(duplicateProvider, expected);
+assert.equal(duplicateProviderCheck.ok, false, 'duplicate provider identities cannot bypass canonical evidence validation');
+assert.ok(duplicateProviderCheck.failures.includes('S2-M6-JVM:provider-profile-missing'));
+
+const arbitraryUnit = structuredClone(record);
+const arbitraryUnitId = arbitraryUnit.items['S2-M6-JVM'].coveredUnitIds[0];
+arbitraryUnit.items['S2-M6-JVM'].unitEvidence[arbitraryUnitId] = 'git:README.md@' + 'a'.repeat(40);
+arbitraryUnit.evidenceId = rehash(arbitraryUnit);
+const arbitraryUnitCheck = validateStage2ProfileEvidence(arbitraryUnit, {
+  ...expected,
+  requireCanonicalUnitEvidence: true,
+  resolveEvidenceIdentity: (identity) => identity,
+});
+assert.equal(arbitraryUnitCheck.ok, false, 'canonical production validation rejects arbitrary tracked README unit evidence');
+assert.ok(arbitraryUnitCheck.failures.includes(`S2-M6-JVM:unit-evidence-not-canonical:${arbitraryUnitId}`));
 
 inventoryIdentities.set('js/platform/stage2-profile-evidence.js', 'b'.repeat(40));
 const staleInventory = validateStage2DenominatorLock(denominatorLock, { scope, resolveInventoryIdentity, resolveDenominatorUnitIds });

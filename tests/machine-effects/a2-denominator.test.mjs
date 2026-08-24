@@ -14,11 +14,30 @@ const validation = validateA2DenominatorInventory(inventory);
 assert.equal(validation.valid, true);
 assert.equal(validation.architectureCount, 4);
 assert.equal(validation.fullIsaCoverageIncluded, false);
-assert.equal(validation.explicitDecoderGapCount >= 4, true);
+assert.equal(validation.explicitDecoderGapCount, 3, 'only baseline A64, delegated A64, and x86 long-64 decoder denominators remain');
 assert.equal(validation.blockingGapCount > validation.explicitDecoderGapCount, true);
 assert.equal(validation.terminalEligible, false, 'partial and unsupported in-profile effect families remain blocking gaps');
 assert.ok(validation.blockingGaps.includes('arm64:a64:all-decoder-encodings-and-aliases'));
+assert.equal(validation.blockingGaps.includes('arm64:a64:effect-family:control'), false,
+  'the finite A64 branch discriminator proof closes only baseline control ownership');
+assert.equal(validation.blockingGaps.includes('arm64:a64:effect-family:flags'), false,
+  'the finite A64 flags encoding proof closes only NZCV-producing aliases and conditional compares');
+assert.equal(validation.blockingGaps.includes('arm64:a64:effect-family:integer'), false,
+  'the finite A64 integer encoding and alias denominator closes only the registry-owned integer family');
+assert.equal(validation.blockingGaps.includes('arm64:a64:effect-family:fp'), false,
+  'the finite A64 scalar FP denominator closes only registry-owned FP forms');
+assert.equal(validation.blockingGaps.includes('arm64:a64:effect-family:system'), false,
+  'the finite A64 system field sweep closes only registry-owned system forms');
+assert.equal(validation.blockingGaps.includes('riscv64:rv64imc:all-valid-32-bit-and-compressed-encodings'), false,
+  'the exhaustive versioned RV64IMC decoder denominator closes only its decoder unit');
 assert.ok(validation.blockingGaps.includes('x86_64:long-64:effect-family:atomic'));
+assert.equal(validation.blockingGaps.includes('x86_64:long-64:effect-family:lea'), false,
+  'the exhaustive long-mode LEA encoding discriminator proof closes only LEA ownership');
+assert.ok(validation.blockingGaps.includes('arm64e:a64+pac:alias:baseline-a64-delegation'), 'delegated baseline exclusions remain profile blockers');
+assert.equal(validation.blockingGaps.includes('arm64e:a64+pac:all-pac-decoder-encodings-and-aliases'), false,
+  'the finite PAC encoding discriminator and independent decoder oracle close the extension decoder unit');
+assert.equal(validation.blockingGaps.includes('arm64e:a64+pac:explicit-case:pac-missing-structured-operands'), false,
+  'malformed operand records remain a baseline-bound fail-closed exclusion outside the valid PAC decoder denominator');
 
 const report = a2DenominatorReport(inventory);
 assert.equal(report.validation.valid, true);
@@ -53,6 +72,18 @@ function clone() { return JSON.parse(JSON.stringify(inventory)); }
 
 {
   const mutated = clone();
+  mutated.architectures.find((architecture) => architecture.id === 'arm64e').decoder.pacDenominator.encodingCaseCount--;
+  assert.throws(() => validateA2DenominatorInventory(mutated), /a2-denominator-arm64e-pac-proof-drift/);
+}
+
+{
+  const mutated = clone();
+  mutated.architectures.find((architecture) => architecture.id === 'arm64e').exclusions[0].normativeExclusion.baselineBlob = '0'.repeat(40);
+  assert.throws(() => validateA2DenominatorInventory(mutated), /a2-denominator-arm64e-malformed-exclusion-drift/);
+}
+
+{
+  const mutated = clone();
   mutated.architectures.find((architecture) => architecture.id === 'arm64e').aliases[0].sourceArchitecture = 'x86_64';
   assert.throws(() => validateA2DenominatorInventory(mutated), /a2-denominator-arm64e-baseline-alias-missing/);
 }
@@ -66,7 +97,7 @@ function clone() { return JSON.parse(JSON.stringify(inventory)); }
 {
   const mutated = clone();
   mutated.architectures.find((architecture) => architecture.id === 'x86_64').decoder.missingUnits = [];
-  assert.throws(() => validateA2DenominatorInventory(mutated), /a2-denominator-decoder-missing-units-required/);
+  assert.throws(() => validateA2DenominatorInventory(mutated), /a2-denominator-decoder-units-required/);
 }
 
 {
@@ -75,10 +106,86 @@ function clone() { return JSON.parse(JSON.stringify(inventory)); }
   assert.throws(() => validateA2DenominatorInventory(mutated), /a2-denominator-decoder-semantic-version-drift/);
 }
 
+for (const mutate of [
+  (lea) => { lea.oracle = 'caller-selected-label'; },
+  (lea) => { lea.proof.source = 'js/targets/architecture/x86_64/effects/addressing.js'; },
+  (lea) => { lea.proof.test = 'tests/phase5/effects/int-control/safety-regression.test.mjs'; },
+  (lea) => { lea.proof.denominatorTest = 'tests/machine-effects/a2-denominator.test.mjs'; },
+]) {
+  const mutated = clone();
+  const lea = mutated.architectures.find((architecture) => architecture.id === 'x86_64').effectRegistry.families.find((family) => family.id === 'lea');
+  mutate(lea);
+  assert.throws(() => validateA2DenominatorInventory(mutated), /a2-denominator-x86-lea-proof-identity-drift/);
+}
+
+for (const familyId of ['control', 'flags', 'fp', 'system']) {
+  for (const mutate of [
+    (family) => { family.oracle = 'caller-selected-label'; },
+    (family) => { family.proof.source = 'js/targets/architecture/arm64/effects/index.js'; },
+    (family) => { family.proof.test = 'tests/machine-effects/a2-denominator.test.mjs'; },
+    (family) => { family.proof.denominatorTest = 'tests/machine-effects/a2-denominator.test.mjs'; },
+    (family) => { family.proof.denominator.encodingCaseCount -= 1; },
+  ]) {
+    const mutated = clone();
+    const family = mutated.architectures.find((architecture) => architecture.id === 'arm64').effectRegistry.families.find((item) => item.id === familyId);
+    mutate(family);
+    assert.throws(() => validateA2DenominatorInventory(mutated), new RegExp(`a2-denominator-arm64-${familyId}-proof-`));
+  }
+}
+
+for (const field of ['mnemonicCount','selectorCount','registerCount']) {
+  const mutated = clone();
+  const systemFamily = mutated.architectures.find((architecture) => architecture.id === 'arm64').effectRegistry.families.find((item) => item.id === 'system');
+  systemFamily.proof.denominator[field] -= 1;
+  assert.throws(() => validateA2DenominatorInventory(mutated), /a2-denominator-arm64-system-proof-denominator-drift/,
+    `system proof cardinality ${field} must be live-bound`);
+}
+
+for (const field of ['mnemonicCount','fpImmediateCount']) {
+  const mutated = clone();
+  const fpFamily = mutated.architectures.find((architecture) => architecture.id === 'arm64').effectRegistry.families.find((item) => item.id === 'fp');
+  fpFamily.proof.denominator[field] -= 1;
+  assert.throws(() => validateA2DenominatorInventory(mutated), /a2-denominator-arm64-fp-proof-denominator-drift/,
+    `FP proof cardinality ${field} must be live-bound`);
+}
+
 {
   const mutated = clone();
-  mutated.architectures.find((architecture) => architecture.id === 'riscv64').decoder.missingUnits[0] = 'x86_64:long-64:wrong-denominator';
-  assert.throws(() => validateA2DenominatorInventory(mutated), /a2-denominator-decoder-missing-unit-profile-drift/);
+  const integer = mutated.architectures.find((architecture) => architecture.id === 'arm64').effectRegistry.families.find((family) => family.id === 'integer');
+  integer.proof.denominator.encodingCaseCount--;
+  assert.throws(() => validateA2DenominatorInventory(mutated), /a2-denominator-arm64-integer-live-proof-drift/,
+    'a stale or caller-minted integer denominator count must fail closed');
+}
+
+{
+  const mutated = clone();
+  mutated.architectures.find((architecture) => architecture.id === 'riscv64').decoder.denominator.denominatorId = 'riscv64:rv64imc:unproven-denominator';
+  assert.throws(() => validateA2DenominatorInventory(mutated), /a2-denominator-exact-decoder-proof-identity-drift/);
+}
+
+{
+  const gaps = report.validation.blockingGaps;
+  assert.equal(gaps.includes('riscv64:rv64imc:effect-family:system:ecall'), false, 'complete environment intrinsic is non-blocking');
+  assert.equal(gaps.includes('riscv64:rv64imc:effect-family:system:ebreak'), false, 'proven exact intrinsic stays non-blocking');
+  assert.equal(gaps.includes('riscv64:rv64imc:effect-family:system:fence.i'), false,
+    'exact baseline-bound Zifencei scope exclusion is terminal without relabelling it supported');
+  assert.equal(gaps.includes('riscv64:rv64imc:effect-family:system'), false, 'an exact parent must not mask its nested gaps');
+}
+
+{
+  const mutated = clone();
+  const system = mutated.architectures.find((architecture) => architecture.id === 'riscv64').effectRegistry.families.find((family) => family.id === 'system');
+  delete system.subunits.find((unit) => unit.id === 'ebreak').proof;
+  assert.throws(() => validateA2DenominatorInventory(mutated), /a2-denominator-exact-current-proof-required/);
+}
+
+{
+  const mutated = clone();
+  const fenceI = mutated.architectures.find((architecture) => architecture.id === 'riscv64').effectRegistry.families
+    .find((family) => family.id === 'system').subunits.find((unit) => unit.id === 'fence.i');
+  fenceI.normativeExclusion.baselineBlob = '0'.repeat(40);
+  assert.throws(() => validateA2DenominatorInventory(mutated), /a2-denominator-normative-exclusion-baseline-drift/,
+    'a caller-minted exclusion without the exact baseline identity must fail');
 }
 
 {

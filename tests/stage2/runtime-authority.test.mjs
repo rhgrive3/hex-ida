@@ -12,7 +12,7 @@ const { proofs: profileProofs } = validatedCapabilityProofFixture();
 
 const binding = createRuntimeAuthorityBinding({
   providerIdentity: 'provider:lldb:test',
-  providerProfileId: 'native:lldb-compatible-v1:test',
+  providerProfileId: 'native:remote-debug-v1:qemu-lldb',
   providerVersion: 'lldb:test',
   runtimeInstanceIdentity: 'runtime:1',
   targetIdentity: 'process:42',
@@ -78,7 +78,7 @@ const fullProof = {
 };
 const support = runtimeProfileSupport({
   binding,
-  providerProfileId: 'native:lldb-compatible-v1:test',
+  providerProfileId: 'native:remote-debug-v1:qemu-lldb',
   targetProfileId,
   providerCapabilities,
   requiredCapabilities,
@@ -87,17 +87,44 @@ const support = runtimeProfileSupport({
 });
 assert.equal(support.status, 'supported-for-exact-provider-profile');
 assert.equal(support.targetProfileId, targetProfileId);
-assert.equal(runtimeProfileSupport({ binding, providerProfileId: 'native:lldb-compatible-v1:test', targetProfileId, providerCapabilities, requiredCapabilities, proof: { ...fullProof, headSha: null }, profileProof: profileProofs['S2-A7-NATIVE'] }).reason, 'runtime-proof-exact-identity-required');
+const inheritedCapabilities = Object.create(providerCapabilities);
+assert.equal(
+  runtimeProfileSupport({
+    binding,
+    providerProfileId: 'native:remote-debug-v1:qemu-lldb',
+    targetProfileId,
+    providerCapabilities: inheritedCapabilities,
+    requiredCapabilities,
+    proof: fullProof,
+    profileProof: profileProofs['S2-A7-NATIVE'],
+  }).status,
+  'partial',
+  'inherited capability flags are not provider-owned evidence',
+);
+assert.equal(
+  runtimeProfileSupport({
+    binding,
+    providerProfileId: 'native:remote-debug-v1:qemu-lldb',
+    targetProfileId,
+    providerCapabilities: [],
+    requiredCapabilities,
+    proof: fullProof,
+    profileProof: profileProofs['S2-A7-NATIVE'],
+  }).status,
+  'partial',
+  'malformed capability maps fail closed',
+);
+assert.equal(runtimeProfileSupport({ binding, providerProfileId: 'native:remote-debug-v1:qemu-lldb', targetProfileId, providerCapabilities, requiredCapabilities, proof: { ...fullProof, headSha: null }, profileProof: profileProofs['S2-A7-NATIVE'] }).reason, 'runtime-proof-exact-identity-required');
 const currentHeadProof = { ...fullProof, headSha: binding.commitSha, treeSha: binding.treeSha };
-assert.equal(runtimeProfileSupport({ binding, providerProfileId: 'native:lldb-compatible-v1:test', targetProfileId, providerCapabilities, requiredCapabilities, proof: currentHeadProof, expectedHeadSha: binding.commitSha, expectedTreeSha: binding.treeSha, profileProof: profileProofs['S2-A7-NATIVE'] }).status, 'supported-for-exact-provider-profile');
-assert.equal(runtimeProfileSupport({ binding, providerProfileId: 'native:lldb-compatible-v1:test', targetProfileId, providerCapabilities, requiredCapabilities, proof: { ...currentHeadProof, headSha: 'c'.repeat(40) }, expectedHeadSha: binding.commitSha, profileProof: profileProofs['S2-A7-NATIVE'] }).reason, 'runtime-proof-stale-head');
-assert.equal(runtimeProfileSupport({ binding, providerProfileId: 'native:lldb-compatible-v1:test', targetProfileId, providerCapabilities, requiredCapabilities, proof: currentHeadProof, profileProof: { ...profileProofs['S2-A7-NATIVE'] } }).status, 'partial', 'copied profile evidence must lose promotion authority');
-assert.equal(runtimeProfileSupport({ binding, providerProfileId: 'native:replay-v1:test', targetProfileId, providerCapabilities, requiredCapabilities, proof: fullProof }).reason, 'runtime-provider-profile-mismatch', 'a different provider profile cannot reuse this authority binding');
+assert.equal(runtimeProfileSupport({ binding, providerProfileId: 'native:remote-debug-v1:qemu-lldb', targetProfileId, providerCapabilities, requiredCapabilities, proof: currentHeadProof, expectedHeadSha: binding.commitSha, expectedTreeSha: binding.treeSha, profileProof: profileProofs['S2-A7-NATIVE'] }).status, 'supported-for-exact-provider-profile');
+assert.equal(runtimeProfileSupport({ binding, providerProfileId: 'native:remote-debug-v1:qemu-lldb', targetProfileId, providerCapabilities, requiredCapabilities, proof: { ...currentHeadProof, headSha: 'c'.repeat(40) }, expectedHeadSha: binding.commitSha, profileProof: profileProofs['S2-A7-NATIVE'] }).reason, 'runtime-proof-stale-head');
+assert.equal(runtimeProfileSupport({ binding, providerProfileId: 'native:remote-debug-v1:qemu-lldb', targetProfileId, providerCapabilities, requiredCapabilities, proof: currentHeadProof, profileProof: { ...profileProofs['S2-A7-NATIVE'] } }).status, 'partial', 'copied profile evidence must lose promotion authority');
+assert.equal(runtimeProfileSupport({ binding, providerProfileId: 'native:replay-v1:test', targetProfileId, providerCapabilities, requiredCapabilities, proof: fullProof }).reason, 'runtime-provider-target-profile-mismatch', 'a provider profile from another target boundary cannot reuse this authority binding');
 assert.equal(runtimeProfileSupport({ binding, providerProfileId: 'evil-provider', targetProfileId: 'not-an-arch', providerCapabilities, requiredCapabilities, proof: fullProof }).status, 'partial', 'unknown provider and architecture labels cannot promote A7');
-assert.equal(runtimeProfileSupport({ binding, providerProfileId: 'native:lldb-compatible-v1:test', targetProfileId, providerCapabilities, requiredCapabilities }).status, 'partial', 'capabilities without proof must not promote A7');
+assert.equal(runtimeProfileSupport({ binding, providerProfileId: 'native:remote-debug-v1:qemu-lldb', targetProfileId, providerCapabilities, requiredCapabilities }).status, 'partial', 'capabilities without proof must not promote A7');
 assert.equal(runtimeProfileSupport({ binding, targetProfileId, providerCapabilities, requiredCapabilities, proof: fullProof }).status, 'partial', 'anonymous provider profile must not promote A7');
 assert.equal(runtimeProfileSupport({ binding, providerProfileId: 'native:lldb-compatible-v1:test', providerCapabilities, requiredCapabilities, proof: fullProof }).status, 'partial', 'missing target profile must not promote A7');
-assert.equal(runtimeProfileSupport({ binding, providerProfileId: 'native:lldb-compatible-v1:test', targetProfileId, providerCapabilities: { ...providerCapabilities, stepInto: false }, requiredCapabilities, proof: fullProof }).status, 'partial');
+assert.equal(runtimeProfileSupport({ binding, providerProfileId: 'native:remote-debug-v1:qemu-lldb', targetProfileId, providerCapabilities: { ...providerCapabilities, stepInto: false }, requiredCapabilities, proof: fullProof }).status, 'partial');
 assert.equal(runtimeProfileSupport({ binding, providerProfileId: 'native:lldb-compatible-v1:test', targetProfileId, providerCapabilities, proof: fullProof }).status, 'partial', 'empty required capability denominator must not promote A7');
 assert.throws(() => runtimeProfileSupport({ binding, providerProfileId: 'x', targetProfileId, requiredCapabilities: ['inventedCapability'] }), /runtime-capability-unknown/);
 console.log('[stage2] runtime authority tests passed');

@@ -13,6 +13,8 @@ import {
   validateFormatSafeMutation,
 } from '../../../js/rebuild/format-safe.js';
 import {
+  evaluateF6RebuildDenominator,
+  f6KnownImplementationGaps,
   materializeRebuildTransaction,
   publishRebuildTransaction,
   validateRebuildTransaction,
@@ -39,6 +41,7 @@ assert.equal(manifest.provenance.policy, 'tracked compiler-produced fixture; no 
 const oracleTool = inspectLlvmReadobj();
 assert.equal(oracleTool.available, true, `llvm-readobj is required: ${oracleTool.reason || 'unavailable'}`);
 assert.match(oracleTool.version, new RegExp(LLVM_READOBJ_EXPECTED_VERSION.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+assert.match(oracleTool.executableDigest, /^sha256:[0-9a-f]{64}$/);
 const independentOracle = createLlvmReadobjOracle();
 
 function fixtureBytes(fixture) {
@@ -102,6 +105,7 @@ function loaderReparse({ transaction, original, output, expectedOutputHash }) {
 }
 
 const proofRows = [];
+const f6EvidenceRows = [];
 for (const fixture of manifest.fixtures) {
   const bytes = fixtureBytes(fixture);
   const image = inspectFormatSafeImage(bytes);
@@ -145,6 +149,12 @@ for (const fixture of manifest.fixtures) {
   const oracleEvidence = validation.validators.find((item) => item.validator === 'independent-differential')?.detail;
   assert.equal(oracleEvidence?.outputDigest, materialized.outputHash);
   assert.match(oracleEvidence?.oracleOutputDigest || '', /^sha256:[0-9a-f]{64}$/);
+  assert.equal(oracleEvidence?.preservationEvidence?.complete, true, `${fixture.id}: independent full-report preservation proof`);
+  assert.equal(oracleEvidence?.preservationEvidence?.sourceReportDigest, oracleEvidence?.preservationEvidence?.outputReportDigest);
+  assert.deepEqual(oracleEvidence?.preservationEvidence?.units, [
+    'layout-and-structure', 'relocations-and-bindings', 'branch-ranges',
+    'unwind-and-debug', 'imports-and-exports', 'signature-consequence',
+  ]);
 
   const publication = await publishRebuildTransaction(materialized, validation, {
     atomicPromote: async (candidate, identity) => {
@@ -161,6 +171,7 @@ for (const fixture of manifest.fixtures) {
     },
   });
   assert.equal(publication.status, 'published', `${fixture.id}: publication`);
+  f6EvidenceRows.push({ transaction, validation, publication, fixture });
   proofRows.push({ fixture: fixture.id, format: fixture.format, architecture: fixture.architecture, sourceSha256: fixture.sha256, outputDigest: materialized.outputHash, mutation: transaction.expectedOriginalState.formatSafe.kind });
 }
 
@@ -169,6 +180,105 @@ assert.deepEqual(manifest.fixtures.map((fixture) => fixture.profile).sort(), ['e
 assert.equal(proofRows.filter((row) => row.format === 'elf').length, 1);
 assert.equal(proofRows.filter((row) => row.format === 'macho').length, 1);
 assert.equal(proofRows.filter((row) => row.format === 'pe').length, 2);
+
+// A bounded production layout operation: append one non-loaded SHT_NOBITS
+// section to the real ELF fixture. Both Hex's loader and llvm-readobj must
+// observe the exact new section; parseability alone is insufficient.
+const layoutFixture = manifest.fixtures.find((fixture) => fixture.profile === 'elf:64');
+const layoutBytes = fixtureBytes(layoutFixture);
+const layoutTransaction = createFormatSafeRebuildTransaction({
+  binaryId: `fixture:${layoutFixture.id}:layout`,
+  source: layoutBytes,
+  sourceHash: digest(layoutBytes),
+  format: 'elf',
+  architecture: 'x86_64',
+  loaderVersion,
+  mutation: { kind: 'elf-add-nobits-section', name: '.bss', size: 16, alignment: 8 },
+});
+assert.equal(layoutTransaction.impact.layoutMoving, true);
+assert.equal(layoutTransaction.sizeDelta, 64);
+assert.equal(layoutTransaction.requiredValidators.includes('layout'), true);
+const layoutMaterialized = await materializeRebuildTransaction(layoutTransaction, layoutBytes);
+assert.equal(layoutMaterialized.status, 'materialized');
+const layoutValidation = await validateRebuildTransaction(layoutTransaction, layoutMaterialized, {
+  original: layoutBytes,
+  loaderReparse,
+  independentOracle,
+  validators: {
+    layout: validateFormatSafeMutation,
+    'format-invariants': validateFormatSafeMutation,
+  },
+});
+assert.equal(layoutValidation.status, 'valid', JSON.stringify(layoutValidation.failures));
+for (const validator of ['layout', 'format-invariants', 'independent-differential']) {
+  assert.deepEqual(layoutValidation.validators.find((item) => item.validator === validator)?.detail?.layoutEvidence, {
+    sectionCount: 14,
+    section: { name: '.bss', type: 'SHT_NOBITS', size: 16, alignment: 8 },
+  }, `${validator}: exact ELF layout evidence`);
+}
+const layoutPublication = await publishRebuildTransaction(layoutMaterialized, layoutValidation, {
+  atomicPromote: async (_candidate, identity) => ({
+    atomic: true,
+    committed: true,
+    protocol: 'temp-then-atomic-rename',
+    publicationIdentity: `fixture-publication:${layoutFixture.id}:layout`,
+    transactionId: identity.materialized.transactionId,
+    outputHash: identity.materialized.outputHash,
+    outputIdentity: identity.materialized.outputIdentity,
+  }),
+});
+assert.equal(layoutPublication.status, 'published');
+const layoutStatus = evaluateF6RebuildDenominator({
+  transaction: layoutTransaction,
+  validation: layoutValidation,
+  publication: layoutPublication,
+  proof: {
+    realFixture: true,
+    realFixtureEvidence: true,
+    negativeValidatorTest: true,
+    staleIdentityTest: true,
+    truncationTest: true,
+    wrongIdentityTest: true,
+  },
+});
+assert.equal(layoutStatus.cells['layout-and-structure'].status, 'blocking');
+assert.equal(layoutStatus.cells['layout-and-structure'].reason, 'f6-layout-and-structure-profile-matrix-incomplete');
+assert.equal(layoutStatus.cells['layout-and-structure'].evidence, 'elf64-terminal-section-table-nobits-adapter+llvm-readobj-section-oracle');
+assert.equal(layoutStatus.blockingUnitIds.includes('elf:64:layout-and-structure'), true);
+const boundedLayoutCell = layoutStatus.boundedOperationCells['elf:64:layout-and-structure:terminal-sht-nobits-append'];
+assert.equal(boundedLayoutCell.status, 'closed', 'the exact ELF SHT_NOBITS operation is independently proven');
+assert.equal(boundedLayoutCell.parentUnit, 'layout-and-structure');
+assert.equal(boundedLayoutCell.operation, 'elf-add-nobits-section');
+assert.equal(layoutStatus.boundedOperationClosedIds.includes(boundedLayoutCell.id), true);
+assert.equal(layoutStatus.boundedOperationBlockingIds.includes(boundedLayoutCell.id), false);
+assert.equal(boundedLayoutCell.evidence, 'format-safe-elf-add-nobits-section+hex-loader-reparse+llvm-readobj-independent-oracle+atomic-publication');
+const incompleteLayoutStatus = evaluateF6RebuildDenominator({
+  transaction: layoutTransaction,
+  validation: layoutValidation,
+  publication: layoutPublication,
+  proof: { realFixture: true, realFixtureEvidence: true },
+});
+assert.equal(incompleteLayoutStatus.boundedOperationCells[boundedLayoutCell.id].status, 'blocking', 'bounded capability must fail closed without the complete negative corpus');
+assert.equal(incompleteLayoutStatus.boundedOperationCells[boundedLayoutCell.id].reason, 'f6-bounded-elf-layout-proof-incomplete');
+assert.equal(f6KnownImplementationGaps().length, 0, 'the unsigned preservation writer closes implementation gaps without promoting the independent bounded layout operation');
+assert.throws(() => createFormatSafeRebuildTransaction({
+  binaryId: 'negative:layout-name', source: layoutBytes, format: 'elf', architecture: 'x86_64', loaderVersion,
+  mutation: { kind: 'elf-add-nobits-section', name: '.attacker', size: 16, alignment: 8 },
+}), /format-safe-elf-nobits-name-unsupported/);
+assert.throws(() => createFormatSafeRebuildTransaction({
+  binaryId: 'negative:layout-alignment', source: layoutBytes, format: 'elf', architecture: 'x86_64', loaderVersion,
+  mutation: { kind: 'elf-add-nobits-section', name: '.bss', size: 16, alignment: 3 },
+}), /format-safe-elf-nobits-alignment-invalid/);
+for (const alignment of [16, 64]) {
+  assert.throws(() => createFormatSafeRebuildTransaction({
+    binaryId: `negative:layout-offset-alignment:${alignment}`, source: layoutBytes, format: 'elf', architecture: 'x86_64', loaderVersion,
+    mutation: { kind: 'elf-add-nobits-section', name: '.bss', size: 16, alignment },
+  }), /format-safe-elf-nobits-offset-alignment-invalid/, `sh_offset must satisfy sh_addralign=${alignment}`);
+}
+const layoutTamper = layoutMaterialized.bytes.slice();
+new DataView(layoutTamper.buffer).setBigUint64(layoutTamper.length - 32, 17n, true);
+assert.equal(validateFormatSafeMutation({ transaction: layoutTransaction, original: layoutBytes, output: layoutTamper }).ok, false, 'changed appended section size is rejected');
+assert.equal((await independentOracle({ transaction: layoutTransaction, original: layoutBytes, output: layoutTamper })).ok, false, 'independent oracle rejects changed appended section size');
 
 // A no-op and a synthetic label are both rejected before they can become proof.
 const pe32Fixture = manifest.fixtures.find((fixture) => fixture.architecture === 'x86');
@@ -199,6 +309,44 @@ assert.throws(() => createFormatSafeRebuildTransaction({
   binaryId: 'negative:macho-architecture-swap', source: machoBytes, format: 'macho', architecture: 'arm64', loaderVersion, mutation: { kind: 'macho-min-version', version: 0x000a0500 },
 }), /format-safe-source-identity-mismatch/);
 
+const peSigned = Uint8Array.from(pe32Bytes);
+const peSignedView = new DataView(peSigned.buffer, peSigned.byteOffset, peSigned.byteLength);
+const peHeaderOffset = peSignedView.getUint32(0x3c, true);
+const peOptionalOffset = peHeaderOffset + 24;
+const peDataDirectoryOffset = peOptionalOffset + (peSignedView.getUint16(peOptionalOffset, true) === 0x10b ? 96 : 112);
+peSignedView.setUint32(peDataDirectoryOffset + 4 * 8, peSigned.length - 8, true);
+peSignedView.setUint32(peDataDirectoryOffset + 4 * 8 + 4, 8, true);
+assert.throws(() => createFormatSafeRebuildTransaction({
+  binaryId:'negative:pe-signed', source:peSigned, format:'pe', architecture:'x86', loaderVersion,
+  mutation:{ kind:'pe-timestamp', timestamp:0x65f6a247 },
+}), /format-safe-signed-or-build-identified-input-unsupported/);
+
+const machoSigned = Uint8Array.from(machoBytes);
+const machoSignedView = new DataView(machoSigned.buffer, machoSigned.byteOffset, machoSigned.byteLength);
+let machoCommandOffset = 32;
+const machoCommandCount = machoSignedView.getUint32(16, true);
+let markedMachoSignature = false;
+for (let index = 0; index < machoCommandCount; index++) {
+  const command = machoSignedView.getUint32(machoCommandOffset, true);
+  const size = machoSignedView.getUint32(machoCommandOffset + 4, true);
+  if (command !== 0x24 && !markedMachoSignature) { machoSignedView.setUint32(machoCommandOffset, 0x1d, true); markedMachoSignature = true; }
+  machoCommandOffset += size;
+}
+assert.equal(markedMachoSignature, true);
+assert.throws(() => createFormatSafeRebuildTransaction({
+  binaryId:'negative:macho-signed', source:machoSigned, format:'macho', architecture:'x86_64', loaderVersion,
+  mutation:{ kind:'macho-min-version', version:0x000a0500 },
+}), /format-safe-signed-or-build-identified-input-unsupported/);
+
+const elfBuildIdentified = Uint8Array.from(elfNoOpBytes);
+const elfBuildIdentifiedView = new DataView(elfBuildIdentified.buffer, elfBuildIdentified.byteOffset, elfBuildIdentified.byteLength);
+const elfSectionTableOffset = Number(elfBuildIdentifiedView.getBigUint64(40, true));
+elfBuildIdentifiedView.setUint32(elfSectionTableOffset + 64 + 4, 7, true);
+assert.throws(() => createFormatSafeRebuildTransaction({
+  binaryId:'negative:elf-build-identified', source:elfBuildIdentified, format:'elf', architecture:'x86_64', loaderVersion,
+  mutation:{ kind:'elf-comment', tag:'Hex F6 signed negative' },
+}), /format-safe-signed-or-build-identified-input-unsupported/);
+
 const elfFixture = manifest.fixtures.find((fixture) => fixture.format === 'elf');
 const elfBytes = fixtureBytes(elfFixture);
 const elfWithBss = inspectFormatSafeImage(appendNonZeroNobitsSection(elfBytes));
@@ -214,4 +362,156 @@ const invariantFailure = validateFormatSafeMutation({ transaction: elfTransactio
 assert.equal(invariantFailure.ok, false);
 const oracleFailure = await independentOracle({ transaction: elfTransaction, original: elfBytes, output: tampered });
 assert.equal(oracleFailure.ok, false);
-console.log(`F6_REAL_REBUILD_PROOF=${JSON.stringify({ schemaVersion: FORMAT_SAFE_REBUILD_SCHEMA, fixtures: proofRows, oracle: { identity: oracleTool.identity, version: oracleTool.version }, negatives: ['no-op-rejected', 'synthetic-rejected', 'header-tamper-rejected'] })}`);
+const truncatedOutput = elfMaterialized.bytes.slice(0, -1);
+const truncationFailure = validateFormatSafeMutation({ transaction: elfTransaction, original: elfBytes, output: truncatedOutput });
+assert.equal(truncationFailure.ok, false, 'truncated output must never pass format validation');
+
+const machoTransaction = createFormatSafeRebuildTransaction({
+  binaryId: 'negative:macho-wrong-identity',
+  source: machoBytes,
+  format: 'macho',
+  architecture: 'x86_64',
+  loaderVersion,
+  mutation: { kind: 'macho-min-version', version: 0x000a0500 },
+});
+const wrongIdentityOutput = (await materializeRebuildTransaction(machoTransaction, machoBytes, { maxOutputBytes: machoBytes.length })).bytes.slice();
+new DataView(wrongIdentityOutput.buffer).setUint32(4, 0x0100000c, true); // arm64 header with an x86_64 transaction
+const wrongIdentityFailure = validateFormatSafeMutation({ transaction: machoTransaction, original: machoBytes, output: wrongIdentityOutput });
+assert.equal(wrongIdentityFailure.ok, false, 'wrong architecture identity must never pass format validation');
+
+const denominatorStatuses = f6EvidenceRows.map(({ transaction, validation, publication }) => evaluateF6RebuildDenominator({
+  transaction,
+  validation,
+  publication,
+  proof: {
+    realFixture: true,
+    realFixtureEvidence: true,
+    negativeValidatorTest: true,
+    staleIdentityTest: true,
+    truncationTest: true,
+    wrongIdentityTest: true,
+  },
+}));
+const incompletePreservation = evaluateF6RebuildDenominator({
+  ...f6EvidenceRows[0],
+  proof:{ realFixture:true, realFixtureEvidence:true },
+});
+for (const unit of ['layout-and-structure','relocations-and-bindings','branch-ranges','unwind-and-debug','imports-and-exports','signature-consequence']) {
+  assert.equal(incompletePreservation.cells[unit].status, 'blocking', `${unit}: negative proof corpus cannot be omitted`);
+}
+assert.equal(denominatorStatuses.length, 4);
+for (const status of denominatorStatuses) {
+  assert.equal(status.status, 'closed', 'the constrained unsigned preservation writer closes every locked invariant cell');
+  for (const unit of ['transaction-identity', 'layout-and-structure', 'relocations-and-bindings', 'branch-ranges', 'unwind-and-debug', 'imports-and-exports', 'signature-consequence', 'loader-reparse', 'independent-differential-oracle', 'atomic-publication', 'real-fixture', 'negative-validator-corpus']) {
+    assert.equal(status.cells[unit].status, 'closed');
+  }
+}
+
+// Adversarial proof binding: a preservation result must come from the
+// canonical LLVM provider, and every claimed impact field must remain bound to
+// the format-safe target. Rebinding identities alone must not manufacture a
+// closed F6 denominator.
+const adversarialFixture = manifest.fixtures.find((fixture) => fixture.format === 'elf');
+const adversarialBytes = fixtureBytes(adversarialFixture);
+const adversarialBase = f6EvidenceRows.find(({ fixture }) => fixture.id === adversarialFixture.id);
+const adversarialMaterialized = await materializeRebuildTransaction(adversarialBase.transaction, adversarialBytes);
+const forgedOracle = async ({ transaction, expectedOutputHash }) => ({
+  schemaVersion: 'hex-rebuild-independent-oracle-result-v1',
+  ok: true,
+  status: 'passed',
+  oracleIdentity: 'forged-caller-oracle',
+  oracleVersion: 'forged',
+  oracleSource: 'forged',
+  oracleOutputDigest: `sha256:${'f'.repeat(64)}`,
+  sourceDigest: transaction.sourceHash,
+  outputDigest: expectedOutputHash,
+  format: transaction.format,
+  architecture: transaction.architecture,
+  preservationEvidence: {
+    complete: true,
+    signaturePolicy: 'unsigned-input-required',
+    sourceReportDigest: `sha256:${'e'.repeat(64)}`,
+    outputReportDigest: `sha256:${'e'.repeat(64)}`,
+    units: ['layout-and-structure', 'relocations-and-bindings', 'branch-ranges', 'unwind-and-debug', 'imports-and-exports', 'signature-consequence'],
+  },
+});
+const forgedValidation = await validateRebuildTransaction(adversarialBase.transaction, adversarialMaterialized, {
+  original: adversarialBytes,
+  loaderReparse,
+  independentOracle: forgedOracle,
+  validators: { 'format-invariants': validateFormatSafeMutation },
+});
+assert.equal(forgedValidation.status, 'invalid', 'caller-minted oracle evidence must not validate');
+assert.deepEqual(forgedValidation.validators.find((item) => item.validator === 'independent-differential'), {
+  validator: 'independent-differential',
+  executed: false,
+  status: 'failed',
+  reason: 'independent-oracle-provider-untrusted',
+  detail: null,
+});
+
+function reboundTransaction(base, mutate) {
+  const transaction = structuredClone(base);
+  mutate(transaction);
+  transaction.transactionId = null;
+  transaction.transactionId = `rebuild-transaction:${stableDigest(transaction)}`;
+  return transaction;
+}
+
+function reboundValidation(base, transaction) {
+  const validation = structuredClone(base);
+  validation.transactionId = transaction.transactionId;
+  validation.outputIdentity = `rebuild-output:${transaction.transactionId}:${validation.outputHash}`;
+  delete validation.validationId;
+  validation.validationId = `rebuild-validation:${stableDigest(validation)}`;
+  return validation;
+}
+
+function reboundPublication(base, transaction, validation) {
+  return { ...base, transactionId: transaction.transactionId, outputIdentity: validation.outputIdentity };
+}
+
+for (const field of ['layoutMoving', 'relocations', 'branchRanges', 'unwind', 'importsExports', 'signature']) {
+  const transaction = reboundTransaction(adversarialBase.transaction, (value) => { value.impact[field] = true; });
+  const validation = reboundValidation(adversarialBase.validation, transaction);
+  const publication = reboundPublication(adversarialBase.publication, transaction, validation);
+  const status = evaluateF6RebuildDenominator({
+    transaction,
+    validation,
+    publication,
+    proof: { realFixture: true, realFixtureEvidence: true, negativeValidatorTest: true, staleIdentityTest: true, truncationTest: true, wrongIdentityTest: true },
+  });
+  assert.equal(status.status, 'blocked', `forged ${field} consequence must block F6`);
+  assert.equal(status.blockingUnitIds.includes('elf:64:layout-and-structure'), true, `forged ${field} must block layout cell`);
+}
+
+const forgedSectionTransaction = reboundTransaction(adversarialBase.transaction, (value) => { value.impact.sections = ['forged-section']; });
+const forgedSectionValidation = reboundValidation(adversarialBase.validation, forgedSectionTransaction);
+const forgedSectionStatus = evaluateF6RebuildDenominator({
+  transaction: forgedSectionTransaction,
+  validation: forgedSectionValidation,
+  publication: reboundPublication(adversarialBase.publication, forgedSectionTransaction, forgedSectionValidation),
+  proof: { realFixture: true, realFixtureEvidence: true, negativeValidatorTest: true, staleIdentityTest: true, truncationTest: true, wrongIdentityTest: true },
+});
+assert.equal(forgedSectionStatus.status, 'blocked', 'forged impact section must block F6');
+assert.equal(forgedSectionStatus.blockingUnitIds.includes('elf:64:layout-and-structure'), true);
+
+const forgedBindingTransaction = reboundTransaction(adversarialBase.transaction, (value) => { value.impact.relocationBindings = ['forged-binding']; });
+const forgedBindingValidation = reboundValidation(adversarialBase.validation, forgedBindingTransaction);
+const forgedBindingStatus = evaluateF6RebuildDenominator({
+  transaction: forgedBindingTransaction,
+  validation: forgedBindingValidation,
+  publication: reboundPublication(adversarialBase.publication, forgedBindingTransaction, forgedBindingValidation),
+  proof: { realFixture: true, realFixtureEvidence: true, negativeValidatorTest: true, staleIdentityTest: true, truncationTest: true, wrongIdentityTest: true },
+});
+assert.equal(forgedBindingStatus.status, 'blocked', 'forged relocation binding must block F6');
+assert.equal(forgedBindingStatus.blockingUnitIds.includes('elf:64:layout-and-structure'), true);
+
+console.log(`F6_REAL_REBUILD_PROOF=${JSON.stringify({
+  schemaVersion: FORMAT_SAFE_REBUILD_SCHEMA,
+  fixtures: proofRows,
+  oracle: { identity: oracleTool.identity, version: oracleTool.version, executable:oracleTool.executable, executableDigest:oracleTool.executableDigest },
+  denominator: denominatorStatuses.map((status) => ({ profileId: status.profileId, status: status.status, closedUnitIds: status.closedUnitIds, blockingUnitIds: status.blockingUnitIds })),
+  layout: { profileId: layoutStatus.profileId, closedUnitIds: layoutStatus.closedUnitIds, blockingUnitIds: layoutStatus.blockingUnitIds },
+  negatives: ['no-op-rejected', 'synthetic-rejected', 'header-tamper-rejected', 'truncation-rejected', 'wrong-identity-rejected', 'signed-input-rejected'],
+})}`);

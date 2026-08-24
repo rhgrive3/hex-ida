@@ -157,17 +157,17 @@ export async function runAgent(config) {
   const query = typeof goal === 'string' ? compileGoal(goal) : goal;
   const started = Date.now();
   const deadlineExceeded = () => Date.now() - started >= budget.timeoutMs;
-  const cancelled = () => budget.isCancelled() || deadlineExceeded();
+  const externallyCancelled = () => cfg.signal?.aborted === true;
+  const cancelled = () => externallyCancelled() || budget.isCancelled() || deadlineExceeded();
+  const cancellationReason = () => externallyCancelled() || budget.isCancelled() ? 'cancelled' : 'timeout';
   let disassembly = 0;
   const countedContext = typeof context.analyze === 'function' ? {
     ...context,
     analyze: async (...args) => {
-      if (budget.isCancelled()) throw new Error('cancelled');
-      if (deadlineExceeded()) throw new Error('timeout');
+      if (cancelled()) throw new Error(cancellationReason());
       if (disassembly >= budget.maxDisassembly) throw new Error('disassembly-budget');
       const model = await context.analyze(...args);
-      if (budget.isCancelled()) throw new Error('cancelled');
-      if (deadlineExceeded()) throw new Error('timeout');
+      if (cancelled()) throw new Error(cancellationReason());
       disassembly += instructionCost(model);
       if (disassembly > budget.maxDisassembly) throw new Error('disassembly-budget');
       return model;
@@ -184,14 +184,18 @@ export async function runAgent(config) {
   let stopReason = null;
 
   for (let call = 0; call < budget.maxToolCalls; call++) {
-    if (budget.isCancelled()) { stopReason = 'cancelled'; break; }
-    if (deadlineExceeded()) { stopReason = 'timeout'; break; }
+    if (cancelled()) { stopReason = cancellationReason(); break; }
     let step;
     try {
       const remainingMs = Math.max(1, budget.timeoutMs - (Date.now() - started));
       const controller = new AbortController();
       const external = cfg.signal;
-      const abort = () => controller.abort(external?.reason ?? 'cancelled');
+      let rejectExternalAbort;
+      const externalAbortPromise = new Promise((_, reject) => { rejectExternalAbort = reject; });
+      const abort = () => {
+        controller.abort(external?.reason ?? 'cancelled');
+        rejectExternalAbort(new Error('cancelled'));
+      };
       if (external?.aborted) abort(); else external?.addEventListener?.('abort', abort, {once:true});
       let timer;
       try {
@@ -206,16 +210,18 @@ export async function runAgent(config) {
             },
           })),
           new Promise((_, reject) => { timer=setTimeout(() => { controller.abort('timeout'); reject(new Error('timeout')); }, remainingMs); }),
+          externalAbortPromise,
         ]);
       } finally {
         clearTimeout(timer); external?.removeEventListener?.('abort', abort);
       }
     } catch (err) {
-      stopReason = 'model-error:' + ((err && err.message) || String(err));
+      if (cancelled() || err?.message === 'cancelled') stopReason = cancellationReason();
+      else if (err?.message === 'timeout') stopReason = 'timeout';
+      else stopReason = 'model-error:' + ((err && err.message) || String(err));
       break;
     }
-    if (budget.isCancelled()) { stopReason = 'cancelled'; break; }
-    if (deadlineExceeded()) { stopReason = 'timeout'; break; }
+    if (cancelled()) { stopReason = cancellationReason(); break; }
     if (step && step.answer) { proposedAnswer = step.answer; break; }
     const req = normalizeToolRequest(step);
     if (!req || !Object.prototype.hasOwnProperty.call(tools, req.tool) || typeof tools[req.tool] !== 'function') {
@@ -233,7 +239,7 @@ export async function runAgent(config) {
       result = { tool: req.tool, error: message };
       if (message === 'disassembly-budget' || message === 'function-budget' || message === 'timeout' || message === 'cancelled') stopReason = message;
     }
-    if (deadlineExceeded() && !stopReason) stopReason = 'timeout';
+    if (cancelled() && !stopReason) stopReason = cancellationReason();
     if (disassembly > budget.maxDisassembly && !stopReason) stopReason = 'disassembly-budget';
     evidenceFromObservation(result, evidence);
     observations.push({ request: req, result });
@@ -273,7 +279,7 @@ export async function runAgent(config) {
     confidence = Math.min(confidence, 0.5);
     if (!missingEvidence.includes('no-deterministic-evidence')) missingEvidence.push('no-deterministic-evidence');
   }
-  if (!stopReason && deadlineExceeded()) stopReason = 'timeout';
+  if (!stopReason && cancelled()) stopReason = cancellationReason();
   if (stopReason && !missingEvidence.includes(stopReason)) missingEvidence.push(stopReason);
 
   return {

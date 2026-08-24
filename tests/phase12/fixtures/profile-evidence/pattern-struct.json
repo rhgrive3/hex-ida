@@ -1,0 +1,5 @@
+{
+  "pattern": "struct Header { magic: u32le; count: u8[4]; }",
+  "snapshotId": "phase12-profile-pattern-fixture",
+  "bytes": [120, 86, 52, 18, 1, 2, 3, 4]
+}

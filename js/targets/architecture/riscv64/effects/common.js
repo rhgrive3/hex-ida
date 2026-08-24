@@ -13,7 +13,7 @@ export const RISCV64_ARCHITECTURE_ID = 'riscv64';
 export const RISCV64_MODE = 'rv64imc';
 export const RISCV64_INSTRUCTION_ALIGNMENT = 2;
 export const RISCV64_XLEN = 64;
-export const RISCV64_MACHINE_EFFECTS_SEMANTIC_VERSION = '1.0.0-phase6-rv64imc';
+export const RISCV64_MACHINE_EFFECTS_SEMANTIC_VERSION = '1.1.0-stage2-rv64imc-environment-intrinsic';
 
 /**
  * Effect-building context for RV64.

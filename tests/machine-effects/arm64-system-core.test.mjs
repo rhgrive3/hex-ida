@@ -66,9 +66,11 @@ const imm = (value) => ({ k:'imm', value:BigInt(value), text:`#${value}` });
 
 {
   const effect = liftArm64SystemEffects(instruction('msr', [sys('some_impl_reg_el1'), gp(1)]));
-  assert.equal(effect.completeness, 'partial');
-  assert.ok(effect.unknownEffects.categories.includes('other'));
-  assert.ok(effect.unknownEffects.categories.includes('faults'));
+  assert.equal(effect.completeness, 'exact-with-intrinsic');
+  const intrinsic = effect.operations.find((op) => op.kind === 'intrinsic');
+  assert.equal(intrinsic.metadata.environmentBoundary, true);
+  assert.equal(intrinsic.effectSummary.memoryRead.scope, 'none');
+  assert.ok(intrinsic.effectSummary.registersWritten.includes('sys:arm64.execution-environment'));
 }
 
 {
@@ -82,17 +84,19 @@ const imm = (value) => ({ k:'imm', value:BigInt(value), text:`#${value}` });
 
 {
   const effect = liftArm64SystemEffects(instruction('svc', [imm(0x80)], '#0x80'));
-  assert.equal(effect.completeness, 'partial');
+  assert.equal(effect.completeness, 'exact-with-intrinsic');
   assert.equal(effect.controlEffect.kind, 'trap');
-  assert.ok(effect.unknownEffects.categories.includes('registers'));
   const intrinsic = effect.operations.find((op) => op.kind === 'intrinsic');
   assert.equal(intrinsic.effectSummary.controlEffects[0].kind, 'trap');
+  assert.equal(intrinsic.effectSummary.memoryWrite.scope, 'all');
+  assert.equal(intrinsic.metadata.preservation, 'none-assumed');
 }
 
 {
   const effect = liftArm64SystemEffects(instruction('dc', [sys('zva'), gp(0)], 'zva, x0'));
-  assert.equal(effect.completeness, 'partial');
-  assert.ok(effect.unknownEffects.categories.includes('memory'), 'generic DC operations must not silently preserve memory');
+  assert.equal(effect.completeness, 'exact-with-intrinsic');
+  const intrinsic = effect.operations.find((op) => op.kind === 'intrinsic');
+  assert.equal(intrinsic.effectSummary.memoryWrite.scope, 'all', 'generic DC operations must not silently preserve memory');
 }
 
 {
@@ -105,8 +109,10 @@ const imm = (value) => ({ k:'imm', value:BigInt(value), text:`#${value}` });
 
 {
   const effect = liftArm64SystemEffects(instruction('hint', [imm(99)], '#99'));
-  assert.equal(effect.completeness, 'partial');
-  assert.match(effect.unknownEffects.reason, /hint-encoding/);
+  assert.equal(effect.completeness, 'exact-with-intrinsic');
+  const intrinsic = effect.operations.find((op) => op.kind === 'intrinsic');
+  assert.equal(intrinsic.metadata.environmentBoundary, true);
+  assert.equal(intrinsic.effectSummary.memoryRead.scope, 'none');
 }
 
 {

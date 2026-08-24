@@ -10,6 +10,12 @@ const DEBUG_CAPABILITY_SET = new Set(DEBUG_CAPABILITIES);
 // boundary, so accepting an arbitrary caller supplied profile label would let
 // a provider mint a new profile merely by naming it.
 const NATIVE_TARGET_PROFILES = new Set(['arm64:a64', 'arm64e:a64+pac', 'x86_64:long-64', 'riscv64:rv64imc']);
+const NATIVE_TARGET_PROVIDER_PROFILE = Object.freeze({
+  'arm64:a64': 'native:remote-debug-v1:qemu-lldb',
+  'arm64e:a64+pac': 'native:remote-debug-v1:qemu-lldb',
+  'x86_64:long-64': 'native:lldb-compatible-v1:host',
+  'riscv64:rv64imc': 'native:remote-debug-v1:qemu-lldb',
+});
 const PROVIDER_PROFILE_PATTERNS = Object.freeze([
   /^native:(?:remote-debug|lldb-compatible|frida-compatible|replay)-v1(?::[a-z0-9][a-z0-9._-]{0,63})?$/i,
   /^managed:(?:wasm|dex|cil|jvm):provider-bound-runtime-v1(?::[a-z0-9][a-z0-9._-]{0,63})?$/i,
@@ -91,6 +97,14 @@ function capabilityList(value) {
   return out;
 }
 
+function hasOwnTrueCapability(source, capability) {
+  return !!source
+    && typeof source === 'object'
+    && !Array.isArray(source)
+    && Object.prototype.hasOwnProperty.call(source, capability)
+    && source[capability] === true;
+}
+
 function bindingPayload(input = {}) {
   const targetProfileId = identityAlias(input, 'targetProfileId', 'architectureProfileId', 'runtime-target-profile-required');
   const buildIdentity = identityAlias(input, 'buildIdentity', 'runtimeBuildIdentity', 'runtime-build-identity-invalid');
@@ -161,6 +175,7 @@ function mismatchReason(binding, providerProfileId, targetProfileId, expectedBui
   const proofBuildIdentity = proof.buildIdentity ?? proof.runtimeBuildIdentity ?? null;
   if (!profileAllowed(providerProfileId)) return 'runtime-provider-profile-unsupported';
   if (!targetProfileAllowed(targetProfileId)) return 'runtime-target-profile-unsupported';
+  if (NATIVE_TARGET_PROVIDER_PROFILE[targetProfileId] && NATIVE_TARGET_PROVIDER_PROFILE[targetProfileId] !== providerProfileId) return 'runtime-provider-target-profile-mismatch';
   if (boundProviderProfileId !== providerProfileId) return 'runtime-provider-profile-mismatch';
   if (boundTargetProfileId !== targetProfileId) return 'runtime-target-profile-mismatch';
   if (proofProviderProfileId != null && proofProviderProfileId !== providerProfileId) return 'runtime-proof-provider-profile-mismatch';
@@ -299,7 +314,11 @@ export function runtimeProfileSupport({
   const canonical = canonicalBinding(binding || {}, { throwOnError: false });
   const hasBinding = canonical != null;
   const declared = capabilityList(requiredCapabilities);
-  const missing = declared.filter((key) => providerCapabilities[key] !== true);
+  // Capability support is authority input, not a convenience lookup.  An
+  // inherited property (for example from a prototype carrying attacker
+  // supplied flags) is not evidence that this provider advertises the
+  // operation.  Malformed maps fail closed as a missing denominator.
+  const missing = declared.filter((key) => !hasOwnTrueCapability(providerCapabilities, key));
   const proofComplete = proof.exactHead === true
     && proof.identityNegativeTests === true
     && proof.staleEventTests === true

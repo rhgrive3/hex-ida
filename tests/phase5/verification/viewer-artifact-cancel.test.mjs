@@ -33,7 +33,7 @@ function nop(address) {
 }
 
 test('P5-6 artifact identity is deterministic and x86 semantic-version sensitive', () => {
-  assert.equal(X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION, '5.1.0-phase5-integrated');
+  assert.equal(X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION, '5.2.0-stage2-x86-denominator');
   const currentA = createArtifactId(artifactInput(X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION));
   const currentB = createArtifactId({ ...artifactInput(X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION), inputArtifactIds:['input-a','input-b'] });
   const stale = createArtifactId(artifactInput('5.0.0-phase5-pre-integration'));

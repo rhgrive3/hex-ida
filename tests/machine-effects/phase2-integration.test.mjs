@@ -21,14 +21,14 @@ const vec = (num, arr) => ({ k:'reg', cls:'vec', num, bits:128, arr, text:`v${nu
 
 assert.equal(MACHINE_EFFECTS_SCHEMA_VERSION, 1);
 // Keep this integration contract synchronized with the production ARM64 semantic version.
-assert.equal(ARM64_MACHINE_EFFECTS_SEMANTIC_VERSION, '3');
-assert.equal(ARM64_ARCHITECTURE.semanticVersion, '3');
-assert.equal(ARM64E_ARCHITECTURE.semanticVersion, '3');
+assert.equal(ARM64_MACHINE_EFFECTS_SEMANTIC_VERSION, '7');
+assert.equal(ARM64_ARCHITECTURE.semanticVersion, '7');
+assert.equal(ARM64E_ARCHITECTURE.semanticVersion, '7');
 assert.equal(ARM64_ARCHITECTURE.capabilities.exactEffects, 'partial');
 assert.equal(ARM64E_ARCHITECTURE.capabilities.exactEffects, 'partial');
 assert.equal(ARM64_ARCHITECTURE.capabilities.semanticAnalysis, 'legacy-v1');
 assert.equal(ARM64E_ARCHITECTURE.capabilities.semanticAnalysis, 'legacy-v1-partial');
-assert.equal(X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION, '5.1.0-phase5-integrated');
+assert.equal(X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION, '5.2.0-stage2-x86-denominator');
 assert.equal(X86_64_ARCHITECTURE.semanticVersion, X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION);
 assert.equal(X86_64_ARCHITECTURE.capabilities.exactEffects, 'partial');
 assert.equal(X86_64_ARCHITECTURE.capabilities.semanticAnalysis, 'phase5-shadow-partial');

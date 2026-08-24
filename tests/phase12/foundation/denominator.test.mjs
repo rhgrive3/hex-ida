@@ -13,11 +13,11 @@ assert.equal(checked.ok, true);
 assert.deepEqual(PHASE12_DENOMINATOR_CATEGORIES, ['knowledge', 'rules', 'patterns', 'remote-collaboration']);
 assert.equal(checked.categoryCount, 4);
 assert.equal(checked.unitCount, 68);
-assert.equal(checked.exactCount, 62);
+assert.equal(checked.exactCount, 63);
 assert.equal(checked.exclusionCount, 5);
-assert.equal(checked.nonExactCount, 6);
-assert.equal(checked.blockingGapCount, 1);
-assert.equal(checked.terminalEligible, false);
+assert.equal(checked.nonExactCount, 5);
+assert.equal(checked.blockingGapCount, 0);
+assert.equal(checked.terminalEligible, true);
 assert.deepEqual(checked.normativeExclusions, [
   'knowledge.external-confirmation-authority',
   'patterns.mutation',
@@ -25,13 +25,12 @@ assert.deepEqual(checked.normativeExclusions, [
   'remote.derived-analysis-egress',
   'rules.ai-capability-minting',
 ]);
-assert.deepEqual(checked.blockingGaps, ['remote.remote-canonical-transport']);
+assert.deepEqual(checked.blockingGaps, []);
 assert.deepEqual(checked.remainingGaps, [
   'knowledge.external-confirmation-authority',
   'patterns.mutation',
   'patterns.network-and-arbitrary-javascript',
   'remote.derived-analysis-egress',
-  'remote.remote-canonical-transport',
   'rules.ai-capability-minting',
 ]);
 assert.equal(checked.promotion.allowed, false);
@@ -49,8 +48,8 @@ for (const category of inventory.categories) {
 const report = phase12DenominatorReport(inventory);
 assert.equal(report.schemaVersion, 'phase12-denominator-report/v2');
 assert.equal(report.valid, true);
-assert.equal(report.terminalEligible, false);
-assert.equal(report.blockingGapCount, 1);
+assert.equal(report.terminalEligible, true);
+assert.equal(report.blockingGapCount, 0);
 assert.equal(report.promotion.allowed, false);
 
 function copy() { return structuredClone(inventory); }
@@ -84,9 +83,9 @@ assert.equal(shrinkFailure.ok, false);
 assert.ok(shrinkFailure.failures.includes('knowledge:unit-set-invalid'));
 assert.ok(shrinkFailure.failures.includes('knowledge.recognition.match-tiers:required-unit-missing'));
 
-const gapAsExclusion = copy();
-unit('remote.remote-canonical-transport', gapAsExclusion).classification = 'PREEXISTING_NORMATIVE_EXCLUSION';
-const promotionFailure = validatePhase12DenominatorInventory(gapAsExclusion);
+const exactAsExclusion = copy();
+unit('remote.remote-canonical-transport', exactAsExclusion).classification = 'PREEXISTING_NORMATIVE_EXCLUSION';
+const promotionFailure = validatePhase12DenominatorInventory(exactAsExclusion);
 assert.equal(promotionFailure.ok, false);
 assert.ok(promotionFailure.failures.includes('remote.remote-canonical-transport:classification-invalid'));
 

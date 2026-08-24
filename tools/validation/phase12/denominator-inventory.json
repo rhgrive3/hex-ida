@@ -822,6 +822,7 @@
               "remote-batch-budget-exceeded",
               "remote-message-budget-exceeded",
               "remote-transport-security-unverified",
+              "remote-transport-proof-verifier-required",
               "remote-transport-proof-rejected",
               "remote-egress-user-authorization-required",
               "remote-raw-binary-egress-forbidden",
@@ -865,15 +866,7 @@
         },
         {
           "id": "remote.remote-canonical-transport",
-          "classification": "BLOCKING_GAP",
-          "reason": "Remote canonical transport now rejects caller-minted boolean claims, but no validated exact-head security-profile evidence and active transport verifier are available at this head.",
-          "gapKind": "PROOF_ABSENCE",
-          "requiredProof": [
-            "validatedStage2CapabilityProof",
-            "exactCommitSha",
-            "exactTreeSha",
-            "activeTransportProofVerifier"
-          ],
+          "classification": "EXACT",
           "check": {
             "type": "all",
             "checks": [
@@ -885,7 +878,21 @@
                   "isValidatedStage2CapabilityProof(profileProof",
                   "profileProof.commitSha === commitSha",
                   "profileProof.treeSha === treeSha",
-                  "typeof gate.verifyTransportProof === 'function'"
+                  "typeof gate.verifyTransportProof === 'function'",
+                  "transportVerifierIdentity",
+                  "independentOracleIdentities.includes(transportVerifierIdentity)"
+                ]
+              },
+              {
+                "type": "source-includes",
+                "path": "js/collaboration/remote-transport.js",
+                "markers": [
+                  "REMOTE_CANONICAL_TRANSPORT_VERIFIER_IDENTITY",
+                  "AES-GCM",
+                  "Ed25519",
+                  "remoteCanonicalTransportBinding(envelope)",
+                  "this.#verifiedBindings.get(proofIdentity) === stableStringify(remoteCanonicalTransportBinding(envelope))",
+                  "remote-transport-response-signature-rejected"
                 ]
               },
               {

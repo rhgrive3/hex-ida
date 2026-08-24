@@ -58,6 +58,16 @@ function liftFlags(mnemonic, operands) { return liftArm64FlagEffects(instruction
 }
 
 {
+  const bundle = liftFlags('cmp', 'w0, w1, uxtx #4');
+  assert.equal(bundle.completeness, 'exact');
+  const reads = bundle.operations.filter((operation) => operation.kind === 'register-read');
+  assert.equal(reads.find((operation) => operation.register.registerId === 'x1')?.register.view, 'x1',
+    'UXTX selects the full X source even when the architectural alias is printed with W registers');
+  assert.ok(bundle.operations.some((operation) => operation.kind === 'value' && operation.opcode === 'trunc'),
+    'the extended 64-bit source is truncated to the 32-bit comparison width after extension');
+}
+
+{
   const bundle = liftFlags('tst', 'x0, x1');
   assert.equal(bundle.completeness, 'exact');
   const writes = Object.fromEntries(bundle.operations.filter((operation) => operation.kind === 'flag-write').map((operation) => [operation.flag.flagId, operation.value]));

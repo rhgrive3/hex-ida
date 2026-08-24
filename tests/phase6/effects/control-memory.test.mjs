@@ -147,16 +147,27 @@ test('loads and stores keep exact width, extension and address provenance', () =
   }
 });
 
-test('environment calls stay explicitly partial instead of becoming state-preserving nops', () => {
+test('environment calls publish an exact-with-intrinsic complete state boundary', () => {
   for (const [name, bytes] of [['ecall', [0x73, 0x00, 0x00, 0x00]], ['ebreak', [0x73, 0x00, 0x10, 0x00]]]) {
     const { bundle } = liftBytes(bytes);
-    assert.equal(bundle.completeness, 'partial', `${name} must not claim exactness`);
+    assert.equal(bundle.completeness, 'exact-with-intrinsic');
     assert.equal(bundle.controlEffect.kind, 'trap');
-    assert.equal(bundle.unknownEffects.preservation, 'not-assumed');
-    for (const category of ['registers', 'memory', 'control']) {
-      assert.ok(bundle.unknownEffects.categories.includes(category), `${name} must not assume ${category} are preserved`);
-    }
+    assert.equal(bundle.unknownEffects, undefined);
     assert.equal(bundle.statePreservation, undefined);
+    const intrinsic = bundle.operations.find((operation) => operation.kind === 'intrinsic');
+    assert.equal(intrinsic.intrinsicId, `riscv64.environment.${name}`);
+    assert.equal(intrinsic.effectSummary.determinism, 'nondeterministic');
+    assert.equal(intrinsic.effectSummary.symbolicDetail, 'summary-only');
+    assert.deepEqual(intrinsic.effectSummary.memoryRead, { scope: 'all', spaces: ['code', 'io', 'memory', 'tls'] });
+    assert.deepEqual(intrinsic.effectSummary.memoryWrite, { scope: 'all', spaces: ['code', 'io', 'memory', 'tls'] });
+    assert.deepEqual(intrinsic.effectSummary.controlEffects, [bundle.controlEffect]);
+    assert.ok(intrinsic.effectSummary.registersWritten.includes('x1'));
+    assert.ok(intrinsic.effectSummary.registersWritten.includes('x31'));
+    assert.ok(intrinsic.effectSummary.registersWritten.includes('sys:riscv64.execution-environment'));
+    assert.equal(intrinsic.effectSummary.registersWritten.includes('x0'), false, 'x0 is immutable, not mutable environment state');
+    assert.deepEqual(intrinsic.effectSummary.registersRead, intrinsic.effectSummary.registersWritten,
+      'the environment may consume and replace every mutable register/environment state cell');
+    assert.equal(intrinsic.effectSummary.registersWritten.length, 32, 'x1..x31 plus the explicit execution-environment state');
   }
 });
 

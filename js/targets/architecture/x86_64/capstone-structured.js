@@ -29,6 +29,14 @@
     } catch { return null; }
   }
 
+  function memoryIndexName(M, handle, id) {
+    const name = capstoneString(M, 'cs_reg_name', handle, id);
+    // Capstone uses EIZ/RIZ as sentinels for the SIB index=4 encoding. They are
+    // not architectural registers and must not cross the structured decoder
+    // boundary as an operand dependency.
+    return name === 'eiz' || name === 'riz' ? null : name;
+  }
+
   function accessName(M, value) {
     const read = Number(M.AC_READ ?? 1);
     const write = Number(M.AC_WRITE ?? 2);
@@ -115,7 +123,7 @@
           segmentCode,
           base:capstoneString(M, 'cs_reg_name', handle, baseCode),
           baseCode,
-          index:capstoneString(M, 'cs_reg_name', handle, indexCode),
+          index:memoryIndexName(M, handle, indexCode),
           indexCode,
           scale:i32(M, pointer + 20),
           displacement:i64(M, pointer + 24),
@@ -164,7 +172,7 @@
       architecture:'x86_64',
       mode:String(options.mode || 'long-64'),
       decoderContractVersion:'x86-64-decoded-instruction/v1',
-      decoderSemanticVersion:'capstone-5-x86-structured-v1',
+      decoderSemanticVersion:'capstone-5-x86-structured-v2',
       instructionCode:opcodeId,
       opcodeId,
       instructionFamily:opcodeName || mnemonic,

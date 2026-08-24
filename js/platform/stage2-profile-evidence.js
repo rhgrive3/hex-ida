@@ -25,6 +25,8 @@ const EXPECTED_PROFILES = Object.freeze({
   'S2-P12-PATTERNS': Object.freeze(['patterns:read-only-v1']),
   'S2-P12-COLLAB-REMOTE': Object.freeze(['collaboration:remote-security-v1']),
 });
+const A7_PROVIDER_PROFILE_IDS = Object.freeze(['native:lldb-compatible-v1:host', 'native:remote-debug-v1:qemu-lldb']);
+const MANAGED_PROVIDER_PROFILE = /^managed:(wasm|dex|cil|jvm):provider-bound-runtime-v1(?::[a-z0-9][a-z0-9._-]{0,63})?$/;
 const VALID_PROFILE_VALIDATIONS = new WeakSet();
 const VALID_PROFILE_RECORDS = new WeakMap();
 const VALID_CAPABILITY_PROOFS = new WeakSet();
@@ -32,6 +34,22 @@ const VALID_CAPABILITY_PROOFS = new WeakSet();
 function sorted(value) { return [...new Set((Array.isArray(value) ? value : []).map(String).filter(Boolean))].sort(); }
 function includesAll(values, expected) { const set = new Set(values); return expected.every((item) => set.has(item)); }
 function same(values, expected) { const left = sorted(values); const right = sorted(expected); return left.length === right.length && left.every((item, index) => item === right[index]); }
+function isCanonicalStringArray(value, { allowEmpty = true } = {}) {
+  if (!Array.isArray(value)) return false;
+  if (!allowEmpty && value.length === 0) return false;
+  const strings = value.every((item) => typeof item === 'string' && item.length > 0 && item.trim() === item);
+  return strings && new Set(value).size === value.length;
+}
+function providerProfileAllowed(itemId, value) {
+  if (itemId === 'S2-A7-NATIVE') return A7_PROVIDER_PROFILE_IDS.includes(value);
+  const managed = /^S2-M6-(WASM|DEX|CIL|JVM)$/.exec(itemId);
+  if (!managed) return false;
+  const expectedFrontend = managed[1].toLowerCase();
+  const match = MANAGED_PROVIDER_PROFILE.exec(value);
+  return !!match && match[1] === expectedFrontend;
+}
+function isRecord(value) { return !!value && typeof value === 'object' && !Array.isArray(value); }
+function hasOwn(value, key) { return isRecord(value) && Object.prototype.hasOwnProperty.call(value, key); }
 function evidenceMap(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
   return Object.fromEntries(Object.entries(value).map(([key, item]) => [String(key), String(item || '')]));
@@ -79,7 +97,7 @@ export function createStage2DenominatorLock(input = {}, { scope, resolveInventor
   if (typeof resolveDenominatorUnitIds !== 'function') throw new TypeError('stage2-denominator-unit-resolver-required');
   const items = {};
   for (const id of STAGE2_PROFILE_EVIDENCE_IDS) {
-    const source = input.items?.[id] || {};
+    const source = hasOwn(input.items, id) ? input.items[id] || {} : {};
     const profiles = sorted(source.profiles);
     const unitIds = sorted(source.unitIds);
     const inventoryRefs = sorted(source.inventoryRefs);
@@ -114,6 +132,9 @@ export function validateStage2DenominatorLock(lock, { scope, resolveInventoryIde
   for (const id of STAGE2_PROFILE_EVIDENCE_IDS) {
     const item = lock.items?.[id];
     if (!item || typeof item !== 'object' || Array.isArray(item)) { failures.push(`${id}:denominator-lock-missing`); continue; }
+    if (!isCanonicalStringArray(item.profiles, { allowEmpty: false })) failures.push(`${id}:denominator-profiles-invalid`);
+    if (!isCanonicalStringArray(item.unitIds, { allowEmpty: false })) failures.push(`${id}:denominator-units-invalid`);
+    if (!isCanonicalStringArray(item.inventoryRefs, { allowEmpty: false })) failures.push(`${id}:denominator-inventory-refs-invalid`);
     const profiles = sorted(item.profiles);
     const unitIds = sorted(item.unitIds);
     const inventoryRefs = sorted(item.inventoryRefs);
@@ -186,38 +207,60 @@ export function validateStage2ProfileEvidence(record, expected = {}) {
   if (!denominatorLock.ok) return { ok: false, reason: denominatorLock.reason, failures: denominatorLock.failures || [] };
   const denominators = expected.denominatorLock.items;
   const failures = [];
+  if (!isRecord(record.items) || !same(Object.keys(isRecord(record.items) ? record.items : {}), STAGE2_PROFILE_EVIDENCE_IDS)) {
+    failures.push('stage2-profile-evidence-item-set-mismatch');
+  }
   for (const id of STAGE2_PROFILE_EVIDENCE_IDS) {
-    const item = record.items?.[id];
+    const item = hasOwn(record.items, id) ? record.items[id] : null;
     const expectedProfiles = EXPECTED_PROFILES[id];
-    if (!item) { failures.push(`${id}:missing`); continue; }
+    if (!isRecord(item)) { failures.push(`${id}:item-invalid`); continue; }
     const denominator = denominators[id];
     if (!denominator || typeof denominator !== 'object' || !Array.isArray(denominator.unitIds) || denominator.unitIds.length === 0) {
       failures.push(`${id}:denominator-lock-missing`);
       continue;
     }
+    if (!isCanonicalStringArray(item.profileIds, { allowEmpty: false })) failures.push(`${id}:profile-identities-invalid`);
+    if (!isCanonicalStringArray(item.coveredUnitIds, { allowEmpty: false })) failures.push(`${id}:covered-unit-identities-invalid`);
+    if (!isCanonicalStringArray(item.realFixtureIdentities, { allowEmpty: false })) failures.push(`${id}:real-fixture-missing`);
+    if (!isCanonicalStringArray(item.negativeTestIdentities, { allowEmpty: false })) failures.push(`${id}:negative-tests-missing`);
+    if (!isCanonicalStringArray(item.evidenceIdentities, { allowEmpty: false })) failures.push(`${id}:evidence-identity-missing`);
+    if (!isCanonicalStringArray(item.providerProfileIds, { allowEmpty: !(id === 'S2-A7-NATIVE' || id.startsWith('S2-M6-')) })) failures.push(`${id}:provider-profile-missing`);
+    if (!isCanonicalStringArray(item.independentOracleIdentities)) failures.push(`${id}:independent-oracle-identities-invalid`);
+    if ((id === 'S2-A7-NATIVE' || id.startsWith('S2-M6-'))
+      && (!Array.isArray(item.providerProfileIds) || !item.providerProfileIds.some((value) => providerProfileAllowed(id, value)))) {
+      failures.push(`${id}:provider-profile-invalid`);
+    }
+    if (id === 'S2-A7-NATIVE' && !same(item.providerProfileIds, A7_PROVIDER_PROFILE_IDS)) failures.push(`${id}:provider-profile-set-mismatch`);
     const profiles = sorted(item.profileIds);
     if (!same(profiles, expectedProfiles)) failures.push(`${id}:profile-denominator-incomplete`);
     if (item.candidateCommitSha !== record.commitSha || item.candidateTreeSha !== record.treeSha) failures.push(`${id}:not-exact-head`);
     if (item.denominatorId !== denominator.id || item.denominatorLockHash !== denominator.lockHash) failures.push(`${id}:denominator-lock-mismatch`);
     if (!same(item.coveredUnitIds, denominator.unitIds)) failures.push(`${id}:denominator-not-complete`);
     if (!same(Object.keys(item.unitEvidence || {}), denominator.unitIds)) failures.push(`${id}:unit-evidence-set-mismatch`);
+    const seenUnitEvidence = new Set();
     for (const unitId of denominator.unitIds) {
       const evidence = item.unitEvidence?.[unitId];
       if (typeof evidence !== 'string' || !evidence) failures.push(`${id}:unit-evidence-missing:${unitId}`);
-      else if (expected.resolveEvidenceIdentity(evidence, { itemId: id, kind: 'unit', unitId }) !== evidence) failures.push(`${id}:unit-evidence-unresolved:${unitId}`);
+      else {
+        if (seenUnitEvidence.has(evidence)) failures.push(`${id}:unit-evidence-duplicate:${unitId}`);
+        seenUnitEvidence.add(evidence);
+        const context = { itemId: id, kind: 'unit', unitId };
+        if (expected.requireCanonicalUnitEvidence === true && !/^artifact:reports\/stage2\/profile-evidence-runs\/[^@/]+\/[^@/]+\.json@sha256:[0-9a-f]{64}$/.test(evidence)) {
+          failures.push(`${id}:unit-evidence-not-canonical:${unitId}`);
+        }
+        if (expected.resolveEvidenceIdentity(evidence, context) !== evidence) failures.push(`${id}:unit-evidence-unresolved:${unitId}`);
+      }
     }
-    if (!Array.isArray(item.realFixtureIdentities) || item.realFixtureIdentities.length === 0) failures.push(`${id}:real-fixture-missing`);
-    if (!Array.isArray(item.negativeTestIdentities) || item.negativeTestIdentities.length === 0) failures.push(`${id}:negative-tests-missing`);
-    if (!Array.isArray(item.evidenceIdentities) || item.evidenceIdentities.length === 0) failures.push(`${id}:evidence-identity-missing`);
-    if (!item.implementationIdentity) failures.push(`${id}:implementation-identity-missing`);
+    if (typeof item.implementationIdentity !== 'string' || !item.implementationIdentity || item.implementationIdentity.trim() !== item.implementationIdentity) failures.push(`${id}:implementation-identity-missing`);
     else if (expected.resolveEvidenceIdentity(item.implementationIdentity, { itemId: id, kind: 'implementation' }) !== item.implementationIdentity) failures.push(`${id}:implementation-identity-unresolved`);
     for (const [kind, values] of [
       ['real-fixture', item.realFixtureIdentities],
       ['negative-test', item.negativeTestIdentities],
       ['evidence', item.evidenceIdentities],
       ['independent-oracle', item.independentOracleIdentities],
-    ]) for (const value of values || []) if (expected.resolveEvidenceIdentity(value, { itemId: id, kind }) !== value) failures.push(`${id}:${kind}-identity-unresolved:${value}`);
-    if ((id === 'S1-A2-NATIVE' || id.startsWith('S2-F6-')) && (!Array.isArray(item.independentOracleIdentities) || item.independentOracleIdentities.length === 0 || item.independentOracleIdentities.includes(item.implementationIdentity))) failures.push(`${id}:independent-oracle-missing`);
+    ]) if (Array.isArray(values)) for (const value of values) if (expected.resolveEvidenceIdentity(value, { itemId: id, kind }) !== value) failures.push(`${id}:${kind}-identity-unresolved:${value}`);
+    const requiresIndependentOracle = id === 'S1-A2-NATIVE' || id.startsWith('S2-F6-') || id === 'S2-P12-COLLAB-REMOTE';
+    if (requiresIndependentOracle && (!Array.isArray(item.independentOracleIdentities) || item.independentOracleIdentities.length === 0 || item.independentOracleIdentities.includes(item.implementationIdentity))) failures.push(`${id}:independent-oracle-missing`);
     if ((id === 'S2-A7-NATIVE' || id.startsWith('S2-M6-')) && (!Array.isArray(item.providerProfileIds) || item.providerProfileIds.length === 0)) failures.push(`${id}:provider-profile-missing`);
   }
   const result = Object.freeze({ ok: failures.length === 0, reason: failures.length ? 'stage2-profile-evidence-incomplete' : null, failures: Object.freeze(failures), evidenceId: record.evidenceId });

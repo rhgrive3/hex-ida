@@ -262,8 +262,13 @@ export function createArm64EffectContext(instruction, options = {}) {
       return applyModifier(base, targetBits, op.shift || null, targetBits);
     }
     if (op.k === 'reg') {
-      const sourceBits = instructionBits(op, targetBits);
-      const base = readRegister(op);
+      const modifierKind = String(op.shift?.op || '').toLowerCase();
+      const widenedXModifier = (modifierKind === 'uxtx' || modifierKind === 'sxtx') && instructionBits(op, targetBits) === 32;
+      const sourceOperand = widenedXModifier
+        ? { ...op, bits:64, text:op.cls === 'zr' ? 'xzr' : `x${op.num}` }
+        : op;
+      const sourceBits = instructionBits(sourceOperand, targetBits);
+      const base = readRegister(sourceOperand);
       if (!base) return null;
       return applyModifier(base, sourceBits, op.shift || null, targetBits);
     }
