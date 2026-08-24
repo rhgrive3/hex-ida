@@ -3,7 +3,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { validatePhysicalIPadEvidence } from '../../../js/platform/physical-ipad-evidence.js';
+import { validatePhysicalIPadEvidence, validatePhysicalIPadScenarioOutput } from '../../../js/platform/physical-ipad-evidence.js';
 import { stableDigest } from '../../../js/core/identity/index.js';
 import { STAGE2_PROFILE_EVIDENCE_IDS, validateStage2DenominatorLock, validateStage2ProfileEvidence } from '../../../js/platform/stage2-profile-evidence.js';
 import { a2DenominatorReport } from '../machine-effects/a2-denominator.mjs';
@@ -328,7 +328,25 @@ function evidenceIdentityAtHead(identity, context = {}, candidateCommitSha = nul
 
 function physicalEvidenceIdentityAtHead(identity, context = {}, candidateCommitSha = null, candidateTreeSha = null) {
   if (!physicalEvidenceArtifactPathAllowed(identity, context.kind)) return null;
-  return evidenceIdentityAtHead(identity, context, candidateCommitSha, candidateTreeSha);
+  const resolved = evidenceIdentityAtHead(identity, context, candidateCommitSha, candidateTreeSha);
+  if (!resolved || context.kind !== 'physical-ipad-scenario-output') return resolved;
+  const match = /^artifact:([^@]+)@sha256:[0-9a-f]{64}$/.exec(identity);
+  const file = match ? repositoryFileAtRoot(match[1]) : null;
+  if (!file) return null;
+  let scenario;
+  try { scenario = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; }
+  const record = context.record || {};
+  const checked = validatePhysicalIPadScenarioOutput(scenario, {
+    commitSha: candidateCommitSha,
+    treeSha: candidateTreeSha,
+    buildIdentity: record.buildIdentity,
+    runtimeIdentity: record.runtimeIdentity,
+    deviceModel: record.deviceModel,
+    iPadOSVersion: record.iPadOSVersion,
+    webKitVersion: record.webKitVersion,
+    fixtureIdentity: record.fixtureIdentity,
+  });
+  return checked.ok ? identity : null;
 }
 
 export function physicalEvidenceArtifactPathAllowed(identity, kind) {
