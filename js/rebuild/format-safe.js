@@ -5,9 +5,11 @@ import { createRebuildTransaction } from './transaction-v2.js';
  * Small, deliberately conservative format-aware rebuild adapter.
  *
  * The transaction engine is intentionally format agnostic.  This adapter is
- * the production contract for the three metadata-only mutations that F6 can
+ * the production contract for conservative format-aware mutations that F6 can
  * prove without relocating code or re-encoding loader state:
  *   - ELF64 .comment contents (a non-allocatable section), and
+ *   - appending one non-loaded ELF64 SHT_NOBITS section when the existing
+ *     section-name table has exact in-place room for the new name,
  *   - the PE COFF timestamp (a fixed-width file-header field).
  *   - a Mach-O 64 LC_VERSION_MIN_MACOSX version field.
  *
@@ -30,6 +32,7 @@ const PE_I386_MACHINE = 0x14c;
 const PE_AMD64_MACHINE = 0x8664;
 const ELF64_HEADER_SIZE = 64;
 const ELF64_SECTION_HEADER_SIZE = 64;
+const ELF_SHT_NOBITS = 8;
 const PE_SECTION_HEADER_SIZE = 40;
 const MAX_FORMAT_IMAGE_BYTES = 128 * 1024 * 1024;
 
@@ -347,17 +350,104 @@ function changed(left, right) {
   return !sameBytes(left, right);
 }
 
+function integerInRange(value, minimum, maximum, code) {
+  const number = Number(value);
+  if (!Number.isSafeInteger(number) || number < minimum || number > maximum) fail(code);
+  return number;
+}
+
+function littleEndianBytes(length, write) {
+  const result = new Uint8Array(length);
+  write(new DataView(result.buffer));
+  return result;
+}
+
+function elfNobitsLayoutPlan(source, image, mutation) {
+  const name = String(mutation.name ?? '.bss');
+  if (name !== '.bss') fail('format-safe-elf-nobits-name-unsupported');
+  if (image.sections.some((section) => section.name === name)) fail('format-safe-elf-nobits-name-duplicate');
+  if (image.header.sectionCount >= 0xffff) fail('format-safe-elf-section-count-exhausted');
+  const size = integerInRange(mutation.size, 1, 0x10000000, 'format-safe-elf-nobits-size-invalid');
+  const alignment = integerInRange(mutation.alignment ?? 8, 1, 0x100000, 'format-safe-elf-nobits-alignment-invalid');
+  if ((alignment & (alignment - 1)) !== 0) fail('format-safe-elf-nobits-alignment-invalid');
+  const names = image.sections[image.header.sectionNameIndex];
+  if (image.header.sectionNameIndex !== image.header.sectionCount - 1) fail('format-safe-elf-section-name-table-not-terminal');
+  const encodedName = utf8(`${name}\0`);
+  const nameOffset = names.offset + names.size;
+  if (nameOffset + encodedName.length !== image.header.sectionTableOffset) fail('format-safe-elf-section-name-space-unavailable');
+  if (source.length !== image.header.sectionTableOffset + image.header.sectionCount * ELF64_SECTION_HEADER_SIZE) fail('format-safe-elf-section-table-not-terminal');
+  if ((source.length + ELF64_SECTION_HEADER_SIZE) % alignment !== 0) fail('format-safe-elf-nobits-offset-alignment-invalid');
+  if (source.slice(nameOffset, nameOffset + encodedName.length).some((byte) => byte !== 0)) fail('format-safe-elf-section-name-space-not-zero');
+
+  const sectionHeader = new Uint8Array(ELF64_SECTION_HEADER_SIZE);
+  const sectionView = new DataView(sectionHeader.buffer);
+  sectionView.setUint32(0, names.size, true);
+  sectionView.setUint32(4, ELF_SHT_NOBITS, true);
+  sectionView.setBigUint64(24, BigInt(source.length + ELF64_SECTION_HEADER_SIZE), true);
+  sectionView.setBigUint64(32, BigInt(size), true);
+  sectionView.setBigUint64(48, BigInt(alignment), true);
+
+  const namesHeaderOffset = image.header.sectionTableOffset + image.header.sectionNameIndex * ELF64_SECTION_HEADER_SIZE;
+  const operations = [
+    {
+      id: 'format-safe:elf:nobits:section-count',
+      offset: 60,
+      before: source.slice(60, 62),
+      after: littleEndianBytes(2, (view) => view.setUint16(0, image.header.sectionCount + 1, true)),
+    },
+    {
+      id: 'format-safe:elf:nobits:name',
+      offset: nameOffset,
+      before: source.slice(nameOffset, nameOffset + encodedName.length),
+      after: encodedName,
+    },
+    {
+      id: 'format-safe:elf:nobits:string-table-size',
+      offset: namesHeaderOffset + 32,
+      before: source.slice(namesHeaderOffset + 32, namesHeaderOffset + 40),
+      after: littleEndianBytes(8, (view) => view.setBigUint64(0, BigInt(names.size + encodedName.length), true)),
+    },
+    {
+      id: 'format-safe:elf:nobits:section-header',
+      offset: source.length,
+      before: new Uint8Array(),
+      after: sectionHeader,
+    },
+  ].map((operation) => ({
+    ...operation,
+    provenance: {
+      source: 'format-safe-rebuild-adapter',
+      schema: FORMAT_SAFE_REBUILD_SCHEMA,
+      mutationKind: mutation.kind,
+      section: name,
+    },
+  }));
+  return {
+    operations,
+    safeState: {
+      schema: FORMAT_SAFE_REBUILD_SCHEMA,
+      kind: mutation.kind,
+      section: name,
+      type: 'SHT_NOBITS',
+      size,
+      alignment,
+      sourceSectionCount: image.header.sectionCount,
+      outputSectionCount: image.header.sectionCount + 1,
+      sectionNameOffset: names.size,
+      sectionHeaderOffset: source.length,
+    },
+  };
+}
+
 function reject(reason, detail = null) {
   return Object.freeze({ ok: false, status: 'rejected', reason, ...(detail == null ? {} : { detail: String(detail) }) });
 }
 
 /**
- * Create a same-size transaction for a supported metadata mutation.
+ * Create a transaction for a supported conservative format mutation.
  *
- * `mutation` is either `{ kind: 'elf-comment', tag: string }` or
- * `{ kind: 'pe-timestamp', timestamp: number }`.  The source is inspected
- * before the transaction is created, so a synthetic byte array or a wrong
- * format cannot be promoted by merely labelling it as ELF/PE.
+ * The source is inspected before the transaction is created, so a synthetic
+ * byte array or a wrong format cannot be promoted by merely labelling it.
  */
 export function createFormatSafeRebuildTransaction(input = {}) {
   const source = bytesOf(input.source);
@@ -369,7 +459,7 @@ export function createFormatSafeRebuildTransaction(input = {}) {
   if (image.format !== format || image.architecture !== architecture) fail('format-safe-source-identity-mismatch');
   const mutation = input.mutation;
   if (!mutation || typeof mutation !== 'object' || Array.isArray(mutation)) fail('format-safe-mutation-required');
-  let operation;
+  let operations;
   let safeState;
   if (mutation.kind === 'elf-comment') {
     if (format !== 'elf') fail('format-safe-mutation-format-mismatch');
@@ -380,8 +470,11 @@ export function createFormatSafeRebuildTransaction(input = {}) {
     after.set(encoded);
     const before = image.target.data;
     if (!changed(before, after)) fail('format-safe-mutation-no-change');
-    operation = { id: 'format-safe:elf:.comment', offset: image.target.offset, before, after, provenance: { source: 'format-safe-rebuild-adapter', schema: FORMAT_SAFE_REBUILD_SCHEMA, mutationKind: mutation.kind, section: '.comment', tag } };
+    operations = [{ id: 'format-safe:elf:.comment', offset: image.target.offset, before, after, provenance: { source: 'format-safe-rebuild-adapter', schema: FORMAT_SAFE_REBUILD_SCHEMA, mutationKind: mutation.kind, section: '.comment', tag } }];
     safeState = { schema: FORMAT_SAFE_REBUILD_SCHEMA, kind: mutation.kind, section: '.comment', offset: image.target.offset, size: image.target.size, replacementDigest: digestBytes(after) };
+  } else if (mutation.kind === 'elf-add-nobits-section') {
+    if (format !== 'elf') fail('format-safe-mutation-format-mismatch');
+    ({ operations, safeState } = elfNobitsLayoutPlan(source, image, mutation));
   } else if (mutation.kind === 'macho-min-version') {
     if (format !== 'macho') fail('format-safe-mutation-format-mismatch');
     const version = Number(mutation.version);
@@ -390,7 +483,7 @@ export function createFormatSafeRebuildTransaction(input = {}) {
     const after = new Uint8Array(4);
     new DataView(after.buffer).setUint32(0, version, true);
     if (!changed(before, after)) fail('format-safe-mutation-no-change');
-    operation = { id: 'format-safe:macho:min-version', offset: image.target.offset, before, after, provenance: { source: 'format-safe-rebuild-adapter', schema: FORMAT_SAFE_REBUILD_SCHEMA, mutationKind: mutation.kind, command: image.target.name, version } };
+    operations = [{ id: 'format-safe:macho:min-version', offset: image.target.offset, before, after, provenance: { source: 'format-safe-rebuild-adapter', schema: FORMAT_SAFE_REBUILD_SCHEMA, mutationKind: mutation.kind, command: image.target.name, version } }];
     safeState = { schema: FORMAT_SAFE_REBUILD_SCHEMA, kind: mutation.kind, command: image.target.name, commandIndex: image.target.commandIndex, offset: image.target.offset, size: 4, originalVersion: image.target.originalVersion, replacementVersion: version, sdkVersion: image.target.sdkVersion };
   } else if (mutation.kind === 'pe-timestamp') {
     if (format !== 'pe') fail('format-safe-mutation-format-mismatch');
@@ -400,7 +493,7 @@ export function createFormatSafeRebuildTransaction(input = {}) {
     const after = new Uint8Array(4);
     new DataView(after.buffer).setUint32(0, timestamp, true);
     if (!changed(before, after)) fail('format-safe-mutation-no-change');
-    operation = { id: 'format-safe:pe:timestamp', offset: image.target.offset, before, after, provenance: { source: 'format-safe-rebuild-adapter', schema: FORMAT_SAFE_REBUILD_SCHEMA, mutationKind: mutation.kind, field: 'COFF.TimeDateStamp', timestamp } };
+    operations = [{ id: 'format-safe:pe:timestamp', offset: image.target.offset, before, after, provenance: { source: 'format-safe-rebuild-adapter', schema: FORMAT_SAFE_REBUILD_SCHEMA, mutationKind: mutation.kind, field: 'COFF.TimeDateStamp', timestamp } }];
     safeState = { schema: FORMAT_SAFE_REBUILD_SCHEMA, kind: mutation.kind, field: 'COFF.TimeDateStamp', offset: image.target.offset, size: 4, originalTimestamp: image.header.timestamp, replacementTimestamp: timestamp };
   } else fail('format-safe-mutation-kind-unsupported');
   const sourceHash = input.sourceHash == null ? digestBytes(source) : String(input.sourceHash);
@@ -411,8 +504,8 @@ export function createFormatSafeRebuildTransaction(input = {}) {
     format,
     architecture,
     loaderVersion: input.loaderVersion,
-    operations: [operation],
-    impact: { layoutMoving: false, sections: [safeState.section || safeState.field], relocationBindings: [] },
+    operations,
+    impact: { layoutMoving: mutation.kind === 'elf-add-nobits-section', sections: [safeState.section || safeState.field], relocationBindings: [] },
     expectedOriginalState: { sourceHash, formatSafe: safeState },
     additionalValidators: ['format-invariants'],
     requireIndependentOracle: true,
@@ -435,6 +528,43 @@ export function validateFormatSafeMutation({ transaction, original, output } = {
     const sourceImage = parseImage(source);
     const outputImage = parseImage(candidate);
     if (sourceImage.format !== format || outputImage.format !== format || sourceImage.architecture !== architecture || outputImage.architecture !== architecture) return reject('format-safe-format-identity-mismatch');
+    const safeState = transaction.expectedOriginalState?.formatSafe;
+    if (!safeState || safeState.schema !== FORMAT_SAFE_REBUILD_SCHEMA) return reject('format-safe-state-missing');
+    if (safeState.kind === 'elf-add-nobits-section') {
+      if (format !== 'elf' || transaction.operations?.length !== 4 || transaction.impact?.layoutMoving !== true) return reject('format-safe-elf-layout-operation-invalid');
+      const expected = elfNobitsLayoutPlan(source, sourceImage, safeState);
+      const canonicalExpectedOperations = expected.operations.map((operation) => ({
+        ...operation,
+        offset: String(operation.offset),
+        before: Array.from(operation.before),
+        after: Array.from(operation.after),
+        address: null,
+      }));
+      if (stableDigest(transaction.operations) !== stableDigest(canonicalExpectedOperations)) return reject('format-safe-operation-bytes-mismatch');
+      if (candidate.length !== source.length + ELF64_SECTION_HEADER_SIZE) return reject('format-safe-elf-layout-size-mismatch');
+      if (outputImage.header.sectionCount !== safeState.outputSectionCount || sourceImage.header.sectionCount !== safeState.sourceSectionCount) return reject('format-safe-elf-section-count-mismatch');
+      const appended = outputImage.sections.at(-1);
+      if (!appended || appended.name !== safeState.section || appended.type !== ELF_SHT_NOBITS || appended.size !== safeState.size
+        || appended.alignment !== String(safeState.alignment) || appended.flags !== '0' || appended.address !== '0'
+        || appended.offset !== candidate.length) return reject('format-safe-elf-nobits-section-mismatch');
+      if (stableDigest(sourceImage.sections.slice(0, -1)) !== stableDigest(outputImage.sections.slice(0, -2))) return reject('format-safe-elf-existing-sections-changed');
+      const sourceNames = sourceImage.sections[sourceImage.header.sectionNameIndex];
+      const outputNames = outputImage.sections[outputImage.header.sectionNameIndex];
+      const comparableSourceNames = { ...sourceNames, size: outputNames.size, data: outputNames.data };
+      if (stableDigest(comparableSourceNames) !== stableDigest(outputNames)) return reject('format-safe-elf-name-table-mismatch');
+      if (digestBytes(source) !== transaction.sourceHash) return reject('format-safe-source-hash-mismatch');
+      return Object.freeze({
+        ok: true,
+        status: 'passed',
+        format,
+        architecture,
+        mutationKind: safeState.kind,
+        changed: true,
+        sourceDigest: digestBytes(source),
+        outputDigest: digestBytes(candidate),
+        layoutEvidence: Object.freeze({ sectionCount: outputImage.header.sectionCount, section: Object.freeze({ name: appended.name, type: 'SHT_NOBITS', size: appended.size, alignment: Number(appended.alignment) }) }),
+      });
+    }
     if (transaction.operations?.length !== 1) return reject('format-safe-operation-count-invalid');
     const operation = transaction.operations[0];
     const offset = Number(BigInt(operation.offset));
@@ -444,8 +574,7 @@ export function validateFormatSafeMutation({ transaction, original, output } = {
     if (digestBytes(source) !== transaction.sourceHash) return reject('format-safe-source-hash-mismatch');
     if (sourceImage.maskedFileDigest !== outputImage.maskedFileDigest) return reject('format-safe-unchanged-bytes-differ');
     if (stableDigest(snapshot(sourceImage)) !== stableDigest(snapshot(outputImage))) return reject('format-safe-structure-invariant-mismatch');
-    const safeState = transaction.expectedOriginalState?.formatSafe;
-    if (!safeState || safeState.schema !== FORMAT_SAFE_REBUILD_SCHEMA || safeState.offset !== offset || safeState.size !== operation.after.length) return reject('format-safe-state-missing');
+    if (safeState.offset !== offset || safeState.size !== operation.after.length) return reject('format-safe-state-missing');
     if (safeState.kind === 'elf-comment') {
       if (format !== 'elf' || safeState.section !== '.comment' || sourceImage.target.name !== '.comment' || digestBytes(operation.after) !== safeState.replacementDigest) return reject('format-safe-elf-state-mismatch');
     } else if (safeState.kind === 'macho-min-version') {

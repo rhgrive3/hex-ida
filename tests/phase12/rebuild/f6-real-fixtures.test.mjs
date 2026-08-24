@@ -14,6 +14,7 @@ import {
 } from '../../../js/rebuild/format-safe.js';
 import {
   evaluateF6RebuildDenominator,
+  f6KnownImplementationGaps,
   materializeRebuildTransaction,
   publishRebuildTransaction,
   validateRebuildTransaction,
@@ -173,6 +174,91 @@ assert.equal(proofRows.filter((row) => row.format === 'elf').length, 1);
 assert.equal(proofRows.filter((row) => row.format === 'macho').length, 1);
 assert.equal(proofRows.filter((row) => row.format === 'pe').length, 2);
 
+// A bounded production layout operation: append one non-loaded SHT_NOBITS
+// section to the real ELF fixture. Both Hex's loader and llvm-readobj must
+// observe the exact new section; parseability alone is insufficient.
+const layoutFixture = manifest.fixtures.find((fixture) => fixture.profile === 'elf:64');
+const layoutBytes = fixtureBytes(layoutFixture);
+const layoutTransaction = createFormatSafeRebuildTransaction({
+  binaryId: `fixture:${layoutFixture.id}:layout`,
+  source: layoutBytes,
+  sourceHash: digest(layoutBytes),
+  format: 'elf',
+  architecture: 'x86_64',
+  loaderVersion,
+  mutation: { kind: 'elf-add-nobits-section', name: '.bss', size: 16, alignment: 8 },
+});
+assert.equal(layoutTransaction.impact.layoutMoving, true);
+assert.equal(layoutTransaction.sizeDelta, 64);
+assert.equal(layoutTransaction.requiredValidators.includes('layout'), true);
+const layoutMaterialized = await materializeRebuildTransaction(layoutTransaction, layoutBytes);
+assert.equal(layoutMaterialized.status, 'materialized');
+const layoutValidation = await validateRebuildTransaction(layoutTransaction, layoutMaterialized, {
+  original: layoutBytes,
+  loaderReparse,
+  independentOracle,
+  validators: {
+    layout: validateFormatSafeMutation,
+    'format-invariants': validateFormatSafeMutation,
+  },
+});
+assert.equal(layoutValidation.status, 'valid', JSON.stringify(layoutValidation.failures));
+for (const validator of ['layout', 'format-invariants', 'independent-differential']) {
+  assert.deepEqual(layoutValidation.validators.find((item) => item.validator === validator)?.detail?.layoutEvidence, {
+    sectionCount: 14,
+    section: { name: '.bss', type: 'SHT_NOBITS', size: 16, alignment: 8 },
+  }, `${validator}: exact ELF layout evidence`);
+}
+const layoutPublication = await publishRebuildTransaction(layoutMaterialized, layoutValidation, {
+  atomicPromote: async (_candidate, identity) => ({
+    atomic: true,
+    committed: true,
+    protocol: 'temp-then-atomic-rename',
+    publicationIdentity: `fixture-publication:${layoutFixture.id}:layout`,
+    transactionId: identity.materialized.transactionId,
+    outputHash: identity.materialized.outputHash,
+    outputIdentity: identity.materialized.outputIdentity,
+  }),
+});
+assert.equal(layoutPublication.status, 'published');
+const layoutStatus = evaluateF6RebuildDenominator({
+  transaction: layoutTransaction,
+  validation: layoutValidation,
+  publication: layoutPublication,
+  proof: {
+    realFixture: true,
+    realFixtureEvidence: true,
+    negativeValidatorTest: true,
+    staleIdentityTest: true,
+    truncationTest: true,
+    wrongIdentityTest: true,
+  },
+});
+assert.equal(layoutStatus.cells['layout-and-structure'].status, 'blocking');
+assert.equal(layoutStatus.cells['layout-and-structure'].reason, 'f6-layout-and-structure-profile-matrix-incomplete');
+assert.equal(layoutStatus.cells['layout-and-structure'].evidence, 'elf64-terminal-section-table-nobits-adapter+llvm-readobj-section-oracle');
+assert.equal(layoutStatus.blockingUnitIds.includes('elf:64:layout-and-structure'), true);
+assert.equal(f6KnownImplementationGaps().includes('elf:64:layout-and-structure'), true);
+assert.equal(f6KnownImplementationGaps().length, 24, 'a single proven operation must not close a format-wide layout cell');
+assert.throws(() => createFormatSafeRebuildTransaction({
+  binaryId: 'negative:layout-name', source: layoutBytes, format: 'elf', architecture: 'x86_64', loaderVersion,
+  mutation: { kind: 'elf-add-nobits-section', name: '.attacker', size: 16, alignment: 8 },
+}), /format-safe-elf-nobits-name-unsupported/);
+assert.throws(() => createFormatSafeRebuildTransaction({
+  binaryId: 'negative:layout-alignment', source: layoutBytes, format: 'elf', architecture: 'x86_64', loaderVersion,
+  mutation: { kind: 'elf-add-nobits-section', name: '.bss', size: 16, alignment: 3 },
+}), /format-safe-elf-nobits-alignment-invalid/);
+for (const alignment of [16, 64]) {
+  assert.throws(() => createFormatSafeRebuildTransaction({
+    binaryId: `negative:layout-offset-alignment:${alignment}`, source: layoutBytes, format: 'elf', architecture: 'x86_64', loaderVersion,
+    mutation: { kind: 'elf-add-nobits-section', name: '.bss', size: 16, alignment },
+  }), /format-safe-elf-nobits-offset-alignment-invalid/, `sh_offset must satisfy sh_addralign=${alignment}`);
+}
+const layoutTamper = layoutMaterialized.bytes.slice();
+new DataView(layoutTamper.buffer).setBigUint64(layoutTamper.length - 32, 17n, true);
+assert.equal(validateFormatSafeMutation({ transaction: layoutTransaction, original: layoutBytes, output: layoutTamper }).ok, false, 'changed appended section size is rejected');
+assert.equal((await independentOracle({ transaction: layoutTransaction, original: layoutBytes, output: layoutTamper })).ok, false, 'independent oracle rejects changed appended section size');
+
 // A no-op and a synthetic label are both rejected before they can become proof.
 const pe32Fixture = manifest.fixtures.find((fixture) => fixture.architecture === 'x86');
 const pe32Bytes = fixtureBytes(pe32Fixture);
@@ -262,5 +348,6 @@ console.log(`F6_REAL_REBUILD_PROOF=${JSON.stringify({
   fixtures: proofRows,
   oracle: { identity: oracleTool.identity, version: oracleTool.version },
   denominator: denominatorStatuses.map((status) => ({ profileId: status.profileId, status: status.status, closedUnitIds: status.closedUnitIds, blockingUnitIds: status.blockingUnitIds })),
+  layout: { profileId: layoutStatus.profileId, closedUnitIds: layoutStatus.closedUnitIds, blockingUnitIds: layoutStatus.blockingUnitIds },
   negatives: ['no-op-rejected', 'synthetic-rejected', 'header-tamper-rejected', 'truncation-rejected', 'wrong-identity-rejected'],
 })}`);

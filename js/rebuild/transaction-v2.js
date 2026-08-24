@@ -199,6 +199,26 @@ export function f6KnownImplementationGaps() {
   return Object.freeze(F6_REBUILD_PROFILES.flatMap((profileId) => F6_UNIMPLEMENTED_OPERATION_UNITS.map((unit) => `${profileId}:${unit}`)));
 }
 
+function elfLayoutEvidenceValid(transaction, validation) {
+  const expected = transaction?.expectedOriginalState?.formatSafe;
+  if (transaction?.format !== 'elf' || transaction?.architecture !== 'x86_64'
+    || expected?.schema !== 'hex-format-safe-rebuild/v1' || expected?.kind !== 'elf-add-nobits-section'
+    || transaction?.impact?.layoutMoving !== true || transaction?.sizeDelta !== 64) return false;
+  const formatResult = validation?.validators?.find((item) => item.validator === 'format-invariants');
+  const layoutResult = validation?.validators?.find((item) => item.validator === 'layout');
+  const oracleResult = validation?.validators?.find((item) => item.validator === 'independent-differential');
+  const matches = (evidence) => evidence?.sectionCount === expected.outputSectionCount
+    && evidence?.section?.name === expected.section
+    && evidence?.section?.type === expected.type
+    && evidence?.section?.size === expected.size
+    && evidence?.section?.alignment === expected.alignment;
+  return formatResult?.status === 'passed' && layoutResult?.status === 'passed'
+    && oracleResult?.status === 'passed'
+    && matches(formatResult.detail?.layoutEvidence)
+    && matches(layoutResult.detail?.layoutEvidence)
+    && matches(oracleResult.detail?.layoutEvidence);
+}
+
 /**
  * Evaluate F6's locked unit vocabulary against the actual v2 transaction
  * evidence.  A generic validator result or denominator identity is not an
@@ -227,6 +247,9 @@ export function evaluateF6RebuildDenominator({ transaction, validation, publicat
   add('transaction-identity', validationPassed ? 'closed' : 'blocking', validationPassed ? null : 'f6-transaction-identity-unproven', validationPassed ? 'transaction-v2-validation-identity' : null);
 
   for (const unit of F6_UNIMPLEMENTED_OPERATION_UNITS) add(unit, 'blocking', `f6-${unit}-adapter-unimplemented`);
+  if (profileId === 'elf:64' && elfLayoutEvidenceValid(transaction, validation)) {
+    add('layout-and-structure', 'blocking', 'f6-layout-and-structure-profile-matrix-incomplete', 'elf64-terminal-section-table-nobits-adapter+llvm-readobj-section-oracle');
+  }
 
   const loader = validation?.validators?.find((item) => item.validator === 'loader-reparse');
   add('loader-reparse', loader?.status === 'passed' ? 'closed' : 'blocking', loader?.status === 'passed' ? null : 'f6-loader-reparse-unproven', loader?.status === 'passed' ? 'production-loader-reparse' : null);
