@@ -28,6 +28,7 @@ import {
 import { validateArm64A64ControlDenominator } from './arm64-a64-control-denominator.mjs';
 import { validateArm64A64FlagsDenominator } from './arm64-a64-flags-denominator.mjs';
 import { validateArm64A64FpDenominator } from './arm64-a64-fp-denominator.mjs';
+import { validateArm64A64SystemDenominator } from './arm64-a64-system-denominator.mjs';
 import {
   ARM64_A64_INTEGER_DENOMINATOR_ID,
   ARM64_A64_INTEGER_DENOMINATOR_SCHEMA,
@@ -399,6 +400,12 @@ export function validateA2DenominatorInventory(inventory = loadA2DenominatorInve
         oracle:'arm-a-profile-a64-floating-point-encoding-tables + deployed-capstone-5-arm64 + llvm-mc-18-aarch64-disassembler',
         coverage:'exact-with-intrinsic', cardinalityFields:['mnemonicCount','fpImmediateCount'],
       }, validateArm64A64FpDenominator(), pathName);
+      validateArm64FamilyProof(families.find((family) => family.id === 'system'), {
+        id:'system', source:'js/targets/architecture/arm64/effects/system.js',
+        test:'tests/machine-effects/arm64-system-core.test.mjs', denominatorTest:'tests/machine-effects/arm64-a64-system-denominator.test.mjs',
+        oracle:'arm-a-profile-a64-exception-and-system-encoding-tables + deployed-capstone-5-arm64 + llvm-mc-18-aarch64-disassembler',
+        coverage:'exact-with-intrinsic', cardinalityFields:['mnemonicCount','selectorCount','registerCount'],
+      }, validateArm64A64SystemDenominator(), pathName);
     }
   }
 

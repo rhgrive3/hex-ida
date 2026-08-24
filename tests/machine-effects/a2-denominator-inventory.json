@@ -120,7 +120,31 @@
               }
             }
           },
-          { "id": "system", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "System families include environment traps, cache maintenance, and unknown hints." },
+          {
+            "id": "system",
+            "status": "exact",
+            "coverage": "exact-with-intrinsic",
+            "preexisting": false,
+            "oracle": "arm-a-profile-a64-exception-and-system-encoding-tables + deployed-capstone-5-arm64 + llvm-mc-18-aarch64-disassembler",
+            "reason": "All 24 registry-owned system mnemonics are bound to the complete 16-bit A64 system selector domain at alias-sensitive X0/XZR boundaries, with explicit conservative environment transitions.",
+            "proof": {
+              "schemaVersion": "machine-effects-effect-unit-proof/v1",
+              "source": "js/targets/architecture/arm64/effects/system.js",
+              "test": "tests/machine-effects/arm64-system-core.test.mjs",
+              "denominatorTest": "tests/machine-effects/arm64-a64-system-denominator.test.mjs",
+              "denominator": {
+                "schemaVersion": "arm64-a64-system-denominator/v1",
+                "denominatorId": "arm64:a64:system-encoding-discriminators:v1",
+                "profileId": "arm64:a64",
+                "encodingFamilyCount": 8,
+                "encodingCaseCount": 262330,
+                "mnemonicCount": 24,
+                "selectorCount": 65536,
+                "registerCount": 32,
+                "oracleIds": ["arm-a-profile-a64-exception-and-system-encoding-tables", "deployed-capstone-5-arm64", "llvm-mc-18-aarch64-disassembler"]
+              }
+            }
+          },
           { "id": "fallback-unmatched-decoder-family", "status": "excluded", "coverage": "unsupported", "preexisting": true, "reason": "Unclaimed decoder families return null and must remain unsupported." }
         ]
       }

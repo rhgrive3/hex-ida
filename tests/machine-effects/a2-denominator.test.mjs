@@ -26,6 +26,8 @@ assert.equal(validation.blockingGaps.includes('arm64:a64:effect-family:integer')
   'the finite A64 integer encoding and alias denominator closes only the registry-owned integer family');
 assert.equal(validation.blockingGaps.includes('arm64:a64:effect-family:fp'), false,
   'the finite A64 scalar FP denominator closes only registry-owned FP forms');
+assert.equal(validation.blockingGaps.includes('arm64:a64:effect-family:system'), false,
+  'the finite A64 system field sweep closes only registry-owned system forms');
 assert.equal(validation.blockingGaps.includes('riscv64:rv64imc:all-valid-32-bit-and-compressed-encodings'), false,
   'the exhaustive versioned RV64IMC decoder denominator closes only its decoder unit');
 assert.ok(validation.blockingGaps.includes('x86_64:long-64:effect-family:atomic'));
@@ -116,7 +118,7 @@ for (const mutate of [
   assert.throws(() => validateA2DenominatorInventory(mutated), /a2-denominator-x86-lea-proof-identity-drift/);
 }
 
-for (const familyId of ['control', 'flags', 'fp']) {
+for (const familyId of ['control', 'flags', 'fp', 'system']) {
   for (const mutate of [
     (family) => { family.oracle = 'caller-selected-label'; },
     (family) => { family.proof.source = 'js/targets/architecture/arm64/effects/index.js'; },
@@ -129,6 +131,14 @@ for (const familyId of ['control', 'flags', 'fp']) {
     mutate(family);
     assert.throws(() => validateA2DenominatorInventory(mutated), new RegExp(`a2-denominator-arm64-${familyId}-proof-`));
   }
+}
+
+for (const field of ['mnemonicCount','selectorCount','registerCount']) {
+  const mutated = clone();
+  const systemFamily = mutated.architectures.find((architecture) => architecture.id === 'arm64').effectRegistry.families.find((item) => item.id === 'system');
+  systemFamily.proof.denominator[field] -= 1;
+  assert.throws(() => validateA2DenominatorInventory(mutated), /a2-denominator-arm64-system-proof-denominator-drift/,
+    `system proof cardinality ${field} must be live-bound`);
 }
 
 for (const field of ['mnemonicCount','fpImmediateCount']) {
