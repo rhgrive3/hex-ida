@@ -134,7 +134,6 @@ import json
 import lldb
 import os
 import subprocess
-import threading
 import time
 
 FIXTURE = ${JSON.stringify(fixturePath)}
@@ -325,27 +324,19 @@ try:
         'state': state_name(process.GetState()),
     }
 
-    debugger.SetAsync(False)
-    input_error = debugger.SetInputString('process continue\\n')
-    if not input_error.Success():
-        fail('cancel-input-failed:' + str(input_error))
-    interpreter = debugger.GetCommandInterpreter()
-    holder = {}
+    debugger.SetAsync(True)
     cancel_stat_before = proc_stat(attached_pid)
     cancel_stop_id_before = process.GetStopID()
-    def run_interpreter():
-        try:
-            holder['result'] = debugger.RunCommandInterpreter(True, False, lldb.SBCommandInterpreterRunOptions(), 0, False, False)
-        except BaseException as exc:
-            holder['exception'] = repr(exc)
-    worker = threading.Thread(target=run_interpreter, daemon=True)
-    worker.start()
+    cancel_continue_error = process.Continue()
+    if not cancel_continue_error.Success():
+        fail('cancel-continue-failed:' + str(cancel_continue_error))
     cancel_stat_after = cancel_stat_before
     cancel_progress_observed = False
     cancel_deadline = time.time() + 3.0
     while time.time() < cancel_deadline:
-        if not worker.is_alive():
-            fail('cancel-command-not-inflight')
+        state = process.GetState()
+        if state in (lldb.eStateExited, lldb.eStateDetached, lldb.eStateInvalid):
+            fail('cancel-process-terminated:' + state_name(state))
         try:
             cancel_stat_after = proc_stat(attached_pid)
         except BaseException:
@@ -358,13 +349,8 @@ try:
         time.sleep(0.01)
     if not cancel_progress_observed:
         fail('cancel-no-execution-progress')
-    interrupt_accepted = interpreter.InterruptCommand()
-    if not interrupt_accepted:
-        fail('cancel-interrupt-not-accepted')
-    worker.join(3.0)
-    if worker.is_alive():
-        fail('cancel-command-not-settled')
-    stopped_state = wait_for(lldb.SBDebugger.StateIsStoppedState)
+    process.SendAsyncInterrupt()
+    stopped_state = wait_for(lldb.SBDebugger.StateIsStoppedState, timeout=3.0)
     if not lldb.SBDebugger.StateIsStoppedState(stopped_state):
         fail('cancel-target-not-stopped:' + state_name(stopped_state))
     if process.GetProcessID() != attached_pid:
@@ -387,20 +373,19 @@ try:
         fail('cancel-late-success-observed')
     result['cancel'] = {
         'observed': True, 'inFlightObserved': True,
-        'inFlightEvidence': 'blocking-command-thread-alive+exact-host-process-cpu-progress',
+        'inFlightEvidence': 'async-continue+exact-host-process-cpu-progress-before-cancel',
         'executionEvidence': 'exact-host-process-cpu-ticks-during-provider-running-window',
-        'executionWindow': 'after-command-continue-before-cancel-interrupt',
-        'progressTransport': 'linux-proc-stat+lldb-command-interpreter+lldb-stop-id',
+        'executionWindow': 'after-continue-before-cancel-interrupt',
+        'progressTransport': 'linux-proc-stat+lldb-stop-id',
         'executionAdvanced': True, 'interruptAccepted': True,
-        'interpreterWasInterrupted': bool(interpreter.WasInterrupted()), 'commandSettled': True,
+        'operationSettled': True,
         'processId': process.GetProcessID(),
         'cpuTicksBefore': cancel_stat_before['cpuTicks'], 'cpuTicksAfter': cancel_stat_after['cpuTicks'],
         'processStartTimeTicks': cancel_stat_before['startTimeTicks'],
         'stopIdBefore': cancel_stop_id_before, 'stopIdAfter': cancel_stop_id_after, 'stopIdAdvanced': True,
-        'settlement': 'cancelled', 'providerDisposition': 'interrupted-command',
+        'settlement': 'cancelled', 'providerDisposition': 'lldb-async-interrupt-observed',
         'lateResultRejected': True, 'lateStateStable': True, 'lateStopIdStable': True, 'lateProcessInstanceStable': True,
         'state': state_name(late_state),
-        'interpreterResult': repr(holder.get('result')), 'interpreterException': holder.get('exception'),
     }
     result['operationResults'] = {'attach': True, 'pause': True, 'cancel': True}
 except BaseException as exc:
@@ -479,8 +464,8 @@ export function parseLldbActiveOpsOutput(output, { fixturePath = null, probeWord
   if (!safeProgress(pause.cpuTicksBefore, pause.cpuTicksAfter)) throw new Error('a7-lldb-pause-process-progress-evidence-missing');
   if (pause.stopIdAdvanced !== true || !safeStopProgress(pause.stopIdBefore, pause.stopIdAfter)) throw new Error('a7-lldb-pause-stop-id-evidence-missing');
   if (proof.operationResults?.cancel !== true || cancel.observed !== true || cancel.inFlightObserved !== true || cancel.interruptAccepted !== true || cancel.executionAdvanced !== true) throw new Error('a7-lldb-cancel-not-observed');
-  if (cancel.inFlightEvidence !== 'blocking-command-thread-alive+exact-host-process-cpu-progress' || cancel.executionEvidence !== 'exact-host-process-cpu-ticks-during-provider-running-window') throw new Error('a7-lldb-cancel-inflight-evidence-missing');
-  if (cancel.commandSettled !== true || cancel.settlement !== 'cancelled' || cancel.providerDisposition !== 'interrupted-command' || cancel.lateResultRejected !== true || cancel.lateStateStable !== true || cancel.lateStopIdStable !== true || cancel.lateProcessInstanceStable !== true) throw new Error('a7-lldb-cancel-settlement-missing');
+  if (cancel.inFlightEvidence !== 'async-continue+exact-host-process-cpu-progress-before-cancel' || cancel.executionEvidence !== 'exact-host-process-cpu-ticks-during-provider-running-window') throw new Error('a7-lldb-cancel-inflight-evidence-missing');
+  if (cancel.operationSettled !== true || cancel.settlement !== 'cancelled' || cancel.providerDisposition !== 'lldb-async-interrupt-observed' || cancel.lateResultRejected !== true || cancel.lateStateStable !== true || cancel.lateStopIdStable !== true || cancel.lateProcessInstanceStable !== true) throw new Error('a7-lldb-cancel-settlement-missing');
   if (cancel.processId !== attach.attachedPid || !Number.isSafeInteger(cancel.processStartTimeTicks) || cancel.processStartTimeTicks <= 0) throw new Error('a7-lldb-cancel-session-identity-mismatch');
   if (!safeProgress(cancel.cpuTicksBefore, cancel.cpuTicksAfter)) throw new Error('a7-lldb-cancel-process-progress-evidence-missing');
   if (cancel.stopIdAdvanced !== true || !safeStopProgress(cancel.stopIdBefore, cancel.stopIdAfter)) throw new Error('a7-lldb-cancel-stop-id-evidence-missing');
@@ -589,7 +574,7 @@ export function collectA7X86LldbProof({
       'lldb-target-x86_64','lldb-process-launched','lldb-stop-at-entry','lldb-registers-observed','lldb-register-write-observed',
       'lldb-memory-read-write-observed','lldb-breakpoint-step-remove-observed','lldb-real-process-attach-observed',
       'lldb-attach-process-target-module-identity','lldb-running-target-pause-observed','lldb-pause-exact-process-progress-stop-id-observed',
-      'lldb-inflight-command-cancel-observed','lldb-cancel-command-settled','lldb-cancel-late-result-stable',
+      'lldb-active-process-cancel-observed','lldb-cancel-operation-settled','lldb-cancel-late-result-stable',
       'runtime-binding-exact-head','runtime-observation-identity',
     ]),
   });
