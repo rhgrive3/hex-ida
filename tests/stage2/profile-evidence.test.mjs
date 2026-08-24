@@ -145,6 +145,18 @@ const duplicateProviderCheck = validateStage2ProfileEvidence(duplicateProvider, 
 assert.equal(duplicateProviderCheck.ok, false, 'duplicate provider identities cannot bypass canonical evidence validation');
 assert.ok(duplicateProviderCheck.failures.includes('S2-M6-JVM:provider-profile-missing'));
 
+const arbitraryUnit = structuredClone(record);
+const arbitraryUnitId = arbitraryUnit.items['S2-M6-JVM'].coveredUnitIds[0];
+arbitraryUnit.items['S2-M6-JVM'].unitEvidence[arbitraryUnitId] = 'git:README.md@' + 'a'.repeat(40);
+arbitraryUnit.evidenceId = rehash(arbitraryUnit);
+const arbitraryUnitCheck = validateStage2ProfileEvidence(arbitraryUnit, {
+  ...expected,
+  requireCanonicalUnitEvidence: true,
+  resolveEvidenceIdentity: (identity) => identity,
+});
+assert.equal(arbitraryUnitCheck.ok, false, 'canonical production validation rejects arbitrary tracked README unit evidence');
+assert.ok(arbitraryUnitCheck.failures.includes(`S2-M6-JVM:unit-evidence-not-canonical:${arbitraryUnitId}`));
+
 inventoryIdentities.set('js/platform/stage2-profile-evidence.js', 'b'.repeat(40));
 const staleInventory = validateStage2DenominatorLock(denominatorLock, { scope, resolveInventoryIdentity, resolveDenominatorUnitIds });
 assert.equal(staleInventory.ok, false, 'production inventory changes must invalidate denominator evidence');

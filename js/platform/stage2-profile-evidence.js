@@ -236,10 +236,19 @@ export function validateStage2ProfileEvidence(record, expected = {}) {
     if (item.denominatorId !== denominator.id || item.denominatorLockHash !== denominator.lockHash) failures.push(`${id}:denominator-lock-mismatch`);
     if (!same(item.coveredUnitIds, denominator.unitIds)) failures.push(`${id}:denominator-not-complete`);
     if (!same(Object.keys(item.unitEvidence || {}), denominator.unitIds)) failures.push(`${id}:unit-evidence-set-mismatch`);
+    const seenUnitEvidence = new Set();
     for (const unitId of denominator.unitIds) {
       const evidence = item.unitEvidence?.[unitId];
       if (typeof evidence !== 'string' || !evidence) failures.push(`${id}:unit-evidence-missing:${unitId}`);
-      else if (expected.resolveEvidenceIdentity(evidence, { itemId: id, kind: 'unit', unitId }) !== evidence) failures.push(`${id}:unit-evidence-unresolved:${unitId}`);
+      else {
+        if (seenUnitEvidence.has(evidence)) failures.push(`${id}:unit-evidence-duplicate:${unitId}`);
+        seenUnitEvidence.add(evidence);
+        const context = { itemId: id, kind: 'unit', unitId };
+        if (expected.requireCanonicalUnitEvidence === true && !/^artifact:reports\/stage2\/profile-evidence-runs\/[^@/]+\/[^@/]+\.json@sha256:[0-9a-f]{64}$/.test(evidence)) {
+          failures.push(`${id}:unit-evidence-not-canonical:${unitId}`);
+        }
+        if (expected.resolveEvidenceIdentity(evidence, context) !== evidence) failures.push(`${id}:unit-evidence-unresolved:${unitId}`);
+      }
     }
     if (typeof item.implementationIdentity !== 'string' || !item.implementationIdentity || item.implementationIdentity.trim() !== item.implementationIdentity) failures.push(`${id}:implementation-identity-missing`);
     else if (expected.resolveEvidenceIdentity(item.implementationIdentity, { itemId: id, kind: 'implementation' }) !== item.implementationIdentity) failures.push(`${id}:implementation-identity-unresolved`);

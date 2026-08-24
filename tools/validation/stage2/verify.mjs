@@ -8,6 +8,7 @@ import { stableDigest } from '../../../js/core/identity/index.js';
 import { STAGE2_PROFILE_EVIDENCE_IDS, validateStage2DenominatorLock, validateStage2ProfileEvidence } from '../../../js/platform/stage2-profile-evidence.js';
 import { a2DenominatorReport } from '../machine-effects/a2-denominator.mjs';
 import { phase12DenominatorReport } from '../phase12/denominator.mjs';
+import { PROFILE_EVIDENCE_RUN_ROOT, PROFILE_UNIT_PROOF_RULES, PROFILE_UNIT_PROOF_SCHEMA } from './profile-evidence-collector.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const REPORT_PATH = path.join(ROOT, 'reports/stage2/stage2-verdict.json');
@@ -137,7 +138,7 @@ function physicalEvidenceResult({ finalMode, evidencePath, headSha, treeSha, req
     commitSha: headSha,
     treeSha,
     buildIdentity,
-    resolveEvidenceIdentity: evidenceIdentityAtHead,
+    resolveEvidenceIdentity: (identity, context) => evidenceIdentityAtHead(identity, context, headSha, treeSha),
   });
   return { required: true, status: checked.ok ? 'passed' : 'failed', reason: checked.reason || null, evidenceId: checked.evidenceId || loaded.record.evidenceId || null };
 }
@@ -170,10 +171,47 @@ function denominatorUnitIdsAtHead(itemId, inventoryRefs) {
   return item.unitIds;
 }
 
-function evidenceIdentityAtHead(identity) {
+function gitIdentityAtHead(identity) {
+  const match = /^git:([^@]+)@([0-9a-f]{40})$/.exec(String(identity || ''));
+  if (!match) return null;
+  const relative = safeRelativePath(match[1]);
+  if (!relative) return null;
+  const resolved = git(['rev-parse', `HEAD:${relative}`], true);
+  return resolved.status === 0 && resolved.stdout === match[2] ? identity : null;
+}
+
+function profileUnitArtifactValid(relative, context, candidateCommitSha, candidateTreeSha) {
+  const prefix = `${PROFILE_EVIDENCE_RUN_ROOT}/`;
+  if (!relative.startsWith(prefix) || relative.split('/').length !== 5 || !relative.endsWith('.json')) return false;
+  let artifact;
+  try { artifact = JSON.parse(fs.readFileSync(path.join(ROOT, relative), 'utf8')); } catch { return false; }
+  if (!artifact || artifact.schemaVersion !== PROFILE_UNIT_PROOF_SCHEMA || artifact.itemId !== context.itemId || artifact.unitId !== context.unitId || artifact.candidateCommitSha !== candidateCommitSha || artifact.candidateTreeSha !== candidateTreeSha || artifact.status !== 'passed') return false;
+  const rule = PROFILE_UNIT_PROOF_RULES[context.itemId];
+  if (!rule || JSON.stringify(artifact.providerProfileIds || []) !== JSON.stringify(rule.providerProfileIds)) return false;
+  const refs = (values) => values.map((ref) => `git:${ref}@${git(['rev-parse', `HEAD:${ref}`], true).stdout}`);
+  if (JSON.stringify(artifact.sourceIdentities || []) !== JSON.stringify(refs(rule.sourceRefs))) return false;
+  if (JSON.stringify(artifact.testIdentities || []) !== JSON.stringify(refs(rule.testRefs))) return false;
+  if (!Array.isArray(artifact.negativeTestIdentities) || artifact.negativeTestIdentities.length === 0 || artifact.negativeTestIdentities.some((value) => gitIdentityAtHead(value) !== value)) return false;
+  if (!Array.isArray(artifact.commandOutputIdentities) || artifact.commandOutputIdentities.length !== rule.commandIds.length) return false;
+  for (const identity of artifact.commandOutputIdentities) {
+    const match = /^artifact:([^@]+)@sha256:([0-9a-f]{64})$/.exec(identity || '');
+    if (!match) return false;
+    const outputPath = safeRelativePath(match[1]);
+    if (!outputPath || !outputPath.startsWith(`${PROFILE_EVIDENCE_RUN_ROOT}/`) || !fs.existsSync(path.join(ROOT, outputPath))) return false;
+    const outputBytes = fs.readFileSync(path.join(ROOT, outputPath));
+    if (createHash('sha256').update(outputBytes).digest('hex') !== match[2]) return false;
+    let output;
+    try { output = JSON.parse(outputBytes); } catch { return false; }
+    if (output.schemaVersion !== 'hex-stage2-profile-command-output/v1' || output.candidateCommitSha !== candidateCommitSha || output.candidateTreeSha !== candidateTreeSha || output.status !== 'passed') return false;
+  }
+  return Array.isArray(artifact.realFixtureIdentities) && artifact.realFixtureIdentities.length > 0;
+}
+
+function evidenceIdentityAtHead(identity, context = {}, candidateCommitSha = null, candidateTreeSha = null) {
   const value = String(identity || '');
   const gitMatch = /^git:([^@]+)@([0-9a-f]{40})$/.exec(value);
   if (gitMatch) {
+    if (context.kind === 'unit' && context.requireCanonicalUnitEvidence !== false) return null;
     const relative = safeRelativePath(gitMatch[1]);
     if (!relative) return null;
     const resolved = git(['rev-parse', `HEAD:${relative}`], true);
@@ -186,7 +224,9 @@ function evidenceIdentityAtHead(identity) {
   const resolved = path.join(ROOT, relative);
   if (!fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) return null;
   const digest = createHash('sha256').update(fs.readFileSync(resolved)).digest('hex');
-  return digest === artifactMatch[2] ? value : null;
+  if (digest !== artifactMatch[2]) return null;
+  if (context.kind === 'unit' && candidateCommitSha && candidateTreeSha && !profileUnitArtifactValid(relative, context, candidateCommitSha, candidateTreeSha)) return null;
+  return value;
 }
 
 export function stage2KnownDenominatorGaps() {
@@ -231,7 +271,8 @@ function profileEvidenceResult({ finalMode, evidencePath, headSha, treeSha, scop
     scope,
     resolveInventoryIdentity: inventoryIdentityAtHead,
     resolveDenominatorUnitIds: denominatorUnitIdsAtHead,
-    resolveEvidenceIdentity: evidenceIdentityAtHead,
+    requireCanonicalUnitEvidence: true,
+    resolveEvidenceIdentity: (identity, context) => evidenceIdentityAtHead(identity, { ...context, requireCanonicalUnitEvidence: true }, headSha, treeSha),
   });
   return {
     required: true,
