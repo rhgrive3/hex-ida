@@ -113,7 +113,7 @@ function runtimeAdapter(platform) { const session = platform?.currentSession?.()
 function runtimeStatus(platform) { const session = platform?.currentSession?.(false); return session ? { connected: !!session.adapter?.connected, sessionId: session.id, binaryId: session.binaryHash || null, backend: session.backend, capabilities: session.adapter?.capabilities || {} } : { connected: false, sessionId: null }; }
 
 async function boundedMemoryRead(adapter, args) {
-  const size = Number(args.size || 1);
+  const size = Number(args.size ?? 1);
   if (!Number.isSafeInteger(size) || size < 1 || size > 256 * 1024) throw new AIError('invalid_tool_call', 'Runtime memory read must be between 1 and 262144 bytes.');
   const bytes = await adapter.readMemory(args.address, size);
   return { address: String(args.address), bytes: Array.from(bytes || []) };
