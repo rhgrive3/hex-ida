@@ -106,8 +106,8 @@
         "tools/validation/machine-effects/x86-long64-lea-denominator.mjs",
         "tools/validation/stage2/build-profile-denominator-inventory.mjs"
       ],
-      "inventoryHash": "stage2-denominator-inventory:7b961f3bc7bd26641768cedbeeda5d15",
-      "lockHash": "stage2-denominator-item:6a1ba531a87548b6a93b2e76e14d2bdb"
+      "inventoryHash": "stage2-denominator-inventory:79addf1db71a83f0e86665c7dc578e1d",
+      "lockHash": "stage2-denominator-item:3b4f32458f805e5107c29b2032a3ff5c"
     },
     "S2-A7-NATIVE": {
       "id": "stage2-denominator:S2-A7-NATIVE:v1",
@@ -183,13 +183,14 @@
         "tests/stage2/fixtures/a7-runtime/aarch64-a64.S",
         "tests/stage2/fixtures/a7-runtime/aarch64-pac.S",
         "tests/stage2/fixtures/a7-runtime/riscv64-rv64imc.S",
+        "tests/stage2/fixtures/a7-runtime/x86_64-long64.S",
         "tests/stage2/runtime-authority.test.mjs",
         "tools/validation/stage2/a7-cross-target-real-fixtures.mjs",
         "tools/validation/stage2/a7-lldb-real-fixture.mjs",
         "tools/validation/stage2/build-profile-denominator-inventory.mjs"
       ],
-      "inventoryHash": "stage2-denominator-inventory:20d60a281556e6be08babc1d4796b2cf",
-      "lockHash": "stage2-denominator-item:4227bb73b220df0670c0bb43f74aa2d7"
+      "inventoryHash": "stage2-denominator-inventory:caa8cdb77f24e61567243945ba095450",
+      "lockHash": "stage2-denominator-item:b83dbaeecdf6ac50e1416a3d7ee1ea17"
     },
     "S2-M6-WASM": {
       "id": "stage2-denominator:S2-M6-WASM:v1",
@@ -224,8 +225,8 @@
         "tests/stage2/managed-runtime.test.mjs",
         "tools/validation/stage2/build-profile-denominator-inventory.mjs"
       ],
-      "inventoryHash": "stage2-denominator-inventory:59e737e81bd3f2dd52b40427ab6463ee",
-      "lockHash": "stage2-denominator-item:c01ccd92e6ea9884e5c3ae810eb7f61b"
+      "inventoryHash": "stage2-denominator-inventory:d1e4ea1a73496855a212842ce9a58536",
+      "lockHash": "stage2-denominator-item:f3c14d7e3ef637eb400478c6ed04cdd4"
     },
     "S2-M6-DEX": {
       "id": "stage2-denominator:S2-M6-DEX:v1",
@@ -260,8 +261,8 @@
         "tests/stage2/managed-runtime.test.mjs",
         "tools/validation/stage2/build-profile-denominator-inventory.mjs"
       ],
-      "inventoryHash": "stage2-denominator-inventory:5905c499d9c17987afdf91f109756362",
-      "lockHash": "stage2-denominator-item:23e878ccb31a87eeaf0e4be169a973bb"
+      "inventoryHash": "stage2-denominator-inventory:9e82cd68c70996c3a253d221287e16e2",
+      "lockHash": "stage2-denominator-item:eac4aeb4d07851952182812e9e4041cc"
     },
     "S2-M6-CIL": {
       "id": "stage2-denominator:S2-M6-CIL:v1",
@@ -296,8 +297,8 @@
         "tests/stage2/managed-runtime.test.mjs",
         "tools/validation/stage2/build-profile-denominator-inventory.mjs"
       ],
-      "inventoryHash": "stage2-denominator-inventory:56a1d99b8568833a0f3b339e2635220f",
-      "lockHash": "stage2-denominator-item:0267652cf5a01163e20c3bec100fa20e"
+      "inventoryHash": "stage2-denominator-inventory:7db27e7dac88e86aeb50c67ea8c69afb",
+      "lockHash": "stage2-denominator-item:3faa51f3c22d84561c2c28bc698eaadb"
     },
     "S2-M6-JVM": {
       "id": "stage2-denominator:S2-M6-JVM:v1",
@@ -332,8 +333,8 @@
         "tests/stage2/managed-runtime.test.mjs",
         "tools/validation/stage2/build-profile-denominator-inventory.mjs"
       ],
-      "inventoryHash": "stage2-denominator-inventory:f1c4d2786f1deb4e15ddbc9142b3846f",
-      "lockHash": "stage2-denominator-item:c1362695dae063d496985709fd8ffc79"
+      "inventoryHash": "stage2-denominator-inventory:5f881e751bd90c16278ff5dea92270db",
+      "lockHash": "stage2-denominator-item:5c79b6e8c4f22d9b76c37578562f1dd2"
     },
     "S2-F6-MACHO": {
       "id": "stage2-denominator:S2-F6-MACHO:v1",
@@ -364,8 +365,8 @@
         "tools/validation/rebuild-independent-oracle.mjs",
         "tools/validation/stage2/build-profile-denominator-inventory.mjs"
       ],
-      "inventoryHash": "stage2-denominator-inventory:1a83847d38232e4ba551f9f8782ac52e",
-      "lockHash": "stage2-denominator-item:e9558faf3e833be6d54c4301d7f9e7e7"
+      "inventoryHash": "stage2-denominator-inventory:48235df947a5cedf70a315c728bff1f6",
+      "lockHash": "stage2-denominator-item:15400071eb6f8d5f8597ab4aa507f182"
     },
     "S2-F6-ELF": {
       "id": "stage2-denominator:S2-F6-ELF:v1",
@@ -396,8 +397,8 @@
         "tools/validation/rebuild-independent-oracle.mjs",
         "tools/validation/stage2/build-profile-denominator-inventory.mjs"
       ],
-      "inventoryHash": "stage2-denominator-inventory:1a83847d38232e4ba551f9f8782ac52e",
-      "lockHash": "stage2-denominator-item:a3cb9fa8477ffb2282891759bede04bb"
+      "inventoryHash": "stage2-denominator-inventory:48235df947a5cedf70a315c728bff1f6",
+      "lockHash": "stage2-denominator-item:d6f27a796bfc8ee37b6374cb961a5a4e"
     },
     "S2-F6-PE": {
       "id": "stage2-denominator:S2-F6-PE:v1",
@@ -441,8 +442,8 @@
         "tools/validation/rebuild-independent-oracle.mjs",
         "tools/validation/stage2/build-profile-denominator-inventory.mjs"
       ],
-      "inventoryHash": "stage2-denominator-inventory:1a83847d38232e4ba551f9f8782ac52e",
-      "lockHash": "stage2-denominator-item:c5f984171aed092d3d0b5c0c703f43ec"
+      "inventoryHash": "stage2-denominator-inventory:48235df947a5cedf70a315c728bff1f6",
+      "lockHash": "stage2-denominator-item:02e4b95d17b32c5206a5f854aa13f897"
     },
     "S2-P12-KNOWLEDGE": {
       "id": "stage2-denominator:S2-P12-KNOWLEDGE:v1",
@@ -478,8 +479,8 @@
         "tools/validation/phase12/denominator.mjs",
         "tools/validation/stage2/build-profile-denominator-inventory.mjs"
       ],
-      "inventoryHash": "stage2-denominator-inventory:1e588dceca8181b5fbdb9896a444f1c2",
-      "lockHash": "stage2-denominator-item:66c00f8eecac774841d6344b7a25ccb3"
+      "inventoryHash": "stage2-denominator-inventory:d2a72c05fade93bda5ae019fca807442",
+      "lockHash": "stage2-denominator-item:96a4c3ebfcd207a016d1980a17f36edb"
     },
     "S2-P12-RULES": {
       "id": "stage2-denominator:S2-P12-RULES:v1",
@@ -506,8 +507,8 @@
         "tools/validation/phase12/denominator.mjs",
         "tools/validation/stage2/build-profile-denominator-inventory.mjs"
       ],
-      "inventoryHash": "stage2-denominator-inventory:1e588dceca8181b5fbdb9896a444f1c2",
-      "lockHash": "stage2-denominator-item:efa85870ffd065de74af7b6f8b694bcb"
+      "inventoryHash": "stage2-denominator-inventory:d2a72c05fade93bda5ae019fca807442",
+      "lockHash": "stage2-denominator-item:bb5c3dfc3782a232144d890387a88887"
     },
     "S2-P12-PATTERNS": {
       "id": "stage2-denominator:S2-P12-PATTERNS:v1",
@@ -536,8 +537,8 @@
         "tools/validation/phase12/denominator.mjs",
         "tools/validation/stage2/build-profile-denominator-inventory.mjs"
       ],
-      "inventoryHash": "stage2-denominator-inventory:1e588dceca8181b5fbdb9896a444f1c2",
-      "lockHash": "stage2-denominator-item:f9eda2e78bb9e149c76bb19e80efb222"
+      "inventoryHash": "stage2-denominator-inventory:d2a72c05fade93bda5ae019fca807442",
+      "lockHash": "stage2-denominator-item:4bb9cb198cd25e3de5bcb84c7450e08a"
     },
     "S2-P12-COLLAB-REMOTE": {
       "id": "stage2-denominator:S2-P12-COLLAB-REMOTE:v1",
@@ -569,9 +570,9 @@
         "tools/validation/phase12/denominator.mjs",
         "tools/validation/stage2/build-profile-denominator-inventory.mjs"
       ],
-      "inventoryHash": "stage2-denominator-inventory:1e588dceca8181b5fbdb9896a444f1c2",
-      "lockHash": "stage2-denominator-item:3e75ad654e32fdfd2a61b972df17bd8c"
+      "inventoryHash": "stage2-denominator-inventory:d2a72c05fade93bda5ae019fca807442",
+      "lockHash": "stage2-denominator-item:fc2743ed16b1eac9da20139957ec0528"
     }
   },
-  "lockHash": "stage2-denominator-lock:058d3e9313218cba718df8335cbf6e11"
+  "lockHash": "stage2-denominator-lock:4722053f0bcf2ccda44733213af0a480"
 }
