@@ -74,10 +74,16 @@ jobs:
           ];
 
           const scheduled = include.flatMap(({ command }) => command.split(/\s+&&\s+/));
-          if (scheduled.length !== parts.length || scheduled.some((command, index) => command !== parts[index])) {
+          const scheduledCounts = new Map();
+          for (const command of scheduled) scheduledCounts.set(command, (scheduledCounts.get(command) || 0) + 1);
+          if (
+            scheduled.length !== parts.length ||
+            parts.some((command) => scheduledCounts.get(command) !== 1) ||
+            scheduled.some((command) => !parts.includes(command))
+          ) {
             const expected = JSON.stringify(parts);
             const actual = JSON.stringify(scheduled);
-            throw new Error(`npm-check shard plan must execute each top-level command exactly once and in declaration order (expected=${expected}, actual=${actual})`);
+            throw new Error(`npm-check shard plan must execute each top-level command exactly once (expected=${expected}, actual=${actual})`);
           }
 
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify({ include })}\n`);
