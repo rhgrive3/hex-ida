@@ -27,11 +27,13 @@ function baseFamily(family){return family.startsWith('v')?family.slice(1):family
 function isVector(operand){return operand?.type==='register'&&operand.register?.kind==='vector';}
 function physicalId(operand){return isVector(operand)?operand.register.physicalId:null;}
 function unique(values){return [...new Set(values.filter(Boolean))].sort();}
+const FP_VECTOR_PP=new Map([['movss',2],['movsd',3],['addss',2],['addsd',3],['subss',2],['subsd',3],['mulss',2],['mulsd',3],['divss',2],['divsd',3],['sqrtss',2],['sqrtsd',3],['ucomiss',0],['ucomisd',1],['comiss',0],['comisd',1],['addps',0],['addpd',1],['subps',0],['subpd',1],['mulps',0],['mulpd',1],['divps',0],['divpd',1],['cvtss2sd',2],['cvtsd2ss',3],['cvtsi2ss',2],['cvtsi2sd',3],['cvttss2si',2],['cvttsd2si',3]]);
 
 function validateEncoding(ctx,family,scalar=false){
   const encoding=x86VectorEncodingInfo(ctx.instruction);
   if(!encoding.valid)return{error:ctx.partial('x86-fp-vector-prefix-metadata-malformed',['registers','other'],{metadata:{family:'fp',operation:family}})};
-  if(encoding.kind==='evex')return{error:ctx.partial('x86-fp-evex-physical-state-unmodelled',['registers','other'],{metadata:{family:'fp',operation:family,vectorPrefixKind:'evex'}})};
+  if(encoding.kind!=='legacy'){const expectedPp=FP_VECTOR_PP.get(baseFamily(family));if(expectedPp==null||encoding.opcodeMap!==1||encoding.mandatoryPrefixCode!==expectedPp)return{error:ctx.partial('x86-fp-vector-prefix-family-mismatch',['registers','other'],{metadata:{family:'fp',operation:family,expectedOpcodeMap:1,actualOpcodeMap:encoding.opcodeMap,expectedMandatoryPrefixCode:expectedPp,actualMandatoryPrefixCode:encoding.mandatoryPrefixCode}})};}
+  if(encoding.kind==='evex')return{error:ctx.partial('x86-fp-evex-physical-state-unmodelled',['registers','faults','other'],{metadata:{family:'fp',operation:family,vectorPrefixKind:'evex',vectorWidthBits:encoding.vectorWidthBits,maskRegister:encoding.maskRegister,maskSemantics:encoding.maskRegister?(encoding.zeroing?'zero':'merge'):'none',broadcastOrRounding:encoding.broadcastOrRounding,sharedDependencyRequired:['x86-physical-zmm0-31','x86-opmask-k0-7','decoded-evex-fields']}})};
   if(family.startsWith('v')!==(encoding.kind==='vex'))return{error:ctx.partial('x86-fp-family-encoding-mismatch',['registers','other'],{metadata:{family:'fp',operation:family,encodingKind:encoding.kind}})};
   if(scalar&&encoding.kind==='vex'&&encoding.vectorWidthBits!==128)return{error:ctx.partial('x86-fp-vex-scalar-width-not-proven',['registers','other'],{metadata:{family:'fp',operation:family,encodedVectorWidthBits:encoding.vectorWidthBits}})};
   return{encoding};
@@ -89,7 +91,7 @@ function liftConversion(ctx,family,encoding){
 
 export function liftX86FloatingPointEffects(instruction,context={}){
   const family=String(instruction?.instructionFamily||'').toLowerCase(),base=baseFamily(family);
-  if(X87_FAMILIES.has(base)){const ctx=createX86EffectContext(instruction,context);return ctx.partial('x86-x87-physical-and-environment-state-unmodelled',['registers','flags','other'],{metadata:{family:'fp',operation:family,x87StateInvented:false,missingState:['x87-stack','TOP','tag-word','control-word','status-word']}});}
+  if(X87_FAMILIES.has(base)){const ctx=createX86EffectContext(instruction,context);return ctx.partial('x86-x87-physical-and-environment-state-unmodelled',['registers','flags','faults','other'],{metadata:{family:'fp',operation:family,x87StateInvented:false,missingState:['st0-st7-80bit','TOP','tag-word','control-word','status-word','last-instruction/data pointers'],sharedDependencyRequired:['x86-x87-physical-state','x86-decoder-x87-register-normalization'],normalizerReachability:'implicit/explicit ST register forms are rejected before this lifter by the current shared register contract'}});}
   const recognized=SCALAR_MOVES.has(base)||SCALAR_ARITHMETIC.has(base)||SCALAR_SQRT.has(base)||SCALAR_COMPARE.has(base)||PACKED_ARITHMETIC.has(base)||CONVERSIONS.has(base);if(!recognized)return null;const ctx=createX86EffectContext(instruction,context);
   if(base==='movsd'&&!ctx.operands.some(isVector))return null;
   const check=validateEncoding(ctx,family,!PACKED_ARITHMETIC.has(base));if(check.error)return check.error;const encoding=check.encoding;

@@ -111,13 +111,13 @@ test('AND/OR/XOR clear CF/OF, define PZS, and make AF explicit undefined', () =>
 });
 
 test('simple x86 flag controls define only their architectural flag', () => {
-  for (const [family, flag, fixedValue] of [
-    ['clc', 'CF', 0],
-    ['stc', 'CF', 1],
-    ['cld', 'DF', 0],
-    ['std', 'DF', 1],
+  for (const [family, flag, fixedValue, opcode] of [
+    ['clc', 'CF', 0, 0xf8],
+    ['stc', 'CF', 1, 0xf9],
+    ['cld', 'DF', 0, 0xfc],
+    ['std', 'DF', 1, 0xfd],
   ]) {
-    const bundle = lift(family, []);
+    const bundle = lift(family, [], { rawBytes:Uint8Array.of(opcode), length:1 });
     assert.equal(bundle.completeness, 'exact');
     assert.equal(bundle.metadata.family, 'system');
     assert.equal(flagWrites(bundle).length, 1);
@@ -128,14 +128,14 @@ test('simple x86 flag controls define only their architectural flag', () => {
 });
 
 test('CMC toggles CF from the incoming flag and rejects fabricated operands', () => {
-  const bundle = lift('cmc', []);
+  const bundle = lift('cmc', [], { rawBytes:Uint8Array.of(0xf5), length:1 });
   assert.equal(bundle.completeness, 'exact');
   assert.equal(flagReads(bundle, 'CF').length, 1);
   assert.equal(flagWrites(bundle, 'CF').length, 1);
   assert.equal(flagWrites(bundle, 'CF')[0].metadata.toggle, true);
   assert.ok(operations(bundle, 'value').some((operation) => operation.opcode === 'xor' && operation.metadata.semantic === 'x86-cmc-toggle-CF'));
 
-  const malformed = liftX86MachineEffects(instruction('cmc', [reg('rax')]));
+  const malformed = liftX86MachineEffects(instruction('cmc', [reg('rax')], { rawBytes:Uint8Array.of(0xf5), length:1 }));
   assert.equal(malformed.completeness, 'partial');
   assert.equal(malformed.unknownEffects.reason, 'x86-cmc-unexpected-explicit-operands');
   assert.equal(flagWrites(malformed).length, 0);
