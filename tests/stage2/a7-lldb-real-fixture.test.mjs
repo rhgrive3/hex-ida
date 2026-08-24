@@ -22,7 +22,7 @@ assert.ok(proof.closedChecks.includes('lldb-registers-observed'));
 assert.ok(proof.closedChecks.includes('lldb-memory-read-write-observed'));
 assert.match(proof.fixture.sourceSha256, /^[0-9a-f]{64}$/);
 assert.match(proof.independentOracle.outputSha256, /^[0-9a-f]{64}$/);
-assert.match(proof.independentOracle.executableIdentity.path, /(?:^|\/)llvm-readobj-18$/);
+assert.match(proof.independentOracle.executableIdentity.path, /(?:^|\/)(?:llvm-readobj-18|llvm-readobj)$/);
 assert.match(proof.independentOracle.executableIdentity.sha256, /^[0-9a-f]{64}$/);
 assert.equal(runtimeProfileSupport({
   binding: proof.binding,

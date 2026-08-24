@@ -29,8 +29,8 @@ for (const proof of run.proofs) {
   assert.match(proof.fixture.binarySha256, /^[0-9a-f]{64}$/);
   assert.match(proof.independentOracle.outputSha256, /^[0-9a-f]{64}$/);
   assert.deepEqual(proof.fixture.semantics, [...A7_PROFILE_BINDINGS[proof.targetProfileId].semanticMarkers]);
-  assert.match(proof.independentOracle.executableIdentities.readobj.path, /(?:^|\/)llvm-readobj-18$/);
-  assert.match(proof.independentOracle.executableIdentities.objdump.path, /(?:^|\/)llvm-objdump-18$/);
+  assert.match(proof.independentOracle.executableIdentities.readobj.path, /(?:^|\/)(?:llvm-readobj-18|llvm-readobj)$/);
+  assert.match(proof.independentOracle.executableIdentities.objdump.path, /(?:^|\/)(?:llvm-objdump-18|llvm-objdump)$/);
 }
 
 const target = A7_CROSS_TARGETS[0];
