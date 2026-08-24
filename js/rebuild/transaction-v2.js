@@ -205,7 +205,7 @@ function independentOracleResultFailure(result, context) {
   if (['elf-comment', 'pe-timestamp', 'macho-min-version'].includes(preservationKind) && result.preservationEvidence?.complete === true) {
     if (result.oracleIdentity !== F6_PRESERVATION_ORACLE_IDENTITY
       || typeof result.oracleVersion !== 'string' || !result.oracleVersion.includes(F6_PRESERVATION_ORACLE_VERSION)
-      || typeof result.oracleSource !== 'string' || !/(?:^|[/\\])llvm-readobj(?:-\d+)?(?:\s|$)/.test(result.oracleSource)
+      || typeof result.oracleSource !== 'string' || !/(?:^|[/\\])llvm-readobj(?:-\d+)?@sha256:[0-9a-f]{64}(?:\s|$)/.test(result.oracleSource)
       || typeof result.oracleOutputDigest !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(result.oracleOutputDigest)) {
       return 'independent-oracle-preservation-provider-identity-invalid';
     }
@@ -278,7 +278,7 @@ function preservationEvidenceValid(transaction, validation) {
     && typeof oracleDetail?.oracleVersion === 'string'
     && oracleDetail.oracleVersion.includes(F6_PRESERVATION_ORACLE_VERSION)
     && typeof oracleDetail?.oracleSource === 'string'
-    && /(?:^|[/\\])llvm-readobj(?:-\d+)?(?:\s|$)/.test(oracleDetail.oracleSource)
+    && /(?:^|[/\\])llvm-readobj(?:-\d+)?@sha256:[0-9a-f]{64}(?:\s|$)/.test(oracleDetail.oracleSource)
     && /^sha256:[0-9a-f]{64}$/.test(String(oracleDetail?.oracleOutputDigest || ''))
     && local?.complete === true
     && local?.signaturePolicy === 'unsigned-input-required'
