@@ -78,10 +78,10 @@ for (const proof of run.proofs) {
   assert.equal(proof.activeOperations.cancel.qemuHostPid, qemuPid);
   assert.equal(proof.activeOperations.cancel.qemuStartTimeTicks, qemuStartTimeTicks);
   assert.equal(proof.activeOperations.cancel.inFlightObserved, true);
-  assert.equal(proof.activeOperations.cancel.inFlightEvidence, 'blocking-continue-thread-alive+provider-running-state-event');
+  assert.equal(proof.activeOperations.cancel.inFlightEvidence, 'blocking-continue-thread-alive+exact-qemu-cpu-progress');
   assert.equal(proof.activeOperations.cancel.executionAdvanced, true);
   assert.equal(proof.activeOperations.cancel.executionEvidence, 'exact-qemu-process-cpu-ticks-during-provider-running-window');
-  assert.equal(proof.activeOperations.cancel.executionWindow, 'after-running-event-before-interrupt');
+  assert.equal(proof.activeOperations.cancel.executionWindow, 'while-blocking-continue-thread-alive-before-interrupt');
   assert.ok(proof.activeOperations.cancel.qemuCpuTicksAfter > proof.activeOperations.cancel.qemuCpuTicksBefore);
   assert.equal(proof.activeOperations.cancel.interruptIssued, true);
   assert.equal(proof.activeOperations.cancel.operationSettled, true);
@@ -90,7 +90,7 @@ for (const proof of run.proofs) {
   assert.ok(proof.activeOperations.cancel.stopIdAfter > proof.activeOperations.cancel.stopIdBefore);
   assert.equal(proof.activeOperations.cancel.settlement, 'cancelled');
   assert.equal(proof.activeOperations.cancel.providerDisposition, 'qemu-user-sigint-observed-by-lldb');
-  assert.equal(proof.activeOperations.cancel.progressTransport, 'linux-proc-stat+lldb-process-events');
+  assert.equal(proof.activeOperations.cancel.progressTransport, 'linux-proc-stat+blocking-continue+lldb-stop-event');
   assert.equal(proof.activeOperations.cancel.modulePath, proof.activeOperations.attach.modulePath);
   assert.equal(Object.prototype.hasOwnProperty.call(proof.activeOperations.cancel, 'memoryProbe'), false, 'cancel proof must not pretend QEMU supports post-SIGINT memory reads');
   assert.equal(proof.activeOperations.cancel.lateResultRejected, true);
@@ -173,10 +173,10 @@ function activeMarker(overrides = {}) {
   const cancel = {
     observed:true,
     inFlightObserved:true,
-    inFlightEvidence:'blocking-continue-thread-alive+provider-running-state-event',
+    inFlightEvidence:'blocking-continue-thread-alive+exact-qemu-cpu-progress',
     executionAdvanced:true,
     executionEvidence:'exact-qemu-process-cpu-ticks-during-provider-running-window',
-    executionWindow:'after-running-event-before-interrupt',
+    executionWindow:'while-blocking-continue-thread-alive-before-interrupt',
     interruptIssued:true,
     operationSettled:true,
     continueSettled:true,
@@ -190,7 +190,7 @@ function activeMarker(overrides = {}) {
     qemuCpuTicksAfter:5,
     settlement:'cancelled',
     providerDisposition:'qemu-user-sigint-observed-by-lldb',
-    progressTransport:'linux-proc-stat+lldb-process-events',
+    progressTransport:'linux-proc-stat+blocking-continue+lldb-stop-event',
     modulePath:'/tmp/fixture',
     lateResultRejected:true,
     lateStateStable:true,
@@ -230,6 +230,7 @@ assert.throws(() => parseCrossTargetActiveOpsOutput(activeMarker({ cancel:{ inFl
 assert.throws(() => parseCrossTargetActiveOpsOutput(activeMarker({ cancel:{ qemuHostPid:11 } }), target, activeOptions), /cancel-qemu-identity-mismatch/);
 assert.throws(() => parseCrossTargetActiveOpsOutput(activeMarker({ cancel:{ qemuStartTimeTicks:1001 } }), target, activeOptions), /cancel-qemu-instance-identity-mismatch/);
 assert.throws(() => parseCrossTargetActiveOpsOutput(activeMarker({ cancel:{ qemuCpuTicksAfter:3 } }), target, activeOptions), /cancel-execution-progress-missing/, 'settlement without measured QEMU execution progress cannot prove cancel');
+assert.throws(() => parseCrossTargetActiveOpsOutput(activeMarker({ cancel:{ executionWindow:'after-interrupt' } }), target, activeOptions), /cancel-settlement-missing/, 'post-interrupt CPU work cannot stand in for an in-flight cancellation');
 assert.throws(() => parseCrossTargetActiveOpsOutput(activeMarker({ cancel:{ lateStopIdStable:false } }), target, activeOptions), /cancel-settlement-missing/, 'late stop-ID movement invalidates cancellation settlement');
 assert.throws(() => parseCrossTargetActiveOpsOutput(activeMarker({ cancel:{ lateQemuInstanceStable:false } }), target, activeOptions), /cancel-settlement-missing/, 'QEMU instance replacement invalidates cancellation settlement');
 
