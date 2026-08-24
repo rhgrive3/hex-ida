@@ -38,6 +38,7 @@ const BASE_ONLY = new Set([...ACQUIRE_LOADS, ...RELEASE_STORES]);
 const UNSCALED_ONLY = /^(?:ldur|stur|ldtr|sttr)/;
 const NON_TEMPORAL_PAIR = new Set(['ldnp','stnp']);
 const UNPRIVILEGED = new Set(['ldtr','sttr']);
+const LEGACY_UNSCALED_ALIASES = new Set(['ldr','str','ldrb','strb','ldrh','strh','ldrsb','ldrsh','ldrsw']);
 
 const WIDTH_OVERRIDE = Object.freeze({
   ldrb:8, ldrsb:8, ldurb:8, ldursb:8, ldarb:8,
@@ -286,6 +287,19 @@ function isSignedImmediate(value, bits) {
   const maximum = (1n << BigInt(bits - 1)) - 1n;
   return value >= minimum && value <= maximum;
 }
+function isLegacyUnscaledAlias(decoded, mnemonic, addressing) {
+  if (!LEGACY_UNSCALED_ALIASES.has(mnemonic) || addressing.mode !== 'offset' || addressing.index) return false;
+  const addressDisp = displacement(addressing, 'addressDisplacement') ?? 0n;
+  if (!isSignedImmediate(addressDisp, 9)) return false;
+  // buildSemanticModel's legacy text surface accepts assembler aliases such as
+  // `ldr x0, [x1, #-8]`; LLVM assembles those bytes as LDUR/STUR. Preserve
+  // that compatibility surface without treating the same impossible structured
+  // decoder record as an exact LDR/STR encoding.
+  return decoded?.parseError === null
+    && Number.isInteger(decoded?.row)
+    && typeof decoded?.operands === 'string'
+    && decoded?.memory != null;
+}
 function validateSimpleAddressing(mnemonic, addressing, widthBits) {
   const addressDisp = displacement(addressing, 'addressDisplacement') ?? 0n;
   const writebackDisp = displacement(addressing, 'writebackDisplacement');
@@ -358,8 +372,12 @@ function simpleMemory(decoded, context, mnemonic, isLoad) {
     throw error;
   }
   const addressError = validateSimpleAddressing(mnemonic, addressing, widthBits);
-  if (addressError) return partial(decoded, context, addressError);
+  const legacyUnscaledAlias = !!addressError && isLegacyUnscaledAlias(decoded, mnemonic, addressing);
+  if (addressError && !legacyUnscaledAlias) return partial(decoded, context, addressError);
   if (overlapIsConstrained(addressing, [reg])) return partial(decoded, context, 'writeback overlaps data register and is constrained-unpredictable');
+  const addressingMetadata = legacyUnscaledAlias
+    ? Object.freeze({ ...addressing.metadata, encoding:'legacy-unscaled-alias' })
+    : addressing.metadata;
 
   const signed = isLoad && SIGNED_LOADS.has(mnemonic);
   const atomic = BASE_ONLY.has(mnemonic) ? true : null;
@@ -372,7 +390,7 @@ function simpleMemory(decoded, context, mnemonic, isLoad) {
     ...possibleFaults(isLoad?'read':'write', { alignment, addressExpr:addressing.addressExpr, tagChecked:isTagChecked(addressing) }),
   ];
   const accessMetadata = {
-    architecture:'arm64', mnemonic, signed, addressing:addressing.metadata, accessIndex:0,
+    architecture:'arm64', mnemonic, signed, addressing:addressingMetadata, accessIndex:0,
     ...(UNPRIVILEGED.has(mnemonic) ? { unprivileged:true } : {}),
   };
 
@@ -397,7 +415,8 @@ function simpleMemory(decoded, context, mnemonic, isLoad) {
     possibleFaults:faults,
     metadata:{
       family:'arm64-memory', mnemonic, transfer:'single', widthBits, signed,
-      addressing:addressing.metadata,
+      addressing:addressingMetadata,
+      ...(legacyUnscaledAlias ? { compatibilityEncodingAlias:'unscaled' } : {}),
       ...(atomic === true ? { atomic:true } : {}),
       ...(ordering ? { ordering } : {}),
       ...(UNPRIVILEGED.has(mnemonic) ? { unprivileged:true } : {}),
