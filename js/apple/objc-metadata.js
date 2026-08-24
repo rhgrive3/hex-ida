@@ -112,7 +112,9 @@ async function pointerTable(get, range, budget, parse) {
   if (!range || range.vmAddr == null || !range.size) {
     return { items, completeness: { present: false, declared: 0, scanned: 0, parsed: 0, capped: false, unreadableSlots: 0, complete: true } };
   }
-  const declared = Math.max(0, Math.floor(Number(range.size) / PTR));
+  const size = Number(range.size);
+  const declared = Math.max(0, Math.floor(size / PTR));
+  const trailingBytes = Number.isSafeInteger(size) && size >= 0 ? size % PTR : null;
   const count = Math.min(declared, budget);
   let scanned = 0, unreadableSlots = 0;
   for (let i = 0; i < count; i++) {
@@ -125,7 +127,7 @@ async function pointerTable(get, range, budget, parse) {
     try { const item = await parse(address); if (item) items.push(item); } catch { /* malformed entry is not evidence */ }
   }
   const capped = declared > budget;
-  return { items, completeness: { present: true, declared, scanned, parsed: items.length, capped, unreadableSlots, complete: !capped && unreadableSlots === 0 && items.length === scanned } };
+  return { items, completeness: { present: true, declared, scanned, parsed: items.length, capped, unreadableSlots, trailingBytes, complete: trailingBytes === 0 && !capped && unreadableSlots === 0 && items.length === scanned } };
 }
 
 export async function parseObjcExtendedMetadata(read, sections = {}, opts = {}) {
