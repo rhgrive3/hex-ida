@@ -41,6 +41,8 @@ export function instruction(family, operands = [], options = {}) {
       implicitReads:options.implicitReads ?? [],
       implicitWrites:options.implicitWrites ?? [],
       conditionCode:options.conditionCode ?? null,
+      prefixes:{ legacy:Uint8Array.from(options.prefixes ?? []), rex:null, vector:options.vectorPrefix ?? null },
+      ...(options.addressSizeBits == null ? {} : { addressSizeBits:options.addressSizeBits }),
     },
   };
 }
