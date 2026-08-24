@@ -47,7 +47,7 @@ for (const id of STAGE2_PROFILE_EVIDENCE_IDS) {
     negativeTestIdentities: [`test:${id}:negative`],
     evidenceIdentities: [`evidence:${id}:aggregate`],
     providerProfileIds: id === 'S2-A7-NATIVE'
-      ? ['native:lldb-compatible-v1:test']
+      ? ['native:lldb-compatible-v1:host', 'native:remote-debug-v1:qemu-lldb']
       : id.startsWith('S2-M6-')
         ? [`managed:${id.slice('S2-M6-'.length).toLowerCase()}:provider-bound-runtime-v1:test`]
         : [],
@@ -123,6 +123,13 @@ const invalidProvider = createStage2ProfileEvidence({ commitSha, treeSha, genera
 const invalidProviderCheck = validateStage2ProfileEvidence(invalidProvider, expected);
 assert.equal(invalidProviderCheck.ok, false, 'a provider profile from another managed frontend cannot prove JVM M6');
 assert.ok(invalidProviderCheck.failures.includes('S2-M6-JVM:provider-profile-invalid'));
+
+const incompleteA7Providers = structuredClone(items);
+incompleteA7Providers['S2-A7-NATIVE'].providerProfileIds = ['native:lldb-compatible-v1:host'];
+const incompleteA7 = createStage2ProfileEvidence({ commitSha, treeSha, generatedAt: '2026-08-22T00:00:00Z', items: incompleteA7Providers });
+const incompleteA7Check = validateStage2ProfileEvidence(incompleteA7, expected);
+assert.equal(incompleteA7Check.ok, false, 'A7 requires the exact host and QEMU provider set');
+assert.ok(incompleteA7Check.failures.includes('S2-A7-NATIVE:provider-profile-set-mismatch'));
 
 const rehash = (value) => `stage2-profile-evidence:${stableDigest({
   schemaVersion: value.schemaVersion,

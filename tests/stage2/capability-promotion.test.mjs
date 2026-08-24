@@ -26,7 +26,7 @@ const runtimeFlags = {
 };
 const nativeCapabilities = ['connect', 'disconnect', 'attach', 'pause', 'resume', 'stepInto', 'breakpointAddress', 'removeBreakpoint', 'readRegisters', 'readMemory', 'writeMemory', 'threads', 'modules', 'cancel'];
 const nativeBinding = createRuntimeAuthorityBinding({
-  providerIdentity: 'provider:capability-test', providerProfileId: 'native:lldb-compatible-v1:test', providerVersion: '1',
+  providerIdentity: 'provider:capability-test', providerProfileId: 'native:remote-debug-v1:qemu-lldb', providerVersion: '1',
   runtimeInstanceIdentity: 'runtime:capability-test', targetIdentity: 'process:capability-test', targetProfileId: 'arm64:a64',
   binaryIdentity: 'binary:capability-test', buildIdentity: 'build:capability-test', moduleIdentity: 'module:capability-test',
   loadMappingIdentity: 'mapping:capability-test', sessionIdentity: 'session:capability-test', capabilityVersion: 'debug/v1',

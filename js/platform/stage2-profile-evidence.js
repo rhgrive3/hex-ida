@@ -25,7 +25,7 @@ const EXPECTED_PROFILES = Object.freeze({
   'S2-P12-PATTERNS': Object.freeze(['patterns:read-only-v1']),
   'S2-P12-COLLAB-REMOTE': Object.freeze(['collaboration:remote-security-v1']),
 });
-const NATIVE_PROVIDER_PROFILE = /^native:(?:remote-debug|lldb-compatible|frida-compatible|replay)-v1(?::[a-z0-9][a-z0-9._-]{0,63})?$/;
+const A7_PROVIDER_PROFILE_IDS = Object.freeze(['native:lldb-compatible-v1:host', 'native:remote-debug-v1:qemu-lldb']);
 const MANAGED_PROVIDER_PROFILE = /^managed:(wasm|dex|cil|jvm):provider-bound-runtime-v1(?::[a-z0-9][a-z0-9._-]{0,63})?$/;
 const VALID_PROFILE_VALIDATIONS = new WeakSet();
 const VALID_PROFILE_RECORDS = new WeakMap();
@@ -41,7 +41,7 @@ function isCanonicalStringArray(value, { allowEmpty = true } = {}) {
   return strings && new Set(value).size === value.length;
 }
 function providerProfileAllowed(itemId, value) {
-  if (itemId === 'S2-A7-NATIVE') return NATIVE_PROVIDER_PROFILE.test(value);
+  if (itemId === 'S2-A7-NATIVE') return A7_PROVIDER_PROFILE_IDS.includes(value);
   const managed = /^S2-M6-(WASM|DEX|CIL|JVM)$/.exec(itemId);
   if (!managed) return false;
   const expectedFrontend = managed[1].toLowerCase();
@@ -230,6 +230,7 @@ export function validateStage2ProfileEvidence(record, expected = {}) {
       && (!Array.isArray(item.providerProfileIds) || !item.providerProfileIds.some((value) => providerProfileAllowed(id, value)))) {
       failures.push(`${id}:provider-profile-invalid`);
     }
+    if (id === 'S2-A7-NATIVE' && !same(item.providerProfileIds, A7_PROVIDER_PROFILE_IDS)) failures.push(`${id}:provider-profile-set-mismatch`);
     const profiles = sorted(item.profileIds);
     if (!same(profiles, expectedProfiles)) failures.push(`${id}:profile-denominator-incomplete`);
     if (item.candidateCommitSha !== record.commitSha || item.candidateTreeSha !== record.treeSha) failures.push(`${id}:not-exact-head`);

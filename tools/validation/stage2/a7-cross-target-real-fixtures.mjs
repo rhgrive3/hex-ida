@@ -13,14 +13,18 @@ import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import { createRuntimeAuthorityBinding, createRuntimeObservation, validateRuntimeObservation } from '../../../js/runtime/authority.js';
+import {
+  A7_OBSERVED_CAPABILITIES,
+  A7_PROFILE_BINDINGS,
+  A7_UNSUPPORTED_CAPABILITIES,
+  validateA7FixtureSource,
+} from './a7-profile-contract.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 export const A7_CROSS_TARGET_PROOF_SCHEMA = 'hex-stage2-a7-cross-target-provider-proof/v1';
 export const A7_CROSS_TARGET_PROVIDER_PROFILE = 'native:remote-debug-v1:qemu-lldb';
-export const A7_REQUIRED_CAPABILITIES = Object.freeze([
-  'attach', 'breakpointAddress', 'cancel', 'connect', 'disconnect', 'modules', 'pause',
-  'readMemory', 'readRegisters', 'removeBreakpoint', 'resume', 'stepInto', 'threads', 'writeMemory',
-]);
+export const A7_REQUIRED_CAPABILITIES = A7_OBSERVED_CAPABILITIES;
+export const A7_UNSUPPORTED_PROVIDER_CAPABILITIES = A7_UNSUPPORTED_CAPABILITIES;
 export const A7_CROSS_TARGETS = Object.freeze([
   Object.freeze({
     targetProfileId:'arm64:a64', sourcePath:'tests/stage2/fixtures/a7-runtime/aarch64-a64.S',
@@ -73,6 +77,22 @@ function executable(command) {
   }
   return command;
 }
+function executableIdentity(command, acceptedBasenames) {
+  let resolved;
+  try { resolved = fs.realpathSync(command); } catch { throw new Error(`a7-cross-provider-executable-missing:${command}`); }
+  const stat = fs.statSync(resolved);
+  if (!stat.isFile() || !acceptedBasenames.includes(path.basename(resolved))) throw new Error(`a7-cross-provider-executable-untrusted:${command}`);
+  return Object.freeze({ path:resolved, sha256:sha256(fs.readFileSync(resolved)) });
+}
+function targetContract(target) {
+  const binding = A7_PROFILE_BINDINGS[target.targetProfileId];
+  if (!binding || binding.sourcePath !== target.sourcePath || binding.targetTriple !== target.targetTriple
+    || binding.providerProfileId !== A7_CROSS_TARGET_PROVIDER_PROFILE
+    || binding.providerProofCommandId !== 'a7-cross-target-real-fixtures') {
+    throw new Error(`a7-cross-target-contract-mismatch:${target.targetProfileId}`);
+  }
+  return binding;
+}
 async function reservePort() {
   const server = net.createServer();
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
@@ -99,12 +119,20 @@ export function parseCrossTargetLldbOutput(output, target, { binaryPath, entry, 
   if (!/stop reason = instruction step into/.test(text)) throw new Error('a7-cross-lldb-step-missing');
   if (!/1 breakpoints deleted; 0 breakpoint locations disabled\./.test(text)) throw new Error('a7-cross-lldb-breakpoint-removal-missing');
   if (!new RegExp(`Process ${processId} exited`).test(text)) throw new Error('a7-cross-lldb-disconnect-missing');
-  return Object.freeze({ processId:Number(processId), outputSha256:sha256(Buffer.from(text)) });
+  return Object.freeze({
+    processId:Number(processId),
+    outputSha256:sha256(Buffer.from(text)),
+    capabilityResults:Object.freeze(Object.fromEntries(A7_REQUIRED_CAPABILITIES.map((capability) => [capability, true]))),
+  });
 }
 
 function compileAndInspect(target, directory, versions) {
+  const binding = targetContract(target);
   const sourceAbsolute = path.join(ROOT, target.sourcePath);
   if (!fs.existsSync(sourceAbsolute)) throw new Error(`a7-cross-fixture-source-missing:${target.targetProfileId}`);
+  const sourceBytes = fs.readFileSync(sourceAbsolute);
+  const sourceSha256 = sha256(sourceBytes);
+  if (!validateA7FixtureSource(target.targetProfileId, target.sourcePath, sourceSha256, sourceBytes.toString('utf8'))) throw new Error(`a7-cross-fixture-source-contract-mismatch:${target.targetProfileId}`);
   const outputA = path.join(directory, `${target.targetProfileId.replaceAll(/[^a-z0-9]+/gi, '-')}-a.elf`);
   const outputB = path.join(directory, `${target.targetProfileId.replaceAll(/[^a-z0-9]+/gi, '-')}-b.elf`);
   const targetArgs = target.rv64imc ? ['--target=riscv64-linux-gnu','-march=rv64imc','-mabi=lp64'] : ['--target=aarch64-linux-gnu'];
@@ -121,7 +149,8 @@ function compileAndInspect(target, directory, versions) {
   const entryMatch = /\bEntry: (0x[0-9A-Fa-f]+)/.exec(readobj)?.[1];
   if (!entryMatch) throw new Error('a7-cross-oracle-entry-missing');
   return Object.freeze({
-    path:outputA, bytes, binarySha256:sha256(bytes), sourceSha256:sha256(fs.readFileSync(sourceAbsolute)),
+    path:outputA, bytes, binarySha256:sha256(bytes), sourceSha256,
+    sourceSemantics:Object.freeze([...binding.semanticMarkers]),
     entry:BigInt(entryMatch), probeWord:symbolValue(readobj, 'probe_word'),
     oracleOutputSha256:sha256(Buffer.from(`${readobj}\n${disassembly}`)),
   });
@@ -173,7 +202,16 @@ export async function collectA7CrossTargetProofs({ requireClean = true } = {}) {
     clang:executable('clang'), lldb:executable('lldb'), readobj:executable('llvm-readobj-18'), objdump:executable('llvm-objdump-18'),
     'qemu-aarch64':executable('qemu-aarch64'), 'qemu-riscv64':executable('qemu-riscv64'),
   });
+  for (const target of A7_CROSS_TARGETS) targetContract(target);
+  const executableBasenames = Object.freeze({
+    clang:['clang','clang-18'], lldb:['lldb','lldb-18'], readobj:['llvm-readobj-18','llvm-readobj'], objdump:['llvm-objdump-18','llvm-objdump'],
+    'qemu-aarch64':['qemu-aarch64'], 'qemu-riscv64':['qemu-riscv64'],
+  });
+  const expectedCrossProfiles = ['arm64:a64', 'arm64e:a64+pac', 'riscv64:rv64imc'];
+  const actualCrossProfiles = A7_CROSS_TARGETS.map((target) => target.targetProfileId).sort();
+  if (JSON.stringify(actualCrossProfiles) !== JSON.stringify(expectedCrossProfiles.sort())) throw new Error('a7-cross-target-profile-set-mismatch');
   const versionIdentities = Object.freeze(Object.fromEntries(Object.entries(versions).map(([id, command]) => [id, commandVersion(command)])));
+  const executableIdentities = Object.freeze(Object.fromEntries(Object.entries(versions).map(([id, command]) => [id, executableIdentity(command, executableBasenames[id])] )));
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'hex-a7-cross-'));
   const proofs = [];
   try {
@@ -182,8 +220,13 @@ export async function collectA7CrossTargetProofs({ requireClean = true } = {}) {
       const observed = await runActiveTarget(target, fixture, versions);
       const binaryIdentity = `sha256:${fixture.binarySha256}`;
       const providerVersion = `${versionIdentities.lldb};${versionIdentities[target.qemu]}`;
+      const providerFingerprint = sha256(Buffer.from(JSON.stringify({
+        providerVersion,
+        lldb:executableIdentities.lldb,
+        qemu:executableIdentities[target.qemu],
+      })));
       const binding = createRuntimeAuthorityBinding({
-        providerIdentity:`lldb-gdb-remote+${target.qemu}:${sha256(Buffer.from(providerVersion))}`,
+        providerIdentity:`lldb-gdb-remote+${target.qemu}:${providerFingerprint}`,
         providerProfileId:A7_CROSS_TARGET_PROVIDER_PROFILE,
         providerVersion,
         runtimeInstanceIdentity:`qemu-user-process:${observed.qemuPid}`,
@@ -198,7 +241,7 @@ export async function collectA7CrossTargetProofs({ requireClean = true } = {}) {
       });
       const observation = createRuntimeObservation({
         binding, sequence:1, observedAt:new Date().toISOString(), kind:'active-cross-target-debug-session',
-        payload:{ targetProfileId:target.targetProfileId, providerProfileId:A7_CROSS_TARGET_PROVIDER_PROFILE, outputSha256:observed.outputSha256, closedCapabilities:A7_REQUIRED_CAPABILITIES },
+        payload:{ targetProfileId:target.targetProfileId, providerProfileId:A7_CROSS_TARGET_PROVIDER_PROFILE, outputSha256:observed.outputSha256, observedCapabilities:observed.capabilityResults, closedCapabilities:A7_REQUIRED_CAPABILITIES, unsupportedCapabilities:A7_UNSUPPORTED_CAPABILITIES },
       });
       const validation = validateRuntimeObservation(binding, observation);
       if (!validation.ok) throw new Error(`a7-cross-runtime-observation-invalid:${target.targetProfileId}:${validation.reason}`);
@@ -206,9 +249,10 @@ export async function collectA7CrossTargetProofs({ requireClean = true } = {}) {
         schemaVersion:A7_CROSS_TARGET_PROOF_SCHEMA, status:'exact-active-provider-observed',
         candidateCommitSha:commitSha, candidateTreeSha:treeSha, targetProfileId:target.targetProfileId,
         providerProfileId:A7_CROSS_TARGET_PROVIDER_PROFILE, providerVersion,
-        fixture:Object.freeze({ sourcePath:target.sourcePath, sourceSha256:fixture.sourceSha256, binarySha256:fixture.binarySha256, targetTriple:target.targetTriple }),
-        independentOracle:Object.freeze({ id:'llvm-readobj+llvm-objdump-18', outputSha256:fixture.oracleOutputSha256 }),
-        binding, observation, closedCapabilities:A7_REQUIRED_CAPABILITIES,
+        fixture:Object.freeze({ sourcePath:target.sourcePath, sourceSha256:fixture.sourceSha256, binarySha256:fixture.binarySha256, targetTriple:target.targetTriple, semantics:fixture.sourceSemantics }),
+        independentOracle:Object.freeze({ id:'llvm-readobj+llvm-objdump-18', executableIdentities:Object.freeze({ readobj:executableIdentities.readobj, objdump:executableIdentities.objdump }), outputSha256:fixture.oracleOutputSha256 }),
+        binding, observation, closedCapabilities:A7_REQUIRED_CAPABILITIES, unsupportedCapabilities:A7_UNSUPPORTED_CAPABILITIES,
+        unsupportedCapabilities:A7_UNSUPPORTED_CAPABILITIES,
       }));
     }
   } finally {
@@ -216,7 +260,7 @@ export async function collectA7CrossTargetProofs({ requireClean = true } = {}) {
   }
   return Object.freeze({
     schemaVersion:A7_CROSS_TARGET_PROOF_SCHEMA, candidateCommitSha:commitSha, candidateTreeSha:treeSha,
-    providerProfileId:A7_CROSS_TARGET_PROVIDER_PROFILE, versionIdentities, proofs:Object.freeze(proofs),
+    providerProfileId:A7_CROSS_TARGET_PROVIDER_PROFILE, versionIdentities, executableIdentities, proofs:Object.freeze(proofs),
   });
 }
 

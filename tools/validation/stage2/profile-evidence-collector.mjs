@@ -13,6 +13,7 @@ import { a2DenominatorReport } from '../machine-effects/a2-denominator.mjs';
 import { phase12DenominatorReport } from '../phase12/denominator.mjs';
 import { f6KnownImplementationGaps } from '../../../js/rebuild/transaction-v2.js';
 import { STAGE2_PROFILE_EVIDENCE_IDS, createStage2ProfileEvidence } from '../../../js/platform/stage2-profile-evidence.js';
+import { A7_PROFILE_BINDINGS, A7_PROVIDER_PROFILE_IDS, A7_UNSUPPORTED_CAPABILITIES, a7ProfileFixtureIdentity } from './a7-profile-contract.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const INVENTORY_PATH = path.join(ROOT, 'tools/validation/stage2/profile-denominator-inventory.json');
@@ -117,6 +118,19 @@ const RULES = Object.freeze({
   }),
 });
 export const PROFILE_UNIT_PROOF_RULES = RULES;
+export const PROFILE_COMMAND_PROOF_MARKERS = Object.freeze({
+  'a2-machine-effects': 'machine-effects: PASS',
+  'a7-runtime-authority': '[stage2] runtime authority tests passed',
+  'a7-capability-promotion': '[stage2] profile-bound capability promotion tests passed',
+  'a7-lldb-real-fixture': '[stage2] active x86 LLDB A7 provider proof passed; canonical evidence assembly remains required',
+  'a7-cross-target-real-fixtures': '[stage2] active AArch64/PAC/RV64 LLDB remote provider proofs passed',
+  'm6-real-fixtures': 'deterministic real managed fixtures passed for wasm/dex/cil/jvm',
+  'f6-real-rebuild': 'F6_REAL_REBUILD_PROOF=',
+  'p12-knowledge': '[phase12] package/provenance/recognition tests passed',
+  'p12-rules': '[phase12] deterministic capability-rule tests passed',
+  'p12-patterns': '[phase12] bounded declarative pattern tests passed',
+  'p12-remote-transport': '[stage2] canonical encrypted remote transport and independent Ed25519 oracle passed',
+});
 
 function sha256(value) { return createHash('sha256').update(value).digest('hex'); }
 function git(args, allowFailure = false) {
@@ -191,6 +205,14 @@ export function inspectProfileEvidencePrerequisites() {
   if (!managed.has('dex')) failures.push('missing-real-compiled-fixture:dex');
   const f6 = f6FixtureMap();
   failures.push(...f6.missing.map((profile) => `missing-real-rebuild-fixture:${profile}`));
+  const a7Rule = RULES['S2-A7-NATIVE'];
+  if (JSON.stringify(a7Rule.providerProfileIds) !== JSON.stringify(A7_PROVIDER_PROFILE_IDS)) failures.push('a7-provider-profile-contract-mismatch');
+  for (const [profileId, binding] of Object.entries(A7_PROFILE_BINDINGS)) {
+    if (!a7Rule.requiredProfileIds.includes(profileId)) failures.push(`a7-profile-contract-unlisted:${profileId}`);
+    if (a7Rule.realFixtureRefsByProfile?.[profileId]?.[0] !== binding.sourcePath) failures.push(`a7-fixture-contract-mismatch:${profileId}`);
+    if (a7Rule.providerProofCommandIdsByProfile?.[profileId] !== binding.providerProofCommandId) failures.push(`a7-provider-command-contract-mismatch:${profileId}`);
+  }
+  failures.push(...A7_UNSUPPORTED_CAPABILITIES.map((capability) => `known-a7-gap:unsupported-capability:${capability}`));
   for (const [itemId, rule] of Object.entries(RULES)) {
     if (Array.isArray(rule.requiredProfileIds)) {
       for (const profileId of rule.requiredProfileIds) {
@@ -260,19 +282,8 @@ export function collectProfileEvidence({ expectedCommitSha, expectedTreeSha, out
     runCanonical('p12-patterns', ['tests/phase12/pattern/evaluator.test.mjs']),
     runCanonical('p12-remote-transport', ['tests/stage2/remote-canonical-transport.test.mjs']),
   ];
-  const commandProofMarkers = Object.freeze({
-    'a2-machine-effects': 'machine-effects: PASS',
-    'a7-lldb-real-fixture': '[stage2] active x86 LLDB A7 provider proof passed; canonical evidence assembly remains required',
-    'a7-cross-target-real-fixtures': '[stage2] active AArch64/PAC/RV64 LLDB remote provider proofs passed',
-    'm6-real-fixtures': 'deterministic real managed fixtures passed for wasm/dex/cil/jvm',
-    'f6-real-rebuild': 'F6_REAL_REBUILD_PROOF=',
-    'p12-knowledge': '[phase12] package/provenance/recognition tests passed',
-    'p12-rules': '[phase12] deterministic capability-rule tests passed',
-    'p12-patterns': '[phase12] bounded declarative pattern tests passed',
-    'p12-remote-transport': '[stage2] canonical encrypted remote transport and independent Ed25519 oracle passed',
-  });
   if (commands.some((command) => command.status !== 'passed')) throw new Error(`profile-proof-command-failed:${commands.filter((command) => command.status !== 'passed').map((command) => command.id).join(',')}`);
-  for (const [id, marker] of Object.entries(commandProofMarkers)) {
+  for (const [id, marker] of Object.entries(PROFILE_COMMAND_PROOF_MARKERS)) {
     if (!commands.find((command) => command.id === id)?.stdout.includes(marker)) throw new Error(`profile-proof-command-marker-missing:${id}`);
   }
   const commandById = new Map(commands.map((command) => [command.id, command]));
@@ -310,7 +321,11 @@ export function collectProfileEvidence({ expectedCommitSha, expectedTreeSha, out
       // fixture must block the run instead of being silently replaced with a
       // test file (or any other arbitrary tracked file).
       if (realFixtureIdentities.length === 0) throw new Error(`profile-proof-real-fixture-missing:${itemId}`);
-      const proof = { schemaVersion: PROFILE_UNIT_PROOF_SCHEMA, itemId, unitId, candidateCommitSha: head.commitSha, candidateTreeSha: head.treeSha, status: 'passed', commandIds: rule.commandIds, commandOutputIdentities: rule.commandIds.map((id) => commandOutputIdentities.get(id)), commandOutputDigests: commandSummaries.map((command) => `sha256:${sha256(`${command.stdout}\n${command.stderr}`)}`), sourceIdentities, testIdentities, providerProfileIds: rule.providerProfileIds, realFixtureIdentities, negativeTestIdentities, independentOracleIdentities };
+      const profileId = itemId === 'S2-A7-NATIVE' ? rule.requiredProfileIds.find((candidate) => unitId.startsWith(`${candidate}:`)) : null;
+      const unitFixtureIdentities = profileId
+        ? [a7ProfileFixtureIdentity(profileId)]
+        : realFixtureIdentities;
+      const proof = { schemaVersion: PROFILE_UNIT_PROOF_SCHEMA, itemId, unitId, candidateCommitSha: head.commitSha, candidateTreeSha: head.treeSha, status: 'passed', commandIds: rule.commandIds, commandOutputIdentities: rule.commandIds.map((id) => commandOutputIdentities.get(id)), commandOutputDigests: commandSummaries.map((command) => `sha256:${sha256(`${command.stdout}\n${command.stderr}`)}`), sourceIdentities, testIdentities, providerProfileIds: rule.providerProfileIds, realFixtureIdentities:unitFixtureIdentities, negativeTestIdentities, independentOracleIdentities };
       const name = `${itemId.toLowerCase()}-${sha256(unitId).slice(0, 16)}.json`;
       files[name] = proof;
       unitEvidence[unitId] = `artifact:${relativeRunPath(runId, name)}@sha256:${sha256(jsonBytes(proof))}`;
@@ -343,7 +358,7 @@ export function collectProfileEvidence({ expectedCommitSha, expectedTreeSha, out
   });
   files['profile-evidence.json'] = profileEvidence;
   const profileEvidenceIdentity = `artifact:${relativeRunPath(runId, 'profile-evidence.json')}@sha256:${sha256(jsonBytes(profileEvidence))}`;
-  const run = { schemaVersion: PROFILE_EVIDENCE_RUN_SCHEMA, runId, candidateCommitSha: head.commitSha, candidateTreeSha: head.treeSha, generatedAt, profileEvidenceIdentity, commands: commands.map(({ stdout, stderr, ...summary }) => ({ ...summary, outputIdentity: commandOutputIdentities.get(summary.id), stdoutDigest: `sha256:${sha256(stdout)}`, stderrDigest: `sha256:${sha256(stderr)}`, proofMarker: commandProofMarkers[summary.id] || null })), items, files };
+  const run = { schemaVersion: PROFILE_EVIDENCE_RUN_SCHEMA, runId, candidateCommitSha: head.commitSha, candidateTreeSha: head.treeSha, generatedAt, profileEvidenceIdentity, commands: commands.map(({ stdout, stderr, ...summary }) => ({ ...summary, outputIdentity: commandOutputIdentities.get(summary.id), stdoutDigest: `sha256:${sha256(stdout)}`, stderrDigest: `sha256:${sha256(stderr)}`, proofMarker: PROFILE_COMMAND_PROOF_MARKERS[summary.id] || null })), items, files };
   writeRun(destination, run);
   return Object.freeze({ outputDir: destination, run });
 }

@@ -42,7 +42,7 @@ export function validatedCapabilityProofFixture() {
       realFixtureIdentities: [`fixture:${id}:real`], negativeTestIdentities: [`test:${id}:negative`],
       evidenceIdentities: [`evidence:${id}:aggregate`], implementationIdentity: `implementation:${id}`,
       providerProfileIds: id === 'S2-A7-NATIVE'
-        ? ['native:lldb-compatible-v1:test']
+        ? ['native:lldb-compatible-v1:host', 'native:remote-debug-v1:qemu-lldb']
         : id.startsWith('S2-M6-')
           ? [`managed:${id.slice('S2-M6-'.length).toLowerCase()}:provider-bound-runtime-v1:test`]
           : [],

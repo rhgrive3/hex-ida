@@ -10,6 +10,7 @@ import {
   inspectProfileEvidencePrerequisites,
 } from '../../tools/validation/stage2/profile-evidence-collector.mjs';
 import { STAGE2_PROFILE_EVIDENCE_IDS } from '../../js/platform/stage2-profile-evidence.js';
+import { A7_PROVIDER_PROFILE_IDS, A7_UNSUPPORTED_CAPABILITIES } from '../../tools/validation/stage2/a7-profile-contract.mjs';
 
 assert.equal(PROFILE_EVIDENCE_RUN_SCHEMA, 'hex-stage2-profile-evidence-run/v1');
 assert.equal(PROFILE_UNIT_PROOF_SCHEMA, 'hex-stage2-profile-unit-proof/v1');
@@ -37,6 +38,7 @@ for (const itemId of ['S2-F6-MACHO', 'S2-F6-ELF', 'S2-F6-PE']) {
   assert.ok(rule.f6Profiles.length >= 1, `${itemId}: exact locked format profiles are bound`);
 }
 const a7Rule = PROFILE_UNIT_PROOF_RULES['S2-A7-NATIVE'];
+assert.deepEqual(a7Rule.providerProfileIds, A7_PROVIDER_PROFILE_IDS);
 assert.deepEqual(a7Rule.requiredProfileIds, ['arm64:a64', 'arm64e:a64+pac', 'x86_64:long-64', 'riscv64:rv64imc']);
 assert.deepEqual(a7Rule.realFixtureRefsByProfile['x86_64:long-64'], ['tests/stage2/fixtures/a7-runtime/x86_64-long64.S']);
 assert.equal(a7Rule.providerProofCommandIdsByProfile['x86_64:long-64'], 'a7-lldb-real-fixture');
@@ -66,6 +68,7 @@ assert.equal(prerequisites.failures.includes('missing-real-compiled-fixture:dex'
 if (prerequisites.failures.some((failure) => failure.startsWith('known-a2-gap:'))) assert.equal(prerequisites.ok, false, 'known A2 denominator gaps block collection');
 assert.equal(prerequisites.failures.some((failure) => failure.startsWith('known-f6-gap:')), false, 'constrained unsigned preservation writers close the F6 implementation gaps');
 assert.equal(prerequisites.failures.includes('known-phase12-gap:remote.remote-canonical-transport'), false, 'active canonical remote transport closes the Phase12 proof gap');
+for (const capability of A7_UNSUPPORTED_CAPABILITIES) assert.ok(prerequisites.failures.includes(`known-a7-gap:unsupported-capability:${capability}`), `A7 denominator remains blocked for unsupported ${capability}`);
 for (const profileId of a7Rule.requiredProfileIds) {
   assert.equal(prerequisites.failures.includes(`missing-real-profile-fixture:S2-A7-NATIVE:${profileId}`), false, `A7 ${profileId}: real target fixture is bound`);
   assert.equal(prerequisites.failures.includes(`missing-active-provider-proof:S2-A7-NATIVE:${profileId}`), false, `A7 ${profileId}: active provider command is bound`);

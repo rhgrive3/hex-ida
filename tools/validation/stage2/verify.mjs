@@ -9,7 +9,10 @@ import { STAGE2_PROFILE_EVIDENCE_IDS, validateStage2DenominatorLock, validateSta
 import { a2DenominatorReport } from '../machine-effects/a2-denominator.mjs';
 import { phase12DenominatorReport } from '../phase12/denominator.mjs';
 import { f6KnownImplementationGaps } from '../../../js/rebuild/transaction-v2.js';
-import { PROFILE_EVIDENCE_RUN_ROOT, PROFILE_UNIT_PROOF_RULES, PROFILE_UNIT_PROOF_SCHEMA } from './profile-evidence-collector.mjs';
+import { PROFILE_COMMAND_PROOF_MARKERS, PROFILE_EVIDENCE_RUN_ROOT, PROFILE_UNIT_PROOF_RULES, PROFILE_UNIT_PROOF_SCHEMA } from './profile-evidence-collector.mjs';
+import { A7_PROFILE_BINDINGS, A7_PROVIDER_PROFILE_IDS, A7_UNSUPPORTED_CAPABILITIES, a7ProfileFixtureIdentity } from './a7-profile-contract.mjs';
+import { A7_CROSS_TARGETS, A7_CROSS_TARGET_PROVIDER_PROFILE, A7_REQUIRED_CAPABILITIES as A7_CROSS_REQUIRED_CAPABILITIES, A7_UNSUPPORTED_PROVIDER_CAPABILITIES } from './a7-cross-target-real-fixtures.mjs';
+import { A7_LLDB_FIXTURE_PATH, A7_X86_REQUIRED_CAPABILITIES, A7_X86_UNSUPPORTED_CAPABILITIES } from './a7-lldb-real-fixture.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const REPORT_PATH = path.join(ROOT, 'reports/stage2/stage2-verdict.json');
@@ -274,6 +277,78 @@ function gitIdentityAtHead(identity) {
   return resolved.status === 0 && resolved.stdout === match[2] ? identity : null;
 }
 
+function executableIdentityShape(identity, basenames) {
+  return !!identity
+    && typeof identity.path === 'string'
+    && basenames.includes(path.basename(identity.path))
+    && /^[0-9a-f]{64}$/.test(identity.sha256 || '');
+}
+
+function proofLine(stdout, prefix) {
+  const line = String(stdout || '').split('\n').find((value) => value.startsWith(`${prefix}=`));
+  if (!line) return null;
+  try { return JSON.parse(line.slice(prefix.length + 1)); } catch { return null; }
+}
+
+function a7CommandProofContentValid(commandId, output, candidateCommitSha, candidateTreeSha) {
+  if (commandId === 'a7-lldb-real-fixture') {
+    const proof = proofLine(output.stdout, 'A7_X86_LLDB_PROVIDER_PROOF');
+    const binding = A7_PROFILE_BINDINGS['x86_64:long-64'];
+    return !!proof
+      && proof.schemaVersion === 'hex-stage2-a7-lldb-provider-proof/v1'
+      && proof.status === 'exact-active-provider-observed'
+      && proof.candidateCommitSha === candidateCommitSha && proof.candidateTreeSha === candidateTreeSha
+      && proof.targetProfileId === 'x86_64:long-64'
+      && proof.providerProfileId === binding.providerProfileId
+      && proof.fixture?.path === A7_LLDB_FIXTURE_PATH
+      && proof.fixture?.sourceSha256 === binding.sourceSha256
+      && proof.fixture?.targetTriple === binding.targetTriple
+      && JSON.stringify(proof.fixture?.semantics || []) === JSON.stringify(binding.semanticMarkers)
+      && JSON.stringify(proof.closedCapabilities || []) === JSON.stringify(A7_X86_REQUIRED_CAPABILITIES)
+      && JSON.stringify(proof.unsupportedCapabilities || []) === JSON.stringify(A7_X86_UNSUPPORTED_CAPABILITIES)
+      && executableIdentityShape(proof.providerExecutableIdentities?.lldb, ['lldb', 'lldb-18'])
+      && executableIdentityShape(proof.providerExecutableIdentities?.clang, ['clang', 'clang-18'])
+      && executableIdentityShape(proof.providerExecutableIdentities?.readobj, ['llvm-readobj-18', 'llvm-readobj'])
+      && JSON.stringify(proof.independentOracle?.executableIdentity) === JSON.stringify(proof.providerExecutableIdentities.readobj)
+      && /^[0-9a-f]{64}$/.test(proof.independentOracle?.outputSha256 || '')
+      && proof.binding?.targetProfileId === proof.targetProfileId
+      && proof.binding?.providerProfileId === proof.providerProfileId;
+  }
+  if (commandId === 'a7-cross-target-real-fixtures') {
+    const run = proofLine(output.stdout, 'A7_CROSS_TARGET_PROVIDER_PROOF');
+    if (!run || run.schemaVersion !== 'hex-stage2-a7-cross-target-provider-proof/v1'
+      || run.candidateCommitSha !== candidateCommitSha || run.candidateTreeSha !== candidateTreeSha
+      || run.providerProfileId !== A7_CROSS_TARGET_PROVIDER_PROFILE) return false;
+    const executableIds = run.executableIdentities || {};
+    if (!executableIdentityShape(executableIds.lldb, ['lldb', 'lldb-18'])
+      || !executableIdentityShape(executableIds.clang, ['clang', 'clang-18'])
+      || !executableIdentityShape(executableIds.readobj, ['llvm-readobj-18', 'llvm-readobj'])
+      || !executableIdentityShape(executableIds.objdump, ['llvm-objdump-18', 'llvm-objdump'])) return false;
+    if (!Array.isArray(run.proofs) || run.proofs.length !== A7_CROSS_TARGETS.length) return false;
+    const seen = new Set();
+    for (const proof of run.proofs) {
+      const target = A7_CROSS_TARGETS.find((candidate) => candidate.targetProfileId === proof.targetProfileId);
+      const binding = A7_PROFILE_BINDINGS[proof.targetProfileId];
+      if (!target || seen.has(proof.targetProfileId) || !binding) return false;
+      seen.add(proof.targetProfileId);
+      if (proof.status !== 'exact-active-provider-observed' || proof.candidateCommitSha !== candidateCommitSha || proof.candidateTreeSha !== candidateTreeSha
+        || proof.providerProfileId !== binding.providerProfileId || proof.fixture?.sourcePath !== binding.sourcePath
+        || proof.fixture?.sourceSha256 !== binding.sourceSha256 || proof.fixture?.targetTriple !== binding.targetTriple
+        || JSON.stringify(proof.fixture?.semantics || []) !== JSON.stringify(binding.semanticMarkers)
+        || JSON.stringify(proof.closedCapabilities || []) !== JSON.stringify(A7_CROSS_REQUIRED_CAPABILITIES)
+        || JSON.stringify(proof.unsupportedCapabilities || []) !== JSON.stringify(A7_UNSUPPORTED_PROVIDER_CAPABILITIES)
+        || proof.binding?.targetProfileId !== proof.targetProfileId || proof.binding?.providerProfileId !== proof.providerProfileId
+        || !executableIdentityShape(proof.independentOracle?.executableIdentities?.readobj, ['llvm-readobj-18', 'llvm-readobj'])
+        || !executableIdentityShape(proof.independentOracle?.executableIdentities?.objdump, ['llvm-objdump-18', 'llvm-objdump'])
+        || JSON.stringify(proof.independentOracle.executableIdentities.readobj) !== JSON.stringify(executableIds.readobj)
+        || JSON.stringify(proof.independentOracle.executableIdentities.objdump) !== JSON.stringify(executableIds.objdump)
+        || !/^[0-9a-f]{64}$/.test(proof.independentOracle?.outputSha256 || '')) return false;
+    }
+    return seen.size === A7_CROSS_TARGETS.length;
+  }
+  return true;
+}
+
 function profileUnitArtifactValid(relative, context, candidateCommitSha, candidateTreeSha) {
   const prefix = `${PROFILE_EVIDENCE_RUN_ROOT}/`;
   if (!relative.startsWith(prefix) || relative.split('/').length !== 5 || !relative.endsWith('.json')) return false;
@@ -284,6 +359,11 @@ function profileUnitArtifactValid(relative, context, candidateCommitSha, candida
   if (!artifact || artifact.schemaVersion !== PROFILE_UNIT_PROOF_SCHEMA || artifact.itemId !== context.itemId || artifact.unitId !== context.unitId || artifact.candidateCommitSha !== candidateCommitSha || artifact.candidateTreeSha !== candidateTreeSha || artifact.status !== 'passed') return false;
   const rule = PROFILE_UNIT_PROOF_RULES[context.itemId];
   if (!rule || JSON.stringify(artifact.providerProfileIds || []) !== JSON.stringify(rule.providerProfileIds)) return false;
+  if (context.itemId === 'S2-A7-NATIVE') {
+    const profileId = Object.keys(A7_PROFILE_BINDINGS).find((candidate) => context.unitId.startsWith(`${candidate}:`));
+    const expectedFixture = profileId ? a7ProfileFixtureIdentity(profileId) : null;
+    if (!profileId || JSON.stringify(artifact.realFixtureIdentities || []) !== JSON.stringify([expectedFixture])) return false;
+  }
   const refs = (values) => values.map((ref) => `git:${ref}@${git(['rev-parse', `HEAD:${ref}`], true).stdout}`);
   if (JSON.stringify(artifact.sourceIdentities || []) !== JSON.stringify(refs(rule.sourceRefs))) return false;
   if (JSON.stringify(artifact.testIdentities || []) !== JSON.stringify(refs(rule.testRefs))) return false;
@@ -293,7 +373,8 @@ function profileUnitArtifactValid(relative, context, candidateCommitSha, candida
   const commandIdentityById = new Map((artifact.commandIds || []).map((id, index) => [id, artifact.commandOutputIdentities[index]]));
   const expectedIndependentOracleIdentities = (rule.independentOracleCommandIds || []).map((id) => commandIdentityById.get(id));
   if (JSON.stringify(artifact.independentOracleIdentities || []) !== JSON.stringify(expectedIndependentOracleIdentities)) return false;
-  for (const identity of artifact.commandOutputIdentities) {
+  for (const [index, identity] of artifact.commandOutputIdentities.entries()) {
+    const commandId = artifact.commandIds[index];
     const match = /^artifact:([^@]+)@sha256:([0-9a-f]{64})$/.exec(identity || '');
     if (!match) return false;
     const outputPath = safeRelativePath(match[1]);
@@ -303,9 +384,20 @@ function profileUnitArtifactValid(relative, context, candidateCommitSha, candida
     if (createHash('sha256').update(outputBytes).digest('hex') !== match[2]) return false;
     let output;
     try { output = JSON.parse(outputBytes); } catch { return false; }
-    if (output.schemaVersion !== 'hex-stage2-profile-command-output/v1' || output.candidateCommitSha !== candidateCommitSha || output.candidateTreeSha !== candidateTreeSha || output.status !== 'passed') return false;
+    if (output.schemaVersion !== 'hex-stage2-profile-command-output/v1' || output.commandId !== commandId || output.candidateCommitSha !== candidateCommitSha || output.candidateTreeSha !== candidateTreeSha || output.status !== 'passed' || output.exitCode !== 0 || output.signal !== null) return false;
+    const marker = PROFILE_COMMAND_PROOF_MARKERS[commandId];
+    if (marker && (typeof output.stdout !== 'string' || !output.stdout.includes(marker))) return false;
+    if (context.itemId === 'S2-A7-NATIVE' && !a7CommandProofContentValid(commandId, output, candidateCommitSha, candidateTreeSha)) return false;
   }
   return Array.isArray(artifact.realFixtureIdentities) && artifact.realFixtureIdentities.length > 0;
+}
+
+function a7ProfileEvidenceMappingValid(record) {
+  const item = record?.items?.['S2-A7-NATIVE'];
+  if (!item) return false;
+  const expectedFixtures = Object.keys(A7_PROFILE_BINDINGS).map((profileId) => a7ProfileFixtureIdentity(profileId)).sort();
+  return JSON.stringify([...item.providerProfileIds].sort()) === JSON.stringify([...A7_PROVIDER_PROFILE_IDS].sort())
+    && JSON.stringify([...item.realFixtureIdentities].sort()) === JSON.stringify(expectedFixtures);
 }
 
 function evidenceIdentityAtHead(identity, context = {}, candidateCommitSha = null, candidateTreeSha = null) {
@@ -369,7 +461,7 @@ export function physicalEvidenceArtifactPathAllowed(identity, kind) {
 export function stage2KnownDenominatorGaps() {
   const a2 = a2DenominatorReport().validation;
   const phase12 = phase12DenominatorReport();
-  const gaps = [...f6KnownImplementationGaps()];
+  const gaps = [...f6KnownImplementationGaps(), ...A7_UNSUPPORTED_CAPABILITIES.map((capability) => `a7-unsupported-capability:${capability}`)];
   if (a2.valid !== true) gaps.push('a2-denominator-invalid');
   if (a2.terminalEligible !== true) gaps.push(...(a2.blockingGaps || []));
   if (phase12.valid !== true) {
@@ -411,6 +503,14 @@ function profileEvidenceResult({ finalMode, evidencePath, headSha, treeSha, scop
     requireCanonicalUnitEvidence: true,
     resolveEvidenceIdentity: (identity, context) => evidenceIdentityAtHead(identity, { ...context, requireCanonicalUnitEvidence: true }, headSha, treeSha),
   });
+  if (checked.ok && !a7ProfileEvidenceMappingValid(loaded.record)) return {
+    required: true,
+    status: 'failed',
+    reason: 'stage2-profile-evidence-a7-mapping-invalid',
+    failures: ['S2-A7-NATIVE:provider-or-fixture-mapping-invalid'],
+    evidenceId: checked.evidenceId || loaded.record.evidenceId || null,
+    provenIds: Object.freeze([]),
+  };
   return {
     required: true,
     status: checked.ok ? 'passed' : 'failed',

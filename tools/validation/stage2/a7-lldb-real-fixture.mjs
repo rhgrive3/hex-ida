@@ -10,14 +10,18 @@ import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createRuntimeAuthorityBinding, createRuntimeObservation, validateRuntimeObservation } from '../../../js/runtime/authority.js';
+import {
+  A7_OBSERVED_CAPABILITIES,
+  A7_PROFILE_BINDINGS,
+  A7_UNSUPPORTED_CAPABILITIES,
+  validateA7FixtureSource,
+} from './a7-profile-contract.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 export const A7_LLDB_PROOF_SCHEMA = 'hex-stage2-a7-lldb-provider-proof/v1';
 export const A7_LLDB_FIXTURE_PATH = 'tests/stage2/fixtures/a7-runtime/x86_64-long64.S';
-export const A7_X86_REQUIRED_CAPABILITIES = Object.freeze([
-  'attach', 'breakpointAddress', 'cancel', 'connect', 'disconnect', 'modules', 'pause',
-  'readMemory', 'readRegisters', 'removeBreakpoint', 'resume', 'stepInto', 'threads', 'writeMemory',
-]);
+export const A7_X86_REQUIRED_CAPABILITIES = A7_OBSERVED_CAPABILITIES;
+export const A7_X86_UNSUPPORTED_CAPABILITIES = A7_UNSUPPORTED_CAPABILITIES;
 const TARGET_PROFILE = 'x86_64:long-64';
 const PROVIDER_PROFILE = 'native:lldb-compatible-v1:host';
 
@@ -43,9 +47,20 @@ function symbolValue(readobj, name) {
   return BigInt(value);
 }
 
+function executableIdentity(command, acceptedBasenames) {
+  let resolved;
+  try { resolved = fs.realpathSync(command); } catch { throw new Error(`a7-lldb-executable-missing:${command}`); }
+  const stat = fs.statSync(resolved);
+  if (!stat.isFile() || !acceptedBasenames.includes(path.basename(resolved))) throw new Error(`a7-lldb-executable-untrusted:${command}`);
+  return Object.freeze({ path:resolved, sha256:sha256(fs.readFileSync(resolved)) });
+}
+
 function fixture(directory, { clang = 'clang', readobj = 'llvm-readobj-18' } = {}) {
   const source = path.join(ROOT, A7_LLDB_FIXTURE_PATH);
   if (!fs.existsSync(source) || !fs.statSync(source).isFile()) throw new Error('a7-lldb-real-fixture-missing');
+  const sourceBytes = fs.readFileSync(source);
+  const sourceDigest = sha256(sourceBytes);
+  if (!validateA7FixtureSource(TARGET_PROFILE, A7_LLDB_FIXTURE_PATH, sourceDigest, sourceBytes.toString('utf8'))) throw new Error('a7-lldb-fixture-source-contract-mismatch');
   const outputA = path.join(directory, 'x86_64-long64-a.elf');
   const outputB = path.join(directory, 'x86_64-long64-b.elf');
   const args = ['--target=x86_64-linux-gnu','-fuse-ld=lld','-nostdlib','-static','-Wl,-e,_start',A7_LLDB_FIXTURE_PATH];
@@ -57,7 +72,7 @@ function fixture(directory, { clang = 'clang', readobj = 'llvm-readobj-18' } = {
   if (!oracle.includes('Machine: EM_X86_64')) throw new Error('a7-lldb-target-profile-mismatch');
   const entryText = /\bEntry: (0x[0-9A-Fa-f]+)/.exec(oracle)?.[1];
   if (!entryText) throw new Error('a7-lldb-oracle-entry-missing');
-  return { absolute:outputA, digest:sha256(bytes), sourceDigest:sha256(fs.readFileSync(source)), entry:BigInt(entryText), probeWord:symbolValue(oracle,'probe_word'), oracleDigest:sha256(Buffer.from(oracle)) };
+  return { absolute:outputA, digest:sha256(bytes), sourceDigest, sourceSemantics:[...A7_PROFILE_BINDINGS[TARGET_PROFILE].semanticMarkers], entry:BigInt(entryText), probeWord:symbolValue(oracle,'probe_word'), oracleDigest:sha256(Buffer.from(oracle)) };
 }
 
 function lldbCommand(pathname, entry, probeWord) {
@@ -97,6 +112,7 @@ export function parseLldbOutput(output, { fixturePath = A7_LLDB_FIXTURE_PATH, en
   const rip = /rip = (0x[0-9a-f]+)/i.exec(text)?.[1];
   const rsp = /rsp = (0x[0-9a-f]+)/i.exec(text)?.[1];
   if (!thread || !rip || !rsp) throw new Error('a7-lldb-register-observation-missing');
+  if (entry != null && BigInt(rip) !== BigInt(entry)) throw new Error('a7-lldb-entry-register-mismatch');
   if (!/rax = 0x0*42\b/i.test(text)) throw new Error('a7-lldb-register-write-missing');
   if (entry != null && (!new RegExp(`Breakpoint 1:.*0x0*${(entry + 1n).toString(16)}`, 'i').test(text)
     || !/stop reason = breakpoint 1\.1/.test(text) || !/stop reason = instruction step into/.test(text))) throw new Error('a7-lldb-breakpoint-step-missing');
@@ -104,7 +120,7 @@ export function parseLldbOutput(output, { fixturePath = A7_LLDB_FIXTURE_PATH, en
     || !new RegExp(`0x0*${probeWord.toString(16)}: 0x8877665544332211`, 'i').test(text))) throw new Error('a7-lldb-memory-read-write-missing');
   if (!/1 breakpoints deleted; 0 breakpoint locations disabled\./.test(text)) throw new Error('a7-lldb-breakpoint-removal-missing');
   if (!/exited with status = 9 .* killed/.test(text)) throw new Error('a7-lldb-session-cleanup-missing');
-  return Object.freeze({ pid: Number(process[1]), threadId: Number(thread[1]), modulePath, rip, rsp, targetProfileId: TARGET_PROFILE });
+  return Object.freeze({ pid: Number(process[1]), threadId: Number(thread[1]), modulePath, rip, rsp, targetProfileId: TARGET_PROFILE, capabilityResults:Object.freeze(Object.fromEntries(A7_X86_REQUIRED_CAPABILITIES.map((capability) => [capability, true]))) });
 }
 
 export function collectA7X86LldbProof({
@@ -121,6 +137,11 @@ export function collectA7X86LldbProof({
   const version = /lldb version (\d+\.\d+\.\d+)/.exec(`${versionResult.stdout}\n${versionResult.stderr}`)?.[1];
   if (!version) throw new Error('a7-lldb-provider-version-missing');
   const compilerVersion = run(clang, ['--version'], 'a7-lldb-compiler-unavailable').split('\n').find(Boolean)?.trim();
+  const executableIdentities = Object.freeze({
+    lldb: executableIdentity(lldb, ['lldb', 'lldb-18']),
+    clang: executableIdentity(clang, ['clang', 'clang-18']),
+    readobj: executableIdentity(readobj, ['llvm-readobj-18', 'llvm-readobj']),
+  });
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'hex-a7-x86-'));
   let checkedFixture;
   let observed;
@@ -133,11 +154,14 @@ export function collectA7X86LldbProof({
   } finally {
     fs.rmSync(directory, { recursive:true, force:true });
   }
+  const bindingContract = A7_PROFILE_BINDINGS[TARGET_PROFILE];
+  if (!bindingContract || bindingContract.sourcePath !== A7_LLDB_FIXTURE_PATH || bindingContract.providerProfileId !== PROVIDER_PROFILE || bindingContract.providerProofCommandId !== 'a7-lldb-real-fixture') throw new Error('a7-lldb-profile-contract-mismatch');
   const binaryIdentity = `sha256:${checkedFixture.digest}`;
   const buildIdentity = `clang-lld-static:${checkedFixture.sourceDigest}:${binaryIdentity}`;
   const sessionIdentity = `lldb-session:${version}:${observed.pid}:${currentCommitSha}`;
+  const providerFingerprint = sha256(Buffer.from(JSON.stringify({ version, executableIdentities })));
   const binding = createRuntimeAuthorityBinding({
-    providerIdentity: `lldb:${version}`,
+    providerIdentity: `lldb:${version}:${providerFingerprint}`,
     providerProfileId: PROVIDER_PROFILE,
     providerVersion: version,
     runtimeInstanceIdentity: `lldb-process:${observed.pid}`,
@@ -153,7 +177,7 @@ export function collectA7X86LldbProof({
     treeSha: currentTreeSha,
     epoch: 0,
   });
-  const observation = createRuntimeObservation({ binding, sequence: 1, observedAt: new Date().toISOString(), kind: 'active-x86-debug-session', payload: { provider: 'lldb', providerVersion: version, threadId: observed.threadId, registers: { rip: observed.rip, rsp: observed.rsp }, fixturePath: A7_LLDB_FIXTURE_PATH, closedCapabilities:A7_X86_REQUIRED_CAPABILITIES } });
+  const observation = createRuntimeObservation({ binding, sequence: 1, observedAt: new Date().toISOString(), kind: 'active-x86-debug-session', payload: { provider: 'lldb', providerVersion: version, threadId: observed.threadId, registers: { rip: observed.rip, rsp: observed.rsp }, fixturePath: A7_LLDB_FIXTURE_PATH, observedCapabilities:observed.capabilityResults, closedCapabilities:A7_X86_REQUIRED_CAPABILITIES, unsupportedCapabilities:A7_X86_UNSUPPORTED_CAPABILITIES } });
   const checkedObservation = validateRuntimeObservation(binding, observation);
   if (!checkedObservation.ok) throw new Error(`a7-lldb-runtime-observation-invalid:${checkedObservation.reason}`);
   return Object.freeze({
@@ -165,11 +189,13 @@ export function collectA7X86LldbProof({
     providerProfileId: PROVIDER_PROFILE,
     providerVersion: version,
     targetProfileId: TARGET_PROFILE,
-    fixture: { path: A7_LLDB_FIXTURE_PATH, sourceSha256:checkedFixture.sourceDigest, sha256: checkedFixture.digest, targetTriple: 'x86_64-linux-gnu', compilerVersion },
-    independentOracle: { id:'llvm-readobj-18', outputSha256:checkedFixture.oracleDigest },
+    fixture: { path: A7_LLDB_FIXTURE_PATH, sourceSha256:checkedFixture.sourceDigest, sha256: checkedFixture.digest, targetTriple: 'x86_64-linux-gnu', compilerVersion, semantics:checkedFixture.sourceSemantics },
+    independentOracle: { id:'llvm-readobj-18', executableIdentity:executableIdentities.readobj, outputSha256:checkedFixture.oracleDigest },
+    providerExecutableIdentities:executableIdentities,
     binding,
     observation,
     closedCapabilities:A7_X86_REQUIRED_CAPABILITIES,
+    unsupportedCapabilities:A7_X86_UNSUPPORTED_CAPABILITIES,
     closedChecks: Object.freeze(['deterministic-real-fixture-byte-identity', 'independent-llvm-object-oracle', 'lldb-version-observed', 'lldb-target-x86_64', 'lldb-process-launched', 'lldb-stop-at-entry', 'lldb-registers-observed', 'lldb-register-write-observed', 'lldb-memory-read-write-observed', 'lldb-breakpoint-step-remove-observed', 'runtime-binding-exact-head', 'runtime-observation-identity']),
   });
 }

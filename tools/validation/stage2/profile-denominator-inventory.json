@@ -191,6 +191,7 @@
         "tests/stage2/runtime-authority.test.mjs",
         "tools/validation/stage2/a7-cross-target-real-fixtures.mjs",
         "tools/validation/stage2/a7-lldb-real-fixture.mjs",
+        "tools/validation/stage2/a7-profile-contract.mjs",
         "tools/validation/stage2/build-profile-denominator-inventory.mjs"
       ]
     },
