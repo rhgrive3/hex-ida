@@ -33,6 +33,11 @@ import {
   ARM64_A64_INTEGER_DENOMINATOR_SCHEMA,
   validateArm64A64IntegerDenominator,
 } from './arm64-a64-integer-denominator.mjs';
+import {
+  ARM64E_PAC_DENOMINATOR_ID,
+  ARM64E_PAC_DENOMINATOR_SCHEMA,
+  validateArm64ePacDenominator,
+} from './arm64e-pac-denominator.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '../../..');
@@ -70,6 +75,22 @@ function assertString(value, code, detail) {
 function validateNormativeExclusion(unit, pathName) {
   const proof = unit.normativeExclusion;
   if (proof == null) return false;
+  if (unit.id === 'pac-missing-structured-operands') {
+    if (unit.status !== 'excluded' || unit.coverage !== 'partial' || unit.preexisting !== true
+      || proof.schemaVersion !== 'machine-effects-preexisting-normative-exclusion/v1'
+      || proof.classification !== 'PREEXISTING_NORMATIVE_EXCLUSION'
+      || proof.baselineCommit !== STAGE2_BASELINE_COMMIT
+      || proof.baselineRef !== 'js/targets/architecture/arm64e/effects.js'
+      || proof.baselineBlob !== '56a7b2bb6fa34d2d4206f5b463770e6f2726efbc'
+      || proof.scope !== 'malformed-operands-outside-validated-pac-decoder-denominator'
+      || proof.currentProofSource !== 'tools/validation/machine-effects/arm64e-pac-denominator.mjs'
+      || proof.currentProofTest !== 'tests/machine-effects/arm64e-pac-denominator.test.mjs') {
+      fail('a2-denominator-arm64e-malformed-exclusion-drift', pathName);
+    }
+    const baselineBlob = spawnSync('git', ['rev-parse', `${STAGE2_BASELINE_COMMIT}:${proof.baselineRef}`], { cwd:ROOT, encoding:'utf8' });
+    if (baselineBlob.status !== 0 || baselineBlob.stdout.trim() !== proof.baselineBlob) fail('a2-denominator-arm64e-malformed-exclusion-baseline-unresolved', pathName);
+    return true;
+  }
   if (unit.id !== 'fence.i' || unit.status !== 'excluded' || unit.coverage !== 'unsupported' || unit.preexisting !== true) {
     fail('a2-denominator-normative-exclusion-unit-invalid', `${pathName}:${unit.id}`);
   }
@@ -321,6 +342,19 @@ export function validateA2DenominatorInventory(inventory = loadA2DenominatorInve
       if (!baseline || baseline.kind !== 'delegation' || baseline.sourceArchitecture !== 'arm64' || baseline.status !== 'excluded' || baseline.preexisting !== true || !baseline.reason) fail('a2-denominator-arm64e-baseline-alias-missing');
       const exclusion = architecture.exclusions?.find((item) => item?.id === 'pac-missing-structured-operands');
       if (!exclusion || exclusion.status !== 'excluded') fail('a2-denominator-pac-partial-exclusion-missing');
+      const pacDenominator = architecture.decoder?.pacDenominator;
+      const livePac = validateArm64ePacDenominator();
+      if (!pacDenominator || pacDenominator.schemaVersion !== ARM64E_PAC_DENOMINATOR_SCHEMA
+        || pacDenominator.denominatorId !== ARM64E_PAC_DENOMINATOR_ID
+        || pacDenominator.source !== 'tools/validation/machine-effects/arm64e-pac-denominator.mjs'
+        || pacDenominator.test !== 'tests/machine-effects/arm64e-pac-denominator.test.mjs'
+        || pacDenominator.encodingFamilyCount !== livePac.encodingFamilyCount
+        || pacDenominator.encodingCaseCount !== livePac.encodingCaseCount
+        || pacDenominator.mnemonicCount !== livePac.mnemonicCount
+        || !sameSet(pacDenominator.oracleIds || [],livePac.oracleIds)
+        || architecture.decoder.missingUnits.includes('arm64e:a64+pac:all-pac-decoder-encodings-and-aliases')) {
+        fail('a2-denominator-arm64e-pac-proof-drift', pathName);
+      }
     }
     if (architecture.id === 'riscv64') {
       const system = families.find((family) => family.id === 'system');

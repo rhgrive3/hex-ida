@@ -69,6 +69,8 @@ const items = {
     'tests/machine-effects/arm64-a64-integer-denominator.test.mjs',
     'tools/validation/machine-effects/arm64-a64-fp-denominator.mjs',
     'tests/machine-effects/arm64-a64-fp-denominator.test.mjs',
+    'tools/validation/machine-effects/arm64e-pac-denominator.mjs',
+    'tests/machine-effects/arm64e-pac-denominator.test.mjs',
   ]),
   'S2-A7-NATIVE': item(nativeProfiles, units(nativeProfiles, nativeRuntimeCapabilities), [
     'js/runtime/authority.js', 'js/runtime/stage2.js', 'tests/stage2/runtime-authority.test.mjs',

@@ -14,7 +14,7 @@ const validation = validateA2DenominatorInventory(inventory);
 assert.equal(validation.valid, true);
 assert.equal(validation.architectureCount, 4);
 assert.equal(validation.fullIsaCoverageIncluded, false);
-assert.equal(validation.explicitDecoderGapCount >= 4, true);
+assert.equal(validation.explicitDecoderGapCount, 3, 'only baseline A64, delegated A64, and x86 long-64 decoder denominators remain');
 assert.equal(validation.blockingGapCount > validation.explicitDecoderGapCount, true);
 assert.equal(validation.terminalEligible, false, 'partial and unsupported in-profile effect families remain blocking gaps');
 assert.ok(validation.blockingGaps.includes('arm64:a64:all-decoder-encodings-and-aliases'));
@@ -32,6 +32,10 @@ assert.ok(validation.blockingGaps.includes('x86_64:long-64:effect-family:atomic'
 assert.equal(validation.blockingGaps.includes('x86_64:long-64:effect-family:lea'), false,
   'the exhaustive long-mode LEA encoding discriminator proof closes only LEA ownership');
 assert.ok(validation.blockingGaps.includes('arm64e:a64+pac:alias:baseline-a64-delegation'), 'delegated baseline exclusions remain profile blockers');
+assert.equal(validation.blockingGaps.includes('arm64e:a64+pac:all-pac-decoder-encodings-and-aliases'), false,
+  'the finite PAC encoding discriminator and independent decoder oracle close the extension decoder unit');
+assert.equal(validation.blockingGaps.includes('arm64e:a64+pac:explicit-case:pac-missing-structured-operands'), false,
+  'malformed operand records remain a baseline-bound fail-closed exclusion outside the valid PAC decoder denominator');
 
 const report = a2DenominatorReport(inventory);
 assert.equal(report.validation.valid, true);
@@ -62,6 +66,18 @@ function clone() { return JSON.parse(JSON.stringify(inventory)); }
   const mutated = clone();
   mutated.architectures.find((architecture) => architecture.id === 'arm64e').pointerAuthenticationMnemonics.pop();
   assert.throws(() => validateA2DenominatorInventory(mutated), /a2-denominator-pac-registry-drift/);
+}
+
+{
+  const mutated = clone();
+  mutated.architectures.find((architecture) => architecture.id === 'arm64e').decoder.pacDenominator.encodingCaseCount--;
+  assert.throws(() => validateA2DenominatorInventory(mutated), /a2-denominator-arm64e-pac-proof-drift/);
+}
+
+{
+  const mutated = clone();
+  mutated.architectures.find((architecture) => architecture.id === 'arm64e').exclusions[0].normativeExclusion.baselineBlob = '0'.repeat(40);
+  assert.throws(() => validateA2DenominatorInventory(mutated), /a2-denominator-arm64e-malformed-exclusion-drift/);
 }
 
 {

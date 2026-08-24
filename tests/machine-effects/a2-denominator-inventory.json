@@ -132,8 +132,19 @@
         "provider": "capstone/backend",
         "contract": "external",
         "enumerationStatus": "excluded",
-        "reason": "The production Capstone bridge does not expose a finite A64+PAC instruction-family registry for this inventory.",
-        "missingUnits": ["arm64e:a64+pac:all-a64-decoder-encodings-and-aliases", "arm64e:a64+pac:all-pac-decoder-encodings-and-aliases"]
+        "reason": "Baseline A64 delegation remains incomplete; the PAC extension has a separate exact finite discriminator denominator.",
+        "units": ["arm64e:a64+pac:all-a64-decoder-encodings-and-aliases", "arm64e:a64+pac:all-pac-decoder-encodings-and-aliases"],
+        "missingUnits": ["arm64e:a64+pac:all-a64-decoder-encodings-and-aliases"],
+        "pacDenominator": {
+          "schemaVersion": "arm64e-pac-denominator/v1",
+          "denominatorId": "arm64e:a64+pac:encoding-discriminators:v1",
+          "source": "tools/validation/machine-effects/arm64e-pac-denominator.mjs",
+          "test": "tests/machine-effects/arm64e-pac-denominator.test.mjs",
+          "encodingFamilyCount": 38,
+          "encodingCaseCount": 44491,
+          "mnemonicCount": 38,
+          "oracleIds": ["arm-architecture-reference-manual-pauth-encodings", "deployed-capstone-5-arm64", "llvm-mc-18-aarch64-pauth-disassembler"]
+        }
       },
       "aliases": [
         { "id": "baseline-a64-delegation", "kind": "delegation", "sourceArchitecture": "arm64", "status": "excluded", "preexisting": true, "reason": "Ordinary A64 is delegated to ARM64 and inherits its explicit exclusions." }
@@ -152,7 +163,20 @@
         ]
       },
       "exclusions": [
-        { "id": "pac-missing-structured-operands", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "PAC forms without required destination/modifier/address evidence remain partial." }
+        {
+          "id": "pac-missing-structured-operands", "status": "excluded", "coverage": "partial", "preexisting": true,
+          "reason": "Malformed PAC records without the operands guaranteed by the validated decoder denominator fail closed and are outside its valid-encoding scope.",
+          "normativeExclusion": {
+            "schemaVersion": "machine-effects-preexisting-normative-exclusion/v1",
+            "classification": "PREEXISTING_NORMATIVE_EXCLUSION",
+            "baselineCommit": "3f3778e5f2bef638456da19609d616d71a3daedc",
+            "baselineRef": "js/targets/architecture/arm64e/effects.js",
+            "baselineBlob": "56a7b2bb6fa34d2d4206f5b463770e6f2726efbc",
+            "scope": "malformed-operands-outside-validated-pac-decoder-denominator",
+            "currentProofSource": "tools/validation/machine-effects/arm64e-pac-denominator.mjs",
+            "currentProofTest": "tests/machine-effects/arm64e-pac-denominator.test.mjs"
+          }
+        }
       ]
     },
     {

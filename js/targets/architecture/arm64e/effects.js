@@ -7,7 +7,7 @@ import {
   createTemporaryValue,
 } from '../../../semantics/effects/index.js';
 
-export const ARM64E_EFFECTS_SEMANTIC_VERSION = '1';
+export const ARM64E_EFFECTS_SEMANTIC_VERSION = '2';
 
 const POINTER_BITS = 64;
 const KEY_BITS = 128;
@@ -120,7 +120,7 @@ function operandRegisterId(operand) {
   let id = String(raw).trim().toLowerCase().replace(/^%/, '');
   if (id === 'lr') id = 'x30';
   if (id === 'fp') id = 'x29';
-  if (/^x(?:[0-9]|[12][0-9]|30)$/.test(id) || id === 'sp') return id;
+  if (/^x(?:[0-9]|[12][0-9]|30)$/.test(id) || id === 'sp' || id === 'xzr') return id;
   return null;
 }
 
@@ -175,6 +175,7 @@ function tmp(id, bits = POINTER_BITS) {
 }
 
 function readRegister(operations, registerId, temporaryId, bits = POINTER_BITS, metadata) {
+  if (registerId === 'xzr') return createBitVectorValue(bits, 0n);
   const value = tmp(temporaryId, bits);
   operations.push(createMachineOperation({
     kind: 'register-read',
@@ -186,6 +187,7 @@ function readRegister(operations, registerId, temporaryId, bits = POINTER_BITS, 
 }
 
 function writeRegister(operations, registerId, value, metadata) {
+  if (registerId === 'xzr') return;
   operations.push(createMachineOperation({
     kind: 'register-write',
     register: reg(registerId, POINTER_BITS),
@@ -320,7 +322,7 @@ function transformPointer(decoded, context, instructionId, descriptor, transform
     intrinsicId: `arm64e.pointer.${transform}`,
     inputs: [pointer, modifier.value, keyValue, architectureState],
     output: result,
-    registersRead: [destination, ...(modifier.metadata.registerId ? [modifier.metadata.registerId] : []), keyId, PAUTH_STATE_ID],
+    registersRead: [destination, ...(modifier.metadata.registerId ? [modifier.metadata.registerId] : []), keyId, PAUTH_STATE_ID].filter((id) => id !== 'xzr'),
     metadata: {
       transform,
       keyIdentity: keyId,
@@ -360,7 +362,7 @@ function stripPointer(decoded, context, instructionId, descriptor) {
     intrinsicId: 'arm64e.pointer.strip',
     inputs: [pointer, architectureState],
     output: result,
-    registersRead: [destination, PAUTH_STATE_ID],
+    registersRead: [destination, PAUTH_STATE_ID].filter((id) => id !== 'xzr'),
     metadata: {
       transform: 'strip',
       pointerKind: descriptor.kind,
@@ -399,7 +401,7 @@ function genericCode(decoded, context, instructionId) {
     intrinsicId: 'arm64e.pointer.generic-code',
     inputs: [value, modifier, keyValue, architectureState],
     output: result,
-    registersRead: [valueRegister, modifierRegister, keyId, PAUTH_STATE_ID],
+    registersRead: [valueRegister, modifierRegister, keyId, PAUTH_STATE_ID].filter((id) => id !== 'xzr'),
     metadata: {
       transform: 'generic-code',
       keyIdentity: keyId,
@@ -445,7 +447,7 @@ function authenticateControlTarget(decoded, context, instructionId, descriptor, 
     intrinsicId: 'arm64e.pointer.authenticate',
     inputs: [target, modifier.value, keyValue, architectureState],
     output: authenticatedTarget,
-    registersRead: [targetRegister, ...(modifier.metadata.registerId ? [modifier.metadata.registerId] : []), keyId, PAUTH_STATE_ID],
+    registersRead: [targetRegister, ...(modifier.metadata.registerId ? [modifier.metadata.registerId] : []), keyId, PAUTH_STATE_ID].filter((id) => id !== 'xzr'),
     metadata: {
       transform: 'authenticate',
       use: 'control-target',
