@@ -75,6 +75,19 @@ function validateStatus(unit, pathName) {
   }
 }
 
+function collectStatusGaps(unit, prefix, { exempt = false } = {}) {
+  if (!unit || typeof unit !== 'object') return [];
+  const pathName = `${prefix}:${unit.id}`;
+  const gaps = [];
+  if (!exempt && unit.status !== 'exact') gaps.push(pathName);
+  for (const subunit of unit.subunits || []) {
+    // Keep nested unit identities aligned with the canonical profile lock,
+    // which treats subunits as a path extension of their parent family.
+    gaps.push(...collectStatusGaps(subunit, pathName));
+  }
+  return gaps;
+}
+
 function validateDecoder(architecture, pathName) {
   const decoder = architecture.decoder;
   if (!decoder || typeof decoder !== 'object') fail('a2-denominator-decoder-required', pathName);
@@ -163,10 +176,13 @@ export function validateA2DenominatorInventory(inventory = loadA2DenominatorInve
 
   const blockingGaps = inventory.architectures.flatMap((architecture) => [
     ...architecture.decoder.missingUnits,
-    ...(architecture.effectRegistry.families || [])
-      .filter((unit) => unit.status !== 'exact' && !(architecture.id === 'riscv64' && unit.id === 'fallback-unmatched-decoder-family'))
-      .map((unit) => `${architecture.profileId}:effect-family:${unit.id}`),
-    ...(architecture.exclusions || []).filter((unit) => unit.status !== 'exact').map((unit) => `${architecture.profileId}:explicit-case:${unit.id}`),
+    ...(architecture.effectRegistry.families || []).flatMap((unit) => collectStatusGaps(
+      unit,
+      `${architecture.profileId}:effect-family`,
+      { exempt: architecture.id === 'riscv64' && unit.id === 'fallback-unmatched-decoder-family' },
+    )),
+    ...(architecture.exclusions || []).flatMap((unit) => collectStatusGaps(unit, `${architecture.profileId}:explicit-case`)),
+    ...(architecture.aliases || []).flatMap((unit) => collectStatusGaps(unit, `${architecture.profileId}:alias`)),
   ]).sort();
   return Object.freeze({
     valid: true,

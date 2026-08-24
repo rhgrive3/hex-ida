@@ -19,6 +19,7 @@ assert.equal(validation.blockingGapCount > validation.explicitDecoderGapCount, t
 assert.equal(validation.terminalEligible, false, 'partial and unsupported in-profile effect families remain blocking gaps');
 assert.ok(validation.blockingGaps.includes('arm64:a64:all-decoder-encodings-and-aliases'));
 assert.ok(validation.blockingGaps.includes('x86_64:long-64:effect-family:atomic'));
+assert.ok(validation.blockingGaps.includes('arm64e:a64+pac:alias:baseline-a64-delegation'), 'delegated baseline exclusions remain profile blockers');
 
 const report = a2DenominatorReport(inventory);
 assert.equal(report.validation.valid, true);
@@ -79,6 +80,22 @@ function clone() { return JSON.parse(JSON.stringify(inventory)); }
   const mutated = clone();
   mutated.architectures.find((architecture) => architecture.id === 'riscv64').decoder.missingUnits[0] = 'x86_64:long-64:wrong-denominator';
   assert.throws(() => validateA2DenominatorInventory(mutated), /a2-denominator-decoder-missing-unit-profile-drift/);
+}
+
+{
+  const mutated = clone();
+  const system = mutated.architectures
+    .find((architecture) => architecture.id === 'riscv64')
+    .effectRegistry.families
+    .find((family) => family.id === 'system');
+  system.status = 'exact';
+  system.coverage = 'exact';
+  system.oracle = 'riscv-unprivileged-isa-system-test-mutation';
+  const gaps = a2DenominatorReport(mutated).validation.blockingGaps;
+  assert.ok(gaps.includes('riscv64:rv64imc:effect-family:system:ecall'), 'nested partial effects must remain denominator blockers');
+  assert.ok(gaps.includes('riscv64:rv64imc:effect-family:system:ebreak'), 'nested partial effects must remain denominator blockers');
+  assert.ok(gaps.includes('riscv64:rv64imc:effect-family:system:fence.i'), 'nested out-of-profile effects must remain explicit');
+  assert.equal(gaps.includes('riscv64:rv64imc:effect-family:system'), false, 'an exact parent must not mask its nested gaps');
 }
 
 {
