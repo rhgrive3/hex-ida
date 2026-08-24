@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   A7_X86_ACTIVE_OPERATION_CAPABILITIES,
   A7_X86_REQUIRED_CAPABILITIES,
@@ -18,6 +20,9 @@ import {
   RUNTIME_PROVIDER_PROTOCOL_VERSION,
   RuntimeProviderProtocolClient,
 } from '../../js/runtime/provider-protocol.js';
+
+const A7_RUNTIME_FIXTURE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'fixtures/a7-runtime');
+process.env.PYTHONPATH = [A7_RUNTIME_FIXTURE_DIR, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter);
 
 const proof = collectA7X86LldbProof();
 assert.equal(proof.status, 'exact-active-provider-observed');
@@ -106,8 +111,6 @@ assert.throws(() => parseLldbActiveOpsOutput(activeMarker({
   cancel:{ observed:true, inFlightObserved:true, interruptAccepted:true, commandSettled:false, processId:101, threadId:7, settlement:'cancelled', providerDisposition:'interrupted-command', lateResultRejected:true, lateStateStable:true, registers:{ rip:'0x1' } },
 }), { fixturePath:'/tmp/fixture', probeWord:0x2000n }), /cancel-settlement-missing/);
 
-// Authority identity negatives: stale/provider-substituted/wrong-target evidence
-// cannot be laundered through the active observation.
 for (const [field, value, reason] of [
   ['sessionIdentity', `${proof.binding.sessionIdentity}:stale`, 'runtime-observation-sessionIdentity-mismatch'],
   ['providerIdentity', `${proof.binding.providerIdentity}:substituted`, 'runtime-observation-providerIdentity-mismatch'],
@@ -133,7 +136,6 @@ class MemoryTransport {
   close() { this.closed = true; }
 }
 
-// disconnect during an operation settles the owner and rejects late success.
 {
   const transport = new MemoryTransport();
   const client = new RuntimeProviderProtocolClient(transport, { timeoutMs:1000 });
@@ -146,7 +148,6 @@ class MemoryTransport {
   assert.equal(client.receive({ protocol:RUNTIME_PROVIDER_PROTOCOL, version:RUNTIME_PROVIDER_PROTOCOL_VERSION, type:'response', id:request.id, epoch:1, result:{ late:true } }), false);
 }
 
-// explicit cancellation removes ownership before a late provider completion.
 {
   const transport = new MemoryTransport();
   const client = new RuntimeProviderProtocolClient(transport, { timeoutMs:1000 });
@@ -161,8 +162,6 @@ class MemoryTransport {
   assert.equal(client.receive({ protocol:RUNTIME_PROVIDER_PROTOCOL, version:RUNTIME_PROVIDER_PROTOCOL_VERSION, type:'response', id:request.id, epoch:1, result:{ late:true } }), false);
 }
 
-// Epoch rotation cancels an old operation and prevents its response from
-// becoming success in the replacement session.
 {
   const transport = new MemoryTransport();
   const client = new RuntimeProviderProtocolClient(transport, { timeoutMs:1000 });
