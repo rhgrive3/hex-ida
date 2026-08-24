@@ -41,7 +41,9 @@ test('VEX support is instruction-specific and does not overclaim AVX2 256-bit pa
   const v256=effects('vpaddd',[reg('ymm0','write'),reg('ymm1','read'),reg('ymm2','read')],{prefixes:vex2(0xf4),instructionId:'p5-3:vpaddd256'}); assert.equal(v256.completeness,'partial'); assert.match(v256.unknownEffects.reason,/vector-width-unmodelled/);
 });
 
-test('MMX independent physical state is never fabricated', () => {
-  assert.throws(()=>createX86DecodedInstruction(instruction('pxor',[reg('mm0'),reg('mm1')],{instructionId:'p5-3:mmx'})),/x86-decoded-instruction-unknown-register/);
+test('MMX is a canonical x87-stack alias while EMMS semantics remain a separate integration step', () => {
+  const decoded=createX86DecodedInstruction(instruction('pxor',[reg('mm0'),reg('mm1')],{instructionId:'p5-3:mmx'}));
+  assert.deepEqual(decoded.detail.operands.map((operand)=>operand.register.physicalId),['x87-stack','x87-stack']);
+  assert.deepEqual(decoded.detail.operands.map((operand)=>operand.register.viewBits),[64,64]);
   const emms=effects('emms',[],{prefixes:legacy(),instructionId:'p5-3:emms'}); assert.equal(emms.completeness,'partial'); assert.match(emms.unknownEffects.reason,/mmx-x87-alias-state-unmodelled/);
 });
