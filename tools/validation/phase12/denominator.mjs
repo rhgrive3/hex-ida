@@ -121,9 +121,7 @@ const REQUIRED_NORMATIVE_EXCLUSIONS = Object.freeze(new Set([
   'remote.derived-analysis-egress',
 ]));
 
-const REQUIRED_BLOCKING_GAPS = Object.freeze(new Set([
-  'remote.remote-canonical-transport',
-]));
+const REQUIRED_BLOCKING_GAPS = Object.freeze(new Set());
 
 const EXPECTED_TRUTH = Object.freeze({
   knowledgePackages: Object.freeze({

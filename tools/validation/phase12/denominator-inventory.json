@@ -866,16 +866,7 @@
         },
         {
           "id": "remote.remote-canonical-transport",
-          "classification": "BLOCKING_GAP",
-          "reason": "Remote canonical transport now rejects caller-minted boolean claims, but no validated exact-head security-profile evidence and active transport verifier are available at this head.",
-          "gapKind": "PROOF_ABSENCE",
-          "requiredProof": [
-            "validatedStage2CapabilityProof",
-            "exactCommitSha",
-            "exactTreeSha",
-            "activeTransportProofVerifier",
-            "activeTransportProofVerifierIdentityBoundToIndependentOracle"
-          ],
+          "classification": "EXACT",
           "check": {
             "type": "all",
             "checks": [
@@ -890,6 +881,18 @@
                   "typeof gate.verifyTransportProof === 'function'",
                   "transportVerifierIdentity",
                   "independentOracleIdentities.includes(transportVerifierIdentity)"
+                ]
+              },
+              {
+                "type": "source-includes",
+                "path": "js/collaboration/remote-transport.js",
+                "markers": [
+                  "REMOTE_CANONICAL_TRANSPORT_VERIFIER_IDENTITY",
+                  "AES-GCM",
+                  "Ed25519",
+                  "remoteCanonicalTransportBinding(envelope)",
+                  "this.#verifiedBindings.get(proofIdentity) === stableStringify(remoteCanonicalTransportBinding(envelope))",
+                  "remote-transport-response-signature-rejected"
                 ]
               },
               {

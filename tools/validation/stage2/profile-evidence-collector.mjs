@@ -96,6 +96,15 @@ const RULES = Object.freeze({
     realFixtureRefs: ['tests/phase12/fixtures/profile-evidence/pattern-struct.json'],
     commandIds: ['p12-patterns'],
   }),
+  'S2-P12-COLLAB-REMOTE': Object.freeze({
+    providerProfileIds: [],
+    sourceRefs: ['js/collaboration/remote-authority.js', 'js/collaboration/remote-transport.js'],
+    testRefs: ['tests/stage2/remote-collaboration.test.mjs', 'tests/stage2/remote-canonical-transport.test.mjs'],
+    negativeTestRefs: ['tests/stage2/remote-canonical-transport.test.mjs'],
+    activeTransportCommandIds: ['p12-remote-transport'],
+    commandIds: ['p12-remote-transport'],
+    independentOracleCommandIds: ['p12-remote-transport'],
+  }),
 });
 export const PROFILE_UNIT_PROOF_RULES = RULES;
 
@@ -184,7 +193,9 @@ export function inspectProfileEvidencePrerequisites() {
     const staticFixtures = (rule.realFixtureRefs || []).filter((ref) => fs.existsSync(path.join(ROOT, ref)));
     const managedFixture = itemId.startsWith('S2-M6-') && managed.has(itemId.slice('S2-M6-'.length).toLowerCase());
     const f6Fixtures = Array.isArray(rule.f6Profiles) && rule.f6Profiles.length > 0 && rule.f6Profiles.every((profile) => f6.found.has(profile));
-    if (staticFixtures.length === 0 && !managedFixture && !f6Fixtures) failures.push(`missing-real-profile-fixture:${itemId}`);
+    const activeTransport = Array.isArray(rule.activeTransportCommandIds) && rule.activeTransportCommandIds.length > 0
+      && rule.activeTransportCommandIds.every((id) => rule.commandIds.includes(id));
+    if (staticFixtures.length === 0 && !managedFixture && !f6Fixtures && !activeTransport) failures.push(`missing-real-profile-fixture:${itemId}`);
   }
   return Object.freeze({ ok: failures.length === 0, failures: Object.freeze(failures), managed, f6 });
 }
@@ -236,6 +247,7 @@ export function collectProfileEvidence({ expectedCommitSha, expectedTreeSha, out
     runCanonical('p12-knowledge', ['tests/phase12/knowledge/package.test.mjs']),
     runCanonical('p12-rules', ['tests/phase12/knowledge/rules.test.mjs']),
     runCanonical('p12-patterns', ['tests/phase12/pattern/evaluator.test.mjs']),
+    runCanonical('p12-remote-transport', ['tests/stage2/remote-canonical-transport.test.mjs']),
   ];
   const commandProofMarkers = Object.freeze({
     'a7-lldb-real-fixture': '[stage2] active x86 LLDB A7 provider proof passed; canonical evidence assembly remains required',
@@ -245,6 +257,7 @@ export function collectProfileEvidence({ expectedCommitSha, expectedTreeSha, out
     'p12-knowledge': '[phase12] package/provenance/recognition tests passed',
     'p12-rules': '[phase12] deterministic capability-rule tests passed',
     'p12-patterns': '[phase12] bounded declarative pattern tests passed',
+    'p12-remote-transport': '[stage2] canonical encrypted remote transport and independent Ed25519 oracle passed',
   });
   if (commands.some((command) => command.status !== 'passed')) throw new Error(`profile-proof-command-failed:${commands.filter((command) => command.status !== 'passed').map((command) => command.id).join(',')}`);
   for (const [id, marker] of Object.entries(commandProofMarkers)) {
@@ -274,6 +287,7 @@ export function collectProfileEvidence({ expectedCommitSha, expectedTreeSha, out
       ...f6FixtureRefs.map(fixtureIdentity),
       ...(f6FixtureRefs.length ? [fixtureIdentity(F6_MANIFEST_PATH)] : []),
       ...profileFixtureRefs.map(fixtureIdentity),
+      ...(rule.activeTransportCommandIds || []).map((id) => commandOutputIdentities.get(id)),
     ];
     const negativeTestIdentities = (rule.negativeTestRefs || rule.testRefs).map(gitIdentity);
     const independentOracleIdentities = (rule.independentOracleCommandIds || []).map((id) => commandOutputIdentities.get(id));

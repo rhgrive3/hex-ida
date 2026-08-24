@@ -531,6 +531,10 @@
         "collaboration:remote-security-v1:remote.security.transport-proof-classes"
       ],
       "inventoryRefs": [
+        "js/collaboration/remote-authority.js",
+        "js/collaboration/remote-transport.js",
+        "tests/stage2/remote-canonical-transport.test.mjs",
+        "tests/stage2/remote-collaboration.test.mjs",
         "tools/validation/phase12/denominator-inventory.json",
         "tools/validation/phase12/denominator.mjs",
         "tools/validation/stage2/build-profile-denominator-inventory.mjs"

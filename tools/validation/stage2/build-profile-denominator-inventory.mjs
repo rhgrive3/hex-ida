@@ -110,6 +110,12 @@ for (const [id, category, profile] of [
   items[id] = item([profile], phase12Category[category].map((unitId) => `${profile}:${unitId}`), [
     'tools/validation/phase12/denominator-inventory.json',
     'tools/validation/phase12/denominator.mjs',
+    ...(id === 'S2-P12-COLLAB-REMOTE' ? [
+      'js/collaboration/remote-authority.js',
+      'js/collaboration/remote-transport.js',
+      'tests/stage2/remote-collaboration.test.mjs',
+      'tests/stage2/remote-canonical-transport.test.mjs',
+    ] : []),
   ]);
 }
 
