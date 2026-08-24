@@ -23,6 +23,11 @@ assert.equal(generatedOutputMode({ eventName: 'pull_request', headRef: 'feature/
 assert.equal(generatedOutputMode({ eventName: 'push', ref: 'refs/heads/main' }), GENERATED_OUTPUT_MODE.ENFORCE);
 assert.equal(generatedOutputMode({ eventName: 'workflow_dispatch' }), GENERATED_OUTPUT_MODE.ENFORCE);
 assert.equal(generatedOutputMode({ eventName: 'pull_request', headRef: 'dev-agent-hardening/' }), GENERATED_OUTPUT_MODE.EPHEMERAL);
+assert.equal(generatedOutputMode({ eventName: 'pull_request', headRef: 'fix/stage2-a2-x86-memory' }), GENERATED_OUTPUT_MODE.EPHEMERAL);
+assert.equal(generatedOutputMode({ eventName: 'pull_request', headRef: 'fix/stage2-a2-arm64-memory' }), GENERATED_OUTPUT_MODE.EPHEMERAL);
+assert.equal(generatedOutputMode({ eventName: 'pull_request', headRef: 'fix/stage2-a7-active-ops' }), GENERATED_OUTPUT_MODE.EPHEMERAL);
+assert.equal(generatedOutputMode({ eventName: 'push', ref: 'refs/heads/fix/stage2-a2-x86-memory' }), GENERATED_OUTPUT_MODE.ENFORCE);
+assert.equal(generatedOutputMode({ eventName: 'pull_request', headRef: 'fix/stage2-a2' }), GENERATED_OUTPUT_MODE.ENFORCE);
 
 for (const workflow of [
   '.github/workflows/generated-sync.yml',
