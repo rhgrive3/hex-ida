@@ -130,7 +130,7 @@ jobs:
         if: >-
           github.event_name == 'pull_request' &&
           github.base_ref == 'hex/p5-x86-integration' &&
-          matrix.name == 'contracts-core' &&
+          (matrix.name == 'contracts-core' || matrix.name == 'semantic-v2') &&
           (
             github.head_ref == 'hex/p5-1-x86-int-control' ||
             github.head_ref == 'hex/p5-2-x86-memory-atomic' ||
