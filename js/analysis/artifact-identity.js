@@ -42,7 +42,7 @@ const KIND_SET = new Set(PHASE7_ARTIFACT_KINDS);
  *
  * This is the machine-readable form of the plan's change-impact table. It is
  * consulted by `dependencyClassFor` so that invalidation is neither broader
- * (FM-14) nor narrower (FM-15) than the real dependency edges.
+ * (FM-14) nor narrower than the real dependency edges.
  */
 export const PHASE7_DEPENDENCY_CLASSES = deepFreeze({
   'phase7.alias.region': ['binary', 'semantic', 'cfg', 'ssa', 'memoryssa', 'aliasOptions'],
@@ -94,12 +94,30 @@ const FORBIDDEN_KEY_FIELDS = Object.freeze([
   'userName', 'userComment', 'bookmark', 'selection', 'scrollOffset', 'theme',
 ]);
 
-function assertNoPresentationState(config) {
-  if (!config || typeof config !== 'object') return;
-  for (const key of Object.keys(config)) {
-    if (FORBIDDEN_KEY_FIELDS.includes(key)) fail(`phase7-artifact-presentation-state-in-key:${key}`);
-    const value = config[key];
-    if (value && typeof value === 'object') assertNoPresentationState(value);
+function assertNoPresentationState(config, seen = new WeakSet()) {
+  if (!config || typeof config !== 'object' || seen.has(config)) return;
+  seen.add(config);
+  try {
+    if (config instanceof Map) {
+      for (const [key, value] of config) {
+        if (typeof key === 'string' && FORBIDDEN_KEY_FIELDS.includes(key)) {
+          fail(`phase7-artifact-presentation-state-in-key:${key}`);
+        }
+        assertNoPresentationState(key, seen);
+        assertNoPresentationState(value, seen);
+      }
+      return;
+    }
+    if (config instanceof Set) {
+      for (const value of config) assertNoPresentationState(value, seen);
+      return;
+    }
+    for (const key of Object.keys(config)) {
+      if (FORBIDDEN_KEY_FIELDS.includes(key)) fail(`phase7-artifact-presentation-state-in-key:${key}`);
+      assertNoPresentationState(config[key], seen);
+    }
+  } finally {
+    seen.delete(config);
   }
 }
 
