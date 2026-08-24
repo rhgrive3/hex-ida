@@ -62,8 +62,26 @@ function validateStatus(unit, pathName) {
   if (!['exact', 'excluded'].includes(unit.status)) fail('a2-denominator-unit-status-invalid', `${pathName}:${unit.id}`);
   if (unit.status === 'exact') {
     if (!['exact', 'exact-with-intrinsic'].includes(unit.coverage)) fail('a2-denominator-exact-coverage-invalid', `${pathName}:${unit.id}`);
-    if (unit.preexisting !== true) fail('a2-denominator-exact-preexisting-evidence-required', `${pathName}:${unit.id}`);
     assertString(unit.oracle, 'a2-denominator-exact-oracle-required', `${pathName}:${unit.id}`);
+    if (unit.preexisting !== true) {
+      const proof = unit.proof;
+      if (!proof || proof.schemaVersion !== 'machine-effects-effect-unit-proof/v1') {
+        fail('a2-denominator-exact-current-proof-required', `${pathName}:${unit.id}`);
+      }
+      for (const [field, expectedPrefix] of [
+        ['source', 'js/targets/architecture/'],
+        ['test', 'tests/'],
+        ['denominatorTest', 'tests/machine-effects/'],
+      ]) {
+        if (typeof proof[field] !== 'string' || !proof[field].startsWith(expectedPrefix)) {
+          fail('a2-denominator-exact-current-proof-ref-invalid', `${pathName}:${unit.id}:${field}`);
+        }
+        const resolved = path.resolve(ROOT, proof[field]);
+        if (!resolved.startsWith(`${ROOT}${path.sep}`) || !fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) {
+          fail('a2-denominator-exact-current-proof-ref-missing', `${pathName}:${unit.id}:${field}`);
+        }
+      }
+    }
   } else {
     if (!['partial', 'unknown', 'unsupported'].includes(unit.coverage)) fail('a2-denominator-exclusion-coverage-invalid', `${pathName}:${unit.id}`);
     if (unit.preexisting !== true) fail('a2-denominator-exclusion-must-be-preexisting', `${pathName}:${unit.id}`);
@@ -211,6 +229,21 @@ export function validateA2DenominatorInventory(inventory = loadA2DenominatorInve
       if (!baseline || baseline.kind !== 'delegation' || baseline.sourceArchitecture !== 'arm64' || baseline.status !== 'excluded' || baseline.preexisting !== true || !baseline.reason) fail('a2-denominator-arm64e-baseline-alias-missing');
       const exclusion = architecture.exclusions?.find((item) => item?.id === 'pac-missing-structured-operands');
       if (!exclusion || exclusion.status !== 'excluded') fail('a2-denominator-pac-partial-exclusion-missing');
+    }
+    if (architecture.id === 'riscv64') {
+      const system = families.find((family) => family.id === 'system');
+      const environmentUnits = [system, ...(system?.subunits || []).filter((unit) => ['ecall', 'ebreak'].includes(unit.id))];
+      if (environmentUnits.length !== 3) fail('a2-denominator-riscv64-environment-unit-set-drift');
+      for (const unit of environmentUnits) {
+        if (unit.status !== 'exact' || unit.coverage !== 'exact-with-intrinsic' || unit.preexisting !== false) {
+          fail('a2-denominator-riscv64-environment-exactness-drift', unit.id);
+        }
+        if (unit.proof?.source !== 'js/targets/architecture/riscv64/effects/system.js'
+          || unit.proof?.test !== 'tests/phase6/effects/control-memory.test.mjs'
+          || unit.proof?.denominatorTest !== 'tests/machine-effects/riscv64-rv64imc-denominator.test.mjs') {
+          fail('a2-denominator-riscv64-environment-proof-drift', unit.id);
+        }
+      }
     }
   }
 

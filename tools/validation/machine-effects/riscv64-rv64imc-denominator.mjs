@@ -84,8 +84,8 @@ export const RV64IMC_32BIT_ENCODING_FAMILIES = Object.freeze([
   entry('rv64i-fence', 0xf00fffff, 0x0000000f, 'fence'),
   // Canonical FENCE.TSO tuple: fm=1000, predecessor=RW, successor=RW.
   entry('rv64i-fence-tso', 0xffffffff, 0x8330000f, 'fence'),
-  entry('rv64i-ecall', 0xffffffff, 0x00000073, 'ecall', 'partial-environment'),
-  entry('rv64i-ebreak', 0xffffffff, 0x00100073, 'ebreak', 'partial-environment'),
+  entry('rv64i-ecall', 0xffffffff, 0x00000073, 'ecall', 'exact-with-intrinsic'),
+  entry('rv64i-ebreak', 0xffffffff, 0x00100073, 'ebreak', 'exact-with-intrinsic'),
 ]);
 
 export const RV64IMC_COMPRESSED_ENCODING_FAMILIES = Object.freeze([

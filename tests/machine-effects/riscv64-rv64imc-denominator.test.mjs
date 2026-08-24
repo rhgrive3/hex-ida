@@ -45,10 +45,15 @@ function assertTruthfulEffects(instruction, family) {
   assert.ok(effects, `${family.id}: supported decode must be owned by a MachineEffects family`);
   assert.equal(effects.architectureId, 'riscv64');
   assert.equal(effects.metadata.instructionFamily, instruction.fields.op);
-  if (family.completeness === 'partial-environment') {
-    assert.equal(effects.completeness, 'partial');
-    assert.equal(effects.unknownEffects?.preservation, 'not-assumed');
+  if (family.completeness === 'exact-with-intrinsic') {
+    assert.equal(effects.completeness, 'exact-with-intrinsic');
+    assert.equal(effects.unknownEffects, undefined);
     assert.equal(effects.controlEffect?.kind, 'trap');
+    const intrinsic = effects.operations.find((operation) => operation.kind === 'intrinsic');
+    assert.ok(intrinsic, `${family.id}: environment transition intrinsic required`);
+    assert.equal(intrinsic.effectSummary.memoryRead.scope, 'all');
+    assert.equal(intrinsic.effectSummary.memoryWrite.scope, 'all');
+    assert.equal(intrinsic.effectSummary.determinism, 'nondeterministic');
   } else {
     assert.equal(effects.completeness, 'exact', `${family.id}: in-profile family must not silently degrade`);
     assert.equal(effects.unknownEffects, undefined);
@@ -147,7 +152,7 @@ const observedCompressedFamilies = new Set();
 const observedCompressedReasons = new Set();
 let compressedSupported = 0;
 let compressedExactEffects = 0;
-let compressedPartialEffects = 0;
+let compressedIntrinsicEffects = 0;
 for (let word = 0; word < 0x10000; word += 1) {
   if ((word & 0b11) === 0b11) continue;
   const instruction = decoded(bytes16(word), `rv64imc-c-${word}`);
@@ -159,19 +164,19 @@ for (let word = 0; word < 0x10000; word += 1) {
   observedCompressedFamilies.add(instruction.fields.expandedFrom);
   const family = Object.freeze({
     id: instruction.fields.expandedFrom,
-    completeness: instruction.fields.op === 'ebreak' ? 'partial-environment' : 'exact',
+    completeness: instruction.fields.op === 'ebreak' ? 'exact-with-intrinsic' : 'exact',
   });
   const effects = liftRiscv64MachineEffects(instruction);
   assert.ok(effects, `compressed word 0x${word.toString(16)} has no MachineEffects owner`);
   assertTruthfulEffects(instruction, family);
   if (effects.completeness === 'exact') compressedExactEffects += 1;
-  else compressedPartialEffects += 1;
+  else if (effects.completeness === 'exact-with-intrinsic') compressedIntrinsicEffects += 1;
 }
 sameSet(observedCompressedFamilies, RV64IMC_COMPRESSED_ENCODING_FAMILIES);
 sameSet(observedCompressedReasons, RV64IMC_COMPRESSED_UNSUPPORTED_REASONS);
 assert.equal(compressedSupported, 38_551);
 assert.equal(compressedExactEffects, 38_550);
-assert.equal(compressedPartialEffects, 1, 'only the exact c.ebreak encoding may retain environment-partial effects');
+assert.equal(compressedIntrinsicEffects, 1, 'only c.ebreak crosses the complete environment intrinsic boundary');
 
 for (const vector of RV64IMC_32BIT_OUT_OF_PROFILE_NEGATIVES) {
   const fields = decodeRiscv64InstructionWord(bytes32(vector.word));

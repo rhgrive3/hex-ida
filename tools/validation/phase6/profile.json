@@ -1,7 +1,7 @@
 {
   "schemaVersion": "phase6-riscv64-profile/v1",
   "phase": 6,
-  "profileVersion": "1.0.0",
+  "profileVersion": "1.1.0",
   "verifierVersion": "phase6-verifier/1.0.0",
   "description": "Frozen Phase 6 RISC-V64 release profile. 'RISC-V support' is not a contract; this file is. Anything not named here as supported is explicitly out of profile and must remain partial or unsupported.",
 
@@ -31,12 +31,10 @@
       "m-extension-multiply",
       "m-extension-divide-and-remainder-including-defined-edge-cases",
       "c-extension-compressed-encodings",
-      "fence-memory-ordering-barrier"
+      "fence-memory-ordering-barrier",
+      "execution-environment-transitions-with-complete-intrinsic-footprint"
     ],
-    "explicitlyPartial": [
-      { "family": "ecall", "reason": "execution-environment effects are outside the binary" },
-      { "family": "ebreak", "reason": "execution-environment effects are outside the binary" }
-    ],
+    "explicitlyPartial": [],
     "explicitlyUnsupported": [
       { "extension": "A", "reason": "riscv64-atomic-extension-outside-phase6-profile" },
       { "extension": "F", "reason": "riscv64-floating-point-extension-outside-phase6-profile" },
@@ -91,7 +89,7 @@
   },
 
   "semanticVersions": {
-    "architecture": "1.0.0-phase6-rv64imc",
+    "architecture": "1.1.0-stage2-rv64imc-environment-intrinsic",
     "decodedInstructionContract": "riscv64-decoded-instruction/v1",
     "instructionWordContract": "riscv64-instruction-word/v1",
     "physicalStateContract": "riscv64-physical-state/v1",

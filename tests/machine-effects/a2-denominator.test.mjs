@@ -85,19 +85,18 @@ function clone() { return JSON.parse(JSON.stringify(inventory)); }
 }
 
 {
-  const mutated = clone();
-  const system = mutated.architectures
-    .find((architecture) => architecture.id === 'riscv64')
-    .effectRegistry.families
-    .find((family) => family.id === 'system');
-  system.status = 'exact';
-  system.coverage = 'exact';
-  system.oracle = 'riscv-unprivileged-isa-system-test-mutation';
-  const gaps = a2DenominatorReport(mutated).validation.blockingGaps;
-  assert.ok(gaps.includes('riscv64:rv64imc:effect-family:system:ecall'), 'nested partial effects must remain denominator blockers');
-  assert.ok(gaps.includes('riscv64:rv64imc:effect-family:system:ebreak'), 'nested partial effects must remain denominator blockers');
+  const gaps = report.validation.blockingGaps;
+  assert.equal(gaps.includes('riscv64:rv64imc:effect-family:system:ecall'), false, 'complete environment intrinsic is non-blocking');
+  assert.equal(gaps.includes('riscv64:rv64imc:effect-family:system:ebreak'), false, 'proven exact intrinsic stays non-blocking');
   assert.ok(gaps.includes('riscv64:rv64imc:effect-family:system:fence.i'), 'nested out-of-profile effects must remain explicit');
   assert.equal(gaps.includes('riscv64:rv64imc:effect-family:system'), false, 'an exact parent must not mask its nested gaps');
+}
+
+{
+  const mutated = clone();
+  const system = mutated.architectures.find((architecture) => architecture.id === 'riscv64').effectRegistry.families.find((family) => family.id === 'system');
+  delete system.subunits.find((unit) => unit.id === 'ebreak').proof;
+  assert.throws(() => validateA2DenominatorInventory(mutated), /a2-denominator-exact-current-proof-required/);
 }
 
 {
