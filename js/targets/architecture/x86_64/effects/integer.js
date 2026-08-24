@@ -43,6 +43,17 @@ const WIDTHS = new Set([8,16,32,64]);
 function supportedWidth(widthBits) { return WIDTHS.has(Number(widthBits)); }
 function hasMemory(operands) { return operands.some((operand) => operand?.type === 'memory'); }
 function registerOrImmediate(operand) { return operand?.type === 'register' || operand?.type === 'immediate'; }
+function validExtendShape(family, destinationWidthBits, sourceWidthBits) {
+  const destinationWidth = Number(destinationWidthBits);
+  const sourceWidth = Number(sourceWidthBits);
+  if (!supportedWidth(destinationWidth) || !supportedWidth(sourceWidth)) return false;
+  if (family === 'movsxd') return sourceWidth === 32 && [16,32,64].includes(destinationWidth);
+  if (family === 'movzx' || family === 'movsx') {
+    if (![8,16].includes(sourceWidth)) return false;
+    return destinationWidth >= Math.max(16, sourceWidth);
+  }
+  return false;
+}
 function physicalValueForViewWrite(ctx, descriptor, oldPhysical, viewValue, metadata = {}) {
   if (descriptor.writePolicy === 'zero-extend-32') {
     return ctx.coerce(viewValue, descriptor.viewBits, descriptor.physicalBits, false);
@@ -116,9 +127,8 @@ export function liftX86IntegerEffects(instruction, context = {}) {
   }
 
   if (EXTENDS.has(family)) {
-    if (destination?.type !== 'register' || source?.type !== 'register' || !supportedWidth(destination.widthBits) || !supportedWidth(source.widthBits)
-      || destination.widthBits <= source.widthBits
-      || (family === 'movsxd' && (source.widthBits !== 32 || destination.widthBits !== 64))) {
+    if (destination?.type !== 'register' || source?.type !== 'register'
+      || !validExtendShape(family, destination.widthBits, source.widthBits)) {
       return ctx.partial(`x86-${family}-operand-shape-unmodelled`, ['registers']);
     }
     const raw = ctx.readOperand(source, source.widthBits);
