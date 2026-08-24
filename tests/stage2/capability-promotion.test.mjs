@@ -74,9 +74,10 @@ const machoStage1 = { status: 'stage1-proven', exactHead: true, fullySatisfiedLe
 const machoRebuild = { status: 'supported-for-exact-rebuild-profile', format: 'macho', formatCoverageComplete: true, formatProfileIds: ['macho:64'] };
 const validatedMachoRebuild = await validatedRebuildSupportFixture('macho', proofs['S2-F6-MACHO']);
 const macho = stage2FormatMaturity('macho', { stage1Proof: machoStage1, rebuildProof: validatedMachoRebuild, profileProof: proofs['S2-F6-MACHO'] });
-assert.equal(macho.level, 'F6');
-assert.equal(macho.status, 'supported');
-assert.equal(macho.features.validatedRebuildPatch, 'supported');
+assert.equal(validatedMachoRebuild.status, 'unsupported', 'generic file identity must not promote broad F6 units');
+assert.equal(macho.level, 'F5');
+assert.equal(macho.status, 'partial');
+assert.equal(macho.features.validatedRebuildPatch, 'unsupported');
 assert.notEqual(stage2FormatMaturity('macho', { stage1Proof: machoStage1, rebuildProof: { ...validatedMachoRebuild }, profileProof: proofs['S2-F6-MACHO'] }).level, 'F6', 'copied rebuild support must not retain publication authority');
 assert.notEqual(stage2FormatMaturity('macho', { stage1Proof: { verdict: 'READY' }, rebuildProof: machoRebuild }).level, 'F6');
 assert.notEqual(stage2FormatMaturity('macho', { stage1Proof: machoStage1, rebuildProof: { ...machoRebuild, formatCoverageComplete: false } }).level, 'F6');
@@ -85,7 +86,7 @@ const peStage1 = { status: 'stage1-proven', exactHead: true, fullySatisfiedLevel
 const peRebuild = { status: 'supported-for-exact-rebuild-profile', format: 'pe', formatCoverageComplete: true, formatProfileIds: ['pe:pe32', 'pe:pe32+'] };
 const validatedPeRebuild = await validatedRebuildSupportFixture('pe', proofs['S2-F6-PE']);
 const pe = stage2FormatMaturity('pe', { stage1Proof: peStage1, rebuildProof: validatedPeRebuild, profileProof: proofs['S2-F6-PE'] });
-assert.equal(pe.features.validatedRebuildPatch, 'supported');
+assert.equal(pe.features.validatedRebuildPatch, 'unsupported');
 assert.equal(pe.fullySatisfiedLevel, 'F4', 'PE cannot claim cumulative F6 while F5 remains unsupported');
 assert.equal(pe.status, 'partial');
 
@@ -114,6 +115,6 @@ assert.equal(phase12.capabilityRules.status, 'supported');
 assert.equal(phase12.patterns.status, 'supported');
 assert.equal(phase12.collaboration.status, 'supported');
 assert.notEqual(stage2Phase12Maturity({ profileProofs: proofs, remoteCollaborationProof: { ...remoteCollaborationProof } }).collaboration.status, 'supported', 'copied remote support cannot retain transport authority');
-assert.equal(phase12.rebuild.status, 'supported');
+assert.equal(phase12.rebuild.status, 'partial', 'Phase12 rebuild projection must retain blocking F6 operation classes');
 assert.equal(stage2Phase12Maturity({ rulesProof: { deterministic: true, partialPropagationTests: true } }).capabilityRules.status, 'partial');
 console.log('[stage2] profile-bound capability promotion tests passed');

@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import { stableDigest } from '../../js/core/identity/index.js';
 import {
+  F6_REBUILD_UNITS,
   INDEPENDENT_ORACLE_RESULT_SCHEMA,
   createRebuildTransaction,
+  evaluateF6RebuildDenominator,
   materializeRebuildTransaction,
   publishRebuildTransaction,
   rebuildProfileSupport,
@@ -11,6 +13,12 @@ import {
 import { validatedCapabilityProofFixture } from './helpers/profile-proof-fixture.mjs';
 
 const { proofs: profileProofs } = validatedCapabilityProofFixture();
+
+assert.deepEqual([...F6_REBUILD_UNITS], [
+  'transaction-identity', 'layout-and-structure', 'relocations-and-bindings', 'branch-ranges',
+  'unwind-and-debug', 'imports-and-exports', 'signature-consequence', 'loader-reparse',
+  'independent-differential-oracle', 'atomic-publication', 'real-fixture', 'negative-validator-corpus',
+], 'canonical evaluator vocabulary must remain aligned with the locked F6 unit classes');
 
 const source = Uint8Array.from([1, 2, 3, 4]);
 const sourceHash = `bytes:${stableDigest(Array.from(source))}`;
@@ -320,8 +328,20 @@ const truth = rebuildProfileSupport({ transaction, validation, publication, proo
   profileDenominatorComplete: true,
   formatProfileIds: ['macho:64'],
 }, profileProof: profileProofs['S2-F6-MACHO'], expectedCommitSha: 'a'.repeat(40), expectedTreeSha: 'b'.repeat(40) });
-assert.equal(truth.status, 'supported-for-exact-rebuild-profile');
+assert.equal(truth.status, 'unsupported', 'generic validators must not promote broad F6 operation classes');
 assert.equal(truth.formatCoverageComplete, true);
+assert.equal(truth.f6Denominator.status, 'blocked');
+assert.ok(truth.f6Denominator.blockingUnitIds.some((id) => id.endsWith(':relocations-and-bindings')));
+assert.ok(truth.f6Denominator.blockingUnitIds.some((id) => id.endsWith(':branch-ranges')));
+assert.ok(truth.f6Denominator.blockingUnitIds.some((id) => id.endsWith(':unwind-and-debug')));
+assert.ok(truth.f6Denominator.blockingUnitIds.some((id) => id.endsWith(':imports-and-exports')));
+
+const malformedDenominator = evaluateF6RebuildDenominator({ transaction, validation, publication, proof: {
+  realFixture: true, realFixtureEvidence: true, negativeValidatorTest: true, staleIdentityTest: true,
+  truncationTest: true, wrongIdentityTest: true,
+} });
+assert.equal(malformedDenominator.status, 'blocked');
+assert.ok(malformedDenominator.blockingUnitIds.some((id) => id.endsWith(':signature-consequence')));
 const forgedProfileProof = rebuildProfileSupport({ transaction, validation, publication, proof: {
   exactHead: true, negativeValidatorTest: true, staleIdentityTest: true, formatSpecificValidatorTests: true,
   atomicInterruptionTest: true, realFixture: true, profileDenominatorComplete: true, formatProfileIds: ['macho:64'],

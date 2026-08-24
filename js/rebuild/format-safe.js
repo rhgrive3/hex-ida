@@ -453,7 +453,17 @@ export function validateFormatSafeMutation({ transaction, original, output } = {
     } else if (safeState.kind === 'pe-timestamp') {
       if (format !== 'pe' || safeState.field !== 'COFF.TimeDateStamp' || sourceImage.header.timestamp !== safeState.originalTimestamp || outputImage.header.timestamp !== safeState.replacementTimestamp) return reject('format-safe-pe-state-mismatch');
     } else return reject('format-safe-state-kind-unsupported');
-    return Object.freeze({ ok: true, status: 'passed', format, architecture, mutationKind: safeState.kind, changed: true, sourceDigest: digestBytes(source), outputDigest: digestBytes(candidate) });
+    return Object.freeze({
+      ok: true,
+      status: 'passed',
+      format,
+      architecture,
+      mutationKind: safeState.kind,
+      changed: true,
+      signatureConsequence: 'preserved-by-unchanged-regions',
+      sourceDigest: digestBytes(source),
+      outputDigest: digestBytes(candidate),
+    });
   } catch (error) {
     return reject('format-safe-parse-or-invariant-failure', error?.message || error);
   }

@@ -11,6 +11,14 @@ const FORMAT_PROFILES = Object.freeze({
   elf: Object.freeze(['elf:64']),
   pe: Object.freeze(['pe:pe32', 'pe:pe32+']),
 });
+export const F6_REBUILD_UNITS = Object.freeze([
+  'transaction-identity', 'layout-and-structure', 'relocations-and-bindings', 'branch-ranges',
+  'unwind-and-debug', 'imports-and-exports', 'signature-consequence', 'loader-reparse',
+  'independent-differential-oracle', 'atomic-publication', 'real-fixture', 'negative-validator-corpus',
+]);
+const F6_UNSUPPORTED_OPERATION_UNITS = new Set([
+  'relocations-and-bindings', 'branch-ranges', 'unwind-and-debug', 'imports-and-exports',
+]);
 const BYTE_HASH_RE = /^bytes:[0-9a-f]{32}$/;
 const VALID_REBUILD_PROFILE_SUPPORT = new WeakSet();
 
@@ -172,6 +180,89 @@ function rebuildIdentityMatches(left, right) {
     && left?.architecture === right?.architecture
     && left?.loaderVersion === right?.loaderVersion
     && left?.sourceHash === right?.sourceHash;
+}
+
+function f6ProfileId(transaction) {
+  if (transaction?.format === 'macho') return transaction.architecture === 'x86_64' || transaction.architecture === 'arm64' ? 'macho:64' : null;
+  if (transaction?.format === 'elf') return transaction.architecture === 'x86_64' ? 'elf:64' : null;
+  if (transaction?.format === 'pe') return transaction.architecture === 'x86' ? 'pe:pe32' : transaction.architecture === 'x86_64' ? 'pe:pe32+' : null;
+  return null;
+}
+
+function f6Cell(profileId, unit, status, reason = null, evidence = null) {
+  return Object.freeze({ id: `${profileId}:${unit}`, unit, status, reason, evidence });
+}
+
+/**
+ * Evaluate F6's locked unit vocabulary against the actual v2 transaction
+ * evidence.  A generic validator result or denominator identity is not an
+ * implementation of a native rewrite class: relocation, branch, unwind, and
+ * import/export edits remain blocking until a format-aware production adapter
+ * and focused evidence exist.  The evaluator intentionally reports those
+ * blockers instead of allowing profile-level proof to promote them.
+ */
+export function evaluateF6RebuildDenominator({ transaction, validation, publication, proof = {} } = {}) {
+  const profileId = f6ProfileId(transaction);
+  const prefix = profileId || `${transaction?.format || 'unknown'}:unknown`;
+  const cells = {};
+  const add = (unit, status, reason = null, evidence = null) => { cells[unit] = f6Cell(prefix, unit, status, reason, evidence); };
+  if (!profileId) {
+    for (const unit of F6_REBUILD_UNITS) add(unit, 'blocking', 'f6-profile-unsupported');
+    return Object.freeze({ status: 'blocked', profileId: null, cells: Object.freeze(cells), closedUnitIds: Object.freeze([]), blockingUnitIds: Object.freeze(F6_REBUILD_UNITS.map((unit) => `${prefix}:${unit}`)), blockers: Object.freeze(['f6-profile-unsupported']) });
+  }
+
+  const validationPassed = transactionIdentityValid(transaction)
+    && validation?.status === 'valid'
+    && validation?.allRequiredExecuted === true
+    && validation?.transactionId === transaction?.transactionId
+    && rebuildIdentityMatches(validation, transaction)
+    && validationIdentityValid(validation);
+  add('transaction-identity', validationPassed ? 'closed' : 'blocking', validationPassed ? null : 'f6-transaction-identity-unproven', validationPassed ? 'transaction-v2-validation-identity' : null);
+
+  const formatSafe = transaction?.expectedOriginalState?.formatSafe?.schema === 'hex-format-safe-rebuild/v1';
+  const formatValidator = validation?.validators?.find((item) => item.validator === 'format-invariants');
+  const boundedLayout = formatSafe && transaction?.sizeDelta === 0 && transaction?.impact?.layoutMoving === false && formatValidator?.status === 'passed';
+  add('layout-and-structure', boundedLayout ? 'closed' : 'blocking', boundedLayout ? null : 'f6-layout-growth-or-structure-adapter-unimplemented', boundedLayout ? 'format-safe-same-size-invariant' : null);
+
+  for (const unit of F6_UNSUPPORTED_OPERATION_UNITS) add(unit, 'blocking', `f6-${unit}-adapter-unimplemented`);
+
+  const signatureEvidence = proof.signatureConsequenceTest === true
+    && formatValidator?.detail?.signatureConsequence === 'preserved-by-unchanged-regions'
+    && transaction?.impact?.signature === false;
+  add('signature-consequence', signatureEvidence ? 'closed' : 'blocking', signatureEvidence ? null : 'f6-signature-consequence-unproven', signatureEvidence ? 'format-safe-signature-preservation' : null);
+
+  const loader = validation?.validators?.find((item) => item.validator === 'loader-reparse');
+  add('loader-reparse', loader?.status === 'passed' ? 'closed' : 'blocking', loader?.status === 'passed' ? null : 'f6-loader-reparse-unproven', loader?.status === 'passed' ? 'production-loader-reparse' : null);
+  const independent = validation?.validators?.find((item) => item.validator === 'independent-differential');
+  add('independent-differential-oracle', independent?.status === 'passed' && validation?.independentDifferential === 'executed' ? 'closed' : 'blocking', independent?.status === 'passed' && validation?.independentDifferential === 'executed' ? null : 'f6-independent-oracle-unproven', independent?.status === 'passed' ? 'independent-oracle-contract' : null);
+
+  const publicationComplete = publication?.status === 'published'
+    && publication.atomic === true
+    && publication.committed === true
+    && publication.transactionId === transaction?.transactionId
+    && publication.outputHash === validation?.outputHash
+    && publication.outputIdentity === validation?.outputIdentity
+    && ATOMIC_PUBLICATION_PROTOCOLS.has(publication.protocol)
+    && !!publication.publicationIdentity;
+  add('atomic-publication', publicationComplete ? 'closed' : 'blocking', publicationComplete ? null : 'f6-atomic-publication-unproven', publicationComplete ? 'transaction-v2-publication-identity' : null);
+  add('real-fixture', proof.realFixture === true && proof.realFixtureEvidence === true ? 'closed' : 'blocking', proof.realFixture === true && proof.realFixtureEvidence === true ? null : 'f6-real-fixture-evidence-unproven', proof.realFixture === true && proof.realFixtureEvidence === true ? 'compiler-produced-fixture' : null);
+  const negativeEvidence = proof.negativeValidatorTest === true
+    && proof.staleIdentityTest === true
+    && proof.truncationTest === true
+    && proof.wrongIdentityTest === true;
+  add('negative-validator-corpus', negativeEvidence ? 'closed' : 'blocking', negativeEvidence ? null : 'f6-negative-validator-evidence-incomplete', negativeEvidence ? 'tamper-truncation-identity-negative-corpus' : null);
+
+  const entries = Object.values(cells);
+  const closedUnitIds = entries.filter((item) => item.status === 'closed').map((item) => item.id);
+  const blockingUnitIds = entries.filter((item) => item.status !== 'closed').map((item) => item.id);
+  return Object.freeze({
+    status: blockingUnitIds.length === 0 ? 'closed' : 'blocked',
+    profileId,
+    cells: Object.freeze(cells),
+    closedUnitIds: Object.freeze(closedUnitIds),
+    blockingUnitIds: Object.freeze(blockingUnitIds),
+    blockers: Object.freeze(entries.filter((item) => item.status !== 'closed').map((item) => item.reason)),
+  });
 }
 
 function positiveSafe(value, fallback, max, code) {
@@ -612,6 +703,7 @@ export async function publishRebuildTransaction(materialized, validation, option
 export function rebuildProfileSupport({ transaction, validation, publication, proof = {}, profileProof = null, expectedCommitSha = null, expectedTreeSha = null } = {}) {
   const requiredCount = transaction?.requiredValidators?.length || 0;
   const executedCount = validation?.validators?.filter((item) => item.executed === true && item.status === 'passed').length || 0;
+  const f6Denominator = evaluateF6RebuildDenominator({ transaction, validation, publication, proof });
   const expectedProfiles = FORMAT_PROFILES[transaction?.format] || [];
   const itemId = transaction?.format ? `S2-F6-${String(transaction.format).toUpperCase()}` : null;
   const formatCoverageComplete = itemId != null && isValidatedStage2CapabilityProof(profileProof, { itemId, profileIds: expectedProfiles });
@@ -653,6 +745,7 @@ export function rebuildProfileSupport({ transaction, validation, publication, pr
     && proof.formatSpecificValidatorTests === true
     && proof.atomicInterruptionTest === true
     && proof.realFixture === true
+    && f6Denominator.status === 'closed'
     && formatCoverageComplete
     && exactCandidateIdentity;
   const result = deepFreeze({
@@ -663,6 +756,7 @@ export function rebuildProfileSupport({ transaction, validation, publication, pr
     executedValidatorCount: executedCount,
     formatProfileIds,
     formatCoverageComplete,
+    f6Denominator,
     outputIdentity,
     status: exact ? 'supported-for-exact-rebuild-profile' : 'unsupported',
     authority: exact ? 'L4-validated-atomic-publication' : 'L3-plan-only',
