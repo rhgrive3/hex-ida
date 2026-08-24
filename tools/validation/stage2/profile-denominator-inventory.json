@@ -92,10 +92,14 @@
       ],
       "inventoryRefs": [
         "tests/machine-effects/a2-denominator-inventory.json",
+        "tests/machine-effects/arm64-a64-control-denominator.test.mjs",
+        "tests/machine-effects/arm64-a64-flags-denominator.test.mjs",
         "tests/machine-effects/riscv64-rv64imc-denominator.test.mjs",
         "tests/machine-effects/x86-capstone-registry.test.mjs",
         "tests/machine-effects/x86-long64-lea-denominator.test.mjs",
         "tools/validation/machine-effects/a2-denominator.mjs",
+        "tools/validation/machine-effects/arm64-a64-control-denominator.mjs",
+        "tools/validation/machine-effects/arm64-a64-flags-denominator.mjs",
         "tools/validation/machine-effects/riscv64-rv64imc-denominator.mjs",
         "tools/validation/machine-effects/x86-capstone-registry.mjs",
         "tools/validation/machine-effects/x86-long64-lea-denominator.mjs",
@@ -170,7 +174,9 @@
       "inventoryRefs": [
         "js/runtime/authority.js",
         "js/runtime/stage2.js",
+        "tests/stage2/a7-lldb-real-fixture.test.mjs",
         "tests/stage2/runtime-authority.test.mjs",
+        "tools/validation/stage2/a7-lldb-real-fixture.mjs",
         "tools/validation/stage2/build-profile-denominator-inventory.mjs"
       ]
     },
