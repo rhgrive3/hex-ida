@@ -187,16 +187,22 @@ def wait_for_fixture_exec(child, timeout=3.0):
         time.sleep(0.01)
     fail('ptrace-launcher-exec-timeout')
 
-def current_frame():
-    thread = process.GetSelectedThread()
-    if not thread.IsValid() and process.GetNumThreads() > 0:
-        thread = process.GetThreadAtIndex(0)
-    if not thread.IsValid():
-        fail('thread-missing')
-    frame = thread.GetFrameAtIndex(0)
-    if not frame.IsValid():
-        fail('frame-missing')
-    return thread, frame
+def current_frame(code, timeout=1.0):
+    deadline = time.time() + timeout
+    while True:
+        thread = process.GetSelectedThread()
+        if not thread.IsValid() and process.GetNumThreads() > 0:
+            thread = process.GetThreadAtIndex(0)
+        if thread.IsValid():
+            frame = thread.GetFrameAtIndex(0)
+            if frame.IsValid():
+                return thread, frame
+        state = process.GetState()
+        if state in (lldb.eStateExited, lldb.eStateDetached, lldb.eStateInvalid):
+            fail(code + '-process-terminated:' + state_name(state))
+        if time.time() >= deadline:
+            fail(code + '-thread-frame-not-ready')
+        time.sleep(0.01)
 
 def reg(frame, name):
     value = frame.FindRegister(name)
@@ -250,7 +256,7 @@ try:
         fail('attach-pid-mismatch')
     if not lldb.SBDebugger.StateIsStoppedState(process.GetState()):
         fail('attach-not-stopped')
-    thread, frame = current_frame()
+    thread, frame = current_frame('attach')
     rip = reg(frame, 'rip')
     rsp = reg(frame, 'rsp')
     rax = reg(frame, 'rax')
@@ -301,7 +307,7 @@ try:
     pause_stop_id_after = process.GetStopID()
     if pause_stop_id_after <= pause_stop_id_before:
         fail('pause-stop-id-not-advanced')
-    pause_thread, pause_frame = current_frame()
+    pause_thread, pause_frame = current_frame('pause')
     pause_rax = reg(pause_frame, 'rax')
     if pause_rax == before_rax:
         fail('pause-no-register-progress')
@@ -360,14 +366,14 @@ try:
     stopped_state = wait_for(lldb.SBDebugger.StateIsStoppedState)
     if not lldb.SBDebugger.StateIsStoppedState(stopped_state):
         fail('cancel-target-not-stopped:' + state_name(stopped_state))
-    thread, frame = current_frame()
+    thread, frame = current_frame('cancel')
     cancel_rip = reg(frame, 'rip')
     cancel_rax = reg(frame, 'rax')
     if cancel_rax == pause_rax:
         fail('cancel-no-execution-observed')
     first_state = process.GetState()
     time.sleep(0.10)
-    thread2, frame2 = current_frame()
+    thread2, frame2 = current_frame('cancel-late')
     late_rip = reg(frame2, 'rip')
     late_rax = reg(frame2, 'rax')
     late_state = process.GetState()
