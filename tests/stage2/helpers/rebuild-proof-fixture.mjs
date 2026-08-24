@@ -25,16 +25,29 @@ export async function validatedRebuildSupportFixture(format, profileProof) {
   const validation = await validateRebuildTransaction(transaction, materialized, {
     original: source,
     loaderReparse: () => ({ ok: true }),
-    independentOracle: ({ output }) => ({
+    independentOracle: ({ output, transaction }) => ({
       schemaVersion: INDEPENDENT_ORACLE_RESULT_SCHEMA, ok: true, status: 'passed',
       oracleIdentity: 'external:test-reparser', oracleVersion: '1', oracleSource: 'tests/stage2/helpers/rebuild-proof-fixture.mjs',
-      sourceDigest: digest(source), outputDigest: digest(output),
+      sourceDigest: digest(source), outputDigest: digest(output), format: transaction.format, architecture: transaction.architecture,
     }),
     validators,
   });
   if (validation.status !== 'valid') throw new Error(`fixture validation failed: ${JSON.stringify(validation)}`);
   const publication = await publishRebuildTransaction(materialized, validation, {
-    atomicPromote: async () => ({ atomic: true, committed: true, protocol: 'transactional-store', publicationIdentity: `artifact:${format}:capability-test` }),
+    atomicPromote: async (_bytes, { materialized }) => ({
+      atomic: true,
+      committed: true,
+      protocol: 'transactional-store',
+      publicationIdentity: `artifact:${format}:capability-test`,
+      transactionId: materialized.transactionId,
+      outputHash: materialized.outputHash,
+      outputIdentity: materialized.outputIdentity,
+      binaryId: materialized.binaryId,
+      format: materialized.format,
+      architecture: materialized.architecture,
+      loaderVersion: materialized.loaderVersion,
+      sourceHash: materialized.sourceHash,
+    }),
   });
   if (publication.status !== 'published') throw new Error(`fixture publication failed: ${JSON.stringify(publication)}`);
   return rebuildProfileSupport({

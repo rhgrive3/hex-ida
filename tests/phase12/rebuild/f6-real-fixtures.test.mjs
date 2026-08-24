@@ -214,4 +214,20 @@ const invariantFailure = validateFormatSafeMutation({ transaction: elfTransactio
 assert.equal(invariantFailure.ok, false);
 const oracleFailure = await independentOracle({ transaction: elfTransaction, original: elfBytes, output: tampered });
 assert.equal(oracleFailure.ok, false);
-console.log(`F6_REAL_REBUILD_PROOF=${JSON.stringify({ schemaVersion: FORMAT_SAFE_REBUILD_SCHEMA, fixtures: proofRows, oracle: { identity: oracleTool.identity, version: oracleTool.version }, negatives: ['no-op-rejected', 'synthetic-rejected', 'header-tamper-rejected'] })}`);
+const truncatedOutput = elfMaterialized.bytes.slice(0, -1);
+const truncationFailure = validateFormatSafeMutation({ transaction: elfTransaction, original: elfBytes, output: truncatedOutput });
+assert.equal(truncationFailure.ok, false, 'truncated output must never pass format validation');
+
+const machoTransaction = createFormatSafeRebuildTransaction({
+  binaryId: 'negative:macho-wrong-identity',
+  source: machoBytes,
+  format: 'macho',
+  architecture: 'x86_64',
+  loaderVersion,
+  mutation: { kind: 'macho-min-version', version: 0x000a0500 },
+});
+const wrongIdentityOutput = (await materializeRebuildTransaction(machoTransaction, machoBytes, { maxOutputBytes: machoBytes.length })).bytes.slice();
+new DataView(wrongIdentityOutput.buffer).setUint32(4, 0x0100000c, true); // arm64 header with an x86_64 transaction
+const wrongIdentityFailure = validateFormatSafeMutation({ transaction: machoTransaction, original: machoBytes, output: wrongIdentityOutput });
+assert.equal(wrongIdentityFailure.ok, false, 'wrong architecture identity must never pass format validation');
+console.log(`F6_REAL_REBUILD_PROOF=${JSON.stringify({ schemaVersion: FORMAT_SAFE_REBUILD_SCHEMA, fixtures: proofRows, oracle: { identity: oracleTool.identity, version: oracleTool.version }, negatives: ['no-op-rejected', 'synthetic-rejected', 'header-tamper-rejected', 'truncation-rejected', 'wrong-identity-rejected'] })}`);

@@ -12,7 +12,7 @@ import { createRebuildTransaction } from './transaction-v2.js';
  *   - a Mach-O 64 LC_VERSION_MIN_MACOSX version field.
  *
  * It does not claim support for section growth, instruction rewriting,
- * relocation updates, signatures, or Mach-O.  Unsupported images fail closed.
+ * relocation updates, or signatures. Unsupported images fail closed.
  */
 
 export const FORMAT_SAFE_REBUILD_SCHEMA = 'hex-format-safe-rebuild/v1';

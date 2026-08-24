@@ -141,6 +141,7 @@ function relocationResultFailure(result) {
 function independentOracleResultFailure(result, context) {
   if (!result || typeof result !== 'object' || Array.isArray(result)) return 'independent-oracle-result-invalid';
   if (result.schemaVersion !== INDEPENDENT_ORACLE_RESULT_SCHEMA) return 'independent-oracle-contract-invalid';
+  if (result.ok !== true || !['passed', 'valid'].includes(String(result.status || '').toLowerCase())) return 'independent-oracle-contract-invalid';
   for (const [field, reason] of [
     ['oracleIdentity', 'independent-oracle-identity-required'],
     ['oracleVersion', 'independent-oracle-version-required'],
@@ -154,9 +155,23 @@ function independentOracleResultFailure(result, context) {
   if (result.oracleIdentity === loaderIdentity || result.oracleVersion === loaderIdentity || result.oracleSource === loaderIdentity) {
     return 'independent-oracle-identity-not-distinct';
   }
+  const format = result.format ?? result.image?.format;
+  if (typeof format !== 'string' || !format.trim()) return 'independent-oracle-format-required';
+  if (format.toLowerCase() !== context.transaction.format) return 'independent-oracle-format-mismatch';
+  const architecture = result.architecture ?? result.arch ?? result.image?.arch;
+  if (typeof architecture !== 'string' || !architecture.trim()) return 'independent-oracle-architecture-required';
+  if (architecture.toLowerCase() !== context.transaction.architecture) return 'independent-oracle-architecture-mismatch';
   if (result.sourceDigest !== context.transaction.sourceHash) return 'independent-oracle-source-digest-mismatch';
   if (result.outputDigest !== context.expectedOutputHash) return 'independent-oracle-output-digest-mismatch';
   return null;
+}
+
+function rebuildIdentityMatches(left, right) {
+  return left?.binaryId === right?.binaryId
+    && left?.format === right?.format
+    && left?.architecture === right?.architecture
+    && left?.loaderVersion === right?.loaderVersion
+    && left?.sourceHash === right?.sourceHash;
 }
 
 function positiveSafe(value, fallback, max, code) {
@@ -555,6 +570,7 @@ export async function publishRebuildTransaction(materialized, validation, option
   if (!validation || validation.schemaVersion !== REBUILD_VALIDATION_SCHEMA || validation.status !== 'valid' || validation.allRequiredExecuted !== true) return { status: 'rejected', reason: 'rebuild-v2-validation-not-green' };
   if (validation.transactionId !== materialized.transactionId) return { status: 'rejected', reason: 'rebuild-v2-validation-transaction-mismatch' };
   if (!validationIdentityValid(validation)) return { status: 'rejected', reason: 'rebuild-v2-validation-not-green' };
+  if (!rebuildIdentityMatches(validation, materialized)) return { status: 'rejected', reason: 'rebuild-v2-validation-identity-mismatch' };
   if (validation.outputHash !== materialized.outputHash) return { status: 'rejected', reason: 'rebuild-v2-validation-output-mismatch' };
   if (validation.outputIdentity !== materialized.outputIdentity) return { status: 'rejected', reason: 'rebuild-v2-validation-output-identity-mismatch' };
   if (JSON.stringify(validation.requiredValidators) !== JSON.stringify(materialized.requiredValidators)) return { status: 'rejected', reason: 'rebuild-v2-validation-validator-set-mismatch' };
@@ -573,10 +589,20 @@ export async function publishRebuildTransaction(materialized, validation, option
     if (!ATOMIC_PUBLICATION_PROTOCOLS.has(protocol)) return { status: 'rejected', reason: 'rebuild-v2-publication-protocol-invalid' };
     const publicationIdentity = String(result.publicationIdentity || '').trim();
     if (!publicationIdentity) return { status: 'rejected', reason: 'rebuild-v2-publication-identity-required' };
-    if (result.transactionId != null && String(result.transactionId) !== materialized.transactionId) return { status: 'rejected', reason: 'rebuild-v2-publication-transaction-mismatch' };
-    if (result.outputHash != null && String(result.outputHash) !== materialized.outputHash) return { status: 'rejected', reason: 'rebuild-v2-publication-output-mismatch' };
+    if (result.transactionId == null || result.outputHash == null || result.outputIdentity == null) return { status: 'rejected', reason: 'rebuild-v2-publication-identity-incomplete' };
+    if (String(result.transactionId) !== materialized.transactionId) return { status: 'rejected', reason: 'rebuild-v2-publication-transaction-mismatch' };
+    if (String(result.outputHash) !== materialized.outputHash) return { status: 'rejected', reason: 'rebuild-v2-publication-output-mismatch' };
     const outputIdentity = canonicalOutputIdentity(materialized.transactionId, materialized.outputHash);
-    if (result.outputIdentity != null && String(result.outputIdentity) !== outputIdentity) return { status: 'rejected', reason: 'rebuild-v2-publication-output-identity-mismatch' };
+    if (String(result.outputIdentity) !== outputIdentity) return { status: 'rejected', reason: 'rebuild-v2-publication-output-identity-mismatch' };
+    for (const field of ['binaryId', 'format', 'architecture', 'loaderVersion', 'sourceHash']) {
+      if (result[field] != null) {
+        const expected = materialized[field];
+        const observed = String(result[field]);
+        if ((field === 'sourceHash' ? observed.toLowerCase() : observed) !== (field === 'sourceHash' ? String(expected).toLowerCase() : String(expected))) {
+          return { status: 'rejected', reason: 'rebuild-v2-publication-identity-mismatch' };
+        }
+      }
+    }
     return deepFreeze({ status: 'published', atomic: true, committed: true, protocol, transactionId: materialized.transactionId, outputHash: materialized.outputHash, outputIdentity, publicationIdentity, result: clone(result) });
   } catch (error) {
     return { status: 'rejected', reason: 'rebuild-v2-publication-failed', detail: String(error?.message || error) };
@@ -607,6 +633,7 @@ export function rebuildProfileSupport({ transaction, validation, publication, pr
     && validation.allRequiredExecuted === true
     && executedCount === requiredCount
     && validation.transactionId === transaction.transactionId
+    && rebuildIdentityMatches(validation, transaction)
     && validation.sourceHash === transaction.sourceHash
     && JSON.stringify(validation.requiredValidators) === JSON.stringify(transaction.requiredValidators)
     && validation.outputIdentity === outputIdentity
