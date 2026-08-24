@@ -288,7 +288,11 @@ function profileUnitArtifactValid(relative, context, candidateCommitSha, candida
   if (JSON.stringify(artifact.sourceIdentities || []) !== JSON.stringify(refs(rule.sourceRefs))) return false;
   if (JSON.stringify(artifact.testIdentities || []) !== JSON.stringify(refs(rule.testRefs))) return false;
   if (!Array.isArray(artifact.negativeTestIdentities) || artifact.negativeTestIdentities.length === 0 || artifact.negativeTestIdentities.some((value) => gitIdentityAtHead(value) !== value)) return false;
+  if (JSON.stringify(artifact.commandIds || []) !== JSON.stringify(rule.commandIds)) return false;
   if (!Array.isArray(artifact.commandOutputIdentities) || artifact.commandOutputIdentities.length !== rule.commandIds.length) return false;
+  const commandIdentityById = new Map((artifact.commandIds || []).map((id, index) => [id, artifact.commandOutputIdentities[index]]));
+  const expectedIndependentOracleIdentities = (rule.independentOracleCommandIds || []).map((id) => commandIdentityById.get(id));
+  if (JSON.stringify(artifact.independentOracleIdentities || []) !== JSON.stringify(expectedIndependentOracleIdentities)) return false;
   for (const identity of artifact.commandOutputIdentities) {
     const match = /^artifact:([^@]+)@sha256:([0-9a-f]{64})$/.exec(identity || '');
     if (!match) return false;

@@ -12,10 +12,11 @@ import { fileURLToPath } from 'node:url';
 import { a2DenominatorReport } from '../machine-effects/a2-denominator.mjs';
 import { phase12DenominatorReport } from '../phase12/denominator.mjs';
 import { f6KnownImplementationGaps } from '../../../js/rebuild/transaction-v2.js';
-import { STAGE2_PROFILE_EVIDENCE_IDS } from '../../../js/platform/stage2-profile-evidence.js';
+import { STAGE2_PROFILE_EVIDENCE_IDS, createStage2ProfileEvidence } from '../../../js/platform/stage2-profile-evidence.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const INVENTORY_PATH = path.join(ROOT, 'tools/validation/stage2/profile-denominator-inventory.json');
+const DENOMINATOR_LOCK_PATH = path.join(ROOT, 'tools/validation/stage2/profile-denominators.lock.json');
 const MANAGED_MANIFEST_PATH = 'tests/stage2/fixtures/managed-real/manifest.json';
 const F6_MANIFEST_PATH = 'tests/phase12/rebuild/fixtures/manifest.json';
 export const PROFILE_EVIDENCE_RUN_SCHEMA = 'hex-stage2-profile-evidence-run/v1';
@@ -33,6 +34,33 @@ const RULES = Object.freeze({
   'S2-M6-DEX': Object.freeze({ providerProfileIds: ['managed:dex:provider-bound-runtime-v1:test'], sourceRefs: ['js/managed/dex/parser.js', 'js/managed/runtime-binding.js'], testRefs: ['tests/stage2/managed-runtime.test.mjs', 'tests/stage2/managed-real-fixtures.test.mjs'], commandIds: ['m6-managed-runtime', 'm6-real-fixtures'] }),
   'S2-M6-CIL': Object.freeze({ providerProfileIds: ['managed:cil:provider-bound-runtime-v1:test'], sourceRefs: ['js/managed/cil/parser.js', 'js/managed/runtime-binding.js'], testRefs: ['tests/stage2/managed-runtime.test.mjs', 'tests/stage2/managed-real-fixtures.test.mjs'], commandIds: ['m6-managed-runtime', 'm6-real-fixtures'] }),
   'S2-M6-JVM': Object.freeze({ providerProfileIds: ['managed:jvm:provider-bound-runtime-v1:test'], sourceRefs: ['js/managed/jvm/parser.js', 'js/managed/runtime-binding.js'], testRefs: ['tests/stage2/managed-runtime.test.mjs', 'tests/stage2/managed-real-fixtures.test.mjs'], commandIds: ['m6-managed-runtime', 'm6-real-fixtures'] }),
+  'S2-F6-MACHO': Object.freeze({
+    providerProfileIds: [],
+    sourceRefs: ['js/rebuild/transaction-v2.js', 'js/rebuild/format-safe.js', 'tools/validation/rebuild-independent-oracle.mjs'],
+    testRefs: ['tests/phase12/rebuild/f6-real-fixtures.test.mjs', 'tests/stage2/rebuild-transaction.test.mjs', 'tests/stage2/independent-oracle.test.mjs'],
+    negativeTestRefs: ['tests/phase12/rebuild/f6-real-fixtures.test.mjs'],
+    f6Profiles: ['macho:64'],
+    commandIds: ['f6-real-rebuild'],
+    independentOracleCommandIds: ['f6-real-rebuild'],
+  }),
+  'S2-F6-ELF': Object.freeze({
+    providerProfileIds: [],
+    sourceRefs: ['js/rebuild/transaction-v2.js', 'js/rebuild/format-safe.js', 'tools/validation/rebuild-independent-oracle.mjs'],
+    testRefs: ['tests/phase12/rebuild/f6-real-fixtures.test.mjs', 'tests/stage2/rebuild-transaction.test.mjs', 'tests/stage2/independent-oracle.test.mjs'],
+    negativeTestRefs: ['tests/phase12/rebuild/f6-real-fixtures.test.mjs'],
+    f6Profiles: ['elf:64'],
+    commandIds: ['f6-real-rebuild'],
+    independentOracleCommandIds: ['f6-real-rebuild'],
+  }),
+  'S2-F6-PE': Object.freeze({
+    providerProfileIds: [],
+    sourceRefs: ['js/rebuild/transaction-v2.js', 'js/rebuild/format-safe.js', 'tools/validation/rebuild-independent-oracle.mjs'],
+    testRefs: ['tests/phase12/rebuild/f6-real-fixtures.test.mjs', 'tests/stage2/rebuild-transaction.test.mjs', 'tests/stage2/independent-oracle.test.mjs'],
+    negativeTestRefs: ['tests/phase12/rebuild/f6-real-fixtures.test.mjs'],
+    f6Profiles: ['pe:pe32', 'pe:pe32+'],
+    commandIds: ['f6-real-rebuild'],
+    independentOracleCommandIds: ['f6-real-rebuild'],
+  }),
   'S2-P12-KNOWLEDGE': Object.freeze({
     providerProfileIds: [],
     sourceRefs: ['js/phase12/package-envelope.js', 'js/knowledge/phase12-recognition.js', 'js/signature/index.js'],
@@ -133,6 +161,12 @@ export function inspectProfileEvidencePrerequisites() {
   if (!managed.has('dex')) failures.push('missing-real-compiled-fixture:dex');
   const f6 = f6FixtureMap();
   failures.push(...f6.missing.map((profile) => `missing-real-rebuild-fixture:${profile}`));
+  for (const [itemId, rule] of Object.entries(RULES)) {
+    const staticFixtures = (rule.realFixtureRefs || []).filter((ref) => fs.existsSync(path.join(ROOT, ref)));
+    const managedFixture = itemId.startsWith('S2-M6-') && managed.has(itemId.slice('S2-M6-'.length).toLowerCase());
+    const f6Fixtures = Array.isArray(rule.f6Profiles) && rule.f6Profiles.length > 0 && rule.f6Profiles.every((profile) => f6.found.has(profile));
+    if (staticFixtures.length === 0 && !managedFixture && !f6Fixtures) failures.push(`missing-real-profile-fixture:${itemId}`);
+  }
   return Object.freeze({ ok: failures.length === 0, failures: Object.freeze(failures), managed, f6 });
 }
 
@@ -171,6 +205,7 @@ export function collectProfileEvidence({ expectedCommitSha, expectedTreeSha, out
   const destination = outputDir || path.join(ROOT, PROFILE_EVIDENCE_RUN_ROOT, runId);
   if (path.resolve(destination) !== path.join(ROOT, PROFILE_EVIDENCE_RUN_ROOT, runId)) throw new Error('profile-proof-output-path-invalid');
   const inventory = loadInventory();
+  const denominatorLock = JSON.parse(fs.readFileSync(DENOMINATOR_LOCK_PATH, 'utf8'));
   const commands = [
     runCanonical('a7-runtime-authority', ['tests/stage2/runtime-authority.test.mjs']),
     runCanonical('a7-capability-promotion', ['tests/stage2/capability-promotion.test.mjs']),
@@ -208,11 +243,15 @@ export function collectProfileEvidence({ expectedCommitSha, expectedTreeSha, out
     const sourceIdentities = rule.sourceRefs.map(gitIdentity);
     const testIdentities = rule.testRefs.map(gitIdentity);
     const fixture = itemId.startsWith('S2-M6-') ? prerequisites.managed.get(itemId.slice('S2-M6-'.length).toLowerCase()) : null;
+    const f6FixtureRefs = (rule.f6Profiles || []).map((profile) => prerequisites.f6.found.get(profile)).filter(Boolean);
     const realFixtureIdentities = [
       ...(Array.isArray(rule.realFixtureRefs) ? rule.realFixtureRefs.map(fixtureIdentity) : []),
       ...(fixture ? [fixtureIdentity(fixture.relative), fixtureIdentity(MANAGED_MANIFEST_PATH)] : []),
+      ...f6FixtureRefs.map(fixtureIdentity),
+      ...(f6FixtureRefs.length ? [fixtureIdentity(F6_MANIFEST_PATH)] : []),
     ];
     const negativeTestIdentities = (rule.negativeTestRefs || rule.testRefs).map(gitIdentity);
+    const independentOracleIdentities = (rule.independentOracleCommandIds || []).map((id) => commandOutputIdentities.get(id));
     const unitEvidence = {};
     for (const unitId of denominator.unitIds) {
       const commandSummaries = rule.commandIds.map((id) => commandById.get(id));
@@ -220,14 +259,40 @@ export function collectProfileEvidence({ expectedCommitSha, expectedTreeSha, out
       // fixture must block the run instead of being silently replaced with a
       // test file (or any other arbitrary tracked file).
       if (realFixtureIdentities.length === 0) throw new Error(`profile-proof-real-fixture-missing:${itemId}`);
-      const proof = { schemaVersion: PROFILE_UNIT_PROOF_SCHEMA, itemId, unitId, candidateCommitSha: head.commitSha, candidateTreeSha: head.treeSha, status: 'passed', commandIds: rule.commandIds, commandOutputIdentities: rule.commandIds.map((id) => commandOutputIdentities.get(id)), commandOutputDigests: commandSummaries.map((command) => `sha256:${sha256(`${command.stdout}\n${command.stderr}`)}`), sourceIdentities, testIdentities, providerProfileIds: rule.providerProfileIds, realFixtureIdentities, negativeTestIdentities, independentOracleIdentities: [] };
+      const proof = { schemaVersion: PROFILE_UNIT_PROOF_SCHEMA, itemId, unitId, candidateCommitSha: head.commitSha, candidateTreeSha: head.treeSha, status: 'passed', commandIds: rule.commandIds, commandOutputIdentities: rule.commandIds.map((id) => commandOutputIdentities.get(id)), commandOutputDigests: commandSummaries.map((command) => `sha256:${sha256(`${command.stdout}\n${command.stderr}`)}`), sourceIdentities, testIdentities, providerProfileIds: rule.providerProfileIds, realFixtureIdentities, negativeTestIdentities, independentOracleIdentities };
       const name = `${itemId.toLowerCase()}-${sha256(unitId).slice(0, 16)}.json`;
       files[name] = proof;
       unitEvidence[unitId] = `artifact:${relativeRunPath(runId, name)}@sha256:${sha256(jsonBytes(proof))}`;
     }
-    items[itemId] = { profileIds: denominator.profiles, unitIds: denominator.unitIds, providerProfileIds: rule.providerProfileIds, sourceIdentities, testIdentities, realFixtureIdentities, unitEvidence };
+    items[itemId] = { profileIds: denominator.profiles, unitIds: denominator.unitIds, providerProfileIds: rule.providerProfileIds, sourceIdentities, testIdentities, realFixtureIdentities, negativeTestIdentities, independentOracleIdentities, unitEvidence };
   }
-  const run = { schemaVersion: PROFILE_EVIDENCE_RUN_SCHEMA, runId, candidateCommitSha: head.commitSha, candidateTreeSha: head.treeSha, generatedAt: new Date().toISOString(), commands: commands.map(({ stdout, stderr, ...summary }) => ({ ...summary, outputIdentity: commandOutputIdentities.get(summary.id), stdoutDigest: `sha256:${sha256(stdout)}`, stderrDigest: `sha256:${sha256(stderr)}`, proofMarker: commandProofMarkers[summary.id] || null })), items, files };
+  const generatedAt = new Date().toISOString();
+  const profileEvidence = createStage2ProfileEvidence({
+    commitSha: head.commitSha,
+    treeSha: head.treeSha,
+    generatedAt,
+    items: Object.fromEntries(Object.entries(items).map(([itemId, item]) => {
+      const denominator = denominatorLock.items?.[itemId];
+      return [itemId, {
+        profileIds: item.profileIds,
+        candidateCommitSha: head.commitSha,
+        candidateTreeSha: head.treeSha,
+        denominatorId: denominator?.id,
+        denominatorLockHash: denominator?.lockHash,
+        coveredUnitIds: item.unitIds,
+        unitEvidence: item.unitEvidence,
+        realFixtureIdentities: item.realFixtureIdentities,
+        negativeTestIdentities: item.negativeTestIdentities,
+        evidenceIdentities: RULES[itemId].commandIds.map((id) => commandOutputIdentities.get(id)),
+        providerProfileIds: item.providerProfileIds,
+        implementationIdentity: item.sourceIdentities[0],
+        independentOracleIdentities: item.independentOracleIdentities,
+      }];
+    })),
+  });
+  files['profile-evidence.json'] = profileEvidence;
+  const profileEvidenceIdentity = `artifact:${relativeRunPath(runId, 'profile-evidence.json')}@sha256:${sha256(jsonBytes(profileEvidence))}`;
+  const run = { schemaVersion: PROFILE_EVIDENCE_RUN_SCHEMA, runId, candidateCommitSha: head.commitSha, candidateTreeSha: head.treeSha, generatedAt, profileEvidenceIdentity, commands: commands.map(({ stdout, stderr, ...summary }) => ({ ...summary, outputIdentity: commandOutputIdentities.get(summary.id), stdoutDigest: `sha256:${sha256(stdout)}`, stderrDigest: `sha256:${sha256(stderr)}`, proofMarker: commandProofMarkers[summary.id] || null })), items, files };
   writeRun(destination, run);
   return Object.freeze({ outputDir: destination, run });
 }
@@ -237,7 +302,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const value = (name) => { const index = args.indexOf(name); return index >= 0 ? args[index + 1] : null; };
   try {
     const result = collectProfileEvidence({ expectedCommitSha: value('--commit'), expectedTreeSha: value('--tree'), outputDir: value('--output'), runId: value('--run-id') || undefined });
-    process.stdout.write(`${JSON.stringify({ ok: true, outputDir: result.outputDir, runId: result.run.runId })}\n`);
+    process.stdout.write(`${JSON.stringify({ ok: true, outputDir: result.outputDir, runId: result.run.runId, profileEvidenceIdentity: result.run.profileEvidenceIdentity })}\n`);
   } catch (error) {
     process.stderr.write(`${error?.message || error}\n`);
     process.exitCode = 1;
