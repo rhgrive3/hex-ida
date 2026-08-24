@@ -17,9 +17,15 @@ import { A7_PROFILE_BINDINGS } from '../../tools/validation/stage2/a7-profile-co
 import { RuntimeAuthorityTracker, validateRuntimeObservation } from '../../js/runtime/authority.js';
 
 const A7_RUNTIME_FIXTURE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'fixtures/a7-runtime');
-process.env.PYTHONPATH = [A7_RUNTIME_FIXTURE_DIR, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter);
-
-const run = await collectA7CrossTargetProofs();
+const previousPythonPath = process.env.PYTHONPATH;
+let run;
+try {
+  process.env.PYTHONPATH = [A7_RUNTIME_FIXTURE_DIR, previousPythonPath].filter(Boolean).join(path.delimiter);
+  run = await collectA7CrossTargetProofs();
+} finally {
+  if (previousPythonPath == null) delete process.env.PYTHONPATH;
+  else process.env.PYTHONPATH = previousPythonPath;
+}
 assert.equal(run.schemaVersion, A7_CROSS_TARGET_PROOF_SCHEMA);
 assert.match(run.candidateCommitSha, /^[0-9a-f]{40}$/);
 assert.match(run.candidateTreeSha, /^[0-9a-f]{40}$/);
