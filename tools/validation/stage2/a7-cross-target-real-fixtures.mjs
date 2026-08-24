@@ -219,14 +219,20 @@ def wait_for_process_event(listener, predicate, timeout=3.0):
             return last
     return last
 
-def current_frame():
-    thread = process.GetSelectedThread()
-    if not thread.IsValid() and process.GetNumThreads() > 0:
-        thread = process.GetThreadAtIndex(0)
+def current_frame(timeout=2.0):
+    deadline = time.time() + timeout
+    thread = lldb.SBThread()
+    while time.time() < deadline:
+        thread = process.GetSelectedThread()
+        if not thread.IsValid() and process.GetNumThreads() > 0:
+            thread = process.GetThreadAtIndex(0)
+        if thread.IsValid():
+            frame = thread.GetFrameAtIndex(0)
+            if frame.IsValid():
+                return thread, frame
+        time.sleep(0.01)
     if not thread.IsValid(): fail('thread-missing')
-    frame = thread.GetFrameAtIndex(0)
-    if not frame.IsValid(): fail('frame-missing')
-    return thread, frame
+    fail('frame-missing')
 
 def reg(frame, name):
     value = frame.FindRegister(name)
