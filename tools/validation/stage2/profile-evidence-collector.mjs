@@ -1,6 +1,6 @@
 /*
- * Exact-run producer for the A7/M6 profile denominator.  This module is
- * deliberately a producer, not a verifier: it executes the canonical focused
+ * Exact-run producer for the Stage 2 profile denominator.  This module is
+ * deliberately a producer, not a verifier: it executes canonical focused
  * tests, records their output, and publishes nothing when any prerequisite is
  * missing.  The final verifier validates the published identities again.
  */
@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { a2DenominatorReport } from '../machine-effects/a2-denominator.mjs';
 import { phase12DenominatorReport } from '../phase12/denominator.mjs';
 import { f6KnownImplementationGaps } from '../../../js/rebuild/transaction-v2.js';
+import { STAGE2_PROFILE_EVIDENCE_IDS } from '../../../js/platform/stage2-profile-evidence.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const INVENTORY_PATH = path.join(ROOT, 'tools/validation/stage2/profile-denominator-inventory.json');
@@ -90,6 +91,14 @@ function f6FixtureMap() {
 
 export function inspectProfileEvidencePrerequisites() {
   const failures = [];
+  // A run that omits a denominator item can never be consumed by the final
+  // verifier.  Keep this check here, before any command is executed, so a
+  // future closure of the current A2/F6/Phase12 gaps cannot accidentally turn
+  // this five-item producer into a partial publication.
+  const missingRules = STAGE2_PROFILE_EVIDENCE_IDS.filter((itemId) => !Object.hasOwn(RULES, itemId));
+  const unexpectedRules = Object.keys(RULES).filter((itemId) => !STAGE2_PROFILE_EVIDENCE_IDS.includes(itemId));
+  failures.push(...missingRules.map((itemId) => `missing-profile-proof-rule:${itemId}`));
+  failures.push(...unexpectedRules.map((itemId) => `unexpected-profile-proof-rule:${itemId}`));
   const a2 = a2DenominatorReport().validation;
   if (a2.terminalEligible !== true) failures.push(...(a2.blockingGaps || []).map((gap) => `known-a2-gap:${gap}`));
   failures.push(...f6KnownImplementationGaps().map((gap) => `known-f6-gap:${gap}`));
@@ -167,7 +176,11 @@ export function collectProfileEvidence({ expectedCommitSha, expectedTreeSha, out
     const unitEvidence = {};
     for (const unitId of denominator.unitIds) {
       const commandSummaries = rule.commandIds.map((id) => commandById.get(id));
-      const proof = { schemaVersion: PROFILE_UNIT_PROOF_SCHEMA, itemId, unitId, candidateCommitSha: head.commitSha, candidateTreeSha: head.treeSha, status: 'passed', commandIds: rule.commandIds, commandOutputIdentities: rule.commandIds.map((id) => commandOutputIdentities.get(id)), commandOutputDigests: commandSummaries.map((command) => `sha256:${sha256(`${command.stdout}\n${command.stderr}`)}`), sourceIdentities, testIdentities, providerProfileIds: rule.providerProfileIds, realFixtureIdentities: realFixtureIdentities.length ? realFixtureIdentities : testIdentities, negativeTestIdentities: testIdentities, independentOracleIdentities: [] };
+      // Test identities are not real-fixture identities.  A missing canonical
+      // fixture must block the run instead of being silently replaced with a
+      // test file (or any other arbitrary tracked file).
+      if (realFixtureIdentities.length === 0) throw new Error(`profile-proof-real-fixture-missing:${itemId}`);
+      const proof = { schemaVersion: PROFILE_UNIT_PROOF_SCHEMA, itemId, unitId, candidateCommitSha: head.commitSha, candidateTreeSha: head.treeSha, status: 'passed', commandIds: rule.commandIds, commandOutputIdentities: rule.commandIds.map((id) => commandOutputIdentities.get(id)), commandOutputDigests: commandSummaries.map((command) => `sha256:${sha256(`${command.stdout}\n${command.stderr}`)}`), sourceIdentities, testIdentities, providerProfileIds: rule.providerProfileIds, realFixtureIdentities, negativeTestIdentities: testIdentities, independentOracleIdentities: [] };
       const name = `${itemId.toLowerCase()}-${sha256(unitId).slice(0, 16)}.json`;
       files[name] = proof;
       unitEvidence[unitId] = `artifact:${relativeRunPath(runId, name)}@sha256:${sha256(jsonBytes(proof))}`;
