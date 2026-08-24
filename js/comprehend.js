@@ -554,6 +554,7 @@ export function findSink(model, vg, acc) {
   const seen = new Set();
   const sinks = [];
   const clampOnly = [];
+  const terminalWithoutSink = [];
   let budget = 0;
 
   while (queue.length && budget++ < 8192) {
@@ -565,9 +566,12 @@ export function findSink(model, vg, acc) {
     seen.add(identity);
     let cur = state.cur;
     let clamps = state.clamps;
+    let pathHasSink = false;
 
     for (const w of writesByRow.get(insn.row) || []) {
-      if (contains(w.value, cur)) sinks.push({ kind: 'store', row: insn.row, address: insn.address, write: w, clamps });
+      if (!contains(w.value, cur)) continue;
+      sinks.push({ kind: 'store', row: insn.row, address: insn.address, write: w, clamps });
+      pathHasSink = true;
     }
     const call = callByRow.get(insn.row);
     if (call) {
@@ -579,13 +583,19 @@ export function findSink(model, vg, acc) {
           name: call.name || null, target: call.target != null ? call.target : null,
           index: a, clamps,
         });
+        pathHasSink = true;
       }
     }
     if (insn.isReturn) {
       const v = vg.at(insn.row, 'x0');
-      if (v && contains(v, cur)) sinks.push({ kind: 'return', row: insn.row, address: insn.address, clamps });
+      if (v && contains(v, cur)) {
+        sinks.push({ kind: 'return', row: insn.row, address: insn.address, clamps });
+        pathHasSink = true;
+      }
     }
-    if (sinks.length) continue;
+    // A sink ends only the current CFG path. A sink found on a sibling path must
+    // never suppress this state's successors (#1748).
+    if (pathHasSink) continue;
 
     const defs = vg.defs.get(insn.row);
     if (defs) {
@@ -598,18 +608,30 @@ export function findSink(model, vg, acc) {
       }
     }
     const next = successors(insn);
-    if (!next.length && clamps.length) clampOnly.push({ kind: 'clamped', clamps, certain: true });
+    if (!next.length) {
+      if (clamps.length) clampOnly.push({ kind: 'clamped', clamps, certain: true });
+      else terminalWithoutSink.push({ row: insn.row, address: insn.address });
+    }
     for (const row of next) queue.push({ row, cur, clamps });
   }
 
+  const explorationIncomplete = queue.length > 0;
   if (sinks.length) {
     const keyOf = (x) => [x.kind, x.row, x.index ?? '', x.write?.baseReg ?? '', x.write?.disp ?? '', x.target ?? ''].join(':');
     const unique = new Map(sinks.map((x) => [keyOf(x), x]));
-    // Divergent branches reaching different consumers are not one certain sink.
-    if (unique.size === 1) return unique.values().next().value;
-    return { kind: 'ambiguous', certain: false, candidates: [...unique.values()].slice(0, 8) };
+    // A unique observed consumer is certain only when every completed path
+    // reaches it and the bounded search itself finished.
+    if (unique.size === 1 && !terminalWithoutSink.length && !clampOnly.length && !explorationIncomplete) {
+      return unique.values().next().value;
+    }
+    return {
+      kind: 'ambiguous',
+      certain: false,
+      candidates: [...unique.values()].slice(0, 8),
+      incompletePaths: terminalWithoutSink.length + clampOnly.length + (explorationIncomplete ? 1 : 0),
+    };
   }
-  if (clampOnly.length === 1) return clampOnly[0];
+  if (clampOnly.length === 1 && !terminalWithoutSink.length && !explorationIncomplete) return clampOnly[0];
 
   // Weak proximity fallback remains explicitly uncertain and is restricted to
   // CFG-reachable rows rather than a sibling branch with a larger row number.
