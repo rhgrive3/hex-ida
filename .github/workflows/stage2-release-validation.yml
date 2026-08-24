@@ -53,6 +53,13 @@ on:
 permissions:
   contents: read
 
+# A new commit on the same PR supersedes the old exact-head/merge-tree proof.
+# Cancel only stale PR runs; manual final-product runs keep a unique run-id group
+# so one release proof cannot cancel another explicitly requested proof.
+concurrency:
+  group: stage2-release-validation-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   head:
     if: github.event_name == 'pull_request'
