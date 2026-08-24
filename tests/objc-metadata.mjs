@@ -49,12 +49,12 @@ p64(0x1318, 0x3000);
 str(0x1880, 'debugName');
 str(0x18a0, '@16@0:8');
 
-const parsed = await parseObjcExtendedMetadata(read, {
+const sections = {
   protocolList: { vmAddr: 0x100n, size: 8n },
   categoryList: { vmAddr: 0x200n, size: 8n },
-}, {
-  classes: [{ name: 'PlayerData', addr: 0x2000n }],
-});
+};
+const opts = { classes: [{ name: 'PlayerData', addr: 0x2000n }] };
+const parsed = await parseObjcExtendedMetadata(read, sections, opts);
 
 assert.equal(parsed.protocols.length, 1);
 assert.equal(parsed.protocols[0].name, 'CoinProviding');
@@ -65,5 +65,43 @@ assert.equal(parsed.categories[0].name, 'Debug');
 assert.equal(parsed.categories[0].className, 'PlayerData');
 assert.equal(parsed.categories[0].methods[0].sel, 'debugName');
 assert.equal(parsed.categories[0].methods[0].imp, 0x3000n);
+assert.equal(parsed.protocols[0].completeness.complete, true);
+assert.equal(parsed.categories[0].completeness.complete, true);
+assert.equal(parsed.completeness.complete, true);
+
+// #1793: a pointer-table section with trailing non-pointer bytes is not complete.
+{
+  const misaligned = await parseObjcExtendedMetadata(read, {
+    protocolList: { vmAddr: 0x100n, size: 9n },
+    categoryList: { vmAddr: 0x200n, size: 8n },
+  }, opts);
+  assert.equal(misaligned.completeness.protocols.complete, false);
+  assert.equal(misaligned.completeness.protocols.misalignedBytes, 1);
+  assert.equal(misaligned.completeness.complete, false);
+}
+
+// #1802: a nested method-list read failure must propagate to table completeness.
+{
+  p32(0x1304, 2);
+  p64(0x1320, 0x18c0);
+  p64(0x1328, 0x18e0);
+  p64(0x1330, 0x3010);
+  str(0x18c0, 'secondMethod');
+  str(0x18e0, 'v16@0:8');
+  const readWithHole = async (addr, len) => {
+    if (Number(addr) === 0x1320 && len === 24) return null;
+    return read(addr, len);
+  };
+  const partial = await parseObjcExtendedMetadata(readWithHole, sections, { ...opts, pageBytes: 8 });
+  assert.equal(partial.categories.length, 1);
+  assert.equal(partial.categories[0].methods.length, 1);
+  assert.equal(partial.categories[0].completeness.methods.instanceMethods.declared, 2);
+  assert.equal(partial.categories[0].completeness.methods.instanceMethods.unreadableEntries, 1);
+  assert.equal(partial.categories[0].completeness.complete, false);
+  assert.equal(partial.completeness.categories.incompleteItems, 1);
+  assert.equal(partial.completeness.categories.complete, false);
+  assert.equal(partial.completeness.complete, false);
+}
 
 console.log('objc-metadata: ok');
+// Keep completeness regressions on a user-authored head after generated sync updates.

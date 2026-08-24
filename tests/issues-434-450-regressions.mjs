@@ -128,7 +128,11 @@ test('#441 protocol requirement vs IMP', () => {
   const protocolOnly=buildObjcRuntimeIndex({protocols:[{name:'P',methods:[{sel:'work:',addr:null}]}]});
   const r=resolveObjcDispatch(protocolOnly,{selector:'work:',protocols:['P']});
   assert.equal(r.resolved,null); assert.equal(r.candidates.length,0); assert.equal(r.requirements.length,1);
-  const concrete=buildObjcRuntimeIndex({classes:[{name:'Worker',methods:[{sel:'work:',addr:0x1234n}]}],protocols:[{name:'P',methods:[{sel:'work:',addr:null}]}]});
+  const concrete=buildObjcRuntimeIndex({
+    classes:[{name:'Worker',methods:[{sel:'work:',addr:0x1234n}]}],
+    protocols:[{name:'P',methods:[{sel:'work:',addr:null}]}],
+    runtimeCompleteness:{complete:true,categories:{complete:true}},
+  });
   const c=resolveObjcDispatch(concrete,{receiverType:'Worker',selector:'work:',protocols:['P']});
   assert.equal(c.resolved?.imp,0x1234n); assert.equal(c.requirements.length,1);
 });

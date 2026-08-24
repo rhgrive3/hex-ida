@@ -208,8 +208,8 @@ export function resolveObjcDispatch(index, { receiverType = null, selector, clas
   const second = candidates[1];
   const sameImplementation = !!top && top.imp != null && candidates.every((m) => m.imp != null && m.imp.toString() === top.imp.toString());
   const uniqueByEvidence = !!top && top.imp != null && (!second || sameImplementation || (!cleanReceiver && top.score - second.score >= 0.16));
-  const categoryComplete = index.completeness?.categories?.complete !== false;
-  const metadataComplete = index.completeness?.complete !== false;
+  const categoryComplete = index.completeness?.categories?.complete === true;
+  const metadataComplete = index.completeness?.complete === true;
   const partialBlocksVerification = cleanReceiver ? !categoryComplete : !metadataComplete;
   const unambiguous = uniqueByEvidence && !partialBlocksVerification;
   return {
