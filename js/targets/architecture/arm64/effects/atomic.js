@@ -21,6 +21,19 @@ const CAS_RE = /^cas(al|a|l)?([bh])?$/;
 const SWP_RE = /^swp(al|a|l)?([bh])?$/;
 const RMW_RE = /^(ldadd|ldset|ldclr|ldeor)(al|a|l)?([bh])?$/;
 const BARRIERS = new Set(['dmb','dsb','isb']);
+const ORDER_SUFFIXES = Object.freeze(['','a','l','al']);
+const SIZE_SUFFIXES = Object.freeze(['','b','h']);
+const orderedSizedMnemonics = (base) => ORDER_SUFFIXES.flatMap((ordering) => SIZE_SUFFIXES.map((size) => `${base}${ordering}${size}`));
+const exclusiveSizedMnemonics = (base) => SIZE_SUFFIXES.map((size) => `${base}${size}`);
+export const ARM64_ATOMIC_EFFECT_MNEMONICS = Object.freeze([
+  ...exclusiveSizedMnemonics('ldxr'), ...exclusiveSizedMnemonics('ldaxr'),
+  ...exclusiveSizedMnemonics('stxr'), ...exclusiveSizedMnemonics('stlxr'),
+  ...orderedSizedMnemonics('cas'), ...orderedSizedMnemonics('swp'),
+  ...orderedSizedMnemonics('ldadd'), ...orderedSizedMnemonics('ldset'),
+  ...orderedSizedMnemonics('ldclr'), ...orderedSizedMnemonics('ldeor'),
+  'dmb','dsb','isb','clrex',
+]);
+const ARM64_ATOMIC_EFFECT_SET = new Set(ARM64_ATOMIC_EFFECT_MNEMONICS);
 
 export const ARM64_ATOMIC_INSTRUCTION_INVENTORY = Object.freeze({
   exclusiveLoads:Object.freeze(['ldxr','ldaxr']),
@@ -74,6 +87,16 @@ function operands(decoded) {
   return Array.isArray(decoded?.ops) ? decoded.ops : Array.isArray(decoded?.operands) ? decoded.operands : [];
 }
 function registers(decoded) { return operands(decoded).map((op) => arm64RegisterOperand(op)).filter(Boolean); }
+function hasOperandShape(decoded, shape) {
+  const ops = operands(decoded);
+  if (ops.length !== shape.length) return false;
+  return shape.every((kind, index) => {
+    const operand = ops[index];
+    if (kind === 'reg') return !!arm64RegisterOperand(operand);
+    if (kind === 'mem') return operand?.k === 'mem' || operand?.kind === 'memory';
+    return false;
+  });
+}
 function isGpOrZero(reg) { return !!reg && (reg.kind === 'gp' || reg.zero === true || reg.kind === 'zero'); }
 function zeroDisplacement(addressing) {
   const raw = addressing?.metadata?.addressDisplacement;
@@ -81,6 +104,18 @@ function zeroDisplacement(addressing) {
 }
 function isBaseOnly(addressing) {
   return addressing.mode === 'offset' && !addressing.index && zeroDisplacement(addressing) && addressing.writebackOperations.length === 0;
+}
+function registerEncodingOverlaps(left, right) {
+  return Number.isInteger(left?.num) && Number.isInteger(right?.num) && left.num === right.num;
+}
+function immediateValue(operand) {
+  const raw = operand?.value;
+  if (typeof raw === 'bigint') return raw;
+  if (typeof raw === 'number' && Number.isSafeInteger(raw)) return BigInt(raw);
+  const text = typeof raw === 'string' ? raw : operand?.text;
+  const normalized = String(text || '').trim().replace(/^#/, '');
+  if (/^(?:0x[0-9a-f]+|\d+)$/i.test(normalized)) return BigInt(normalized);
+  return null;
 }
 function registerMatchesSizeSuffix(reg, sizeSuffix) {
   if (!isGpOrZero(reg)) return false;
@@ -117,18 +152,18 @@ function tagChecked(addressing) { return addressing?.base?.kind !== 'sp'; }
 function faults(direction, alignment, addressExpr, addressing) {
   const causes = ['address-size','translation','access-flag','permission','external'];
   if (tagChecked(addressing)) causes.push('tag-check');
-  const out = [
-    {
-      kind:'data-abort',
-      condition:{ kind:'memory-access-fault', access:direction },
-      detail:{ causes, tagChecked:tagChecked(addressing), addressExpr },
-    },
-    {
+  const out = [{
+    kind:'data-abort',
+    condition:{ kind:'memory-access-fault', access:direction },
+    detail:{ causes, tagChecked:tagChecked(addressing), addressExpr },
+  }];
+  if (alignment > 1) {
+    out.push({
       kind:'alignment-fault',
       condition:{ kind:'misaligned', alignment },
       detail:{ access:direction, atomic:true, alignment },
-    },
-  ];
+    });
+  }
   if (addressing?.base?.kind === 'sp') {
     out.unshift({
       kind:'stack-pointer-alignment-fault',
@@ -196,11 +231,21 @@ function valueOp(opcode, input, fromBits, toBits, id, metadata = {}) {
 function readRegister(reg, id, widthBits = reg.bits) {
   if (reg.zero) return { operations:[], value:createBitVectorValue(widthBits, 0n), registerId:null };
   if (widthBits > reg.bits) throw new TypeError('arm64-atomic-source-width-exceeds-register-view');
-  const read = createArm64RegisterRead(reg, id, reg.bits);
+  const physicalBits = reg.kind === 'gp' && reg.bits === 32 ? 64 : reg.bits;
+  const read = createArm64RegisterRead(reg, id, physicalBits);
   const operations = [read.operation];
   let value = read.value;
-  if (widthBits < reg.bits) {
-    const trunc = valueOp('truncate', value, reg.bits, widthBits, `${id}.truncated`, { purpose:'atomic-source-width' });
+  let valueBits = physicalBits;
+  if (valueBits !== reg.bits) {
+    const view = valueOp('truncate', value, valueBits, reg.bits, `${id}.view`, {
+      purpose:'atomic-register-view', reason:'a64-w-register-read-is-low-32-of-physical-x',
+    });
+    operations.push(view.operation);
+    value = view.output;
+    valueBits = reg.bits;
+  }
+  if (widthBits < valueBits) {
+    const trunc = valueOp('truncate', value, valueBits, widthBits, `${id}.truncated`, { purpose:'atomic-source-width' });
     operations.push(trunc.operation);
     value = trunc.output;
   }
@@ -233,6 +278,7 @@ function writeLoadedGp(reg, value, valueBits, idPrefix) {
 
 function exclusiveLoad(decoded, context, match) {
   const ctx = contextOf(decoded, context);
+  if (!hasOperandShape(decoded, ['reg','mem'])) return partial(decoded, context, 'exclusive load operand shape is invalid');
   const dest = registers(decoded)[0];
   const sizeSuffix = match[1] || '';
   if (!registerMatchesSizeSuffix(dest, sizeSuffix)) return partial(decoded, context, 'exclusive load destination width is invalid');
@@ -287,6 +333,7 @@ function exclusiveLoad(decoded, context, match) {
 
 function exclusiveStore(decoded, context, match) {
   const ctx = contextOf(decoded, context);
+  if (!hasOperandShape(decoded, ['reg','reg','mem'])) return partial(decoded, context, 'exclusive store operand shape is invalid');
   const regs = registers(decoded);
   const status = regs[0];
   const data = regs[1];
@@ -304,6 +351,12 @@ function exclusiveStore(decoded, context, match) {
     throw error;
   }
   if (!isBaseOnly(addr)) return partial(decoded, context, 'exclusive stores require base-only addressing');
+  if (registerEncodingOverlaps(status, data)) {
+    return partial(decoded, context, 'exclusive store status/data overlap is constrained-unpredictable');
+  }
+  if (addr.base?.kind === 'gp' && registerEncodingOverlaps(status, addr.base)) {
+    return partial(decoded, context, 'exclusive store status/base overlap is constrained-unpredictable');
+  }
 
   const release = mnemonicOf(decoded).startsWith('stlxr');
   const ordering = release ? 'release' : 'relaxed';
@@ -355,6 +408,7 @@ function exclusiveStore(decoded, context, match) {
 
 function atomicRmw(decoded, context, { family, suffix = '', sizeSuffix = '' }) {
   const ctx = contextOf(decoded, context);
+  if (!hasOperandShape(decoded, ['reg','reg','mem'])) return partial(decoded, context, `${family} operand shape is invalid`);
   const regs = registers(decoded);
   const source = regs[0];
   const result = regs[1];
@@ -405,6 +459,7 @@ function atomicRmw(decoded, context, { family, suffix = '', sizeSuffix = '' }) {
 
 function compareSwap(decoded, context, match) {
   const ctx = contextOf(decoded, context);
+  if (!hasOperandShape(decoded, ['reg','reg','mem'])) return partial(decoded, context, 'CAS operand shape is invalid');
   const suffix = match[1] || '';
   const sizeSuffix = match[2] || '';
   const regs = registers(decoded);
@@ -487,6 +542,7 @@ const BARRIER_OPTIONS = Object.freeze({
 });
 
 function barrier(decoded, context, mnemonic) {
+  if (operands(decoded).length > 1) return partial(decoded, context, `${mnemonic.toUpperCase()} operand shape is invalid`, mnemonic === 'isb' ? ['other'] : ['memory','other']);
   const option = barrierOption(decoded);
   if (mnemonic === 'isb') {
     if (option !== 'sy') return partial(decoded, context, `unsupported ISB option: ${option}`, ['other']);
@@ -504,22 +560,36 @@ function barrier(decoded, context, mnemonic) {
 }
 
 function clearExclusive(decoded, context) {
-  const token = arm64Temporary('exclusive.monitor.cleared', 1);
+  const ops = operands(decoded);
+  if (ops.length > 1) return partial(decoded, context, 'CLREX operand shape is invalid', ['registers','other']);
+  const immediate = ops.length === 0 ? 15n : immediateValue(ops[0]);
+  if (immediate == null || immediate < 0n || immediate > 15n) {
+    return partial(decoded, context, 'CLREX immediate must be an imm4 value', ['registers','other']);
+  }
+  const nextMonitorToken = arm64Temporary('exclusive.monitor.cleared-token', 64);
+  const operations = [createMachineOperation({
+    kind:'intrinsic',
+    intrinsicId:'arm64.exclusive-monitor-clear',
+    effectSummary:intrinsicSummary({
+      outputs:[nextMonitorToken],
+      registersWritten:EXCLUSIVE_MONITOR_STATE.map(([id]) => id),
+      determinism:'deterministic',
+    }),
+    metadata:{ architecture:'arm64', hiddenState:'exclusive-monitor' },
+  })];
+  exclusiveStateWrite(operations, [
+    createBitVectorValue(1, 0n), createBitVectorValue(64, 0n), createBitVectorValue(16, 0n), nextMonitorToken,
+  ], { transition:'clear-explicit' });
   return bundle(decoded, context, {
-    operations:[createMachineOperation({
-      kind:'intrinsic',
-      intrinsicId:'arm64.exclusive-monitor-clear',
-      effectSummary:intrinsicSummary({ outputs:[token], determinism:'deterministic' }),
-      metadata:{ architecture:'arm64', hiddenState:'exclusive-monitor' },
-    })],
+    operations,
     completeness:'exact-with-intrinsic',
-    metadata:{ family:'arm64-atomic', kind:'exclusive-monitor-clear', mnemonic:'clrex' },
+    metadata:{ family:'arm64-atomic', kind:'exclusive-monitor-clear', mnemonic:'clrex', immediate:Number(immediate) },
   });
 }
 
 export function isArm64AtomicInstruction(decodedOrMnemonic) {
   const mnemonic = typeof decodedOrMnemonic === 'string' ? decodedOrMnemonic.toLowerCase() : mnemonicOf(decodedOrMnemonic);
-  return EXCLUSIVE_LOAD_RE.test(mnemonic) || EXCLUSIVE_STORE_RE.test(mnemonic) || CAS_RE.test(mnemonic) || SWP_RE.test(mnemonic) || RMW_RE.test(mnemonic) || BARRIERS.has(mnemonic) || mnemonic === 'clrex';
+  return ARM64_ATOMIC_EFFECT_SET.has(mnemonic);
 }
 
 export function liftArm64AtomicEffects(decoded, context = {}) {
