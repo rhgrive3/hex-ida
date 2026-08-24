@@ -196,6 +196,10 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
           const t = referenceTarget(b, opsStr);
           res.calls.push({ row, addr, target: t, name: t != null && symbols ? symbols.nameAt(t) || symbols.label(t) : null });
         } else res.indirectCalls++;
+        // AAPCS64 calls may clobber x0-x18; BL/BLR also overwrite LR/x30.
+        // Keep x19-x29 provenance because those registers are callee-saved.
+        for (let r = 0; r <= 18; r++) pageOf.delete(r);
+        pageOf.delete(30);
       } else if (isReturn(b)) {
         res.returns++;
       } else if (/^b\./.test(b) || b === 'cbz' || b === 'cbnz' || b === 'tbz' || b === 'tbnz') {
