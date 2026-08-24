@@ -335,6 +335,8 @@ assert.ok(truth.f6Denominator.blockingUnitIds.some((id) => id.endsWith(':relocat
 assert.ok(truth.f6Denominator.blockingUnitIds.some((id) => id.endsWith(':branch-ranges')));
 assert.ok(truth.f6Denominator.blockingUnitIds.some((id) => id.endsWith(':unwind-and-debug')));
 assert.ok(truth.f6Denominator.blockingUnitIds.some((id) => id.endsWith(':imports-and-exports')));
+assert.ok(truth.f6Denominator.blockingUnitIds.some((id) => id.endsWith(':layout-and-structure')));
+assert.ok(truth.f6Denominator.blockingUnitIds.some((id) => id.endsWith(':signature-consequence')));
 
 const malformedDenominator = evaluateF6RebuildDenominator({ transaction, validation, publication, proof: {
   realFixture: true, realFixtureEvidence: true, negativeValidatorTest: true, staleIdentityTest: true,

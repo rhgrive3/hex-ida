@@ -8,6 +8,7 @@ import { stableDigest } from '../../../js/core/identity/index.js';
 import { STAGE2_PROFILE_EVIDENCE_IDS, validateStage2DenominatorLock, validateStage2ProfileEvidence } from '../../../js/platform/stage2-profile-evidence.js';
 import { a2DenominatorReport } from '../machine-effects/a2-denominator.mjs';
 import { phase12DenominatorReport } from '../phase12/denominator.mjs';
+import { f6KnownImplementationGaps } from '../../../js/rebuild/transaction-v2.js';
 import { PROFILE_EVIDENCE_RUN_ROOT, PROFILE_UNIT_PROOF_RULES, PROFILE_UNIT_PROOF_SCHEMA } from './profile-evidence-collector.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -232,7 +233,7 @@ function evidenceIdentityAtHead(identity, context = {}, candidateCommitSha = nul
 export function stage2KnownDenominatorGaps() {
   const a2 = a2DenominatorReport().validation;
   const phase12 = phase12DenominatorReport();
-  const gaps = [];
+  const gaps = [...f6KnownImplementationGaps()];
   if (a2.valid !== true) gaps.push('a2-denominator-invalid');
   if (a2.terminalEligible !== true) gaps.push(...(a2.blockingGaps || []));
   if (phase12.valid !== true) {

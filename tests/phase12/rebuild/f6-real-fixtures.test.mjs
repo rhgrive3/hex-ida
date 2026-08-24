@@ -143,7 +143,6 @@ for (const fixture of manifest.fixtures) {
   assert.equal(validation.status, 'valid', `${fixture.id}: ${JSON.stringify(validation.failures)}`);
   assert.equal(validation.independentDifferential, 'executed');
   assert.equal(validation.validators.find((item) => item.validator === 'format-invariants')?.status, 'passed');
-  assert.equal(validation.validators.find((item) => item.validator === 'format-invariants')?.detail?.signatureConsequence, 'preserved-by-unchanged-regions');
   assert.equal(validation.validators.find((item) => item.validator === 'independent-differential')?.status, 'passed');
   const oracleEvidence = validation.validators.find((item) => item.validator === 'independent-differential')?.detail;
   assert.equal(oracleEvidence?.outputDigest, materialized.outputHash);
@@ -216,7 +215,6 @@ const tampered = elfMaterialized.bytes.slice();
 tampered[0] = 0;
 const invariantFailure = validateFormatSafeMutation({ transaction: elfTransaction, original: elfBytes, output: tampered });
 assert.equal(invariantFailure.ok, false);
-assert.equal(invariantFailure.signatureConsequence, undefined, 'tampered bytes must not produce signature-preservation evidence');
 const oracleFailure = await independentOracle({ transaction: elfTransaction, original: elfBytes, output: tampered });
 assert.equal(oracleFailure.ok, false);
 const truncatedOutput = elfMaterialized.bytes.slice(0, -1);
@@ -247,19 +245,15 @@ const denominatorStatuses = f6EvidenceRows.map(({ transaction, validation, publi
     staleIdentityTest: true,
     truncationTest: true,
     wrongIdentityTest: true,
-    signatureConsequenceTest: true,
   },
 }));
 assert.equal(denominatorStatuses.length, 4);
 for (const status of denominatorStatuses) {
   assert.equal(status.status, 'blocked', 'broad native rewrite classes remain blocking');
-  assert.equal(status.cells['transaction-identity'].status, 'closed');
-  assert.equal(status.cells['layout-and-structure'].status, 'closed');
-  assert.equal(status.cells['signature-consequence'].status, 'closed');
-  for (const unit of ['loader-reparse', 'independent-differential-oracle', 'atomic-publication', 'real-fixture', 'negative-validator-corpus']) {
+  for (const unit of ['transaction-identity', 'loader-reparse', 'independent-differential-oracle', 'atomic-publication', 'real-fixture', 'negative-validator-corpus']) {
     assert.equal(status.cells[unit].status, 'closed');
   }
-  for (const unit of ['relocations-and-bindings', 'branch-ranges', 'unwind-and-debug', 'imports-and-exports']) {
+  for (const unit of ['layout-and-structure', 'relocations-and-bindings', 'branch-ranges', 'unwind-and-debug', 'imports-and-exports', 'signature-consequence']) {
     assert.equal(status.cells[unit].status, 'blocking');
   }
 }
@@ -268,5 +262,5 @@ console.log(`F6_REAL_REBUILD_PROOF=${JSON.stringify({
   fixtures: proofRows,
   oracle: { identity: oracleTool.identity, version: oracleTool.version },
   denominator: denominatorStatuses.map((status) => ({ profileId: status.profileId, status: status.status, closedUnitIds: status.closedUnitIds, blockingUnitIds: status.blockingUnitIds })),
-  negatives: ['no-op-rejected', 'synthetic-rejected', 'header-tamper-rejected', 'truncation-rejected', 'wrong-identity-rejected', 'signature-preservation-rejected-on-tamper'],
+  negatives: ['no-op-rejected', 'synthetic-rejected', 'header-tamper-rejected', 'truncation-rejected', 'wrong-identity-rejected'],
 })}`);

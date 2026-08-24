@@ -6,6 +6,8 @@ const knownGaps = stage2KnownDenominatorGaps();
 assert.ok(knownGaps.includes('arm64:a64:all-decoder-encodings-and-aliases'));
 assert.ok(knownGaps.includes('x86_64:long-64:effect-family:atomic'));
 assert.ok(knownGaps.includes('remote.remote-canonical-transport'), 'Phase12 blocking denominator gaps must block Stage2 profile evidence');
+assert.ok(knownGaps.includes('macho:64:layout-and-structure'), 'unsupported F6 layout growth must block Stage2 profile evidence');
+assert.ok(knownGaps.includes('pe:pe32+:signature-consequence'), 'unimplemented signature consequence handling must block Stage2 profile evidence');
 assert.match(stage2CanonicalBuildIdentity(), /^userscript-release:[0-9a-f]{64}:build:[0-9a-f]{24}:serial:\d+$/);
 
 const scope = JSON.parse(fs.readFileSync('tools/validation/stage2/completion-scope.lock.json', 'utf8'));

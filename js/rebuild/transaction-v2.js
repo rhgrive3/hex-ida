@@ -16,8 +16,10 @@ export const F6_REBUILD_UNITS = Object.freeze([
   'unwind-and-debug', 'imports-and-exports', 'signature-consequence', 'loader-reparse',
   'independent-differential-oracle', 'atomic-publication', 'real-fixture', 'negative-validator-corpus',
 ]);
-const F6_UNSUPPORTED_OPERATION_UNITS = new Set([
-  'relocations-and-bindings', 'branch-ranges', 'unwind-and-debug', 'imports-and-exports',
+export const F6_REBUILD_PROFILES = Object.freeze(['macho:64', 'elf:64', 'pe:pe32', 'pe:pe32+']);
+export const F6_UNIMPLEMENTED_OPERATION_UNITS = Object.freeze([
+  'layout-and-structure', 'relocations-and-bindings', 'branch-ranges',
+  'unwind-and-debug', 'imports-and-exports', 'signature-consequence',
 ]);
 const BYTE_HASH_RE = /^bytes:[0-9a-f]{32}$/;
 const VALID_REBUILD_PROFILE_SUPPORT = new WeakSet();
@@ -193,13 +195,18 @@ function f6Cell(profileId, unit, status, reason = null, evidence = null) {
   return Object.freeze({ id: `${profileId}:${unit}`, unit, status, reason, evidence });
 }
 
+export function f6KnownImplementationGaps() {
+  return Object.freeze(F6_REBUILD_PROFILES.flatMap((profileId) => F6_UNIMPLEMENTED_OPERATION_UNITS.map((unit) => `${profileId}:${unit}`)));
+}
+
 /**
  * Evaluate F6's locked unit vocabulary against the actual v2 transaction
  * evidence.  A generic validator result or denominator identity is not an
- * implementation of a native rewrite class: relocation, branch, unwind, and
- * import/export edits remain blocking until a format-aware production adapter
- * and focused evidence exist.  The evaluator intentionally reports those
- * blockers instead of allowing profile-level proof to promote them.
+ * implementation of a native rewrite class: layout growth, relocation,
+ * branch, unwind, import/export, and signature consequences remain blocking
+ * until a format-aware production adapter and focused evidence exist. The
+ * evaluator reports those blockers instead of allowing profile-level proof to
+ * promote them.
  */
 export function evaluateF6RebuildDenominator({ transaction, validation, publication, proof = {} } = {}) {
   const profileId = f6ProfileId(transaction);
@@ -219,17 +226,7 @@ export function evaluateF6RebuildDenominator({ transaction, validation, publicat
     && validationIdentityValid(validation);
   add('transaction-identity', validationPassed ? 'closed' : 'blocking', validationPassed ? null : 'f6-transaction-identity-unproven', validationPassed ? 'transaction-v2-validation-identity' : null);
 
-  const formatSafe = transaction?.expectedOriginalState?.formatSafe?.schema === 'hex-format-safe-rebuild/v1';
-  const formatValidator = validation?.validators?.find((item) => item.validator === 'format-invariants');
-  const boundedLayout = formatSafe && transaction?.sizeDelta === 0 && transaction?.impact?.layoutMoving === false && formatValidator?.status === 'passed';
-  add('layout-and-structure', boundedLayout ? 'closed' : 'blocking', boundedLayout ? null : 'f6-layout-growth-or-structure-adapter-unimplemented', boundedLayout ? 'format-safe-same-size-invariant' : null);
-
-  for (const unit of F6_UNSUPPORTED_OPERATION_UNITS) add(unit, 'blocking', `f6-${unit}-adapter-unimplemented`);
-
-  const signatureEvidence = proof.signatureConsequenceTest === true
-    && formatValidator?.detail?.signatureConsequence === 'preserved-by-unchanged-regions'
-    && transaction?.impact?.signature === false;
-  add('signature-consequence', signatureEvidence ? 'closed' : 'blocking', signatureEvidence ? null : 'f6-signature-consequence-unproven', signatureEvidence ? 'format-safe-signature-preservation' : null);
+  for (const unit of F6_UNIMPLEMENTED_OPERATION_UNITS) add(unit, 'blocking', `f6-${unit}-adapter-unimplemented`);
 
   const loader = validation?.validators?.find((item) => item.validator === 'loader-reparse');
   add('loader-reparse', loader?.status === 'passed' ? 'closed' : 'blocking', loader?.status === 'passed' ? null : 'f6-loader-reparse-unproven', loader?.status === 'passed' ? 'production-loader-reparse' : null);
