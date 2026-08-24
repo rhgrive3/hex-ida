@@ -271,6 +271,10 @@ try:
     attached_pid = process.GetProcessID()
     if attached_pid <= 0:
         fail('remote-process-identity-missing')
+    debugger.SetSelectedTarget(target)
+    command_process = debugger.GetCommandInterpreter().GetProcess()
+    if not command_process.IsValid() or command_process.GetProcessID() != attached_pid:
+        fail('remote-command-process-identity-mismatch')
     if not lldb.SBDebugger.StateIsStoppedState(process.GetState()):
         fail('remote-attach-not-stopped')
     triple = target.GetTriple() or ''
@@ -296,11 +300,12 @@ try:
 
     before_operand = operand
     pause_interpreter = debugger.GetCommandInterpreter()
+    pause_context = lldb.SBExecutionContext(process)
     pause_holder = {}
     def run_pause_continue():
         command_result = lldb.SBCommandReturnObject()
         try:
-            pause_interpreter.HandleCommand('process continue', command_result, False)
+            pause_interpreter.HandleCommand('process continue', pause_context, command_result, False)
             pause_holder['succeeded'] = bool(command_result.Succeeded())
             pause_holder['error'] = command_result.GetError() or ''
             pause_holder['output'] = command_result.GetOutput() or ''
@@ -344,6 +349,9 @@ try:
     if not input_error.Success():
         fail('cancel-input-failed:' + str(input_error))
     interpreter = debugger.GetCommandInterpreter()
+    cancel_process = interpreter.GetProcess()
+    if not cancel_process.IsValid() or cancel_process.GetProcessID() != attached_pid:
+        fail('cancel-command-process-identity-mismatch')
     holder = {}
     def run_interpreter():
         try:
