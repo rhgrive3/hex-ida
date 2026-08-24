@@ -4,7 +4,7 @@ The Ubuntu/Debian LLDB package can expose a Python wrapper that external
 ``python3`` cannot import because the native ``_lldb`` binding is packaged
 separately. The A7 proof runners invoke only generated, bounded provider
 scripts from temporary ``hex-a7-*`` directories. For exactly those scripts,
-replace the external Python process with the installed LLDB driver and import
+replace the external Python process with the installed LLDB driver and execute
 the same script in LLDB's embedded interpreter, where ``_lldb`` is registered
 by LLDB itself.
 
@@ -65,6 +65,14 @@ def _handoff_to_embedded_lldb() -> None:
     # The embedded interpreter obtains its Python paths from LLDB itself.
     # Do not carry the external-wrapper PYTHONPATH into the embedded runtime.
     env.pop("PYTHONPATH", None)
+    script_literal = repr(script)
+    python_command = (
+        "exec(compile(open(" + script_literal + ", 'rb').read(), "
+        + script_literal
+        + ", 'exec'), {'__name__': '__main__', '__file__': "
+        + script_literal
+        + "})"
+    )
     argv = [
         lldb,
         "-b",
@@ -72,7 +80,7 @@ def _handoff_to_embedded_lldb() -> None:
         "-o",
         "settings set symbols.enable-external-lookup false",
         "-o",
-        f"command script import {script}",
+        f"script {python_command}",
         "-o",
         "quit",
     ]
