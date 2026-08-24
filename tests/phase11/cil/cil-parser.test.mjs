@@ -7,13 +7,8 @@ export function buildMinimalCil() {
   const buf = new Uint8Array(0x300);
   const view = new DataView(buf.buffer);
 
-  // DOS header
-  buf[0] = 0x4d; buf[1] = 0x5a; // 'MZ'
-  view.setUint32(0x3c, 0x80, true); // PE offset
-
-  // PE signature
-  buf[0x80] = 0x50; buf[0x81] = 0x45; buf[0x82] = 0; buf[0x83] = 0; // 'PE\0\0'
-
+  // Deliberately minimal raw metadata fixture. Real PE/CLI inputs must use
+  // the optional-header CLI directory and are covered by adversarial tests.
   // Metadata root BSJB signature at 0x100
   buf[0x100] = 0x42; buf[0x101] = 0x53; buf[0x102] = 0x4a; buf[0x103] = 0x42; // 'BSJB'
   view.setUint16(0x104, 1, true); // MajorVersion

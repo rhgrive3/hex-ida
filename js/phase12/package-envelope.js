@@ -5,6 +5,7 @@ import { createResourceBudget } from './resource-budget.js';
 
 export const PACKAGE_ENVELOPE_VERSION = 'hex-phase12-package-envelope-v1';
 export const PACKAGE_SCHEMA_VERSION = 1;
+export const PHASE12_PROVIDER_OUTPUT_SCHEMA = 'provider-v1';
 export const MAX_PACKAGE_INPUT_BYTES = 32 * 1024 * 1024;
 export const DEFAULT_PACKAGE_LIMITS = Object.freeze({ maxDepth: 64, maxStrings: 200_000, maxStringBytes: 4 * 1024 * 1024, maxTokens: 2_000_000, maxEntries: 1_000_000 });
 
@@ -217,11 +218,14 @@ export function validateProviderOutput(value, options = {}) {
     if (new TextEncoder().encode(encoded).byteLength > maxBytes) throw new PackageValidationError('provider-output-too-large');
     const entries = Array.isArray(value.items) ? value.items : Array.isArray(value.results) ? value.results : [];
     if (entries.length > maxEntries) throw new PackageValidationError('provider-output-entry-budget-exceeded');
-    if (value.schemaVersion == null || value.provenance == null) throw new PackageValidationError('provider-output-provenance-required');
-    if (value.completeness === 'truncated' && value.unique === true) throw new PackageValidationError('provider-output-truncated-unique-invalid');
+    if (value.schemaVersion !== PHASE12_PROVIDER_OUTPUT_SCHEMA) throw new PackageValidationError('provider-output-schema-unsupported');
+    if (!value.provenance || typeof value.provenance !== 'object' || Array.isArray(value.provenance)) throw new PackageValidationError('provider-output-provenance-required');
+    if (!['complete', 'partial', 'truncated'].includes(value.completeness)) throw new PackageValidationError('provider-output-completeness-invalid');
+    if (value.completeness !== 'complete' && value.unique === true) throw new PackageValidationError('provider-output-incomplete-unique-invalid');
     for (const item of entries) {
       if (!item || typeof item !== 'object') throw new PackageValidationError('provider-output-item-invalid');
       if (item.id == null || item.targetIdentity == null) throw new PackageValidationError('provider-output-item-identity-required');
+      if (value.targetIdentity != null && item.targetIdentity !== value.targetIdentity) throw new PackageValidationError('provider-output-item-target-mismatch');
     }
     if (options.targetIdentity != null && value.targetIdentity !== options.targetIdentity) throw new PackageValidationError('provider-output-target-mismatch');
     return { ok: true, value: deepFreeze(value) };

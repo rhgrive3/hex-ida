@@ -12,6 +12,22 @@ function resolvePlugin(value) {
   return architecturePluginV2(value);
 }
 
+function identity(value) {
+  return String(value ?? '').trim().toLowerCase();
+}
+
+// ARM64e deliberately delegates ordinary A64 instructions to the canonical
+// ARM64 lifter. That shared semantic bundle remains valid for the ARM64e
+// profile; every other architecture must emit its own identity.
+function compatibleArchitectureIds(plugin) {
+  const id = identity(plugin.id);
+  return id === 'arm64e' ? new Set(['arm64', 'arm64e']) : new Set([id]);
+}
+
+function compatibleModes(plugin) {
+  return new Set((typeof plugin.modes === 'function' ? plugin.modes() : []).map(identity).filter(Boolean));
+}
+
 function frozenError(error) {
   return Object.freeze({
     name: String(error?.name || 'Error'),
@@ -44,6 +60,12 @@ export function classifyMachineEffectsCoverage(architectureOrPlugin, decoded, co
   if (typeof plugin.liftExact !== 'function') {
     return Object.freeze({ ...base, status: 'unsupported', reason: 'machine-effects-lifter-unavailable' });
   }
+  const architectureIds = compatibleArchitectureIds(plugin);
+  const declaredArchitecture = decoded?.architectureId ?? decoded?.architecture ?? context?.architectureId ?? context?.architecture;
+  if (declaredArchitecture != null && !architectureIds.has(identity(declaredArchitecture))) {
+    return Object.freeze({ ...base, status: 'error', reason: 'machine-effects-input-architecture-mismatch', expected: String(plugin.id), observed: String(declaredArchitecture) });
+  }
+  const modes = compatibleModes(plugin);
 
   let bundle;
   try {
@@ -60,6 +82,16 @@ export function classifyMachineEffectsCoverage(architectureOrPlugin, decoded, co
     validated = validateMachineEffectBundle(bundle);
   } catch (error) {
     return Object.freeze({ ...base, status: 'error', reason: 'machine-effects-invalid-bundle', error: frozenError(error) });
+  }
+  if (!architectureIds.has(identity(validated.architectureId))) {
+    return Object.freeze({ ...base, status: 'error', reason: 'machine-effects-bundle-architecture-mismatch', expected: [...architectureIds], observed: validated.architectureId, instructionId: validated.instructionId });
+  }
+  const expectedInstructionId = context?.instructionId ?? decoded?.instructionId;
+  if (expectedInstructionId != null && String(validated.instructionId) !== String(expectedInstructionId)) {
+    return Object.freeze({ ...base, status: 'error', reason: 'machine-effects-bundle-instruction-mismatch', expected: String(expectedInstructionId), observed: validated.instructionId });
+  }
+  if (modes.size > 0 && !modes.has(identity(validated.mode))) {
+    return Object.freeze({ ...base, status: 'error', reason: 'machine-effects-bundle-mode-mismatch', expected: [...modes], observed: validated.mode, instructionId: validated.instructionId });
   }
   if (!VALID_COMPLETENESS.has(validated.completeness)) {
     return Object.freeze({

@@ -1,9 +1,12 @@
 import { deepFreeze, jsonSafe, stableDigest } from '../core/identity/index.js';
+import { isValidatedStage2CapabilityProof } from '../platform/stage2-profile-evidence.js';
 import { CHANGELOG_SCHEMA_VERSION, ChangeLog, createProjectOperation } from './index.js';
 import { applyRemoteEnvelopeQueued } from './remote-delivery.js';
 
 export const REMOTE_COLLAB_SCHEMA = 'hex-remote-collaboration-envelope/v1';
 export const REMOTE_GATE_SCHEMA = 'hex-remote-collaboration-gate/v1';
+export const REMOTE_SECURITY_PROFILE_ID = 'collaboration:remote-security-v1';
+const VALID_REMOTE_COLLABORATION_SUPPORT = new WeakSet();
 
 function required(value, code) {
   const text = String(value ?? '').trim();
@@ -42,6 +45,11 @@ function authorized(permissions, operation) {
   const action = `action:${operation.action}`;
   const combined = `${fact}:action:${operation.action}`;
   return permissions.includes(combined) || (permissions.includes(fact) && permissions.includes(action));
+}
+
+function envelopeIdentity(envelope) {
+  const { envelopeId, ...payload } = envelope;
+  return `remote-envelope:${stableDigest(payload)}`;
 }
 
 export function createRemoteCollaborationEnvelope(input = {}) {
@@ -85,7 +93,7 @@ export function createRemoteCollaborationEnvelope(input = {}) {
       derivedDataOnly: input.egress?.derivedDataOnly !== false,
     },
   };
-  return deepFreeze({ ...envelope, envelopeId: `remote-envelope:${stableDigest(envelope)}` });
+  return deepFreeze({ ...envelope, envelopeId: envelopeIdentity(envelope) });
 }
 
 export class RemoteCollaborationGate {
@@ -113,6 +121,7 @@ export class RemoteCollaborationGate {
     if ((envelope.binaryIdentity ?? null) !== this.binaryIdentity) return { ok: false, reason: 'remote-wrong-binary' };
     if (envelope.sessionIdentity !== this.sessionIdentity) return { ok: false, reason: 'remote-wrong-session' };
     if (!validSequence(envelope.sequence)) return { ok: false, reason: 'remote-sequence-invalid' };
+    if (typeof envelope.envelopeId !== 'string' || envelope.envelopeId !== envelopeIdentity(envelope)) return { ok: false, reason: 'remote-envelope-identity-mismatch' };
     if (this.revokedActors.has(envelope.actorIdentity)) return { ok: false, reason: 'remote-actor-revoked' };
     const permissions = Object.hasOwn(this.allowedActors, envelope.actorIdentity) ? this.allowedActors[envelope.actorIdentity] : null;
     if (!permissions) return { ok: false, reason: 'remote-actor-unauthorized' };
@@ -188,21 +197,35 @@ export class RemoteCollaborationChannel {
   }
 }
 
-export function remoteCollaborationSupport({ gate, securityProfileId = null, proof = {} } = {}) {
-  const ready = gate instanceof RemoteCollaborationGate
-    && !!String(securityProfileId || '').trim()
-    && proof.exactHead === true
-    && proof.replayTests === true
-    && proof.identityTests === true
-    && proof.authorizationTests === true
-    && proof.transportSecurityTests === true
-    && proof.privacyTests === true
-    && proof.convergenceTests === true
-    && proof.revocationTests === true
-    && proof.outOfOrderTests === true;
-  return Object.freeze({
-    status: ready ? 'supported-for-exact-security-profile' : 'unsupported',
-    securityProfileId: securityProfileId == null ? null : String(securityProfileId),
-    authority: ready ? 'remote-authorized-canonical-operations' : 'none',
+export function remoteCollaborationSupport({
+  gate,
+  profileProof = null,
+  expectedCommitSha = null,
+  expectedTreeSha = null,
+} = {}) {
+  const commitSha = String(expectedCommitSha || '').toLowerCase();
+  const treeSha = String(expectedTreeSha || '').toLowerCase();
+  const exactIdentity = /^[0-9a-f]{40}$/.test(commitSha) && /^[0-9a-f]{40}$/.test(treeSha);
+  const brandedProfile = isValidatedStage2CapabilityProof(profileProof, {
+    itemId: 'S2-P12-COLLAB-REMOTE',
+    profileIds: [REMOTE_SECURITY_PROFILE_ID],
   });
+  const ready = gate instanceof RemoteCollaborationGate
+    && typeof gate.verifyTransportProof === 'function'
+    && exactIdentity
+    && brandedProfile
+    && profileProof.commitSha === commitSha
+    && profileProof.treeSha === treeSha;
+  const result = Object.freeze({
+    status: ready ? 'supported-for-exact-security-profile' : 'unsupported',
+    securityProfileId: ready ? REMOTE_SECURITY_PROFILE_ID : null,
+    authority: ready ? 'remote-authorized-canonical-operations' : 'none',
+    evidenceId: ready ? profileProof.evidenceId : null,
+  });
+  if (ready) VALID_REMOTE_COLLABORATION_SUPPORT.add(result);
+  return result;
+}
+
+export function isValidatedRemoteCollaborationSupport(value) {
+  return !!value && VALID_REMOTE_COLLABORATION_SUPPORT.has(value) && value.status === 'supported-for-exact-security-profile';
 }

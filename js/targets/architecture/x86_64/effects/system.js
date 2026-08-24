@@ -2,6 +2,13 @@ import { createX86EffectContext, x86RegisterOperand } from './common.js';
 
 const FENCES = new Set(['lfence','sfence','mfence']);
 const PRIVILEGED = new Set(['cli','sti','hlt','invd','wbinvd','swapgs','lgdt','lidt','lldt','ltr','movcr','movdr']);
+const SIMPLE_FLAG_CONTROLS = Object.freeze({
+  clc:Object.freeze({ flag:'CF', fixedValue:0 }),
+  stc:Object.freeze({ flag:'CF', fixedValue:1 }),
+  cmc:Object.freeze({ flag:'CF', toggle:true }),
+  cld:Object.freeze({ flag:'DF', fixedValue:0 }),
+  std:Object.freeze({ flag:'DF', fixedValue:1 }),
+});
 
 function exactPrefix(instruction, expected) {
   const actual = [...(instruction?.detail?.prefixes?.legacy || [])];
@@ -92,10 +99,43 @@ function liftSysret(ctx, family) {
   });
 }
 
+function liftSimpleFlagControl(ctx, family) {
+  const spec = SIMPLE_FLAG_CONTROLS[family];
+  if (!spec) return null;
+  if (ctx.operands.length !== 0) {
+    return ctx.partial(`x86-${family}-unexpected-explicit-operands`, ['flags','other'], {
+      metadata:{ family:'system', operation:family, operandCount:ctx.operands.length },
+    });
+  }
+
+  const value = spec.toggle
+    ? ctx.valueOp('xor', [ctx.readFlag(spec.flag), ctx.constant(1, 1n)], 1, {
+      semantic:`x86-${family}-toggle-${spec.flag}`,
+    })
+    : ctx.constant(1, BigInt(spec.fixedValue));
+  ctx.writeFlag(spec.flag, value, {
+    operation:family,
+    widthBits:1,
+    definedness:spec.toggle ? 'defined' : 'fixed',
+    ...(spec.toggle ? { toggle:true } : { fixedValue:spec.fixedValue }),
+  });
+  return ctx.finish({
+    family:'system',
+    metadata:{
+      operation:family,
+      flag:spec.flag,
+      flagsModified:[spec.flag],
+      ...(spec.toggle ? { toggle:true } : { fixedValue:spec.fixedValue }),
+    },
+  });
+}
+
 export function liftX86SystemEffects(instruction, context = {}) {
   const family = String(instruction?.instructionFamily || '').toLowerCase();
-  if (![...FENCES, ...PRIVILEGED, 'pause','cpuid','rdtsc','rdtscp','syscall','sysret','sysretq'].includes(family)) return null;
+  if (![...FENCES, ...PRIVILEGED, ...Object.keys(SIMPLE_FLAG_CONTROLS), 'pause','cpuid','rdtsc','rdtscp','syscall','sysret','sysretq'].includes(family)) return null;
   const ctx = createX86EffectContext(instruction, context);
+
+  if (SIMPLE_FLAG_CONTROLS[family]) return liftSimpleFlagControl(ctx, family);
 
   if (FENCES.has(family)) {
     return ctx.partial('x86-fence-generic-barrier-contract-insufficient', ['memory','other'], {

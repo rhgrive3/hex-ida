@@ -1,14 +1,19 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { validatePhysicalIPadEvidence } from '../../../js/platform/physical-ipad-evidence.js';
-import { STAGE2_PROFILE_EVIDENCE_IDS, validateStage2ProfileEvidence } from '../../../js/platform/stage2-profile-evidence.js';
+import { stableDigest } from '../../../js/core/identity/index.js';
+import { STAGE2_PROFILE_EVIDENCE_IDS, validateStage2DenominatorLock, validateStage2ProfileEvidence } from '../../../js/platform/stage2-profile-evidence.js';
+import { a2DenominatorReport } from '../machine-effects/a2-denominator.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const REPORT_PATH = path.join(ROOT, 'reports/stage2/stage2-verdict.json');
 const SCOPE_PATH = path.join(ROOT, 'tools/validation/stage2/completion-scope.lock.json');
 const LEDGER_PATH = path.join(ROOT, 'tools/validation/stage2/closure-ledger.json');
+const DENOMINATOR_PATH = path.join(ROOT, 'tools/validation/stage2/profile-denominators.lock.json');
+const DENOMINATOR_INVENTORY_PATH = path.join(ROOT, 'tools/validation/stage2/profile-denominator-inventory.json');
 const OUTPUT_LIMIT = 7000;
 const REQUIRED_LEDGER_IDS = Object.freeze([
   ...STAGE2_PROFILE_EVIDENCE_IDS,
@@ -29,6 +34,13 @@ function parseArg(name, argv) {
   return index >= 0 ? argv[index + 1] : null;
 }
 function hasFlag(name, argv) { return argv.includes(name); }
+function parseNonNegativeInteger(name, argv) {
+  const raw = parseArg(name, argv);
+  if (raw == null) return null;
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < 0) throw new TypeError(`${name.slice(2)}-invalid`);
+  return value;
+}
 function run(command) {
   const startedAt = Date.now();
   const result = spawnSync(command.bin, command.args, { cwd: ROOT, encoding: 'utf8', maxBuffer: 128 * 1024 * 1024, env: { ...process.env, CI: process.env.CI || '1' } });
@@ -98,17 +110,114 @@ function readEvidenceJson(finalMode, evidencePath, requiredReason, missingReason
   catch (error) { return { required: true, status: 'failed', reason: invalidReason, detail: String(error?.message || error) }; }
 }
 
-function physicalEvidenceResult({ finalMode, evidencePath, headSha, treeSha, buildIdentity }) {
+export function stage2CanonicalBuildIdentity() {
+  const release = JSON.parse(fs.readFileSync(path.join(ROOT, 'userscript/release-version.json'), 'utf8'));
+  if (!/^[0-9a-f]{64}$/.test(String(release.releaseIdentity || ''))) throw new TypeError('stage2-release-identity-invalid');
+  if (!/^[0-9a-f]{24}$/.test(String(release.buildId || ''))) throw new TypeError('stage2-build-id-invalid');
+  if (!Number.isSafeInteger(release.serial) || release.serial < 1) throw new TypeError('stage2-release-serial-invalid');
+  return `userscript-release:${release.releaseIdentity}:build:${release.buildId}:serial:${release.serial}`;
+}
+
+function physicalEvidenceResult({ finalMode, evidencePath, headSha, treeSha, requestedBuildIdentity }) {
+  const buildIdentity = stage2CanonicalBuildIdentity();
+  if (requestedBuildIdentity != null && String(requestedBuildIdentity) !== buildIdentity) return {
+    required: finalMode,
+    status: 'failed',
+    reason: 'physical-ipad-requested-build-identity-mismatch',
+    expectedBuildIdentity: buildIdentity,
+  };
   const loaded = readEvidenceJson(finalMode, evidencePath, 'physical-ipad-evidence-required', 'physical-ipad-evidence-file-missing', 'physical-ipad-evidence-json-invalid');
   if (loaded.status !== 'loaded') return loaded;
-  const checked = validatePhysicalIPadEvidence(loaded.record, { commitSha: headSha, treeSha, ...(buildIdentity ? { buildIdentity } : {}) });
+  const checked = validatePhysicalIPadEvidence(loaded.record, {
+    commitSha: headSha,
+    treeSha,
+    buildIdentity,
+    resolveEvidenceIdentity: evidenceIdentityAtHead,
+  });
   return { required: true, status: checked.ok ? 'passed' : 'failed', reason: checked.reason || null, evidenceId: checked.evidenceId || loaded.record.evidenceId || null };
 }
 
-function profileEvidenceResult({ finalMode, evidencePath, headSha, treeSha }) {
+function safeRelativePath(ref) {
+  const value = String(ref || '');
+  return value && !path.isAbsolute(value) && !value.includes('\\') && !value.split('/').includes('..') ? value : null;
+}
+
+function loadDenominatorInventory() {
+  if (!fs.existsSync(DENOMINATOR_INVENTORY_PATH)) return null;
+  try { return JSON.parse(fs.readFileSync(DENOMINATOR_INVENTORY_PATH, 'utf8')); }
+  catch { return null; }
+}
+
+function inventoryIdentityAtHead(ref, itemId) {
+  const value = safeRelativePath(ref);
+  const canonical = loadDenominatorInventory()?.items?.[itemId];
+  if (!value || !canonical || !Array.isArray(canonical.inventoryRefs) || !canonical.inventoryRefs.includes(value)) return null;
+  const resolved = git(['rev-parse', `HEAD:${value}`], true);
+  return resolved.status === 0 && /^[0-9a-f]{40}$/.test(resolved.stdout) ? resolved.stdout : null;
+}
+
+function denominatorUnitIdsAtHead(itemId, inventoryRefs) {
+  const item = loadDenominatorInventory()?.items?.[itemId];
+  if (!item || !Array.isArray(item.unitIds) || !Array.isArray(item.inventoryRefs)) return [];
+  const left = [...new Set((inventoryRefs || []).map(String))].sort();
+  const right = [...new Set(item.inventoryRefs.map(String))].sort();
+  if (left.length !== right.length || left.some((value, index) => value !== right[index])) return [];
+  return item.unitIds;
+}
+
+function evidenceIdentityAtHead(identity) {
+  const value = String(identity || '');
+  const gitMatch = /^git:([^@]+)@([0-9a-f]{40})$/.exec(value);
+  if (gitMatch) {
+    const relative = safeRelativePath(gitMatch[1]);
+    if (!relative) return null;
+    const resolved = git(['rev-parse', `HEAD:${relative}`], true);
+    return resolved.status === 0 && resolved.stdout === gitMatch[2] ? value : null;
+  }
+  const artifactMatch = /^artifact:([^@]+)@sha256:([0-9a-f]{64})$/.exec(value);
+  if (!artifactMatch) return null;
+  const relative = safeRelativePath(artifactMatch[1]);
+  if (!relative) return null;
+  const resolved = path.join(ROOT, relative);
+  if (!fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) return null;
+  const digest = createHash('sha256').update(fs.readFileSync(resolved)).digest('hex');
+  return digest === artifactMatch[2] ? value : null;
+}
+
+export function stage2KnownDenominatorGaps() {
+  const a2 = a2DenominatorReport().validation;
+  return Object.freeze(a2.terminalEligible === true ? [] : [...(a2.blockingGaps || [])]);
+}
+
+function profileEvidenceResult({ finalMode, evidencePath, headSha, treeSha, scope }) {
   const loaded = readEvidenceJson(finalMode, evidencePath, 'stage2-profile-evidence-required', 'stage2-profile-evidence-file-missing', 'stage2-profile-evidence-json-invalid');
   if (loaded.status !== 'loaded') return loaded;
-  const checked = validateStage2ProfileEvidence(loaded.record, { commitSha: headSha, treeSha });
+  if (!fs.existsSync(DENOMINATOR_PATH)) return { required: true, status: 'failed', reason: 'stage2-profile-denominator-lock-missing', failures: [] };
+  let denominatorLock;
+  try { denominatorLock = JSON.parse(fs.readFileSync(DENOMINATOR_PATH, 'utf8')); }
+  catch (error) { return { required: true, status: 'failed', reason: 'stage2-profile-denominator-lock-invalid', failures: [String(error?.message || error)] }; }
+  const lockChecked = validateStage2DenominatorLock(denominatorLock, {
+    scope,
+    resolveInventoryIdentity: inventoryIdentityAtHead,
+    resolveDenominatorUnitIds: denominatorUnitIdsAtHead,
+  });
+  if (!lockChecked.ok) return { required: true, status: 'failed', reason: lockChecked.reason, failures: lockChecked.failures || [] };
+  const knownDenominatorGaps = stage2KnownDenominatorGaps();
+  if (knownDenominatorGaps.length) return {
+    required: true,
+    status: 'failed',
+    reason: 'stage2-known-implementation-denominator-incomplete',
+    failures: knownDenominatorGaps,
+  };
+  const checked = validateStage2ProfileEvidence(loaded.record, {
+    commitSha: headSha,
+    treeSha,
+    denominatorLock,
+    scope,
+    resolveInventoryIdentity: inventoryIdentityAtHead,
+    resolveDenominatorUnitIds: denominatorUnitIdsAtHead,
+    resolveEvidenceIdentity: evidenceIdentityAtHead,
+  });
   return {
     required: true,
     status: checked.ok ? 'passed' : 'failed',
@@ -121,6 +230,43 @@ function profileEvidenceResult({ finalMode, evidencePath, headSha, treeSha }) {
 
 function commandPassed(results, fragment) {
   return results.some((result) => result.command.includes(fragment) && result.status === 'passed');
+}
+
+function candidateMergeResult({ finalMode, headSha, treeSha, expectedMainSha }) {
+  if (!finalMode) return { required: false, status: 'not-evaluated-in-implementation-mode', currentMainSha: null, candidateMergeTree: null };
+  if (!/^[0-9a-f]{40}$/.test(String(expectedMainSha || '').toLowerCase())) return { required: true, status: 'failed', reason: 'current-main-sha-required', currentMainSha: null, candidateMergeTree: null };
+  const currentMainSha = git(['rev-parse', 'origin/main'], true).stdout;
+  if (currentMainSha !== String(expectedMainSha).toLowerCase()) return { required: true, status: 'failed', reason: 'current-main-sha-mismatch', currentMainSha, candidateMergeTree: null };
+  if (git(['merge-base', '--is-ancestor', currentMainSha, headSha], true).status !== 0) return { required: true, status: 'failed', reason: 'candidate-not-reconciled-with-current-main', currentMainSha, candidateMergeTree: null };
+  const merged = git(['merge-tree', '--write-tree', currentMainSha, headSha], true);
+  const candidateMergeTree = merged.stdout.split(/\s+/).find((value) => /^[0-9a-f]{40}$/.test(value)) || null;
+  if (merged.status !== 0 || !candidateMergeTree) return { required: true, status: 'failed', reason: 'candidate-merge-tree-conflict', currentMainSha, candidateMergeTree };
+  if (candidateMergeTree !== treeSha) return { required: true, status: 'failed', reason: 'candidate-merge-tree-differs-from-tested-tree', currentMainSha, candidateMergeTree };
+  return { required: true, status: 'passed', reason: null, currentMainSha, candidateMergeTree };
+}
+
+export function minimumVerdictCounts({ structural, sourceAudit, commands, profiles, physical, ledger, generatedOutput, candidateMerge, releaseBlockingIssueCount }) {
+  const profileFailures = Array.isArray(profiles.failures) ? profiles.failures : [];
+  const failedCommands = commands.filter((result) => result.status !== 'passed').length;
+  const stage2Passed = commandPassed(commands, 'tests/stage2/run.mjs');
+  const fullCheckPassed = commandPassed(commands, 'run check');
+  const benchmarkPassed = commandPassed(commands, 'benchmark:baseline');
+  return Object.freeze({
+    unmappedCount: ledger.unmappedCount,
+    unprovenCount: ledger.unresolved.length,
+    scopeReductionCount: structural.errors.filter((reason) => reason.includes('scope-') || reason.includes('baseline-')).length,
+    promotedFallbackCount: stage2Passed && profiles.status === 'passed' ? 0 : 1,
+    coverageDenominatorMisses: profiles.status === 'passed' ? 0 : Math.max(1, profileFailures.filter((reason) => reason.includes('denominator') || reason.includes('profile')).length),
+    requiredValidatorMisses: failedCommands + (generatedOutput.status === 'passed' ? 0 : 1) + (candidateMerge.status === 'passed' ? 0 : 1),
+    fuzzOrPropertyFailures: fullCheckPassed ? 0 : 1,
+    mutationSelfTestFailures: stage2Passed ? 0 : 1,
+    realFixtureFailures: profiles.status === 'passed' ? 0 : 1,
+    performanceBudgetFailures: benchmarkPassed ? 0 : 1,
+    requiredTargetPlatformFailures: physical.status === 'passed' ? 0 : 1,
+    supportProjectionMismatches: sourceAudit.ok && stage2Passed ? 0 : 1,
+    releaseBlockingIssueCount: releaseBlockingIssueCount == null ? 1 : releaseBlockingIssueCount,
+    staleEvidenceCount: [profiles, physical, candidateMerge].filter((item) => item.status !== 'passed').length,
+  });
 }
 
 function effectiveLedger(structural, { headSha, treeSha, sourceAudit, commands, physical, profiles, full }) {
@@ -141,7 +287,7 @@ function effectiveLedger(structural, { headSha, treeSha, sourceAudit, commands, 
   return { items, unresolved, unmappedCount: REQUIRED_LEDGER_IDS.filter((id) => !items.some((item) => item.id === id)).length };
 }
 
-export function verifyStage2({ expectedSha = null, finalMode = false, physicalEvidencePath = null, profileEvidencePath = null, buildIdentity = null, full = false } = {}) {
+export function verifyStage2({ expectedSha = null, expectedMainSha = null, finalMode = false, physicalEvidencePath = null, profileEvidencePath = null, buildIdentity = null, releaseBlockingIssueCount = null, full = false } = {}) {
   const headSha = git(['rev-parse', 'HEAD']).stdout;
   const treeSha = git(['rev-parse', 'HEAD^{tree}']).stdout;
   if (!/^[0-9a-f]{40}$/.test(headSha) || !/^[0-9a-f]{40}$/.test(treeSha)) throw new Error('stage2-git-identity-invalid');
@@ -151,6 +297,13 @@ export function verifyStage2({ expectedSha = null, finalMode = false, physicalEv
 
   const structural = validateScopeAndLedger(headSha);
   const sourceAudit = auditStage2Source();
+  const physical = physicalEvidenceResult({ finalMode, evidencePath: physicalEvidencePath, headSha, treeSha, requestedBuildIdentity: buildIdentity });
+  const profiles = profileEvidenceResult({ finalMode, evidencePath: profileEvidencePath, headSha, treeSha, scope: structural.scope });
+  const candidateMerge = candidateMergeResult({ finalMode, headSha, treeSha, expectedMainSha });
+  const preflightBlocked = finalMode && (
+    !structural.ok || !sourceAudit.ok || !full || releaseBlockingIssueCount !== 0
+    || physical.status !== 'passed' || profiles.status !== 'passed' || candidateMerge.status !== 'passed'
+  );
   const commands = [
     node('tools/validation/stage1/verify.mjs', '--expect-sha', headSha),
     node('tests/stage2/run.mjs'),
@@ -159,11 +312,17 @@ export function verifyStage2({ expectedSha = null, finalMode = false, physicalEv
     npm('phase12:test'),
     npm('benchmark:baseline'),
   ];
+  if (finalMode) commands.push(npm('userscript:build'));
   if (full) commands.push(npm('check'));
-  const commandResults = commands.map(run);
-  const physical = physicalEvidenceResult({ finalMode, evidencePath: physicalEvidencePath, headSha, treeSha, buildIdentity });
-  const profiles = profileEvidenceResult({ finalMode, evidencePath: profileEvidencePath, headSha, treeSha });
+  const commandResults = preflightBlocked ? [] : commands.map(run);
+  const generatedDirty = preflightBlocked ? '' : git(['status', '--porcelain', '--untracked-files=no']).stdout;
+  const generatedOutput = {
+    required: finalMode,
+    status: !finalMode ? 'not-evaluated-in-implementation-mode' : preflightBlocked ? 'blocked-by-preflight' : generatedDirty ? 'failed' : 'passed',
+    reason: preflightBlocked ? 'generated-output-check-not-run' : generatedDirty ? 'generated-output-zero-diff-failed' : null,
+  };
   const ledger = effectiveLedger(structural, { headSha, treeSha, sourceAudit, commands: commandResults, physical, profiles, full });
+  const counts = minimumVerdictCounts({ structural, sourceAudit, commands: commandResults, profiles, physical, ledger, generatedOutput, candidateMerge, releaseBlockingIssueCount });
 
   const failures = [];
   if (!structural.ok) failures.push(...structural.errors.map((reason) => ({ gate: 'scope-ledger', reason })));
@@ -171,16 +330,25 @@ export function verifyStage2({ expectedSha = null, finalMode = false, physicalEv
   for (const result of commandResults) if (result.status !== 'passed') failures.push({ gate: 'command', reason: result.command });
   if (physical.status === 'failed') failures.push({ gate: 'physical-ipad', reason: physical.reason });
   if (profiles.status === 'failed') failures.push({ gate: 'profile-evidence', reason: profiles.reason, details: profiles.failures || [] });
+  if (generatedOutput.status === 'failed') failures.push({ gate: 'generated-output', reason: generatedOutput.reason });
+  if (candidateMerge.status === 'failed') failures.push({ gate: 'candidate-merge-tree', reason: candidateMerge.reason });
   if (ledger.unmappedCount !== 0) failures.push({ gate: 'ledger', reason: `unmapped-count:${ledger.unmappedCount}` });
   if (finalMode && !full) failures.push({ gate: 'final-audit', reason: 'full-repository-check-required' });
   if (finalMode && ledger.unresolved.length) failures.push({ gate: 'ledger', reason: `unproven-count:${ledger.unresolved.length}` });
+  if (finalMode && releaseBlockingIssueCount == null) failures.push({ gate: 'release-audit', reason: 'release-blocking-issue-count-required' });
+  if (finalMode) for (const [name, value] of Object.entries(counts)) if (value !== 0) failures.push({ gate: 'machine-verdict', reason: `${name}:${value}` });
 
   const verdict = failures.length === 0 ? (finalMode ? 'COMPLETE' : 'IMPLEMENTATION_READY') : 'NOT_COMPLETE';
   const report = {
-    schemaVersion: 'stage2-verdict/v2',
+    schemaVersion: 'stage2-verdict/v3',
     stage: 2,
     headSha,
     treeSha,
+    scopeLockHash: `stage2-scope-lock:${stableDigest(structural.scope)}`,
+    candidateCommit: headSha,
+    candidateTree: treeSha,
+    currentMainCommit: candidateMerge.currentMainSha,
+    candidateMergeTree: candidateMerge.candidateMergeTree,
     expectedSha: expectedSha || null,
     finalMode,
     full,
@@ -188,9 +356,12 @@ export function verifyStage2({ expectedSha = null, finalMode = false, physicalEv
     scope: { version: structural.scope.scopeVersion, baselineCommit: structural.scope.baselineCommit, ledgerItemCount: structural.ledgerItemCount, status: structural.ok ? 'passed' : 'failed' },
     sourceAudit,
     commands: commandResults,
+    generatedOutput,
+    candidateMerge,
     profileEvidence: profiles,
     physicalIPadEvidence: physical,
     ledger,
+    ...counts,
     failures,
     verdict,
   };
@@ -206,10 +377,12 @@ if (isMain) {
   try {
     const report = verifyStage2({
       expectedSha: parseArg('--expect-sha', argv),
+      expectedMainSha: parseArg('--expect-main-sha', argv),
       finalMode: hasFlag('--final', argv),
       physicalEvidencePath: parseArg('--physical-evidence', argv),
       profileEvidencePath: parseArg('--profile-evidence', argv),
       buildIdentity: parseArg('--build-identity', argv),
+      releaseBlockingIssueCount: parseNonNegativeInteger('--release-blocking-issue-count', argv),
       full: hasFlag('--full', argv),
     });
     console.log(`Stage 2 verdict: ${report.verdict} @ ${report.headSha}`);

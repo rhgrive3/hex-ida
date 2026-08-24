@@ -7,8 +7,9 @@ import {
   remoteCollaborationSupport,
 } from '../../js/collaboration/remote-authority.js';
 import { applyRemoteEnvelopeQueued } from '../../js/collaboration/remote-delivery.js';
+import { validatedCapabilityProofFixture } from './helpers/profile-proof-fixture.mjs';
 
-function gate() {
+function gate(overrides = {}) {
   return new RemoteCollaborationGate({
     projectIdentity: 'project:1',
     binaryIdentity: 'binary:1',
@@ -22,6 +23,7 @@ function gate() {
     },
     maxBatch: 8,
     maxMessageBytes: 65536,
+    ...overrides,
   });
 }
 function log() {
@@ -119,7 +121,7 @@ assert.equal(tombstoneLog.snapshot().unresolved.filter((item) => item.operationI
 const bigIntEnvelope = envelope({ messageId: 'msg:bigint', sequence: 1, operations: [{ targetEntityId: 'fn:3', factKind: 'type', action: 'set', payload: { value: 2n ** 63n } }] });
 assert.doesNotThrow(() => gate().validate(bigIntEnvelope));
 
-const collabProof = remoteCollaborationSupport({ gate: gate(), securityProfileId: 'remote-security-v1:test', proof: {
+const arbitraryBooleanProof = {
   exactHead: true,
   replayTests: true,
   identityTests: true,
@@ -129,7 +131,21 @@ const collabProof = remoteCollaborationSupport({ gate: gate(), securityProfileId
   convergenceTests: true,
   revocationTests: true,
   outOfOrderTests: true,
-} });
+};
+assert.equal(remoteCollaborationSupport({ gate: gate(), securityProfileId: 'arbitrary-profile', proof: arbitraryBooleanProof }).status, 'unsupported', 'caller-supplied profile labels and booleans cannot mint remote support');
+
+const { proofs } = validatedCapabilityProofFixture();
+const profileProof = proofs['S2-P12-COLLAB-REMOTE'];
+const collabProof = remoteCollaborationSupport({
+  gate: gate({ verifyTransportProof: () => true }),
+  profileProof,
+  expectedCommitSha: 'a'.repeat(40),
+  expectedTreeSha: 'b'.repeat(40),
+});
 assert.equal(collabProof.status, 'supported-for-exact-security-profile');
+assert.equal(collabProof.securityProfileId, 'collaboration:remote-security-v1');
 assert.equal(remoteCollaborationSupport({ gate: gate(), proof: { exactHead: true } }).status, 'unsupported');
+assert.equal(remoteCollaborationSupport({ gate: gate({ verifyTransportProof: () => true }), profileProof: { ...profileProof }, expectedCommitSha: 'a'.repeat(40), expectedTreeSha: 'b'.repeat(40) }).status, 'unsupported', 'copied profile evidence loses validator authority');
+assert.equal(remoteCollaborationSupport({ gate: gate({ verifyTransportProof: () => true }), profileProof, expectedCommitSha: 'c'.repeat(40), expectedTreeSha: 'b'.repeat(40) }).status, 'unsupported', 'stale exact-head evidence cannot promote support');
+assert.equal(remoteCollaborationSupport({ gate: gate(), profileProof, expectedCommitSha: 'a'.repeat(40), expectedTreeSha: 'b'.repeat(40) }).status, 'unsupported', 'canonical support requires an active transport proof verifier');
 console.log('[stage2] remote collaboration security/reconnect tests passed');

@@ -1,6 +1,6 @@
 import { deepFreeze, stableDigest } from '../core/identity/index.js';
 
-export const PHYSICAL_IPAD_EVIDENCE_SCHEMA = 'hex-physical-ipad-evidence/v1';
+export const PHYSICAL_IPAD_EVIDENCE_SCHEMA = 'hex-physical-ipad-evidence/v2';
 export const REQUIRED_IPAD_CHECKS = Object.freeze([
   'runtimeActivationIdentity',
   'openNontrivialBinary',
@@ -33,6 +33,7 @@ function evidencePayload(record) {
     testedAt: record.testedAt,
     attestedBy: record.attestedBy,
     fixtureIdentity: record.fixtureIdentity,
+    scenarioEvidenceIdentity: record.scenarioEvidenceIdentity,
     checks: record.checks,
     runtimeProfilesExercised: record.runtimeProfilesExercised,
     rebuildProfilesExercised: record.rebuildProfilesExercised,
@@ -59,6 +60,7 @@ export function createPhysicalIPadEvidence(input = {}) {
     testedAt: required(input.testedAt, 'ipad-evidence-tested-at-required'),
     attestedBy: required(input.attestedBy, 'ipad-evidence-attestor-required'),
     fixtureIdentity: required(input.fixtureIdentity, 'ipad-evidence-fixture-required'),
+    scenarioEvidenceIdentity: required(input.scenarioEvidenceIdentity, 'ipad-evidence-scenario-output-required'),
     checks: deepFreeze(checks),
     runtimeProfilesExercised: Object.freeze([...(input.runtimeProfilesExercised || [])].map(String).filter(Boolean).sort()),
     rebuildProfilesExercised: Object.freeze([...(input.rebuildProfilesExercised || [])].map(String).filter(Boolean).sort()),
@@ -69,7 +71,7 @@ export function createPhysicalIPadEvidence(input = {}) {
 
 export function validatePhysicalIPadEvidence(record, expected = {}) {
   if (!record || record.schemaVersion !== PHYSICAL_IPAD_EVIDENCE_SCHEMA) return { ok: false, reason: 'ipad-evidence-schema-invalid' };
-  const stringFields = ['commitSha','treeSha','buildIdentity','runtimeIdentity','deviceModel','iPadOSVersion','webKitVersion','testedAt','attestedBy','fixtureIdentity','evidenceId'];
+  const stringFields = ['commitSha','treeSha','buildIdentity','runtimeIdentity','deviceModel','iPadOSVersion','webKitVersion','testedAt','attestedBy','fixtureIdentity','scenarioEvidenceIdentity','evidenceId'];
   for (const key of stringFields) if (typeof record[key] !== 'string' || !record[key].trim()) return { ok: false, reason: `ipad-evidence-${key}-invalid` };
   if (!/^[0-9a-f]{40}$/.test(record.commitSha)) return { ok: false, reason: 'ipad-evidence-commit-invalid' };
   if (!/^[0-9a-f]{40}$/.test(record.treeSha)) return { ok: false, reason: 'ipad-evidence-tree-invalid' };
@@ -80,6 +82,9 @@ export function validatePhysicalIPadEvidence(record, expected = {}) {
   if (expected.commitSha && record.commitSha !== String(expected.commitSha).toLowerCase()) return { ok: false, reason: 'ipad-evidence-stale-commit' };
   if (expected.treeSha && record.treeSha !== String(expected.treeSha).toLowerCase()) return { ok: false, reason: 'ipad-evidence-stale-tree' };
   if (expected.buildIdentity && record.buildIdentity !== expected.buildIdentity) return { ok: false, reason: 'ipad-evidence-build-mismatch' };
+  if (typeof expected.resolveEvidenceIdentity !== 'function') return { ok: false, reason: 'ipad-evidence-identity-resolver-required' };
+  if (expected.resolveEvidenceIdentity(record.fixtureIdentity, { kind: 'physical-ipad-fixture' }) !== record.fixtureIdentity) return { ok: false, reason: 'ipad-evidence-fixture-unresolved' };
+  if (expected.resolveEvidenceIdentity(record.scenarioEvidenceIdentity, { kind: 'physical-ipad-scenario-output' }) !== record.scenarioEvidenceIdentity) return { ok: false, reason: 'ipad-evidence-scenario-output-unresolved' };
   const missingChecks = REQUIRED_IPAD_CHECKS.filter((key) => record.checks?.[key] !== true);
   if (missingChecks.length) return { ok: false, reason: 'ipad-evidence-required-check-missing', missingChecks };
   if (!record.deviceModel.toLowerCase().includes('ipad')) return { ok: false, reason: 'ipad-evidence-device-not-ipad' };

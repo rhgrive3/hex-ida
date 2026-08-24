@@ -23,6 +23,10 @@ assert.equal(provider.ok, true);
 assert.equal(provider.value.textIsUntrustedData, true);
 assert.equal(provider.value.persisted, false);
 assert.equal(validateProviderOutput({ schemaVersion: 'v1', provenance: {}, completeness: 'truncated', unique: true, items: [] }).ok, false);
+assert.equal(validateProviderOutput({ schemaVersion: 'provider-v2', targetIdentity: 'binary-a', provenance: {}, completeness: 'complete', items: [] }).code, 'provider-output-schema-unsupported');
+assert.equal(validateProviderOutput({ schemaVersion: 'provider-v1', targetIdentity: 'binary-a', provenance: {}, completeness: 'unknown', items: [] }).code, 'provider-output-completeness-invalid');
+assert.equal(validateProviderOutput({ schemaVersion: 'provider-v1', targetIdentity: 'binary-a', provenance: {}, completeness: 'partial', unique: true, items: [] }).code, 'provider-output-incomplete-unique-invalid');
+assert.equal(validateProviderOutput({ schemaVersion: 'provider-v1', targetIdentity: 'binary-a', provenance: {}, completeness: 'complete', items: [{ id: 'swapped', targetIdentity: 'binary-b' }] }).code, 'provider-output-item-target-mismatch');
 
 assert.throws(() => resolvePackageDependencies(createPackageEnvelope({ kind: 'mixed', packageId: 'parent', packageVersion: '1', dependencies: [{ packageId: 'dep', packageVersion: '1', contentHash: 'hash-old' }], payload: {} }), []), /not resolved/);
 
