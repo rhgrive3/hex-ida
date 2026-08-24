@@ -7,6 +7,7 @@ export const REMOTE_COLLAB_SCHEMA = 'hex-remote-collaboration-envelope/v1';
 export const REMOTE_GATE_SCHEMA = 'hex-remote-collaboration-gate/v1';
 export const REMOTE_SECURITY_PROFILE_ID = 'collaboration:remote-security-v1';
 const VALID_REMOTE_COLLABORATION_SUPPORT = new WeakSet();
+const VERIFIED_TRANSPORT_PROOFS = new WeakMap();
 
 function required(value, code) {
   const text = String(value ?? '').trim();
@@ -118,6 +119,7 @@ export class RemoteCollaborationGate {
   }
 
   validate(envelope) {
+    VERIFIED_TRANSPORT_PROOFS.delete(this);
     if (!envelope || !this.supportedEnvelopeSchemas.has(envelope.schemaVersion)) return { ok: false, reason: 'remote-envelope-schema-unsupported' };
     if (!this.supportedOperationSchemas.has(envelope.operationSchemaVersion)) return { ok: false, reason: 'remote-operation-schema-unsupported' };
     if (envelope.projectIdentity !== this.projectIdentity) return { ok: false, reason: 'remote-wrong-project' };
@@ -136,7 +138,11 @@ export class RemoteCollaborationGate {
     if (envelope.transportProof?.authenticated !== true || envelope.transportProof?.confidentiality !== 'verified' || envelope.transportProof?.integrity !== 'verified') {
       return { ok: false, reason: 'remote-transport-security-unverified' };
     }
-    if (this.verifyTransportProof && this.verifyTransportProof(envelope.transportProof, envelope) !== true) return { ok: false, reason: 'remote-transport-proof-rejected' };
+    if (!this.verifyTransportProof) return { ok: false, reason: 'remote-transport-proof-verifier-required' };
+    let verified = false;
+    try { verified = this.verifyTransportProof(envelope.transportProof, envelope) === true; }
+    catch { return { ok: false, reason: 'remote-transport-proof-rejected' }; }
+    if (!verified) return { ok: false, reason: 'remote-transport-proof-rejected' };
     if (envelope.egress?.userAuthorized !== true) return { ok: false, reason: 'remote-egress-user-authorization-required' };
     if (envelope.egress?.rawBinaryBytes === true || envelope.egress?.derivedDataOnly !== true) return { ok: false, reason: 'remote-raw-binary-egress-forbidden' };
     for (const operation of envelope.operations) {
@@ -145,6 +151,11 @@ export class RemoteCollaborationGate {
       if (operation.provenance?.transport !== 'remote') return { ok: false, reason: 'remote-operation-provenance-invalid' };
       if (!authorized(permissions, operation)) return { ok: false, reason: 'remote-operation-not-authorized', factKind: operation.factKind, action: operation.action };
     }
+    VERIFIED_TRANSPORT_PROOFS.set(this, Object.freeze({
+      envelopeId: envelope.envelopeId,
+      verifier: this.verifyTransportProof,
+      verifierIdentity: this.transportVerifierIdentity,
+    }));
     return { ok: true };
   }
 
@@ -218,9 +229,14 @@ export function remoteCollaborationSupport({
   const transportVerifierBound = typeof transportVerifierIdentity === 'string'
     && Array.isArray(profileProof?.independentOracleIdentities)
     && profileProof.independentOracleIdentities.includes(transportVerifierIdentity);
+  const activeTransportProof = gate instanceof RemoteCollaborationGate ? VERIFIED_TRANSPORT_PROOFS.get(gate) : null;
+  const activeVerificationBound = !!activeTransportProof
+    && activeTransportProof.verifier === gate.verifyTransportProof
+    && activeTransportProof.verifierIdentity === transportVerifierIdentity;
   const ready = gate instanceof RemoteCollaborationGate
     && typeof gate.verifyTransportProof === 'function'
     && transportVerifierBound
+    && activeVerificationBound
     && exactIdentity
     && brandedProfile
     && profileProof.commitSha === commitSha

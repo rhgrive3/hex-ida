@@ -7,7 +7,7 @@ import {
 } from '../../js/platform/stage2-capability-maturity.js';
 import { createStage2CapabilityProofs } from '../../js/platform/stage2-profile-evidence.js';
 import { validatedCapabilityProofFixture } from './helpers/profile-proof-fixture.mjs';
-import { RemoteCollaborationGate, remoteCollaborationSupport } from '../../js/collaboration/remote-authority.js';
+import { RemoteCollaborationGate, createRemoteCollaborationEnvelope, remoteCollaborationSupport } from '../../js/collaboration/remote-authority.js';
 import { createRuntimeAuthorityBinding, runtimeProfileSupport } from '../../js/runtime/authority.js';
 import { createManagedRuntimeBinding, managedRuntimeProfileSupport } from '../../js/managed/runtime-binding.js';
 import { validatedRebuildSupportFixture } from './helpers/rebuild-proof-fixture.mjs';
@@ -90,14 +90,26 @@ assert.equal(pe.features.validatedRebuildPatch, 'unsupported');
 assert.equal(pe.fullySatisfiedLevel, 'F4', 'PE cannot claim cumulative F6 while F5 remains unsupported');
 assert.equal(pe.status, 'partial');
 
+const remoteGate = new RemoteCollaborationGate({
+  projectIdentity: 'project:capability-test',
+  sessionIdentity: 'session:capability-test',
+  allowedActors: { actor: ['*'] },
+  verifyTransportProof: (proof) => proof.proofIdentity === 'tls:capability-test',
+  transportVerifierIdentity: 'oracle:S2-P12-COLLAB-REMOTE:independent',
+});
+assert.deepEqual(remoteGate.validate(createRemoteCollaborationEnvelope({
+  projectIdentity: 'project:capability-test',
+  sessionIdentity: 'session:capability-test',
+  actorIdentity: 'actor',
+  deviceIdentity: 'device:actor',
+  messageId: 'message:capability-test',
+  sequence: 1,
+  operations: [{ targetEntityId: 'entity', factKind: 'name', action: 'set', payload: 'value' }],
+  transportProof: { authenticated: true, confidentiality: 'verified', integrity: 'verified', proofIdentity: 'tls:capability-test' },
+  egress: { userAuthorized: true },
+})), { ok: true });
 const remoteCollaborationProof = remoteCollaborationSupport({
-  gate: new RemoteCollaborationGate({
-    projectIdentity: 'project:capability-test',
-    sessionIdentity: 'session:capability-test',
-    allowedActors: {},
-    verifyTransportProof: () => true,
-    transportVerifierIdentity: 'oracle:S2-P12-COLLAB-REMOTE:independent',
-  }),
+  gate: remoteGate,
   profileProof: proofs['S2-P12-COLLAB-REMOTE'],
   expectedCommitSha: 'a'.repeat(40),
   expectedTreeSha: 'b'.repeat(40),

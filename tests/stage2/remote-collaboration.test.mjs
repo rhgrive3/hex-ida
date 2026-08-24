@@ -23,6 +23,7 @@ function gate(overrides = {}) {
     },
     maxBatch: 8,
     maxMessageBytes: 65536,
+    verifyTransportProof: (proof) => proof.proofIdentity === 'tls:test',
     transportVerifierIdentity: 'oracle:S2-P12-COLLAB-REMOTE:independent',
     ...overrides,
   });
@@ -47,6 +48,9 @@ function envelope({ actor = 'alice', device = `device:${actor}`, messageId, sequ
 
 const remoteGate = gate();
 const remoteLog = log();
+const callerClaimed = envelope({ messageId: 'msg:caller-claimed', sequence: 1, operations: [{ targetEntityId: 'fn:claimed', factKind: 'name', action: 'set', payload: 'x' }] });
+assert.equal(gate({ verifyTransportProof: null }).validate(callerClaimed).reason, 'remote-transport-proof-verifier-required');
+assert.equal(gate({ verifyTransportProof: () => { throw new Error('verifier-failed'); } }).validate(callerClaimed).reason, 'remote-transport-proof-rejected');
 const child = envelope({ messageId: 'msg:child', sequence: 1, operations: [{ operationId: 'op:child', targetEntityId: 'fn:1', factKind: 'type', action: 'set', payload: 'int', causalParents: ['op:parent'] }] });
 const childResult = applyRemoteEnvelopeQueued(remoteLog, remoteGate, child);
 assert.equal(childResult.status, 'accepted-with-pending-dependencies');
@@ -137,8 +141,10 @@ assert.equal(remoteCollaborationSupport({ gate: gate(), securityProfileId: 'arbi
 
 const { proofs } = validatedCapabilityProofFixture();
 const profileProof = proofs['S2-P12-COLLAB-REMOTE'];
+const activeGate = gate();
+assert.deepEqual(activeGate.validate(envelope({ messageId: 'msg:support-proof', sequence: 1, operations: [{ targetEntityId: 'fn:support', factKind: 'name', action: 'set', payload: 'support' }] })), { ok: true });
 const collabProof = remoteCollaborationSupport({
-  gate: gate({ verifyTransportProof: () => true }),
+  gate: activeGate,
   profileProof,
   expectedCommitSha: 'a'.repeat(40),
   expectedTreeSha: 'b'.repeat(40),
@@ -146,6 +152,7 @@ const collabProof = remoteCollaborationSupport({
 assert.equal(collabProof.status, 'supported-for-exact-security-profile');
 assert.equal(collabProof.securityProfileId, 'collaboration:remote-security-v1');
 assert.equal(remoteCollaborationSupport({ gate: gate(), proof: { exactHead: true } }).status, 'unsupported');
+assert.equal(remoteCollaborationSupport({ gate: gate({ verifyTransportProof: () => true }), profileProof, expectedCommitSha: 'a'.repeat(40), expectedTreeSha: 'b'.repeat(40) }).status, 'unsupported', 'a verifier function without an active successful verification cannot promote support');
 assert.equal(remoteCollaborationSupport({ gate: gate({ verifyTransportProof: () => true }), profileProof: { ...profileProof }, expectedCommitSha: 'a'.repeat(40), expectedTreeSha: 'b'.repeat(40) }).status, 'unsupported', 'copied profile evidence loses validator authority');
 assert.equal(remoteCollaborationSupport({ gate: gate({ verifyTransportProof: () => true }), profileProof, expectedCommitSha: 'c'.repeat(40), expectedTreeSha: 'b'.repeat(40) }).status, 'unsupported', 'stale exact-head evidence cannot promote support');
 assert.equal(remoteCollaborationSupport({ gate: gate(), profileProof, expectedCommitSha: 'a'.repeat(40), expectedTreeSha: 'b'.repeat(40) }).status, 'unsupported', 'canonical support requires an active transport proof verifier');

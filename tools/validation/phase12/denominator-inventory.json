@@ -822,6 +822,7 @@
               "remote-batch-budget-exceeded",
               "remote-message-budget-exceeded",
               "remote-transport-security-unverified",
+              "remote-transport-proof-verifier-required",
               "remote-transport-proof-rejected",
               "remote-egress-user-authorization-required",
               "remote-raw-binary-egress-forbidden",

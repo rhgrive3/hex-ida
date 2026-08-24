@@ -348,6 +348,7 @@ function secureEnvelope(input = {}) {
 function behaviorRemoteSecurityGate() {
   const gate = new remote.RemoteCollaborationGate({
     projectIdentity: 'remote-project', sessionIdentity: 'remote-session', allowedActors: { actor: ['fact:name', 'action:set'] },
+    verifyTransportProof: (proof) => proof.proofIdentity === 'proof',
   });
   const observed = new Set();
   const insecure = remote.createRemoteCollaborationEnvelope({
