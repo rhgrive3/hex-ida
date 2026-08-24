@@ -20,6 +20,8 @@ assert.equal(validation.terminalEligible, false, 'partial and unsupported in-pro
 assert.ok(validation.blockingGaps.includes('arm64:a64:all-decoder-encodings-and-aliases'));
 assert.equal(validation.blockingGaps.includes('arm64:a64:effect-family:control'), false,
   'the finite A64 branch discriminator proof closes only baseline control ownership');
+assert.equal(validation.blockingGaps.includes('arm64:a64:effect-family:flags'), false,
+  'the finite A64 flags encoding proof closes only NZCV-producing aliases and conditional compares');
 assert.equal(validation.blockingGaps.includes('riscv64:rv64imc:all-valid-32-bit-and-compressed-encodings'), false,
   'the exhaustive versioned RV64IMC decoder denominator closes only its decoder unit');
 assert.ok(validation.blockingGaps.includes('x86_64:long-64:effect-family:atomic'));

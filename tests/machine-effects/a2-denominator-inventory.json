@@ -23,7 +23,20 @@
         "source": "js/targets/architecture/arm64/effects/index.js",
         "export": "arm64MachineEffectFamilies",
         "families": [
-          { "id": "flags", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "Condition-code families contain operand/encoding forms that remain partial." },
+          {
+            "id": "flags",
+            "status": "exact",
+            "coverage": "exact",
+            "preexisting": false,
+            "oracle": "arm-a-profile-a64-data-processing-encoding-tables + deployed-capstone-5-arm64 + llvm-mc-18-aarch64-disassembler",
+            "reason": "All CMP/CMN/TST aliases and CCMN/CCMP register/immediate discriminator forms have exact NZCV effects.",
+            "proof": {
+              "schemaVersion": "machine-effects-effect-unit-proof/v1",
+              "source": "js/targets/architecture/arm64/effects/flags.js",
+              "test": "tests/machine-effects/arm64-flags-nzcv.test.mjs",
+              "denominatorTest": "tests/machine-effects/arm64-a64-flags-denominator.test.mjs"
+            }
+          },
           {
             "id": "control",
             "status": "exact",
