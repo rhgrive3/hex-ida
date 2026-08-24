@@ -1,5 +1,19 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { compilePattern, evaluatePattern, parsePattern, patternSupportTruth } from '../../../js/pattern/index.js';
+
+const fixturePath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../fixtures/profile-evidence/pattern-struct.json');
+const fixture = JSON.parse(fs.readFileSync(fixturePath, 'utf8'));
+const fixturePattern = compilePattern(fixture.pattern, { snapshotId: fixture.snapshotId });
+const fixtureResult = evaluatePattern(fixturePattern, {
+  snapshotId: fixture.snapshotId,
+  read: (offset, length) => Uint8Array.from(fixture.bytes).slice(Number(offset), Number(offset) + length),
+  size: fixture.bytes.length,
+});
+assert.equal(fixtureResult.status, 'complete', 'canonical profile fixture must be evaluated by the production pattern runtime');
+assert.equal(fixtureResult.value.fields.magic.value, 0x12345678);
 
 const compiled = compilePattern('struct Header { magic: u32le; count: u8[4]; }', { snapshotId: 'snapshot-a' });
 const bytes = Uint8Array.from([0x78, 0x56, 0x34, 0x12, 1, 2, 3, 4]);

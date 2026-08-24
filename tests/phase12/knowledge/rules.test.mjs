@@ -1,6 +1,15 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { compileCapabilityRule, compileCapabilityRules, evaluateCapabilityRule, evaluateCapabilityRules } from '../../../js/knowledge/phase12-rules.js';
 import { createResourceBudget } from '../../../js/phase12/resource-budget.js';
+
+const fixturePath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../fixtures/profile-evidence/capability-rule.json');
+const fixture = JSON.parse(fs.readFileSync(fixturePath, 'utf8'));
+const fixtureRule = compileCapabilityRule(fixture.rule);
+assert.equal(evaluateCapabilityRule(fixtureRule, { snapshotId: 'phase12-profile-fixture', entityId: 'fixture-function', features: fixture.features, completeness: 'complete' }).verdict, 'supported');
+assert.equal(evaluateCapabilityRule(fixtureRule, { snapshotId: 'phase12-profile-fixture', entityId: 'fixture-function', features: fixture.negativeFeatures, completeness: 'complete' }).verdict, 'not-detected');
 
 const rule = compileCapabilityRule({ id: 'has-xor', version: '1', capabilityId: 'crypto.xor', scope: 'function', requiredFeatures: ['effects'], when: { op: 'all', args: [{ op: 'contains', path: 'effects', value: 'xor' }, { op: 'gte', path: 'loopCount', value: 1 }] } });
 const positive = evaluateCapabilityRule(rule, { snapshotId: 'snap-a', entityId: 'fn-a', features: { effects: ['load', 'xor'], loopCount: 2 }, evidenceIds: ['ev-a'], completeness: 'complete' });

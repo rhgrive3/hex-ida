@@ -33,6 +33,30 @@ const RULES = Object.freeze({
   'S2-M6-DEX': Object.freeze({ providerProfileIds: ['managed:dex:provider-bound-runtime-v1:test'], sourceRefs: ['js/managed/dex/parser.js', 'js/managed/runtime-binding.js'], testRefs: ['tests/stage2/managed-runtime.test.mjs', 'tests/stage2/managed-real-fixtures.test.mjs'], commandIds: ['m6-managed-runtime', 'm6-real-fixtures'] }),
   'S2-M6-CIL': Object.freeze({ providerProfileIds: ['managed:cil:provider-bound-runtime-v1:test'], sourceRefs: ['js/managed/cil/parser.js', 'js/managed/runtime-binding.js'], testRefs: ['tests/stage2/managed-runtime.test.mjs', 'tests/stage2/managed-real-fixtures.test.mjs'], commandIds: ['m6-managed-runtime', 'm6-real-fixtures'] }),
   'S2-M6-JVM': Object.freeze({ providerProfileIds: ['managed:jvm:provider-bound-runtime-v1:test'], sourceRefs: ['js/managed/jvm/parser.js', 'js/managed/runtime-binding.js'], testRefs: ['tests/stage2/managed-runtime.test.mjs', 'tests/stage2/managed-real-fixtures.test.mjs'], commandIds: ['m6-managed-runtime', 'm6-real-fixtures'] }),
+  'S2-P12-KNOWLEDGE': Object.freeze({
+    providerProfileIds: [],
+    sourceRefs: ['js/phase12/package-envelope.js', 'js/knowledge/phase12-recognition.js', 'js/signature/index.js'],
+    testRefs: ['tests/phase12/knowledge/package.test.mjs'],
+    negativeTestRefs: ['tests/phase12/knowledge/package.test.mjs'],
+    realFixtureRefs: ['tests/phase12/fixtures/profile-evidence/knowledge-package.json'],
+    commandIds: ['p12-knowledge'],
+  }),
+  'S2-P12-RULES': Object.freeze({
+    providerProfileIds: [],
+    sourceRefs: ['js/knowledge/phase12-rules.js'],
+    testRefs: ['tests/phase12/knowledge/rules.test.mjs'],
+    negativeTestRefs: ['tests/phase12/knowledge/rules.test.mjs'],
+    realFixtureRefs: ['tests/phase12/fixtures/profile-evidence/capability-rule.json'],
+    commandIds: ['p12-rules'],
+  }),
+  'S2-P12-PATTERNS': Object.freeze({
+    providerProfileIds: [],
+    sourceRefs: ['js/pattern/index.js'],
+    testRefs: ['tests/phase12/pattern/evaluator.test.mjs'],
+    negativeTestRefs: ['tests/phase12/pattern/evaluator.test.mjs'],
+    realFixtureRefs: ['tests/phase12/fixtures/profile-evidence/pattern-struct.json'],
+    commandIds: ['p12-patterns'],
+  }),
 });
 export const PROFILE_UNIT_PROOF_RULES = RULES;
 
@@ -153,9 +177,21 @@ export function collectProfileEvidence({ expectedCommitSha, expectedTreeSha, out
     runCanonical('m6-managed-runtime', ['tests/stage2/managed-runtime.test.mjs']),
     runCanonical('m6-real-fixtures', ['tests/stage2/managed-real-fixtures.test.mjs']),
     runCanonical('f6-real-rebuild', ['tests/phase12/rebuild/f6-real-fixtures.test.mjs']),
+    runCanonical('p12-knowledge', ['tests/phase12/knowledge/package.test.mjs']),
+    runCanonical('p12-rules', ['tests/phase12/knowledge/rules.test.mjs']),
+    runCanonical('p12-patterns', ['tests/phase12/pattern/evaluator.test.mjs']),
   ];
+  const commandProofMarkers = Object.freeze({
+    'm6-real-fixtures': 'deterministic real managed fixtures passed for wasm/dex/cil/jvm',
+    'f6-real-rebuild': 'F6_REAL_REBUILD_PROOF=',
+    'p12-knowledge': '[phase12] package/provenance/recognition tests passed',
+    'p12-rules': '[phase12] deterministic capability-rule tests passed',
+    'p12-patterns': '[phase12] bounded declarative pattern tests passed',
+  });
   if (commands.some((command) => command.status !== 'passed')) throw new Error(`profile-proof-command-failed:${commands.filter((command) => command.status !== 'passed').map((command) => command.id).join(',')}`);
-  if (!commands.find((command) => command.id === 'f6-real-rebuild')?.stdout.includes('F6_REAL_REBUILD_PROOF=')) throw new Error('profile-proof-f6-oracle-marker-missing');
+  for (const [id, marker] of Object.entries(commandProofMarkers)) {
+    if (!commands.find((command) => command.id === id)?.stdout.includes(marker)) throw new Error(`profile-proof-command-marker-missing:${id}`);
+  }
   const commandById = new Map(commands.map((command) => [command.id, command]));
   const files = {};
   const commandOutputIdentity = (command) => {
@@ -172,7 +208,11 @@ export function collectProfileEvidence({ expectedCommitSha, expectedTreeSha, out
     const sourceIdentities = rule.sourceRefs.map(gitIdentity);
     const testIdentities = rule.testRefs.map(gitIdentity);
     const fixture = itemId.startsWith('S2-M6-') ? prerequisites.managed.get(itemId.slice('S2-M6-'.length).toLowerCase()) : null;
-    const realFixtureIdentities = fixture ? [fixtureIdentity(fixture.relative), fixtureIdentity(MANAGED_MANIFEST_PATH)] : [];
+    const realFixtureIdentities = [
+      ...(Array.isArray(rule.realFixtureRefs) ? rule.realFixtureRefs.map(fixtureIdentity) : []),
+      ...(fixture ? [fixtureIdentity(fixture.relative), fixtureIdentity(MANAGED_MANIFEST_PATH)] : []),
+    ];
+    const negativeTestIdentities = (rule.negativeTestRefs || rule.testRefs).map(gitIdentity);
     const unitEvidence = {};
     for (const unitId of denominator.unitIds) {
       const commandSummaries = rule.commandIds.map((id) => commandById.get(id));
@@ -180,14 +220,14 @@ export function collectProfileEvidence({ expectedCommitSha, expectedTreeSha, out
       // fixture must block the run instead of being silently replaced with a
       // test file (or any other arbitrary tracked file).
       if (realFixtureIdentities.length === 0) throw new Error(`profile-proof-real-fixture-missing:${itemId}`);
-      const proof = { schemaVersion: PROFILE_UNIT_PROOF_SCHEMA, itemId, unitId, candidateCommitSha: head.commitSha, candidateTreeSha: head.treeSha, status: 'passed', commandIds: rule.commandIds, commandOutputIdentities: rule.commandIds.map((id) => commandOutputIdentities.get(id)), commandOutputDigests: commandSummaries.map((command) => `sha256:${sha256(`${command.stdout}\n${command.stderr}`)}`), sourceIdentities, testIdentities, providerProfileIds: rule.providerProfileIds, realFixtureIdentities, negativeTestIdentities: testIdentities, independentOracleIdentities: [] };
+      const proof = { schemaVersion: PROFILE_UNIT_PROOF_SCHEMA, itemId, unitId, candidateCommitSha: head.commitSha, candidateTreeSha: head.treeSha, status: 'passed', commandIds: rule.commandIds, commandOutputIdentities: rule.commandIds.map((id) => commandOutputIdentities.get(id)), commandOutputDigests: commandSummaries.map((command) => `sha256:${sha256(`${command.stdout}\n${command.stderr}`)}`), sourceIdentities, testIdentities, providerProfileIds: rule.providerProfileIds, realFixtureIdentities, negativeTestIdentities, independentOracleIdentities: [] };
       const name = `${itemId.toLowerCase()}-${sha256(unitId).slice(0, 16)}.json`;
       files[name] = proof;
       unitEvidence[unitId] = `artifact:${relativeRunPath(runId, name)}@sha256:${sha256(jsonBytes(proof))}`;
     }
     items[itemId] = { profileIds: denominator.profiles, unitIds: denominator.unitIds, providerProfileIds: rule.providerProfileIds, sourceIdentities, testIdentities, realFixtureIdentities, unitEvidence };
   }
-  const run = { schemaVersion: PROFILE_EVIDENCE_RUN_SCHEMA, runId, candidateCommitSha: head.commitSha, candidateTreeSha: head.treeSha, generatedAt: new Date().toISOString(), commands: commands.map(({ stdout, stderr, ...summary }) => ({ ...summary, outputIdentity: commandOutputIdentities.get(summary.id), stdoutDigest: `sha256:${sha256(stdout)}`, stderrDigest: `sha256:${sha256(stderr)}`, proofMarker: summary.id === 'm6-real-fixtures' ? 'deterministic real managed fixtures passed for wasm/dex/cil/jvm' : summary.id === 'f6-real-rebuild' ? 'F6_REAL_REBUILD_PROOF=' : null })), items, files };
+  const run = { schemaVersion: PROFILE_EVIDENCE_RUN_SCHEMA, runId, candidateCommitSha: head.commitSha, candidateTreeSha: head.treeSha, generatedAt: new Date().toISOString(), commands: commands.map(({ stdout, stderr, ...summary }) => ({ ...summary, outputIdentity: commandOutputIdentities.get(summary.id), stdoutDigest: `sha256:${sha256(stdout)}`, stderrDigest: `sha256:${sha256(stderr)}`, proofMarker: commandProofMarkers[summary.id] || null })), items, files };
   writeRun(destination, run);
   return Object.freeze({ outputDir: destination, run });
 }
