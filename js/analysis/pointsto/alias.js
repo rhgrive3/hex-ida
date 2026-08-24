@@ -111,21 +111,6 @@ export function pointsToAlias(left, right, options = {}) {
           continue;
         }
 
-        const aKey = String(a.rootIdentity?.variable?.key ?? '');
-        const bKey = String(b.rootIdentity?.variable?.key ?? '');
-        if (aKey && bKey && aKey !== bKey) {
-          if ((aKey.includes('heap') || aKey.includes('alloc')) && (bKey.includes('heap') || bKey.includes('alloc'))) {
-            relations.push('no');
-            reasonCodes.add('distinct-non-escaping-allocation');
-            continue;
-          }
-          if ((aKey.includes('global') || aKey.includes('g_root')) && (bKey.includes('global') || bKey.includes('g_root'))) {
-            relations.push('no');
-            reasonCodes.add('disjoint-global-interval');
-            continue;
-          }
-        }
-
         relations.push('may');
         reasonCodes.add('escape-unproven');
         continue;
