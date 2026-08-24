@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { stableDigest } from '../../js/core/identity/index.js';
-import { INDEPENDENT_ORACLE_RESULT_SCHEMA } from '../../js/rebuild/transaction-v2.js';
+import { INDEPENDENT_ORACLE_RESULT_SCHEMA, registerCanonicalIndependentOracleProvider } from '../../js/rebuild/transaction-v2.js';
 
 /**
  * The F6 adapter is deliberately a validation tool, not a browser/runtime
@@ -345,7 +345,7 @@ export function createLlvmReadobjOracle({
   const tool = inspectLlvmReadobj({ command, timeoutMs: boundedTimeout, maxOutputBytes: boundedOutput, expectedVersion });
   const oracleSource = tool.executable ? `${tool.executable}@${tool.executableDigest} ${READOBJ_FLAGS.join(' ')}` : 'llvm-readobj';
 
-  return async function independentOracle(context = {}) {
+  const independentOracle = async function independentOracle(context = {}) {
     const transaction = context.transaction || {};
     let original;
     let output;
@@ -437,4 +437,5 @@ export function createLlvmReadobjOracle({
       fs.rmSync(directory, { recursive: true, force: true });
     }
   };
+  return registerCanonicalIndependentOracleProvider(independentOracle);
 }

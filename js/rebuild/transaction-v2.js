@@ -21,6 +21,22 @@ const F6_NATIVE_INVARIANT_UNITS = Object.freeze([
   'layout-and-structure', 'relocations-and-bindings', 'branch-ranges',
   'unwind-and-debug', 'imports-and-exports', 'signature-consequence',
 ]);
+const F6_PRESERVATION_ORACLE_IDENTITY = 'external:llvm-readobj';
+const F6_PRESERVATION_ORACLE_VERSION = 'Ubuntu LLVM version 18.1.3';
+const TRUSTED_INDEPENDENT_ORACLE_PROVIDERS = new WeakSet();
+
+// The preservation denominator accepts only the repository's registered
+// independent-provider adapter. A caller-supplied function cannot mint a
+// preservation result by copying the result schema or report fields.
+export function registerCanonicalIndependentOracleProvider(provider) {
+  if (typeof provider !== 'function') throw new TypeError('independent-oracle-provider-required');
+  TRUSTED_INDEPENDENT_ORACLE_PROVIDERS.add(provider);
+  return provider;
+}
+
+function isCanonicalIndependentOracleProvider(provider) {
+  return typeof provider === 'function' && TRUSTED_INDEPENDENT_ORACLE_PROVIDERS.has(provider);
+}
 export const F6_UNIMPLEMENTED_OPERATION_UNITS = Object.freeze([]);
 // These are evaluator-level bounded capabilities, not replacements for the
 // locked profile-wide F6 units above.  A capability can close only when its
@@ -185,6 +201,15 @@ function independentOracleResultFailure(result, context) {
   if (architecture.toLowerCase() !== context.transaction.architecture) return 'independent-oracle-architecture-mismatch';
   if (result.sourceDigest !== context.transaction.sourceHash) return 'independent-oracle-source-digest-mismatch';
   if (result.outputDigest !== context.expectedOutputHash) return 'independent-oracle-output-digest-mismatch';
+  const preservationKind = context.transaction.expectedOriginalState?.formatSafe?.kind;
+  if (['elf-comment', 'pe-timestamp', 'macho-min-version'].includes(preservationKind) && result.preservationEvidence?.complete === true) {
+    if (result.oracleIdentity !== F6_PRESERVATION_ORACLE_IDENTITY
+      || typeof result.oracleVersion !== 'string' || !result.oracleVersion.includes(F6_PRESERVATION_ORACLE_VERSION)
+      || typeof result.oracleSource !== 'string' || !/(?:^|[/\\])llvm-readobj(?:-\d+)?(?:\s|$)/.test(result.oracleSource)
+      || typeof result.oracleOutputDigest !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(result.oracleOutputDigest)) {
+      return 'independent-oracle-preservation-provider-identity-invalid';
+    }
+  }
   return null;
 }
 
@@ -217,8 +242,22 @@ export function f6KnownImplementationGaps() {
 
 function preservationEvidenceValid(transaction, validation) {
   const expected = transaction?.expectedOriginalState?.formatSafe;
+  const expectedImpactSection = expected?.kind === 'elf-comment'
+    ? expected.section
+    : expected?.kind === 'pe-timestamp'
+      ? expected.field
+      : null;
+  // The format-safe adapter currently represents Mach-O's command target with
+  // a null impact section. Bind that representation as well: otherwise a
+  // caller can rebind transaction/validation identities while changing the
+  // claimed affected section and still inherit a preservation proof.
+  const impactSections = transaction?.impact?.sections;
+  const impactSectionMatches = expectedImpactSection == null
+    ? Array.isArray(impactSections) && impactSections.length === 1 && impactSections[0] == null
+    : Array.isArray(impactSections) && impactSections.length === 1 && impactSections[0] === expectedImpactSection;
   if (!['elf-comment','pe-timestamp','macho-min-version'].includes(expected?.kind)
     || expected.signaturePolicy !== 'unsigned-input-required'
+    || !impactSectionMatches
     || transaction?.sizeDelta !== 0
     || transaction?.impact?.layoutMoving !== false
     || transaction?.impact?.relocations !== false
@@ -231,9 +270,16 @@ function preservationEvidenceValid(transaction, validation) {
   const oracleResult = validation?.validators?.find((item) => item.validator === 'independent-differential');
   const local = formatResult?.detail?.preservationEvidence;
   const independent = oracleResult?.detail?.preservationEvidence;
+  const oracleDetail = oracleResult?.detail;
   const exactUnits = (value) => JSON.stringify(value || []) === JSON.stringify(F6_NATIVE_INVARIANT_UNITS);
   return formatResult?.status === 'passed'
     && oracleResult?.status === 'passed'
+    && oracleDetail?.oracleIdentity === F6_PRESERVATION_ORACLE_IDENTITY
+    && typeof oracleDetail?.oracleVersion === 'string'
+    && oracleDetail.oracleVersion.includes(F6_PRESERVATION_ORACLE_VERSION)
+    && typeof oracleDetail?.oracleSource === 'string'
+    && /(?:^|[/\\])llvm-readobj(?:-\d+)?(?:\s|$)/.test(oracleDetail.oracleSource)
+    && /^sha256:[0-9a-f]{64}$/.test(String(oracleDetail?.oracleOutputDigest || ''))
     && local?.complete === true
     && local?.signaturePolicy === 'unsigned-input-required'
     && local?.unchangedBytesExceptTarget === true
@@ -783,6 +829,9 @@ function validatorResult(name, executed, ok, reason = null, detail = null) {
 
 async function executeExternal(name, fn, context) {
   if (typeof fn !== 'function') return validatorResult(name, false, false, 'required-validator-unavailable');
+  if (name === 'independent-differential' && context.preservationRequiresTrustedProvider && !context.independentOracleTrusted) {
+    return validatorResult(name, false, false, 'independent-oracle-provider-untrusted');
+  }
   try {
     const result = await fn(context);
     if (!result || (result.ok !== true && result.status !== 'passed' && result.status !== 'valid')) return validatorResult(name, true, false, result?.reason || 'validator-rejected', result || null);
@@ -820,6 +869,8 @@ export async function validateRebuildTransaction(transaction, materialized, opti
     && materialized.outputIdentity === canonicalOutputIdentity(transaction.transactionId, materialized.outputHash);
   const unchangedMatches = verifyUnchangedMappings(original, materialized.bytes, materialized.mappings);
   const evidenceComplete = transaction.operations.every((operation) => operation.provenance && Object.keys(operation.provenance).length > 0);
+  const preservationRequiresTrustedProvider = ['elf-comment', 'pe-timestamp', 'macho-min-version'].includes(transaction.expectedOriginalState?.formatSafe?.kind);
+  const independentOracleTrusted = isCanonicalIndependentOracleProvider(options.independentOracle);
   builtins.set('source-precondition', () => validatorResult('source-precondition', true, sourceMatches, 'source-hash-mismatch'));
   builtins.set('structure', () => validatorResult('structure', true, structureMatches, 'output-length-inconsistent'));
   builtins.set('unchanged-regions', () => validatorResult('unchanged-regions', true, unchangedMatches, 'unchanged-region-differed'));
@@ -835,7 +886,7 @@ export async function validateRebuildTransaction(transaction, materialized, opti
         : name === 'independent-differential'
           ? options.independentOracle
         : options.validators?.[name];
-    validators.push(await executeExternal(name, external, { transaction, materialized, original, output: materialized.bytes, expectedOutputHash: materialized.outputHash }));
+    validators.push(await executeExternal(name, external, { transaction, materialized, original, output: materialized.bytes, expectedOutputHash: materialized.outputHash, preservationRequiresTrustedProvider, independentOracleTrusted }));
   }
 
   const failures = validators.filter((item) => item.status !== 'passed');

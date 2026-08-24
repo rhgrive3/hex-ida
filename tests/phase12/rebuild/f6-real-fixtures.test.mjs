@@ -406,6 +406,107 @@ for (const status of denominatorStatuses) {
     assert.equal(status.cells[unit].status, 'closed');
   }
 }
+
+// Adversarial proof binding: a preservation result must come from the
+// canonical LLVM provider, and every claimed impact field must remain bound to
+// the format-safe target. Rebinding identities alone must not manufacture a
+// closed F6 denominator.
+const adversarialFixture = manifest.fixtures.find((fixture) => fixture.format === 'elf');
+const adversarialBytes = fixtureBytes(adversarialFixture);
+const adversarialBase = f6EvidenceRows.find(({ fixture }) => fixture.id === adversarialFixture.id);
+const adversarialMaterialized = await materializeRebuildTransaction(adversarialBase.transaction, adversarialBytes);
+const forgedOracle = async ({ transaction, expectedOutputHash }) => ({
+  schemaVersion: 'hex-rebuild-independent-oracle-result-v1',
+  ok: true,
+  status: 'passed',
+  oracleIdentity: 'forged-caller-oracle',
+  oracleVersion: 'forged',
+  oracleSource: 'forged',
+  oracleOutputDigest: `sha256:${'f'.repeat(64)}`,
+  sourceDigest: transaction.sourceHash,
+  outputDigest: expectedOutputHash,
+  format: transaction.format,
+  architecture: transaction.architecture,
+  preservationEvidence: {
+    complete: true,
+    signaturePolicy: 'unsigned-input-required',
+    sourceReportDigest: `sha256:${'e'.repeat(64)}`,
+    outputReportDigest: `sha256:${'e'.repeat(64)}`,
+    units: ['layout-and-structure', 'relocations-and-bindings', 'branch-ranges', 'unwind-and-debug', 'imports-and-exports', 'signature-consequence'],
+  },
+});
+const forgedValidation = await validateRebuildTransaction(adversarialBase.transaction, adversarialMaterialized, {
+  original: adversarialBytes,
+  loaderReparse,
+  independentOracle: forgedOracle,
+  validators: { 'format-invariants': validateFormatSafeMutation },
+});
+assert.equal(forgedValidation.status, 'invalid', 'caller-minted oracle evidence must not validate');
+assert.deepEqual(forgedValidation.validators.find((item) => item.validator === 'independent-differential'), {
+  validator: 'independent-differential',
+  executed: false,
+  status: 'failed',
+  reason: 'independent-oracle-provider-untrusted',
+  detail: null,
+});
+
+function reboundTransaction(base, mutate) {
+  const transaction = structuredClone(base);
+  mutate(transaction);
+  transaction.transactionId = null;
+  transaction.transactionId = `rebuild-transaction:${stableDigest(transaction)}`;
+  return transaction;
+}
+
+function reboundValidation(base, transaction) {
+  const validation = structuredClone(base);
+  validation.transactionId = transaction.transactionId;
+  validation.outputIdentity = `rebuild-output:${transaction.transactionId}:${validation.outputHash}`;
+  delete validation.validationId;
+  validation.validationId = `rebuild-validation:${stableDigest(validation)}`;
+  return validation;
+}
+
+function reboundPublication(base, transaction, validation) {
+  return { ...base, transactionId: transaction.transactionId, outputIdentity: validation.outputIdentity };
+}
+
+for (const field of ['layoutMoving', 'relocations', 'branchRanges', 'unwind', 'importsExports', 'signature']) {
+  const transaction = reboundTransaction(adversarialBase.transaction, (value) => { value.impact[field] = true; });
+  const validation = reboundValidation(adversarialBase.validation, transaction);
+  const publication = reboundPublication(adversarialBase.publication, transaction, validation);
+  const status = evaluateF6RebuildDenominator({
+    transaction,
+    validation,
+    publication,
+    proof: { realFixture: true, realFixtureEvidence: true, negativeValidatorTest: true, staleIdentityTest: true, truncationTest: true, wrongIdentityTest: true },
+  });
+  assert.equal(status.status, 'blocked', `forged ${field} consequence must block F6`);
+  assert.equal(status.blockingUnitIds.includes('elf:64:layout-and-structure'), true, `forged ${field} must block layout cell`);
+}
+
+const forgedSectionTransaction = reboundTransaction(adversarialBase.transaction, (value) => { value.impact.sections = ['forged-section']; });
+const forgedSectionValidation = reboundValidation(adversarialBase.validation, forgedSectionTransaction);
+const forgedSectionStatus = evaluateF6RebuildDenominator({
+  transaction: forgedSectionTransaction,
+  validation: forgedSectionValidation,
+  publication: reboundPublication(adversarialBase.publication, forgedSectionTransaction, forgedSectionValidation),
+  proof: { realFixture: true, realFixtureEvidence: true, negativeValidatorTest: true, staleIdentityTest: true, truncationTest: true, wrongIdentityTest: true },
+});
+assert.equal(forgedSectionStatus.status, 'blocked', 'forged impact section must block F6');
+assert.equal(forgedSectionStatus.blockingUnitIds.includes('elf:64:layout-and-structure'), true);
+
+const forgedBindingTransaction = reboundTransaction(adversarialBase.transaction, (value) => { value.impact.relocationBindings = ['forged-binding']; });
+const forgedBindingValidation = reboundValidation(adversarialBase.validation, forgedBindingTransaction);
+const forgedBindingStatus = evaluateF6RebuildDenominator({
+  transaction: forgedBindingTransaction,
+  validation: forgedBindingValidation,
+  publication: reboundPublication(adversarialBase.publication, forgedBindingTransaction, forgedBindingValidation),
+  proof: { realFixture: true, realFixtureEvidence: true, negativeValidatorTest: true, staleIdentityTest: true, truncationTest: true, wrongIdentityTest: true },
+});
+assert.equal(forgedBindingStatus.status, 'blocked', 'forged relocation binding must block F6');
+assert.equal(forgedBindingStatus.blockingUnitIds.includes('elf:64:layout-and-structure'), true);
+
 console.log(`F6_REAL_REBUILD_PROOF=${JSON.stringify({
   schemaVersion: FORMAT_SAFE_REBUILD_SCHEMA,
   fixtures: proofRows,
