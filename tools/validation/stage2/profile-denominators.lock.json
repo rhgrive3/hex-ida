@@ -189,8 +189,8 @@
         "tools/validation/stage2/a7-lldb-real-fixture.mjs",
         "tools/validation/stage2/build-profile-denominator-inventory.mjs"
       ],
-      "inventoryHash": "stage2-denominator-inventory:caa8cdb77f24e61567243945ba095450",
-      "lockHash": "stage2-denominator-item:b83dbaeecdf6ac50e1416a3d7ee1ea17"
+      "inventoryHash": "stage2-denominator-inventory:6dc34f586746702ce2bfdd591bfb27e5",
+      "lockHash": "stage2-denominator-item:bede40bf314c0fb66ec784bdd5cc7f89"
     },
     "S2-M6-WASM": {
       "id": "stage2-denominator:S2-M6-WASM:v1",
@@ -574,5 +574,5 @@
       "lockHash": "stage2-denominator-item:fc2743ed16b1eac9da20139957ec0528"
     }
   },
-  "lockHash": "stage2-denominator-lock:4722053f0bcf2ccda44733213af0a480"
+  "lockHash": "stage2-denominator-lock:eb198c2673fd95935bf08abce72e519e"
 }
