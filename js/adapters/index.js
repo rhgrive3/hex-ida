@@ -24,6 +24,7 @@ function classifyStop(result) {
   if (!reason) return { kind:'paused', message:null };
   if (/命令ぶん進んだ|timeout/i.test(reason)) return { kind:'timeout', message:reason };
   if (/unsupported|未対応|対応していない|実行できません|まだ実行できません/i.test(reason)) return { kind:'unsupported', message:reason };
+  if (/paused/i.test(reason)) return { kind:'paused', message:reason };
   if (/cancelled|stale-request/i.test(reason)) return { kind:'cancelled', message:reason };
   if (/oob|unmapped|permission|fault|MMIO/i.test(reason)) return { kind:'fault', message:reason };
   if (/最初の呼び出し元まで戻ってきました/.test(reason)) return { kind:'return', message:reason };
@@ -181,8 +182,8 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     return super.disconnect();
   }
   async pause() {
-    this.cancelled = true;
-    if (this.activeRun) { this.activeRun.cancelled = true; this.activeRun.sandbox.emulator.stopped = 'cancelled'; }
+    const run = this.activeRun;
+    if (run) { run.paused = true; run.sandbox.emulator.stopped = 'paused'; }
     return { paused:true };
   }
   async cancel() {
@@ -195,9 +196,10 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
   async resume(options = {}) {
     const sandbox = this.ensureSandbox();
     if (this.activeRun) throw new DebugAdapterError('already-running', 'local sandbox already has an active execution');
-    const run = { sandbox, epoch:this.epoch, cancelled:!!(options.signal && options.signal.aborted), kind:'resume' };
+    const run = { sandbox, epoch:this.epoch, cancelled:!!(options.signal && options.signal.aborted), paused:false, kind:'resume' };
     this.activeRun = run;
     this.cancelled = run.cancelled;
+    if (sandbox.emulator.stopped === 'paused') sandbox.emulator.stopped = null;
     const maxSteps = boundedInteger(options.maxSteps, 20000, 1, 1000000, 'maxSteps');
     const timeoutMs = options.timeoutMs == null ? null : boundedInteger(options.timeoutMs, 2000, 10, 30000, 'timeoutMs');
     const started = Date.now();
@@ -212,6 +214,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     try {
       const result = await sandbox.run({ maxSteps, onProgress:(n) => {
         if (run.cancelled) sandbox.emulator.stopped = 'cancelled';
+        else if (run.paused) sandbox.emulator.stopped = 'paused';
         else if (timeoutMs != null && Date.now() - started >= timeoutMs) sandbox.emulator.stopped = 'timeout';
         if (options.onProgress) options.onProgress(n);
       } });
