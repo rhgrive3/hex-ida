@@ -155,7 +155,7 @@ export class BinaryImage {
 
   _nextMappingBoundary(current, owner) {
     // Issue #970: a narrower mapping starting inside `owner` (e.g. a zero-fill __bss
-    // section inside a file-backed segment) ends the current chunk at its start.
+    // section inside a broader file-backed segment) ends the current chunk at its start.
     const end = owner.address + owner.size;
     let next = null;
     const consider = (m) => {
@@ -361,8 +361,13 @@ export function mergeFunctionSeeds(input, context = {}) {
     if (!best.callingConvention && other.callingConvention) best.callingConvention = other.callingConvention;
     if (!best.abiMetadata && other.abiMetadata) best.abiMetadata = { ...other.abiMetadata };
     let inheritedExtent = false;
-    if (best.size == null && other.size != null) { best.size = other.size; inheritedExtent = true; }
-    if (best.end == null && other.end != null) { best.end = other.end; inheritedExtent = true; }
+    const bestHasExtent = best.size != null || best.end != null;
+    const otherHasExtent = other.size != null || other.end != null;
+    if (!bestHasExtent && otherHasExtent) {
+      best.size = other.size ?? null;
+      best.end = other.end ?? null;
+      inheritedExtent = true;
+    }
     if (inheritedExtent) {
       best.extentSource = other.extentSource || other.source || 'unknown';
       best.extentConfidence = Number(other.extentConfidence ?? other.confidence ?? 0);
