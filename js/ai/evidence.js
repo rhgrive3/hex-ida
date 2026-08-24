@@ -105,6 +105,17 @@ export class EvidenceStore {
     for (const evidence of initial) this.add(evidence);
   }
 
+  static fromPersistedConfirmed(initial = [], options = {}) {
+    const store = new EvidenceStore([], options);
+    for (const evidence of Array.isArray(initial) ? initial : []) {
+      // Persistence may contain historical/non-terminal records. Only records
+      // that were actually persisted as verified regain deterministic authority;
+      // normal constructor/add callers remain untrusted.
+      store.add(evidence, evidence?.status === 'verified' ? DETERMINISTIC_VERIFICATION : null);
+    }
+    return store;
+  }
+
   setObservationStore(store) {
     this.observationStore = store || null;
     if (this.observationStore) {
