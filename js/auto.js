@@ -430,13 +430,13 @@ function tick() { return new Promise((resolve) => setTimeout(resolve, 0)); }
 
 /*
  * Cache only successful, non-null analysis. Rejections/nulls are retryable.
- * Forward the complete options bag: pinpoint injects AbortSignal as the third
- * argument, and dropping it here would turn its timeout into an outer-only
- * Promise race while the real semantic analysis kept running in the backend.
+ * AbortSignal-bearing calls are intentionally not shared: a caller-owned signal
+ * must never become the cancellation authority for another caller's analysis.
  */
 export function memoizeAnalysis(analyze) {
   const cache = new Map();
   return (addr, end, options = undefined) => {
+    if (options?.signal) return Promise.resolve().then(() => analyze(addr, end, options));
     const key = `${addr == null ? 'null' : addr.toString()}:${end == null ? 'null' : end.toString()}`;
     if (cache.has(key)) return cache.get(key);
     const p = Promise.resolve()
