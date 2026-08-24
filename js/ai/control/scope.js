@@ -80,8 +80,8 @@ export class ScopeController {
 }
 
 export function initialScope(snapshot) {
-  if (snapshot?.selection?.start) return 'selection';
-  if (snapshot?.currentFunction?.address) return 'function';
+  if (snapshot?.selection?.start != null) return 'selection';
+  if (snapshot?.currentFunction?.address != null) return 'function';
   return snapshot?.projectIdentity && !snapshot?.binaryId ? 'project' : 'binary';
 }
 
@@ -114,7 +114,7 @@ function isAddressKey(key) {
     || /(Address|Addr|Start|End|From|To|Target)$/.test(text);
 }
 function inFunction(target, fn) {
-  if (!fn?.address) return false;
+  if (fn?.address == null) return false;
   const start = toBigInt(fn.range?.start ?? fn.address);
   const endExclusive = toBigInt(fn.range?.end);
   if (start == null) return false;
