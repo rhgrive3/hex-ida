@@ -256,27 +256,61 @@ try:
 
     before_rax = rax
     debugger.SetAsync(True)
-    continue_error = process.Continue()
-    if not continue_error.Success():
-        fail('pause-continue-failed:' + str(continue_error))
-    time.sleep(0.05)
-    stop_error = process.Stop()
-    if not stop_error.Success():
-        fail('pause-stop-failed:' + str(stop_error))
-    stopped_state = wait_for(lldb.SBDebugger.StateIsStoppedState)
-    if not lldb.SBDebugger.StateIsStoppedState(stopped_state):
-        fail('pause-stop-not-observed:' + state_name(stopped_state))
-    thread, frame = current_frame()
-    pause_rip = reg(frame, 'rip')
-    pause_rsp = reg(frame, 'rsp')
-    pause_rax = reg(frame, 'rax')
-    if pause_rax == before_rax:
+    pause_continue_accepted = False
+    pause_running_observed = False
+    pause_stop_accepted = False
+    pause_thread = None
+    pause_frame = None
+    pause_rax = before_rax
+    pause_deadline = time.time() + 3.0
+    while time.time() < pause_deadline:
+        state = process.GetState()
+        if state in (lldb.eStateExited, lldb.eStateDetached, lldb.eStateInvalid):
+            fail('pause-process-terminated:' + state_name(state))
+        if lldb.SBDebugger.StateIsStoppedState(state):
+            continue_error = process.Continue()
+            if not continue_error.Success():
+                fail('pause-continue-failed:' + str(continue_error))
+            pause_continue_accepted = True
+        running_state = wait_for(lambda value: value == lldb.eStateRunning, timeout=0.5)
+        if running_state != lldb.eStateRunning:
+            state = process.GetState()
+            if state in (lldb.eStateExited, lldb.eStateDetached, lldb.eStateInvalid):
+                fail('pause-process-terminated:' + state_name(state))
+            continue
+        pause_running_observed = True
+        time.sleep(0.01)
+        if process.GetState() != lldb.eStateRunning:
+            continue
+        stop_error = process.Stop()
+        if not stop_error.Success():
+            state = process.GetState()
+            if lldb.SBDebugger.StateIsStoppedState(state):
+                continue
+            fail('pause-stop-failed:' + str(stop_error))
+        pause_stop_accepted = True
+        stopped_state = wait_for(lldb.SBDebugger.StateIsStoppedState, timeout=0.5)
+        if not lldb.SBDebugger.StateIsStoppedState(stopped_state):
+            continue
+        pause_thread, pause_frame = current_frame()
+        pause_rax = reg(pause_frame, 'rax')
+        if pause_rax != before_rax:
+            break
+    if not pause_continue_accepted:
+        fail('pause-continue-not-observed')
+    if not pause_running_observed:
+        fail('pause-running-not-observed')
+    if not pause_stop_accepted:
+        fail('pause-stop-not-accepted')
+    if pause_frame is None or pause_rax == before_rax:
         fail('pause-no-execution-observed')
+    pause_rip = reg(pause_frame, 'rip')
+    pause_rsp = reg(pause_frame, 'rsp')
     result['pause'] = {
         'observed': True, 'continueAccepted': True, 'stopAccepted': True,
         'runningObserved': True, 'runningEvidence': 'continue-success+register-progress',
         'stoppedObserved': True, 'executionAdvanced': True,
-        'processId': process.GetProcessID(), 'threadId': thread.GetThreadID(),
+        'processId': process.GetProcessID(), 'threadId': pause_thread.GetThreadID(),
         'registers': {'rip': hex(pause_rip), 'rsp': hex(pause_rsp), 'rax': hex(pause_rax)},
         'state': state_name(process.GetState()),
     }
