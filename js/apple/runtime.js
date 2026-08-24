@@ -45,12 +45,18 @@ export function resolveObjcIMP(objcIndex, address, { receiverType = null, select
     }
     candidates = candidates.filter((m) => chain.has(m.className));
   }
-  const unique = candidates.length === 1 ? candidates[0] : null;
+  const metadataComplete = objcIndex.completeness?.complete === true;
+  const unique = metadataComplete && candidates.length === 1 ? candidates[0] : null;
   return {
     resolved: unique,
     candidates,
     confidence: unique ? 0.98 : candidates.length ? 0.55 : 0,
-    reason: unique ? 'unique IMP in Objective-C metadata' : candidates.length ? 'IMP is shared by multiple methods' : 'IMP not found in parsed metadata',
+    reason: unique
+      ? 'unique IMP in complete Objective-C metadata'
+      : candidates.length
+        ? (metadataComplete ? 'IMP is shared by multiple methods' : 'Objective-C runtime metadata is partial; IMP identity is not globally unique')
+        : 'IMP not found in parsed metadata',
+    partial: !metadataComplete,
   };
 }
 

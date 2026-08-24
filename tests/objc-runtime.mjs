@@ -49,8 +49,6 @@ const index = buildObjcRuntimeIndex(model);
 }
 {
   const r = resolveObjcDispatch(index, { receiverType: 'PlayerData *', selector: 'coinCount' });
-  // Protocol entries describe required methods; they do not carry an
-  // implementation IMP and must never be promoted to a resolved dispatch.
   assert.equal(r.resolved, null);
   assert.equal(r.candidates.length, 0);
   assert.equal(r.requirements.length, 1);
@@ -87,6 +85,12 @@ const index = buildObjcRuntimeIndex(model);
   assert.equal(r.partial, true);
 }
 {
+  const unknown = buildObjcRuntimeIndex({ classes: model.classes, protocols: model.protocols, categories: model.categories });
+  const r = resolveObjcDispatch(unknown, { receiverType: 'Leaf *', selector: 'value' });
+  assert.equal(r.resolved, null, 'unknown completeness must fail closed like partial metadata');
+  assert.equal(r.partial, true);
+}
+{
   const collision = buildObjcRuntimeIndex({
     ...model,
     categories: [...model.categories, { name: 'Override', className: 'Leaf', methods: [{ sel: 'value', addr: 0x3400n }] }],
@@ -116,6 +120,14 @@ const index = buildObjcRuntimeIndex(model);
   const imp = resolveObjcIMP(index, 0x2000n, { receiverType: 'PlayerData *', selector: 'addCoins:' });
   assert.equal(imp.resolved?.selector, 'addCoins:');
   assert.equal(imp.confidence, 0.98);
+}
+{
+  const partial = buildObjcRuntimeIndex({ ...model, runtimeCompleteness: { complete: false, categories: { complete: false } } });
+  const imp = resolveObjcIMP(partial, 0x2000n, { receiverType: 'PlayerData *', selector: 'addCoins:' });
+  assert.equal(imp.resolved, null, 'a single parsed IMP candidate is not globally unique under partial metadata');
+  assert.equal(imp.candidates.length, 1);
+  assert.equal(imp.partial, true);
+  assert.equal(imp.confidence, 0.55);
 }
 {
   assert.equal(runtimeOriginForSymbol('-[PlayerData addCoins:]'), 'objc');
