@@ -39,7 +39,15 @@ jobs:
             .filter(Boolean);
           if (parts.length < 2) throw new Error('npm check must contain at least two independent top-level commands');
 
+          // Keep the slow, self-contained proof suites as their own jobs instead
+          // of serializing them behind unrelated contracts. In particular,
+          // invariants:test already owns the complete MachineEffects contract;
+          // adding effects:test here would execute the same 52-test denominator
+          // twice on every PR without adding any proof strength.
           const isolated = new Map([
+            ['npm run invariants:test', 'invariants'],
+            ['npm run semantic-v2:test', 'semantic-v2'],
+            ['npm run phase8:test', 'phase8:test'],
             ['npm test', 'test'],
             ['npm run phase6:test', 'phase6:test'],
             ['npm run benchmark:baseline', 'benchmark:baseline'],
@@ -47,14 +55,9 @@ jobs:
           const contracts = parts.filter((command) => !isolated.has(command));
           if (!contracts.length) throw new Error('npm check must contain contract commands');
 
-          // MachineEffects used to run in a separate always-on workflow. Keep
-          // the coverage while avoiding another checkout/setup/npm-ci runner.
-          if (!parts.includes('npm run effects:test')) contracts.unshift('npm run effects:test');
-
-          // One large serial contract shard became the critical path in live CI.
-          // Keep the low-overhead checks together, but run the heavier historical
-          // phase contracts in parallel. This still cuts the old nine npm-ci
-          // runners almost in half while improving wall-clock latency.
+          // Keep the low-overhead checks together, but preserve the dedicated
+          // frozen-toolchain lane for Phase 4/5. Every npm-check top-level
+          // command is still executed exactly once by the matrix.
           const phaseCommands = new Set(['npm run phase4:test', 'npm run phase5:test']);
           const coreContracts = contracts.filter((command) => !phaseCommands.has(command));
           const phaseContracts = contracts.filter((command) => phaseCommands.has(command));
@@ -69,6 +72,14 @@ jobs:
               .filter((command) => isolated.has(command))
               .map((command) => ({ name: isolated.get(command), command })),
           ];
+
+          const scheduled = include.flatMap(({ command }) => command.split(/\s+&&\s+/));
+          if (scheduled.length !== parts.length || scheduled.some((command, index) => command !== parts[index])) {
+            const expected = JSON.stringify(parts);
+            const actual = JSON.stringify(scheduled);
+            throw new Error(`npm-check shard plan must execute each top-level command exactly once and in declaration order (expected=${expected}, actual=${actual})`);
+          }
+
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify({ include })}\n`);
           NODE
 
@@ -79,7 +90,7 @@ jobs:
     timeout-minutes: 45
     strategy:
       fail-fast: false
-      max-parallel: 5
+      max-parallel: 8
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
       - name: Checkout
