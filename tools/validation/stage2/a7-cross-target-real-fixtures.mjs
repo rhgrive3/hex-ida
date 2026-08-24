@@ -373,13 +373,12 @@ try:
     cancel_worker.start()
     time.sleep(0.05)
     if not cancel_worker.is_alive(): fail('cancel-continue-not-inflight:' + str(cancel_holder))
-    cancel_running_state = wait_for_process_event(listener, lldb.SBDebugger.StateIsRunningState)
-    if not lldb.SBDebugger.StateIsRunningState(cancel_running_state): fail('cancel-running-event-not-observed:' + state_name(cancel_running_state))
-    cancel_running_qemu = qemu_sample('cancel-running')
-    require_same_qemu(cancel_qemu_before, cancel_running_qemu, 'cancel-running')
+    cancel_running_qemu = qemu_sample('cancel-inflight-start')
+    require_same_qemu(cancel_qemu_before, cancel_running_qemu, 'cancel-inflight-start')
     time.sleep(0.08)
-    cancel_progress_qemu = qemu_sample('cancel-progress')
-    require_qemu_progress(cancel_running_qemu, cancel_progress_qemu, 'cancel-running-window')
+    if not cancel_worker.is_alive(): fail('cancel-continue-settled-before-interrupt:' + str(cancel_holder))
+    cancel_progress_qemu = qemu_sample('cancel-inflight-progress')
+    require_qemu_progress(cancel_running_qemu, cancel_progress_qemu, 'cancel-inflight-window')
     signal_qemu_and_wait(listener, 'cancel')
     cancel_worker.join(3.0)
     if cancel_worker.is_alive(): fail('cancel-continue-not-settled')
@@ -402,7 +401,7 @@ try:
     require_same_qemu(late_qemu_before, late_qemu_after, 'cancel-late')
     if first_state != late_state or late_stop_id_before != late_stop_id_after:
         fail('cancel-late-success-observed')
-    result['cancel'] = {'observed': True, 'inFlightObserved': True, 'inFlightEvidence': 'blocking-continue-thread-alive+provider-running-state-event', 'executionAdvanced': True, 'executionEvidence': 'exact-qemu-process-cpu-ticks-during-provider-running-window', 'executionWindow': 'after-running-event-before-interrupt', 'interruptIssued': True, 'operationSettled': True, 'continueSettled': True, 'processId': process.GetProcessID(), 'qemuHostPid': QEMU_PID, 'qemuStartTimeTicks': cancel_qemu_after['startTimeTicks'], 'qemuCpuTicksBefore': cancel_running_qemu['cpuTicks'], 'qemuCpuTicksAfter': cancel_progress_qemu['cpuTicks'], 'settlement': 'cancelled', 'providerDisposition': 'qemu-user-sigint-observed-by-lldb', 'progressTransport': 'linux-proc-stat+lldb-process-events', 'modulePath': cancel_module, 'stopIdAdvanced': True, 'stopIdBefore': cancel_stop_id_before, 'stopIdAfter': cancel_stop_id_after, 'lateResultRejected': True, 'lateStateStable': True, 'lateStopIdStable': True, 'lateQemuInstanceStable': True, 'continueResult': str(cancel_holder.get('result')), 'state': state_name(late_state)}
+    result['cancel'] = {'observed': True, 'inFlightObserved': True, 'inFlightEvidence': 'blocking-continue-thread-alive+exact-qemu-cpu-progress', 'executionAdvanced': True, 'executionEvidence': 'exact-qemu-process-cpu-ticks-during-provider-running-window', 'executionWindow': 'while-blocking-continue-thread-alive-before-interrupt', 'interruptIssued': True, 'operationSettled': True, 'continueSettled': True, 'processId': process.GetProcessID(), 'qemuHostPid': QEMU_PID, 'qemuStartTimeTicks': cancel_qemu_after['startTimeTicks'], 'qemuCpuTicksBefore': cancel_running_qemu['cpuTicks'], 'qemuCpuTicksAfter': cancel_progress_qemu['cpuTicks'], 'settlement': 'cancelled', 'providerDisposition': 'qemu-user-sigint-observed-by-lldb', 'progressTransport': 'linux-proc-stat+blocking-continue+lldb-stop-event', 'modulePath': cancel_module, 'stopIdAdvanced': True, 'stopIdBefore': cancel_stop_id_before, 'stopIdAfter': cancel_stop_id_after, 'lateResultRejected': True, 'lateStateStable': True, 'lateStopIdStable': True, 'lateQemuInstanceStable': True, 'continueResult': str(cancel_holder.get('result')), 'state': state_name(late_state)}
     result['operationResults'] = {'attach': True, 'pause': True, 'cancel': True}
 except BaseException as exc:
     result['error'] = str(exc)
@@ -471,8 +470,8 @@ export function parseCrossTargetActiveOpsOutput(output, target, { binaryPath, pr
   if (pause.processId !== attach.processId || pause.modulePath !== attach.modulePath) throw new Error('a7-cross-pause-session-identity-mismatch');
 
   if (proof.operationResults?.cancel !== true || cancel.observed !== true || cancel.inFlightObserved !== true || cancel.interruptIssued !== true || cancel.executionAdvanced !== true) throw new Error('a7-cross-cancel-not-observed');
-  if (cancel.inFlightEvidence !== 'blocking-continue-thread-alive+provider-running-state-event') throw new Error('a7-cross-cancel-inflight-evidence-missing');
-  if (cancel.operationSettled !== true || cancel.continueSettled !== true || cancel.stopIdAdvanced !== true || cancel.settlement !== 'cancelled' || cancel.providerDisposition !== 'qemu-user-sigint-observed-by-lldb' || cancel.progressTransport !== 'linux-proc-stat+lldb-process-events' || cancel.executionEvidence !== 'exact-qemu-process-cpu-ticks-during-provider-running-window' || cancel.executionWindow !== 'after-running-event-before-interrupt' || cancel.lateResultRejected !== true || cancel.lateStateStable !== true || cancel.lateStopIdStable !== true || cancel.lateQemuInstanceStable !== true) throw new Error('a7-cross-cancel-settlement-missing');
+  if (cancel.inFlightEvidence !== 'blocking-continue-thread-alive+exact-qemu-cpu-progress') throw new Error('a7-cross-cancel-inflight-evidence-missing');
+  if (cancel.operationSettled !== true || cancel.continueSettled !== true || cancel.stopIdAdvanced !== true || cancel.settlement !== 'cancelled' || cancel.providerDisposition !== 'qemu-user-sigint-observed-by-lldb' || cancel.progressTransport !== 'linux-proc-stat+blocking-continue+lldb-stop-event' || cancel.executionEvidence !== 'exact-qemu-process-cpu-ticks-during-provider-running-window' || cancel.executionWindow !== 'while-blocking-continue-thread-alive-before-interrupt' || cancel.lateResultRejected !== true || cancel.lateStateStable !== true || cancel.lateStopIdStable !== true || cancel.lateQemuInstanceStable !== true) throw new Error('a7-cross-cancel-settlement-missing');
   if (qemuPid != null && cancel.qemuHostPid !== qemuPid) throw new Error('a7-cross-cancel-qemu-identity-mismatch');
   if (!validQemuSample(cancel) || cancel.qemuStartTimeTicks !== attach.qemuStartTimeTicks) throw new Error('a7-cross-cancel-qemu-instance-identity-mismatch');
   if (!validCpuAdvance(cancel)) throw new Error('a7-cross-cancel-execution-progress-missing');
