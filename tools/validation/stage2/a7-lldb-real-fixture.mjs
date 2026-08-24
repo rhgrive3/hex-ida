@@ -213,6 +213,20 @@ def module_path(target):
     filename = spec.GetFilename() or ''
     return os.path.realpath(os.path.join(directory, filename))
 
+def proc_stat(pid):
+    with open('/proc/' + str(pid) + '/stat', 'r', encoding='utf8') as handle:
+        text = handle.read().strip()
+    close = text.rfind(')')
+    if close < 0:
+        fail('proc-stat-malformed')
+    fields = text[close + 2:].split()
+    if len(fields) < 20:
+        fail('proc-stat-short')
+    return {
+        'cpuTicks': int(fields[11]) + int(fields[12]),
+        'startTimeTicks': int(fields[19]),
+    }
+
 result = {'kind': 'active-provider-operations'}
 child = None
 process = None
@@ -255,51 +269,74 @@ try:
     }
 
     before_rax = rax
-    debugger.SetAsync(True)
+    debugger.SetAsync(False)
     pause_continue_accepted = False
     pause_running_observed = False
     pause_stop_accepted = False
     pause_thread = None
     pause_frame = None
     pause_rax = before_rax
-    continue_error = process.Continue()
-    if not continue_error.Success():
+    pause_holder = {}
+    pause_stat_before = proc_stat(attached_pid)
+    def run_pause_continue():
+        try:
+            pause_holder['error'] = process.Continue()
+        except BaseException as exc:
+            pause_holder['exception'] = repr(exc)
+    pause_worker = threading.Thread(target=run_pause_continue, daemon=True)
+    pause_worker.start()
+    pause_deadline = time.time() + 3.0
+    pause_stat_after = pause_stat_before
+    while time.time() < pause_deadline:
+        if not pause_worker.is_alive():
+            break
+        try:
+            pause_stat_after = proc_stat(attached_pid)
+        except BaseException:
+            state = process.GetState()
+            fail('pause-process-terminated:' + state_name(state))
+        if pause_stat_after['startTimeTicks'] != pause_stat_before['startTimeTicks']:
+            fail('pause-process-identity-changed')
+        if pause_stat_after['cpuTicks'] > pause_stat_before['cpuTicks']:
+            pause_running_observed = True
+            break
+        time.sleep(0.01)
+    if not pause_running_observed:
+        if pause_holder.get('exception') is not None:
+            fail('pause-continue-exception:' + pause_holder['exception'])
+        if not pause_worker.is_alive():
+            continue_result = pause_holder.get('error')
+            fail('pause-continue-settled-before-progress:' + str(continue_result))
+        fail('pause-no-execution-progress')
+    stop_error = process.Stop()
+    if not stop_error.Success():
+        fail('pause-stop-failed:' + str(stop_error))
+    pause_stop_accepted = True
+    pause_worker.join(3.0)
+    if pause_worker.is_alive():
+        fail('pause-continue-not-settled')
+    if pause_holder.get('exception') is not None:
+        fail('pause-continue-exception:' + pause_holder['exception'])
+    continue_error = pause_holder.get('error')
+    if continue_error is None or not continue_error.Success():
         fail('pause-continue-failed:' + str(continue_error))
     pause_continue_accepted = True
-    time.sleep(0.02)
-    pause_deadline = time.time() + 3.0
-    last_stop_error = None
-    while time.time() < pause_deadline:
-        stop_error = process.Stop()
-        if stop_error.Success():
-            pause_stop_accepted = True
-            break
-        last_stop_error = str(stop_error)
-        state = process.GetState()
-        if state in (lldb.eStateExited, lldb.eStateDetached, lldb.eStateInvalid):
-            fail('pause-process-terminated:' + state_name(state))
-        time.sleep(0.01)
-    if not pause_stop_accepted:
-        fail('pause-stop-failed:' + str(last_stop_error))
     stopped_state = wait_for(lldb.SBDebugger.StateIsStoppedState, timeout=1.0)
     if not lldb.SBDebugger.StateIsStoppedState(stopped_state):
         fail('pause-stopped-not-observed:' + state_name(stopped_state))
     pause_thread, pause_frame = current_frame()
     pause_rax = reg(pause_frame, 'rax')
-    if not pause_continue_accepted:
-        fail('pause-continue-not-observed')
-    if not pause_stop_accepted:
-        fail('pause-stop-not-accepted')
     if pause_frame is None or pause_rax == before_rax:
-        fail('pause-no-execution-observed')
-    pause_running_observed = True
+        fail('pause-no-register-progress')
     pause_rip = reg(pause_frame, 'rip')
     pause_rsp = reg(pause_frame, 'rsp')
     result['pause'] = {
         'observed': True, 'continueAccepted': True, 'stopAccepted': True,
-        'runningObserved': True, 'runningEvidence': 'continue-success+register-progress',
+        'runningObserved': True, 'runningEvidence': 'blocking-continue+exact-process-cpu-progress+register-progress',
         'stoppedObserved': True, 'executionAdvanced': True,
         'processId': process.GetProcessID(), 'threadId': pause_thread.GetThreadID(),
+        'cpuTicksBefore': pause_stat_before['cpuTicks'], 'cpuTicksAfter': pause_stat_after['cpuTicks'],
+        'processStartTimeTicks': pause_stat_before['startTimeTicks'],
         'registers': {'rip': hex(pause_rip), 'rsp': hex(pause_rsp), 'rax': hex(pause_rax)},
         'state': state_name(process.GetState()),
     }
@@ -415,7 +452,7 @@ export function parseLldbActiveOpsOutput(output, { fixturePath = null, probeWord
   if (!attach.registers?.rip || !attach.registers?.rsp || !Number.isSafeInteger(attach.threadId)) throw new Error('a7-lldb-attach-register-observation-missing');
   if (probeWord != null && String(attach.memoryProbe || '').toLowerCase() !== '0x1020304050607080') throw new Error('a7-lldb-attach-memory-observation-missing');
   if (proof.operationResults?.pause !== true || pause.observed !== true || pause.runningObserved !== true || pause.stoppedObserved !== true || pause.executionAdvanced !== true || pause.continueAccepted !== true || pause.stopAccepted !== true) throw new Error('a7-lldb-pause-not-observed');
-  if (pause.runningEvidence !== 'continue-success+register-progress') throw new Error('a7-lldb-pause-running-evidence-missing');
+  if (pause.runningEvidence !== 'blocking-continue+exact-process-cpu-progress+register-progress') throw new Error('a7-lldb-pause-running-evidence-missing');
   if (pause.processId !== attach.attachedPid || !pause.registers?.rip || !Number.isSafeInteger(pause.threadId)) throw new Error('a7-lldb-pause-session-identity-mismatch');
   if (proof.operationResults?.cancel !== true || cancel.observed !== true || cancel.inFlightObserved !== true || cancel.interruptAccepted !== true || cancel.executionAdvanced !== true) throw new Error('a7-lldb-cancel-not-observed');
   if (cancel.inFlightEvidence !== 'blocking-command-thread-alive') throw new Error('a7-lldb-cancel-inflight-evidence-missing');
