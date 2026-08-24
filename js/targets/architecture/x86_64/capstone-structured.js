@@ -74,13 +74,14 @@
 
   function implicitRegisters(M, handle, detail, offset, countOffset, capacity) {
     const count = Math.min(capacity, u8(M, detail + countOffset));
-    const result = [];
+    const names = [];
+    const codes = [];
     for (let index = 0; index < count; index++) {
       const id = u16(M, detail + offset + index * 2);
       const name = capstoneString(M, 'cs_reg_name', handle, id);
-      if (name) result.push(name);
+      if (name) { names.push(name); codes.push(id); }
     }
-    return result;
+    return Object.freeze({ names:Object.freeze(names), codes:Object.freeze(codes) });
   }
 
   function groups(M, handle, detail) {
@@ -196,6 +197,8 @@
     const legacyPrefixes = Uint8Array.from({ length:4 }, (_unused, index) => u8(M, x86 + index)).filter((value) => value !== 0);
     const opcodeBytes = Uint8Array.from({ length:4 }, (_unused, index) => u8(M, x86 + 4 + index));
     const encoding = x86 + ABI.encoding;
+    const implicitReads = implicitRegisters(M, handle, detailPointer, 0, 40, 20);
+    const implicitWrites = implicitRegisters(M, handle, detailPointer, 42, 82, 20);
     const detail = Object.freeze({
       abiContractVersion:ABI.contractVersion,
       prefixes:Object.freeze({ legacy:legacyPrefixes, rex:u8(M, x86 + 8) || null, vector:vectorPrefix(rawBytes) }),
@@ -210,8 +213,10 @@
       eflags:i64(M, x86 + 56),
       operandCount,
       operands:Object.freeze(operands),
-      implicitReads:Object.freeze(implicitRegisters(M, handle, detailPointer, 0, 40, 20)),
-      implicitWrites:Object.freeze(implicitRegisters(M, handle, detailPointer, 42, 82, 20)),
+      implicitReads:implicitReads.names,
+      implicitReadCodes:implicitReads.codes,
+      implicitWrites:implicitWrites.names,
+      implicitWriteCodes:implicitWrites.codes,
       groups:Object.freeze(groups(M, handle, detailPointer)),
       conditionCode:conditionCode(opcodeName),
       encodingOffsets:Object.freeze({
