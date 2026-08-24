@@ -91,7 +91,7 @@
       let boundary = false;
       while (startIndex < startCount) {
         const start = functionStarts[startIndex];
-        if (start < pc) { startIndex++; continue; }
+        if (start < pc) { boundary = true; startIndex++; continue; }
         if (start === pc) { boundary = true; startIndex++; }
         break;
       }
