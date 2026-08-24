@@ -31,7 +31,7 @@ test('real decoder bytes preserve legacy/VEX structure before P5-3 effects', asy
 
     const cvtRaw=decoder.decode([0xf2,0x0f,0x2a,0xc0],0x401700n)[0],cvt=createX86DecodedInstruction({...cvtRaw,instructionId:'p5-3:real:cvtsi2sd'}); assert.equal(cvt.instructionFamily,'cvtsi2sd'); assert.equal(cvt.rawBytes[0],0xf2); assert.equal(cvt.detail.operands[0].register.id,'xmm0'); assert.equal(cvt.detail.operands[1].register.id,'eax'); const cvtBundle=effects(cvtRaw); assert.equal(cvtBundle.completeness,'exact-with-intrinsic'); assert.equal(cvtBundle.metadata.fpEnvironmentContract,'x86-mxcsr/v1'); assert.ok(ops(cvtBundle,'register-write').some((op)=>op.register.registerId==='mxcsr'));
 
-    const fenceRaw=decoder.decode([0x0f,0xae,0xf0],0x401800n)[0],fence=createX86DecodedInstruction({...fenceRaw,instructionId:'p5-3:real:mfence'}); assert.equal(fence.instructionFamily,'mfence'); const fenceBundle=effects(fenceRaw); assert.equal(fenceBundle.completeness,'partial'); assert.equal(fenceBundle.metadata.operation,'mfence');
+    const fenceRaw=decoder.decode([0x0f,0xae,0xf0],0x401800n)[0],fence=createX86DecodedInstruction({...fenceRaw,instructionId:'p5-3:real:mfence'}); assert.equal(fence.instructionFamily,'mfence'); const fenceBundle=effects(fenceRaw); assert.equal(fenceBundle.completeness,'exact'); assert.equal(fenceBundle.metadata.operation,'mfence');
 
     const pauseRaw=decoder.decode([0xf3,0x90],0x401900n)[0],pause=createX86DecodedInstruction({...pauseRaw,instructionId:'p5-3:real:pause'}); assert.equal(pause.instructionFamily,'pause'); assert.deepEqual([...pause.rawBytes],[0xf3,0x90]); assert.equal(pause.detail.prefixes.vector,null); assert.equal(effects(pauseRaw).completeness,'exact');
   }finally{decoder.close();}
