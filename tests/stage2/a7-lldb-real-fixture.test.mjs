@@ -51,11 +51,16 @@ assert.equal(proof.observation.bindingId, proof.binding.bindingId);
 assert.equal(proof.observation.payload.processIdentity, proof.activeOperations.attach.attachedPid);
 assert.equal(proof.activeOperations.attach.requestedPid, proof.activeOperations.attach.attachedPid);
 assert.equal(proof.activeOperations.pause.processId, proof.activeOperations.attach.attachedPid);
+assert.equal(proof.activeOperations.pause.continueAccepted, true);
+assert.equal(proof.activeOperations.pause.stopAccepted, true);
 assert.equal(proof.activeOperations.pause.runningObserved, true);
+assert.equal(proof.activeOperations.pause.runningEvidence, 'continue-success+register-progress');
 assert.equal(proof.activeOperations.pause.stoppedObserved, true);
 assert.equal(proof.activeOperations.pause.executionAdvanced, true);
 assert.equal(proof.activeOperations.cancel.processId, proof.activeOperations.attach.attachedPid);
 assert.equal(proof.activeOperations.cancel.inFlightObserved, true);
+assert.equal(proof.activeOperations.cancel.inFlightEvidence, 'blocking-command-thread-alive');
+assert.equal(proof.activeOperations.cancel.executionAdvanced, true);
 assert.equal(proof.activeOperations.cancel.interruptAccepted, true);
 assert.equal(proof.activeOperations.cancel.commandSettled, true);
 assert.equal(proof.activeOperations.cancel.settlement, 'cancelled');
@@ -95,8 +100,8 @@ function activeMarker(overrides = {}) {
   const value = {
     kind:'active-provider-operations',
     attach:{ observed:true, requestedPid:101, attachedPid:101, targetTriple:'x86_64-unknown-linux-gnu', modulePath:'/tmp/fixture', threadId:7, registers:{ rip:'0x1000', rsp:'0x2000', rax:'0x1' }, memoryProbe:'0x1020304050607080', state:'stopped' },
-    pause:{ observed:true, runningObserved:true, stoppedObserved:true, executionAdvanced:true, processId:101, threadId:7, registers:{ rip:'0x1001', rsp:'0x2000', rax:'0x10' }, state:'stopped' },
-    cancel:{ observed:true, inFlightObserved:true, interruptAccepted:true, commandSettled:true, processId:101, threadId:7, settlement:'cancelled', providerDisposition:'interrupted-command', lateResultRejected:true, lateStateStable:true, registers:{ rip:'0x1002', rax:'0x20' }, state:'stopped' },
+    pause:{ observed:true, continueAccepted:true, stopAccepted:true, runningObserved:true, runningEvidence:'continue-success+register-progress', stoppedObserved:true, executionAdvanced:true, processId:101, threadId:7, registers:{ rip:'0x1001', rsp:'0x2000', rax:'0x10' }, state:'stopped' },
+    cancel:{ observed:true, inFlightObserved:true, inFlightEvidence:'blocking-command-thread-alive', executionAdvanced:true, interruptAccepted:true, commandSettled:true, processId:101, threadId:7, settlement:'cancelled', providerDisposition:'interrupted-command', lateResultRejected:true, lateStateStable:true, registers:{ rip:'0x1002', rax:'0x20' }, state:'stopped' },
     operationResults:{ attach:true, pause:true, cancel:true },
     ...overrides,
   };
@@ -114,8 +119,11 @@ assert.throws(() => parseLldbActiveOpsOutput(activeMarker({
   advertisedCapabilities:{ pause:true }, operationResults:{ attach:true, pause:true, cancel:true }, pause:{ observed:false },
 }), { fixturePath:'/tmp/fixture', probeWord:0x2000n }), /pause-not-observed/, 'advertising pause without a real observation must not close the denominator');
 assert.throws(() => parseLldbActiveOpsOutput(activeMarker({
-  cancel:{ observed:true, inFlightObserved:true, interruptAccepted:true, commandSettled:false, processId:101, threadId:7, settlement:'cancelled', providerDisposition:'interrupted-command', lateResultRejected:true, lateStateStable:true, registers:{ rip:'0x1' } },
+  cancel:{ observed:true, inFlightObserved:true, inFlightEvidence:'blocking-command-thread-alive', executionAdvanced:true, interruptAccepted:true, commandSettled:false, processId:101, threadId:7, settlement:'cancelled', providerDisposition:'interrupted-command', lateResultRejected:true, lateStateStable:true, registers:{ rip:'0x1', rax:'0x2' } },
 }), { fixturePath:'/tmp/fixture', probeWord:0x2000n }), /cancel-settlement-missing/);
+assert.throws(() => parseLldbActiveOpsOutput(activeMarker({
+  pause:{ observed:true, continueAccepted:true, stopAccepted:true, runningObserved:true, runningEvidence:'static-capability-flag', stoppedObserved:true, executionAdvanced:true, processId:101, threadId:7, registers:{ rip:'0x1001', rsp:'0x2000', rax:'0x10' } },
+}), { fixturePath:'/tmp/fixture', probeWord:0x2000n }), /pause-running-evidence-missing/);
 
 for (const [field, value, reason] of [
   ['sessionIdentity', `${proof.binding.sessionIdentity}:stale`, 'runtime-observation-sessionIdentity-mismatch'],
