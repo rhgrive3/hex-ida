@@ -22,6 +22,7 @@ on:
       - 'tools/validation/machine-effects/**'
       - 'tests/compiler-truth/**'
       - 'tests/machine-effects/**'
+      - '!tests/machine-effects/run.mjs'
       - 'tests/benchmark-baseline*'
       - 'tests/issue-458-ghidra-trigger.mjs'
       - 'package.json'
