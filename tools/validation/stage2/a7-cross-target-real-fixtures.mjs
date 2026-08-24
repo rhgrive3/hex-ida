@@ -14,6 +14,7 @@ import { fileURLToPath } from 'node:url';
 
 import { createRuntimeAuthorityBinding, createRuntimeObservation, validateRuntimeObservation } from '../../../js/runtime/authority.js';
 import {
+  A7_ACTIVE_OPERATION_CAPABILITIES,
   A7_OBSERVED_CAPABILITIES,
   A7_PROFILE_BINDINGS,
   A7_UNSUPPORTED_CAPABILITIES,
@@ -25,6 +26,9 @@ export const A7_CROSS_TARGET_PROOF_SCHEMA = 'hex-stage2-a7-cross-target-provider
 export const A7_CROSS_TARGET_PROVIDER_PROFILE = 'native:remote-debug-v1:qemu-lldb';
 export const A7_REQUIRED_CAPABILITIES = A7_OBSERVED_CAPABILITIES;
 export const A7_UNSUPPORTED_PROVIDER_CAPABILITIES = A7_UNSUPPORTED_CAPABILITIES;
+export const A7_CROSS_ACTIVE_OPERATION_CAPABILITIES = A7_ACTIVE_OPERATION_CAPABILITIES;
+const BASELINE_CAPABILITIES = Object.freeze(A7_REQUIRED_CAPABILITIES.filter((capability) => !A7_CROSS_ACTIVE_OPERATION_CAPABILITIES.includes(capability)));
+const ACTIVE_MARKER = 'A7_CROSS_ACTIVE_OPS';
 export const A7_CROSS_TARGETS = Object.freeze([
   Object.freeze({
     targetProfileId:'arm64:a64', sourcePath:'tests/stage2/fixtures/a7-runtime/aarch64-a64.S',
@@ -44,6 +48,7 @@ export const A7_CROSS_TARGETS = Object.freeze([
 ]);
 
 function sha256(bytes) { return createHash('sha256').update(bytes).digest('hex'); }
+function capabilityMap(capabilities) { return Object.freeze(Object.fromEntries(capabilities.map((capability) => [capability, true]))); }
 function commandVersion(command) {
   const result = spawnSync(command, ['--version'], { cwd:ROOT, encoding:'utf8', timeout:10_000, maxBuffer:2 * 1024 * 1024 });
   if (result.status !== 0) throw new Error(`a7-cross-provider-unavailable:${command}`);
@@ -122,7 +127,7 @@ export function parseCrossTargetLldbOutput(output, target, { binaryPath, entry, 
   return Object.freeze({
     processId:Number(processId),
     outputSha256:sha256(Buffer.from(text)),
-    capabilityResults:Object.freeze(Object.fromEntries(A7_REQUIRED_CAPABILITIES.map((capability) => [capability, true]))),
+    capabilityResults:capabilityMap(BASELINE_CAPABILITIES),
   });
 }
 
@@ -194,17 +199,264 @@ async function runActiveTarget(target, fixture, versions) {
   }
 }
 
+
+function crossActiveOpsPython(target, fixture, port) {
+  return `
+import json
+import lldb
+import os
+import threading
+import time
+
+FIXTURE = ${JSON.stringify(fixture.path)}
+PORT = ${port}
+PROBE = ${fixture.probeWord.toString()}
+REGISTER = ${JSON.stringify(target.register)}
+ARCH = ${JSON.stringify(target.lldbArchitecture)}
+MARKER = ${JSON.stringify('A7_CROSS_ACTIVE_OPS')}
+
+def fail(code):
+    raise RuntimeError(code)
+
+def state_name(state):
+    return lldb.SBDebugger.StateAsCString(state) or str(state)
+
+def wait_for(predicate, timeout=3.0):
+    deadline = time.time() + timeout
+    last = None
+    while time.time() < deadline:
+        last = process.GetState()
+        if predicate(last):
+            return last
+        time.sleep(0.01)
+    return last
+
+def current_frame():
+    thread = process.GetSelectedThread()
+    if not thread.IsValid() and process.GetNumThreads() > 0:
+        thread = process.GetThreadAtIndex(0)
+    if not thread.IsValid():
+        fail('thread-missing')
+    frame = thread.GetFrameAtIndex(0)
+    if not frame.IsValid():
+        fail('frame-missing')
+    return thread, frame
+
+def reg(frame, name):
+    value = frame.FindRegister(name)
+    if not value.IsValid():
+        fail('register-missing:' + name)
+    return value.GetValueAsUnsigned()
+
+def module_path(target):
+    module = target.GetModuleAtIndex(0)
+    if not module.IsValid():
+        fail('module-missing')
+    spec = module.GetFileSpec()
+    return os.path.realpath(os.path.join(spec.GetDirectory() or '', spec.GetFilename() or ''))
+
+result = {'kind': 'active-provider-operations'}
+process = None
+try:
+    lldb.SBDebugger.Initialize()
+    debugger = lldb.SBDebugger.Create()
+    debugger.SkipLLDBInitFiles(True)
+    debugger.SetAsync(False)
+    target = debugger.CreateTarget(FIXTURE)
+    if not target.IsValid():
+        fail('target-create-failed')
+    error = lldb.SBError()
+    process = target.ConnectRemote(debugger.GetListener(), 'connect://127.0.0.1:' + str(PORT), 'gdb-remote', error)
+    if not error.Success() or not process.IsValid():
+        fail('remote-attach-failed:' + str(error))
+    attached_pid = process.GetProcessID()
+    if attached_pid <= 0:
+        fail('remote-process-identity-missing')
+    if not lldb.SBDebugger.StateIsStoppedState(process.GetState()):
+        fail('remote-attach-not-stopped')
+    triple = target.GetTriple() or ''
+    if ARCH not in triple:
+        fail('remote-target-architecture-mismatch:' + triple)
+    observed_module = module_path(target)
+    if observed_module != os.path.realpath(FIXTURE):
+        fail('remote-module-mismatch')
+    thread, frame = current_frame()
+    pc = reg(frame, 'pc')
+    sp = reg(frame, 'sp')
+    operand = reg(frame, REGISTER)
+    memory_error = lldb.SBError()
+    probe_value = process.ReadUnsignedFromMemory(PROBE, 8, memory_error)
+    if not memory_error.Success() or probe_value != 0x1020304050607080:
+        fail('remote-memory-mismatch')
+    result['attach'] = {
+        'observed': True, 'transport': 'gdb-remote', 'processId': attached_pid,
+        'targetTriple': triple, 'modulePath': observed_module, 'threadId': thread.GetThreadID(),
+        'registers': {'pc': hex(pc), 'sp': hex(sp), REGISTER: hex(operand)},
+        'memoryProbe': hex(probe_value), 'state': state_name(process.GetState()),
+    }
+
+    before_operand = operand
+    debugger.SetAsync(True)
+    continue_error = process.Continue()
+    if not continue_error.Success():
+        fail('pause-continue-failed:' + str(continue_error))
+    running_state = wait_for(lldb.SBDebugger.StateIsRunningState)
+    if not lldb.SBDebugger.StateIsRunningState(running_state):
+        fail('pause-running-not-observed')
+    time.sleep(0.05)
+    stop_error = process.Stop()
+    if not stop_error.Success():
+        fail('pause-stop-failed:' + str(stop_error))
+    stopped_state = wait_for(lldb.SBDebugger.StateIsStoppedState)
+    if not lldb.SBDebugger.StateIsStoppedState(stopped_state):
+        fail('pause-stop-not-observed')
+    thread, frame = current_frame()
+    pause_pc = reg(frame, 'pc')
+    pause_sp = reg(frame, 'sp')
+    pause_operand = reg(frame, REGISTER)
+    if pause_operand == before_operand:
+        fail('pause-no-execution-observed')
+    result['pause'] = {
+        'observed': True, 'runningObserved': True, 'stoppedObserved': True, 'executionAdvanced': True,
+        'processId': process.GetProcessID(), 'threadId': thread.GetThreadID(),
+        'registers': {'pc': hex(pause_pc), 'sp': hex(pause_sp), REGISTER: hex(pause_operand)},
+        'state': state_name(process.GetState()),
+    }
+
+    debugger.SetAsync(False)
+    input_error = debugger.SetInputString('process continue\\n')
+    if not input_error.Success():
+        fail('cancel-input-failed:' + str(input_error))
+    interpreter = debugger.GetCommandInterpreter()
+    holder = {}
+    def run_interpreter():
+        try:
+            holder['result'] = debugger.RunCommandInterpreter(True, False, lldb.SBCommandInterpreterRunOptions(), 0, False, False)
+        except BaseException as exc:
+            holder['exception'] = repr(exc)
+    worker = threading.Thread(target=run_interpreter, daemon=True)
+    worker.start()
+    running_state = wait_for(lldb.SBDebugger.StateIsRunningState)
+    if not lldb.SBDebugger.StateIsRunningState(running_state):
+        fail('cancel-inflight-running-not-observed')
+    if not interpreter.InterruptCommand():
+        fail('cancel-interrupt-not-accepted')
+    worker.join(3.0)
+    if worker.is_alive():
+        fail('cancel-command-not-settled')
+    stopped_state = wait_for(lldb.SBDebugger.StateIsStoppedState)
+    if not lldb.SBDebugger.StateIsStoppedState(stopped_state):
+        fail('cancel-target-not-stopped')
+    thread, frame = current_frame()
+    cancel_pc = reg(frame, 'pc')
+    cancel_operand = reg(frame, REGISTER)
+    first_state = process.GetState()
+    time.sleep(0.10)
+    thread2, frame2 = current_frame()
+    late_pc = reg(frame2, 'pc')
+    late_operand = reg(frame2, REGISTER)
+    late_state = process.GetState()
+    if first_state != late_state or cancel_pc != late_pc or cancel_operand != late_operand:
+        fail('cancel-late-success-observed')
+    result['cancel'] = {
+        'observed': True, 'inFlightObserved': True, 'interruptAccepted': True,
+        'interpreterWasInterrupted': bool(interpreter.WasInterrupted()), 'commandSettled': True,
+        'processId': process.GetProcessID(), 'threadId': thread.GetThreadID(), 'settlement': 'cancelled', 'providerDisposition': 'interrupted-command',
+        'lateResultRejected': True, 'lateStateStable': True,
+        'registers': {'pc': hex(cancel_pc), REGISTER: hex(cancel_operand)}, 'state': state_name(late_state),
+        'interpreterResult': repr(holder.get('result')), 'interpreterException': holder.get('exception'),
+    }
+    result['operationResults'] = {'attach': True, 'pause': True, 'cancel': True}
+except BaseException as exc:
+    result['error'] = str(exc)
+finally:
+    try:
+        if process is not None and process.IsValid() and process.GetState() not in (lldb.eStateExited, lldb.eStateDetached, lldb.eStateInvalid):
+            process.Kill()
+    except BaseException:
+        pass
+    try:
+        if 'debugger' in globals():
+            lldb.SBDebugger.Destroy(debugger)
+        lldb.SBDebugger.Terminate()
+    except BaseException:
+        pass
+print(MARKER + '=' + json.dumps(result, sort_keys=True))
+`;
+}
+
+function runLldbPythonProof(lldb, python, directory, pythonSource, stem) {
+  const scriptPath = path.join(directory, `${stem}.py`);
+  fs.writeFileSync(scriptPath, pythonSource, { encoding:'utf8', mode:0o600 });
+  const pythonPathResult = spawnSync(lldb, ['-P'], { cwd:ROOT, encoding:'utf8', timeout:10_000, maxBuffer:2 * 1024 * 1024 });
+  const lldbPythonPath = String(pythonPathResult.stdout || '').trim();
+  if (pythonPathResult.status !== 0 || !lldbPythonPath) throw new Error('a7-cross-lldb-python-provider-path-unavailable');
+  const result = spawnSync(python, [scriptPath], {
+    cwd:ROOT, encoding:'utf8', timeout:30_000, maxBuffer:16 * 1024 * 1024,
+    env:{ ...process.env, DEBUGINFOD_URLS:'', PYTHONPATH:[lldbPythonPath, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter) },
+  });
+  const output = `${result.stdout || ''}\n${result.stderr || ''}`;
+  if (result.status !== 0 || result.signal) throw new Error(`a7-cross-active-ops-command-failed:${result.signal || result.status}:${String(result.stderr || '').trim()}`);
+  return Object.freeze({ output, lldbPythonPath });
+}
+
+function parseMarker(output, marker, code) {
+  const prefix = `${marker}=`;
+  const line = String(output || '').split(/\r?\n/).find((value) => value.startsWith(prefix));
+  if (!line) throw new Error(`${code}-missing`);
+  let value;
+  try { value = JSON.parse(line.slice(prefix.length)); } catch { throw new Error(`${code}-invalid-json`); }
+  if (value?.error) throw new Error(`${code}-failed:${value.error}`);
+  return value;
+}
+
+export function parseCrossTargetActiveOpsOutput(output, target, { binaryPath, probeWord } = {}) {
+  const proof = parseMarker(output, ACTIVE_MARKER, 'a7-cross-active-ops');
+  if (proof?.kind !== 'active-provider-operations') throw new Error('a7-cross-active-ops-kind-mismatch');
+  const attach = proof.attach || {};
+  const pause = proof.pause || {};
+  const cancel = proof.cancel || {};
+  if (proof.operationResults?.attach !== true || attach.observed !== true || attach.transport !== 'gdb-remote') throw new Error('a7-cross-attach-not-observed');
+  if (!Number.isSafeInteger(attach.processId) || attach.processId <= 0) throw new Error('a7-cross-attach-process-identity-missing');
+  if (!String(attach.targetTriple || '').includes(target.lldbArchitecture)) throw new Error('a7-cross-attach-target-identity-mismatch');
+  if (binaryPath != null && path.resolve(String(attach.modulePath || '')) !== path.resolve(binaryPath)) throw new Error('a7-cross-attach-module-identity-mismatch');
+  if (!attach.registers?.pc || !attach.registers?.sp || !Object.prototype.hasOwnProperty.call(attach.registers, target.register)) throw new Error('a7-cross-attach-register-observation-missing');
+  if (probeWord != null && String(attach.memoryProbe || '').toLowerCase() !== '0x1020304050607080') throw new Error('a7-cross-attach-memory-observation-missing');
+  if (proof.operationResults?.pause !== true || pause.observed !== true || pause.runningObserved !== true || pause.stoppedObserved !== true || pause.executionAdvanced !== true) throw new Error('a7-cross-pause-not-observed');
+  if (pause.processId !== attach.processId || !pause.registers?.pc || !Object.prototype.hasOwnProperty.call(pause.registers, target.register)) throw new Error('a7-cross-pause-session-identity-mismatch');
+  if (proof.operationResults?.cancel !== true || cancel.observed !== true || cancel.inFlightObserved !== true || cancel.interruptAccepted !== true) throw new Error('a7-cross-cancel-not-observed');
+  if (cancel.commandSettled !== true || cancel.settlement !== 'cancelled' || cancel.providerDisposition !== 'interrupted-command' || cancel.lateResultRejected !== true || cancel.lateStateStable !== true) throw new Error('a7-cross-cancel-settlement-missing');
+  if (cancel.processId !== attach.processId || !cancel.registers?.pc || !Object.prototype.hasOwnProperty.call(cancel.registers, target.register)) throw new Error('a7-cross-cancel-session-identity-mismatch');
+  return Object.freeze({ ...proof, operationResults:Object.freeze({ attach:true, pause:true, cancel:true }), capabilityResults:capabilityMap(A7_CROSS_ACTIVE_OPERATION_CAPABILITIES) });
+}
+
+async function runActiveOperationTarget(target, fixture, versions, directory) {
+  const port = await reservePort();
+  const qemu = spawn(versions[target.qemu], [...target.qemuCpuArgs, '-g', String(port), fixture.path], { cwd:ROOT, stdio:['ignore','pipe','pipe'] });
+  let qemuError = '';
+  qemu.stderr.on('data', (chunk) => { qemuError += String(chunk); });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  if (qemu.exitCode != null) throw new Error(`a7-cross-active-qemu-start-failed:${target.targetProfileId}:${qemuError.trim()}`);
+  try {
+    const stem = `a7-cross-active-${target.targetProfileId.replaceAll(/[^a-z0-9]+/gi, '-')}`;
+    const activeRun = runLldbPythonProof(versions.lldb, versions.python, directory, crossActiveOpsPython(target, fixture, port), stem);
+    return Object.freeze({ ...parseCrossTargetActiveOpsOutput(activeRun.output, target, { binaryPath:fixture.path, probeWord:fixture.probeWord }), qemuPid:qemu.pid, lldbPythonPath:activeRun.lldbPythonPath });
+  } finally {
+    if (qemu.exitCode == null) qemu.kill('SIGKILL');
+  }
+}
+
 export async function collectA7CrossTargetProofs({ requireClean = true } = {}) {
   if (requireClean && git(['status','--porcelain','--untracked-files=all'])) throw new Error('a7-cross-proof-worktree-dirty');
   const commitSha = git(['rev-parse','HEAD']);
   const treeSha = git(['rev-parse','HEAD^{tree}']);
   const versions = Object.freeze({
-    clang:executable('clang'), lldb:executable('lldb'), readobj:executable('llvm-readobj-18'), objdump:executable('llvm-objdump-18'),
+    clang:executable('clang'), lldb:executable('lldb'), python:executable('python3'), readobj:executable('llvm-readobj-18'), objdump:executable('llvm-objdump-18'),
     'qemu-aarch64':executable('qemu-aarch64'), 'qemu-riscv64':executable('qemu-riscv64'),
   });
   for (const target of A7_CROSS_TARGETS) targetContract(target);
   const executableBasenames = Object.freeze({
-    clang:['clang','clang-18'], lldb:['lldb','lldb-18'], readobj:['llvm-readobj-18','llvm-readobj'], objdump:['llvm-objdump-18','llvm-objdump'],
+    clang:['clang','clang-18'], lldb:['lldb','lldb-18'], python:['python3','python3.10','python3.11','python3.12','python3.13'], readobj:['llvm-readobj-18','llvm-readobj'], objdump:['llvm-objdump-18','llvm-objdump'],
     'qemu-aarch64':['qemu-aarch64'], 'qemu-riscv64':['qemu-riscv64'],
   });
   const expectedCrossProfiles = ['arm64:a64', 'arm64e:a64+pac', 'riscv64:rv64imc'];
@@ -218,30 +470,35 @@ export async function collectA7CrossTargetProofs({ requireClean = true } = {}) {
     for (const target of A7_CROSS_TARGETS) {
       const fixture = compileAndInspect(target, directory, versions);
       const observed = await runActiveTarget(target, fixture, versions);
+      const activeOperations = await runActiveOperationTarget(target, fixture, versions, directory);
+      const closedCapabilities = Object.freeze([...new Set([...Object.keys(observed.capabilityResults), ...Object.keys(activeOperations.capabilityResults)])].sort());
+      if (JSON.stringify(closedCapabilities) !== JSON.stringify([...A7_REQUIRED_CAPABILITIES].sort())) throw new Error(`a7-cross-capability-denominator-incomplete:${target.targetProfileId}`);
       const binaryIdentity = `sha256:${fixture.binarySha256}`;
       const providerVersion = `${versionIdentities.lldb};${versionIdentities[target.qemu]}`;
       const providerFingerprint = sha256(Buffer.from(JSON.stringify({
         providerVersion,
         lldb:executableIdentities.lldb,
         qemu:executableIdentities[target.qemu],
+        python:executableIdentities.python,
+        lldbPythonPath:activeOperations.lldbPythonPath,
       })));
       const binding = createRuntimeAuthorityBinding({
         providerIdentity:`lldb-gdb-remote+${target.qemu}:${providerFingerprint}`,
         providerProfileId:A7_CROSS_TARGET_PROVIDER_PROFILE,
         providerVersion,
-        runtimeInstanceIdentity:`qemu-user-process:${observed.qemuPid}`,
-        targetIdentity:`qemu-user-target:${target.targetProfileId}:${binaryIdentity}`,
+        runtimeInstanceIdentity:`qemu-user-process:${activeOperations.qemuPid}`,
+        targetIdentity:`qemu-user-target:${target.targetProfileId}:${activeOperations.attach.processId}:${binaryIdentity}`,
         targetProfileId:target.targetProfileId,
         binaryIdentity,
         buildIdentity:`clang-lld-static:${fixture.sourceSha256}:${binaryIdentity}`,
-        moduleIdentity:`lldb-module:${target.targetProfileId}:${binaryIdentity}`,
-        loadMappingIdentity:`lldb-load:${target.targetProfileId}:${binaryIdentity}:0x${fixture.entry.toString(16)}`,
-        sessionIdentity:`lldb-gdb-remote:${target.targetProfileId}:${observed.processId}:${commitSha}`,
+        moduleIdentity:`lldb-module:${target.targetProfileId}:${binaryIdentity}:${sha256(Buffer.from(path.resolve(activeOperations.attach.modulePath)))}`,
+        loadMappingIdentity:`lldb-load:${target.targetProfileId}:${binaryIdentity}:${activeOperations.pause.registers.pc}`,
+        sessionIdentity:`lldb-gdb-remote:${target.targetProfileId}:${activeOperations.attach.processId}:${commitSha}`,
         capabilityVersion:'debug/v1', commitSha, treeSha, epoch:0,
       });
       const observation = createRuntimeObservation({
         binding, sequence:1, observedAt:new Date().toISOString(), kind:'active-cross-target-debug-session',
-        payload:{ targetProfileId:target.targetProfileId, providerProfileId:A7_CROSS_TARGET_PROVIDER_PROFILE, outputSha256:observed.outputSha256, observedCapabilities:observed.capabilityResults, closedCapabilities:A7_REQUIRED_CAPABILITIES, unsupportedCapabilities:A7_UNSUPPORTED_CAPABILITIES },
+        payload:{ targetProfileId:target.targetProfileId, providerProfileId:A7_CROSS_TARGET_PROVIDER_PROFILE, outputSha256:observed.outputSha256, processIdentity:activeOperations.attach.processId, modulePath:path.resolve(activeOperations.attach.modulePath), attach:activeOperations.attach, pause:activeOperations.pause, cancel:activeOperations.cancel, observedCapabilities:Object.freeze({ ...observed.capabilityResults, ...activeOperations.capabilityResults }), closedCapabilities, unsupportedCapabilities:A7_UNSUPPORTED_CAPABILITIES },
       });
       const validation = validateRuntimeObservation(binding, observation);
       if (!validation.ok) throw new Error(`a7-cross-runtime-observation-invalid:${target.targetProfileId}:${validation.reason}`);
@@ -251,8 +508,9 @@ export async function collectA7CrossTargetProofs({ requireClean = true } = {}) {
         providerProfileId:A7_CROSS_TARGET_PROVIDER_PROFILE, providerVersion,
         fixture:Object.freeze({ sourcePath:target.sourcePath, sourceSha256:fixture.sourceSha256, binarySha256:fixture.binarySha256, targetTriple:target.targetTriple, semantics:fixture.sourceSemantics }),
         independentOracle:Object.freeze({ id:'llvm-readobj+llvm-objdump-18', executableIdentities:Object.freeze({ readobj:executableIdentities.readobj, objdump:executableIdentities.objdump }), outputSha256:fixture.oracleOutputSha256 }),
-        binding, observation, closedCapabilities:A7_REQUIRED_CAPABILITIES, unsupportedCapabilities:A7_UNSUPPORTED_CAPABILITIES,
-        unsupportedCapabilities:A7_UNSUPPORTED_CAPABILITIES,
+        lldbPythonPath:activeOperations.lldbPythonPath,
+        activeOperations:Object.freeze({ attach:activeOperations.attach, pause:activeOperations.pause, cancel:activeOperations.cancel }),
+        binding, observation, closedCapabilities, unsupportedCapabilities:A7_UNSUPPORTED_CAPABILITIES,
       }));
     }
   } finally {
