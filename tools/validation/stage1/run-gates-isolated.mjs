@@ -89,8 +89,9 @@ export async function runIsolatedGateBatch({
       const cwd = path.join(tempRoot, `${String(index).padStart(2, '0')}-${gate.id}`);
       git(root, ['worktree', 'add', '--detach', '--quiet', cwd, headSha]);
       worktrees.push(cwd);
-      if (fs.existsSync(nodeModules)) {
-        fs.symlinkSync(nodeModules, path.join(cwd, 'node_modules'), process.platform === 'win32' ? 'junction' : 'dir');
+      const worktreeNodeModules = path.join(cwd, 'node_modules');
+      if (fs.existsSync(nodeModules) && !fs.existsSync(worktreeNodeModules)) {
+        fs.symlinkSync(nodeModules, worktreeNodeModules, process.platform === 'win32' ? 'junction' : 'dir');
       }
     }
 
