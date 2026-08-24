@@ -60,3 +60,5 @@ import { createCapabilityExecutor } from '../../js/ai/capabilities/executor.js';
   await executor.execute('navigation.open-function', { address: 4096 });
   assert.equal(calls.length, 2);
 }
+
+// Exact-head CI trigger after current-main reconciliation.
