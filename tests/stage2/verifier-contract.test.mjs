@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { minimumVerdictCounts, stage2CanonicalBuildIdentity, stage2KnownDenominatorGaps, validateScopeAndLedger } from '../../tools/validation/stage2/verify.mjs';
+import { minimumVerdictCounts, stage2CanonicalBuildIdentity, stage2KnownDenominatorGaps, validateScopeAndLedger, verifyStage2 } from '../../tools/validation/stage2/verify.mjs';
 
 const knownGaps = stage2KnownDenominatorGaps();
 assert.ok(knownGaps.includes('arm64:a64:all-decoder-encodings-and-aliases'));
@@ -62,5 +62,13 @@ const missing = minimumVerdictCounts({
   releaseBlockingIssueCount: null,
 });
 for (const field of requiredFields) assert.ok(missing[field] > 0, `${field} must fail closed when its proof is absent`);
+
+const untrackedProbe = 'stage2-untracked-verifier-probe.tmp';
+try {
+  fs.writeFileSync(untrackedProbe, 'must block exact-tree verification\n');
+  assert.throws(() => verifyStage2(), /stage2-worktree-not-clean:[\s\S]*stage2-untracked-verifier-probe\.tmp/);
+} finally {
+  fs.rmSync(untrackedProbe, { force: true });
+}
 
 console.log('[stage2] H16 machine verdict fields fail closed');
