@@ -56,8 +56,17 @@ function bounded(value, fallback, min, max) {
   return Math.max(min, Math.min(max, Math.floor(n)));
 }
 function nonNegativeOffset(value) {
-  const n = Number(value || 0);
-  return Number.isSafeInteger(n) && n >= 0 ? n : 0;
+  if (value == null) return 0;
+  if (typeof value === 'number') {
+    if (Number.isSafeInteger(value) && value >= 0) return value;
+  } else if (typeof value === 'string') {
+    const text = value.trim();
+    if (/^\d+$/.test(text)) {
+      const n = Number(text);
+      if (Number.isSafeInteger(n)) return n;
+    }
+  }
+  throw new AgentToolError('invalid-argument', 'offset must be a non-negative safe integer', { name: 'offset', value });
 }
 
 export function pageRows(value, limit, offset = 0) {
