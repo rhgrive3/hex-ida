@@ -517,13 +517,13 @@ export function amountOf(model, update) {
  * ARC が用意する property の代行関数。
  *
  *   objc_getProperty(self, _cmd, offset, atomic)                  … 位置は x2
- *   objc_setProperty*(self, _cmd, value, offset, …)               … 位置は x3
+ *   objc_setProperty*(self, _cmd, offset, value, …)               … 位置は x2、値は x3
  *
  * この形のとき、フィールドの位置は命令の中の即値としてそのまま書いてある。
  */
 const PROPERTY_HELPERS = [
   { re: /objc_getProperty/, kind: 'read', reg: 'x2' },
-  { re: /objc_setProperty/, kind: 'write', reg: 'x3' },
+  { re: /objc_setProperty/, kind: 'write', reg: 'x2' },
 ];
 
 /*
@@ -639,7 +639,7 @@ function propertyHelperUpdates(model, insns, self) {
 
 /** 代行関数ごしのフィールド操作を、ふつうの読み書きと同じ形にそろえる。 */
 function helperUpdate(kind, where, call) {
-  const reg = kind === 'read' ? 'x0' : 'x2';
+  const reg = kind === 'read' ? 'x0' : 'x3';
   const disp = where.disp != null ? where.disp : null;
   const indexAddr = where.indexAddr != null ? where.indexAddr : null;
   const key = 'x0@' + (indexAddr != null ? 'iv' + indexAddr.toString() : String(disp));
