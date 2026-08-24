@@ -41,7 +41,8 @@ export class AIRuntime {
     const hasPersistedState = (session.confirmedFindings?.length || 0) > 0 || (session.hypotheses?.length || 0) > 0;
     if (this.storeNamespaces.size === 0 && (this.initialStoresExplicit || !hasPersistedState)) stores = this.initialStores;
     else {
-      const evidenceStore = new EvidenceStore().restorePersistedConfirmed(session.confirmedFindings || []);
+      const evidenceStore = new EvidenceStore(session.confirmedFindings || []);
+      evidenceStore.restorePersistedConfirmed(session.confirmedFindings || []);
       const hypothesisStore = new HypothesisStore(evidenceStore, session.hypotheses || []);
       stores = { evidenceStore, hypothesisStore, proposalStore: new ProposalStore({ evidenceStore, binding: () => proposalBinding(this.localContext) }) };
     }
