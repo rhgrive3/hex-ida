@@ -47,6 +47,7 @@ function visit(value, schema, path, errors) {
 }
 
 function typeMatches(value, type) {
+  if (Array.isArray(type)) return type.some((candidate) => typeMatches(value, candidate));
   if (type === 'object') return value != null && typeof value === 'object' && !Array.isArray(value);
   if (type === 'array') return Array.isArray(value);
   if (type === 'number') return typeof value === 'number' && Number.isFinite(value);
