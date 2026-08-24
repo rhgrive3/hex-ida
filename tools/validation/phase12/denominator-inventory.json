@@ -872,7 +872,8 @@
             "validatedStage2CapabilityProof",
             "exactCommitSha",
             "exactTreeSha",
-            "activeTransportProofVerifier"
+            "activeTransportProofVerifier",
+            "activeTransportProofVerifierIdentityBoundToIndependentOracle"
           ],
           "check": {
             "type": "all",
@@ -885,7 +886,9 @@
                   "isValidatedStage2CapabilityProof(profileProof",
                   "profileProof.commitSha === commitSha",
                   "profileProof.treeSha === treeSha",
-                  "typeof gate.verifyTransportProof === 'function'"
+                  "typeof gate.verifyTransportProof === 'function'",
+                  "transportVerifierIdentity",
+                  "independentOracleIdentities.includes(transportVerifierIdentity)"
                 ]
               },
               {

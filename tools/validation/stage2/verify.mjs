@@ -7,6 +7,7 @@ import { validatePhysicalIPadEvidence } from '../../../js/platform/physical-ipad
 import { stableDigest } from '../../../js/core/identity/index.js';
 import { STAGE2_PROFILE_EVIDENCE_IDS, validateStage2DenominatorLock, validateStage2ProfileEvidence } from '../../../js/platform/stage2-profile-evidence.js';
 import { a2DenominatorReport } from '../machine-effects/a2-denominator.mjs';
+import { phase12DenominatorReport } from '../phase12/denominator.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const REPORT_PATH = path.join(ROOT, 'reports/stage2/stage2-verdict.json');
@@ -57,9 +58,9 @@ function run(command) {
 const node = (...args) => ({ bin: process.execPath, args });
 const npm = (...args) => ({ bin: process.platform === 'win32' ? 'npm.cmd' : 'npm', args: ['run', ...args] });
 
-function validateScopeAndLedger(headSha) {
-  const scope = JSON.parse(fs.readFileSync(SCOPE_PATH, 'utf8'));
-  const ledger = JSON.parse(fs.readFileSync(LEDGER_PATH, 'utf8'));
+export function validateScopeAndLedger(headSha, overrides = {}) {
+  const scope = overrides.scope || JSON.parse(fs.readFileSync(SCOPE_PATH, 'utf8'));
+  const ledger = overrides.ledger || JSON.parse(fs.readFileSync(LEDGER_PATH, 'utf8'));
   const errors = [];
   if (scope.growthOnly !== true) errors.push('scope-not-growth-only');
   if (!/^[0-9a-f]{40}$/.test(scope.baselineCommit || '')) errors.push('scope-baseline-commit-invalid');
@@ -76,6 +77,10 @@ function validateScopeAndLedger(headSha) {
       if (!fs.existsSync(path.join(ROOT, ref))) errors.push(`ledger-ref-missing:${item.id}:${ref}`);
     }
   }
+  const requiredPhase12Profiles = [...new Set((scope.phase12CapabilityProfiles || []).map(String).filter(Boolean))].sort();
+  const mappedPhase12Profiles = [...new Set((ledger.items || []).flatMap((item) => Array.isArray(item.scopeProfiles) ? item.scopeProfiles.map(String) : []))].sort();
+  for (const profile of requiredPhase12Profiles) if (!mappedPhase12Profiles.includes(profile)) errors.push(`phase12-profile-unmapped:${profile}`);
+  for (const profile of mappedPhase12Profiles) if (!requiredPhase12Profiles.includes(profile)) errors.push(`phase12-profile-out-of-scope:${profile}`);
   for (const id of REQUIRED_LEDGER_IDS) if (!ids.has(id)) errors.push(`ledger-required-id-missing:${id}`);
   return { ok: errors.length === 0, errors, scope, ledger, ledgerItemCount: ids.size };
 }
@@ -186,7 +191,17 @@ function evidenceIdentityAtHead(identity) {
 
 export function stage2KnownDenominatorGaps() {
   const a2 = a2DenominatorReport().validation;
-  return Object.freeze(a2.terminalEligible === true ? [] : [...(a2.blockingGaps || [])]);
+  const phase12 = phase12DenominatorReport();
+  const gaps = [];
+  if (a2.valid !== true) gaps.push('a2-denominator-invalid');
+  if (a2.terminalEligible !== true) gaps.push(...(a2.blockingGaps || []));
+  if (phase12.valid !== true) {
+    gaps.push('phase12-denominator-invalid');
+    gaps.push(...(phase12.failures || []).map((failure) => `phase12-denominator:${failure}`));
+  } else if (phase12.terminalEligible !== true) {
+    gaps.push(...(phase12.blockingGaps || []));
+  }
+  return Object.freeze([...new Set(gaps)].sort());
 }
 
 function profileEvidenceResult({ finalMode, evidencePath, headSha, treeSha, scope }) {

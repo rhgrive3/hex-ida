@@ -52,7 +52,9 @@ for (const id of STAGE2_PROFILE_EVIDENCE_IDS) {
         ? [`managed:${id.slice('S2-M6-'.length).toLowerCase()}:provider-bound-runtime-v1:test`]
         : [],
     implementationIdentity: `implementation:${id}`,
-    independentOracleIdentities: id === 'S1-A2-NATIVE' || id.startsWith('S2-F6-') ? [`oracle:${id}:independent`] : [],
+    independentOracleIdentities: id === 'S1-A2-NATIVE' || id.startsWith('S2-F6-') || id === 'S2-P12-COLLAB-REMOTE'
+      ? [`oracle:${id}:independent`]
+      : [],
   };
   for (const value of Object.values(items[id].unitEvidence)) knownEvidence.add(value);
   for (const key of ['realFixtureIdentities', 'negativeTestIdentities', 'evidenceIdentities', 'independentOracleIdentities']) {
@@ -71,6 +73,12 @@ const incompleteItems = structuredClone(items);
 incompleteItems['S2-F6-PE'].coveredUnitIds = [];
 const incomplete = createStage2ProfileEvidence({ commitSha, treeSha, generatedAt: '2026-08-22T00:00:00Z', items: incompleteItems });
 assert.equal(validateStage2ProfileEvidence(incomplete, expected).reason, 'stage2-profile-evidence-incomplete');
+
+const remoteWithoutOracleItems = structuredClone(items);
+remoteWithoutOracleItems['S2-P12-COLLAB-REMOTE'].independentOracleIdentities = [];
+const remoteWithoutOracle = createStage2ProfileEvidence({ commitSha, treeSha, generatedAt: '2026-08-22T00:00:00Z', items: remoteWithoutOracleItems });
+const remoteWithoutOracleValidation = validateStage2ProfileEvidence(remoteWithoutOracle, expected);
+assert.ok(remoteWithoutOracleValidation.failures.includes('S2-P12-COLLAB-REMOTE:independent-oracle-missing'), 'remote transport proof requires an independently identified verifier');
 
 const fabricated = createStage2ProfileEvidence({
   commitSha, treeSha, generatedAt: '2026-08-22T00:00:00Z',

@@ -95,6 +95,7 @@ const remoteCollaborationProof = remoteCollaborationSupport({
     sessionIdentity: 'session:capability-test',
     allowedActors: {},
     verifyTransportProof: () => true,
+    transportVerifierIdentity: 'oracle:S2-P12-COLLAB-REMOTE:independent',
   }),
   profileProof: proofs['S2-P12-COLLAB-REMOTE'],
   expectedCommitSha: 'a'.repeat(40),

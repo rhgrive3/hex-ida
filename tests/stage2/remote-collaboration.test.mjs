@@ -23,6 +23,7 @@ function gate(overrides = {}) {
     },
     maxBatch: 8,
     maxMessageBytes: 65536,
+    transportVerifierIdentity: 'oracle:S2-P12-COLLAB-REMOTE:independent',
     ...overrides,
   });
 }
@@ -148,4 +149,5 @@ assert.equal(remoteCollaborationSupport({ gate: gate(), proof: { exactHead: true
 assert.equal(remoteCollaborationSupport({ gate: gate({ verifyTransportProof: () => true }), profileProof: { ...profileProof }, expectedCommitSha: 'a'.repeat(40), expectedTreeSha: 'b'.repeat(40) }).status, 'unsupported', 'copied profile evidence loses validator authority');
 assert.equal(remoteCollaborationSupport({ gate: gate({ verifyTransportProof: () => true }), profileProof, expectedCommitSha: 'c'.repeat(40), expectedTreeSha: 'b'.repeat(40) }).status, 'unsupported', 'stale exact-head evidence cannot promote support');
 assert.equal(remoteCollaborationSupport({ gate: gate(), profileProof, expectedCommitSha: 'a'.repeat(40), expectedTreeSha: 'b'.repeat(40) }).status, 'unsupported', 'canonical support requires an active transport proof verifier');
+assert.equal(remoteCollaborationSupport({ gate: gate({ transportVerifierIdentity: 'oracle:other:independent' }), profileProof, expectedCommitSha: 'a'.repeat(40), expectedTreeSha: 'b'.repeat(40) }).status, 'unsupported', 'transport verifier identity must be bound to the validated profile oracle');
 console.log('[stage2] remote collaboration security/reconnect tests passed');

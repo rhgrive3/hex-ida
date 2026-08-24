@@ -249,7 +249,8 @@ export function validateStage2ProfileEvidence(record, expected = {}) {
       ['evidence', item.evidenceIdentities],
       ['independent-oracle', item.independentOracleIdentities],
     ]) if (Array.isArray(values)) for (const value of values) if (expected.resolveEvidenceIdentity(value, { itemId: id, kind }) !== value) failures.push(`${id}:${kind}-identity-unresolved:${value}`);
-    if ((id === 'S1-A2-NATIVE' || id.startsWith('S2-F6-')) && (!Array.isArray(item.independentOracleIdentities) || item.independentOracleIdentities.length === 0 || item.independentOracleIdentities.includes(item.implementationIdentity))) failures.push(`${id}:independent-oracle-missing`);
+    const requiresIndependentOracle = id === 'S1-A2-NATIVE' || id.startsWith('S2-F6-') || id === 'S2-P12-COLLAB-REMOTE';
+    if (requiresIndependentOracle && (!Array.isArray(item.independentOracleIdentities) || item.independentOracleIdentities.length === 0 || item.independentOracleIdentities.includes(item.implementationIdentity))) failures.push(`${id}:independent-oracle-missing`);
     if ((id === 'S2-A7-NATIVE' || id.startsWith('S2-M6-')) && (!Array.isArray(item.providerProfileIds) || item.providerProfileIds.length === 0)) failures.push(`${id}:provider-profile-missing`);
   }
   const result = Object.freeze({ ok: failures.length === 0, reason: failures.length ? 'stage2-profile-evidence-incomplete' : null, failures: Object.freeze(failures), evidenceId: record.evidenceId });

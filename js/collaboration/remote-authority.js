@@ -112,6 +112,9 @@ export class RemoteCollaborationGate {
     this.seenEnvelopeIds = new Set();
     this.lastSequenceByActor = new Map();
     this.verifyTransportProof = typeof input.verifyTransportProof === 'function' ? input.verifyTransportProof : null;
+    this.transportVerifierIdentity = input.transportVerifierIdentity == null
+      ? null
+      : required(input.transportVerifierIdentity, 'remote-gate-transport-verifier-identity-invalid');
   }
 
   validate(envelope) {
@@ -167,6 +170,7 @@ export class RemoteCollaborationGate {
       actors: Object.keys(this.allowedActors).sort(),
       revokedActors: [...this.revokedActors].sort(),
       seenMessageCount: this.seenMessages.size,
+      transportVerifierIdentity: this.transportVerifierIdentity,
     });
   }
 }
@@ -210,8 +214,13 @@ export function remoteCollaborationSupport({
     itemId: 'S2-P12-COLLAB-REMOTE',
     profileIds: [REMOTE_SECURITY_PROFILE_ID],
   });
+  const transportVerifierIdentity = gate instanceof RemoteCollaborationGate ? gate.transportVerifierIdentity : null;
+  const transportVerifierBound = typeof transportVerifierIdentity === 'string'
+    && Array.isArray(profileProof?.independentOracleIdentities)
+    && profileProof.independentOracleIdentities.includes(transportVerifierIdentity);
   const ready = gate instanceof RemoteCollaborationGate
     && typeof gate.verifyTransportProof === 'function'
+    && transportVerifierBound
     && exactIdentity
     && brandedProfile
     && profileProof.commitSha === commitSha
