@@ -30,6 +30,7 @@ const PE_SIGNATURE = [0x50, 0x45, 0x00, 0x00];
 const MACHO64_MAGIC = 0xfeedfacf;
 const MACHO_X86_64_CPU = 0x01000007;
 const MACHO_ARM64_CPU = 0x0100000c;
+const MACHO_LC_SEGMENT_64 = 0x19;
 const MACHO64_HEADER_SIZE = 32;
 const LC_VERSION_MIN_MACOSX = 0x24;
 const LC_CODE_SIGNATURE = 0x1d;
@@ -291,6 +292,8 @@ function parseMacho(bytes) {
   ensureRange(bytes, MACHO64_HEADER_SIZE, header.loadCommandsSize, 'format-safe-macho-load-commands-range-invalid');
   const commandsEnd = MACHO64_HEADER_SIZE + header.loadCommandsSize;
   const loadCommands = [];
+  const sections = [];
+  const segments = [];
   let offset = MACHO64_HEADER_SIZE;
   let target = null;
   let hasCodeSignature = false;
@@ -301,6 +304,52 @@ function parseMacho(bytes) {
     if (size < 8 || size % 8 !== 0 || offset > commandsEnd - size) fail('format-safe-macho-load-command-size-invalid');
     const entry = { index, command, offset, size, digest: stableDigest(Array.from(bytes.slice(offset, offset + size))) };
     if (command === LC_CODE_SIGNATURE) hasCodeSignature = true;
+    if (command === MACHO_LC_SEGMENT_64) {
+      if (size < 72) fail('format-safe-macho-segment-command-invalid');
+      const segmentName = text(bytes.slice(offset + 8, offset + 24));
+      const fileOffset = boundedNumber(u64(bytes, offset + 40));
+      const fileSize = boundedNumber(u64(bytes, offset + 48));
+      const sectionCount = u32(bytes, offset + 64);
+      if (size !== 72 + sectionCount * 80) fail('format-safe-macho-segment-section-table-invalid');
+      ensureRange(bytes, fileOffset, fileSize, 'format-safe-macho-segment-file-range-invalid');
+      const segment = { commandIndex: index, name: segmentName, fileOffset, fileSize, sectionCount };
+      segments.push(segment);
+      for (let sectionIndex = 0; sectionIndex < sectionCount; sectionIndex++) {
+        const sectionOffset = offset + 72 + sectionIndex * 80;
+        const name = text(bytes.slice(sectionOffset, sectionOffset + 16));
+        const sectionSegment = text(bytes.slice(sectionOffset + 16, sectionOffset + 32));
+        const address = boundedNumber(u64(bytes, sectionOffset + 32));
+        const sectionSize = boundedNumber(u64(bytes, sectionOffset + 40));
+        const dataOffset = u32(bytes, sectionOffset + 48);
+        const alignment = u32(bytes, sectionOffset + 52);
+        const relocationOffset = u32(bytes, sectionOffset + 56);
+        const relocationCount = u32(bytes, sectionOffset + 60);
+        const flags = u32(bytes, sectionOffset + 64);
+        const reserved1 = u32(bytes, sectionOffset + 68);
+        const reserved2 = u32(bytes, sectionOffset + 72);
+        const reserved3 = u32(bytes, sectionOffset + 76);
+        if (sectionSize > 0) ensureRange(bytes, dataOffset, sectionSize, 'format-safe-macho-section-range-invalid');
+        sections.push({
+          index: sections.length,
+          commandIndex: index,
+          segmentIndex: segments.length - 1,
+          segment: sectionSegment,
+          name,
+          address,
+          size: sectionSize,
+          offset: dataOffset,
+          alignment,
+          relocationOffset,
+          relocationCount,
+          flags,
+          reserved1,
+          reserved2,
+          reserved3,
+          data: bytes.slice(dataOffset, dataOffset + sectionSize),
+          headerOffset: sectionOffset,
+        });
+      }
+    }
     if (command === LC_VERSION_MIN_MACOSX) {
       if (size !== 16 || target) fail('format-safe-macho-version-command-invalid');
       target = { name: 'LC_VERSION_MIN_MACOSX.version', command, commandIndex: index, offset: offset + 8, size: 4, data: bytes.slice(offset + 8, offset + 12), originalVersion: u32(bytes, offset + 8), sdkVersion: u32(bytes, offset + 12) };
@@ -312,7 +361,7 @@ function parseMacho(bytes) {
   if (offset !== commandsEnd) fail('format-safe-macho-load-command-count-invalid');
   if (!target) fail('format-safe-macho-version-target-unavailable');
   return {
-    format: 'macho', architecture, header, loadCommands, sections: [], target,
+    format: 'macho', architecture, header, loadCommands, sections, segments, target,
     maskedFileDigest: bytesDigestMasked(bytes, target.offset, target.size),
     signatureState: hasCodeSignature ? 'code-signature-present' : 'unsigned',
   };
@@ -353,7 +402,7 @@ function snapshot(image) {
   if (image.format === 'elf') {
     return { ...base, header: image.header, programHeadersDigest: image.programHeadersDigest, sectionTableDigest: image.sectionTableDigest };
   }
-  if (image.format === 'macho') return { ...base, header: image.header, loadCommands: image.loadCommands };
+  if (image.format === 'macho') return { ...base, header: image.header, loadCommands: image.loadCommands, segments: image.segments };
   return { ...base, header: { ...image.header, timestamp: null } };
 }
 
@@ -524,6 +573,58 @@ function peSectionVirtualSizePlan(source, image, mutation) {
   };
 }
 
+function machoSectionSizePlan(source, image, mutation) {
+  if (image.format !== 'macho' || image.architecture !== 'x86_64') fail('format-safe-macho-layout-unsupported');
+  const segmentName = String(mutation.segment ?? '__TEXT');
+  const sectionName = String(mutation.section ?? '__text');
+  if (segmentName !== '__TEXT' || sectionName !== '__text') fail('format-safe-macho-layout-section-unsupported');
+  const target = image.sections.find((section) => section.segment === segmentName && section.name === sectionName);
+  if (!target) fail('format-safe-macho-layout-target-unavailable');
+  const segment = image.segments.find((item) => item.commandIndex === target.commandIndex);
+  if (!segment || segment.sectionCount !== 2) fail('format-safe-macho-layout-segment-invalid');
+  const next = image.sections.filter((section) => section.segment === segmentName && section.offset > target.offset).sort((left, right) => left.offset - right.offset)[0];
+  const nextSectionOffset = next?.offset ?? segment.fileOffset + segment.fileSize;
+  if (target.offset + target.size > nextSectionOffset) fail('format-safe-macho-layout-source-overlap');
+  const availableGap = nextSectionOffset - (target.offset + target.size);
+  const requestedSize = integerInRange(mutation.size, target.size + 1, target.size + availableGap, 'format-safe-macho-layout-size-invalid');
+  const sectionHeaderOffset = target.headerOffset;
+  return {
+    operations: [{
+      id: 'format-safe:macho:section-size',
+      offset: sectionHeaderOffset + 40,
+      before: source.slice(sectionHeaderOffset + 40, sectionHeaderOffset + 48),
+      after: littleEndianBytes(8, (view) => view.setBigUint64(0, BigInt(requestedSize), true)),
+      provenance: {
+        source: 'format-safe-rebuild-adapter',
+        schema: FORMAT_SAFE_REBUILD_SCHEMA,
+        mutationKind: mutation.kind,
+        segment: segmentName,
+        section: sectionName,
+        originalSize: target.size,
+        size: requestedSize,
+      },
+    }],
+    safeState: {
+      schema: FORMAT_SAFE_REBUILD_SCHEMA,
+      kind: mutation.kind,
+      segment: segmentName,
+      section: sectionName,
+      sourceSectionCount: image.sections.length,
+      outputSectionCount: image.sections.length,
+      segmentCommandIndex: segment.commandIndex,
+      segmentCommandName: segment.name,
+      segmentFileOffset: segment.fileOffset,
+      segmentFileSize: segment.fileSize,
+      sectionIndex: target.index,
+      sectionHeaderOffset,
+      sectionOffset: target.offset,
+      nextSectionOffset,
+      originalSize: target.size,
+      size: requestedSize,
+    },
+  };
+}
+
 function reject(reason, detail = null) {
   return Object.freeze({ ok: false, status: 'rejected', reason, ...(detail == null ? {} : { detail: String(detail) }) });
 }
@@ -564,6 +665,9 @@ export function createFormatSafeRebuildTransaction(input = {}) {
   } else if (mutation.kind === 'pe-section-virtual-size') {
     if (format !== 'pe') fail('format-safe-mutation-format-mismatch');
     ({ operations, safeState } = peSectionVirtualSizePlan(source, image, mutation));
+  } else if (mutation.kind === 'macho-section-size') {
+    if (format !== 'macho') fail('format-safe-mutation-format-mismatch');
+    ({ operations, safeState } = machoSectionSizePlan(source, image, mutation));
   } else if (mutation.kind === 'macho-min-version') {
     if (format !== 'macho') fail('format-safe-mutation-format-mismatch');
     const version = Number(mutation.version);
@@ -594,7 +698,7 @@ export function createFormatSafeRebuildTransaction(input = {}) {
     architecture,
     loaderVersion: input.loaderVersion,
     operations,
-    impact: { layoutMoving: ['elf-add-nobits-section', 'pe-section-virtual-size'].includes(mutation.kind), sections: [safeState.section || safeState.field], relocationBindings: [] },
+    impact: { layoutMoving: ['elf-add-nobits-section', 'pe-section-virtual-size', 'macho-section-size'].includes(mutation.kind), sections: [safeState.section || safeState.field], relocationBindings: [] },
     expectedOriginalState: { sourceHash, formatSafe: safeState },
     additionalValidators: ['format-invariants'],
     requireIndependentOracle: true,
@@ -702,6 +806,58 @@ export function validateFormatSafeMutation({ transaction, original, output } = {
             sectionAlignment: safeState.sectionAlignment,
             sizeOfImage: outputImage.header.optional.sizeOfImage,
           }),
+        }),
+      });
+    }
+    if (safeState.kind === 'macho-section-size') {
+      if (format !== 'macho' || transaction.operations?.length !== 1 || transaction.impact?.layoutMoving !== true) return reject('format-safe-macho-layout-operation-invalid');
+      const expected = machoSectionSizePlan(source, sourceImage, safeState);
+      const canonicalExpectedOperations = expected.operations.map((operation) => ({
+        ...operation,
+        offset: String(operation.offset),
+        before: Array.from(operation.before),
+        after: Array.from(operation.after),
+        address: null,
+      }));
+      if (stableDigest(transaction.operations) !== stableDigest(canonicalExpectedOperations)) return reject('format-safe-operation-bytes-mismatch');
+      if (candidate.length !== source.length || outputImage.sections.length !== sourceImage.sections.length) return reject('format-safe-macho-layout-size-mismatch');
+      const target = outputImage.sections[safeState.sectionIndex];
+      if (!target || target.segment !== safeState.segment || target.name !== safeState.section || target.offset !== safeState.sectionOffset
+        || target.size !== safeState.size) return reject('format-safe-macho-layout-section-mismatch');
+      const sourceTarget = sourceImage.sections[safeState.sectionIndex];
+      for (let index = 0; index < sourceImage.sections.length; index++) {
+        const before = sourceImage.sections[index];
+        const after = outputImage.sections[index];
+        const expectedData = index === safeState.sectionIndex ? source.slice(before.offset, before.offset + after.size) : before.data;
+        if (!after || before.segment !== after.segment || before.name !== after.name || before.address !== after.address
+          || before.offset !== after.offset || before.alignment !== after.alignment || before.relocationOffset !== after.relocationOffset
+          || before.relocationCount !== after.relocationCount || before.flags !== after.flags || before.reserved1 !== after.reserved1
+          || before.reserved2 !== after.reserved2 || before.reserved3 !== after.reserved3
+          || (index !== safeState.sectionIndex && before.size !== after.size) || !sameBytes(expectedData, after.data)) {
+          return reject('format-safe-macho-existing-sections-changed');
+        }
+      }
+      const sourceSegment = sourceImage.segments.find((item) => item.commandIndex === safeState.segmentCommandIndex);
+      const outputSegment = outputImage.segments.find((item) => item.commandIndex === safeState.segmentCommandIndex);
+      if (!sourceSegment || !outputSegment || sourceSegment.name !== outputSegment.name || sourceSegment.fileOffset !== outputSegment.fileOffset
+        || sourceSegment.fileSize !== outputSegment.fileSize || sourceSegment.sectionCount !== outputSegment.sectionCount) return reject('format-safe-macho-segment-changed');
+      const maskedSourceDigest = bytesDigestMasked(source, safeState.sectionHeaderOffset + 40, 8);
+      const maskedOutputDigest = bytesDigestMasked(candidate, safeState.sectionHeaderOffset + 40, 8);
+      if (maskedSourceDigest !== maskedOutputDigest) return reject('format-safe-macho-unchanged-bytes-differ');
+      if (!sourceTarget || sourceTarget.size !== safeState.originalSize || target.size !== safeState.size) return reject('format-safe-macho-layout-size-mismatch');
+      return Object.freeze({
+        ok: true,
+        status: 'passed',
+        format,
+        architecture,
+        mutationKind: safeState.kind,
+        changed: true,
+        sourceDigest: digestBytes(source),
+        outputDigest: digestBytes(candidate),
+        layoutEvidence: Object.freeze({
+          sectionCount: outputImage.sections.length,
+          segment: Object.freeze({ commandIndex: outputSegment.commandIndex, name: safeState.segment, fileOffset: outputSegment.fileOffset, fileSize: outputSegment.fileSize, sectionCount: outputSegment.sectionCount }),
+          section: Object.freeze({ index: target.index, segment: target.segment, name: target.name, offset: target.offset, originalSize: sourceTarget.size, size: target.size, nextSectionOffset: safeState.nextSectionOffset }),
         }),
       });
     }

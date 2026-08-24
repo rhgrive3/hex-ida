@@ -241,6 +241,50 @@ function readPreservationEvidence(output, sourceOutput, transaction) {
   });
 }
 
+function readMachoSections(output) {
+  const number = (block, label) => {
+    const value = block.match(new RegExp(`^\\s*${label}:\\s+(0x[0-9A-Fa-f]+|\\d+)`, 'm'))?.[1];
+    return value == null ? null : Number(value);
+  };
+  return [...output.matchAll(/^\s*Section \{\n([\s\S]*?)^\s*\}/gm)].map((match, index) => {
+    const block = match[1];
+    return Object.freeze({
+      index,
+      name: block.match(/^\s*Name:\s+([^\s(]+)\s+/m)?.[1] || '',
+      segment: block.match(/^\s*Segment:\s+([^\s(]+)\s+/m)?.[1] || '',
+      address: number(block, 'Address'),
+      size: number(block, 'Size'),
+      offset: number(block, 'Offset'),
+      alignment: number(block, 'Alignment'),
+      relocationOffset: number(block, 'RelocationOffset'),
+      relocationCount: number(block, 'RelocationCount'),
+    });
+  });
+}
+
+function readMachoLayoutEvidence(output, sourceOutput, transaction) {
+  const expected = transaction?.expectedOriginalState?.formatSafe;
+  if (expected?.kind !== 'macho-section-size') return null;
+  const sections = readMachoSections(output);
+  const sourceSections = readMachoSections(sourceOutput);
+  if (sections.length !== expected.outputSectionCount || sourceSections.length !== expected.sourceSectionCount) throw new TypeError('independent-oracle-macho-section-count-mismatch');
+  for (let index = 0; index < sourceSections.length; index++) {
+    const before = sourceSections[index];
+    const after = sections[index];
+    if (!after || before.name !== after.name || before.segment !== after.segment || before.address !== after.address
+      || before.offset !== after.offset || before.alignment !== after.alignment || before.relocationOffset !== after.relocationOffset
+      || before.relocationCount !== after.relocationCount || (index !== expected.sectionIndex && before.size !== after.size)) {
+      throw new TypeError('independent-oracle-macho-existing-section-mismatch');
+    }
+  }
+  const section = sections[expected.sectionIndex];
+  const sourceSection = sourceSections[expected.sectionIndex];
+  if (!section || !sourceSection || section.segment !== expected.segment || section.name !== expected.section
+    || section.offset !== expected.sectionOffset || sourceSection.size !== expected.originalSize || section.size !== expected.size) {
+    throw new TypeError('independent-oracle-macho-layout-mismatch');
+  }
+  return Object.freeze({ sectionCount: sections.length, segment: Object.freeze({ commandIndex: expected.segmentCommandIndex, name: expected.segment, fileOffset: expected.segmentFileOffset, fileSize: expected.segmentFileSize, sectionCount: expected.outputSectionCount }), section: Object.freeze({ index: section.index, segment: section.segment, name: section.name, offset: section.offset, originalSize: sourceSection.size, size: section.size, nextSectionOffset: expected.nextSectionOffset }) });
+}
 function versionOf(executable, timeoutMs, maxOutputBytes) {
   const result = spawnSync(executable, ['--version'], { encoding: 'utf8', timeout: timeoutMs, maxBuffer: maxOutputBytes });
   if (result.status !== 0 || result.error || result.signal) return null;
@@ -360,9 +404,14 @@ export function createLlvmReadobjOracle({
       let layoutEvidence = null;
       let preservationEvidence = null;
       try {
-        layoutEvidence = transaction?.expectedOriginalState?.formatSafe?.kind === 'elf-add-nobits-section'
+        const kind = transaction?.expectedOriginalState?.formatSafe?.kind;
+        layoutEvidence = kind === 'elf-add-nobits-section'
           ? readElfLayoutEvidence(stdout, sourceStdout, transaction)
-          : readPeLayoutEvidence(stdout, sourceStdout, transaction);
+          : kind === 'pe-section-virtual-size'
+            ? readPeLayoutEvidence(stdout, sourceStdout, transaction)
+            : kind === 'macho-section-size'
+              ? readMachoLayoutEvidence(stdout, sourceStdout, transaction)
+              : null;
         preservationEvidence = readPreservationEvidence(stdout, sourceStdout, transaction);
       } catch (error) {
         return failed(error?.message || 'independent-oracle-layout-mismatch', null, { ...base, ...header, oracleOutputDigest: sha256(stdout) });

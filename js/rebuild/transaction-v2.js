@@ -31,6 +31,7 @@ export const F6_BOUNDED_OPERATION_CELLS = Object.freeze([
   'elf:64:layout-and-structure:terminal-sht-nobits-append',
   'pe:pe32:layout-and-structure:text-virtual-size-within-alignment',
   'pe:pe32+:layout-and-structure:text-virtual-size-within-alignment',
+  'macho:64:layout-and-structure:text-section-size-within-file-gap',
 ]);
 const BYTE_HASH_RE = /^bytes:[0-9a-f]{32}$/;
 const VALID_REBUILD_PROFILE_SUPPORT = new WeakSet();
@@ -290,6 +291,36 @@ function peLayoutEvidenceValid(transaction, validation) {
     && matches(oracleResult.detail?.layoutEvidence);
 }
 
+function machoLayoutEvidenceValid(transaction, validation) {
+  const expected = transaction?.expectedOriginalState?.formatSafe;
+  if (transaction?.format !== 'macho' || transaction?.architecture !== 'x86_64'
+    || expected?.schema !== 'hex-format-safe-rebuild/v1' || expected?.kind !== 'macho-section-size'
+    || transaction?.impact?.layoutMoving !== true || transaction?.sizeDelta !== 0
+    || expected?.segment !== '__TEXT' || expected?.section !== '__text'
+    || expected?.sourceSectionCount !== expected?.outputSectionCount) return false;
+  const formatResult = validation?.validators?.find((item) => item.validator === 'format-invariants');
+  const layoutResult = validation?.validators?.find((item) => item.validator === 'layout');
+  const oracleResult = validation?.validators?.find((item) => item.validator === 'independent-differential');
+  const matches = (evidence) => evidence?.sectionCount === expected.outputSectionCount
+    && evidence?.segment?.commandIndex === expected.segmentCommandIndex
+    && evidence?.segment?.name === expected.segment
+    && evidence?.segment?.fileOffset === expected.segmentFileOffset
+    && evidence?.segment?.fileSize === expected.segmentFileSize
+    && evidence?.segment?.sectionCount === expected.outputSectionCount
+    && evidence?.section?.index === expected.sectionIndex
+    && evidence?.section?.segment === expected.segment
+    && evidence?.section?.name === expected.section
+    && evidence?.section?.offset === expected.sectionOffset
+    && evidence?.section?.originalSize === expected.originalSize
+    && evidence?.section?.size === expected.size
+    && evidence?.section?.nextSectionOffset === expected.nextSectionOffset;
+  return formatResult?.status === 'passed' && layoutResult?.status === 'passed'
+    && oracleResult?.status === 'passed'
+    && matches(formatResult.detail?.layoutEvidence)
+    && matches(layoutResult.detail?.layoutEvidence)
+    && matches(oracleResult.detail?.layoutEvidence);
+}
+
 /**
  * Evaluate F6's locked unit vocabulary against the actual v2 transaction
  * evidence.  A generic validator result or denominator identity is not an
@@ -362,7 +393,7 @@ export function evaluateF6RebuildDenominator({ transaction, validation, publicat
     );
   }
   if (profileId === 'pe:pe32' || profileId === 'pe:pe32+') {
-    const boundedId = profileId === 'pe:pe32' ? F6_BOUNDED_OPERATION_CELLS[1] : F6_BOUNDED_OPERATION_CELLS[2];
+    const boundedId = F6_BOUNDED_OPERATION_CELLS.find((id) => id.startsWith(`${profileId}:`));
     const peLayoutProof = validationPassed
       && publicationComplete
       && proof.realFixture === true
@@ -379,6 +410,26 @@ export function evaluateF6RebuildDenominator({ transaction, validation, publicat
       peLayoutProof ? 'closed' : 'blocking',
       peLayoutProof ? null : 'f6-bounded-pe-layout-proof-incomplete',
       peLayoutProof ? 'format-safe-pe-section-virtual-size+hex-loader-reparse+llvm-readobj-independent-oracle+atomic-publication' : null,
+    );
+  }
+  if (profileId === 'macho:64') {
+    const boundedId = F6_BOUNDED_OPERATION_CELLS.find((id) => id.startsWith(`${profileId}:`));
+    const machoLayoutProof = validationPassed
+      && publicationComplete
+      && proof.realFixture === true
+      && proof.realFixtureEvidence === true
+      && proof.negativeValidatorTest === true
+      && proof.staleIdentityTest === true
+      && proof.truncationTest === true
+      && proof.wrongIdentityTest === true
+      && machoLayoutEvidenceValid(transaction, validation);
+    boundedOperationCells[boundedId] = f6BoundedOperationCell(
+      boundedId,
+      'layout-and-structure',
+      'macho-section-size',
+      machoLayoutProof ? 'closed' : 'blocking',
+      machoLayoutProof ? null : 'f6-bounded-macho-layout-proof-incomplete',
+      machoLayoutProof ? 'format-safe-macho-section-size+hex-loader-reparse+llvm-readobj-independent-oracle+atomic-publication' : null,
     );
   }
   if (profileId === 'elf:64' && elfLayoutEvidenceValid(transaction, validation)) {
