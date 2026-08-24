@@ -173,8 +173,8 @@ function parseThin(bytes, opts) {
   const namesByAddr = new Map();
   const nameIndexEntries = image.symbols.length + image.exports.length;
   if (metadataBudget.take({ objects:nameIndexEntries, operations:nameIndexEntries, estimatedHeapBytes:nameIndexEntries*48 }, 'name-address-index')) {
-    for (const sym of image.symbols) if (sym.defined && sym.address) namesByAddr.set(sym.address.toString(), sym.name);
-    for (const ex of image.exports) if (ex.address) namesByAddr.set(ex.address.toString(), ex.name);
+    for (const sym of image.symbols) if (sym.defined && sym.address != null) namesByAddr.set(sym.address.toString(), sym.name);
+    for (const ex of image.exports) if (ex.address != null) namesByAddr.set(ex.address.toString(), ex.name);
   }
   if (hadFunctionStarts) {
     for (const f of image.functions) if (!f.name) f.name = namesByAddr.get(f.address.toString()) || null;
@@ -182,7 +182,7 @@ function parseThin(bytes, opts) {
     image.functions = image.functions.filter((f) => f.source !== 'export' || provenStarts.has(f.address.toString()));
   } else {
     for (const sym of image.symbols) {
-      if (!sym.defined || !sym.address) continue;
+      if (!sym.defined || sym.address == null) continue;
       const sec = image.sectionAt(sym.address);
       if (sec && sec.perms.execute && sym.name !== '__mh_execute_header' && metadataBudget.take({ objects:1, operations:1, estimatedHeapBytes:128 }, 'symbol-function-fallback')) image.functions.push(functionSeed(sym.address, { name: sym.name, source: 'symbol', confidence: 0.9 }));
     }
