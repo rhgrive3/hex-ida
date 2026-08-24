@@ -158,9 +158,12 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
 
       const di = destIndex(mn);
       const destReg = di >= 0 && ops[di]?.k === 'reg' && ops[di]?.cls === 'gp' ? ops[di].num : null;
+      const pairDestReg = /^(ldp|ldpsw|ldnp)$/.test(b) && ops[1]?.k === 'reg' && ops[1]?.cls === 'gp'
+        ? ops[1].num
+        : null;
       const reads = new Set();
       for (let i = 0; i < ops.length; i++) {
-        if (i === di && ops[i].k === 'reg') continue;
+        if ((i === di || (i === 1 && pairDestReg != null)) && ops[i].k === 'reg') continue;
         readRegs(ops[i], reads);
       }
       for (const op of ops) if (op.k === 'mem') readRegs(op, reads);
@@ -168,6 +171,10 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
       if (destReg != null) {
         written.add(destReg);
         if (destReg === 0) lastX0Write = row;
+      }
+      if (pairDestReg != null) {
+        written.add(pairDestReg);
+        if (pairDestReg === 0) lastX0Write = row;
       }
 
       if (b === 'sub' && ops[0] && ops[0].cls === 'sp' && ops[2] && ops[2].k === 'imm' && ops[2].value != null) {
@@ -232,6 +239,7 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
         }
       }
       if (destReg != null) pageOf.delete(destReg);
+      if (pairDestReg != null) pageOf.delete(pairDestReg);
       if (nextPage) pageOf.set(nextPage.reg, { value: nextPage.value, row: nextPage.row });
     }
   }
