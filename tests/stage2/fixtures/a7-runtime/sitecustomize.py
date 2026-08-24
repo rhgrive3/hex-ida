@@ -54,6 +54,29 @@ def _installed_lldb() -> str:
     raise RuntimeError("a7-lldb-driver-unavailable")
 
 
+def _remove_own_bytecode_cache() -> None:
+    """Remove only this startup hook's interpreter cache from the fixture tree."""
+    cached = globals().get("__cached__")
+    if not cached:
+        return
+    cached = os.path.realpath(cached)
+    own_directory = os.path.realpath(os.path.dirname(__file__))
+    cache_directory = os.path.dirname(cached)
+    if os.path.basename(cache_directory) != "__pycache__":
+        return
+    if os.path.realpath(os.path.dirname(cache_directory)) != own_directory:
+        return
+    try:
+        if os.path.isfile(cached):
+            os.unlink(cached)
+        try:
+            os.rmdir(cache_directory)
+        except OSError:
+            pass
+    except OSError:
+        pass
+
+
 def _handoff_to_embedded_lldb() -> None:
     script = sys.argv[0] if sys.argv else ""
     if not _is_a7_provider_script(script):
@@ -87,4 +110,8 @@ def _handoff_to_embedded_lldb() -> None:
     os.execve(lldb, argv, env)
 
 
+# CPython writes sitecustomize.pyc before executing this module. Remove exactly
+# that cache before any LLDB exec handoff so the next strict git-status proof
+# still observes a clean repository worktree.
+_remove_own_bytecode_cache()
 _handoff_to_embedded_lldb()
