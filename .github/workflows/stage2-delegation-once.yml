@@ -1,0 +1,49 @@
+name: Stage 2 delegation one-shot
+
+on:
+  push:
+    branches:
+      - ci/stage2-reuse-stage1-proof-20260825
+    paths:
+      - '.github/workflows/stage2-delegation-once.yml'
+      - 'tools/validation/stage2/apply-delegation-once.py'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: stage2-delegation-one-shot
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ci/stage2-reuse-stage1-proof-20260825
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Apply exact-base patch
+        run: python tools/validation/stage2/apply-delegation-once.py
+      - name: Verify delegation contract and Stage 2 suite
+        run: |
+          set -euo pipefail
+          node tests/stage2/stage1-delegation-contract.test.mjs
+          node tests/stage2/run.mjs
+          test "$(git hash-object tools/validation/stage2/verify.mjs)" = "54cce71f4799ea96d14c7b271efaab63cef352a7"
+      - name: Commit only final production proof changes
+        run: |
+          set -euo pipefail
+          git rm .github/workflows/stage2-delegation-once.yml tools/validation/stage2/apply-delegation-once.py
+          git add tools/validation/stage2/verify.mjs tests/stage2/stage1-delegation-contract.test.mjs
+          git diff --cached --check
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git commit -m "ci: reuse same-head Stage 1 proof in Stage 2"
+          git push origin HEAD:ci/stage2-reuse-stage1-proof-20260825
