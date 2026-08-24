@@ -46,10 +46,10 @@ class LoopbackTransport {
 const lifecycleTransport = new LoopbackTransport();
 const lifecycleAdapter = new RemoteDebugAdapter(lifecycleTransport, { capabilities:{ readMemory:true } });
 const provider = new DebugAdapterRuntimeProvider(lifecycleAdapter);
-const first = await provider.openSession({ processKey:'first' });
+const first = await provider.openSession({ processKey:'first', binaryId:'test-binary' });
 await first.close();
 assert.equal(lifecycleTransport.closeCount, 0, 'closing one runtime session must not permanently destroy a reusable transport');
-const second = await provider.openSession({ processKey:'second' });
+const second = await provider.openSession({ processKey:'second', binaryId:'test-binary' });
 assert.equal(lifecycleTransport.connectCount, 2, 'the same remote adapter must support a second sequential runtime session');
 const bytes = await lifecycleAdapter.readMemory(0x1000n, 2);
 assert.deepEqual([...bytes], [0x12, 0x34], 'nested protocol-native Uint8Array memory results must be accepted');
