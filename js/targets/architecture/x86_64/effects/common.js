@@ -142,13 +142,67 @@ export function createX86EffectContext(decoded, context = {}) {
     return outputs;
   }
 
+  function readPhysicalRegister(physicalId, physicalBits, view, metadata = {}) {
+    const physical = createRegisterValue(physicalId, physicalBits, { view });
+    const full = temporary(physicalBits, `read-${view}`);
+    addOperation({ kind:'register-read', register:physical, value:full, metadata:{ view, ...metadata } });
+    return full;
+  }
+
+  function writePhysicalRegister(physicalId, physicalBits, view, value, writePolicy, metadata = {}) {
+    const source = coerce(value, valueWidth(value) || physicalBits, physicalBits, false);
+    const physical = createRegisterValue(physicalId, physicalBits, { view });
+    addOperation({ kind:'register-write', register:physical, value:source, metadata:{ view, writePolicy, ...metadata } });
+    return true;
+  }
+
   function readRegister(input) {
     const operand = registerOperand(input);
     if (!operand) return null;
     const descriptor = operand.register;
-    const physical = createRegisterValue(descriptor.physicalId, descriptor.physicalBits, { view:descriptor.id });
-    const full = temporary(descriptor.physicalBits, `read-${descriptor.id}`);
-    addOperation({ kind:'register-read', register:physical, value:full, metadata:{ view:descriptor.id } });
+
+    if (Array.isArray(descriptor.compositeParts)) {
+      let combined = constant(descriptor.viewBits, 0n);
+      for (const part of descriptor.compositeParts) {
+        const partValue = readPhysicalRegister(part.physicalId, part.bits, descriptor.id, {
+          compositeView:descriptor.id,
+          compositePartLsb:part.lsb,
+        });
+        combined = valueOp('insert', [combined, partValue], descriptor.viewBits, {
+          lsb:part.lsb,
+          widthBits:part.bits,
+          physicalBits:descriptor.viewBits,
+          physicalId:descriptor.physicalId,
+          physicalPartId:part.physicalId,
+          view:descriptor.id,
+          writePolicy:'compose-physical-parts',
+        });
+      }
+      return combined;
+    }
+
+    if (descriptor.dynamicView?.kind === 'x87-top-relative') {
+      const stack = readPhysicalRegister(descriptor.physicalId, descriptor.physicalBits, descriptor.id, {
+        dynamicView:'x87-top-relative',
+      });
+      const status = readRegister(descriptor.dynamicView.topRegister);
+      if (!status) return null;
+      const top = valueOp('extract', [status], descriptor.dynamicView.topBits, {
+        lsb:descriptor.dynamicView.topLsb,
+        widthBits:descriptor.dynamicView.topBits,
+        view:'x87-top',
+      });
+      return valueOp('x87-stack-select', [stack, top], descriptor.viewBits, {
+        logicalIndex:descriptor.dynamicView.logicalIndex,
+        slotWidthBits:descriptor.dynamicView.slotWidthBits,
+        slotCount:descriptor.dynamicView.slotCount,
+        topModulo:descriptor.dynamicView.slotCount,
+        physicalId:descriptor.physicalId,
+        view:descriptor.id,
+      });
+    }
+
+    const full = readPhysicalRegister(descriptor.physicalId, descriptor.physicalBits, descriptor.id);
     if (descriptor.viewBits === descriptor.physicalBits && descriptor.lsb === 0) return full;
     return valueOp('extract', [full], descriptor.viewBits, {
       lsb:descriptor.lsb,
@@ -173,6 +227,49 @@ export function createX86EffectContext(decoded, context = {}) {
     let bits = valueWidth(source) || descriptor.viewBits;
     source = coerce(source, bits, descriptor.viewBits, false);
     bits = descriptor.viewBits;
+
+    if (Array.isArray(descriptor.compositeParts)) {
+      for (const part of descriptor.compositeParts) {
+        const partValue = valueOp('extract', [source], part.bits, {
+          lsb:part.lsb,
+          widthBits:part.bits,
+          physicalBits:descriptor.viewBits,
+          physicalId:descriptor.physicalId,
+          physicalPartId:part.physicalId,
+          view:descriptor.id,
+        });
+        writePhysicalRegister(part.physicalId, part.bits, descriptor.id, partValue, descriptor.writePolicy, {
+          compositeView:descriptor.id,
+          compositePartLsb:part.lsb,
+        });
+      }
+      return true;
+    }
+
+    if (descriptor.dynamicView?.kind === 'x87-top-relative') {
+      const stack = readPhysicalRegister(descriptor.physicalId, descriptor.physicalBits, descriptor.id, {
+        dynamicView:'x87-top-relative',
+      });
+      const status = readRegister(descriptor.dynamicView.topRegister);
+      if (!status) return false;
+      const top = valueOp('extract', [status], descriptor.dynamicView.topBits, {
+        lsb:descriptor.dynamicView.topLsb,
+        widthBits:descriptor.dynamicView.topBits,
+        view:'x87-top',
+      });
+      const nextStack = valueOp('x87-stack-insert', [stack, top, source], descriptor.physicalBits, {
+        logicalIndex:descriptor.dynamicView.logicalIndex,
+        slotWidthBits:descriptor.dynamicView.slotWidthBits,
+        slotCount:descriptor.dynamicView.slotCount,
+        topModulo:descriptor.dynamicView.slotCount,
+        physicalId:descriptor.physicalId,
+        view:descriptor.id,
+      });
+      return writePhysicalRegister(descriptor.physicalId, descriptor.physicalBits, descriptor.id, nextStack, descriptor.writePolicy, {
+        dynamicView:'x87-top-relative',
+      });
+    }
+
     if (descriptor.kind === 'vector' && descriptor.viewBits !== descriptor.physicalBits) return false;
     if (descriptor.writePolicy === 'zero-extend-32') {
       source = coerce(source, bits, descriptor.physicalBits, false);
@@ -187,9 +284,7 @@ export function createX86EffectContext(decoded, context = {}) {
         writePolicy:'preserve-unaffected',
       });
     }
-    const physical = createRegisterValue(descriptor.physicalId, descriptor.physicalBits, { view:descriptor.id });
-    addOperation({ kind:'register-write', register:physical, value:source, metadata:{ view:descriptor.id, writePolicy:descriptor.writePolicy } });
-    return true;
+    return writePhysicalRegister(descriptor.physicalId, descriptor.physicalBits, descriptor.id, source, descriptor.writePolicy);
   }
 
   function readFlag(name) {
