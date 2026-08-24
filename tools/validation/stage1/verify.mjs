@@ -173,17 +173,28 @@ export function verifyStage1({ expectedSha = null } = {}) {
   // Validate Competitive Profile
   verifyCompetitiveProfile();
 
-  const gates = [];
-  for (const gate of GATES) {
-    const commandResults = [];
-    for (const command of gate.commands) commandResults.push(runCommand(command));
-    gates.push(Object.freeze({
-      id: gate.id,
-      name: gate.name,
-      status: commandResults.every((result) => result.status === 'passed') ? 'passed' : 'failed',
-      evidence: Object.freeze([...gate.evidence]),
-      commands: Object.freeze(commandResults),
-    }));
+  const gateResultPath = path.join(ROOT, 'reports/stage1/stage1-gate-results.tmp.json');
+  fs.mkdirSync(path.dirname(gateResultPath), { recursive: true });
+  let gates;
+  try {
+    const gateRunner = spawnSync(process.execPath, [
+      path.join(ROOT, 'tools/validation/stage1/run-gates-isolated.mjs'),
+      '--head', gitSha,
+      '--output', gateResultPath,
+      '--concurrency', '2',
+    ], {
+      cwd: ROOT,
+      encoding: 'utf8',
+      maxBuffer: 16 * 1024 * 1024,
+      env: { ...process.env, CI: process.env.CI || '1' },
+    });
+    if (gateRunner.status !== 0) {
+      throw new Error(`stage1-gate-runner-failed:${bounded(gateRunner.stderr || gateRunner.stdout)}`);
+    }
+    gates = JSON.parse(fs.readFileSync(gateResultPath, 'utf8'));
+    if (!Array.isArray(gates) || gates.length !== GATES.length) throw new Error('stage1-gate-result-count-invalid');
+  } finally {
+    fs.rmSync(gateResultPath, { force: true });
   }
 
   const verdict = gates.every((gate) => gate.status === 'passed') ? 'READY' : 'BLOCKED';
