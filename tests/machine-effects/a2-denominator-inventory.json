@@ -69,7 +69,30 @@
           },
           { "id": "memory", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "Memory families include constrained-unpredictable forms and implementation-defined prefetch effects." },
           { "id": "simd", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "SIMD registry includes unsupported/scalable-vector and unresolved operand shapes." },
-          { "id": "fp", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "FP registry includes unavailable encoded immediates and unsupported forms." },
+          {
+            "id": "fp",
+            "status": "exact",
+            "coverage": "exact-with-intrinsic",
+            "preexisting": false,
+            "oracle": "arm-a-profile-a64-floating-point-encoding-tables + deployed-capstone-5-arm64 + llvm-mc-18-aarch64-disassembler",
+            "reason": "All 45 registry-owned scalar FP mnemonics are bound to 67 A64 encoding rows, including complete FPImm8, condition, fixed-point scale, type, and register discriminator domains.",
+            "proof": {
+              "schemaVersion": "machine-effects-effect-unit-proof/v1",
+              "source": "js/targets/architecture/arm64/effects/fp.js",
+              "test": "tests/machine-effects/arm64-fp-core.test.mjs",
+              "denominatorTest": "tests/machine-effects/arm64-a64-fp-denominator.test.mjs",
+              "denominator": {
+                "schemaVersion": "arm64-a64-fp-denominator/v1",
+                "denominatorId": "arm64:a64:fp-encoding-discriminators:v1",
+                "profileId": "arm64:a64",
+                "encodingFamilyCount": 67,
+                "encodingCaseCount": 8417,
+                "mnemonicCount": 45,
+                "fpImmediateCount": 256,
+                "oracleIds": ["arm-a-profile-a64-floating-point-encoding-tables", "deployed-capstone-5-arm64", "llvm-mc-18-aarch64-disassembler"]
+              }
+            }
+          },
           {
             "id": "integer",
             "status": "exact",

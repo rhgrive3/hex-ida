@@ -27,6 +27,7 @@ import {
 } from './riscv64-rv64imc-denominator.mjs';
 import { validateArm64A64ControlDenominator } from './arm64-a64-control-denominator.mjs';
 import { validateArm64A64FlagsDenominator } from './arm64-a64-flags-denominator.mjs';
+import { validateArm64A64FpDenominator } from './arm64-a64-fp-denominator.mjs';
 import {
   ARM64_A64_INTEGER_DENOMINATOR_ID,
   ARM64_A64_INTEGER_DENOMINATOR_SCHEMA,
@@ -149,7 +150,7 @@ function validateStatus(unit, pathName) {
 }
 
 function validateArm64FamilyProof(unit, expected, live, pathName) {
-  if (!unit || unit.status !== 'exact' || unit.coverage !== 'exact' || unit.preexisting !== false
+  if (!unit || unit.status !== 'exact' || unit.coverage !== (expected.coverage || 'exact') || unit.preexisting !== false
     || unit.oracle !== expected.oracle
     || unit.proof?.schemaVersion !== 'machine-effects-effect-unit-proof/v1'
     || unit.proof?.source !== expected.source
@@ -158,7 +159,7 @@ function validateArm64FamilyProof(unit, expected, live, pathName) {
     fail(`a2-denominator-arm64-${expected.id}-proof-identity-drift`, pathName);
   }
   const proof = unit.proof.denominator;
-  for (const field of ['schemaVersion','denominatorId','profileId','encodingFamilyCount','encodingCaseCount']) {
+  for (const field of ['schemaVersion','denominatorId','profileId','encodingFamilyCount','encodingCaseCount',...(expected.cardinalityFields || [])]) {
     if (proof?.[field] !== live[field]) fail(`a2-denominator-arm64-${expected.id}-proof-denominator-drift`, `${pathName}:${field}`);
   }
   if (!sameSet(proof.oracleIds || [], live.oracleIds)) fail(`a2-denominator-arm64-${expected.id}-proof-denominator-drift`, `${pathName}:oracleIds`);
@@ -358,6 +359,12 @@ export function validateA2DenominatorInventory(inventory = loadA2DenominatorInve
         test:'tests/machine-effects/arm64-flags-nzcv.test.mjs', denominatorTest:'tests/machine-effects/arm64-a64-flags-denominator.test.mjs',
         oracle:'arm-a-profile-a64-data-processing-encoding-tables + deployed-capstone-5-arm64 + llvm-mc-18-aarch64-disassembler',
       }, validateArm64A64FlagsDenominator(), pathName);
+      validateArm64FamilyProof(families.find((family) => family.id === 'fp'), {
+        id:'fp', source:'js/targets/architecture/arm64/effects/fp.js',
+        test:'tests/machine-effects/arm64-fp-core.test.mjs', denominatorTest:'tests/machine-effects/arm64-a64-fp-denominator.test.mjs',
+        oracle:'arm-a-profile-a64-floating-point-encoding-tables + deployed-capstone-5-arm64 + llvm-mc-18-aarch64-disassembler',
+        coverage:'exact-with-intrinsic', cardinalityFields:['mnemonicCount','fpImmediateCount'],
+      }, validateArm64A64FpDenominator(), pathName);
     }
   }
 

@@ -24,6 +24,8 @@ assert.equal(validation.blockingGaps.includes('arm64:a64:effect-family:flags'), 
   'the finite A64 flags encoding proof closes only NZCV-producing aliases and conditional compares');
 assert.equal(validation.blockingGaps.includes('arm64:a64:effect-family:integer'), false,
   'the finite A64 integer encoding and alias denominator closes only the registry-owned integer family');
+assert.equal(validation.blockingGaps.includes('arm64:a64:effect-family:fp'), false,
+  'the finite A64 scalar FP denominator closes only registry-owned FP forms');
 assert.equal(validation.blockingGaps.includes('riscv64:rv64imc:all-valid-32-bit-and-compressed-encodings'), false,
   'the exhaustive versioned RV64IMC decoder denominator closes only its decoder unit');
 assert.ok(validation.blockingGaps.includes('x86_64:long-64:effect-family:atomic'));
@@ -98,7 +100,7 @@ for (const mutate of [
   assert.throws(() => validateA2DenominatorInventory(mutated), /a2-denominator-x86-lea-proof-identity-drift/);
 }
 
-for (const familyId of ['control', 'flags']) {
+for (const familyId of ['control', 'flags', 'fp']) {
   for (const mutate of [
     (family) => { family.oracle = 'caller-selected-label'; },
     (family) => { family.proof.source = 'js/targets/architecture/arm64/effects/index.js'; },
@@ -111,6 +113,14 @@ for (const familyId of ['control', 'flags']) {
     mutate(family);
     assert.throws(() => validateA2DenominatorInventory(mutated), new RegExp(`a2-denominator-arm64-${familyId}-proof-`));
   }
+}
+
+for (const field of ['mnemonicCount','fpImmediateCount']) {
+  const mutated = clone();
+  const fpFamily = mutated.architectures.find((architecture) => architecture.id === 'arm64').effectRegistry.families.find((item) => item.id === 'fp');
+  fpFamily.proof.denominator[field] -= 1;
+  assert.throws(() => validateA2DenominatorInventory(mutated), /a2-denominator-arm64-fp-proof-denominator-drift/,
+    `FP proof cardinality ${field} must be live-bound`);
 }
 
 {

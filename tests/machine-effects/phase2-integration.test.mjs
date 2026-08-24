@@ -21,9 +21,9 @@ const vec = (num, arr) => ({ k:'reg', cls:'vec', num, bits:128, arr, text:`v${nu
 
 assert.equal(MACHINE_EFFECTS_SCHEMA_VERSION, 1);
 // Keep this integration contract synchronized with the production ARM64 semantic version.
-assert.equal(ARM64_MACHINE_EFFECTS_SEMANTIC_VERSION, '5');
-assert.equal(ARM64_ARCHITECTURE.semanticVersion, '5');
-assert.equal(ARM64E_ARCHITECTURE.semanticVersion, '5');
+assert.equal(ARM64_MACHINE_EFFECTS_SEMANTIC_VERSION, '6');
+assert.equal(ARM64_ARCHITECTURE.semanticVersion, '6');
+assert.equal(ARM64E_ARCHITECTURE.semanticVersion, '6');
 assert.equal(ARM64_ARCHITECTURE.capabilities.exactEffects, 'partial');
 assert.equal(ARM64E_ARCHITECTURE.capabilities.exactEffects, 'partial');
 assert.equal(ARM64_ARCHITECTURE.capabilities.semanticAnalysis, 'legacy-v1');

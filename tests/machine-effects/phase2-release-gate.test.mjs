@@ -84,9 +84,9 @@ for (const [key, architecture, instruction] of coverageCorpus) {
 
 const coverage = summarizeCoverage(coverageRecords, { integrationState:INTEGRATION_STATE.INTEGRATED });
 assert.deepEqual(coverage.counts, {
-  exact:11,
+  exact:12,
   'exact-with-intrinsic':7,
-  partial:5,
+  partial:4,
   unknown:0,
   unsupported:1,
 });
@@ -233,7 +233,7 @@ const shadowCases = [
 ];
 
 const differential = await runDifferentialSuite(shadowCases, {
-  semanticVersions:{ machineEffects:'1.0.0', arm64:'5', legacyV1:'1' },
+  semanticVersions:{ machineEffects:'1.0.0', arm64:'6', legacyV1:'1' },
   machineLifter:(instruction) => ARM64_ARCHITECTURE.liftExact(instruction),
   compatibilityLowering:(bundle) => lowerMachineEffectsToLegacyV1(bundle),
   legacyV1Oracle,
@@ -256,7 +256,7 @@ assert.ok(conservativeCompatibilityBarriers > 0, 'fault information must remain 
 const releaseGate = Object.freeze({
   schemaVersion:'phase2-machine-effects-release-gate/v1',
   machineEffectsSchemaVersion:'1.0.0',
-  architectureSemanticVersion:'5',
+  architectureSemanticVersion:'6',
   coverageScope:'phase2-release-corpus',
   coverage,
   shadowDifferentialScope:'representative-observable-v1-smoke',
