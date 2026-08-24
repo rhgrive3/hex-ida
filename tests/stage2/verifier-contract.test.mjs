@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { isStage2RepositoryFile, minimumVerdictCounts, parseNonNegativeInteger, stage2CanonicalBuildIdentity, stage2KnownDenominatorGaps, validateScopeAndLedger, verifyStage2 } from '../../tools/validation/stage2/verify.mjs';
+import { isStage2RepositoryFile, minimumVerdictCounts, parseNonNegativeInteger, physicalEvidenceArtifactPathAllowed, stage2CanonicalBuildIdentity, stage2KnownDenominatorGaps, validateScopeAndLedger, verifyStage2 } from '../../tools/validation/stage2/verify.mjs';
 
 const knownGaps = stage2KnownDenominatorGaps();
 assert.ok(knownGaps.includes('arm64:a64:all-decoder-encodings-and-aliases'));
@@ -41,6 +41,12 @@ assert.ok(validateScopeAndLedger('HEAD', { scope, ledger: manuallyProven }).erro
 assert.equal(isStage2RepositoryFile('README.md'), true);
 assert.equal(isStage2RepositoryFile('../README.md'), false);
 assert.equal(isStage2RepositoryFile('/tmp/stage2-evidence.json'), false);
+const artifact = (relative) => `artifact:${relative}@sha256:${'a'.repeat(64)}`;
+assert.equal(physicalEvidenceArtifactPathAllowed(artifact('README.md'), 'physical-ipad-fixture'), false, 'arbitrary repository artifacts cannot stand in for the physical fixture');
+assert.equal(physicalEvidenceArtifactPathAllowed(artifact('tests/phase5/corpus/fixtures/vertical-sysv-amd64.elf'), 'physical-ipad-fixture'), true);
+assert.equal(physicalEvidenceArtifactPathAllowed(artifact('README.md'), 'physical-ipad-scenario-output'), false, 'arbitrary JSON-free artifacts cannot stand in for scenario output');
+assert.equal(physicalEvidenceArtifactPathAllowed(artifact('reports/stage2/physical-ipad/run-1/scenario.json'), 'physical-ipad-scenario-output'), true);
+assert.equal(physicalEvidenceArtifactPathAllowed(artifact('reports/stage2/physical-ipad/run-1/nested/scenario.json'), 'physical-ipad-scenario-output'), false);
 assert.throws(() => parseNonNegativeInteger('--release-blocking-issue-count', ['--release-blocking-issue-count', '']), /release-blocking-issue-count-invalid/);
 assert.throws(() => verifyStage2({ finalMode: true, expectedSha: '' }), /stage2-exact-head-required/);
 

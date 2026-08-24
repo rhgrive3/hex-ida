@@ -17,6 +17,12 @@ const SCOPE_PATH = path.join(ROOT, 'tools/validation/stage2/completion-scope.loc
 const LEDGER_PATH = path.join(ROOT, 'tools/validation/stage2/closure-ledger.json');
 const DENOMINATOR_PATH = path.join(ROOT, 'tools/validation/stage2/profile-denominators.lock.json');
 const DENOMINATOR_INVENTORY_PATH = path.join(ROOT, 'tools/validation/stage2/profile-denominator-inventory.json');
+const PHYSICAL_IPAD_FIXTURE_PATHS = new Set([
+  'tests/phase5/corpus/fixtures/vertical-sysv-amd64.elf',
+  'tests/phase5/corpus/fixtures/vertical-microsoft-x64.exe',
+  'tests/phase12/rebuild/fixtures/vertical-microsoft-x86.exe',
+]);
+const PHYSICAL_IPAD_SCENARIO_ROOT = 'reports/stage2/physical-ipad/';
 const OUTPUT_LIMIT = 7000;
 const REQUIRED_LEDGER_IDS = Object.freeze([
   ...STAGE2_PROFILE_EVIDENCE_IDS,
@@ -321,8 +327,21 @@ function evidenceIdentityAtHead(identity, context = {}, candidateCommitSha = nul
 }
 
 function physicalEvidenceIdentityAtHead(identity, context = {}, candidateCommitSha = null, candidateTreeSha = null) {
-  if (!/^artifact:[^@]+@sha256:[0-9a-f]{64}$/.test(String(identity || ''))) return null;
+  if (!physicalEvidenceArtifactPathAllowed(identity, context.kind)) return null;
   return evidenceIdentityAtHead(identity, context, candidateCommitSha, candidateTreeSha);
+}
+
+export function physicalEvidenceArtifactPathAllowed(identity, kind) {
+  const match = /^artifact:([^@]+)@sha256:[0-9a-f]{64}$/.exec(String(identity || ''));
+  const relative = match ? safeRelativePath(match[1]) : null;
+  if (!relative) return false;
+  if (kind === 'physical-ipad-fixture') return PHYSICAL_IPAD_FIXTURE_PATHS.has(relative);
+  if (kind === 'physical-ipad-scenario-output') {
+    return relative.startsWith(PHYSICAL_IPAD_SCENARIO_ROOT)
+      && relative.endsWith('.json')
+      && relative.split('/').length === 5;
+  }
+  return false;
 }
 
 export function stage2KnownDenominatorGaps() {
