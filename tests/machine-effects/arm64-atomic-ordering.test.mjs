@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { liftArm64MemoryEffects } from '../../js/targets/architecture/arm64/effects/memory.js';
-import { liftArm64AtomicEffects, ARM64_ATOMIC_INSTRUCTION_INVENTORY } from '../../js/targets/architecture/arm64/effects/atomic.js';
+import { liftArm64AtomicEffects, ARM64_ATOMIC_EFFECT_MNEMONICS, ARM64_ATOMIC_INSTRUCTION_INVENTORY } from '../../js/targets/architecture/arm64/effects/atomic.js';
 
 let sequence = 0;
 const x = (n) => ({ k:'reg', text:`x${n}`, cls:'gp', bits:64, num:n });
@@ -73,12 +73,21 @@ function liftAtomic(mnemonic, ops) { return liftArm64AtomicEffects({ mnemonic, o
 
 {
   const addByte = liftAtomic('ldaddb', [w(0), w(2), mem(x(1))]);
-  const trunc = addByte.operations.find((op) => op.kind === 'value' && op.opcode === 'truncate');
+  const physicalRead = addByte.operations.find((op) => op.kind === 'register-read' && op.register?.registerId === 'x0');
+  const viewTrunc = addByte.operations.find((op) => op.kind === 'value' && op.opcode === 'truncate'
+    && op.metadata?.purpose === 'atomic-register-view');
+  const widthTrunc = addByte.operations.find((op) => op.kind === 'value' && op.opcode === 'truncate'
+    && op.metadata?.purpose === 'atomic-source-width');
   assert.equal(addByte.completeness, 'exact-with-intrinsic');
-  assert.ok(trunc, 'byte atomic source must explicitly truncate the W view');
-  assert.equal(trunc.metadata.fromBits, 32);
-  assert.equal(trunc.metadata.toBits, 8);
+  assert.equal(physicalRead?.register.widthBits, 64, 'atomic W sources read canonical physical X state');
+  assert.ok(viewTrunc, 'W atomic source is explicitly projected to its 32-bit architectural view');
+  assert.equal(viewTrunc.metadata.fromBits, 64);
+  assert.equal(viewTrunc.metadata.toBits, 32);
+  assert.ok(widthTrunc, 'byte atomic source must explicitly truncate the W view');
+  assert.equal(widthTrunc.metadata.fromBits, 32);
+  assert.equal(widthTrunc.metadata.toBits, 8);
   assert.equal(addByte.operations.find((op) => op.kind === 'intrinsic').effectSummary.memoryRead.accesses[0].widthBits, 8);
+  assert.ok(!addByte.possibleFaults.some((fault) => fault.kind === 'alignment-fault'), 'byte atomics cannot be misaligned');
 }
 
 {
@@ -104,19 +113,55 @@ function liftAtomic(mnemonic, ops) { return liftArm64AtomicEffects({ mnemonic, o
   const b = liftAtomic('clrex', []);
   assert.equal(b.completeness, 'exact-with-intrinsic');
   assert.equal(b.operations[0].intrinsicId, 'arm64.exclusive-monitor-clear');
+  const hiddenWrites = b.operations.filter((op) => op.kind === 'register-write' && op.metadata?.purpose === 'exclusive-monitor-state');
+  assert.deepEqual(hiddenWrites.map((op) => op.register.registerId), [
+    'arm64.exclusive.valid', 'arm64.exclusive.address', 'arm64.exclusive.size', 'arm64.exclusive.token',
+  ]);
+  assert.equal(hiddenWrites[0].value.value, '0');
+  assert.equal(hiddenWrites[1].value.value, '0');
+  assert.equal(hiddenWrites[2].value.value, '0');
 }
 
 {
   const malformedWriteback = liftAtomic('stxr', [w(0), x(2), { k:'mem', base:x(1), mode:'post', addressDisp:null, writebackDisp:null }]);
+  const malformedStatusDataOverlap = liftAtomic('stxr', [w(2), x(2), mem(x(1))]);
+  const malformedStatusBaseOverlap = liftAtomic('stxr', [w(1), x(2), mem(x(1))]);
   const malformedOffset = liftAtomic('cas', [x(0), x(2), mem(x(1), { disp:8n })]);
   const malformedIndex = liftAtomic('ldxr', [x(0), mem(x(1), { index:x(3) })]);
   const malformedByteRegister = liftAtomic('ldaddb', [x(0), x(2), mem(x(1))]);
   assert.equal(malformedWriteback.completeness, 'partial');
+  assert.equal(malformedStatusDataOverlap.completeness, 'partial');
+  assert.match(malformedStatusDataOverlap.unknownEffects.reason, /constrained-unpredictable/);
+  assert.equal(malformedStatusBaseOverlap.completeness, 'partial');
+  assert.match(malformedStatusBaseOverlap.unknownEffects.reason, /constrained-unpredictable/);
   assert.equal(malformedOffset.completeness, 'partial');
   assert.equal(malformedIndex.completeness, 'partial');
   assert.equal(malformedByteRegister.completeness, 'partial');
   assert.ok(malformedWriteback.unknownEffects.categories.includes('memory'));
 }
+
+
+{
+  for (const [mnemonic, expected] of [['ldadd','relaxed'],['ldadda','acquire'],['ldaddl','release'],['ldaddal','acq-rel']]) {
+    const b = liftAtomic(mnemonic, [x(0), x(2), mem(x(1))]);
+    assert.equal(b.completeness, 'exact-with-intrinsic');
+    assert.equal(b.metadata.ordering, expected, mnemonic);
+  }
+}
+
+{
+  const malformedExtraRegister = liftAtomic('cas', [x(0), x(2), x(3), mem(x(1))]);
+  const malformedClrex = liftAtomic('clrex', [other('#1'), other('#2')]);
+  const malformedClrexImmediate = liftAtomic('clrex', [{ k:'imm', text:'#16', value:16n }]);
+  assert.equal(malformedExtraRegister.completeness, 'partial');
+  assert.equal(malformedClrex.completeness, 'partial');
+  assert.equal(malformedClrexImmediate.completeness, 'partial');
+  assert.equal(malformedExtraRegister.operations.length, 0);
+}
+
+assert.ok(ARM64_ATOMIC_EFFECT_MNEMONICS.includes('ldaxrb'));
+assert.ok(ARM64_ATOMIC_EFFECT_MNEMONICS.includes('casalh'));
+assert.ok(ARM64_ATOMIC_EFFECT_MNEMONICS.includes('ldeoral'));
 
 assert.deepEqual(ARM64_ATOMIC_INSTRUCTION_INVENTORY.compareSwap, ['cas','casa','casl','casal']);
 console.log('arm64 atomic ordering effects: PASS');
