@@ -259,50 +259,59 @@ try:
     pause_continue_accepted = False
     pause_running_observed = False
     pause_stop_accepted = False
+    pause_stopped_observed = False
     pause_thread = None
     pause_frame = None
     pause_rax = before_rax
+    pause_listener = lldb.SBListener('a7-host-pause')
+    pause_broadcaster = process.GetBroadcaster()
+    pause_mask = pause_broadcaster.AddListener(pause_listener, lldb.SBProcess.eBroadcastBitStateChanged)
+    if (pause_mask & lldb.SBProcess.eBroadcastBitStateChanged) == 0:
+        fail('pause-listener-registration-failed')
+    continue_error = process.Continue()
+    if not continue_error.Success():
+        fail('pause-continue-failed:' + str(continue_error))
+    pause_continue_accepted = True
     pause_deadline = time.time() + 3.0
     while time.time() < pause_deadline:
-        state = process.GetState()
-        if state in (lldb.eStateExited, lldb.eStateDetached, lldb.eStateInvalid):
-            fail('pause-process-terminated:' + state_name(state))
-        if not pause_continue_accepted:
-            if not lldb.SBDebugger.StateIsStoppedState(state):
-                time.sleep(0.01)
-                continue
-            continue_error = process.Continue()
-            if not continue_error.Success():
-                fail('pause-continue-failed:' + str(continue_error))
-            pause_continue_accepted = True
-        running_state = wait_for(lambda value: value == lldb.eStateRunning, timeout=0.25)
-        if running_state == lldb.eStateRunning:
+        event = lldb.SBEvent()
+        if not pause_listener.WaitForEvent(1, event):
+            continue
+        event_process = lldb.SBProcess.GetProcessFromEvent(event)
+        if not event_process.IsValid() or event_process.GetProcessID() != attached_pid:
+            continue
+        event_state = lldb.SBProcess.GetStateFromEvent(event)
+        if event_state in (lldb.eStateExited, lldb.eStateDetached, lldb.eStateInvalid):
+            fail('pause-process-terminated:' + state_name(event_state))
+        if event_state == lldb.eStateRunning:
             pause_running_observed = True
-        else:
-            state = process.GetState()
-            if state in (lldb.eStateExited, lldb.eStateDetached, lldb.eStateInvalid):
-                fail('pause-process-terminated:' + state_name(state))
-            if not pause_running_observed:
-                continue
-        stop_error = process.Stop()
-        if not stop_error.Success():
-            state = process.GetState()
-            if state in (lldb.eStateExited, lldb.eStateDetached, lldb.eStateInvalid):
-                fail('pause-process-terminated:' + state_name(state))
-            time.sleep(0.01)
-            continue
-        pause_stop_accepted = True
-        stopped_state = wait_for(lldb.SBDebugger.StateIsStoppedState, timeout=0.5)
-        if not lldb.SBDebugger.StateIsStoppedState(stopped_state):
-            continue
-        pause_thread, pause_frame = current_frame()
-        pause_rax = reg(pause_frame, 'rax')
-        if pause_rax != before_rax:
             break
-    if not pause_continue_accepted:
-        fail('pause-continue-not-observed')
     if not pause_running_observed:
         fail('pause-running-not-observed')
+    stop_error = process.Stop()
+    if not stop_error.Success():
+        fail('pause-stop-failed:' + str(stop_error))
+    pause_stop_accepted = True
+    pause_deadline = time.time() + 3.0
+    while time.time() < pause_deadline:
+        event = lldb.SBEvent()
+        if not pause_listener.WaitForEvent(1, event):
+            continue
+        event_process = lldb.SBProcess.GetProcessFromEvent(event)
+        if not event_process.IsValid() or event_process.GetProcessID() != attached_pid:
+            continue
+        event_state = lldb.SBProcess.GetStateFromEvent(event)
+        if event_state in (lldb.eStateExited, lldb.eStateDetached, lldb.eStateInvalid):
+            fail('pause-process-terminated:' + state_name(event_state))
+        if lldb.SBDebugger.StateIsStoppedState(event_state):
+            pause_stopped_observed = True
+            break
+    if not pause_stopped_observed:
+        fail('pause-stopped-not-observed')
+    pause_thread, pause_frame = current_frame()
+    pause_rax = reg(pause_frame, 'rax')
+    if not pause_continue_accepted:
+        fail('pause-continue-not-observed')
     if not pause_stop_accepted:
         fail('pause-stop-not-accepted')
     if pause_frame is None or pause_rax == before_rax:
