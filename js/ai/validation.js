@@ -85,11 +85,19 @@ export function validateAIResult(result) {
 }
 
 export function addressText(value) {
-  if (value == null) return null;
+  if (value == null || typeof value === 'boolean') return null;
   // BigInt('') and BigInt('   ') are 0n, so a missing or blank address would
   // become a legitimate-looking action target at 0x0 (#1301). Blank input is
   // absent input, not address zero; only an explicit '0' means 0x0.
-  if (typeof value === 'string' && value.trim() === '') return null;
+  if (typeof value === 'string') {
+    const text = value.trim();
+    if (!text || !/^(?:0[xX][0-9a-fA-F]+|[0-9]+)$/.test(text)) return null;
+    value = text;
+  } else if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value) || value < 0) return null;
+  } else if (typeof value !== 'bigint') {
+    return null;
+  }
   try {
     const n = typeof value === 'bigint' ? value : BigInt(value);
     return n < 0n ? null : `0x${n.toString(16)}`;

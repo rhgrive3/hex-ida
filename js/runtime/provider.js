@@ -238,6 +238,10 @@ export class DebugAdapterRuntimeProvider {
         finally { if (this.activeSession === session) this.activeSession = null; }
       },
     });
+    // The provider session owns the event/request generation. Reusable remote
+    // adapters keep their own protocol counter across disconnects, so align it
+    // to the newly-created session before connect or facet publication.
+    if (typeof this.adapter.setEpoch === 'function') this.adapter.setEpoch(session.epoch);
     const facets = {};
     if (this._descriptor.facets.includes('debugger')) facets.debugger = debuggerFacet(this.adapter, session);
     if (this._descriptor.facets.includes('instrumentation')) facets.instrumentation = instrumentationFacet(this.adapter, session);

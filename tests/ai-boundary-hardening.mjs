@@ -11,6 +11,8 @@
  */
 import assert from 'node:assert/strict';
 import { jsonSafe, addressText } from '../js/ai/validation.js';
+import { PROPOSAL_STATUSES } from '../js/ai/schema.js';
+import { ProposalStore } from '../js/ai/proposals.js';
 import { sanitizeValue, sanitizeToolSchema } from '../js/ai/provider/worker-protocol.js';
 import { measureWirePayload, assertWireBudget } from '../js/ai/budget/wire.js';
 import '../js/worker-budget.js';
@@ -58,9 +60,30 @@ assert.equal(addressText('0x0'), '0x0');
 assert.equal(addressText('0x100000000'), '0x100000000');
 assert.equal(addressText(-1), null);
 assert.equal(addressText('nonsense'), null);
+assert.equal(addressText(true), null);
+assert.equal(addressText(false), null);
+assert.equal(addressText(1.5), null);
+assert.equal(addressText([]), null);
+assert.equal(addressText({}), null);
 assert.equal(addressText(null), null);
 assert.equal(addressText(undefined), null);
-console.log('  ok 3 blank addresses are absent input, not address zero (#1301)');
+console.log('  ok 3 only explicit address representations become addresses (#1301 #1697)');
+
+/* ── #1693 observable proposal states stay inside the public contract ───── */
+
+{
+  const store = new ProposalStore({ evidenceStore:{ has:(id) => id === 'ev:applying' } });
+  const proposal = store.create({ kind:'rename', evidenceIds:['ev:applying'], before:'old', after:'new' });
+  const { approvalToken } = store.approve(proposal.id);
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const applying = store.apply(proposal.id, { approvalToken, currentState:'old', apply:async () => gate });
+  assert.equal(store.get(proposal.id).status, 'applying');
+  assert.equal(PROPOSAL_STATUSES.includes(store.get(proposal.id).status), true, 'every externally observable proposal state must be public');
+  release();
+  await applying;
+}
+console.log('  ok 4 applying is an enumerated proposal state (#1693)');
 
 /* ── #1303 予算は実際に送る payload を測る ─────────────────── */
 
@@ -112,7 +135,7 @@ console.log('  ok 3 blank addresses are absent input, not address zero (#1301)')
   const usage = assertWireBudget({ messages: [{ role: 'user', content: 'hi' }] });
   assert.ok(usage.wireBytes > 0 && usage.wireBytes < 1024);
 }
-console.log('  ok 4 wire budget measures the payload that is actually sent (#1303)');
+console.log('  ok 5 wire budget measures the payload that is actually sent (#1303)');
 
 /* ── #1337 release は take と同じ厳しさで ──────────────────── */
 

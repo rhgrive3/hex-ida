@@ -1,18 +1,20 @@
 import { AIError } from './schema.js';
 
+const DEFAULT_TIMEOUT_MS = 30000;
 const DEFAULT_MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 
 export async function requestJSON(url, body, {
   signal,
-  timeoutMs = 30000,
+  timeoutMs = DEFAULT_TIMEOUT_MS,
   maxResponseBytes = DEFAULT_MAX_RESPONSE_BYTES,
   fetchImpl = globalThis.fetch,
 } = {}) {
   if (typeof fetchImpl !== 'function') throw new AIError('provider_error', 'Fetch is unavailable.');
   if (signal?.aborted) throw new AIError('cancelled', 'AI investigation was cancelled.');
   const responseLimit = normalizeLimit(maxResponseBytes);
+  const timeoutDelay = normalizeTimeout(timeoutMs);
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort('timeout'), Math.max(1, timeoutMs));
+  const timeout = setTimeout(() => controller.abort('timeout'), timeoutDelay);
   const abort = () => controller.abort(signal?.reason ?? 'cancelled');
   if (signal) {
     signal.addEventListener('abort', abort, { once: true });
@@ -90,6 +92,15 @@ async function readBoundedText(response, maxBytes, controller) {
     throw new AIError('context_too_large', `The AI service response exceeded ${maxBytes} bytes.`, { bytes, maxBytes });
   }
   return text;
+}
+
+function normalizeTimeout(value) {
+  if (typeof value === 'boolean') return DEFAULT_TIMEOUT_MS;
+  if (typeof value === 'string' && value.trim() === '') return DEFAULT_TIMEOUT_MS;
+  if (typeof value !== 'number' && typeof value !== 'string') return DEFAULT_TIMEOUT_MS;
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return DEFAULT_TIMEOUT_MS;
+  return Math.max(1, Math.floor(n));
 }
 
 function normalizeLimit(value) {

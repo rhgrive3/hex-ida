@@ -92,6 +92,26 @@ for (const reason of EXPLICIT_FALSY) {
 }
 console.log('  ok 1 AI transport forwards explicit falsy reasons (#1345)');
 
+/* ── 1b. invalid timeout types cannot collapse into an immediate timeout ── */
+
+{
+  const originalSetTimeout = globalThis.setTimeout;
+  const observed = [];
+  globalThis.setTimeout = (_fn, delay) => { observed.push(delay); return 0; };
+  const response = { ok:true, status:200, headers:{ get:() => null }, text:async () => '{}' };
+  try {
+    for (const timeoutMs of [false, true, '', '   ', Number.NaN, Number.POSITIVE_INFINITY, {}, []]) {
+      await requestJSON('/x', {}, { timeoutMs, fetchImpl:async () => response });
+      assert.equal(observed.pop(), 30000, `invalid timeout ${String(timeoutMs)} must use the safe default (#1696)`);
+    }
+    await requestJSON('/x', {}, { timeoutMs:1, fetchImpl:async () => response });
+    assert.equal(observed.pop(), 1, 'an explicit positive numeric timeout remains valid');
+  } finally {
+    globalThis.setTimeout = originalSetTimeout;
+  }
+}
+console.log('  ok 2 invalid timeout types use the safe default (#1696)');
+
 /* ── 2. source 走査: 伝播サイトは全て ?? であること ─────────── */
 
 /**
