@@ -34,6 +34,6 @@ test('CLI/STI/HLT never become NOPs', () => {
   for(const family of ['cli','sti','hlt']){const bundle=effects(family,[],{prefixes:legacy(),instructionId:`p5-3:${family}`}); assert.equal(bundle.completeness,'partial',family); assert.equal(bundle.metadata.treatedAsNop,false,family); assert.ok(bundle.possibleFaults.some((fault)=>fault.kind==='general-protection'),family);}
 });
 
-test('x87 state remains explicit partial where the decoded form does not require absent ST registers', () => {
-  const bundle=effects('fldz',[],{prefixes:legacy(),instructionId:'p5-3:fldz'}); assert.equal(bundle.completeness,'partial'); assert.match(bundle.unknownEffects.reason,/x87-physical-and-environment-state-unmodelled/); assert.equal(bundle.metadata.x87StateInvented,false);
+test('synthetic x87 input fails closed unless trusted decoder provenance is present', () => {
+  const bundle=effects('fldz',[],{prefixes:legacy(),rawBytes:[0xd9,0xee],instructionId:'p5-3:fldz'}); assert.equal(bundle.completeness,'partial'); assert.match(bundle.unknownEffects.reason,/trusted-decoder-provenance/); assert.equal(bundle.metadata.x87PhysicalStateModeled,true);
 });

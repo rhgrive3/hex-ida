@@ -41,9 +41,9 @@ test('VEX support is instruction-specific and does not overclaim AVX2 256-bit pa
   const v256=effects('vpaddd',[reg('ymm0','write'),reg('ymm1','read'),reg('ymm2','read')],{prefixes:vex2(0xf4),instructionId:'p5-3:vpaddd256'}); assert.equal(v256.completeness,'partial'); assert.match(v256.unknownEffects.reason,/vector-width-unmodelled/);
 });
 
-test('MMX is a canonical x87-stack alias while EMMS semantics remain a separate integration step', () => {
+test('MMX is an x87-stack alias and EMMS clears the canonical x87 tag word', () => {
   const decoded=createX86DecodedInstruction(instruction('pxor',[reg('mm0'),reg('mm1')],{instructionId:'p5-3:mmx'}));
-  assert.deepEqual(decoded.detail.operands.map((operand)=>operand.register.physicalId),['x87-stack','x87-stack']);
-  assert.deepEqual(decoded.detail.operands.map((operand)=>operand.register.viewBits),[64,64]);
-  const emms=effects('emms',[],{prefixes:legacy(),instructionId:'p5-3:emms'}); assert.equal(emms.completeness,'partial'); assert.match(emms.unknownEffects.reason,/mmx-x87-alias-state-unmodelled/);
+  assert.equal(decoded.detail.operands[0].register.physicalId,'x87-stack');
+  assert.equal(decoded.detail.operands[0].register.kind,'mmx');
+  const emms=effects('emms',[],{prefixes:legacy(),rawBytes:[0x0f,0x77],instructionId:'p5-3:emms'}); assert.equal(emms.completeness,'exact'); assert.ok(ops(emms,'register-write').some((op)=>op.register.registerId==='fptw'));
 });

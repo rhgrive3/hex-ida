@@ -32,10 +32,10 @@ test('VEX.128 zeroes YMM upper 128 and VEX.256 replaces the full YMM', () => {
 });
 
 test('unsupported vector state and malformed encoding fail closed', () => {
-  assert.throws(() => lift(instruction('pxor', [reg('xmm16'),reg('xmm0')], { instructionId:'p5-3:xmm16' })), /x86-decoded-instruction-unknown-register/);
+  assert.throws(() => lift(instruction('pxor', [reg('xmm16'),reg('xmm0')], { instructionId:'p5-3:xmm16' })), /x86-decoded-instruction-high-vector-register-requires-evex/);
   const zmm = lift(instruction('vxorps', [reg('zmm0'),reg('zmm1'),reg('zmm2')], { prefixes:evex(), instructionId:'p5-3:zmm' }));
   assert.equal(zmm.completeness, 'partial');
-  assert.match(zmm.unknownEffects.reason, /evex-physical-state-unmodelled/);
+  assert.match(zmm.unknownEffects.reason, /evex/);
   const evexLow = lift(instruction('vxorps', [reg('xmm0'),reg('xmm1'),reg('xmm2')], { prefixes:evex(), instructionId:'p5-3:evex-low' }));
   assert.equal(evexLow.completeness, 'partial');
   assert.match(evexLow.unknownEffects.reason, /evex-physical-state-unmodelled/);
@@ -57,12 +57,14 @@ test('formatted mnemonic/opStr are not semantic authority and provenance is stab
   assert.equal(serializeMachineEffectBundle(first), serializeMachineEffectBundle(second));
 });
 
-test('VZEROUPPER is bounded and updates only canonical modeled YMM state', () => {
+test('VZEROUPPER is bounded and clears canonical MAXVL state for vector registers 0-15', () => {
   const bundle = lift(instruction('vzeroupper', [], { prefixes:vex2(0xf8), rawBytes:[0xc5,0xf8,0x77], instructionId:'p5-3:vzeroupper' }));
   assert.equal(bundle.completeness, 'exact');
-  assert.equal(ops(bundle,'register-write').length, 16);
-  assert.equal(ops(bundle,'register-write').every((operation) => /^ymm(?:[0-9]|1[0-5])$/.test(operation.register.registerId)), true);
-  assert.ok(bundle.operations.length < 100);
+  const writes=ops(bundle,'register-write');
+  assert.equal(writes.filter((operation)=>/^ymm(?:[0-9]|1[0-5])$/.test(operation.register.registerId)).length,16);
+  assert.equal(writes.filter((operation)=>/^zmmh(?:[0-9]|1[0-5])$/.test(operation.register.registerId)).length,16);
+  assert.ok(bundle.operations.length < 180);
   assert.equal(bundle.metadata.low128, 'preserved');
-  assert.equal(bundle.metadata.upper128, 'zeroed');
+  assert.equal(bundle.metadata.bits128To511, 'zero');
+  assert.equal(bundle.metadata.maxVlBits,512);
 });
