@@ -19,6 +19,23 @@ missingLocal.items.find((item) => item.id === 'S2-P12-COLLAB-REMOTE').scopeProfi
 const missingLocalResult = validateScopeAndLedger('HEAD', { scope, ledger: missingLocal });
 assert.ok(missingLocalResult.errors.includes('phase12-profile-unmapped:collaboration:local-v1'), 'removing local collaboration ownership must block the ledger');
 
+const missingField = structuredClone(ledger);
+delete missingField.items[0].owner;
+assert.ok(validateScopeAndLedger('HEAD', { scope, ledger: missingField }).errors.includes('ledger-field-invalid:S1-A2-NATIVE:owner'));
+const wrongScopeProfile = structuredClone(ledger);
+wrongScopeProfile.items[0].scopeProfile = 'smaller-denominator';
+assert.ok(validateScopeAndLedger('HEAD', { scope, ledger: wrongScopeProfile }).errors.includes('ledger-scope-profile-invalid:S1-A2-NATIVE'));
+const wildcardWithoutMatches = structuredClone(ledger);
+wildcardWithoutMatches.items[0].testRefs = ['tests/does-not-exist/**'];
+assert.ok(validateScopeAndLedger('HEAD', { scope, ledger: wildcardWithoutMatches }).errors.includes('ledger-ref-missing:S1-A2-NATIVE:tests/does-not-exist/**'));
+const extraItem = structuredClone(ledger);
+extraItem.items.push({ ...structuredClone(ledger.items[0]), id: 'S2-UNSCOPED' });
+assert.ok(validateScopeAndLedger('HEAD', { scope, ledger: extraItem }).errors.includes('ledger-unexpected-id:S2-UNSCOPED'));
+const manuallyProven = structuredClone(ledger);
+manuallyProven.items[0].status = 'PROVEN';
+manuallyProven.items[0].proofIdentity = 'caller-minted';
+assert.ok(validateScopeAndLedger('HEAD', { scope, ledger: manuallyProven }).errors.includes('ledger-declared-proof-invalid:S1-A2-NATIVE'));
+
 const passed = (command) => ({ command, status: 'passed' });
 const complete = minimumVerdictCounts({
   structural: { errors: [] }, sourceAudit: { ok: true },

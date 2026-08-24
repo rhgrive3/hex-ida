@@ -23,6 +23,32 @@ const REQUIRED_LEDGER_IDS = Object.freeze([
   'S2-IPAD-PHYSICAL',
   'S2-FINAL-AUDIT',
 ]);
+const LEDGER_SCOPE_PROFILES = Object.freeze({
+  'S2-F6-MACHO': Object.freeze(['rebuild:transaction-v2']),
+  'S2-F6-ELF': Object.freeze(['rebuild:transaction-v2']),
+  'S2-F6-PE': Object.freeze(['rebuild:transaction-v2']),
+  'S2-P12-KNOWLEDGE': Object.freeze(['knowledge-packages:v1']),
+  'S2-P12-RULES': Object.freeze(['capability-rules:v1']),
+  'S2-P12-PATTERNS': Object.freeze(['patterns:read-only-v1']),
+  'S2-P12-COLLAB-REMOTE': Object.freeze(['collaboration:local-v1', 'collaboration:remote-security-v1']),
+});
+const LEDGER_SCOPE_PROFILE = Object.freeze({
+  'S1-A2-NATIVE': 'arm64:a64 + arm64e:a64+pac + x86_64:long-64 + riscv64:rv64imc',
+  'S2-A7-NATIVE': 'native A7 provider/architecture locked profiles',
+  'S2-M6-WASM': 'managed:wasm:m6',
+  'S2-M6-DEX': 'managed:dex:m6',
+  'S2-M6-CIL': 'managed:cil:m6',
+  'S2-M6-JVM': 'managed:jvm:m6',
+  'S2-F6-MACHO': 'macho:64 F6',
+  'S2-F6-ELF': 'elf:64 F6',
+  'S2-F6-PE': 'pe:pe32 + pe:pe32+ F6',
+  'S2-P12-KNOWLEDGE': 'knowledge-packages:v1',
+  'S2-P12-RULES': 'capability-rules:v1',
+  'S2-P12-PATTERNS': 'patterns:read-only-v1',
+  'S2-P12-COLLAB-REMOTE': 'collaboration:remote-security-v1',
+  'S2-IPAD-PHYSICAL': 'physical-ipad-ipados-webkit',
+  'S2-FINAL-AUDIT': 'phase1-12 exact candidate',
+});
 
 function git(args, allowFailure = false) {
   const result = spawnSync('git', args, { cwd: ROOT, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
@@ -64,19 +90,47 @@ export function validateScopeAndLedger(headSha, overrides = {}) {
   const scope = overrides.scope || JSON.parse(fs.readFileSync(SCOPE_PATH, 'utf8'));
   const ledger = overrides.ledger || JSON.parse(fs.readFileSync(LEDGER_PATH, 'utf8'));
   const errors = [];
+  if (scope.schemaVersion !== 'hex-completion-scope-lock/v1') errors.push('scope-schema-invalid');
   if (scope.growthOnly !== true) errors.push('scope-not-growth-only');
   if (!/^[0-9a-f]{40}$/.test(scope.baselineCommit || '')) errors.push('scope-baseline-commit-invalid');
   if (!/^[0-9a-f]{40}$/.test(scope.baselineTree || '')) errors.push('scope-baseline-tree-invalid');
   if (!Array.isArray(scope.requiredTargetPlatforms) || !scope.requiredTargetPlatforms.includes('physical-ipad-ipados-webkit')) errors.push('physical-ipad-missing-from-scope');
   const ancestor = git(['merge-base', '--is-ancestor', scope.baselineCommit, headSha], true);
   if (ancestor.status !== 0) errors.push('scope-baseline-not-ancestor');
+  if (ledger.schemaVersion !== 'hex-completion-ledger/v1') errors.push('ledger-schema-invalid');
+  if (ledger.scopeVersion !== scope.scopeVersion) errors.push('ledger-scope-version-mismatch');
+  if (JSON.stringify(ledger.terminalStates) !== JSON.stringify(['PROVEN', 'PREEXISTING_NORMATIVE_EXCLUSION'])) errors.push('ledger-terminal-states-invalid');
+  if (!Array.isArray(ledger.items)) errors.push('ledger-items-invalid');
   const ids = new Set();
   for (const item of ledger.items || []) {
     if (!item.id || ids.has(item.id)) errors.push(`ledger-id-invalid:${item.id || '<missing>'}`);
     ids.add(item.id);
-    for (const ref of [...(item.implementationRefs || []), ...(item.testRefs || []), ...(item.verifierRefs || []), ...(item.supportTruthRefs || [])]) {
-      if (ref.includes('*')) continue;
-      if (!fs.existsSync(path.join(ROOT, ref))) errors.push(`ledger-ref-missing:${item.id}:${ref}`);
+    if (!REQUIRED_LEDGER_IDS.includes(item.id)) errors.push(`ledger-unexpected-id:${item.id}`);
+    if (item.stage !== (item.id === 'S1-A2-NATIVE' ? 1 : 2)) errors.push(`ledger-stage-invalid:${item.id}`);
+    for (const field of ['lane', 'sourceOfRequirement', 'owner']) {
+      if (typeof item[field] !== 'string' || !item[field].trim()) errors.push(`ledger-field-invalid:${item.id}:${field}`);
+    }
+    if (item.scopeProfile !== LEDGER_SCOPE_PROFILE[item.id]) errors.push(`ledger-scope-profile-invalid:${item.id}`);
+    const declaredProfiles = Array.isArray(item.scopeProfiles) ? [...new Set(item.scopeProfiles.map(String))].sort() : [];
+    const expectedProfiles = [...(LEDGER_SCOPE_PROFILES[item.id] || [])].sort();
+    if (JSON.stringify(declaredProfiles) !== JSON.stringify(expectedProfiles)) errors.push(`ledger-scope-profiles-invalid:${item.id}`);
+    if (item.status !== 'IN_PROGRESS' || item.proofIdentity !== null) errors.push(`ledger-declared-proof-invalid:${item.id}`);
+    for (const field of ['implementationRefs', 'testRefs', 'verifierRefs', 'supportTruthRefs']) {
+      const refs = item[field];
+      if (!Array.isArray(refs) || refs.length === 0 || new Set(refs).size !== refs.length) {
+        errors.push(`ledger-refs-invalid:${item.id}:${field}`);
+        continue;
+      }
+      for (const ref of refs) {
+        if (typeof ref !== 'string' || !safeRelativePath(ref.replace(/\*\*/g, 'placeholder'))) {
+          errors.push(`ledger-ref-invalid:${item.id}:${ref}`);
+          continue;
+        }
+        const matched = ref.includes('*')
+          ? git(['ls-files', ref], true).stdout
+          : git(['cat-file', '-e', `${headSha}:${ref}`], true).status === 0;
+        if (!matched) errors.push(`ledger-ref-missing:${item.id}:${ref}`);
+      }
     }
   }
   const requiredPhase12Profiles = [...new Set((scope.phase12CapabilityProfiles || []).map(String).filter(Boolean))].sort();
@@ -292,6 +346,8 @@ function commandPassed(results, fragment) {
 function candidateMergeResult({ finalMode, headSha, treeSha, expectedMainSha }) {
   if (!finalMode) return { required: false, status: 'not-evaluated-in-implementation-mode', currentMainSha: null, candidateMergeTree: null };
   if (!/^[0-9a-f]{40}$/.test(String(expectedMainSha || '').toLowerCase())) return { required: true, status: 'failed', reason: 'current-main-sha-required', currentMainSha: null, candidateMergeTree: null };
+  const fetched = git(['fetch', '--quiet', 'origin', 'main'], true);
+  if (fetched.status !== 0) return { required: true, status: 'failed', reason: 'current-main-fetch-failed', currentMainSha: null, candidateMergeTree: null };
   const currentMainSha = git(['rev-parse', 'origin/main'], true).stdout;
   if (currentMainSha !== String(expectedMainSha).toLowerCase()) return { required: true, status: 'failed', reason: 'current-main-sha-mismatch', currentMainSha, candidateMergeTree: null };
   if (git(['merge-base', '--is-ancestor', currentMainSha, headSha], true).status !== 0) return { required: true, status: 'failed', reason: 'candidate-not-reconciled-with-current-main', currentMainSha, candidateMergeTree: null };
@@ -349,7 +405,7 @@ export function verifyStage2({ expectedSha = null, expectedMainSha = null, final
   const treeSha = git(['rev-parse', 'HEAD^{tree}']).stdout;
   if (!/^[0-9a-f]{40}$/.test(headSha) || !/^[0-9a-f]{40}$/.test(treeSha)) throw new Error('stage2-git-identity-invalid');
   if (expectedSha && headSha !== String(expectedSha).toLowerCase()) throw new Error(`stage2-exact-head-mismatch: expected ${expectedSha}, got ${headSha}`);
-  const dirty = git(['status', '--porcelain', '--untracked-files=no']).stdout;
+  const dirty = git(['status', '--porcelain', '--untracked-files=all']).stdout;
   if (dirty) throw new Error(`stage2-worktree-not-clean:\n${dirty}`);
 
   const structural = validateScopeAndLedger(headSha);
@@ -372,7 +428,7 @@ export function verifyStage2({ expectedSha = null, expectedMainSha = null, final
   if (finalMode) commands.push(npm('userscript:build'));
   if (full) commands.push(npm('check'));
   const commandResults = preflightBlocked ? [] : commands.map(run);
-  const generatedDirty = preflightBlocked ? '' : git(['status', '--porcelain', '--untracked-files=no']).stdout;
+  const generatedDirty = preflightBlocked ? '' : git(['status', '--porcelain', '--untracked-files=all']).stdout;
   const generatedOutput = {
     required: finalMode,
     status: !finalMode ? 'not-evaluated-in-implementation-mode' : preflightBlocked ? 'blocked-by-preflight' : generatedDirty ? 'failed' : 'passed',
