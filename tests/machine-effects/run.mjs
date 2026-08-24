@@ -30,23 +30,24 @@ async function worker() {
 }
 
 function runFile(file) {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve) => {
     const child = spawn(process.execPath, [path.join(directory, file)], {
       cwd: process.cwd(),
-      env: { ...process.env, CI: process.env.CI || '1' },
+      env: process.env,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     const stdout = [];
     const stderr = [];
+    let spawnError = null;
     child.stdout.on('data', (chunk) => stdout.push(chunk));
     child.stderr.on('data', (chunk) => stderr.push(chunk));
-    child.once('error', reject);
+    child.once('error', (error) => { spawnError = error; });
     child.once('close', (code, signal) => resolve({
       file,
-      code,
+      code: spawnError ? 1 : code,
       signal,
       stdout: Buffer.concat(stdout).toString('utf8'),
-      stderr: Buffer.concat(stderr).toString('utf8'),
+      stderr: `${Buffer.concat(stderr).toString('utf8')}${spawnError ? `${spawnError.stack || spawnError.message || String(spawnError)}\n` : ''}`,
     }));
   });
 }
