@@ -19,9 +19,18 @@ export const REBUILD_ORACLE_MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
 export const REBUILD_ORACLE_TIMEOUT_MS = 15_000;
 
 const READOBJ_FLAGS = Object.freeze([
-  '--file-header',
-  '--program-headers',
-  '--section-headers',
+  '--all',
+  '--coff-imports',
+  '--coff-exports',
+  '--coff-basereloc',
+  '--macho-version-min',
+  '--macho-dysymtab',
+  '--macho-indirect-symbols',
+  '--macho-linker-options',
+]);
+const F6_PRESERVATION_UNITS = Object.freeze([
+  'layout-and-structure', 'relocations-and-bindings', 'branch-ranges',
+  'unwind-and-debug', 'imports-and-exports', 'signature-consequence',
 ]);
 
 function bytes(value) {
@@ -208,6 +217,30 @@ function readPeLayoutEvidence(output, sourceOutput, transaction) {
   }) });
 }
 
+function normalizedPreservationReport(output, kind) {
+  let value = String(output || '').replace(/^File:\s*.*$/m, 'File: <canonical>');
+  if (kind === 'pe-timestamp') value = value.replace(/^(\s*TimeDateStamp:)\s*.*$/m, '$1 <intentional-target>');
+  if (kind === 'macho-min-version') value = value.replace(/^(\s*Version:)\s*.*$/m, '$1 <intentional-target>');
+  return value;
+}
+
+function readPreservationEvidence(output, sourceOutput, transaction) {
+  const expected = transaction?.expectedOriginalState?.formatSafe;
+  if (!['elf-comment', 'pe-timestamp', 'macho-min-version'].includes(expected?.kind)) return null;
+  if (expected.signaturePolicy !== 'unsigned-input-required') throw new TypeError('independent-oracle-signature-policy-missing');
+  const sourceReport = normalizedPreservationReport(sourceOutput, expected.kind);
+  const outputReport = normalizedPreservationReport(output, expected.kind);
+  if (!sourceReport || sourceReport !== outputReport) throw new TypeError('independent-oracle-preservation-report-mismatch');
+  const reportDigest = sha256(sourceReport);
+  return Object.freeze({
+    complete:true,
+    signaturePolicy:'unsigned-input-required',
+    sourceReportDigest:reportDigest,
+    outputReportDigest:reportDigest,
+    units:F6_PRESERVATION_UNITS,
+  });
+}
+
 function versionOf(executable, timeoutMs, maxOutputBytes) {
   const result = spawnSync(executable, ['--version'], { encoding: 'utf8', timeout: timeoutMs, maxBuffer: maxOutputBytes });
   if (result.status !== 0 || result.error || result.signal) return null;
@@ -311,15 +344,12 @@ export function createLlvmReadobjOracle({
           oracleOutputDigest: sha256(stdout),
         });
       }
-      let sourceStdout = '';
-      if (['elf-add-nobits-section', 'pe-section-virtual-size'].includes(transaction?.expectedOriginalState?.formatSafe?.kind)) {
-        const sourceResult = spawnSync(tool.executable, [...READOBJ_FLAGS, sourcePath], {
-          encoding: 'utf8', timeout: boundedTimeout, maxBuffer: boundedOutput, windowsHide: true,
-        });
-        sourceStdout = String(sourceResult.stdout || '');
-        if (sourceResult.error || sourceResult.signal || sourceResult.status !== 0) {
-          return failed('independent-oracle-rejected-source', String(sourceResult.stderr || sourceResult.error?.message || sourceResult.signal || `exit:${sourceResult.status}`), { ...base, oracleOutputDigest: sha256(stdout) });
-        }
+      const sourceResult = spawnSync(tool.executable, [...READOBJ_FLAGS, sourcePath], {
+        encoding: 'utf8', timeout: boundedTimeout, maxBuffer: boundedOutput, windowsHide: true,
+      });
+      const sourceStdout = String(sourceResult.stdout || '');
+      if (sourceResult.error || sourceResult.signal || sourceResult.status !== 0) {
+        return failed('independent-oracle-rejected-source', String(sourceResult.stderr || sourceResult.error?.message || sourceResult.signal || `exit:${sourceResult.status}`), { ...base, oracleOutputDigest: sha256(stdout) });
       }
       if (Buffer.byteLength(stdout, 'utf8') > boundedOutput) return failed('independent-oracle-output-budget-exceeded', null, base);
       const header = readHeader(stdout);
@@ -328,10 +358,12 @@ export function createLlvmReadobjOracle({
       if (header.format !== String(transaction.format || '').toLowerCase()) return failed('independent-oracle-format-mismatch', null, { ...base, ...header, oracleOutputDigest: sha256(stdout) });
       if (header.architecture !== String(transaction.architecture || '').toLowerCase()) return failed('independent-oracle-architecture-mismatch', null, { ...base, ...header, oracleOutputDigest: sha256(stdout) });
       let layoutEvidence = null;
+      let preservationEvidence = null;
       try {
         layoutEvidence = transaction?.expectedOriginalState?.formatSafe?.kind === 'elf-add-nobits-section'
           ? readElfLayoutEvidence(stdout, sourceStdout, transaction)
           : readPeLayoutEvidence(stdout, sourceStdout, transaction);
+        preservationEvidence = readPreservationEvidence(stdout, sourceStdout, transaction);
       } catch (error) {
         return failed(error?.message || 'independent-oracle-layout-mismatch', null, { ...base, ...header, oracleOutputDigest: sha256(stdout) });
       }
@@ -346,6 +378,7 @@ export function createLlvmReadobjOracle({
         oracleOutputDigest: sha256(stdout),
         reportBytes: Buffer.byteLength(stdout, 'utf8'),
         ...(layoutEvidence ? { layoutEvidence } : {}),
+        ...(preservationEvidence ? { preservationEvidence } : {}),
       });
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });

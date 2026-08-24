@@ -17,10 +17,11 @@ export const F6_REBUILD_UNITS = Object.freeze([
   'independent-differential-oracle', 'atomic-publication', 'real-fixture', 'negative-validator-corpus',
 ]);
 export const F6_REBUILD_PROFILES = Object.freeze(['macho:64', 'elf:64', 'pe:pe32', 'pe:pe32+']);
-export const F6_UNIMPLEMENTED_OPERATION_UNITS = Object.freeze([
+const F6_NATIVE_INVARIANT_UNITS = Object.freeze([
   'layout-and-structure', 'relocations-and-bindings', 'branch-ranges',
   'unwind-and-debug', 'imports-and-exports', 'signature-consequence',
 ]);
+export const F6_UNIMPLEMENTED_OPERATION_UNITS = Object.freeze([]);
 // These are evaluator-level bounded capabilities, not replacements for the
 // locked profile-wide F6 units above.  A capability can close only when its
 // exact production operation, loader reparse, and independent oracle evidence
@@ -213,6 +214,37 @@ export function f6KnownImplementationGaps() {
   return Object.freeze(F6_REBUILD_PROFILES.flatMap((profileId) => F6_UNIMPLEMENTED_OPERATION_UNITS.map((unit) => `${profileId}:${unit}`)));
 }
 
+function preservationEvidenceValid(transaction, validation) {
+  const expected = transaction?.expectedOriginalState?.formatSafe;
+  if (!['elf-comment','pe-timestamp','macho-min-version'].includes(expected?.kind)
+    || expected.signaturePolicy !== 'unsigned-input-required'
+    || transaction?.sizeDelta !== 0
+    || transaction?.impact?.layoutMoving !== false
+    || transaction?.impact?.relocations !== false
+    || transaction?.impact?.branchRanges !== false
+    || transaction?.impact?.unwind !== false
+    || transaction?.impact?.importsExports !== false
+    || transaction?.impact?.signature !== false
+    || transaction?.impact?.relocationBindings?.length !== 0) return false;
+  const formatResult = validation?.validators?.find((item) => item.validator === 'format-invariants');
+  const oracleResult = validation?.validators?.find((item) => item.validator === 'independent-differential');
+  const local = formatResult?.detail?.preservationEvidence;
+  const independent = oracleResult?.detail?.preservationEvidence;
+  const exactUnits = (value) => JSON.stringify(value || []) === JSON.stringify(F6_NATIVE_INVARIANT_UNITS);
+  return formatResult?.status === 'passed'
+    && oracleResult?.status === 'passed'
+    && local?.complete === true
+    && local?.signaturePolicy === 'unsigned-input-required'
+    && local?.unchangedBytesExceptTarget === true
+    && local?.unchangedStructure === true
+    && exactUnits(local?.units)
+    && independent?.complete === true
+    && independent?.signaturePolicy === 'unsigned-input-required'
+    && independent?.sourceReportDigest === independent?.outputReportDigest
+    && /^sha256:[0-9a-f]{64}$/.test(String(independent?.sourceReportDigest || ''))
+    && exactUnits(independent?.units);
+}
+
 function elfLayoutEvidenceValid(transaction, validation) {
   const expected = transaction?.expectedOriginalState?.formatSafe;
   if (transaction?.format !== 'elf' || transaction?.architecture !== 'x86_64'
@@ -294,7 +326,21 @@ export function evaluateF6RebuildDenominator({ transaction, validation, publicat
     && !!publication.publicationIdentity;
   add('transaction-identity', validationPassed ? 'closed' : 'blocking', validationPassed ? null : 'f6-transaction-identity-unproven', validationPassed ? 'transaction-v2-validation-identity' : null);
 
-  for (const unit of F6_UNIMPLEMENTED_OPERATION_UNITS) add(unit, 'blocking', `f6-${unit}-adapter-unimplemented`);
+  const preservationProof = validationPassed
+    && publicationComplete
+    && proof.realFixture === true
+    && proof.realFixtureEvidence === true
+    && proof.negativeValidatorTest === true
+    && proof.staleIdentityTest === true
+    && proof.truncationTest === true
+    && proof.wrongIdentityTest === true
+    && preservationEvidenceValid(transaction, validation);
+  for (const unit of F6_NATIVE_INVARIANT_UNITS) add(
+    unit,
+    preservationProof ? 'closed' : 'blocking',
+    preservationProof ? null : 'f6-preservation-profile-proof-incomplete',
+    preservationProof ? 'format-safe-unsigned-preservation+hex-whole-file-invariants+llvm-readobj-all-source-output-oracle' : null,
+  );
   const boundedLayoutProof = validationPassed
     && publicationComplete
     && proof.realFixture === true

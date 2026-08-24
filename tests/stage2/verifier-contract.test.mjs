@@ -6,9 +6,7 @@ const knownGaps = stage2KnownDenominatorGaps();
 assert.ok(knownGaps.includes('arm64:a64:all-decoder-encodings-and-aliases'));
 assert.ok(knownGaps.includes('x86_64:long-64:effect-family:atomic'));
 assert.equal(knownGaps.includes('remote.remote-canonical-transport'), false, 'active canonical remote transport is no longer a denominator gap');
-assert.ok(knownGaps.includes('macho:64:layout-and-structure'), 'unsupported F6 layout growth must block Stage2 profile evidence');
-assert.ok(knownGaps.includes('elf:64:layout-and-structure'), 'one bounded ELF layout operation cannot promote the format-wide layout cell');
-assert.ok(knownGaps.includes('pe:pe32+:signature-consequence'), 'unimplemented signature consequence handling must block Stage2 profile evidence');
+assert.equal(knownGaps.some((gap) => /^(?:macho|elf|pe):/.test(gap)), false, 'unsigned preservation writers with independent full-report comparison close all F6 invariant cells');
 assert.match(stage2CanonicalBuildIdentity(), /^userscript-release:[0-9a-f]{64}:build:[0-9a-f]{24}:serial:\d+$/);
 
 const scope = JSON.parse(fs.readFileSync('tools/validation/stage2/completion-scope.lock.json', 'utf8'));

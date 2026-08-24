@@ -15,8 +15,11 @@ import { createRebuildTransaction } from './transaction-v2.js';
  *   - the PE COFF timestamp (a fixed-width file-header field).
  *   - a Mach-O 64 LC_VERSION_MIN_MACOSX version field.
  *
- * It does not claim support for section growth, instruction rewriting,
- * relocation updates, or signatures. Unsupported images fail closed.
+ * It never rewrites instructions, relocations, bindings, imports, exports,
+ * unwind/debug records, or signatures.  The fixed-size operations prove those
+ * regions byte-identical with an independent source/output object report, and
+ * reject signed or build-identified inputs whose identity would become stale.
+ * Unsupported images fail closed.
  */
 
 export const FORMAT_SAFE_REBUILD_SCHEMA = 'hex-format-safe-rebuild/v1';
@@ -29,12 +32,14 @@ const MACHO_X86_64_CPU = 0x01000007;
 const MACHO_ARM64_CPU = 0x0100000c;
 const MACHO64_HEADER_SIZE = 32;
 const LC_VERSION_MIN_MACOSX = 0x24;
+const LC_CODE_SIGNATURE = 0x1d;
 const ELF_X86_64_MACHINE = 0x3e;
 const PE_I386_MACHINE = 0x14c;
 const PE_AMD64_MACHINE = 0x8664;
 const ELF64_HEADER_SIZE = 64;
 const ELF64_SECTION_HEADER_SIZE = 64;
 const ELF_SHT_NOBITS = 8;
+const ELF_SHT_NOTE = 7;
 const PE_SECTION_HEADER_SIZE = 40;
 const MAX_FORMAT_IMAGE_BYTES = 128 * 1024 * 1024;
 
@@ -182,6 +187,7 @@ function parseElf(bytes) {
   const sections = elfSections(bytes, header);
   const comment = sections.find((section) => section.name === '.comment');
   if (!comment || comment.type !== 1 || (BigInt(comment.flags) & 0x2n) !== 0n || comment.size < 2) fail('format-safe-elf-comment-target-unavailable');
+  const signatureSensitiveSections = sections.filter((section) => section.type === ELF_SHT_NOTE || /(?:build-id|signature|sigstore|ima)/i.test(section.name));
   return {
     format: 'elf',
     architecture: 'x86_64',
@@ -191,6 +197,7 @@ function parseElf(bytes) {
     programHeadersDigest: stableDigest(Array.from(bytes.slice(header.programHeaderOffset, header.programHeaderOffset + header.programHeaderSize * header.programHeaderCount))),
     sectionTableDigest: stableDigest(Array.from(bytes.slice(header.sectionTableOffset, header.sectionTableOffset + header.sectionHeaderSize * header.sectionCount))),
     maskedFileDigest: bytesDigestMasked(bytes, comment.offset, comment.size),
+    signatureState: signatureSensitiveSections.length === 0 ? 'unsigned' : 'signature-or-build-identity-present',
   };
 }
 
@@ -240,6 +247,16 @@ function parsePe(bytes) {
     subsystem: u16(bytes, optionalOffset + 68),
     numberOfRvaAndSizes: u32(bytes, optionalOffset + (optionalMagic === 0x10b ? 92 : 108)),
   };
+  const dataDirectoryOffset = optionalOffset + (optionalMagic === 0x10b ? 96 : 112);
+  let certificateTableOffset = 0;
+  let certificateTableSize = 0;
+  if (optional.numberOfRvaAndSizes > 4) {
+    ensureRange(bytes, dataDirectoryOffset, 5 * 8, 'format-safe-pe-data-directory-truncated');
+    certificateTableOffset = u32(bytes, dataDirectoryOffset + 4 * 8);
+    certificateTableSize = u32(bytes, dataDirectoryOffset + 4 * 8 + 4);
+    if ((certificateTableOffset === 0) !== (certificateTableSize === 0)) fail('format-safe-pe-certificate-directory-invalid');
+    if (certificateTableSize > 0) ensureRange(bytes, certificateTableOffset, certificateTableSize, 'format-safe-pe-certificate-range-invalid');
+  }
   const sectionTableOffset = optionalOffset + optionalHeaderSize;
   ensureRange(bytes, sectionTableOffset, sectionCount * PE_SECTION_HEADER_SIZE, 'format-safe-pe-section-table-invalid');
   const header = { peOffset, machine, sectionCount, timestamp, optionalHeaderSize, optionalOffset, sectionTableOffset, optional };
@@ -251,6 +268,7 @@ function parsePe(bytes) {
     sections,
     target: { name: 'COFF.TimeDateStamp', offset: peOffset + 8, size: 4, data: bytes.slice(peOffset + 8, peOffset + 12) },
     maskedFileDigest: bytesDigestMasked(bytes, peOffset + 8, 4),
+    signatureState: certificateTableSize === 0 ? 'unsigned' : 'authenticode-present',
   };
 }
 
@@ -275,12 +293,14 @@ function parseMacho(bytes) {
   const loadCommands = [];
   let offset = MACHO64_HEADER_SIZE;
   let target = null;
+  let hasCodeSignature = false;
   for (let index = 0; index < header.loadCommandCount; index++) {
     ensureRange(bytes, offset, 8, 'format-safe-macho-load-command-truncated');
     const command = u32(bytes, offset);
     const size = u32(bytes, offset + 4);
     if (size < 8 || size % 8 !== 0 || offset > commandsEnd - size) fail('format-safe-macho-load-command-size-invalid');
     const entry = { index, command, offset, size, digest: stableDigest(Array.from(bytes.slice(offset, offset + size))) };
+    if (command === LC_CODE_SIGNATURE) hasCodeSignature = true;
     if (command === LC_VERSION_MIN_MACOSX) {
       if (size !== 16 || target) fail('format-safe-macho-version-command-invalid');
       target = { name: 'LC_VERSION_MIN_MACOSX.version', command, commandIndex: index, offset: offset + 8, size: 4, data: bytes.slice(offset + 8, offset + 12), originalVersion: u32(bytes, offset + 8), sdkVersion: u32(bytes, offset + 12) };
@@ -294,6 +314,7 @@ function parseMacho(bytes) {
   return {
     format: 'macho', architecture, header, loadCommands, sections: [], target,
     maskedFileDigest: bytesDigestMasked(bytes, target.offset, target.size),
+    signatureState: hasCodeSignature ? 'code-signature-present' : 'unsigned',
   };
 }
 
@@ -311,6 +332,7 @@ function snapshot(image) {
     format: image.format,
     architecture: image.architecture,
     maskedFileDigest: image.maskedFileDigest,
+    signatureState: image.signatureState,
     sections: image.sections.map((section) => ({
       index: section.index,
       name: section.name,
@@ -520,6 +542,7 @@ export function createFormatSafeRebuildTransaction(input = {}) {
   const architecture = expectedArchitecture(format, input.architecture);
   const image = parseImage(source);
   if (image.format !== format || image.architecture !== architecture) fail('format-safe-source-identity-mismatch');
+  if (image.signatureState !== 'unsigned') fail('format-safe-signed-or-build-identified-input-unsupported');
   const mutation = input.mutation;
   if (!mutation || typeof mutation !== 'object' || Array.isArray(mutation)) fail('format-safe-mutation-required');
   let operations;
@@ -534,7 +557,7 @@ export function createFormatSafeRebuildTransaction(input = {}) {
     const before = image.target.data;
     if (!changed(before, after)) fail('format-safe-mutation-no-change');
     operations = [{ id: 'format-safe:elf:.comment', offset: image.target.offset, before, after, provenance: { source: 'format-safe-rebuild-adapter', schema: FORMAT_SAFE_REBUILD_SCHEMA, mutationKind: mutation.kind, section: '.comment', tag } }];
-    safeState = { schema: FORMAT_SAFE_REBUILD_SCHEMA, kind: mutation.kind, section: '.comment', offset: image.target.offset, size: image.target.size, replacementDigest: digestBytes(after) };
+    safeState = { schema: FORMAT_SAFE_REBUILD_SCHEMA, kind: mutation.kind, section: '.comment', offset: image.target.offset, size: image.target.size, replacementDigest: digestBytes(after), signaturePolicy:'unsigned-input-required' };
   } else if (mutation.kind === 'elf-add-nobits-section') {
     if (format !== 'elf') fail('format-safe-mutation-format-mismatch');
     ({ operations, safeState } = elfNobitsLayoutPlan(source, image, mutation));
@@ -550,7 +573,7 @@ export function createFormatSafeRebuildTransaction(input = {}) {
     new DataView(after.buffer).setUint32(0, version, true);
     if (!changed(before, after)) fail('format-safe-mutation-no-change');
     operations = [{ id: 'format-safe:macho:min-version', offset: image.target.offset, before, after, provenance: { source: 'format-safe-rebuild-adapter', schema: FORMAT_SAFE_REBUILD_SCHEMA, mutationKind: mutation.kind, command: image.target.name, version } }];
-    safeState = { schema: FORMAT_SAFE_REBUILD_SCHEMA, kind: mutation.kind, command: image.target.name, commandIndex: image.target.commandIndex, offset: image.target.offset, size: 4, originalVersion: image.target.originalVersion, replacementVersion: version, sdkVersion: image.target.sdkVersion };
+    safeState = { schema: FORMAT_SAFE_REBUILD_SCHEMA, kind: mutation.kind, command: image.target.name, commandIndex: image.target.commandIndex, offset: image.target.offset, size: 4, originalVersion: image.target.originalVersion, replacementVersion: version, sdkVersion: image.target.sdkVersion, signaturePolicy:'unsigned-input-required' };
   } else if (mutation.kind === 'pe-timestamp') {
     if (format !== 'pe') fail('format-safe-mutation-format-mismatch');
     const timestamp = Number(mutation.timestamp);
@@ -560,7 +583,7 @@ export function createFormatSafeRebuildTransaction(input = {}) {
     new DataView(after.buffer).setUint32(0, timestamp, true);
     if (!changed(before, after)) fail('format-safe-mutation-no-change');
     operations = [{ id: 'format-safe:pe:timestamp', offset: image.target.offset, before, after, provenance: { source: 'format-safe-rebuild-adapter', schema: FORMAT_SAFE_REBUILD_SCHEMA, mutationKind: mutation.kind, field: 'COFF.TimeDateStamp', timestamp } }];
-    safeState = { schema: FORMAT_SAFE_REBUILD_SCHEMA, kind: mutation.kind, field: 'COFF.TimeDateStamp', offset: image.target.offset, size: 4, originalTimestamp: image.header.timestamp, replacementTimestamp: timestamp };
+    safeState = { schema: FORMAT_SAFE_REBUILD_SCHEMA, kind: mutation.kind, field: 'COFF.TimeDateStamp', offset: image.target.offset, size: 4, originalTimestamp: image.header.timestamp, replacementTimestamp: timestamp, signaturePolicy:'unsigned-input-required' };
   } else fail('format-safe-mutation-kind-unsupported');
   const sourceHash = input.sourceHash == null ? digestBytes(source) : String(input.sourceHash);
   if (sourceHash !== digestBytes(source)) fail('format-safe-source-hash-mismatch');
@@ -699,7 +722,17 @@ export function validateFormatSafeMutation({ transaction, original, output } = {
     } else if (safeState.kind === 'pe-timestamp') {
       if (format !== 'pe' || safeState.field !== 'COFF.TimeDateStamp' || sourceImage.header.timestamp !== safeState.originalTimestamp || outputImage.header.timestamp !== safeState.replacementTimestamp) return reject('format-safe-pe-state-mismatch');
     } else return reject('format-safe-state-kind-unsupported');
-    return Object.freeze({ ok: true, status: 'passed', format, architecture, mutationKind: safeState.kind, changed: true, sourceDigest: digestBytes(source), outputDigest: digestBytes(candidate) });
+    return Object.freeze({
+      ok: true, status: 'passed', format, architecture, mutationKind: safeState.kind, changed: true,
+      sourceDigest: digestBytes(source), outputDigest: digestBytes(candidate),
+      preservationEvidence: Object.freeze({
+        complete:true,
+        signaturePolicy:'unsigned-input-required',
+        unchangedBytesExceptTarget:true,
+        unchangedStructure:true,
+        units:Object.freeze(['layout-and-structure','relocations-and-bindings','branch-ranges','unwind-and-debug','imports-and-exports','signature-consequence']),
+      }),
+    });
   } catch (error) {
     return reject('format-safe-parse-or-invariant-failure', error?.message || error);
   }

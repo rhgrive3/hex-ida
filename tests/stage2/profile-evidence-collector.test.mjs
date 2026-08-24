@@ -64,7 +64,7 @@ const prerequisites = inspectProfileEvidencePrerequisites();
 assert.equal(prerequisites.managed.has('dex'), true, 'canonical real DEX fixture is present');
 assert.equal(prerequisites.failures.includes('missing-real-compiled-fixture:dex'), false);
 if (prerequisites.failures.some((failure) => failure.startsWith('known-a2-gap:'))) assert.equal(prerequisites.ok, false, 'known A2 denominator gaps block collection');
-assert.ok(prerequisites.failures.includes('known-f6-gap:macho:64:layout-and-structure'), 'known F6 implementation gaps block collection');
+assert.equal(prerequisites.failures.some((failure) => failure.startsWith('known-f6-gap:')), false, 'constrained unsigned preservation writers close the F6 implementation gaps');
 assert.equal(prerequisites.failures.includes('known-phase12-gap:remote.remote-canonical-transport'), false, 'active canonical remote transport closes the Phase12 proof gap');
 for (const profileId of a7Rule.requiredProfileIds) {
   assert.equal(prerequisites.failures.includes(`missing-real-profile-fixture:S2-A7-NATIVE:${profileId}`), false, `A7 ${profileId}: real target fixture is bound`);
