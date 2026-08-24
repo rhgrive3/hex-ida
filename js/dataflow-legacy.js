@@ -417,9 +417,17 @@ export function traceOrigin(model, row, reg, opts) {
         row: found.row, address: found.address, crossedJoin,
       };
     }
-    if (mn === 'movz' || mn === 'mov' || mn === 'movk' || mn === 'movn') {
+    if (mn === 'mov' || mn === 'movz' || mn === 'movn') {
       const imm = found.ops.find((x) => x.k === 'imm' && x.value != null);
-      if (imm) return { kind: 'imm', value: imm.value, row: found.row, crossedJoin };
+      if (imm) {
+        if (mn === 'mov') return { kind: 'imm', value: imm.value, row: found.row, crossedJoin };
+        const dst = found.ops[0];
+        const bits = dst && (dst.bits === 32 || /^w\d+$/.test(String(dst.text || ''))) ? 32 : 64;
+        const shift = BigInt(imm.shift && imm.shift.amount != null ? imm.shift.amount : 0);
+        const shifted = BigInt.asUintN(bits, BigInt(imm.value) << shift);
+        const value = mn === 'movn' ? BigInt.asUintN(bits, ~shifted) : shifted;
+        return { kind: 'imm', value, row: found.row, crossedJoin };
+      }
     }
     if (PASS_OPS.has(mn)) {
       const src = found.reads.find((r) => r !== want) || found.reads[0] || null;
