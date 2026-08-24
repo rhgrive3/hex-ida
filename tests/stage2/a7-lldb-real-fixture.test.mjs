@@ -54,18 +54,28 @@ assert.equal(proof.activeOperations.pause.processId, proof.activeOperations.atta
 assert.equal(proof.activeOperations.pause.continueAccepted, true);
 assert.equal(proof.activeOperations.pause.stopAccepted, true);
 assert.equal(proof.activeOperations.pause.runningObserved, true);
-assert.equal(proof.activeOperations.pause.runningEvidence, 'continue-success+register-progress');
+assert.equal(proof.activeOperations.pause.runningEvidence, 'exact-host-process-cpu-progress+lldb-stop-id');
+assert.equal(proof.activeOperations.pause.executionEvidence, 'exact-host-process-cpu-ticks-during-provider-running-window');
 assert.equal(proof.activeOperations.pause.stoppedObserved, true);
 assert.equal(proof.activeOperations.pause.executionAdvanced, true);
+assert.equal(proof.activeOperations.pause.stopIdAdvanced, true);
+assert.ok(proof.activeOperations.pause.cpuTicksAfter > proof.activeOperations.pause.cpuTicksBefore);
+assert.ok(proof.activeOperations.pause.stopIdAfter > proof.activeOperations.pause.stopIdBefore);
 assert.equal(proof.activeOperations.cancel.processId, proof.activeOperations.attach.attachedPid);
 assert.equal(proof.activeOperations.cancel.inFlightObserved, true);
-assert.equal(proof.activeOperations.cancel.inFlightEvidence, 'blocking-command-thread-alive');
+assert.equal(proof.activeOperations.cancel.inFlightEvidence, 'blocking-command-thread-alive+exact-host-process-cpu-progress');
+assert.equal(proof.activeOperations.cancel.executionEvidence, 'exact-host-process-cpu-ticks-during-provider-running-window');
 assert.equal(proof.activeOperations.cancel.executionAdvanced, true);
 assert.equal(proof.activeOperations.cancel.interruptAccepted, true);
 assert.equal(proof.activeOperations.cancel.commandSettled, true);
+assert.equal(proof.activeOperations.cancel.stopIdAdvanced, true);
+assert.ok(proof.activeOperations.cancel.cpuTicksAfter > proof.activeOperations.cancel.cpuTicksBefore);
+assert.ok(proof.activeOperations.cancel.stopIdAfter > proof.activeOperations.cancel.stopIdBefore);
 assert.equal(proof.activeOperations.cancel.settlement, 'cancelled');
 assert.equal(proof.activeOperations.cancel.lateResultRejected, true);
 assert.equal(proof.activeOperations.cancel.lateStateStable, true);
+assert.equal(proof.activeOperations.cancel.lateStopIdStable, true);
+assert.equal(proof.activeOperations.cancel.lateProcessInstanceStable, true);
 assert.ok(proof.closedChecks.includes('lldb-real-process-attach-observed'));
 assert.ok(proof.closedChecks.includes('lldb-running-target-pause-observed'));
 assert.ok(proof.closedChecks.includes('lldb-inflight-command-cancel-observed'));
@@ -100,8 +110,26 @@ function activeMarker(overrides = {}) {
   const value = {
     kind:'active-provider-operations',
     attach:{ observed:true, requestedPid:101, attachedPid:101, targetTriple:'x86_64-unknown-linux-gnu', modulePath:'/tmp/fixture', threadId:7, registers:{ rip:'0x1000', rsp:'0x2000', rax:'0x1' }, memoryProbe:'0x1020304050607080', state:'stopped' },
-    pause:{ observed:true, continueAccepted:true, stopAccepted:true, runningObserved:true, runningEvidence:'continue-success+register-progress', stoppedObserved:true, executionAdvanced:true, processId:101, threadId:7, registers:{ rip:'0x1001', rsp:'0x2000', rax:'0x10' }, state:'stopped' },
-    cancel:{ observed:true, inFlightObserved:true, inFlightEvidence:'blocking-command-thread-alive', executionAdvanced:true, interruptAccepted:true, commandSettled:true, processId:101, threadId:7, settlement:'cancelled', providerDisposition:'interrupted-command', lateResultRejected:true, lateStateStable:true, registers:{ rip:'0x1002', rax:'0x20' }, state:'stopped' },
+    pause:{
+      observed:true, continueAccepted:true, stopAccepted:true, runningObserved:true,
+      runningEvidence:'exact-host-process-cpu-progress+lldb-stop-id',
+      executionEvidence:'exact-host-process-cpu-ticks-during-provider-running-window',
+      executionWindow:'after-continue-before-interrupt', progressTransport:'linux-proc-stat+lldb-stop-id',
+      stoppedObserved:true, executionAdvanced:true, interruptIssued:true, processId:101,
+      cpuTicksBefore:1, cpuTicksAfter:2, processStartTimeTicks:4242,
+      stopIdBefore:1, stopIdAfter:2, stopIdAdvanced:true, state:'stopped',
+    },
+    cancel:{
+      observed:true, inFlightObserved:true,
+      inFlightEvidence:'blocking-command-thread-alive+exact-host-process-cpu-progress',
+      executionEvidence:'exact-host-process-cpu-ticks-during-provider-running-window',
+      executionWindow:'after-command-continue-before-cancel-interrupt',
+      executionAdvanced:true, interruptAccepted:true, commandSettled:true, processId:101,
+      cpuTicksBefore:2, cpuTicksAfter:3, processStartTimeTicks:4242,
+      stopIdBefore:2, stopIdAfter:3, stopIdAdvanced:true,
+      settlement:'cancelled', providerDisposition:'interrupted-command', lateResultRejected:true,
+      lateStateStable:true, lateStopIdStable:true, lateProcessInstanceStable:true, state:'stopped',
+    },
     operationResults:{ attach:true, pause:true, cancel:true },
     ...overrides,
   };
@@ -119,11 +147,46 @@ assert.throws(() => parseLldbActiveOpsOutput(activeMarker({
   advertisedCapabilities:{ pause:true }, operationResults:{ attach:true, pause:true, cancel:true }, pause:{ observed:false },
 }), { fixturePath:'/tmp/fixture', probeWord:0x2000n }), /pause-not-observed/, 'advertising pause without a real observation must not close the denominator');
 assert.throws(() => parseLldbActiveOpsOutput(activeMarker({
-  cancel:{ observed:true, inFlightObserved:true, inFlightEvidence:'blocking-command-thread-alive', executionAdvanced:true, interruptAccepted:true, commandSettled:false, processId:101, threadId:7, settlement:'cancelled', providerDisposition:'interrupted-command', lateResultRejected:true, lateStateStable:true, registers:{ rip:'0x1', rax:'0x2' } },
+  cancel:{
+    observed:true, inFlightObserved:true,
+    inFlightEvidence:'blocking-command-thread-alive+exact-host-process-cpu-progress',
+    executionEvidence:'exact-host-process-cpu-ticks-during-provider-running-window',
+    executionAdvanced:true, interruptAccepted:true, commandSettled:false, processId:101,
+    cpuTicksBefore:2, cpuTicksAfter:3, processStartTimeTicks:4242,
+    stopIdBefore:2, stopIdAfter:3, stopIdAdvanced:true,
+    settlement:'cancelled', providerDisposition:'interrupted-command', lateResultRejected:true,
+    lateStateStable:true, lateStopIdStable:true, lateProcessInstanceStable:true,
+  },
 }), { fixturePath:'/tmp/fixture', probeWord:0x2000n }), /cancel-settlement-missing/);
 assert.throws(() => parseLldbActiveOpsOutput(activeMarker({
-  pause:{ observed:true, continueAccepted:true, stopAccepted:true, runningObserved:true, runningEvidence:'static-capability-flag', stoppedObserved:true, executionAdvanced:true, processId:101, threadId:7, registers:{ rip:'0x1001', rsp:'0x2000', rax:'0x10' } },
+  pause:{
+    observed:true, continueAccepted:true, stopAccepted:true, runningObserved:true,
+    runningEvidence:'static-capability-flag', executionEvidence:'exact-host-process-cpu-ticks-during-provider-running-window',
+    stoppedObserved:true, executionAdvanced:true, interruptIssued:true, processId:101,
+    cpuTicksBefore:1, cpuTicksAfter:2, processStartTimeTicks:4242,
+    stopIdBefore:1, stopIdAfter:2, stopIdAdvanced:true,
+  },
 }), { fixturePath:'/tmp/fixture', probeWord:0x2000n }), /pause-running-evidence-missing/);
+assert.throws(() => parseLldbActiveOpsOutput(activeMarker({
+  pause:{
+    observed:true, continueAccepted:true, stopAccepted:true, runningObserved:true,
+    runningEvidence:'exact-host-process-cpu-progress+lldb-stop-id', executionEvidence:'exact-host-process-cpu-ticks-during-provider-running-window',
+    stoppedObserved:true, executionAdvanced:true, interruptIssued:true, processId:101,
+    cpuTicksBefore:2, cpuTicksAfter:2, processStartTimeTicks:4242,
+    stopIdBefore:1, stopIdAfter:2, stopIdAdvanced:true,
+  },
+}), { fixturePath:'/tmp/fixture', probeWord:0x2000n }), /pause-process-progress-evidence-missing/);
+assert.throws(() => parseLldbActiveOpsOutput(activeMarker({
+  cancel:{
+    observed:true, inFlightObserved:true,
+    inFlightEvidence:'blocking-command-thread-alive+exact-host-process-cpu-progress', executionEvidence:'exact-host-process-cpu-ticks-during-provider-running-window',
+    executionAdvanced:true, interruptAccepted:true, commandSettled:true, processId:101,
+    cpuTicksBefore:2, cpuTicksAfter:3, processStartTimeTicks:4242,
+    stopIdBefore:3, stopIdAfter:3, stopIdAdvanced:true,
+    settlement:'cancelled', providerDisposition:'interrupted-command', lateResultRejected:true,
+    lateStateStable:true, lateStopIdStable:true, lateProcessInstanceStable:true,
+  },
+}), { fixturePath:'/tmp/fixture', probeWord:0x2000n }), /cancel-stop-id-evidence-missing/);
 
 for (const [field, value, reason] of [
   ['sessionIdentity', `${proof.binding.sessionIdentity}:stale`, 'runtime-observation-sessionIdentity-mismatch'],
