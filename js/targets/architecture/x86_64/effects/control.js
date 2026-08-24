@@ -1,24 +1,60 @@
 import { createX86EffectContext, x86MemoryFaults, x86RegisterOperand } from './common.js';
 import { x86EffectiveAddressExpression } from './addressing.js';
 import { emitX86Condition } from './flags.js';
+import { resolveX86Long64FeatureEnvelope } from '../feature-contract.js';
 
 const CONDITION_COUNT_BRANCHES = Object.freeze(new Map([
   ['jrcxz','rcx'],
   ['jecxz','ecx'],
-  ['jcxz','cx'],
 ]));
 const LOOP_BRANCHES = Object.freeze(new Set(['loop','loope','loopz','loopne','loopnz']));
 
 function loopCountRegister(instruction) {
+  const detailWidth = Number(instruction?.detail?.addressSizeBits);
+  if (detailWidth === 32) return 'ecx';
   const legacy = Array.from(instruction?.detail?.prefixes?.legacy ?? []);
   return legacy.includes(0x67) ? 'ecx' : 'rcx';
+}
+
+const PREFIX_GROUPS = Object.freeze([
+  Object.freeze(new Set([0xf0,0xf2,0xf3])),
+  Object.freeze(new Set([0x2e,0x36,0x3e,0x26,0x64,0x65])),
+  Object.freeze(new Set([0x66])),
+  Object.freeze(new Set([0x67])),
+]);
+
+function validateControlPrefixState(instruction, family) {
+  if (instruction?.detail?.prefixes?.vector != null) return 'x86-control-vector-prefix-invalid';
+  const rex = instruction?.detail?.prefixes?.rex;
+  if (rex != null && (!Number.isInteger(Number(rex)) || Number(rex) < 0x40 || Number(rex) > 0x4f)) return 'x86-control-rex-prefix-invalid';
+  const legacy = Array.from(instruction?.detail?.prefixes?.legacy ?? []);
+  if (legacy.some((prefix) => !PREFIX_GROUPS.some((group) => group.has(prefix)))) return 'x86-control-legacy-prefix-invalid';
+  for (const group of PREFIX_GROUPS) {
+    if (legacy.filter((prefix) => group.has(prefix)).length > 1) return 'x86-control-conflicting-legacy-prefixes';
+  }
+  if (legacy.includes(0xf0)) return 'x86-control-lock-prefix-invalid';
+  const expectedAddressSize = legacy.includes(0x67) ? 32 : 64;
+  const observedAddressSize = Number(instruction?.detail?.addressSizeBits);
+  if (Number.isFinite(observedAddressSize) && observedAddressSize !== 0 && observedAddressSize !== expectedAddressSize) return 'x86-control-address-size-prefix-mismatch';
+  if (family === 'jcxz') return 'x86-jcxz-illegal-in-long-64';
+  if (family === 'jrcxz' && expectedAddressSize !== 64) return 'x86-jrcxz-address-size-mismatch';
+  if (family === 'jecxz' && expectedAddressSize !== 32) return 'x86-jecxz-address-size-mismatch';
+  return null;
+}
+
+function x86ControlTargetFault(operation, conditional = false) {
+  return Object.freeze({
+    kind:'control-transfer-fault',
+    condition:Object.freeze({ kind:'x86-non-canonical-control-target', when:conditional ? 'taken' : 'always' }),
+    detail:Object.freeze({ vector:'#GP(0)', exceptionClass:'fault', operation }),
+  });
 }
 
 function addressRef(value) { return Object.freeze({ kind:'absolute-address', value:BigInt(value).toString(), widthBits:64 }); }
 function fallthrough(instruction) { return addressRef(BigInt(instruction.address) + BigInt(instruction.length)); }
 function directTarget(operand) { return operand?.type === 'immediate' ? operand.value : null; }
 
-function trapEffect(ctx, family) {
+function trapEffect(ctx, family, featureMetadata) {
   if (family === 'ud2') {
     return ctx.finish({
       family:'control',
@@ -28,7 +64,7 @@ function trapEffect(ctx, family) {
         condition:{ kind:'always' },
         detail:{ vector:'#UD', exceptionClass:'fault', operation:'ud2' },
       }],
-      metadata:{ operation:'ud2', architecturalTrap:true },
+      metadata:{ ...featureMetadata, operation:'ud2', architecturalTrap:true },
     });
   }
   return ctx.finish({
@@ -39,7 +75,7 @@ function trapEffect(ctx, family) {
       condition:{ kind:'always' },
       detail:{ vector:'#BP', exceptionClass:'trap', operation:'int3' },
     }],
-    metadata:{ operation:'int3', architecturalTrap:true },
+    metadata:{ ...featureMetadata, operation:'int3', architecturalTrap:true },
   });
 }
 
@@ -64,18 +100,65 @@ export function liftX86ControlEffects(instruction, context = {}) {
   const conditional = (family.startsWith('j') && family !== 'jmp') || LOOP_BRANCHES.has(family);
   if (!conditional && !['jmp','call','ret','retq','nop','ud2','int3'].includes(family)) return null;
   const ctx = createX86EffectContext(instruction, context);
+  const featureEnvelope = resolveX86Long64FeatureEnvelope(ctx.instruction, context);
+  if (!featureEnvelope.supported) {
+    return ctx.partial(featureEnvelope.reason, ['control','other'], {
+      controlEffect:{ kind:'unknown', reason:featureEnvelope.reason },
+      detail:{ featureProfileId:featureEnvelope.profileId, featureState:featureEnvelope.featureState ?? null, featureContractVersion:featureEnvelope.contractVersion, featureDetail:featureEnvelope.detail ?? null },
+      metadata:{ featureProfileId:featureEnvelope.profileId, featureContractVersion:featureEnvelope.contractVersion },
+    });
+  }
+  const prefixFailure = validateControlPrefixState(ctx.instruction, family);
+  if (prefixFailure) {
+    return ctx.partial(prefixFailure, ['control','other'], {
+      controlEffect:{ kind:'unknown', reason:prefixFailure },
+      metadata:{ featureProfileId:featureEnvelope.profileId, featureContractVersion:featureEnvelope.contractVersion },
+    });
+  }
+  const featureMetadata = { featureProfileId:featureEnvelope.profileId, featureContractVersion:featureEnvelope.contractVersion, featureState:featureEnvelope.featureState };
 
   if (family === 'nop') {
+    // Intel's multi-byte NOP encodings (0F 1F /0) carry a syntactic r/m
+    // operand even though the operand is architecturally not read and no
+    // memory access occurs.  Capstone therefore exposes one register/memory
+    // operand for these encodings.  Treat that decoder shape as the same
+    // proven state-preserving NOP; only shapes no architectural NOP can have
+    // remain fail-closed.
+    const nopOperand = ctx.operands[0] ?? null;
+    const rawBytes = Array.from(ctx.instruction.rawBytes ?? []);
+    let opcodeIndex = 0;
+    while (opcodeIndex < rawBytes.length && (
+      PREFIX_GROUPS.some((group) => group.has(rawBytes[opcodeIndex]))
+      || (rawBytes[opcodeIndex] >= 0x40 && rawBytes[opcodeIndex] <= 0x4f)
+    )) opcodeIndex += 1;
+    const multiByteNop = rawBytes[opcodeIndex] === 0x0f
+      && rawBytes[opcodeIndex + 1] === 0x1f
+      && ((rawBytes[opcodeIndex + 2] ?? 0xff) & 0x38) === 0;
+    const validNopShape = ctx.operands.length === 0 || (
+      ctx.operands.length === 1
+      && multiByteNop
+      && (nopOperand?.type === 'memory' || nopOperand?.type === 'register')
+      && [16,32,64].includes(Number(nopOperand?.widthBits))
+    );
+    if (!validNopShape) return ctx.partial('x86-nop-operand-shape-unmodelled', ['control','other'], { controlEffect:{ kind:'unknown', reason:'x86-nop-operand-shape-unmodelled' } });
     return ctx.finish({
       family:'control',
       statePreservation:{ proven:true, reason:'x86-nop-architectural-state-preservation' },
-      metadata:{ operation:'nop' },
+      metadata:{ operation:'nop', ...featureMetadata },
     });
   }
 
-  if (family === 'ud2' || family === 'int3') return trapEffect(ctx, family);
+  if (family === 'ud2' || family === 'int3') {
+    if (ctx.operands.length !== 0) return ctx.partial(`x86-${family}-operand-shape-unmodelled`, ['control','faults'], { controlEffect:{ kind:'unknown', reason:`x86-${family}-operand-shape-unmodelled` } });
+    return trapEffect(ctx, family, featureMetadata);
+  }
 
   if (conditional) {
+    if (ctx.operands.length !== 1) {
+      return ctx.partial(`x86-${family}-operand-shape-unmodelled`, ['control'], {
+        controlEffect:{ kind:'unknown', reason:`x86-${family}-operand-shape-unmodelled` },
+      });
+    }
     const target = directTarget(ctx.operands[0]);
     if (target == null) {
       return ctx.partial(`x86-${family}-target-unmodelled`, ['control'], {
@@ -105,7 +188,7 @@ export function liftX86ControlEffects(instruction, context = {}) {
         condition = ctx.valueOp('and', [nonZero,zfCondition], 1, { semantic:wantsZero ? 'count != 0 && ZF == 1' : 'count != 0 && ZF == 0' });
         conditionKind = wantsZero ? 'loop-count-and-zf' : 'loop-count-and-not-zf';
       }
-      return ctx.finish({ family:'control', controlEffect:{ kind:'conditional-branch', target:addressRef(target), fallthrough:fallthrough(ctx.instruction), condition }, metadata:{ operation:family, conditionKind, countRegister, countDecremented:true, flagsPreserved:true, instructionLength:ctx.instruction.length } });
+      return ctx.finish({ family:'control', controlEffect:{ kind:'conditional-branch', target:addressRef(target), fallthrough:fallthrough(ctx.instruction), condition }, possibleFaults:[x86ControlTargetFault(family, true)], metadata:{ ...featureMetadata, operation:family, conditionKind, countRegister, countDecremented:true, flagsPreserved:true, instructionLength:ctx.instruction.length } });
     }
 
     const countRegister = CONDITION_COUNT_BRANCHES.get(family);
@@ -141,7 +224,9 @@ export function liftX86ControlEffects(instruction, context = {}) {
         fallthrough:fallthrough(ctx.instruction),
         condition,
       },
+      possibleFaults:[x86ControlTargetFault(family, true)],
       metadata:{
+        ...featureMetadata,
         operation:family,
         conditionKind,
         ...(conditionKind === 'rflags' ? { conditionCode:ctx.instruction.detail.conditionCode ?? family.slice(1) } : { countRegister }),
@@ -162,7 +247,8 @@ export function liftX86ControlEffects(instruction, context = {}) {
       return ctx.finish({
         family:'control',
         controlEffect:{ kind:'branch', target:addressRef(direct) },
-        metadata:{ operation:'jmp', direct:true, instructionLength:ctx.instruction.length },
+        possibleFaults:[x86ControlTargetFault('jmp')],
+        metadata:{ ...featureMetadata, operation:'jmp', direct:true, instructionLength:ctx.instruction.length },
       });
     }
     const indirect = resolveIndirectTarget(ctx, operand, 'jmp');
@@ -170,8 +256,8 @@ export function liftX86ControlEffects(instruction, context = {}) {
       return ctx.finish({
         family:'control',
         controlEffect:{ kind:'indirect', target:indirect.target },
-        possibleFaults:indirect.faults,
-        metadata:{ operation:'jmp', direct:false, memoryIndirect:operand?.type === 'memory', instructionLength:ctx.instruction.length },
+        possibleFaults:[...indirect.faults,x86ControlTargetFault('jmp')],
+        metadata:{ ...featureMetadata, operation:'jmp', direct:false, memoryIndirect:operand?.type === 'memory', instructionLength:ctx.instruction.length },
       });
     }
     return ctx.partial('x86-jmp-target-unmodelled', ['control','registers','memory'], {
@@ -220,8 +306,9 @@ export function liftX86ControlEffects(instruction, context = {}) {
     return ctx.finish({
       family:'control',
       controlEffect:{ kind:'call', target, fallthrough:addressRef(returnAddress) },
-      possibleFaults:[...targetFaults,...x86MemoryFaults('write',64)],
+      possibleFaults:[...targetFaults,...x86MemoryFaults('write',64),x86ControlTargetFault('call')],
       metadata:{
+        ...featureMetadata,
         operation:'call',
         direct:direct != null,
         memoryIndirect:operand?.type === 'memory',
@@ -261,7 +348,7 @@ export function liftX86ControlEffects(instruction, context = {}) {
   return ctx.finish({
     family:'control',
     controlEffect:{ kind:'return', target },
-    possibleFaults:x86MemoryFaults('read',64),
-    metadata:{ operation:'ret', abiSemantics:false, stackDelta:total.toString(), immediateAdjustment:extra.toString(), instructionLength:ctx.instruction.length },
+    possibleFaults:[...x86MemoryFaults('read',64),x86ControlTargetFault('ret')],
+    metadata:{ ...featureMetadata, operation:'ret', abiSemantics:false, stackDelta:total.toString(), immediateAdjustment:extra.toString(), instructionLength:ctx.instruction.length },
   });
 }
