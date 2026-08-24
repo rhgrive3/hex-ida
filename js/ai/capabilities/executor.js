@@ -1,4 +1,5 @@
 import { AIError } from '../schema.js';
+import { assertSchema } from '../validation.js';
 import { validatePatchRange } from '../../patch.js';
 
 export class CapabilityExecutor {
@@ -15,7 +16,7 @@ export class CapabilityExecutor {
   async execute(id, args = {}, options = {}) {
     const entry = this.catalog?.get?.(id);
     if (!entry || !entry.agentExposed) throw new AIError('invalid_tool_call', `Unknown or human-only capability: ${id}`);
-    validateObject(args, entry.inputSchema);
+    assertSchema(args, entry.inputSchema || { type: 'object' }, 'invalid_tool_call');
     const runtimePlatform = entry.category === 'runtime' ? await this.resolveRuntimePlatform() : null;
     this.verifyBinding(entry, args, runtimePlatform);
     if (entry.requiresApproval && !validAuthorization(options.authorization)) throw new AIError('approval_required', `Capability ${id} requires a proposal approval token.`);
@@ -203,14 +204,6 @@ async function applyPatch(app, args) {
 function serializePatch(item) { return { fileOffset: item.offset.toString(), address: item.addr == null ? null : String(item.addr), before: Array.from(item.before), after: Array.from(item.after), label: item.label || null, reason: item.reason || null }; }
 function byteArray(value) { const raw = Array.from(value || []); for (const byte of raw) if (!Number.isInteger(byte) || byte < 0 || byte > 255) throw new AIError('invalid_tool_call', 'Mutation contains a non-byte value.'); return Uint8Array.from(raw); }
 function equalBytes(a, b) { return a?.length === b?.length && Array.from(a).every((value, index) => value === b[index]); }
-
-function validateObject(value, schema) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new AIError('invalid_tool_call', 'Capability arguments must be an object.');
-  if (schema?.additionalProperties === false) {
-    const allowed = new Set(Object.keys(schema.properties || {}));
-    for (const key of Object.keys(value)) if (!allowed.has(key)) throw new AIError('invalid_tool_call', `Unknown capability argument: ${key}`);
-  }
-}
 
 function callRequired(target, method, ...args) {
   if (typeof target?.[method] !== 'function') throw new AIError('tool_failed', `Project ${method} capability is unavailable.`);

@@ -202,6 +202,14 @@ function canonicalIdentity(value, stack = new Set()) {
 }
 
 function randomToken() {
-  if (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function') return globalThis.crypto.randomUUID();
-  return `approval_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`;
+  const crypto = globalThis.crypto;
+  if (crypto && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+  if (!crypto || typeof crypto.getRandomValues !== 'function') {
+    throw new AIError('tool_failed', 'Secure randomness is unavailable for approval tokens.');
+  }
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  let token = 'approval_';
+  for (const byte of bytes) token += byte.toString(16).padStart(2, '0');
+  return token;
 }

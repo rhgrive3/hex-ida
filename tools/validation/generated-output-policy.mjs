@@ -10,8 +10,14 @@ export const GENERATED_OUTPUT_MODE = Object.freeze({
   EPHEMERAL: 'ephemeral',
 });
 
-const COMPONENT_PREFIX = 'dev-agent-hardening/';
-const INTEGRATION_PREFIX = 'dev-agent-hardening/integration/';
+const COMPONENT_PREFIXES = Object.freeze([
+  'dev-agent-hardening/',
+  'fix/stage2-a2-',
+  'fix/stage2-a7-',
+]);
+const INTEGRATION_PREFIXES = Object.freeze([
+  'dev-agent-hardening/integration/',
+]);
 
 export function generatedOutputMode({ eventName = '', headRef = '', ref = '' } = {}) {
   const event = String(eventName || '');
@@ -19,8 +25,8 @@ export function generatedOutputMode({ eventName = '', headRef = '', ref = '' } =
   const refName = String(ref || '');
 
   if (event === 'pull_request'
-    && branch.startsWith(COMPONENT_PREFIX)
-    && !branch.startsWith(INTEGRATION_PREFIX)) {
+    && COMPONENT_PREFIXES.some((prefix) => branch.startsWith(prefix))
+    && !INTEGRATION_PREFIXES.some((prefix) => branch.startsWith(prefix))) {
     return GENERATED_OUTPUT_MODE.EPHEMERAL;
   }
 
