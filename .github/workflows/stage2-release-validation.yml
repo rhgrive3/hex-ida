@@ -74,7 +74,7 @@ jobs:
         # Invariant Gates already runs the complete repository check for every
         # pull request. Keep Stage 2 focused on its exact-head product here;
         # manual/final validation below still requires --full.
-        run: node tools/validation/stage2/verify.mjs --expect-sha "$VERIFY_SHA"
+        run: node tools/validation/stage2/verify.mjs --expect-sha "$VERIFY_SHA" || { cat reports/stage2/stage2-verdict.json; exit 1; }
 
   candidate-merge-tree:
     if: github.event_name == 'pull_request'
@@ -93,7 +93,7 @@ jobs:
       - name: Verify exact candidate merge tree
         env:
           VERIFY_SHA: ${{ github.sha }}
-        run: node tools/validation/stage2/verify.mjs --expect-sha "$VERIFY_SHA"
+        run: node tools/validation/stage2/verify.mjs --expect-sha "$VERIFY_SHA" || { cat reports/stage2/stage2-verdict.json; exit 1; }
 
   final-exact-product:
     if: github.event_name == 'workflow_dispatch'
