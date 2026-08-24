@@ -71,7 +71,7 @@
         "provider": "capstone/backend",
         "contract": "external-structured-v1",
         "contractVersion": "x86-64-decoded-instruction/v1",
-        "semanticVersion": "capstone-5-x86-structured-v1",
+        "semanticVersion": "capstone-5-x86-structured-v2",
         "enumerationStatus": "excluded",
         "reason": "The production Capstone bridge does not expose a finite long-64 instruction-family registry for this inventory.",
         "missingUnits": ["x86_64:long-64:all-decoder-encodings-prefixes-and-aliases"]
@@ -82,7 +82,20 @@
         "families": [
           { "id": "control", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "Control forms remain partial when structured targets or stack state are unavailable." },
           { "id": "memory", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "Memory forms include locked ordering and deferred operand shapes." },
-          { "id": "lea", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "LEA fails closed for unsupported address/operand shapes." },
+          {
+            "id": "lea",
+            "status": "exact",
+            "coverage": "exact",
+            "preexisting": false,
+            "oracle": "intel-sdm-vol2-lea-8d-r + deployed-capstone-5-x86-long64-detail",
+            "reason": "All long-mode LEA operand/address widths and complete REX/ModRM/SIB discriminator space have structured exact effects.",
+            "proof": {
+              "schemaVersion": "machine-effects-effect-unit-proof/v1",
+              "source": "js/targets/architecture/x86_64/effects/integer.js",
+              "test": "tests/phase5/effects/memory/addressing.test.mjs",
+              "denominatorTest": "tests/machine-effects/x86-long64-lea-denominator.test.mjs"
+            }
+          },
           { "id": "integer", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "Integer forms include deferred memory and implicit-state shapes." },
           { "id": "string", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "Repeated string effects exceed the frozen generic contract." },
           { "id": "atomic", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "Locked and wide atomic effects remain explicitly partial." },

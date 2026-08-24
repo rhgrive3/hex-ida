@@ -44,11 +44,16 @@ export async function createCapstoneX86Session() {
     }
   }
 
+  function instructionName(instructionId) {
+    const pointer = M.ccall('cs_insn_name', 'number', ['number','number'], [handle, Number(instructionId)]);
+    return pointer ? M.UTF8ToString(pointer) : null;
+  }
+
   function close() {
     M.ccall('cs_close', 'number', ['pointer'], [handlePointer]);
     M._free(outputPointer);
     M._free(handlePointer);
     try { fs.unlinkSync(modulePath); } catch { /* best effort */ }
   }
-  return Object.freeze({ decode, close });
+  return Object.freeze({ decode, instructionName, close });
 }

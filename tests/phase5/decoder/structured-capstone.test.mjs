@@ -132,6 +132,13 @@ try {
     immediateSize:0,
   });
 
+  // Capstone names SIB index=4 sentinels EIZ/RIZ. They are absence markers,
+  // not architectural registers or implicit input dependencies.
+  const noIndexLea = await decode([0x48,0x8d,0x04,0x20], 0x401100n);
+  assert.equal(noIndexLea.detail.operands[1].memory.base, 'rax');
+  assert.equal(noIndexLea.detail.operands[1].memory.index, null);
+  assert.doesNotThrow(() => createX86DecodedInstruction({ ...noIndexLea, instructionId:'p5:lea:no-sib-index' }));
+
   // The immediate value and its encoded width remain structural facts.
   const immediateMove = await decode([0x48,0xc7,0xc0,0x78,0x56,0x34,0x12], 0x402000n);
   const immediate = immediateMove.detail.operands.find((operand) => operand.type === 'immediate');

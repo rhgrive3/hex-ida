@@ -21,6 +21,8 @@ assert.ok(validation.blockingGaps.includes('arm64:a64:all-decoder-encodings-and-
 assert.equal(validation.blockingGaps.includes('riscv64:rv64imc:all-valid-32-bit-and-compressed-encodings'), false,
   'the exhaustive versioned RV64IMC decoder denominator closes only its decoder unit');
 assert.ok(validation.blockingGaps.includes('x86_64:long-64:effect-family:atomic'));
+assert.equal(validation.blockingGaps.includes('x86_64:long-64:effect-family:lea'), false,
+  'the exhaustive long-mode LEA encoding discriminator proof closes only LEA ownership');
 assert.ok(validation.blockingGaps.includes('arm64e:a64+pac:alias:baseline-a64-delegation'), 'delegated baseline exclusions remain profile blockers');
 
 const report = a2DenominatorReport(inventory);
