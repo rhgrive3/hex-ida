@@ -1,5 +1,5 @@
 import { createX86EffectContext } from './common.js';
-import { readX86VectorOperand, writeX86VectorRegister, x86VectorEncodingInfo } from './simd.js';
+import { readX86VectorOperand, writeX86VectorRegister, x86VectorEncodingInfo, x86VectorFamilyEncodingMatches } from './simd.js';
 
 function isVector(operand) {
   return operand?.type === 'register' && operand.register?.kind === 'vector';
@@ -16,9 +16,10 @@ export function liftX86SimdAndNotEffects(instruction, context = {}) {
   const ctx = createX86EffectContext(instruction, context);
   const encoding = x86VectorEncodingInfo(ctx.instruction);
   if (!encoding.valid) return ctx.partial('x86-vector-prefix-metadata-malformed', ['registers','memory','other'], { metadata:{ operation:family } });
-  if (encoding.kind === 'evex') return ctx.partial('x86-evex-physical-state-unmodelled', ['registers','other'], { metadata:{ operation:family, vectorPrefixKind:'evex' } });
+  if (encoding.kind === 'evex') return ctx.partial('x86-evex-physical-state-unmodelled', ['registers','other'], { metadata:{ operation:family, vectorPrefixKind:'evex', vectorWidthBits:encoding.vectorWidthBits, maskRegister:encoding.maskRegister, maskSemantics:encoding.maskRegister?(encoding.zeroing?'zero':'merge'):'none', sharedDependencyRequired:['x86-physical-zmm0-31','x86-opmask-k0-7','decoded-evex-fields'] } });
   if (family === 'pandn' && encoding.kind !== 'legacy') return ctx.partial('x86-pandn-encoding-mismatch', ['registers','other']);
   if (family === 'vpandn' && encoding.kind !== 'vex') return ctx.partial('x86-vpandn-encoding-mismatch', ['registers','other']);
+  if (family === 'vpandn' && !x86VectorFamilyEncodingMatches(ctx.instruction, family, encoding)) return ctx.partial('x86-vpandn-vector-prefix-family-mismatch', ['registers','other'], { metadata:{ opcodeMap:encoding.opcodeMap, mandatoryPrefixCode:encoding.mandatoryPrefixCode } });
 
   const [destination, operand1, operand2] = ctx.operands;
   if (!isVector(destination)) return ctx.partial(`x86-${family}-destination-unmodelled`, ['registers']);

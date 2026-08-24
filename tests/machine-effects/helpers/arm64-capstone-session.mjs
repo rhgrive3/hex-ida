@@ -18,6 +18,16 @@ export async function createCapstoneArm64Session() {
   const M = await factory({ locateFile:(name) => path.join(ROOT, name), print:()=>{}, printErr:()=>{} });
   const handlePointer = M._malloc(4);
   const outputPointer = M._malloc(4);
+  const majorPointer = M._malloc(4);
+  const minorPointer = M._malloc(4);
+  const packedVersion = M.ccall('cs_version', 'number', ['pointer','pointer'], [majorPointer, minorPointer]);
+  const version = Object.freeze({
+    packed:packedVersion,
+    major:M.getValue(majorPointer, 'i32'),
+    minor:M.getValue(minorPointer, 'i32'),
+  });
+  M._free(minorPointer);
+  M._free(majorPointer);
   const opened = M.ccall('cs_open', 'number', ['number','number','pointer'], [M.ARCH_ARM64, M.MODE_ARM | M.MODE_LITTLE_ENDIAN, handlePointer]);
   if (opened !== 0) throw new Error(`arm64-capstone-open-failed:${opened}`);
   const handle = M.getValue(handlePointer, 'i32');
@@ -58,5 +68,5 @@ export async function createCapstoneArm64Session() {
     M._free(handlePointer);
     try { fs.unlinkSync(modulePath); } catch { /* best effort */ }
   }
-  return Object.freeze({ decode, instructionName, close });
+  return Object.freeze({ decode, instructionName, version, close });
 }

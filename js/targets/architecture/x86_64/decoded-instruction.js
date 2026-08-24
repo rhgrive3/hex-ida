@@ -35,10 +35,40 @@ function accessOf(value) {
   return access;
 }
 
-function registerOf(value, code) {
+function supplementaryRegisterShape(value, hintedWidthBits) {
+  const name = String(typeof value === 'object' ? (value?.id ?? value?.name ?? value?.registerId ?? '') : value ?? '').trim().toLowerCase();
+  const hinted = Number(hintedWidthBits);
+  const width = Number.isSafeInteger(hinted) && hinted > 0 ? hinted : null;
+  const fixed = [
+    [/^st\([0-7]\)$/,80,'x87'], [/^mm[0-7]$/,64,'mmx'], [/^k[0-7]$/,width || 64,'mask'],
+    [/^xmm(?:1[6-9]|2[0-9]|3[01])$/,128,'vector'], [/^ymm(?:1[6-9]|2[0-9]|3[01])$/,256,'vector'],
+    [/^zmm(?:[0-9]|[12][0-9]|3[01])$/,512,'vector'], [/^bnd[0-3]$/,128,'bounds'],
+    [/^cr(?:[0-9]|1[0-5])$/,64,'control-register'], [/^dr(?:[0-9]|1[0-5])$/,64,'debug-register'],
+    [/^(?:cs|ds|es|fs|gs|ss)$/,16,'segment'], [/^fpsw$/,16,'x87-status'], [/^fpcw$/,16,'x87-control'],
+  ];
+  for (const [pattern,bits,kind] of fixed) if (pattern.test(name)) return { name, bits:Number(bits), kind };
+  return null;
+}
+
+function registerOf(value, code, { decoderRegisterCode = null, widthBits = null } = {}) {
   const descriptor = x86RegisterDescriptor(value);
-  if (!descriptor) throw new TypeError(code);
-  return descriptor;
+  if (descriptor) return descriptor;
+  const decoderCode = Number(decoderRegisterCode);
+  const shape = Number.isSafeInteger(decoderCode) && decoderCode > 0 ? supplementaryRegisterShape(value, widthBits) : null;
+  if (!shape) throw new TypeError(code);
+  return Object.freeze({
+    id:shape.name,
+    physicalId:shape.name,
+    physicalBits:shape.bits,
+    viewBits:shape.bits,
+    lsb:0,
+    writePolicy:'replace',
+    kind:'decoder-supplementary',
+    architecturalKind:shape.kind,
+    modeled:false,
+    decoderSupplementary:true,
+    decoderRegisterCode:decoderCode,
+  });
 }
 
 function normalizeOperand(input, index) {
@@ -48,8 +78,12 @@ function normalizeOperand(input, index) {
   const widthBits = input.widthBits == null ? null : integer(input.widthBits, 'x86-decoded-instruction-invalid-operand-width', { min:1, max:4096 });
   const common = { index, type, access:accessOf(input.access), ...(widthBits == null ? {} : { widthBits }) };
   if (type === 'register') {
-    const register = registerOf(input.register ?? input.registerId ?? input.name, 'x86-decoded-instruction-unknown-register');
-    if (widthBits != null && widthBits !== register.viewBits) throw new TypeError('x86-decoded-instruction-register-width-mismatch');
+    let register = registerOf(input.register ?? input.registerId ?? input.name, 'x86-decoded-instruction-unknown-register', { decoderRegisterCode:input.registerCode ?? input.register?.decoderRegisterCode, widthBits });
+    if (widthBits != null && widthBits !== register.viewBits) {
+      if (register.kind === 'opmask' && register.physicalBits === 64 && widthBits <= 64) {
+        register = Object.freeze({ ...register, viewBits:widthBits, writePolicy:'decoder-dependent-opmask-width', decoderNarrowView:true });
+      } else throw new TypeError('x86-decoded-instruction-register-width-mismatch');
+    }
     return Object.freeze({ ...common, widthBits:register.viewBits, register });
   }
   if (type === 'immediate') {
@@ -61,8 +95,8 @@ function normalizeOperand(input, index) {
   }
   if (type === 'memory') {
     const raw = input.memory && typeof input.memory === 'object' ? input.memory : input;
-    const base = raw.base == null ? null : registerOf(raw.base, 'x86-decoded-instruction-unknown-memory-base');
-    const indexRegister = raw.index == null ? null : registerOf(raw.index, 'x86-decoded-instruction-unknown-memory-index');
+    const base = raw.base == null ? null : registerOf(raw.base, 'x86-decoded-instruction-unknown-memory-base', { decoderRegisterCode:raw.baseCode ?? raw.base?.decoderRegisterCode, widthBits:raw.base?.viewBits });
+    const indexRegister = raw.index == null ? null : registerOf(raw.index, 'x86-decoded-instruction-unknown-memory-index', { decoderRegisterCode:raw.indexCode ?? raw.index?.decoderRegisterCode, widthBits:raw.index?.viewBits });
     const segment = raw.segment == null ? null : String(raw.segment).toLowerCase();
     const scale = raw.scale == null ? 1 : integer(raw.scale, 'x86-decoded-instruction-invalid-memory-scale', { min:1, max:8 });
     if (![1,2,4,8].includes(scale)) throw new TypeError('x86-decoded-instruction-invalid-memory-scale');
@@ -123,8 +157,8 @@ export function createX86DecodedInstruction(input = {}) {
       prefixes:normalizePrefixState(rawDetail.prefixes ?? input.prefixes),
       operandCount,
       operands:Object.freeze(operands),
-      implicitReads:Object.freeze((rawDetail.implicitReads ?? input.implicitReads ?? []).map((value) => registerOf(value, 'x86-decoded-instruction-unknown-implicit-read'))),
-      implicitWrites:Object.freeze((rawDetail.implicitWrites ?? input.implicitWrites ?? []).map((value) => registerOf(value, 'x86-decoded-instruction-unknown-implicit-write'))),
+      implicitReads:Object.freeze((rawDetail.implicitReads ?? input.implicitReads ?? []).map((value, index) => registerOf(value, 'x86-decoded-instruction-unknown-implicit-read', { decoderRegisterCode:rawDetail.implicitReadCodes?.[index] }))),
+      implicitWrites:Object.freeze((rawDetail.implicitWrites ?? input.implicitWrites ?? []).map((value, index) => registerOf(value, 'x86-decoded-instruction-unknown-implicit-write', { decoderRegisterCode:rawDetail.implicitWriteCodes?.[index] }))),
       conditionCode:(rawDetail.conditionCode ?? input.conditionCode) == null ? null : String(rawDetail.conditionCode ?? input.conditionCode).toLowerCase(),
     }),
     detailAvailable:input.detailAvailable === true || input.detailStatus === 'complete',

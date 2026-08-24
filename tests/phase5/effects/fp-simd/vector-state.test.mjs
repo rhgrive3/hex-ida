@@ -33,7 +33,9 @@ test('VEX.128 zeroes YMM upper 128 and VEX.256 replaces the full YMM', () => {
 
 test('unsupported vector state and malformed encoding fail closed', () => {
   assert.throws(() => lift(instruction('pxor', [reg('xmm16'),reg('xmm0')], { instructionId:'p5-3:xmm16' })), /x86-decoded-instruction-unknown-register/);
-  assert.throws(() => lift(instruction('vxorps', [reg('zmm0'),reg('zmm1'),reg('zmm2')], { prefixes:evex(), instructionId:'p5-3:zmm' })), /x86-decoded-instruction-unknown-register/);
+  const zmm = lift(instruction('vxorps', [reg('zmm0'),reg('zmm1'),reg('zmm2')], { prefixes:evex(), instructionId:'p5-3:zmm' }));
+  assert.equal(zmm.completeness, 'partial');
+  assert.match(zmm.unknownEffects.reason, /evex-physical-state-unmodelled/);
   const evexLow = lift(instruction('vxorps', [reg('xmm0'),reg('xmm1'),reg('xmm2')], { prefixes:evex(), instructionId:'p5-3:evex-low' }));
   assert.equal(evexLow.completeness, 'partial');
   assert.match(evexLow.unknownEffects.reason, /evex-physical-state-unmodelled/);

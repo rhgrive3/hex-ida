@@ -196,6 +196,10 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
           const t = referenceTarget(b, opsStr);
           res.calls.push({ row, addr, target: t, name: t != null && symbols ? symbols.nameAt(t) || symbols.label(t) : null });
         } else res.indirectCalls++;
+        // AAPCS64 calls may clobber x0-x18; BL/BLR also overwrite LR/x30.
+        // Keep x19-x29 provenance because those registers are callee-saved.
+        for (let r = 0; r <= 18; r++) pageOf.delete(r);
+        pageOf.delete(30);
       } else if (isReturn(b)) {
         res.returns++;
       } else if (/^b\./.test(b) || b === 'cbz' || b === 'cbnz' || b === 'tbz' || b === 'tbnz') {
@@ -452,6 +456,11 @@ export function describeFunction(res, name) {
   if (res.hasTrap) notes.push('「ここには来ないはず」という停止命令');
   if (notes.length) lines.push(notes.join('、') + ' が出てきます。');
   if (res.dataRows > 0) lines.push('命令として読めない 4 バイトが ' + res.dataRows + ' 行あります。定数や飛び先表などのデータが混ざっています。');
-  if (res.truncated) lines.push('※ 大きすぎるため、先頭から ' + MAX_INSTRUCTIONS.toLocaleString() + ' 命令ぶんだけを見ています。');
+  if (res.truncated) {
+    const analyzedRows = Number.isFinite(res.analyzedRows) && res.analyzedRows > 0
+      ? Math.floor(res.analyzedRows)
+      : MAX_INSTRUCTIONS;
+    lines.push('※ 大きすぎるため、先頭から ' + analyzedRows.toLocaleString() + ' 命令ぶんだけを見ています。');
+  }
   return lines;
 }

@@ -99,6 +99,16 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Phase 5's real-byte verification corpus is intentionally pinned to
+      # Clang/LLD 18. Keep the invariant shard on that same frozen provider
+      # instead of silently falling back to the runner's default Clang 17.
+      - name: Install the frozen Phase 5 toolchain
+        if: matrix.name == 'contracts-phase'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y clang-18 lld-18 llvm-18
+
       - name: Prepare generated userscript for canonical Phase 5 component semantic check
         if: >-
           github.event_name == 'pull_request' &&
