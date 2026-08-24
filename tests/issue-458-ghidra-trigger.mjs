@@ -11,5 +11,7 @@ for (const path of [
 ]) {
   assert.ok(workflow.includes(path), `Ghidra differential trigger must include ${path}`);
 }
+assert.ok(workflow.includes("'tests/machine-effects/**'"), 'MachineEffects semantic proof changes remain in Ghidra trigger scope');
+assert.ok(workflow.includes("'!tests/machine-effects/run.mjs'"), 'runner-only orchestration changes must not launch the Ghidra differential');
 assert.ok(workflow.includes('node tests/issue-458-ghidra-trigger.mjs'));
 console.log('issue #458 Ghidra trigger regression passed');
