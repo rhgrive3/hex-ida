@@ -128,7 +128,7 @@ export function parseLldbOutput(output, { fixturePath = A7_LLDB_FIXTURE_PATH, en
   return Object.freeze({ pid:Number(process[1]), threadId:Number(thread[1]), modulePath, rip, rsp, targetProfileId:TARGET_PROFILE, capabilityResults:capabilityMap(BASELINE_CAPABILITIES) });
 }
 
-function hostActiveOpsPython(fixturePath, probeWord) {
+function hostActiveOpsPython(fixturePath, probeWord, pythonPath) {
   return `
 import json
 import lldb
@@ -139,7 +139,22 @@ import time
 
 FIXTURE = ${JSON.stringify(fixturePath)}
 PROBE = ${probeWord.toString()}
+PYTHON = ${JSON.stringify(pythonPath)}
 MARKER = ${JSON.stringify(ACTIVE_MARKER)}
+PTRACE_LAUNCHER = r'''import ctypes
+import os
+import sys
+PR_SET_PTRACER = 0x59616D61
+PR_SET_PTRACER_ANY = ctypes.c_ulong(-1).value
+libc = ctypes.CDLL(None, use_errno=True)
+prctl = libc.prctl
+prctl.argtypes = [ctypes.c_int, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong]
+prctl.restype = ctypes.c_int
+if prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY, 0, 0, 0) != 0:
+    error_number = ctypes.get_errno()
+    raise OSError(error_number, os.strerror(error_number))
+os.execv(sys.argv[1], [sys.argv[1]])
+'''
 
 def fail(code):
     raise RuntimeError(code)
@@ -156,6 +171,21 @@ def wait_for(predicate, timeout=3.0):
             return last
         time.sleep(0.01)
     return last
+
+def wait_for_fixture_exec(child, timeout=3.0):
+    deadline = time.time() + timeout
+    expected = os.path.realpath(FIXTURE)
+    proc_exe = '/proc/' + str(child.pid) + '/exe'
+    while time.time() < deadline:
+        if child.poll() is not None:
+            fail('ptrace-launcher-failed:' + str(child.returncode))
+        try:
+            if os.path.realpath(proc_exe) == expected:
+                return
+        except OSError:
+            pass
+        time.sleep(0.01)
+    fail('ptrace-launcher-exec-timeout')
 
 def current_frame():
     thread = process.GetSelectedThread()
@@ -194,8 +224,8 @@ try:
     target = debugger.CreateTarget(FIXTURE)
     if not target.IsValid():
         fail('target-create-failed')
-    child = subprocess.Popen([FIXTURE], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    time.sleep(0.05)
+    child = subprocess.Popen([PYTHON, '-c', PTRACE_LAUNCHER, FIXTURE], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    wait_for_fixture_exec(child)
     requested_pid = child.pid
     error = lldb.SBError()
     process = target.Attach(lldb.SBAttachInfo(requested_pid), error)
@@ -407,7 +437,7 @@ export function collectA7X86LldbProof({
     const output = `${result.stdout || ''}\n${result.stderr || ''}`;
     if (result.status !== 0 || result.signal) throw new Error(`a7-lldb-provider-command-failed:${result.signal || result.status}`);
     baseline = parseLldbOutput(output, { fixturePath:checkedFixture.absolute, entry:checkedFixture.entry, probeWord:checkedFixture.probeWord });
-    const activeRun = runLldbPythonProof(lldb, python, directory, hostActiveOpsPython(checkedFixture.absolute, checkedFixture.probeWord), 'a7-lldb-active-ops');
+    const activeRun = runLldbPythonProof(lldb, python, directory, hostActiveOpsPython(checkedFixture.absolute, checkedFixture.probeWord, python), 'a7-lldb-active-ops');
     lldbPythonPath = activeRun.lldbPythonPath;
     activeOperations = parseLldbActiveOpsOutput(activeRun.output, { fixturePath:checkedFixture.absolute, probeWord:checkedFixture.probeWord });
   } finally {
