@@ -92,7 +92,9 @@
       ],
       "inventoryRefs": [
         "tests/machine-effects/a2-denominator-inventory.json",
+        "tests/machine-effects/riscv64-rv64imc-denominator.test.mjs",
         "tools/validation/machine-effects/a2-denominator.mjs",
+        "tools/validation/machine-effects/riscv64-rv64imc-denominator.mjs",
         "tools/validation/stage2/build-profile-denominator-inventory.mjs"
       ]
     },
