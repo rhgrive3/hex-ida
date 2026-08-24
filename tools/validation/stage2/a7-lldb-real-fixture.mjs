@@ -381,7 +381,7 @@ export function collectA7X86LldbProof({
   readobj = fs.existsSync('/usr/bin/llvm-readobj-18') ? '/usr/bin/llvm-readobj-18' : 'llvm-readobj',
   python = fs.existsSync('/usr/bin/python3') ? '/usr/bin/python3' : 'python3',
 } = {}) {
-  const clean = git(['status', '--porcelain', '--untracked-files=no']);
+  const clean = git(['status', '--porcelain', '--untracked-files=all']);
   if (clean) throw new Error('a7-lldb-proof-worktree-dirty');
   const currentCommitSha = git(['rev-parse', 'HEAD']);
   const currentTreeSha = git(['rev-parse', 'HEAD^{tree}']);
