@@ -274,7 +274,6 @@ try:
         'memoryProbe': hex(probe_value), 'state': state_name(process.GetState()),
     }
 
-    before_rax = rax
     debugger.SetAsync(True)
     pause_stat_before = proc_stat(attached_pid)
     pause_stop_id_before = process.GetStopID()
@@ -304,24 +303,25 @@ try:
     stopped_state = wait_for(lldb.SBDebugger.StateIsStoppedState, timeout=3.0)
     if not lldb.SBDebugger.StateIsStoppedState(stopped_state):
         fail('pause-stopped-not-observed:' + state_name(stopped_state))
+    if process.GetProcessID() != attached_pid:
+        fail('pause-process-id-changed')
+    pause_stat_stopped = proc_stat(attached_pid)
+    if pause_stat_stopped['startTimeTicks'] != pause_stat_before['startTimeTicks']:
+        fail('pause-process-identity-changed-after-stop')
     pause_stop_id_after = process.GetStopID()
     if pause_stop_id_after <= pause_stop_id_before:
         fail('pause-stop-id-not-advanced')
-    pause_thread, pause_frame = current_frame('pause')
-    pause_rax = reg(pause_frame, 'rax')
-    if pause_rax == before_rax:
-        fail('pause-no-register-progress')
-    pause_rip = reg(pause_frame, 'rip')
-    pause_rsp = reg(pause_frame, 'rsp')
     result['pause'] = {
         'observed': True, 'continueAccepted': True, 'stopAccepted': True,
-        'runningObserved': True, 'runningEvidence': 'continue-success+register-progress',
+        'runningObserved': True, 'runningEvidence': 'exact-host-process-cpu-progress+lldb-stop-id',
+        'executionEvidence': 'exact-host-process-cpu-ticks-during-provider-running-window',
+        'executionWindow': 'after-continue-before-interrupt',
+        'progressTransport': 'linux-proc-stat+lldb-stop-id',
         'stoppedObserved': True, 'executionAdvanced': True, 'interruptIssued': True,
-        'stopIdBefore': pause_stop_id_before, 'stopIdAfter': pause_stop_id_after,
-        'processId': process.GetProcessID(), 'threadId': pause_thread.GetThreadID(),
+        'stopIdBefore': pause_stop_id_before, 'stopIdAfter': pause_stop_id_after, 'stopIdAdvanced': True,
+        'processId': process.GetProcessID(),
         'cpuTicksBefore': pause_stat_before['cpuTicks'], 'cpuTicksAfter': pause_stat_after['cpuTicks'],
         'processStartTimeTicks': pause_stat_before['startTimeTicks'],
-        'registers': {'rip': hex(pause_rip), 'rsp': hex(pause_rsp), 'rax': hex(pause_rax)},
         'state': state_name(process.GetState()),
     }
 
@@ -332,6 +332,7 @@ try:
     interpreter = debugger.GetCommandInterpreter()
     holder = {}
     cancel_stat_before = proc_stat(attached_pid)
+    cancel_stop_id_before = process.GetStopID()
     def run_interpreter():
         try:
             holder['result'] = debugger.RunCommandInterpreter(True, False, lldb.SBCommandInterpreterRunOptions(), 0, False, False)
@@ -366,28 +367,39 @@ try:
     stopped_state = wait_for(lldb.SBDebugger.StateIsStoppedState)
     if not lldb.SBDebugger.StateIsStoppedState(stopped_state):
         fail('cancel-target-not-stopped:' + state_name(stopped_state))
-    thread, frame = current_frame('cancel')
-    cancel_rip = reg(frame, 'rip')
-    cancel_rax = reg(frame, 'rax')
-    if cancel_rax == pause_rax:
-        fail('cancel-no-execution-observed')
+    if process.GetProcessID() != attached_pid:
+        fail('cancel-process-id-changed')
+    cancel_stop_id_after = process.GetStopID()
+    if cancel_stop_id_after <= cancel_stop_id_before:
+        fail('cancel-stop-id-not-advanced')
     first_state = process.GetState()
+    first_stop_id = cancel_stop_id_after
+    first_stat = proc_stat(attached_pid)
+    if first_stat['startTimeTicks'] != cancel_stat_before['startTimeTicks']:
+        fail('cancel-process-identity-changed-after-stop')
     time.sleep(0.10)
-    thread2, frame2 = current_frame('cancel-late')
-    late_rip = reg(frame2, 'rip')
-    late_rax = reg(frame2, 'rax')
     late_state = process.GetState()
-    if first_state != late_state or cancel_rip != late_rip or cancel_rax != late_rax:
+    late_stop_id = process.GetStopID()
+    late_stat = proc_stat(attached_pid)
+    if late_stat['startTimeTicks'] != cancel_stat_before['startTimeTicks']:
+        fail('cancel-late-process-identity-changed')
+    if first_state != late_state or first_stop_id != late_stop_id:
         fail('cancel-late-success-observed')
     result['cancel'] = {
-        'observed': True, 'inFlightObserved': True, 'inFlightEvidence': 'blocking-command-thread-alive',
+        'observed': True, 'inFlightObserved': True,
+        'inFlightEvidence': 'blocking-command-thread-alive+exact-host-process-cpu-progress',
+        'executionEvidence': 'exact-host-process-cpu-ticks-during-provider-running-window',
+        'executionWindow': 'after-command-continue-before-cancel-interrupt',
+        'progressTransport': 'linux-proc-stat+lldb-command-interpreter+lldb-stop-id',
         'executionAdvanced': True, 'interruptAccepted': True,
         'interpreterWasInterrupted': bool(interpreter.WasInterrupted()), 'commandSettled': True,
-        'processId': process.GetProcessID(), 'threadId': thread.GetThreadID(),
+        'processId': process.GetProcessID(),
         'cpuTicksBefore': cancel_stat_before['cpuTicks'], 'cpuTicksAfter': cancel_stat_after['cpuTicks'],
         'processStartTimeTicks': cancel_stat_before['startTimeTicks'],
-        'settlement': 'cancelled', 'providerDisposition': 'interrupted-command', 'lateResultRejected': True, 'lateStateStable': True,
-        'registers': {'rip': hex(cancel_rip), 'rax': hex(cancel_rax)}, 'state': state_name(late_state),
+        'stopIdBefore': cancel_stop_id_before, 'stopIdAfter': cancel_stop_id_after, 'stopIdAdvanced': True,
+        'settlement': 'cancelled', 'providerDisposition': 'interrupted-command',
+        'lateResultRejected': True, 'lateStateStable': True, 'lateStopIdStable': True, 'lateProcessInstanceStable': True,
+        'state': state_name(late_state),
         'interpreterResult': repr(holder.get('result')), 'interpreterException': holder.get('exception'),
     }
     result['operationResults'] = {'attach': True, 'pause': True, 'cancel': True}
@@ -441,6 +453,14 @@ function parseMarker(output, marker, code) {
   return value;
 }
 
+function safeProgress(before, after) {
+  return Number.isSafeInteger(before) && before >= 0 && Number.isSafeInteger(after) && after > before;
+}
+
+function safeStopProgress(before, after) {
+  return Number.isSafeInteger(before) && before >= 0 && Number.isSafeInteger(after) && after > before;
+}
+
 export function parseLldbActiveOpsOutput(output, { fixturePath = null, probeWord = null } = {}) {
   const proof = parseMarker(output, ACTIVE_MARKER, 'a7-lldb-active-ops');
   if (proof?.kind !== 'active-provider-operations') throw new Error('a7-lldb-active-ops-kind-mismatch');
@@ -453,13 +473,17 @@ export function parseLldbActiveOpsOutput(output, { fixturePath = null, probeWord
   if (fixturePath != null && path.resolve(String(attach.modulePath || '')) !== path.resolve(fixturePath)) throw new Error('a7-lldb-attach-module-identity-mismatch');
   if (!attach.registers?.rip || !attach.registers?.rsp || !Number.isSafeInteger(attach.threadId)) throw new Error('a7-lldb-attach-register-observation-missing');
   if (probeWord != null && String(attach.memoryProbe || '').toLowerCase() !== '0x1020304050607080') throw new Error('a7-lldb-attach-memory-observation-missing');
-  if (proof.operationResults?.pause !== true || pause.observed !== true || pause.runningObserved !== true || pause.stoppedObserved !== true || pause.executionAdvanced !== true || pause.continueAccepted !== true || pause.stopAccepted !== true) throw new Error('a7-lldb-pause-not-observed');
-  if (pause.runningEvidence !== 'continue-success+register-progress') throw new Error('a7-lldb-pause-running-evidence-missing');
-  if (pause.processId !== attach.attachedPid || !pause.registers?.rip || !Number.isSafeInteger(pause.threadId)) throw new Error('a7-lldb-pause-session-identity-mismatch');
+  if (proof.operationResults?.pause !== true || pause.observed !== true || pause.runningObserved !== true || pause.stoppedObserved !== true || pause.executionAdvanced !== true || pause.continueAccepted !== true || pause.stopAccepted !== true || pause.interruptIssued !== true) throw new Error('a7-lldb-pause-not-observed');
+  if (pause.runningEvidence !== 'exact-host-process-cpu-progress+lldb-stop-id' || pause.executionEvidence !== 'exact-host-process-cpu-ticks-during-provider-running-window') throw new Error('a7-lldb-pause-running-evidence-missing');
+  if (pause.processId !== attach.attachedPid || !Number.isSafeInteger(pause.processStartTimeTicks) || pause.processStartTimeTicks <= 0) throw new Error('a7-lldb-pause-session-identity-mismatch');
+  if (!safeProgress(pause.cpuTicksBefore, pause.cpuTicksAfter)) throw new Error('a7-lldb-pause-process-progress-evidence-missing');
+  if (pause.stopIdAdvanced !== true || !safeStopProgress(pause.stopIdBefore, pause.stopIdAfter)) throw new Error('a7-lldb-pause-stop-id-evidence-missing');
   if (proof.operationResults?.cancel !== true || cancel.observed !== true || cancel.inFlightObserved !== true || cancel.interruptAccepted !== true || cancel.executionAdvanced !== true) throw new Error('a7-lldb-cancel-not-observed');
-  if (cancel.inFlightEvidence !== 'blocking-command-thread-alive') throw new Error('a7-lldb-cancel-inflight-evidence-missing');
-  if (cancel.commandSettled !== true || cancel.settlement !== 'cancelled' || cancel.providerDisposition !== 'interrupted-command' || cancel.lateResultRejected !== true || cancel.lateStateStable !== true) throw new Error('a7-lldb-cancel-settlement-missing');
-  if (cancel.processId !== attach.attachedPid || !cancel.registers?.rip || !Number.isSafeInteger(cancel.threadId)) throw new Error('a7-lldb-cancel-session-identity-mismatch');
+  if (cancel.inFlightEvidence !== 'blocking-command-thread-alive+exact-host-process-cpu-progress' || cancel.executionEvidence !== 'exact-host-process-cpu-ticks-during-provider-running-window') throw new Error('a7-lldb-cancel-inflight-evidence-missing');
+  if (cancel.commandSettled !== true || cancel.settlement !== 'cancelled' || cancel.providerDisposition !== 'interrupted-command' || cancel.lateResultRejected !== true || cancel.lateStateStable !== true || cancel.lateStopIdStable !== true || cancel.lateProcessInstanceStable !== true) throw new Error('a7-lldb-cancel-settlement-missing');
+  if (cancel.processId !== attach.attachedPid || !Number.isSafeInteger(cancel.processStartTimeTicks) || cancel.processStartTimeTicks <= 0) throw new Error('a7-lldb-cancel-session-identity-mismatch');
+  if (!safeProgress(cancel.cpuTicksBefore, cancel.cpuTicksAfter)) throw new Error('a7-lldb-cancel-process-progress-evidence-missing');
+  if (cancel.stopIdAdvanced !== true || !safeStopProgress(cancel.stopIdBefore, cancel.stopIdAfter)) throw new Error('a7-lldb-cancel-stop-id-evidence-missing');
   return Object.freeze({
     ...proof,
     operationResults:Object.freeze({ attach:true, pause:true, cancel:true }),
@@ -525,7 +549,7 @@ export function collectA7X86LldbProof({
     binaryIdentity,
     buildIdentity,
     moduleIdentity: `lldb-module:${binaryIdentity}:${sha256(Buffer.from(activeModulePath))}`,
-    loadMappingIdentity: `lldb-load:${binaryIdentity}:${sha256(Buffer.from(`${activeModulePath}:${activeOperations.pause.registers.rip}`))}`,
+    loadMappingIdentity: `lldb-load:${binaryIdentity}:${sha256(Buffer.from(`${activeModulePath}:${activeOperations.attach.registers.rip}`))}`,
     sessionIdentity,
     capabilityVersion: 'debug/v1',
     commitSha: currentCommitSha,
@@ -564,7 +588,7 @@ export function collectA7X86LldbProof({
       'deterministic-real-fixture-byte-identity','independent-llvm-object-oracle','lldb-version-observed',
       'lldb-target-x86_64','lldb-process-launched','lldb-stop-at-entry','lldb-registers-observed','lldb-register-write-observed',
       'lldb-memory-read-write-observed','lldb-breakpoint-step-remove-observed','lldb-real-process-attach-observed',
-      'lldb-attach-process-target-module-identity','lldb-running-target-pause-observed','lldb-pause-register-pc-observed',
+      'lldb-attach-process-target-module-identity','lldb-running-target-pause-observed','lldb-pause-exact-process-progress-stop-id-observed',
       'lldb-inflight-command-cancel-observed','lldb-cancel-command-settled','lldb-cancel-late-result-stable',
       'runtime-binding-exact-head','runtime-observation-identity',
     ]),
