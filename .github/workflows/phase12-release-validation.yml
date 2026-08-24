@@ -23,6 +23,12 @@ on:
 permissions:
   contents: read
 
+# Only the newest commit on a PR needs this validation. Explicit manual runs
+# remain isolated so one exact audit cannot cancel another.
+concurrency:
+  group: phase12-release-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   verify:
     # Phase 12 owns only Phase 12 lanes. Dev Agent hardening has its own
