@@ -196,10 +196,6 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
           const t = referenceTarget(b, opsStr);
           res.calls.push({ row, addr, target: t, name: t != null && symbols ? symbols.nameAt(t) || symbols.label(t) : null });
         } else res.indirectCalls++;
-        // Calls may overwrite all volatile GPRs, and BL/BLR architecturally
-        // replace x30/LR. Keep only callee-saved x19-x29 provenance alive.
-        for (let reg = 0; reg <= 18; reg++) pageOf.delete(reg);
-        pageOf.delete(30);
       } else if (isReturn(b)) {
         res.returns++;
       } else if (/^b\./.test(b) || b === 'cbz' || b === 'cbnz' || b === 'tbz' || b === 'tbnz') {
