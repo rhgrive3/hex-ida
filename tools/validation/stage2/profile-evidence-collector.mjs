@@ -26,9 +26,14 @@ export const PROFILE_EVIDENCE_RUN_ROOT = 'reports/stage2/profile-evidence-runs';
 const RULES = Object.freeze({
   'S2-A7-NATIVE': Object.freeze({
     providerProfileIds: ['native:lldb-compatible-v1:test'],
-    sourceRefs: ['js/runtime/authority.js', 'js/platform/stage2-profile-evidence.js'],
-    testRefs: ['tests/stage2/runtime-authority.test.mjs', 'tests/stage2/capability-promotion.test.mjs'],
-    commandIds: ['a7-runtime-authority', 'a7-capability-promotion'],
+    sourceRefs: ['js/runtime/authority.js', 'js/platform/stage2-profile-evidence.js', 'tools/validation/stage2/a7-lldb-real-fixture.mjs'],
+    testRefs: ['tests/stage2/runtime-authority.test.mjs', 'tests/stage2/capability-promotion.test.mjs', 'tests/stage2/a7-lldb-real-fixture.test.mjs'],
+    requiredProfileIds: ['arm64:a64', 'arm64e:a64+pac', 'x86_64:long-64', 'riscv64:rv64imc'],
+    realFixtureRefsByProfile: Object.freeze({
+      'x86_64:long-64': Object.freeze(['tests/phase5/corpus/fixtures/vertical-sysv-amd64.elf']),
+    }),
+    providerProofCommandIdsByProfile: Object.freeze({ 'x86_64:long-64': 'a7-lldb-real-fixture' }),
+    commandIds: ['a7-runtime-authority', 'a7-capability-promotion', 'a7-lldb-real-fixture'],
   }),
   'S2-M6-WASM': Object.freeze({ providerProfileIds: ['managed:wasm:provider-bound-runtime-v1:test'], sourceRefs: ['js/managed/wasm/parser.js', 'js/managed/runtime-binding.js'], testRefs: ['tests/stage2/managed-runtime.test.mjs', 'tests/stage2/managed-real-fixtures.test.mjs'], commandIds: ['m6-managed-runtime', 'm6-real-fixtures'] }),
   'S2-M6-DEX': Object.freeze({ providerProfileIds: ['managed:dex:provider-bound-runtime-v1:test'], sourceRefs: ['js/managed/dex/parser.js', 'js/managed/runtime-binding.js'], testRefs: ['tests/stage2/managed-runtime.test.mjs', 'tests/stage2/managed-real-fixtures.test.mjs'], commandIds: ['m6-managed-runtime', 'm6-real-fixtures'] }),
@@ -162,6 +167,14 @@ export function inspectProfileEvidencePrerequisites() {
   const f6 = f6FixtureMap();
   failures.push(...f6.missing.map((profile) => `missing-real-rebuild-fixture:${profile}`));
   for (const [itemId, rule] of Object.entries(RULES)) {
+    if (Array.isArray(rule.requiredProfileIds)) {
+      for (const profileId of rule.requiredProfileIds) {
+        const refs = rule.realFixtureRefsByProfile?.[profileId] || [];
+        if (refs.length === 0 || refs.some((ref) => !fs.existsSync(path.join(ROOT, ref)))) failures.push(`missing-real-profile-fixture:${itemId}:${profileId}`);
+        if (!rule.providerProofCommandIdsByProfile?.[profileId]) failures.push(`missing-active-provider-proof:${itemId}:${profileId}`);
+      }
+      continue;
+    }
     const staticFixtures = (rule.realFixtureRefs || []).filter((ref) => fs.existsSync(path.join(ROOT, ref)));
     const managedFixture = itemId.startsWith('S2-M6-') && managed.has(itemId.slice('S2-M6-'.length).toLowerCase());
     const f6Fixtures = Array.isArray(rule.f6Profiles) && rule.f6Profiles.length > 0 && rule.f6Profiles.every((profile) => f6.found.has(profile));
@@ -209,6 +222,7 @@ export function collectProfileEvidence({ expectedCommitSha, expectedTreeSha, out
   const commands = [
     runCanonical('a7-runtime-authority', ['tests/stage2/runtime-authority.test.mjs']),
     runCanonical('a7-capability-promotion', ['tests/stage2/capability-promotion.test.mjs']),
+    runCanonical('a7-lldb-real-fixture', ['tests/stage2/a7-lldb-real-fixture.test.mjs']),
     runCanonical('m6-managed-runtime', ['tests/stage2/managed-runtime.test.mjs']),
     runCanonical('m6-real-fixtures', ['tests/stage2/managed-real-fixtures.test.mjs']),
     runCanonical('f6-real-rebuild', ['tests/phase12/rebuild/f6-real-fixtures.test.mjs']),
@@ -217,6 +231,7 @@ export function collectProfileEvidence({ expectedCommitSha, expectedTreeSha, out
     runCanonical('p12-patterns', ['tests/phase12/pattern/evaluator.test.mjs']),
   ];
   const commandProofMarkers = Object.freeze({
+    'a7-lldb-real-fixture': '[stage2] bounded x86 LLDB A7 provider proof passed; four-profile promotion remains blocked',
     'm6-real-fixtures': 'deterministic real managed fixtures passed for wasm/dex/cil/jvm',
     'f6-real-rebuild': 'F6_REAL_REBUILD_PROOF=',
     'p12-knowledge': '[phase12] package/provenance/recognition tests passed',
@@ -244,11 +259,13 @@ export function collectProfileEvidence({ expectedCommitSha, expectedTreeSha, out
     const testIdentities = rule.testRefs.map(gitIdentity);
     const fixture = itemId.startsWith('S2-M6-') ? prerequisites.managed.get(itemId.slice('S2-M6-'.length).toLowerCase()) : null;
     const f6FixtureRefs = (rule.f6Profiles || []).map((profile) => prerequisites.f6.found.get(profile)).filter(Boolean);
+    const profileFixtureRefs = (rule.requiredProfileIds || []).flatMap((profile) => rule.realFixtureRefsByProfile?.[profile] || []);
     const realFixtureIdentities = [
       ...(Array.isArray(rule.realFixtureRefs) ? rule.realFixtureRefs.map(fixtureIdentity) : []),
       ...(fixture ? [fixtureIdentity(fixture.relative), fixtureIdentity(MANAGED_MANIFEST_PATH)] : []),
       ...f6FixtureRefs.map(fixtureIdentity),
       ...(f6FixtureRefs.length ? [fixtureIdentity(F6_MANIFEST_PATH)] : []),
+      ...profileFixtureRefs.map(fixtureIdentity),
     ];
     const negativeTestIdentities = (rule.negativeTestRefs || rule.testRefs).map(gitIdentity);
     const independentOracleIdentities = (rule.independentOracleCommandIds || []).map((id) => commandOutputIdentities.get(id));
