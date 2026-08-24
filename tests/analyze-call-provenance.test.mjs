@@ -53,3 +53,5 @@ const calleeSaved = await analyzeLines([
   'ret',
 ]);
 assert.equal(calleeSaved.stringRefs.some((ref) => ref.addr === 0x200000020n), true);
+
+// Exact-head CI trigger after current-main reconciliation.
