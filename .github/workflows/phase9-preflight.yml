@@ -16,6 +16,12 @@ on:
 permissions:
   contents: read
 
+# Only the newest commit on a PR needs this validation. Explicit manual runs
+# remain isolated so one exact audit cannot cancel another.
+concurrency:
+  group: phase9-preflight-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   preflight:
     runs-on: ubuntu-latest
