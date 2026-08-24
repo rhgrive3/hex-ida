@@ -62,14 +62,15 @@ function candidateTools(requested) {
 
 function executablePath(candidates) {
   for (const candidate of candidates) {
-    if (candidate.includes(path.sep)) {
+    const paths = candidate.includes(path.sep)
+      ? [candidate]
+      : String(process.env.PATH || '').split(path.delimiter).filter(Boolean).map((directory) => path.join(directory, candidate));
+    for (const requested of paths) {
       try {
-        if (fs.statSync(candidate).isFile() && (process.platform === 'win32' || (fs.statSync(candidate).mode & 0o111))) return candidate;
+        const stat = fs.statSync(requested);
+        if (stat.isFile() && (process.platform === 'win32' || (stat.mode & 0o111))) return fs.realpathSync(requested);
       } catch {}
-      continue;
     }
-    const probe = spawnSync(candidate, ['--version'], { encoding: 'utf8', timeout: 2_000, maxBuffer: 64 * 1024 });
-    if (probe.status === 0) return candidate;
   }
   return null;
 }
@@ -312,11 +313,13 @@ export function inspectLlvmReadobj({ command = null, timeoutMs = REBUILD_ORACLE_
   const executable = executablePath(candidateTools(command));
   if (!executable) return Object.freeze({ available: false, identity: LLVM_READOBJ_IDENTITY, executable: null, version: null, expectedVersion: expectedVersion || null, reason: 'independent-oracle-tool-unavailable' });
   const version = versionOf(executable, boundedTimeout, boundedOutput);
+  const executableDigest = sha256(fs.readFileSync(executable));
   const versionMatches = !expectedVersion || (!!version && version.includes(String(expectedVersion)));
   return Object.freeze({
     available: versionMatches,
     identity: LLVM_READOBJ_IDENTITY,
     executable,
+    executableDigest,
     version,
     expectedVersion: expectedVersion || null,
     reason: versionMatches ? null : 'independent-oracle-tool-version-mismatch',
@@ -340,7 +343,7 @@ export function createLlvmReadobjOracle({
   const boundedInput = boundedPositive(maxInputBytes, REBUILD_ORACLE_MAX_INPUT_BYTES, REBUILD_ORACLE_MAX_INPUT_BYTES, 'rebuild-independent-oracle-input-budget-invalid');
   const boundedOutput = boundedPositive(maxOutputBytes, REBUILD_ORACLE_MAX_OUTPUT_BYTES, REBUILD_ORACLE_MAX_OUTPUT_BYTES, 'rebuild-independent-oracle-output-budget-invalid');
   const tool = inspectLlvmReadobj({ command, timeoutMs: boundedTimeout, maxOutputBytes: boundedOutput, expectedVersion });
-  const oracleSource = tool.executable ? `${tool.executable} ${READOBJ_FLAGS.join(' ')}` : 'llvm-readobj';
+  const oracleSource = tool.executable ? `${tool.executable}@${tool.executableDigest} ${READOBJ_FLAGS.join(' ')}` : 'llvm-readobj';
 
   return async function independentOracle(context = {}) {
     const transaction = context.transaction || {};
@@ -359,6 +362,7 @@ export function createLlvmReadobjOracle({
       oracleIdentity: LLVM_READOBJ_IDENTITY,
       oracleVersion: tool.version || '',
       oracleSource,
+      oracleExecutableDigest:tool.executableDigest || '',
       sourceDigest,
       outputDigest,
       sourceLength: original.length,

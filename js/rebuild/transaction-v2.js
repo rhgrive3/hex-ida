@@ -241,6 +241,8 @@ function preservationEvidenceValid(transaction, validation) {
     && exactUnits(local?.units)
     && independent?.complete === true
     && independent?.signaturePolicy === 'unsigned-input-required'
+    && /^sha256:[0-9a-f]{64}$/.test(String(oracleResult?.detail?.oracleExecutableDigest || ''))
+    && String(oracleResult?.detail?.oracleSource || '').includes(`@${oracleResult.detail.oracleExecutableDigest} `)
     && independent?.sourceReportDigest === independent?.outputReportDigest
     && /^sha256:[0-9a-f]{64}$/.test(String(independent?.sourceReportDigest || ''))
     && exactUnits(independent?.units);

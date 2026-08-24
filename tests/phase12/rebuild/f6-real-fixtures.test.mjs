@@ -41,6 +41,7 @@ assert.equal(manifest.provenance.policy, 'tracked compiler-produced fixture; no 
 const oracleTool = inspectLlvmReadobj();
 assert.equal(oracleTool.available, true, `llvm-readobj is required: ${oracleTool.reason || 'unavailable'}`);
 assert.match(oracleTool.version, new RegExp(LLVM_READOBJ_EXPECTED_VERSION.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+assert.match(oracleTool.executableDigest, /^sha256:[0-9a-f]{64}$/);
 const independentOracle = createLlvmReadobjOracle();
 
 function fixtureBytes(fixture) {
@@ -408,7 +409,7 @@ for (const status of denominatorStatuses) {
 console.log(`F6_REAL_REBUILD_PROOF=${JSON.stringify({
   schemaVersion: FORMAT_SAFE_REBUILD_SCHEMA,
   fixtures: proofRows,
-  oracle: { identity: oracleTool.identity, version: oracleTool.version },
+  oracle: { identity: oracleTool.identity, version: oracleTool.version, executable:oracleTool.executable, executableDigest:oracleTool.executableDigest },
   denominator: denominatorStatuses.map((status) => ({ profileId: status.profileId, status: status.status, closedUnitIds: status.closedUnitIds, blockingUnitIds: status.blockingUnitIds })),
   layout: { profileId: layoutStatus.profileId, closedUnitIds: layoutStatus.closedUnitIds, blockingUnitIds: layoutStatus.blockingUnitIds },
   negatives: ['no-op-rejected', 'synthetic-rejected', 'header-tamper-rejected', 'truncation-rejected', 'wrong-identity-rejected', 'signed-input-rejected'],
