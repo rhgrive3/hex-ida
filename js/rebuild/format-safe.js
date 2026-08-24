@@ -10,6 +10,8 @@ import { createRebuildTransaction } from './transaction-v2.js';
  *   - ELF64 .comment contents (a non-allocatable section), and
  *   - appending one non-loaded ELF64 SHT_NOBITS section when the existing
  *     section-name table has exact in-place room for the new name,
+ *   - increasing the PE32/PE32+ .text virtual size within the existing
+ *     section-alignment bucket, without moving file bytes,
  *   - the PE COFF timestamp (a fixed-width file-header field).
  *   - a Mach-O 64 LC_VERSION_MIN_MACOSX version field.
  *
@@ -362,6 +364,10 @@ function littleEndianBytes(length, write) {
   return result;
 }
 
+function alignUp(value, alignment) {
+  return Math.ceil(value / alignment) * alignment;
+}
+
 function elfNobitsLayoutPlan(source, image, mutation) {
   const name = String(mutation.name ?? '.bss');
   if (name !== '.bss') fail('format-safe-elf-nobits-name-unsupported');
@@ -439,6 +445,63 @@ function elfNobitsLayoutPlan(source, image, mutation) {
   };
 }
 
+function peSectionVirtualSizePlan(source, image, mutation) {
+  if (image.format !== 'pe') fail('format-safe-pe-layout-format-mismatch');
+  const sectionName = String(mutation.section ?? '.text');
+  if (sectionName !== '.text') fail('format-safe-pe-layout-section-unsupported');
+  const target = image.sections.find((section) => section.name === sectionName);
+  if (!target || target.index !== 0) fail('format-safe-pe-layout-target-unavailable');
+  const sectionAlignment = image.header.optional.sectionAlignment;
+  const fileAlignment = image.header.optional.fileAlignment;
+  if (!Number.isSafeInteger(sectionAlignment) || sectionAlignment < 1 || (sectionAlignment & (sectionAlignment - 1)) !== 0
+    || !Number.isSafeInteger(fileAlignment) || fileAlignment < 1 || sectionAlignment < fileAlignment) {
+    fail('format-safe-pe-layout-alignment-invalid');
+  }
+  const originalSizeOfImage = image.header.optional.sizeOfImage;
+  const imageEnd = image.sections.reduce((end, section) => Math.max(end, section.virtualAddress + Math.max(section.virtualSize, section.rawSize)), 0);
+  if (originalSizeOfImage !== alignUp(imageEnd, sectionAlignment)) fail('format-safe-pe-layout-size-of-image-invalid');
+  const requestedSize = integerInRange(mutation.virtualSize, target.virtualSize + 1, 0x10000000, 'format-safe-pe-layout-virtual-size-invalid');
+  const originalBucket = alignUp(target.virtualAddress + target.virtualSize, sectionAlignment);
+  const outputBucket = alignUp(target.virtualAddress + requestedSize, sectionAlignment);
+  if (originalBucket !== outputBucket) fail('format-safe-pe-layout-alignment-bucket-invalid');
+  const next = image.sections[target.index + 1];
+  if (next && target.virtualAddress + requestedSize > next.virtualAddress) fail('format-safe-pe-layout-section-overlap');
+  const sectionHeaderOffset = image.header.sectionTableOffset + target.index * PE_SECTION_HEADER_SIZE;
+  return {
+    operations: [{
+      id: 'format-safe:pe:section-virtual-size',
+      offset: sectionHeaderOffset + 8,
+      before: source.slice(sectionHeaderOffset + 8, sectionHeaderOffset + 12),
+      after: littleEndianBytes(4, (view) => view.setUint32(0, requestedSize, true)),
+      provenance: {
+        source: 'format-safe-rebuild-adapter',
+        schema: FORMAT_SAFE_REBUILD_SCHEMA,
+        mutationKind: mutation.kind,
+        section: sectionName,
+        originalVirtualSize: target.virtualSize,
+        virtualSize: requestedSize,
+      },
+    }],
+    safeState: {
+      schema: FORMAT_SAFE_REBUILD_SCHEMA,
+      kind: mutation.kind,
+      section: sectionName,
+      sourceSectionCount: image.header.sectionCount,
+      outputSectionCount: image.header.sectionCount,
+      sectionIndex: target.index,
+      sectionHeaderOffset,
+      virtualAddress: target.virtualAddress,
+      rawSize: target.rawSize,
+      originalVirtualSize: target.virtualSize,
+      virtualSize: requestedSize,
+      sectionAlignment,
+      fileAlignment,
+      originalSizeOfImage,
+      outputSizeOfImage: originalSizeOfImage,
+    },
+  };
+}
+
 function reject(reason, detail = null) {
   return Object.freeze({ ok: false, status: 'rejected', reason, ...(detail == null ? {} : { detail: String(detail) }) });
 }
@@ -475,6 +538,9 @@ export function createFormatSafeRebuildTransaction(input = {}) {
   } else if (mutation.kind === 'elf-add-nobits-section') {
     if (format !== 'elf') fail('format-safe-mutation-format-mismatch');
     ({ operations, safeState } = elfNobitsLayoutPlan(source, image, mutation));
+  } else if (mutation.kind === 'pe-section-virtual-size') {
+    if (format !== 'pe') fail('format-safe-mutation-format-mismatch');
+    ({ operations, safeState } = peSectionVirtualSizePlan(source, image, mutation));
   } else if (mutation.kind === 'macho-min-version') {
     if (format !== 'macho') fail('format-safe-mutation-format-mismatch');
     const version = Number(mutation.version);
@@ -505,7 +571,7 @@ export function createFormatSafeRebuildTransaction(input = {}) {
     architecture,
     loaderVersion: input.loaderVersion,
     operations,
-    impact: { layoutMoving: mutation.kind === 'elf-add-nobits-section', sections: [safeState.section || safeState.field], relocationBindings: [] },
+    impact: { layoutMoving: ['elf-add-nobits-section', 'pe-section-virtual-size'].includes(mutation.kind), sections: [safeState.section || safeState.field], relocationBindings: [] },
     expectedOriginalState: { sourceHash, formatSafe: safeState },
     additionalValidators: ['format-invariants'],
     requireIndependentOracle: true,
@@ -563,6 +629,57 @@ export function validateFormatSafeMutation({ transaction, original, output } = {
         sourceDigest: digestBytes(source),
         outputDigest: digestBytes(candidate),
         layoutEvidence: Object.freeze({ sectionCount: outputImage.header.sectionCount, section: Object.freeze({ name: appended.name, type: 'SHT_NOBITS', size: appended.size, alignment: Number(appended.alignment) }) }),
+      });
+    }
+    if (safeState.kind === 'pe-section-virtual-size') {
+      if (format !== 'pe' || transaction.operations?.length !== 1 || transaction.impact?.layoutMoving !== true) return reject('format-safe-pe-layout-operation-invalid');
+      const expected = peSectionVirtualSizePlan(source, sourceImage, safeState);
+      const canonicalExpectedOperations = expected.operations.map((operation) => ({
+        ...operation,
+        offset: String(operation.offset),
+        before: Array.from(operation.before),
+        after: Array.from(operation.after),
+        address: null,
+      }));
+      if (stableDigest(transaction.operations) !== stableDigest(canonicalExpectedOperations)) return reject('format-safe-operation-bytes-mismatch');
+      if (candidate.length !== source.length || outputImage.header.sectionCount !== sourceImage.header.sectionCount) return reject('format-safe-pe-layout-size-mismatch');
+      if (sourceImage.header.optional.sizeOfImage !== safeState.originalSizeOfImage || outputImage.header.optional.sizeOfImage !== safeState.outputSizeOfImage) return reject('format-safe-pe-size-of-image-mismatch');
+      const target = outputImage.sections[safeState.sectionIndex];
+      if (!target || target.name !== safeState.section || target.virtualAddress !== safeState.virtualAddress
+        || target.rawSize !== safeState.rawSize || target.virtualSize !== safeState.virtualSize) return reject('format-safe-pe-layout-section-mismatch');
+      for (let index = 0; index < sourceImage.sections.length; index++) {
+        const before = sourceImage.sections[index];
+        const after = outputImage.sections[index];
+        if (!after || before.name !== after.name || before.virtualAddress !== after.virtualAddress || before.rawSize !== after.rawSize
+          || before.rawOffset !== after.rawOffset || before.characteristics !== after.characteristics
+          || (index !== safeState.sectionIndex && before.virtualSize !== after.virtualSize)
+          || !sameBytes(before.data, after.data)) return reject('format-safe-pe-existing-sections-changed');
+      }
+      const maskedSourceDigest = bytesDigestMasked(source, safeState.sectionHeaderOffset + 8, 4);
+      const maskedOutputDigest = bytesDigestMasked(candidate, safeState.sectionHeaderOffset + 8, 4);
+      if (maskedSourceDigest !== maskedOutputDigest) return reject('format-safe-pe-unchanged-bytes-differ');
+      return Object.freeze({
+        ok: true,
+        status: 'passed',
+        format,
+        architecture,
+        mutationKind: safeState.kind,
+        changed: true,
+        sourceDigest: digestBytes(source),
+        outputDigest: digestBytes(candidate),
+        layoutEvidence: Object.freeze({
+          sectionCount: outputImage.header.sectionCount,
+          section: Object.freeze({
+            index: target.index,
+            name: target.name,
+            virtualAddress: target.virtualAddress,
+            rawSize: target.rawSize,
+            originalVirtualSize: safeState.originalVirtualSize,
+            virtualSize: target.virtualSize,
+            sectionAlignment: safeState.sectionAlignment,
+            sizeOfImage: outputImage.header.optional.sizeOfImage,
+          }),
+        }),
       });
     }
     if (transaction.operations?.length !== 1) return reject('format-safe-operation-count-invalid');

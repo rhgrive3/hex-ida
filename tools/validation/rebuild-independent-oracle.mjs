@@ -148,6 +148,66 @@ function readElfLayoutEvidence(output, sourceOutput, transaction) {
   return Object.freeze({ sectionCount, section: Object.freeze({ name: section.name, type: section.type, size: section.size, alignment: section.alignment }) });
 }
 
+function readPeSections(output) {
+  const number = (block, label) => {
+    const value = block.match(new RegExp(`^\\s*${label}:\\s+(0x[0-9A-Fa-f]+|\\d+)`, 'm'))?.[1];
+    return value == null ? null : Number(value);
+  };
+  return [...output.matchAll(/^\s*Section \{\n([\s\S]*?)^\s*\}/gm)].map((match, index) => {
+    const block = match[1];
+    return Object.freeze({
+      index,
+      name: block.match(/^\s*Name:\s+([^\s(]+)\s+/m)?.[1] || '',
+      virtualSize: number(block, 'VirtualSize'),
+      virtualAddress: number(block, 'VirtualAddress'),
+      rawSize: number(block, 'RawDataSize'),
+    });
+  });
+}
+
+function readPeLayoutEvidence(output, sourceOutput, transaction) {
+  const expected = transaction?.expectedOriginalState?.formatSafe;
+  if (expected?.kind !== 'pe-section-virtual-size') return null;
+  const sectionCount = Number(output.match(/^\s*SectionCount:\s*(\d+)\s*$/m)?.[1]);
+  const sourceSectionCount = Number(sourceOutput.match(/^\s*SectionCount:\s*(\d+)\s*$/m)?.[1]);
+  const sectionAlignment = Number(output.match(/^\s*SectionAlignment:\s*(0x[0-9A-Fa-f]+|\d+)\s*$/m)?.[1]);
+  const sourceSectionAlignment = Number(sourceOutput.match(/^\s*SectionAlignment:\s*(0x[0-9A-Fa-f]+|\d+)\s*$/m)?.[1]);
+  const sizeOfImage = Number(output.match(/^\s*SizeOfImage:\s*(0x[0-9A-Fa-f]+|\d+)\s*$/m)?.[1]);
+  const sourceSizeOfImage = Number(sourceOutput.match(/^\s*SizeOfImage:\s*(0x[0-9A-Fa-f]+|\d+)\s*$/m)?.[1]);
+  const sections = readPeSections(output);
+  const sourceSections = readPeSections(sourceOutput);
+  if (!Number.isSafeInteger(sectionCount) || !Number.isSafeInteger(sourceSectionCount)
+    || sectionCount !== expected.outputSectionCount || sourceSectionCount !== expected.sourceSectionCount
+    || sections.length !== sectionCount || sourceSections.length !== sourceSectionCount
+    || sectionAlignment !== expected.sectionAlignment || sourceSectionAlignment !== expected.sectionAlignment
+    || sizeOfImage !== expected.outputSizeOfImage || sourceSizeOfImage !== expected.originalSizeOfImage) {
+    throw new TypeError('independent-oracle-pe-layout-header-mismatch');
+  }
+  for (let index = 0; index < sourceSections.length; index++) {
+    const before = sourceSections[index];
+    const after = sections[index];
+    if (!after || before.name !== after.name || before.virtualAddress !== after.virtualAddress || before.rawSize !== after.rawSize
+      || (index !== expected.sectionIndex && before.virtualSize !== after.virtualSize)) throw new TypeError('independent-oracle-pe-existing-section-mismatch');
+  }
+  const section = sections[expected.sectionIndex];
+  const sourceSection = sourceSections[expected.sectionIndex];
+  if (!section || !sourceSection || section.name !== expected.section || sourceSection.name !== expected.section
+    || section.virtualAddress !== expected.virtualAddress || section.rawSize !== expected.rawSize
+    || sourceSection.virtualSize !== expected.originalVirtualSize || section.virtualSize !== expected.virtualSize) {
+    throw new TypeError('independent-oracle-pe-layout-mismatch');
+  }
+  return Object.freeze({ sectionCount, section: Object.freeze({
+    index: section.index,
+    name: section.name,
+    virtualAddress: section.virtualAddress,
+    rawSize: section.rawSize,
+    originalVirtualSize: sourceSection.virtualSize,
+    virtualSize: section.virtualSize,
+    sectionAlignment,
+    sizeOfImage,
+  }) });
+}
+
 function versionOf(executable, timeoutMs, maxOutputBytes) {
   const result = spawnSync(executable, ['--version'], { encoding: 'utf8', timeout: timeoutMs, maxBuffer: maxOutputBytes });
   if (result.status !== 0 || result.error || result.signal) return null;
@@ -252,7 +312,7 @@ export function createLlvmReadobjOracle({
         });
       }
       let sourceStdout = '';
-      if (transaction?.expectedOriginalState?.formatSafe?.kind === 'elf-add-nobits-section') {
+      if (['elf-add-nobits-section', 'pe-section-virtual-size'].includes(transaction?.expectedOriginalState?.formatSafe?.kind)) {
         const sourceResult = spawnSync(tool.executable, [...READOBJ_FLAGS, sourcePath], {
           encoding: 'utf8', timeout: boundedTimeout, maxBuffer: boundedOutput, windowsHide: true,
         });
@@ -269,7 +329,9 @@ export function createLlvmReadobjOracle({
       if (header.architecture !== String(transaction.architecture || '').toLowerCase()) return failed('independent-oracle-architecture-mismatch', null, { ...base, ...header, oracleOutputDigest: sha256(stdout) });
       let layoutEvidence = null;
       try {
-        layoutEvidence = readElfLayoutEvidence(stdout, sourceStdout, transaction);
+        layoutEvidence = transaction?.expectedOriginalState?.formatSafe?.kind === 'elf-add-nobits-section'
+          ? readElfLayoutEvidence(stdout, sourceStdout, transaction)
+          : readPeLayoutEvidence(stdout, sourceStdout, transaction);
       } catch (error) {
         return failed(error?.message || 'independent-oracle-layout-mismatch', null, { ...base, ...header, oracleOutputDigest: sha256(stdout) });
       }
