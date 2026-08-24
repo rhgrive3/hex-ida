@@ -91,6 +91,14 @@ function capabilityList(value) {
   return out;
 }
 
+function hasOwnTrueCapability(source, capability) {
+  return !!source
+    && typeof source === 'object'
+    && !Array.isArray(source)
+    && Object.prototype.hasOwnProperty.call(source, capability)
+    && source[capability] === true;
+}
+
 function bindingPayload(input = {}) {
   const targetProfileId = identityAlias(input, 'targetProfileId', 'architectureProfileId', 'runtime-target-profile-required');
   const buildIdentity = identityAlias(input, 'buildIdentity', 'runtimeBuildIdentity', 'runtime-build-identity-invalid');
@@ -299,7 +307,11 @@ export function runtimeProfileSupport({
   const canonical = canonicalBinding(binding || {}, { throwOnError: false });
   const hasBinding = canonical != null;
   const declared = capabilityList(requiredCapabilities);
-  const missing = declared.filter((key) => providerCapabilities[key] !== true);
+  // Capability support is authority input, not a convenience lookup.  An
+  // inherited property (for example from a prototype carrying attacker
+  // supplied flags) is not evidence that this provider advertises the
+  // operation.  Malformed maps fail closed as a missing denominator.
+  const missing = declared.filter((key) => !hasOwnTrueCapability(providerCapabilities, key));
   const proofComplete = proof.exactHead === true
     && proof.identityNegativeTests === true
     && proof.staleEventTests === true

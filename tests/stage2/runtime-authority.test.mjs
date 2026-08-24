@@ -87,6 +87,33 @@ const support = runtimeProfileSupport({
 });
 assert.equal(support.status, 'supported-for-exact-provider-profile');
 assert.equal(support.targetProfileId, targetProfileId);
+const inheritedCapabilities = Object.create(providerCapabilities);
+assert.equal(
+  runtimeProfileSupport({
+    binding,
+    providerProfileId: 'native:lldb-compatible-v1:test',
+    targetProfileId,
+    providerCapabilities: inheritedCapabilities,
+    requiredCapabilities,
+    proof: fullProof,
+    profileProof: profileProofs['S2-A7-NATIVE'],
+  }).status,
+  'partial',
+  'inherited capability flags are not provider-owned evidence',
+);
+assert.equal(
+  runtimeProfileSupport({
+    binding,
+    providerProfileId: 'native:lldb-compatible-v1:test',
+    targetProfileId,
+    providerCapabilities: [],
+    requiredCapabilities,
+    proof: fullProof,
+    profileProof: profileProofs['S2-A7-NATIVE'],
+  }).status,
+  'partial',
+  'malformed capability maps fail closed',
+);
 assert.equal(runtimeProfileSupport({ binding, providerProfileId: 'native:lldb-compatible-v1:test', targetProfileId, providerCapabilities, requiredCapabilities, proof: { ...fullProof, headSha: null }, profileProof: profileProofs['S2-A7-NATIVE'] }).reason, 'runtime-proof-exact-identity-required');
 const currentHeadProof = { ...fullProof, headSha: binding.commitSha, treeSha: binding.treeSha };
 assert.equal(runtimeProfileSupport({ binding, providerProfileId: 'native:lldb-compatible-v1:test', targetProfileId, providerCapabilities, requiredCapabilities, proof: currentHeadProof, expectedHeadSha: binding.commitSha, expectedTreeSha: binding.treeSha, profileProof: profileProofs['S2-A7-NATIVE'] }).status, 'supported-for-exact-provider-profile');

@@ -123,6 +123,7 @@ export function validateManagedRuntimeState(binding, state = {}) {
   const threads = state.threads;
   if (threads.length > binding.maxThreads) return { ok: false, reason: 'managed-runtime-thread-budget-exceeded' };
   for (const thread of threads) {
+    if (!thread || typeof thread !== 'object' || Array.isArray(thread)) return { ok: false, reason: 'managed-runtime-thread-invalid' };
     const frames = Array.isArray(thread?.frames) ? thread.frames : [];
     if (frames.length > binding.maxFramesPerThread) return { ok: false, reason: 'managed-runtime-frame-budget-exceeded' };
     for (const frame of frames) {

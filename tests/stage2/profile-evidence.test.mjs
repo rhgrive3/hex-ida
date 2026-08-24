@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { stableDigest } from '../../js/core/identity/index.js';
 import {
   STAGE2_PROFILE_EVIDENCE_IDS,
   createStage2DenominatorLock,
@@ -45,7 +46,11 @@ for (const id of STAGE2_PROFILE_EVIDENCE_IDS) {
     realFixtureIdentities: [`fixture:${id}:real`],
     negativeTestIdentities: [`test:${id}:negative`],
     evidenceIdentities: [`evidence:${id}:aggregate`],
-    providerProfileIds: id === 'S2-A7-NATIVE' || id.startsWith('S2-M6-') ? [`provider:${id}`] : [],
+    providerProfileIds: id === 'S2-A7-NATIVE'
+      ? ['native:lldb-compatible-v1:test']
+      : id.startsWith('S2-M6-')
+        ? [`managed:${id.slice('S2-M6-'.length).toLowerCase()}:provider-bound-runtime-v1:test`]
+        : [],
     implementationIdentity: `implementation:${id}`,
     independentOracleIdentities: id === 'S1-A2-NATIVE' || id.startsWith('S2-F6-') ? [`oracle:${id}:independent`] : [],
   };
@@ -103,6 +108,34 @@ const unresolvedEvidenceItems = structuredClone(items);
 unresolvedEvidenceItems['S2-M6-JVM'].realFixtureIdentities = ['fabricated:fixture'];
 const unresolvedEvidence = createStage2ProfileEvidence({ commitSha, treeSha, generatedAt: '2026-08-22T00:00:00Z', items: unresolvedEvidenceItems });
 assert.equal(validateStage2ProfileEvidence(unresolvedEvidence, expected).ok, false, 'arbitrary evidence labels cannot prove a profile');
+
+const invalidProviderItems = structuredClone(items);
+invalidProviderItems['S2-M6-JVM'].providerProfileIds = ['managed:dex:provider-bound-runtime-v1:test'];
+const invalidProvider = createStage2ProfileEvidence({ commitSha, treeSha, generatedAt: '2026-08-22T00:00:00Z', items: invalidProviderItems });
+const invalidProviderCheck = validateStage2ProfileEvidence(invalidProvider, expected);
+assert.equal(invalidProviderCheck.ok, false, 'a provider profile from another managed frontend cannot prove JVM M6');
+assert.ok(invalidProviderCheck.failures.includes('S2-M6-JVM:provider-profile-invalid'));
+
+const rehash = (value) => `stage2-profile-evidence:${stableDigest({
+  schemaVersion: value.schemaVersion,
+  commitSha: value.commitSha,
+  treeSha: value.treeSha,
+  generatedAt: value.generatedAt,
+  items: value.items,
+})}`;
+const extraItem = structuredClone(record);
+extraItem.items.EXTRA = {};
+extraItem.evidenceId = rehash(extraItem);
+const extraItemCheck = validateStage2ProfileEvidence(extraItem, expected);
+assert.equal(extraItemCheck.ok, false, 'unknown profile evidence items cannot enter the authority record');
+assert.ok(extraItemCheck.failures.includes('stage2-profile-evidence-item-set-mismatch'));
+
+const duplicateProvider = structuredClone(record);
+duplicateProvider.items['S2-M6-JVM'].providerProfileIds.push(duplicateProvider.items['S2-M6-JVM'].providerProfileIds[0]);
+duplicateProvider.evidenceId = rehash(duplicateProvider);
+const duplicateProviderCheck = validateStage2ProfileEvidence(duplicateProvider, expected);
+assert.equal(duplicateProviderCheck.ok, false, 'duplicate provider identities cannot bypass canonical evidence validation');
+assert.ok(duplicateProviderCheck.failures.includes('S2-M6-JVM:provider-profile-missing'));
 
 inventoryIdentities.set('js/platform/stage2-profile-evidence.js', 'b'.repeat(40));
 const staleInventory = validateStage2DenominatorLock(denominatorLock, { scope, resolveInventoryIdentity, resolveDenominatorUnitIds });
