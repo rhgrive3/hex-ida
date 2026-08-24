@@ -54,7 +54,9 @@ function capabilityMap(capabilities) { return Object.freeze(Object.fromEntries(c
 function commandVersion(command) {
   const result = spawnSync(command, ['--version'], { cwd:ROOT, encoding:'utf8', timeout:10_000, maxBuffer:2 * 1024 * 1024 });
   if (result.status !== 0) throw new Error(`a7-cross-provider-unavailable:${command}`);
-  const line = `${result.stdout || ''}\n${result.stderr || ''}`.split('\n').find((value) => value.trim())?.trim();
+  const line = `${result.stdout || ''}\
+${result.stderr || ''}`.split('\
+').find((value) => value.trim())?.trim();
   if (!line) throw new Error(`a7-cross-provider-version-missing:${command}`);
   return line;
 }
@@ -66,11 +68,14 @@ function git(args) {
 function run(command, args, code, options = {}) {
   const result = spawnSync(command, args, { cwd:ROOT, encoding:'utf8', timeout:30_000, maxBuffer:16 * 1024 * 1024, env:{ ...process.env, DEBUGINFOD_URLS:'' }, ...options });
   if (result.status !== 0 || result.signal) throw new Error(`${code}:${result.signal || result.status}:${String(result.stderr || '').trim()}`);
-  return `${result.stdout || ''}\n${result.stderr || ''}`;
+  return `${result.stdout || ''}\
+${result.stderr || ''}`;
 }
 function symbolValue(readobj, name) {
-  const blocks = String(readobj).match(/Symbol \{[\s\S]*?\n  \}/g) || [];
-  const block = blocks.find((value) => new RegExp(`\\bName: ${name}(?: \\(|\\n)`).test(value));
+  const blocks = String(readobj).match(/Symbol \{[\s\S]*?\
+  \}/g) || [];
+  const block = blocks.find((value) => new RegExp(`\\bName: ${name}(?: \\(|\\
+)`).test(value));
   const value = block && /\bValue: (0x[0-9A-Fa-f]+)/.exec(block)?.[1];
   if (!value) throw new Error(`a7-cross-oracle-symbol-missing:${name}`);
   return BigInt(value);
@@ -116,7 +121,8 @@ export function parseCrossTargetLldbOutput(output, target, { binaryPath, entry, 
   if (!new RegExp(`Current executable set to '${escaped}' \\(${target.lldbArchitecture}\\)\\.`).test(text)) throw new Error('a7-cross-lldb-target-profile-mismatch');
   const processId = /Process (\d+) stopped/.exec(text)?.[1];
   if (!processId || !/stop reason = signal SIGTRAP/.test(text)) throw new Error('a7-cross-lldb-active-process-missing');
-  if (!text.split('\n').some((line) => line.includes(binaryPath) && /\[\s*0\]/.test(line))) throw new Error('a7-cross-lldb-module-missing');
+  if (!text.split('\
+').some((line) => line.includes(binaryPath) && /\[\s*0\]/.test(line))) throw new Error('a7-cross-lldb-module-missing');
   if (!/\* thread #1: tid = /.test(text)) throw new Error('a7-cross-lldb-thread-missing');
   if (!new RegExp(`pc = 0x0*${entry.toString(16)}`, 'i').test(text) || !/\bsp = 0x[0-9a-f]+/i.test(text)) throw new Error('a7-cross-lldb-register-read-missing');
   if (!new RegExp(`${target.register} = 0x0*42\\b`, 'i').test(text)) throw new Error('a7-cross-lldb-register-write-missing');
@@ -151,7 +157,8 @@ function compileAndInspect(target, directory, versions) {
   if (target.pac && (!/\bpaciasp\b/.test(disassembly) || !/\bautiasp\b/.test(disassembly))) throw new Error('a7-cross-pac-oracle-missing');
   const entryMatch = /\bEntry: (0x[0-9A-Fa-f]+)/.exec(readobj)?.[1];
   if (!entryMatch) throw new Error('a7-cross-oracle-entry-missing');
-  return Object.freeze({ path:outputA, bytes, binarySha256:sha256(bytes), sourceSha256, sourceSemantics:Object.freeze([...binding.semanticMarkers]), entry:BigInt(entryMatch), probeWord:symbolValue(readobj, 'probe_word'), oracleOutputSha256:sha256(Buffer.from(`${readobj}\n${disassembly}`)) });
+  return Object.freeze({ path:outputA, bytes, binarySha256:sha256(bytes), sourceSha256, sourceSemantics:Object.freeze([...binding.semanticMarkers]), entry:BigInt(entryMatch), probeWord:symbolValue(readobj, 'probe_word'), oracleOutputSha256:sha256(Buffer.from(`${readobj}\
+${disassembly}`)) });
 }
 
 async function runActiveTarget(target, fixture, versions) {
@@ -165,7 +172,8 @@ async function runActiveTarget(target, fixture, versions) {
   const args = ['-b','-Q','-o','settings set symbols.enable-external-lookup false','-o',`target create ${fixture.path}`,'-o',`gdb-remote 127.0.0.1:${port}`,'-o','process status','-o','target modules list','-o','thread list','-o',`register read pc sp ${target.register}`,'-o',`memory read -fx -s8 -c1 0x${fixture.probeWord.toString(16)}`,'-o',`register write ${target.register} 0x42`,'-o',`register read ${target.register}`,'-o',`memory write -s8 0x${fixture.probeWord.toString(16)} 0x8877665544332211`,'-o',`memory read -fx -s8 -c1 0x${fixture.probeWord.toString(16)}`,'-o',`breakpoint set -a 0x${breakpoint.toString(16)}`,'-o','continue','-o','thread step-inst','-o','breakpoint delete 1','-o','process kill'];
   try {
     const result = spawnSync(versions.lldb, args, { cwd:ROOT, encoding:'utf8', timeout:30_000, maxBuffer:16 * 1024 * 1024 });
-    const output = `${result.stdout || ''}\n${result.stderr || ''}`;
+    const output = `${result.stdout || ''}\
+${result.stderr || ''}`;
     if (result.status !== 0 || result.signal) throw new Error(`a7-cross-lldb-command-failed:${target.targetProfileId}:${result.signal || result.status}`);
     return Object.freeze({ ...parseCrossTargetLldbOutput(output, target, { binaryPath:fixture.path, entry:fixture.entry, probeWord:fixture.probeWord }), qemuPid:qemu.pid });
   } finally { if (qemu.exitCode == null) qemu.kill('SIGKILL'); }
@@ -281,6 +289,19 @@ def require_qemu_progress(before, after, code):
     if after['cpuTicks'] <= before['cpuTicks']:
         fail(code + '-qemu-cpu-not-advanced:' + str(before['cpuTicks']) + ':' + str(after['cpuTicks']))
 
+def wait_for_qemu_progress(before, code, timeout=1.0, guard=None):
+    deadline = time.time() + timeout
+    last = before
+    while time.time() < deadline:
+        if guard is not None and not guard():
+            fail(code + '-guard-lost-before-progress')
+        last = qemu_sample(code + '-sample')
+        require_same_qemu(before, last, code)
+        if last['cpuTicks'] > before['cpuTicks']:
+            return last
+        time.sleep(0.01)
+    fail(code + '-qemu-cpu-not-advanced:' + str(before['cpuTicks']) + ':' + str(last['cpuTicks']))
+
 def read_probe(code):
     memory_error = lldb.SBError()
     value = process.ReadUnsignedFromMemory(PROBE, 8, memory_error)
@@ -347,9 +368,7 @@ try:
     if not lldb.SBDebugger.StateIsRunningState(running_state): fail('pause-running-event-not-observed:' + state_name(running_state))
     pause_running_qemu = qemu_sample('pause-running')
     require_same_qemu(pause_qemu_before, pause_running_qemu, 'pause-running')
-    time.sleep(0.08)
-    pause_progress_qemu = qemu_sample('pause-progress')
-    require_qemu_progress(pause_running_qemu, pause_progress_qemu, 'pause-running-window')
+    pause_progress_qemu = wait_for_qemu_progress(pause_running_qemu, 'pause-running-window')
     signal_qemu_and_wait(listener, 'pause')
     pause_stop_id_after = process.GetStopID(False)
     if pause_stop_id_after <= pause_stop_id_before: fail('pause-stop-id-not-advanced')
@@ -375,10 +394,8 @@ try:
     if not cancel_worker.is_alive(): fail('cancel-continue-not-inflight:' + str(cancel_holder))
     cancel_running_qemu = qemu_sample('cancel-inflight-start')
     require_same_qemu(cancel_qemu_before, cancel_running_qemu, 'cancel-inflight-start')
-    time.sleep(0.08)
+    cancel_progress_qemu = wait_for_qemu_progress(cancel_running_qemu, 'cancel-inflight-window', guard=cancel_worker.is_alive)
     if not cancel_worker.is_alive(): fail('cancel-continue-settled-before-interrupt:' + str(cancel_holder))
-    cancel_progress_qemu = qemu_sample('cancel-inflight-progress')
-    require_qemu_progress(cancel_running_qemu, cancel_progress_qemu, 'cancel-inflight-window')
     signal_qemu_and_wait(listener, 'cancel')
     cancel_worker.join(3.0)
     if cancel_worker.is_alive(): fail('cancel-continue-not-settled')
@@ -424,14 +441,16 @@ function runLldbPythonProof(lldb, python, directory, pythonSource, stem) {
   const lldbPythonPath = String(pythonPathResult.stdout || '').trim();
   if (pythonPathResult.status !== 0 || !lldbPythonPath) throw new Error('a7-cross-lldb-python-provider-path-unavailable');
   const result = spawnSync(python, [scriptPath], { cwd:ROOT, encoding:'utf8', timeout:30_000, maxBuffer:16 * 1024 * 1024, env:{ ...process.env, DEBUGINFOD_URLS:'', PYTHONPATH:[lldbPythonPath, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter) } });
-  const output = `${result.stdout || ''}\n${result.stderr || ''}`;
+  const output = `${result.stdout || ''}\
+${result.stderr || ''}`;
   if (result.status !== 0 || result.signal) throw new Error(`a7-cross-active-ops-command-failed:${result.signal || result.status}:${String(result.stderr || '').trim()}`);
   return Object.freeze({ output, lldbPythonPath });
 }
 
 function parseMarker(output, marker, code) {
   const prefix = `${marker}=`;
-  const line = String(output || '').split(/\r?\n/).find((value) => value.startsWith(prefix));
+  const line = String(output || '').split(/\r?\
+/).find((value) => value.startsWith(prefix));
   if (!line) throw new Error(`${code}-missing`);
   let value;
   try { value = JSON.parse(line.slice(prefix.length)); } catch { throw new Error(`${code}-invalid-json`); }
@@ -530,6 +549,8 @@ export async function collectA7CrossTargetProofs({ requireClean = true } = {}) {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  try { const proof = await collectA7CrossTargetProofs(); process.stdout.write(`A7_CROSS_TARGET_PROVIDER_PROOF=${JSON.stringify(proof)}\n`); }
-  catch (error) { process.stderr.write(`${error?.message || error}\n`); process.exitCode = 1; }
+  try { const proof = await collectA7CrossTargetProofs(); process.stdout.write(`A7_CROSS_TARGET_PROVIDER_PROOF=${JSON.stringify(proof)}\
+`); }
+  catch (error) { process.stderr.write(`${error?.message || error}\
+`); process.exitCode = 1; }
 }
