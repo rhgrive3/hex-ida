@@ -246,23 +246,27 @@ def reg(frame, name):
     if not value.IsValid(): fail('register-missing:' + name)
     return value.GetValueAsUnsigned()
 
-def rsp_register(number, code):
+def rsp_register_snapshot(code):
     command_result = lldb.SBCommandReturnObject()
-    debugger.GetCommandInterpreter().HandleCommand('process plugin packet send p' + format(number, 'x'), command_result)
+    debugger.GetCommandInterpreter().HandleCommand('process plugin packet send g', command_result)
     if not command_result.Succeeded():
         fail(code + '-rsp-command-failed:' + (command_result.GetError() or 'unknown'))
     output = (command_result.GetOutput() or '') + '\\n' + (command_result.GetError() or '')
-    match = re.search(r'response:\\s*([0-9A-Fa-f]+)', output)
+    match = re.search(r'^response:[ \\t]*([0-9A-Fa-f]+)[ \\t]*$', output, re.MULTILINE)
     if not match:
         fail(code + '-rsp-response-missing:' + repr(output))
     payload = match.group(1)
-    if payload.startswith('E') or len(payload) != 16:
-        fail(code + '-rsp-response-invalid:' + payload)
     try:
         raw = bytes.fromhex(payload)
     except ValueError:
-        fail(code + '-rsp-response-nonhex:' + payload)
-    return int.from_bytes(raw, byteorder='little', signed=False)
+        fail(code + '-rsp-response-nonhex')
+    required_bytes = (max(RSP_REGISTER_NUMBER, RSP_SP_REGISTER_NUMBER, RSP_PC_REGISTER_NUMBER) + 1) * 8
+    if len(raw) < required_bytes:
+        fail(code + '-rsp-response-short:' + str(len(raw)))
+    def value(number):
+        offset = number * 8
+        return int.from_bytes(raw[offset:offset + 8], byteorder='little', signed=False)
+    return {'pc': value(RSP_PC_REGISTER_NUMBER), 'sp': value(RSP_SP_REGISTER_NUMBER), REGISTER: value(RSP_REGISTER_NUMBER)}
 
 def module_path(target):
     module = target.GetModuleAtIndex(0)
@@ -313,10 +317,8 @@ try:
     pc = reg(frame, 'pc')
     sp = reg(frame, 'sp')
     operand = reg(frame, REGISTER)
-    rsp_pc = rsp_register(RSP_PC_REGISTER_NUMBER, 'attach-pc')
-    rsp_sp = rsp_register(RSP_SP_REGISTER_NUMBER, 'attach-sp')
-    rsp_operand = rsp_register(RSP_REGISTER_NUMBER, 'attach-operand')
-    if rsp_pc != pc or rsp_sp != sp or rsp_operand != operand:
+    rsp_attach = rsp_register_snapshot('attach')
+    if rsp_attach['pc'] != pc or rsp_attach['sp'] != sp or rsp_attach[REGISTER] != operand:
         fail('remote-rsp-register-cross-check-mismatch')
     memory_error = lldb.SBError()
     probe_value = process.ReadUnsignedFromMemory(PROBE, 8, memory_error)
@@ -334,9 +336,10 @@ try:
     signal_qemu_and_wait(listener, 'pause')
     pause_stop_id_after = process.GetStopID(False)
     if pause_stop_id_after <= pause_stop_id_before: fail('pause-stop-id-not-advanced')
-    pause_pc = rsp_register(RSP_PC_REGISTER_NUMBER, 'pause-pc')
-    pause_sp = rsp_register(RSP_SP_REGISTER_NUMBER, 'pause-sp')
-    pause_operand = rsp_register(RSP_REGISTER_NUMBER, 'pause-operand')
+    rsp_pause = rsp_register_snapshot('pause')
+    pause_pc = rsp_pause['pc']
+    pause_sp = rsp_pause['sp']
+    pause_operand = rsp_pause[REGISTER]
     if pause_operand == before_operand: fail('pause-no-execution-observed')
     result['pause'] = {'observed': True, 'continueAccepted': True, 'interruptIssued': True, 'runningObserved': True, 'runningEvidence': 'provider-running-state-event+qemu-sigint+register-progress', 'stoppedObserved': True, 'executionAdvanced': True, 'stopIdAdvanced': True, 'stopIdBefore': pause_stop_id_before, 'stopIdAfter': pause_stop_id_after, 'processId': process.GetProcessID(), 'qemuHostPid': QEMU_PID, 'threadId': attached_thread_id, 'providerDisposition': 'qemu-user-sigint-observed-by-lldb', 'registerTransport': 'lldb-gdb-remote-packet', 'registers': {'pc': hex(pause_pc), 'sp': hex(pause_sp), REGISTER: hex(pause_operand)}, 'state': state_name(process.GetState())}
 
@@ -363,13 +366,15 @@ try:
     if not lldb.SBDebugger.StateIsStoppedState(stopped_state): fail('cancel-target-not-stopped:' + state_name(stopped_state))
     cancel_stop_id_after = process.GetStopID(False)
     if cancel_stop_id_after <= cancel_stop_id_before: fail('cancel-stop-id-not-advanced')
-    cancel_pc = rsp_register(RSP_PC_REGISTER_NUMBER, 'cancel-pc')
-    cancel_operand = rsp_register(RSP_REGISTER_NUMBER, 'cancel-operand')
+    rsp_cancel = rsp_register_snapshot('cancel')
+    cancel_pc = rsp_cancel['pc']
+    cancel_operand = rsp_cancel[REGISTER]
     if cancel_operand == cancel_before_operand: fail('cancel-no-execution-observed')
     first_state = process.GetState()
     time.sleep(0.10)
-    late_pc = rsp_register(RSP_PC_REGISTER_NUMBER, 'cancel-late-pc')
-    late_operand = rsp_register(RSP_REGISTER_NUMBER, 'cancel-late-operand')
+    rsp_late = rsp_register_snapshot('cancel-late')
+    late_pc = rsp_late['pc']
+    late_operand = rsp_late[REGISTER]
     late_state = process.GetState()
     if first_state != late_state or cancel_pc != late_pc or cancel_operand != late_operand: fail('cancel-late-success-observed')
     result['cancel'] = {'observed': True, 'inFlightObserved': True, 'inFlightEvidence': 'blocking-continue-thread-alive+provider-running-state-event', 'executionAdvanced': True, 'interruptIssued': True, 'operationSettled': True, 'continueSettled': True, 'processId': process.GetProcessID(), 'qemuHostPid': QEMU_PID, 'threadId': attached_thread_id, 'settlement': 'cancelled', 'providerDisposition': 'qemu-user-sigint-observed-by-lldb', 'registerTransport': 'lldb-gdb-remote-packet', 'stopIdAdvanced': True, 'stopIdBefore': cancel_stop_id_before, 'stopIdAfter': cancel_stop_id_after, 'lateResultRejected': True, 'lateStateStable': True, 'continueResult': str(cancel_holder.get('result')), 'registers': {'pc': hex(cancel_pc), REGISTER: hex(cancel_operand)}, 'state': state_name(late_state)}
