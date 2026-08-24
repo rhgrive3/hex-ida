@@ -47,19 +47,23 @@ for (const proof of run.proofs) {
   assert.equal(proof.observation.payload.processIdentity, proof.activeOperations.attach.processId);
   assert.equal(proof.observation.payload.qemuHostPid, qemuPid);
   assert.equal(proof.activeOperations.attach.transport, 'gdb-remote');
+  assert.equal(proof.activeOperations.attach.registerTransport, 'SBFrame+gdb-remote-packet');
   assert.equal(proof.activeOperations.attach.qemuHostPid, qemuPid);
   assert.equal(proof.activeOperations.pause.processId, proof.activeOperations.attach.processId);
+  assert.equal(proof.activeOperations.pause.threadId, proof.activeOperations.attach.threadId);
   assert.equal(proof.activeOperations.pause.qemuHostPid, qemuPid);
   assert.equal(proof.activeOperations.pause.continueAccepted, true);
   assert.equal(proof.activeOperations.pause.interruptIssued, true);
   assert.equal(proof.activeOperations.pause.runningObserved, true);
   assert.equal(proof.activeOperations.pause.runningEvidence, 'provider-running-state-event+qemu-sigint+register-progress');
   assert.equal(proof.activeOperations.pause.providerDisposition, 'qemu-user-sigint-observed-by-lldb');
+  assert.equal(proof.activeOperations.pause.registerTransport, 'lldb-gdb-remote-packet');
   assert.equal(proof.activeOperations.pause.stoppedObserved, true);
   assert.equal(proof.activeOperations.pause.executionAdvanced, true);
   assert.equal(proof.activeOperations.pause.stopIdAdvanced, true);
   assert.ok(proof.activeOperations.pause.stopIdAfter > proof.activeOperations.pause.stopIdBefore);
   assert.equal(proof.activeOperations.cancel.processId, proof.activeOperations.attach.processId);
+  assert.equal(proof.activeOperations.cancel.threadId, proof.activeOperations.attach.threadId);
   assert.equal(proof.activeOperations.cancel.qemuHostPid, qemuPid);
   assert.equal(proof.activeOperations.cancel.inFlightObserved, true);
   assert.equal(proof.activeOperations.cancel.inFlightEvidence, 'blocking-continue-thread-alive+provider-running-state-event');
@@ -71,6 +75,7 @@ for (const proof of run.proofs) {
   assert.ok(proof.activeOperations.cancel.stopIdAfter > proof.activeOperations.cancel.stopIdBefore);
   assert.equal(proof.activeOperations.cancel.settlement, 'cancelled');
   assert.equal(proof.activeOperations.cancel.providerDisposition, 'qemu-user-sigint-observed-by-lldb');
+  assert.equal(proof.activeOperations.cancel.registerTransport, 'lldb-gdb-remote-packet');
   assert.equal(proof.activeOperations.cancel.lateResultRejected, true);
   assert.equal(proof.activeOperations.cancel.lateStateStable, true);
   assert.match(proof.fixture.sourceSha256, /^[0-9a-f]{64}$/);
@@ -104,33 +109,94 @@ assert.throws(() => parseCrossTargetLldbOutput("Current executable set to '/tmp/
 assert.throws(() => parseCrossTargetLldbOutput(`Current executable set to '/tmp/fixture' (aarch64).\nProcess 1 stopped\nstop reason = signal SIGTRAP\n/tmp/fixture [0]\n* thread #1: tid = 2\npc = 0x1001, sp = 0x2000\nx0 = 0x42\n0x2000: 0x1020304050607080\n0x2000: 0x8877665544332211\nBreakpoint 1: 0x1004\nstop reason = breakpoint 1.1\nstop reason = instruction step into\n1 breakpoints deleted; 0 breakpoint locations disabled.\nProcess 1 exited`, target, { binaryPath:'/tmp/fixture', entry:0x1000n, probeWord:0x2000n }), /a7-cross-lldb-register-read-missing/);
 
 function activeMarker(overrides = {}) {
+  const attach = {
+    observed:true,
+    transport:'gdb-remote',
+    registerTransport:'SBFrame+gdb-remote-packet',
+    processId:1,
+    qemuHostPid:10,
+    targetTriple:'aarch64-unknown-linux-gnu',
+    modulePath:'/tmp/fixture',
+    threadId:2,
+    registers:{ pc:'0x1000', sp:'0x2000', x0:'0x1' },
+    memoryProbe:'0x1020304050607080',
+    state:'stopped',
+    ...(overrides.attach || {}),
+  };
+  const pause = {
+    observed:true,
+    continueAccepted:true,
+    interruptIssued:true,
+    runningObserved:true,
+    runningEvidence:'provider-running-state-event+qemu-sigint+register-progress',
+    providerDisposition:'qemu-user-sigint-observed-by-lldb',
+    registerTransport:'lldb-gdb-remote-packet',
+    stoppedObserved:true,
+    executionAdvanced:true,
+    stopIdAdvanced:true,
+    stopIdBefore:1,
+    stopIdAfter:2,
+    processId:1,
+    qemuHostPid:10,
+    threadId:2,
+    registers:{ pc:'0x1004', sp:'0x2000', x0:'0x10' },
+    state:'stopped',
+    ...(overrides.pause || {}),
+  };
+  const cancel = {
+    observed:true,
+    inFlightObserved:true,
+    inFlightEvidence:'blocking-continue-thread-alive+provider-running-state-event',
+    executionAdvanced:true,
+    interruptIssued:true,
+    operationSettled:true,
+    continueSettled:true,
+    stopIdAdvanced:true,
+    stopIdBefore:2,
+    stopIdAfter:3,
+    processId:1,
+    qemuHostPid:10,
+    threadId:2,
+    settlement:'cancelled',
+    providerDisposition:'qemu-user-sigint-observed-by-lldb',
+    registerTransport:'lldb-gdb-remote-packet',
+    lateResultRejected:true,
+    lateStateStable:true,
+    registers:{ pc:'0x1008', x0:'0x20' },
+    state:'stopped',
+    ...(overrides.cancel || {}),
+  };
   const value = {
     kind:'active-provider-operations',
-    attach:{ observed:true, transport:'gdb-remote', processId:1, qemuHostPid:10, targetTriple:'aarch64-unknown-linux-gnu', modulePath:'/tmp/fixture', threadId:2, registers:{ pc:'0x1000', sp:'0x2000', x0:'0x1' }, memoryProbe:'0x1020304050607080', state:'stopped' },
-    pause:{ observed:true, continueAccepted:true, interruptIssued:true, runningObserved:true, runningEvidence:'provider-running-state-event+qemu-sigint+register-progress', providerDisposition:'qemu-user-sigint-observed-by-lldb', stoppedObserved:true, executionAdvanced:true, stopIdAdvanced:true, stopIdBefore:1, stopIdAfter:2, processId:1, qemuHostPid:10, threadId:2, registers:{ pc:'0x1004', sp:'0x2000', x0:'0x10' }, state:'stopped' },
-    cancel:{ observed:true, inFlightObserved:true, inFlightEvidence:'blocking-continue-thread-alive+provider-running-state-event', executionAdvanced:true, interruptIssued:true, operationSettled:true, continueSettled:true, stopIdAdvanced:true, stopIdBefore:2, stopIdAfter:3, processId:1, qemuHostPid:10, threadId:2, settlement:'cancelled', providerDisposition:'qemu-user-sigint-observed-by-lldb', lateResultRejected:true, lateStateStable:true, registers:{ pc:'0x1008', x0:'0x20' }, state:'stopped' },
+    attach,
+    pause,
+    cancel,
     operationResults:{ attach:true, pause:true, cancel:true },
-    ...overrides,
   };
+  for (const [key, item] of Object.entries(overrides)) {
+    if (key !== 'attach' && key !== 'pause' && key !== 'cancel') value[key] = item;
+  }
   return `A7_CROSS_ACTIVE_OPS=${JSON.stringify(value)}`;
 }
 
 const activeOptions = { binaryPath:'/tmp/fixture', probeWord:0x2000n, qemuPid:10 };
 assert.doesNotThrow(() => parseCrossTargetActiveOpsOutput(activeMarker(), target, activeOptions));
 assert.throws(() => parseCrossTargetActiveOpsOutput(activeMarker({
-  attach:{ observed:true, transport:'gdb-remote', processId:1, qemuHostPid:10, targetTriple:'x86_64-linux-gnu', modulePath:'/tmp/fixture', threadId:2, registers:{ pc:'0x1', sp:'0x2', x0:'0x3' }, memoryProbe:'0x1020304050607080' },
+  attach:{ targetTriple:'x86_64-linux-gnu' },
 }), target, activeOptions), /attach-target-identity-mismatch/);
 assert.throws(() => parseCrossTargetActiveOpsOutput(activeMarker({
-  attach:{ observed:true, transport:'gdb-remote', processId:1, qemuHostPid:10, targetTriple:'aarch64-linux-gnu', modulePath:'/tmp/wrong', threadId:2, registers:{ pc:'0x1', sp:'0x2', x0:'0x3' }, memoryProbe:'0x1020304050607080' },
+  attach:{ modulePath:'/tmp/wrong' },
 }), target, activeOptions), /attach-module-identity-mismatch/);
-assert.throws(() => parseCrossTargetActiveOpsOutput(activeMarker({ attach:{ observed:true, transport:'gdb-remote', processId:1, qemuHostPid:11, targetTriple:'aarch64-linux-gnu', modulePath:'/tmp/fixture', threadId:2, registers:{ pc:'0x1', sp:'0x2', x0:'0x3' }, memoryProbe:'0x1020304050607080' } }), target, activeOptions), /attach-qemu-identity-mismatch/);
+assert.throws(() => parseCrossTargetActiveOpsOutput(activeMarker({ attach:{ qemuHostPid:11 } }), target, activeOptions), /attach-qemu-identity-mismatch/);
 assert.throws(() => parseCrossTargetActiveOpsOutput(activeMarker({ advertisedCapabilities:{ cancel:true }, cancel:{ observed:false } }), target, activeOptions), /cancel-not-observed/, 'capability advertisement without active cancellation is not proof');
-assert.throws(() => parseCrossTargetActiveOpsOutput(activeMarker({ cancel:{ observed:true, inFlightObserved:true, inFlightEvidence:'blocking-continue-thread-alive+provider-running-state-event', executionAdvanced:true, interruptIssued:true, operationSettled:true, continueSettled:true, stopIdAdvanced:true, stopIdBefore:2, stopIdAfter:3, processId:999, qemuHostPid:10, threadId:2, settlement:'cancelled', providerDisposition:'qemu-user-sigint-observed-by-lldb', lateResultRejected:true, lateStateStable:true, registers:{ pc:'0x1', x0:'0x2' } } }), target, activeOptions), /cancel-session-identity-mismatch/);
-assert.throws(() => parseCrossTargetActiveOpsOutput(activeMarker({ pause:{ observed:true, continueAccepted:true, interruptIssued:true, runningObserved:true, runningEvidence:'static-capability-flag', providerDisposition:'qemu-user-sigint-observed-by-lldb', stoppedObserved:true, executionAdvanced:true, stopIdAdvanced:true, stopIdBefore:1, stopIdAfter:2, processId:1, qemuHostPid:10, threadId:2, registers:{ pc:'0x1004', sp:'0x2000', x0:'0x10' } } }), target, activeOptions), /pause-running-evidence-missing/);
-assert.throws(() => parseCrossTargetActiveOpsOutput(activeMarker({ pause:{ observed:true, continueAccepted:true, interruptIssued:true, runningObserved:true, runningEvidence:'provider-running-state-event+qemu-sigint+register-progress', providerDisposition:'qemu-user-sigint-observed-by-lldb', stoppedObserved:true, executionAdvanced:true, stopIdAdvanced:true, stopIdBefore:1, stopIdAfter:2, processId:1, qemuHostPid:11, threadId:2, registers:{ pc:'0x1004', sp:'0x2000', x0:'0x10' } } }), target, activeOptions), /pause-qemu-identity-mismatch/);
-assert.throws(() => parseCrossTargetActiveOpsOutput(activeMarker({ cancel:{ observed:true, inFlightObserved:true, inFlightEvidence:'blocking-continue-thread-alive+provider-running-state-event', executionAdvanced:true, interruptIssued:true, operationSettled:false, continueSettled:true, stopIdAdvanced:true, stopIdBefore:2, stopIdAfter:3, processId:1, qemuHostPid:10, threadId:2, settlement:'cancelled', providerDisposition:'qemu-user-sigint-observed-by-lldb', lateResultRejected:true, lateStateStable:true, registers:{ pc:'0x1008', x0:'0x20' } } }), target, activeOptions), /cancel-settlement-missing/, 'unsettled qemu-backed continue cannot prove cancel');
-assert.throws(() => parseCrossTargetActiveOpsOutput(activeMarker({ cancel:{ observed:true, inFlightObserved:true, inFlightEvidence:'static-capability-flag', executionAdvanced:true, interruptIssued:true, operationSettled:true, continueSettled:true, stopIdAdvanced:true, stopIdBefore:2, stopIdAfter:3, processId:1, qemuHostPid:10, threadId:2, settlement:'cancelled', providerDisposition:'qemu-user-sigint-observed-by-lldb', lateResultRejected:true, lateStateStable:true, registers:{ pc:'0x1008', x0:'0x20' } } }), target, activeOptions), /cancel-inflight-evidence-missing/, 'capability advertisement cannot substitute for an in-flight provider operation');
-assert.throws(() => parseCrossTargetActiveOpsOutput(activeMarker({ cancel:{ observed:true, inFlightObserved:true, inFlightEvidence:'blocking-continue-thread-alive+provider-running-state-event', executionAdvanced:true, interruptIssued:true, operationSettled:true, continueSettled:true, stopIdAdvanced:true, stopIdBefore:2, stopIdAfter:3, processId:1, qemuHostPid:11, threadId:2, settlement:'cancelled', providerDisposition:'qemu-user-sigint-observed-by-lldb', lateResultRejected:true, lateStateStable:true, registers:{ pc:'0x1008', x0:'0x20' } } }), target, activeOptions), /cancel-qemu-identity-mismatch/);
+assert.throws(() => parseCrossTargetActiveOpsOutput(activeMarker({ cancel:{ processId:999 } }), target, activeOptions), /cancel-session-identity-mismatch/);
+assert.throws(() => parseCrossTargetActiveOpsOutput(activeMarker({ pause:{ runningEvidence:'static-capability-flag' } }), target, activeOptions), /pause-running-evidence-missing/);
+assert.throws(() => parseCrossTargetActiveOpsOutput(activeMarker({ pause:{ qemuHostPid:11 } }), target, activeOptions), /pause-qemu-identity-mismatch/);
+assert.throws(() => parseCrossTargetActiveOpsOutput(activeMarker({ pause:{ registerTransport:'static-capability-flag' } }), target, activeOptions), /pause-running-evidence-missing/, 'stopped state without provider register evidence cannot prove pause');
+assert.throws(() => parseCrossTargetActiveOpsOutput(activeMarker({ cancel:{ operationSettled:false } }), target, activeOptions), /cancel-settlement-missing/, 'unsettled qemu-backed continue cannot prove cancel');
+assert.throws(() => parseCrossTargetActiveOpsOutput(activeMarker({ cancel:{ inFlightEvidence:'static-capability-flag' } }), target, activeOptions), /cancel-inflight-evidence-missing/, 'capability advertisement cannot substitute for an in-flight provider operation');
+assert.throws(() => parseCrossTargetActiveOpsOutput(activeMarker({ cancel:{ qemuHostPid:11 } }), target, activeOptions), /cancel-qemu-identity-mismatch/);
+assert.throws(() => parseCrossTargetActiveOpsOutput(activeMarker({ cancel:{ registerTransport:'static-capability-flag' } }), target, activeOptions), /cancel-settlement-missing/, 'late stopped state without provider register evidence cannot prove cancel');
 
 console.log(`A7_CROSS_TARGET_PROVIDER_PROOF=${JSON.stringify(run)}`);
 console.log('[stage2] active AArch64/PAC/RV64 LLDB remote provider proofs passed');
