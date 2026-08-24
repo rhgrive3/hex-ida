@@ -177,7 +177,6 @@ const opsOf = (bundle, kind) => bundle.operations.filter((op) => op.kind === kin
   assert.equal(unscaledWriteback.completeness, 'partial');
 }
 
-
 {
   const invalidClass = lift('ldrb', [x(0), mem(x(1))]);
   const invalidVectorClass = lift('ldrb', [fp('b', 0, 8), mem(x(1))]);
@@ -213,6 +212,22 @@ const opsOf = (bundle, kind) => bundle.operations.filter((op) => op.kind === kin
   assert.equal(scaledMax.completeness, 'exact');
   assert.equal(unscaledMin.completeness, 'exact');
   for (const current of [scaledMisaligned, scaledOverflow, unscaledOverflow]) assert.equal(current.completeness, 'partial');
+}
+
+{
+  const structuredOutOfRange = lift('ldur', [w(1), mem(x(29), { disp:-356n })]);
+  const legacyAbstract = lift('ldur', [w(1), mem(x(29), { disp:-356n })], {
+    row:4,
+    parseError:null,
+    operands:'w1, [x29, #-0x164]',
+    memory:{ base:'x29' },
+  });
+  assert.equal(structuredOutOfRange.completeness, 'partial', 'decoder-style structured LDUR must still satisfy imm9');
+  assert.equal(opsOf(structuredOutOfRange, 'memory-read').length, 0);
+  assert.equal(legacyAbstract.completeness, 'exact', 'legacy semantic-model abstract LDUR remains compatible');
+  assert.equal(legacyAbstract.metadata.compatibilityEncodingAlias, 'abstract-unscaled');
+  assert.equal(legacyAbstract.metadata.addressing.encoding, 'legacy-abstract-unscaled');
+  assert.equal(opsOf(legacyAbstract, 'memory-read').length, 1);
 }
 
 {
