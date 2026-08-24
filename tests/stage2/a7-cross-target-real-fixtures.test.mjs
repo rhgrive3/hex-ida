@@ -61,9 +61,10 @@ for (const proof of run.proofs) {
   assert.equal(proof.activeOperations.pause.continueAccepted, true);
   assert.equal(proof.activeOperations.pause.interruptIssued, true);
   assert.equal(proof.activeOperations.pause.runningObserved, true);
-  assert.equal(proof.activeOperations.pause.runningEvidence, 'provider-running-state-event+qemu-proc-cpu-ticks+lldb-stop-id+guest-memory');
-  assert.equal(proof.activeOperations.pause.executionEvidence, 'qemu-proc-cpu-ticks-advanced');
-  assert.equal(proof.activeOperations.pause.progressTransport, 'linux-proc-stat+lldb-gdb-remote-memory');
+  assert.equal(proof.activeOperations.pause.runningEvidence, 'provider-running-state-event+exact-qemu-cpu-progress+lldb-stop-id');
+  assert.equal(proof.activeOperations.pause.executionEvidence, 'exact-qemu-process-cpu-ticks-during-provider-running-window');
+  assert.equal(proof.activeOperations.pause.executionWindow, 'after-running-event-before-interrupt');
+  assert.equal(proof.activeOperations.pause.progressTransport, 'linux-proc-stat+lldb-process-events');
   assert.equal(proof.activeOperations.pause.providerDisposition, 'qemu-user-sigint-observed-by-lldb');
   assert.equal(proof.activeOperations.pause.stoppedObserved, true);
   assert.equal(proof.activeOperations.pause.executionAdvanced, true);
@@ -71,7 +72,7 @@ for (const proof of run.proofs) {
   assert.equal(proof.activeOperations.pause.stopIdAdvanced, true);
   assert.ok(proof.activeOperations.pause.stopIdAfter > proof.activeOperations.pause.stopIdBefore);
   assert.equal(proof.activeOperations.pause.modulePath, proof.activeOperations.attach.modulePath);
-  assert.equal(proof.activeOperations.pause.memoryProbe, proof.activeOperations.attach.memoryProbe);
+  assert.equal(Object.prototype.hasOwnProperty.call(proof.activeOperations.pause, 'memoryProbe'), false, 'pause proof must not pretend QEMU supports post-SIGINT memory reads');
 
   assert.equal(proof.activeOperations.cancel.processId, proof.activeOperations.attach.processId);
   assert.equal(proof.activeOperations.cancel.qemuHostPid, qemuPid);
@@ -79,7 +80,8 @@ for (const proof of run.proofs) {
   assert.equal(proof.activeOperations.cancel.inFlightObserved, true);
   assert.equal(proof.activeOperations.cancel.inFlightEvidence, 'blocking-continue-thread-alive+provider-running-state-event');
   assert.equal(proof.activeOperations.cancel.executionAdvanced, true);
-  assert.equal(proof.activeOperations.cancel.executionEvidence, 'qemu-proc-cpu-ticks-advanced');
+  assert.equal(proof.activeOperations.cancel.executionEvidence, 'exact-qemu-process-cpu-ticks-during-provider-running-window');
+  assert.equal(proof.activeOperations.cancel.executionWindow, 'after-running-event-before-interrupt');
   assert.ok(proof.activeOperations.cancel.qemuCpuTicksAfter > proof.activeOperations.cancel.qemuCpuTicksBefore);
   assert.equal(proof.activeOperations.cancel.interruptIssued, true);
   assert.equal(proof.activeOperations.cancel.operationSettled, true);
@@ -88,14 +90,13 @@ for (const proof of run.proofs) {
   assert.ok(proof.activeOperations.cancel.stopIdAfter > proof.activeOperations.cancel.stopIdBefore);
   assert.equal(proof.activeOperations.cancel.settlement, 'cancelled');
   assert.equal(proof.activeOperations.cancel.providerDisposition, 'qemu-user-sigint-observed-by-lldb');
-  assert.equal(proof.activeOperations.cancel.progressTransport, 'linux-proc-stat+lldb-gdb-remote-memory');
+  assert.equal(proof.activeOperations.cancel.progressTransport, 'linux-proc-stat+lldb-process-events');
   assert.equal(proof.activeOperations.cancel.modulePath, proof.activeOperations.attach.modulePath);
-  assert.equal(proof.activeOperations.cancel.memoryProbe, proof.activeOperations.attach.memoryProbe);
+  assert.equal(Object.prototype.hasOwnProperty.call(proof.activeOperations.cancel, 'memoryProbe'), false, 'cancel proof must not pretend QEMU supports post-SIGINT memory reads');
   assert.equal(proof.activeOperations.cancel.lateResultRejected, true);
   assert.equal(proof.activeOperations.cancel.lateStateStable, true);
-  assert.equal(proof.activeOperations.cancel.lateCpuStable, true);
   assert.equal(proof.activeOperations.cancel.lateStopIdStable, true);
-  assert.equal(proof.activeOperations.cancel.lateMemoryStable, true);
+  assert.equal(proof.activeOperations.cancel.lateQemuInstanceStable, true);
 
   assert.match(proof.fixture.sourceSha256, /^[0-9a-f]{64}$/);
   assert.match(proof.fixture.binarySha256, /^[0-9a-f]{64}$/);
@@ -150,10 +151,11 @@ function activeMarker(overrides = {}) {
     continueAccepted:true,
     interruptIssued:true,
     runningObserved:true,
-    runningEvidence:'provider-running-state-event+qemu-proc-cpu-ticks+lldb-stop-id+guest-memory',
+    runningEvidence:'provider-running-state-event+exact-qemu-cpu-progress+lldb-stop-id',
     executionAdvanced:true,
-    executionEvidence:'qemu-proc-cpu-ticks-advanced',
-    progressTransport:'linux-proc-stat+lldb-gdb-remote-memory',
+    executionEvidence:'exact-qemu-process-cpu-ticks-during-provider-running-window',
+    executionWindow:'after-running-event-before-interrupt',
+    progressTransport:'linux-proc-stat+lldb-process-events',
     providerDisposition:'qemu-user-sigint-observed-by-lldb',
     stoppedObserved:true,
     stopIdAdvanced:true,
@@ -165,7 +167,6 @@ function activeMarker(overrides = {}) {
     qemuCpuTicksBefore:1,
     qemuCpuTicksAfter:3,
     modulePath:'/tmp/fixture',
-    memoryProbe:'0x1020304050607080',
     state:'stopped',
     ...(overrides.pause || {}),
   };
@@ -174,7 +175,8 @@ function activeMarker(overrides = {}) {
     inFlightObserved:true,
     inFlightEvidence:'blocking-continue-thread-alive+provider-running-state-event',
     executionAdvanced:true,
-    executionEvidence:'qemu-proc-cpu-ticks-advanced',
+    executionEvidence:'exact-qemu-process-cpu-ticks-during-provider-running-window',
+    executionWindow:'after-running-event-before-interrupt',
     interruptIssued:true,
     operationSettled:true,
     continueSettled:true,
@@ -188,14 +190,12 @@ function activeMarker(overrides = {}) {
     qemuCpuTicksAfter:5,
     settlement:'cancelled',
     providerDisposition:'qemu-user-sigint-observed-by-lldb',
-    progressTransport:'linux-proc-stat+lldb-gdb-remote-memory',
+    progressTransport:'linux-proc-stat+lldb-process-events',
     modulePath:'/tmp/fixture',
-    memoryProbe:'0x1020304050607080',
     lateResultRejected:true,
     lateStateStable:true,
-    lateCpuStable:true,
     lateStopIdStable:true,
-    lateMemoryStable:true,
+    lateQemuInstanceStable:true,
     state:'stopped',
     ...(overrides.cancel || {}),
   };
@@ -224,13 +224,14 @@ assert.throws(() => parseCrossTargetActiveOpsOutput(activeMarker({ pause:{ runni
 assert.throws(() => parseCrossTargetActiveOpsOutput(activeMarker({ pause:{ qemuHostPid:11 } }), target, activeOptions), /pause-qemu-identity-mismatch/);
 assert.throws(() => parseCrossTargetActiveOpsOutput(activeMarker({ pause:{ qemuStartTimeTicks:1001 } }), target, activeOptions), /pause-qemu-instance-identity-mismatch/);
 assert.throws(() => parseCrossTargetActiveOpsOutput(activeMarker({ pause:{ qemuCpuTicksAfter:1 } }), target, activeOptions), /pause-execution-progress-missing/, 'running state without measured QEMU execution progress cannot prove pause');
-assert.throws(() => parseCrossTargetActiveOpsOutput(activeMarker({ pause:{ memoryProbe:'0x0' } }), target, activeOptions), /pause-session-identity-mismatch/, 'stopped state without the same guest memory identity cannot prove pause');
+assert.throws(() => parseCrossTargetActiveOpsOutput(activeMarker({ pause:{ executionWindow:'after-interrupt' } }), target, activeOptions), /pause-running-evidence-missing/, 'post-interrupt CPU work cannot stand in for provider-running execution');
 assert.throws(() => parseCrossTargetActiveOpsOutput(activeMarker({ cancel:{ operationSettled:false } }), target, activeOptions), /cancel-settlement-missing/, 'unsettled qemu-backed continue cannot prove cancel');
 assert.throws(() => parseCrossTargetActiveOpsOutput(activeMarker({ cancel:{ inFlightEvidence:'static-capability-flag' } }), target, activeOptions), /cancel-inflight-evidence-missing/, 'capability advertisement cannot substitute for an in-flight provider operation');
 assert.throws(() => parseCrossTargetActiveOpsOutput(activeMarker({ cancel:{ qemuHostPid:11 } }), target, activeOptions), /cancel-qemu-identity-mismatch/);
 assert.throws(() => parseCrossTargetActiveOpsOutput(activeMarker({ cancel:{ qemuStartTimeTicks:1001 } }), target, activeOptions), /cancel-qemu-instance-identity-mismatch/);
 assert.throws(() => parseCrossTargetActiveOpsOutput(activeMarker({ cancel:{ qemuCpuTicksAfter:3 } }), target, activeOptions), /cancel-execution-progress-missing/, 'settlement without measured QEMU execution progress cannot prove cancel');
-assert.throws(() => parseCrossTargetActiveOpsOutput(activeMarker({ cancel:{ lateCpuStable:false } }), target, activeOptions), /cancel-settlement-missing/, 'late CPU activity invalidates cancellation settlement');
+assert.throws(() => parseCrossTargetActiveOpsOutput(activeMarker({ cancel:{ lateStopIdStable:false } }), target, activeOptions), /cancel-settlement-missing/, 'late stop-ID movement invalidates cancellation settlement');
+assert.throws(() => parseCrossTargetActiveOpsOutput(activeMarker({ cancel:{ lateQemuInstanceStable:false } }), target, activeOptions), /cancel-settlement-missing/, 'QEMU instance replacement invalidates cancellation settlement');
 
 console.log(`A7_CROSS_TARGET_PROVIDER_PROOF=${JSON.stringify(run)}`);
 console.log('[stage2] active AArch64/PAC/RV64 LLDB remote provider proofs passed');
