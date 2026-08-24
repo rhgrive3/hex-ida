@@ -273,7 +273,10 @@ export async function runAgent(config) {
   let missingEvidence = deterministic.missingEvidence.slice();
   if (proposedAnswer) {
     if (Array.isArray(proposedAnswer.missingEvidence)) missingEvidence = Array.from(new Set([...missingEvidence, ...proposedAnswer.missingEvidence]));
-    if (typeof proposedAnswer.confidence === 'number') confidence = Math.min(confidence, Math.max(0, proposedAnswer.confidence));
+    if (typeof proposedAnswer.confidence === 'number') {
+      const modelConfidence = finiteConfidence(proposedAnswer.confidence, null);
+      if (modelConfidence !== null) confidence = Math.min(confidence, modelConfidence);
+    }
   }
   if (!evidence.size) {
     confidence = Math.min(confidence, 0.5);
