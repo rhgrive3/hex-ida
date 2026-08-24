@@ -204,7 +204,6 @@ function crossActiveOpsPython(target, fixture, port) {
 import json
 import lldb
 import os
-import threading
 import time
 
 FIXTURE = ${JSON.stringify(fixture.path)}
@@ -228,6 +227,23 @@ def wait_for(predicate, timeout=3.0):
         if predicate(last):
             return last
         time.sleep(0.01)
+    return last
+
+def wait_for_process_event(listener, predicate, timeout=3.0):
+    deadline = time.time() + timeout
+    last = lldb.eStateInvalid
+    while time.time() < deadline:
+        event = lldb.SBEvent()
+        if not listener.WaitForEvent(1, event):
+            continue
+        if not lldb.SBProcess.EventIsProcessEvent(event):
+            continue
+        event_process = lldb.SBProcess.GetProcessFromEvent(event)
+        if not event_process.IsValid() or event_process.GetProcessID() != process.GetProcessID():
+            continue
+        last = lldb.SBProcess.GetStateFromEvent(event)
+        if predicate(last):
+            return last
     return last
 
 def current_frame():
@@ -264,17 +280,14 @@ try:
     target = debugger.CreateTarget(FIXTURE)
     if not target.IsValid():
         fail('target-create-failed')
+    listener = debugger.GetListener()
     error = lldb.SBError()
-    process = target.ConnectRemote(debugger.GetListener(), 'connect://127.0.0.1:' + str(PORT), 'gdb-remote', error)
+    process = target.ConnectRemote(listener, 'connect://127.0.0.1:' + str(PORT), 'gdb-remote', error)
     if not error.Success() or not process.IsValid():
         fail('remote-attach-failed:' + str(error))
     attached_pid = process.GetProcessID()
     if attached_pid <= 0:
         fail('remote-process-identity-missing')
-    debugger.SetSelectedTarget(target)
-    command_process = debugger.GetCommandInterpreter().GetProcess()
-    if not command_process.IsValid() or command_process.GetProcessID() != attached_pid:
-        fail('remote-command-process-identity-mismatch')
     if not lldb.SBDebugger.StateIsStoppedState(process.GetState()):
         fail('remote-attach-not-stopped')
     triple = target.GetTriple() or ''
@@ -299,36 +312,24 @@ try:
     }
 
     before_operand = operand
-    pause_interpreter = debugger.GetCommandInterpreter()
-    pause_context = lldb.SBExecutionContext(process)
-    pause_holder = {}
-    def run_pause_continue():
-        command_result = lldb.SBCommandReturnObject()
-        try:
-            pause_interpreter.HandleCommand('process continue', pause_context, command_result, False)
-            pause_holder['succeeded'] = bool(command_result.Succeeded())
-            pause_holder['error'] = command_result.GetError() or ''
-            pause_holder['output'] = command_result.GetOutput() or ''
-        except BaseException as exc:
-            pause_holder['exception'] = repr(exc)
-    pause_worker = threading.Thread(target=run_pause_continue, daemon=True)
-    pause_worker.start()
+    pause_stop_id_before = process.GetStopID(False)
+    debugger.SetAsync(True)
+    continue_error = process.Continue()
+    if not continue_error.Success():
+        fail('pause-continue-failed:' + str(continue_error))
+    running_state = wait_for_process_event(listener, lldb.SBDebugger.StateIsRunningState)
+    if not lldb.SBDebugger.StateIsRunningState(running_state):
+        fail('pause-running-event-not-observed:' + state_name(running_state))
     time.sleep(0.05)
-    if not pause_worker.is_alive():
-        fail('pause-command-not-inflight:' + str(pause_holder))
     stop_error = process.Stop()
     if not stop_error.Success():
         fail('pause-stop-failed:' + str(stop_error))
-    pause_worker.join(3.0)
-    if pause_worker.is_alive():
-        fail('pause-command-not-settled')
-    if 'exception' in pause_holder:
-        fail('pause-command-exception:' + pause_holder['exception'])
-    if pause_holder.get('succeeded') is not True:
-        fail('pause-command-failed:' + str(pause_holder.get('error', '')))
     stopped_state = wait_for(lldb.SBDebugger.StateIsStoppedState)
     if not lldb.SBDebugger.StateIsStoppedState(stopped_state):
         fail('pause-stop-not-observed:' + state_name(stopped_state))
+    pause_stop_id_after = process.GetStopID(False)
+    if pause_stop_id_after <= pause_stop_id_before:
+        fail('pause-stop-id-not-advanced')
     thread, frame = current_frame()
     pause_pc = reg(frame, 'pc')
     pause_sp = reg(frame, 'sp')
@@ -337,44 +338,34 @@ try:
         fail('pause-no-execution-observed')
     result['pause'] = {
         'observed': True, 'continueAccepted': True, 'stopAccepted': True,
-        'runningObserved': True, 'runningEvidence': 'blocking-command-thread-alive+register-progress',
-        'stoppedObserved': True, 'executionAdvanced': True,
+        'runningObserved': True, 'runningEvidence': 'provider-running-state-event+register-progress',
+        'stoppedObserved': True, 'executionAdvanced': True, 'stopIdAdvanced': True,
+        'stopIdBefore': pause_stop_id_before, 'stopIdAfter': pause_stop_id_after,
         'processId': process.GetProcessID(), 'threadId': thread.GetThreadID(),
         'registers': {'pc': hex(pause_pc), 'sp': hex(pause_sp), REGISTER: hex(pause_operand)},
         'state': state_name(process.GetState()),
     }
 
-    debugger.SetAsync(False)
-    input_error = debugger.SetInputString('process continue\\n')
-    if not input_error.Success():
-        fail('cancel-input-failed:' + str(input_error))
-    interpreter = debugger.GetCommandInterpreter()
-    cancel_process = interpreter.GetProcess()
-    if not cancel_process.IsValid() or cancel_process.GetProcessID() != attached_pid:
-        fail('cancel-command-process-identity-mismatch')
-    holder = {}
-    def run_interpreter():
-        try:
-            holder['result'] = debugger.RunCommandInterpreter(True, False, lldb.SBCommandInterpreterRunOptions(), 0, False, False)
-        except BaseException as exc:
-            holder['exception'] = repr(exc)
-    worker = threading.Thread(target=run_interpreter, daemon=True)
-    worker.start()
+    cancel_before_operand = pause_operand
+    cancel_stop_id_before = process.GetStopID(False)
+    continue_error = process.Continue()
+    if not continue_error.Success():
+        fail('cancel-continue-failed:' + str(continue_error))
+    running_state = wait_for_process_event(listener, lldb.SBDebugger.StateIsRunningState)
+    if not lldb.SBDebugger.StateIsRunningState(running_state):
+        fail('cancel-running-event-not-observed:' + state_name(running_state))
     time.sleep(0.05)
-    if not worker.is_alive():
-        fail('cancel-command-not-inflight')
-    if not interpreter.InterruptCommand():
-        fail('cancel-interrupt-not-accepted')
-    worker.join(3.0)
-    if worker.is_alive():
-        fail('cancel-command-not-settled')
+    process.SendAsyncInterrupt()
     stopped_state = wait_for(lldb.SBDebugger.StateIsStoppedState)
     if not lldb.SBDebugger.StateIsStoppedState(stopped_state):
         fail('cancel-target-not-stopped:' + state_name(stopped_state))
+    cancel_stop_id_after = process.GetStopID(False)
+    if cancel_stop_id_after <= cancel_stop_id_before:
+        fail('cancel-stop-id-not-advanced')
     thread, frame = current_frame()
     cancel_pc = reg(frame, 'pc')
     cancel_operand = reg(frame, REGISTER)
-    if cancel_operand == pause_operand:
+    if cancel_operand == cancel_before_operand:
         fail('cancel-no-execution-observed')
     first_state = process.GetState()
     time.sleep(0.10)
@@ -385,13 +376,13 @@ try:
     if first_state != late_state or cancel_pc != late_pc or cancel_operand != late_operand:
         fail('cancel-late-success-observed')
     result['cancel'] = {
-        'observed': True, 'inFlightObserved': True, 'inFlightEvidence': 'blocking-command-thread-alive',
-        'executionAdvanced': True, 'interruptAccepted': True,
-        'interpreterWasInterrupted': bool(interpreter.WasInterrupted()), 'commandSettled': True,
-        'processId': process.GetProcessID(), 'threadId': thread.GetThreadID(), 'settlement': 'cancelled', 'providerDisposition': 'interrupted-command',
+        'observed': True, 'inFlightObserved': True, 'inFlightEvidence': 'provider-running-state-event',
+        'executionAdvanced': True, 'interruptAccepted': True, 'operationSettled': True,
+        'processId': process.GetProcessID(), 'threadId': thread.GetThreadID(),
+        'settlement': 'cancelled', 'providerDisposition': 'async-process-interrupt',
+        'stopIdAdvanced': True, 'stopIdBefore': cancel_stop_id_before, 'stopIdAfter': cancel_stop_id_after,
         'lateResultRejected': True, 'lateStateStable': True,
         'registers': {'pc': hex(cancel_pc), REGISTER: hex(cancel_operand)}, 'state': state_name(late_state),
-        'interpreterResult': repr(holder.get('result')), 'interpreterException': holder.get('exception'),
     }
     result['operationResults'] = {'attach': True, 'pause': True, 'cancel': True}
 except BaseException as exc:
@@ -449,12 +440,14 @@ export function parseCrossTargetActiveOpsOutput(output, target, { binaryPath, pr
   if (binaryPath != null && path.resolve(String(attach.modulePath || '')) !== path.resolve(binaryPath)) throw new Error('a7-cross-attach-module-identity-mismatch');
   if (!attach.registers?.pc || !attach.registers?.sp || !Object.prototype.hasOwnProperty.call(attach.registers, target.register)) throw new Error('a7-cross-attach-register-observation-missing');
   if (probeWord != null && String(attach.memoryProbe || '').toLowerCase() !== '0x1020304050607080') throw new Error('a7-cross-attach-memory-observation-missing');
-  if (proof.operationResults?.pause !== true || pause.observed !== true || pause.runningObserved !== true || pause.stoppedObserved !== true || pause.executionAdvanced !== true || pause.continueAccepted !== true || pause.stopAccepted !== true) throw new Error('a7-cross-pause-not-observed');
-  if (pause.runningEvidence !== 'blocking-command-thread-alive+register-progress') throw new Error('a7-cross-pause-running-evidence-missing');
+  if (proof.operationResults?.pause !== true || pause.observed !== true || pause.runningObserved !== true || pause.stoppedObserved !== true || pause.executionAdvanced !== true || pause.continueAccepted !== true || pause.stopAccepted !== true || pause.stopIdAdvanced !== true) throw new Error('a7-cross-pause-not-observed');
+  if (pause.runningEvidence !== 'provider-running-state-event+register-progress') throw new Error('a7-cross-pause-running-evidence-missing');
+  if (!Number.isSafeInteger(pause.stopIdBefore) || !Number.isSafeInteger(pause.stopIdAfter) || pause.stopIdAfter <= pause.stopIdBefore) throw new Error('a7-cross-pause-stop-id-evidence-missing');
   if (pause.processId !== attach.processId || !pause.registers?.pc || !Object.prototype.hasOwnProperty.call(pause.registers, target.register)) throw new Error('a7-cross-pause-session-identity-mismatch');
   if (proof.operationResults?.cancel !== true || cancel.observed !== true || cancel.inFlightObserved !== true || cancel.interruptAccepted !== true || cancel.executionAdvanced !== true) throw new Error('a7-cross-cancel-not-observed');
-  if (cancel.inFlightEvidence !== 'blocking-command-thread-alive') throw new Error('a7-cross-cancel-inflight-evidence-missing');
-  if (cancel.commandSettled !== true || cancel.settlement !== 'cancelled' || cancel.providerDisposition !== 'interrupted-command' || cancel.lateResultRejected !== true || cancel.lateStateStable !== true) throw new Error('a7-cross-cancel-settlement-missing');
+  if (cancel.inFlightEvidence !== 'provider-running-state-event') throw new Error('a7-cross-cancel-inflight-evidence-missing');
+  if (cancel.operationSettled !== true || cancel.stopIdAdvanced !== true || cancel.settlement !== 'cancelled' || cancel.providerDisposition !== 'async-process-interrupt' || cancel.lateResultRejected !== true || cancel.lateStateStable !== true) throw new Error('a7-cross-cancel-settlement-missing');
+  if (!Number.isSafeInteger(cancel.stopIdBefore) || !Number.isSafeInteger(cancel.stopIdAfter) || cancel.stopIdAfter <= cancel.stopIdBefore) throw new Error('a7-cross-cancel-stop-id-evidence-missing');
   if (cancel.processId !== attach.processId || !cancel.registers?.pc || !Object.prototype.hasOwnProperty.call(cancel.registers, target.register)) throw new Error('a7-cross-cancel-session-identity-mismatch');
   return Object.freeze({ ...proof, operationResults:Object.freeze({ attach:true, pause:true, cancel:true }), capabilityResults:capabilityMap(A7_CROSS_ACTIVE_OPERATION_CAPABILITIES) });
 }
