@@ -34,7 +34,7 @@ export function buildX86CapstoneRegistryEvidence(instructionName) {
       // Reject a hole followed by another name. A contiguous interval is part
       // of this deployed registry's identity, not an assumption about future
       // Capstone versions.
-      for (let probe = id + 1; probe <= Math.min(MAX_REGISTRY_ID, id + 32); probe++) {
+      for (let probe = id + 1; probe <= MAX_REGISTRY_ID; probe++) {
         if (instructionName(probe)) fail('x86-capstone-registry-noncontiguous', `${id}->${probe}`);
       }
       break;
