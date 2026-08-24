@@ -14,7 +14,7 @@ import {
   createArm64RegisterRead,
   createArm64RegisterWrite,
 } from './addressing.js';
-import { isArm64AtomicInstruction, liftArm64AtomicEffects } from './atomic.js';
+import { ARM64_ATOMIC_EFFECT_MNEMONICS, isArm64AtomicInstruction, liftArm64AtomicEffects } from './atomic.js';
 
 export const LEGACY_ARM64_MEMORY_INVENTORY = Object.freeze({
   loads: Object.freeze(['ldr','ldrb','ldrh','ldrsb','ldrsh','ldrsw','ldur','ldurb','ldurh','ldursb','ldursh','ldursw','ldp','ldpsw','ldnp','ldar','ldarb','ldarh','ldxr','ldaxr','ldtr']),
@@ -28,7 +28,9 @@ const SIMPLE_LOADS = new Set(['ldr','ldrb','ldrh','ldrsb','ldrsh','ldrsw','ldur'
 const SIMPLE_STORES = new Set(['str','strb','strh','stur','sturb','sturh','sttr','stlr','stlrb','stlrh']);
 const PAIR_LOADS = new Set(['ldp','ldnp','ldpsw']);
 const PAIR_STORES = new Set(['stp','stnp']);
-const ALL_NON_ATOMIC = new Set([...SIMPLE_LOADS, ...SIMPLE_STORES, ...PAIR_LOADS, ...PAIR_STORES, 'prfm']);
+const NON_ATOMIC_MEMORY_MNEMONICS = Object.freeze([...SIMPLE_LOADS, ...SIMPLE_STORES, ...PAIR_LOADS, ...PAIR_STORES, 'prfm']);
+const ALL_NON_ATOMIC = new Set(NON_ATOMIC_MEMORY_MNEMONICS);
+export const ARM64_MEMORY_EFFECT_MNEMONICS = Object.freeze([...NON_ATOMIC_MEMORY_MNEMONICS, ...ARM64_ATOMIC_EFFECT_MNEMONICS]);
 const SIGNED_LOADS = new Set(['ldrsb','ldrsh','ldrsw','ldursb','ldursh','ldursw','ldpsw']);
 const ACQUIRE_LOADS = new Set(['ldar','ldarb','ldarh']);
 const RELEASE_STORES = new Set(['stlr','stlrb','stlrh']);
@@ -36,6 +38,7 @@ const BASE_ONLY = new Set([...ACQUIRE_LOADS, ...RELEASE_STORES]);
 const UNSCALED_ONLY = /^(?:ldur|stur|ldtr|sttr)/;
 const NON_TEMPORAL_PAIR = new Set(['ldnp','stnp']);
 const UNPRIVILEGED = new Set(['ldtr','sttr']);
+const LEGACY_UNSCALED_ALIASES = new Set(['ldr','str','ldrb','strb','ldrh','strh','ldrsb','ldrsh','ldrsw']);
 
 const WIDTH_OVERRIDE = Object.freeze({
   ldrb:8, ldrsb:8, ldurb:8, ldursb:8, ldarb:8,
@@ -146,6 +149,13 @@ function stackPointerAlignmentFault(addressing, accessIndex = 0) {
 }
 
 function zeroConstant(widthBits) { return createBitVectorValue(widthBits, 0n); }
+function normalizedDataRegister(regInput) {
+  if (regInput && typeof regInput === 'object' && typeof regInput.kind === 'string'
+      && Number.isInteger(Number(regInput.bits)) && (typeof regInput.physicalId === 'string' || regInput.zero === true)) {
+    return regInput;
+  }
+  return arm64RegisterOperand(regInput);
+}
 function valueOp(opcode, input, fromBits, toBits, id, metadata = {}) {
   const output = arm64Temporary(id, toBits);
   return {
@@ -158,7 +168,7 @@ function valueOp(opcode, input, fromBits, toBits, id, metadata = {}) {
 }
 
 function loadedValueToRegister(regInput, rawValue, memoryBits, { signed = false, idPrefix = 'load' } = {}) {
-  const reg = arm64RegisterOperand(regInput);
+  const reg = normalizedDataRegister(regInput);
   if (!reg) throw new TypeError('arm64-load-destination-register-required');
   if (reg.zero) return { operations:[], discarded:true };
   if (reg.kind === 'sp') throw new TypeError('arm64-load-to-sp-unsupported');
@@ -203,7 +213,7 @@ function loadedValueToRegister(regInput, rawValue, memoryBits, { signed = false,
 }
 
 function storeValueFromRegister(regInput, widthBits, idPrefix) {
-  const reg = arm64RegisterOperand(regInput);
+  const reg = normalizedDataRegister(regInput);
   if (!reg) throw new TypeError('arm64-store-source-register-required');
   if (reg.zero) return { operations:[], value:zeroConstant(widthBits) };
   if (reg.kind === 'sp') throw new TypeError('arm64-store-from-sp-unsupported');
@@ -243,27 +253,135 @@ function overlapIsConstrained(addressing, regs) {
     return reg && !reg.zero && reg.physicalId === addressing.base.physicalId;
   });
 }
-function zeroDisplacement(addressing) {
-  const raw = addressing?.metadata?.addressDisplacement;
-  return raw == null || BigInt(raw) === 0n;
+function displacement(addressing, field) {
+  const raw = addressing?.metadata?.[field];
+  return raw == null ? null : BigInt(raw);
 }
-function validateSimpleAddressing(mnemonic, addressing) {
+function zeroDisplacement(addressing) {
+  const value = displacement(addressing, 'addressDisplacement');
+  return value == null || value === 0n;
+}
+function isGp(reg, bits = null) {
+  return !!reg && (reg.kind === 'gp' || reg.zero === true || reg.kind === 'zero') && (bits == null || Number(reg.bits) === bits);
+}
+function isVector(reg, widths = [8,16,32,64,128]) {
+  return reg?.kind === 'vector' && widths.includes(Number(reg.bits));
+}
+function validSingleDataRegister(mnemonic, reg) {
+  if (['ldr','str','ldur','stur'].includes(mnemonic)) return isGp(reg) && [32,64].includes(Number(reg.bits)) || isVector(reg);
+  if (['ldrb','ldrh','ldurb','ldurh','strb','strh','sturb','sturh','ldarb','ldarh','stlrb','stlrh'].includes(mnemonic)) return isGp(reg, 32);
+  if (['ldrsb','ldrsh','ldursb','ldursh'].includes(mnemonic)) return isGp(reg) && [32,64].includes(Number(reg.bits));
+  if (['ldrsw','ldursw'].includes(mnemonic)) return isGp(reg, 64);
+  if (['ldar','stlr','ldtr','sttr'].includes(mnemonic)) return isGp(reg) && [32,64].includes(Number(reg.bits));
+  return false;
+}
+function validPairRegisters(mnemonic, regs) {
+  if (mnemonic === 'ldpsw') return regs.every((reg) => isGp(reg, 64));
+  const [left, right] = regs;
+  if (isGp(left) && isGp(right)) return [32,64].includes(Number(left.bits)) && left.bits === right.bits;
+  if (isVector(left) && isVector(right)) return [32,64,128].includes(Number(left.bits)) && left.bits === right.bits;
+  return false;
+}
+function isSignedImmediate(value, bits) {
+  const minimum = -(1n << BigInt(bits - 1));
+  const maximum = (1n << BigInt(bits - 1)) - 1n;
+  return value >= minimum && value <= maximum;
+}
+function isLegacyAssemblyMemoryRecord(decoded) {
+  return Number.isInteger(decoded?.row)
+    && typeof decoded?.operands === 'string'
+    && decoded?.memory != null;
+}
+function isLegacyTextMemoryRecord(decoded) {
+  return decoded?.parseError === null && isLegacyAssemblyMemoryRecord(decoded);
+}
+function isLegacyUnscaledAlias(decoded, mnemonic, addressing) {
+  if (!LEGACY_UNSCALED_ALIASES.has(mnemonic) || addressing.mode !== 'offset' || addressing.index) return false;
+  const addressDisp = displacement(addressing, 'addressDisplacement') ?? 0n;
+  if (!isSignedImmediate(addressDisp, 9)) return false;
+  // buildSemanticModel's legacy text surface accepts assembler aliases such as
+  // `ldr x0, [x1, #-8]`; LLVM assembles those bytes as LDUR/STUR. Preserve
+  // that compatibility surface without treating the same impossible structured
+  // decoder record as an exact LDR/STR encoding.
+  return isLegacyTextMemoryRecord(decoded);
+}
+function isLegacyAbstractUnscaledForm(decoded, mnemonic, addressing) {
+  if (!UNSCALED_ONLY.test(mnemonic) || addressing.mode !== 'offset' || addressing.index) return false;
+  if (displacement(addressing, 'writebackDisplacement') != null) return false;
+  // Legacy semantic-model rows are already-decoded abstract instructions. Some
+  // historical fixtures use frame-relative LDUR/STUR displacements wider than
+  // the physical imm9 encoding while preserving an exact abstract address.
+  // Keep only that text-model compatibility; decoder-origin structured records
+  // still have to satisfy the real A64 encoding range above.
+  return isLegacyTextMemoryRecord(decoded);
+}
+function validateSimpleAddressing(mnemonic, addressing, widthBits) {
+  const addressDisp = displacement(addressing, 'addressDisplacement') ?? 0n;
+  const writebackDisp = displacement(addressing, 'writebackDisplacement');
   if (BASE_ONLY.has(mnemonic)) {
-    if (addressing.mode !== 'offset' || addressing.index || !zeroDisplacement(addressing)) return `${mnemonic} requires base-only addressing`;
+    if (addressing.mode !== 'offset' || addressing.index || addressDisp !== 0n || writebackDisp != null) return `${mnemonic} requires base-only addressing`;
+    return null;
   }
   if (UNSCALED_ONLY.test(mnemonic)) {
-    if (addressing.mode !== 'offset' || addressing.index) return `${mnemonic} requires unscaled immediate offset addressing without writeback`;
+    if (addressing.mode !== 'offset' || addressing.index || writebackDisp != null || !isSignedImmediate(addressDisp, 9)) return `${mnemonic} requires an imm9 unscaled offset without writeback`;
+    return null;
   }
+  if (addressing.index) {
+    if (addressing.mode !== 'offset' || addressDisp !== 0n || writebackDisp != null) return `${mnemonic} register-offset addressing cannot write back or carry an immediate`;
+    return null;
+  }
+  if (addressing.mode === 'offset') {
+    const scale = BigInt(widthBits / 8);
+    if (addressDisp < 0n || addressDisp > 4095n * scale || addressDisp % scale !== 0n) return `${mnemonic} unsigned offset is outside the scaled imm12 encoding`;
+    return null;
+  }
+  if (addressing.mode === 'pre') {
+    if (writebackDisp == null || addressDisp !== writebackDisp || !isSignedImmediate(addressDisp, 9)) return `${mnemonic} pre-index requires one signed imm9 displacement`;
+    return null;
+  }
+  if (addressing.mode === 'post') {
+    if (addressDisp !== 0n || writebackDisp == null || !isSignedImmediate(writebackDisp, 9)) return `${mnemonic} post-index requires one signed imm9 writeback displacement`;
+    return null;
+  }
+  return `${mnemonic} addressing mode is unsupported`;
+}
+function validatePairAddressing(mnemonic, addressing, widthBits) {
+  if (addressing.index) return `${mnemonic} does not support register-offset addressing`;
+  if (NON_TEMPORAL_PAIR.has(mnemonic) && addressing.mode !== 'offset') return `${mnemonic} does not support writeback addressing`;
+  const addressDisp = displacement(addressing, 'addressDisplacement') ?? 0n;
+  const writebackDisp = displacement(addressing, 'writebackDisplacement');
+  const encodedDisp = addressing.mode === 'post' ? writebackDisp : addressDisp;
+  const scale = BigInt(widthBits / 8);
+  if (encodedDisp == null || encodedDisp % scale !== 0n || encodedDisp < -64n * scale || encodedDisp > 63n * scale) return `${mnemonic} displacement is outside the scaled imm7 encoding`;
+  if (addressing.mode === 'pre' && writebackDisp !== addressDisp) return `${mnemonic} pre-index displacement and writeback must match`;
+  if (addressing.mode === 'post' && addressDisp !== 0n) return `${mnemonic} post-index access must use the unmodified base`;
+  if (addressing.mode === 'offset' && writebackDisp != null) return `${mnemonic} offset addressing cannot write back`;
   return null;
+}
+function hasOperandShape(decoded, shape) {
+  const ops = operands(decoded);
+  if (ops.length !== shape.length) return false;
+  return shape.every((kind, index) => {
+    const operand = ops[index];
+    if (kind === 'reg') return !!arm64RegisterOperand(operand);
+    if (kind === 'mem') return operand?.k === 'mem' || operand?.kind === 'memory';
+    if (kind === 'imm') return operand?.k === 'imm' || operand?.kind === 'immediate';
+    return false;
+  });
 }
 
 function simpleMemory(decoded, context, mnemonic, isLoad) {
   const ctx = contextOf(decoded, context);
+  if (!hasOperandShape(decoded, ['reg','mem'])) return partial(decoded, context, 'memory instruction operand shape is invalid');
   const reg = dataRegisters(decoded)[0];
   if (!reg) return partial(decoded, context, 'memory instruction data register is missing');
+  if (!validSingleDataRegister(mnemonic, reg)) return partial(decoded, context, `${mnemonic} data register class or width is invalid`);
+  if (reg.zero && isLegacyAssemblyMemoryRecord(decoded)) {
+    return partial(decoded, context, 'legacy assembly zero-register memory access preserves the compatibility decompiler denominator');
+  }
   const widthBits = memoryWidthBits(mnemonic, reg);
   if (![8,16,32,64,128].includes(widthBits)) return partial(decoded, context, 'unsupported memory transfer width');
-  if ((mnemonic === 'ldrsw' || mnemonic === 'ldursw') && (reg.kind !== 'gp' || reg.bits !== 64)) return partial(decoded, context, `${mnemonic} requires an X destination register`);
+  if ((mnemonic === 'ldrsw' || mnemonic === 'ldursw') && (!isGp(reg, 64))) return partial(decoded, context, `${mnemonic} requires an X/XZR destination register`);
 
   let addressing;
   try { addressing = buildArm64EffectiveAddress(decoded, { prefix:'addr', accessWidthBits:widthBits }); }
@@ -271,9 +389,17 @@ function simpleMemory(decoded, context, mnemonic, isLoad) {
     if (error instanceof Arm64AddressingError) return partial(decoded, context, error.code);
     throw error;
   }
-  const addressError = validateSimpleAddressing(mnemonic, addressing);
-  if (addressError) return partial(decoded, context, addressError);
+  const addressError = validateSimpleAddressing(mnemonic, addressing, widthBits);
+  const legacyUnscaledAlias = !!addressError && isLegacyUnscaledAlias(decoded, mnemonic, addressing);
+  const legacyAbstractUnscaled = !!addressError && isLegacyAbstractUnscaledForm(decoded, mnemonic, addressing);
+  if (addressError && !legacyUnscaledAlias && !legacyAbstractUnscaled) return partial(decoded, context, addressError);
   if (overlapIsConstrained(addressing, [reg])) return partial(decoded, context, 'writeback overlaps data register and is constrained-unpredictable');
+  const compatibilityEncodingAlias = legacyUnscaledAlias ? 'unscaled' : legacyAbstractUnscaled ? 'abstract-unscaled' : null;
+  const addressingMetadata = legacyUnscaledAlias
+    ? Object.freeze({ ...addressing.metadata, encoding:'legacy-unscaled-alias' })
+    : legacyAbstractUnscaled
+      ? Object.freeze({ ...addressing.metadata, encoding:'legacy-abstract-unscaled' })
+      : addressing.metadata;
 
   const signed = isLoad && SIGNED_LOADS.has(mnemonic);
   const atomic = BASE_ONLY.has(mnemonic) ? true : null;
@@ -286,7 +412,7 @@ function simpleMemory(decoded, context, mnemonic, isLoad) {
     ...possibleFaults(isLoad?'read':'write', { alignment, addressExpr:addressing.addressExpr, tagChecked:isTagChecked(addressing) }),
   ];
   const accessMetadata = {
-    architecture:'arm64', mnemonic, signed, addressing:addressing.metadata, accessIndex:0,
+    architecture:'arm64', mnemonic, signed, addressing:addressingMetadata, accessIndex:0,
     ...(UNPRIVILEGED.has(mnemonic) ? { unprivileged:true } : {}),
   };
 
@@ -311,7 +437,8 @@ function simpleMemory(decoded, context, mnemonic, isLoad) {
     possibleFaults:faults,
     metadata:{
       family:'arm64-memory', mnemonic, transfer:'single', widthBits, signed,
-      addressing:addressing.metadata,
+      addressing:addressingMetadata,
+      ...(compatibilityEncodingAlias ? { compatibilityEncodingAlias } : {}),
       ...(atomic === true ? { atomic:true } : {}),
       ...(ordering ? { ordering } : {}),
       ...(UNPRIVILEGED.has(mnemonic) ? { unprivileged:true } : {}),
@@ -321,12 +448,14 @@ function simpleMemory(decoded, context, mnemonic, isLoad) {
 
 function pairMemory(decoded, context, mnemonic, isLoad) {
   const ctx = contextOf(decoded, context);
+  if (!hasOperandShape(decoded, ['reg','reg','mem'])) return partial(decoded, context, 'pair memory instruction operand shape is invalid');
   const regs = dataRegisters(decoded).slice(0, 2);
   if (regs.length !== 2) return partial(decoded, context, 'pair memory instruction requires two data registers');
+  if (!validPairRegisters(mnemonic, regs)) return partial(decoded, context, `${mnemonic} pair register classes or widths are invalid`);
   const widthBits = mnemonic === 'ldpsw' ? 32 : memoryWidthBits(mnemonic, regs[0]);
   const secondWidth = mnemonic === 'ldpsw' ? 32 : memoryWidthBits(mnemonic, regs[1]);
   if (!widthBits || widthBits !== secondWidth || ![32,64,128].includes(widthBits)) return partial(decoded, context, 'unsupported or mismatched pair widths');
-  if (mnemonic === 'ldpsw' && regs.some((reg) => reg.kind !== 'gp' || reg.bits !== 64)) return partial(decoded, context, 'ldpsw requires two X destination registers');
+  if (mnemonic === 'ldpsw' && regs.some((reg) => !isGp(reg, 64))) return partial(decoded, context, 'ldpsw requires two X/XZR destination registers');
   if (isLoad && !regs[0].zero && !regs[1].zero && regs[0].physicalId === regs[1].physicalId) return partial(decoded, context, 'pair load destinations overlap and are constrained-unpredictable');
 
   let addressing;
@@ -335,8 +464,8 @@ function pairMemory(decoded, context, mnemonic, isLoad) {
     if (error instanceof Arm64AddressingError) return partial(decoded, context, error.code);
     throw error;
   }
-  if (addressing.index) return partial(decoded, context, `${mnemonic} does not support register-offset addressing`);
-  if (NON_TEMPORAL_PAIR.has(mnemonic) && addressing.mode !== 'offset') return partial(decoded, context, `${mnemonic} does not support writeback addressing`);
+  const addressError = validatePairAddressing(mnemonic, addressing, widthBits);
+  if (addressError) return partial(decoded, context, addressError);
   if (overlapIsConstrained(addressing, regs)) return partial(decoded, context, 'pair writeback overlaps data register and is constrained-unpredictable');
 
   const strideBytes = widthBits / 8;
@@ -378,8 +507,10 @@ function pairMemory(decoded, context, mnemonic, isLoad) {
 
 function literalLoad(decoded, context, mnemonic) {
   const ctx = contextOf(decoded, context);
+  if (!hasOperandShape(decoded, ['reg','imm'])) return partial(decoded, context, 'literal load operand shape is invalid');
   const reg = dataRegisters(decoded)[0];
   if (!reg) return partial(decoded, context, 'literal load destination register is missing');
+  if (mnemonic === 'ldrsw' ? !isGp(reg, 64) : !(isGp(reg) && [32,64].includes(Number(reg.bits)) || isVector(reg, [32,64,128]))) return partial(decoded, context, `${mnemonic} literal destination class or width is invalid`);
   const immediate = immediateValue(immediateOperand(decoded));
   let target = decoded?.pcRelTarget ?? decoded?.literalTarget ?? immediate;
   if (typeof target === 'number' && Number.isSafeInteger(target)) target = BigInt(target);
@@ -388,7 +519,7 @@ function literalLoad(decoded, context, mnemonic) {
 
   const widthBits = memoryWidthBits(mnemonic, reg);
   if (![32,64,128].includes(widthBits)) return partial(decoded, context, 'unsupported literal load width');
-  if (mnemonic === 'ldrsw' && (reg.kind !== 'gp' || reg.bits !== 64)) return partial(decoded, context, 'literal ldrsw requires an X destination register');
+  if (mnemonic === 'ldrsw' && !isGp(reg, 64)) return partial(decoded, context, 'literal ldrsw requires an X/XZR destination register');
   const signed = SIGNED_LOADS.has(mnemonic);
   const addressExpr = arm64ConstantExpr(target, 64);
   const access = accessFor({ ctx, addressExpr, widthBits });
