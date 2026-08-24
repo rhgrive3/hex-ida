@@ -85,6 +85,7 @@ export function validateAIResult(result) {
 }
 
 export function addressText(value) {
+  // Accept only explicit address representations; boolean coercion would turn true/false into 0x1/0x0 (#1697).
   if (value == null || typeof value === 'boolean') return null;
   // BigInt('') and BigInt('   ') are 0n, so a missing or blank address would
   // become a legitimate-looking action target at 0x0 (#1301). Blank input is
