@@ -80,6 +80,18 @@ function clone() { return JSON.parse(JSON.stringify(inventory)); }
   assert.throws(() => validateA2DenominatorInventory(mutated), /a2-denominator-decoder-semantic-version-drift/);
 }
 
+for (const mutate of [
+  (lea) => { lea.oracle = 'caller-selected-label'; },
+  (lea) => { lea.proof.source = 'js/targets/architecture/x86_64/effects/addressing.js'; },
+  (lea) => { lea.proof.test = 'tests/phase5/effects/int-control/safety-regression.test.mjs'; },
+  (lea) => { lea.proof.denominatorTest = 'tests/machine-effects/a2-denominator.test.mjs'; },
+]) {
+  const mutated = clone();
+  const lea = mutated.architectures.find((architecture) => architecture.id === 'x86_64').effectRegistry.families.find((family) => family.id === 'lea');
+  mutate(lea);
+  assert.throws(() => validateA2DenominatorInventory(mutated), /a2-denominator-x86-lea-proof-identity-drift/);
+}
+
 {
   const mutated = clone();
   mutated.architectures.find((architecture) => architecture.id === 'riscv64').decoder.denominator.denominatorId = 'riscv64:rv64imc:unproven-denominator';

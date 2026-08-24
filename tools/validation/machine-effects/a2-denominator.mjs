@@ -288,6 +288,17 @@ export function validateA2DenominatorInventory(inventory = loadA2DenominatorInve
         }
       }
     }
+    if (architecture.id === 'x86_64') {
+      const lea = families.find((family) => family.id === 'lea');
+      if (!lea || lea.status !== 'exact' || lea.coverage !== 'exact' || lea.preexisting !== false
+        || lea.oracle !== 'intel-sdm-vol2-lea-8d-r + deployed-capstone-5-x86-long64-detail'
+        || lea.proof?.schemaVersion !== 'machine-effects-effect-unit-proof/v1'
+        || lea.proof?.source !== 'js/targets/architecture/x86_64/effects/integer.js'
+        || lea.proof?.test !== 'tests/phase5/effects/memory/addressing.test.mjs'
+        || lea.proof?.denominatorTest !== 'tests/machine-effects/x86-long64-lea-denominator.test.mjs') {
+        fail('a2-denominator-x86-lea-proof-identity-drift', pathName);
+      }
+    }
   }
 
   const blockingGaps = inventory.architectures.flatMap((architecture) => [

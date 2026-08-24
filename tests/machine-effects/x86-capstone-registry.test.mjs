@@ -27,6 +27,18 @@ try {
   assert.equal(session.decode(Uint8Array.of(0x37), 0x1000n).length, 0);
 
   verifyX86CapstoneRegistryEvidence(evidence);
+
+  for (const mutate of [
+    (candidate) => { candidate.rows[0].name = 'not-aaa'; },
+    (candidate) => { candidate.rows[1].id = 99; },
+    (candidate) => { candidate.registryId = 'caller-minted-registry'; },
+    (candidate) => { candidate.scope = 'long64-encoding-denominator'; },
+    (candidate) => { candidate.missingAuthority = []; },
+  ]) {
+    const candidate = structuredClone(evidence);
+    mutate(candidate);
+    assert.throws(() => verifyX86CapstoneRegistryEvidence(candidate), /x86-capstone-registry-/);
+  }
 } finally {
   session.close();
 }
