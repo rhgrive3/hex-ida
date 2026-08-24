@@ -19,11 +19,21 @@ const INVENTORY_PATH = path.join(ROOT, 'tools/validation/stage2/profile-denomina
 const DENOMINATOR_LOCK_PATH = path.join(ROOT, 'tools/validation/stage2/profile-denominators.lock.json');
 const MANAGED_MANIFEST_PATH = 'tests/stage2/fixtures/managed-real/manifest.json';
 const F6_MANIFEST_PATH = 'tests/phase12/rebuild/fixtures/manifest.json';
+const A2_INVENTORY_PATH = 'tests/machine-effects/a2-denominator-inventory.json';
 export const PROFILE_EVIDENCE_RUN_SCHEMA = 'hex-stage2-profile-evidence-run/v1';
 export const PROFILE_UNIT_PROOF_SCHEMA = 'hex-stage2-profile-unit-proof/v1';
 export const PROFILE_EVIDENCE_RUN_ROOT = 'reports/stage2/profile-evidence-runs';
 
 const RULES = Object.freeze({
+  'S1-A2-NATIVE': Object.freeze({
+    providerProfileIds: [],
+    sourceRefs: [A2_INVENTORY_PATH, 'tools/validation/machine-effects/a2-denominator.mjs'],
+    testRefs: ['tests/machine-effects/run.mjs', 'tests/machine-effects/a2-denominator.test.mjs', 'tests/machine-effects/verification-external-oracles.test.mjs'],
+    negativeTestRefs: ['tests/machine-effects/a2-denominator.test.mjs', 'tests/machine-effects/verification-external-oracles.test.mjs'],
+    realFixtureRefs: [A2_INVENTORY_PATH],
+    commandIds: ['a2-machine-effects'],
+    independentOracleCommandIds: ['a2-machine-effects'],
+  }),
   'S2-A7-NATIVE': Object.freeze({
     providerProfileIds: ['native:lldb-compatible-v1:host', 'native:remote-debug-v1:qemu-lldb'],
     sourceRefs: ['js/runtime/authority.js', 'js/platform/stage2-profile-evidence.js', 'tools/validation/stage2/a7-lldb-real-fixture.mjs', 'tools/validation/stage2/a7-cross-target-real-fixtures.mjs'],
@@ -237,6 +247,7 @@ export function collectProfileEvidence({ expectedCommitSha, expectedTreeSha, out
   const inventory = loadInventory();
   const denominatorLock = JSON.parse(fs.readFileSync(DENOMINATOR_LOCK_PATH, 'utf8'));
   const commands = [
+    runCanonical('a2-machine-effects', ['tests/machine-effects/run.mjs']),
     runCanonical('a7-runtime-authority', ['tests/stage2/runtime-authority.test.mjs']),
     runCanonical('a7-capability-promotion', ['tests/stage2/capability-promotion.test.mjs']),
     runCanonical('a7-lldb-real-fixture', ['tests/stage2/a7-lldb-real-fixture.test.mjs']),
@@ -250,6 +261,7 @@ export function collectProfileEvidence({ expectedCommitSha, expectedTreeSha, out
     runCanonical('p12-remote-transport', ['tests/stage2/remote-canonical-transport.test.mjs']),
   ];
   const commandProofMarkers = Object.freeze({
+    'a2-machine-effects': 'machine-effects: PASS',
     'a7-lldb-real-fixture': '[stage2] active x86 LLDB A7 provider proof passed; canonical evidence assembly remains required',
     'a7-cross-target-real-fixtures': '[stage2] active AArch64/PAC/RV64 LLDB remote provider proofs passed',
     'm6-real-fixtures': 'deterministic real managed fixtures passed for wasm/dex/cil/jvm',

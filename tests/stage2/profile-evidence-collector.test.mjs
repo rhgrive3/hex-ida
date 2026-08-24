@@ -14,10 +14,10 @@ import { STAGE2_PROFILE_EVIDENCE_IDS } from '../../js/platform/stage2-profile-ev
 assert.equal(PROFILE_EVIDENCE_RUN_SCHEMA, 'hex-stage2-profile-evidence-run/v1');
 assert.equal(PROFILE_UNIT_PROOF_SCHEMA, 'hex-stage2-profile-unit-proof/v1');
 assert.equal(PROFILE_EVIDENCE_RUN_ROOT, 'reports/stage2/profile-evidence-runs');
-assert.deepEqual(Object.keys(PROFILE_UNIT_PROOF_RULES).sort(), ['S2-A7-NATIVE', 'S2-F6-ELF', 'S2-F6-MACHO', 'S2-F6-PE', 'S2-M6-CIL', 'S2-M6-DEX', 'S2-M6-JVM', 'S2-M6-WASM', 'S2-P12-COLLAB-REMOTE', 'S2-P12-KNOWLEDGE', 'S2-P12-PATTERNS', 'S2-P12-RULES']);
+assert.deepEqual(Object.keys(PROFILE_UNIT_PROOF_RULES).sort(), ['S1-A2-NATIVE', 'S2-A7-NATIVE', 'S2-F6-ELF', 'S2-F6-MACHO', 'S2-F6-PE', 'S2-M6-CIL', 'S2-M6-DEX', 'S2-M6-JVM', 'S2-M6-WASM', 'S2-P12-COLLAB-REMOTE', 'S2-P12-KNOWLEDGE', 'S2-P12-PATTERNS', 'S2-P12-RULES']);
 assert.deepEqual(
   STAGE2_PROFILE_EVIDENCE_IDS.filter((itemId) => !Object.hasOwn(PROFILE_UNIT_PROOF_RULES, itemId)),
-  ['S1-A2-NATIVE'],
+  [],
   'the producer must expose an explicit blocker for every denominator item it cannot assemble',
 );
 for (const rule of Object.values(PROFILE_UNIT_PROOF_RULES)) {
@@ -55,6 +55,10 @@ const remoteRule = PROFILE_UNIT_PROOF_RULES['S2-P12-COLLAB-REMOTE'];
 assert.deepEqual(remoteRule.activeTransportCommandIds, ['p12-remote-transport']);
 assert.deepEqual(remoteRule.independentOracleCommandIds, ['p12-remote-transport']);
 assert.deepEqual(remoteRule.negativeTestRefs, ['tests/stage2/remote-canonical-transport.test.mjs']);
+const a2Rule = PROFILE_UNIT_PROOF_RULES['S1-A2-NATIVE'];
+assert.deepEqual(a2Rule.commandIds, ['a2-machine-effects']);
+assert.deepEqual(a2Rule.independentOracleCommandIds, ['a2-machine-effects']);
+assert.deepEqual(a2Rule.realFixtureRefs, ['tests/machine-effects/a2-denominator-inventory.json']);
 
 const prerequisites = inspectProfileEvidencePrerequisites();
 assert.equal(prerequisites.managed.has('dex'), true, 'canonical real DEX fixture is present');
