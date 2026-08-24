@@ -13,6 +13,7 @@ export const REQUIRED_IPAD_CHECKS = Object.freeze([
   'memoryBudget',
   'phase12UiPath',
 ]);
+const ARTIFACT_IDENTITY = /^artifact:[^@]+@sha256:[0-9a-f]{64}$/;
 
 function required(value, code) {
   const text = String(value ?? '').trim();
@@ -82,6 +83,8 @@ export function validatePhysicalIPadEvidence(record, expected = {}) {
   if (expected.commitSha && record.commitSha !== String(expected.commitSha).toLowerCase()) return { ok: false, reason: 'ipad-evidence-stale-commit' };
   if (expected.treeSha && record.treeSha !== String(expected.treeSha).toLowerCase()) return { ok: false, reason: 'ipad-evidence-stale-tree' };
   if (expected.buildIdentity && record.buildIdentity !== expected.buildIdentity) return { ok: false, reason: 'ipad-evidence-build-mismatch' };
+  if (!ARTIFACT_IDENTITY.test(record.fixtureIdentity)) return { ok: false, reason: 'ipad-evidence-fixture-identity-invalid' };
+  if (!ARTIFACT_IDENTITY.test(record.scenarioEvidenceIdentity)) return { ok: false, reason: 'ipad-evidence-scenario-output-identity-invalid' };
   if (typeof expected.resolveEvidenceIdentity !== 'function') return { ok: false, reason: 'ipad-evidence-identity-resolver-required' };
   if (expected.resolveEvidenceIdentity(record.fixtureIdentity, { kind: 'physical-ipad-fixture' }) !== record.fixtureIdentity) return { ok: false, reason: 'ipad-evidence-fixture-unresolved' };
   if (expected.resolveEvidenceIdentity(record.scenarioEvidenceIdentity, { kind: 'physical-ipad-scenario-output' }) !== record.scenarioEvidenceIdentity) return { ok: false, reason: 'ipad-evidence-scenario-output-unresolved' };

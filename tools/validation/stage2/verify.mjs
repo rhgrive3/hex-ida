@@ -63,9 +63,10 @@ function parseArg(name, argv) {
   return index >= 0 ? argv[index + 1] : null;
 }
 function hasFlag(name, argv) { return argv.includes(name); }
-function parseNonNegativeInteger(name, argv) {
+export function parseNonNegativeInteger(name, argv) {
   const raw = parseArg(name, argv);
   if (raw == null) return null;
+  if (typeof raw !== 'string' || raw.trim() === '') throw new TypeError(`${name.slice(2)}-invalid`);
   const value = Number(raw);
   if (!Number.isSafeInteger(value) || value < 0) throw new TypeError(`${name.slice(2)}-invalid`);
   return value;
@@ -95,6 +96,10 @@ export function validateScopeAndLedger(headSha, overrides = {}) {
   if (!/^[0-9a-f]{40}$/.test(scope.baselineCommit || '')) errors.push('scope-baseline-commit-invalid');
   if (!/^[0-9a-f]{40}$/.test(scope.baselineTree || '')) errors.push('scope-baseline-tree-invalid');
   if (!Array.isArray(scope.requiredTargetPlatforms) || !scope.requiredTargetPlatforms.includes('physical-ipad-ipados-webkit')) errors.push('physical-ipad-missing-from-scope');
+  if (/^[0-9a-f]{40}$/.test(scope.baselineCommit || '') && /^[0-9a-f]{40}$/.test(scope.baselineTree || '')) {
+    const baselineTree = git(['rev-parse', `${scope.baselineCommit}^{tree}`], true);
+    if (baselineTree.status !== 0 || baselineTree.stdout !== scope.baselineTree) errors.push('scope-baseline-tree-mismatch');
+  }
   const ancestor = git(['merge-base', '--is-ancestor', scope.baselineCommit, headSha], true);
   if (ancestor.status !== 0) errors.push('scope-baseline-not-ancestor');
   if (ledger.schemaVersion !== 'hex-completion-ledger/v1') errors.push('ledger-schema-invalid');
@@ -165,9 +170,13 @@ function auditStage2Source() {
 function readEvidenceJson(finalMode, evidencePath, requiredReason, missingReason, invalidReason) {
   if (!finalMode) return { required: false, status: 'not-evaluated-in-implementation-mode' };
   if (!evidencePath) return { required: true, status: 'failed', reason: requiredReason };
-  const resolved = path.resolve(ROOT, evidencePath);
+  const relative = safeRelativePath(evidencePath);
+  if (!relative) return { required: true, status: 'failed', reason: invalidReason, detail: 'evidence-path-must-be-repository-relative' };
+  const resolved = path.resolve(ROOT, relative);
   if (!fs.existsSync(resolved)) return { required: true, status: 'failed', reason: missingReason };
-  try { return { required: true, status: 'loaded', record: JSON.parse(fs.readFileSync(resolved, 'utf8')) }; }
+  const repositoryFile = repositoryFileAtRoot(relative);
+  if (!repositoryFile) return { required: true, status: 'failed', reason: invalidReason, detail: 'evidence-path-outside-repository-or-not-regular-file' };
+  try { return { required: true, status: 'loaded', record: JSON.parse(fs.readFileSync(repositoryFile, 'utf8')) }; }
   catch (error) { return { required: true, status: 'failed', reason: invalidReason, detail: String(error?.message || error) }; }
 }
 
@@ -193,7 +202,7 @@ function physicalEvidenceResult({ finalMode, evidencePath, headSha, treeSha, req
     commitSha: headSha,
     treeSha,
     buildIdentity,
-    resolveEvidenceIdentity: (identity, context) => evidenceIdentityAtHead(identity, context, headSha, treeSha),
+    resolveEvidenceIdentity: (identity, context) => physicalEvidenceIdentityAtHead(identity, context, headSha, treeSha),
   });
   return { required: true, status: checked.ok ? 'passed' : 'failed', reason: checked.reason || null, evidenceId: checked.evidenceId || loaded.record.evidenceId || null };
 }
@@ -201,6 +210,30 @@ function physicalEvidenceResult({ finalMode, evidencePath, headSha, treeSha, req
 function safeRelativePath(ref) {
   const value = String(ref || '');
   return value && !path.isAbsolute(value) && !value.includes('\\') && !value.split('/').includes('..') ? value : null;
+}
+
+function repositoryFileAtRoot(ref) {
+  const relative = safeRelativePath(ref);
+  if (!relative) return null;
+  const resolved = path.resolve(ROOT, relative);
+  const lexicalRelative = path.relative(ROOT, resolved);
+  if (!lexicalRelative || lexicalRelative.startsWith(`..${path.sep}`) || path.isAbsolute(lexicalRelative)) return null;
+  let stat;
+  try { stat = fs.lstatSync(resolved); } catch { return null; }
+  if (!stat.isFile() || stat.isSymbolicLink()) return null;
+  let realRoot;
+  let realFile;
+  try {
+    realRoot = fs.realpathSync(ROOT);
+    realFile = fs.realpathSync(resolved);
+  } catch { return null; }
+  const realRelative = path.relative(realRoot, realFile);
+  if (!realRelative || realRelative.startsWith(`..${path.sep}`) || path.isAbsolute(realRelative)) return null;
+  return realFile;
+}
+
+export function isStage2RepositoryFile(ref) {
+  return repositoryFileAtRoot(ref) !== null;
 }
 
 function loadDenominatorInventory() {
@@ -239,7 +272,9 @@ function profileUnitArtifactValid(relative, context, candidateCommitSha, candida
   const prefix = `${PROFILE_EVIDENCE_RUN_ROOT}/`;
   if (!relative.startsWith(prefix) || relative.split('/').length !== 5 || !relative.endsWith('.json')) return false;
   let artifact;
-  try { artifact = JSON.parse(fs.readFileSync(path.join(ROOT, relative), 'utf8')); } catch { return false; }
+  const artifactPath = repositoryFileAtRoot(relative);
+  if (!artifactPath) return false;
+  try { artifact = JSON.parse(fs.readFileSync(artifactPath, 'utf8')); } catch { return false; }
   if (!artifact || artifact.schemaVersion !== PROFILE_UNIT_PROOF_SCHEMA || artifact.itemId !== context.itemId || artifact.unitId !== context.unitId || artifact.candidateCommitSha !== candidateCommitSha || artifact.candidateTreeSha !== candidateTreeSha || artifact.status !== 'passed') return false;
   const rule = PROFILE_UNIT_PROOF_RULES[context.itemId];
   if (!rule || JSON.stringify(artifact.providerProfileIds || []) !== JSON.stringify(rule.providerProfileIds)) return false;
@@ -252,8 +287,9 @@ function profileUnitArtifactValid(relative, context, candidateCommitSha, candida
     const match = /^artifact:([^@]+)@sha256:([0-9a-f]{64})$/.exec(identity || '');
     if (!match) return false;
     const outputPath = safeRelativePath(match[1]);
-    if (!outputPath || !outputPath.startsWith(`${PROFILE_EVIDENCE_RUN_ROOT}/`) || !fs.existsSync(path.join(ROOT, outputPath))) return false;
-    const outputBytes = fs.readFileSync(path.join(ROOT, outputPath));
+    const outputFile = outputPath && outputPath.startsWith(`${PROFILE_EVIDENCE_RUN_ROOT}/`) ? repositoryFileAtRoot(outputPath) : null;
+    if (!outputFile) return false;
+    const outputBytes = fs.readFileSync(outputFile);
     if (createHash('sha256').update(outputBytes).digest('hex') !== match[2]) return false;
     let output;
     try { output = JSON.parse(outputBytes); } catch { return false; }
@@ -276,12 +312,17 @@ function evidenceIdentityAtHead(identity, context = {}, candidateCommitSha = nul
   if (!artifactMatch) return null;
   const relative = safeRelativePath(artifactMatch[1]);
   if (!relative) return null;
-  const resolved = path.join(ROOT, relative);
-  if (!fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) return null;
+  const resolved = repositoryFileAtRoot(relative);
+  if (!resolved) return null;
   const digest = createHash('sha256').update(fs.readFileSync(resolved)).digest('hex');
   if (digest !== artifactMatch[2]) return null;
   if (context.kind === 'unit' && candidateCommitSha && candidateTreeSha && !profileUnitArtifactValid(relative, context, candidateCommitSha, candidateTreeSha)) return null;
   return value;
+}
+
+function physicalEvidenceIdentityAtHead(identity, context = {}, candidateCommitSha = null, candidateTreeSha = null) {
+  if (!/^artifact:[^@]+@sha256:[0-9a-f]{64}$/.test(String(identity || ''))) return null;
+  return evidenceIdentityAtHead(identity, context, candidateCommitSha, candidateTreeSha);
 }
 
 export function stage2KnownDenominatorGaps() {
@@ -404,6 +445,7 @@ export function verifyStage2({ expectedSha = null, expectedMainSha = null, final
   const headSha = git(['rev-parse', 'HEAD']).stdout;
   const treeSha = git(['rev-parse', 'HEAD^{tree}']).stdout;
   if (!/^[0-9a-f]{40}$/.test(headSha) || !/^[0-9a-f]{40}$/.test(treeSha)) throw new Error('stage2-git-identity-invalid');
+  if (finalMode && !/^[0-9a-f]{40}$/.test(String(expectedSha || '').toLowerCase())) throw new Error('stage2-exact-head-required');
   if (expectedSha && headSha !== String(expectedSha).toLowerCase()) throw new Error(`stage2-exact-head-mismatch: expected ${expectedSha}, got ${headSha}`);
   const dirty = git(['status', '--porcelain', '--untracked-files=all']).stdout;
   if (dirty) throw new Error(`stage2-worktree-not-clean:\n${dirty}`);

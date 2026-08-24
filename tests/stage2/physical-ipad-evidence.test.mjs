@@ -44,4 +44,9 @@ assert.equal(validatePhysicalIPadEvidence(malformedTime, { commitSha, treeSha, r
 const missingDevice = { ...record, deviceModel: '' };
 assert.equal(validatePhysicalIPadEvidence(missingDevice, { commitSha, treeSha, resolveEvidenceIdentity }).reason, 'ipad-evidence-deviceModel-invalid');
 assert.equal(validatePhysicalIPadEvidence(record, { commitSha, treeSha, resolveEvidenceIdentity: () => null }).reason, 'ipad-evidence-fixture-unresolved');
+const gitReadmeIdentity = 'git:README.md@' + 'a'.repeat(40);
+const gitBacked = createPhysicalIPadEvidence({ ...record, fixtureIdentity: gitReadmeIdentity });
+assert.equal(validatePhysicalIPadEvidence(gitBacked, { commitSha, treeSha, resolveEvidenceIdentity: (identity) => identity }).reason, 'ipad-evidence-fixture-identity-invalid');
+const gitScenario = createPhysicalIPadEvidence({ ...record, scenarioEvidenceIdentity: gitReadmeIdentity });
+assert.equal(validatePhysicalIPadEvidence(gitScenario, { commitSha, treeSha, resolveEvidenceIdentity: (identity) => identity }).reason, 'ipad-evidence-scenario-output-identity-invalid');
 console.log('[stage2] physical iPad evidence contract tests passed');

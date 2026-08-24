@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { minimumVerdictCounts, stage2CanonicalBuildIdentity, stage2KnownDenominatorGaps, validateScopeAndLedger, verifyStage2 } from '../../tools/validation/stage2/verify.mjs';
+import { isStage2RepositoryFile, minimumVerdictCounts, parseNonNegativeInteger, stage2CanonicalBuildIdentity, stage2KnownDenominatorGaps, validateScopeAndLedger, verifyStage2 } from '../../tools/validation/stage2/verify.mjs';
 
 const knownGaps = stage2KnownDenominatorGaps();
 assert.ok(knownGaps.includes('arm64:a64:all-decoder-encodings-and-aliases'));
@@ -18,6 +18,9 @@ const missingLocal = structuredClone(ledger);
 missingLocal.items.find((item) => item.id === 'S2-P12-COLLAB-REMOTE').scopeProfiles = ['collaboration:remote-security-v1'];
 const missingLocalResult = validateScopeAndLedger('HEAD', { scope, ledger: missingLocal });
 assert.ok(missingLocalResult.errors.includes('phase12-profile-unmapped:collaboration:local-v1'), 'removing local collaboration ownership must block the ledger');
+const staleBaselineTree = structuredClone(scope);
+staleBaselineTree.baselineTree = '0'.repeat(40);
+assert.ok(validateScopeAndLedger('HEAD', { scope: staleBaselineTree, ledger }).errors.includes('scope-baseline-tree-mismatch'), 'baseline tree must match the frozen baseline commit');
 
 const missingField = structuredClone(ledger);
 delete missingField.items[0].owner;
@@ -35,6 +38,11 @@ const manuallyProven = structuredClone(ledger);
 manuallyProven.items[0].status = 'PROVEN';
 manuallyProven.items[0].proofIdentity = 'caller-minted';
 assert.ok(validateScopeAndLedger('HEAD', { scope, ledger: manuallyProven }).errors.includes('ledger-declared-proof-invalid:S1-A2-NATIVE'));
+assert.equal(isStage2RepositoryFile('README.md'), true);
+assert.equal(isStage2RepositoryFile('../README.md'), false);
+assert.equal(isStage2RepositoryFile('/tmp/stage2-evidence.json'), false);
+assert.throws(() => parseNonNegativeInteger('--release-blocking-issue-count', ['--release-blocking-issue-count', '']), /release-blocking-issue-count-invalid/);
+assert.throws(() => verifyStage2({ finalMode: true, expectedSha: '' }), /stage2-exact-head-required/);
 
 const passed = (command) => ({ command, status: 'passed' });
 const complete = minimumVerdictCounts({
