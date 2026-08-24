@@ -49,8 +49,9 @@ export const A7_PROVIDER_PROFILE_IDS = Object.freeze([
 ]);
 
 // Runtime operations which require explicit active-provider observation rather
-// than method existence or a capability advertisement.  The real fixture
-// runners bind each operation to the same provider/target/session identities.
+// than method existence or a capability advertisement.  Real fixture evidence
+// keeps the canonical provider/target/binary fixed while binding each active
+// operation to the exact runtime instance and session in which it was observed.
 export const A7_ACTIVE_OPERATION_CAPABILITIES = Object.freeze(['attach', 'cancel', 'pause']);
 export const A7_UNSUPPORTED_CAPABILITIES = Object.freeze([]);
 export const A7_OBSERVED_CAPABILITIES = Object.freeze([
