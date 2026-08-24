@@ -69,6 +69,8 @@ const items = {
     'tests/machine-effects/arm64-a64-integer-denominator.test.mjs',
     'tools/validation/machine-effects/arm64-a64-fp-denominator.mjs',
     'tests/machine-effects/arm64-a64-fp-denominator.test.mjs',
+    'tools/validation/machine-effects/arm64-a64-system-denominator.mjs',
+    'tests/machine-effects/arm64-a64-system-denominator.test.mjs',
     'tools/validation/machine-effects/arm64e-pac-denominator.mjs',
     'tests/machine-effects/arm64e-pac-denominator.test.mjs',
   ]),
