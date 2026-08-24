@@ -94,12 +94,30 @@ const FORBIDDEN_KEY_FIELDS = Object.freeze([
   'userName', 'userComment', 'bookmark', 'selection', 'scrollOffset', 'theme',
 ]);
 
-function assertNoPresentationState(config) {
-  if (!config || typeof config !== 'object') return;
-  for (const key of Object.keys(config)) {
-    if (FORBIDDEN_KEY_FIELDS.includes(key)) fail(`phase7-artifact-presentation-state-in-key:${key}`);
-    const value = config[key];
-    if (value && typeof value === 'object') assertNoPresentationState(value);
+function assertNoPresentationState(config, seen = new WeakSet()) {
+  if (!config || typeof config !== 'object' || seen.has(config)) return;
+  seen.add(config);
+  try {
+    if (config instanceof Map) {
+      for (const [key, value] of config) {
+        if (typeof key === 'string' && FORBIDDEN_KEY_FIELDS.includes(key)) {
+          fail(`phase7-artifact-presentation-state-in-key:${key}`);
+        }
+        assertNoPresentationState(key, seen);
+        assertNoPresentationState(value, seen);
+      }
+      return;
+    }
+    if (config instanceof Set) {
+      for (const value of config) assertNoPresentationState(value, seen);
+      return;
+    }
+    for (const key of Object.keys(config)) {
+      if (FORBIDDEN_KEY_FIELDS.includes(key)) fail(`phase7-artifact-presentation-state-in-key:${key}`);
+      assertNoPresentationState(config[key], seen);
+    }
+  } finally {
+    seen.delete(config);
   }
 }
 
