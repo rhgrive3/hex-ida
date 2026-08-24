@@ -16,14 +16,26 @@ test('x86 semantic selection coexists with integrated viewer implementation whil
   assert.equal(ARM64_ARCHITECTURE.capabilities.semanticAnalysis, 'legacy-v1');
 });
 
-test('canonical x86 physical state uses YMM-backed XMM views plus one MXCSR environment register', () => {
+test('canonical x86 physical state covers legacy YMM views, AVX-512 composites, opmask, x87, and MXCSR', () => {
   const xmm0 = x86RegisterDescriptor('xmm0');
   const ymm0 = x86RegisterDescriptor('ymm0');
+  const zmm0 = x86RegisterDescriptor('zmm0');
+  const k1 = x86RegisterDescriptor('k1');
+  const st0 = x86RegisterDescriptor('st(0)');
+  const mm0 = x86RegisterDescriptor('mm0');
   const mxcsr = x86RegisterDescriptor('mxcsr');
   assert.equal(xmm0.physicalId, 'ymm0');
   assert.equal(xmm0.viewBits, 128);
   assert.equal(ymm0.physicalId, 'ymm0');
   assert.equal(ymm0.viewBits, 256);
+  assert.equal(zmm0.viewBits, 512);
+  assert.deepEqual(zmm0.compositeParts.map((part) => part.physicalId), ['ymm0','zmmh0']);
+  assert.equal(k1.physicalId, 'k1');
+  assert.equal(k1.viewBits, 64);
+  assert.equal(st0.physicalId, 'x87-stack');
+  assert.equal(st0.dynamicView.kind, 'x87-top-relative');
+  assert.equal(mm0.physicalId, 'x87-stack');
+  assert.equal(mm0.viewBits, 64);
   assert.equal(mxcsr.physicalId, 'mxcsr');
   assert.equal(mxcsr.viewBits, 32);
   assert.equal(mxcsr.kind, 'fp-environment');
