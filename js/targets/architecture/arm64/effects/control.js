@@ -60,6 +60,13 @@ function targetAlignmentFault() {
   };
 }
 
+function indirectTargetFaults(operand) {
+  // The architectural zero register fixes the target to aligned address zero;
+  // retaining a target-misaligned possibility for BR/BLR/RET XZR would be a
+  // false fault in an otherwise exact encoding-family proof.
+  return operand?.k === 'reg' && operand.cls === 'zr' ? [] : [targetAlignmentFault()];
+}
+
 function gpRegister(num) {
   return { k: 'reg', cls: 'gp', num, bits: 64, text: `x${num}` };
 }
@@ -86,7 +93,7 @@ function liftArm64ControlEffectsCore(instruction, options = {}) {
     }
     return ctx.finish({
       controlEffect: { kind: 'indirect', target },
-      possibleFaults: [targetAlignmentFault()],
+      possibleFaults: indirectTargetFaults(ops[0]),
       metadata: { family: 'control', operation: 'br', indirect: true },
     });
   }
@@ -118,7 +125,7 @@ function liftArm64ControlEffectsCore(instruction, options = {}) {
     ctx.writeRegister(gpRegister(30), ctx.constant(64, address + ARM64_INSTRUCTION_BYTES));
     return ctx.finish({
       controlEffect: { kind: 'call', target, ...(fallthroughRef(instruction) ? { fallthrough: fallthroughRef(instruction) } : {}) },
-      possibleFaults: [targetAlignmentFault()],
+      possibleFaults: indirectTargetFaults(ops[0]),
       metadata: { family: 'control', operation: 'blr', indirect: true, abiSemantics: false },
     });
   }
@@ -131,7 +138,7 @@ function liftArm64ControlEffectsCore(instruction, options = {}) {
     }
     return ctx.finish({
       controlEffect: { kind: 'return', target },
-      possibleFaults: [targetAlignmentFault()],
+      possibleFaults: indirectTargetFaults(operand),
       metadata: { family: 'control', operation: 'ret', abiSemantics: false },
     });
   }

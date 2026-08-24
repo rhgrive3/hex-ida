@@ -3,7 +3,9 @@ import {
   createMachineEffectBundle,
   createMachineOperation,
   createRegisterValue,
+  createTemporaryValue,
 } from '../../../../semantics/effects/index.js';
+import { ARM64_BTI_PAGE_GUARD_STATE_ID } from './bti-guard-state.js';
 
 export const ARM64_BTYPE_REGISTER_ID = 'pstate.btype';
 export const ARM64_BTYPE_WIDTH_BITS = 2;
@@ -30,7 +32,7 @@ function registerIdFromOperand(operand) {
   let id = String(raw).trim().toLowerCase().replace(/^%/, '');
   if (id === 'lr') id = 'x30';
   if (id === 'fp') id = 'x29';
-  return /^x(?:[0-9]|[12][0-9]|30)$/.test(id) || id === 'sp' ? id : null;
+  return /^x(?:[0-9]|[12][0-9]|30)$/.test(id) || id === 'sp' || id === 'xzr' ? id : null;
 }
 
 function targetRegisterOf(decoded) {
@@ -57,8 +59,8 @@ function guardedPageState(context) {
  * set call type 2. Direct branch families reset BTYPE to 0.
  *
  * The current guarded-page state is a loader/runtime input, not instruction
- * syntax. If it is absent, return an explicit unknown transition so callers can
- * fail closed rather than choosing a convenient branch type.
+ * syntax. If no concrete observation is available, retain the canonical
+ * mapped-page state as a symbolic input instead of choosing a convenient value.
  */
 export function resolveArm64BtypeTransition(decoded, context = {}) {
   const mnemonic = mnemonicOf(decoded);
@@ -89,9 +91,9 @@ export function resolveArm64BtypeTransition(decoded, context = {}) {
     return Object.freeze({ kind:'known', value:3, branchKind:'indirect-jump', mnemonic, sourceRegister, currentPageGuarded });
   }
   return Object.freeze({
-    kind:'unknown', branchKind:'indirect-jump', mnemonic, sourceRegister,
+    kind:'symbolic', branchKind:'indirect-jump', mnemonic, sourceRegister,
     currentPageGuarded:null,
-    reason:'arm64-btype-current-page-guarded-state-unavailable',
+    dependency:ARM64_BTI_PAGE_GUARD_STATE_ID,
   });
 }
 
@@ -102,29 +104,69 @@ function transitionMetadata(transition) {
     mnemonic:transition.mnemonic,
     ...(transition.sourceRegister ? { sourceRegister:transition.sourceRegister } : {}),
     ...(transition.currentPageGuarded == null ? {} : { currentPageGuarded:transition.currentPageGuarded }),
-    ...(transition.kind === 'known' ? { architecturalValue:transition.value } : { unresolved:true }),
+    ...(transition.kind === 'known'
+      ? { architecturalValue:transition.value }
+      : transition.kind === 'symbolic'
+        ? { symbolicDependency:transition.dependency }
+        : { unresolved:true, reason:transition.reason }),
   };
 }
 
 export function arm64BtypeOperationInputs(transition) {
   if (!transition) return Object.freeze([]);
-  const value = transition.kind === 'known'
-    ? createBitVectorValue(ARM64_BTYPE_WIDTH_BITS, BigInt(transition.value))
-    : createBitVectorValue(ARM64_BTYPE_WIDTH_BITS);
+  if (transition.kind === 'symbolic') {
+    const guarded = createTemporaryValue(
+      `arm64.btype.guarded:${transition.sourceRegister || 'unknown'}`,
+      createBitVectorValue(1),
+    );
+    const value = createTemporaryValue(
+      `arm64.btype.value:${transition.sourceRegister || 'unknown'}`,
+      createBitVectorValue(ARM64_BTYPE_WIDTH_BITS),
+    );
+    return Object.freeze([
+      createMachineOperation({
+        kind:'register-read',
+        register:createRegisterValue(ARM64_BTI_PAGE_GUARD_STATE_ID, 1),
+        value:guarded,
+        metadata:{ externalState:'executable-page-guarded', authority:'runtime-mapping', stateKind:'branch-target-identification' },
+      }),
+      createMachineOperation({
+        kind:'value',
+        opcode:'select',
+        inputs:[
+          guarded,
+          createBitVectorValue(ARM64_BTYPE_WIDTH_BITS, 3n),
+          createBitVectorValue(ARM64_BTYPE_WIDTH_BITS, 1n),
+        ],
+        outputs:[value],
+        metadata:{ semantic:'mapped-page-guarded ? 3 : 1', stateKind:'branch-target-identification' },
+      }),
+      createMachineOperation({
+        kind:'register-write',
+        register:ARM64_BTYPE_REGISTER,
+        value,
+        metadata:transitionMetadata(transition),
+      }),
+    ]);
+  }
+  if (transition.kind === 'unknown') {
+    const value = createBitVectorValue(ARM64_BTYPE_WIDTH_BITS);
+    return Object.freeze([
+      createMachineOperation({ kind:'register-write', register:ARM64_BTYPE_REGISTER, value, metadata:transitionMetadata(transition) }),
+      createMachineOperation({
+        kind:'unknown', reason:transition.reason, categories:['registers'],
+        metadata:{ stateKind:'branch-target-identification', registerId:ARM64_BTYPE_REGISTER_ID },
+      }),
+    ]);
+  }
+  const value = createBitVectorValue(ARM64_BTYPE_WIDTH_BITS, BigInt(transition.value));
   const write = createMachineOperation({
     kind:'register-write',
     register:ARM64_BTYPE_REGISTER,
     value,
     metadata:transitionMetadata(transition),
   });
-  if (transition.kind === 'known') return Object.freeze([write]);
-  const unknown = createMachineOperation({
-    kind:'unknown',
-    reason:transition.reason,
-    categories:['registers'],
-    metadata:{ stateKind:'branch-target-identification', registerId:ARM64_BTYPE_REGISTER_ID },
-  });
-  return Object.freeze([write, unknown]);
+  return Object.freeze([write]);
 }
 
 function hasBtypeWrite(bundle) {
@@ -183,7 +225,11 @@ export function decorateArm64BtypeEffects(decoded, context, bundle) {
     btypeTransition:{
       kind:transition.kind,
       branchKind:transition.branchKind,
-      ...(transition.kind === 'known' ? { value:transition.value } : { reason:transition.reason }),
+      ...(transition.kind === 'known'
+        ? { value:transition.value }
+        : transition.kind === 'symbolic'
+          ? { dependency:transition.dependency }
+          : { reason:transition.reason }),
       ...(transition.sourceRegister ? { sourceRegister:transition.sourceRegister } : {}),
       ...(transition.currentPageGuarded == null ? {} : { currentPageGuarded:transition.currentPageGuarded }),
     },

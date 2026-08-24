@@ -24,7 +24,20 @@
         "export": "arm64MachineEffectFamilies",
         "families": [
           { "id": "flags", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "Condition-code families contain operand/encoding forms that remain partial." },
-          { "id": "control", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "Control families remain partial when targets, operands, or link addresses are unavailable." },
+          {
+            "id": "control",
+            "status": "exact",
+            "coverage": "exact",
+            "preexisting": false,
+            "oracle": "arm-a-profile-a64-branch-encoding-tables + deployed-capstone-5-arm64 + llvm-mc-18-aarch64-disassembler",
+            "reason": "All A64 B/BL/B.cond/CBZ/CBNZ/TBZ/TBNZ/BR/BLR/RET discriminator forms have exact control, link, target, fault, and BTYPE effects.",
+            "proof": {
+              "schemaVersion": "machine-effects-effect-unit-proof/v1",
+              "source": "js/targets/architecture/arm64/effects/control.js",
+              "test": "tests/machine-effects/arm64-control-flow.test.mjs",
+              "denominatorTest": "tests/machine-effects/arm64-a64-control-denominator.test.mjs"
+            }
+          },
           { "id": "memory", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "Memory families include constrained-unpredictable forms and implementation-defined prefetch effects." },
           { "id": "simd", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "SIMD registry includes unsupported/scalable-vector and unresolved operand shapes." },
           { "id": "fp", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "FP registry includes unavailable encoded immediates and unsupported forms." },
