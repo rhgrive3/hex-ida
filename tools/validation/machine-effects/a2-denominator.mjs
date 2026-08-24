@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import { architecturePluginV2 } from '../../../js/targets/architecture/index.js';
@@ -21,6 +22,7 @@ import { riscv64MachineEffectFamilies } from '../../../js/targets/architecture/r
 import {
   RV64IMC_DECODER_DENOMINATOR_ID,
   RV64IMC_DECODER_DENOMINATOR_SCHEMA,
+  RV64IMC_32BIT_OUT_OF_PROFILE_NEGATIVES,
   validateRv64imcDecoderDenominator,
 } from './riscv64-rv64imc-denominator.mjs';
 
@@ -28,6 +30,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '../../..');
 export const DEFAULT_A2_DENOMINATOR_PATH = path.join(ROOT, 'tests/machine-effects/a2-denominator-inventory.json');
 export const A2_DENOMINATOR_SCHEMA = 'machine-effects-a2-denominator/v1';
+const STAGE2_BASELINE_COMMIT = '3f3778e5f2bef638456da19609d616d71a3daedc';
 
 const REGISTRIES = Object.freeze({
   arm64: Object.freeze({ families: arm64MachineEffectFamilies, pac: null, profileId: 'arm64:a64', source: 'js/targets/architecture/arm64/effects/index.js', exportName: 'arm64MachineEffectFamilies', decoderContractVersion: null, decoderSemanticVersion: null }),
@@ -54,6 +57,45 @@ function sameList(actual, expected) {
 
 function assertString(value, code, detail) {
   if (typeof value !== 'string' || value.trim() === '') fail(code, detail);
+}
+
+function validateNormativeExclusion(unit, pathName) {
+  const proof = unit.normativeExclusion;
+  if (proof == null) return false;
+  if (unit.id !== 'fence.i' || unit.status !== 'excluded' || unit.coverage !== 'unsupported' || unit.preexisting !== true) {
+    fail('a2-denominator-normative-exclusion-unit-invalid', `${pathName}:${unit.id}`);
+  }
+  if (!proof || proof.schemaVersion !== 'machine-effects-preexisting-normative-exclusion/v1'
+    || proof.classification !== 'PREEXISTING_NORMATIVE_EXCLUSION') {
+    fail('a2-denominator-normative-exclusion-proof-invalid', `${pathName}:${unit.id}`);
+  }
+  if (proof.baselineCommit !== STAGE2_BASELINE_COMMIT
+    || proof.baselineRef !== 'tools/validation/phase6/profile.json'
+    || proof.baselineBlob !== '7f8e893d4645a20a7be309f071d1b3a18653b5d1') {
+    fail('a2-denominator-normative-exclusion-baseline-drift', `${pathName}:${unit.id}`);
+  }
+  const baselineBlob = spawnSync('git', ['rev-parse', `${STAGE2_BASELINE_COMMIT}:${proof.baselineRef}`], { cwd: ROOT, encoding: 'utf8' });
+  if (baselineBlob.status !== 0 || baselineBlob.stdout.trim() !== proof.baselineBlob) {
+    fail('a2-denominator-normative-exclusion-baseline-unresolved', `${pathName}:${unit.id}`);
+  }
+  const baseline = spawnSync('git', ['show', `${STAGE2_BASELINE_COMMIT}:${proof.baselineRef}`], { cwd: ROOT, encoding: 'utf8' });
+  if (baseline.status !== 0) fail('a2-denominator-normative-exclusion-baseline-unresolved', `${pathName}:${unit.id}`);
+  let profile;
+  try { profile = JSON.parse(baseline.stdout); } catch { fail('a2-denominator-normative-exclusion-baseline-invalid', `${pathName}:${unit.id}`); }
+  if (profile.isaProfile?.id !== 'rv64imc'
+    || JSON.stringify(profile.isaProfile?.standardExtensions) !== JSON.stringify(['M', 'C'])
+    || proof.excludedExtension !== 'Zifencei') {
+    fail('a2-denominator-normative-exclusion-scope-drift', `${pathName}:${unit.id}`);
+  }
+  if (proof.currentProofSource !== 'tools/validation/machine-effects/riscv64-rv64imc-denominator.mjs'
+    || proof.currentProofTest !== 'tests/machine-effects/riscv64-rv64imc-denominator.test.mjs') {
+    fail('a2-denominator-normative-exclusion-current-proof-drift', `${pathName}:${unit.id}`);
+  }
+  const negative = RV64IMC_32BIT_OUT_OF_PROFILE_NEGATIVES.find((item) => item.id === 'zifencei-extension');
+  if (!negative || negative.word !== 0x0000100f || negative.reason !== 'riscv64-zifencei-outside-phase6-profile') {
+    fail('a2-denominator-normative-exclusion-negative-proof-invalid', `${pathName}:${unit.id}`);
+  }
+  return true;
 }
 
 function validateStatus(unit, pathName) {
@@ -87,6 +129,7 @@ function validateStatus(unit, pathName) {
     if (unit.preexisting !== true) fail('a2-denominator-exclusion-must-be-preexisting', `${pathName}:${unit.id}`);
     assertString(unit.reason, 'a2-denominator-exclusion-reason-required', `${pathName}:${unit.id}`);
   }
+  validateNormativeExclusion(unit, pathName);
   if (unit.subunits != null) {
     if (!Array.isArray(unit.subunits) || unit.subunits.length === 0) fail('a2-denominator-subunits-required', `${pathName}:${unit.id}`);
     const ids = new Set();
@@ -102,7 +145,7 @@ function collectStatusGaps(unit, prefix, { exempt = false } = {}) {
   if (!unit || typeof unit !== 'object') return [];
   const pathName = `${prefix}:${unit.id}`;
   const gaps = [];
-  if (!exempt && unit.status !== 'exact') gaps.push(pathName);
+  if (!exempt && unit.status !== 'exact' && unit.normativeExclusion == null) gaps.push(pathName);
   for (const subunit of unit.subunits || []) {
     // Keep nested unit identities aligned with the canonical profile lock,
     // which treats subunits as a path extension of their parent family.

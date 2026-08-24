@@ -88,7 +88,8 @@ function clone() { return JSON.parse(JSON.stringify(inventory)); }
   const gaps = report.validation.blockingGaps;
   assert.equal(gaps.includes('riscv64:rv64imc:effect-family:system:ecall'), false, 'complete environment intrinsic is non-blocking');
   assert.equal(gaps.includes('riscv64:rv64imc:effect-family:system:ebreak'), false, 'proven exact intrinsic stays non-blocking');
-  assert.ok(gaps.includes('riscv64:rv64imc:effect-family:system:fence.i'), 'nested out-of-profile effects must remain explicit');
+  assert.equal(gaps.includes('riscv64:rv64imc:effect-family:system:fence.i'), false,
+    'exact baseline-bound Zifencei scope exclusion is terminal without relabelling it supported');
   assert.equal(gaps.includes('riscv64:rv64imc:effect-family:system'), false, 'an exact parent must not mask its nested gaps');
 }
 
@@ -97,6 +98,15 @@ function clone() { return JSON.parse(JSON.stringify(inventory)); }
   const system = mutated.architectures.find((architecture) => architecture.id === 'riscv64').effectRegistry.families.find((family) => family.id === 'system');
   delete system.subunits.find((unit) => unit.id === 'ebreak').proof;
   assert.throws(() => validateA2DenominatorInventory(mutated), /a2-denominator-exact-current-proof-required/);
+}
+
+{
+  const mutated = clone();
+  const fenceI = mutated.architectures.find((architecture) => architecture.id === 'riscv64').effectRegistry.families
+    .find((family) => family.id === 'system').subunits.find((unit) => unit.id === 'fence.i');
+  fenceI.normativeExclusion.baselineBlob = '0'.repeat(40);
+  assert.throws(() => validateA2DenominatorInventory(mutated), /a2-denominator-normative-exclusion-baseline-drift/,
+    'a caller-minted exclusion without the exact baseline identity must fail');
 }
 
 {

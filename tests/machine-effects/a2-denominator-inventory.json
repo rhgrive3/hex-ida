@@ -162,7 +162,23 @@
                   "denominatorTest": "tests/machine-effects/riscv64-rv64imc-denominator.test.mjs"
                 }
               },
-              { "id": "fence.i", "status": "excluded", "coverage": "unsupported", "preexisting": true, "reason": "Zifencei is outside the frozen RV64IMC profile." }
+              {
+                "id": "fence.i",
+                "status": "excluded",
+                "coverage": "unsupported",
+                "preexisting": true,
+                "reason": "Zifencei is outside the frozen RV64IMC profile.",
+                "normativeExclusion": {
+                  "schemaVersion": "machine-effects-preexisting-normative-exclusion/v1",
+                  "classification": "PREEXISTING_NORMATIVE_EXCLUSION",
+                  "baselineCommit": "3f3778e5f2bef638456da19609d616d71a3daedc",
+                  "baselineRef": "tools/validation/phase6/profile.json",
+                  "baselineBlob": "7f8e893d4645a20a7be309f071d1b3a18653b5d1",
+                  "excludedExtension": "Zifencei",
+                  "currentProofSource": "tools/validation/machine-effects/riscv64-rv64imc-denominator.mjs",
+                  "currentProofTest": "tests/machine-effects/riscv64-rv64imc-denominator.test.mjs"
+                }
+              }
             ]
           },
           { "id": "fallback-unmatched-decoder-family", "status": "excluded", "coverage": "unsupported", "preexisting": true, "reason": "Unsupported extensions/reserved encodings return null and remain explicit unsupported." }
