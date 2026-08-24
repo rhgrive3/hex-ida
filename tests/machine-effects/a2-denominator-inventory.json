@@ -101,9 +101,23 @@
         "contract": "external-structured-v1",
         "contractVersion": "riscv64-decoded-instruction/v1",
         "semanticVersion": "capstone-5-riscv64-word-exact-v1",
-        "enumerationStatus": "excluded",
-        "reason": "The instruction-word decoder exposes family-level maps, not a complete per-encoding RV64IMC denominator.",
-        "missingUnits": ["riscv64:rv64imc:all-valid-32-bit-and-compressed-encodings"]
+        "enumerationStatus": "exact",
+        "units": ["riscv64:rv64imc:all-valid-32-bit-and-compressed-encodings"],
+        "missingUnits": [],
+        "denominator": {
+          "schemaVersion": "riscv64-rv64imc-decoder-denominator/v1",
+          "denominatorId": "riscv64:rv64imc:decoder-denominator:v1",
+          "source": "tools/validation/machine-effects/riscv64-rv64imc-denominator.mjs",
+          "test": "tests/machine-effects/riscv64-rv64imc-denominator.test.mjs",
+          "encoding32FamilyCount": 66,
+          "compressedFamilyCount": 33,
+          "compressedWordCount": 49152,
+          "discriminatorTupleCount": 28672,
+          "oracleIds": [
+            "deployed-capstone-5.0-riscv64-detail",
+            "riscv-unprivileged-isa-rv64i-m-c-encoding-tables"
+          ]
+        }
       },
       "effectRegistry": {
         "source": "js/targets/architecture/riscv64/effects/index.js",

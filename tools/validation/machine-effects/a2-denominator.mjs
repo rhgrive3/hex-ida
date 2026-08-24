@@ -18,6 +18,11 @@ import {
   X86_DECODER_SEMANTIC_VERSION,
 } from '../../../js/targets/architecture/x86_64/decoded-instruction.js';
 import { riscv64MachineEffectFamilies } from '../../../js/targets/architecture/riscv64/effects/index.js';
+import {
+  RV64IMC_DECODER_DENOMINATOR_ID,
+  RV64IMC_DECODER_DENOMINATOR_SCHEMA,
+  validateRv64imcDecoderDenominator,
+} from './riscv64-rv64imc-denominator.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '../../..');
@@ -93,13 +98,48 @@ function validateDecoder(architecture, pathName) {
   if (!decoder || typeof decoder !== 'object') fail('a2-denominator-decoder-required', pathName);
   assertString(decoder.provider, 'a2-denominator-decoder-provider-required', pathName);
   assertString(decoder.contract, 'a2-denominator-decoder-contract-required', pathName);
-  if (decoder.enumerationStatus !== 'excluded') fail('a2-denominator-decoder-gap-must-be-explicit', pathName);
-  assertString(decoder.reason, 'a2-denominator-decoder-gap-reason-required', pathName);
-  if (!Array.isArray(decoder.missingUnits) || decoder.missingUnits.length === 0) fail('a2-denominator-decoder-missing-units-required', pathName);
+  if (!['exact', 'excluded'].includes(decoder.enumerationStatus)) fail('a2-denominator-decoder-status-invalid', pathName);
+  if (!Array.isArray(decoder.missingUnits)) fail('a2-denominator-decoder-missing-units-invalid', pathName);
+  const denominatorUnits = decoder.units == null ? decoder.missingUnits : decoder.units;
+  if (!Array.isArray(denominatorUnits) || denominatorUnits.length === 0) fail('a2-denominator-decoder-units-required', pathName);
+  if (new Set(denominatorUnits).size !== denominatorUnits.length) fail('a2-denominator-decoder-units-duplicate', pathName);
+  if (!denominatorUnits.every((unit) => typeof unit === 'string' && unit.startsWith(`${architecture.profileId}:`))) {
+    fail('a2-denominator-decoder-unit-profile-drift', pathName);
+  }
   if (new Set(decoder.missingUnits).size !== decoder.missingUnits.length) fail('a2-denominator-decoder-missing-units-duplicate', pathName);
   if (!decoder.missingUnits.every((unit) => typeof unit === 'string' && unit.startsWith(`${architecture.profileId}:`))) {
     fail('a2-denominator-decoder-missing-unit-profile-drift', pathName);
   }
+  if (decoder.enumerationStatus === 'excluded') {
+    assertString(decoder.reason, 'a2-denominator-decoder-gap-reason-required', pathName);
+    if (decoder.missingUnits.length === 0) fail('a2-denominator-decoder-missing-units-required', pathName);
+    if (decoder.denominator != null) fail('a2-denominator-excluded-decoder-cannot-claim-proof', pathName);
+    return;
+  }
+  if (decoder.missingUnits.length !== 0) fail('a2-denominator-exact-decoder-cannot-have-missing-units', pathName);
+  if (decoder.units.length !== 1 || decoder.units[0] !== 'riscv64:rv64imc:all-valid-32-bit-and-compressed-encodings') {
+    fail('a2-denominator-exact-decoder-unit-set-drift', pathName);
+  }
+  if (architecture.id !== 'riscv64') fail('a2-denominator-exact-decoder-proof-unavailable', pathName);
+  const proof = decoder.denominator;
+  if (!proof || typeof proof !== 'object') fail('a2-denominator-exact-decoder-proof-required', pathName);
+  const live = validateRv64imcDecoderDenominator();
+  if (proof.schemaVersion !== RV64IMC_DECODER_DENOMINATOR_SCHEMA || proof.schemaVersion !== live.schemaVersion) {
+    fail('a2-denominator-exact-decoder-proof-schema-drift', pathName);
+  }
+  if (proof.denominatorId !== RV64IMC_DECODER_DENOMINATOR_ID || proof.denominatorId !== live.denominatorId) {
+    fail('a2-denominator-exact-decoder-proof-identity-drift', pathName);
+  }
+  if (proof.source !== 'tools/validation/machine-effects/riscv64-rv64imc-denominator.mjs') {
+    fail('a2-denominator-exact-decoder-proof-source-drift', pathName);
+  }
+  if (proof.test !== 'tests/machine-effects/riscv64-rv64imc-denominator.test.mjs') {
+    fail('a2-denominator-exact-decoder-proof-test-drift', pathName);
+  }
+  for (const field of ['encoding32FamilyCount', 'compressedFamilyCount', 'compressedWordCount', 'discriminatorTupleCount']) {
+    if (proof[field] !== live[field]) fail('a2-denominator-exact-decoder-proof-count-drift', `${pathName}:${field}`);
+  }
+  if (!sameSet(proof.oracleIds || [], live.oracleIds)) fail('a2-denominator-exact-decoder-proof-oracle-drift', pathName);
 }
 
 export function loadA2DenominatorInventory(file = DEFAULT_A2_DENOMINATOR_PATH) {

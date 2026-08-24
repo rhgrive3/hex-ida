@@ -37,7 +37,10 @@ const rebuildUnits = [
 const a2Units = [];
 for (const architecture of a2.architectures) {
   const profile = architecture.profileId;
-  a2Units.push(...architecture.decoder.missingUnits);
+  // Exact decoder units remain in the canonical proof denominator even after
+  // they stop appearing in the blocking-gap projection. Older inventories use
+  // missingUnits as both the denominator and gap list, so preserve that shape.
+  a2Units.push(...(architecture.decoder.units || architecture.decoder.missingUnits));
   for (const family of architecture.effectRegistry.families || []) {
     a2Units.push(`${profile}:effect-family:${family.id}`);
     for (const subunit of family.subunits || []) a2Units.push(`${profile}:effect-family:${family.id}:${subunit.id}`);
@@ -52,6 +55,8 @@ const items = {
   'S1-A2-NATIVE': item(nativeProfiles, a2Units, [
     'tests/machine-effects/a2-denominator-inventory.json',
     'tools/validation/machine-effects/a2-denominator.mjs',
+    'tools/validation/machine-effects/riscv64-rv64imc-denominator.mjs',
+    'tests/machine-effects/riscv64-rv64imc-denominator.test.mjs',
   ]),
   'S2-A7-NATIVE': item(nativeProfiles, units(nativeProfiles, nativeRuntimeCapabilities), [
     'js/runtime/authority.js', 'js/runtime/stage2.js', 'tests/stage2/runtime-authority.test.mjs',

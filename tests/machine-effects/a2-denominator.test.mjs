@@ -18,6 +18,8 @@ assert.equal(validation.explicitDecoderGapCount >= 4, true);
 assert.equal(validation.blockingGapCount > validation.explicitDecoderGapCount, true);
 assert.equal(validation.terminalEligible, false, 'partial and unsupported in-profile effect families remain blocking gaps');
 assert.ok(validation.blockingGaps.includes('arm64:a64:all-decoder-encodings-and-aliases'));
+assert.equal(validation.blockingGaps.includes('riscv64:rv64imc:all-valid-32-bit-and-compressed-encodings'), false,
+  'the exhaustive versioned RV64IMC decoder denominator closes only its decoder unit');
 assert.ok(validation.blockingGaps.includes('x86_64:long-64:effect-family:atomic'));
 assert.ok(validation.blockingGaps.includes('arm64e:a64+pac:alias:baseline-a64-delegation'), 'delegated baseline exclusions remain profile blockers');
 
@@ -67,7 +69,7 @@ function clone() { return JSON.parse(JSON.stringify(inventory)); }
 {
   const mutated = clone();
   mutated.architectures.find((architecture) => architecture.id === 'x86_64').decoder.missingUnits = [];
-  assert.throws(() => validateA2DenominatorInventory(mutated), /a2-denominator-decoder-missing-units-required/);
+  assert.throws(() => validateA2DenominatorInventory(mutated), /a2-denominator-decoder-units-required/);
 }
 
 {
@@ -78,8 +80,8 @@ function clone() { return JSON.parse(JSON.stringify(inventory)); }
 
 {
   const mutated = clone();
-  mutated.architectures.find((architecture) => architecture.id === 'riscv64').decoder.missingUnits[0] = 'x86_64:long-64:wrong-denominator';
-  assert.throws(() => validateA2DenominatorInventory(mutated), /a2-denominator-decoder-missing-unit-profile-drift/);
+  mutated.architectures.find((architecture) => architecture.id === 'riscv64').decoder.denominator.denominatorId = 'riscv64:rv64imc:unproven-denominator';
+  assert.throws(() => validateA2DenominatorInventory(mutated), /a2-denominator-exact-decoder-proof-identity-drift/);
 }
 
 {

@@ -48,8 +48,17 @@ export function liftRiscv64IntegerEffects(decoded, context = {}) {
 
   if (op === 'lui') {
     // LUI materialises imm[31:12] as a sign-extended 32-bit constant.
-    ctx.writeRegister(fields.rd, ctx.constant(RISCV64_XLEN, fields.imm));
-    return ctx.finish({ family: 'integer-constant', metadata: { valueOrigin: 'lui-upper-immediate' } });
+    const written = ctx.writeRegister(fields.rd, ctx.constant(RISCV64_XLEN, fields.imm));
+    return ctx.finish({
+      family: 'integer-constant',
+      ...(written ? {} : {
+        statePreservation: {
+          proven: true,
+          reason: 'riscv64-lui-write-to-hardwired-zero-is-discarded',
+        },
+      }),
+      metadata: { valueOrigin: 'lui-upper-immediate' },
+    });
   }
 
   if (op === 'auipc') {
