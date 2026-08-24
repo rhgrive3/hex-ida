@@ -22,9 +22,15 @@ import {
 } from '../../js/runtime/provider-protocol.js';
 
 const A7_RUNTIME_FIXTURE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'fixtures/a7-runtime');
-process.env.PYTHONPATH = [A7_RUNTIME_FIXTURE_DIR, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter);
-
-const proof = collectA7X86LldbProof();
+const previousPythonPath = process.env.PYTHONPATH;
+let proof;
+try {
+  process.env.PYTHONPATH = [A7_RUNTIME_FIXTURE_DIR, previousPythonPath].filter(Boolean).join(path.delimiter);
+  proof = collectA7X86LldbProof();
+} finally {
+  if (previousPythonPath == null) delete process.env.PYTHONPATH;
+  else process.env.PYTHONPATH = previousPythonPath;
+}
 assert.equal(proof.status, 'exact-active-provider-observed');
 assert.equal(proof.promotion, 'requires-canonical-four-profile-evidence-assembly');
 assert.equal(proof.targetProfileId, 'x86_64:long-64');
