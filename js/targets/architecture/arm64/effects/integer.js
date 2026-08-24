@@ -18,7 +18,7 @@ export const ARM64_INTEGER_EFFECT_MNEMONICS = Object.freeze(new Set([
   'and','ands','orr','eor','bic','bics','orn','eon','mvn',
   'lsl','lslv','lsr','lsrv','asr','asrv','ror','rorv',
   'mul','mneg','smull','umull','smulh','umulh','sdiv','udiv',
-  'madd','msub','smaddl','smsubl','umaddl','umsubl',
+  'madd','msub','smaddl','smsubl','umaddl','umsubl','smnegl','umnegl',
   'mov','movz','movn','movk','adr','adrp',
   'ubfx','sbfx','ubfiz','sbfiz','bfxil','bfi','bfc','ubfm','sbfm','bfm','extr',
   'sxtb','sxth','sxtw','uxtb','uxth','uxtw','clz','rbit','rev','rev16','rev32','abs',
@@ -203,13 +203,17 @@ function liftMultiplyDivide(ctx, ops, mnemonic) {
     result = ctx.valueOp(mnemonic === 'madd' ? 'add' : 'sub', [acc,product], widthBits, { widthBits });
   } else {
     const signed = mnemonic.startsWith('sm');
+    const negate = mnemonic.endsWith('negl');
     const subtract = mnemonic.includes('sub');
-    const a = read(1,32), b = read(2,32), acc = read(3,64);
-    if (!a || !b || !acc || widthBits !== 64) return ctx.partial(`arm64-${mnemonic}-operands-unmodelled`, ['registers','other']);
+    const a = read(1,32), b = read(2,32);
+    const acc = negate ? null : read(3,64);
+    if (!a || !b || (!negate && !acc) || widthBits !== 64) return ctx.partial(`arm64-${mnemonic}-operands-unmodelled`, ['registers','other']);
     const ea = signed ? ctx.signExtend(a,32,64) : ctx.zeroExtend(a,32,64);
     const eb = signed ? ctx.signExtend(b,32,64) : ctx.zeroExtend(b,32,64);
     const product = ctx.valueOp('mul', [ea,eb], 64, { widthBits: 64, widening: signed ? 'signed' : 'unsigned' });
-    result = ctx.valueOp(subtract ? 'sub' : 'add', [acc,product], 64, { widthBits: 64 });
+    result = negate
+      ? ctx.valueOp('neg', [product], 64, { widthBits: 64, widening: signed ? 'signed' : 'unsigned' })
+      : ctx.valueOp(subtract ? 'sub' : 'add', [acc,product], 64, { widthBits: 64 });
   }
 
   const failed = writeOrPartial(ctx, destination, result, `arm64-${mnemonic}-destination-unmodelled`);
@@ -257,7 +261,16 @@ function liftMove(ctx, ops, mnemonic, instruction) {
   }
 
   const failed = writeOrPartial(ctx, destination, result, `arm64-${mnemonic}-destination-unmodelled`);
-  return failed || ctx.finish({ metadata: { family: 'integer', operation: mnemonic, widthBits } });
+  if (failed) return failed;
+  return ctx.finish({
+    metadata: { family: 'integer', operation: mnemonic, widthBits },
+    ...(ctx.operations.length === 0 ? {
+      statePreservation: {
+        proven: true,
+        reason: 'A64 move/address result written to XZR/WZR is architecturally discarded',
+      },
+    } : {}),
+  });
 }
 
 function liftBitfield(ctx, ops, mnemonic) {
@@ -381,7 +394,7 @@ export function liftArm64IntegerEffects(instruction, options = {}) {
   if (['add','adds','sub','subs','adc','adcs','sbc','sbcs','neg','negs','ngc','ngcs'].includes(mnemonic)) return liftAddSub(ctx, ops, mnemonic);
   if (['and','ands','orr','eor','bic','bics','orn','eon','mvn'].includes(mnemonic)) return liftLogical(ctx, ops, mnemonic);
   if (['lsl','lslv','lsr','lsrv','asr','asrv','ror','rorv'].includes(mnemonic)) return liftShift(ctx, ops, mnemonic);
-  if (['mul','mneg','smull','umull','smulh','umulh','sdiv','udiv','madd','msub','smaddl','smsubl','umaddl','umsubl'].includes(mnemonic)) return liftMultiplyDivide(ctx, ops, mnemonic);
+  if (['mul','mneg','smull','umull','smulh','umulh','sdiv','udiv','madd','msub','smaddl','smsubl','umaddl','umsubl','smnegl','umnegl'].includes(mnemonic)) return liftMultiplyDivide(ctx, ops, mnemonic);
   if (['mov','movz','movn','movk','adr','adrp'].includes(mnemonic)) return liftMove(ctx, ops, mnemonic, instruction);
   if (['ubfx','sbfx','ubfiz','sbfiz','bfxil','bfi','bfc','ubfm','sbfm','bfm','extr'].includes(mnemonic)) return liftBitfield(ctx, ops, mnemonic);
   if (['sxtb','sxth','sxtw','uxtb','uxth','uxtw','clz','rbit','rev','rev16','rev32','abs'].includes(mnemonic)) return liftUnary(ctx, ops, mnemonic);

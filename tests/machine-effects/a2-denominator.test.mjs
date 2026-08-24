@@ -22,6 +22,8 @@ assert.equal(validation.blockingGaps.includes('arm64:a64:effect-family:control')
   'the finite A64 branch discriminator proof closes only baseline control ownership');
 assert.equal(validation.blockingGaps.includes('arm64:a64:effect-family:flags'), false,
   'the finite A64 flags encoding proof closes only NZCV-producing aliases and conditional compares');
+assert.equal(validation.blockingGaps.includes('arm64:a64:effect-family:integer'), false,
+  'the finite A64 integer encoding and alias denominator closes only the registry-owned integer family');
 assert.equal(validation.blockingGaps.includes('riscv64:rv64imc:all-valid-32-bit-and-compressed-encodings'), false,
   'the exhaustive versioned RV64IMC decoder denominator closes only its decoder unit');
 assert.ok(validation.blockingGaps.includes('x86_64:long-64:effect-family:atomic'));
@@ -109,6 +111,14 @@ for (const familyId of ['control', 'flags']) {
     mutate(family);
     assert.throws(() => validateA2DenominatorInventory(mutated), new RegExp(`a2-denominator-arm64-${familyId}-proof-`));
   }
+}
+
+{
+  const mutated = clone();
+  const integer = mutated.architectures.find((architecture) => architecture.id === 'arm64').effectRegistry.families.find((family) => family.id === 'integer');
+  integer.proof.denominator.encodingCaseCount--;
+  assert.throws(() => validateA2DenominatorInventory(mutated), /a2-denominator-arm64-integer-live-proof-drift/,
+    'a stale or caller-minted integer denominator count must fail closed');
 }
 
 {

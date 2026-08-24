@@ -8,7 +8,7 @@ import { liftArm64MemoryEffects } from './memory.js';
 import { liftArm64SimdEffects } from './simd.js';
 import { liftArm64SystemEffects } from './system.js';
 
-export const ARM64_MACHINE_EFFECTS_SEMANTIC_VERSION = '4';
+export const ARM64_MACHINE_EFFECTS_SEMANTIC_VERSION = '5';
 
 // This order is part of the Phase 2 semantic contract. Shape-sensitive families
 // precede scalar families when A64 reuses a mnemonic (for example ADD/MOV in

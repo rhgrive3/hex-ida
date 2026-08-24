@@ -65,7 +65,7 @@ function bti(kind = 'c') {
   return { mnemonic:'bti', ops:[{ k:'other', text:kind }] };
 }
 
-assert.equal(ARM64_MACHINE_EFFECTS_SEMANTIC_VERSION, '4');
+assert.equal(ARM64_MACHINE_EFFECTS_SEMANTIC_VERSION, '5');
 
 {
   const result = liftArm64MachineEffects(bti('c'), context('bti-unguarded', {

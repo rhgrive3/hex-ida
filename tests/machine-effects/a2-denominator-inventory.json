@@ -70,7 +70,33 @@
           { "id": "memory", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "Memory families include constrained-unpredictable forms and implementation-defined prefetch effects." },
           { "id": "simd", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "SIMD registry includes unsupported/scalable-vector and unresolved operand shapes." },
           { "id": "fp", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "FP registry includes unavailable encoded immediates and unsupported forms." },
-          { "id": "integer", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "Integer registry contains operand, range, and encoding forms that fail closed as partial." },
+          {
+            "id": "integer",
+            "status": "exact",
+            "coverage": "exact",
+            "preexisting": false,
+            "oracle": "arm-a-profile-a64-data-processing-encoding-tables + deployed-capstone-5-arm64 + llvm-mc-18-aarch64-disassembler",
+            "reason": "All 83 registry-owned scalar integer mnemonics and aliases are bound to 39 A64 fixed encoding rows with complete discriminator sweeps and exact effects.",
+            "proof": {
+              "schemaVersion": "machine-effects-effect-unit-proof/v1",
+              "source": "js/targets/architecture/arm64/effects/integer.js",
+              "test": "tests/machine-effects/arm64-int-arithmetic.test.mjs",
+              "denominatorTest": "tests/machine-effects/arm64-a64-integer-denominator.test.mjs",
+              "denominator": {
+                "schemaVersion": "arm64-a64-integer-denominator/v1",
+                "denominatorId": "arm64:a64:integer-encoding-discriminators:v1",
+                "source": "tools/validation/machine-effects/arm64-a64-integer-denominator.mjs",
+                "encodingFamilyCount": 39,
+                "encodingCaseCount": 68901,
+                "mnemonicCount": 83,
+                "oracleIds": [
+                  "arm-a-profile-a64-data-processing-encoding-tables",
+                  "deployed-capstone-5-arm64",
+                  "llvm-mc-18-aarch64-disassembler"
+                ]
+              }
+            }
+          },
           { "id": "system", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "System families include environment traps, cache maintenance, and unknown hints." },
           { "id": "fallback-unmatched-decoder-family", "status": "excluded", "coverage": "unsupported", "preexisting": true, "reason": "Unclaimed decoder families return null and must remain unsupported." }
         ]

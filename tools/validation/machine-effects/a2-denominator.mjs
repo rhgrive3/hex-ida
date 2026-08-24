@@ -27,6 +27,11 @@ import {
 } from './riscv64-rv64imc-denominator.mjs';
 import { validateArm64A64ControlDenominator } from './arm64-a64-control-denominator.mjs';
 import { validateArm64A64FlagsDenominator } from './arm64-a64-flags-denominator.mjs';
+import {
+  ARM64_A64_INTEGER_DENOMINATOR_ID,
+  ARM64_A64_INTEGER_DENOMINATOR_SCHEMA,
+  validateArm64A64IntegerDenominator,
+} from './arm64-a64-integer-denominator.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '../../..');
@@ -281,6 +286,31 @@ export function validateA2DenominatorInventory(inventory = loadA2DenominatorInve
       }
     }
 
+    if (architecture.id === 'arm64') {
+      const integer = families.find((family) => family.id === 'integer');
+      const liveInteger = validateArm64A64IntegerDenominator();
+      const proof = integer?.proof;
+      const denominator = proof?.denominator;
+      if (!integer || integer.status !== 'exact' || integer.coverage !== 'exact' || integer.preexisting !== false
+        || integer.oracle !== 'arm-a-profile-a64-data-processing-encoding-tables + deployed-capstone-5-arm64 + llvm-mc-18-aarch64-disassembler'
+        || proof?.schemaVersion !== 'machine-effects-effect-unit-proof/v1'
+        || proof?.source !== 'js/targets/architecture/arm64/effects/integer.js'
+        || proof?.test !== 'tests/machine-effects/arm64-int-arithmetic.test.mjs'
+        || proof?.denominatorTest !== 'tests/machine-effects/arm64-a64-integer-denominator.test.mjs') {
+        fail('a2-denominator-arm64-integer-proof-identity-drift', pathName);
+      }
+      if (!denominator || denominator.schemaVersion !== ARM64_A64_INTEGER_DENOMINATOR_SCHEMA
+        || denominator.schemaVersion !== liveInteger.schemaVersion
+        || denominator.denominatorId !== ARM64_A64_INTEGER_DENOMINATOR_ID
+        || denominator.denominatorId !== liveInteger.denominatorId
+        || denominator.source !== 'tools/validation/machine-effects/arm64-a64-integer-denominator.mjs'
+        || denominator.encodingFamilyCount !== liveInteger.encodingFamilyCount
+        || denominator.encodingCaseCount !== liveInteger.encodingCaseCount
+        || denominator.mnemonicCount !== liveInteger.mnemonicCount
+        || !sameSet(denominator.oracleIds || [],liveInteger.oracleIds)) {
+        fail('a2-denominator-arm64-integer-live-proof-drift', pathName);
+      }
+    }
     if (architecture.id === 'arm64e') {
       const pac = architecture.pointerAuthenticationMnemonics;
       if (!Array.isArray(pac) || !sameSet(pac, live.pac())) fail('a2-denominator-pac-registry-drift');
