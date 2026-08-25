@@ -22,7 +22,7 @@
  */
 
 import { stableStringify } from '../../core/identity/index.js';
-import { createAnalysisStatus } from '../status.js';
+import { createAnalysisStatus, mergeAnalysisStatus } from '../status.js';
 import { createAliasResult, mayAlias, unknownAlias } from './result.js';
 import { aliasMemoryRegions } from './legacy-safety-floor.js';
 import { isPreciseMemoryRegion, sameMemoryRegionIdentity } from './regions-v2.js';
@@ -130,13 +130,26 @@ function explainRelation(relation, a, b) {
 }
 
 function statusFor(options) {
-  if (options?.status) return options.status;
+  const cancelled = options?.signal?.aborted === true;
+  if (options?.status) {
+    if (!cancelled) return options.status;
+    const cancellationStatus = createAnalysisStatus({
+      snapshotId: options.status.snapshotId,
+      analyzerId: options.status.analyzerId,
+      analyzerVersion: options.status.analyzerVersion,
+      completeness: 'partial',
+      budgetClass: options.status.budgetClass ?? null,
+      stopReason: 'cancelled',
+    });
+    return mergeAnalysisStatus(options.status, cancellationStatus);
+  }
   return createAnalysisStatus({
     snapshotId: options?.snapshotId ?? 'snapshot-unbound',
     analyzerId: A1_ANALYZER_ID,
     analyzerVersion: A1_ANALYZER_VERSION,
-    completeness: 'complete',
+    completeness: cancelled ? 'partial' : 'complete',
     budgetClass: options?.budgetClass ?? null,
+    stopReason: cancelled ? 'cancelled' : null,
   });
 }
 
