@@ -16,6 +16,8 @@
     "tools/validation/phase12/",
     "tests/stage1/",
     "tools/validation/stage1/",
+    "tests/competitive/",
+    "tools/validation/competitive/",
     "tests/stage2/",
     "tools/validation/stage2/"
   ],
