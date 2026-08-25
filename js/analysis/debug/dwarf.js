@@ -196,8 +196,12 @@ function readForm(cursor, form, unit, sections, implicitConst) {
     case DW_FORM.loclistx: case DW_FORM.rnglistx:
       return { value: cursor.uleb() };
     case DW_FORM.string: {
-      const text = cstring(cursor.bytes, cursor.offset);
-      cursor.skip(text.length + 1);
+      const start = cursor.offset;
+      let end = start;
+      while (end < cursor.bytes.length && cursor.bytes[end] !== 0) end += 1;
+      if (end === cursor.bytes.length) return { value: null, unsupported: true, fatal: true };
+      const text = new TextDecoder('utf8').decode(cursor.bytes.subarray(start, end));
+      cursor.offset = end + 1;
       return { value: text };
     }
     case DW_FORM.strp: {
