@@ -167,7 +167,8 @@ export function mergeAnalysisStatus(base, ...others) {
   if (completeness === 'complete' && stopReason != null) fail('analysis-status-merge-inconsistent');
   const evidenceIds = [...new Set(all.flatMap((status) => status.evidenceIds ?? []))].sort();
   const dependencyIds = [...new Set(all.flatMap((status) => status.dependencyIds ?? []))].sort();
-  const budgetClass = all.map((status) => status.budgetClass).find((value) => value != null) ?? null;
+  const budgetClasses = [...new Set(all.map((status) => status.budgetClass).filter((value) => value != null))];
+  const budgetClass = budgetClasses.length === 1 ? budgetClasses[0] : null;
   return createAnalysisStatus({
     snapshotId: base.snapshotId,
     analyzerId: base.analyzerId,
