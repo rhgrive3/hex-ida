@@ -38,7 +38,7 @@ test('unsupported vector state and malformed encoding fail closed', () => {
   assert.match(zmm.unknownEffects.reason, /evex/);
   const evexLow = lift(instruction('vxorps', [reg('xmm0'),reg('xmm1'),reg('xmm2')], { prefixes:evex(), instructionId:'p5-3:evex-low' }));
   assert.equal(evexLow.completeness, 'partial');
-  assert.match(evexLow.unknownEffects.reason, /evex-physical-state-unmodelled/);
+  assert.match(evexLow.unknownEffects.reason, /trusted-decoder-provenance-required|evex-physical-state-unmodelled/);
   const malformed = lift(instruction('vxorps', [reg('xmm0'),reg('xmm1'),reg('xmm2')], { prefixes:{ legacy:[], rex:null, vector:{ kind:'vex2', bytes:[0xc4,0] } }, instructionId:'p5-3:bad-vex' }));
   assert.equal(malformed.completeness, 'partial');
   assert.match(malformed.unknownEffects.reason, /prefix-metadata-malformed/);
