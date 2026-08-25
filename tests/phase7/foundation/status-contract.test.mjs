@@ -79,3 +79,11 @@ test('a fail-closed stop reason wins over a benign one when merging', () => {
   assert.equal(merged.stopReason, 'cancelled');
   assert.equal(isFailClosedStatus(merged), true);
 });
+
+test('merging mixed budget classes is commutative and fails closed to null', () => {
+  const interactive = base({ budgetClass: 'interactive' });
+  const exhaustive = base({ budgetClass: 'exhaustive' });
+  assert.equal(mergeAnalysisStatus(interactive, exhaustive).budgetClass, null);
+  assert.equal(mergeAnalysisStatus(exhaustive, interactive).budgetClass, null);
+  assert.equal(mergeAnalysisStatus(interactive, base({ budgetClass: 'interactive' })).budgetClass, 'interactive');
+});
