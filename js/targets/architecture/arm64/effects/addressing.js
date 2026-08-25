@@ -211,6 +211,22 @@ function mnemonicEncoding(decoded, index) {
   return 'scaled-or-immediate';
 }
 
+function validatePrefetchAddressEncoding(decoded, index, addressDisp) {
+  const mnemonic = String(decoded?.mnemonic || '').trim().toLowerCase();
+  if (mnemonic !== 'prfm' && mnemonic !== 'prfum') return;
+  const displacement = addressDisp ?? 0n;
+  if (mnemonic === 'prfum') {
+    if (index) fail('arm64-prfum-register-offset-unsupported');
+    if (displacement < -256n || displacement > 255n) {
+      fail('arm64-prfum-immediate-out-of-range', { displacement:displacement.toString() });
+    }
+    return;
+  }
+  if (!index && (displacement < 0n || displacement > 32760n || displacement % 8n !== 0n)) {
+    fail('arm64-prfm-immediate-invalid', { displacement:displacement.toString() });
+  }
+}
+
 export function buildArm64EffectiveAddress(decoded, options = {}) {
   const mem = memoryOperand(decoded);
   if (!mem) fail('arm64-memory-operand-required');
@@ -226,6 +242,7 @@ export function buildArm64EffectiveAddress(decoded, options = {}) {
   const readOperations = [baseRead.operation];
   const baseExpr = arm64TemporaryExpr(`${prefix}.base`, 64);
   const addressDisp = addressDisplacement(mem, mode);
+  validatePrefetchAddressEncoding(decoded, index, addressDisp);
   let offsetExpr = arm64ConstantExpr(addressDisp || 0n, 64);
   let offsetKind = 'immediate';
 
@@ -233,7 +250,9 @@ export function buildArm64EffectiveAddress(decoded, options = {}) {
     if (addressDisp && addressDisp !== 0n) fail('arm64-register-offset-cannot-have-immediate-displacement');
     const indexRead = createArm64RegisterRead(index, `${prefix}.index`, index.bits);
     readOperations.push(indexRead.operation);
-    offsetExpr = extendIndex(arm64TemporaryExpr(`${prefix}.index`, index.bits), index, mem.shift || mem.extend || null, options.accessWidthBits ?? null);
+    const mnemonic = String(decoded?.mnemonic || '').trim().toLowerCase();
+    const accessWidthBits = options.accessWidthBits ?? (mnemonic === 'prfm' ? 64 : null);
+    offsetExpr = extendIndex(arm64TemporaryExpr(`${prefix}.index`, index.bits), index, mem.shift || mem.extend || null, accessWidthBits);
     offsetKind = 'register';
   }
 
