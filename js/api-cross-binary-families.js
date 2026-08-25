@@ -80,7 +80,13 @@ const EXTRA_API_TABLE = [
   { id:'pag_runtime', re:/^_?PAGCode_[A-Za-z0-9_]+$/, cat:'runtime', args:null, ret:null, effect:'runtime' },
 
   // Finite standard helpers that do not form a useful larger namespace.
-  { id:'libc_runtime', re:/^_?(?:qsort|mergesort|atexit|perror|reallocf|close\$NOCANCEL|dlerror|posix_memalign|difftime)$/, cat:'runtime', args:null, ret:null, effect:'runtime' },
+  // These families intentionally preserve the strongest stable side-effect
+  // contract each API exposes instead of laundering them all as generic runtime.
+  { id:'libc_sort', re:/^_?(?:qsort|mergesort)$/, cat:'memory', args:null, ret:null, effect:'write' },
+  { id:'libc_io_runtime', re:/^_?(?:perror|close\$NOCANCEL)$/, cat:'io', args:null, ret:null, effect:'io' },
+  { id:'libc_posix_memalign', re:/^_?posix_memalign$/, cat:'memory', args:null, ret:null, effect:'write' },
+  { id:'libc_difftime', re:/^_?difftime$/, cat:'runtime', args:null, ret:'number', effect:'pure' },
+  { id:'libc_runtime', re:/^_?(?:atexit|reallocf|dlerror)$/, cat:'runtime', args:null, ret:null, effect:'runtime' },
   { id:'os_log', re:/^_?__os_log_fault_impl$/, cat:'log', args:null, ret:null, effect:'log' },
 ];
 
