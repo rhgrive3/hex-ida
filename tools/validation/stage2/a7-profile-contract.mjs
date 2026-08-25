@@ -48,13 +48,15 @@ export const A7_PROVIDER_PROFILE_IDS = Object.freeze([
   'native:remote-debug-v1:qemu-lldb',
 ]);
 
-// These capabilities are not actually exercised by the current bounded
-// runners.  Keeping the denominator blocked is safer than asserting them
-// from a status-only observation.
-export const A7_UNSUPPORTED_CAPABILITIES = Object.freeze(['attach', 'cancel', 'pause']);
+// Runtime operations which require explicit active-provider observation rather
+// than method existence or a capability advertisement.  Real fixture evidence
+// keeps the canonical provider/target/binary fixed while binding each active
+// operation to the exact runtime instance and session in which it was observed.
+export const A7_ACTIVE_OPERATION_CAPABILITIES = Object.freeze(['attach', 'cancel', 'pause']);
+export const A7_UNSUPPORTED_CAPABILITIES = Object.freeze([]);
 export const A7_OBSERVED_CAPABILITIES = Object.freeze([
-  'breakpointAddress', 'connect', 'disconnect', 'modules', 'readMemory', 'readRegisters',
-  'removeBreakpoint', 'resume', 'stepInto', 'threads', 'writeMemory',
+  'attach', 'breakpointAddress', 'cancel', 'connect', 'disconnect', 'modules', 'pause',
+  'readMemory', 'readRegisters', 'removeBreakpoint', 'resume', 'stepInto', 'threads', 'writeMemory',
 ]);
 
 export function a7ProfileBinding(profileId) {
