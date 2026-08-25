@@ -14,6 +14,7 @@ import { fileURLToPath } from 'node:url';
 
 import { createRuntimeAuthorityBinding, createRuntimeObservation, validateRuntimeObservation } from '../../../js/runtime/authority.js';
 import {
+  A7_ACTIVE_OPERATION_CAPABILITIES,
   A7_OBSERVED_CAPABILITIES,
   A7_PROFILE_BINDINGS,
   A7_UNSUPPORTED_CAPABILITIES,
@@ -25,6 +26,10 @@ export const A7_CROSS_TARGET_PROOF_SCHEMA = 'hex-stage2-a7-cross-target-provider
 export const A7_CROSS_TARGET_PROVIDER_PROFILE = 'native:remote-debug-v1:qemu-lldb';
 export const A7_REQUIRED_CAPABILITIES = A7_OBSERVED_CAPABILITIES;
 export const A7_UNSUPPORTED_PROVIDER_CAPABILITIES = A7_UNSUPPORTED_CAPABILITIES;
+export const A7_CROSS_ACTIVE_OPERATION_CAPABILITIES = A7_ACTIVE_OPERATION_CAPABILITIES;
+const BASELINE_CAPABILITIES = Object.freeze(A7_REQUIRED_CAPABILITIES.filter((capability) => !A7_CROSS_ACTIVE_OPERATION_CAPABILITIES.includes(capability)));
+const ACTIVE_MARKER = 'A7_CROSS_ACTIVE_OPS';
+const INITIAL_PROBE_VALUE = 0x1020304050607080n;
 export const A7_CROSS_TARGETS = Object.freeze([
   Object.freeze({
     targetProfileId:'arm64:a64', sourcePath:'tests/stage2/fixtures/a7-runtime/aarch64-a64.S',
@@ -44,6 +49,7 @@ export const A7_CROSS_TARGETS = Object.freeze([
 ]);
 
 function sha256(bytes) { return createHash('sha256').update(bytes).digest('hex'); }
+function capabilityMap(capabilities) { return Object.freeze(Object.fromEntries(capabilities.map((capability) => [capability, true]))); }
 function commandVersion(command) {
   const result = spawnSync(command, ['--version'], { cwd:ROOT, encoding:'utf8', timeout:10_000, maxBuffer:2 * 1024 * 1024 });
   if (result.status !== 0) throw new Error(`a7-cross-provider-unavailable:${command}`);
@@ -119,11 +125,7 @@ export function parseCrossTargetLldbOutput(output, target, { binaryPath, entry, 
   if (!/stop reason = instruction step into/.test(text)) throw new Error('a7-cross-lldb-step-missing');
   if (!/1 breakpoints deleted; 0 breakpoint locations disabled\./.test(text)) throw new Error('a7-cross-lldb-breakpoint-removal-missing');
   if (!new RegExp(`Process ${processId} exited`).test(text)) throw new Error('a7-cross-lldb-disconnect-missing');
-  return Object.freeze({
-    processId:Number(processId),
-    outputSha256:sha256(Buffer.from(text)),
-    capabilityResults:Object.freeze(Object.fromEntries(A7_REQUIRED_CAPABILITIES.map((capability) => [capability, true]))),
-  });
+  return Object.freeze({ processId:Number(processId), outputSha256:sha256(Buffer.from(text)), capabilityResults:capabilityMap(BASELINE_CAPABILITIES) });
 }
 
 function compileAndInspect(target, directory, versions) {
@@ -194,19 +196,369 @@ async function runActiveTarget(target, fixture, versions) {
   }
 }
 
+function crossActiveOpsPython(target, fixture, port, qemuPid, operation) {
+  return `
+import json
+import lldb
+import os
+import signal
+import time
+
+FIXTURE = ${JSON.stringify(fixture.path)}
+PORT = ${port}
+QEMU_PID = ${qemuPid}
+PROBE = ${fixture.probeWord.toString()}
+REGISTER = ${JSON.stringify(target.register)}
+ARCH = ${JSON.stringify(target.lldbArchitecture)}
+MARKER = ${JSON.stringify(ACTIVE_MARKER)}
+OPERATION = ${JSON.stringify(operation)}
+EXPECTED_PROBE = 0x1020304050607080
+
+def fail(code):
+    raise RuntimeError(code)
+
+def state_name(state):
+    return lldb.SBDebugger.StateAsCString(state) or str(state)
+
+def wait_for(predicate, timeout=3.0):
+    deadline = time.time() + timeout
+    last = None
+    while time.time() < deadline:
+        last = process.GetState()
+        if predicate(last):
+            return last
+        time.sleep(0.01)
+    return last
+
+def wait_for_process_event(listener, predicate, timeout=3.0):
+    deadline = time.time() + timeout
+    last = lldb.eStateInvalid
+    while time.time() < deadline:
+        event = lldb.SBEvent()
+        if not listener.WaitForEvent(1, event):
+            continue
+        if not lldb.SBProcess.EventIsProcessEvent(event):
+            continue
+        event_process = lldb.SBProcess.GetProcessFromEvent(event)
+        if not event_process.IsValid() or event_process.GetProcessID() != process.GetProcessID():
+            continue
+        last = lldb.SBProcess.GetStateFromEvent(event)
+        if predicate(last):
+            return last
+    return last
+
+def current_frame(timeout=2.0):
+    deadline = time.time() + timeout
+    thread = lldb.SBThread()
+    while time.time() < deadline:
+        thread = process.GetSelectedThread()
+        if not thread.IsValid() and process.GetNumThreads() > 0:
+            thread = process.GetThreadAtIndex(0)
+        if thread.IsValid():
+            frame = thread.GetFrameAtIndex(0)
+            if frame.IsValid():
+                return thread, frame
+        time.sleep(0.01)
+    if not thread.IsValid(): fail('thread-missing')
+    fail('frame-missing')
+
+def reg(frame, name):
+    value = frame.FindRegister(name)
+    if not value.IsValid(): fail('register-missing:' + name)
+    return value.GetValueAsUnsigned()
+
+def module_path(target):
+    module = target.GetModuleAtIndex(0)
+    if not module.IsValid(): fail('module-missing')
+    spec = module.GetFileSpec()
+    return os.path.realpath(os.path.join(spec.GetDirectory() or '', spec.GetFilename() or ''))
+
+def qemu_sample(code):
+    stat_path = '/proc/' + str(QEMU_PID) + '/stat'
+    try:
+        text = open(stat_path, 'r', encoding='utf8').read().strip()
+    except BaseException as exc:
+        fail(code + '-qemu-stat-read-failed:' + repr(exc))
+    close = text.rfind(')')
+    first_space = text.find(' ')
+    if close < 0 or first_space < 0:
+        fail(code + '-qemu-stat-malformed')
+    try:
+        pid = int(text[:first_space])
+        fields = text[close + 2:].split()
+        if len(fields) <= 19:
+            fail(code + '-qemu-stat-short:' + str(len(fields)))
+        utime = int(fields[11])
+        stime = int(fields[12])
+        start_time = int(fields[19])
+    except BaseException as exc:
+        fail(code + '-qemu-stat-invalid:' + repr(exc))
+    if pid != QEMU_PID or start_time <= 0 or utime < 0 or stime < 0:
+        fail(code + '-qemu-stat-identity-invalid')
+    return {'pid': pid, 'startTimeTicks': start_time, 'cpuTicks': utime + stime}
+
+def require_same_qemu(before, after, code):
+    if before['pid'] != QEMU_PID or after['pid'] != QEMU_PID or before['startTimeTicks'] != after['startTimeTicks']:
+        fail(code + '-qemu-instance-changed')
+
+def wait_for_qemu_progress(before, code, timeout=1.0):
+    deadline = time.time() + timeout
+    last = before
+    while time.time() < deadline:
+        last = qemu_sample(code + '-sample')
+        require_same_qemu(before, last, code)
+        if last['cpuTicks'] > before['cpuTicks']:
+            return last
+        time.sleep(0.01)
+    fail(code + '-qemu-cpu-not-advanced:' + str(before['cpuTicks']) + ':' + str(last['cpuTicks']))
+
+def read_probe(code):
+    memory_error = lldb.SBError()
+    value = process.ReadUnsignedFromMemory(PROBE, 8, memory_error)
+    if not memory_error.Success():
+        fail(code + '-memory-read-failed:' + str(memory_error))
+    if value != EXPECTED_PROBE:
+        fail(code + '-memory-identity-mismatch:' + hex(value))
+    return value
+
+def signal_qemu_and_wait(listener, code):
+    try:
+        os.kill(QEMU_PID, 0)
+        os.kill(QEMU_PID, signal.SIGINT)
+    except BaseException as exc:
+        fail(code + '-qemu-signal-failed:' + repr(exc))
+    stopped = wait_for_process_event(listener, lldb.SBDebugger.StateIsStoppedState)
+    if not lldb.SBDebugger.StateIsStoppedState(stopped):
+        stopped = wait_for(lldb.SBDebugger.StateIsStoppedState)
+    if not lldb.SBDebugger.StateIsStoppedState(stopped):
+        fail(code + '-stop-not-observed:' + state_name(stopped))
+    try:
+        os.kill(QEMU_PID, 0)
+    except BaseException as exc:
+        fail(code + '-qemu-identity-lost:' + repr(exc))
+    return stopped
+
+result = {'kind': 'active-provider-operation', 'operation': OPERATION}
+process = None
+try:
+    lldb.SBDebugger.Initialize()
+    debugger = lldb.SBDebugger.Create()
+    debugger.SkipLLDBInitFiles(True)
+    debugger.SetAsync(False)
+    target = debugger.CreateTarget(FIXTURE)
+    if not target.IsValid(): fail('target-create-failed')
+    listener = debugger.GetListener()
+    error = lldb.SBError()
+    process = target.ConnectRemote(listener, 'connect://127.0.0.1:' + str(PORT), 'gdb-remote', error)
+    if not error.Success() or not process.IsValid(): fail('remote-attach-failed:' + str(error))
+    attached_pid = process.GetProcessID()
+    if attached_pid <= 0: fail('remote-process-identity-missing')
+    if not lldb.SBDebugger.StateIsStoppedState(process.GetState()): fail('remote-attach-not-stopped')
+    triple = target.GetTriple() or ''
+    if ARCH not in triple: fail('remote-target-architecture-mismatch:' + triple)
+    if target.GetByteOrder() != lldb.eByteOrderLittle: fail('remote-target-byte-order-mismatch')
+    observed_module = module_path(target)
+    if observed_module != os.path.realpath(FIXTURE): fail('remote-module-mismatch')
+    thread, frame = current_frame()
+    attached_thread_id = thread.GetThreadID()
+    pc = reg(frame, 'pc')
+    sp = reg(frame, 'sp')
+    operand = reg(frame, REGISTER)
+    attach_qemu = qemu_sample(OPERATION + '-attach')
+    probe_value = read_probe(OPERATION + '-attach')
+    result['attach'] = {'observed': True, 'transport': 'gdb-remote', 'registerTransport': 'SBFrame', 'processId': attached_pid, 'qemuHostPid': QEMU_PID, 'qemuStartTimeTicks': attach_qemu['startTimeTicks'], 'qemuCpuTicks': attach_qemu['cpuTicks'], 'targetTriple': triple, 'modulePath': observed_module, 'threadId': attached_thread_id, 'registers': {'pc': hex(pc), 'sp': hex(sp), REGISTER: hex(operand)}, 'memoryProbe': hex(probe_value), 'state': state_name(process.GetState())}
+
+    stop_id_before = process.GetStopID(False)
+    qemu_before = qemu_sample(OPERATION + '-before')
+    require_same_qemu(attach_qemu, qemu_before, OPERATION + '-before')
+    debugger.SetAsync(True)
+    continue_error = process.Continue()
+    if not continue_error.Success(): fail(OPERATION + '-continue-failed:' + str(continue_error))
+    running_state = wait_for_process_event(listener, lldb.SBDebugger.StateIsRunningState)
+    if not lldb.SBDebugger.StateIsRunningState(running_state): fail(OPERATION + '-running-event-not-observed:' + state_name(running_state))
+    running_qemu = qemu_sample(OPERATION + '-running')
+    require_same_qemu(qemu_before, running_qemu, OPERATION + '-running')
+    progress_qemu = wait_for_qemu_progress(running_qemu, OPERATION + '-running-window')
+    signal_qemu_and_wait(listener, OPERATION)
+    stop_id_after = process.GetStopID(False)
+    if stop_id_after <= stop_id_before: fail(OPERATION + '-stop-id-not-advanced')
+    qemu_after = qemu_sample(OPERATION + '-after')
+    require_same_qemu(progress_qemu, qemu_after, OPERATION + '-after')
+    stopped_module = module_path(target)
+    if stopped_module != observed_module: fail(OPERATION + '-module-identity-changed')
+
+    if OPERATION == 'pause':
+        result['pause'] = {'observed': True, 'continueAccepted': True, 'interruptIssued': True, 'runningObserved': True, 'runningEvidence': 'provider-running-state-event+exact-qemu-cpu-progress+lldb-stop-id', 'stoppedObserved': True, 'executionAdvanced': True, 'executionEvidence': 'exact-qemu-process-cpu-ticks-during-provider-running-window', 'executionWindow': 'after-running-event-before-interrupt', 'progressTransport': 'linux-proc-stat+lldb-process-events', 'stopIdAdvanced': True, 'stopIdBefore': stop_id_before, 'stopIdAfter': stop_id_after, 'processId': process.GetProcessID(), 'qemuHostPid': QEMU_PID, 'qemuStartTimeTicks': qemu_after['startTimeTicks'], 'qemuCpuTicksBefore': running_qemu['cpuTicks'], 'qemuCpuTicksAfter': progress_qemu['cpuTicks'], 'providerDisposition': 'qemu-user-sigint-observed-by-lldb', 'modulePath': stopped_module, 'state': state_name(process.GetState())}
+    elif OPERATION == 'cancel':
+        first_state = process.GetState()
+        late_stop_id_before = process.GetStopID(False)
+        late_qemu_before = qemu_sample('cancel-late-before')
+        time.sleep(0.12)
+        late_state = process.GetState()
+        late_stop_id_after = process.GetStopID(False)
+        late_qemu_after = qemu_sample('cancel-late-after')
+        require_same_qemu(late_qemu_before, late_qemu_after, 'cancel-late')
+        if first_state != late_state or late_stop_id_before != late_stop_id_after:
+            fail('cancel-late-success-observed')
+        result['cancel'] = {'observed': True, 'inFlightObserved': True, 'inFlightEvidence': 'provider-running-state-event+exact-qemu-cpu-progress-before-cancel', 'continueAccepted': True, 'runningObserved': True, 'executionAdvanced': True, 'executionEvidence': 'exact-qemu-process-cpu-ticks-during-provider-running-window', 'executionWindow': 'after-running-event-before-cancel-interrupt', 'interruptIssued': True, 'operationSettled': True, 'executionSettled': True, 'processId': process.GetProcessID(), 'qemuHostPid': QEMU_PID, 'qemuStartTimeTicks': qemu_after['startTimeTicks'], 'qemuCpuTicksBefore': running_qemu['cpuTicks'], 'qemuCpuTicksAfter': progress_qemu['cpuTicks'], 'settlement': 'cancelled', 'providerDisposition': 'qemu-user-sigint-observed-by-lldb', 'progressTransport': 'linux-proc-stat+lldb-running-and-stop-events', 'modulePath': stopped_module, 'stopIdAdvanced': True, 'stopIdBefore': stop_id_before, 'stopIdAfter': stop_id_after, 'lateSuccessRejected': True, 'lateStateStable': True, 'lateStopIdStable': True, 'lateQemuInstanceStable': True, 'state': state_name(late_state)}
+    else:
+        fail('unsupported-operation:' + OPERATION)
+except BaseException as exc:
+    result['error'] = str(exc)
+finally:
+    try:
+        if process is not None and process.IsValid() and process.GetState() not in (lldb.eStateExited, lldb.eStateDetached, lldb.eStateInvalid): process.Kill()
+    except BaseException: pass
+    try:
+        if 'debugger' in globals(): lldb.SBDebugger.Destroy(debugger)
+        lldb.SBDebugger.Terminate()
+    except BaseException: pass
+print(MARKER + '=' + json.dumps(result, sort_keys=True))
+`;
+}
+
+function runLldbPythonProof(lldb, python, directory, pythonSource, stem) {
+  const scriptPath = path.join(directory, `${stem}.py`);
+  fs.writeFileSync(scriptPath, pythonSource, { encoding:'utf8', mode:0o600 });
+  const pythonPathResult = spawnSync(lldb, ['-P'], { cwd:ROOT, encoding:'utf8', timeout:10_000, maxBuffer:2 * 1024 * 1024 });
+  const lldbPythonPath = String(pythonPathResult.stdout || '').trim();
+  if (pythonPathResult.status !== 0 || !lldbPythonPath) throw new Error('a7-cross-lldb-python-provider-path-unavailable');
+  const result = spawnSync(python, [scriptPath], { cwd:ROOT, encoding:'utf8', timeout:30_000, maxBuffer:16 * 1024 * 1024, env:{ ...process.env, DEBUGINFOD_URLS:'', PYTHONPATH:[lldbPythonPath, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter) } });
+  const output = `${result.stdout || ''}\n${result.stderr || ''}`;
+  if (result.status !== 0 || result.signal) throw new Error(`a7-cross-active-ops-command-failed:${result.signal || result.status}:${String(result.stderr || '').trim()}`);
+  return Object.freeze({ output, lldbPythonPath });
+}
+
+function parseMarker(output, marker, code) {
+  const prefix = `${marker}=`;
+  const line = String(output || '').split(/\r?\n/).find((value) => value.startsWith(prefix));
+  if (!line) throw new Error(`${code}-missing`);
+  let value;
+  try { value = JSON.parse(line.slice(prefix.length)); } catch { throw new Error(`${code}-invalid-json`); }
+  if (value?.error) throw new Error(`${code}-failed:${value.error}`);
+  return value;
+}
+function validQemuSample(value) {
+  return Number.isSafeInteger(value?.qemuStartTimeTicks) && value.qemuStartTimeTicks > 0;
+}
+function validCpuAdvance(value) {
+  return Number.isSafeInteger(value?.qemuCpuTicksBefore) && value.qemuCpuTicksBefore >= 0
+    && Number.isSafeInteger(value?.qemuCpuTicksAfter) && value.qemuCpuTicksAfter > value.qemuCpuTicksBefore;
+}
+
+function validateAttach(attach, target, { binaryPath, probeWord, qemuPid }, code) {
+  if (attach?.observed !== true || attach.transport !== 'gdb-remote') throw new Error(`a7-cross-${code}-attach-not-observed`);
+  if (!Number.isSafeInteger(attach.processId) || attach.processId <= 0) throw new Error(`a7-cross-${code}-attach-process-identity-missing`);
+  if (qemuPid != null && attach.qemuHostPid !== qemuPid) throw new Error(`a7-cross-${code}-attach-qemu-identity-mismatch`);
+  if (!validQemuSample(attach)) throw new Error(`a7-cross-${code}-attach-qemu-instance-identity-missing`);
+  if (!String(attach.targetTriple || '').includes(target.lldbArchitecture)) throw new Error(`a7-cross-${code}-attach-target-identity-mismatch`);
+  if (binaryPath != null && path.resolve(String(attach.modulePath || '')) !== path.resolve(binaryPath)) throw new Error(`a7-cross-${code}-attach-module-identity-mismatch`);
+  if (attach.registerTransport !== 'SBFrame' || !attach.registers?.pc || !attach.registers?.sp || !Object.prototype.hasOwnProperty.call(attach.registers, target.register)) throw new Error(`a7-cross-${code}-attach-register-observation-missing`);
+  if (probeWord != null && String(attach.memoryProbe || '').toLowerCase() !== `0x${INITIAL_PROBE_VALUE.toString(16)}`) throw new Error(`a7-cross-${code}-attach-memory-observation-missing`);
+}
+
+function validatePause(pause, attach) {
+  if (pause?.observed !== true || pause.runningObserved !== true || pause.stoppedObserved !== true || pause.executionAdvanced !== true || pause.continueAccepted !== true || pause.interruptIssued !== true || pause.stopIdAdvanced !== true) throw new Error('a7-cross-pause-not-observed');
+  if (pause.runningEvidence !== 'provider-running-state-event+exact-qemu-cpu-progress+lldb-stop-id' || pause.executionEvidence !== 'exact-qemu-process-cpu-ticks-during-provider-running-window' || pause.executionWindow !== 'after-running-event-before-interrupt' || pause.providerDisposition !== 'qemu-user-sigint-observed-by-lldb' || pause.progressTransport !== 'linux-proc-stat+lldb-process-events') throw new Error('a7-cross-pause-running-evidence-missing');
+  if (pause.qemuHostPid !== attach.qemuHostPid || pause.qemuStartTimeTicks !== attach.qemuStartTimeTicks) throw new Error('a7-cross-pause-qemu-instance-identity-mismatch');
+  if (!validCpuAdvance(pause)) throw new Error('a7-cross-pause-execution-progress-missing');
+  if (!Number.isSafeInteger(pause.stopIdBefore) || !Number.isSafeInteger(pause.stopIdAfter) || pause.stopIdAfter <= pause.stopIdBefore) throw new Error('a7-cross-pause-stop-id-evidence-missing');
+  if (pause.processId !== attach.processId || pause.modulePath !== attach.modulePath) throw new Error('a7-cross-pause-session-identity-mismatch');
+}
+
+function validateCancel(cancel, attach) {
+  if (cancel?.observed !== true || cancel.inFlightObserved !== true || cancel.continueAccepted !== true || cancel.runningObserved !== true || cancel.interruptIssued !== true || cancel.executionAdvanced !== true) throw new Error('a7-cross-cancel-not-observed');
+  if (cancel.inFlightEvidence !== 'provider-running-state-event+exact-qemu-cpu-progress-before-cancel') throw new Error('a7-cross-cancel-inflight-evidence-missing');
+  if (cancel.operationSettled !== true || cancel.executionSettled !== true || cancel.stopIdAdvanced !== true || cancel.settlement !== 'cancelled' || cancel.providerDisposition !== 'qemu-user-sigint-observed-by-lldb' || cancel.progressTransport !== 'linux-proc-stat+lldb-running-and-stop-events' || cancel.executionEvidence !== 'exact-qemu-process-cpu-ticks-during-provider-running-window' || cancel.executionWindow !== 'after-running-event-before-cancel-interrupt' || cancel.lateSuccessRejected !== true || cancel.lateStateStable !== true || cancel.lateStopIdStable !== true || cancel.lateQemuInstanceStable !== true) throw new Error('a7-cross-cancel-settlement-missing');
+  if (cancel.qemuHostPid !== attach.qemuHostPid || cancel.qemuStartTimeTicks !== attach.qemuStartTimeTicks) throw new Error('a7-cross-cancel-qemu-instance-identity-mismatch');
+  if (!validCpuAdvance(cancel)) throw new Error('a7-cross-cancel-execution-progress-missing');
+  if (!Number.isSafeInteger(cancel.stopIdBefore) || !Number.isSafeInteger(cancel.stopIdAfter) || cancel.stopIdAfter <= cancel.stopIdBefore) throw new Error('a7-cross-cancel-stop-id-evidence-missing');
+  if (cancel.processId !== attach.processId || cancel.modulePath !== attach.modulePath) throw new Error('a7-cross-cancel-session-identity-mismatch');
+}
+
+export function parseCrossTargetActiveOpsOutput(output, target, { binaryPath, probeWord, pauseQemuPid = null, cancelQemuPid = null } = {}) {
+  const proof = parseMarker(output, ACTIVE_MARKER, 'a7-cross-active-ops');
+  if (proof?.kind !== 'active-provider-operation-set') throw new Error('a7-cross-active-ops-kind-mismatch');
+  if (proof.operationResults?.attach !== true || proof.operationResults?.pause !== true || proof.operationResults?.cancel !== true) throw new Error('a7-cross-active-ops-denominator-incomplete');
+  const attach = proof.attach || {};
+  const pause = proof.pause || {};
+  const cancelAttach = proof.cancelAttach || {};
+  const cancel = proof.cancel || {};
+  validateAttach(attach, target, { binaryPath, probeWord, qemuPid:pauseQemuPid }, 'pause');
+  validatePause(pause, attach);
+  validateAttach(cancelAttach, target, { binaryPath, probeWord, qemuPid:cancelQemuPid }, 'cancel');
+  validateCancel(cancel, cancelAttach);
+  if (path.resolve(cancelAttach.modulePath) !== path.resolve(attach.modulePath) || cancelAttach.targetTriple !== attach.targetTriple) throw new Error('a7-cross-operation-set-target-mismatch');
+  if (cancelAttach.qemuHostPid === attach.qemuHostPid && cancelAttach.qemuStartTimeTicks === attach.qemuStartTimeTicks) throw new Error('a7-cross-operation-set-runtime-not-independent');
+  return Object.freeze({ ...proof, operationResults:Object.freeze({ attach:true, pause:true, cancel:true }), capabilityResults:capabilityMap(A7_CROSS_ACTIVE_OPERATION_CAPABILITIES) });
+}
+
+function parseOperationOutput(output, target, { binaryPath, probeWord, qemuPid, operation }) {
+  const proof = parseMarker(output, ACTIVE_MARKER, `a7-cross-${operation}-ops`);
+  if (proof?.kind !== 'active-provider-operation' || proof.operation !== operation) throw new Error(`a7-cross-${operation}-kind-mismatch`);
+  validateAttach(proof.attach, target, { binaryPath, probeWord, qemuPid }, operation);
+  if (operation === 'pause') validatePause(proof.pause, proof.attach);
+  else if (operation === 'cancel') validateCancel(proof.cancel, proof.attach);
+  else throw new Error(`a7-cross-operation-unsupported:${operation}`);
+  return proof;
+}
+
+async function runActiveOperationSession(target, fixture, versions, directory, operation) {
+  const port = await reservePort();
+  const qemu = spawn(versions[target.qemu], [...target.qemuCpuArgs, '-g', String(port), fixture.path], { cwd:ROOT, stdio:['ignore','pipe','pipe'] });
+  let qemuError = '';
+  qemu.stderr.on('data', (chunk) => { qemuError += String(chunk); });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  if (qemu.exitCode != null) throw new Error(`a7-cross-${operation}-qemu-start-failed:${target.targetProfileId}:${qemuError.trim()}`);
+  try {
+    const stem = `a7-cross-active-${operation}-${target.targetProfileId.replaceAll(/[^a-z0-9]+/gi, '-')}`;
+    const activeRun = runLldbPythonProof(versions.lldb, versions.python, directory, crossActiveOpsPython(target, fixture, port, qemu.pid, operation), stem);
+    const parsed = parseOperationOutput(activeRun.output, target, { binaryPath:fixture.path, probeWord:fixture.probeWord, qemuPid:qemu.pid, operation });
+    return Object.freeze({ ...parsed, qemuPid:qemu.pid, lldbPythonPath:activeRun.lldbPythonPath });
+  } finally { if (qemu.exitCode == null) qemu.kill('SIGKILL'); }
+}
+
+async function runActiveOperationTarget(target, fixture, versions, directory) {
+  const pauseSession = await runActiveOperationSession(target, fixture, versions, directory, 'pause');
+  const cancelSession = await runActiveOperationSession(target, fixture, versions, directory, 'cancel');
+  const combined = {
+    kind:'active-provider-operation-set',
+    attach:pauseSession.attach,
+    pause:pauseSession.pause,
+    cancelAttach:cancelSession.attach,
+    cancel:cancelSession.cancel,
+    operationResults:{ attach:true, pause:true, cancel:true },
+  };
+  const marker = `${ACTIVE_MARKER}=${JSON.stringify(combined)}`;
+  const proof = parseCrossTargetActiveOpsOutput(marker, target, { binaryPath:fixture.path, probeWord:fixture.probeWord, pauseQemuPid:pauseSession.qemuPid, cancelQemuPid:cancelSession.qemuPid });
+  return Object.freeze({ ...proof, pauseQemuPid:pauseSession.qemuPid, cancelQemuPid:cancelSession.qemuPid, lldbPythonPath:pauseSession.lldbPythonPath, cancelLldbPythonPath:cancelSession.lldbPythonPath });
+}
+
+function operationBinding({ target, fixture, active, operation, providerIdentity, providerVersion, binaryIdentity, commitSha, treeSha }) {
+  const attach = operation === 'cancel' ? active.cancelAttach : active.attach;
+  return createRuntimeAuthorityBinding({
+    providerIdentity,
+    providerProfileId:A7_CROSS_TARGET_PROVIDER_PROFILE,
+    providerVersion,
+    runtimeInstanceIdentity:`qemu-user-process:${attach.qemuHostPid}:start:${attach.qemuStartTimeTicks}`,
+    targetIdentity:`qemu-user-target:${target.targetProfileId}:${attach.processId}:${binaryIdentity}`,
+    targetProfileId:target.targetProfileId,
+    binaryIdentity,
+    buildIdentity:`clang-lld-static:${fixture.sourceSha256}:${binaryIdentity}`,
+    moduleIdentity:`lldb-module:${target.targetProfileId}:${binaryIdentity}:${sha256(Buffer.from(path.resolve(attach.modulePath)))}`,
+    loadMappingIdentity:`lldb-load:${target.targetProfileId}:${binaryIdentity}:entry-0x${fixture.entry.toString(16)}:probe-0x${fixture.probeWord.toString(16)}`,
+    sessionIdentity:`lldb-gdb-remote:${target.targetProfileId}:${operation}:${attach.processId}:${commitSha}`,
+    capabilityVersion:'debug/v1', commitSha, treeSha, epoch:0,
+  });
+}
+
 export async function collectA7CrossTargetProofs({ requireClean = true } = {}) {
   if (requireClean && git(['status','--porcelain','--untracked-files=all'])) throw new Error('a7-cross-proof-worktree-dirty');
   const commitSha = git(['rev-parse','HEAD']);
   const treeSha = git(['rev-parse','HEAD^{tree}']);
-  const versions = Object.freeze({
-    clang:executable('clang'), lldb:executable('lldb'), readobj:executable('llvm-readobj-18'), objdump:executable('llvm-objdump-18'),
-    'qemu-aarch64':executable('qemu-aarch64'), 'qemu-riscv64':executable('qemu-riscv64'),
-  });
+  const versions = Object.freeze({ clang:executable('clang'), lldb:executable('lldb'), python:executable('python3'), readobj:executable('llvm-readobj-18'), objdump:executable('llvm-objdump-18'), 'qemu-aarch64':executable('qemu-aarch64'), 'qemu-riscv64':executable('qemu-riscv64') });
   for (const target of A7_CROSS_TARGETS) targetContract(target);
-  const executableBasenames = Object.freeze({
-    clang:['clang','clang-18'], lldb:['lldb','lldb-18'], readobj:['llvm-readobj-18','llvm-readobj'], objdump:['llvm-objdump-18','llvm-objdump'],
-    'qemu-aarch64':['qemu-aarch64'], 'qemu-riscv64':['qemu-riscv64'],
-  });
+  const executableBasenames = Object.freeze({ clang:['clang','clang-18'], lldb:['lldb','lldb-18'], python:['python3','python3.10','python3.11','python3.12','python3.13'], readobj:['llvm-readobj-18','llvm-readobj'], objdump:['llvm-objdump-18','llvm-objdump'], 'qemu-aarch64':['qemu-aarch64'], 'qemu-riscv64':['qemu-riscv64'] });
   const expectedCrossProfiles = ['arm64:a64', 'arm64e:a64+pac', 'riscv64:rv64imc'];
   const actualCrossProfiles = A7_CROSS_TARGETS.map((target) => target.targetProfileId).sort();
   if (JSON.stringify(actualCrossProfiles) !== JSON.stringify(expectedCrossProfiles.sort())) throw new Error('a7-cross-target-profile-set-mismatch');
@@ -218,50 +570,31 @@ export async function collectA7CrossTargetProofs({ requireClean = true } = {}) {
     for (const target of A7_CROSS_TARGETS) {
       const fixture = compileAndInspect(target, directory, versions);
       const observed = await runActiveTarget(target, fixture, versions);
+      const activeOperations = await runActiveOperationTarget(target, fixture, versions, directory);
+      const closedCapabilities = Object.freeze([...new Set([...Object.keys(observed.capabilityResults), ...Object.keys(activeOperations.capabilityResults)])].sort());
+      if (JSON.stringify(closedCapabilities) !== JSON.stringify([...A7_REQUIRED_CAPABILITIES].sort())) throw new Error(`a7-cross-capability-denominator-incomplete:${target.targetProfileId}`);
       const binaryIdentity = `sha256:${fixture.binarySha256}`;
       const providerVersion = `${versionIdentities.lldb};${versionIdentities[target.qemu]}`;
-      const providerFingerprint = sha256(Buffer.from(JSON.stringify({
-        providerVersion,
-        lldb:executableIdentities.lldb,
-        qemu:executableIdentities[target.qemu],
-      })));
-      const binding = createRuntimeAuthorityBinding({
-        providerIdentity:`lldb-gdb-remote+${target.qemu}:${providerFingerprint}`,
-        providerProfileId:A7_CROSS_TARGET_PROVIDER_PROFILE,
-        providerVersion,
-        runtimeInstanceIdentity:`qemu-user-process:${observed.qemuPid}`,
-        targetIdentity:`qemu-user-target:${target.targetProfileId}:${binaryIdentity}`,
-        targetProfileId:target.targetProfileId,
-        binaryIdentity,
-        buildIdentity:`clang-lld-static:${fixture.sourceSha256}:${binaryIdentity}`,
-        moduleIdentity:`lldb-module:${target.targetProfileId}:${binaryIdentity}`,
-        loadMappingIdentity:`lldb-load:${target.targetProfileId}:${binaryIdentity}:0x${fixture.entry.toString(16)}`,
-        sessionIdentity:`lldb-gdb-remote:${target.targetProfileId}:${observed.processId}:${commitSha}`,
-        capabilityVersion:'debug/v1', commitSha, treeSha, epoch:0,
-      });
-      const observation = createRuntimeObservation({
-        binding, sequence:1, observedAt:new Date().toISOString(), kind:'active-cross-target-debug-session',
-        payload:{ targetProfileId:target.targetProfileId, providerProfileId:A7_CROSS_TARGET_PROVIDER_PROFILE, outputSha256:observed.outputSha256, observedCapabilities:observed.capabilityResults, closedCapabilities:A7_REQUIRED_CAPABILITIES, unsupportedCapabilities:A7_UNSUPPORTED_CAPABILITIES },
-      });
+      const providerFingerprint = sha256(Buffer.from(JSON.stringify({ providerVersion, lldb:executableIdentities.lldb, qemu:executableIdentities[target.qemu], python:executableIdentities.python, lldbPythonPath:activeOperations.lldbPythonPath, cancelLldbPythonPath:activeOperations.cancelLldbPythonPath })));
+      const providerIdentity = `lldb-gdb-remote+${target.qemu}:${providerFingerprint}`;
+      const pauseBinding = operationBinding({ target, fixture, active:activeOperations, operation:'pause', providerIdentity, providerVersion, binaryIdentity, commitSha, treeSha });
+      const cancelBinding = operationBinding({ target, fixture, active:activeOperations, operation:'cancel', providerIdentity, providerVersion, binaryIdentity, commitSha, treeSha });
+      if (pauseBinding.bindingId === cancelBinding.bindingId) throw new Error(`a7-cross-operation-binding-collision:${target.targetProfileId}`);
+      const pauseObservation = createRuntimeObservation({ binding:pauseBinding, sequence:1, observedAt:new Date().toISOString(), kind:'active-cross-target-pause-session', payload:{ targetProfileId:target.targetProfileId, providerProfileId:A7_CROSS_TARGET_PROVIDER_PROFILE, attach:activeOperations.attach, pause:activeOperations.pause, observedCapabilities:capabilityMap(['attach','pause']) } });
+      const cancelObservation = createRuntimeObservation({ binding:cancelBinding, sequence:1, observedAt:new Date().toISOString(), kind:'active-cross-target-cancel-session', payload:{ targetProfileId:target.targetProfileId, providerProfileId:A7_CROSS_TARGET_PROVIDER_PROFILE, attach:activeOperations.cancelAttach, cancel:activeOperations.cancel, observedCapabilities:capabilityMap(['attach','cancel']) } });
+      for (const [name, operationBindingValue, operationObservation] of [['pause', pauseBinding, pauseObservation], ['cancel', cancelBinding, cancelObservation]]) {
+        const operationValidation = validateRuntimeObservation(operationBindingValue, operationObservation);
+        if (!operationValidation.ok) throw new Error(`a7-cross-${name}-runtime-observation-invalid:${target.targetProfileId}:${operationValidation.reason}`);
+      }
+      const operationSetDigest = sha256(Buffer.from(JSON.stringify({ baseline:observed.outputSha256, pauseBindingId:pauseBinding.bindingId, cancelBindingId:cancelBinding.bindingId })));
+      const binding = createRuntimeAuthorityBinding({ providerIdentity, providerProfileId:A7_CROSS_TARGET_PROVIDER_PROFILE, providerVersion, runtimeInstanceIdentity:`a7-provider-operation-set:${operationSetDigest}`, targetIdentity:`a7-target-operation-set:${target.targetProfileId}:${binaryIdentity}`, targetProfileId:target.targetProfileId, binaryIdentity, buildIdentity:`clang-lld-static:${fixture.sourceSha256}:${binaryIdentity}`, moduleIdentity:`lldb-module-set:${target.targetProfileId}:${binaryIdentity}:${sha256(Buffer.from(path.resolve(activeOperations.attach.modulePath)))}`, loadMappingIdentity:`lldb-load-set:${target.targetProfileId}:${binaryIdentity}:entry-0x${fixture.entry.toString(16)}:probe-0x${fixture.probeWord.toString(16)}`, sessionIdentity:`a7-provider-operation-set:${target.targetProfileId}:${operationSetDigest}:${commitSha}`, capabilityVersion:'debug/v1', commitSha, treeSha, epoch:0 });
+      const observation = createRuntimeObservation({ binding, sequence:1, observedAt:new Date().toISOString(), kind:'active-cross-target-provider-operation-set', payload:{ targetProfileId:target.targetProfileId, providerProfileId:A7_CROSS_TARGET_PROVIDER_PROFILE, baselineOutputSha256:observed.outputSha256, operationBindingIds:Object.freeze({ pause:pauseBinding.bindingId, cancel:cancelBinding.bindingId }), activeOperations:Object.freeze({ attach:activeOperations.attach, pause:activeOperations.pause, cancelAttach:activeOperations.cancelAttach, cancel:activeOperations.cancel }), observedCapabilities:Object.freeze({ ...observed.capabilityResults, ...activeOperations.capabilityResults }), closedCapabilities, unsupportedCapabilities:A7_UNSUPPORTED_CAPABILITIES } });
       const validation = validateRuntimeObservation(binding, observation);
       if (!validation.ok) throw new Error(`a7-cross-runtime-observation-invalid:${target.targetProfileId}:${validation.reason}`);
-      proofs.push(Object.freeze({
-        schemaVersion:A7_CROSS_TARGET_PROOF_SCHEMA, status:'exact-active-provider-observed',
-        candidateCommitSha:commitSha, candidateTreeSha:treeSha, targetProfileId:target.targetProfileId,
-        providerProfileId:A7_CROSS_TARGET_PROVIDER_PROFILE, providerVersion,
-        fixture:Object.freeze({ sourcePath:target.sourcePath, sourceSha256:fixture.sourceSha256, binarySha256:fixture.binarySha256, targetTriple:target.targetTriple, semantics:fixture.sourceSemantics }),
-        independentOracle:Object.freeze({ id:'llvm-readobj+llvm-objdump-18', executableIdentities:Object.freeze({ readobj:executableIdentities.readobj, objdump:executableIdentities.objdump }), outputSha256:fixture.oracleOutputSha256 }),
-        binding, observation, closedCapabilities:A7_REQUIRED_CAPABILITIES, unsupportedCapabilities:A7_UNSUPPORTED_CAPABILITIES,
-        unsupportedCapabilities:A7_UNSUPPORTED_CAPABILITIES,
-      }));
+      proofs.push(Object.freeze({ schemaVersion:A7_CROSS_TARGET_PROOF_SCHEMA, status:'exact-active-provider-observed', candidateCommitSha:commitSha, candidateTreeSha:treeSha, targetProfileId:target.targetProfileId, providerProfileId:A7_CROSS_TARGET_PROVIDER_PROFILE, providerVersion, fixture:Object.freeze({ sourcePath:target.sourcePath, sourceSha256:fixture.sourceSha256, binarySha256:fixture.binarySha256, targetTriple:target.targetTriple, semantics:fixture.sourceSemantics }), independentOracle:Object.freeze({ id:'llvm-readobj+llvm-objdump-18', executableIdentities:Object.freeze({ readobj:executableIdentities.readobj, objdump:executableIdentities.objdump }), outputSha256:fixture.oracleOutputSha256 }), lldbPythonPath:activeOperations.lldbPythonPath, activeOperations:Object.freeze({ attach:activeOperations.attach, pause:activeOperations.pause, cancelAttach:activeOperations.cancelAttach, cancel:activeOperations.cancel }), operationBindings:Object.freeze({ pause:pauseBinding, cancel:cancelBinding }), operationObservations:Object.freeze({ pause:pauseObservation, cancel:cancelObservation }), binding, observation, closedCapabilities, unsupportedCapabilities:A7_UNSUPPORTED_CAPABILITIES }));
     }
-  } finally {
-    fs.rmSync(directory, { recursive:true, force:true });
-  }
-  return Object.freeze({
-    schemaVersion:A7_CROSS_TARGET_PROOF_SCHEMA, candidateCommitSha:commitSha, candidateTreeSha:treeSha,
-    providerProfileId:A7_CROSS_TARGET_PROVIDER_PROFILE, versionIdentities, executableIdentities, proofs:Object.freeze(proofs),
-  });
+  } finally { fs.rmSync(directory, { recursive:true, force:true }); }
+  return Object.freeze({ schemaVersion:A7_CROSS_TARGET_PROOF_SCHEMA, candidateCommitSha:commitSha, candidateTreeSha:treeSha, providerProfileId:A7_CROSS_TARGET_PROVIDER_PROFILE, versionIdentities, executableIdentities, proofs:Object.freeze(proofs) });
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
