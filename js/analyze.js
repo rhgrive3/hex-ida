@@ -70,12 +70,20 @@ async function awaitAbortable(operation, signal) {
   });
 }
 
+const ATOMIC_SOURCE_RESULT_RE = /^(?:swp|ldadd|ldset|ldclr|ldeor)(?:al|a|l)?(?:b|h)?$/;
+const ATOMIC_READ_WRITE_DEST_RE = /^cas(?:al|a|l)?(?:b|h)?$/;
+
 function destIndex(mn) {
   const b = mn.toLowerCase();
+  if (ATOMIC_SOURCE_RESULT_RE.test(b)) return 1;
   if (/^(str|stp|stur|strb|strh|sturb|sturh|stnp|st1|st2|st3|st4|stlr)/.test(b)) return -1;
   if (/^(cmp|cmn|tst|ccmp|ccmn|fcmp|b|bl|br|blr|ret|cbz|cbnz|tbz|tbnz|nop|svc|brk|hint|bti|dmb|dsb|isb|prfm|msr)/.test(b)) return -1;
   if (/^b\./.test(b)) return -1;
   return 0;
+}
+
+function destinationIsRead(mn, index) {
+  return index === 0 && ATOMIC_READ_WRITE_DEST_RE.test(mn.toLowerCase());
 }
 
 function readRegs(op, into) {
@@ -163,7 +171,7 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
         : null;
       const reads = new Set();
       for (let i = 0; i < ops.length; i++) {
-        if ((i === di || (i === 1 && pairDestReg != null)) && ops[i].k === 'reg') continue;
+        if ((i === di || (i === 1 && pairDestReg != null)) && ops[i].k === 'reg' && !destinationIsRead(mn, i)) continue;
         readRegs(ops[i], reads);
       }
       for (const op of ops) if (op.k === 'mem') readRegs(op, reads);
