@@ -29,7 +29,7 @@ def _is_a7_provider_script(pathname: str) -> bool:
     parent = os.path.basename(directory)
     return (
         base.endswith(".py")
-        and (base == "a7-lldb-active-ops.py" or base.startswith("a7-cross-active-"))
+        and (base.startswith("a7-lldb-active-") or base.startswith("a7-cross-active-"))
         and (parent.startswith("hex-a7-x86-") or parent.startswith("hex-a7-cross-"))
         and os.path.realpath(os.path.dirname(directory)) == os.path.realpath(tempfile.gettempdir())
     )
