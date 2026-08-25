@@ -233,7 +233,9 @@ export function buildArm64EffectiveAddress(decoded, options = {}) {
     if (addressDisp && addressDisp !== 0n) fail('arm64-register-offset-cannot-have-immediate-displacement');
     const indexRead = createArm64RegisterRead(index, `${prefix}.index`, index.bits);
     readOperations.push(indexRead.operation);
-    offsetExpr = extendIndex(arm64TemporaryExpr(`${prefix}.index`, index.bits), index, mem.shift || mem.extend || null, options.accessWidthBits ?? null);
+    const mnemonic = String(decoded?.mnemonic || '').trim().toLowerCase();
+    const accessWidthBits = options.accessWidthBits ?? (mnemonic === 'prfm' ? 64 : null);
+    offsetExpr = extendIndex(arm64TemporaryExpr(`${prefix}.index`, index.bits), index, mem.shift || mem.extend || null, accessWidthBits);
     offsetKind = 'register';
   }
 
