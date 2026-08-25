@@ -124,6 +124,7 @@ export function parseMsf(bytes) {
     return data.subarray(start, start + blockSize);
   };
   const concatBlocks = (indices, byteLength) => {
+    if (indices.length * blockSize < byteLength) return null;
     const out = new Uint8Array(byteLength);
     let written = 0;
     for (const index of indices) {
