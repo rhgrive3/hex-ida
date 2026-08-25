@@ -8,6 +8,7 @@
  */
 import { CHUNK_ROWS } from './backend.js';
 import { parseOperands, isCall, isReturn, categoryOf, referenceTarget } from './arm64.js';
+import { arm64EncodingWord } from './targets/architecture/arm64/encoding-word.js';
 import { pick } from './i18n.js';
 import { buildSemanticModel, attachTexts } from './blocks.js';
 import { LRU } from './lru.js';
@@ -146,10 +147,16 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
       const opsStr = entry.ops ? (entry.ops[idx] || '') : '';
       if (!mn) continue;
       const addr = region.vmAddr + BigInt(row) * 4n;
+      // Carry the fixed-width encoding word alongside the printed text. The
+      // disassembler drops some architecturally defined fields from its operand
+      // string (PRFM's unnamed prfop values print as nothing at all), and a
+      // machine-effect lifter must read those from the encoding rather than
+      // guess or fail closed on an instruction it otherwise decodes exactly.
+      const word = arm64EncodingWord(entry.bytes, idx);
       const b = mn.toLowerCase();
       // `<=` before the push let the array reach MAX_MODEL_ROWS + 1. The bound
       // exists to cap model construction work, so it has to be exact (#1287).
-      if (rawInsns.length < MAX_MODEL_ROWS) rawInsns.push({ row, address: addr, mn, ops: opsStr });
+      if (rawInsns.length < MAX_MODEL_ROWS) rawInsns.push({ row, address: addr, mn, ops: opsStr, word });
       else modelRowsDropped = true;
       if (b.charCodeAt(0) === 46) { res.dataRows++; continue; }
       res.instructions++;

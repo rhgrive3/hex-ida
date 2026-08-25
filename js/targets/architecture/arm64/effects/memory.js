@@ -1,5 +1,6 @@
 import {
   createBitVectorValue,
+  createIntrinsicEffectSummary,
   createMachineEffectBundle,
   createMachineOperation,
   createMemoryAccess,
@@ -15,12 +16,13 @@ import {
   createArm64RegisterWrite,
 } from './addressing.js';
 import { ARM64_ATOMIC_EFFECT_MNEMONICS, isArm64AtomicInstruction, liftArm64AtomicEffects } from './atomic.js';
+import { arm64DecodedEncodingWord } from '../encoding-word.js';
 
 export const LEGACY_ARM64_MEMORY_INVENTORY = Object.freeze({
   loads: Object.freeze(['ldr','ldrb','ldrh','ldrsb','ldrsh','ldrsw','ldur','ldurb','ldurh','ldursb','ldursh','ldursw','ldp','ldpsw','ldnp','ldar','ldarb','ldarh','ldxr','ldaxr','ldtr']),
   stores: Object.freeze(['str','strb','strh','stur','sturb','sturh','stp','stnp','stlr','stlrb','stlrh','sttr','stxr','stlxr']),
   atomicHandlers: Object.freeze(['cas','casa','casl','casal','swp','swpa','swpl','swpal','ldadd','ldadda','ldaddl','ldaddal','ldset','ldclr','ldeor']),
-  barriersAndHints: Object.freeze(['dmb','dsb','isb','clrex','prfm']),
+  barriersAndHints: Object.freeze(['dmb','dsb','isb','clrex','prfm','prfum']),
   simdMemoryDeferred: Object.freeze(['ld1','ld2','ld3','ld4','st1','st2','st3','st4']),
 });
 
@@ -28,7 +30,8 @@ const SIMPLE_LOADS = new Set(['ldr','ldrb','ldrh','ldrsb','ldrsh','ldrsw','ldur'
 const SIMPLE_STORES = new Set(['str','strb','strh','stur','sturb','sturh','sttr','stlr','stlrb','stlrh']);
 const PAIR_LOADS = new Set(['ldp','ldnp','ldpsw']);
 const PAIR_STORES = new Set(['stp','stnp']);
-const NON_ATOMIC_MEMORY_MNEMONICS = Object.freeze([...SIMPLE_LOADS, ...SIMPLE_STORES, ...PAIR_LOADS, ...PAIR_STORES, 'prfm']);
+const PREFETCH_MNEMONICS = new Set(['prfm','prfum']);
+const NON_ATOMIC_MEMORY_MNEMONICS = Object.freeze([...SIMPLE_LOADS, ...SIMPLE_STORES, ...PAIR_LOADS, ...PAIR_STORES, ...PREFETCH_MNEMONICS]);
 const ALL_NON_ATOMIC = new Set(NON_ATOMIC_MEMORY_MNEMONICS);
 export const ARM64_MEMORY_EFFECT_MNEMONICS = Object.freeze([...NON_ATOMIC_MEMORY_MNEMONICS, ...ARM64_ATOMIC_EFFECT_MNEMONICS]);
 const SIGNED_LOADS = new Set(['ldrsb','ldrsh','ldrsw','ldursb','ldursh','ldursw','ldpsw']);
@@ -539,19 +542,133 @@ function literalLoad(decoded, context, mnemonic) {
   });
 }
 
-function prefetch(decoded, context) {
+// PRFM/PRFUM carry a 5-bit prfop field: the 18 architecturally named values are
+// a finite (type, target, policy) product, and the remaining 14 encodings are
+// valid but unnamed. The deployed disassembler prints nothing at all for the
+// unnamed ones, so they are recovered from Rt of the encoding word — the same
+// word the decoder itself consumed. With no word available the form stays
+// fail-closed rather than inventing a prfop.
+const PREFETCH_TYPES = Object.freeze({ ld:'prefetch-for-load', li:'preload-instruction', st:'prefetch-for-store' });
+const PREFETCH_TYPE_BY_CODE = Object.freeze(['prefetch-for-load','preload-instruction','prefetch-for-store']);
+const PREFETCH_POLICIES = Object.freeze({ keep:'temporal-keep', strm:'streaming-non-temporal' });
+const PREFETCH_NAMED_RE = /^p(ld|li|st)l([123])(keep|strm)$/;
+
+function prefetchOperationFromCode(code) {
+  const type = (code >>> 3) & 0x3;
+  const target = (code >>> 1) & 0x3;
+  const policy = code & 0x1;
+  const named = type < 3 && target < 3;
+  if (!named) return Object.freeze({ code, spelling:`#${code}`, named:false, operation:'unnamed-prfop', cacheLevel:null, policy:null });
+  return Object.freeze({
+    code,
+    spelling:`p${['ld','li','st'][type]}l${target + 1}${policy ? 'strm' : 'keep'}`,
+    named:true,
+    operation:PREFETCH_TYPE_BY_CODE[type],
+    cacheLevel:target + 1,
+    policy:policy ? PREFETCH_POLICIES.strm : PREFETCH_POLICIES.keep,
+  });
+}
+
+function prefetchOperand(decoded) {
+  // A printed specifier is its own operand; when the disassembler omits it the
+  // operand list simply starts with the address, so there is nothing to parse
+  // and the field comes from the encoding instead.
+  const first = operands(decoded)[0];
+  const printed = first?.k === 'other' ? String(first.text ?? '').trim().toLowerCase() : '';
+  if (printed) {
+    const named = PREFETCH_NAMED_RE.exec(printed);
+    if (!named) return null;
+    const [, type, level, policy] = named;
+    const code = (({ ld:0, li:1, st:2 })[type] << 3) | ((Number(level) - 1) << 1) | (policy === 'strm' ? 1 : 0);
+    return Object.freeze({
+      code, spelling:printed, named:true,
+      operation:PREFETCH_TYPES[type], cacheLevel:Number(level), policy:PREFETCH_POLICIES[policy],
+    });
+  }
+  const word = arm64DecodedEncodingWord(decoded);
+  if (word == null) return null;
+  return prefetchOperationFromCode(word & 0x1f);
+}
+
+function prefetchIntrinsic(prfop, addressValue, addressExpr, registersRead) {
+  return createMachineOperation({
+    kind:'intrinsic',
+    intrinsicId:'arm64.memory-system-prefetch-hint',
+    effectSummary:createIntrinsicEffectSummary({
+      inputs:[addressValue, createBitVectorValue(5, BigInt(prfop.code))],
+      outputs:[],
+      registersRead,
+      registersWritten:[],
+      memoryRead:{ scope:'none' },
+      memoryWrite:{ scope:'none' },
+      controlEffects:[],
+      determinism:'nondeterministic',
+      symbolicDetail:'summary-only',
+    }),
+    metadata:{ addressExpr, state:'memory-system-hint', prfop:prfop.code },
+  });
+}
+
+function prefetchMetadata(mnemonic, prfop, extra) {
+  return {
+    family:'arm64-memory', mnemonic, hint:true, ...extra,
+    prefetch:Object.freeze({
+      prfop:prfop.code, spelling:prfop.spelling, named:prfop.named,
+      operation:prfop.operation, cacheLevel:prfop.cacheLevel, policy:prfop.policy,
+    }),
+  };
+}
+
+// PRFM (literal) has no memory operand: the hinted address is PC-relative and
+// the disassembler prints it as a resolved immediate.
+function literalPrefetch(decoded, context, mnemonic, prfop) {
+  const immediate = immediateValue(operands(decoded).find((operand) => operand?.k === 'imm' || operand?.kind === 'immediate'));
+  let target = decoded?.pcRelTarget ?? decoded?.literalTarget ?? immediate;
+  if (typeof target === 'number' && Number.isSafeInteger(target)) target = BigInt(target);
+  if (typeof target === 'string' && /^-?(?:0x[0-9a-f]+|\d+)$/i.test(target)) target = BigInt(target);
+  if (typeof target !== 'bigint') return partial(decoded, context, 'prfm literal target is unresolved', ['memory','other']);
+  const addressExpr = arm64ConstantExpr(target, 64);
+  return bundle(decoded, context, {
+    operations:[prefetchIntrinsic(prfop, createBitVectorValue(64, BigInt.asUintN(64, target)), addressExpr, [])],
+    possibleFaults:[],
+    completeness:'exact-with-intrinsic',
+    metadata:prefetchMetadata(mnemonic, prfop, { transfer:'literal', literal:true, target:target.toString() }),
+  });
+}
+
+function prefetch(decoded, context, mnemonic) {
+  const prfop = prefetchOperand(decoded);
+  if (!prfop) return partial(decoded, context, 'prefetch operation specifier is unavailable from the decoder', ['memory','other']);
+  if (!memoryOperand(decoded)) return literalPrefetch(decoded, context, mnemonic, prfop);
+
   let addressing;
   try { addressing = buildArm64EffectiveAddress(decoded, { prefix:'prefetch.addr' }); }
   catch (error) {
     if (error instanceof Arm64AddressingError) return partial(decoded, context, error.code, ['memory','other']);
     throw error;
   }
-  if (addressing.mode !== 'offset') return partial(decoded, context, 'prfm does not support writeback addressing', ['memory','other']);
+  if (addressing.mode !== 'offset') return partial(decoded, context, `${mnemonic} does not support writeback addressing`, ['memory','other']);
+  const addressValue = addressing.readOperations
+    .find((operation) => operation.kind === 'register-read' && operation.register?.registerId === addressing.base.physicalId)?.value || null;
+  if (!addressValue) return partial(decoded, context, 'prefetch effective address state is unavailable', ['memory','other']);
+
+  // Architecturally a prefetch changes no register, memory, or flag state and
+  // raises no synchronous fault; only the memory-system hint itself is
+  // implementation-defined. Declaring that hint as a closed intrinsic keeps the
+  // architectural effect exact instead of leaving the instruction unknown.
   return bundle(decoded, context, {
-    operations:[...addressing.readOperations],
-    completeness:'partial',
-    unknownEffects:{ categories:['memory','other'], reason:'PRFM is an implementation-defined memory-system hint without an exact accessed width' },
-    metadata:{ family:'arm64-memory', mnemonic:'prfm', addressing:addressing.metadata, hint:true },
+    operations:[
+      ...addressing.readOperations,
+      prefetchIntrinsic(prfop, addressValue, addressing.addressExpr, [
+        addressing.base.physicalId, ...(addressing.index ? [addressing.index.physicalId] : []),
+      ]),
+    ],
+    possibleFaults:[],
+    completeness:'exact-with-intrinsic',
+    metadata:prefetchMetadata(mnemonic, prfop, {
+      addressing:addressing.metadata,
+      ...(mnemonic === 'prfum' ? { unscaled:true } : {}),
+    }),
   });
 }
 
@@ -564,7 +681,7 @@ export function liftArm64MemoryEffects(decoded, context = {}) {
   const mnemonic = mnemonicOf(decoded);
   if (isArm64AtomicInstruction(mnemonic)) return liftArm64AtomicEffects(decoded, context);
   if (!ALL_NON_ATOMIC.has(mnemonic)) return null;
-  if (mnemonic === 'prfm') return prefetch(decoded, context);
+  if (PREFETCH_MNEMONICS.has(mnemonic)) return prefetch(decoded, context, mnemonic);
 
   const hasMem = !!memoryOperand(decoded);
   if (!hasMem && (mnemonic === 'ldr' || mnemonic === 'ldrsw')) return literalLoad(decoded, context, mnemonic);

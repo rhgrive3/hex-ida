@@ -1,0 +1,131 @@
+name: Stage 2 non-physical closure proof
+
+on:
+  pull_request:
+    paths:
+      - 'js/**'
+      - 'tests/**'
+      - 'tools/**'
+      - 'userscript/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/stage2-nonphysical-closure.yml'
+  workflow_dispatch:
+    inputs:
+      expect_sha:
+        description: Exact candidate commit SHA
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stage2-nonphysical-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  exact-nonphysical-closure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || inputs.expect_sha }}
+          fetch-depth: 0
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install active native proof providers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-18 lld-18 llvm-18 lldb-18 qemu-user
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Assert exact candidate identity
+        id: identity
+        shell: bash
+        env:
+          EXPECT_SHA: ${{ github.event.pull_request.head.sha || inputs.expect_sha }}
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse HEAD)"
+          tree="$(git rev-parse 'HEAD^{tree}')"
+          test "$sha" = "$EXPECT_SHA"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "tree=$tree" >> "$GITHUB_OUTPUT"
+
+      - name: Require canonical generated artifacts to be synchronized
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run userscript:build
+          git diff --exit-code
+          test -z "$(git status --porcelain --untracked-files=no)"
+
+      - name: Collect exact non-physical Stage 2 profile evidence
+        id: profile
+        shell: bash
+        env:
+          SHA: ${{ steps.identity.outputs.sha }}
+          TREE: ${{ steps.identity.outputs.tree }}
+        run: |
+          set -euo pipefail
+          run_id="exact-${SHA:0:16}"
+          node tools/validation/stage2/profile-evidence-collector.mjs \
+            --commit "$SHA" \
+            --tree "$TREE" \
+            --run-id "$run_id"
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          echo "profile_path=reports/stage2/profile-evidence-runs/$run_id/profile-evidence.json" >> "$GITHUB_OUTPUT"
+
+      - name: Run exact-head Stage 2 verifier and full repository validation
+        shell: bash
+        env:
+          SHA: ${{ steps.identity.outputs.sha }}
+        run: |
+          set -euo pipefail
+          node tools/validation/stage2/verify.mjs --expect-sha "$SHA" --full
+
+      - name: Record non-physical candidate identity
+        shell: bash
+        env:
+          SHA: ${{ steps.identity.outputs.sha }}
+          TREE: ${{ steps.identity.outputs.tree }}
+          PROFILE_PATH: ${{ steps.profile.outputs.profile_path }}
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import path from 'node:path';
+          const profile = JSON.parse(fs.readFileSync(process.env.PROFILE_PATH, 'utf8'));
+          const release = JSON.parse(fs.readFileSync('userscript/release-version.json', 'utf8'));
+          const record = {
+            schemaVersion: 'hex-stage2-nonphysical-candidate/v1',
+            verdict: 'BLOCKED_ONLY_ON_PHYSICAL_IPAD_EVIDENCE',
+            candidateCommitSha: process.env.SHA,
+            candidateTreeSha: process.env.TREE,
+            profileEvidenceId: profile.evidenceId,
+            generatedBuildIdentity: `userscript-release:${release.releaseIdentity}:build:${release.buildId}:serial:${release.serial}`,
+            remainingBlockers: ['S2-IPAD-PHYSICAL'],
+          };
+          fs.mkdirSync('reports/stage2', { recursive: true });
+          fs.writeFileSync('reports/stage2/nonphysical-candidate.json', `${JSON.stringify(record, null, 2)}\n`);
+          console.log(JSON.stringify(record));
+          NODE
+
+      - name: Upload exact proof artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage2-nonphysical-${{ steps.identity.outputs.sha || github.run_id }}
+          path: reports/stage2/
+          if-no-files-found: warn
+          retention-days: 14

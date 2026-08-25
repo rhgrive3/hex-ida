@@ -11,11 +11,17 @@ import { ARM64_SIMD_EFFECT_MNEMONICS, liftArm64SimdEffects } from '../../js/targ
 import {
   ARM64_A64_SIMD_ALIAS_BINDINGS,
   ARM64_A64_SIMD_ASSEMBLY_CASES,
+  ARM64_A64_SIMD_DENOMINATOR_ID,
+  ARM64_A64_SIMD_DENOMINATOR_SCHEMA,
   ARM64_A64_SIMD_DENOMINATOR_VERSION,
+  ARM64_A64_SIMD_LOCKED_CASE_COUNT,
+  ARM64_A64_SIMD_LOCKED_CORPUS_SHA256,
   ARM64_A64_SIMD_MNEMONIC_DENOMINATOR,
   ARM64_A64_SIMD_ORACLE_IDS,
+  arm64A64SimdDecoderDependencyProof,
   validateArm64A64SimdDenominator,
 } from '../../tools/validation/machine-effects/arm64-a64-simd-denominator.mjs';
+import { validateArm64A64DecoderDependencyProof } from '../../tools/validation/machine-effects/arm64-a64-decoder-denominator.mjs';
 import { createCapstoneArm64Session } from './helpers/arm64-capstone-session.mjs';
 
 function executable(candidates) {
@@ -129,6 +135,27 @@ assert.equal(denominator.caseCount, 891);
 assert.equal(denominator.formCount, 891);
 assert.equal(denominator.aliasBindingCount, 3);
 assert.deepEqual(denominator.oracleIds, ARM64_A64_SIMD_ORACLE_IDS);
+assert.equal(denominator.schemaVersion, ARM64_A64_SIMD_DENOMINATOR_SCHEMA);
+assert.equal(denominator.denominatorId, ARM64_A64_SIMD_DENOMINATOR_ID);
+assert.equal(denominator.profileId, 'arm64:a64');
+// The corpus digest is the shrink guard: a case removed, renamed, or reordered
+// changes it, so a smaller claim can never be published under this identity.
+assert.equal(denominator.caseCount, ARM64_A64_SIMD_LOCKED_CASE_COUNT);
+assert.equal(denominator.corpusSha256, ARM64_A64_SIMD_LOCKED_CORPUS_SHA256);
+assert.match(denominator.corpusSha256, /^[0-9a-f]{64}$/);
+
+// The dependency contract handed to the A64 decoder ownership denominator must
+// be accepted by that denominator's own validator, not by this file's opinion.
+const simdDependencyProof = arm64A64SimdDecoderDependencyProof();
+assert.equal(validateArm64A64DecoderDependencyProof('simd', simdDependencyProof), true);
+assert.equal(validateArm64A64DecoderDependencyProof('memory', simdDependencyProof), false, 'a SIMD proof must never satisfy the memory dependency');
+for (const damaged of [
+  { ...simdDependencyProof, observedCorpusSha256:'b'.repeat(64) },
+  { ...simdDependencyProof, encodingCaseCount:ARM64_A64_SIMD_LOCKED_CASE_COUNT - 1 },
+  { ...simdDependencyProof, coverageState:'partial' },
+  { ...simdDependencyProof, independentAuthority:false },
+  { ...simdDependencyProof, oracleIds:['production-effect-registry-simd','deployed-capstone-arm64-a64'] },
+]) assert.equal(validateArm64A64DecoderDependencyProof('simd', damaged), false);
 assert.deepEqual([...ARM64_SIMD_EFFECT_MNEMONICS].sort(), [...ARM64_A64_SIMD_MNEMONIC_DENOMINATOR].sort(), 'production SIMD registry drifted from independent denominator');
 
 const source = `.text\n${ARM64_A64_SIMD_ASSEMBLY_CASES.map((entry) => entry.assembly).join('\n')}\n`;

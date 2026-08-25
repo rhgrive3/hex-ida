@@ -11,10 +11,14 @@ import {
   ARM64_A64_MEMORY_DENOMINATOR_ID,
   ARM64_A64_MEMORY_ENCODING_FAMILIES,
   ARM64_A64_MEMORY_EXACT_MNEMONICS,
+  ARM64_A64_MEMORY_LOCKED_CASE_COUNT,
+  ARM64_A64_MEMORY_LOCKED_CORPUS_SHA256,
   ARM64_A64_MEMORY_PARTIAL_MNEMONICS,
+  arm64A64MemoryDecoderDependencyProof,
   arm64A64MemoryEncodingCases,
   validateArm64A64MemoryDenominator,
 } from '../../tools/validation/machine-effects/arm64-a64-memory-denominator.mjs';
+import { validateArm64A64DecoderDependencyProof } from '../../tools/validation/machine-effects/arm64-a64-decoder-denominator.mjs';
 import { createCapstoneArm64Session } from './helpers/arm64-capstone-session.mjs';
 
 function bytes32(word) {
@@ -44,7 +48,7 @@ function assembleCases(cases) {
     fs.rmSync(directory, { recursive:true, force:true });
   }
 }
-function decodedInstruction(raw, id) {
+function decodedInstruction(raw, id, word = null) {
   return {
     instructionId:id,
     address:raw.address,
@@ -52,6 +56,9 @@ function decodedInstruction(raw, id) {
     operands:raw.opStr,
     opStr:raw.opStr,
     ops:parseOperands(raw.opStr),
+    // The production pipeline carries the fixed-width encoding word next to the
+    // printed text; a decoder-lossy field is read from it, never invented.
+    ...(word == null ? {} : { word }),
     mode:'a64',
     origin:{ instructionIds:[id] },
   };
@@ -72,9 +79,28 @@ function accesses(bundle) {
 const denominator = validateArm64A64MemoryDenominator();
 assert.equal(denominator.denominatorId, ARM64_A64_MEMORY_DENOMINATOR_ID);
 assert.equal(denominator.encodingFamilyCount, 9);
-assert.equal(denominator.encodingCaseCount, 198);
-assert.equal(denominator.mnemonicCount, 120);
-assert.equal(denominator.partialMnemonicCount, 1);
+assert.equal(denominator.encodingCaseCount, 235);
+assert.equal(denominator.mnemonicCount, 121);
+assert.equal(denominator.partialMnemonicCount, 0);
+assert.equal(denominator.exactMnemonicCount, 121);
+assert.equal(denominator.encodingCaseCount, ARM64_A64_MEMORY_LOCKED_CASE_COUNT);
+// The corpus digest is the shrink guard: a case removed, renamed, or reordered
+// changes it, so a smaller claim can never be published under this identity.
+assert.equal(denominator.corpusSha256, ARM64_A64_MEMORY_LOCKED_CORPUS_SHA256);
+assert.match(denominator.corpusSha256, /^[0-9a-f]{64}$/);
+
+// The dependency contract handed to the A64 decoder ownership denominator must
+// be accepted by that denominator's own validator, not by this file's opinion.
+const memoryDependencyProof = arm64A64MemoryDecoderDependencyProof();
+assert.equal(validateArm64A64DecoderDependencyProof('memory', memoryDependencyProof), true);
+assert.equal(validateArm64A64DecoderDependencyProof('simd', memoryDependencyProof), false, 'a memory proof must never satisfy the SIMD dependency');
+for (const damaged of [
+  { ...memoryDependencyProof, observedCorpusSha256:'b'.repeat(64) },
+  { ...memoryDependencyProof, encodingCaseCount:ARM64_A64_MEMORY_LOCKED_CASE_COUNT - 1 },
+  { ...memoryDependencyProof, coverageState:'partial' },
+  { ...memoryDependencyProof, independentAuthority:false },
+  { ...memoryDependencyProof, oracleIds:['production-effect-registry-memory','deployed-capstone-5-arm64'] },
+]) assert.equal(validateArm64A64DecoderDependencyProof('memory', damaged), false);
 assert.equal(new Set(ARM64_A64_MEMORY_ENCODING_FAMILIES.map(({ id }) => id)).size, 9);
 assert.deepEqual(
   [...ARM64_MEMORY_EFFECT_MNEMONICS].sort(),
@@ -92,7 +118,7 @@ try {
     const raw = session.decode(bytes32(oracle.word), 0x400000n + BigInt(index * 4));
     assert.equal(raw.length, 1, `${current.id}:Capstone rejected LLVM encoding 0x${oracle.word.toString(16)}:${oracle.llvmText}`);
     assert.equal(raw[0].mnemonic, current.mnemonic, `${current.id}:decoder mnemonic drift:${raw[0].opStr}`);
-    const effects = liftArm64MachineEffects(decodedInstruction(raw[0], `arm64-memory-denominator:${current.id}`));
+    const effects = liftArm64MachineEffects(decodedInstruction(raw[0], `arm64-memory-denominator:${current.id}`, oracle.word));
     assert.ok(effects, `${current.id}:registry-owned decoder form escaped memory ownership`);
     assert.equal(effects.completeness, current.completeness, `${current.id}:${raw[0].mnemonic}:${raw[0].opStr}:${effects.unknownEffects?.reason}`);
 
@@ -113,6 +139,22 @@ try {
     if (current.readOrdering) assert.ok(memoryAccesses.some(({ direction, access }) => direction === 'read' && access.ordering === current.readOrdering), `${current.id}:read ordering`);
     if (current.writeOrdering) assert.ok(memoryAccesses.some(({ direction, access }) => direction === 'write' && access.ordering === current.writeOrdering), `${current.id}:write ordering`);
     if (current.addressingMode) assert.equal(effects.metadata.addressing?.mode, current.addressingMode, `${current.id}:addressing mode`);
+    if (current.prefetch) {
+      // The prefetch hint is exact only when every prfop discriminator survives
+      // the decoder boundary and the architectural state change stays empty.
+      assert.equal(effects.metadata.prefetch?.operation, current.prefetch.operation, `${current.id}:prfop operation`);
+      assert.equal(effects.metadata.prefetch?.cacheLevel, current.prefetch.cacheLevel, `${current.id}:prfop target`);
+      assert.equal(effects.metadata.prefetch?.policy, current.prefetch.policy, `${current.id}:prfop policy`);
+      assert.equal(effects.metadata.prefetch?.named, current.prefetch.named, `${current.id}:prfop naming`);
+      assert.equal(effects.metadata.prefetch?.prfop, current.prefetch.prfop, `${current.id}:prfop code`);
+      assert.equal(accesses(effects).length, 0, `${current.id}:a prefetch hint must not fabricate a memory access`);
+      assert.equal(effects.operations.some((operation) => operation.kind === 'memory-write'), false, `${current.id}:prefetch write`);
+      const intrinsic = effects.operations.find((operation) => operation.kind === 'intrinsic');
+      assert.ok(intrinsic, `${current.id}:prefetch intrinsic`);
+      assert.equal(intrinsic.intrinsicId, 'arm64.memory-system-prefetch-hint', `${current.id}:prefetch intrinsic id`);
+      assert.deepEqual(intrinsic.effectSummary.registersWritten, [], `${current.id}:prefetch register writes`);
+      assert.equal(intrinsic.effectSummary.determinism, 'nondeterministic', `${current.id}:prefetch determinism`);
+    }
     if (current.literal) assert.equal(effects.metadata.transfer, 'literal', `${current.id}:literal discriminator`);
     if (current.writeback) {
       const memoryIndex = effects.operations.findIndex((operation) => operation.kind === 'memory-read' || operation.kind === 'memory-write');
@@ -178,6 +220,12 @@ for (const malformed of [
   direct('stxr', [w(2), x(2), mem(x(1))]),
   direct('stxr', [w(1), x(2), mem(x(1))]),
   direct('clrex', [{ k:'imm', text:'#16', value:16n }]),
+  // A prefetch whose specifier the disassembler dropped and whose encoding word
+  // the producer did not carry must fail closed, not assume a prfop.
+  direct('prfm', [mem(x(1))]),
+  direct('prfum', [mem(x(1))]),
+  direct('prfm', [{ k:'other', text:'pldl4keep' }, mem(x(1))]),
+  direct('prfm', [{ k:'other', text:'pldl1keep' }, mem(x(1), { mode:'pre', disp:-8n, writebackDisp:-8n })]),
 ]) {
   assert.equal(malformed?.completeness, 'partial', 'malformed/invalid structured input must fail closed');
   assert.equal(accesses(malformed).length, 0, 'malformed/invalid structured input must not emit memory effects');

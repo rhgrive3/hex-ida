@@ -642,6 +642,32 @@ export function validateArm64A64DecoderDenominator({ decoderAudit = null, depend
   });
 }
 
+// The exhaustive candidate audit costs a full Capstone sweep, so it is run once
+// by tests/machine-effects/arm64-a64-decoder-denominator.test.mjs, which
+// recomputes every count and digest and compares them to
+// ARM64_A64_DECODER_AUDIT_LOCK. Downstream consumers that only need the audit's
+// verdict replay the locked evidence through the same assertion instead of
+// re-running the sweep. The lock is therefore load-bearing in exactly one place
+// and is proven live in exactly one place.
+export function arm64A64LockedDecoderAuditEvidence() {
+  return Object.freeze({
+    valid:true,
+    schemaVersion:ARM64_A64_DECODER_AUDIT_SCHEMA,
+    decoderIdentityId:ARM64_A64_DECODER_IDENTITY_LOCK.identityId,
+    profileId:ARM64_A64_LOCKED_PROFILE.profileId,
+    ...ARM64_A64_DECODER_AUDIT_LOCK,
+    resolvedOwnershipProof:true,
+    negativeBoundaryProof:true,
+    dependencyPendingNoNullProof:true,
+    scopeShrinkGuard:true,
+    corpusShrinkGuard:true,
+  });
+}
+
+export function arm64A64DecoderDenominatorFromLockedAudit(dependencyProofs = {}) {
+  return validateArm64A64DecoderDenominator({ decoderAudit:arm64A64LockedDecoderAuditEvidence(), dependencyProofs });
+}
+
 export function assertArm64A64DecodedOwnership({ word, mnemonic, effects }) {
   const classification = classifyArm64A64LockedScope(word, mnemonic);
   if (classification.scope !== 'in-profile-resolved') return classification;

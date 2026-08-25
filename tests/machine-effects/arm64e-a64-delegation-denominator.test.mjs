@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 
 import { parseOperands } from '../../js/arm64.js';
 import { liftArm64SystemEffects } from '../../js/targets/architecture/arm64/effects/system.js';
@@ -88,6 +89,37 @@ assert.equal(proof.terminalEligible, dependency.terminalEligible);
 assert.equal(proof.terminalStatus, dependency.terminalEligible ? 'exact-via-arm64-baseline' : 'blocked-on-arm64-baseline');
 if (!dependency.terminalEligible) {
   assert.ok(dependency.blockingUnits.length > 0, 'non-terminal ARM64 baseline dependency must name its blockers');
+} else {
+  assert.deepEqual(dependency.blockingUnits, []);
 }
+
+// The delegated baseline has no coverage of its own: a non-exact ARM64 family
+// or a re-opened ARM64 decoder unit must pull it straight back to blocked,
+// including through the fallback family, whose exemption is a negative proof
+// rather than a standing allowance.
+const baselineInventory = JSON.parse(fs.readFileSync(new URL('./a2-denominator-inventory.json', import.meta.url), 'utf8'));
+function mutatedBaseline(mutate) {
+  const clone = JSON.parse(JSON.stringify(baselineInventory));
+  mutate(clone.architectures.find((architecture) => architecture.id === 'arm64'));
+  return arm64BaselineDependencyStatus(clone);
+}
+const reopenedDecoder = mutatedBaseline((arm64) => {
+  arm64.decoder.enumerationStatus = 'excluded';
+  arm64.decoder.missingUnits = ['arm64:a64:all-decoder-encodings-and-aliases'];
+});
+assert.equal(reopenedDecoder.terminalEligible, false);
+assert.ok(reopenedDecoder.blockingUnits.includes('arm64:a64:all-decoder-encodings-and-aliases'));
+assert.ok(
+  mutatedBaseline((arm64) => { arm64.decoder.enumerationStatus = 'excluded'; }).blockingUnits
+    .includes('arm64:a64:effect-family:fallback-unmatched-decoder-family'),
+  'the fallback exemption must disappear with the decoder ownership proof that justifies it',
+);
+const reopenedFamily = mutatedBaseline((arm64) => {
+  const memory = arm64.effectRegistry.families.find((family) => family.id === 'memory');
+  memory.status = 'excluded';
+  memory.coverage = 'partial';
+});
+assert.equal(reopenedFamily.terminalEligible, false);
+assert.ok(reopenedFamily.blockingUnits.includes('arm64:a64:effect-family:memory'));
 
 console.log(`ARM64e A64 delegation denominator (${proof.knownBaselineEncodingCaseCount} known baseline cases + ${proof.pacEncodingCaseCount} PAC cases): PASS; dependency=${proof.terminalStatus}`);

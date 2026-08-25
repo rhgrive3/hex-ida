@@ -15,9 +15,26 @@
       "decoder": {
         "provider": "capstone/backend",
         "contract": "external",
-        "enumerationStatus": "excluded",
-        "reason": "The production Capstone bridge does not expose a finite A64 instruction-family registry for this inventory.",
-        "missingUnits": ["arm64:a64:all-decoder-encodings-and-aliases"]
+        "enumerationStatus": "exact",
+        "units": ["arm64:a64:all-decoder-encodings-and-aliases"],
+        "missingUnits": [],
+        "denominator": {
+          "schemaVersion": "arm64-a64-decoder-denominator/v2",
+          "denominatorId": "arm64:a64:locked-decoder-ownership:v2",
+          "profileId": "arm64:a64:stage2-a2-production-effects:v2",
+          "architectureProfileId": "arm64:a64",
+          "denominatorAuthority": "independent-arm-encoding-family-union-plus-fixed-decoder-audit",
+          "decoderIdentityId": "capstone/backend:arm64:a64:5.0:cb88f8a5:2e71bc20:6b108b95",
+          "architectureSemanticVersion": "7",
+          "source": "tools/validation/machine-effects/arm64-a64-decoder-denominator.mjs",
+          "test": "tests/machine-effects/arm64-a64-decoder-denominator.test.mjs",
+          "candidateCaseCount": 376186,
+          "candidateUniqueWordCount": 375875,
+          "candidateSha256": "57f25255163e5194f7b53a0766444a479da2538b98dd1c84fb06104feb0f6590",
+          "candidateUniqueWordsSha256": "a752ffdc75e67302f32578f9c2697b586067db98b81686aa861e46b553d75e90",
+          "decoderAuditSha256": "de6882fa5b13b7f31480fb4089f76d537415e18262de81d5f306a62f72061d4d",
+          "dependencyFamilies": ["memory", "simd"]
+        }
       },
       "effectRegistry": {
         "source": "js/targets/architecture/arm64/effects/index.js",
@@ -67,8 +84,59 @@
               }
             }
           },
-          { "id": "memory", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "Memory families include constrained-unpredictable forms and implementation-defined prefetch effects." },
-          { "id": "simd", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "SIMD registry includes unsupported/scalable-vector and unresolved operand shapes." },
+          {
+            "id": "memory",
+            "status": "exact",
+            "coverage": "exact-with-intrinsic",
+            "preexisting": false,
+            "oracle": "arm-a-profile-a64-load-store-encoding-tables + deployed-capstone-5-arm64 + llvm-aarch64-integrated-assembler-disassembler",
+            "reason": "All 121 registry-owned load/store, exclusive, LSE-atomic, barrier, and prefetch mnemonics are bound to 235 encoding cases assembled by LLVM MC and decoded by the deployed Capstone build, including every one of the 32 PRFM/PRFUM prfop encodings. Constrained-unpredictable and malformed forms remain explicit fail-closed negatives outside the denominator.",
+            "proof": {
+              "schemaVersion": "machine-effects-effect-unit-proof/v1",
+              "source": "js/targets/architecture/arm64/effects/memory.js",
+              "test": "tests/machine-effects/arm64-memory-addressing.test.mjs",
+              "denominatorTest": "tests/machine-effects/arm64-a64-memory-denominator.test.mjs",
+              "denominator": {
+                "schemaVersion": "arm64-a64-memory-denominator/v1",
+                "denominatorId": "arm64:a64:memory-encoding-discriminators:v1",
+                "profileId": "arm64:a64",
+                "source": "tools/validation/machine-effects/arm64-a64-memory-denominator.mjs",
+                "encodingFamilyCount": 9,
+                "encodingCaseCount": 235,
+                "mnemonicCount": 121,
+                "exactMnemonicCount": 121,
+                "partialMnemonicCount": 0,
+                "corpusSha256": "4433ccc2c89cb205e6eaf745159fe3f5d65f3760ddc468a3067ce5c03c90063e",
+                "oracleIds": ["arm-a-profile-a64-load-store-encoding-tables", "deployed-capstone-5-arm64", "llvm-aarch64-integrated-assembler-disassembler"]
+              }
+            }
+          },
+          {
+            "id": "simd",
+            "status": "exact",
+            "coverage": "exact-with-intrinsic",
+            "preexisting": false,
+            "oracle": "arm-a64-advanced-simd-encoding-tables + llvm-mc-aarch64-advanced-simd + deployed-capstone-arm64-a64",
+            "reason": "All 108 registry-owned Advanced SIMD mnemonics are bound to 891 fixed-width A64 encoding cases assembled by LLVM MC and decoded by the deployed Capstone build, with the three internal alias bindings and the out-of-profile SVE/malformed negatives proven separately.",
+            "proof": {
+              "schemaVersion": "machine-effects-effect-unit-proof/v1",
+              "source": "js/targets/architecture/arm64/effects/simd.js",
+              "test": "tests/machine-effects/arm64-simd-core.test.mjs",
+              "denominatorTest": "tests/machine-effects/arm64-a64-simd-denominator.test.mjs",
+              "denominator": {
+                "schemaVersion": "arm64-a64-simd-denominator/v1",
+                "denominatorId": "arm64:a64:advanced-simd-encoding-discriminators:v1",
+                "profileId": "arm64:a64",
+                "source": "tools/validation/machine-effects/arm64-a64-simd-denominator.mjs",
+                "mnemonicCount": 108,
+                "caseCount": 891,
+                "formCount": 891,
+                "aliasBindingCount": 3,
+                "corpusSha256": "7fe74945fe34e0f0c1f967297d53e25323d03bd446d701598211f15f49bedd4b",
+                "oracleIds": ["arm-a64-advanced-simd-encoding-tables", "llvm-mc-aarch64-advanced-simd", "deployed-capstone-arm64-a64"]
+              }
+            }
+          },
           {
             "id": "fp",
             "status": "exact",
@@ -155,10 +223,31 @@
       "decoder": {
         "provider": "capstone/backend",
         "contract": "external",
-        "enumerationStatus": "excluded",
-        "reason": "Baseline A64 delegation remains incomplete; the PAC extension has a separate exact finite discriminator denominator.",
+        "enumerationStatus": "exact",
         "units": ["arm64e:a64+pac:all-a64-decoder-encodings-and-aliases", "arm64e:a64+pac:all-pac-decoder-encodings-and-aliases"],
-        "missingUnits": ["arm64e:a64+pac:all-a64-decoder-encodings-and-aliases"],
+        "missingUnits": [],
+        "delegation": {
+          "schemaVersion": "arm64e-a64-delegation-denominator/v1",
+          "denominatorId": "arm64e:a64+pac:baseline-a64-delegation:v1",
+          "profileId": "arm64e:a64+pac",
+          "source": "tools/validation/machine-effects/arm64e-a64-delegation-denominator.mjs",
+          "test": "tests/machine-effects/arm64e-a64-delegation-denominator.test.mjs",
+          "delegationMechanismStatus": "proven",
+          "terminalStatus": "exact-via-arm64-baseline",
+          "units": [
+            "arm64e:a64+pac:all-a64-decoder-encodings-and-aliases",
+            "arm64e:a64+pac:alias:baseline-a64-delegation",
+            "arm64e:a64+pac:effect-family:fallback-unmatched-decoder-family"
+          ],
+          "pacEncodingCaseCount": 44491,
+          "pacMnemonicCount": 38,
+          "knownBaselineEncodingCaseCount": 376186,
+          "strictBaselineDisjointEncodingCaseCount": 376177,
+          "baselineFeatureAliasOverlapCount": 9,
+          "positiveDelegationSampleCount": 5,
+          "pacDispatchOwnerCount": 38,
+          "fallbackDisposition": "null-after-single-canonical-arm64-attempt"
+        },
         "pacDenominator": {
           "schemaVersion": "arm64e-pac-denominator/v1",
           "denominatorId": "arm64e:a64+pac:encoding-discriminators:v1",
@@ -171,7 +260,22 @@
         }
       },
       "aliases": [
-        { "id": "baseline-a64-delegation", "kind": "delegation", "sourceArchitecture": "arm64", "status": "excluded", "preexisting": true, "reason": "Ordinary A64 is delegated to ARM64 and inherits its explicit exclusions." }
+        {
+          "id": "baseline-a64-delegation",
+          "kind": "delegation",
+          "sourceArchitecture": "arm64",
+          "status": "exact",
+          "coverage": "exact-with-intrinsic",
+          "preexisting": false,
+          "oracle": "arm64e-pac-finite-discriminator-denominator + canonical-arm64-machine-effects-lifter + production-arm64e-extension-dispatch + current-arm64-a2-denominator-inventory",
+          "reason": "Ordinary A64 delegates to the canonical ARM64 lifter, whose decoder unit and every effect family are now exact, so the delegated baseline inherits an exact result instead of open exclusions. The PAC boundary is disjoint from the delegated baseline apart from 9 enumerated feature-alias overlaps.",
+          "proof": {
+            "schemaVersion": "machine-effects-effect-unit-proof/v1",
+            "source": "js/targets/architecture/arm64e/effects.js",
+            "test": "tests/machine-effects/arm64e-effects.test.mjs",
+            "denominatorTest": "tests/machine-effects/arm64e-a64-delegation-denominator.test.mjs"
+          }
+        }
       ],
       "pointerAuthenticationMnemonics": [
         "pacia", "pacib", "pacda", "pacdb", "paciza", "pacizb", "pacdza", "pacdzb", "paciasp", "pacibsp", "pacia1716", "pacib1716",
