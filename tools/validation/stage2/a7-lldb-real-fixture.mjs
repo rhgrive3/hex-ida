@@ -11,6 +11,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createRuntimeAuthorityBinding, createRuntimeObservation, validateRuntimeObservation } from '../../../js/runtime/authority.js';
 import {
+  A7_ACTIVE_OPERATION_CAPABILITIES,
   A7_OBSERVED_CAPABILITIES,
   A7_PROFILE_BINDINGS,
   A7_UNSUPPORTED_CAPABILITIES,
@@ -22,10 +23,14 @@ export const A7_LLDB_PROOF_SCHEMA = 'hex-stage2-a7-lldb-provider-proof/v1';
 export const A7_LLDB_FIXTURE_PATH = 'tests/stage2/fixtures/a7-runtime/x86_64-long64.S';
 export const A7_X86_REQUIRED_CAPABILITIES = A7_OBSERVED_CAPABILITIES;
 export const A7_X86_UNSUPPORTED_CAPABILITIES = A7_UNSUPPORTED_CAPABILITIES;
+export const A7_X86_ACTIVE_OPERATION_CAPABILITIES = A7_ACTIVE_OPERATION_CAPABILITIES;
+const BASELINE_CAPABILITIES = Object.freeze(A7_X86_REQUIRED_CAPABILITIES.filter((capability) => !A7_X86_ACTIVE_OPERATION_CAPABILITIES.includes(capability)));
 const TARGET_PROFILE = 'x86_64:long-64';
 const PROVIDER_PROFILE = 'native:lldb-compatible-v1:host';
+const ACTIVE_MARKER = 'A7_LLDB_ACTIVE_OPS';
 
 function sha256(bytes) { return createHash('sha256').update(bytes).digest('hex'); }
+function capabilityMap(capabilities) { return Object.freeze(Object.fromEntries(capabilities.map((capability) => [capability, true]))); }
 
 function git(args) {
   const result = spawnSync('git', args, { cwd: ROOT, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 });
@@ -120,13 +125,418 @@ export function parseLldbOutput(output, { fixturePath = A7_LLDB_FIXTURE_PATH, en
     || !new RegExp(`0x0*${probeWord.toString(16)}: 0x8877665544332211`, 'i').test(text))) throw new Error('a7-lldb-memory-read-write-missing');
   if (!/1 breakpoints deleted; 0 breakpoint locations disabled\./.test(text)) throw new Error('a7-lldb-breakpoint-removal-missing');
   if (!/exited with status = 9 .* killed/.test(text)) throw new Error('a7-lldb-session-cleanup-missing');
-  return Object.freeze({ pid: Number(process[1]), threadId: Number(thread[1]), modulePath, rip, rsp, targetProfileId: TARGET_PROFILE, capabilityResults:Object.freeze(Object.fromEntries(A7_X86_REQUIRED_CAPABILITIES.map((capability) => [capability, true]))) });
+  return Object.freeze({ pid:Number(process[1]), threadId:Number(thread[1]), modulePath, rip, rsp, targetProfileId:TARGET_PROFILE, capabilityResults:capabilityMap(BASELINE_CAPABILITIES) });
+}
+
+function hostActiveOpsPython(fixturePath, probeWord, pythonPath) {
+  return `
+import json
+import lldb
+import os
+import subprocess
+import time
+
+FIXTURE = ${JSON.stringify(fixturePath)}
+PROBE = ${probeWord.toString()}
+PYTHON = ${JSON.stringify(pythonPath)}
+MARKER = ${JSON.stringify(ACTIVE_MARKER)}
+PTRACE_LAUNCHER = r'''import ctypes
+import os
+import sys
+PR_SET_PTRACER = 0x59616D61
+PR_SET_PTRACER_ANY = ctypes.c_ulong(-1).value
+libc = ctypes.CDLL(None, use_errno=True)
+prctl = libc.prctl
+prctl.argtypes = [ctypes.c_int, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong]
+prctl.restype = ctypes.c_int
+if prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY, 0, 0, 0) != 0:
+    error_number = ctypes.get_errno()
+    raise OSError(error_number, os.strerror(error_number))
+os.execv(sys.argv[1], [sys.argv[1]])
+'''
+
+def fail(code):
+    raise RuntimeError(code)
+
+def state_name(state):
+    return lldb.SBDebugger.StateAsCString(state) or str(state)
+
+def wait_for(predicate, timeout=3.0):
+    deadline = time.time() + timeout
+    last = None
+    while time.time() < deadline:
+        last = process.GetState()
+        if predicate(last):
+            return last
+        time.sleep(0.01)
+    return last
+
+def wait_for_fixture_exec(child, timeout=3.0):
+    deadline = time.time() + timeout
+    expected = os.path.realpath(FIXTURE)
+    proc_exe = '/proc/' + str(child.pid) + '/exe'
+    while time.time() < deadline:
+        if child.poll() is not None:
+            fail('ptrace-launcher-failed:' + str(child.returncode))
+        try:
+            if os.path.realpath(proc_exe) == expected:
+                return
+        except OSError:
+            pass
+        time.sleep(0.01)
+    fail('ptrace-launcher-exec-timeout')
+
+def current_frame(code, timeout=1.0):
+    deadline = time.time() + timeout
+    while True:
+        thread = process.GetSelectedThread()
+        if not thread.IsValid() and process.GetNumThreads() > 0:
+            thread = process.GetThreadAtIndex(0)
+        if thread.IsValid():
+            frame = thread.GetFrameAtIndex(0)
+            if frame.IsValid():
+                return thread, frame
+        state = process.GetState()
+        if state in (lldb.eStateExited, lldb.eStateDetached, lldb.eStateInvalid):
+            fail(code + '-process-terminated:' + state_name(state))
+        if time.time() >= deadline:
+            fail(code + '-thread-frame-not-ready')
+        time.sleep(0.01)
+
+def reg(frame, name):
+    value = frame.FindRegister(name)
+    if not value.IsValid():
+        fail('register-missing:' + name)
+    return value.GetValueAsUnsigned()
+
+def module_path(target):
+    module = target.GetModuleAtIndex(0)
+    if not module.IsValid():
+        fail('module-missing')
+    spec = module.GetFileSpec()
+    directory = spec.GetDirectory() or ''
+    filename = spec.GetFilename() or ''
+    return os.path.realpath(os.path.join(directory, filename))
+
+def proc_stat(pid):
+    with open('/proc/' + str(pid) + '/stat', 'r', encoding='utf8') as handle:
+        text = handle.read().strip()
+    close = text.rfind(')')
+    if close < 0:
+        fail('proc-stat-malformed')
+    fields = text[close + 2:].split()
+    if len(fields) < 20:
+        fail('proc-stat-short')
+    return {
+        'cpuTicks': int(fields[11]) + int(fields[12]),
+        'startTimeTicks': int(fields[19]),
+    }
+
+def continue_after_stopped(code, pid, start_time_ticks, stop_id, timeout=3.0):
+    deadline = time.time() + timeout
+    previous_sample = None
+    stable_samples = 0
+    attempts = 0
+    rejected = False
+    rejected_cpu_ticks = None
+    last_error = None
+    while time.time() < deadline:
+        if process.GetProcessID() != pid:
+            fail(code + '-process-id-changed')
+        state = process.GetState()
+        if state in (lldb.eStateExited, lldb.eStateDetached, lldb.eStateInvalid):
+            fail(code + '-process-terminated:' + state_name(state))
+        stat = proc_stat(pid)
+        if stat['startTimeTicks'] != start_time_ticks:
+            fail(code + '-process-identity-changed')
+        current_stop_id = process.GetStopID()
+        if rejected:
+            if stat['cpuTicks'] != rejected_cpu_ticks:
+                fail(code + '-rejected-resume-execution-ambiguous')
+            if lldb.SBDebugger.StateIsStoppedState(state) and current_stop_id != stop_id:
+                stop_id = current_stop_id
+                rejected = False
+                rejected_cpu_ticks = None
+                previous_sample = None
+                stable_samples = 0
+                last_error = None
+                time.sleep(0.01)
+                continue
+            if state == lldb.eStateRunning:
+                time.sleep(0.01)
+                continue
+        if lldb.SBDebugger.StateIsStoppedState(state) and current_stop_id == stop_id:
+            sample = (stat['cpuTicks'], current_stop_id)
+            if sample == previous_sample:
+                stable_samples += 1
+            else:
+                previous_sample = sample
+                stable_samples = 0
+            if stable_samples >= 1:
+                attempts += 1
+                continue_error = process.Continue()
+                if continue_error.Success():
+                    return attempts, stat
+                last_error = str(continue_error)
+                if 'process still running' not in last_error.lower():
+                    fail(code + '-failed:' + last_error)
+                rejected = True
+                rejected_cpu_ticks = stat['cpuTicks']
+                previous_sample = None
+                stable_samples = 0
+        elif not rejected:
+            previous_sample = None
+            stable_samples = 0
+        time.sleep(0.01)
+    fail(code + '-settlement-timeout:' + str(last_error or state_name(process.GetState())))
+
+result = {'kind': 'active-provider-operations'}
+child = None
+process = None
+try:
+    lldb.SBDebugger.Initialize()
+    debugger = lldb.SBDebugger.Create()
+    debugger.SkipLLDBInitFiles(True)
+    debugger.SetAsync(False)
+    target = debugger.CreateTarget(FIXTURE)
+    if not target.IsValid():
+        fail('target-create-failed')
+    child = subprocess.Popen([PYTHON, '-c', PTRACE_LAUNCHER, FIXTURE], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    wait_for_fixture_exec(child)
+    requested_pid = child.pid
+    error = lldb.SBError()
+    process = target.Attach(lldb.SBAttachInfo(requested_pid), error)
+    if not error.Success() or not process.IsValid():
+        fail('attach-failed:' + str(error))
+    attached_pid = process.GetProcessID()
+    if attached_pid != requested_pid:
+        fail('attach-pid-mismatch')
+    if not lldb.SBDebugger.StateIsStoppedState(process.GetState()):
+        fail('attach-not-stopped')
+    thread, frame = current_frame('attach')
+    rip = reg(frame, 'rip')
+    rsp = reg(frame, 'rsp')
+    rax = reg(frame, 'rax')
+    memory_error = lldb.SBError()
+    probe_value = process.ReadUnsignedFromMemory(PROBE, 8, memory_error)
+    if not memory_error.Success() or probe_value != 0x1020304050607080:
+        fail('attach-memory-mismatch')
+    observed_module = module_path(target)
+    if observed_module != os.path.realpath(FIXTURE):
+        fail('attach-module-mismatch')
+    result['attach'] = {
+        'observed': True, 'requestedPid': requested_pid, 'attachedPid': attached_pid,
+        'targetTriple': target.GetTriple(), 'modulePath': observed_module,
+        'threadId': thread.GetThreadID(), 'registers': {'rip': hex(rip), 'rsp': hex(rsp), 'rax': hex(rax)},
+        'memoryProbe': hex(probe_value), 'state': state_name(process.GetState()),
+    }
+
+    debugger.SetAsync(True)
+    pause_stat_before = proc_stat(attached_pid)
+    pause_stop_id_before = process.GetStopID()
+    continue_error = process.Continue()
+    if not continue_error.Success():
+        fail('pause-continue-failed:' + str(continue_error))
+    pause_stat_after = pause_stat_before
+    pause_running_observed = False
+    pause_deadline = time.time() + 3.0
+    while time.time() < pause_deadline:
+        state = process.GetState()
+        if state in (lldb.eStateExited, lldb.eStateDetached, lldb.eStateInvalid):
+            fail('pause-process-terminated:' + state_name(state))
+        try:
+            pause_stat_after = proc_stat(attached_pid)
+        except BaseException:
+            fail('pause-process-stat-unavailable')
+        if pause_stat_after['startTimeTicks'] != pause_stat_before['startTimeTicks']:
+            fail('pause-process-identity-changed')
+        if pause_stat_after['cpuTicks'] > pause_stat_before['cpuTicks']:
+            pause_running_observed = True
+            break
+        time.sleep(0.01)
+    if not pause_running_observed:
+        fail('pause-no-execution-progress')
+    process.SendAsyncInterrupt()
+    stopped_state = wait_for(lldb.SBDebugger.StateIsStoppedState, timeout=3.0)
+    if not lldb.SBDebugger.StateIsStoppedState(stopped_state):
+        fail('pause-stopped-not-observed:' + state_name(stopped_state))
+    if process.GetProcessID() != attached_pid:
+        fail('pause-process-id-changed')
+    pause_stat_stopped = proc_stat(attached_pid)
+    if pause_stat_stopped['startTimeTicks'] != pause_stat_before['startTimeTicks']:
+        fail('pause-process-identity-changed-after-stop')
+    pause_stop_id_after = process.GetStopID()
+    if pause_stop_id_after <= pause_stop_id_before:
+        fail('pause-stop-id-not-advanced')
+    result['pause'] = {
+        'observed': True, 'continueAccepted': True, 'stopAccepted': True,
+        'runningObserved': True, 'runningEvidence': 'exact-host-process-cpu-progress+lldb-stop-id',
+        'executionEvidence': 'exact-host-process-cpu-ticks-during-provider-running-window',
+        'executionWindow': 'after-continue-before-interrupt',
+        'progressTransport': 'linux-proc-stat+lldb-stop-id',
+        'stoppedObserved': True, 'executionAdvanced': True, 'interruptIssued': True,
+        'stopIdBefore': pause_stop_id_before, 'stopIdAfter': pause_stop_id_after, 'stopIdAdvanced': True,
+        'processId': process.GetProcessID(),
+        'cpuTicksBefore': pause_stat_before['cpuTicks'], 'cpuTicksAfter': pause_stat_after['cpuTicks'],
+        'processStartTimeTicks': pause_stat_before['startTimeTicks'],
+        'state': state_name(process.GetState()),
+    }
+
+    debugger.SetAsync(True)
+    cancel_stop_id_before = pause_stop_id_after
+    cancel_continue_attempts, cancel_stat_before = continue_after_stopped(
+        'cancel-continue', attached_pid, pause_stat_before['startTimeTicks'], cancel_stop_id_before)
+    cancel_stat_after = cancel_stat_before
+    cancel_progress_observed = False
+    cancel_deadline = time.time() + 3.0
+    while time.time() < cancel_deadline:
+        state = process.GetState()
+        if state in (lldb.eStateExited, lldb.eStateDetached, lldb.eStateInvalid):
+            fail('cancel-process-terminated:' + state_name(state))
+        try:
+            cancel_stat_after = proc_stat(attached_pid)
+        except BaseException:
+            fail('cancel-process-stat-unavailable')
+        if cancel_stat_after['startTimeTicks'] != cancel_stat_before['startTimeTicks']:
+            fail('cancel-process-identity-changed')
+        if cancel_stat_after['cpuTicks'] > cancel_stat_before['cpuTicks']:
+            cancel_progress_observed = True
+            break
+        time.sleep(0.01)
+    if not cancel_progress_observed:
+        fail('cancel-no-execution-progress')
+    process.SendAsyncInterrupt()
+    stopped_state = wait_for(lldb.SBDebugger.StateIsStoppedState, timeout=3.0)
+    if not lldb.SBDebugger.StateIsStoppedState(stopped_state):
+        fail('cancel-target-not-stopped:' + state_name(stopped_state))
+    if process.GetProcessID() != attached_pid:
+        fail('cancel-process-id-changed')
+    cancel_stop_id_after = process.GetStopID()
+    if cancel_stop_id_after <= cancel_stop_id_before:
+        fail('cancel-stop-id-not-advanced')
+    first_state = process.GetState()
+    first_stop_id = cancel_stop_id_after
+    first_stat = proc_stat(attached_pid)
+    if first_stat['startTimeTicks'] != cancel_stat_before['startTimeTicks']:
+        fail('cancel-process-identity-changed-after-stop')
+    time.sleep(0.10)
+    late_state = process.GetState()
+    late_stop_id = process.GetStopID()
+    late_stat = proc_stat(attached_pid)
+    if late_stat['startTimeTicks'] != cancel_stat_before['startTimeTicks']:
+        fail('cancel-late-process-identity-changed')
+    if first_state != late_state or first_stop_id != late_stop_id:
+        fail('cancel-late-success-observed')
+    result['cancel'] = {
+        'observed': True, 'inFlightObserved': True,
+        'inFlightEvidence': 'async-continue+exact-host-process-cpu-progress-before-cancel',
+        'executionEvidence': 'exact-host-process-cpu-ticks-during-provider-running-window',
+        'executionWindow': 'after-continue-before-cancel-interrupt',
+        'progressTransport': 'linux-proc-stat+lldb-stop-id',
+        'executionAdvanced': True, 'interruptAccepted': True,
+        'operationSettled': True, 'continueSettlementAttempts': cancel_continue_attempts,
+        'processId': process.GetProcessID(),
+        'cpuTicksBefore': cancel_stat_before['cpuTicks'], 'cpuTicksAfter': cancel_stat_after['cpuTicks'],
+        'processStartTimeTicks': cancel_stat_before['startTimeTicks'],
+        'stopIdBefore': cancel_stop_id_before, 'stopIdAfter': cancel_stop_id_after, 'stopIdAdvanced': True,
+        'settlement': 'cancelled', 'providerDisposition': 'lldb-async-interrupt-observed',
+        'lateResultRejected': True, 'lateStateStable': True, 'lateStopIdStable': True, 'lateProcessInstanceStable': True,
+        'state': state_name(late_state),
+    }
+    result['operationResults'] = {'attach': True, 'pause': True, 'cancel': True}
+except BaseException as exc:
+    result['error'] = str(exc)
+finally:
+    try:
+        if process is not None and process.IsValid() and process.GetState() not in (lldb.eStateExited, lldb.eStateDetached, lldb.eStateInvalid):
+            process.Kill()
+    except BaseException:
+        pass
+    try:
+        if child is not None and child.poll() is None:
+            child.kill()
+        if child is not None:
+            child.wait(timeout=1.0)
+    except BaseException:
+        pass
+    try:
+        if 'debugger' in globals():
+            lldb.SBDebugger.Destroy(debugger)
+        lldb.SBDebugger.Terminate()
+    except BaseException:
+        pass
+print(MARKER + '=' + json.dumps(result, sort_keys=True))
+`;
+}
+
+function runLldbPythonProof(lldb, python, directory, pythonSource, code) {
+  const scriptPath = path.join(directory, `${code}.py`);
+  fs.writeFileSync(scriptPath, pythonSource, { encoding:'utf8', mode:0o600 });
+  const pythonPathResult = spawnSync(lldb, ['-P'], { cwd:ROOT, encoding:'utf8', timeout:10_000, maxBuffer:2 * 1024 * 1024 });
+  const lldbPythonPath = String(pythonPathResult.stdout || '').trim();
+  if (pythonPathResult.status !== 0 || !lldbPythonPath) throw new Error('a7-lldb-python-provider-path-unavailable');
+  const result = spawnSync(python, [scriptPath], {
+    cwd:ROOT, encoding:'utf8', timeout:30_000, maxBuffer:16 * 1024 * 1024,
+    env:{ ...process.env, DEBUGINFOD_URLS:'', PYTHONPATH:[lldbPythonPath, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter) },
+  });
+  const output = `${result.stdout || ''}\n${result.stderr || ''}`;
+  if (result.status !== 0 || result.signal) throw new Error(`${code}:${result.signal || result.status}:${String(result.stderr || '').trim()}`);
+  return Object.freeze({ output, lldbPythonPath });
+}
+
+function parseMarker(output, marker, code) {
+  const prefix = `${marker}=`;
+  const line = String(output || '').split(/\r?\n/).find((value) => value.startsWith(prefix));
+  if (!line) throw new Error(`${code}-missing`);
+  let value;
+  try { value = JSON.parse(line.slice(prefix.length)); } catch { throw new Error(`${code}-invalid-json`); }
+  if (value?.error) throw new Error(`${code}-failed:${value.error}`);
+  return value;
+}
+
+function safeProgress(before, after) {
+  return Number.isSafeInteger(before) && before >= 0 && Number.isSafeInteger(after) && after > before;
+}
+
+function safeStopProgress(before, after) {
+  return Number.isSafeInteger(before) && before >= 0 && Number.isSafeInteger(after) && after > before;
+}
+
+export function parseLldbActiveOpsOutput(output, { fixturePath = null, probeWord = null } = {}) {
+  const proof = parseMarker(output, ACTIVE_MARKER, 'a7-lldb-active-ops');
+  if (proof?.kind !== 'active-provider-operations') throw new Error('a7-lldb-active-ops-kind-mismatch');
+  const attach = proof.attach || {};
+  const pause = proof.pause || {};
+  const cancel = proof.cancel || {};
+  if (proof.operationResults?.attach !== true || attach.observed !== true) throw new Error('a7-lldb-attach-not-observed');
+  if (!Number.isSafeInteger(attach.requestedPid) || attach.requestedPid <= 0 || attach.attachedPid !== attach.requestedPid) throw new Error('a7-lldb-attach-process-identity-mismatch');
+  if (!/x86_64|x86-64/i.test(String(attach.targetTriple || ''))) throw new Error('a7-lldb-attach-target-identity-mismatch');
+  if (fixturePath != null && path.resolve(String(attach.modulePath || '')) !== path.resolve(fixturePath)) throw new Error('a7-lldb-attach-module-identity-mismatch');
+  if (!attach.registers?.rip || !attach.registers?.rsp || !Number.isSafeInteger(attach.threadId)) throw new Error('a7-lldb-attach-register-observation-missing');
+  if (probeWord != null && String(attach.memoryProbe || '').toLowerCase() !== '0x1020304050607080') throw new Error('a7-lldb-attach-memory-observation-missing');
+  if (proof.operationResults?.pause !== true || pause.observed !== true || pause.runningObserved !== true || pause.stoppedObserved !== true || pause.executionAdvanced !== true || pause.continueAccepted !== true || pause.stopAccepted !== true || pause.interruptIssued !== true) throw new Error('a7-lldb-pause-not-observed');
+  if (pause.runningEvidence !== 'exact-host-process-cpu-progress+lldb-stop-id' || pause.executionEvidence !== 'exact-host-process-cpu-ticks-during-provider-running-window') throw new Error('a7-lldb-pause-running-evidence-missing');
+  if (pause.processId !== attach.attachedPid || !Number.isSafeInteger(pause.processStartTimeTicks) || pause.processStartTimeTicks <= 0) throw new Error('a7-lldb-pause-session-identity-mismatch');
+  if (!safeProgress(pause.cpuTicksBefore, pause.cpuTicksAfter)) throw new Error('a7-lldb-pause-process-progress-evidence-missing');
+  if (pause.stopIdAdvanced !== true || !safeStopProgress(pause.stopIdBefore, pause.stopIdAfter)) throw new Error('a7-lldb-pause-stop-id-evidence-missing');
+  if (proof.operationResults?.cancel !== true || cancel.observed !== true || cancel.inFlightObserved !== true || cancel.interruptAccepted !== true || cancel.executionAdvanced !== true) throw new Error('a7-lldb-cancel-not-observed');
+  if (cancel.inFlightEvidence !== 'async-continue+exact-host-process-cpu-progress-before-cancel' || cancel.executionEvidence !== 'exact-host-process-cpu-ticks-during-provider-running-window') throw new Error('a7-lldb-cancel-inflight-evidence-missing');
+  if (cancel.operationSettled !== true || cancel.settlement !== 'cancelled' || cancel.providerDisposition !== 'lldb-async-interrupt-observed' || cancel.lateResultRejected !== true || cancel.lateStateStable !== true || cancel.lateStopIdStable !== true || cancel.lateProcessInstanceStable !== true) throw new Error('a7-lldb-cancel-settlement-missing');
+  if (cancel.processId !== attach.attachedPid || !Number.isSafeInteger(cancel.processStartTimeTicks) || cancel.processStartTimeTicks <= 0) throw new Error('a7-lldb-cancel-session-identity-mismatch');
+  if (!safeProgress(cancel.cpuTicksBefore, cancel.cpuTicksAfter)) throw new Error('a7-lldb-cancel-process-progress-evidence-missing');
+  if (cancel.stopIdAdvanced !== true || !safeStopProgress(cancel.stopIdBefore, cancel.stopIdAfter)) throw new Error('a7-lldb-cancel-stop-id-evidence-missing');
+  return Object.freeze({
+    ...proof,
+    operationResults:Object.freeze({ attach:true, pause:true, cancel:true }),
+    capabilityResults:capabilityMap(A7_X86_ACTIVE_OPERATION_CAPABILITIES),
+  });
 }
 
 export function collectA7X86LldbProof({
   lldb = process.env.LLDB || (fs.existsSync('/usr/bin/lldb') ? '/usr/bin/lldb' : '/usr/bin/lldb-18'),
   clang = fs.existsSync('/usr/bin/clang') ? '/usr/bin/clang' : '/usr/bin/clang-18',
   readobj = fs.existsSync('/usr/bin/llvm-readobj-18') ? '/usr/bin/llvm-readobj-18' : 'llvm-readobj',
+  python = fs.existsSync('/usr/bin/python3') ? '/usr/bin/python3' : 'python3',
 } = {}) {
   const clean = git(['status', '--porcelain', '--untracked-files=all']);
   if (clean) throw new Error('a7-lldb-proof-worktree-dirty');
@@ -141,62 +551,88 @@ export function collectA7X86LldbProof({
     lldb: executableIdentity(lldb, ['lldb', 'lldb-18']),
     clang: executableIdentity(clang, ['clang', 'clang-18']),
     readobj: executableIdentity(readobj, ['llvm-readobj-18', 'llvm-readobj']),
+    python: executableIdentity(python, ['python3', 'python3.10', 'python3.11', 'python3.12', 'python3.13']),
   });
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'hex-a7-x86-'));
   let checkedFixture;
-  let observed;
+  let baseline;
+  let activeOperations;
+  let lldbPythonPath;
   try {
     checkedFixture = fixture(directory, { clang, readobj });
     const result = spawnSync(lldb, lldbCommand(checkedFixture.absolute, checkedFixture.entry, checkedFixture.probeWord), { cwd: ROOT, encoding: 'utf8', timeout: 30_000, maxBuffer: 16 * 1024 * 1024 });
     const output = `${result.stdout || ''}\n${result.stderr || ''}`;
     if (result.status !== 0 || result.signal) throw new Error(`a7-lldb-provider-command-failed:${result.signal || result.status}`);
-    observed = parseLldbOutput(output, { fixturePath:checkedFixture.absolute, entry:checkedFixture.entry, probeWord:checkedFixture.probeWord });
+    baseline = parseLldbOutput(output, { fixturePath:checkedFixture.absolute, entry:checkedFixture.entry, probeWord:checkedFixture.probeWord });
+    const activeRun = runLldbPythonProof(lldb, python, directory, hostActiveOpsPython(checkedFixture.absolute, checkedFixture.probeWord, python), 'a7-lldb-active-ops');
+    lldbPythonPath = activeRun.lldbPythonPath;
+    activeOperations = parseLldbActiveOpsOutput(activeRun.output, { fixturePath:checkedFixture.absolute, probeWord:checkedFixture.probeWord });
   } finally {
     fs.rmSync(directory, { recursive:true, force:true });
   }
   const bindingContract = A7_PROFILE_BINDINGS[TARGET_PROFILE];
   if (!bindingContract || bindingContract.sourcePath !== A7_LLDB_FIXTURE_PATH || bindingContract.providerProfileId !== PROVIDER_PROFILE || bindingContract.providerProofCommandId !== 'a7-lldb-real-fixture') throw new Error('a7-lldb-profile-contract-mismatch');
+  const closedCapabilities = Object.freeze([...new Set([...Object.keys(baseline.capabilityResults), ...Object.keys(activeOperations.capabilityResults)])].sort());
+  if (JSON.stringify(closedCapabilities) !== JSON.stringify([...A7_X86_REQUIRED_CAPABILITIES].sort())) throw new Error('a7-lldb-capability-denominator-incomplete');
   const binaryIdentity = `sha256:${checkedFixture.digest}`;
   const buildIdentity = `clang-lld-static:${checkedFixture.sourceDigest}:${binaryIdentity}`;
-  const sessionIdentity = `lldb-session:${version}:${observed.pid}:${currentCommitSha}`;
-  const providerFingerprint = sha256(Buffer.from(JSON.stringify({ version, executableIdentities })));
+  const attachedPid = activeOperations.attach.attachedPid;
+  const sessionIdentity = `lldb-attach-session:${version}:${attachedPid}:${currentCommitSha}`;
+  const providerFingerprint = sha256(Buffer.from(JSON.stringify({ version, executableIdentities, lldbPythonPath })));
+  const activeModulePath = path.resolve(activeOperations.attach.modulePath);
   const binding = createRuntimeAuthorityBinding({
     providerIdentity: `lldb:${version}:${providerFingerprint}`,
     providerProfileId: PROVIDER_PROFILE,
     providerVersion: version,
-    runtimeInstanceIdentity: `lldb-process:${observed.pid}`,
-    targetIdentity: `lldb-target:${binaryIdentity}`,
+    runtimeInstanceIdentity: `lldb-attached-process:${attachedPid}`,
+    targetIdentity: `lldb-attached-target:${attachedPid}:${binaryIdentity}`,
     targetProfileId: TARGET_PROFILE,
     binaryIdentity,
     buildIdentity,
-    moduleIdentity: `lldb-module:${binaryIdentity}:${sha256(Buffer.from(observed.modulePath))}`,
-    loadMappingIdentity: `lldb-load:${binaryIdentity}:${sha256(Buffer.from(observed.modulePath))}`,
+    moduleIdentity: `lldb-module:${binaryIdentity}:${sha256(Buffer.from(activeModulePath))}`,
+    loadMappingIdentity: `lldb-load:${binaryIdentity}:${sha256(Buffer.from(`${activeModulePath}:${activeOperations.attach.registers.rip}`))}`,
     sessionIdentity,
     capabilityVersion: 'debug/v1',
     commitSha: currentCommitSha,
     treeSha: currentTreeSha,
     epoch: 0,
   });
-  const observation = createRuntimeObservation({ binding, sequence: 1, observedAt: new Date().toISOString(), kind: 'active-x86-debug-session', payload: { provider: 'lldb', providerVersion: version, threadId: observed.threadId, registers: { rip: observed.rip, rsp: observed.rsp }, fixturePath: A7_LLDB_FIXTURE_PATH, observedCapabilities:observed.capabilityResults, closedCapabilities:A7_X86_REQUIRED_CAPABILITIES, unsupportedCapabilities:A7_X86_UNSUPPORTED_CAPABILITIES } });
+  const observation = createRuntimeObservation({
+    binding, sequence:1, observedAt:new Date().toISOString(), kind:'active-x86-debug-session',
+    payload:{
+      provider:'lldb', providerVersion:version, fixturePath:A7_LLDB_FIXTURE_PATH,
+      processIdentity:attachedPid, modulePath:activeModulePath,
+      attach:activeOperations.attach, pause:activeOperations.pause, cancel:activeOperations.cancel,
+      baselineLaunchProcessId:baseline.pid,
+      observedCapabilities:Object.freeze({ ...baseline.capabilityResults, ...activeOperations.capabilityResults }),
+      closedCapabilities, unsupportedCapabilities:A7_X86_UNSUPPORTED_CAPABILITIES,
+    },
+  });
   const checkedObservation = validateRuntimeObservation(binding, observation);
   if (!checkedObservation.ok) throw new Error(`a7-lldb-runtime-observation-invalid:${checkedObservation.reason}`);
   return Object.freeze({
-    schemaVersion: A7_LLDB_PROOF_SCHEMA,
-    status: 'exact-active-provider-observed',
-    promotion: 'requires-canonical-four-profile-evidence-assembly',
-    candidateCommitSha: currentCommitSha,
-    candidateTreeSha: currentTreeSha,
-    providerProfileId: PROVIDER_PROFILE,
-    providerVersion: version,
-    targetProfileId: TARGET_PROFILE,
-    fixture: { path: A7_LLDB_FIXTURE_PATH, sourceSha256:checkedFixture.sourceDigest, sha256: checkedFixture.digest, targetTriple: 'x86_64-linux-gnu', compilerVersion, semantics:checkedFixture.sourceSemantics },
-    independentOracle: { id:'llvm-readobj-18', executableIdentity:executableIdentities.readobj, outputSha256:checkedFixture.oracleDigest },
+    schemaVersion:A7_LLDB_PROOF_SCHEMA,
+    status:'exact-active-provider-observed',
+    promotion:'requires-canonical-four-profile-evidence-assembly',
+    candidateCommitSha:currentCommitSha,
+    candidateTreeSha:currentTreeSha,
+    providerProfileId:PROVIDER_PROFILE,
+    providerVersion:version,
+    targetProfileId:TARGET_PROFILE,
+    fixture:{ path:A7_LLDB_FIXTURE_PATH, sourceSha256:checkedFixture.sourceDigest, sha256:checkedFixture.digest, targetTriple:'x86_64-linux-gnu', compilerVersion, semantics:checkedFixture.sourceSemantics },
+    independentOracle:{ id:'llvm-readobj-18', executableIdentity:executableIdentities.readobj, outputSha256:checkedFixture.oracleDigest },
     providerExecutableIdentities:executableIdentities,
-    binding,
-    observation,
-    closedCapabilities:A7_X86_REQUIRED_CAPABILITIES,
-    unsupportedCapabilities:A7_X86_UNSUPPORTED_CAPABILITIES,
-    closedChecks: Object.freeze(['deterministic-real-fixture-byte-identity', 'independent-llvm-object-oracle', 'lldb-version-observed', 'lldb-target-x86_64', 'lldb-process-launched', 'lldb-stop-at-entry', 'lldb-registers-observed', 'lldb-register-write-observed', 'lldb-memory-read-write-observed', 'lldb-breakpoint-step-remove-observed', 'runtime-binding-exact-head', 'runtime-observation-identity']),
+    lldbPythonPath,
+    activeOperations:Object.freeze({ attach:activeOperations.attach, pause:activeOperations.pause, cancel:activeOperations.cancel }),
+    binding, observation, closedCapabilities, unsupportedCapabilities:A7_X86_UNSUPPORTED_CAPABILITIES,
+    closedChecks:Object.freeze([
+      'deterministic-real-fixture-byte-identity','independent-llvm-object-oracle','lldb-version-observed',
+      'lldb-target-x86_64','lldb-process-launched','lldb-stop-at-entry','lldb-registers-observed','lldb-register-write-observed',
+      'lldb-memory-read-write-observed','lldb-breakpoint-step-remove-observed','lldb-real-process-attach-observed',
+      'lldb-attach-process-target-module-identity','lldb-running-target-pause-observed','lldb-pause-exact-process-progress-stop-id-observed',
+      'lldb-active-process-cancel-observed','lldb-cancel-operation-settled','lldb-cancel-late-result-stable',
+      'runtime-binding-exact-head','runtime-observation-identity',
+    ]),
   });
 }
 
