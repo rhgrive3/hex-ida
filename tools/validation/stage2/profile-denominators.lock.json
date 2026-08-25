@@ -196,8 +196,8 @@
         "tools/validation/stage2/a7-profile-contract.mjs",
         "tools/validation/stage2/build-profile-denominator-inventory.mjs"
       ],
-      "inventoryHash": "stage2-denominator-inventory:a2b4331558706fa69d4ff11fe0751521",
-      "lockHash": "stage2-denominator-item:da0876fc7511b4d891567b6be5d08623"
+      "inventoryHash": "stage2-denominator-inventory:1b8985860ee070bb3260a94d6e5fcadc",
+      "lockHash": "stage2-denominator-item:92aca2d5c4e0afd1e65eaf0cf1c02222"
     },
     "S2-M6-WASM": {
       "id": "stage2-denominator:S2-M6-WASM:v1",
@@ -585,5 +585,5 @@
       "lockHash": "stage2-denominator-item:1a18850e21c7c1ad0f2499b400d01e10"
     }
   },
-  "lockHash": "stage2-denominator-lock:3b9c1114b03694b6bbe74843af5a97df"
+  "lockHash": "stage2-denominator-lock:4f3fdb266f9e3c756e1321023a7d00cc"
 }
