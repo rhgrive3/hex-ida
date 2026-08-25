@@ -243,6 +243,7 @@ export function selectedTypeIfCertain(result, layer) {
 
 /** Counts conclusions presented as certain, for the false-certainty metric. */
 export function certainConclusions(result) {
+  if (!isCompleteStatus(result?.status)) return [];
   return Object.entries(result.layers ?? {})
     .filter(([, solved]) => solved.confidence === 'certain' && solved.contradictions.length === 0)
     .map(([layer, solved]) => ({ layer, claim: solved.selected }));
