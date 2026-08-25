@@ -78,6 +78,15 @@ function destIndex(mn) {
   return 0;
 }
 
+function atomicOperandRole(mn) {
+  const b = mn.toLowerCase();
+  if (/^cas(?:a|al|l)?(?:b|h)?$/.test(b)) return { destIndex: 0, readsDest: true };
+  if (/^(?:swp|ldadd|ldclr|ldeor|ldset)(?:a|al|l)?(?:b|h)?$/.test(b)) {
+    return { destIndex: 1, readsDest: false };
+  }
+  return null;
+}
+
 function readRegs(op, into) {
   if (!op) return;
   if (op.k === 'reg' && op.cls === 'gp') into.add(op.num);
@@ -156,14 +165,16 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
       if (catg === 'load') res.loads++;
       if (catg === 'store') res.stores++;
 
-      const di = destIndex(mn);
+      const atomicRole = atomicOperandRole(b);
+      const di = atomicRole?.destIndex ?? destIndex(mn);
       const destReg = di >= 0 && ops[di]?.k === 'reg' && ops[di]?.cls === 'gp' ? ops[di].num : null;
       const pairDestReg = /^(ldp|ldpsw|ldnp)$/.test(b) && ops[1]?.k === 'reg' && ops[1]?.cls === 'gp'
         ? ops[1].num
         : null;
       const reads = new Set();
       for (let i = 0; i < ops.length; i++) {
-        if ((i === di || (i === 1 && pairDestReg != null)) && ops[i].k === 'reg') continue;
+        const writeOnlyDest = i === di && !atomicRole?.readsDest;
+        if ((writeOnlyDest || (i === 1 && pairDestReg != null)) && ops[i].k === 'reg') continue;
         readRegs(ops[i], reads);
       }
       for (const op of ops) if (op.k === 'mem') readRegs(op, reads);
