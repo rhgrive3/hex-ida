@@ -39,6 +39,11 @@ function sameAbsoluteTarget(target, reference) {
   catch { return false; }
 }
 
+function isAlignedDirectTarget(target) {
+  try { return (BigInt(target) & 3n) === 0n; }
+  catch { return false; }
+}
+
 /**
  * Preserve condition-evaluation operations even when both control outcomes land
  * in the same basic block, but canonicalize the externally visible control edge
@@ -80,6 +85,7 @@ function liftArm64ControlEffectsCore(instruction, options = {}) {
   if (mnemonic === 'b') {
     const target = directTargetOf(instruction, 'branch');
     if (target == null) return ctx.partial('arm64-b-target-unavailable', ['control'], undefined, { kind: 'unknown', reason: 'arm64-b-target-unavailable' });
+    if (!isAlignedDirectTarget(target)) return ctx.partial('arm64-b-target-misaligned-encoding', ['control'], undefined, { kind:'unknown', reason:'arm64-b-target-misaligned-encoding' });
     return ctx.finish({
       controlEffect: { kind: 'branch', target: addressRef(target) },
       metadata: { family: 'control', operation: 'b', direct: true },
@@ -101,6 +107,7 @@ function liftArm64ControlEffectsCore(instruction, options = {}) {
   if (mnemonic === 'bl') {
     const target = directTargetOf(instruction, 'call');
     if (target == null) return ctx.partial('arm64-bl-target-unavailable', ['control','registers'], undefined, { kind: 'unknown', reason: 'arm64-bl-target-unavailable' });
+    if (!isAlignedDirectTarget(target)) return ctx.partial('arm64-bl-target-misaligned-encoding', ['control','registers'], undefined, { kind:'unknown', reason:'arm64-bl-target-misaligned-encoding' });
     const fallthrough = fallthroughRef(instruction);
     const address = instructionAddress(instruction);
     if (address == null) {
@@ -147,6 +154,9 @@ function liftArm64ControlEffectsCore(instruction, options = {}) {
   const fallthrough = fallthroughRef(instruction);
   if (target == null || !fallthrough) {
     return ctx.partial(`arm64-${mnemonic}-targets-unavailable`, ['control'], undefined, { kind: 'unknown', reason: `arm64-${mnemonic}-targets-unavailable` });
+  }
+  if (!isAlignedDirectTarget(target)) {
+    return ctx.partial(`arm64-${mnemonic}-target-misaligned-encoding`, ['control'], undefined, { kind:'unknown', reason:`arm64-${mnemonic}-target-misaligned-encoding` });
   }
 
   if (COMPARE_BRANCH.has(mnemonic)) {
