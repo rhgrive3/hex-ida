@@ -89,6 +89,16 @@ function cstring(bytes, offset, limit = bytes.length) {
   return new TextDecoder('utf8').decode(bytes.subarray(offset, end));
 }
 
+function cstringWithNext(bytes, offset, limit = bytes.length) {
+  let end = offset;
+  while (end < limit && bytes[end] !== 0) end += 1;
+  if (end >= limit) return null;
+  return {
+    value: new TextDecoder('utf8').decode(bytes.subarray(offset, end)),
+    next: end + 1,
+  };
+}
+
 /** Reads the MSF superblock and stream directory. */
 export function parseMsf(bytes) {
   const data = bytesOf(bytes);
@@ -230,13 +240,19 @@ export function parseModuleInfo(bytes, dbi) {
   while (offset + 64 <= end) {
     const streamIndex = view.getInt16(offset + 34, true);
     const symbolByteSize = view.getUint32(offset + 36, true);
-    const moduleName = cstring(bytes, offset + 64, end);
-    let cursor = offset + 64 + moduleName.length + 1;
-    const objectName = cstring(bytes, cursor, end);
-    cursor += objectName.length + 1;
+    const moduleNameEntry = cstringWithNext(bytes, offset + 64, end);
+    if (!moduleNameEntry) break;
+    const objectNameEntry = cstringWithNext(bytes, moduleNameEntry.next, end);
+    if (!objectNameEntry) break;
+    let cursor = objectNameEntry.next;
     // Entries are aligned to 4 bytes.
     cursor = (cursor + 3) & ~3;
-    modules.push({ streamIndex, symbolByteSize, moduleName, objectName });
+    modules.push({
+      streamIndex,
+      symbolByteSize,
+      moduleName: moduleNameEntry.value,
+      objectName: objectNameEntry.value,
+    });
     if (cursor <= offset) break;
     offset = cursor;
   }
@@ -401,10 +417,11 @@ function parseFieldList(view, bytes, start, end) {
     if (leaf !== LF_MEMBER) break;
     const typeIndex = view.getUint32(offset + 4, true);
     const { value: fieldOffset, next } = readNumeric(view, bytes, offset + 8);
-    const name = cstring(bytes, next, end);
-    members.push({ name, typeIndex, offset: fieldOffset });
+    const nameEntry = cstringWithNext(bytes, next, end);
+    if (!nameEntry) break;
+    members.push({ name: nameEntry.value, typeIndex, offset: fieldOffset });
     // Records are padded to a 4-byte boundary with 0xf1..0xf3 filler.
-    let cursor = next + name.length + 1;
+    let cursor = nameEntry.next;
     while (cursor < end && bytes[cursor] >= 0xf0) cursor += 1;
     if (cursor <= offset) break;
     offset = cursor;
