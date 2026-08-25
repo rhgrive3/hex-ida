@@ -1,5 +1,6 @@
 import {
   createBitVectorValue,
+  createIntrinsicEffectSummary,
   createMachineEffectBundle,
   createMachineOperation,
   createMemoryAccess,
@@ -539,6 +540,36 @@ function literalLoad(decoded, context, mnemonic) {
   });
 }
 
+// PRFM carries a 5-bit prfop field. The 18 architecturally named values are a
+// finite (type, target, policy) product; the remaining encodings are valid but
+// unnamed and are spelled as a bare immediate by the disassembler. Both shapes
+// are enumerated here so the prefetch operand is an exact discriminator rather
+// than an opaque token.
+const PREFETCH_TYPES = Object.freeze({ ld:'prefetch-for-load', li:'preload-instruction', st:'prefetch-for-store' });
+const PREFETCH_POLICIES = Object.freeze({ keep:'temporal-keep', strm:'streaming-non-temporal' });
+const PREFETCH_NAMED_RE = /^p(ld|li|st)l([123])(keep|strm)$/;
+const PREFETCH_RAW_RE = /^#(?:0x([0-9a-f]+)|(\d+))$/i;
+
+function prefetchOperand(decoded) {
+  const first = operands(decoded)[0];
+  const text = String(first?.text ?? '').trim().toLowerCase();
+  if (!text) return null;
+  const named = PREFETCH_NAMED_RE.exec(text);
+  if (named) {
+    const [, type, level, policy] = named;
+    const code = ({ ld:0, li:1, st:2 }[type] << 3) | ((Number(level) - 1) << 1) | (policy === 'strm' ? 1 : 0);
+    return Object.freeze({
+      code, spelling:text, named:true,
+      operation:PREFETCH_TYPES[type], cacheLevel:Number(level), policy:PREFETCH_POLICIES[policy],
+    });
+  }
+  const raw = PREFETCH_RAW_RE.exec(text);
+  if (!raw) return null;
+  const code = Number.parseInt(raw[1] ?? raw[2], raw[1] ? 16 : 10);
+  if (!Number.isSafeInteger(code) || code < 0 || code > 31) return null;
+  return Object.freeze({ code, spelling:text, named:false, operation:'unnamed-prfop', cacheLevel:null, policy:null });
+}
+
 function prefetch(decoded, context) {
   let addressing;
   try { addressing = buildArm64EffectiveAddress(decoded, { prefix:'prefetch.addr' }); }
@@ -547,11 +578,46 @@ function prefetch(decoded, context) {
     throw error;
   }
   if (addressing.mode !== 'offset') return partial(decoded, context, 'prfm does not support writeback addressing', ['memory','other']);
+  const prfop = prefetchOperand(decoded);
+  if (!prfop) return partial(decoded, context, 'prfm requires a structured prefetch operation specifier', ['memory','other']);
+  const addressValue = addressing.readOperations
+    .find((operation) => operation.kind === 'register-read' && operation.register?.registerId === addressing.base.physicalId)?.value || null;
+  if (!addressValue) return partial(decoded, context, 'prfm effective address state is unavailable', ['memory','other']);
+
+  // Architecturally PRFM changes no register, memory, or flag state and raises
+  // no synchronous fault; only the memory-system hint itself is
+  // implementation-defined. Declaring that hint as a closed intrinsic keeps the
+  // architectural effect exact instead of leaving the whole instruction
+  // unknown.
+  const operations = [...addressing.readOperations];
+  operations.push(createMachineOperation({
+    kind:'intrinsic',
+    intrinsicId:'arm64.memory-system-prefetch-hint',
+    effectSummary:createIntrinsicEffectSummary({
+      inputs:[addressValue, createBitVectorValue(5, BigInt(prfop.code))],
+      outputs:[],
+      registersRead:[addressing.base.physicalId, ...(addressing.index ? [addressing.index.physicalId] : [])],
+      registersWritten:[],
+      memoryRead:{ scope:'none' },
+      memoryWrite:{ scope:'none' },
+      controlEffects:[],
+      determinism:'nondeterministic',
+      symbolicDetail:'summary-only',
+    }),
+    metadata:{ addressExpr:addressing.addressExpr, state:'memory-system-hint', prfop:prfop.code },
+  }));
+
   return bundle(decoded, context, {
-    operations:[...addressing.readOperations],
-    completeness:'partial',
-    unknownEffects:{ categories:['memory','other'], reason:'PRFM is an implementation-defined memory-system hint without an exact accessed width' },
-    metadata:{ family:'arm64-memory', mnemonic:'prfm', addressing:addressing.metadata, hint:true },
+    operations,
+    possibleFaults:[],
+    completeness:'exact-with-intrinsic',
+    metadata:{
+      family:'arm64-memory', mnemonic:'prfm', addressing:addressing.metadata, hint:true,
+      prefetch:Object.freeze({
+        prfop:prfop.code, spelling:prfop.spelling, named:prfop.named,
+        operation:prfop.operation, cacheLevel:prfop.cacheLevel, policy:prfop.policy,
+      }),
+    },
   });
 }
 

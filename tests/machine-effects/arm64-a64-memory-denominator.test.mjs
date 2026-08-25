@@ -72,7 +72,7 @@ function accesses(bundle) {
 const denominator = validateArm64A64MemoryDenominator();
 assert.equal(denominator.denominatorId, ARM64_A64_MEMORY_DENOMINATOR_ID);
 assert.equal(denominator.encodingFamilyCount, 9);
-assert.equal(denominator.encodingCaseCount, 198);
+assert.equal(denominator.encodingCaseCount, 218);
 assert.equal(denominator.mnemonicCount, 120);
 assert.equal(denominator.partialMnemonicCount, 1);
 assert.equal(new Set(ARM64_A64_MEMORY_ENCODING_FAMILIES.map(({ id }) => id)).size, 9);
@@ -113,6 +113,21 @@ try {
     if (current.readOrdering) assert.ok(memoryAccesses.some(({ direction, access }) => direction === 'read' && access.ordering === current.readOrdering), `${current.id}:read ordering`);
     if (current.writeOrdering) assert.ok(memoryAccesses.some(({ direction, access }) => direction === 'write' && access.ordering === current.writeOrdering), `${current.id}:write ordering`);
     if (current.addressingMode) assert.equal(effects.metadata.addressing?.mode, current.addressingMode, `${current.id}:addressing mode`);
+    if (current.prefetch) {
+      // The prefetch hint is exact only when every prfop discriminator survives
+      // the decoder boundary and the architectural state change stays empty.
+      assert.equal(effects.metadata.prefetch?.operation, current.prefetch.operation, `${current.id}:prfop operation`);
+      assert.equal(effects.metadata.prefetch?.cacheLevel, current.prefetch.cacheLevel, `${current.id}:prfop target`);
+      assert.equal(effects.metadata.prefetch?.policy, current.prefetch.policy, `${current.id}:prfop policy`);
+      assert.equal(effects.metadata.prefetch?.named, true, `${current.id}:prfop naming`);
+      assert.equal(accesses(effects).length, 0, `${current.id}:a prefetch hint must not fabricate a memory access`);
+      assert.equal(effects.operations.some((operation) => operation.kind === 'memory-write'), false, `${current.id}:prefetch write`);
+      const intrinsic = effects.operations.find((operation) => operation.kind === 'intrinsic');
+      assert.ok(intrinsic, `${current.id}:prefetch intrinsic`);
+      assert.equal(intrinsic.intrinsicId, 'arm64.memory-system-prefetch-hint', `${current.id}:prefetch intrinsic id`);
+      assert.deepEqual(intrinsic.effectSummary.registersWritten, [], `${current.id}:prefetch register writes`);
+      assert.equal(intrinsic.effectSummary.determinism, 'nondeterministic', `${current.id}:prefetch determinism`);
+    }
     if (current.literal) assert.equal(effects.metadata.transfer, 'literal', `${current.id}:literal discriminator`);
     if (current.writeback) {
       const memoryIndex = effects.operations.findIndex((operation) => operation.kind === 'memory-read' || operation.kind === 'memory-write');

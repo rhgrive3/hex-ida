@@ -17,6 +17,14 @@ assert.equal(validation.fullIsaCoverageIncluded, false);
 assert.equal(validation.explicitDecoderGapCount, 3, 'only baseline A64, delegated A64, and x86 long-64 decoder denominators remain');
 assert.equal(validation.blockingGapCount > validation.explicitDecoderGapCount, true);
 assert.equal(validation.terminalEligible, false, 'partial and unsupported in-profile effect families remain blocking gaps');
+// Terminality is a property of the locked denominator, not of full-ISA
+// coverage: this inventory is rejected outright if it ever claims the latter,
+// so the two must not be conjoined into an unsatisfiable gate.
+assert.equal(validation.terminalEligible, validation.blockingGapCount === 0);
+assert.throws(
+  () => validateA2DenominatorInventory({ ...inventory, scope:{ ...inventory.scope, fullIsaCoverageIncluded:true } }),
+  /a2-denominator-must-not-claim-full-isa/,
+);
 assert.ok(validation.blockingGaps.includes('arm64:a64:all-decoder-encodings-and-aliases'));
 assert.equal(validation.blockingGaps.includes('arm64:a64:effect-family:control'), false,
   'the finite A64 branch discriminator proof closes only baseline control ownership');

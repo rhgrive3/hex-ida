@@ -11,7 +11,7 @@ export const ARM64_A64_MEMORY_ENCODING_FAMILIES = Object.freeze([
   family('exclusive', ['mnemonic','width','ordering','monitor-state','fault']),
   family('lse-atomic', ['mnemonic','width','ordering','conditional-write','fault']),
   family('barrier-exclusive-clear', ['mnemonic','ordering','scope','hidden-state']),
-  family('prefetch-partial', ['mnemonic','implementation-defined','fail-closed']),
+  family('prefetch-hint', ['mnemonic','prfop-type','prfop-target','prfop-policy','addressing','decoder-provenance']),
 ]);
 
 const NON_ATOMIC_EXACT = Object.freeze([
@@ -158,7 +158,29 @@ export function* arm64A64MemoryEncodingCases() {
   yield item('fault:sp-single', 'single-load-store', 'ldr x0, [sp]', 'ldr', { widthBits:64, addressingMode:'offset', faultKinds:['stack-pointer-alignment-fault','data-abort'], tagChecked:false });
   yield item('fault:sp-exclusive', 'exclusive', 'ldxr x0, [sp]', 'ldxr', { completeness:'exact-with-intrinsic', widthBits:64, ordering:'relaxed', faultKinds:['stack-pointer-alignment-fault','data-abort','alignment-fault'], tagChecked:false });
 
-  yield item('partial:prfm', 'prefetch-partial', 'prfm pldl1keep, [x1]', 'prfm', { completeness:'partial', faultKinds:[] });
+  // PRFM's 5-bit prfop field is a finite (type, target, policy) product. The 18
+  // architecturally named values are enumerated exactly; the 14 unnamed values
+  // are spelled by the deployed decoder without any operand text, so they stay
+  // an explicit fail-closed negative instead of a fabricated hint.
+  for (const [type, operation] of [['ld','prefetch-for-load'],['li','preload-instruction'],['st','prefetch-for-store']]) {
+    for (const level of [1, 2, 3]) {
+      for (const [policy, policyId] of [['keep','temporal-keep'],['strm','streaming-non-temporal']]) {
+        const spelling = `p${type}l${level}${policy}`;
+        yield item(`prefetch:${spelling}`, 'prefetch-hint', `prfm ${spelling}, [x1]`, 'prfm', {
+          completeness:'exact-with-intrinsic', faultKinds:[], addressingMode:'offset',
+          prefetch:{ operation, cacheLevel:level, policy:policyId, named:true },
+        });
+      }
+    }
+  }
+  for (const [id, asm] of [
+    ['scaled-max','prfm pldl1keep, [x1, #32760]'],
+    ['register-x','prfm pldl1keep, [x1, x2, lsl #3]'],
+  ]) yield item(`prefetch-address:${id}`, 'prefetch-hint', asm, 'prfm', {
+    completeness:'exact-with-intrinsic', faultKinds:[], addressingMode:'offset',
+    prefetch:{ operation:'prefetch-for-load', cacheLevel:1, policy:'temporal-keep', named:true },
+  });
+  yield item('prefetch:unnamed-prfop', 'prefetch-hint', 'prfm #6, [x1]', 'prfm', { completeness:'partial', faultKinds:[] });
 }
 
 export function validateArm64A64MemoryDenominator() {

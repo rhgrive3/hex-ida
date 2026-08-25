@@ -427,7 +427,14 @@ export function validateA2DenominatorInventory(inventory = loadA2DenominatorInve
     explicitDecoderGapCount: inventory.architectures.reduce((count, architecture) => count + architecture.decoder.missingUnits.length, 0),
     blockingGapCount: blockingGaps.length,
     blockingGaps: Object.freeze(blockingGaps),
-    terminalEligible: inventory.scope.fullIsaCoverageIncluded === true && blockingGaps.length === 0,
+    // This denominator is the locked production-registry denominator. It never
+    // claims full-ISA percentage coverage (the inventory is rejected above if it
+    // tries), so terminality is defined by the locked denominator itself: every
+    // declared decoder unit, effect family, explicit exclusion, and alias has to
+    // be exact or carry a normative-exclusion proof. Requiring
+    // fullIsaCoverageIncluded here as well made the gate unsatisfiable by
+    // construction and hid which units are actually still open.
+    terminalEligible: blockingGaps.length === 0,
     fullIsaCoverageIncluded: false,
   });
 }
