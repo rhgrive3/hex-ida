@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { MemoryByteSource } from '../js/binary/source.js';
 import { CachedByteSource, InstrumentedByteSource, ByteSourceCancelledError } from '../js/bytesource/cached.js';
+import { scanSourceStrings } from '../js/bytesource/strings.js';
 import { hashByteSource } from '../js/platform/hash.js';
 
 const bytes = Uint8Array.from({ length: 4096 }, (_, i) => i & 0xff);
@@ -19,4 +20,23 @@ await assert.rejects(() => cached.read(0n, 4, { signal: controller.signal }), By
 
 const hash = await hashByteSource(new MemoryByteSource(bytes, { maxReadLength: 1024 }), { chunkSize: 512 });
 assert.match(hash, /^fnv1a64:1000:[0-9a-f]{16}$/);
+
+// #1895: explicit numeric zero is a bounded request, not an omitted limit.
+{
+  const stringBytes = new TextEncoder().encode('AAAA\0BBBB\0CCCC\0');
+  const image = {
+    sections: [],
+    segments: [],
+    endian: 'little',
+    offsetToAddress(offset) { return offset; },
+  };
+  const zeroLimit = await scanSourceStrings(image, stringBytes, { minLength: 4, utf16: false, limit: 0 });
+  assert.equal(zeroLimit.results.length, 1);
+  assert.equal(zeroLimit.capped, true);
+
+  const defaultLimit = await scanSourceStrings(image, stringBytes, { minLength: 4, utf16: false });
+  assert.equal(defaultLimit.results.length, 3);
+  assert.equal(defaultLimit.capped, false);
+}
+
 console.log('platform-bytesource: PASS');
