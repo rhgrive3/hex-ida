@@ -41,4 +41,19 @@ for (const value of [-257, 256]) {
   assert.equal(effects.operations.length, 0);
 }
 
+const registerOffsetId = 'arm64-prfum-register-offset';
+const registerOffset = liftArm64MachineEffects({
+  instructionId:registerOffsetId,
+  mnemonic:'prfum',
+  ops:[prfop, {
+    k:'mem', text:'[x1, x2]', base:x(1), index:x(2), shift:{ op:'lsl', amount:0 },
+    mode:'offset', disp:null, addressDisp:null, writebackDisp:null,
+  }],
+  mode:'a64',
+  origin:{ instructionIds:[registerOffsetId] },
+});
+assert.equal(registerOffset?.completeness, 'partial', 'PRFUM register-offset is not encodable and must fail closed');
+assert.match(registerOffset.unknownEffects?.reason || '', /prfum-register-offset-unsupported/);
+assert.equal(registerOffset.operations.length, 0);
+
 console.log('ARM64 prefetch immediate validation: PASS');
