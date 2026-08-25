@@ -39,11 +39,6 @@ jobs:
             .filter(Boolean);
           if (parts.length < 2) throw new Error('npm check must contain at least two independent top-level commands');
 
-          // Keep the slow, self-contained proof suites as their own jobs instead
-          // of serializing them behind unrelated contracts. In particular,
-          // invariants:test already owns the complete MachineEffects contract;
-          // adding effects:test here would execute the same 52-test denominator
-          // twice on every PR without adding any proof strength.
           const isolated = new Map([
             ['npm run invariants:test', 'invariants'],
             ['npm run semantic-v2:test', 'semantic-v2'],
@@ -55,19 +50,17 @@ jobs:
           const contracts = parts.filter((command) => !isolated.has(command));
           if (!contracts.length) throw new Error('npm check must contain contract commands');
 
-          // Keep the low-overhead checks together, but preserve the dedicated
-          // frozen-toolchain lane for Phase 4/5. Every npm-check top-level
-          // command is still executed exactly once by the matrix.
           const phaseCommands = new Set(['npm run phase4:test', 'npm run phase5:test']);
           const coreContracts = contracts.filter((command) => !phaseCommands.has(command));
-          const phaseContracts = contracts.filter((command) => phaseCommands.has(command));
-          if (!coreContracts.length || !phaseContracts.length) {
+          if (!coreContracts.length || !parts.includes('npm run phase4:test') || !parts.includes('npm run phase5:test')) {
             throw new Error('npm check contract layout changed; rebalance invariant shards explicitly');
           }
 
+          // Diagnostic split only: isolate the stale A2 PR's failing Phase 4/5 shard.
           const include = [
             { name: 'contracts-core', command: coreContracts.join(' && ') },
-            { name: 'contracts-phase', command: phaseContracts.join(' && ') },
+            { name: 'contracts-phase4', command: 'npm run phase4:test' },
+            { name: 'contracts-phase5', command: 'npm run phase5:test' },
             ...parts
               .filter((command) => isolated.has(command))
               .map((command) => ({ name: isolated.get(command), command })),
@@ -116,11 +109,8 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # Phase 5's real-byte verification corpus is intentionally pinned to
-      # Clang/LLD 18. Keep the invariant shard on that same frozen provider
-      # instead of silently falling back to the runner's default Clang 17.
       - name: Install the frozen Phase 5 toolchain
-        if: matrix.name == 'contracts-phase'
+        if: startsWith(matrix.name, 'contracts-phase')
         run: |
           set -euo pipefail
           sudo apt-get update
