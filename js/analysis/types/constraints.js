@@ -203,8 +203,8 @@ function toBigInt(val, fallback = 0n) {
   if (val == null) return fallback;
   if (typeof val === 'bigint') return val;
   if (typeof val === 'number') {
-    if (!Number.isFinite(val)) return null;
-    return BigInt(Math.trunc(val));
+    if (!Number.isSafeInteger(val)) return null;
+    return BigInt(val);
   }
   try { return BigInt(val); } catch { return null; }
 }
