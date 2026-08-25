@@ -29,6 +29,7 @@ import {
   verifyArm64A64DecoderIdentity,
 } from '../../tools/validation/machine-effects/arm64-a64-decoder-denominator.mjs';
 import { createCapstoneArm64Session } from './helpers/arm64-capstone-session.mjs';
+import { arm64A64SimdDecoderDependencyProof } from '../../tools/validation/machine-effects/arm64-a64-simd-denominator.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -288,6 +289,15 @@ for (const damaged of [
 const memoryOnly = validateArm64A64DecoderDenominator({ decoderAudit, dependencyProofs:{ memory:memoryContract } });
 assert.deepEqual(memoryOnly.missingDependencies, ['simd']);
 assert.equal(memoryOnly.terminalEligible, false);
+// The repository's real SIMD dependency proof, unlike the synthetic shapes
+// above, is central truth: it must satisfy the contract on its own and it must
+// leave memory as the single remaining dependency.
+const realSimd = arm64A64SimdDecoderDependencyProof();
+assert.equal(validateArm64A64DecoderDependencyProof('simd', realSimd), true);
+const simdResolved = validateArm64A64DecoderDenominator({ decoderAudit, dependencyProofs:{ simd:realSimd } });
+assert.deepEqual(simdResolved.missingDependencies, ['memory'], 'only the memory family dependency remains open');
+assert.equal(simdResolved.terminalEligible, false);
+
 const contractComplete = validateArm64A64DecoderDenominator({
   decoderAudit,
   dependencyProofs:{ memory:memoryContract, simd:dependencyContract('simd') },

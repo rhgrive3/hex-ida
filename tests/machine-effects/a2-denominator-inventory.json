@@ -68,7 +68,32 @@
             }
           },
           { "id": "memory", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "Memory families include constrained-unpredictable forms and implementation-defined prefetch effects." },
-          { "id": "simd", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "SIMD registry includes unsupported/scalable-vector and unresolved operand shapes." },
+          {
+            "id": "simd",
+            "status": "exact",
+            "coverage": "exact-with-intrinsic",
+            "preexisting": false,
+            "oracle": "arm-a64-advanced-simd-encoding-tables + llvm-mc-aarch64-advanced-simd + deployed-capstone-arm64-a64",
+            "reason": "All 108 registry-owned Advanced SIMD mnemonics are bound to 891 fixed-width A64 encoding cases assembled by LLVM MC and decoded by the deployed Capstone build, with the three internal alias bindings and the out-of-profile SVE/malformed negatives proven separately.",
+            "proof": {
+              "schemaVersion": "machine-effects-effect-unit-proof/v1",
+              "source": "js/targets/architecture/arm64/effects/simd.js",
+              "test": "tests/machine-effects/arm64-simd-core.test.mjs",
+              "denominatorTest": "tests/machine-effects/arm64-a64-simd-denominator.test.mjs",
+              "denominator": {
+                "schemaVersion": "arm64-a64-simd-denominator/v1",
+                "denominatorId": "arm64:a64:advanced-simd-encoding-discriminators:v1",
+                "profileId": "arm64:a64",
+                "source": "tools/validation/machine-effects/arm64-a64-simd-denominator.mjs",
+                "mnemonicCount": 108,
+                "caseCount": 891,
+                "formCount": 891,
+                "aliasBindingCount": 3,
+                "corpusSha256": "7fe74945fe34e0f0c1f967297d53e25323d03bd446d701598211f15f49bedd4b",
+                "oracleIds": ["arm-a64-advanced-simd-encoding-tables", "llvm-mc-aarch64-advanced-simd", "deployed-capstone-arm64-a64"]
+              }
+            }
+          },
           {
             "id": "fp",
             "status": "exact",

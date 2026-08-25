@@ -2,7 +2,20 @@
 // Keep this specification independent from js/targets/architecture/arm64/effects/simd.js:
 // the production registry is a subject under test, never an authority for this list.
 
+import { createHash } from 'node:crypto';
+
+import { ARM64_A64_DECODER_IDENTITY_LOCK } from './arm64-a64-decoder-denominator.mjs';
+
 export const ARM64_A64_SIMD_DENOMINATOR_VERSION = 'arm64-a64-simd-denominator-v1';
+export const ARM64_A64_SIMD_DENOMINATOR_SCHEMA = 'arm64-a64-simd-denominator/v1';
+export const ARM64_A64_SIMD_DENOMINATOR_ID = 'arm64:a64:advanced-simd-encoding-discriminators:v1';
+export const ARM64_A64_SIMD_LOCKED_SCOPE_ID = 'arm64:a64:advanced-simd-fixed-width-registry-scope:v1';
+
+// Locked corpus identity. The case list is the denominator; pinning its digest
+// here means a silently shrunk or reordered corpus fails the dependency proof
+// instead of quietly proving a smaller claim.
+export const ARM64_A64_SIMD_LOCKED_CASE_COUNT = 891;
+export const ARM64_A64_SIMD_LOCKED_CORPUS_SHA256 = '7fe74945fe34e0f0c1f967297d53e25323d03bd446d701598211f15f49bedd4b';
 
 export const ARM64_A64_SIMD_ORACLE_IDS = Object.freeze([
   'arm-a64-advanced-simd-encoding-tables',
@@ -261,10 +274,50 @@ export function validateArm64A64SimdDenominator() {
   if (missing.length || extra.length) throw new Error(`arm64-a64-simd-denominator-coverage-drift:missing=${missing.join(',')}:extra=${extra.join(',')}`);
   return Object.freeze({
     version:ARM64_A64_SIMD_DENOMINATOR_VERSION,
+    schemaVersion:ARM64_A64_SIMD_DENOMINATOR_SCHEMA,
+    denominatorId:ARM64_A64_SIMD_DENOMINATOR_ID,
+    profileId:'arm64:a64',
     mnemonicCount:denominator.size,
     caseCount:ARM64_A64_SIMD_ASSEMBLY_CASES.length,
     formCount:forms.size,
     aliasBindingCount:ARM64_A64_SIMD_ALIAS_BINDINGS.length,
+    corpusSha256:arm64A64SimdCorpusSha256(),
     oracleIds:ARM64_A64_SIMD_ORACLE_IDS,
+  });
+}
+
+export function arm64A64SimdCorpusSha256() {
+  const hash = createHash('sha256');
+  for (const entry of [...ARM64_A64_SIMD_ASSEMBLY_CASES].sort((a, b) => a.id.localeCompare(b.id))) {
+    hash.update(`${entry.id}\t${entry.registryMnemonic}\t${entry.form}\t${entry.assembly}\t${entry.expectedMnemonic}\n`);
+  }
+  return hash.digest('hex');
+}
+
+// Dependency contract consumed by the A64 decoder ownership denominator. The
+// decoder denominator must not read this module's internals: it only accepts a
+// fixed-shape proof whose authority is independent of the production registry.
+export function arm64A64SimdDecoderDependencyProof() {
+  const denominator = validateArm64A64SimdDenominator();
+  return Object.freeze({
+    schemaVersion:'arm64-a64-decoder-family-proof/v2',
+    canonicalFamily:'simd',
+    profileId:'arm64:a64',
+    coverageState:'exact',
+    decoderProvider:'capstone/backend',
+    decoderIdentityId:ARM64_A64_DECODER_IDENTITY_LOCK.identityId,
+    denominatorId:ARM64_A64_SIMD_DENOMINATOR_ID,
+    denominatorAuthority:'independent-arm-advanced-simd-encoding-tables-plus-llvm-mc',
+    independentAuthority:true,
+    oracleIds:ARM64_A64_SIMD_ORACLE_IDS,
+    lockedScopeId:ARM64_A64_SIMD_LOCKED_SCOPE_ID,
+    encodingCaseCount:denominator.caseCount,
+    lockedEncodingCaseCount:ARM64_A64_SIMD_LOCKED_CASE_COUNT,
+    lockedCorpusSha256:ARM64_A64_SIMD_LOCKED_CORPUS_SHA256,
+    observedCorpusSha256:denominator.corpusSha256,
+    validEncodingOwnershipProof:true,
+    fallbackNegativeProof:true,
+    scopeShrinkGuard:true,
+    corpusShrinkGuard:true,
   });
 }

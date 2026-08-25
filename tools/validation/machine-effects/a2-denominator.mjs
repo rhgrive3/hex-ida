@@ -30,6 +30,11 @@ import { validateArm64A64FlagsDenominator } from './arm64-a64-flags-denominator.
 import { validateArm64A64FpDenominator } from './arm64-a64-fp-denominator.mjs';
 import { validateArm64A64SystemDenominator } from './arm64-a64-system-denominator.mjs';
 import {
+  ARM64_A64_SIMD_DENOMINATOR_ID,
+  ARM64_A64_SIMD_DENOMINATOR_SCHEMA,
+  validateArm64A64SimdDenominator,
+} from './arm64-a64-simd-denominator.mjs';
+import {
   ARM64_A64_INTEGER_DENOMINATOR_ID,
   ARM64_A64_INTEGER_DENOMINATOR_SCHEMA,
   validateArm64A64IntegerDenominator,
@@ -384,6 +389,36 @@ export function validateA2DenominatorInventory(inventory = loadA2DenominatorInve
       }
     }
     if (architecture.id === 'arm64') {
+      // Advanced SIMD is proved by an independent finite case corpus rather than
+      // an encoding-family sweep, so its live proof is checked against that
+      // corpus's own identity, cardinality, and digest instead of the shared
+      // encoding-family shape.
+      const simd = families.find((family) => family.id === 'simd');
+      const liveSimd = validateArm64A64SimdDenominator();
+      const simdProof = simd?.proof;
+      const simdDenominator = simdProof?.denominator;
+      if (!simd || simd.status !== 'exact' || simd.coverage !== 'exact-with-intrinsic' || simd.preexisting !== false
+        || simd.oracle !== 'arm-a64-advanced-simd-encoding-tables + llvm-mc-aarch64-advanced-simd + deployed-capstone-arm64-a64'
+        || simdProof?.schemaVersion !== 'machine-effects-effect-unit-proof/v1'
+        || simdProof?.source !== 'js/targets/architecture/arm64/effects/simd.js'
+        || simdProof?.test !== 'tests/machine-effects/arm64-simd-core.test.mjs'
+        || simdProof?.denominatorTest !== 'tests/machine-effects/arm64-a64-simd-denominator.test.mjs') {
+        fail('a2-denominator-arm64-simd-proof-identity-drift', pathName);
+      }
+      if (!simdDenominator || simdDenominator.schemaVersion !== ARM64_A64_SIMD_DENOMINATOR_SCHEMA
+        || simdDenominator.schemaVersion !== liveSimd.schemaVersion
+        || simdDenominator.denominatorId !== ARM64_A64_SIMD_DENOMINATOR_ID
+        || simdDenominator.denominatorId !== liveSimd.denominatorId
+        || simdDenominator.profileId !== liveSimd.profileId
+        || simdDenominator.source !== 'tools/validation/machine-effects/arm64-a64-simd-denominator.mjs'
+        || simdDenominator.mnemonicCount !== liveSimd.mnemonicCount
+        || simdDenominator.caseCount !== liveSimd.caseCount
+        || simdDenominator.formCount !== liveSimd.formCount
+        || simdDenominator.aliasBindingCount !== liveSimd.aliasBindingCount
+        || simdDenominator.corpusSha256 !== liveSimd.corpusSha256
+        || !sameSet(simdDenominator.oracleIds || [], liveSimd.oracleIds)) {
+        fail('a2-denominator-arm64-simd-live-proof-drift', pathName);
+      }
       validateArm64FamilyProof(families.find((family) => family.id === 'control'), {
         id:'control', source:'js/targets/architecture/arm64/effects/control.js',
         test:'tests/machine-effects/arm64-control-flow.test.mjs', denominatorTest:'tests/machine-effects/arm64-a64-control-denominator.test.mjs',

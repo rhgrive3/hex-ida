@@ -36,6 +36,10 @@ assert.equal(validation.blockingGaps.includes('arm64:a64:effect-family:fp'), fal
   'the finite A64 scalar FP denominator closes only registry-owned FP forms');
 assert.equal(validation.blockingGaps.includes('arm64:a64:effect-family:system'), false,
   'the finite A64 system field sweep closes only registry-owned system forms');
+assert.equal(validation.blockingGaps.includes('arm64:a64:effect-family:simd'), false,
+  'the finite A64 Advanced SIMD case corpus closes only registry-owned SIMD forms');
+assert.ok(validation.blockingGaps.includes('arm64:a64:effect-family:memory'),
+  'the memory family stays blocking while unnamed PRFM prfop values and PRFUM have no exact owner');
 assert.equal(validation.blockingGaps.includes('riscv64:rv64imc:all-valid-32-bit-and-compressed-encodings'), false,
   'the exhaustive versioned RV64IMC decoder denominator closes only its decoder unit');
 assert.ok(validation.blockingGaps.includes('x86_64:long-64:effect-family:atomic'));
