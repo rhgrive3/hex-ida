@@ -148,8 +148,8 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
       objectMemory:spec.objectMemory || spec.fakeObject || [], stackMemory:spec.stack || spec.stackMemory || [], watch:spec.watch || [],
       breakpoints:[...this.breakpoints.values()].filter((b) => b.enabled && b.address != null).map((b) => b.address)
     });
-    for (const item of spec.heap || []) await emu.store(asAddress(item.address), Number(item.size || 8), BigInt(item.value || 0));
-    for (const item of spec.globalValues || []) await emu.store(asAddress(item.address), Number(item.size || 8), BigInt(item.value || 0));
+    for (const item of spec.heap || []) await emu.store(asAddress(item.address), Number(item.size ?? 8), BigInt(item.value || 0));
+    for (const item of spec.globalValues || []) await emu.store(asAddress(item.address), Number(item.size ?? 8), BigInt(item.value || 0));
     const initialRegisters = cloneRegisters(emu);
     initializing = false;
     if (launchGeneration !== this.launchGeneration) {
