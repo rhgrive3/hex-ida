@@ -8,6 +8,7 @@ import { liftX86FloatingPointEffects } from './fp.js';
 import { liftX86SimdEffects } from './simd.js';
 import { liftX86SimdAndNotEffects } from './simd-and-not.js';
 import { liftX86SystemEffects } from './system.js';
+import { liftX86ExtendedStateEffects, integrateX86ExtendedStateAliases } from './extended-state.js';
 import { normalizeX86Instruction, X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION } from './common.js';
 
 function liftX86IntegerFamily(instruction, context) {
@@ -32,12 +33,25 @@ const FAMILIES = Object.freeze([
 
 export { X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION };
 
+function invalidNonEvexExtendedVector(instruction) {
+  const evex = String(instruction?.detail?.prefixes?.vector?.kind || '').toLowerCase() === 'evex';
+  if (evex) return false;
+  const registers = [
+    ...(instruction?.detail?.operands || []).filter((operand) => operand?.type === 'register').map((operand) => operand.register),
+    ...(instruction?.detail?.implicitReads || []), ...(instruction?.detail?.implicitWrites || []),
+  ];
+  return registers.some((register) => register?.evexOnly === true || /^(?:zmm(?:[0-9]|[12][0-9]|3[01])|(?:xmm|ymm)(?:1[6-9]|2[0-9]|3[01]))$/.test(String(register?.id || '').toLowerCase()));
+}
+
 export function liftX86MachineEffects(decoded, context = {}) {
   const instruction = normalizeX86Instruction(decoded, context);
   if (!instruction.detailAvailable) return null;
+  if (invalidNonEvexExtendedVector(instruction)) throw new TypeError('x86-decoded-instruction-high-vector-register-requires-evex');
+  const extended = liftX86ExtendedStateEffects(instruction, context);
+  if (extended != null) return extended;
   for (const family of FAMILIES) {
     const result = family.lift(instruction, context);
-    if (result != null) return result;
+    if (result != null) return integrateX86ExtendedStateAliases(instruction, result, context);
   }
   return null;
 }
