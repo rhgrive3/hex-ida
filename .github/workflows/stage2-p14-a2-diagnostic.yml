@@ -11,28 +11,44 @@ on:
 permissions:
   contents: read
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
-  diagnose:
+  x86-ownership:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: npm ci
+      - run: node tools/validation/machine-effects/a2-denominator.mjs
+        continue-on-error: true
+      - run: node tests/machine-effects/x86-long64-decoder-denominator.test.mjs
+
+  arm64-families:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: npm ci
+      - run: node tests/machine-effects/arm64-a64-memory-denominator.test.mjs
+      - run: node tests/machine-effects/arm64-a64-simd-denominator.test.mjs
+      - run: node tests/machine-effects/arm64e-a64-delegation-denominator.test.mjs
+
+  arm64-decoder:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+        with: { fetch-depth: 0 }
       - uses: actions/setup-node@v4
-        with:
-          node-version: 22
+        with: { node-version: 22 }
       - run: npm ci
-      - name: Current central A2 report
-        continue-on-error: true
-        run: node tools/validation/machine-effects/a2-denominator.mjs
-      - name: x86 current decoder ownership
-        run: node tests/machine-effects/x86-long64-decoder-denominator.test.mjs
-      - name: ARM64 decoder composition proof
-        run: node tests/machine-effects/arm64-a64-decoder-denominator.test.mjs
-      - name: ARM64 memory proof
-        run: node tests/machine-effects/arm64-a64-memory-denominator.test.mjs
-      - name: ARM64 SIMD proof
-        run: node tests/machine-effects/arm64-a64-simd-denominator.test.mjs
-      - name: ARM64e delegation proof
-        run: node tests/machine-effects/arm64e-a64-delegation-denominator.test.mjs
+      - run: node tests/machine-effects/arm64-a64-decoder-denominator.test.mjs
