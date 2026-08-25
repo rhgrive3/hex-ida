@@ -270,7 +270,7 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET) {
     let length = cursor.u32();
     let offsetSize = 4;
     if (length === 0xffffffff) { length = Number(cursor.u64()); offsetSize = 8; }
-    if (length === 0 || unitStart + offsetSize + 4 + length > info.length + 4) {
+    if (length === 0 || cursor.offset + length > info.length) {
       diagnostics.push(`truncated compilation unit at 0x${unitStart.toString(16)}`);
       complete = false;
       break;
