@@ -43,8 +43,19 @@ function contradicts(left, right) {
  * happened to have an answer ready (P7-INV-010).
  */
 function baseStatus(options) {
-  if (options.status) return options.status;
   const cancelled = options.signal?.aborted === true;
+  if (options.status) {
+    if (!cancelled) return options.status;
+    const cancellationStatus = createAnalysisStatus({
+      snapshotId: options.status.snapshotId,
+      analyzerId: options.status.analyzerId,
+      analyzerVersion: options.status.analyzerVersion,
+      completeness: 'partial',
+      budgetClass: options.status.budgetClass ?? null,
+      stopReason: 'cancelled',
+    });
+    return mergeAnalysisStatus(options.status, cancellationStatus);
+  }
   return createAnalysisStatus({
     snapshotId: options.snapshotId ?? 'snapshot-unbound',
     analyzerId: PHASE7_ALIAS_SOLVER_ID,
@@ -113,7 +124,7 @@ export function createPhase7AliasSolver({ ir, cfg, ssa, options = {} } = {}) {
   function alias(leftRegion, rightRegion, context = {}) {
     const status = baseStatus({ signal: options.signal, ...options, ...context });
     if (status.stopReason != null && status.completeness !== 'bounded') {
-      return unknownAlias(status, ['budget-exhausted']);
+      return unknownAlias(status, [status.stopReason === 'cancelled' ? 'analysis-cancelled' : 'budget-exhausted']);
     }
 
     const a1 = a1RegionAlias(leftRegion, rightRegion, { ...options, status });
