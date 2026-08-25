@@ -41,6 +41,7 @@ export function normalizeAddressProofIr(ir) {
   const nodes = Array.isArray(ir.nodes) ? ir.nodes : [];
   const valuesById = new Map(values.map((value) => [String(value.id), value]));
   const nodesById = new Map(nodes.map((node) => [String(node.id), node]));
+  const occupiedNodeIds = new Set(nodesById.keys());
   const rewrittenValues = new Map();
   const syntheticNodes = [];
 
@@ -54,7 +55,12 @@ export function normalizeAddressProofIr(ir) {
     const resultValue = valuesById.get(resultValueId);
     if (!resultValue || String(resultValue.definitionNodeId ?? '') !== String(node.id)) continue;
 
-    const syntheticId = `${String(node.id)}:canonical-address-result`;
+    const syntheticIdBase = `${String(node.id)}:canonical-address-result`;
+    let syntheticId = syntheticIdBase;
+    for (let suffix = 1; occupiedNodeIds.has(syntheticId); suffix++) {
+      syntheticId = `${syntheticIdBase}:${suffix}`;
+    }
+    occupiedNodeIds.add(syntheticId);
     syntheticNodes.push(deepFreeze({
       ...node,
       id: syntheticId,
