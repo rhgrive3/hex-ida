@@ -1,0 +1,35 @@
+name: Stage2 P14 A2 diagnostic
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/stage2-p14-a2-diagnostic.yml'
+      - 'tools/validation/machine-effects/**'
+      - 'tests/machine-effects/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - name: Current central A2 report
+        run: node tools/validation/machine-effects/a2-denominator.mjs
+      - name: x86 current decoder ownership
+        run: node tests/machine-effects/x86-long64-decoder-denominator.test.mjs
+      - name: ARM64 decoder composition proof
+        run: node tests/machine-effects/arm64-a64-decoder-denominator.test.mjs
+      - name: ARM64 memory proof
+        run: node tests/machine-effects/arm64-a64-memory-denominator.test.mjs
+      - name: ARM64 SIMD proof
+        run: node tests/machine-effects/arm64-a64-simd-denominator.test.mjs
+      - name: ARM64e delegation proof
+        run: node tests/machine-effects/arm64e-a64-delegation-denominator.test.mjs
