@@ -89,11 +89,27 @@ function liftConversion(ctx,family,encoding){
   let d,m,s;if(encoding.kind==='legacy'){[d,s]=ctx.operands;m=d;}else[d,m,s]=ctx.operands;if(!isVector(d)||!isVector(m))return ctx.partial(`x86-${family}-operand-shape-unmodelled`,['registers','memory','faults','other']);let input,inputWidth,toBits;if(base==='cvtsi2ss'||base==='cvtsi2sd'){input=integerInput(ctx,s);inputWidth=s?.widthBits;toBits=base.endsWith('ss')?32:64;}else{inputWidth=base==='cvtss2sd'?32:64;toBits=base==='cvtss2sd'?64:32;input=readScalar(ctx,s,inputWidth);}if(input?.integrationRequired)return integrationPartial(ctx,family,['memory','registers','faults','other']);if(!input||!inputWidth)return ctx.partial(`x86-${family}-source-unmodelled`,['registers','memory','faults','other']);const result=ctx.intrinsic('x86.fp.conversion',[input.value],[toBits],{registersRead:unique([input.registerId]),registersWritten:[d.register.physicalId],determinism:'nondeterministic',symbolicDetail:'summary-only',metadata:{operation:base,sourceWidthBits:inputWidth,destinationWidthBits:toBits,sourceKind:(base==='cvtsi2ss'||base==='cvtsi2sd')?'signed-integer':'ieee-float',destinationFormat:toBits===32?'binary32':'binary64',fpEnvironmentDependency:'MXCSR',exactArchitecturalSummary:false}})[0];if(!destinationShape(ctx,encoding,d,m,result,toBits,false))return ctx.partial(`x86-${family}-destination-unmodelled`,['registers','faults','other']);return fpPartial(ctx,family,{sourceWidthBits:inputWidth,destinationWidthBits:toBits,conversion:base,encodingKind:encoding.kind},[...input.possibleFaults,fpFault(family)]);
 }
 
-export function liftX86FloatingPointEffects(instruction,context={}){
-  const family=String(instruction?.instructionFamily||'').toLowerCase(),base=baseFamily(family);
-  if(X87_FAMILIES.has(base)){const ctx=createX86EffectContext(instruction,context);return ctx.partial('x86-x87-physical-and-environment-state-unmodelled',['registers','flags','faults','other'],{metadata:{family:'fp',operation:family,x87StateInvented:false,missingState:['st0-st7-80bit','TOP','tag-word','control-word','status-word','last-instruction/data pointers'],sharedDependencyRequired:['x86-x87-physical-state','x86-decoder-x87-register-normalization'],normalizerReachability:'implicit/explicit ST register forms are rejected before this lifter by the current shared register contract'}});}
-  const recognized=SCALAR_MOVES.has(base)||SCALAR_ARITHMETIC.has(base)||SCALAR_SQRT.has(base)||SCALAR_COMPARE.has(base)||PACKED_ARITHMETIC.has(base)||CONVERSIONS.has(base);if(!recognized)return null;const ctx=createX86EffectContext(instruction,context);
-  if(base==='movsd'&&!ctx.operands.some(isVector))return null;
-  const check=validateEncoding(ctx,family,!PACKED_ARITHMETIC.has(base));if(check.error)return check.error;const encoding=check.encoding;
-  if(SCALAR_MOVES.has(base))return liftScalarMove(ctx,family,encoding,SCALAR_MOVES.get(base));if(SCALAR_ARITHMETIC.has(base))return liftScalarArithmetic(ctx,family,encoding,SCALAR_ARITHMETIC.get(base));if(SCALAR_SQRT.has(base))return liftScalarSqrt(ctx,family,encoding,SCALAR_SQRT.get(base));if(SCALAR_COMPARE.has(base))return liftScalarCompare(ctx,family,SCALAR_COMPARE.get(base));if(PACKED_ARITHMETIC.has(base))return liftPacked(ctx,family,encoding,PACKED_ARITHMETIC.get(base));if(CONVERSIONS.has(base))return liftConversion(ctx,family,encoding);return null;
+import { liftX86VectorGeneralEffects } from './vector-general.js';
+
+export function liftX86FloatingPointEffects(instruction, context = {}) {
+  const family = String(instruction?.instructionFamily || '').toLowerCase(), base = baseFamily(family);
+  if (['andps', 'andpd', 'orps', 'orpd', 'xorps', 'xorpd', 'pand', 'por', 'pxor', 'movdqa', 'movdqu', 'movaps', 'movups', 'movapd', 'movupd'].includes(base)) return null;
+  if (X87_FAMILIES.has(base)) {
+    const ctx = createX86EffectContext(instruction, context);
+    return ctx.partial('x86-x87-physical-and-environment-state-unmodelled', ['registers', 'flags', 'faults', 'other'], { metadata: { family: 'fp', operation: family, x87StateInvented: false, missingState: ['st0-st7-80bit', 'TOP', 'tag-word', 'control-word', 'status-word', 'last-instruction/data pointers'], sharedDependencyRequired: ['x86-x87-physical-state', 'x86-decoder-x87-register-normalization'], normalizerReachability: 'implicit/explicit ST register forms are rejected before this lifter by the current shared register contract' } });
+  }
+  const recognized = SCALAR_MOVES.has(base) || SCALAR_ARITHMETIC.has(base) || SCALAR_SQRT.has(base) || SCALAR_COMPARE.has(base) || PACKED_ARITHMETIC.has(base) || CONVERSIONS.has(base);
+  if (!recognized) return liftX86VectorGeneralEffects(instruction, context, 'fp');
+  const ctx = createX86EffectContext(instruction, context);
+  if (base === 'movsd' && !ctx.operands.some(isVector)) return null;
+  const check = validateEncoding(ctx, family, !PACKED_ARITHMETIC.has(base));
+  if (check.error) return check.error;
+  const encoding = check.encoding;
+  if (SCALAR_MOVES.has(base)) return liftScalarMove(ctx, family, encoding, SCALAR_MOVES.get(base));
+  if (SCALAR_ARITHMETIC.has(base)) return liftScalarArithmetic(ctx, family, encoding, SCALAR_ARITHMETIC.get(base));
+  if (SCALAR_SQRT.has(base)) return liftScalarSqrt(ctx, family, encoding, SCALAR_SQRT.get(base));
+  if (SCALAR_COMPARE.has(base)) return liftScalarCompare(ctx, family, SCALAR_COMPARE.get(base));
+  if (PACKED_ARITHMETIC.has(base)) return liftPacked(ctx, family, encoding, PACKED_ARITHMETIC.get(base));
+  if (CONVERSIONS.has(base)) return liftConversion(ctx, family, encoding);
+  return liftX86VectorGeneralEffects(instruction, context, 'fp');
 }

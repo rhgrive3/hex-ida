@@ -1,6 +1,21 @@
 import { x86EffectiveAddressExpression } from './addressing.js';
 
-export const X87_FAMILIES = new Set(['fld','fld1','fldz','fst','fstp','fild','fist','fistp','fadd','faddp','fiadd','fsub','fsubp','fisub','fsubr','fsubrp','fmul','fmulp','fimul','fdiv','fdivp','fidiv','fdivr','fdivrp','fcom','fcomp','fcompp','fucom','fucomp','fucompp','fxch','fnstcw','fldcw','fnstsw','fwait','wait','fsqrt','frndint','fchs','fabs','fscale','fprem','fprem1','fyl2x','f2xm1']);
+export const X87_FAMILIES = new Set([
+  'fld','fld1','fldz','fldl2e','fldl2t','fldlg2','fldln2','fldpi','fild','fbld',
+  'fst','fstp','fist','fistp','fisttp','fbstp','fstpnce',
+  'fadd','faddp','fiadd','fsub','fsubp','fisub','fsubr','fsubrp','fisubr',
+  'fmul','fmulp','fimul','fdiv','fdivp','fidiv','fdivr','fdivrp','fidivr',
+  'fcom','fcomp','fcompp','fucom','fucomp','fucompp','ficom','ficomp','ftst','fxam',
+  'fcomi','fcompi','fucomi','fucompi',
+  'fcmovb','fcmovbe','fcmove','fcmovnb','fcmovnbe','fcmovne','fcmovnu','fcmovu',
+  'fcos','fsin','fsincos','fptan','fpatan','fxtract',
+  'fxch','fnstcw','fstcw','fldcw','fnstsw','fstsw','fwait','wait',
+  'fsqrt','frndint','fchs','fabs','fscale','fprem','fprem1','fyl2x','fyl2xp1','f2xm1',
+  'fdecstp','fincstp','ffree','ffreep',
+  'fldenv','fnstenv','fstenv','fnsave','fsave','frstor',
+  'fxsave','fxsave64','fxrstor','fxrstor64',
+  'fninit','finit','fnclex','fclex','fnop','fdisi8087_nop','feni8087_nop','fsetpm',
+]);
 export const FP_EVEX_BASES = new Set(['movss','movsd','addss','addsd','subss','subsd','mulss','mulsd','divss','divsd','sqrtss','sqrtsd','ucomiss','ucomisd','comiss','comisd','addps','addpd','subps','subpd','mulps','mulpd','divps','divpd','cvtss2sd','cvtsd2ss','cvtsi2ss','cvtsi2sd','cvttss2si','cvttsd2si']);
 export const SIMD_EVEX_BASES = new Set(['movaps','movups','movapd','movupd','movdqa','movdqu','movd','movq','andps','andpd','pand','orps','orpd','por','xorps','xorpd','pxor','paddb','paddw','paddd','paddq','psubb','psubw','psubd','psubq','pcmpeqb','pcmpeqw','pcmpeqd','pcmpgtb','pcmpgtw','pcmpgtd','psllw','pslld','psllq','psrlw','psrld','psrlq','psraw','psrad','pshufd','punpckldq','pandn']);
 export const X87_STATE = Object.freeze(['x87-stack','fpcw','fpsw','fptw','fop','fip','fdp']);

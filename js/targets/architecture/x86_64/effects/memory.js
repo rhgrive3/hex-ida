@@ -603,20 +603,56 @@ function liftPop(ctx) {
   return ctx.partial('x86-pop-destination-unmodelled', ['registers','memory'], { possibleFaults:faults });
 }
 
+function liftPushf(ctx, family) {
+  const is16 = family === 'pushf';
+  const stackWidth = is16 ? 16 : 64;
+  const oldRsp = ctx.readRegister(x86RegisterOperand('rsp'));
+  if (!oldRsp) return ctx.partial('x86-pushf-rsp-unmodelled', ['registers', 'memory']);
+  const flags = ctx.readRegister(x86RegisterOperand('rflags'));
+  const value = flags ? (is16 ? ctx.valueOp('extract', [flags], 16, { lsb: 0 }) : flags) : ctx.constant(stackWidth, 0x202n);
+  const delta = stackWidth / 8;
+  const nextRsp = ctx.valueOp('sub', [oldRsp, ctx.constant(64, BigInt(delta))], 64, { stackDelta: -delta, stackWidthBits: stackWidth });
+  ctx.writeMemory(nextRsp, stackWidth, value, { metadata: { stackAccess: true, stackPhase: 'push-flags' } });
+  ctx.writeRegister(x86RegisterOperand('rsp'), nextRsp);
+  return ctx.finish({
+    family: 'memory',
+    possibleFaults: x86MemoryFaults('write', stackWidth),
+    metadata: { operation: family, stackDelta: -delta, stackWidthBits: stackWidth },
+  });
+}
+
+function liftPopf(ctx, family) {
+  const is16 = family === 'popf';
+  const stackWidth = is16 ? 16 : 64;
+  const delta = stackWidth / 8;
+  const oldRsp = ctx.readRegister(x86RegisterOperand('rsp'));
+  if (!oldRsp) return ctx.partial('x86-popf-rsp-unmodelled', ['registers', 'memory']);
+  const value = ctx.readMemory(oldRsp, stackWidth, { metadata: { stackAccess: true, stackPhase: 'pop-flags' } });
+  const nextRsp = ctx.valueOp('add', [oldRsp, ctx.constant(64, BigInt(delta))], 64, { stackDelta: delta, stackWidthBits: stackWidth });
+  ctx.writeRegister(x86RegisterOperand('rsp'), nextRsp);
+  const rflags = x86RegisterOperand('rflags');
+  if (rflags) ctx.writeRegister(rflags, is16 ? ctx.coerce(value, 16, 64, false) : value);
+  return ctx.finish({
+    family: 'memory',
+    possibleFaults: x86MemoryFaults('read', stackWidth),
+    metadata: { operation: family, stackDelta: delta, stackWidthBits: stackWidth },
+  });
+}
+
 export function liftX86MemoryEffects(instruction, context = {}) {
   const family = String(instruction?.instructionFamily || '').toLowerCase();
   const recognized = MOVES.has(family)
     || BINARY_ARITHMETIC.has(family)
     || BINARY_LOGICAL.has(family)
     || CROSS_LANE_REQUIRED.has(family)
-    || ['cmp','test','not','push','pop','setcc','cmovcc'].includes(family)
+    || ['cmp','test','not','push','pop','pushf','pushfq','popf','popfq','setcc','cmovcc'].includes(family)
     || family.startsWith('set')
     || family.startsWith('cmov');
   if (!recognized) return null;
 
   const hasMemory = memoryOperands(instruction?.detail?.operands || []).length > 0;
   const lock = hasLock(instruction);
-  const implicitStackMemory = family === 'push' || family === 'pop';
+  const implicitStackMemory = family === 'push' || family === 'pop' || family === 'pushf' || family === 'pushfq' || family === 'popf' || family === 'popfq';
   if (!hasMemory && !lock && !implicitStackMemory) return null;
 
   const ctx = createX86EffectContext(instruction, context);
@@ -630,6 +666,8 @@ export function liftX86MemoryEffects(instruction, context = {}) {
   if (CROSS_LANE_REQUIRED.has(family)) return liftIntegratedCrossLane(ctx, family);
   if (family === 'push') return liftPush(ctx);
   if (family === 'pop') return liftPop(ctx);
+  if (family === 'pushf' || family === 'pushfq') return liftPushf(ctx, family);
+  if (family === 'popf' || family === 'popfq') return liftPopf(ctx, family);
   if (MOVES.has(family)) return liftMove(ctx, family);
   if (family === 'cmp' || family === 'test') return liftCompareOrTest(ctx, family);
   if (BINARY_ARITHMETIC.has(family)) return liftBinaryMemory(ctx, family, false);
