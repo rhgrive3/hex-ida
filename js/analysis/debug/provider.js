@@ -151,7 +151,7 @@ export function createDebugPage(input = {}) {
  * become hard constraints.
  */
 export function createDebugProviderResult(input = {}) {
-  const identity = input.identity?.digest ? input.identity : createDebugIdentity(input.identity ?? {});
+  const identity = createDebugIdentity(input.identity ?? {});
   const status = input.status?.schemaVersion ? input.status : createAnalysisStatus(input.status ?? {});
   return deepFreeze({
     schemaVersion: DEBUG_PROVIDER_SCHEMA_VERSION,
