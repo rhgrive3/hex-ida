@@ -33,6 +33,29 @@ const MAX_AUTO_UNIQUE_ANALYSES = 256;
 const ANALYZE_GUARDS = new WeakMap();
 const ACCESS_BATCHES = new WeakMap();
 
+function isObjectKey(value) {
+  return value != null && (typeof value === 'object' || typeof value === 'function');
+}
+
+function burstScopedState(registry, callback, opts, createState) {
+  let entry = registry.get(callback);
+  if (!entry) {
+    entry = { shared: null, bursts: new WeakMap() };
+    registry.set(callback, entry);
+  }
+  const burst = opts?.shapes;
+  if (isObjectKey(burst)) {
+    let state = entry.bursts.get(burst);
+    if (!state) {
+      state = createState();
+      entry.bursts.set(burst, state);
+    }
+    return state;
+  }
+  if (!entry.shared) entry.shared = createState();
+  return entry.shared;
+}
+
 function narrowedPriorCount(candidates, universe) {
   if (!candidates.length) return Math.max(1, universe || 1);
   const exact = candidates.filter((c) => c && c.askedByName);
@@ -117,11 +140,8 @@ function linkParentSignal(controller, parentSignal) {
  */
 function guardedAnalyze(analyze, opts) {
   if (typeof analyze !== 'function') return analyze;
-  let state = ANALYZE_GUARDS.get(analyze);
-  if (!state) {
-    state = { blockedUntil: 0, uniqueKeys: new Set() };
-    ANALYZE_GUARDS.set(analyze, state);
-  }
+  const state = burstScopedState(ANALYZE_GUARDS, analyze, opts,
+    () => ({ blockedUntil: 0, uniqueKeys: new Set() }));
   const ms = timeoutMs(opts);
   const uniqueLimit = uniqueAnalysisLimit(opts);
   return async (...args) => {
@@ -196,11 +216,8 @@ function sizeMatches(site, size) {
  */
 function batchedScanAccess(scanAccess, opts) {
   if (typeof scanAccess !== 'function') return scanAccess;
-  let state = ACCESS_BATCHES.get(scanAccess);
-  if (!state) {
-    state = { promise: null, groups: null };
-    ACCESS_BATCHES.set(scanAccess, state);
-  }
+  const state = burstScopedState(ACCESS_BATCHES, scanAccess, opts,
+    () => ({ promise: null, groups: null }));
   return async (requested = []) => {
     if (!state.groups && !state.promise) {
       const all = automaticOffsets(opts, requested);
