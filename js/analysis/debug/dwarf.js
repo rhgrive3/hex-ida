@@ -506,8 +506,11 @@ export function gnuDebugLinkCrc32(bytes) {
 /** Parses `.gnu_debuglink`: a NUL-terminated name followed by a CRC32. */
 export function readDebugLink(section) {
   if (!section || section.length < 5) return null;
-  const name = cstring(section, 0);
-  const crcOffset = (name.length + 4) & ~3;
+  let nulOffset = 0;
+  while (nulOffset < section.length && section[nulOffset] !== 0) nulOffset += 1;
+  if (nulOffset === section.length) return null;
+  const name = new TextDecoder('utf8').decode(section.subarray(0, nulOffset));
+  const crcOffset = (nulOffset + 4) & ~3;
   if (crcOffset + 4 > section.length) return null;
   const view = new DataView(section.buffer, section.byteOffset, section.byteLength);
   return { name, crc32: view.getUint32(crcOffset, true) >>> 0 };
