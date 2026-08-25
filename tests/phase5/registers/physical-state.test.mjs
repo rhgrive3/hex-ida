@@ -79,29 +79,27 @@ for (let index = 0; index < 32; index++) {
     { physicalId:`ymm${index}`, bits:256, lsb:0 },
     { physicalId:`zmmh${index}`, bits:256, lsb:256 },
   ]);
-  if (index < 16) {
-    const physicalId = `ymm${index}`;
-    const xmm = descriptor(`xmm${index}`, {
-      physicalId,
-      physicalBits:256,
-      viewBits:128,
-      lsb:0,
-      writePolicy:'encoding-dependent-upper-lanes',
-      kind:'vector',
-    });
-    const ymm = descriptor(physicalId, {
-      physicalId,
-      physicalBits:256,
-      viewBits:256,
-      lsb:0,
-      writePolicy:'replace',
-      kind:'vector',
-    });
-    assert.equal(xmm.physicalId, ymm.physicalId, `xmm${index}/ymm${index} must share physical identity`);
-  } else {
-    assert.equal(x86RegisterDescriptor(`xmm${index}`), null);
-    assert.equal(x86RegisterDescriptor(`ymm${index}`), null);
-  }
+  const physicalId = `ymm${index}`;
+  const extended = index >= 16 ? { evexOnly:true, modeled:true } : {};
+  const xmm = descriptor(`xmm${index}`, {
+    physicalId,
+    physicalBits:256,
+    viewBits:128,
+    lsb:0,
+    writePolicy:'encoding-dependent-upper-lanes',
+    kind:'vector',
+    ...extended,
+  });
+  const ymm = descriptor(physicalId, {
+    physicalId,
+    physicalBits:256,
+    viewBits:256,
+    lsb:0,
+    writePolicy:'replace',
+    kind:'vector',
+    ...extended,
+  });
+  assert.equal(xmm.physicalId, ymm.physicalId, `xmm${index}/ymm${index} must share physical identity`);
 }
 
 for (let index = 0; index < 8; index++) {
@@ -126,7 +124,7 @@ for (const [name,bits,kind] of [
 for (const [leftName,rightName] of [
   ['rax','eax'], ['rax','ax'], ['rax','al'], ['rax','ah'],
   ['rsp','esp'], ['r8','r8d'], ['rip','eip'], ['rflags','eflags'],
-  ['xmm0','ymm0'], ['xmm15','ymm15'],
+  ['xmm0','ymm0'], ['xmm15','ymm15'], ['xmm16','ymm16'], ['xmm31','ymm31'],
 ]) {
   const left = x86RegisterDescriptor(leftName);
   const right = x86RegisterDescriptor(rightName);
