@@ -232,6 +232,45 @@ def proc_stat(pid):
         'startTimeTicks': int(fields[19]),
     }
 
+def continue_after_stopped(code, pid, start_time_ticks, stop_id, timeout=3.0):
+    deadline = time.time() + timeout
+    previous_sample = None
+    stable_samples = 0
+    attempts = 0
+    rejected = False
+    last_error = None
+    while time.time() < deadline:
+        if process.GetProcessID() != pid:
+            fail(code + '-process-id-changed')
+        state = process.GetState()
+        if state in (lldb.eStateExited, lldb.eStateDetached, lldb.eStateInvalid):
+            fail(code + '-process-terminated:' + state_name(state))
+        stat = proc_stat(pid)
+        if stat['startTimeTicks'] != start_time_ticks:
+            fail(code + '-process-identity-changed')
+        current_stop_id = process.GetStopID()
+        if lldb.SBDebugger.StateIsStoppedState(state) and current_stop_id == stop_id:
+            sample = (stat['cpuTicks'], current_stop_id)
+            if sample == previous_sample:
+                stable_samples += 1
+            else:
+                previous_sample = sample
+                stable_samples = 0
+            if stable_samples >= 1:
+                attempts += 1
+                continue_error = process.Continue()
+                if continue_error.Success():
+                    return attempts, stat
+                last_error = str(continue_error)
+                if 'process still running' not in last_error.lower():
+                    fail(code + '-failed:' + last_error)
+                rejected = True
+                stable_samples = 0
+        elif rejected:
+            fail(code + '-rejected-resume-left-stopped-state:' + state_name(state))
+        time.sleep(0.01)
+    fail(code + '-settlement-timeout:' + str(last_error or state_name(process.GetState())))
+
 result = {'kind': 'active-provider-operations'}
 child = None
 process = None
@@ -325,11 +364,9 @@ try:
     }
 
     debugger.SetAsync(True)
-    cancel_stat_before = proc_stat(attached_pid)
-    cancel_stop_id_before = process.GetStopID()
-    cancel_continue_error = process.Continue()
-    if not cancel_continue_error.Success():
-        fail('cancel-continue-failed:' + str(cancel_continue_error))
+    cancel_stop_id_before = pause_stop_id_after
+    cancel_continue_attempts, cancel_stat_before = continue_after_stopped(
+        'cancel-continue', attached_pid, pause_stat_before['startTimeTicks'], cancel_stop_id_before)
     cancel_stat_after = cancel_stat_before
     cancel_progress_observed = False
     cancel_deadline = time.time() + 3.0
@@ -378,7 +415,7 @@ try:
         'executionWindow': 'after-continue-before-cancel-interrupt',
         'progressTransport': 'linux-proc-stat+lldb-stop-id',
         'executionAdvanced': True, 'interruptAccepted': True,
-        'operationSettled': True,
+        'operationSettled': True, 'continueSettlementAttempts': cancel_continue_attempts,
         'processId': process.GetProcessID(),
         'cpuTicksBefore': cancel_stat_before['cpuTicks'], 'cpuTicksAfter': cancel_stat_after['cpuTicks'],
         'processStartTimeTicks': cancel_stat_before['startTimeTicks'],
