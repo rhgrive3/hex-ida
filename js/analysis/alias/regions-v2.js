@@ -160,6 +160,7 @@ function preciseRegion({ descriptor, functionId, binaryId, widthBits, origin, ad
     const explicitSpace = nonEmpty(descriptor.addressSpace ?? addressSpace);
     if (!explicitSpace || (!scope.functionId && !scope.binaryId)) return null;
     const rootIdentity = descriptor.rootIdentity ?? (addressValueId ? { addressValueId } : null);
+    if (rootIdentity == null) return null;
     canonicalRegionIdentity = { addressSpace: explicitSpace, rootIdentity: jsonSafe(rootIdentity), widthBits: normalizedWidth };
     specific = {
       ...(scope.functionId ? { functionId: scope.functionId } : {}),
