@@ -61,8 +61,6 @@ function nonEmpty(value, code) {
 
 function optionalSizeBytes(value) {
   if (value == null) return null;
-  if (typeof value !== 'number' && typeof value !== 'string') fail('debug-record-invalid-size');
-  if (typeof value === 'string' && !value.trim()) fail('debug-record-invalid-size');
   const size = Number(value);
   if (!Number.isSafeInteger(size) || size < 0) fail('debug-record-invalid-size');
   return size;
@@ -111,6 +109,73 @@ export function createDebugIdentity(input = {}) {
 /** True when this identity may create authoritative (hard) facts. */
 export function isAuthoritative(identity) {
   return !!identity && AUTHORITATIVE_VERDICTS.has(identity.verdict);
+}
+
+function coverageList(value) {
+  if (value == null) return null;
+  if (!Array.isArray(value)) return null;
+  return new Set(value.map(String));
+}
+
+/**
+ * True only when one record is explicitly covered by a partial identity.
+ *
+ * Coverage is deliberately conjunctive and fail-closed: every supplied
+ * selector must be understood and match the record, and a partial match with
+ * no usable selector never becomes hard authority. This prevents a source-level
+ * `matched-partial` boolean from laundering uncovered records into exact facts.
+ */
+export function isDebugRecordAuthoritative(result, record) {
+  const identity = result?.identity;
+  if (!identity || !record) return false;
+  if (identity.verdict === 'matched-authoritative') return true;
+  if (identity.verdict !== 'matched-partial') return false;
+
+  const coverage = identity.coverage;
+  if (!coverage || typeof coverage !== 'object' || Array.isArray(coverage)) return false;
+  const known = new Set(['entityIds', 'recordKinds', 'addresses', 'buildIdentities', 'modules', 'module']);
+  const keys = Object.keys(coverage);
+  if (keys.length === 0 || keys.some((key) => !known.has(key))) return false;
+
+  let constrained = false;
+  const entityIds = coverageList(coverage.entityIds);
+  if (entityIds) {
+    constrained = true;
+    if (!entityIds.has(String(record.entityId))) return false;
+  } else if (coverage.entityIds != null) return false;
+
+  const recordKinds = coverageList(coverage.recordKinds);
+  if (recordKinds) {
+    constrained = true;
+    if (!recordKinds.has(String(record.kind))) return false;
+  } else if (coverage.recordKinds != null) return false;
+
+  const addresses = coverageList(coverage.addresses);
+  if (addresses) {
+    constrained = true;
+    if (record.address == null || !addresses.has(String(record.address))) return false;
+  } else if (coverage.addresses != null) return false;
+
+  const buildIdentities = coverageList(coverage.buildIdentities);
+  if (buildIdentities) {
+    constrained = true;
+    if (record.buildIdentity == null || !buildIdentities.has(String(record.buildIdentity))) return false;
+  } else if (coverage.buildIdentities != null) return false;
+
+  const modules = coverageList(coverage.modules);
+  if (modules) {
+    constrained = true;
+    const moduleId = record.descriptor?.module ?? record.descriptor?.moduleId ?? null;
+    if (moduleId == null || !modules.has(String(moduleId))) return false;
+  } else if (coverage.modules != null) return false;
+
+  if (coverage.module != null) {
+    constrained = true;
+    const moduleId = record.descriptor?.module ?? record.descriptor?.moduleId ?? null;
+    if (moduleId == null || String(moduleId) !== String(coverage.module)) return false;
+  }
+
+  return constrained;
 }
 
 /** One record from a provider, always carrying its debug-source provenance. */
@@ -200,7 +265,13 @@ export class DebugInfoProvider {
    */
   authoritativeRecords(result, reader, scope, options = {}) {
     if (!result.authoritative) return createDebugPage({ records: [], truncated: false });
-    return reader.call(this, scope, options);
+    const page = reader.call(this, scope, options);
+    if (result.identity?.verdict !== 'matched-partial') return page;
+    return createDebugPage({
+      records: (page.records ?? []).filter((record) => isDebugRecordAuthoritative(result, record)),
+      nextCursor: page.nextCursor,
+      truncated: page.truncated,
+    });
   }
 }
 
@@ -221,7 +292,7 @@ export function applyDebugTypesToGraph(graph, result, page) {
       entityId: record.entityId,
       descriptor: record.descriptor?.claim ?? record.descriptor,
     };
-    if (result.authoritative) {
+    if (isDebugRecordAuthoritative(result, record)) {
       graph.addHardConstraint({
         kind: 'debug-type',
         origin: 'debug-matched',
@@ -233,9 +304,9 @@ export function applyDebugTypesToGraph(graph, result, page) {
       applied.hard += 1;
       continue;
     }
-    // Unmatched debug data is still information — it just has no authority. It
-    // enters as soft evidence so a user can see it, and it can never overrule a
-    // hard constraint or reach certainty on its own.
+    // Unmatched or uncovered debug data is still information — it just has no
+    // authority. It enters as soft evidence so it can never overrule a hard
+    // constraint or reach certainty on its own.
     graph.addSoftEvidence({
       kind: 'signature-candidate',
       origin: 'debug-unmatched',
@@ -255,7 +326,6 @@ export function applyDebugTypesToGraph(graph, result, page) {
  * rather than authoritative starts.
  */
 export function debugFunctionEvidence(result, page) {
-  const authoritative = result.authoritative;
   return (page.records ?? [])
     .filter((record) => record.kind === 'symbol' && record.address != null && record.descriptor?.isFunction === true)
     .map((record) => ({
@@ -263,7 +333,7 @@ export function debugFunctionEvidence(result, page) {
       address: record.address,
       sizeBytes: record.sizeBytes ?? null,
       name: record.name,
-      confidence: authoritative ? 'exact' : 'heuristic',
+      confidence: isDebugRecordAuthoritative(result, record) ? 'exact' : 'heuristic',
       providerId: record.providerId,
       providerVersion: record.providerVersion,
       buildIdentity: record.buildIdentity,
