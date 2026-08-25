@@ -1,0 +1,977 @@
+# HEX_REVERSE_ENGINEERING_DEEP_RESEARCH_MASTER.md
+
+**Research date:** 2026-08-22, Asia/Tokyo  
+**Repository:** `rhgrive3/ida-245`  
+**Mode:** RESEARCH ONLY  
+**Evidence policy:** 現行 Hex については production source / production wiring / tests・verifiers を文書より優先し、外部実装については E1/E2 を主要根拠、E3 を failure/history 根拠とした。IDA/Hex-Rays と Binary Ninja の proprietary core は一切 source-reviewed と扱っていない。
+
+## エグゼクティブ判定と Research Freeze Point
+
+### 総合判定
+
+現行 Hex の最も重要な強みは、単純な「機能数」ではなく、**semantic truth の所有権、unknown/partial の保守性、stable identity/provenance、deterministic budget/cancellation、hard/soft type evidence の分離、EvidenceGraph を中心にした query/UI/AI 境界**を既に設計原則として持っていることである。`docs/flash.md` 自体も `MachineEffects → Semantic IR → CFG → SSA → MemorySSA → alias / points-to / summaries → type/value facts → decompiler projection → query/UI/AI` を single-truth chain とし、false `NoAlias`、false `MustAlias`、false exact indirect target、false exact type、semantic mismatch、stale publication をゼロにする release invariant を明示している。これは「もっと賢く見せる」競合追従ではなく、**証拠が揃った時だけ精度を上げられる構造**として非常に価値が高い。fileciteturn41file0L1-L2
+
+一方、最も大きな残差は、現在の保守性が精度に変換され切っていない境界に集中している。特に、現行 local points-to は **memory-loaded pointer と call-return pointer を明示的に unresolved boundary としている**。この選択自体は正しく、unsound な推測を避けているが、既に存在する MemorySSA と interprocedural summaries を用いてこの境界を安全に閉じる余地が大きい。fileciteturn30file0L1-L2
+
+第二の大きな残差は C-ME の「coverage declaration」と「独立 semantic oracle proof」の違いである。Hex 側の profile/support declarations は x86/x64/ARM64/RV64 の広い表面を宣言しているが、外部の `rax` が示す real hardware/KVM/QEMU/ASL differential methodology は、**実装とは独立した誤り検出能力**を提供する。`rax` は x86-64 を KVM/real hardware、AArch64 を hardware/QEMU+ASL、Hexagon/RISC-V を QEMU と同一初期状態から比較し、x87、AVX-512/APX、SVE/SVE2、RVV まで対象にしている。Hex が採るべきなのはこの runtime architecture ではなく、**verification method** である。citeturn22search12
+
+第三は C4。Ghidra の公開 decompiler source が示す最大の教訓は「どの simplification rule があるか」以上に、**pass ordering、fixed-point、restart、heritage/dead-code ordering、invalidation、non-convergence の扱いが correctness architecture そのもの**だという点である。Ghidra は Actions を変化がなくなるまで反復でき、restart を bounded にし、type inference にも明示的な pass limit を持たせる。また heritage が十分に進むまでは dead-code を許可しない。Hex の decompiler を強くするには、競合の最終 pseudocode を真似るより、この lifecycle discipline を Canonical Semantic IR / MemorySSA の上に取り込む方が leverage が大きい。citeturn10view0turn11view1turn11view2turn11view3
+
+第四は symbolic。現行 Hex には browser-safe な真正の exact Bool/BV finite-domain solver があり、SAT model を Hex 自身で再評価し、unsupported/resource limit を proof に昇格させない。しかし default `maxBvWidth = 8` であり、full-width binary reasoning の主 solver にはならない。fileciteturn47file0L1-L2 Z3 の公式 WebAssembly package は存在するものの、公式ドキュメント上 threads と `SharedArrayBuffer` を要求し、browser 側には cross-origin isolation が必要であるため、「WASM があるから現在の iPad/userscript にそのまま入る」という前提は成立しない。citeturn17search2turn18search1turn19search0
+
+第五は Stage 2。runtime、managed、native rebuild、persistence、extensions、collaboration には provider/adapter architecture が既に存在する。したがって次の課題は provider を増やすことではなく、**provider presence ≠ proven capability** を守りながら、vertical workflows、identity binding、independent reparse、real-device/browser proof を閉じることにある。現行 `js/runtime/**` には debugger/emulator/instrumentation/evidence bridge が既に存在する。fileciteturn53file0L1-L2
+
+### 最高 leverage の外部発見
+
+| 優先 | Finding | CURRENT Hex に効く正確な点 | Leverage |
+|---|---|---|---|
+| P0 | **HEX-C0-01 same-binary twin ground truth** | competitor output を真実にせず、debug/stripped twin と source/spec を denominator にする | 全 campaign |
+| P0 | **HEX-ME-01 independent MachineEffects oracle** | support declaration と semantic correctness を分離する | MachineEffects → 全 downstream |
+| P0 | **HEX-C1-01 MemorySSA-backed loaded-pointer recovery** | `unresolved-load` を、MustAlias の exact store がある時だけ閉じる | C1→C2→C3→C4→query |
+| P0 | **HEX-C1-02 return-pointer summaries** | `unresolved-call` を complete summary の時だけ閉じる | C1→indirect calls→types→decompiler |
+| P0 | **HEX-C1-03 provenance-backed roots** | heap/global/TLS/stack roots を名前 heuristics ではなく object identity で分離 | alias/aggregates/indirect |
+| P0 | **HEX-C2-01 byte-exact MemorySSA forwarding** | partial overlap と unknown barriers を扱いつつ load→value 精度を上げる | C2→C3→C4 |
+| P1 | **HEX-C2-02 wrapped intervals + congruence + branch refinement** | switch、bounds、pointer interval、signedness の precision を増やす | C1/C2/C4/SYM |
+| P1 | **HEX-C3-01 ambiguity-preserving recursive type constraints** | 現在の hard/soft authority model を壊さず structural type breadth を増やす | C3/C4 |
+| P0 | **HEX-C3-02 ABI aggregate/prototype unification** | small-struct return、HFA/HVA、sret、varargs 等の high-impact ABI 誤りを防ぐ | calls/types/decompiler |
+| P1 | **HEX-C3-03 versioned language metadata providers** | Go/Rust/Swift/ObjC の metadata を canonical type graph に安全に供給 | managed/native/types |
+| P0 | **HEX-C4-01 explicit pass lifecycle/invalidation** | stale facts、premature DCE、non-converging rewrites を防ぐ | decompiler architecture-wide |
+| P1 | **HEX-C4-02 semantics-preserving structuring** | irreducible CFG で「見た目のための誤変換」を防ぐ | C4 |
+| P1 | **HEX-C4-03 raw↔optimized↔rendered provenance mapping** | HLIL/pseudocode と canonical semantics の食い違いを検出 | C4/query/UI/AI |
+| P0 | **HEX-SYM-01 tiered solver deployment** | 8-bit exact floor は保持し、Z3-WASM/remote を別 authority tier にする | C-SYM |
+| P1 | **HEX-SYM-02 tiered symbolic memory** | concrete memory を高速に保ち、symbolic pointer のみ arrays に昇格 | C-SYM/deobf |
+| P1 | **HEX-SYM-03 first-class taint + proof-gated deobfuscation** | MBA/opaque predicate simplificationを proof のない cosmetic rewrite にしない | SYM/C4/security |
+| P0 | **HEX-X-01 independent rebuild reparse gate** | writer が成功しただけの invalid binary publication を防ぐ | native rebuild |
+| P1 | **HEX-X-02 Apple versioned metadata/fixup knowledge** | dyld cache/chained fixups/Swift/ObjC/code-signing/arm64e 周辺を閉じる | Apple workflow |
+| P1 | **HEX-S2-01 trace/static identity binding** | runtime observation が stale binary に適用されるのを防ぐ | runtime/query/AI |
+| P1 | **HEX-S2-02 collision-preserving recognition** | function signatures を誤った exact match authority にしない | signatures/diff/types |
+
+この順序は feature visibility ではなく downstream leverage から決めている。特に `C1 → C2 → C3 → C4` の precision backbone を先に強くすると、一つの sound improvement が alias、MemorySSA、values、types、aggregates、decompiler、causal query、AI explanation の全てに波及する。逆に pseudocode の cosmetic cleanup 単独は visible ではあるが semantic truth をほぼ増やさない。
+
+### 最初に着手価値が高い research-backed changes
+
+最初の十件は、**loaded-pointer bridge、return-pointer summary、MachineEffects differential oracle、byte-overlap MemorySSA corpus、ABI aggregate return corpus、decompiler pass dependency/invalidation contract、raw/optimized projection consistency、WebKit solver exact-device proof、native rebuild independent reparse、same-binary twin benchmark generator** である。
+
+このうち C0/C1/C-SYM は現在の integration/PR と重なる可能性があるため、実装開始前に必ず candidate tree を再取得すべきであり、本報告では「未実装」と断定せず **IN-FLIGHT / VERIFY BEFORE WORK** とする。
+
+### Research Freeze Point
+
+初回 freeze で確認した識別子は次の通り。
+
+| Object | Freeze identity |
+|---|---|
+| `main` | `f7fe0150a4bbed8ab7019837d0965d93836a0a4d` |
+| main commit time | `2026-08-22T02:08:54Z` = `2026-08-22 11:08:54 JST` |
+| main subject | `docs: correct stage-two APIGAP-S2-A6 pointer` |
+| main tree | `e6a845111d8bcd60a71de2d9e57def6db75348c0` |
+| `docs/flash.md` blob | `b8af3f98b9e9c5c997d52ec78baff23fa3ea6e00` |
+| `completion/stage1-integration` | `da2708d92787f6e6b55fe37b85e9b4d79a15a2c1` |
+| integration relation at freeze | main より 3 commits ahead / 0 behind |
+| integration changed surface at freeze | 203 files, +2334/-624 |
+| component PR observed initially | PR #1413 |
+| PR #1413 initial observed head | `04b6f566e5ee06f32c6c1a34959f3aaa9e3276f5` |
+| initial PR title observed | `[completion][C-S1-08][WebKit] close symbolic browser proof blockers` |
+| open Issues final search | 0 |
+| research final timestamp | `2026-08-22 20:49 JST` |
+
+Integration 側には少なくとも native/LIEF/rebuild、link-stage hardening、integration candidacy gate に関する commits が既に存在していた。したがって Mach-O/ELF/PE rebuild を「Hex に存在しない新機能」として提案するのは誤りであり、本報告は **main の現状、integration candidate、component PR** を分離して扱う。
+
+PR #1413 の取得済み diff では Stage 1 validation workflow が exact PR head と merge-tree の両方を検査する方向へ強化され、alias root descriptors に `global-like` / `heap-like` / `tls-like` を加える変更など、C0/C1 にも触れていた。つまり C-SYM だけの PR として扱うこともできない。fileciteturn48file0L1-L2
+
+また、この PR diff には root identity の文字列中の `heap` / `alloc` / `global` 等を参照して separation reason を得る path が見えた。これは **本当に hard `NoAlias` を mint する経路なら provenance review が必要**である。名前・spelling は current Hex の type authority model でも soft evidence として扱われるべき性質であり、binary-proven allocation/global identity なしに exact non-alias の根拠にしてはならない。ここは「bug である」と断定するのではなく、integration acceptance 時の adversarial proof target とする。fileciteturn48file0L1-L2
+
+**CI state:** 初回取得時、main の GitHub combined status は status context なしの pending 相当であり、別途観測した一つの workflow run は success だった。しかしこれは「main の required CI がすべて green」という証拠ではない。integration PR body に exact-head verifier READY 等の自己申告があっても、Hex 自身の guardrail に従い worker/PR text を proof として昇格させていない。
+
+**Second freshness check:** `2026-08-22 20:49 JST` に open PR / open issue を再検索した。open PR は引き続き #1413 一件、open issue はゼロだった。一方 #1413 の search metadata は研究開始時から更新され、title が `feat(stage1): Stage 1 Release Validation and Competitive Attack Program Foundation` に変わり、body は main=`f7fe...`、integration=`da270...` を checkpoint としていた。すなわち **PR metadata/scope は研究中に変化した**。そのため C0/C1/C-SYM recommendation は全て in-flight-aware に再分類した。
+
+同時に main/integration の direct branch refresh は GitHub REST rate limit (`2026-08-22 11:49 UTC` 頃) に阻まれた。そのため最終時点に「main と integration が絶対に一 commit も動いていない」とは主張しない。最終 PR search が同じ main/integration checkpoint を参照していたことは補助証拠に留める。この制約は後述の Remaining Unknowns に明示する。
+
+## CURRENT Hex truth map
+
+### Authority と truth drift
+
+`docs/flash.md` は正しく、planning document は implementation proof ではないと定め、production wiring を `producer → canonical artifact/fact → stable identity + provenance → query/API → production consumer → UI/AI` としている。fileciteturn41file0L1-L2
+
+ただし authority docs の一部には `js/analysis/alias-core.js`、`pointer-analysis.js`、`points-to-analysis.js` など古い flat ownership path を指す箇所があるのに対し、実際の main は `js/analysis/alias/**`、`js/analysis/pointsto/**`、`js/analysis/summary/**`、`js/semantics/memoryssa/**` に分解されている。現行 tree では pointsto は `alias.js`、`lattice.js`、`local.js` で構成される。fileciteturn28file0L1-L10 alias は canonical-address/regions/solver 等に分割されている。fileciteturn29file0L1-L10
+
+これは architecture の破綻ではなく **owner-path documentation drift** である。Flash の architecture を変更する必要はなく、guardrail/ownership pointers を canonical current paths に合わせる小さな documentation delta で十分である。
+
+### Canonical pipeline audit
+
+| Subsystem | CURRENT STRENGTH | CURRENT LIMIT | CURRENT AUTHORITY / PROOF | CURRENT IN-FLIGHT WORK | RESEARCH QUESTION |
+|---|---|---|---|---|---|
+| **MachineEffects** | explicit effects layer が Semantic IR より前に存在し、unknown boundary を下流に伝播させる設計 | profile declarations と独立 semantic correctness oracle は別物。x87/AVX-512/APX、SVE/PAC、RV extension edge の independent proof は今回の main audit だけでは再証明できない | `js/semantics/effects/index.js`; platform capability profiles。effects module は current tree に存在。fileciteturn42file0L1-L10 | Stage1 C-ME campaign | hardware/QEMU/spec differential を JS MachineEffects の offline oracle にできるか |
+| **Semantic IR / CFG / SSA** | single-truth chain、stable identities、explicit unknowns | downstream precision が C1/C2 gaps に制限される | `js/semantics/{ir,cfg,ssa}` が current canonical tree。fileciteturn34file0L1-L10 | Stage1 integration | transform ごとの consumes/produces/invalidation をさらに machine-readable にできるか |
+| **C1 alias / points-to** | field-sensitive local fixed point、SSA φ/loop range、root preservation、widening、budget | **loads/calls intentionally unresolved** | `js/analysis/pointsto/local.js` が明記。fileciteturn30file0L1-L2 | PR #1413 が roots/alias を広く変更 | MemorySSA exact store と complete summaries だけから sound に境界を閉じられるか |
+| **C1 summaries** | SCC condensation、recursive least fixed point、unknown-call fallback、non-exhaustive indirect set に unknown を加算、non-convergence を complete にしない | return-pointer provenance の current precision は local pointsto 境界を完全には閉じていない | `solveInterproceduralSummaries`; iterative Tarjan、bounded recursion。fileciteturn32file0L1-L2 | C1 in-flight | pointer-return/object-allocation summary fact を finite lattice で追加できるか |
+| **C2 MemorySSA** | region-aware defs/uses、may/must/unknown、call/intrinsic clobber、budget/cancel、broad fallback | exact load-store value propagation と partial-byte reconstruction の downstream consumer depthが主要機会 | `buildMemorySsa`; incomplete call は broad access、unknown memory は broad clobber。fileciteturn36file0L1-L2 | C2 campaign | MustAlias exact byte coverage の時だけ forwarding する最小拡張は何か |
+| **C2 Memory queries** | reaching def と explainable memory path が既にある | `reachingConcreteStore` は exact store を返せるが、これを pointsto/value/decompiler がどこまで使うかが precision bottleneck | `reachingConcreteStore` は `aliasRelation === 'must'` かつ `memory-def` の時だけ non-null。fileciteturn37file0L1-L10 | C2 | existing query を canonical bridge として再利用する |
+| **Value/range facts** | pointsto では bounded offset ranges がある | production-wired relational range/congruence/known-bits breadth は今回の exact source evidenceでは証明できず **UNPROVEN** | rich value domain を docs の宣言から推測しない | C2 | wrapped interval→known bits→congruence→限定 relational の順が最適か |
+| **C3 types** | Machine/ABI/Structural/Nominal を分離。hard と soft を別型にし、hard contradiction 時は selection を withheld | structural/prototype/language-specific constraint breadth は拡張余地大 | `constraints.js`, `graph.js`; heuristic/unmatched-debug は hard fact 不可。fileciteturn51file0L1-L10 fileciteturn52file0L1-L10 | C3 | Retypd 的 recursive constraint を現 authority model の下に置けるか |
+| **C4 decompiler** | AST、pipeline、idioms、loop repair、call prototypes、phase8、fallback architecture が存在 | Ghidraほど pass prerequisite/restart/invalidation が公開構造として明示されている証拠はない。appearance を先行させるべきでない | current `js/decompiler/**`; pass subtree には manager/stack φ/stack return recovery。fileciteturn39file0L1-L2 fileciteturn40file0L1-L10 | C4 | Action/Rule の lifecycle lesson を existing pipeline に最小限取り込む |
+| **C-SYM** | solver-independent interface、worker、cancellation、exact finite-domain solver、validated SAT model | default BV width 8、arrays/full symbolic memory がないため realistic 32/64-bit SMT を主 solver として処理できない | current solver tree。fileciteturn46file0L1-L10 exact backend。fileciteturn47file0L1-L2 | PR #1413 は研究中に C-SYM/C0/C1 と重なる状態 | Z3 WASM を first-party isolated context の optional backend にできるか |
+| **Runtime** | provider/authority/evidence bridge/debugger/emulator/instrumentation abstractions が既に存在 | provider existence と real Frida/debugger/emulator capability proof は別 | current runtime tree。fileciteturn53file0L1-L2 | Stage2 runtime/Frida | dynamic evidence の module/build/generation identity をどこまで静的 entity に bind するか |
+| **Native/rebuild** | Stage2 architecture と LIEF lane が存在 | main と integration を混ぜて「完成」と呼べない。F3–F6 correctness は independent reparse/reloc/unwind/signature proof が必要 | stage2 maturity source + integration commits | **LIEF work in-flight** | writer-independent rebuild oracle を release gate にできるか |
+| **Managed** | ILSpy/JADX adapters が stage2 capability model の所有 lane として存在 | opcode coverage と APK/.NET application workflow maturity は別 | `stage2-capability-maturity.js` declarations | in-flight/Stage2 | metadata/resources/exceptions/generics/PDB/R2R を vertical corpus で証明する |
+| **Recognition/diff/knowledge/patterns** | dedicated `signature/**`, `knowledge/**`, `diff/**`, `pattern/**` architecture を想定 | corpus size/provenance/collision behavior の exact current maturity は今回 **UNPROVEN** | source+stage2 declarations を docs claim より優先 | Stage2 | WARP/FID/capa/pattern assets を canonical truth に昇格させず利用する |
+| **Persistence/plugin/collab** | locked stage2 lanes がある | transport presence は maturity ではない | `stage2-capability-maturity.js` | Stage2 | snapshot identity、migration、extension authority、cancel/isolation を end-to-end prove する |
+
+### 現行 Hex の重要な設計上の優位
+
+**Unknown-call conservatism は維持すべきである。** 現行 interprocedural solver は missing/stale/incomplete callee を「no effect」と扱わず broad unknown effect にし、non-exhaustive indirect target set は known candidates に unknown-call effect を追加する。recursive SCC が budget 内で収束しなければ optimistic intermediate を publish せず conservative incomplete summary に置き換える。これは競合から置換すべき弱点ではなく、**外部アルゴリズムを導入する時に絶対に壊してはならない Hex advantage** である。fileciteturn32file0L1-L2
+
+**Type ambiguity の扱いも同様である。** Hex は contradictory hard constraints に「70% の型」を選ばず selection を withheld し、soft evidence が hard contradiction を消せない。これは Retypd/Oxidizer 系のより広い inference を受け入れるための良い authority shell であり、新しい type engine で置換するより、現在の `TypeConstraintGraph` に新しい evidence producers を接続すべきである。fileciteturn52file0L1-L10
+
+**MemorySSA も作り直すべきではない。** current implementation は calls/intrinsics、unknown clobber、may/must/unknown relation、access sequencing を一つの canonical memory truth に統合している。C1/C2 precision work はこのエンジンを再利用し、二つ目の reaching-def/memory model を作らないのが正解である。fileciteturn36file0L1-L2
+
+## 外部実装研究と source registry
+
+### IDA / Hex-Rays の lawful public surface
+
+`HexRaysSA/ida-sdk` は公開 SDK として利用できるが、これから proprietary decompiler core の内部アルゴリズムを推論してはいけない。今回 source-reviewed と扱ったのは public SDK/API、public repositories、lawful plugins、independent IDB parsers 等だけである。`ida-sdk` は MIT の public source である。citeturn9search0turn9search1
+
+`ida-domain` の重要な lesson は、低レベル API を無秩序に agent に投げるのではなく Functions/Types/Xrefs の domain abstraction を提供する点にある。Hex ではこれを query layer に適用し、AI が rendered text を再解釈するのではなく stable semantic entities を query させるべきである。citeturn9search5
+
+`ida-codemode` から得られる最重要 lesson は、agent/session workspace と database authority を分離することである。persistent REPL/handle は lease-scoped にし、handle ごとの namespace/isolation を持たせ、session state が canonical database semantics そのものにならないようにする。これは Hex の EvidenceGraph と非常に相性がよい。citeturn2search1
+
+recursive discovery では Hex-Rays 公開 plugin `goomba` も重要だった。これは MBA/opaque-predicate simplification に Z3 を使って soundness を検証し、non-linear case では fingerprint oracle を使用する。Hex にとっての lesson は「MBA simplifier を付ける」ことではなく、**deobfuscation rewrite は semantic-equivalence proof が通った時だけ canonical projection に昇格させる**ことである。citeturn20search7
+
+IDA agent ecosystem の `IDASQL` や `idac` も、queryability、multiple database handles、headless/GUI session routing に有用な UX lesson を示す。一方、Hex では read/write agent surface が analysis authority を迂回して canonical facts を書き換える設計は採用すべきでない。citeturn20search5turn20search11
+
+**禁止境界:** proprietary Hex-Rays core の hidden SSA/type algorithms は **NO STRONG PUBLIC SOURCE FOUND** であり、推測・byte-for-byte reconstruction の対象外とした。leaked/cracked/pirated source/binary は一切使用していない。
+
+### Ghidra — primary open decompiler reference
+
+Ghidra の最大価値は個々の peephole rule ではなく、公開された C++ decompiler が **phase lifecycle をコードで証明している**ことにある。
+
+`Action::perform` は repeat flag と change count を使って収束まで反復でき、`ActionRestartGroup` は restart を bounded にする。citeturn10view0 `coreaction.cc` の universal action sequence は heritage、parameter recovery、local restriction、dead code、dynamic mapping、spacebase recovery、nonzero mask、type inference、varnode restructuring、repeat rule pools の順序を明示する。type inference 自体にも bounded pass limit があり、settle しない場合は warning/state を残す。citeturn11view2turn11view3
+
+`heritage.cc` では address-space ごとの heritage/deadcode delay を持ち、SSA/heritage が十分に閉じる前に dead-state elimination を始めない。clear/restart 時には多数の maps/caches/pass state をまとめて invalidation する。Hex にとってこれは **premature DCE と stale analysis cache を structural invariant で防止せよ**という lesson である。citeturn11view1
+
+2026 年の Ghidra failure history はこの教訓をさらに強くする。Sleigh `PcodeCacher` では vector reallocation 後に raw pointer を使ったため use-after-free、`HighVariable::merge` では削除された variable が intersection cache に残って use-after-free が起きた。前者は stable reference/ID、後者は atomic cache invalidation の重要性を直接示す。citeturn22search5turn22search6
+
+さらに Mach-O loader は attacker-controlled `ncmds` をそのまま巨大 allocation に使う resource-consumption bug を持ち、ELF GNU hash parser は unbounded loop、out-of-range zero provider、cancellation disabled の組合せで永久 hang を起こした。Hex の browser/iPad environment ではこの種の bug は desktop よりさらに重大であり、**file-bound validation、allocation budgets、iteration cap、always-cancellable parsing** を format lane の hard invariant にするべきである。citeturn22search4turn22search8
+
+`udiv128` simplifier でも fixed-size temporary の境界ミスが compiler-idiom simplification から reachable だった。Hex の JavaScript は同じ memory corruption class を持たないとしても、bit-width、BigInt→bitvector normalization、index bounds を simplifier property tests で独立に証明する必要がある。citeturn22search7
+
+なお GitHub release widget の取得結果は 2026-05-13 の `Ghidra 12.1` を “Latest” としていたが、一次情報の advisory/issue は 12.1.1/12.1.2 の存在を明確に示している。したがって crawler の “Latest” 表示は stale と判断し、本報告では version marketing ではなく source mechanism/advisory を authority とした。citeturn22search0turn22search8turn22search9
+
+### Binary Ninja / WARP
+
+Binary Ninja proprietary core は source-reviewed としていない。一方 open `binaryninja-api` が公開する MLIL/SSA API からは、memory SSA version、memory φ、SSA loads/stores/calls、aliased variables、IL-to-IL mappings、use-def exposure が API contract の一部であることが観測できる。Hex にとっての opportunity は「BN の IL をコピーする」ことではなく、**canonical memory/value truth を result navigation/API から直接辿れること**である。citeturn3search2turn3search4
+
+WARP は recognition lane で特に重要である。function GUID を basic-block GUID 群から構築し、instruction normalization では relocation-sensitive bytes を扱い、NOP/self-move 相当を正規化する。より重要なのは **一つの GUID に複数候補があれば collision を削除せず保持し、caller/callee/adjacency 等の constraints で絞る**設計である。firmware の relocation 情報不足は明確な failure mode になる。citeturn22search14turn3search0
+
+Hex はこれを `signature/knowledge/diff` に取り込む際、fingerprint match を exact semantic fact とせず、候補集合、algorithm version、normalization version、constraint evidence、collision cardinality を保存すべきである。
+
+### angr / Triton / Retypd / other decompilers
+
+angr AIL の有用な lesson は optimized graph だけを残さず、unoptimized graph と instruction mapping を保持することである。これにより decompiler projection が canonical low-level evidence へ戻れる。Hex の EvidenceGraph と同じ方向性であり、C4 では raw→optimized→rendered mapping を transform record として保持すべきである。citeturn4search9
+
+Claripy は solver abstraction、AST translation、backend caching、timeout/interrupt、model handling を solver-independent layer に置く。Hex の現行 `solver/backend/session/worker` 分離は方向として正しく、置き換えではなく capability breadth を足すべきである。citeturn4search2
+
+Triton の symbolic memory では concrete/QF_BV memory が scale のための default であり、symbolic pointer を必要とする時に array/QF_ABV model を使う選択肢がある。この二段階性は browser Hex に適している。すべての load/store を最初から SMT Array にするのではなく、MemorySSA/concrete regions を first tier、必要な query だけ array backend に昇格するのがよい。citeturn5search1turn5search8
+
+Retypd の recursive types/subtyping は modern binary type recovery の強い研究基盤だが、reference implementation は GPLv3 である。したがって Hex では paper-level algorithm/invariants を **CLEAN-ROOM-ONLY** とし、現行 `TypeConstraintGraph` の hard/soft authority model の下に independently implement するのが適切である。citeturn5search2turn5search3
+
+`gtirb-ddisasm-retypd` の failure/limitation からは generic arithmetic alone では signedness を誤り得ること、FP/vector sinks、globals、parameter-count discrepancies が type quality を落とすことが分かる。したがって Hex は opcode/ABI-specific hard evidence と generic structural constraints を混同すべきでない。citeturn5search0
+
+Rust 向け Oxidizer は compiler-version-sensitive recovery と複数 possible types を保持する。Hex の既存 ambiguity model と相性が良い。language recovery provider は「最も plausible な Rust type 一個」を hard fact にするのではなく、toolchain/version evidence と alternatives を TypeConstraintGraph に供給すべきである。citeturn4search1turn4search0
+
+decompilation structuring では dewolf/DREAM 系が irreducible CFG/loop/condition restructuring の重要な研究源だが、dewolf は LGPL 系であるため **CLEAN-ROOM-ONLY**。最終 pseudocode の美観より equivalence と raw fallback を優先する。citeturn6search0turn6search6
+
+### Machine semantics、runtime、formats、languages、recognition
+
+`rax` と Rizin `rz-tracetest` は独立 differential semantics の最も直接的な source class である。Remill の formal-validation history でも `xadd` 等の semantics discrepancies が見つかっており、「成熟した semantics library だから正しい」とは言えない。複数 oracle が disagree した時は spec/hardware を上位 authority とし、maskable undefined state を比較から除外する仕組みが必要である。citeturn22search12turn7search5turn7search7
+
+Miasm の symbolic overlapping-memory failure では signed pointer difference の扱いから異常に大きい overlap width が生じた例があり、Hex C2/C-SYM には **modular-width checked arithmetic と impossible overlap invariant** が必要である。citeturn7search9
+
+Frida Gum の Stalker は block の shadow copy/dynamic recompilation、call/block/instruction event streams、cached code、self-modifying-code trust threshold を持つ。Hex が採るべきなのはその desktop-native core ではなく、**runtime trace event を static bytes/hash + module/build identity + generation に bind し、stale trace を canonical fact にしない**点である。runtime provider は `REMOTE/BRIDGE-OPTIONAL` とし、browser は indexing/query/evidence projection を所有する。citeturn8search2turn8search3
+
+Qiling は OS/environment emulation、Unicorn は native execution engine、rr は Linux record/replay として強力だが、これらを mandatory iPad architecture にするのは不適切である。build-time oracle または optional remote provider として価値がある。citeturn8search0turn8search1turn8search13
+
+LIEF は ELF/PE/Mach-O の parse/modify/build、DWARF/PDB、ObjC、dyld-cache 関連を持つ permissive reference であり、integration branch が既にこの lane を進めている以上、推奨は「LIEF を導入せよ」ではなく **writer-independent validation を追加せよ**である。citeturn13search0turn13search2
+
+Apple では dyld cache header が code signature、local symbols、UUID、subcache/patch-related metadata を含み、Mach-O chained fixups/signature reconstruction が単純な section rewrite では済まない。citeturn12search2turn13search7 Swift ABI docs は metadata layout の有用な authority だが、一部 nominal-type textual documentation 自身が out-of-date と警告しており、runtime headers は unknown metadata kinds を forward-compatible に扱う必要を示す。したがって Hex の Swift provider は documentation snapshot に固定せず、**compiler/runtime version identity を解析結果に記録する**べきである。citeturn13search1turn13search3
+
+GoReSym は Go runtime/compiler の version-specific knowledge を利用し、stripped/malformed/UPX/split ranges といった実際の binary conditions を扱う。Hex では同じ考えを採り、まず toolchain/build fingerprint を evidence として確立し、その version の `pclntab/moduledata/types` parser を選ぶべきである。citeturn14search0
+
+ILSpy は .NET metadata/PDB/ReadyToRun を含む成熟した managed workflow の reference で、JADX は DEX/APK/AAB/resources/deobfuscation を一つの application workflow として扱い、自身も全入力を完全 decompile できるとは主張していない。Hex の `managedIlspy` / `managedJadx` lane は既にあるので、次に測るべきは VM opcode count ではなく **metadata→types→exceptions→resources→source navigation の vertical maturity** である。citeturn14search4turn14search7
+
+BinDiff は structural matching cascade、BinExport は IDA/BN/Ghidra を跨ぐ interchange surface として有用である。Hex では BinExport を optional oracle/interchange として使う余地があるが、canonical entity schema を BinExport に合わせて置換すべきではない。citeturn15search4turn15search6
+
+Diaphora の長期 history では unreliable heuristics の移動/廃止が生じている。これは recognizer heuristic を「永続的な truth rule」にしない理由になる。algorithm version、feature set、confidence/evidence、collision set を保存する必要がある。citeturn15search5
+
+PatternLanguage/ImHex、YARA-X、capa の lesson は pattern/rule ecosystem を parser/type authority と混同しないことにある。YARA-X のような bounded rule engine と versioned package model は useful だが、match は `knowledge evidence` であり semantic truth ではない。citeturn16search1turn16search2turn15search3
+
+### Inspected-source registry
+
+以下は mandatory source universe と recursive discovery を disposition 別に統合した registry である。「Deep」は source/API/history が finding に直接使用されたもの、「Screened」は mandatory group として architecture/license/relevance を確認したが、より強い source と重複し独自 P0/P1 mechanism を採用しなかったものを指す。
+
+| Source family | Inspected sources | Identity/activity used | Evidence | Transfer posture / disposition |
+|---|---|---|---|---|
+| IDA public | `HexRaysSA/ida-sdk`, `ida-domain`, `ida-codemode`, `rax`, `plugin-repository` | 2026 public snapshots; rax active | E1/E2 | SDK/rax permissive where LICENSE verified; proprietary IDA core excluded |
+| IDA plugins | `lucid`, `HexRaysDeob`, `d810-ng`, historical `d810`, `HexRaysCodeXplorer`, `HexRaysPyTools`, `hrtng`, `HexraysToolbox` | screened current/historical | E1/E3 | per-repo LICENSE review before code transfer; mechanism discovery only where unclear |
+| IDB/TIL/signatures | `python-idb`, `idb-rs`, `FLIRTDB` | screened | E1/E3 | parsers: per-file review; FLIRT data: DATA-LICENSE-REVIEW |
+| Recursive IDA | `goomba`, `IDASQL`, `idac` | 2026 active public projects | E1/E3 | public API/agent/deobf lessons only |
+| Ghidra | `NationalSecurityAgency/ghidra`, `rizinorg/rz-ghidra`, `ghidra-data/FID` | 12.1.x-era source/history; exact latest release widget conflict noted | E1/E2/E3 | Apache-2.0 Ghidra source: PERMISSIVE-REFERENCE |
+| Binary Ninja | `Vector35/binaryninja-api`, `Vector35/warp` | current 2026 snapshots | E1/E2 | open code permissive; proprietary core not reviewed; WARP datasets separately reviewed |
+| angr family | `angr`, `claripy`, `pyvex`, `archinfo`, `cle`, `pypcode` | active 2026 | E1/E2 | BSD family/per-file review; PERMISSIVE-REFERENCE |
+| Rust/type | `oxidizer`, `oxidizer-eval`, `retypd`, `gtirb-ddisasm-retypd` | Oxidizer integrated into angr; Retypd historical/research | E1/E2 | Retypd/GTIRB integration GPL: CLEAN-ROOM-ONLY |
+| Symbolic | `JonathanSalwan/Triton`, Z3, Bitwuzla, cvc5 | current public docs/source | E1/E2 | Z3 MIT reference; Bitwuzla/cvc5 browser deployment unproven |
+| Other analysis | BAP, Miasm, Remill, Anvill, Rellic, patchestry | screened/deep where unique | E1/E2/E3 | Miasm GPL: CLEAN-ROOM; Remill spec/oracle reference after file-level review |
+| Decompilers | rev.ng, RetDec, dewolf, Reko, NotDec, m2c | deep/screened | E1/E2 | dewolf/rev.ng restrictive: CLEAN-ROOM; RetDec permissive/reference |
+| Benchmarks | DecompileBench, CodeFuse-DeBench, DREAM papers, Oxidizer eval | historical/current research | E2/E3 | methodology evidence; results never current GT |
+| Machine semantics | SLEIGH/P-code, rax, Remill, RzIL, Triton, Miasm, LLVM MC, QEMU | deep | E1/E2 | production transfer only where license compatible; QEMU/hardware principally oracle |
+| Runtime | Frida Gum, Qiling, Unicorn, QEMU, rr, DynamoRIO, LLDB, Tenet, Lighthouse | deep/screened | E1/E2/E3 | mostly bridge/oracle; native runtime not browser architecture |
+| Native/Apple | LIEF, Apple dyld, objc4, Swift, LLVM | current official source/docs | E1/E2 | LIEF/LLVM/Swift permissive where applicable; Apple files per-license review |
+| Recognition | BinDiff, BinExport, Diaphora, capa, capa-rules, FID, WARP, FLIRTDB | current/historical | E1/E2/E3 | Diaphora AGPL clean-room; datasets DATA-LICENSE-REVIEW |
+| Managed | JADX, Apktool, ILSpy, dnSpyEx, smali, JVM decompilers, GoReSym, Oxidizer, Swift/ObjC references | current/historical | E1/E2 | ILSpy/GoReSym permissive; dnSpyEx GPL clean-room |
+| Patterns | PatternLanguage, ImHex, ImHex-Patterns, YARA/YARA-X | current | E1/E2 | PatternLanguage/ImHex CLEAN-ROOM; community datasets review; YARA-X permissive reference |
+| UX/API/AI | ida-domain, ida-codemode, BN API, Ghidra APIs, Lighthouse, Tenet, IDASQL, idac | current | E1/E2/E3 | interface lessons; no external agent becomes Hex semantic authority |
+
+**Discovery saturation:** 各 major domain について source code/docs → issues/advisories → related projects/papers の独立 pass を行い、最終 consolidation 後の追加 pass では、既存 Top-20 の dependency ordering を変える新規 P0/P1 mechanism は得られなかった。新規に得られた 2026 Ghidra advisories は recommendation の優先度を変えるのではなく、既に抽出していた bounded parsing / cache invalidation / cancellation invariants を強化した。唯一の freshness uncertainty は Hex 自身の direct branch endpoint が最終時に rate-limited だった点である。
+
+## 実装可能な finding cards と failure history
+
+以下のカードは feature wishlist ではない。すべて「current Hex のどの precise weakness/opportunity を閉じるか」を先頭に置いている。
+
+### Actionable cards
+
+**HEX-C0-01 — Same-binary twin benchmark authority**
+
+**DOMAIN:** C0。  
+**CURRENT HEX EVIDENCE:** `docs/flash.md` は既に competitor output を ground truth にせず、alias corpus と competitive profile を別物として扱う。fileciteturn41file0L1-L2  
+**CURRENT LIMIT:** cross-tool comparison が増えるほど、compiler drift や tool disagreement を「truth」に誤変換する危険が増える。  
+**EXTERNAL MECHANISM:** Oxidizer evaluation、DecompileBench の semantic/readability 分離を参考にしつつ、より強い Hex rule として **一回の compilation artifact から debug oracle と stripped twin を生成**する。DecompileBench も recompilation/semantic correctness と readability を分ける。citeturn6search3turn4search0  
+**PRIMARY SOURCES:** Hex current Flash; DecompileBench; Oxidizer eval。  
+**WHY IT WORKS:** source/toolchain/codegen を固定したまま metadata visibility だけを変えられる。  
+**KNOWN FAILURE MODES:** debug/stripped を別 compilation にすると layout/codegen drift、competitor consensus laundering、LLM readability score を correctness と混同。  
+**HEX ADAPTATION:** current competitive profile を versioned manifest とし source hash/compiler/version/flags/binary hash/debug hash を固定。  
+**CANONICAL OWNER:** `tools/validation/competitive/**`, existing phase7/8 corpus machinery。  
+**DO NOT DUPLICATE:** completion scope lock / Stage1 verifier。  
+**PROOF PLAN:** positive=same artifact symbols/types recoverable; negative=different compiler hash を pair として拒否。metamorphic=strip-only transformation 後 `.text` identity を確認。  
+**BENCHMARK IMPACT:** 全 correctness metric denominator の信頼性向上。  
+**IPAD/BROWSER FIT:** OFFLINE-ORACLE-ONLY generation、browser は corpus consumption。  
+**TRANSFER POSTURE:** PERMISSIVE-REFERENCE / methodology only。  
+**EFFORT:** medium。  
+**EXPECTED LEVERAGE:** architecture-wide。  
+**RISK:** benchmark harness 自体が production logic と common-mode になること。  
+**CAMPAIGN STATUS:** **COVERED BY `docs/flash.md`, NEEDS MORE DETAIL**。
+
+**HEX-ME-01 — Independent differential MachineEffects oracle**
+
+**DOMAIN:** C-ME。  
+**CURRENT HEX EVIDENCE:** `js/semantics/effects/index.js` が canonical effects layer。fileciteturn42file0L1-L10  
+**CURRENT LIMIT:** internal tests/profile coverage は implementation-independent semantic oracle ではない。PAC/x87/SVE/APX/system/atomic edge の「100%」を declarations だけから proof にできない。  
+**EXTERNAL MECHANISM:** rax の identical-state differential: software semantics vs KVM/hardware/QEMU/ASL。citeturn22search12 RzIL trace tests と Remill discrepancy history も同じ必要性を裏付ける。citeturn7search5turn7search7  
+**PRIMARY SOURCES:** rax, Rizin, Remill, official ISA specs。  
+**WHY IT WORKS:** same bug を実装と test oracle が共有する common-mode risk を減らす。  
+**KNOWN FAILURE MODES:** undefined/unpredictable state の false mismatch、host feature mismatch、exceptions/memory ordering の比較不足、oracle 自身の QEMU bug。  
+**HEX ADAPTATION:** MachineEffects JS の production architecture は変えず、offline corpus generator が initial state / bytes / expected observable state / comparison mask / oracle identity を出力する。  
+**CANONICAL OWNER:** current MachineEffects providers + `tools/validation/machine-effects/**`。  
+**DO NOT DUPLICATE:** MachineEffects evaluator を production にもう一つ作らない。  
+**PROOF PLAN:** positive=spec-defined instruction; negative=undefined flag masked; differential=hardware + QEMU/spec triangulation; fuzz=random legal operands; metamorphic=encode/decode round-trip。  
+**BENCHMARK IMPACT:** instruction semantic correctness、flags、vector lanes、memory effects。  
+**IPAD/BROWSER FIT:** **OFFLINE-ORACLE-ONLY**。  
+**TRANSFER POSTURE:** rax permissive reference; specs E2; QEMU runtime oracle only。  
+**EFFORT:** large。  
+**EXPECTED LEVERAGE:** architecture-wide。  
+**RISK:** false confidence from incomplete observables。  
+**CAMPAIGN STATUS:** **COVERED BY `docs/flash.md`; implementation guidance should be strengthened**。
+
+**HEX-C1-01 — MemorySSA-backed loaded-pointer recovery**
+
+**DOMAIN:** C1/C2。  
+**CURRENT HEX EVIDENCE:** `pointsto/local.js` explicitly says loads are unresolved and returns TOP `unresolved-load`; this is intentional safety.fileciteturn30file0L1-L2 `reachingConcreteStore()` already exposes an exact store only when relation is MustAlias and definition is a concrete `memory-def`.fileciteturn37file0L1-L10  
+**CURRENT LIMIT:** pointer stored to memory and reloaded loses object/root precision despite existing exact MemorySSA evidence.  
+**EXTERNAL MECHANISM:** SSA/memory-SSA use-def propagation, as exposed publicly by Ghidra/BN analysis APIs, but constrained by Hex's stronger exactness rules.citeturn3search2  
+**WHY IT WORKS:** no new alias inference is needed; it reuses a fact already proven by canonical MemorySSA.  
+**KNOWN FAILURE MODES:** partial overlap, may-alias writer, unknown-call clobber, width-changing load, endian mistake, intervening volatile/atomic semantics.  
+**HEX ADAPTATION:** only if `reachingConcreteStore` is exact, bytes fully cover pointer width, no unknown barrier, and stored semantic value has valid points-to provenance; otherwise remain TOP.  
+**CANONICAL OWNER:** `js/analysis/pointsto/local.js` consuming `js/semantics/memoryssa/queries.js` through existing production pipeline.  
+**DO NOT DUPLICATE:** no second memory reaching-def engine.  
+**PROOF PLAN:** positive=store pointer→load pointer→exact field; negative=may-alias store, unknown call, partial byte overlap, mismatched width all unresolved。fuzz offsets/widths/endian。  
+**BENCHMARK IMPACT:** alias exact recall、indirect target recall、aggregate/type recovery。  
+**IPAD/BROWSER FIT:** **BROWSER-NATIVE**。  
+**TRANSFER POSTURE:** independent Hex implementation; external mechanism only。  
+**EFFORT:** medium。  
+**EXPECTED LEVERAGE:** multi-subsystem。  
+**RISK:** accidental forwarding across may/unknown clobber。  
+**CAMPAIGN STATUS:** **COVERED BY Flash corpus; IN-FLIGHT-adjacent; NEEDS MORE DETAIL**。
+
+**HEX-C1-02 — Return-pointer and allocation summaries**
+
+**DOMAIN:** C1。  
+**CURRENT HEX EVIDENCE:** local pointsto treats call result as unresolved; interprocedural summary solver already has SCC recursion, unknown fallbacks and exhaustive/non-exhaustive call target semantics.fileciteturn30file0L1-L2 fileciteturn32file0L1-L2  
+**CURRENT LIMIT:** direct callees that provably return an argument-derived/global/allocation-derived pointer cannot feed precise caller points-to.  
+**EXTERNAL MECHANISM:** finite interprocedural result summaries; Retypd/angr/Ghidra function-spec research corroborates propagating facts through ABI/function boundaries while retaining ambiguity.citeturn5search2turn4search9  
+**WHY IT WORKS:** Hex already has the sound recursion/unknown machinery; only finite return relation facts are missing.  
+**KNOWN FAILURE MODES:** recursion growth, pointer identity path strings growing unbounded, incomplete indirect candidates, unknown external allocation semantics, escaped local object.  
+**HEX ADAPTATION:** summary fact kinds should be finite: `returns-arg(i)+offset`, `returns-root(id)+offset`, `returns-allocation(site)`, `unknown`; non-exhaustive target union must include unknown.  
+**CANONICAL OWNER:** `js/analysis/summary/**` + `js/analysis/pointsto/**`。  
+**DO NOT DUPLICATE:** existing SCC solver/summary contract stays canonical.  
+**PROOF PLAN:** direct return; wrapper chain; recursive return; exhaustive indirect union; non-exhaustive indirect→TOP; missing/stale summary→TOP。  
+**BENCHMARK IMPACT:** exact alias recall、function-pointer/vtable targets、prototype/types。  
+**IPAD/BROWSER FIT:** BROWSER-NATIVE。  
+**TRANSFER POSTURE:** independent implementation。  
+**EFFORT:** medium-large。  
+**EXPECTED LEVERAGE:** multi-subsystem。  
+**RISK:** unsound exact return from partial summary。  
+**CAMPAIGN STATUS:** **COVERED BY Flash corpus / NEEDS MORE DETAIL; verify PR before work**。
+
+**HEX-C1-03 — Provenance-backed heap/global/TLS/object roots**
+
+**DOMAIN:** C1。  
+**CURRENT HEX EVIDENCE:** main has canonical root service; PR #1413 adds `global-like`, `heap-like`, `tls-like` related handling.fileciteturn48file0L1-L2  
+**CURRENT LIMIT:** distinct roots can remain MayAlias if allocation/global/TLS identities are not canonically represented; conversely string heuristics risk false NoAlias.  
+**EXTERNAL MECHANISM:** allocation-site/object-root identities plus escape classification; WARP/GTIRB-style stable identity concepts are useful, but alias proof must come from binary/runtime evidence, not names.  
+**WHY IT WORKS:** two independently proven nonoverlapping object identities permit separation without guessing offsets.  
+**KNOWN FAILURE MODES:** allocator reuse, escaped pointers, aliases through globals, TLS thread ambiguity, linker aliases/IFUNC, name-based inference.  
+**HEX ADAPTATION:** explicit root descriptor schema with origin/evidence/escape scope and snapshot identity; spelling remains soft metadata only.  
+**CANONICAL OWNER:** `js/analysis/alias/**`, `js/analysis/pointsto/**`。  
+**DO NOT DUPLICATE:** canonical-address root service remains owner.  
+**PROOF PLAN:** different stack roots; distinct nonescaping allocation sites; escaped allocation negative; TLS same/different logical thread; aliased symbol negative。  
+**BENCHMARK IMPACT:** false `NoAlias` hard gate + exact recall。  
+**IPAD/BROWSER FIT:** BROWSER-NATIVE。  
+**TRANSFER POSTURE:** independent implementation。  
+**EFFORT:** medium。  
+**EXPECTED LEVERAGE:** multi-subsystem。  
+**RISK:** highest risk is treating heuristic root labels as proof。  
+**CAMPAIGN STATUS:** **IN-FLIGHT**; adversarial review required。
+
+**HEX-C2-01 — Byte-precise load/store forwarding**
+
+**DOMAIN:** C2。  
+**CURRENT HEX EVIDENCE:** MemorySSA distinguishes concrete def, may clobber, unknown clobber, call/intrinsic clobber。fileciteturn36file0L1-L2  
+**CURRENT LIMIT:** exact bytes and partial stores are not yet proven to feed a rich canonical value forwarding layer end-to-end.  
+**EXTERNAL MECHANISM:** reaching memory definition + overlap splitting/reconstruction; Miasm history shows pointer-difference/overlap arithmetic must remain width-bounded.citeturn7search9  
+**WHY IT WORKS:** many compiler-generated stack locals/aggregate fields become constants/pointers before requiring a global solver.  
+**KNOWN FAILURE MODES:** partial overwrite, endian, atomic/volatile, unknown writer, memcpy-like intrinsic, signed address arithmetic.  
+**HEX ADAPTATION:** forwarding only with exact byte coverage; partial coverage may reconstruct only if every contributing definition is exact and ordered; otherwise unknown.  
+**CANONICAL OWNER:** MemorySSA consumer/value fact layer。  
+**DO NOT DUPLICATE:** MemorySSA itself remains sole memory truth.  
+**PROOF PLAN:** exact full store/load; two exact partial stores reconstruct; one unknown byte invalidates; volatile/atomic negative; overlapping may store negative。  
+**BENCHMARK IMPACT:** reaching-memory-def correctness、constants、pointer/type recovery、decompiler temporaries。  
+**IPAD/BROWSER FIT:** BROWSER-NATIVE。  
+**TRANSFER POSTURE:** independent implementation。  
+**EFFORT:** medium。  
+**EXPECTED LEVERAGE:** multi-subsystem。  
+**RISK:** byte-order or overlap bug becomes silent wrong value。  
+**CAMPAIGN STATUS:** **COVERED but guidance should be strengthened**。
+
+**HEX-C2-02 — Wrapped interval / known-bit / congruence / branch refinement ladder**
+
+**DOMAIN:** C2。  
+**CURRENT HEX EVIDENCE:** offset ranges exist in pointsto, but a production-wired relational/congruence value domain was not independently proven in the inspected main evidence.  
+**CURRENT LIMIT:** switch bounds、stride/alignment、wrapped arithmetic、induction、signed/unsigned branch refinement lose inexpensive precision before SMT.  
+**EXTERNAL MECHANISM:** Ghidra range/value phases plus mature compiler-analysis technique; run cheap monotone domains before expensive relational solving. Ghidra explicitly orders nonzero-mask analysis before/around type/structural stages.citeturn11view2turn11view3  
+**WHY IT WORKS:** most binary bounds are expressible with interval+known bits+congruence without SMT explosion.  
+**KNOWN FAILURE MODES:** wraparound treated as mathematical integer, signedness conflation, widening too slow/too aggressive, relational domain memory explosion.  
+**HEX ADAPTATION:** add in order: wrapped interval → known bits/nonzero → congruence → branch refinement; full relational domain only targeted.  
+**CANONICAL OWNER:** existing value facts layer between MemorySSA and types/decompiler.  
+**DO NOT DUPLICATE:** symbolic solver is not the canonical everyday value analysis.  
+**PROOF PLAN:** wrap boundaries, `x & mask`, stride φ loops, branch `x<k`, signed/unsigned counterexamples, widening termination。  
+**BENCHMARK IMPACT:** indirect target recall、switch recovery、alias interval precision、decompiler constants。  
+**IPAD/BROWSER FIT:** BROWSER-NATIVE。  
+**TRANSFER POSTURE:** algorithmic reference from primary sources/specs。  
+**EFFORT:** medium-large。  
+**EXPECTED LEVERAGE:** multi-subsystem。  
+**RISK:** unsound narrowing after wrap/signedness mistake。  
+**CAMPAIGN STATUS:** **NEEDS MORE DETAIL IN Flash**。
+
+**HEX-C3-01 — Recursive structural type constraints without forced choice**
+
+**DOMAIN:** C3。  
+**CURRENT HEX EVIDENCE:** hard/soft evidence and contradiction withholding already implemented。fileciteturn51file0L1-L10  
+**CURRENT LIMIT:** current graph model is a strong authority shell, but richer recursive pointers/struct/array/function relationships remain an opportunity.  
+**EXTERNAL MECHANISM:** Retypd recursive types, polymorphism/subtyping; Oxidizer alternatives.citeturn5search2turn4search1  
+**WHY IT WORKS:** recursive constraints connect usage at many sites without pretending a nominal type is certain.  
+**KNOWN FAILURE MODES:** arithmetic signedness misclassification, unconstrained recursion, all integers accidentally becoming pointers, layout unions collapsed to struct.  
+**HEX ADAPTATION:** new structural constraints become evidence producers into current graph; no new confidence authority.  
+**CANONICAL OWNER:** `js/analysis/types/**`。  
+**DO NOT DUPLICATE:** `TypeConstraintGraph` remains canonical; no parallel Retypd engine result schema.  
+**PROOF PLAN:** recursive list; conflicting pointer/int; union overlap; array stride; ambiguous candidates retained; hard debug contradiction wins.  
+**BENCHMARK IMPACT:** structural aggregate precision/recall、casts、temporary count。  
+**IPAD/BROWSER FIT:** BROWSER-NATIVE with budgets。  
+**TRANSFER POSTURE:** **CLEAN-ROOM-ONLY** for Retypd implementation.  
+**EFFORT:** large。  
+**EXPECTED LEVERAGE:** multi-subsystem。  
+**RISK:** solver complexity and accidental certainty。  
+**CAMPAIGN STATUS:** **COVERED conceptually; algorithm details should be strengthened**。
+
+**HEX-C3-02 — ABI/prototype/aggregate-return unification**
+
+**DOMAIN:** C3。  
+**CURRENT HEX EVIDENCE:** ABI is a separate type layer, which is correct.fileciteturn51file0L1-L10  
+**CURRENT LIMIT:** small aggregate returns, hidden sret, HFA/HVA, split registers, varargs and callsite conflicts are high-impact sources of wrong prototypes.  
+**EXTERNAL MECHANISM:** Ghidra function specs/parameter ID and historical AArch64 aggregate-return failures; language ABI specs are primary authority.  
+**WHY IT WORKS:** caller and callee observations constrain each other, but ABI spec keeps the conclusion from becoming heuristic.  
+**KNOWN FAILURE MODES:** thunk/tail-call confusion, variadic calls, vector/floating classes, architecture sub-ABI differences, mismatched debug info.  
+**HEX ADAPTATION:** ABI constraints hard only when architecture/platform/build identity is known; callsite observations otherwise soft/structural.  
+**CANONICAL OWNER:** ABI/type facts + `js/decompiler/call-prototypes.js` consumer。  
+**DO NOT DUPLICATE:** decompiler must not independently invent prototypes.  
+**PROOF PLAN:** SysV/Win64/AAPCS64 fixtures; small structs; HFA; sret; vararg; thunk; contradictory callsites。  
+**BENCHMARK IMPACT:** prototype exactness、argument count、aggregate rendering。  
+**IPAD/BROWSER FIT:** BROWSER-NATIVE。  
+**TRANSFER POSTURE:** official ABI specifications E2 preferred。  
+**EFFORT:** large。  
+**EXPECTED LEVERAGE:** multi-subsystem。  
+**RISK:** platform misidentification produces hard wrong ABI facts。  
+**CAMPAIGN STATUS:** **NEEDS MORE DETAIL IN Flash**。
+
+**HEX-C3-03 — Versioned language metadata providers**
+
+**DOMAIN:** C3 / Stage2。  
+**CURRENT HEX EVIDENCE:** hard source origin distinguishes `runtime-verified` from observation/heuristic。fileciteturn51file0L1-L10  
+**CURRENT LIMIT:** Go/Rust/Swift/ObjC knowledge can be very precise but breaks badly when version/layout assumptions drift.  
+**EXTERNAL MECHANISM:** GoReSym toolchain-aware metadata parsing; Swift runtime metadata versioning/unknown-kind tolerance; Oxidizer compiler-version models。citeturn14search0turn13search3turn4search1  
+**WHY IT WORKS:** version detection turns a fragile byte pattern into a scoped metadata contract.  
+**KNOWN FAILURE MODES:** stripped version markers, corrupted metadata, future Swift metadata kind, partially initialized runtime metadata, packed/obfuscated Go metadata.  
+**HEX ADAPTATION:** provider result contains language/toolchain/build identity, parser version, byte evidence, completeness; only identity-verified metadata emits hard type constraints.  
+**CANONICAL OWNER:** `js/managed/**`, `js/knowledge/**` producers into `js/analysis/types/**`。  
+**DO NOT DUPLICATE:** language parser cannot bypass TypeConstraintGraph.  
+**PROOF PLAN:** version matrix, malformed corpus, unknown future-kind fixture, stripped twin, contradictory debug/runtime metadata。  
+**BENCHMARK IMPACT:** nominal/aggregate/prototype recall。  
+**IPAD/BROWSER FIT:** BROWSER-NATIVE for parsers; corpus generation offline。  
+**TRANSFER POSTURE:** GoReSym permissive; Swift official source/docs with file-level compliance。  
+**EFFORT:** large。  
+**EXPECTED LEVERAGE:** multi-subsystem。  
+**RISK:** metadata version misclassification。  
+**CAMPAIGN STATUS:** **partially covered; Swift/Go version invariants should be added**。
+
+**HEX-C4-01 — Explicit decompiler pass dependencies, restart and invalidation**
+
+**DOMAIN:** C4。  
+**CURRENT HEX EVIDENCE:** decompiler pipeline/pass manager exists。fileciteturn39file0L1-L2  
+**CURRENT LIMIT:** current evidence does not show a Ghidra-level explicit contract for every pass's prerequisites, invalidated facts and bounded fixed-point publication.  
+**EXTERNAL MECHANISM:** Ghidra Actions/Rules, bounded restart, heritage/deadcode delay, type pass limit。citeturn10view0turn11view1turn11view2  
+**WHY IT WORKS:** most hard decompiler bugs are stale-analysis/order bugs, not absence of one rewrite.  
+**KNOWN FAILURE MODES:** non-convergence, DCE before SSA closure, stale dominance/cover/type facts after rewrite, repeated pass oscillation.  
+**HEX ADAPTATION:** each pass declares consumes, produces, invalidates, repeat policy, max iterations, failure publication status; scheduler remains inside existing pipeline.  
+**CANONICAL OWNER:** current decompiler pass manager/pipeline core.  
+**DO NOT DUPLICATE:** do not create a second optimizer IR or second type/value truth.  
+**PROOF PLAN:** mutation invalidates dependent fact; two oscillating rules hit budget and fall back; DCE blocked until required semantic phase complete。  
+**BENCHMARK IMPACT:** semantic equivalence、raw fallback、latency、non-convergence。  
+**IPAD/BROWSER FIT:** BROWSER-NATIVE。  
+**TRANSFER POSTURE:** Ghidra Apache-2.0 PERMISSIVE-REFERENCE, but design independently to Hex contracts。  
+**EFFORT:** medium-large。  
+**EXPECTED LEVERAGE:** architecture-wide。  
+**RISK:** broad refactor; should be incremental contract addition, not rewrite。  
+**CAMPAIGN STATUS:** **NEEDS MORE DETAIL IN Flash**。
+
+**HEX-C4-02 — Safe structuring for irreducible/exception-aware CFGs**
+
+**DOMAIN:** C4。  
+**CURRENT HEX EVIDENCE:** current loop repair/AST/pipeline provides structuring surface.fileciteturn39file0L1-L2  
+**CURRENT LIMIT:** readability pressure can tempt unsafe goto elimination or state-machine simplification.  
+**EXTERNAL MECHANISM:** DREAM/dewolf-style structural transforms with explicit irreducible handling; Ghidra block actions provide another independent reference。citeturn6search0turn6search6turn11view2  
+**WHY IT WORKS:** region transforms are valuable when their preconditions are graph properties rather than pattern guesses.  
+**KNOWN FAILURE MODES:** exception edges omitted, multi-entry loops, switch fallthrough, break/continue misplacement, flattened dispatch mistaken for structured loop.  
+**HEX ADAPTATION:** proof-gated region transforms; keep `goto`/raw state machine when precondition fails.  
+**CANONICAL OWNER:** CFG/decompiler structuring layer.  
+**DO NOT DUPLICATE:** CFG truth remains `js/semantics/cfg/**`。  
+**PROOF PLAN:** irreducible two-entry SCC; nested switch/loop; exception edge; flattened dispatcher; semantic equivalence differential。  
+**BENCHMARK IMPACT:** avoidable goto count and readability measured only after semantic gate。  
+**IPAD/BROWSER FIT:** BROWSER-NATIVE。  
+**TRANSFER POSTURE:** dewolf CLEAN-ROOM-ONLY; papers/graph theory preferred。  
+**EFFORT:** large。  
+**EXPECTED LEVERAGE:** local/multi-C4。  
+**RISK:** semantic drift for visual gain。  
+**CAMPAIGN STATUS:** **COVERED, guidance should be strengthened**。
+
+**HEX-C4-03 — Raw/optimized/rendered bidirectional provenance**
+
+**DOMAIN:** C4/query/API。  
+**CURRENT HEX EVIDENCE:** Hex has origin/transform/evidence architecture; MemorySSA has explain path。fileciteturn37file0L1-L10  
+**CURRENT LIMIT:** every optimized pseudocode fragment must remain navigable to pre-transform canonical evidence; otherwise UI/AI can over-trust projection.  
+**EXTERNAL MECHANISM:** angr AIL keeps unoptimized graph/mappings; BN public IL APIs expose cross-IL mappings。citeturn4search9turn3search2  
+**WHY IT WORKS:** disagreement between disassembly/IL/decompiler becomes detectable rather than hidden.  
+**KNOWN FAILURE MODES:** many-to-one transformation loses origin, deleted temporary has no replacement mapping, stale rendered mapping after incremental reanalysis.  
+**HEX ADAPTATION:** every decompiler transform produces consumed/produced semantic IDs and proof kind; UI result can jump to canonical IR/instruction evidence.  
+**CANONICAL OWNER:** existing origin/identity + decompiler projection + query.  
+**DO NOT DUPLICATE:** rendered AST IDs do not become independent semantic identities.  
+**PROOF PLAN:** CSE, DCE, φ elimination, switch recovery, struct field render; every output span resolves to source entities; stale snapshot rejected。  
+**BENCHMARK IMPACT:** provenance loss=0、navigation latency、projection inconsistency。  
+**IPAD/BROWSER FIT:** BROWSER-NATIVE。  
+**TRANSFER POSTURE:** permissive API mechanisms; independent implementation。  
+**EFFORT:** medium。  
+**EXPECTED LEVERAGE:** architecture-wide UI/AI trust。  
+**RISK:** provenance storage growth。  
+**CAMPAIGN STATUS:** **largely covered architecturally; strengthen C4 proof requirements**。
+
+**HEX-SYM-01 — Tiered exact solver deployment**
+
+**DOMAIN:** C-SYM。  
+**CURRENT HEX EVIDENCE:** exact exhaustive backend is real, bounded, cancellable and model-validating, but default max BV width is 8。fileciteturn47file0L1-L2  
+**CURRENT LIMIT:** practical 32/64-bit path/deobf queries exceed its finite search envelope.  
+**EXTERNAL MECHANISM:** solver-independent Claripy-style AST/backend; optional Z3 WASM or remote native solver。citeturn4search2turn17search2  
+**WHY IT WORKS:** exact authority contract can stay independent from concrete backend.  
+**KNOWN FAILURE MODES:** Z3 official WASM threads require `SharedArrayBuffer`/cross-origin isolation; userscript cannot assume host COOP/COEP; worker cancellation/memory may fail on iPad。citeturn18search1turn19search0  
+**HEX ADAPTATION:** tier 0=current exhaustive browser exact floor; tier 1=first-party cross-origin-isolated Z3 WASM when measured; tier 2=optional remote solver. Backend result never accepted without query hash/model validation where applicable.  
+**CANONICAL OWNER:** current `js/symbolic/solver/**` registry/session/worker.  
+**DO NOT DUPLICATE:** canonical Expr AST and proof result remain Hex-owned.  
+**PROOF PLAN:** actual Safari/iPad cold start, 32/64-bit BV, timeout, cancellation, memory pressure, CSP, offline, SAT model validation, UNSAT cross-check。  
+**BENCHMARK IMPACT:** symbolic exact coverage、solve latency、startup、peak memory、cancel latency。  
+**IPAD/BROWSER FIT:** current exhaustive = **BROWSER-NATIVE**; Z3 = **WASM-FEASIBLE only in proven isolated deployment**; remote optional。  
+**TRANSFER POSTURE:** Z3 MIT/permissive reference.  
+**EFFORT:** large。  
+**EXPECTED LEVERAGE:** multi-subsystem。  
+**RISK:** WebKit/SAB deployment assumption。  
+**CAMPAIGN STATUS:** **IN-FLIGHT / REQUIRES ADR if made default**。
+
+Bitwuzla と cvc5 については、native solver としては強いが、今回の一次資料探索では Hex の現在の Safari/userscript deployment にそのまま採用できる **officially supported canonical WASM/browser path を確認できなかった**。したがって browser production backend については **NO STRONG PUBLIC SOURCE FOUND**。citeturn17search1turn17search0
+
+**HEX-SYM-02 — Tiered symbolic memory**
+
+**DOMAIN:** C-SYM/C2。  
+**CURRENT HEX EVIDENCE:** canonical MemorySSA が concrete memory relationships を既に持つ。  
+**CURRENT LIMIT:** symbolic address が必要な query と ordinary concrete loads を同じ高コスト SMT array model で扱う必要はないが、array-capable exact path も必要。  
+**EXTERNAL MECHANISM:** Triton concrete/QF_BV vs optional MEMORY_ARRAY/QF_ABV strategy。citeturn5search8  
+**WHY IT WORKS:** common case の speed/memory を保ちながら symbolic pointer を表現できる。  
+**KNOWN FAILURE MODES:** concrete→array transition semantics mismatch、endianness、partial writes、alias with unknown symbolic address、state explosion。  
+**HEX ADAPTATION:** MemorySSA-backed concrete memory first; symbolic address encounter時に explicit escalation; budget exhausted は UNKNOWN。  
+**CANONICAL OWNER:** symbolic executor/translation consuming canonical memory semantics。  
+**DO NOT DUPLICATE:** symbolic memory is query state, not a replacement for MemorySSA。  
+**PROOF PLAN:** concrete-only parity; symbolic index array; partial writes; unknown pointer; aliasing two symbolic stores; cancellation。  
+**BENCHMARK IMPACT:** solve scale、memory、path coverage。  
+**IPAD/BROWSER FIT:** concrete BROWSER-NATIVE; arrays WASM/REMOTE depending backend。  
+**TRANSFER POSTURE:** Triton mechanism research; implementation independent。  
+**EFFORT:** large。  
+**EXPECTED LEVERAGE:** multi-subsystem。  
+**RISK:** memory model mismatch can invalidate proofs。  
+**CAMPAIGN STATUS:** **NEEDS MORE DETAIL IN Flash**。
+
+**HEX-SYM-03 — First-class taint and proof-gated deobfuscation**
+
+**DOMAIN:** C-SYM/C4。  
+**CURRENT HEX EVIDENCE:** symbolic/evidence architecture exists; AI/heuristic authority is already restricted.  
+**CURRENT LIMIT:** taint source/sink/sanitizer semantics and OLLVM/MBA transformations should not be improvised as decompiler-only heuristics.  
+**EXTERNAL MECHANISM:** Triton first-class symbolic+taint; goomba proof-validated MBA simplification。citeturn5search1turn20search7  
+**WHY IT WORKS:** taint answers “where did this dependency originate” without forcing expensive full symbolic equivalence everywhere; rewrite proof separately establishes semantic preservation.  
+**KNOWN FAILURE MODES:** implicit-flow over/under-taint, sanitizer model misclassification, path explosion, MBA simplifier assumes width/signedness incorrectly.  
+**HEX ADAPTATION:** taint as separate lattice over canonical value IDs; source/sink models versioned; deobf rewrite publishes only after local solver/differential proof or remains suggestion.  
+**CANONICAL OWNER:** `js/symbolic/**` with EvidenceGraph projection.  
+**DO NOT DUPLICATE:** decompiler cannot invent independent taint facts.  
+**PROOF PLAN:** direct/indirect taint, sanitizer, control dependency, MBA equivalent/non-equivalent pairs, solver timeout→no rewrite。  
+**BENCHMARK IMPACT:** source/sink recall/precision、opaque predicate exactness、semantic mismatch。  
+**IPAD/BROWSER FIT:** taint BROWSER-NATIVE; heavy equivalence WASM/REMOTE optional。  
+**TRANSFER POSTURE:** mechanisms only; source license reviewed per project。  
+**EFFORT:** large。  
+**EXPECTED LEVERAGE:** multi-subsystem。  
+**RISK:** heuristic sanitizer promoted to truth。  
+**CAMPAIGN STATUS:** **partially covered; first-class taint detail missing**。
+
+**HEX-X-01 — Writer-independent rebuild validation**
+
+**DOMAIN:** C-X / Stage2。  
+**CURRENT HEX EVIDENCE:** LIEF/native rebuild work is in integration; main と候補を混ぜてはいけない。  
+**CURRENT LIMIT:** serializer/builder 自身が “success” を返しても relocation/unwind/signature/layout が壊れている可能性がある。  
+**EXTERNAL MECHANISM:** LIEF parse-modify-build surface + independent loader/reparse/spec validation。citeturn13search0turn13search2  
+**WHY IT WORKS:** writer と checker の failure mode を分離する。  
+**KNOWN FAILURE MODES:** segment/section growth、branch range、relocation regeneration、import/export edit、exception/unwind、code signature、alignment、malformed input。  
+**HEX ADAPTATION:** output bytes を fresh parser instance で再parseし、layout invariants、relocation targets、unwind entries、imports/exports、signature state を original mutation intent と比較する。可能なら OS/toolchain loader oracle も offline 実行。  
+**CANONICAL OWNER:** existing binary/rebuild lane。  
+**DO NOT DUPLICATE:** LIEF adapter/rebuild engine already in flight。  
+**PROOF PLAN:** no-op rebuild byte/semantic equivalence; section growth; new branch range; import edit; unwind preservation; corrupted output must be rejected。  
+**BENCHMARK IMPACT:** reparse success、loader acceptance、reloc/unwind correctness。  
+**IPAD/BROWSER FIT:** parser/reparse BROWSER/WASM-FEASIBLE; OS loader oracle OFFLINE。  
+**TRANSFER POSTURE:** LIEF Apache-2.0 PERMISSIVE-REFERENCE。  
+**EFFORT:** large。  
+**EXPECTED LEVERAGE:** Stage2 native architecture-wide。  
+**RISK:** using the same writer/parser implementation for both sides weakens independence。  
+**CAMPAIGN STATUS:** **IN-FLIGHT; Flash guidance should explicitly require independent reparse**。
+
+**HEX-X-02 — Apple chained-fixup/dyld/Swift/ObjC/code-signing knowledge plane**
+
+**DOMAIN:** C-X / Stage2 / C3。  
+**CURRENT HEX EVIDENCE:** Apple/native lane exists; exact vertical maturity must not be inferred from adapter presence。  
+**CURRENT LIMIT:** modern Apple binaries combine dyld caches, chained fixups, ObjC metadata, Swift runtime metadata, unwind, signatures and arm64e-related pointer metadata.  
+**EXTERNAL MECHANISM:** LIEF APIs + Apple dyld/objc4 + Swift ABI/runtime headers。citeturn12search2turn13search7turn13search3  
+**WHY IT WORKS:** metadata can recover names/types/dispatch relationships that pure instruction analysis cannot.  
+**KNOWN FAILURE MODES:** stale Swift docs、future metadata kinds、partial initialization、shared-cache slide/rebase mistakes、PAC bits confused with canonical address、invalidating code signatures on rebuild。  
+**HEX ADAPTATION:** versioned Apple metadata provider; PAC/authentication metadata represented separately from raw address identity; unknown metadata kind stays unknown。  
+**CANONICAL OWNER:** `js/binary/**`, `js/managed/**`, knowledge provider → canonical types/symbols。  
+**DO NOT DUPLICATE:** metadata parser cannot create a second pointer/type truth.  
+**PROOF PLAN:** OS/toolchain version corpus; shared-cache samples; chained fixups; Swift generic metadata; ObjC categories/protocols; PAC/authenticated pointer fixtures; rebuild signing-state checks。  
+**BENCHMARK IMPACT:** symbol/type/vtable/dispatch recall、rebuild validity。  
+**IPAD/BROWSER FIT:** parsing BROWSER-NATIVE/WASM-FEASIBLE; signing/OS-loader oracle OFFLINE/BRIDGE。  
+**TRANSFER POSTURE:** official sources/specs preferred; file-level license compliance。  
+**EFFORT:** large。  
+**EXPECTED LEVERAGE:** multi-subsystem。  
+**RISK:** version drift。  
+**CAMPAIGN STATUS:** **covered broadly; needs detailed Apple invariants**。
+
+**HEX-S2-01 — Runtime trace identity, trust generation and bounded storage**
+
+**DOMAIN:** Stage2/runtime。  
+**CURRENT HEX EVIDENCE:** debugger/emulator/instrumentation/evidence-bridge abstractions already exist。fileciteturn53file0L1-L2  
+**CURRENT LIMIT:** external provider observations are useful only if provably attached to the exact binary/module generation being analyzed.  
+**EXTERNAL MECHANISM:** Frida Stalker code-cache/trust strategy, per-thread streams, block/call/instruction events。citeturn8search2turn8search3  
+**WHY IT WORKS:** self-modifying/reloaded modules make raw address identity insufficient.  
+**KNOWN FAILURE MODES:** ASLR, unload/reload, JIT/self-modifying code, trace overflow, remote disconnect, event reorder, stale snapshot publication。  
+**HEX ADAPTATION:** runtime event key = provider/session/module-build-id/static-byte-hash/generation/thread/timestamp/PC; browser maintains bounded chunked indexes; observed event is evidence, not static semantics override。  
+**CANONICAL OWNER:** `js/runtime/**` + EvidenceGraph/query.  
+**DO NOT DUPLICATE:** runtime does not become a second CFG/type authority.  
+**PROOF PLAN:** module reload same VA/new bytes; trace cancellation; dropped events flagged; snapshot identity mismatch rejection; self-modifying block generation。  
+**BENCHMARK IMPACT:** trace lookup latency、storage、cancel latency、runtime/static mapping precision。  
+**IPAD/BROWSER FIT:** provider **REMOTE/BRIDGE-OPTIONAL**; indexing/query BROWSER-NATIVE。  
+**TRANSFER POSTURE:** mechanism research; external native runtime remains optional。  
+**EFFORT:** large。  
+**EXPECTED LEVERAGE:** multi-subsystem。  
+**RISK:** dynamic observation silently overwrites static fact。  
+**CAMPAIGN STATUS:** **COVERED broadly; needs identity/trust detail**。
+
+**HEX-S2-02 — Collision-preserving recognition/diff**
+
+**DOMAIN:** Stage2/knowledge/signature/diff。  
+**CURRENT HEX EVIDENCE:** canonical knowledge/signature/diff lanes exist, exact corpus maturity is not proven here。  
+**CURRENT LIMIT:** function recognizers can easily turn probabilistic fingerprints into false exact names/types.  
+**EXTERNAL MECHANISM:** WARP retains collisions and adds structural constraints; BinDiff cascades structural/basic-block/callgraph signals; Diaphora history shows heuristics age poorly。citeturn22search14turn15search4turn15search5  
+**WHY IT WORKS:** collision set is evidence about uncertainty rather than an inconvenience to delete.  
+**KNOWN FAILURE MODES:** relocation-stripped firmware, identical thunks, LTO/ICF, compiler-version drift, tiny functions, dataset poisoning。  
+**HEX ADAPTATION:** versioned fingerprint algorithm; retain all candidates; constraint provenance; type/signature transfer only at authority level allowed by match proof。  
+**CANONICAL OWNER:** `js/signature/**`, `js/knowledge/**`, `js/diff/**`。  
+**DO NOT DUPLICATE:** recognition result cannot override canonical binary evidence/type graph.  
+**PROOF PLAN:** deliberate collisions; stripped relocations; ICF clones; compiler O0–O3; dataset version migration; candidate transfer negative tests。  
+**BENCHMARK IMPACT:** recognition precision/recall、false exact name/type、diff stability。  
+**IPAD/BROWSER FIT:** BROWSER-NATIVE with local IndexedDB/OPFS-style storage if deployment support is proven; large corpus may be on-demand。  
+**TRANSFER POSTURE:** code may be permissive; **DATA-LICENSE-REVIEW** for datasets。  
+**EFFORT:** medium-large。  
+**EXPECTED LEVERAGE:** multi-subsystem。  
+**RISK:** corpus provenance/licensing and collision suppression。  
+**CAMPAIGN STATUS:** **NEEDS MORE DETAIL IN Flash**。
+
+### Secondary but material findings
+
+**Managed vertical maturity:** `managedIlspy` / `managedJadx` は既存 lane のため「新 feature」として追加しない。必要なのは ILSpy の metadata/PDB/ReadyToRun と JADX の DEX/APK/AAB/resources workflow をモデルに、`parse → metadata → control flow → types → exceptions → resources → source navigation → query evidence` の vertical tests を構築すること。citeturn14search4turn14search7
+
+**Patterns/knowledge packages:** PatternLanguage/ImHex patterns/capa/YARA-X は package ecosystem の source として有益だが、pattern match は fact evidence。parser/types/call targets の canonical proof に直接昇格させない。community packages は `origin/license/version/hash/generator` を必須 manifest にする。citeturn16search0turn16search2turn15search8
+
+**Agent sessions:** Code Mode、ida-domain、IDASQL/idac から、stable handles、domain-specific query、persistent session、multi-database isolation を学ぶべきだが、LLM-generated explanation/name/type は EvidenceGraph の suggestion artifact として保存し、canonical semantic fact にはしない。citeturn2search1turn9search5turn20search11
+
+### Historical failure patterns
+
+| EXTERNAL FAILURE | ROOT CAUSE | PREVENTIVE INVARIANT | Hex already? | EXACT HEX GAP / action |
+|---|---|---|---|---|
+| Ghidra Sleigh UAF | vector reallocation invalidated raw pointer | semantic references use stable IDs/ownership, not container addresses | largely yes via stable IDs | ensure plugin/runtime/decompiler temporary caches obey same rule. citeturn22search5 |
+| Ghidra `HighVariable::merge` UAF | deleted entity remained in cache | invalidation must be atomic with entity rewrite/delete | partially | C4 pass contract should declare invalidated caches/facts. citeturn22search6 |
+| Ghidra Mach-O memory exhaustion | attacker field trusted for allocation | count ≤ remaining bytes and budget | guardrail philosophy yes | native parser malformed corpus and per-allocation cap. citeturn22search4 |
+| Ghidra ELF infinite loop | unbounded loop + EOF wrapper returning zeros + cancellation disabled | every attacker-derived walk bounded by file size + iteration budget + cancellation | generic budgets yes | format-specific verifier must enforce. citeturn22search8 |
+| Ghidra `udiv128` bounds bug | arithmetic helper temporary too small | bit-width/index property tests for simplifiers | unproven | C2/C4 arithmetic metamorphic corpus. citeturn22search7 |
+| Ghidra function decompile hangs | pathological function lacks useful termination/fallback | per-phase and total budget, publish raw/partial result | Hex supports budgets generally | C4 pass-level budget/nonconvergence reason. citeturn22search9 |
+| Miasm symbolic overlap anomaly | signed/modular address math created impossible width | widths remain bounded in bitvector domain | partially via BigInt rules | C2/SYM impossible-overlap assertion. citeturn7search9 |
+| BN cross-view switch inconsistency | lower/high-level projections disagreed | cross-layer mapping consistency tests | EvidenceGraph direction yes | C4 raw↔optimized↔rendered verifier |
+| Diaphora heuristics later demoted | heuristic quality drift | heuristic version/provenance and no hard authority | Hex philosophy yes | recognition schema must preserve version/collision. citeturn15search5 |
+| WebKit/solver threading fragility | SAB/Atomics/browser isolation is deployment-sensitive | exact-device capability proof, fallback backend | C-SYM PR in flight | never promote “WASM builds” to “iPad works”. citeturn18search1turn19search0 |
+
+## ベンチマーク、data/corpus、license、iPad viability
+
+### Ground-truth methodology
+
+競合出力を ground truth にしてはいけない。この研究で推奨する benchmark fixture pipeline は次である。
+
+`source-level truth → pinned compiler/toolchain/flags → one compiled artifact → debug oracle view + stripped twin → Hex analysis → independent metrics`
+
+重要なのは **debug binary と stripped binary を別々に compile しない**ことである。同じ code bytes を持つ twin を作ることにより compiler/code-layout drift を elimination できる。debug metadata は answer generator ではなく identity-matched oracle としてのみ使用する。現行 Hex type model も identity-matched debug source だけを hard constraint origin と認める設計になっている。fileciteturn51file0L1-L10
+
+Competitor execution は lawful license がある環境でのみ secondary differential evidence とする。IDA/BN を実行できない環境ではその metric は **UNMEASURED** とし、公開 benchmark の historical number を現在の Hex victory score に流用しない。
+
+**Correctness と readability は別計測する。** DecompileBench のような recompilation/coverage と readability を分ける方向は正しいが、LLM readability score は semantic truth ではない。citeturn6search3
+
+推奨 measurement contract:
+
+| Dimension | Ground truth | Critical negative metric |
+|---|---|---|
+| instruction semantics | ISA spec / hardware/reference execution | mismatched defined bit/register/memory |
+| function starts/extents | source/debug symbols from same artifact + hand fixtures | false function start/extent |
+| CFG | source-labeled fixtures + exact decoded control flow | false/missing edge |
+| indirect targets | fixture-defined exhaustive target set | false exact target |
+| alias | object/layout construction | false MustAlias / false NoAlias |
+| MemorySSA | deterministic stores/loads + byte layout | wrong reaching definition |
+| prototypes | compiler ABI/debug same artifact | wrong hard ABI claim |
+| aggregates | source layouts/debug | false exact field/type |
+| decompiler semantics | execution/property equivalence | semantic mismatch |
+| readability | structural metrics/human rubric separate | avoidable goto/temp/cast only after semantic pass |
+| performance | fixed device/browser/toolchain | TTFUA, active-function latency, peak memory |
+| lifecycle | synthetic cancellation/stale snapshot | stale publication, cancellation latency |
+
+### Corpus plan
+
+**MachineEffects corpus:** generated per ISA/profile with instruction bytes, initial registers/vector/flags/memory, defined-result mask, expected exception/trap, oracle ID/version, CPU feature set。x86 profiles must explicitly cover x87/SSE/AVX/AVX-512/APX/system instructions; ARM64 includes FP/SIMD/SVE/PAC-relevant semantics; RISC-V profile must name exact extensions rather than “RV64” generically。rax demonstrates that this breadth is testable with independent execution.citeturn22search12
+
+**Alias corpus:** same/different stack object, global/TLS, allocation sites, escaped/non-escaped objects, overlapping/disjoint fields, φ same/different roots, loop-carried pointers, pointer store/load, direct/recursive pointer returns, exhaustive/non-exhaustive indirect calls, unknown call/store barriers。`docs/flash.md` already enumerates much of this, so the delta is implementation oracle linkage rather than a second corpus.fileciteturn41file0L1-L2
+
+**ABI/type corpus:** SysV x86-64, Win64, AAPCS64, RV64 ABI; integer/FP/vector class, sret, small struct return, HFA/HVA, varargs, tail calls/thunks, callbacks/function pointers; contradictory debug/runtime metadata。
+
+**Decompiler corpus:** reducible/irreducible CFGs, nested loops/switches, break/continue, tail calls, exceptions, compiler state machines, flattening, MBA, aggregate loads/stores, vector idioms。semantic correctness must be checked before goto/temp/cast counts。
+
+**Format malformed corpus:** attacker-controlled counts, truncated tables, cyclic/unterminated tables, integer overflow, overlapping segments, huge allocation claims, bad relocations, bad unwind, invalid code signatures。2026 Ghidra Mach-O/ELF failures make this a P0 safety corpus rather than optional fuzzing。citeturn22search4turn22search8
+
+**Runtime corpus:** ASLR、module reload、same VA/new binary generation、self-modifying/JIT、dropped events、trace overflow、cancellation、remote disconnect、thread race。
+
+**Managed corpus:** versions of .NET/CIL/ReadyToRun/PDB、DEX/APK/AAB/resources、Go toolchains、Rust toolchains、Swift ABI versions、ObjC runtime layouts。opcode coverage と application workflow score は別 denominator にする。
+
+### Data / knowledge asset acquisition
+
+| Asset | Origin | Provenance / license posture | Hex use | Bundle? |
+|---|---|---|---|---|
+| Ghidra FID/data archives | Ghidra project | Apache family where exact asset license confirms | function candidate recognition | permitted assets only; retain provenance |
+| WARP datasets | Vector35 ecosystem | implementation license と dataset provenance を分離 | GUID candidate importer | **DATA-LICENSE-REVIEW**; local regeneration preferred |
+| FLIRTDB | community signatures | mixed/upstream provenance risk | FLIRT-compatible candidate importer | wholesale bundleしない; per-asset review |
+| capa rules | Mandiant/community | rule dataset rights separately evaluate | capability evidence | DATA-LICENSE-REVIEW |
+| ImHex patterns | community | per-pattern provenance can vary | structured knowledge/pattern hints | default bundleは避け、curated manifest |
+| YARA-X rules | project/user rules | engine と rule data を分離 | pattern scanning | user/local packages first |
+| Go metadata corpus | own compiled fixtures from Go toolchains | reproducible generation | versioned language tests | regenerate locally |
+| Swift metadata corpus | own compiled Swift fixtures | official toolchain | ABI/version tests | regenerate locally |
+| LLVM compiler corpus | own source + pinned LLVM | reproducible | debug/stripped twins | bundle own source/metadata manifests |
+| malformed binaries | owned fixtures + licensed OSS fuzz corpora | provenance critical | parser safety | generated mutations preferred |
+| DecompileBench/Oxidizer corpora | academic/public projects | obey repository dataset terms | historical methodology/eval | do not treat tool output as GT |
+
+**Dataset invariant:** every imported knowledge package should minimally record `origin`, `license/provenance status`, `generator`, `generator version`, `dataset schema version`, `content hash`, `architectures`, `platform/toolchain versions`, `creation timestamp`, and `redistribution decision`。A function signature without this metadata should be usable only as local untrusted evidence, not bundled authoritative knowledge.
+
+### Transfer posture matrix
+
+| Source | Posture | Reason |
+|---|---|---|
+| Ghidra | PERMISSIVE-REFERENCE | Apache-2.0 public implementation。citeturn22search0 |
+| ida-sdk | PERMISSIVE-REFERENCE | MIT public SDK; proprietary core excluded。citeturn9search0 |
+| rax | PERMISSIVE-REFERENCE / ORACLE | public research code; most value is methodology。citeturn22search12 |
+| Binary Ninja API/WARP | PERMISSIVE-REFERENCE; dataset separate | public API/format; proprietary core excluded。citeturn22search14 |
+| angr/Claripy | PERMISSIVE-REFERENCE | BSD family public source。citeturn4search5 |
+| Retypd / gtirb-ddisasm-retypd | CLEAN-ROOM-ONLY | GPL implementation; use papers/invariants。citeturn5search3turn5search0 |
+| dewolf | CLEAN-ROOM-ONLY | LGPL source; use structuring research at algorithm level。citeturn6search0 |
+| Miasm | CLEAN-ROOM-ONLY | GPL source; failure/mechanism evidence only |
+| Diaphora | CLEAN-ROOM-ONLY | AGPL implementation; use heuristic-history lesson。citeturn15search5 |
+| LIEF | PERMISSIVE-REFERENCE | Apache-2.0。citeturn13search0 |
+| ILSpy | PERMISSIVE-REFERENCE | MIT public implementation。citeturn14search4 |
+| dnSpyEx | CLEAN-ROOM-ONLY | GPL implementation |
+| GoReSym | PERMISSIVE-REFERENCE | MIT source and versioning techniques。citeturn14search0 |
+| PatternLanguage / ImHex | CLEAN-ROOM-ONLY for implementation | LGPL/GPL implementation; package concepts only。citeturn16search1 |
+| ImHex patterns / FLIRTDB / WARP data / capa rules | DATA-LICENSE-REVIEW | data redistribution differs from implementation license |
+| Z3 | PERMISSIVE-REFERENCE | MIT; deployment constraints separately proven。citeturn17search2 |
+| QEMU/hardware/KVM | OFFLINE-ORACLE-ONLY by default | desktop/native architecture not Hex production requirement |
+| leaked/cracked/proprietary unauthorized material | **EXCLUDE** | provenance/IP boundary |
+
+これは legal advice ではなく technical provenance classification である。
+
+### Browser / iPad deployment verdict
+
+| Finding class | Deployment |
+|---|---|
+| alias/points-to/MemorySSA/value/type/decompiler passes | **BROWSER-NATIVE** |
+| current exhaustive Bool/BV solver | **BROWSER-NATIVE** |
+| Z3 official WASM | **WASM-FEASIBLE only where cross-origin isolation/SAB are actually proven** |
+| Bitwuzla/cvc5 browser production | **NO STRONG PUBLIC SOURCE FOUND / NOT YET PROVEN** |
+| LIEF parsing/reparse | **WASM-FEASIBLE**, exact integration device proof required |
+| machine-semantics hardware/KVM/QEMU | **OFFLINE-ORACLE-ONLY** |
+| Frida instrumentation | **REMOTE/BRIDGE-OPTIONAL** |
+| Qiling/Unicorn full emulation | **REMOTE/BRIDGE-OPTIONAL / OFFLINE-ORACLE** |
+| rr | **DESKTOP-ONLY** |
+| large solver/whole-program symbolic | optional worker/remote; never blocking UI baseline |
+| knowledge/signature/pattern matching | **BROWSER-NATIVE** when package/budget size is bounded |
+| corpus generation/compiler matrix | **OFFLINE-ORACLE-ONLY** |
+
+iPad の competitive advantage を守るため、heavy analysis は active-function prioritization、worker isolation、explicit budget、cancellation、incremental publication を要求する。特に Z3 official WASM の `SharedArrayBuffer`/cross-origin isolation requirement は現在の userscript deployment と本質的に衝突し得るため、ADR なしに default solver として採用してはいけない。citeturn18search1turn19search0
+
+## `docs/flash.md` delta、gap-to-source matrix、Do-Not-Adopt、roadmap
+
+### Gap-to-source matrix
+
+| CURRENT Hex weakness/opportunity | Best public source(s) | Mechanism | Next action |
+|---|---|---|---|
+| load pointer loses points-to | current MemorySSA + BN/Ghidra SSA concepts | MustAlias exact reaching store → points-to fact | bridge existing engines only |
+| call return loses points-to | Hex SCC summaries + interproc analysis research | finite return relation summary | extend summary contract |
+| root precision | WARP stable identity concepts + escape/object analysis | proven allocation/global/TLS root | finish in-flight work with provenance tests |
+| load/store values | MemorySSA + overlap lessons | byte-exact forwarding | C2 property corpus |
+| weak cheap value facts | Ghidra range/nonzero phases | wrapped interval/known bits/congruence | value-domain ladder |
+| type breadth | Retypd/Oxidizer | recursive constraints + alternatives | producer under TypeConstraintGraph |
+| ABI errors | Ghidra function specs + ABI specs | caller/callee/ABI unification | ABI corpus |
+| decompiler phase fragility | Ghidra Actions/heritage | explicit dependencies/fixed points/invalidation | pass contract |
+| irreducible pseudocode | DREAM/dewolf/Ghidra | graph-preconditioned structuring | proof-gated transforms |
+| rendered/source divergence | AIL/BN IL mappings | persistent transform mapping | provenance verifier |
+| ME confidence | rax/RzIL/Remill | independent differential | offline oracle |
+| solver width | Claripy/Z3 | backend abstraction + WASM/remote tiers | complete WebKit proof/ADR |
+| symbolic memory | Triton | concrete-first, array on escalation | tiered memory |
+| taint/deobf | Triton/goomba | taint lattice + equivalence proof | add as evidence, not decompiler heuristic |
+| rebuild correctness | LIEF/specs | independent reparse/loader oracle | Stage2 gate |
+| Apple maturity | dyld/Swift/objc4 | versioned metadata/fixup knowledge | Apple version matrix |
+| runtime evidence | Frida | module generation/code-cache identity | event identity contract |
+| function recognition | WARP/BinDiff/Diaphora | collision retention + constraints | versioned recognizer schema |
+| managed maturity | ILSpy/JADX/GoReSym | vertical workflow + toolchain versions | version corpus |
+| rule packages | YARA-X/capa/ImHex | bounded data-driven evidence | package manifest/license gate |
+| agent UX | Code Mode/ida-domain/idac | lease-scoped handles + typed queries | EvidenceGraph-only authority |
+
+### Precise delta against current Flash
+
+**A — already fully covered**
+
+`docs/flash.md` already covers single truth, provenance, exactness over aesthetics, false exact gates, competitor-output-not-GT, C0 denominator discipline, independent W6 oracle role, C1→C4 dependency ordering, MachineEffects oracle concept, browser viability as a constraint, and load/return/TLS/unknown-call cases in the alias corpus.これらは書き直すべきではない。fileciteturn41file0L1-L2
+
+**B — covered, but implementation guidance should be strengthened**
+
+| Flash area | Proposed minimal delta | Reason |
+|---|---|---|
+| C1 loaded pointer | “Only propagate through MemorySSA when reaching def is concrete + MustAlias + exact byte coverage; every may/unknown writer is barrier.” | current `reachingConcreteStore` を再利用すれば第二 memory engine が不要 |
+| C1 call return | finite return relation facts; incomplete/nonexhaustive caller path always includes unknown | existing SCC summary soundnessを保つ |
+| C1 roots | hard root separation requires provenance-backed object identity; spelling/name never sufficient | PR #1413 adversarial risk |
+| C2 values | byte overlap/endian/atomic/volatile rulesを明記 | silent bad forwarding防止 |
+| C2 range | wrapped intervals → known bits → congruence → branch refinement の cheap ladder | SMT依存前に precision |
+| C3 ABI | sret/HFA/HVA/split-reg/varargs/thunk corpus | aggregate prototype errorが high leverage |
+| C3 languages | provider/toolchain/build identity mandatory | Go/Swift/Rust drift対策 |
+| C4 passes | consumes/produces/invalidates/repeat/max-iterations/fallback fields | Ghidra failure/history lesson |
+| C-ME | initial state + defined-result mask + oracle identity + ISA profileを differential fixture contract に追加 | undefined-bit false mismatchを防ぐ |
+| C-SYM | deployment capability tableに SAB/COOP/COEP/CSP/startup/memory/cancel/actual-iPad fields | WASM availability≠production viability |
+| runtime | module-build-hash/generation identity + dropped-event status | stale trace prevention |
+| recognition | retain collision set + algorithm/schema version | false exact signature prevention |
+
+**C — missing and should be added**
+
+最も価値が高い missing detail は次の四点である。
+
+第一に、**native rebuild の independent reparse/loader validation を hard validity gate として言語化**する。writer 自身の success を proof にしない。
+
+第二に、**knowledge/data package manifest** を Flash の Stage2 acquisition rule に追加する。origin、license/provenance、generator、schema/version、hash、supported architectures/platforms、redistribution decision を必須とする。
+
+第三に、Swift/other evolving runtime metadata について **unknown future kinds remain unknown** と **metadata parser version/build identity** を invariant にする。citeturn13search3
+
+第四に、agent session state は **lease-scoped/non-authoritative** と明示し、agent suggestion を canonical analysis truth にするためには既存 evidence/user-approved authority path を通す。
+
+**D — contradicts current deployment assumptions and requires ADR**
+
+Z3 WASM を primary/default solver にする変更は ADR が必要である。公式 package の threading/SAB/cross-origin isolation requirement は current userscript/iPad deployment constraint に直接関係するためである。citeturn18search1turn19search0
+
+また、extension/plugin に任意 native/WASM code execution を与え canonical facts を直接 mutate させるような trust-boundary change も ADR 対象である。
+
+**E — useful only as oracle/test/data source**
+
+`rax`, QEMU/KVM/hardware, formal ISA models, proprietary competitor executions, BinExport comparison export、large compiler matrices は production canonical engines ではなく oracle/test/interchange source として使う。
+
+**F — inappropriate for Hex**
+
+rr/Qiling/Unicorn を mandatory runtime core にする、desktop-only debugger architecture を browser runtime ownership にする、proprietary IDA/BN core を reconstruct する、copyleft implementation structure を直接 Hex source に写す、competitor pseudocode を truth にする、といった方向は採用しない。
+
+### Do Not Adopt
+
+**Full-SMT-everywhere を採らない。** Binary analysis の大半を最初から SMT Array + full-width solver に流すと iPad memory/startup/cancellation が悪化する。MemorySSA、cheap value domain、concrete symbolic memory を first tier にする。
+
+**Z3-WASM を「WASM だから browser-native」と呼ばない。** 公式 requirement は threads/SAB/cross-origin isolation を含む。first-party isolated deployment の実測が通るまでは optional backend である。citeturn18search1turn19search0
+
+**Ghidra の architecture を wholesale port しない。** Action lifecycle、ordering、invalidation の lesson は採るが、Hex の canonical pipeline/EvidenceGraph を置き換える必要はない。
+
+**IDA/BN proprietary internals を推論して clone しない。** public SDK/API/behavior 以外は authority がない。
+
+**Pretty pseudocode を correctness より上に置かない。** irreducible CFG には goto/raw fallback が正しい場合がある。
+
+**Signature collision を削除しない。** WARP が複数候補を保持するのは重要な safety property である。citeturn22search14
+
+**Symbol/function/root names を hard semantic proof にしない。** 特に PR #1413 の root-key spelling を利用するように見える path は exact NoAlias publication 前に binary provenance を要求すべきである。fileciteturn48file0L1-L2
+
+**Dynamic trace を static truth の上書きに使わない。** Runtime state は exact binary/module generation に紐付いた evidence である。
+
+**Writer-only rebuild validation を採らない。** 同じ serialization logic が作った object を同じ assumptions で読み返しただけでは独立性が弱い。
+
+**Copyleft source structure の直接移植をしない。** Retypd/dewolf/Miasm/Diaphora/PatternLanguage 等は paper/behavior/invariants を clean-room で使う。
+
+**Community data を implementation license だけで bundle しない。** signatures/rules/patterns の provenance は別審査。
+
+**Provider presence を maturity と呼ばない。** Frida/ILSpy/JADX/LIEF adapter が存在しても、real-device/real-file/vertical workflow proof がなければ mature capability ではない。
+
+### Final prioritized roadmap
+
+| Campaign lane | Research-backed order | Victory condition |
+|---|---|---|
+| **C0** | same-binary twin manifest → ground-truth provenance → correctness/readability split → identity-pinned scorecard | competitor outputなしで score を再生成できる |
+| **C1** | in-flight root work review → loaded-pointer bridge → return-pointer summaries → escape/context refinements | false Must/NoAlias=0 while exact recall materially rises |
+| **C2** | byte-exact forwarding → wrapped intervals → known bits/congruence → branch refinement → targeted induction | reaching-memory-def correctness=100% locked corpus; downstream facts improve |
+| **C3** | ABI aggregate/prototype first → recursive structural constraints → Go/Rust/Swift/ObjC providers | no false exact type; ambiguity preserved; aggregate/prototype recall rises |
+| **C4** | pass lifecycle/invalidation → raw/optimized mapping → safe structuring → compiler/language idioms | semantic mismatch=0; raw fallback preserved; readability improves secondarily |
+| **C-ME** | rax-style oracle harness → x86/x87/vector/system → ARM FP/SIMD/SVE/PAC → RISC-V exact extension profiles → exceptions/atomics | external defined-state differential mismatch=0 on locked corpus |
+| **C-SYM** | finish in-flight WebKit proof → keep exhaustive safety floor → optional Z3 isolated backend → tiered symbolic memory → taint/deobf | proof results validated; unsupported/resource-limit never mint proof; actual iPad budget met |
+| **C-X** | integration LIEF reconciliation → independent reparse → reloc/unwind/signature → Apple metadata/versioning | rebuilt outputs independently reparsed/validated |
+| **Stage2** | managed vertical corpora → runtime identity/bounded traces → recognition collision model → data package provenance → plugin/session isolation | adapter presence replaced by end-to-end evidence |
+| **Competitive victory gate** | reproduce same corpus under lawful competitors where licenses exist; otherwise UNMEASURED | Hex wins must come from independent ground truth, not tool disagreement |
+
+ここで「stronger than IDA/Ghidra/BN/angr/Triton/Rizin」と呼ぶ基準は、単純な feature parity ではない。少なくとも locked ground-truth corpus 上で、semantic correctness hard gates を維持したまま、alias/type/indirect-target/decompiler recall、format/managed workflow breadth、symbolic capability、time-to-first-useful-analysis、active-function latency、peak memory、cancellation latency の複数軸で優位を再現できる必要がある。
+
+## Remaining unknowns、appendix-equivalent evidence inventory、最終監査
+
+### Remaining unknowns
+
+**Hex final direct branch identity:** 最終 freshness check の REST branch fetch は GitHub rate limit に阻まれた。final open-PR search は同じ main/integration checkpoint を参照したが、これを branch-tip proof と同一視しない。実装作業開始時には `main`、`docs/flash.md` blob、integration HEAD、PR #1413 exact head を再取得することが必須である。
+
+**PR #1413 exact final head:** 研究開始時は `04b6f566...` を観測したが、研究終了時に PR metadata/title が変化した。final exact head は rate-limit のため再証明できない。したがって C0/C1/C-SYM work は全て **VERIFY BEFORE WORK**。
+
+**Current exact Ghidra release tag:** GitHub release widget の retrieved snapshot は 12.1 を latest と表示したが、一次 advisory/issue は少なくとも 12.1.2 が存在したことを証明する。current release-number marketing はこの研究の mechanism conclusion には使用しなかった。citeturn22search0turn22search8
+
+**Bitwuzla/cvc5 Safari production:** solver 本体は strong source だが、current official upstream から Hex userscript/iPad production を裏付ける canonical browser deployment evidence は得られなかった。**NO STRONG PUBLIC SOURCE FOUND.**
+
+**IDA/Hex-Rays proprietary algorithms:** public observable surface 以上の SSA/type/decompiler internal implementation は **NO STRONG PUBLIC SOURCE FOUND** かつ研究対象外。
+
+**Binary Ninja proprietary core algorithms:** 同様に open API 以上を source-reviewed としていない。
+
+**Universal readability ground truth:** human readability に architecture-independent な objective ground truth は存在しない。semantic correctness から分離した task metrics/human evaluation として扱うべきである。**NO STRONG PUBLIC SOURCE FOUND** for a universal scalar metric.
+
+**arm64e/PAC full semantic oracle:** public ISA/runtime metadata から多くは研究できるが、OS/toolchain-specific arm64e behavior まで含む「単一の公開完全 oracle」を確認できなかった。MachineEffects test は architectural PAC semantics、Mach-O authenticated fixups、runtime metadata を別 evidence class として組み合わせるべきである。
+
+### Important source files/symbols/issues equivalent
+
+| System | Important implementation/history evidence |
+|---|---|
+| Hex C1 | `js/analysis/pointsto/local.js` — fixed-point, widening, unresolved load/call boundary。fileciteturn30file0L1-L2 |
+| Hex summaries | `js/analysis/summary/interprocedural.js` — SCC, conservative unknowns, non-convergence。fileciteturn32file0L1-L2 |
+| Hex MemorySSA | `js/semantics/memoryssa/build.js`, `queries.js`。fileciteturn36file0L1-L2 fileciteturn37file0L1-L10 |
+| Hex types | `constraints.js`, `graph.js` — authority separation/ambiguity。fileciteturn51file0L1-L10 fileciteturn52file0L1-L10 |
+| Hex symbolic | `solver/exhaustive-backend.js` — exact bounded Bool/BV。fileciteturn47file0L1-L2 |
+| Hex campaign | `docs/flash.md` blob `b8af3f98...`。fileciteturn41file0L1-L2 |
+| Ghidra lifecycle | `action.cc`, `coreaction.cc`, `heritage.cc`。citeturn10view0turn11view1turn11view2turn11view3 |
+| Ghidra stale reference | `PcodeCacher::allocateInstruction` advisory。citeturn22search5 |
+| Ghidra cache invalidation | `HighVariable::merge` advisory。citeturn22search6 |
+| Ghidra loader bounds | Mach-O `ncmds` advisory。citeturn22search4 |
+| Ghidra cancellation/bounds | ELF GNU hash infinite-loop advisory。citeturn22search8 |
+| rax | differential harnesses x86/AArch64/Hexagon/RISC-V。citeturn22search12 |
+| WARP | GUID normalization/collision constraints。citeturn22search14 |
+| Triton | symbolic/taint + optional symbolic-array memory。citeturn5search1turn5search8 |
+| Retypd | recursive type/subtyping research。citeturn5search2 |
+| Frida | Stalker dynamic instrumentation/code-cache model。citeturn8search2turn8search3 |
+| LIEF | native parse/modify/build + Apple support。citeturn13search0turn13search2 |
+| Swift | metadata ABI + unknown-kind forward compatibility。citeturn13search1turn13search3 |
+| GoReSym | version-specific Go metadata recovery。citeturn14search0 |
+| ILSpy/JADX | managed vertical workflow references。citeturn14search4turn14search7 |
+| BinDiff/BinExport | structural diff / neutral interchange。citeturn15search4turn15search6 |
+| YARA-X/capa | rule ecosystem references。citeturn16search2turn15search3 |
+| Z3/WebKit | official WASM/SAB/isolation deployment constraints。citeturn18search1turn19search0 |
+
+### Rejected/excluded sources equivalent
+
+研究中に provenance が疑わしい dnSpy-like mirrors、IDA proprietary binaries/source を暗示する results、cracks/leaks/pirated databases、非公開 SDK を必要とする material は採用していない。IDA/Hex-Rays に関する finding は official public repos/APIs/plugins、lawful community plugins、public behavior、independent IDB parsers に限定した。
+
+GitHub stars、marketing comparison、“best decompiler” claims、LLM-generated benchmark leaderboards は technical evidence として使用していない。
+
+第三者 blog/forum は discovery source 以上に昇格させず、core implementation recommendation は public source/spec/paper/API を根拠とした。
+
+### Final technical verdict
+
+Hex が最も大きく勝てる経路は、「他ツールが持つ機能を全部追加する」ことではない。
+
+勝ち筋は、
+
+**independent MachineEffects proof**  
+→ **MemorySSA を使った sound pointer/value precision**  
+→ **ambiguity-preserving ABI/type recovery**  
+→ **bounded/invalidation-safe decompiler fixed points**  
+→ **solver/runtime/managed/native providers を canonical evidence に正しく接続**  
+→ **same-binary ground truth で競争結果を再現可能にする**
+
+という既存 architecture の延長にある。
+
+特に重要なのは、current Hex の unknown/partial discipline を弱めずに exact recall を上げることである。`unresolved-load` や `unresolved-call` は失敗ではなく、現状の proof boundary を正直に示す安全機構である。そこを MemorySSA exact reaching store と complete interprocedural summary からだけ閉じれば、単一改善が alias → values → types → aggregates → decompiler → query → AI explanations まで波及する。fileciteturn30file0L1-L2 fileciteturn32file0L1-L2
+
+同様に、Ghidra から最も学ぶべきものは最終 pseudocode の形ではなく、pass ordering、fixed-point、restart、invalidation、resource limits、malformed-input history である。2026 年の公開 security/failure history は、成熟した decompiler でも stale references、unbounded parsing、uncancellable loops、simplifier bounds bugs が長く潜伏し得ることを示した。citeturn22search4turn22search5turn22search6turn22search7turn22search8
+
+そして browser/iPad advantage は捨てる必要がない。`rax`、QEMU、rr、Frida、Qiling 等の desktop-native 技術は **offline oracle / optional bridge** として取り込めばよく、production truth engine を native desktop architecture に移す理由にはならない。逆に current Hex の deterministic browser analysis、small exact solver floor、EvidenceGraph、stable provenance を保ったまま、重い solver/runtime/oracle を外側に配置する方が competitive differentiation になる。
+
+最終的に「Hex が major RE tools より強い」と主張できるのは、競合と似た UI や prettier pseudocode を得た時ではなく、**independent ground truth 上で false exactness を増やさず precision/coverage/workflow breadth を上げ、その結果が exact identities・reproducible corpus・actual iPad/browser constraints の下で再現された時**である。
+
+Research audit:  
+PASS — two consecutive zero-finding reviews.
