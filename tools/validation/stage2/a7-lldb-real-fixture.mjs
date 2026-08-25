@@ -238,6 +238,7 @@ def continue_after_stopped(code, pid, start_time_ticks, stop_id, timeout=3.0):
     stable_samples = 0
     attempts = 0
     rejected = False
+    rejected_cpu_ticks = None
     last_error = None
     while time.time() < deadline:
         if process.GetProcessID() != pid:
@@ -249,6 +250,21 @@ def continue_after_stopped(code, pid, start_time_ticks, stop_id, timeout=3.0):
         if stat['startTimeTicks'] != start_time_ticks:
             fail(code + '-process-identity-changed')
         current_stop_id = process.GetStopID()
+        if rejected:
+            if stat['cpuTicks'] != rejected_cpu_ticks:
+                fail(code + '-rejected-resume-execution-ambiguous')
+            if lldb.SBDebugger.StateIsStoppedState(state) and current_stop_id != stop_id:
+                stop_id = current_stop_id
+                rejected = False
+                rejected_cpu_ticks = None
+                previous_sample = None
+                stable_samples = 0
+                last_error = None
+                time.sleep(0.01)
+                continue
+            if state == lldb.eStateRunning:
+                time.sleep(0.01)
+                continue
         if lldb.SBDebugger.StateIsStoppedState(state) and current_stop_id == stop_id:
             sample = (stat['cpuTicks'], current_stop_id)
             if sample == previous_sample:
@@ -265,9 +281,12 @@ def continue_after_stopped(code, pid, start_time_ticks, stop_id, timeout=3.0):
                 if 'process still running' not in last_error.lower():
                     fail(code + '-failed:' + last_error)
                 rejected = True
+                rejected_cpu_ticks = stat['cpuTicks']
+                previous_sample = None
                 stable_samples = 0
-        elif rejected:
-            fail(code + '-rejected-resume-left-stopped-state:' + state_name(state))
+        elif not rejected:
+            previous_sample = None
+            stable_samples = 0
         time.sleep(0.01)
     fail(code + '-settlement-timeout:' + str(last_error or state_name(process.GetState())))
 
