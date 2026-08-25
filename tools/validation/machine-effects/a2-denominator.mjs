@@ -32,8 +32,21 @@ import { validateArm64A64SystemDenominator } from './arm64-a64-system-denominato
 import {
   ARM64_A64_SIMD_DENOMINATOR_ID,
   ARM64_A64_SIMD_DENOMINATOR_SCHEMA,
+  arm64A64SimdDecoderDependencyProof,
   validateArm64A64SimdDenominator,
 } from './arm64-a64-simd-denominator.mjs';
+import {
+  ARM64_A64_MEMORY_DENOMINATOR_ID,
+  ARM64_A64_MEMORY_DENOMINATOR_SCHEMA,
+  arm64A64MemoryDecoderDependencyProof,
+  validateArm64A64MemoryDenominator,
+} from './arm64-a64-memory-denominator.mjs';
+import { ARM64_A64_DECODER_AUDIT_LOCK, arm64A64DecoderDenominatorFromLockedAudit } from './arm64-a64-decoder-denominator.mjs';
+import {
+  ARM64E_A64_DELEGATION_DENOMINATOR_ID,
+  ARM64E_A64_DELEGATION_DENOMINATOR_SCHEMA,
+  validateArm64eA64DelegationDenominator,
+} from './arm64e-a64-delegation-denominator.mjs';
 import {
   ARM64_A64_INTEGER_DENOMINATOR_ID,
   ARM64_A64_INTEGER_DENOMINATOR_SCHEMA,
@@ -205,6 +218,93 @@ function collectStatusGaps(unit, prefix, { exempt = false } = {}) {
   return gaps;
 }
 
+// The unmatched-family fallback can never be exact: it exists precisely to
+// return null. It stops being a blocking gap only when the architecture's
+// decoder denominator proves no valid in-profile encoding can reach it. Without
+// that negative proof the fallback stays an open gap, because an unowned valid
+// encoding would otherwise disappear into it unnoticed.
+function fallbackNegativeProven(architecture) {
+  if (architecture.decoder?.enumerationStatus !== 'exact') return false;
+  if (architecture.id === 'riscv64') return architecture.decoder.missingUnits.length === 0;
+  if (architecture.id === 'arm64') return arm64A64DecoderTerminal().fallbackNegativeProof === true;
+  if (architecture.id === 'arm64e') return validateArm64eA64DelegationDenominator().terminalEligible === true;
+  return false;
+}
+
+function validateArm64ExactDecoder(decoder, pathName) {
+  const proof = decoder.denominator;
+  if (!proof || typeof proof !== 'object') fail('a2-denominator-exact-decoder-proof-required', pathName);
+  const live = arm64A64DecoderTerminal();
+  // An exact A64 decoder unit is only publishable when the ownership audit and
+  // both family dependency contracts hold at the same time. Anything less has to
+  // stay an explicit missing unit.
+  if (live.terminalEligible !== true) fail('a2-denominator-arm64-decoder-not-terminal', `${pathName}:${JSON.stringify(live.missingDependencies)}`);
+  if (live.validEncodingOwnershipProof !== true || live.fallbackNegativeProof !== true) {
+    fail('a2-denominator-arm64-decoder-ownership-proof-missing', pathName);
+  }
+  if (proof.source !== 'tools/validation/machine-effects/arm64-a64-decoder-denominator.mjs'
+    || proof.test !== 'tests/machine-effects/arm64-a64-decoder-denominator.test.mjs') {
+    fail('a2-denominator-arm64-decoder-proof-ref-drift', pathName);
+  }
+  for (const field of ['schemaVersion','denominatorId','profileId','architectureProfileId','denominatorAuthority','decoderIdentityId','architectureSemanticVersion']) {
+    if (proof[field] !== live[field]) fail('a2-denominator-arm64-decoder-proof-identity-drift', `${pathName}:${field}`);
+  }
+  for (const field of ['candidateCaseCount','candidateUniqueWordCount','candidateSha256','candidateUniqueWordsSha256']) {
+    if (proof[field] !== live.candidateCorpus[field]) fail('a2-denominator-arm64-decoder-proof-corpus-drift', `${pathName}:${field}`);
+  }
+  if (proof.decoderAuditSha256 !== ARM64_A64_DECODER_AUDIT_LOCK.decoderAuditSha256) {
+    fail('a2-denominator-arm64-decoder-proof-audit-drift', pathName);
+  }
+  if (!sameList(proof.dependencyFamilies || [], live.requiredCanonicalFamilies.filter((family) => ['memory','simd'].includes(family)))) {
+    fail('a2-denominator-arm64-decoder-proof-dependency-drift', pathName);
+  }
+}
+
+function validateArm64eExactDecoder(decoder, pathName) {
+  const proof = decoder.delegation;
+  if (!proof || typeof proof !== 'object') fail('a2-denominator-arm64e-delegation-proof-required', pathName);
+  const live = validateArm64eA64DelegationDenominator();
+  // The delegated baseline is only exact while the ARM64 baseline it delegates
+  // to is itself terminal. It has no independent coverage of its own to fall
+  // back on.
+  if (live.terminalEligible !== true) {
+    fail('a2-denominator-arm64e-delegation-not-terminal', `${pathName}:${JSON.stringify(live.dependency?.blockingUnits || [])}`);
+  }
+  if (proof.source !== 'tools/validation/machine-effects/arm64e-a64-delegation-denominator.mjs'
+    || proof.test !== 'tests/machine-effects/arm64e-a64-delegation-denominator.test.mjs') {
+    fail('a2-denominator-arm64e-delegation-proof-ref-drift', pathName);
+  }
+  if (proof.schemaVersion !== ARM64E_A64_DELEGATION_DENOMINATOR_SCHEMA || proof.schemaVersion !== live.schemaVersion
+    || proof.denominatorId !== ARM64E_A64_DELEGATION_DENOMINATOR_ID || proof.denominatorId !== live.denominatorId) {
+    fail('a2-denominator-arm64e-delegation-proof-identity-drift', pathName);
+  }
+  for (const field of ['profileId','delegationMechanismStatus','terminalStatus','fallbackDisposition']) {
+    if (proof[field] !== live[field]) fail('a2-denominator-arm64e-delegation-proof-identity-drift', `${pathName}:${field}`);
+  }
+  for (const field of [
+    'pacEncodingCaseCount','pacMnemonicCount','knownBaselineEncodingCaseCount',
+    'strictBaselineDisjointEncodingCaseCount','baselineFeatureAliasOverlapCount',
+    'positiveDelegationSampleCount','pacDispatchOwnerCount',
+  ]) {
+    if (proof[field] !== live[field]) fail('a2-denominator-arm64e-delegation-proof-count-drift', `${pathName}:${field}`);
+  }
+  if (!sameList(proof.units || [], live.units)) fail('a2-denominator-arm64e-delegation-proof-unit-drift', pathName);
+}
+
+// Terminal state of the A64 decoder ownership denominator on the current tree,
+// composed from the locked (and separately live-proven) candidate audit plus the
+// two real family dependency contracts.
+let arm64DecoderTerminalCache = null;
+function arm64A64DecoderTerminal() {
+  if (arm64DecoderTerminalCache == null) {
+    arm64DecoderTerminalCache = arm64A64DecoderDenominatorFromLockedAudit({
+      memory:arm64A64MemoryDecoderDependencyProof(),
+      simd:arm64A64SimdDecoderDependencyProof(),
+    });
+  }
+  return arm64DecoderTerminalCache;
+}
+
 function validateDecoder(architecture, pathName) {
   const decoder = architecture.decoder;
   if (!decoder || typeof decoder !== 'object') fail('a2-denominator-decoder-required', pathName);
@@ -229,10 +329,16 @@ function validateDecoder(architecture, pathName) {
     return;
   }
   if (decoder.missingUnits.length !== 0) fail('a2-denominator-exact-decoder-cannot-have-missing-units', pathName);
-  if (decoder.units.length !== 1 || decoder.units[0] !== 'riscv64:rv64imc:all-valid-32-bit-and-compressed-encodings') {
-    fail('a2-denominator-exact-decoder-unit-set-drift', pathName);
-  }
-  if (architecture.id !== 'riscv64') fail('a2-denominator-exact-decoder-proof-unavailable', pathName);
+  const EXACT_DECODER_UNITS = Object.freeze({
+    riscv64:Object.freeze(['riscv64:rv64imc:all-valid-32-bit-and-compressed-encodings']),
+    arm64:Object.freeze(['arm64:a64:all-decoder-encodings-and-aliases']),
+    arm64e:Object.freeze(['arm64e:a64+pac:all-a64-decoder-encodings-and-aliases','arm64e:a64+pac:all-pac-decoder-encodings-and-aliases']),
+  });
+  const expectedUnits = EXACT_DECODER_UNITS[architecture.id];
+  if (!expectedUnits) fail('a2-denominator-exact-decoder-proof-unavailable', pathName);
+  if (!sameSet(decoder.units, expectedUnits)) fail('a2-denominator-exact-decoder-unit-set-drift', pathName);
+  if (architecture.id === 'arm64') return validateArm64ExactDecoder(decoder, pathName);
+  if (architecture.id === 'arm64e') return validateArm64eExactDecoder(decoder, pathName);
   const proof = decoder.denominator;
   if (!proof || typeof proof !== 'object') fail('a2-denominator-exact-decoder-proof-required', pathName);
   const live = validateRv64imcDecoderDenominator();
@@ -345,7 +451,22 @@ export function validateA2DenominatorInventory(inventory = loadA2DenominatorInve
       if (new Set(pac).size !== pac.length) fail('a2-denominator-pac-duplicate');
       const aliases = Array.isArray(architecture.aliases) ? architecture.aliases : [];
       const baseline = aliases.find((alias) => alias?.id === 'baseline-a64-delegation');
-      if (!baseline || baseline.kind !== 'delegation' || baseline.sourceArchitecture !== 'arm64' || baseline.status !== 'excluded' || baseline.preexisting !== true || !baseline.reason) fail('a2-denominator-arm64e-baseline-alias-missing');
+      if (!baseline || baseline.kind !== 'delegation' || baseline.sourceArchitecture !== 'arm64' || !baseline.reason) fail('a2-denominator-arm64e-baseline-alias-missing');
+      const delegation = validateArm64eA64DelegationDenominator();
+      // The delegated baseline alias tracks the ARM64 baseline exactly: exact
+      // once that baseline is terminal, an explicit pre-existing exclusion while
+      // it is not. It never gets to be exact on its own authority.
+      if (delegation.terminalEligible === true) {
+        if (baseline.status !== 'exact' || baseline.coverage !== 'exact-with-intrinsic' || baseline.preexisting !== false
+          || baseline.proof?.schemaVersion !== 'machine-effects-effect-unit-proof/v1'
+          || baseline.proof?.source !== 'js/targets/architecture/arm64e/effects.js'
+          || baseline.proof?.test !== 'tests/machine-effects/arm64e-effects.test.mjs'
+          || baseline.proof?.denominatorTest !== 'tests/machine-effects/arm64e-a64-delegation-denominator.test.mjs') {
+          fail('a2-denominator-arm64e-baseline-alias-proof-drift');
+        }
+      } else if (baseline.status !== 'excluded' || baseline.preexisting !== true) {
+        fail('a2-denominator-arm64e-baseline-alias-must-track-baseline');
+      }
       const exclusion = architecture.exclusions?.find((item) => item?.id === 'pac-missing-structured-operands');
       if (!exclusion || exclusion.status !== 'excluded') fail('a2-denominator-pac-partial-exclusion-missing');
       const pacDenominator = architecture.decoder?.pacDenominator;
@@ -419,6 +540,39 @@ export function validateA2DenominatorInventory(inventory = loadA2DenominatorInve
         || !sameSet(simdDenominator.oracleIds || [], liveSimd.oracleIds)) {
         fail('a2-denominator-arm64-simd-live-proof-drift', pathName);
       }
+      // Memory is proved the same way as SIMD: an independent finite case corpus
+      // with its own digest, not a shared encoding-family sweep.
+      const memory = families.find((family) => family.id === 'memory');
+      const liveMemory = validateArm64A64MemoryDenominator();
+      const memoryProof = memory?.proof;
+      const memoryDenominator = memoryProof?.denominator;
+      if (!memory || memory.status !== 'exact' || memory.coverage !== 'exact-with-intrinsic' || memory.preexisting !== false
+        || memory.oracle !== 'arm-a-profile-a64-load-store-encoding-tables + deployed-capstone-5-arm64 + llvm-aarch64-integrated-assembler-disassembler'
+        || memoryProof?.schemaVersion !== 'machine-effects-effect-unit-proof/v1'
+        || memoryProof?.source !== 'js/targets/architecture/arm64/effects/memory.js'
+        || memoryProof?.test !== 'tests/machine-effects/arm64-memory-addressing.test.mjs'
+        || memoryProof?.denominatorTest !== 'tests/machine-effects/arm64-a64-memory-denominator.test.mjs') {
+        fail('a2-denominator-arm64-memory-proof-identity-drift', pathName);
+      }
+      if (!memoryDenominator || memoryDenominator.schemaVersion !== ARM64_A64_MEMORY_DENOMINATOR_SCHEMA
+        || memoryDenominator.schemaVersion !== liveMemory.schemaVersion
+        || memoryDenominator.denominatorId !== ARM64_A64_MEMORY_DENOMINATOR_ID
+        || memoryDenominator.denominatorId !== liveMemory.denominatorId
+        || memoryDenominator.profileId !== liveMemory.profileId
+        || memoryDenominator.source !== 'tools/validation/machine-effects/arm64-a64-memory-denominator.mjs'
+        || memoryDenominator.encodingFamilyCount !== liveMemory.encodingFamilyCount
+        || memoryDenominator.encodingCaseCount !== liveMemory.encodingCaseCount
+        || memoryDenominator.mnemonicCount !== liveMemory.mnemonicCount
+        || memoryDenominator.exactMnemonicCount !== liveMemory.exactMnemonicCount
+        || memoryDenominator.partialMnemonicCount !== liveMemory.partialMnemonicCount
+        || memoryDenominator.corpusSha256 !== liveMemory.corpusSha256
+        || !sameSet(memoryDenominator.oracleIds || [], liveMemory.oracleIds)) {
+        fail('a2-denominator-arm64-memory-live-proof-drift', pathName);
+      }
+      // An exact memory family that still declares partial mnemonics would be a
+      // false exact, whatever the inventory says.
+      if (liveMemory.partialMnemonicCount !== 0) fail('a2-denominator-arm64-memory-partial-mnemonics-remain', pathName);
+
       validateArm64FamilyProof(families.find((family) => family.id === 'control'), {
         id:'control', source:'js/targets/architecture/arm64/effects/control.js',
         test:'tests/machine-effects/arm64-control-flow.test.mjs', denominatorTest:'tests/machine-effects/arm64-a64-control-denominator.test.mjs',
@@ -449,7 +603,7 @@ export function validateA2DenominatorInventory(inventory = loadA2DenominatorInve
     ...(architecture.effectRegistry.families || []).flatMap((unit) => collectStatusGaps(
       unit,
       `${architecture.profileId}:effect-family`,
-      { exempt: architecture.id === 'riscv64' && unit.id === 'fallback-unmatched-decoder-family' },
+      { exempt: unit.id === 'fallback-unmatched-decoder-family' && fallbackNegativeProven(architecture) },
     )),
     ...(architecture.exclusions || []).flatMap((unit) => collectStatusGaps(unit, `${architecture.profileId}:explicit-case`)),
     ...(architecture.aliases || []).flatMap((unit) => collectStatusGaps(unit, `${architecture.profileId}:alias`)),

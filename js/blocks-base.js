@@ -444,6 +444,9 @@ export function makeInstruction(raw) {
     mnemonic: mn,
     operands: opsStr,
     ops: parsed,
+    // Fixed-width A64 encoding, when the producer had the bytes. Effect lifters
+    // read decoder-lossy fields from it; nothing here interprets it.
+    word: typeof raw.word === 'number' && Number.isSafeInteger(raw.word) ? raw.word >>> 0 : null,
     parseError,
     category: categoryOf(base),
     reads: [],

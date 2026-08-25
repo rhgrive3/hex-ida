@@ -14,9 +14,9 @@ const validation = validateA2DenominatorInventory(inventory);
 assert.equal(validation.valid, true);
 assert.equal(validation.architectureCount, 4);
 assert.equal(validation.fullIsaCoverageIncluded, false);
-assert.equal(validation.explicitDecoderGapCount, 3, 'only baseline A64, delegated A64, and x86 long-64 decoder denominators remain');
+assert.equal(validation.explicitDecoderGapCount, 1, 'only the x86 long-64 decoder denominator remains');
 assert.equal(validation.blockingGapCount > validation.explicitDecoderGapCount, true);
-assert.equal(validation.terminalEligible, false, 'partial and unsupported in-profile effect families remain blocking gaps');
+assert.equal(validation.terminalEligible, false, 'partial and unsupported x86 long-64 effect families remain blocking gaps');
 // Terminality is a property of the locked denominator, not of full-ISA
 // coverage: this inventory is rejected outright if it ever claims the latter,
 // so the two must not be conjoined into an unsatisfiable gate.
@@ -25,7 +25,10 @@ assert.throws(
   () => validateA2DenominatorInventory({ ...inventory, scope:{ ...inventory.scope, fullIsaCoverageIncluded:true } }),
   /a2-denominator-must-not-claim-full-isa/,
 );
-assert.ok(validation.blockingGaps.includes('arm64:a64:all-decoder-encodings-and-aliases'));
+assert.equal(validation.blockingGaps.includes('arm64:a64:all-decoder-encodings-and-aliases'), false,
+  'the locked A64 candidate audit plus both family dependency contracts close the baseline decoder unit');
+assert.equal(validation.blockingGaps.includes('arm64:a64:effect-family:fallback-unmatched-decoder-family'), false,
+  'the A64 fallback negative proof shows no valid in-profile encoding can reach the unmatched-family fallback');
 assert.equal(validation.blockingGaps.includes('arm64:a64:effect-family:control'), false,
   'the finite A64 branch discriminator proof closes only baseline control ownership');
 assert.equal(validation.blockingGaps.includes('arm64:a64:effect-family:flags'), false,
@@ -38,14 +41,25 @@ assert.equal(validation.blockingGaps.includes('arm64:a64:effect-family:system'),
   'the finite A64 system field sweep closes only registry-owned system forms');
 assert.equal(validation.blockingGaps.includes('arm64:a64:effect-family:simd'), false,
   'the finite A64 Advanced SIMD case corpus closes only registry-owned SIMD forms');
-assert.ok(validation.blockingGaps.includes('arm64:a64:effect-family:memory'),
-  'the memory family stays blocking while unnamed PRFM prfop values and PRFUM have no exact owner');
+assert.equal(validation.blockingGaps.includes('arm64:a64:effect-family:memory'), false,
+  'all 32 PRFM/PRFUM prfop encodings and every load/store form now have an exact owner');
 assert.equal(validation.blockingGaps.includes('riscv64:rv64imc:all-valid-32-bit-and-compressed-encodings'), false,
   'the exhaustive versioned RV64IMC decoder denominator closes only its decoder unit');
 assert.ok(validation.blockingGaps.includes('x86_64:long-64:effect-family:atomic'));
 assert.equal(validation.blockingGaps.includes('x86_64:long-64:effect-family:lea'), false,
   'the exhaustive long-mode LEA encoding discriminator proof closes only LEA ownership');
-assert.ok(validation.blockingGaps.includes('arm64e:a64+pac:alias:baseline-a64-delegation'), 'delegated baseline exclusions remain profile blockers');
+for (const unit of [
+  'arm64e:a64+pac:alias:baseline-a64-delegation',
+  'arm64e:a64+pac:all-a64-decoder-encodings-and-aliases',
+  'arm64e:a64+pac:effect-family:fallback-unmatched-decoder-family',
+]) {
+  assert.equal(validation.blockingGaps.includes(unit), false,
+    'the delegated baseline is exact exactly when the ARM64 baseline it delegates to is terminal');
+}
+assert.deepEqual(
+  validation.blockingGaps.filter((unit) => !unit.startsWith('x86_64:')), [],
+  'every remaining A2 blocking gap is x86-64 long-mode production coverage',
+);
 assert.equal(validation.blockingGaps.includes('arm64e:a64+pac:all-pac-decoder-encodings-and-aliases'), false,
   'the finite PAC encoding discriminator and independent decoder oracle close the extension decoder unit');
 assert.equal(validation.blockingGaps.includes('arm64e:a64+pac:explicit-case:pac-missing-structured-operands'), false,

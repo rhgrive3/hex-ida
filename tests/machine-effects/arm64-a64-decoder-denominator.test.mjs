@@ -24,12 +24,15 @@ import {
   buildArm64CapstoneRegistryEvidence,
   classifyArm64A64LockedScope,
   classifyArm64A64TopLevel,
+  arm64A64DecoderDenominatorFromLockedAudit,
+  arm64A64LockedDecoderAuditEvidence,
   validateArm64A64DecoderDenominator,
   validateArm64A64DecoderDependencyProof,
   verifyArm64A64DecoderIdentity,
 } from '../../tools/validation/machine-effects/arm64-a64-decoder-denominator.mjs';
 import { createCapstoneArm64Session } from './helpers/arm64-capstone-session.mjs';
 import { arm64A64SimdDecoderDependencyProof } from '../../tools/validation/machine-effects/arm64-a64-simd-denominator.mjs';
+import { arm64A64MemoryDecoderDependencyProof } from '../../tools/validation/machine-effects/arm64-a64-memory-denominator.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -293,10 +296,31 @@ assert.equal(memoryOnly.terminalEligible, false);
 // above, is central truth: it must satisfy the contract on its own and it must
 // leave memory as the single remaining dependency.
 const realSimd = arm64A64SimdDecoderDependencyProof();
+const realMemory = arm64A64MemoryDecoderDependencyProof();
 assert.equal(validateArm64A64DecoderDependencyProof('simd', realSimd), true);
+assert.equal(validateArm64A64DecoderDependencyProof('memory', realMemory), true);
 const simdResolved = validateArm64A64DecoderDenominator({ decoderAudit, dependencyProofs:{ simd:realSimd } });
-assert.deepEqual(simdResolved.missingDependencies, ['memory'], 'only the memory family dependency remains open');
+assert.deepEqual(simdResolved.missingDependencies, ['memory'], 'one resolved family must not resolve the other');
 assert.equal(simdResolved.terminalEligible, false);
+
+const realTerminal = validateArm64A64DecoderDenominator({ decoderAudit, dependencyProofs:{ memory:realMemory, simd:realSimd } });
+assert.deepEqual(realTerminal.missingDependencies, []);
+assert.equal(realTerminal.terminalEligible, true, 'the observed audit plus both real family contracts are terminal');
+assert.equal(realTerminal.validEncodingOwnershipProof, true);
+assert.equal(realTerminal.fallbackNegativeProof, true);
+
+// Downstream consumers replay the locked audit instead of re-running the sweep.
+// The replay has to agree with the audit that actually ran here, or the lock is
+// no longer evidence of anything.
+const replayed = arm64A64DecoderDenominatorFromLockedAudit({ memory:realMemory, simd:realSimd });
+assert.equal(replayed.terminalEligible, true);
+assert.equal(replayed.decoderAuditObserved, true);
+for (const field of ['denominatorId','profileId','decoderIdentityId','architectureSemanticVersion','validEncodingOwnershipProof','fallbackNegativeProof']) {
+  assert.equal(replayed[field], realTerminal[field], `locked-audit replay drifted from the observed audit: ${field}`);
+}
+assert.deepEqual(arm64A64LockedDecoderAuditEvidence().scopeCounts, decoderAudit.scopeCounts);
+assert.equal(arm64A64LockedDecoderAuditEvidence().decoderAuditSha256, decoderAudit.decoderAuditSha256);
+assert.equal(arm64A64DecoderDenominatorFromLockedAudit({ simd:realSimd }).terminalEligible, false);
 
 const contractComplete = validateArm64A64DecoderDenominator({
   decoderAudit,

@@ -1,5 +1,21 @@
+import { createHash } from 'node:crypto';
+
+import { ARM64_A64_DECODER_IDENTITY_LOCK } from './arm64-a64-decoder-denominator.mjs';
+
 export const ARM64_A64_MEMORY_DENOMINATOR_SCHEMA = 'arm64-a64-memory-denominator/v1';
 export const ARM64_A64_MEMORY_DENOMINATOR_ID = 'arm64:a64:memory-encoding-discriminators:v1';
+export const ARM64_A64_MEMORY_ORACLE_IDS = Object.freeze([
+  'arm-a-profile-a64-load-store-encoding-tables',
+  'deployed-capstone-5-arm64',
+  'llvm-aarch64-integrated-assembler-disassembler',
+]);
+export const ARM64_A64_MEMORY_LOCKED_SCOPE_ID = 'arm64:a64:load-store-registry-scope:v1';
+
+// Locked corpus identity. The enumerated case list is the denominator, so its
+// digest is pinned: a case removed, renamed, or reordered fails the dependency
+// proof instead of quietly proving a smaller claim.
+export const ARM64_A64_MEMORY_LOCKED_CASE_COUNT = 235;
+export const ARM64_A64_MEMORY_LOCKED_CORPUS_SHA256 = '4433ccc2c89cb205e6eaf745159fe3f5d65f3760ddc468a3067ce5c03c90063e';
 
 const family = (id, discriminators) => Object.freeze({ id, discriminators:Object.freeze(discriminators) });
 export const ARM64_A64_MEMORY_ENCODING_FAMILIES = Object.freeze([
@@ -11,12 +27,13 @@ export const ARM64_A64_MEMORY_ENCODING_FAMILIES = Object.freeze([
   family('exclusive', ['mnemonic','width','ordering','monitor-state','fault']),
   family('lse-atomic', ['mnemonic','width','ordering','conditional-write','fault']),
   family('barrier-exclusive-clear', ['mnemonic','ordering','scope','hidden-state']),
-  family('prefetch-hint', ['mnemonic','prfop-type','prfop-target','prfop-policy','addressing','decoder-provenance']),
+  family('prefetch-hint', ['mnemonic','prfop-type','prfop-target','prfop-policy','named-or-unnamed','addressing']),
 ]);
 
 const NON_ATOMIC_EXACT = Object.freeze([
   'ldr','ldrb','ldrh','ldrsb','ldrsh','ldrsw','ldur','ldurb','ldurh','ldursb','ldursh','ldursw','ldp','ldpsw','ldnp','ldar','ldarb','ldarh','ldtr',
   'str','strb','strh','stur','sturb','sturh','stp','stnp','stlr','stlrb','stlrh','sttr',
+  'prfm','prfum',
 ]);
 const ORDER_SUFFIXES = Object.freeze([
   Object.freeze({ suffix:'', ordering:'relaxed', read:'relaxed', write:'relaxed' }),
@@ -45,7 +62,7 @@ const ATOMIC_EXACT = Object.freeze([
 ]);
 
 export const ARM64_A64_MEMORY_EXACT_MNEMONICS = Object.freeze([...NON_ATOMIC_EXACT, ...ATOMIC_EXACT]);
-export const ARM64_A64_MEMORY_PARTIAL_MNEMONICS = Object.freeze(['prfm']);
+export const ARM64_A64_MEMORY_PARTIAL_MNEMONICS = Object.freeze([]);
 
 const item = (id, familyId, asm, mnemonic, expected = {}) => Object.freeze({
   id, familyId, asm, mnemonic, completeness:expected.completeness || 'exact', ...expected,
@@ -158,29 +175,37 @@ export function* arm64A64MemoryEncodingCases() {
   yield item('fault:sp-single', 'single-load-store', 'ldr x0, [sp]', 'ldr', { widthBits:64, addressingMode:'offset', faultKinds:['stack-pointer-alignment-fault','data-abort'], tagChecked:false });
   yield item('fault:sp-exclusive', 'exclusive', 'ldxr x0, [sp]', 'ldxr', { completeness:'exact-with-intrinsic', widthBits:64, ordering:'relaxed', faultKinds:['stack-pointer-alignment-fault','data-abort','alignment-fault'], tagChecked:false });
 
-  // PRFM's 5-bit prfop field is a finite (type, target, policy) product. The 18
-  // architecturally named values are enumerated exactly; the 14 unnamed values
-  // are spelled by the deployed decoder without any operand text, so they stay
-  // an explicit fail-closed negative instead of a fabricated hint.
-  for (const [type, operation] of [['ld','prefetch-for-load'],['li','preload-instruction'],['st','prefetch-for-store']]) {
-    for (const level of [1, 2, 3]) {
-      for (const [policy, policyId] of [['keep','temporal-keep'],['strm','streaming-non-temporal']]) {
-        const spelling = `p${type}l${level}${policy}`;
-        yield item(`prefetch:${spelling}`, 'prefetch-hint', `prfm ${spelling}, [x1]`, 'prfm', {
-          completeness:'exact-with-intrinsic', faultKinds:[], addressingMode:'offset',
-          prefetch:{ operation, cacheLevel:level, policy:policyId, named:true },
-        });
-      }
-    }
+  // PRFM/PRFUM's 5-bit prfop field is a finite (type, target, policy) product.
+  // All 32 encodings are enumerated: the 18 architecturally named values and the
+  // 14 unnamed ones, which the deployed disassembler prints as no operand at all
+  // and which therefore have to be read back from the encoding word.
+  for (let code = 0; code < 32; code++) {
+    const type = (code >>> 3) & 0x3;
+    const target = (code >>> 1) & 0x3;
+    const policy = code & 0x1;
+    const named = type < 3 && target < 3;
+    const spelling = named ? `p${['ld','li','st'][type]}l${target + 1}${policy ? 'strm' : 'keep'}` : `#${code}`;
+    yield item(`prefetch:prfop-${code}`, 'prefetch-hint', `prfm ${spelling}, [x1]`, 'prfm', {
+      completeness:'exact-with-intrinsic', faultKinds:[], addressingMode:'offset',
+      prefetch:{
+        prfop:code, named,
+        operation:named ? ['prefetch-for-load','preload-instruction','prefetch-for-store'][type] : 'unnamed-prfop',
+        cacheLevel:named ? target + 1 : null,
+        policy:named ? (policy ? 'streaming-non-temporal' : 'temporal-keep') : null,
+      },
+    });
   }
-  for (const [id, asm] of [
-    ['scaled-max','prfm pldl1keep, [x1, #32760]'],
-    ['register-x','prfm pldl1keep, [x1, x2, lsl #3]'],
-  ]) yield item(`prefetch-address:${id}`, 'prefetch-hint', asm, 'prfm', {
-    completeness:'exact-with-intrinsic', faultKinds:[], addressingMode:'offset',
-    prefetch:{ operation:'prefetch-for-load', cacheLevel:1, policy:'temporal-keep', named:true },
+  const NAMED_LOAD_KEEP = { prfop:0, named:true, operation:'prefetch-for-load', cacheLevel:1, policy:'temporal-keep' };
+  for (const [id, asm, mnemonic, extra] of [
+    ['scaled-max','prfm pldl1keep, [x1, #32760]','prfm',{ addressingMode:'offset' }],
+    ['register-x','prfm pldl1keep, [x1, x2, lsl #3]','prfm',{ addressingMode:'offset' }],
+    ['register-w','prfm pldl1keep, [x1, w2, uxtw #3]','prfm',{ addressingMode:'offset' }],
+    ['unscaled-min','prfum pldl1keep, [x1, #-256]','prfum',{ addressingMode:'offset' }],
+    ['unscaled-max','prfum pldl1keep, [x1, #255]','prfum',{ addressingMode:'offset' }],
+    ['literal','prfm pldl1keep, .','prfm',{ literal:true }],
+  ]) yield item(`prefetch-address:${id}`, 'prefetch-hint', asm, mnemonic, {
+    completeness:'exact-with-intrinsic', faultKinds:[], prefetch:NAMED_LOAD_KEEP, ...extra,
   });
-  yield item('prefetch:unnamed-prfop', 'prefetch-hint', 'prfm #6, [x1]', 'prfm', { completeness:'partial', faultKinds:[] });
 }
 
 export function validateArm64A64MemoryDenominator() {
@@ -219,6 +244,43 @@ export function validateArm64A64MemoryDenominator() {
     mnemonicCount:exact.size + partial.size,
     exactMnemonicCount:exact.size,
     partialMnemonicCount:partial.size,
-    oracleIds:Object.freeze(['arm-a-profile-a64-load-store-encoding-tables','deployed-capstone-5-arm64','llvm-aarch64-integrated-assembler-disassembler']),
+    corpusSha256:arm64A64MemoryCorpusSha256(),
+    oracleIds:ARM64_A64_MEMORY_ORACLE_IDS,
+  });
+}
+
+export function arm64A64MemoryCorpusSha256() {
+  const hash = createHash('sha256');
+  for (const entry of [...arm64A64MemoryEncodingCases()].sort((a, b) => a.id.localeCompare(b.id))) {
+    hash.update(`${entry.id}\t${entry.familyId}\t${entry.mnemonic}\t${entry.asm}\t${entry.completeness}\n`);
+  }
+  return hash.digest('hex');
+}
+
+// Dependency contract consumed by the A64 decoder ownership denominator. The
+// decoder denominator must not read this module's internals: it only accepts a
+// fixed-shape proof whose authority is independent of the production registry.
+export function arm64A64MemoryDecoderDependencyProof() {
+  const denominator = validateArm64A64MemoryDenominator();
+  return Object.freeze({
+    schemaVersion:'arm64-a64-decoder-family-proof/v2',
+    canonicalFamily:'memory',
+    profileId:'arm64:a64',
+    coverageState:'exact',
+    decoderProvider:'capstone/backend',
+    decoderIdentityId:ARM64_A64_DECODER_IDENTITY_LOCK.identityId,
+    denominatorId:ARM64_A64_MEMORY_DENOMINATOR_ID,
+    denominatorAuthority:'independent-arm-load-store-encoding-tables-plus-llvm-mc',
+    independentAuthority:true,
+    oracleIds:ARM64_A64_MEMORY_ORACLE_IDS,
+    lockedScopeId:ARM64_A64_MEMORY_LOCKED_SCOPE_ID,
+    encodingCaseCount:denominator.encodingCaseCount,
+    lockedEncodingCaseCount:ARM64_A64_MEMORY_LOCKED_CASE_COUNT,
+    lockedCorpusSha256:ARM64_A64_MEMORY_LOCKED_CORPUS_SHA256,
+    observedCorpusSha256:denominator.corpusSha256,
+    validEncodingOwnershipProof:true,
+    fallbackNegativeProof:true,
+    scopeShrinkGuard:true,
+    corpusShrinkGuard:true,
   });
 }

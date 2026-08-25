@@ -3,6 +3,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { parseOperands } from '../../../js/arm64.js';
+import { arm64A64DecoderDenominatorFromLockedAudit } from './arm64-a64-decoder-denominator.mjs';
+import { arm64A64MemoryDecoderDependencyProof } from './arm64-a64-memory-denominator.mjs';
+import { arm64A64SimdDecoderDependencyProof } from './arm64-a64-simd-denominator.mjs';
 import { liftArm64MachineEffects } from '../../../js/targets/architecture/arm64/effects/index.js';
 import {
   arm64ePointerAuthenticationMnemonics,
@@ -102,8 +105,20 @@ export function arm64BaselineDependencyStatus(inventory = readInventory()) {
 
   const families = arm64.effectRegistry?.families;
   if (!Array.isArray(families) || families.length === 0) fail('arm64e-delegation-arm64-effect-registry-missing');
+  // The unmatched-family fallback exists to return null and can never be exact.
+  // It stops blocking the delegated baseline only when the A64 decoder ownership
+  // denominator proves no valid in-profile encoding can reach it — the same
+  // negative proof the A2 denominator requires.
+  const fallbackNegativeProven = decoder.enumerationStatus === 'exact'
+    && (decoder.missingUnits || []).length === 0
+    && arm64A64DecoderDenominatorFromLockedAudit({
+      memory:arm64A64MemoryDecoderDependencyProof(),
+      simd:arm64A64SimdDecoderDependencyProof(),
+    }).fallbackNegativeProof === true;
   for (const family of families) {
-    if (family?.status !== 'exact') blocking.add(`arm64:a64:effect-family:${family?.id || 'unknown'}`);
+    if (family?.status === 'exact') continue;
+    if (family?.id === 'fallback-unmatched-decoder-family' && fallbackNegativeProven) continue;
+    blocking.add(`arm64:a64:effect-family:${family?.id || 'unknown'}`);
   }
 
   const blockingUnits = Object.freeze([...blocking].sort());
