@@ -196,8 +196,12 @@ function readForm(cursor, form, unit, sections, implicitConst) {
     case DW_FORM.loclistx: case DW_FORM.rnglistx:
       return { value: cursor.uleb() };
     case DW_FORM.string: {
-      const text = cstring(cursor.bytes, cursor.offset);
-      cursor.skip(text.length + 1);
+      const start = cursor.offset;
+      let end = start;
+      while (end < cursor.bytes.length && cursor.bytes[end] !== 0) end += 1;
+      if (end === cursor.bytes.length) return { value: null, unsupported: true, fatal: true };
+      const text = new TextDecoder('utf8').decode(cursor.bytes.subarray(start, end));
+      cursor.offset = end + 1;
       return { value: text };
     }
     case DW_FORM.strp: {
@@ -506,8 +510,11 @@ export function gnuDebugLinkCrc32(bytes) {
 /** Parses `.gnu_debuglink`: a NUL-terminated name followed by a CRC32. */
 export function readDebugLink(section) {
   if (!section || section.length < 5) return null;
-  const name = cstring(section, 0);
-  const crcOffset = (name.length + 4) & ~3;
+  let nulOffset = 0;
+  while (nulOffset < section.length && section[nulOffset] !== 0) nulOffset += 1;
+  if (nulOffset === section.length) return null;
+  const name = new TextDecoder('utf8').decode(section.subarray(0, nulOffset));
+  const crcOffset = (nulOffset + 4) & ~3;
   if (crcOffset + 4 > section.length) return null;
   const view = new DataView(section.buffer, section.byteOffset, section.byteLength);
   return { name, crc32: view.getUint32(crcOffset, true) >>> 0 };
