@@ -61,6 +61,8 @@ function nonEmpty(value, code) {
 
 function optionalSizeBytes(value) {
   if (value == null) return null;
+  if (typeof value !== 'number' && typeof value !== 'string') fail('debug-record-invalid-size');
+  if (typeof value === 'string' && !value.trim()) fail('debug-record-invalid-size');
   const size = Number(value);
   if (!Number.isSafeInteger(size) || size < 0) fail('debug-record-invalid-size');
   return size;
