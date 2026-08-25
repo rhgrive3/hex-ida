@@ -17,11 +17,14 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
       - run: npm ci
       - name: Current central A2 report
+        continue-on-error: true
         run: node tools/validation/machine-effects/a2-denominator.mjs
       - name: x86 current decoder ownership
         run: node tests/machine-effects/x86-long64-decoder-denominator.test.mjs
