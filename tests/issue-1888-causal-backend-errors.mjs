@@ -11,6 +11,7 @@ assert.deepEqual(rangeFailure.paths, []);
 assert.equal(rangeFailure.complete, false);
 assert.equal(rangeFailure.truncated, true);
 assert.ok(rangeFailure.reasons.includes('function-range-error'));
+assert.equal(rangeFailure.reasons.filter((reason) => reason === 'function-range-error').length, 1);
 
 const calleeFailure = functionPaths({
   graphCompleteness: { callsComplete: true },
@@ -22,5 +23,6 @@ assert.deepEqual(calleeFailure.paths, []);
 assert.equal(calleeFailure.complete, false);
 assert.equal(calleeFailure.truncated, true);
 assert.ok(calleeFailure.reasons.includes('callee-query-error'));
+assert.equal(calleeFailure.reasons.filter((reason) => reason === 'callee-query-error').length, 1);
 
 console.log('issue #1888 causal backend error regression PASS');
