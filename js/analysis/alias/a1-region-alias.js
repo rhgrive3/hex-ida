@@ -130,13 +130,22 @@ function explainRelation(relation, a, b) {
 }
 
 function statusFor(options) {
-  if (options?.status) return options.status;
+  const cancelled = options?.signal?.aborted === true;
+  if (options?.status) {
+    if (!cancelled) return options.status;
+    return createAnalysisStatus({
+      ...options.status,
+      completeness: 'partial',
+      stopReason: 'cancelled',
+    });
+  }
   return createAnalysisStatus({
     snapshotId: options?.snapshotId ?? 'snapshot-unbound',
     analyzerId: A1_ANALYZER_ID,
     analyzerVersion: A1_ANALYZER_VERSION,
-    completeness: 'complete',
+    completeness: cancelled ? 'partial' : 'complete',
     budgetClass: options?.budgetClass ?? null,
+    stopReason: cancelled ? 'cancelled' : null,
   });
 }
 
@@ -152,7 +161,9 @@ export function a1RegionAlias(a, b, options = {}) {
   // A cancelled or budget-exhausted caller may not receive a strong answer at
   // all, regardless of what the regions look like (P7-INV-010).
   if (status.stopReason != null && status.completeness !== 'bounded') {
-    return unknownAlias(status, ['budget-exhausted'], { regionIds: [a?.id, b?.id].filter(Boolean) });
+    return unknownAlias(status, [status.stopReason === 'cancelled' ? 'analysis-cancelled' : 'budget-exhausted'], {
+      regionIds: [a?.id, b?.id].filter(Boolean),
+    });
   }
 
   if (!a || !b) return unknownAlias(status, ['unresolved-root']);
