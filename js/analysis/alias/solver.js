@@ -113,7 +113,7 @@ export function createPhase7AliasSolver({ ir, cfg, ssa, options = {} } = {}) {
   function alias(leftRegion, rightRegion, context = {}) {
     const status = baseStatus({ signal: options.signal, ...options, ...context });
     if (status.stopReason != null && status.completeness !== 'bounded') {
-      return unknownAlias(status, ['budget-exhausted']);
+      return unknownAlias(status, [status.stopReason === 'cancelled' ? 'analysis-cancelled' : 'budget-exhausted']);
     }
 
     const a1 = a1RegionAlias(leftRegion, rightRegion, { ...options, status });

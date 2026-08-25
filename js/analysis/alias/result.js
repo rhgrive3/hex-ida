@@ -50,6 +50,7 @@ export const ALIAS_PROOF_REASONS = Object.freeze([
   'union-overlap',
   'escape-unproven',
   'budget-exhausted',
+  'analysis-cancelled',
   'analysis-unsupported',
 ]);
 
