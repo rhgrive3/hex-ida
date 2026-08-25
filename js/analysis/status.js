@@ -146,11 +146,16 @@ export function weakestCompleteness(...values) {
  * Merges several statuses into the one status a fused result may claim.
  *
  * Merging never strengthens: the result is at most as complete as its weakest
- * input, and any fail-closed stop reason propagates.
+ * input, and any fail-closed stop reason propagates. All inputs must describe
+ * the same snapshot; otherwise evidence or dependencies from one binary state
+ * could be republished under another snapshot's identity.
  */
 export function mergeAnalysisStatus(base, ...others) {
   if (!base) fail('analysis-status-merge-base-required');
   const all = [base, ...others.flat().filter(Boolean)];
+  for (const status of all) {
+    if (status.snapshotId !== base.snapshotId) fail('analysis-status-snapshot-mismatch');
+  }
   const completeness = weakestCompleteness(all.map((status) => status.completeness));
   let stopReason = null;
   for (const status of all) {
