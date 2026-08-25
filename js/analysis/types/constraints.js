@@ -192,8 +192,9 @@ export function claimsConflict(left, right) {
   // is declared an alias of the other.
   if (a.name != null && b.name != null) {
     if (a.name === b.name) return false;
-    const aliases = new Set([...(a.aliases ?? []), ...(b.aliases ?? [])]);
-    return !(aliases.has(a.name) && aliases.has(b.name));
+    const aAliases = new Set(a.aliases ?? []);
+    const bAliases = new Set(b.aliases ?? []);
+    return !(aAliases.has(b.name) || bAliases.has(a.name));
   }
   return true;
 }
