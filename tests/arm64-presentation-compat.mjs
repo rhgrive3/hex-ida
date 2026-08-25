@@ -107,4 +107,21 @@ assert.equal(typeof facade.brief("add", "x0, x1, x2"), "string");
 facade.clearBriefCache();
 console.log("  ok 5 public facade smoke");
 
+// 6. Atomic ordering/size variants must stay in the atomic category (#1827).
+for (const mnemonic of [
+  "casb", "cash", "casab", "caslh", "casalb",
+  "swpb", "swpah", "swplb", "swpalh",
+  "ldaddb", "ldaddah", "ldaddlb", "ldaddalh",
+  "ldseta", "ldsetalh", "ldclrlb", "ldclral", "ldeorb", "ldeoralh",
+]) {
+  assert.equal(facade.categoryOf(mnemonic), "atomic", `${mnemonic} must be classified as atomic`);
+}
+for (const mnemonic of ["casx", "swpaa", "ldaddq", "ldsetall"]) {
+  assert.notEqual(facade.categoryOf(mnemonic), "atomic", `${mnemonic} is not a canonical atomic variant`);
+}
+assert.equal(facade.categoryOf("ldxr"), "load", "exclusive loads retain their established presentation category");
+assert.equal(facade.categoryOf("stxr"), "store", "exclusive stores retain their established presentation category");
+assert.equal(facade.categoryOf("dmb"), "system", "barriers retain their established presentation category");
+console.log("  ok 6 atomic category variants");
+
 console.log("All ARM64 presentation compatibility tests PASS!");

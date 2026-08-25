@@ -158,12 +158,20 @@ cat('movi mvni orr_v addv uaddlv tbl tbx zip1 zip2 uzp1 uzp2 trn1 trn2 ext rev64
 cat('casal cas casa casl swp swpa swpl swpal ldadd ldadda ldaddl ldaddal ldset ldclr ldeor', 'atomic');
 cat('udf .byte', 'data');
 
+// Keep the presentation/category surface aligned with the canonical machine-
+// effects grammar without changing the established load/store/system categories
+// for exclusive operations and barriers. These are the read-modify-write families
+// that this facade already classifies as atomic; all ordering/size variants belong
+// to the same category (#1827).
+const ATOMIC_CATEGORY_RE = /^(?:cas|swp|ldadd|ldset|ldclr|ldeor)(?:al|a|l)?(?:b|h)?$/;
+
 export function categoryOf(mn) {
   if (!mn) return '';
   const b = mn.toLowerCase();
   if (b.charCodeAt(0) === 46) return 'data';
   const direct = CATEGORY.get(b);
   if (direct) return direct;
+  if (ATOMIC_CATEGORY_RE.test(b)) return 'atomic';
   if (/^b\./.test(b)) return 'flow';
   if (/^f/.test(b)) return 'float';
   return '';
@@ -1629,7 +1637,7 @@ const BRIEF_CACHE_MAX = 4000;
 export function brief(mn, ops, style, ctx) {
   if (!mn) return '';
   const gen = (ctx && ctx.gen) || 0;
-  const key = gen + ' ' + style + ' ' + (ctx && ctx.lang ? ctx.lang : '') + ' ' + mn + ' ' + (ops || '');
+  const key = gen + '\0' + style + '\0' + (ctx && ctx.lang ? ctx.lang : '') + '\0' + mn + '\0' + (ops || '');
   const hit = briefCache.get(key);
   if (hit !== undefined) return hit;
 
