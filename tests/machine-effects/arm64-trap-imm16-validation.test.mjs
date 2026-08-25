@@ -11,6 +11,7 @@ function trap(mnemonic, value) {
   });
 }
 
+// Exception-generation encodings carry an unsigned imm16 in bits [20:5].
 for (const mnemonic of ['svc','hvc','smc','brk','hlt']) {
   for (const value of [0, 65535]) {
     const effect = trap(mnemonic, value);
