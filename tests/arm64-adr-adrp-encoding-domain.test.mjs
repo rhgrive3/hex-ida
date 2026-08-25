@@ -18,6 +18,7 @@ function lift(mnemonic, address, target, suffix) {
 
 for (const [suffix, delta] of [
   ['min-valid', -0x100000n],
+  ['zero-valid', 0n],
   ['max-valid', 0xfffffn],
 ]) {
   const effect = lift('adr', base, base + delta, suffix);
@@ -37,6 +38,7 @@ for (const [suffix, delta] of [
 const pageBase = 0x400000000n;
 for (const [suffix, pages] of [
   ['min-valid', -0x100000n],
+  ['zero-valid', 0n],
   ['max-valid', 0xfffffn],
 ]) {
   const effect = lift('adrp', pageBase + 0x123n, pageBase + pages * 0x1000n, suffix);
