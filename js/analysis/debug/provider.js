@@ -88,6 +88,9 @@ export function createDebugIdentity(input = {}) {
     detail: input.detail == null ? null : String(input.detail),
     coverage: input.coverage == null ? null : Object.freeze({ ...input.coverage }),
   };
+  // A match must actually have compared something. Filename or path equality is
+  // explicitly not authority (§11.2), so a verdict of matched-* with no
+  // observed identity is rejected rather than trusted.
   if (AUTHORITATIVE_VERDICTS.has(verdict) && (identity.observed == null || identity.expected == null)) {
     fail('debug-identity-match-requires-compared-identities');
   }
@@ -105,15 +108,25 @@ export function createDebugIdentity(input = {}) {
   return deepFreeze(identity);
 }
 
+/** True when this identity may create authoritative (hard) facts. */
 export function isAuthoritative(identity) {
   return !!identity && AUTHORITATIVE_VERDICTS.has(identity.verdict);
 }
 
 function coverageList(value) {
-  if (value == null || !Array.isArray(value)) return null;
+  if (value == null) return null;
+  if (!Array.isArray(value)) return null;
   return new Set(value.map(String));
 }
 
+/**
+ * True only when one record is explicitly covered by a partial identity.
+ *
+ * Coverage is deliberately conjunctive and fail-closed: every supplied
+ * selector must be understood and match the record, and a partial match with
+ * no usable selector never becomes hard authority. This prevents a source-level
+ * `matched-partial` boolean from laundering uncovered records into exact facts.
+ */
 export function isDebugRecordAuthoritative(result, record) {
   const identity = result?.identity;
   if (!identity || !record) return false;
@@ -167,6 +180,7 @@ export function isDebugRecordAuthoritative(result, record) {
   return constrained;
 }
 
+/** One record from a provider, always carrying its debug-source provenance. */
 export function createDebugRecord(input = {}) {
   const kind = nonEmpty(input.kind, 'debug-record-kind-required');
   if (!KIND_SET.has(kind)) fail('debug-record-invalid-kind');
@@ -177,6 +191,9 @@ export function createDebugRecord(input = {}) {
     address: input.address == null ? null : String(input.address),
     sizeBytes: optionalSizeBytes(input.sizeBytes),
     descriptor: input.descriptor ?? null,
+    // Provenance is not optional. A debug-derived fact that cannot say which
+    // provider and which matched build produced it cannot be invalidated
+    // correctly when either changes.
     providerId: nonEmpty(input.providerId, 'debug-record-provider-required'),
     providerVersion: nonEmpty(input.providerVersion, 'debug-record-provider-version-required'),
     buildIdentity: input.buildIdentity == null ? null : String(input.buildIdentity),
@@ -184,6 +201,7 @@ export function createDebugRecord(input = {}) {
   });
 }
 
+/** One page of records plus the cursor for the next page. */
 export function createDebugPage(input = {}) {
   return deepFreeze({
     records: deepFreeze([...(input.records ?? [])]),
@@ -192,6 +210,13 @@ export function createDebugPage(input = {}) {
   });
 }
 
+/**
+ * The provider result.
+ *
+ * `identity` gates everything: `symbols`, `types` and friends may be populated
+ * regardless, but `authoritative` is what decides whether those records may
+ * become hard constraints.
+ */
 export function createDebugProviderResult(input = {}) {
   const identity = createDebugIdentity(input.identity ?? {});
   const status = input.status?.schemaVersion ? input.status : createAnalysisStatus(input.status ?? {});
@@ -210,6 +235,14 @@ export function createDebugProviderResult(input = {}) {
   });
 }
 
+/**
+ * The abstract provider.
+ *
+ * Subclasses implement `#probe` and the paged readers. The base class owns the
+ * identity gate so no backend can accidentally skip it: `authoritativeTypes`
+ * and `authoritativeSymbols` are the only accessors the application layer uses,
+ * and they return nothing at all when the identity did not match.
+ */
 export class DebugInfoProvider {
   constructor({ id, version, ecosystem }) {
     this.id = nonEmpty(id, 'debug-provider-id-required');
@@ -217,12 +250,21 @@ export class DebugInfoProvider {
     this.ecosystem = nonEmpty(ecosystem, 'debug-provider-ecosystem-required');
   }
 
+  /** Must return a `createDebugProviderResult`. */
   probe() { fail('debug-provider-probe-not-implemented'); }
+
   symbols() { return createDebugPage({}); }
   types() { return createDebugPage({}); }
   lines() { return createDebugPage({}); }
   inlineFrames() { return createDebugPage({}); }
 
+  /**
+   * Records that may become authoritative facts.
+   *
+   * Non-matching identity yields an empty page — not the records with a lower
+   * confidence attached. Surfacing them as "probably right" is precisely how a
+   * wrong PDB ends up in someone's decompilation.
+   */
   authoritativeRecords(result, reader, scope, options = {}) {
     if (!result.authoritative) return createDebugPage({ records: [], truncated: false });
     const page = reader.call(this, scope, options);
@@ -235,6 +277,13 @@ export class DebugInfoProvider {
   }
 }
 
+/**
+ * Applies debug records to the canonical TypeConstraintGraph.
+ *
+ * This is the *only* sanctioned path from a debug backend into type recovery.
+ * Neither DWARF nor PDB may construct a type result of its own; both hand
+ * constraints to the graph and let it decide (§11.1 step 6).
+ */
 export function applyDebugTypesToGraph(graph, result, page) {
   if (!graph) fail('debug-apply-graph-required');
   const applied = { hard: 0, soft: 0, skipped: 0 };
@@ -257,6 +306,9 @@ export function applyDebugTypesToGraph(graph, result, page) {
       applied.hard += 1;
       continue;
     }
+    // Unmatched or uncovered debug data is still information — it just has no
+    // authority. It enters as soft evidence so it can never overrule a hard
+    // constraint or reach certainty on its own.
     graph.addSoftEvidence({
       kind: 'signature-candidate',
       origin: 'debug-unmatched',
@@ -269,6 +321,12 @@ export function applyDebugTypesToGraph(graph, result, page) {
   return applied;
 }
 
+/**
+ * Turns debug symbol records into function-discovery evidence.
+ *
+ * Same rule: an unmatched provider contributes weak, clearly-labelled evidence
+ * rather than authoritative starts.
+ */
 export function debugFunctionEvidence(result, page) {
   return (page.records ?? [])
     .filter((record) => record.kind === 'symbol' && record.address != null && record.descriptor?.isFunction === true)
