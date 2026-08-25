@@ -43,8 +43,21 @@ function contradicts(left, right) {
  * happened to have an answer ready (P7-INV-010).
  */
 function baseStatus(options) {
-  if (options.status) return options.status;
   const cancelled = options.signal?.aborted === true;
+  if (options.status) {
+    if (!cancelled) return options.status;
+    const cancellationStatus = createAnalysisStatus({
+      snapshotId: options.status.snapshotId,
+      analyzerId: options.status.analyzerId,
+      analyzerVersion: options.status.analyzerVersion,
+      completeness: 'partial',
+      budgetClass: options.status.budgetClass ?? null,
+      stopReason: 'cancelled',
+      evidenceIds: options.status.evidenceIds ?? [],
+      dependencyIds: options.status.dependencyIds ?? [],
+    });
+    return mergeAnalysisStatus(options.status, cancellationStatus);
+  }
   return createAnalysisStatus({
     snapshotId: options.snapshotId ?? 'snapshot-unbound',
     analyzerId: PHASE7_ALIAS_SOLVER_ID,
