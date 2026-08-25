@@ -127,6 +127,7 @@ function broadEffect(source, addressSpaces = ['memory']) {
 }
 
 function mergeEffects(lists, cap) {
+  const effectiveCap = Number.isSafeInteger(cap) && cap >= 1 ? cap : 1;
   const byKey = new Map();
   let broad = null;
   for (const effect of lists.flat()) {
@@ -141,8 +142,8 @@ function mergeEffects(lists, cap) {
     if (!byKey.has(key)) byKey.set(key, effect);
   }
   const specific = [...byKey.values()];
-  if (broad) return [broad, ...specific].slice(0, cap);
-  if (specific.length > cap) {
+  if (broad) return [broad, ...specific].slice(0, effectiveCap);
+  if (specific.length > effectiveCap) {
     // Rather than truncate a list a consumer would read as exhaustive, collapse
     // to one broad effect: less precise, still sound.
     return [broadEffect('unknown-call-fallback')];
