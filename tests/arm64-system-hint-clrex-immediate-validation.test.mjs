@@ -15,6 +15,7 @@ function immediate(value) {
   return { k:'imm', value:BigInt(value), text:`#${value}` };
 }
 
+// A64 HINT encodes imm7; CLREX encodes an optional imm4 selector.
 for (const value of [0, 127]) {
   const effect = lift('hint', [immediate(value)]);
   assert.ok(effect, `hint #${value}:effect-required`);
