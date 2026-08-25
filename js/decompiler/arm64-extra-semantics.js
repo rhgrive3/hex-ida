@@ -17,6 +17,15 @@ function parseImm(text) {
   return Number.isSafeInteger(value) ? value : null;
 }
 
+function expandMovi2dImmediate(imm) {
+  if (!Number.isInteger(imm) || imm < 0 || imm > 0xff) return null;
+  let value = 0n;
+  for (let bit = 0; bit < 8; bit++) {
+    if ((imm & (1 << bit)) !== 0) value |= 0xffn << BigInt(bit * 8);
+  }
+  return value;
+}
+
 function asmPayload(text) {
   const match = /^\s*__asm\s*\(\s*(["'])(.*?)\1\s*\)\s*;?\s*$/.exec(String(text || ''));
   return match ? match[2].trim() : null;
@@ -72,7 +81,10 @@ function lowerOne(payload) {
       }
       if (shift >= 0 && shift <= 63) {
         const arrangement = operands[0].split('.')[1].toLowerCase();
-        const value = BigInt.asUintN(64, BigInt(imm) << BigInt(shift));
+        const value = arrangement === '2d'
+          ? (operands.length === 2 ? expandMovi2dImmediate(imm) : null)
+          : BigInt.asUintN(64, BigInt(imm) << BigInt(shift));
+        if (value == null) return null;
         return `${operands[0].split('.')[0]} = __a64_movi_${arrangement}(0x${value.toString(16)});`;
       }
     }
