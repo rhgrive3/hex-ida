@@ -42,6 +42,10 @@ export const TYPE_CONFIDENCE = Object.freeze(['certain', 'probable', 'possible',
 
 function fail(code) { throw new TypeError(code); }
 
+function mergedEvidenceIds(left, right) {
+  return [...new Set([...(left ?? []), ...(right ?? [])])].sort();
+}
+
 export class TypeConstraintGraph {
   constructor({ snapshotId = 'snapshot-unbound', budgetClass = null } = {}) {
     this.snapshotId = snapshotId;
@@ -61,14 +65,29 @@ export class TypeConstraintGraph {
   addHardConstraint(input) {
     const constraint = createHardConstraint(input);
     const bucket = this.#bucket(constraint.claim.entityId, constraint.claim.layer);
-    const isDuplicate = bucket.hard.some((c) => (
+    const duplicateIndex = bucket.hard.findIndex((c) => (
       c.kind === constraint.kind &&
       c.origin === constraint.origin &&
       c.claim.key === constraint.claim.key &&
       c.providerVersion === constraint.providerVersion &&
       c.buildIdentity === constraint.buildIdentity
     ));
-    if (!isDuplicate) bucket.hard.push(constraint);
+    if (duplicateIndex === -1) {
+      bucket.hard.push(constraint);
+    } else {
+      const existing = bucket.hard[duplicateIndex];
+      const evidenceIds = mergedEvidenceIds(existing.evidenceIds, constraint.evidenceIds);
+      if (evidenceIds.length !== existing.evidenceIds.length) {
+        bucket.hard[duplicateIndex] = createHardConstraint({
+          kind: existing.kind,
+          origin: existing.origin,
+          claim: existing.claim,
+          evidenceIds,
+          providerVersion: existing.providerVersion,
+          buildIdentity: existing.buildIdentity,
+        });
+      }
+    }
     if (constraint.origin === 'user-approved') {
       this.userConstraintDigests.add(stableDigest(constraint.claim));
     }
@@ -78,13 +97,27 @@ export class TypeConstraintGraph {
   addSoftEvidence(input) {
     const evidence = createSoftEvidence(input);
     const bucket = this.#bucket(evidence.claim.entityId, evidence.claim.layer);
-    const isDuplicate = bucket.soft.some((e) => (
+    const duplicateIndex = bucket.soft.findIndex((e) => (
       e.kind === evidence.kind &&
       e.origin === evidence.origin &&
       e.claim.key === evidence.claim.key &&
       e.weight === evidence.weight
     ));
-    if (!isDuplicate) bucket.soft.push(evidence);
+    if (duplicateIndex === -1) {
+      bucket.soft.push(evidence);
+    } else {
+      const existing = bucket.soft[duplicateIndex];
+      const evidenceIds = mergedEvidenceIds(existing.evidenceIds, evidence.evidenceIds);
+      if (evidenceIds.length !== existing.evidenceIds.length) {
+        bucket.soft[duplicateIndex] = createSoftEvidence({
+          kind: existing.kind,
+          origin: existing.origin,
+          claim: existing.claim,
+          weight: existing.weight,
+          evidenceIds,
+        });
+      }
+    }
     return evidence;
   }
 
