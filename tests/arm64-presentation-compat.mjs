@@ -124,4 +124,19 @@ assert.equal(facade.categoryOf("stxr"), "store", "exclusive stores retain their 
 assert.equal(facade.categoryOf("dmb"), "system", "barriers retain their established presentation category");
 console.log("  ok 6 atomic category variants");
 
+// 7. Presentation parser must reject non-existent SIMD/FP registers and lanes (#2068, #2070).
+for (const valid of ["b31", "h31", "s31", "d31", "q31", "v31.16b"]) {
+  assert.equal(directOperands.parseOperands(valid)[0]?.k, "reg", `${valid} must remain a valid register`);
+}
+for (const invalid of ["b32", "h32", "s32", "d32", "q32", "q99", "v32.16b", "v99.16b"]) {
+  assert.equal(directOperands.parseOperands(invalid)[0]?.k, "other", `${invalid} must fail soft instead of becoming a register`);
+}
+for (const valid of ["v0.b[15]", "v0.h[7]", "v0.s[3]", "v0.d[1]", "v31.b[0]"]) {
+  assert.equal(directOperands.parseOperands(valid)[0]?.k, "elem", `${valid} must remain a valid vector element`);
+}
+for (const invalid of ["v0.b[16]", "v0.h[8]", "v0.s[4]", "v0.d[2]", "v32.b[0]"]) {
+  assert.equal(directOperands.parseOperands(invalid)[0]?.k, "other", `${invalid} must fail soft instead of becoming a vector element`);
+}
+console.log("  ok 7 SIMD/FP register and vector-lane bounds (#2068 #2070)");
+
 console.log("All ARM64 presentation compatibility tests PASS!");
