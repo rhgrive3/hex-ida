@@ -8,7 +8,7 @@ on:
 permissions:
   contents: read
 jobs:
-  residual-surfaces:
+  residual-gaps:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -19,7 +19,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --no-audit --no-fund
-      - name: Dump representative frozen-witness surfaces
+      - name: Enumerate frozen 1487 closure gaps
         run: |
           node --input-type=module <<'NODE'
           import { createCapstoneX86Session } from './tests/phase5/helpers/capstone-session.mjs';
@@ -27,27 +27,25 @@ jobs:
           import { dispatchX86MachineEffects } from './js/targets/architecture/x86_64/effects/index.js';
           import { X86_LONG64_DECODER_WITNESSES } from './tools/validation/machine-effects/fixtures/x86-long64-decoder-witnesses.mjs';
           import { bytesFromX86Long64WitnessHex } from './tools/validation/machine-effects/x86-long64-decoder-denominator.mjs';
-          const wanted = new Set(['clc','cli','hlt','mov','nop','insb','prefetchwt1','rstorssp','roundsd','vcvtpd2ps','v4fmaddps','vblendmpd','vbroadcastf32x4','vgatherpf0dpd','vscatterpf0dpd','valignd','vpblendmb','vptestmb','vbroadcasti128','wrssd']);
+          import { evaluateX86Long64ClosureMatrix } from './tools/validation/machine-effects/x86-long64-closure-matrix.mjs';
           const session = await createCapstoneX86Session();
           try {
+            const rows = [];
             for (const [id,name,hex] of X86_LONG64_DECODER_WITNESSES) {
-              if (!wanted.has(name)) continue;
               const bytes = bytesFromX86Long64WitnessHex(hex);
-              const raw = session.decode(bytes,0x100000n+BigInt(id)*0x20n)[0];
-              const decoded = createX86DecodedInstruction(raw);
-              const dispatch = dispatchX86MachineEffects(decoded);
-              const result = dispatch.result;
-              console.log(JSON.stringify({
-                id,name,hex,owner:dispatch.ownerId,reason:result?.unknownEffects?.reason,completeness:result?.completeness,
-                operands:decoded.detail.operands.map((o)=>({type:o.type,access:o.access,widthBits:o.widthBits,reg:o.register?.id,mem:o.memory?{base:o.memory.base?.id,index:o.memory.index?.id,scale:o.memory.scale,disp:String(o.memory.displacement)}:undefined,imm:o.value!=null?String(o.value):undefined})),
-                implicitReads:decoded.detail.implicitReads.map((r)=>r.id),implicitWrites:decoded.detail.implicitWrites.map((r)=>r.id),
-                groups:decoded.detail.groups,
-                partialOperations:(result?.operations||[]).map((op)=>({kind:op.kind,registerId:op.register?.registerId,writePolicy:op.metadata?.writePolicy,intrinsicId:op.intrinsicId,memory:op.memoryAccess?{space:op.memoryAccess.space,widthBits:op.memoryAccess.widthBits}:undefined})),
-                metadata:result?.metadata,
-              }));
+              const decoded = session.decode(bytes, 0x100000n + BigInt(id) * 0x20n);
+              if (decoded.length !== 1) throw new Error(`decode-count:${name}:${decoded.length}`);
+              const instruction = createX86DecodedInstruction({ ...decoded[0], instructionId:`closure-witness:${id}` });
+              rows.push({id,name,hex,instruction});
             }
-            const [vx] = session.decode(Uint8Array.of(0xc5,0xf8,0x57,0xc1),0x900000n);
-            const vxResult=dispatchX86MachineEffects(createX86DecodedInstruction(vx)).result;
-            console.log(JSON.stringify({name:'vxorps-vex128-proof',ops:vxResult.operations.map((op)=>({kind:op.kind,registerId:op.register?.registerId,writePolicy:op.metadata?.writePolicy,opcode:op.opcode,metadata:op.metadata}))}));
+            const matrix = evaluateX86Long64ClosureMatrix(rows, dispatchX86MachineEffects);
+            console.log(JSON.stringify({
+              totalWitnessCount:matrix.totalWitnessCount,
+              partialCount:matrix.partialCount,
+              blockingGapCount:matrix.blockingGapCount,
+              completenessByOwner:matrix.completenessByOwner,
+              blockingGaps:matrix.blockingGaps,
+            }, null, 2));
+            if (matrix.partialCount !== 0 || matrix.blockingGapCount !== 0) process.exitCode = 1;
           } finally { session.close(); }
           NODE
