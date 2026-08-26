@@ -95,7 +95,7 @@ export class InterventionLedger {
   #records = new Map();
 
   validate(input) {
-    const record = input?.interventionId && Object.isFrozen(input) ? input : createInterventionRecord(input);
+    const record = createInterventionRecord(input);
     for (const parent of record.parentInterventionIds) {
       if (!this.#records.has(parent)) throw new DebugAdapterError('runtime-intervention-parent-missing', `intervention parent not found: ${parent}`);
     }
