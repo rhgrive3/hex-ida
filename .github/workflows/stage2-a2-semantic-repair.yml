@@ -63,6 +63,18 @@ jobs:
               raise SystemExit('expected synthetic fixture constructor not found')
           p.write_text(s.replace(old,new,1))
           PY
+      - name: Keep SIMD width-negative prefix valid
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('tests/machine-effects/x86-long64-simd-denominator.test.mjs')
+          s = p.read_text()
+          old = "const oldSynthetic=effects('vpaddd',[reg('ymm0'),reg('ymm1'),reg('ymm2')],vex256(0));assert.equal(oldSynthetic.completeness,'partial');assert.match(oldSynthetic.unknownEffects.reason,/vector-width-unmodelled/);"
+          new = "const oldSynthetic=effects('vpaddd',[reg('ymm0'),reg('ymm1'),reg('ymm2')],vex128(1));assert.equal(oldSynthetic.completeness,'partial');assert.match(oldSynthetic.unknownEffects.reason,/vector-width-unmodelled/);"
+          if old not in s:
+              raise SystemExit('expected SIMD width-negative fixture not found')
+          p.write_text(s.replace(old,new,1))
+          PY
       - name: Prove frozen 1487 closure matrix
         run: node tests/machine-effects/x86-long64-closure-matrix.test.mjs
       - name: Prove focused denominators
@@ -75,7 +87,7 @@ jobs:
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add js/targets/architecture/x86_64/effects/terminal-residual.js js/targets/architecture/x86_64/effects/extended-state-helpers.js tests/machine-effects/helpers/x86-long64-fp-simd.mjs
+          git add js/targets/architecture/x86_64/effects/terminal-residual.js js/targets/architecture/x86_64/effects/extended-state-helpers.js tests/machine-effects/helpers/x86-long64-fp-simd.mjs tests/machine-effects/x86-long64-simd-denominator.test.mjs
           git diff --cached --quiet && exit 0
           git commit -m "fix(stage2): close final x86 long64 semantic residuals"
           git push origin HEAD:integration/stage2-a2-x86-long64-terminal-semantics
