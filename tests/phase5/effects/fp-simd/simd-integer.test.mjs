@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createX86DecodedInstruction } from '../../../../js/targets/architecture/x86_64/decoded-instruction.js';
-import { effects, instruction, reg, imm, legacy, vex2, ops, physicalReads, physicalWrites, intrinsics } from './helpers.mjs';
+import { effects, instruction, reg, imm, mem, legacy, vex2, ops, physicalReads, physicalWrites, intrinsics } from './helpers.mjs';
 
 function oracleBitwise(operation,left,right,widthBits){const mask=(1n<<BigInt(widthBits))-1n;if(operation==='and')return(left&right)&mask;if(operation==='or')return(left|right)&mask;if(operation==='xor')return(left^right)&mask;throw new Error('bad-op');}
 function oraclePshufd(immediate){return[0,1,2,3].map((lane)=>(immediate>>(lane*2))&3);}
@@ -34,6 +34,21 @@ test('PSHUFD uses structured immediate and independent lane-map oracle', () => {
 
 test('PUNPCKLDQ has explicit interleave mapping', () => {
   const bundle=effects('punpckldq',[reg('xmm0','read-write'),reg('xmm1','read')],{prefixes:legacy(),instructionId:'p5-3:punpckldq',opStr:'wrong display text'}); assert.equal(bundle.completeness,'exact-with-intrinsic'); const map=intrinsics(bundle,'x86.simd.unpack')[0].metadata.laneMap; assert.deepEqual(map.map((entry)=>[entry.source,entry.sourceLane]),[[0,0],[1,0],[0,1],[1,1]]);
+});
+
+test('broad vector ownership does not promote unproven operand roles to exactness', () => {
+  const cases = [
+    effects('addsubps',[reg('xmm0','read-write'),reg('xmm1','read')],{prefixes:legacy(),instructionId:'p5-3:addsubps-owner'}),
+    effects('cmpps',[reg('xmm0','read-write'),reg('xmm1','read'),imm(0)],{prefixes:legacy(),instructionId:'p5-3:cmpps-owner'}),
+    effects('pextrb',[mem(8,{access:'write'}),reg('xmm1','read'),imm(0)],{prefixes:legacy(),instructionId:'p5-3:pextrb-owner'}),
+    effects('kmovb',[mem(8,{access:'write'}),reg('k1','read')],{prefixes:legacy(),instructionId:'p5-3:kmovb-owner'}),
+  ];
+  for (const bundle of cases) {
+    assert.equal(bundle.completeness,'partial');
+    assert.equal(bundle.metadata.requiresDedicatedOperandRoles,true);
+    assert.equal(bundle.metadata.exactArchitecturalSummary,false);
+    assert.match(bundle.unknownEffects.reason,/requires-dedicated-operand-semantics/);
+  }
 });
 
 test('VEX support is instruction-specific and does not overclaim AVX2 256-bit packed integer', () => {

@@ -65,6 +65,12 @@ const KNOWN_VECTOR_FAMILIES = new Set([
   'vtestpd','vtestps','vucomisd','vucomiss','vunpckhpd','vunpckhps','vunpcklpd','vunpcklps','vxorpd','vxorps','xorpd','xorps',
 ]);
 
+// A family may enter the exact generic path only after its complete operand
+// roles, implicit state, memory direction and physical vector write policy are
+// proven.  Broad mnemonic recognition establishes ownership, not exactness.
+// Dedicated SIMD/FP/EVEX lifters run before this fallback and remain exact.
+const PROVEN_GENERIC_VECTOR_FAMILIES = new Set([]);
+
 function classifyVectorCategory(family) {
   const lower = String(family || '').toLowerCase();
   const base = lower.startsWith('v') ? lower.slice(1) : lower;
@@ -87,6 +93,17 @@ export function liftX86VectorGeneralEffects(instruction, context = {}, requiredF
 
   const ctx = createX86EffectContext(instruction, context);
   const operands = ctx.operands;
+
+  if (!PROVEN_GENERIC_VECTOR_FAMILIES.has(family)) {
+    return ctx.partial('x86-vector-family-requires-dedicated-operand-semantics', ['memory', 'registers', 'flags', 'other'], {
+      metadata:{
+        family:category,
+        operation:family,
+        exactArchitecturalSummary:false,
+        requiresDedicatedOperandRoles:true,
+      },
+    });
+  }
 
   const inputs = [], registersRead = [], registerTargets = [], memoryReads = [], memoryWrites = [];
   const faults = [];

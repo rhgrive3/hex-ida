@@ -695,8 +695,15 @@ const EXTENDED_SYSTEM_NAMES = new Set([
   'montmul', 'xcryptcbc', 'xcryptcfb', 'xcryptctr', 'xcryptecb', 'xcryptofb', 'xsha1', 'xsha256', 'xstore',
   'prefetch', 'prefetchnta', 'prefetcht0', 'prefetcht1', 'prefetcht2', 'prefetchw', 'prefetchwt1',
 ]);
+const PROVEN_EXTENDED_SYSTEM_FAMILIES = new Set([]);
 
 function liftExtendedSystem(ctx, family) {
+  if (!PROVEN_EXTENDED_SYSTEM_FAMILIES.has(family)) {
+    return ctx.partial('x86-extended-system-family-requires-dedicated-semantics', ['memory', 'registers', 'flags', 'control', 'faults', 'other'], {
+      controlEffect:{ kind:'unknown', reason:'x86-extended-system-control-effect-unproven' },
+      metadata:{ family:'system', operation:family, exactArchitecturalSummary:false, requiresDedicatedOperandRoles:true },
+    });
+  }
   const operands = ctx.operands;
   const inputs = [], registersRead = [], registersWritten = [], memoryReads = [], memoryWrites = [];
   const faults = [];

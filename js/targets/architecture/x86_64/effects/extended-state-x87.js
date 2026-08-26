@@ -56,11 +56,18 @@ const D3NOW_FAMILIES = new Set([
   'pfmax','pfmin','pfmul','pfnacc','pfpnacc','pfrcpit1','pfrcpit2','pfrcp',
   'pfrsqit1','pfrsqrt','pfsubr','pfsub','pi2fd','pi2fw','pmulhrw','pswapd',
 ]);
+const PROVEN_3DNOW_FAMILIES = new Set([]);
+const PROVEN_X87_FAMILIES = new Set([]);
 
 export function lift3DNow(instruction, context = {}) {
   const family = String(instruction?.instructionFamily || '').toLowerCase();
   if (!D3NOW_FAMILIES.has(family)) return null;
   const ctx = createX86EffectContext(instruction, context);
+  if (!PROVEN_3DNOW_FAMILIES.has(family)) {
+    return ctx.partial('x86-3dnow-family-requires-dedicated-semantics', ['memory', 'registers', 'flags', 'other'], {
+      metadata:{ family:'simd', operation:family, exactArchitecturalSummary:false, requiresDedicatedOperandRoles:true },
+    });
+  }
   const operands = ctx.operands;
   const inputs = [], registersRead = [], registersWritten = [], memoryReads = [];
   let faults = [possibleFeatureFault('device-not-available')];
@@ -143,6 +150,11 @@ export function liftX87(instruction, context, family) {
   }
   const base = baseFamily(family);
   const ctx = createX86EffectContext(instruction, context);
+  if (!PROVEN_X87_FAMILIES.has(base)) {
+    return ctx.partial('x86-x87-family-requires-dedicated-semantics', ['memory', 'registers', 'flags', 'faults', 'other'], {
+      metadata:{ family:'fp', operation:family, exactArchitecturalSummary:false, requiresDedicatedOperandRoles:true, x87PhysicalStateModeled:true },
+    });
+  }
   const plan = x87Plan(base, ctx);
   if (!plan) return null;
   const inputs = [], registersRead = [], stateWriteOperands = [], memoryReads = [], memoryWrites = [];

@@ -6,6 +6,8 @@ import {
   trustedCapstoneInstruction, physicalIds,
 } from './extended-state-helpers.js';
 
+const PROVEN_GENERIC_EVEX_FAMILIES = new Set([]);
+
 function classifyEvexCategory(name) {
   const lower = name.toLowerCase();
   if (/^vp(?!er[\w]*p[sd])/.test(lower) || /^valign|^vbroadcasti|^vextracti|^vinserti|^vshufi|^vcompress[bwdq]|^vexpand[bwdq]/.test(lower) || /^k[a-z]/.test(lower)) {
@@ -81,6 +83,11 @@ export function liftEvex(instruction, context, family) {
   }
 
   const ctx = createX86EffectContext(instruction, context);
+  if (!PROVEN_GENERIC_EVEX_FAMILIES.has(family)) {
+    return ctx.partial('x86-evex-family-requires-dedicated-semantics', ['memory', 'registers', 'flags', 'other'], {
+      metadata:{ family:category, operation:family, exactArchitecturalSummary:false, requiresDedicatedOperandRoles:true },
+    });
+  }
   const operands = ctx.operands;
   const hasMemory = operands.some((operand) => operand?.type === 'memory');
   const activeWidth = activeVectorWidth(operands);
@@ -213,4 +220,3 @@ export function liftEvex(instruction, context, family) {
     }
   });
 }
-

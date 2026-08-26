@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { effects, legacy, legacyPrefix, ops, intrinsics } from './helpers.mjs';
+import { effects, reg, mem, legacy, legacyPrefix, ops, intrinsics } from './helpers.mjs';
 
 test('LFENCE/SFENCE/MFENCE remain distinct partial results when generic barrier semantics are insufficient', () => {
   for(const family of ['lfence','sfence','mfence']){
@@ -36,4 +36,18 @@ test('CLI/STI/HLT never become NOPs', () => {
 
 test('synthetic x87 input fails closed unless trusted decoder provenance is present', () => {
   const bundle=effects('fldz',[],{prefixes:legacy(),rawBytes:[0xd9,0xee],instructionId:'p5-3:fldz'}); assert.equal(bundle.completeness,'partial'); assert.match(bundle.unknownEffects.reason,/trusted-decoder-provenance/); assert.equal(bundle.metadata.x87PhysicalStateModeled,true);
+});
+
+test('extended system ownership never invents exact memory, control, or flag roles', () => {
+  const bundles = [
+    effects('movdiri',[mem(32,{access:'write'}),reg('ecx','read')],{instructionId:'p5-3:movdiri-owner'}),
+    effects('xbegin',[],{instructionId:'p5-3:xbegin-owner'}),
+    effects('rdrand',[reg('rax','write')],{instructionId:'p5-3:rdrand-owner'}),
+  ];
+  for (const bundle of bundles) {
+    assert.equal(bundle.completeness,'partial');
+    assert.match(bundle.unknownEffects.reason,/requires-dedicated-semantics/);
+    assert.equal(bundle.metadata.exactArchitecturalSummary,false);
+    assert.equal(bundle.controlEffect.kind,'unknown');
+  }
 });

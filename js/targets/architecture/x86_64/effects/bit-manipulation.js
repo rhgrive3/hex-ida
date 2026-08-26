@@ -10,6 +10,13 @@ const BIT_MANIP_NAMES = new Set([
   'enter', 'leave', 'xlatb', 'xlat',
 ]);
 
+const MEMORY_BIT_STRING_NAMES = new Set(['bt', 'btc', 'btr', 'bts']);
+const PROVEN_GENERIC_BIT_MANIPULATION_FAMILIES = new Set([]);
+
+function hasLock(instruction) {
+  return [...(instruction?.detail?.prefixes?.legacy || [])].includes(0xf0);
+}
+
 export function liftX86BitManipulationEffects(instruction, context = {}) {
   const family = String(instruction?.instructionFamily || '').toLowerCase();
   if (!BIT_MANIP_NAMES.has(family)) return null;
@@ -18,6 +25,42 @@ export function liftX86BitManipulationEffects(instruction, context = {}) {
   const hasMemory = operands.some((op) => op?.type === 'memory');
   const faults = [];
   const inputs = [], registersRead = [], registersWritten = [], memoryReads = [], memoryWrites = [];
+
+  // LOCK changes these operations into atomic read-modify-write transactions.
+  // This generic intrinsic lane does not yet carry that ordering contract, so
+  // consuming the instruction here would silently discard architectural
+  // atomicity.  Keep ownership, but fail closed until the atomic lane models it.
+  if (hasLock(ctx.instruction)) {
+    return ctx.partial(
+      hasMemory ? 'x86-lock-prefixed-family-not-modelled-in-bit-manipulation' : 'x86-lock-prefix-without-memory-operand',
+      ['memory', 'registers', 'flags', 'other'],
+      { metadata:{ family:'bit-manipulation', operation:family, lockPrefix:true, lockIgnored:false } },
+    );
+  }
+
+  // Intel memory BT/BTC/BTR/BTS operands are bit strings: an out-of-element
+  // bit index selects a different byte/word/dword/qword beyond the encoded
+  // effective address.  A plain memory access at the encoded address is not an
+  // exact summary, even without LOCK.  Preserve conservative ownership until
+  // that index-derived address adjustment is represented explicitly.
+  if (MEMORY_BIT_STRING_NAMES.has(family) && operands[0]?.type === 'memory') {
+    const width = Number(operands[0].widthBits || 32);
+    return ctx.partial('x86-memory-bit-string-address-adjustment-unmodelled', ['memory', 'registers', 'flags'], {
+      possibleFaults:x86MemoryFaults(family === 'bt' ? 'read' : 'read-write', width),
+      metadata:{ family:'bit-manipulation', operation:family, bitStringAddressing:true },
+    });
+  }
+
+  if (!PROVEN_GENERIC_BIT_MANIPULATION_FAMILIES.has(family)) {
+    return ctx.partial('x86-bit-manipulation-family-requires-dedicated-semantics', ['memory', 'registers', 'flags', 'other'], {
+      metadata:{
+        family:'bit-manipulation',
+        operation:family,
+        exactArchitecturalSummary:false,
+        requiresDedicatedOperandRoles:true,
+      },
+    });
+  }
 
   if (family === 'leave') {
     const rbp = x86RegisterOperand('rbp');
