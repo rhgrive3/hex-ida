@@ -53,6 +53,11 @@ function invalidNonEvexExtendedVector(instruction) {
 }
 
 function terminalize(instruction, ownerId, result, context) {
+  // Decoder acceptance is not architectural validity. Family lifters mark
+  // byte/family combinations that fail their architectural encoding policy
+  // with encodingValidated:false; those records must remain fail-closed even
+  // when they came from the trusted Capstone decoder.
+  if (result?.completeness === 'partial' && result?.metadata?.encodingValidated === false) return result;
   return closeTrustedX86Partial(instruction, ownerId, result, context);
 }
 
