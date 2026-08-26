@@ -26,6 +26,7 @@ const ARM64_ADD_SUB_FAMILY_MNEMONICS = Object.freeze(new Set([
   'adc','adcs','sbc','sbcs','neg','negs','ngc','ngcs',
 ]));
 const ARM64_LOGICAL_IMMEDIATE_MNEMONICS = Object.freeze(new Set(['and','ands','orr','eor','tst']));
+const ARM64_LITERAL_MEMORY_MNEMONICS = Object.freeze(new Set(['ldr','ldrsw','prfm']));
 
 function validImm12WithOptionalLsl12(op) {
   if (op?.k !== 'imm') return true;
@@ -72,6 +73,11 @@ function logicalImmediateEncodable(op, widthBits) {
   const immediate = immediateOf(op);
   if (immediate == null) return false;
   return LOGICAL_IMMEDIATE_MASKS[widthBits].has(BigInt.asUintN(widthBits, immediate).toString());
+}
+
+function asBigIntOrNull(value) {
+  try { return value == null ? null : BigInt(value); }
+  catch { return null; }
 }
 
 function addSubImmediateEncodingFailure(instruction) {
@@ -123,6 +129,24 @@ function logicalEncodingFailure(instruction) {
   return logicalImmediateEncodable(rhs, widthBits) ? null : `arm64-${mnemonic}-logical-immediate-unencodable`;
 }
 
+function literalMemoryEncodingFailure(instruction) {
+  const mnemonic = instructionMnemonic(instruction);
+  if (!ARM64_LITERAL_MEMORY_MNEMONICS.has(mnemonic)) return null;
+  const ops = Array.isArray(instruction?.ops) ? instruction.ops : [];
+  if (ops.some((op) => op?.k === 'mem' || op?.kind === 'memory')) return null;
+  const immediate = ops.find((op) => op?.k === 'imm' || op?.kind === 'immediate');
+  const target = asBigIntOrNull(instruction?.pcRelTarget ?? instruction?.literalTarget ?? immediateOf(immediate));
+  if (target == null) return null; // The memory family already fails closed unresolved literal targets.
+  const address = asBigIntOrNull(instruction?.address);
+  if (address == null) return `arm64-${mnemonic}-literal-address-unavailable-for-encoding`;
+  if ((target & 3n) !== 0n) return `arm64-${mnemonic}-literal-target-misaligned-encoding`;
+  const displacement = target - address;
+  if (displacement < -(1n << 20n) || displacement > (1n << 20n) - 4n) {
+    return `arm64-${mnemonic}-literal-target-out-of-range-encoding`;
+  }
+  return null;
+}
+
 function unaryEncodingFailure(instruction) {
   const mnemonic = instructionMnemonic(instruction);
   if (mnemonic !== 'rev32') return null;
@@ -136,6 +160,7 @@ function structuredEncodingFailure(instruction) {
   return addSubImmediateEncodingFailure(instruction)
     || flagEncodingFailure(instruction)
     || logicalEncodingFailure(instruction)
+    || literalMemoryEncodingFailure(instruction)
     || unaryEncodingFailure(instruction);
 }
 
@@ -170,7 +195,7 @@ export function liftArm64MachineEffects(decoded, context = {}) {
   const familyContext = normalizedContext(context);
   const encodingFailure = structuredEncodingFailure(instruction);
   if (encodingFailure) {
-    const partial = createArm64EffectContext(instruction, familyContext).partial(encodingFailure, ['registers','flags','other']);
+    const partial = createArm64EffectContext(instruction, familyContext).partial(encodingFailure, ['registers','flags','memory','other']);
     return decorateArm64BtiGuardedPageEffects(instruction, partial, familyContext);
   }
   for (const family of ARM64_EFFECT_FAMILIES) {
