@@ -54,12 +54,22 @@ function invalidNonEvexExtendedVector(instruction) {
   return registers.some((register) => register?.evexOnly === true || /^(?:zmm(?:[0-9]|[12][0-9]|3[01])|(?:xmm|ymm)(?:1[6-9]|2[0-9]|3[01]))$/.test(String(register?.id || '').toLowerCase()));
 }
 
+const STRUCTURED_FAIL_CLOSED_REASON = /(?:structured-implicit-accumulator-missing|prefix-state-unmodelled|f2-repeat-prefix|implicit-state-unmodelled|address-size-unmodelled|operand-shape-unmodelled)/;
+
 function terminalize(instruction, ownerId, result, context) {
   // Decoder acceptance is not architectural validity. Family lifters mark
   // byte/family combinations that fail their architectural encoding policy
   // with encodingValidated:false; those records must remain fail-closed even
-  // when they came from the trusted Capstone decoder.
-  if (result?.completeness === 'partial' && result?.metadata?.encodingValidated === false) return result;
+  // when they came from the trusted Capstone decoder. Likewise, a trusted
+  // decoder provenance token cannot repair deliberately inconsistent structured
+  // evidence (missing implicit state, malformed prefix/operand shape, etc.).
+  const reason = String(result?.unknownEffects?.reason || '');
+  if (result?.completeness === 'partial' && (
+    result?.metadata?.encodingValidated === false
+    || result?.metadata?.exactWideAtomicClaim === false
+    || result?.metadata?.structuredImplicitAccumulatorMissing === true
+    || STRUCTURED_FAIL_CLOSED_REASON.test(reason)
+  )) return result;
   return closeTrustedX86Partial(instruction, ownerId, result, context);
 }
 
