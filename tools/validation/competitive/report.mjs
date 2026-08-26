@@ -7,6 +7,18 @@ const REPORT_DIR = path.join(ROOT, 'reports/competitive');
 const SCORECARD_PATH = path.join(REPORT_DIR, 'scorecard.json');
 const MD_REPORT_PATH = path.join(REPORT_DIR, 'scorecard.md');
 
+function atomicWriteText(filePath, text) {
+  const parent = path.dirname(filePath);
+  fs.mkdirSync(parent, { recursive: true });
+  const temporary = path.join(parent, `.${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`);
+  try {
+    fs.writeFileSync(temporary, text, { flag: 'wx' });
+    fs.renameSync(temporary, filePath);
+  } finally {
+    if (fs.existsSync(temporary)) fs.unlinkSync(temporary);
+  }
+}
+
 export function formatCompetitiveMarkdownReport(scorecard) {
   const lines = [];
   lines.push('# Hex Competitive Attack Program — Official Scorecard');
@@ -48,8 +60,7 @@ export function generateCompetitiveMarkdownReport({ scorecard = null } = {}) {
   }
 
   const markdown = formatCompetitiveMarkdownReport(card);
-  fs.mkdirSync(REPORT_DIR, { recursive: true });
-  fs.writeFileSync(MD_REPORT_PATH, `${markdown}\n`);
+  atomicWriteText(MD_REPORT_PATH, `${markdown}\n`);
   return markdown;
 }
 
