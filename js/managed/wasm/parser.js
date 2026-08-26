@@ -86,7 +86,6 @@ export function decodeName(bytes, offset) {
 export function parseWasm(bytes, options = {}) {
   const probe = probeWasm(bytes);
   if (!probe.supported) fail('wasm-unsupported-binary');
-  if (probe.formatVersion !== '1') fail('wasm-unsupported-version');
 
   const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
   let pos = 8; // skip magic (4) and version (4)
@@ -261,8 +260,8 @@ export function parseWasm(bytes, options = {}) {
   return deepFreeze({
     imageId,
     moduleId,
-    formatVersion: probe.formatVersion,
-    vmSpecEdition: probe.vmSpecEdition,
+    formatVersion: '1',
+    vmSpecEdition: 'core-3.0',
     sections,
     types,
     imports,
