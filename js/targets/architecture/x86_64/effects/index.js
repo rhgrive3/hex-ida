@@ -10,6 +10,7 @@ import { liftX86SimdEffects } from './simd.js';
 import { liftX86SimdAndNotEffects } from './simd-and-not.js';
 import { liftX86SystemEffects } from './system.js';
 import { liftX86SystemRegisterMoveEffects } from './system-register-move.js';
+import { dispatchX86TerminalResidualEffects } from './terminal-residual.js';
 import {
   dispatchX86ExtendedStateEffects,
   liftX86ExtendedStateEffects,
@@ -72,6 +73,20 @@ export function dispatchX86MachineEffects(decoded, context = {}) {
   const systemRegisterMove = liftX86SystemRegisterMoveEffects(instruction, context);
   if (systemRegisterMove != null) {
     return Object.freeze({ ownerId:'system', result:terminalize(instruction, 'system', systemRegisterMove, context) });
+  }
+
+  // The terminal long-64 residual lane is deliberately provenance- and
+  // raw-encoding-gated. It owns only families for which the frozen decoder
+  // denominator exposed a concrete architectural surface that is not covered
+  // by the older broad family lifters. VEX results still pass through the
+  // canonical MAXVL alias integrator before they become externally visible.
+  const terminalResidual = dispatchX86TerminalResidualEffects(instruction, context);
+  if (terminalResidual != null && terminalResidual.result != null) {
+    const integrated = integrateX86ExtendedStateAliases(instruction, terminalResidual.result, context);
+    return Object.freeze({
+      ownerId:terminalResidual.ownerId,
+      result:terminalize(instruction, terminalResidual.ownerId, integrated, context),
+    });
   }
 
   const extended = dispatchX86ExtendedStateEffects(instruction, context);
