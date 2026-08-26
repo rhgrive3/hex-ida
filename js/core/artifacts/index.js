@@ -47,5 +47,6 @@ export async function readArtifactPage(source, {
   if (signal?.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError');
   const bytes = await source.readExactly(normalizedOffset, n, { signal });
   budget?.checkCancelled?.();
+  if (signal?.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError');
   return Object.freeze({ offset:normalizedOffset, length:bytes.byteLength, bytes });
 }
