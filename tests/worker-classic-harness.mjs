@@ -193,6 +193,22 @@ function fileFromWords(name, words) {
     'loop must preserve an address base that no back-edge path redefines',
   );
 
+  const rematerializedLoop = new NodeBackend();
+  const rematerializedInfo = await rematerializedLoop.open(fileFromWords('loop-rematerialized-base.bin', [
+    0x90000000, // adrp x0, page(0) — preheader state
+    0x91008000, // add x0, x0, #0x20
+    0x91004001, // loop: add x1, x0, #0x10
+    0x90000000, // adrp x0, page(0) — same value on the back-edge path
+    0x91008000, // add x0, x0, #0x20
+    0x54ffffa1, // b.ne loop (pc - 12)
+  ]));
+  const rematerializedScan = await rematerializedLoop.scanProgram(rematerializedInfo.raw.id);
+  assert.ok(
+    Array.from({ length: rematerializedScan.refCount }, (_, i) => ({ from:rematerializedScan.refFrom[i], to:rematerializedScan.refTo[i] }))
+      .some((x) => x.from === 8n && x.to === 0x30n),
+    'same-value ADRP rematerialization must preserve the loop-entry reference',
+  );
+
   const loop = new NodeBackend();
   const loopInfo = await loop.open(fileFromWords('loop-clobbered-base.bin', [
     0x90000000, // adrp x0, page(0) — preheader state

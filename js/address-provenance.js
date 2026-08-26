@@ -32,6 +32,13 @@
     const pageOf = new Array(32).fill(null);
     const pageAt = new Int32Array(32);
     pageAt.fill(-1);
+    // A loop-entry kill invalidates the merge state for address construction,
+    // but a direct memory access at that first linear visit still observes the
+    // incoming value on the preheader path.  Retain that value as an explicit,
+    // short-lived fallback instead of silently dropping the memory reference.
+    const entryFallbackOf = new Array(32).fill(null);
+    const entryFallbackAt = new Int32Array(32);
+    entryFallbackAt.fill(-1);
     // enter() advances monotonically, so normalize external boundaries once.
     const functionStarts = Array.from(opts.functionStarts || [], asBigInt)
       .filter((start) => start != null)
@@ -76,14 +83,24 @@
     function clear() {
       pageOf.fill(null);
       pageAt.fill(-1);
+      entryFallbackOf.fill(null);
+      entryFallbackAt.fill(-1);
       generation++;
     }
 
-    function kill(reg) {
+    function invalidate(reg, preserveEntryFallback = false) {
       const r = Number(reg);
       if (!Number.isInteger(r) || r < 0 || r >= 32) return;
       pageOf[r] = null;
       pageAt[r] = -1;
+      if (!preserveEntryFallback) {
+        entryFallbackOf[r] = null;
+        entryFallbackAt[r] = -1;
+      }
+    }
+
+    function kill(reg) {
+      invalidate(reg);
     }
 
     function note(reg, value, index) {
@@ -91,16 +108,21 @@
       if (!Number.isInteger(r) || r < 0 || r >= 32 || !Number.isInteger(at)) return;
       const v = asBigInt(value);
       if (v == null) { kill(r); return; }
+      entryFallbackOf[r] = null;
+      entryFallbackAt[r] = -1;
       pageOf[r] = v;
       pageAt[r] = at;
     }
 
-    function base(reg, index) {
+    function base(reg, index, options) {
       const r = Number(reg), at = Number(index);
       if (!Number.isInteger(r) || r < 0 || r >= 32 || !Number.isInteger(at)) return null;
       const born = pageAt[r];
-      if (born < 0 || at < born || at - born > window) return null;
-      return pageOf[r];
+      if (born >= 0 && at >= born && at - born <= window) return pageOf[r];
+      if (!options?.allowEntryFallback) return null;
+      const fallbackBorn = entryFallbackAt[r];
+      if (fallbackBorn < 0 || at < fallbackBorn || at - fallbackBorn > window) return null;
+      return entryFallbackOf[r];
     }
 
     function markForwardEntry(target, pc) {
@@ -126,7 +148,14 @@
       }
       const kills = entryKills.get(pc);
       if (kills) {
-        for (const reg of kills) kill(reg);
+        for (const reg of kills) {
+          const r = Number(reg);
+          if (Number.isInteger(r) && r >= 0 && r < 32 && pageOf[r] != null) {
+            entryFallbackOf[r] = pageOf[r];
+            entryFallbackAt[r] = pageAt[r];
+          }
+          invalidate(r, true);
+        }
         entryKills.delete(pc);
         generation++;
         return true;

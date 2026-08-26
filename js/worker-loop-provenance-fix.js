@@ -12,45 +12,57 @@
  * unchanged address bases are deliberately preserved.
  */
 
-function __noteLoopProvenanceWrites(word, kind, pc, lastWrite) {
-  const mark = (reg) => {
+function __noteLoopProvenanceState(word, kind, pc, lastWrite, values = null) {
+  const write = (reg, value = null, record = true) => {
     const r = Number(reg);
-    if (Number.isInteger(r) && r >= 0 && r < 32) lastWrite[r] = pc;
+    if (!Number.isInteger(r) || r < 0 || r >= 32) return;
+    if (values) values[r] = value == null ? null : value;
+    if (record) lastWrite[r] = pc;
   };
+  const unknown = (reg, record = true) => write(reg, null, record);
 
   const K = Words.KIND;
   if (kind === K.CALL || kind === K.INDCALL) {
-    for (let reg = 0; reg <= 18; reg++) mark(reg);
-    mark(30);
+    for (let reg = 0; reg <= 18; reg++) unknown(reg);
+    unknown(30);
     return;
   }
 
   const rel = Words.pcRelTarget(word, pc);
-  if (rel) { mark(rel.reg); return; }
+  if (rel) { write(rel.reg, rel.value); return; }
 
   const pair = Words.pairedOffset(word);
   if (pair) {
-    if (!pair.load && !pair.store) mark(pair.rd);
-    else if (pair.load && pair.gpDest !== false) mark(pair.rd);
+    // A self-relative ADD is an address induction step.  The normal scanner
+    // can carry that provenance through the instruction, so it is not a
+    // clobber that should erase the first linear visit at a loop header.
+    if (!pair.load && !pair.store) {
+      const value = values && values[pair.rn] != null ? values[pair.rn] + pair.imm : null;
+      write(pair.rd, value, pair.rd !== pair.rn);
+    } else if (pair.load && pair.gpDest !== false) unknown(pair.rd);
     return;
   }
 
-  if (kind === K.LITERAL) { mark(word & 0x1f); return; }
+  if (kind === K.LITERAL) { unknown(word & 0x1f); return; }
 
   const mem = Words.memoryAccess(word);
   if (mem) {
     if (mem.load && !mem.vector) {
-      mark(mem.reg);
-      if (mem.pair && mem.reg2 != null) mark(mem.reg2);
+      unknown(mem.reg);
+      if (mem.pair && mem.reg2 != null) unknown(mem.reg2);
     }
-    if (mem.statusReg != null) mark(mem.statusReg);
-    if (mem.mode === 'pre' || mem.mode === 'post') mark(mem.base);
+    if (mem.statusReg != null) unknown(mem.statusReg);
+    // Vector writeback advances an address iterator while preserving the
+    // address family used by the loop.  Leave it to the normal scanner's
+    // existing first-pass handling instead of treating the base as an unknown
+    // overwrite at the loop entry.
+    if ((mem.mode === 'pre' || mem.mode === 'post') && !mem.vector) unknown(mem.base);
     return;
   }
 
   if (kind === K.FARITH || kind === K.FMUL || kind === K.SIMD ||
       (kind === K.CSEL && Words.isFpCondSelect?.(word))) return;
-  if (WRITES_LOW_REG[kind]) mark(word & 0x1f);
+  if (WRITES_LOW_REG[kind]) unknown(word & 0x1f);
 }
 
 async function __backwardLoopEntryKills(region, requestId) {
@@ -58,8 +70,24 @@ async function __backwardLoopEntryKills(region, requestId) {
   const total = Number(region?.size ?? 0n);
   if (!Number.isSafeInteger(total) || total <= 0) return { entries, cancelled:false };
 
-  const lastWrite = new Array(32).fill(null);
+  // A backward target in a later function is a call/tail/data artifact, not a
+  // loop merge.  Keep the prepass within the function-start boundaries already
+  // used by the normal provenance scanner.  Raw test regions have no metadata,
+  // in which case the whole region remains one analysis unit.
+  const functionStarts = Array.from(functionStartsForRegion(region) || [], (value) => {
+    try { return typeof value === 'bigint' ? value : BigInt(value); } catch { return null; }
+  }).filter((value) => value != null && value >= region.vmAddr && value < region.vmAddr + region.size)
+    .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  const edgeTargets = new Map();
+  const targetSet = new Set();
+  let nextFunctionStart = 0;
+  let currentFunctionStart = null;
   let pos = 0;
+
+  // Pass one only discovers conditional back edges.  Keeping this separate
+  // lets the second pass remember the exact abstract address value at each
+  // target and distinguish a same-value re-materialization from a real
+  // clobber.
   while (pos < total) {
     if (cancelled(requestId)) return { entries, cancelled:true };
     const want = Math.min(1024 * 1024, total - pos);
@@ -70,25 +98,82 @@ async function __backwardLoopEntryKills(region, requestId) {
     for (let i = 0; i < count; i++) {
       const word = dv.getUint32(i * 4, true);
       const pc = region.vmAddr + BigInt(pos + i * 4);
-      const kind = Words.classifyWord(word);
-      __noteLoopProvenanceWrites(word, kind, pc, lastWrite);
-
-      let target = null;
-      if (kind === Words.KIND.CALL || kind === Words.KIND.BRANCH) {
-        target = Words.branchImm26(word, pc);
-      } else if (kind === Words.KIND.CONDBR) {
-        target = Words.condBranchTarget(word, pc);
+      while (nextFunctionStart < functionStarts.length && functionStarts[nextFunctionStart] <= pc) {
+        currentFunctionStart = functionStarts[nextFunctionStart++];
       }
+      const kind = Words.classifyWord(word);
+      if (kind !== Words.KIND.CONDBR) continue;
+      const target = Words.condBranchTarget(word, pc);
       if (target == null || target > pc) continue;
       if (target < region.vmAddr || target >= region.vmAddr + region.size) continue;
+      if (currentFunctionStart != null && target < currentFunctionStart) continue;
+      edgeTargets.set(pc, target);
+      targetSet.add(target);
+    }
+    pos += count * 4;
+    if (count * 4 < want) break;
+    await yieldToQueue();
+  }
 
-      let kills = entries.get(target);
-      if (!kills) { kills = new Set(); entries.set(target, kills); }
+  if (!targetSet.size) return { entries, cancelled:false };
+
+  const values = new Array(32).fill(null);
+  const lastWrite = new Array(32).fill(null);
+  const targetValues = new Map();
+  nextFunctionStart = 0;
+  currentFunctionStart = null;
+  pos = 0;
+  while (pos < total) {
+    if (cancelled(requestId)) return { entries, cancelled:true };
+    const want = Math.min(1024 * 1024, total - pos);
+    const blk = await readRange(region.fileOffset + BigInt(pos), want);
+    if (blk.length < 4) break;
+    const count = Math.floor(blk.length / 4);
+    const dv = new DataView(blk.buffer, blk.byteOffset, count * 4);
+    for (let i = 0; i < count; i++) {
+      const word = dv.getUint32(i * 4, true);
+      const pc = region.vmAddr + BigInt(pos + i * 4);
+      while (nextFunctionStart < functionStarts.length && functionStarts[nextFunctionStart] <= pc) {
+        currentFunctionStart = functionStarts[nextFunctionStart++];
+        values.fill(null);
+        lastWrite.fill(null);
+      }
+      if (targetSet.has(pc)) targetValues.set(pc, values.slice());
+
+      const kind = Words.classifyWord(word);
+      __noteLoopProvenanceState(word, kind, pc, lastWrite, values);
+
+      // Instructions after a return/trap or an unconditional branch are not
+      // reachable on the linear path that started at a possible loop header.
+      // Do not let writes in those detached blocks contaminate a later
+      // conditional edge's kill set.
+      if (kind === Words.KIND.RET || kind === Words.KIND.TRAP || kind === Words.KIND.BRANCH) {
+        values.fill(null);
+        lastWrite.fill(null);
+        continue;
+      }
+
+      const target = edgeTargets.get(pc);
+      if (target == null) continue;
+      const before = targetValues.get(target);
+      let kills = null;
       for (let reg = 0; reg < lastWrite.length; reg++) {
         const at = lastWrite[reg];
-        if (at != null && at >= target) kills.add(reg);
+        if (at == null || at < target) continue;
+        // An unknown pre-entry value cannot carry a stale exact reference.  A
+        // known value that is re-materialized identically is also safe; only a
+        // changed or newly-unknown value needs an entry kill.
+        const prior = before ? before[reg] : null;
+        if (prior == null || values[reg] !== prior) {
+          if (!kills) kills = new Set();
+          kills.add(reg);
+        }
       }
-      if (!kills.size) entries.delete(target);
+      if (kills?.size) {
+        const prior = entries.get(target);
+        if (prior) for (const reg of prior) kills.add(reg);
+        entries.set(target, kills);
+      }
     }
     pos += count * 4;
     if (count * 4 < want) break;
