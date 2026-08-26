@@ -298,8 +298,33 @@ function unaryEncodingFailure(instruction) {
   return null;
 }
 
+const SIGNED_IMM21_MIN = -(1n << 20n);
+const SIGNED_IMM21_MAX = (1n << 20n) - 1n;
+const A64_PAGE_BYTES = 4096n;
+
+function addressImmediateEncodingFailure(instruction) {
+  const mnemonic = instructionMnemonic(instruction);
+  if (mnemonic !== 'adr' && mnemonic !== 'adrp') return null;
+  const address = asBigIntOrNull(instruction?.address);
+  const target = asBigIntOrNull(instruction?.pcRelTarget);
+  if (address == null || target == null) return `arm64-${mnemonic}-encoding-address-unavailable`;
+  if (mnemonic === 'adr') {
+    const delta = BigInt.asIntN(64, target - address);
+    return delta < SIGNED_IMM21_MIN || delta > SIGNED_IMM21_MAX
+      ? 'arm64-adr-target-out-of-encoding-range'
+      : null;
+  }
+  if ((target & (A64_PAGE_BYTES - 1n)) !== 0n) return 'arm64-adrp-target-not-page-aligned';
+  const pageBase = address & ~(A64_PAGE_BYTES - 1n);
+  const pageDelta = BigInt.asIntN(64, target - pageBase) / A64_PAGE_BYTES;
+  return pageDelta < SIGNED_IMM21_MIN || pageDelta > SIGNED_IMM21_MAX
+    ? 'arm64-adrp-target-out-of-encoding-range'
+    : null;
+}
+
 function structuredEncodingFailure(instruction) {
-  return addSubImmediateEncodingFailure(instruction)
+  return addressImmediateEncodingFailure(instruction)
+    || addSubImmediateEncodingFailure(instruction)
     || flagEncodingFailure(instruction)
     || logicalEncodingFailure(instruction)
     || multiplyDivideEncodingFailure(instruction)
