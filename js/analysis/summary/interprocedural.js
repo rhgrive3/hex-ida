@@ -32,7 +32,7 @@ import {
 } from './contract.js';
 
 export const INTERPROCEDURAL_ANALYZER_ID = 'phase7.summary.interprocedural';
-export const INTERPROCEDURAL_ANALYZER_VERSION = '1.0.0';
+export const INTERPROCEDURAL_ANALYZER_VERSION = '1.0.1';
 
 export const INTERPROCEDURAL_DEFAULT_BUDGET = Object.freeze({
   maxIterationsPerComponent: 16,
@@ -295,21 +295,27 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
   const mayThrow = [local.mayThrow];
   const escapes = [...local.escapes];
 
+  const accumulateCallee = (callee) => {
+    reads.push(callee.memoryReadRegions);
+    writes.push(callee.memoryWriteRegions);
+    escapes.push(...callee.escapes);
+    // Keep provenance-bearing unresolved effects and control-flow knowledge in
+    // lockstep with the memory dimensions for every resolved call edge.
+    unknowns.push(...callee.unknownCallEffects);
+    noreturn.push(callee.noreturn);
+    mayThrow.push(callee.mayThrow);
+    statuses.push(callee.status);
+  };
+
   for (const call of local.directCalls) {
     for (const target of call.targetEntityIds) {
       const callee = solved.get(target);
       if (callee) {
-        reads.push(callee.memoryReadRegions);
-        writes.push(callee.memoryWriteRegions);
-        escapes.push(...callee.escapes);
         // Propagated unknowns keep the *originating* call site rather than
         // accumulating a path prefix. A growing identifier would make the
         // effect lattice infinite and the recursive fixed point would never
         // converge — the exact summary-growth failure §9.4 warns about.
-        unknowns.push(...callee.unknownCallEffects);
-        noreturn.push(callee.noreturn);
-        mayThrow.push(callee.mayThrow);
-        statuses.push(callee.status);
+        accumulateCallee(callee);
         continue;
       }
       if (component.includes(target)) {
@@ -343,10 +349,7 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
     for (const candidate of set.candidateEntityIds) {
       const callee = solved.get(candidate);
       if (!callee) continue;
-      reads.push(callee.memoryReadRegions);
-      writes.push(callee.memoryWriteRegions);
-      escapes.push(...callee.escapes);
-      statuses.push(callee.status);
+      accumulateCallee(callee);
     }
     if (!set.exhaustive) {
       writes.push([broadEffect('unknown-call-fallback')]);
