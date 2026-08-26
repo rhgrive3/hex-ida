@@ -125,6 +125,14 @@
       return entryFallbackOf[r];
     }
 
+    function scanIndexAt(pc) {
+      if (rangeStart == null) return null;
+      const delta = pc - rangeStart;
+      if (delta < 0n || delta % 4n !== 0n) return null;
+      const index = delta / 4n;
+      return index <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(index) : null;
+    }
+
     function markForwardEntry(target, pc) {
       if (target == null || target <= pc + 4n || !inRange(target)) return;
       branchEntries.add(target);
@@ -148,8 +156,15 @@
       }
       const kills = entryKills.get(pc);
       if (kills) {
+        const scanIndex = scanIndexAt(pc);
         for (const reg of kills) {
           const r = Number(reg);
+          // A complete exact address chain immediately before the target is
+          // part of the first linear visit to that instruction. Preserve it
+          // even when a later loop-carried path redefines the same register;
+          // the ordinary #1900 case, where the base is older than the target,
+          // remains fail-closed.
+          if (scanIndex != null && pageOf[r] != null && pageAt[r] === scanIndex - 1) continue;
           if (Number.isInteger(r) && r >= 0 && r < 32 && pageOf[r] != null) {
             entryFallbackOf[r] = pageOf[r];
             entryFallbackAt[r] = pageAt[r];

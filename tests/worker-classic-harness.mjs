@@ -209,6 +209,21 @@ function fileFromWords(name, words) {
     'same-value ADRP rematerialization must preserve the loop-entry reference',
   );
 
+  const reestablishedLoop = new NodeBackend();
+  const reestablishedInfo = await reestablishedLoop.open(fileFromWords('loop-reestablished-base.bin', [
+    0x90000000, // adrp x0, page(0) — preheader state
+    0x91008000, // add x0, x0, #0x20 — exact base immediately before target
+    0x91004001, // loop: add x1, x0, #0x10
+    0xaa0203e0, // mov x0, x2 — the back-edge path clobbers x0
+    0x54ffffc1, // b.ne loop (pc - 8)
+  ]));
+  const reestablishedScan = await reestablishedLoop.scanProgram(reestablishedInfo.raw.id);
+  assert.ok(
+    Array.from({ length: reestablishedScan.refCount }, (_, i) => ({ from:reestablishedScan.refFrom[i], to:reestablishedScan.refTo[i] }))
+      .some((x) => x.from === 8n && x.to === 0x30n),
+    'a complete exact chain immediately before a loop target must keep its first-visit reference',
+  );
+
   const loop = new NodeBackend();
   const loopInfo = await loop.open(fileFromWords('loop-clobbered-base.bin', [
     0x90000000, // adrp x0, page(0) — preheader state
