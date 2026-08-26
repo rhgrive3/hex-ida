@@ -67,6 +67,7 @@ function provenanceLedger({ ledger, measuredObservations, corpus }) {
     corpusId:corpus.corpusId,
     corpusVersion:corpus.corpusVersion,
     corpusDigest:corpus.corpusDigest,
+    toolchain:corpus.toolchain,
     baselineObservationsDigest:ledger.observationsDigest,
     observations:provenanceObservations,
     observationsDigest:stableDigest(provenanceObservations),

@@ -79,6 +79,7 @@ export function validateFrozenProvenance(provenance, baseline = loadFrozenBaseli
   if (provenance.corpusId !== baseline.corpusId) errors.push('provenance sidecar corpus id mismatch');
   if (provenance.corpusVersion !== baseline.corpusVersion) errors.push('provenance sidecar corpus version mismatch');
   if (provenance.corpusDigest !== baseline.corpusDigest) errors.push('provenance sidecar corpus digest mismatch');
+  if (stableDigest(provenance.toolchain) !== stableDigest(baseline.toolchain)) errors.push('provenance sidecar toolchain mismatch');
   if (provenance.baselineObservationsDigest !== baseline.observationsDigest) errors.push('provenance sidecar observation digest mismatch');
   if (!Array.isArray(provenance.observations)) errors.push('provenance sidecar observations must be an array');
   else {

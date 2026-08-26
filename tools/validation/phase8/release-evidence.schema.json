@@ -24,7 +24,7 @@
     },
     "corpus": {
       "type": "object",
-      "required": ["corpusId", "corpusVersion", "corpusDigest", "toolchain", "frozenBaselineDigest", "baselineCommit"]
+      "required": ["corpusId", "corpusVersion", "corpusDigest", "toolchain", "frozenBaselineDigest", "frozenProvenanceDigest", "baselineCommit", "provenanceBaseCommit"]
     },
     "registry": {
       "type": "object",

@@ -48,9 +48,10 @@ test('the frozen provenance sidecar is self-consistent and immutable', () => {
   assert.equal(Object.isFrozen(frozen.observations[0]), true);
   assert.equal(Object.isFrozen(frozen.observations[0].sourceAddresses), true);
   assert.equal(frozen.observationsDigest, stableDigest(frozen.observations));
+  assert.equal(stableDigest(frozen.toolchain), stableDigest(baseline.toolchain));
 });
 
-test('the sentinel provenance shape retains 44 source addresses and 166 IR references', () => {
+test('provenance extraction preserves coalesced 44-address / 166-IR identity sets', () => {
   const sourceMap = Array.from({ length:44 }, (_unused, index) => ({
     source:{ addresses:[BigInt(0x1000 + index * 4)], ir:[] },
   }));
