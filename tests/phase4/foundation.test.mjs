@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict';
 import {
+  ArtifactCorruptionError,
   ArtifactHotCache,
   ArtifactStore,
   MemoryArtifactBackend,
   createArtifactDescriptor,
+  decodeArtifactPayload,
+  encodeArtifactPayload,
   readArtifactPage,
 } from '../../js/core/artifacts/index.js';
 import { ResourceBudget } from '../../js/core/budgets/index.js';
@@ -58,6 +61,19 @@ const nonSemantic2 = createArtifactDescriptor({
   relevance:{ architectureSemantic:false, abiSemantic:false, semanticSchema:false }, config:{ offset:'0', length:4 },
 });
 assert.equal(nonSemantic1.artifactId, nonSemantic2.artifactId);
+
+// Artifact payload decoding must reject malformed UTF-8 instead of replacing it with U+FFFD.
+assert.deepEqual(decodeArtifactPayload(encodeArtifactPayload({ value:'ok' })), { value:'ok' });
+const malformedUtf8 = new Uint8Array([
+  ...new TextEncoder().encode('{"value":"'),
+  0xff,
+  ...new TextEncoder().encode('"}'),
+]);
+assert.throws(
+  () => decodeArtifactPayload(malformedUtf8),
+  (error) => error instanceof ArtifactCorruptionError && error.code === 'artifact-payload-malformed',
+  'invalid UTF-8 inside otherwise valid JSON must fail closed as artifact-payload-malformed',
+);
 
 // Hot cache is bounded and persistent/backend correctness is independent of eviction.
 const entries = new Map();
