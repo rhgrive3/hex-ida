@@ -29,7 +29,7 @@ const EXTRA_API_TABLE = [
   // C string/search/conversion APIs missed by the existing narrower table.
   { id:'libc_string', re:/^_?(?:strspn|strcspn|strpbrk|strcoll|strnstr|strcasestr|memmem|atof|atoll|fnmatch)$/, cat:'string', args:null, ret:null, effect:'read' },
 
-  // strndup allocates a new string and returns ownership of that allocation.
+  // strndup allocates a new string and returns the allocated pointer to its caller.
   { id:'libc_strndup', re:/^_?strndup$/, cat:'string', args:['str','maxlen'], ret:'heap', effect:'alloc' },
 
   // Fortified strcat still mutates its destination and returns that pointer.
