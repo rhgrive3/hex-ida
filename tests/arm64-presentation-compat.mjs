@@ -141,6 +141,7 @@ for (const invalid of ["v0.b[16]", "v0.h[8]", "v0.s[4]", "v0.d[2]", "v32.b[0]"])
 console.log("  ok 7 SIMD/FP register and vector-lane bounds (#2068 #2070)");
 
 // 8. analyzeFunction must use the architectural effective immediate for ADD/SUB (#2051).
+// Keep both frame accounting and ADRP+ADD provenance on the same effective-immediate contract.
 function analyzerBackend(instructions) {
   const mn = [];
   const ops = [];
