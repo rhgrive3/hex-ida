@@ -144,7 +144,7 @@ function validStringIoBytes(family, bytes) {
   return false;
 }
 function ioAccess(direction, widthBits) {
-  return Object.freeze({ space:'io', addressExpr:Object.freeze({ kind:'x86-io-port-register', register:'dx' }), widthBits, endian:'little', direction });
+  return Object.freeze({ space:'io', addressExpr:Object.freeze({ kind:'x86-io-port-register', register:'dx' }), widthBits, endian:'little' });
 }
 function liftStringIo(instruction, context, family) {
   const widthBits = STRING_IO_WIDTH[family];
