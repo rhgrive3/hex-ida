@@ -28,6 +28,7 @@ export async function startParentDevWorkerRuntime(options = {}) {
       now: options.now,
       sleep: options.sleep,
     });
+    const poolCompletionBridge = new IframeWorkerCompletionBridge({ workerPool, coordinator, now: options.now });
     const taskGraphHost = options.taskGraphHost || new DynamicTaskGraphHost({
       workerPool,
       cryptoRef: options.cryptoRef || globalThis.crypto,
@@ -35,8 +36,8 @@ export async function startParentDevWorkerRuntime(options = {}) {
       sleep: options.sleep,
       pollMs: options.taskGraphPollMs,
       cleanupTimeoutMs: options.taskGraphCleanupTimeoutMs,
+      onWorkerCompletion: (completion) => poolCompletionBridge.publishGraphCompletion(completion),
     });
-    const poolCompletionBridge = new IframeWorkerCompletionBridge({ workerPool, coordinator, now: options.now });
     return Object.freeze({
       role:'supervisor', mode:'multi-frame-capable', enabled:true, tabNodeId:node.tabNodeId, coordinator, skillRegistry, workerPool, taskGraphHost,
       discover:(args)=>coordinator.discover(args), claim:(args,opts={})=>claimWithCancellationCleanup(coordinator,args,opts.signal), createChat:(args)=>coordinator.createChat(args), send:(args)=>coordinator.send(args), observe:(args)=>coordinator.observe(args), followup:(args)=>coordinator.followup(args), nudge:(args)=>coordinator.nudge(args), stop:(args)=>coordinator.stop(args), result:(args)=>coordinator.result(args), release:(args)=>coordinator.release(args), waitEvent:(args,opts={})=>poolCompletionBridge.waitEvent(args,opts),
