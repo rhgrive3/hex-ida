@@ -6,11 +6,12 @@ import { createDevWorkerToolSurface, DEV_WORKER_TOOL } from '../workers/tool-sur
 import { createDevAdminToolSurface, DEV_ADMIN_TOOL } from '../admin/tool-surface.js';
 
 let fallbackSequence = 0;
-const RUN_SCOPED_POOL_TOOLS = new Set([
+const RUN_SCOPED_ADMIN_TOOLS = new Set([
   DEV_ADMIN_TOOL.POOL_CLAIM,
   DEV_ADMIN_TOOL.POOL_START,
   DEV_ADMIN_TOOL.POOL_FOLLOWUP,
   DEV_ADMIN_TOOL.POOL_RELEASE,
+  DEV_ADMIN_TOOL.GRAPH_START,
 ]);
 
 export class DevSupervisorV0 {
@@ -110,7 +111,7 @@ function runtimeOwnedAdminArguments(run, decision) {
     ? decision.arguments
     : {};
   const args = { ...supplied };
-  if (!RUN_SCOPED_POOL_TOOLS.has(decision?.tool)) return args;
+  if (!RUN_SCOPED_ADMIN_TOOLS.has(decision?.tool)) return args;
 
   const runId = requiredRuntimeIdentity(run?.runId, 'runId');
   rejectIdentityOverride(args.runId, runId, 'runId');
