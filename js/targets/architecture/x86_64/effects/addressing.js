@@ -4,6 +4,16 @@ const ADDRESS_WIDTHS = new Set([32, 64]);
 const LEGACY_SEGMENTS = new Set(['cs', 'ds', 'es', 'ss']);
 const TLS_SEGMENTS = new Set(['fs', 'gs']);
 const MASK64 = (1n << 64n) - 1n;
+const VSIB_FAMILIES = new Set([
+  'vgatherdpd', 'vgatherdps', 'vgatherqpd', 'vgatherqps',
+  'vgatherpf0dpd', 'vgatherpf0dps', 'vgatherpf0qpd', 'vgatherpf0qps',
+  'vgatherpf1dpd', 'vgatherpf1dps', 'vgatherpf1qpd', 'vgatherpf1qps',
+  'vpgatherdd', 'vpgatherdq', 'vpgatherqd', 'vpgatherqq',
+  'vscatterdpd', 'vscatterdps', 'vscatterqpd', 'vscatterqps',
+  'vscatterpf0dpd', 'vscatterpf0dps', 'vscatterpf0qpd', 'vscatterpf0qps',
+  'vscatterpf1dpd', 'vscatterpf1dps', 'vscatterpf1qpd', 'vscatterpf1qps',
+  'vpscatterdd', 'vpscatterdq', 'vpscatterqd', 'vpscatterqq',
+]);
 
 function unsigned(value, bits) {
   const mask = (1n << BigInt(bits)) - 1n;
@@ -69,6 +79,14 @@ function segmentSemantics(segment) {
   return null;
 }
 
+function isVectorRegister(desc) {
+  return desc?.kind === 'vector' || /^[xyz]mm\d+$/.test(desc?.id || '');
+}
+
+function supportsVsib(instruction) {
+  return VSIB_FAMILIES.has(String(instruction?.instructionFamily || '').toLowerCase());
+}
+
 function validatedComponents(instruction, memory) {
   if (!memory || ![1, 2, 4, 8].includes(Number(memory.scale))) return null;
   const widthBits = addressSizeBits(instruction, memory);
@@ -79,10 +97,12 @@ function validatedComponents(instruction, memory) {
   const ripRelative = memory.base?.physicalId === 'rip';
   if (memory.base && !ripRelative && memory.base.viewBits !== widthBits) return null;
   if (ripRelative && memory.base.viewBits !== widthBits) return null;
-  if (memory.index && memory.index.viewBits !== widthBits) return null;
+  const vectorIndex = isVectorRegister(memory.index);
+  if (vectorIndex && (!supportsVsib(instruction) || ![128, 256, 512].includes(Number(memory.index?.viewBits)))) return null;
+  if (memory.index && !vectorIndex && memory.index.viewBits !== widthBits) return null;
   if (memory.index?.physicalId === 'rip') return null;
 
-  return Object.freeze({ widthBits, segment, ripRelative });
+  return Object.freeze({ widthBits, segment, ripRelative, vectorIndex });
 }
 
 function structuredCalculation(instruction, memory, state) {
@@ -111,10 +131,24 @@ function structuredCalculation(instruction, memory, state) {
   }
 
   if (memory.index) {
-    const indexRegister = registerExpr(memory.index, widthBits);
-    if (!indexRegister) return null;
-    index = scaledIndex(indexRegister, Number(memory.scale), widthBits);
-    calculation = add(calculation, index, widthBits, { addressComponent:'index' });
+    if (state.vectorIndex) {
+      const vectorWidthBits = Number(memory.index.viewBits || 128);
+      const indexRegister = registerExpr(memory.index, vectorWidthBits);
+      if (!indexRegister) return null;
+      index = Object.freeze({
+        kind:'vector-scaled-index',
+        index:indexRegister,
+        scale:Number(memory.scale),
+        widthBits:vectorWidthBits,
+        vectorWidthBits,
+      });
+      calculation = add(calculation, index, widthBits, { addressComponent:'vector-index' });
+    } else {
+      const indexRegister = registerExpr(memory.index, widthBits);
+      if (!indexRegister) return null;
+      index = scaledIndex(indexRegister, Number(memory.scale), widthBits);
+      calculation = add(calculation, index, widthBits, { addressComponent:'index' });
+    }
   }
 
   const displacement = BigInt(memory.displacement ?? 0n);
