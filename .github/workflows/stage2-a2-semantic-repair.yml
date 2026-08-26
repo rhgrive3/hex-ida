@@ -74,3 +74,4 @@ jobs:
           git diff --cached --quiet && exit 0
           git commit -m "fix(stage2): close final x86 long64 semantic residuals"
           git push origin HEAD:integration/stage2-a2-x86-long64-terminal-semantics
+# retrigger after dedicated EVEX ownership repair
