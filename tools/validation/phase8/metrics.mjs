@@ -16,7 +16,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { stableDigest } from '../../../js/core/identity/index.js';
+import { deepFreeze, stableDigest } from '../../../js/core/identity/index.js';
 import { PASS_STAGES, passRegistryDigest, phase8Passes, runPhase8Stage } from '../../../js/decompiler/phase8/index.js';
 import { edgeAccountingFailures } from '../../../js/decompiler/phase8/structuring.js';
 import { forcedContradictions } from '../../../js/decompiler/phase8/aggregates.js';
@@ -28,11 +28,90 @@ import { decompileEntry, observeCorpus } from './decompile-corpus.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const FROZEN_BASELINE = path.join(ROOT, 'tests/phase8/corpus/pre-phase8-observations.json');
+const FROZEN_PROVENANCE = path.join(ROOT, 'tests/phase8/corpus/pre-phase8-provenance.json');
 const PHASE8_SOURCE_DIRECTORY = path.join(ROOT, 'js/decompiler/phase8');
 
 export function loadFrozenBaseline(target = FROZEN_BASELINE) {
   if (!fs.existsSync(target)) throw new Error(`phase8: frozen baseline missing at ${path.relative(ROOT, target)}`);
   return JSON.parse(fs.readFileSync(target, 'utf8'));
+}
+
+function numericOrLexicalCompare(left, right) {
+  const leftText = String(left);
+  const rightText = String(right);
+  if (/^-?\d+$/.test(leftText) && /^-?\d+$/.test(rightText)) {
+    const leftNumber = BigInt(leftText);
+    const rightNumber = BigInt(rightText);
+    if (leftNumber < rightNumber) return -1;
+    if (leftNumber > rightNumber) return 1;
+  }
+  return leftText < rightText ? -1 : leftText > rightText ? 1 : 0;
+}
+
+function sortedUniqueStrings(value) {
+  if (!Array.isArray(value)) return null;
+  return [...new Set(value.map(String))].sort(numericOrLexicalCompare);
+}
+
+function validateProvenanceSet(value, label) {
+  const errors = [];
+  if (!Array.isArray(value)) return [`${label} must be an array`];
+  if (value.some((item) => typeof item !== 'string')) errors.push(`${label} must contain strings`);
+  const normalized = sortedUniqueStrings(value);
+  if (normalized.length !== value.length || normalized.some((item, index) => item !== value[index])) {
+    errors.push(`${label} must be sorted and duplicate-free`);
+  }
+  return errors;
+}
+
+/**
+ * Validates the immutable provenance sidecar against the already-frozen
+ * baseline. The old observation ledger intentionally remains untouched; this
+ * separate identity is what lets the verifier repair the rendering-count proxy
+ * without silently recapturing the historical question set.
+ */
+export function validateFrozenProvenance(provenance, baseline = loadFrozenBaseline()) {
+  const errors = [];
+  if (!provenance || typeof provenance !== 'object' || Array.isArray(provenance)) return ['provenance sidecar must be an object'];
+  if (provenance.schemaVersion !== 1) errors.push('provenance sidecar schemaVersion mismatch');
+  if (provenance.profileVersion !== 3) errors.push('provenance sidecar profileVersion mismatch');
+  if (provenance.baseProductSha !== baseline.baseCommit) errors.push('provenance sidecar base product mismatch');
+  if (provenance.corpusId !== baseline.corpusId) errors.push('provenance sidecar corpus id mismatch');
+  if (provenance.corpusVersion !== baseline.corpusVersion) errors.push('provenance sidecar corpus version mismatch');
+  if (provenance.corpusDigest !== baseline.corpusDigest) errors.push('provenance sidecar corpus digest mismatch');
+  if (stableDigest(provenance.toolchain) !== stableDigest(baseline.toolchain)) errors.push('provenance sidecar toolchain mismatch');
+  if (provenance.baselineObservationsDigest !== baseline.observationsDigest) errors.push('provenance sidecar observation digest mismatch');
+  if (!Array.isArray(provenance.observations)) errors.push('provenance sidecar observations must be an array');
+  else {
+    const expectedIds = baseline.observations.map((observation) => observation.id);
+    const actualIds = provenance.observations.map((observation) => observation?.id);
+    if (actualIds.length !== expectedIds.length || actualIds.some((id, index) => id !== expectedIds[index])) {
+      errors.push('provenance sidecar denominator does not match the frozen baseline');
+    }
+    for (const [index, observation] of provenance.observations.entries()) {
+      if (!observation || typeof observation !== 'object' || Array.isArray(observation)) {
+        errors.push(`provenance observation ${index} must be an object`);
+        continue;
+      }
+      if (typeof observation.id !== 'string' || observation.id.length === 0) errors.push(`provenance observation ${index} id is invalid`);
+      if (typeof observation.available !== 'boolean') errors.push(`provenance observation ${observation.id ?? index} availability is invalid`);
+      errors.push(...validateProvenanceSet(observation.sourceAddresses, `provenance observation ${observation.id ?? index} sourceAddresses`));
+      errors.push(...validateProvenanceSet(observation.irProvenance, `provenance observation ${observation.id ?? index} irProvenance`));
+      if (observation.sourceAddressesDigest !== stableDigest(observation.sourceAddresses)) errors.push(`provenance observation ${observation.id ?? index} source address digest mismatch`);
+      if (observation.irProvenanceDigest !== stableDigest(observation.irProvenance)) errors.push(`provenance observation ${observation.id ?? index} IR digest mismatch`);
+      if (observation.irProvenanceCount !== observation.irProvenance.length) errors.push(`provenance observation ${observation.id ?? index} IR count mismatch`);
+    }
+  }
+  if (provenance.observationsDigest !== stableDigest(provenance.observations)) errors.push('provenance sidecar digest mismatch');
+  return errors;
+}
+
+export function loadFrozenProvenance(target = FROZEN_PROVENANCE, baseline = loadFrozenBaseline()) {
+  if (!fs.existsSync(target)) throw new Error(`phase8: frozen provenance sidecar missing at ${path.relative(ROOT, target)}`);
+  const provenance = JSON.parse(fs.readFileSync(target, 'utf8'));
+  const errors = validateFrozenProvenance(provenance, baseline);
+  if (errors.length) throw new TypeError(`phase8: invalid frozen provenance sidecar: ${errors.join('; ')}`);
+  return deepFreeze(provenance);
 }
 
 function sum(values) {
@@ -153,6 +232,79 @@ export function artifactIdentityFailures() {
   return failures;
 }
 
+function validCandidateProvenance(provenance) {
+  if (!provenance || typeof provenance !== 'object' || Array.isArray(provenance)) return false;
+  if (validateProvenanceSet(provenance.sourceAddresses, 'candidate sourceAddresses').length > 0) return false;
+  if (validateProvenanceSet(provenance.irProvenance, 'candidate irProvenance').length > 0) return false;
+  if (provenance.sourceAddressesDigest !== stableDigest(provenance.sourceAddresses)) return false;
+  if (provenance.irProvenanceDigest !== stableDigest(provenance.irProvenance)) return false;
+  if (provenance.irProvenanceCount !== provenance.irProvenance.length) return false;
+  return true;
+}
+
+function containsAll(values, required) {
+  const available = new Set(values);
+  return required.every((value) => available.has(value));
+}
+
+/**
+ * Compares identity-bearing source/IR provenance against the frozen sidecar.
+ *
+ * Source addresses are a monotonic coverage floor: a candidate may add
+ * provenance, but it may not substitute one address for another at equal
+ * cardinality or silently drop an address. IR ids/counts are stored and
+ * digest-checked as telemetry only. Their numeric identities may legitimately
+ * be renumbered or become fewer when an upstream exact lifter takes a
+ * conservative fallback; making that implementation detail a hard floor would
+ * recreate the rendering-count proxy defect this sidecar fixes.
+ */
+export function provenanceCoverageFailures(observations, baseline, frozenProvenance = null) {
+  const baselineObservations = Array.isArray(baseline?.observations) ? baseline.observations : [];
+  const candidateById = new Map((Array.isArray(observations) ? observations : []).map((observation) => [observation?.id, observation]));
+  const failures = [];
+  let sidecar = frozenProvenance;
+  if (sidecar == null) {
+    try { sidecar = loadFrozenProvenance(undefined, baseline); }
+    catch (error) {
+      failures.push({ id:'<frozen-provenance>', kind:'frozen-provenance-invalid', detail:error?.message || String(error) });
+      return failures;
+    }
+  }
+  const sidecarErrors = validateFrozenProvenance(sidecar, baseline);
+  if (sidecarErrors.length) {
+    failures.push({ id:'<frozen-provenance>', kind:'frozen-provenance-invalid', detail:sidecarErrors.join('; ') });
+    return failures;
+  }
+  const referenceById = new Map(sidecar.observations.map((observation) => [observation.id, observation]));
+  for (const baselineObservation of baselineObservations) {
+    if (!baselineObservation?.semantic) continue;
+    const id = baselineObservation.id;
+    const candidate = candidateById.get(id);
+    const reference = referenceById.get(id);
+    if (!candidate) {
+      failures.push({ id, kind:'candidate-provenance-missing', detail:'candidate observation is missing' });
+      continue;
+    }
+    if (!reference || reference.available !== true) {
+      failures.push({ id, kind:'frozen-provenance-missing', detail:'semantic baseline has no frozen provenance set' });
+      continue;
+    }
+    if (!validCandidateProvenance(candidate.provenance)) {
+      failures.push({ id, kind:'candidate-provenance-missing', detail:'candidate provenance is missing, null, malformed, or has a stale digest' });
+      continue;
+    }
+    if (!containsAll(candidate.provenance.sourceAddresses, reference.sourceAddresses)) {
+      failures.push({
+        id,
+        kind:'source-provenance-not-superset',
+        detail:`required ${reference.sourceAddresses.length} source addresses, candidate has ${candidate.provenance.sourceAddresses.length}`,
+      });
+      continue;
+    }
+  }
+  return failures;
+}
+
 /**
  * Compares the candidate against the frozen pre-Phase-8 product.
  *
@@ -160,10 +312,9 @@ export function artifactIdentityFailures() {
  * regression against that frozen evidence, not as an absolute property of a
  * single run.
  */
-export function safetyCounters(observations, baseline) {
+export function safetyCounters(observations, baseline, frozenProvenance = null) {
   const byId = new Map(baseline.observations.map((observation) => [observation.id, observation]));
   let semanticMismatchCount = 0;
-  let provenanceLossCount = 0;
   let unknownSafetyRegressionCount = 0;
   const details = [];
 
@@ -182,11 +333,6 @@ export function safetyCounters(observations, baseline) {
       semanticMismatchCount += 1;
       details.push({ id: observation.id, kind: 'semantic-path-lost' });
     }
-    if (before.semantic && observation.semantic && observation.sourceMappedNodes < before.sourceMappedNodes) {
-      provenanceLossCount += 1;
-      details.push({ id: observation.id, kind: 'source-mapping-lost', detail: `${before.sourceMappedNodes} -> ${observation.sourceMappedNodes}` });
-    }
-
     const ledger = observation.phase8;
     if (ledger) {
       // A published ledger that claims complete reasoning about a function the
@@ -203,6 +349,10 @@ export function safetyCounters(observations, baseline) {
       }
     }
   }
+
+  const provenanceFailures = provenanceCoverageFailures(observations, baseline, frozenProvenance);
+  const provenanceLossCount = provenanceFailures.length;
+  details.push(...provenanceFailures);
 
   return {
     semanticMismatchCount,
@@ -487,6 +637,7 @@ export function completeResultDivergences(runs) {
 export function collectPhase8Metrics({ repetitions = 3, includePerformance = true } = {}) {
   const corpus = loadCorpus();
   const baseline = loadFrozenBaseline();
+  const frozenProvenance = loadFrozenProvenance(undefined, baseline);
   const observations = observeCorpus({ corpus, decompilerTimeBudgetMs: MEASUREMENT_TIME_BUDGET_MS });
   const quality = qualityVector(observations);
   const baselineQuality = qualityVector(baseline.observations);
@@ -505,7 +656,9 @@ export function collectPhase8Metrics({ repetitions = 3, includePerformance = tru
       corpusDigest: corpus.corpusDigest,
       toolchain: corpus.toolchain,
       frozenBaselineDigest: baseline.observationsDigest,
+      frozenProvenanceDigest: frozenProvenance.observationsDigest,
       baselineCommit: baseline.baseCommit,
+      provenanceBaseCommit: frozenProvenance.baseProductSha,
     },
     registry: {
       passRegistryDigest: passRegistryDigest(),
@@ -513,7 +666,7 @@ export function collectPhase8Metrics({ repetitions = 3, includePerformance = tru
     },
     quality: { baseline: baselineQuality, candidate: quality },
     safety: {
-      ...safetyCounters(observations, baseline),
+      ...safetyCounters(observations, baseline, frozenProvenance),
       architectureBoundaryViolationCount: boundary.length,
       architectureBoundaryViolations: boundary.slice(0, 10),
       staleArtifactAcceptanceCount: artifactFailures.length,

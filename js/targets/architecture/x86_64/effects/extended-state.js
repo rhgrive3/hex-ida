@@ -3,15 +3,17 @@ import {
 } from '../../../../semantics/effects/index.js';
 import { x86RegisterOperand } from './common.js';
 import { X87_FAMILIES, baseFamily, exactBase, vexInfo, vectorIndex } from './extended-state-helpers.js';
-import { liftVzero, liftEmms, liftX87 } from './extended-state-x87.js';
+import { liftVzero, liftEmms, liftX87, lift3DNow } from './extended-state-x87.js';
 import { liftEvex } from './extended-state-evex.js';
 
 export function liftX86ExtendedStateEffects(instruction,context={}){
   const family=String(instruction?.instructionFamily||'').toLowerCase(),base=baseFamily(family);
   if(X87_FAMILIES.has(base))return liftX87(instruction,context,family);
-  if(family==='emms')return liftEmms(instruction,context);
+  if(family==='emms'||family==='femms')return liftEmms(instruction,context);
   if(family==='vzeroall'||family==='vzeroupper')return liftVzero(instruction,context,family);
   if(String(instruction?.detail?.prefixes?.vector?.kind||'').toLowerCase()==='evex')return liftEvex(instruction,context,family);
+  const d3now = lift3DNow(instruction, context);
+  if (d3now != null) return d3now;
   return null;
 }
 

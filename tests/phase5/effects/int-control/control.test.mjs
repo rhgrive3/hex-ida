@@ -142,3 +142,29 @@ test('unknown conditional detail and malformed RET fail closed', () => {
   assert.equal(badRet.completeness, 'partial');
   assert.equal(badRet.controlEffect.kind, 'unknown');
 });
+test('indirect JMP/CALL with a non-VSIB vector memory index fails closed', () => {
+  for (const family of ['jmp','call']) {
+    const bundle = lift(family, [mem(64, { base:'rax', index:'xmm0', scale:4 })]);
+    assert.equal(bundle.completeness, 'partial');
+    assert.equal(bundle.controlEffect.kind, 'unknown');
+    assert.match(bundle.unknownEffects.reason, new RegExp(`x86-${family}-(?:target|stack)-unmodelled`));
+  }
+});
+
+test('INT requires one bounded 8-bit immediate vector', () => {
+  const valid = lift('int', [imm(0x80, 8)], { length:2, rawBytes:[0xcd,0x80] });
+  assert.equal(valid.completeness, 'exact');
+  assert.equal(valid.possibleFaults[0].detail.vector, 0x80);
+  for (const operands of [[], [reg('rax')], [imm(0x100, 8)], [imm(-1, 8)], [imm(1, 16)], [imm(1, 8), imm(2, 8)]]) {
+    const bundle = lift('int', operands);
+    assert.equal(bundle.completeness, 'partial');
+    assert.equal(bundle.controlEffect.kind, 'unknown');
+    assert.match(bundle.unknownEffects.reason, /x86-int-(?:operand-shape|vector)/);
+  }
+  const wrongRaw = lift('int', [imm(0x80, 8)], { length:2, rawBytes:[0x90,0x80] });
+  assert.equal(wrongRaw.completeness, 'partial');
+  assert.equal(wrongRaw.unknownEffects.reason, 'x86-int-encoding-unmodelled');
+  for (const value of [undefined, 'not-a-number']) {
+    assert.throws(() => lift('int', [{ type:'immediate', value, widthBits:8 }]), /x86-decoded-instruction-invalid-immediate/);
+  }
+});
