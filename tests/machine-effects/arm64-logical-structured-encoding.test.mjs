@@ -15,6 +15,7 @@ function lift(mnemonic, operands, suffix) {
 for (const [mnemonic, operands] of [
   ['and','x0, x1, #1'],
   ['and','x0, x1, x2, lsr #63'],
+  ['and','w0, w1, w2'],
   ['bic','x0, x1, x2, ror #1'],
   ['orn','w0, w1, w2, asr #31'],
   ['mvn','x0, x1, lsl #3'],
@@ -28,11 +29,16 @@ for (const [mnemonic, operands] of [
 for (const [mnemonic, operands, reason] of [
   ['and','x0, #1, #1','arm64-and-lhs-register-required'],
   ['and','x0, #1, x2','arm64-and-lhs-register-required'],
+  ['and','x0, w1, x2','arm64-and-lhs-register-required'],
+  ['and','x0, x1, w2','arm64-and-rhs-register-required'],
+  ['orr','w0, x1, w2','arm64-orr-lhs-register-required'],
   ['bic','x0, x1, #1','arm64-bic-logical-immediate-unencodable'],
   ['orn','x0, #1, x2','arm64-orn-lhs-register-required'],
   ['mvn','x0, #1','arm64-mvn-source-register-required'],
+  ['mvn','x0, w1','arm64-mvn-source-register-required'],
   ['tst','#1, #1','arm64-tst-lhs-register-required'],
   ['tst','x0, #0','arm64-tst-logical-immediate-unencodable'],
+  ['tst','x0, w1','arm64-tst-rhs-register-required'],
 ]) {
   const effects = lift(mnemonic, operands, `invalid-${mnemonic}-${operands.replace(/\W+/g,'-')}`);
   assert.equal(effects.completeness, 'partial', `${mnemonic} malformed logical shape must fail closed`);
