@@ -93,6 +93,7 @@ jobs:
             node tools/validation/phase8/baseline.mjs --force
           )
           cp "$BASE/tests/phase8/corpus/pre-phase8-observations.json" tests/phase8/corpus/pre-phase8-observations.json
+          cp "$BASE/tests/phase8/corpus/pre-phase8-provenance.json" tests/phase8/corpus/pre-phase8-provenance.json
           node --input-type=module <<'NODE'
           import fs from 'node:fs';
           import { stableDigest } from './js/core/identity/index.js';
@@ -106,6 +107,7 @@ jobs:
           ];
           const corpus = JSON.parse(fs.readFileSync('tests/phase8/corpus/functions.json', 'utf8'));
           const baseline = JSON.parse(fs.readFileSync('tests/phase8/corpus/pre-phase8-observations.json', 'utf8'));
+          const provenance = JSON.parse(fs.readFileSync('tests/phase8/corpus/pre-phase8-provenance.json', 'utf8'));
           const metadata = {
             schemaVersion:1,
             baseProductSha:base,
@@ -116,6 +118,8 @@ jobs:
             observationCount:baseline.observations.length,
             denominator:corpus.functions.map((entry) => entry.id),
             baselineObservationsDigest:baseline.observationsDigest,
+            baselineProvenanceDigest:provenance.observationsDigest,
+            baselineProvenanceFile:'tests/phase8/corpus/pre-phase8-provenance.json',
             note:'Only measurement/corpus tooling and the exact expanded frozen corpus were overlaid onto the pre-Phase-8 product. No Phase 8 production implementation was backported.',
           };
           fs.writeFileSync('tests/phase8/corpus/pre-phase8-baseline-identity.json', `${JSON.stringify(metadata, null, 2)}\n`);
@@ -132,6 +136,7 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add tests/phase8/corpus/functions.json \
                   tests/phase8/corpus/pre-phase8-observations.json \
+                  tests/phase8/corpus/pre-phase8-provenance.json \
                   tests/phase8/corpus/pre-phase8-baseline-identity.json \
                   tools/validation/phase8/p8i-baseline-request.json
           git commit -m 'Phase 8: freeze expanded base-product baseline'
