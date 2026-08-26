@@ -73,6 +73,12 @@ function accesses(bundle) {
   }
   return out;
 }
+const DSB_OPTION_BY_CRM = Object.freeze([
+  'ssbb','oshld','oshst','osh',
+  'pssbb','nshld','nshst','nsh',
+  'sy','ishld','ishst','ish',
+  'sy','ld','st','sy',
+]);
 
 const denominator = validateArm64A64MemoryDenominator();
 assert.equal(denominator.denominatorId, ARM64_A64_MEMORY_DENOMINATOR_ID);
@@ -163,7 +169,10 @@ try {
       assert.equal(effects.operations[0].kind, 'barrier', `${current.id}:barrier operation`);
     }
     if (current.barrierCrm != null) {
-      assert.equal(effects.metadata.crm, current.barrierCrm, `${current.id}:barrier CRm discriminator`);
+      assert.equal((oracle.word >>> 8) & 0xf, current.barrierCrm, `${current.id}:encoded barrier CRm discriminator`);
+      const expectedOption = current.id.startsWith('barrier:dsb:') ? DSB_OPTION_BY_CRM[current.barrierCrm] : 'sy';
+      assert.equal(effects.metadata.option, expectedOption, `${current.id}:barrier semantics after decoder normalization`);
+      if (effects.metadata.crm != null) assert.equal(effects.metadata.crm, current.barrierCrm, `${current.id}:preserved textual barrier CRm`);
       assert.equal(effects.operations[0].kind, 'barrier', `${current.id}:barrier operation`);
     }
     if (current.clrexImmediate != null) assert.equal(effects.metadata.immediate, current.clrexImmediate, `${current.id}:CLREX imm4 discriminator`);
