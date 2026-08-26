@@ -104,11 +104,47 @@ function gpRegister(num) {
   return { k: 'reg', cls: 'gp', num, bits: 64, text: `x${num}` };
 }
 
+function directTargetOperandShapeValid(instruction, operand, kind = 'branch') {
+  if (operand?.k === 'imm' && operand.value != null) return true;
+  if (operand?.k === 'other' && /^#?(?:0x[0-9a-f]+|\d+)$/i.test(String(operand.text || '').trim())) return true;
+  const explicit = kind === 'call' ? instruction?.callTarget : instruction?.branchTarget;
+  return operand?.k === 'other' && explicit != null;
+}
+
+function isBranchTestRegister(operand) {
+  return operand?.k === 'reg'
+    && (operand.cls === 'gp' || operand.cls === 'zr')
+    && (Number(operand.bits) === 32 || Number(operand.bits) === 64);
+}
+
+function directBranchOperandShapeValid(instruction, mnemonic, ops) {
+  if (mnemonic === 'b' || /^b\./.test(mnemonic)) {
+    return ops.length === 1 && directTargetOperandShapeValid(instruction, ops[0], 'branch');
+  }
+  if (mnemonic === 'bl') {
+    return ops.length === 1 && directTargetOperandShapeValid(instruction, ops[0], 'call');
+  }
+  if (COMPARE_BRANCH.has(mnemonic)) {
+    return ops.length === 2 && isBranchTestRegister(ops[0]) && directTargetOperandShapeValid(instruction, ops[1], 'branch');
+  }
+  if (TEST_BRANCH.has(mnemonic)) {
+    return ops.length === 3 && isBranchTestRegister(ops[0])
+      && ops[1]?.k === 'imm' && ops[1].value != null
+      && directTargetOperandShapeValid(instruction, ops[2], 'branch');
+  }
+  return true;
+}
+
 function liftArm64ControlEffectsCore(instruction, options = {}) {
   const mnemonic = String(instruction?.mnemonic || '').toLowerCase();
   if (!isArm64ControlEffectMnemonic(mnemonic)) return null;
   const ctx = createArm64EffectContext(instruction, options);
   const ops = instruction?.ops || [];
+
+  if (!directBranchOperandShapeValid(instruction, mnemonic, ops)) {
+    const reason = `arm64-${mnemonic}-operand-shape-invalid`;
+    return ctx.partial(reason, ['control','registers'], undefined, { kind:'unknown', reason });
+  }
 
   if (mnemonic === 'b') {
     const target = directTargetOf(instruction, 'branch');
