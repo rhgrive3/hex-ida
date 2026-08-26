@@ -164,13 +164,16 @@ function vectorcallReturn(prototype, options = {}) {
     return { reg:null, partial:true, reason:'microsoft-vectorcall-wide-vector-return-unsupported' };
   }
   if (/float|double|\bfp\b/.test(`${type} ${abiClass}`)) {
-    const bits = Number(options.returnBits ?? prototype.returnBits ?? prototype.bits ?? typeBits(type, 64)) || 64;
+    const bits = Number(options.returnBits ?? prototype.returnBits ?? prototype.bits ?? typeBits(type, 64));
+    if (!Number.isSafeInteger(bits) || bits <= 0) return { reg:null, partial:true, reason:'microsoft-vectorcall-return-width-invalid' };
     return { reg:'xmm0', bits, abiClass:'fp' };
   }
   const aggregate = prototype.aggregate === true || /aggregate|struct|union|record|array/.test(`${type} ${abiClass}`);
   if (aggregate) return { reg:null, partial:true, reason:'microsoft-vectorcall-non-hva-aggregate-return-requires-layout-proof' };
   if (type || abiClass || options.returnsValue === true || prototype.returnsValue === true) {
-    return { reg:'rax', bits:Number(options.returnBits ?? prototype.returnBits ?? prototype.bits ?? 64) || 64 };
+    const bits = Number(options.returnBits ?? prototype.returnBits ?? prototype.bits ?? 64);
+    if (!Number.isSafeInteger(bits) || bits <= 0) return { reg:null, partial:true, reason:'microsoft-vectorcall-return-width-invalid' };
+    return { reg:'rax', bits };
   }
   return { reg:null, partial:true, reason:'return-value-evidence-missing' };
 }
