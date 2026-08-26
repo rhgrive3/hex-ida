@@ -236,6 +236,7 @@ export class PagedArtifactReader {
         finish(reject, new ByteSourceCancelledError());
       };
       signal?.addEventListener?.('abort', onAbort, { once:true });
+      if (signal?.aborted) onAbort();
       entry.promise.then(
         (value) => finish(resolve, value),
         (error) => finish(reject, isAbortLike(error) ? new ByteSourceCancelledError() : error),
