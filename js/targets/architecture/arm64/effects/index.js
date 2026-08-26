@@ -148,8 +148,11 @@ function addSubImmediateEncodingFailure(instruction) {
   const widthBits = Number(ops[0]?.bits || 0);
   if (['adc','adcs','sbc','sbcs'].includes(mnemonic)) {
     if (!isGpSourceOfWidth(lhs, widthBits) || !isGpSourceOfWidth(rhs, widthBits)) return `arm64-${mnemonic}-register-width-unencodable`;
+    if (!isPlainGpSource(lhs) || !isPlainGpSource(rhs)) return `arm64-${mnemonic}-register-modifier-unencodable`;
   } else if (alias && !isGpSourceOfWidth(rhs, widthBits)) {
     return `arm64-${mnemonic}-register-width-unencodable`;
+  } else if (['ngc','ngcs'].includes(mnemonic) && !isPlainGpSource(rhs)) {
+    return `arm64-${mnemonic}-register-modifier-unencodable`;
   }
   if (lhs?.k === 'imm') return `arm64-${mnemonic}-lhs-immediate-unencodable`;
   if (rhs?.k === 'reg' && String(rhs.shift?.op || '').toLowerCase() === 'ror') return `arm64-${mnemonic}-ror-shift-unencodable`;
