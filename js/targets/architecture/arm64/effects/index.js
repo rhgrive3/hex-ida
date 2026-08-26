@@ -203,7 +203,23 @@ function multiplyDivideEncodingFailure(instruction) {
   if (!ARM64_MULTIPLY_DIVIDE_MNEMONICS.has(mnemonic)) return null;
   const ops = Array.isArray(instruction?.ops) ? instruction.ops : [];
   if (!isGpOrZrRegister(ops[0])) return null;
-  for (const operand of ops.slice(1)) if (!isPlainGpSource(operand)) return `arm64-${mnemonic}-source-register-required`;
+  const destinationBits = Number(ops[0]?.bits || 0);
+  const required = [];
+  if (['mul','mneg','sdiv','udiv','madd','msub'].includes(mnemonic)) {
+    for (let index = 1; index < ops.length; index++) required.push([index, destinationBits]);
+  } else if (['smull','umull','smnegl','umnegl'].includes(mnemonic)) {
+    required.push([1,32],[2,32]);
+    if (destinationBits !== 64) return `arm64-${mnemonic}-source-register-required`;
+  } else if (['smulh','umulh'].includes(mnemonic)) {
+    required.push([1,64],[2,64]);
+    if (destinationBits !== 64) return `arm64-${mnemonic}-source-register-required`;
+  } else {
+    required.push([1,32],[2,32],[3,64]);
+    if (destinationBits !== 64) return `arm64-${mnemonic}-source-register-required`;
+  }
+  for (const [index,bits] of required) {
+    if (!isPlainGpSourceOfWidth(ops[index], bits)) return `arm64-${mnemonic}-source-register-required`;
+  }
   return null;
 }
 
@@ -211,17 +227,21 @@ function registerOnlyIntegerEncodingFailure(instruction) {
   const mnemonic = instructionMnemonic(instruction);
   const ops = Array.isArray(instruction?.ops) ? instruction.ops : [];
   if (!isGpOrZrRegister(ops[0])) return null;
-  const indices = mnemonic === 'extr' ? [1,2]
+  const widthBits = Number(ops[0]?.bits || 0);
+  const widthSensitiveIndices = mnemonic === 'extr' ? [1,2]
     : ARM64_CONDITIONAL_TWO_SOURCE.has(mnemonic) ? [1,2]
       : ARM64_CONDITIONAL_ONE_SOURCE.has(mnemonic) ? [1]
-        : ARM64_UNARY_REGISTER_MNEMONICS.has(mnemonic) ? [1]
-          : null;
-  if (indices) {
-    for (const index of indices) if (!isPlainGpSource(ops[index])) return `arm64-${mnemonic}-source-register-required`;
+        : null;
+  if (widthSensitiveIndices) {
+    for (const index of widthSensitiveIndices) {
+      if (!isPlainGpSourceOfWidth(ops[index], widthBits)) return `arm64-${mnemonic}-source-register-required`;
+    }
+  } else if (ARM64_UNARY_REGISTER_MNEMONICS.has(mnemonic)) {
+    if (!isPlainGpSource(ops[1])) return `arm64-${mnemonic}-source-register-required`;
   }
   if (!ARM64_SHIFT_MNEMONICS.has(mnemonic)) return null;
-  if (!isPlainGpSource(ops[1])) return `arm64-${mnemonic}-source-register-required`;
-  if (ARM64_VARIABLE_SHIFT_MNEMONICS.has(mnemonic) && !isPlainGpSource(ops[2])) return `arm64-${mnemonic}-shift-register-required`;
+  if (!isPlainGpSourceOfWidth(ops[1], widthBits)) return `arm64-${mnemonic}-source-register-required`;
+  if (ARM64_VARIABLE_SHIFT_MNEMONICS.has(mnemonic) && !isPlainGpSourceOfWidth(ops[2], widthBits)) return `arm64-${mnemonic}-shift-register-required`;
   return null;
 }
 
