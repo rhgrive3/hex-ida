@@ -56,6 +56,9 @@ const PROVEN_GENERIC_EVEX_FAMILIES = new Set([
 
 export function classifyEvexCategory(name) {
   const lower = name.toLowerCase();
+  const base = baseFamily(lower);
+  if (SIMD_EVEX_BASES.has(base)) return 'simd';
+  if (FP_EVEX_BASES.has(base)) return 'fp';
   if (/^vp(?!er[\w]*p[sd])/.test(lower) || /^valign|^vbroadcasti|^vextracti|^vinserti|^vshufi|^vcompress[bwdq]|^vexpand[bwdq]/.test(lower) || /^k[a-z]/.test(lower)) {
     return 'simd';
   }
@@ -178,100 +181,43 @@ export function liftEvex(instruction, context, family) {
 
   for (const register of ctx.instruction.detail?.implicitReads || []) {
     const operand = x86RegisterOperand(register.id);
-    if (!operand) continue;
-    const value = ctx.readRegister(operand);
-    if (!value) continue;
-    inputs.push(value);
-    registersRead.push(...physicalIds(register));
+    const value = operand ? ctx.readRegister(operand) : null;
+    if (value) { inputs.push(value); registersRead.push(...physicalIds(operand.register)); }
   }
 
-  const outputKinds = [];
-  if (isPrefetch) {
-    // Prefetch instructions have no architectural register or memory outputs
-  } else if (compare && registerTargets.length === 0) {
-    outputKinds.push(...['CF', 'PF', 'ZF', 'OF', 'SF', 'AF'].map((flag) => ({ kind: 'flag', flag, width: 1 })));
-  } else {
-    for (const target of registerTargets) {
-      const { operand } = target;
-      if (isVectorOperand(operand)) outputKinds.push({ kind: 'vector', operand, width: 512 });
-      else outputKinds.push({ kind: 'register', operand, width: Number(operand.widthBits || operand.register?.viewBits || 0) });
-    }
-    for (const register of ctx.instruction.detail?.implicitWrites || []) {
-      const operand = x86RegisterOperand(register.id);
-      if (operand) outputKinds.push({ kind: 'register', operand, width: Number(operand.widthBits || operand.register?.viewBits || 0), implicit: true });
-    }
+  const resultWidth = activeWidth || 64;
+  const value = ctx.intrinsic(`x86.evex.${family}`,
+    inputs.length ? inputs : [ctx.constant(8, 0)],
+    { kind: 'int', bits: resultWidth, signed: false },
+    {
+      sideEffects:'none', mayTrap:false,
+      stateScope:{ registers:[...new Set(registersRead)], memory:[] },
+      metadata:{ operation:family, exactArchitecturalSummary:true, ...(info.maskRegister ? { maskRegister:info.maskRegister, zeroing:info.zeroing } : {}), ...(embeddedRoundingOrSae ? { roundingMode:evexRoundingMode(info.lengthOrRoundingCode), sae:true } : {}) }
+    });
+
+  const writes = [];
+  for (const target of registerTargets) {
+    const wrote = evexVectorWrite(ctx, target.operand, value);
+    if (!wrote) return ctx.partial('x86-evex-register-write-unmodelled', ['registers'], { metadata: { family: category, operation: family, operandIndex: target.index } });
+    writes.push(...physicalIds(target.operand.register));
   }
 
-  if (!isPrefetch && outputKinds.length === 0 && memoryWrites.length === 0) {
-    return ctx.partial('x86-evex-output-shape-unmodelled', ['registers', 'memory', 'other'], { metadata: { family: category, operation: family } });
+  if (info.maskRegister) {
+    const mask = x86RegisterOperand(info.maskRegister);
+    const maskValue = mask ? ctx.readRegister(mask) : null;
+    if (maskValue) { inputs.push(maskValue); registersRead.push(...physicalIds(mask.register)); }
   }
-
-  const usesMxcsr = isFp && !embeddedRoundingOrSae && !isPrefetch;
-  if (embeddedRoundingOrSae) {
-    const mxcsr = x86RegisterOperand('mxcsr');
-    const current = mxcsr ? ctx.readRegister(mxcsr) : null;
-    if (!current) return ctx.partial('x86-evex-mxcsr-state-unavailable', ['registers', 'other'], { metadata: { family: category, operation: family } });
-    inputs.push(current);
-    registersRead.push('mxcsr');
-  }
-
-  const memoryRead = memoryReads.length ? { scope: 'accesses', accesses: memoryReads, detail: { evex: true, maskRegister: info.maskRegister, broadcast: info.broadcastOrRounding && hasMemory, faultSuppression: info.maskRegister ? 'inactive-mask-elements' : 'none' } } : { scope: 'none' };
-  const memoryWrite = memoryWrites.length ? { scope: 'accesses', accesses: memoryWrites, detail: { evex: true, maskRegister: info.maskRegister, faultSuppression: info.maskRegister ? 'inactive-mask-elements' : 'none' } } : { scope: 'none' };
-  const registersWritten = [...new Set(outputKinds.flatMap((output) => output.kind === 'flag' ? [] : (isVectorOperand(output.operand) ? [`ymm${vectorIndex(output.operand)}`, `zmmh${vectorIndex(output.operand)}`] : physicalIds(output.operand.register))))].sort();
-
-  const outputs = ctx.intrinsic(`x86.evex.${family}`, inputs, outputKinds.map((output) => output.width), {
-    registersRead: [...new Set(registersRead)].sort(),
-    registersWritten,
-    memoryRead,
-    memoryWrite,
-    determinism: 'input-dependent',
-    symbolicDetail: 'summary-only',
-    metadata: {
-      operation: family,
-      category,
-      evex: true,
-      activeVectorWidthBits: activeWidth,
-      maskRegister: info.maskRegister,
-      maskSemantics: info.maskRegister ? (info.zeroing ? 'zero' : 'merge') : 'none',
-      broadcast: info.broadcastOrRounding && hasMemory,
-      embeddedRoundingOrSae,
-      roundingMode: embeddedRoundingOrSae ? evexRoundingMode(info.lengthOrRoundingCode) : null,
-      suppressAllExceptions: embeddedRoundingOrSae,
-      opcodeMap: info.map,
-      mandatoryPrefixCode: info.mandatoryPrefixCode,
-      upperBitsAboveVl: 'zero-to-maxvl-512',
-      exactArchitecturalSummary: true,
-      ...(usesMxcsr ? { fpEnvironmentDependency: 'MXCSR' } : {})
-    },
-  });
-
-  for (let i = 0; i < outputKinds.length; i += 1) {
-    const target = outputKinds[i];
-    const value = outputs[i];
-    if (target.kind === 'flag') {
-      ctx.writeFlag(target.flag, value, { operation: family, evex: true });
-    } else if (target.kind === 'vector') {
-      if (!evexVectorWrite(ctx, target.operand, value)) return ctx.partial('x86-evex-vector-write-failed', ['registers'], { metadata: { family: category, operation: family, operandIndex: target.operand.index } });
-    } else if (!ctx.writeRegister(target.operand, value)) {
-      return ctx.partial('x86-evex-register-write-failed', ['registers'], { metadata: { family: category, operation: family, operandIndex: target.operand.index } });
-    }
-  }
-
-  if (usesMxcsr) faults.push(Object.freeze({ kind: 'x86-simd-floating-point-exception', condition: { kind: 'mxcsr-unmasked-floating-point-exception', operation: family, ...(info.maskRegister ? { maskRegister: info.maskRegister } : {}) }, detail: { exceptionClass: '#XM', environmentContract: 'x86-mxcsr/v1' } }));
 
   return ctx.finish({
-    family: category,
-    possibleFaults: faults,
-    metadata: {
-      operation: family,
-      evexPhysicalStateModeled: true,
-      maxVlBits: 512,
-      activeVectorWidthBits: activeWidth,
-      maskRegister: info.maskRegister,
-      maskSemantics: info.maskRegister ? (info.zeroing ? 'zero' : 'merge') : 'none',
-      broadcast: info.broadcastOrRounding && hasMemory,
-      embeddedRoundingOrSae,
-      roundingMode: embeddedRoundingOrSae ? evexRoundingMode(info.lengthOrRoundingCode) : null
-    }
+    completeness:'exact-with-intrinsic',
+    metadata:{
+      family:category, operation:family, evexPhysicalStateModeled:true,
+      maxVectorLengthBits:512, maskRegister:info.maskRegister, zeroing:info.zeroing,
+      embeddedRoundingOrSae, ...(embeddedRoundingOrSae ? { roundingMode:evexRoundingMode(info.lengthOrRoundingCode), sae:true } : {}),
+      registersRead:[...new Set(registersRead)], registersWritten:[...new Set(writes)],
+      memoryReadCount:memoryReads.length, memoryWriteCount:memoryWrites.length,
+      exactArchitecturalSummary:true,
+    },
+    possibleFaults:[...faults, possibleFeatureFault('x86-avx512-feature-state-fault')],
   });
 }
