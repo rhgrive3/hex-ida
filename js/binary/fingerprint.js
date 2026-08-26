@@ -125,7 +125,7 @@ function fingerprintImageResult(state, total, executableOnly) {
  */
 export function fingerprintImage(image, opts = {}) {
   const executableOnly = opts.executableOnly !== false;
-  const chunkBytes = Math.max(4096, Math.min(1 << 20, Number(opts.chunkBytes || 256 * 1024)));
+  const chunkBytes = Math.min(1 << 20, byteCountOption(opts.chunkBytes, 256 * 1024, 4096));
   const ranges = fingerprintRanges(image, executableOnly);
 
   if (image.bytes) {
