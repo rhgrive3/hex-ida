@@ -100,4 +100,22 @@ const app = {
   assert.equal(cancelled, 1, 'pinpoint timeout must reach fieldAccessMany.cancel');
 }
 
+// Sheet close and the local pinpoint timeout can race on iOS. Both signals own
+// the same request, but physical worker cancellation must remain idempotent.
+{
+  const parent = new AbortController();
+  const local = new AbortController();
+  let cancelled = 0;
+  let resolveRequest;
+  const request = new Promise((resolve) => { resolveRequest = resolve; });
+  request.cancel = () => { cancelled++; resolveRequest(new Map()); };
+  app.backend.fieldAccessMany = () => request;
+  const scan = makePinpointAccessScanner(app, region, parent.signal);
+  const returned = scan([{ offset: 0x40n, size: 4 }], { signal: local.signal });
+  parent.abort('sheet-closed');
+  local.abort('pinpoint-access-timeout');
+  await returned;
+  assert.equal(cancelled, 1, 'racing cancellation sources must cancel the worker once');
+}
+
 console.log('pinpoint-ui-runtime: PASS');
