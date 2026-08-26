@@ -14,8 +14,8 @@ export const ARM64_A64_MEMORY_LOCKED_SCOPE_ID = 'arm64:a64:load-store-registry-s
 // Locked corpus identity. The enumerated case list is the denominator, so its
 // digest is pinned: a case removed, renamed, or reordered fails the dependency
 // proof instead of quietly proving a smaller claim.
-export const ARM64_A64_MEMORY_LOCKED_CASE_COUNT = 235;
-export const ARM64_A64_MEMORY_LOCKED_CORPUS_SHA256 = '4433ccc2c89cb205e6eaf745159fe3f5d65f3760ddc468a3067ce5c03c90063e';
+export const ARM64_A64_MEMORY_LOCKED_CASE_COUNT = 267;
+export const ARM64_A64_MEMORY_LOCKED_CORPUS_SHA256 = '3313f81cbe51108c43102d226222fedbd13251c45a7cfbb9552285992559e4c9';
 
 const family = (id, discriminators) => Object.freeze({ id, discriminators:Object.freeze(discriminators) });
 export const ARM64_A64_MEMORY_ENCODING_FAMILIES = Object.freeze([
@@ -58,7 +58,7 @@ const ATOMIC_EXACT = Object.freeze([
   ...orderedSizedMnemonics('cas'), ...orderedSizedMnemonics('swp'),
   ...orderedSizedMnemonics('ldadd'), ...orderedSizedMnemonics('ldset'),
   ...orderedSizedMnemonics('ldclr'), ...orderedSizedMnemonics('ldeor'),
-  'dmb','dsb','isb','clrex',
+  'dmb','dsb','isb','ssbb','pssbb','clrex',
 ]);
 
 export const ARM64_A64_MEMORY_EXACT_MNEMONICS = Object.freeze([...NON_ATOMIC_EXACT, ...ATOMIC_EXACT]);
@@ -170,6 +170,11 @@ export function* arm64A64MemoryEncodingCases() {
     yield item(`barrier:${mnemonic}:${option}`, 'barrier-exclusive-clear', `${mnemonic} ${option}`, mnemonic, { ordering:'barrier', barrierOption:option, faultKinds:[] });
   }
   yield item('barrier:isb:sy', 'barrier-exclusive-clear', 'isb sy', 'isb', { barrierOption:'sy', faultKinds:[] });
+  for (let crm = 0; crm < 16; crm++) {
+    const dsbDecodedMnemonic = crm === 0 ? 'ssbb' : crm === 4 ? 'pssbb' : 'dsb';
+    yield item(`barrier:dsb:crm-${crm}`, 'barrier-exclusive-clear', `dsb #${crm}`, dsbDecodedMnemonic, { ordering:'barrier', barrierCrm:crm, faultKinds:[] });
+    yield item(`barrier:isb:crm-${crm}`, 'barrier-exclusive-clear', `isb #${crm}`, 'isb', { barrierOption:'sy', barrierCrm:crm, faultKinds:[] });
+  }
   for (const immediate of [0,15]) yield item(`clrex:${immediate}`, 'barrier-exclusive-clear', `clrex #${immediate}`, 'clrex', { completeness:'exact-with-intrinsic', clrexImmediate:immediate, faultKinds:[] });
 
   yield item('fault:sp-single', 'single-load-store', 'ldr x0, [sp]', 'ldr', { widthBits:64, addressingMode:'offset', faultKinds:['stack-pointer-alignment-fault','data-abort'], tagChecked:false });

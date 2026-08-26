@@ -56,8 +56,6 @@ function decodedInstruction(raw, id, word = null) {
     operands:raw.opStr,
     opStr:raw.opStr,
     ops:parseOperands(raw.opStr),
-    // The production pipeline carries the fixed-width encoding word next to the
-    // printed text; a decoder-lossy field is read from it, never invented.
     ...(word == null ? {} : { word }),
     mode:'a64',
     origin:{ instructionIds:[id] },
@@ -75,22 +73,25 @@ function accesses(bundle) {
   }
   return out;
 }
+const DSB_OPTION_BY_CRM = Object.freeze([
+  'ssbb','oshld','oshst','osh',
+  'pssbb','nshld','nshst','nsh',
+  'sy','ishld','ishst','ish',
+  'sy','ld','st','sy',
+]);
+const DECODER_MNEMONIC_ALIASES = Object.freeze({ dfb:'dsb' });
 
 const denominator = validateArm64A64MemoryDenominator();
 assert.equal(denominator.denominatorId, ARM64_A64_MEMORY_DENOMINATOR_ID);
 assert.equal(denominator.encodingFamilyCount, 9);
-assert.equal(denominator.encodingCaseCount, 235);
-assert.equal(denominator.mnemonicCount, 121);
+assert.equal(denominator.encodingCaseCount, 267);
+assert.equal(denominator.mnemonicCount, 123);
 assert.equal(denominator.partialMnemonicCount, 0);
-assert.equal(denominator.exactMnemonicCount, 121);
+assert.equal(denominator.exactMnemonicCount, 123);
 assert.equal(denominator.encodingCaseCount, ARM64_A64_MEMORY_LOCKED_CASE_COUNT);
-// The corpus digest is the shrink guard: a case removed, renamed, or reordered
-// changes it, so a smaller claim can never be published under this identity.
 assert.equal(denominator.corpusSha256, ARM64_A64_MEMORY_LOCKED_CORPUS_SHA256);
 assert.match(denominator.corpusSha256, /^[0-9a-f]{64}$/);
 
-// The dependency contract handed to the A64 decoder ownership denominator must
-// be accepted by that denominator's own validator, not by this file's opinion.
 const memoryDependencyProof = arm64A64MemoryDecoderDependencyProof();
 assert.equal(validateArm64A64DecoderDependencyProof('memory', memoryDependencyProof), true);
 assert.equal(validateArm64A64DecoderDependencyProof('simd', memoryDependencyProof), false, 'a memory proof must never satisfy the SIMD dependency');
@@ -103,10 +104,13 @@ for (const damaged of [
 ]) assert.equal(validateArm64A64DecoderDependencyProof('memory', damaged), false);
 assert.equal(new Set(ARM64_A64_MEMORY_ENCODING_FAMILIES.map(({ id }) => id)).size, 9);
 assert.deepEqual(
-  [...ARM64_MEMORY_EFFECT_MNEMONICS].sort(),
+  [...ARM64_MEMORY_EFFECT_MNEMONICS].filter((mnemonic) => !(mnemonic in DECODER_MNEMONIC_ALIASES)).sort(),
   [...ARM64_A64_MEMORY_EXACT_MNEMONICS, ...ARM64_A64_MEMORY_PARTIAL_MNEMONICS].sort(),
   'production memory registry drifted from the independently-declared denominator',
 );
+for (const alias of Object.keys(DECODER_MNEMONIC_ALIASES)) {
+  assert.ok(ARM64_MEMORY_EFFECT_MNEMONICS.includes(alias), `decoder alias ${alias} escaped production memory ownership`);
+}
 
 const cases = [...arm64A64MemoryEncodingCases()];
 const llvmRows = assembleCases(cases);
@@ -117,7 +121,8 @@ try {
     const oracle = llvmRows[index];
     const raw = session.decode(bytes32(oracle.word), 0x400000n + BigInt(index * 4));
     assert.equal(raw.length, 1, `${current.id}:Capstone rejected LLVM encoding 0x${oracle.word.toString(16)}:${oracle.llvmText}`);
-    assert.equal(raw[0].mnemonic, current.mnemonic, `${current.id}:decoder mnemonic drift:${raw[0].opStr}`);
+    const canonicalDecoderMnemonic = DECODER_MNEMONIC_ALIASES[raw[0].mnemonic] || raw[0].mnemonic;
+    assert.equal(canonicalDecoderMnemonic, current.mnemonic, `${current.id}:decoder mnemonic drift:${raw[0].mnemonic}:${raw[0].opStr}`);
     const effects = liftArm64MachineEffects(decodedInstruction(raw[0], `arm64-memory-denominator:${current.id}`, oracle.word));
     assert.ok(effects, `${current.id}:registry-owned decoder form escaped memory ownership`);
     assert.equal(effects.completeness, current.completeness, `${current.id}:${raw[0].mnemonic}:${raw[0].opStr}:${effects.unknownEffects?.reason}`);
@@ -140,8 +145,6 @@ try {
     if (current.writeOrdering) assert.ok(memoryAccesses.some(({ direction, access }) => direction === 'write' && access.ordering === current.writeOrdering), `${current.id}:write ordering`);
     if (current.addressingMode) assert.equal(effects.metadata.addressing?.mode, current.addressingMode, `${current.id}:addressing mode`);
     if (current.prefetch) {
-      // The prefetch hint is exact only when every prfop discriminator survives
-      // the decoder boundary and the architectural state change stays empty.
       assert.equal(effects.metadata.prefetch?.operation, current.prefetch.operation, `${current.id}:prfop operation`);
       assert.equal(effects.metadata.prefetch?.cacheLevel, current.prefetch.cacheLevel, `${current.id}:prfop target`);
       assert.equal(effects.metadata.prefetch?.policy, current.prefetch.policy, `${current.id}:prfop policy`);
@@ -170,18 +173,21 @@ try {
       assert.equal(effects.metadata.option, current.barrierOption, `${current.id}:barrier option`);
       assert.equal(effects.operations[0].kind, 'barrier', `${current.id}:barrier operation`);
     }
+    if (current.barrierCrm != null) {
+      assert.equal((oracle.word >>> 8) & 0xf, current.barrierCrm, `${current.id}:encoded barrier CRm discriminator`);
+      const expectedOption = current.id.startsWith('barrier:dsb:') ? DSB_OPTION_BY_CRM[current.barrierCrm] : 'sy';
+      assert.equal(effects.metadata.option, expectedOption, `${current.id}:barrier semantics after decoder normalization`);
+      if (effects.metadata.crm != null) assert.equal(effects.metadata.crm, current.barrierCrm, `${current.id}:preserved textual barrier CRm`);
+      assert.equal(effects.operations[0].kind, 'barrier', `${current.id}:barrier operation`);
+    }
     if (current.clrexImmediate != null) assert.equal(effects.metadata.immediate, current.clrexImmediate, `${current.id}:CLREX imm4 discriminator`);
   }
 
-  // Valid but intentionally unowned pair-exclusive remains unsupported rather
-  // than being misrepresented as a state-preserving memory operation.
   const pairExclusive = session.decode(bytes32(0xc87f8440), 0x500000n);
   assert.equal(pairExclusive[0]?.mnemonic, 'ldaxp');
   const unsupported = liftArm64MachineEffects(decodedInstruction(pairExclusive[0], 'arm64-memory-negative:ldaxp'));
   assert.equal(unsupported, null, 'unowned pair-exclusive must remain unsupported');
 
-  // An unallocated all-ones word must not enter the registry through a nearby
-  // decoder alias.
   assert.deepEqual(session.decode(bytes32(0xffffffff), 0x500004n), [], 'invalid encoding unexpectedly decoded');
 } finally {
   session.close();
@@ -220,8 +226,11 @@ for (const malformed of [
   direct('stxr', [w(2), x(2), mem(x(1))]),
   direct('stxr', [w(1), x(2), mem(x(1))]),
   direct('clrex', [{ k:'imm', text:'#16', value:16n }]),
-  // A prefetch whose specifier the disassembler dropped and whose encoding word
-  // the producer did not carry must fail closed, not assume a prfop.
+  direct('dsb', [{ k:'imm', text:'#16', value:16n }]),
+  direct('isb', [{ k:'imm', text:'#16', value:16n }]),
+  direct('ssbb', [imm(0)]),
+  direct('pssbb', [imm(4)]),
+  direct('dfb', [imm(12)]),
   direct('prfm', [mem(x(1))]),
   direct('prfum', [mem(x(1))]),
   direct('prfm', [{ k:'other', text:'pldl4keep' }, mem(x(1))]),
