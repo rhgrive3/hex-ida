@@ -9,6 +9,7 @@ import { liftX86FloatingPointEffects } from './fp.js';
 import { liftX86SimdEffects } from './simd.js';
 import { liftX86SimdAndNotEffects } from './simd-and-not.js';
 import { liftX86SystemEffects } from './system.js';
+import { liftX86SystemRegisterMoveEffects } from './system-register-move.js';
 import {
   dispatchX86ExtendedStateEffects,
   liftX86ExtendedStateEffects,
@@ -59,6 +60,15 @@ export function dispatchX86MachineEffects(decoded, context = {}) {
   const instruction = normalizeX86Instruction(decoded, context);
   if (!instruction.detailAvailable) return Object.freeze({ ownerId: 'fallback', result: null });
   if (invalidNonEvexExtendedVector(instruction)) throw new TypeError('x86-decoded-instruction-high-vector-register-requires-evex');
+
+  // Capstone emits the architectural MOV family for 0F20/21/22/23. These
+  // encodings must be claimed before the generic integer MOV owner or their
+  // CR/DR physical state and privilege/debug effects would be lost.
+  const systemRegisterMove = liftX86SystemRegisterMoveEffects(instruction, context);
+  if (systemRegisterMove != null) {
+    return Object.freeze({ ownerId:'system', result:terminalize(instruction, 'system', systemRegisterMove, context) });
+  }
+
   const extended = dispatchX86ExtendedStateEffects(instruction, context);
   if (extended != null && extended.result != null) {
     return Object.freeze({
