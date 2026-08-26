@@ -39,6 +39,7 @@ for (const crm of [8, 12]) {
   assert.equal(b.metadata.option, 'sy');
   assert.equal(b.metadata.crm, crm);
   assert.equal(b.metadata.reservedEncoding, true);
+  assert.equal(b.operations[0].metadata.reservedEncoding, true);
   assert.equal(b.metadata.domain, 'full-system');
   assert.equal(b.metadata.access, 'all');
 }
@@ -56,6 +57,7 @@ for (const crm of [0, 14]) {
   assert.equal(b.metadata.option, 'sy');
   assert.equal(b.metadata.crm, crm);
   assert.equal(b.metadata.reservedEncoding, true);
+  assert.equal(b.operations[0].metadata.reservedEncoding, true);
   assert.deepEqual(
     { domain:b.operations[0].scope.domain, access:b.operations[0].scope.access },
     { domain:'instruction-stream', access:'instruction-fetch' },
