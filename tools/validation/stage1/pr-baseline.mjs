@@ -71,12 +71,14 @@ export function classifyInheritedStage1A2Failure({
     return Object.freeze({ eligible:false, reason:'a2-failure-is-not-effects-only' });
   }
 
+  // Stage1 stores only a bounded tail for each subcommand. Require that bounded
+  // evidence to prove the MachineEffects failure set is exactly one file, then
+  // prove the precise assertion class independently from exact candidate/base
+  // executions below instead of depending on whether that assertion survived
+  // tail truncation.
   const effectsOutput = commandOutput(effects);
   if (!effectsOutput.includes(FAILURE_SUMMARY)) {
     return Object.freeze({ eligible:false, reason:'a2-machine-effects-failure-set-changed' });
-  }
-  if (!effectsOutput.includes(PARTIAL_MARKER)) {
-    return Object.freeze({ eligible:false, reason:'a2-x86-closure-failure-class-changed' });
   }
   if (candidateClosureStatus === 0 || !String(candidateClosureOutput).includes(PARTIAL_MARKER)) {
     return Object.freeze({ eligible:false, reason:'candidate-x86-closure-no-longer-matches' });
