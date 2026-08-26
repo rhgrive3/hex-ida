@@ -33,6 +33,11 @@ const ARM64_MULTIPLY_DIVIDE_MNEMONICS = Object.freeze(new Set([
 ]));
 const ARM64_CONDITIONAL_TWO_SOURCE = Object.freeze(new Set(['csel','csinc','csinv','csneg']));
 const ARM64_CONDITIONAL_ONE_SOURCE = Object.freeze(new Set(['cinc','cneg','cinv']));
+const ARM64_UNARY_REGISTER_MNEMONICS = Object.freeze(new Set([
+  'sxtb','sxth','sxtw','uxtb','uxth','uxtw','clz','rbit','rev','rev16','rev32','abs',
+]));
+const ARM64_SHIFT_MNEMONICS = Object.freeze(new Set(['lsl','lslv','lsr','lsrv','asr','asrv','ror','rorv']));
+const ARM64_VARIABLE_SHIFT_MNEMONICS = Object.freeze(new Set(['lslv','lsrv','asrv','rorv']));
 
 function validImm12WithOptionalLsl12(op) {
   if (op?.k !== 'imm') return true;
@@ -166,9 +171,7 @@ function multiplyDivideEncodingFailure(instruction) {
   const mnemonic = instructionMnemonic(instruction);
   if (!ARM64_MULTIPLY_DIVIDE_MNEMONICS.has(mnemonic)) return null;
   const ops = Array.isArray(instruction?.ops) ? instruction.ops : [];
-  for (const operand of ops.slice(1)) {
-    if (!isPlainGpSource(operand)) return `arm64-${mnemonic}-source-register-required`;
-  }
+  for (const operand of ops.slice(1)) if (!isPlainGpSource(operand)) return `arm64-${mnemonic}-source-register-required`;
   return null;
 }
 
@@ -178,11 +181,14 @@ function registerOnlyIntegerEncodingFailure(instruction) {
   const indices = mnemonic === 'extr' ? [1,2]
     : ARM64_CONDITIONAL_TWO_SOURCE.has(mnemonic) ? [1,2]
       : ARM64_CONDITIONAL_ONE_SOURCE.has(mnemonic) ? [1]
-        : null;
-  if (!indices) return null;
-  for (const index of indices) {
-    if (!isPlainGpSource(ops[index])) return `arm64-${mnemonic}-source-register-required`;
+        : ARM64_UNARY_REGISTER_MNEMONICS.has(mnemonic) ? [1]
+          : null;
+  if (indices) {
+    for (const index of indices) if (!isPlainGpSource(ops[index])) return `arm64-${mnemonic}-source-register-required`;
   }
+  if (!ARM64_SHIFT_MNEMONICS.has(mnemonic)) return null;
+  if (!isPlainGpSource(ops[1])) return `arm64-${mnemonic}-source-register-required`;
+  if (ARM64_VARIABLE_SHIFT_MNEMONICS.has(mnemonic) && !isPlainGpSource(ops[2])) return `arm64-${mnemonic}-shift-register-required`;
   return null;
 }
 
