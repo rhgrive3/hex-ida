@@ -10,12 +10,6 @@ import { liftArm64SystemEffects } from './system.js';
 
 export const ARM64_MACHINE_EFFECTS_SEMANTIC_VERSION = '7';
 
-// This order is part of the Phase 2 semantic contract. Shape-sensitive families
-// precede scalar families when A64 reuses a mnemonic (for example ADD/MOV in
-// SIMD versus integer code). They must return null when the operand shape is not
-// theirs. Memory intentionally precedes system so DMB/DSB/ISB/CLREX have one
-// canonical implementation: the atomic/memory model, which validates barrier
-// options and models exclusive-monitor state.
 const ARM64_EFFECT_FAMILIES = Object.freeze([
   Object.freeze({ id:'flags', lift:liftArm64FlagEffects }),
   Object.freeze({ id:'control', lift:liftArm64ControlEffects }),
@@ -31,6 +25,7 @@ const ARM64_ADD_SUB_FAMILY_MNEMONICS = Object.freeze(new Set([
   ...ARM64_ADD_SUB_IMMEDIATE_MNEMONICS,
   'adc','adcs','sbc','sbcs','neg','negs','ngc','ngcs',
 ]));
+const ARM64_LOGICAL_IMMEDIATE_MNEMONICS = Object.freeze(new Set(['and','ands','orr','eor','tst']));
 
 function validImm12WithOptionalLsl12(op) {
   if (op?.k !== 'imm') return true;
@@ -40,6 +35,45 @@ function validImm12WithOptionalLsl12(op) {
   return String(op.shift.op || '').toLowerCase() === 'lsl' && Number(op.shift.amount) === 12;
 }
 
+function rotateRightElement(value, amount, widthBits) {
+  const width = BigInt(widthBits);
+  const shift = BigInt(amount % widthBits);
+  const mask = (1n << width) - 1n;
+  if (shift === 0n) return value & mask;
+  return ((value >> shift) | (value << (width - shift))) & mask;
+}
+
+function replicateElement(value, elementBits, widthBits) {
+  let result = 0n;
+  for (let offset = 0; offset < widthBits; offset += elementBits) result |= value << BigInt(offset);
+  return BigInt.asUintN(widthBits, result);
+}
+
+function buildLogicalImmediateMasks(widthBits) {
+  const masks = new Set();
+  for (let elementBits = 2; elementBits <= widthBits; elementBits *= 2) {
+    for (let ones = 1; ones < elementBits; ones++) {
+      const base = (1n << BigInt(ones)) - 1n;
+      for (let rotation = 0; rotation < elementBits; rotation++) {
+        masks.add(replicateElement(rotateRightElement(base, rotation, elementBits), elementBits, widthBits).toString());
+      }
+    }
+  }
+  return masks;
+}
+
+const LOGICAL_IMMEDIATE_MASKS = Object.freeze({
+  32: buildLogicalImmediateMasks(32),
+  64: buildLogicalImmediateMasks(64),
+});
+
+function logicalImmediateEncodable(op, widthBits) {
+  if (op?.k !== 'imm' || (widthBits !== 32 && widthBits !== 64) || op.shift != null) return false;
+  const immediate = immediateOf(op);
+  if (immediate == null) return false;
+  return LOGICAL_IMMEDIATE_MASKS[widthBits].has(BigInt.asUintN(widthBits, immediate).toString());
+}
+
 function addSubImmediateEncodingFailure(instruction) {
   const mnemonic = instructionMnemonic(instruction);
   if (!ARM64_ADD_SUB_FAMILY_MNEMONICS.has(mnemonic)) return null;
@@ -47,22 +81,9 @@ function addSubImmediateEncodingFailure(instruction) {
   const alias = ['neg','negs','ngc','ngcs'].includes(mnemonic);
   const lhs = alias ? null : ops[1];
   const rhs = alias ? ops[1] : ops[2];
-
-  // Only ADD/ADDS/SUB/SUBS have an A64 immediate form. Carry forms and the
-  // NEG/NGC aliases are register-only, so a structured immediate must never be
-  // promoted to exact semantics by the generic operand reader.
-  if (rhs?.k === 'imm' && !ARM64_ADD_SUB_IMMEDIATE_MNEMONICS.has(mnemonic)) {
-    return `arm64-${mnemonic}-immediate-form-unencodable`;
-  }
-  // The first source of the three-operand forms is always a register/SP view.
+  if (rhs?.k === 'imm' && !ARM64_ADD_SUB_IMMEDIATE_MNEMONICS.has(mnemonic)) return `arm64-${mnemonic}-immediate-form-unencodable`;
   if (lhs?.k === 'imm') return `arm64-${mnemonic}-lhs-immediate-unencodable`;
-
-  // A64 add/sub shifted-register encodings reserve shift=3 (ROR). The generic
-  // operand modifier supports ROR for instructions that genuinely encode it,
-  // so reject it at this mnemonic-specific boundary before semantic lifting.
-  if (rhs?.k === 'reg' && String(rhs.shift?.op || '').toLowerCase() === 'ror') {
-    return `arm64-${mnemonic}-ror-shift-unencodable`;
-  }
+  if (rhs?.k === 'reg' && String(rhs.shift?.op || '').toLowerCase() === 'ror') return `arm64-${mnemonic}-ror-shift-unencodable`;
   if (rhs?.k !== 'imm') return null;
   if (!validImm12WithOptionalLsl12(rhs)) {
     const immediate = immediateOf(rhs);
@@ -78,7 +99,6 @@ function flagEncodingFailure(instruction) {
   const ops = Array.isArray(instruction?.ops) ? instruction.ops : [];
   const rhs = ops[1];
   if (rhs?.k !== 'imm') return null;
-
   if (mnemonic === 'cmp' || mnemonic === 'cmn') {
     if (!validImm12WithOptionalLsl12(rhs)) {
       const immediate = immediateOf(rhs);
@@ -87,11 +107,20 @@ function flagEncodingFailure(instruction) {
     }
     return null;
   }
-
   const immediate = immediateOf(rhs);
   if (immediate == null || immediate < 0n || immediate > 31n) return `arm64-${mnemonic}-immediate-out-of-range`;
   if (rhs.shift != null) return `arm64-${mnemonic}-immediate-shift-unencodable`;
   return null;
+}
+
+function logicalEncodingFailure(instruction) {
+  const mnemonic = instructionMnemonic(instruction);
+  if (!ARM64_LOGICAL_IMMEDIATE_MNEMONICS.has(mnemonic)) return null;
+  const ops = Array.isArray(instruction?.ops) ? instruction.ops : [];
+  const rhs = mnemonic === 'tst' ? ops[1] : ops[2];
+  if (rhs?.k !== 'imm') return null;
+  const widthBits = Number(ops[0]?.bits || 0);
+  return logicalImmediateEncodable(rhs, widthBits) ? null : `arm64-${mnemonic}-logical-immediate-unencodable`;
 }
 
 function unaryEncodingFailure(instruction) {
@@ -106,6 +135,7 @@ function unaryEncodingFailure(instruction) {
 function structuredEncodingFailure(instruction) {
   return addSubImmediateEncodingFailure(instruction)
     || flagEncodingFailure(instruction)
+    || logicalEncodingFailure(instruction)
     || unaryEncodingFailure(instruction);
 }
 
@@ -115,11 +145,6 @@ function normalizedInstruction(decoded, context) {
   const origin = decoded.origin ?? context?.origin;
   const mode = decoded.mode ?? context?.mode;
   const mnemonic = instructionMnemonic(decoded);
-  // Current decoded-model producers are allowed to carry ADR/ADRP's resolved
-  // absolute target either in pcRelTarget or in the already-decoded immediate
-  // operand. Normalize those architecture-layer representations before
-  // MachineEffects are created, so generic Semantic IR/SSA consumers never need
-  // to inspect instruction text or reconstruct PC-relative semantics.
   const operands = Array.isArray(decoded.ops) ? decoded.ops : Array.isArray(decoded.operands) ? decoded.operands : [];
   const adrImmediate = operands.length > 1 ? immediateOf(operands[1]) : null;
   const normalizedPcRelTarget = (mnemonic === 'adr' || mnemonic === 'adrp') && decoded.pcRelTarget == null
@@ -137,12 +162,7 @@ function normalizedInstruction(decoded, context) {
 
 function normalizedContext(context = {}) {
   const machineEffectsOptions = context.machineEffectsOptions ?? context.options ?? {};
-  return {
-    ...context,
-    ...machineEffectsOptions,
-    options: machineEffectsOptions,
-    machineEffectsOptions,
-  };
+  return { ...context, ...machineEffectsOptions, options: machineEffectsOptions, machineEffectsOptions };
 }
 
 export function liftArm64MachineEffects(decoded, context = {}) {
@@ -150,10 +170,7 @@ export function liftArm64MachineEffects(decoded, context = {}) {
   const familyContext = normalizedContext(context);
   const encodingFailure = structuredEncodingFailure(instruction);
   if (encodingFailure) {
-    const partial = createArm64EffectContext(instruction, familyContext).partial(
-      encodingFailure,
-      ['registers','flags','other'],
-    );
+    const partial = createArm64EffectContext(instruction, familyContext).partial(encodingFailure, ['registers','flags','other']);
     return decorateArm64BtiGuardedPageEffects(instruction, partial, familyContext);
   }
   for (const family of ARM64_EFFECT_FAMILIES) {
