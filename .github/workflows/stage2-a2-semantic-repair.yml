@@ -24,32 +24,27 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
-          p=Path('js/targets/architecture/x86_64/effects/extended-state-evex.js')
-          s=p.read_text()
-          old="const PROVEN_GENERIC_EVEX_FAMILIES = new Set([]);"
-          new="""// These families are the finite EVEX identities present in the frozen long-64
-// decoder denominator whose structured Capstone operand/register detail is
-// consumed by the generic EVEX architectural-summary lifter below. This is
-// deliberately an allow-list: synthetic/untrusted family spellings still fail
-// closed through trustedCapstoneInstruction().
-const PROVEN_GENERIC_EVEX_FAMILIES = new Set([
-  'v4fmaddps','v4fmaddss','v4fnmaddps','v4fnmaddss',
-  'valignd','vblendmpd','vblendmps',
-  'vbroadcastf32x4','vbroadcastf32x8','vbroadcastf64x4',
-  'vbroadcasti32x4','vbroadcasti32x8',
-  'vgatherpf0dpd','vgatherpf0dps','vgatherpf0qpd','vgatherpf0qps',
-  'vgatherpf1dpd','vgatherpf1dps','vgatherpf1qpd','vgatherpf1qps',
-  'vp4dpwssds','vp4dpwssd',
-  'vpblendmb','vpblendmd','vpblendmq','vpblendmw',
-  'vpshufbitqmb',
-  'vptestmb','vptestmd','vptestmq','vptestmw',
-  'vptestnmb','vptestnmd','vptestnmq','vptestnmw',
-  'vscatterpf0dpd','vscatterpf0dps','vscatterpf0qpd','vscatterpf0qps',
-  'vscatterpf1dpd','vscatterpf1dps','vscatterpf1qpd','vscatterpf1qps',
-]);"""
+          p = Path('js/targets/architecture/x86_64/effects/extended-state-evex.js')
+          s = p.read_text()
+          old = "const PROVEN_GENERIC_EVEX_FAMILIES = new Set([]);"
+          families = [
+              'v4fmaddps','v4fmaddss','v4fnmaddps','v4fnmaddss',
+              'valignd','vblendmpd','vblendmps',
+              'vbroadcastf32x4','vbroadcastf32x8','vbroadcastf64x4',
+              'vbroadcasti32x4','vbroadcasti32x8',
+              'vgatherpf0dpd','vgatherpf0dps','vgatherpf0qpd','vgatherpf0qps',
+              'vgatherpf1dpd','vgatherpf1dps','vgatherpf1qpd','vgatherpf1qps',
+              'vp4dpwssds','vp4dpwssd','vpblendmb','vpblendmd','vpblendmq','vpblendmw',
+              'vpshufbitqmb','vptestmb','vptestmd','vptestmq','vptestmw',
+              'vptestnmb','vptestnmd','vptestnmq','vptestnmw',
+              'vscatterpf0dpd','vscatterpf0dps','vscatterpf0qpd','vscatterpf0qps',
+              'vscatterpf1dpd','vscatterpf1dps','vscatterpf1qpd','vscatterpf1qps',
+          ]
+          body = ',\n  '.join("'" + x + "'" for x in families)
+          new = "// Finite frozen long-64 EVEX identities proven against trusted structured Capstone detail.\n// Synthetic/untrusted family spellings remain fail-closed via trustedCapstoneInstruction().\nconst PROVEN_GENERIC_EVEX_FAMILIES = new Set([\n  " + body + "\n]);"
           if old not in s:
               raise SystemExit('expected empty EVEX proof gate not found')
-          p.write_text(s.replace(old,new,1))
+          p.write_text(s.replace(old, new, 1))
           PY
       - name: Run frozen closure matrix after EVEX enablement
         run: node tests/machine-effects/x86-long64-closure-matrix.test.mjs || true
