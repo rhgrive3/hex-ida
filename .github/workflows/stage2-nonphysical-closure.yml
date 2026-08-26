@@ -74,7 +74,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          node tests/machine-effects/run.mjs
+          mkdir -p reports/stage2
+          node tests/machine-effects/run.mjs 2>&1 | tee reports/stage2/machine-effects.log
 
       - name: Collect exact non-physical Stage 2 profile evidence
         id: profile
