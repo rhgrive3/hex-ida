@@ -1,10 +1,8 @@
 name: Stage2 A2 semantic repair
 on:
   push:
-    branches:
-      - integration/stage2-a2-x86-long64-terminal-semantics
-    paths:
-      - .github/workflows/stage2-a2-semantic-repair.yml
+    branches: [integration/stage2-a2-x86-long64-terminal-semantics]
+    paths: [.github/workflows/stage2-a2-semantic-repair.yml]
 permissions:
   contents: write
 jobs:
@@ -20,60 +18,45 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --no-audit --no-fund
-      - name: Apply final semantic repairs
+      - name: Apply production semantic repairs
         run: |
           python3 - <<'PY'
           from pathlib import Path
-          p = Path('js/targets/architecture/x86_64/effects/terminal-residual.js')
-          s = p.read_text()
-          replacements = {
-            "if (family === 'insb') return same(bytes,[0x6c]);": "if (family === 'insb') return same(bytes,[0x6c]) || same(bytes,[0x26,0x6c]);",
-            "if (family === 'insd') return same(bytes,[0x6d]);": "if (family === 'insd') return same(bytes,[0x6d]) || same(bytes,[0x26,0x6d]);",
-            "if (family === 'outsb') return same(bytes,[0x6e]);": "if (family === 'outsb') return same(bytes,[0x6e]) || same(bytes,[0x26,0x6e]);",
-            "if (family === 'outsd') return same(bytes,[0x6f]);": "if (family === 'outsd') return same(bytes,[0x6f]) || same(bytes,[0x26,0x6f]);",
-            "if (family === 'roundsd' && same(bytes,[0x66,0x0f,0x3a,0x0a,0x00,0x00]))": "if (family === 'roundsd' && same(bytes,[0x66,0x0f,0x3a,0x0b,0x00,0x00]))",
-            "if (family === 'roundss' && same(bytes,[0x66,0x0f,0x3a,0x0b,0x00,0x00]))": "if (family === 'roundss' && same(bytes,[0x66,0x0f,0x3a,0x0a,0x00,0x00]))",
-            "if (family === 'vroundsd' && same(bytes,[0xc4,0xe3,0x79,0x0a,0x00,0x00]))": "if (family === 'vroundsd' && same(bytes,[0xc4,0xe3,0x01,0x0b,0x00,0x00]))",
-            "if (family === 'vroundss' && same(bytes,[0xc4,0xe3,0x79,0x0b,0x00,0x00]))": "if (family === 'vroundss' && same(bytes,[0xc4,0xe3,0x01,0x0a,0x00,0x00]))",
-            "if (family === 'vcvtpd2ps' && same(bytes,[0xc5,0xf9,0x5a,0x00]))": "if (family === 'vcvtpd2ps' && same(bytes,[0xc5,0x79,0x5a,0x00]))",
+          p=Path('js/targets/architecture/x86_64/effects/terminal-residual.js'); s=p.read_text()
+          repl={
+            "if (family === 'insb') return same(bytes,[0x6c]);":"if (family === 'insb') return same(bytes,[0x6c]) || same(bytes,[0x26,0x6c]);",
+            "if (family === 'insd') return same(bytes,[0x6d]);":"if (family === 'insd') return same(bytes,[0x6d]) || same(bytes,[0x26,0x6d]);",
+            "if (family === 'outsb') return same(bytes,[0x6e]);":"if (family === 'outsb') return same(bytes,[0x6e]) || same(bytes,[0x26,0x6e]);",
+            "if (family === 'outsd') return same(bytes,[0x6f]);":"if (family === 'outsd') return same(bytes,[0x6f]) || same(bytes,[0x26,0x6f]);",
+            "if (family === 'roundsd' && same(bytes,[0x66,0x0f,0x3a,0x0a,0x00,0x00]))":"if (family === 'roundsd' && same(bytes,[0x66,0x0f,0x3a,0x0b,0x00,0x00]))",
+            "if (family === 'roundss' && same(bytes,[0x66,0x0f,0x3a,0x0b,0x00,0x00]))":"if (family === 'roundss' && same(bytes,[0x66,0x0f,0x3a,0x0a,0x00,0x00]))",
+            "if (family === 'vroundsd' && same(bytes,[0xc4,0xe3,0x79,0x0a,0x00,0x00]))":"if (family === 'vroundsd' && same(bytes,[0xc4,0xe3,0x01,0x0b,0x00,0x00]))",
+            "if (family === 'vroundss' && same(bytes,[0xc4,0xe3,0x79,0x0b,0x00,0x00]))":"if (family === 'vroundss' && same(bytes,[0xc4,0xe3,0x01,0x0a,0x00,0x00]))",
+            "if (family === 'vcvtpd2ps' && same(bytes,[0xc5,0xf9,0x5a,0x00]))":"if (family === 'vcvtpd2ps' && same(bytes,[0xc5,0x79,0x5a,0x00]))",
           }
-          for old,new in replacements.items():
-              if old not in s:
-                  raise SystemExit('expected encoding gate not found: ' + old)
-              s = s.replace(old,new,1)
+          for a,b in repl.items():
+            if a not in s: raise SystemExit('missing terminal gate: '+a)
+            s=s.replace(a,b,1)
           p.write_text(s)
-
-          p = Path('js/targets/architecture/x86_64/effects/extended-state-helpers.js')
-          s = p.read_text()
-          old = "if((p0&0x0c)!==0||(p1&0x04)===0||map===0||(zeroing&&aaa===0))return null;"
-          new = "if((p0&0x0c)!==0||(p1&0x04)===0||map===0||ll===3||(zeroing&&aaa===0))return null;"
-          if old not in s:
-              raise SystemExit('expected EVEX validity guard not found')
-          p.write_text(s.replace(old,new,1))
+          p=Path('js/targets/architecture/x86_64/effects/extended-state-helpers.js'); s=p.read_text()
+          a="if((p0&0x0c)!==0||(p1&0x04)===0||map===0||(zeroing&&aaa===0))return null;"; b="if((p0&0x0c)!==0||(p1&0x04)===0||map===0||ll===3||(zeroing&&aaa===0))return null;"
+          if a not in s: raise SystemExit('missing EVEX validity gate')
+          p.write_text(s.replace(a,b,1))
           PY
-      - name: Make synthetic VEX fixtures raw-prefix coherent
+      - name: Repair coherent VEX-only synthetic fixtures
         run: |
           python3 - <<'PY'
           from pathlib import Path
-          p = Path('tests/machine-effects/helpers/x86-long64-fp-simd.mjs')
-          s = p.read_text()
-          old = "export function instruction(family,operands=[],prefixes=legacy(),rawBytes=[0x90]){seq++;return{address:0x500000n+BigInt(seq*16),length:rawBytes.length,rawBytes:Uint8Array.from(rawBytes),mode:'long-64',instructionCode:code++,instructionFamily:family,instructionId:`x86-denominator:${family}:${seq}`,detailAvailable:true,detailStatus:'complete',mnemonic:family,opStr:'',detail:{operandCount:operands.length,operands,prefixes,implicitReads:[],implicitWrites:[],conditionCode:null}};}\nexport function effects(family,operands=[],prefixes=legacy(),rawBytes=[0x90]){const input=instruction(family,operands,prefixes,rawBytes);return liftX86MachineEffects(input,{instructionId:input.instructionId});}"
-          new = "export function instruction(family,operands=[],prefixes=legacy(),rawBytes=null){seq++;const coherentRaw=rawBytes??(Array.isArray(prefixes?.vector?.bytes)?[...prefixes.vector.bytes,0x90]:[0x90]);return{address:0x500000n+BigInt(seq*16),length:coherentRaw.length,rawBytes:Uint8Array.from(coherentRaw),mode:'long-64',instructionCode:code++,instructionFamily:family,instructionId:`x86-denominator:${family}:${seq}`,detailAvailable:true,detailStatus:'complete',mnemonic:family,opStr:'',detail:{operandCount:operands.length,operands,prefixes,implicitReads:[],implicitWrites:[],conditionCode:null}};}\nexport function effects(family,operands=[],prefixes=legacy(),rawBytes=null){const input=instruction(family,operands,prefixes,rawBytes);return liftX86MachineEffects(input,{instructionId:input.instructionId});}"
-          if old not in s:
-              raise SystemExit('expected synthetic fixture constructor not found')
-          p.write_text(s.replace(old,new,1))
-          PY
-      - name: Keep SIMD width-negative prefix valid
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path('tests/machine-effects/x86-long64-simd-denominator.test.mjs')
-          s = p.read_text()
-          old = "const oldSynthetic=effects('vpaddd',[reg('ymm0'),reg('ymm1'),reg('ymm2')],vex256(0));assert.equal(oldSynthetic.completeness,'partial');assert.match(oldSynthetic.unknownEffects.reason,/vector-width-unmodelled/);"
-          new = "const oldSynthetic=effects('vpaddd',[reg('ymm0'),reg('ymm1'),reg('ymm2')],vex128(1));assert.equal(oldSynthetic.completeness,'partial');assert.match(oldSynthetic.unknownEffects.reason,/vector-width-unmodelled/);"
-          if old not in s:
-              raise SystemExit('expected SIMD width-negative fixture not found')
-          p.write_text(s.replace(old,new,1))
+          p=Path('tests/machine-effects/helpers/x86-long64-fp-simd.mjs'); s=p.read_text()
+          a="export function instruction(family,operands=[],prefixes=legacy(),rawBytes=[0x90]){seq++;return{address:0x500000n+BigInt(seq*16),length:rawBytes.length,rawBytes:Uint8Array.from(rawBytes),mode:'long-64',instructionCode:code++,instructionFamily:family,instructionId:`x86-denominator:${family}:${seq}`,detailAvailable:true,detailStatus:'complete',mnemonic:family,opStr:'',detail:{operandCount:operands.length,operands,prefixes,implicitReads:[],implicitWrites:[],conditionCode:null}};}\nexport function effects(family,operands=[],prefixes=legacy(),rawBytes=[0x90]){const input=instruction(family,operands,prefixes,rawBytes);return liftX86MachineEffects(input,{instructionId:input.instructionId});}"
+          b="export function instruction(family,operands=[],prefixes=legacy(),rawBytes=null){seq++;const k=prefixes?.vector?.kind;const coherentRaw=rawBytes??((k==='vex2'||k==='vex3')&&Array.isArray(prefixes?.vector?.bytes)?[...prefixes.vector.bytes,0x90]:[0x90]);return{address:0x500000n+BigInt(seq*16),length:coherentRaw.length,rawBytes:Uint8Array.from(coherentRaw),mode:'long-64',instructionCode:code++,instructionFamily:family,instructionId:`x86-denominator:${family}:${seq}`,detailAvailable:true,detailStatus:'complete',mnemonic:family,opStr:'',detail:{operandCount:operands.length,operands,prefixes,implicitReads:[],implicitWrites:[],conditionCode:null}};}\nexport function effects(family,operands=[],prefixes=legacy(),rawBytes=null){const input=instruction(family,operands,prefixes,rawBytes);return liftX86MachineEffects(input,{instructionId:input.instructionId});}"
+          if a not in s: raise SystemExit('missing fixture constructor')
+          p.write_text(s.replace(a,b,1))
+          p=Path('tests/machine-effects/x86-long64-simd-denominator.test.mjs'); s=p.read_text()
+          a="const oldSynthetic=effects('vpaddd',[reg('ymm0'),reg('ymm1'),reg('ymm2')],vex256(0));assert.equal(oldSynthetic.completeness,'partial');assert.match(oldSynthetic.unknownEffects.reason,/vector-width-unmodelled/);"
+          b="const oldSynthetic=effects('vpaddd',[reg('ymm0'),reg('ymm1'),reg('ymm2')],vex128(1));assert.equal(oldSynthetic.completeness,'partial');assert.match(oldSynthetic.unknownEffects.reason,/vector-width-unmodelled/);"
+          if a not in s: raise SystemExit('missing width-negative fixture')
+          p.write_text(s.replace(a,b,1))
           PY
       - name: Prove frozen 1487 closure matrix
         run: node tests/machine-effects/x86-long64-closure-matrix.test.mjs
@@ -83,7 +66,7 @@ jobs:
           node tests/machine-effects/x86-long64-simd-denominator.test.mjs
           node tests/machine-effects/x86-long64-system-denominator.test.mjs
           node tests/machine-effects/a2-denominator.test.mjs
-      - name: Commit only after all focused proofs pass
+      - name: Commit only after proofs pass
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
