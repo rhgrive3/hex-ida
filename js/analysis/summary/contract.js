@@ -131,7 +131,10 @@ export function createIndirectCallSet(input = {}) {
  */
 export function createFunctionSummary(input = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) fail('function-summary-invalid');
-  const status = input.status?.schemaVersion ? input.status : createAnalysisStatus(input.status ?? {});
+  // A schema marker is not proof that the envelope came through the canonical
+  // constructor. Rebuild it here so forged/future-shaped objects cannot bypass
+  // completeness and stop-reason consistency checks at the summary boundary.
+  const status = createAnalysisStatus(input.status ?? {});
 
   const unknownCallEffects = list(input.unknownCallEffects, 'function-summary-invalid-unknown-calls').map(createUnknownCallEffect);
   const memoryReadRegions = list(input.memoryReadRegions, 'function-summary-invalid-read-regions').map(createMemoryEffect);
