@@ -169,7 +169,8 @@ export class EvidenceStore {
     // identities collided in practice (#1302), silently folding the second
     // record into the first and losing evidence. This is the same 128-bit
     // digest the symbolic evidence graph already derives its ids from.
-    const id = String(input.id || `ev_${stableDigest(identity).slice(0, 32)}`);
+    if (input.id && typeof input.id !== 'string') return null;
+    const id = input.id || `ev_${stableDigest(identity).slice(0, 32)}`;
     const record = {
       id,
       kind: String(input.kind || 'observation'),
