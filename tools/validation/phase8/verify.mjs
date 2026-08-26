@@ -32,7 +32,7 @@ const READINESS = JSON.parse(fs.readFileSync(path.join(ROOT, 'tools/validation/p
 const CHECKPOINT_LEDGER = path.join(ROOT, 'reports/phase8/checkpoints.json');
 
 export const VERIFIER_ID = 'phase8.verifier';
-export const VERIFIER_VERSION = '1.0.0';
+export const VERIFIER_VERSION = '1.1.0';
 export const SCHEMA_VERSION = 'phase8-release-evidence/v1';
 
 function sha256(bytes) { return crypto.createHash('sha256').update(bytes).digest('hex'); }
