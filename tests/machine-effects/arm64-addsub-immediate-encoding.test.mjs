@@ -24,6 +24,16 @@ for (const [suffix, operands] of [
   assert.equal(effects.completeness, 'exact', `${operands}:${effects.unknownEffects?.reason}`);
 }
 
+for (const [mnemonic, operands] of [
+  ['add','x0, x1, x2, lsl #0'],
+  ['add','x0, x1, x2, lsr #63'],
+  ['add','x0, x1, x2, asr #63'],
+  ['add','w0, w1, w2, lsl #31'],
+]) {
+  const effects = lift(mnemonic, operands, `valid-shift-${operands.replace(/\W+/g,'-')}`);
+  assert.equal(effects.completeness, 'exact', `${mnemonic} ${operands}:${effects.unknownEffects?.reason}`);
+}
+
 for (const [mnemonic, operands, reason] of [
   ['add','x0, x1, #4097','arm64-add-immediate-out-of-range'],
   ['sub','x0, x1, #-1','arm64-sub-immediate-out-of-range'],
@@ -38,6 +48,10 @@ for (const [mnemonic, operands, reason] of [
   ['ngc','x0, #1','arm64-ngc-immediate-form-unencodable'],
   ['ngcs','x0, #1','arm64-ngcs-immediate-form-unencodable'],
   ['add','x0, #1, x2','arm64-add-lhs-immediate-unencodable'],
+  ['add','x0, x1, x2, ror #1','arm64-add-ror-shift-unencodable'],
+  ['adds','x0, x1, x2, ror #1','arm64-adds-ror-shift-unencodable'],
+  ['sub','x0, x1, x2, ror #1','arm64-sub-ror-shift-unencodable'],
+  ['subs','x0, x1, x2, ror #1','arm64-subs-ror-shift-unencodable'],
 ]) {
   const effects = lift(mnemonic, operands, `${mnemonic}-${reason}`);
   assert.equal(effects.completeness, 'partial', `${mnemonic} ${operands} must fail closed`);
