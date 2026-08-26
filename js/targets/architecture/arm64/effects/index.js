@@ -112,15 +112,20 @@ function asBigIntOrNull(value) {
   catch { return null; }
 }
 
+function isGpOrZrRegister(operand) {
+  return operand?.k === 'reg' && ['gp','zr'].includes(String(operand.cls || '').toLowerCase());
+}
+
 function isPlainGpSource(operand) {
-  return operand?.k === 'reg'
-    && ['gp','zr'].includes(String(operand.cls || '').toLowerCase())
-    && operand.shift == null
-    && operand.extend == null;
+  return isGpOrZrRegister(operand) && operand.shift == null && operand.extend == null;
+}
+
+function isPlainGpSourceOfWidth(operand, widthBits) {
+  return isPlainGpSource(operand) && Number(operand.bits) === widthBits;
 }
 
 function isLogicalShiftedGpSource(operand, widthBits) {
-  if (operand?.k !== 'reg' || !['gp','zr'].includes(String(operand.cls || '').toLowerCase()) || operand.extend != null) return false;
+  if (!isGpOrZrRegister(operand) || Number(operand.bits) !== widthBits || operand.extend != null) return false;
   if (operand.shift == null) return true;
   const kind = String(operand.shift.op || '').toLowerCase();
   const amount = Number(operand.shift.amount ?? 0);
@@ -131,6 +136,7 @@ function addSubImmediateEncodingFailure(instruction) {
   const mnemonic = instructionMnemonic(instruction);
   if (!ARM64_ADD_SUB_FAMILY_MNEMONICS.has(mnemonic)) return null;
   const ops = Array.isArray(instruction?.ops) ? instruction.ops : [];
+  if (!isGpOrZrRegister(ops[0])) return null;
   const alias = ['neg','negs','ngc','ngcs'].includes(mnemonic);
   const lhs = alias ? null : ops[1];
   const rhs = alias ? ops[1] : ops[2];
@@ -150,6 +156,7 @@ function flagEncodingFailure(instruction) {
   const mnemonic = instructionMnemonic(instruction);
   if (!['cmp','cmn','ccmp','ccmn'].includes(mnemonic)) return null;
   const ops = Array.isArray(instruction?.ops) ? instruction.ops : [];
+  if (!isGpOrZrRegister(ops[0])) return null;
   const rhs = ops[1];
   if (rhs?.k !== 'imm') return null;
   if (mnemonic === 'cmp' || mnemonic === 'cmn') {
@@ -172,6 +179,7 @@ function logicalEncodingFailure(instruction) {
   const isRegisterOnly = ARM64_LOGICAL_REGISTER_ONLY_MNEMONICS.has(mnemonic) || mnemonic === 'mvn';
   if (!isImmediateCapable && !isRegisterOnly) return null;
   const ops = Array.isArray(instruction?.ops) ? instruction.ops : [];
+  if (!isGpOrZrRegister(ops[0])) return null;
   const widthBits = Number(ops[0]?.bits || 0);
   if (widthBits !== 32 && widthBits !== 64) return `arm64-${mnemonic}-width-unencodable`;
 
@@ -181,7 +189,7 @@ function logicalEncodingFailure(instruction) {
 
   const lhs = mnemonic === 'tst' ? ops[0] : ops[1];
   const rhs = mnemonic === 'tst' ? ops[1] : ops[2];
-  if (!isPlainGpSource(lhs)) return `arm64-${mnemonic}-lhs-register-required`;
+  if (!isPlainGpSourceOfWidth(lhs, widthBits)) return `arm64-${mnemonic}-lhs-register-required`;
 
   if (rhs?.k === 'imm') {
     if (!isImmediateCapable || !logicalImmediateEncodable(rhs, widthBits)) return `arm64-${mnemonic}-logical-immediate-unencodable`;
@@ -194,6 +202,7 @@ function multiplyDivideEncodingFailure(instruction) {
   const mnemonic = instructionMnemonic(instruction);
   if (!ARM64_MULTIPLY_DIVIDE_MNEMONICS.has(mnemonic)) return null;
   const ops = Array.isArray(instruction?.ops) ? instruction.ops : [];
+  if (!isGpOrZrRegister(ops[0])) return null;
   for (const operand of ops.slice(1)) if (!isPlainGpSource(operand)) return `arm64-${mnemonic}-source-register-required`;
   return null;
 }
@@ -201,6 +210,7 @@ function multiplyDivideEncodingFailure(instruction) {
 function registerOnlyIntegerEncodingFailure(instruction) {
   const mnemonic = instructionMnemonic(instruction);
   const ops = Array.isArray(instruction?.ops) ? instruction.ops : [];
+  if (!isGpOrZrRegister(ops[0])) return null;
   const indices = mnemonic === 'extr' ? [1,2]
     : ARM64_CONDITIONAL_TWO_SOURCE.has(mnemonic) ? [1,2]
       : ARM64_CONDITIONAL_ONE_SOURCE.has(mnemonic) ? [1]
@@ -219,6 +229,7 @@ function moveEncodingFailure(instruction) {
   const mnemonic = instructionMnemonic(instruction);
   if (mnemonic !== 'mov') return null;
   const ops = Array.isArray(instruction?.ops) ? instruction.ops : [];
+  if (!isGpOrZrRegister(ops[0])) return null;
   const source = ops[1];
   if (source?.k !== 'imm') return null;
   const widthBits = Number(ops[0]?.bits || 0);
@@ -245,6 +256,7 @@ function unaryEncodingFailure(instruction) {
   const mnemonic = instructionMnemonic(instruction);
   if (mnemonic !== 'rev32') return null;
   const ops = Array.isArray(instruction?.ops) ? instruction.ops : [];
+  if (!isGpOrZrRegister(ops[0])) return null;
   if (ops[0]?.k === 'reg' && ops[0].bits !== 64) return 'arm64-rev32-destination-width-unencodable';
   if (ops[1]?.k === 'reg' && ops[1].bits !== 64) return 'arm64-rev32-source-width-unencodable';
   return null;
