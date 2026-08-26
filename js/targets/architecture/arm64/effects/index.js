@@ -32,6 +32,14 @@ const ARM64_ADD_SUB_FAMILY_MNEMONICS = Object.freeze(new Set([
   'adc','adcs','sbc','sbcs','neg','negs','ngc','ngcs',
 ]));
 
+function validImm12WithOptionalLsl12(op) {
+  if (op?.k !== 'imm') return true;
+  const immediate = immediateOf(op);
+  if (immediate == null || immediate < 0n || immediate > 0xfffn) return false;
+  if (op.shift == null) return true;
+  return String(op.shift.op || '').toLowerCase() === 'lsl' && Number(op.shift.amount) === 12;
+}
+
 function addSubImmediateEncodingFailure(instruction) {
   const mnemonic = instructionMnemonic(instruction);
   if (!ARM64_ADD_SUB_FAMILY_MNEMONICS.has(mnemonic)) return null;
@@ -56,16 +64,33 @@ function addSubImmediateEncodingFailure(instruction) {
     return `arm64-${mnemonic}-ror-shift-unencodable`;
   }
   if (rhs?.k !== 'imm') return null;
-
-  const immediate = immediateOf(rhs);
-  if (immediate == null || immediate < 0n || immediate > 0xfffn) {
-    return `arm64-${mnemonic}-immediate-out-of-range`;
-  }
-  const shift = rhs.shift ?? null;
-  if (shift == null) return null;
-  if (String(shift.op || '').toLowerCase() !== 'lsl' || Number(shift.amount) !== 12) {
+  if (!validImm12WithOptionalLsl12(rhs)) {
+    const immediate = immediateOf(rhs);
+    if (immediate == null || immediate < 0n || immediate > 0xfffn) return `arm64-${mnemonic}-immediate-out-of-range`;
     return `arm64-${mnemonic}-immediate-shift-unencodable`;
   }
+  return null;
+}
+
+function flagEncodingFailure(instruction) {
+  const mnemonic = instructionMnemonic(instruction);
+  if (!['cmp','cmn','ccmp','ccmn'].includes(mnemonic)) return null;
+  const ops = Array.isArray(instruction?.ops) ? instruction.ops : [];
+  const rhs = ops[1];
+  if (rhs?.k !== 'imm') return null;
+
+  if (mnemonic === 'cmp' || mnemonic === 'cmn') {
+    if (!validImm12WithOptionalLsl12(rhs)) {
+      const immediate = immediateOf(rhs);
+      if (immediate == null || immediate < 0n || immediate > 0xfffn) return `arm64-${mnemonic}-immediate-out-of-range`;
+      return `arm64-${mnemonic}-immediate-shift-unencodable`;
+    }
+    return null;
+  }
+
+  const immediate = immediateOf(rhs);
+  if (immediate == null || immediate < 0n || immediate > 31n) return `arm64-${mnemonic}-immediate-out-of-range`;
+  if (rhs.shift != null) return `arm64-${mnemonic}-immediate-shift-unencodable`;
   return null;
 }
 
@@ -79,7 +104,9 @@ function unaryEncodingFailure(instruction) {
 }
 
 function structuredEncodingFailure(instruction) {
-  return addSubImmediateEncodingFailure(instruction) || unaryEncodingFailure(instruction);
+  return addSubImmediateEncodingFailure(instruction)
+    || flagEncodingFailure(instruction)
+    || unaryEncodingFailure(instruction);
 }
 
 function normalizedInstruction(decoded, context) {
