@@ -146,6 +146,25 @@ import { resolveABIPlugin } from '../js/targets/abi/index.js';
   } });
   assert.equal(returned.reg, 'ymm0');
   assert.equal(returned.bits, 256);
+
+  const invalidFp = classifyMicrosoftVectorcallCallReturn({ callPrototype:{
+    callingConvention:'__vectorcall', returnType:'double', returnBits:-1, returnsValue:true,
+  } });
+  assert.equal(invalidFp.reg, null);
+  assert.equal(invalidFp.partial, true);
+  assert.equal(invalidFp.reason, 'microsoft-vectorcall-return-width-invalid');
+
+  const invalidInteger = classifyMicrosoftVectorcallCallReturn({ callPrototype:{
+    callingConvention:'__vectorcall', returnType:'int', returnBits:1.5, returnsValue:true,
+  } });
+  assert.equal(invalidInteger.reg, null);
+  assert.equal(invalidInteger.partial, true);
+  assert.equal(invalidInteger.reason, 'microsoft-vectorcall-return-width-invalid');
+
+  const defaultInteger = classifyMicrosoftVectorcallCallReturn({ callPrototype:{
+    callingConvention:'__vectorcall', returnType:'int', returnsValue:true,
+  } });
+  assert.deepEqual(defaultInteger, { reg:'rax', bits:64 });
 }
 
 // #955: ABI derives mandatory hidden sret from authoritative aggregate layout;
