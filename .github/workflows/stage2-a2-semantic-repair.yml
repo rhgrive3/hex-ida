@@ -20,30 +20,25 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --no-audit --no-fund
-      - name: Repair canonical memory space and MOV CR/DR ModRM validation
+      - name: Repair IO memory-access schema
         run: |
           python3 - <<'PY'
           from pathlib import Path
-          residual = Path('js/targets/architecture/x86_64/effects/terminal-residual.js')
-          s = residual.read_text()
-          if "space:'shadow-stack'" not in s:
-              raise SystemExit('expected shadow-stack schema uses not found')
-          residual.write_text(s.replace("space:'shadow-stack'", "space:'memory'"))
-
-          mov = Path('js/targets/architecture/x86_64/effects/system-register-move.js')
-          s = mov.read_text()
-          old = "  if ((modrm >>> 6) !== 3) return null;\n"
+          p = Path('js/targets/architecture/x86_64/effects/terminal-residual.js')
+          s = p.read_text()
+          old = "return Object.freeze({ space:'io', addressExpr:Object.freeze({ kind:'x86-io-port-register', register:'dx' }), widthBits, endian:'little', direction });"
+          new = "return Object.freeze({ space:'io', addressExpr:Object.freeze({ kind:'x86-io-port-register', register:'dx' }), widthBits, endian:'little' });"
           if old not in s:
-              raise SystemExit('expected MOV CR/DR mod guard not found')
-          mov.write_text(s.replace(old, '', 1))
+              raise SystemExit('expected IO access schema shape not found')
+          p.write_text(s.replace(old, new, 1))
           PY
-      - name: Run frozen closure matrix after repair
+      - name: Run frozen closure matrix after IO repair
         run: node tests/machine-effects/x86-long64-closure-matrix.test.mjs || true
-      - name: Commit production repairs
+      - name: Commit production repair
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add js/targets/architecture/x86_64/effects/terminal-residual.js js/targets/architecture/x86_64/effects/system-register-move.js
+          git add js/targets/architecture/x86_64/effects/terminal-residual.js
           git diff --cached --quiet && exit 0
-          git commit -m "fix(stage2): align residual memory schema and CRDR encoding"
+          git commit -m "fix(stage2): align IO residual access schema"
           git push origin HEAD:integration/stage2-a2-x86-long64-terminal-semantics
