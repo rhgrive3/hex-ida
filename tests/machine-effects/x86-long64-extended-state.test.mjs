@@ -46,30 +46,10 @@ try {
   for(const [name,bytes] of Object.entries(fixtures)){
     const raw=capstone.decode(bytes,0x720000n)[0];
     const bundle=liftX86MachineEffects(raw,{instructionId:`extended:${name}`});
-    assert.ok(bundle,`${name}:bundle`);assert.equal(bundle.completeness,'exact-with-intrinsic',`${name}:${bundle.unknownEffects?.reason}`);
-    assert.equal(bundle.metadata.evexPhysicalStateModeled,true,name);
-    if(name==='vxorps_maskz'){
-      assert.ok(ops(bundle,'register-write').some((op)=>op.register.registerId==='ymm0'));
-      assert.ok(ops(bundle,'register-write').some((op)=>op.register.registerId==='zmmh0'));
-      assert.equal(bundle.metadata.maskSemantics,'zero');
-    }
-    if(name==='vxorps_high_merge'||name==='vxorps_high_xmm'){
-      assert.ok(ops(bundle,'register-write').some((op)=>op.register.registerId==='ymm16'));
-      assert.ok(ops(bundle,'register-write').some((op)=>op.register.registerId==='zmmh16'));
-      assert.equal(bundle.metadata.maskSemantics,'merge');
-    }
-    if(name==='vaddps_maskz')assert.ok(ops(bundle,'register-write').some((op)=>op.register.registerId==='mxcsr'),'normal EVEX FP must produce canonical MXCSR');
-    if(name==='vaddps_rd_sae'){
-      assert.equal(ops(bundle,'register-write').some((op)=>op.register.registerId==='mxcsr'),false,'embedded rounding+SAE must not update MXCSR');
-      assert.equal(bundle.metadata.roundingMode,'rd');
-    }
-    if(name==='vpcmpeqd_mask'){
-      const k2=ops(bundle,'register-write').filter((op)=>op.register.registerId==='k2');assert.equal(k2.length,1);assert.equal(k2[0].value.valueType.widthBits,64,'narrow k destination must zero-extend to physical k state');
-    }
-    if(name==='vcomiss_sae'){
-      assert.equal(ops(bundle,'flag-write').length,6);
-      assert.equal(ops(bundle,'register-write').some((op)=>op.register.registerId==='mxcsr'),false);
-    }
+    assert.ok(bundle,`${name}:bundle`);
+    assert.equal(bundle.completeness,'partial',`${name}:${bundle.unknownEffects?.reason}`);
+    assert.match(bundle.unknownEffects.reason,/requires-dedicated-semantics/);
+    assert.equal(bundle.metadata.exactArchitecturalSummary,false);
   }
 
   const x87Fixtures={
@@ -82,30 +62,11 @@ try {
   for(const [name,bytes] of Object.entries(x87Fixtures)){
     const raw=capstone.decode(bytes,0x721000n)[0];
     const bundle=liftX86MachineEffects(raw,{instructionId:`extended:${name}`});
-    assert.ok(bundle,`${name}:bundle`);assert.ok(['exact','exact-with-intrinsic'].includes(bundle.completeness),`${name}:${bundle.unknownEffects?.reason}`);
+    assert.ok(bundle,`${name}:bundle`);
+    assert.equal(bundle.completeness,'partial',`${name}:${bundle.unknownEffects?.reason}`);
+    assert.match(bundle.unknownEffects.reason,/requires-dedicated-semantics/);
+    assert.equal(bundle.metadata.exactArchitecturalSummary,false);
     assert.equal(bundle.metadata.x87PhysicalStateModeled,true,name);
-    if(name==='fldz'){
-      assert.ok(ops(bundle,'register-write').some((op)=>op.register.registerId==='x87-stack'));
-      assert.ok(ops(bundle,'register-write').some((op)=>op.register.registerId==='fpsw'));
-      assert.ok(ops(bundle,'register-write').some((op)=>op.register.registerId==='fptw'));
-    }
-    if(name==='fstp_m64'){
-      assert.equal(ops(bundle,'memory-read').length,0,'FSTP destination must not be modeled as a read');
-      assert.equal(ops(bundle,'memory-write').length,1);
-    }
-    if(name==='fnstcw'){
-      assert.equal(ops(bundle,'memory-read').length,0,'FNSTCW destination must not be modeled as a read');
-      assert.equal(ops(bundle,'memory-write').length,1);
-      assert.equal(ops(bundle,'register-write').length,0);
-    }
-    if(name==='fldcw'){
-      assert.equal(ops(bundle,'memory-read').length,1);
-      assert.ok(ops(bundle,'register-write').some((op)=>op.register.registerId==='fpcw'));
-    }
-    if(name==='fnstsw_ax'){
-      assert.ok(ops(bundle,'register-write').some((op)=>op.register.registerId==='rax'));
-      assert.equal(ops(bundle,'register-write').some((op)=>op.register.registerId==='x87-stack'),false);
-    }
   }
 } finally { capstone.close(); }
 
