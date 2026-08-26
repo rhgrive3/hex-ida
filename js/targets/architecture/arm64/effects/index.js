@@ -124,6 +124,10 @@ function isPlainGpSourceOfWidth(operand, widthBits) {
   return isPlainGpSource(operand) && Number(operand.bits) === widthBits;
 }
 
+function isGpSourceOfWidth(operand, widthBits) {
+  return isGpOrZrRegister(operand) && Number(operand.bits) === widthBits;
+}
+
 function isLogicalShiftedGpSource(operand, widthBits) {
   if (!isGpOrZrRegister(operand) || Number(operand.bits) !== widthBits || operand.extend != null) return false;
   if (operand.shift == null) return true;
@@ -141,6 +145,12 @@ function addSubImmediateEncodingFailure(instruction) {
   const lhs = alias ? null : ops[1];
   const rhs = alias ? ops[1] : ops[2];
   if (rhs?.k === 'imm' && !ARM64_ADD_SUB_IMMEDIATE_MNEMONICS.has(mnemonic)) return `arm64-${mnemonic}-immediate-form-unencodable`;
+  const widthBits = Number(ops[0]?.bits || 0);
+  if (['adc','adcs','sbc','sbcs'].includes(mnemonic)) {
+    if (!isGpSourceOfWidth(lhs, widthBits) || !isGpSourceOfWidth(rhs, widthBits)) return `arm64-${mnemonic}-register-width-unencodable`;
+  } else if (alias && !isGpSourceOfWidth(rhs, widthBits)) {
+    return `arm64-${mnemonic}-register-width-unencodable`;
+  }
   if (lhs?.k === 'imm') return `arm64-${mnemonic}-lhs-immediate-unencodable`;
   if (rhs?.k === 'reg' && String(rhs.shift?.op || '').toLowerCase() === 'ror') return `arm64-${mnemonic}-ror-shift-unencodable`;
   if (rhs?.k !== 'imm') return null;
