@@ -5,9 +5,9 @@ import { isStage2RepositoryFile, minimumVerdictCounts, parseNonNegativeInteger, 
 const knownGaps = stage2KnownDenominatorGaps();
 assert.equal(knownGaps.includes('arm64:a64:all-decoder-encodings-and-aliases'), false, 'terminal ARM64 decoder denominator is no longer a gap');
 assert.equal(knownGaps.includes('x86_64:long-64:effect-family:atomic'), false, 'proven exact x86 atomic denominator is no longer a gap');
-assert.ok(knownGaps.includes('x86_64:long-64:effect-family:fp'), 'x86 fp effect family is a known gap');
-assert.ok(knownGaps.includes('x86_64:long-64:effect-family:simd'), 'x86 simd effect family is a known gap');
-assert.ok(knownGaps.includes('x86_64:long-64:effect-family:system'), 'x86 system effect family is a known gap');
+assert.equal(knownGaps.includes('x86_64:long-64:effect-family:fp'), false, 'closed x86 fp denominator must not remain a known gap');
+assert.equal(knownGaps.includes('x86_64:long-64:effect-family:simd'), false, 'closed x86 simd denominator must not remain a known gap');
+assert.equal(knownGaps.includes('x86_64:long-64:effect-family:system'), false, 'closed x86 system denominator must not remain a known gap');
 assert.equal(knownGaps.includes('remote.remote-canonical-transport'), false, 'active canonical remote transport is no longer a denominator gap');
 assert.equal(knownGaps.some((gap) => /^(?:macho|elf|pe):/.test(gap)), false, 'unsigned preservation writers with independent full-report comparison close all F6 invariant cells');
 for (const capability of ['attach', 'cancel', 'pause']) assert.equal(knownGaps.includes(`a7-unsupported-capability:${capability}`), false, `A7 active-provider proof closes ${capability} without a static unsupported declaration`);
