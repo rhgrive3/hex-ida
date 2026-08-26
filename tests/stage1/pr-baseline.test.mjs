@@ -8,7 +8,7 @@ const summary = 'machine-effects: 1 file(s) failed: x86-long64-closure-matrix.te
 function report({
   effectsStatus = 'failed',
   coverageStatus = 'passed',
-  effectsOutput = `${marker} witness\n${summary}`,
+  effectsOutput = summary,
   extraFailure = false,
   commandCount = 2,
 } = {}) {
@@ -46,10 +46,11 @@ assert.equal(classify({ report:report({ extraFailure:true }) }).reason, 'stage1-
 assert.equal(classify({ report:report({ coverageStatus:'failed' }) }).reason, 'a2-failure-is-not-effects-only');
 assert.equal(classify({ report:report({ commandCount:1 }) }).reason, 'a2-command-set-changed');
 assert.equal(classify({
-  report:report({ effectsOutput:`${marker}\nmachine-effects: 2 file(s) failed: x86-long64-closure-matrix.test.mjs:exit=1, arm64-a64-decoder-denominator.test.mjs:exit=1` }),
+  report:report({ effectsOutput:'machine-effects: 2 file(s) failed: x86-long64-closure-matrix.test.mjs:exit=1, arm64-a64-decoder-denominator.test.mjs:exit=1' }),
 }).reason, 'a2-machine-effects-failure-set-changed');
-assert.equal(classify({ report:report({ effectsOutput:summary }) }).reason, 'a2-x86-closure-failure-class-changed');
+assert.equal(classify({ candidateClosureStatus:1, candidateClosureOutput:'different failure' }).reason, 'candidate-x86-closure-no-longer-matches');
 assert.equal(classify({ candidateClosureStatus:0, candidateClosureOutput:'' }).reason, 'candidate-x86-closure-no-longer-matches');
+assert.equal(classify({ baselineClosureStatus:1, baselineClosureOutput:'different failure' }).reason, 'baseline-x86-closure-no-longer-matches');
 assert.equal(classify({ baselineClosureStatus:0, baselineClosureOutput:'' }).reason, 'baseline-x86-closure-no-longer-matches');
 assert.equal(classify({ changedFiles:['js/targets/architecture/x86_64/effects/index.js'] }).reason, 'pr-touches-x86-closure-dependency-surface');
 assert.equal(classify({ report:{ verdict:'READY', gates:[] } }).reason, 'stage1-report-missing-or-invalid');
