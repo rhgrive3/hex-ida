@@ -130,14 +130,50 @@ function liftPunpckldq(ctx,family,encoding){
   const width=vectorWidth(ctx,encoding,true);if(!width)return ctx.partial('x86-vector-width-unmodelled',['registers','memory','other'],{metadata:{operation:family}});if(width===256&&encoding.kind==='vex'&&(encoding.opcodeMap!==1||encoding.mandatoryPrefixCode!==1))return ctx.partial('x86-vector-width-unmodelled',['registers','memory','other'],{metadata:{operation:family,cause:'mandatory-prefix-or-map-mismatch',expectedOpcodeMap:1,expectedMandatoryPrefixCode:1,actualOpcodeMap:encoding.opcodeMap,actualMandatoryPrefixCode:encoding.mandatoryPrefixCode}});const operands=binaryOperands(ctx,encoding,width);if(!operands)return ctx.partial(`x86-${family}-operand-shape-unmodelled`,['registers','memory']);const laneCount=width/32,laneMap=Array.from({length:laneCount},(_,destinationLane)=>{const partitionBase=Math.floor(destinationLane/4)*4,within=destinationLane%4;return{destinationLane,source:within%2,sourceLane:partitionBase+Math.floor(within/2)};});const out=ctx.intrinsic('x86.simd.unpack',[operands.left.value,operands.right.value],[width],{registersRead:operands.registersRead,registersWritten:[operands.destination.register.physicalId],determinism:'input-dependent',symbolicDetail:'summary-only',metadata:{operation:'punpckldq',vectorWidthBits:width,elementWidthBits:32,laneCount,partitionWidthBits:128,half:'low-per-128-bit-lane',laneMap,encodingKind:encoding.kind,upperLaneBehavior:upperBehavior(encoding,width),exactArchitecturalSummary:true}})[0];if(!writeX86VectorRegister(ctx,operands.destination,out,encoding,width))return ctx.partial(`x86-${family}-destination-unmodelled`,['registers']);return ctx.finish({family:'simd',possibleFaults:operands.faults,metadata:{operation:family,vectorWidthBits:width,partitionWidthBits:128,laneMap}});
 }
 
-export function liftX86SimdEffects(instruction,context={}){
-  const family=String(instruction?.instructionFamily||'').toLowerCase(),base=baseFamily(family);
-  const recognized=FULL_MOVES.has(base)||INTEGER_MOVES.has(base)||BITWISE.has(base)||PACKED_ARITHMETIC.has(base)||PACKED_COMPARE.has(base)||PACKED_SHIFT.has(base)||base==='pshufd'||base==='punpckldq'||['vzeroupper','vzeroall','emms'].includes(family);if(!recognized)return null;const ctx=createX86EffectContext(instruction,context);
-  if(family==='emms')return ctx.partial('x86-mmx-x87-alias-state-unmodelled',['registers','other'],{metadata:{family:'simd',operation:'emms',mmxIndependentStateInvented:false,sharedDependencyRequired:['x86-mmx-x87-physical-alias-state','x87-tag-word']}});
-  if(family==='vzeroall'){const check=validateEncoding(ctx,family);if(check.error)return check.error;if(check.encoding.kind!=='vex'||check.encoding.vectorWidthBits!==256||check.encoding.encodedVvvv!==15)return ctx.partial('x86-vzeroall-encoding-unmodelled',['registers','other'],{metadata:{family:'simd',operation:'vzeroall'}});return ctx.partial('x86-vzeroall-full-vector-state-unmodelled',['registers','other'],{metadata:{family:'simd',operation:'vzeroall',architecturalRange:'zmm0-zmm15[MAXVL-1:0]',unsupportedState:['zmm0-15[511:256]'],sharedDependencyRequired:['x86-physical-zmm0-15']}});}
-  if(family==='vzeroupper'){const check=validateEncoding(ctx,family);if(check.error)return check.error;if(check.encoding.kind!=='vex'||check.encoding.vectorWidthBits!==128)return ctx.partial('x86-vzeroupper-encoding-unmodelled',['registers','other']);for(let index=0;index<16;index+=1){const physical=x86RegisterOperand(`ymm${index}`),old=ctx.readRegister(physical);if(!old)return ctx.partial('x86-vzeroupper-register-state-unmodelled',['registers']);const low=ctx.valueOp('extract',[old],128,{lsb:0,widthBits:128,physicalBits:256,physicalId:`ymm${index}`,view:`xmm${index}`});if(!ctx.writeRegister(physical,ctx.coerce(low,128,256,false)))return ctx.partial('x86-vzeroupper-register-write-unmodelled',['registers']);}return ctx.finish({family:'simd',metadata:{operation:'vzeroupper',registers:['ymm0-ymm15'],low128:'preserved',upper128:'zeroed',globalMaxVlStateModeled:false,sharedDependencyRequired:['x86-physical-zmm0-15']}});}
-  const check=validateEncoding(ctx,family,INTEGER_MOVES.has(base));if(check.error)return check.error;const encoding=check.encoding;
-  if(INTEGER_MOVES.has(base))return liftIntegerMove(ctx,family,encoding,INTEGER_MOVES.get(base));if(FULL_MOVES.has(base))return liftFullMove(ctx,family,encoding,FULL_MOVES.get(base));
-  if(BITWISE.has(base)){const width=vectorWidth(ctx,encoding,true);if(!width)return ctx.partial(encoding.kind==='vex'?'x86-vex-width-operand-mismatch':'x86-vector-width-unmodelled',['registers','memory','other'],{metadata:{operation:family}});const operands=binaryOperands(ctx,encoding,width);if(!operands)return ctx.partial(`x86-${family}-operand-shape-unmodelled`,['registers','memory']);const result=ctx.valueOp(BITWISE.get(base),[operands.left.value,operands.right.value],width,{vectorBitwise:true,vectorWidthBits:width,semanticFamily:base});if(!writeX86VectorRegister(ctx,operands.destination,result,encoding,width))return ctx.partial(`x86-${family}-destination-unmodelled`,['registers']);return ctx.finish({family:'simd',possibleFaults:operands.faults,metadata:{operation:family,vectorWidthBits:width,bitwiseOperation:BITWISE.get(base),encodingKind:encoding.kind,upperLaneBehavior:upperBehavior(encoding,width)}});}
-  if(PACKED_ARITHMETIC.has(base))return packedIntrinsic(ctx,family,encoding,PACKED_ARITHMETIC.get(base),false);if(PACKED_COMPARE.has(base))return packedIntrinsic(ctx,family,encoding,PACKED_COMPARE.get(base),true);if(PACKED_SHIFT.has(base))return liftShift(ctx,family,encoding,PACKED_SHIFT.get(base));if(base==='pshufd')return liftPshufd(ctx,family,encoding);if(base==='punpckldq')return liftPunpckldq(ctx,family,encoding);return null;
+import { liftX86VectorGeneralEffects } from './vector-general.js';
+
+export function liftX86SimdEffects(instruction, context = {}) {
+  const family = String(instruction?.instructionFamily || '').toLowerCase(), base = baseFamily(family);
+  const recognized = FULL_MOVES.has(base) || INTEGER_MOVES.has(base) || BITWISE.has(base) || PACKED_ARITHMETIC.has(base) || PACKED_COMPARE.has(base) || PACKED_SHIFT.has(base) || base === 'pshufd' || base === 'punpckldq' || ['vzeroupper', 'vzeroall', 'emms'].includes(family);
+  if (!recognized) return liftX86VectorGeneralEffects(instruction, context, 'simd');
+  const ctx = createX86EffectContext(instruction, context);
+  if (family === 'emms') return ctx.partial('x86-mmx-x87-alias-state-unmodelled', ['registers', 'other'], { metadata: { family: 'simd', operation: 'emms', mmxIndependentStateInvented: false, sharedDependencyRequired: ['x86-mmx-x87-physical-alias-state', 'x87-tag-word'] } });
+  if (family === 'vzeroall') {
+    const check = validateEncoding(ctx, family);
+    if (check.error) return check.error;
+    if (check.encoding.kind !== 'vex' || check.encoding.vectorWidthBits !== 256 || check.encoding.encodedVvvv !== 15) return ctx.partial('x86-vzeroall-encoding-unmodelled', ['registers', 'other'], { metadata: { family: 'simd', operation: 'vzeroall' } });
+    return ctx.partial('x86-vzeroall-full-vector-state-unmodelled', ['registers', 'other'], { metadata: { family: 'simd', operation: 'vzeroall', architecturalRange: 'zmm0-zmm15[MAXVL-1:0]', unsupportedState: ['zmm0-15[511:256]'], sharedDependencyRequired: ['x86-physical-zmm0-15'] } });
+  }
+  if (family === 'vzeroupper') {
+    const check = validateEncoding(ctx, family);
+    if (check.error) return check.error;
+    if (check.encoding.kind !== 'vex' || check.encoding.vectorWidthBits !== 128) return ctx.partial('x86-vzeroupper-encoding-unmodelled', ['registers', 'other']);
+    for (let index = 0; index < 16; index += 1) {
+      const physical = x86RegisterOperand(`ymm${index}`), old = ctx.readRegister(physical);
+      if (!old) return ctx.partial('x86-vzeroupper-register-state-unmodelled', ['registers']);
+      const low = ctx.valueOp('extract', [old], 128, { lsb: 0, widthBits: 128, physicalBits: 256, physicalId: `ymm${index}`, view: `xmm${index}` });
+      if (!ctx.writeRegister(physical, ctx.coerce(low, 128, 256, false))) return ctx.partial('x86-vzeroupper-register-write-unmodelled', ['registers']);
+    }
+    return ctx.finish({ family: 'simd', metadata: { operation: 'vzeroupper', registers: ['ymm0-ymm15'], low128: 'preserved', upper128: 'zeroed', globalMaxVlStateModeled: false, sharedDependencyRequired: ['x86-physical-zmm0-15'] } });
+  }
+  const check = validateEncoding(ctx, family, INTEGER_MOVES.has(base));
+  if (check.error) return check.error;
+  const encoding = check.encoding;
+  if (INTEGER_MOVES.has(base)) return liftIntegerMove(ctx, family, encoding, INTEGER_MOVES.get(base));
+  if (FULL_MOVES.has(base)) return liftFullMove(ctx, family, encoding, FULL_MOVES.get(base));
+  if (BITWISE.has(base)) {
+    const width = vectorWidth(ctx, encoding, true);
+    if (!width) return ctx.partial(encoding.kind === 'vex' ? 'x86-vex-width-operand-mismatch' : 'x86-vector-width-unmodelled', ['registers', 'memory', 'other'], { metadata: { operation: family } });
+    const operands = binaryOperands(ctx, encoding, width);
+    if (!operands) return ctx.partial(`x86-${family}-operand-shape-unmodelled`, ['registers', 'memory']);
+    const result = ctx.valueOp(BITWISE.get(base), [operands.left.value, operands.right.value], width, { vectorBitwise: true, vectorWidthBits: width, semanticFamily: base });
+    if (!writeX86VectorRegister(ctx, operands.destination, result, encoding, width)) return ctx.partial(`x86-${family}-destination-unmodelled`, ['registers']);
+    return ctx.finish({ family: 'simd', possibleFaults: operands.faults, metadata: { operation: family, vectorWidthBits: width, bitwiseOperation: BITWISE.get(base), encodingKind: encoding.kind, upperLaneBehavior: upperBehavior(encoding, width) } });
+  }
+  if (PACKED_ARITHMETIC.has(base)) return packedIntrinsic(ctx, family, encoding, PACKED_ARITHMETIC.get(base), false);
+  if (PACKED_COMPARE.has(base)) return packedIntrinsic(ctx, family, encoding, PACKED_COMPARE.get(base), true);
+  if (PACKED_SHIFT.has(base)) return liftShift(ctx, family, encoding, PACKED_SHIFT.get(base));
+  if (base === 'pshufd') return liftPshufd(ctx, family, encoding);
+  if (base === 'punpckldq') return liftPunpckldq(ctx, family, encoding);
+  return liftX86VectorGeneralEffects(instruction, context, 'simd');
 }

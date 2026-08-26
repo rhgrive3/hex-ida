@@ -35,6 +35,58 @@ process.once('exit', closeSessions);
 
 function codeText(line) { return String(line || '').replace(/\/\/.*$/, '').trim(); }
 
+/*
+ * `sourceMap.length` is a rendering counter, not a provenance counter. A
+ * precise upstream lifter can collapse several unknown/assembly rows into one
+ * printed node while preserving (or improving) the instruction and IR
+ * provenance. Phase 8 therefore freezes the identity-bearing sets separately.
+ *
+ * BigInts reach the printer as strings with the `n` suffix in a few historical
+ * paths. Remove that presentation detail before sorting/digesting so a source
+ * address has one stable identity across the old baseline and current runs.
+ */
+function provenanceScalar(value) {
+  const text = String(value);
+  return /^-?\d+n$/.test(text) ? text.slice(0, -1) : text;
+}
+
+function compareProvenanceScalars(left, right) {
+  const leftText = String(left);
+  const rightText = String(right);
+  if (/^-?\d+$/.test(leftText) && /^-?\d+$/.test(rightText)) {
+    const leftNumber = BigInt(leftText);
+    const rightNumber = BigInt(rightText);
+    if (leftNumber < rightNumber) return -1;
+    if (leftNumber > rightNumber) return 1;
+  }
+  return leftText < rightText ? -1 : leftText > rightText ? 1 : 0;
+}
+
+function sortedProvenanceSet(values) {
+  if (!Array.isArray(values)) return null;
+  return [...new Set(values.map(provenanceScalar))].sort(compareProvenanceScalars);
+}
+
+/**
+ * Extracts the identity-bearing provenance from one printed source map.
+ *
+ * `null` is deliberately distinct from an empty set: a missing source map is
+ * not evidence that the function has no provenance. The verifier treats it as
+ * a fail-closed measurement failure when the frozen baseline requires it.
+ */
+export function provenanceFromSourceMap(sourceMap) {
+  if (!Array.isArray(sourceMap)) return null;
+  const sourceAddresses = sortedProvenanceSet(sourceMap.flatMap((entry) => entry?.source?.addresses ?? []));
+  const irProvenance = sortedProvenanceSet(sourceMap.flatMap((entry) => entry?.source?.ir ?? []));
+  return {
+    sourceAddresses,
+    sourceAddressesDigest:stableDigest(sourceAddresses),
+    irProvenance,
+    irProvenanceDigest:stableDigest(irProvenance),
+    irProvenanceCount:irProvenance.length,
+  };
+}
+
 function memoryInfo(mnemonic, operands) {
   const name = String(mnemonic).toLowerCase();
   if (!/^(?:ld|st)/.test(name)) return null;
@@ -184,6 +236,7 @@ export function observationOf(entry, outcome) {
   if (outcome.failure) return { id:entry.id, architectureId:entry.architectureId, failure:outcome.failure };
   const result = outcome.result;
   const metrics = result?.metrics ?? {};
+  const provenance = provenanceFromSourceMap(result?.sourceMap);
   return {
     id:entry.id,
     architectureId:entry.architectureId,
@@ -193,6 +246,7 @@ export function observationOf(entry, outcome) {
     pseudocode:result?.pseudocode ?? '',
     lineCount:Array.isArray(result?.lines) ? result.lines.length : 0,
     sourceMappedNodes:Array.isArray(result?.sourceMap) ? result.sourceMap.length : 0,
+    provenance,
     provenanceDigest:stableDigest((result?.lines ?? []).map((line) => ({
       kind:line?.kind ?? null,
       addresses:(line?.source?.addresses ?? []).map((address) => String(address)),
