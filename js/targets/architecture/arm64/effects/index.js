@@ -48,6 +48,13 @@ function addSubImmediateEncodingFailure(instruction) {
   }
   // The first source of the three-operand forms is always a register/SP view.
   if (lhs?.k === 'imm') return `arm64-${mnemonic}-lhs-immediate-unencodable`;
+
+  // A64 add/sub shifted-register encodings reserve shift=3 (ROR). The generic
+  // operand modifier supports ROR for instructions that genuinely encode it,
+  // so reject it at this mnemonic-specific boundary before semantic lifting.
+  if (rhs?.k === 'reg' && String(rhs.shift?.op || '').toLowerCase() === 'ror') {
+    return `arm64-${mnemonic}-ror-shift-unencodable`;
+  }
   if (rhs?.k !== 'imm') return null;
 
   const immediate = immediateOf(rhs);
