@@ -7,3 +7,4 @@ importScripts('./worker-fixes.js');
 importScripts('./worker-xref-memory-fix.js');
 importScripts('./worker-kind-fix.js');
 importScripts('./worker-function-provenance-fix.js');
+importScripts('./worker-loop-provenance-fix.js');
