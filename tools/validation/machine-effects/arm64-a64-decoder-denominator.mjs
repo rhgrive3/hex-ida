@@ -314,7 +314,7 @@ export function buildArm64A64CandidateCorpusEvidence() {
       candidateCaseCount++;
       familyCount++;
     }
-    if (familyCount !== input.expectedCaseCount) throw new Error(`arm64-decoder-denominator-generator-shrink:${input.family}:${familyCount}`);
+    if (familyCount !== input.expectedCaseCount) throw new Error(`arm64-decoder-denominator-generator-shrink:${input.family}:${familyCount}:${input.expectedCaseCount}`);
     familyCaseCounts[input.family] = familyCount;
   }
 
@@ -366,8 +366,8 @@ export const ARM64_A64_DECODER_AUDIT_LOCK = Object.freeze({
   recognizedMnemonicsSha256:'dd421cadb32c76de18eae4ee444cf5a3e965a618e2330acf89eab3d98f0e01a9',
   scopeCounts:Object.freeze({
     'in-profile-resolved':343_236,
-    'dependency-pending':65,
-    'out-of-profile-unenumerated':32_838,
+    'dependency-pending':68,
+    'out-of-profile-unenumerated':32_835,
   }),
   resolvedOwnerCounts:Object.freeze({ control:21_306, flags:15_232, fp:8_417, integer:68_899, system:229_382 }),
   rejectedKindCounts:Object.freeze({ 'provider-unsupported-architectural':2, 'invalid-or-reserved':45 }),
