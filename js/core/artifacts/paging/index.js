@@ -235,11 +235,14 @@ export class PagedArtifactReader {
         this.stats.cancelledRequests++;
         finish(reject, new ByteSourceCancelledError());
       };
-      signal?.addEventListener?.('abort', onAbort, { once:true });
       entry.promise.then(
         (value) => finish(resolve, value),
         (error) => finish(reject, isAbortLike(error) ? new ByteSourceCancelledError() : error),
       );
+      signal?.addEventListener?.('abort', onAbort, { once:true });
+      if (signal?.aborted) {
+        onAbort();
+      }
     });
   }
 
