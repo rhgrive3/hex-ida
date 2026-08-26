@@ -39,6 +39,39 @@ function sameAbsoluteTarget(target, reference) {
   catch { return false; }
 }
 
+function isAlignedDirectTarget(target) {
+  try { return (BigInt(target) & 3n) === 0n; }
+  catch { return false; }
+}
+
+function directBranchDisplacementBits(mnemonic) {
+  if (mnemonic === 'b' || mnemonic === 'bl') return 26;
+  if (COMPARE_BRANCH.has(mnemonic) || /^b\./.test(mnemonic)) return 19;
+  if (TEST_BRANCH.has(mnemonic)) return 14;
+  return null;
+}
+
+function directBranchEncodingStatus(instruction, target, mnemonic) {
+  const address = instructionAddress(instruction);
+  if (address == null) return { valid:false, reason:`arm64-${mnemonic}-address-unavailable-for-encoding` };
+  let destination;
+  try { destination = BigInt(target); }
+  catch { return { valid:false, reason:`arm64-${mnemonic}-target-unavailable` }; }
+  if ((destination & 3n) !== 0n) return { valid:false, reason:`arm64-${mnemonic}-target-misaligned-encoding` };
+  const bits = directBranchDisplacementBits(mnemonic);
+  if (!bits) return { valid:true };
+  // Disassembler targets may be sign-extended 64-bit addresses for backward
+  // branches. Compare the architectural modulo-64-bit displacement rather
+  // than treating that representation as an unrelated high positive address.
+  const displacement = BigInt.asIntN(64, destination - address);
+  const minimum = -(1n << BigInt(bits + 1));
+  const maximum = (1n << BigInt(bits + 1)) - 4n;
+  if (displacement < minimum || displacement > maximum) {
+    return { valid:false, reason:`arm64-${mnemonic}-target-out-of-range-encoding` };
+  }
+  return { valid:true };
+}
+
 /**
  * Preserve condition-evaluation operations even when both control outcomes land
  * in the same basic block, but canonicalize the externally visible control edge
@@ -80,6 +113,8 @@ function liftArm64ControlEffectsCore(instruction, options = {}) {
   if (mnemonic === 'b') {
     const target = directTargetOf(instruction, 'branch');
     if (target == null) return ctx.partial('arm64-b-target-unavailable', ['control'], undefined, { kind: 'unknown', reason: 'arm64-b-target-unavailable' });
+    const encoding = directBranchEncodingStatus(instruction, target, mnemonic);
+    if (!encoding.valid) return ctx.partial(encoding.reason, ['control'], undefined, { kind:'unknown', reason:encoding.reason });
     return ctx.finish({
       controlEffect: { kind: 'branch', target: addressRef(target) },
       metadata: { family: 'control', operation: 'b', direct: true },
@@ -101,11 +136,13 @@ function liftArm64ControlEffectsCore(instruction, options = {}) {
   if (mnemonic === 'bl') {
     const target = directTargetOf(instruction, 'call');
     if (target == null) return ctx.partial('arm64-bl-target-unavailable', ['control','registers'], undefined, { kind: 'unknown', reason: 'arm64-bl-target-unavailable' });
-    const fallthrough = fallthroughRef(instruction);
     const address = instructionAddress(instruction);
     if (address == null) {
       return ctx.partial('arm64-bl-link-address-unavailable', ['registers'], undefined, { kind: 'call', target: addressRef(target) });
     }
+    const encoding = directBranchEncodingStatus(instruction, target, mnemonic);
+    if (!encoding.valid) return ctx.partial(encoding.reason, ['control','registers'], undefined, { kind:'unknown', reason:encoding.reason });
+    const fallthrough = fallthroughRef(instruction);
     ctx.writeRegister(gpRegister(30), ctx.constant(64, address + ARM64_INSTRUCTION_BYTES));
     return ctx.finish({
       controlEffect: { kind: 'call', target: addressRef(target), ...(fallthrough ? { fallthrough } : {}) },
@@ -147,6 +184,10 @@ function liftArm64ControlEffectsCore(instruction, options = {}) {
   const fallthrough = fallthroughRef(instruction);
   if (target == null || !fallthrough) {
     return ctx.partial(`arm64-${mnemonic}-targets-unavailable`, ['control'], undefined, { kind: 'unknown', reason: `arm64-${mnemonic}-targets-unavailable` });
+  }
+  const encoding = directBranchEncodingStatus(instruction, target, mnemonic);
+  if (!encoding.valid) {
+    return ctx.partial(encoding.reason, ['control'], undefined, { kind:'unknown', reason:encoding.reason });
   }
 
   if (COMPARE_BRANCH.has(mnemonic)) {
