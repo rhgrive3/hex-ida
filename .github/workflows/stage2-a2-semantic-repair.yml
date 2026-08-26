@@ -8,7 +8,7 @@ on:
 permissions:
   contents: write
 jobs:
-  repair-terminal:
+  repair-final-nine:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -20,25 +20,42 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --no-audit --no-fund
-      - name: Repair HINT_NOP preservation contract
+      - name: Repair final trusted encoding gates
         run: |
           python3 - <<'PY'
           from pathlib import Path
           p = Path('js/targets/architecture/x86_64/effects/terminal-residual.js')
           s = p.read_text()
-          old = "    statePreservation:{ proven:true, reason:'x86-amd-hint-nop-normal-path-preserves-architectural-state' },\n    possibleFaults:[udFault('nop', '0F19 /0 is an AMD HINT_NOP encoding and may be reserved/unsupported on other implementations')],\n    metadata:{ operation:'nop', hintNopEncoding:'0F19/0', implementationDependentAvailability:true, memoryOperandIsSyntacticOnly:true },"
-          new = "    possibleFaults:[udFault('nop', '0F19 /0 is an AMD HINT_NOP encoding and may be reserved/unsupported on other implementations')],\n    metadata:{ operation:'nop', hintNopEncoding:'0F19/0', implementationDependentAvailability:true, memoryOperandIsSyntacticOnly:true, normalPathStatePreserving:true },"
-          if old not in s:
-              raise SystemExit('expected HINT_NOP preservation block not found')
-          p.write_text(s.replace(old, new, 1))
+          replacements = {
+            "if (family === 'insb') return same(bytes,[0x6c]);": "if (family === 'insb') return same(bytes,[0x6c]) || same(bytes,[0x26,0x6c]);",
+            "if (family === 'insd') return same(bytes,[0x6d]);": "if (family === 'insd') return same(bytes,[0x6d]) || same(bytes,[0x26,0x6d]);",
+            "if (family === 'outsb') return same(bytes,[0x6e]);": "if (family === 'outsb') return same(bytes,[0x6e]) || same(bytes,[0x26,0x6e]);",
+            "if (family === 'outsd') return same(bytes,[0x6f]);": "if (family === 'outsd') return same(bytes,[0x6f]) || same(bytes,[0x26,0x6f]);",
+            "if (family === 'roundsd' && same(bytes,[0x66,0x0f,0x3a,0x0a,0x00,0x00]))": "if (family === 'roundsd' && same(bytes,[0x66,0x0f,0x3a,0x0b,0x00,0x00]))",
+            "if (family === 'roundss' && same(bytes,[0x66,0x0f,0x3a,0x0b,0x00,0x00]))": "if (family === 'roundss' && same(bytes,[0x66,0x0f,0x3a,0x0a,0x00,0x00]))",
+            "if (family === 'vroundsd' && same(bytes,[0xc4,0xe3,0x79,0x0a,0x00,0x00]))": "if (family === 'vroundsd' && same(bytes,[0xc4,0xe3,0x01,0x0b,0x00,0x00]))",
+            "if (family === 'vroundss' && same(bytes,[0xc4,0xe3,0x79,0x0b,0x00,0x00]))": "if (family === 'vroundss' && same(bytes,[0xc4,0xe3,0x01,0x0a,0x00,0x00]))",
+            "if (family === 'vcvtpd2ps' && same(bytes,[0xc5,0xf9,0x5a,0x00]))": "if (family === 'vcvtpd2ps' && same(bytes,[0xc5,0x79,0x5a,0x00]))",
+          }
+          for old,new in replacements.items():
+              if old not in s:
+                  raise SystemExit('expected encoding gate not found: ' + old)
+              s = s.replace(old,new,1)
+          p.write_text(s)
           PY
-      - name: Run frozen closure matrix after HINT_NOP repair
-        run: node tests/machine-effects/x86-long64-closure-matrix.test.mjs || true
-      - name: Commit production repair
+      - name: Prove frozen 1487 closure matrix
+        run: node tests/machine-effects/x86-long64-closure-matrix.test.mjs
+      - name: Prove focused denominators
+        run: |
+          node tests/machine-effects/x86-long64-fp-denominator.test.mjs
+          node tests/machine-effects/x86-long64-simd-denominator.test.mjs
+          node tests/machine-effects/x86-long64-system-denominator.test.mjs
+          node tests/machine-effects/a2-denominator.test.mjs
+      - name: Commit proven production repair
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add js/targets/architecture/x86_64/effects/terminal-residual.js
           git diff --cached --quiet && exit 0
-          git commit -m "fix(stage2): align HINT_NOP preservation contract"
+          git commit -m "fix(stage2): close final x86 long64 residual encoding gates"
           git push origin HEAD:integration/stage2-a2-x86-long64-terminal-semantics
