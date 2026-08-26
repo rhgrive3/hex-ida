@@ -318,7 +318,7 @@ function exclusiveLoad(decoded, context, match) {
     metadata:{ addressExpr:addr.addressExpr, widthBits, state:'exclusive-monitor' },
   }));
   exclusiveStateWrite(ops, [
-    createBitVectorValue(1, 1n), addressValue, createBitVectorValue(64, 0n), monitor,
+    createBitVectorValue(1, 1n), addressValue, createBitVectorValue(16, BigInt(widthBits)), monitor,
   ], { transition:'set' });
   try { ops.push(...writeLoadedGp(dest, raw, widthBits, 'exclusive.load')); }
   catch (error) { return partial(decoded, context, error.message); }
