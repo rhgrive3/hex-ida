@@ -54,7 +54,7 @@ function invalidNonEvexExtendedVector(instruction) {
   return registers.some((register) => register?.evexOnly === true || /^(?:zmm(?:[0-9]|[12][0-9]|3[01])|(?:xmm|ymm)(?:1[6-9]|2[0-9]|3[01]))$/.test(String(register?.id || '').toLowerCase()));
 }
 
-const STRUCTURED_FAIL_CLOSED_REASON = /(?:structured-implicit-accumulator-missing|prefix-state-unmodelled|f2-repeat-prefix|implicit-state-unmodelled|address-size-unmodelled|operand-shape-unmodelled)/;
+const STRUCTURED_FAIL_CLOSED_REASON = /^(?:x86-cmpxchg-structured-implicit-accumulator-missing|x86-string-(?:prefix-state-unmodelled|f2-repeat-prefix-not-proven-for-this-family|implicit-state-unmodelled|address-size-unmodelled|operand-shape-unmodelled))$/;
 
 function terminalize(instruction, ownerId, result, context) {
   // Decoder acceptance is not architectural validity. Family lifters mark
