@@ -101,7 +101,7 @@ export function createAliasResult(input = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) fail('alias-result-invalid');
   const relation = String(input.relation ?? '').trim();
   if (!RELATION_SET.has(relation)) fail('alias-result-invalid-relation');
-  const status = input.status?.schemaVersion ? input.status : createAnalysisStatus(input.status ?? {});
+  const status = createAnalysisStatus(input.status ?? {});
   const reasonCodes = reasonList(input.reasonCodes);
 
   if (STRONG_ALIAS_RELATIONS.includes(relation)) {
