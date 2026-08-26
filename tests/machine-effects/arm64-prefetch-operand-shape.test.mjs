@@ -22,6 +22,8 @@ function lift(mnemonic, ops, extra = {}) {
   });
 }
 
+// The finite denominator separately protects unnamed prfop decoding from the
+// encoding word; these direct cases protect the structured operand boundary.
 const validPrfm = lift('prfm', [prfop(), mem(x(1))]);
 assert.equal(validPrfm.completeness, 'exact-with-intrinsic');
 assert.equal(validPrfm.metadata.prefetch.prfop, 0);
