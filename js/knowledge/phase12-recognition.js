@@ -25,7 +25,8 @@ export function createMatchResult(input = {}) {
   })).sort((a, b) => b.score - a.score || tierRank(a.tier) - tierRank(b.tier) || a.packageEntryId.localeCompare(b.packageEntryId));
   const top = candidates[0];
   const second = candidates[1] || null;
-  const ambiguityWindow = Math.max(0, Number(input.ambiguityWindow ?? 0.035));
+  const rawAmbiguityWindow = Number(input.ambiguityWindow ?? 0.035);
+  const ambiguityWindow = Number.isFinite(rawAmbiguityWindow) ? Math.max(0, rawAmbiguityWindow) : 0.035;
   const ambiguityMargin = second ? Math.max(0, top.score - second.score) : 1;
   const candidateSearchTruncated = input.candidateSearchTruncated === true || input.truncated === true || input.candidateSearch?.truncated === true;
   const ambiguous = candidateSearchTruncated || !!second && ambiguityMargin <= ambiguityWindow;
