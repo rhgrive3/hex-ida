@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { VirtualList } from '../../js/ui/primitives.js';
+import { presentationBasicBlocks } from '../../js/ui/function-analysis-presentation.js';
 import { createAppRuntimeIO } from '../../js/runtime/app-runtime.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -33,6 +34,18 @@ assert.equal(navigation.includes('if (running) app.backend.cancelSearch(running)
 assert.equal(navigation.includes('err?.name === "AbortError" || err?.code === "ABORT_ERR"'), true, 'expected search cancellation must not surface as a failure dialog');
 assert.equal(backend.includes('cancelSearch(request) {\n    if (request == null) return false;\n    return this.cancel(request);\n  }'), true,
   'unowned legacy sheet cleanup must never fall back to cancelling the backend global last request');
+
+// Function UI presentation must not coerce malformed instruction rows into row 0.
+const [presentedBlock] = presentationBasicBlocks({
+  blocks: [{
+    startRow: 10,
+    endRow: 10,
+    insts: [{ row: null }, { row: '' }, { row: false }],
+  }],
+});
+assert.deepEqual(presentedBlock.rows, [10]);
+assert.equal(presentedBlock.startRow, 10);
+assert.equal(presentedBlock.endRow, 10);
 
 // VirtualList supports lazy large indexes without pre-materializing every item.
 const source = { length: 293794, itemAt(index) { return { index }; } };
