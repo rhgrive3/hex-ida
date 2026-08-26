@@ -22,4 +22,21 @@ export const X86_LONG64_FP_SHARED_BLOCKERS=Object.freeze([
  Object.freeze({id:'vex-maxvl-alias',required:['xmm/ymm writes must alias zmm[MAXVL] when AVX-512 is locked']}),
  Object.freeze({id:'evex-avx512-state',required:['zmm0-zmm31','k0-k7','decoded-evex-fields','merge-zero-mask-semantics','embedded-rounding-sae']}),
 ]);
-export function validateX86Long64FpDenominator(){const ids=X86_LONG64_FP_EXACT_FORMS.map(({id})=>id);if(new Set(ids).size!==ids.length)throw new Error('x86-fp-denominator-duplicate-form');return Object.freeze({schemaVersion:X86_LONG64_FP_DENOMINATOR_SCHEMA,denominatorId:X86_LONG64_FP_DENOMINATOR_ID,profileId:'x86_64:long-64',exactFormCount:ids.length,sharedBlockerCount:X86_LONG64_FP_SHARED_BLOCKERS.length,ownedRemainingCount:0,closed:false,oracleIds:Object.freeze(['intel-sdm-vol2-x87-sse-avx-avx512','deployed-capstone-5-x86-long64-detail'])});}
+export const X86_LONG64_FP_OWNED_REMAINING=Object.freeze([]);
+export function validateX86Long64FpDenominator(){
+  const ids=X86_LONG64_FP_EXACT_FORMS.map(({id})=>id);
+  if(new Set(ids).size!==ids.length)throw new Error('x86-fp-denominator-duplicate-form');
+  const ownedRemainingCount=X86_LONG64_FP_OWNED_REMAINING.length;
+  const sharedBlockerCount=X86_LONG64_FP_SHARED_BLOCKERS.length;
+  const closed=ids.length>0&&ownedRemainingCount===0&&sharedBlockerCount===0;
+  return Object.freeze({
+    schemaVersion:X86_LONG64_FP_DENOMINATOR_SCHEMA,
+    denominatorId:X86_LONG64_FP_DENOMINATOR_ID,
+    profileId:'x86_64:long-64',
+    exactFormCount:ids.length,
+    ownedRemainingCount,
+    sharedBlockerCount,
+    closed,
+    oracleIds:Object.freeze(['intel-sdm-vol2-x87-sse-avx-avx512','deployed-capstone-5-x86-long64-detail'])
+  });
+}
