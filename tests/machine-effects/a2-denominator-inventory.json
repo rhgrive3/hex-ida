@@ -90,7 +90,7 @@
             "coverage": "exact-with-intrinsic",
             "preexisting": false,
             "oracle": "arm-a-profile-a64-load-store-encoding-tables + deployed-capstone-5-arm64 + llvm-aarch64-integrated-assembler-disassembler",
-            "reason": "All 121 registry-owned load/store, exclusive, LSE-atomic, barrier, and prefetch mnemonics are bound to 235 encoding cases assembled by LLVM MC and decoded by the deployed Capstone build, including every one of the 32 PRFM/PRFUM prfop encodings. Constrained-unpredictable and malformed forms remain explicit fail-closed negatives outside the denominator.",
+            "reason": "All 123 registry-owned load/store, exclusive, LSE-atomic, barrier, and prefetch mnemonics are bound to 267 encoding cases assembled by LLVM MC and decoded by the deployed Capstone build, including every one of the 32 PRFM/PRFUM prfop encodings and all DSB/ISB CRm imm4 encodings. Constrained-unpredictable and malformed forms remain explicit fail-closed negatives outside the denominator.",
             "proof": {
               "schemaVersion": "machine-effects-effect-unit-proof/v1",
               "source": "js/targets/architecture/arm64/effects/memory.js",
@@ -102,11 +102,11 @@
                 "profileId": "arm64:a64",
                 "source": "tools/validation/machine-effects/arm64-a64-memory-denominator.mjs",
                 "encodingFamilyCount": 9,
-                "encodingCaseCount": 235,
-                "mnemonicCount": 121,
-                "exactMnemonicCount": 121,
+                "encodingCaseCount": 267,
+                "mnemonicCount": 123,
+                "exactMnemonicCount": 123,
                 "partialMnemonicCount": 0,
-                "corpusSha256": "4433ccc2c89cb205e6eaf745159fe3f5d65f3760ddc468a3067ce5c03c90063e",
+                "corpusSha256": "3313f81cbe51108c43102d226222fedbd13251c45a7cfbb9552285992559e4c9",
                 "oracleIds": ["arm-a-profile-a64-load-store-encoding-tables", "deployed-capstone-5-arm64", "llvm-aarch64-integrated-assembler-disassembler"]
               }
             }
