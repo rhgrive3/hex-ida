@@ -21,7 +21,7 @@ const family = (id, discriminators) => Object.freeze({ id, discriminators:Object
 export const ARM64_A64_MEMORY_ENCODING_FAMILIES = Object.freeze([
   family('single-load-store', ['mnemonic','width','scaled-imm12','register-offset','pre-index','post-index','writeback','fault']),
   family('single-unscaled-unprivileged', ['mnemonic','width','signed-imm9','privilege','fault']),
-  family('pair-load-store', ['mnemonic','width','signedness','pc-relative','fault']),
+  family('pair-load-store', ['mnemonic','width','signed-scaled-imm7','pre-index','post-index','writeback','fault']),
   family('literal-load', ['mnemonic','width','signedness','pc-relative','fault']),
   family('acquire-release', ['mnemonic','width','ordering','atomic','fault']),
   family('exclusive', ['mnemonic','width','ordering','monitor-state','fault']),
