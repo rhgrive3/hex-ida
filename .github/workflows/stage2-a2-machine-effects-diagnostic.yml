@@ -8,7 +8,16 @@ on:
 permissions:
   contents: read
 jobs:
-  machine-effects:
+  focused:
+    strategy:
+      fail-fast: false
+      matrix:
+        test:
+          - tests/machine-effects/a2-denominator.test.mjs
+          - tests/machine-effects/x86-long64-fp-denominator.test.mjs
+          - tests/machine-effects/x86-long64-simd-denominator.test.mjs
+          - tests/machine-effects/x86-long64-system-denominator.test.mjs
+          - tests/machine-effects/x86-system-register-move.test.mjs
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -17,5 +26,5 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --no-audit --no-fund
-      - name: Run canonical A2 machine effects with full output
-        run: node tests/machine-effects/run.mjs
+      - name: Run focused A2 closure proof
+        run: node "${{ matrix.test }}"
