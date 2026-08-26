@@ -6,6 +6,7 @@ import {
   EVIDENCE_AUTHORITY,
   createDiscoveryEvidence,
   createFunctionCandidate,
+  createRegion,
   hasExactStart,
   hasKnownExtent,
 } from '../../../js/analysis/discovery/candidates.js';
@@ -36,6 +37,21 @@ test('a candidate with an unknown extent cannot claim regions', () => {
   assert.throws(() => createFunctionCandidate({
     start: 0x1000, extentState: 'unknown', regions: [{ start: 0x1000, end: 0x1010 }],
   }), /unknown-extent-cannot-claim-regions/);
+});
+
+test('canonical discovery addresses reject negative values', () => {
+  assert.throws(() => createFunctionCandidate({ start: -1n }), /discovery-candidate-invalid-start/);
+  assert.throws(() => createFunctionCandidate({ start: '-1' }), /discovery-candidate-invalid-start/);
+  assert.throws(() => createDiscoveryEvidence({ kind: 'export', start: -1n }), /discovery-evidence-invalid-start/);
+  assert.throws(() => createRegion({ start: -2n, end: -1n }), /discovery-region-invalid-start/);
+  assert.throws(() => createRegion({ start: 0n, end: -1n }), /discovery-region-invalid-end/);
+
+  assert.equal(createFunctionCandidate({ start: 0n }).start, '0');
+  assert.equal(createFunctionCandidate({ start: '0x10' }).start, '16');
+  assert.deepEqual(createRegion({ start: '0x10', end: '32' }), {
+    start: '16', end: '32', ownership: 'exclusive',
+  });
+  assert.throws(() => createRegion({ start: 1n, end: 1n }), /discovery-region-empty/);
 });
 
 test('a byte pattern alone never establishes a function start', () => {

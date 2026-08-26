@@ -53,8 +53,11 @@ function fail(code) { throw new TypeError(code); }
 
 function address(value, code) {
   if (value == null) fail(code);
-  try { return BigInt(value); }
-  catch { fail(code); return 0n; }
+  try {
+    const result = BigInt(value);
+    if (result < 0n) fail(code);
+    return result;
+  } catch { fail(code); return 0n; }
 }
 
 /**
