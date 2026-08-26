@@ -1,6 +1,7 @@
 const UI_PRESENTATION_ROUTE = Symbol('canonical-function-ui-presentation');
 
 function safeRows(block) {
+  // UI projection must not invent rows through Number(null/''/false) coercion.
   const rows = [...new Set((block?.insts || [])
     .map((inst) => inst?.row)
     .filter(Number.isSafeInteger))]
