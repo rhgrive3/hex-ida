@@ -94,9 +94,8 @@ function liftHintNop(instruction, context) {
   if (ctx.operands.length !== 1 || !['memory','register'].includes(ctx.operands[0]?.type)) return null;
   return ctx.finish({
     family:'control',
-    statePreservation:{ proven:true, reason:'x86-amd-hint-nop-normal-path-preserves-architectural-state' },
     possibleFaults:[udFault('nop', '0F19 /0 is an AMD HINT_NOP encoding and may be reserved/unsupported on other implementations')],
-    metadata:{ operation:'nop', hintNopEncoding:'0F19/0', implementationDependentAvailability:true, memoryOperandIsSyntacticOnly:true },
+    metadata:{ operation:'nop', hintNopEncoding:'0F19/0', implementationDependentAvailability:true, memoryOperandIsSyntacticOnly:true, normalPathStatePreserving:true },
   });
 }
 
