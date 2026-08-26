@@ -176,7 +176,7 @@ console.log('  ok 5 resident release rejects non-finite amounts (#1337)');
 
 /* ── #2045 pagination total は non-negative safe integer のみ ── */
 
-for (const total of [-1, 1.5, Infinity, '-1']) {
+for (const total of [-1, 1.5, Infinity, '-1', '10']) {
   const page = pageRows({ results: [{ address: 0x1000n }], total, complete: true }, 10, 0);
   assert.equal(page.total, null, `malformed total ${String(total)} must not become canonical total (#2045)`);
   assert.equal(page.complete, false, `malformed total ${String(total)} must fail closed (#2045)`);

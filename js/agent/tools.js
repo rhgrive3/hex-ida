@@ -88,9 +88,8 @@ export function pageRows(value, limit, offset = 0) {
   }
   const results = rows.slice(sourceStart, sourceStart + limit);
   const totalRaw = meta.total ?? meta.completeness?.total;
-  const totalNumber = Number(totalRaw);
   const hasExplicitTotal = totalRaw != null;
-  const explicitTotal = hasExplicitTotal && Number.isSafeInteger(totalNumber) && totalNumber >= 0 ? totalNumber : null;
+  const explicitTotal = hasExplicitTotal && Number.isSafeInteger(totalRaw) && totalRaw >= 0 ? totalRaw : null;
   const invalidTotal = hasExplicitTotal && explicitTotal == null;
   const returned = results.length;
   let complete = meta.complete ?? meta.completeness?.complete;
