@@ -237,5 +237,9 @@ function liftArm64ControlEffectsCore(instruction, options = {}) {
 
 export function liftArm64ControlEffects(instruction, options = {}) {
   const bundle = liftArm64ControlEffectsCore(instruction, options);
-  return bundle == null ? null : decorateArm64BtypeEffects(instruction, options, bundle);
+  if (bundle == null) return null;
+  // Operand-shape failures describe encodings that do not exist. Do not attach
+  // architectural BTYPE state transitions to a malformed structured instruction.
+  if (/operand-shape-invalid$/.test(String(bundle.unknownEffects?.reason || ''))) return bundle;
+  return decorateArm64BtypeEffects(instruction, options, bundle);
 }
