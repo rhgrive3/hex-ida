@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { parseOperands } from '../../js/arm64.js';
 import { liftArm64MachineEffects } from '../../js/targets/architecture/arm64/effects/index.js';
 
+// The finite decoder denominator proves legal encodings; this file locks malformed structured-input rejection.
 let sequence = 0;
 function lift(mnemonic, operands, extra = {}) {
   const instructionId = `arm64-control-operand-shape:${sequence++}`;
