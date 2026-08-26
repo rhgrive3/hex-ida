@@ -11,8 +11,17 @@ export function validateSchema(value, schema, path = '$') {
 
 function visit(value, schema, path, errors) {
   if (schema.oneOf) {
-    const matches = schema.oneOf.filter((candidate) => validateSchema(value, candidate, path).ok);
-    if (matches.length !== 1) errors.push(`${path} must match exactly one schema`);
+    const attempts = schema.oneOf.map((candidate) => validateSchema(value, candidate, path));
+    const matches = attempts.filter((attempt) => attempt.ok);
+    if (matches.length !== 1) {
+      errors.push(`${path} must match exactly one schema`);
+      if (matches.length === 0 && attempts.length) {
+        const closest = attempts.reduce((best, attempt) => (
+          attempt.errors.length < best.errors.length ? attempt : best
+        ));
+        errors.push(...closest.errors);
+      }
+    }
     return;
   }
   if (schema.anyOf) {

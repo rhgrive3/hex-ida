@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { aiBudget } from '../js/ai/schema.js';
+import { sanitizeActions, validateModelDecision } from '../js/ai/validation.js';
 import { AIProvider } from '../js/ai/provider/index.js';
 import {
   ChatGPTWebProvider,
@@ -14,7 +15,7 @@ assert.equal(aiBudget('chat', { timeoutMs: 999999 }).timeoutMs, 240000, 'caller 
 const standardProvider = new AIProvider();
 assert.equal(standardProvider.turnTimeoutMs('chat'), 30000, 'ordinary providers keep the previous 30-second chat default');
 assert.equal(standardProvider.turnTimeoutMs('agent'), 120000, 'ordinary providers keep the previous two-minute agent default');
-const chatgptPolicy = new ChatGPTWebProvider({ bridge: { request: async () => '{\"type\":\"final\",\"answer\":\"ok\"}' } });
+const chatgptPolicy = new ChatGPTWebProvider({ bridge: { request: async () => '{"type":"final","answer":"ok"}' } });
 assert.equal(chatgptPolicy.turnTimeoutMs('chat'), null, 'ChatGPT Web must not impose a default chat timeout');
 assert.equal(chatgptPolicy.turnTimeoutMs('agent'), null, 'ChatGPT Web must not impose a default agent timeout');
 
@@ -69,6 +70,33 @@ const tools = [{
   const decision = parseChatGPTDecision('```json\n{"type":"final","answer":"done","confidence":0.8,"evidenceIds":[]}\n```');
   assert.equal(decision.type, 'final');
   assert.equal(decision.answer, 'done');
+}
+
+{
+  /* The public Hex prompt only constrains suggestedActions to an array. A
+     textual suggestion must not discard an otherwise valid final answer, and
+     must still fail closed before the executable action surface. */
+  const decision = validateModelDecision({
+    type: 'final',
+    answer: 'scope explanation',
+    confidence: 0.99,
+    evidenceIds: [],
+    hypothesisIds: [],
+    suggestedActions: ['broaden the scope'],
+    followups: [],
+  });
+  assert.deepEqual(decision.suggestedActions, ['broaden the scope']);
+  assert.deepEqual(sanitizeActions(decision.suggestedActions), []);
+}
+
+{
+  assert.throws(
+    () => validateModelDecision({ type: 'final', answer: 'bad', suggestedActions: [42] }),
+    (error) => error?.type === 'invalid_model_output'
+      && /\$ must match exactly one schema/.test(error.message)
+      && /\$\.suggestedActions\[0\] does not match any schema/.test(error.message),
+    'oneOf failures must retain the closest field-level validation error for model repair',
+  );
 }
 
 assert.throws(() => parseChatGPTDecision('not json'), /JSON object/);
