@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { parseOperands } from '../../js/arm64.js';
 import { liftArm64MachineEffects } from '../../js/targets/architecture/arm64/effects/index.js';
 
+// Keep this focused on canonical structured-input validation; the finite decoder
+// denominator remains the authority for valid encoded instruction coverage.
 function lift(mnemonic, operands, suffix) {
   return liftArm64MachineEffects({
     instructionId:`arm64-addsub-immediate-${suffix}`,
