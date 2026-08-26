@@ -59,7 +59,7 @@ assertRejected('mrs', 'x0, nzcv, #1', 'mrs-operand-shape-invalid');
 assertRejected('msr', 'nzcv, x0, #1', 'msr-operand-shape-invalid');
 assertRejected('eret', '#1', 'eret-operand-shape-invalid');
 
-// Existing immediate-domain contracts remain intact.
+// Existing immediate-domain contracts remain intact and stay in exact-head regression coverage.
 assertRejected('clrex', '#-1', 'clrex-imm4-out-of-range');
 assertRejected('clrex', '#16', 'clrex-imm4-out-of-range');
 assertRejected('hint', '#-1', 'generic-hint-imm7-out-of-range');
