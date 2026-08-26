@@ -96,6 +96,16 @@ function readRegs(op, into) {
   }
 }
 
+function arm64AddSubImmediateValue(op) {
+  if (op?.k !== 'imm' || op.value == null) return null;
+  const shift = op.shift;
+  if (!shift) return op.value;
+  if (String(shift.op || '').toLowerCase() !== 'lsl') return null;
+  if (shift.amount === 0) return op.value;
+  if (shift.amount === 12) return op.value << 12n;
+  return null;
+}
+
 export async function analyzeFunction(backend, region, startRow, endRow, symbols, onProgress, opts = {}) {
   const signal = opts?.signal || null;
   throwIfAborted(signal);
@@ -193,7 +203,8 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
       }
 
       if (b === 'sub' && ops[0] && ops[0].cls === 'sp' && ops[2] && ops[2].k === 'imm' && ops[2].value != null) {
-        res.frameBytes += Number(ops[2].value);
+        const amount = arm64AddSubImmediateValue(ops[2]);
+        if (amount != null) res.frameBytes += Number(amount);
       }
       if (/^stp?$/.test(b) || b === 'stp' || b === 'str') {
         const mem = ops.find((x) => x.k === 'mem');
@@ -242,9 +253,10 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
       } else if (b === 'add') {
         const src = ops[1];
         const imm = ops[2];
-        if (src?.k === 'reg' && imm?.k === 'imm' && imm.value != null) {
+        const offset = arm64AddSubImmediateValue(imm);
+        if (src?.k === 'reg' && offset != null) {
           const p = pageOf.get(src.num);
-          if (p && row - p.row <= 8) res.stringRefs.push({ row, addr: p.value + imm.value });
+          if (p && row - p.row <= 8) res.stringRefs.push({ row, addr: p.value + offset });
         }
       } else if (b === 'ldr') {
         const mem = ops.find((x) => x.k === 'mem');

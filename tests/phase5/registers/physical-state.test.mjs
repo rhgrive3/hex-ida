@@ -119,6 +119,29 @@ for (const [name,bits,kind] of [
   ['fip',64,'x87-pointer'], ['fdp',64,'x87-pointer'],
 ]) descriptor(name, { physicalId:name, physicalBits:bits, viewBits:bits, lsb:0, writePolicy:'replace', kind });
 
+const architecturallyDefinedControlRegisters = new Set([0,2,3,4,8]);
+const architecturallyDefinedDebugRegisters = new Set([0,1,2,3,6,7]);
+for (const [prefix,kind,architecturallyDefined] of [
+  ['cr','control-register',architecturallyDefinedControlRegisters],
+  ['dr','debug-register',architecturallyDefinedDebugRegisters],
+]) {
+  for (let index = 0; index < 16; index++) {
+    const name = `${prefix}${index}`;
+    descriptor(name, {
+      physicalId:name,
+      physicalBits:64,
+      viewBits:64,
+      lsb:0,
+      writePolicy:'replace',
+      kind,
+      architecturalKind:kind,
+      modeled:true,
+      privileged:true,
+      architecturallyDefined:architecturallyDefined.has(index),
+    });
+  }
+}
+
 // The target converts every fixed view to its physicalId before generic SSA. Width
 // and spelling stay access metadata and cannot create a second SSA cell.
 for (const [leftName,rightName] of [
@@ -145,8 +168,10 @@ assert.equal(physicalFile.filter((entry) => entry.id.startsWith('zmmh')).length,
 assert.equal(physicalFile.filter((entry) => /^k[0-7]$/.test(entry.id)).length, 8);
 assert.equal(physicalFile.filter((entry) => entry.id === 'x87-stack').length, 1);
 assert.equal(physicalFile.filter((entry) => entry.id === 'mxcsr').length, 1);
-assert.equal(X86_REGISTER_DESCRIPTORS.length, 178);
-assert.equal(X86_PHYSICAL_REGISTERS.length, 98);
+assert.equal(physicalFile.filter((entry) => /^cr(?:[0-9]|1[0-5])$/.test(entry.id)).length, 16);
+assert.equal(physicalFile.filter((entry) => /^dr(?:[0-9]|1[0-5])$/.test(entry.id)).length, 16);
+assert.equal(X86_REGISTER_DESCRIPTORS.length, 210);
+assert.equal(X86_PHYSICAL_REGISTERS.length, 130);
 assert.equal(Object.isFrozen(X86_REGISTER_DESCRIPTORS), true);
 assert.equal(Object.isFrozen(X86_PHYSICAL_REGISTERS), true);
 
