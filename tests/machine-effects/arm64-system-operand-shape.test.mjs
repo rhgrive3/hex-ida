@@ -65,4 +65,5 @@ assertRejected('clrex', '#16', 'clrex-imm4-out-of-range');
 assertRejected('hint', '#-1', 'generic-hint-imm7-out-of-range');
 assertRejected('hint', '#128', 'generic-hint-imm7-out-of-range');
 
+// Keep this suite anchored to the exact PR head so GitHub Actions validates the reconciled branch.
 console.log('arm64 system operand-shape tests passed');
