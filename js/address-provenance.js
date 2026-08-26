@@ -38,9 +38,24 @@
       .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
     const startCount = functionStarts.length;
     let startIndex = 0;
-    const branchEntries = new Set();
     const rangeStart = asBigInt(opts.rangeStart);
     const rangeEnd = asBigInt(opts.rangeEnd);
+
+    function inRange(target) {
+      if (target == null) return false;
+      if (rangeStart != null && target < rangeStart) return false;
+      if (rangeEnd != null && target >= rangeEnd) return false;
+      return true;
+    }
+
+    // A linear scanner cannot discover a backward branch until after its target
+    // has already been visited. Callers that have a cheap control-flow prepass
+    // can therefore seed every direct branch entry here, making loop headers
+    // and other merge points provenance barriers on their first visit.
+    const branchEntries = new Set(
+      Array.from(opts.branchEntries || [], asBigInt)
+        .filter((target) => target != null && inRange(target)),
+    );
     let generation = 0;
 
     function clear() {
@@ -71,13 +86,6 @@
       const born = pageAt[r];
       if (born < 0 || at < born || at - born > window) return null;
       return pageOf[r];
-    }
-
-    function inRange(target) {
-      if (target == null) return false;
-      if (rangeStart != null && target < rangeStart) return false;
-      if (rangeEnd != null && target >= rangeEnd) return false;
-      return true;
     }
 
     function markForwardEntry(target, pc) {
