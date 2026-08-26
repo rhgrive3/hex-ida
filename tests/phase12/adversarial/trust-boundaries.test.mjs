@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { createPackageEnvelope, resolvePackageDependencies, validateProviderOutput } from '../../../js/phase12/package-envelope.js';
+import { createPackageEnvelope, parseBoundedPackageInput, resolvePackageDependencies, validatePackageEnvelope, validateProviderOutput } from '../../../js/phase12/package-envelope.js';
 import { validatePhase12ProviderResult } from '../../../js/phase12/provider-boundary.js';
 import { createMatchResult, promoteKnowledgeSuggestion } from '../../../js/knowledge/phase12-recognition.js';
 import { ChangeLog, createProjectOperation } from '../../../js/collaboration/index.js';
@@ -27,6 +27,24 @@ assert.equal(validateProviderOutput({ schemaVersion: 'provider-v2', targetIdenti
 assert.equal(validateProviderOutput({ schemaVersion: 'provider-v1', targetIdentity: 'binary-a', provenance: {}, completeness: 'unknown', items: [] }).code, 'provider-output-completeness-invalid');
 assert.equal(validateProviderOutput({ schemaVersion: 'provider-v1', targetIdentity: 'binary-a', provenance: {}, completeness: 'partial', unique: true, items: [] }).code, 'provider-output-incomplete-unique-invalid');
 assert.equal(validateProviderOutput({ schemaVersion: 'provider-v1', targetIdentity: 'binary-a', provenance: {}, completeness: 'complete', items: [{ id: 'swapped', targetIdentity: 'binary-b' }] }).code, 'provider-output-item-target-mismatch');
+
+assert.throws(
+  () => parseBoundedPackageInput('{"value":1}', { maxBytes: 'not-a-number' }),
+  (error) => error?.code === 'package-resource-limit-invalid' && error?.detail?.name === 'maxBytes',
+);
+assert.throws(
+  () => parseBoundedPackageInput('{"value":1}', { maxTokens: Number.POSITIVE_INFINITY }),
+  (error) => error?.code === 'package-resource-limit-invalid' && error?.detail?.name === 'maxTokens',
+);
+const invalidEnvelopeLimit = validatePackageEnvelope(packageA, { maxEntries: Number.NaN });
+assert.equal(invalidEnvelopeLimit.ok, false);
+assert.equal(invalidEnvelopeLimit.code, 'package-resource-limit-invalid');
+const invalidProviderLimit = validateProviderOutput(
+  { schemaVersion: 'provider-v1', targetIdentity: 'binary-a', provenance: {}, completeness: 'complete', items: [] },
+  { maxEntries: 'not-a-number' },
+);
+assert.equal(invalidProviderLimit.ok, false);
+assert.equal(invalidProviderLimit.code, 'provider-output-resource-limit-invalid');
 
 assert.throws(() => resolvePackageDependencies(createPackageEnvelope({ kind: 'mixed', packageId: 'parent', packageVersion: '1', dependencies: [{ packageId: 'dep', packageVersion: '1', contentHash: 'hash-old' }], payload: {} }), []), /not resolved/);
 
