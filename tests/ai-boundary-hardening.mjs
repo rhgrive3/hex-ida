@@ -15,6 +15,7 @@ import { PROPOSAL_STATUSES } from '../js/ai/schema.js';
 import { ProposalStore } from '../js/ai/proposals.js';
 import { sanitizeValue, sanitizeToolSchema } from '../js/ai/provider/worker-protocol.js';
 import { measureWirePayload, assertWireBudget } from '../js/ai/budget/wire.js';
+import { pageRows } from '../js/agent/tools.js';
 import '../js/worker-budget.js';
 
 console.log('Testing AI boundary hardening...');
@@ -172,5 +173,35 @@ for (const bad of [Infinity, -Infinity, Number.NaN, 'lots', null, undefined, {}]
   assert.equal(budget.snapshot().resident, 0, 'over-release must clamp at zero, not go negative');
 }
 console.log('  ok 5 resident release rejects non-finite amounts (#1337)');
+
+/* ── #2045 pagination total は non-negative safe integer のみ ── */
+
+for (const total of [-1, 1.5, Infinity, '-1', '10']) {
+  const page = pageRows({ results: [{ address: 0x1000n }], total, complete: true }, 10, 0);
+  assert.equal(page.total, null, `malformed total ${String(total)} must not become canonical total (#2045)`);
+  assert.equal(page.complete, false, `malformed total ${String(total)} must fail closed (#2045)`);
+  assert.equal(page.truncated, true);
+  assert.equal(page.reason, 'invalid-total');
+  assert.equal(page.completeness.total, null);
+  assert.equal(page.completeness.complete, false);
+}
+
+{
+  const nested = pageRows({ results: [{ address: 0x1000n }], completeness: { total: -1, complete: true } }, 10, 0);
+  assert.equal(nested.total, null);
+  assert.equal(nested.complete, false);
+  assert.equal(nested.reason, 'invalid-total');
+}
+
+{
+  const empty = pageRows({ results: [], total: 0 }, 10, 0);
+  assert.equal(empty.total, 0);
+  assert.equal(empty.complete, true);
+  const bounded = pageRows({ results: [{ address: 0x1000n }], total: 10 }, 10, 0);
+  assert.equal(bounded.total, 10);
+  assert.equal(bounded.complete, false);
+  assert.equal(bounded.coverage, 0.1);
+}
+console.log('  ok 6 pageRows rejects malformed explicit totals fail-closed (#2045)');
 
 console.log('AI boundary hardening: PASS');
