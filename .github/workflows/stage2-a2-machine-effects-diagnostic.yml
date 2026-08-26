@@ -5,13 +5,10 @@ on:
       - integration/stage2-a2-x86-long64-terminal-semantics
     paths:
       - .github/workflows/stage2-a2-machine-effects-diagnostic.yml
-      - js/targets/architecture/x86_64/effects/terminal-residual.js
-      - js/targets/architecture/x86_64/effects/index.js
-      - js/targets/architecture/x86_64/effects/system-register-move.js
 permissions:
   contents: read
 jobs:
-  terminal-closure:
+  residual-nine:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -22,11 +19,40 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --no-audit --no-fund
-      - name: Run frozen 1487 closure matrix
-        run: node tests/machine-effects/x86-long64-closure-matrix.test.mjs
-      - name: Run focused terminal denominator proofs
+      - name: Dump remaining nine decoded envelopes
         run: |
-          node tests/machine-effects/x86-long64-fp-denominator.test.mjs
-          node tests/machine-effects/x86-long64-simd-denominator.test.mjs
-          node tests/machine-effects/x86-long64-system-denominator.test.mjs
-          node tests/machine-effects/a2-denominator.test.mjs
+          node --input-type=module <<'NODE'
+          import { createCapstoneX86Session } from './tests/phase5/helpers/capstone-session.mjs';
+          import { createX86DecodedInstruction } from './js/targets/architecture/x86_64/decoded-instruction.js';
+          import { dispatchX86MachineEffects } from './js/targets/architecture/x86_64/effects/index.js';
+          import { X86_LONG64_DECODER_WITNESSES } from './tools/validation/machine-effects/fixtures/x86-long64-decoder-witnesses.mjs';
+          import { bytesFromX86Long64WitnessHex } from './tools/validation/machine-effects/x86-long64-decoder-denominator.mjs';
+          const wanted = new Set([233,236,516,517,640,641,809,1423,1424]);
+          const session = await createCapstoneX86Session();
+          try {
+            for (const [id,name,hex] of X86_LONG64_DECODER_WITNESSES) {
+              if (!wanted.has(id)) continue;
+              const bytes = bytesFromX86Long64WitnessHex(hex);
+              const raw = session.decode(bytes, 0x100000n + BigInt(id) * 0x20n)[0];
+              const instruction = createX86DecodedInstruction({ ...raw, instructionId:`closure-witness:${id}` });
+              const detail = instruction.detail || {};
+              const dispatch = dispatchX86MachineEffects(instruction);
+              console.log(JSON.stringify({
+                id,name,hex,decodedBytes:Array.from(instruction.bytes || bytes),
+                opcodeName:instruction.opcodeName,instructionFamily:instruction.instructionFamily,
+                length:instruction.length,prefixes:detail.prefixes,addressSizeBits:detail.addressSizeBits,
+                encoding:detail.encoding,vex:detail.vex,evex:detail.evex,
+                operands:(detail.operands||[]).map((o)=>({
+                  type:o.type,access:o.access,widthBits:o.widthBits,encodedWidthBits:o.encodedWidthBits,
+                  value:o.value == null ? null : String(o.value),
+                  register:o.register?{id:o.register.id,physicalId:o.register.physicalId,kind:o.register.kind,viewBits:o.register.viewBits,writePolicy:o.register.writePolicy}:null,
+                  memory:o.memory?{base:o.memory.base?.id,index:o.memory.index?.id,segment:o.memory.segment?.id,scale:o.memory.scale,displacement:String(o.memory.displacement ?? 0),addressSizeBits:o.memory.addressSizeBits}:null
+                })),
+                implicitReads:(detail.implicitReads||[]).map((r)=>({id:r.id,physicalId:r.physicalId,kind:r.kind})),
+                implicitWrites:(detail.implicitWrites||[]).map((r)=>({id:r.id,physicalId:r.physicalId,kind:r.kind})),
+                eflags:String(detail.eflags ?? 0),groups:detail.groups,
+                dispatch:{ownerId:dispatch.ownerId,completeness:dispatch.result?.completeness,reason:dispatch.result?.unknownEffects?.reason,metadata:dispatch.result?.metadata}
+              }));
+            }
+          } finally { session.close(); }
+          NODE
