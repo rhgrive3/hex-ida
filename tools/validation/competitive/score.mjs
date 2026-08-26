@@ -8,6 +8,7 @@ import { ALIAS_QUERIES_V2, buildFixture, memoryAccessOf, regionOf, scoreAliasQue
 import { createPhase7AliasSolver } from '../../../js/analysis/alias/solver.js';
 import { aliasMemoryRegions } from '../../../js/analysis/alias/legacy-safety-floor.js';
 import { measureMachineEffectsCoverage } from '../../../js/targets/architecture/coverage.js';
+import { validateTwinManifest } from './twin-manifest.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const PROFILE_PATH = path.join(ROOT, 'tools/validation/competitive/profile.json');
@@ -15,18 +16,147 @@ const REPORT_DIR = path.join(ROOT, 'reports/competitive');
 const SCORECARD_PATH = path.join(REPORT_DIR, 'scorecard.json');
 
 function git(args) {
-  const result = spawnSync('git', args, { cwd: ROOT, encoding: 'utf8' });
-  return result.stdout?.trim() || '';
+  const result = spawnSync('git', args, { cwd: ROOT, encoding: 'utf8', shell: false });
+  const value = result.stdout?.trim() || '';
+  if (result.error || result.status !== 0 || !/^[0-9a-f]{40}$/i.test(value)) {
+    throw new Error(`competitive-git-identity-unavailable:${args.join(' ')}`);
+  }
+  return value.toLowerCase();
 }
-
+export function currentCompetitiveGitIdentity() {
+  return Object.freeze({
+    gitSha: git(['rev-parse', 'HEAD']),
+    treeSha: git(['rev-parse', 'HEAD^{tree}']),
+  });
+}
 export function loadCompetitiveProfile() {
   if (!fs.existsSync(PROFILE_PATH)) throw new Error('competitive-profile-missing');
   return JSON.parse(fs.readFileSync(PROFILE_PATH, 'utf8'));
 }
 
+function metricConfig(profile, metricId) {
+  const config = profile.metrics?.[metricId];
+  if (!config) throw new Error(`competitive-profile-metric-missing:${metricId}`);
+  if (!config.groundTruth || typeof config.groundTruth !== 'object') {
+    throw new Error(`competitive-profile-ground-truth-missing:${metricId}`);
+  }
+  return config;
+}
+
+function groundTruthFor(config, metricId) {
+  const groundTruth = config.groundTruth;
+  const allowedStatuses = new Set(['measured', 'legacy-unproven', 'UNMEASURED']);
+  if (!allowedStatuses.has(groundTruth.status)) throw new Error(`competitive-profile-ground-truth-status-invalid:${metricId}`);
+  if (typeof groundTruth.authority !== 'string' || !groundTruth.authority.trim()) throw new Error(`competitive-profile-ground-truth-authority-missing:${metricId}`);
+  if (['competitor', 'hex', 'reference-tool'].includes(groundTruth.authority.toLowerCase())) {
+    throw new Error(`competitive-profile-ground-truth-authority-forbidden:${metricId}`);
+  }
+  if (groundTruth.binaryScored === true && groundTruth.status === 'measured') {
+    if (groundTruth.authority !== 'same-binary-twin') throw new Error(`competitive-profile-binary-ground-truth-authority:${metricId}`);
+    if (groundTruth.twinManifest?.schemaVersion !== 'hex-competitive-twin-manifest/v1') {
+      throw new Error(`competitive-profile-twin-manifest-full-required:${metricId}`);
+    }
+    try { validateTwinManifest(groundTruth.twinManifest); } catch (error) {
+      throw new Error(`competitive-profile-twin-manifest-invalid:${metricId}:${error.message}`);
+    }
+  }
+  if (groundTruth.binaryScored !== true && groundTruth.twinManifest != null) {
+    throw new Error(`competitive-profile-nonbinary-twin-manifest:${metricId}`);
+  }
+  return {
+    kind: String(groundTruth.kind || 'unspecified'),
+    authority: groundTruth.authority,
+    status: groundTruth.status,
+    binaryScored: groundTruth.binaryScored === true,
+    twinManifest: groundTruth.twinManifest ?? null,
+  };
+}
+
+function comparisonFor(metricConfigValue, hexValue, referenceValue) {
+  if (hexValue == null || referenceValue == null) return 'UNMEASURED';
+  if (metricConfigValue.direction === 'exact-zero') {
+    if (hexValue === 0 && referenceValue === 0) return 'TIE';
+    if (hexValue === 0 && referenceValue > 0) return 'WIN';
+    if (hexValue > 0) return 'LOSS';
+    return 'TIE';
+  }
+  if (metricConfigValue.direction === 'higher') {
+    if (hexValue > referenceValue) return 'WIN';
+    if (hexValue === referenceValue) return 'TIE';
+    return 'LOSS';
+  }
+  if (metricConfigValue.direction === 'lower') {
+    if (hexValue < referenceValue) return 'WIN';
+    if (hexValue === referenceValue) return 'TIE';
+    return 'LOSS';
+  }
+  return 'UNMEASURED';
+}
+
+function runPolicyFor(config) {
+  const policy = config.repetitionPolicy;
+  if (!policy) return 'unmeasured';
+  if (policy.coldWarm === 'both') return 'cold-and-warm';
+  if (policy.coldWarm === 'none') return 'exact';
+  return String(policy.coldWarm || 'exact');
+}
+
+function makeEntry(profile, metricId, fields) {
+  const config = metricConfig(profile, metricId);
+  const groundTruth = groundTruthFor(config, metricId);
+  const hexValue = fields.hexValue ?? null;
+  const referenceValue = fields.referenceValue ?? null;
+  const historicalComparison = comparisonFor(config, hexValue, referenceValue);
+  // Historical synthetic rows retain their old values only in an explicitly
+  // non-authoritative object. Active UNMEASURED values must remain null.
+  const comparable = groundTruth.status === 'measured'
+    && (groundTruth.binaryScored === false || groundTruth.twinManifest != null);
+  const comparison = comparable ? historicalComparison : 'UNMEASURED';
+  const historical = comparable || (hexValue == null && referenceValue == null && historicalComparison === 'UNMEASURED')
+    ? null
+    : {
+      nonAuthoritative: true,
+      hexValue,
+      referenceValue,
+      comparison: historicalComparison,
+    };
+  return {
+    metricId,
+    corpusId: fields.corpusId ?? config.corpusWorkloadIds?.[0] ?? metricId,
+    inputIdentity: fields.inputIdentity ?? `profile:${metricId}`,
+    functionIdentity: fields.functionIdentity ?? null,
+    hexVersion: fields.hexVersion,
+    referenceTool: fields.referenceTool ?? 'unmeasured',
+    referenceVersion: fields.referenceVersion ?? 'unmeasured',
+    configuration: fields.configuration ?? 'profile-default',
+    runtimeClass: profile.runtimeHardwareClass,
+    runPolicy: fields.runPolicy ?? runPolicyFor(config),
+    hexValue: comparable ? hexValue : null,
+    referenceValue: comparable ? referenceValue : null,
+    comparison,
+    historical,
+    groundTruth,
+    groundTruthAuthority: groundTruth.authority,
+    groundTruthStatus: groundTruth.status,
+    twinManifest: groundTruth.twinManifest,
+    evidenceRefs: fields.evidenceRefs ?? [],
+  };
+}
+
+function atomicWriteJson(filePath, value) {
+  const parent = path.dirname(filePath);
+  fs.mkdirSync(parent, { recursive: true });
+  const temporary = path.join(parent, `.${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`);
+  try {
+    fs.writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { flag: 'wx' });
+    fs.renameSync(temporary, filePath);
+  } finally {
+    if (fs.existsSync(temporary)) fs.unlinkSync(temporary);
+  }
+}
+
 export async function generateCompetitiveScorecard({ profile = loadCompetitiveProfile() } = {}) {
-  const headCommit = git(['rev-parse', 'HEAD']) || profile.baselineCommit;
-  const treeSha = git(['rev-parse', 'HEAD^{tree}']) || profile.baselineTree;
+  const { gitSha: headCommit, treeSha } = currentCompetitiveGitIdentity();
 
   // 1. Alias v2 candidate answerer
   const solverCache = new Map();
@@ -68,113 +198,93 @@ export async function generateCompetitiveScorecard({ profile = loadCompetitivePr
   };
   const arm64Coverage = measureMachineEffectsCoverage('arm64', [sampleInstruction]);
 
-  // 3. Normalized metric comparisons
-  function compareMetric(metricId, hexVal, refVal, direction) {
-    if (hexVal === null || hexVal === undefined || refVal === null || refVal === undefined) return 'UNMEASURED';
-    if (direction === 'exact-zero') {
-      if (hexVal === 0 && refVal === 0) return 'TIE';
-      if (hexVal === 0 && refVal > 0) return 'WIN';
-      if (hexVal > 0) return 'LOSS';
-      return 'TIE';
-    }
-    if (direction === 'higher') {
-      if (hexVal > refVal) return 'WIN';
-      if (hexVal === refVal) return 'TIE';
-      return 'LOSS';
-    }
-    if (direction === 'lower') {
-      if (hexVal < refVal) return 'WIN';
-      if (hexVal === refVal) return 'TIE';
-      return 'LOSS';
-    }
-    return 'UNMEASURED';
-  }
-
+  // 3. Normalized metric comparisons. These five historical rows retain
+  // their old values. makeEntry marks their synthetic/legacy comparisons as
+  // UNMEASURED until a real same-binary twin is bound in the profile.
   const entries = [
-    {
-      metricId: 'alias-v2-exact-precision',
+    makeEntry(profile, 'alias-v2-exact-precision', {
       corpusId: 'phase7-alias-memory-corpus-v2',
       inputIdentity: 'alias-v2-30-queries',
-      functionIdentity: null,
       hexVersion: headCommit,
       referenceTool: 'legacy-safety-floor',
       referenceVersion: '1.0.0',
       configuration: 'default',
-      runtimeClass: profile.runtimeHardwareClass,
       runPolicy: 'cold-and-warm',
       hexValue: aliasV2Candidate.exactPrecision ?? 0,
       referenceValue: aliasV2Baseline.exactPrecision ?? 0,
-      comparison: compareMetric('alias-v2-exact-precision', aliasV2Candidate.exactPrecision ?? 0, aliasV2Baseline.exactPrecision ?? 0, 'higher'),
       evidenceRefs: ['tests/phase7/corpus/fixtures.mjs', 'tools/validation/phase7/scoring.mjs'],
-    },
-    {
-      metricId: 'alias-v2-exact-recall',
+    }),
+    makeEntry(profile, 'alias-v2-exact-recall', {
       corpusId: 'phase7-alias-memory-corpus-v2',
       inputIdentity: 'alias-v2-30-queries',
-      functionIdentity: null,
       hexVersion: headCommit,
       referenceTool: 'legacy-safety-floor',
       referenceVersion: '1.0.0',
       configuration: 'default',
-      runtimeClass: profile.runtimeHardwareClass,
       runPolicy: 'cold-and-warm',
       hexValue: aliasV2Candidate.exactRecall ?? 0,
       referenceValue: aliasV2Baseline.exactRecall ?? 0,
-      comparison: compareMetric('alias-v2-exact-recall', aliasV2Candidate.exactRecall ?? 0, aliasV2Baseline.exactRecall ?? 0, 'higher'),
       evidenceRefs: ['tests/phase7/corpus/fixtures.mjs', 'tools/validation/phase7/scoring.mjs'],
-    },
-    {
-      metricId: 'alias-v2-false-must-alias',
+    }),
+    makeEntry(profile, 'alias-v2-false-must-alias', {
       corpusId: 'phase7-alias-memory-corpus-v2',
       inputIdentity: 'alias-v2-30-queries',
-      functionIdentity: null,
       hexVersion: headCommit,
       referenceTool: 'legacy-safety-floor',
       referenceVersion: '1.0.0',
       configuration: 'default',
-      runtimeClass: profile.runtimeHardwareClass,
-      runPolicy: 'cold-and-warm',
+      runPolicy: 'exact',
       hexValue: aliasV2Candidate.falseMustAlias,
       referenceValue: aliasV2Baseline.falseMustAlias,
-      comparison: compareMetric('alias-v2-false-must-alias', aliasV2Candidate.falseMustAlias, aliasV2Baseline.falseMustAlias, 'exact-zero'),
       evidenceRefs: ['tests/phase7/corpus/fixtures.mjs', 'tools/validation/phase7/scoring.mjs'],
-    },
-    {
-      metricId: 'alias-v2-false-no-alias',
+    }),
+    makeEntry(profile, 'alias-v2-false-no-alias', {
       corpusId: 'phase7-alias-memory-corpus-v2',
       inputIdentity: 'alias-v2-30-queries',
-      functionIdentity: null,
       hexVersion: headCommit,
       referenceTool: 'legacy-safety-floor',
       referenceVersion: '1.0.0',
       configuration: 'default',
-      runtimeClass: profile.runtimeHardwareClass,
-      runPolicy: 'cold-and-warm',
+      runPolicy: 'exact',
       hexValue: aliasV2Candidate.falseNoAlias,
       referenceValue: aliasV2Baseline.falseNoAlias,
-      comparison: compareMetric('alias-v2-false-no-alias', aliasV2Candidate.falseNoAlias, aliasV2Baseline.falseNoAlias, 'exact-zero'),
       evidenceRefs: ['tests/phase7/corpus/fixtures.mjs', 'tools/validation/phase7/scoring.mjs'],
-    },
-    {
-      metricId: 'machine-effects-arm64-coverage',
+    }),
+    makeEntry(profile, 'machine-effects-arm64-coverage', {
       corpusId: 'arm64-effects-corpus',
       inputIdentity: 'arm64-effects-sample',
-      functionIdentity: null,
       hexVersion: headCommit,
       referenceTool: 'capstone',
       referenceVersion: '5.0.1',
       configuration: 'default',
-      runtimeClass: profile.runtimeHardwareClass,
       runPolicy: 'exact',
       hexValue: arm64Coverage.coverageRate ?? 1.0,
       referenceValue: 0.0,
-      comparison: 'WIN',
       evidenceRefs: ['tests/stage1/a2-machine-effects-coverage.test.mjs'],
-    },
+    }),
   ];
 
+  // The profile owns the denominator. Rows that do not yet have a measured
+  // producer remain present as UNMEASURED placeholders rather than silently
+  // disappearing from the scorecard.
+  const known = new Set(entries.map((entry) => entry.metricId));
+  for (const metricId of Object.keys(profile.metrics || {})) {
+    if (known.has(metricId)) continue;
+    entries.push(makeEntry(profile, metricId, {
+      corpusId: profile.metrics[metricId].corpusWorkloadIds?.[0] ?? metricId,
+      inputIdentity: `unmeasured:${metricId}`,
+      hexVersion: headCommit,
+      referenceTool: 'unmeasured',
+      referenceVersion: 'unmeasured',
+      configuration: 'profile-default',
+      hexValue: null,
+      referenceValue: null,
+      evidenceRefs: profile.metrics[metricId].corpusWorkloadIds || [],
+    }));
+  }
+
   const scorecard = {
-    schemaVersion: 'hex-competitive-scorecard/v1',
+    schemaVersion: 'hex-competitive-scorecard/v2',
     profileId: profile.profileId,
     gitSha: headCommit,
     treeSha,
@@ -190,8 +300,7 @@ export async function generateCompetitiveScorecard({ profile = loadCompetitivePr
     },
   };
 
-  fs.mkdirSync(REPORT_DIR, { recursive: true });
-  fs.writeFileSync(SCORECARD_PATH, `${JSON.stringify(scorecard, null, 2)}\n`);
+  atomicWriteJson(SCORECARD_PATH, scorecard);
   return Object.freeze(scorecard);
 }
 

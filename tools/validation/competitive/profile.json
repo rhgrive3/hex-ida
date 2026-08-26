@@ -1,5 +1,5 @@
 {
-  "schemaVersion": "hex-competitive-profile/v1",
+  "schemaVersion": "hex-competitive-profile/v2",
   "profileId": "competitive-v2-master",
   "baselineCommit": "a7f2e8f03828d0bee971b799ab07666642a33f60",
   "baselineTree": "bd714bfd90494c716cc8345b2ca16e8d8ecc57a0",
@@ -31,6 +31,37 @@
       "role": "disassembly-oracle"
     }
   },
+  "groundTruthContract": {
+    "schemaVersion": "hex-competitive-ground-truth/v1",
+    "binaryRowsRequireSameBinaryTwin": true,
+    "allowedAuthorities": [
+      "same-binary-twin",
+      "source-spec",
+      "deterministic-fixture"
+    ],
+    "legacyStatuses": [
+      "legacy-unproven",
+      "UNMEASURED"
+    ],
+    "competitorOutputIsNeverAuthority": true
+  },
+  "denominator": {
+    "schemaVersion": "hex-competitive-denominator/v1",
+    "status": "frozen",
+    "metricIds": [
+      "alias-v2-exact-precision",
+      "alias-v2-exact-recall",
+      "alias-v2-false-must-alias",
+      "alias-v2-false-no-alias",
+      "machine-effects-arm64-coverage",
+      "machine-effects-x86_64-coverage",
+      "machine-effects-riscv64-coverage",
+      "decompiler-quality-gotos",
+      "decompiler-quality-assembly-fallbacks",
+      "universal-binary-hotpath-ms"
+    ],
+    "metricIdsDigest": "175cc1cf6bd8b24b7ec4df49516a428c"
+  },
   "metrics": {
     "alias-v2-exact-precision": {
       "name": "Alias Analysis v2 Exact Precision",
@@ -40,6 +71,13 @@
       "class": "deterministic",
       "blocksGenericCI": true,
       "requiresDedicatedRunner": false,
+      "groundTruth": {
+        "kind": "nonbinary-source-fixture",
+        "authority": "deterministic-fixture",
+        "status": "legacy-unproven",
+        "binaryScored": false,
+        "twinManifest": null
+      },
       "corpusWorkloadIds": ["phase7-alias-memory-corpus-v2"],
       "repetitionPolicy": {
         "coldWarm": "both",
@@ -54,6 +92,13 @@
       "class": "deterministic",
       "blocksGenericCI": true,
       "requiresDedicatedRunner": false,
+      "groundTruth": {
+        "kind": "nonbinary-source-fixture",
+        "authority": "deterministic-fixture",
+        "status": "legacy-unproven",
+        "binaryScored": false,
+        "twinManifest": null
+      },
       "corpusWorkloadIds": ["phase7-alias-memory-corpus-v2"],
       "repetitionPolicy": {
         "coldWarm": "both",
@@ -68,6 +113,13 @@
       "class": "deterministic",
       "blocksGenericCI": true,
       "requiresDedicatedRunner": false,
+      "groundTruth": {
+        "kind": "nonbinary-source-fixture",
+        "authority": "deterministic-fixture",
+        "status": "legacy-unproven",
+        "binaryScored": false,
+        "twinManifest": null
+      },
       "corpusWorkloadIds": ["phase7-alias-memory-corpus-v2"],
       "repetitionPolicy": {
         "coldWarm": "none",
@@ -82,6 +134,13 @@
       "class": "deterministic",
       "blocksGenericCI": true,
       "requiresDedicatedRunner": false,
+      "groundTruth": {
+        "kind": "nonbinary-source-fixture",
+        "authority": "deterministic-fixture",
+        "status": "legacy-unproven",
+        "binaryScored": false,
+        "twinManifest": null
+      },
       "corpusWorkloadIds": ["phase7-alias-memory-corpus-v2"],
       "repetitionPolicy": {
         "coldWarm": "none",
@@ -96,7 +155,14 @@
       "class": "deterministic",
       "blocksGenericCI": true,
       "requiresDedicatedRunner": false,
-      "corpusWorkloadIds": ["tests/stage1/a2-machine-effects-coverage.test.mjs"]
+      "groundTruth": {
+        "kind": "nonbinary-synthetic-fixture",
+        "authority": "deterministic-fixture",
+        "status": "legacy-unproven",
+        "binaryScored": false,
+        "twinManifest": null
+      },
+      "corpusWorkloadIds": ["tests/stage1/a2-machine-effects-coverage.test.mjs", "arm64-effects-corpus"]
     },
     "machine-effects-x86_64-coverage": {
       "name": "MachineEffects x86_64 Coverage",
@@ -106,6 +172,13 @@
       "class": "deterministic",
       "blocksGenericCI": true,
       "requiresDedicatedRunner": false,
+      "groundTruth": {
+        "kind": "binary-corpus-without-twin",
+        "authority": "same-binary-twin",
+        "status": "UNMEASURED",
+        "binaryScored": true,
+        "twinManifest": null
+      },
       "corpusWorkloadIds": ["tests/phase5/verification/compiler-corpus-pipeline.test.mjs"]
     },
     "machine-effects-riscv64-coverage": {
@@ -116,6 +189,13 @@
       "class": "deterministic",
       "blocksGenericCI": true,
       "requiresDedicatedRunner": false,
+      "groundTruth": {
+        "kind": "binary-corpus-without-twin",
+        "authority": "same-binary-twin",
+        "status": "UNMEASURED",
+        "binaryScored": true,
+        "twinManifest": null
+      },
       "corpusWorkloadIds": ["tests/phase6/verification/compiler-corpus-pipeline.test.mjs"]
     },
     "decompiler-quality-gotos": {
@@ -126,6 +206,13 @@
       "class": "deterministic",
       "blocksGenericCI": true,
       "requiresDedicatedRunner": false,
+      "groundTruth": {
+        "kind": "binary-corpus-without-twin",
+        "authority": "same-binary-twin",
+        "status": "UNMEASURED",
+        "binaryScored": true,
+        "twinManifest": null
+      },
       "corpusWorkloadIds": ["tests/phase8/corpus/**"]
     },
     "decompiler-quality-assembly-fallbacks": {
@@ -136,6 +223,13 @@
       "class": "deterministic",
       "blocksGenericCI": true,
       "requiresDedicatedRunner": false,
+      "groundTruth": {
+        "kind": "binary-corpus-without-twin",
+        "authority": "same-binary-twin",
+        "status": "UNMEASURED",
+        "binaryScored": true,
+        "twinManifest": null
+      },
       "corpusWorkloadIds": ["tests/phase8/corpus/**"]
     },
     "universal-binary-hotpath-ms": {
@@ -146,6 +240,13 @@
       "class": "device-class-performance",
       "blocksGenericCI": false,
       "requiresDedicatedRunner": true,
+      "groundTruth": {
+        "kind": "binary-corpus-without-twin",
+        "authority": "same-binary-twin",
+        "status": "UNMEASURED",
+        "binaryScored": true,
+        "twinManifest": null
+      },
       "corpusWorkloadIds": ["tests/benchmark-baseline.mjs"]
     }
   }
