@@ -8,7 +8,7 @@ on:
 permissions:
   contents: write
 jobs:
-  repair-evex:
+  repair-terminal:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -20,39 +20,30 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --no-audit --no-fund
-      - name: Enable finite proven generic EVEX families
+      - name: Repair canonical memory space and MOV CR/DR ModRM validation
         run: |
           python3 - <<'PY'
           from pathlib import Path
-          p = Path('js/targets/architecture/x86_64/effects/extended-state-evex.js')
-          s = p.read_text()
-          old = "const PROVEN_GENERIC_EVEX_FAMILIES = new Set([]);"
-          families = [
-              'v4fmaddps','v4fmaddss','v4fnmaddps','v4fnmaddss',
-              'valignd','vblendmpd','vblendmps',
-              'vbroadcastf32x4','vbroadcastf32x8','vbroadcastf64x4',
-              'vbroadcasti32x4','vbroadcasti32x8',
-              'vgatherpf0dpd','vgatherpf0dps','vgatherpf0qpd','vgatherpf0qps',
-              'vgatherpf1dpd','vgatherpf1dps','vgatherpf1qpd','vgatherpf1qps',
-              'vp4dpwssds','vp4dpwssd','vpblendmb','vpblendmd','vpblendmq','vpblendmw',
-              'vpshufbitqmb','vptestmb','vptestmd','vptestmq','vptestmw',
-              'vptestnmb','vptestnmd','vptestnmq','vptestnmw',
-              'vscatterpf0dpd','vscatterpf0dps','vscatterpf0qpd','vscatterpf0qps',
-              'vscatterpf1dpd','vscatterpf1dps','vscatterpf1qpd','vscatterpf1qps',
-          ]
-          body = ',\n  '.join("'" + x + "'" for x in families)
-          new = "// Finite frozen long-64 EVEX identities proven against trusted structured Capstone detail.\n// Synthetic/untrusted family spellings remain fail-closed via trustedCapstoneInstruction().\nconst PROVEN_GENERIC_EVEX_FAMILIES = new Set([\n  " + body + "\n]);"
+          residual = Path('js/targets/architecture/x86_64/effects/terminal-residual.js')
+          s = residual.read_text()
+          if "space:'shadow-stack'" not in s:
+              raise SystemExit('expected shadow-stack schema uses not found')
+          residual.write_text(s.replace("space:'shadow-stack'", "space:'memory'"))
+
+          mov = Path('js/targets/architecture/x86_64/effects/system-register-move.js')
+          s = mov.read_text()
+          old = "  if ((modrm >>> 6) !== 3) return null;\n"
           if old not in s:
-              raise SystemExit('expected empty EVEX proof gate not found')
-          p.write_text(s.replace(old, new, 1))
+              raise SystemExit('expected MOV CR/DR mod guard not found')
+          mov.write_text(s.replace(old, '', 1))
           PY
-      - name: Run frozen closure matrix after EVEX enablement
+      - name: Run frozen closure matrix after repair
         run: node tests/machine-effects/x86-long64-closure-matrix.test.mjs || true
-      - name: Commit production change
+      - name: Commit production repairs
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add js/targets/architecture/x86_64/effects/extended-state-evex.js
+          git add js/targets/architecture/x86_64/effects/terminal-residual.js js/targets/architecture/x86_64/effects/system-register-move.js
           git diff --cached --quiet && exit 0
-          git commit -m "fix(stage2): enable proven frozen EVEX semantic families"
+          git commit -m "fix(stage2): align residual memory schema and CRDR encoding"
           git push origin HEAD:integration/stage2-a2-x86-long64-terminal-semantics
