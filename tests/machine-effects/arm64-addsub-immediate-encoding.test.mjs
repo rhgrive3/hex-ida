@@ -7,7 +7,7 @@ import { liftArm64MachineEffects } from '../../js/targets/architecture/arm64/eff
 // denominator remains the authority for valid encoded instruction coverage.
 function lift(mnemonic, operands, suffix) {
   return liftArm64MachineEffects({
-    instructionId:`arm64-addsub-immediate-${suffix}`,
+    instructionId:`arm64-structured-encoding-${suffix}`,
     mnemonic,
     mode:'a64',
     ops:parseOperands(operands),
@@ -45,4 +45,18 @@ for (const [mnemonic, operands, reason] of [
   assert.equal(effects.metadata?.failClosed, true);
 }
 
-console.log('ARM64 add/sub immediate encoding validation: PASS');
+const rev32X = lift('rev32', 'x0, x1', 'rev32-x');
+assert.equal(rev32X.completeness, 'exact', rev32X.unknownEffects?.reason);
+
+for (const [operands, reason] of [
+  ['w0, w1','arm64-rev32-destination-width-unencodable'],
+  ['w0, x1','arm64-rev32-destination-width-unencodable'],
+  ['x0, w1','arm64-rev32-source-width-unencodable'],
+]) {
+  const effects = lift('rev32', operands, `rev32-${operands.replace(/\W+/g,'-')}`);
+  assert.equal(effects.completeness, 'partial', `rev32 ${operands} must fail closed`);
+  assert.equal(effects.unknownEffects?.reason, reason);
+  assert.equal(effects.metadata?.failClosed, true);
+}
+
+console.log('ARM64 structured encoding validation: PASS');
