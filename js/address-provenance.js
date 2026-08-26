@@ -145,7 +145,7 @@
       while (startIndex < startCount) {
         const start = functionStarts[startIndex];
         if (start < pc) { fullBoundary = true; startIndex++; continue; }
-        if (start === pc) { fullBoundary = true; startIndex++; }
+        if (start === pc) { fullBoundary = true; startIndex++; continue; }
         break;
       }
       if (branchEntries.delete(pc)) fullBoundary = true;
