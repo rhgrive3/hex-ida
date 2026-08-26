@@ -6,34 +6,20 @@ on:
     paths:
       - .github/workflows/stage2-a2-machine-effects-diagnostic.yml
 permissions:
-  contents: write
+  contents: read
 jobs:
-  residual-gaps:
+  residual-shapes:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: integration/stage2-a2-x86-long64-terminal-semantics
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
       - run: npm ci --no-audit --no-fund
-      - name: Apply finite frozen EVEX proof set
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path('js/targets/architecture/x86_64/effects/extended-state-evex.js')
-          s = p.read_text()
-          old = "const PROVEN_GENERIC_EVEX_FAMILIES = new Set([]);"
-          if old in s:
-              families = ['v4fmaddps','v4fmaddss','v4fnmaddps','v4fnmaddss','valignd','vblendmpd','vblendmps','vbroadcastf32x4','vbroadcastf32x8','vbroadcastf64x4','vbroadcasti32x4','vbroadcasti32x8','vgatherpf0dpd','vgatherpf0dps','vgatherpf0qpd','vgatherpf0qps','vgatherpf1dpd','vgatherpf1dps','vgatherpf1qpd','vgatherpf1qps','vp4dpwssds','vp4dpwssd','vpblendmb','vpblendmd','vpblendmq','vpblendmw','vpshufbitqmb','vptestmb','vptestmd','vptestmq','vptestmw','vptestnmb','vptestnmd','vptestnmq','vptestnmw','vscatterpf0dpd','vscatterpf0dps','vscatterpf0qpd','vscatterpf0qps','vscatterpf1dpd','vscatterpf1dps','vscatterpf1qpd','vscatterpf1qps']
-              body = ',\n  '.join(repr(x) for x in families)
-              new = "// Finite frozen long-64 EVEX identities proven against trusted structured Capstone detail.\n// Synthetic/untrusted family spellings remain fail-closed via trustedCapstoneInstruction().\nconst PROVEN_GENERIC_EVEX_FAMILIES = new Set([\n  " + body + "\n]);"
-              p.write_text(s.replace(old, new, 1))
-          PY
-      - name: Enumerate frozen 1487 closure gaps
+      - name: Dump final frozen residual shapes
         run: |
           node --input-type=module <<'NODE'
           import { createCapstoneX86Session } from './tests/phase5/helpers/capstone-session.mjs';
@@ -41,26 +27,30 @@ jobs:
           import { dispatchX86MachineEffects } from './js/targets/architecture/x86_64/effects/index.js';
           import { X86_LONG64_DECODER_WITNESSES } from './tools/validation/machine-effects/fixtures/x86-long64-decoder-witnesses.mjs';
           import { bytesFromX86Long64WitnessHex } from './tools/validation/machine-effects/x86-long64-decoder-denominator.mjs';
-          import { evaluateX86Long64ClosureMatrix } from './tools/validation/machine-effects/x86-long64-closure-matrix.mjs';
           const session = await createCapstoneX86Session();
           try {
-            const rows = [];
             for (const [id,name,hex] of X86_LONG64_DECODER_WITNESSES) {
               const bytes = bytesFromX86Long64WitnessHex(hex);
-              const decoded = session.decode(bytes, 0x100000n + BigInt(id) * 0x20n);
-              const instruction = createX86DecodedInstruction({ ...decoded[0], instructionId:`closure-witness:${id}` });
-              rows.push({id,name,hex,instruction});
+              const raw = session.decode(bytes, 0x100000n + BigInt(id) * 0x20n)[0];
+              const instruction = createX86DecodedInstruction({ ...raw, instructionId:`closure-witness:${id}` });
+              const dispatch = dispatchX86MachineEffects(instruction);
+              if (dispatch.result?.completeness !== 'partial') continue;
+              const detail = instruction.detail || {};
+              console.log(JSON.stringify({
+                id,name,hex,ownerId:dispatch.ownerId,reason:dispatch.result?.unknownEffects?.reason,
+                length:instruction.length,opcodeName:instruction.opcodeName,instructionFamily:instruction.instructionFamily,
+                prefixes:detail.prefixes,addressSizeBits:detail.addressSizeBits,eflags:String(detail.eflags ?? 0),
+                operands:(detail.operands||[]).map((o)=>({
+                  type:o.type,access:o.access,widthBits:o.widthBits,encodedWidthBits:o.encodedWidthBits,
+                  register:o.register?{id:o.register.id,physicalId:o.register.physicalId,kind:o.register.kind,architecturalKind:o.register.architecturalKind,viewBits:o.register.viewBits}:null,
+                  memory:o.memory?{base:o.memory.base?.id,index:o.memory.index?.id,segment:o.memory.segment?.id,scale:o.memory.scale,displacement:String(o.memory.displacement ?? 0),addressSizeBits:o.memory.addressSizeBits}:null,
+                  value:o.value == null ? null : String(o.value),
+                })),
+                implicitReads:(detail.implicitReads||[]).map((r)=>({id:r.id,physicalId:r.physicalId,kind:r.kind,architecturalKind:r.architecturalKind})),
+                implicitWrites:(detail.implicitWrites||[]).map((r)=>({id:r.id,physicalId:r.physicalId,kind:r.kind,architecturalKind:r.architecturalKind})),
+                groups:detail.groups,
+                resultMetadata:dispatch.result?.metadata,
+              }));
             }
-            const matrix = evaluateX86Long64ClosureMatrix(rows, dispatchX86MachineEffects);
-            console.log(JSON.stringify({partialCount:matrix.partialCount,blockingGapCount:matrix.blockingGapCount,completenessByOwner:matrix.completenessByOwner,blockingGaps:matrix.blockingGaps}, null, 2));
           } finally { session.close(); }
           NODE
-      - name: Commit production EVEX gate
-        run: |
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add js/targets/architecture/x86_64/effects/extended-state-evex.js
-          if ! git diff --cached --quiet; then
-            git commit -m "fix(stage2): enable proven frozen EVEX semantic families"
-            git push origin HEAD:integration/stage2-a2-x86-long64-terminal-semantics
-          fi
