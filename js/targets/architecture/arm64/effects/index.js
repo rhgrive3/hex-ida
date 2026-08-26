@@ -27,6 +27,10 @@ const ARM64_ADD_SUB_FAMILY_MNEMONICS = Object.freeze(new Set([
 ]));
 const ARM64_LOGICAL_IMMEDIATE_MNEMONICS = Object.freeze(new Set(['and','ands','orr','eor','tst']));
 const ARM64_LITERAL_MEMORY_MNEMONICS = Object.freeze(new Set(['ldr','ldrsw','prfm']));
+const ARM64_MULTIPLY_DIVIDE_MNEMONICS = Object.freeze(new Set([
+  'mul','mneg','smull','umull','smulh','umulh','sdiv','udiv',
+  'madd','msub','smaddl','smsubl','umaddl','umsubl','smnegl','umnegl',
+]));
 
 function validImm12WithOptionalLsl12(op) {
   if (op?.k !== 'imm') return true;
@@ -129,6 +133,19 @@ function logicalEncodingFailure(instruction) {
   return logicalImmediateEncodable(rhs, widthBits) ? null : `arm64-${mnemonic}-logical-immediate-unencodable`;
 }
 
+function multiplyDivideEncodingFailure(instruction) {
+  const mnemonic = instructionMnemonic(instruction);
+  if (!ARM64_MULTIPLY_DIVIDE_MNEMONICS.has(mnemonic)) return null;
+  const ops = Array.isArray(instruction?.ops) ? instruction.ops : [];
+  for (const operand of ops.slice(1)) {
+    if (operand?.k !== 'reg' || !['gp','zr'].includes(String(operand.cls || '').toLowerCase())) {
+      return `arm64-${mnemonic}-source-register-required`;
+    }
+    if (operand.shift != null || operand.extend != null) return `arm64-${mnemonic}-source-modifier-unencodable`;
+  }
+  return null;
+}
+
 function literalMemoryEncodingFailure(instruction) {
   const mnemonic = instructionMnemonic(instruction);
   if (!ARM64_LITERAL_MEMORY_MNEMONICS.has(mnemonic)) return null;
@@ -136,14 +153,12 @@ function literalMemoryEncodingFailure(instruction) {
   if (ops.some((op) => op?.k === 'mem' || op?.kind === 'memory')) return null;
   const immediate = ops.find((op) => op?.k === 'imm' || op?.kind === 'immediate');
   const target = asBigIntOrNull(instruction?.pcRelTarget ?? instruction?.literalTarget ?? immediateOf(immediate));
-  if (target == null) return null; // The memory family already fails closed unresolved literal targets.
+  if (target == null) return null;
   const address = asBigIntOrNull(instruction?.address);
   if (address == null) return `arm64-${mnemonic}-literal-address-unavailable-for-encoding`;
   if ((target & 3n) !== 0n) return `arm64-${mnemonic}-literal-target-misaligned-encoding`;
   const displacement = target - address;
-  if (displacement < -(1n << 20n) || displacement > (1n << 20n) - 4n) {
-    return `arm64-${mnemonic}-literal-target-out-of-range-encoding`;
-  }
+  if (displacement < -(1n << 20n) || displacement > (1n << 20n) - 4n) return `arm64-${mnemonic}-literal-target-out-of-range-encoding`;
   return null;
 }
 
@@ -160,6 +175,7 @@ function structuredEncodingFailure(instruction) {
   return addSubImmediateEncodingFailure(instruction)
     || flagEncodingFailure(instruction)
     || logicalEncodingFailure(instruction)
+    || multiplyDivideEncodingFailure(instruction)
     || literalMemoryEncodingFailure(instruction)
     || unaryEncodingFailure(instruction);
 }
