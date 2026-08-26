@@ -1,7 +1,7 @@
 {
-  "profileVersion": 2,
+  "profileVersion": 3,
   "phase": 8,
-  "note": "Frozen Phase 8 acceptance profile. Changing any value here is an acceptance-semantics change: it invalidates historical Phase 8 evidence and requires the baseline to be re-captured under the new profile (ENGINEERING_PROCESS_GUARDRAILS \u00a75, \u00a73.5). v2 (P8-1) added completeResultDivergenceCount, which measures determinism in production mode rather than only in the work-bounded measurement mode.",
+  "note": "Frozen Phase 8 acceptance profile. Changing any value here is an acceptance-semantics change: it invalidates historical Phase 8 evidence and requires the baseline to be re-captured under the new profile (ENGINEERING_PROCESS_GUARDRAILS \u00a75, \u00a73.5). v3 replaces the rendering-node sourceMappedNodes floor with a frozen source-address provenance-set floor; sourceMappedNodes and IR provenance sets/counts remain telemetry with identity/digest validation only. The provenance sidecar is captured from the exact pre-Phase-8 product at bd03d1a860863814dbdcc00559709794d460189d.",
   "hardZero": {
     "semanticMismatchCount": 0,
     "provenanceLossCount": 0,
@@ -25,8 +25,7 @@
       "rawAssemblyFallbacks": "lower",
       "temporaries": "lower",
       "redundantCasts": "lower",
-      "structuredFunctions": "higher",
-      "sourceMappedNodes": "higher"
+      "structuredFunctions": "higher"
     },
     "requireStrictImprovementAtExit": [
       "redundantCasts",

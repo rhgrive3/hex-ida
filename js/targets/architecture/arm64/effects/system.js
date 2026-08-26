@@ -305,8 +305,15 @@ function bti(instruction, context, ops) {
 }
 
 function trap(instruction, context, mnemonic, ops) {
-  const imm = immediate(ops[0]);
-  if (!imm) return partial(instruction, context, `${mnemonic}-immediate-unavailable`, ['control','faults','other']);
+  const operand = ops[0];
+  if (operand?.k !== 'imm' || operand.value == null) {
+    return partial(instruction, context, `${mnemonic}-immediate-unavailable`, ['control','faults','other']);
+  }
+  const immediateValue = BigInt(operand.value);
+  if (immediateValue < 0n || immediateValue > 0xffffn) {
+    return partial(instruction, context, `${mnemonic}-imm16-out-of-range`, ['control','faults','other']);
+  }
+  const imm = createBitVectorValue(64, immediateValue);
   const inputs = [imm];
   const controlEffect = { kind:'trap', reason:`arm64-${mnemonic}` };
   const operation = environmentIntrinsic({
@@ -315,7 +322,7 @@ function trap(instruction, context, mnemonic, ops) {
     controlEffects:[controlEffect],
     memory:true,
     completeEnvironment:true,
-    metadata:{ immediate:ops[0]?.value ?? null, exceptionEntry:true },
+    metadata:{ immediate:operand.value, exceptionEntry:true },
   });
   return bundle(instruction, context, {
     operations:[operation], controlEffect, completeness:'exact-with-intrinsic',
