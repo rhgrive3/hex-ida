@@ -14,7 +14,11 @@ const signal = {
 const source = {
   size: 1n,
   maxReadLength: 1,
-  async readExactly() { return Uint8Array.of(0x41); },
+  async read(offset, length) {
+    assert.equal(offset, 0n);
+    assert.equal(length, 1);
+    return Uint8Array.of(0x41);
+  },
 };
 
 const reader = new PagedArtifactReader(source, {
