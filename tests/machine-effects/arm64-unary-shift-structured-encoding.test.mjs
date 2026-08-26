@@ -17,11 +17,12 @@ for (const [mnemonic, operands] of [
   ['rev','x0, x1'],
   ['sxtb','x0, w1'],
   ['lsl','x0, x1, #3'],
+  ['lsl','w0, w1, #3'],
   ['ror','x0, x1, #63'],
   ['lslv','x0, x1, x2'],
   ['asrv','w0, w1, w2'],
 ]) {
-  const effects = lift(mnemonic, operands, `valid-${mnemonic}`);
+  const effects = lift(mnemonic, operands, `valid-${mnemonic}-${operands.replace(/\W+/g,'-')}`);
   assert.equal(effects.completeness, 'exact', `${mnemonic}:${effects.unknownEffects?.reason}`);
 }
 
@@ -30,9 +31,13 @@ for (const [mnemonic, operands, reason] of [
   ['rev','x0, #1','arm64-rev-source-register-required'],
   ['sxtb','x0, #1','arm64-sxtb-source-register-required'],
   ['lsl','x0, #1, #3','arm64-lsl-source-register-required'],
+  ['lsl','x0, w1, #3','arm64-lsl-source-register-required'],
   ['ror','x0, #1, #3','arm64-ror-source-register-required'],
+  ['ror','w0, x1, #3','arm64-ror-source-register-required'],
   ['lslv','x0, x1, #2','arm64-lslv-shift-register-required'],
+  ['lslv','x0, x1, w2','arm64-lslv-shift-register-required'],
   ['asrv','x0, #1, x2','arm64-asrv-source-register-required'],
+  ['asrv','x0, w1, x2','arm64-asrv-source-register-required'],
 ]) {
   const effects = lift(mnemonic, operands, `invalid-${mnemonic}-${operands.replace(/\W+/g,'-')}`);
   assert.equal(effects.completeness, 'partial', `${mnemonic} malformed source must fail closed`);
