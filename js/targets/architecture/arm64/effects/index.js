@@ -62,6 +62,19 @@ function addSubImmediateEncodingFailure(instruction) {
   return null;
 }
 
+function unaryEncodingFailure(instruction) {
+  const mnemonic = instructionMnemonic(instruction);
+  if (mnemonic !== 'rev32') return null;
+  const ops = Array.isArray(instruction?.ops) ? instruction.ops : [];
+  if (ops[0]?.k === 'reg' && ops[0].bits !== 64) return 'arm64-rev32-destination-width-unencodable';
+  if (ops[1]?.k === 'reg' && ops[1].bits !== 64) return 'arm64-rev32-source-width-unencodable';
+  return null;
+}
+
+function structuredEncodingFailure(instruction) {
+  return addSubImmediateEncodingFailure(instruction) || unaryEncodingFailure(instruction);
+}
+
 function normalizedInstruction(decoded, context) {
   if (!decoded || typeof decoded !== 'object') throw new TypeError('arm64-decoded-instruction-required');
   const instructionId = decoded.instructionId ?? context?.instructionId;
@@ -101,10 +114,10 @@ function normalizedContext(context = {}) {
 export function liftArm64MachineEffects(decoded, context = {}) {
   const instruction = normalizedInstruction(decoded, context);
   const familyContext = normalizedContext(context);
-  const addSubEncodingFailure = addSubImmediateEncodingFailure(instruction);
-  if (addSubEncodingFailure) {
+  const encodingFailure = structuredEncodingFailure(instruction);
+  if (encodingFailure) {
     const partial = createArm64EffectContext(instruction, familyContext).partial(
-      addSubEncodingFailure,
+      encodingFailure,
       ['registers','flags','other'],
     );
     return decorateArm64BtiGuardedPageEffects(instruction, partial, familyContext);
