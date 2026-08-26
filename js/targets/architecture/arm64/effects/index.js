@@ -189,7 +189,10 @@ function logicalEncodingFailure(instruction) {
   const isRegisterOnly = ARM64_LOGICAL_REGISTER_ONLY_MNEMONICS.has(mnemonic) || mnemonic === 'mvn';
   if (!isImmediateCapable && !isRegisterOnly) return null;
   const ops = Array.isArray(instruction?.ops) ? instruction.ops : [];
-  if (!isGpOrZrRegister(ops[0])) return null;
+  if (!isGpOrZrRegister(ops[0])) {
+    if (mnemonic === 'tst' && ops[0]?.k !== 'reg') return 'arm64-tst-lhs-register-required';
+    return null;
+  }
   const widthBits = Number(ops[0]?.bits || 0);
   if (widthBits !== 32 && widthBits !== 64) return `arm64-${mnemonic}-width-unencodable`;
 
