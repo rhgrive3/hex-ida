@@ -305,6 +305,9 @@ function bti(instruction, context, ops) {
 }
 
 function trap(instruction, context, mnemonic, ops) {
+  if (ops.length !== 1) {
+    return partial(instruction, context, `${mnemonic}-operand-shape-invalid`, ['control','faults','other']);
+  }
   const operand = ops[0];
   if (operand?.k !== 'imm' || operand.value == null) {
     return partial(instruction, context, `${mnemonic}-immediate-unavailable`, ['control','faults','other']);
