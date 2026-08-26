@@ -233,39 +233,48 @@ function assertObjectCounts(actualMap, expected, code) {
  * "foundation", and those labels must not be confused with dispatcher owner
  * identity.
  */
-export function analyzeX86Long64ValidEncodingOwnership(decodedRows, liftEffect) {
+export function analyzeX86Long64ValidEncodingOwnership(decodedRows, dispatchOrLiftEffect) {
   if (!Array.isArray(decodedRows)) fail('x86-long64-decoder-ownership-rows-required');
-  if (typeof liftEffect !== 'function') fail('x86-long64-decoder-ownership-lifter-required');
+  if (typeof dispatchOrLiftEffect !== 'function') fail('x86-long64-decoder-ownership-lifter-required');
   const metadataLabelCounts = {};
   const canonicalMetadataCounts = Object.fromEntries(X86_LONG64_CANONICAL_EFFECT_OWNERS.map((owner) => [owner,0]));
   const unowned = [];
+  const invalidOwner = [];
   for (const row of decodedRows) {
     const instruction = row?.instruction;
     const id = Number(row?.id ?? instruction?.instructionCode);
     const name = String(row?.name ?? instruction?.instructionFamily ?? '');
     if (!instruction || !Number.isInteger(id) || !name) fail('x86-long64-decoder-ownership-row-invalid');
     if (EXCLUSION_BY_ID.has(id)) fail('x86-long64-decoder-ownership-out-of-profile-row', id);
-    const effect = liftEffect(instruction);
-    if (effect == null) {
+    const outcome = dispatchOrLiftEffect(instruction);
+    const isDispatch = outcome != null && typeof outcome === 'object' && 'ownerId' in outcome && 'result' in outcome;
+    const effect = isDispatch ? outcome.result : outcome;
+    const ownerId = isDispatch ? outcome.ownerId : (effect ? String(effect.metadata?.family || '(none)').toLowerCase() : null);
+
+    if (effect == null || ownerId === 'fallback' || ownerId == null) {
       unowned.push(Object.freeze({ id, name }));
       continue;
     }
     const label = String(effect.metadata?.family || '(none)').toLowerCase();
     metadataLabelCounts[label] = (metadataLabelCounts[label] || 0) + 1;
-    if (OWNER_SET.has(label)) canonicalMetadataCounts[label]++;
+    if (OWNER_SET.has(ownerId)) {
+      canonicalMetadataCounts[ownerId]++;
+    } else {
+      invalidOwner.push(Object.freeze({ id, name, ownerId }));
+    }
   }
   return Object.freeze({
     schemaVersion:'x86-long64-valid-encoding-ownership/v1',
     denominatorId:X86_LONG64_DECODER_DENOMINATOR_ID,
     canonicalDispatcher:true,
     validEncodingCount:decodedRows.length,
-    ownedCount:decodedRows.length - unowned.length,
+    ownedCount:decodedRows.length - unowned.length - invalidOwner.length,
     unownedCount:unowned.length,
-    invalidOwnerCount:0,
+    invalidOwnerCount:invalidOwner.length,
     ownerCounts:Object.freeze(canonicalMetadataCounts),
     metadataLabelCounts:Object.freeze(metadataLabelCounts),
     unowned:Object.freeze(unowned),
-    invalidOwner:Object.freeze([]),
+    invalidOwner:Object.freeze(invalidOwner),
   });
 }
 

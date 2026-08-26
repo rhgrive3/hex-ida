@@ -26,4 +26,20 @@ export const X86_LONG64_SIMD_SHARED_BLOCKERS=Object.freeze([
  Object.freeze({id:'vzeroupper-maxvl',required:['zmm0-zmm15[MAXVL-1:128]']}),
  Object.freeze({id:'emms-mmx-x87-alias',required:['mm0-mm7/x87-physical-alias','x87-tag-word']}),
 ]);
-export function validateX86Long64SimdDenominator(){const ids=X86_LONG64_SIMD_EXACT_FORMS.map(({id})=>id);if(new Set(ids).size!==ids.length)throw new Error('x86-simd-denominator-duplicate-form');return Object.freeze({schemaVersion:X86_LONG64_SIMD_DENOMINATOR_SCHEMA,denominatorId:X86_LONG64_SIMD_DENOMINATOR_ID,profileId:'x86_64:long-64',exactFormCount:ids.length,ownedRemainingCount:0,sharedBlockerCount:X86_LONG64_SIMD_SHARED_BLOCKERS.length,closed:false,oracleIds:Object.freeze(['intel-sdm-vol2-sse-avx-avx2-avx512','deployed-capstone-5-x86-long64-detail'])});}
+export function validateX86Long64SimdDenominator(){
+  const ids=X86_LONG64_SIMD_EXACT_FORMS.map(({id})=>id);
+  if(new Set(ids).size!==ids.length)throw new Error('x86-simd-denominator-duplicate-form');
+  const ownedRemainingCount=X86_LONG64_SIMD_OWNED_REMAINING.length;
+  const sharedBlockerCount=X86_LONG64_SIMD_SHARED_BLOCKERS.length;
+  const closed=ids.length>0&&ownedRemainingCount===0&&sharedBlockerCount===0;
+  return Object.freeze({
+    schemaVersion:X86_LONG64_SIMD_DENOMINATOR_SCHEMA,
+    denominatorId:X86_LONG64_SIMD_DENOMINATOR_ID,
+    profileId:'x86_64:long-64',
+    exactFormCount:ids.length,
+    ownedRemainingCount,
+    sharedBlockerCount,
+    closed,
+    oracleIds:Object.freeze(['intel-sdm-vol2-sse-avx-avx2-avx512','deployed-capstone-5-x86-long64-detail'])
+  });
+}

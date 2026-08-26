@@ -57,6 +57,36 @@ import {
   ARM64E_PAC_DENOMINATOR_SCHEMA,
   validateArm64ePacDenominator,
 } from './arm64e-pac-denominator.mjs';
+import {
+  X86_LONG64_DECODER_DENOMINATOR_ID,
+  X86_LONG64_DECODER_DENOMINATOR_SCHEMA,
+  x86Long64DecoderDenominatorIdentity,
+} from './x86-long64-decoder-denominator.mjs';
+import {
+  X86_LONG64_CONTROL_DENOMINATOR_ID,
+  X86_LONG64_CONTROL_DENOMINATOR_SCHEMA,
+  x86Long64ControlDenominatorIdentity,
+} from './x86-long64-control-denominator.mjs';
+import {
+  X86_LONG64_INTEGER_DENOMINATOR_ID,
+  X86_LONG64_INTEGER_DENOMINATOR_SCHEMA,
+  validateX86Long64IntegerDenominator,
+} from './x86-long64-integer-denominator.mjs';
+import {
+  X86_LONG64_STRING_DENOMINATOR_ID,
+  X86_LONG64_STRING_DENOMINATOR_SCHEMA,
+  x86Long64StringDenominatorIdentity,
+} from './x86-long64-string-denominator.mjs';
+import {
+  X86_LONG64_ATOMIC_DENOMINATOR_ID,
+  X86_LONG64_ATOMIC_DENOMINATOR_SCHEMA,
+  x86Long64AtomicDenominatorIdentity,
+} from './x86-long64-atomic-denominator.mjs';
+import {
+  X86_LONG64_MEMORY_DENOMINATOR_ID,
+  X86_LONG64_MEMORY_DENOMINATOR_SCHEMA,
+  x86Long64MemoryDenominatorIdentity,
+} from './x86-long64-memory-denominator.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '../../..');
@@ -228,7 +258,34 @@ function fallbackNegativeProven(architecture) {
   if (architecture.id === 'riscv64') return architecture.decoder.missingUnits.length === 0;
   if (architecture.id === 'arm64') return arm64A64DecoderTerminal().fallbackNegativeProof === true;
   if (architecture.id === 'arm64e') return validateArm64eA64DelegationDenominator().terminalEligible === true;
+  if (architecture.id === 'x86_64') return architecture.decoder.missingUnits.length === 0;
   return false;
+}
+
+function validateX86ExactDecoder(decoder, pathName) {
+  const proof = decoder.denominator;
+  if (!proof || typeof proof !== 'object') fail('a2-denominator-exact-decoder-proof-required', pathName);
+  const live = x86Long64DecoderDenominatorIdentity();
+  if (proof.schemaVersion !== X86_LONG64_DECODER_DENOMINATOR_SCHEMA || proof.schemaVersion !== live.schemaVersion) {
+    fail('a2-denominator-exact-decoder-proof-schema-drift', pathName);
+  }
+  if (proof.denominatorId !== X86_LONG64_DECODER_DENOMINATOR_ID || proof.denominatorId !== live.denominatorId) {
+    fail('a2-denominator-exact-decoder-proof-identity-drift', pathName);
+  }
+  if (proof.source !== 'tools/validation/machine-effects/x86-long64-decoder-denominator.mjs') {
+    fail('a2-denominator-exact-decoder-proof-source-drift', pathName);
+  }
+  if (proof.test !== 'tests/machine-effects/x86-long64-decoder-denominator.test.mjs') {
+    fail('a2-denominator-exact-decoder-proof-test-drift', pathName);
+  }
+  for (const field of [
+    'registryInstructionCount', 'validLong64InstructionIdCount', 'explicitOutOfProfileRegistryIdCount',
+    'modeInvalidOrRepurposedCount', 'prefixTokenCount', 'nonemittingAliasCount',
+    'witnessFixtureVersion', 'witnessSha256',
+  ]) {
+    if (proof[field] !== live[field]) fail('a2-denominator-exact-decoder-proof-count-drift', `${pathName}:${field}`);
+  }
+  if (!sameSet(proof.oracleIds || [], live.oracleIds)) fail('a2-denominator-exact-decoder-proof-oracle-drift', pathName);
 }
 
 function validateArm64ExactDecoder(decoder, pathName) {
@@ -333,12 +390,14 @@ function validateDecoder(architecture, pathName) {
     riscv64:Object.freeze(['riscv64:rv64imc:all-valid-32-bit-and-compressed-encodings']),
     arm64:Object.freeze(['arm64:a64:all-decoder-encodings-and-aliases']),
     arm64e:Object.freeze(['arm64e:a64+pac:all-a64-decoder-encodings-and-aliases','arm64e:a64+pac:all-pac-decoder-encodings-and-aliases']),
+    x86_64:Object.freeze(['x86_64:long-64:all-decoder-encodings-prefixes-and-aliases']),
   });
   const expectedUnits = EXACT_DECODER_UNITS[architecture.id];
   if (!expectedUnits) fail('a2-denominator-exact-decoder-proof-unavailable', pathName);
   if (!sameSet(decoder.units, expectedUnits)) fail('a2-denominator-exact-decoder-unit-set-drift', pathName);
   if (architecture.id === 'arm64') return validateArm64ExactDecoder(decoder, pathName);
   if (architecture.id === 'arm64e') return validateArm64eExactDecoder(decoder, pathName);
+  if (architecture.id === 'x86_64') return validateX86ExactDecoder(decoder, pathName);
   const proof = decoder.denominator;
   if (!proof || typeof proof !== 'object') fail('a2-denominator-exact-decoder-proof-required', pathName);
   const live = validateRv64imcDecoderDenominator();
@@ -507,6 +566,128 @@ export function validateA2DenominatorInventory(inventory = loadA2DenominatorInve
         || lea.proof?.test !== 'tests/phase5/effects/memory/addressing.test.mjs'
         || lea.proof?.denominatorTest !== 'tests/machine-effects/x86-long64-lea-denominator.test.mjs') {
         fail('a2-denominator-x86-lea-proof-identity-drift', pathName);
+      }
+
+      const control = families.find((family) => family.id === 'control');
+      if (control && control.status === 'exact') {
+        const liveControl = x86Long64ControlDenominatorIdentity();
+        const controlProof = control.proof;
+        const controlDenominator = controlProof?.denominator;
+        if (control.coverage !== 'exact' || control.preexisting !== false
+          || control.oracle !== 'intel-sdm-vol2-call-ret-jmp-jcc-loop-jcxz + deployed-capstone-5-x86-long64-detail'
+          || controlProof?.schemaVersion !== 'machine-effects-effect-unit-proof/v1'
+          || controlProof?.source !== 'js/targets/architecture/x86_64/effects/control.js'
+          || controlProof?.test !== 'tests/phase5/effects/int-control/control.test.mjs'
+          || controlProof?.denominatorTest !== 'tests/machine-effects/x86-long64-control-denominator.test.mjs') {
+          fail('a2-denominator-x86-control-proof-identity-drift', pathName);
+        }
+        if (!controlDenominator || controlDenominator.schemaVersion !== X86_LONG64_CONTROL_DENOMINATOR_SCHEMA
+          || controlDenominator.denominatorId !== X86_LONG64_CONTROL_DENOMINATOR_ID
+          || controlDenominator.profileId !== liveControl.profileId
+          || controlDenominator.encodingCaseCount !== liveControl.encodingCaseCount
+          || controlDenominator.conditionCount !== liveControl.conditionCount
+          || controlDenominator.aliasCaseCount !== liveControl.aliasCaseCount
+          || !sameSet(controlDenominator.oracleIds || [], liveControl.oracleIds)) {
+          fail('a2-denominator-x86-control-live-proof-drift', pathName);
+        }
+      }
+
+      const integer = families.find((family) => family.id === 'integer');
+      if (integer && integer.status === 'exact') {
+        const liveInteger = validateX86Long64IntegerDenominator();
+        const integerProof = integer.proof;
+        const integerDenominator = integerProof?.denominator;
+        if (integer.coverage !== 'exact' || integer.preexisting !== false
+          || integer.oracle !== 'intel-sdm-vol2-general-purpose-instructions + deployed-capstone-5-x86-long64-detail'
+          || integerProof?.schemaVersion !== 'machine-effects-effect-unit-proof/v1'
+          || integerProof?.source !== 'js/targets/architecture/x86_64/effects/integer.js'
+          || integerProof?.test !== 'tests/phase5/effects/int-control/integer-flags.test.mjs'
+          || integerProof?.denominatorTest !== 'tests/machine-effects/x86-long64-integer-denominator.test.mjs') {
+          fail('a2-denominator-x86-integer-proof-identity-drift', pathName);
+        }
+        if (!integerDenominator || integerDenominator.schemaVersion !== X86_LONG64_INTEGER_DENOMINATOR_SCHEMA
+          || integerDenominator.denominatorId !== X86_LONG64_INTEGER_DENOMINATOR_ID
+          || integerDenominator.encodingCaseCount !== liveInteger.encodingCaseCount
+          || integerDenominator.integerOwnedCaseCount !== liveInteger.integerOwnedCaseCount
+          || integerDenominator.memoryDelegationCaseCount !== liveInteger.memoryDelegationCaseCount
+          || !sameList(integerDenominator.operandWidths || [], liveInteger.operandWidths)
+          || !sameSet(integerDenominator.oracleIds || [], liveInteger.oracleIds)) {
+          fail('a2-denominator-x86-integer-live-proof-drift', pathName);
+        }
+      }
+
+      const stringFamily = families.find((family) => family.id === 'string');
+      if (stringFamily && stringFamily.status === 'exact') {
+        const liveString = x86Long64StringDenominatorIdentity();
+        const stringProof = stringFamily.proof;
+        const stringDenominator = stringProof?.denominator;
+        if (stringFamily.coverage !== 'exact-with-intrinsic' || stringFamily.preexisting !== false
+          || stringFamily.oracle !== 'intel-sdm-string-operation-semantics + deployed-capstone-5-x86-long64-detail + x86-repeated-string-summary/v1'
+          || stringProof?.schemaVersion !== 'machine-effects-effect-unit-proof/v1'
+          || stringProof?.source !== 'js/targets/architecture/x86_64/effects/string.js'
+          || stringProof?.test !== 'tests/phase5/effects/memory/string.test.mjs'
+          || stringProof?.denominatorTest !== 'tests/machine-effects/x86-long64-string-denominator.test.mjs') {
+          fail('a2-denominator-x86-string-proof-identity-drift', pathName);
+        }
+        if (!stringDenominator || stringDenominator.schemaVersion !== X86_LONG64_STRING_DENOMINATOR_SCHEMA
+          || stringDenominator.denominatorId !== X86_LONG64_STRING_DENOMINATOR_ID
+          || stringDenominator.operationCount !== liveString.operationCount
+          || stringDenominator.elementWidthCount !== liveString.elementWidthCount
+          || stringDenominator.addressSizeCount !== liveString.addressSizeCount
+          || stringDenominator.sourceSegmentDiscriminatorCount !== liveString.sourceSegmentDiscriminatorCount
+          || stringDenominator.nonCompareRepeatCount !== liveString.nonCompareRepeatCount
+          || stringDenominator.compareRepeatCount !== liveString.compareRepeatCount
+          || stringDenominator.semanticCaseCount !== liveString.semanticCaseCount
+          || !sameSet(stringDenominator.oracleIds || [], liveString.oracleIds)) {
+          fail('a2-denominator-x86-string-live-proof-drift', pathName);
+        }
+      }
+
+      const atomic = families.find((family) => family.id === 'atomic');
+      if (atomic && atomic.status === 'exact') {
+        const liveAtomic = x86Long64AtomicDenominatorIdentity();
+        const atomicProof = atomic.proof;
+        const atomicDenominator = atomicProof?.denominator;
+        if (atomic.coverage !== 'exact-with-intrinsic' || atomic.preexisting !== false
+          || atomic.oracle !== 'intel-sdm-vol2-cmpxchg-xadd-xchg-current + intel-sdm-vol3-locked-instruction-ordering-current + amd64-vol3-general-purpose-programming-current + deployed-capstone-5-x86-long64-structured-detail'
+          || atomicProof?.schemaVersion !== 'machine-effects-effect-unit-proof/v1'
+          || atomicProof?.source !== 'js/targets/architecture/x86_64/effects/atomic.js'
+          || atomicProof?.test !== 'tests/phase5/effects/memory/atomic.test.mjs'
+          || atomicProof?.denominatorTest !== 'tests/machine-effects/x86-long64-atomic-denominator.test.mjs') {
+          fail('a2-denominator-x86-atomic-proof-identity-drift', pathName);
+        }
+        if (!atomicDenominator || atomicDenominator.schemaVersion !== X86_LONG64_ATOMIC_DENOMINATOR_SCHEMA
+          || atomicDenominator.denominatorId !== X86_LONG64_ATOMIC_DENOMINATOR_ID
+          || atomicDenominator.semanticCaseCount !== liveAtomic.semanticCaseCount
+          || atomicDenominator.familyCount !== liveAtomic.familyCount
+          || !sameList(atomicDenominator.scalarWidths || [], liveAtomic.scalarWidths)
+          || !sameSet(atomicDenominator.oracleIds || [], liveAtomic.oracleIds)) {
+          fail('a2-denominator-x86-atomic-live-proof-drift', pathName);
+        }
+      }
+
+      const memory = families.find((family) => family.id === 'memory');
+      if (memory && memory.status === 'exact') {
+        const liveMemory = x86Long64MemoryDenominatorIdentity();
+        const memoryProof = memory.proof;
+        const memoryDenominator = memoryProof?.denominator;
+        if (memory.coverage !== 'exact-with-intrinsic' || memory.preexisting !== false
+          || memory.oracle !== 'intel-sdm-vol2-memory-instruction-reference + deployed-capstone-5-x86-long64-detail'
+          || memoryProof?.schemaVersion !== 'machine-effects-effect-unit-proof/v1'
+          || memoryProof?.source !== 'js/targets/architecture/x86_64/effects/memory.js'
+          || memoryProof?.test !== 'tests/phase5/effects/memory/memory.test.mjs'
+          || memoryProof?.denominatorTest !== 'tests/machine-effects/x86-long64-memory-denominator.test.mjs') {
+          fail('a2-denominator-x86-memory-proof-identity-drift', pathName);
+        }
+        if (!memoryDenominator || memoryDenominator.schemaVersion !== X86_LONG64_MEMORY_DENOMINATOR_SCHEMA
+          || memoryDenominator.denominatorId !== X86_LONG64_MEMORY_DENOMINATOR_ID
+          || memoryDenominator.addressEncodingCaseCount !== liveMemory.addressEncodingCaseCount
+          || memoryDenominator.semanticCaseCount !== liveMemory.semanticCaseCount
+          || memoryDenominator.moffsCaseCount !== liveMemory.moffsCaseCount
+          || memoryDenominator.owner !== liveMemory.owner
+          || !sameSet(memoryDenominator.oracleIds || [], liveMemory.independentOracleIds)) {
+          fail('a2-denominator-x86-memory-live-proof-drift', pathName);
+        }
       }
     }
     if (architecture.id === 'arm64') {

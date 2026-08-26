@@ -4,17 +4,37 @@ import {
 import { x86RegisterOperand } from './common.js';
 import { X87_FAMILIES, baseFamily, exactBase, vexInfo, vectorIndex } from './extended-state-helpers.js';
 import { liftVzero, liftEmms, liftX87, lift3DNow } from './extended-state-x87.js';
-import { liftEvex } from './extended-state-evex.js';
+import { liftEvex, classifyEvexCategory } from './extended-state-evex.js';
 
-export function liftX86ExtendedStateEffects(instruction,context={}){
-  const family=String(instruction?.instructionFamily||'').toLowerCase(),base=baseFamily(family);
-  if(X87_FAMILIES.has(base))return liftX87(instruction,context,family);
-  if(family==='emms'||family==='femms')return liftEmms(instruction,context);
-  if(family==='vzeroall'||family==='vzeroupper')return liftVzero(instruction,context,family);
-  if(String(instruction?.detail?.prefixes?.vector?.kind||'').toLowerCase()==='evex')return liftEvex(instruction,context,family);
+export function dispatchX86ExtendedStateEffects(instruction, context = {}) {
+  const family = String(instruction?.instructionFamily || '').toLowerCase(), base = baseFamily(family);
+  if (X87_FAMILIES.has(base)) {
+    const result = liftX87(instruction, context, family);
+    if (result != null) return { ownerId: 'fp', result };
+  }
+  if (family === 'emms' || family === 'femms') {
+    const result = liftEmms(instruction, context);
+    if (result != null) return { ownerId: 'simd', result };
+  }
+  if (family === 'vzeroall' || family === 'vzeroupper') {
+    const result = liftVzero(instruction, context, family);
+    if (result != null) return { ownerId: 'simd', result };
+  }
+  if (String(instruction?.detail?.prefixes?.vector?.kind || '').toLowerCase() === 'evex') {
+    const result = liftEvex(instruction, context, family);
+    if (result != null) {
+      const ownerId = classifyEvexCategory(family);
+      return { ownerId, result };
+    }
+  }
   const d3now = lift3DNow(instruction, context);
-  if (d3now != null) return d3now;
+  if (d3now != null) return { ownerId: 'simd', result: d3now };
   return null;
+}
+
+export function liftX86ExtendedStateEffects(instruction, context = {}) {
+  const dispatch = dispatchX86ExtendedStateEffects(instruction, context);
+  return dispatch?.result ?? null;
 }
 
 export function integrateX86ExtendedStateAliases(instruction,bundle,context={}){

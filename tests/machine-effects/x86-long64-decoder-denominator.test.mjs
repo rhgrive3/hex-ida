@@ -5,7 +5,7 @@ import {
   X86_DECODER_SEMANTIC_VERSION,
   createX86DecodedInstruction,
 } from '../../js/targets/architecture/x86_64/decoded-instruction.js';
-import { liftX86MachineEffects } from '../../js/targets/architecture/x86_64/effects/index.js';
+import { dispatchX86MachineEffects, liftX86MachineEffects } from '../../js/targets/architecture/x86_64/effects/index.js';
 import { createCapstoneX86Session } from '../phase5/helpers/capstone-session.mjs';
 import {
   buildX86CapstoneRegistryEvidence,
@@ -175,14 +175,25 @@ try {
     }
   }
 
-  // Ownership is evaluated only after the independent denominator is fixed.
-  // Current main is allowed to report missing family dependencies; the strict
-  // assertion MUST fail rather than reclassify those valid encodings as
-  // fallback/out-of-profile. Once all family PRs land the same assertion turns
-  // into the exact closure gate without changing this denominator.
-  const ownership = analyzeX86Long64ValidEncodingOwnership(decodedRows, liftX86MachineEffects);
+  // Ownership is evaluated using canonical dispatch-owner tracing.
+  const ownership = analyzeX86Long64ValidEncodingOwnership(decodedRows, dispatchX86MachineEffects);
   assert.equal(ownership.validEncodingCount, identity.validLong64InstructionIdCount);
   assert.equal(ownership.ownedCount + ownership.unownedCount + ownership.invalidOwnerCount, ownership.validEncodingCount);
+  assert.equal(ownership.invalidOwnerCount, 0);
+
+  // Mutation resistance: mutating metadata.family must NOT change canonical ownership tracing
+  const poisonedDispatcher = (instruction) => {
+    const outcome = dispatchX86MachineEffects(instruction);
+    if (outcome.result) {
+      // Simulate poison metadata
+      return { ownerId: outcome.ownerId, result: { ...outcome.result, metadata: { ...outcome.result.metadata, family: 'poison-mutated' } } };
+    }
+    return outcome;
+  };
+  const poisonedOwnership = analyzeX86Long64ValidEncodingOwnership(decodedRows, poisonedDispatcher);
+  assert.deepEqual(poisonedOwnership.ownerCounts, ownership.ownerCounts);
+  assert.equal(poisonedOwnership.ownedCount, ownership.ownedCount);
+
   const fallbackProof = x86Long64FallbackNegativeProof(ownership);
   assert.equal(fallbackProof.validEncodingFallbackEligibleCount, 0);
   assert.equal(fallbackProof.validEncodingWithoutOwnerCount, ownership.unownedCount);
@@ -198,7 +209,7 @@ try {
     denominatorId:identity.denominatorId,
     validLong64InstructionIds:decodedRows.length,
     explicitOutOfProfileRegistryIds:identity.explicitOutOfProfileRegistryIdCount,
-    ownership:{ owned:ownership.ownedCount, unowned:ownership.unownedCount, metadataLabelCounts:ownership.metadataLabelCounts },
+    ownership:{ owned:ownership.ownedCount, unowned:ownership.unownedCount, ownerCounts:ownership.ownerCounts, metadataLabelCounts:ownership.metadataLabelCounts },
     firstUnowned:ownership.unowned.slice(0,12),
   }));
 } finally {

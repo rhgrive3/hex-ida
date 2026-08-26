@@ -315,16 +315,92 @@
         "contract": "external-structured-v1",
         "contractVersion": "x86-64-decoded-instruction/v1",
         "semanticVersion": "capstone-5-x86-structured-v2",
-        "enumerationStatus": "excluded",
-        "reason": "The production Capstone bridge does not expose a finite long-64 instruction-family registry for this inventory.",
-        "missingUnits": ["x86_64:long-64:all-decoder-encodings-prefixes-and-aliases"]
+        "enumerationStatus": "exact",
+        "units": ["x86_64:long-64:all-decoder-encodings-prefixes-and-aliases"],
+        "missingUnits": [],
+        "denominator": {
+          "schemaVersion": "x86-long64-decoder-denominator/v1",
+          "denominatorId": "x86_64:long-64:all-decoder-encodings-prefixes-and-aliases:v1",
+          "source": "tools/validation/machine-effects/x86-long64-decoder-denominator.mjs",
+          "test": "tests/machine-effects/x86-long64-decoder-denominator.test.mjs",
+          "registryInstructionCount": 1523,
+          "validLong64InstructionIdCount": 1487,
+          "explicitOutOfProfileRegistryIdCount": 36,
+          "modeInvalidOrRepurposedCount": 19,
+          "prefixTokenCount": 7,
+          "nonemittingAliasCount": 10,
+          "witnessFixtureVersion": "x86-long64-decoder-witnesses/v1",
+          "witnessSha256": "04f0b92aa2d7009d896cefd24a0ec2d9f0a03d998429010050f326f0f2185ccc",
+          "oracleIds": [
+            "intel-sdm-vol2-x86-instruction-encoding-and-long-mode-validity",
+            "intel-xed-isa-pattern-grammar",
+            "deployed-capstone-5-x86-long64-detail",
+            "x86_64:long-64:lea-encoding-discriminators:v1"
+          ]
+        }
       },
       "effectRegistry": {
         "source": "js/targets/architecture/x86_64/effects/index.js",
         "export": "x86MachineEffectFamilies",
         "families": [
-          { "id": "control", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "Control forms remain partial when structured targets or stack state are unavailable." },
-          { "id": "memory", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "Memory forms include locked ordering and deferred operand shapes." },
+          {
+            "id": "control",
+            "status": "exact",
+            "coverage": "exact",
+            "preexisting": false,
+            "oracle": "intel-sdm-vol2-call-ret-jmp-jcc-loop-jcxz + deployed-capstone-5-x86-long64-detail",
+            "reason": "All direct/indirect branches, near calls, returns, condition codes, loop counters, and trap instructions have structured exact control and register/memory/flag effects.",
+            "proof": {
+              "schemaVersion": "machine-effects-effect-unit-proof/v1",
+              "source": "js/targets/architecture/x86_64/effects/control.js",
+              "test": "tests/phase5/effects/int-control/control.test.mjs",
+              "denominatorTest": "tests/machine-effects/x86-long64-control-denominator.test.mjs",
+              "denominator": {
+                "schemaVersion": "x86-long64-control-denominator/v1",
+                "denominatorId": "x86_64:long-64:control-encoding-discriminators:v1",
+                "profileId": "x86_64:long-64",
+                "encodingCaseCount": 63,
+                "conditionCount": 16,
+                "aliasCaseCount": 14,
+                "oracleIds": [
+                  "intel-sdm-vol2-call-ret-jmp-jcc-loop-jcxz",
+                  "intel-sdm-vol1-cet-shadow-stack",
+                  "intel-sdm-vol1-mpx-bnd-bndpreserve",
+                  "deployed-capstone-5-x86-long64-detail"
+                ]
+              }
+            }
+          },
+          {
+            "id": "memory",
+            "status": "exact",
+            "coverage": "exact-with-intrinsic",
+            "preexisting": false,
+            "oracle": "intel-sdm-vol2-memory-instruction-reference + deployed-capstone-5-x86-long64-detail",
+            "reason": "All 100992 ModRM/SIB address discriminators, 7231 semantic forms across binary ALU, unary, shift/rotate, CMOVcc, SETcc, IMUL, and stack push/pop, plus 16 64-bit absolute moffs forms have structured exact memory effects.",
+            "proof": {
+              "schemaVersion": "machine-effects-effect-unit-proof/v1",
+              "source": "js/targets/architecture/x86_64/effects/memory.js",
+              "test": "tests/phase5/effects/memory/memory.test.mjs",
+              "denominatorTest": "tests/machine-effects/x86-long64-memory-denominator.test.mjs",
+              "denominator": {
+                "schemaVersion": "x86-long64-memory-denominator/v1",
+                "denominatorId": "x86_64:long-64:effect-family:memory:v1",
+                "addressEncodingCaseCount": 100992,
+                "semanticCaseCount": 7231,
+                "moffsCaseCount": 16,
+                "owner": "memory",
+                "oracleIds": [
+                  "intel-sdm-vol2-instruction-reference-memory-encodings",
+                  "intel-sdm-vol1-64-bit-addressing-and-segment-rules",
+                  "amd64-apm-vol3-general-purpose-and-system-instructions",
+                  "deployed-capstone-5-x86-long64-structured-detail",
+                  "llvm-objdump-x86-64-independent-disassembly-sample",
+                  "byte-level-modrm-sib-effective-address-oracle-v1"
+                ]
+              }
+            }
+          },
           {
             "id": "lea",
             "status": "exact",
@@ -339,9 +415,89 @@
               "denominatorTest": "tests/machine-effects/x86-long64-lea-denominator.test.mjs"
             }
           },
-          { "id": "integer", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "Integer forms include deferred memory and implicit-state shapes." },
-          { "id": "string", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "Repeated string effects exceed the frozen generic contract." },
-          { "id": "atomic", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "Locked and wide atomic effects remain explicitly partial." },
+          {
+            "id": "integer",
+            "status": "exact",
+            "coverage": "exact",
+            "preexisting": false,
+            "oracle": "intel-sdm-vol2-general-purpose-instructions + deployed-capstone-5-x86-long64-detail",
+            "reason": "All register/immediate binary ALU, shift/rotate, sign-extension, CMOVcc, and SETcc forms have structured exact integer effects across 8/16/32/64-bit operand widths.",
+            "proof": {
+              "schemaVersion": "machine-effects-effect-unit-proof/v1",
+              "source": "js/targets/architecture/x86_64/effects/integer.js",
+              "test": "tests/phase5/effects/int-control/integer-flags.test.mjs",
+              "denominatorTest": "tests/machine-effects/x86-long64-integer-denominator.test.mjs",
+              "denominator": {
+                "schemaVersion": "x86-long64-integer-denominator/v1",
+                "denominatorId": "x86_64:long-64:effect-family:integer:v1",
+                "encodingCaseCount": 57294,
+                "integerOwnedCaseCount": 56666,
+                "memoryDelegationCaseCount": 628,
+                "operandWidths": [8, 16, 32, 64],
+                "oracleIds": [
+                  "intel-sdm-vol2-integer-opcode-tables-static-denominator",
+                  "deployed-capstone-5-x86-long64-detail"
+                ]
+              }
+            }
+          },
+          {
+            "id": "string",
+            "status": "exact",
+            "coverage": "exact-with-intrinsic",
+            "preexisting": false,
+            "oracle": "intel-sdm-string-operation-semantics + deployed-capstone-5-x86-long64-detail + x86-repeated-string-summary/v1",
+            "reason": "All MOVS, STOS, LODS, CMPS, and SCAS single-step and REP/REPE/REPNE repeated operations across 8/16/32/64-bit element widths, 32/64-bit address sizes, and segment overrides have structured exact effects or exact architectural summaries.",
+            "proof": {
+              "schemaVersion": "machine-effects-effect-unit-proof/v1",
+              "source": "js/targets/architecture/x86_64/effects/string.js",
+              "test": "tests/phase5/effects/memory/string.test.mjs",
+              "denominatorTest": "tests/machine-effects/x86-long64-string-denominator.test.mjs",
+              "denominator": {
+                "schemaVersion": "x86-long64-string-denominator/v1",
+                "denominatorId": "x86_64:long-64:effect-family:string:v1",
+                "operationCount": 5,
+                "elementWidthCount": 4,
+                "addressSizeCount": 2,
+                "sourceSegmentDiscriminatorCount": 7,
+                "nonCompareRepeatCount": 2,
+                "compareRepeatCount": 3,
+                "semanticCaseCount": 672,
+                "oracleIds": [
+                  "intel-sdm-string-operation-semantics",
+                  "deployed-capstone-5-x86-long64-detail",
+                  "x86-repeated-string-summary/v1"
+                ]
+              }
+            }
+          },
+          {
+            "id": "atomic",
+            "status": "exact",
+            "coverage": "exact-with-intrinsic",
+            "preexisting": false,
+            "oracle": "intel-sdm-vol2-cmpxchg-xadd-xchg-current + intel-sdm-vol3-locked-instruction-ordering-current + amd64-vol3-general-purpose-programming-current + deployed-capstone-5-x86-long64-structured-detail",
+            "reason": "All XCHG, XADD, CMPXCHG, CMPXCHG8B, and CMPXCHG16B scalar and wide atomic operations across 8/16/32/64/128-bit widths have structured exact locked RMW effects and sequential-consistency ordering.",
+            "proof": {
+              "schemaVersion": "machine-effects-effect-unit-proof/v1",
+              "source": "js/targets/architecture/x86_64/effects/atomic.js",
+              "test": "tests/phase5/effects/memory/atomic.test.mjs",
+              "denominatorTest": "tests/machine-effects/x86-long64-atomic-denominator.test.mjs",
+              "denominator": {
+                "schemaVersion": "x86-long64-atomic-denominator/v1",
+                "denominatorId": "x86_64:long-64:effect-family:atomic",
+                "semanticCaseCount": 89,
+                "familyCount": 5,
+                "scalarWidths": [8, 16, 32, 64],
+                "oracleIds": [
+                  "intel-sdm-vol2-cmpxchg-xadd-xchg-current",
+                  "intel-sdm-vol3-locked-instruction-ordering-current",
+                  "amd64-vol3-general-purpose-programming-current",
+                  "deployed-capstone-5-x86-long64-structured-detail"
+                ]
+              }
+            }
+          },
           { "id": "fp", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "x87/environment-dependent forms remain partial." },
           { "id": "simd", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "EVEX and unresolved vector state remain partial." },
           { "id": "system", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "Fences, privileged, timestamp, and environment effects remain partial." },

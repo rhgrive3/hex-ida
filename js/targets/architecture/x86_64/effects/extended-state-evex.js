@@ -8,7 +8,7 @@ import {
 
 const PROVEN_GENERIC_EVEX_FAMILIES = new Set([]);
 
-function classifyEvexCategory(name) {
+export function classifyEvexCategory(name) {
   const lower = name.toLowerCase();
   if (/^vp(?!er[\w]*p[sd])/.test(lower) || /^valign|^vbroadcasti|^vextracti|^vinserti|^vshufi|^vcompress[bwdq]|^vexpand[bwdq]/.test(lower) || /^k[a-z]/.test(lower)) {
     return 'simd';
