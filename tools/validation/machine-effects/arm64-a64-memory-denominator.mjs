@@ -15,7 +15,7 @@ export const ARM64_A64_MEMORY_LOCKED_SCOPE_ID = 'arm64:a64:load-store-registry-s
 // digest is pinned: a case removed, renamed, or reordered fails the dependency
 // proof instead of quietly proving a smaller claim.
 export const ARM64_A64_MEMORY_LOCKED_CASE_COUNT = 267;
-export const ARM64_A64_MEMORY_LOCKED_CORPUS_SHA256 = 'b052d33f0998064cce78c70763aa1076269941a025cb8cef9462aba29deef622';
+export const ARM64_A64_MEMORY_LOCKED_CORPUS_SHA256 = '3313f81cbe51108c43102d226222fedbd13251c45a7cfbb9552285992559e4c9';
 
 const family = (id, discriminators) => Object.freeze({ id, discriminators:Object.freeze(discriminators) });
 export const ARM64_A64_MEMORY_ENCODING_FAMILIES = Object.freeze([
@@ -58,7 +58,7 @@ const ATOMIC_EXACT = Object.freeze([
   ...orderedSizedMnemonics('cas'), ...orderedSizedMnemonics('swp'),
   ...orderedSizedMnemonics('ldadd'), ...orderedSizedMnemonics('ldset'),
   ...orderedSizedMnemonics('ldclr'), ...orderedSizedMnemonics('ldeor'),
-  'dmb','dsb','isb','clrex',
+  'dmb','dsb','isb','ssbb','pssbb','clrex',
 ]);
 
 export const ARM64_A64_MEMORY_EXACT_MNEMONICS = Object.freeze([...NON_ATOMIC_EXACT, ...ATOMIC_EXACT]);
@@ -171,7 +171,8 @@ export function* arm64A64MemoryEncodingCases() {
   }
   yield item('barrier:isb:sy', 'barrier-exclusive-clear', 'isb sy', 'isb', { barrierOption:'sy', faultKinds:[] });
   for (let crm = 0; crm < 16; crm++) {
-    yield item(`barrier:dsb:crm-${crm}`, 'barrier-exclusive-clear', `dsb #${crm}`, 'dsb', { ordering:'barrier', barrierCrm:crm, faultKinds:[] });
+    const dsbDecodedMnemonic = crm === 0 ? 'ssbb' : crm === 4 ? 'pssbb' : 'dsb';
+    yield item(`barrier:dsb:crm-${crm}`, 'barrier-exclusive-clear', `dsb #${crm}`, dsbDecodedMnemonic, { ordering:'barrier', barrierCrm:crm, faultKinds:[] });
     yield item(`barrier:isb:crm-${crm}`, 'barrier-exclusive-clear', `isb #${crm}`, 'isb', { barrierOption:'sy', barrierCrm:crm, faultKinds:[] });
   }
   for (const immediate of [0,15]) yield item(`clrex:${immediate}`, 'barrier-exclusive-clear', `clrex #${immediate}`, 'clrex', { completeness:'exact-with-intrinsic', clrexImmediate:immediate, faultKinds:[] });
