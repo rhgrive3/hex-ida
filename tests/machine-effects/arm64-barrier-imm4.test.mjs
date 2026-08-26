@@ -23,14 +23,24 @@ for (const [crm, option, domain, access] of [
 }
 
 for (const [crm, alias] of [[0, 'ssbb'], [4, 'pssbb']]) {
-  const b = lift('dsb', [imm(crm)]);
-  assert.equal(b.completeness, 'exact');
-  assert.equal(b.operations[0].kind, 'barrier');
-  assert.equal(b.metadata.option, alias);
-  assert.equal(b.metadata.alias, alias);
-  assert.equal(b.metadata.crm, crm);
-  assert.equal(b.metadata.domain, 'speculation');
-  assert.equal(b.metadata.access, 'store-bypass');
+  const structured = lift('dsb', [imm(crm)]);
+  assert.equal(structured.completeness, 'exact');
+  assert.equal(structured.operations[0].kind, 'barrier');
+  assert.equal(structured.metadata.option, alias);
+  assert.equal(structured.metadata.alias, alias);
+  assert.equal(structured.metadata.crm, crm);
+  assert.equal(structured.metadata.domain, 'speculation');
+  assert.equal(structured.metadata.access, 'store-bypass');
+
+  const decodedAlias = lift(alias);
+  assert.equal(decodedAlias.completeness, 'exact');
+  assert.equal(decodedAlias.operations[0].kind, 'barrier');
+  assert.equal(decodedAlias.metadata.option, alias);
+  assert.equal(decodedAlias.metadata.alias, alias);
+  assert.equal(decodedAlias.metadata.crm, crm);
+  assert.equal(decodedAlias.metadata.domain, 'speculation');
+  assert.equal(decodedAlias.metadata.access, 'store-bypass');
+  assert.equal(lift(alias, [imm(crm)]).completeness, 'partial');
 }
 
 for (const crm of [8, 12]) {
