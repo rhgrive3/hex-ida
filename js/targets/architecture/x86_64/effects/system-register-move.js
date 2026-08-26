@@ -23,7 +23,6 @@ function encoding(instruction) {
   const opcode = raw[cursor + 1];
   if (![0x20,0x21,0x22,0x23].includes(opcode)) return null;
   const modrm = raw[cursor + 2];
-  if ((modrm >>> 6) !== 3) return null;
   return Object.freeze({ rex, opcode, modrm });
 }
 

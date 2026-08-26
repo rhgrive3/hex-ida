@@ -204,7 +204,7 @@ function liftWrss(instruction, context, family) {
   const address = memoryAddress(ctx, destination);
   const value = source?.type === 'register' ? ctx.readRegister(source) : null;
   if (!address || !value) return null;
-  ctx.writeMemory(address.expression, spec.width, value, { space:'shadow-stack', alignment:spec.width / 8, metadata:{ operation:family, userAccess:spec.user, architecturalShadowStackStore:true } });
+  ctx.writeMemory(address.expression, spec.width, value, { space:'memory', alignment:spec.width / 8, metadata:{ operation:family, userAccess:spec.user, architecturalShadowStackStore:true } });
   ctx.intrinsic(`x86.cet.${family}`, [value], [], {
     registersRead:[CET_STATE, SHADOW_STACK_STATE, EXECUTION_ENV, ...addressRegisters(destination)],
     registersWritten:[], memoryRead:{ scope:'none' }, memoryWrite:{ scope:'none' }, determinism:'input-dependent', symbolicDetail:'summary-only',
@@ -219,14 +219,14 @@ function liftRstorssp(instruction, context) {
   const operand = ctx.operands[0];
   const address = memoryAddress(ctx, operand);
   if (!address) return null;
-  const token = ctx.readMemory(address.expression, 64, { space:'shadow-stack', alignment:8, atomic:true, metadata:{ operation:'rstorssp', tokenRead:true } });
+  const token = ctx.readMemory(address.expression, 64, { space:'memory', alignment:8, atomic:true, metadata:{ operation:'rstorssp', tokenRead:true } });
   const [replacement, cf] = ctx.intrinsic('x86.cet.rstorssp', [token], [64,1], {
     registersRead:[SSP_STATE,CET_STATE,SHADOW_STACK_STATE,EXECUTION_ENV,...addressRegisters(operand)],
     registersWritten:[SSP_STATE,SHADOW_STACK_STATE],
     memoryRead:{ scope:'none' }, memoryWrite:{ scope:'none' }, determinism:'input-dependent', symbolicDetail:'summary-only',
     metadata:{ operation:'rstorssp', exactArchitecturalSummary:true, tokenValidation:true, restoredSsp:'effective-address', previousSspTokenReplacement:true },
   });
-  ctx.writeMemory(address.expression,64,replacement,{ space:'shadow-stack', alignment:8, atomic:true, metadata:{ operation:'rstorssp', previousSspToken:true } });
+  ctx.writeMemory(address.expression,64,replacement,{ space:'memory', alignment:8, atomic:true, metadata:{ operation:'rstorssp', previousSspToken:true } });
   ctx.writeFlag('CF',cf,{ operation:'rstorssp', semantic:'restore-token-alignment-hole' });
   for (const flag of ['ZF','PF','AF','OF','SF']) ctx.writeFlag(flag,ctx.constant(1,0n),{ operation:'rstorssp', fixedValue:0 });
   return ctx.finish({ family:'system', possibleFaults:[udFault('rstorssp','CET shadow stack disabled or LOCK prefix'),gpFault('rstorssp','unaligned or non-canonical address'),cpFault('rstorssp','restore token mode/address validation failure'),...x86MemoryFaults('read',64),...x86MemoryFaults('write',64)], metadata:{ operation:'rstorssp', cetStateModeled:true, shadowStackTokenRmw:true } });
@@ -238,13 +238,13 @@ function liftClrssbsy(instruction, context) {
   const operand = ctx.operands[0];
   const address = memoryAddress(ctx, operand);
   if (!address) return null;
-  const token = ctx.readMemory(address.expression,64,{ space:'shadow-stack', alignment:8, atomic:true, metadata:{ operation:'clrssbsy', busyTokenRead:true } });
+  const token = ctx.readMemory(address.expression,64,{ space:'memory', alignment:8, atomic:true, metadata:{ operation:'clrssbsy', busyTokenRead:true } });
   const [cleared, cf] = ctx.intrinsic('x86.cet.clrssbsy',[token],[64,1],{
     registersRead:[CET_STATE,SHADOW_STACK_STATE,EXECUTION_ENV,...addressRegisters(operand)], registersWritten:[SSP_STATE,SHADOW_STACK_STATE],
     memoryRead:{ scope:'none' }, memoryWrite:{ scope:'none' }, determinism:'input-dependent', symbolicDetail:'summary-only',
     metadata:{ operation:'clrssbsy', exactArchitecturalSummary:true, busyTokenCompareExchange:true, sspAfterSuccess:'0' },
   });
-  ctx.writeMemory(address.expression,64,cleared,{ space:'shadow-stack', alignment:8, atomic:true, metadata:{ operation:'clrssbsy', clearBusyBit:true } });
+  ctx.writeMemory(address.expression,64,cleared,{ space:'memory', alignment:8, atomic:true, metadata:{ operation:'clrssbsy', clearBusyBit:true } });
   ctx.writeFlag('CF',cf,{ operation:'clrssbsy', semantic:'invalid-busy-token' });
   for (const flag of ['ZF','PF','AF','OF','SF']) ctx.writeFlag(flag,ctx.constant(1,0n),{ operation:'clrssbsy', fixedValue:0 });
   return ctx.finish({ family:'system', possibleFaults:[udFault('clrssbsy','CET shadow stack disabled or LOCK prefix'),gpFault('clrssbsy','CPL>0, invalid token, unaligned or non-canonical address'),...x86MemoryFaults('read',64),...x86MemoryFaults('write',64)], metadata:{ operation:'clrssbsy', cetStateModeled:true, busyTokenRmw:true, sspCleared:true } });
