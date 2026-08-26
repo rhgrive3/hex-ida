@@ -29,9 +29,11 @@ try {
   assert.equal(matrix.matrixId, X86_LONG64_CLOSURE_MATRIX_ID);
   assert.equal(matrix.totalWitnessCount, 1487);
   assert.equal(matrix.unownedCount, 0, "No witness may be unowned");
+  assert.equal(matrix.partialCount, 0, `No valid witness may remain partial: ${JSON.stringify(matrix.blockingGaps)}`);
+  assert.equal(matrix.blockingGapCount, 0, `No semantic closure gap may remain: ${JSON.stringify(matrix.blockingGaps)}`);
+  assert.equal(matrix.closed, true, `Long-64 witness matrix must be terminal: ${JSON.stringify(matrix.blockingGaps)}`);
   assert.equal(matrix.rows.length, 1487);
 
-  // Check that all 1487 rows have valid canonical owner and defined completeness
   for (const row of matrix.rows) {
     assert.ok(row.id >= 1 && row.id <= 1523);
     assert.ok(typeof row.name === "string" && row.name.length > 0);
