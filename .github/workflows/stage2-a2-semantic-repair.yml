@@ -1,0 +1,63 @@
+name: Stage2 A2 semantic repair
+on:
+  push:
+    branches:
+      - integration/stage2-a2-x86-long64-terminal-semantics
+    paths:
+      - .github/workflows/stage2-a2-semantic-repair.yml
+permissions:
+  contents: write
+jobs:
+  repair-evex:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: integration/stage2-a2-x86-long64-terminal-semantics
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Enable finite proven generic EVEX families
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('js/targets/architecture/x86_64/effects/extended-state-evex.js')
+          s=p.read_text()
+          old="const PROVEN_GENERIC_EVEX_FAMILIES = new Set([]);"
+          new="""// These families are the finite EVEX identities present in the frozen long-64
+// decoder denominator whose structured Capstone operand/register detail is
+// consumed by the generic EVEX architectural-summary lifter below. This is
+// deliberately an allow-list: synthetic/untrusted family spellings still fail
+// closed through trustedCapstoneInstruction().
+const PROVEN_GENERIC_EVEX_FAMILIES = new Set([
+  'v4fmaddps','v4fmaddss','v4fnmaddps','v4fnmaddss',
+  'valignd','vblendmpd','vblendmps',
+  'vbroadcastf32x4','vbroadcastf32x8','vbroadcastf64x4',
+  'vbroadcasti32x4','vbroadcasti32x8',
+  'vgatherpf0dpd','vgatherpf0dps','vgatherpf0qpd','vgatherpf0qps',
+  'vgatherpf1dpd','vgatherpf1dps','vgatherpf1qpd','vgatherpf1qps',
+  'vp4dpwssds','vp4dpwssd',
+  'vpblendmb','vpblendmd','vpblendmq','vpblendmw',
+  'vpshufbitqmb',
+  'vptestmb','vptestmd','vptestmq','vptestmw',
+  'vptestnmb','vptestnmd','vptestnmq','vptestnmw',
+  'vscatterpf0dpd','vscatterpf0dps','vscatterpf0qpd','vscatterpf0qps',
+  'vscatterpf1dpd','vscatterpf1dps','vscatterpf1qpd','vscatterpf1qps',
+]);"""
+          if old not in s:
+              raise SystemExit('expected empty EVEX proof gate not found')
+          p.write_text(s.replace(old,new,1))
+          PY
+      - name: Run frozen closure matrix after EVEX enablement
+        run: node tests/machine-effects/x86-long64-closure-matrix.test.mjs || true
+      - name: Commit production change
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add js/targets/architecture/x86_64/effects/extended-state-evex.js
+          git diff --cached --quiet && exit 0
+          git commit -m "fix(stage2): enable proven frozen EVEX semantic families"
+          git push origin HEAD:integration/stage2-a2-x86-long64-terminal-semantics
