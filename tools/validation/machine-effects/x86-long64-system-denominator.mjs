@@ -10,6 +10,7 @@ const PREFIX_FS = p('segment-fs-64', [0x64]);
 const PREFIX_GS = p('segment-gs-65', [0x65]);
 const PREFIX_REX = p('rex-40-ignored', [0x40]);
 const PREFIX_REXW = p('rex-w-48', [0x48]);
+const PREFIX_REXR = p('rex-r-44', [0x44]);
 const CANONICAL_OR_REX = Object.freeze([PREFIX_NONE,PREFIX_REX]);
 const MEMORY_PREFIXES = Object.freeze([PREFIX_NONE,PREFIX_67,PREFIX_FS,PREFIX_GS,PREFIX_REX]);
 
@@ -57,15 +58,26 @@ export const X86_LONG64_SYSTEM_FAMILY_ROWS = Object.freeze([
   row({ family:'lidt', opcode:[0x0f,0x01], prefixes:MEMORY_PREFIXES, operands:[o('m80-base',[0x18]),o('m80-sib',[0x1c,0x24]),o('m80-rm5-disp32',[0x1d,0,0,0,0])], privilege:PRIVILEGED, environment:NATIVE_OR_VM, implicitState:['IDTR','CPL','explicit-memory-address'], effectClass:'privileged-memory-intrinsic' }),
   row({ family:'lldt', opcode:[0x0f,0x00], prefixes:MEMORY_PREFIXES, operands:[o('r16-ax',[0xd0],CANONICAL_OR_REX),o('m16-base',[0x10]),o('m16-sib',[0x14,0x24]),o('m16-rm5-disp32',[0x15,0,0,0,0])], privilege:PRIVILEGED, environment:NATIVE_OR_VM, implicitState:['LDTR-visible-selector','LDTR-hidden-descriptor-cache','GDT/LDT-descriptor-memory','CPL'], effectClass:'privileged-descriptor-intrinsic' }),
   row({ family:'ltr', opcode:[0x0f,0x00], prefixes:MEMORY_PREFIXES, operands:[o('r16-ax',[0xd8],CANONICAL_OR_REX),o('m16-base',[0x18]),o('m16-sib',[0x1c,0x24]),o('m16-rm5-disp32',[0x1d,0,0,0,0])], privilege:PRIVILEGED, environment:NATIVE_OR_VM, implicitState:['TR-visible-selector','TR-hidden-descriptor-cache','GDT-descriptor-memory','CPL'], effectClass:'privileged-descriptor-intrinsic' }),
-]);
-
-export const X86_LONG64_SYSTEM_SHARED_DEPENDENCIES = Object.freeze([
-  Object.freeze({
-    id:'mov-control-debug-register-family-alias',
-    reason:'deployed Capstone emits MOV for 0F20/0F21/0F22/0F23 control/debug-register encodings; memory/integer ownership precedes system and the physical register contract does not model CR/DR state',
-    requiredOwners:Object.freeze(['js/targets/architecture/x86_64/effects/index.js','js/targets/architecture/x86_64/effects/integer.js','js/targets/architecture/x86_64/registers-core.js']),
+  row({
+    family:'mov',
+    opcode:[0x0f],
+    prefixes:[PREFIX_NONE],
+    operands:[
+      o('cr0-to-r64',[0x20,0xc0],[PREFIX_NONE]),
+      o('r64-to-cr0',[0x22,0xc0],[PREFIX_NONE]),
+      o('dr7-to-r64',[0x21,0xf8],[PREFIX_NONE]),
+      o('r64-to-dr7',[0x23,0xf8],[PREFIX_NONE]),
+      o('cr8-to-r64',[0x20,0xc0],[PREFIX_REXR]),
+      o('r64-to-cr8',[0x22,0xc0],[PREFIX_REXR]),
+    ],
+    privilege:PRIVILEGED,
+    environment:NATIVE_OR_VM,
+    implicitState:['CR0-CR15','DR0-DR15','CPL','DR7.GD','DR6.BD','control/debug-derived-state'],
+    effectClass:'privileged-register-move-intrinsic',
   }),
 ]);
+
+export const X86_LONG64_SYSTEM_SHARED_DEPENDENCIES = Object.freeze([]);
 
 export function* x86Long64SystemEncodingCases() {
   for (const family of X86_LONG64_SYSTEM_FAMILY_ROWS) {
@@ -110,8 +122,8 @@ export function validateX86Long64SystemDenominator() {
     encodingCaseCount,
     discriminatorDimensions:Object.freeze(['opcode/family','privilege','environment','prefix','operand/state','implicit-state']),
     quotientProof:Object.freeze({
-      prefix:'one deployed-decoder representative per cross-vendor architecturally defined prefix class; Intel-reserved and AMD-undefined legacy-prefix combinations are excluded even when the decoder accepts them, while REX.W remains explicit for SYSRETQ',
-      operandState:'register identity is quotient-equivalent under the common x86 register contract; base, SIB, and ModRM r/m=5 disp32 representatives cover distinct effective-address shapes, with address-size prefixes allowed to change the r/m=5 interpretation',
+      prefix:'one deployed-decoder representative per cross-vendor architecturally defined prefix class; Intel-reserved and AMD-undefined legacy-prefix combinations are excluded even when the decoder accepts them, while REX.W remains explicit for SYSRETQ and REX.R for CR8',
+      operandState:'register identity is quotient-equivalent under the common x86 register contract; base, SIB, and ModRM r/m=5 disp32 representatives cover distinct effective-address shapes, with address-size prefixes allowed to change the r/m=5 interpretation; MOV CR/DR additionally enumerates control/debug direction and CR8 REX.R extension',
       environment:'runtime host values remain symbolic architectural inputs/outputs; only privilege/environment predicates and architectural trap alternatives are enumerated',
     }),
     oracleIds:Object.freeze([
