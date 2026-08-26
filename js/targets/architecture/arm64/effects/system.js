@@ -256,7 +256,18 @@ function clearExclusiveMonitor(operations, token) {
 }
 
 function clrex(instruction, context, ops) {
-  const imm = immediate(ops[0]);
+  const operand = ops[0];
+  let imm = null;
+  if (operand != null) {
+    if (operand?.k !== 'imm' || operand.value == null) {
+      return partial(instruction, context, 'clrex-immediate-unavailable', ['other']);
+    }
+    const value = BigInt(operand.value);
+    if (value < 0n || value > 0xfn) {
+      return partial(instruction, context, 'clrex-imm4-out-of-range', ['other']);
+    }
+    imm = createBitVectorValue(64, value);
+  }
   const operations = [];
   const monitorState = readExclusiveMonitor(operations);
   const nextToken = temp('clrex:next-monitor-token', createBitVectorValue(64));
@@ -294,8 +305,15 @@ function bti(instruction, context, ops) {
 }
 
 function trap(instruction, context, mnemonic, ops) {
-  const imm = immediate(ops[0]);
-  if (!imm) return partial(instruction, context, `${mnemonic}-immediate-unavailable`, ['control','faults','other']);
+  const operand = ops[0];
+  if (operand?.k !== 'imm' || operand.value == null) {
+    return partial(instruction, context, `${mnemonic}-immediate-unavailable`, ['control','faults','other']);
+  }
+  const immediateValue = BigInt(operand.value);
+  if (immediateValue < 0n || immediateValue > 0xffffn) {
+    return partial(instruction, context, `${mnemonic}-imm16-out-of-range`, ['control','faults','other']);
+  }
+  const imm = createBitVectorValue(64, immediateValue);
   const inputs = [imm];
   const controlEffect = { kind:'trap', reason:`arm64-${mnemonic}` };
   const operation = environmentIntrinsic({
@@ -304,7 +322,7 @@ function trap(instruction, context, mnemonic, ops) {
     controlEffects:[controlEffect],
     memory:true,
     completeEnvironment:true,
-    metadata:{ immediate:ops[0]?.value ?? null, exceptionEntry:true },
+    metadata:{ immediate:operand.value, exceptionEntry:true },
   });
   return bundle(instruction, context, {
     operations:[operation], controlEffect, completeness:'exact-with-intrinsic',
@@ -451,8 +469,15 @@ function eret(instruction, context) {
 }
 
 function genericHint(instruction, context, ops) {
-  const imm = immediate(ops[0]);
-  if (!imm) return partial(instruction, context, 'generic-hint-immediate-unavailable', ['other']);
+  const operand = ops[0];
+  if (operand?.k !== 'imm' || operand.value == null) {
+    return partial(instruction, context, 'generic-hint-immediate-unavailable', ['other']);
+  }
+  const value = BigInt(operand.value);
+  if (value < 0n || value > 0x7fn) {
+    return partial(instruction, context, 'generic-hint-imm7-out-of-range', ['other']);
+  }
+  const imm = createBitVectorValue(64, value);
   const operation = environmentIntrinsic({
     id:'arm64.environment.hint', inputs:[imm],
     metadata:{ hintImmediate:String(imm.value) },
