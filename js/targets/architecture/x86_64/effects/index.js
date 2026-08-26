@@ -1,6 +1,7 @@
 import { liftX86ControlEffects } from './control.js';
 import { liftX86IntegerEffects, liftX86LeaEffects } from './integer.js';
 import { liftX86ImplicitSignExtensionEffects } from './implicit-sign-extension.js';
+import { liftX86BitManipulationEffects } from './bit-manipulation.js';
 import { liftX86MemoryEffects } from './memory.js';
 import { liftX86StringEffects } from './string.js';
 import { liftX86AtomicEffects } from './atomic.js';
@@ -12,7 +13,9 @@ import { liftX86ExtendedStateEffects, integrateX86ExtendedStateAliases } from '.
 import { normalizeX86Instruction, X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION } from './common.js';
 
 function liftX86IntegerFamily(instruction, context) {
-  return liftX86ImplicitSignExtensionEffects(instruction, context) ?? liftX86IntegerEffects(instruction, context);
+  return liftX86ImplicitSignExtensionEffects(instruction, context)
+    ?? liftX86IntegerEffects(instruction, context)
+    ?? liftX86BitManipulationEffects(instruction, context);
 }
 
 function liftX86SimdFamily(instruction, context) {
