@@ -1,3 +1,4 @@
+// Exact-head CI retrigger marker; semantic no-op.
 import { liftX86ControlEffects } from './control.js';
 import { liftX86IntegerEffects, liftX86LeaEffects } from './integer.js';
 import { liftX86ImplicitSignExtensionEffects } from './implicit-sign-extension.js';
