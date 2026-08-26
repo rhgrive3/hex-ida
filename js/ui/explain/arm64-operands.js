@@ -58,9 +58,15 @@ function parseReg(text) {
   if (m[5]) return { k: "reg", text: t, cls: "gp", bits: 64, num: t === "lr" ? 30 : 29 };
   if (m[6]) {
     const bits = { b: 8, h: 16, s: 32, d: 64, q: 128 }[m[6].toLowerCase()];
-    return { k: "reg", text: t, cls: "fp", bits, num: parseInt(m[7], 10) };
+    const n = parseInt(m[7], 10);
+    if (n > 31) return null;
+    return { k: "reg", text: t, cls: "fp", bits, num: n };
   }
-  if (m[8]) return { k: "reg", text: t, cls: "vec", bits: 128, num: parseInt(m[9], 10), arr: m[10] || null };
+  if (m[8]) {
+    const n = parseInt(m[9], 10);
+    if (n > 31) return null;
+    return { k: "reg", text: t, cls: "vec", bits: 128, num: n, arr: m[10] || null };
+  }
   return null;
 }
 
@@ -113,7 +119,13 @@ export function parseOperands(str) {
     const imm = parseImm(raw);
     if (imm) { out.push(imm); continue; }
     const ve = VEC_ELEM_RE.exec(raw);
-    if (ve) { out.push({ k: "elem", text: raw, num: parseInt(ve[1], 10), size: ve[2], index: parseInt(ve[3], 10) }); continue; }
+    if (ve) {
+      const num = parseInt(ve[1], 10);
+      const size = ve[2].toLowerCase();
+      const index = parseInt(ve[3], 10);
+      const laneCount = { b: 16, h: 8, s: 4, d: 2 }[size];
+      if (num <= 31 && index < laneCount) { out.push({ k: "elem", text: raw, num, size: ve[2], index }); continue; }
+    }
     const reg = parseReg(raw);
     if (reg) { out.push(reg); continue; }
     if (COND_RE.test(raw)) { out.push({ k: "cond", text: raw.toLowerCase() }); continue; }
