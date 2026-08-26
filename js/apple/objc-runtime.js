@@ -139,7 +139,21 @@ function protocolSet(index, chain, explicit) {
   const out = new Set((explicit || []).map((p) => cleanClassName(p.name || p)).filter(Boolean));
   for (const name of chain) {
     const c = index.classes.get(name);
-    for (const p of (c && c.protocols) || []) out.add(cleanClassName(p));
+    for (const p of (c && c.protocols) || []) {
+      const protocol = cleanClassName(p);
+      if (protocol) out.add(protocol);
+    }
+  }
+  const pending = [...out];
+  while (pending.length) {
+    const name = pending.pop();
+    const protocol = index.protocols?.get(name);
+    for (const inherited of protocol?.protocols || []) {
+      const inheritedName = cleanClassName(inherited?.name || inherited);
+      if (!inheritedName || out.has(inheritedName)) continue;
+      out.add(inheritedName);
+      pending.push(inheritedName);
+    }
   }
   return out;
 }
