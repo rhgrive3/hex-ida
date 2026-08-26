@@ -1,0 +1,21 @@
+name: Stage2 A2 machine-effects diagnostic
+on:
+  push:
+    branches:
+      - integration/stage2-a2-x86-long64-terminal-semantics
+    paths:
+      - .github/workflows/stage2-a2-machine-effects-diagnostic.yml
+permissions:
+  contents: read
+jobs:
+  machine-effects:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Run canonical A2 machine effects with full output
+        run: node tests/machine-effects/run.mjs
