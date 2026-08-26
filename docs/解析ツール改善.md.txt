@@ -973,5 +973,402 @@ Hex が最も大きく勝てる経路は、「他ツールが持つ機能を全�
 
 最終的に「Hex が major RE tools より強い」と主張できるのは、競合と似た UI や prettier pseudocode を得た時ではなく、**independent ground truth 上で false exactness を増やさず precision/coverage/workflow breadth を上げ、その結果が exact identities・reproducible corpus・actual iPad/browser constraints の下で再現された時**である。
 
-Research audit:  
+Research audit:
 PASS — two consecutive zero-finding reviews.
+
+# Final Research Addendum: 2026-08-25 current-main reconciliation
+
+## 監査結論と authority
+
+この節より前の本文は、2026-08-22 の research freeze と、その時点で取得した外部証拠を保存した historical baseline である。削除、圧縮、現在状態への読み替えは行わない。直前の `Research audit: PASS` も historical verdict であり、この addendum の saturation 証拠に置き換える。
+
+今回の CURRENT 判定基点は次の通りである。
+
+| Field | Current value |
+|---|---|
+| Reconciliation date | 2026-08-25 UTC |
+| Live main SHA | `3057877d5eb46d623801ac8e18d125b8f44e7c6e` |
+| Live main tree | `f6e43030fd0c582da526b26ef457c585f3da2994` |
+| Historical research freeze SHA | `f7fe0150a4bbed8ab7019837d0965d93836a0a4d` |
+| Authority order | production source > production wiring > tests/verifier > current canonical docs > historical freeze |
+| Scope | research and final implementation specification only |
+| Production semantics changed by this audit | none |
+
+Current source と current docs が食い違う場合は production source を採用した。例として `docs/SUPPORT_MATRIX.md` と `js/platform/capability-maturity.js` の base profile は ARM64 A2 を partial と表示するが、Stage 2 の profile-bound promotion は `js/platform/stage2-capability-maturity.js` と current denominator proof で別途計算される。この addendum は静的な base declaration と profile-specific proof を混同しない。
+
+## Final addendum の finding-card 正規化規則
+
+上記 historical cards はそのまま有効であり、次の field mapping と CURRENT overlay を合わせたものを最終 card とする。
+
+| Required field | Historical card field |
+|---|---|
+| ID / Priority / Title | roadmap table と card heading |
+| Problem | `CURRENT LIMIT` |
+| Current Hex state | `CURRENT HEX EVIDENCE` と本節の freshness status |
+| External evidence / Mechanism / Sources | `EXTERNAL MECHANISM`, `PRIMARY SOURCES`, `TRANSFER POSTURE` |
+| Why Hex should care | `WHY IT WORKS`, `EXPECTED LEVERAGE` |
+| Exact integration point | `HEX ADAPTATION`, `CANONICAL OWNER` |
+| Soundness boundary | `DO NOT DUPLICATE` と本節の authority boundary |
+| Failure modes | `KNOWN FAILURE MODES`, `RISK` |
+| Acceptance tests | `PROOF PLAN` |
+| Benchmark / denominator | `BENCHMARK IMPACT` |
+| iPad/WebKit constraints | `IPAD/BROWSER FIT` |
+| Dependencies | 本節の dependency overlay と DAG |
+| Implementation disposition | 本節の CURRENT status と backlog |
+| ARM64 effect | 本節の ARM64 overlay |
+
+この mapping は既存 research を捨てずに card schema を完成させるためのものだ。新規 card は本節内で全 field を明示する。
+
+## CURRENT Hex freshness reconciliation
+
+### P0 reconciliation
+
+| ID | CURRENT status | Strongest current evidence | Remaining exact gap | Dependencies | ARM64 effect | Disposition |
+|---|---|---|---|---|---|---|
+| HEX-C0-01 | PARTIALLY IMPLEMENTED | `tools/validation/competitive/**`, Phase 7/8 compiler corpora, compiler-truth score gates | debug-bearing artifact と strip-only twin の byte-identity manifest が全 benchmark denominator に統一されていない | none | HIGH | Extend the existing competitive profile; do not create competitor-consensus truth |
+| HEX-ME-01 | IMPLEMENTED BUT NOT PROVEN | locked A2 denominator machinery, `tools/validation/machine-effects/independent-oracle.mjs`, external-oracle authority policy, ARM64/ARM64e denominator tests | formal ISA footprint and relaxed-memory litmus oracles, plus hardware/QEMU triangulation, are absent from the release proof | C0-01 | CRITICAL | Extend current offline oracle lane with Sail/Isla/ArchSem corpus production |
+| HEX-C1-01 | NOT STARTED | `reachingConcreteStore()` exists, while `pointsto/local.js` still returns `unresolved-load` | no versioned MemorySSA boundary-fact bridge into the points-to fixed point | ME-01, C1-03 | HIGH | Implement after provenance roots are safe |
+| HEX-C1-02 | NOT STARTED | summary SCC, return value IDs, allocation and escape facts exist; call result remains `unresolved-call` | no finite pointer-return relation, complete-candidate join, or digest coverage for consumed return/allocation facts | C1-03 | HIGH | Extend the current summary schema and digest |
+| HEX-C1-03 | IMPLEMENTED BUT NOT PROVEN | canonical root descriptors and escape hooks exist; Phase 7 exactness corpus exists | `pointsto/alias.js` can still mint exact `NoAlias` from `heap`/`alloc` or `global`/`g_root` substrings | C0-01, ME-01 | CRITICAL | Remove spelling-derived exactness before adding downstream consumers |
+| HEX-C2-01 | PARTIALLY IMPLEMENTED | canonical MemorySSA queries and Phase 8 memory consumers exist | no general byte-coverage proof object and end-to-end partial-store reconstruction gate | C1-01, C1-03 | HIGH | Extend the one MemorySSA authority |
+| HEX-C3-02 | PARTIALLY IMPLEMENTED | AAPCS64, Darwin ARM64, SysV AMD64, Microsoft x64/vectorcall plugins cover aggregate, split return and sret cases with tests | HFA/HVA and variadic/platform sub-ABI denominator closure is not proven across all locked profiles | C0-01, ME-01, C1-02, C2-01 | CRITICAL | Complete ABI matrices before broader type heuristics |
+| HEX-C4-01 | IMPLEMENTED + PROVEN | Phase 8 transaction, declared consumes/produces/preserves, fail-closed invalidation, cancellation and substrate tests | no remaining mechanism gap in this card; keep as mandatory prerequisite and regression gate | C0-01 | HIGH | Preserve; reopen only on a concrete regression |
+| HEX-SYM-01 | PARTIALLY IMPLEMENTED | canonical symbolic DAG, solver registry/session/result taxonomy, exact small-domain backend, worker backend and model validation | measured 32/64-bit production backend tiers and physical iPad/WebKit resource proof remain open | C0-01, ME-01 | HIGH | Keep exact local floor; add optional measured tiers |
+| HEX-X-01 | IMPLEMENTED + PROVEN | `transaction-v2.js` binds output/validator/oracle identities; independent `llvm-readobj` adapter and Stage 2 negatives exist | broader F6 operation coverage remains separate profile work, not a gap in the independent-gate mechanism | C0-01 | CRITICAL | Preserve as a non-bypassable gate |
+
+### P1 reconciliation
+
+| ID | CURRENT status | Strongest current evidence | Remaining exact gap | Dependencies | ARM64 effect | Disposition |
+|---|---|---|---|---|---|---|
+| HEX-C2-02 | PARTIALLY IMPLEMENTED | exact-width bitvectors, wrapped ranges and SCCP are production wired and tested | known bits, congruence and edge-specific branch refinement are incomplete | C2-01 | HIGH | Extend the Phase 8 product domain |
+| HEX-C3-01 | PARTIALLY IMPLEMENTED | authority-separated type graph and ambiguity-preserving aggregate candidates exist | recursive structural constraint breadth and bounded solver proof are incomplete | C1-02, C2-01, C3-02 | HIGH | Add producers to the existing graph |
+| HEX-C3-03 | PARTIALLY IMPLEMENTED | versioned DWARF/PDB providers and completeness-aware ObjC metadata exist | Swift/Go/Rust version matrices, dyld cache context and complete runtime metadata provider identities remain incomplete | C0-01, C3-02, X-02 | CRITICAL | Version each ecosystem provider; unknown version stays partial |
+| HEX-C4-02 | PARTIALLY IMPLEMENTED | Phase 8 accounts every edge, keeps irreducible regions as residual jumps, preserves foreign/unwind constraints, and independently recounts edges | broader exception-aware region transforms and semantic validation per transform remain open | C4-01, C4-04 | HIGH | Continue only through proof-gated regions |
+| HEX-C4-03 | PARTIALLY IMPLEMENTED | Phase 8 transforms carry origin rows/SSA references and stale artifact identity is rejected | complete bidirectional UI mapping for every deleted/merged rendered entity is not proven | C4-01, C2-01 | HIGH | Complete projection/query coverage without new semantic IDs |
+| HEX-SYM-02 | PARTIALLY IMPLEMENTED | function-local symbolic execution has concrete memory and explicit unknown-load behavior | exact byte-addressed symbolic arrays and concrete-to-array escalation are incomplete | SYM-01, ME-01, C2-01 | HIGH | Local concrete tier first, optional array tier second |
+| HEX-SYM-03 | PARTIALLY IMPLEMENTED | symbolic equivalence and bounded function sandbox exist | first-class taint lattice and uniform proof gate for deobfuscation candidates remain incomplete | SYM-01, SYM-02, C4-04 | MEDIUM | Keep timeout and unsupported as no-adoption |
+| HEX-X-02 | PARTIALLY IMPLEMENTED | ObjC metadata, Mach-O handling and bounded Mach-O rebuild cells exist | dyld shared cache, chained fixup breadth, Swift versions, PAC/auth metadata and signing consequences lack one locked Apple matrix | ME-01, C3-03, X-01, X-03 | CRITICAL | Architecture-neutral contracts with Apple-specific providers |
+| HEX-S2-01 | IMPLEMENTED + PROVEN | provider/session/target/module/binary identities, generation and epoch rejection are production wired with Stage 2 race and stale-event tests | no research mechanism gap; new providers must pass the same contract | C0-01 | HIGH | Preserve and reuse |
+| HEX-S2-02 | IMPLEMENTED + PROVEN | bounded candidate graphs, maximum-weight matching, retained alternatives, truncation and calibration reporting are production wired | corpus breadth is an implementation/data task; collision-preserving mechanism is present | C0-01 | MEDIUM | Preserve suggestion authority and candidate sets |
+
+`IMPLEMENTED + PROVEN` is scoped to the card mechanism and current locked tests. It is not a statement that the entire containing phase or every format/ISA profile is complete.
+
+## Mandatory source-class audit
+
+### A. Sail ecosystem, formal ISA and relaxed memory
+
+**Primary sources:** [Sail](https://github.com/rems-project/sail), [Sail Arm-A](https://github.com/rems-project/sail-arm), [RISC-V Sail](https://github.com/riscv/sail-riscv), [RISC-V RVWMO](https://docs.riscv.org/reference/isa/unpriv/rvwmo.html), [Isla](https://github.com/rems-project/isla), [Isla paper](https://www.repository.cam.ac.uk/handle/1810/323709), [ArchSem](https://github.com/rems-project/archsem), [ArchSem paper](https://www.cl.cam.ac.uk/~pes20/Stuff/2025-archsem-paper.pdf).
+
+- Sail supplies executable ISA definitions, generated emulators and proof-assistant output. ASL-derived Arm-A models cover current Arm-A profiles much more deeply than the older handwritten fragment. RISC-V International has adopted the RISC-V Sail model. Sail's x86 material remains a core user-mode fragment or a translated ACL2 model, so it cannot be treated as a complete x86 oracle.
+- Isla symbolically executes Sail and combines instruction semantics with Cat-style axiomatic memory models. It can produce per-instruction footprints and allowed outcomes for binary litmus tests. This covers atomics, acquire/release, barriers and fences in a way that sequential final-state differentials cannot.
+- ArchSem adds reusable Rocq semantics across Arm, RISC-V and x86. Its current repository documents unfinished extraction/CLI work and partiality concerns. It is research-grade proof infrastructure, not a browser dependency.
+- Undefined, unpredictable, constrained-unpredictable and reserved behavior must become explicit comparison masks or unsupported rows. A model version alone cannot silently choose one behavior.
+- Hex use: offline/CI oracle and corpus generator. MachineEffects remains the production runtime. Sail/Isla results are versioned by model commit, profile and solver/configuration identity.
+- Complementarity: Sail/Isla checks specification-level defined behavior and allowed relaxed-memory outcomes; rax-style hardware/QEMU runs expose model, toolchain and hardware disagreement. Neither side alone is final truth when they disagree.
+- ARM64 effect: CRITICAL. RISC-V effect: HIGH. x86 effect: MEDIUM because the public model coverage is not equivalent to a complete modern long-mode denominator.
+- Finding disposition: merge into HEX-ME-01. No new card.
+
+### B. Alive2 and translation validation
+
+**Primary sources:** [Alive2](https://github.com/AliveToolkit/alive2), [Alive2 PLDI 2021 paper](https://web.ist.utl.pt/nuno.lopes/pubs/alive2-pldi21.pdf), [LLVM undefined behavior documentation](https://llvm.org/docs/UndefinedBehavior.html).
+
+- Alive2 checks directional refinement of a candidate LLVM transformation with explicit treatment of poison, undef, memory and undefined behavior. It validates individual transformations rather than proving the optimizer implementation once for all inputs.
+- Current Hex already has bounded equivalence, exact translation eligibility, explicit symbolic outcomes and model validation. It does not yet expose a decompiler-pass adoption gate with refinement-aware UB/memory observables.
+- Hex use: validate risky simplification, constant propagation, algebraic rewrite, CFG rewrite and deobfuscation candidate before commit. A proof applies only to the declared slice, preconditions, observables and semantics version.
+- Timeout, unsupported translation, incomplete memory, inconsistent precondition or solver disagreement yields `UNKNOWN` and prevents candidate adoption.
+- ARM64 effect: HIGH because validation is architecture-neutral after exact MachineEffects to Semantic IR lifting.
+- Finding disposition: new HEX-C4-04. It extends C4-01/C4-03 and SYM-01 without proposing whole-decompiler verification.
+
+### C. Crucible, What4, GREASE and under-constrained execution
+
+**Primary sources:** [Crucible](https://github.com/GaloisInc/crucible), [What4](https://github.com/GaloisInc/what4), [GREASE](https://github.com/GaloisInc/grease), [GREASE refinement documentation](https://galoisinc.github.io/grease/refinement.html), [Under-Constrained Symbolic Execution paper](https://www.usenix.org/conference/usenixsecurity15/technical-sessions/presentation/ramos).
+
+- The useful mechanism is arbitrary function entry with unconstrained registers/arguments and iterative precondition or pointer-shape refinement. It avoids whole-program reachability as the admission condition for active-function analysis.
+- Compositionality comes from explicit preconditions and summaries. A finding under unconstrained entry can be infeasible under every real caller, so it is candidate evidence until caller/precondition validation succeeds.
+- Current Hex already has active-function `FunctionSandbox`, symbolic arguments/fields, bounded paths/loops/steps and explicit unsupported results. The new value is richer memory-shape refinement and solver abstraction, which fits existing SYM cards.
+- Browser tier: keep the current light executor and small exact solver. Remote/offline tier: richer Crucible/What4/GREASE-style execution. No native Haskell/solver stack enters the iPad runtime.
+- GREASE's current documented scope is Linux ELF on 32-bit ARM, PowerPC and x86-64. It does not establish PE, Mach-O, ARM64, JIT/self-modifying or multithreaded support.
+- ARM64 effect: MEDIUM for the mechanism. Direct current GREASE ARM64 applicability is NONE.
+- Finding disposition: merge into HEX-SYM-01/02/03. No new card.
+
+### D. DDisasm, GTIRB and rewriting
+
+**Primary sources:** [DDisasm](https://github.com/GrammaTech/ddisasm), [GTIRB](https://github.com/GrammaTech/gtirb), [GTIRB documentation](https://grammatech.github.io/gtirb/), [gtirb-rewriting](https://github.com/GrammaTech/gtirb-rewriting), [RetroWrite](https://github.com/HexHive/retrowrite), [Datalog Disassembly paper](https://www.usenix.org/conference/usenixsecurity20/presentation/flores-montoya), [weighted-interval disassembly paper](https://arxiv.org/abs/2505.01536).
+
+- DDisasm uses superset decoding and global Datalog inference to recover code/data, functions, symbols and CFG before emitting a reassemblable GTIRB representation. This mechanism is distinct from LIEF's format parse/write surface.
+- GTIRB keeps byte intervals, symbolic expressions, blocks and auxiliary metadata as an interchange/rewrite IR. It does not encode instruction semantics. `gtirb-rewriting` adds constrained patches, clobbers and scratch-register requirements.
+- Weighted interval scheduling ranks mutually conflicting decode candidates after superset exploration. Learned weights and interval optimization remain heuristic. The losing candidates and collision evidence must be retained, and selection cannot mint exact code truth.
+- Format boundary: DDisasm covers ELF/PE and multiple architectures including ARM64. `gtirb-rewriting` documents ARM64 support for ELF, not Apple Mach-O. RetroWrite's x86-64 and AArch64 paths have different restrictions. None supplies Hex's required Mach-O/arm64e/PAC/signing closure.
+- Hex use: an ambiguity-preserving discovery and reassembly evidence layer connected to current binary identity, Semantic IR, EvidenceGraph and rebuild transactions. DDisasm's AGPL-3.0 and `gtirb-rewriting`'s GPLv3 are product-integration boundaries.
+- ARM64 effect: HIGH, with CRITICAL relevance to Apple workflows only after a native Mach-O implementation and proof corpus exists.
+- Finding disposition: new HEX-X-03.
+
+### E. egg, egglog and equality saturation
+
+**Primary sources:** [egg](https://github.com/egraphs-good/egg), [egg paper](https://arxiv.org/abs/2004.03082), [egglog](https://github.com/egraphs-good/egglog), [egglog paper](https://ztatlock.net/pubs/2023-pldi-egglog/2023-pldi-egglog.pdf), [Equality Saturation Checker](https://isa-afp.org/entries/Equality_Saturation_Checker.html).
+
+- E-graphs compactly retain many equivalent expressions. Equality saturation reduces rewrite-order dependence, and extraction chooses a candidate under a cost model.
+- E-class membership is only as sound as the rewrite rules, widths, side conditions and effect model. Cost-minimal extraction does not prove canonical semantics.
+- Hex use: generate expression-canonicalization, compiler-idiom, MBA and deobfuscation candidates inside a bounded region. Adoption requires independent HEX-C4-04 refinement/equivalence proof.
+- Enforce node, e-class, iteration, time and memory budgets. Browser use begins with active-function pure bitvector slices. Large MBA saturation stays remote/offline until physical iPad memory and cancellation gates pass.
+- ARM64 effect: MEDIUM because the mechanism is mostly architecture-neutral after exact lifting.
+- Finding disposition: new HEX-C4-05. Direct egg/egglog browser dependency is DO-NOT-ADOPT until license, size and benchmark evidence pass.
+
+### F. Neural and LLM decompilation
+
+**Primary sources:** [LLM4Decompile](https://arxiv.org/abs/2403.05286), [LLM4Decompile repository](https://github.com/albertan017/LLM4Decompile), [Decompile-Bench](https://proceedings.neurips.cc/paper_files/paper/2025/hash/079cf13ae174c31f148207d94d213bdc-Abstract-Datasets_and_Benchmarks_Track.html), [DecompileBench](https://aclanthology.org/2025.findings-acl.1194/), [SK2Decompile](https://arxiv.org/abs/2509.22114), [fine-grained neural-decompiler equivalence](https://arxiv.org/abs/2501.04811), [Decaf](https://arxiv.org/abs/2605.11501).
+
+- LLM4Decompile demonstrates binary-to-source and deterministic-decompiler refinement models, principally on Linux x86-64 GCC O0-O3 data. Decompile-Bench contributes large binary/source pairs and leakage-aware evaluation subsets. SK2Decompile separates structural skeleton recovery from identifier naming. This separation is useful even when the model output is never authoritative.
+- Published re-executability is bounded by test inputs and often omits global state, heap, exceptional behavior or UB. Text similarity, CodeBLEU, LLM-as-judge and model confidence do not prove semantic equivalence.
+- 2025-2026 work adds compiler-feedback search and instruction-level alignment. Those mechanisms improve candidate ranking and diagnostics, and merge into C0-01/C4-04. They do not make model output canonical truth.
+- Hex use is limited to candidate identifiers, type/readability hints, explanations, ranking and benchmark corpus. Every suggestion carries model, prompt, input artifact and snapshot identity. Exact promotion needs non-LLM evidence under the ordinary authority graph.
+- Architecture boundary: the studied corpora are dominated by C/C++ and common x86/ARM compiler settings. Apple arm64e, Swift/ObjC metadata, PAC and full multi-architecture coverage are not established by aggregate benchmark scores.
+- Browser boundary: local small models require a separate measured budget and license review; remote inference is optional and cannot block canonical local analysis.
+- ARM64 effect: LOW for semantic truth, MEDIUM for readability/corpus expansion.
+- Finding disposition: merge corpus work into HEX-C0-01 and suggestion UX into the existing AI/readability lane. No new P0/P1 card.
+
+## Source-universe audit outside the mandatory classes
+
+| Adjacent source class | Primary examples | Result for Hex | Finding disposition |
+|---|---|---|---|
+| Separation logic, bi-abduction and frame inference | compositional shape analysis and function summaries | minimal heap preconditions and frame summaries strengthen complete return/effect summaries, but require source-level assumptions that binaries often cannot prove | merge C1-02; no new card |
+| Pointer provenance and capability models | [CHERI specification](https://github.com/CTSRD-CHERI/cheri-specification), PNVI/CHERI memory-model work | useful negative lesson: source-language or capability provenance cannot be projected onto ordinary binaries from names or equal addresses | merge C1-03; DO-NOT-ADOPT as generic exact alias authority |
+| Compiler fuzzing and metamorphic testing | [EMI project](https://people.inf.ethz.ch/suz/emi/index.html), [EMI paper](https://www.cs.ucdavis.edu/~su/publications/emi.pdf) | equivalent variants, seeded fuzz and reducer loops strengthen corpus construction; compiler agreement is still not ground truth | merge C0-01 and ME-01 |
+| Verified binary lifting and proof certificates | [Scalable Validation of Binary Lifters](https://sushant94.me/publications/20pldi.pdf), [formally verified lifting](https://ssrg.ece.vt.edu/papers/pldi22.pdf), [IsaBIL](https://drops.dagstuhl.de/entities/document/10.4230/LIPIcs.ECOOP.2025.14) | validates the lift and records proof obligations; current work has architecture and trusted-lifter boundaries | merge ME-01, C4-04 and X-03 |
+| ABI, unwind and debug validation | [DWARF standard](https://dwarfstd.org/), platform ABI specifications, runtime repositories | exact platform/version identity is mandatory; metadata completeness is evidence, not automatic authority | merge C3-02, C3-03 and X-02 |
+| Superoptimization and enumerative search | [STOKE paper](https://arxiv.org/abs/1211.0557) | expands candidate space, with correctness determined by a separate verifier and declared preconditions | merge C4-05 and C4-04 |
+
+No additional source class above satisfies all new-finding criteria after the three new cards below are admitted. In particular, project novelty, a new implementation option, or a stronger test generator alone does not create a new finding.
+
+## New finding cards
+
+### HEX-C4-04: Pass-local refinement and equivalence validation
+
+- **ID:** HEX-C4-04
+- **Priority:** P1
+- **Title:** Pass-local refinement and equivalence validation
+- **Problem:** a rewrite may satisfy local pattern preconditions and still change behavior through width, poison-like undefined state, memory, exceptional control or omitted observables.
+- **Current Hex state:** PARTIALLY IMPLEMENTED. `js/symbolic/verify/equivalence.js` provides bounded equivalence, translation eligibility, input correspondence, precondition consistency, model validation and explicit unknown results. Phase 8 transactions provide the adoption boundary. Refinement-aware pass wiring and complete UB/memory observables are not present.
+- **External evidence:** Alive2 demonstrates per-transformation refinement validation with explicit poison, undef, memory and UB semantics. Binary-lifter validation shows that instruction and block translations can be compared by symbolic summaries.
+- **Mechanism:** snapshot before state and candidate after state; declare preconditions and observable state; translate both through the same versioned Semantic IR semantics; ask whether after refines before, or whether they are equivalent when bidirectional equality is required; adopt only on an eligible proof result.
+- **Why Hex should care:** one validator protects constant folding, algebraic simplification, CFG structuring, deobfuscation and future rewrite families. It lowers the cost of expanding C4 without weakening raw fallback.
+- **Exact integration point:** Phase 8 pass transaction before commit; `js/symbolic/verify/**`; symbolic translation support matrix; transform provenance ledger; current solver session/registry.
+- **Soundness boundary:** proof covers only declared inputs, memory regions, effects, UB assumptions and bounded control. Missing observable, unsupported translation, inconsistent precondition, timeout or solver uncertainty yields no adoption. Equivalence of rendered text is irrelevant.
+- **Failure modes:** vacuous preconditions, omitted memory/exception/PAC state, wrong input correspondence, treating bounded loops as unbounded proof, solver/backend disagreement, stale semantics identity.
+- **Acceptance tests:** equivalent and non-equivalent width cases; poison/undefined-state analogue; exact and omitted memory region; CFG edge deletion; inconsistent precondition; timeout/cancel/unsupported; corrupted SAT model; stale snapshot; differential agreement with exhaustive backend in its tractable domain.
+- **Benchmark / denominator:** every risky Phase 8 rewrite kind and every target-width/operator family has an `adopted`, `refuted` or explicit `unknown/unsupported` row; semantic mismatch is zero; unknown never commits.
+- **iPad/WebKit constraints:** pure small Bool/BV slices may use the local exact backend. Large bitvectors, memory arrays and loop-heavy checks use optional WASM/remote tiers. Rewrite latency has a per-function budget and cancellation gate.
+- **Dependencies:** C4-01, C4-03, SYM-01, ME-01; memory-bearing proofs additionally depend on C2-01 and SYM-02.
+- **Expected downstream leverage:** HIGH across C4, SYM and rebuild validation.
+- **Implementation disposition:** ADOPT incrementally. Start with pure bitvector rewrites already expressible by the current DAG.
+- **ARM64 effect:** HIGH.
+- **Sources:** [Alive2](https://github.com/AliveToolkit/alive2), [Alive2 PLDI paper](https://web.ist.utl.pt/nuno.lopes/pubs/alive2-pldi21.pdf), [LLVM UB](https://llvm.org/docs/UndefinedBehavior.html), [Scalable Validation of Binary Lifters](https://sushant94.me/publications/20pldi.pdf).
+
+### HEX-C4-05: Proof-gated equality-saturation candidate generation
+
+- **ID:** HEX-C4-05
+- **Priority:** P1
+- **Title:** Proof-gated equality-saturation candidate generation
+- **Problem:** ordered rewrite pipelines miss useful canonical forms and produce rule-order-dependent MBA/idiom simplification, while aggressive rule sets can silently merge non-equivalent terms.
+- **Current Hex state:** NOT STARTED. Current Phase 8 has staged passes and individual rewrite rules, but no e-graph/equality-saturation candidate layer.
+- **External evidence:** egg provides rebuilding and e-class analyses for scalable equality saturation; egglog combines equality reasoning with Datalog-style facts; formal certificate checking work confirms that independent checking is possible for restricted explanation formats.
+- **Mechanism:** build a bounded e-graph for a pure Semantic IR expression region; apply width- and side-condition-aware candidate rules; extract a small Pareto set by readability/cost; send each candidate to HEX-C4-04; publish only a proved candidate.
+- **Why Hex should care:** reduces rewrite-order dependence and supplies better canonicalization, compiler-idiom and MBA candidates while keeping the semantic authority outside the generator.
+- **Exact integration point:** a Phase 8 candidate-only pass after exact-width scalar facts and before final projection; transform ledger records rule set, e-graph budget, extraction cost and C4-04 proof ID.
+- **Soundness boundary:** e-class membership and extraction cost are not proof. Effectful expressions, memory, calls, traps, floating point and unsupported widths remain outside the initial domain. Candidate generation never mutates canonical Semantic IR directly.
+- **Failure modes:** unsound rule, missing width/shift side condition, saturation explosion, extraction chooses an unreadable or expensive term, proof timeout, provenance collapse.
+- **Acceptance tests:** rule-order metamorphism; known MBA equivalent/non-equivalent corpus; width wraparound; shift boundary; node/e-class/time/memory caps; timeout yields unchanged IR; proof IDs and origins survive extraction; deterministic replay.
+- **Benchmark / denominator:** frozen expression families by width/operator/idiom/obfuscation class; semantic mismatch zero; adopted-candidate proof coverage; node/e-class peak; latency and peak memory; readability metrics remain secondary.
+- **iPad/WebKit constraints:** initial domain is an active-function bounded pure-expression slice. Hard caps are mandatory. Large saturation runs remain remote/offline until physical iPad evidence passes.
+- **Dependencies:** C4-01, C2-02, C4-04, SYM-01.
+- **Expected downstream leverage:** MEDIUM to HIGH for C4 and deobfuscation.
+- **Implementation disposition:** ADOPT as an optional candidate generator. DO-NOT-ADOPT egg/egglog as a canonical semantic authority or mandatory browser dependency.
+- **ARM64 effect:** MEDIUM.
+- **Sources:** [egg](https://github.com/egraphs-good/egg), [egg paper](https://arxiv.org/abs/2004.03082), [egglog](https://github.com/egraphs-good/egglog), [egglog paper](https://ztatlock.net/pubs/2023-pldi-egglog/2023-pldi-egglog.pdf), [Equality Saturation Checker](https://isa-afp.org/entries/Equality_Saturation_Checker.html).
+
+### HEX-X-03: Ambiguity-preserving discovery and reassemblable IR
+
+- **ID:** HEX-X-03
+- **Priority:** P1
+- **Title:** Ambiguity-preserving discovery and reassemblable IR
+- **Problem:** function/code/data discovery, relocation symbolization and rewrite planning are coupled by byte-interval choices. A single early heuristic choice loses overlap/collision evidence and can make later reassembly appear exact.
+- **Current Hex state:** PARTIALLY IMPLEMENTED. Hex has binary format parsers, function discovery, fingerprints, Semantic IR, evidence identity and validated rebuild transactions. It lacks one discovery artifact that retains conflicting byte intervals, code/data/function candidates, jump-table evidence and symbolic relocation expressions through rewrite planning.
+- **External evidence:** DDisasm performs superset decode plus global Datalog inference and emits GTIRB; GTIRB represents byte intervals, blocks, symbols and symbolic expressions for reassembly; weighted-interval research exposes candidate-selection mechanics; RetroWrite demonstrates architecture-specific reassembly tradeoffs.
+- **Mechanism:** enumerate bounded candidates; retain overlap and provenance edges; rank or globally select a working view without deleting alternatives; bind selected blocks and symbolic expressions to immutable input bytes and relocation identities; require independent reparse and semantic validation for rebuilt output.
+- **Why Hex should care:** improves function discovery, jump-table recovery, code/data ambiguity handling and rebuild reliability through one evidence chain. It is distinct from LIEF-style container writing.
+- **Exact integration point:** current binary/function discovery producers; EvidenceGraph; Semantic IR origin mapping; recognition candidate sets; `js/rebuild/transaction-v2.js` planning and validation.
+- **Soundness boundary:** WIS scores, Datalog rules and fingerprints are candidate evidence. Overlapping or losing candidates remain visible. A selected view becomes exact only from format/relocation/decoder proof. Reassemblability does not imply equivalent execution.
+- **Failure modes:** hidden inline data, prefix-overlap instruction streams, indirect jump-table miss, relocation stripped or misclassified, exception/unwind range loss, architecture-specific PC-relative encoding, Mach-O chained fixup/PAC/signing drift.
+- **Acceptance tests:** mixed code/data; deliberate overlap; adjacent functions; jump tables; stripped and relocated ELF/PE/Mach-O; ARM64 literal pools and ADRP pairs; arm64e authenticated fixups; candidate permutation determinism; reassembly reopen plus independent parser; semantic differential on changed regions.
+- **Benchmark / denominator:** format/architecture matrix with every byte classified as exact candidate, ambiguous set, data, padding or unsupported; function-boundary precision/recall; collision retention; relocation/jump-table recall; rebuild independent-oracle success; false exact selection zero.
+- **iPad/WebKit constraints:** local candidate enumeration and interval scheduling must be bounded and cancellable. Large Datalog/global solving may be offline/remote. GTIRB protobuf and Python rewriting stacks are references, not mandatory runtime dependencies.
+- **Dependencies:** C0-01, ME-01, X-01; Apple promotion additionally depends on X-02.
+- **Expected downstream leverage:** HIGH across discovery, CFG, diff and rebuild.
+- **Implementation disposition:** ADOPT the mechanism through Hex-owned versioned artifacts. DO-NOT-ADOPT direct GPL/runtime dependencies or an ELF-only ARM64 claim for Mach-O.
+- **ARM64 effect:** HIGH, with CRITICAL Apple relevance after Mach-O proof.
+- **Sources:** [DDisasm](https://github.com/GrammaTech/ddisasm), [GTIRB](https://github.com/GrammaTech/gtirb), [gtirb-rewriting](https://github.com/GrammaTech/gtirb-rewriting), [RetroWrite](https://github.com/HexHive/retrowrite), [Datalog Disassembly](https://www.usenix.org/conference/usenixsecurity20/presentation/flores-montoya), [weighted-interval disassembly](https://arxiv.org/abs/2505.01536).
+
+## DO-NOT-ADOPT decisions
+
+| Candidate | Decision | Reason |
+|---|---|---|
+| Sail/Isla/ArchSem in the browser production runtime | DO-NOT-ADOPT | CI/offline oracle gains the semantic benefit without solver/native footprint, model update cost or duplicate production semantics |
+| Source-language/CHERI provenance as exact alias truth for ordinary binaries | DO-NOT-ADOPT | binary evidence does not establish the source allocation/provenance assumptions; this would increase false `NoAlias` risk |
+| Whole-program Crucible/GREASE as a normal interactive prerequisite | DO-NOT-ADOPT | path, memory and solver budgets conflict with active-function-first iPad UX; remote function-local tier is sufficient |
+| GTIRB/gtirb-rewriting as the canonical Hex IR | DO-NOT-ADOPT | format/architecture gaps, licensing/runtime cost and mismatch with Hex Semantic IR/EvidenceGraph; adopt the discovery artifact mechanism |
+| Equality saturation as proof or canonical semantics | DO-NOT-ADOPT | e-graphs preserve asserted equalities and cost choices; independent validation remains required |
+| LLM output, confidence, re-execution score or LLM-as-judge as semantic authority | DO-NOT-ADOPT | hallucination, incomplete observables, corpus leakage and architecture gaps prevent exact promotion |
+| Competitor consensus as ground truth | DO-NOT-ADOPT | correlated bugs and proprietary unknowns remain possible; use source/spec/same-binary truth |
+
+## Updated priority order
+
+Registry totals are **P0: 10** and **P1: 13**. This audit adds **0 P0** and **3 P1** findings. The three new cards are HEX-C4-04, HEX-C4-05 and HEX-X-03. Implemented and proven mechanisms remain in the registry as non-regression gates. Active backlog totals are **P0: 8** and **P1: 11** after excluding C4-01, X-01, S2-01 and S2-02 from new implementation work.
+
+The final leverage order is:
+
+1. C0-01 measurement authority.
+2. ME-01 sequential plus relaxed-memory semantic oracle.
+3. C1-03 exact provenance roots and removal of spelling-derived exactness.
+4. C1-01 loaded-pointer boundary facts and C1-02 return-pointer summaries.
+5. C2-01 byte-exact memory/value forwarding, then C2-02 cheap value domains.
+6. C3-02 ABI closure, then C3-01/C3-03 structural and metadata breadth.
+7. C4-03 provenance completion and C4-04 pass-local validation, then C4-02/C4-05.
+8. SYM-01/02 solver and memory tiers, then SYM-03 taint/deobfuscation.
+9. X-03 discovery/reassembly artifact and X-02 Apple closure.
+10. Query/UI/AI consumes the proven artifacts and suggestions.
+
+C4-01, X-01, S2-01 and S2-02 stay mandatory gates at every dependent merge even though their mechanisms need no new implementation task.
+
+## Implementation dependency DAG
+
+```text
+C0-01
+  -> ME-01
+  -> every benchmark and acceptance denominator
+
+ME-01 -> C1-03 -> C1-01 -> C2-01 -> C2-02
+             \-> C1-02 ----/       \-> C3-01
+                              \-----> C3-02 -> C3-03 -> X-02
+
+C4-01 [proven gate] -> C4-03 -> C4-04 -> C4-02
+                                  |       \-> C4-05 -> SYM-03
+SYM-01 ---------------------------+
+  \-> SYM-02 -> memory-bearing C4-04 proofs
+
+ME-01 -> X-03 -> X-02
+X-01 [proven gate] -> every X-03/X-02 publication
+S2-01 [proven gate] -> remote oracle/solver/runtime evidence
+S2-02 [proven gate] -> candidate recognition/diff consumers
+```
+
+No decompiler, solver or AI lane may bypass ME/C1/C2/C3 authority by inferring equivalent facts from rendered text.
+
+## Final implementation backlog
+
+| Task ID | Priority | Dependency | Production files likely affected | Proof/tests required | Benchmark denominator | Completion condition | Parallelizable with | Must wait for | Complexity |
+|---|---|---|---|---|---|---|---|---|---|
+| FR-C0-01A | P0 | none | `tools/validation/competitive/**`, Phase 7/8 corpus manifests | strip-only twin identity positive/negative, toolchain drift rejection, deterministic manifest | frozen source/toolchain/artifact matrix | every scored binary has one source and same-artifact debug/stripped identity | FR-ME-01A research tooling | none | M |
+| FR-ME-01A | P0 | FR-C0-01A | `tools/validation/machine-effects/**`, fixture manifests | Sail/Isla footprint differential, model identity, undefined mask, mismatch minimization | ARM64/arm64e and RV64 locked instruction families | zero unexplained defined-state mismatch; unsupported rows explicit | FR-C1-03A after interface freeze | C0 manifest contract | L |
+| FR-ME-01B | P0 | FR-ME-01A | litmus corpus/validation tooling | acquire/release/barrier/atomic outcome sets, hardware/QEMU triangulation | locked relaxed-memory litmus families | Hex effects admit all and only modeled outcomes within declared scope | FR-C3-02A | ME oracle schema | XL |
+| FR-C1-03A | P0 | FR-C0-01A, FR-ME-01A | `js/analysis/alias/**`, `js/analysis/pointsto/**` | remove name-based exactness, closest alias negatives, rename metamorphism, false No/MustAlias gates | Phase 7 exact alias corpus plus heap/global/TLS adversarial rows | no exact result depends on spelling; false exactness zero | FR-C3-02A | root evidence schema | M |
+| FR-C1-01A | P0 | FR-C1-03A | points-to local analysis, MemorySSA query/compat orchestration | exact store/load positive; may/unknown/partial/atomic negatives; snapshot mismatch; convergence | pointer load boundary matrix by width/endian/effect | exact pointer recovered only from one complete reaching-store proof | FR-C1-02A | C1-03 | L |
+| FR-C1-02A | P0 | FR-C1-03A | `js/analysis/summary/**`, points-to call consumer | direct/wrapper/recursive returns, exhaustive/incomplete indirect sets, schema/digest mutation | return-root kind x recursion x target-completeness matrix | caller precision improves; incomplete summary always joins unknown | FR-C1-01A | C1-03 | L |
+| FR-C2-01A | P0 | FR-C1-01A, FR-C1-03A | MemorySSA queries, Phase 8 value-number/forwarding consumer | full and partial coverage, endian, overlap, unknown call/store, volatile/atomic | byte coverage x width x clobber matrix | proof object authorizes every forwarded byte; semantic mismatch zero | none | C1 boundary facts | L |
+| FR-C2-02A | P1 | FR-C2-01A | Phase 8 range/SCCP facts | known-bit/congruence lattice laws, wrapped operations, branch-edge facts, widening termination | width/operator/branch/loop matrix | monotone over-approximation and strict held-out precision gain | FR-C3-03A | C2-01 | L |
+| FR-C3-02A | P0 | FR-ME-01A, FR-C1-02A | `js/targets/abi/**`, call prototype consumers | AAPCS64/Darwin/SysV/Win matrices, HFA/HVA, sret, varargs, thunks, conflicting calls | locked ABI aggregate/prototype matrix | no false exact prototype and all matrix cells terminal | FR-C1-01A | ME and return summaries | XL |
+| FR-C3-01A | P1 | FR-C2-01A, FR-C3-02A | `js/analysis/types/**` | recursive list, pointer/int conflict, union overlap, array stride, budget/cancel | structural type corpus by recursive construct | ambiguity retained; exact precision unchanged; recall improves | FR-C3-03A | C2/C3 ABI facts | XL |
+| FR-C3-03A | P1 | FR-C3-02A | debug/language/Apple metadata providers | version drift, unknown kind, truncated/cyclic metadata, provider identity mismatch | ecosystem x compiler/runtime version matrix | every provider is versioned and incomplete data cannot promote exactness | FR-C2-02A | ABI contract | XL |
+| FR-C4-03A | P1 | C4-01 proven gate, FR-C2-01A | Phase 8 projection, provenance, query/UI mapping | CSE/DCE/phi/switch/struct field many-to-one mappings, stale snapshot | every rendered entity and removed transform class | provenance loss zero and reverse navigation complete | FR-SYM-01A | C2 facts | L |
+| FR-SYM-01A | P0 | FR-ME-01A | symbolic solver adapters/registry/session | 32/64-bit BV, SAT model validation, UNSAT differential, timeout/cancel/late result, physical iPad | solver capability x width x runtime tier | exact floor retained; optional tier meets identity and resource gates | FR-C4-03A | ME semantics | XL |
+| FR-SYM-02A | P1 | FR-SYM-01A, FR-C2-01A | symbolic Expr sorts, translator, memory state | concrete parity, array index, partial writes, symbolic alias, endian, cancellation | memory mode x width x alias class | exact escalation or explicit unknown, with bounded resources | FR-X-03A | solver and memory semantics | XL |
+| FR-C4-04A | P1 | C4-01 proven gate, FR-C4-03A, FR-SYM-01A | Phase 8 transaction and symbolic verify integration | pure BV equivalent/refuted/unknown, stale proof, model corruption | risky scalar rewrite registry | no candidate commits without eligible proof | FR-X-03A | C4 provenance and solver | L |
+| FR-C4-04B | P1 | FR-C4-04A, FR-SYM-02A | symbolic memory/effects translation | memory, CFG, exception and bounded-loop cases | memory/CFG rewrite registry | declared observables complete and semantic mismatch zero | none | scalar validator and symbolic memory | XL |
+| FR-C4-02A | P1 | FR-C4-04A | Phase 8 structuring | irreducible, exception/unwind, switch fallthrough, flattened dispatcher | CFG region/edge-kind matrix | transformed regions validate; others retain residual jumps | FR-C4-05A | validator | L |
+| FR-C4-05A | P1 | FR-C2-02A, FR-C4-04A | new bounded Phase 8 candidate module | rule-order metamorphism, MBA positive/negative, caps, deterministic extraction | pure expression family x width | every adopted term has independent proof; budgets always terminate | FR-C4-02A | value domain and validator | XL |
+| FR-SYM-03A | P1 | FR-SYM-02A, FR-C4-04A | symbolic taint/deobf and EvidenceGraph projection | explicit/implicit dependency, source/sink/sanitizer versions, opaque predicate, timeout | taint/deobf source-sink and MBA corpus | heuristic facts remain suggestions; proved rewrites alone commit | FR-X-02A | symbolic memory and validator | XL |
+| FR-X-03A | P1 | FR-C0-01A, FR-ME-01A, X-01 proven gate | binary/function discovery, evidence artifacts, rebuild planning | code/data/overlap/jump-table/relocation rows, determinism, independent reparse | format x architecture discovery matrix | alternatives retained; false exact selection zero | FR-C4-04A | C0/ME contracts | XL |
+| FR-X-02A | P1 | FR-C3-03A, FR-X-03A, X-01 proven gate | Mach-O/dyld/fixup/Apple metadata/rebuild providers | OS/toolchain versions, chained fixups, arm64e PAC/auth, signing consequence | Apple format x metadata x architecture matrix | unknown versions stay partial; rebuilt output independently validated | FR-SYM-03A | metadata and discovery artifacts | XL |
+
+Completed gates C4-01, X-01, S2-01 and S2-02 need regression ownership, not new feature PRs. Each backlog task is intentionally smaller than a whole research finding where a sound contract boundary exists.
+
+## Research saturation evidence
+
+### Counter reset
+
+The mandatory-source audit produced three mechanisms that could not be absorbed without losing a distinct integration/acceptance boundary:
+
+- HEX-C4-04 pass-local refinement validation.
+- HEX-C4-05 proof-gated equality-saturation candidate generation.
+- HEX-X-03 ambiguity-preserving discovery and reassemblable IR.
+
+After adding those cards and their dependencies, the saturation counter was reset to zero.
+
+### Independent discovery pass 1
+
+Search universe changed from reverse-engineering projects to separation logic, memory provenance, compiler fuzzing/metamorphic testing and ABI/debug verification. Citation chains included CHERI/PNVI, bi-abduction, EMI/Csmith-style validation and debug/unwind standards.
+
+Results:
+
+- compositional heap footprints and frame inference strengthen C1-02 summary design;
+- provenance research strengthens the prohibition on name-derived C1-03 exactness;
+- EMI/metamorphic generation strengthens C0-01/ME-01 corpus construction;
+- ABI/debug validation strengthens C3-02/C3-03.
+
+All have concrete value, but each is a mechanism option or soundness constraint inside an existing card. **NEW P0/P1 MECHANISMS = 0.**
+
+### Independent discovery pass 2
+
+Search universe changed again to linker/relocation/reassembly correctness, verified lifting/proof certificates, binary Hoare/incorrectness logic, superoptimization and cross-level compiler/hardware refinement. Citation chains and competitor groups were independent from pass 1.
+
+Results:
+
+- verified lifting and certificates strengthen ME-01, C4-04 and X-03;
+- linker/reassembly proof strengthens X-01/X-03;
+- superoptimization is another candidate generator under C4-04/C4-05;
+- binary correctness/incorrectness logic is a remote proof tier, not an interactive canonical engine.
+
+No result introduced a distinct current-Hex gap with a new integration point, acceptance denominator and failure boundary beyond the admitted cards. **NEW P0/P1 MECHANISMS = 0.**
+
+Two consecutive independent zero-mechanism passes were therefore observed after the reset.
+
+## Self-review round 1: research completeness
+
+- Sail was evaluated as executable sequential semantics, instruction-footprint oracle and relaxed-memory litmus oracle. Production embedding was evaluated separately and rejected.
+- Alive2 was evaluated as a methodology for individual transformation refinement, including UB/memory boundaries, rather than as an LLVM-only product dependency.
+- Crucible/GREASE arbitrary-function entry and precondition refinement were mapped to the current active-function sandbox and symbolic tiers.
+- DDisasm/GTIRB discovery/reassemblability was kept distinct from LIEF container writing.
+- Equality saturation was treated as candidate-set construction with proof-gated extraction.
+- Neural output remains suggestion/corpus/ranking evidence and never semantic authority.
+- Every new and updated card has an ARM64 effect classification.
+- CURRENT source and tests were checked before assigning status.
+
+## Self-review round 2: soundness
+
+- Competitor output is diagnostic only.
+- No proprietary IDA/Hex-Rays or Binary Ninja core is described as source-reviewed.
+- Heuristic root names, WIS scores, recognizer confidence, e-graph membership and LLM confidence cannot mint exact facts.
+- C1-03 explicitly blocks current spelling-derived `NoAlias` behavior before downstream expansion.
+- Solver timeout, cancellation, unsupported translation and incomplete memory remain `UNKNOWN` or no-adoption.
+- Reassembly or writer success is insufficient without X-01 independent validation and, where changed semantics matter, C4-04 proof.
+- LLM re-execution and readability metrics remain separate from exact semantic proof.
+
+## Self-review round 3: source-universe and saturation
+
+- The historical saturation statement was invalidated as CURRENT evidence and was not reused.
+- Three mandatory-universe mechanisms were admitted and the counter was reset.
+- Pass 1 and pass 2 used different fields, terms and citation/competitor groups.
+- Each pass produced zero mechanisms satisfying all new-finding criteria.
+- New projects that only supplied another implementation option were merged into existing Sources/Implementation options.
+
+## Final research freeze
+
+Final registry:
+
+- P0 findings: 10 total, 0 new in this audit.
+- P1 findings: 13 total, 3 new in this audit.
+- Existing findings materially expanded: C0-01, ME-01, C1-02, C1-03, C3-03, C4-03, SYM-01/02/03, X-01, X-02.
+- DO-NOT-ADOPT decisions: 7 classes listed above.
+- ARM64-critical findings: ME-01, C1-03, C3-02, C3-03, X-01, X-02; X-03 becomes critical for the Apple path after Mach-O proof exists.
+- Production semantics changed during this research task: none.
+
+**FINAL VERDICT: RESEARCH_SATURATED_READY_FOR_IMPLEMENTATION**
