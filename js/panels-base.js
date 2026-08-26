@@ -21,6 +21,7 @@ import { explain, operandNotes, categoryLabel, isBranch, isCall } from './arm64.
 import { GLOSSARY, searchGlossary } from './glossary.js';
 import { CHAPTERS, loadProgress, saveProgress } from './learn.js';
 import { analyzeFunctionCached, describeFunction } from './analyze.js';
+import { makePinpointAnalyzer, makePinpointAccessScanner } from './ui/pinpoint-runtime.js';
 import { levelOf } from './blocks.js';
 import {
   functionStory, blockTitle, blockHeading, blockSummary, roleTag, buildOverlay,
@@ -1474,7 +1475,12 @@ export function showOverview(app) {
     }
     const box = progressBox(later, pick('中身を調べています…', 'Looking inside…'));
     let cancelled = false;
-    sheet.onClose = () => { cancelled = true; app.backend.cancelSearch(); app.backend.onScanProgress = null; };
+    const runController = new AbortController();
+    sheet.onClose = () => {
+      cancelled = true;
+      if (!runController.signal.aborted) runController.abort('analysis-sheet-closed');
+      app.backend.onScanProgress = null;
+    };
 
     prepare(app, box).then(async ({ strings, program, shapes }) => {
       if (cancelled || !sheet.root.isConnected) return;
@@ -1483,8 +1489,8 @@ export function showOverview(app) {
       const report = await autoAnalyze({
         strings, program, symbols: app.symbols, region, fields: app.fields,
         shapes, recognition,
-        analyze: makeAnalyzer(app, region),
-        scanAccess: makeAccessScanner(app, region),
+        analyze: makeAnalyzer(app, region, runController.signal),
+        scanAccess: makeAccessScanner(app, region, runController.signal),
         isCancelled: () => cancelled || !sheet.root.isConnected,
         onProgress: (p) => {
           box.set({ done: p.done, all: p.all });
@@ -1533,13 +1539,8 @@ function autoPhaseText(phase) {
  * 自動解析の特定用。位置をまとめて渡して、1 回の走査で全部の読み書きを取る。
  * 候補ごとにセクションを舐め直すと、数十 MB × 候補数になってしまうため。
  */
-function makeAccessScanner(app, region) {
-  if (!region) return null;
-  return async (list) => {
-    const offsets = (list || []).map((x) => ({ offset: x.offset, size: x.size || 0 }));
-    if (!offsets.length) return new Map();
-    return app.backend.fieldAccessMany(region.id, offsets);
-  };
+function makeAccessScanner(app, region, signal = null) {
+  return makePinpointAccessScanner(app, region, signal);
 }
 
 /**
@@ -1573,17 +1574,29 @@ async function pinnedFor(app, goal, ctx) {
     map: report ? report.map : null,
     // 形から立てた候補を開いて確かめるとき、参照している文言もそこで読む
     textAt: stringLookup(ctx.strings || []),
-    analyze: makeAnalyzer(app, region),
-    scanAccess: makeAccessScanner(app, region),
+    signal: ctx.signal || null,
+    analyze: makeAnalyzer(app, region, ctx.signal || null),
+    scanAccess: makeAccessScanner(app, region, ctx.signal || null),
     // 1 つの目的だけを見にきているので、ここでは予算を広く取る
     budget: { left: 48 },
     limit: 12,
     onProgress: (x) => { if (ctx.box) ctx.box.set(x); },
   };
+  let retryableFailure = false;
+  const attempt = async (operation) => {
+    try { return await operation(); }
+    catch (error) {
+      if (ctx.signal?.aborted || error?.name === 'AbortError' || error?.code === 'ABORT_ERR' ||
+          error?.code === 'pinpoint-analysis-timeout' || error?.code === 'pinpoint-access-timeout') {
+        retryableFailure = true;
+      }
+      return null;
+    }
+  };
   const p = (async () => {
     let pin = null;
     if (app.fields && app.fields.classCount) {
-      pin = await pinpointField(common).catch(() => null);
+      pin = await attempt(() => pinpointField(common));
     }
     /*
      * クラス表から決まらなかったなら、形と命令から「場所」を決めにいく。
@@ -1598,8 +1611,7 @@ async function pinnedFor(app, goal, ctx) {
     const undecided = (p) => !p || !p.top ||
       verdictRank(p.verdict) <= verdictRank(VERDICT.AMBIGUOUS);
     if (undecided(pin) && ((ctx.ranked && ctx.ranked.length) || (common.shapes && common.shapes.size))) {
-      const loc = await pinpointLocation(Object.assign({}, common, { ranked: ctx.ranked || [] }))
-        .catch(() => null);
+      const loc = await attempt(() => pinpointLocation(Object.assign({}, common, { ranked: ctx.ranked || [] })));
       if (beats(loc, pin)) pin = loc;
     }
     /*
@@ -1612,14 +1624,22 @@ async function pinnedFor(app, goal, ctx) {
      * 画面には「見つかりませんでした」しか出ていなかった。
      */
     if (undecided(pin) && ctx.ranked && ctx.ranked.length) {
-      const fn = await pinpointFunction(Object.assign({}, common, { ranked: ctx.ranked }))
-        .catch(() => null);
+      const fn = await attempt(() => pinpointFunction(Object.assign({}, common, { ranked: ctx.ranked })));
       if (beats(fn, pin)) pin = fn;
     }
     return pin;
   })();
   app.pinnedCache.set(key, p);
-  return p;
+  try {
+    const result = await p;
+    if ((ctx.signal?.aborted || retryableFailure) && app.pinnedCache.get(key) === p) {
+      app.pinnedCache.delete(key);
+    }
+    return result;
+  } catch (error) {
+    if (app.pinnedCache.get(key) === p) app.pinnedCache.delete(key);
+    throw error;
+  }
 }
 
 /**
@@ -1707,21 +1727,8 @@ async function fillPurpose(app, region, program, strings, rows) {
 }
 
 /** 自動解析の深掘り用。関数 1 つを解析してモデルだけ返す。 */
-function makeAnalyzer(app, region) {
-  if (!region || !app.store.get('canDisassemble')) return null;
-  const totalRows = Number(region.size / 4n);
-  return async (addr, end) => {
-    const startRow = Number((addr - region.vmAddr) / 4n);
-    if (!(startRow >= 0) || startRow >= totalRows) return null;
-    const endRow = end != null
-      ? Math.min(totalRows - 1, Number((end - region.vmAddr) / 4n) - 1)
-      : Math.min(totalRows - 1, startRow + 512);
-    if (endRow < startRow) return null;
-    // 速さのために文字列は読まない。あとで開いたときに読み足される。
-    const res = await analyzeFunctionCached(app.backend, region, startRow, endRow,
-      app.symbols, null, { texts: false });
-    return res.model;
-  };
+function makeAnalyzer(app, region, signal = null) {
+  return makePinpointAnalyzer(app, region, signal);
 }
 
 /* ────────────────────────────────────────────────────────────
@@ -3241,8 +3248,12 @@ export function showDataTable(app, schema) {
 export function showCandidates(app, goal) {
   if (!goal) return;
   app.lastGoal = goal;
+  const controller = new AbortController();
   const sheet = new Sheet(goalLabel(goal), {
-    onClose: () => { app.backend.cancelSearch(); app.backend.onScanProgress = null; },
+    onClose: () => {
+      if (!controller.signal.aborted) controller.abort('candidate-sheet-closed');
+      app.backend.onScanProgress = null;
+    },
   });
   const body = sheet.body;
   const box = progressBox(body, pick('調べています…', 'Working…'));
@@ -3264,6 +3275,7 @@ export function showCandidates(app, goal) {
     });
     const pin = await pinnedFor(app, goal, {
       strings, program, shapes, region, box, ranked: ranked.candidates,
+      signal: controller.signal,
     });
     box.done();
     if (!sheet.root.isConnected) return;
