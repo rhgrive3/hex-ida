@@ -56,6 +56,25 @@ const index = buildObjcRuntimeIndex(model);
   assert.equal(r.requirements[0].selector, 'coinCount');
 }
 {
+  const inheritedProtocolIndex = buildObjcRuntimeIndex({
+    classes: [
+      { name: 'NSObject', superName: null, methods: [], classMethods: [], protocols: [] },
+      { name: 'ProtocolChild', superName: 'NSObject', methods: [], classMethods: [], protocols: ['DerivedProtocol'] },
+    ],
+    protocols: [
+      { name: 'BaseProtocol', methods: [{ sel: 'baseRequirement', addr: null }] },
+      { name: 'DerivedProtocol', protocols: ['BaseProtocol'], methods: [] },
+    ],
+    categories: [],
+    runtimeCompleteness: { complete: true, categories: { complete: true } },
+  });
+  const r = resolveObjcDispatch(inheritedProtocolIndex, { receiverType: 'ProtocolChild *', selector: 'baseRequirement' });
+  assert.equal(r.resolved, null);
+  assert.equal(r.candidates.length, 0);
+  assert.equal(r.requirements.length, 1, 'requirements inherited through adopted protocols must remain visible');
+  assert.equal(r.requirements[0].className, 'BaseProtocol');
+}
+{
   const m = objcMessage(index, { receiver: 'player', receiverType: 'PlayerData *', selector: 'addCoins:', args: ['amount'] });
   assert.equal(m.text, '[player addCoins:amount]');
   assert.equal(m.dispatch.resolved?.imp, 0x2000n);
