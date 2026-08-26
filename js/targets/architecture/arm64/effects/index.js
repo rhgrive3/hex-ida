@@ -26,6 +26,7 @@ const ARM64_ADD_SUB_FAMILY_MNEMONICS = Object.freeze(new Set([
   'adc','adcs','sbc','sbcs','neg','negs','ngc','ngcs',
 ]));
 const ARM64_LOGICAL_IMMEDIATE_MNEMONICS = Object.freeze(new Set(['and','ands','orr','eor','tst']));
+const ARM64_LOGICAL_REGISTER_ONLY_MNEMONICS = Object.freeze(new Set(['bic','bics','orn','eon']));
 const ARM64_LITERAL_MEMORY_MNEMONICS = Object.freeze(new Set(['ldr','ldrsw','prfm']));
 const ARM64_MULTIPLY_DIVIDE_MNEMONICS = Object.freeze(new Set([
   'mul','mneg','smull','umull','smulh','umulh','sdiv','udiv',
@@ -118,6 +119,14 @@ function isPlainGpSource(operand) {
     && operand.extend == null;
 }
 
+function isLogicalShiftedGpSource(operand, widthBits) {
+  if (operand?.k !== 'reg' || !['gp','zr'].includes(String(operand.cls || '').toLowerCase()) || operand.extend != null) return false;
+  if (operand.shift == null) return true;
+  const kind = String(operand.shift.op || '').toLowerCase();
+  const amount = Number(operand.shift.amount ?? 0);
+  return ['lsl','lsr','asr','ror'].includes(kind) && Number.isInteger(amount) && amount >= 0 && amount < widthBits;
+}
+
 function addSubImmediateEncodingFailure(instruction) {
   const mnemonic = instructionMnemonic(instruction);
   if (!ARM64_ADD_SUB_FAMILY_MNEMONICS.has(mnemonic)) return null;
@@ -159,12 +168,26 @@ function flagEncodingFailure(instruction) {
 
 function logicalEncodingFailure(instruction) {
   const mnemonic = instructionMnemonic(instruction);
-  if (!ARM64_LOGICAL_IMMEDIATE_MNEMONICS.has(mnemonic)) return null;
+  const isImmediateCapable = ARM64_LOGICAL_IMMEDIATE_MNEMONICS.has(mnemonic);
+  const isRegisterOnly = ARM64_LOGICAL_REGISTER_ONLY_MNEMONICS.has(mnemonic) || mnemonic === 'mvn';
+  if (!isImmediateCapable && !isRegisterOnly) return null;
   const ops = Array.isArray(instruction?.ops) ? instruction.ops : [];
-  const rhs = mnemonic === 'tst' ? ops[1] : ops[2];
-  if (rhs?.k !== 'imm') return null;
   const widthBits = Number(ops[0]?.bits || 0);
-  return logicalImmediateEncodable(rhs, widthBits) ? null : `arm64-${mnemonic}-logical-immediate-unencodable`;
+  if (widthBits !== 32 && widthBits !== 64) return `arm64-${mnemonic}-width-unencodable`;
+
+  if (mnemonic === 'mvn') {
+    return isLogicalShiftedGpSource(ops[1], widthBits) ? null : 'arm64-mvn-source-register-required';
+  }
+
+  const lhs = mnemonic === 'tst' ? ops[0] : ops[1];
+  const rhs = mnemonic === 'tst' ? ops[1] : ops[2];
+  if (!isPlainGpSource(lhs)) return `arm64-${mnemonic}-lhs-register-required`;
+
+  if (rhs?.k === 'imm') {
+    if (!isImmediateCapable || !logicalImmediateEncodable(rhs, widthBits)) return `arm64-${mnemonic}-logical-immediate-unencodable`;
+    return null;
+  }
+  return isLogicalShiftedGpSource(rhs, widthBits) ? null : `arm64-${mnemonic}-rhs-register-required`;
 }
 
 function multiplyDivideEncodingFailure(instruction) {
