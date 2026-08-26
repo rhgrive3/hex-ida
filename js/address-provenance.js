@@ -48,14 +48,29 @@
       return true;
     }
 
-    // A linear scanner cannot discover a backward branch until after its target
-    // has already been visited. Callers that have a cheap control-flow prepass
-    // can therefore seed every direct branch entry here, making loop headers
-    // and other merge points provenance barriers on their first visit.
+    // Full branch entries are retained for the existing forward-target contract.
     const branchEntries = new Set(
       Array.from(opts.branchEntries || [], asBigInt)
         .filter((target) => target != null && inRange(target)),
     );
+
+    // A backward edge is discovered after its target was already visited by a
+    // linear scanner. The prepass can seed only the registers that may have
+    // been redefined on that loop path. This is strictly more precise than
+    // clearing every register at every back-edge target: unchanged bases remain
+    // valid, while loop-carried clobbers fail closed on the first visit.
+    const entryKills = new Map();
+    for (const item of opts.entryKills || []) {
+      if (!Array.isArray(item) || item.length < 2) continue;
+      const target = asBigInt(item[0]);
+      if (target == null || !inRange(target)) continue;
+      const regs = new Set();
+      for (const value of item[1] || []) {
+        const reg = Number(value);
+        if (Number.isInteger(reg) && reg >= 0 && reg < 32) regs.add(reg);
+      }
+      if (regs.size) entryKills.set(target, regs);
+    }
     let generation = 0;
 
     function clear() {
@@ -96,16 +111,27 @@
     function enter(pcValue) {
       const pc = asBigInt(pcValue);
       if (pc == null) return false;
-      let boundary = false;
+      let fullBoundary = false;
       while (startIndex < startCount) {
         const start = functionStarts[startIndex];
-        if (start < pc) { boundary = true; startIndex++; continue; }
-        if (start === pc) { boundary = true; startIndex++; }
+        if (start < pc) { fullBoundary = true; startIndex++; continue; }
+        if (start === pc) { fullBoundary = true; startIndex++; }
         break;
       }
-      if (branchEntries.delete(pc)) boundary = true;
-      if (boundary) clear();
-      return boundary;
+      if (branchEntries.delete(pc)) fullBoundary = true;
+      if (fullBoundary) {
+        clear();
+        entryKills.delete(pc);
+        return true;
+      }
+      const kills = entryKills.get(pc);
+      if (kills) {
+        for (const reg of kills) kill(reg);
+        entryKills.delete(pc);
+        generation++;
+        return true;
+      }
+      return false;
     }
 
     function killCallClobbered() {
@@ -147,7 +173,7 @@
     return {
       enter, note, base, kill, clear, control,
       get generation() { return generation; },
-      get pendingEntries() { return branchEntries.size; },
+      get pendingEntries() { return branchEntries.size + entryKills.size; },
       get pairWindow() { return window; },
     };
   }
