@@ -80,6 +80,22 @@ console.log('classic worker harness regression passed');
   });
   outOfRange.control(0, 0x1004n, K.CALL);
   assert.equal(outOfRange.pendingEntries, 0, 'out-of-range call targets must not create local scan boundaries');
+
+  // #1900: a prepass seeds only registers clobbered on a backward loop path.
+  const loopSafe = globalThis.AddressProvenance.create({
+    words,
+    functionStarts: [],
+    entryKills: [[0x1008n, [0]], [0x1200n, [19]]],
+    rangeStart: 0x1000n,
+    rangeEnd: 0x1100n,
+    pairWindow: 16,
+  });
+  loopSafe.note(0, 0x6000n, 0);
+  loopSafe.note(19, 0x7000n, 0);
+  assert.equal(loopSafe.pendingEntries, 1, 'only in-range preloaded loop kills are retained');
+  assert.equal(loopSafe.enter(0x1008n), true, 'preloaded backward target must be a first-visit provenance boundary');
+  assert.equal(loopSafe.base(0, 1), null, 'loop-clobbered base provenance must be invalidated');
+  assert.equal(loopSafe.base(19, 1), 0x7000n, 'unmodified base provenance must survive the loop merge');
 }
 
 function fileFromWords(name, words) {
@@ -143,6 +159,59 @@ function fileFromWords(name, words) {
   const shapes = await b.valueShapes(id);
   assert.equal(shapes.count, 2);
   assert.ok(Array.from(shapes.flags).every((f) => (f & 32) !== 0));
+}
+
+// #1900: a backward B.cond target is a merge point. Provenance from the
+// preheader survives only when the source GP register is unchanged by the loop.
+{
+  const straight = new NodeBackend();
+  const straightInfo = await straight.open(fileFromWords('straight-adrp-add.bin', [
+    0x90000000, // adrp x0, page(0)
+    0x91008001, // add x1, x0, #0x20
+    0xd503201f, // nop
+  ]));
+  const straightScan = await straight.scanProgram(straightInfo.raw.id);
+  assert.ok(
+    Array.from({ length: straightScan.refCount }, (_, i) => ({ from:straightScan.refFrom[i], to:straightScan.refTo[i] }))
+      .some((x) => x.from === 4n && x.to === 0x20n),
+    'straight-line ADRP+ADD must keep its exact reference',
+  );
+  const straightXrefs = await straight.xrefs({ regionId:straightInfo.raw.id, target:0x20n, limit:8 });
+  assert.ok(straightXrefs.results.some((x) => x.addr === 4n && x.kind === 'address'));
+
+  const unchangedLoop = new NodeBackend();
+  const unchangedInfo = await unchangedLoop.open(fileFromWords('loop-unchanged-base.bin', [
+    0x90000000, // adrp x0, page(0)
+    0xd503201f, // nop
+    0x91008001, // loop: add x1, x0, #0x20
+    0x54ffffe1, // b.ne loop (pc - 4); x0 is unchanged
+  ]));
+  const unchangedScan = await unchangedLoop.scanProgram(unchangedInfo.raw.id);
+  assert.ok(
+    Array.from({ length: unchangedScan.refCount }, (_, i) => ({ from:unchangedScan.refFrom[i], to:unchangedScan.refTo[i] }))
+      .some((x) => x.from === 8n && x.to === 0x20n),
+    'loop must preserve an address base that no back-edge path redefines',
+  );
+
+  const loop = new NodeBackend();
+  const loopInfo = await loop.open(fileFromWords('loop-clobbered-base.bin', [
+    0x90000000, // adrp x0, page(0) — preheader state
+    0xd503201f, // nop
+    0x91008001, // loop: add x1, x0, #0x20
+    0xaa0203e0, // mov x0, x2 — redefines the base on the back-edge path
+    0x54ffffc1, // b.ne loop (pc - 8)
+  ]));
+  const loopScan = await loop.scanProgram(loopInfo.raw.id);
+  assert.ok(
+    !Array.from({ length: loopScan.refCount }, (_, i) => ({ from:loopScan.refFrom[i], to:loopScan.refTo[i] }))
+      .some((x) => x.from === 8n && x.to === 0x20n),
+    'scanProgram must not carry clobbered preheader ADRP provenance into the loop merge',
+  );
+  const loopXrefs = await loop.xrefs({ regionId:loopInfo.raw.id, target:0x20n, limit:8 });
+  assert.ok(
+    !loopXrefs.results.some((x) => x.addr === 8n && x.kind === 'address'),
+    'findXrefs must not report stale ADRP+ADD xrefs after a loop-carried base clobber',
+  );
 }
 
 // issues-814-816 ARM64 memory E2E
