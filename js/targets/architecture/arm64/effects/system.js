@@ -491,11 +491,38 @@ function genericHint(instruction, context, ops) {
   });
 }
 
+function operandShapeFailure(instruction, mnemonic, ops) {
+  if (mnemonic === 'nop' || WAITS_AND_EVENTS.has(mnemonic)) {
+    return ops.length === 0 ? null : { reason:`${mnemonic}-operand-shape-invalid`, categories:['other'] };
+  }
+  if (mnemonic === 'clrex') {
+    return ops.length <= 1 ? null : { reason:'clrex-operand-shape-invalid', categories:['other'] };
+  }
+  if (mnemonic === 'bti') {
+    if (ops.length > 1) return { reason:'bti-operand-shape-invalid', categories:['faults','other'] };
+    if (ops.length === 0) return null;
+    const kind = String(ops[0]?.text || '').trim().toLowerCase();
+    return ['c','j','jc'].includes(kind) ? null : { reason:'bti-target-invalid', categories:['faults','other'] };
+  }
+  if (mnemonic === 'mrs' || mnemonic === 'msr') {
+    return ops.length === 2 ? null : { reason:`${mnemonic}-operand-shape-invalid`, categories:['registers','faults','other'] };
+  }
+  if (mnemonic === 'eret') {
+    return ops.length === 0 ? null : { reason:'eret-operand-shape-invalid', categories:['control','faults','other'] };
+  }
+  if (mnemonic === 'hint') {
+    return ops.length === 1 ? null : { reason:'generic-hint-operand-shape-invalid', categories:['other'] };
+  }
+  return null;
+}
+
 export function liftArm64SystemEffects(instruction, context = {}) {
   const mnemonic = mnemonicOf(instruction);
   const ops = operandsOf(instruction);
 
   if (!mnemonic || ARM64E_ONLY.test(mnemonic)) return null;
+  const shapeFailure = operandShapeFailure(instruction, mnemonic, ops);
+  if (shapeFailure) return partial(instruction, context, shapeFailure.reason, shapeFailure.categories);
   if (mnemonic === 'nop') return nop(instruction, context);
   if (BARRIERS.has(mnemonic)) return barrier(instruction, context, mnemonic, ops);
   if (WAITS_AND_EVENTS.has(mnemonic)) return waitOrEvent(instruction, context, mnemonic);
