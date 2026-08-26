@@ -118,7 +118,10 @@ export function clusterFunctions(functions = []) {
 }
 
 export function rankApplicationFunctions(functions = [], contextFor = () => ({})) {
-  return functions.map((fn, index) => ({ function: fingerprintFunction(fn), index, score: applicationCodeScore(fn, contextFor(fn, index)), classification: classifyFunction(fn, contextFor(fn, index)) })).sort((a,b) => b.score - a.score);
+  return functions.map((fn, index) => {
+    const context = contextFor(fn, index);
+    return { function: fingerprintFunction(fn), index, score: applicationCodeScore(fn, context), classification: classifyFunction(fn, context) };
+  }).sort((a,b) => b.score - a.score);
 }
 
 export function classificationMetrics(results = []) {

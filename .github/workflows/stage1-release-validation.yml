@@ -9,6 +9,8 @@ on:
       - 'tests/stage1/**'
       - 'tools/validation/stage1/**'
       - 'tools/validation/competitive/**'
+      - 'tests/competitive/**'
+      - 'package.json'
       - 'tests/phase7/**'
       - 'tools/validation/phase7/**'
       - 'tests/phase8/**'
