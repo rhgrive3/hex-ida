@@ -35,6 +35,10 @@ for (const [mnemonic, operands] of [
   ['ccmp','x0, #0, #0, eq'],
   ['ccmp','x0, #31, #15, ne'],
   ['ccmn','x0, #31, #15, eq'],
+  ['and','x0, x1, #1'],
+  ['orr','x0, x1, #0xff00ff00ff00ff00'],
+  ['eor','w0, w1, #0x00ff00ff'],
+  ['tst','x0, #0x5555555555555555'],
 ]) {
   const effects = lift(mnemonic, operands, `valid-${mnemonic}-${operands.replace(/\W+/g,'-')}`);
   assert.equal(effects.completeness, 'exact', `${mnemonic} ${operands}:${effects.unknownEffects?.reason}`);
@@ -64,6 +68,11 @@ for (const [mnemonic, operands, reason] of [
   ['ccmp','x0, #-1, #0, eq','arm64-ccmp-immediate-out-of-range'],
   ['ccmp','x0, #32, #0, eq','arm64-ccmp-immediate-out-of-range'],
   ['ccmn','x0, #32, #15, ne','arm64-ccmn-immediate-out-of-range'],
+  ['and','x0, x1, #0','arm64-and-logical-immediate-unencodable'],
+  ['ands','x0, x1, #0xffffffffffffffff','arm64-ands-logical-immediate-unencodable'],
+  ['orr','x0, x1, #0x0123456789abcdef','arm64-orr-logical-immediate-unencodable'],
+  ['eor','w0, w1, #0xffffffff','arm64-eor-logical-immediate-unencodable'],
+  ['tst','x0, #0','arm64-tst-logical-immediate-unencodable'],
 ]) {
   const effects = lift(mnemonic, operands, `${mnemonic}-${reason}`);
   assert.equal(effects.completeness, 'partial', `${mnemonic} ${operands} must fail closed`);
