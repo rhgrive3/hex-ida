@@ -1,0 +1,86 @@
+name: Stage2 A2 terminal closure finalizer
+on:
+  push:
+    branches:
+      - integration/stage2-a2-x86-long64-terminal-semantics
+    paths:
+      - .github/workflows/stage2-a2-terminal-finalize.yml
+permissions:
+  contents: write
+jobs:
+  finalize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: integration/stage2-a2-x86-long64-terminal-semantics
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Restore exact EVEX base and apply proven repairs
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+
+          evex_path='js/targets/architecture/x86_64/effects/extended-state-evex.js'
+          s=subprocess.check_output(['git','show','a010744139f3ad98d033d67a897410064d159523:'+evex_path],text=True)
+          old="export function classifyEvexCategory(name) {\n  const lower = name.toLowerCase();\n  if (/^vp(?!er[\\w]*p[sd])/.test(lower)"
+          new="export function classifyEvexCategory(name) {\n  const lower = name.toLowerCase();\n  const base = baseFamily(lower);\n  if (SIMD_EVEX_BASES.has(base)) return 'simd';\n  if (FP_EVEX_BASES.has(base)) return 'fp';\n  if (/^vp(?!er[\\w]*p[sd])/.test(lower)"
+          if old not in s: raise SystemExit('classifier anchor missing')
+          Path(evex_path).write_text(s.replace(old,new,1))
+
+          p=Path('js/targets/architecture/x86_64/effects/terminal-residual.js'); s=p.read_text()
+          repl={
+            "if (family === 'insb') return same(bytes,[0x6c]);":"if (family === 'insb') return same(bytes,[0x6c]) || same(bytes,[0x26,0x6c]);",
+            "if (family === 'insd') return same(bytes,[0x6d]);":"if (family === 'insd') return same(bytes,[0x6d]) || same(bytes,[0x26,0x6d]);",
+            "if (family === 'outsb') return same(bytes,[0x6e]);":"if (family === 'outsb') return same(bytes,[0x6e]) || same(bytes,[0x26,0x6e]);",
+            "if (family === 'outsd') return same(bytes,[0x6f]);":"if (family === 'outsd') return same(bytes,[0x6f]) || same(bytes,[0x26,0x6f]);",
+            "if (family === 'roundsd' && same(bytes,[0x66,0x0f,0x3a,0x0a,0x00,0x00]))":"if (family === 'roundsd' && same(bytes,[0x66,0x0f,0x3a,0x0b,0x00,0x00]))",
+            "if (family === 'roundss' && same(bytes,[0x66,0x0f,0x3a,0x0b,0x00,0x00]))":"if (family === 'roundss' && same(bytes,[0x66,0x0f,0x3a,0x0a,0x00,0x00]))",
+            "if (family === 'vroundsd' && same(bytes,[0xc4,0xe3,0x79,0x0a,0x00,0x00]))":"if (family === 'vroundsd' && same(bytes,[0xc4,0xe3,0x01,0x0b,0x00,0x00]))",
+            "if (family === 'vroundss' && same(bytes,[0xc4,0xe3,0x79,0x0b,0x00,0x00]))":"if (family === 'vroundss' && same(bytes,[0xc4,0xe3,0x01,0x0a,0x00,0x00]))",
+            "if (family === 'vcvtpd2ps' && same(bytes,[0xc5,0xf9,0x5a,0x00]))":"if (family === 'vcvtpd2ps' && same(bytes,[0xc5,0x79,0x5a,0x00]))",
+          }
+          for a,b in repl.items():
+            if a not in s: raise SystemExit('terminal gate missing: '+a)
+            s=s.replace(a,b,1)
+          p.write_text(s)
+
+          p=Path('js/targets/architecture/x86_64/effects/extended-state-helpers.js'); s=p.read_text()
+          a="if((p0&0x0c)!==0||(p1&0x04)===0||map===0||(zeroing&&aaa===0))return null;"
+          b="if((p0&0x0c)!==0||(p1&0x04)===0||map===0||ll===3||(zeroing&&aaa===0))return null;"
+          if a not in s: raise SystemExit('EVEX validity anchor missing')
+          p.write_text(s.replace(a,b,1))
+
+          p=Path('tests/machine-effects/helpers/x86-long64-fp-simd.mjs'); s=p.read_text()
+          a="export function instruction(family,operands=[],prefixes=legacy(),rawBytes=[0x90]){seq++;return{address:0x500000n+BigInt(seq*16),length:rawBytes.length,rawBytes:Uint8Array.from(rawBytes),mode:'long-64',instructionCode:code++,instructionFamily:family,instructionId:`x86-denominator:${family}:${seq}`,detailAvailable:true,detailStatus:'complete',mnemonic:family,opStr:'',detail:{operandCount:operands.length,operands,prefixes,implicitReads:[],implicitWrites:[],conditionCode:null}};}\nexport function effects(family,operands=[],prefixes=legacy(),rawBytes=[0x90]){const input=instruction(family,operands,prefixes,rawBytes);return liftX86MachineEffects(input,{instructionId:input.instructionId});}"
+          b="export function instruction(family,operands=[],prefixes=legacy(),rawBytes=null){seq++;const k=prefixes?.vector?.kind;const coherentRaw=rawBytes??((k==='vex2'||k==='vex3')&&Array.isArray(prefixes?.vector?.bytes)?[...prefixes.vector.bytes,0x90]:[0x90]);return{address:0x500000n+BigInt(seq*16),length:coherentRaw.length,rawBytes:Uint8Array.from(coherentRaw),mode:'long-64',instructionCode:code++,instructionFamily:family,instructionId:`x86-denominator:${family}:${seq}`,detailAvailable:true,detailStatus:'complete',mnemonic:family,opStr:'',detail:{operandCount:operands.length,operands,prefixes,implicitReads:[],implicitWrites:[],conditionCode:null}};}\nexport function effects(family,operands=[],prefixes=legacy(),rawBytes=null){const input=instruction(family,operands,prefixes,rawBytes);return liftX86MachineEffects(input,{instructionId:input.instructionId});}"
+          if a not in s: raise SystemExit('fixture constructor anchor missing')
+          p.write_text(s.replace(a,b,1))
+
+          p=Path('tests/machine-effects/x86-long64-simd-denominator.test.mjs'); s=p.read_text()
+          a="const oldSynthetic=effects('vpaddd',[reg('ymm0'),reg('ymm1'),reg('ymm2')],vex256(0));assert.equal(oldSynthetic.completeness,'partial');assert.match(oldSynthetic.unknownEffects.reason,/vector-width-unmodelled/);"
+          b="const oldSynthetic=effects('vpaddd',[reg('ymm0'),reg('ymm1'),reg('ymm2')],vex128(1));assert.equal(oldSynthetic.completeness,'partial');assert.match(oldSynthetic.unknownEffects.reason,/vector-width-unmodelled/);"
+          if a not in s: raise SystemExit('width negative anchor missing')
+          p.write_text(s.replace(a,b,1))
+          PY
+      - name: Prove frozen semantic closure
+        run: node tests/machine-effects/x86-long64-closure-matrix.test.mjs
+      - name: Prove focused denominators
+        run: |
+          node tests/machine-effects/x86-long64-fp-denominator.test.mjs
+          node tests/machine-effects/x86-long64-simd-denominator.test.mjs
+          node tests/machine-effects/x86-long64-system-denominator.test.mjs
+          node tests/machine-effects/a2-denominator.test.mjs
+      - name: Commit proven repairs
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add js/targets/architecture/x86_64/effects/extended-state-evex.js js/targets/architecture/x86_64/effects/terminal-residual.js js/targets/architecture/x86_64/effects/extended-state-helpers.js tests/machine-effects/helpers/x86-long64-fp-simd.mjs tests/machine-effects/x86-long64-simd-denominator.test.mjs
+          git diff --cached --quiet && exit 0
+          git commit -m "fix(stage2): close final x86 long64 semantic residuals"
+          git push origin HEAD:integration/stage2-a2-x86-long64-terminal-semantics
