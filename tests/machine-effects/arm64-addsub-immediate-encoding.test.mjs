@@ -114,4 +114,5 @@ for (const [operands, reason] of [
   assert.equal(effects.metadata?.failClosed, true);
 }
 
+// This assertion file is also the exact-head CI retrigger anchor after canonical generated-artifact sync.
 console.log('ARM64 structured encoding validation: PASS');
