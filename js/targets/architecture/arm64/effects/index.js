@@ -272,6 +272,19 @@ function moveEncodingFailure(instruction) {
   return movImmediateEncodable(source, widthBits) ? null : 'arm64-mov-immediate-unencodable';
 }
 
+function prefetchOperandShapeEncodingFailure(instruction) {
+  const mnemonic = instructionMnemonic(instruction);
+  if (mnemonic !== 'prfm' && mnemonic !== 'prfum') return null;
+  const ops = Array.isArray(instruction?.ops) ? instruction.ops : [];
+  const hasPrintedSpecifier = ops[0]?.k === 'other';
+  const addressIndex = hasPrintedSpecifier ? 1 : 0;
+  if (ops.length !== addressIndex + 1) return `arm64-${mnemonic}-operand-shape-unencodable`;
+  const address = ops[addressIndex];
+  if (address?.k === 'mem' || address?.kind === 'memory') return null;
+  if (mnemonic === 'prfm' && (address?.k === 'imm' || address?.kind === 'immediate')) return null;
+  return `arm64-${mnemonic}-operand-shape-unencodable`;
+}
+
 function literalMemoryEncodingFailure(instruction) {
   const mnemonic = instructionMnemonic(instruction);
   if (!ARM64_LITERAL_MEMORY_MNEMONICS.has(mnemonic)) return null;
@@ -330,6 +343,7 @@ function structuredEncodingFailure(instruction) {
     || multiplyDivideEncodingFailure(instruction)
     || registerOnlyIntegerEncodingFailure(instruction)
     || moveEncodingFailure(instruction)
+    || prefetchOperandShapeEncodingFailure(instruction)
     || literalMemoryEncodingFailure(instruction)
     || unaryEncodingFailure(instruction);
 }
