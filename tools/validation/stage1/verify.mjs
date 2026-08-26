@@ -30,7 +30,7 @@ const node = (...args) => ({ bin: process.execPath, args });
 const npm = (...args) => ({ bin: process.platform === 'win32' ? 'npm.cmd' : 'npm', args: ['run', ...args] });
 
 const GATES = Object.freeze([
-  Object.freeze({ id: 'A1', name: 'canonical address/value truth closure', evidence: ['tests/core-identity-contracts.mjs'], commands: [node('tests/core-identity-contracts.mjs')] }),
+  Object.freeze({ id: 'A1', name: 'canonical address/value truth closure', evidence: ['tests/core-identity-contracts.mjs', 'tests/competitive/**', 'tools/validation/competitive/**'], commands: [node('tests/core-identity-contracts.mjs'), npm('competitive:test'), npm('competitive:verify')] }),
   Object.freeze({ id: 'A2', name: 'MachineEffects coverage denominator closure', evidence: ['js/targets/architecture/coverage.js', 'tests/machine-effects/**', 'tests/stage1/a2-machine-effects-coverage.test.mjs'], commands: [npm('effects:test'), node('tests/stage1/a2-machine-effects-coverage.test.mjs')] }),
   Object.freeze({ id: 'A3', name: 'alias/call-clobber and unknown-writer soundness', evidence: ['tests/semantic-v2/alias-floor-safety.test.mjs', 'tests/semantic-v2/compat-v1-call-abi-state.test.mjs', 'tests/semantic-v2/compat-v1-memory.test.mjs'], commands: [node('tests/semantic-v2/alias-floor-safety.test.mjs'), node('tests/semantic-v2/compat-v1-call-abi-state.test.mjs'), node('tests/semantic-v2/compat-v1-memory.test.mjs')] }),
   Object.freeze({ id: 'A4', name: 'semantic pipeline breadth', evidence: ['tests/semantic-v2/**'], commands: [npm('semantic-v2:test')] }),
