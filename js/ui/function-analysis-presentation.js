@@ -2,7 +2,7 @@ const UI_PRESENTATION_ROUTE = Symbol('canonical-function-ui-presentation');
 
 function safeRows(block) {
   const rows = [...new Set((block?.insts || [])
-    .map((inst) => Number(inst?.row))
+    .map((inst) => inst?.row)
     .filter(Number.isSafeInteger))]
     .sort((a, b) => a - b);
   if (!rows.length && Number.isSafeInteger(block?.startRow)) rows.push(block.startRow);
