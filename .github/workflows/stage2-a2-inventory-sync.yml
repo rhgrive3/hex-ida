@@ -1,0 +1,115 @@
+name: Stage2 A2 inventory one-shot sync
+
+on:
+  push:
+    branches:
+      - integration/stage2-a2-x86-long64-terminal-semantics
+    paths:
+      - .github/workflows/stage2-a2-inventory-sync.yml
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: integration/stage2-a2-x86-long64-terminal-semantics
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Synchronize terminal x86 A2 inventory and contract test
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const inventoryPath = 'tests/machine-effects/a2-denominator-inventory.json';
+          const inventory = JSON.parse(fs.readFileSync(inventoryPath, 'utf8'));
+          const x86 = inventory.architectures.find((item) => item.id === 'x86_64');
+          if (!x86) throw new Error('x86_64 inventory missing');
+          const families = x86.effectRegistry.families;
+          const replaceFamily = (id, value) => {
+            const index = families.findIndex((item) => item.id === id);
+            if (index < 0) throw new Error(`missing x86 family:${id}`);
+            families[index] = value;
+          };
+          replaceFamily('fp', {
+            id:'fp', status:'exact', coverage:'exact-with-intrinsic', preexisting:false,
+            oracle:'intel-sdm-vol2-x87-sse-avx-avx512 + deployed-capstone-5-x86-long64-detail',
+            reason:'The finite FP denominator is closed: x87 physical stack/environment state, VEX MAXVL aliasing, and EVEX AVX-512 register/mask/rounding state are represented and real decoder witnesses are exercised.',
+            proof:{
+              schemaVersion:'machine-effects-effect-unit-proof/v1',
+              source:'js/targets/architecture/x86_64/effects/fp.js',
+              test:'tests/phase5/effects/fp-simd/moves-fp.test.mjs',
+              denominatorTest:'tests/machine-effects/x86-long64-fp-denominator.test.mjs',
+              denominator:{
+                schemaVersion:'x86-long64-fp-denominator/v1', denominatorId:'x86_64:long-64:fp-effect-discriminators:v1', profileId:'x86_64:long-64',
+                exactFormCount:68, ownedRemainingCount:0, sharedBlockerCount:0, closed:true,
+                oracleIds:['intel-sdm-vol2-x87-sse-avx-avx512','deployed-capstone-5-x86-long64-detail']
+              }
+            }
+          });
+          replaceFamily('simd', {
+            id:'simd', status:'exact', coverage:'exact-with-intrinsic', preexisting:false,
+            oracle:'intel-sdm-vol2-sse-avx-avx2-avx512 + deployed-capstone-5-x86-long64-detail',
+            reason:'The finite SIMD denominator is closed: XMM/YMM/ZMM MAXVL aliasing, EVEX opmask state, VZEROALL/VZEROUPPER, and MMX/x87 aliasing are represented and real decoder witnesses are exercised.',
+            proof:{
+              schemaVersion:'machine-effects-effect-unit-proof/v1',
+              source:'js/targets/architecture/x86_64/effects/simd.js',
+              test:'tests/phase5/effects/fp-simd/simd-integer.test.mjs',
+              denominatorTest:'tests/machine-effects/x86-long64-simd-denominator.test.mjs',
+              denominator:{
+                schemaVersion:'x86-long64-simd-denominator/v1', denominatorId:'x86_64:long-64:simd-effect-discriminators:v1', profileId:'x86_64:long-64',
+                exactFormCount:125, ownedRemainingCount:0, sharedBlockerCount:0, closed:true,
+                oracleIds:['intel-sdm-vol2-sse-avx-avx2-avx512','deployed-capstone-5-x86-long64-detail']
+              }
+            }
+          });
+          replaceFamily('system', {
+            id:'system', status:'exact', coverage:'exact-with-intrinsic', preexisting:false,
+            oracle:'intel-sdm-vol2-system-instruction-reference + intel-sdm-vol3-system-programming + amd64-apm + deployed-capstone-5-x86-long64-structured-decoder',
+            reason:'The finite system denominator is closed: system/environment intrinsics remain symbolic and fail-closed where appropriate, while MOV CR/DR has canonical physical state and is owned by the system dispatcher rather than generic integer MOV.',
+            proof:{
+              schemaVersion:'machine-effects-effect-unit-proof/v1',
+              source:'js/targets/architecture/x86_64/effects/system.js',
+              test:'tests/phase5/effects/fp-simd/system.test.mjs',
+              denominatorTest:'tests/machine-effects/x86-long64-system-denominator.test.mjs',
+              denominator:{
+                schemaVersion:'x86-long64-system-denominator/v1', denominatorId:'x86_64:long-64:effect-family:system:v1', profileId:'x86_64:long-64',
+                familyCount:26, encodingCaseCount:110, sharedDependencyRequired:false,
+                oracleIds:[
+                  'intel-sdm-vol2-system-instruction-reference + intel-sdm-vol3-system-programming',
+                  'amd64-apm-vol2-system-programming + amd64-apm-vol3-general-purpose-and-system-instructions',
+                  'deployed-capstone-5-x86-long64-structured-decoder'
+                ]
+              }
+            }
+          });
+          fs.writeFileSync(inventoryPath, JSON.stringify(inventory, null, 2) + '\n');
+
+          const testPath = 'tests/machine-effects/a2-denominator.test.mjs';
+          let test = fs.readFileSync(testPath, 'utf8');
+          const replacements = [
+            ["assert.equal(validation.blockingGapCount > validation.explicitDecoderGapCount, true);", "assert.equal(validation.blockingGapCount, 0, 'the locked A2 denominator has no blocking gap');"],
+            ["assert.equal(validation.terminalEligible, false, 'partial and unsupported x86 long-64 effect families remain blocking gaps');", "assert.equal(validation.terminalEligible, true, 'the locked A2 denominator is terminal');"],
+            ["assert.deepEqual(validation.blockingGaps, [\n  'x86_64:long-64:effect-family:fp',\n  'x86_64:long-64:effect-family:simd',\n  'x86_64:long-64:effect-family:system',\n]);", "assert.deepEqual(validation.blockingGaps, []);\nassert.equal(validation.blockingGaps.includes('x86_64:long-64:effect-family:fp'), false);\nassert.equal(validation.blockingGaps.includes('x86_64:long-64:effect-family:simd'), false);\nassert.equal(validation.blockingGaps.includes('x86_64:long-64:effect-family:system'), false);"]
+          ];
+          for (const [from, to] of replacements) {
+            if (!test.includes(from)) throw new Error(`central A2 test replacement anchor missing: ${from.slice(0, 80)}`);
+            test = test.replace(from, to);
+          }
+          fs.writeFileSync(testPath, test);
+          NODE
+          node tools/validation/stage2/build-profile-denominator-inventory.mjs
+      - name: Commit canonical inventory projection
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add tests/machine-effects/a2-denominator-inventory.json tests/machine-effects/a2-denominator.test.mjs tools/validation/stage2/profile-denominator-inventory.json
+          if git diff --cached --quiet; then
+            echo 'No inventory changes required.'
+            exit 0
+          fi
+          git commit -m 'fix(stage2): publish closed x86 A2 denominator truth'
+          git push origin HEAD:integration/stage2-a2-x86-long64-terminal-semantics
