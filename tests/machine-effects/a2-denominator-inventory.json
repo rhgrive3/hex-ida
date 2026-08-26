@@ -32,7 +32,7 @@
           "candidateUniqueWordCount": 375875,
           "candidateSha256": "57f25255163e5194f7b53a0766444a479da2538b98dd1c84fb06104feb0f6590",
           "candidateUniqueWordsSha256": "a752ffdc75e67302f32578f9c2697b586067db98b81686aa861e46b553d75e90",
-          "decoderAuditSha256": "de6882fa5b13b7f31480fb4089f76d537415e18262de81d5f306a62f72061d4d",
+          "decoderAuditSha256": "c39f28439939b171994064176137437f8a965243e56199437174959dc39e0332",
           "dependencyFamilies": ["memory", "simd"]
         }
       },
