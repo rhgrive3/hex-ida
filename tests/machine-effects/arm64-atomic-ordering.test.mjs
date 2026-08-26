@@ -104,9 +104,35 @@ function liftAtomic(mnemonic, ops) { return liftArm64AtomicEffects({ mnemonic, o
   assert.equal(b.operations[0].kind, 'barrier');
   assert.equal(b.operations[0].scope.domain, 'inner-shareable');
   assert.equal(b.operations[0].scope.access, 'all');
+
+  const imm0 = liftAtomic('dmb', [imm(0)]);
+  const imm15 = liftAtomic('dmb', [imm(15)]);
+  const imm11 = liftAtomic('dmb', [imm(11)]);
+  assert.equal(imm0.completeness, 'exact');
+  assert.equal(imm0.metadata.option, 'sy');
+  assert.equal(imm0.metadata.domain, 'full-system');
+  assert.equal(imm0.metadata.access, 'all');
+  assert.equal(imm0.metadata.crm, 0);
+  assert.equal(imm15.completeness, 'exact');
+  assert.equal(imm15.metadata.option, 'sy');
+  assert.equal(imm15.metadata.crm, 15);
+  assert.deepEqual(
+    { domain:imm15.metadata.domain, access:imm15.metadata.access },
+    { domain:liftAtomic('dmb', [other('sy')]).metadata.domain, access:liftAtomic('dmb', [other('sy')]).metadata.access },
+  );
+  assert.equal(imm11.completeness, 'exact');
+  assert.equal(imm11.metadata.option, 'ish');
+  assert.equal(imm11.metadata.domain, 'inner-shareable');
+
   const bad = liftAtomic('dmb', [other('bad-option')]);
+  const negative = liftAtomic('dmb', [imm(-1)]);
+  const tooLarge = liftAtomic('dmb', [imm(16)]);
   assert.equal(bad.completeness, 'partial');
+  assert.equal(negative.completeness, 'partial');
+  assert.equal(tooLarge.completeness, 'partial');
   assert.ok(bad.unknownEffects.categories.includes('memory'));
+  assert.ok(negative.unknownEffects.categories.includes('memory'));
+  assert.ok(tooLarge.unknownEffects.categories.includes('memory'));
 }
 
 {
@@ -139,7 +165,6 @@ function liftAtomic(mnemonic, ops) { return liftArm64AtomicEffects({ mnemonic, o
   assert.equal(malformedByteRegister.completeness, 'partial');
   assert.ok(malformedWriteback.unknownEffects.categories.includes('memory'));
 }
-
 
 {
   for (const [mnemonic, expected] of [['ldadd','relaxed'],['ldadda','acquire'],['ldaddl','release'],['ldaddal','acq-rel']]) {

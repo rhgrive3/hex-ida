@@ -106,9 +106,19 @@ export function functionPaths(program, from, to, opts) {
     if (path.length >= maxDepth) { reasons.add('depth-limit'); continue; }
 
     let range = null;
-    try { range = program.functionRange(head); } catch { range = null; }
+    try {
+      range = program.functionRange(head);
+    } catch {
+      reasons.add('function-range-error');
+      range = null;
+    }
     let callees = [];
-    try { callees = program.calleesOf(head, range && range.end, 201) || []; } catch { callees = []; }
+    try {
+      callees = program.calleesOf(head, range && range.end, 201) || [];
+    } catch {
+      reasons.add('callee-query-error');
+      callees = [];
+    }
     if (callees.length > 200) { reasons.add('callee-limit'); callees = callees.slice(0, 200); }
     for (const c of callees) {
       const addr = c && c.addr != null ? c.addr : c;
