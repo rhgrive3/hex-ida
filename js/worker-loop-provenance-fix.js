@@ -7,14 +7,58 @@
  * Forward branch entries are already learned by AddressProvenance.control()
  * before their first linear visit. Backward entries are different: their edge
  * is only decoded after the target has already been visited, so a one-pass
- * scanner needs a cheap control-flow prepass to know those boundaries up front.
+ * scanner needs a cheap control-flow prepass. The prepass records only GP
+ * registers that may be redefined between a backward target and its edge;
+ * unchanged address bases are deliberately preserved.
  */
 
-async function __backwardDirectBranchEntries(region, requestId) {
-  const entries = new Set();
+function __noteLoopProvenanceWrites(word, kind, pc, lastWrite) {
+  const mark = (reg) => {
+    const r = Number(reg);
+    if (Number.isInteger(r) && r >= 0 && r < 32) lastWrite[r] = pc;
+  };
+
+  const K = Words.KIND;
+  if (kind === K.CALL || kind === K.INDCALL) {
+    for (let reg = 0; reg <= 18; reg++) mark(reg);
+    mark(30);
+    return;
+  }
+
+  const rel = Words.pcRelTarget(word, pc);
+  if (rel) { mark(rel.reg); return; }
+
+  const pair = Words.pairedOffset(word);
+  if (pair) {
+    if (!pair.load && !pair.store) mark(pair.rd);
+    else if (pair.load && pair.gpDest !== false) mark(pair.rd);
+    return;
+  }
+
+  if (kind === K.LITERAL) { mark(word & 0x1f); return; }
+
+  const mem = Words.memoryAccess(word);
+  if (mem) {
+    if (mem.load && !mem.vector) {
+      mark(mem.reg);
+      if (mem.pair && mem.reg2 != null) mark(mem.reg2);
+    }
+    if (mem.statusReg != null) mark(mem.statusReg);
+    if (mem.mode === 'pre' || mem.mode === 'post') mark(mem.base);
+    return;
+  }
+
+  if (kind === K.FARITH || kind === K.FMUL || kind === K.SIMD ||
+      (kind === K.CSEL && Words.isFpCondSelect?.(word))) return;
+  if (WRITES_LOW_REG[kind]) mark(word & 0x1f);
+}
+
+async function __backwardLoopEntryKills(region, requestId) {
+  const entries = new Map();
   const total = Number(region?.size ?? 0n);
   if (!Number.isSafeInteger(total) || total <= 0) return { entries, cancelled:false };
 
+  const lastWrite = new Array(32).fill(null);
   let pos = 0;
   while (pos < total) {
     if (cancelled(requestId)) return { entries, cancelled:true };
@@ -27,6 +71,8 @@ async function __backwardDirectBranchEntries(region, requestId) {
       const word = dv.getUint32(i * 4, true);
       const pc = region.vmAddr + BigInt(pos + i * 4);
       const kind = Words.classifyWord(word);
+      __noteLoopProvenanceWrites(word, kind, pc, lastWrite);
+
       let target = null;
       if (kind === Words.KIND.CALL || kind === Words.KIND.BRANCH) {
         target = Words.branchImm26(word, pc);
@@ -35,7 +81,14 @@ async function __backwardDirectBranchEntries(region, requestId) {
       }
       if (target == null || target > pc) continue;
       if (target < region.vmAddr || target >= region.vmAddr + region.size) continue;
-      entries.add(target);
+
+      let kills = entries.get(target);
+      if (!kills) { kills = new Set(); entries.set(target, kills); }
+      for (let reg = 0; reg < lastWrite.length; reg++) {
+        const at = lastWrite[reg];
+        if (at != null && at >= target) kills.add(reg);
+      }
+      if (!kills.size) entries.delete(target);
     }
     pos += count * 4;
     if (count * 4 < want) break;
@@ -54,7 +107,7 @@ const __scanProgramBeforeLoopProvenanceFix = scanProgram;
 scanProgram = async function scanProgramWithLoopProvenance(args) {
   const region = regions.get(args.regionId);
   if (!region) throw new Error('Unknown region.');
-  const prepass = await __backwardDirectBranchEntries(region, args.requestId);
+  const prepass = await __backwardLoopEntryKills(region, args.requestId);
   if (prepass.cancelled) return { cancelled:true, __transfer:[] };
   if (!prepass.entries.size) return __scanProgramBeforeLoopProvenanceFix(args);
 
@@ -62,10 +115,10 @@ scanProgram = async function scanProgramWithLoopProvenance(args) {
   const seeded = Object.freeze({
     ...original,
     create(options) {
-      const inherited = options?.branchEntries || [];
+      const inherited = Array.from(options?.entryKills || []);
       return original.create({
         ...options,
-        branchEntries: [...inherited, ...prepass.entries],
+        entryKills: [...inherited, ...prepass.entries],
       });
     },
   });
@@ -83,14 +136,13 @@ scanProgram = async function scanProgramWithLoopProvenance(args) {
 };
 
 /*
- * Keep worker-xref-memory-fix.js semantics, adding only one new boundary: a
- * pre-discovered backward direct branch target clears the local ADR/ADRP page
- * state before the target instruction is interpreted.
+ * Keep worker-xref-memory-fix.js semantics, adding only selective first-visit
+ * invalidation for GP registers that a backward loop edge may have redefined.
  */
 findXrefs = async function findXrefsLoopSafe({ regionId, target, limit, requestId, epoch }) {
   const region = regions.get(regionId);
   if (!region) throw new Error('Unknown region.');
-  const prepass = await __backwardDirectBranchEntries(region, requestId);
+  const prepass = await __backwardLoopEntryKills(region, requestId);
   if (prepass.cancelled) return { results:[], cancelled:true, capped:false };
 
   const want = BigInt(target);
@@ -120,7 +172,13 @@ findXrefs = async function findXrefsLoopSafe({ regionId, target, limit, requestI
       const direct = Words.wordTarget(w, pc);
       if (direct != null && direct === want && pushHit(byteOff, pc, 'branch')) break;
 
-      if (prepass.entries.has(pc)) __clearPages(pageOf, pageAt);
+      const loopKills = prepass.entries.get(pc);
+      if (loopKills) {
+        for (const reg of loopKills) {
+          pageOf[reg] = null;
+          pageAt[reg] = -1;
+        }
+      }
 
       /* Preserve worker-fixes.js control-boundary semantics exactly. */
       if (__controlBoundary(w)) {
