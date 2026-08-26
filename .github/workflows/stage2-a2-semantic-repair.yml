@@ -20,19 +20,19 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --no-audit --no-fund
-      - name: Repair IO memory-access schema
+      - name: Repair HINT_NOP preservation contract
         run: |
           python3 - <<'PY'
           from pathlib import Path
           p = Path('js/targets/architecture/x86_64/effects/terminal-residual.js')
           s = p.read_text()
-          old = "return Object.freeze({ space:'io', addressExpr:Object.freeze({ kind:'x86-io-port-register', register:'dx' }), widthBits, endian:'little', direction });"
-          new = "return Object.freeze({ space:'io', addressExpr:Object.freeze({ kind:'x86-io-port-register', register:'dx' }), widthBits, endian:'little' });"
+          old = "    statePreservation:{ proven:true, reason:'x86-amd-hint-nop-normal-path-preserves-architectural-state' },\n    possibleFaults:[udFault('nop', '0F19 /0 is an AMD HINT_NOP encoding and may be reserved/unsupported on other implementations')],\n    metadata:{ operation:'nop', hintNopEncoding:'0F19/0', implementationDependentAvailability:true, memoryOperandIsSyntacticOnly:true },"
+          new = "    possibleFaults:[udFault('nop', '0F19 /0 is an AMD HINT_NOP encoding and may be reserved/unsupported on other implementations')],\n    metadata:{ operation:'nop', hintNopEncoding:'0F19/0', implementationDependentAvailability:true, memoryOperandIsSyntacticOnly:true, normalPathStatePreserving:true },"
           if old not in s:
-              raise SystemExit('expected IO access schema shape not found')
+              raise SystemExit('expected HINT_NOP preservation block not found')
           p.write_text(s.replace(old, new, 1))
           PY
-      - name: Run frozen closure matrix after IO repair
+      - name: Run frozen closure matrix after HINT_NOP repair
         run: node tests/machine-effects/x86-long64-closure-matrix.test.mjs || true
       - name: Commit production repair
         run: |
@@ -40,5 +40,5 @@ jobs:
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add js/targets/architecture/x86_64/effects/terminal-residual.js
           git diff --cached --quiet && exit 0
-          git commit -m "fix(stage2): align IO residual access schema"
+          git commit -m "fix(stage2): align HINT_NOP preservation contract"
           git push origin HEAD:integration/stage2-a2-x86-long64-terminal-semantics
