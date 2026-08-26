@@ -81,20 +81,21 @@ console.log('classic worker harness regression passed');
   outOfRange.control(0, 0x1004n, K.CALL);
   assert.equal(outOfRange.pendingEntries, 0, 'out-of-range call targets must not create local scan boundaries');
 
-  // #1900: a prepass can seed a backward branch target before its first
-  // linear visit, so stale ADR/ADRP state is cleared at the loop merge point.
+  // #1900: a prepass seeds only registers clobbered on a backward loop path.
   const loopSafe = globalThis.AddressProvenance.create({
     words,
     functionStarts: [],
-    branchEntries: [0x1008n, 0x1200n],
+    entryKills: [[0x1008n, [0]], [0x1200n, [19]]],
     rangeStart: 0x1000n,
     rangeEnd: 0x1100n,
     pairWindow: 16,
   });
-  loopSafe.note(19, 0x6000n, 0);
-  assert.equal(loopSafe.pendingEntries, 1, 'only in-range preloaded branch entries are retained');
-  assert.equal(loopSafe.enter(0x1008n), true, 'preloaded backward target must be a first-visit boundary');
-  assert.equal(loopSafe.base(19, 1), null, 'merge point must invalidate incoming address provenance');
+  loopSafe.note(0, 0x6000n, 0);
+  loopSafe.note(19, 0x7000n, 0);
+  assert.equal(loopSafe.pendingEntries, 1, 'only in-range preloaded loop kills are retained');
+  assert.equal(loopSafe.enter(0x1008n), true, 'preloaded backward target must be a first-visit provenance boundary');
+  assert.equal(loopSafe.base(0, 1), null, 'loop-clobbered base provenance must be invalidated');
+  assert.equal(loopSafe.base(19, 1), 0x7000n, 'unmodified base provenance must survive the loop merge');
 }
 
 function fileFromWords(name, words) {
@@ -160,8 +161,8 @@ function fileFromWords(name, words) {
   assert.ok(Array.from(shapes.flags).every((f) => (f & 32) !== 0));
 }
 
-// #1900: a backward B.cond target is a merge point. ADRP provenance created
-// before the loop must not fabricate an exact ADRP+ADD xref at that target.
+// #1900: a backward B.cond target is a merge point. Provenance from the
+// preheader survives only when the source GP register is unchanged by the loop.
 {
   const straight = new NodeBackend();
   const straightInfo = await straight.open(fileFromWords('straight-adrp-add.bin', [
@@ -178,23 +179,38 @@ function fileFromWords(name, words) {
   const straightXrefs = await straight.xrefs({ regionId:straightInfo.raw.id, target:0x20n, limit:8 });
   assert.ok(straightXrefs.results.some((x) => x.addr === 4n && x.kind === 'address'));
 
+  const unchangedLoop = new NodeBackend();
+  const unchangedInfo = await unchangedLoop.open(fileFromWords('loop-unchanged-base.bin', [
+    0x90000000, // adrp x0, page(0)
+    0xd503201f, // nop
+    0x91008001, // loop: add x1, x0, #0x20
+    0x54ffffe1, // b.ne loop (pc - 4); x0 is unchanged
+  ]));
+  const unchangedScan = await unchangedLoop.scanProgram(unchangedInfo.raw.id);
+  assert.ok(
+    Array.from({ length: unchangedScan.refCount }, (_, i) => ({ from:unchangedScan.refFrom[i], to:unchangedScan.refTo[i] }))
+      .some((x) => x.from === 8n && x.to === 0x20n),
+    'loop must preserve an address base that no back-edge path redefines',
+  );
+
   const loop = new NodeBackend();
-  const loopInfo = await loop.open(fileFromWords('loop-adrp-add.bin', [
+  const loopInfo = await loop.open(fileFromWords('loop-clobbered-base.bin', [
     0x90000000, // adrp x0, page(0) — preheader state
     0xd503201f, // nop
     0x91008001, // loop: add x1, x0, #0x20
-    0x54ffffe1, // b.ne loop (pc - 4)
+    0xaa0203e0, // mov x0, x2 — redefines the base on the back-edge path
+    0x54ffffc1, // b.ne loop (pc - 8)
   ]));
   const loopScan = await loop.scanProgram(loopInfo.raw.id);
   assert.ok(
     !Array.from({ length: loopScan.refCount }, (_, i) => ({ from:loopScan.refFrom[i], to:loopScan.refTo[i] }))
       .some((x) => x.from === 8n && x.to === 0x20n),
-    'scanProgram must not carry preheader ADRP provenance into a backward-branch merge point',
+    'scanProgram must not carry clobbered preheader ADRP provenance into the loop merge',
   );
   const loopXrefs = await loop.xrefs({ regionId:loopInfo.raw.id, target:0x20n, limit:8 });
   assert.ok(
     !loopXrefs.results.some((x) => x.addr === 8n && x.kind === 'address'),
-    'findXrefs must not report stale ADRP+ADD address xrefs at a backward-branch merge point',
+    'findXrefs must not report stale ADRP+ADD xrefs after a loop-carried base clobber',
   );
 }
 
