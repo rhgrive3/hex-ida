@@ -540,9 +540,38 @@ const BARRIER_OPTIONS = Object.freeze({
   oshst:{ domain:'outer-shareable', access:'stores' },
   oshld:{ domain:'outer-shareable', access:'loads' },
 });
+const DMB_OPTION_BY_CRM = Object.freeze([
+  'sy','oshld','oshst','osh',
+  'sy','nshld','nshst','nsh',
+  'sy','ishld','ishst','ish',
+  'sy','ld','st','sy',
+]);
+
+function dmbOption(decoded) {
+  const ops = operands(decoded);
+  if (ops.length === 0) return { option:'sy', crm:null };
+  const immediate = immediateValue(ops[0]);
+  if (immediate != null) {
+    if (immediate < 0n || immediate > 15n) return null;
+    const crm = Number(immediate);
+    return { option:DMB_OPTION_BY_CRM[crm], crm };
+  }
+  const option = barrierOption(decoded);
+  return BARRIER_OPTIONS[option] ? { option, crm:null } : null;
+}
 
 function barrier(decoded, context, mnemonic) {
   if (operands(decoded).length > 1) return partial(decoded, context, `${mnemonic.toUpperCase()} operand shape is invalid`, mnemonic === 'isb' ? ['other'] : ['memory','other']);
+  if (mnemonic === 'dmb') {
+    const normalized = dmbOption(decoded);
+    if (!normalized) return partial(decoded, context, `unsupported DMB option: ${barrierOption(decoded)}`, ['memory','other']);
+    const { option, crm } = normalized;
+    const scope = BARRIER_OPTIONS[option];
+    return bundle(decoded, context, {
+      operations:[createMachineOperation({ kind:'barrier', scope:{ kind:'dmb', option, ...scope }, metadata:{ architecture:'arm64', ordering:'barrier', ...(crm == null ? {} : { crm }) } })],
+      metadata:{ family:'arm64-atomic', kind:'barrier', mnemonic:'dmb', option, ...scope, ...(crm == null ? {} : { crm }) },
+    });
+  }
   const option = barrierOption(decoded);
   if (mnemonic === 'isb') {
     if (option !== 'sy') return partial(decoded, context, `unsupported ISB option: ${option}`, ['other']);
