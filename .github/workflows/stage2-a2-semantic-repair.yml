@@ -20,7 +20,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --no-audit --no-fund
-      - name: Apply final trusted encoding gates
+      - name: Apply final semantic repairs
         run: |
           python3 - <<'PY'
           from pathlib import Path
@@ -42,6 +42,14 @@ jobs:
                   raise SystemExit('expected encoding gate not found: ' + old)
               s = s.replace(old,new,1)
           p.write_text(s)
+
+          p = Path('js/targets/architecture/x86_64/effects/extended-state-helpers.js')
+          s = p.read_text()
+          old = "if((p0&0x0c)!==0||(p1&0x04)===0||map===0||(zeroing&&aaa===0))return null;"
+          new = "if((p0&0x0c)!==0||(p1&0x04)===0||map===0||ll===3||(zeroing&&aaa===0))return null;"
+          if old not in s:
+              raise SystemExit('expected EVEX validity guard not found')
+          p.write_text(s.replace(old,new,1))
           PY
       - name: Make synthetic VEX fixtures raw-prefix coherent
         run: |
@@ -67,7 +75,7 @@ jobs:
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add js/targets/architecture/x86_64/effects/terminal-residual.js tests/machine-effects/helpers/x86-long64-fp-simd.mjs
+          git add js/targets/architecture/x86_64/effects/terminal-residual.js js/targets/architecture/x86_64/effects/extended-state-helpers.js tests/machine-effects/helpers/x86-long64-fp-simd.mjs
           git diff --cached --quiet && exit 0
           git commit -m "fix(stage2): close final x86 long64 semantic residuals"
           git push origin HEAD:integration/stage2-a2-x86-long64-terminal-semantics
