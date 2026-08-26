@@ -55,16 +55,41 @@ function fallthrough(instruction) { return addressRef(BigInt(instruction.address
 function directTarget(operand) { return operand?.type === 'immediate' ? operand.value : null; }
 
 function trapEffect(ctx, family, featureMetadata) {
-  if (family === 'ud2') {
+  if (family === 'ud2' || family === 'ud0' || family === 'ud1') {
     return ctx.finish({
       family:'control',
-      controlEffect:{ kind:'trap', reason:'x86-ud2-invalid-opcode' },
+      controlEffect:{ kind:'trap', reason:`x86-${family}-invalid-opcode` },
       possibleFaults:[{
         kind:'invalid-opcode',
         condition:{ kind:'always' },
-        detail:{ vector:'#UD', exceptionClass:'fault', operation:'ud2' },
+        detail:{ vector:'#UD', exceptionClass:'fault', operation:family },
       }],
-      metadata:{ ...featureMetadata, operation:'ud2', architecturalTrap:true },
+      metadata:{ ...featureMetadata, operation:family, architecturalTrap:true },
+    });
+  }
+  if (family === 'int1') {
+    return ctx.finish({
+      family:'control',
+      controlEffect:{ kind:'trap', reason:'x86-int1-icebp' },
+      possibleFaults:[{
+        kind:'breakpoint-trap',
+        condition:{ kind:'always' },
+        detail:{ vector:'#DB', exceptionClass:'trap', operation:'int1' },
+      }],
+      metadata:{ ...featureMetadata, operation:'int1', architecturalTrap:true },
+    });
+  }
+  if (family === 'int') {
+    const vector = ctx.operands[0]?.type === 'immediate' ? Number(ctx.operands[0].value) : 0;
+    return ctx.finish({
+      family:'control',
+      controlEffect:{ kind:'trap', reason:'x86-int-software-interrupt' },
+      possibleFaults:[{
+        kind:'software-interrupt',
+        condition:{ kind:'always' },
+        detail:{ vector, exceptionClass:'trap', operation:'int' },
+      }],
+      metadata:{ ...featureMetadata, operation:'int', vector, architecturalTrap:true },
     });
   }
   return ctx.finish({
@@ -77,6 +102,29 @@ function trapEffect(ctx, family, featureMetadata) {
     }],
     metadata:{ ...featureMetadata, operation:'int3', architecturalTrap:true },
   });
+}
+
+function intOperandFailure(ctx) {
+  if (ctx.operands.length !== 1 || ctx.operands[0]?.type !== 'immediate') return 'x86-int-operand-shape-unmodelled';
+  const vector = ctx.operands[0];
+  const widths = [vector.widthBits, vector.encodedWidthBits].filter((width) => width != null).map(Number);
+  if (widths.some((width) => width !== 8)) return 'x86-int-vector-width-unmodelled';
+  const rawValue = vector.value;
+  if (rawValue == null || !['bigint', 'number', 'string'].includes(typeof rawValue) || (typeof rawValue === 'string' && rawValue.trim() === '')) return 'x86-int-vector-unmodelled';
+  let value;
+  try {
+    value = BigInt(rawValue);
+  } catch {
+    return 'x86-int-vector-unmodelled';
+  }
+  if (value < 0n || value > 0xffn) return 'x86-int-vector-unmodelled';
+  const rawBytes = Array.from(ctx.instruction.rawBytes || []);
+  const legacyPrefixes = new Set([0xf0, 0xf2, 0xf3, 0x2e, 0x36, 0x3e, 0x26, 0x64, 0x65, 0x66, 0x67]);
+  let opcodeIndex = 0;
+  while (opcodeIndex < rawBytes.length && legacyPrefixes.has(rawBytes[opcodeIndex])) opcodeIndex += 1;
+  if (opcodeIndex < rawBytes.length && rawBytes[opcodeIndex] >= 0x40 && rawBytes[opcodeIndex] <= 0x4f) opcodeIndex += 1;
+  if (rawBytes.length !== opcodeIndex + 2 || rawBytes[opcodeIndex] !== 0xcd || BigInt(rawBytes[opcodeIndex + 1]) !== value) return 'x86-int-encoding-unmodelled';
+  return null;
 }
 
 function resolveIndirectTarget(ctx, operand, operation) {
@@ -95,10 +143,13 @@ function resolveIndirectTarget(ctx, operand, operation) {
   return Object.freeze({ target, faults:x86MemoryFaults('read',64) });
 }
 
+const CONTROL_FAMILIES = new Set(['jmp','call','ret','retq','nop','ud2','ud0','ud1','int3','int1','int']);
+const TRAP_FAMILIES = new Set(['ud2','ud0','ud1','int3','int1','int']);
+
 export function liftX86ControlEffects(instruction, context = {}) {
   const family = String(instruction?.instructionFamily || '').toLowerCase();
   const conditional = (family.startsWith('j') && family !== 'jmp') || LOOP_BRANCHES.has(family);
-  if (!conditional && !['jmp','call','ret','retq','nop','ud2','int3'].includes(family)) return null;
+  if (!conditional && !CONTROL_FAMILIES.has(family)) return null;
   const ctx = createX86EffectContext(instruction, context);
   const featureEnvelope = resolveX86Long64FeatureEnvelope(ctx.instruction, context);
   if (!featureEnvelope.supported) {
@@ -148,8 +199,13 @@ export function liftX86ControlEffects(instruction, context = {}) {
     });
   }
 
-  if (family === 'ud2' || family === 'int3') {
-    if (ctx.operands.length !== 0) return ctx.partial(`x86-${family}-operand-shape-unmodelled`, ['control','faults'], { controlEffect:{ kind:'unknown', reason:`x86-${family}-operand-shape-unmodelled` } });
+  if (TRAP_FAMILIES.has(family)) {
+    if (family === 'int') {
+      const failure = intOperandFailure(ctx);
+      if (failure) return ctx.partial(failure, ['control', 'faults', 'other'], { controlEffect:{ kind:'unknown', reason:failure } });
+    } else if (ctx.operands.length !== 0) {
+      return ctx.partial(`x86-${family}-operand-shape-unmodelled`, ['control','faults'], { controlEffect:{ kind:'unknown', reason:`x86-${family}-operand-shape-unmodelled` } });
+    }
     return trapEffect(ctx, family, featureMetadata);
   }
 
