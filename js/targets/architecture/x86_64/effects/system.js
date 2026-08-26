@@ -672,9 +672,146 @@ function liftSimpleFlagControl(ctx, family) {
   });
 }
 
+const EXTENDED_SYSTEM_NAMES = new Set([
+  'bndcl', 'bndcn', 'bndcu', 'bndldx', 'bndmk', 'bndmov', 'bndstx',
+  'clac', 'stac', 'cldemote', 'clflush', 'clflushopt', 'clgi', 'stgi', 'clrssbsy', 'clts', 'clwb', 'clzero',
+  'encls', 'enclu', 'enclv', 'endbr32', 'endbr64', 'lcall', 'ljmp',
+  'in', 'out', 'insb', 'insd', 'insw', 'outsb', 'outsd', 'outsw',
+  'incsspd', 'incsspq', 'invept', 'invlpg', 'invlpga', 'invpcid', 'invvpid',
+  'iret', 'iretd', 'iretq', 'lahf', 'sahf', 'lar', 'lfs', 'lgs', 'lss',
+  'llwpcb', 'slwpcb', 'lwpins', 'lwpval', 'lmsw', 'smsw', 'retf', 'retfq',
+  'lsl', 'monitorx', 'monitor', 'movdir64b', 'movdiri', 'mwaitx', 'mwait',
+  'pconfig', 'ptwrite', 'rdfsbase', 'rdgsbase', 'wrfsbase', 'wrgsbase',
+  'rdmsr', 'wrmsr', 'rdpid', 'rdpkru', 'wrpkru', 'rdpmc',
+  'rdsspd', 'rdsspq', 'rstorssp', 'saveprevssp', 'setssbsy', 'wrssd', 'wrssq', 'wrussd', 'wrussq',
+  'sgdt', 'sidt', 'sldt', 'str', 'skinit', 'tpause', 'umonitor', 'umwait',
+  'verr', 'verw', 'vmcall', 'vmclear', 'vmfunc', 'vmlaunch', 'vmload', 'vmmcall',
+  'vmptrld', 'vmptrst', 'vmread', 'vmresume', 'vmrun', 'vmsave', 'vmwrite', 'vmxoff', 'vmxon',
+  'wbnoinvd', 'xabort', 'xbegin', 'xend', 'xtest', 'xgetbv', 'xsetbv',
+  'xsave', 'xsaveopt', 'xsavec', 'xsaves', 'xsave64', 'xsaveopt64', 'xsavec64', 'xsaves64',
+  'xrstor', 'xrstors', 'xrstor64', 'xrstors64', 'serialize', 'tsxldtrk', 'tsxsusldtrk',
+  'enqcmd', 'enqcmds',
+  'getsec', 'rsm', 'sysenter', 'sysexit', 'sysexitq', 'rdrand', 'rdseed',
+  'montmul', 'xcryptcbc', 'xcryptcfb', 'xcryptctr', 'xcryptecb', 'xcryptofb', 'xsha1', 'xsha256', 'xstore',
+  'prefetch', 'prefetchnta', 'prefetcht0', 'prefetcht1', 'prefetcht2', 'prefetchw', 'prefetchwt1',
+]);
+const PROVEN_EXTENDED_SYSTEM_FAMILIES = new Set([]);
+
+function liftExtendedSystem(ctx, family) {
+  if (!PROVEN_EXTENDED_SYSTEM_FAMILIES.has(family)) {
+    return ctx.partial('x86-extended-system-family-requires-dedicated-semantics', ['memory', 'registers', 'flags', 'control', 'faults', 'other'], {
+      controlEffect:{ kind:'unknown', reason:'x86-extended-system-control-effect-unproven' },
+      metadata:{ family:'system', operation:family, exactArchitecturalSummary:false, requiresDedicatedOperandRoles:true },
+    });
+  }
+  const operands = ctx.operands;
+  const inputs = [], registersRead = [], registersWritten = [], memoryReads = [], memoryWrites = [];
+  const faults = [];
+
+  if (['lcall', 'ljmp', 'retf', 'retfq', 'iret', 'iretd', 'iretq'].includes(family)) {
+    const isCall = family === 'lcall';
+    const isRet = ['retf', 'retfq', 'iret', 'iretd', 'iretq'].includes(family);
+    const target = Object.freeze({ kind: 'indirect', source: `x86-far-${family}` });
+    return ctx.finish({
+      family: 'system',
+      controlEffect: { kind: isCall ? 'call' : (isRet ? 'return' : 'indirect'), target },
+      possibleFaults: [Object.freeze({ kind: 'general-protection', condition: { kind: 'x86-far-transfer-fault' }, detail: { fault: '#GP(0)' } })],
+      metadata: { operation: family, farControlTransfer: true },
+    });
+  }
+
+  if (family === 'lahf') {
+    const ah = x86RegisterOperand('ah');
+    const flagsVal = ctx.valueOp('flags-to-ah', [ctx.readFlag('SF'), ctx.readFlag('ZF'), ctx.readFlag('AF'), ctx.readFlag('PF'), ctx.readFlag('CF')], 8);
+    ctx.writeRegister(ah, flagsVal);
+    return ctx.finish({ family: 'system', metadata: { operation: 'lahf', ahWritten: true } });
+  }
+  if (family === 'sahf') {
+    const ah = x86RegisterOperand('ah');
+    const ahVal = ctx.readRegister(ah);
+    if (!ahVal) return ctx.partial('x86-sahf-ah-unmodelled', ['registers']);
+    ctx.writeFlag('SF', ctx.valueOp('extract', [ahVal], 1, { lsb: 7 }), { operation: 'sahf' });
+    ctx.writeFlag('ZF', ctx.valueOp('extract', [ahVal], 1, { lsb: 6 }), { operation: 'sahf' });
+    ctx.writeFlag('AF', ctx.valueOp('extract', [ahVal], 1, { lsb: 4 }), { operation: 'sahf' });
+    ctx.writeFlag('PF', ctx.valueOp('extract', [ahVal], 1, { lsb: 2 }), { operation: 'sahf' });
+    ctx.writeFlag('CF', ctx.valueOp('extract', [ahVal], 1, { lsb: 0 }), { operation: 'sahf' });
+    return ctx.finish({ family: 'system', metadata: { operation: 'sahf', flagsWritten: ['SF', 'ZF', 'AF', 'PF', 'CF'] } });
+  }
+
+  for (let i = 0; i < operands.length; i += 1) {
+    const op = operands[i];
+    if (op?.type === 'register') {
+      const val = ctx.readRegister(op);
+      if (val) { inputs.push(val); registersRead.push(op.register.physicalId); }
+    } else if (op?.type === 'immediate') {
+      inputs.push(ctx.constant(Number(op.widthBits || op.encodedWidthBits || 8), op.value));
+    } else if (op?.type === 'memory') {
+      const addr = x86EffectiveAddressExpression(ctx.instruction, op);
+      const width = Number(op.widthBits || 32);
+      if (addr) {
+        inputs.push(ctx.readMemory(addr.expression, width, { space: addr.space, metadata: { ...addr.metadata, operation: family } }));
+        memoryReads.push({ space: addr.space, addressExpr: addr.expression, widthBits: width, endian: 'little' });
+        faults.push(...x86MemoryFaults('read', width));
+        for (const reg of [op.memory?.base, op.memory?.index]) {
+          if (reg?.physicalId) registersRead.push(reg.physicalId);
+        }
+      }
+    }
+  }
+
+  for (const reg of ctx.instruction.detail?.implicitReads || []) {
+    const op = x86RegisterOperand(reg.id);
+    if (op) {
+      const val = ctx.readRegister(op);
+      if (val) { inputs.push(val); registersRead.push(reg.physicalId); }
+    }
+  }
+
+  const destOperands = [];
+  for (let i = 0; i < operands.length; i += 1) {
+    const op = operands[i];
+    if (op?.type === 'register' && (i === 0 || ['rdfsbase', 'rdgsbase', 'rdpid', 'rdpkru', 'rdpmc', 'rdmsr', 'rdsspd', 'rdsspq', 'smsw', 'sldt', 'str', 'lar', 'lsl', 'vmread'].includes(family))) {
+      destOperands.push(op);
+    }
+  }
+  for (const reg of ctx.instruction.detail?.implicitWrites || []) {
+    const op = x86RegisterOperand(reg.id);
+    if (op) destOperands.push(op);
+  }
+
+  const outputWidths = destOperands.map((d) => Number(d.widthBits || d.register?.viewBits || 32));
+  const outputs = ctx.intrinsic(`x86.system.${family}`, inputs, outputWidths, {
+    registersRead: [...new Set(registersRead)].sort(),
+    registersWritten: [...new Set(destOperands.filter((d) => d.type === 'register').map((d) => d.register.physicalId))].sort(),
+    memoryRead: memoryReads.length ? { scope: 'accesses', accesses: memoryReads } : { scope: 'none' },
+    memoryWrite: memoryWrites.length ? { scope: 'accesses', accesses: memoryWrites } : { scope: 'none' },
+    determinism: 'input-dependent',
+    symbolicDetail: 'summary-only',
+    metadata: { operation: family, systemPrivileged: true, exactArchitecturalSummary: true },
+  });
+
+  for (let i = 0; i < destOperands.length; i += 1) {
+    const dest = destOperands[i];
+    if (dest?.type === 'register') {
+      ctx.writeRegister(dest, outputs[i]);
+    }
+  }
+
+  if (['lar', 'lsl', 'verr', 'verw', 'xtest'].includes(family)) {
+    ctx.writeFlag('ZF', ctx.constant(1, 1n), { operation: family });
+  }
+
+  return ctx.finish({
+    family: 'system',
+    possibleFaults: faults,
+    metadata: { operation: family, systemPrivileged: true },
+  });
+}
+
 export function liftX86SystemEffects(instruction, context = {}) {
   const family = String(instruction?.instructionFamily || '').toLowerCase();
-  if (![...FENCES, ...LIVE_PRIVILEGED, ...SHARED_ALIAS_PRIVILEGED, ...Object.keys(SIMPLE_FLAG_CONTROLS), 'pause','cpuid','rdtsc','rdtscp','syscall','sysret','sysretq'].includes(family)) return null;
+  const knownSystem = [...FENCES, ...LIVE_PRIVILEGED, ...SHARED_ALIAS_PRIVILEGED, ...Object.keys(SIMPLE_FLAG_CONTROLS), 'pause', 'cpuid', 'rdtsc', 'rdtscp', 'syscall', 'sysret', 'sysretq'].includes(family);
+  if (!knownSystem && !EXTENDED_SYSTEM_NAMES.has(family)) return null;
   const ctx = createX86EffectContext(instruction, context);
 
   if (SIMPLE_FLAG_CONTROLS[family]) return liftSimpleFlagControl(ctx, family);
@@ -710,5 +847,7 @@ export function liftX86SystemEffects(instruction, context = {}) {
       metadata:{ family:'system', operation:family, treatedAsNop:false, privileged:true, sharedDependencyRequired:true },
     });
   }
+
+  if (EXTENDED_SYSTEM_NAMES.has(family)) return liftExtendedSystem(ctx, family);
   return null;
 }
