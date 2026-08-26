@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import * as facade from "../js/arm64.js";
 import * as directOperands from "../js/ui/explain/arm64-operands.js";
 import * as directAapcs from "../js/abi/aapcs64/presentation.js";
+import { analyzeFunction } from "../js/analyze.js";
 
 console.log("Testing ARM64 presentation compatibility...");
 
@@ -138,5 +139,57 @@ for (const invalid of ["v0.b[16]", "v0.h[8]", "v0.s[4]", "v0.d[2]", "v32.b[0]"])
   assert.equal(directOperands.parseOperands(invalid)[0]?.k, "other", `${invalid} must fail soft instead of becoming a vector element`);
 }
 console.log("  ok 7 SIMD/FP register and vector-lane bounds (#2068 #2070)");
+
+// 8. analyzeFunction must use the architectural effective immediate for ADD/SUB (#2051).
+function analyzerBackend(instructions) {
+  const mn = [];
+  const ops = [];
+  instructions.forEach((insn, index) => {
+    mn[index] = insn.mn;
+    ops[index] = insn.ops;
+  });
+  return { async fetchChunk() { return { mn, ops, bytes: null }; } };
+}
+
+async function analyzeArm64Fixture(instructions) {
+  const region = { id: "arm64-shifted-imm", vmAddr: 0x100000n, size: BigInt(instructions.length * 4) };
+  return analyzeFunction(analyzerBackend(instructions), region, 0, instructions.length - 1, null, null, { texts: false });
+}
+
+for (const [ops, expected] of [
+  ["sp, sp, #0x20", 32],
+  ["sp, sp, #1, lsl #0", 1],
+  ["sp, sp, #1, lsl #12", 4096],
+  ["sp, sp, #2, lsl #12", 8192],
+]) {
+  const result = await analyzeArm64Fixture([{ mn: "sub", ops }]);
+  assert.equal(result.frameBytes, expected, `sub ${ops} must produce frameBytes=${expected}`);
+}
+{
+  const result = await analyzeArm64Fixture([
+    { mn: "adrp", ops: "x8, #0x100000" },
+    { mn: "add", ops: "x8, x8, #1" },
+  ]);
+  assert.deepEqual(result.stringRefs.map((ref) => ref.addr), [0x100001n]);
+}
+{
+  const result = await analyzeArm64Fixture([
+    { mn: "adrp", ops: "x8, #0x100000" },
+    { mn: "add", ops: "x8, x8, #1, lsl #12" },
+  ]);
+  assert.deepEqual(result.stringRefs.map((ref) => ref.addr), [0x101000n]);
+}
+for (const malformed of ["sp, sp, #1, lsl #1", "sp, sp, #1, lsr #12"]) {
+  const result = await analyzeArm64Fixture([{ mn: "sub", ops: malformed }]);
+  assert.equal(result.frameBytes, 0, `unsupported shift must not manufacture frame size: ${malformed}`);
+}
+for (const malformed of ["x8, x8, #1, lsl #1", "x8, x8, #1, lsr #12"]) {
+  const result = await analyzeArm64Fixture([
+    { mn: "adrp", ops: "x8, #0x100000" },
+    { mn: "add", ops: malformed },
+  ]);
+  assert.equal(result.stringRefs.length, 0, `unsupported shift must not manufacture ADRP+ADD ref: ${malformed}`);
+}
+console.log("  ok 8 shifted ADD/SUB immediate analyzer regression (#2051)");
 
 console.log("All ARM64 presentation compatibility tests PASS!");
