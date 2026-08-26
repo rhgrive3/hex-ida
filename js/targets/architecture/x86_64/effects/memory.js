@@ -604,38 +604,20 @@ function liftPop(ctx) {
 }
 
 function liftPushf(ctx, family) {
-  const is16 = family === 'pushf';
-  const stackWidth = is16 ? 16 : 64;
-  const oldRsp = ctx.readRegister(x86RegisterOperand('rsp'));
-  if (!oldRsp) return ctx.partial('x86-pushf-rsp-unmodelled', ['registers', 'memory']);
-  const flags = ctx.readRegister(x86RegisterOperand('rflags'));
-  const value = flags ? (is16 ? ctx.valueOp('extract', [flags], 16, { lsb: 0 }) : flags) : ctx.constant(stackWidth, 0x202n);
-  const delta = stackWidth / 8;
-  const nextRsp = ctx.valueOp('sub', [oldRsp, ctx.constant(64, BigInt(delta))], 64, { stackDelta: -delta, stackWidthBits: stackWidth });
-  ctx.writeMemory(nextRsp, stackWidth, value, { metadata: { stackAccess: true, stackPhase: 'push-flags' } });
-  ctx.writeRegister(x86RegisterOperand('rsp'), nextRsp);
-  return ctx.finish({
-    family: 'memory',
-    possibleFaults: x86MemoryFaults('write', stackWidth),
-    metadata: { operation: family, stackDelta: -delta, stackWidthBits: stackWidth },
+  return ctx.partial(`x86-${family}-architectural-flags-semantics-unmodelled`, ['registers', 'memory', 'flags', 'other'], {
+    detail: {
+      reason: 'architectural RFLAGS masks, reserved bits, and stack fault behavior are not represented by the frozen x86 effect contract',
+    },
+    metadata: { operation: family, stackFlagsSemantics: 'fail-closed-until-masks-and-faults-are-modeled' },
   });
 }
 
 function liftPopf(ctx, family) {
-  const is16 = family === 'popf';
-  const stackWidth = is16 ? 16 : 64;
-  const delta = stackWidth / 8;
-  const oldRsp = ctx.readRegister(x86RegisterOperand('rsp'));
-  if (!oldRsp) return ctx.partial('x86-popf-rsp-unmodelled', ['registers', 'memory']);
-  const value = ctx.readMemory(oldRsp, stackWidth, { metadata: { stackAccess: true, stackPhase: 'pop-flags' } });
-  const nextRsp = ctx.valueOp('add', [oldRsp, ctx.constant(64, BigInt(delta))], 64, { stackDelta: delta, stackWidthBits: stackWidth });
-  ctx.writeRegister(x86RegisterOperand('rsp'), nextRsp);
-  const rflags = x86RegisterOperand('rflags');
-  if (rflags) ctx.writeRegister(rflags, is16 ? ctx.coerce(value, 16, 64, false) : value);
-  return ctx.finish({
-    family: 'memory',
-    possibleFaults: x86MemoryFaults('read', stackWidth),
-    metadata: { operation: family, stackDelta: delta, stackWidthBits: stackWidth },
+  return ctx.partial(`x86-${family}-architectural-flags-semantics-unmodelled`, ['registers', 'memory', 'flags', 'other'], {
+    detail: {
+      reason: 'architectural RFLAGS masks, privilege-controlled bits, and stack fault behavior are not represented by the frozen x86 effect contract',
+    },
+    metadata: { operation: family, stackFlagsSemantics: 'fail-closed-until-masks-privilege-and-faults-are-modeled' },
   });
 }
 

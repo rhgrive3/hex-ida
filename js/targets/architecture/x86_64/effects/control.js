@@ -104,6 +104,29 @@ function trapEffect(ctx, family, featureMetadata) {
   });
 }
 
+function intOperandFailure(ctx) {
+  if (ctx.operands.length !== 1 || ctx.operands[0]?.type !== 'immediate') return 'x86-int-operand-shape-unmodelled';
+  const vector = ctx.operands[0];
+  const widths = [vector.widthBits, vector.encodedWidthBits].filter((width) => width != null).map(Number);
+  if (widths.some((width) => width !== 8)) return 'x86-int-vector-width-unmodelled';
+  const rawValue = vector.value;
+  if (rawValue == null || !['bigint', 'number', 'string'].includes(typeof rawValue) || (typeof rawValue === 'string' && rawValue.trim() === '')) return 'x86-int-vector-unmodelled';
+  let value;
+  try {
+    value = BigInt(rawValue);
+  } catch {
+    return 'x86-int-vector-unmodelled';
+  }
+  if (value < 0n || value > 0xffn) return 'x86-int-vector-unmodelled';
+  const rawBytes = Array.from(ctx.instruction.rawBytes || []);
+  const legacyPrefixes = new Set([0xf0, 0xf2, 0xf3, 0x2e, 0x36, 0x3e, 0x26, 0x64, 0x65, 0x66, 0x67]);
+  let opcodeIndex = 0;
+  while (opcodeIndex < rawBytes.length && legacyPrefixes.has(rawBytes[opcodeIndex])) opcodeIndex += 1;
+  if (opcodeIndex < rawBytes.length && rawBytes[opcodeIndex] >= 0x40 && rawBytes[opcodeIndex] <= 0x4f) opcodeIndex += 1;
+  if (rawBytes.length !== opcodeIndex + 2 || rawBytes[opcodeIndex] !== 0xcd || BigInt(rawBytes[opcodeIndex + 1]) !== value) return 'x86-int-encoding-unmodelled';
+  return null;
+}
+
 function resolveIndirectTarget(ctx, operand, operation) {
   if (operand?.type === 'register') {
     if (operand.widthBits !== 64) return null;
@@ -177,7 +200,12 @@ export function liftX86ControlEffects(instruction, context = {}) {
   }
 
   if (TRAP_FAMILIES.has(family)) {
-    if (family !== 'int' && ctx.operands.length !== 0) return ctx.partial(`x86-${family}-operand-shape-unmodelled`, ['control','faults'], { controlEffect:{ kind:'unknown', reason:`x86-${family}-operand-shape-unmodelled` } });
+    if (family === 'int') {
+      const failure = intOperandFailure(ctx);
+      if (failure) return ctx.partial(failure, ['control', 'faults', 'other'], { controlEffect:{ kind:'unknown', reason:failure } });
+    } else if (ctx.operands.length !== 0) {
+      return ctx.partial(`x86-${family}-operand-shape-unmodelled`, ['control','faults'], { controlEffect:{ kind:'unknown', reason:`x86-${family}-operand-shape-unmodelled` } });
+    }
     return trapEffect(ctx, family, featureMetadata);
   }
 

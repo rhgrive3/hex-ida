@@ -77,7 +77,16 @@ export function liftEvex(instruction, context, family) {
   const isPrefetch = /gatherpf|scatterpf/.test(family);
   const compare = /^v(?:p?cmp|ptest|fpclass|u?comi)/.test(family);
 
-  if (!trustedCapstoneInstruction(instruction, family)) {
+  // A synthetic/unqualified `v*` spelling is not evidence that this generic
+  // EVEX owner applies. Keep the finite dedicated EVEX families available to
+  // their existing provenance-negative tests, but require the Capstone
+  // identity proof before claiming every broader family (for example
+  // `vpmulld`). Canonical decoder rows carry that proof and remain owned.
+  const knownDedicatedFamily = FP_EVEX_BASES.has(base) || SIMD_EVEX_BASES.has(base);
+  const trusted = trustedCapstoneInstruction(instruction, family);
+  if (!trusted && !knownDedicatedFamily) return null;
+
+  if (!trusted) {
     const ctx = createX86EffectContext(instruction, context);
     return ctx.partial('x86-evex-trusted-decoder-provenance-required', ['registers', 'memory', 'other'], { metadata: { family: category, operation: family, evexPhysicalStateModeled: true } });
   }
