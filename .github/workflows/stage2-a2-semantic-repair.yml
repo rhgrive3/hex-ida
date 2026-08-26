@@ -8,7 +8,7 @@ on:
 permissions:
   contents: write
 jobs:
-  repair-final-nine:
+  prove-and-commit-terminal:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -20,7 +20,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --no-audit --no-fund
-      - name: Repair final trusted encoding gates
+      - name: Apply final trusted encoding gates
         run: |
           python3 - <<'PY'
           from pathlib import Path
@@ -43,6 +43,18 @@ jobs:
               s = s.replace(old,new,1)
           p.write_text(s)
           PY
+      - name: Make synthetic VEX fixtures raw-prefix coherent
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('tests/machine-effects/helpers/x86-long64-fp-simd.mjs')
+          s = p.read_text()
+          old = "export function instruction(family,operands=[],prefixes=legacy(),rawBytes=[0x90]){seq++;return{address:0x500000n+BigInt(seq*16),length:rawBytes.length,rawBytes:Uint8Array.from(rawBytes),mode:'long-64',instructionCode:code++,instructionFamily:family,instructionId:`x86-denominator:${family}:${seq}`,detailAvailable:true,detailStatus:'complete',mnemonic:family,opStr:'',detail:{operandCount:operands.length,operands,prefixes,implicitReads:[],implicitWrites:[],conditionCode:null}};}\nexport function effects(family,operands=[],prefixes=legacy(),rawBytes=[0x90]){const input=instruction(family,operands,prefixes,rawBytes);return liftX86MachineEffects(input,{instructionId:input.instructionId});}"
+          new = "export function instruction(family,operands=[],prefixes=legacy(),rawBytes=null){seq++;const coherentRaw=rawBytes??(Array.isArray(prefixes?.vector?.bytes)?[...prefixes.vector.bytes,0x90]:[0x90]);return{address:0x500000n+BigInt(seq*16),length:coherentRaw.length,rawBytes:Uint8Array.from(coherentRaw),mode:'long-64',instructionCode:code++,instructionFamily:family,instructionId:`x86-denominator:${family}:${seq}`,detailAvailable:true,detailStatus:'complete',mnemonic:family,opStr:'',detail:{operandCount:operands.length,operands,prefixes,implicitReads:[],implicitWrites:[],conditionCode:null}};}\nexport function effects(family,operands=[],prefixes=legacy(),rawBytes=null){const input=instruction(family,operands,prefixes,rawBytes);return liftX86MachineEffects(input,{instructionId:input.instructionId});}"
+          if old not in s:
+              raise SystemExit('expected synthetic fixture constructor not found')
+          p.write_text(s.replace(old,new,1))
+          PY
       - name: Prove frozen 1487 closure matrix
         run: node tests/machine-effects/x86-long64-closure-matrix.test.mjs
       - name: Prove focused denominators
@@ -51,11 +63,11 @@ jobs:
           node tests/machine-effects/x86-long64-simd-denominator.test.mjs
           node tests/machine-effects/x86-long64-system-denominator.test.mjs
           node tests/machine-effects/a2-denominator.test.mjs
-      - name: Commit proven production repair
+      - name: Commit only after all focused proofs pass
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add js/targets/architecture/x86_64/effects/terminal-residual.js
+          git add js/targets/architecture/x86_64/effects/terminal-residual.js tests/machine-effects/helpers/x86-long64-fp-simd.mjs
           git diff --cached --quiet && exit 0
-          git commit -m "fix(stage2): close final x86 long64 residual encoding gates"
+          git commit -m "fix(stage2): close final x86 long64 semantic residuals"
           git push origin HEAD:integration/stage2-a2-x86-long64-terminal-semantics
