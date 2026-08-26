@@ -122,7 +122,7 @@ function liftArm64ControlEffectsCore(instruction, options = {}) {
   }
 
   if (mnemonic === 'br') {
-    if (ops.length > 1) {
+    if (ops.length !== 1) {
       return ctx.partial('arm64-br-operand-shape-invalid', ['control','registers'], undefined, { kind:'unknown', reason:'arm64-br-operand-shape-invalid' });
     }
     const target = ctx.readRegister(ops[0]);
@@ -154,7 +154,7 @@ function liftArm64ControlEffectsCore(instruction, options = {}) {
   }
 
   if (mnemonic === 'blr') {
-    if (ops.length > 1) {
+    if (ops.length !== 1) {
       return ctx.partial('arm64-blr-operand-shape-invalid', ['control','registers'], undefined, { kind:'unknown', reason:'arm64-blr-operand-shape-invalid' });
     }
     const target = ctx.readRegister(ops[0]);
