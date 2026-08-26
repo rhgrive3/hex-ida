@@ -150,8 +150,8 @@ try {
   assert.equal(decoderAudit.decoderRejectedSha256, ARM64_A64_DECODER_AUDIT_LOCK.decoderRejectedSha256);
   assert.deepEqual(decoderAudit.scopeCounts, {
     'in-profile-resolved':343_236,
-    'dependency-pending':65,
-    'out-of-profile-unenumerated':32_838,
+    'dependency-pending':68,
+    'out-of-profile-unenumerated':32_835,
   });
   assert.deepEqual(decoderAudit.resolvedOwnerCounts, {
     control:21_306,

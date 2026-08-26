@@ -144,7 +144,7 @@ const RESOLVED_CLASSIFIERS = Object.freeze([
   Object.freeze({ family:'system', classify:classifyArm64A64SystemEncoding }),
 ]);
 const SYSTEM_PROFILE_MNEMONICS = new Set(ARM64_A64_SYSTEM_MNEMONIC_DENOMINATOR);
-const MEMORY_CANONICAL_SYSTEM_MNEMONICS = new Set(['dmb','dsb','isb','clrex']);
+const MEMORY_CANONICAL_SYSTEM_MNEMONICS = new Set(['dmb','dsb','isb','ssbb','pssbb','dfb','clrex']);
 
 export function classifyArm64A64LockedScope(word, decodedMnemonic = null) {
   const value = Number(word) >>> 0;
@@ -314,7 +314,7 @@ export function buildArm64A64CandidateCorpusEvidence() {
       candidateCaseCount++;
       familyCount++;
     }
-    if (familyCount !== input.expectedCaseCount) throw new Error(`arm64-decoder-denominator-generator-shrink:${input.family}:${familyCount}`);
+    if (familyCount !== input.expectedCaseCount) throw new Error(`arm64-decoder-denominator-generator-shrink:${input.family}:${familyCount}:${input.expectedCaseCount}`);
     familyCaseCounts[input.family] = familyCount;
   }
 
@@ -360,14 +360,14 @@ export const ARM64_A64_DECODER_AUDIT_LOCK = Object.freeze({
   decoderRejectedCaseCount:47,
   decoderRecognizedUniqueWordCount:375_828,
   decoderRecognizedUniqueWordsSha256:'204bf1935482a4c131b4a0fac6da13adf54b9e864559553b67795e0ff1e0bbb8',
-  decoderAuditSha256:'de6882fa5b13b7f31480fb4089f76d537415e18262de81d5f306a62f72061d4d',
+  decoderAuditSha256:'c39f28439939b171994064176137437f8a965243e56199437174959dc39e0332',
   decoderRejectedSha256:'5cdf9f730d4587ee7ec92b837a219db61ef9635dedaf99606a32ac887de86808',
   recognizedMnemonicCount:208,
   recognizedMnemonicsSha256:'dd421cadb32c76de18eae4ee444cf5a3e965a618e2330acf89eab3d98f0e01a9',
   scopeCounts:Object.freeze({
     'in-profile-resolved':343_236,
-    'dependency-pending':65,
-    'out-of-profile-unenumerated':32_838,
+    'dependency-pending':68,
+    'out-of-profile-unenumerated':32_835,
   }),
   resolvedOwnerCounts:Object.freeze({ control:21_306, flags:15_232, fp:8_417, integer:68_899, system:229_382 }),
   rejectedKindCounts:Object.freeze({ 'provider-unsupported-architectural':2, 'invalid-or-reserved':45 }),
@@ -520,14 +520,18 @@ export function assertArm64A64DecoderAuditLock(evidence) {
     'decoderRecognizedUniqueWordCount','decoderRecognizedUniqueWordsSha256','decoderAuditSha256',
     'decoderRejectedSha256','recognizedMnemonicCount','recognizedMnemonicsSha256',
   ]) {
-    if (evidence[key] !== ARM64_A64_DECODER_AUDIT_LOCK[key]) throw new Error(`arm64-decoder-audit-drift:${key}`);
+    if (evidence[key] !== ARM64_A64_DECODER_AUDIT_LOCK[key]) {
+      throw new Error(`arm64-decoder-audit-drift:${key}:observed=${evidence[key]}:expected=${ARM64_A64_DECODER_AUDIT_LOCK[key]}`);
+    }
   }
   for (const [key, expected] of [
     ['scopeCounts', ARM64_A64_DECODER_AUDIT_LOCK.scopeCounts],
     ['resolvedOwnerCounts', ARM64_A64_DECODER_AUDIT_LOCK.resolvedOwnerCounts],
     ['rejectedKindCounts', ARM64_A64_DECODER_AUDIT_LOCK.rejectedKindCounts],
   ]) {
-    if (!sameCounts(evidence[key], expected)) throw new Error(`arm64-decoder-audit-drift:${key}`);
+    if (!sameCounts(evidence[key], expected)) {
+      throw new Error(`arm64-decoder-audit-drift:${key}:observed=${JSON.stringify(evidence[key])}:expected=${JSON.stringify(expected)}`);
+    }
   }
   for (const key of ['resolvedOwnershipProof','negativeBoundaryProof','dependencyPendingNoNullProof','scopeShrinkGuard','corpusShrinkGuard']) {
     if (evidence[key] !== true) throw new Error(`arm64-decoder-audit-proof-missing:${key}`);
