@@ -134,12 +134,12 @@ function liftCacheHint(instruction, context, family) {
 
 const STRING_IO_WIDTH = Object.freeze({ insb:8, insw:16, insd:32, outsb:8, outsw:16, outsd:32 });
 function validStringIoBytes(family, bytes) {
-  if (family === 'insb') return same(bytes,[0x6c]);
+  if (family === 'insb') return same(bytes,[0x6c]) || same(bytes,[0x26,0x6c]);
   if (family === 'insw') return same(bytes,[0x66,0x6d]);
-  if (family === 'insd') return same(bytes,[0x6d]);
-  if (family === 'outsb') return same(bytes,[0x6e]);
+  if (family === 'insd') return same(bytes,[0x6d]) || same(bytes,[0x26,0x6d]);
+  if (family === 'outsb') return same(bytes,[0x6e]) || same(bytes,[0x26,0x6e]);
   if (family === 'outsw') return same(bytes,[0x66,0x6f]);
-  if (family === 'outsd') return same(bytes,[0x6f]);
+  if (family === 'outsd') return same(bytes,[0x6f]) || same(bytes,[0x26,0x6f]);
   return false;
 }
 function ioAccess(direction, widthBits) {
@@ -274,12 +274,12 @@ function scalarRound(ctx, family, scalarBits, vex) {
 function liftResidualVector(instruction, context, family) {
   const bytes = raw(instruction);
   const ctx = createX86EffectContext(instruction, context);
-  if (family === 'roundsd' && same(bytes,[0x66,0x0f,0x3a,0x0a,0x00,0x00])) return scalarRound(ctx,family,64,false);
-  if (family === 'roundss' && same(bytes,[0x66,0x0f,0x3a,0x0b,0x00,0x00])) return scalarRound(ctx,family,32,false);
-  if (family === 'vroundsd' && same(bytes,[0xc4,0xe3,0x79,0x0a,0x00,0x00])) return scalarRound(ctx,family,64,true);
-  if (family === 'vroundss' && same(bytes,[0xc4,0xe3,0x79,0x0b,0x00,0x00])) return scalarRound(ctx,family,32,true);
+  if (family === 'roundsd' && same(bytes,[0x66,0x0f,0x3a,0x0b,0x00,0x00])) return scalarRound(ctx,family,64,false);
+  if (family === 'roundss' && same(bytes,[0x66,0x0f,0x3a,0x0a,0x00,0x00])) return scalarRound(ctx,family,32,false);
+  if (family === 'vroundsd' && same(bytes,[0xc4,0xe3,0x01,0x0b,0x00,0x00])) return scalarRound(ctx,family,64,true);
+  if (family === 'vroundss' && same(bytes,[0xc4,0xe3,0x01,0x0a,0x00,0x00])) return scalarRound(ctx,family,32,true);
 
-  if (family === 'vcvtpd2ps' && same(bytes,[0xc5,0xf9,0x5a,0x00])) {
+  if (family === 'vcvtpd2ps' && same(bytes,[0xc5,0x79,0x5a,0x00])) {
     const [destination, source] = ctx.operands;
     const address = memoryAddress(ctx,source);
     if (!address || destination?.type !== 'register') return null;
