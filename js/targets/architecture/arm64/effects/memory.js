@@ -590,6 +590,17 @@ function prefetchOperand(decoded) {
   return prefetchOperationFromCode(word & 0x1f);
 }
 
+function prefetchOperandShape(decoded) {
+  const items = operands(decoded);
+  const hasPrintedPrfop = items[0]?.k === 'other';
+  const addressIndex = hasPrintedPrfop ? 1 : 0;
+  if (items.length !== addressIndex + 1) return null;
+  const address = items[addressIndex];
+  if (address?.k === 'mem') return Object.freeze({ kind:'memory', address });
+  if (address?.k === 'imm' || address?.kind === 'immediate') return Object.freeze({ kind:'literal', address });
+  return null;
+}
+
 function prefetchIntrinsic(prfop, addressValue, addressExpr, registersRead) {
   return createMachineOperation({
     kind:'intrinsic',
@@ -621,8 +632,8 @@ function prefetchMetadata(mnemonic, prfop, extra) {
 
 // PRFM (literal) has no memory operand: the hinted address is PC-relative and
 // the disassembler prints it as a resolved immediate.
-function literalPrefetch(decoded, context, mnemonic, prfop) {
-  const immediate = immediateValue(operands(decoded).find((operand) => operand?.k === 'imm' || operand?.kind === 'immediate'));
+function literalPrefetch(decoded, context, mnemonic, prfop, operand) {
+  const immediate = immediateValue(operand);
   let target = decoded?.pcRelTarget ?? decoded?.literalTarget ?? immediate;
   if (typeof target === 'number' && Number.isSafeInteger(target)) target = BigInt(target);
   if (typeof target === 'string' && /^-?(?:0x[0-9a-f]+|\d+)$/i.test(target)) target = BigInt(target);
@@ -637,9 +648,11 @@ function literalPrefetch(decoded, context, mnemonic, prfop) {
 }
 
 function prefetch(decoded, context, mnemonic) {
+  const shape = prefetchOperandShape(decoded);
+  if (!shape) return partial(decoded, context, 'prefetch instruction operand shape is invalid', ['memory','other']);
   const prfop = prefetchOperand(decoded);
   if (!prfop) return partial(decoded, context, 'prefetch operation specifier is unavailable from the decoder', ['memory','other']);
-  if (!memoryOperand(decoded)) return literalPrefetch(decoded, context, mnemonic, prfop);
+  if (shape.kind === 'literal') return literalPrefetch(decoded, context, mnemonic, prfop, shape.address);
 
   let addressing;
   try { addressing = buildArm64EffectiveAddress(decoded, { prefix:'prefetch.addr' }); }
