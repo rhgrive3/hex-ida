@@ -85,6 +85,9 @@ async function buildText(app, region, sel, what, wantAsm) {
       throw new Error(t('sel.regionChanged'));
     }
     const entry = await app.backend.fetchChunk(region.id, c, wantAsm);
+    if (app.store.get('currentRegion') !== region) {
+      throw new Error(t('sel.regionChanged'));
+    }
     const base = c * CHUNK_ROWS;
     const from = Math.max(sel.start, base);
     const to = Math.min(sel.end, base + CHUNK_ROWS - 1);
