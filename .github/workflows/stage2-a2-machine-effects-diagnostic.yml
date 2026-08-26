@@ -14,13 +14,14 @@ jobs:
       matrix:
         test:
           - tests/machine-effects/a2-denominator.test.mjs
-          - tests/machine-effects/x86-long64-fp-denominator.test.mjs
           - tests/machine-effects/x86-long64-simd-denominator.test.mjs
           - tests/machine-effects/x86-long64-system-denominator.test.mjs
-          - tests/machine-effects/x86-system-register-move.test.mjs
+          - tests/machine-effects/x86-long64-closure-matrix.test.mjs
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
