@@ -10,6 +10,10 @@ import { liftArm64SystemEffects } from './system.js';
 
 export const ARM64_MACHINE_EFFECTS_SEMANTIC_VERSION = '7';
 
+const SIGNED_IMM21_MIN = -(1n << 20n);
+const SIGNED_IMM21_MAX = (1n << 20n) - 1n;
+const A64_PAGE_BYTES = 4096n;
+
 const ARM64_EFFECT_FAMILIES = Object.freeze([
   Object.freeze({ id:'flags', lift:liftArm64FlagEffects }),
   Object.freeze({ id:'control', lift:liftArm64ControlEffects }),
@@ -110,6 +114,26 @@ function movImmediateEncodable(op, widthBits) {
 function asBigIntOrNull(value) {
   try { return value == null ? null : BigInt(value); }
   catch { return null; }
+}
+
+function addressImmediateEncodingFailure(instruction) {
+  const mnemonic = instructionMnemonic(instruction);
+  if (mnemonic !== 'adr' && mnemonic !== 'adrp') return null;
+  const address = asBigIntOrNull(instruction?.address);
+  const target = asBigIntOrNull(instruction?.pcRelTarget);
+  if (address == null || target == null) return `arm64-${mnemonic}-encoding-address-unavailable`;
+  if (mnemonic === 'adr') {
+    const delta = target - address;
+    return delta < SIGNED_IMM21_MIN || delta > SIGNED_IMM21_MAX
+      ? 'arm64-adr-target-out-of-encoding-range'
+      : null;
+  }
+  if ((target & (A64_PAGE_BYTES - 1n)) !== 0n) return 'arm64-adrp-target-not-page-aligned';
+  const pageBase = address & ~(A64_PAGE_BYTES - 1n);
+  const pageDelta = (target - pageBase) / A64_PAGE_BYTES;
+  return pageDelta < SIGNED_IMM21_MIN || pageDelta > SIGNED_IMM21_MAX
+    ? 'arm64-adrp-target-out-of-encoding-range'
+    : null;
 }
 
 function isGpOrZrRegister(operand) {
@@ -299,7 +323,8 @@ function unaryEncodingFailure(instruction) {
 }
 
 function structuredEncodingFailure(instruction) {
-  return addSubImmediateEncodingFailure(instruction)
+  return addressImmediateEncodingFailure(instruction)
+    || addSubImmediateEncodingFailure(instruction)
     || flagEncodingFailure(instruction)
     || logicalEncodingFailure(instruction)
     || multiplyDivideEncodingFailure(instruction)
