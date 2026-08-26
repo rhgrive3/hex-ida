@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 
 import { liftArm64ControlEffects } from '../js/targets/architecture/arm64/effects/control.js';
 
+// Decoder-derived cases prove valid encodings; these cases additionally prove
+// that malformed structured absolute targets cannot bypass A64 PC-relative bounds.
 const gp64 = { k:'reg', cls:'gp', num:0, bits:64, text:'x0' };
 const imm0 = { k:'imm', value:0n, text:'#0' };
 const base = 0x40000000n;
