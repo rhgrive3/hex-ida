@@ -145,7 +145,7 @@ function dependencyMap(value) {
 }
 
 export function evaluateCapabilityRule(rule, snapshot = {}, options = {}) {
-  const compiled = rule.compiledId ? rule : compileCapabilityRule(rule, options);
+  const compiled = compileCapabilityRule(rule, options);
   const budget = options.budget || createResourceBudget({ maxWork: options.maxWork || 10_000, maxNodes: options.maxFeatureQueries || 10_000, signal: options.signal });
   const completeness = snapshot.completeness || snapshot.analysisCompleteness || 'complete';
   const partialUpstream = completeness !== 'complete' || snapshot.partial === true || snapshot.unknown === true;
@@ -210,7 +210,7 @@ export function compileCapabilityRules(rules = [], options = {}) {
 }
 
 export function evaluateCapabilityRules(rules, snapshot, options = {}) {
-  const ordered = Array.isArray(rules) && rules.every((rule) => rule.compiledId) ? rules : compileCapabilityRules(rules, options);
+  const ordered = compileCapabilityRules(rules, options);
   const budget = options.budget || createResourceBudget({ maxWork: options.maxWork || 10_000, maxNodes: options.maxFeatureQueries || 10_000, signal: options.signal });
   const resultsById = new Map();
   const out = [];
