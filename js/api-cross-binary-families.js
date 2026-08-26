@@ -27,7 +27,13 @@ const EXTRA_API_TABLE = [
   { id:'posix_io', re:/^_?(?:fcntl|fstat|lstat|statfs|fstatfs|opendir|closedir|readdir|readdir_r|scandir|rename|pipe|socketpair|select|getsockname|getpeername|setsockopt|getsockopt|ioctl|kqueue|kevent|dup2|mkstemp|fsync|getcwd|dirfd|nftw|basename|if_nametoindex|gethostname|connectx|symlink|chmod|umask|ftruncate|open_dprotected_np|isatty)$/, cat:'io', args:null, ret:null, effect:'io' },
 
   // C string/search/conversion APIs missed by the existing narrower table.
-  { id:'libc_string', re:/^_?(?:strspn|strcspn|strpbrk|strndup|strcoll|strnstr|strcasestr|memmem|atof|atoll|__strcat_chk|fnmatch)$/, cat:'string', args:null, ret:null, effect:'read' },
+  { id:'libc_string', re:/^_?(?:strspn|strcspn|strpbrk|strcoll|strnstr|strcasestr|memmem|atof|atoll|fnmatch)$/, cat:'string', args:null, ret:null, effect:'read' },
+
+  // strndup allocates a new string and returns the allocated pointer to its caller.
+  { id:'libc_strndup', re:/^_?strndup$/, cat:'string', args:['str','maxlen'], ret:'heap', effect:'alloc' },
+
+  // Fortified strcat still mutates its destination and returns that pointer.
+  { id:'libc_strcat_chk', re:/^_?__strcat_chk$/, cat:'string', args:['dst','src','object_size'], ret:'ptr', effect:'copy' },
 
   // strtoll/strtoull can store the first unparsed character through endptr.
   { id:'libc_strto', re:/^_?str(?:toll|toull)$/, cat:'string', args:null, ret:null, effect:'write' },
