@@ -35,6 +35,7 @@ for (const [mnemonic, operands, extra, reason] of [
   const effects = lift(mnemonic, operands, extra);
   assert.equal(effects.completeness, 'partial', `${mnemonic} ${operands}: encoding-impossible shape must fail closed`);
   assert.match(effects.unknownEffects.reason, reason);
+  // A malformed encoding must not acquire register/BTYPE operations from the post-lift decorator.
   assert.equal(effects.operations.length, 0, `${mnemonic}: invalid shape must not emit register effects`);
   assert.equal(effects.controlEffect.kind, 'unknown', `${mnemonic}: invalid shape must not emit exact control`);
 }
