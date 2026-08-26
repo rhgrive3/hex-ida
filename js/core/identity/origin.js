@@ -7,7 +7,8 @@ function fail(code) { throw new TypeError(code); }
 function stringList(values, code) {
   if (values == null) return [];
   if (!Array.isArray(values)) fail(code);
-  return values.map((value) => String(value)).filter(Boolean);
+  for (const value of values) if (typeof value !== 'string') fail(code);
+  return values.filter(Boolean);
 }
 function bigintValue(value, code) {
   if (typeof value === 'bigint') return value;
