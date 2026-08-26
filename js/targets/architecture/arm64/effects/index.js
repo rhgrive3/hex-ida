@@ -309,14 +309,14 @@ function addressImmediateEncodingFailure(instruction) {
   const target = asBigIntOrNull(instruction?.pcRelTarget);
   if (address == null || target == null) return `arm64-${mnemonic}-encoding-address-unavailable`;
   if (mnemonic === 'adr') {
-    const delta = target - address;
+    const delta = BigInt.asIntN(64, target - address);
     return delta < SIGNED_IMM21_MIN || delta > SIGNED_IMM21_MAX
       ? 'arm64-adr-target-out-of-encoding-range'
       : null;
   }
   if ((target & (A64_PAGE_BYTES - 1n)) !== 0n) return 'arm64-adrp-target-not-page-aligned';
   const pageBase = address & ~(A64_PAGE_BYTES - 1n);
-  const pageDelta = (target - pageBase) / A64_PAGE_BYTES;
+  const pageDelta = BigInt.asIntN(64, target - pageBase) / A64_PAGE_BYTES;
   return pageDelta < SIGNED_IMM21_MIN || pageDelta > SIGNED_IMM21_MAX
     ? 'arm64-adrp-target-out-of-encoding-range'
     : null;
