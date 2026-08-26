@@ -2,7 +2,12 @@
   "schemaVersion": "machine-effects-a2-denominator/v1",
   "oracleRole": "production-effect-registry-denominator-with-explicit-profile-gaps",
   "scope": {
-    "lockedProfiles": ["arm64:a64", "arm64e:a64+pac", "x86_64:long-64", "riscv64:rv64imc"],
+    "lockedProfiles": [
+      "arm64:a64",
+      "arm64e:a64+pac",
+      "x86_64:long-64",
+      "riscv64:rv64imc"
+    ],
     "unitGranularity": "production-decoder-effect-family",
     "fullIsaCoverageIncluded": false,
     "percentagePolicy": "not-emitted; this denominator exposes registry units and explicit exclusions, not ISA percentages",
@@ -16,7 +21,9 @@
         "provider": "capstone/backend",
         "contract": "external",
         "enumerationStatus": "exact",
-        "units": ["arm64:a64:all-decoder-encodings-and-aliases"],
+        "units": [
+          "arm64:a64:all-decoder-encodings-and-aliases"
+        ],
         "missingUnits": [],
         "denominator": {
           "schemaVersion": "arm64-a64-decoder-denominator/v2",
@@ -33,7 +40,10 @@
           "candidateSha256": "57f25255163e5194f7b53a0766444a479da2538b98dd1c84fb06104feb0f6590",
           "candidateUniqueWordsSha256": "a752ffdc75e67302f32578f9c2697b586067db98b81686aa861e46b553d75e90",
           "decoderAuditSha256": "c39f28439939b171994064176137437f8a965243e56199437174959dc39e0332",
-          "dependencyFamilies": ["memory", "simd"]
+          "dependencyFamilies": [
+            "memory",
+            "simd"
+          ]
         }
       },
       "effectRegistry": {
@@ -58,7 +68,11 @@
                 "profileId": "arm64:a64",
                 "encodingFamilyCount": 12,
                 "encodingCaseCount": 15232,
-                "oracleIds": ["arm-a-profile-a64-data-processing-encoding-tables", "deployed-capstone-5-arm64", "llvm-mc-18-aarch64-disassembler"]
+                "oracleIds": [
+                  "arm-a-profile-a64-data-processing-encoding-tables",
+                  "deployed-capstone-5-arm64",
+                  "llvm-mc-18-aarch64-disassembler"
+                ]
               }
             }
           },
@@ -80,7 +94,11 @@
                 "profileId": "arm64:a64",
                 "encodingFamilyCount": 10,
                 "encodingCaseCount": 21306,
-                "oracleIds": ["arm-a-profile-a64-branch-encoding-tables", "deployed-capstone-5-arm64", "llvm-mc-18-aarch64-disassembler"]
+                "oracleIds": [
+                  "arm-a-profile-a64-branch-encoding-tables",
+                  "deployed-capstone-5-arm64",
+                  "llvm-mc-18-aarch64-disassembler"
+                ]
               }
             }
           },
@@ -107,7 +125,11 @@
                 "exactMnemonicCount": 123,
                 "partialMnemonicCount": 0,
                 "corpusSha256": "3313f81cbe51108c43102d226222fedbd13251c45a7cfbb9552285992559e4c9",
-                "oracleIds": ["arm-a-profile-a64-load-store-encoding-tables", "deployed-capstone-5-arm64", "llvm-aarch64-integrated-assembler-disassembler"]
+                "oracleIds": [
+                  "arm-a-profile-a64-load-store-encoding-tables",
+                  "deployed-capstone-5-arm64",
+                  "llvm-aarch64-integrated-assembler-disassembler"
+                ]
               }
             }
           },
@@ -133,7 +155,11 @@
                 "formCount": 891,
                 "aliasBindingCount": 3,
                 "corpusSha256": "7fe74945fe34e0f0c1f967297d53e25323d03bd446d701598211f15f49bedd4b",
-                "oracleIds": ["arm-a64-advanced-simd-encoding-tables", "llvm-mc-aarch64-advanced-simd", "deployed-capstone-arm64-a64"]
+                "oracleIds": [
+                  "arm-a64-advanced-simd-encoding-tables",
+                  "llvm-mc-aarch64-advanced-simd",
+                  "deployed-capstone-arm64-a64"
+                ]
               }
             }
           },
@@ -157,7 +183,11 @@
                 "encodingCaseCount": 8417,
                 "mnemonicCount": 45,
                 "fpImmediateCount": 256,
-                "oracleIds": ["arm-a-profile-a64-floating-point-encoding-tables", "deployed-capstone-5-arm64", "llvm-mc-18-aarch64-disassembler"]
+                "oracleIds": [
+                  "arm-a-profile-a64-floating-point-encoding-tables",
+                  "deployed-capstone-5-arm64",
+                  "llvm-mc-18-aarch64-disassembler"
+                ]
               }
             }
           },
@@ -209,11 +239,21 @@
                 "mnemonicCount": 24,
                 "selectorCount": 65536,
                 "registerCount": 32,
-                "oracleIds": ["arm-a-profile-a64-exception-and-system-encoding-tables", "deployed-capstone-5-arm64", "llvm-mc-18-aarch64-disassembler"]
+                "oracleIds": [
+                  "arm-a-profile-a64-exception-and-system-encoding-tables",
+                  "deployed-capstone-5-arm64",
+                  "llvm-mc-18-aarch64-disassembler"
+                ]
               }
             }
           },
-          { "id": "fallback-unmatched-decoder-family", "status": "excluded", "coverage": "unsupported", "preexisting": true, "reason": "Unclaimed decoder families return null and must remain unsupported." }
+          {
+            "id": "fallback-unmatched-decoder-family",
+            "status": "excluded",
+            "coverage": "unsupported",
+            "preexisting": true,
+            "reason": "Unclaimed decoder families return null and must remain unsupported."
+          }
         ]
       }
     },
@@ -224,7 +264,10 @@
         "provider": "capstone/backend",
         "contract": "external",
         "enumerationStatus": "exact",
-        "units": ["arm64e:a64+pac:all-a64-decoder-encodings-and-aliases", "arm64e:a64+pac:all-pac-decoder-encodings-and-aliases"],
+        "units": [
+          "arm64e:a64+pac:all-a64-decoder-encodings-and-aliases",
+          "arm64e:a64+pac:all-pac-decoder-encodings-and-aliases"
+        ],
         "missingUnits": [],
         "delegation": {
           "schemaVersion": "arm64e-a64-delegation-denominator/v1",
@@ -256,7 +299,11 @@
           "encodingFamilyCount": 38,
           "encodingCaseCount": 44491,
           "mnemonicCount": 38,
-          "oracleIds": ["arm-architecture-reference-manual-pauth-encodings", "deployed-capstone-5-arm64", "llvm-mc-18-aarch64-pauth-disassembler"]
+          "oracleIds": [
+            "arm-architecture-reference-manual-pauth-encodings",
+            "deployed-capstone-5-arm64",
+            "llvm-mc-18-aarch64-pauth-disassembler"
+          ]
         }
       },
       "aliases": [
@@ -278,21 +325,72 @@
         }
       ],
       "pointerAuthenticationMnemonics": [
-        "pacia", "pacib", "pacda", "pacdb", "paciza", "pacizb", "pacdza", "pacdzb", "paciasp", "pacibsp", "pacia1716", "pacib1716",
-        "autia", "autib", "autda", "autdb", "autiza", "autizb", "autdza", "autdzb", "autiasp", "autibsp", "autia1716", "autib1716",
-        "xpaci", "xpacd", "xpaclri", "pacga", "braa", "brab", "braaz", "brabz", "blraa", "blrab", "blraaz", "blrabz", "retaa", "retab"
+        "pacia",
+        "pacib",
+        "pacda",
+        "pacdb",
+        "paciza",
+        "pacizb",
+        "pacdza",
+        "pacdzb",
+        "paciasp",
+        "pacibsp",
+        "pacia1716",
+        "pacib1716",
+        "autia",
+        "autib",
+        "autda",
+        "autdb",
+        "autiza",
+        "autizb",
+        "autdza",
+        "autdzb",
+        "autiasp",
+        "autibsp",
+        "autia1716",
+        "autib1716",
+        "xpaci",
+        "xpacd",
+        "xpaclri",
+        "pacga",
+        "braa",
+        "brab",
+        "braaz",
+        "brabz",
+        "blraa",
+        "blrab",
+        "blraaz",
+        "blrabz",
+        "retaa",
+        "retab"
       ],
       "effectRegistry": {
         "source": "js/targets/architecture/arm64e/effects.js",
         "export": "arm64eMachineEffectFamilies",
         "families": [
-          { "id": "pointer-authentication", "status": "exact", "coverage": "exact-with-intrinsic", "preexisting": true, "oracle": "arm-architecture-reference-manual-pointer-authentication", "reason": "Valid structured PAC forms are lifted with explicit key/state intrinsics." },
-          { "id": "fallback-unmatched-decoder-family", "status": "excluded", "coverage": "unsupported", "preexisting": true, "reason": "Non-PAC forms delegate to the ARM64 registry; unclaimed forms return null." }
+          {
+            "id": "pointer-authentication",
+            "status": "exact",
+            "coverage": "exact-with-intrinsic",
+            "preexisting": true,
+            "oracle": "arm-architecture-reference-manual-pointer-authentication",
+            "reason": "Valid structured PAC forms are lifted with explicit key/state intrinsics."
+          },
+          {
+            "id": "fallback-unmatched-decoder-family",
+            "status": "excluded",
+            "coverage": "unsupported",
+            "preexisting": true,
+            "reason": "Non-PAC forms delegate to the ARM64 registry; unclaimed forms return null."
+          }
         ]
       },
       "exclusions": [
         {
-          "id": "pac-missing-structured-operands", "status": "excluded", "coverage": "partial", "preexisting": true,
+          "id": "pac-missing-structured-operands",
+          "status": "excluded",
+          "coverage": "partial",
+          "preexisting": true,
           "reason": "Malformed PAC records without the operands guaranteed by the validated decoder denominator fail closed and are outside its valid-encoding scope.",
           "normativeExclusion": {
             "schemaVersion": "machine-effects-preexisting-normative-exclusion/v1",
@@ -316,7 +414,9 @@
         "contractVersion": "x86-64-decoded-instruction/v1",
         "semanticVersion": "capstone-5-x86-structured-v2",
         "enumerationStatus": "exact",
-        "units": ["x86_64:long-64:all-decoder-encodings-prefixes-and-aliases"],
+        "units": [
+          "x86_64:long-64:all-decoder-encodings-prefixes-and-aliases"
+        ],
         "missingUnits": [],
         "denominator": {
           "schemaVersion": "x86-long64-decoder-denominator/v1",
@@ -433,7 +533,12 @@
                 "encodingCaseCount": 57294,
                 "integerOwnedCaseCount": 56666,
                 "memoryDelegationCaseCount": 628,
-                "operandWidths": [8, 16, 32, 64],
+                "operandWidths": [
+                  8,
+                  16,
+                  32,
+                  64
+                ],
                 "oracleIds": [
                   "intel-sdm-vol2-integer-opcode-tables-static-denominator",
                   "deployed-capstone-5-x86-long64-detail"
@@ -488,7 +593,12 @@
                 "denominatorId": "x86_64:long-64:effect-family:atomic",
                 "semanticCaseCount": 89,
                 "familyCount": 5,
-                "scalarWidths": [8, 16, 32, 64],
+                "scalarWidths": [
+                  8,
+                  16,
+                  32,
+                  64
+                ],
                 "oracleIds": [
                   "intel-sdm-vol2-cmpxchg-xadd-xchg-current",
                   "intel-sdm-vol3-locked-instruction-ordering-current",
@@ -498,10 +608,94 @@
               }
             }
           },
-          { "id": "fp", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "x87/environment-dependent forms remain partial." },
-          { "id": "simd", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "EVEX and unresolved vector state remain partial." },
-          { "id": "system", "status": "excluded", "coverage": "partial", "preexisting": true, "reason": "Fences, privileged, timestamp, and environment effects remain partial." },
-          { "id": "fallback-unmatched-decoder-family", "status": "excluded", "coverage": "unsupported", "preexisting": true, "reason": "Unclaimed or detail-unavailable decoder families return null and must remain unsupported." }
+          {
+            "id": "fp",
+            "status": "exact",
+            "coverage": "exact-with-intrinsic",
+            "preexisting": false,
+            "oracle": "intel-sdm-vol2-x87-sse-avx-avx512 + deployed-capstone-5-x86-long64-detail",
+            "reason": "The finite FP denominator is closed: x87 physical stack/environment state, VEX MAXVL aliasing, and EVEX AVX-512 register/mask/rounding state are represented and real decoder witnesses are exercised.",
+            "proof": {
+              "schemaVersion": "machine-effects-effect-unit-proof/v1",
+              "source": "js/targets/architecture/x86_64/effects/fp.js",
+              "test": "tests/phase5/effects/fp-simd/moves-fp.test.mjs",
+              "denominatorTest": "tests/machine-effects/x86-long64-fp-denominator.test.mjs",
+              "denominator": {
+                "schemaVersion": "x86-long64-fp-denominator/v1",
+                "denominatorId": "x86_64:long-64:fp-effect-discriminators:v1",
+                "profileId": "x86_64:long-64",
+                "exactFormCount": 68,
+                "ownedRemainingCount": 0,
+                "sharedBlockerCount": 0,
+                "closed": true,
+                "oracleIds": [
+                  "intel-sdm-vol2-x87-sse-avx-avx512",
+                  "deployed-capstone-5-x86-long64-detail"
+                ]
+              }
+            }
+          },
+          {
+            "id": "simd",
+            "status": "exact",
+            "coverage": "exact-with-intrinsic",
+            "preexisting": false,
+            "oracle": "intel-sdm-vol2-sse-avx-avx2-avx512 + deployed-capstone-5-x86-long64-detail",
+            "reason": "The finite SIMD denominator is closed: XMM/YMM/ZMM MAXVL aliasing, EVEX opmask state, VZEROALL/VZEROUPPER, and MMX/x87 aliasing are represented and real decoder witnesses are exercised.",
+            "proof": {
+              "schemaVersion": "machine-effects-effect-unit-proof/v1",
+              "source": "js/targets/architecture/x86_64/effects/simd.js",
+              "test": "tests/phase5/effects/fp-simd/simd-integer.test.mjs",
+              "denominatorTest": "tests/machine-effects/x86-long64-simd-denominator.test.mjs",
+              "denominator": {
+                "schemaVersion": "x86-long64-simd-denominator/v1",
+                "denominatorId": "x86_64:long-64:simd-effect-discriminators:v1",
+                "profileId": "x86_64:long-64",
+                "exactFormCount": 125,
+                "ownedRemainingCount": 0,
+                "sharedBlockerCount": 0,
+                "closed": true,
+                "oracleIds": [
+                  "intel-sdm-vol2-sse-avx-avx2-avx512",
+                  "deployed-capstone-5-x86-long64-detail"
+                ]
+              }
+            }
+          },
+          {
+            "id": "system",
+            "status": "exact",
+            "coverage": "exact-with-intrinsic",
+            "preexisting": false,
+            "oracle": "intel-sdm-vol2-system-instruction-reference + intel-sdm-vol3-system-programming + amd64-apm + deployed-capstone-5-x86-long64-structured-decoder",
+            "reason": "The finite system denominator is closed: system/environment intrinsics remain symbolic and fail-closed where appropriate, while MOV CR/DR has canonical physical state and is owned by the system dispatcher rather than generic integer MOV.",
+            "proof": {
+              "schemaVersion": "machine-effects-effect-unit-proof/v1",
+              "source": "js/targets/architecture/x86_64/effects/system.js",
+              "test": "tests/phase5/effects/fp-simd/system.test.mjs",
+              "denominatorTest": "tests/machine-effects/x86-long64-system-denominator.test.mjs",
+              "denominator": {
+                "schemaVersion": "x86-long64-system-denominator/v1",
+                "denominatorId": "x86_64:long-64:effect-family:system:v1",
+                "profileId": "x86_64:long-64",
+                "familyCount": 26,
+                "encodingCaseCount": 110,
+                "sharedDependencyRequired": false,
+                "oracleIds": [
+                  "intel-sdm-vol2-system-instruction-reference + intel-sdm-vol3-system-programming",
+                  "amd64-apm-vol2-system-programming + amd64-apm-vol3-general-purpose-and-system-instructions",
+                  "deployed-capstone-5-x86-long64-structured-decoder"
+                ]
+              }
+            }
+          },
+          {
+            "id": "fallback-unmatched-decoder-family",
+            "status": "excluded",
+            "coverage": "unsupported",
+            "preexisting": true,
+            "reason": "Unclaimed or detail-unavailable decoder families return null and must remain unsupported."
+          }
         ]
       }
     },
@@ -514,7 +708,9 @@
         "contractVersion": "riscv64-decoded-instruction/v1",
         "semanticVersion": "capstone-5-riscv64-word-exact-v1",
         "enumerationStatus": "exact",
-        "units": ["riscv64:rv64imc:all-valid-32-bit-and-compressed-encodings"],
+        "units": [
+          "riscv64:rv64imc:all-valid-32-bit-and-compressed-encodings"
+        ],
         "missingUnits": [],
         "denominator": {
           "schemaVersion": "riscv64-rv64imc-decoder-denominator/v1",
@@ -535,11 +731,46 @@
         "source": "js/targets/architecture/riscv64/effects/index.js",
         "export": "riscv64MachineEffectFamilies",
         "families": [
-          { "id": "hint", "status": "exact", "coverage": "exact", "preexisting": true, "oracle": "riscv-unprivileged-isa-rvc", "reason": "RVC architectural hints are explicit state-preserving no-ops." },
-          { "id": "control", "status": "exact", "coverage": "exact", "preexisting": true, "oracle": "riscv-unprivileged-isa-rv64i", "reason": "Supported branches and jumps have structured exact effects." },
-          { "id": "memory", "status": "exact", "coverage": "exact", "preexisting": true, "oracle": "riscv-unprivileged-isa-rv64i", "reason": "Profile load/store families are structurally lifted with explicit faults." },
-          { "id": "muldiv", "status": "exact", "coverage": "exact", "preexisting": true, "oracle": "riscv-unprivileged-isa-m", "reason": "M multiply/divide edge cases are represented explicitly." },
-          { "id": "integer", "status": "exact", "coverage": "exact", "preexisting": true, "oracle": "riscv-unprivileged-isa-rv64i", "reason": "RV64I integer, compare, shift, and W-result families are structurally lifted." },
+          {
+            "id": "hint",
+            "status": "exact",
+            "coverage": "exact",
+            "preexisting": true,
+            "oracle": "riscv-unprivileged-isa-rvc",
+            "reason": "RVC architectural hints are explicit state-preserving no-ops."
+          },
+          {
+            "id": "control",
+            "status": "exact",
+            "coverage": "exact",
+            "preexisting": true,
+            "oracle": "riscv-unprivileged-isa-rv64i",
+            "reason": "Supported branches and jumps have structured exact effects."
+          },
+          {
+            "id": "memory",
+            "status": "exact",
+            "coverage": "exact",
+            "preexisting": true,
+            "oracle": "riscv-unprivileged-isa-rv64i",
+            "reason": "Profile load/store families are structurally lifted with explicit faults."
+          },
+          {
+            "id": "muldiv",
+            "status": "exact",
+            "coverage": "exact",
+            "preexisting": true,
+            "oracle": "riscv-unprivileged-isa-m",
+            "reason": "M multiply/divide edge cases are represented explicitly."
+          },
+          {
+            "id": "integer",
+            "status": "exact",
+            "coverage": "exact",
+            "preexisting": true,
+            "oracle": "riscv-unprivileged-isa-rv64i",
+            "reason": "RV64I integer, compare, shift, and W-result families are structurally lifted."
+          },
           {
             "id": "system",
             "status": "exact",
@@ -553,9 +784,18 @@
               "denominatorTest": "tests/machine-effects/riscv64-rv64imc-denominator.test.mjs"
             },
             "subunits": [
-              { "id": "fence", "status": "exact", "coverage": "exact", "preexisting": true, "oracle": "riscv-unprivileged-isa-fence" },
               {
-                "id": "ecall", "status": "exact", "coverage": "exact-with-intrinsic", "preexisting": false,
+                "id": "fence",
+                "status": "exact",
+                "coverage": "exact",
+                "preexisting": true,
+                "oracle": "riscv-unprivileged-isa-fence"
+              },
+              {
+                "id": "ecall",
+                "status": "exact",
+                "coverage": "exact-with-intrinsic",
+                "preexisting": false,
                 "oracle": "riscv-unprivileged-isa-environment-call",
                 "proof": {
                   "schemaVersion": "machine-effects-effect-unit-proof/v1",
@@ -565,7 +805,10 @@
                 }
               },
               {
-                "id": "ebreak", "status": "exact", "coverage": "exact-with-intrinsic", "preexisting": false,
+                "id": "ebreak",
+                "status": "exact",
+                "coverage": "exact-with-intrinsic",
+                "preexisting": false,
                 "oracle": "riscv-unprivileged-isa-breakpoint",
                 "proof": {
                   "schemaVersion": "machine-effects-effect-unit-proof/v1",
@@ -593,7 +836,13 @@
               }
             ]
           },
-          { "id": "fallback-unmatched-decoder-family", "status": "excluded", "coverage": "unsupported", "preexisting": true, "reason": "Unsupported extensions/reserved encodings return null and remain explicit unsupported." }
+          {
+            "id": "fallback-unmatched-decoder-family",
+            "status": "excluded",
+            "coverage": "unsupported",
+            "preexisting": true,
+            "reason": "Unsupported extensions/reserved encodings return null and remain explicit unsupported."
+          }
         ]
       }
     }

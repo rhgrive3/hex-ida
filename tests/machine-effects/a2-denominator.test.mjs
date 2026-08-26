@@ -15,8 +15,8 @@ assert.equal(validation.valid, true);
 assert.equal(validation.architectureCount, 4);
 assert.equal(validation.fullIsaCoverageIncluded, false);
 assert.equal(validation.explicitDecoderGapCount, 0, 'all architectures have exact decoder denominators');
-assert.equal(validation.blockingGapCount > validation.explicitDecoderGapCount, true);
-assert.equal(validation.terminalEligible, false, 'partial and unsupported x86 long-64 effect families remain blocking gaps');
+assert.equal(validation.blockingGapCount, 0, 'the locked A2 denominator has no blocking gap');
+assert.equal(validation.terminalEligible, true, 'the locked A2 denominator is terminal');
 // Terminality is a property of the locked denominator, not of full-ISA
 // coverage: this inventory is rejected outright if it ever claims the latter,
 // so the two must not be conjoined into an unsatisfiable gate.
@@ -56,11 +56,10 @@ assert.equal(validation.blockingGaps.includes('x86_64:long-64:effect-family:stri
 assert.equal(validation.blockingGaps.includes('x86_64:long-64:effect-family:atomic'), false);
 assert.equal(validation.blockingGaps.includes('x86_64:long-64:effect-family:fallback-unmatched-decoder-family'), false,
   'x86 fallback negative proof proves no valid encoding reaches fallback');
-assert.deepEqual(validation.blockingGaps, [
-  'x86_64:long-64:effect-family:fp',
-  'x86_64:long-64:effect-family:simd',
-  'x86_64:long-64:effect-family:system',
-]);
+assert.deepEqual(validation.blockingGaps, []);
+assert.equal(validation.blockingGaps.includes('x86_64:long-64:effect-family:fp'), false);
+assert.equal(validation.blockingGaps.includes('x86_64:long-64:effect-family:simd'), false);
+assert.equal(validation.blockingGaps.includes('x86_64:long-64:effect-family:system'), false);
 assert.equal(validation.blockingGaps.includes('arm64e:a64+pac:all-pac-decoder-encodings-and-aliases'), false,
   'the finite PAC encoding discriminator and independent decoder oracle close the extension decoder unit');
 assert.equal(validation.blockingGaps.includes('arm64e:a64+pac:explicit-case:pac-missing-structured-operands'), false,

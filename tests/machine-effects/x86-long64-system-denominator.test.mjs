@@ -26,12 +26,13 @@ const faultText = (bundle) => bundle.possibleFaults.map((fault) => `${fault.kind
 const identity = validateX86Long64SystemDenominator();
 assert.equal(identity.denominatorId, X86_LONG64_SYSTEM_DENOMINATOR_ID);
 assert.equal(identity.profileId, 'x86_64:long-64');
-assert.equal(identity.familyCount, 25);
-assert.equal(identity.encodingCaseCount, 104);
+assert.equal(identity.familyCount, 26);
+assert.equal(identity.encodingCaseCount, 110);
 assert.deepEqual(identity.discriminatorDimensions, ['opcode/family','privilege','environment','prefix','operand/state','implicit-state']);
 assert.match(identity.quotientProof.prefix, /cross-vendor architecturally defined prefix class/i);
 assert.match(identity.quotientProof.environment, /symbolic architectural/i);
-assert.equal(identity.sharedDependencyRequired, true);
+assert.equal(identity.sharedDependencyRequired, false);
+assert.deepEqual(identity.sharedDependencies, []);
 assert.ok(identity.oracleIds.some((id) => /intel-sdm/i.test(id)));
 assert.ok(identity.oracleIds.some((id) => /amd64-apm/i.test(id)));
 assert.ok(identity.oracleIds.some((id) => /capstone.*structured-decoder/i.test(id)));
@@ -98,7 +99,7 @@ try {
 }
 
 assert.equal(caseCount, identity.encodingCaseCount);
-assert.equal(byFamily.size, 25);
+assert.equal(byFamily.size, 26);
 
 // Fence semantics remain distinct rather than collapsing to a generic barrier.
 const fenceRelations = new Set();
@@ -128,6 +129,8 @@ assert.match(faultText(byFamily.get('rdtscp')), /undefined-opcode|#UD/i);
 assert.match(faultText(byFamily.get('syscall')), /undefined-opcode|#UD/i);
 assert.match(faultText(byFamily.get('swapgs')), /general-protection|#GP/i);
 assert.match(faultText(byFamily.get('swapgs')), /undefined-opcode|#UD/i);
+assert.match(faultText(byFamily.get('mov')), /general-protection|#GP/i);
+assert.match(faultText(byFamily.get('mov')), /undefined-opcode|#UD/i);
 
 // SYSRET compatibility target is ECX-derived; SYSRETQ retains RCX canonicality checks.
 assert.ok(byFamily.get('sysret').operations.some((op) => op.kind === 'value' && op.metadata?.semantic === 'x86-sysret-compat-target-ecx'));
@@ -173,9 +176,6 @@ for (const family of ['cpuid','clc']) {
   assert.equal(effect.metadata.encodingValidated, false);
 }
 
-assert.deepEqual(
-  X86_LONG64_SYSTEM_SHARED_DEPENDENCIES[0].requiredOwners,
-  ['js/targets/architecture/x86_64/effects/index.js','js/targets/architecture/x86_64/effects/integer.js','js/targets/architecture/x86_64/registers-core.js'],
-);
+assert.deepEqual(X86_LONG64_SYSTEM_SHARED_DEPENDENCIES, []);
 
 console.log(`x86 long-64 system denominator (${caseCount} encoding discriminators / ${identity.familyCount} families): PASS`);

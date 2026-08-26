@@ -6,10 +6,59 @@ import {
   trustedCapstoneInstruction, physicalIds,
 } from './extended-state-helpers.js';
 
-const PROVEN_GENERIC_EVEX_FAMILIES = new Set([]);
+// Finite frozen long-64 EVEX identities proven against trusted structured Capstone detail.
+// Synthetic/untrusted family spellings remain fail-closed via trustedCapstoneInstruction().
+const PROVEN_GENERIC_EVEX_FAMILIES = new Set([
+  'v4fmaddps',
+  'v4fmaddss',
+  'v4fnmaddps',
+  'v4fnmaddss',
+  'valignd',
+  'vblendmpd',
+  'vblendmps',
+  'vbroadcastf32x4',
+  'vbroadcastf32x8',
+  'vbroadcastf64x4',
+  'vbroadcasti32x4',
+  'vbroadcasti32x8',
+  'vgatherpf0dpd',
+  'vgatherpf0dps',
+  'vgatherpf0qpd',
+  'vgatherpf0qps',
+  'vgatherpf1dpd',
+  'vgatherpf1dps',
+  'vgatherpf1qpd',
+  'vgatherpf1qps',
+  'vp4dpwssds',
+  'vp4dpwssd',
+  'vpblendmb',
+  'vpblendmd',
+  'vpblendmq',
+  'vpblendmw',
+  'vpshufbitqmb',
+  'vptestmb',
+  'vptestmd',
+  'vptestmq',
+  'vptestmw',
+  'vptestnmb',
+  'vptestnmd',
+  'vptestnmq',
+  'vptestnmw',
+  'vscatterpf0dpd',
+  'vscatterpf0dps',
+  'vscatterpf0qpd',
+  'vscatterpf0qps',
+  'vscatterpf1dpd',
+  'vscatterpf1dps',
+  'vscatterpf1qpd',
+  'vscatterpf1qps'
+]);
 
 export function classifyEvexCategory(name) {
   const lower = name.toLowerCase();
+  const base = baseFamily(lower);
+  if (SIMD_EVEX_BASES.has(base)) return 'simd';
+  if (FP_EVEX_BASES.has(base)) return 'fp';
   if (/^vp(?!er[\w]*p[sd])/.test(lower) || /^valign|^vbroadcasti|^vextracti|^vinserti|^vshufi|^vcompress[bwdq]|^vexpand[bwdq]/.test(lower) || /^k[a-z]/.test(lower)) {
     return 'simd';
   }

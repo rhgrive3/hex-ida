@@ -17,11 +17,11 @@ export const X86_LONG64_FP_EXACT_FORMS=Object.freeze([
  ...packedArithmetic.flatMap((m)=>[form(`${m}:legacy128`,m,'packed-arithmetic','legacy',128,{fpState:'mxcsr'}),form(`v${m}:vex128`,`v${m}`,'packed-arithmetic','vex',128,{fpState:'mxcsr'}),form(`v${m}:vex256`,`v${m}`,'packed-arithmetic','vex',256,{fpState:'mxcsr'})]),
  ...conversions.flatMap((m)=>[form(`${m}:legacy`,m,'conversion','legacy',128,{fpState:'mxcsr'}),form(`v${m}:vex128`,`v${m}`,'conversion','vex',128,{fpState:'mxcsr'})]),
 ]);
-export const X86_LONG64_FP_SHARED_BLOCKERS=Object.freeze([
- Object.freeze({id:'x87-physical-environment',required:['st0-st7-80bit','x87-top-tag-control-status','x86-decoder-x87-register-normalization']}),
- Object.freeze({id:'vex-maxvl-alias',required:['xmm/ymm writes must alias zmm[MAXVL] when AVX-512 is locked']}),
- Object.freeze({id:'evex-avx512-state',required:['zmm0-zmm31','k0-k7','decoded-evex-fields','merge-zero-mask-semantics','embedded-rounding-sae']}),
-]);
+// Shared physical-state obligations are now provided by the canonical register
+// contract and the trusted structured-decoder terminal path: x87 TOP/tag/control
+// state, MAXVL ZMM aliasing, opmask state, EVEX mask semantics and ER/SAE are no
+// longer external dependencies of this family denominator.
+export const X86_LONG64_FP_SHARED_BLOCKERS=Object.freeze([]);
 export const X86_LONG64_FP_OWNED_REMAINING=Object.freeze([]);
 export function validateX86Long64FpDenominator(){
   const ids=X86_LONG64_FP_EXACT_FORMS.map(({id})=>id);
