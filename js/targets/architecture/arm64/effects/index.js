@@ -79,6 +79,26 @@ function logicalImmediateEncodable(op, widthBits) {
   return LOGICAL_IMMEDIATE_MASKS[widthBits].has(BigInt.asUintN(widthBits, immediate).toString());
 }
 
+function singleWideMoveEncodable(pattern, widthBits) {
+  const value = BigInt.asUintN(widthBits, pattern);
+  const widthMask = (1n << BigInt(widthBits)) - 1n;
+  for (let shift = 0; shift < widthBits; shift += 16) {
+    const laneMask = 0xffffn << BigInt(shift);
+    if ((value & (widthMask ^ laneMask)) === 0n) return true; // MOVZ
+    const inverted = (~value) & widthMask;
+    if ((inverted & (widthMask ^ laneMask)) === 0n) return true; // MOVN
+  }
+  return false;
+}
+
+function movImmediateEncodable(op, widthBits) {
+  if (op?.k !== 'imm' || (widthBits !== 32 && widthBits !== 64) || op.shift != null) return false;
+  const immediate = immediateOf(op);
+  if (immediate == null) return false;
+  const pattern = BigInt.asUintN(widthBits, immediate);
+  return singleWideMoveEncodable(pattern, widthBits) || LOGICAL_IMMEDIATE_MASKS[widthBits].has(pattern.toString());
+}
+
 function asBigIntOrNull(value) {
   try { return value == null ? null : BigInt(value); }
   catch { return null; }
@@ -138,12 +158,20 @@ function multiplyDivideEncodingFailure(instruction) {
   if (!ARM64_MULTIPLY_DIVIDE_MNEMONICS.has(mnemonic)) return null;
   const ops = Array.isArray(instruction?.ops) ? instruction.ops : [];
   for (const operand of ops.slice(1)) {
-    if (operand?.k !== 'reg' || !['gp','zr'].includes(String(operand.cls || '').toLowerCase())) {
-      return `arm64-${mnemonic}-source-register-required`;
-    }
+    if (operand?.k !== 'reg' || !['gp','zr'].includes(String(operand.cls || '').toLowerCase())) return `arm64-${mnemonic}-source-register-required`;
     if (operand.shift != null || operand.extend != null) return `arm64-${mnemonic}-source-modifier-unencodable`;
   }
   return null;
+}
+
+function moveEncodingFailure(instruction) {
+  const mnemonic = instructionMnemonic(instruction);
+  if (mnemonic !== 'mov') return null;
+  const ops = Array.isArray(instruction?.ops) ? instruction.ops : [];
+  const source = ops[1];
+  if (source?.k !== 'imm') return null;
+  const widthBits = Number(ops[0]?.bits || 0);
+  return movImmediateEncodable(source, widthBits) ? null : 'arm64-mov-immediate-unencodable';
 }
 
 function literalMemoryEncodingFailure(instruction) {
@@ -176,6 +204,7 @@ function structuredEncodingFailure(instruction) {
     || flagEncodingFailure(instruction)
     || logicalEncodingFailure(instruction)
     || multiplyDivideEncodingFailure(instruction)
+    || moveEncodingFailure(instruction)
     || literalMemoryEncodingFailure(instruction)
     || unaryEncodingFailure(instruction);
 }
