@@ -36,6 +36,7 @@
       "userscript/release-version.json",
       "js/userscript/deployment-identity.generated.js",
       "js/userscript/chatgpt-bridge.js",
+      "js/userscript/dev/parent-worker-runtime.js",
       "js/userscript/dev/task-graph/dynamic-task-graph.js",
       "js/userscript/dev/frame-mesh/iframe-worker-completion-bridge.js",
       "js/userscript/dev/worker-host/worker-chat-controller.js",
@@ -86,6 +87,7 @@
     "js/managed/runtime-binding.js",
     "js/managed/index.js",
     "js/userscript/chatgpt-bridge.js",
+    "js/userscript/dev/parent-worker-runtime.js",
     "package.json"
   ],
   "generatedPaths": ["reports/phase12/**", "userscript/hex.user.template.js", "userscript/release-version.json", "js/userscript/deployment-identity.generated.js"],
