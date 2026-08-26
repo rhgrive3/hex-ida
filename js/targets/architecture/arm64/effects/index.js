@@ -31,6 +31,8 @@ const ARM64_MULTIPLY_DIVIDE_MNEMONICS = Object.freeze(new Set([
   'mul','mneg','smull','umull','smulh','umulh','sdiv','udiv',
   'madd','msub','smaddl','smsubl','umaddl','umsubl','smnegl','umnegl',
 ]));
+const ARM64_CONDITIONAL_TWO_SOURCE = Object.freeze(new Set(['csel','csinc','csinv','csneg']));
+const ARM64_CONDITIONAL_ONE_SOURCE = Object.freeze(new Set(['cinc','cneg','cinv']));
 
 function validImm12WithOptionalLsl12(op) {
   if (op?.k !== 'imm') return true;
@@ -84,9 +86,9 @@ function singleWideMoveEncodable(pattern, widthBits) {
   const widthMask = (1n << BigInt(widthBits)) - 1n;
   for (let shift = 0; shift < widthBits; shift += 16) {
     const laneMask = 0xffffn << BigInt(shift);
-    if ((value & (widthMask ^ laneMask)) === 0n) return true; // MOVZ
+    if ((value & (widthMask ^ laneMask)) === 0n) return true;
     const inverted = (~value) & widthMask;
-    if ((inverted & (widthMask ^ laneMask)) === 0n) return true; // MOVN
+    if ((inverted & (widthMask ^ laneMask)) === 0n) return true;
   }
   return false;
 }
@@ -102,6 +104,13 @@ function movImmediateEncodable(op, widthBits) {
 function asBigIntOrNull(value) {
   try { return value == null ? null : BigInt(value); }
   catch { return null; }
+}
+
+function isPlainGpSource(operand) {
+  return operand?.k === 'reg'
+    && ['gp','zr'].includes(String(operand.cls || '').toLowerCase())
+    && operand.shift == null
+    && operand.extend == null;
 }
 
 function addSubImmediateEncodingFailure(instruction) {
@@ -158,8 +167,21 @@ function multiplyDivideEncodingFailure(instruction) {
   if (!ARM64_MULTIPLY_DIVIDE_MNEMONICS.has(mnemonic)) return null;
   const ops = Array.isArray(instruction?.ops) ? instruction.ops : [];
   for (const operand of ops.slice(1)) {
-    if (operand?.k !== 'reg' || !['gp','zr'].includes(String(operand.cls || '').toLowerCase())) return `arm64-${mnemonic}-source-register-required`;
-    if (operand.shift != null || operand.extend != null) return `arm64-${mnemonic}-source-modifier-unencodable`;
+    if (!isPlainGpSource(operand)) return `arm64-${mnemonic}-source-register-required`;
+  }
+  return null;
+}
+
+function registerOnlyIntegerEncodingFailure(instruction) {
+  const mnemonic = instructionMnemonic(instruction);
+  const ops = Array.isArray(instruction?.ops) ? instruction.ops : [];
+  const indices = mnemonic === 'extr' ? [1,2]
+    : ARM64_CONDITIONAL_TWO_SOURCE.has(mnemonic) ? [1,2]
+      : ARM64_CONDITIONAL_ONE_SOURCE.has(mnemonic) ? [1]
+        : null;
+  if (!indices) return null;
+  for (const index of indices) {
+    if (!isPlainGpSource(ops[index])) return `arm64-${mnemonic}-source-register-required`;
   }
   return null;
 }
@@ -204,6 +226,7 @@ function structuredEncodingFailure(instruction) {
     || flagEncodingFailure(instruction)
     || logicalEncodingFailure(instruction)
     || multiplyDivideEncodingFailure(instruction)
+    || registerOnlyIntegerEncodingFailure(instruction)
     || moveEncodingFailure(instruction)
     || literalMemoryEncodingFailure(instruction)
     || unaryEncodingFailure(instruction);
