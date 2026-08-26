@@ -78,9 +78,9 @@ const denominator = validateArm64A64MemoryDenominator();
 assert.equal(denominator.denominatorId, ARM64_A64_MEMORY_DENOMINATOR_ID);
 assert.equal(denominator.encodingFamilyCount, 9);
 assert.equal(denominator.encodingCaseCount, 267);
-assert.equal(denominator.mnemonicCount, 121);
+assert.equal(denominator.mnemonicCount, 123);
 assert.equal(denominator.partialMnemonicCount, 0);
-assert.equal(denominator.exactMnemonicCount, 121);
+assert.equal(denominator.exactMnemonicCount, 123);
 assert.equal(denominator.encodingCaseCount, ARM64_A64_MEMORY_LOCKED_CASE_COUNT);
 assert.equal(denominator.corpusSha256, ARM64_A64_MEMORY_LOCKED_CORPUS_SHA256);
 assert.match(denominator.corpusSha256, /^[0-9a-f]{64}$/);
@@ -214,6 +214,8 @@ for (const malformed of [
   direct('clrex', [{ k:'imm', text:'#16', value:16n }]),
   direct('dsb', [{ k:'imm', text:'#16', value:16n }]),
   direct('isb', [{ k:'imm', text:'#16', value:16n }]),
+  direct('ssbb', [imm(0)]),
+  direct('pssbb', [imm(4)]),
   direct('prfm', [mem(x(1))]),
   direct('prfum', [mem(x(1))]),
   direct('prfm', [{ k:'other', text:'pldl4keep' }, mem(x(1))]),
