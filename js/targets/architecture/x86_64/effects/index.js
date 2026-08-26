@@ -14,6 +14,7 @@ import {
   liftX86ExtendedStateEffects,
   integrateX86ExtendedStateAliases,
 } from './extended-state.js';
+import { closeTrustedX86Partial } from './trusted-decoder-terminal.js';
 import { normalizeX86Instruction, X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION } from './common.js';
 
 function liftX86IntegerFamily(instruction, context) {
@@ -50,20 +51,28 @@ function invalidNonEvexExtendedVector(instruction) {
   return registers.some((register) => register?.evexOnly === true || /^(?:zmm(?:[0-9]|[12][0-9]|3[01])|(?:xmm|ymm)(?:1[6-9]|2[0-9]|3[01]))$/.test(String(register?.id || '').toLowerCase()));
 }
 
+function terminalize(instruction, ownerId, result, context) {
+  return closeTrustedX86Partial(instruction, ownerId, result, context);
+}
+
 export function dispatchX86MachineEffects(decoded, context = {}) {
   const instruction = normalizeX86Instruction(decoded, context);
   if (!instruction.detailAvailable) return Object.freeze({ ownerId: 'fallback', result: null });
   if (invalidNonEvexExtendedVector(instruction)) throw new TypeError('x86-decoded-instruction-high-vector-register-requires-evex');
   const extended = dispatchX86ExtendedStateEffects(instruction, context);
   if (extended != null && extended.result != null) {
-    return Object.freeze({ ownerId: extended.ownerId, result: extended.result });
+    return Object.freeze({
+      ownerId: extended.ownerId,
+      result: terminalize(instruction, extended.ownerId, extended.result, context),
+    });
   }
   for (const family of FAMILIES) {
     const result = family.lift(instruction, context);
     if (result != null) {
+      const integrated = integrateX86ExtendedStateAliases(instruction, result, context);
       return Object.freeze({
         ownerId: family.id,
-        result: integrateX86ExtendedStateAliases(instruction, result, context),
+        result: terminalize(instruction, family.id, integrated, context),
       });
     }
   }
