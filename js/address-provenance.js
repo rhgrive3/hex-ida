@@ -142,10 +142,11 @@
       const pc = asBigInt(pcValue);
       if (pc == null) return false;
       let fullBoundary = false;
+      // Consume all boundaries at this PC so duplicates cannot leak into the next instruction.
       while (startIndex < startCount) {
         const start = functionStarts[startIndex];
         if (start < pc) { fullBoundary = true; startIndex++; continue; }
-        if (start === pc) { fullBoundary = true; startIndex++; }
+        if (start === pc) { fullBoundary = true; startIndex++; continue; }
         break;
       }
       if (branchEntries.delete(pc)) fullBoundary = true;
