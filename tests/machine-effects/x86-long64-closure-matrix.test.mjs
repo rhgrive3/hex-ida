@@ -22,7 +22,10 @@ try {
     assert.equal(decoded.length, 1, "instruction must decode once: " + name);
     const instruction = createX86DecodedInstruction({ ...decoded[0], instructionId: "closure-witness:" + id });
     if (id === 116 || id === 377 || id === 378) {
-      console.log("X86_CLOSURE_RESIDUAL_WITNESS", JSON.stringify({ id, name, hex, instruction }));
+      console.log("X86_CLOSURE_RESIDUAL_WITNESS", JSON.stringify(
+        { id, name, hex, instruction },
+        (_key, value) => typeof value === "bigint" ? value.toString() : value,
+      ));
     }
     decodedRows.push(Object.freeze({ id, name, hex, instruction }));
   }
