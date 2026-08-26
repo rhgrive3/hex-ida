@@ -29,8 +29,14 @@ for (const [mnemonic, operands] of [
   ['add','x0, x1, x2, lsr #63'],
   ['add','x0, x1, x2, asr #63'],
   ['add','w0, w1, w2, lsl #31'],
+  ['cmp','x0, #0'],
+  ['cmp','x0, #4095'],
+  ['cmn','x0, #1, lsl #12'],
+  ['ccmp','x0, #0, #0, eq'],
+  ['ccmp','x0, #31, #15, ne'],
+  ['ccmn','x0, #31, #15, eq'],
 ]) {
-  const effects = lift(mnemonic, operands, `valid-shift-${operands.replace(/\W+/g,'-')}`);
+  const effects = lift(mnemonic, operands, `valid-${mnemonic}-${operands.replace(/\W+/g,'-')}`);
   assert.equal(effects.completeness, 'exact', `${mnemonic} ${operands}:${effects.unknownEffects?.reason}`);
 }
 
@@ -52,6 +58,12 @@ for (const [mnemonic, operands, reason] of [
   ['adds','x0, x1, x2, ror #1','arm64-adds-ror-shift-unencodable'],
   ['sub','x0, x1, x2, ror #1','arm64-sub-ror-shift-unencodable'],
   ['subs','x0, x1, x2, ror #1','arm64-subs-ror-shift-unencodable'],
+  ['cmp','x0, #4096','arm64-cmp-immediate-out-of-range'],
+  ['cmn','x0, #-1','arm64-cmn-immediate-out-of-range'],
+  ['cmp','x0, #1, lsr #12','arm64-cmp-immediate-shift-unencodable'],
+  ['ccmp','x0, #-1, #0, eq','arm64-ccmp-immediate-out-of-range'],
+  ['ccmp','x0, #32, #0, eq','arm64-ccmp-immediate-out-of-range'],
+  ['ccmn','x0, #32, #15, ne','arm64-ccmn-immediate-out-of-range'],
 ]) {
   const effects = lift(mnemonic, operands, `${mnemonic}-${reason}`);
   assert.equal(effects.completeness, 'partial', `${mnemonic} ${operands} must fail closed`);
