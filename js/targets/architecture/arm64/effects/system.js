@@ -16,6 +16,16 @@ const TRAPS = new Set(['svc','hvc','smc','brk','hlt']);
 const MAINTENANCE = new Set(['dc','ic','tlbi']);
 const ARM64E_ONLY = /^(?:paci|pacd|auti|autd|xpac|retaa|retab|braa|brab|blraa|blrab)/;
 
+// These selector/arity sets are the finite shapes emitted by deployed Capstone
+// across arm64:a64:system-encoding-discriminators:v1 (262,330 encoding cases).
+// Extend them only together with that denominator/proof; unknown selectors stay
+// fail-closed rather than being promoted to exact effects from text alone.
+const DC_XT_SELECTORS = new Set('cgdsw cgdvac cgdvap cgsw cgvac cgvap cigdsw cigdvac cigsw cigvac cisw civac csw cvac cvap cvau gva gzva igdsw igdvac igsw igvac isw ivac zva'.split(' '));
+const IC_NO_XT_SELECTORS = new Set('iallu ialluis'.split(' '));
+const IC_XT_SELECTORS = new Set(['ivau']);
+const TLBI_NO_XT_SELECTORS = new Set('alle1 alle1is alle1os alle2 alle2is alle2os alle3 alle3is alle3os paall paallos vmalle1 vmalle1is vmalle1os vmalls12e1 vmalls12e1is vmalls12e1os'.split(' '));
+const TLBI_XT_SELECTORS = new Set('aside1 aside1is aside1os ipas2e1 ipas2e1is ipas2e1os ipas2le1 ipas2le1is ipas2le1os ripas2e1 ripas2e1is ripas2e1os ripas2le1 ripas2le1is ripas2le1os rpalos rpaos rvaae1 rvaae1is rvaae1os rvaale1 rvaale1is rvaale1os rvae1 rvae1is rvae1os rvae2 rvae2is rvae2os rvae3 rvae3is rvae3os rvale1 rvale1is rvale1os rvale2 rvale2is rvale2os rvale3 rvale3is rvale3os vaae1 vaae1is vaae1os vaale1 vaale1is vaale1os vae1 vae1is vae1os vae2 vae2is vae2os vae3 vae3is vae3os vale1 vale1is vale1os vale2 vale2is vale2os vale3 vale3is vale3os'.split(' '));
+
 const COMMON_READABLE_SYSREGS = new Set([
   'tpidr_el0','tpidrro_el0','cntvct_el0','cntpct_el0','cntfrq_el0',
   'fpcr','fpsr','nzcv','currentel','daif','spsel',
@@ -95,6 +105,13 @@ function gpId(op) {
 }
 function isGpDestination(op) {
   return op?.k === 'reg' && (op.cls === 'gp' || op.cls === 'zr');
+}
+function isSystemXt(op) {
+  return op?.k === 'reg'
+    && (op.cls === 'gp' || op.cls === 'zr')
+    && Number(op.bits) === 64
+    && op.shift == null
+    && op.extend == null;
 }
 function gpRead(operations, op, id) {
   if (op?.k === 'reg' && op.cls === 'zr') return createBitVectorValue(Number(op.bits || 64), 0n);
@@ -491,6 +508,43 @@ function genericHint(instruction, context, ops) {
   });
 }
 
+function textOperand(op) {
+  const text = String(op?.text || '').trim().toLowerCase();
+  return text || null;
+}
+function immediateInRange(op, max) {
+  if (op?.k !== 'imm' || op.value == null) return false;
+  const value = BigInt(op.value);
+  return value >= 0n && value <= BigInt(max);
+}
+function systemCrOperand(op) {
+  const text = textOperand(op);
+  return text != null && /^c(?:[0-9]|1[0-5])$/.test(text);
+}
+function maintenanceOperandShapeValid(mnemonic, ops) {
+  if (ops.length < 1 || ops.length > 2 || ops[0]?.k !== 'other') return false;
+  const selector = textOperand(ops[0]);
+  if (!selector) return false;
+  let shape = null;
+  if (mnemonic === 'dc') {
+    if (DC_XT_SELECTORS.has(selector)) shape = 'xt';
+  } else if (mnemonic === 'ic') {
+    if (IC_NO_XT_SELECTORS.has(selector)) shape = 'none';
+    else if (IC_XT_SELECTORS.has(selector)) shape = 'xt';
+  } else if (mnemonic === 'tlbi') {
+    if (TLBI_NO_XT_SELECTORS.has(selector)) shape = 'none';
+    else if (TLBI_XT_SELECTORS.has(selector)) shape = 'xt';
+  }
+  if (shape === 'none') return ops.length === 1;
+  if (shape === 'xt') return ops.length === 2 && isSystemXt(ops[1]);
+  return false;
+}
+function sysOperandShapeValid(ops) {
+  if (ops.length !== 4 && ops.length !== 5) return false;
+  if (!immediateInRange(ops[0], 7) || !systemCrOperand(ops[1]) || !systemCrOperand(ops[2]) || !immediateInRange(ops[3], 7)) return false;
+  return ops.length === 4 || isSystemXt(ops[4]);
+}
+
 function operandShapeFailure(instruction, mnemonic, ops) {
   if (mnemonic === 'nop' || WAITS_AND_EVENTS.has(mnemonic)) {
     return ops.length === 0 ? null : { reason:`${mnemonic}-operand-shape-invalid`, categories:['other'] };
@@ -506,6 +560,12 @@ function operandShapeFailure(instruction, mnemonic, ops) {
   }
   if (mnemonic === 'mrs' || mnemonic === 'msr') {
     return ops.length === 2 ? null : { reason:`${mnemonic}-operand-shape-invalid`, categories:['registers','faults','other'] };
+  }
+  if (MAINTENANCE.has(mnemonic)) {
+    return maintenanceOperandShapeValid(mnemonic, ops) ? null : { reason:`${mnemonic}-operand-shape-invalid`, categories:['registers','faults','other'] };
+  }
+  if (mnemonic === 'sys') {
+    return sysOperandShapeValid(ops) ? null : { reason:'sys-operand-shape-invalid', categories:['registers','faults','other'] };
   }
   if (mnemonic === 'eret') {
     return ops.length === 0 ? null : { reason:'eret-operand-shape-invalid', categories:['control','faults','other'] };
