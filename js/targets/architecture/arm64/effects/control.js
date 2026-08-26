@@ -122,6 +122,9 @@ function liftArm64ControlEffectsCore(instruction, options = {}) {
   }
 
   if (mnemonic === 'br') {
+    if (ops.length !== 1) {
+      return ctx.partial('arm64-br-operand-shape-invalid', ['control','registers'], undefined, { kind:'unknown', reason:'arm64-br-operand-shape-invalid' });
+    }
     const target = ctx.readRegister(ops[0]);
     if (!target || instructionBits(ops[0]) !== 64) {
       return ctx.partial('arm64-br-target-register-unmodelled', ['control','registers'], undefined, { kind: 'unknown', reason: 'arm64-br-target-register-unmodelled' });
@@ -151,6 +154,9 @@ function liftArm64ControlEffectsCore(instruction, options = {}) {
   }
 
   if (mnemonic === 'blr') {
+    if (ops.length !== 1) {
+      return ctx.partial('arm64-blr-operand-shape-invalid', ['control','registers'], undefined, { kind:'unknown', reason:'arm64-blr-operand-shape-invalid' });
+    }
     const target = ctx.readRegister(ops[0]);
     const address = instructionAddress(instruction);
     if (!target || instructionBits(ops[0]) !== 64) {
@@ -168,6 +174,9 @@ function liftArm64ControlEffectsCore(instruction, options = {}) {
   }
 
   if (mnemonic === 'ret') {
+    if (ops.length > 1) {
+      return ctx.partial('arm64-ret-operand-shape-invalid', ['control','registers'], undefined, { kind:'unknown', reason:'arm64-ret-operand-shape-invalid' });
+    }
     const operand = ops[0] || gpRegister(30);
     const target = ctx.readRegister(operand);
     if (!target || instructionBits(operand) !== 64) {
@@ -228,5 +237,9 @@ function liftArm64ControlEffectsCore(instruction, options = {}) {
 
 export function liftArm64ControlEffects(instruction, options = {}) {
   const bundle = liftArm64ControlEffectsCore(instruction, options);
-  return bundle == null ? null : decorateArm64BtypeEffects(instruction, options, bundle);
+  if (bundle == null) return null;
+  // Operand-shape failures describe encodings that do not exist. Do not attach
+  // architectural BTYPE state transitions to a malformed structured instruction.
+  if (/operand-shape-invalid$/.test(String(bundle.unknownEffects?.reason || ''))) return bundle;
+  return decorateArm64BtypeEffects(instruction, options, bundle);
 }
