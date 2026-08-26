@@ -57,10 +57,13 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --no-audit --no-fund
+      - name: Verify Stage 1 PR baseline classifier contract
+        run: node tests/stage1/pr-baseline.test.mjs
       - name: Verify exact Stage 1 candidate head
         env:
           VERIFY_SHA: ${{ github.event.pull_request.head.sha }}
-        run: node tools/validation/stage1/verify.mjs --expect-sha "$VERIFY_SHA"
+          HEX_STAGE1_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: node tools/validation/stage1/pr-baseline.mjs --expect-sha "$VERIFY_SHA"
 
   candidate-merge-tree:
     if: github.event_name == 'pull_request'
@@ -76,10 +79,13 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --no-audit --no-fund
+      - name: Verify Stage 1 PR baseline classifier contract
+        run: node tests/stage1/pr-baseline.test.mjs
       - name: Verify exact Stage 1 candidate merge tree
         env:
           VERIFY_SHA: ${{ github.sha }}
-        run: node tools/validation/stage1/verify.mjs --expect-sha "$VERIFY_SHA"
+          HEX_STAGE1_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: node tools/validation/stage1/pr-baseline.mjs --expect-sha "$VERIFY_SHA"
 
   dispatch-exact-candidate:
     if: github.event_name == 'workflow_dispatch'
