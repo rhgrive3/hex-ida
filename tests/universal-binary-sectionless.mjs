@@ -51,6 +51,41 @@ function issue74To85Regressions() {
   const plt=makeSectionlessElf64Fixture(), pv=new DataView(plt.buffer); pv.setBigUint64(64+56+32,0xd0n,true); pv.setBigUint64(64+56+40,0xd0n,true); const dyn=(i,tag,val)=>{const p=0x200+i*16;pv.setBigInt64(p,BigInt(tag),true);pv.setBigUint64(p+8,BigInt(val),true);}; dyn(9,23,0x4003a0); dyn(10,2,24); dyn(11,20,999); dyn(12,0,0); const pi=openBinary(plt); assert.ok(pi.warnings.some(x=>x.includes('DT_PLTREL'))); assert.equal(pi.metadata.programDynamicPartial,true);
 }
 
+function issues2095_2139_2163Regressions() {
+  {
+    const badIdent=makeSectionlessElf64Fixture(); badIdent[6]=2;
+    assert.throws(()=>openBinary(badIdent),/identification version 2/);
+    const badHeader=makeSectionlessElf64Fixture(); new DataView(badHeader.buffer).setUint32(20,2,true);
+    assert.throws(()=>openBinary(badHeader),/header version 2/);
+    const big=new Uint8Array(64); big.set([0x7f,0x45,0x4c,0x46,2,2,1],0); new DataView(big.buffer).setUint32(20,2,false);
+    assert.throws(()=>openBinary(big),/header version 2/);
+  }
+  {
+    const noNul=makeSectionlessElf64Fixture(); noNul[0x30f]=0x58;
+    const image=openBinary(noNul);
+    assert.equal(image.libraries.length,0);
+    assert.equal(image.metadata.programDynamicPartial,true);
+    assert.ok(image.warnings.some(x=>x.includes('not NUL-terminated within DT_STRSZ')));
+
+    const outside=makeSectionlessElf64Fixture(); new DataView(outside.buffer).setBigUint64(0x200+2*16+8,15n,true);
+    const outsideImage=openBinary(outside);
+    assert.equal(outsideImage.libraries.length,0);
+    assert.equal(outsideImage.metadata.programDynamicPartial,true);
+  }
+  {
+    const aps=makeSectionlessElf64Fixture(), v=new DataView(aps.buffer);
+    v.setBigUint64(64+56+32,0xd0n,true); v.setBigUint64(64+56+40,0xd0n,true);
+    const overflow=[0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x02];
+    const blob=[0x41,0x50,0x53,0x32,0x01,...overflow]; aps.set(blob,0x3c0);
+    const dyn=(i,tag,val)=>{const p=0x200+i*16;v.setBigInt64(p,BigInt(tag),true);v.setBigUint64(p+8,BigInt(val),true);};
+    dyn(9,0x60000011,0x4003c0); dyn(10,0x60000012,blob.length); dyn(11,0,0);
+    const image=openBinary(aps);
+    assert.equal(image.relocations.some(x=>x.source==='PT_DYNAMIC-ANDROID-RELA'),false);
+    assert.equal(image.metadata.programDynamicPartial,true);
+    assert.ok(image.warnings.some(x=>x.includes('signed 64-bit')));
+  }
+}
+
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   const image=openBinary(makeSectionlessElf64Fixture());
   assert.equal(image.format,'elf');
@@ -67,5 +102,6 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   assert.equal(auditBinary(image).errors,0);
   assert.ok(fingerprintImage(image).bytes>0);
   issue74To85Regressions();
+  issues2095_2139_2163Regressions();
   console.log('universal-binary-sectionless: PASS');
 }
