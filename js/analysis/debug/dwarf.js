@@ -139,9 +139,19 @@ class Cursor {
   slice(count) { const out = this.bytes.subarray(this.offset, this.offset + count); this.offset += count; return out; }
 }
 
+/**
+ * Reads a NUL-terminated string from a string section.
+ *
+ * A section-backed string is only valid when the offset points inside the
+ * section *and* a NUL terminator follows before its end (#1861). Anything else
+ * returns `null`, which callers propagate as an unresolved attribute instead of
+ * silently decoding an empty or unterminated span.
+ */
 function cstring(bytes, offset) {
+  if (!bytes || offset < 0 || offset >= bytes.length) return null;
   let end = offset;
   while (end < bytes.length && bytes[end] !== 0) end += 1;
+  if (end === bytes.length) return null;
   return new TextDecoder('utf8').decode(bytes.subarray(offset, end));
 }
 
@@ -206,11 +216,13 @@ function readForm(cursor, form, unit, sections, implicitConst) {
     }
     case DW_FORM.strp: {
       const offset = unit.offsetSize === 8 ? Number(cursor.u64()) : cursor.u32();
-      return { value: sections.debug_str ? cstring(sections.debug_str, offset) : null, unsupported: !sections.debug_str };
+      const text = sections.debug_str ? cstring(sections.debug_str, offset) : null;
+      return { value: text, unsupported: !sections.debug_str || text == null };
     }
     case DW_FORM.line_strp: {
       const offset = unit.offsetSize === 8 ? Number(cursor.u64()) : cursor.u32();
-      return { value: sections.debug_line_str ? cstring(sections.debug_line_str, offset) : null, unsupported: !sections.debug_line_str };
+      const text = sections.debug_line_str ? cstring(sections.debug_line_str, offset) : null;
+      return { value: text, unsupported: !sections.debug_line_str || text == null };
     }
     case DW_FORM.sec_offset: case DW_FORM.ref_addr: case DW_FORM.strp_sup:
       return { value: unit.offsetSize === 8 ? cursor.u64() : BigInt(cursor.u32()) };
