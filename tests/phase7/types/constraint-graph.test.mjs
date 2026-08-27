@@ -63,6 +63,20 @@ test('an uncontradicted hard constraint yields a certain answer', () => {
   assert.equal(selectedTypeIfCertain(result, 'machine').descriptor.widthBits, 32);
 });
 
+test('compatible hard facts merge canonically independent of insertion order', () => {
+  const width = { kind:'access-width', origin:'binary-evidence', claim:{
+    layer:'machine', entityId:'e', descriptor:{ widthBits:64 },
+  } };
+  const klass = { kind:'runtime-metadata-type', origin:'runtime-verified', claim:{
+    layer:'machine', entityId:'e', descriptor:{ class:'pointer' },
+  } };
+  const forward = graphFor([width, klass]).solveEntity('e').layers.machine;
+  const reverse = graphFor([klass, width]).solveEntity('e').layers.machine;
+  assert.deepEqual(forward, reverse);
+  assert.deepEqual(forward.selected.descriptor, { class:'pointer', widthBits:64 });
+  assert.equal(forward.confidence, 'certain');
+});
+
 test('contradicting hard constraints withhold selection entirely', () => {
   // Not "lower confidence" — no selection at all. A 70%-certain answer between
   // two mutually exclusive hard facts is a fabrication (FM-6).
