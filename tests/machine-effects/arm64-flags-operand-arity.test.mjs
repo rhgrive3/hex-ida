@@ -32,25 +32,27 @@ for (const [mnemonic, operands] of valid) {
   assert.equal(effects.operations.filter((operation) => operation.kind === 'flag-write').length, 4, `${mnemonic}: NZCV write set`);
 }
 
-// Arity rejection must happen before any NZCV write is emitted.
+// Arity rejection must happen before any NZCV write is emitted. TST's
+// register-only structured owner can reject a missing RHS even earlier than
+// the flags owner; preserve that more-specific fail-closed reason.
 const invalid = [
-  ['cmp', 'x0'],
-  ['cmp', 'x0, x1, x2'],
-  ['cmn', 'x0'],
-  ['cmn', 'x0, x1, x2'],
-  ['tst', 'x0'],
-  ['tst', 'x0, x1, x2'],
-  ['ccmp', 'x0, x1, #0'],
-  ['ccmp', 'x0, x1, #0, eq, x2'],
-  ['ccmn', 'x0, x1, #0'],
-  ['ccmn', 'x0, x1, #0, eq, x2'],
+  ['cmp', 'x0', 'arm64-cmp-operand-shape-unencodable'],
+  ['cmp', 'x0, x1, x2', 'arm64-cmp-operand-shape-unencodable'],
+  ['cmn', 'x0', 'arm64-cmn-operand-shape-unencodable'],
+  ['cmn', 'x0, x1, x2', 'arm64-cmn-operand-shape-unencodable'],
+  ['tst', 'x0', 'arm64-tst-rhs-register-required'],
+  ['tst', 'x0, x1, x2', 'arm64-tst-operand-shape-unencodable'],
+  ['ccmp', 'x0, x1, #0', 'arm64-ccmp-operand-shape-unencodable'],
+  ['ccmp', 'x0, x1, #0, eq, x2', 'arm64-ccmp-operand-shape-unencodable'],
+  ['ccmn', 'x0, x1, #0', 'arm64-ccmn-operand-shape-unencodable'],
+  ['ccmn', 'x0, x1, #0, eq, x2', 'arm64-ccmn-operand-shape-unencodable'],
 ];
 
-for (const [mnemonic, operands] of invalid) {
+for (const [mnemonic, operands, expectedReason] of invalid) {
   const effects = lift(mnemonic, operands);
   assert.ok(effects, `${mnemonic}: invalid structured form must fail closed`);
   assert.equal(effects.completeness, 'partial', `${mnemonic}:${operands}`);
-  assert.equal(effects.unknownEffects?.reason, `arm64-${mnemonic}-operand-shape-unencodable`, `${mnemonic}:${operands}`);
+  assert.equal(effects.unknownEffects?.reason, expectedReason, `${mnemonic}:${operands}`);
   assert.equal(effects.operations.some((operation) => operation.kind === 'flag-write'), false, `${mnemonic}: invalid shape must not write NZCV`);
 }
 
