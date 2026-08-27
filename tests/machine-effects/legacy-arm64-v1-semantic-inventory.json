@@ -130,11 +130,18 @@
       "sourceMarkers": ["const BIN_OF =", "if (BIN_OF[base])"]
     },
     {
+      "id": "pointer-auth-lr-unknown",
+      "match": { "mnemonics": ["autiasp", "autibsp", "paciasp", "pacibsp", "xpaclri"] },
+      "legacyBehavior": "unknown-x30-write-with-input-dependencies",
+      "semanticWarning": "Legacy compatibility IR preserves LR/SP dependencies and fails closed on the unmodeled PAC value.",
+      "sourceMarkers": ["Pointer Authentication aliases", "paciasp|pacibsp|autiasp|autibsp", "base === 'xpaclri'"]
+    },
+    {
       "id": "legacy-explicit-empty",
-      "match": { "mnemonics": ["autiasp", "autibsp", "bti", "dmb", "dsb", "hint", "isb", "nop", "paciasp", "pacibsp", "prfm", "sev", "wfe", "wfi", "xpaclri", "yield"] },
+      "match": { "mnemonics": ["bti", "dmb", "dsb", "hint", "isb", "nop", "prfm", "sev", "wfe", "wfi", "yield"] },
       "legacyBehavior": "empty-v1-output",
       "semanticWarning": "Compatibility behavior only. Empty legacy output is not ISA proof of state preservation.",
-      "sourceMarkers": ["何も起きない命令", "paciasp|pacibsp|autiasp|autibsp|xpaclri|dmb|dsb|isb|prfm"]
+      "sourceMarkers": ["何も起きない命令", "nop|hint|bti|dmb|dsb|isb|prfm"]
     },
     {
       "id": "fallback-unknown",
