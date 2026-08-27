@@ -1,3 +1,9 @@
+function sectionHasMappedAddress(sec) {
+  if (sec?.source === 'section-header') return (Number(sec.flags || 0) & 0x2) !== 0; // ELF SHF_ALLOC
+  if (sec?.source === 'unmapped-section') return false;
+  return true;
+}
+
 export function auditBinary(image) {
   const issues = [];
   const stats = {
@@ -22,7 +28,7 @@ export function auditBinary(image) {
   for (const sec of image.sections) {
     if (sec.fileSize > 0n) {
       checkFileRange(image, sec.fileOffset, sec.fileSize, `section ${sec.name}`, issues);
-      if (sec.address !== 0n) {
+      if (sectionHasMappedAddress(sec)) {
         stats.mappedSections++;
         checkRoundTrip(image, sec.address, sec.fileOffset, `section ${sec.name}`, stats, issues);
       }
