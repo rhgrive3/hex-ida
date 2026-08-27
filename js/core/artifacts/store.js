@@ -1,6 +1,7 @@
 import {
   ARTIFACT_STORE_VERSION,
   ArtifactCorruptionError,
+  assertCanonicalArtifactDescriptor,
   createArtifactRecord,
   decodeArtifactPayload,
   encodeArtifactPayload,
@@ -275,6 +276,7 @@ export class ArtifactStore {
 
   async publish(descriptor, payload, options = {}) {
     if (!descriptor?.artifactId) throw new TypeError('artifact-descriptor-required');
+    assertCanonicalArtifactDescriptor(descriptor);
     const artifactId = String(descriptor.artifactId);
     aborted(options.signal);
 
