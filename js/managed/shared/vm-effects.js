@@ -131,6 +131,41 @@ function assertNotAborted(options) {
   }
 }
 
+function budgetValue(options, key) {
+  const raw = options?.budget?.[key] ?? VM_EFFECT_DEFAULT_BUDGET[key];
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < 0) fail(`vm-effect-invalid-budget-${key}`);
+  return value;
+}
+
+export function createVMEffectBudgetTracker(options = {}) {
+  const limits = Object.freeze({
+    maxOperations: budgetValue(options, 'maxOperations'),
+    maxValues: budgetValue(options, 'maxValues'),
+    maxExceptionRegions: budgetValue(options, 'maxExceptionRegions'),
+  });
+  let operations = 0;
+  let values = 0;
+  let exceptionRegions = 0;
+  const checkpoint = () => assertNotAborted(options);
+  const charge = (field, count, limit, code) => {
+    checkpoint();
+    const n = Number(count);
+    if (!Number.isSafeInteger(n) || n < 0) fail('vm-effect-invalid-budget-charge');
+    const next = field + n;
+    if (next > limit) fail(code);
+    return next;
+  };
+  return Object.freeze({
+    limits,
+    checkpoint,
+    chargeOperation(count = 1) { operations = charge(operations, count, limits.maxOperations, 'vm-effect-resource-limit-operations'); return operations; },
+    chargeValues(count = 1) { values = charge(values, count, limits.maxValues, 'vm-effect-resource-limit-values'); return values; },
+    chargeExceptionRegions(count = 1) { exceptionRegions = charge(exceptionRegions, count, limits.maxExceptionRegions, 'vm-effect-resource-limit-exception-regions'); return exceptionRegions; },
+    snapshot() { return Object.freeze({ operations, values, exceptionRegions, limits }); },
+  });
+}
+
 export function createVMEffectBundle(input, options = {}) {
   assertNotAborted(options);
   input = object(input, 'vm-effect-bundle-invalid');
@@ -218,6 +253,13 @@ export function createVMEffectFunction(input, options = {}) {
   const frontendId = nonEmpty(input.frontendId, 'vm-effect-frontend-id-required');
   const bundles = array(input.bundles ?? [], 'vm-effect-function-bundles-required');
   const exceptionRegions = array(input.exceptionRegions ?? [], 'vm-effect-function-exceptions-invalid');
+  if (bundles.length > budgetValue(options, 'maxOperations')) fail('vm-effect-resource-limit-operations');
+  if (exceptionRegions.length > budgetValue(options, 'maxExceptionRegions')) fail('vm-effect-resource-limit-exception-regions');
+  let valueCount = 0;
+  for (const bundle of bundles) {
+    valueCount += (bundle?.consumedValues?.length || 0) + (bundle?.producedValues?.length || 0);
+    if (valueCount > budgetValue(options, 'maxValues')) fail('vm-effect-resource-limit-values');
+  }
 
   const outBundles = bundles.map((b) => createVMEffectBundle(b, options));
   const aggregateCompleteness = nonEmpty(input.aggregateCompleteness ?? (
