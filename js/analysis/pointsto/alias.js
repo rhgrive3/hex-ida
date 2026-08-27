@@ -111,19 +111,21 @@ export function pointsToAlias(left, right, options = {}) {
           continue;
         }
 
-        const aKey = String(a.rootIdentity?.variable?.key ?? '');
-        const bKey = String(b.rootIdentity?.variable?.key ?? '');
-        if (aKey && bKey && aKey !== bKey) {
-          if ((aKey.includes('heap') || aKey.includes('alloc')) && (bKey.includes('heap') || bKey.includes('alloc'))) {
-            relations.push('no');
-            reasonCodes.add('distinct-non-escaping-allocation');
-            continue;
-          }
-          if ((aKey.includes('global') || aKey.includes('g_root')) && (bKey.includes('global') || bKey.includes('g_root'))) {
-            relations.push('no');
-            reasonCodes.add('disjoint-global-interval');
-            continue;
-          }
+        // Descriptor-backed storage classes are proof-bearing because they come
+        // from the canonical root descriptor boundary, not from variable spelling.
+        // A manually-constructed/root-name-only target therefore cannot mint
+        // separation authority (#1806), while the Phase 7 frozen corpus keeps its
+        // two exact distinct-storage cases through explicit provenance (#1848).
+        const descriptorSeparated = a.separationAuthority === 'root-descriptor'
+          && b.separationAuthority === 'root-descriptor'
+          && a.separationClass === b.separationClass
+          && ['global-like', 'heap-like', 'tls-like'].includes(a.separationClass)
+          && a.rootEntityId != null && b.rootEntityId != null
+          && a.rootEntityId !== b.rootEntityId;
+        if (descriptorSeparated) {
+          relations.push('no');
+          reasonCodes.add('distinct-proven-root');
+          continue;
         }
 
         relations.push('may');

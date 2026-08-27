@@ -175,6 +175,8 @@ function rootKeyOf(target) {
     rootKind: target.rootKind,
     rootIdentity: target.rootIdentity ?? null,
     rootEntityId: target.rootEntityId ?? null,
+    separationClass: target.separationClass ?? null,
+    separationAuthority: target.separationAuthority ?? null,
     address: target.address ?? null,
   });
 }
@@ -186,6 +188,8 @@ export function createPointsToTarget(input = {}) {
     rootKind: String(input.rootKind ?? 'unknown'),
     rootIdentity: input.rootIdentity ?? null,
     rootEntityId: input.rootEntityId == null ? null : String(input.rootEntityId),
+    separationClass: input.separationClass == null ? null : String(input.separationClass),
+    separationAuthority: input.separationAuthority == null ? null : String(input.separationAuthority),
     address: input.address == null ? null : String(input.address),
     offsetRange: input.offsetRange ?? UNBOUNDED_RANGE,
     widthBits: input.widthBits == null ? null : Number(input.widthBits),
