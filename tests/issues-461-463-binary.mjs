@@ -16,7 +16,6 @@ function machoWithFirstCommand(cmd, cmdsize) {
   dv.setUint32(24, 0, true); dv.setUint32(28, 0, true);
   let p = 32;
   dv.setUint32(p, cmd, true); dv.setUint32(p + 4, cmdsize, true);
-  // Adjacent bytes deliberately look usable to an over-reading parser.
   p += cmdsize;
   dv.setUint32(p, 0x77777777, true); dv.setUint32(p + 4, secondSize, true);
   dv.setUint32(p + 8, 0x12345678, true); dv.setUint32(p + 12, 1, true);
@@ -24,18 +23,17 @@ function machoWithFirstCommand(cmd, cmdsize) {
   return bytes;
 }
 
-// #463: command-specific fields are never read across cmdsize into the next LC.
 {
-  const symtab = parseMachO(machoWithFirstCommand(0x2, 8)); // LC_SYMTAB needs 24
+  const symtab = parseMachO(machoWithFirstCommand(0x2, 8));
   assert.ok(symtab.warnings.some((w) => /invalid LC_SYMTAB size 8/.test(w)), symtab.warnings.join('\n'));
   assert.equal(symtab.symbols.length, 0);
   assert.equal(symtab.exports.length, 0);
 
-  const version = parseMachO(machoWithFirstCommand(0x25, 8)); // LC_VERSION_MIN_IPHONEOS needs 16
+  const version = parseMachO(machoWithFirstCommand(0x25, 8));
   assert.ok(version.warnings.some((w) => /invalid LC_VERSION_MIN size 8/.test(w)), version.warnings.join('\n'));
   assert.equal(version.metadata.buildVersion, undefined);
 
-  const dylib = parseMachO(machoWithFirstCommand(0x0c, 8)); // LC_LOAD_DYLIB needs 24
+  const dylib = parseMachO(machoWithFirstCommand(0x0c, 8));
   assert.ok(dylib.warnings.some((w) => /invalid dylib command size 8/.test(w)), dylib.warnings.join('\n'));
   assert.equal(dylib.libraries.length, 0);
 }
@@ -43,14 +41,14 @@ function machoWithFirstCommand(cmd, cmdsize) {
 function peFixture({ entryRva = 0x1000, machine = 0x8664, executable = true, virtualSize = 0x100, rawSize = 0x100 } = {}) {
   const bytes = new Uint8Array(0x400);
   const dv = new DataView(bytes.buffer);
-  dv.setUint16(0, 0x5a4d, true);            // MZ
+  dv.setUint16(0, 0x5a4d, true);
   dv.setUint32(0x3c, 0x80, true);
   const pe = 0x80;
-  dv.setUint32(pe, 0x00004550, true);        // PE\0\0
+  dv.setUint32(pe, 0x00004550, true);
   const coff = pe + 4;
   dv.setUint16(coff, machine, true);
   dv.setUint16(coff + 2, 1, true);
-  dv.setUint16(coff + 16, 112, true);        // PE32+ minimum optional header
+  dv.setUint16(coff + 16, 112, true);
   const opt = coff + 20;
   dv.setUint16(opt, 0x20b, true);
   dv.setUint32(opt + 16, entryRva, true);
@@ -79,7 +77,6 @@ function rejected(image, fragment) {
   assert.ok(image.warnings.some((w) => w.includes(fragment)), image.warnings.join('\n'));
 }
 
-// #461: high-confidence entrypoint seeds require mapped executable file-backed bytes.
 {
   const valid = parsePE(peFixture());
   assert.equal(entrySeeds(valid).length, 1);
@@ -121,7 +118,6 @@ function aarch64GnuPropertyFixture({ namesz = 4, owner = [0x47, 0x4e, 0x55, 0x00
   return bytes;
 }
 
-// #2101: AArch64 GNU property evidence requires the canonical "GNU\0" owner encoding.
 {
   const canonical = parseAarch64GnuProperty(aarch64GnuPropertyFixture());
   assert.equal(canonical.btiRequested, true);
@@ -129,12 +125,15 @@ function aarch64GnuPropertyFixture({ namesz = 4, owner = [0x47, 0x4e, 0x55, 0x00
   assert.equal(canonical.evidence.length, 1);
 
   const unterminated = parseAarch64GnuProperty(aarch64GnuPropertyFixture({ namesz: 3, owner: [0x47, 0x4e, 0x55] }));
+  assert.equal(unterminated.loaderPolicy, 'feature-bit-absent');
   assert.equal(unterminated.btiRequested, false);
   assert.equal(unterminated.pacRequested, false);
   assert.equal(unterminated.evidence.length, 0);
 
   const wrongTerminator = parseAarch64GnuProperty(aarch64GnuPropertyFixture({ owner: [0x47, 0x4e, 0x55, 0x78] }));
+  assert.equal(wrongTerminator.loaderPolicy, 'feature-bit-absent');
   assert.equal(wrongTerminator.btiRequested, false);
+  assert.equal(wrongTerminator.pacRequested, false);
   assert.equal(wrongTerminator.evidence.length, 0);
 
   const pac = parseAarch64GnuProperty(aarch64GnuPropertyFixture({ featureBits: 2 }));
