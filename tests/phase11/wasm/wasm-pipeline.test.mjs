@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { WasmFrontend } from '../../../js/managed/wasm/frontend.js';
-import { lowerVMEffectsToSemanticIr } from '../../../js/managed/shared/bridge.js';
+import { lowerVMEffectsToSemanticIr } from '../../../js/managed/shared/bridge-v2.js';
 
 console.log('[phase11] running wasm pipeline tests...');
 
