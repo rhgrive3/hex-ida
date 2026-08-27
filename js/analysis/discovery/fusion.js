@@ -77,6 +77,21 @@ function authorityRank(authority) {
   return authority === 'authoritative' ? 2 : authority === 'corroborating' ? 1 : 0;
 }
 
+function regionSignature(item) {
+  return (item.regions ?? []).map((region) => `${region.start}-${region.end}-${region.ownership ?? ''}`).join(',');
+}
+
+function compareEvidence(left, right) {
+  return authorityRank(right.authority) - authorityRank(left.authority)
+    || String(left.start).localeCompare(String(right.start))
+    || String(left.producerId).localeCompare(String(right.producerId))
+    || String(left.kind).localeCompare(String(right.kind))
+    || String(left.name ?? '').localeCompare(String(right.name ?? ''))
+    || String(left.extentRole ?? '').localeCompare(String(right.extentRole ?? ''))
+    || String(left.architectureId ?? '').localeCompare(String(right.architectureId ?? ''))
+    || regionSignature(left).localeCompare(regionSignature(right));
+}
+
 /**
  * Fuses start evidence into a state.
  *
@@ -179,12 +194,14 @@ export function fuseFunctionCandidates(evidence, options = {}) {
   }
 
   const byStart = new Map();
-  for (const item of evidence) {
+  const orderedEvidence = [...evidence].sort(compareEvidence);
+  for (const item of orderedEvidence) {
     if (item.start == null) continue;
     const key = BigInt(item.start).toString();
-    if (!byStart.has(key)) byStart.set(key, []);
-    const bucket = byStart.get(key);
-    if (bucket.length < budget.maxEvidencePerCandidate) bucket.push(item);
+    if (!byStart.has(key)) byStart.set(key, { items: [], overflow: false });
+    const entry = byStart.get(key);
+    if (entry.items.length < budget.maxEvidencePerCandidate) entry.items.push(item);
+    else entry.overflow = true;
   }
 
   if (byStart.size > budget.maxCandidates) {
@@ -192,16 +209,27 @@ export function fuseFunctionCandidates(evidence, options = {}) {
   }
 
   const candidates = [];
+  let evidenceOverflow = false;
   const starts = [...byStart.keys()].sort((left, right) => (BigInt(left) < BigInt(right) ? -1 : 1));
   for (const start of starts) {
-    const bucket = byStart.get(start)
-      .slice()
-      .sort((left, right) => authorityRank(right.authority) - authorityRank(left.authority)
-        || String(left.producerId).localeCompare(String(right.producerId)));
+    const entry = byStart.get(start);
+    const bucket = entry.items;
+    evidenceOverflow ||= entry.overflow;
     const startState = fuseStartState(bucket);
-    const extent = fuseExtent(bucket);
+    let extent = fuseExtent(bucket);
     const names = [...new Set(bucket.map((item) => item.name).filter(Boolean))];
     const conflicts = [...extent.conflicts];
+    if (entry.overflow) {
+      // Omitted evidence is not evidence of agreement. The start itself is still
+      // the bucket key and remains supported by the retained highest-authority
+      // evidence, but name/extent claims may have an omitted contradiction.
+      extent = { regions: [], state: 'unknown', conflicts: extent.conflicts };
+      conflicts.push({
+        kind: 'evidence-budget',
+        detail: 'candidate evidence exceeded maxEvidencePerCandidate',
+        alternatives: [{ retained: bucket.length, omitted: 'one-or-more' }],
+      });
+    }
 
     // Two authoritative sources naming the same address differently is a real
     // disagreement about what this function is, and it is recorded rather than
@@ -213,7 +241,7 @@ export function fuseFunctionCandidates(evidence, options = {}) {
 
     candidates.push(createFunctionCandidate({
       start,
-      name: names[0] ?? null,
+      name: entry.overflow ? null : (names[0] ?? null),
       regions: extent.regions,
       startEvidence: bucket,
       extentEvidence: bucket.filter((item) => item.regions.length > 0),
@@ -230,7 +258,7 @@ export function fuseFunctionCandidates(evidence, options = {}) {
   }
   return {
     candidates: reconciled,
-    status: status('complete', null),
+    status: evidenceOverflow ? status('truncated', 'budget-exhausted') : status('complete', null),
   };
 }
 

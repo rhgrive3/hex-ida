@@ -175,3 +175,22 @@ test('start and extent metrics are reported independently and are sound', () => 
   assert.ok(typeof metrics.candidate.startPrecision === 'number');
   assert.ok(typeof metrics.candidate.extentPrecision === 'number');
 });
+
+test('evidence overflow is deterministic and cannot publish complete exact claims', () => {
+  const evidence = [
+    createDiscoveryEvidence({ kind: 'export', start: 0x1000, name: 'A', producerId: 'a', regions: [{ start: 0x1000, end: 0x1100 }] }),
+    createDiscoveryEvidence({ kind: 'debug-symbol', start: 0x1000, name: 'A', producerId: 'b', regions: [{ start: 0x1000, end: 0x1100 }] }),
+    createDiscoveryEvidence({ kind: 'loader-function-start', start: 0x1000, name: 'B', producerId: 'z', regions: [{ start: 0x1000, end: 0x1200 }] }),
+  ];
+  const options = { budget: { maxEvidencePerCandidate: 2 } };
+  const forward = fuseFunctionCandidates(evidence, options);
+  const reverse = fuseFunctionCandidates([...evidence].reverse(), options);
+
+  assert.equal(forward.status.completeness, 'truncated');
+  assert.equal(forward.status.stopReason, 'budget-exhausted');
+  assert.equal(forward.candidates[0].startState, 'exact');
+  assert.equal(forward.candidates[0].extentState, 'unknown');
+  assert.equal(forward.candidates[0].name, null);
+  assert.ok(forward.candidates[0].conflicts.some((conflict) => conflict.kind === 'evidence-budget'));
+  assert.deepEqual(forward, reverse, 'the same evidence multiset must not depend on producer/input order');
+});
