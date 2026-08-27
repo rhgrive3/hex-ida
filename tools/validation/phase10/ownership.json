@@ -84,7 +84,10 @@
     "tests/architecture-compat-live-view.mjs",
     "tests/phase-runner-contract.mjs",
     "tests/runtime-module-binding-contract.mjs",
-    "tests/core-identity-contracts.mjs"
+    "tests/core-identity-contracts.mjs",
+    "js/analysis/artifact-identity.js",
+    "js/core/artifacts/contracts.js",
+    "js/core/artifacts/store.js"
   ],
   "forbiddenPrefixes": [
     "js/semantics/",
