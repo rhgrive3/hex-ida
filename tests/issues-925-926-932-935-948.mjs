@@ -43,14 +43,14 @@ const classify = (args) => classifyAAPCS64Arguments({ callPrototype:{ args } });
   const union = classify([{ type:'union U', bits:128 }]);
   assert.equal(union.arguments[0].abiClass, 'aggregate');
   assert.deepEqual(union.arguments[0].regs, ['x0','x1']);
-  const split = classify([
+  const spill = classify([
     ...Array.from({length:7}, () => ({ type:'uint64_t', bits:64 })),
     { type:'struct Pair', aggregate:true, bits:128 },
   ]);
-  assert.equal(split.arguments[7].location, 'register-stack');
-  assert.deepEqual(split.arguments[7].regs, ['x7']);
-  assert.equal(split.arguments[7].stackBytes, 8);
-  assert.equal(split.stackArguments.at(-1).pieceOffsetBytes, 8);
+  assert.equal(spill.arguments[7].location, 'stack');
+  assert.equal(spill.arguments[7].bytes, 16);
+  assert.equal(spill.arguments[7].offset, 0);
+  assert.equal(spill.srcs.some((source) => source.reg === 'x7'), false);
   const aligned = classify([{type:'uint64_t',bits:64},{type:'struct Pair',aggregate:true,bits:128,alignment:16}]);
   assert.deepEqual(aligned.arguments[1].regs, ['x2','x3']);
   const wide6 = classify([...Array.from({length:6},()=>({type:'uint64_t',bits:64})),{type:'__int128'}]);
