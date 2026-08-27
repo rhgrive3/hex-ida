@@ -70,7 +70,33 @@ function makeLegacyThreadMachOFixture() {
   return b;
 }
 
+function makeUndersizedKnownLoadCommandFixture(command) {
+  const b = new Uint8Array(40);
+  const v = new DataView(b.buffer);
+  v.setUint32(0, 0xfeedfacf, true);
+  v.setInt32(4, 0x0100000c, true);
+  v.setInt32(8, 0, true);
+  v.setUint32(12, 2, true);
+  v.setUint32(16, 1, true);
+  v.setUint32(20, 8, true);
+  v.setUint32(24, 0, true);
+  v.setUint32(28, 0, true);
+  v.setUint32(32, command, true);
+  v.setUint32(36, 8, true);
+  return b;
+}
+
 function testMachOIssueRegressions() {
+  for (const command of [0x80000028, 0x26, 0x80000034, 0x80000033, 0x22, 0x80000022, 0x32]) {
+    assert.throws(
+      () => openBinary(makeUndersizedKnownLoadCommandFixture(command)),
+      /invalid Mach-O load command .* expected at least/,
+      `known load command 0x${command.toString(16)} must reject undersized cmdsize`,
+    );
+  }
+  assert.doesNotThrow(() => openBinary(makeUndersizedKnownLoadCommandFixture(0x12345678)),
+    'unknown load commands remain skippable when their generic cmdsize is valid');
+
   const legacy=openBinary(makeLegacyThreadMachOFixture());
   assert.equal(legacy.entrypoint,0x100000180n); assert.equal(legacy.metadata.entrypointSource,'LC_UNIXTHREAD');
   assert.equal(legacy.platform,'iOS'); assert.equal(legacy.metadata.buildVersion.minos,'17.0.2'); assert.equal(legacy.metadata.buildVersion.source,'LC_VERSION_MIN');
