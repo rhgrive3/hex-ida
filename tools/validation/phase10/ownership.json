@@ -87,7 +87,9 @@
     "tests/core-identity-contracts.mjs",
     "js/analysis/artifact-identity.js",
     "js/core/artifacts/contracts.js",
-    "js/core/artifacts/store.js"
+    "js/core/artifacts/store.js",
+    "tools/validation/phase7-ownership.mjs",
+    "tools/validation/phase-ownership/phase7.json"
   ],
   "forbiddenPrefixes": [
     "js/semantics/",
