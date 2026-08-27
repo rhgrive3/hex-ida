@@ -50,7 +50,13 @@
       "tools/validation/stage2/**",
       "tests/stage2/**",
       "js/ai/dev/**",
-      "tests/dev-agent/**"
+      "tests/dev-agent/**",
+      "js/analysis/alias/address-ir-normalize-v2.js",
+      "js/analysis/artifact-identity.js",
+      "js/core/artifacts/contracts.js",
+      "js/core/artifacts/store.js",
+      "js/core/evidence/compat.js",
+      "tests/phase7/alias/address-normalize-id-collision.test.mjs"
     ]
   },
   "contractPaths": [
@@ -88,7 +94,13 @@
     "js/managed/index.js",
     "js/userscript/chatgpt-bridge.js",
     "js/userscript/dev/parent-worker-runtime.js",
-    "package.json"
+    "package.json",
+    "js/analysis/alias/address-ir-normalize-v2.js",
+    "js/analysis/artifact-identity.js",
+    "js/core/artifacts/contracts.js",
+    "js/core/artifacts/store.js",
+    "js/core/evidence/compat.js",
+    "tests/phase7/alias/address-normalize-id-collision.test.mjs"
   ],
   "generatedPaths": ["reports/phase12/**", "userscript/hex.user.template.js", "userscript/release-version.json", "js/userscript/deployment-identity.generated.js"],
   "releaseOnlyPaths": ["reports/phase12/**"],
