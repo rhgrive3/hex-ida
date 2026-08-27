@@ -15,6 +15,11 @@ for (const [mnemonic, operands] of [
   ['orr','x0, x1, xzr'],
   ['mvn','x0, x1'],
   ['tst','x0, x1'],
+  // Logical-immediate AND/ORR/EOR encode Rd=31 as SP. This is distinct from
+  // their shifted-register forms, where register 31 is ZR and SP is illegal.
+  ['and','sp, x0, #1'],
+  ['orr','wsp, w1, #255'],
+  ['eor','sp, xzr, #255'],
 ]) {
   assert.notEqual(lift(mnemonic, operands).completeness, 'partial', `${mnemonic} valid logical form regressed: ${operands}`);
 }
@@ -26,6 +31,9 @@ for (const [mnemonic, operands] of [
   ['mvn','sp, x1'],
   ['tst','sp, x1'],
   ['tst','x0, sp'],
+  ['and','sp, x0, #0'],
+  ['orr','sp, x0, #-1'],
+  ['eor','sp, sp, #1'],
 ]) {
   const result = lift(mnemonic, operands);
   assert.equal(result.completeness, 'partial', `${mnemonic} illegal SP logical form must fail closed: ${operands}`);
