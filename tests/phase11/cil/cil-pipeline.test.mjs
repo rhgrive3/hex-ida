@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { CilFrontend } from '../../../js/managed/cil/frontend.js';
-import { lowerVMEffectsToSemanticIr } from '../../../js/managed/shared/bridge.js';
+import { lowerVMEffectsToSemanticIr } from '../../../js/managed/shared/bridge-v2.js';
 import { buildMinimalCil } from './cil-parser.test.mjs';
 
 console.log('[phase11] running cil pipeline tests...');
