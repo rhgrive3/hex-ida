@@ -21,10 +21,22 @@ function validRegisterLhs(mnemonic, op) {
   return cls === 'sp' && SP_LHS_MNEMONICS.has(mnemonic);
 }
 
+function validSpImmediateRhs(op) {
+  if (op?.k !== 'imm') return true;
+  let immediate;
+  try { immediate = BigInt(op.value); } catch { return false; }
+  if (immediate < 0n || immediate > 0xfffn) return false;
+  if (op.shift == null) return true;
+  return String(op.shift.op || '').toLowerCase() === 'lsl' && Number(op.shift.amount) === 12;
+}
+
 export function liftArm64FlagEffects(instruction, options = {}) {
   const mnemonic = String(instruction?.mnemonic || '').trim().toLowerCase();
   const ops = Array.isArray(instruction?.ops) ? instruction.ops : [];
   if (STRICT_REGISTER_LHS.has(mnemonic) && !validRegisterLhs(mnemonic, ops[0])) {
+    return liftArm64FlagEffectsCore({ ...instruction, ops: [] }, options);
+  }
+  if (SP_LHS_MNEMONICS.has(mnemonic) && String(ops[0]?.cls || '').toLowerCase() === 'sp' && !validSpImmediateRhs(ops[1])) {
     return liftArm64FlagEffectsCore({ ...instruction, ops: [] }, options);
   }
   return liftArm64FlagEffectsCore(instruction, options);
