@@ -17,6 +17,16 @@ node --test tests/phase7/pointsto/loaded-pointer-recovery.test.mjs
 Expected pre-fix result: the positive case fails because the loaded value remains
 `unresolved-load`. Negative cases already remain unresolved.
 
+Recorded on base `31b43543be999378add7cd6537e7889b5c67802f` (2026-08-27):
+
+```text
+tests 1
+pass 0
+fail 1
+AssertionError [ERR_ASSERTION]: post-fix contract expects a finite recovered loaded pointer
+true !== false
+```
+
 ## 2. Run the focused proof
 
 After implementation, rerun the same command. Expected result:

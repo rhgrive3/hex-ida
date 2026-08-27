@@ -37,7 +37,7 @@ verification. Denominators and tests may not be weakened.
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | HEX-C0-01 | COMPLETE_EXISTING | COMPLETE | existing/main | historical | historical | merged PR 1887 | none | same-artifact debug/stripped authority merged and retained on live main | `tools/validation/competitive/**` | competitive twin authority regressions | historical | main evidence retained | `2af6a913` | non-regression only | none |
 | HEX-ME-01 | REMAINING | PARTIAL | Sol | — | — | — | C0-01 | external-oracle policy and differential harness exist; no formal/relaxed-memory release proof | partial oracle infrastructure | required formal/hardware/undefined-mask matrix | — | — | — | incomplete observables may create false confidence | none |
-| HEX-C1-01 | IMPLEMENTING | MISSING | Sol + one Luna Max implementation owner | `specs/001-loaded-pointer-recovery` | T001–T022; T001–T002 complete | `research-close/integration` / PR 2201 | C1-03 | production still returns `unresolved-load`; canonical `reachingConcreteStore` has no indexed consumer | exact C1-01 inventory gate added; semantic bridge pending | inventory gate 3/3 and Phase 7 manifest PASS; store/load counterexample pending | analyze clean; implement active | — | — | false precise points-to is release-blocking | none |
+| HEX-C1-01 | VERIFYING | MISSING | Sol + one Luna Max implementation owner | `specs/001-loaded-pointer-recovery` | T001–T022; T001–T016 complete | `research-close/integration` / PR 2201 | C1-03 | pre-fix 1/1 failed because the exact load stayed `unresolved-load` | canonical post-MemorySSA points-to refinement; exact byte/proof/provenance/freshness gate; complete-only atomic solver publication | focused 11/11 twice; pointsto/alias 59/59; Phase 7 36/36 (287/287); Semantic V2 54/54; Phase 8 27/27 (277/277); inventory 3/3; lint 1505 files; syntax/diff/manifest PASS | analyze clean; converge pending | — | — | target set is single-store only; multi-store bytes remain C2-01 | none |
 | HEX-C1-02 | REMAINING | MISSING | Sol | — | — | — | C1-03 | production still returns `unresolved-call` | no complete return-pointer summary relation | pending complete/incomplete/recursive target matrix | — | — | — | incomplete summary must join unknown | none |
 | HEX-C1-03 | COMPLETE_EXISTING | COMPLETE | existing/main | historical | historical | merged PR 2185 | C0-01 | provenance-backed root separation is on live main | canonical roots; spelling cannot mint exact separation | alias provenance negative regressions | historical | main evidence retained | `552f798f` | non-regression only | none |
 | HEX-C2-01 | REMAINING | PARTIAL | Sol | — | — | — | C1-01, C1-03 | canonical MemorySSA query exists without general byte-coverage consumer | exact-store query only | pending byte coverage, endian, overlap, clobber matrix | — | — | — | one wrong byte creates silent wrong value | none |
@@ -77,5 +77,21 @@ verification. Denominators and tests may not be weakened.
   20/20 requirements covered, 0 critical/high/medium findings, and both checklists fully reviewed.
 - Ownership preflight: `tests/phase7/ownership/c1-01-inventory.test.mjs` passes 3/3 against the
   actual tracked plus untracked branch inventory; the Phase 7 manifest gate also passes.
-- Next action: one Luna Max implementation owner executes T003–T012 counterexample-first while Sol
-  retains T013–T022 integration, convergence, exact-product proof, PR, and merge authority.
+- Implementation evidence: the original focused test failed 1/1 before production edits; the
+  final focused matrix passes 11/11 twice and the existing pointsto/alias matrix passes 59/59.
+  MayAlias, real call-clobber, unknown clobber, phi, partial/incompatible bytes, provenance,
+  stale identities, malformed metadata, cancellation, iteration/value/target budgets, volatile,
+  atomic, and discarded-publication cases remain conservative.
+- Subsystem & downstream verification:
+  - Phase 7: PASS (36/36 files, 287/287 tests)
+  - Semantic V2: PASS (54/54 files, mismatch 0, unknown store/call safety failure 0, provenance loss 0)
+  - Phase 8: PASS (27/27 files, 277/277 tests)
+  - Effects / Invariants / Userscript / Migration / Core / Platform / Runtime / UI / Benchmark: all PASS
+- Identity evidence: A2 and alias-provider versions advanced to `1.1.0`; the recovery proof digest
+  binds snapshot/function/schema/build, canonical use/definition/provider proof, access metadata,
+  and the stored PointsToSet digest. A provider-proof mutation changes the proof identity while
+  identical replays remain identical.
+- Ownership evidence: exhaustive search finds one production `reachingConcreteStore` consumer in
+  canonical points-to analysis and no second reaching-definition implementation. Lint validated
+  1,505 files; changed-module syntax and `git diff --check` pass.
+- Next action: T017 Spec Kit convergence, candidate merge tree, and exact-product gates.

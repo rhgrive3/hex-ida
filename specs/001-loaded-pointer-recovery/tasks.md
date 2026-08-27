@@ -34,7 +34,7 @@ description: "Dependency-ordered closure ledger for HEX-C1-01 loaded-pointer rec
 
 **⚠️ CRITICAL**: The positive test must fail with `unresolved-load` on the recorded base before T004 begins. Negative behavior must remain conservative.
 
-- [ ] T003 Create the exact store-pointer/load-pointer counterexample and canonical boundary fixture in `tests/phase7/pointsto/loaded-pointer-recovery.test.mjs`, run it pre-fix, and record the expected failure in `specs/001-loaded-pointer-recovery/quickstart.md`
+- [X] T003 Create the exact store-pointer/load-pointer counterexample and canonical boundary fixture in `tests/phase7/pointsto/loaded-pointer-recovery.test.mjs`, run it pre-fix, and record the expected failure in `specs/001-loaded-pointer-recovery/quickstart.md`
 
 **Checkpoint**: Current-main failure is proven and no production source has changed.
 
@@ -48,13 +48,13 @@ description: "Dependency-ordered closure ledger for HEX-C1-01 loaded-pointer rec
 
 ### Tests for User Story 1
 
-- [ ] T004 [US1] Extend `tests/phase7/pointsto/loaded-pointer-recovery.test.mjs` with exact target/offset/width/provenance and deterministic-replay assertions that fail before implementation
+- [X] T004 [US1] Extend `tests/phase7/pointsto/loaded-pointer-recovery.test.mjs` with exact target/offset/width/provenance and deterministic-replay assertions that fail before implementation
 
 ### Implementation for User Story 1
 
-- [ ] T005 [US1] Implement the bounded, identity-valid MemorySSA load/use/store lookup and exact eligibility transfer in `js/analysis/pointsto/local.js`
-- [ ] T006 [US1] Stage baseline and post-MemorySSA points-to runs with atomic complete-only publication and escape-cache invalidation in `js/analysis/alias/solver.js`
-- [ ] T007 [US1] Bind the existing current MemorySSA artifact and snapshot/function identity into the canonical solver through `js/analysis/index.js` and, only if required, constrained routing in `js/semantics/compat/index.js`
+- [X] T005 [US1] Implement the bounded, identity-valid MemorySSA load/use/store lookup and exact eligibility transfer in `js/analysis/pointsto/local.js`
+- [X] T006 [US1] Stage baseline and post-MemorySSA points-to runs with atomic complete-only publication and escape-cache invalidation in `js/analysis/alias/solver.js`
+- [X] T007 [US1] Bind the existing current MemorySSA artifact and snapshot/function identity into the canonical solver through `js/analysis/index.js` and, only if required, constrained routing in `js/semantics/compat/index.js`
 
 **Checkpoint**: User Story 1 passes independently without a MemorySSA rebuild or second memory authority.
 
@@ -68,13 +68,13 @@ description: "Dependency-ordered closure ledger for HEX-C1-01 loaded-pointer rec
 
 ### Tests for User Story 2
 
-- [ ] T008 [US2] Add MayAlias, unknown-alias/clobber, incomplete-call, multiple-definition, phi, partial-byte, width/endian, provenance, volatile, and atomic negative cases to `tests/phase7/pointsto/loaded-pointer-recovery.test.mjs`
-- [ ] T009 [US2] Add stale snapshot/function/build/source-entity and malformed access-metadata cases to `tests/phase7/pointsto/loaded-pointer-recovery.test.mjs`
-- [ ] T010 [US2] Add cancellation, iteration/value/target budget, truncation, no-partial-publication, and deterministic degradation cases to `tests/phase7/pointsto/loaded-pointer-recovery.test.mjs`
+- [X] T008 [US2] Add MayAlias, unknown-alias/clobber, incomplete-call, multiple-definition, phi, partial-byte, width/endian, provenance, volatile, and atomic negative cases to `tests/phase7/pointsto/loaded-pointer-recovery.test.mjs`
+- [X] T009 [US2] Add stale snapshot/function/build/source-entity and malformed access-metadata cases to `tests/phase7/pointsto/loaded-pointer-recovery.test.mjs`
+- [X] T010 [US2] Add cancellation, iteration/value/target budget, truncation, no-partial-publication, and deterministic degradation cases to `tests/phase7/pointsto/loaded-pointer-recovery.test.mjs`
 
 ### Implementation for User Story 2
 
-- [ ] T011 [US2] Complete fail-closed diagnostics, identity validation, cancellation checkpoints, and bounded index/publication behavior in `js/analysis/pointsto/local.js` and `js/analysis/alias/solver.js`
+- [X] T011 [US2] Complete fail-closed diagnostics, identity validation, cancellation checkpoints, and bounded index/publication behavior in `js/analysis/pointsto/local.js` and `js/analysis/alias/solver.js`
 
 **Checkpoint**: User Stories 1 and 2 pass together with zero false certainty.
 
@@ -88,12 +88,12 @@ description: "Dependency-ordered closure ledger for HEX-C1-01 loaded-pointer rec
 
 ### Tests for User Story 3
 
-- [ ] T012 [US3] Add paired downstream analysis-surface positive/negative assertions to `tests/phase7/pointsto/loaded-pointer-recovery.test.mjs`
-- [ ] T013 [US3] Run the ownership regression and exhaustive duplicate-owner search, recording results in `docs/analysis-improvement-finding-ledger.md`
+- [X] T012 [US3] Add paired downstream analysis-surface positive/negative assertions to `tests/phase7/pointsto/loaded-pointer-recovery.test.mjs`
+- [X] T013 [US3] Run the ownership regression and exhaustive duplicate-owner search, recording results in `docs/analysis-improvement-finding-ledger.md`
 
 ### Integration for User Story 3
 
-- [ ] T014 [US3] Run the focused test twice and record exact case counts, deterministic replay, unchanged denominators, and no weakened assertions in `docs/analysis-improvement-finding-ledger.md`
+- [X] T014 [US3] Run the focused test twice and record exact case counts, deterministic replay, unchanged denominators, and no weakened assertions in `docs/analysis-improvement-finding-ledger.md`
 
 **Checkpoint**: All user stories are independently proven and the implementation inventory is ownership-clean.
 
@@ -103,8 +103,8 @@ description: "Dependency-ordered closure ledger for HEX-C1-01 loaded-pointer rec
 
 **Purpose**: Bind implementation completeness and release evidence to the exact product that is merged.
 
-- [ ] T015 Run changed-module syntax checks, lint, and Phase 7 ownership validation from `specs/001-loaded-pointer-recovery/quickstart.md`
-- [ ] T016 Run Phase 7, Semantic V2, and Phase 8 subsystem/downstream suites from `specs/001-loaded-pointer-recovery/quickstart.md` and record exact results in `docs/analysis-improvement-finding-ledger.md`
+- [X] T015 Run changed-module syntax checks, lint, and Phase 7 ownership validation from `specs/001-loaded-pointer-recovery/quickstart.md`
+- [X] T016 Run Phase 7, Semantic V2, and Phase 8 subsystem/downstream suites from `specs/001-loaded-pointer-recovery/quickstart.md` and record exact results in `docs/analysis-improvement-finding-ledger.md`
 - [ ] T017 Execute `/speckit.converge`, append any unmet work to `specs/001-loaded-pointer-recovery/tasks.md`, and repeat implement/converge until CONVERGED
 - [ ] T018 Refetch live main, recheck open-PR/Issue-Agent collision against the actual file inventory, reconcile once through Sol, and record the new base relationship in `docs/analysis-improvement-finding-ledger.md`
 - [ ] T019 Regenerate `userscript/hex.user.template.js` and `userscript/release-version.json` only with the canonical builder, then prove a second build has zero diff

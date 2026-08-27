@@ -47,7 +47,25 @@ export function createAnalysisSurface({
   resolveRegion = null,
   options = {},
 } = {}) {
-  const solver = createPhase7AliasSolver({ ir, cfg, ssa, options: { snapshotId, ...options } });
+  const solverOptions = {
+    ...options,
+    snapshotId,
+    ...(ir?.functionId == null ? {} : { functionId: ir.functionId }),
+    ...(ir?.contractVersion == null ? {} : { semanticIrVersion: ir.contractVersion }),
+    ...(memorySsa == null ? {} : {
+      memorySsa,
+      memorySsaBinding: {
+        ...(options.memorySsaBinding ?? {}),
+        memorySsa,
+        snapshotId,
+        functionId: ir?.functionId ?? null,
+        semanticIrVersion: ir?.contractVersion ?? null,
+        memorySsaBuildVersion: memorySsa.buildVersion ?? null,
+        completeness: 'complete',
+      },
+    }),
+  };
+  const solver = createPhase7AliasSolver({ ir, cfg, ssa, options: solverOptions });
   let localSummary = null;
   let escapeResult = null;
   let typeGraph = null;
