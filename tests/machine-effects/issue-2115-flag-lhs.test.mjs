@@ -21,4 +21,25 @@ for (const [mnemonic, valid, invalid] of [
   assert.equal(result.operations.filter((op) => op.kind !== 'unknown').length, 0, `${mnemonic} invalid lhs emitted exact operations`);
 }
 
-console.log('issue #2115 regression: PASS');
+for (const [mnemonic, operands] of [
+  ['cmp','sp, #0'],
+  ['cmp','sp, #4095'],
+  ['cmp','sp, #1, lsl #12'],
+  ['cmn','sp, #1'],
+]) {
+  assert.notEqual(lift(mnemonic, operands).completeness, 'partial', `${mnemonic} valid SP/immediate form regressed: ${operands}`);
+}
+
+for (const [mnemonic, operands] of [
+  ['cmp','sp, #-1'],
+  ['cmp','sp, #4096'],
+  ['cmp','sp, #1, lsl #1'],
+  ['cmn','sp, #-1'],
+  ['cmn','sp, #4096'],
+]) {
+  const result = lift(mnemonic, operands);
+  assert.equal(result.completeness, 'partial', `${mnemonic} invalid SP/immediate form must fail closed: ${operands}`);
+  assert.equal(result.operations.filter((op) => op.kind !== 'unknown').length, 0, `${mnemonic} invalid SP/immediate emitted exact operations: ${operands}`);
+}
+
+console.log('issues #2115/#2144 regression: PASS');
