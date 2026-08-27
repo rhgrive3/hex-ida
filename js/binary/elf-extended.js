@@ -78,10 +78,15 @@ export function collectRelrRelocations(r, tags, image, bits, context = null) {
 
 function readSleb(r, state, end) {
   let value=0n, shift=0n, byte=0;
+  const min=-(1n<<63n), max=(1n<<63n)-1n;
   for(let i=0;i<10;i++){
     if(state.p>=end) throw new Error('truncated SLEB128');
     byte=r.u8(state.p++); value|=BigInt(byte&0x7f)<<shift; shift+=7n;
-    if(!(byte&0x80)){ if((byte&0x40)&&shift<64n)value|=(-1n)<<shift; return value; }
+    if(!(byte&0x80)){
+      if(byte&0x40) value|=(-1n)<<shift;
+      if(value<min||value>max) throw new Error('SLEB128 exceeds signed 64-bit range');
+      return value;
+    }
   }
   throw new Error('SLEB128 exceeds 10 bytes');
 }
@@ -156,4 +161,3 @@ export function parseDynamicSymbolVersions(r,tags,image,symbolCount,stringAt,con
   for(let i=0;i<count&&!budget.stopped;i++){if(!budget.step(1,'DT_VERSYM decode'))break;const raw=r.u16(voff+i*2),index=raw&0x7fff;if(index<=1)continue;if(!budget.claimOutput(1,96,'DT_VERSYM entries'))break;const named=names.get(index);out.set(i,{index,hidden:!!(raw&0x8000),name:named?.name||null,library:named?.library||null,definition:named?.definition??null});}
   image.metadata.symbolVersions={entries:out.size,named:[...out.values()].filter((v)=>v.name).length,complete:!budget.stopped&&!image.metadata.programDynamicPartial};return out;
 }
-
