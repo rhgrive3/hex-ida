@@ -289,8 +289,6 @@ function nameSections(r, sections, h) {
     if (BigInt(s.nameOffset) >= str.size) continue;
     const sectionName = terminatedStringInTable(r, Number(str.offset), Number(str.size), s.nameOffset, 1 << 20);
     if (sectionName != null) { s.name = sectionName; continue; }
-    // Unnamed or unterminated: an unterminated name is malformed input, so the
-    // section keeps its index-only identity instead of inventing a string.
     s.name = '';
   }
 }
@@ -386,10 +384,13 @@ function parseRelocations(r, sec, sections, image, bits, elfType, budget) {
 }
 
 function parseDynamic(r, sec, sections, image, bits, budget) {
-  const str=sections[sec.link];if(!str||str.type!==SHT_STRTAB)return;const ent=Number(sec.entsize||(bits===64?16n:8n));if(!ent)return;
+  const str=sections[sec.link];if(!str||str.type!==SHT_STRTAB)return;
+  const minEnt=BigInt(bits===64?16:8),rawEnt=sec.entsize||minEnt;
+  if(rawEnt<minEnt){budget.partial(`dynamic-section:${sec.index}:entry-size`,`ELF SHT_DYNAMIC ${sec.index} entry size ${rawEnt} is smaller than ${minEnt}`);return;}
+  const ent=safeOffset(rawEnt);if(ent==null||!ent){budget.partial(`dynamic-section:${sec.index}:entry-size`,`ELF SHT_DYNAMIC ${sec.index} entry size is not safely representable`);return;}
   const start=safeOffset(sec.offset),strStart=safeOffset(str.offset),strSize=safeOffset(str.size);if(start==null||strStart==null||strSize==null||start>r.length||strStart>r.length||strSize>r.length-strStart){budget.partial(`dynamic-section:${sec.index}:span`,`ELF SHT_DYNAMIC/string table exceeds the file`);return;}
-  const fileCapacity=Math.floor((r.length-start)/ent),declared=Math.floor(Number(sec.size)/ent),count=Math.min(declared,fileCapacity);
-  if(declared>fileCapacity)budget.partial(`dynamic-section:${sec.index}:truncated`,`ELF SHT_DYNAMIC exceeds its file-backed capacity`);
+  const declaredBig=sec.size/rawEnt,fileCapacity=Math.floor((r.length-start)/ent),declared=declaredBig>BigInt(Number.MAX_SAFE_INTEGER)?Number.MAX_SAFE_INTEGER:Number(declaredBig),count=Math.min(declared,fileCapacity);
+  if(declaredBig>BigInt(fileCapacity))budget.partial(`dynamic-section:${sec.index}:truncated`,`ELF SHT_DYNAMIC exceeds its file-backed capacity`);
   for(let i=0;i<count;i++){
     if(!budget.take({inputBytes:ent,records:1,operations:1,estimatedHeapBytes:32},'SHT_DYNAMIC'))break;
     const p=start+i*ent,tag=bits===64?r.i64(p):BigInt(r.i32(p)),val=bits===64?r.u64(p+8):BigInt(r.u32(p+4));if(tag===0n)break;
