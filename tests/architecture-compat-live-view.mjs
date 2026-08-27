@@ -150,6 +150,7 @@ console.log("  ok Case 2 control-flow projection parity");
 }
 
 // Case 15 — default row mapping never rounds unsafe BigInt rows
+// Keep both sides of the Number.MAX_SAFE_INTEGER boundary explicit so this remains a fail-closed coordinate conversion contract.
 {
   const custom = new ArchitectureAdapter({ id: "custom-safe-row", fixedInstructionSize: 1, instructionAlignment: 1 });
   const maxSafe = BigInt(Number.MAX_SAFE_INTEGER);
