@@ -59,6 +59,13 @@ function nonEmpty(value, code) {
   return text;
 }
 
+function strictNonEmptyString(value, code) {
+  if (typeof value !== 'string') fail(code);
+  const text = value.trim();
+  if (!text) fail(code);
+  return text;
+}
+
 function optionalSizeBytes(value) {
   if (value == null) return null;
   if (typeof value !== 'number' && typeof value !== 'string') fail('debug-record-invalid-size');
@@ -116,7 +123,8 @@ export function isAuthoritative(identity) {
 function coverageList(value) {
   if (value == null) return null;
   if (!Array.isArray(value)) return null;
-  return new Set(value.map(String));
+  if (value.some((item) => typeof item !== 'string' || !item.trim())) return null;
+  return new Set(value.map((item) => item.trim()));
 }
 
 /**
@@ -143,38 +151,39 @@ export function isDebugRecordAuthoritative(result, record) {
   const entityIds = coverageList(coverage.entityIds);
   if (entityIds) {
     constrained = true;
-    if (!entityIds.has(String(record.entityId))) return false;
+    if (typeof record.entityId !== 'string' || !entityIds.has(record.entityId)) return false;
   } else if (coverage.entityIds != null) return false;
 
   const recordKinds = coverageList(coverage.recordKinds);
   if (recordKinds) {
     constrained = true;
-    if (!recordKinds.has(String(record.kind))) return false;
+    if (typeof record.kind !== 'string' || !recordKinds.has(record.kind)) return false;
   } else if (coverage.recordKinds != null) return false;
 
   const addresses = coverageList(coverage.addresses);
   if (addresses) {
     constrained = true;
-    if (record.address == null || !addresses.has(String(record.address))) return false;
+    if (typeof record.address !== 'string' || !addresses.has(record.address)) return false;
   } else if (coverage.addresses != null) return false;
 
   const buildIdentities = coverageList(coverage.buildIdentities);
   if (buildIdentities) {
     constrained = true;
-    if (record.buildIdentity == null || !buildIdentities.has(String(record.buildIdentity))) return false;
+    if (typeof record.buildIdentity !== 'string' || !buildIdentities.has(record.buildIdentity)) return false;
   } else if (coverage.buildIdentities != null) return false;
 
   const modules = coverageList(coverage.modules);
   if (modules) {
     constrained = true;
     const moduleId = record.descriptor?.module ?? record.descriptor?.moduleId ?? null;
-    if (moduleId == null || !modules.has(String(moduleId))) return false;
+    if (typeof moduleId !== 'string' || !modules.has(moduleId)) return false;
   } else if (coverage.modules != null) return false;
 
   if (coverage.module != null) {
     constrained = true;
     const moduleId = record.descriptor?.module ?? record.descriptor?.moduleId ?? null;
-    if (moduleId == null || String(moduleId) !== String(coverage.module)) return false;
+    if (typeof coverage.module !== 'string' || !coverage.module.trim()) return false;
+    if (typeof moduleId !== 'string' || moduleId !== coverage.module.trim()) return false;
   }
 
   return constrained;
@@ -186,9 +195,9 @@ export function createDebugRecord(input = {}) {
   if (!KIND_SET.has(kind)) fail('debug-record-invalid-kind');
   return deepFreeze({
     kind,
-    entityId: nonEmpty(input.entityId, 'debug-record-entity-required'),
+    entityId: strictNonEmptyString(input.entityId, 'debug-record-entity-required'),
     name: input.name == null ? null : String(input.name),
-    address: input.address == null ? null : String(input.address),
+    address: input.address == null ? null : strictNonEmptyString(input.address, 'debug-record-invalid-address'),
     sizeBytes: optionalSizeBytes(input.sizeBytes),
     descriptor: input.descriptor ?? null,
     // Provenance is not optional. A debug-derived fact that cannot say which
@@ -196,8 +205,8 @@ export function createDebugRecord(input = {}) {
     // correctly when either changes.
     providerId: nonEmpty(input.providerId, 'debug-record-provider-required'),
     providerVersion: nonEmpty(input.providerVersion, 'debug-record-provider-version-required'),
-    buildIdentity: input.buildIdentity == null ? null : String(input.buildIdentity),
-    evidenceIds: [...new Set((input.evidenceIds ?? []).map(String))].sort(),
+    buildIdentity: input.buildIdentity == null ? null : strictNonEmptyString(input.buildIdentity, 'debug-record-invalid-build-identity'),
+    evidenceIds: [...new Set((input.evidenceIds ?? []).map((value) => strictNonEmptyString(value, 'debug-record-invalid-evidence-id')))].sort(),
   });
 }
 
