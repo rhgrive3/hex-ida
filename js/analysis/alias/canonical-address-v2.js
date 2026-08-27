@@ -26,6 +26,31 @@ export {
  * unknown. The normalization is local to canonical-address proof construction;
  * the canonical SSA contract itself is left untouched.
  */
+
+const PROVEN_SEPARATION_DESCRIPTOR_KINDS = new Set(['global-like', 'heap-like', 'tls-like']);
+
+function rootDescriptorForProof(proof, options = {}) {
+  if (!proof || !['rooted', 'root-only'].includes(proof.kind)) return null;
+  const table = options.rootDescriptors;
+  if (table == null) return null;
+  const variableKey = proof.rootIdentity?.variable?.key;
+  const keys = variableKey == null ? [] : [`variable:${String(variableKey)}`, String(variableKey)];
+  if (table instanceof Map) {
+    for (const key of keys) if (table.has(key)) return table.get(key);
+    return null;
+  }
+  if (typeof table !== 'object' || Array.isArray(table)) return null;
+  for (const key of keys) if (Object.prototype.hasOwnProperty.call(table, key)) return table[key];
+  return null;
+}
+
+function attachSeparationAuthority(proof, options = {}) {
+  const descriptor = rootDescriptorForProof(proof, options);
+  const kind = descriptor == null ? null : String(descriptor.kind ?? '');
+  if (!PROVEN_SEPARATION_DESCRIPTOR_KINDS.has(kind)) return proof;
+  return Object.freeze({ ...proof, separationClass: kind, separationAuthority: 'root-descriptor' });
+}
+
 function addressProofOptions(options = {}) {
   const definitions = options?.ssa?.definitions;
   if (!Array.isArray(definitions)
@@ -50,7 +75,8 @@ export {
 } from './canonical-address-v2-core.js';
 
 export function deriveCanonicalAddressProof(ir, addressValueId, options = {}) {
-  return deriveCanonicalAddressProofCore(ir, addressValueId, addressProofOptions(options));
+  const normalizedOptions = addressProofOptions(options);
+  return attachSeparationAuthority(deriveCanonicalAddressProofCore(ir, addressValueId, normalizedOptions), normalizedOptions);
 }
 
 export function deriveCanonicalRegionEvidence(ir, addressValueId, options = {}) {

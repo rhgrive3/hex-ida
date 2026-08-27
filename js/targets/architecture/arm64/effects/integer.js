@@ -159,6 +159,23 @@ function validLogicalRegisterClass(mnemonic, ops) {
     && logicalImmediateEncodable(rhs, bits);
 }
 
+function validMovEncoding(mnemonic, ops) {
+  if (mnemonic !== 'mov') return true;
+  if (ops.length !== 2) return false;
+  const dst = ops[0], src = ops[1];
+  const dstClass = regClass(dst);
+  if (!['gp','zr','sp'].includes(dstClass)) return true; // SIMD/FP MOV belongs to an earlier family.
+  const bits = regBits(dst);
+  if (bits !== 32 && bits !== 64) return false;
+  if (dst.shift != null || dst.extend != null) return false;
+  if (src?.k === 'imm') return dstClass !== 'sp';
+  const srcClass = regClass(src);
+  if (!['gp','zr','sp'].includes(srcClass) || regBits(src) !== bits || src.shift != null || src.extend != null) return false;
+  const spInvolved = dstClass === 'sp' || srcClass === 'sp';
+  if (spInvolved && (dstClass === 'zr' || srcClass === 'zr')) return false;
+  return true;
+}
+
 function validRegisterOnlyClass(expected, ops) {
   if (expected == null) return true;
   return !ops.some((op) => regClass(op) === 'sp');
@@ -173,6 +190,10 @@ export function liftArm64IntegerEffects(instruction, options = {}) {
   }
   if (!validRegisterOnlyClass(expected, ops)) {
     return liftArm64IntegerEffectsCore({ ...instruction, ops: [] }, options);
+  }
+  if (!validMovEncoding(mnemonic, ops)) {
+    return createArm64EffectContext(instruction, options).partial(
+      'arm64-mov-operand-shape-unencodable', ['registers','other']);
   }
   if (!validAddSubRegister31Encoding(mnemonic, ops)) {
     // Carry-consuming forms read NZCV before their core notices empty operands.
