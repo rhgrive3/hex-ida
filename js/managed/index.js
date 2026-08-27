@@ -46,7 +46,7 @@ import {
   MANAGED_BRIDGE_VERSION,
   queryManagedRuntimeProvider,
   queryManagedSymbolicVerification,
-} from './shared/bridge.js';
+} from './shared/bridge-v2.js';
 import { WasmFrontend } from './wasm/frontend.js';
 
 export {

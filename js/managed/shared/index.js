@@ -43,4 +43,4 @@ export {
   lowerVMEffectsToSemanticIr,
   queryManagedSymbolicVerification,
   queryManagedRuntimeProvider,
-} from './bridge.js';
+} from './bridge-v2.js';
