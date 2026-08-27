@@ -56,7 +56,9 @@
       "js/core/artifacts/contracts.js",
       "js/core/artifacts/store.js",
       "js/core/evidence/compat.js",
-      "tests/phase7/alias/address-normalize-id-collision.test.mjs"
+      "tests/phase7/alias/address-normalize-id-collision.test.mjs",
+      "tools/validation/phase7-ownership.mjs",
+      "tools/validation/phase-ownership/phase7.json"
     ]
   },
   "contractPaths": [
@@ -100,7 +102,9 @@
     "js/core/artifacts/contracts.js",
     "js/core/artifacts/store.js",
     "js/core/evidence/compat.js",
-    "tests/phase7/alias/address-normalize-id-collision.test.mjs"
+    "tests/phase7/alias/address-normalize-id-collision.test.mjs",
+    "tools/validation/phase7-ownership.mjs",
+    "tools/validation/phase-ownership/phase7.json"
   ],
   "generatedPaths": ["reports/phase12/**", "userscript/hex.user.template.js", "userscript/release-version.json", "js/userscript/deployment-identity.generated.js"],
   "releaseOnlyPaths": ["reports/phase12/**"],
