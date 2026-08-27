@@ -39,7 +39,9 @@
     "js/core/artifacts/contracts.js",
     "js/core/artifacts/store.js",
     "js/core/evidence/compat.js",
-    "js/knowledge/phase12-identity.js"
+    "js/knowledge/phase12-identity.js",
+    "tools/validation/phase10/ownership.json",
+    "tools/validation/phase12/ownership.json"
   ],
   "generatedPaths": [
     "reports/phase7/**",
