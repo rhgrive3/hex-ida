@@ -122,8 +122,10 @@ export function matchFunctions(beforeFunctions = [], afterFunctions = [], option
     if (!budget.checkPreprocessWall('before fingerprint preprocessing')) return incompletePreprocessing(index);
   }
 
-  const threshold = options.threshold ?? 0.62;
-  const ambiguityWindow = options.ambiguityWindow ?? 0.035;
+  const rawThreshold = Number(options.threshold ?? 0.62);
+  const threshold = Number.isFinite(rawThreshold) ? rawThreshold : 0.62;
+  const rawAmbiguityWindow = Number(options.ambiguityWindow ?? 0.035);
+  const ambiguityWindow = Number.isFinite(rawAmbiguityWindow) && rawAmbiguityWindow >= 0 ? rawAmbiguityWindow : 0.035;
   const all = [];
   candidateGeneration:
   for (let i = 0; i < before.length; i++) {
