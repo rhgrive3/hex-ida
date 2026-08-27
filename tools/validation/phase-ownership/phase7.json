@@ -35,7 +35,11 @@
   ],
   "sharedIntegrationPaths": [
     "js/semantics/compat/index.js",
-    "package.json"
+    "package.json",
+    "js/core/artifacts/contracts.js",
+    "js/core/artifacts/store.js",
+    "js/core/evidence/compat.js",
+    "js/knowledge/phase12-identity.js"
   ],
   "generatedPaths": [
     "reports/phase7/**",
