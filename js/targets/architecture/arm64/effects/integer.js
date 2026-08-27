@@ -102,11 +102,19 @@ function validLogicalRegisterClass(mnemonic, ops) {
   return !ops.some((op) => regClass(op) === 'sp');
 }
 
+function validRegisterOnlyClass(expected, ops) {
+  if (expected == null) return true;
+  return !ops.some((op) => regClass(op) === 'sp');
+}
+
 export function liftArm64IntegerEffects(instruction, options = {}) {
   const mnemonic = String(instruction?.mnemonic || '').toLowerCase();
   const ops = Array.isArray(instruction?.ops) ? instruction.ops : [];
   const expected = expectedOperandCount(mnemonic);
   if (expected != null && ops.length !== expected) {
+    return liftArm64IntegerEffectsCore({ ...instruction, ops: [] }, options);
+  }
+  if (!validRegisterOnlyClass(expected, ops)) {
     return liftArm64IntegerEffectsCore({ ...instruction, ops: [] }, options);
   }
   if (!validAddSubRegister31Encoding(mnemonic, ops)) {
