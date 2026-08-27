@@ -80,7 +80,9 @@
     "tests/ai-tool-registry-module-boundary.mjs",
     "tests/architecture-compat-live-view.mjs",
     "tests/phase-runner-contract.mjs",
-    "tests/runtime-module-binding-contract.mjs"
+    "tests/runtime-module-binding-contract.mjs",
+    "js/program.js",
+    "tests/issue-2059-program-merge.mjs"
   ],
   "forbiddenPrefixes": [
     "js/binary/",
