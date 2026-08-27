@@ -97,6 +97,7 @@ export function compileExperiment(hypothesis, options = {}) {
   const objectBase = asAddress(options.objectBase ?? hypothesis.objectBase ?? 0x600000001000n, 'objectBase');
   const initial = normalizeInteger(hypothesis.initial ?? options.initial ?? 100, fieldBits, signed);
   const argIndex = integerInRange(hypothesis.argumentIndex, 1, 0, 31, 'argumentIndex');
+  if (fieldOffset != null && argIndex === 0) throw new DebugAdapterError('invalid-hypothesis', 'argumentIndex 0 conflicts with objectBase for field experiments');
   const pointerInput = hypothesis.argumentKind === 'pointer' || hypothesis.pointer === true;
   const inputs = options.inputs || generateDifferentialInputs({ bits:fieldSize <= 4 ? 32 : 64, signed, boundary:hypothesis.boundary ?? hypothesis.clampMin ?? hypothesis.clampMax, pointer:pointerInput, limit:options.limit ?? 12 });
   const cases = [];

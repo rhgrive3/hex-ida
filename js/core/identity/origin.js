@@ -4,6 +4,11 @@ export const ORIGIN_SCHEMA_VERSION = 1;
 const CANONICAL_ORIGIN_SETS = new WeakSet();
 
 function fail(code) { throw new TypeError(code); }
+function arrayList(values, code) {
+  if (values == null) return [];
+  if (!Array.isArray(values)) fail(code);
+  return values;
+}
 function stringList(values, code) {
   if (values == null) return [];
   if (!Array.isArray(values)) fail(code);
@@ -84,16 +89,16 @@ export function createOriginSet(input = {}) {
   if (input && typeof input === 'object' && CANONICAL_ORIGIN_SETS.has(input)) return input;
   if (input == null) input = {};
   if (typeof input !== 'object' || Array.isArray(input)) fail('origin-invalid-set');
-  const byteRanges = uniqueSorted((input.byteRanges || []).map(byteRange));
-  const virtualRanges = uniqueSorted((input.virtualRanges || []).map(virtualRange));
-  const transforms = uniqueSorted((input.transforms || []).map(createTransformRecord));
+  const byteRanges = uniqueSorted(arrayList(input.byteRanges, 'origin-invalid-byte-ranges').map(byteRange));
+  const virtualRanges = uniqueSorted(arrayList(input.virtualRanges, 'origin-invalid-virtual-ranges').map(virtualRange));
+  const transforms = uniqueSorted(arrayList(input.transforms, 'origin-invalid-transforms').map(createTransformRecord));
   const out = {
     schemaVersion: ORIGIN_SCHEMA_VERSION,
     byteRanges,
     virtualRanges,
     instructionIds: uniqueSorted(stringList(input.instructionIds, 'origin-invalid-instruction-ids')),
     operationIds: uniqueSorted(stringList(input.operationIds ?? input.bytecodeOperationIds, 'origin-invalid-operation-ids')),
-    sourceLocations: uniqueSorted((input.sourceLocations || []).map(exactJson)),
+    sourceLocations: uniqueSorted(arrayList(input.sourceLocations, 'origin-invalid-source-locations').map(exactJson)),
     parentEntityIds: uniqueSorted(stringList(input.parentEntityIds, 'origin-invalid-parent-ids')),
     transforms,
   };
