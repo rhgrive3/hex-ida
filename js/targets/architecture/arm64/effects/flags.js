@@ -141,6 +141,10 @@ export function liftArm64FlagEffects(instruction, options = {}) {
   if (!ARM64_FLAG_EFFECT_MNEMONICS.has(mnemonic)) return null;
   const ctx = createArm64EffectContext(instruction, options);
   const ops = instruction?.ops || [];
+  const expectedOperands = mnemonic === 'ccmp' || mnemonic === 'ccmn' ? 4 : 2;
+  if (!Array.isArray(ops) || ops.length !== expectedOperands) {
+    return ctx.partial(`arm64-${mnemonic}-operand-shape-unencodable`, ['flags', 'other']);
+  }
   const widthBits = instructionBits(ops[0]);
 
   if (mnemonic === 'tst') {
