@@ -131,7 +131,9 @@ export class KnowledgeDB {
     if (!matches.length) return { matched:false, ambiguous:matches.truncated === true, truncated:matches.truncated === true, confidence:0, candidates:[] };
     const best = matches[0], second = matches[1];
     const truncated = matches.truncated === true;
-    const ambiguous = truncated || (!!second && best.confidence - second.confidence < (options.ambiguityWindow ?? 0.045));
+    const rawAmbiguityWindow = Number(options.ambiguityWindow ?? 0.045);
+    const ambiguityWindow = Number.isFinite(rawAmbiguityWindow) && rawAmbiguityWindow >= 0 ? rawAmbiguityWindow : 0.045;
+    const ambiguous = truncated || (!!second && best.confidence - second.confidence < ambiguityWindow);
     const accepted = !ambiguous && best.confidence >= (options.acceptThreshold ?? 0.82) && ['exact','normalized-identical','semantic-equivalent','probable-same'].includes(best.identity);
     return {
       matched:accepted, ambiguous, truncated, confidence:best.confidence, knowledge:accepted ? best.record : null, reasons:best.reasons,
