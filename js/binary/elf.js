@@ -1,5 +1,6 @@
 import { parseELF as parseELFCore } from './elf-core.js';
 import { functionSeed, mergeFunctionSeeds } from './model.js';
+import { ByteView } from './reader.js';
 
 function executableOwnerForSymbol(image, symbol) {
   const start = BigInt(symbol.address);
@@ -38,6 +39,18 @@ export function repairElfZeroAddressFunctionSeeds(image) {
   return image;
 }
 
+function validateElfVersion(input) {
+  const initial = new ByteView(input, { littleEndian:true });
+  if (initial.length < 24 || initial.u8(0) !== 0x7f || initial.u8(1) !== 0x45 || initial.u8(2) !== 0x4c || initial.u8(3) !== 0x46) return;
+  if (initial.u8(6) !== 1) throw new Error(`unsupported ELF identification version ${initial.u8(6)}`);
+  const data = initial.u8(5);
+  if (data !== 1 && data !== 2) return;
+  const header = new ByteView(initial.bytes, { littleEndian:data === 1 });
+  const headerVersion = header.u32(20);
+  if (headerVersion !== 1) throw new Error(`unsupported ELF header version ${headerVersion}`);
+}
+
 export function parseELF(input, options = {}) {
+  validateElfVersion(input);
   return repairElfZeroAddressFunctionSeeds(parseELFCore(input, options));
 }

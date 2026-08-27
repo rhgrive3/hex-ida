@@ -45,6 +45,12 @@ class SparseReader {
   i32(off){ return this._ok(off,4)?this.dv.getInt32(off,true):0; }
   u64(off){ return this._ok(off,8)?this.dv.getBigUint64(off,true):0n; }
   i64(off){ return this._ok(off,8)?this.dv.getBigInt64(off,true):0n; }
+  slice(off,size){
+    if(!Number.isSafeInteger(off)||!Number.isSafeInteger(size)||size<0) return new Uint8Array();
+    const out=new Uint8Array(size);
+    for(let i=0;i<size;i++) out[i]=this.u8(off+i);
+    return out;
+  }
   cstring(off,max=1<<20){
     if(!this._ok(off,1)) return '';
     const bytes=[];
