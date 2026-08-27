@@ -83,6 +83,27 @@ assert.equal(constOf(valueAt(['mov w0, #1','mov w1, #1','bics wzr, w0, w1','cset
   assert.notEqual(sanitizePointer(raw,0x100000000n),null);
 }
 
+// #2198: ARM64E chained fixup formats (1/7/9/10/12) decode instead of collapsing to null.
+{
+  const base=0x100000000n;
+  // format 1: unauthenticated rebase carries a vmaddr in target:43 + high8<<56.
+  assert.equal(sanitizePointer(0x0000000100004000n,base,1),0x100004000n);
+  // format 1: authenticated rebase carries a 32-bit runtime offset; base-relative.
+  assert.equal(sanitizePointer(0x8000000000004000n,base,1),0x100004000n);
+  // formats 7/12 (OFFSET/USERLAND24) rebase by image offset.
+  assert.equal(sanitizePointer(0x4000n,base,7),0x100004000n);
+  assert.equal(sanitizePointer(0x4000n,base,12),0x100004000n);
+  // format 10 is a vmaddr format like 1 (no base needed).
+  assert.equal(sanitizePointer(0x0000001100004064n,base,10),0x1100004064n);
+  // bind (bit 62) is an ordinal, not an address: fail closed.
+  assert.equal(sanitizePointer((1n<<62n)|0xffn,base,1),null);
+  // offset rebase with unknown base: fail closed.
+  assert.equal(sanitizePointer(0x4000n,null,7),null);
+  assert.equal(sanitizePointer(0x8000000000004000n,null,1),null);
+  // auth bit + bind bit on the 2/6 path stays rejected (bit 63 is the bind there).
+  assert.equal(sanitizePointer((1n<<63n)|0xffn,base,2),null);
+}
+
 // #827/#828: compat stack coordinates are total/signed and forwarding is width exact.
 function compatIR(lines) {
   const m=model(lines); const prev=getSemanticMigrationMode(); setSemanticMigrationMode('semantic-v2-compat');
