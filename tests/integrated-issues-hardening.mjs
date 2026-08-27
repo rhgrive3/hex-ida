@@ -656,3 +656,30 @@ await import('./artifact-key-collisions.mjs');
 
 console.log('\nAll integrated issue tests PASS!');
 
+
+// Issue #2193: UTF-16 scan must re-examine the q+1 shifted start after a run
+// ends below minLength or on a non-printable pair.
+{
+  const { scanSourceStrings } = await import('../js/bytesource/strings.js');
+  const image = { sections: [], offsetToAddress: (o) => o };
+
+  // UTF-16LE: "A"(too short) + malformed pair + "BC" starting at odd offset 3.
+  const le = Uint8Array.from([0x41, 0x00, 0xff, 0x42, 0x00, 0x43, 0x00]);
+  const resLe = await scanSourceStrings(image, le, { minLength: 2, utf16: 'le' });
+  assert.ok(resLe.results.some((s) => s.fileOffset === 3n && s.text === 'BC' && s.encoding === 'utf16le'),
+    `expected "BC" at offset 3, got ${resLe.results.map((x) => `${x.encoding}@${x.fileOffset}`).join(" | ")}`);
+
+  // Symmetric UTF-16BE case: "A" (1 char, below minLength) then a malformed
+  // pair, then "BC" at the odd offset 3 (00 42 00 43).
+  const be = Uint8Array.from([0x00, 0x41, 0xff, 0x00, 0x42, 0x00, 0x43]);
+  const resBe = await scanSourceStrings(image, be, { minLength: 2, utf16: 'be' });
+  assert.ok(resBe.results.some((s) => s.fileOffset === 3n && s.text === 'BC' && s.encoding === 'utf16be'),
+    `expected "BC" at offset 3 (BE), got ${resBe.results.map((x) => `${x.encoding}@${x.fileOffset} "${x.text}"`).join(' | ')}`);
+  // No duplicate emits for normal contiguous strings.
+  const pad = Buffer.concat([Buffer.from([0xff]), Buffer.from('HELLO', 'utf16le'), Buffer.from([1, 2]), Buffer.from('WORLD', 'utf16le')]);
+  const dupes = await scanSourceStrings(image, pad, { minLength: 2, utf16: 'both' });
+  const keys = new Set(dupes.results.map((s) => `${s.fileOffset}:${s.encoding}`));
+  assert.equal(keys.size, dupes.results.length, 'dedupe by (fileOffset, encoding) must hold');
+
+  console.log('  ok #2193 scanUtf16 one-byte-shifted candidate start');
+}
