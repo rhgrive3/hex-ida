@@ -50,7 +50,9 @@
       "tools/validation/stage2/**",
       "tests/stage2/**",
       "js/ai/dev/**",
-      "tests/dev-agent/**"
+      "tests/dev-agent/**",
+      "js/program.js",
+      "tests/issue-2059-program-merge.mjs"
     ]
   },
   "contractPaths": [
