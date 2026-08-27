@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { parseMachO } from '../js/binary/macho.js';
 import { parsePE } from '../js/binary/pe.js';
+import { parseAarch64GnuProperty } from '../js/binary/elf-gnu-property.js';
 
 function machoWithFirstCommand(cmd, cmdsize) {
   const secondSize = 24;
@@ -92,4 +93,57 @@ function rejected(image, fragment) {
   rejected(parsePE(peFixture({ entryRva: 0x1002, machine: 0xaa64 })), 'not 4-byte aligned');
 }
 
-console.log('issues #461/#463 binary trust-boundary regressions PASS');
+function aarch64GnuPropertyFixture({ namesz = 4, owner = [0x47, 0x4e, 0x55, 0x00], featureBits = 1 } = {}) {
+  const noteOffset = 0x100;
+  const descOffset = (noteOffset + 12 + namesz + 3) & ~3;
+  const descSize = 16;
+  const noteEnd = (descOffset + descSize + 3) & ~3;
+  const bytes = new Uint8Array(noteEnd);
+  const dv = new DataView(bytes.buffer);
+  bytes.set([0x7f, 0x45, 0x4c, 0x46, 2, 1, 1], 0);
+  dv.setUint16(16, 2, true);
+  dv.setUint16(18, 183, true);
+  dv.setBigUint64(32, 64n, true);
+  dv.setUint16(52, 64, true);
+  dv.setUint16(54, 56, true);
+  dv.setUint16(56, 1, true);
+  const ph = 64;
+  dv.setUint32(ph, 0x6474e553, true);
+  dv.setBigUint64(ph + 8, BigInt(noteOffset), true);
+  dv.setBigUint64(ph + 32, BigInt(noteEnd - noteOffset), true);
+  dv.setUint32(noteOffset, namesz, true);
+  dv.setUint32(noteOffset + 4, descSize, true);
+  dv.setUint32(noteOffset + 8, 5, true);
+  bytes.set(owner.slice(0, namesz), noteOffset + 12);
+  dv.setUint32(descOffset, 0xc0000000, true);
+  dv.setUint32(descOffset + 4, 4, true);
+  dv.setUint32(descOffset + 8, featureBits, true);
+  return bytes;
+}
+
+// #2101: AArch64 GNU property evidence requires the canonical "GNU\0" owner encoding.
+{
+  const canonical = parseAarch64GnuProperty(aarch64GnuPropertyFixture());
+  assert.equal(canonical.btiRequested, true);
+  assert.equal(canonical.loaderPolicy, 'bti-requested');
+  assert.equal(canonical.evidence.length, 1);
+
+  const unterminated = parseAarch64GnuProperty(aarch64GnuPropertyFixture({ namesz: 3, owner: [0x47, 0x4e, 0x55] }));
+  assert.equal(unterminated.loaderPolicy, 'feature-bit-absent');
+  assert.equal(unterminated.btiRequested, false);
+  assert.equal(unterminated.pacRequested, false);
+  assert.equal(unterminated.evidence.length, 0);
+
+  const wrongTerminator = parseAarch64GnuProperty(aarch64GnuPropertyFixture({ owner: [0x47, 0x4e, 0x55, 0x78] }));
+  assert.equal(wrongTerminator.loaderPolicy, 'feature-bit-absent');
+  assert.equal(wrongTerminator.btiRequested, false);
+  assert.equal(wrongTerminator.pacRequested, false);
+  assert.equal(wrongTerminator.evidence.length, 0);
+
+  const pac = parseAarch64GnuProperty(aarch64GnuPropertyFixture({ featureBits: 2 }));
+  assert.equal(pac.btiRequested, false);
+  assert.equal(pac.pacRequested, true);
+  assert.equal(pac.evidence.length, 1);
+}
+
+console.log('issues #461/#463/#2101 binary trust-boundary regressions PASS');
