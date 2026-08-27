@@ -32,6 +32,7 @@ for (const [mnemonic, operands] of valid) {
   assert.equal(effects.operations.filter((operation) => operation.kind === 'flag-write').length, 4, `${mnemonic}: NZCV write set`);
 }
 
+// Arity rejection must happen before any NZCV write is emitted.
 const invalid = [
   ['cmp', 'x0'],
   ['cmp', 'x0, x1, x2'],
