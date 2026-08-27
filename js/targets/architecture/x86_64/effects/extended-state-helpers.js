@@ -45,7 +45,7 @@ export function evexInfo(instruction){
   const vector=instruction?.detail?.prefixes?.vector,bytes=vector?.bytes||[];
   if(String(vector?.kind||'').toLowerCase()!=='evex'||bytes.length!==4||bytes[0]!==0x62||!rawPrefixMatches(instruction,bytes))return null;
   const p0=bytes[1],p1=bytes[2],p2=bytes[3],map=p0&3,ll=(p2>>>5)&3,aaa=p2&7,zeroing=(p2&0x80)!==0,b=(p2&0x10)!==0;
-  if((p0&0x0c)!==0||(p1&0x04)===0||map===0||(zeroing&&aaa===0))return null;
+  if((p0&0x0c)!==0||(p1&0x04)===0||map===0||ll===3||(zeroing&&aaa===0))return null;
   return Object.freeze({bytes,map,mandatoryPrefixCode:p1&3,lengthOrRoundingCode:ll,encodedVvvv:(p1>>>3)&15,maskRegister:aaa===0?null:`k${aaa}`,zeroing,broadcastOrRounding:b});
 }
 

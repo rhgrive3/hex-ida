@@ -223,6 +223,8 @@ function multiplyDivideEncodingFailure(instruction) {
   if (!ARM64_MULTIPLY_DIVIDE_MNEMONICS.has(mnemonic)) return null;
   const ops = Array.isArray(instruction?.ops) ? instruction.ops : [];
   if (!isGpOrZrRegister(ops[0])) return null;
+  const expectedOperandCount = ['madd','msub','smaddl','smsubl','umaddl','umsubl'].includes(mnemonic) ? 4 : 3;
+  if (ops.length !== expectedOperandCount) return `arm64-${mnemonic}-operand-shape-unencodable`;
   const destinationBits = Number(ops[0]?.bits || 0);
   const required = [];
   if (['mul','mneg','sdiv','udiv','madd','msub'].includes(mnemonic)) {

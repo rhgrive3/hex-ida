@@ -81,6 +81,18 @@ test('an incomplete summary is never treated as pure', () => {
   assert.equal(summaryMayWriteRegion(incomplete, 'any_region'), true);
 });
 
+test('a schema-marked status is still revalidated at the summary boundary', () => {
+  const forged = {
+    schemaVersion: 1,
+    snapshotId: 's',
+    analyzerId: 'phase7.summary.local',
+    analyzerVersion: '1.0.0',
+    completeness: 'complete',
+    stopReason: 'budget-exhausted',
+  };
+  assert.throws(() => base({ status:forged }), /complete-cannot-stop-early/);
+});
+
 test('a stale or missing summary reads as may-write, not as pure', () => {
   assert.equal(summaryMayWriteRegion(null, 'region_a'), true);
   assert.equal(summaryMayWriteRegion(undefined, null), true);

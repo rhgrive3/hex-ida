@@ -125,6 +125,13 @@ jobs:
           git diff --exit-code
           test -z "$(git status --porcelain --untracked-files=no)"
 
+      - name: Run canonical A2 machine-effects proof with visible diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p reports/stage2
+          node tests/machine-effects/run.mjs 2>&1 | tee reports/stage2/machine-effects.log
+
       - name: Collect exact non-physical Stage 2 profile evidence
         if: steps.impact.outputs.required == 'true'
         id: profile

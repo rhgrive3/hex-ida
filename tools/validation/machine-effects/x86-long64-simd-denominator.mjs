@@ -19,13 +19,10 @@ export const X86_LONG64_SIMD_EXACT_FORMS=Object.freeze([
  form('pandn:legacy128','pandn','and-not','legacy',128),form('vpandn:vex128','vpandn','and-not','vex',128),form('vpandn:vex256','vpandn','and-not','vex',256),form('vzeroupper:vex128','vzeroupper','vector-state','vex',128),
 ]);
 export const X86_LONG64_SIMD_OWNED_REMAINING=Object.freeze([]);
-export const X86_LONG64_SIMD_SHARED_BLOCKERS=Object.freeze([
- Object.freeze({id:'vex-maxvl-alias',required:['xmm/ymm writes must alias zmm[MAXVL] when AVX-512 is locked']}),
- Object.freeze({id:'evex-avx512-state',required:['zmm0-zmm31','k0-k7','decoded-evex-fields','merge-zero-mask-semantics']}),
- Object.freeze({id:'vzeroall-maxvl',required:['zmm0-zmm15[MAXVL-1:0]']}),
- Object.freeze({id:'vzeroupper-maxvl',required:['zmm0-zmm15[MAXVL-1:128]']}),
- Object.freeze({id:'emms-mmx-x87-alias',required:['mm0-mm7/x87-physical-alias','x87-tag-word']}),
-]);
+// MAXVL aliasing, EVEX ZMM/k-mask state, VZERO* semantics and the MMX/x87
+// shared physical/tag state are all modeled by the canonical x86 physical-state
+// and extended-state layers, so these are no longer external blockers.
+export const X86_LONG64_SIMD_SHARED_BLOCKERS=Object.freeze([]);
 export function validateX86Long64SimdDenominator(){
   const ids=X86_LONG64_SIMD_EXACT_FORMS.map(({id})=>id);
   if(new Set(ids).size!==ids.length)throw new Error('x86-simd-denominator-duplicate-form');

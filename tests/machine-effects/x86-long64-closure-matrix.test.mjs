@@ -1,3 +1,4 @@
+// Exact-head proof retrigger after canonical userscript autofix; assertions unchanged.
 import assert from "node:assert/strict";
 
 import { createCapstoneX86Session } from "../phase5/helpers/capstone-session.mjs";

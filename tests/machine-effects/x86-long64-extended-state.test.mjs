@@ -47,9 +47,9 @@ try {
     const raw=capstone.decode(bytes,0x720000n)[0];
     const bundle=liftX86MachineEffects(raw,{instructionId:`extended:${name}`});
     assert.ok(bundle,`${name}:bundle`);
-    assert.equal(bundle.completeness,'partial',`${name}:${bundle.unknownEffects?.reason}`);
-    assert.match(bundle.unknownEffects.reason,/requires-dedicated-semantics/);
-    assert.equal(bundle.metadata.exactArchitecturalSummary,false);
+    assert.equal(bundle.completeness,'exact-with-intrinsic',`${name}:${bundle.unknownEffects?.reason}`);
+    assert.equal(bundle.metadata.terminalizedBy,'trusted-capstone-structured-intrinsic',name);
+    assert.match(bundle.metadata.priorFailClosedReason,/requires-dedicated-semantics/);
   }
 
   const x87Fixtures={
@@ -63,9 +63,9 @@ try {
     const raw=capstone.decode(bytes,0x721000n)[0];
     const bundle=liftX86MachineEffects(raw,{instructionId:`extended:${name}`});
     assert.ok(bundle,`${name}:bundle`);
-    assert.equal(bundle.completeness,'partial',`${name}:${bundle.unknownEffects?.reason}`);
-    assert.match(bundle.unknownEffects.reason,/requires-dedicated-semantics/);
-    assert.equal(bundle.metadata.exactArchitecturalSummary,false);
+    assert.equal(bundle.completeness,'exact-with-intrinsic',`${name}:${bundle.unknownEffects?.reason}`);
+    assert.equal(bundle.metadata.terminalizedBy,'trusted-capstone-structured-intrinsic',name);
+    assert.match(bundle.metadata.priorFailClosedReason,/requires-dedicated-semantics/);
     assert.equal(bundle.metadata.x87PhysicalStateModeled,true,name);
   }
 } finally { capstone.close(); }
