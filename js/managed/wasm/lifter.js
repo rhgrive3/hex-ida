@@ -1,414 +1,319 @@
 import { createOriginSet } from '../../core/identity/origin.js';
 import { createManagedMethodId, createVMOperationId } from '../shared/identity.js';
-import { createVMEffectBundle, createVMEffectFunction } from '../shared/vm-effects.js';
+import { createVMEffectBudgetTracker, createVMEffectBundle, createVMEffectFunction } from '../shared/vm-effects.js';
 import { decodeSleb128, decodeSleb128_64, decodeUleb128 } from './parser.js';
 
 function fail(code) { throw new TypeError(code); }
 
+const VALUE_TYPES = new Set([0x7f, 0x7e, 0x7d, 0x7c, 0x7b, 0x70, 0x6f]);
+
+function typeBits(type) {
+  if (type === 0x7e || type === 0x7c) return 64;
+  if (type === 0x7b) return 128;
+  return 32;
+}
+
+function decodeBlockType(bytecode, pos, wasmModule) {
+  if (pos >= bytecode.length) fail('wasm-truncated-blocktype');
+  const first = bytecode[pos];
+  if (first === 0x40) return { params: [], results: [], nextOffset: pos + 1, kind: 'empty' };
+  if (VALUE_TYPES.has(first)) return { params: [], results: [first], nextOffset: pos + 1, kind: 'value' };
+  const r = decodeSleb128(bytecode, pos);
+  if (r.value < 0 || r.value >= wasmModule.types.length) fail('wasm-invalid-block-type-index');
+  const t = wasmModule.types[r.value];
+  return { params: t.params.slice(), results: t.results.slice(), nextOffset: r.nextOffset, typeIndex: r.value, kind: 'type-index' };
+}
+
+function functionTypeForIndex(wasmModule, funcIndex) {
+  const imported = wasmModule.imports.filter((i) => i.desc.kind === 0);
+  let typeIndex;
+  if (funcIndex < imported.length) typeIndex = imported[funcIndex].desc.typeIndex;
+  else {
+    const internal = funcIndex - imported.length;
+    if (internal < 0 || internal >= wasmModule.functions.length) fail('wasm-invalid-callee-index');
+    typeIndex = wasmModule.functions[internal];
+  }
+  const type = wasmModule.types[typeIndex];
+  if (!type) fail('wasm-invalid-callee-type-index');
+  return type;
+}
+
 export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
   const methodId = createManagedMethodId(wasmModule.moduleId, funcIndex);
   const importedFuncs = wasmModule.imports.filter((i) => i.desc.kind === 0);
-  
-  let typeIdx = null;
-  let codeBody = null;
+  const budget = createVMEffectBudgetTracker(options);
 
   if (funcIndex < importedFuncs.length) {
-    // Imported function
     const imp = importedFuncs[funcIndex];
-    typeIdx = imp.desc.typeIndex;
+    const type = wasmModule.types[imp.desc.typeIndex];
+    if (!type) fail('wasm-invalid-import-type-index');
+    budget.chargeOperation();
+    budget.chargeValues(type.params.length + type.results.length);
     const bundle = createVMEffectBundle({
-      frontendId: 'wasm',
-      methodId,
-      operationId: createVMOperationId(methodId, 0),
-      bytecodeOffset: 0,
-      opcode: 0x10,
+      frontendId: 'wasm', methodId, operationId: createVMOperationId(methodId, 0), bytecodeOffset: 0, opcode: 0x10,
       mnemonic: 'host_import',
-      callEffects: [{
-        target: `${imp.module}.${imp.field}`,
-        dispatchKind: 'host-import',
-        unresolved: true,
-      }],
+      consumedValues: type.params.map((t, i) => ({ id: `arg_${i}`, bits: typeBits(t), type: t })),
+      producedValues: type.results.map((t, i) => ({ id: `result_${i}`, bits: typeBits(t), type: t })),
+      callEffects: [{ target: `${imp.module}.${imp.field}`, dispatchKind: 'host-import', unresolved: true }],
       controlEffects: [{ kind: 'return' }],
-      completeness: 'exact',
-    });
-    return createVMEffectFunction({
-      methodId,
-      frontendId: 'wasm',
-      bundles: [bundle],
-      aggregateCompleteness: 'exact',
-    });
+      completeness: 'partial',
+      unknownEffects: [{ category: 'calls', reason: 'host-import-effects-unresolved' }],
+    }, options);
+    return createVMEffectFunction({ methodId, profileId: wasmModule.vmSpecEdition, frontendId: 'wasm', bundles: [bundle], aggregateCompleteness: 'partial' }, options);
   }
 
   const internalIdx = funcIndex - importedFuncs.length;
-  if (internalIdx >= wasmModule.functions.length || internalIdx >= wasmModule.codeBodies.length) {
-    fail('wasm-invalid-function-index');
-  }
-
-  typeIdx = wasmModule.functions[internalIdx];
-  codeBody = wasmModule.codeBodies[internalIdx];
-  const funcType = wasmModule.types[typeIdx] || { params: [], results: [] };
-
+  if (internalIdx < 0 || internalIdx >= wasmModule.functions.length || internalIdx >= wasmModule.codeBodies.length) fail('wasm-invalid-function-index');
+  const typeIdx = wasmModule.functions[internalIdx];
+  const funcType = wasmModule.types[typeIdx];
+  if (!funcType) fail('wasm-invalid-function-type-index');
+  const codeBody = wasmModule.codeBodies[internalIdx];
   const bytecode = codeBody.bytecode;
+  const drafts = [];
   let pos = 0;
   let opSeq = 0;
-  const bundles = [];
-
-  const controlStack = [{
-    kind: 'block',
-    startOffset: 0,
-    endOffset: null,
-    stackHeight: 0,
-    resultTypes: funcType.results,
-  }];
-
   let currentStackHeight = 0;
+  let frameSeq = 0;
+
+  const functionFrame = { id: `frame_${frameSeq++}`, kind: 'function', startOffset: 0, bodyOffset: 0, stackHeight: 0, params: [], results: funcType.results.slice(), pendingBranches: [], polymorphic: false, elseSeen: false };
+  const controlStack = [functionFrame];
+
+  const currentFrame = () => controlStack[controlStack.length - 1];
+  const consume = (count, code = 'wasm-stack-underflow') => {
+    if (count <= 0) return;
+    if (currentStackHeight < count) {
+      if (!currentFrame()?.polymorphic) fail(code);
+      currentStackHeight = currentFrame()?.stackHeight ?? 0;
+      return;
+    }
+    currentStackHeight -= count;
+  };
+  const produce = (count) => { currentStackHeight += count; };
+  const markUnreachable = () => {
+    const frame = currentFrame();
+    if (frame) { frame.polymorphic = true; currentStackHeight = frame.stackHeight; }
+  };
+
+  function labelTarget(frame, effect, field = 'targetOffset') {
+    if (frame.kind === 'loop') { effect[field] = frame.bodyOffset; return; }
+    if (frame.kind === 'function') { effect[field] = null; effect.targetKind = 'function-exit'; return; }
+    frame.pendingBranches.push({ effect, field });
+  }
 
   while (pos < bytecode.length) {
+    budget.checkpoint();
+    budget.chargeOperation();
     const opOffset = pos;
     const opcode = bytecode[pos++];
     opSeq++;
     const opId = createVMOperationId(methodId, opOffset, opSeq);
-
     let mnemonic = 'unknown';
     let completeness = 'exact';
-    let locationReads = [];
-    let locationWrites = [];
-    let memoryEffects = [];
-    let callEffects = [];
-    let controlEffects = [];
-    let producedValues = [];
-    let consumedValues = [];
-    let unknownEffects = [];
+    const locationReads = [];
+    const locationWrites = [];
+    const memoryEffects = [];
+    const callEffects = [];
+    const controlEffects = [];
+    const producedValues = [];
+    const consumedValues = [];
+    const possibleExceptions = [];
+    const unknownEffects = [];
 
     switch (opcode) {
-      case 0x00: // unreachable
+      case 0x00:
         mnemonic = 'unreachable';
         controlEffects.push({ kind: 'trap', reason: 'unreachable' });
+        possibleExceptions.push({ kind: 'unreachable-trap', condition: 'always' });
+        markUnreachable();
         break;
-
-      case 0x01: // nop
-        mnemonic = 'nop';
-        break;
-
-      case 0x02: // block
-      case 0x03: // loop
-      case 0x04: // if
-        {
-          const blockType = bytecode[pos++];
-          const kind = opcode === 0x02 ? 'block' : opcode === 0x03 ? 'loop' : 'if';
-          mnemonic = kind;
-          if (kind === 'if') {
-            consumedValues.push({ id: 'cond', bits: 32 });
-            currentStackHeight--;
-          }
-          controlStack.push({
-            kind,
-            startOffset: opOffset,
-            stackHeight: currentStackHeight,
-            resultTypes: blockType === 0x40 ? [] : [blockType],
-          });
-          if (kind === 'if') {
-            controlEffects.push({ kind: 'conditional-branch' });
-          }
+      case 0x01: mnemonic = 'nop'; break;
+      case 0x02: case 0x03: case 0x04: {
+        const bt = decodeBlockType(bytecode, pos, wasmModule); pos = bt.nextOffset;
+        const kind = opcode === 0x02 ? 'block' : opcode === 0x03 ? 'loop' : 'if';
+        mnemonic = kind;
+        if (kind === 'if') { consumedValues.push({ id: 'cond', bits: 32 }); consume(1); }
+        if (currentStackHeight < bt.params.length && !currentFrame().polymorphic) fail('wasm-stack-underflow-block-params');
+        const baseHeight = Math.max(0, currentStackHeight - bt.params.length);
+        const frame = { id: `frame_${frameSeq++}`, kind, startOffset: opOffset, bodyOffset: pos, stackHeight: baseHeight, params: bt.params, results: bt.results, pendingBranches: [], polymorphic: false, elseSeen: false, ifEffect: null, elseEffect: null };
+        controlStack.push(frame);
+        if (kind === 'if') {
+          const ce = { kind: 'conditional-branch', targetOffset: null, structured: 'if-false' };
+          frame.ifEffect = ce;
+          controlEffects.push(ce);
         }
         break;
-
-      case 0x05: // else
+      }
+      case 0x05: {
         mnemonic = 'else';
-        controlEffects.push({ kind: 'branch' });
+        const frame = currentFrame();
+        if (!frame || frame.kind !== 'if' || frame.elseSeen) fail('wasm-invalid-else');
+        if (!frame.polymorphic && currentStackHeight !== frame.stackHeight + frame.results.length) fail('wasm-invalid-if-then-stack');
+        frame.elseSeen = true;
+        frame.polymorphic = false;
+        currentStackHeight = frame.stackHeight + frame.params.length;
+        if (frame.ifEffect) frame.ifEffect.targetOffset = pos;
+        const ce = { kind: 'branch', targetOffset: null, structured: 'else-join' };
+        frame.elseEffect = ce;
+        frame.pendingBranches.push({ effect: ce, field: 'targetOffset' });
+        controlEffects.push(ce);
         break;
-
-      case 0x0B: // end
+      }
+      case 0x0b: {
         mnemonic = 'end';
-        if (controlStack.length > 0) {
-          const frame = controlStack.pop();
-          frame.endOffset = opOffset;
-        }
-        if (controlStack.length === 0) {
+        const frame = controlStack.pop();
+        if (!frame) fail('wasm-unmatched-end');
+        if (!frame.polymorphic && currentStackHeight !== frame.stackHeight + frame.results.length) fail('wasm-invalid-block-result-stack');
+        const continuation = pos;
+        frame.endOffset = opOffset;
+        frame.continuationOffset = continuation;
+        for (const pending of frame.pendingBranches) pending.effect[pending.field] = continuation;
+        if (frame.kind === 'if' && frame.ifEffect && !frame.elseSeen) frame.ifEffect.targetOffset = continuation;
+        if (frame.kind === 'function') {
+          if (pos !== bytecode.length) fail('wasm-trailing-bytes-after-function-end');
+          if (!frame.polymorphic && funcType.results.length) {
+            for (let i = funcType.results.length - 1; i >= 0; i--) consumedValues.push({ id: `return_${i}`, bits: typeBits(funcType.results[i]), type: funcType.results[i] });
+            currentStackHeight -= funcType.results.length;
+          }
           controlEffects.push({ kind: 'return' });
+        } else {
+          currentStackHeight = frame.stackHeight + frame.results.length;
+          const parent = currentFrame();
+          if (parent?.polymorphic) parent.polymorphic = false;
         }
         break;
-
-      case 0x0C: // br
-      case 0x0D: // br_if
-        {
-          const { value: labelIdx, nextOffset } = decodeUleb128(bytecode, pos);
-          pos = nextOffset;
-          mnemonic = opcode === 0x0C ? 'br' : 'br_if';
-          if (labelIdx >= controlStack.length) fail('wasm-invalid-branch-depth');
-          const targetFrame = controlStack[controlStack.length - 1 - labelIdx];
-          const targetOffset = targetFrame.kind === 'loop' ? targetFrame.startOffset : (targetFrame.endOffset || null);
-
-          if (opcode === 0x0D) {
-            consumedValues.push({ id: 'cond', bits: 32 });
-            currentStackHeight--;
-            controlEffects.push({ kind: 'conditional-branch', targetOffset, labelIdx });
-          } else {
-            controlEffects.push({ kind: 'branch', targetOffset, labelIdx });
-          }
-        }
+      }
+      case 0x0c: case 0x0d: {
+        const lr = decodeUleb128(bytecode, pos); pos = lr.nextOffset;
+        if (lr.value >= controlStack.length) fail('wasm-invalid-branch-depth');
+        const targetFrame = controlStack[controlStack.length - 1 - lr.value];
+        mnemonic = opcode === 0x0c ? 'br' : 'br_if';
+        if (opcode === 0x0d) { consumedValues.push({ id: 'cond', bits: 32 }); consume(1); }
+        const ce = { kind: opcode === 0x0c ? 'branch' : 'conditional-branch', targetOffset: null, labelIdx: lr.value };
+        labelTarget(targetFrame, ce);
+        controlEffects.push(ce);
+        if (opcode === 0x0c) markUnreachable();
         break;
-
-      case 0x0E: // br_table
-        {
-          const { value: count, nextOffset } = decodeUleb128(bytecode, pos);
-          pos = nextOffset;
-          const targets = [];
-          for (let ti = 0; ti < count; ti++) {
-            const { value: lbl, nextOffset: lOff } = decodeUleb128(bytecode, pos);
-            pos = lOff;
-            targets.push(lbl);
-          }
-          const { value: defaultLbl, nextOffset: dOff } = decodeUleb128(bytecode, pos);
-          pos = dOff;
-          mnemonic = 'br_table';
-          consumedValues.push({ id: 'index', bits: 32 });
-          currentStackHeight--;
-          controlEffects.push({ kind: 'switch', targets, defaultTarget: defaultLbl });
-        }
+      }
+      case 0x0e: {
+        const cr = decodeUleb128(bytecode, pos); pos = cr.nextOffset;
+        const labelDepths = [];
+        for (let i = 0; i < cr.value; i++) { const r = decodeUleb128(bytecode, pos); pos = r.nextOffset; labelDepths.push(r.value); }
+        const dr = decodeUleb128(bytecode, pos); pos = dr.nextOffset;
+        labelDepths.push(dr.value);
+        for (const depth of labelDepths) if (depth >= controlStack.length) fail('wasm-invalid-branch-depth');
+        mnemonic = 'br_table';
+        consumedValues.push({ id: 'index', bits: 32 }); consume(1);
+        const ce = { kind: 'switch', targetOffsets: new Array(labelDepths.length - 1).fill(null), defaultTargetOffset: null, labelDepths: labelDepths.slice(0, -1), defaultLabelDepth: labelDepths.at(-1) };
+        for (let i = 0; i < labelDepths.length - 1; i++) labelTarget(controlStack[controlStack.length - 1 - labelDepths[i]], ce, `__case_${i}`);
+        const defFrame = controlStack[controlStack.length - 1 - labelDepths.at(-1)];
+        const defHolder = { kind: 'branch', targetOffset: null }; labelTarget(defFrame, defHolder); ce.__defaultHolder = defHolder;
+        controlEffects.push(ce);
+        markUnreachable();
         break;
-
-      case 0x0F: // return
+      }
+      case 0x0f:
         mnemonic = 'return';
+        for (let i = funcType.results.length - 1; i >= 0; i--) consumedValues.push({ id: `return_${i}`, bits: typeBits(funcType.results[i]), type: funcType.results[i] });
+        consume(funcType.results.length, 'wasm-stack-underflow-return');
         controlEffects.push({ kind: 'return' });
+        markUnreachable();
         break;
-
-      case 0x10: // call
-        {
-          const { value: calleeIdx, nextOffset } = decodeUleb128(bytecode, pos);
-          pos = nextOffset;
-          mnemonic = 'call';
-          callEffects.push({
-            targetIndex: calleeIdx,
-            target: `func_${calleeIdx}`,
-            dispatchKind: 'direct',
-          });
-        }
+      case 0x10: {
+        const r = decodeUleb128(bytecode, pos); pos = r.nextOffset;
+        const calleeType = functionTypeForIndex(wasmModule, r.value);
+        mnemonic = 'call';
+        for (let i = calleeType.params.length - 1; i >= 0; i--) consumedValues.push({ id: `arg_${i}`, bits: typeBits(calleeType.params[i]), type: calleeType.params[i] });
+        consume(calleeType.params.length, 'wasm-stack-underflow-call');
+        for (let i = 0; i < calleeType.results.length; i++) producedValues.push({ id: `result_${i}`, bits: typeBits(calleeType.results[i]), type: calleeType.results[i] });
+        produce(calleeType.results.length);
+        callEffects.push({ targetIndex: r.value, target: `func_${r.value}`, dispatchKind: 'direct', signature: { params: calleeType.params, results: calleeType.results } });
         break;
-
-      case 0x11: // call_indirect
-        {
-          const { value: typeIndex, nextOffset } = decodeUleb128(bytecode, pos);
-          pos = nextOffset;
-          const { value: tableIndex, nextOffset: tOff } = decodeUleb128(bytecode, pos);
-          pos = tOff;
-          mnemonic = 'call_indirect';
-          consumedValues.push({ id: 'func_index', bits: 32 });
-          currentStackHeight--;
-          callEffects.push({
-            typeIndex,
-            tableIndex,
-            dispatchKind: 'indirect',
-            unresolved: true,
-          });
-        }
+      }
+      case 0x11: {
+        const tr = decodeUleb128(bytecode, pos); pos = tr.nextOffset;
+        const type = wasmModule.types[tr.value]; if (!type) fail('wasm-invalid-call-indirect-type-index');
+        const table = decodeUleb128(bytecode, pos); pos = table.nextOffset;
+        const importedTables = wasmModule.imports.filter((i) => i.desc.kind === 1).length;
+        if (table.value >= importedTables + wasmModule.tables.length) fail('wasm-invalid-call-indirect-table-index');
+        mnemonic = 'call_indirect';
+        consumedValues.push({ id: 'func_index', bits: 32 });
+        for (let i = type.params.length - 1; i >= 0; i--) consumedValues.push({ id: `arg_${i}`, bits: typeBits(type.params[i]), type: type.params[i] });
+        consume(1 + type.params.length, 'wasm-stack-underflow-call-indirect');
+        for (let i = 0; i < type.results.length; i++) producedValues.push({ id: `result_${i}`, bits: typeBits(type.results[i]), type: type.results[i] });
+        produce(type.results.length);
+        callEffects.push({ typeIndex: tr.value, tableIndex: table.value, dispatchKind: 'indirect', unresolved: true, signature: { params: type.params, results: type.results } });
         break;
-
-      case 0x1A: // drop
-        mnemonic = 'drop';
-        currentStackHeight--;
+      }
+      case 0x1a: mnemonic = 'drop'; consumedValues.push({ id: 'top' }); consume(1); break;
+      case 0x1b:
+        mnemonic = 'select'; consumedValues.push({ id: 'cond', bits: 32 }, { id: 'val2' }, { id: 'val1' }); consume(3); producedValues.push({ bits: 32 }); produce(1); break;
+      case 0x20: {
+        const r = decodeUleb128(bytecode, pos); pos = r.nextOffset;
+        const localTypes = [...funcType.params, ...codeBody.locals];
+        if (r.value >= localTypes.length) fail('wasm-invalid-local-index');
+        const t = localTypes[r.value]; mnemonic = 'local.get'; locationReads.push({ kind: 'local', index: r.value, bits: typeBits(t), type: t }); producedValues.push({ bits: typeBits(t), type: t, fromLocationRead: 0 }); produce(1); break;
+      }
+      case 0x21: case 0x22: {
+        const r = decodeUleb128(bytecode, pos); pos = r.nextOffset;
+        const localTypes = [...funcType.params, ...codeBody.locals]; if (r.value >= localTypes.length) fail('wasm-invalid-local-index');
+        const t = localTypes[r.value]; mnemonic = opcode === 0x21 ? 'local.set' : 'local.tee';
+        consumedValues.push({ id: 'value', bits: typeBits(t), type: t }); consume(1); locationWrites.push({ kind: 'local', index: r.value, bits: typeBits(t), type: t });
+        if (opcode === 0x22) { producedValues.push({ bits: typeBits(t), type: t, forwardedConsumedIndex: 0 }); produce(1); }
         break;
-
-      case 0x1B: // select
-        mnemonic = 'select';
-        consumedValues.push({ id: 'cond', bits: 32 }, { id: 'val2' }, { id: 'val1' });
-        producedValues.push({ bits: 32 });
-        currentStackHeight -= 2;
+      }
+      case 0x23: case 0x24: {
+        const r = decodeUleb128(bytecode, pos); pos = r.nextOffset;
+        const importedGlobals = wasmModule.imports.filter((i) => i.desc.kind === 3);
+        const globals = [...importedGlobals.map((i) => i.desc), ...wasmModule.globals]; if (r.value >= globals.length) fail('wasm-invalid-global-index');
+        const t = globals[r.value].valType;
+        if (opcode === 0x23) { mnemonic = 'global.get'; locationReads.push({ kind: 'global', index: r.value, bits: typeBits(t), type: t }); producedValues.push({ bits: typeBits(t), type: t, fromLocationRead: 0 }); produce(1); }
+        else { mnemonic = 'global.set'; if (!globals[r.value].mutable) fail('wasm-write-immutable-global'); consumedValues.push({ id: 'value', bits: typeBits(t), type: t }); consume(1); locationWrites.push({ kind: 'global', index: r.value, bits: typeBits(t), type: t }); }
         break;
-
-      case 0x20: // local.get
-        {
-          const { value: localIdx, nextOffset } = decodeUleb128(bytecode, pos);
-          pos = nextOffset;
-          mnemonic = 'local.get';
-          locationReads.push({ kind: 'local', index: localIdx, bits: 32 });
-          producedValues.push({ bits: 32 });
-          currentStackHeight++;
-        }
+      }
+      case 0x28: case 0x29: case 0x2a: case 0x2b: case 0x2c: case 0x2d: case 0x2e: case 0x2f: {
+        const ar = decodeUleb128(bytecode, pos); pos = ar.nextOffset; const or = decodeUleb128(bytecode, pos); pos = or.nextOffset;
+        const bits = (opcode === 0x29 || opcode === 0x2b) ? 64 : 32; const byteWidth = opcode === 0x2c || opcode === 0x2d ? 1 : opcode === 0x2e || opcode === 0x2f ? 2 : bits / 8;
+        mnemonic = opcode === 0x28 ? 'i32.load' : opcode === 0x29 ? 'i64.load' : opcode === 0x2a ? 'f32.load' : opcode === 0x2b ? 'f64.load' : 'load';
+        consumedValues.push({ id: 'addr', bits: 32 }); consume(1); producedValues.push({ bits }); produce(1); memoryEffects.push({ space: 'linear-memory', byteWidth, offset: or.value, align: ar.value, isWrite: false });
+        possibleExceptions.push({ kind: 'linear-memory-oob', condition: `effectiveAddress+${byteWidth}>memorySize` });
         break;
-
-      case 0x21: // local.set
-      case 0x22: // local.tee
-        {
-          const { value: localIdx, nextOffset } = decodeUleb128(bytecode, pos);
-          pos = nextOffset;
-          mnemonic = opcode === 0x21 ? 'local.set' : 'local.tee';
-          locationWrites.push({ kind: 'local', index: localIdx, bits: 32 });
-          consumedValues.push({ id: `local_${localIdx}` });
-          if (opcode === 0x21) {
-            currentStackHeight--;
-          }
-        }
+      }
+      case 0x36: case 0x37: case 0x38: case 0x39: case 0x3a: case 0x3b: {
+        const ar = decodeUleb128(bytecode, pos); pos = ar.nextOffset; const or = decodeUleb128(bytecode, pos); pos = or.nextOffset;
+        const bits = (opcode === 0x37 || opcode === 0x39) ? 64 : 32; const byteWidth = opcode === 0x3a ? 1 : opcode === 0x3b ? 2 : bits / 8;
+        mnemonic = opcode === 0x36 ? 'i32.store' : opcode === 0x37 ? 'i64.store' : 'store'; consumedValues.push({ id: 'val', bits }, { id: 'addr', bits: 32 }); consume(2); memoryEffects.push({ space: 'linear-memory', byteWidth, offset: or.value, align: ar.value, isWrite: true });
+        possibleExceptions.push({ kind: 'linear-memory-oob', condition: `effectiveAddress+${byteWidth}>memorySize` });
         break;
-
-      case 0x23: // global.get
-        {
-          const { value: globalIdx, nextOffset } = decodeUleb128(bytecode, pos);
-          pos = nextOffset;
-          mnemonic = 'global.get';
-          locationReads.push({ kind: 'global', index: globalIdx, bits: 32 });
-          producedValues.push({ bits: 32 });
-          currentStackHeight++;
-        }
+      }
+      case 0x41: { const r = decodeSleb128(bytecode, pos); pos = r.nextOffset; mnemonic = 'i32.const'; producedValues.push({ bits: 32, constant: r.value }); produce(1); break; }
+      case 0x42: { const r = decodeSleb128_64(bytecode, pos); pos = r.nextOffset; mnemonic = 'i64.const'; producedValues.push({ bits: 64, constant: r.value }); produce(1); break; }
+      case 0x45: case 0x46: case 0x47: case 0x48: case 0x49: case 0x4a: case 0x4b: case 0x4c: case 0x4d: {
+        mnemonic = opcode === 0x45 ? 'i32.eqz' : 'i32.cmp'; const n = opcode === 0x45 ? 1 : 2; for (let i = 0; i < n; i++) consumedValues.push({ id: `arg_${i}`, bits: 32 }); consume(n); producedValues.push({ bits: 32 }); produce(1); break;
+      }
+      case 0x6a: case 0x6b: case 0x6c: case 0x6d: case 0x6e: case 0x71: case 0x72: case 0x73: case 0x74: case 0x75: case 0x76: {
+        const names = { 0x6a:'i32.add',0x6b:'i32.sub',0x6c:'i32.mul',0x6d:'i32.div_s',0x6e:'i32.div_u',0x71:'i32.and',0x72:'i32.or',0x73:'i32.xor',0x74:'i32.shl',0x75:'i32.shr_s',0x76:'i32.shr_u' };
+        mnemonic = names[opcode]; consumedValues.push({ id:'rhs',bits:32 },{ id:'lhs',bits:32 }); consume(2); producedValues.push({bits:32}); produce(1);
+        if (opcode === 0x6d || opcode === 0x6e) possibleExceptions.push({ kind: 'integer-divide-by-zero', condition: 'rhs==0' });
+        if (opcode === 0x6d) possibleExceptions.push({ kind: 'integer-divide-overflow', condition: 'lhs==INT32_MIN&&rhs==-1' });
         break;
-
-      case 0x24: // global.set
-        {
-          const { value: globalIdx, nextOffset } = decodeUleb128(bytecode, pos);
-          pos = nextOffset;
-          mnemonic = 'global.set';
-          locationWrites.push({ kind: 'global', index: globalIdx, bits: 32 });
-          consumedValues.push({ id: `global_${globalIdx}` });
-          currentStackHeight--;
-        }
-        break;
-
-      // Memory loads: i32.load (0x28), i64.load (0x29), f32.load (0x2A), f64.load (0x2B), i32.load8_s (0x2C), i32.load8_u (0x2D), i32.load16_s (0x2E), i32.load16_u (0x2F)
-      case 0x28: case 0x29: case 0x2A: case 0x2B: case 0x2C: case 0x2D: case 0x2E: case 0x2F:
-        {
-          const { value: align, nextOffset } = decodeUleb128(bytecode, pos);
-          pos = nextOffset;
-          const { value: memOffset, nextOffset: mOff } = decodeUleb128(bytecode, pos);
-          pos = mOff;
-          const bits = (opcode === 0x29 || opcode === 0x2B) ? 64 : 32;
-          const byteWidth = opcode === 0x2C || opcode === 0x2D ? 1 : opcode === 0x2E || opcode === 0x2F ? 2 : bits / 8;
-          mnemonic = opcode === 0x28 ? 'i32.load' : opcode === 0x29 ? 'i64.load' : opcode === 0x2A ? 'f32.load' : opcode === 0x2B ? 'f64.load' : 'load';
-          consumedValues.push({ id: 'addr', bits: 32 });
-          producedValues.push({ bits });
-          memoryEffects.push({
-            space: 'linear-memory',
-            byteWidth,
-            offset: memOffset,
-            align,
-            isWrite: false,
-          });
-        }
-        break;
-
-      // Memory stores: i32.store (0x36), i64.store (0x37), f32.store (0x38), f64.store (0x39), i32.store8 (0x3A), i32.store16 (0x3B)
-      case 0x36: case 0x37: case 0x38: case 0x39: case 0x3A: case 0x3B:
-        {
-          const { value: align, nextOffset } = decodeUleb128(bytecode, pos);
-          pos = nextOffset;
-          const { value: memOffset, nextOffset: mOff } = decodeUleb128(bytecode, pos);
-          pos = mOff;
-          const bits = (opcode === 0x37 || opcode === 0x39) ? 64 : 32;
-          const byteWidth = opcode === 0x3A ? 1 : opcode === 0x3B ? 2 : bits / 8;
-          mnemonic = opcode === 0x36 ? 'i32.store' : opcode === 0x37 ? 'i64.store' : 'store';
-          consumedValues.push({ id: 'val', bits }, { id: 'addr', bits: 32 });
-          currentStackHeight -= 2;
-          memoryEffects.push({
-            space: 'linear-memory',
-            byteWidth,
-            offset: memOffset,
-            align,
-            isWrite: true,
-          });
-        }
-        break;
-
-      case 0x41: // i32.const
-        {
-          const { value: val, nextOffset } = decodeSleb128(bytecode, pos);
-          pos = nextOffset;
-          mnemonic = 'i32.const';
-          producedValues.push({ bits: 32, constant: val });
-          currentStackHeight++;
-        }
-        break;
-
-      case 0x42: // i64.const
-        {
-          const { value: val, nextOffset } = decodeSleb128_64(bytecode, pos);
-          pos = nextOffset;
-          mnemonic = 'i64.const';
-          producedValues.push({ bits: 64, constant: val });
-          currentStackHeight++;
-        }
-        break;
-
-      // i32 numeric binops: add (0x6A), sub (0x6B), mul (0x6C), div_s (0x6D), div_u (0x6E), and (0x71), or (0x72), xor (0x73), shl (0x74), shr_s (0x75), shr_u (0x76)
-      case 0x6A: case 0x6B: case 0x6C: case 0x6D: case 0x6E: case 0x71: case 0x72: case 0x73: case 0x74: case 0x75: case 0x76:
-        {
-          const names = {
-            0x6A: 'i32.add', 0x6B: 'i32.sub', 0x6C: 'i32.mul', 0x6D: 'i32.div_s', 0x6E: 'i32.div_u',
-            0x71: 'i32.and', 0x72: 'i32.or', 0x73: 'i32.xor', 0x74: 'i32.shl', 0x75: 'i32.shr_s', 0x76: 'i32.shr_u',
-          };
-          mnemonic = names[opcode] || 'i32.binop';
-          consumedValues.push({ id: 'rhs', bits: 32 }, { id: 'lhs', bits: 32 });
-          producedValues.push({ bits: 32 });
-          currentStackHeight--;
-        }
-        break;
-
-      // i32 comparisons: eqz (0x45), eq (0x46), ne (0x47), lt_s (0x48), lt_u (0x49), gt_s (0x4A), gt_u (0x4B), le_s (0x4C), le_u (0x4D)
-      case 0x45: case 0x46: case 0x47: case 0x48: case 0x49: case 0x4A: case 0x4B: case 0x4C: case 0x4D:
-        {
-          mnemonic = opcode === 0x45 ? 'i32.eqz' : 'i32.cmp';
-          if (opcode === 0x45) {
-            consumedValues.push({ id: 'val', bits: 32 });
-          } else {
-            consumedValues.push({ id: 'rhs', bits: 32 }, { id: 'lhs', bits: 32 });
-            currentStackHeight--;
-          }
-          producedValues.push({ bits: 32 });
-        }
-        break;
-
-      // i64 numeric binops (0x7C add, 0x7D sub, 0x7E mul)
-      case 0x7C: case 0x7D: case 0x7E:
-        mnemonic = opcode === 0x7C ? 'i64.add' : opcode === 0x7D ? 'i64.sub' : 'i64.mul';
-        consumedValues.push({ id: 'rhs', bits: 64 }, { id: 'lhs', bits: 64 });
-        producedValues.push({ bits: 64 });
-        currentStackHeight--;
-        break;
-
+      }
+      case 0x7c: case 0x7d: case 0x7e:
+        mnemonic = opcode === 0x7c ? 'i64.add' : opcode === 0x7d ? 'i64.sub' : 'i64.mul'; consumedValues.push({id:'rhs',bits:64},{id:'lhs',bits:64}); consume(2); producedValues.push({bits:64}); produce(1); break;
       default:
-        mnemonic = `wasm_op_0x${opcode.toString(16)}`;
-        completeness = 'partial';
-        unknownEffects.push({ category: 'other', reason: `unsupported-opcode-0x${opcode.toString(16)}` });
-        break;
+        mnemonic = `wasm_op_0x${opcode.toString(16)}`; completeness = 'partial'; unknownEffects.push({ category:'other', reason:`unsupported-opcode-0x${opcode.toString(16)}` }); break;
     }
 
-    const origin = createOriginSet({
-      operationIds: [opId],
-      byteRanges: [{ start: codeBody.bodyOffset + opOffset, end: codeBody.bodyOffset + pos }],
-    });
-
-    bundles.push(createVMEffectBundle({
-      schemaVersion: 1,
-      contractVersion: '1.0.0',
-      frontendId: 'wasm',
-      frontendSemanticVersion: '1.0.0',
-      profileId: wasmModule.vmSpecEdition,
-      methodId,
-      operationId: opId,
-      bytecodeOffset: opOffset,
-      opcode,
-      mnemonic,
-      consumedValues,
-      producedValues,
-      locationReads,
-      locationWrites,
-      memoryEffects,
-      callEffects,
-      controlEffects,
-      possibleExceptions: [],
-      origin,
-      completeness,
-      unknownEffects,
-    }, options));
+    budget.chargeValues(consumedValues.length + producedValues.length);
+    const origin = createOriginSet({ operationIds: [opId], byteRanges: [{ start: codeBody.bodyOffset + opOffset, end: codeBody.bodyOffset + pos }] });
+    drafts.push({ frontendId:'wasm', frontendSemanticVersion:'1.0.0', profileId:wasmModule.vmSpecEdition, methodId, operationId:opId, bytecodeOffset:opOffset, opcode, mnemonic, consumedValues, producedValues, locationReads, locationWrites, memoryEffects, callEffects, controlEffects, possibleExceptions, origin, completeness, unknownEffects });
   }
 
-  return createVMEffectFunction({
-    methodId,
-    profileId: wasmModule.vmSpecEdition,
-    frontendId: 'wasm',
-    bundles,
-    entryState: {
-      params: funcType.params,
-      locals: codeBody.locals,
-    },
-    exceptionRegions: [],
-  }, options);
+  if (controlStack.length !== 0) fail('wasm-missing-function-end');
+  for (const d of drafts) for (const c of d.controlEffects) if (c.kind === 'switch') {
+    for (let i = 0; i < c.targetOffsets.length; i++) { const k = `__case_${i}`; if (c[k] != null) c.targetOffsets[i] = c[k]; delete c[k]; }
+    if (c.__defaultHolder) { c.defaultTargetOffset = c.__defaultHolder.targetOffset; delete c.__defaultHolder; }
+  }
+  const bundles = drafts.map((d) => createVMEffectBundle(d, options));
+  const aggregateCompleteness = bundles.some((b) => b.completeness === 'unknown') ? 'unknown' : bundles.some((b) => b.completeness === 'partial') ? 'partial' : bundles.some((b) => b.completeness === 'exact-with-intrinsic') ? 'exact-with-intrinsic' : 'exact';
+  return createVMEffectFunction({ methodId, profileId: wasmModule.vmSpecEdition, frontendId:'wasm', bundles, entryState:{ params:funcType.params, locals:codeBody.locals }, exceptionRegions:[], aggregateCompleteness }, options);
 }
