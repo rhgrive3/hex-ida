@@ -71,7 +71,13 @@ export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
     if (strOff == null || strSize == null || !strSpan) return '';
     const n = Number(offset);
     if (!Number.isSafeInteger(n) || n < 0 || n >= strSize || strOff + n >= strSpan.spanEnd) return '';
-    return r.cstring(strOff + n, Math.min(strSize - n, strSpan.spanEnd - strOff - n, 1 << 20));
+    const maxLength = Math.min(strSize - n, strSpan.spanEnd - strOff - n, 1 << 20);
+    const bytes = r.slice(strOff + n, maxLength);
+    if (bytes.indexOf(0) < 0) {
+      markDynamicPartial(image, `dynamic string at offset ${n} is not NUL-terminated within DT_STRSZ`);
+      return '';
+    }
+    return r.cstring(strOff + n, maxLength);
   };
 
   for (const needed of tags.get(DT_NEEDED) || []) {
