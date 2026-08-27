@@ -16,7 +16,7 @@
  * Consumers that want a stronger answer ask here; nobody gets a private path.
  */
 
-import { createAnalysisStatus, mergeAnalysisStatus } from '../status.js';
+import { createAnalysisStatus, isCompleteStatus, mergeAnalysisStatus } from '../status.js';
 import { analyzeLocalPointsTo } from '../pointsto/local.js';
 import { pointsToAlias } from '../pointsto/alias.js';
 import { analyzeEscape } from '../summary/escape.js';
@@ -24,7 +24,7 @@ import { a1RegionAlias } from './a1-region-alias.js';
 import { createAliasResult, unknownAlias } from './result.js';
 
 export const PHASE7_ALIAS_SOLVER_ID = 'phase7.alias.solver';
-export const PHASE7_ALIAS_SOLVER_VERSION = '1.0.0';
+export const PHASE7_ALIAS_SOLVER_VERSION = '1.1.0';
 
 const STRENGTH = { unknown: 0, may: 1, must: 2, no: 2 };
 
@@ -74,16 +74,105 @@ function baseStatus(options) {
  */
 export function createPhase7AliasSolver({ ir, cfg, ssa, options = {} } = {}) {
   let pointsToRun = null;
+  let baselineRun = null;
+  let refinedRun = null;
   let escapeRun = null;
+  let effectiveSnapshotId = options.snapshotId ?? 'snapshot-unbound';
   const enableA2 = options.enableA2 !== false && ir != null;
   const enableEscape = options.enableEscape !== false && enableA2;
+
+  // MemorySSA is built from this solver's baseline answers. It can therefore
+  // only be attached after that build has completed; the refinement below is a
+  // one-way consumer pass and never feeds a new answer back into MemorySSA.
+  let memoryBinding = null;
+  if (options.memorySsaBinding?.memorySsa != null || options.memorySsa != null) {
+    memoryBinding = {
+      ...(options.memorySsaBinding ?? {}),
+      memorySsa: options.memorySsaBinding?.memorySsa ?? options.memorySsa,
+    };
+    if (options.snapshotId == null && memoryBinding.snapshotId != null) {
+      effectiveSnapshotId = String(memoryBinding.snapshotId);
+    }
+  }
+
+  function baselineOptions() {
+    const result = { ...options, snapshotId: effectiveSnapshotId };
+    delete result.memorySsa;
+    delete result.memorySsaBinding;
+    return result;
+  }
+
+  function baselinePointsTo() {
+    if (!enableA2) return null;
+    if (baselineRun == null) baselineRun = analyzeLocalPointsTo(ir, cfg, ssa, baselineOptions());
+    return baselineRun;
+  }
+
+  function refinementOptions() {
+    const base = baselineOptions();
+    const memorySsa = memoryBinding?.memorySsa ?? null;
+    if (memorySsa == null) return base;
+    return {
+      ...base,
+      memorySsa,
+      memorySsaBinding: { ...memoryBinding, memorySsa },
+    };
+  }
+
+  function stageMemoryRefinement() {
+    const baseline = baselinePointsTo();
+    if (!baseline || memoryBinding?.memorySsa == null) {
+      pointsToRun = baseline;
+      refinedRun = null;
+      return pointsToRun;
+    }
+    const candidate = analyzeLocalPointsTo(ir, cfg, ssa, refinementOptions());
+    refinedRun = candidate;
+    const publishable = isCompleteStatus(candidate.status)
+      && candidate.recovery?.bindingState === 'current'
+      && candidate.recovery?.publicationAllowed === true;
+    if (publishable) {
+      // The replacement is one immutable result boundary. Escape evidence is
+      // tied to the old map and must be recomputed after a successful swap.
+      pointsToRun = candidate;
+      escapeRun = null;
+      return pointsToRun;
+    }
+    // Keep the complete baseline authoritative when the staged pass is stale,
+    // cancelled, truncated, malformed, or otherwise incomplete. Preserve the
+    // candidate diagnostics as audit evidence without exposing its map.
+    pointsToRun = candidate.recovery == null
+      ? baseline
+      : { ...baseline, recovery: { ...candidate.recovery, publicationAllowed: false } };
+    return pointsToRun;
+  }
 
   function pointsTo() {
     if (!enableA2) return null;
     if (pointsToRun == null) {
-      pointsToRun = analyzeLocalPointsTo(ir, cfg, ssa, options);
+      if (memoryBinding?.memorySsa != null) return stageMemoryRefinement();
+      pointsToRun = baselinePointsTo();
     }
     return pointsToRun;
+  }
+
+  /** Attach one already-validated MemorySSA artifact for a post-build pass. */
+  function refineMemorySsa(memorySsa, binding = {}) {
+    memoryBinding = {
+      ...binding,
+      ...(memoryBinding ?? {}),
+      ...((binding && typeof binding === 'object') ? binding : {}),
+      memorySsa,
+    };
+    if (options.snapshotId == null && memoryBinding.snapshotId != null) {
+      effectiveSnapshotId = String(memoryBinding.snapshotId);
+    }
+    refinedRun = null;
+    // Preserve demand-driven construction when the solver has not been asked
+    // a question yet. A builder that already queried the baseline receives the
+    // refinement immediately, and escape facts are invalidated on publication.
+    if (baselineRun != null || pointsToRun != null) return stageMemoryRefinement();
+    return null;
   }
 
   /**
@@ -97,7 +186,7 @@ export function createPhase7AliasSolver({ ir, cfg, ssa, options = {} } = {}) {
     if (!enableEscape) return null;
     if (escapeRun == null) {
       const run = pointsTo();
-      escapeRun = run == null ? null : analyzeEscape(ir, cfg, ssa, run, options);
+      escapeRun = run == null ? null : analyzeEscape(ir, cfg, ssa, run, { ...options, snapshotId: effectiveSnapshotId });
     }
     return escapeRun;
   }
@@ -122,7 +211,7 @@ export function createPhase7AliasSolver({ ir, cfg, ssa, options = {} } = {}) {
    * identity alone cannot see field offsets.
    */
   function alias(leftRegion, rightRegion, context = {}) {
-    const status = baseStatus({ signal: options.signal, ...options, ...context });
+    const status = baseStatus({ signal: options.signal, ...options, snapshotId: effectiveSnapshotId, ...context });
     if (status.stopReason != null && status.completeness !== 'bounded') {
       return unknownAlias(status, [status.stopReason === 'cancelled' ? 'analysis-cancelled' : 'budget-exhausted']);
     }
@@ -188,6 +277,7 @@ export function createPhase7AliasSolver({ ir, cfg, ssa, options = {} } = {}) {
     alias,
     queryAlias,
     pointsToRun: pointsTo,
+    refineMemorySsa,
     escapeRun: escape,
     analyzerId: PHASE7_ALIAS_SOLVER_ID,
     analyzerVersion: PHASE7_ALIAS_SOLVER_VERSION,
