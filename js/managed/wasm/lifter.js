@@ -78,6 +78,7 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
     let controlEffects = [];
     let producedValues = [];
     let consumedValues = [];
+    let possibleExceptions = [];
     let unknownEffects = [];
 
     switch (opcode) {
@@ -282,6 +283,10 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
             align,
             isWrite: false,
           });
+          possibleExceptions.push({
+            kind: 'linear-memory-oob',
+            condition: `effectiveAddress+${byteWidth}>memorySize`,
+          });
         }
         break;
 
@@ -303,6 +308,10 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
             offset: memOffset,
             align,
             isWrite: true,
+          });
+          possibleExceptions.push({
+            kind: 'linear-memory-oob',
+            condition: `effectiveAddress+${byteWidth}>memorySize`,
           });
         }
         break;
@@ -338,6 +347,12 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
           consumedValues.push({ id: 'rhs', bits: 32 }, { id: 'lhs', bits: 32 });
           producedValues.push({ bits: 32 });
           currentStackHeight--;
+          if (opcode === 0x6D || opcode === 0x6E) {
+            possibleExceptions.push({ kind: 'integer-divide-by-zero', condition: 'rhs==0' });
+          }
+          if (opcode === 0x6D) {
+            possibleExceptions.push({ kind: 'integer-divide-overflow', condition: 'lhs==INT32_MIN&&rhs==-1' });
+          }
         }
         break;
 
@@ -393,7 +408,7 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
       memoryEffects,
       callEffects,
       controlEffects,
-      possibleExceptions: [],
+      possibleExceptions,
       origin,
       completeness,
       unknownEffects,
