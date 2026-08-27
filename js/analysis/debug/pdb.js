@@ -294,6 +294,14 @@ export function parseSymbolRecords(bytes, budget = DEBUG_DEFAULT_BUDGET) {
     const end = offset + 2 + length;
     if (end > bytes.length) break;
 
+    // Fixed-field reads are confined to the record's own end (#1845): a short
+    // known-kind record must fail closed instead of reading the next record's
+    // bytes as its fields, or faulting past the stream end.
+    const fieldEnd = kind === S_PUB32 ? offset + 14
+      : (kind === S_GPROC32 || kind === S_LPROC32 || kind === S_GPROC32_ID || kind === S_LPROC32_ID)
+        ? offset + 38
+        : end;
+    if (fieldEnd > end) break;
     if (kind === S_PUB32) {
       const flags = view.getUint32(offset + 4, true);
       symbols.push({
@@ -345,6 +353,16 @@ export function parseTpiStream(bytes, budget = DEBUG_DEFAULT_BUDGET) {
     const end = offset + 2 + length;
     if (end > bytes.length) break;
     const body = offset + 4;
+
+    // Fixed-field reads are confined to the record's own end (#1845): a short
+    // known-leaf record must fail closed instead of reading the next record's
+    // bytes as its fields, or faulting past the stream end.
+    const bodyEnd = {
+      [LF_STRUCTURE]: body + 18, [LF_CLASS]: body + 18, [LF_UNION]: body + 10,
+      [LF_POINTER]: body + 8, [LF_MODIFIER]: body + 6, [LF_PROCEDURE]: body + 12,
+      [LF_ARRAY]: body + 8, [LF_ENUM]: body + 8,
+    }[leaf] ?? end;
+    if (bodyEnd > end) break;
 
     if (leaf === LF_STRUCTURE || leaf === LF_CLASS || leaf === LF_UNION) {
       const count = view.getUint16(body, true);
