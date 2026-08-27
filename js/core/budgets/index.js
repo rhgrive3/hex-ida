@@ -61,8 +61,9 @@ export class ResourceBudget {
       }
     }
     for (const [k, v] of Object.entries(limits)) {
-      if (v !== undefined) {
-        validatedLimits[k] = validateLimit(v, k);
+      const validated = validateLimit(v, k);
+      if (validated !== undefined) {
+        validatedLimits[k] = validated;
       }
     }
     this.limits = Object.freeze(validatedLimits);
