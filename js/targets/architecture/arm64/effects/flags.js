@@ -10,15 +10,21 @@ export {
 import { liftArm64FlagEffects as liftArm64FlagEffectsCore } from './flags-core.js';
 
 const STRICT_REGISTER_LHS = new Set(['cmp','cmn','ccmp','ccmn']);
+const SP_LHS_MNEMONICS = new Set(['cmp','cmn']);
 
-function validRegisterLhs(op) {
-  return op?.k === 'reg' && ['gp','zr'].includes(String(op.cls || '').toLowerCase());
+function validRegisterLhs(mnemonic, op) {
+  if (op?.k !== 'reg') return false;
+  const cls = String(op.cls || '').toLowerCase();
+  if (cls === 'gp' || cls === 'zr') return true;
+  // ADD/SUB aliases CMP/CMN have architectural forms whose Rn=31 is SP
+  // (notably immediate/extended-register encodings). Conditional compares do not.
+  return cls === 'sp' && SP_LHS_MNEMONICS.has(mnemonic);
 }
 
 export function liftArm64FlagEffects(instruction, options = {}) {
   const mnemonic = String(instruction?.mnemonic || '').trim().toLowerCase();
   const ops = Array.isArray(instruction?.ops) ? instruction.ops : [];
-  if (STRICT_REGISTER_LHS.has(mnemonic) && !validRegisterLhs(ops[0])) {
+  if (STRICT_REGISTER_LHS.has(mnemonic) && !validRegisterLhs(mnemonic, ops[0])) {
     return liftArm64FlagEffectsCore({ ...instruction, ops: [] }, options);
   }
   return liftArm64FlagEffectsCore(instruction, options);
