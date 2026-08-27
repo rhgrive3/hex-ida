@@ -193,13 +193,13 @@ function wordCoverage(haystack, needle) {
 
 /* 値の役割。同じ「hp」でも、今の値・上限・初期値では意味がまるで違う。 */
 const ROLE_RULES = [
-  { role: 'max', re: /\b(max|maximum|limit|cap|upper|full|総|最大)\b/ },
-  { role: 'min', re: /\b(min|minimum|lower|最小)\b/ },
-  { role: 'base', re: /\b(base|default|initial|init|origin|original|start|starting|素|基本|初期)\b/ },
-  { role: 'delta', re: /\b(delta|diff|add|bonus|buff|modifier|mod|rate|ratio|percent|倍率|補正)\b/ },
-  { role: 'count', re: /\b(count|num|number|times|total|len|length|size|回数|個数)\b/ },
-  { role: 'flag', re: /\b(is|has|can|should|enabled|flag)\b/ },
-  { role: 'current', re: /\b(cur|current|now|present|現在|今)\b/ },
+  { role: 'max', re: /(?:\b(?:max|maximum|limit|cap|upper|full)\b|総|最大)/ },
+  { role: 'min', re: /(?:\b(?:min|minimum|lower)\b|最小)/ },
+  { role: 'base', re: /(?:\b(?:base|default|initial|init|origin|original|start|starting)\b|素|基本|初期)/ },
+  { role: 'delta', re: /(?:\b(?:delta|diff|add|bonus|buff|modifier|mod|rate|ratio|percent)\b|倍率|補正)/ },
+  { role: 'count', re: /(?:\b(?:count|num|number|times|total|len|length|size)\b|回数|個数)/ },
+  { role: 'flag', re: /\b(?:is|has|can|should|enabled|flag)\b/ },
+  { role: 'current', re: /(?:\b(?:cur|current|now|present)\b|現在|今)/ },
 ];
 
 /**

@@ -87,18 +87,23 @@ export function pageRows(value, limit, offset = 0) {
     sourceStart = rows.length > limit ? Math.min(start, rows.length) : 0;
   }
   const results = rows.slice(sourceStart, sourceStart + limit);
-  const explicitTotal = Number.isFinite(Number(meta.total ?? meta.completeness?.total)) ? Number(meta.total ?? meta.completeness?.total) : null;
+  const totalRaw = meta.total ?? meta.completeness?.total;
+  const hasExplicitTotal = totalRaw != null;
+  const explicitTotal = hasExplicitTotal && Number.isSafeInteger(totalRaw) && totalRaw >= 0 ? totalRaw : null;
+  const invalidTotal = hasExplicitTotal && explicitTotal == null;
   const returned = results.length;
   let complete = meta.complete ?? meta.completeness?.complete;
   const upstreamTruncated = Boolean(meta.truncated) || complete === false;
-  if (complete == null) {
+  if (invalidTotal) {
+    complete = false;
+  } else if (complete == null) {
     if (explicitTotal != null) complete = start + returned >= explicitTotal && !upstreamTruncated;
     else complete = rows.length < limit && !upstreamTruncated;
   }
-  const total = explicitTotal ?? (complete ? start + returned : (rows.length > limit ? rows.length : null));
+  const total = invalidTotal ? null : (explicitTotal ?? (complete ? start + returned : (rows.length > limit ? rows.length : null)));
   let coverage = Number(meta.coverage ?? meta.completeness?.coverage);
   if (!Number.isFinite(coverage)) coverage = total ? Math.min(1, (start + returned) / total) : (complete ? 1 : null);
-  const reason = meta.reason ?? meta.completeness?.reason ?? (complete ? null : 'result-limit');
+  const reason = meta.reason ?? meta.completeness?.reason ?? (invalidTotal ? 'invalid-total' : (complete ? null : 'result-limit'));
   return {
     results, total, returned, offset: start, complete: Boolean(complete), truncated: !complete,
     coverage: Number.isFinite(coverage) ? Math.max(0, Math.min(1, coverage)) : null, reason,
@@ -405,8 +410,12 @@ export function createAgentTools(context, opts) {
     async find_paths(from, to, options) {
       const fromAddress = requiredAddress(from, 'from'); const toAddress = requiredAddress(to, 'to');
       const safe = { maxDepth: bounded(options && options.maxDepth, 6, 1, 12), maxPaths: bounded(options && options.maxPaths, 8, 1, 32), maxVisited: bounded(options && options.maxVisited, 10000, 16, 20000) };
-      const paths = functionPaths(ctx.program, fromAddress, toAddress, safe);
-      return { tool: 'find_paths', from: fromAddress, to: toAddress, paths, returned:paths.length, total:paths.length, complete:paths.length < safe.maxPaths, truncated:paths.length >= safe.maxPaths, reason:paths.length >= safe.maxPaths ? 'path-limit' : null };
+      const result = functionPaths(ctx.program, fromAddress, toAddress, safe);
+      const paths = Array.isArray(result?.paths) ? result.paths : [];
+      const complete = result?.complete === true;
+      const truncated = result?.truncated === true || !complete;
+      const reasons = Array.isArray(result?.reasons) ? result.reasons.slice() : [];
+      return { tool: 'find_paths', from: fromAddress, to: toAddress, paths, returned:paths.length, total:complete ? paths.length : null, complete, truncated, reason:reasons[0] ?? (truncated ? 'incomplete-search' : null), reasons, visited:Number.isSafeInteger(result?.visited) ? result.visited : null };
     },
     async get_semantic_facts(functionAddress, options) {
       const { addr, ir } = await modelAndIr(functionAddress);
