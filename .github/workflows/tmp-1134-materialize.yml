@@ -1,0 +1,59 @@
+name: Temporary issue 1134 materializer
+
+on:
+  push:
+    branches:
+      - fix/issue-1134-wasm-trap-effects
+    paths:
+      - '.github/workflows/tmp-1134-materialize.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  materialize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/issue-1134-wasm-trap-effects
+          fetch-depth: 0
+
+      - name: Materialize exact files
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+          const zlib = require('zlib');
+          for (const [source, target] of [
+            ['tools/.tmp-1134-lifter.br.b64', 'js/managed/wasm/lifter.js'],
+            ['tools/.tmp-1134-test.br.b64', 'tests/phase11/wasm/issue-1134-traps.test.mjs'],
+          ]) {
+            const data = Buffer.from(fs.readFileSync(source, 'utf8').trim(), 'base64');
+            const output = zlib.brotliDecompressSync(data);
+            fs.mkdirSync(path.dirname(target), { recursive: true });
+            fs.writeFileSync(target, output);
+          }
+          NODE
+          printf '%s  %s\n' '3e8691e1b2e560033cebc23864ac73c381de53c2df778247d7e1a6b0b5c13e78' 'js/managed/wasm/lifter.js' | sha256sum -c -
+          printf '%s  %s\n' '6d6b95e931da085351bd73ba6545faca3fe0121d6d29caa9b528131cc2de5eb1' 'tests/phase11/wasm/issue-1134-traps.test.mjs' | sha256sum -c -
+
+      - name: Run focused regressions
+        run: |
+          node tests/phase11/wasm/issue-1134-traps.test.mjs
+          node tests/phase11/wasm/wasm-vmeffects.test.mjs
+
+      - name: Commit permanent two-file fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f tools/.tmp-1134-lifter.br.b64 tools/.tmp-1134-test.br.b64 .github/workflows/tmp-1134-materialize.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A -- js/managed/wasm/lifter.js tests/phase11/wasm/issue-1134-traps.test.mjs tools/.tmp-1134-lifter.br.b64 tools/.tmp-1134-test.br.b64 .github/workflows/tmp-1134-materialize.yml
+          git diff --cached --check
+          git commit -m 'fix(wasm): model memory and integer division traps'
+          git push origin HEAD:fix/issue-1134-wasm-trap-effects
