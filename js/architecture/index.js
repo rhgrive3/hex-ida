@@ -8,6 +8,7 @@ import {
 } from '../targets/architecture/index.js';
 
 const ADAPTER_CACHE = new WeakMap();
+const MAX_SAFE_ROW = BigInt(Number.MAX_SAFE_INTEGER);
 
 export class ArchitectureAdapter {
   constructor(definition) {
@@ -28,7 +29,9 @@ export class ArchitectureAdapter {
       const size = BigInt(this.fixedInstructionSize);
       if (rel < 0n || rel + size > BigInt(region.size)) return null;
       if (rel % size !== 0n) return null;
-      return Number(rel / size);
+      const row = rel / size;
+      if (row > MAX_SAFE_ROW) return null;
+      return Number(row);
     });
     this.addressForRow = definition.addressForRow || ((region, row) => {
       if (this.fixedInstructionSize == null || !region) return null;
@@ -150,4 +153,3 @@ export function architectureCapability(image, engine = {}) {
 }
 
 export { ArchitecturePluginV2, architecturePluginV2, architecturePluginsV2 };
-
