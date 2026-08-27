@@ -267,16 +267,31 @@ function parseSectionHeaders(r, h, bits, image) {
   return out;
 }
 
+/*
+ * Section-backed string tables must contain a real NUL terminator inside the
+ * table's file-backed span (#2167). ByteView.cstring() returns the whole span
+ * when no NUL exists, which would admit malformed bytes as canonical symbol /
+ * DT_NEEDED / SONAME / section names. Returns null when the span has no NUL.
+ */
+function terminatedStringInTable(r, strStart, strSize, offset, maxSpan) {
+  const max = Math.min(strSize - offset, maxSpan);
+  if (max <= 0) return null;
+  const slice = r.slice(strStart + offset, max);
+  const nul = slice.indexOf(0);
+  if (nul < 0) return null;
+  return r.cstring(strStart + offset, Math.min(nul + 1, max));
+}
+
 function nameSections(r, sections, h) {
   const str = sections[h.shstrndx];
   if (!str || str.type !== SHT_STRTAB || str.offset + str.size > BigInt(r.length)) return;
   for (const s of sections) {
     if (BigInt(s.nameOffset) >= str.size) continue;
-    try { s.name = r.cstring(Number(str.offset) + s.nameOffset, Number(str.size) - s.nameOffset); }
-    catch (error) {
-      if (error?.code === 'BINARY_SOURCE_RANGE_MISSING') throw error;
-      s.name = '';
-    }
+    const sectionName = terminatedStringInTable(r, Number(str.offset), Number(str.size), s.nameOffset, 1 << 20);
+    if (sectionName != null) { s.name = sectionName; continue; }
+    // Unnamed or unterminated: an unterminated name is malformed input, so the
+    // section keeps its index-only identity instead of inventing a string.
+    s.name = '';
   }
 }
 
@@ -308,7 +323,8 @@ function parseSymbols(r, table, sections, image, bits, elfType, budget) {
     else{nameOff=r.u32(p);value=BigInt(r.u32(p+4));size=BigInt(r.u32(p+8));info=r.u8(p+12);other=r.u8(p+13);shndx=r.u16(p+14);}
     if (BigInt(nameOff) >= str.size || nameOff >= strBytes) continue;
     const maxName=Math.min(strBytes-nameOff,1<<20,Math.max(1,Math.floor(budget.remainingStringBytes/2)+1));
-    const name=r.cstring(strStart+nameOff,maxName);
+    const name=terminatedStringInTable(r,strStart,strBytes,nameOff,maxName);
+    if(name==null){budget.partial(`symbols:${table.index}:unterminated-name`,`ELF symbol ${i} in table ${table.index} references a string without a NUL terminator in its string table`);continue;}
     if(!name)continue;
     if(!budget.take({inputBytes:Math.min(maxName,name.length+1),stringBytes:name.length*2,estimatedHeapBytes:name.length*2+32},'symbol-name'))break;
     const bind=info>>>4,type=info&0xf;
@@ -377,7 +393,7 @@ function parseDynamic(r, sec, sections, image, bits, budget) {
   for(let i=0;i<count;i++){
     if(!budget.take({inputBytes:ent,records:1,operations:1,estimatedHeapBytes:32},'SHT_DYNAMIC'))break;
     const p=start+i*ent,tag=bits===64?r.i64(p):BigInt(r.i32(p)),val=bits===64?r.u64(p+8):BigInt(r.u32(p+4));if(tag===0n)break;
-    if((tag===1n||tag===14n)&&val<str.size){const off=Number(val),max=Math.min(strSize-off,1<<20,Math.max(1,Math.floor(budget.remainingStringBytes/2)+1)),name=r.cstring(strStart+off,max);if(name&&!budget.take({inputBytes:Math.min(max,name.length+1),stringBytes:name.length*2,estimatedHeapBytes:name.length*2+32},'SHT_DYNAMIC-string'))break;if(tag===1n&&name)image.libraries.push(name);else if(tag===14n&&name)image.metadata.soname=name;}
+    if((tag===1n||tag===14n)&&val<str.size){const off=Number(val),max=Math.min(strSize-off,1<<20,Math.max(1,Math.floor(budget.remainingStringBytes/2)+1)),name=terminatedStringInTable(r,strStart,strSize,off,max);if(name==null&&off<strSize){budget.partial(`dynamic-section:${sec.index}:unterminated-string`,`ELF SHT_DYNAMIC ${sec.index} references a string without a NUL terminator in its string table`);continue;}if(name&&!budget.take({inputBytes:Math.min(max,name.length+1),stringBytes:name.length*2,estimatedHeapBytes:name.length*2+32},'SHT_DYNAMIC-string'))break;if(tag===1n&&name)image.libraries.push(name);else if(tag===14n&&name)image.metadata.soname=name;}
   }
 }
 

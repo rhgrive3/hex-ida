@@ -783,3 +783,73 @@ console.log('\nAll integrated issue tests PASS!');
 
   console.log('  ok #2187 PE cstrings require a NUL inside the mapped span');
 }
+
+// Issue #2167: section-backed ELF string tables must contain a real NUL for
+// every accepted symbol / DT_NEEDED / SONAME string. ByteView.cstring()
+// tolerates a missing terminator, which admitted malformed bytes as canonical
+// metadata through SHT_SYMTAB/SHT_DYNSYM/SHT_DYNAMIC and section names.
+{
+  const { parseELF } = await import('../js/binary/elf-core.js');
+
+  function buildElf({ strBytes, symName }) {
+    const ehsize = 64, shentsize = 64;
+    const symOff = ehsize;
+    const symCount = 2;
+    const symSize = 24 * symCount;
+    const strOff = symOff + symSize;
+    const strSize = strBytes.length;
+    let off = (strOff + strSize + 7) & ~7;
+    const shstrOff = off;
+    // ".symtab\0.strtab\0" preceded by a placeholder NUL byte.
+    const shstrBytes = [0, 0x2e, 0x73, 0x79, 0x6d, 0x74, 0x61, 0x62, 0, 0x2e, 0x73, 0x74, 0x72, 0x74, 0x61, 0x62, 0];
+    const nSh = 1;   // ".symtab"
+    const nSt = 9;   // ".strtab"
+    const shstrSize = shstrBytes.length;
+    const shOff = (shstrOff + shstrSize + 7) & ~7;
+    const total = shOff + 4 * shentsize;
+
+    const buf = new Uint8Array(total);
+    const dv = new DataView(buf.buffer);
+    buf.set(strBytes, strOff);
+    buf.set(shstrBytes, shstrOff);
+    dv.setUint32(symOff + 24 + 0, symName, true);
+    dv.setUint8(symOff + 24 + 4, 0x12); // GLOBAL FUNC
+    dv.setUint16(symOff + 24 + 6, 1, true);
+    dv.setBigUint64(symOff + 24 + 8, 0x1000n, true);
+    dv.setBigUint64(symOff + 24 + 16, 4n, true);
+
+    buf.set([0x7f, 0x45, 0x4c, 0x46, 2, 1, 1, 0], 0);
+    dv.setUint16(16, 2, true); dv.setUint16(18, 62, true);
+    dv.setBigUint64(40, BigInt(shOff), true);
+    dv.setUint16(52, ehsize, true); dv.setUint16(56, 4, true);
+    dv.setUint16(58, shentsize, true); dv.setUint16(60, 3, true);
+
+    const writeSh = (i, name, type, offset, size, link, entsize) => {
+      const o = shOff + i * shentsize;
+      dv.setUint32(o, name, true); dv.setUint32(o + 4, type, true);
+      dv.setBigUint64(o + 24, BigInt(offset), true); dv.setBigUint64(o + 32, BigInt(size), true);
+      dv.setUint32(o + 40, link, true); dv.setBigUint64(o + 56, BigInt(entsize), true);
+    };
+    writeSh(0, 0, 0, 0, 0, 0, 0);
+    writeSh(1, nSh, 2, symOff, symSize, 2, 24);   // SYMTAB -> .strtab
+    writeSh(2, nSt, 3, strOff, strSize, 0, 0);    // STRTAB
+    return buf;
+  }
+
+  // "ABC" with no NUL anywhere in the table: no symbol name may be produced.
+  {
+    const image = parseELF(buildElf({ strBytes: [0x41, 0x42, 0x43], symName: 0 }));
+    assert.deepEqual(image.symbols.filter((s) => s.name), [],
+      `unterminated string must not become a symbol name: ${JSON.stringify(image.symbols)}`);
+    assert.ok(image.warnings.some((w) => /NUL terminator/.test(w)), 'a diagnostic is recorded');
+  }
+
+  // "ABC\0" keeps working.
+  {
+    const image = parseELF(buildElf({ strBytes: [0x41, 0x42, 0x43, 0], symName: 0 }));
+    assert.ok(image.symbols.some((s) => s.name === 'ABC'), 'terminated symbol name still resolves');
+    assert.ok(!image.warnings.some((w) => /NUL terminator/.test(w)), 'no diagnostic for valid input');
+  }
+
+  console.log('  ok #2167 ELF section-backed strings require a NUL terminator');
+}
