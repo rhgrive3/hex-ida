@@ -1,0 +1,60 @@
+name: Temporary debug fix materializer
+
+on:
+  push:
+    branches:
+      - fix/debug-record-bounds-1845-1860-1861-materializer
+    paths:
+      - '.github/workflows/tmp-debugfix-materialize.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  materialize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/debug-record-bounds-1845-1860-1861-materializer
+          fetch-depth: 0
+
+      - name: Materialize exact source payloads
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+          const zlib = require('zlib');
+          const entries = [
+            ['tools/.tmp-debugfix-pdb.br.b64', 'js/analysis/debug/pdb.js'],
+            ['tools/.tmp-debugfix-dwarf.br.b64', 'js/analysis/debug/dwarf.js'],
+            ['tools/.tmp-debugfix-providers.br.b64', 'tests/phase7/debug/providers.test.mjs'],
+          ];
+          for (const [source, target] of entries) {
+            const encoded = fs.readFileSync(source, 'utf8').trim();
+            const output = zlib.brotliDecompressSync(Buffer.from(encoded, 'base64'));
+            fs.mkdirSync(path.dirname(target), { recursive: true });
+            fs.writeFileSync(target, output);
+          }
+          NODE
+          printf '%s  %s\n' 'cc8efcb8de6b0b8d29ac53134f82ba6a708fc2f18fd4610475e78be009515e82' 'js/analysis/debug/pdb.js' | sha256sum -c -
+          printf '%s  %s\n' 'd4e00fa11894e4f7df070a4396eb5afc9f4494c7f9a79b183e63682db91863c2' 'js/analysis/debug/dwarf.js' | sha256sum -c -
+          printf '%s  %s\n' '8f6dc4f6c8dc6cf0f5bc7771e79046dae4ede1b3e9876081a65a4c7a8308bc4a' 'tests/phase7/debug/providers.test.mjs' | sha256sum -c -
+
+      - name: Run focused debug provider regression
+        run: node tests/phase7/debug/providers.test.mjs
+
+      - name: Commit only permanent changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f tools/.tmp-debugfix-pdb.br.b64 tools/.tmp-debugfix-dwarf.br.b64 tools/.tmp-debugfix-providers.br.b64 .github/workflows/tmp-debugfix-materialize.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A -- js/analysis/debug/pdb.js js/analysis/debug/dwarf.js tests/phase7/debug/providers.test.mjs tools/.tmp-debugfix-pdb.br.b64 tools/.tmp-debugfix-dwarf.br.b64 tools/.tmp-debugfix-providers.br.b64 .github/workflows/tmp-debugfix-materialize.yml
+          git diff --cached --check
+          git commit -m 'fix(debug): enforce record and cursor bounds'
+          git push origin HEAD:fix/debug-record-bounds-1845-1860-1861-materializer
