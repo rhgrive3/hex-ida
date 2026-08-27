@@ -27,6 +27,16 @@ for (const [mnemonic, operands] of [
 }
 
 for (const [mnemonic, operands, reason] of [
+  ['and','x0, x1, x2, x3','arm64-and-operand-shape-unencodable'],
+  ['ands','x0, x1','arm64-ands-operand-shape-unencodable'],
+  ['orr','x0, x1, x2, x3','arm64-orr-operand-shape-unencodable'],
+  ['eor','x0, x1','arm64-eor-operand-shape-unencodable'],
+  ['bic','x0, x1, x2, x3','arm64-bic-operand-shape-unencodable'],
+  ['bics','x0, x1','arm64-bics-operand-shape-unencodable'],
+  ['orn','x0, x1, x2, x3','arm64-orn-operand-shape-unencodable'],
+  ['eon','x0, x1','arm64-eon-operand-shape-unencodable'],
+  ['mvn','x0, x1, x2','arm64-mvn-operand-shape-unencodable'],
+  ['tst','x0, x1, x2','arm64-tst-operand-shape-unencodable'],
   ['and','x0, #1, #1','arm64-and-lhs-register-required'],
   ['and','x0, #1, x2','arm64-and-lhs-register-required'],
   ['and','x0, w1, x2','arm64-and-lhs-register-required'],
