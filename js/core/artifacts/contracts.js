@@ -13,6 +13,7 @@ export const ARTIFACT_PAYLOAD_ENCODING = 'canonical-json-v1';
 export const ARTIFACT_NOT_APPLICABLE_VERSION = 'n/a';
 
 const COMPLETENESS = new Set(['complete', 'bounded', 'partial', 'truncated', 'unsupported']);
+const CANONICAL_ARTIFACT_DESCRIPTORS = new WeakSet();
 const encoder = new TextEncoder();
 const decoder = new TextDecoder('utf-8', { fatal:true });
 
@@ -31,10 +32,16 @@ export class ArtifactUnsupportedError extends ArtifactError { constructor(code =
 function required(value, code) { const text = String(value ?? '').trim(); if (!text) throw new ArtifactError(code); return text; }
 function optional(value) { return value == null ? null : String(value); }
 function version(value, relevant = true) { if (!relevant) return ARTIFACT_NOT_APPLICABLE_VERSION; return required(value, 'artifact-version-required'); }
-function sortedStrings(values) {
+function sortedStrings(values, code) {
   if (values == null) return [];
-  if (!Array.isArray(values)) throw new ArtifactError('artifact-upstream-ids-invalid');
-  return [...new Set(values.map(String).filter(Boolean))].sort();
+  if (!Array.isArray(values)) throw new ArtifactError(code);
+  const normalized = values.map((value) => {
+    if (typeof value !== 'string') throw new ArtifactError(code);
+    const text = value.trim();
+    if (!text) throw new ArtifactError(code);
+    return text;
+  });
+  return [...new Set(normalized)].sort();
 }
 
 const RESERVED_TAGS = Object.freeze(['$map', '$set', '$bigint', '$date', '$bytes']);
@@ -90,7 +97,7 @@ export function createArtifactDescriptor(input = {}) {
   const versions = input.versions || {};
   const config = canonicalArtifactKeyValue(input.config ?? {});
   const keyExtras = canonicalArtifactKeyValue(input.keyExtras ?? {});
-  const upstreamArtifactIds = sortedStrings(input.upstreamArtifactIds ?? input.inputArtifactIds ?? []);
+  const upstreamArtifactIds = sortedStrings(input.upstreamArtifactIds ?? input.inputArtifactIds ?? [], 'artifact-upstream-ids-invalid');
   const canonicalConfig = canonicalConfigHash(config);
   const keyMaterialHash = stableDigest({ config, keyExtras });
   const descriptor = {
@@ -115,7 +122,7 @@ export function createArtifactDescriptor(input = {}) {
     canonicalConfigHash:canonicalConfig,
     keyMaterialHash,
     upstreamArtifactIds,
-    originRefs:sortedStrings(input.originRefs ?? []),
+    originRefs:sortedStrings(input.originRefs ?? [], 'artifact-origin-refs-invalid'),
   };
   const optionsHash = stableDigest({
     artifactContractVersion:ARTIFACT_CONTRACT_VERSION,
@@ -141,7 +148,16 @@ export function createArtifactDescriptor(input = {}) {
     optionsHash,
     inputArtifactIds:upstreamArtifactIds,
   });
-  return deepFreeze(descriptor);
+  const frozen = deepFreeze(descriptor);
+  CANONICAL_ARTIFACT_DESCRIPTORS.add(frozen);
+  return frozen;
+}
+
+export function assertCanonicalArtifactDescriptor(descriptor) {
+  if (!descriptor || typeof descriptor !== 'object' || !CANONICAL_ARTIFACT_DESCRIPTORS.has(descriptor)) {
+    throw new ArtifactError('artifact-descriptor-noncanonical');
+  }
+  return descriptor;
 }
 
 export function encodeArtifactPayload(payload) { return encoder.encode(stableStringify(payload)); }
