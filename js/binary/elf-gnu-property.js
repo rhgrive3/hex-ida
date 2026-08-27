@@ -113,13 +113,12 @@ export function parseAarch64GnuProperty(input, options = {}) {
         warnings.push(`malformed GNU property note at file offset ${cursor}`);
         break;
       }
-      let name = '';
-      for (let i = 0; i < namesz && nameStart + i < end; i++) {
-        const byte = bytes[nameStart + i];
-        if (byte === 0) break;
-        name += String.fromCharCode(byte);
-      }
-      if (noteType === NT_GNU_PROPERTY_TYPE_0 && name === 'GNU') {
+      const canonicalGnuOwner = namesz === 4
+        && bytes[nameStart] === 0x47
+        && bytes[nameStart + 1] === 0x4e
+        && bytes[nameStart + 2] === 0x55
+        && bytes[nameStart + 3] === 0x00;
+      if (noteType === NT_GNU_PROPERTY_TYPE_0 && canonicalGnuOwner) {
         const propertyAlignment = bits === 64 ? 8 : 4;
         let propertyCursor = descStart;
         const descEnd = descStart + descsz;
