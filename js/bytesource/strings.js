@@ -99,7 +99,10 @@ function scanUtf16(image, bytes, base, range, min, max, out, seen, limit, encodi
     let chars = 0;
     while (q + 1 < bytes.length && chars < max && printableAt(q)) { chars++; q += 2; }
     if (chars >= min) emit(image, bytes, base, start, q - start, encoding, range, out, seen);
-    p = q + 1 < bytes.length && printableAt(q) ? q : Math.max(q + 2, p + 1);
+    // A run may end on an odd boundary; the next candidate start is the next
+    // unexamined byte (q + 1), not q + 2. UTF-16 candidate starts are not
+    // 2-byte aligned here because scanning itself advances one byte at a time.
+    p = Math.max(q + 1, p + 1);
   }
 }
 
