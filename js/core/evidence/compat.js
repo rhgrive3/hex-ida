@@ -16,7 +16,7 @@ function familyFor(record = {}) {
 }
 
 function targetIds(record = {}) {
-  return [record.entityId, record.functionId, record.instructionId].filter((value) => value != null).map(String);
+  return [record.entityId, record.functionId, record.instructionId].filter((value) => value != null);
 }
 
 export function legacyAiEvidenceToCanonical(record = {}) {
@@ -31,7 +31,7 @@ export function legacyAiEvidenceToCanonical(record = {}) {
     confidence: Number.isFinite(record.confidence) ? record.confidence : null,
     deterministic: record.status === 'verified',
     origin: createOriginSet({
-      instructionIds: record.instructionId ? [record.instructionId] : [],
+      instructionIds: record.instructionId == null ? [] : [record.instructionId],
       parentEntityIds: targetIds(record),
     }),
     payload: {
