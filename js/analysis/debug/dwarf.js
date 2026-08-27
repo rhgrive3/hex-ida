@@ -99,14 +99,19 @@ class Cursor {
     this.bytes = bytes;
     this.view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     this.offset = offset;
+    // Reads must not walk past a caller-declared end (a compilation-unit
+    // boundary, #1860). `subarray()` silently clamps an out-of-range end, so a
+    // short block would otherwise read nothing, advance the offset anyway, and
+    // slip through every truncation check.
+    this.limit = bytes.length;
   }
 
-  get eof() { return this.offset >= this.bytes.length; }
+  get eof() { return this.offset >= this.limit; }
 
-  u8() { const value = this.view.getUint8(this.offset); this.offset += 1; return value; }
-  u16() { const value = this.view.getUint16(this.offset, true); this.offset += 2; return value; }
-  u32() { const value = this.view.getUint32(this.offset, true); this.offset += 4; return value; }
-  u64() { const value = this.view.getBigUint64(this.offset, true); this.offset += 8; return value; }
+  u8() { if (this.offset + 1 > this.limit) throw new RangeError('dwarf-read-past-limit'); const value = this.view.getUint8(this.offset); this.offset += 1; return value; }
+  u16() { if (this.offset + 2 > this.limit) throw new RangeError('dwarf-read-past-limit'); const value = this.view.getUint16(this.offset, true); this.offset += 2; return value; }
+  u32() { if (this.offset + 4 > this.limit) throw new RangeError('dwarf-read-past-limit'); const value = this.view.getUint32(this.offset, true); this.offset += 4; return value; }
+  u64() { if (this.offset + 8 > this.limit) throw new RangeError('dwarf-read-past-limit'); const value = this.view.getBigUint64(this.offset, true); this.offset += 8; return value; }
 
   uleb() {
     let result = 0n;
@@ -136,12 +141,28 @@ class Cursor {
   }
 
   skip(count) { this.offset += count; }
-  slice(count) { const out = this.bytes.subarray(this.offset, this.offset + count); this.offset += count; return out; }
+  /** Bounded slice: fails closed rather than silently clamping (#1860). */
+  slice(count) {
+    if (this.offset + count > this.limit) throw new RangeError('dwarf-read-past-limit');
+    const out = this.bytes.subarray(this.offset, this.offset + count);
+    this.offset += count;
+    return out;
+  }
 }
 
+/**
+ * Reads a NUL-terminated string from a string section.
+ *
+ * A section-backed string is only valid when the offset points inside the
+ * section *and* a NUL terminator follows before its end (#1861). Anything else
+ * returns `null`, which callers propagate as an unresolved attribute instead of
+ * silently decoding an empty or unterminated span.
+ */
 function cstring(bytes, offset) {
+  if (!bytes || offset < 0 || offset >= bytes.length) return null;
   let end = offset;
   while (end < bytes.length && bytes[end] !== 0) end += 1;
+  if (end === bytes.length) return null;
   return new TextDecoder('utf8').decode(bytes.subarray(offset, end));
 }
 
@@ -206,11 +227,13 @@ function readForm(cursor, form, unit, sections, implicitConst) {
     }
     case DW_FORM.strp: {
       const offset = unit.offsetSize === 8 ? Number(cursor.u64()) : cursor.u32();
-      return { value: sections.debug_str ? cstring(sections.debug_str, offset) : null, unsupported: !sections.debug_str };
+      const text = sections.debug_str ? cstring(sections.debug_str, offset) : null;
+      return { value: text, unsupported: !sections.debug_str || text == null };
     }
     case DW_FORM.line_strp: {
       const offset = unit.offsetSize === 8 ? Number(cursor.u64()) : cursor.u32();
-      return { value: sections.debug_line_str ? cstring(sections.debug_line_str, offset) : null, unsupported: !sections.debug_line_str };
+      const text = sections.debug_line_str ? cstring(sections.debug_line_str, offset) : null;
+      return { value: text, unsupported: !sections.debug_line_str || text == null };
     }
     case DW_FORM.sec_offset: case DW_FORM.ref_addr: case DW_FORM.strp_sup:
       return { value: unit.offsetSize === 8 ? cursor.u64() : BigInt(cursor.u32()) };
@@ -284,6 +307,7 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET) {
       break;
     }
     const unitEnd = cursor.offset + length;
+    cursor.limit = unitEnd;   // attribute reads are unit-local (#1860)
     const version = cursor.u16();
     let abbrevOffset;
     let addressSize;
@@ -300,6 +324,7 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET) {
       diagnostics.push(`unsupported DWARF version ${version} at 0x${unitStart.toString(16)}`);
       complete = false;
       cursor.offset = unitEnd;
+      cursor.limit = info.length;   // the unit-end advance itself is not unit-local
       continue;
     }
 
@@ -309,6 +334,7 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET) {
       diagnostics.push(`no abbreviations for unit at 0x${unitStart.toString(16)}`);
       complete = false;
       cursor.offset = unitEnd;
+      cursor.limit = info.length;   // the unit-end advance itself is not unit-local
       continue;
     }
 
@@ -322,7 +348,17 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET) {
         break;
       }
       const dieOffset = cursor.offset;
-      const code = Number(cursor.uleb());
+      let code;
+      try {
+        code = Number(cursor.uleb());
+      } catch (error) {
+        // A DIE header that overruns the unit is the same truncation as an
+        // attribute read past the boundary (#1860): fail closed, do not resync.
+        diagnostics.push(`read past unit boundary at 0x${dieOffset.toString(16)}`);
+        complete = false;
+        unitComplete = false;
+        break;
+      }
       if (code === 0) { stack.pop(); continue; }
       const declaration = abbrev.get(code);
       if (!declaration) {
@@ -333,16 +369,25 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET) {
       }
       const attributes = new Map();
       let dieComplete = true;
-      for (const spec of declaration.attributes) {
-        const read = readForm(cursor, spec.form, unit, sections, spec.implicitConst);
-        if (read.unsupported) {
-          dieComplete = false;
-          diagnostics.push(`unsupported form 0x${spec.form.toString(16)} at 0x${dieOffset.toString(16)}`);
-          if (read.fatal) { unitComplete = false; break; }
+      try {
+        for (const spec of declaration.attributes) {
+          const read = readForm(cursor, spec.form, unit, sections, spec.implicitConst);
+          if (read.unsupported) {
+            dieComplete = false;
+            diagnostics.push(`unsupported form 0x${spec.form.toString(16)} at 0x${dieOffset.toString(16)}`);
+            if (read.fatal) { unitComplete = false; break; }
+          }
+          // strx forms need the unit's str_offsets base, which may appear in this
+          // very DIE, so they are resolved after the whole attribute list is read.
+          attributes.set(spec.attribute, { form: spec.form, value: read.value });
         }
-        // strx forms need the unit's str_offsets base, which may appear in this
-        // very DIE, so they are resolved after the whole attribute list is read.
-        attributes.set(spec.attribute, { form: spec.form, value: read.value });
+      } catch (error) {
+        // A read past the unit boundary (a block whose declared length overruns
+        // the unit, #1860) is a truncation, not an exception to propagate: the
+        // unit fails closed with a diagnostic, like any other truncated record.
+        diagnostics.push(`read past unit boundary at 0x${dieOffset.toString(16)}`);
+        complete = false;
+        unitComplete = false;
       }
       if (!unitComplete) { complete = false; break; }
 
@@ -374,6 +419,7 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET) {
     if (!unitComplete) complete = false;
     units.push(unit);
     cursor.offset = unitEnd;
+    cursor.limit = info.length;   // the unit-end advance itself is not unit-local
   }
 
   return { dies, units, diagnostics, complete };
