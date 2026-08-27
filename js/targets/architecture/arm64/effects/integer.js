@@ -7,6 +7,7 @@ import { liftArm64IntegerEffects as liftArm64IntegerEffectsCore } from './intege
 
 const ADD_SUB_BASE = new Set(['add','adds','sub','subs']);
 const ADD_SUB_ALL = new Set(['add','adds','sub','subs','adc','adcs','sbc','sbcs','neg','negs','ngc','ngcs']);
+const LOGICAL_NO_SP = new Set(['and','ands','orr','eor','bic','bics','orn','eon','mvn']);
 const EXTEND_KINDS = new Set(['uxtb','uxth','uxtw','uxtx','sxtb','sxth','sxtw','sxtx']);
 
 function expectedOperandCount(mnemonic) {
@@ -96,6 +97,11 @@ function validAddSubRegister31Encoding(mnemonic, ops) {
   return validShiftedSource(rhs, bits);
 }
 
+function validLogicalRegisterClass(mnemonic, ops) {
+  if (!LOGICAL_NO_SP.has(mnemonic)) return true;
+  return !ops.some((op) => regClass(op) === 'sp');
+}
+
 export function liftArm64IntegerEffects(instruction, options = {}) {
   const mnemonic = String(instruction?.mnemonic || '').toLowerCase();
   const ops = Array.isArray(instruction?.ops) ? instruction.ops : [];
@@ -104,6 +110,9 @@ export function liftArm64IntegerEffects(instruction, options = {}) {
     return liftArm64IntegerEffectsCore({ ...instruction, ops: [] }, options);
   }
   if (!validAddSubRegister31Encoding(mnemonic, ops)) {
+    return liftArm64IntegerEffectsCore({ ...instruction, ops: [] }, options);
+  }
+  if (!validLogicalRegisterClass(mnemonic, ops)) {
     return liftArm64IntegerEffectsCore({ ...instruction, ops: [] }, options);
   }
   return liftArm64IntegerEffectsCore(instruction, options);
