@@ -732,3 +732,54 @@ console.log('\nAll integrated issue tests PASS!');
 
   console.log('  ok #2188 destIndex whole-word mnemonic matching');
 }
+
+// Issue #2187: PE import/export strings require a NUL inside the mapped span.
+// ByteView.cstring() returns the whole span when no NUL exists, which let
+// malformed unterminated bytes become canonical metadata.
+{
+  const { parseExports } = await import('../js/binary/pe-loader.js');
+  const { ByteView } = await import('../js/binary/reader.js');
+
+  function peImage(sections, bytesLen) {
+    return {
+      imageBase: 0x10000000n, bits: 64, sections, segments: [...sections],
+      metadata: {}, warnings: [], symbols: [], functions: [], imports: [], exports: [], relocations: [], libraries: [],
+      addressToOffset(address) {
+        const a = BigInt(address);
+        for (const s of sections) { if (a >= s.address && a < s.address + s.fileSize) return s.fileOffset + (a - s.address); }
+        return null;
+      },
+    };
+  }
+
+  // Export directory referencing a DLL name span whose last byte is not NUL.
+  {
+    const bytes = new Uint8Array(0x200); const dv = new DataView(bytes.buffer);
+    const sec = { index: 1, address: 0x10001000n, size: 0x100n, fileOffset: 0x0n, fileSize: 0x100n, perms: { read: true, execute: false } };
+    // Fill to the end of the mapped span: no NUL anywhere the string could read.
+    bytes.fill(0x41, 0x40, 0x100);
+    // Export directory at RVA 0x1000 -> file offset 0; Name RVA 0x1040 -> file 0x40.
+    dv.setUint32(12, 0x1040, true);
+    const image = peImage([sec], bytes.length);
+    parseExports(new ByteView(bytes), { rva: 0x1000, size: 0x40 }, image);
+    assert.equal(image.metadata.exportName, undefined,
+      `unterminated DLL name must be rejected, got ${JSON.stringify(image.metadata.exportName)}`);
+    assert.ok(image.metadata.peMetadata && image.metadata.peMetadata.complete === false,
+      'peMetadata is marked partial');
+    assert.ok(image.metadata.peMetadata.reasons.includes('PE export DLL:unterminated-string'),
+      `reason recorded, got ${JSON.stringify(image.metadata.peMetadata?.reasons)}`);
+  }
+
+  // Terminated name in the identical layout is still accepted.
+  {
+    const bytes = new Uint8Array(0x200); const dv = new DataView(bytes.buffer);
+    const sec = { index: 1, address: 0x10001000n, size: 0x100n, fileOffset: 0x0n, fileSize: 0x100n, perms: { read: true, execute: false } };
+    new TextEncoder().encodeInto('OK\0', bytes.subarray(0x40));
+    dv.setUint32(12, 0x1040, true);
+    const image = peImage([sec], bytes.length);
+    parseExports(new ByteView(bytes), { rva: 0x1000, size: 0x40 }, image);
+    assert.equal(image.metadata.exportName, 'OK', 'terminated export DLL name keeps working');
+  }
+
+  console.log('  ok #2187 PE cstrings require a NUL inside the mapped span');
+}
