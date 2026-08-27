@@ -29,7 +29,7 @@ assert.match(legacy.percentagePolicy, /not-applicable/);
 
 assert.equal(classifyLegacyInstruction({ mnemonic:'add' }, inventory).familyId, 'binary');
 assert.equal(classifyLegacyInstruction({ mnemonic:'ldr', memory:{ kind:'load' } }, inventory).familyId, 'memory');
-assert.equal(classifyLegacyInstruction({ mnemonic:'paciasp' }, inventory).familyId, 'legacy-explicit-empty');
+assert.equal(classifyLegacyInstruction({ mnemonic:'paciasp' }, inventory).familyId, 'pointer-auth-lr-unknown');
 assert.equal(classifyLegacyInstruction({ mnemonic:'madeup', writes:['x0'] }, inventory).familyId, 'fallback-unknown');
 assert.equal(classifyLegacyInstruction({ mnemonic:'movi', ops:[{k:'reg'}, {k:'imm', value:0n}] }, inventory).familyId, 'vector-zero-immediate');
 assert.equal(classifyLegacyInstruction({ mnemonic:'movi', ops:[{k:'reg'}, {k:'imm', value:1n}] }, inventory).familyId, 'fallback-unknown');

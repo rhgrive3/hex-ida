@@ -526,8 +526,23 @@ function lift(insn, opts = {}) {
     return out;
   }
 
+  /* ── Pointer Authentication aliases ──
+   * PAC/AUT/XPAC change LR even when the exact signed pointer value is not
+   * representable in this legacy IR. Preserve the read dependencies and cut
+   * the old x30 definition with an explicit unknown write. */
+  if (/^(paciasp|pacibsp|autiasp|autibsp)$/.test(base)) {
+    push({ op: OP.UNKNOWN, mnemonic: base, dstReg: 'x30', dstBits: 64,
+      srcs: [{ t:'reg', reg:'x30', bits:64 }, { t:'reg', reg:'sp', bits:64 }] });
+    return out;
+  }
+  if (base === 'xpaclri') {
+    push({ op: OP.UNKNOWN, mnemonic: base, dstReg: 'x30', dstBits: 64,
+      srcs: [{ t:'reg', reg:'x30', bits:64 }] });
+    return out;
+  }
+
   /* ── 何も起きない命令 ── */
-  if (/^(nop|hint|bti|paciasp|pacibsp|autiasp|autibsp|xpaclri|dmb|dsb|isb|prfm|yield|wfe|wfi|sev)$/.test(base)) {
+  if (/^(nop|hint|bti|dmb|dsb|isb|prfm|yield|wfe|wfi|sev)$/.test(base)) {
     return out;
   }
 
@@ -1642,11 +1657,27 @@ function irIdentity(value) {
   if (!irCacheIds.has(value)) irCacheIds.set(value, nextIrCacheId++);
   return `@${irCacheIds.get(value)}`;
 }
+function prototypeParameterSignature(param) {
+  if (!param) return '-';
+  return JSON.stringify([
+    param.type ?? '', param.name ?? '', param.abiClass ?? '', param.class ?? '', param.kind ?? '',
+    param.pointer ?? '', param.isPointer ?? '', param.hfa ?? '',
+    param.members ?? '', param.elements ?? '', param.count ?? '',
+    param.bits ?? '', param.sizeBits ?? '',
+    param.mayContainPointers ?? '', param.containsPointers ?? '',
+  ]);
+}
 function prototypeSignature(proto) {
   if (!proto) return '-';
-  const args = Array.isArray(proto.args || proto.parameters || proto.params) ? (proto.args || proto.parameters || proto.params) : [];
-  return [irIdentity(proto), proto.returnType || proto.resultType || '', proto.returnClass || '', proto.returnsValue ?? '',
-    ...args.map((a) => `${a?.type || ''}:${a?.abiClass || a?.class || ''}:${a?.bits || ''}`)].join('|');
+  const args = callParameterList(proto) || [];
+  return [
+    irIdentity(proto),
+    proto.returnType ?? '', proto.ret ?? '', proto.result ?? '', proto.resultType ?? '',
+    proto.returnClass ?? '', proto.abiClass ?? '', proto.resultClass ?? '',
+    proto.returnsValue ?? '', proto.void ?? '', proto.indirectResult ?? '',
+    proto.returnBits ?? '', proto.bits ?? '', proto.variadic ?? '', proto.varargs ?? '',
+    ...args.map(prototypeParameterSignature),
+  ].join('|');
 }
 function irConfigurationKey(opts) {
   if (!opts) return 'default';
