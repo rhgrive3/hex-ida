@@ -130,17 +130,21 @@ export function parseAarch64GnuProperty(input, options = {}) {
             warnings.push(`malformed GNU property payload at file offset ${propertyCursor}`);
             break;
           }
-          if (propertyType === GNU_PROPERTY_AARCH64_FEATURE_1_AND && dataSize >= 4) {
-            const value = r.u32(dataStart);
-            featureBits = featureBits == null ? value : (featureBits & value);
-            evidence.push(Object.freeze({
-              source:'PT_GNU_PROPERTY',
-              programHeaderIndex:index,
-              noteType:NT_GNU_PROPERTY_TYPE_0,
-              propertyType:GNU_PROPERTY_AARCH64_FEATURE_1_AND,
-              fileOffset:propertyCursor,
-              featureBits:value,
-            }));
+          if (propertyType === GNU_PROPERTY_AARCH64_FEATURE_1_AND) {
+            if (dataSize !== 4) {
+              warnings.push(`malformed GNU_PROPERTY_AARCH64_FEATURE_1_AND size ${dataSize} at file offset ${propertyCursor}`);
+            } else {
+              const value = r.u32(dataStart);
+              featureBits = featureBits == null ? value : (featureBits & value);
+              evidence.push(Object.freeze({
+                source:'PT_GNU_PROPERTY',
+                programHeaderIndex:index,
+                noteType:NT_GNU_PROPERTY_TYPE_0,
+                propertyType:GNU_PROPERTY_AARCH64_FEATURE_1_AND,
+                fileOffset:propertyCursor,
+                featureBits:value,
+              }));
+            }
           }
           const advanced = align(dataStart + dataSize, propertyAlignment);
           if (advanced <= propertyCursor) break;
