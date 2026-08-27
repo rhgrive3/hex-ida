@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { DexFrontend } from '../../../js/managed/dex/frontend.js';
-import { lowerVMEffectsToSemanticIr } from '../../../js/managed/shared/bridge.js';
+import { lowerVMEffectsToSemanticIr } from '../../../js/managed/shared/bridge-v2.js';
 import { buildMinimalDex } from './dex-parser.test.mjs';
 
 console.log('[phase11] running dex pipeline tests...');
