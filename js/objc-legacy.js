@@ -78,6 +78,30 @@ export function sanitizePointer(v, base, pointerFormat = null) {
     const high8 = (v >> 36n) & 0xffn;
     return target | (high8 << 56n);
   }
+  /* ARM64E chained fixup formats (dyld_chained_ptr_arm64e_*). They share auth /
+     bind bit placement with each other, not with format 2/6: bind = bit 62,
+     and an authenticated rebase carries a 32-bit runtime offset instead of a
+     vmaddr. Formats 7/9/12 rebase by image offset; 1/10 carry a preferred
+     vmaddr in target:43 + high8. Without this branch every arm64e metadata
+     pointer collapsed to `null` (#2198). */
+  if (format === 1 || format === 7 || format === 9 || format === 10 || format === 12) {
+    const auth = ((v >> 63n) & 1n) !== 0n;
+    if (((v >> 62n) & 1n) !== 0n) return null;    // bind ordinal, not an address
+    if (auth) {
+      // dyld chains "diversity+addr" authentication on bits 32..61 — no address.
+      if (base == null) return null;
+      return BigInt(base) + (v & 0xffffffffn);
+    }
+    const target = v & 0x7ffffffffffn;
+    if (target === 0n) return null;
+    const high8 = (v >> 43n) & 0xffn;
+    const reconstructed = target | (high8 << 56n);
+    if (format === 7 || format === 9 || format === 12) {
+      if (base == null) return null;
+      return BigInt(base) + reconstructed;
+    }
+    return reconstructed;
+  }
   if (format != null) return null;
   /* Some modern Mach-O metadata fields contain a bare image-relative offset
      without the chained-pointer next/high bits.  When the image base is known,
