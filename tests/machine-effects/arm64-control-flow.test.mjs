@@ -60,7 +60,8 @@ function registerWrites(bundle) { return bundle.operations.filter((operation) =>
   const bundle = lift('ret');
   assert.equal(bundle.completeness, 'exact');
   assert.equal(bundle.controlEffect.kind, 'return');
-  assert.equal(registerWrites(bundle).length, 0);
+  assert.deepEqual(registerWrites(bundle).map((operation) => operation.register.registerId), ['pstate.btype']);
+  assert.equal(registerWrites(bundle)[0].value.value, '0', 'RET resets architectural BTYPE state');
   assert.deepEqual(bundle.operations.filter((operation) => operation.kind === 'register-read').map((operation) => operation.register.registerId), ['x30']);
   assert.equal(bundle.metadata.abiSemantics, false);
 }
