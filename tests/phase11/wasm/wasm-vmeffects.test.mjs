@@ -21,13 +21,13 @@ const wasmBytes = new Uint8Array([
   //   return
   //   end
   0x0a, 0x0d, 0x01, 0x0b, 0x00,
-  0x20, 0x00,       // local.get 0
-  0x20, 0x01,       // local.get 1
-  0x6a,             // i32.add
-  0x41, 0x05,       // i32.const 5
-  0x6c,             // i32.mul
-  0x0f,             // return
-  0x0b,             // end
+  0x20, 0x00,
+  0x20, 0x01,
+  0x6a,
+  0x41, 0x05,
+  0x6c,
+  0x0f,
+  0x0b,
 ]);
 
 const parsed = parseWasm(wasmBytes);
@@ -36,21 +36,16 @@ const vmFn = liftWasmFunction(0, parsed);
 assert.equal(vmFn.frontendId, 'wasm');
 assert.equal(vmFn.bundles.length, 7);
 assert.equal(vmFn.aggregateCompleteness, 'exact');
-
 assert.equal(vmFn.bundles[0].mnemonic, 'local.get');
 assert.equal(vmFn.bundles[0].locationReads[0].kind, 'local');
 assert.equal(vmFn.bundles[0].locationReads[0].index, 0);
-
 assert.equal(vmFn.bundles[1].mnemonic, 'local.get');
 assert.equal(vmFn.bundles[1].locationReads[0].index, 1);
-
 assert.equal(vmFn.bundles[2].mnemonic, 'i32.add');
 assert.equal(vmFn.bundles[2].consumedValues.length, 2);
 assert.equal(vmFn.bundles[2].producedValues.length, 1);
-
 assert.equal(vmFn.bundles[3].mnemonic, 'i32.const');
 assert.equal(vmFn.bundles[3].producedValues[0].constant, 5);
-
 assert.deepEqual(vmFn.bundles[0].origin.byteRanges, [{ start:'34', end:'36' }], 'local.get origin includes its index immediate');
 assert.deepEqual(vmFn.bundles[2].origin.byteRanges, [{ start:'38', end:'39' }], 'single-byte op origin remains one byte');
 assert.deepEqual(vmFn.bundles[3].origin.byteRanges, [{ start:'39', end:'41' }], 'i32.const origin includes its SLEB immediate');
@@ -65,12 +60,12 @@ const immediateModule = {
     bodyOffset:100,
     locals:[],
     bytecode:new Uint8Array([
-      0x41, 0x80, 0x01,             // i32.const 128 (multi-byte SLEB)
-      0x10, 0x80, 0x01,             // call 128 (multi-byte ULEB)
-      0x28, 0x02, 0x80, 0x01,       // i32.load align=2 offset=128
-      0x0e, 0x02, 0x00, 0x80, 0x01, 0x00, // br_table count=2, labels 0/128, default 0
-      0x01,                         // nop control
-      0x0b,                         // end
+      0x41, 0x80, 0x01,
+      0x10, 0x80, 0x00,
+      0x28, 0x02, 0x80, 0x01,
+      0x0e, 0x02, 0x00, 0x80, 0x00, 0x00,
+      0x01,
+      0x0b,
     ]),
   }],
 };
@@ -85,7 +80,6 @@ assert.deepEqual(immediateFn.bundles.map((bundle) => bundle.origin.byteRanges[0]
 ]);
 
 assert.equal(vmFn.bundles[4].mnemonic, 'i32.mul');
-
 assert.equal(vmFn.bundles[5].mnemonic, 'return');
 assert.equal(vmFn.bundles[5].controlEffects[0].kind, 'return');
 
