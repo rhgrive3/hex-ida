@@ -1,67 +1,25 @@
-import { deepFreeze } from '../../core/identity/index.js';
-import { createManagedImageId, createManagedModuleId } from '../shared/identity.js';
+// WASM parser public boundary regression guard for #1113.
+// The core parser preserves the decoded function body. This wrapper rejects
+// any body whose outer function expression is not terminated by `end` (0x0b).
+export {
+  probeWasm,
+  decodeUleb128,
+  decodeSleb128,
+  decodeSleb128_64,
+  decodeName,
+} from './parser-core.js';
+
+import { parseWasm as parseWasmCore } from './parser-core.js';
 
 function fail(code) { throw new TypeError(code); }
 
-export function probeWasm(bytes) {
-  if (!bytes || bytes.length < 8) return { supported: false, confidence: 0, reason: 'too-small' };
-  const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-  if (u8[0] === 0x00 && u8[1] === 0x61 && u8[2] === 0x73 && u8[3] === 0x6d) {
-    const version = u8[4] | (u8[5] << 8) | (u8[6] << 16) | (u8[7] << 24);
-    if (version === 1) return { supported: true, confidence: 1.0, formatVersion: '1', vmSpecEdition: 'core-3.0' };
-    return { supported: true, confidence: 0.8, formatVersion: String(version), vmSpecEdition: 'unknown' };
+export function parseWasm(bytes, options = {}) {
+  const module = parseWasmCore(bytes, options);
+  for (const body of module.codeBodies || []) {
+    const bytecode = body?.bytecode;
+    if (!bytecode || bytecode.length === 0 || bytecode[bytecode.length - 1] !== 0x0b) {
+      fail('wasm-function-missing-end');
+    }
   }
-  return { supported: false, confidence: 0, reason: 'invalid-magic' };
-}
-
-export function decodeUleb128(bytes, offset, maxBytes = 5) {
-  let result=0,shift=0,pos=offset,count=0;
-  while(pos<bytes.length&&count<maxBytes){const byte=bytes[pos++];count++;result|=(byte&0x7f)<<shift;if((byte&0x80)===0)return{value:result>>>0,nextOffset:pos};shift+=7;}
-  fail('wasm-malformed-uleb128');
-}
-export function decodeSleb128(bytes,offset,maxBytes=5){let result=0,shift=0,pos=offset,count=0,byte=0;while(pos<bytes.length&&count<maxBytes){byte=bytes[pos++];count++;result|=(byte&0x7f)<<shift;shift+=7;if((byte&0x80)===0){if(shift<32&&(byte&0x40)!==0)result|=(~0<<shift);return{value:result|0,nextOffset:pos};}}fail('wasm-malformed-sleb128');}
-export function decodeSleb128_64(bytes,offset){let result=0n,shift=0n,pos=offset,count=0,byte=0;while(pos<bytes.length&&count<10){byte=bytes[pos++];count++;result|=BigInt(byte&0x7f)<<shift;shift+=7n;if((byte&0x80)===0){if(shift<64n&&(byte&0x40)!==0)result|=(~0n<<shift);return{value:BigInt.asIntN(64,result),nextOffset:pos};}}fail('wasm-malformed-sleb128-64');}
-export function decodeName(bytes,offset){const{value:len,nextOffset}=decodeUleb128(bytes,offset);if(nextOffset+len>bytes.length)fail('wasm-truncated-name');const nameBytes=bytes.subarray(nextOffset,nextOffset+len);const name=new TextDecoder('utf-8',{fatal:true}).decode(nameBytes);return{name,nextOffset:nextOffset+len};}
-
-const WASM_VALUE_TYPES=new Set([0x7f,0x7e,0x7d,0x7c,0x7b,0x70,0x6f]);
-function readByte(bytes,offset,code){if(!Number.isSafeInteger(offset)||offset<0||offset>=bytes.length)fail(code);return{value:bytes[offset],nextOffset:offset+1};}
-function readValueType(bytes,offset,code='wasm-invalid-value-type'){const{value,nextOffset}=readByte(bytes,offset,code);if(!WASM_VALUE_TYPES.has(value))fail(code);return{value,nextOffset};}
-function readLimits(bytes,offset,code){let r=readByte(bytes,offset,code);const flags=r.value;let pos=r.nextOffset;if((flags&~0x03)!==0)fail(`${code}-flags`);const minR=decodeUleb128(bytes,pos);pos=minR.nextOffset;let max=null;if(flags&1){const maxR=decodeUleb128(bytes,pos);pos=maxR.nextOffset;max=maxR.value;if(max<minR.value)fail(`${code}-max-less-than-min`);}return{value:{min:minR.value,max,shared:Boolean(flags&2),flags},nextOffset:pos};}
-function readTableType(bytes,offset){const elem=readValueType(bytes,offset,'wasm-invalid-table-element-type');if(elem.value!==0x70&&elem.value!==0x6f)fail('wasm-invalid-table-element-type');const lim=readLimits(bytes,elem.nextOffset,'wasm-invalid-table-limits');return{value:{elemType:elem.value,...lim.value},nextOffset:lim.nextOffset};}
-function readGlobalType(bytes,offset){const vt=readValueType(bytes,offset,'wasm-invalid-global-value-type');const mut=readByte(bytes,vt.nextOffset,'wasm-truncated-global-mutability');if(mut.value!==0&&mut.value!==1)fail('wasm-invalid-global-mutability');return{value:{valType:vt.value,mutable:mut.value===1},nextOffset:mut.nextOffset};}
-function readConstExpr(bytes,offset){const start=offset;let pos=offset;const ops=[];while(pos<bytes.length){const opOffset=pos;const op=bytes[pos++];if(op===0x0b)return{value:{ops,rawBytes:bytes.subarray(start,pos)},nextOffset:pos};if(op===0x41){const r=decodeSleb128(bytes,pos);pos=r.nextOffset;ops.push({opcode:op,value:r.value});}else if(op===0x42){const r=decodeSleb128_64(bytes,pos);pos=r.nextOffset;ops.push({opcode:op,value:r.value});}else if(op===0x43){if(pos+4>bytes.length)fail('wasm-truncated-const-expr');const dv=new DataView(bytes.buffer,bytes.byteOffset+pos,4);ops.push({opcode:op,value:dv.getFloat32(0,true)});pos+=4;}else if(op===0x44){if(pos+8>bytes.length)fail('wasm-truncated-const-expr');const dv=new DataView(bytes.buffer,bytes.byteOffset+pos,8);ops.push({opcode:op,value:dv.getFloat64(0,true)});pos+=8;}else if(op===0x23||op===0xd2){const r=decodeUleb128(bytes,pos);pos=r.nextOffset;ops.push({opcode:op,index:r.value});}else if(op===0xd0){const t=readValueType(bytes,pos,'wasm-invalid-ref-null-type');pos=t.nextOffset;ops.push({opcode:op,refType:t.value});}else fail(`wasm-unsupported-const-expr-opcode-0x${op.toString(16)}`);if(pos<=opOffset)fail('wasm-invalid-const-expr-progress');}fail('wasm-truncated-const-expr');}
-function readIndexVector(bytes,offset,code){const countR=decodeUleb128(bytes,offset);let pos=countR.nextOffset;const values=[];for(let i=0;i<countR.value;i++){const r=decodeUleb128(bytes,pos);pos=r.nextOffset;values.push(r.value);}return{value:values,nextOffset:pos};}
-function readByteVector(bytes,offset,code){const lenR=decodeUleb128(bytes,offset);const end=lenR.nextOffset+lenR.value;if(end>bytes.length)fail(code);return{value:bytes.subarray(lenR.nextOffset,end),nextOffset:end};}
-function requireIndex(length,index,code){if(!Number.isSafeInteger(index)||index<0||index>=length)fail(code);return index;}
-
-export function parseWasm(bytes,options={}){
-  const probe=probeWasm(bytes);if(!probe.supported)fail('wasm-unsupported-binary');if(probe.formatVersion!=='1')fail('wasm-unsupported-version');
-  const u8=bytes instanceof Uint8Array?bytes:new Uint8Array(bytes);let pos=8;
-  const sections=[],types=[],imports=[],functions=[],tables=[],memories=[],globals=[],exports=[],elements=[],codeBodies=[],dataSegments=[],customSections=[];let startFunction=null;
-  const seenSections=new Set();let lastStandardSection=0;
-  while(pos<u8.length){const idR=readByte(u8,pos,'wasm-truncated-section-id');const sectionId=idR.value;pos=idR.nextOffset;if(sectionId>11)fail(`wasm-unsupported-section-${sectionId}`);if(sectionId!==0){if(seenSections.has(sectionId))fail(`wasm-duplicate-section-${sectionId}`);if(sectionId<lastStandardSection)fail(`wasm-out-of-order-section-${sectionId}`);seenSections.add(sectionId);lastStandardSection=sectionId;}
-    const sizeR=decodeUleb128(u8,pos);pos=sizeR.nextOffset;if(sizeR.value>u8.length-pos)fail('wasm-truncated-section-payload');const sectionStart=pos,sectionEnd=pos+sizeR.value,sectionBytes=u8.subarray(sectionStart,sectionEnd);sections.push({id:sectionId,offset:sectionStart,size:sizeR.value});let secPos=0;
-    if(sectionId===0){try{const n=decodeName(sectionBytes,0);customSections.push({name:n.name,data:sectionBytes.subarray(n.nextOffset)});}catch{customSections.push({name:'unknown',data:sectionBytes});}pos=sectionEnd;continue;}
-    if(sectionId===1){const countR=decodeUleb128(sectionBytes,secPos);secPos=countR.nextOffset;for(let i=0;i<countR.value;i++){const form=readByte(sectionBytes,secPos,'wasm-malformed-type-section');secPos=form.nextOffset;if(form.value!==0x60)fail('wasm-unsupported-type-form');const pc=decodeUleb128(sectionBytes,secPos);secPos=pc.nextOffset;const params=[];for(let p=0;p<pc.value;p++){const t=readValueType(sectionBytes,secPos);secPos=t.nextOffset;params.push(t.value);}const rc=decodeUleb128(sectionBytes,secPos);secPos=rc.nextOffset;const results=[];for(let r=0;r<rc.value;r++){const t=readValueType(sectionBytes,secPos);secPos=t.nextOffset;results.push(t.value);}types.push({params,results});}}
-    else if(sectionId===2){const countR=decodeUleb128(sectionBytes,secPos);secPos=countR.nextOffset;for(let i=0;i<countR.value;i++){const mod=decodeName(sectionBytes,secPos);secPos=mod.nextOffset;const field=decodeName(sectionBytes,secPos);secPos=field.nextOffset;const kr=readByte(sectionBytes,secPos,'wasm-truncated-import-kind');secPos=kr.nextOffset;let desc;if(kr.value===0){const tr=decodeUleb128(sectionBytes,secPos);secPos=tr.nextOffset;desc={kind:0,typeIndex:tr.value};}else if(kr.value===1){const tr=readTableType(sectionBytes,secPos);secPos=tr.nextOffset;desc={kind:1,...tr.value};}else if(kr.value===2){const mr=readLimits(sectionBytes,secPos,'wasm-invalid-memory-limits');secPos=mr.nextOffset;desc={kind:2,...mr.value};}else if(kr.value===3){const gr=readGlobalType(sectionBytes,secPos);secPos=gr.nextOffset;desc={kind:3,...gr.value};}else fail(`wasm-invalid-import-kind-${kr.value}`);imports.push({module:mod.name,field:field.name,desc});}}
-    else if(sectionId===3){const c=decodeUleb128(sectionBytes,secPos);secPos=c.nextOffset;for(let i=0;i<c.value;i++){const r=decodeUleb128(sectionBytes,secPos);secPos=r.nextOffset;functions.push(r.value);}}
-    else if(sectionId===4){const c=decodeUleb128(sectionBytes,secPos);secPos=c.nextOffset;for(let i=0;i<c.value;i++){const r=readTableType(sectionBytes,secPos);secPos=r.nextOffset;tables.push(r.value);}}
-    else if(sectionId===5){const c=decodeUleb128(sectionBytes,secPos);secPos=c.nextOffset;for(let i=0;i<c.value;i++){const r=readLimits(sectionBytes,secPos,'wasm-invalid-memory-limits');secPos=r.nextOffset;memories.push(r.value);}}
-    else if(sectionId===6){const c=decodeUleb128(sectionBytes,secPos);secPos=c.nextOffset;for(let i=0;i<c.value;i++){const gt=readGlobalType(sectionBytes,secPos);secPos=gt.nextOffset;const init=readConstExpr(sectionBytes,secPos);secPos=init.nextOffset;globals.push({...gt.value,init:init.value});}}
-    else if(sectionId===7){const c=decodeUleb128(sectionBytes,secPos);secPos=c.nextOffset;for(let i=0;i<c.value;i++){const n=decodeName(sectionBytes,secPos);secPos=n.nextOffset;const k=readByte(sectionBytes,secPos,'wasm-truncated-export-kind');secPos=k.nextOffset;if(k.value>3)fail(`wasm-invalid-export-kind-${k.value}`);const idx=decodeUleb128(sectionBytes,secPos);secPos=idx.nextOffset;exports.push({name:n.name,kind:k.value,index:idx.value});}}
-    else if(sectionId===8){const r=decodeUleb128(sectionBytes,secPos);secPos=r.nextOffset;startFunction=r.value;}
-    else if(sectionId===9){const c=decodeUleb128(sectionBytes,secPos);secPos=c.nextOffset;for(let i=0;i<c.value;i++){const fr=decodeUleb128(sectionBytes,secPos);secPos=fr.nextOffset;const flags=fr.value;let mode='active',tableIndex=0,offsetExpr=null;if(flags===0){const e=readConstExpr(sectionBytes,secPos);secPos=e.nextOffset;offsetExpr=e.value;}else if(flags===1||flags===3){mode=flags===1?'passive':'declarative';const ek=readByte(sectionBytes,secPos,'wasm-truncated-element-kind');secPos=ek.nextOffset;if(ek.value!==0)fail('wasm-invalid-element-kind');}else if(flags===2){const ti=decodeUleb128(sectionBytes,secPos);secPos=ti.nextOffset;tableIndex=ti.value;const e=readConstExpr(sectionBytes,secPos);secPos=e.nextOffset;offsetExpr=e.value;const ek=readByte(sectionBytes,secPos,'wasm-truncated-element-kind');secPos=ek.nextOffset;if(ek.value!==0)fail('wasm-invalid-element-kind');}else fail(`wasm-unsupported-element-flags-${flags}`);const vec=readIndexVector(sectionBytes,secPos,'wasm-invalid-element-vector');secPos=vec.nextOffset;elements.push({mode,tableIndex,offsetExpr,functionIndices:vec.value});}}
-    else if(sectionId===10){const c=decodeUleb128(sectionBytes,secPos);secPos=c.nextOffset;for(let i=0;i<c.value;i++){const bodyOffset=sectionStart+secPos;const bodySizeR=decodeUleb128(sectionBytes,secPos);secPos=bodySizeR.nextOffset;if(bodySizeR.value>sectionBytes.length-secPos)fail('wasm-truncated-function-body');const bodyBytes=sectionBytes.subarray(secPos,secPos+bodySizeR.value);secPos+=bodySizeR.value;let bp=0;const lg=decodeUleb128(bodyBytes,bp);bp=lg.nextOffset;const locals=[];for(let g=0;g<lg.value;g++){const count=decodeUleb128(bodyBytes,bp);bp=count.nextOffset;const type=readValueType(bodyBytes,bp,'wasm-invalid-local-type');bp=type.nextOffset;if(count.value>1000000||locals.length+count.value>1000000)fail('wasm-too-many-locals');for(let j=0;j<count.value;j++)locals.push(type.value);}codeBodies.push({bodyOffset,bodySize:bodySizeR.value,locals,bytecode:bodyBytes.subarray(bp),rawBytes:bodyBytes});}}
-    else if(sectionId===11){const c=decodeUleb128(sectionBytes,secPos);secPos=c.nextOffset;for(let i=0;i<c.value;i++){const fr=decodeUleb128(sectionBytes,secPos);secPos=fr.nextOffset;let mode='active',memoryIndex=0,offsetExpr=null;if(fr.value===0){const e=readConstExpr(sectionBytes,secPos);secPos=e.nextOffset;offsetExpr=e.value;}else if(fr.value===1)mode='passive';else if(fr.value===2){const mi=decodeUleb128(sectionBytes,secPos);secPos=mi.nextOffset;memoryIndex=mi.value;const e=readConstExpr(sectionBytes,secPos);secPos=e.nextOffset;offsetExpr=e.value;}else fail(`wasm-unsupported-data-flags-${fr.value}`);const data=readByteVector(sectionBytes,secPos,'wasm-truncated-data-segment');secPos=data.nextOffset;dataSegments.push({mode,memoryIndex,offsetExpr,data:data.value});}}
-    if(secPos!==sectionBytes.length)fail(`wasm-section-${sectionId}-trailing-bytes`);pos=sectionEnd;
-  }
-  const importedFunctions=imports.filter(x=>x.desc.kind===0),importedTables=imports.filter(x=>x.desc.kind===1),importedMemories=imports.filter(x=>x.desc.kind===2),importedGlobals=imports.filter(x=>x.desc.kind===3);
-  for(const imp of importedFunctions)requireIndex(types.length,imp.desc.typeIndex,'wasm-invalid-import-type-index');for(const typeIndex of functions)requireIndex(types.length,typeIndex,'wasm-invalid-function-type-index');if(functions.length!==codeBodies.length)fail('wasm-function-code-count-mismatch');
-  const functionCount=importedFunctions.length+functions.length,tableCount=importedTables.length+tables.length,memoryCount=importedMemories.length+memories.length,globalCount=importedGlobals.length+globals.length;
-  for(const ex of exports){const lengths=[functionCount,tableCount,memoryCount,globalCount];requireIndex(lengths[ex.kind],ex.index,`wasm-invalid-export-index-${ex.kind}`);}
-  if(startFunction!=null){requireIndex(functionCount,startFunction,'wasm-invalid-start-function-index');let typeIndex;if(startFunction<importedFunctions.length)typeIndex=importedFunctions[startFunction].desc.typeIndex;else typeIndex=functions[startFunction-importedFunctions.length];const t=types[typeIndex];if(!t||t.params.length!==0||t.results.length!==0)fail('wasm-invalid-start-function-type');}
-  for(const el of elements){if(el.mode==='active')requireIndex(tableCount,el.tableIndex,'wasm-invalid-element-table-index');for(const fi of el.functionIndices)requireIndex(functionCount,fi,'wasm-invalid-element-function-index');}
-  for(const ds of dataSegments)if(ds.mode==='active')requireIndex(memoryCount,ds.memoryIndex,'wasm-invalid-data-memory-index');
-  const binaryId=options.binaryId||'wasm-binary',imageId=createManagedImageId(binaryId),moduleId=createManagedModuleId(imageId,'main');
-  return deepFreeze({imageId,moduleId,formatVersion:probe.formatVersion,vmSpecEdition:probe.vmSpecEdition,sections,types,imports,functions,tables,memories,globals,exports,startFunction,elements,codeBodies,dataSegments,customSections,rawBytes:u8});
+  return module;
 }
