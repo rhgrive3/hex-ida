@@ -44,7 +44,8 @@ export function mergeProgramScans(scans = [], options = {}) {
     const av=BigInt(a.vmAddr ?? 0), bv=BigInt(b.vmAddr ?? 0);
     return av < bv ? -1 : av > bv ? 1 : String(a.regionId||'').localeCompare(String(b.regionId||''));
   });
-  const expectedRegions = (options.regions || []).map((r) => ({ id:r.id ?? null, vmAddr:BigInt(r.vmAddr ?? 0), size:BigInt(r.size ?? 0) }));
+  const expectedRegionsSpecified = Array.isArray(options.regions);
+  const expectedRegions = (expectedRegionsSpecified ? options.regions : []).map((r) => ({ id:r.id ?? null, vmAddr:BigInt(r.vmAddr ?? 0), size:BigInt(r.size ?? 0) }));
   const reasons = [...(options.reasons || [])];
   const scannedIds = new Set(ordered.map((x) => x.regionId).filter((x) => x != null));
   for (const region of expectedRegions) if (region.id != null && !scannedIds.has(region.id)) reasons.push(`program-region-unscanned:${region.id}`);
@@ -88,7 +89,8 @@ export function mergeProgramScans(scans = [], options = {}) {
   const unsupported=ordered.length>0 && ordered.every((x)=>x.unsupported===true);
   const callsCapped=callAvailable>callCap || ordered.some((x)=>x.callsCapped);
   const refsCapped=refAvailable>refCap || ordered.some((x)=>x.refsCapped);
-  const complete=!unsupported && uniqueReasons.length===0 && expectedRegions.length===ordered.length;
+  const complete=!unsupported && uniqueReasons.length===0
+    && (!expectedRegionsSpecified || expectedRegions.length===ordered.length);
   return {
     vmAddr: ordered.length ? BigInt(ordered[0].vmAddr ?? 0) : (expectedRegions[0]?.vmAddr ?? 0n),
     regions: expectedRegions,
@@ -99,7 +101,8 @@ export function mergeProgramScans(scans = [], options = {}) {
     callsCapped, refsCapped, unsupported,
     architecture: ordered.find((x)=>x.architecture || x.arch)?.architecture || ordered.find((x)=>x.arch)?.arch || null,
     complete, truncated:!complete,
-    completeness:{ complete, reasons:uniqueReasons, regionCount:ordered.length, expectedRegionCount:expectedRegions.length,
+    completeness:{ complete, reasons:uniqueReasons, regionCount:ordered.length,
+      expectedRegionCount:expectedRegionsSpecified ? expectedRegions.length : null,
       limits:{calls:callCap,refs:refCap,kindWords:Number(limits.kindWords)||0} },
   };
 }
