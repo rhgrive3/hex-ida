@@ -34,6 +34,11 @@ import {
 export const TYPE_GRAPH_ANALYZER_ID = 'phase7.types.constraint-graph';
 export const TYPE_GRAPH_ANALYZER_VERSION = '1.0.0';
 export const TYPE_RESULT_SCHEMA_VERSION = 1;
+export const TYPE_GRAPH_DEFAULT_LIMITS = Object.freeze({
+  maxConstraintsPerLayer: 4096,
+  maxComparisonsPerLayer: 50000,
+  maxContradictionsPerLayer: 1024,
+});
 
 /**
  * Confidence bands. `certain` is reachable only from an uncontradicted hard
@@ -43,12 +48,38 @@ export const TYPE_CONFIDENCE = Object.freeze(['certain', 'probable', 'possible',
 
 function fail(code) { throw new TypeError(code); }
 
+function positiveLimit(value, fallback, code) {
+  if (value == null) return fallback;
+  const number = Number(value);
+  if (!Number.isSafeInteger(number) || number < 1) fail(code);
+  return number;
+}
+
 function mergedEvidenceIds(left, right) {
   return [...new Set([...(left ?? []), ...(right ?? [])])].sort();
 }
 
 function constraintOrderKey(constraint) {
   return stableDigest(constraint);
+}
+
+function hardIdentity(constraint) {
+  return stableDigest({
+    kind: constraint.kind,
+    origin: constraint.origin,
+    claim: constraint.claim,
+    providerVersion: constraint.providerVersion,
+    buildIdentity: constraint.buildIdentity,
+  });
+}
+
+function softIdentity(evidence) {
+  return stableDigest({
+    kind: evidence.kind,
+    origin: evidence.origin,
+    claim: evidence.claim,
+    weight: evidence.weight,
+  });
 }
 
 function mergeCompatibleHardClaims(entityId, layer, claims) {
@@ -85,10 +116,15 @@ function mergeCompatibleHardClaims(entityId, layer, claims) {
 }
 
 export class TypeConstraintGraph {
-  constructor({ snapshotId = 'snapshot-unbound', budgetClass = null } = {}) {
+  constructor({ snapshotId = 'snapshot-unbound', budgetClass = null, limits = {} } = {}) {
     this.snapshotId = snapshotId;
     this.budgetClass = budgetClass;
-    /** entityId -> layer -> { hard: [], soft: [] } */
+    this.limits = Object.freeze({
+      maxConstraintsPerLayer: positiveLimit(limits.maxConstraintsPerLayer, TYPE_GRAPH_DEFAULT_LIMITS.maxConstraintsPerLayer, 'type-graph-invalid-constraint-limit'),
+      maxComparisonsPerLayer: positiveLimit(limits.maxComparisonsPerLayer, TYPE_GRAPH_DEFAULT_LIMITS.maxComparisonsPerLayer, 'type-graph-invalid-comparison-limit'),
+      maxContradictionsPerLayer: positiveLimit(limits.maxContradictionsPerLayer, TYPE_GRAPH_DEFAULT_LIMITS.maxContradictionsPerLayer, 'type-graph-invalid-contradiction-limit'),
+    });
+    /** entityId -> layer -> bounded constraint bucket */
     this.entities = new Map();
     this.userConstraintDigests = new Set();
   }
@@ -96,22 +132,30 @@ export class TypeConstraintGraph {
   #bucket(entityId, layer) {
     if (!this.entities.has(entityId)) this.entities.set(entityId, new Map());
     const layers = this.entities.get(entityId);
-    if (!layers.has(layer)) layers.set(layer, { hard: [], soft: [] });
+    if (!layers.has(layer)) {
+      layers.set(layer, {
+        hard: [],
+        soft: [],
+        hardIndex: new Map(),
+        softIndex: new Map(),
+        truncated: false,
+      });
+    }
     return layers.get(layer);
   }
 
   addHardConstraint(input) {
     const constraint = createHardConstraint(input);
     const bucket = this.#bucket(constraint.claim.entityId, constraint.claim.layer);
-    const duplicateIndex = bucket.hard.findIndex((c) => (
-      c.kind === constraint.kind &&
-      c.origin === constraint.origin &&
-      c.claim.key === constraint.claim.key &&
-      c.providerVersion === constraint.providerVersion &&
-      c.buildIdentity === constraint.buildIdentity
-    ));
-    if (duplicateIndex === -1) {
-      bucket.hard.push(constraint);
+    const identity = hardIdentity(constraint);
+    const duplicateIndex = bucket.hardIndex.get(identity);
+    if (duplicateIndex == null) {
+      if (bucket.hard.length + bucket.soft.length >= this.limits.maxConstraintsPerLayer) {
+        bucket.truncated = true;
+      } else {
+        bucket.hardIndex.set(identity, bucket.hard.length);
+        bucket.hard.push(constraint);
+      }
     } else {
       const existing = bucket.hard[duplicateIndex];
       const evidenceIds = mergedEvidenceIds(existing.evidenceIds, constraint.evidenceIds);
@@ -135,14 +179,15 @@ export class TypeConstraintGraph {
   addSoftEvidence(input) {
     const evidence = createSoftEvidence(input);
     const bucket = this.#bucket(evidence.claim.entityId, evidence.claim.layer);
-    const duplicateIndex = bucket.soft.findIndex((e) => (
-      e.kind === evidence.kind &&
-      e.origin === evidence.origin &&
-      e.claim.key === evidence.claim.key &&
-      e.weight === evidence.weight
-    ));
-    if (duplicateIndex === -1) {
-      bucket.soft.push(evidence);
+    const identity = softIdentity(evidence);
+    const duplicateIndex = bucket.softIndex.get(identity);
+    if (duplicateIndex == null) {
+      if (bucket.hard.length + bucket.soft.length >= this.limits.maxConstraintsPerLayer) {
+        bucket.truncated = true;
+      } else {
+        bucket.softIndex.set(identity, bucket.soft.length);
+        bucket.soft.push(evidence);
+      }
     } else {
       const existing = bucket.soft[duplicateIndex];
       const evidenceIds = mergedEvidenceIds(existing.evidenceIds, evidence.evidenceIds);
@@ -178,14 +223,29 @@ export class TypeConstraintGraph {
     }
 
     const solvedLayers = {};
+    let stopReason = null;
     for (const layer of TYPE_LAYERS) {
       const bucket = layers.get(layer);
       if (!bucket) continue;
-      solvedLayers[layer] = solveLayer(entityId, layer, bucket);
+      const solved = solveLayer(entityId, layer, bucket, {
+        signal,
+        maxComparisons: this.limits.maxComparisonsPerLayer,
+        maxContradictions: this.limits.maxContradictionsPerLayer,
+      });
+      solvedLayers[layer] = solved.layer;
+      if (solved.stopReason === 'cancelled') {
+        stopReason = 'cancelled';
+        break;
+      }
+      if (solved.stopReason === 'budget-exhausted') stopReason = stopReason ?? 'budget-exhausted';
     }
     return createTypeResult({
       entityId,
-      status: this.#status('complete', null),
+      status: stopReason === 'cancelled'
+        ? this.#status('partial', 'cancelled')
+        : stopReason === 'budget-exhausted'
+          ? this.#status('truncated', 'budget-exhausted')
+          : this.#status('complete', null),
       layers: solvedLayers,
       userConstrained: [...this.userConstraintDigests].some((digest) => (
         Object.values(solvedLayers).some((solved) => solved.hardConstraints.some((constraint) => (
@@ -207,19 +267,42 @@ export class TypeConstraintGraph {
   }
 }
 
-function solveLayer(entityId, layer, bucket) {
+function solveLayer(entityId, layer, bucket, { signal, maxComparisons, maxContradictions }) {
   const contradictions = [];
-  for (let i = 0; i < bucket.hard.length; i += 1) {
-    for (let j = i + 1; j < bucket.hard.length; j += 1) {
-      if (claimsConflict(bucket.hard[i].claim, bucket.hard[j].claim)) {
-        const pair = [bucket.hard[i], bucket.hard[j]].sort((left, right) => constraintOrderKey(left).localeCompare(constraintOrderKey(right)));
-        contradictions.push(createContradiction({
-          layer,
-          entityId,
-          left: pair[0],
-          right: pair[1],
-          detail: `hard constraints disagree: ${pair[0].kind} vs ${pair[1].kind}`,
-        }));
+  let comparisons = 0;
+  let stopReason = bucket.truncated ? 'budget-exhausted' : null;
+
+  const canCompare = () => {
+    if (signal?.aborted) {
+      stopReason = 'cancelled';
+      return false;
+    }
+    if (comparisons >= maxComparisons) {
+      stopReason = 'budget-exhausted';
+      return false;
+    }
+    comparisons += 1;
+    return true;
+  };
+
+  if (!stopReason) {
+    hardPairs: for (let i = 0; i < bucket.hard.length; i += 1) {
+      for (let j = i + 1; j < bucket.hard.length; j += 1) {
+        if (!canCompare()) break hardPairs;
+        if (claimsConflict(bucket.hard[i].claim, bucket.hard[j].claim)) {
+          const pair = [bucket.hard[i], bucket.hard[j]].sort((left, right) => constraintOrderKey(left).localeCompare(constraintOrderKey(right)));
+          contradictions.push(createContradiction({
+            layer,
+            entityId,
+            left: pair[0],
+            right: pair[1],
+            detail: `hard constraints disagree: ${pair[0].kind} vs ${pair[1].kind}`,
+          }));
+          if (contradictions.length >= maxContradictions) {
+            stopReason = 'budget-exhausted';
+            break hardPairs;
+          }
+        }
       }
     }
   }
@@ -239,9 +322,18 @@ function solveLayer(entityId, layer, bucket) {
     candidates.set(claim.key, { claim, weight, sources: new Set([source]) });
   };
   for (const constraint of bucket.hard) add(constraint.claim, 1, 'hard');
-  for (const evidence of bucket.soft) {
-    if (hardClaims.some((hard) => claimsConflict(hard, evidence.claim))) continue;
-    add(evidence.claim, evidence.weight, 'soft');
+  if (!stopReason) {
+    softEvidence: for (const evidence of bucket.soft) {
+      let conflicts = false;
+      for (const hard of hardClaims) {
+        if (!canCompare()) break softEvidence;
+        if (claimsConflict(hard, evidence.claim)) {
+          conflicts = true;
+          break;
+        }
+      }
+      if (!conflicts) add(evidence.claim, evidence.weight, 'soft');
+    }
   }
 
   const ranked = [...candidates.values()].sort((left, right) => (
@@ -250,7 +342,12 @@ function solveLayer(entityId, layer, bucket) {
 
   let selected = null;
   let confidence = 'unknown';
-  if (contradictions.length > 0) {
+  if (stopReason != null) {
+    // A bounded/cancelled layer has not examined all potentially conflicting
+    // evidence. Never publish a strong selection from an incomplete solve.
+    selected = null;
+    confidence = 'unknown';
+  } else if (contradictions.length > 0) {
     // Withhold selection entirely. Picking the highest-scoring side of a hard
     // contradiction is precisely the false certainty this layer exists to stop.
     confidence = 'unknown';
@@ -268,19 +365,22 @@ function solveLayer(entityId, layer, bucket) {
     confidence = 'unknown';
   }
 
-  return deepFreeze({
-    layer,
-    candidates: deepFreeze(ranked.map((entry) => ({
-      claim: entry.claim,
-      weight: entry.weight,
-      sources: [...entry.sources].sort(),
-    }))),
-    selected,
-    confidence,
-    hardConstraints: deepFreeze([...bucket.hard].sort((left, right) => constraintOrderKey(left).localeCompare(constraintOrderKey(right)))),
-    softEvidence: deepFreeze([...bucket.soft].sort((left, right) => constraintOrderKey(left).localeCompare(constraintOrderKey(right)))),
-    contradictions: deepFreeze(contradictions.sort((left, right) => stableDigest(left).localeCompare(stableDigest(right)))),
-  });
+  return {
+    stopReason,
+    layer: deepFreeze({
+      layer,
+      candidates: deepFreeze(ranked.map((entry) => ({
+        claim: entry.claim,
+        weight: entry.weight,
+        sources: [...entry.sources].sort(),
+      }))),
+      selected,
+      confidence,
+      hardConstraints: deepFreeze([...bucket.hard].sort((left, right) => constraintOrderKey(left).localeCompare(constraintOrderKey(right)))),
+      softEvidence: deepFreeze([...bucket.soft].sort((left, right) => constraintOrderKey(left).localeCompare(constraintOrderKey(right)))),
+      contradictions: deepFreeze(contradictions.sort((left, right) => stableDigest(left).localeCompare(stableDigest(right)))),
+    }),
+  };
 }
 
 export function createTypeResult(input = {}) {
