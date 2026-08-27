@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { JvmFrontend } from '../../../js/managed/jvm/frontend.js';
-import { lowerVMEffectsToSemanticIr } from '../../../js/managed/shared/bridge.js';
+import { lowerVMEffectsToSemanticIr } from '../../../js/managed/shared/bridge-v2.js';
 import { buildMinimalJvmClass } from './jvm-parser.test.mjs';
 
 console.log('[phase11] running jvm pipeline tests...');
