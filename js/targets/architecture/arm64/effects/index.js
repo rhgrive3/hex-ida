@@ -142,6 +142,8 @@ function addSubImmediateEncodingFailure(instruction) {
   const ops = Array.isArray(instruction?.ops) ? instruction.ops : [];
   if (!isGpOrZrRegister(ops[0])) return null;
   const alias = ['neg','negs','ngc','ngcs'].includes(mnemonic);
+  const expectedOperandCount = alias ? 2 : 3;
+  if (ops.length !== expectedOperandCount) return `arm64-${mnemonic}-operand-shape-unencodable`;
   const lhs = alias ? null : ops[1];
   const rhs = alias ? ops[1] : ops[2];
   if (rhs?.k === 'imm' && !ARM64_ADD_SUB_IMMEDIATE_MNEMONICS.has(mnemonic)) return `arm64-${mnemonic}-immediate-form-unencodable`;
@@ -195,6 +197,11 @@ function logicalEncodingFailure(instruction) {
   if (!isGpOrZrRegister(ops[0])) {
     if (mnemonic === 'tst' && ops[0]?.k !== 'reg') return 'arm64-tst-lhs-register-required';
     return null;
+  }
+  const expectedOperandCount = mnemonic === 'mvn' || mnemonic === 'tst' ? 2 : 3;
+  if (ops.length !== expectedOperandCount) {
+    if (mnemonic === 'tst' && ops.length < expectedOperandCount) return 'arm64-tst-rhs-register-required';
+    return `arm64-${mnemonic}-operand-shape-unencodable`;
   }
   const widthBits = Number(ops[0]?.bits || 0);
   if (widthBits !== 32 && widthBits !== 64) return `arm64-${mnemonic}-width-unencodable`;

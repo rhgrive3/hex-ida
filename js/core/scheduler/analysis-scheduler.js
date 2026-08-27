@@ -75,9 +75,10 @@ export class AnalysisScheduler {
   constructor({ store, maxConcurrency=2, starvationInterval=8, defaultBudget={}, onEvent=null }={}) {
     if (!store) throw new TypeError('artifact-store-required');
     if (!Number.isSafeInteger(maxConcurrency) || maxConcurrency <= 0) throw new TypeError('scheduler-max-concurrency-invalid');
+    if (onEvent != null && typeof onEvent !== 'function') throw new TypeError('scheduler-on-event-invalid');
     const normalizedStarvationInterval = strictSafeInteger(starvationInterval, 8, 'scheduler-starvation-interval-invalid', 1);
     this.store=store; this.maxConcurrency=maxConcurrency; this.starvationInterval=normalizedStarvationInterval; this.defaultBudget=defaultBudget;
-    this.onEvent = typeof onEvent === 'function' ? onEvent : null;
+    this.onEvent = onEvent;
     this.seq = 0;
     this.inflight=new Map(); this.running=0; this.dispatchEpoch=0; this.dag=new Map(); this.dagEdgeCount=0; this.states=new Map(); this.activeConsumers=0;
     this.queue=new IndexedMinHeap((a,b)=>a.orderKey<b.orderKey?-1:a.orderKey>b.orderKey?1:a.artifactId.localeCompare(b.artifactId));

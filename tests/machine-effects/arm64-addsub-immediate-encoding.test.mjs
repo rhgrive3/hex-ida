@@ -51,6 +51,18 @@ for (const [mnemonic, operands] of [
 }
 
 for (const [mnemonic, operands, reason] of [
+  ['add','x0, x1, x2, x3','arm64-add-operand-shape-unencodable'],
+  ['adds','x0, x1','arm64-adds-operand-shape-unencodable'],
+  ['sub','x0, x1, x2, x3','arm64-sub-operand-shape-unencodable'],
+  ['subs','x0, x1','arm64-subs-operand-shape-unencodable'],
+  ['adc','x0, x1, x2, x3','arm64-adc-operand-shape-unencodable'],
+  ['adcs','x0, x1','arm64-adcs-operand-shape-unencodable'],
+  ['sbc','x0, x1, x2, x3','arm64-sbc-operand-shape-unencodable'],
+  ['sbcs','x0, x1','arm64-sbcs-operand-shape-unencodable'],
+  ['neg','x0, x1, x2','arm64-neg-operand-shape-unencodable'],
+  ['negs','x0','arm64-negs-operand-shape-unencodable'],
+  ['ngc','x0, x1, x2','arm64-ngc-operand-shape-unencodable'],
+  ['ngcs','x0','arm64-ngcs-operand-shape-unencodable'],
   ['add','x0, x1, #4097','arm64-add-immediate-out-of-range'],
   ['sub','x0, x1, #-1','arm64-sub-immediate-out-of-range'],
   ['adds','x0, x1, #4096, lsl #12','arm64-adds-immediate-out-of-range'],

@@ -204,7 +204,10 @@ export function analyzeDecodedSemanticFunction(input = {}, options = {}) {
   const abiPlugin = resolveABIPlugin({ architecture:architectureId, platform:input.platform, abiId:input.abiId });
   if (!abiPlugin?.supported) throw new TypeError('semantic-function-supported-abi-required');
   if (abiPlugin.architectureId !== architectureId) throw new TypeError('semantic-function-abi-architecture-mismatch');
-  const blocks = partitionDecodedFunction(input.instructions, architecturePlugin, { callPrototype:input.callPrototype ?? null });
+  const orderedInstructions = Array.isArray(input.instructions)
+    ? input.instructions.slice().sort((left, right) => addressOf(left) < addressOf(right) ? -1 : addressOf(left) > addressOf(right) ? 1 : 0)
+    : input.instructions;
+  const blocks = partitionDecodedFunction(orderedInstructions, architecturePlugin, { callPrototype:input.callPrototype ?? null });
   const abiAdapter = semanticAbiAdapter(abiPlugin, input);
   let defaultMode = null;
   try { defaultMode = architecturePlugin.modes()?.[0] ?? null; } catch { defaultMode = null; }
@@ -224,11 +227,11 @@ export function analyzeDecodedSemanticFunction(input = {}, options = {}) {
     },
   }, { signal:options.signal, abiAdapter });
   abortIfRequested(options.signal);
-  const decodedByInstructionId = new Map(pipeline.machineEffects.map((bundle, index) => [bundle.instructionId, input.instructions[index]]));
+  const decodedByInstructionId = new Map(pipeline.machineEffects.map((bundle, index) => [bundle.instructionId, orderedInstructions[index]]));
   const legacyRows = new Map();
   for (const legacy of pipeline.legacyV1.instructions) {
     const candidates = (legacy.origin?.instructionIds || []).map((id) => decodedByInstructionId.get(id)).filter(Boolean);
-    const decoded = candidates.sort((left, right) => addressOf(left) < addressOf(right) ? -1 : addressOf(left) > addressOf(right) ? 1 : 0)[0] ?? input.instructions[0];
+    const decoded = candidates.sort((left, right) => addressOf(left) < addressOf(right) ? -1 : addressOf(left) > addressOf(right) ? 1 : 0)[0] ?? orderedInstructions[0];
     if (!legacyRows.has(legacy.row)) legacyRows.set(legacy.row, {
       row:legacy.row,
       address:legacy.address == null ? addressOf(decoded) : BigInt(legacy.address),
@@ -246,9 +249,9 @@ export function analyzeDecodedSemanticFunction(input = {}, options = {}) {
     legacyRows.set(block.startRow, { ...(prior || { row:block.startRow, size:0, mn:'', ops:'' }), address:proven });
   }
   const model = {
-    name:String(input.name || `sub_${addressOf(input.instructions[0]).toString(16)}`),
+    name:String(input.name || `sub_${addressOf(orderedInstructions[0]).toString(16)}`),
     instructions:Array.from({ length:maximumRow + 1 }, (_unused, row) => legacyRows.get(row) ?? {
-      row, address:addressOf(input.instructions[0]), size:0, mn:'', ops:'',
+      row, address:addressOf(orderedInstructions[0]), size:0, mn:'', ops:'',
     }),
     switches:[],
   };
@@ -258,7 +261,7 @@ export function analyzeDecodedSemanticFunction(input = {}, options = {}) {
     decoderSemanticVersion:String(input.decoderSemanticVersion),
     binaryId:String(input.binaryId),
     sliceId:String(input.sliceId),
-    addr:addressOf(input.instructions[0]),
+    addr:addressOf(orderedInstructions[0]),
     name:model.name,
     functionPrototype:input.functionPrototype ?? null,
   });

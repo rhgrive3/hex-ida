@@ -1122,7 +1122,7 @@ class App {
     const epoch=this.backend.gen;
     const max=Math.min(500000,Math.max(1000,Number(options.maxFunctions)||350000));
     const knowledgeLimit=Math.min(2048,Math.max(0,Number(options.knowledgeLimit ?? 512)));
-    this.recognitionBusy=(async()=>{
+    const pending=(async()=>{
       try { await this.ensureSwift(); } catch { /* Swift metadata is optional */ }
       if(epoch!==this.backend.gen || sym!==this.symbols) return null;
       const total=sym?.addrs?.length||0, count=Math.min(total,max), functions=new Array(count);
@@ -1172,8 +1172,10 @@ class App {
       };
       if(epoch===this.backend.gen && sym===this.symbols)this.recognition=state;
       return state;
-    })().finally(()=>{this.recognitionBusy=null;});
-    return this.recognitionBusy;
+    })();
+    this.recognitionBusy=pending;
+    try { return await pending; }
+    finally { if(this.recognitionBusy===pending)this.recognitionBusy=null; }
   }
 
   /** その関数がどのクラスのメソッドか。分からなければ null。 */
