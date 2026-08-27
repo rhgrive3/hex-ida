@@ -199,7 +199,10 @@ function logicalEncodingFailure(instruction) {
     return null;
   }
   const expectedOperandCount = mnemonic === 'mvn' || mnemonic === 'tst' ? 2 : 3;
-  if (ops.length !== expectedOperandCount) return `arm64-${mnemonic}-operand-shape-unencodable`;
+  if (ops.length !== expectedOperandCount) {
+    if (mnemonic === 'tst' && ops.length < expectedOperandCount) return 'arm64-tst-rhs-register-required';
+    return `arm64-${mnemonic}-operand-shape-unencodable`;
+  }
   const widthBits = Number(ops[0]?.bits || 0);
   if (widthBits !== 32 && widthBits !== 64) return `arm64-${mnemonic}-width-unencodable`;
 
