@@ -11,7 +11,7 @@ export const ARM64_BTYPE_REGISTER_ID = 'pstate.btype';
 export const ARM64_BTYPE_WIDTH_BITS = 2;
 export const ARM64_BTYPE_REGISTER = createRegisterValue(ARM64_BTYPE_REGISTER_ID, ARM64_BTYPE_WIDTH_BITS);
 
-const DIRECT_RESET = /^(?:b|bl|cbz|cbnz|tbz|tbnz|b\.(?:eq|ne|cs|hs|cc|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le|al|nv))$/;
+const DIRECT_RESET = /^(?:b|bl|cbz|cbnz|tbz|tbnz|ret|retaa|retab|b\.(?:eq|ne|cs|hs|cc|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le|al|nv))$/;
 const INDIRECT_JUMP = new Set(['br','braa','brab','braaz','brabz']);
 const INDIRECT_CALL = new Set(['blr','blraa','blrab','blraaz','blrabz']);
 
@@ -56,7 +56,7 @@ function guardedPageState(context) {
  * For BR-family transfers through IP0/IP1 (x16/x17), the branch type is always
  * the jump-compatible value 1. Other BR-family transfers depend on whether the
  * source page is guarded: non-guarded -> 1, guarded -> 3. BLR-family transfers
- * set call type 2. Direct branch families reset BTYPE to 0.
+ * set call type 2. Direct branch and return families reset BTYPE to 0.
  *
  * The current guarded-page state is a loader/runtime input, not instruction
  * syntax. If no concrete observation is available, retain the canonical
