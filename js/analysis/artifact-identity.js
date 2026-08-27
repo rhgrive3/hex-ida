@@ -58,14 +58,16 @@ export const PHASE7_DEPENDENCY_CLASSES = deepFreeze({
 function fail(code) { throw new TypeError(code); }
 
 function nonEmpty(value, code) {
-  const text = String(value ?? '').trim();
+  if (typeof value !== 'string') fail(code);
+  const text = value.trim();
   if (!text) fail(code);
   return text;
 }
 
-function optional(value) {
+function optional(value, code = 'phase7-artifact-invalid-optional-id') {
   if (value == null) return null;
-  const text = String(value).trim();
+  if (typeof value !== 'string') fail(code);
+  const text = value.trim();
   return text.length ? text : null;
 }
 
@@ -134,7 +136,7 @@ export function createPhase7ArtifactDescriptor(input = {}) {
   if (!KIND_SET.has(kind)) fail('phase7-artifact-unknown-kind');
   const classes = dependencyClassFor(kind);
 
-  const budgetClass = optional(input.budgetClass);
+  const budgetClass = optional(input.budgetClass, 'phase7-artifact-invalid-budget-class');
   // Budget class only belongs in the key when completeness can depend on it.
   // An artifact produced under an exhaustive budget is not interchangeable with
   // one truncated under an interactive budget.
@@ -142,11 +144,11 @@ export function createPhase7ArtifactDescriptor(input = {}) {
     phase7SchemaVersion: PHASE7_ARTIFACT_SCHEMA_VERSION,
     architectureId: classes.includes('architecture') || classes.includes('semantic')
       ? nonEmpty(input.architectureId, 'phase7-artifact-architecture-required')
-      : optional(input.architectureId),
+      : optional(input.architectureId, 'phase7-artifact-invalid-architecture-id'),
     abiId: classes.includes('abi')
       ? nonEmpty(input.abiId, 'phase7-artifact-abi-required')
-      : optional(input.abiId),
-    platformId: optional(input.platformId),
+      : optional(input.abiId, 'phase7-artifact-invalid-abi-id'),
+    platformId: optional(input.platformId, 'phase7-artifact-invalid-platform-id'),
     snapshotId: nonEmpty(input.snapshotId, 'phase7-artifact-snapshot-required'),
     cfgVersion: classes.includes('cfg') ? nonEmpty(input.cfgVersion, 'phase7-artifact-cfg-version-required') : null,
     ssaVersion: classes.includes('ssa') ? nonEmpty(input.ssaVersion, 'phase7-artifact-ssa-version-required') : null,
@@ -157,13 +159,13 @@ export function createPhase7ArtifactDescriptor(input = {}) {
     calleeSummaryIds: classes.includes('calleeSummaries')
       ? sortedIds(input.calleeSummaryIds, 'phase7-artifact-invalid-callee-summary-id')
       : [],
-    libraryModelId: classes.includes('libraryModel') ? optional(input.libraryModelId) : null,
+    libraryModelId: classes.includes('libraryModel') ? optional(input.libraryModelId, 'phase7-artifact-invalid-library-model-id') : null,
     debugProviderVersion: classes.includes('debugProvider') || classes.includes('debugIdentity')
-      ? optional(input.debugProviderVersion)
+      ? optional(input.debugProviderVersion, 'phase7-artifact-invalid-debug-provider-version')
       : null,
-    debugBuildIdentity: classes.includes('debugIdentity') ? optional(input.debugBuildIdentity) : null,
-    loaderEvidenceId: classes.includes('loaderEvidence') ? optional(input.loaderEvidenceId) : null,
-    userConstraintDigest: classes.includes('userConstraints') ? optional(input.userConstraintDigest) : null,
+    debugBuildIdentity: classes.includes('debugIdentity') ? optional(input.debugBuildIdentity, 'phase7-artifact-invalid-debug-build-identity') : null,
+    loaderEvidenceId: classes.includes('loaderEvidence') ? optional(input.loaderEvidenceId, 'phase7-artifact-invalid-loader-evidence-id') : null,
+    userConstraintDigest: classes.includes('userConstraints') ? optional(input.userConstraintDigest, 'phase7-artifact-invalid-user-constraint-digest') : null,
   };
 
   const options = input.options ?? {};
@@ -171,8 +173,8 @@ export function createPhase7ArtifactDescriptor(input = {}) {
 
   return createArtifactDescriptor({
     binaryId: nonEmpty(input.binaryId, 'phase7-artifact-binary-id-required'),
-    sliceId: optional(input.sliceId),
-    entityId: optional(input.functionId ?? input.entityId),
+    sliceId: optional(input.sliceId, 'phase7-artifact-invalid-slice-id'),
+    entityId: optional(input.functionId ?? input.entityId, 'phase7-artifact-invalid-entity-id'),
     artifactKind: kind,
     producerId: nonEmpty(input.analyzerId, 'phase7-artifact-analyzer-required'),
     producerVersion: nonEmpty(input.analyzerVersion, 'phase7-artifact-analyzer-version-required'),
