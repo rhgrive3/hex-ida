@@ -14,7 +14,7 @@ export const ARTIFACT_NOT_APPLICABLE_VERSION = 'n/a';
 
 const COMPLETENESS = new Set(['complete', 'bounded', 'partial', 'truncated', 'unsupported']);
 const encoder = new TextEncoder();
-const decoder = new TextDecoder();
+const decoder = new TextDecoder('utf-8', { fatal:true });
 
 export class ArtifactError extends Error {
   constructor(code, message = code, detail = null) {

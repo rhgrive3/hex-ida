@@ -1,4 +1,6 @@
 const COMPLETION_SOURCE = 'iframe-worker-pool';
+const GRAPH_COMPLETION_SOURCE = 'dynamic-task-graph';
+const MAX_RETAINED_GRAPH_COMPLETIONS = 2048;
 
 export class IframeWorkerCompletionBridge {
   constructor({ workerPool, coordinator, now = () => new Date().toISOString() } = {}) {
@@ -14,6 +16,7 @@ export class IframeWorkerCompletionBridge {
     this.sequence = 0;
     this.runByLease = new Map();
     this.currentBySlot = new Map();
+    this.graphCompletions = new Map();
     this.originalStart = workerPool.start.bind(workerPool);
     this.originalFollowup = workerPool.followup.bind(workerPool);
     workerPool.start = (args) => this.start(args);
@@ -131,6 +134,37 @@ export class IframeWorkerCompletionBridge {
     });
   }
 
+  publishGraphCompletion(data = {}) {
+    const runId = requiredIdentity(data.runId, 'runId');
+    const graphId = requiredIdentity(data.graphId, 'graphId');
+    const taskId = requiredIdentity(data.taskId, 'taskId');
+    const completionId = `graph-completion-${++this.sequence}`;
+    const event = Object.freeze({
+      type: 'worker.completed',
+      data: Object.freeze({
+        source: GRAPH_COMPLETION_SOURCE,
+        runId,
+        graphId,
+        taskId,
+        attempt: boundedAttempt(data.attempt),
+        workerId: optionalIdentity(data.workerId),
+        leaseId: optionalIdentity(data.leaseId),
+        slot: Number.isInteger(Number(data.slot)) ? Number(data.slot) : null,
+        completionId,
+      }),
+      observedAt: this.now(),
+    });
+    const record = { completionId, runId, graphId, taskId, event, delivered: false };
+    this.graphCompletions.set(completionId, record);
+    while (this.graphCompletions.size > MAX_RETAINED_GRAPH_COMPLETIONS) {
+      const oldest = this.graphCompletions.keys().next().value;
+      if (oldest == null) break;
+      this.graphCompletions.delete(oldest);
+    }
+    this.coordinator.enqueue(event);
+    return event;
+  }
+
   async waitEvent(args = {}, options = {}) {
     while (true) {
       /* Case B: completion can predate the wait by arbitrarily long. The
@@ -142,6 +176,15 @@ export class IframeWorkerCompletionBridge {
       if (retained) return retained;
 
       const event = await this.coordinator.waitEvent(args, options);
+      if (isGraphCompletion(event)) {
+        const record = this.graphCompletions.get(String(event.data?.completionId || ''));
+        if (!record || record.delivered) continue;
+        const requestedRunId = args.runId == null ? null : String(args.runId);
+        if (requestedRunId != null && record.runId !== requestedRunId) continue;
+        record.delivered = true;
+        this.graphCompletions.delete(record.completionId);
+        return event;
+      }
       if (!isPoolCompletion(event)) return event;
       const occurrence = this.currentOccurrenceForEvent(event);
       if (!occurrence || occurrence.delivered || !this.isCurrentRetainedCompletion(occurrence)) continue;
@@ -163,6 +206,13 @@ export class IframeWorkerCompletionBridge {
       occurrence.published = true;
       occurrence.delivered = true;
       return event;
+    }
+    for (const record of this.graphCompletions.values()) {
+      if (runId != null && record.runId !== runId) continue;
+      if (record.delivered) continue;
+      record.delivered = true;
+      this.graphCompletions.delete(record.completionId);
+      return record.event;
     }
     return null;
   }
@@ -225,7 +275,12 @@ export class IframeWorkerCompletionBridge {
     if (this.workerPool.followup !== this.originalFollowup) this.workerPool.followup = this.originalFollowup;
     this.runByLease.clear();
     this.currentBySlot.clear();
+    this.graphCompletions.clear();
   }
+}
+
+function isGraphCompletion(event) {
+  return event?.type === 'worker.completed' && event?.data?.source === GRAPH_COMPLETION_SOURCE;
 }
 
 function isPoolCompletion(event) {
@@ -252,4 +307,13 @@ function requiredIdentity(value, field) {
   const text = String(value ?? '').trim();
   if (!text) throw new TypeError(`Iframe Worker completion ${field} must be non-empty.`);
   return text;
+}
+
+function optionalIdentity(value) {
+  const text = String(value ?? '').trim();
+  return text || null;
+}
+function boundedAttempt(value) {
+  const number = Number(value);
+  return Number.isInteger(number) && number >= 1 ? number : null;
 }

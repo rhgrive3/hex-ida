@@ -11,6 +11,15 @@ function api(name, id, cat) {
   passed++;
 }
 
+function apiContract(name, expected) {
+  const got = apiInfo(name);
+  if (!got) throw new Error(`${name}: expected API contract, got unknown`);
+  for (const [key, value] of Object.entries(expected)) {
+    if (got[key] !== value) throw new Error(`${name}: ${key}=${String(got[key])}, want ${String(value)}`);
+  }
+  passed++;
+}
+
 api('_dispatch_get_global_queue', 'concurrency', 'concurrency');
 api('_dispatch_get_main_queue', 'concurrency', 'concurrency');
 api('_CGRectGetWidth', 'geometry', 'ui');
@@ -32,6 +41,13 @@ api('_swift_getErrorValue', 'swift_runtime', 'runtime');
 api('_strptime', 'time', 'time');
 api('_localtime_r', 'time', 'time');
 api('_dispatch_time', 'time', 'time');
+
+// #2017: allocation/mutation semantics must not be collapsed into the broad
+// read-only libc_string family. Exercise the public apiInfo() path so the
+// regression covers precise-table precedence plus the cross-binary fallback.
+apiContract('strndup', { id:'libc_strndup', cat:'string', ret:'heap', effect:'alloc' });
+apiContract('__strcat_chk', { id:'libc_strcat_chk', cat:'string', ret:'ptr', effect:'copy' });
+apiContract('strspn', { id:'libc_string', cat:'string', ret:null, effect:'read' });
 
 process.stdout.write(`API classification: ${passed} regressions ok\n`);
 

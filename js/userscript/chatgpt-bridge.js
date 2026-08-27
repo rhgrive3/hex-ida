@@ -5,7 +5,10 @@ import {
 
 const LATE_BINDING_LIMIT = 32;
 const DEFAULT_LATE_BINDING_WAIT_MS = 2500;
-const DEV_SUPERVISOR_PROMPT_PREFIX = 'HEX DEV SUPERVISOR PROTOCOL hex-dev-supervisor-v1';
+const DEV_SUPERVISOR_PROMPT_PREFIXES = Object.freeze([
+  'HEX DEV SUPERVISOR PROTOCOL hex-dev-supervisor-v1',
+  'HEX DEV SUPERVISOR CONTINUATION hex-dev-supervisor-v1',
+]);
 
 export function installChatGPTWebBridge(options = {}) {
   const existing = globalThis.__HEX_CHATGPT_BRIDGE__;
@@ -57,9 +60,11 @@ export function installChatGPTWebBridge(options = {}) {
           timeoutMs: explicitTimeout(requestOptions.timeoutMs ?? options.timeoutMs) ?? undefined,
           expectedConversation: routed.conversation,
           newConversation: routed.isNew === true,
-          completionMode: requestPrompt.startsWith(DEV_SUPERVISOR_PROMPT_PREFIX)
-            ? 'single-json-object'
-            : null,
+          completionMode: requestOptions.completionMode ?? (
+            DEV_SUPERVISOR_PROMPT_PREFIXES.some((prefix) => requestPrompt.startsWith(prefix))
+              ? 'single-json-object'
+              : null
+          ),
         });
         // New Chat can expose its settled /c/<id> slightly after the assistant
         // response itself has become quiet. If we return before that route

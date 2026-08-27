@@ -46,7 +46,11 @@ export function createResourceBudget(options = {}) {
     consumeWork: (amount = 1) => check('work', amount, limits.maxWork, 'resource-limit-work'),
     consumeOutputBytes: (amount) => check('outputBytes', amount, limits.maxOutputBytes, 'resource-limit-output'),
     checkDepth: (depth) => depth <= limits.maxDepth ? !stopped : stop('resource-limit-depth', { depth, limit: limits.maxDepth }),
-    checkpoint: () => !stopped && !signal?.aborted,
+    checkpoint: () => {
+      if (stopped) return false;
+      if (signal?.aborted) return stop('cancelled', signal.reason?.message || null);
+      return true;
+    },
     partial: (reason = stopped?.reason || 'partial') => Object.freeze({ status: 'partial', reason, usage: Object.freeze({ ...used }), limits }),
     snapshot: () => Object.freeze({ version: RESOURCE_BUDGET_VERSION, limits, usage: Object.freeze({ ...used }), stopped }),
   });

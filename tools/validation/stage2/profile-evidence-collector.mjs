@@ -122,7 +122,7 @@ export const PROFILE_COMMAND_PROOF_MARKERS = Object.freeze({
   'a2-machine-effects': 'machine-effects: PASS',
   'a7-runtime-authority': '[stage2] runtime authority tests passed',
   'a7-capability-promotion': '[stage2] profile-bound capability promotion tests passed',
-  'a7-lldb-real-fixture': '[stage2] active x86 LLDB A7 provider proof passed; canonical evidence assembly remains required',
+  'a7-lldb-real-fixture': '[stage2] independent active x86 LLDB A7 pause/cancel proofs passed; canonical evidence assembly remains required',
   'a7-cross-target-real-fixtures': '[stage2] active AArch64/PAC/RV64 LLDB remote provider proofs passed',
   'm6-real-fixtures': 'deterministic real managed fixtures passed for wasm/dex/cil/jvm',
   'f6-real-rebuild': 'F6_REAL_REBUILD_PROOF=',

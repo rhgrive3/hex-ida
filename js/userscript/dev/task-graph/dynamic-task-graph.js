@@ -41,6 +41,7 @@ export class DynamicTaskGraphHost {
     sleep = delay,
     pollMs = DEFAULT_POLL_MS,
     cleanupTimeoutMs = DEFAULT_CLEANUP_TIMEOUT_MS,
+    onWorkerCompletion = null,
   } = {}) {
     if (!workerPool || typeof workerPool.claim !== 'function' || typeof workerPool.release !== 'function'
       || typeof workerPool.waitResult !== 'function') {
@@ -52,10 +53,11 @@ export class DynamicTaskGraphHost {
     this.sleep = sleep;
     this.pollMs = boundedInt(pollMs, 1, 1000, DEFAULT_POLL_MS);
     this.cleanupTimeoutMs = boundedInt(cleanupTimeoutMs, 10, 60000, DEFAULT_CLEANUP_TIMEOUT_MS);
+    this.onWorkerCompletion = typeof onWorkerCompletion === 'function' ? onWorkerCompletion : null;
     this.graphs = new Map();
   }
 
-  async start({ graphId = null, tasks, maxConcurrency = DEV_WORKER_POOL_MAX } = {}) {
+  async start({ graphId = null, tasks, maxConcurrency = DEV_WORKER_POOL_MAX, runId = null } = {}) {
     const id = graphId == null ? randomGraphId(this.cryptoRef) : normalizeGraphId(graphId);
     if (this.graphs.has(id)) throw graphError('graph-exists', `Task graph already exists: ${id}`);
     const graph = new DynamicTaskGraph({
@@ -67,6 +69,8 @@ export class DynamicTaskGraphHost {
       sleep: this.sleep,
       pollMs: this.pollMs,
       cleanupTimeoutMs: this.cleanupTimeoutMs,
+      runId,
+      onWorkerCompletion: this.onWorkerCompletion,
     });
     this.graphs.set(id, graph);
     await graph.start();
@@ -100,13 +104,15 @@ export class DynamicTaskGraphHost {
 }
 
 export class DynamicTaskGraph {
-  constructor({ graphId, tasks, maxConcurrency, workerPool, now, sleep, pollMs, cleanupTimeoutMs } = {}) {
+  constructor({ graphId, tasks, maxConcurrency, workerPool, now, sleep, pollMs, cleanupTimeoutMs, runId = null, onWorkerCompletion = null } = {}) {
     this.graphId = normalizeGraphId(graphId);
     this.workerPool = workerPool;
     this.now = now;
     this.sleep = sleep;
     this.pollMs = pollMs;
     this.cleanupTimeoutMs = cleanupTimeoutMs;
+    this.runId = normalizeOptionalRunId(runId);
+    this.onWorkerCompletion = typeof onWorkerCompletion === 'function' ? onWorkerCompletion : null;
     this.maxConcurrency = boundedInt(maxConcurrency, 1, DEV_WORKER_POOL_MAX, DEV_WORKER_POOL_MAX);
     this.tasks = normalizeTasks(tasks, now);
     assertAcyclic(this.tasks);
@@ -268,6 +274,7 @@ export class DynamicTaskGraph {
         if (cleanupError) {
           closeAttemptTrace(trace, 'failed', cleanupError);
           this.finishTaskFailure(task, cleanupError);
+          if (outcome) this.publishWorkerCompletion(task, lease);
           return;
         }
         if (outcome && !attemptError) {
@@ -276,11 +283,13 @@ export class DynamicTaskGraph {
           task.error = null;
           task.state = DEV_TASK_STATE.SUCCEEDED;
           task.finishedAt = this.now();
+          this.publishWorkerCompletion(task, lease);
           return;
         }
         if (this.abortController.signal.aborted || attemptError?.code === 'cancelled') {
           closeAttemptTrace(trace, 'cancelled', attemptError);
           this.finishTaskCancelled(task, this.cancelReason || attemptError?.message || 'cancelled');
+          if (outcome) this.publishWorkerCompletion(task, lease);
           return;
         }
         closeAttemptTrace(trace, 'failed', attemptError);
@@ -288,9 +297,11 @@ export class DynamicTaskGraph {
         if (task.attempts < task.maxAttempts) {
           task.state = DEV_TASK_STATE.READY;
           task.readyAt = this.now();
+          if (outcome) this.publishWorkerCompletion(task, lease);
           return;
         }
         this.finishTaskFailure(task, attemptError || graphError('task-failed', `Task failed: ${task.id}`));
+        if (outcome) this.publishWorkerCompletion(task, lease);
         return;
       }
     } finally {
@@ -331,6 +342,19 @@ export class DynamicTaskGraph {
     // already clamped to MAX_ATTEMPTS when the task is normalized.
     task.trace.push(trace);
     return trace;
+  }
+
+  publishWorkerCompletion(task, lease) {
+    if (!this.runId || !this.onWorkerCompletion) return null;
+    return this.onWorkerCompletion(Object.freeze({
+      runId: this.runId,
+      graphId: this.graphId,
+      taskId: task.id,
+      attempt: task.attempts,
+      leaseId: lease?.leaseId || null,
+      workerId: lease?.workerId || null,
+      slot: lease?.slot ?? null,
+    }));
   }
 
   async waitForWorkerResult(task, leaseId) {
@@ -598,6 +622,7 @@ function safeClone(value) {
 }
 function normalizeTaskId(value) { const id = String(value || '').trim(); if (!TASK_ID.test(id)) throw new TypeError(`Invalid task id: ${value}`); return id; }
 function normalizeGraphId(value) { const id = String(value || '').trim(); if (!GRAPH_ID.test(id)) throw new TypeError(`Invalid graph id: ${value}`); return id; }
+function normalizeOptionalRunId(value) { if (value == null) return null; const id = String(value).trim(); if (!id) throw new TypeError('Invalid Supervisor runId.'); return id; }
 function plainRecord(value) { if (!value || typeof value !== 'object' || Array.isArray(value)) return false; const proto = Object.getPrototypeOf(value); return proto === Object.prototype || proto === null; }
 function boundedInt(value, min, max, fallback) { if (value == null) return fallback; const number = Number(value); if (!Number.isFinite(number)) throw new TypeError('Expected finite numeric bound.'); return Math.min(max, Math.max(min, Math.floor(number))); }
 function settleWithin(operation, timeoutMs) {

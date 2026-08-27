@@ -19,10 +19,13 @@ import {
   verifyCompetitiveScorecard,
 } from '../../tools/validation/competitive/verify.mjs';
 import {
+  stage1GateDefinitions,
   validateStage1ScopeAndLedger,
 } from '../../tools/validation/stage1/verify.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+const competitiveProfile = loadCompetitiveProfile();
+const completeScorecard = await generateCompetitiveScorecard({ profile: competitiveProfile });
 
 // 1. Mutation: Corpus item deleted / missing fixture
 {
@@ -53,26 +56,10 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
   assert.ok(result.falseNoAlias > 0, 'False NoAlias must be flagged');
 
   // Verify that competitive verifier rejects non-zero falseNoAlias
-  const fakeScorecard = {
-    schemaVersion: 'hex-competitive-scorecard/v1',
-    profileId: 'test-profile',
-    gitSha: 'a'.repeat(40),
-    treeSha: 'b'.repeat(40),
-    generatedAt: new Date().toISOString(),
-    runtimeHardwareClass: 'test',
-    entries: [
-      {
-        metricId: 'alias-v2-false-no-alias',
-        hexValue: 1,
-        referenceValue: 0,
-        comparison: 'LOSS',
-        runPolicy: 'test',
-      },
-    ],
-    summary: { totalMetrics: 1, wins: 0, ties: 0, losses: 1, unmeasured: 0 },
-  };
+  const fakeScorecard = structuredClone(completeScorecard);
+  fakeScorecard.entries.find((entry) => entry.metricId === 'alias-v2-false-no-alias').hexValue = 1;
   assert.throws(
-    () => verifyCompetitiveScorecard(fakeScorecard),
+    () => verifyCompetitiveScorecard(fakeScorecard, competitiveProfile),
     /competitive-hard-invariant-failed:false-no-alias:1/,
     'Must reject scorecard with falseNoAlias > 0'
   );
@@ -85,26 +72,10 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
   const result = scoreAliasQueriesV2(falseMustAnswerer, { queries: ALIAS_QUERIES_V2 });
   assert.equal(result.falseMustAlias, 1, 'Must detect false MustAlias');
 
-  const fakeScorecard = {
-    schemaVersion: 'hex-competitive-scorecard/v1',
-    profileId: 'test-profile',
-    gitSha: 'a'.repeat(40),
-    treeSha: 'b'.repeat(40),
-    generatedAt: new Date().toISOString(),
-    runtimeHardwareClass: 'test',
-    entries: [
-      {
-        metricId: 'alias-v2-false-must-alias',
-        hexValue: 1,
-        referenceValue: 0,
-        comparison: 'LOSS',
-        runPolicy: 'test',
-      },
-    ],
-    summary: { totalMetrics: 1, wins: 0, ties: 0, losses: 1, unmeasured: 0 },
-  };
+  const fakeScorecard = structuredClone(completeScorecard);
+  fakeScorecard.entries.find((entry) => entry.metricId === 'alias-v2-false-must-alias').hexValue = 1;
   assert.throws(
-    () => verifyCompetitiveScorecard(fakeScorecard),
+    () => verifyCompetitiveScorecard(fakeScorecard, competitiveProfile),
     /competitive-hard-invariant-failed:false-must-alias:1/,
     'Must reject scorecard with falseMustAlias > 0'
   );
@@ -114,14 +85,12 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 {
   assert.throws(
     () => verifyCompetitiveProfile({
-      schemaVersion: 'hex-competitive-profile/v1',
-      profileId: 'bad-profile',
+      ...structuredClone(competitiveProfile),
       baselineCommit: null,
       baselineTree: null,
       specificationBlobSha: null,
-      metrics: {},
     }),
-    /missing-frozen-identities/,
+    /profile-baselineCommit/,
     'Must reject profile missing baseline/specification identities'
   );
 }
@@ -141,16 +110,17 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 {
   assert.throws(
     () => verifyCompetitiveProfile({
-      schemaVersion: 'hex-competitive-profile/v1',
+      ...structuredClone(competitiveProfile),
       profileId: 'bad-direction',
-      baselineCommit: 'a'.repeat(40),
-      baselineTree: 'b'.repeat(40),
-      specificationBlobSha: 'c'.repeat(40),
       metrics: {
-        'mutated-metric': { direction: 'invalid-direction', regressionTolerance: 0 },
+        ...structuredClone(competitiveProfile.metrics),
+        'alias-v2-exact-precision': {
+          ...structuredClone(competitiveProfile.metrics['alias-v2-exact-precision']),
+          direction: 'invalid-direction',
+        },
       },
     }),
-    /invalid-metric-direction:mutated-metric:invalid-direction/,
+    /metric-direction:alias-v2-exact-precision/,
     'Must reject metric claiming invalid direction'
   );
 }
@@ -160,16 +130,18 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
   // Profile with exact-zero tolerance cannot have non-zero tolerance
   assert.throws(
     () => verifyCompetitiveProfile({
-      schemaVersion: 'hex-competitive-profile/v1',
+      ...structuredClone(competitiveProfile),
       profileId: 'bad-tolerance',
-      baselineCommit: 'a'.repeat(40),
-      baselineTree: 'b'.repeat(40),
-      specificationBlobSha: 'c'.repeat(40),
       metrics: {
-        'alias-v2-false-must-alias': { direction: 'exact-zero', regressionTolerance: 0.1 },
+        ...structuredClone(competitiveProfile.metrics),
+        'alias-v2-false-must-alias': {
+          ...structuredClone(competitiveProfile.metrics['alias-v2-false-must-alias']),
+          direction: 'exact-zero',
+          regressionTolerance: 0.1,
+        },
       },
     }),
-    /exact-zero-metric-must-have-zero-tolerance/,
+    /metric-exact-zero-tolerance:alias-v2-false-must-alias/,
     'Must reject non-zero tolerance on exact-zero invariant'
   );
 }
@@ -190,6 +162,18 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
     workflowContent.includes('tools/validation/competitive/**'),
     'Stage 1 workflow must trigger on competitive validation paths'
   );
+  assert.ok(
+    workflowContent.includes('tests/competitive/**'),
+    'Stage 1 workflow must trigger on competitive contract tests'
+  );
+  assert.ok(
+    workflowContent.includes("'package.json'"),
+    'Stage 1 workflow must trigger when the competitive test command can change'
+  );
+  const a1 = stage1GateDefinitions().find((gate) => gate.id === 'A1');
+  assert.ok(a1?.evidence.includes('tests/competitive/**'), 'A1 must own competitive tests');
+  assert.ok(a1?.commands.some((command) => JSON.stringify(command).includes('competitive:test')), 'A1 must run competitive:test');
+  assert.ok(a1?.commands.some((command) => JSON.stringify(command).includes('competitive:verify')), 'A1 must run competitive:verify');
 }
 
 // 10. Mutation: Exact-run report accidentally required as committed dirty artifact

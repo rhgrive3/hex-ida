@@ -72,6 +72,27 @@ test('matched-partial record explicitly covered by entity id may be authoritativ
   assert.equal(calls[0][0], 'hard');
 });
 
+test('non-string coverage selectors and record IDs cannot collide into authority', () => {
+  const malformedCoverage = resultFor(createDebugIdentity({
+    verdict: 'matched-partial', providerId: 'pdb', providerVersion: '1',
+    expected: 'build-A', observed: 'build-A-partial', method: 'partial-id',
+    coverage: { entityIds: [{ source:'A' }] },
+  }));
+  assert.equal(isDebugRecordAuthoritative(malformedCoverage, {
+    kind:'type', entityId:'[object Object]', buildIdentity:'build-A-partial', descriptor:{},
+  }), false);
+  assert.throws(() => record({ entityId:{ source:'B' } }), /debug-record-entity-required/);
+
+  const malformedModule = resultFor(createDebugIdentity({
+    verdict: 'matched-partial', providerId: 'pdb', providerVersion: '1',
+    expected: 'build-A', observed: 'build-A-partial', method: 'partial-id',
+    coverage: { modules: [{ source:'A' }] },
+  }));
+  assert.equal(isDebugRecordAuthoritative(malformedModule, record({
+    descriptor:{ module:'[object Object]', claim:{ kind:'int' } },
+  })), false);
+});
+
 test('matched-authoritative remains authoritative and symbol confidence is per-record', () => {
   const full = resultFor(createDebugIdentity({
     verdict: 'matched-authoritative', providerId: 'pdb', providerVersion: '1',

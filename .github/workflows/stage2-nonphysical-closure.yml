@@ -35,21 +35,75 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || inputs.expect_sha }}
           fetch-depth: 0
 
+      - name: Detect Stage 2 proof impact
+        id: impact
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || inputs.expect_sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" != "pull_request" ]]; then
+            echo "required=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          required=false
+          while IFS= read -r changed; do
+            case "$changed" in
+              js/targets/architecture/*|\
+              js/runtime/*|\
+              js/managed/*|\
+              js/rebuild/*|\
+              js/phase12/*|\
+              js/platform/stage2-*|\
+              js/platform/physical-ipad-evidence.js|\
+              js/knowledge/*|\
+              js/signature/*|\
+              js/pattern/*|\
+              js/collaboration/*|\
+              tests/machine-effects/*|\
+              tests/stage2/*|\
+              tests/phase12/*|\
+              tools/validation/machine-effects/*|\
+              tools/validation/stage2/*|\
+              tools/validation/phase6/*|\
+              tools/validation/phase10/*|\
+              tools/validation/phase11/*|\
+              tools/validation/phase12/*|\
+              tools/validation/rebuild-independent-oracle.mjs|\
+              package.json|package-lock.json)
+                required=true
+                break
+                ;;
+            esac
+          done < <(git diff --name-only "$BASE_SHA...$HEAD_SHA")
+
+          echo "required=$required" >> "$GITHUB_OUTPUT"
+          if [[ "$required" == "false" ]]; then
+            echo "Stage 2 semantic/profile inputs are unchanged; skipping native proof providers and full closure validation."
+          fi
+
       - name: Set up Node
+        if: steps.impact.outputs.required == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
 
       - name: Install active native proof providers
+        if: steps.impact.outputs.required == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y clang-18 lld-18 llvm-18 lldb-18 qemu-user
 
       - name: Install dependencies
+        if: steps.impact.outputs.required == 'true'
         run: npm ci --no-audit --no-fund
 
       - name: Assert exact candidate identity
+        if: steps.impact.outputs.required == 'true'
         id: identity
         shell: bash
         env:
@@ -63,6 +117,7 @@ jobs:
           echo "tree=$tree" >> "$GITHUB_OUTPUT"
 
       - name: Require canonical generated artifacts to be synchronized
+        if: steps.impact.outputs.required == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -70,7 +125,15 @@ jobs:
           git diff --exit-code
           test -z "$(git status --porcelain --untracked-files=no)"
 
+      - name: Run canonical A2 machine-effects proof with visible diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p reports/stage2
+          node tests/machine-effects/run.mjs 2>&1 | tee reports/stage2/machine-effects.log
+
       - name: Collect exact non-physical Stage 2 profile evidence
+        if: steps.impact.outputs.required == 'true'
         id: profile
         shell: bash
         env:
@@ -87,6 +150,7 @@ jobs:
           echo "profile_path=reports/stage2/profile-evidence-runs/$run_id/profile-evidence.json" >> "$GITHUB_OUTPUT"
 
       - name: Run exact-head Stage 2 verifier and full repository validation
+        if: steps.impact.outputs.required == 'true'
         shell: bash
         env:
           SHA: ${{ steps.identity.outputs.sha }}
@@ -95,6 +159,7 @@ jobs:
           node tools/validation/stage2/verify.mjs --expect-sha "$SHA" --full
 
       - name: Record non-physical candidate identity
+        if: steps.impact.outputs.required == 'true'
         shell: bash
         env:
           SHA: ${{ steps.identity.outputs.sha }}
@@ -122,7 +187,7 @@ jobs:
           NODE
 
       - name: Upload exact proof artifacts
-        if: always()
+        if: always() && steps.impact.outputs.required == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: stage2-nonphysical-${{ steps.identity.outputs.sha || github.run_id }}

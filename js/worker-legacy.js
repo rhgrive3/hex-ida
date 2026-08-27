@@ -1393,7 +1393,9 @@ async function scanProgram({ regionId, requestId, epoch, callLimit, refLimit, ki
       }
 
       const pair = Words.pairedOffset(w);
-      const base = pair ? provenance.base(pair.rn, index) : null;
+      const base = pair ? provenance.base(pair.rn, index, {
+        allowEntryFallback: pair.load || pair.store,
+      }) : null;
       if (pair && base != null) {
         const full = base + pair.imm;
         addRef(pc, full, pair.load ? 1 : pair.store ? 2 : 0);
@@ -1416,7 +1418,7 @@ async function scanProgram({ regionId, requestId, epoch, callLimit, refLimit, ki
         // access shapes whose decoder establishes an exact pair/RMW memory role.
         const referenceWorthy = memWrite.pair === true || memWrite.rmw === true;
         const knownBase = referenceWorthy && !memWrite.indexed && memWrite.disp != null
-          ? provenance.base(memWrite.base, index) : null;
+          ? provenance.base(memWrite.base, index, { allowEntryFallback: true }) : null;
         if (knownBase != null) {
           const full = memWrite.mode === 'post' ? knownBase : knownBase + memWrite.disp;
           addRef(pc, full, memWrite.rmw ? 3 : memWrite.load ? 1 : memWrite.store ? 2 : 0);
@@ -2131,7 +2133,9 @@ async function findXrefs({ regionId, target, limit, requestId, epoch }) {
         continue;
       }
       const pair = pairedOffset(w);
-      const base = pair ? provenance.base(pair.rn, index) : null;
+      const base = pair ? provenance.base(pair.rn, index, {
+        allowEntryFallback: pair.load || pair.store,
+      }) : null;
       if (pair && base != null) {
         const full = base + pair.imm;
         if (full === want) {
@@ -2147,7 +2151,8 @@ async function findXrefs({ regionId, target, limit, requestId, epoch }) {
       }
       const memWrite = Words.memoryAccess(w);
       if (memWrite) {
-        const knownBase = !memWrite.indexed && memWrite.disp != null ? provenance.base(memWrite.base, index) : null;
+        const knownBase = !memWrite.indexed && memWrite.disp != null
+          ? provenance.base(memWrite.base, index, { allowEntryFallback: true }) : null;
         if (knownBase != null) {
           const full = memWrite.mode === 'post' ? knownBase : knownBase + memWrite.disp;
           if (full === want) {

@@ -53,7 +53,14 @@ function required(value, code) {
 function stringArray(value, code) {
   if (value == null) return [];
   if (!Array.isArray(value)) fail(code);
-  return [...new Set(value.map(String).filter(Boolean))].sort();
+  const normalized = [];
+  for (const item of value) {
+    if (typeof item !== 'string') fail(code);
+    const text = item.trim();
+    if (!text) fail(code);
+    normalized.push(text);
+  }
+  return [...new Set(normalized)].sort();
 }
 function safeArray(value, code) {
   if (value == null) return [];

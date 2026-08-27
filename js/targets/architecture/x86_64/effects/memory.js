@@ -603,20 +603,38 @@ function liftPop(ctx) {
   return ctx.partial('x86-pop-destination-unmodelled', ['registers','memory'], { possibleFaults:faults });
 }
 
+function liftPushf(ctx, family) {
+  return ctx.partial(`x86-${family}-architectural-flags-semantics-unmodelled`, ['registers', 'memory', 'flags', 'other'], {
+    detail: {
+      reason: 'architectural RFLAGS masks, reserved bits, and stack fault behavior are not represented by the frozen x86 effect contract',
+    },
+    metadata: { operation: family, stackFlagsSemantics: 'fail-closed-until-masks-and-faults-are-modeled' },
+  });
+}
+
+function liftPopf(ctx, family) {
+  return ctx.partial(`x86-${family}-architectural-flags-semantics-unmodelled`, ['registers', 'memory', 'flags', 'other'], {
+    detail: {
+      reason: 'architectural RFLAGS masks, privilege-controlled bits, and stack fault behavior are not represented by the frozen x86 effect contract',
+    },
+    metadata: { operation: family, stackFlagsSemantics: 'fail-closed-until-masks-privilege-and-faults-are-modeled' },
+  });
+}
+
 export function liftX86MemoryEffects(instruction, context = {}) {
   const family = String(instruction?.instructionFamily || '').toLowerCase();
   const recognized = MOVES.has(family)
     || BINARY_ARITHMETIC.has(family)
     || BINARY_LOGICAL.has(family)
     || CROSS_LANE_REQUIRED.has(family)
-    || ['cmp','test','not','push','pop','setcc','cmovcc'].includes(family)
+    || ['cmp','test','not','push','pop','pushf','pushfq','popf','popfq','setcc','cmovcc'].includes(family)
     || family.startsWith('set')
     || family.startsWith('cmov');
   if (!recognized) return null;
 
   const hasMemory = memoryOperands(instruction?.detail?.operands || []).length > 0;
   const lock = hasLock(instruction);
-  const implicitStackMemory = family === 'push' || family === 'pop';
+  const implicitStackMemory = family === 'push' || family === 'pop' || family === 'pushf' || family === 'pushfq' || family === 'popf' || family === 'popfq';
   if (!hasMemory && !lock && !implicitStackMemory) return null;
 
   const ctx = createX86EffectContext(instruction, context);
@@ -630,6 +648,8 @@ export function liftX86MemoryEffects(instruction, context = {}) {
   if (CROSS_LANE_REQUIRED.has(family)) return liftIntegratedCrossLane(ctx, family);
   if (family === 'push') return liftPush(ctx);
   if (family === 'pop') return liftPop(ctx);
+  if (family === 'pushf' || family === 'pushfq') return liftPushf(ctx, family);
+  if (family === 'popf' || family === 'popfq') return liftPopf(ctx, family);
   if (MOVES.has(family)) return liftMove(ctx, family);
   if (family === 'cmp' || family === 'test') return liftCompareOrTest(ctx, family);
   if (BINARY_ARITHMETIC.has(family)) return liftBinaryMemory(ctx, family, false);

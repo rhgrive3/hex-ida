@@ -141,8 +141,19 @@ jobs:
           )
         run: npm run userscript:build
 
+      - name: Verify invariant baseline classifier contract
+        if: matrix.name == 'invariants'
+        run: node tests/invariant-pr-baseline.mjs
+
       - name: Run exact check shard
+        if: matrix.name != 'invariants'
         run: ${{ matrix.command }}
+
+      - name: Run exact invariant shard with current-main regression isolation
+        if: matrix.name == 'invariants'
+        env:
+          HEX_INVARIANT_BASE_REF: refs/remotes/origin/main
+        run: node tools/validation/invariant-pr-baseline.mjs
 
   invariant-gates:
     name: invariant-gates

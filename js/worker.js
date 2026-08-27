@@ -7,3 +7,5 @@ importScripts('./worker-fixes.js');
 importScripts('./worker-xref-memory-fix.js');
 importScripts('./worker-kind-fix.js');
 importScripts('./worker-function-provenance-fix.js');
+/* Install merge-point hardening last so it wraps the current canonical scanners. */
+importScripts('./worker-loop-provenance-fix.js');

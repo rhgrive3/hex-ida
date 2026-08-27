@@ -20,7 +20,7 @@
  * bad debug record cannot poison unrelated components of the graph.
  */
 
-import { deepFreeze, stableDigest } from '../../core/identity/index.js';
+import { deepFreeze, stableDigest, stableStringify } from '../../core/identity/index.js';
 import { createAnalysisStatus, isCompleteStatus } from '../status.js';
 import {
   TYPE_LAYERS,
@@ -28,6 +28,7 @@ import {
   createContradiction,
   createHardConstraint,
   createSoftEvidence,
+  createTypeClaim,
 } from './constraints.js';
 
 export const TYPE_GRAPH_ANALYZER_ID = 'phase7.types.constraint-graph';
@@ -44,6 +45,43 @@ function fail(code) { throw new TypeError(code); }
 
 function mergedEvidenceIds(left, right) {
   return [...new Set([...(left ?? []), ...(right ?? [])])].sort();
+}
+
+function constraintOrderKey(constraint) {
+  return stableDigest(constraint);
+}
+
+function mergeCompatibleHardClaims(entityId, layer, claims) {
+  const distinct = [...new Map(claims.map((claim) => [claim.key, claim])).values()]
+    .sort((left, right) => left.key.localeCompare(right.key));
+  if (distinct.length === 1) return distinct[0];
+
+  const descriptors = distinct.map((claim) => claim.descriptor);
+  if (descriptors.some((descriptor) => !descriptor || typeof descriptor !== 'object' || Array.isArray(descriptor))) return null;
+  if (layer === 'structural') {
+    const members = [...descriptors].sort((left, right) => {
+      const leftOffset = Number(left.offset ?? 0);
+      const rightOffset = Number(right.offset ?? 0);
+      return leftOffset - rightOffset || stableStringify(left).localeCompare(stableStringify(right));
+    });
+    return createTypeClaim({ layer, entityId, descriptor:{ ...members[0], members } });
+  }
+  const merged = {};
+  if (layer === 'nominal') {
+    const names = [...new Set(descriptors.flatMap((descriptor) => [descriptor.name, ...(descriptor.aliases ?? [])]).filter(Boolean))].sort();
+    if (names.length > 0) {
+      merged.name = names[0];
+      merged.aliases = names;
+    }
+  }
+  for (const descriptor of descriptors) {
+    for (const [key,value] of Object.entries(descriptor).sort(([left],[right]) => left.localeCompare(right))) {
+      if (layer === 'nominal' && (key === 'name' || key === 'aliases')) continue;
+      if (!(key in merged)) merged[key] = value;
+      else if (stableStringify(merged[key]) !== stableStringify(value)) return null;
+    }
+  }
+  return createTypeClaim({ layer, entityId, descriptor:merged });
 }
 
 export class TypeConstraintGraph {
@@ -174,12 +212,13 @@ function solveLayer(entityId, layer, bucket) {
   for (let i = 0; i < bucket.hard.length; i += 1) {
     for (let j = i + 1; j < bucket.hard.length; j += 1) {
       if (claimsConflict(bucket.hard[i].claim, bucket.hard[j].claim)) {
+        const pair = [bucket.hard[i], bucket.hard[j]].sort((left, right) => constraintOrderKey(left).localeCompare(constraintOrderKey(right)));
         contradictions.push(createContradiction({
           layer,
           entityId,
-          left: bucket.hard[i],
-          right: bucket.hard[j],
-          detail: `hard constraints disagree: ${bucket.hard[i].kind} vs ${bucket.hard[j].kind}`,
+          left: pair[0],
+          right: pair[1],
+          detail: `hard constraints disagree: ${pair[0].kind} vs ${pair[1].kind}`,
         }));
       }
     }
@@ -216,8 +255,8 @@ function solveLayer(entityId, layer, bucket) {
     // contradiction is precisely the false certainty this layer exists to stop.
     confidence = 'unknown';
   } else if (bucket.hard.length > 0) {
-    selected = bucket.hard[0].claim;
-    confidence = 'certain';
+    selected = mergeCompatibleHardClaims(entityId, layer, hardClaims);
+    confidence = selected == null ? 'unknown' : 'certain';
   } else if (ranked.length === 1) {
     selected = ranked[0].claim;
     confidence = ranked[0].weight >= 0.75 ? 'probable' : 'possible';
@@ -238,9 +277,9 @@ function solveLayer(entityId, layer, bucket) {
     }))),
     selected,
     confidence,
-    hardConstraints: deepFreeze([...bucket.hard]),
-    softEvidence: deepFreeze([...bucket.soft]),
-    contradictions: deepFreeze(contradictions),
+    hardConstraints: deepFreeze([...bucket.hard].sort((left, right) => constraintOrderKey(left).localeCompare(constraintOrderKey(right)))),
+    softEvidence: deepFreeze([...bucket.soft].sort((left, right) => constraintOrderKey(left).localeCompare(constraintOrderKey(right)))),
+    contradictions: deepFreeze(contradictions.sort((left, right) => stableDigest(left).localeCompare(stableDigest(right)))),
   });
 }
 

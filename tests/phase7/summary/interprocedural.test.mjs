@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { summaryIsPure } from '../../../js/analysis/summary/contract.js';
+import { createAnalysisStatus } from '../../../js/analysis/status.js';
+import { createFunctionSummary, summaryIsPure } from '../../../js/analysis/summary/contract.js';
 import {
   condenseCallGraph,
   solveInterproceduralSummaries,
@@ -91,6 +92,8 @@ test('a non-exhaustive indirect call adds unknown effects on top of its candidat
   const summary = solved.summaries.get('fn_dispatch');
   assert.ok(summary.memoryWriteRegions.some((effect) => effect.broad),
     'candidates must not be averaged into an answer that omits the unresolved rest');
+  assert.ok(summary.memoryWriteRegions.some((effect) => effect.regionId === 'region_target'),
+    'resolved candidate effects must be retained alongside the unknown fallback');
   assert.notEqual(summary.status.completeness, 'complete');
 });
 
@@ -100,6 +103,127 @@ test('a proven exhaustive indirect call merges only its candidates', () => {
   assert.equal(summary.status.completeness, 'complete');
   assert.ok(summary.memoryWriteRegions.some((effect) => effect.regionId === 'region_target'));
   assert.ok(!summary.memoryWriteRegions.some((effect) => effect.broad));
+});
+
+test('an exhaustive indirect candidate propagates control facts exactly like a direct callee', () => {
+  const base = buildSummaryGraph('exhaustive-indirect');
+  const caller = base.get('fn_dispatch_exact');
+  const callee = createFunctionSummary({ ...base.get('fn_target'), noreturn: true, mayThrow: true });
+  const directCaller = createFunctionSummary({
+    ...caller,
+    directCalls: [{ callSiteId: 'direct_control', targetEntityIds: ['fn_target'], effectSource: 'proven-summary' }],
+    indirectCallSets: [],
+  });
+
+  const indirect = solveInterproceduralSummaries({
+    roots: ['fn_dispatch_exact'],
+    localSummaries: new Map([['fn_dispatch_exact', caller], ['fn_target', callee]]),
+  }).summaries.get('fn_dispatch_exact');
+  const direct = solveInterproceduralSummaries({
+    roots: ['fn_dispatch_exact'],
+    localSummaries: new Map([['fn_dispatch_exact', directCaller], ['fn_target', callee]]),
+  }).summaries.get('fn_dispatch_exact');
+
+  assert.equal(indirect.noreturn, true);
+  assert.equal(indirect.mayThrow, true);
+  assert.equal(indirect.noreturn, direct.noreturn);
+  assert.equal(indirect.mayThrow, direct.mayThrow);
+  assert.deepEqual(indirect.memoryReadRegions, direct.memoryReadRegions);
+  assert.deepEqual(indirect.memoryWriteRegions, direct.memoryWriteRegions);
+});
+
+test('multiple exhaustive indirect candidates union their control facts', () => {
+  const base = buildSummaryGraph('exhaustive-indirect');
+  const caller = createFunctionSummary({
+    ...base.get('fn_dispatch_exact'),
+    indirectCallSets: [{
+      callSiteId: 'dispatch.multi',
+      candidateEntityIds: ['fn_throw', 'fn_noreturn'],
+      exhaustive: true,
+    }],
+  });
+  const thrower = createFunctionSummary({ ...base.get('fn_target'), functionId: 'fn_throw', noreturn: false, mayThrow: true });
+  const terminator = createFunctionSummary({ ...base.get('fn_target'), functionId: 'fn_noreturn', noreturn: true, mayThrow: false });
+
+  const summary = solveInterproceduralSummaries({
+    roots: ['fn_dispatch_exact'],
+    localSummaries: new Map([
+      ['fn_dispatch_exact', caller],
+      ['fn_throw', thrower],
+      ['fn_noreturn', terminator],
+    ]),
+  }).summaries.get('fn_dispatch_exact');
+
+  assert.equal(summary.status.completeness, 'complete');
+  assert.equal(summary.noreturn, true);
+  assert.equal(summary.mayThrow, true);
+});
+
+test('indirect candidates retain nested unknown-call provenance and union all control dimensions', () => {
+  const completeStatus = createAnalysisStatus({
+    snapshotId: 'snapshot_issue_1147',
+    analyzerId: 'phase7.summary.local',
+    analyzerVersion: '1.0.0',
+    completeness: 'complete',
+  });
+  const partialStatus = createAnalysisStatus({
+    snapshotId: 'snapshot_issue_1147',
+    analyzerId: 'phase7.summary.local',
+    analyzerVersion: '1.0.0',
+    completeness: 'partial',
+    stopReason: 'evidence-missing',
+  });
+  const caller = createFunctionSummary({
+    functionId: 'fn_dispatch_multi',
+    indirectCallSets: [{
+      callSiteId: 'dispatch.call',
+      candidateEntityIds: ['fn_throw', 'fn_noreturn', 'fn_unknown'],
+      exhaustive: true,
+    }],
+    noreturn: false,
+    mayThrow: false,
+    status: completeStatus,
+  });
+  const thrower = createFunctionSummary({
+    functionId: 'fn_throw',
+    noreturn: false,
+    mayThrow: true,
+    status: completeStatus,
+  });
+  const terminator = createFunctionSummary({
+    functionId: 'fn_noreturn',
+    noreturn: true,
+    mayThrow: false,
+    status: completeStatus,
+  });
+  const unknown = createFunctionSummary({
+    functionId: 'fn_unknown',
+    memoryWriteRegions: [{ regionKind: 'unknown', broad: true, source: 'unknown-call-fallback' }],
+    unknownCallEffects: [{
+      callSiteId: 'nested.call',
+      reason: 'summary-missing',
+      targetEntityIds: ['fn_missing'],
+    }],
+    noreturn: 'unknown',
+    mayThrow: 'unknown',
+    status: partialStatus,
+  });
+
+  const summary = solveInterproceduralSummaries({
+    roots: ['fn_dispatch_multi'],
+    localSummaries: new Map([
+      ['fn_dispatch_multi', caller],
+      ['fn_throw', thrower],
+      ['fn_noreturn', terminator],
+      ['fn_unknown', unknown],
+    ]),
+  }).summaries.get('fn_dispatch_multi');
+
+  assert.ok(summary.unknownCallEffects.some((effect) =>
+    effect.callSiteId === 'nested.call' && effect.reason === 'summary-missing'));
+  assert.equal(summary.noreturn, 'unknown');
+  assert.equal(summary.mayThrow, 'unknown');
+  assert.notEqual(summary.status.completeness, 'complete');
 });
 
 test('a library model applies only where the binary does not define the callee', () => {

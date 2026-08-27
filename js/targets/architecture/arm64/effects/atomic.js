@@ -20,7 +20,7 @@ const EXCLUSIVE_STORE_RE = /^stl?xr([bh])?$/;
 const CAS_RE = /^cas(al|a|l)?([bh])?$/;
 const SWP_RE = /^swp(al|a|l)?([bh])?$/;
 const RMW_RE = /^(ldadd|ldset|ldclr|ldeor)(al|a|l)?([bh])?$/;
-const BARRIERS = new Set(['dmb','dsb','isb']);
+const BARRIERS = new Set(['dmb','dsb','isb','ssbb','pssbb','dfb']);
 const ORDER_SUFFIXES = Object.freeze(['','a','l','al']);
 const SIZE_SUFFIXES = Object.freeze(['','b','h']);
 const orderedSizedMnemonics = (base) => ORDER_SUFFIXES.flatMap((ordering) => SIZE_SUFFIXES.map((size) => `${base}${ordering}${size}`));
@@ -31,7 +31,7 @@ export const ARM64_ATOMIC_EFFECT_MNEMONICS = Object.freeze([
   ...orderedSizedMnemonics('cas'), ...orderedSizedMnemonics('swp'),
   ...orderedSizedMnemonics('ldadd'), ...orderedSizedMnemonics('ldset'),
   ...orderedSizedMnemonics('ldclr'), ...orderedSizedMnemonics('ldeor'),
-  'dmb','dsb','isb','clrex',
+  'dmb','dsb','isb','ssbb','pssbb','dfb','clrex',
 ]);
 const ARM64_ATOMIC_EFFECT_SET = new Set(ARM64_ATOMIC_EFFECT_MNEMONICS);
 
@@ -41,7 +41,7 @@ export const ARM64_ATOMIC_INSTRUCTION_INVENTORY = Object.freeze({
   compareSwap:Object.freeze(['cas','casa','casl','casal']),
   swap:Object.freeze(['swp','swpa','swpl','swpal']),
   readModifyWrite:Object.freeze(['ldadd','ldadda','ldaddl','ldaddal','ldset','ldclr','ldeor']),
-  barriers:Object.freeze(['dmb','dsb','isb','clrex']),
+  barriers:Object.freeze(['dmb','dsb','isb','ssbb','pssbb','dfb','clrex']),
 });
 
 function mnemonicOf(decoded) { return String(decoded?.mnemonic || '').trim().toLowerCase(); }
@@ -540,23 +540,120 @@ const BARRIER_OPTIONS = Object.freeze({
   oshst:{ domain:'outer-shareable', access:'stores' },
   oshld:{ domain:'outer-shareable', access:'loads' },
 });
+const DMB_OPTION_BY_CRM = Object.freeze([
+  'sy','oshld','oshst','osh',
+  'sy','nshld','nshst','nsh',
+  'sy','ishld','ishst','ish',
+  'sy','ld','st','sy',
+]);
+const DSB_OPTION_BY_CRM = Object.freeze([
+  'ssbb','oshld','oshst','osh',
+  'pssbb','nshld','nshst','nsh',
+  'sy','ishld','ishst','ish',
+  'sy','ld','st','sy',
+]);
+
+function dmbOption(decoded) {
+  const ops = operands(decoded);
+  if (ops.length === 0) return { option:'sy', crm:null };
+  const immediate = immediateValue(ops[0]);
+  if (immediate != null) {
+    if (immediate < 0n || immediate > 15n) return null;
+    const crm = Number(immediate);
+    return { option:DMB_OPTION_BY_CRM[crm], crm };
+  }
+  const option = barrierOption(decoded);
+  return BARRIER_OPTIONS[option] ? { option, crm:null } : null;
+}
+
+function dsbOption(decoded) {
+  const ops = operands(decoded);
+  if (ops.length === 0) return { option:'sy', crm:null, reservedEncoding:false };
+  const immediate = immediateValue(ops[0]);
+  if (immediate != null) {
+    if (immediate < 0n || immediate > 15n) return null;
+    const crm = Number(immediate);
+    return { option:DSB_OPTION_BY_CRM[crm], crm, reservedEncoding:crm === 8 || crm === 12 };
+  }
+  const option = barrierOption(decoded);
+  return BARRIER_OPTIONS[option] ? { option, crm:null, reservedEncoding:false } : null;
+}
+
+function isbOption(decoded) {
+  const ops = operands(decoded);
+  if (ops.length === 0) return { crm:null, reservedEncoding:false };
+  const immediate = immediateValue(ops[0]);
+  if (immediate != null) {
+    if (immediate < 0n || immediate > 15n) return null;
+    const crm = Number(immediate);
+    return { crm, reservedEncoding:crm !== 15 };
+  }
+  return barrierOption(decoded) === 'sy' ? { crm:null, reservedEncoding:false } : null;
+}
+
+function speculationStoreBypassBarrier(decoded, context, mnemonic, crm) {
+  if (operands(decoded).length !== 0) return partial(decoded, context, `${mnemonic.toUpperCase()} operand shape is invalid`, ['memory','other']);
+  const scope = { domain:'speculation', access:'store-bypass' };
+  return bundle(decoded, context, {
+    operations:[createMachineOperation({ kind:'barrier', scope:{ kind:'dsb', option:mnemonic, ...scope }, metadata:{ architecture:'arm64', ordering:'barrier', crm, alias:mnemonic } })],
+    metadata:{ family:'arm64-atomic', kind:'barrier', mnemonic, option:mnemonic, ...scope, crm, alias:mnemonic },
+  });
+}
+
+function dataFullBarrier(decoded, context) {
+  if (operands(decoded).length !== 0) return partial(decoded, context, 'DFB operand shape is invalid', ['memory','other']);
+  const scope = BARRIER_OPTIONS.sy;
+  return bundle(decoded, context, {
+    operations:[createMachineOperation({
+      kind:'barrier',
+      scope:{ kind:'dsb', option:'sy', ...scope },
+      metadata:{ architecture:'arm64', ordering:'barrier', crm:12, alias:'dfb', reservedEncoding:true },
+    })],
+    metadata:{ family:'arm64-atomic', kind:'barrier', mnemonic:'dfb', option:'sy', ...scope, crm:12, alias:'dfb', reservedEncoding:true },
+  });
+}
 
 function barrier(decoded, context, mnemonic) {
+  if (mnemonic === 'ssbb' || mnemonic === 'pssbb') return speculationStoreBypassBarrier(decoded, context, mnemonic, mnemonic === 'ssbb' ? 0 : 4);
+  if (mnemonic === 'dfb') return dataFullBarrier(decoded, context);
   if (operands(decoded).length > 1) return partial(decoded, context, `${mnemonic.toUpperCase()} operand shape is invalid`, mnemonic === 'isb' ? ['other'] : ['memory','other']);
-  const option = barrierOption(decoded);
-  if (mnemonic === 'isb') {
-    if (option !== 'sy') return partial(decoded, context, `unsupported ISB option: ${option}`, ['other']);
+  if (mnemonic === 'dmb') {
+    const normalized = dmbOption(decoded);
+    if (!normalized) return partial(decoded, context, `unsupported DMB option: ${barrierOption(decoded)}`, ['memory','other']);
+    const { option, crm } = normalized;
+    const scope = BARRIER_OPTIONS[option];
     return bundle(decoded, context, {
-      operations:[createMachineOperation({ kind:'barrier', scope:{ kind:'isb', domain:'instruction-stream', access:'instruction-fetch', option:'sy' }, metadata:{ architecture:'arm64' } })],
-      metadata:{ family:'arm64-atomic', kind:'barrier', mnemonic, option:'sy' },
+      operations:[createMachineOperation({ kind:'barrier', scope:{ kind:'dmb', option, ...scope }, metadata:{ architecture:'arm64', ordering:'barrier', ...(crm == null ? {} : { crm }) } })],
+      metadata:{ family:'arm64-atomic', kind:'barrier', mnemonic:'dmb', option, ...scope, ...(crm == null ? {} : { crm }) },
     });
   }
-  const scope = BARRIER_OPTIONS[option];
-  if (!scope) return partial(decoded, context, `unsupported ${mnemonic.toUpperCase()} option: ${option}`, ['memory','other']);
-  return bundle(decoded, context, {
-    operations:[createMachineOperation({ kind:'barrier', scope:{ kind:mnemonic, option, ...scope }, metadata:{ architecture:'arm64', ordering:'barrier' } })],
-    metadata:{ family:'arm64-atomic', kind:'barrier', mnemonic, option, ...scope },
-  });
+  if (mnemonic === 'dsb') {
+    const normalized = dsbOption(decoded);
+    if (!normalized) return partial(decoded, context, `unsupported DSB option: ${barrierOption(decoded)}`, ['memory','other']);
+    const { option, crm, reservedEncoding } = normalized;
+    if (option === 'ssbb' || option === 'pssbb') {
+      const scope = { domain:'speculation', access:'store-bypass' };
+      return bundle(decoded, context, {
+        operations:[createMachineOperation({ kind:'barrier', scope:{ kind:'dsb', option, ...scope }, metadata:{ architecture:'arm64', ordering:'barrier', crm, alias:option } })],
+        metadata:{ family:'arm64-atomic', kind:'barrier', mnemonic:'dsb', option, ...scope, crm, alias:option },
+      });
+    }
+    const scope = BARRIER_OPTIONS[option];
+    return bundle(decoded, context, {
+      operations:[createMachineOperation({ kind:'barrier', scope:{ kind:'dsb', option, ...scope }, metadata:{ architecture:'arm64', ordering:'barrier', ...(crm == null ? {} : { crm }), ...(reservedEncoding ? { reservedEncoding:true } : {}) } })],
+      metadata:{ family:'arm64-atomic', kind:'barrier', mnemonic:'dsb', option, ...scope, ...(crm == null ? {} : { crm }), ...(reservedEncoding ? { reservedEncoding:true } : {}) },
+    });
+  }
+  if (mnemonic === 'isb') {
+    const normalized = isbOption(decoded);
+    if (!normalized) return partial(decoded, context, `unsupported ISB option: ${barrierOption(decoded)}`, ['other']);
+    const { crm, reservedEncoding } = normalized;
+    return bundle(decoded, context, {
+      operations:[createMachineOperation({ kind:'barrier', scope:{ kind:'isb', domain:'instruction-stream', access:'instruction-fetch', option:'sy' }, metadata:{ architecture:'arm64', ...(crm == null ? {} : { crm }), ...(reservedEncoding ? { reservedEncoding:true } : {}) } })],
+      metadata:{ family:'arm64-atomic', kind:'barrier', mnemonic, option:'sy', ...(crm == null ? {} : { crm }), ...(reservedEncoding ? { reservedEncoding:true } : {}) },
+    });
+  }
+  return partial(decoded, context, `unsupported ${mnemonic.toUpperCase()} barrier`, ['memory','other']);
 }
 
 function clearExclusive(decoded, context) {

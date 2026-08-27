@@ -14,9 +14,9 @@ const validation = validateA2DenominatorInventory(inventory);
 assert.equal(validation.valid, true);
 assert.equal(validation.architectureCount, 4);
 assert.equal(validation.fullIsaCoverageIncluded, false);
-assert.equal(validation.explicitDecoderGapCount, 1, 'only the x86 long-64 decoder denominator remains');
-assert.equal(validation.blockingGapCount > validation.explicitDecoderGapCount, true);
-assert.equal(validation.terminalEligible, false, 'partial and unsupported x86 long-64 effect families remain blocking gaps');
+assert.equal(validation.explicitDecoderGapCount, 0, 'all architectures have exact decoder denominators');
+assert.equal(validation.blockingGapCount, 0, 'the locked A2 denominator has no blocking gap');
+assert.equal(validation.terminalEligible, true, 'the locked A2 denominator is terminal');
 // Terminality is a property of the locked denominator, not of full-ISA
 // coverage: this inventory is rejected outright if it ever claims the latter,
 // so the two must not be conjoined into an unsatisfiable gate.
@@ -45,21 +45,21 @@ assert.equal(validation.blockingGaps.includes('arm64:a64:effect-family:memory'),
   'all 32 PRFM/PRFUM prfop encodings and every load/store form now have an exact owner');
 assert.equal(validation.blockingGaps.includes('riscv64:rv64imc:all-valid-32-bit-and-compressed-encodings'), false,
   'the exhaustive versioned RV64IMC decoder denominator closes only its decoder unit');
-assert.ok(validation.blockingGaps.includes('x86_64:long-64:effect-family:atomic'));
+assert.equal(validation.blockingGaps.includes('x86_64:long-64:all-decoder-encodings-prefixes-and-aliases'), false,
+  'the exhaustive x86-64 long-64 decoder denominator closes the x86 decoder unit');
+assert.equal(validation.blockingGaps.includes('x86_64:long-64:effect-family:control'), false);
+assert.equal(validation.blockingGaps.includes('x86_64:long-64:effect-family:memory'), false);
 assert.equal(validation.blockingGaps.includes('x86_64:long-64:effect-family:lea'), false,
   'the exhaustive long-mode LEA encoding discriminator proof closes only LEA ownership');
-for (const unit of [
-  'arm64e:a64+pac:alias:baseline-a64-delegation',
-  'arm64e:a64+pac:all-a64-decoder-encodings-and-aliases',
-  'arm64e:a64+pac:effect-family:fallback-unmatched-decoder-family',
-]) {
-  assert.equal(validation.blockingGaps.includes(unit), false,
-    'the delegated baseline is exact exactly when the ARM64 baseline it delegates to is terminal');
-}
-assert.deepEqual(
-  validation.blockingGaps.filter((unit) => !unit.startsWith('x86_64:')), [],
-  'every remaining A2 blocking gap is x86-64 long-mode production coverage',
-);
+assert.equal(validation.blockingGaps.includes('x86_64:long-64:effect-family:integer'), false);
+assert.equal(validation.blockingGaps.includes('x86_64:long-64:effect-family:string'), false);
+assert.equal(validation.blockingGaps.includes('x86_64:long-64:effect-family:atomic'), false);
+assert.equal(validation.blockingGaps.includes('x86_64:long-64:effect-family:fallback-unmatched-decoder-family'), false,
+  'x86 fallback negative proof proves no valid encoding reaches fallback');
+assert.deepEqual(validation.blockingGaps, []);
+assert.equal(validation.blockingGaps.includes('x86_64:long-64:effect-family:fp'), false);
+assert.equal(validation.blockingGaps.includes('x86_64:long-64:effect-family:simd'), false);
+assert.equal(validation.blockingGaps.includes('x86_64:long-64:effect-family:system'), false);
 assert.equal(validation.blockingGaps.includes('arm64e:a64+pac:all-pac-decoder-encodings-and-aliases'), false,
   'the finite PAC encoding discriminator and independent decoder oracle close the extension decoder unit');
 assert.equal(validation.blockingGaps.includes('arm64e:a64+pac:explicit-case:pac-missing-structured-operands'), false,
@@ -122,7 +122,7 @@ function clone() { return JSON.parse(JSON.stringify(inventory)); }
 
 {
   const mutated = clone();
-  mutated.architectures.find((architecture) => architecture.id === 'x86_64').decoder.missingUnits = [];
+  mutated.architectures.find((architecture) => architecture.id === 'x86_64').decoder.units = [];
   assert.throws(() => validateA2DenominatorInventory(mutated), /a2-denominator-decoder-units-required/);
 }
 
@@ -142,6 +142,24 @@ for (const mutate of [
   const lea = mutated.architectures.find((architecture) => architecture.id === 'x86_64').effectRegistry.families.find((family) => family.id === 'lea');
   mutate(lea);
   assert.throws(() => validateA2DenominatorInventory(mutated), /a2-denominator-x86-lea-proof-identity-drift/);
+}
+
+for (const familyId of ['control', 'memory', 'integer', 'string', 'atomic']) {
+  for (const mutate of [
+    (family) => { family.oracle = 'caller-selected-label'; },
+    (family) => { family.proof.source = 'js/targets/architecture/x86_64/effects/common.js'; },
+    (family) => { family.proof.test = 'tests/machine-effects/a2-denominator.test.mjs'; },
+    (family) => { family.proof.denominatorTest = 'tests/machine-effects/a2-denominator.test.mjs'; },
+    (family) => {
+      if (family.proof.denominator.encodingCaseCount) family.proof.denominator.encodingCaseCount -= 1;
+      else if (family.proof.denominator.semanticCaseCount) family.proof.denominator.semanticCaseCount -= 1;
+    },
+  ]) {
+    const mutated = clone();
+    const family = mutated.architectures.find((architecture) => architecture.id === 'x86_64').effectRegistry.families.find((item) => item.id === familyId);
+    mutate(family);
+    assert.throws(() => validateA2DenominatorInventory(mutated), new RegExp(`a2-denominator-x86-${familyId}-(?:live-)?proof-`));
+  }
 }
 
 for (const familyId of ['control', 'flags', 'fp', 'system']) {

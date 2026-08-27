@@ -82,7 +82,12 @@ export const MODEL_DECISION_SCHEMA = Object.freeze({
         evidenceIds: { type: 'array', items: { type: 'string' } },
         hypothesisIds: { type: 'array', items: { type: 'string' } },
         hypotheses: { type: 'array', items: { type: 'object' } },
-        suggestedActions: { type: 'array', items: { type: 'object' } },
+        // `suggestedActions` is model-authored advisory data. The public prompt
+        // only promises an array, and models can reasonably emit prose here.
+        // Accept prose at this boundary so an otherwise valid final answer is
+        // not discarded; sanitizeActions() still admits only reviewed action
+        // objects before anything reaches the executable/UI action surface.
+        suggestedActions: { type: 'array', items: { anyOf: [{ type: 'object' }, { type: 'string' }] } },
         followups: { type: 'array', items: { type: 'string' } },
       },
     },

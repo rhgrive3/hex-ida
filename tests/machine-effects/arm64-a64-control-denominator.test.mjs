@@ -77,7 +77,7 @@ try {
   assert.equal(malformedBit.completeness, 'partial');
   const malformedRegister = liftArm64MachineEffects({ instructionId:'arm64-control-negative:br', mnemonic:'br', ops:[], mode:'a64' });
   assert.equal(malformedRegister.completeness, 'partial');
-  assert.match(malformedRegister.unknownEffects.reason, /target-register-unmodelled/);
+  assert.match(malformedRegister.unknownEffects.reason, /arm64-br-operand-shape-invalid/);
 
   for (const alias of ['b.cs','b.hs','b.cc','b.lo']) {
     const instructionId = `arm64-control-alias:${alias}`;

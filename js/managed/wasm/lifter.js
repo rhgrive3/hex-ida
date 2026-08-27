@@ -68,10 +68,6 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
     const opcode = bytecode[pos++];
     opSeq++;
     const opId = createVMOperationId(methodId, opOffset, opSeq);
-    const origin = createOriginSet({
-      operationIds: [opId],
-      byteRanges: [{ start: codeBody.bodyOffset + opOffset, end: codeBody.bodyOffset + pos }],
-    });
 
     let mnemonic = 'unknown';
     let completeness = 'exact';
@@ -373,6 +369,11 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
         unknownEffects.push({ category: 'other', reason: `unsupported-opcode-0x${opcode.toString(16)}` });
         break;
     }
+
+    const origin = createOriginSet({
+      operationIds: [opId],
+      byteRanges: [{ start: codeBody.bodyOffset + opOffset, end: codeBody.bodyOffset + pos }],
+    });
 
     bundles.push(createVMEffectBundle({
       schemaVersion: 1,

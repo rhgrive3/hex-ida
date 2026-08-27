@@ -39,6 +39,39 @@ function sameAbsoluteTarget(target, reference) {
   catch { return false; }
 }
 
+function isAlignedDirectTarget(target) {
+  try { return (BigInt(target) & 3n) === 0n; }
+  catch { return false; }
+}
+
+function directBranchDisplacementBits(mnemonic) {
+  if (mnemonic === 'b' || mnemonic === 'bl') return 26;
+  if (COMPARE_BRANCH.has(mnemonic) || /^b\./.test(mnemonic)) return 19;
+  if (TEST_BRANCH.has(mnemonic)) return 14;
+  return null;
+}
+
+function directBranchEncodingStatus(instruction, target, mnemonic) {
+  const address = instructionAddress(instruction);
+  if (address == null) return { valid:false, reason:`arm64-${mnemonic}-address-unavailable-for-encoding` };
+  let destination;
+  try { destination = BigInt(target); }
+  catch { return { valid:false, reason:`arm64-${mnemonic}-target-unavailable` }; }
+  if ((destination & 3n) !== 0n) return { valid:false, reason:`arm64-${mnemonic}-target-misaligned-encoding` };
+  const bits = directBranchDisplacementBits(mnemonic);
+  if (!bits) return { valid:true };
+  // Disassembler targets may be sign-extended 64-bit addresses for backward
+  // branches. Compare the architectural modulo-64-bit displacement rather
+  // than treating that representation as an unrelated high positive address.
+  const displacement = BigInt.asIntN(64, destination - address);
+  const minimum = -(1n << BigInt(bits + 1));
+  const maximum = (1n << BigInt(bits + 1)) - 4n;
+  if (displacement < minimum || displacement > maximum) {
+    return { valid:false, reason:`arm64-${mnemonic}-target-out-of-range-encoding` };
+  }
+  return { valid:true };
+}
+
 /**
  * Preserve condition-evaluation operations even when both control outcomes land
  * in the same basic block, but canonicalize the externally visible control edge
@@ -71,15 +104,53 @@ function gpRegister(num) {
   return { k: 'reg', cls: 'gp', num, bits: 64, text: `x${num}` };
 }
 
+function directTargetOperandShapeValid(instruction, operand, kind = 'branch') {
+  if (operand?.k === 'imm' && operand.value != null) return true;
+  if (operand?.k === 'other' && /^#?(?:0x[0-9a-f]+|\d+)$/i.test(String(operand.text || '').trim())) return true;
+  const explicit = kind === 'call' ? instruction?.callTarget : instruction?.branchTarget;
+  return operand?.k === 'other' && explicit != null;
+}
+
+function isBranchTestRegister(operand) {
+  return operand?.k === 'reg'
+    && (operand.cls === 'gp' || operand.cls === 'zr')
+    && (Number(operand.bits) === 32 || Number(operand.bits) === 64);
+}
+
+function directBranchOperandShapeValid(instruction, mnemonic, ops) {
+  if (mnemonic === 'b' || /^b\./.test(mnemonic)) {
+    return ops.length === 1 && directTargetOperandShapeValid(instruction, ops[0], 'branch');
+  }
+  if (mnemonic === 'bl') {
+    return ops.length === 1 && directTargetOperandShapeValid(instruction, ops[0], 'call');
+  }
+  if (COMPARE_BRANCH.has(mnemonic)) {
+    return ops.length === 2 && isBranchTestRegister(ops[0]) && directTargetOperandShapeValid(instruction, ops[1], 'branch');
+  }
+  if (TEST_BRANCH.has(mnemonic)) {
+    return ops.length === 3 && isBranchTestRegister(ops[0])
+      && ops[1]?.k === 'imm' && ops[1].value != null
+      && directTargetOperandShapeValid(instruction, ops[2], 'branch');
+  }
+  return true;
+}
+
 function liftArm64ControlEffectsCore(instruction, options = {}) {
   const mnemonic = String(instruction?.mnemonic || '').toLowerCase();
   if (!isArm64ControlEffectMnemonic(mnemonic)) return null;
   const ctx = createArm64EffectContext(instruction, options);
   const ops = instruction?.ops || [];
 
+  if (!directBranchOperandShapeValid(instruction, mnemonic, ops)) {
+    const reason = `arm64-${mnemonic}-operand-shape-invalid`;
+    return ctx.partial(reason, ['control','registers'], undefined, { kind:'unknown', reason });
+  }
+
   if (mnemonic === 'b') {
     const target = directTargetOf(instruction, 'branch');
     if (target == null) return ctx.partial('arm64-b-target-unavailable', ['control'], undefined, { kind: 'unknown', reason: 'arm64-b-target-unavailable' });
+    const encoding = directBranchEncodingStatus(instruction, target, mnemonic);
+    if (!encoding.valid) return ctx.partial(encoding.reason, ['control'], undefined, { kind:'unknown', reason:encoding.reason });
     return ctx.finish({
       controlEffect: { kind: 'branch', target: addressRef(target) },
       metadata: { family: 'control', operation: 'b', direct: true },
@@ -87,6 +158,9 @@ function liftArm64ControlEffectsCore(instruction, options = {}) {
   }
 
   if (mnemonic === 'br') {
+    if (ops.length !== 1) {
+      return ctx.partial('arm64-br-operand-shape-invalid', ['control','registers'], undefined, { kind:'unknown', reason:'arm64-br-operand-shape-invalid' });
+    }
     const target = ctx.readRegister(ops[0]);
     if (!target || instructionBits(ops[0]) !== 64) {
       return ctx.partial('arm64-br-target-register-unmodelled', ['control','registers'], undefined, { kind: 'unknown', reason: 'arm64-br-target-register-unmodelled' });
@@ -101,11 +175,13 @@ function liftArm64ControlEffectsCore(instruction, options = {}) {
   if (mnemonic === 'bl') {
     const target = directTargetOf(instruction, 'call');
     if (target == null) return ctx.partial('arm64-bl-target-unavailable', ['control','registers'], undefined, { kind: 'unknown', reason: 'arm64-bl-target-unavailable' });
-    const fallthrough = fallthroughRef(instruction);
     const address = instructionAddress(instruction);
     if (address == null) {
       return ctx.partial('arm64-bl-link-address-unavailable', ['registers'], undefined, { kind: 'call', target: addressRef(target) });
     }
+    const encoding = directBranchEncodingStatus(instruction, target, mnemonic);
+    if (!encoding.valid) return ctx.partial(encoding.reason, ['control','registers'], undefined, { kind:'unknown', reason:encoding.reason });
+    const fallthrough = fallthroughRef(instruction);
     ctx.writeRegister(gpRegister(30), ctx.constant(64, address + ARM64_INSTRUCTION_BYTES));
     return ctx.finish({
       controlEffect: { kind: 'call', target: addressRef(target), ...(fallthrough ? { fallthrough } : {}) },
@@ -114,6 +190,9 @@ function liftArm64ControlEffectsCore(instruction, options = {}) {
   }
 
   if (mnemonic === 'blr') {
+    if (ops.length !== 1) {
+      return ctx.partial('arm64-blr-operand-shape-invalid', ['control','registers'], undefined, { kind:'unknown', reason:'arm64-blr-operand-shape-invalid' });
+    }
     const target = ctx.readRegister(ops[0]);
     const address = instructionAddress(instruction);
     if (!target || instructionBits(ops[0]) !== 64) {
@@ -131,6 +210,9 @@ function liftArm64ControlEffectsCore(instruction, options = {}) {
   }
 
   if (mnemonic === 'ret') {
+    if (ops.length > 1) {
+      return ctx.partial('arm64-ret-operand-shape-invalid', ['control','registers'], undefined, { kind:'unknown', reason:'arm64-ret-operand-shape-invalid' });
+    }
     const operand = ops[0] || gpRegister(30);
     const target = ctx.readRegister(operand);
     if (!target || instructionBits(operand) !== 64) {
@@ -147,6 +229,10 @@ function liftArm64ControlEffectsCore(instruction, options = {}) {
   const fallthrough = fallthroughRef(instruction);
   if (target == null || !fallthrough) {
     return ctx.partial(`arm64-${mnemonic}-targets-unavailable`, ['control'], undefined, { kind: 'unknown', reason: `arm64-${mnemonic}-targets-unavailable` });
+  }
+  const encoding = directBranchEncodingStatus(instruction, target, mnemonic);
+  if (!encoding.valid) {
+    return ctx.partial(encoding.reason, ['control'], undefined, { kind:'unknown', reason:encoding.reason });
   }
 
   if (COMPARE_BRANCH.has(mnemonic)) {
@@ -187,5 +273,9 @@ function liftArm64ControlEffectsCore(instruction, options = {}) {
 
 export function liftArm64ControlEffects(instruction, options = {}) {
   const bundle = liftArm64ControlEffectsCore(instruction, options);
-  return bundle == null ? null : decorateArm64BtypeEffects(instruction, options, bundle);
+  if (bundle == null) return null;
+  // Operand-shape failures describe encodings that do not exist. Do not attach
+  // architectural BTYPE state transitions to a malformed structured instruction.
+  if (/operand-shape-invalid$/.test(String(bundle.unknownEffects?.reason || ''))) return bundle;
+  return decorateArm64BtypeEffects(instruction, options, bundle);
 }

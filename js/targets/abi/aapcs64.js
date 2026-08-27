@@ -209,6 +209,13 @@ function scalableReturnClass(proto, type, cls) {
   return scalableAAPCS64Class(type, cls) || scalableAAPCS64Class(type, String(proto?.returnKind || proto?.resultKind || '').toLowerCase());
 }
 
+function returnBitsOf(...values) {
+  const raw = values.find((value) => value != null);
+  if (raw == null) return 64;
+  const bits = Number(raw);
+  return Number.isFinite(bits) && Number.isInteger(bits) && bits > 0 ? bits : null;
+}
+
 export function classifyAAPCS64CallReturn(insn, opts = {}) {
   const proto = callPrototypeOf(insn, opts);
   if (!proto) return null;
@@ -217,10 +224,11 @@ export function classifyAAPCS64CallReturn(insn, opts = {}) {
   if (proto.void === true || type === 'void' || cls === 'void') return null;
   if (proto.indirectResult === true || cls === 'indirect') return null;
   if (scalableReturnClass(proto,type,cls)) return null;
+  const returnBits = returnBitsOf(proto.returnBits, proto.bits);
+  if (returnBits == null) return null;
   if (cls.includes('fp') || cls.includes('float') || cls.includes('vector') || /^(float|double|__fp16)/.test(type)) {
-    return { reg:'v0', bits:Number(proto.returnBits || proto.bits || 64) || 64 };
+    return { reg:'v0', bits:returnBits };
   }
-  const returnBits=Number(proto.returnBits || proto.bits || 64) || 64;
   const aggregate=proto.aggregate===true||proto.isAggregate===true||/aggregate|struct|union|record|array|composite/.test(type+' '+cls);
   const wideInteger=!aggregate&&(/(?:unsigned\s+)?__int128|int128_t|uint128_t/.test(type+' '+cls)||returnBits===128);
   if (aggregate && returnBits>128) return {reg:null,regs:[],bits:returnBits,aggregate:true,indirect:true,hiddenResultPointer:'x8'};
@@ -236,11 +244,12 @@ export function classifyAAPCS64FunctionReturn(opts = {}) {
   if (opts?.returnsValue === false || proto?.returnsValue === false || proto?.void === true || type === 'void' || cls === 'void') return null;
   if (proto?.indirectResult === true || cls === 'indirect') return null;
   if (scalableReturnClass(proto,type,cls)) return null;
+  const returnBits = returnBitsOf(proto?.returnBits, proto?.bits, opts?.returnBits);
+  if (returnBits == null) return null;
   if (cls.includes('fp') || cls.includes('float') || cls.includes('vector') || /^(float|double|__fp16)/.test(type)) {
-    return { reg:'v0', bits:Number(proto?.returnBits || proto?.bits || opts?.returnBits || 64) || 64 };
+    return { reg:'v0', bits:returnBits };
   }
   if (type || cls || opts?.returnsValue === true || proto?.returnsValue === true) {
-    const returnBits=Number(proto?.returnBits || proto?.bits || opts?.returnBits || 64) || 64;
     const aggregate=proto?.aggregate===true||proto?.isAggregate===true||/aggregate|struct|union|record|array|composite/.test(type+' '+cls);
     const wideInteger=!aggregate&&(/(?:unsigned\s+)?__int128|int128_t|uint128_t/.test(type+' '+cls)||returnBits===128);
     if (aggregate && returnBits>128) return {reg:null,regs:[],bits:returnBits,aggregate:true,indirect:true,hiddenResultPointer:'x8'};

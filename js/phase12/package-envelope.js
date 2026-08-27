@@ -19,6 +19,25 @@ function required(value, code) {
   return text;
 }
 
+function positiveLimit(value, fallback, name, code = 'package-resource-limit-invalid') {
+  if (value == null) return fallback;
+  const n = Number(value);
+  if (!Number.isSafeInteger(n) || n <= 0) {
+    throw new PackageValidationError(code, `${name} must be a positive safe integer`, { name, value });
+  }
+  return n;
+}
+
+function normalizedPackageLimits(options = {}) {
+  return Object.freeze({
+    maxDepth: positiveLimit(options.maxDepth, DEFAULT_PACKAGE_LIMITS.maxDepth, 'maxDepth'),
+    maxStrings: positiveLimit(options.maxStrings, DEFAULT_PACKAGE_LIMITS.maxStrings, 'maxStrings'),
+    maxStringBytes: positiveLimit(options.maxStringBytes, DEFAULT_PACKAGE_LIMITS.maxStringBytes, 'maxStringBytes'),
+    maxTokens: positiveLimit(options.maxTokens, DEFAULT_PACKAGE_LIMITS.maxTokens, 'maxTokens'),
+    maxEntries: positiveLimit(options.maxEntries, DEFAULT_PACKAGE_LIMITS.maxEntries, 'maxEntries'),
+  });
+}
+
 function bytesOf(value) {
   if (typeof value === 'string') return new TextEncoder().encode(value);
   if (value instanceof Uint8Array) return value;
@@ -28,10 +47,8 @@ function bytesOf(value) {
 }
 
 function scanJsonBudget(bytes, limits = {}) {
-  const maxDepth = Number(limits.maxDepth || DEFAULT_PACKAGE_LIMITS.maxDepth);
-  const maxStrings = Number(limits.maxStrings || DEFAULT_PACKAGE_LIMITS.maxStrings);
-  const maxStringBytes = Number(limits.maxStringBytes || DEFAULT_PACKAGE_LIMITS.maxStringBytes);
-  const maxTokens = Number(limits.maxTokens || DEFAULT_PACKAGE_LIMITS.maxTokens);
+  const normalized = normalizedPackageLimits(limits);
+  const { maxDepth, maxStrings, maxStringBytes, maxTokens } = normalized;
   let depth = 0, strings = 0, stringBytes = 0, tokens = 0, inString = false, escaped = false, currentStringBytes = 0;
   for (let i = 0; i < bytes.length; i++) {
     const byte = bytes[i];
@@ -72,13 +89,13 @@ function countEntries(value, limits, depth = 0, state = { entries: 0 }) {
 
 export function parseBoundedPackageInput(value, options = {}) {
   const bytes = bytesOf(value);
-  const maxBytes = Number(options.maxBytes || MAX_PACKAGE_INPUT_BYTES);
+  const maxBytes = positiveLimit(options.maxBytes, MAX_PACKAGE_INPUT_BYTES, 'maxBytes');
   if (bytes.byteLength > maxBytes) throw new PackageValidationError('package-input-too-large', 'package input exceeds pre-parse byte budget');
   scanJsonBudget(bytes, options);
   let parsed;
   try { parsed = JSON.parse(new TextDecoder().decode(bytes)); }
   catch (error) { throw new PackageValidationError('package-json-malformed', error.message); }
-  const limits = { ...DEFAULT_PACKAGE_LIMITS, ...options };
+  const limits = normalizedPackageLimits(options);
   countEntries(parsed, limits);
   return Object.freeze({ value: parsed, inputBytes: bytes.byteLength, scan: scanJsonBudget(bytes, options) });
 }
@@ -145,7 +162,7 @@ function validateEnvelopeShape(envelope, options = {}) {
   required(envelope.kind, 'package-kind-required');
   required(envelope.contentHash, 'package-content-identity-required');
   if (envelope.payload === undefined) throw new PackageValidationError('package-payload-required');
-  countEntries(envelope.payload, { ...DEFAULT_PACKAGE_LIMITS, ...options });
+  countEntries(envelope.payload, normalizedPackageLimits(options));
   const dependencies = normalizeDependencies(envelope.dependencies);
   const expected = packageContentIdentity({ ...envelope, dependencies });
   if (expected !== envelope.contentHash) throw new PackageValidationError('package-content-identity-mismatch', 'package content identity does not match canonical payload');
@@ -210,9 +227,9 @@ export function createPackageArtifactDescriptor(envelope, input = {}) {
 }
 
 export function validateProviderOutput(value, options = {}) {
-  const maxEntries = Number(options.maxEntries || 100_000);
-  const maxBytes = Number(options.maxBytes || 8 * 1024 * 1024);
   try {
+    const maxEntries = positiveLimit(options.maxEntries, 100_000, 'maxEntries', 'provider-output-resource-limit-invalid');
+    const maxBytes = positiveLimit(options.maxBytes, 8 * 1024 * 1024, 'maxBytes', 'provider-output-resource-limit-invalid');
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new PackageValidationError('provider-output-schema-invalid');
     const encoded = stableStringify(value);
     if (new TextEncoder().encode(encoded).byteLength > maxBytes) throw new PackageValidationError('provider-output-too-large');
