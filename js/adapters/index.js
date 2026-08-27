@@ -148,8 +148,8 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
       objectMemory:spec.objectMemory || spec.fakeObject || [], stackMemory:spec.stack || spec.stackMemory || [], watch:spec.watch || [],
       breakpoints:[...this.breakpoints.values()].filter((b) => b.enabled && b.address != null).map((b) => b.address)
     });
-    for (const item of spec.heap || []) await emu.store(asAddress(item.address), Number(item.size || 8), BigInt(item.value || 0));
-    for (const item of spec.globalValues || []) await emu.store(asAddress(item.address), Number(item.size || 8), BigInt(item.value || 0));
+    for (const item of spec.heap || []) await emu.store(asAddress(item.address), Number(item.size ?? 8), BigInt(item.value || 0));
+    for (const item of spec.globalValues || []) await emu.store(asAddress(item.address), Number(item.size ?? 8), BigInt(item.value || 0));
     const initialRegisters = cloneRegisters(emu);
     initializing = false;
     if (launchGeneration !== this.launchGeneration) {
@@ -318,7 +318,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     if (data.length > 256*1024) throw new DebugAdapterError('too-large','memory write exceeds 256 KiB');
     if (!data.length) return { written:0 };
     const start = asAddress(address); memoryMap.assert(start,data.length,'write'); const emu = sandbox.emulator;
-    traceState.suppressMemory = true;
+    traceState.suppressMemory = Number(traceState.suppressMemory || 0) + 1;
     try {
       for (let i=0;i<data.length;i+=8) {
         const n=Math.min(8,data.length-i); let value=0n;
@@ -326,7 +326,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
         await emu.store(start+BigInt(i),n,value);
         if (sandbox !== this.sandbox || epoch !== this.epoch) throw new DebugAdapterError('stale-request','memory write was invalidated by a newer launch or session change', { requestEpoch:epoch, currentEpoch:this.epoch });
       }
-    } finally { traceState.suppressMemory = false; }
+    } finally { traceState.suppressMemory = Math.max(0, Number(traceState.suppressMemory || 0) - 1); }
     return { written:data.length };
   }
   async getThreads() { return [{ id:'sandbox:0', name:'sandbox', state:this.running ? 'running':'stopped' }]; }
