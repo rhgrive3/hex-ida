@@ -61,6 +61,10 @@ function validRegisterRhs(mnemonic, lhs, rhs) {
   return kind.endsWith('x') ? rhsBits === 64 : rhsBits === 32;
 }
 
+function validTstRegisterClass(ops) {
+  return !ops.some((op) => op?.k === 'reg' && String(op.cls || '').toLowerCase() === 'sp');
+}
+
 export function liftArm64FlagEffects(instruction, options = {}) {
   const mnemonic = String(instruction?.mnemonic || '').trim().toLowerCase();
   const ops = Array.isArray(instruction?.ops) ? instruction.ops : [];
@@ -71,6 +75,9 @@ export function liftArm64FlagEffects(instruction, options = {}) {
     return liftArm64FlagEffectsCore({ ...instruction, ops: [] }, options);
   }
   if (STRICT_REGISTER_LHS.has(mnemonic) && !validRegisterRhs(mnemonic, ops[0], ops[1])) {
+    return liftArm64FlagEffectsCore({ ...instruction, ops: [] }, options);
+  }
+  if (mnemonic === 'tst' && !validTstRegisterClass(ops)) {
     return liftArm64FlagEffectsCore({ ...instruction, ops: [] }, options);
   }
   return liftArm64FlagEffectsCore(instruction, options);
