@@ -683,3 +683,52 @@ console.log('\nAll integrated issue tests PASS!');
 
   console.log('  ok #2193 scanUtf16 one-byte-shifted candidate start');
 }
+
+// Issue #2188: destIndex() must match branch/no-destination mnemonics as whole
+// words, not by prefix — `b` was swallowing bic/bfi/bfm/bfxil etc.
+{
+  const { analyzeFunction } = await import('../js/analyze.js');
+  const { CHUNK_ROWS } = await import('../js/backend.js');
+
+  function stubBackend(mn, ops) {
+    return {
+      async fetchChunk(_regionId, chunkIndex) {
+        const base = chunkIndex * CHUNK_ROWS;
+        const mnArr = [], opsArr = [];
+        for (let k = 0; k < CHUNK_ROWS; k++) {
+          const row = base + k;
+          if (row < mn.length) { mnArr.push(mn[row]); opsArr.push(ops[row]); }
+          else { mnArr.push(''); opsArr.push(''); }
+        }
+        return { mn: mnArr, ops: opsArr };
+      },
+      async readAt() { return { found: false }; },
+    };
+  }
+  const mk = (mn, ops) => analyzeFunction(
+    stubBackend(mn, ops),
+    { id: 'r0', vmAddr: 0x100000000n, size: BigInt(mn.length) * 4n },
+    0, mn.length - 1, null, null, { texts: false });
+
+  // bic x0, x1, x2 writes x0; only x1/x2 are entry reads. Pre-fix, x0 also
+  // appeared in argRegs and the write was dropped.
+  const bic = await mk(['bic', 'ret'], ['x0, x1, x2', '']);
+  assert.deepEqual(bic.argRegs, [1, 2], `bic argRegs must be [1,2], got ${JSON.stringify(bic.argRegs)}`);
+  assert.equal(bic.setsReturnValue, true, 'bic must record the x0 write');
+
+  // bfi writes its first operand too.
+  const bfi = await mk(['bfi', 'ret'], ['x0, x1, #0, #4', '']);
+  assert.deepEqual(bfi.argRegs, [1], `bfi argRegs must be [1], got ${JSON.stringify(bfi.argRegs)}`);
+  assert.equal(bfi.setsReturnValue, true);
+
+  // Genuine destination-less mnemonics keep their behavior.
+  const cbz = await mk(['cbz', 'movz x0, #1', 'ret'], ['x3, #8', 'x0, #1', '']);
+  assert.deepEqual(cbz.argRegs, [3]);
+  assert.equal(cbz.setsReturnValue, true, 'the movz write after cbz still counts');
+
+  const prfm = await mk(['prfm', 'ret'], ['pldl1keep, [x2]', '']);
+  assert.deepEqual(prfm.argRegs, [2], 'prfm stays read-only');
+  assert.equal(prfm.setsReturnValue, false);
+
+  console.log('  ok #2188 destIndex whole-word mnemonic matching');
+}
