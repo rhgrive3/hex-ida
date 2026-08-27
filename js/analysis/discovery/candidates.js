@@ -53,8 +53,11 @@ function fail(code) { throw new TypeError(code); }
 
 function address(value, code) {
   if (value == null) fail(code);
-  try { return BigInt(value); }
-  catch { fail(code); return 0n; }
+  try {
+    const result = BigInt(value);
+    if (result < 0n) fail(code);
+    return result;
+  } catch { fail(code); return 0n; }
 }
 
 /**
@@ -73,6 +76,11 @@ export function createDiscoveryEvidence(input = {}) {
   if (!KIND_SET.has(kind)) fail(`discovery-evidence-unknown-kind:${kind}`);
   const extentRole = String(input.extentRole ?? 'complete');
   if (!EXTENT_ROLES.includes(extentRole)) fail('discovery-evidence-invalid-extent-role');
+  const evidenceIds = input.evidenceIds ?? [];
+  if (!Array.isArray(evidenceIds)
+      || evidenceIds.some((id) => typeof id !== 'string' || id.length === 0)) {
+    fail('discovery-evidence-invalid-evidence-id');
+  }
   return deepFreeze({
     kind,
     authority: EVIDENCE_AUTHORITY[kind],
@@ -85,7 +93,7 @@ export function createDiscoveryEvidence(input = {}) {
     architectureId: input.architectureId == null ? null : String(input.architectureId),
     name: input.name == null ? null : String(input.name),
     confidence: input.confidence == null ? null : String(input.confidence),
-    evidenceIds: [...new Set((input.evidenceIds ?? []).map(String))].sort(),
+    evidenceIds: [...new Set(evidenceIds)].sort(),
   });
 }
 
