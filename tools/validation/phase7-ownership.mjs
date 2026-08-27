@@ -93,12 +93,16 @@ export function validateFiles(manifest, files, { allowEmpty = false } = {}) {
   for (const file of unique) {
     const invalid = validateRepositoryPath(file);
     if (invalid) { violations.push({ file, category: 'invalid-path', detail: invalid }); continue; }
-    if (matches(file, manifest.forbiddenPaths)) {
+    // Shared integration paths are explicit cross-phase seams. They may cross
+    // a broad forbidden prefix only when the manifest names the path/pattern;
+    // undeclared siblings remain forbidden and outside the Phase 7 lane.
+    const shared = matches(file, manifest.sharedIntegrationPaths ?? []);
+    if (!shared && matches(file, manifest.forbiddenPaths)) {
       const rationale = Object.entries(manifest.forbiddenRationale ?? {})
         .find(([pattern]) => regexFor(pattern).test(file))?.[1] ?? 'path is forbidden to Phase 7';
       violations.push({ file, category: 'forbidden', detail: rationale });
     }
-    if (!matches(file, manifest.lanes.p7)) {
+    if (!shared && !matches(file, manifest.lanes.p7)) {
       violations.push({ file, category: 'outside-lane', detail: 'p7 owns no matching path' });
     }
   }
