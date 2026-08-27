@@ -6,10 +6,18 @@ function required(value, code) {
   return text;
 }
 
+function stableIdentity(prefix, parts) {
+  // Preserve every legacy ID whose components never used the structural
+  // separator. Only tuples that were previously ambiguous move to v2 framing.
+  if (parts.every((part) => !part.includes(':'))) return `${prefix}:${parts.join(':')}`;
+  const framed = parts.map((part) => `${part.length}:${part}`).join('');
+  return `${prefix}:v2:${framed}`;
+}
+
 export function createProjectIdentity(input = {}) {
   const projectId = required(input.projectId ?? input.id, 'phase12-project-id-required');
   const binaryKey = required(input.binaryId ?? input.binaryKey, 'phase12-project-binary-id-required');
-  return `hex-project:${projectId}:${binaryKey}`;
+  return stableIdentity('hex-project', [projectId, binaryKey]);
 }
 
 export function createBinaryIdentity(input = {}) {
@@ -17,20 +25,20 @@ export function createBinaryIdentity(input = {}) {
   const contentHash = required(input.contentHash ?? input.binaryHash, 'phase12-binary-content-hash-required');
   const format = required(input.format, 'phase12-binary-format-required');
   const architecture = required(input.architecture, 'phase12-binary-architecture-required');
-  return `hex-binary:${projectId}:${contentHash}:${format}:${architecture}`;
+  return stableIdentity('hex-binary', [projectId, contentHash, format, architecture]);
 }
 
 export function createEntityIdentity(input = {}) {
   const binaryId = required(input.binaryId, 'phase12-entity-binary-id-required');
   const kind = required(input.kind, 'phase12-entity-kind-required');
   const stableKey = required(input.stableKey ?? input.key, 'phase12-entity-stable-key-required');
-  return `hex-entity:${binaryId}:${kind}:${stableKey}`;
+  return stableIdentity('hex-entity', [binaryId, kind, stableKey]);
 }
 
 export function createOperationIdentity(input = {}) {
   const projectId = required(input.projectId, 'phase12-operation-project-id-required');
   const operationId = required(input.operationId, 'phase12-operation-id-required');
-  return `hex-operation:${projectId}:${operationId}`;
+  return stableIdentity('hex-operation', [projectId, operationId]);
 }
 
 export function identityDigest(value) { return stableDigest(value); }
