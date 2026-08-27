@@ -3,6 +3,8 @@ import test from 'node:test';
 
 import { aliasMemoryRegions } from '../../../js/analysis/alias/legacy-safety-floor.js';
 import { createPhase7AliasSolver } from '../../../js/analysis/alias/solver.js';
+import { pointsToAlias } from '../../../js/analysis/pointsto/alias.js';
+import { createAnalysisStatus } from '../../../js/analysis/status.js';
 import { ALIAS_QUERIES, buildFixture, memoryAccessOf, regionOf } from '../corpus/fixtures.mjs';
 
 const solvers = new Map();
@@ -80,6 +82,47 @@ test('two similar-looking opaque roots are neither identified nor separated', ()
 test('a pointer read out of memory is an unresolved boundary', () => {
   const result = answer(ALIAS_QUERIES.find((query) => query.id === 'q-load-derived'));
   assert.ok(['may', 'unknown'].includes(result.relation));
+});
+
+test('root spelling alone cannot manufacture NoAlias separation authority', () => {
+  const target = (rootKey, variableKey) => ({
+    top: false,
+    lossReasons: [],
+    targets: [{
+      rootKey,
+      rootKind: 'unknown',
+      addressSpace: 'default',
+      address: null,
+      offsetRange: { min: 0n, max: 0n, exact: true },
+      rootIdentity: { variable: { key: variableKey } },
+    }],
+  });
+
+  for (const [leftName, rightName] of [
+    ['heap_left', 'heap_right'],
+    ['alloc_left', 'alloc_right'],
+    ['global_left', 'global_right'],
+    ['g_root_left', 'g_root_right'],
+  ]) {
+    const result = pointsToAlias(target('r1', leftName), target('r2', rightName), {
+      widthBitsLeft: 64,
+      widthBitsRight: 64,
+      nonEscapingRoots: new Set(),
+      status: createAnalysisStatus({
+        snapshotId: 'snapshot_root_spelling',
+        analyzerId: 'test.root-spelling',
+        analyzerVersion: '1.0.0',
+        completeness: 'complete',
+      }),
+    });
+    assert.equal(result.relation, 'may', `${leftName}/${rightName} must not be a semantic separation proof`);
+    assert.ok(result.reasonCodes.includes('escape-unproven'));
+    assert.ok(!result.reasonCodes.includes('distinct-non-escaping-allocation'), 'name-only heap roots must not claim allocation separation');
+    assert.ok(!result.reasonCodes.includes('disjoint-global-interval'), 'name-only global roots must not claim interval separation');
+    assert.ok(!result.reasonCodes.includes('distinct-proven-root'), 'name-only roots must not claim descriptor-backed separation');
+    assert.ok(!result.reasonCodes.some((code) => code.startsWith('distinct-') || code.startsWith('disjoint-')),
+      'name-only roots must not gain any present or future strong separation reason');
+  }
 });
 
 test('the Phase 7 solver is never weaker than the conservative floor', () => {
