@@ -42,4 +42,36 @@ for (const [mnemonic, operands] of [
   assert.equal(result.operations.filter((op) => op.kind !== 'unknown').length, 0, `${mnemonic} invalid SP/immediate emitted exact operations: ${operands}`);
 }
 
-console.log('issues #2115/#2144 regression: PASS');
+for (const [mnemonic, operands] of [
+  ['cmp','x0, x1'],
+  ['cmp','w0, w1'],
+  ['cmp','x0, x1, lsl #63'],
+  ['cmp','w0, w1, asr #31'],
+  ['cmp','sp, x1'],
+  ['cmp','sp, x1, lsl #4'],
+  ['cmp','sp, w1, uxtw #4'],
+  ['cmn','x0, w1, sxtw #4'],
+  ['ccmp','x0, x1, #0, eq'],
+  ['ccmn','w0, w1, #15, ne'],
+]) {
+  assert.notEqual(lift(mnemonic, operands).completeness, 'partial', `${mnemonic} valid register form regressed: ${operands}`);
+}
+
+for (const [mnemonic, operands] of [
+  ['cmp','x0, w1'],
+  ['cmp','x0, x1, ror #1'],
+  ['cmn','x0, x1, ror #1'],
+  ['cmp','x0, x1, lsl #64'],
+  ['cmp','sp, x1, lsl #5'],
+  ['cmp','sp, x1, lsr #1'],
+  ['cmp','x0, w1, uxtw #5'],
+  ['ccmp','x0, w1, #0, eq'],
+  ['ccmn','w0, x1, #0, eq'],
+  ['ccmp','x0, x1, lsl #1, #0, eq'],
+]) {
+  const result = lift(mnemonic, operands);
+  assert.equal(result.completeness, 'partial', `${mnemonic} invalid register encoding must fail closed: ${operands}`);
+  assert.equal(result.operations.filter((op) => op.kind !== 'unknown').length, 0, `${mnemonic} invalid register encoding emitted exact operations: ${operands}`);
+}
+
+console.log('issues #2115/#2144/#2145 regression: PASS');
