@@ -4,10 +4,12 @@ export {
   evaluateArm64Bitfield,
 } from './integer-core.js';
 import { liftArm64IntegerEffects as liftArm64IntegerEffectsCore } from './integer-core.js';
+import { createArm64EffectContext } from './common.js';
 
 const ADD_SUB_BASE = new Set(['add','adds','sub','subs']);
 const ADD_SUB_ALL = new Set(['add','adds','sub','subs','adc','adcs','sbc','sbcs','neg','negs','ngc','ngcs']);
 const LOGICAL_NO_SP = new Set(['and','ands','orr','eor','bic','bics','orn','eon','mvn']);
+const LOGICAL_IMMEDIATE_SP_DEST = new Set(['and','orr','eor']);
 const EXTEND_KINDS = new Set(['uxtb','uxth','uxtw','uxtx','sxtb','sxth','sxtw','sxtx']);
 
 function expectedOperandCount(mnemonic) {
@@ -34,6 +36,45 @@ function validImm12(op) {
   if (value < 0n || value > 0xfffn) return false;
   if (op.shift == null) return true;
   return String(op.shift.op || '').toLowerCase() === 'lsl' && Number(op.shift.amount) === 12;
+}
+
+function rotateRightElement(value, amount, widthBits) {
+  const width = BigInt(widthBits);
+  const shift = BigInt(amount % widthBits);
+  const mask = (1n << width) - 1n;
+  if (shift === 0n) return value & mask;
+  return ((value >> shift) | (value << (width - shift))) & mask;
+}
+
+function replicateElement(value, elementBits, widthBits) {
+  let result = 0n;
+  for (let offset = 0; offset < widthBits; offset += elementBits) result |= value << BigInt(offset);
+  return BigInt.asUintN(widthBits, result);
+}
+
+function buildLogicalImmediateMasks(widthBits) {
+  const masks = new Set();
+  for (let elementBits = 2; elementBits <= widthBits; elementBits *= 2) {
+    for (let ones = 1; ones < elementBits; ones++) {
+      const base = (1n << BigInt(ones)) - 1n;
+      for (let rotation = 0; rotation < elementBits; rotation++) {
+        masks.add(replicateElement(rotateRightElement(base, rotation, elementBits), elementBits, widthBits).toString());
+      }
+    }
+  }
+  return masks;
+}
+
+const LOGICAL_IMMEDIATE_MASKS = Object.freeze({
+  32: buildLogicalImmediateMasks(32),
+  64: buildLogicalImmediateMasks(64),
+});
+
+function logicalImmediateEncodable(op, widthBits) {
+  if (op?.k !== 'imm' || (widthBits !== 32 && widthBits !== 64) || op.shift != null) return false;
+  let immediate;
+  try { immediate = BigInt(op.value); } catch { return false; }
+  return LOGICAL_IMMEDIATE_MASKS[widthBits].has(BigInt.asUintN(widthBits, immediate).toString());
 }
 
 function validExtendedSource(rhs, targetBits) {
@@ -99,7 +140,23 @@ function validAddSubRegister31Encoding(mnemonic, ops) {
 
 function validLogicalRegisterClass(mnemonic, ops) {
   if (!LOGICAL_NO_SP.has(mnemonic)) return true;
-  return !ops.some((op) => regClass(op) === 'sp');
+  if (!ops.some((op) => regClass(op) === 'sp')) return true;
+
+  // Logical-immediate AND/ORR/EOR interpret Rd=31 as SP, while their source
+  // register and all logical shifted-register forms interpret register 31 as ZR.
+  // Keep register-form SP fail-closed, but preserve the architectural immediate
+  // destination form and validate its bitmask domain here because top-level
+  // generic GP/ZR validation intentionally does not classify SP destinations.
+  if (!LOGICAL_IMMEDIATE_SP_DEST.has(mnemonic) || ops.length !== 3 || ops[2]?.k !== 'imm') return false;
+  const dst = ops[0], lhs = ops[1], rhs = ops[2];
+  const bits = regBits(dst);
+  return regClass(dst) === 'sp'
+    && (bits === 32 || bits === 64)
+    && isGpOrZr(lhs)
+    && regBits(lhs) === bits
+    && lhs.shift == null
+    && lhs.extend == null
+    && logicalImmediateEncodable(rhs, bits);
 }
 
 function validRegisterOnlyClass(expected, ops) {
@@ -118,7 +175,11 @@ export function liftArm64IntegerEffects(instruction, options = {}) {
     return liftArm64IntegerEffectsCore({ ...instruction, ops: [] }, options);
   }
   if (!validAddSubRegister31Encoding(mnemonic, ops)) {
-    return liftArm64IntegerEffectsCore({ ...instruction, ops: [] }, options);
+    // Carry-consuming forms read NZCV before their core notices empty operands.
+    // Fail before entering the core so an invalid SP encoding cannot leak an
+    // exact flag-read operation into an otherwise fail-closed bundle.
+    return createArm64EffectContext(instruction, options).partial(
+      `arm64-${mnemonic}-register31-unencodable`, ['registers','flags','other']);
   }
   if (!validLogicalRegisterClass(mnemonic, ops)) {
     return liftArm64IntegerEffectsCore({ ...instruction, ops: [] }, options);
