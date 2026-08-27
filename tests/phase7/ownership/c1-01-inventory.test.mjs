@@ -7,6 +7,8 @@ import { fileURLToPath } from 'node:url';
 import { loadManifest, regexFor } from '../../../tools/validation/phase7-ownership.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
+const C1_01_BASE_SHA = '852fcc559711eac680f6853644d390fdb5c1b7f8';
+const C1_01_HEAD_SHA = '66664d4b5ec29ad503c785e50f3d2ff78df1dbe3';
 
 const C1_01_ALLOWED_PATHS = Object.freeze([
   '.specify/memory/constitution.md',
@@ -50,13 +52,15 @@ export function validateC101Inventory(files, manifest = loadManifest()) {
 }
 
 function currentC101Inventory() {
-  const base = process.env.HEX_C101_BASE_SHA
-    ?? lines('git', ['merge-base', 'origin/main', 'HEAD'])[0];
-  assert.ok(base, 'C1-01 ownership validation requires a current-main merge base');
-  return Array.from(new Set([
-    ...lines('git', ['diff', '--name-only', '--diff-filter=ACMRTUXB', base, '--']),
-    ...lines('git', ['ls-files', '--others', '--exclude-standard']),
-  ])).sort();
+  const explicitBase = process.env.HEX_C101_BASE_SHA;
+  const base = explicitBase ?? C1_01_BASE_SHA;
+  const head = process.env.HEX_C101_HEAD_SHA ?? (explicitBase ? 'HEAD' : C1_01_HEAD_SHA);
+  assert.ok(base && head, 'C1-01 ownership validation requires an explicit or frozen commit range');
+  const tracked = lines('git', ['diff', '--name-only', '--diff-filter=ACMRTUXB', base, head, '--']);
+  const untracked = head === 'HEAD'
+    ? lines('git', ['ls-files', '--others', '--exclude-standard'])
+    : [];
+  return Array.from(new Set([...tracked, ...untracked])).sort();
 }
 
 test('HEX-C1-01 planned inventory is accepted without widening Phase 7 ownership', () => {
