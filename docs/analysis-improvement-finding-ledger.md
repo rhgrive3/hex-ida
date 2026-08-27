@@ -3,10 +3,12 @@
 ## Campaign authority
 
 - Scope: close findings from `docs/解析ツール改善.md.txt`; unrelated Issue work is excluded.
-- Live-main audit base: `e29187c5be7a62cdf966a821c1d9a0623d8f6ce3`.
+- Initial live-main audit base: `e29187c5be7a62cdf966a821c1d9a0623d8f6ce3`.
+- Current implementation base after pre-worker reconciliation: `852fcc559711eac680f6853644d390fdb5c1b7f8`.
 - Integration owner: Sol Supervisor on `research-close/integration`.
 - Integration worktree: `/workspaces/ida-245-research-integration`.
-- Concurrent pull requests at preflight: none.
+- Concurrent pull requests at initial preflight: none. Pre-worker recheck found PR 2202 only;
+  its DWARF/integrated-Issue files do not overlap C1-01.
 - Concurrent research implementation branches: none newer than the research addendum; old unmerged
   branches are historical evidence only and will not be modified.
 - Generated-output owner: integration lane only. Component workers may build generated output
@@ -35,7 +37,7 @@ verification. Denominators and tests may not be weakened.
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | HEX-C0-01 | COMPLETE_EXISTING | COMPLETE | existing/main | historical | historical | merged PR 1887 | none | same-artifact debug/stripped authority merged and retained on live main | `tools/validation/competitive/**` | competitive twin authority regressions | historical | main evidence retained | `2af6a913` | non-regression only | none |
 | HEX-ME-01 | REMAINING | PARTIAL | Sol | — | — | — | C0-01 | external-oracle policy and differential harness exist; no formal/relaxed-memory release proof | partial oracle infrastructure | required formal/hardware/undefined-mask matrix | — | — | — | incomplete observables may create false confidence | none |
-| HEX-C1-01 | PLANNING | MISSING | Sol | `specs/001-loaded-pointer-recovery` | pending | `research-close/integration` / pending | C1-03 | production still returns `unresolved-load`; canonical `reachingConcreteStore` has no indexed consumer | no loaded-pointer bridge | pending deterministic store/load positive and MayAlias/clobber/width negatives | — | — | — | false precise points-to is release-blocking | none |
+| HEX-C1-01 | IMPLEMENTING | MISSING | Sol + one Luna Max implementation owner | `specs/001-loaded-pointer-recovery` | T001–T022; T001–T002 complete | `research-close/integration` / PR 2201 | C1-03 | production still returns `unresolved-load`; canonical `reachingConcreteStore` has no indexed consumer | exact C1-01 inventory gate added; semantic bridge pending | inventory gate 3/3 and Phase 7 manifest PASS; store/load counterexample pending | analyze clean; implement active | — | — | false precise points-to is release-blocking | none |
 | HEX-C1-02 | REMAINING | MISSING | Sol | — | — | — | C1-03 | production still returns `unresolved-call` | no complete return-pointer summary relation | pending complete/incomplete/recursive target matrix | — | — | — | incomplete summary must join unknown | none |
 | HEX-C1-03 | COMPLETE_EXISTING | COMPLETE | existing/main | historical | historical | merged PR 2185 | C0-01 | provenance-backed root separation is on live main | canonical roots; spelling cannot mint exact separation | alias provenance negative regressions | historical | main evidence retained | `552f798f` | non-regression only | none |
 | HEX-C2-01 | REMAINING | PARTIAL | Sol | — | — | — | C1-01, C1-03 | canonical MemorySSA query exists without general byte-coverage consumer | exact-store query only | pending byte coverage, endian, overlap, clobber matrix | — | — | — | one wrong byte creates silent wrong value | none |
@@ -59,13 +61,21 @@ verification. Denominators and tests may not be weakened.
 
 ## Active finding checkpoint: HEX-C1-01
 
-- Exact current-main base: `e29187c5be7a62cdf966a821c1d9a0623d8f6ce3`.
+- Exact current-main implementation base: `852fcc559711eac680f6853644d390fdb5c1b7f8`.
+- Moving-main reconciliation: `e29187c5` → `852fcc55` contains the independently owned ELF
+  fix plus canonical generated outputs. No C1-01 source/test overlap exists; generated outputs are
+  deferred to T019 and will be rebuilt from the final candidate.
 - First deterministic divergence: a load-derived pointer becomes `TOP/unresolved-load` even when
   canonical MemorySSA identifies one exact reaching concrete store.
 - Canonical owner: `js/analysis/pointsto/**`, consuming `js/semantics/memoryssa/**` through the
   existing production analysis orchestration.
 - Forbidden architecture: a second reaching-definition engine, MayAlias forwarding, private
   decompiler recovery, name-based provenance, or any unrelated Issue fix.
-- Preflight collision result: zero open PRs and no current research branch implementing C1-01.
-- Next action: create exactly one C1-01 Spec Kit feature and run specify, clarify, graft trace,
-  plan, checklist, tasks, and analyze before production code changes.
+- Preflight collision result: no research overlap; PR 2202 changes only
+  `js/analysis/debug/dwarf.js` and `tests/integrated-issues-hardening.mjs`.
+- Spec Kit readiness: specify, clarify, graft trace, plan, checklist, tasks, and analyze complete;
+  20/20 requirements covered, 0 critical/high/medium findings, and both checklists fully reviewed.
+- Ownership preflight: `tests/phase7/ownership/c1-01-inventory.test.mjs` passes 3/3 against the
+  actual tracked plus untracked branch inventory; the Phase 7 manifest gate also passes.
+- Next action: one Luna Max implementation owner executes T003–T012 counterexample-first while Sol
+  retains T013–T022 integration, convergence, exact-product proof, PR, and merge authority.
