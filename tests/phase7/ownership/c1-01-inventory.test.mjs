@@ -18,6 +18,7 @@ const C1_01_ALLOWED_PATHS = Object.freeze([
   'js/semantics/compat/index.js',
   'tests/phase7/pointsto/loaded-pointer-recovery.test.mjs',
   'tests/phase7/ownership/c1-01-inventory.test.mjs',
+  'tools/validation/phase-ownership/phase7.json',
   'userscript/hex.user.template.js',
   'userscript/release-version.json',
 ]);
@@ -69,6 +70,7 @@ test('HEX-C1-01 planned inventory is accepted without widening Phase 7 ownership
     'js/semantics/compat/index.js',
     'tests/phase7/pointsto/loaded-pointer-recovery.test.mjs',
     'tests/phase7/ownership/c1-01-inventory.test.mjs',
+    'tools/validation/phase-ownership/phase7.json',
     'userscript/hex.user.template.js',
     'userscript/release-version.json',
   ];
