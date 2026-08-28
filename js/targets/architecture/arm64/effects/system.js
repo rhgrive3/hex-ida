@@ -11,6 +11,8 @@ const ARCHITECTURE_ID = 'arm64';
 const MODE = 'a64';
 
 const BARRIERS = new Set(['dmb','dsb','isb']);
+const DATA_BARRIER_OPTIONS = new Set(['sy','st','ld','ish','ishst','ishld','nsh','nshst','nshld','osh','oshst','oshld']);
+const DSB_NXS_OPTIONS = new Set(['oshnxs','nshnxs','ishnxs','synxs']);
 const WAITS_AND_EVENTS = new Set(['yield','wfe','wfi','sev','sevl']);
 const TRAPS = new Set(['svc','hvc','smc','brk','hlt']);
 const MAINTENANCE = new Set(['dc','ic','tlbi']);
@@ -590,14 +592,19 @@ function sysOperandShapeValid(ops) {
 
 function operandShapeFailure(instruction, mnemonic, ops) {
   if (BARRIERS.has(mnemonic)) {
-    if (ops.length > 1) return { reason:`${mnemonic}-operand-shape-invalid`, categories:['other'] };
-    if (ops.length === 1) {
-      const op = ops[0];
-      if (op?.k === 'reg' || op?.cls || op?.shift != null || op?.extend != null) {
-        return { reason:`${mnemonic}-operand-shape-invalid`, categories:['other'] };
-      }
+    if (ops.length === 0) return null;
+    if (ops.length !== 1) return { reason:`${mnemonic}-operand-shape-invalid`, categories:['other'] };
+    const op = ops[0];
+    if (op?.k === 'imm') {
+      if (!isPlainImmediate(op)) return { reason:`${mnemonic}-operand-shape-invalid`, categories:['other'] };
+      const value = BigInt(op.value);
+      return value >= 0n && value <= 15n ? null : { reason:`${mnemonic}-operand-shape-invalid`, categories:['other'] };
     }
-    return null;
+    const option = textOperand(op);
+    const valid = mnemonic === 'isb'
+      ? option === 'sy'
+      : DATA_BARRIER_OPTIONS.has(option) || (mnemonic === 'dsb' && DSB_NXS_OPTIONS.has(option));
+    return valid ? null : { reason:`${mnemonic}-operand-shape-invalid`, categories:['other'] };
   }
   if (mnemonic === 'nop' || WAITS_AND_EVENTS.has(mnemonic)) {
     return ops.length === 0 ? null : { reason:`${mnemonic}-operand-shape-invalid`, categories:['other'] };
