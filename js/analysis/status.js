@@ -69,6 +69,7 @@ const COMPLETENESS_RANK = new Map(ANALYSIS_COMPLETENESS.map((value, index) => [v
 function fail(code) { throw new TypeError(code); }
 
 // Canonical status identities are protocol strings; never coerce arbitrary values.
+// Keep this validation on the maintainer-owned head so exact-head CI runs after generated synchronization.
 function nonEmpty(value, code) {
   if (typeof value !== 'string') fail(code);
   const text = value.trim();
