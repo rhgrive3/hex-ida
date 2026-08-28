@@ -1,5 +1,6 @@
 import { assemble as assembleArm64 } from '../../patch.js';
 import { extendArm64WithArm64eEffects } from './arm64e/effects.js';
+import { arm64ePointerAuthenticationOperandShapeFailureBundle } from './arm64e/encoding.js';
 import { ARM64_MACHINE_EFFECTS_SEMANTIC_VERSION, liftArm64MachineEffects } from './arm64/effects/index.js';
 import { decorateArm64BtypeEffects } from './arm64/effects/btype.js';
 import { decorateArm64BtiGuardedPageEffects } from './arm64/effects/bti-guard-state.js';
@@ -104,6 +105,8 @@ const ARM64_REGISTERS = Object.freeze([
 
 const liftArm64eMachineEffectsBase = extendArm64WithArm64eEffects(liftArm64MachineEffects);
 const liftArm64eMachineEffects = (decoded, context = {}) => {
+  const encodingFailure = arm64ePointerAuthenticationOperandShapeFailureBundle(decoded, context);
+  if (encodingFailure) return encodingFailure;
   const bundle = liftArm64eMachineEffectsBase(decoded, context);
   if (bundle == null) return null;
   const postState = decorateArm64BtiGuardedPageEffects(decoded, bundle, context);
