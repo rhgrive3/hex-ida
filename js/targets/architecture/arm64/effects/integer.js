@@ -11,6 +11,7 @@ const ADD_SUB_ALL = new Set(['add','adds','sub','subs','adc','adcs','sbc','sbcs'
 const LOGICAL_NO_SP = new Set(['and','ands','orr','eor','bic','bics','orn','eon','mvn']);
 const LOGICAL_IMMEDIATE_SP_DEST = new Set(['and','orr','eor']);
 const EXTEND_KINDS = new Set(['uxtb','uxth','uxtw','uxtx','sxtb','sxth','sxtw','sxtx']);
+const CONDITIONAL_SELECT_MNEMONICS = new Set(['csel','csinc','csinv','csneg','cset','csetm','cinc','cneg','cinv']);
 
 function expectedOperandCount(mnemonic) {
   if (['lsl','lslv','lsr','lsrv','asr','asrv','ror','rorv'].includes(mnemonic)) return 3;
@@ -181,6 +182,14 @@ function validRegisterOnlyClass(expected, ops) {
   return !ops.some((op) => regClass(op) === 'sp');
 }
 
+function validConditionalOperand(mnemonic, ops) {
+  if (!CONDITIONAL_SELECT_MNEMONICS.has(mnemonic)) return true;
+  const condition = ops[ops.length - 1];
+  return condition?.k === 'cond'
+    && condition.shift == null
+    && condition.extend == null;
+}
+
 export function liftArm64IntegerEffects(instruction, options = {}) {
   const mnemonic = String(instruction?.mnemonic || '').toLowerCase();
   const ops = Array.isArray(instruction?.ops) ? instruction.ops : [];
@@ -190,6 +199,10 @@ export function liftArm64IntegerEffects(instruction, options = {}) {
   }
   if (!validRegisterOnlyClass(expected, ops)) {
     return liftArm64IntegerEffectsCore({ ...instruction, ops: [] }, options);
+  }
+  if (!validConditionalOperand(mnemonic, ops)) {
+    return createArm64EffectContext(instruction, options).partial(
+      `arm64-${mnemonic}-condition-operand-unencodable`, ['registers','flags','other']);
   }
   if (!validMovEncoding(mnemonic, ops)) {
     return createArm64EffectContext(instruction, options).partial(
