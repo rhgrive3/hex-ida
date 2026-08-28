@@ -37,6 +37,7 @@ export class CachedByteSource extends ByteSource {
     this.pageSize = options.pageSize ?? 256 * 1024;
     this.maxCachedBytes = options.maxCachedBytes ?? 8 * 1024 * 1024;
     if (!Number.isSafeInteger(this.pageSize) || this.pageSize <= 0) throw new TypeError('pageSize must be a positive safe integer');
+    if (this.pageSize > source.maxReadLength) throw new TypeError('pageSize must not exceed source maxReadLength');
     if (!Number.isSafeInteger(this.maxCachedBytes) || this.maxCachedBytes < this.pageSize) throw new TypeError('maxCachedBytes must be at least one page');
     this.cache = new Map();
     this.inflight = new Map();
