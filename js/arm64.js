@@ -123,12 +123,12 @@ export function isBranch(mn) {
   const b = (mn || '').toLowerCase();
   return BRANCH_IMM.has(b) || /^b\.[a-z]{2}$/.test(b) ||
     b === 'br' || b === 'blr' || b === 'ret' ||
-    /^(braa|brab|blraa|blrab|retaa|retab)$/.test(b);
+    /^(braa|brab|braaz|brabz|blraa|blrab|blraaz|blrabz|retaa|retab)$/.test(b);
 }
 
 export function isCall(mn) {
   const b = (mn || '').toLowerCase();
-  return b === 'bl' || b === 'blr' || b === 'blraa' || b === 'blrab';
+  return b === 'bl' || b === 'blr' || b === 'blraa' || b === 'blrab' || b === 'blraaz' || b === 'blrabz';
 }
 
 export function isReturn(mn) {
@@ -150,7 +150,7 @@ cat('cmp cmn tst ccmp ccmn fcmp fcmpe', 'compare');
 cat('csel csinc csinv csneg cset csetm cinc cinv cneg', 'select');
 cat('ldr ldrb ldrh ldrsb ldrsh ldrsw ldur ldurb ldurh ldursb ldursh ldursw ldp ldpsw ldnp ldtr ldxr ldaxr ldar ldarb ldarh ld1 ld2 ld3 ld4 prfm', 'load');
 cat('str strb strh stur sturb sturh stp stnp sttr stxr stlxr stlr stlrb stlrh st1 st2 st3 st4', 'store');
-cat('b bl br blr ret cbz cbnz tbz tbnz braa brab blraa blrab retaa retab', 'flow');
+cat('b bl br blr ret cbz cbnz tbz tbnz braa brab braaz brabz blraa blrab blraaz blrabz retaa retab', 'flow');
 cat('adr adrp', 'address');
 cat('nop hint bti svc hvc smc brk hlt dmb dsb isb yield wfe wfi sev sevl mrs msr sys eret clrex paciasp pacibsp autiasp autibsp pacia pacib autia autib xpaclri pacia1716 dc ic tlbi', 'system');
 cat('fadd fsub fmul fdiv fneg fabs fsqrt fmadd fmsub fnmadd fcvt fcvtzs fcvtzu fcvtas fcvtau fcvtms fcvtns fcvtps scvtf ucvtf frinta frintm frintn frintp frintz fmax fmin fmaxnm fminnm', 'float');
@@ -1539,8 +1539,8 @@ HANDLERS['.byte'] = (o, ops, base, addr, c) => {
 
 function familyHandler(base) {
   if (/^b\.[a-z]{2}$/.test(base)) return condBranch;
-  if (/^(braa|brab)$/.test(base)) return HANDLERS.br;
-  if (/^(blraa|blrab)$/.test(base)) return HANDLERS.blr;
+  if (/^(braa|brab|braaz|brabz)$/.test(base)) return HANDLERS.br;
+  if (/^(blraa|blrab|blraaz|blrabz)$/.test(base)) return HANDLERS.blr;
   if (/^ld/.test(base)) return loadStore(true);
   if (/^st/.test(base)) return loadStore(false);
   if (/^f/.test(base)) {
