@@ -18,7 +18,7 @@ import { INDEPENDENT_ORACLE_CASE_FIXTURES } from './fixtures/independent-oracle-
 const currentHead = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
 const candidateTreeSha = spawnSync('git', ['merge-tree', '--write-tree', 'origin/main', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
 assert.match(candidateTreeSha, /^[0-9a-f]{40}$/);
-const assignedBase = 'ac8c090fc2dd6e5973617378d1cf9310ace2cf73';
+const assignedBase = '1cd6470973b0d41e2af88cf1c8730a9188657013';
 const corpus = createCorpus(INDEPENDENT_ORACLE_CASE_FIXTURES);
 const results = [];
 for (const corpusCase of corpus.cases) {
