@@ -35,15 +35,9 @@ export const ARM64E_PAC_ENCODING_FAMILIES = Object.freeze([
   ...BRANCH_ZERO.map(([mnemonic,match]) => row(mnemonic,mnemonic,0xfffffc1f,match,[5])),
 ]);
 
-function fieldValue(word, shift) { return (word >>> shift) & 31; }
-function valid(row, word) {
-  // PACGA's third source is X-register-only and encoding 31 is reserved.
-  return row.id !== 'pacga' || fieldValue(word,16) !== 31;
-}
-
 export function classifyArm64ePacEncoding(word) {
   const value = Number(word) >>> 0;
-  const matches = ARM64E_PAC_ENCODING_FAMILIES.filter((candidate) => ((value & candidate.mask) >>> 0) === candidate.match && valid(candidate,value));
+  const matches = ARM64E_PAC_ENCODING_FAMILIES.filter((candidate) => ((value & candidate.mask) >>> 0) === candidate.match);
   if (matches.length > 1) throw new Error(`arm64e-pac-denominator-overlap:0x${value.toString(16)}:${matches.map(({id})=>id).join(',')}`);
   return matches[0] || null;
 }
@@ -53,7 +47,7 @@ export function* arm64ePacEncodingCases() {
     if (family.fields.length === 0) { yield Object.freeze({ id:family.id, familyId:family.id, mnemonic:family.mnemonic, word:family.match }); continue; }
     const visit = function* (index, word, suffix) {
       if (index === family.fields.length) {
-        if (valid(family,word)) yield Object.freeze({ id:`${family.id}:${suffix.join(':')}`, familyId:family.id, mnemonic:family.mnemonic, word:word >>> 0 });
+        yield Object.freeze({ id:`${family.id}:${suffix.join(':')}`, familyId:family.id, mnemonic:family.mnemonic, word:word >>> 0 });
         return;
       }
       const shift = family.fields[index];

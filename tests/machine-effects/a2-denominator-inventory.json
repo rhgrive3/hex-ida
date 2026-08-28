@@ -282,7 +282,7 @@
             "arm64e:a64+pac:alias:baseline-a64-delegation",
             "arm64e:a64+pac:effect-family:fallback-unmatched-decoder-family"
           ],
-          "pacEncodingCaseCount": 44491,
+          "pacEncodingCaseCount": 45515,
           "pacMnemonicCount": 38,
           "knownBaselineEncodingCaseCount": 376186,
           "strictBaselineDisjointEncodingCaseCount": 376177,
@@ -297,7 +297,7 @@
           "source": "tools/validation/machine-effects/arm64e-pac-denominator.mjs",
           "test": "tests/machine-effects/arm64e-pac-denominator.test.mjs",
           "encodingFamilyCount": 38,
-          "encodingCaseCount": 44491,
+          "encodingCaseCount": 45515,
           "mnemonicCount": 38,
           "oracleIds": [
             "arm-architecture-reference-manual-pauth-encodings",
