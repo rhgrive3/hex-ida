@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { MemoryByteSource } from '../js/binary/source.js';
+import { ByteView } from '../js/binary/reader.js';
 import { CachedByteSource, InstrumentedByteSource, ByteSourceCancelledError } from '../js/bytesource/cached.js';
 import { scanSourceStrings } from '../js/bytesource/strings.js';
 import { hashByteSource } from '../js/platform/hash.js';
@@ -42,5 +43,16 @@ assert.throws(
   () => new CachedByteSource(strictBackend, { pageSize: 65, maxCachedBytes: 65 }),
   /pageSize must not exceed source maxReadLength/,
 );
+
+const customBackingBytes = Uint8Array.of(0x7f, 0x00);
+const customBacking = {
+  __binaryByteBacking: true,
+  size: 2n,
+  subarray(start, end) { return customBackingBytes.subarray(Number(start), Number(end)); },
+};
+const bigintView = new ByteView(customBacking);
+assert.equal(bigintView.u8(0), 0x7f);
+assert.equal(bigintView.data(0, 1n).view.getUint8(0), 0x7f);
+assert.equal(bigintView.data(0, 2n).view.byteLength, 2);
 
 console.log('platform-bytesource: PASS');

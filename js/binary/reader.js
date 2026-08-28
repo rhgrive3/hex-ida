@@ -80,7 +80,7 @@ export class ByteView {
   data(offset, size) {
     const o = this.check(offset, size);
     if (this.view) return { view: this.view, offset: o };
-    const bytes = this.bytes.subarray(o, o + size);
+    const bytes = this.bytes.subarray(o, o + Number(size));
     return { view: new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength), offset: 0 };
   }
 
