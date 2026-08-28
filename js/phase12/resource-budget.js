@@ -45,7 +45,14 @@ export function createResourceBudget(options = {}) {
     consumeEntries: (amount = 1) => check('entries', amount, limits.maxEntries, 'resource-limit-entries'),
     consumeWork: (amount = 1) => check('work', amount, limits.maxWork, 'resource-limit-work'),
     consumeOutputBytes: (amount) => check('outputBytes', amount, limits.maxOutputBytes, 'resource-limit-output'),
-    checkDepth: (depth) => depth <= limits.maxDepth ? !stopped : stop('resource-limit-depth', { depth, limit: limits.maxDepth }),
+    checkDepth: (depth) => {
+      if (stopped) return false;
+      if (signal?.aborted) return stop('cancelled', signal.reason?.message || null);
+      const value = Number(depth);
+      return Number.isSafeInteger(value) && value >= 0 && value <= limits.maxDepth
+        ? true
+        : stop('resource-limit-depth', { depth: value, limit: limits.maxDepth });
+    },
     checkpoint: () => {
       if (stopped) return false;
       if (signal?.aborted) return stop('cancelled', signal.reason?.message || null);
