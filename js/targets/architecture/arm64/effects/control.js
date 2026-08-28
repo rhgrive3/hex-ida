@@ -107,10 +107,13 @@ function gpRegister(num) {
 function isIndirectControlRegister(operand) {
   return operand?.k === 'reg'
     && (operand.cls === 'gp' || operand.cls === 'zr')
-    && Number(operand.bits) === 64;
+    && Number(operand.bits) === 64
+    && operand.shift == null
+    && operand.extend == null;
 }
 
 function directTargetOperandShapeValid(instruction, operand, kind = 'branch') {
+  if (operand?.shift != null || operand?.extend != null) return false;
   if (operand?.k === 'imm' && operand.value != null) return true;
   if (operand?.k === 'other' && /^#?(?:0x[0-9a-f]+|\d+)$/i.test(String(operand.text || '').trim())) return true;
   const explicit = kind === 'call' ? instruction?.callTarget : instruction?.branchTarget;
@@ -120,7 +123,9 @@ function directTargetOperandShapeValid(instruction, operand, kind = 'branch') {
 function isBranchTestRegister(operand) {
   return operand?.k === 'reg'
     && (operand.cls === 'gp' || operand.cls === 'zr')
-    && (Number(operand.bits) === 32 || Number(operand.bits) === 64);
+    && (Number(operand.bits) === 32 || Number(operand.bits) === 64)
+    && operand.shift == null
+    && operand.extend == null;
 }
 
 function directBranchOperandShapeValid(instruction, mnemonic, ops) {
@@ -136,6 +141,7 @@ function directBranchOperandShapeValid(instruction, mnemonic, ops) {
   if (TEST_BRANCH.has(mnemonic)) {
     return ops.length === 3 && isBranchTestRegister(ops[0])
       && ops[1]?.k === 'imm' && ops[1].value != null
+      && ops[1].shift == null && ops[1].extend == null
       && directTargetOperandShapeValid(instruction, ops[2], 'branch');
   }
   return true;
