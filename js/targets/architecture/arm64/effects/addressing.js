@@ -18,7 +18,10 @@ const fail = (code, detail) => { throw new Arm64AddressingError(code, detail); }
 const own = (value, key) => value != null && Object.prototype.hasOwnProperty.call(value, key);
 
 function integer(value, code) {
-  if (value && typeof value === 'object' && own(value, 'value')) value = value.value;
+  if (value && typeof value === 'object' && own(value, 'value')) {
+    if (value.shift != null || value.extend != null) fail(code);
+    value = value.value;
+  }
   if (typeof value === 'bigint') return value;
   if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value);
   if (typeof value === 'string' && /^-?(?:0x[0-9a-f]+|\d+)$/i.test(value.trim())) return BigInt(value.trim());
@@ -236,6 +239,7 @@ export function buildArm64EffectiveAddress(decoded, options = {}) {
   if (!base || base.zero || !['gp', 'sp'].includes(base.kind) || base.bits !== 64) fail('arm64-invalid-memory-base-register');
   const index = memIndex(mem);
   if (index && !['gp'].includes(index.kind)) fail('arm64-invalid-memory-index-register');
+  if (!index && (mem.shift != null || mem.extend != null)) fail('arm64-immediate-addressing-modifier-unencodable');
   if (mode !== 'offset' && index) fail('arm64-writeback-register-offset-unsupported');
 
   const baseRead = createArm64RegisterRead(base, `${prefix}.base`, 64);
