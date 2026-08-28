@@ -1,0 +1,58 @@
+name: PR2372 dirty monitor
+
+on:
+  push:
+    branches:
+      - diag/pr2372-dirty-monitor
+
+permissions:
+  contents: read
+
+jobs:
+  trace:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: c24dbb7688610f727745926bc877b6ec9ef788d0
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Trace dirty paths during MachineEffects run
+        shell: bash
+        run: |
+          set -u
+          WT="$(mktemp -d)/a2"
+          git worktree add --detach --quiet "$WT" c24dbb7688610f727745926bc877b6ec9ef788d0
+          rm -rf "$WT/node_modules"
+          ln -s "$PWD/node_modules" "$WT/node_modules"
+          (
+            cd "$WT"
+            npm run effects:test > /tmp/effects.out 2> /tmp/effects.err
+          ) &
+          PID=$!
+          LAST=""
+          while kill -0 "$PID" 2>/dev/null; do
+            NOW="$(git -C "$WT" status --porcelain --untracked-files=all || true)"
+            if [ -n "$NOW" ] && [ "$NOW" != "$LAST" ]; then
+              echo '--- DIRTY STATUS ---'
+              printf '%s\n' "$NOW"
+              LAST="$NOW"
+            fi
+            sleep 0.1
+          done
+          wait "$PID" || RC=$?
+          RC=${RC:-0}
+          echo "effects rc=$RC"
+          echo '--- FINAL STATUS ---'
+          git -C "$WT" status --porcelain --untracked-files=all || true
+          echo '--- STDERR TAIL ---'
+          tail -120 /tmp/effects.err || true
+          echo '--- STDOUT TAIL ---'
+          tail -120 /tmp/effects.out || true
+          git worktree remove --force "$WT"
+          exit 0
