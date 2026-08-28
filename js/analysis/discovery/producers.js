@@ -44,11 +44,14 @@ function loaderFunctionStarts(image) {
     out.push(start);
   };
 
-  for (const start of image?.functionStarts ?? []) add(start);
+  // Canonical loader truth must win deduplication. The legacy projection is
+  // compatibility-only and may omit provenance/extent fields carried by the
+  // canonical BinaryImage.functions seed.
   for (const start of image?.functions ?? []) {
     const sources = new Set([start?.source, ...(start?.sources ?? [])].filter(Boolean));
     if (sources.has('function_starts')) add(start);
   }
+  for (const start of image?.functionStarts ?? []) add(start);
   return out;
 }
 
@@ -126,11 +129,16 @@ export const exportProducer = Object.freeze({
 
     const entrypoint = toAddress(image?.entrypoint);
     if (entrypoint != null) {
-      const loaderValidated = (image?.functions ?? []).some((seed) => {
+      const explicitlyRejected = image?.metadata?.entrypointValid === false;
+      const entrypointSeedValidated = (image?.functions ?? []).some((seed) => {
         if (toAddress(seed?.address) !== entrypoint) return false;
         const sources = new Set([seed?.source, ...(seed?.sources ?? [])].filter(Boolean));
         return sources.has('entrypoint');
-      }) || image?.metadata?.entrypointValid === true;
+      });
+      // An explicit loader rejection is authoritative negative truth. A stale or
+      // contradictory compatibility seed must never resurrect the entrypoint.
+      const loaderValidated = !explicitlyRejected
+        && (image?.metadata?.entrypointValid === true || entrypointSeedValidated);
       if (loaderValidated) {
         out.push(evidence('entrypoint', { start: entrypoint, name: 'entrypoint', evidenceIds: [`entrypoint:${entrypoint}`] }));
       }
