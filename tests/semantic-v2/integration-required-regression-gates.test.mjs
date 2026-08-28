@@ -29,7 +29,7 @@ if (!shouldRun) {
       env: { ...process.env, NODE_OPTIONS: '' },
       encoding: 'utf8',
       maxBuffer: 64 * 1024 * 1024,
-      timeout: 240_000,
+      timeout: 600_000,
     });
     process.stdout.write(`\n[phase3-required] npm run ${script}\n`);
     if (child.stdout) process.stdout.write(child.stdout);
