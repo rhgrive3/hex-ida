@@ -22,14 +22,17 @@ test('#2371 canonical BinaryImage.functions carries LC_FUNCTION_STARTS into load
   assert.equal(at(result.candidates, 0x100001000n)?.startState, 'exact');
 });
 
-test('#2371 legacy functionStarts and canonical functions deduplicate the same loader start', () => {
+test('#2371 canonical functions wins dedup over the legacy compatibility projection', () => {
   const image = {
-    functionStarts: [{ address: 0x100001000n }],
-    functions: [{ address: 0x100001000n, source: 'function_starts' }],
+    functionStarts: [{ address: 0x100001000n, name: 'legacy' }],
+    functions: [{ address: 0x100001000n, source: 'function_starts', name: 'canonical', sizeBytes: 16 }],
     unwindEntries: [],
   };
   const evidence = loaderProducer.produce({ image });
-  assert.equal(evidence.filter((item) => item.kind === 'loader-function-start').length, 1);
+  const starts = evidence.filter((item) => item.kind === 'loader-function-start');
+  assert.equal(starts.length, 1);
+  assert.equal(starts[0].name, 'canonical');
+  assert.equal(starts[0].regions.length, 1);
 });
 
 test('#2379 untyped/data exports are not authoritative function starts', () => {
@@ -65,6 +68,18 @@ test('#2380 loader-rejected entrypoint is not resurrected as authoritative evide
     entrypoint: bad,
     metadata: { entrypointValid: false },
     functions: [],
+  };
+  assert.equal(exportProducer.produce({ image }).some((item) => item.kind === 'entrypoint'), false);
+  const result = functionCandidates({ input: { image }, architectureId: 'arm64' });
+  assert.equal(at(result.candidates, bad), undefined);
+});
+
+test('#2380 explicit loader rejection wins over a contradictory stale entrypoint seed', () => {
+  const bad = 0x100004000n;
+  const image = {
+    entrypoint: bad,
+    metadata: { entrypointValid: false },
+    functions: [{ address: bad, source: 'entrypoint' }],
   };
   assert.equal(exportProducer.produce({ image }).some((item) => item.kind === 'entrypoint'), false);
   const result = functionCandidates({ input: { image }, architectureId: 'arm64' });
