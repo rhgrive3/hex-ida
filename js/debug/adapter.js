@@ -39,10 +39,10 @@ export function asAddress(value, name = 'address') {
 /** Strict protocol integer validation. UI convenience clamping belongs at the UI boundary. */
 export function boundedInteger(value, fallback, min, max, name = 'value') {
   const candidate = value == null ? fallback : value;
-  const n = Number(candidate);
-  if (!Number.isFinite(n) || !Number.isInteger(n)) {
+  if (typeof candidate !== 'number' || !Number.isFinite(candidate) || !Number.isInteger(candidate)) {
     throw new DebugAdapterError('invalid-number', `${name} must be a finite integer`, { name, value });
   }
+  const n = candidate;
   if (n < min || n > max) {
     throw new DebugAdapterError('out-of-range', `${name} must be between ${min} and ${max}`, { name, value: n, min, max });
   }
