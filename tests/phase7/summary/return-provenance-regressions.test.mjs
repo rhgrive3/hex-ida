@@ -99,6 +99,10 @@ function callerFixture({ returnProvenance, indirectPartial = false } = {}) {
     blocks: [{ id: 'entry', nodeIds: nodes.map((node) => node.id), origin: origin('entry') }],
     values,
     nodes,
+    completeness: indirectPartial ? 'partial' : 'complete',
+    unknowns: indirectPartial
+      ? [{ reason: 'non-exhaustive-indirect-targets', categories: ['control'] }]
+      : [],
   });
   const cfg = createSemanticCfg({
     functionId: 'fn_caller',
