@@ -23,7 +23,10 @@ export async function openBinarySource(input, opts = {}) {
   const rangeOptions = withSignal(opts.ranges || {}, opts.signal);
 
   if (detected.format === 'elf') return parseELFSource(source, opts, prefix, rangeOptions);
-  if (detected.format === 'pe') return parsePESource(source, opts, prefix, rangeOptions);
+  // The source probe is intentionally small; parsePE performs bounded range reads for e_lfanew and PE\0\0.
+  if (detected.format === 'pe' || (prefix.byteLength >= 2 && prefix[0] === 0x4d && prefix[1] === 0x5a)) {
+    return parsePESource(source, opts, prefix, rangeOptions);
+  }
   if (detected.format === 'macho') return parseMachOSource(source, opts, prefix, rangeOptions);
   throw new Error('対応していない実行ファイル形式です（Mach-O / ELF / PE を判定できませんでした）。');
 }
