@@ -59,6 +59,7 @@ export class BinaryImage {
     this.symbols = [];
     this.relocations = [];
     this.functions = [];
+    this.unwindEntries = [];
     this.libraries = [];
     this.warnings = [];
     this.metadata = meta.metadata || {};

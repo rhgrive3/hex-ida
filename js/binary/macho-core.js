@@ -159,6 +159,7 @@ function parseThin(bytes, opts) {
   for (const st of symtabs) parseSymbolTable(r, st, image, bits, metadataBudget);
   const hadFunctionStarts = !!linkeditData.functionStarts;
   if (linkeditData.functionStarts) parseFunctionStarts(r, linkeditData.functionStarts, image, metadataBudget);
+  parseCompactUnwind(r, image, metadataBudget);
   let chainedImports = null;
   if (linkeditData.chainedFixups) chainedImports = parseChainedImports(r, linkeditData.chainedFixups, image, metadataBudget);
   if (linkeditData.chainedFixups && chainedImports) parseChainedBindingSites(r, linkeditData.chainedFixups, image, chainedImports, segmentOrder, metadataBudget);
@@ -460,4 +461,76 @@ function selectFatSlice(bytes, kind, preferredArch) {
   if (preferredArch && !want) throw new Error(`requested Mach-O architecture ${preferredArch} is not present in the universal binary`);
   const chosen = want || valid.find((s) => sliceArchName(s) === 'arm64e') || valid.find((s) => sliceArchName(s) === 'arm64') || valid.find((s) => sliceArchName(s) === 'x86_64') || valid[0];
   return chosen ? { ...chosen, all } : null;
+}
+
+function parseCompactUnwind(r, image, metadataBudget = null) {
+  const sec = image.sections.find((s) => s.name === '__unwind_info' || s.name === '__TEXT,__unwind_info');
+  if (!sec || sec.fileOffset == null || sec.fileSize == null || sec.fileSize < 28n) return;
+  const fileOff = Number(sec.fileOffset);
+  const fileSize = Number(sec.fileSize);
+  if (!Number.isSafeInteger(fileOff) || !Number.isSafeInteger(fileSize) || fileOff < 0 || fileSize < 28 || fileOff + fileSize > r.length) return;
+
+  const version = r.u32(fileOff);
+  if (version !== 1) return;
+  const indexOff = r.u32(fileOff + 20);
+  const indexCount = r.u32(fileOff + 24);
+  if (!indexCount || indexCount < 1 || indexOff + indexCount * 12 > fileSize) return;
+
+  const textSeg = image.segments.find((s) => s.name === '__TEXT');
+  const imageBase = textSeg ? textSeg.address : (image.segments[0] ? image.segments[0].address : 0n);
+  const alignment = (image.arch === 'arm64' || image.arch === 'arm64e' || image.arch === 'arm64_32') ? 4n : image.arch === 'arm' ? 2n : 1n;
+
+  const functionAddresses = new Set();
+
+  for (let i = 0; i < indexCount; i++) {
+    const e = fileOff + indexOff + i * 12;
+    const funcOffset = r.u32(e);
+    const pageOff = r.u32(e + 4);
+    if (!pageOff || pageOff + 8 > fileSize) continue;
+    const pageAbs = fileOff + pageOff;
+    const kind = r.u32(pageAbs);
+    if (kind === 2) {
+      const entryOff = r.u16(pageAbs + 4);
+      const count = r.u16(pageAbs + 6);
+      if (entryOff + count * 8 > fileSize - pageOff) continue;
+      for (let k = 0; k < count; k++) {
+        const p = pageAbs + entryOff + k * 8;
+        if (p + 8 > r.length) break;
+        const funcOff = r.u32(p);
+        const addr = imageBase + BigInt(funcOff);
+        functionAddresses.add(addr);
+      }
+    } else if (kind === 3) {
+      const entryOff = r.u16(pageAbs + 4);
+      const count = r.u16(pageAbs + 6);
+      if (entryOff + count * 4 > fileSize - pageOff) continue;
+      for (let k = 0; k < count; k++) {
+        const p = pageAbs + entryOff + k * 4;
+        if (p + 4 > r.length) break;
+        const entry = r.u32(p);
+        const funcOff = funcOffset + (entry & 0x00ffffff);
+        const addr = imageBase + BigInt(funcOff);
+        functionAddresses.add(addr);
+      }
+    }
+  }
+
+  const sortedAddresses = [...functionAddresses].filter((addr) => {
+    const seg = image.segmentAt(addr);
+    return seg && seg.perms?.execute === true && (alignment <= 1n || addr % alignment === 0n);
+  }).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+
+  for (let i = 0; i < sortedAddresses.length; i++) {
+    const start = sortedAddresses[i];
+    const end = sortedAddresses[i + 1] ?? null;
+    const sizeBytes = end != null ? Number(end - start) : null;
+    image.unwindEntries.push({
+      start,
+      end,
+      sizeBytes,
+      primary: true,
+      source: 'compact-unwind',
+    });
+    image.functions.push(functionSeed(start, { source: 'unwind', confidence: 0.95 }));
+  }
 }

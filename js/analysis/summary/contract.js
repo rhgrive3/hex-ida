@@ -129,6 +129,20 @@ export function createIndirectCallSet(input = {}) {
  * The consistency checks at the end are the contract's whole point: they make
  * "we did not look" structurally distinguishable from "there is nothing there".
  */
+function createReturnProvenance(input = {}) {
+  if (!input || typeof input !== 'object') fail('function-summary-invalid-return-provenance');
+  const kind = nonEmpty(input.kind, 'function-summary-invalid-return-provenance-kind');
+  const argIndex = input.argIndex == null ? null : Number(input.argIndex);
+  const offset = input.offset == null ? null : BigInt(input.offset);
+  const rootEntityId = input.rootEntityId == null ? null : String(input.rootEntityId);
+  return deepFreeze({
+    kind,
+    argIndex: Number.isSafeInteger(argIndex) && argIndex >= 0 ? argIndex : null,
+    offset: offset == null ? null : offset.toString(10),
+    rootEntityId,
+  });
+}
+
 export function createFunctionSummary(input = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) fail('function-summary-invalid');
   // A schema marker is not proof that the envelope came through the canonical
@@ -139,6 +153,7 @@ export function createFunctionSummary(input = {}) {
   const unknownCallEffects = list(input.unknownCallEffects, 'function-summary-invalid-unknown-calls').map(createUnknownCallEffect);
   const memoryReadRegions = list(input.memoryReadRegions, 'function-summary-invalid-read-regions').map(createMemoryEffect);
   const memoryWriteRegions = list(input.memoryWriteRegions, 'function-summary-invalid-write-regions').map(createMemoryEffect);
+  const returnProvenance = list(input.returnProvenance, 'function-summary-invalid-return-provenance').map(createReturnProvenance);
 
   const summary = {
     schemaVersion: FUNCTION_SUMMARY_SCHEMA_VERSION,
@@ -146,6 +161,7 @@ export function createFunctionSummary(input = {}) {
     functionId: nonEmpty(input.functionId, 'function-summary-function-id-required'),
     inputs: sortedIds(input.inputs, 'function-summary-invalid-inputs'),
     returnValues: sortedIds(input.returnValues, 'function-summary-invalid-return-values'),
+    returnProvenance: deepFreeze(returnProvenance),
     registerEffects: sortedIds(input.registerEffects, 'function-summary-invalid-register-effects'),
     memoryReadRegions: deepFreeze(memoryReadRegions),
     memoryWriteRegions: deepFreeze(memoryWriteRegions),
