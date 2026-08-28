@@ -233,6 +233,9 @@ export function validateProviderOutput(value, options = {}) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new PackageValidationError('provider-output-schema-invalid');
     const encoded = stableStringify(value);
     if (new TextEncoder().encode(encoded).byteLength > maxBytes) throw new PackageValidationError('provider-output-too-large');
+    const hasItems = Array.isArray(value.items);
+    const hasResults = Array.isArray(value.results);
+    if (hasItems && hasResults) throw new PackageValidationError('provider-output-entry-collection-ambiguous');
     const entries = Array.isArray(value.items) ? value.items : Array.isArray(value.results) ? value.results : [];
     if (entries.length > maxEntries) throw new PackageValidationError('provider-output-entry-budget-exceeded');
     if (value.schemaVersion !== PHASE12_PROVIDER_OUTPUT_SCHEMA) throw new PackageValidationError('provider-output-schema-unsupported');
@@ -241,7 +244,7 @@ export function validateProviderOutput(value, options = {}) {
     if (value.completeness !== 'complete' && value.unique === true) throw new PackageValidationError('provider-output-incomplete-unique-invalid');
     for (const item of entries) {
       if (!item || typeof item !== 'object') throw new PackageValidationError('provider-output-item-invalid');
-      if (item.id == null || item.targetIdentity == null) throw new PackageValidationError('provider-output-item-identity-required');
+      if (typeof item.id !== 'string' || item.id.trim() === '' || item.targetIdentity == null) throw new PackageValidationError('provider-output-item-identity-required');
       if (value.targetIdentity != null && item.targetIdentity !== value.targetIdentity) throw new PackageValidationError('provider-output-item-target-mismatch');
     }
     if (options.targetIdentity != null && value.targetIdentity !== options.targetIdentity) throw new PackageValidationError('provider-output-target-mismatch');
