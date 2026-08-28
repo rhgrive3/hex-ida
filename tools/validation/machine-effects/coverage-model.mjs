@@ -95,7 +95,9 @@ export function summarizeCoverage(records, { integrationState = null } = {}) {
     byFamily.set(family, familyCounts);
   }
 
-  const effectiveIntegration = integrationState || (notIntegrated ? INTEGRATION_STATE.NOT_INTEGRATED : INTEGRATION_STATE.INTEGRATED);
+  const effectiveIntegration = notIntegrated
+    ? INTEGRATION_STATE.NOT_INTEGRATED
+    : (integrationState || INTEGRATION_STATE.INTEGRATED);
   return Object.freeze({
     schemaVersion: 'machine-effects-coverage-report/v1',
     integrationState: effectiveIntegration,
