@@ -12,6 +12,7 @@ const LOGICAL_NO_SP = new Set(['and','ands','orr','eor','bic','bics','orn','eon'
 const LOGICAL_IMMEDIATE_SP_DEST = new Set(['and','orr','eor']);
 const EXTEND_KINDS = new Set(['uxtb','uxth','uxtw','uxtx','sxtb','sxth','sxtw','sxtx']);
 const CONDITIONAL_SELECT_MNEMONICS = new Set(['csel','csinc','csinv','csneg','cset','csetm','cinc','cneg','cinv']);
+const MOVE_WIDE_MNEMONICS = new Set(['movz','movn','movk']);
 
 function expectedOperandCount(mnemonic) {
   if (['lsl','lslv','lsr','lsrv','asr','asrv','ror','rorv'].includes(mnemonic)) return 3;
@@ -19,6 +20,7 @@ function expectedOperandCount(mnemonic) {
   if (['csel','csinc','csinv','csneg'].includes(mnemonic)) return 4;
   if (['cset','csetm'].includes(mnemonic)) return 2;
   if (['cinc','cneg','cinv'].includes(mnemonic)) return 3;
+  if (MOVE_WIDE_MNEMONICS.has(mnemonic)) return 2;
   if (mnemonic === 'extr') return 4;
   if (['ubfx','sbfx','ubfiz','sbfiz','bfxil','bfi','ubfm','sbfm','bfm'].includes(mnemonic)) return 4;
   if (mnemonic === 'bfc') return 3;
@@ -113,8 +115,6 @@ function validAddSubRegister31Encoding(mnemonic, ops) {
   if (regBits(lhs) !== bits) return false;
 
   if (rhs?.k === 'imm') {
-    // ADD/SUB immediate interpret register 31 as SP for Rn and, when S=0,
-    // for Rd. ADDS/SUBS keep Rd=31 as ZR.
     const dstOk = mnemonic === 'add' || mnemonic === 'sub' ? isGpOrSp(dst) : isGpOrZr(dst);
     return dstOk && isGpOrSp(lhs) && validImm12(rhs);
   }
@@ -127,14 +127,11 @@ function validAddSubRegister31Encoding(mnemonic, ops) {
   const usesExtendedEncoding = dstClass === 'sp' || lhsClass === 'sp' || explicitExtend;
 
   if (usesExtendedEncoding) {
-    // In ADD/SUB extended-register encodings Rn=31 is SP. Rd=31 is SP only
-    // for S=0; flag-setting forms still interpret it as ZR.
     const dstOk = mnemonic === 'add' || mnemonic === 'sub' ? isGpOrSp(dst) : isGpOrZr(dst);
     if (!dstOk || !isGpOrSp(lhs)) return false;
     return validExtendedSource(rhs, bits);
   }
 
-  // Shifted-register encodings interpret register 31 as ZR and never SP.
   if (!isGpOrZr(dst) || !isGpOrZr(lhs)) return false;
   return validShiftedSource(rhs, bits);
 }
@@ -142,12 +139,6 @@ function validAddSubRegister31Encoding(mnemonic, ops) {
 function validLogicalRegisterClass(mnemonic, ops) {
   if (!LOGICAL_NO_SP.has(mnemonic)) return true;
   if (!ops.some((op) => regClass(op) === 'sp')) return true;
-
-  // Logical-immediate AND/ORR/EOR interpret Rd=31 as SP, while their source
-  // register and all logical shifted-register forms interpret register 31 as ZR.
-  // Keep register-form SP fail-closed, but preserve the architectural immediate
-  // destination form and validate its bitmask domain here because top-level
-  // generic GP/ZR validation intentionally does not classify SP destinations.
   if (!LOGICAL_IMMEDIATE_SP_DEST.has(mnemonic) || ops.length !== 3 || ops[2]?.k !== 'imm') return false;
   const dst = ops[0], lhs = ops[1], rhs = ops[2];
   const bits = regBits(dst);
@@ -165,7 +156,7 @@ function validMovEncoding(mnemonic, ops) {
   if (ops.length !== 2) return false;
   const dst = ops[0], src = ops[1];
   const dstClass = regClass(dst);
-  if (!['gp','zr','sp'].includes(dstClass)) return true; // SIMD/FP MOV belongs to an earlier family.
+  if (!['gp','zr','sp'].includes(dstClass)) return true;
   const bits = regBits(dst);
   if (bits !== 32 && bits !== 64) return false;
   if (dst.shift != null || dst.extend != null) return false;
@@ -175,6 +166,23 @@ function validMovEncoding(mnemonic, ops) {
   const spInvolved = dstClass === 'sp' || srcClass === 'sp';
   if (spInvolved && (dstClass === 'zr' || srcClass === 'zr')) return false;
   return true;
+}
+
+function validMoveWideEncoding(mnemonic, ops) {
+  if (!MOVE_WIDE_MNEMONICS.has(mnemonic)) return true;
+  if (ops.length !== 2) return false;
+  const dst = ops[0], src = ops[1];
+  const bits = regBits(dst);
+  if (!isGpOrZr(dst) || (bits !== 32 && bits !== 64) || dst.shift != null || dst.extend != null) return false;
+  if (src?.k !== 'imm' || src.value == null || src.extend != null) return false;
+  let immediate;
+  try { immediate = BigInt(src.value); } catch { return false; }
+  if (immediate < 0n || immediate > 0xffffn) return false;
+  if (src.shift == null) return true;
+  if (String(src.shift.op || '').toLowerCase() !== 'lsl') return false;
+  const amount = Number(src.shift.amount);
+  if (!Number.isInteger(amount)) return false;
+  return bits === 32 ? amount === 0 || amount === 16 : [0,16,32,48].includes(amount);
 }
 
 function validRegisterOnlyClass(expected, ops) {
@@ -197,6 +205,10 @@ export function liftArm64IntegerEffects(instruction, options = {}) {
   if (expected != null && ops.length !== expected) {
     return liftArm64IntegerEffectsCore({ ...instruction, ops: [] }, options);
   }
+  if (!validMoveWideEncoding(mnemonic, ops)) {
+    return createArm64EffectContext(instruction, options).partial(
+      `arm64-${mnemonic}-move-wide-operand-shape-unencodable`, ['registers','other']);
+  }
   if (!validRegisterOnlyClass(expected, ops)) {
     return liftArm64IntegerEffectsCore({ ...instruction, ops: [] }, options);
   }
@@ -209,9 +221,6 @@ export function liftArm64IntegerEffects(instruction, options = {}) {
       'arm64-mov-operand-shape-unencodable', ['registers','other']);
   }
   if (!validAddSubRegister31Encoding(mnemonic, ops)) {
-    // Carry-consuming forms read NZCV before their core notices empty operands.
-    // Fail before entering the core so an invalid SP encoding cannot leak an
-    // exact flag-read operation into an otherwise fail-closed bundle.
     return createArm64EffectContext(instruction, options).partial(
       `arm64-${mnemonic}-register31-unencodable`, ['registers','flags','other']);
   }
