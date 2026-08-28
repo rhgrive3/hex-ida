@@ -48,7 +48,7 @@ export function scanStrings(image, opts = {}) {
       const s=p; let q=p, chars=0;
       while(q<end&&chars<max){ const x=utf8At(bytes,q,end); if(!x||!printableCodePoint(x.cp)) break; q+=x.bytes; chars++; }
       if(chars>=min) emit(image,out,seen,s,q-s,'utf8',range.section);
-      p=Math.max(q+(q<end?1:0),p+1);
+      p=Math.max(chars>=max?q:q+(q<end?1:0),p+1);
     }
     if(!includeUtf16) continue;
     for(let parity=0;parity<2;parity++){
@@ -58,7 +58,7 @@ export function scanStrings(image, opts = {}) {
         const s=p; let q=p, chars=0;
         while(q+1<end&&chars<max){ const x=utf16At(bytes,q,end); if(!x||!printableCodePoint(x.cp)) break; q+=x.bytes; chars++; }
         if(chars>=min) emit(image,out,seen,s,q-s,'utf16le',range.section);
-        p=Math.max(q+(q<end?2:0),p+2);
+        p=Math.max(chars>=max?q:q+(q<end?2:0),p+2);
       }
     }
   }
