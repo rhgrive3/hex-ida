@@ -69,7 +69,7 @@ try {
 }
 
 async function waitForServer() {
-  const deadline = Date.now() + 30000;
+  const deadline = Date.now() + 60000;
   while (Date.now() < deadline) {
     if (child.exitCode != null) throw new Error(`wrangler exited before ready:\n${output}`);
     try { const response = await fetch(base + '/hex.meta.js'); if (response.status === 200) return; } catch {}

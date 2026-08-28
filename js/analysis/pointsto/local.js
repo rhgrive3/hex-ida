@@ -17,7 +17,7 @@
  * exists; pretending otherwise is how field-sensitive analyses become unsound.
  */
 
-import { createAnalysisStatus } from '../status.js';
+import { createAnalysisStatus, isCompleteStatus } from '../status.js';
 import { stableDigest, stableStringify } from '../../core/identity/index.js';
 import {
   defaultRootEntityId,
@@ -723,7 +723,27 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
       if (loaded.candidate) return loaded.set;
       return topPointsTo('unresolved-load');
     }
-    if (node.kind === 'call') return topPointsTo('unresolved-call');
+    if (node.kind === 'call') {
+      const calleeSummary = (function () {
+        const calleeId = node.call?.targetEntityId ?? node.call?.callee ?? node.call?.target ?? (Array.isArray(node.call?.targetEntityIds) && node.call.targetEntityIds.length === 1 ? node.call.targetEntityIds[0] : null);
+        if (!calleeId) return null;
+        const summary = options.summaries?.get(String(calleeId)) || (typeof options.summaryProvider === 'function' ? options.summaryProvider(String(calleeId)) : null);
+        if (!summary || !isCompleteStatus(summary.status) || (summary.unknownCallEffects || []).length > 0) return null;
+        return summary;
+      })();
+      if (calleeSummary && calleeSummary.returnProvenance?.length) {
+        const prov = calleeSummary.returnProvenance[0];
+        if (prov.kind === 'arg' && prov.argIndex != null && node.inputs && node.inputs[prov.argIndex] != null) {
+          const argSet = irGet(node.inputs[prov.argIndex]);
+          if (!argSet.top && !pointsToIsBottom(argSet)) {
+            const offset = BigInt(prov.offset ?? 0n);
+            const width = BigInt(calleeSummary.addressWidthBits ?? 64);
+            return offset !== 0n ? shiftSet(argSet, offset, width) : argSet;
+          }
+        }
+      }
+      return topPointsTo('unresolved-call');
+    }
 
     const seed = rootOnlySeed(proof, evidenceIds);
     if (seed) return createPointsToSet({ targets: [seed] });

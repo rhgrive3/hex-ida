@@ -158,6 +158,12 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
     }
   }
 
+  const returnProvenance = [];
+  const nodeByOutput = new Map();
+  for (const n of ir.nodes ?? []) {
+    for (const out of n.outputs ?? []) nodeByOutput.set(out, n);
+  }
+
   for (const node of ir.nodes ?? []) {
     if (node.kind === 'load' || node.kind === 'store') {
       const into = node.kind === 'load' ? memoryReadRegions : memoryWriteRegions;
@@ -194,7 +200,37 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
     }
     if (node.kind === 'return') {
       sawReturn = true;
-      for (const input of node.inputs ?? []) returnValues.add(String(input));
+      for (let retIdx = 0; retIdx < (node.inputs ?? []).length; retIdx++) {
+        const inputValId = node.inputs[retIdx];
+        returnValues.add(String(inputValId));
+        let curr = inputValId;
+        let offset = 0n;
+        const visited = new Set();
+        while (curr && !visited.has(curr)) {
+          visited.add(curr);
+          const producer = nodeByOutput.get(curr);
+          if (!producer) break;
+          if (producer.kind === 'copy' || producer.kind === 'bitcast') {
+            curr = producer.inputs?.[0];
+          } else if (producer.kind === 'binary' && (producer.operator === 'add' || producer.operator === 'sub')) {
+            const rightConst = producer.inputs?.[1];
+            const rightProducer = nodeByOutput.get(rightConst);
+            const num = rightProducer?.constant != null ? rightProducer.constant : (typeof rightConst === 'number' || typeof rightConst === 'bigint' ? rightConst : null);
+            if (num != null) {
+              offset += (producer.operator === 'sub' ? -BigInt(num) : BigInt(num));
+              curr = producer.inputs?.[0];
+            } else break;
+          } else break;
+        }
+        const inputIndex = ir.inputs ? ir.inputs.indexOf(curr) : -1;
+        if (inputIndex >= 0) {
+          returnProvenance.push({
+            kind: 'arg',
+            argIndex: inputIndex,
+            offset: offset.toString(10),
+          });
+        }
+      }
       continue;
     }
 
@@ -302,6 +338,7 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
     functionId: ir.functionId,
     inputs: [...readVariables],
     returnValues: [...returnValues],
+    returnProvenance,
     registerEffects: [...registerEffects],
     memoryReadRegions,
     memoryWriteRegions,
