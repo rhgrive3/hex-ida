@@ -164,8 +164,14 @@ function sysRegId(name) {
   if (name === 'fpcr' || name === 'fpsr' || name === 'nzcv') return name;
   return `sys:${name}`;
 }
+function isPlainImmediate(op) {
+  return op?.k === 'imm'
+    && op.value != null
+    && op.shift == null
+    && op.extend == null;
+}
 function immediate(op) {
-  if (op?.k !== 'imm' || op.value == null) return null;
+  if (!isPlainImmediate(op)) return null;
   return createBitVectorValue(64, BigInt.asUintN(64, BigInt(op.value)));
 }
 function accessFault(systemRegister, access) {
@@ -294,7 +300,7 @@ function clrex(instruction, context, ops) {
   const operand = ops[0];
   let imm = null;
   if (operand != null) {
-    if (operand?.k !== 'imm' || operand.value == null) {
+    if (!isPlainImmediate(operand)) {
       return partial(instruction, context, 'clrex-immediate-unavailable', ['other']);
     }
     const value = BigInt(operand.value);
@@ -344,7 +350,7 @@ function trap(instruction, context, mnemonic, ops) {
     return partial(instruction, context, `${mnemonic}-operand-shape-invalid`, ['control','faults','other']);
   }
   const operand = ops[0];
-  if (operand?.k !== 'imm' || operand.value == null) {
+  if (!isPlainImmediate(operand)) {
     return partial(instruction, context, `${mnemonic}-immediate-unavailable`, ['control','faults','other']);
   }
   const immediateValue = BigInt(operand.value);
@@ -508,7 +514,7 @@ function eret(instruction, context) {
 
 function genericHint(instruction, context, ops) {
   const operand = ops[0];
-  if (operand?.k !== 'imm' || operand.value == null) {
+  if (!isPlainImmediate(operand)) {
     return partial(instruction, context, 'generic-hint-immediate-unavailable', ['other']);
   }
   const value = BigInt(operand.value);
@@ -531,7 +537,7 @@ function textOperand(op) {
   return text || null;
 }
 function immediateInRange(op, max) {
-  if (op?.k !== 'imm' || op.value == null) return false;
+  if (!isPlainImmediate(op)) return false;
   const value = BigInt(op.value);
   return value >= 0n && value <= BigInt(max);
 }
@@ -540,7 +546,7 @@ function systemCrOperand(op) {
   return text != null && /^c(?:[0-9]|1[0-5])$/.test(text);
 }
 function msrPstateImmediateShapeValid(sys, src) {
-  if (src?.k !== 'imm' || src.value == null) return false;
+  if (!isPlainImmediate(src)) return false;
   const domain = PSTATE_IMMEDIATE_CRM_DOMAINS.get(sys);
   if (!domain) return false;
   const value = BigInt(src.value);
