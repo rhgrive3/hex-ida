@@ -1,0 +1,92 @@
+name: one-shot-2442-current
+on:
+  push:
+    branches:
+      - fix/2442-arm64-tbz-bit-domain
+permissions:
+  contents: write
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Apply current-main TBZ/TBNZ finite bit-index gate
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+          const path = 'js/targets/architecture/arm64/effects/control.js';
+          let source = fs.readFileSync(path, 'utf8');
+          const before = `  if (TEST_BRANCH.has(mnemonic)) {\n    return ops.length === 3 && isBranchTestRegister(ops[0])\n      && ops[1]?.k === 'imm' && ops[1].value != null\n      && ops[1].shift == null && ops[1].extend == null\n      && directTargetOperandShapeValid(instruction, ops[2], 'branch');\n  }`;
+          const after = `  if (TEST_BRANCH.has(mnemonic)) {\n    const bit = immediateOf(ops[1]);\n    const widthBits = instructionBits(ops[0]);\n    return ops.length === 3 && isBranchTestRegister(ops[0])\n      && ops[1]?.k === 'imm' && bit != null\n      && bit >= 0n && bit < BigInt(widthBits)\n      && ops[1].shift == null && ops[1].extend == null\n      && directTargetOperandShapeValid(instruction, ops[2], 'branch');\n  }`;
+          if (!source.includes(before)) throw new Error('current-main TBZ/TBNZ shape checkpoint not found');
+          fs.writeFileSync(path, source.replace(before, after));
+          NODE
+          cat > tests/machine-effects/arm64-tbz-bit-domain-btype.test.mjs <<'EOF'
+          import assert from 'node:assert/strict';
+          import { liftArm64MachineEffects } from '../../js/targets/architecture/arm64/effects/index.js';
+
+          let sequence = 0;
+          function lift(mnemonic, bits, bit) {
+            const instructionId = `arm64-tbz-bit-domain-${++sequence}`;
+            const target = 0x1800n;
+            return liftArm64MachineEffects({
+              instructionId,
+              mnemonic,
+              address:0x1000n,
+              branchTarget:target,
+              mode:'a64',
+              ops:[
+                { k:'reg', cls:'gp', num:0, bits, text:`${bits === 32 ? 'w' : 'x'}0` },
+                { k:'imm', value:BigInt(bit), text:`#${bit}` },
+                { k:'imm', value:target, text:'0x1800' },
+              ],
+              origin:{ instructionIds:[instructionId] },
+            });
+          }
+
+          const btypeWrite = (effect) => effect.operations.some((operation) =>
+            operation.kind === 'register-write' && operation.register?.registerId === 'pstate.btype');
+
+          for (const [mnemonic, bits, bit] of [
+            ['tbz', 32, 32],
+            ['tbnz', 32, 63],
+            ['tbz', 64, 64],
+            ['tbnz', 64, -1],
+          ]) {
+            const effect = lift(mnemonic, bits, bit);
+            assert.equal(effect.completeness, 'partial', `${mnemonic} ${bits}/#${bit} must fail closed`);
+            assert.equal(effect.operations.length, 0, `${mnemonic} ${bits}/#${bit} must emit no definite operations`);
+            assert.equal(btypeWrite(effect), false, `${mnemonic} ${bits}/#${bit} must not reset BTYPE`);
+          }
+
+          for (const [mnemonic, bits, bit] of [
+            ['tbz', 32, 0],
+            ['tbz', 32, 31],
+            ['tbnz', 64, 0],
+            ['tbnz', 64, 63],
+          ]) {
+            const effect = lift(mnemonic, bits, bit);
+            assert.ok(['exact','exact-with-intrinsic'].includes(effect.completeness), `${mnemonic} ${bits}/#${bit} must remain exact`);
+            assert.equal(btypeWrite(effect), true, `${mnemonic} ${bits}/#${bit} must retain direct BTYPE reset`);
+          }
+
+          console.log('arm64 TBZ/TBNZ bit domain BTYPE: PASS');
+          EOF
+      - name: Run focused regression
+        run: node tests/machine-effects/arm64-tbz-bit-domain-btype.test.mjs
+      - name: Commit source and regression only
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          rm .github/workflows/zz-one-shot-2442-current.yml
+          git add js/targets/architecture/arm64/effects/control.js tests/machine-effects/arm64-tbz-bit-domain-btype.test.mjs .github/workflows/zz-one-shot-2442-current.yml
+          git commit -m 'fix(arm64): validate TBZ/TBNZ bit-index domain on current main'
+          git push origin HEAD:fix/2442-arm64-tbz-bit-domain
