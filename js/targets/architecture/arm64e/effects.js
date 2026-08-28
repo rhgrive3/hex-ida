@@ -143,6 +143,28 @@ function pointerRegisterId(operand) {
   return Number.isInteger(widthBits) && widthBits === POINTER_BITS ? registerId : null;
 }
 
+function authenticatedControlTargetRegisterId(operand) {
+  const registerId = pointerRegisterId(operand);
+  return registerId && registerId !== 'sp' ? registerId : null;
+}
+
+function authenticatedControlModifierRegisterId(operand) {
+  const registerId = pointerRegisterId(operand);
+  return registerId && registerId !== 'xzr' ? registerId : null;
+}
+
+function authenticatedTargetAlignmentFault() {
+  return {
+    kind: 'pc-alignment-fault',
+    condition: { kind: 'target-misaligned', alignmentBytes: 4 },
+    detail: {
+      architecture: 'arm64',
+      instructionSet: 'a64',
+      targetSource: 'authenticated-target',
+    },
+  };
+}
+
 function instructionIdOf(decoded, context) {
   const instructionId = String(context?.instructionId ?? decoded?.instructionId ?? '').trim();
   if (!instructionId) throw new TypeError('arm64e-instruction-id-required');
@@ -425,13 +447,23 @@ function genericCode(decoded, context, instructionId) {
 
 function authenticateControlTarget(decoded, context, instructionId, descriptor, controlKind) {
   const operands = operandList(decoded);
-  const targetRegister = controlKind === 'return' ? 'x30' : pointerRegisterId(operands[0]);
-  const modifierIndex = controlKind === 'return' ? 0 : 1;
-  const effectiveDescriptor = controlKind === 'return' ? { ...descriptor, modifier: 'sp' } : descriptor;
-  if (!targetRegister) {
-    return partialMissing(decoded, context, instructionId, 'authenticated control target register is unavailable', { control: true, fault: true });
+  const isReturn = controlKind === 'return';
+  const hasZeroModifier = descriptor.modifier === 'zero';
+  const expectedOperandCount = isReturn ? 0 : hasZeroModifier ? 1 : 2;
+  if (operands.length !== expectedOperandCount) {
+    return partialMissing(decoded, context, instructionId, 'authenticated control operand shape is invalid', { control: true, fault: true });
   }
 
+  const targetRegister = isReturn ? 'x30' : authenticatedControlTargetRegisterId(operands[0]);
+  if (!targetRegister) {
+    return partialMissing(decoded, context, instructionId, 'authenticated control target operand shape is invalid', { control: true, fault: true });
+  }
+  if (!isReturn && !hasZeroModifier && !authenticatedControlModifierRegisterId(operands[1])) {
+    return partialMissing(decoded, context, instructionId, 'authenticated control modifier operand shape is invalid', { control: true, fault: true });
+  }
+
+  const modifierIndex = isReturn ? 0 : 1;
+  const effectiveDescriptor = isReturn ? { ...descriptor, modifier: 'sp' } : descriptor;
   const operations = [];
   const target = readRegister(operations, targetRegister, `${instructionId}.target`, POINTER_BITS, {
     stateKind: 'authenticated-control-target',
@@ -480,7 +512,10 @@ function authenticateControlTarget(decoded, context, instructionId, descriptor, 
     kind: controlKind,
     target: authenticatedTarget,
   }, completeness, {
-    possibleFaults: [authFault(mnemonicOf(decoded), keyId, 'control-target')],
+    possibleFaults: [
+      authFault(mnemonicOf(decoded), keyId, 'control-target'),
+      authenticatedTargetAlignmentFault(),
+    ],
     unknownEffects,
     metadata: {
       transform: 'authenticate',
