@@ -19,8 +19,8 @@ function safeNonNegativeInteger(value) {
 function sameSnapshotIdentity(snapshot, current) {
   const currentRevision = safeNonNegativeInteger(current?.projectRevision ?? 0);
   const currentEpoch = safeNonNegativeInteger(current?.analysisEpoch);
-  if (currentRevision == null || currentEpoch == null) return false;
-  return String(current?.binaryId ?? "") === String(snapshot.binaryId)
+  if (currentRevision == null || currentEpoch == null || typeof current?.binaryId !== "string") return false;
+  return current.binaryId === snapshot.binaryId
     && currentRevision === snapshot.projectRevision
     && currentEpoch === snapshot.analysisEpoch
     && artifactVersionsEqual(current?.artifactVersions, snapshot.artifactVersions);
