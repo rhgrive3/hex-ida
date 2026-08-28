@@ -12,7 +12,11 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      - name: Install active native proof providers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-18 lld-18 llvm-18 lldb-18 qemu-user
+      - run: npm ci --no-audit --no-fund
       - name: Run Stage2 tests with per-file markers
         shell: bash
         run: |
