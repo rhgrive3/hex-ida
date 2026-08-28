@@ -111,16 +111,16 @@ function git(args, root = ROOT) {
   return result.stdout.trim();
 }
 
-function exactSha(value, label) {
+function exactSha(value, label, root = ROOT) {
   if (!/^[0-9a-f]{40}$/i.test(String(value || ''))) throw new TypeError(`${label} must be an exact commit SHA`);
-  const resolved = git(['rev-parse', `${value}^{commit}`]);
+  const resolved = git(['rev-parse', `${value}^{commit}`], root);
   if (resolved.toLowerCase() !== String(value).toLowerCase()) throw new TypeError(`${label} did not resolve exactly: ${value}`);
   return resolved;
 }
 
 export function inventoryFromGit(baseSha, headSha, root = ROOT) {
-  const base = exactSha(baseSha, 'baseSha');
-  const head = exactSha(headSha, 'headSha');
+  const base = exactSha(baseSha, 'baseSha', root);
+  const head = exactSha(headSha, 'headSha', root);
   const output = git(['diff', '--name-only', `${base}..${head}`], root);
   return output ? output.split('\n').map(normalize).filter(Boolean).sort() : [];
 }
