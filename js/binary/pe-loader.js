@@ -193,8 +193,12 @@ export function parseExports(r, dir, image, sharedBudget = null) {
     const frva=r.u32(fr.start+i*4); if(!frva)continue;
     const name=names.get(i)||`#${baseOrdinal+i}`;
     if(frva>=dirStart&&frva<dirEnd){
-      const forwarder=mappedCStringAtRva(r,image,frva,budget,'PE export forwarder');
-      image.exports.push({name,address:0n,ordinal:baseOrdinal+i,kind:'forwarder',forwarder:forwarder||null,source:'PE-export'});continue;
+      const forwarderRange=mappedFileRangeForRva(image,frva);
+      if(!forwarderRange){budget.partial('PE export forwarder:unmapped-string','Ignored PE export forwarder string outside a file-backed mapping');continue;}
+      const forwarderEnd=Math.min(forwarderRange.end,forwarderRange.start+(dirEnd-frva));
+      const forwarder=mappedCStringAtOffset(r,forwarderRange.start,forwarderEnd,budget,'PE export forwarder');
+      if(!forwarder)continue;
+      image.exports.push({name,address:0n,ordinal:baseOrdinal+i,kind:'forwarder',forwarder,source:'PE-export'});continue;
     }
     const address=image.imageBase+BigInt(frva); image.exports.push({name,address,ordinal:baseOrdinal+i,kind:'export',source:'PE-export'});
     const sec=image.sectionAt(address); if(sec&&sec.perms.execute)image.functions.push(functionSeed(address,{name,source:'export',confidence:0.95}));
