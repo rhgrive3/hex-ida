@@ -151,6 +151,12 @@ function temp(id, valueType) {
 function validRegisterNumber(op) {
   return Number.isInteger(op?.num) && op.num >= 0 && op.num < 32;
 }
+function hasForbiddenSimdRegisterModifier(op) {
+  if (!op) return false;
+  if (op.k === 'list') return (op.regs || []).some(hasForbiddenSimdRegisterModifier);
+  const simdRegister = op.k === 'elem' || (op.k === 'reg' && (op.cls === 'vec' || op.cls === 'fp'));
+  return simdRegister && (op.shift != null || op.extend != null);
+}
 function physicalRegisterId(op) {
   if (!op) return null;
   if (op.k === 'elem') return validRegisterNumber(op) ? `v${op.num}` : null;
@@ -1127,6 +1133,9 @@ export function liftArm64SimdEffects(instruction, context = {}) {
       return partial(instruction, context, 'arm64-sve-scalable-vector-semantics-unsupported', ['registers','flags','other']);
     }
     return null;
+  }
+  if (ops.some(hasForbiddenSimdRegisterModifier)) {
+    return partial(instruction, context, 'arm64-simd-register-modifier-unencodable', ['registers','flags','other']);
   }
   if (mnemonic === 'addp' && ops[0]?.k === 'reg' && ops[0].cls === 'fp') return scalarSimdEffects(instruction, context, mnemonic, ops);
   if (!hasVectorOperand(ops)) {
