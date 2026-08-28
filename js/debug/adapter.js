@@ -56,20 +56,28 @@ export function normalizeCapabilities(input = {}) {
   return Object.freeze(out);
 }
 
+function breakpointId(value, fallback) {
+  if (value == null) return fallback;
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new DebugAdapterError('invalid-breakpoint', 'breakpoint id must be a non-empty string');
+  }
+  return value;
+}
+
 export function normalizeBreakpoint(spec) {
   if (!spec || typeof spec !== 'object') throw new DebugAdapterError('invalid-breakpoint', 'breakpoint must be an object');
   const kind = spec.kind || (spec.address != null ? 'address' : spec.function ? 'function' : null);
   if (!BREAKPOINT_KINDS.includes(kind)) throw new DebugAdapterError('invalid-breakpoint', `unsupported breakpoint kind: ${kind}`);
   if (kind === 'address') {
     const address = asAddress(spec.address);
-    const id = String(spec.id || `bp:address:${address}`);
+    const id = breakpointId(spec.id, `bp:address:${address}`);
     return { id, kind, address, enabled: spec.enabled !== false };
   }
   if (kind === 'function') {
     const fn = String(spec.function || '').trim();
     if (!fn) throw new DebugAdapterError('invalid-breakpoint', 'function breakpoint requires function');
     const address = spec.address == null ? null : asAddress(spec.address);
-    const id = String(spec.id || `bp:function:${fn}:${address ?? ''}`);
+    const id = breakpointId(spec.id, `bp:function:${fn}:${address ?? ''}`);
     return { id, kind, function: fn, address, enabled: spec.enabled !== false };
   }
   if (kind === 'conditional') {
@@ -77,7 +85,7 @@ export function normalizeBreakpoint(spec) {
     const address = asAddress(spec.address);
     const condition = String(spec.condition || '').trim();
     if (!condition) throw new DebugAdapterError('invalid-breakpoint', 'conditional breakpoint requires condition');
-    const id = String(spec.id || `bp:conditional:${address}:${condition}`);
+    const id = breakpointId(spec.id, `bp:conditional:${address}:${condition}`);
     return { id, kind, address, condition, enabled: spec.enabled !== false };
   }
   const address = asAddress(spec.address);
@@ -86,7 +94,7 @@ export function normalizeBreakpoint(spec) {
   if (!WATCHPOINT_ACCESS.includes(access)) {
     throw new DebugAdapterError('invalid-watchpoint-access', `unsupported watchpoint access: ${spec.access}`, { access: spec.access, allowed: WATCHPOINT_ACCESS });
   }
-  const id = String(spec.id || `bp:memory:${address}:${size}:${access}`);
+  const id = breakpointId(spec.id, `bp:memory:${address}:${size}:${access}`);
   return { id, kind: 'memory', address, size, access, enabled: spec.enabled !== false };
 }
 
