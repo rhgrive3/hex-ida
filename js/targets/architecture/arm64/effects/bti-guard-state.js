@@ -9,6 +9,9 @@ import {
 
 export const ARM64_BTI_PAGE_GUARD_STATE_ID = 'arm64.exec-page.guarded';
 
+const ARM64_BTYPE_REGISTER_ID = 'pstate.btype';
+const ARM64_BTYPE_PRODUCERS = new Set(['br','braa','brab','braaz','brabz','blr','blraa','blrab','blraaz','blrabz']);
+
 function mnemonicOf(instruction) {
   return String(instruction?.mnemonic || '').trim().toLowerCase();
 }
@@ -161,36 +164,72 @@ function guardRead() {
   };
 }
 
+function hasBtypeWrite(bundle) {
+  return bundle.operations.some((operation) => operation.kind === 'register-write' && operation.register?.registerId === ARM64_BTYPE_REGISTER_ID);
+}
+
+function withArchitecturalBtypeReset(instruction, bundle) {
+  const mnemonic = mnemonicOf(instruction);
+  if (!bundle || !mnemonic || ARM64_BTYPE_PRODUCERS.has(mnemonic) || hasBtypeWrite(bundle)) return bundle;
+  const failClosedPartial = bundle.completeness === 'partial'
+    && bundle.operations.every((operation) => operation.kind === 'unknown');
+  if (bundle.metadata?.failClosed === true || failClosedPartial) return bundle;
+  const operations = [
+    ...bundle.operations,
+    createMachineOperation({
+      kind:'register-write',
+      register:createRegisterValue(ARM64_BTYPE_REGISTER_ID, 2),
+      value:createBitVectorValue(2, 0n),
+      metadata:{
+        stateKind:'branch-target-identification',
+        branchKind:'non-indirect-reset',
+        mnemonic,
+        architecturalValue:0,
+      },
+    }),
+  ];
+  return rebuiltBundle(bundle, {
+    operations,
+    possibleFaults:bundle.possibleFaults,
+    completeness:bundle.completeness,
+    unknownEffects:bundle.unknownEffects,
+    metadata:{
+      btypeTransition:{ kind:'known', branchKind:'non-indirect-reset', value:0, mnemonic },
+    },
+  });
+}
+
 export function decorateArm64BtiGuardedPageEffects(instruction, bundle, context = {}) {
-  if (!bundle || mnemonicOf(instruction) !== 'bti') return bundle;
+  if (!bundle) return bundle;
+  if (mnemonicOf(instruction) !== 'bti') return withArchitecturalBtypeReset(instruction, bundle);
   const guardState = normalizeArm64BtiGuardedPageState(
     context.btiGuardedPage ?? context.guardedPageState ?? context.pageGuardState ?? null,
   );
   const landing = landingKindOf(instruction);
 
   if (guardState.state === 'unguarded') {
-    return rebuiltBundle(bundle, {
+    return withArchitecturalBtypeReset(instruction, rebuiltBundle(bundle, {
       operations:[],
       possibleFaults:[],
       completeness:'exact',
-      statePreservation:{ proven:true, reason:'BTI on an observed non-guarded executable page is architecturally NOP-like' },
+      statePreservation:{ proven:true, reason:'BTI on an observed non-guarded executable page is architecturally NOP-like before the architectural BTYPE post-state reset' },
       metadata:{
         btiGuardedPage:guardState,
         btiCheck:'skipped-non-guarded-page',
         loaderPolicyDoesNotImplyMappedState:true,
       },
-    });
+    }));
   }
 
   const intrinsicIndex = bundle.operations.findIndex((operation) => operation.kind === 'intrinsic' && operation.intrinsicId === 'arm64.system.bti');
   if (intrinsicIndex < 0 || !landing) {
-    return rebuiltBundle(bundle, {
+    return withArchitecturalBtypeReset(instruction, rebuiltBundle(bundle, {
       operations:bundle.operations,
       possibleFaults:bundle.possibleFaults,
       completeness:'partial',
       unknownEffects:{ categories:['control','faults'], reason:intrinsicIndex < 0 ? 'bti-intrinsic-missing' : 'bti-landing-pad-kind-unresolved' },
       metadata:{ btiGuardedPage:guardState, btiCheck:'partial' },
-    });
+    }));
   }
 
   const operations = bundle.operations.slice();
@@ -215,7 +254,7 @@ export function decorateArm64BtiGuardedPageEffects(instruction, bundle, context 
   }];
 
   if (guardState.state === 'guarded') {
-    return rebuiltBundle(bundle, {
+    return withArchitecturalBtypeReset(instruction, rebuiltBundle(bundle, {
       operations,
       possibleFaults,
       completeness:'exact-with-intrinsic',
@@ -224,10 +263,10 @@ export function decorateArm64BtiGuardedPageEffects(instruction, bundle, context 
         btiCheck:'guarded-page-compatibility',
         loaderPolicyDoesNotImplyMappedState:true,
       },
-    });
+    }));
   }
 
-  return rebuiltBundle(bundle, {
+  return withArchitecturalBtypeReset(instruction, rebuiltBundle(bundle, {
     operations,
     possibleFaults,
     completeness:'partial',
@@ -241,5 +280,5 @@ export function decorateArm64BtiGuardedPageEffects(instruction, bundle, context 
       btiCheck:'conditional-on-unknown-page-guard-state',
       loaderPolicyDoesNotImplyMappedState:true,
     },
-  });
+  }));
 }
