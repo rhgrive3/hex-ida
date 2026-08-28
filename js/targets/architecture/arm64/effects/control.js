@@ -139,8 +139,11 @@ function directBranchOperandShapeValid(instruction, mnemonic, ops) {
     return ops.length === 2 && isBranchTestRegister(ops[0]) && directTargetOperandShapeValid(instruction, ops[1], 'branch');
   }
   if (TEST_BRANCH.has(mnemonic)) {
+    const bit = immediateOf(ops[1]);
+    const widthBits = instructionBits(ops[0]);
     return ops.length === 3 && isBranchTestRegister(ops[0])
-      && ops[1]?.k === 'imm' && ops[1].value != null
+      && ops[1]?.k === 'imm' && bit != null
+      && bit >= 0n && bit < BigInt(widthBits)
       && ops[1].shift == null && ops[1].extend == null
       && directTargetOperandShapeValid(instruction, ops[2], 'branch');
   }
