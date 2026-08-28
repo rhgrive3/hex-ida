@@ -47,6 +47,7 @@ function deepFreeze(value, seen = new WeakSet()) {
   return value;
 }
 
+// Manifest object fields use JSON-style plain-object semantics.
 function isPlainObject(value) {
   if (value == null || typeof value !== "object") return false;
   const prototype = Object.getPrototypeOf(value);
