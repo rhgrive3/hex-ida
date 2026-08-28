@@ -33,6 +33,7 @@ export function validateLegacyInventory(inventory = loadLegacyInventory(), { roo
     if (!family?.id || ids.has(family.id)) fail('legacy-inventory-family-id-invalid', family?.id || '<missing>');
     ids.add(family.id);
     if (!family.match || typeof family.match !== 'object') fail('legacy-inventory-family-match-required', family.id);
+    if (family.match.fallback === true && index !== inventory.families.length - 1) fail('legacy-inventory-fallback-must-be-last', family.id);
     if (!Array.isArray(family.sourceMarkers) || family.sourceMarkers.length === 0) fail('legacy-inventory-source-markers-required', family.id);
     for (const marker of family.sourceMarkers) {
       if (!source.includes(marker)) fail('legacy-inventory-source-drift', `${family.id}: missing ${marker}`);
