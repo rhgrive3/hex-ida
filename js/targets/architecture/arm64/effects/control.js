@@ -104,6 +104,12 @@ function gpRegister(num) {
   return { k: 'reg', cls: 'gp', num, bits: 64, text: `x${num}` };
 }
 
+function isIndirectControlRegister(operand) {
+  return operand?.k === 'reg'
+    && (operand.cls === 'gp' || operand.cls === 'zr')
+    && Number(operand.bits) === 64;
+}
+
 function directTargetOperandShapeValid(instruction, operand, kind = 'branch') {
   if (operand?.k === 'imm' && operand.value != null) return true;
   if (operand?.k === 'other' && /^#?(?:0x[0-9a-f]+|\d+)$/i.test(String(operand.text || '').trim())) return true;
@@ -158,11 +164,11 @@ function liftArm64ControlEffectsCore(instruction, options = {}) {
   }
 
   if (mnemonic === 'br') {
-    if (ops.length !== 1) {
+    if (ops.length !== 1 || !isIndirectControlRegister(ops[0])) {
       return ctx.partial('arm64-br-operand-shape-invalid', ['control','registers'], undefined, { kind:'unknown', reason:'arm64-br-operand-shape-invalid' });
     }
     const target = ctx.readRegister(ops[0]);
-    if (!target || instructionBits(ops[0]) !== 64) {
+    if (!target) {
       return ctx.partial('arm64-br-target-register-unmodelled', ['control','registers'], undefined, { kind: 'unknown', reason: 'arm64-br-target-register-unmodelled' });
     }
     return ctx.finish({
@@ -190,12 +196,12 @@ function liftArm64ControlEffectsCore(instruction, options = {}) {
   }
 
   if (mnemonic === 'blr') {
-    if (ops.length !== 1) {
+    if (ops.length !== 1 || !isIndirectControlRegister(ops[0])) {
       return ctx.partial('arm64-blr-operand-shape-invalid', ['control','registers'], undefined, { kind:'unknown', reason:'arm64-blr-operand-shape-invalid' });
     }
     const target = ctx.readRegister(ops[0]);
     const address = instructionAddress(instruction);
-    if (!target || instructionBits(ops[0]) !== 64) {
+    if (!target) {
       return ctx.partial('arm64-blr-target-register-unmodelled', ['control','registers'], undefined, { kind: 'unknown', reason: 'arm64-blr-target-register-unmodelled' });
     }
     if (address == null) {
@@ -210,12 +216,12 @@ function liftArm64ControlEffectsCore(instruction, options = {}) {
   }
 
   if (mnemonic === 'ret') {
-    if (ops.length > 1) {
+    if (ops.length > 1 || (ops.length === 1 && !isIndirectControlRegister(ops[0]))) {
       return ctx.partial('arm64-ret-operand-shape-invalid', ['control','registers'], undefined, { kind:'unknown', reason:'arm64-ret-operand-shape-invalid' });
     }
     const operand = ops[0] || gpRegister(30);
     const target = ctx.readRegister(operand);
-    if (!target || instructionBits(operand) !== 64) {
+    if (!target) {
       return ctx.partial('arm64-ret-target-register-unmodelled', ['control','registers'], undefined, { kind: 'unknown', reason: 'arm64-ret-target-register-unmodelled' });
     }
     return ctx.finish({
