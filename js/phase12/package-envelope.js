@@ -236,7 +236,7 @@ export function validateProviderOutput(value, options = {}) {
     const hasItems = Array.isArray(value.items);
     const hasResults = Array.isArray(value.results);
     if (hasItems && hasResults) throw new PackageValidationError('provider-output-entry-collection-ambiguous');
-    const entries = hasItems ? value.items : hasResults ? value.results : [];
+    const entries = Array.isArray(value.items) ? value.items : Array.isArray(value.results) ? value.results : [];
     if (entries.length > maxEntries) throw new PackageValidationError('provider-output-entry-budget-exceeded');
     if (value.schemaVersion !== PHASE12_PROVIDER_OUTPUT_SCHEMA) throw new PackageValidationError('provider-output-schema-unsupported');
     if (!value.provenance || typeof value.provenance !== 'object' || Array.isArray(value.provenance)) throw new PackageValidationError('provider-output-provenance-required');
