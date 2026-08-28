@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { semanticAbiAdapter } from '../js/analysis/semantic-function.js';
 import { AAPCS64_ABI } from '../js/targets/abi/index.js';
 import { enhanceSemanticDecompilation } from '../js/decompiler/pipeline.js';
+import { parseGhidraOutput } from '../tools/decompiler/ghidra-diff.mjs';
 
 function val(id, reg, bits = 32, kind = 'def') { return { id, reg, bits, kind, uses: [], def: null, const: null }; }
 function arg(id, reg, bits = 32) { return val(id, reg, bits, 'arg'); }
@@ -42,4 +43,13 @@ assert.ok(enhanced.importantInputs.includes('a1'));
 assert.ok(enhanced.sideEffects.some((x) => x.includes('hp')));
 assert.ok(enhanced.metrics.sourceMappedNodes >= 4);
 assert.ok(enhanced.highVariables.groups.length > 0);
+
+function parsedGhidra(payload) {
+  return parseGhidraOutput(`GHIDRA_FUNCTION 1000 ${payload}`).get('1000');
+}
+assert.equal(parsedGhidra('line1\\nline2'), 'line1\nline2');
+assert.equal(parsedGhidra('literal\\\\n'), 'literal\\n');
+assert.equal(parsedGhidra('literal\\\\\\\\n'), 'literal\\\\n');
+assert.equal(parsedGhidra('a\\n\\\\b\\n\\\\n'), 'a\n\\b\n\\n');
+
 console.log('decompiler semantic pipeline PASS');
