@@ -6,6 +6,7 @@ import {
   assertReleaseReady,
   createA2DenominatorSnapshot,
   createOracleReport,
+  validateOracleReport,
 } from '../../tools/validation/machine-effects/oracle-report.mjs';
 import {
   verifyCandidateMergeTree,
@@ -78,6 +79,22 @@ assertReleaseReady(report, {
   expectedCandidateTreeSha: candidateTreeSha,
   requireCandidateTree: true,
 });
+assert.throws(() => validateOracleReport({
+  ...report,
+  counts: { ...report.counts, unexpected: 0 },
+}), /report-status-counts-invalid/);
+assert.throws(() => validateOracleReport({
+  ...report,
+  policy: { ...report.policy, networkAllowed: true },
+}), /report-authority-policy-invalid/);
+assert.throws(() => createOracleReport({
+  productSha: currentHead,
+  baseSha: assignedBase,
+  corpus,
+  results: [results[0], results[0]],
+  a2Before,
+  a2After,
+}), /report-result-case-duplicate/);
 
 const exactHead = verifyExactHead({
   report,

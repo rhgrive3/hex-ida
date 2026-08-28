@@ -145,12 +145,12 @@ reports are bound to one exact product or candidate merge tree.
 **Purpose**: Run the short validation sequence and prepare integration-owned evidence without
 changing forbidden production, workflow, C0-01, denominator, or generated files.
 
-- [ ] T034 [P] Run the T0 counterexample and T1 negative/replay commands from `specs/004-independent-machine-effects-oracle/quickstart.md` and record exact counts in the feature evidence
-- [ ] T035 [P] Run the T2 profile/report/denominator commands from `specs/004-independent-machine-effects-oracle/quickstart.md` and record explicit gaps and counts in the feature evidence
-- [ ] T036 Review the actual changed-file inventory against the offline allowlist in `tests/machine-effects/independent-oracle-ownership.test.mjs`
-- [ ] T037 Run the permanent exact-head verifier from `tools/validation/machine-effects/oracle-release-verify.mjs` against the frozen branch head and record verifier/corpus/oracle/toolchain identities
-- [ ] T038 Build the actual candidate merge tree through the Sol integration lane, rerun applicable owned gates against that tree, and record its SHA in `specs/004-independent-machine-effects-oracle/quickstart.md`
-- [ ] T039 Reconcile moving `main`, canonical generated output, required CI, and post-merge live-main verification through Sol; update only the durable feature evidence under `specs/004-independent-machine-effects-oracle/`
+- [X] T034 [P] Run the T0 counterexample and T1 negative/replay commands from `specs/004-independent-machine-effects-oracle/quickstart.md` and record exact counts in the feature evidence
+- [X] T035 [P] Run the T2 profile/report/denominator commands from `specs/004-independent-machine-effects-oracle/quickstart.md` and record explicit gaps and counts in the feature evidence
+- [X] T036 Review the actual changed-file inventory against the offline allowlist in `tests/machine-effects/independent-oracle-ownership.test.mjs`
+- [X] T037 Run the permanent exact-head verifier from `tools/validation/machine-effects/oracle-release-verify.mjs` against the frozen branch head and record verifier/corpus/oracle/toolchain identities
+- [X] T038 Build the actual candidate merge tree through the Sol integration lane, rerun applicable owned gates against that tree, and record its SHA in `specs/004-independent-machine-effects-oracle/quickstart.md`
+- [X] T039 Reconcile moving `main`, canonical generated output, required CI, and post-merge live-main verification through Sol; update only the durable feature evidence under `specs/004-independent-machine-effects-oracle/`
 
 ---
 
@@ -238,3 +238,16 @@ MachineEffects, C0-01, A2 denominator, workflows, or generated output.
   none is silently promoted to ISA truth.
 - No task authorizes a second production evaluator, expected-table generation from the subject, or
   denominator deletion/rewriting.
+
+## Phase 7: Convergence
+
+- [ ] T040 [P] Bind every result envelope to its corpus case profile, oracle identity/version, and
+  complete defined mask so stale or denominator-shrunk results cannot pass per FR-005/FR-014
+  (partial)
+- [ ] T041 [P] Reject production-derived or self-oracle corpus generator identities and add
+  regression coverage for generator authority separation per FR-003/FR-008 (missing)
+- [ ] T042 Harden malformed oracle outcome, output, and diagnostic-budget handling so every
+  malformed or oversized artifact returns an explicit zero-pass result per FR-007/FR-013
+  (partial)
+- [ ] T043 Enforce strict report count, profile, external-evidence, and policy envelope validation
+  with negative coverage per FR-014/FR-017 (partial)

@@ -5,6 +5,7 @@ import {
   productionSubjectObservation,
   runIndependentComparison,
 } from '../../tools/validation/machine-effects/oracle-runner.mjs';
+import { createCorpus } from '../../tools/validation/machine-effects/oracle-corpus.mjs';
 import {
   createCorpusCase,
   createOracleResult,
@@ -41,6 +42,12 @@ expectRejected((value) => { value.caseId = `sha256:${'0'.repeat(64)}`; }, /stale
 expectRejected((value) => { value.expectedState = null; }, /normal-state-required/);
 
 const corpusCase = createCorpusCase(DETERMINISTIC_ADD_CASE);
+assert.throws(() => createCorpus([DETERMINISTIC_ADD_CASE], {
+  generatorIdentity: 'production-machine-effects-evaluator',
+}), /production-derived/);
+assert.throws(() => createCorpus([DETERMINISTIC_ADD_CASE], {
+  generatorIdentity: corpusCase.oracleIdentity,
+}), /oracle-identity-collision/);
 const validSubject = () => productionSubjectObservation({ state: corpusCase.expectedState });
 
 const identityMismatch = await runIndependentComparison({
@@ -100,6 +107,32 @@ const productionSource = await runIndependentComparison({
 });
 assert.equal(productionSource.status, 'malformed');
 assert.equal(productionSource.passContribution, 0);
+
+const malformedOracleOutcome = await runIndependentComparison({
+  corpusCase,
+  subject: validSubject,
+  oracle: {
+    ...createReferenceOracle({
+      identity: corpusCase.oracleIdentity,
+      version: corpusCase.oracleVersion,
+      provenance: corpusCase.provenance,
+    }),
+    async evaluate() { return { outcome: { kind: 'not-a-real-outcome' }, state: corpusCase.expectedState }; },
+  },
+});
+assert.equal(malformedOracleOutcome.status, 'malformed');
+assert.equal(malformedOracleOutcome.passContribution, 0);
+
+const malformedSubjectOutput = await runIndependentComparison({
+  corpusCase,
+  subject: () => {
+    const output = { ...productionSubjectObservation({ state: corpusCase.expectedState }) };
+    output.circular = output;
+    return output;
+  },
+});
+assert.equal(malformedSubjectOutput.status, 'malformed');
+assert.equal(malformedSubjectOutput.passContribution, 0);
 
 const notIntegrated = await runIndependentComparison({ corpusCase });
 assert.equal(notIntegrated.status, 'not-integrated');
@@ -161,11 +194,30 @@ assert.equal(partialOracle.passContribution, 0);
 const validResult = await runIndependentComparison({ corpusCase, subject: validSubject });
 assert.throws(() => createOracleResult({
   ...validResult,
+  profileId: 'x86_64:long-64',
+}, corpusCase), /profile-mismatch/);
+const shrunkResult = clone(validResult);
+shrunkResult.definedMask.registers.x0 = '0x0000000000000000';
+assert.throws(() => createOracleResult(shrunkResult, corpusCase), /defined-mask-mismatch/);
+const otherOracleResult = clone(validResult);
+otherOracleResult.oracleIdentity = 'independent-other-oracle';
+otherOracleResult.provenance = {
+  ...otherOracleResult.provenance,
+  authorityId: 'other-independent-authority',
+  isaReference: 'other ISA reference',
+};
+assert.throws(() => createOracleResult(otherOracleResult, corpusCase), /oracle-identity-mismatch/);
+assert.throws(() => createOracleResult({
+  ...validResult,
   resultId: `sha256:${'0'.repeat(64)}`,
 }), /stale-identity/);
 assert.throws(() => createOracleResult({
   ...validResult,
   unknown: true,
 }), /unknown-field/);
+assert.throws(() => createOracleResult({
+  ...validResult,
+  diagnostics: Array.from({ length: 33 }, () => ({ code: 'too-many' })),
+}, corpusCase), /diagnostics-invalid-count/);
 
-console.log('machine-effects independent oracle negative matrix: PASS (19 rejection/blocking cases)');
+console.log('machine-effects independent oracle negative matrix: PASS (26 rejection/blocking cases)');

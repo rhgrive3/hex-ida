@@ -1,4 +1,7 @@
 import {
+  assertDistinctOracleIdentity,
+  assertNonEmptyString,
+  INDEPENDENT_ORACLE_IDENTITY,
   INDEPENDENT_GENERATOR_IDENTITY,
   INDEPENDENT_GENERATOR_VERSION,
   ORACLE_PROFILE_INVENTORY,
@@ -35,6 +38,10 @@ export function createCorpus(cases = [], {
   corpusVersion = '1.0.0',
 } = {}) {
   if (!Array.isArray(cases) || cases.length === 0) fail('corpus-cases-required');
+  const normalizedGeneratorIdentity = assertDistinctOracleIdentity(generatorIdentity, 'corpus-generator-identity');
+  if (normalizedGeneratorIdentity === INDEPENDENT_ORACLE_IDENTITY) fail('corpus-generator-oracle-identity-collision');
+  const normalizedGeneratorVersion = assertNonEmptyString(String(generatorVersion), 'corpus-generator-version');
+  const normalizedCorpusVersion = assertNonEmptyString(String(corpusVersion), 'corpus-version');
   const normalized = cases.map((item) => {
     const caseValue = validateCorpusCase(item);
     assertProfileCase(caseValue);
@@ -45,9 +52,9 @@ export function createCorpus(cases = [], {
   const profileIds = [...new Set(normalized.map((item) => item.profileId))].sort();
   const payload = {
     schemaVersion: CORPUS_SCHEMA_VERSION,
-    corpusVersion: String(corpusVersion),
-    generatorIdentity: String(generatorIdentity),
-    generatorVersion: String(generatorVersion),
+    corpusVersion: normalizedCorpusVersion,
+    generatorIdentity: normalizedGeneratorIdentity,
+    generatorVersion: normalizedGeneratorVersion,
     caseIds: ids,
     profileIds,
   };
