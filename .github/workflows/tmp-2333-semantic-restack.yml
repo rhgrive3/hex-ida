@@ -1,0 +1,73 @@
+name: tmp-2333-semantic-restack
+on:
+  push:
+    branches: [tmp/2333-semantic-restack]
+permissions:
+  contents: write
+jobs:
+  restack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Build current-main memory modifier fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git reset --hard origin/main
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('js/targets/architecture/arm64/effects/memory.js')
+          s=p.read_text()
+          old="if (kind === 'reg') return !!arm64RegisterOperand(operand);"
+          new="if (kind === 'reg') return operand?.shift == null && operand?.extend == null && !!arm64RegisterOperand(operand);"
+          count=s.count(old)
+          if count != 1:
+              raise SystemExit(f'expected exactly one memory reg-shape predicate, found {count}')
+          p.write_text(s.replace(old,new,1))
+          PY
+          cat > tests/machine-effects/arm64-memory-data-register-modifier-encoding.test.mjs <<'EOF'
+          import assert from 'node:assert/strict';
+          import { parseOperands } from '../../js/arm64.js';
+          import { liftArm64MemoryEffects } from '../../js/targets/architecture/arm64/effects/memory.js';
+
+          let sequence=0;
+          function lift(mnemonic, operands) {
+            sequence += 1;
+            const instructionId=`arm64-memory-data-register-modifier-${sequence}`;
+            return liftArm64MemoryEffects({instructionId,mnemonic,operands,ops:parseOperands(operands),mode:'a64',origin:{instructionIds:[instructionId]}});
+          }
+
+          for (const [mnemonic,operands] of [
+            ['ldr','x0, [x1]'],
+            ['str','w0, [x1, #4]'],
+            ['ldp','x0, x1, [sp, #16]'],
+            ['stp','x0, x1, [x2, #16]'],
+            ['ldr','x0, [x1, x2, lsl #3]'],
+          ]) {
+            const effect=lift(mnemonic,operands);
+            assert.ok(effect && ['exact','exact-with-intrinsic'].includes(effect.completeness), `${mnemonic} ${operands}: legal memory form`);
+          }
+
+          for (const [mnemonic,operands] of [
+            ['ldr','x0, lsl #1, [x1]'],
+            ['str','w0, uxtw #2, [x1]'],
+            ['ldp','x0, x1, lsl #1, [x2]'],
+            ['stp','x0, x1, sxtx #0, [x2]'],
+          ]) {
+            const effect=lift(mnemonic,operands);
+            assert.ok(effect, `${mnemonic} ${operands}: fail-closed effect required`);
+            assert.equal(effect.completeness,'partial', `${mnemonic}: data-register modifier contradiction must be partial`);
+            assert.equal(effect.operations.length,0, `${mnemonic}: invalid data-register modifier must not emit definite memory/register/writeback effects`);
+          }
+
+          console.log('arm64 memory data-register modifier encoding: PASS');
+          EOF
+          git add js/targets/architecture/arm64/effects/memory.js tests/machine-effects/arm64-memory-data-register-modifier-encoding.test.mjs
+          git diff --cached --check
+          git commit -m "fix(arm64): reject modifiers on memory data registers"
+          git push --force origin HEAD:fix/2333-arm64-memory-data-register-modifiers
