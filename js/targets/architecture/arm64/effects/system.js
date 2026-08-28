@@ -34,6 +34,24 @@ const COMMON_WRITABLE_SYSREGS = new Set([
   'tpidr_el0','fpcr','fpsr','nzcv','daif','spsel',
 ]);
 
+// MSR (immediate) is a distinct PSTATE encoding. CRm carries both the
+// immediate and, for the constrained fields below, part of the field selector.
+const PSTATE_IMMEDIATE_CRM_DOMAINS = new Map([
+  ['uao', [0x0, 0xf]],
+  ['pan', [0x0, 0xf]],
+  ['spsel', [0x0, 0xf]],
+  ['ssbs', [0x0, 0xf]],
+  ['dit', [0x0, 0xf]],
+  ['tco', [0x0, 0xf]],
+  ['daifset', [0x0, 0xf]],
+  ['daifclr', [0x0, 0xf]],
+  ['allint', [0x0, 0x1]],
+  ['pm', [0x2, 0x3]],
+  ['svcrsm', [0x2, 0x3]],
+  ['svcrza', [0x4, 0x5]],
+  ['svcrsmza', [0x6, 0x7]],
+]);
+
 // An exception or implementation-defined system operation crosses an opaque
 // architectural environment boundary.  Exact-with-intrinsic is honest only
 // when that boundary carries the complete conservative footprint; it must not
@@ -353,7 +371,7 @@ function trap(instruction, context, mnemonic, ops) {
 function mrs(instruction, context, ops) {
   const dst = ops[0];
   const sys = sysRegText(ops[1]);
-  if (!isGpDestination(dst) || !sys) {
+  if (!isSystemXt(dst) || !sys) {
     return partial(instruction, context, 'mrs-operands-or-system-register-unavailable', ['registers','faults','other']);
   }
   const operations = [];
@@ -521,6 +539,20 @@ function systemCrOperand(op) {
   const text = textOperand(op);
   return text != null && /^c(?:[0-9]|1[0-5])$/.test(text);
 }
+function msrPstateImmediateShapeValid(sys, src) {
+  if (src?.k !== 'imm' || src.value == null) return false;
+  const domain = PSTATE_IMMEDIATE_CRM_DOMAINS.get(sys);
+  if (!domain) return false;
+  const value = BigInt(src.value);
+  return value >= BigInt(domain[0]) && value <= BigInt(domain[1]);
+}
+function msrOperandShapeValid(ops) {
+  if (ops.length !== 2) return false;
+  const sys = sysRegText(ops[0]);
+  if (!sys) return false;
+  if (isSystemXt(ops[1])) return true;
+  return msrPstateImmediateShapeValid(sys, ops[1]);
+}
 function maintenanceOperandShapeValid(mnemonic, ops) {
   if (ops.length < 1 || ops.length > 2 || ops[0]?.k !== 'other') return false;
   const selector = textOperand(ops[0]);
@@ -558,8 +590,15 @@ function operandShapeFailure(instruction, mnemonic, ops) {
     const kind = String(ops[0]?.text || '').trim().toLowerCase();
     return ['c','j','jc'].includes(kind) ? null : { reason:'bti-target-invalid', categories:['faults','other'] };
   }
-  if (mnemonic === 'mrs' || mnemonic === 'msr') {
-    return ops.length === 2 ? null : { reason:`${mnemonic}-operand-shape-invalid`, categories:['registers','faults','other'] };
+  if (mnemonic === 'mrs') {
+    return ops.length === 2 && isSystemXt(ops[0]) && sysRegText(ops[1])
+      ? null
+      : { reason:'mrs-operand-shape-invalid', categories:['registers','faults','other'] };
+  }
+  if (mnemonic === 'msr') {
+    return msrOperandShapeValid(ops)
+      ? null
+      : { reason:'msr-operand-shape-invalid', categories:['registers','faults','other'] };
   }
   if (MAINTENANCE.has(mnemonic)) {
     return maintenanceOperandShapeValid(mnemonic, ops) ? null : { reason:`${mnemonic}-operand-shape-invalid`, categories:['registers','faults','other'] };
