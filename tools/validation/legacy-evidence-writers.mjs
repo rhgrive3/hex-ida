@@ -5,29 +5,40 @@ function stripComments(lines) {
   const code = [];
   let inBlockComment = false;
   for (const raw of lines) {
-    let line = raw;
-    if (inBlockComment) {
-      if (line.includes("*/")) {
-        line = line.slice(line.indexOf("*/") + 2);
-        inBlockComment = false;
-      } else {
-        code.push("");
+    let out = "";
+    let quote = null;
+    let escaped = false;
+    for (let i = 0; i < raw.length; i++) {
+      const ch = raw[i];
+      const next = raw[i + 1];
+      if (inBlockComment) {
+        if (ch === "*" && next === "/") {
+          inBlockComment = false;
+          i += 1;
+        }
         continue;
       }
-    }
-    while (line.includes("/*")) {
-      const start = line.indexOf("/*");
-      const end = line.indexOf("*/", start + 2);
-      if (end !== -1) {
-        line = line.slice(0, start) + " " + line.slice(end + 2);
-      } else {
-        line = line.slice(0, start);
-        inBlockComment = true;
-        break;
+      if (quote) {
+        out += ch;
+        if (escaped) escaped = false;
+        else if (ch === "\\") escaped = true;
+        else if (ch === quote) quote = null;
+        continue;
       }
+      if (ch === "'" || ch === '"') {
+        quote = ch;
+        out += ch;
+        continue;
+      }
+      if (ch === "/" && next === "*") {
+        inBlockComment = true;
+        i += 1;
+        continue;
+      }
+      if (ch === "/" && next === "/") break;
+      out += ch;
     }
-    if (line.includes("//")) line = line.slice(0, line.indexOf("//"));
-    code.push(line);
+    code.push(out);
   }
   return code;
 }
@@ -69,7 +80,7 @@ export function scanEvidenceWriters(rootDir = "js") {
         const constructorPattern = new RegExp(`\\bnew\\s+(?:${[...bindings].map(escapeRegExp).join("|")})\\s*\\(`);
         for (let i = 0; i < lines.length; i++) {
           const trimmed = lines[i].trim();
-          // Remove double and single quoted strings after comments are gone.
+          // Remove double and single quoted strings after comment lexing.
           const withoutStrings = codeLines[i].replace(/(["'])(?:(?=(\\?))\2.)*?\1/g, '""');
           if (constructorPattern.test(withoutStrings)) {
             findings.push({
