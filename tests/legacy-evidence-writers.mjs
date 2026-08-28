@@ -55,6 +55,25 @@ try {
   const res4 = scanEvidenceWriters(tempDir);
   assert.equal(res4.length, 0);
 
+  // 5. Simple static aliases from the exact evidence module count.
+  fs.mkdirSync(path.join(tempDir, "ai"), { recursive: true });
+  fs.writeFileSync(path.join(tempDir, "ai", "evidence.js"), "export class EvidenceStore {}\n");
+  fs.writeFileSync(fakeJs, `
+    import { EvidenceStore as Store } from './ai/evidence.js';
+    const store = new Store();
+  `);
+  const aliasFindings = scanEvidenceWriters(tempDir);
+  assert.equal(aliasFindings.length, 1);
+  assert.match(aliasFindings[0].snippet, /new Store\(\)/);
+
+  // 6. The same alias name from another module is not EvidenceStore authority.
+  fs.writeFileSync(path.join(tempDir, "other.js"), "export class EvidenceStore {}\n");
+  fs.writeFileSync(fakeJs, `
+    import { EvidenceStore as Store } from './other.js';
+    const store = new Store();
+  `);
+  assert.equal(scanEvidenceWriters(tempDir).length, 0);
+
   console.log("All legacy evidence writers unit tests PASS!");
 } finally {
   fs.rmSync(tempDir, { recursive: true, force: true });
