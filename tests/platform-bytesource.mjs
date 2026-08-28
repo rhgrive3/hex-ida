@@ -36,4 +36,11 @@ const zeroLimitStrings = await scanSourceStrings(stringImage, stringBytes, {
 assert.equal(zeroLimitStrings.results.length, 1, 'explicit limit=0 must clamp to the minimum limit of 1');
 assert.equal(zeroLimitStrings.capped, true);
 
+const strictBackend = new MemoryByteSource(bytes, { maxReadLength: 64 });
+assert.doesNotThrow(() => new CachedByteSource(strictBackend, { pageSize: 64, maxCachedBytes: 64 }));
+assert.throws(
+  () => new CachedByteSource(strictBackend, { pageSize: 65, maxCachedBytes: 65 }),
+  /pageSize must not exceed source maxReadLength/,
+);
+
 console.log('platform-bytesource: PASS');
