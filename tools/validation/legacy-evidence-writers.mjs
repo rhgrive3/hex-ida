@@ -1,6 +1,69 @@
 import fs from "node:fs";
 import path from "node:path";
 
+function stripComments(lines) {
+  const code = [];
+  let inBlockComment = false;
+  for (const raw of lines) {
+    let out = "";
+    let quote = null;
+    let escaped = false;
+    for (let i = 0; i < raw.length; i++) {
+      const ch = raw[i];
+      const next = raw[i + 1];
+      if (inBlockComment) {
+        if (ch === "*" && next === "/") {
+          inBlockComment = false;
+          i += 1;
+        }
+        continue;
+      }
+      if (quote) {
+        out += ch;
+        if (escaped) escaped = false;
+        else if (ch === "\\") escaped = true;
+        else if (ch === quote) quote = null;
+        continue;
+      }
+      if (ch === "'" || ch === '"') {
+        quote = ch;
+        out += ch;
+        continue;
+      }
+      if (ch === "/" && next === "*") {
+        inBlockComment = true;
+        i += 1;
+        continue;
+      }
+      if (ch === "/" && next === "/") break;
+      out += ch;
+    }
+    code.push(out);
+  }
+  return code;
+}
+
+function evidenceStoreBindings(full, rootDir, codeLines) {
+  const bindings = new Set(["EvidenceStore"]);
+  const evidenceModule = path.resolve(rootDir, "ai/evidence.js");
+  for (const line of codeLines) {
+    const match = /\bimport\s*\{([^}]*)\}\s*from\s*(["'])([^"']+)\2/.exec(line);
+    if (!match || !match[3].startsWith(".")) continue;
+    let target = path.resolve(path.dirname(full), match[3]);
+    if (!path.extname(target)) target += ".js";
+    if (path.normalize(target) !== path.normalize(evidenceModule)) continue;
+    for (const specifier of match[1].split(",")) {
+      const binding = /^\s*EvidenceStore(?:\s+as\s+([A-Za-z_$][\w$]*))?\s*$/.exec(specifier);
+      if (binding) bindings.add(binding[1] || "EvidenceStore");
+    }
+  }
+  return bindings;
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 export function scanEvidenceWriters(rootDir = "js") {
   const findings = [];
   function walk(dir) {
@@ -12,35 +75,14 @@ export function scanEvidenceWriters(rootDir = "js") {
       } else if (entry.isFile() && entry.name.endsWith(".js")) {
         const text = fs.readFileSync(full, "utf8");
         const lines = text.split("\n");
-        let inBlockComment = false;
+        const codeLines = stripComments(lines);
+        const bindings = evidenceStoreBindings(full, rootDir, codeLines);
+        const constructorPattern = new RegExp(`\\bnew\\s+(?:${[...bindings].map(escapeRegExp).join("|")})\\s*\\(`);
         for (let i = 0; i < lines.length; i++) {
-          let line = lines[i];
-          const trimmed = line.trim();
-          if (inBlockComment) {
-            if (line.includes("*/")) {
-              line = line.slice(line.indexOf("*/") + 2);
-              inBlockComment = false;
-            } else {
-              continue;
-            }
-          }
-          while (line.includes("/*")) {
-            const start = line.indexOf("/*");
-            const end = line.indexOf("*/", start + 2);
-            if (end !== -1) {
-              line = line.slice(0, start) + " " + line.slice(end + 2);
-            } else {
-              line = line.slice(0, start);
-              inBlockComment = true;
-              break;
-            }
-          }
-          if (line.includes("//")) {
-            line = line.slice(0, line.indexOf("//"));
-          }
-          // Remove double and single quoted strings
-          const withoutStrings = line.replace(/(["'])(?:(?=(\\?))\2.)*?\1/g, '""');
-          if (/\bnew\s+EvidenceStore\s*\(/.test(withoutStrings)) {
+          const trimmed = lines[i].trim();
+          // Remove double and single quoted strings after comment lexing.
+          const withoutStrings = codeLines[i].replace(/(["'])(?:(?=(\\?))\2.)*?\1/g, '""');
+          if (constructorPattern.test(withoutStrings)) {
             findings.push({
               file: full.replace(/\\/g, "/"),
               line: i + 1,

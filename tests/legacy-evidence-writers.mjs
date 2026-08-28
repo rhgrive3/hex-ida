@@ -55,6 +55,35 @@ try {
   const res4 = scanEvidenceWriters(tempDir);
   assert.equal(res4.length, 0);
 
+  // 5. Simple static aliases from the exact evidence module count.
+  fs.mkdirSync(path.join(tempDir, "ai"), { recursive: true });
+  fs.writeFileSync(path.join(tempDir, "ai", "evidence.js"), "export class EvidenceStore {}\n");
+  fs.writeFileSync(fakeJs, `
+    import { EvidenceStore as Store } from './ai/evidence.js';
+    const store = new Store();
+  `);
+  const aliasFindings = scanEvidenceWriters(tempDir);
+  assert.equal(aliasFindings.length, 1);
+  assert.match(aliasFindings[0].snippet, /new Store\(\)/);
+
+  // 6. The same alias name from another module is not EvidenceStore authority.
+  fs.writeFileSync(path.join(tempDir, "other.js"), "export class EvidenceStore {}\n");
+  fs.writeFileSync(fakeJs, `
+    import { EvidenceStore as Store } from './other.js';
+    const store = new Store();
+  `);
+  assert.equal(scanEvidenceWriters(tempDir).length, 0);
+
+  // 7. Comment markers inside strings must not hide later executable code.
+  fs.writeFileSync(fakeJs, `
+    const url = 'http://example.test'; const store = new EvidenceStore();
+    const text = '// new EvidenceStore()';
+    // new EvidenceStore();
+  `);
+  const urlFindings = scanEvidenceWriters(tempDir);
+  assert.equal(urlFindings.length, 1);
+  assert.match(urlFindings[0].snippet, /http:\/\/example\.test/);
+
   console.log("All legacy evidence writers unit tests PASS!");
 } finally {
   fs.rmSync(tempDir, { recursive: true, force: true });
