@@ -152,7 +152,7 @@ cat('ldr ldrb ldrh ldrsb ldrsh ldrsw ldur ldurb ldurh ldursb ldursh ldursw ldp l
 cat('str strb strh stur sturb sturh stp stnp sttr stxr stlxr stlr stlrb stlrh st1 st2 st3 st4', 'store');
 cat('b bl br blr ret cbz cbnz tbz tbnz braa brab braaz brabz blraa blrab blraaz blrabz retaa retab', 'flow');
 cat('adr adrp', 'address');
-cat('nop hint bti svc hvc smc brk hlt dmb dsb isb yield wfe wfi sev sevl mrs msr sys eret clrex paciasp pacibsp autiasp autibsp pacia pacib autia autib xpaclri pacia1716 dc ic tlbi', 'system');
+cat('nop hint bti svc hvc smc brk hlt dmb dsb isb yield wfe wfi sev sevl mrs msr sys eret clrex paciasp pacibsp pacia pacib pacda pacdb paciza pacizb pacdza pacdzb pacia1716 pacib1716 autiasp autibsp autia autib autda autdb autiza autizb autdza autdzb autia1716 autib1716 xpaci xpacd xpaclri pacga dc ic tlbi', 'system');
 cat('fadd fsub fmul fdiv fneg fabs fsqrt fmadd fmsub fnmadd fcvt fcvtzs fcvtzu fcvtas fcvtau fcvtms fcvtns fcvtps scvtf ucvtf frinta frintm frintn frintp frintz fmax fmin fmaxnm fminnm', 'float');
 cat('movi mvni orr_v addv uaddlv tbl tbx zip1 zip2 uzp1 uzp2 trn1 trn2 ext rev64_v cmeq cmgt xtn sqxtn', 'simd');
 cat('casal cas casa casl swp swpa swpl swpal ldadd ldadda ldaddl ldaddal ldset ldclr ldeor', 'atomic');
@@ -1246,30 +1246,96 @@ HANDLERS.bti = (o) => {
 };
 HANDLERS.hint = HANDLERS.bti;
 
-for (const n of ['paciasp', 'pacibsp', 'pacia', 'pacib']) {
+for (const n of ['paciasp', 'pacibsp']) {
   HANDLERS[n] = (o) => {
     o.title = J('戻り先アドレスに封をする', 'Sign the return address');
-    o.pseudo = 'lr = sign(lr)';
-    o.summary = J(
-      '戻り先アドレス (x30) に、書き換えを検出するための「封印」を付ける。',
-      'Add a cryptographic signature to the return address in x30.');
-    o.detail.push(J(
-      'スタックを壊して戻り先を書き換える攻撃（ROP）を防ぐ仕組みです。関数の入口で封をし、出口で autiasp が確認します。' +
-      '書き換えられていたらクラッシュします。arm64e（新しい iPhone）でよく見ます。',
-      'Pointer authentication: the prologue signs the return address and the epilogue checks it, defeating ROP attacks.'));
+    o.pseudo = 'lr = sign(lr, sp)';
+    o.summary = J('戻り先アドレス (x30) を SP を使って署名し、書き換えを検出できるようにする。', 'Sign the return address in x30 using SP as the modifier.');
     o.terms = ['pac', 'security', 'lr'];
   };
 }
-for (const n of ['autiasp', 'autibsp', 'autia', 'autib', 'xpaclri']) {
+for (const n of ['pacia', 'pacib', 'pacda', 'pacdb']) {
+  HANDLERS[n] = (o, ops) => {
+    const destination = opShort(ops[0]); const modifier = opShort(ops[1]);
+    o.title = J('ポインタに認証コードを付ける', 'Sign a pointer');
+    o.pseudo = destination + ' = sign(' + destination + ', ' + modifier + ')';
+    o.summary = J(destination + ' のポインタを ' + modifier + ' を修飾値として署名し、結果を同じレジスタへ戻す。', 'Sign the pointer in ' + destination + ' using ' + modifier + ' as the modifier, writing the result back.');
+    o.terms = ['pac', 'security'];
+  };
+}
+for (const n of ['paciza', 'pacizb', 'pacdza', 'pacdzb']) {
+  HANDLERS[n] = (o, ops) => {
+    const destination = opShort(ops[0]);
+    o.title = J('ゼロ修飾値でポインタに封をする', 'Sign a pointer with zero modifier');
+    o.pseudo = destination + ' = sign(' + destination + ', 0)';
+    o.summary = J(destination + ' のポインタを修飾値 0 で署名し、結果を同じレジスタへ戻す。', 'Sign the pointer in ' + destination + ' with a zero modifier and write it back.');
+    o.terms = ['pac', 'security'];
+  };
+}
+for (const n of ['pacia1716', 'pacib1716']) {
   HANDLERS[n] = (o) => {
-    o.title = J('戻り先アドレスの封を確かめる', 'Verify the return address');
-    o.pseudo = 'lr = verify(lr)';
-    o.summary = J(
-      '入口で付けた封印を確認して外す。壊されていればここでクラッシュします。',
-      'Check and strip the signature added in the prologue; a tampered value crashes here.');
+    o.title = J('x17 のポインタに封をする', 'Sign the pointer in x17');
+    o.pseudo = 'x17 = sign(x17, x16)';
+    o.summary = J('x17 のポインタを x16 を修飾値として署名する。', 'Sign the pointer in x17 using x16 as the modifier.');
+    o.terms = ['pac', 'security'];
+  };
+}
+for (const n of ['autiasp', 'autibsp']) {
+  HANDLERS[n] = (o) => {
+    o.title = J('戻り先アドレスの封を確かめる', 'Authenticate the return address');
+    o.pseudo = 'lr = authenticate(lr, sp)';
+    o.summary = J('SP を修飾値として戻り先アドレス (x30) の署名を検証する。', 'Authenticate the return address in x30 using SP as the modifier.');
     o.terms = ['pac', 'security', 'lr'];
   };
 }
+for (const n of ['autia', 'autib', 'autda', 'autdb']) {
+  HANDLERS[n] = (o, ops) => {
+    const destination = opShort(ops[0]); const modifier = opShort(ops[1]);
+    o.title = J('ポインタの署名を確かめる', 'Authenticate a pointer');
+    o.pseudo = destination + ' = authenticate(' + destination + ', ' + modifier + ')';
+    o.summary = J(destination + ' のポインタを ' + modifier + ' を修飾値として認証し、結果を同じレジスタへ戻す。', 'Authenticate the pointer in ' + destination + ' using ' + modifier + ' as the modifier, writing the result back.');
+    o.terms = ['pac', 'security'];
+  };
+}
+for (const n of ['autiza', 'autizb', 'autdza', 'autdzb']) {
+  HANDLERS[n] = (o, ops) => {
+    const destination = opShort(ops[0]);
+    o.title = J('ゼロ修飾値でポインタを認証する', 'Authenticate a pointer with zero modifier');
+    o.pseudo = destination + ' = authenticate(' + destination + ', 0)';
+    o.summary = J(destination + ' のポインタを修飾値 0 で認証し、結果を同じレジスタへ戻す。', 'Authenticate the pointer in ' + destination + ' with a zero modifier and write it back.');
+    o.terms = ['pac', 'security'];
+  };
+}
+for (const n of ['autia1716', 'autib1716']) {
+  HANDLERS[n] = (o) => {
+    o.title = J('x17 のポインタの封を確かめる', 'Authenticate the pointer in x17');
+    o.pseudo = 'x17 = authenticate(x17, x16)';
+    o.summary = J('x17 のポインタを x16 を修飾値として認証する。', 'Authenticate the pointer in x17 using x16 as the modifier.');
+    o.terms = ['pac', 'security'];
+  };
+}
+for (const n of ['xpaci', 'xpacd']) {
+  HANDLERS[n] = (o, ops) => {
+    const destination = opShort(ops[0]);
+    o.title = J('ポインタ認証コードを取り除く', 'Strip pointer authentication code');
+    o.pseudo = destination + ' = strip_pac(' + destination + ')';
+    o.summary = J(destination + ' からポインタ認証コードを取り除く。', 'Strip the pointer authentication code from ' + destination + '.');
+    o.terms = ['pac', 'security'];
+  };
+}
+HANDLERS.xpaclri = (o) => {
+  o.title = J('戻り先アドレスの認証コードを取り除く', 'Strip the return-address authentication code');
+  o.pseudo = 'lr = strip_pac(lr)';
+  o.summary = J('x30 (LR) からポインタ認証コードを取り除く。', 'Strip the pointer authentication code from x30 (LR).');
+  o.terms = ['pac', 'security', 'lr'];
+};
+HANDLERS.pacga = (o, ops) => {
+  const destination = opShort(ops[0]); const source = opShort(ops[1]); const modifier = opShort(ops[2]);
+  o.title = J('汎用ポインタ認証コードを作る', 'Generate a generic pointer authentication code');
+  o.pseudo = destination + ' = pacga(' + source + ', ' + modifier + ')';
+  o.summary = J(source + ' と ' + modifier + ' から汎用認証コードを作り、' + destination + ' に入れる。', 'Generate a generic authentication code from ' + source + ' and ' + modifier + ', storing it in ' + destination + '.');
+  o.terms = ['pac', 'security'];
+};
 
 for (const n of ['dmb', 'dsb', 'isb']) {
   HANDLERS[n] = (o) => {
