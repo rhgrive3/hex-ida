@@ -55,11 +55,17 @@ function visit(value, schema, path, errors) {
   }
 }
 
+function isPlainObject(value) {
+  if (value == null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
 function typeMatches(value, type) {
   if (Array.isArray(type)) {
     return type.some((candidate) => typeMatches(value, candidate));
   }
-  if (type === 'object') return value != null && typeof value === 'object' && !Array.isArray(value);
+  if (type === 'object') return isPlainObject(value);
   if (type === 'array') return Array.isArray(value);
   if (type === 'number') return typeof value === 'number' && Number.isFinite(value);
   if (type === 'integer') return typeof value === 'number' && Number.isFinite(value) && Number.isInteger(value);
