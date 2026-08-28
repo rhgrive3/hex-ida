@@ -27,11 +27,12 @@ export function createVerificationReport({
   assertExternalOraclePolicy(externalOracles);
   const coverage = summarizeCoverage(coverageRecords, { integrationState });
   assertCoverageFullyAccounted(coverage);
+  const effectiveIntegrationState = coverage.integrationState;
 
   return Object.freeze({
     schemaVersion: 'machine-effects-verification-report/v1',
-    integrationState,
-    integrationBlocking: integrationState !== INTEGRATION_STATE.INTEGRATED,
+    integrationState: effectiveIntegrationState,
+    integrationBlocking: effectiveIntegrationState !== INTEGRATION_STATE.INTEGRATED,
     legacyInventoryValidation: legacyValidation,
     legacy,
     coverage,
