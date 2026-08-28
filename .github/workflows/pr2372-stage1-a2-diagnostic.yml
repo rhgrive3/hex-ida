@@ -1,0 +1,42 @@
+name: PR2372 Stage1 A2 diagnostic
+
+on:
+  push:
+    branches:
+      - diag/pr2372-stage1-a2
+
+permissions:
+  contents: read
+
+jobs:
+  a2-diagnostic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 385a2c1950097b6b624e56de3c6cf9469812e455
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Run exact A2 diagnostics
+        shell: bash
+        run: |
+          set +e
+          echo '=== independent-oracle-report ==='
+          node tests/machine-effects/independent-oracle-report.test.mjs
+          REPORT_RC=$?
+          echo "REPORT_RC=$REPORT_RC"
+          echo '=== effects:test ==='
+          npm run effects:test
+          EFFECTS_RC=$?
+          echo "EFFECTS_RC=$EFFECTS_RC"
+          echo '=== a2 coverage ==='
+          node tests/stage1/a2-machine-effects-coverage.test.mjs
+          COVERAGE_RC=$?
+          echo "COVERAGE_RC=$COVERAGE_RC"
+          echo "SUMMARY report=$REPORT_RC effects=$EFFECTS_RC coverage=$COVERAGE_RC"
+          exit 0
