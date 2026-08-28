@@ -1,5 +1,5 @@
 function sectionHasMappedAddress(sec) {
-  if (sec?.source === 'section-header') return (Number(sec.flags || 0) & 0x2) !== 0; // ELF SHF_ALLOC
+  if (sec?.source === 'section-header') return (BigInt(sec.flags || 0) & 0x2n) !== 0n; // ELF SHF_ALLOC
   if (sec?.source === 'unmapped-section') return false;
   return true;
 }
@@ -105,4 +105,8 @@ function checkRoundTrip(image, address, offset, label, stats, issues) {
 }
 
 function issue(level, code, message) { return { level, code, message }; }
-function hex(v) { return v == null ? 'null' : '0x' + BigInt(v).toString(16).toUpperCase(); }
+function hex(v) {
+  if (v == null) return 'null';
+  const value = BigInt(v);
+  return value < 0n ? '-0x' + (-value).toString(16).toUpperCase() : '0x' + value.toString(16).toUpperCase();
+}
