@@ -65,6 +65,14 @@ function validTstRegisterClass(ops) {
   return !ops.some((op) => op?.k === 'reg' && String(op.cls || '').toLowerCase() === 'sp');
 }
 
+function validConditionalCompareImmediates(ops) {
+  const comparison = ops[1];
+  const fallback = ops[2];
+  if (comparison?.k === 'imm' && (comparison.shift != null || comparison.extend != null)) return false;
+  if (fallback?.k === 'imm' && (fallback.shift != null || fallback.extend != null)) return false;
+  return true;
+}
+
 export function liftArm64FlagEffects(instruction, options = {}) {
   const mnemonic = String(instruction?.mnemonic || '').trim().toLowerCase();
   const ops = Array.isArray(instruction?.ops) ? instruction.ops : [];
@@ -75,6 +83,9 @@ export function liftArm64FlagEffects(instruction, options = {}) {
     return liftArm64FlagEffectsCore({ ...instruction, ops: [] }, options);
   }
   if (STRICT_REGISTER_LHS.has(mnemonic) && !validRegisterRhs(mnemonic, ops[0], ops[1])) {
+    return liftArm64FlagEffectsCore({ ...instruction, ops: [] }, options);
+  }
+  if ((mnemonic === 'ccmp' || mnemonic === 'ccmn') && !validConditionalCompareImmediates(ops)) {
     return liftArm64FlagEffectsCore({ ...instruction, ops: [] }, options);
   }
   if (mnemonic === 'tst' && !validTstRegisterClass(ops)) {
