@@ -77,11 +77,15 @@ shrink, no production evaluator/expected-table authority, and no out-of-allowlis
 
 ## T034-T039 Evidence Capture
 
-The implementation commit used for the first exact-head capture was
-`fec2cd41f10080d43b0d9dd09334d884361cb4a8`; the assigned base was
-`e1a3de992640ebad97c8579688277ea9556d64af`. The subsequent `origin/main` refresh resolved to
-`68162317089c6384e547b2c20bb2c6d2a855033c`, and its delta from the assigned base had zero overlap
-with the feature allowlist. The local candidate merge tree for that implementation head was
+The current reconciled component base is the exact living-integration head
+`68162317089c6384e547b2c20bb2c6d2a855033c`. The normal moving-main merge commit is
+`fe7558def0e1a8b0838196e96cb1f3f254e5f6c0`; its local candidate merge tree against
+`origin/main` was `5cc0599838168aa762084c1f412e474fc5e594d1`. The report test below uses the
+integration SHA as its assigned base and derives the exact product head from `git rev-parse HEAD`.
+
+Historical pre-reconciliation captures remain below for provenance only. The first exact-head
+capture used implementation commit `fec2cd41f10080d43b0d9dd09334d884361cb4a8` and assigned base
+`e1a3de992640ebad97c8579688277ea9556d64af`; the local candidate merge tree was
 `032f98ece138702a73a8a447e0e66352b20d7db7`.
 
 After convergence hardening, the clean exact-head capture was rerun at
@@ -97,7 +101,7 @@ node tests/machine-effects/independent-oracle-counterexample.test.mjs --pre-fix
 node tests/machine-effects/independent-oracle-counterexample.test.mjs
   exit=0; 1 deterministic case, 1 exact/equivalent result, distinct oracle identity
 node tests/machine-effects/independent-oracle-negative.test.mjs
-  exit=0; 19 rejection/blocking cases
+  exit=0; 26 rejection/blocking cases
 node tests/machine-effects/independent-oracle-determinism.test.mjs
   exit=0; 2 byte-identical replays
 ```
