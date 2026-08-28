@@ -241,13 +241,13 @@ MachineEffects, C0-01, A2 denominator, workflows, or generated output.
 
 ## Phase 7: Convergence
 
-- [ ] T040 [P] Bind every result envelope to its corpus case profile, oracle identity/version, and
+- [X] T040 [P] Bind every result envelope to its corpus case profile, oracle identity/version, and
   complete defined mask so stale or denominator-shrunk results cannot pass per FR-005/FR-014
   (partial)
-- [ ] T041 [P] Reject production-derived or self-oracle corpus generator identities and add
+- [X] T041 [P] Reject production-derived or self-oracle corpus generator identities and add
   regression coverage for generator authority separation per FR-003/FR-008 (missing)
-- [ ] T042 Harden malformed oracle outcome, output, and diagnostic-budget handling so every
+- [X] T042 Harden malformed oracle outcome, output, and diagnostic-budget handling so every
   malformed or oversized artifact returns an explicit zero-pass result per FR-007/FR-013
   (partial)
-- [ ] T043 Enforce strict report count, profile, external-evidence, and policy envelope validation
+- [X] T043 Enforce strict report count, profile, external-evidence, and policy envelope validation
   with negative coverage per FR-014/FR-017 (partial)
