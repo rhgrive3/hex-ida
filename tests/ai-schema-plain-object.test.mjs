@@ -7,5 +7,5 @@ assert.equal(validateSchema(Object.assign(Object.create(null), { value: 1 }), ob
 assert.equal(validateSchema(new Date(), objectSchema).ok, false);
 assert.equal(validateSchema(new (class ModelOutput { constructor() { this.value = 1; } })(), objectSchema).ok, false);
 
-// Maintainer-owned exact-head regression after canonical generated synchronization.
+// Maintainer-owned exact-head regression after the latest canonical generated synchronization.
 console.log('ai-schema-plain-object: PASS');
