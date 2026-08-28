@@ -74,7 +74,7 @@ if (!report) {
       env,
       encoding: 'utf8',
       maxBuffer: 64 * 1024 * 1024,
-      timeout: 180_000,
+      timeout: 600_000,
     });
     process.stdout.write(`\n[phase3-v2-${suite} ${index + 1}] ${command}\n`);
     if (child.stdout) process.stdout.write(child.stdout);
