@@ -17,14 +17,21 @@
       "type": "object",
       "required": ["commitSha", "treeSha", "clean"],
       "properties": {
-        "commitSha": { "pattern": "^[0-9a-f]{40}$" },
-        "treeSha": { "pattern": "^[0-9a-f]{40}$" },
+        "commitSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "treeSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
         "clean": { "type": "boolean" },
         "dirtyFiles": { "type": "array", "items": { "type": "string" } }
       }
     },
-    "foundation": { "type": "object", "required": ["commitSha", "treeSha"] },
+    "foundation": {
+      "type": "object",
+      "required": ["commitSha", "treeSha"],
+      "properties": {
+        "commitSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "treeSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" }
+      }
+    },
     "gates": { "type": "array", "items": { "type": "object", "required": ["id", "status"] } },
-    "evidenceDigest": { "pattern": "^[0-9a-f]{64}$" }
+    "evidenceDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
   }
 }
