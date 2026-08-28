@@ -596,13 +596,6 @@ function operandShapeFailure(instruction, mnemonic, ops) {
       if (op?.k === 'reg' || op?.cls || op?.shift != null || op?.extend != null) {
         return { reason:`${mnemonic}-operand-shape-invalid`, categories:['other'] };
       }
-      const raw = String(op?.text || op?.value || '').trim().toLowerCase().replace(/^#/, '');
-      const validOptions = new Set(['sy','st','ld','ish','ishst','ishld','nsh','nshst','nshld','osh','oshst','oshld']);
-      if (mnemonic === 'isb') {
-        if (raw && raw !== 'sy' && !/^\d+$/.test(raw)) return { reason:`${mnemonic}-operand-shape-invalid`, categories:['other'] };
-      } else {
-        if (raw && !validOptions.has(raw) && !/^\d+$/.test(raw)) return { reason:`${mnemonic}-operand-shape-invalid`, categories:['other'] };
-      }
     }
     return null;
   }
