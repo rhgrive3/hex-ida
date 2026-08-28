@@ -70,7 +70,7 @@ function fixture(instanceKind, classKind) {
   assert.equal(parsed.classes[0].classMethods.length, 0);
   assert.equal(parsed.names.some((method) => method.sel === 'fake:'), false);
   assert.equal(parsed.completeness.complete, false);
-  assert.equal(parsed.completeness.classes.reasons.includes('method-selector-unresolved'), true);
+  assert.equal(parsed.completeness.classes.reasons.includes('method-selector-invalid'), true);
 }
 
 {
