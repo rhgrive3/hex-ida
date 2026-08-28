@@ -1,0 +1,43 @@
+name: PR2372 dirty worktree path diagnostic
+on:
+  push:
+    branches:
+      - diag/pr2372-dirty-path
+permissions:
+  contents: read
+jobs:
+  dirty-path:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: c24dbb7688610f727745926bc877b6ec9ef788d0
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Reproduce effects test in linked worktree and print dirty paths
+        shell: bash
+        run: |
+          set -u
+          WT="$(mktemp -d)/a2"
+          git worktree add --detach "$WT" c24dbb7688610f727745926bc877b6ec9ef788d0
+          ln -s "$PWD/node_modules" "$WT/node_modules"
+          echo '=== STATUS BEFORE ==='
+          git -C "$WT" status --porcelain=v1 --untracked-files=all
+          set +e
+          (cd "$WT" && npm run effects:test)
+          RC=$?
+          set -e
+          echo "=== EFFECTS RC: $RC ==="
+          echo '=== STATUS AFTER ==='
+          git -C "$WT" status --porcelain=v1 --untracked-files=all
+          echo '=== DIFF STAT ==='
+          git -C "$WT" diff --stat || true
+          echo '=== DIFF NAMES ==='
+          git -C "$WT" diff --name-only || true
+          git worktree remove --force "$WT"
+          exit 0
