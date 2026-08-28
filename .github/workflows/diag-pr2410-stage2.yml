@@ -1,0 +1,45 @@
+name: diag-pr2410-stage2
+on:
+  push:
+    branches: [diag/pr2410-stage2-isolate-20260829]
+jobs:
+  isolate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Run Stage2 tests with per-file markers
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import path from 'node:path';
+          import { pathToFileURL } from 'node:url';
+          const root = path.resolve('tests/stage2');
+          function discover(dir) {
+            return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) =>
+              entry.isDirectory() ? discover(path.join(dir, entry.name)) :
+              entry.name.endsWith('.test.mjs') ? [path.join(dir, entry.name)] : []
+            ).sort();
+          }
+          const files = discover(root);
+          for (const file of files) {
+            console.log(`::group::STAGE2 START ${path.relative(process.cwd(), file)}`);
+            try {
+              await import(pathToFileURL(file).href);
+              console.log(`STAGE2 PASS ${path.relative(process.cwd(), file)}`);
+              console.log('::endgroup::');
+            } catch (error) {
+              console.error(`STAGE2 FAIL ${path.relative(process.cwd(), file)}`);
+              console.error(error?.stack || error);
+              console.log('::endgroup::');
+              process.exitCode = 1;
+              break;
+            }
+          }
+          NODE
