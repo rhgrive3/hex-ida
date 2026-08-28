@@ -17,7 +17,13 @@ function bytes32(word) { const value=Number(word)>>>0; return Uint8Array.of(valu
 const denominator = validateArm64ePacDenominator();
 assert.equal(denominator.denominatorId,ARM64E_PAC_DENOMINATOR_ID);
 assert.equal(denominator.encodingFamilyCount,38);
-assert.equal(denominator.encodingCaseCount,44_491);
+assert.equal(denominator.encodingCaseCount,45_515);
+
+// PACGA encodes its modifier in Rm and interprets Rm==31 as SP. This is a
+// valid discriminator boundary, not a reserved row to remove from the corpus.
+const pacgaSpWord = 0x9adf3020; // pacga x0, x1, sp
+assert.equal(classifyArm64ePacEncoding(pacgaSpWord)?.mnemonic,'pacga');
+assert.equal([...arm64ePacEncodingCases()].some((item)=>item.word===pacgaSpWord),true);
 
 const session = await createCapstoneArm64Session();
 let count=0;
@@ -51,6 +57,9 @@ assert.match(malformed.unknownEffects.reason,/destination register is unavailabl
 const zeroDestination=liftArm64eEffects({instructionId:'arm64e-pac:xzr',mnemonic:'pacia',ops:parseOperands('xzr, sp'),mode:'arm64e'});
 assert.equal(zeroDestination.completeness,'exact-with-intrinsic');
 assert.equal(zeroDestination.operations.some((operation)=>operation.kind==='register-write'&&operation.register?.id==='xzr'),false);
+const spModifier=liftArm64eEffects({instructionId:'arm64e-pac:pacga-sp',mnemonic:'pacga',ops:parseOperands('x0, x1, sp'),mode:'arm64e'});
+assert.equal(spModifier.completeness,'exact-with-intrinsic');
+assert.equal(spModifier.operations.some((operation)=>operation.kind==='register-read'&&operation.register?.registerId==='sp'),true);
 
 const llvmMc=['/usr/bin/llvm-mc-18','/usr/bin/llvm-mc'].find((candidate)=>fs.existsSync(candidate));
 assert.ok(llvmMc);
@@ -60,5 +69,11 @@ const oracle=spawnSync(llvmMc,['--disassemble','--triple=aarch64','--mattr=+paut
 assert.equal(oracle.status,0,oracle.stderr);
 assert.doesNotMatch(oracle.stdout,/<unknown>/i);
 for(const mnemonic of new Set(ARM64E_PAC_ENCODING_FAMILIES.map(({mnemonic})=>mnemonic))) assert.match(oracle.stdout,new RegExp(`\\b${mnemonic}\\b`),`LLVM omitted ${mnemonic}`);
+
+const pacgaSpOracle=spawnSync(llvmMc,['--disassemble','--triple=aarch64','--mattr=+pauth'],{
+  input:`${[...bytes32(pacgaSpWord)].map((byte)=>`0x${byte.toString(16).padStart(2,'0')}`).join(' ')}\n`,encoding:'utf8',
+});
+assert.equal(pacgaSpOracle.status,0,pacgaSpOracle.stderr);
+assert.match(pacgaSpOracle.stdout,/\bpacga\s+x0,\s*x1,\s*sp\b/i);
 
 console.log(`ARM64e PAC denominator (${count} finite discriminator cases): PASS`);
