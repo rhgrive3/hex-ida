@@ -169,7 +169,7 @@ export function assertDifferentialReady(result) {
 
 export function assertDifferentialMatch(result) {
   assertDifferentialReady(result);
-  if (result.status === 'mismatch' || result.matched === false) {
+  if (result.status !== 'match' || result.matched !== true) {
     fail('machine-effects-v1-compatibility-mismatch', result.mnemonic || result.decodedKey || 'instruction');
   }
   return true;
