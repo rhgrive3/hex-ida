@@ -22,6 +22,29 @@ export function ghidraAvailability() {
   return { available:true, executable:exe };
 }
 
+function decodeGhidraPayload(text) {
+  const source = String(text || '');
+  let out = '';
+  for (let i = 0; i < source.length; i++) {
+    const ch = source[i];
+    if (ch !== '\\' || i + 1 >= source.length) {
+      out += ch;
+      continue;
+    }
+    const next = source[i + 1];
+    if (next === '\\') {
+      out += '\\';
+      i++;
+    } else if (next === 'n') {
+      out += '\n';
+      i++;
+    } else {
+      out += ch;
+    }
+  }
+  return out;
+}
+
 /* analyzeHeadless may prefix GhidraScript.println() with logger/script text. */
 export function parseGhidraOutput(text) {
   const functions = new Map();
@@ -29,7 +52,7 @@ export function parseGhidraOutput(text) {
     const marker = line.indexOf('GHIDRA_FUNCTION ');
     if (marker < 0) continue;
     const m = /^GHIDRA_FUNCTION\s+(\S+)\s+(.*)$/.exec(line.slice(marker));
-    if (m) functions.set(m[1], m[2].replace(/\\n/g, '\n').replace(/\\\\/g, '\\'));
+    if (m) functions.set(m[1], decodeGhidraPayload(m[2]));
   }
   return functions;
 }
