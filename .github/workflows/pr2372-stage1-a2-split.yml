@@ -1,0 +1,51 @@
+name: PR2372 Stage1 A2 split diagnostic
+
+on:
+  push:
+    branches:
+      - diag/pr2372-stage1-a2
+
+permissions:
+  contents: read
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 385a2c1950097b6b624e56de3c6cf9469812e455
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: node tests/machine-effects/independent-oracle-report.test.mjs
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 385a2c1950097b6b624e56de3c6cf9469812e455
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: node tests/stage1/a2-machine-effects-coverage.test.mjs
+  effects:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 385a2c1950097b6b624e56de3c6cf9469812e455
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npm run effects:test
