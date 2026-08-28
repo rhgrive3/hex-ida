@@ -44,6 +44,7 @@ const parsed = await parseObjcExtendedMetadata(read, {
 
 assert.equal(parsed.categories.length, 1);
 assert.equal(parsed.categories[0].methods.length, 0, 'indirect selector storage must never be reinterpreted as a direct C string');
+assert.equal(parsed.categories[0].methods.some((method) => method.sel === 'fake:'), false, 'fabricated selector must not enter category methods');
 assert.equal(parsed.categories[0].completeness.methods.instanceMethods.invalidEntries, 1);
 assert.equal(parsed.categories[0].completeness.complete, false);
 assert.equal(parsed.completeness.complete, false);
