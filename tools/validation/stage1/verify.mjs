@@ -89,7 +89,10 @@ export function verifyStage1({ expectedSha = null } = {}) {
   fs.mkdirSync(path.dirname(gateResultPath), { recursive: true });
   let gates;
   try {
-    const gateRunner = spawnSync(process.execPath, [path.join(ROOT, 'tools/validation/stage1/run-gates-isolated.mjs'), '--head', gitSha, '--output', gateResultPath, '--concurrency', '2'], { cwd: ROOT, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024, env: { ...process.env, CI: process.env.CI || '1' } });
+    // Heavy gates such as A2 already parallelize internally. Serializing the outer
+    // gate scheduler prevents nested process oversubscription on hosted runners
+    // without weakening, skipping, or changing any release proof.
+    const gateRunner = spawnSync(process.execPath, [path.join(ROOT, 'tools/validation/stage1/run-gates-isolated.mjs'), '--head', gitSha, '--output', gateResultPath, '--concurrency', '1'], { cwd: ROOT, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024, env: { ...process.env, CI: process.env.CI || '1' } });
     if (gateRunner.status !== 0) throw new Error(`stage1-gate-runner-failed:${bounded(gateRunner.stderr || gateRunner.stdout)}`);
     gates = JSON.parse(fs.readFileSync(gateResultPath, 'utf8'));
     if (!Array.isArray(gates) || gates.length !== GATES.length) throw new Error('stage1-gate-result-count-invalid');
