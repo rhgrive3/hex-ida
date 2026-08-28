@@ -12,10 +12,28 @@ function parseInteger(value) {
   return null;
 }
 
+function canonicalId(value) {
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+function uniqueIdMap(items) {
+  const map = new Map();
+  for (const item of items) {
+    const id = canonicalId(item?.id);
+    if (id == null || map.has(id)) return null;
+    map.set(id, item);
+  }
+  return map;
+}
+
 function exactIntegerConstant(valuesById, nodesById, valueId) {
-  const value = valuesById.get(String(valueId));
+  const id = canonicalId(valueId);
+  if (id == null) return null;
+  const value = valuesById.get(id);
   if (!value || value.kind === 'unknown' || value.kind === 'undef') return null;
-  const node = value.definitionNodeId == null ? null : nodesById.get(String(value.definitionNodeId));
+  const definitionNodeId = value.definitionNodeId == null ? null : canonicalId(value.definitionNodeId);
+  if (value.definitionNodeId != null && definitionNodeId == null) return null;
+  const node = definitionNodeId == null ? null : nodesById.get(definitionNodeId);
   if (!node || node.kind !== 'const') return null;
   for (const candidate of [value.metadata?.constant, node.attributes?.constant, node.metadata?.constant]) {
     const integer = parseInteger(candidate);
@@ -39,11 +57,13 @@ export function normalizeAddressProofIr(ir) {
   if (!ir || typeof ir !== 'object' || Array.isArray(ir)) return ir;
   const values = Array.isArray(ir.values) ? ir.values : [];
   const nodes = Array.isArray(ir.nodes) ? ir.nodes : [];
-  const valuesById = new Map(values.map((value) => [String(value.id), value]));
-  const nodesById = new Map(nodes.map((node) => [String(node.id), node]));
+  const valuesById = uniqueIdMap(values);
+  const nodesById = uniqueIdMap(nodes);
+  if (!valuesById || !nodesById) return ir;
+
   const rewrittenValues = new Map();
   const syntheticNodes = [];
-  const usedNodeIds = new Set(nodes.map((node) => String(node.id)));
+  const usedNodeIds = new Set(nodesById.keys());
 
   const allocateSyntheticId = (base) => {
     if (!usedNodeIds.has(base)) { usedNodeIds.add(base); return base; }
@@ -58,13 +78,16 @@ export function normalizeAddressProofIr(ir) {
     if (node?.kind !== 'intrinsic' || String(node.operator ?? '').toLowerCase() !== 'add-with-carry') continue;
     if (!Array.isArray(node.inputs) || node.inputs.length !== 3) continue;
     if (!Array.isArray(node.outputs) || node.outputs.length < 1) continue;
+    if (node.inputs.some((id) => canonicalId(id) == null) || node.outputs.some((id) => canonicalId(id) == null)) continue;
     if (exactIntegerConstant(valuesById, nodesById, node.inputs[2]) !== 0n) continue;
 
-    const resultValueId = String(node.outputs[0]);
+    const nodeId = canonicalId(node.id);
+    const resultValueId = canonicalId(node.outputs[0]);
+    if (nodeId == null || resultValueId == null) continue;
     const resultValue = valuesById.get(resultValueId);
-    if (!resultValue || String(resultValue.definitionNodeId ?? '') !== String(node.id)) continue;
+    if (!resultValue || canonicalId(resultValue.definitionNodeId) !== nodeId) continue;
 
-    const syntheticId = allocateSyntheticId(`${String(node.id)}:canonical-address-result`);
+    const syntheticId = allocateSyntheticId(`${nodeId}:canonical-address-result`);
     syntheticNodes.push(deepFreeze({
       ...node,
       id: syntheticId,
@@ -87,7 +110,7 @@ export function normalizeAddressProofIr(ir) {
   if (!syntheticNodes.length) return ir;
   return deepFreeze({
     ...ir,
-    values: values.map((value) => rewrittenValues.get(String(value.id)) ?? value),
+    values: values.map((value) => rewrittenValues.get(value.id) ?? value),
     nodes: [...nodes, ...syntheticNodes],
   });
 }
