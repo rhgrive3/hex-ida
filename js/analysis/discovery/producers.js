@@ -30,17 +30,37 @@ function evidence(kind, input) {
 /**
  * Loader-supplied function starts and unwind entries.
  *
- * `image.functionStarts` and `image.unwindEntries` are already
- * format-normalised by the loader; a Mach-O LC_FUNCTION_STARTS table, an ELF
- * `.eh_frame` FDE list and a PE `.pdata` entry all arrive here in the same
- * shape, which is why one producer covers all three formats.
+ * Loader-owned seeds live canonically in `image.functions`; the legacy
+ * `image.functionStarts` projection is accepted only as a compatibility input.
+ * Unwind ranges remain in `image.unwindEntries`.
  */
+function loaderFunctionStarts(image) {
+  const out = [];
+  const seen = new Set();
+  const add = (start) => {
+    const address = toAddress(start?.address ?? start);
+    if (address == null || seen.has(address)) return;
+    seen.add(address);
+    out.push(start);
+  };
+
+  // Canonical loader truth must win deduplication. The legacy projection is
+  // compatibility-only and may omit provenance/extent fields carried by the
+  // canonical BinaryImage.functions seed.
+  for (const start of image?.functions ?? []) {
+    const sources = new Set([start?.source, ...(start?.sources ?? [])].filter(Boolean));
+    if (sources.has('function_starts')) add(start);
+  }
+  for (const start of image?.functionStarts ?? []) add(start);
+  return out;
+}
+
 export const loaderProducer = Object.freeze({
   id: 'discovery.loader',
   architectureId: null,
   produce(input) {
     const out = [];
-    for (const start of input?.image?.functionStarts ?? []) {
+    for (const start of loaderFunctionStarts(input?.image)) {
       const address = toAddress(start.address ?? start);
       if (address == null) continue;
       const region = start.sizeBytes ? regionFromSize(address, start.sizeBytes) : null;
@@ -87,14 +107,41 @@ export const exportProducer = Object.freeze({
   architectureId: null,
   produce(input) {
     const out = [];
-    for (const entry of input?.image?.exports ?? []) {
+    const image = input?.image;
+    const symbolsByAddress = new Set(
+      (image?.symbols ?? [])
+        .map((symbol) => toAddress(symbol?.address))
+        .filter(Boolean),
+    );
+    for (const entry of image?.exports ?? []) {
       const address = toAddress(entry.address);
       if (address == null) continue;
-      out.push(evidence('export', { start: address, name: entry.name ?? null, evidenceIds: [`export:${address}`] }));
+      const explicitlyFunction = entry.isFunction === true || entry.kind === 'function';
+      if (explicitlyFunction) {
+        out.push(evidence('export', { start: address, name: entry.name ?? null, evidenceIds: [`export:${address}`] }));
+      } else if (!symbolsByAddress.has(address)) {
+        // Export visibility alone is not function-start proof. Keep an untyped
+        // export only as one corroborating name/address observation; a loader
+        // start, unwind record, debug symbol, etc. must supply the proof.
+        out.push(evidence('symbol-table', { start: address, name: entry.name ?? null, evidenceIds: [`export:${address}`] }));
+      }
     }
-    const entrypoint = toAddress(input?.image?.entrypoint);
+
+    const entrypoint = toAddress(image?.entrypoint);
     if (entrypoint != null) {
-      out.push(evidence('entrypoint', { start: entrypoint, name: 'entrypoint', evidenceIds: [`entrypoint:${entrypoint}`] }));
+      const explicitlyRejected = image?.metadata?.entrypointValid === false;
+      const entrypointSeedValidated = (image?.functions ?? []).some((seed) => {
+        if (toAddress(seed?.address) !== entrypoint) return false;
+        const sources = new Set([seed?.source, ...(seed?.sources ?? [])].filter(Boolean));
+        return sources.has('entrypoint');
+      });
+      // An explicit loader rejection is authoritative negative truth. A stale or
+      // contradictory compatibility seed must never resurrect the entrypoint.
+      const loaderValidated = !explicitlyRejected
+        && (image?.metadata?.entrypointValid === true || entrypointSeedValidated);
+      if (loaderValidated) {
+        out.push(evidence('entrypoint', { start: entrypoint, name: 'entrypoint', evidenceIds: [`entrypoint:${entrypoint}`] }));
+      }
     }
     return out;
   },
