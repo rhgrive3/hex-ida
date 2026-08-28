@@ -28,9 +28,9 @@ independently after the foundational evidence contract is complete.
 **Purpose**: Establish the offline ownership surface and deterministic seed evidence without
 touching production semantics.
 
-- [ ] T001 [P] Freeze the v1 profile, authority-role, resource-budget, and forbidden-path policy in `tools/validation/machine-effects/oracle-policy.mjs`
-- [ ] T002 [P] Add the deterministic add counterexample seed and independent expected-state fixture inputs in `tests/machine-effects/fixtures/independent-oracle-cases.mjs`
-- [ ] T003 [P] Create the versioned case/result/provenance schema module skeleton in `tools/validation/machine-effects/oracle-schema.mjs`
+- [X] T001 [P] Freeze the v1 profile, authority-role, resource-budget, and forbidden-path policy in `tools/validation/machine-effects/oracle-policy.mjs`
+- [X] T002 [P] Add the deterministic add counterexample seed and independent expected-state fixture inputs in `tests/machine-effects/fixtures/independent-oracle-cases.mjs`
+- [X] T003 [P] Create the versioned case/result/provenance schema module skeleton in `tools/validation/machine-effects/oracle-schema.mjs`
 
 **Checkpoint**: Offline ownership, profile inventory, required counterexample, and contract files
 are present; no production or generated file is changed.
@@ -45,12 +45,12 @@ proof can be promoted.
 **⚠️ CRITICAL**: No user-story implementation may be accepted until this phase preserves
 independence and explicit uncertainty.
 
-- [ ] T004 Implement canonical normalization, schema validation, and digest-derived identities for cases and results in `tools/validation/machine-effects/oracle-schema.mjs`
-- [ ] T005 Implement machine-state shape, width, outcome, and per-observable defined-mask validation in `tools/validation/machine-effects/oracle-schema.mjs`
-- [ ] T006 Define bounded execution, cancellation, and explicit non-pass state handling in `tools/validation/machine-effects/oracle-runner.mjs`
-- [ ] T007 Define the external oracle adapter contract, distinct identity requirements, and offline/network policy in `tools/validation/machine-effects/oracle-runner.mjs`
-- [ ] T008 Implement a read-only A2 denominator snapshot/preservation boundary in `tools/validation/machine-effects/oracle-report.mjs`
-- [ ] T009 [P] Add ownership and authority-separation regression fixtures covering production evaluator, expected tables, C0-01, A2, workflow, and generated-output exclusions in `tests/machine-effects/independent-oracle-ownership.test.mjs`
+- [X] T004 Implement canonical normalization, schema validation, and digest-derived identities for cases and results in `tools/validation/machine-effects/oracle-schema.mjs`
+- [X] T005 Implement machine-state shape, width, outcome, and per-observable defined-mask validation in `tools/validation/machine-effects/oracle-schema.mjs`
+- [X] T006 Define bounded execution, cancellation, and explicit non-pass state handling in `tools/validation/machine-effects/oracle-runner.mjs`
+- [X] T007 Define the external oracle adapter contract, distinct identity requirements, and offline/network policy in `tools/validation/machine-effects/oracle-runner.mjs`
+- [X] T008 Implement a read-only A2 denominator snapshot/preservation boundary in `tools/validation/machine-effects/oracle-report.mjs`
+- [X] T009 [P] Add ownership and authority-separation regression fixtures covering production evaluator, expected tables, C0-01, A2, workflow, and generated-output exclusions in `tests/machine-effects/independent-oracle-ownership.test.mjs`
 
 **Checkpoint**: Case/result/provenance schemas reject malformed and identity-invalid inputs;
 non-pass states cannot become pass by omission; production and denominator authority remain
@@ -69,16 +69,16 @@ implementation, run the same case with a distinct oracle identity and require on
 
 ### Tests for User Story 1 (write first and observe failure)
 
-- [ ] T010 [P] [US1] Add the pre-fix release-grade failing assertion for the deterministic add case in `tests/machine-effects/independent-oracle-counterexample.test.mjs`
-- [ ] T011 [P] [US1] Add non-production expected register, flag, vector state, defined-mask, ISA authority, and oracle identity fixtures in `tests/machine-effects/fixtures/independent-oracle-cases.mjs`
+- [X] T010 [P] [US1] Add the pre-fix release-grade failing assertion for the deterministic add case in `tests/machine-effects/independent-oracle-counterexample.test.mjs`
+- [X] T011 [P] [US1] Add non-production expected register, flag, vector state, defined-mask, ISA authority, and oracle identity fixtures in `tests/machine-effects/fixtures/independent-oracle-cases.mjs`
 
 ### Implementation for User Story 1
 
-- [ ] T012 [US1] Implement normalized corpus-case construction and stable case identity in `tools/validation/machine-effects/oracle-corpus.mjs` using the schema contract from T004-T005
-- [ ] T013 [US1] Implement the bounded offline oracle adapter invocation and observation capture in `tools/validation/machine-effects/oracle-runner.mjs`
-- [ ] T014 [US1] Implement masked register, flag, vector, and outcome comparison with distinct-oracle enforcement in `tools/validation/machine-effects/oracle-runner.mjs`
-- [ ] T015 [US1] Emit the positive exact/equivalent result with comparison counts, provenance, and identity fields in `tools/validation/machine-effects/oracle-report.mjs`
-- [ ] T016 [US1] Complete the post-implementation positive and pre-fix counterexample assertions in `tests/machine-effects/independent-oracle-counterexample.test.mjs`
+- [X] T012 [US1] Implement normalized corpus-case construction and stable case identity in `tools/validation/machine-effects/oracle-corpus.mjs` using the schema contract from T004-T005
+- [X] T013 [US1] Implement the bounded offline oracle adapter invocation and observation capture in `tools/validation/machine-effects/oracle-runner.mjs`
+- [X] T014 [US1] Implement masked register, flag, vector, and outcome comparison with distinct-oracle enforcement in `tools/validation/machine-effects/oracle-runner.mjs`
+- [X] T015 [US1] Emit the positive exact/equivalent result with comparison counts, provenance, and identity fields in `tools/validation/machine-effects/oracle-report.mjs`
+- [X] T016 [US1] Complete the post-implementation positive and pre-fix counterexample assertions in `tests/machine-effects/independent-oracle-counterexample.test.mjs`
 
 **Checkpoint**: User Story 1 proves the smallest deterministic case independently; a defined-bit
 mismatch blocks, and production self-agreement cannot satisfy the result.
@@ -95,18 +95,18 @@ negative fixture must reject or remain blocking with an explicit reason and zero
 
 ### Tests for User Story 2 (write first)
 
-- [ ] T017 [P] [US2] Add negative fixtures for production-derived expected values/provenance and oracle identity/version mismatch in `tests/machine-effects/independent-oracle-negative.test.mjs`
-- [ ] T018 [P] [US2] Add negative fixtures for undefined bits marked defined, malformed schema, unknown fields, missing fields, truncated state, inconsistent lengths, and invalid digests in `tests/machine-effects/independent-oracle-negative.test.mjs`
-- [ ] T019 [P] [US2] Add unavailable, unsupported, not-integrated, cancelled, and budget-exhaustion assertions in `tests/machine-effects/independent-oracle-negative.test.mjs`
-- [ ] T020 [P] [US2] Add two-run byte-identical replay and stale-identity assertions in `tests/machine-effects/independent-oracle-determinism.test.mjs`
+- [X] T017 [P] [US2] Add negative fixtures for production-derived expected values/provenance and oracle identity/version mismatch in `tests/machine-effects/independent-oracle-negative.test.mjs`
+- [X] T018 [P] [US2] Add negative fixtures for undefined bits marked defined, malformed schema, unknown fields, missing fields, truncated state, inconsistent lengths, and invalid digests in `tests/machine-effects/independent-oracle-negative.test.mjs`
+- [X] T019 [P] [US2] Add unavailable, unsupported, not-integrated, cancelled, and budget-exhaustion assertions in `tests/machine-effects/independent-oracle-negative.test.mjs`
+- [X] T020 [P] [US2] Add two-run byte-identical replay and stale-identity assertions in `tests/machine-effects/independent-oracle-determinism.test.mjs`
 
 ### Implementation for User Story 2
 
-- [ ] T021 [US2] Enforce strict unknown-field, required-field, duplicate-ID, shape, digest, and partial-artifact rejection in `tools/validation/machine-effects/oracle-schema.mjs`
-- [ ] T022 [US2] Enforce authority provenance, production-subject exclusion, and distinct oracle identity validation in `tools/validation/machine-effects/oracle-policy.mjs`
-- [ ] T023 [US2] Enforce undefined/unpredictable mask rules and explicit trap, fault, exception, and equivalent-outcome handling in `tools/validation/machine-effects/oracle-runner.mjs`
-- [ ] T024 [US2] Enforce bounded input/output/time/memory policy, cancellation propagation, and bounded diagnostics in `tools/validation/machine-effects/oracle-runner.mjs`
-- [ ] T025 [US2] Emit deterministic replay identities and explicit non-pass classifications in `tools/validation/machine-effects/oracle-report.mjs`
+- [X] T021 [US2] Enforce strict unknown-field, required-field, duplicate-ID, shape, digest, and partial-artifact rejection in `tools/validation/machine-effects/oracle-schema.mjs`
+- [X] T022 [US2] Enforce authority provenance, production-subject exclusion, and distinct oracle identity validation in `tools/validation/machine-effects/oracle-policy.mjs`
+- [X] T023 [US2] Enforce undefined/unpredictable mask rules and explicit trap, fault, exception, and equivalent-outcome handling in `tools/validation/machine-effects/oracle-runner.mjs`
+- [X] T024 [US2] Enforce bounded input/output/time/memory policy, cancellation propagation, and bounded diagnostics in `tools/validation/machine-effects/oracle-runner.mjs`
+- [X] T025 [US2] Emit deterministic replay identities and explicit non-pass classifications in `tools/validation/machine-effects/oracle-report.mjs`
 
 **Checkpoint**: Every required trust and uncertainty negative case is blocking or rejected; no
 undefined bit, missing tool, stale identity, or partial artifact can count as pass.
@@ -123,17 +123,17 @@ run exact-head and candidate-merge-tree verification on the actual expected SHA.
 
 ### Tests for User Story 3 (write first)
 
-- [ ] T026 [P] [US3] Add profile inventory, real-ISA authority, and explicit unsupported/unavailable gap assertions in `tests/machine-effects/independent-oracle-report.test.mjs`
-- [ ] T027 [P] [US3] Add A2 ID/row/count/digest preservation assertions in `tests/machine-effects/independent-oracle-denominator-preservation.test.mjs`
-- [ ] T028 [P] [US3] Add product/base/candidate-tree, verifier, corpus, oracle, toolchain, and generated-identity binding assertions in `tests/machine-effects/independent-oracle-report.test.mjs`
+- [X] T026 [P] [US3] Add profile inventory, real-ISA authority, and explicit unsupported/unavailable gap assertions in `tests/machine-effects/independent-oracle-report.test.mjs`
+- [X] T027 [P] [US3] Add A2 ID/row/count/digest preservation assertions in `tests/machine-effects/independent-oracle-denominator-preservation.test.mjs`
+- [X] T028 [P] [US3] Add product/base/candidate-tree, verifier, corpus, oracle, toolchain, and generated-identity binding assertions in `tests/machine-effects/independent-oracle-report.test.mjs`
 
 ### Implementation for User Story 3
 
-- [ ] T029 [US3] Implement four-profile summaries, explicit gaps, and authority-role reporting in `tools/validation/machine-effects/oracle-report.mjs`
-- [ ] T030 [US3] Implement read-only A2 denominator comparison and fail-closed preservation result in `tools/validation/machine-effects/oracle-report.mjs`
-- [ ] T031 [US3] Implement exact product/base/candidate-tree, verifier, corpus, oracle, toolchain, and generated-identity binding in `tools/validation/machine-effects/oracle-report.mjs`
-- [ ] T032 [US3] Add the release-facing offline report verifier entry point and identity checks in `tools/validation/machine-effects/oracle-release-verify.mjs`
-- [ ] T033 [US3] Complete profile, gap, denominator, and identity report assertions in `tests/machine-effects/independent-oracle-report.test.mjs` and `tests/machine-effects/independent-oracle-denominator-preservation.test.mjs`
+- [X] T029 [US3] Implement four-profile summaries, explicit gaps, and authority-role reporting in `tools/validation/machine-effects/oracle-report.mjs`
+- [X] T030 [US3] Implement read-only A2 denominator comparison and fail-closed preservation result in `tools/validation/machine-effects/oracle-report.mjs`
+- [X] T031 [US3] Implement exact product/base/candidate-tree, verifier, corpus, oracle, toolchain, and generated-identity binding in `tools/validation/machine-effects/oracle-report.mjs`
+- [X] T032 [US3] Add the release-facing offline report verifier entry point and identity checks in `tools/validation/machine-effects/oracle-release-verify.mjs`
+- [X] T033 [US3] Complete profile, gap, denominator, and identity report assertions in `tests/machine-effects/independent-oracle-report.test.mjs` and `tests/machine-effects/independent-oracle-denominator-preservation.test.mjs`
 
 **Checkpoint**: Four-profile evidence is explicit, A2 remains byte-for-byte preserved, and release
 reports are bound to one exact product or candidate merge tree.
