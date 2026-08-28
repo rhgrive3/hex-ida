@@ -14,31 +14,44 @@ function fail(code, detail = '') {
   throw new Error(detail ? `${code}: ${detail}` : code);
 }
 
+function withCycleGuard(value, seen, build) {
+  if (seen.has(value)) fail('non-serializable-cycle');
+  seen.add(value);
+  try {
+    return build();
+  } finally {
+    seen.delete(value);
+  }
+}
+
 function stableValue(value, seen = new WeakSet()) {
   if (typeof value === 'bigint') return { $bigint: value.toString() };
   if (value == null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return value;
   if (typeof value === 'function' || typeof value === 'undefined' || typeof value === 'symbol') return undefined;
   if (value instanceof Map) {
-    return {
+    return withCycleGuard(value, seen, () => ({
       $map: [...value.entries()]
         .map(([key, entryValue]) => [stableValue(key, seen), stableValue(entryValue, seen)])
         .sort((a, b) => JSON.stringify(a[0]).localeCompare(JSON.stringify(b[0]))),
-    };
+    }));
   }
   if (value instanceof Set) {
-    return { $set: [...value].map((item) => stableValue(item, seen)).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))) };
+    return withCycleGuard(value, seen, () => ({
+      $set: [...value].map((item) => stableValue(item, seen)).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))),
+    }));
   }
-  if (Array.isArray(value)) return value.map((item) => stableValue(item, seen) ?? null);
+  if (Array.isArray(value)) {
+    return withCycleGuard(value, seen, () => value.map((item) => stableValue(item, seen) ?? null));
+  }
   if (typeof value === 'object') {
-    if (seen.has(value)) fail('non-serializable-cycle');
-    seen.add(value);
-    const out = {};
-    for (const key of Object.keys(value).sort()) {
-      const normalized = stableValue(value[key], seen);
-      if (normalized !== undefined) out[key] = normalized;
-    }
-    seen.delete(value);
-    return out;
+    return withCycleGuard(value, seen, () => {
+      const out = {};
+      for (const key of Object.keys(value).sort()) {
+        const normalized = stableValue(value[key], seen);
+        if (normalized !== undefined) out[key] = normalized;
+      }
+      return out;
+    });
   }
   return String(value);
 }
