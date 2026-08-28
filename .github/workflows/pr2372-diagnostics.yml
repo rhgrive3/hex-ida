@@ -1,0 +1,55 @@
+name: PR2372 diagnostics
+
+on:
+  push:
+    branches:
+      - research/hex-me-01-independent-oracle
+
+permissions:
+  contents: read
+
+jobs:
+  diagnostics:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: A2 coverage diagnostics
+        shell: bash
+        run: |
+          set +e
+          node tests/stage1/a2-machine-effects-coverage.test.mjs
+          rc=$?
+          echo "A2_COVERAGE_RC=$rc"
+          exit 0
+      - name: A9 binary diagnostics
+        shell: bash
+        run: |
+          set +e
+          npm run binary:test
+          rc=$?
+          echo "A9_BINARY_RC=$rc"
+          exit 0
+      - name: A9 benchmark diagnostics
+        shell: bash
+        run: |
+          set +e
+          npm run benchmark:baseline
+          rc=$?
+          echo "A9_BENCHMARK_RC=$rc"
+          exit 0
+      - name: Stage2 denominator diagnostics
+        shell: bash
+        run: |
+          set +e
+          node tests/stage2/profile-denominator-inventory.test.mjs
+          rc=$?
+          echo "STAGE2_DENOMINATOR_RC=$rc"
+          exit 0
