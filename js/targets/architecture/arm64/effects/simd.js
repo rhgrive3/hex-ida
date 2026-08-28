@@ -414,7 +414,7 @@ function appendGpWrite(operations, dst, semanticValue, idPrefix) {
   return true;
 }
 function immediateInteger(op) {
-  if (op?.k !== 'imm' || op.value == null || typeof op.value !== 'bigint') return null;
+  if (op?.k !== 'imm' || op.value == null || typeof op.value !== 'bigint' || op.extend != null) return null;
   return op.value;
 }
 function immediateValue(op, widthBits = 64) {
@@ -425,7 +425,7 @@ function immediateValue(op, widthBits = 64) {
 function immediateFloatZero(op, widthBits) {
   if (op?.k !== 'imm') return null;
   const zero = (op.float != null && Number(op.float) === 0) || op.value === 0n;
-  if (!zero || op.shift) return null;
+  if (!zero || op.shift || op.extend != null) return null;
   const format = FLOAT_FORMAT[widthBits];
   return format ? createFloatValue(widthBits, format, { bitPattern:0n }) : null;
 }
