@@ -47,6 +47,12 @@ function deepFreeze(value, seen = new WeakSet()) {
   return value;
 }
 
+function isPlainObject(value) {
+  if (value == null || typeof value !== "object") return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
 export function validatePluginManifest(manifest) {
   if (!manifest || typeof manifest !== "object") throw new TypeError("plugin-manifest-invalid");
   const pluginId = String(manifest.id || "");
@@ -59,7 +65,7 @@ export function validatePluginManifest(manifest) {
 
   let permissions = {};
   if (manifest.permissions != null) {
-    if (typeof manifest.permissions !== "object" || Array.isArray(manifest.permissions)) {
+    if (!isPlainObject(manifest.permissions)) {
       throw new TypeError("plugin-manifest-permissions-invalid");
     }
     for (const key of Object.keys(manifest.permissions)) {
