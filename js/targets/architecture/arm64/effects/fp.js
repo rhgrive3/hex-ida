@@ -14,6 +14,10 @@ const FP_ENV_INTRINSICS = new Set([
 ]);
 const FP_TERNARY = new Set(['fmadd','fmsub','fnmadd','fnmsub']);
 const FP_BINARY = new Set(['fadd','fsub','fmul','fdiv','fmax','fmin','fmaxnm','fminnm','frecps','frsqrts']);
+const FP_FINITE_SHAPE = new Set([
+  ...FP_ENV_INTRINSICS,
+  'fmov','fabs','fneg','fcsel','fcmp','fcmpe','fccmp','fccmpe',
+]);
 
 function operandsOf(instruction) {
   if (Array.isArray(instruction?.ops)) return instruction.ops;
@@ -23,6 +27,8 @@ function operandsOf(instruction) {
 }
 
 function invalidFiniteShape(mnemonic, ops) {
+  if (!FP_FINITE_SHAPE.has(mnemonic)) return false;
+  if (ops.some((op) => op?.shift != null || op?.extend != null)) return true;
   if (['fmov','fabs','fneg'].includes(mnemonic)) return ops.length !== 2;
   if (mnemonic === 'fcsel') return ops.length !== 4;
   if (['fcmp','fcmpe'].includes(mnemonic)) return ops.length !== 2;
