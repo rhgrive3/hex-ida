@@ -28,6 +28,7 @@ function operandList(decoded) {
 function registerClassOf(operand) {
   if (operand == null) return null;
   if (operand && typeof operand === 'object' && !Array.isArray(operand)) {
+    if (operand.shift != null || operand.extend != null) return null;
     const explicitWidth = operand.bits
       ?? operand.widthBits
       ?? operand.value?.bits
