@@ -1,0 +1,40 @@
+name: PR2372 isolated A2 exact diagnostic
+
+on:
+  push:
+    branches:
+      - diag/pr2372-stage1-a2
+
+permissions:
+  contents: read
+
+jobs:
+  isolated-a2:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: c24dbb7688610f727745926bc877b6ec9ef788d0
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Reproduce Stage1 isolated A2 and print retained diagnostics
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import { runIsolatedGateBatch } from './tools/validation/stage1/run-gates-isolated.mjs';
+          import { stage1GateDefinitions } from './tools/validation/stage1/verify.mjs';
+          const a2 = stage1GateDefinitions().filter((gate) => gate.id === 'A2');
+          const result = await runIsolatedGateBatch({
+            repositoryRoot: process.cwd(),
+            headSha: 'c24dbb7688610f727745926bc877b6ec9ef788d0',
+            gates: a2,
+            concurrency: 1,
+            outputLimit: 20000,
+          });
+          console.log(JSON.stringify(result, null, 2));
+          NODE
