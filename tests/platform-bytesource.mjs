@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { MemoryByteSource } from '../js/binary/source.js';
+import { MemoryByteSource, SubrangeByteSource, asByteSource } from '../js/binary/source.js';
 import { ByteView } from '../js/binary/reader.js';
 import { CachedByteSource, InstrumentedByteSource, ByteSourceCancelledError } from '../js/bytesource/cached.js';
 import { scanSourceStrings } from '../js/bytesource/strings.js';
@@ -54,5 +54,11 @@ const bigintView = new ByteView(customBacking);
 assert.equal(bigintView.u8(0), 0x7f);
 assert.equal(bigintView.data(0, 1n).view.getUint8(0), 0x7f);
 assert.equal(bigintView.data(0, 2n).view.byteLength, 2);
+
+const limitedParent = new MemoryByteSource(bytes, { maxReadLength: 64 });
+assert.equal(new SubrangeByteSource(limitedParent, 0n, 128n, { maxReadLength: 128 }).maxReadLength, 64);
+assert.equal(new SubrangeByteSource(limitedParent, 0n, 128n, { maxReadLength: 32 }).maxReadLength, 32);
+assert.equal(asByteSource(limitedParent, { maxReadLength: 128 }).maxReadLength, 64);
+assert.equal(asByteSource(limitedParent, { maxReadLength: 32 }).maxReadLength, 32);
 
 console.log('platform-bytesource: PASS');
