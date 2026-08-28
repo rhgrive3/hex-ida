@@ -75,9 +75,14 @@ async function canonicalIdentity(app, options = {}) {
     error.code = 'ANALYSIS_QUERY_BINARY_UNBOUND';
     throw error;
   }
+  if (typeof binaryId !== 'string' || !binaryId.trim()) {
+    const error = new TypeError('analysis-query-binary-id-invalid');
+    error.code = 'ANALYSIS_QUERY_BINARY_ID_INVALID';
+    throw error;
+  }
 
   return {
-    binaryId: String(binaryId),
+    binaryId,
     projectRevision: nonNegativeSafeInteger(
       project?.revision ?? app?.projectRevision ?? app?.workspace?.bindingRevision,
       0,
