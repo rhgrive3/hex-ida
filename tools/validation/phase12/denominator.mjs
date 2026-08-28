@@ -223,7 +223,9 @@ function behaviorDependencyPinning() {
   });
   const resolved = packageEnvelope.resolvePackageDependencies(parent, [dependency]);
   const observed = new Set(resolved.length === 1 && resolved[0].contentHash === dependency.contentHash ? ['exact-resolution'] : []);
-  try { packageEnvelope.resolvePackageDependencies(parent, [{ ...dependency, contentHash: `${dependency.contentHash.slice(0, -1)}0` }]); }
+  const lastHashNibble = dependency.contentHash.at(-1);
+  const wrongHash = `${dependency.contentHash.slice(0, -1)}${lastHashNibble === '0' ? '1' : '0'}`;
+  try { packageEnvelope.resolvePackageDependencies(parent, [{ ...dependency, contentHash: wrongHash }]); }
   catch (error) { if (error.code === 'package-dependency-not-pinned') observed.add('wrong-hash-rejected'); }
   try { packageEnvelope.resolvePackageDependencies(parent, [{ ...dependency, packageVersion: '2' }]); }
   catch (error) { if (error.code === 'package-dependency-not-pinned') observed.add('wrong-version-rejected'); }
