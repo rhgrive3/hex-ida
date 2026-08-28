@@ -43,6 +43,10 @@ const genericEntries = [
   ...CURRENT_GENERIC_FILES.map((file) => path.join(root, file)).filter(fs.existsSync),
   ...FUTURE_GENERIC_DIRS.flatMap((dir) => walk(path.join(root, dir))),
 ];
+const architectureEntries = [
+  ...walk(path.join(root, 'js/architecture')),
+  ...walk(path.join(root, 'js/targets/architecture')),
+];
 const genericSet = new Set(genericEntries.map((file) => path.resolve(file)));
 for (const dir of FUTURE_GENERIC_DIRS) {
   for (const file of walk(path.join(root, dir))) genericSet.add(path.resolve(file));
@@ -109,7 +113,7 @@ const boundaryPlugin = {
 };
 
 await build({
-  entryPoints:genericEntries,
+  entryPoints:[...new Set([...genericEntries, ...architectureEntries])],
   bundle:true,
   write:false,
   outdir:path.join(root, '.invariant-boundary-build'),
@@ -128,4 +132,4 @@ if (violations.length) {
   process.exit(1);
 }
 
-console.log(`import-boundaries: PASS (${genericEntries.length} generic entrypoints checked)`);
+console.log(`import-boundaries: PASS (${genericEntries.length} generic entrypoints checked, ${architectureEntries.length} architecture entrypoints checked)`);
