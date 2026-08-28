@@ -107,7 +107,9 @@ export function partitionDecodedFunction(instructions, architecturePlugin, optio
     const fallthroughBlock = byStart.get(endOf(instruction).toString()) || blocks[index + 1] || null;
     if (kind === 'conditional-branch') {
       if (targetBlock) block.successors.push({ to:targetBlock.key, kind:'conditional-true' });
-      if (fallthroughBlock) block.successors.push({ to:fallthroughBlock.key, kind:'conditional-false' });
+      if (fallthroughBlock && (!targetBlock || fallthroughBlock.key !== targetBlock.key)) {
+        block.successors.push({ to:fallthroughBlock.key, kind:'conditional-false' });
+      }
     } else if (kind === 'branch') {
       if (targetBlock) block.successors.push({ to:targetBlock.key, kind:'branch' });
     } else if (!['return','unknown'].includes(kind) && !isAuthoritativeNoreturnCall(kind, options) && fallthroughBlock) {
@@ -241,6 +243,10 @@ function legacyProjectionSnapshot(legacy) {
       row:instruction.row,
       address:instruction.address ?? null,
       block:instruction.block,
+      args:(instruction.args || []).map((arg) => ({
+        valueId:arg?.value?.semanticSsaValueId ?? arg?.value?.semanticValueId ?? arg?.value?.id ?? null,
+        bits:arg?.bits ?? arg?.value?.bits ?? null,
+      })),
       semanticNodeId:instruction.semanticNodeId ?? null,
       sourceInstructionIds:instruction.sourceInstructionIds ?? [],
       origin:instruction.origin ?? null,
@@ -327,19 +333,19 @@ function assertRequiredString(value, label) {
 export function analyzeDecodedSemanticFunction(input = {}, options = {}) {
   abortIfRequested(options.signal);
   if (!input || typeof input !== 'object') throw new TypeError('semantic-function-input-object-required');
-  if (!Array.isArray(input.instructions) || !input.instructions.length) throw new TypeError('semantic-function-decoded-instructions-required');
+  if (!Array.isArray(input.instructions)) throw new TypeError('semantic-function-decoded-instructions-required');
   const architectureId = String(input.architecture || '').trim().toLowerCase();
   const architecturePlugin = architecturePluginV2(architectureId);
   if (!architecturePlugin) throw new TypeError(`semantic-function-unsupported-architecture:${architectureId}`);
   const requestedInstructionEndianness = input.instructionEndianness ?? input.endianness ?? input.endian;
-  if (requestedInstructionEndianness != null) {
+  if (requestedInstructionEndianness != null && requestedInstructionEndianness !== 'unknown') {
     const endian = String(requestedInstructionEndianness).trim().toLowerCase();
     const supported = architecturePlugin.supportedInstructionEndianness ?? [];
     if (supported.length && !supported.includes(endian))
       throw new TypeError(`semantic-function-unsupported-instruction-endianness:${endian}`);
   }
   const requestedMemoryEndianness = input.dataEndianness ?? input.endianness ?? input.endian;
-  if (requestedMemoryEndianness != null) {
+  if (requestedMemoryEndianness != null && requestedMemoryEndianness !== 'unknown') {
     const endian = String(requestedMemoryEndianness).trim().toLowerCase();
     const supported = architecturePlugin.supportedMemoryEndianness ?? [];
     if (supported.length && !supported.includes(endian))
