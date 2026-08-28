@@ -2,6 +2,7 @@ import { assemble as assembleArm64 } from '../../patch.js';
 import { extendArm64WithArm64eEffects } from './arm64e/effects.js';
 import { ARM64_MACHINE_EFFECTS_SEMANTIC_VERSION, liftArm64MachineEffects } from './arm64/effects/index.js';
 import { decorateArm64BtypeEffects } from './arm64/effects/btype.js';
+import { decorateArm64BtiGuardedPageEffects } from './arm64/effects/bti-guard-state.js';
 import { X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION, liftX86MachineEffects } from './x86_64/effects/index.js';
 import { x86RegisterFile } from './x86_64/registers.js';
 import { RISCV64_INSTRUCTION_ALIGNMENT, RISCV64_MACHINE_EFFECTS_SEMANTIC_VERSION, liftRiscv64MachineEffects } from './riscv64/effects/index.js';
@@ -104,7 +105,9 @@ const ARM64_REGISTERS = Object.freeze([
 const liftArm64eMachineEffectsBase = extendArm64WithArm64eEffects(liftArm64MachineEffects);
 const liftArm64eMachineEffects = (decoded, context = {}) => {
   const bundle = liftArm64eMachineEffectsBase(decoded, context);
-  return bundle == null ? null : decorateArm64BtypeEffects(decoded, context, bundle);
+  if (bundle == null) return null;
+  const postState = decorateArm64BtiGuardedPageEffects(decoded, bundle, context);
+  return decorateArm64BtypeEffects(decoded, context, postState);
 };
 
 export const ARM64_ARCHITECTURE = registerArchitecturePlugin({

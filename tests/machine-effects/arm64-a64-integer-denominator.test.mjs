@@ -108,8 +108,14 @@ try {
     instructionId:'arm64-integer-mov-xzr-preserve', mnemonic:'movz', mode:'a64', ops:parseOperands('xzr, #1'),
   });
   assert.equal(preserve.completeness, 'exact');
-  assert.equal(preserve.operations.length, 0);
-  assert.equal(preserve.statePreservation.proven, true);
+  assert.equal(preserve.operations.length, 1);
+  assert.equal(preserve.operations[0]?.kind, 'register-write');
+  assert.equal(preserve.operations[0]?.register?.registerId, 'pstate.btype');
+  assert.equal(preserve.operations[0]?.register?.widthBits, 2);
+  assert.equal(preserve.operations[0]?.value?.kind, 'bitvector');
+  assert.equal(preserve.operations[0]?.value?.widthBits, 2);
+  assert.equal(preserve.operations[0]?.value?.value, '0');
+  assert.notEqual(preserve.statePreservation?.proven, true);
 
   for (const [mnemonic, operands] of [
     ['lslv','x0, x1, x2'],['lsrv','x0, x1, x2'],['asrv','x0, x1, x2'],['rorv','x0, x1, x2'],
