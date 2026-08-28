@@ -8,6 +8,10 @@ const ARITY = Object.freeze(Object.fromEntries([
 ]));
 
 const CONTROL = new Set(['braa','brab','braaz','brabz','blraa','blrab','blraaz','blrabz','retaa','retab']);
+const POINTER_TRANSFORM_TWO = new Set(['pacia','pacib','pacda','pacdb','autia','autib','autda','autdb']);
+const POINTER_TRANSFORM_ONE = new Set(['paciza','pacizb','pacdza','pacdzb','autiza','autizb','autdza','autdzb','xpaci','xpacd']);
+const AUTHENTICATED_BRANCH_TWO = new Set(['braa','brab','blraa','blrab']);
+const AUTHENTICATED_BRANCH_ONE = new Set(['braaz','brabz','blraaz','blrabz']);
 
 function mnemonicOf(decoded) {
   return String(decoded?.mnemonic ?? decoded?.opcode ?? '').trim().toLowerCase();
@@ -21,6 +25,63 @@ function operandList(decoded) {
   return String(text || '').split(',').map((part) => part.trim()).filter(Boolean);
 }
 
+function registerClassOf(operand) {
+  if (operand == null) return null;
+  if (operand && typeof operand === 'object' && !Array.isArray(operand)) {
+    const explicitWidth = operand.bits
+      ?? operand.widthBits
+      ?? operand.value?.bits
+      ?? operand.value?.widthBits;
+    if (explicitWidth != null && Number(explicitWidth) !== 64) return null;
+    if (operand.k === 'reg' && operand.cls === 'sp') return 'sp';
+    if (operand.k === 'reg' && operand.cls === 'zr') return 'zr';
+    if (operand.k === 'reg' && operand.cls === 'gp' && Number.isInteger(operand.num) && operand.num >= 0 && operand.num <= 30) return 'x';
+  }
+
+  const raw = typeof operand === 'string'
+    ? operand
+    : operand.registerId ?? operand.register ?? operand.reg ?? operand.name ?? operand.text ?? operand.value?.registerId ?? operand.value?.reg;
+  if (raw == null || (typeof raw !== 'string' && typeof raw !== 'number')) return null;
+  let text = String(raw).trim().toLowerCase().replace(/^%/, '');
+  if (text === 'lr') text = 'x30';
+  if (text === 'fp') text = 'x29';
+  if (text === 'sp') return 'sp';
+  if (text === 'xzr') return 'zr';
+  if (/^x(?:[0-9]|[12][0-9]|30)$/.test(text)) return 'x';
+  return null;
+}
+
+function expectedRegisterClasses(mnemonic) {
+  if (POINTER_TRANSFORM_TWO.has(mnemonic)) return ['x-or-zr','x-or-sp'];
+  if (POINTER_TRANSFORM_ONE.has(mnemonic)) return ['x-or-zr'];
+  if (AUTHENTICATED_BRANCH_TWO.has(mnemonic)) return ['x-or-zr','x-or-sp'];
+  if (AUTHENTICATED_BRANCH_ONE.has(mnemonic)) return ['x-or-zr'];
+  if (mnemonic === 'pacga') return ['x-or-zr','x-or-zr','x-or-sp'];
+  return [];
+}
+
+function registerClassFailure(mnemonic, operands) {
+  const expectedClasses = expectedRegisterClasses(mnemonic);
+  for (let index = 0; index < expectedClasses.length; index++) {
+    const actualClass = registerClassOf(operands[index]);
+    const expectedClass = expectedClasses[index];
+    const valid = expectedClass === 'x-or-sp'
+      ? actualClass === 'x' || actualClass === 'sp'
+      : actualClass === 'x' || actualClass === 'zr';
+    if (!valid) {
+      return Object.freeze({
+        reason:`arm64e-${mnemonic}-operand-register-class-invalid`,
+        mnemonic,
+        operandIndex:index,
+        expectedRegisterClass:expectedClass,
+        actualRegisterClass:actualClass,
+        control:CONTROL.has(mnemonic),
+      });
+    }
+  }
+  return null;
+}
+
 export function arm64ePointerAuthenticationOperandArities() {
   return ARITY;
 }
@@ -28,16 +89,19 @@ export function arm64ePointerAuthenticationOperandArities() {
 export function arm64ePointerAuthenticationOperandShapeFailure(decoded) {
   const mnemonic = mnemonicOf(decoded);
   if (!Object.hasOwn(ARITY, mnemonic)) return null;
+  const operands = operandList(decoded);
   const expected = ARITY[mnemonic];
-  const actual = operandList(decoded).length;
-  if (actual === expected) return null;
-  return Object.freeze({
-    reason:`arm64e-${mnemonic}-operand-shape-invalid`,
-    mnemonic,
-    expectedOperandCount:expected,
-    actualOperandCount:actual,
-    control:CONTROL.has(mnemonic),
-  });
+  const actual = operands.length;
+  if (actual !== expected) {
+    return Object.freeze({
+      reason:`arm64e-${mnemonic}-operand-shape-invalid`,
+      mnemonic,
+      expectedOperandCount:expected,
+      actualOperandCount:actual,
+      control:CONTROL.has(mnemonic),
+    });
+  }
+  return registerClassFailure(mnemonic, operands);
 }
 
 export function arm64ePointerAuthenticationOperandShapeFailureBundle(decoded, context = {}) {
@@ -61,8 +125,15 @@ export function arm64ePointerAuthenticationOperandShapeFailureBundle(decoded, co
       reason:failure.reason,
       detail:{
         mnemonic:failure.mnemonic,
-        expectedOperandCount:failure.expectedOperandCount,
-        actualOperandCount:failure.actualOperandCount,
+        ...(failure.expectedOperandCount == null ? {} : {
+          expectedOperandCount:failure.expectedOperandCount,
+          actualOperandCount:failure.actualOperandCount,
+        }),
+        ...(failure.operandIndex == null ? {} : {
+          operandIndex:failure.operandIndex,
+          expectedRegisterClass:failure.expectedRegisterClass,
+          actualRegisterClass:failure.actualRegisterClass,
+        }),
       },
     },
     metadata:{
@@ -70,7 +141,7 @@ export function arm64ePointerAuthenticationOperandShapeFailureBundle(decoded, co
       family:'arm64e-pointer-authentication',
       mnemonic:failure.mnemonic,
       failClosed:true,
-      encodingValidation:'operand-arity',
+      encodingValidation:failure.operandIndex == null ? 'operand-arity' : 'operand-register-class',
     },
   }, context?.machineEffectsOptions ?? context?.options ?? {});
 }
