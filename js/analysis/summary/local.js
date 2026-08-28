@@ -15,13 +15,14 @@
 
 import { createAnalysisStatus, mergeAnalysisStatus } from '../status.js';
 import {
+  classifyCallTargetProof,
   createFunctionSummary,
   createMemoryEffect,
   createUnknownCallEffect,
 } from './contract.js';
 
 export const LOCAL_SUMMARY_ANALYZER_ID = 'phase7.summary.local';
-export const LOCAL_SUMMARY_ANALYZER_VERSION = '1.0.0';
+export const LOCAL_SUMMARY_ANALYZER_VERSION = '1.0.1';
 
 const DEFAULT_ADDRESS_SPACES = Object.freeze(['memory']);
 
@@ -226,9 +227,15 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
         if (inputIndex >= 0) {
           returnProvenance.push({
             kind: 'arg',
+            returnIndex: retIdx,
             argIndex: inputIndex,
             offset: offset.toString(10),
           });
+        } else {
+          // Absence of a recovered alternative is not proof that the other
+          // alternatives are exhaustive. Keep an explicit unknown member so a
+          // caller cannot turn one understood return path into a singleton.
+          returnProvenance.push({ kind: 'unknown', returnIndex: retIdx });
         }
       }
       continue;
@@ -253,12 +260,15 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
 
     if (node.kind !== 'call') continue;
 
-    const targets = [...(node.call?.targetEntityIds ?? [])].map(String);
-    const resolved = targets.length === 1 ? calleeSummaries.get(targets[0]) : null;
+    const targetProof = classifyCallTargetProof(node.call);
+    const targets = targetProof.candidateEntityIds;
+    const resolved = targetProof.exactSingletonEntityId == null
+      ? null
+      : calleeSummaries.get(targetProof.exactSingletonEntityId);
 
     if (resolved) {
-      // A proven callee summary folds in with full authority, and its own status
-      // weakens ours: a caller cannot be more certain than its callee.
+      // A callee summary can be exact only after the call-site target universe
+      // itself is proven. A non-exhaustive singleton must not take this branch.
       statuses.push(resolved.status);
       memoryReadRegions.push(...resolved.memoryReadRegions.map((effect) => createMemoryEffect({ ...effect, source: 'proven-summary' })));
       memoryWriteRegions.push(...resolved.memoryWriteRegions.map((effect) => createMemoryEffect({ ...effect, source: 'proven-summary' })));
@@ -274,10 +284,19 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
       if (resolved.mayThrow === 'unknown') controlUnknown = true;
       if (resolved.noreturn === true) sawNoreturnCall = true;
       if (resolved.noreturn === 'unknown') controlUnknown = true;
-      directCalls.push({
-        callSiteId: node.id, targetEntityIds: targets,
-        summaryId: resolved.functionId, effectSource: 'proven-summary',
-      });
+      if (targetProof.kind === 'indirect') {
+        indirectCallSets.push({
+          callSiteId: node.id,
+          candidateEntityIds: targets,
+          exhaustive: true,
+          evidenceIds: evidenceOf(node),
+        });
+      } else {
+        directCalls.push({
+          callSiteId: node.id, targetEntityIds: targets,
+          summaryId: resolved.functionId, effectSource: 'proven-summary',
+        });
+      }
       continue;
     }
 
@@ -285,11 +304,14 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
     const source = complete ? 'abi-rule' : 'unknown-call-fallback';
     const readOk = applyScope({ node, scope: node.call?.memoryRead, resolveRegion, into: memoryReadRegions, source });
     const writeOk = applyScope({ node, scope: node.call?.memoryWrite, resolveRegion, into: memoryWriteRegions, source });
+    const nonExhaustiveIndirect = targetProof.kind === 'indirect' && !targetProof.exhaustive;
 
-    if (!complete || !readOk || !writeOk) {
+    if (!complete || !readOk || !writeOk || nonExhaustiveIndirect) {
       unknownCallEffects.push(createUnknownCallEffect({
         callSiteId: node.id,
-        reason: targets.length ? 'summary-missing' : 'unresolved-target',
+        reason: nonExhaustiveIndirect
+          ? 'indirect-incomplete-target-set'
+          : targets.length ? 'summary-missing' : 'unresolved-target',
         targetEntityIds: targets,
         evidenceIds: evidenceOf(node),
       }));
@@ -302,24 +324,18 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
       if (node.call.noreturn === 'unknown') controlUnknown = true;
     }
 
-    if (targets.length) {
+    if (targetProof.kind === 'indirect') {
+      indirectCallSets.push({
+        callSiteId: node.id,
+        candidateEntityIds: targets,
+        exhaustive: targetProof.exhaustive,
+        evidenceIds: evidenceOf(node),
+      });
+    } else if (targets.length) {
       directCalls.push({
         callSiteId: node.id, targetEntityIds: targets,
         summaryId: null, effectSource: source,
       });
-    } else if ((node.call?.targetValueIds ?? []).length) {
-      // An indirect call whose candidate set is not proven exhaustive keeps its
-      // unknown-call effect on top of whatever the candidates say.
-      indirectCallSets.push({
-        callSiteId: node.id, candidateEntityIds: [], exhaustive: false, evidenceIds: evidenceOf(node),
-      });
-      if (!unknownCallEffects.some((effect) => effect.callSiteId === node.id)) {
-        unknownCallEffects.push(createUnknownCallEffect({
-          callSiteId: node.id, reason: 'indirect-incomplete-target-set', evidenceIds: evidenceOf(node),
-        }));
-        controlUnknown = true;
-        ensureBroadWrite(node);
-      }
     }
   }
 
