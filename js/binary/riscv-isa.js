@@ -54,11 +54,16 @@ export function normalizeRiscvIsaString(input) {
   const xlen = Number(match[1]);
   const suffix = match[2];
   const tokens = suffix.split('_').filter(Boolean);
+  const firstToken = tokens[0] || '';
+  // RISC-V ISA strings require an integer base. Preserve the standard G
+  // abbreviation supported here, but never infer I from a multi-letter
+  // Z*/S*/X* extension such as `rv64zicsr`.
+  if (!/^[ieg]/.test(firstToken)) return null;
   // The first token may use the compact single-letter extension sequence,
   // including the standard G abbreviation (for example rv64gc/rv64gcv).
-  // Version digits stop that sequence; multi-letter Z* tokens are checked
-  // independently so a 'c' inside zicbom etc. cannot masquerade as C.
-  const compactRun = /^([a-z]+)/.exec(tokens[0] || '')?.[1] || '';
+  // Stop before multi-letter Z*/S*/X* extensions so a 'c' inside zicsr etc.
+  // cannot masquerade as the compressed C extension.
+  const compactRun = /^([ieg](?:(?![zsx])[a-z])*)/.exec(firstToken)?.[1] || '';
   const compressedInstructions = compactRun.includes('c')
     || tokens.some((token) => /^c(?:\d|$)/.test(token) || /^zca(?:\d|$)/.test(token));
   return Object.freeze({
