@@ -44,6 +44,22 @@ export function decodeMethodListHeader(rawEntsize) {
   return { relative:!!(raw&REL_FLAG), directSelector:!!(raw&DIRECT_SEL_FLAG), stride:raw&ENTSIZE_MASK };
 }
 
+/**
+ * Resolve the selector-address representation declared by a relative
+ * method-list header. Indirect entries are never reinterpreted as
+ * direct C strings when pointer resolution fails (#2392).
+ */
+export async function resolveRelativeMethodSelectorAddress(directSelector, nameTarget, dereference) {
+  if (directSelector) return nameTarget;
+  if (typeof dereference !== 'function') return null;
+  try {
+    const resolved = await dereference(nameTarget);
+    return resolved == null ? null : BigInt(resolved);
+  } catch {
+    return null;
+  }
+}
+
 const MAX_CLASSES = 20000;
 const MAX_METHODS = 60000;
 const MAX_NAME = 512;
@@ -225,8 +241,9 @@ async function pointer(get, addr) {
  * 形式が 2 つある。
  *   従来型: 1 件 24 バイト（名前・型・実装のポインタが 3 本）
  *   相対型: 1 件 12 バイト（それぞれの位置からの差で書く。iOS 14 以降はこちら）
- * 相対型の「名前」は、名前そのものではなく名前を指すポインタを指していることがある
- * ので、1 段たどってみて、だめなら直接読む。
+ * 相対型の selector 表現は method-list header の directSelector flag が決める。
+ * indirect form は selector-reference を 1 段たどれた場合だけ採用し、解決失敗時に
+ * storage 自身を direct C string として読み替えない。
  */
 async function readMethods(get, listAddr, out, className, prefix, budget, completeness = null) {
   if (listAddr == null) return;
@@ -254,10 +271,14 @@ async function readMethods(get, listAddr, out, className, prefix, budget, comple
       const impField = entry + 8n;
       const nameTarget = nameField + BigInt(i32(b, 0));
       imp = impField + BigInt(i32(b, 8));
-      if (directSelector) nameAddr = nameTarget;
-      else {
-        nameAddr = await pointer(get, nameTarget);
-        if (nameAddr == null || await cstring(get, nameAddr) == null) nameAddr = nameTarget;
+      nameAddr = await resolveRelativeMethodSelectorAddress(
+        directSelector,
+        nameTarget,
+        (addr) => pointer(get, addr),
+      );
+      if (nameAddr == null) {
+        markLegacyPartial(completeness, 'method-selector-unresolved', 'incompleteMethodLists');
+        continue;
       }
     } else {
       nameAddr = cleanPointer(get, u64(b, 0));

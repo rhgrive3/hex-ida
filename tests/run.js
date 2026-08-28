@@ -656,7 +656,7 @@ function objcMemory(relative, corruptName, chained) {
     u32w(A.methods + 16n, Number(A.imp - (A.methods + 16n)));
 
     // クラスメソッド側は、名前を直接指す古い相対形式で置く
-    u32w(A.metaMethods, 12 | 0x80000000);
+    u32w(A.metaMethods, 12 | 0x80000000 | 0x40000000);
     u32w(A.metaMethods + 4n, 1);
     u32w(A.metaMethods + 8n, Number(A.selName2 - (A.metaMethods + 8n)));
     u32w(A.metaMethods + 12n, 0);
