@@ -206,5 +206,8 @@ export function inRange(value, start, size) {
 
 export function hex(value) {
   if (value == null) return null;
-  return '0x' + integerValue(value, 'value').toString(16).toUpperCase();
+  const integer = integerValue(value, 'value');
+  return integer < 0n
+    ? '-0x' + (-integer).toString(16).toUpperCase()
+    : '0x' + integer.toString(16).toUpperCase();
 }
