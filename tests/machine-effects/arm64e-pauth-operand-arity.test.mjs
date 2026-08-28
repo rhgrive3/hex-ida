@@ -128,4 +128,5 @@ for (const [mnemonic, operands, operandIndex, expectedClass] of [
   ['pacga', ['x0','x1','w2'], 2, 'x-or-sp'],
 ]) assertClassFailClosed(mnemonic, operands, operandIndex, expectedClass);
 
+// Keep this regression on a maintainer-authored head after generated artifact synchronization.
 console.log('arm64e-pauth-operand-arity: PASS');
