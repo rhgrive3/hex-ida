@@ -31,6 +31,31 @@ assert.notEqual(
   createOperationIdentity({ projectId: 'a', operationId: 'b:c' }),
 );
 
+// Stable identity components are canonical strings, not coercible values.
+// In particular, distinct objects must never collapse through "[object Object]".
+for (const invalid of [{ a: 1 }, ['a'], 1, true]) {
+  assert.throws(
+    () => createProjectIdentity({ projectId: invalid, binaryId: 'binary-a' }),
+    { name: 'TypeError', message: 'phase12-project-id-required' },
+  );
+}
+assert.throws(
+  () => createProjectIdentity({ projectId: 'project-a', binaryId: { value: 'binary-a' } }),
+  { name: 'TypeError', message: 'phase12-project-binary-id-required' },
+);
+assert.throws(
+  () => createBinaryIdentity({ projectId: 'project-a', contentHash: ['sha256:binary-a'], format: 'macho', architecture: 'arm64' }),
+  { name: 'TypeError', message: 'phase12-binary-content-hash-required' },
+);
+assert.throws(
+  () => createEntityIdentity({ binaryId: 'binary-a', kind: {}, stableKey: '0x1000' }),
+  { name: 'TypeError', message: 'phase12-entity-kind-required' },
+);
+assert.throws(
+  () => createOperationIdentity({ projectId: 'project-a', operationId: 7 }),
+  { name: 'TypeError', message: 'phase12-operation-id-required' },
+);
+
 const descriptor = createArtifactDescriptor({
   binaryId,
   entityId,
