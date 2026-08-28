@@ -24,9 +24,15 @@ function nonNegativeSafeInteger(value, fallback, code) {
   return number;
 }
 
+function isPlainObject(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
 function artifactVersionsFor(app) {
   const direct = app?.analysisArtifactVersions ?? app?.artifactVersions ?? null;
-  if (direct && typeof direct === 'object' && !Array.isArray(direct)) return { ...direct };
+  if (direct && isPlainObject(direct)) return { ...direct };
   const backend = app?.backend;
   let route = backend?.analysisRoute ?? 'unknown';
   try { route = backend?.analysisRouteInfo?.()?.route ?? route; } catch { /* stable conservative identity */ }

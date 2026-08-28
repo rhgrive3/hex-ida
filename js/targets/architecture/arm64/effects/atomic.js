@@ -524,6 +524,7 @@ function compareSwap(decoded, context, match) {
 
 function barrierOption(decoded) {
   const op = operands(decoded)[0];
+  if (op && (op.shift != null || op.extend != null)) return null;
   const raw = String(op?.text || op?.value || decoded?.barrierOption || decoded?.operandsText || '').trim().toLowerCase();
   return raw.replace(/^#/, '') || 'sy';
 }

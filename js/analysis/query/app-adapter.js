@@ -68,9 +68,15 @@ function paged(values, page, completeness = 'complete', status = {}) {
   };
 }
 
+function isPlainObject(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
 function artifactVersions(app) {
   const value = app?.analysisArtifactVersions ?? app?.artifactVersions;
-  return value && typeof value === 'object' && !Array.isArray(value) ? { ...value } : {};
+  return isPlainObject(value) ? { ...value } : {};
 }
 
 function currentInfo(app) { return storeValue(app, 'fileInfo'); }
@@ -314,14 +320,14 @@ export function createAppAnalysisQueryAdapter(app) {
       if (!binaryId && typeof app?.ensureAnalysisIdentity === 'function') {
         try { binaryId = await app.ensureAnalysisIdentity(); } catch { /* fail below */ }
       }
-      if (!binaryId) {
+      if (typeof binaryId !== 'string' || binaryId.trim() === '') {
         const error = new Error('analysis-query-binary-unbound');
         error.code = 'ANALYSIS_QUERY_BINARY_UNBOUND';
         throw error;
       }
       const projectRevision = Number(project?.revision ?? app?.projectRevision ?? app?.workspace?.bindingRevision ?? 0);
       const analysisEpoch = Number(app?.backend?.gen ?? app?.analysisEpoch ?? 0);
-      return { binaryId:String(binaryId), projectRevision:Number.isFinite(projectRevision) ? projectRevision : 0, artifactVersions:artifactVersions(app), analysisEpoch:Number.isFinite(analysisEpoch) ? analysisEpoch : 0 };
+      return { binaryId:binaryId.trim(), projectRevision:Number.isFinite(projectRevision) ? projectRevision : 0, artifactVersions:artifactVersions(app), analysisEpoch:Number.isFinite(analysisEpoch) ? analysisEpoch : 0 };
     },
 
     async binaryInfo(snapshot) {

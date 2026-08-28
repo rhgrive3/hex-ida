@@ -22,9 +22,17 @@ function addressFromArgs(args) {
 
 function evidenceFromObservation(obs, set) {
   if (!obs || typeof obs !== 'object') return;
-  for (const e of obs.evidence || []) if (typeof e === 'string') set.add(e);
-  for (const r of obs.results || []) for (const e of r && r.evidence || []) if (typeof e === 'string') set.add(e);
-  for (const u of obs.updates || []) for (const e of u && u.evidence || []) if (typeof e === 'string') set.add(e);
+  const addEvidence = (value) => {
+    if (!Array.isArray(value)) return;
+    for (const e of value) if (typeof e === 'string' && e.trim()) set.add(e.trim());
+  };
+  addEvidence(obs.evidence);
+  if (Array.isArray(obs.results)) {
+    for (const r of obs.results) if (r && typeof r === 'object') addEvidence(r.evidence);
+  }
+  if (Array.isArray(obs.updates)) {
+    for (const u of obs.updates) if (u && typeof u === 'object') addEvidence(u.evidence);
+  }
 }
 
 function finiteConfidence(value, fallback = null) {

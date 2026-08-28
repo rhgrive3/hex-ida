@@ -589,6 +589,23 @@ function sysOperandShapeValid(ops) {
 }
 
 function operandShapeFailure(instruction, mnemonic, ops) {
+  if (BARRIERS.has(mnemonic)) {
+    if (ops.length > 1) return { reason:`${mnemonic}-operand-shape-invalid`, categories:['other'] };
+    if (ops.length === 1) {
+      const op = ops[0];
+      if (op?.k === 'reg' || op?.cls || op?.shift != null || op?.extend != null) {
+        return { reason:`${mnemonic}-operand-shape-invalid`, categories:['other'] };
+      }
+      const raw = String(op?.text || op?.value || '').trim().toLowerCase().replace(/^#/, '');
+      const validOptions = new Set(['sy','st','ld','ish','ishst','ishld','nsh','nshst','nshld','osh','oshst','oshld']);
+      if (mnemonic === 'isb') {
+        if (raw && raw !== 'sy' && !/^\d+$/.test(raw)) return { reason:`${mnemonic}-operand-shape-invalid`, categories:['other'] };
+      } else {
+        if (raw && !validOptions.has(raw) && !/^\d+$/.test(raw)) return { reason:`${mnemonic}-operand-shape-invalid`, categories:['other'] };
+      }
+    }
+    return null;
+  }
   if (mnemonic === 'nop' || WAITS_AND_EVENTS.has(mnemonic)) {
     return ops.length === 0 ? null : { reason:`${mnemonic}-operand-shape-invalid`, categories:['other'] };
   }

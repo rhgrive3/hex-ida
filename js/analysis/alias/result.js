@@ -84,7 +84,14 @@ function reasonList(values) {
 function idList(values, code) {
   if (values == null) return [];
   if (!Array.isArray(values)) fail(code);
-  return [...new Set(values.map((value) => String(value ?? '').trim()).filter(Boolean))].sort();
+  const out = [];
+  for (const value of values) {
+    if (typeof value !== 'string') fail(code);
+    const text = value.trim();
+    if (!text) fail(code);
+    out.push(text);
+  }
+  return [...new Set(out)].sort();
 }
 
 /**

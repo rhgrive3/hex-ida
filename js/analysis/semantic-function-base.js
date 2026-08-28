@@ -317,14 +317,28 @@ function addressWidthBitsFor(architecturePlugin) {
   return Number.isSafeInteger(bits) && bits > 0 ? bits : 64;
 }
 
+function assertRequiredString(value, label) {
+  if (typeof value !== 'string' || value.trim() === '') {
+    throw new TypeError(`semantic-function-${label}-required`);
+  }
+  return value.trim();
+}
+
 export function analyzeDecodedSemanticFunction(input = {}, options = {}) {
   abortIfRequested(options.signal);
-  const architectureId = String(input.architecture || '').toLowerCase();
-  if (!architectureId) throw new TypeError('semantic-function-architecture-required');
+  if (!input || typeof input !== 'object') throw new TypeError('semantic-function-input-object-required');
+  if (!Array.isArray(input.instructions) || !input.instructions.length) throw new TypeError('semantic-function-decoded-instructions-required');
+  const architectureId = String(input.architecture || '').trim().toLowerCase();
   const architecturePlugin = architecturePluginV2(architectureId);
-  if (!architecturePlugin || architecturePlugin.id !== architectureId) throw new TypeError('semantic-function-architecture-not-registered');
-  if (typeof architecturePlugin.liftExact !== 'function') throw new TypeError('semantic-function-architecture-lifter-required');
-  const requestedMemoryEndianness = input.memoryEndianness ?? input.endian ?? null;
+  if (!architecturePlugin) throw new TypeError(`semantic-function-unsupported-architecture:${architectureId}`);
+  const requestedInstructionEndianness = input.instructionEndianness ?? input.endianness ?? input.endian;
+  if (requestedInstructionEndianness != null) {
+    const endian = String(requestedInstructionEndianness).trim().toLowerCase();
+    const supported = architecturePlugin.supportedInstructionEndianness ?? [];
+    if (supported.length && !supported.includes(endian))
+      throw new TypeError(`semantic-function-unsupported-instruction-endianness:${endian}`);
+  }
+  const requestedMemoryEndianness = input.dataEndianness ?? input.endianness ?? input.endian;
   if (requestedMemoryEndianness != null) {
     const endian = String(requestedMemoryEndianness).trim().toLowerCase();
     const supported = architecturePlugin.supportedMemoryEndianness ?? [];
@@ -334,15 +348,18 @@ export function analyzeDecodedSemanticFunction(input = {}, options = {}) {
   const abiPlugin = resolveABIPlugin({ architecture:architectureId, platform:input.platform, abiId:input.abiId });
   if (!abiPlugin?.supported) throw new TypeError('semantic-function-supported-abi-required');
   if (abiPlugin.architectureId !== architectureId) throw new TypeError('semantic-function-abi-architecture-mismatch');
+  const decoderSemanticVersion = assertRequiredString(input.decoderSemanticVersion, 'decoder-semantic-version');
+  const binaryId = assertRequiredString(input.binaryId, 'binary-id');
+  const sliceId = assertRequiredString(input.sliceId, 'slice-id');
   const blocks = partitionDecodedFunction(input.instructions, architecturePlugin, { callPrototype:input.callPrototype ?? null });
   const abiAdapter = semanticAbiAdapter(abiPlugin, input);
   let defaultMode = null;
   try { defaultMode = architecturePlugin.modes()?.[0] ?? null; } catch { defaultMode = null; }
   const pipeline = buildSemanticV2CompatibilityPipeline({
     architecturePlugin,
-    decoderSemanticVersion:String(input.decoderSemanticVersion),
-    binaryId:String(input.binaryId),
-    sliceId:String(input.sliceId),
+    decoderSemanticVersion,
+    binaryId,
+    sliceId,
     addressWidthBits:addressWidthBitsFor(architecturePlugin),
     mode:input.mode ?? defaultMode ?? 'default',
     entryBlockKey:blocks[0].key,
@@ -385,9 +402,9 @@ export function analyzeDecodedSemanticFunction(input = {}, options = {}) {
   const decompiler = decompileSemantic(model, {
     ir:pipeline.legacyV1,
     abiAdapter,
-    decoderSemanticVersion:String(input.decoderSemanticVersion),
-    binaryId:String(input.binaryId),
-    sliceId:String(input.sliceId),
+    decoderSemanticVersion,
+    binaryId,
+    sliceId,
     addr:addressOf(input.instructions[0]),
     name:model.name,
     functionPrototype:input.functionPrototype ?? null,
@@ -400,7 +417,7 @@ export function analyzeDecodedSemanticFunction(input = {}, options = {}) {
     architectureSemanticVersion:architecturePlugin.semanticVersion,
     abiId:abiPlugin.id,
     abiSemanticVersion:abiPlugin.semanticVersion,
-    decoderSemanticVersion:String(input.decoderSemanticVersion),
+    decoderSemanticVersion,
     analysisContext:Object.freeze({
       dataEndianness:input.dataEndianness ?? null,
       instructionEndianness:input.instructionEndianness ?? null,

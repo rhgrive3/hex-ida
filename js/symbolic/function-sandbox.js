@@ -129,9 +129,17 @@ export class FunctionSandbox {
       this.emulator.heap = firstSetupHeapOverride;
     }
     this._setupCount++;
-    // Synthetic object memory is explicit. Emulator.ensure() is no longer
-    // allowed to fabricate a zero page when backing I/O fails.
-    this.emulator.mapZero(objectBase, this.maxObjectSize, 'sandbox-object');
+    // Synthetic object memory is explicit. Chunk into 1 MiB mappings so
+    // maxObjectSize up to 16 MiB can be backed without exceeding single-mapping limit.
+    const CHUNK_SIZE = 1024 * 1024;
+    let remaining = this.maxObjectSize;
+    let currentBase = objectBase;
+    while (remaining > 0) {
+      const chunkSize = Math.min(remaining, CHUNK_SIZE);
+      this.emulator.mapZero(currentBase, chunkSize, 'sandbox-object');
+      currentBase += BigInt(chunkSize);
+      remaining -= chunkSize;
+    }
     this.emulator.setup(asBig(address), args);
 
     for (const [reg, value] of Object.entries(o.registers || {})) this.emulator.set(reg, asBig(value));

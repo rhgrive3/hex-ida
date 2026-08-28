@@ -6,7 +6,8 @@ function fail(code) {
 }
 
 function nonEmpty(value, code) {
-  const text = String(value ?? '').trim();
+  if (typeof value !== 'string') fail(code);
+  const text = value.trim();
   if (!text) fail(code);
   return text;
 }
@@ -22,7 +23,14 @@ function nonNegativeInteger(value, fallback, code) {
 function sortedStrings(value, code) {
   if (value == null) return [];
   if (!Array.isArray(value)) fail(code);
-  return [...new Set(value.map(String).filter(Boolean))].sort();
+  const out = [];
+  for (const item of value) {
+    if (typeof item !== 'string') fail(code);
+    const text = item.trim();
+    if (!text) fail(code);
+    out.push(text);
+  }
+  return [...new Set(out)].sort();
 }
 
 export function jsonSafe(value, seen = new WeakSet()) {
@@ -117,9 +125,9 @@ export function createSliceId(input = {}) {
   if (sourceRange != null) validateCanonicalIdentityNumbers(sourceRange);
   return typedId('slice', {
     binaryId: nonEmpty(input.binaryId, 'slice-binary-id-required'),
-    containerId: input.containerId == null ? null : String(input.containerId),
+    containerId: input.containerId == null ? null : nonEmpty(input.containerId, 'slice-container-id-invalid'),
     index: nonNegativeInteger(input.index, 0, 'slice-index-invalid'),
-    architecture: input.architecture == null ? null : String(input.architecture),
+    architecture: input.architecture == null ? null : nonEmpty(input.architecture, 'slice-architecture-invalid'),
     sourceRange: sourceRange == null ? null : jsonSafe(sourceRange),
   });
 }
@@ -127,7 +135,7 @@ export function createSliceId(input = {}) {
 export function createImageId(input = {}) {
   return typedId('image', {
     binaryId: nonEmpty(input.binaryId, 'image-binary-id-required'),
-    sliceId: input.sliceId == null ? null : String(input.sliceId),
+    sliceId: input.sliceId == null ? null : nonEmpty(input.sliceId, 'image-slice-id-invalid'),
     loaderId: nonEmpty(input.loaderId ?? 'unknown', 'image-loader-id-required'),
     imageBase: input.imageBase == null ? null : canonicalAddress(input.imageBase),
   });
@@ -136,15 +144,15 @@ export function createImageId(input = {}) {
 export function createArtifactId(input = {}) {
   return typedId('artifact', {
     binaryId: nonEmpty(input.binaryId, 'artifact-binary-id-required'),
-    sliceId: input.sliceId == null ? null : String(input.sliceId),
+    sliceId: input.sliceId == null ? null : nonEmpty(input.sliceId, 'artifact-slice-id-invalid'),
     loaderVersion: nonEmpty(input.loaderVersion, 'artifact-loader-version-required'),
     architectureSemanticVersion: nonEmpty(input.architectureSemanticVersion, 'artifact-architecture-semantic-version-required'),
     abiSemanticVersion: nonEmpty(input.abiSemanticVersion, 'artifact-abi-semantic-version-required'),
     semanticSchemaVersion: nonEmpty(input.semanticSchemaVersion, 'artifact-semantic-schema-version-required'),
-    entityId: input.entityId == null ? null : String(input.entityId),
+    entityId: input.entityId == null ? null : nonEmpty(input.entityId, 'artifact-entity-id-invalid'),
     passId: nonEmpty(input.passId, 'artifact-pass-id-required'),
     passVersion: nonEmpty(input.passVersion ?? '1', 'artifact-pass-version-required'),
-    optionsHash: input.optionsHash == null ? null : String(input.optionsHash),
+    optionsHash: input.optionsHash == null ? null : nonEmpty(input.optionsHash, 'artifact-options-hash-invalid'),
     inputArtifactIds: sortedStrings(input.inputArtifactIds, 'artifact-input-ids-invalid'),
   });
 }
@@ -173,7 +181,7 @@ export function createEntityId(input = {}) {
   const witness = lossyTypeWitness(input.identity);
   return typedId('entity', {
     binaryId: nonEmpty(input.binaryId, 'entity-binary-id-required'),
-    sliceId: input.sliceId == null ? null : String(input.sliceId),
+    sliceId: input.sliceId == null ? null : nonEmpty(input.sliceId, 'entity-slice-id-invalid'),
     kind: nonEmpty(input.kind, 'entity-kind-required'),
     identity: jsonSafe(input.identity),
     ...(witness ? { identityTypes: witness } : {}),
@@ -203,7 +211,7 @@ export function createVmOperationId(input = {}) {
   return typedId('operation', {
     domain: 'vm',
     binaryId: nonEmpty(input.binaryId, 'operation-binary-id-required'),
-    sliceId: input.sliceId == null ? null : String(input.sliceId),
+    sliceId: input.sliceId == null ? null : nonEmpty(input.sliceId, 'operation-slice-id-invalid'),
     vm: nonEmpty(input.vm, 'operation-vm-required'),
     methodId: nonEmpty(input.methodId, 'operation-method-id-required'),
     operationOffset: normalizeIdentity(input.operationOffset, 'operation-offset-required'),
@@ -240,9 +248,9 @@ export function createMemoryRegionId(input = {}) {
 export function createEvidenceId(input = {}) {
   const witness = lossyTypeWitness(input.identity);
   return typedId('evidence', {
-    binaryId: input.binaryId == null ? null : String(input.binaryId),
+    binaryId: input.binaryId == null ? null : nonEmpty(input.binaryId, 'evidence-binary-id-invalid'),
     kind: nonEmpty(input.kind ?? 'evidence', 'evidence-kind-required'),
-    sourceId: input.sourceId == null ? null : String(input.sourceId),
+    sourceId: input.sourceId == null ? null : nonEmpty(input.sourceId, 'evidence-source-id-invalid'),
     identity: jsonSafe(input.identity),
     ...(witness ? { identityTypes: witness } : {}),
   });
