@@ -11,7 +11,7 @@ permissions:
 jobs:
   diagnostics:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
         with:
@@ -21,6 +21,14 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --no-audit --no-fund
+      - name: A2 effects diagnostics
+        shell: bash
+        run: |
+          set +e
+          npm run effects:test
+          rc=$?
+          echo "A2_EFFECTS_RC=$rc"
+          exit 0
       - name: A2 coverage diagnostics
         shell: bash
         run: |
@@ -45,11 +53,18 @@ jobs:
           rc=$?
           echo "A9_BENCHMARK_RC=$rc"
           exit 0
-      - name: Stage2 denominator diagnostics
+      - name: Regenerate Stage2 denominator artifacts
         shell: bash
         run: |
-          set +e
+          node tools/validation/stage2/build-profile-denominator-inventory.mjs
+          node tools/validation/stage2/build-profile-denominator-lock.mjs
+          git diff -- tools/validation/stage2/profile-denominator-inventory.json tools/validation/stage2/profile-denominators.lock.json
           node tests/stage2/profile-denominator-inventory.test.mjs
-          rc=$?
-          echo "STAGE2_DENOMINATOR_RC=$rc"
-          exit 0
+      - name: Upload regenerated denominator artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr2372-generated-denominators
+          path: |
+            tools/validation/stage2/profile-denominator-inventory.json
+            tools/validation/stage2/profile-denominators.lock.json
+          if-no-files-found: error
