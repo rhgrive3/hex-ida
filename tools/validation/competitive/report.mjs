@@ -19,6 +19,13 @@ function atomicWriteText(filePath, text) {
   }
 }
 
+function markdownTableCell(value) {
+  return String(value)
+    .replace(/\\/g, '\\\\')
+    .replace(/\|/g, '\\|')
+    .replace(/\r?\n/g, '<br>');
+}
+
 export function formatCompetitiveMarkdownReport(scorecard) {
   const lines = [];
   lines.push('# Hex Competitive Attack Program — Official Scorecard');
@@ -45,7 +52,12 @@ export function formatCompetitiveMarkdownReport(scorecard) {
   for (const entry of scorecard.entries) {
     const hexVal = typeof entry.hexValue === 'number' ? entry.hexValue.toFixed(4) : String(entry.hexValue);
     const refVal = typeof entry.referenceValue === 'number' ? entry.referenceValue.toFixed(4) : String(entry.referenceValue);
-    lines.push(`| \`${entry.metricId}\` | ${hexVal} | ${entry.referenceTool} (${entry.referenceVersion}) | ${refVal} | **${entry.comparison}** | ${entry.runPolicy} |`);
+    const metricId = markdownTableCell(entry.metricId);
+    const referenceTool = markdownTableCell(entry.referenceTool);
+    const referenceVersion = markdownTableCell(entry.referenceVersion);
+    const comparison = markdownTableCell(entry.comparison);
+    const runPolicy = markdownTableCell(entry.runPolicy);
+    lines.push(`| \`${metricId}\` | ${markdownTableCell(hexVal)} | ${referenceTool} (${referenceVersion}) | ${markdownTableCell(refVal)} | **${comparison}** | ${runPolicy} |`);
   }
 
   lines.push('');
