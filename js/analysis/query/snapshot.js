@@ -19,6 +19,13 @@ function nonNegativeSafeInteger(value, code) {
   return number;
 }
 
+function nonEmptyString(value, code) {
+  if (typeof value !== "string") throw new TypeError(code);
+  const text = value.trim();
+  if (!text) throw new TypeError(code);
+  return text;
+}
+
 function normalizeArtifacts(value) {
   if (value == null) return {};
   if (typeof value !== "object" || Array.isArray(value)) throw new TypeError("analysis-snapshot-artifact-versions-invalid");
@@ -39,7 +46,7 @@ function normalizeArtifacts(value) {
 function identityTuple(value) {
   return {
     schemaVersion: ANALYSIS_SNAPSHOT_SCHEMA_VERSION,
-    binaryId: String(value.binaryId),
+    binaryId: nonEmptyString(value.binaryId, "analysis-snapshot-binary-id-required"),
     projectRevision: nonNegativeSafeInteger(value.projectRevision ?? 0, "analysis-snapshot-project-revision-invalid"),
     analysisEpoch: nonNegativeSafeInteger(value.analysisEpoch, "analysis-snapshot-epoch-invalid"),
     artifactVersions: normalizeArtifacts(value.artifactVersions),
@@ -63,8 +70,7 @@ export function createAnalysisSnapshot({
   analysisEpoch = 0,
   createdAt = new Date().toISOString(),
 } = {}) {
-  const id = String(binaryId ?? "").trim();
-  if (!id) throw new TypeError("analysis-snapshot-binary-id-required");
+  const id = nonEmptyString(binaryId, "analysis-snapshot-binary-id-required");
   const tuple = identityTuple({ binaryId: id, projectRevision, artifactVersions, analysisEpoch });
   return deepFreeze({
     ...tuple,
@@ -77,8 +83,7 @@ export function createAnalysisSnapshot({
 export function assertAnalysisSnapshot(snapshot) {
   if (!snapshot || typeof snapshot !== "object") throw new TypeError("analysis-snapshot-required");
   if (snapshot.schemaVersion !== ANALYSIS_SNAPSHOT_SCHEMA_VERSION) throw new TypeError("analysis-snapshot-version-mismatch");
-  const id = String(snapshot.binaryId ?? "").trim();
-  if (!id) throw new TypeError("analysis-snapshot-binary-id-required");
+  const id = nonEmptyString(snapshot.binaryId, "analysis-snapshot-binary-id-required");
   // createdAt is not part of semantic identity. Older schema-v1 callers may
   // omit it; validate it only when supplied while keeping identity fields
   // strictly self-verifying.
