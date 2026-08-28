@@ -65,6 +65,11 @@ function bti(kind = 'c') {
   return { mnemonic:'bti', ops:[{ k:'other', text:kind }] };
 }
 
+function btypeWrites(bundle) {
+  return bundle.operations.filter((operation) =>
+    operation.kind === 'register-write' && operation.register?.registerId === 'pstate.btype');
+}
+
 assert.equal(ARM64_MACHINE_EFFECTS_SEMANTIC_VERSION, '7');
 
 {
@@ -75,9 +80,11 @@ assert.equal(ARM64_MACHINE_EFFECTS_SEMANTIC_VERSION, '7');
     loaderPolicy:{ btiRequested:true },
   }));
   assert.equal(result.completeness, 'exact');
-  assert.deepEqual(result.operations, []);
+  assert.equal(result.operations.length, 1);
+  assert.equal(btypeWrites(result).length, 1);
+  assert.equal(btypeWrites(result)[0].value.value, '0');
   assert.deepEqual(result.possibleFaults, []);
-  assert.equal(result.statePreservation.proven, true);
+  assert.equal(result.statePreservation, undefined);
   assert.equal(result.metadata.btiCheck, 'skipped-non-guarded-page');
 }
 
@@ -93,6 +100,8 @@ assert.equal(ARM64_MACHINE_EFFECTS_SEMANTIC_VERSION, '7');
   assert.equal(intrinsic.effectSummary.inputs.length, 3);
   assert.deepEqual(intrinsic.metadata.inputOrder, ['page-guarded','pstate.btype','landing-pad-kind']);
   assert.equal(intrinsic.metadata.landingPadKind, 'jc');
+  assert.equal(btypeWrites(result).length, 1);
+  assert.equal(btypeWrites(result)[0].value.value, '0');
   assert.equal(result.possibleFaults.length, 1);
   assert.equal(result.possibleFaults[0].condition.kind, 'and');
   assert.equal(result.possibleFaults[0].condition.terms[0].kind, 'mapped-page-guarded');
@@ -112,6 +121,8 @@ assert.equal(ARM64_MACHINE_EFFECTS_SEMANTIC_VERSION, '7');
     operation.kind === 'register-read' && operation.register.registerId === ARM64_BTI_PAGE_GUARD_STATE_ID);
   assert.ok(guardRead);
   assert.equal(guardRead.register.widthBits, 1);
+  assert.equal(btypeWrites(result).length, 1);
+  assert.equal(btypeWrites(result)[0].value.value, '0');
   assert.equal(result.possibleFaults[0].condition.terms[0].value, 'unknown');
 }
 
