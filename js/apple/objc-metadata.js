@@ -75,7 +75,7 @@ async function methodList(get, listAddr, owner, classMethod, source) {
       if (directSelector) nameAddr = nameTarget;
       else {
         nameAddr = await ptr(get, nameTarget);
-        if (nameAddr == null || await cstring(get, nameAddr) == null) nameAddr = nameTarget;
+        if (nameAddr == null) { invalidEntries++; continue; }
       }
       typeAddr = at + 4n + BigInt(i32(b, 4)); imp = at + 8n + BigInt(i32(b, 8));
     } else {
