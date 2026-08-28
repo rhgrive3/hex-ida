@@ -38,10 +38,13 @@ function readNtbs(bytes, start, end) {
 
 function strictAddress(value) {
   if (value == null) return 0n;
-  if (typeof value === 'bigint') return value;
-  if (typeof value === 'number') return Number.isSafeInteger(value) ? BigInt(value) : null;
+  if (typeof value === 'bigint') return value >= 0n ? value : null;
+  if (typeof value === 'number') return Number.isSafeInteger(value) && value >= 0 ? BigInt(value) : null;
   if (typeof value !== 'string' || value.trim() === '') return null;
-  try { return BigInt(value.trim()); } catch { return null; }
+  try {
+    const parsed = BigInt(value.trim());
+    return parsed >= 0n ? parsed : null;
+  } catch { return null; }
 }
 
 export function normalizeRiscvIsaString(input) {
