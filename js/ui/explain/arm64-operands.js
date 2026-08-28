@@ -159,7 +159,8 @@ export function immText(op) {
   const dec = v.toString(10);
   if (v > -10n && v < 10n) return dec;
   if (/^#-?0x/i.test(op.text)) {
-    return isJa() ? "0x" + absHex(v) + "（10進で " + dec + "）" : "0x" + absHex(v) + " (" + dec + ")";
+    const hex = (v < 0n ? "-0x" : "0x") + (v < 0n ? -v : v).toString(16).toUpperCase();
+    return isJa() ? hex + "（10進で " + dec + "）" : hex + " (" + dec + ")";
   }
   return dec;
 }
