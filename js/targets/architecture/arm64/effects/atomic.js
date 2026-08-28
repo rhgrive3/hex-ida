@@ -92,7 +92,7 @@ function hasOperandShape(decoded, shape) {
   if (ops.length !== shape.length) return false;
   return shape.every((kind, index) => {
     const operand = ops[index];
-    if (kind === 'reg') return !!arm64RegisterOperand(operand);
+    if (kind === 'reg') return operand?.shift == null && operand?.extend == null && !!arm64RegisterOperand(operand);
     if (kind === 'mem') return operand?.k === 'mem' || operand?.kind === 'memory';
     return false;
   });
