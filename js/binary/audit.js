@@ -1,5 +1,5 @@
 function sectionHasMappedAddress(sec) {
-  if (sec?.source === 'section-header') return (Number(sec.flags || 0) & 0x2) !== 0; // ELF SHF_ALLOC
+  if (sec?.source === 'section-header') return (BigInt(sec.flags || 0) & 0x2n) !== 0n; // ELF SHF_ALLOC
   if (sec?.source === 'unmapped-section') return false;
   return true;
 }
