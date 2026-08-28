@@ -58,6 +58,15 @@ function asBytes(value, label = 'read result') {
   throw new ByteSourceError(`${label} must be a Uint8Array, ArrayBuffer, or ArrayBufferView`);
 }
 
+function effectiveMaxReadLength(source, requested) {
+  const sourceMax = source?.maxReadLength;
+  const candidate = requested ?? sourceMax ?? DEFAULT_MAX_READ_LENGTH;
+  if (Number.isSafeInteger(candidate) && candidate > 0
+      && Number.isSafeInteger(sourceMax) && sourceMax > 0
+      && candidate > sourceMax) return sourceMax;
+  return candidate;
+}
+
 export class ByteSource {
   constructor(size, { maxReadLength = DEFAULT_MAX_READ_LENGTH } = {}) {
     this.size = nonNegativeBigInt(size, 'source size');
@@ -141,7 +150,7 @@ export class SubrangeByteSource extends ByteSource {
     if (start > base.size || size > base.size - start) {
       throw new ByteSourceRangeError('subrange outside source', { offset: start, length: size, size: base.size });
     }
-    super(size, { maxReadLength: options.maxReadLength ?? base.maxReadLength });
+    super(size, { maxReadLength: effectiveMaxReadLength(base, options.maxReadLength) });
     this.parent = base;
     this.offset = start;
   }
@@ -154,7 +163,7 @@ export class SubrangeByteSource extends ByteSource {
 
 class DelegatingByteSource extends ByteSource {
   constructor(source, options = {}) {
-    super(source.size, { maxReadLength: options.maxReadLength ?? source.maxReadLength ?? DEFAULT_MAX_READ_LENGTH });
+    super(source.size, { maxReadLength: effectiveMaxReadLength(source, options.maxReadLength) });
     this.delegate = source;
   }
 
