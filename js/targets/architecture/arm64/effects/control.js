@@ -286,8 +286,11 @@ function liftArm64ControlEffectsCore(instruction, options = {}) {
 export function liftArm64ControlEffects(instruction, options = {}) {
   const bundle = liftArm64ControlEffectsCore(instruction, options);
   if (bundle == null) return null;
-  // Operand-shape failures describe encodings that do not exist. Do not attach
-  // architectural BTYPE state transitions to a malformed structured instruction.
-  if (/operand-shape-invalid$/.test(String(bundle.unknownEffects?.reason || ''))) return bundle;
+  // Encoding-domain failures describe instructions that cannot exist. Do not attach
+  // architectural BTYPE post-state to malformed structured evidence. Missing
+  // address/target evidence is intentionally not included: a decoded valid direct
+  // branch still resets BTYPE even when its concrete target cannot be reconstructed.
+  const failureReason = String(bundle.unknownEffects?.reason || '');
+  if (/(?:operand-shape-invalid|target-(?:misaligned|out-of-range)-encoding)$/.test(failureReason)) return bundle;
   return decorateArm64BtypeEffects(instruction, options, bundle);
 }
