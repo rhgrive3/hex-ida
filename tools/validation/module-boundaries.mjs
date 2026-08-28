@@ -1,7 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { moduleBoundaryPolicy, MODULE_BOUNDARY_POLICY_VERSION } from "./module-boundaries-policy.mjs";
 
+const REPOSITORY_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const IMPORT_SPEC_RE = /(?:import\s+(?:(?:[\w*\s{},]+from\s+)?[\x27"]([^\x27"]+)[\x27"])|export\s+[\w*\s{},]+from\s+[\x27"]([^\x27"]+)[\x27"]|import\(\s*[\x27"]([^\x27"]+)[\x27"]\s*\))/g;
 
 export function extractLiteralImports(sourceText) {
@@ -18,6 +20,13 @@ export function scanModuleBoundaries(options = {}) {
   const root = options.root || "js";
   const policy = options.policy || moduleBoundaryPolicy;
   const violations = [];
+  const absoluteRoot = path.resolve(root);
+  const relativeRoot = path.relative(REPOSITORY_ROOT, absoluteRoot);
+  const rootIsInRepository = relativeRoot === "" || (!relativeRoot.startsWith(`..${path.sep}`) && relativeRoot !== "..");
+  const logicalPathFor = (full) => {
+    const value = rootIsInRepository ? path.relative(REPOSITORY_ROOT, path.resolve(full)) : full;
+    return value.replace(/\\/g, "/");
+  };
 
   function walk(dir) {
     if (!fs.existsSync(dir)) return;
@@ -27,7 +36,7 @@ export function scanModuleBoundaries(options = {}) {
         if (entry.name === "node_modules" || entry.name === ".git") continue;
         walk(full);
       } else if (entry.isFile() && (entry.name.endsWith(".js") || entry.name.endsWith(".mjs"))) {
-        const normPath = full.replace(/\\/g, "/");
+        const normPath = logicalPathFor(full);
         const importerGroup = policy.classify(normPath);
         if (!importerGroup) continue;
 
@@ -57,7 +66,7 @@ export function scanModuleBoundaries(options = {}) {
     }
   }
 
-  walk(root);
+  walk(absoluteRoot);
   return violations.sort((a, b) => a.importer.localeCompare(b.importer) || a.target.localeCompare(b.target) || a.rule.localeCompare(b.rule));
 }
 
