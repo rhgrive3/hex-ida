@@ -74,6 +74,16 @@ try {
   `);
   assert.equal(scanEvidenceWriters(tempDir).length, 0);
 
+  // 7. Comment markers inside strings must not hide later executable code.
+  fs.writeFileSync(fakeJs, `
+    const url = 'http://example.test'; const store = new EvidenceStore();
+    const text = '// new EvidenceStore()';
+    // new EvidenceStore();
+  `);
+  const urlFindings = scanEvidenceWriters(tempDir);
+  assert.equal(urlFindings.length, 1);
+  assert.match(urlFindings[0].snippet, /http:\/\/example\.test/);
+
   console.log("All legacy evidence writers unit tests PASS!");
 } finally {
   fs.rmSync(tempDir, { recursive: true, force: true });
