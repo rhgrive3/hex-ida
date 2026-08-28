@@ -183,17 +183,33 @@ export function pagedReader(read, pageBytes = 65536, maxPages = 96) {
 /** 0 で終わる文字列を読む。読めなければ null。 */
 async function cstring(get, addr) {
   if (addr == null) return null;
-  // 区画の端に置かれた名前も読めるように、短い読み取りも受け取る
+  // 区画の端に置かれた名前も読めるように、短い読み取りも受け取る。
+  // Objective-C identifiers/selectors are UTF-8, not ASCII-only (#2373).
   const buf = await get(addr, MAX_NAME, true);
-  if (!buf) return null;
-  let s = '';
-  for (let i = 0; i < buf.length; i++) {
-    const c = buf[i];
-    if (c === 0) return s.length ? s : null;
-    if (c < 0x20 || c >= 0x7f) return null;      // 読めない → 名前ではない
-    s += String.fromCharCode(c);
+  if (!buf || !buf.length) return null;
+  const end = buf.indexOf(0);
+  if (end <= 0) return null;
+  try {
+    const text = new TextDecoder('utf-8', { fatal: true }).decode(buf.subarray(0, end));
+    return /[\u0000-\u001f\u007f]/u.test(text) ? null : text;
+  } catch {
+    return null;
   }
-  return null;                                   // 終端が見つからない
+}
+
+function newLegacyCompleteness(present, declared = 0) {
+  return {
+    present: !!present, declared, scanned: 0, parsed: 0, capped: false,
+    unreadableSlots: 0, invalidEntries: 0, incompleteMethodLists: 0,
+    misalignedBytes: 0, sizeValid: true, reasons: [], complete: !present,
+  };
+}
+
+function markLegacyPartial(status, reason, field = null) {
+  if (!status) return;
+  status.complete = false;
+  if (field) status[field] = (status[field] || 0) + 1;
+  if (reason && !status.reasons.includes(reason)) status.reasons.push(reason);
 }
 
 function cleanPointer(get, value) { return sanitizePointer(value, get.base, get.pointerFormat); }
@@ -212,20 +228,24 @@ async function pointer(get, addr) {
  * 相対型の「名前」は、名前そのものではなく名前を指すポインタを指していることがある
  * ので、1 段たどってみて、だめなら直接読む。
  */
-async function readMethods(get, listAddr, out, className, prefix, budget) {
+async function readMethods(get, listAddr, out, className, prefix, budget, completeness = null) {
   if (listAddr == null) return;
   const head = await get(listAddr, 8);
-  if (!head) return;
+  if (!head || head.length < 8) { markLegacyPartial(completeness, 'method-list-unreadable', 'incompleteMethodLists'); return; }
   const entsize = u32(head, 0);
   const count = u32(head, 4);
-  if (!count || count > 20000) return;
+  if (!count) return;
+  if (count > 20000) { markLegacyPartial(completeness, 'method-list-count-invalid', 'incompleteMethodLists'); return; }
   const { relative, directSelector, stride } = decodeMethodListHeader(entsize);
-  if (relative ? stride < 12 : stride < 24) return;
+  if (relative ? stride < 12 : stride < 24) { markLegacyPartial(completeness, 'method-list-stride-invalid', 'incompleteMethodLists'); return; }
 
+  let scanned = 0;
   for (let i = 0; i < count && out.length < budget; i++) {
     const entry = listAddr + 8n + BigInt(i) * BigInt(stride);
-    const b = await get(entry, relative ? 12 : 24);
-    if (!b) return;
+    const width = relative ? 12 : 24;
+    const b = await get(entry, width);
+    if (!b || b.length < width) { markLegacyPartial(completeness, 'method-entry-unreadable', 'incompleteMethodLists'); return; }
+    scanned++;
 
     let nameAddr = null;
     let imp = null;
@@ -243,15 +263,16 @@ async function readMethods(get, listAddr, out, className, prefix, budget) {
       nameAddr = cleanPointer(get, u64(b, 0));
       imp = cleanPointer(get, u64(b, 16));
     }
-    if (imp == null) continue;
+    if (imp == null) { markLegacyPartial(completeness, 'method-imp-unresolved', 'incompleteMethodLists'); continue; }
     const sel = await cstring(get, nameAddr);
-    if (!sel) continue;                          // 名前が読めないなら付けない
+    if (!sel) { markLegacyPartial(completeness, 'method-selector-invalid', 'incompleteMethodLists'); continue; }
     out.push({
       addr: imp,
       name: prefix + '[' + className + ' ' + sel + ']',
       sel, kind: prefix, className,
     });
   }
+  if (scanned < count) markLegacyPartial(completeness, 'method-budget', 'incompleteMethodLists');
 }
 
 /* ── フィールド（ivar）──────────────────────────────────────
@@ -456,28 +477,28 @@ async function readProperties(get, listAddr) {
 }
 
 /** クラス 1 つぶん（インスタンスメソッドとクラスメソッドの両方）。 */
-async function readClass(get, classAddr, out, seen, meta) {
+async function readClass(get, classAddr, out, seen, meta, completeness = null) {
   if (classAddr == null || seen.has(classAddr.toString())) return null;
   seen.add(classAddr.toString());
 
   const cls = await get(classAddr, CLASS_SIZE);
-  if (!cls) return null;
+  if (!cls || cls.length < CLASS_SIZE) { markLegacyPartial(completeness, 'class-unreadable'); return null; }
   const roAddr = cleanPointer(get, u64(cls, CLASS_DATA) & ~7n);
-  if (roAddr == null) return null;
+  if (roAddr == null) { markLegacyPartial(completeness, 'class-ro-unresolved'); return null; }
   /*
    * 短くても受け取る。baseProperties まで読めるとうれしいが、そこまで
    * 載っていない表もある。「プロパティが読めない」を理由にクラスごと
    * 捨ててしまうと、いちばん大事な ivar の名前まで失う。
    */
   const ro = await get(roAddr, RO_SIZE, true);
-  if (!ro || ro.length < RO_IVARS + PTR) return null;
+  if (!ro || ro.length < RO_IVARS + PTR) { markLegacyPartial(completeness, 'class-ro-unreadable'); return null; }
 
   const name = await cstring(get, cleanPointer(get, u64(ro, RO_NAME)));
-  if (!name) return null;
+  if (!name) { markLegacyPartial(completeness, 'class-name-invalid'); return null; }
 
   const before = out.length;
   await readMethods(get, cleanPointer(get, u64(ro, RO_METHODS)), out, name,
-    meta ? '+' : '-', MAX_METHODS);
+    meta ? '+' : '-', MAX_METHODS, completeness);
   const methods = out.slice(before);
 
   const info = {
@@ -508,7 +529,7 @@ async function readClass(get, classAddr, out, seen, meta) {
   if (!meta) {
     const isa = cleanPointer(get, u64(cls, CLASS_ISA));
     if (isa != null) {
-      const metaInfo = await readClass(get, isa, out, seen, true);
+      const metaInfo = await readClass(get, isa, out, seen, true, completeness);
       if (metaInfo && metaInfo.methods) info.classMethods = metaInfo.methods;
     }
   }
@@ -532,26 +553,50 @@ export async function buildObjcModel(read, classList, onProgress, imageBase, poi
   const names = [];
   const classes = [];
   const seen = new Set();
-  if (!classList || !classList.size) return { classes, names, count: 0 };
+  if (!classList || !classList.size) {
+    const classesCompleteness = newLegacyCompleteness(false, 0);
+    classesCompleteness.complete = true;
+    return { classes, names, count: 0, completeness: { classes: classesCompleteness, complete: true } };
+  }
+
+  const size = BigInt(classList.size);
+  const sizeValid = size >= 0n && size <= BigInt(Number.MAX_SAFE_INTEGER);
+  const declared = sizeValid ? Number(size / BigInt(PTR)) : 0;
+  const classesCompleteness = newLegacyCompleteness(true, declared);
+  classesCompleteness.sizeValid = sizeValid;
+  classesCompleteness.misalignedBytes = sizeValid ? Number(size % BigInt(PTR)) : null;
+  classesCompleteness.capped = declared > MAX_CLASSES;
+  classesCompleteness.complete = sizeValid && classesCompleteness.misalignedBytes === 0 && !classesCompleteness.capped;
+  if (!sizeValid) markLegacyPartial(classesCompleteness, 'class-list-size-invalid');
+  if (classesCompleteness.misalignedBytes) markLegacyPartial(classesCompleteness, 'class-list-size-misaligned');
+  if (classesCompleteness.capped) markLegacyPartial(classesCompleteness, 'class-budget');
 
   const get = pagedReader(read);
   get.base = imageBase != null
     ? BigInt(imageBase)
     : (classList.vmAddr / 0x100000000n) * 0x100000000n;
   get.pointerFormat = pointerFormat ?? classList.pointerFormat ?? classList.pointer_format ?? null;
-  const total = Math.min(Number(classList.size) / PTR, MAX_CLASSES);
+  const total = Math.min(declared, MAX_CLASSES);
 
   for (let i = 0; i < total && names.length < MAX_METHODS; i++) {
     const slot = classList.vmAddr + BigInt(i) * BigInt(PTR);
     let ptr;
-    try { ptr = await pointer(get, slot); } catch { break; }
-    if (ptr == null) continue;
+    try { ptr = await pointer(get, slot); }
+    catch { markLegacyPartial(classesCompleteness, 'class-slot-unreadable', 'unreadableSlots'); break; }
+    classesCompleteness.scanned++;
+    if (ptr == null) { markLegacyPartial(classesCompleteness, 'class-pointer-unresolved', 'invalidEntries'); continue; }
     try {
-      const info = await readClass(get, ptr, names, seen, false);
+      const info = await readClass(get, ptr, names, seen, false, classesCompleteness);
       if (info) classes.push(info);
-    } catch { /* 1 クラス壊れていても、残りは読む */ }
-    if (onProgress && (i & 63) === 0) onProgress(i / total);
+      else markLegacyPartial(classesCompleteness, 'class-invalid', 'invalidEntries');
+    } catch { markLegacyPartial(classesCompleteness, 'class-parse-error', 'invalidEntries'); }
+    if (onProgress && (i & 63) === 0) onProgress(total ? i / total : 1);
   }
+  if (names.length >= MAX_METHODS && classesCompleteness.scanned < total) {
+    markLegacyPartial(classesCompleteness, 'method-budget');
+  }
+  classesCompleteness.parsed = classes.length;
+  if (classesCompleteness.scanned < total) markLegacyPartial(classesCompleteness, 'class-scan-incomplete');
   if (onProgress) onProgress(1);
 
   // 親クラスの名前を解決しておく（部品の系統が見えるようにする）
@@ -560,7 +605,10 @@ export async function buildObjcModel(read, classList, onProgress, imageBase, poi
     const parent = c.superAddr != null ? byAddr.get(c.superAddr.toString()) : null;
     c.superName = parent ? parent.name : null;
   }
-  return { classes, names, count: classes.length };
+  return {
+    classes, names, count: classes.length,
+    completeness: { classes: classesCompleteness, complete: classesCompleteness.complete === true },
+  };
 }
 
 /**
