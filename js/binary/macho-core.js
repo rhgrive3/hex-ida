@@ -269,7 +269,9 @@ function parseSegment32(r, p, cmdsize, image, order) {
 
 function parseDylib(r, p, cmdsize, image, isId) {
   const nameoff = r.u32(p + 8);
-  if (nameoff >= cmdsize) return;
+  if (nameoff < 24 || nameoff >= cmdsize) return;
+  const span = r.bytes.subarray(p + nameoff, p + cmdsize);
+  if (span.indexOf(0) === -1) return;
   const name = r.cstring(p + nameoff, cmdsize - nameoff);
   if (isId) image.metadata.installName = name;
   else if (name) image.libraries.push(name);
@@ -334,7 +336,13 @@ function parseSymbolTable(r, st, image, bits, sharedBudget = null) {
     const desc = r.u16(p + 6);
     const value = bits === 64 ? r.u64(p + 8) : BigInt(r.u32(p + 8));
     if (type & 0xe0) continue;
-    const name = strx < st.strsize ? r.cstring(st.stroff + strx, st.strsize - strx) : '';
+    let name = '';
+    if (strx < st.strsize) {
+      const span = r.bytes.subarray(st.stroff + strx, st.stroff + st.strsize);
+      if (span.indexOf(0) !== -1) {
+        name = r.cstring(st.stroff + strx, st.strsize - strx);
+      }
+    }
     if (!name) continue;
     if (!budget.take({ stringBytes:name.length*2, estimatedHeapBytes:name.length*2+32 }, 'symbol-name')) break;
     const ntype = type & 0x0e;

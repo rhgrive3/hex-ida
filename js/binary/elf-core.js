@@ -263,7 +263,7 @@ function parseSectionHeaders(r, h, bits, image) {
       out.push({ index: i, nameOffset: r.u32(p), type: r.u32(p + 4), flags: BigInt(r.u32(p + 8)), addr: BigInt(r.u32(p + 12)), offset: BigInt(r.u32(p + 16)), size: BigInt(r.u32(p + 20)), link: r.u32(p + 24), info: r.u32(p + 28), addralign: BigInt(r.u32(p + 32)), entsize: BigInt(r.u32(p + 36)), name: '' });
     }
   }
-  if (h.shstrndx === 0xffff && out[0]) h.shstrndx = out[0].link;
+  if (h.shstrndx === 0xffff && out[0] && out[0].link < out.length) h.shstrndx = out[0].link;
   return out;
 }
 
@@ -283,7 +283,11 @@ function terminatedStringInTable(r, strStart, strSize, offset, maxSpan) {
 }
 
 function nameSections(r, sections, h) {
-  const str = sections[h.shstrndx];
+  let shstrndx = h.shstrndx;
+  if (shstrndx === 0xffff && sections[0] && sections[0].link < sections.length) {
+    shstrndx = sections[0].link;
+  }
+  const str = sections[shstrndx];
   if (!str || str.type !== SHT_STRTAB || str.offset + str.size > BigInt(r.length)) return;
   for (const s of sections) {
     if (BigInt(s.nameOffset) >= str.size) continue;

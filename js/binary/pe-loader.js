@@ -18,9 +18,22 @@ function markPEPartial(image, reason, warning = null) {
   if (warning && !image.warnings.includes(warning)) image.warnings.push(warning);
 }
 
+function metadataLimit(value, fallback) {
+  const n = Number(value);
+  return Number.isSafeInteger(n) && n > 0 ? n : fallback;
+}
+
+function resolveMetadataLimits(overrides = {}) {
+  const out = {};
+  for (const [key, fallback] of Object.entries(PE_METADATA_LIMITS)) {
+    out[key] = metadataLimit(overrides[key], fallback);
+  }
+  return out;
+}
+
 export function createPEMetadataBudget(image, options = {}) {
   image.metadata ||= {};
-  const limits = { ...PE_METADATA_LIMITS, ...(options.limits || options.metadataLimits || {}) };
+  const limits = resolveMetadataLimits(options.limits || options.metadataLimits || {});
   const signal = options.signal || null;
   const started = Date.now();
   const used = { inputBytes:0, records:0, objects:0, stringBytes:0, operations:0, estimatedHeapBytes:0 };

@@ -33,10 +33,11 @@ export async function scanSourceStrings(image, input, opts = {}) {
       }
       const bytes = carry.length ? concat(carry, block) : block;
       const base = offset - BigInt(carry.length);
-      scanAscii(image, bytes, base, range, min, max, out, seen, limit);
+      const isFinalBlock = offset + BigInt(block.length) >= range.end || !block.length;
+      scanAscii(image, bytes, base, range, min, max, out, seen, limit, isFinalBlock);
       for (const encoding of utf16Encodings) {
         if (out.length >= limit) break;
-        scanUtf16(image, bytes, base, range, min, max, out, seen, limit, encoding);
+        scanUtf16(image, bytes, base, range, min, max, out, seen, limit, encoding, isFinalBlock);
       }
       const keep = Math.min(overlapBytes, bytes.length);
       carry = bytes.slice(bytes.length - keep);
@@ -70,12 +71,15 @@ function mappedRanges(image, sourceSize, includeExecutable) {
   return ranges;
 }
 
-function scanAscii(image, bytes, base, range, min, max, out, seen, limit) {
+function scanAscii(image, bytes, base, range, min, max, out, seen, limit, isFinalBlock) {
   for (let p = 0; p < bytes.length && out.length < limit;) {
     if (!printableAscii(bytes[p])) { p++; continue; }
     const start = p;
     let q = p;
     while (q < bytes.length && q - start < max && printableAscii(bytes[q])) q++;
+    if (!isFinalBlock && q === bytes.length && q - start < max && base + BigInt(q) < range.end) {
+      break;
+    }
     if (q - start >= min) emit(image, bytes, base, start, q - start, 'utf8', range, out, seen);
     p = q < bytes.length && printableAscii(bytes[q]) ? q : Math.max(q + 1, p + 1);
   }
@@ -89,7 +93,7 @@ function chooseUtf16Encodings(image, option) {
   return [image?.endian === 'big' ? 'utf16be' : 'utf16le'];
 }
 
-function scanUtf16(image, bytes, base, range, min, max, out, seen, limit, encoding) {
+function scanUtf16(image, bytes, base, range, min, max, out, seen, limit, encoding, isFinalBlock) {
   const be = encoding === 'utf16be';
   const printableAt = (p) => p + 1 < bytes.length && (be ? bytes[p] === 0 && printableAscii(bytes[p + 1]) : printableAscii(bytes[p]) && bytes[p + 1] === 0);
   for (let p = 0; p + 1 < bytes.length && out.length < limit;) {
@@ -98,10 +102,10 @@ function scanUtf16(image, bytes, base, range, min, max, out, seen, limit, encodi
     let q = p;
     let chars = 0;
     while (q + 1 < bytes.length && chars < max && printableAt(q)) { chars++; q += 2; }
+    if (!isFinalBlock && q + 1 >= bytes.length && chars < max && base + BigInt(q) < range.end) {
+      break;
+    }
     if (chars >= min) emit(image, bytes, base, start, q - start, encoding, range, out, seen);
-    // If maxLength stopped an otherwise-continuing run, q is the next
-    // unexamined code-unit start and must remain eligible as the next chunk.
-    // Otherwise advance one byte so odd-aligned candidates are still found.
     p = chars === max && printableAt(q) ? q : Math.max(q + 1, p + 1);
   }
 }

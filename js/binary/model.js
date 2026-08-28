@@ -41,7 +41,17 @@ export class BinaryImage {
     this.imageBase = bigintOrNull(meta.imageBase) ?? 0n;
     this.entrypoint = bigintOrNull(meta.entrypoint);
     this.fileOffset = bigintOrNull(meta.fileOffset) ?? 0n;
-    this.fileSize = bigintOrNull(meta.fileSize) ?? (this.bytes ? BigInt(this.bytes.length) : this.source?.size ?? 0n);
+    let defaultFileSize = 0n;
+    if (this.bytes) {
+      if (this.bytes instanceof Uint8Array) defaultFileSize = BigInt(this.bytes.length);
+      else if (typeof this.bytes.size === 'bigint') defaultFileSize = this.bytes.size;
+      else if (Number.isSafeInteger(this.bytes.length)) defaultFileSize = BigInt(this.bytes.length);
+      else if (this.source?.size != null) defaultFileSize = this.source.size;
+      else throw new TypeError('BinaryImage expects bytes or a valid binary byte backing');
+    } else if (this.source?.size != null) {
+      defaultFileSize = this.source.size;
+    }
+    this.fileSize = bigintOrNull(meta.fileSize) ?? defaultFileSize;
     this.segments = [];
     this.sections = [];
     this.imports = [];
@@ -55,12 +65,19 @@ export class BinaryImage {
   }
 
   addSegment(s) {
+    const address = BigInt(s.address ?? 0);
+    const size = BigInt(s.size ?? 0);
+    const fileOffset = BigInt(s.fileOffset ?? 0);
+    const fileSize = BigInt(s.fileSize ?? 0);
+    if (address < 0n || size < 0n || fileOffset < 0n || fileSize < 0n) {
+      throw new RangeError('Segment address, size, fileOffset, and fileSize must be non-negative');
+    }
     const seg = {
       name: s.name || '',
-      address: BigInt(s.address ?? 0),
-      size: BigInt(s.size ?? 0),
-      fileOffset: BigInt(s.fileOffset ?? 0),
-      fileSize: BigInt(s.fileSize ?? 0),
+      address,
+      size,
+      fileOffset,
+      fileSize,
       perms: normalizePerms(s.perms),
       flags: s.flags ?? 0,
       source: s.source || this.format,
@@ -70,13 +87,20 @@ export class BinaryImage {
   }
 
   addSection(s) {
+    const address = BigInt(s.address ?? 0);
+    const size = BigInt(s.size ?? 0);
+    const fileOffset = BigInt(s.fileOffset ?? 0);
+    const fileSize = BigInt(s.fileSize ?? s.size ?? 0);
+    if (address < 0n || size < 0n || fileOffset < 0n || fileSize < 0n) {
+      throw new RangeError('Section address, size, fileOffset, and fileSize must be non-negative');
+    }
     const sec = {
       name: s.name || '',
       segment: s.segment || null,
-      address: BigInt(s.address ?? 0),
-      size: BigInt(s.size ?? 0),
-      fileOffset: BigInt(s.fileOffset ?? 0),
-      fileSize: BigInt(s.fileSize ?? s.size ?? 0),
+      address,
+      size,
+      fileOffset,
+      fileSize,
       perms: normalizePerms(s.perms),
       flags: s.flags ?? 0,
       type: s.type ?? null,
@@ -89,7 +113,7 @@ export class BinaryImage {
 
   addressToOffset(address) {
     const a = strictBigIntOrNull(address);
-    if (a === null) return null;
+    if (a === null || a < 0n) return null;
     const owner = this._virtualMappingAt(a);
     if (!owner) return null;
     const delta = a - owner.address;
@@ -102,10 +126,10 @@ export class BinaryImage {
 
   offsetToAddress(offset) {
     const o = strictBigIntOrNull(offset);
-    if (o === null) return null;
+    if (o === null || o < 0n) return null;
     const candidates = [];
     for (const s of this.sections) {
-      if (s.address === 0n || !inRange(o, s.fileOffset, s.fileSize)) continue;
+      if (s.address == null || !inRange(o, s.fileOffset, s.fileSize)) continue;
       candidates.push(s);
     }
     for (const s of this.segments) {
@@ -129,20 +153,19 @@ export class BinaryImage {
 
   sectionAt(address) {
     const a = strictBigIntOrNull(address);
-    if (a === null) return null;
+    if (a === null || a < 0n) return null;
     return this.sections.find((s) => inRange(a, s.address, s.size)) || null;
   }
 
   segmentAt(address) {
     const a = strictBigIntOrNull(address);
-    if (a === null) return null;
+    if (a === null || a < 0n) return null;
     return this.segments.find((s) => inRange(a, s.address, s.size)) || null;
   }
 
   _virtualMappingAt(address) {
-    const a = BigInt(address);
-    // Issue #970: the narrowest mapping wins. A zero-fill child section (e.g. __bss)
-    // inside a broader file-backed segment must not be served raw file bytes.
+    const a = strictBigIntOrNull(address);
+    if (a === null || a < 0n) return null;
     let best = null;
     for (const s of this.sections) {
       if (s.size > 0n && inRange(a, s.address, s.size) && (!best || s.size < best.size)) best = s;

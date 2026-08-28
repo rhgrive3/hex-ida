@@ -54,6 +54,8 @@ export function parseChainedImports(r,dc,image,sharedBudget=null){
     }
     const strp = stringsBase + nameOffset;
     if (strp < base || strp >= base + dc.size) { status.complete=false;status.importsComplete=false;status.importsPartialReason ||= 'invalid-name-offset';continue; }
+    const span = r.bytes.subarray(strp, base + dc.size);
+    if (span.indexOf(0) === -1) { status.complete=false;status.importsComplete=false;status.importsPartialReason ||= 'non-terminated-import-name';continue; }
     const name = r.cstring(strp, base + dc.size - strp);
     if (!name) { status.complete=false;status.importsComplete=false;status.importsPartialReason ||= 'invalid-import-name';continue; }
     if(!budget.take({stringBytes:name.length*2,estimatedHeapBytes:name.length*2+32},'chained-import-name')){status.complete=false;status.importsComplete=false;status.importsPartialReason='metadata-budget';break;}
