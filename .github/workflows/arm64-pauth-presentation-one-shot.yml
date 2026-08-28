@@ -1,0 +1,112 @@
+name: ARM64 PAuth presentation one-shot
+
+on:
+  push:
+    branches:
+      - fix/2215-arm64-pauth-presentation-control
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact branch head
+        uses: actions/checkout@v4
+        with:
+          ref: fix/2215-arm64-pauth-presentation-control
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Apply minimal presentation alias patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('js/arm64.js')
+          s = p.read_text()
+          replacements = [
+            ("/^(braa|brab|blraa|blrab|retaa|retab)$/.test(b);",
+             "/^(braa|brab|braaz|brabz|blraa|blrab|blraaz|blrabz|retaa|retab)$/.test(b);"),
+            ("return b === 'bl' || b === 'blr' || b === 'blraa' || b === 'blrab';",
+             "return b === 'bl' || b === 'blr' || b === 'blraa' || b === 'blrab' || b === 'blraaz' || b === 'blrabz';"),
+            ("cat('b bl br blr ret cbz cbnz tbz tbnz braa brab blraa blrab retaa retab', 'flow');",
+             "cat('b bl br blr ret cbz cbnz tbz tbnz braa brab braaz brabz blraa blrab blraaz blrabz retaa retab', 'flow');"),
+            ("if (/^(braa|brab)$/.test(base)) return HANDLERS.br;",
+             "if (/^(braa|brab|braaz|brabz)$/.test(base)) return HANDLERS.br;"),
+            ("if (/^(blraa|blrab)$/.test(base)) return HANDLERS.blr;",
+             "if (/^(blraa|blrab|blraaz|blrabz)$/.test(base)) return HANDLERS.blr;"),
+          ]
+          for old, new in replacements:
+              if s.count(old) != 1:
+                  raise SystemExit(f'expected exactly one match for: {old}')
+              s = s.replace(old, new)
+          p.write_text(s)
+          PY
+
+          cat > tests/arm64-pauth-presentation-control.test.mjs <<'EOF'
+          import assert from 'node:assert/strict';
+          import { isBranch, isCall, categoryOf, brief } from '../js/arm64.js';
+
+          const branchAliases = ['braaz', 'brabz', 'blraaz', 'blrabz'];
+          for (const mnemonic of branchAliases) {
+            assert.equal(isBranch(mnemonic), true, `${mnemonic} must be classified as a branch`);
+            assert.equal(categoryOf(mnemonic), 'flow', `${mnemonic} must be categorized as control flow`);
+          }
+
+          assert.equal(isCall('blraaz'), true);
+          assert.equal(isCall('blrabz'), true);
+          assert.equal(isCall('braaz'), false);
+          assert.equal(isCall('brabz'), false);
+
+          assert.equal(brief('braaz', 'x16', 'pseudo'), 'goto *x16');
+          assert.equal(brief('brabz', 'x17', 'pseudo'), 'goto *x17');
+          assert.equal(brief('blraaz', 'x16', 'pseudo'), '(*x16)()');
+          assert.equal(brief('blrabz', 'x17', 'pseudo'), '(*x17)()');
+
+          // Existing authenticated forms remain unchanged.
+          for (const mnemonic of ['braa', 'brab', 'blraa', 'blrab']) {
+            assert.equal(isBranch(mnemonic), true, `${mnemonic} regression`);
+            assert.equal(categoryOf(mnemonic), 'flow', `${mnemonic} category regression`);
+          }
+          assert.equal(isCall('blraa'), true);
+          assert.equal(isCall('blrab'), true);
+
+          console.log('ARM64 PAuth presentation control aliases: PASS');
+          EOF
+
+          node tests/arm64-pauth-presentation-control.test.mjs
+
+      - name: Commit functional patch and remove one-shot runner
+        shell: bash
+        env:
+          START_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          workflow='.github/workflows/arm64-pauth-presentation-one-shot.yml'
+          git rm -- "$workflow"
+
+          unexpected="$(git status --porcelain --untracked-files=all | awk '{print $2}' | grep -Ev '^(js/arm64\.js|tests/arm64-pauth-presentation-control\.test\.mjs|\.github/workflows/arm64-pauth-presentation-one-shot\.yml)$' || true)"
+          if [[ -n "$unexpected" ]]; then
+            echo 'Unexpected files changed by presentation fix:' >&2
+            printf '%s\n' "$unexpected" >&2
+            exit 1
+          fi
+
+          git fetch origin fix/2215-arm64-pauth-presentation-control
+          if [[ "$(git rev-parse FETCH_HEAD)" != "$START_SHA" ]]; then
+            echo 'Branch moved during one-shot patch; refusing stale push.' >&2
+            exit 1
+          fi
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- js/arm64.js tests/arm64-pauth-presentation-control.test.mjs
+          git commit -m 'fix(arm64): classify zero-modifier PAuth control aliases'
+          git push origin HEAD:fix/2215-arm64-pauth-presentation-control
