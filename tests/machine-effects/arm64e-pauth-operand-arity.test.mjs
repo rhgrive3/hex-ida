@@ -48,6 +48,18 @@ function assertFailClosed(mnemonic, names, expected) {
   assert.equal(bundle.unknownEffects?.detail?.actualOperandCount, names.length);
 }
 
+function assertClassFailClosed(mnemonic, names, operandIndex, expectedClass) {
+  const bundle = lift(mnemonic, names);
+  assert.ok(bundle, `${mnemonic}: invalid register class must produce an explicit fail-closed bundle`);
+  assert.equal(bundle.completeness, 'partial', `${mnemonic}: invalid register class is partial`);
+  assert.equal(bundle.metadata?.failClosed, true, `${mnemonic}: invalid register class is marked failClosed`);
+  assert.equal(bundle.metadata?.encodingValidation, 'operand-register-class');
+  assert.equal(bundle.operations.length, 0, `${mnemonic}: invalid register class produces no semantic operations`);
+  assert.equal(bundle.unknownEffects?.reason, `arm64e-${mnemonic}-operand-register-class-invalid`);
+  assert.equal(bundle.unknownEffects?.detail?.operandIndex, operandIndex);
+  assert.equal(bundle.unknownEffects?.detail?.expectedRegisterClass, expectedClass);
+}
+
 for (const [mnemonic, expected] of Object.entries(arities)) {
   const valid = operandNames(mnemonic, expected);
   assert.equal(valid.length, expected, `${mnemonic}: test fixture arity`);
@@ -72,5 +84,48 @@ for (const [mnemonic, operands] of [
   const bundle = lift(mnemonic, operands);
   assert.equal(bundle.operations.length, 0, `${mnemonic}: minimal extra-operand counterexample stays effect-free`);
 }
+
+// Register 31 has instruction-position-specific semantics in A64 PAuth encodings.
+// Ordinary X fields may denote XZR; modifier fields spelled <Xn|SP> or <Xm|SP>
+// use encoding 31 as SP instead and therefore do not accept XZR.
+for (const [mnemonic, operands, operandIndex, expectedClass] of [
+  ['pacia', ['sp','x1'], 0, 'x-or-zr'],
+  ['autia', ['sp','x1'], 0, 'x-or-zr'],
+  ['paciza', ['sp'], 0, 'x-or-zr'],
+  ['xpaci', ['sp'], 0, 'x-or-zr'],
+  ['braaz', ['sp'], 0, 'x-or-zr'],
+  ['braa', ['sp','x1'], 0, 'x-or-zr'],
+  ['blraaz', ['sp'], 0, 'x-or-zr'],
+  ['blraa', ['sp','x1'], 0, 'x-or-zr'],
+  ['pacga', ['x0','sp','x2'], 1, 'x-or-zr'],
+  ['pacia', ['x0','xzr'], 1, 'x-or-sp'],
+  ['braa', ['x16','xzr'], 1, 'x-or-sp'],
+  ['pacga', ['x0','x1','xzr'], 2, 'x-or-sp'],
+]) assertClassFailClosed(mnemonic, operands, operandIndex, expectedClass);
+
+for (const [mnemonic, operands] of [
+  ['pacia', ['x0','sp']],
+  ['autia', ['x0','sp']],
+  ['braa', ['x16','sp']],
+  ['blraa', ['x16','sp']],
+  ['pacga', ['x0','x1','sp']],
+  ['pacia', ['xzr','sp']],
+  ['braaz', ['xzr']],
+  ['pacga', ['xzr','xzr','sp']],
+]) {
+  const bundle = lift(mnemonic, operands);
+  assert.ok(bundle, `${mnemonic}: architecturally valid register class must lift`);
+  assert.notEqual(bundle.metadata?.failClosed, true, `${mnemonic}: valid SP/XZR position remains accepted`);
+  assert.ok(bundle.operations.length > 0, `${mnemonic}: valid register-class form keeps semantics`);
+}
+
+for (const [mnemonic, operands, operandIndex, expectedClass] of [
+  ['pacia', ['w0','x1'], 0, 'x-or-zr'],
+  ['pacia', ['x0','w1'], 1, 'x-or-sp'],
+  ['braaz', ['w16'], 0, 'x-or-zr'],
+  ['braa', ['x16','w17'], 1, 'x-or-sp'],
+  ['pacga', ['x0','w1','x2'], 1, 'x-or-zr'],
+  ['pacga', ['x0','x1','w2'], 2, 'x-or-sp'],
+]) assertClassFailClosed(mnemonic, operands, operandIndex, expectedClass);
 
 console.log('arm64e-pauth-operand-arity: PASS');
