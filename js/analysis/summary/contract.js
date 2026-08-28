@@ -69,6 +69,40 @@ function booleanKnowledge(value, code) {
   return null;
 }
 
+/**
+ * Canonical proof classification for a semantic call target universe.
+ *
+ * A singleton candidate is not proof that the universe is singleton. Direct
+ * identity is exact when there is no runtime target value. An indirect target
+ * set is exact only when the semantic call itself is complete; a partial call
+ * must retain an unknown target outside the currently recovered candidates.
+ * Summary construction and points-to recovery share this helper so the two
+ * consumers cannot disagree about when a callee may be treated as exact.
+ */
+export function classifyCallTargetProof(call = {}) {
+  if (!call || typeof call !== 'object' || Array.isArray(call)) {
+    return deepFreeze({ kind: 'unknown', candidateEntityIds: [], exhaustive: false, exactSingletonEntityId: null });
+  }
+  const candidates = [];
+  for (const value of call.targetEntityIds ?? []) candidates.push(String(value));
+  for (const value of [call.targetEntityId, call.callee, call.target]) {
+    if (value != null && String(value).trim()) candidates.push(String(value));
+  }
+  const candidateEntityIds = [...new Set(candidates.filter(Boolean))].sort();
+  const targetValueIds = [...new Set((call.targetValueIds ?? []).map(String).filter(Boolean))].sort();
+  const indirect = targetValueIds.length > 0;
+  const kind = indirect ? 'indirect' : candidateEntityIds.length ? 'direct' : 'unknown';
+  const exhaustive = kind === 'direct'
+    ? candidateEntityIds.length === 1
+    : kind === 'indirect' && call.completeness === 'complete';
+  return deepFreeze({
+    kind,
+    candidateEntityIds,
+    exhaustive,
+    exactSingletonEntityId: exhaustive && candidateEntityIds.length === 1 ? candidateEntityIds[0] : null,
+  });
+}
+
 /** One memory region a function reads or writes, with why we believe it. */
 export function createMemoryEffect(input = {}) {
   const source = nonEmpty(input.source ?? 'proven-summary', 'function-summary-effect-source-required');
@@ -123,26 +157,57 @@ export function createIndirectCallSet(input = {}) {
   });
 }
 
+function createReturnProvenance(input = {}) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) fail('function-summary-invalid-return-provenance');
+  const kind = nonEmpty(input.kind, 'function-summary-invalid-return-provenance-kind');
+  const argIndex = input.argIndex == null ? null : Number(input.argIndex);
+  const returnIndex = input.returnIndex == null ? null : Number(input.returnIndex);
+  const offset = input.offset == null ? null : BigInt(input.offset);
+  const rootEntityId = input.rootEntityId == null ? null : String(input.rootEntityId);
+  if (input.argIndex != null && (!Number.isSafeInteger(argIndex) || argIndex < 0)) {
+    fail('function-summary-invalid-return-provenance-arg-index');
+  }
+  if (input.returnIndex != null && (!Number.isSafeInteger(returnIndex) || returnIndex < 0)) {
+    fail('function-summary-invalid-return-provenance-return-index');
+  }
+  const out = {
+    kind,
+    argIndex: Number.isSafeInteger(argIndex) && argIndex >= 0 ? argIndex : null,
+    offset: offset == null ? null : offset.toString(10),
+    rootEntityId,
+  };
+  // Keep old summaries wire-compatible: an omitted returnIndex still means the
+  // primary return position. New producers set it explicitly for multi-return
+  // ABIs so alternatives from different return positions never get joined.
+  if (returnIndex != null) out.returnIndex = returnIndex;
+  return deepFreeze(out);
+}
+
+function canonicalReturnProvenance(values) {
+  const byKey = new Map();
+  for (const value of values) {
+    const key = [
+      value.returnIndex ?? 0,
+      value.kind,
+      value.argIndex ?? '',
+      value.offset ?? '',
+      value.rootEntityId ?? '',
+    ].join('\u0000');
+    if (!byKey.has(key)) byKey.set(key, value);
+  }
+  return [...byKey.values()].sort((left, right) => {
+    const leftKey = [left.returnIndex ?? 0, left.kind, left.argIndex ?? -1, left.offset ?? '', left.rootEntityId ?? ''].join('\u0000');
+    const rightKey = [right.returnIndex ?? 0, right.kind, right.argIndex ?? -1, right.offset ?? '', right.rootEntityId ?? ''].join('\u0000');
+    return leftKey.localeCompare(rightKey);
+  });
+}
+
 /**
  * Builds one function summary.
  *
  * The consistency checks at the end are the contract's whole point: they make
  * "we did not look" structurally distinguishable from "there is nothing there".
  */
-function createReturnProvenance(input = {}) {
-  if (!input || typeof input !== 'object') fail('function-summary-invalid-return-provenance');
-  const kind = nonEmpty(input.kind, 'function-summary-invalid-return-provenance-kind');
-  const argIndex = input.argIndex == null ? null : Number(input.argIndex);
-  const offset = input.offset == null ? null : BigInt(input.offset);
-  const rootEntityId = input.rootEntityId == null ? null : String(input.rootEntityId);
-  return deepFreeze({
-    kind,
-    argIndex: Number.isSafeInteger(argIndex) && argIndex >= 0 ? argIndex : null,
-    offset: offset == null ? null : offset.toString(10),
-    rootEntityId,
-  });
-}
-
 export function createFunctionSummary(input = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) fail('function-summary-invalid');
   // A schema marker is not proof that the envelope came through the canonical
@@ -153,7 +218,9 @@ export function createFunctionSummary(input = {}) {
   const unknownCallEffects = list(input.unknownCallEffects, 'function-summary-invalid-unknown-calls').map(createUnknownCallEffect);
   const memoryReadRegions = list(input.memoryReadRegions, 'function-summary-invalid-read-regions').map(createMemoryEffect);
   const memoryWriteRegions = list(input.memoryWriteRegions, 'function-summary-invalid-write-regions').map(createMemoryEffect);
-  const returnProvenance = list(input.returnProvenance, 'function-summary-invalid-return-provenance').map(createReturnProvenance);
+  const returnProvenance = canonicalReturnProvenance(
+    list(input.returnProvenance, 'function-summary-invalid-return-provenance').map(createReturnProvenance),
+  );
 
   const summary = {
     schemaVersion: FUNCTION_SUMMARY_SCHEMA_VERSION,
@@ -204,19 +271,32 @@ export function createFunctionSummary(input = {}) {
 
 /** Stable identity for dependency edges between caller and callee summaries. */
 export function functionSummaryDigest(summary) {
+  // The digest is the semantic dependency identity. Every consumer-visible
+  // FunctionSummary field belongs here; otherwise a callee can change meaning
+  // without invalidating callers or advancing a recursive fixed point.
   return stableDigest({
     schemaVersion: summary.schemaVersion,
+    contractVersion: summary.contractVersion,
     functionId: summary.functionId,
+    inputs: summary.inputs,
+    returnValues: summary.returnValues,
+    returnProvenance: summary.returnProvenance,
+    registerEffects: summary.registerEffects,
     memoryReadRegions: summary.memoryReadRegions,
     memoryWriteRegions: summary.memoryWriteRegions,
     escapes: summary.escapes,
+    allocations: summary.allocations,
+    frees: summary.frees,
     directCalls: summary.directCalls,
     indirectCallSets: summary.indirectCallSets,
     unknownCallEffects: summary.unknownCallEffects,
     noreturn: summary.noreturn,
     mayThrow: summary.mayThrow,
     stackDelta: summary.stackDelta,
+    semanticFacts: summary.semanticFacts,
     completeness: summary.status.completeness,
+    stopReason: summary.status.stopReason,
+    analyzerId: summary.status.analyzerId,
     analyzerVersion: summary.status.analyzerVersion,
   });
 }
