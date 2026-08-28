@@ -32,7 +32,7 @@ import {
 } from './contract.js';
 
 export const INTERPROCEDURAL_ANALYZER_ID = 'phase7.summary.interprocedural';
-export const INTERPROCEDURAL_ANALYZER_VERSION = '1.0.1';
+export const INTERPROCEDURAL_ANALYZER_VERSION = '1.0.2';
 
 export const INTERPROCEDURAL_DEFAULT_BUDGET = Object.freeze({
   maxIterationsPerComponent: 16,
@@ -376,6 +376,11 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
     functionId,
     inputs: local.inputs,
     returnValues: local.returnValues,
+    // Return provenance is a local return-expression fact. Composition must
+    // preserve it exactly once the component converges; otherwise the solved
+    // A3 summary becomes less informative than its local input. An unconverged
+    // optimistic state is never allowed to publish exact provenance.
+    returnProvenance: unconverged ? [] : local.returnProvenance,
     registerEffects: local.registerEffects,
     memoryReadRegions: mergeEffects(reads, limits.maxEffectsPerSummary),
     memoryWriteRegions: mergeEffects(writes, limits.maxEffectsPerSummary),
