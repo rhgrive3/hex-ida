@@ -1,0 +1,37 @@
+name: tmp-2328-semantic-restack
+on:
+  push:
+    branches: [tmp/2328-semantic-restack]
+permissions:
+  contents: write
+jobs:
+  restack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Build current-main semantic restack
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main fix/2326-arm64-atomic-register-modifiers
+          git reset --hard origin/main
+          git show origin/fix/2326-arm64-atomic-register-modifiers:tests/machine-effects/arm64-atomic-register-modifier-encoding.test.mjs > tests/machine-effects/arm64-atomic-register-modifier-encoding.test.mjs
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('js/targets/architecture/arm64/effects/atomic.js')
+          s = p.read_text()
+          old = "if (kind === 'reg') return !!arm64RegisterOperand(operand);"
+          new = "if (kind === 'reg') return operand?.shift == null && operand?.extend == null && !!arm64RegisterOperand(operand);"
+          count = s.count(old)
+          if count != 1:
+              raise SystemExit(f'expected exactly one atomic reg-shape predicate, found {count}')
+          p.write_text(s.replace(old, new, 1))
+          PY
+          git add js/targets/architecture/arm64/effects/atomic.js tests/machine-effects/arm64-atomic-register-modifier-encoding.test.mjs
+          git diff --cached --check
+          git commit -m "fix(arm64): reject modifiers on atomic data registers"
+          git push --force origin HEAD:fix/2326-arm64-atomic-register-modifiers
