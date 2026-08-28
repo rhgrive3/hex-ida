@@ -22,7 +22,7 @@ const INTEGRATION_PREFIXES = Object.freeze([
 function isValidBranchName(branch) {
   if (typeof branch !== 'string' || !branch) return false;
   if (branch.includes('..') || branch.includes('@{') || branch.includes('\\') || /[\x00-\x20\x7f ~^:?*[]/.test(branch)) return false;
-  if (branch.startsWith('/') || branch.endsWith('/') || branch.endsWith('.lock') || branch.includes('//')) return false;
+  if (branch.startsWith('/') || branch.endsWith('.lock') || branch.includes('//')) return false;
   return true;
 }
 
