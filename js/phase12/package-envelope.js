@@ -175,9 +175,17 @@ export function validatePackageEnvelope(envelope, options = {}) {
 }
 
 export function importPhase12Package(value, options = {}) {
-  const parsed = typeof value === 'object' && value !== null && !(value instanceof Uint8Array) && !(value instanceof ArrayBuffer) && !ArrayBuffer.isView(value)
-    ? { value }
-    : parseBoundedPackageInput(value, options);
+  let parsed;
+  if (typeof value === 'object' && value !== null && !(value instanceof Uint8Array) && !(value instanceof ArrayBuffer) && !ArrayBuffer.isView(value)) {
+    const maxBytes = positiveLimit(options.maxBytes, MAX_PACKAGE_INPUT_BYTES, 'maxBytes', 'package-envelope-resource-limit-invalid');
+    const encoded = stableStringify(value);
+    if (new TextEncoder().encode(encoded).byteLength > maxBytes) {
+      throw new PackageValidationError('package-input-too-large', `package object exceeds maximum size of ${maxBytes} bytes`);
+    }
+    parsed = { value };
+  } else {
+    parsed = parseBoundedPackageInput(value, options);
+  }
   const input = parsed.value;
   if (input?.format === 'hex-knowledge-pack') {
     const legacy = importKnowledgePack(input);
@@ -226,11 +234,17 @@ export function createPackageArtifactDescriptor(envelope, input = {}) {
   });
 }
 
+const ALLOWED_OUTPUT_FIELDS = new Set(['schemaVersion', 'provenance', 'completeness', 'targetIdentity', 'items', 'results', 'unique']);
+const ALLOWED_ITEM_FIELDS = new Set(['id', 'targetIdentity', 'value', 'confidence', 'metadata', 'evidence', 'provenance']);
+
 export function validateProviderOutput(value, options = {}) {
   try {
     const maxEntries = positiveLimit(options.maxEntries, 100_000, 'maxEntries', 'provider-output-resource-limit-invalid');
     const maxBytes = positiveLimit(options.maxBytes, 8 * 1024 * 1024, 'maxBytes', 'provider-output-resource-limit-invalid');
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new PackageValidationError('provider-output-schema-invalid');
+    for (const key of Object.keys(value)) {
+      if (!ALLOWED_OUTPUT_FIELDS.has(key)) throw new PackageValidationError('provider-output-unknown-field', `unknown field: ${key}`);
+    }
     const encoded = stableStringify(value);
     if (new TextEncoder().encode(encoded).byteLength > maxBytes) throw new PackageValidationError('provider-output-too-large');
     const hasItems = Array.isArray(value.items);
@@ -244,6 +258,9 @@ export function validateProviderOutput(value, options = {}) {
     if (value.completeness !== 'complete' && value.unique === true) throw new PackageValidationError('provider-output-incomplete-unique-invalid');
     for (const item of entries) {
       if (!item || typeof item !== 'object') throw new PackageValidationError('provider-output-item-invalid');
+      for (const key of Object.keys(item)) {
+        if (!ALLOWED_ITEM_FIELDS.has(key)) throw new PackageValidationError('provider-output-item-unknown-field', `unknown item field: ${key}`);
+      }
       if (typeof item.id !== 'string' || item.id.trim() === '' || item.targetIdentity == null) throw new PackageValidationError('provider-output-item-identity-required');
       if (value.targetIdentity != null && item.targetIdentity !== value.targetIdentity) throw new PackageValidationError('provider-output-item-target-mismatch');
     }

@@ -40,6 +40,26 @@ async function verify(name, path, spec) {
   return digest;
 }
 
+async function fetchWithHttpsRedirects(initialUrl, maxRedirects = 10) {
+  let currentUrl = initialUrl;
+  let redirects = 0;
+  while (true) {
+    if (!/^https:\/\//i.test(currentUrl)) {
+      throw new Error(`Insecure redirect URL or downgrade forbidden: ${currentUrl}`);
+    }
+    const response = await fetch(currentUrl, { redirect: 'manual' });
+    if ([301, 302, 303, 307, 308].includes(response.status)) {
+      redirects++;
+      if (redirects > maxRedirects) throw new Error('Too many HTTP redirects');
+      const location = response.headers.get('location');
+      if (!location) throw new Error('Redirect missing Location header');
+      currentUrl = new URL(location, currentUrl).href;
+      continue;
+    }
+    return response;
+  }
+}
+
 async function fetchFixture(name, spec) {
   const target = join(outputDir, spec.file);
   try {
@@ -57,7 +77,7 @@ async function fetchFixture(name, spec) {
   await mkdir(dirname(target), { recursive:true });
   const temp = `${target}.partial-${process.pid}`;
   await rm(temp, { force:true });
-  const response = await fetch(url, { redirect:'follow' });
+  const response = await fetchWithHttpsRedirects(url);
   if (!response.ok || !response.body) throw new Error(`${name}: download failed with HTTP ${response.status}`);
 
   const hash = createHash('sha256');

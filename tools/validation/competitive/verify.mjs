@@ -195,7 +195,9 @@ export function verifyCompetitiveScorecard(scorecard, profile = loadCompetitiveP
   object(scorecard, 'scorecard-object');
   if (scorecard.schemaVersion !== SCORECARD_SCHEMA) fail('invalid-scorecard-schema', String(scorecard.schemaVersion));
   if (scorecard.profileId !== profile.profileId) fail('scorecard-profile-mismatch');
-  for (const key of ['gitSha', 'treeSha', 'runtimeHardwareClass']) requiredText(scorecard[key], `scorecard-${key}`);
+  for (const key of ['gitSha', 'treeSha', 'runtimeHardwareClass', 'generatedAt']) requiredText(scorecard[key], `scorecard-${key}`);
+  const genTime = Date.parse(scorecard.generatedAt);
+  if (!Number.isFinite(genTime) || Number.isNaN(genTime) || isNaN(new Date(scorecard.generatedAt).getTime())) fail('scorecard-generatedAt-invalid');
   if (!HEX_SHA_RE.test(scorecard.gitSha) || !HEX_SHA_RE.test(scorecard.treeSha)) fail('scorecard-identity-invalid');
   const expectedIdentity = options.expectedGitSha || options.expectedTreeSha
     ? { gitSha: options.expectedGitSha, treeSha: options.expectedTreeSha }

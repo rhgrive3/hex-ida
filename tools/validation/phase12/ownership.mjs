@@ -121,8 +121,19 @@ function exactSha(value, label, root = ROOT) {
 export function inventoryFromGit(baseSha, headSha, root = ROOT) {
   const base = exactSha(baseSha, 'baseSha', root);
   const head = exactSha(headSha, 'headSha', root);
-  const output = git(['diff', '--name-only', `${base}..${head}`], root);
-  return output ? output.split('\n').map(normalize).filter(Boolean).sort() : [];
+  const output = git(['diff', '--name-status', `${base}..${head}`], root);
+  if (!output) return [];
+  const files = [];
+  for (const line of output.split('\n')) {
+    const parts = line.trim().split(/\t+/);
+    if (parts.length >= 2) {
+      for (let i = 1; i < parts.length; i++) {
+        const file = normalize(parts[i]);
+        if (file) files.push(file);
+      }
+    }
+  }
+  return [...new Set(files)].sort();
 }
 
 export function inventoryDigest(files) {

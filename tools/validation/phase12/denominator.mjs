@@ -165,11 +165,16 @@ function pathValue(value, dottedPath) {
 
 function readSource(root, relativePath, failures, id) {
   const relative = String(relativePath || '');
-  if (!relative || path.isAbsolute(relative) || relative.split('/').includes('..')) {
+  if (!relative || path.isAbsolute(relative)) {
     failures.push(`${id}:source-path-invalid`);
     return null;
   }
   const absolute = path.resolve(root, relative);
+  const relFromRoot = path.relative(path.resolve(root), absolute);
+  if (relFromRoot.startsWith('..') || path.isAbsolute(relFromRoot) || relFromRoot.split(/[\\/]/).includes('..')) {
+    failures.push(`${id}:source-path-invalid`);
+    return null;
+  }
   try { return fs.readFileSync(absolute, 'utf8'); }
   catch { failures.push(`${id}:source-missing:${relative}`); return null; }
 }

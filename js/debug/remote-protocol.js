@@ -254,7 +254,7 @@ export class RemoteProtocolClient {
     try { packet = decodeWireValue(wire); } catch { return false; }
     if (packet.type === 'response') {
       const pending = this.pending.get(packet.id);
-      if (!pending || pending.epoch !== this.epoch) return false;
+      if (!pending || pending.epoch !== packet.epoch || packet.epoch !== this.epoch) return false;
       this._cleanupPending(packet.id, pending);
       if (packet.error) pending.reject(new DebugAdapterError(String(packet.error.code || 'remote-error'), String(packet.error.message || 'remote error').slice(0,2048), packet.error.details || null));
       else pending.resolve(packet.result);

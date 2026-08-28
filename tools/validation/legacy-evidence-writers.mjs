@@ -46,9 +46,11 @@ function stripComments(lines) {
 function evidenceStoreBindings(full, rootDir, codeLines) {
   const bindings = new Set(["EvidenceStore"]);
   const evidenceModule = path.resolve(rootDir, "ai/evidence.js");
-  for (const line of codeLines) {
-    const match = /\bimport\s*\{([^}]*)\}\s*from\s*(["'])([^"']+)\2/.exec(line);
-    if (!match || !match[3].startsWith(".")) continue;
+  const fullCode = codeLines.join('\n');
+  const importRegex = /\bimport\s*\{([^}]*)\}\s*from\s*(["'])([^"']+)\2/gs;
+  let match;
+  while ((match = importRegex.exec(fullCode)) !== null) {
+    if (!match[3].startsWith(".")) continue;
     let target = path.resolve(path.dirname(full), match[3]);
     if (!path.extname(target)) target += ".js";
     if (path.normalize(target) !== path.normalize(evidenceModule)) continue;

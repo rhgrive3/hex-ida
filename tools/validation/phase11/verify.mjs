@@ -68,6 +68,16 @@ function parseArgs(argv) {
   return { expectSha, shadow };
 }
 
+function isUnverifiedPath(file) {
+  const norm = file.replace(/\\/g, '/');
+  return UNVERIFIED_PATHS.some((pattern) => {
+    if (pattern.endsWith('/')) {
+      return norm === pattern.slice(0, -1) || norm.startsWith(pattern);
+    }
+    return norm === pattern;
+  });
+}
+
 function getProductIdentity() {
   const commitSha = git(['rev-parse', 'HEAD']) || '0000000000000000000000000000000000000000';
   const treeSha = git(['rev-parse', 'HEAD^{tree}']) || '0000000000000000000000000000000000000000';
@@ -77,7 +87,7 @@ function getProductIdentity() {
     .map((line) => line.trim())
     .filter(Boolean)
     .map((line) => line.slice(2).trim())
-    .filter((file) => !UNVERIFIED_PATHS.some((prefix) => file.startsWith(prefix)));
+    .filter((file) => !isUnverifiedPath(file));
   return Object.freeze({ commitSha, treeSha, clean: dirtyFiles.length === 0, dirtyFiles });
 }
 

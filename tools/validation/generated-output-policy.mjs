@@ -19,12 +19,20 @@ const INTEGRATION_PREFIXES = Object.freeze([
   'dev-agent-hardening/integration/',
 ]);
 
+function isValidBranchName(branch) {
+  if (typeof branch !== 'string' || !branch) return false;
+  if (branch.includes('..') || branch.includes('@{') || branch.includes('\\') || /[\x00-\x20\x7f ~^:?*[]/.test(branch)) return false;
+  if (branch.startsWith('/') || branch.endsWith('/') || branch.endsWith('.lock') || branch.includes('//')) return false;
+  return true;
+}
+
 export function generatedOutputMode({ eventName = '', headRef = '', ref = '' } = {}) {
   const event = String(eventName || '');
   const branch = String(headRef || '');
   const refName = String(ref || '');
 
   if (event === 'pull_request'
+    && isValidBranchName(branch)
     && COMPONENT_PREFIXES.some((prefix) => branch.startsWith(prefix))
     && !INTEGRATION_PREFIXES.some((prefix) => branch.startsWith(prefix))) {
     return GENERATED_OUTPUT_MODE.EPHEMERAL;

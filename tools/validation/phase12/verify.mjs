@@ -24,7 +24,16 @@ function git(args) {
 export function getProductIdentity() {
   const commitSha = git(['rev-parse', 'HEAD']);
   const treeSha = git(['rev-parse', 'HEAD^{tree}']);
-  const dirtyFiles = (git(['status', '--porcelain']) || '').split('\n').map((line) => line.trim()).filter(Boolean).map((line) => line.slice(2).trim()).filter((file) => !UNVERIFIED_PATHS.some((prefix) => file.startsWith(prefix)));
+  const dirtyFiles = (git(['status', '--porcelain']) || '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .flatMap((line) => {
+      const filePart = line.slice(2).trim();
+      if (filePart.includes(' -> ')) return filePart.split(' -> ').map((s) => s.trim());
+      return [filePart];
+    })
+    .filter((file) => !UNVERIFIED_PATHS.some((prefix) => file.startsWith(prefix)));
   return Object.freeze({ commitSha, treeSha, clean: dirtyFiles.length === 0, dirtyFiles });
 }
 
