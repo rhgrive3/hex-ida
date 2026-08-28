@@ -550,7 +550,7 @@ function msrOperandShapeValid(ops) {
   if (ops.length !== 2) return false;
   const sys = sysRegText(ops[0]);
   if (!sys) return false;
-  if (isSystemXt(ops[1])) return !PSTATE_IMMEDIATE_CRM_DOMAINS.has(sys);
+  if (isSystemXt(ops[1])) return true;
   return msrPstateImmediateShapeValid(sys, ops[1]);
 }
 function maintenanceOperandShapeValid(mnemonic, ops) {
