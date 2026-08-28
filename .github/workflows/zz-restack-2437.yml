@@ -1,0 +1,46 @@
+name: restack-2437
+on:
+  push:
+    branches: [restack/2437-current-main]
+permissions:
+  contents: write
+jobs:
+  restack:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - name: Apply barrier finite-domain validation
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs=require('fs'); const p='js/targets/architecture/arm64/effects/system.js'; let s=fs.readFileSync(p,'utf8');
+          let a="const BARRIERS = new Set(['dmb','dsb','isb']);";
+          let b=a+"\nconst DATA_BARRIER_OPTIONS = new Set(['sy','st','ld','ish','ishst','ishld','nsh','nshst','nshld','osh','oshst','oshld']);\nconst DSB_NXS_OPTIONS = new Set(['oshnxs','nshnxs','ishnxs','synxs']);";
+          if(!s.includes(a)) throw new Error('barrier constants checkpoint missing'); s=s.replace(a,b);
+          a=`  if (BARRIERS.has(mnemonic)) {\n    if (ops.length > 1) return { reason:\`${'${mnemonic}'}-operand-shape-invalid\`, categories:['other'] };\n    if (ops.length === 1) {\n      const op = ops[0];\n      if (op?.k === 'reg' || op?.cls || op?.shift != null || op?.extend != null) {\n        return { reason:\`${'${mnemonic}'}-operand-shape-invalid\`, categories:['other'] };\n      }\n    }\n    return null;\n  }`;
+          b=`  if (BARRIERS.has(mnemonic)) {\n    if (ops.length === 0) return null;\n    if (ops.length !== 1) return { reason:\`${'${mnemonic}'}-operand-shape-invalid\`, categories:['other'] };\n    const op = ops[0];\n    if (op?.k === 'imm') {\n      if (!isPlainImmediate(op)) return { reason:\`${'${mnemonic}'}-operand-shape-invalid\`, categories:['other'] };\n      const value = BigInt(op.value);\n      return value >= 0n && value <= 15n ? null : { reason:\`${'${mnemonic}'}-operand-shape-invalid\`, categories:['other'] };\n    }\n    const option = textOperand(op);\n    const valid = mnemonic === 'isb'\n      ? option === 'sy'\n      : DATA_BARRIER_OPTIONS.has(option) || (mnemonic === 'dsb' && DSB_NXS_OPTIONS.has(option));\n    return valid ? null : { reason:\`${'${mnemonic}'}-operand-shape-invalid\`, categories:['other'] };\n  }`;
+          if(!s.includes(a)) throw new Error('barrier shape checkpoint missing'); fs.writeFileSync(p,s.replace(a,b));
+          NODE
+          cat > tests/machine-effects/arm64-system-barrier-domain.test.mjs <<'EOF'
+          import assert from 'node:assert/strict';
+          import { parseOperands } from '../../js/arm64.js';
+          import { liftArm64SystemEffects } from '../../js/targets/architecture/arm64/effects/system.js';
+          let sequence=0;
+          function lift(mnemonic,operands=''){const instructionId=`arm64-system-barrier-domain-${++sequence}`;return liftArm64SystemEffects({instructionId,mnemonic,operands,ops:parseOperands(operands),mode:'a64',origin:{instructionIds:[instructionId]}});}
+          for(const [m,o] of [['dmb',''],['dmb','sy'],['dmb','ish'],['dmb','#0'],['dmb','#15'],['dsb',''],['dsb','sy'],['dsb','oshnxs'],['dsb','nshnxs'],['dsb','ishnxs'],['dsb','synxs'],['dsb','#0'],['dsb','#4'],['dsb','#15'],['isb',''],['isb','sy'],['isb','#0'],['isb','#15']]){const e=lift(m,o);assert.ok(e);assert.notEqual(e.completeness,'partial');assert.equal(e.operations.some(x=>x.kind==='barrier'),true);}
+          for(const [m,o] of [['dmb','foo'],['dsb','foo'],['isb','foo'],['dmb','oshnxs'],['isb','synxs'],['dmb','#-1'],['dsb','#16'],['isb','#999'],['dmb','sy, lsl #1'],['dsb','#1, lsl #1'],['isb','sy, uxtw'],['dmb','x0'],['isb','sy, x0']]){const e=lift(m,o);assert.ok(e);assert.equal(e.completeness,'partial');assert.equal(e.operations.some(x=>x.kind==='barrier'),false);}
+          console.log('arm64 system barrier domain: PASS');
+          EOF
+      - run: node tests/machine-effects/arm64-system-barrier-domain.test.mjs
+      - name: Commit functional restack only
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          rm .github/workflows/zz-restack-2437.yml
+          git add js/targets/architecture/arm64/effects/system.js tests/machine-effects/arm64-system-barrier-domain.test.mjs .github/workflows/zz-restack-2437.yml
+          git commit -m 'fix(arm64): enforce system barrier operand domains'
+          git push origin HEAD:restack/2437-current-main
