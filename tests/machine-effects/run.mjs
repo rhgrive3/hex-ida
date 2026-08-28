@@ -17,14 +17,24 @@ if (files.length === 0) throw new Error('machine-effects: no Phase 2 tests disco
 // separate cores without sharing module/global state. Keep concurrency bounded
 // to avoid oversubscribing hosted CI runners and preserve deterministic output
 // by publishing captured results in filename order after every worker settles.
+//
+// The release-report proof inspects the repository's exact clean-tree identity.
+// It must run after every other MachineEffects process has settled; otherwise a
+// concurrent proof that temporarily materializes/cleans an artifact can create
+// a false release-working-tree-dirty result without leaving the repository dirty.
+const exclusiveFiles = new Set(['independent-oracle-report.test.mjs']);
+const parallelIndexes = files
+  .map((_, index) => index)
+  .filter((index) => !exclusiveFiles.has(files[index]));
 const concurrency = Math.max(1, Math.min(4, os.availableParallelism()));
 const results = new Array(files.length);
-let nextIndex = 0;
+let nextParallelIndex = 0;
 
 async function worker() {
   while (true) {
-    const index = nextIndex++;
-    if (index >= files.length) return;
+    const slot = nextParallelIndex++;
+    if (slot >= parallelIndexes.length) return;
+    const index = parallelIndexes[slot];
     results[index] = await runFile(files[index]);
   }
 }
@@ -52,7 +62,11 @@ function runFile(file) {
   });
 }
 
-await Promise.all(Array.from({ length: Math.min(concurrency, files.length) }, () => worker()));
+await Promise.all(Array.from({ length: Math.min(concurrency, parallelIndexes.length) }, () => worker()));
+
+for (let index = 0; index < files.length; index += 1) {
+  if (exclusiveFiles.has(files[index])) results[index] = await runFile(files[index]);
+}
 
 const failures = [];
 for (const result of results) {
