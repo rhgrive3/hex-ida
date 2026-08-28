@@ -61,4 +61,17 @@ assert.equal(new SubrangeByteSource(limitedParent, 0n, 128n, { maxReadLength: 32
 assert.equal(asByteSource(limitedParent, { maxReadLength: 128 }).maxReadLength, 64);
 assert.equal(asByteSource(limitedParent, { maxReadLength: 32 }).maxReadLength, 32);
 
+const utf16leBytes = Uint8Array.of(0x41, 0, 0x42, 0, 0x43, 0, 0x44, 0, 0x45, 0, 0x46, 0, 0, 0);
+const utf16Split = await scanSourceStrings(stringImage, utf16leBytes, {
+  minLength: 2,
+  maxLength: 3,
+  utf16: 'le',
+  chunkSize: 64,
+});
+assert.deepEqual(
+  utf16Split.results.filter((x) => x.encoding === 'utf16le').map((x) => x.text),
+  ['ABC', 'DEF'],
+  'UTF-16 continuation at maxLength must not skip the next code unit',
+);
+
 console.log('platform-bytesource: PASS');
