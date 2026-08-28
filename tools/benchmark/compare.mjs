@@ -16,8 +16,24 @@ function check(name, ok, detail) {
   if (!ok) failed = true;
 }
 
-function atLeast(actual, floor) {
-  return typeof actual === 'number' && Number.isFinite(actual) && actual + EPS >= floor;
+function ratioAtLeast(actual, floor) {
+  return typeof actual === 'number'
+    && Number.isFinite(actual)
+    && actual >= 0
+    && actual <= 1
+    && typeof floor === 'number'
+    && Number.isFinite(floor)
+    && floor >= 0
+    && floor <= 1
+    && actual + EPS >= floor;
+}
+
+function nonNegativeCountAtMost(actual, ceiling) {
+  return Number.isSafeInteger(actual)
+    && actual >= 0
+    && Number.isSafeInteger(ceiling)
+    && ceiling >= 0
+    && actual <= ceiling;
 }
 
 if (accuracyPath) {
@@ -32,11 +48,11 @@ if (accuracyPath) {
     const fixture = baseline.fixtures[fixtureKey];
     check(`${target} accuracy fixture size`, got.fixture?.size === fixture?.size, `${got.fixture?.size ?? 'N/A'} == ${fixture?.size ?? 'N/A'}`);
     check(`${target} accuracy fixture hash`, got.fixture?.sha256 === fixture?.sha256, got.fixture?.sha256 || 'missing');
-    check(`${target} function-start precision`, atLeast(got.functionStartPrecision, expected.functionStartPrecision), `${got.functionStartPrecision ?? 'N/A'} >= ${expected.functionStartPrecision}`);
-    check(`${target} function-start recall`, atLeast(got.functionStartRecall, expected.functionStartRecall), `${got.functionStartRecall ?? 'N/A'} >= ${expected.functionStartRecall}`);
+    check(`${target} function-start precision`, ratioAtLeast(got.functionStartPrecision, expected.functionStartPrecision), `${got.functionStartPrecision ?? 'N/A'} >= ${expected.functionStartPrecision}`);
+    check(`${target} function-start recall`, ratioAtLeast(got.functionStartRecall, expected.functionStartRecall), `${got.functionStartRecall ?? 'N/A'} >= ${expected.functionStartRecall}`);
     for (const [id, floor] of Object.entries(expected.featureFloors)) {
       const score = got.featureScores?.[id];
-      check(`${target} ${id}`, atLeast(score, floor), `${score ?? 'N/A'} >= ${floor}`);
+      check(`${target} ${id}`, ratioAtLeast(score, floor), `${score ?? 'N/A'} >= ${floor}`);
     }
   }
 }
@@ -47,9 +63,9 @@ if (compilerTruthPath) {
   const expected = baseline.observations.compilerTruth;
   check('compiler-truth completeness', current.completeness === 'complete', current.completeness || 'missing');
   check('compiler-truth executed all cases', current.executed === current.expectedCases && current.expectedCases > 0, `${current.executed}/${current.expectedCases}`);
-  check('semantic mismatches', current.semanticMismatches <= expected.semanticMismatches, `${current.semanticMismatches} <= ${expected.semanticMismatches}`);
-  check('semantic unverified', current.semanticUnverified <= expected.semanticUnverified, `${current.semanticUnverified} <= ${expected.semanticUnverified}`);
-  check('decompiler semantic regressions', current.decompilerSemanticRegressions <= expected.decompilerSemanticRegressions, `${current.decompilerSemanticRegressions} <= ${expected.decompilerSemanticRegressions}`);
+  check('semantic mismatches', nonNegativeCountAtMost(current.semanticMismatches, expected.semanticMismatches), `${current.semanticMismatches} <= ${expected.semanticMismatches}`);
+  check('semantic unverified', nonNegativeCountAtMost(current.semanticUnverified, expected.semanticUnverified), `${current.semanticUnverified} <= ${expected.semanticUnverified}`);
+  check('decompiler semantic regressions', nonNegativeCountAtMost(current.decompilerSemanticRegressions, expected.decompilerSemanticRegressions), `${current.decompilerSemanticRegressions} <= ${expected.decompilerSemanticRegressions}`);
   check('Ghidra differential', current.ghidra?.status === 'ok', current.ghidra?.status || 'missing');
   check('Ghidra parsed corpus', current.ghidra?.parsed === expected.ghidra.parsed, `${current.ghidra?.parsed ?? 'N/A'} == ${expected.ghidra.parsed}`);
   check('Ghidra expected corpus', current.ghidra?.expected === expected.ghidra.expected, `${current.ghidra?.expected ?? 'N/A'} == ${expected.ghidra.expected}`);
