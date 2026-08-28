@@ -1,5 +1,5 @@
 /* Extended Objective-C runtime metadata. */
-import { pagedReader, sanitizePointer, decodeMethodListHeader } from '../objc-legacy.js';
+import { pagedReader, sanitizePointer, decodeMethodListHeader, resolveRelativeMethodSelectorAddress } from '../objc-legacy.js';
 
 const PTR = 8;
 const NAME_READ_INITIAL = 256;
@@ -72,11 +72,12 @@ async function methodList(get, listAddr, owner, classMethod, source) {
     let nameAddr = null, typeAddr = null, imp = null;
     if (relative) {
       const nameTarget = at + BigInt(i32(b, 0));
-      if (directSelector) nameAddr = nameTarget;
-      else {
-        nameAddr = await ptr(get, nameTarget);
-        if (nameAddr == null) { invalidEntries++; continue; }
-      }
+      nameAddr = await resolveRelativeMethodSelectorAddress(
+        directSelector,
+        nameTarget,
+        (addr) => ptr(get, addr),
+      );
+      if (nameAddr == null) { invalidEntries++; continue; }
       typeAddr = at + 4n + BigInt(i32(b, 4)); imp = at + 8n + BigInt(i32(b, 8));
     } else {
       nameAddr = await decodedPointer(get, u64(b, 0), at);
