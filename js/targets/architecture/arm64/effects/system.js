@@ -156,7 +156,11 @@ function gpWrite(operations, op, value) {
   }));
   return true;
 }
+function hasNoOperandModifier(op) {
+  return op?.shift == null && op?.extend == null;
+}
 function sysRegText(op) {
+  if (!hasNoOperandModifier(op)) return null;
   const text = String(op?.text || '').trim().toLowerCase();
   return /^[a-z][a-z0-9_]*$/.test(text) ? text : null;
 }
@@ -533,6 +537,7 @@ function genericHint(instruction, context, ops) {
 }
 
 function textOperand(op) {
+  if (!hasNoOperandModifier(op)) return null;
   const text = String(op?.text || '').trim().toLowerCase();
   return text || null;
 }
@@ -593,8 +598,8 @@ function operandShapeFailure(instruction, mnemonic, ops) {
   if (mnemonic === 'bti') {
     if (ops.length > 1) return { reason:'bti-operand-shape-invalid', categories:['faults','other'] };
     if (ops.length === 0) return null;
-    const kind = String(ops[0]?.text || '').trim().toLowerCase();
-    return ['c','j','jc'].includes(kind) ? null : { reason:'bti-target-invalid', categories:['faults','other'] };
+    const kind = textOperand(ops[0]);
+    return kind != null && ['c','j','jc'].includes(kind) ? null : { reason:'bti-target-invalid', categories:['faults','other'] };
   }
   if (mnemonic === 'mrs') {
     return ops.length === 2 && isSystemXt(ops[0]) && sysRegText(ops[1])
