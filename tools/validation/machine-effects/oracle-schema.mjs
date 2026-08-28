@@ -6,6 +6,7 @@ import {
   INDEPENDENT_GENERATOR_VERSION,
   INDEPENDENT_ORACLE_IDENTITY,
   INDEPENDENT_ORACLE_VERSION,
+  ORACLE_BUDGETS,
   ORACLE_PROFILE_INVENTORY,
   PASS_STATUSES,
   RESULT_SCHEMA_VERSION,
@@ -433,13 +434,14 @@ function normalizeMismatch(value, code = 'mismatch-invalid') {
 
 function normalizeDiagnostics(value, code = 'diagnostics-invalid') {
   if (!Array.isArray(value)) fail(code);
+  if (value.length > ORACLE_BUDGETS.maxDiagnostics) fail(`${code}-count`);
   return value.map((entry) => {
     plainObject(entry, `${code}-entry`);
     const allowed = new Set(['code', 'detail']);
     assertAllowedKeys(entry, allowed, `${code}-unknown-field`);
     return {
       code: assertNonEmptyString(entry.code, `${code}-code`),
-      ...(entry.detail == null ? {} : { detail: String(entry.detail).slice(0, 4096) }),
+      ...(entry.detail == null ? {} : { detail: String(entry.detail).slice(0, ORACLE_BUDGETS.maxDiagnosticBytes) }),
     };
   });
 }
@@ -458,18 +460,23 @@ function normalizeResultInput(input, caseValue = null) {
   if (caseId !== caseIdentity) fail('oracle-result-case-identity-mismatch');
   if (caseValue && caseId !== caseValue.caseId) fail('oracle-result-stale-case');
   const profileId = assertNonEmptyString(input.profileId, 'oracle-result-profile-required');
+  if (caseValue && profileId !== caseValue.profileId) fail('oracle-result-profile-mismatch');
   const oracleIdentity = assertDistinctOracleIdentity(input.oracleIdentity, 'oracle-result-oracle-identity');
   const oracleVersion = assertNonEmptyString(input.oracleVersion, 'oracle-result-oracle-version');
+  if (caseValue && oracleIdentity !== caseValue.oracleIdentity) fail('oracle-result-oracle-identity-mismatch');
+  if (caseValue && oracleVersion !== caseValue.oracleVersion) fail('oracle-result-oracle-version-mismatch');
   const oracleSource = assertIndependentText(input.oracleSource, 'oracle-result-oracle-source');
   const toolchainIdentity = assertIndependentText(input.toolchainIdentity, 'oracle-result-toolchain-identity');
   const provenance = normalizeProvenance(input.provenance, oracleIdentity, 'oracle-result-provenance');
   if (!RESULT_STATUSES.includes(input.status)) fail('oracle-result-status');
   const expectedOutcome = normalizeOutcome(input.expectedOutcome, 'oracle-result-expected-outcome');
+  if (caseValue && canonicalStringify(expectedOutcome) !== canonicalStringify(caseValue.expectedOutcome)) fail('oracle-result-expected-outcome-mismatch');
   const observedOutcome = normalizeOutcome(input.observedOutcome, 'oracle-result-observed-outcome');
   const observedState = input.observedState == null ? null : normalizeMachineState(input.observedState, 'oracle-result-observed-state');
   const maskBasis = observedState ?? caseValue?.expectedState ?? caseValue?.initialState;
   if (!maskBasis) fail('oracle-result-mask-basis-required');
   const definedMask = normalizeDefinedMask(input.definedMask, maskBasis, 'oracle-result-defined-mask');
+  if (caseValue && canonicalStringify(definedMask) !== canonicalStringify(caseValue.definedMask)) fail('oracle-result-defined-mask-mismatch');
   const comparisonCounts = normalizeComparisonCounts(input.comparisonCounts);
   if (!Array.isArray(input.mismatches)) fail('oracle-result-mismatches-invalid');
   const mismatches = input.mismatches.map((entry) => normalizeMismatch(entry));

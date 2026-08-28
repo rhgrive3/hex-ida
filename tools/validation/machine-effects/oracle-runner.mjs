@@ -208,32 +208,67 @@ function safeResult({
   const normalizedStatus = RESULT_STATUSES.includes(status) ? status : 'malformed';
   const safeIdentity = (() => {
     try { return assertDistinctOracleIdentity(oracleIdentity, 'oracle-result-identity'); }
-    catch { return INDEPENDENT_ORACLE_IDENTITY; }
+    catch { return caseValue.oracleIdentity; }
+  })();
+  const safeVersion = (() => {
+    const candidate = String(oracleVersion || '');
+    return candidate.trim() === '' ? caseValue.oracleVersion : candidate;
+  })();
+  const safeSource = (() => {
+    try { return assertIndependentText(oracleSource, 'oracle-result-source'); }
+    catch { return 'offline-independent-reference-model'; }
+  })();
+  const safeToolchain = (() => {
+    try { return assertIndependentText(toolchainIdentity, 'oracle-result-toolchain'); }
+    catch { return caseValue.provenance.toolchainIdentity; }
   })();
   const safeProvenance = (() => {
     try { return assertIndependentProvenance(provenance, { oracleIdentity: safeIdentity, code: 'oracle-result-provenance' }); }
-    catch { return DEFAULT_PROVENANCE; }
+    catch { return caseValue.provenance; }
   })();
-  return createOracleResult({
+  const safeOutcome = (() => {
+    try { return normalizeOutcome(observedOutcome, 'oracle-result-observed-outcome'); }
+    catch { return { kind: 'unavailable', code: 'malformed-observation' }; }
+  })();
+  const payload = {
     schemaVersion: 'machine-effects-independent-oracle-result/v1',
     caseId: caseValue.caseId,
     caseIdentity: caseValue.caseId,
     profileId: caseValue.profileId,
     oracleIdentity: safeIdentity,
-    oracleVersion: String(oracleVersion || INDEPENDENT_ORACLE_VERSION),
-    oracleSource: String(oracleSource || 'offline-independent-reference-model'),
-    toolchainIdentity: String(toolchainIdentity || 'node-independent-reference-runtime'),
+    oracleVersion: safeVersion,
+    oracleSource: safeSource,
+    toolchainIdentity: safeToolchain,
     provenance: safeProvenance,
     status: normalizedStatus,
     expectedOutcome: caseValue.expectedOutcome,
-    observedOutcome,
+    observedOutcome: safeOutcome,
     observedState,
     definedMask,
     comparisonCounts,
     mismatches,
     diagnostics: diagnostics.slice(0, ORACLE_BUDGETS.maxDiagnostics),
     passContribution: PASS_STATUSES.includes(normalizedStatus) ? 1 : 0,
-  }, caseValue);
+  };
+  try {
+    return createOracleResult(payload, caseValue);
+  } catch (error) {
+    return createOracleResult({
+      ...payload,
+      status: 'malformed',
+      oracleIdentity: caseValue.oracleIdentity,
+      oracleVersion: caseValue.oracleVersion,
+      oracleSource: 'offline-independent-reference-model',
+      toolchainIdentity: caseValue.provenance.toolchainIdentity,
+      provenance: caseValue.provenance,
+      observedOutcome: { kind: 'unavailable', code: 'malformed-result' },
+      observedState: null,
+      comparisonCounts: { registers: 0, flags: 0, vectors: 0, memory: 0, outcome: 0, total: 0 },
+      mismatches: [],
+      diagnostics: [diagnostic('result-normalization-failed', error.message)],
+      passContribution: 0,
+    }, caseValue);
+  }
 }
 
 function oracleEnvelopeValid(oracle, caseValue) {
@@ -296,6 +331,30 @@ export async function runIndependentComparison({
     provenance: adapter.provenance,
     diagnostics: [diagnostic('oracle-cancelled', oracleObservation.reason)],
   });
+  let oracleObservationBytes;
+  try { oracleObservationBytes = Buffer.byteLength(canonicalStringify(oracleObservation), 'utf8'); }
+  catch (error) {
+    return safeResult({
+      caseValue,
+      status: 'malformed',
+      oracleIdentity: adapter.identity,
+      oracleVersion: adapter.version,
+      oracleSource: adapter.source,
+      toolchainIdentity: adapter.toolchainIdentity,
+      provenance: adapter.provenance,
+      diagnostics: [diagnostic('oracle-output-malformed', error.message)],
+    });
+  }
+  if (oracleObservationBytes > effectiveBudgets.maxOutputBytes) return safeResult({
+    caseValue,
+    status: 'resource-limited',
+    oracleIdentity: adapter.identity,
+    oracleVersion: adapter.version,
+    oracleSource: adapter.source,
+    toolchainIdentity: adapter.toolchainIdentity,
+    provenance: adapter.provenance,
+    diagnostics: [diagnostic('oracle-output-budget-exceeded')],
+  });
   if (Date.now() - startedAt > effectiveBudgets.timeoutMs) return safeResult({
     caseValue,
     status: 'resource-limited',
@@ -316,6 +375,20 @@ export async function runIndependentComparison({
     provenance: adapter.provenance,
     diagnostics: [diagnostic('oracle-partial-observation')],
   });
+  let oracleOutcome;
+  try { oracleOutcome = normalizeOutcome(oracleObservation.outcome, 'oracle-observed-outcome'); }
+  catch (error) {
+    return safeResult({
+      caseValue,
+      status: 'malformed',
+      oracleIdentity: adapter.identity,
+      oracleVersion: adapter.version,
+      oracleSource: adapter.source,
+      toolchainIdentity: adapter.toolchainIdentity,
+      provenance: adapter.provenance,
+      diagnostics: [diagnostic('oracle-outcome-malformed', error.message)],
+    });
+  }
   let oracleState;
   try { oracleState = normalizeMachineState(oracleObservation.state, 'oracle-observed-state'); }
   catch (error) {
@@ -355,7 +428,7 @@ export async function runIndependentComparison({
     observedState: oracleState,
     definedMask: caseValue.definedMask,
   });
-  if (!expectedCheck.exact || oracleObservation.outcome.kind !== caseValue.expectedOutcome.kind) return safeResult({
+  if (!expectedCheck.exact || oracleOutcome.kind !== caseValue.expectedOutcome.kind) return safeResult({
     caseValue,
     status: 'malformed',
     oracleIdentity: adapter.identity,
@@ -363,7 +436,7 @@ export async function runIndependentComparison({
     oracleSource: adapter.source,
     toolchainIdentity: adapter.toolchainIdentity,
     provenance: adapter.provenance,
-    observedOutcome: oracleObservation.outcome,
+    observedOutcome: oracleOutcome,
     observedState: oracleState,
     comparisonCounts: expectedCheck.comparisonCounts,
     mismatches: expectedCheck.mismatches,
@@ -380,7 +453,7 @@ export async function runIndependentComparison({
     diagnostics: [diagnostic('cancelled-before-subject-comparison')],
   });
   let subjectObservation;
-  try { subjectObservation = await subject({ caseValue, oracleObservation, signal, budgets }); }
+  try { subjectObservation = await subject({ caseValue, signal, budgets: effectiveBudgets }); }
   catch (error) {
     return safeResult({
       caseValue,
@@ -436,7 +509,25 @@ export async function runIndependentComparison({
     provenance: adapter.provenance,
     diagnostics: [diagnostic('production-subject-identity-invalid')],
   });
-  if (/(?:expected[-_ ]?table|self[-_ ]?oracle|production-derived)/i.test(canonicalStringify(subjectObservation))) return safeResult({
+  let subjectSerialized;
+  let subjectBytes;
+  try {
+    subjectSerialized = canonicalStringify(subjectObservation);
+    subjectBytes = Buffer.byteLength(subjectSerialized, 'utf8');
+  }
+  catch (error) {
+    return safeResult({
+      caseValue,
+      status: 'malformed',
+      oracleIdentity: adapter.identity,
+      oracleVersion: adapter.version,
+      oracleSource: adapter.source,
+      toolchainIdentity: adapter.toolchainIdentity,
+      provenance: adapter.provenance,
+      diagnostics: [diagnostic('production-subject-output-malformed', error.message)],
+    });
+  }
+  if (/(?:expected[-_ ]?table|self[-_ ]?oracle|production-derived)/i.test(subjectSerialized)) return safeResult({
     caseValue,
     status: 'malformed',
     oracleIdentity: adapter.identity,
@@ -488,7 +579,7 @@ export async function runIndependentComparison({
       diagnostics: [diagnostic('production-subject-state-malformed', error.message)],
     });
   }
-  if (Buffer.byteLength(canonicalStringify(subjectObservation), 'utf8') > effectiveBudgets.maxOutputBytes) return safeResult({
+  if (subjectBytes > effectiveBudgets.maxOutputBytes) return safeResult({
     caseValue,
     status: 'resource-limited',
     oracleIdentity: adapter.identity,
