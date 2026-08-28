@@ -1,0 +1,51 @@
+name: PR2407 fixture fix
+
+on:
+  push:
+    branches:
+      - fix/2392-objc-indirect-selector-fail-closed
+
+permissions:
+  contents: write
+
+jobs:
+  fix-fixture:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/2392-objc-indirect-selector-fail-closed
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Correct direct-selector fixture representation
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('tests/run.js')
+          text = path.read_text()
+          old = '''    // クラスメソッド側は、名前を直接指す古い相対形式で置く
+    u32w(A.metaMethods, 12 | 0x80000000);
+'''
+          new = '''    // クラスメソッド側は direct-selector flag を立て、名前を直接指す相対形式で置く
+    u32w(A.metaMethods, 12 | 0x80000000 | 0x40000000);
+'''
+          if text.count(old) != 1:
+              raise SystemExit('ObjC fixture anchor mismatch')
+          path.write_text(text.replace(old, new, 1))
+          PY
+      - name: Verify repository tests
+        run: npm test
+      - name: Commit fixture correction
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add tests/run.js
+          git diff --cached --check
+          git diff --cached --quiet && exit 0
+          git commit -m "test(objc): encode relative direct selector explicitly"
+          git push origin HEAD:fix/2392-objc-indirect-selector-fail-closed
