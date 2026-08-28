@@ -1,0 +1,60 @@
+name: PR2372 new oracle tests split
+
+on:
+  push:
+    branches:
+      - diag/pr2372-stage1-a2
+
+permissions:
+  contents: read
+
+jobs:
+  counterexample:
+    runs-on: ubuntu-latest
+    steps: &base
+      - uses: actions/checkout@v4
+        with:
+          ref: 385a2c1950097b6b624e56de3c6cf9469812e455
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: node tests/machine-effects/independent-oracle-counterexample.test.mjs
+  denominator:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: 385a2c1950097b6b624e56de3c6cf9469812e455, fetch-depth: 0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci --no-audit --no-fund
+      - run: node tests/machine-effects/independent-oracle-denominator-preservation.test.mjs
+  determinism:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: 385a2c1950097b6b624e56de3c6cf9469812e455, fetch-depth: 0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci --no-audit --no-fund
+      - run: node tests/machine-effects/independent-oracle-determinism.test.mjs
+  negative:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: 385a2c1950097b6b624e56de3c6cf9469812e455, fetch-depth: 0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci --no-audit --no-fund
+      - run: node tests/machine-effects/independent-oracle-negative.test.mjs
+  ownership:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: 385a2c1950097b6b624e56de3c6cf9469812e455, fetch-depth: 0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci --no-audit --no-fund
+      - run: node tests/machine-effects/independent-oracle-ownership.test.mjs
