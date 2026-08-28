@@ -109,6 +109,7 @@ function registerEncodingOverlaps(left, right) {
   return Number.isInteger(left?.num) && Number.isInteger(right?.num) && left.num === right.num;
 }
 function immediateValue(operand) {
+  if (operand?.shift != null || operand?.extend != null) return null;
   const raw = operand?.value;
   if (typeof raw === 'bigint') return raw;
   if (typeof raw === 'number' && Number.isSafeInteger(raw)) return BigInt(raw);
