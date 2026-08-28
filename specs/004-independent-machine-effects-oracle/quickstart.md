@@ -84,6 +84,11 @@ The implementation commit used for the first exact-head capture was
 with the feature allowlist. The local candidate merge tree for that implementation head was
 `032f98ece138702a73a8a447e0e66352b20d7db7`.
 
+After convergence hardening, the clean exact-head capture was rerun at
+`aabbdcaf3c9b61188423f6fe40462b0bca129243`; its local candidate merge tree was
+`ee6870a2437013a89cd177e0535a0464e09061b1`. The final checklist-only task-marker commit is
+reverified separately before handoff.
+
 T034 short commands and exact results:
 
 ```text
