@@ -5,6 +5,7 @@ import { readFile, mkdir, rm, writeFile } from 'node:fs/promises';
 import { dirname, posix, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveUserscriptReleaseVersion } from './userscript-release-version.mjs';
+import { parseImportScriptsArguments } from './userscript-classic-imports.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const dist = resolve(root, 'dist');
@@ -121,15 +122,21 @@ async function collectClassic(path, sources) {
   const source = await readFile(resolve(root, path), 'utf8'); sources.set(path, source);
   for (const dependency of parseImports(source, path)) await collectClassic(dependency, sources);
 }
+function resolvedImportScriptsArguments(args, from) {
+  return parseImportScriptsArguments(args, from)
+    .map((specifier) => normalizePath(posix.join(posix.dirname(from), specifier)));
+}
 function parseImports(source, from) {
   const out = [];
-  for (const call of source.matchAll(/\bimportScripts\s*\(([^;]*?)\)\s*;/gs)) for (const match of call[1].matchAll(/(['"])([^'"]+)\1/g)) out.push(normalizePath(posix.join(posix.dirname(from), match[2])));
+  for (const call of source.matchAll(/\bimportScripts\s*\(([^;]*?)\)\s*;/gs)) out.push(...resolvedImportScriptsArguments(call[1], from));
   return out;
 }
 function inlineImports(path, sources, stack = []) {
   if (stack.includes(path)) throw new Error(`Worker import cycle: ${[...stack, path].join(' -> ')}`);
   const source = sources.get(path); if (source == null) throw new Error(`Missing worker source: ${path}`);
-  return source.replace(/\bimportScripts\s*\(([^;]*?)\)\s*;/gs, (_all, args) => [...args.matchAll(/(['"])([^'"]+)\1/g)].map((match) => inlineImports(normalizePath(posix.join(posix.dirname(path), match[2])), sources, [...stack, path])).join('\n'));
+  return source.replace(/\bimportScripts\s*\(([^;]*?)\)\s*;/gs, (_all, args) => resolvedImportScriptsArguments(args, path)
+    .map((dependency) => inlineImports(dependency, sources, [...stack, path]))
+    .join('\n'));
 }
 function normalizePath(value) { const path = posix.normalize(String(value).replaceAll('\\', '/')).replace(/^\.\//, '').replace(/^\//, ''); if (!path || path.startsWith('../')) throw new Error(`Path escapes repository: ${value}`); return path; }
 

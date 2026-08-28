@@ -18,6 +18,9 @@
       ".github/workflows/stage2-release-validation.yml",
       ".github/workflows/invariant-gates.yml",
       "package.json",
+      "scripts/build-userscript.mjs",
+      "scripts/userscript-classic-imports.mjs",
+      "tests/userscript-importscripts-literals.mjs",
       "js/platform/capability-maturity.js",
       "js/platform/stage2-capability-maturity.js",
       "js/platform/stage2-profile-evidence.js",
@@ -90,7 +93,10 @@
     "js/managed/index.js",
     "js/userscript/chatgpt-bridge.js",
     "js/userscript/dev/parent-worker-runtime.js",
-    "package.json"
+    "package.json",
+    "scripts/build-userscript.mjs",
+    "scripts/userscript-classic-imports.mjs",
+    "tests/userscript-importscripts-literals.mjs"
   ],
   "generatedPaths": ["reports/phase12/**", "userscript/hex.user.template.js", "userscript/release-version.json", "js/userscript/deployment-identity.generated.js"],
   "releaseOnlyPaths": ["reports/phase12/**"],
