@@ -19,7 +19,13 @@ function testReader() {
 
 function testDetection() {
   assert.equal(detectBinary(Uint8Array.from([0x7f,0x45,0x4c,0x46])).format, 'elf');
-  assert.equal(detectBinary(Uint8Array.from([0x4d,0x5a,0,0])).format, 'pe');
+  const pe = new Uint8Array(0x44);
+  const pv = new DataView(pe.buffer);
+  pe.set([0x4d, 0x5a], 0);
+  pv.setUint32(0x3c, 0x40, true);
+  pe.set([0x50, 0x45, 0x00, 0x00], 0x40);
+  assert.equal(detectBinary(pe).format, 'pe');
+  assert.equal(detectBinary(Uint8Array.from([0x4d,0x5a,0,0])).format, 'unknown');
   assert.equal(detectBinary(Uint8Array.from([0xcf,0xfa,0xed,0xfe])).format, 'macho');
   assert.equal(detectBinary(Uint8Array.from([1,2,3,4])).format, 'unknown');
 }

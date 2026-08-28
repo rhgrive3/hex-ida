@@ -515,8 +515,8 @@
         "tools/validation/phase12/denominator.mjs",
         "tools/validation/stage2/build-profile-denominator-inventory.mjs"
       ],
-      "inventoryHash": "stage2-denominator-inventory:17064b81e4a7fa02d548876a3c262d99",
-      "lockHash": "stage2-denominator-item:649373049c4a78533de9b933f5c03710"
+      "inventoryHash": "stage2-denominator-inventory:4f1163e15e0e8be1faf36e7bab59748a",
+      "lockHash": "stage2-denominator-item:694d63f80667299c235fea64093366d7"
     },
     "S2-P12-RULES": {
       "id": "stage2-denominator:S2-P12-RULES:v1",
@@ -543,8 +543,8 @@
         "tools/validation/phase12/denominator.mjs",
         "tools/validation/stage2/build-profile-denominator-inventory.mjs"
       ],
-      "inventoryHash": "stage2-denominator-inventory:17064b81e4a7fa02d548876a3c262d99",
-      "lockHash": "stage2-denominator-item:31fd0cf6e7b4cdcfbec83b710eb9855a"
+      "inventoryHash": "stage2-denominator-inventory:4f1163e15e0e8be1faf36e7bab59748a",
+      "lockHash": "stage2-denominator-item:8b92c884e3bc1f22d4e1808f7bfbd38f"
     },
     "S2-P12-PATTERNS": {
       "id": "stage2-denominator:S2-P12-PATTERNS:v1",
@@ -573,8 +573,8 @@
         "tools/validation/phase12/denominator.mjs",
         "tools/validation/stage2/build-profile-denominator-inventory.mjs"
       ],
-      "inventoryHash": "stage2-denominator-inventory:17064b81e4a7fa02d548876a3c262d99",
-      "lockHash": "stage2-denominator-item:8d110d67bea8ad084ae4deae019eae1f"
+      "inventoryHash": "stage2-denominator-inventory:4f1163e15e0e8be1faf36e7bab59748a",
+      "lockHash": "stage2-denominator-item:a038869adc370755300a673fcda3d67e"
     },
     "S2-P12-COLLAB-REMOTE": {
       "id": "stage2-denominator:S2-P12-COLLAB-REMOTE:v1",
@@ -610,9 +610,9 @@
         "tools/validation/phase12/denominator.mjs",
         "tools/validation/stage2/build-profile-denominator-inventory.mjs"
       ],
-      "inventoryHash": "stage2-denominator-inventory:b3e96b074a0d411b453c752fc215ff70",
-      "lockHash": "stage2-denominator-item:b6c858d33e8ee6e9002f725c743d82e8"
+      "inventoryHash": "stage2-denominator-inventory:46dc41cd75fd969c748a2cc7b24b572f",
+      "lockHash": "stage2-denominator-item:17bde1b50bad085027820ae225a85459"
     }
   },
-  "lockHash": "stage2-denominator-lock:7f708d422d5a0332424600fdb206febd"
+  "lockHash": "stage2-denominator-lock:0e03ab41af7830c42dea7b23b90b5f8f"
 }
