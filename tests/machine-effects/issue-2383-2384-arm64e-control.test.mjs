@@ -36,6 +36,8 @@ for (const [mnemonic, operands, kind] of [
   const bundle = liftArm64eEffects(instruction(mnemonic, operands));
   assert.equal(bundle.completeness, 'exact-with-intrinsic', `${mnemonic} must remain exact-with-intrinsic`);
   assert.equal(bundle.controlEffect.kind, kind);
+  const authFault = bundle.possibleFaults?.find((fault) => fault.condition?.kind === 'pointer-authentication-failed');
+  assert.ok(authFault, `${mnemonic} must preserve authentication failure alongside alignment failure`);
   const fault = alignmentFault(bundle);
   assert.ok(fault, `${mnemonic} must retain A64 PC alignment fault after authentication`);
   assert.deepEqual(fault.condition, { kind: 'target-misaligned', alignmentBytes: 4 });
