@@ -12,12 +12,13 @@
  * *offset range* instead of collapsing to "somewhere in this object". That is
  * what turns overlapping-field questions from `may` into `no`.
  *
- * A2 deliberately does not resolve loads or calls. A pointer read out of memory
- * or returned by a call is an unresolved boundary until P7-3 summary evidence
- * exists; pretending otherwise is how field-sensitive analyses become unsound.
+ * Pointer loads and call returns are resolved only through already-proven
+ * MemorySSA / FunctionSummary evidence. Unsupported, incomplete or ambiguous
+ * boundaries stay conservative rather than being guessed from presentation.
  */
 
 import { createAnalysisStatus, isCompleteStatus } from '../status.js';
+import { classifyCallTargetProof } from '../summary/contract.js';
 import { stableDigest, stableStringify } from '../../core/identity/index.js';
 import {
   defaultRootEntityId,
@@ -45,7 +46,7 @@ import {
 } from './lattice.js';
 
 export const A2_ANALYZER_ID = 'phase7.pointsto.a2-local';
-export const A2_ANALYZER_VERSION = '1.1.0';
+export const A2_ANALYZER_VERSION = '1.1.1';
 
 /** Casts that keep pointer provenance intact when the width does not change. */
 const WIDTH_PRESERVING_CASTS = new Set(['copy', 'bitcast']);
@@ -464,13 +465,6 @@ function shiftSet(set, delta, widthBits) {
 }
 
 /**
- * Runs the local points-to fixed point for one function.
- *
- * Returns a map from IR value id to `PointsToSet`, plus the status describing
- * how the run terminated. A run that hits its iteration cap is reported as
- * `truncated`, never as complete.
- */
-/**
  * Root singleton for an SSA `entry` definition: the incoming machine state a
  * function was handed. The root identity is built with the canonical helpers so
  * A2 and the exact derivation name the same object.
@@ -724,25 +718,43 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
       return topPointsTo('unresolved-load');
     }
     if (node.kind === 'call') {
-      const calleeSummary = (function () {
-        const calleeId = node.call?.targetEntityId ?? node.call?.callee ?? node.call?.target ?? (Array.isArray(node.call?.targetEntityIds) && node.call.targetEntityIds.length === 1 ? node.call.targetEntityIds[0] : null);
-        if (!calleeId) return null;
-        const summary = options.summaries?.get(String(calleeId)) || (typeof options.summaryProvider === 'function' ? options.summaryProvider(String(calleeId)) : null);
-        if (!summary || !isCompleteStatus(summary.status) || (summary.unknownCallEffects || []).length > 0) return null;
-        return summary;
-      })();
-      if (calleeSummary && calleeSummary.returnProvenance?.length) {
-        const prov = calleeSummary.returnProvenance[0];
-        if (prov.kind === 'arg' && prov.argIndex != null && node.inputs && node.inputs[prov.argIndex] != null) {
-          const argSet = irGet(node.inputs[prov.argIndex]);
-          if (!argSet.top && !pointsToIsBottom(argSet)) {
-            const offset = BigInt(prov.offset ?? 0n);
-            const width = BigInt(calleeSummary.addressWidthBits ?? 64);
-            return offset !== 0n ? shiftSet(argSet, offset, width) : argSet;
-          }
-        }
+      const targetProof = classifyCallTargetProof(node.call);
+      const calleeId = targetProof.exactSingletonEntityId;
+      const calleeSummary = calleeId == null
+        ? null
+        : (options.summaries?.get(String(calleeId))
+          || (typeof options.summaryProvider === 'function' ? options.summaryProvider(String(calleeId)) : null));
+      if (!calleeSummary || !isCompleteStatus(calleeSummary.status)
+        || (calleeSummary.unknownCallEffects || []).length > 0) {
+        return topPointsTo('unresolved-call');
       }
-      return topPointsTo('unresolved-call');
+
+      const returnIndex = Math.max(0, (node.outputs ?? []).indexOf(id));
+      const alternatives = (calleeSummary.returnProvenance ?? []).filter(
+        (prov) => Number(prov.returnIndex ?? 0) === returnIndex,
+      );
+      if (!alternatives.length) return topPointsTo('unresolved-call');
+
+      // Canonical Semantic IR carries the argument list independently from a
+      // runtime target value. Old fixtures predate that field, so node.inputs is
+      // retained only as a compatibility fallback.
+      const argumentIds = node.call?.arguments?.length ? node.call.arguments : node.inputs;
+      let merged = BOTTOM_POINTS_TO;
+      for (const prov of alternatives) {
+        if (prov.kind !== 'arg' || prov.argIndex == null || argumentIds?.[prov.argIndex] == null) {
+          return topPointsTo('unresolved-call');
+        }
+        const argSet = irGet(argumentIds[prov.argIndex]);
+        if (argSet.top || pointsToIsBottom(argSet)) return topPointsTo('unresolved-call');
+        let offset;
+        try { offset = BigInt(prov.offset ?? 0n); }
+        catch { return topPointsTo('unresolved-call'); }
+        const shifted = offset !== 0n ? shiftSet(argSet, offset, width ?? 64) : argSet;
+        if (shifted.top) return topPointsTo('unresolved-call');
+        merged = joinPointsTo(merged, shifted, budget);
+        if (merged.top) return merged;
+      }
+      return pointsToIsBottom(merged) ? topPointsTo('unresolved-call') : merged;
     }
 
     const seed = rootOnlySeed(proof, evidenceIds);
