@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 import { createCorpus } from '../../tools/validation/machine-effects/oracle-corpus.mjs';
@@ -96,17 +99,37 @@ assert.throws(() => createOracleReport({
   a2After,
 }), /report-result-case-duplicate/);
 
-const exactHead = verifyExactHead({
-  report,
-  expectedHead: currentHead,
-  expectedBase: assignedBase,
-  expectedCandidateTree: candidateTreeSha,
-  requireClean: true,
-  requireCandidateTree: true,
-});
-assert.equal(exactHead.valid, true);
-assert.equal(exactHead.headSha, currentHead);
-assert.equal(exactHead.baseSha, assignedBase);
+// The canonical MachineEffects runner executes independent test files in
+// parallel. Other tests may create transient working-tree artifacts while this
+// release proof is checking cleanliness. Verify the exact committed head in a
+// dedicated detached worktree so requireClean remains strict and deterministic.
+const releaseWorktreeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hex-oracle-release-'));
+const releaseWorktree = path.join(releaseWorktreeRoot, 'worktree');
+try {
+  const addWorktree = spawnSync(
+    'git',
+    ['worktree', 'add', '--detach', '--quiet', releaseWorktree, currentHead],
+    { encoding: 'utf8' },
+  );
+  assert.equal(addWorktree.status, 0, addWorktree.stderr || 'failed to create clean release worktree');
+
+  const exactHead = verifyExactHead({
+    cwd: releaseWorktree,
+    report,
+    expectedHead: currentHead,
+    expectedBase: assignedBase,
+    expectedCandidateTree: candidateTreeSha,
+    requireClean: true,
+    requireCandidateTree: true,
+  });
+  assert.equal(exactHead.valid, true);
+  assert.equal(exactHead.headSha, currentHead);
+  assert.equal(exactHead.baseSha, assignedBase);
+} finally {
+  spawnSync('git', ['worktree', 'remove', '--force', releaseWorktree], { encoding: 'utf8' });
+  spawnSync('git', ['worktree', 'prune'], { encoding: 'utf8' });
+  fs.rmSync(releaseWorktreeRoot, { recursive: true, force: true });
+}
 
 const candidateTree = verifyCandidateMergeTree({
   report,
