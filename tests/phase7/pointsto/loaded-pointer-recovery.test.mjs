@@ -224,7 +224,7 @@ test('canonical store-pointer/load-pointer fixture recovers the stored pointer e
   assert.deepEqual(loaded.targets.map((target) => target.offsetRange), [{ min: 32n, max: 32n, exact: true }]);
   assert.equal(loaded.targets[0].widthBits, 64);
   assert.equal(result.status.completeness, 'complete');
-  assert.equal(A2_ANALYZER_VERSION, '1.1.0');
+  assert.equal(A2_ANALYZER_VERSION, '1.1.1');
   assert.equal(result.status.analyzerVersion, A2_ANALYZER_VERSION);
   assert.equal(result.recovery?.proofs?.loaded?.storeNodeId, 'node_store');
 });
