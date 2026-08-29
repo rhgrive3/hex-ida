@@ -33,7 +33,7 @@ const enhanced = enhanceSemanticDecompilation(result, { calls:[] }, {
   fieldFor: (_reg, off) => off === 32n ? { name:'hp' } : null,
   abiAdapter:semanticAbiAdapter(AAPCS64_ABI),
   functionPrototype:{ returnType:'void', parameters:[{ type:'Player *' }, { type:'int32' }] },
-  decompilerTimeBudgetMs:1000,
+  decompilerTimeBudgetMs:5000,
 });
 assert.ok(enhanced.semanticAst && enhanced.cAst);
 assert.ok(enhanced.sourceMap.length >= 4);

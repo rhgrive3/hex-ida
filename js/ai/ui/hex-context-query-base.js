@@ -221,53 +221,69 @@ export function createHexAIContext(app) {
     value:async (query, options = {}) => {
       const offset = safeCount(options.offset, 0, 1_000_000);
       const limit = Math.max(1, safeCount(options.limit, 50, 200));
-      const need = Math.min(MAX_QUERY_PAGE, offset + limit + 1);
+      const targetCount = limit + 1;
       return withFreshSnapshot(app, async (api, snapshot) => {
         const info = await api.binaryInfo(snapshot, { signal:options.signal ?? null });
         if (queryCompleteness(info) === 'unsupported' || !info?.value) {
           return { results:[], offset, returned:0, total:null, complete:false, truncated:true, reason:queryReason(info) || 'binary-info-unavailable' };
         }
-        const all = [];
-        let complete = true;
-        let reason = null;
+        const results = [];
+        let neededOffset = offset;
+        let anySupported = false;
+        let complete = queryCompleteness(info) === 'complete';
+        let reason = complete ? null : (queryReason(info) || 'binary-info-incomplete');
         for (const region of info.value.regions || []) {
           abortIfNeeded(options.signal);
-          if (all.length >= need) { complete = false; reason ||= 'result-limit'; break; }
-          const remaining = Math.max(1, need - all.length);
+          if (results.length >= targetCount) break;
+          const regionOffset = neededOffset;
+          const remaining = targetCount - results.length;
           const result = await api.search(snapshot, {
             regionId:region.id,
             kind:'text',
             query:String(query ?? ''),
             from:0,
-          }, { offset:0, limit:remaining }, { signal:options.signal ?? null });
+          }, { offset:regionOffset, limit:remaining }, { signal:options.signal ?? null });
           if (queryCompleteness(result) === 'unsupported') continue;
-          if (queryCompleteness(result) !== 'complete' || result?.page?.next != null) {
+          anySupported = true;
+          const regionTotal = Number.isFinite(Number(result?.page?.total)) ? Number(result.page.total) : null;
+          if (queryCompleteness(result) !== 'complete') {
             complete = false;
             reason ||= queryReason(result) || 'search-incomplete';
           }
-          for (const row of result?.value || []) {
+          const matches = Array.isArray(result?.value) ? result.value : [];
+          if (neededOffset > 0) {
+            if (regionTotal != null && regionTotal <= neededOffset) {
+              neededOffset -= regionTotal;
+              continue;
+            } else {
+              neededOffset = 0;
+            }
+          }
+          for (const row of matches) {
             const address = toBigInt(row?.addr ?? row?.address);
-            all.push({
+            results.push({
               ...row,
               addr:undefined,
               address:undefined,
               stringAddress:address,
               regionId:region.id,
             });
-            if (all.length >= need) break;
+            if (results.length >= targetCount) break;
           }
         }
-        const rows = all.slice(offset, offset + limit);
-        const exhausted = offset + rows.length >= all.length;
-        const pageComplete = complete && exhausted;
+        if (!anySupported) complete = false;
+        const rows = results.slice(0, limit);
+        const hasNext = results.length > limit;
+        const exhausted = !hasNext;
+        const pageComplete = anySupported && complete && exhausted;
         return {
           results:rows,
           offset,
           returned:rows.length,
-          total:pageComplete ? all.length : null,
+          total:pageComplete ? offset + rows.length : null,
           complete:pageComplete,
           truncated:!pageComplete,
-          reason:pageComplete ? null : (reason || 'result-limit'),
+          reason:pageComplete ? null : (reason || (hasNext ? 'result-limit' : 'search-incomplete')),
         };
       }, options);
     },

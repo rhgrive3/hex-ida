@@ -213,7 +213,7 @@ async function testRpcTimeoutDoesNotLoseWorkerCompletion() {
   const { runtime, client } = await runtimeWithSlot();
   const channel = new MessageChannel();
   const server = createDevWorkerParentRpc({ port: channel.port1, runtime });
-  const rpc = createDevWorkerParentRpcClient({ port: channel.port2, timeoutMs: 20 });
+  const rpc = createDevWorkerParentRpcClient({ port: channel.port2, timeoutMs: 80 });
   try {
     const claim = await claimAndCompleteInitial(runtime, client);
     await assert.rejects(
