@@ -4,7 +4,7 @@ export {
   evaluateArm64Bitfield,
 } from './integer-core.js';
 import { liftArm64IntegerEffects as liftArm64IntegerEffectsCore } from './integer-core.js';
-import { createArm64EffectContext } from './common.js';
+import { createArm64EffectContext, immediateOf } from './common.js';
 
 const ADD_SUB_BASE = new Set(['add','adds','sub','subs']);
 const ADD_SUB_ALL = new Set(['add','adds','sub','subs','adc','adcs','sbc','sbcs','neg','negs','ngc','ngcs']);
@@ -198,12 +198,43 @@ function validConditionalOperand(mnemonic, ops) {
     && condition.extend == null;
 }
 
+function validAddressEncoding(instruction, ops) {
+  const mnemonic = String(instruction?.mnemonic || '').toLowerCase();
+  if (mnemonic !== 'adr' && mnemonic !== 'adrp') return true;
+  if (ops.length !== 2) return false;
+  const destination = ops[0];
+  const targetOperand = ops[1];
+  if (!isGpOrZr(destination) || regBits(destination) !== 64
+    || destination.shift != null || destination.extend != null) return false;
+  if (!['imm','other'].includes(String(targetOperand?.k || ''))
+    || targetOperand?.shift != null || targetOperand?.extend != null) return false;
+  const rawAddress = instruction?.address;
+  const rawTarget = instruction?.pcRelTarget ?? immediateOf(targetOperand);
+  if (rawAddress == null || rawTarget == null) return false;
+  let address, target;
+  try { address = BigInt(rawAddress); } catch { return false; }
+  try { target = BigInt(rawTarget); } catch { return false; }
+  if (targetOperand?.k === 'imm' && immediateOf(targetOperand) !== target) return false;
+  if (mnemonic === 'adr') {
+    const delta = BigInt.asIntN(64, target - address);
+    return delta >= -(1n << 20n) && delta <= (1n << 20n) - 1n;
+  }
+  if ((target & 0xfffn) !== 0n) return false;
+  const pageBase = address & ~0xfffn;
+  const pageDelta = BigInt.asIntN(64, target - pageBase) / 4096n;
+  return pageDelta >= -(1n << 20n) && pageDelta <= (1n << 20n) - 1n;
+}
+
 export function liftArm64IntegerEffects(instruction, options = {}) {
   const mnemonic = String(instruction?.mnemonic || '').toLowerCase();
   const ops = Array.isArray(instruction?.ops) ? instruction.ops : [];
   const expected = expectedOperandCount(mnemonic);
   if (expected != null && ops.length !== expected) {
     return liftArm64IntegerEffectsCore({ ...instruction, ops: [] }, options);
+  }
+  if (!validAddressEncoding(instruction, ops)) {
+    return createArm64EffectContext(instruction, options).partial(
+      `arm64-${mnemonic}-address-operand-unencodable`, ['registers','other']);
   }
   if (!validMoveWideEncoding(mnemonic, ops)) {
     return createArm64EffectContext(instruction, options).partial(

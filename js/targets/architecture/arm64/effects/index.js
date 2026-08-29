@@ -327,9 +327,24 @@ const A64_PAGE_BYTES = 4096n;
 function addressImmediateEncodingFailure(instruction) {
   const mnemonic = instructionMnemonic(instruction);
   if (mnemonic !== 'adr' && mnemonic !== 'adrp') return null;
+  const ops = Array.isArray(instruction?.ops) ? instruction.ops : [];
+  if (ops.length !== 2) return `arm64-${mnemonic}-operand-shape-unencodable`;
+  const destination = ops[0];
+  const targetOperand = ops[1];
+  if (!isGpOrZrRegister(destination) || Number(destination.bits) !== 64
+    || destination.shift != null || destination.extend != null) {
+    return `arm64-${mnemonic}-destination-unencodable`;
+  }
+  if (!['imm','other'].includes(String(targetOperand?.k || ''))
+    || targetOperand?.shift != null || targetOperand?.extend != null) {
+    return `arm64-${mnemonic}-target-operand-unencodable`;
+  }
   const address = asBigIntOrNull(instruction?.address);
   const target = asBigIntOrNull(instruction?.pcRelTarget);
   if (address == null || target == null) return `arm64-${mnemonic}-encoding-address-unavailable`;
+  if (targetOperand?.k === 'imm' && immediateOf(targetOperand) !== target) {
+    return `arm64-${mnemonic}-target-evidence-mismatch`;
+  }
   if (mnemonic === 'adr') {
     const delta = BigInt.asIntN(64, target - address);
     return delta < SIGNED_IMM21_MIN || delta > SIGNED_IMM21_MAX
