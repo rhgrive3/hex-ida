@@ -39,10 +39,11 @@ function appFor({ architecture, fixedInstructionSize, queryValue, withQueries = 
 }
 
 const region = { id:'text', vmAddr:0x1000n, size:0x100n };
+const activeSignal = new AbortController().signal;
 
 {
   const { app, calls, legacy } = appFor({ architecture:'x86_64', fixedInstructionSize:null, queryValue:{ architectureId:'x86_64', semanticIR:{ instructions:[] } } });
-  const analyze = makePinpointAnalyzer(app, region, null, legacy);
+  const analyze = makePinpointAnalyzer(app, region, activeSignal, legacy);
   assert.equal(await analyze(0x1001n, 0x1010n), null);
   assert.deepEqual(calls.functions, [0x1001n]);
   assert.equal(calls.legacy, 0);
@@ -50,7 +51,7 @@ const region = { id:'text', vmAddr:0x1000n, size:0x100n };
 
 {
   const { app, calls, legacy } = appFor({ architecture:'riscv64', fixedInstructionSize:null, queryValue:{ architectureId:'riscv64', semanticIR:{ instructions:[] } } });
-  const analyze = makePinpointAnalyzer(app, region, null, legacy);
+  const analyze = makePinpointAnalyzer(app, region, activeSignal, legacy);
   assert.equal(await analyze(0x1002n, 0x1010n), null);
   assert.deepEqual(calls.functions, [0x1002n]);
   assert.equal(calls.legacy, 0);
@@ -59,7 +60,7 @@ const region = { id:'text', vmAddr:0x1000n, size:0x100n };
 {
   const canonicalModel = { canonical:true };
   const { app, calls, legacy } = appFor({ architecture:'arm64', fixedInstructionSize:4, queryValue:{ architectureId:'arm64', model:canonicalModel } });
-  const analyze = makePinpointAnalyzer(app, region, null, legacy);
+  const analyze = makePinpointAnalyzer(app, region, activeSignal, legacy);
   assert.equal(await analyze(0x1004n, 0x1010n), canonicalModel);
   assert.deepEqual(calls.functions, [0x1004n]);
   assert.equal(calls.legacy, 0);
