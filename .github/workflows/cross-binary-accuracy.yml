@@ -20,6 +20,7 @@ on:
       - 'tests/oracle-cfg-normalize.py'
       - 'tests/oracle-requirements.txt'
       - 'tests/issue-497-cross-binary-workflow.mjs'
+      - 'tests/issue-2484-cross-binary-memory-envelope.mjs'
       - 'tests/issue-500-matcher-budget.mjs'
       - 'tools/benchmark/**'
       - 'scripts/fetch-real-fixtures.mjs'
@@ -40,6 +41,7 @@ on:
       - 'tests/oracle-cfg-normalize.py'
       - 'tests/oracle-requirements.txt'
       - 'tests/issue-497-cross-binary-workflow.mjs'
+      - 'tests/issue-2484-cross-binary-memory-envelope.mjs'
       - 'tests/issue-500-matcher-budget.mjs'
       - 'tools/benchmark/**'
       - 'scripts/fetch-real-fixtures.mjs'
@@ -56,7 +58,7 @@ env:
   HEX_FIXTURE_YWP_URL: https://raw.githubusercontent.com/rhgrive3/hex/bd7bd61d093592d07fdd9e9b14a859e19dd4c3a9/tests/YWP
   ORACLE_PYTHON_VERSION: '3.12.13'
   # Keep two persistent pseudocode workers, but run their memory-heavy phase
-  # after the two non-pseudocode lanes so the runner never hosts both pools at once.
+  # after the non-pseudocode shards so the runner never hosts both pools at once.
   LOCAL_PSEUDOC_WORKERS: 2
 
 jobs:
@@ -226,42 +228,34 @@ jobs:
           pseudoc_output="accuracy-part-${{ matrix.target.name }}-pseudoc.json"
           rm -f "${core_output}.tmp" "${pinpoint_output}.tmp" "${pseudoc_output}.tmp"
 
-          declare -a pids=()
-          declare -a labels=()
-
-          # Core + pinpoint share two persistent parser processes instead of
-          # six separate GitHub jobs/processes. Each process opens the fixture
-          # once and evaluates a disjoint feature set.
+          # Keep the exact feature universe, but run bounded non-pseudocode shards
+          # sequentially so no single process owns the former heavy feature set
+          # and no two 4 GiB V8 heaps overlap on one hosted runner.
           if [[ "$CORE_CACHE_HIT" != "true" || "$PINPOINT_CACHE_HIT" != "true" ]]; then
             node --max-old-space-size=4096 tests/accuracy.mjs \
               --target="$target" \
               --oracle="$oracle" \
               --only='sections,funcs,funcs-guess,disasm,kinds,calls,refs,imports,objc,selstub,pinpoint' \
               --json > accuracy-local-nonpseudoc-0.json \
-              2> accuracy-local-nonpseudoc-0.log &
-            pids+=("$!")
-            labels+=("nonpseudoc-0")
+              2> accuracy-local-nonpseudoc-0.log
+            cat accuracy-local-nonpseudoc-0.log
 
             node --max-old-space-size=4096 tests/accuracy.mjs \
               --target="$target" \
               --oracle="$oracle" \
-              --only='strings,xrefs,funcname,selffield,role,apimeaning,summary,expr,formula,pinpoint-partial' \
+              --only='strings,xrefs,funcname,selffield,role' \
               --json > accuracy-local-nonpseudoc-1.json \
-              2> accuracy-local-nonpseudoc-1.log &
-            pids+=("$!")
-            labels+=("nonpseudoc-1")
-          fi
+              2> accuracy-local-nonpseudoc-1.log
+            cat accuracy-local-nonpseudoc-1.log
 
-          # Join both non-pseudocode lanes before starting pseudocode. The
-          # feature sets and worker counts are unchanged; only their memory-heavy
-          # phases no longer overlap on the same hosted runner.
-          status=0
-          for i in "${!pids[@]}"; do
-            if ! wait "${pids[$i]}"; then status=1; fi
-            log="accuracy-local-${labels[$i]}.log"
-            if [[ -f "$log" ]]; then cat "$log"; fi
-          done
-          if [[ "$status" -ne 0 ]]; then exit "$status"; fi
+            node --max-old-space-size=4096 tests/accuracy.mjs \
+              --target="$target" \
+              --oracle="$oracle" \
+              --only='apimeaning,summary,expr,formula,pinpoint-partial' \
+              --json > accuracy-local-nonpseudoc-2.json \
+              2> accuracy-local-nonpseudoc-2.log
+            cat accuracy-local-nonpseudoc-2.log
+          fi
 
           if [[ "$PSEUDOC_CACHE_HIT" != "true" ]]; then
             if ! node tests/accuracy-pseudoc-parallel.mjs \
@@ -279,7 +273,7 @@ jobs:
           if [[ "$CORE_CACHE_HIT" != "true" || "$PINPOINT_CACHE_HIT" != "true" ]]; then
             node --input-type=module <<'NODE'
           import fs from 'node:fs';
-          const rows = [0, 1].flatMap((i) => JSON.parse(fs.readFileSync(`accuracy-local-nonpseudoc-${i}.json`, 'utf8')));
+          const rows = [0, 1, 2].flatMap((i) => JSON.parse(fs.readFileSync(`accuracy-local-nonpseudoc-${i}.json`, 'utf8')));
           const coreIds = new Set(['sections','funcs','funcs-guess','disasm','kinds','calls','refs','imports','objc','selstub','strings','xrefs','funcname','selffield','role','apimeaning','summary','expr','formula']);
           const pinpointIds = new Set(['pinpoint', 'pinpoint-partial']);
           const core = rows.filter((row) => coreIds.has(row.id));
@@ -352,7 +346,9 @@ jobs:
             exit 1
           fi
       - name: Workflow contract regression
-        run: node tests/issue-497-cross-binary-workflow.mjs
+        run: |
+          node tests/issue-497-cross-binary-workflow.mjs
+          node tests/issue-2484-cross-binary-memory-envelope.mjs
       - name: Accuracy merge regression
         run: |
           node tests/accuracy-merge.mjs --self-test
