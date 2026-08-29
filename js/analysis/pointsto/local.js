@@ -18,7 +18,7 @@
  */
 
 import { createAnalysisStatus, isCompleteStatus } from '../status.js';
-import { classifyCallTargetProof } from '../summary/contract.js';
+import { classifyCallTargetProof, summaryIdentityMatches } from '../summary/contract.js';
 import { stableDigest, stableStringify } from '../../core/identity/index.js';
 import {
   defaultRootEntityId,
@@ -46,7 +46,7 @@ import {
 } from './lattice.js';
 
 export const A2_ANALYZER_ID = 'phase7.pointsto.a2-local';
-export const A2_ANALYZER_VERSION = '1.1.1';
+export const A2_ANALYZER_VERSION = '1.2.0';
 
 /** Casts that keep pointer provenance intact when the width does not change. */
 const WIDTH_PRESERVING_CASTS = new Set(['copy', 'bitcast']);
@@ -465,6 +465,31 @@ function shiftSet(set, delta, widthBits) {
 }
 
 /**
+ * Converts a finite root/allocation return fact into the canonical points-to
+ * target shape. An identity is mandatory: a kind without its stable root/site
+ * id is only a label, not provenance, and therefore remains unresolved.
+ */
+function targetFromReturnProvenance(provenance, widthBits, evidenceIds) {
+  if (provenance?.kind !== 'root' && provenance?.kind !== 'allocation') return null;
+  const rootEntityId = provenance.rootEntityId ?? provenance.allocationSiteId ?? null;
+  if (rootEntityId == null || !String(rootEntityId).trim()) return null;
+  let offset;
+  try { offset = BigInt(provenance.offset ?? 0n); }
+  catch { return null; }
+  return createPointsToTarget({
+    addressSpace: provenance.addressSpace == null ? 'memory' : String(provenance.addressSpace),
+    rootKind: provenance.kind === 'allocation' ? 'allocation' : 'rooted',
+    rootIdentity: provenance.rootIdentity ?? null,
+    rootEntityId: String(rootEntityId),
+    separationClass: provenance.separationClass ?? null,
+    separationAuthority: provenance.separationAuthority ?? null,
+    offsetRange: exactRange(offset),
+    widthBits,
+    evidenceIds,
+  });
+}
+
+/**
  * Root singleton for an SSA `entry` definition: the incoming machine state a
  * function was handed. The root identity is built with the canonical helpers so
  * A2 and the exact derivation name the same object.
@@ -727,7 +752,23 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
         ? null
         : (options.summaries?.get(String(calleeId))
           || (typeof options.summaryProvider === 'function' ? options.summaryProvider(String(calleeId)) : null));
-      if (!calleeSummary || !isCompleteStatus(calleeSummary.status)
+      const configuredSummaryIdentity = options.summaryIdentity ?? options.expectedSummaryIdentity;
+      const summaryIdentity = configuredSummaryIdentity
+        && typeof configuredSummaryIdentity === 'object'
+        && !Array.isArray(configuredSummaryIdentity)
+        ? configuredSummaryIdentity
+        : {};
+      if (!calleeSummary
+        || !summaryIdentityMatches(calleeSummary, {
+          functionId: calleeId,
+          snapshotId: options.snapshotId ?? 'snapshot-unbound',
+          analyzerId: options.summaryAnalyzerId ?? options.expectedSummaryAnalyzerId ?? summaryIdentity.analyzerId ?? null,
+          analyzerVersion: options.summaryAnalyzerVersion
+            ?? options.expectedSummaryAnalyzerVersion
+            ?? summaryIdentity.analyzerVersion
+            ?? null,
+        })
+        || !isCompleteStatus(calleeSummary.status)
         || (calleeSummary.unknownCallEffects || []).length > 0) {
         return topPointsTo('unresolved-call');
       }
@@ -744,17 +785,21 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
       const argumentIds = node.call?.arguments?.length ? node.call.arguments : node.inputs;
       let merged = BOTTOM_POINTS_TO;
       for (const prov of alternatives) {
-        if (prov.kind !== 'arg' || prov.argIndex == null || argumentIds?.[prov.argIndex] == null) {
-          return topPointsTo('unresolved-call');
+        let candidate;
+        if (prov.kind === 'arg' && prov.argIndex != null && argumentIds?.[prov.argIndex] != null) {
+          const argSet = irGet(argumentIds[prov.argIndex]);
+          if (argSet.top || pointsToIsBottom(argSet)) return topPointsTo('unresolved-call');
+          let offset;
+          try { offset = BigInt(prov.offset ?? 0n); }
+          catch { return topPointsTo('unresolved-call'); }
+          candidate = offset !== 0n ? shiftSet(argSet, offset, width ?? 64) : argSet;
+        } else {
+          const target = targetFromReturnProvenance(prov, width ?? 64, evidenceIds);
+          if (!target) return topPointsTo('unresolved-call');
+          candidate = createPointsToSet({ targets: [target] });
         }
-        const argSet = irGet(argumentIds[prov.argIndex]);
-        if (argSet.top || pointsToIsBottom(argSet)) return topPointsTo('unresolved-call');
-        let offset;
-        try { offset = BigInt(prov.offset ?? 0n); }
-        catch { return topPointsTo('unresolved-call'); }
-        const shifted = offset !== 0n ? shiftSet(argSet, offset, width ?? 64) : argSet;
-        if (shifted.top) return topPointsTo('unresolved-call');
-        merged = joinPointsTo(merged, shifted, budget);
+        if (candidate.top || pointsToIsBottom(candidate)) return topPointsTo('unresolved-call');
+        merged = joinPointsTo(merged, candidate, budget);
         if (merged.top) return merged;
       }
       return pointsToIsBottom(merged) ? topPointsTo('unresolved-call') : merged;
