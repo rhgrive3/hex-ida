@@ -1,0 +1,110 @@
+name: Repair UI bounded semantic range
+
+on:
+  push:
+    branches: [integration/all-open-prs-20260829]
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    container:
+      image: mcr.microsoft.com/playwright:v1.55.0-noble
+      options: --ipc=host
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Apply bounded partial function-range repair
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          p = Path('js/app.js')
+          text = p.read_text()
+          old = """  validatedFunctionRange(addr) {
+            const fn=this.symbols?.functionAt?.(BigInt(addr)); if(!fn) return {ok:false,reason:'function-symbol-missing'};
+            const region=this.executableRegionFor(fn.start); if(!region) return {ok:false,reason:'function-start-not-executable',function:fn};
+            if(fn.end==null)return {ok:false,reason:'function-end-unproven',function:fn,region};
+            const regionEnd=region.vmAddr+region.size;
+            let end=BigInt(fn.end);
+            let complete=true,reason=null;
+            if(end<=fn.start){return {ok:false,reason:'invalid-function-range',function:fn,region};}
+            if(end>regionEnd){end=regionEnd;complete=false;reason='symbol-range-crosses-executable-region';}
+            return {ok:true,start:fn.start,end,region,function:fn,complete,reason,provenance:'executable-region+proven-function-extent'};
+          }
+          """
+          new = """  validatedFunctionRange(addr) {
+            const sym=this.symbols;
+            const fn=sym?.functionAt?.(BigInt(addr)); if(!fn) return {ok:false,reason:'function-symbol-missing'};
+            const region=this.executableRegionFor(fn.start); if(!region) return {ok:false,reason:'function-start-not-executable',function:fn};
+            const regionEnd=region.vmAddr+region.size;
+            if(fn.end==null){
+              /*
+               * A proven function start does not prove its end.  When the whole
+               * function-start universe is complete and every seed is exact,
+               * however, the next exact start in the same executable region is
+               * a safe non-overlap ceiling for a bounded analysis.  This ceiling
+               * is deliberately NOT published as the function's exact end: the
+               * result remains partial with function-end-unproven provenance.
+               */
+              const index=Number(fn.index);
+              const next=index>=0 && Number.isSafeInteger(index) && index+1<sym.funcs.length
+                ? BigInt(sym.funcs[index+1]) : null;
+              const nextEvidence=next==null?null:sym.functionEvidence?.(next);
+              const completeExactUniverse=sym.functionStartsComplete===true && sym.allSeedsExact===true;
+              const nextIsConfirmed=nextEvidence?.confirmed===true;
+              if(completeExactUniverse && nextIsConfirmed && next>fn.start && next<regionEnd && this.executableRegionFor(next)===region){
+                return {
+                  ok:true,start:fn.start,end:next,region,function:fn,complete:false,
+                  reason:'function-end-unproven',
+                  provenance:'executable-region+complete-exact-function-start-universe+confirmed-next-start-bound',
+                  boundedBy:'next-confirmed-function-start',
+                };
+              }
+              return {ok:false,reason:'function-end-unproven',function:fn,region};
+            }
+            let end=BigInt(fn.end);
+            let complete=true,reason=null;
+            if(end<=fn.start){return {ok:false,reason:'invalid-function-range',function:fn,region};}
+            if(end>regionEnd){end=regionEnd;complete=false;reason='symbol-range-crosses-executable-region';}
+            return {ok:true,start:fn.start,end,region,function:fn,complete,reason,provenance:'executable-region+proven-function-extent'};
+          }
+          """
+          count = text.count(old)
+          if count != 1:
+              raise SystemExit(f'validatedFunctionRange anchor mismatch: {count}')
+          p.write_text(text.replace(old, new))
+          PY
+          node --check js/app.js
+          git diff --check
+      - name: Install matching Playwright package
+        run: npm install --no-save --save-exact playwright@1.55.0
+      - name: Run previously failing UI shards
+        env:
+          CI: '1'
+          UI_SHOTS: tests/ui-shots
+        shell: bash
+        run: |
+          node tests/ui/browser.mjs
+          node tests/ui/analysis-navigation.mjs
+          npm run ai:browser
+      - name: Commit verified repair and remove temporary workflows
+        shell: bash
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git rm .github/workflows/repair-ui-bounded-function-range.yml
+          git rm -f .github/workflows/diagnose-ui-semantic-model.yml
+          git add js/app.js
+          git commit -m "fix(ui): analyze unknown function ends within proven bounds"
+          git push origin HEAD:integration/all-open-prs-20260829
