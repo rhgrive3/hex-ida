@@ -507,12 +507,47 @@ export function createAppAnalysisQueryAdapter(app) {
         const value = await app.getEvidence(query, options);
         return value == null ? unsupported(query?.functionId ?? null, 'evidence-store-unavailable') : paged(Array.isArray(value) ? value : [value], page);
       }
-      const rows = [...(app?.autoReport?.report?.deep || [])];
-      if (query.functionId != null) {
-        const result = await loadFunction(query.functionId, options);
-        for (const evidence of result?.value?.decompiler?.evidence || []) rows.push({ kind:'decompiler', functionId:query.functionId, evidence });
+      const rawTarget = query?.functionId ?? query?.address ?? null;
+      const targetAddress = addressOf(rawTarget);
+      const targetId = targetAddress != null ? functionId(targetAddress) : (rawTarget != null ? String(rawTarget) : null);
+
+      const rows = [];
+      const deep = app?.autoReport?.report?.deep || [];
+      if (targetAddress == null && targetId == null) {
+        rows.push(...deep);
+      } else {
+        for (const item of deep) {
+          const itemAddr = addressOf(item?.functionId ?? item?.address ?? item?.addr ?? item?.startAddress);
+          const itemFnId = item?.functionId != null ? String(item.functionId) : (itemAddr != null ? functionId(itemAddr) : null);
+          if ((targetAddress != null && itemAddr != null && itemAddr === targetAddress) ||
+              (targetId != null && itemFnId === targetId)) {
+            rows.push(item);
+          }
+        }
       }
-      return rows.length ? paged(rows, page, app?.autoReport?.report?.truncated ? 'partial' : 'complete') : unsupported(query?.functionId ?? null, 'evidence-store-unavailable');
+
+      let decompilerCompleteness = 'complete';
+      if (targetAddress != null || targetId != null) {
+        const result = await loadFunction(rawTarget, options);
+        if (result?.status?.completeness === 'partial' || result?.status?.completeness === 'truncated') {
+          decompilerCompleteness = result.status.completeness;
+        }
+        for (const evidence of result?.value?.decompiler?.evidence || []) {
+          rows.push({ kind:'decompiler', functionId:targetId ?? rawTarget, evidence });
+        }
+        if (!rows.length && result?.status?.completeness === 'unsupported') {
+          return unsupported(rawTarget, result.status.reason || 'function-range-unavailable');
+        }
+      }
+
+      if (!rows.length && targetAddress != null) {
+        const range = rangeFor(app, targetAddress);
+        if (!range.ok) return unsupported(rawTarget, range.reason || 'function-range-unavailable');
+      }
+
+      const autoTruncated = app?.autoReport?.report?.truncated === true;
+      const completeness = decompilerCompleteness !== 'complete' ? decompilerCompleteness : (autoTruncated ? 'partial' : 'complete');
+      return rows.length ? paged(rows, page, completeness) : unsupported(rawTarget, 'evidence-store-unavailable');
     },
 
     async decompile(_snapshot, id, options = {}) {
