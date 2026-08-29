@@ -180,10 +180,15 @@ export function parseChainedBindingSites(r,dc,image,imports,segments=image.segme
           const raw = width === 4 ? BigInt(r.u32(Number(expectedOff))) : r.u64(Number(expectedOff));
           const d = decodeChainedPointer(raw, pointerFormat);
           if (!d) { markUnsupportedChainedFormat(image, pointerFormat); fail(`segment ${segIndex} pointer format ${pointerFormat} could not be decoded`); break; }
-          if (d.bind && d.ordinal >= 0 && d.ordinal < imports.length && imports[d.ordinal]) {
-            if(!budget.take({objects:1,operations:1,estimatedHeapBytes:112},'chained-bind-site')){fail('shared metadata budget exhausted while recording bind site');status.bindingSites=decoded;return status;}
-            imports[d.ordinal].sites.push({ address, offset: expectedOff, kind: 'chained-bind', pointerFormat, addend: d.addend });
-            decoded++;
+          if (d.bind) {
+            const imp = d.ordinal >= 0 && d.ordinal < imports.length ? imports[d.ordinal] : null;
+            if (!imp) {
+              fail(`invalid bind ordinal ${d.ordinal} does not reference a parsed chained import`);
+            } else {
+              if(!budget.take({objects:1,operations:1,estimatedHeapBytes:112},'chained-bind-site')){fail('shared metadata budget exhausted while recording bind site');status.bindingSites=decoded;return status;}
+              imp.sites.push({ address, offset: expectedOff, kind: 'chained-bind', pointerFormat, addend: d.addend });
+              decoded++;
+            }
           }
           if (!d.next) { terminated = true; break; }
           const delta = BigInt(d.next) * BigInt(d.stride);
