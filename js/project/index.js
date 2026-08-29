@@ -80,7 +80,13 @@ export function createHexProject(input = {}) {
 
 export function normalizeNavigation(value = {}) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new ProjectFormatError('navigation must be an object');
-  return { currentFunction: value.currentFunction ?? null, history: list(value.history, 'navigation.history').slice(-500), bookmarks: list(value.bookmarks, 'navigation.bookmarks'), lastQuery: value.lastQuery ?? null };
+  return {
+    currentFunction: value.currentFunction ?? null,
+    history: list(value.history, 'navigation.history').slice(-500),
+    cursorIndex: value.cursorIndex != null ? Number(value.cursorIndex) : null,
+    bookmarks: list(value.bookmarks, 'navigation.bookmarks').slice(-500),
+    lastQuery: value.lastQuery ?? null,
+  };
 }
 
 /*
