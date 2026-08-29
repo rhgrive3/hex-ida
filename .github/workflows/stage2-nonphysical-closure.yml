@@ -186,12 +186,18 @@ jobs:
               ;;
           esac
 
-      - name: Run canonical A2 machine-effects proof with visible diagnostics
+      - name: Assert full check retains the canonical A2 denominator
+        if: steps.impact.outputs.required == 'true'
         shell: bash
         run: |
-          set -euo pipefail
-          mkdir -p reports/stage2
-          node tests/machine-effects/run.mjs 2>&1 | tee reports/stage2/machine-effects.log
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          if (!String(pkg.scripts?.check || '').includes('npm run invariants:test')) throw new Error('stage2-full-check-missing-invariants');
+          if (pkg.scripts?.['invariants:test'] !== 'node tools/validation/invariant-gates.mjs') throw new Error('stage2-invariant-owner-changed');
+          const source = fs.readFileSync('tools/validation/invariant-gates.mjs', 'utf8');
+          if (!source.includes('tests/machine-effects/run.mjs')) throw new Error('stage2-machine-effects-denominator-not-owned-by-invariants');
+          NODE
 
       - name: Collect exact non-physical Stage 2 profile evidence
         if: steps.impact.outputs.required == 'true'
