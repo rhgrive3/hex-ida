@@ -244,6 +244,7 @@ function sameArrangement(op, reference, allowed, elementKind) {
 }
 function gpWidth(op) {
   if (op?.k !== 'reg' || !validRegisterNumber(op) || !['gp','zr'].includes(op.cls)) return null;
+  if (op.shift != null || op.extend != null) return null;
   if (op.cls === 'gp' && op.num === 31) return null;
   if (op.cls === 'zr' && op.num !== 31) return null;
   return op.bits === 32 || op.bits === 64 ? op.bits : null;
