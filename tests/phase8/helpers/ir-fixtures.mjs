@@ -214,13 +214,26 @@ export class IrFixture {
 
   /** A switch terminator: one edge per case, plus an optional default. */
   switchBranch(selector, cases, defaultTarget = null) {
+    const normalizedCases = cases.map((entry) => {
+      if (Array.isArray(entry)) return { value: BigInt(entry[0]), to: entry[1] };
+      if (entry && typeof entry === 'object') {
+        return { value: BigInt(entry.value ?? entry.caseValue), to: entry.to ?? entry.target };
+      }
+      // Legacy fixtures supplied only target blocks. Such evidence carries no
+      // selector value and therefore remains conservative to the scalar pass.
+      return { value: null, to: entry };
+    });
     this.current.insts.push({
       op: 'switch', sub: null, block: this.current.index, row: this.current.insts.length,
       args: [{ value: selector }], selectorValue: selector,
+      cases: normalizedCases.filter((entry) => entry.value != null),
+      casesComplete: normalizedCases.every((entry) => entry.value != null),
       origin: { instructionIds: [`instruction_switch_${nextId}`] },
     });
     selector?.uses.push(this.current.insts.at(-1));
-    const targets = defaultTarget == null ? [...cases] : [...cases, defaultTarget];
+    const targets = defaultTarget == null
+      ? normalizedCases.map((entry) => entry.to)
+      : [...normalizedCases.map((entry) => entry.to), defaultTarget];
     this.current.succ = targets;
     this.current.successorEdges = targets.map((to, index) => ({
       to,

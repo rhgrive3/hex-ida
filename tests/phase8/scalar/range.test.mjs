@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { bitvector } from '../../../js/decompiler/phase8/bitvector.js';
+import { bitvector, signedOf } from '../../../js/decompiler/phase8/bitvector.js';
 import {
-  cardinality, contains, describeRange, emptyRange, evaluateBinaryRange, fullRange,
-  isFull, join, rangeOf, sameRange, signExtendRange, singleton, truncateRange, widen, zeroExtendRange,
+  cardinality, contains, describeRange, emptyFact, emptyRange, evaluateBinaryFact,
+  evaluateBinaryRange, factFromRange, fullFact, fullRange, intersectRange, isEmpty,
+  isFull, join, joinFacts, rangeOf, refineFactByComparison, sameRange, signExtendRange,
+  singleton, singletonFact, truncateRange, widen, widenFacts, zeroExtendRange,
 } from '../../../js/decompiler/phase8/range.js';
 
 /**
@@ -154,4 +156,79 @@ test('the description distinguishes the three shapes', () => {
   assert.match(describeRange(emptyRange(32)), /^empty:32$/);
   assert.match(describeRange(rangeOf(1n, 2n, 32)), /^interval:32/);
   assert.match(describeRange(rangeOf(0xFFFFFFF0n, 1n, 32)), /^wrapped:32/);
+});
+
+test('unsigned add and subtract retain modular wrap at the declared width', () => {
+  const add = evaluateBinaryRange('add', rangeOf(0xF8n, 0xFFn, 8), rangeOf(0x10n, 0x10n, 8));
+  assert.equal(add.exact, true);
+  assert.equal(add.range.kind, 'interval');
+  assert.deepEqual([add.range.lower, add.range.upper], [0x08n, 0x0Fn]);
+
+  const subtract = evaluateBinaryRange('sub', rangeOf(0n, 3n, 8), rangeOf(8n, 8n, 8));
+  assert.equal(subtract.exact, true);
+  assert.equal(subtract.range.kind, 'interval');
+  assert.deepEqual([subtract.range.lower, subtract.range.upper], [0xF8n, 0xFBn]);
+});
+
+test('signed extrema remain distinct from unsigned extrema', () => {
+  assert.equal(signedOf(0x80n, 8), -128n);
+  assert.equal(signedOf(0x7Fn, 8), 127n);
+  const all = fullFact(8, { valueId: 1 });
+  const signed = refineFactByComparison(all, 'slt', 0x80n, true);
+  const unsigned = refineFactByComparison(all, 'ult', 0x80n, true);
+  assert.equal(isEmpty(signed.range), true, 'no signed 8-bit value is below INT_MIN');
+  assert.deepEqual([unsigned.range.lower, unsigned.range.upper], [0n, 0x7Fn]);
+});
+
+test('known bits and congruence are projections of the same masked/shifted value set', () => {
+  const input = fullFact(8, { valueId: 10 });
+  const mask = singletonFact(bitvector(0xFCn, 8), { valueId: 11 });
+  const masked = evaluateBinaryFact('and', input, mask);
+  assert.equal(masked.range.kind, 'interval');
+  assert.equal(masked.range.upper, 0xFCn);
+  assert.equal(masked.knownZero & 0x03n, 0x03n);
+  assert.deepEqual(masked.congruence, { remainder: 0n, modulus: 4n });
+
+  const shifted = evaluateBinaryFact('shl', masked, singletonFact(bitvector(1n, 8), { valueId: 12 }));
+  assert.equal(shifted.knownZero & 0x01n, 0x01n);
+  assert.equal(shifted.congruence.modulus, 8n);
+});
+
+test('product joins and widening never promote a non-singleton to an exact constant', () => {
+  const left = factFromRange(rangeOf(1n, 1n, 8), { valueId: 1 });
+  const right = factFromRange(rangeOf(2n, 2n, 8), { valueId: 1 });
+  const joined = joinFacts(left, right);
+  assert.equal(joined.constant, null);
+  assert.equal(joined.status, 'conservative');
+  const widened = widenFacts(left, right);
+  assert.equal(widened.constant, null);
+  assert.equal(widened.status, 'conservative');
+});
+
+test('alignment and pointer-offset evidence survives only an agreeing join and edge restriction', () => {
+  const alignment = { modulus: 16n, remainder: 0n };
+  const pointerOffset = { baseId: 'p', offset: 4n };
+  const first = factFromRange(rangeOf(0n, 10n, 32), { valueId: 4, alignment, pointerOffset });
+  const second = factFromRange(rangeOf(20n, 30n, 32), { valueId: 4, alignment, pointerOffset });
+  const joined = joinFacts(first, second);
+  assert.deepEqual(joined.alignment, alignment);
+  assert.deepEqual(joined.pointerOffset, pointerOffset);
+  const restricted = refineFactByComparison(joined, 'ult', 25n, true);
+  assert.deepEqual(restricted.alignment, alignment);
+  assert.deepEqual(restricted.pointerOffset, pointerOffset);
+  const disagreement = joinFacts(first, factFromRange(rangeOf(40n, 50n, 32), {
+    valueId: 4, alignment: { modulus: 8n, remainder: 0n }, pointerOffset,
+  }));
+  assert.equal(disagreement.alignment, null);
+});
+
+test('malformed widths and unsupported operations stay conservative', () => {
+  assert.throws(() => fullRange(24), /unsupported-width/);
+  const malformed = factFromRange({ bits: 24, kind: 'interval', lower: 0n, upper: 1n });
+  assert.equal(malformed.status, 'malformed');
+  const unsupported = evaluateBinaryFact('rotl', fullFact(32), fullFact(32));
+  assert.equal(isFull(unsupported.range), true);
+  assert.equal(unsupported.constant, null);
+  const incomplete = emptyFact(8, { status: 'partial' });
+  assert.equal(incomplete.constant, null);
 });

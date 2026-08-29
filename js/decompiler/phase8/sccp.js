@@ -27,14 +27,16 @@ import {
   isSupportedWidth, sameBitvector, signExtend, truncate, zeroExtend,
 } from './bitvector.js';
 import {
-  describeRange, emptyRange, fullRange, join, sameRange, singleton, widen,
-  evaluateBinaryRange, signExtendRange, truncateRange, zeroExtendRange,
+  describeRange, emptyRange, fullRange, join, sameRange, singleton,
+  evaluateBinaryFact, factFromRange, fullFact, emptyFact,
+  joinFacts, sameFact, signExtendFact, truncateFact, widenFacts, zeroExtendFact,
+  refineComparisonFacts,
 } from './range.js';
 import { createPassDescriptor, createPassResult } from './contract.js';
 
 export const SCCP_PASS = createPassDescriptor({
   id: 'phase8.sccp',
-  version: '1.0.0',
+  version: '2.0.0',
   stage: 'scalar-optimization',
   budgetClass: 'standard',
   consumes: ['cfg', 'ssa'],
@@ -153,6 +155,8 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
 
   const cells = new Map();
   const ranges = new Map();
+  const facts = new Map();
+  const edgeFacts = new Map();
   const visits = new Map();
   const executableEdges = new Set();
   const executableBlocks = new Set();
@@ -170,8 +174,18 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
   const blockByIndex = new Map(blocks.map((block) => [block.index, block]));
 
   const cellOf = (value) => (value == null ? overdefined('missing operand') : cells.get(value.id) ?? TOP);
+  const factOfValue = (value) => {
+    if (value == null) return null;
+    const known = facts.get(value.id);
+    if (known != null) return known;
+    const range = ranges.get(value.id);
+    const bits = widthOf(value);
+    return range == null || bits == null ? null : factFromRange(range, { valueId: value.id });
+  };
   const rangeOfValue = (value) => {
     if (value == null) return null;
+    const knownFact = facts.get(value.id);
+    if (knownFact?.range) return knownFact.range;
     const known = ranges.get(value.id);
     if (known) return known;
     const bits = widthOf(value);
@@ -197,9 +211,12 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
     }
   }
 
-  function setCell(valueId, proposed, proposedRange) {
+  function setCell(valueId, proposed, proposedRange, proposedFact = null) {
     const previous = cells.get(valueId) ?? TOP;
-    const previousRange = ranges.get(valueId) ?? null;
+    const previousFact = facts.get(valueId) ?? (ranges.get(valueId)
+      ? factFromRange(ranges.get(valueId), { valueId })
+      : null);
+    const previousRange = previousFact?.range ?? ranges.get(valueId) ?? null;
     const seen = (visits.get(valueId) ?? 0) + 1;
     visits.set(valueId, seen);
 
@@ -210,19 +227,24 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
     // function. Meeting with the previous cell is what makes the chain finite.
     const next = meet(previous, proposed);
 
-    // Ranges ascend by union for the same reason: a monotone chain plus widening
-    // is what bounds convergence. Without it a range can shrink and grow forever.
-    let effectiveRange = proposedRange;
-    if (previousRange != null && proposedRange != null && previousRange.bits === proposedRange.bits) {
-      effectiveRange = join(previousRange, proposedRange);
-      if (!sameRange(previousRange, effectiveRange) && seen > limits.maxVisitsPerValue) {
+    // Product facts ascend by union for the same reason: a monotone chain plus
+    // widening is what bounds convergence. The compatibility range is derived
+    // from this one product, never maintained as a second truth.
+    let candidateFact = proposedFact ?? (proposedRange == null ? null : factFromRange(proposedRange, { valueId }));
+    if (candidateFact != null && candidateFact.valueId !== valueId) candidateFact = Object.freeze({ ...candidateFact, valueId });
+    let effectiveFact = candidateFact;
+    if (previousFact != null && candidateFact != null && previousFact.bits === candidateFact.bits) {
+      effectiveFact = joinFacts(previousFact, candidateFact);
+      if (!sameFact(previousFact, effectiveFact) && seen > limits.maxVisitsPerValue) {
         // A value that keeps moving is widened rather than chased; the
         // alternative is a fixed point that exists in theory and not inside a
         // browser budget.
-        effectiveRange = widen(previousRange, effectiveRange);
+        effectiveFact = widenFacts(previousFact, effectiveFact);
         widened += 1;
       }
+      if (effectiveFact.valueId !== valueId) effectiveFact = Object.freeze({ ...effectiveFact, valueId });
     }
+    const effectiveRange = effectiveFact?.range ?? proposedRange;
 
     // Two cells are equal when the state matches and either both carry no
     // constant or they carry the same one. `sameBitvector(null, null)` is false
@@ -234,9 +256,11 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
       : sameBitvector(previous.constant, next.constant);
     const cellChanged = previous.state !== next.state || !sameConstant;
     const rangeChanged = effectiveRange != null && (previousRange == null || !sameRange(previousRange, effectiveRange));
-    if (!cellChanged && !rangeChanged) return;
+    const factChanged = effectiveFact != null && !sameFact(previousFact, effectiveFact);
+    if (!cellChanged && !rangeChanged && !factChanged) return;
     cells.set(valueId, next);
     if (effectiveRange != null) ranges.set(valueId, effectiveRange);
+    if (effectiveFact != null) facts.set(valueId, effectiveFact);
     for (const use of valueById.get(valueId)?.uses ?? []) {
       const target = use?.dst?.id ?? use?.id;
       if (target != null) valueWorklist.push(target);
@@ -257,22 +281,31 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
     const bits = widthOf(value);
     let cell = TOP;
     let range = bits == null ? null : emptyRange(bits);
+    let fact = bits == null ? null : emptyFact(bits, { valueId: value.id });
     for (const incoming of definition?.incoming ?? []) {
       const from = incoming?.from;
       const source = incoming?.value;
-      if (from == null) return { cell: overdefined('phi predecessor is unknown'), range: bits == null ? null : fullRange(bits) };
+      if (from == null) return {
+        cell: overdefined('phi predecessor is unknown'),
+        range: bits == null ? null : fullRange(bits),
+        fact: bits == null ? null : fullFact(bits, { valueId: value.id, reason: 'phi predecessor is unknown' }),
+      };
       // Only executable predecessors contribute. This is the whole point of the
       // "conditional" in SCCP.
       if (!executablePredecessors.get(definition.block)?.has(from)) continue;
       cell = meet(cell, cellOf(source));
-      const sourceRange = rangeOfValue(source);
-      if (bits != null && sourceRange != null && sourceRange.bits === bits) range = join(range, sourceRange);
-      else if (bits != null) range = fullRange(bits);
+      const sourceFact = factOfValue(source);
+      const sourceRange = sourceFact?.range ?? rangeOfValue(source);
+      if (bits != null && sourceFact != null && sourceFact.bits === bits) fact = joinFacts(fact, sourceFact);
+      else if (bits != null && sourceRange != null && sourceRange.bits === bits) fact = joinFacts(fact, factFromRange(sourceRange, { valueId: value.id }));
+      else if (bits != null) fact = fullFact(bits, { valueId: value.id, reason: 'phi incoming width disagrees' });
     }
-    return { cell, range };
+    range = fact?.range ?? range;
+    if (fact?.valueId !== value.id && fact != null) fact = Object.freeze({ ...fact, valueId: value.id });
+    return { cell, range, fact };
   }
 
-  function evaluate(value) {
+  function evaluateValue(value) {
     const definition = value.def;
     const bits = widthOf(value);
     if (bits == null) return { cell: overdefined(`unsupported width: ${value?.bits}`), range: null };
@@ -304,13 +337,17 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
     if (shape.kind === 'copy') {
       const source = operands[0];
       const cell = operandCells[0] ?? overdefined('copy has no source');
+      const sourceFact = factOfValue(source);
       const sourceRange = rangeOfValue(source);
       if (cell.state === CONSTANT && cell.constant.bits !== bits) {
         // A copy that changes width is a cast the IR did not label; do not
         // silently reinterpret the bits.
         return { cell: overdefined('copy changes width without a declared cast'), range: fullRange(bits) };
       }
-      return { cell, range: sourceRange && sourceRange.bits === bits ? sourceRange : fullRange(bits) };
+      const copiedFact = sourceFact != null && sourceFact.bits === bits
+        ? sourceFact
+        : factFromRange(sourceRange && sourceRange.bits === bits ? sourceRange : fullRange(bits), { valueId: value.id });
+      return { cell, range: copiedFact.range, fact: Object.freeze({ ...copiedFact, valueId: value.id }) };
     }
 
     if (shape.kind === 'cast') {
@@ -324,9 +361,11 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
         return { cell: overdefined(`cast is not representable: ${shape.operator}`), range: fullRange(bits) };
       }
       if (sourceRange == null) return { cell: overdefined('cast source has no range'), range: fullRange(bits) };
-      const widenedRange = shape.operator === 'trunc' ? truncateRange(sourceRange, bits)
-        : shape.operator === 'zext' ? zeroExtendRange(sourceRange, bits)
-          : signExtendRange(sourceRange, bits);
+      const sourceFact = factOfValue(source) ?? factFromRange(sourceRange, { valueId: source?.id ?? null });
+      const castedFact = shape.operator === 'trunc' ? truncateFact(sourceFact, bits)
+        : shape.operator === 'zext' ? zeroExtendFact(sourceFact, bits)
+          : signExtendFact(sourceFact, bits);
+      const widenedRange = { range: castedFact.range, exact: castedFact.status === 'exact', reason: castedFact.reason };
       if (!widenedRange.exact && widenedRange.reason) {
         diagnostics.push({
           severity: 'info',
@@ -335,7 +374,7 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
           reason: widenedRange.reason,
         });
       }
-      return { cell: overdefined(`operand of ${shape.operator} is not constant`), range: widenedRange.range };
+      return { cell: overdefined(`operand of ${shape.operator} is not constant`), range: widenedRange.range, fact: Object.freeze({ ...castedFact, valueId: value.id }) };
     }
 
     if (shape.kind === 'unary') {
@@ -351,7 +390,11 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
           const folded = signExtend(constants[0], bits);
           if (folded != null) return { cell: constantCell(folded), range: singleton(folded) };
         }
-        if (sourceRange != null) return { cell: overdefined('operand is not constant'), range: signExtendRange(sourceRange, bits).range };
+        if (sourceRange != null) {
+          const sourceFact = factOfValue(operands[0]) ?? factFromRange(sourceRange, { valueId: operands[0]?.id ?? null });
+          const castedFact = signExtendFact(sourceFact, bits);
+          return { cell: overdefined('operand is not constant'), range: castedFact.range, fact: Object.freeze({ ...castedFact, valueId: value.id }) };
+        }
       }
       return { cell: overdefined(`unary ${shape.operator} is not foldable here`), range: fullRange(bits) };
     }
@@ -372,13 +415,18 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
         }
         return { cell: overdefined('binary result width disagrees with the value width'), range: fullRange(bits) };
       }
-      const leftRange = rangeOfValue(operands[0]);
-      const rightRange = rangeOfValue(operands[1]);
+      const leftFact = factOfValue(operands[0]);
+      const rightFact = factOfValue(operands[1]);
+      const leftRange = leftFact?.range ?? rangeOfValue(operands[0]);
+      const rightRange = rightFact?.range ?? rangeOfValue(operands[1]);
       if (leftRange == null || rightRange == null) return { cell: overdefined('operand has no range'), range: fullRange(bits) };
-      const combined = evaluateBinaryRange(shape.operator, leftRange, rightRange);
+      const combined = evaluateBinaryFact(shape.operator,
+        leftFact ?? factFromRange(leftRange, { valueId: operands[0]?.id ?? null }),
+        rightFact ?? factFromRange(rightRange, { valueId: operands[1]?.id ?? null }));
       return {
         cell: overdefined(`operands of ${shape.operator} are not both constant`),
         range: combined.range.bits === bits ? combined.range : fullRange(bits),
+        fact: Object.freeze({ ...combined, valueId: value.id }),
       };
     }
 
@@ -408,25 +456,179 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
         const chosen = conditionCell.constant.value === 0n ? operandCells[2] : operandCells[1];
         const chosenValue = conditionCell.constant.value === 0n ? operands[2] : operands[1];
         if (chosen != null) {
-          const chosenRange = rangeOfValue(chosenValue);
-          return { cell: chosen, range: chosenRange && chosenRange.bits === bits ? chosenRange : fullRange(bits) };
+          const chosenFact = factOfValue(chosenValue);
+          const chosenRange = chosenFact?.range ?? rangeOfValue(chosenValue);
+          const resultFact = chosenFact && chosenFact.bits === bits
+            ? Object.freeze({ ...chosenFact, valueId: value.id })
+            : factFromRange(chosenRange && chosenRange.bits === bits ? chosenRange : fullRange(bits), { valueId: value.id });
+          return { cell: chosen, range: resultFact.range, fact: resultFact };
         }
       }
-      const armRanges = [rangeOfValue(operands[1]), rangeOfValue(operands[2])].filter((range) => range?.bits === bits);
+      const armFacts = [factOfValue(operands[1]), factOfValue(operands[2])].filter((fact) => fact?.bits === bits);
+      const armRanges = armFacts.map((fact) => fact.range);
       return {
         cell: meet(operandCells[1] ?? overdefined('select arm missing'), operandCells[2] ?? overdefined('select arm missing')),
         range: armRanges.length === 2 ? join(armRanges[0], armRanges[1]) : fullRange(bits),
+        fact: armFacts.length === 2 ? Object.freeze({ ...joinFacts(armFacts[0], armFacts[1]), valueId: value.id }) : fullFact(bits, { valueId: value.id, reason: 'select arm fact missing' }),
       };
     }
 
     return { cell: overdefined('operation shape is not modelled'), range: fullRange(bits) };
   }
 
+  function evaluate(value) {
+    const result = evaluateValue(value);
+    if (result == null || result.fact != null || result.range == null) return result;
+    return { ...result, fact: factFromRange(result.range, { valueId: value.id, reason: result.cell?.reason }) };
+  }
+
+  function edgeKey(from, to, kind) { return `${from}->${to}:${kind}`; }
+
+  function recordEdgeFact(from, edge, { reachable = true, factsForEdge = new Map(), predicate = null } = {}) {
+    if (edge?.to == null) return;
+    const key = edgeKey(from, edge.to, edge.kind ?? 'branch');
+    const orderedFacts = [...factsForEdge.entries()]
+      .filter(([valueId, fact]) => valueId != null && fact != null)
+      .sort(([left], [right]) => Number(left) - Number(right));
+    const factMap = new Map(orderedFacts);
+    const existing = edgeFacts.get(key);
+    // Reachability is monotone. A previously accepted edge cannot be withdrawn
+    // by a later work-list visit; an initially unknown predicate therefore never
+    // creates an unsound promise that a later pass silently retracts.
+    const finalReachability = existing?.reachable === true && reachable === false ? true : reachable;
+    edgeFacts.set(key, Object.freeze({
+      edgeId: key,
+      from,
+      to: edge.to,
+      kind: edge.kind ?? 'branch',
+      reachable: finalReachability,
+      status: budgetExhausted ? 'partial' : 'complete',
+      predicate: predicate == null ? null : Object.freeze({ ...predicate }),
+      facts: factMap,
+      // The direct getter preserves the small pre-fix edge-fact API while the
+      // structured `facts` map carries metadata and remains the canonical
+      // projection for new consumers.
+      get: (valueId) => factMap.get(valueId),
+      provenance: Object.freeze({
+        edge: `${from}->${edge.to}`,
+        condition: predicate?.conditionId ?? null,
+      }),
+    }));
+  }
+
+  function refinementForCondition(condition, truth) {
+    const definition = condition?.def;
+    if (definition?.op !== 'bin') return new Map();
+    const operands = argumentValues(definition);
+    if (operands.length < 2) return new Map();
+    return refineComparisonFacts(definition.sub,
+      factOfValue(operands[0]) ?? factFromRange(rangeOfValue(operands[0]), { valueId: operands[0]?.id ?? null }),
+      factOfValue(operands[1]) ?? factFromRange(rangeOfValue(operands[1]), { valueId: operands[1]?.id ?? null }),
+      truth);
+  }
+
+  function edgeIsImpossible(refinement) {
+    return [...refinement.values()].some((fact) => fact?.range?.kind === 'empty');
+  }
+
+  function processSwitch(block, terminator, edges) {
+    const selector = terminator.selectorValue ?? terminator.conditionValue ?? argumentValues(terminator)[0];
+    const selectorFact = factOfValue(selector);
+    // A selector whose producer has not reached a fixed cell yet is different
+    // from an unknown selector.  Defer publication so a later exact selector
+    // can discard impossible case/default edges without stale reachability
+    // surviving from this first visit.
+    if (selector == null || selectorFact == null) {
+      if (selector == null || widthOf(selector) != null) return;
+      for (const edge of edges) {
+        recordEdgeFact(block.index, edge, {
+          reachable: true,
+          predicate: { kind: 'switch', conditionId: selector.id ?? null, malformed: true },
+        });
+        markEdge(block.index, edge.to, edge.kind ?? 'switch');
+      }
+      return;
+    }
+    const rawCases = terminator.cases ?? terminator.extra?.cases ?? [];
+    const cases = Array.isArray(rawCases) ? rawCases : [];
+    const normalizedCases = cases.map((entry, index) => {
+      const rawValue = Array.isArray(entry) ? entry[0] : entry?.value ?? entry?.caseValue ?? entry?.constant;
+      const to = Array.isArray(entry) ? entry[1] : entry?.to ?? entry?.target;
+      try {
+        return { value: rawValue == null ? null : BigInt(rawValue), to, index };
+      } catch {
+        return { value: null, to, index, malformed: true };
+      }
+    }).filter((entry) => entry.value != null && entry.to != null);
+    const complete = terminator.casesComplete === true || terminator.extra?.casesComplete === true;
+    const malformed = !Array.isArray(rawCases) || cases.some((entry, index) => {
+      const normalized = normalizedCases.find((candidate) => candidate.index === index);
+      return normalized == null || normalized.malformed;
+    }) || normalizedCases.some((entry, index, all) => all.some((other) => other !== entry
+      && other.value === entry.value && other.to !== entry.to));
+    const byTarget = new Map();
+    for (const entry of normalizedCases) {
+      if (!byTarget.has(entry.to)) byTarget.set(entry.to, []);
+      byTarget.get(entry.to).push(entry);
+    }
+    const selectorConstant = selectorFact?.constant?.value ?? null;
+    for (const edge of edges) {
+      const entries = edge.kind === 'switch-case' ? (byTarget.get(edge.to) ?? []) : [];
+      let refinement = new Map();
+      let reachable = true;
+      if (!malformed && entries.length > 0 && selectorFact != null) {
+        // Several case labels may share one target.  The edge fact is their
+        // union, never just the last label (which would be falsely precise).
+        const caseFacts = entries.map((entry) => refineComparisonFacts('eq', selectorFact,
+          factFromRange(singleton({ value: BigInt.asUintN(selectorFact.bits, entry.value), bits: selectorFact.bits }), { valueId: null }), true));
+        const candidates = caseFacts.map((factsForCase) => factsForCase.get(selectorFact.valueId) ?? selectorFact);
+        const selectorCases = candidates.reduce((merged, fact) => joinFacts(merged, fact), null);
+        if (selectorCases != null && selectorFact.valueId != null) refinement.set(selectorFact.valueId, selectorCases);
+        reachable = candidates.some((fact) => fact?.range?.kind !== 'empty');
+      } else if (edge.kind === 'switch-default' && complete && selectorFact != null) {
+        // A default complement generally has multiple disconnected pieces.  A
+        // singleton selector is the one case where the complement is exact.
+        if (!malformed && selectorConstant != null) {
+          const covered = normalizedCases.some((entry) => BigInt.asUintN(selectorFact.bits, entry.value) === selectorConstant);
+          reachable = !covered;
+          if (!reachable && selectorFact.valueId != null) {
+            refinement.set(selectorFact.valueId, emptyFact(selectorFact.bits, {
+              valueId: selectorFact.valueId,
+              reason: 'switch default is impossible for the proven selector',
+            }));
+          }
+        }
+      }
+      recordEdgeFact(block.index, edge, {
+        reachable,
+        factsForEdge: refinement,
+        predicate: {
+          kind: 'switch',
+          conditionId: selector?.id ?? null,
+          caseValue: entries.length <= 1 ? entries[0]?.value ?? null : entries.map((entry) => entry.value),
+          malformed,
+        },
+      });
+      if (reachable) markEdge(block.index, edge.to, edge.kind);
+    }
+  }
+
   function processTerminator(block) {
     const terminator = (block.insts ?? []).at(-1);
-    const edges = block.successorEdges ?? [];
-    if (terminator?.op !== 'cbr' || edges.length === 0) {
-      for (const successor of block.succ ?? []) markEdge(block.index, successor, 'unconditional');
+    const edges = Array.isArray(block.successorEdges) && block.successorEdges.length > 0
+      ? block.successorEdges
+      : (block.succ ?? []).map((to) => ({ to, kind: 'branch' }));
+    if (edges.length === 0) return;
+    if (terminator?.op === 'switch') {
+      processSwitch(block, terminator, edges);
+      return;
+    }
+    if (terminator?.op !== 'cbr') {
+      for (const edge of edges) recordEdgeFact(block.index, edge, {
+        reachable: true,
+        predicate: { kind: 'unconditional', conditionId: null },
+      });
+      for (const edge of edges) markEdge(block.index, edge.to, edge.kind ?? 'unconditional');
       return;
     }
     const condition = terminator.conditionValue;
@@ -435,19 +637,43 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
     // known". Marking both arms executable here would be permanent — edges are
     // only ever added — and the branch could never be folded afterwards no
     // matter what the condition turns out to be.
-    if (cell.state === UNDEFINED) return;
-    if (cell.state !== CONSTANT || cell.constant.bits !== 1) {
-      for (const edge of edges) markEdge(block.index, edge.to, edge.kind);
+    if (cell.state === UNDEFINED) {
+      // An unsupported-width condition never received an initial lattice cell;
+      // it is malformed evidence, not an unevaluated value.  Keep both arms
+      // reachable conservatively rather than inventing an unreachable block.
+      if (condition == null || widthOf(condition) == null) {
+        for (const edge of edges) {
+          recordEdgeFact(block.index, edge, {
+            reachable: true,
+            predicate: { kind: 'branch', conditionId: condition?.id ?? null, malformed: true },
+          });
+          markEdge(block.index, edge.to, edge.kind ?? 'branch');
+        }
+      }
       return;
     }
-    // A proved condition makes exactly one arm executable. Everything reached
-    // only through the other arm is unreachable, and a phi there stops seeing it.
-    const taken = cell.constant.value !== 0n;
+    const hasConstantCondition = cell.state === CONSTANT && cell.constant.bits === 1;
+    // A proved condition makes exactly one arm executable. Otherwise derive
+    // branch-local scalar facts from a canonical comparison, never by mutating
+    // the global fact map.
+    const taken = hasConstantCondition ? cell.constant.value !== 0n : null;
     for (const edge of edges) {
       const isTrueArm = edge.kind === 'conditional-true';
       const isFalseArm = edge.kind === 'conditional-false' || edge.kind === 'fallthrough';
-      if ((taken && isTrueArm) || (!taken && isFalseArm)) markEdge(block.index, edge.to, edge.kind);
-      else if (!isTrueArm && !isFalseArm) markEdge(block.index, edge.to, edge.kind);
+      let reachable = true;
+      let factsForEdge = new Map();
+      if (hasConstantCondition) {
+        reachable = (taken && isTrueArm) || (!taken && isFalseArm) || (!isTrueArm && !isFalseArm);
+      } else if (isTrueArm || isFalseArm) {
+        factsForEdge = refinementForCondition(condition, isTrueArm);
+        reachable = !edgeIsImpossible(factsForEdge);
+      }
+      recordEdgeFact(block.index, edge, {
+        reachable,
+        factsForEdge,
+        predicate: { kind: 'branch', conditionId: condition?.id ?? null, truth: isTrueArm ? true : isFalseArm ? false : null },
+      });
+      if (reachable) markEdge(block.index, edge.to, edge.kind);
     }
   }
 
@@ -457,7 +683,11 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
   const conditionOwners = new Map();
   for (const block of blocks) {
     const terminator = (block.insts ?? []).at(-1);
-    const conditionId = terminator?.op === 'cbr' ? terminator.conditionValue?.id : null;
+    const conditionId = terminator?.op === 'cbr'
+      ? terminator.conditionValue?.id
+      : terminator?.op === 'switch'
+        ? (terminator.selectorValue ?? terminator.conditionValue ?? argumentValues(terminator)[0])?.id
+        : null;
     if (conditionId == null) continue;
     if (!conditionOwners.has(conditionId)) conditionOwners.set(conditionId, []);
     conditionOwners.get(conditionId).push(block);
@@ -473,7 +703,11 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
     const bits = widthOf(value);
     const known = constantOfValue(value);
     cells.set(value.id, known != null ? constantCell(known) : overdefined(value.kind === 'arg' ? 'function argument' : 'value has no definition'));
-    if (bits != null) ranges.set(value.id, known != null ? singleton(known) : fullRange(bits));
+    if (bits != null) {
+      const range = known != null ? singleton(known) : fullRange(bits);
+      ranges.set(value.id, range);
+      facts.set(value.id, factFromRange(range, { valueId: value.id, reason: known == null ? 'function argument' : null }));
+    }
   }
 
   const entry = blocks.find((block) => block.isEntry) ?? blocks[0];
@@ -523,21 +757,100 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
     }
   }
 
-  const provenConstants = [...cells.entries()].filter(([, cell]) => cell.state === CONSTANT);
+  // Materialize conservative block-entry joins from the edge-local facts. This
+  // is a projection of the same edge map, not another path/value analysis.
+  const blockEntryFacts = new Map();
+  for (const entry of edgeFacts.values()) {
+    if (entry.reachable !== true) continue;
+    if (!blockEntryFacts.has(entry.to)) blockEntryFacts.set(entry.to, new Map());
+    const merged = blockEntryFacts.get(entry.to);
+    for (const [valueId, fact] of entry.facts) {
+      const prior = merged.get(valueId);
+      merged.set(valueId, prior == null ? fact : joinFacts(prior, fact));
+    }
+  }
+  for (const [block, valueFacts] of blockEntryFacts) blockEntryFacts.set(block, new Map(
+    [...valueFacts.entries()].sort(([left], [right]) => Number(left) - Number(right)),
+  ));
+
   const unreachableBlocks = blocks.filter((block) => !executableBlocks.has(block.index)).map((block) => block.index);
+
+  /*
+   * A work-limited run has not proved that its worklist is at a fixed point.
+   * Even a singleton reached before the cutoff is therefore not safe to expose
+   * as an exact scalar fact: an unvisited predecessor may still widen it.  Keep
+   * the result structurally useful for diagnostics, but publish full-width
+   * partial facts and no constants.  Cancellation is handled by the enclosing
+   * transaction and never reaches this publication path.
+   */
+  const degradePartialFact = (fact) => fact == null || !isSupportedWidth(fact.bits)
+    ? fact
+    : fullFact(fact.bits, {
+      valueId: fact.valueId,
+      status: 'partial',
+      reason: 'fixed point not reached before budget exhaustion',
+      provenance: fact.provenance,
+    });
+  const publishedFacts = budgetExhausted
+    ? new Map([...facts.entries()].map(([valueId, fact]) => [valueId, degradePartialFact(fact)]))
+    : facts;
+  const publishedRanges = budgetExhausted
+    ? new Map([...publishedFacts.entries()].map(([valueId, fact]) => [valueId, fact.range]))
+    : ranges;
+  const publishedEdgeFacts = budgetExhausted
+    ? new Map([...edgeFacts.entries()].map(([key, edge]) => {
+      const partialFacts = new Map([...edge.facts.entries()].map(([valueId, fact]) => [valueId, degradePartialFact(fact)]));
+      return [key, Object.freeze({
+        ...edge,
+        status: 'partial',
+        facts: partialFacts,
+        get: (valueId) => partialFacts.get(valueId),
+      })];
+    }))
+    : edgeFacts;
+  const publishedBlockEntryFacts = budgetExhausted
+    ? new Map([...blockEntryFacts.entries()].map(([block, valueFacts]) => [block, new Map(
+      [...valueFacts.entries()].map(([valueId, fact]) => [valueId, degradePartialFact(fact)]),
+    )]))
+    : blockEntryFacts;
+  const numericMap = (source) => new Map([...source].sort(([left], [right]) => Number(left) - Number(right)));
+  const lexicalMap = (source) => new Map([...source].sort(([left], [right]) => String(left).localeCompare(String(right))));
+  const outputFacts = numericMap(publishedFacts);
+  const outputRanges = numericMap(publishedRanges);
+  const outputEdges = lexicalMap(publishedEdgeFacts);
+  const outputBlockEntryFacts = numericMap(publishedBlockEntryFacts);
+  const provenConstants = budgetExhausted
+    ? []
+    : [...outputFacts.entries()]
+      .filter(([, fact]) => fact?.constant != null && !['partial', 'malformed', 'unknown'].includes(fact.status));
   const newlyProven = provenConstants.filter(([valueId]) => {
     const value = valueById.get(valueId);
     return value != null && constantOfValue(value) == null;
   });
+  const inputIdentity = context.analysisIdentity ?? context.identity ?? context.artifactIdentity ?? null;
+  const inputVersions = typeof analysis?.snapshot === 'function' ? analysis.snapshot() : null;
 
   const result = {
     contractVersion: SCCP_PASS.contractVersion,
     passVersion: SCCP_PASS.version,
+    identity: inputIdentity,
+    provenance: Object.freeze({
+      producer: SCCP_PASS.id,
+      producerVersion: SCCP_PASS.version,
+      canonicalOwner: 'phase8/range.js + phase8/sccp.js',
+      inputVersions,
+      functionOrigin: context.ir?.origin ?? null,
+    }),
     // Constants the IR did not already carry. Reporting the total would flatter
     // the pass with facts it did not produce.
-    constants: new Map(provenConstants.map(([valueId, cell]) => [valueId, cell.constant])),
+    constants: new Map(budgetExhausted ? [] : provenConstants.map(([valueId, cell]) => [valueId, cell.constant])),
     newlyProvenConstantCount: newlyProven.length,
-    ranges,
+    // The product fact map is the sole scalar semantic truth. Compatibility
+    // ranges/constants below are projections retained for existing consumers.
+    facts: outputFacts,
+    ranges: outputRanges,
+    edgeFacts: outputEdges,
+    blockEntryFacts: outputBlockEntryFacts,
     executableEdges: Object.freeze([...executableEdges].sort()),
     unreachableBlockIndexes: Object.freeze(unreachableBlocks.sort((left, right) => left - right)),
     overdefinedReasons: new Map([...cells.entries()]

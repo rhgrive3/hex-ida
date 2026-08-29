@@ -24,26 +24,26 @@ unfinished dependency. Story labels map to the three P1 stories in `spec.md`.
 
 **Purpose**: Establish the authoritative base and prevent ownership collisions.
 
-- [ ] T001 Verify `origin/main`, GitHub redirect identity, timestamp, branch, and isolated worktree in `quickstart.md`.
-- [ ] T002 Inspect live main, relevant open PRs, active branches, intended files, and recent canonical-owner commits; record the collision report in `quickstart.md`.
-- [ ] T003 [P] Run `graft map`, targeted `graft ask --source`, `graft callers`, and `graft grep`; record the compressed producer/consumer/invalidation/test trace in `research.md`.
-- [ ] T004 [P] Check `.specify/extensions.yml`, installed workflow syntax, and feature paths with `.specify/scripts/bash/check-prerequisites.sh`.
+- [x] T001 Verify `origin/main`, GitHub redirect identity, timestamp, branch, and isolated worktree in `quickstart.md`.
+- [x] T002 Inspect live main, relevant open PRs, active branches, intended files, and recent canonical-owner commits; record the collision report in `quickstart.md`.
+- [x] T003 [P] Run `graft map`, targeted `graft ask --source`, `graft callers`, and `graft grep`; record the compressed producer/consumer/invalidation/test trace in `research.md`.
+- [x] T004 [P] Check `.specify/extensions.yml`, installed workflow syntax, and feature paths with `.specify/scripts/bash/check-prerequisites.sh`.
 
 ## Phase 2: Foundational Spec Kit and proof prerequisites
 
 **Purpose**: Complete the design lifecycle and prove the real gap before any
 production edit.
 
-- [ ] T005 [P] Complete the required semantic contract fields and user stories in `specs/002-wrapped-interval-congruence/spec.md`.
-- [ ] T006 [P] Record canonical-owner research, alternatives, dependency decision, and no-clarification result in `specs/002-wrapped-interval-congruence/research.md`.
-- [ ] T007 [P] Define `BitVectorFact`, `EdgeFactSet`, `ScalarAnalysisResult`, and identity invariants in `specs/002-wrapped-interval-congruence/data-model.md`.
-- [ ] T008 [P] Define the internal scalar-facts producer, edge-refinement, publication, consumer, and negative contracts in `specs/002-wrapped-interval-congruence/contracts/scalar-facts.md`.
-- [ ] T009 [P] Record exact base, pre-fix command/failure, staged gates, convergence, and review evidence slots in `specs/002-wrapped-interval-congruence/quickstart.md`.
-- [ ] T010 [P] Evaluate built-in requirements and reviewer-owned soundness checklists in `specs/002-wrapped-interval-congruence/checklists/requirements.md` and `specs/002-wrapped-interval-congruence/checklists/soundness.md`.
-- [ ] T011 Confirm `SECOND_SEMANTIC_TRUTH_CREATED: NO`, expected/forbidden files, and C2-01/C3-02 dependency boundaries in `specs/002-wrapped-interval-congruence/plan.md`.
-- [ ] T012 Run read-only Spec Kit analyze after tasks generation, map every FR/SC/story to tasks, and obtain `ANALYZE = CLEAN` before production edits.
-- [ ] T013 Obtain Sol's targeted spot-check of canonical ownership, first divergence, counterexample, false-exactness risk, duplicate truth, and negative boundaries; stop on `REQUEST_PLAN_CORRECTION`.
-- [ ] T014 Run `node --test tests/phase8/scalar/c2-02-pre-fix.test.mjs` at the base and record both expected failures in `quickstart.md`; do not alter expectations to match implementation.
+- [x] T005 [P] Complete the required semantic contract fields and user stories in `specs/002-wrapped-interval-congruence/spec.md`.
+- [x] T006 [P] Record canonical-owner research, alternatives, dependency decision, and no-clarification result in `specs/002-wrapped-interval-congruence/research.md`.
+- [x] T007 [P] Define `BitVectorFact`, `EdgeFactSet`, `ScalarAnalysisResult`, and identity invariants in `specs/002-wrapped-interval-congruence/data-model.md`.
+- [x] T008 [P] Define the internal scalar-facts producer, edge-refinement, publication, consumer, and negative contracts in `specs/002-wrapped-interval-congruence/contracts/scalar-facts.md`.
+- [x] T009 [P] Record exact base, pre-fix command/failure, staged gates, convergence, and review evidence slots in `specs/002-wrapped-interval-congruence/quickstart.md`.
+- [x] T010 [P] Evaluate built-in requirements and reviewer-owned soundness checklists in `specs/002-wrapped-interval-congruence/checklists/requirements.md` and `specs/002-wrapped-interval-congruence/checklists/soundness.md`.
+- [x] T011 Confirm `SECOND_SEMANTIC_TRUTH_CREATED: NO`, expected/forbidden files, and C2-01/C3-02 dependency boundaries in `specs/002-wrapped-interval-congruence/plan.md`.
+- [x] T012 Run read-only Spec Kit analyze after tasks generation, map every FR/SC/story to tasks, and obtain `ANALYZE = CLEAN` before production edits.
+- [x] T013 Obtain Sol's targeted spot-check of canonical ownership, first divergence, counterexample, false-exactness risk, duplicate truth, and negative boundaries; stop on `REQUEST_PLAN_CORRECTION`.
+- [x] T014 Run `node --test tests/phase8/scalar/c2-02-pre-fix.test.mjs` at the base and record both expected failures in `quickstart.md`; do not alter expectations to match implementation.
 
 ## Phase 3: User Story 1 — Exact machine-width scalar facts (P1) 🎯 MVP
 
@@ -56,17 +56,17 @@ positive/negative matrix without promoting a non-singleton.
 
 ### Tests for User Story 1 (write first; keep the pre-fix proof)
 
-- [ ] T015 [US1] Add unchanged pre-fix and post-fix assertions for mask-derived congruence in `tests/phase8/scalar/c2-02-pre-fix.test.mjs`.
-- [ ] T016 [P] [US1] Add unsigned add/subtract wrap, signed minimum/maximum, and signed-vs-unsigned boundary tests in `tests/phase8/scalar/range.test.mjs`.
-- [ ] T017 [P] [US1] Add AND/shift known-bit and residue, width truncation/extension, malformed-width, unsupported-op, and non-singleton negative tests in `tests/phase8/scalar/range.test.mjs`.
+- [x] T015 [US1] Add unchanged pre-fix and post-fix assertions for mask-derived congruence in `tests/phase8/scalar/c2-02-pre-fix.test.mjs`.
+- [x] T016 [P] [US1] Add unsigned add/subtract wrap, signed minimum/maximum, and signed-vs-unsigned boundary tests in `tests/phase8/scalar/range.test.mjs`.
+- [x] T017 [P] [US1] Add AND/shift known-bit and residue, width truncation/extension, malformed-width, unsupported-op, and non-singleton negative tests in `tests/phase8/scalar/range.test.mjs`.
 
 ### Implementation for User Story 1
 
-- [ ] T018 [US1] Implement immutable width-bounded `BitVectorFact` construction, normalization, singleton projection, known-zero/known-one masks, and congruence in `js/decompiler/phase8/range.js`.
-- [ ] T019 [US1] Implement sound modular add/subtract, supported casts/shifts/masks, congruence joins, and conservative fallback reasons in `js/decompiler/phase8/range.js`.
-- [ ] T020 [US1] Reuse or minimally extend width-safe helpers in `js/decompiler/phase8/bitvector.js` only if inspection proves the helper is missing; do not create a second arithmetic engine.
-- [ ] T021 [US1] Update canonical range exports in `js/decompiler/phase8/index.js` only when required by existing consumers/tests; preserve compatibility projection names.
-- [ ] T022 [US1] Run the unchanged minimum regression and focused range/bitvector tests; record `POST_FIX_SHA`, command, pass, and negative proofs in `specs/002-wrapped-interval-congruence/quickstart.md`.
+- [x] T018 [US1] Implement immutable width-bounded `BitVectorFact` construction, normalization, singleton projection, known-zero/known-one masks, and congruence in `js/decompiler/phase8/range.js`.
+- [x] T019 [US1] Implement sound modular add/subtract, supported casts/shifts/masks, congruence joins, and conservative fallback reasons in `js/decompiler/phase8/range.js`.
+- [x] T020 [US1] Reuse or minimally extend width-safe helpers in `js/decompiler/phase8/bitvector.js` only if inspection proves the helper is missing; do not create a second arithmetic engine.
+- [x] T021 [US1] Update canonical range exports in `js/decompiler/phase8/index.js` only when required by existing consumers/tests; preserve compatibility projection names.
+- [x] T022 [US1] Run the unchanged minimum regression and focused range/bitvector tests; record `POST_FIX_SHA`, command, pass, and negative proofs in `specs/002-wrapped-interval-congruence/quickstart.md`.
 
 **Checkpoint**: US1 is independently testable, but edge refinement and SCCP
 publication must still be complete before the finding can merge.
@@ -83,19 +83,19 @@ refinement without global path leakage.
 
 ### Tests for User Story 2
 
-- [ ] T023 [P] [US2] Add equality true/false, inequality, signed `<`, unsigned `<`, `<=`, `>=`, and mathematically impossible branch tests in `tests/phase8/scalar/sccp.test.mjs`.
-- [ ] T024 [P] [US2] Add switch case/default, duplicate/incomplete case, phi join, loop widening, convergence, and edge-key determinism tests in `tests/phase8/scalar/sccp.test.mjs`.
-- [ ] T025 [P] [US2] Add stale identity, malformed predicate, cancellation, budget exhaustion, and truncated-run publication negatives in `tests/phase8/scalar/sccp.test.mjs`.
-- [ ] T026 [P] [US2] Extend canonical comparison/switch/edge/pointer-origin fixtures in `tests/phase8/helpers/ir-fixtures.mjs` without inventing consumer-local semantics.
+- [x] T023 [P] [US2] Add equality true/false, inequality, signed `<`, unsigned `<`, `<=`, `>=`, and mathematically impossible branch tests in `tests/phase8/scalar/sccp.test.mjs`.
+- [x] T024 [P] [US2] Add switch case/default, duplicate/incomplete case, phi join, loop widening, convergence, and edge-key determinism tests in `tests/phase8/scalar/sccp.test.mjs`.
+- [x] T025 [P] [US2] Add stale identity, malformed predicate, cancellation, budget exhaustion, and truncated-run publication negatives in `tests/phase8/scalar/sccp.test.mjs`.
+- [x] T026 [P] [US2] Extend canonical comparison/switch/edge/pointer-origin fixtures in `tests/phase8/helpers/ir-fixtures.mjs` without inventing consumer-local semantics.
 
 ### Implementation for User Story 2
 
-- [ ] T027 [US2] Extend SCCP's single canonical value map to carry `BitVectorFact` products and immutable `ranges`/`constants` projections in `js/decompiler/phase8/sccp.js`.
-- [ ] T028 [US2] Implement conservative edge/block-entry fact derivation for equality, inequality, signed/unsigned bounds, and valid mask predicates in `js/decompiler/phase8/sccp.js`.
-- [ ] T029 [US2] Implement switch case/default refinement, proven-impossible edge handling, phi joins, loop widening, and deterministic edge/fact caps in `js/decompiler/phase8/sccp.js`.
-- [ ] T030 [US2] Implement alignment/pointer-offset refinement only when canonical provenance/address-domain evidence exists in `js/decompiler/phase8/sccp.js` and `js/decompiler/phase8/range.js`.
-- [ ] T031 [US2] Preserve transaction cancellation, completeness, identity, provenance, invalidation, and deterministic digest behavior for the extended `ranges` result in `js/decompiler/phase8/sccp.js` and `js/decompiler/phase8/transaction.js`.
-- [ ] T032 [US2] Bump only the minimum producer/contract/schema version required for result-shape invalidation in `js/decompiler/phase8/sccp.js`, `js/decompiler/phase8/contract.js`, or `js/decompiler/phase8/artifact-identity.js` after proving it is necessary.
+- [x] T027 [US2] Extend SCCP's single canonical value map to carry `BitVectorFact` products and immutable `ranges`/`constants` projections in `js/decompiler/phase8/sccp.js`.
+- [x] T028 [US2] Implement conservative edge/block-entry fact derivation for equality, inequality, signed/unsigned bounds, and valid mask predicates in `js/decompiler/phase8/sccp.js`.
+- [x] T029 [US2] Implement switch case/default refinement, proven-impossible edge handling, phi joins, loop widening, and deterministic edge/fact caps in `js/decompiler/phase8/sccp.js`.
+- [x] T030 [US2] Implement alignment/pointer-offset refinement only when canonical provenance/address-domain evidence exists in `js/decompiler/phase8/sccp.js` and `js/decompiler/phase8/range.js`.
+- [x] T031 [US2] Preserve transaction cancellation, completeness, identity, provenance, invalidation, and deterministic digest behavior for the extended `ranges` result in `js/decompiler/phase8/sccp.js` and `js/decompiler/phase8/transaction.js`.
+- [x] T032 [US2] Bump only the minimum producer/contract/schema version required for result-shape invalidation in `js/decompiler/phase8/sccp.js`, `js/decompiler/phase8/contract.js`, or `js/decompiler/phase8/artifact-identity.js` after proving it is necessary.
 
 **Checkpoint**: US2 passes the required edge/refinement and lifecycle matrix with
 the global fact unchanged where a predicate is path-specific.
@@ -109,10 +109,10 @@ consumer demonstrates proof-backed precision without private scalar truth.
 query; stale, partial, unsupported, cancelled, malformed, and budget-limited
 results remain conservative and never publish exactness.
 
-- [ ] T033 [P] [US3] Add a downstream precision regression for the selected canonical GVN/induction/switch-bounds/pointer-offset query in `tests/phase8/integration/c2-02-downstream-range.test.mjs`.
-- [ ] T034 [P] [US3] Add identity/provenance/completeness and deterministic replay assertions for the canonical result in `tests/phase8/scalar/sccp.test.mjs`.
-- [ ] T035 [US3] Update only the direct consumer query boundary needed to read canonical facts in `js/decompiler/phase8/valuenumber.js`, `induction.js`, `aggregates.js`, `structuring.js`, `providers.js`, or their declared projection module; do not add local analysis.
-- [ ] T036 [US3] Run T0/T1/T2 owning-subsystem and downstream gates and prove all paired negatives in `specs/002-wrapped-interval-congruence/quickstart.md`.
+- [x] T033 [P] [US3] Add a downstream precision regression for the selected canonical GVN/induction/switch-bounds/pointer-offset query in `tests/phase8/integration/c2-02-downstream-range.test.mjs`.
+- [x] T034 [P] [US3] Add identity/provenance/completeness and deterministic replay assertions for the canonical result in `tests/phase8/scalar/sccp.test.mjs`.
+- [x] T035 [US3] Update only the direct consumer query boundary needed to read canonical facts in `js/decompiler/phase8/valuenumber.js`, `induction.js`, `aggregates.js`, `structuring.js`, `providers.js`, or their declared projection module; do not add local analysis.
+- [x] T036 [US3] Run T0/T1/T2 owning-subsystem and downstream gates and prove all paired negatives in `specs/002-wrapped-interval-congruence/quickstart.md`.
 
 ## Phase 6: Convergence, independent reviews, and moving-main reconciliation
 

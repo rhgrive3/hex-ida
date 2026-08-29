@@ -3,7 +3,7 @@ import test from 'node:test';
 
 import { createAnalysisState, runPassTransaction, seedAnalysisState } from '../../../js/decompiler/phase8/transaction.js';
 import { SCCP_PASS, runSccpPass } from '../../../js/decompiler/phase8/sccp.js';
-import { isFull } from '../../../js/decompiler/phase8/range.js';
+import { contains, isEmpty, isFull } from '../../../js/decompiler/phase8/range.js';
 import { fixture } from '../helpers/ir-fixtures.mjs';
 
 /**
@@ -199,6 +199,11 @@ test('the pass produces a fact, rewrites nothing, and invalidates nothing', () =
   assert.deepEqual([...outcome.result.produced], ['ranges']);
   assert.deepEqual([...outcome.invalidated], [], 'publishing a fact must not discard unrelated analyses');
   assert.equal(state.version('ssa'), 1, 'SSA must keep its version and its reuse');
+  const facts = state.get('ranges');
+  assert.equal(facts.completeness, 'complete');
+  assert.equal(facts.provenance.producer, SCCP_PASS.id);
+  assert.equal(facts.provenance.producerVersion, SCCP_PASS.version);
+  assert.equal(facts.provenance.canonicalOwner, 'phase8/range.js + phase8/sccp.js');
 });
 
 test('the pass refuses to run without the facts it declares it consumes', () => {
@@ -257,4 +262,179 @@ test('an unsupported width is unknown rather than approximated', () => {
   const { facts } = analyze(f.build());
   assert.equal(facts.constants.get(odd.id), undefined);
   assert.match(facts.overdefinedReasons.get(odd.id) ?? '', /unsupported width/);
+});
+
+function branchFacts(operator, inputValue, boundValue, bits = 8) {
+  const f = fixture(`branch-${operator}`);
+  f.block(0);
+  const input = inputValue == null ? f.opaque(bits) : f.constant(inputValue, bits);
+  const bound = f.constant(boundValue, bits);
+  const condition = f.binary(operator, input, bound, 1);
+  f.conditionalBranch(condition, 1, 2);
+  f.block(1).ret();
+  f.block(2).ret();
+  return { ...analyze(f.build()).facts, input, condition };
+}
+
+function edge(facts, key) { return facts.edgeFacts.get(key); }
+
+test('true/false equality and inequality edges carry only proven path facts', () => {
+  const equality = branchFacts('eq', null, 10);
+  const eqTrue = edge(equality, '0->1:conditional-true');
+  const eqFalse = edge(equality, '0->2:conditional-false');
+  assert.equal(eqTrue.facts.get(equality.input.id).range.lower, 10n);
+  assert.equal(eqTrue.facts.get(equality.input.id).range.upper, 10n);
+  assert.equal(eqFalse.facts.has(equality.input.id), false, 'the non-equality complement is disconnected and stays conservative');
+
+  const inequality = branchFacts('ne', null, 10);
+  const neTrue = edge(inequality, '0->1:conditional-true');
+  const neFalse = edge(inequality, '0->2:conditional-false');
+  assert.equal(neTrue.facts.has(inequality.input.id), false);
+  assert.equal(neFalse.facts.get(inequality.input.id).range.lower, 10n);
+  assert.equal(neFalse.facts.get(inequality.input.id).range.upper, 10n);
+});
+
+test('signed and unsigned comparisons use different bitvector domains', () => {
+  const unsigned = branchFacts('ult', null, 0x80);
+  const unsignedTrue = edge(unsigned, '0->1:conditional-true').facts.get(unsigned.input.id).range;
+  assert.deepEqual([unsignedTrue.lower, unsignedTrue.upper], [0n, 0x7Fn]);
+
+  const signed = branchFacts('slt', null, 0x80);
+  const signedTrue = edge(signed, '0->1:conditional-true');
+  assert.equal(signedTrue.reachable, false, 'no signed 8-bit value is below -128');
+  assert.equal(isEmpty(signedTrue.facts.get(signed.input.id).range), true);
+  assert.ok(factsFor(signed, '0->2:conditional-false'));
+
+  const upper = branchFacts('ule', null, 0x80);
+  const upperTrue = edge(upper, '0->1:conditional-true').facts.get(upper.input.id).range;
+  assert.deepEqual([upperTrue.lower, upperTrue.upper], [0n, 0x80n]);
+  const lower = branchFacts('uge', null, 0x80);
+  const lowerTrue = edge(lower, '0->1:conditional-true').facts.get(lower.input.id).range;
+  assert.deepEqual([lowerTrue.lower, lowerTrue.upper], [0x80n, 0xFFn]);
+});
+
+function factsFor(facts, key) { return facts.edgeFacts.get(key); }
+
+test('a mathematically impossible constant comparison does not execute its edge', () => {
+  const facts = branchFacts('slt', 0x80, 0x80);
+  assert.equal(facts.constants.size > 0, true);
+  assert.equal(edge(facts, '0->1:conditional-true').reachable, false);
+  assert.ok(facts.unreachableBlockIndexes.includes(1));
+  assert.ok(factsFor(facts, '0->2:conditional-false').reachable);
+});
+
+test('switch case labels, shared targets, and default remain conservative and deterministic', () => {
+  const f = fixture('switch-ranges');
+  f.block(0);
+  const selector = f.opaque(8);
+  f.switchBranch(selector, [[1, 1], [2, 1], [3, 2]], 3);
+  f.block(1).ret();
+  f.block(2).ret();
+  f.block(3).ret();
+  const facts = analyze(f.build()).facts;
+  const shared = edge(facts, '0->1:switch-case').facts.get(selector.id).range;
+  assert.equal(contains(shared, 1n), true);
+  assert.equal(contains(shared, 2n), true);
+  assert.equal(contains(shared, 3n), false);
+  assert.equal(edge(facts, '0->3:switch-default').reachable, true);
+
+  const exact = (() => {
+    const g = fixture('switch-exact');
+    g.block(0);
+    const value = g.constant(2, 8);
+    g.switchBranch(value, [[1, 1], [2, 1], [3, 2]], 3);
+    g.block(1).ret();
+    g.block(2).ret();
+    g.block(3).ret();
+    return analyze(g.build()).facts;
+  })();
+  assert.deepEqual([...exact.executableEdges], ['0->1:switch-case']);
+  assert.deepEqual([...exact.unreachableBlockIndexes], [2, 3]);
+});
+
+test('edge facts do not leak into the global phi/range fact', () => {
+  const f = fixture('edge-local-phi');
+  f.block(0);
+  const input = f.opaque(8);
+  const limit = f.constant(10, 8);
+  const condition = f.binary('ult', input, limit, 1);
+  f.conditionalBranch(condition, 1, 2);
+  f.block(1);
+  const left = f.constant(1, 8);
+  f.branch(3);
+  f.block(2);
+  const right = f.constant(2, 8);
+  f.branch(3);
+  f.block(3);
+  const merged = f.phi([[1, left], [2, right]], 8);
+  f.ret();
+  const facts = analyze(f.build()).facts;
+  assert.equal(facts.ranges.get(input.id).kind, 'full');
+  assert.equal(facts.constants.get(merged.id), undefined);
+  assert.equal(facts.blockEntryFacts.get(1).get(input.id).range.upper, 9n);
+  assert.equal(facts.blockEntryFacts.get(2).get(input.id).range.lower, 10n);
+});
+
+test('budget exhaustion publishes no exact constants or singleton partial ranges', () => {
+  const f = fixture('partial-publish');
+  f.block(0);
+  let previous = f.constant(1, 32);
+  for (let index = 0; index < 100; index += 1) previous = f.binary('add', previous, f.constant(1, 32), 32);
+  f.ret();
+  const state = seedAnalysisState(f.build());
+  runPassTransaction(state, PASS, { analysis: state, sccpLimits: { maxWorkItems: 2 } }, {});
+  const facts = state.get('ranges');
+  assert.equal(facts.completeness, 'partial');
+  assert.equal(facts.constants.size, 0);
+  for (const fact of facts.facts.values()) {
+    assert.equal(fact.status, 'partial');
+    assert.equal(fact.constant, null);
+    assert.equal(isFull(fact.range), true);
+  }
+});
+
+test('malformed predicates and stale producer identities fail closed', () => {
+  const f = fixture('malformed-predicate');
+  f.block(0);
+  const malformed = f.opaque(8);
+  f.conditionalBranch(malformed, 1, 2);
+  f.block(1).ret();
+  f.block(2).ret();
+  const facts = analyze(f.build()).facts;
+  assert.equal(facts.edgeFacts.get('0->1:conditional-true').reachable, true);
+  assert.equal(facts.edgeFacts.get('0->2:conditional-false').reachable, true);
+  assert.equal(facts.passVersion, SCCP_PASS.version);
+  const identityFacts = analyze(f.build(), { analysisIdentity: { binaryId: 'b', snapshotId: 's' } }).facts;
+  assert.deepEqual(identityFacts.identity, { binaryId: 'b', snapshotId: 's' });
+  const stale = { ...facts, passVersion: '0.0.0' };
+  assert.notEqual(stale.passVersion, SCCP_PASS.version, 'a stale producer identity cannot be mistaken for this result');
+
+  const unsupported = fixture('unsupported-branch');
+  unsupported.block(0);
+  unsupported.conditionalBranch(unsupported.opaque(24), 1, 2);
+  unsupported.block(1).ret();
+  unsupported.block(2).ret();
+  const unsupportedFacts = analyze(unsupported.build()).facts;
+  assert.deepEqual([...unsupportedFacts.unreachableBlockIndexes], [], 'unsupported branch evidence keeps both arms conservative');
+});
+
+test('identical replay includes product and edge facts, not only executable-edge shape', () => {
+  const f = fixture('replay-product');
+  f.block(0);
+  const input = f.opaque(8);
+  const condition = f.binary('ult', input, f.constant(10, 8), 1);
+  f.conditionalBranch(condition, 1, 2);
+  f.block(1).ret();
+  f.block(2).ret();
+  const ir = f.build();
+  const first = analyze(ir).facts;
+  const second = analyze(ir).facts;
+  assert.deepEqual([...first.edgeFacts.keys()], [...second.edgeFacts.keys()]);
+  for (const key of first.edgeFacts.keys()) {
+    const a = first.edgeFacts.get(key);
+    const b = second.edgeFacts.get(key);
+    assert.equal(a.reachable, b.reachable);
+    assert.deepEqual([...a.facts.entries()].map(([id, fact]) => [id, fact.range.kind, fact.range.lower, fact.range.upper, fact.congruence.modulus]),
+      [...b.facts.entries()].map(([id, fact]) => [id, fact.range.kind, fact.range.lower, fact.range.upper, fact.congruence.modulus]));
+  }
 });

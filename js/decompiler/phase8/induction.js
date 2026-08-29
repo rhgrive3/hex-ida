@@ -227,6 +227,14 @@ function sameValue(left, right) {
 function constantOf(value, rangeFacts) {
   if (value == null) return null;
   if (value.const != null) return BigInt(value.const);
+  // The product fact is the canonical scalar owner.  A partial or malformed
+  // SCCP result is never allowed to turn a singleton-looking projection into
+  // an exact loop bound; the legacy constants map is only a compatibility view.
+  const canonical = rangeFacts?.facts?.get?.(value.id) ?? null;
+  if (rangeFacts?.completeness === 'complete' && canonical?.constant != null
+      && !['partial', 'malformed', 'unknown'].includes(canonical.status)) {
+    return BigInt(canonical.constant.value);
+  }
   const proven = rangeFacts?.constants?.get?.(value.id) ?? null;
   if (proven != null && proven.value != null) return BigInt(proven.value);
   return null;

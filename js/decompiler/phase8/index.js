@@ -35,6 +35,14 @@ export { createPassDescriptor, createPassResult, unchangedResult, ANALYSIS_KEYS,
 export { createPhase8ArtifactDescriptor, PHASE8_ARTIFACT_KINDS, PHASE8_ARTIFACT_SCHEMA_VERSION } from './artifact-identity.js';
 export { createAnalysisState, invalidationFor, runPassTransaction, seedAnalysisState, transactionDigest } from './transaction.js';
 export { SCCP_PASS, describeSccp, runSccpPass } from './sccp.js';
+export {
+  cardinality, contains, describeRange, emptyFact, emptyRange, evaluateBinaryFact,
+  evaluateBinaryRange, factFromRange, fullFact, fullRange, intersectRange, isEmpty,
+  isFull, join, joinFacts, normalizeCongruence, rangeOf, refineComparisonFacts,
+  refineFactByComparison, sameFact, sameRange, singleton, singletonFact,
+  signExtendFact, signExtendRange, truncateFact, truncateRange, widen, widenFacts,
+  zeroExtendFact, zeroExtendRange,
+} from './range.js';
 export { GVN_PASS, loadIsReusable, runGvnPass } from './valuenumber.js';
 export { DCE_PASS, observableEffectReason, runDcePass } from './dce.js';
 export { INDUCTION_PASS, INDUCTION_SUMMARY_VERSION, classifyLoop, describeLoopFacts, readGuardPredicate, resolveStep, runInductionPass, tripCountOf } from './induction.js';
