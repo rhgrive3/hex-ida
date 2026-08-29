@@ -1,5 +1,5 @@
 /*
- * issue-2482 regression guard: bounded analysis windows.
+ * issue-2484 regression guard: bounded analysis windows.
  *
  * #2458 (issue #2409) stopped getFunctionEnd from falling back to the next
  * function start. That is correct as an extent assertion, but callers that
@@ -13,7 +13,7 @@
  *   2. makePinpointAnalyzer clamps an unproven window to the next function
  *      start (and only falls back to 512 rows for the final function).
  *
- *   node tests/issue-2482-analysis-window.mjs
+ *   node tests/issue-2484-analysis-window.mjs
  */
 import assert from 'node:assert/strict';
 import { SymbolIndex } from '../js/symbols.js';
@@ -64,7 +64,7 @@ import { makePinpointAnalyzer } from '../js/ui/pinpoint-runtime.js';
   assert.equal(gap.functionStartAt(0x1000n), 0x1000n, 'exact start is always owned');
   assert.equal(gap.functionStartAt(0x1080n), null, 'next start across a gap is no boundary');
   // A next start inside the same region is a real boundary, so mid-addresses
-  // up to it are owned (this is what made #2482 formula resolve again).
+  // up to it are owned (this is what made #2484 formula resolve again).
   const bounded = new SymbolIndex({
     funcs: new BigUint64Array([0x1000n, 0x10C0n]),
     regions: [{ id: 'text-a', vmAddr: 0x1000n, size: 0x1000n, exec: true }],
@@ -86,7 +86,7 @@ import { makePinpointAnalyzer } from '../js/ui/pinpoint-runtime.js';
   }, symbols, region);
   // A call/ref site mid-function (end unproven) must still name its caller.
   assert.equal(program.functionStartOf(0x1080n), 0x1000n,
-    'reference owners must resolve without an extent claim (this made #2482 formula null)');
+    'reference owners must resolve without an extent claim (this made #2484 formula null)');
   const refs = program.functionsReferencing(0x9000n, 1n, 8);
   assert.equal(refs[0].addr, 0x1000n, 'functionsReferencing must resolve the owning start');
   assert.equal(refs[0].site, 0x1084n, 'the raw site is still reported for audit');
@@ -115,4 +115,4 @@ import { makePinpointAnalyzer } from '../js/ui/pinpoint-runtime.js';
   assert.deepEqual(calls[2], { startRow: 0, endRow: 3 }, 'a caller-supplied end must be respected unchanged');
 }
 
-console.log('issue-2482 analysis-window regression passed');
+console.log('issue-2484 analysis-window regression passed');
