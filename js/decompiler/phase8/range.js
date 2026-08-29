@@ -142,6 +142,14 @@ function immutableProvenance(provenance) {
   return Object.freeze(copy);
 }
 
+function immutableEvidence(value) {
+  if (value == null || typeof value !== 'object') return value;
+  if (Array.isArray(value)) return Object.freeze(value.map((item) => immutableEvidence(item)));
+  const copy = {};
+  for (const key of Object.keys(value).sort()) copy[key] = immutableEvidence(value[key]);
+  return Object.freeze(copy);
+}
+
 function mergeProvenance(left, right) {
   const merged = {};
   for (const source of [left, right]) {
@@ -183,6 +191,27 @@ function congruenceFromAlignment(alignment) {
   }
   if (alignment.alignment != null) return { modulus: alignment.alignment, remainder: 0n };
   return null;
+}
+
+function shiftedAlignment(alignment, delta, bits) {
+  if (alignment == null || delta == null) return null;
+  const congruence = normalizeCongruenceValue(congruenceFromAlignment(alignment), bits);
+  if (congruence.modulus <= 1n) return alignment;
+  const remainder = ((congruence.remainder + delta) % congruence.modulus + congruence.modulus) % congruence.modulus;
+  if (typeof alignment === 'number' || typeof alignment === 'bigint') {
+    return Object.freeze({ modulus: congruence.modulus, remainder });
+  }
+  return Object.freeze({ ...alignment, modulus: congruence.modulus, remainder });
+}
+
+function shiftedPointerOffset(pointerOffset, delta) {
+  if (pointerOffset == null || delta == null || typeof pointerOffset !== 'object') return null;
+  if (pointerOffset.baseId == null || pointerOffset.offset == null) return null;
+  try {
+    return Object.freeze({ ...pointerOffset, offset: BigInt(pointerOffset.offset) + BigInt(delta) });
+  } catch {
+    return null;
+  }
 }
 
 function validRangeShape(range) {
@@ -235,10 +264,13 @@ export function factFromRange(range, options = {}) {
   const congruence = requestedCongruence == null && value != null
     ? Object.freeze({ remainder: value, modulus: 1n << BigInt(bits) })
     : normalizeCongruenceValue(requestedCongruence, bits);
-  const constant = value == null || status === 'malformed' || status === 'unknown' || status === 'partial'
+  if (status == null) status = value == null ? 'conservative' : 'exact';
+  // Only a complete, valid fact may carry an exact constant.  In particular,
+  // an unsupported or stale singleton-shaped payload is still not permission
+  // to fold: shape is not proof of semantic validity.
+  const constant = value == null || !['exact', 'conservative'].includes(status)
     ? null
     : bitvector(value, bits);
-  if (status == null) status = value == null ? 'conservative' : 'exact';
   if (isFull(range) && reason == null) reason = 'unconstrained';
   if (isEmpty(range) && status === 'exact') status = 'conservative';
   return Object.freeze({
@@ -248,8 +280,8 @@ export function factFromRange(range, options = {}) {
     knownZero,
     knownOne,
     congruence,
-    alignment: options.alignment ?? null,
-    pointerOffset: options.pointerOffset ?? null,
+    alignment: immutableEvidence(options.alignment ?? null),
+    pointerOffset: immutableEvidence(options.pointerOffset ?? null),
     constant,
     status,
     reason,
@@ -329,7 +361,7 @@ function factInput(value) {
 function constantFromFact(fact) {
   // A partial, malformed, or explicitly unknown fact cannot be promoted back
   // to an exact operand merely because its range happens to be a singleton.
-  if (fact == null || ['partial', 'malformed', 'unknown'].includes(fact.status)) return null;
+  if (fact == null || !['exact', 'conservative'].includes(fact.status)) return null;
   if (fact?.constant != null) return fact.constant.value;
   return singletonValue(fact?.range);
 }
@@ -350,6 +382,8 @@ export function evaluateBinaryFact(operator, leftInput, rightInput) {
   let knownZero = 0n;
   let knownOne = 0n;
   let congruence = NO_CONGRUENCE;
+  let alignment = null;
+  let pointerOffset = null;
   const leftConstant = constantFromFact(left);
   const rightConstant = constantFromFact(right);
   const comparison = new Set(['eq', 'ne', 'ult', 'ule', 'ugt', 'uge', 'slt', 'sle', 'sgt', 'sge', '=', '==', '!=', '<', '<=', '>', '>=']);
@@ -372,6 +406,14 @@ export function evaluateBinaryFact(operator, leftInput, rightInput) {
     // apparently zero bit in both operands can become one in the sum.
     knownZero = 0n;
     knownOne = 0n;
+    if (rightConstant != null && left.pointerOffset != null) {
+      const delta = operator === 'sub' ? -rightConstant : rightConstant;
+      pointerOffset = shiftedPointerOffset(left.pointerOffset, delta);
+      alignment = shiftedAlignment(left.alignment, delta, bits);
+    } else if (operator === 'add' && leftConstant != null && right.pointerOffset != null) {
+      pointerOffset = shiftedPointerOffset(right.pointerOffset, leftConstant);
+      alignment = shiftedAlignment(right.alignment, leftConstant, bits);
+    }
   } else if (operator === 'and' && rightConstant != null) {
     ({ knownZero, knownOne, congruence } = maskFactsForConstant(rightConstant, bits, left));
   } else if (operator === 'and' && leftConstant != null) {
@@ -422,6 +464,8 @@ export function evaluateBinaryFact(operator, leftInput, rightInput) {
     knownZero,
     knownOne,
     congruence,
+    alignment,
+    pointerOffset,
     status: combined.exact && cardinality(combined.range) === 1n ? 'exact' : 'conservative',
     reason: combined.reason,
     deriveKnownBits: false,

@@ -247,11 +247,13 @@ test('two runs over the same input agree exactly', () => {
     f.ret();
     return f.build();
   };
-  const [first, second] = [analyze(build()).facts, analyze(build()).facts];
+  const ir = build();
+  const [first, second] = [analyze(ir).facts, analyze(ir).facts];
   assert.deepEqual([...first.executableEdges], [...second.executableEdges]);
   assert.deepEqual([...first.unreachableBlockIndexes], [...second.unreachableBlockIndexes]);
   assert.equal(first.constants.size, second.constants.size);
   assert.equal(first.workItems, second.workItems);
+  assert.equal(first.publicationDigest, second.publicationDigest, 'semantic replay identity must include product facts and diagnostics');
 });
 
 test('an unsupported width is unknown rather than approximated', () => {
@@ -416,6 +418,26 @@ test('malformed predicates and stale producer identities fail closed', () => {
   unsupported.block(2).ret();
   const unsupportedFacts = analyze(unsupported.build()).facts;
   assert.deepEqual([...unsupportedFacts.unreachableBlockIndexes], [], 'unsupported branch evidence keeps both arms conservative');
+});
+
+test('missing branch or switch selector evidence keeps every successor conservative', () => {
+  const branch = fixture('missing-branch-condition');
+  branch.block(0);
+  branch.opaque(1);
+  branch.conditionalBranch({ id: 999999, bits: 1 }, 1, 2);
+  branch.block(1).ret();
+  branch.block(2).ret();
+  const branchFacts = analyze(branch.build()).facts;
+  assert.deepEqual([...branchFacts.unreachableBlockIndexes], [], 'a missing condition must not hide a successor');
+
+  const switched = fixture('missing-switch-selector');
+  switched.block(0);
+  switched.opaque(8);
+  switched.switchBranch({ id: 999998, bits: 8, uses: [] }, [[1, 1]], 2);
+  switched.block(1).ret();
+  switched.block(2).ret();
+  const switchFacts = analyze(switched.build()).facts;
+  assert.deepEqual([...switchFacts.unreachableBlockIndexes], [], 'a missing selector must not hide a case or default');
 });
 
 test('identical replay includes product and edge facts, not only executable-edge shape', () => {
