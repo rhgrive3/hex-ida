@@ -473,74 +473,48 @@ function selectFatSlice(bytes, kind, preferredArch) {
   return chosen ? { ...chosen, all } : null;
 }
 
-function parseCompactUnwind(r, image, metadataBudget = null) {
-  const sec = image.sections.find((s) => s.name === '__unwind_info' || s.name === '__TEXT,__unwind_info');
-  if (!sec || sec.fileOffset == null || sec.fileSize == null || sec.fileSize < 28n) return;
-  const fileOff = Number(sec.fileOffset);
-  const fileSize = Number(sec.fileSize);
-  if (!Number.isSafeInteger(fileOff) || !Number.isSafeInteger(fileSize) || fileOff < 0 || fileSize < 28 || fileOff + fileSize > r.length) return;
-
-  const version = r.u32(fileOff);
-  if (version !== 1) return;
-  const indexOff = r.u32(fileOff + 20);
-  const indexCount = r.u32(fileOff + 24);
-  if (!indexCount || indexCount < 1 || indexOff + indexCount * 12 > fileSize) return;
-
-  const textSeg = image.segments.find((s) => s.name === '__TEXT');
-  const imageBase = textSeg ? textSeg.address : (image.segments[0] ? image.segments[0].address : 0n);
-  const alignment = (image.arch === 'arm64' || image.arch === 'arm64e' || image.arch === 'arm64_32') ? 4n : image.arch === 'arm' ? 2n : 1n;
-
-  const functionAddresses = new Set();
-
-  for (let i = 0; i < indexCount; i++) {
-    const e = fileOff + indexOff + i * 12;
-    const funcOffset = r.u32(e);
-    const pageOff = r.u32(e + 4);
-    if (!pageOff || pageOff + 8 > fileSize) continue;
-    const pageAbs = fileOff + pageOff;
-    const kind = r.u32(pageAbs);
-    if (kind === 2) {
-      const entryOff = r.u16(pageAbs + 4);
-      const count = r.u16(pageAbs + 6);
-      if (entryOff + count * 8 > fileSize - pageOff) continue;
-      for (let k = 0; k < count; k++) {
-        const p = pageAbs + entryOff + k * 8;
-        if (p + 8 > r.length) break;
-        const funcOff = r.u32(p);
-        const addr = imageBase + BigInt(funcOff);
-        functionAddresses.add(addr);
-      }
-    } else if (kind === 3) {
-      const entryOff = r.u16(pageAbs + 4);
-      const count = r.u16(pageAbs + 6);
-      if (entryOff + count * 4 > fileSize - pageOff) continue;
-      for (let k = 0; k < count; k++) {
-        const p = pageAbs + entryOff + k * 4;
-        if (p + 4 > r.length) break;
-        const entry = r.u32(p);
-        const funcOff = funcOffset + (entry & 0x00ffffff);
-        const addr = imageBase + BigInt(funcOff);
-        functionAddresses.add(addr);
-      }
+export function parseCompactUnwind(r, image, metadataBudget = null) {
+  const sec=image.sections.find((s)=>s.name==='__unwind_info'||s.name==='__TEXT,__unwind_info');
+  if(!sec)return;
+  const budget=ensureMachOMetadataBudget(image,metadataBudget);let complete=true;
+  const partial=(reason)=>{complete=false;budget.partial(`compact-unwind:${reason}`);};
+  if(sec.fileOffset==null||sec.fileSize==null||sec.fileSize<28n){partial('section-too-small');return;}
+  const fileOff=Number(sec.fileOffset),fileSize=Number(sec.fileSize);
+  if(!Number.isSafeInteger(fileOff)||!Number.isSafeInteger(fileSize)||fileOff<0||fileSize<28||fileOff+fileSize>r.length){partial('section-out-of-range');return;}
+  if(!budget.take({inputBytes:28,records:1,objects:1,operations:1,estimatedHeapBytes:64},'compact-unwind-header'))return;
+  const version=r.u32(fileOff);if(version!==1){partial('unsupported-version');return;}
+  const indexOff=r.u32(fileOff+20),indexCount=r.u32(fileOff+24);
+  if(indexCount<2||indexOff>fileSize||indexCount>(fileSize-indexOff)/12){partial('index-out-of-range');return;}
+  const textSeg=image.segments.find((s)=>s.name==='__TEXT');
+  const imageBase=textSeg?textSeg.address:(image.segments[0]?image.segments[0].address:0n);
+  const alignment=(image.arch==='arm64'||image.arch==='arm64e'||image.arch==='arm64_32')?4n:image.arch==='arm'?2n:1n;
+  const functionAddresses=new Set();
+  outer: for(let i=0;i<indexCount-1;i++){
+    if(!budget.take({inputBytes:12,records:1,objects:1,operations:1,estimatedHeapBytes:48},'compact-unwind-index')){complete=false;break;}
+    const e=fileOff+indexOff+i*12,next=e+12,lower=r.u32(e),upper=r.u32(next),pageOff=r.u32(e+4);
+    if(upper<=lower){partial('nonmonotonic-first-level-range');continue;}
+    if(!pageOff||pageOff+8>fileSize){partial('page-out-of-range');continue;}
+    const pageAbs=fileOff+pageOff,pageBytes=Math.min(4096,fileSize-pageOff),kind=r.u32(pageAbs),entryOff=r.u16(pageAbs+4),count=r.u16(pageAbs+6);
+    const stride=kind===2?8:kind===3?4:0;
+    if(!stride){partial('unsupported-second-level-kind');continue;}
+    if(entryOff<8||entryOff>pageBytes||count>(pageBytes-entryOff)/stride){partial('entry-array-out-of-page');continue;}
+    for(let k=0;k<count;k++){
+      if(!budget.take({inputBytes:stride,records:1,objects:1,operations:2,estimatedHeapBytes:48},'compact-unwind-entry')){complete=false;break outer;}
+      const at=pageAbs+entryOff+k*stride;
+      let functionOffset;
+      if(kind===2)functionOffset=r.u32(at);
+      else functionOffset=lower+(r.u32(at)&0x00ffffff);
+      if(functionOffset<lower||functionOffset>=upper){partial('entry-outside-first-level-range');continue;}
+      functionAddresses.add(imageBase+BigInt(functionOffset));
     }
   }
-
-  const sortedAddresses = [...functionAddresses].filter((addr) => {
-    const seg = image.segmentAt(addr);
-    return seg && seg.perms?.execute === true && (alignment <= 1n || addr % alignment === 0n);
-  }).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
-
-  for (let i = 0; i < sortedAddresses.length; i++) {
-    const start = sortedAddresses[i];
-    const end = sortedAddresses[i + 1] ?? null;
-    const sizeBytes = end != null ? Number(end - start) : null;
-    image.unwindEntries.push({
-      start,
-      end,
-      sizeBytes,
-      primary: true,
-      source: 'compact-unwind',
-    });
-    image.functions.push(functionSeed(start, { source: 'unwind', confidence: 0.95 }));
+  if(!complete)return;
+  const sortedAddresses=[...functionAddresses].sort((a,b)=>a<b?-1:a>b?1:0);
+  for(const addr of sortedAddresses){const seg=image.segmentAt(addr);if(!seg||seg.perms?.execute!==true||(alignment>1n&&addr%alignment!==0n)){partial('entry-not-executable-or-aligned');break;}}
+  if(!complete)return;
+  for(let i=0;i<sortedAddresses.length;i++){
+    const start=sortedAddresses[i],end=sortedAddresses[i+1]??null,sizeBytes=end!=null?Number(end-start):null;
+    image.unwindEntries.push({start,end,sizeBytes,primary:true,source:'compact-unwind'});
+    image.functions.push(functionSeed(start,{source:'unwind',confidence:0.95}));
   }
 }

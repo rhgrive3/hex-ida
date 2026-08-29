@@ -242,6 +242,26 @@ export async function parseSwiftConformanceDescriptor(read,address,options={}){
   return{runtime:'swift',kind:'conformance',address:addr,protocol,typeRef,rawTypeRef,objcClassName,objcClassReference,witnessTable,flags,typeReferenceKind,conditionalRequirements:(flags>>>8)&0xff,resilientWitnesses:!!(flags&(1<<16))};
 }
 
+const SWIFT_CLASS_HAS_VTABLE = 1 << 15;
+const SWIFT_CLASS_RESILIENT_SUPERCLASS = 1 << 13;
+async function discoverSwiftClassVTables(read,types,budget){
+  const seeds=[],warnings=[];let complete=true;
+  for(const type of types||[]){
+    if(type?.kind!=='class')continue;
+    const specific=(Number(type.flags)>>>16)&0xffff;
+    if(!(specific&SWIFT_CLASS_HAS_VTABLE))continue;
+    const metadataInit=specific&0x3,resilient=!!(specific&SWIFT_CLASS_RESILIENT_SUPERCLASS);
+    if(type.generic||resilient||metadataInit!==0){complete=false;warnings.push(`Swift class ${type.name||type.address}: vtable layout is not proof-safe for automatic projection.`);continue;}
+    const headerAddress=BigInt(type.address)+44n,h=await exact(read,headerAddress,8);
+    if(!h){complete=false;warnings.push(`Swift class ${type.name||type.address}: vtable header is unreadable.`);continue;}
+    const vtableOffset=u32(h,0),count=u32(h,4);
+    if(count>4096||count>budget){complete=false;warnings.push(`Swift class ${type.name||type.address}: vtable count exceeds analysis budget.`);continue;}
+    if(!count){type.vtable=[];type.methods=[];continue;}
+    seeds.push({address:headerAddress+8n,count,vtableOffset,typeAddress:type.address,typeName:type.name,source:'class-descriptor'});
+  }
+  return{seeds,complete,warnings};
+}
+
 export async function parseSwiftVTable(read,address,count,budget=4096){const n=Math.min(normalizeBudget(count,0,100000),normalizeBudget(budget,4096,100000)),out=[];let at=BigInt(address);for(let i=0;i<n;i++,at+=8n){const b=await exact(read,at,8);if(!b)break;const flags=u32(b,0),impl=rel(at+4n,i32(b,4));out.push({index:i,flags,impl,kind:flags&0x0f,instance:!!(flags&0x10),dynamic:!!(flags&0x20),async:!!(flags&0x40)});}return out;}
 
 export async function parseSwiftWitnessTable(read,address,count,budget=4096,options={}){
@@ -274,7 +294,9 @@ export async function buildSwiftMetadataModel(read,sections,opts={}){
       else if(f.mangledTypeEncoding?.symbolicReferences?.length&&!f.mangledTypeEncoding.referencesResolved)warnings.push(`Swift field ${t.name||t.address}.${f.name}: symbolic mangled type reference remains unresolved.`);
     }
   }catch{t.fields=[];warnings.push(`Swift type ${t.name||t.address}: field metadata could not be parsed.`);typeScan.completeness.complete=false;typeScan.completeness.invalidEntries++;}}
-  const vtables=[];let vtablesComplete=true;for(const v of opts.vtables||[]){const methods=await parseSwiftVTable(read,v.address,v.count,budget),expected=Math.min(normalizeBudget(v.count,0,100000),budget),x={...v,methods};if(methods.length!==expected||Number(v.count)>budget)vtablesComplete=false;vtables.push(x);const owner=types.find((t)=>t.address.toString()===String(v.typeAddress));if(owner){owner.vtable=methods;owner.methods=methods;}}
+  const autoVtables=await discoverSwiftClassVTables(read,types,budget);warnings.push(...autoVtables.warnings);
+  const vtableSeedMap=new Map();for(const v of autoVtables.seeds)vtableSeedMap.set(`${String(v.typeAddress)}:${String(v.address)}`,v);for(const v of opts.vtables||[])vtableSeedMap.set(`${String(v.typeAddress)}:${String(v.address)}`,v);
+  const vtables=[];let vtablesComplete=autoVtables.complete;for(const v of vtableSeedMap.values()){const methods=await parseSwiftVTable(read,v.address,v.count,budget),expected=Math.min(normalizeBudget(v.count,0,100000),budget),x={...v,methods};if(methods.length!==expected||Number(v.count)>budget)vtablesComplete=false;vtables.push(x);const owner=types.find((t)=>t.address.toString()===String(v.typeAddress));if(owner){owner.vtable=methods;owner.methods=methods;}}
   const witnessTables=[];let witnessTablesComplete=true;
   const witnessSeeds=[...(opts.witnessTables||[])],seedAddresses=new Set(witnessSeeds.map((w)=>String(w.address)));
   for(const c of conformances){

@@ -14,14 +14,14 @@ function pushIndex(map, key, value) {
   list.push(value);
 }
 
-function normalizeMethod(m, owner, classMethod, source = 'class') {
+function normalizeMethod(m, owner, classMethod, source = 'class', proofRequired = false) {
   const selector = m && (m.sel || m.selector || m.name && String(m.name).match(/\s([^\]]+)\]$/)?.[1]);
   if (!selector) return null;
   return {
     selector,
     className: owner,
     classMethod: !!classMethod,
-    imp: m.addr != null ? m.addr : (m.imp != null ? m.imp : null),
+    imp: proofRequired && source !== 'protocol' && source !== 'protocol-optional' && m?.implementationProven !== true ? null : (m.addr != null ? m.addr : (m.imp != null ? m.imp : null)),
     types: m.types || m.type || m.typeEncoding || null,
     typeEncoding: m.types || m.type || m.typeEncoding || null,
     source,
@@ -38,6 +38,7 @@ export function buildObjcRuntimeIndex(objcModel = {}) {
   const methodsByIMP = new Map();
   const categories = [];
   const protocols = new Map();
+  const proofRequired = objcModel.implementationProofRequired === true;
 
   for (const c of objcModel.classes || []) {
     if (!c || !c.name) continue;
@@ -49,13 +50,13 @@ export function buildObjcRuntimeIndex(objcModel = {}) {
     };
     classes.set(info.name, info);
     for (const m of info.methods || []) {
-      const x = normalizeMethod(m, info.name, false);
+      const x = normalizeMethod(m, info.name, false, 'class', proofRequired);
       if (!x) continue;
       pushIndex(methodsBySelector, methodKey(false, x.selector), x);
       if (x.imp != null) pushIndex(methodsByIMP, x.imp.toString(), x);
     }
     for (const m of info.classMethods || []) {
-      const x = normalizeMethod(m, info.name, true);
+      const x = normalizeMethod(m, info.name, true, 'class', proofRequired);
       if (!x) continue;
       pushIndex(methodsBySelector, methodKey(true, x.selector), x);
       if (x.imp != null) pushIndex(methodsByIMP, x.imp.toString(), x);
@@ -68,19 +69,19 @@ export function buildObjcRuntimeIndex(objcModel = {}) {
     const copy = { ...p, name };
     protocols.set(name, copy);
     for (const m of p.instanceMethods || p.methods || []) {
-      const x = normalizeMethod({ ...m, optional: false }, name, false, 'protocol');
+      const x = normalizeMethod({ ...m, optional: false }, name, false, 'protocol', proofRequired);
       if (x) pushIndex(protocolRequirementsBySelector, methodKey(false, x.selector), x);
     }
     for (const m of p.classMethods || []) {
-      const x = normalizeMethod({ ...m, optional: false }, name, true, 'protocol');
+      const x = normalizeMethod({ ...m, optional: false }, name, true, 'protocol', proofRequired);
       if (x) pushIndex(protocolRequirementsBySelector, methodKey(true, x.selector), x);
     }
     for (const m of p.optionalInstanceMethods || []) {
-      const x = normalizeMethod({ ...m, optional: true }, name, false, 'protocol');
+      const x = normalizeMethod({ ...m, optional: true }, name, false, 'protocol', proofRequired);
       if (x) pushIndex(protocolRequirementsBySelector, methodKey(false, x.selector), x);
     }
     for (const m of p.optionalClassMethods || []) {
-      const x = normalizeMethod({ ...m, optional: true }, name, true, 'protocol');
+      const x = normalizeMethod({ ...m, optional: true }, name, true, 'protocol', proofRequired);
       if (x) pushIndex(protocolRequirementsBySelector, methodKey(true, x.selector), x);
     }
   }
@@ -96,7 +97,7 @@ export function buildObjcRuntimeIndex(objcModel = {}) {
       target.protocols = [...new Set([...(target.protocols || []), ...cat.protocols.map((p) => cleanClassName(p?.name || p)).filter(Boolean)])];
     }
     for (const m of cat.instanceMethods || cat.methods || []) {
-      const x = normalizeMethod(m, targetClass, false, 'category');
+      const x = normalizeMethod(m, targetClass, false, 'category', proofRequired);
       if (x) {
         x.category = name;
         pushIndex(methodsBySelector, methodKey(false, x.selector), x);
@@ -104,7 +105,7 @@ export function buildObjcRuntimeIndex(objcModel = {}) {
       }
     }
     for (const m of cat.classMethods || []) {
-      const x = normalizeMethod(m, targetClass, true, 'category');
+      const x = normalizeMethod(m, targetClass, true, 'category', proofRequired);
       if (x) {
         x.category = name;
         pushIndex(methodsBySelector, methodKey(true, x.selector), x);

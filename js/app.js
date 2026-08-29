@@ -1047,7 +1047,9 @@ class App {
         const info = this.store.get('fileInfo');
         const sl = info && info.slices ? info.slices[slice] : null;
         const imageBase = sl && sl.info ? sl.info.textVM : null;
-        const model = await buildObjcRuntimeModel(read, list, { protocolList, categoryList }, null, imageBase);
+        const executableRanges=regions.filter((r)=>r?.exec===true&&r.size>0n).map((r)=>({vmAddr:r.vmAddr,size:r.size}));
+        const architecture=sl?.name||sl?.info?.arch||sl?.info?.architecture||null;
+        const model = await buildObjcRuntimeModel(read, list, { protocolList, categoryList, executableRanges, architecture }, null, imageBase);
         if (epoch !== this.backend.gen || this.store.get('sliceIndex') !== slice) return this.fields;
         model.runtimeIndex = model.runtimeIndex || buildObjcRuntimeIndex(model);
         this.objcModel = model;
