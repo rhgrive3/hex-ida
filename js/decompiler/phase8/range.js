@@ -392,6 +392,17 @@ export function factFromRange(range, options = {}) {
   const bits = Number(range.bits);
   const hasEvidence = EVIDENCE_FIELDS.some((field) => options[field] != null);
   if (!hasEvidence) return simpleFactFromRange(range, options, bits);
+  // SCCP evaluates ordinary arithmetic values with an explicit zero mask and
+  // modulus-one residue to say "no additional evidence".  Those primitive
+  // spellings are already validated by construction; sending them through the
+  // recursive evidence freezer on every work-list visit made the hot path
+  // sensitive to GC pauses and could turn a bounded complete pass into a
+  // deadline cancellation.  Keep the same semantics, including an explicitly
+  // supplied modulus-one residue, while reserving the rich validator for real
+  // masks, residues, provenance, alignment, and pointer evidence.
+  if (hasOnlyTrivialEvidence(options)) {
+    return simpleFactFromRange(range, options, bits, options.congruence != null);
+  }
   const mask = widthMask(bits);
   const cyclicEvidence = !evidenceIsAcyclic(options);
   const parsedKnownZero = cyclicEvidence ? { value: null, malformed: true } : parseBoundedMaskEvidence(options.knownZero, bits);
@@ -776,7 +787,21 @@ function rangeContainsRange(container, member) {
     .some(([containerLower, containerUpper]) => containerLower <= memberLower && memberUpper <= containerUpper));
 }
 
-function simpleFactFromRange(range, options, bits) {
+function hasOnlyTrivialEvidence(options) {
+  const zeroMask = options.knownZero == null || options.knownZero === 0n || options.knownZero === 0;
+  const oneMask = options.knownOne == null || options.knownOne === 0n || options.knownOne === 0;
+  const residue = options.congruence;
+  const noResidue = residue == null || residue === NO_CONGRUENCE
+    || (residue && typeof residue === 'object'
+      && (residue.remainder === 0n || residue.remainder === 0)
+      && (residue.modulus === 1n || residue.modulus === 1));
+  return zeroMask && oneMask && noResidue
+    && options.alignment == null
+    && options.pointerOffset == null
+    && (options.provenance == null || options.provenance === false);
+}
+
+function simpleFactFromRange(range, options, bits, explicitNoCongruence = false) {
   const mask = widthMask(bits);
   const value = singletonValue(range);
   const status = options.status ?? (value == null ? 'conservative' : 'exact');
@@ -789,7 +814,9 @@ function simpleFactFromRange(range, options, bits) {
     range,
     knownZero: value != null && options.deriveKnownBits !== false ? mask ^ value : 0n,
     knownOne: value != null && options.deriveKnownBits !== false ? value : 0n,
-    congruence: value == null ? NO_CONGRUENCE : Object.freeze({ remainder: value, modulus: 1n << BigInt(bits) }),
+    congruence: explicitNoCongruence || value == null
+      ? NO_CONGRUENCE
+      : Object.freeze({ remainder: value, modulus: 1n << BigInt(bits) }),
     alignment: null,
     pointerOffset: null,
     constant: value == null || !['exact', 'conservative'].includes(finalStatus) ? null : bitvector(value, bits),

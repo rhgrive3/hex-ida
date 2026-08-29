@@ -368,9 +368,6 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
       if (effectiveFact.valueId !== valueId) effectiveFact = Object.freeze({ ...effectiveFact, valueId });
     }
     const effectiveRange = effectiveFact?.range ?? proposedRange;
-    if (effectiveFact != null) {
-      effectiveFact = attachValueProvenance(effectiveFact, valueById.get(valueId));
-    }
 
     // Two cells are equal when the state matches and either both carry no
     // constant or they carry the same one. `sameBitvector(null, null)` is false
@@ -384,6 +381,14 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
     const rangeChanged = effectiveRange != null && (previousRange == null || !sameRange(previousRange, effectiveRange));
     const factChanged = effectiveFact != null && !sameFact(previousFact, effectiveFact);
     if (!cellChanged && !rangeChanged && !factChanged) return;
+    // Provenance is needed only for a fact that will actually be committed.
+    // Attaching it before the no-change check cloned instruction/input arrays
+    // on every loop revisit even when the semantic fact was unchanged.  The
+    // delayed attachment preserves the same publication contents while keeping
+    // SCCP's bounded work path allocation-stable.
+    if (effectiveFact != null) {
+      effectiveFact = attachValueProvenance(effectiveFact, valueById.get(valueId));
+    }
     cells.set(valueId, next);
     if (effectiveRange != null) ranges.set(valueId, effectiveRange);
     if (effectiveFact != null) facts.set(valueId, effectiveFact);
@@ -1029,6 +1034,8 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
   });
   const digestFactMap = (source) => [...source.entries()]
     .map(([valueId, fact]) => [valueId, digestFact(fact)]);
+  const digestRangeMap = (source) => [...source.entries()]
+    .map(([valueId, range]) => [valueId, range]);
   const digestEdgeMap = (source) => [...source.entries()].map(([key, edge]) => [key, {
     edgeId: edge.edgeId,
     from: edge.from,
@@ -1101,7 +1108,11 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
     provenance: result.provenance,
     constants: [...result.constants.entries()],
     facts: digestFactMap(outputFacts),
-    ranges: digestFactMap(outputFacts),
+    // `ranges` is the compatibility projection of `facts`; digest the narrow
+    // projection instead of serializing every product fact a second time.  The
+    // canonical fact map above still covers all scalar semantics, while this
+    // retains replay sensitivity to a compatibility-map change.
+    ranges: digestRangeMap(outputRanges),
     edgeFacts: digestEdgeMap(outputEdges),
     blockEntryFacts: digestBlockFacts(outputBlockEntryFacts),
     executableEdges: result.executableEdges,
