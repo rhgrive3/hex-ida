@@ -295,6 +295,7 @@ export function runInSandbox({ source, mode = 'script', index = 0, api, out, tim
     const channel = new MessageChannel();
     const runController = new AbortController();
     let settled = false;
+    let timer = null;
     let rpcTotal = 0;
     let rpcConcurrent = 0;
     let rpcInputBytes = 0;
@@ -316,7 +317,7 @@ export function runInSandbox({ source, mode = 'script', index = 0, api, out, tim
       if (settled) return;
       settled = true;
       runController.abort(value?.error || 'sandbox-finished');
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
       if (signal && onAbort) signal.removeEventListener('abort', onAbort);
       window.removeEventListener('message', onFrameReady);
       window.removeEventListener('pagehide', onPageHide);
@@ -339,7 +340,7 @@ export function runInSandbox({ source, mode = 'script', index = 0, api, out, tim
     const onPageHide = () => finish({ error: 'ページが閉じられたため実行を停止しました。' });
     window.addEventListener('pagehide', onPageHide, { once: true });
 
-    const timer = setTimeout(
+    timer = setTimeout(
       () => finish({ error: '実行が時間制限を超えたため、安全に停止しました。' }),
       Math.max(50, Number(timeout) || 30000)
     );
