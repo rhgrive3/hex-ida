@@ -10,11 +10,6 @@ export const GENERATED_OUTPUT_MODE = Object.freeze({
   EPHEMERAL: 'ephemeral',
 });
 
-const COMPONENT_PREFIXES = Object.freeze([
-  'dev-agent-hardening/',
-  'fix/stage2-a2-',
-  'fix/stage2-a7-',
-]);
 const INTEGRATION_PREFIXES = Object.freeze([
   'dev-agent-hardening/integration/',
 ]);
@@ -31,16 +26,15 @@ export function generatedOutputMode({ eventName = '', headRef = '', ref = '' } =
   const branch = String(headRef || '');
   const refName = String(ref || '');
 
-  if (event === 'pull_request'
-    && isValidBranchName(branch)
-    && COMPONENT_PREFIXES.some((prefix) => branch.startsWith(prefix))
-    && !INTEGRATION_PREFIXES.some((prefix) => branch.startsWith(prefix))) {
+  if (event === 'pull_request' && isValidBranchName(branch)) {
+    if (INTEGRATION_PREFIXES.some((prefix) => branch.startsWith(prefix))) {
+      return GENERATED_OUTPUT_MODE.ENFORCE;
+    }
     return GENERATED_OUTPUT_MODE.EPHEMERAL;
   }
 
-  // Pushes to main, integration/release branches, workflow dispatch, and
+  // Pushes to main/release contexts, workflow dispatch, and malformed or
   // unknown contexts fail closed to canonical generated-output enforcement.
-  // A component lane opts into the exemption only by its explicit prefix.
   void refName;
   return GENERATED_OUTPUT_MODE.ENFORCE;
 }
