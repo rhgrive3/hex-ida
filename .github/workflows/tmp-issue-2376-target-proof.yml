@@ -1,0 +1,78 @@
+name: Temporary issue 2376 decoded-target proof
+
+on:
+  push:
+    branches: [fix/issue-2376-swift-pointer-resolver]
+    paths:
+      - '.github/workflows/tmp-issue-2376-target-proof.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: issue-2376-target-proof
+  cancel-in-progress: true
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Validate triggering head
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          git fetch origin fix/issue-2376-swift-pointer-resolver
+          test "$(git rev-parse origin/fix/issue-2376-swift-pointer-resolver)" = "${GITHUB_SHA}"
+      - name: Require mapped proof for decoded rebases
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          p = Path('js/binary/macho-dyld.js')
+          s = p.read_text()
+          old = """    if (!decoded || decoded.bind || decoded.target == null) return null;\n    return BigInt(decoded.target);\n"""
+          new = """    if (!decoded || decoded.bind || decoded.target == null) return null;\n    const target = BigInt(decoded.target);\n    return image.sectionAt?.(target) || image.segmentAt?.(target) ? target : null;\n"""
+          if s.count(old) != 1:
+              raise SystemExit('unexpected resolveMachOPointer decoded-target seam')
+          p.write_text(s.replace(old, new, 1))
+
+          t = Path('tests/issue-2376-swift-pointer-resolver.mjs')
+          s = t.read_text()
+          anchor = """// DYLD_CHAINED_PTR_64_OFFSET reconstructs high8 and adds image base.\n"""
+          block = """// A decoded chained rebase still needs mapped-image proof before becoming exact.\n{\n  const targetOffset=0x200000n;\n  const {image,storage}=makeChainedFixture({pointerFormat:9,raw:targetOffset});\n  assert.equal(image.segmentAt(image.imageBase+targetOffset),null);\n  assert.equal(resolveMachOPointer(image,targetOffset,{address:storage}),null);\n}\n\n"""
+          if block not in s:
+              if s.count(anchor) != 1:
+                  raise SystemExit('unexpected regression insertion anchor')
+              s = s.replace(anchor, block + anchor, 1)
+              t.write_text(s)
+          PY
+      - name: Focused regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check js/binary/macho-dyld.js
+          node tests/issue-2376-swift-pointer-resolver.mjs
+          node tests/issue-2376-chained-incomplete-coverage.mjs
+          node tests/issue-569-chained-segment-bounds.mjs
+          node tests/issue-840-rtti-pointer-formats.mjs
+      - name: Publish repair and remove one-shot
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm .github/workflows/tmp-issue-2376-target-proof.yml
+          git config user.name rhgrive3
+          git config user.email rhgrive@gmail.com
+          git add js/binary/macho-dyld.js tests/issue-2376-swift-pointer-resolver.mjs
+          git diff --cached --check
+          git commit -m 'fix(swift): require mapped proof for decoded rebases'
+          git push origin HEAD:fix/issue-2376-swift-pointer-resolver
