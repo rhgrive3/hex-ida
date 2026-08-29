@@ -1,100 +1,277 @@
-/* AAPCS64 prototype recovery driven by actual SSA uses and recovered type evidence. */
+import { architecturePluginV2 } from '../../targets/architecture/index.js';
+import { abiPlugin as registeredABIPlugin } from '../../targets/abi/index.js';
+
+const ARCH_META_CACHE = new Map();
+const REGISTER_CANDIDATE_CACHE = new Map();
+const STACK_LAYOUT_CACHE = new Map();
 
 function tname(t, fallback = 'unknown') { return t?.name || t?.type || fallback; }
 function used(v) { return (v?.uses || []).some((u) => u && !u.clobbered); }
 function bitsOf(t) { return Number(t?.bits || (t?.size ? Number(t.size) * 8 : 0) || 0); }
 function kindOf(t) { return String(t?.kind || t?.class || t?.abiClass || '').toLowerCase(); }
+function stringValue(value) { return typeof value === 'string' && value.length ? value : null; }
 
-function registerArguments(ir, types, opts, prefix, abiClass) {
-  let lastUsed = -1;
-  for (let i = 0; i < 8; i++) {
-    const v = ir?.args?.get?.(`${prefix}${i}`) || null;
-    if (v && used(v)) lastUsed = i;
+function abiContext(opts = {}) {
+  const adapter = opts.abiAdapter || null;
+  let plugin = opts.abiPlugin || null;
+  if (!plugin && adapter?.id) {
+    try { plugin = registeredABIPlugin(adapter.id); } catch { plugin = null; }
   }
+  const supported = !!adapter && !!plugin && plugin.supported !== false && String(adapter.id || plugin.id || '') !== 'unknown';
+  const cacheKey = supported ? String(plugin.semanticIdentity || `${plugin.id}@${plugin.semanticVersion || '1'}`) : 'unknown';
+  let meta = ARCH_META_CACHE.get(cacheKey) || null;
+  if (!meta) {
+    let architecture = null;
+    try { if (supported) architecture = architecturePluginV2(plugin.architectureId); } catch { architecture = null; }
+    let registers = [];
+    try { registers = architecture?.registerFile?.() || []; } catch { registers = []; }
+    const aliases = new Map();
+    for (const descriptor of registers) {
+      const canonicalReg = stringValue(descriptor?.physicalId) || stringValue(descriptor?.id);
+      if (!canonicalReg) continue;
+      for (const name of [descriptor?.id, descriptor?.physicalId, descriptor?.abiName, ...(Array.isArray(descriptor?.views) ? descriptor.views : [])]) {
+        const value = stringValue(name);
+        if (value) aliases.set(value.toLowerCase(), canonicalReg);
+      }
+    }
+    const canonicalReg = (reg) => aliases.get(String(reg || '').toLowerCase()) || String(reg || '');
+    const stackPointers = new Set();
+    for (const descriptor of registers) {
+      if (descriptor?.kind !== 'stack-pointer' && descriptor?.role !== 'stack-pointer') continue;
+      for (const name of [descriptor?.id, descriptor?.physicalId, descriptor?.abiName]) {
+        const value = stringValue(name);
+        if (value) stackPointers.add(canonicalReg(value));
+      }
+    }
+    meta = { aliases, stackPointers };
+    ARCH_META_CACHE.set(cacheKey, meta);
+  }
+  const canonical = (reg) => meta.aliases.get(String(reg || '').toLowerCase()) || String(reg || '');
+  return { adapter, plugin, supported, canonical, stackPointers:meta.stackPointers, cacheKey };
+}
+
+function classifyArguments(plugin, functionPrototype) {
+  if (!plugin || !functionPrototype) return null;
+  try {
+    return plugin.classifyArguments({ callPrototype:functionPrototype }, { callPrototype:functionPrototype }) || null;
+  } catch { return null; }
+}
+
+function registerCandidates(ctx) {
+  if (!ctx.supported) return new Map();
+  const cached = REGISTER_CANDIDATE_CACHE.get(ctx.cacheKey);
+  if (cached) return cached;
+  const out = new Map();
+  const add = (reg, entry = {}) => {
+    const canonical = ctx.canonical(reg);
+    if (!canonical || out.has(canonical)) return;
+    out.set(canonical, {
+      reg:canonical,
+      bankIndex:Number.isInteger(Number(entry.index)) ? Number(entry.index) : null,
+      abiClass:entry.abiClass ?? null,
+    });
+  };
+  const probes = [
+    { type:'int64', bits:64, abiClass:'integer' },
+    { type:'double', bits:64, abiClass:'fp' },
+    { type:'void *', bits:64, pointer:true, abiClass:'pointer' },
+  ];
+  for (const parameter of probes) {
+    const functionPrototype = { parameters:Array.from({ length:16 }, () => ({ ...parameter })) };
+    const classified = classifyArguments(ctx.plugin, functionPrototype);
+    for (const entry of classified?.arguments || []) {
+      if (!entry || !['register','registers'].includes(entry.location)) continue;
+      const regs = Array.isArray(entry.regs) ? entry.regs : [entry.reg];
+      for (const reg of regs) if (typeof reg === 'string') add(reg, entry);
+    }
+  }
+  REGISTER_CANDIDATE_CACHE.set(ctx.cacheKey, out);
+  return out;
+}
+
+function registerArguments(ir, types, opts, ctx) {
+  if (!ctx.supported) return [];
+  const candidates = registerCandidates(ctx);
   const out = [];
-  for (let i = 0; i <= lastUsed; i++) {
-    const v = ir?.args?.get?.(`${prefix}${i}`) || null;
-    const recovered = v ? types?.values?.get?.(v.id) : null;
+  const seen = new Set();
+  for (const [rawReg, value] of ir?.args?.entries?.() || []) {
+    if (!value || !used(value)) continue;
+    const reg = ctx.canonical(rawReg);
+    let classified = null;
+    try { classified = ctx.plugin.classifyEntryRegister?.(reg) || null; } catch { classified = null; }
+    const candidate = classified?.kind === 'argument'
+      ? { reg, bankIndex:Number.isInteger(Number(classified.index)) ? Number(classified.index) : null, abiClass:classified.abiClass ?? null }
+      : candidates.get(reg) || null;
+    if (!candidate || seen.has(reg)) continue;
+    seen.add(reg);
+    const recovered = types?.values?.get?.(value.id) || null;
+    const abiClass = String(candidate.abiClass || '').toLowerCase();
+    const bank = /fp|float|sse|vector/.test(abiClass) ? 'fp' : 'integer';
+    const fallbackIndex = candidate.bankIndex == null ? out.length : candidate.bankIndex;
     out.push({
-      index:i, bankIndex:i, reg:`${prefix}${i}`, abiClass,
-      name:opts.argNames?.[`${prefix}${i}`] || (abiClass === 'integer' ? opts.argNames?.[i] : null) || `${abiClass === 'fp' ? 'fpArg' : 'arg'}${i + 1}`,
-      type:tname(recovered), confidence:recovered?.confidence || (v ? 0.45 : 0.2),
-      valueId:v?.id ?? null, used:!!v && used(v), sourceOrderKnown:false,
+      index:null, bankIndex:candidate.bankIndex, reg, abiClass:candidate.abiClass || bank,
+      name:opts.argNames?.[reg] || opts.argNames?.[fallbackIndex] || `${bank === 'fp' ? 'fpArg' : 'arg'}${fallbackIndex + 1}`,
+      type:tname(recovered), confidence:recovered?.confidence || 0.45,
+      valueId:value.id ?? null, used:true, sourceOrderKnown:false,
+      evidence:`entry SSA use classified by ABI ${ctx.adapter.id}`,
     });
   }
   return out;
 }
 
-function entryStackArguments(ir, types) {
-  const entrySp = ir?.args?.get?.('sp') || null;
-  if (!entrySp) return [];
+function stackLayout(ctx) {
+  if (!ctx.supported || !ctx.stackPointers.size) return null;
+  if (STACK_LAYOUT_CACHE.has(ctx.cacheKey)) return STACK_LAYOUT_CACHE.get(ctx.cacheKey);
+  let rules = {};
+  try { rules = ctx.plugin.stackRules?.() || {}; } catch { rules = {}; }
+  if (rules.unknown === true) { STACK_LAYOUT_CACHE.set(ctx.cacheKey, null); return null; }
+  const explicit = Number(rules.firstStackArgumentOffset);
+  const derived = Number(rules.returnAddressBytes || 0) + Number(rules.shadowSpaceBytes || 0);
+  const firstStackArgumentOffset = Number.isSafeInteger(explicit) && explicit >= 0 ? explicit
+    : Number.isSafeInteger(derived) && derived >= 0 ? derived : 0;
+  const layout = {
+    firstStackArgumentOffset:BigInt(firstStackArgumentOffset),
+    argumentSlotBytes:Number.isSafeInteger(Number(rules.argumentSlotBytes)) ? Number(rules.argumentSlotBytes) : null,
+    returnAddressBytes:Number(rules.returnAddressBytes || 0),
+    shadowSpaceBytes:Number(rules.shadowSpaceBytes || 0),
+  };
+  STACK_LAYOUT_CACHE.set(ctx.cacheKey, layout);
+  return layout;
+}
+
+function entryValueForBase(ir, ctx, canonicalBase) {
+  for (const [rawReg, value] of ir?.args?.entries?.() || []) {
+    if (ctx.canonical(rawReg) === canonicalBase) return value;
+  }
+  return null;
+}
+
+function entryStackArguments(ir, types, ctx) {
+  const layout = stackLayout(ctx);
+  if (!layout) return [];
   const byKey = new Map();
   for (const inst of ir?.instructions || []) {
-    if (inst?.op !== 'load' || inst.loc?.kind !== 'stack' || inst.loc?.baseReg !== 'sp') continue;
-    if (inst.loc.frameEpoch !== entrySp.id || inst.loc.disp == null || inst.loc.disp < 0n) continue;
-    if (inst.memUse?.kind !== 'entry') continue;
-    const key = inst.loc.key;
+    if (inst?.op !== 'load' || inst.loc?.kind !== 'stack') continue;
+    const baseReg = ctx.canonical(inst.loc?.baseReg);
+    if (!ctx.stackPointers.has(baseReg)) continue;
+    const entrySp = entryValueForBase(ir, ctx, baseReg);
+    if (!entrySp || inst.loc.frameEpoch !== entrySp.id || inst.loc.disp == null) continue;
+    const disp = BigInt(inst.loc.disp);
+    if (disp < layout.firstStackArgumentOffset || inst.memUse?.kind !== 'entry') continue;
+    const key = inst.loc.key || `${baseReg}:${disp}`;
     if (byKey.has(key)) continue;
     const recovered = inst.dst ? types?.values?.get?.(inst.dst.id) : null;
     byKey.set(key, {
-      index:null, reg:null, abiClass:'stack', stackOffset:inst.loc.disp,
-      name:`stackArg_${inst.loc.disp.toString(16)}`, type:tname(recovered),
+      index:null, reg:null, abiClass:'stack', stackOffset:disp,
+      abiStackOffset:disp - layout.firstStackArgumentOffset,
+      stackBaseRegister:baseReg, stackCoordinate:'callee-entry-sp',
+      name:`stackArg_${disp.toString(16)}`, type:tname(recovered),
       confidence:recovered?.confidence || 0.5, valueId:inst.dst?.id ?? null, used:true,
-      sourceOrderKnown:false, evidence:'load from entry-SP Memory-SSA version with no reaching store',
+      sourceOrderKnown:false, evidence:'load from ABI-proven entry stack base Memory-SSA version with no reaching store',
     });
   }
   return [...byKey.values()].sort((a,b) => a.stackOffset < b.stackOffset ? -1 : a.stackOffset > b.stackOffset ? 1 : 0);
 }
 
-function returnLocations(ret, indirectResult, opts = {}) {
-  if (indirectResult) return [{ kind:'indirect', reg:'x8', role:'result-address' }];
-  const name = tname(ret, opts.returnType || 'unknown').toLowerCase();
-  if (name === 'void' || kindOf(ret) === 'void') return [];
-  if (!ret && !opts.returnType && !opts.returnClass) return [];
-  const kind = kindOf(ret) || String(opts.returnClass || '').toLowerCase();
-  const bits = bitsOf(ret) || Number(opts.returnBits || 0);
-  const hfaCount = Number(ret?.hfaCount || ret?.hvaCount || opts.hfaCount || 0);
-  if ((kind.includes('hfa') || kind.includes('hva')) && hfaCount >= 1 && hfaCount <= 4) {
-    return Array.from({ length:hfaCount }, (_, i) => ({ kind:'register', reg:`v${i}`, abiClass:'fp' }));
+function returnPrototype(ret, opts = {}) {
+  const returnType = tname(ret, opts.returnType || '');
+  const returnClass = kindOf(ret) || String(opts.returnClass || '').toLowerCase();
+  const returnBits = bitsOf(ret) || Number(opts.returnBits || 0);
+  return {
+    returnType, returnClass, returnBits,
+    aggregate:ret?.aggregate === true || /aggregate|struct|union|record|array|composite/.test(`${returnType} ${returnClass}`.toLowerCase()),
+    hfaCount:Number(ret?.hfaCount || ret?.hvaCount || opts.hfaCount || 0),
+    returnsValue:returnType !== 'void' && returnClass !== 'void',
+  };
+}
+
+function classifyReturn(ctx, ret, opts = {}) {
+  if (!ctx.supported) return null;
+  const functionPrototype = returnPrototype(ret, opts);
+  if (!ret && !opts.returnType && !opts.returnClass && !opts.returnBits) return null;
+  try {
+    return ctx.plugin.classifyFunctionReturn({
+      functionPrototype, prototype:functionPrototype,
+      returnType:functionPrototype.returnType,
+      returnClass:functionPrototype.returnClass,
+      returnBits:functionPrototype.returnBits,
+      returnsValue:functionPrototype.returnsValue,
+    }) || null;
+  } catch { return null; }
+}
+
+function hiddenResultRegisterFrom(classified, ctx) {
+  const hidden = classified?.hiddenResultPointer;
+  const raw = typeof hidden === 'string' ? hidden : hidden?.input;
+  return raw ? ctx.canonical(raw) : null;
+}
+
+function indirectResultCandidate(ctx) {
+  if (!ctx.supported) return null;
+  const probes = [
+    { returnType:'struct aggregate', returnClass:'aggregate', returnBits:256, aggregate:true, returnsValue:true },
+    { returnType:'struct aggregate', returnClass:'indirect', returnBits:256, aggregate:true, indirectResult:true, returnsValue:true },
+  ];
+  for (const functionPrototype of probes) {
+    let classified = null;
+    try { classified = ctx.plugin.classifyFunctionReturn({ functionPrototype, prototype:functionPrototype, ...functionPrototype }) || null; } catch { classified = null; }
+    const reg = hiddenResultRegisterFrom(classified, ctx);
+    if (reg) return reg;
   }
-  if (kind.includes('float') || kind.includes('double') || kind.includes('vector') || /^(float|double|__fp16)/.test(name)) {
-    return [{ kind:'register', reg:'v0', abiClass:'fp' }];
-  }
-  const aggregate = kind.includes('aggregate') || kind.includes('struct') || kind.includes('union') || ret?.aggregate === true;
-  if (aggregate) {
-    if (!bits) return [];
-    if (bits <= 64) return [{ kind:'register', reg:'x0', abiClass:'integer' }];
-    if (bits <= 128) return [{ kind:'register', reg:'x0', abiClass:'integer' }, { kind:'register', reg:'x1', abiClass:'integer' }];
-    return [];
-  }
-  if (bits > 64 && bits <= 128) return [{ kind:'register', reg:'x0', abiClass:'integer' }, { kind:'register', reg:'x1', abiClass:'integer' }];
-  if (bits > 128) return [];
-  return [{ kind:'register', reg:'x0', abiClass:'integer' }];
+  return null;
+}
+
+function returnLocations(classified, indirectRegister, ctx) {
+  if (indirectRegister) return [{ kind:'indirect', reg:indirectRegister, role:'result-address' }];
+  if (!classified) return [];
+  const regs = Array.isArray(classified.regs) && classified.regs.length
+    ? classified.regs
+    : Array.isArray(classified.pieces) && classified.pieces.length
+      ? classified.pieces.map((piece) => piece?.reg).filter(Boolean)
+      : classified.reg ? [classified.reg] : [];
+  return [...new Set(regs.map((reg) => ctx.canonical(reg)).filter(Boolean))].map((reg) => ({
+    kind:'register', reg, abiClass:classified.abiClass ?? null,
+  }));
 }
 
 export function recoverFunctionPrototype(ir, types, opts = {}) {
-  const integerArgs = registerArguments(ir, types, opts, 'x', 'integer');
-  const fpArgs = registerArguments(ir, types, opts, 'v', 'fp');
-  const stackArgs = entryStackArguments(ir, types);
-  const args = [...integerArgs, ...fpArgs, ...stackArgs];
-  const x8 = ir?.args?.get?.('x8');
-  const indirectResult = !!(x8 && used(x8) && (types?.values?.get?.(x8.id)?.kind === 'pointer' || opts.indirectResult));
+  const ctx = abiContext(opts);
+  const registerArgs = registerArguments(ir, types, opts, ctx);
+  const integerArgs = registerArgs.filter((arg) => !/fp|float|sse|vector/.test(String(arg.abiClass || '').toLowerCase()));
+  const fpArgs = registerArgs.filter((arg) => /fp|float|sse|vector/.test(String(arg.abiClass || '').toLowerCase()));
+  const stackArgs = entryStackArguments(ir, types, ctx);
+  const args = [...registerArgs, ...stackArgs];
   const ret = types?.ret || null;
+  const classifiedReturn = classifyReturn(ctx, ret, opts);
+  let indirectRegister = classifiedReturn?.indirect === true ? hiddenResultRegisterFrom(classifiedReturn, ctx) : null;
+  if (!indirectRegister) {
+    const candidate = indirectResultCandidate(ctx);
+    if (candidate) {
+      const entry = entryValueForBase(ir, ctx, candidate);
+      const recovered = entry ? types?.values?.get?.(entry.id) : null;
+      if (entry && used(entry) && (recovered?.kind === 'pointer' || opts.indirectResult === true)) indirectRegister = candidate;
+    }
+  }
+  const locations = returnLocations(classifiedReturn, indirectRegister, ctx);
   const retType = tname(ret, opts.returnType || 'unknown');
-  const locations = returnLocations(ret, indirectResult, opts);
   return {
-    convention:'AAPCS64', arguments:args,
+    convention:ctx.supported ? String(ctx.adapter.id || ctx.plugin.id) : 'unknown',
+    conventionKnown:ctx.supported,
+    arguments:args,
     argumentBanks:{ integer:integerArgs, fp:fpArgs, stack:stackArgs },
     returnType:retType, returnConfidence:ret?.confidence || (locations.length ? 0.35 : 0),
-    returnLocations:locations, returnLocationKnown:indirectResult || !!ret || !!opts.returnType || !!opts.returnClass,
-    indirectResult, indirectResultRegister:indirectResult ? 'x8' : null,
+    returnLocations:locations,
+    returnLocationKnown:ctx.supported && (indirectRegister != null || classifiedReturn != null),
+    indirectResult:indirectRegister != null,
+    indirectResultRegister:indirectRegister,
     variadic:opts.variadic === true,
+    completeness:ctx.supported ? 'partial' : 'unknown',
     evidence:[
-      ...(integerArgs.length ? ['entry SSA use of x0..x7'] : []),
-      ...(fpArgs.length ? ['entry SSA use of v0..v7'] : []),
-      ...(stackArgs.length ? ['entry-SP loads with Memory-SSA entry versions'] : []),
-      ...(indirectResult ? ['x8 used as typed indirect-result pointer'] : []),
-      ...(ret ? ['semantic return-type evidence'] : []),
+      ...(registerArgs.length ? [`entry SSA register uses classified by ABI ${ctx.adapter.id}`] : []),
+      ...(stackArgs.length ? [`entry stack loads classified by ABI ${ctx.adapter.id} stack rules`] : []),
+      ...(indirectRegister ? [`ABI ${ctx.adapter.id} indirect-result register evidence`] : []),
+      ...(ret ? ['semantic return-type evidence classified by ABI plugin'] : []),
+      ...(!ctx.supported ? ['ABI unknown: no calling-convention facts fabricated'] : []),
     ],
   };
 }
