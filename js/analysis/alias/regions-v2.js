@@ -32,6 +32,12 @@ function nonEmpty(value) {
   return text || null;
 }
 
+function strictNonEmptyString(value) {
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  return text || null;
+}
+
 function toBigIntString(value) {
   try { return (typeof value === 'bigint' ? value : BigInt(value)).toString(); }
   catch { return null; }
@@ -52,8 +58,9 @@ function normalizedOrigin(...origins) {
 }
 
 function uniqueBinaryId(origin, explicit) {
-  if (nonEmpty(explicit)) return nonEmpty(explicit);
-  const ids = new Set((origin?.byteRanges ?? []).map((range) => nonEmpty(range.binaryId)).filter(Boolean));
+  const direct = strictNonEmptyString(explicit);
+  if (direct) return direct;
+  const ids = new Set((origin?.byteRanges ?? []).map((range) => strictNonEmptyString(range.binaryId)).filter(Boolean));
   return ids.size === 1 ? [...ids][0] : null;
 }
 
@@ -102,8 +109,8 @@ function descriptorWithProofMetadata(descriptor, proof) {
 function unknownRegion({ functionId, binaryId, widthBits, origin, sourceEntityId, addressValueId, addressSpace, reason, metadata }) {
   const normalizedWidth = Number.isSafeInteger(Number(widthBits)) && Number(widthBits) > 0 ? Number(widthBits) : null;
   const uncertaintyIdentity = {
-    sourceEntityId: nonEmpty(sourceEntityId),
-    addressValueId: nonEmpty(addressValueId),
+    sourceEntityId: strictNonEmptyString(sourceEntityId),
+    addressValueId: strictNonEmptyString(addressValueId),
     addressSpace: nonEmpty(addressSpace),
     ...(normalizedWidth == null ? {} : { widthBits: normalizedWidth }),
     reason: nonEmpty(reason) ?? 'unproven-memory-region',
@@ -151,7 +158,7 @@ function preciseRegion({ descriptor, functionId, binaryId, widthBits, origin, ad
     canonicalRegionIdentity = { address, widthBits: normalizedWidth };
     specific = { binaryId: scope.binaryId, ...(scope.functionId ? { functionId: scope.functionId } : {}), address };
   } else if (kind === 'rooted-offset') {
-    const rootEntityId = nonEmpty(descriptor.rootEntityId ?? descriptor.rootId);
+    const rootEntityId = strictNonEmptyString(descriptor.rootEntityId ?? descriptor.rootId);
     const offset = toBigIntString(descriptor.offset ?? 0);
     if (!rootEntityId || offset == null || (!scope.functionId && !scope.binaryId)) return null;
     canonicalRegionIdentity = { rootEntityId, offset, widthBits: normalizedWidth };
@@ -187,11 +194,11 @@ function preciseRegion({ descriptor, functionId, binaryId, widthBits, origin, ad
 export function deriveMemoryRegion(input = {}) {
   const memory = object(input.memory) ?? {};
   const origin = normalizedOrigin(input.origin);
-  const functionId = nonEmpty(input.functionId);
+  const functionId = strictNonEmptyString(input.functionId);
   const binaryId = uniqueBinaryId(origin, input.binaryId);
   const widthBits = Number(memory.widthBits ?? input.widthBits);
   const addressSpace = nonEmpty(memory.addressSpace ?? input.addressSpace);
-  const addressValueId = nonEmpty(memory.addressExpr?.valueId ?? input.addressValueId);
+  const addressValueId = strictNonEmptyString(memory.addressExpr?.valueId ?? input.addressValueId);
   const descriptor = normalizeDescriptor(input.regionEvidence ?? input.provenance ?? input.metadata);
 
   const precise = descriptor && Number.isSafeInteger(widthBits) && widthBits > 0
@@ -267,15 +274,15 @@ export function classifySemanticMemoryRegion(ir, nodeOrId, options = {}) {
   const node = typeof nodeOrId === 'string' ? nodes.find((item) => item.id === nodeOrId) : nodeOrId;
   if (!node || (node.kind !== 'load' && node.kind !== 'store') || !object(node.memory)) {
     return unknownRegion({
-      functionId: nonEmpty(ir?.functionId),
-      binaryId: nonEmpty(options.binaryId),
+      functionId: strictNonEmptyString(ir?.functionId),
+      binaryId: strictNonEmptyString(options.binaryId),
       origin: normalizedOrigin(node?.origin, ir?.origin),
       sourceEntityId: node?.id ?? null,
       reason: 'malformed-memory-node',
     });
   }
 
-  const addressValueId = nonEmpty(node.memory.addressExpr?.valueId);
+  const addressValueId = strictNonEmptyString(node.memory.addressExpr?.valueId);
   const value = addressValueId ? values.find((item) => item.id === addressValueId) : null;
   const definingNode = value?.definitionNodeId ? nodes.find((item) => item.id === value.definitionNodeId) : null;
   const accessOrigin = normalizedOrigin(node.origin, value?.origin, definingNode?.origin);
