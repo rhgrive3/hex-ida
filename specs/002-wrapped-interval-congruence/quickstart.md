@@ -22,10 +22,12 @@ advanced through `be5636b1baeadfaef5ae10d81406f02118dca780`
 `03def51c52da869b53929ee537546aedddbe689b`, `48a0b429...`, and finally
 `609c9560104da321eb21487f05c12c73a851fc66`. The lane was reconciled onto that
 newest SHA before implementation acceptance. Its moving-main delta touches
-only AI/query and ARM64 control-register files plus their tests; it does not
-overlap this lane's canonical range/SCCP files, scalar/integration tests, or
-generated inputs. A fresh remote/open-PR check remains required before Review 2
-and merge.
+only AI/query, ARM64, runtime, project, UI, and generated userscript files plus
+their tests; it does not overlap this lane's canonical range/SCCP files,
+scalar/integration tests, or generated inputs. The latest implementation
+preflight resolved `origin/main=c8dfa360496f37adfe5815be2c83485915d3db1f` at
+`2026-08-29T19:56:13Z`; a fresh remote/open-PR check remains required before
+Review 2 and merge.
 
 ## Minimum pre-fix regression
 
@@ -62,7 +64,7 @@ also asserts that the global `x` fact remains full once edge facts are added.
 After implementation, run the identical test and record the exact SHA/output:
 
 ```bash
-POST_FIX_SHA=61788968c61d97c9371a05c33a4517e40417ee12
+POST_FIX_SHA=3bc879a8245f757c266288eaf1edf4cbd9d042e1
 node --test tests/phase8/scalar/c2-02-pre-fix.test.mjs
 ```
 
@@ -74,16 +76,19 @@ original assertions are unchanged; the edge object retains a compatibility
 Additional implementation-head evidence:
 
 ```text
-T0: git diff --check; node --check range.js; node --check sccp.js — PASS
+T0: git diff --check; node --check range.js; node --check sccp.js; npm run lint — PASS
 T1: range.test.mjs + sccp.test.mjs + pre-fix regression — PASS
-T2: npm run phase8:test — PASS (298 tests, 30/30 discovered files)
-Downstream: c2-02-downstream-range.test.mjs — PASS (2 tests)
+T2: npm run phase8:test — PASS (300 tests, 30/30 discovered files)
+Downstream: c2-02-downstream-range.test.mjs — PASS (3 tests)
+Ownership: npm run phase8:ownership — PASS
+Convergence: Spec Kit artifacts rechecked after implementation; no remaining
+spec/plan/task gap was found; `CONVERGENCE_RESULT=CLEAN`.
 Generated output: no generated files changed; canonical generator not owned by this lane.
 ```
 
-The implementation is represented by the commits through
-`61788968c61d97c9371a05c33a4517e40417ee12`, with the final source head recorded
-again after this documentation update. The publication digest covers canonical
+The implementation is represented by the source/test commit
+`3bc879a8245f757c266288eaf1edf4cbd9d042e1`; documentation-only evidence
+updates do not alter the semantic head. The publication digest covers canonical
 facts, edge/block-entry refinements, identity/provenance, completeness, budget,
 and diagnostics. Subsequent documentation-only evidence updates must not be
 confused with the original pre-fix comparison.
