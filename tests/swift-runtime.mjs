@@ -108,6 +108,9 @@ assert.equal(methods[3].async, true);
 
 // Vtable and witness dispatch resolution keep ABI slot evidence.
 const index = buildSwiftRuntimeIndex({
+  // #2397: bare simple-name aliases are honored only for a proven-complete
+  // universe; this synthetic fixture models a fully parsed one.
+  complete: true,
   types: [{ ...type, vtable: [{ index: 0, impl: 0x2000n, name: 'takeDamage' }] }],
   protocols: [proto], conformances: [conf],
   vtables: [{ typeName: 'PlayerState', methods: [{ index: 0, impl: 0x2000n, name: 'takeDamage' }] }],
