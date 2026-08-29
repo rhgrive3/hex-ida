@@ -33,6 +33,7 @@ import {
   refineComparisonFacts,
 } from './range.js';
 import { createPassDescriptor, createPassResult } from './contract.js';
+import { stableDigest } from '../../core/identity/index.js';
 
 export const SCCP_PASS = createPassDescriptor({
   id: 'phase8.sccp',
@@ -99,6 +100,37 @@ function constantOfValue(value) {
   const raw = value?.def?.extra?.value ?? value?.const;
   if (raw == null) return null;
   try { return bitvector(raw, bits); } catch { return null; }
+}
+
+function valueProvenance(value) {
+  const ids = [
+    ...(Array.isArray(value?.origin?.instructionIds) ? value.origin.instructionIds : []),
+    ...(Array.isArray(value?.def?.origin?.instructionIds) ? value.def.origin.instructionIds : []),
+  ];
+  return {
+    valueId: value?.id ?? null,
+    definitionBlock: value?.def?.block ?? null,
+    instructionIds: [...new Set(ids)].sort(),
+  };
+}
+
+function attachValueProvenance(fact, value) {
+  if (fact == null) return fact;
+  const prior = fact.provenance ?? {};
+  const instructionIds = [
+    ...(Array.isArray(prior.instructionIds) ? prior.instructionIds : []),
+    ...valueProvenance(value).instructionIds,
+  ];
+  return Object.freeze({
+    ...fact,
+    valueId: value?.id ?? fact.valueId ?? null,
+    provenance: Object.freeze({
+      ...prior,
+      valueId: value?.id ?? fact.valueId ?? null,
+      definitionBlock: value?.def?.block ?? prior.definitionBlock ?? null,
+      instructionIds: Object.freeze([...new Set(instructionIds)].sort()),
+    }),
+  });
 }
 
 /** The generic operator name for a definition, or null when it is not modelled. */
@@ -180,7 +212,7 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
     if (known != null) return known;
     const range = ranges.get(value.id);
     const bits = widthOf(value);
-    return range == null || bits == null ? null : factFromRange(range, { valueId: value.id });
+    return range == null || bits == null ? null : factFromRange(range, { valueId: value.id, provenance: valueProvenance(value) });
   };
   const rangeOfValue = (value) => {
     if (value == null) return null;
@@ -214,7 +246,7 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
   function setCell(valueId, proposed, proposedRange, proposedFact = null) {
     const previous = cells.get(valueId) ?? TOP;
     const previousFact = facts.get(valueId) ?? (ranges.get(valueId)
-      ? factFromRange(ranges.get(valueId), { valueId })
+      ? factFromRange(ranges.get(valueId), { valueId, provenance: valueProvenance(valueById.get(valueId)) })
       : null);
     const previousRange = previousFact?.range ?? ranges.get(valueId) ?? null;
     const seen = (visits.get(valueId) ?? 0) + 1;
@@ -230,7 +262,10 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
     // Product facts ascend by union for the same reason: a monotone chain plus
     // widening is what bounds convergence. The compatibility range is derived
     // from this one product, never maintained as a second truth.
-    let candidateFact = proposedFact ?? (proposedRange == null ? null : factFromRange(proposedRange, { valueId }));
+    let candidateFact = proposedFact ?? (proposedRange == null ? null : factFromRange(proposedRange, {
+      valueId,
+      provenance: valueProvenance(valueById.get(valueId)),
+    }));
     if (candidateFact != null && candidateFact.valueId !== valueId) candidateFact = Object.freeze({ ...candidateFact, valueId });
     let effectiveFact = candidateFact;
     if (previousFact != null && candidateFact != null && previousFact.bits === candidateFact.bits) {
@@ -297,7 +332,10 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
       const sourceFact = factOfValue(source);
       const sourceRange = sourceFact?.range ?? rangeOfValue(source);
       if (bits != null && sourceFact != null && sourceFact.bits === bits) fact = joinFacts(fact, sourceFact);
-      else if (bits != null && sourceRange != null && sourceRange.bits === bits) fact = joinFacts(fact, factFromRange(sourceRange, { valueId: value.id }));
+      else if (bits != null && sourceRange != null && sourceRange.bits === bits) fact = joinFacts(fact, factFromRange(sourceRange, {
+        valueId: value.id,
+        provenance: valueProvenance(source),
+      }));
       else if (bits != null) fact = fullFact(bits, { valueId: value.id, reason: 'phi incoming width disagrees' });
     }
     range = fact?.range ?? range;
@@ -346,7 +384,10 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
       }
       const copiedFact = sourceFact != null && sourceFact.bits === bits
         ? sourceFact
-        : factFromRange(sourceRange && sourceRange.bits === bits ? sourceRange : fullRange(bits), { valueId: value.id });
+        : factFromRange(sourceRange && sourceRange.bits === bits ? sourceRange : fullRange(bits), {
+          valueId: value.id,
+          provenance: valueProvenance(source),
+        });
       return { cell, range: copiedFact.range, fact: Object.freeze({ ...copiedFact, valueId: value.id }) };
     }
 
@@ -361,7 +402,10 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
         return { cell: overdefined(`cast is not representable: ${shape.operator}`), range: fullRange(bits) };
       }
       if (sourceRange == null) return { cell: overdefined('cast source has no range'), range: fullRange(bits) };
-      const sourceFact = factOfValue(source) ?? factFromRange(sourceRange, { valueId: source?.id ?? null });
+      const sourceFact = factOfValue(source) ?? factFromRange(sourceRange, {
+        valueId: source?.id ?? null,
+        provenance: valueProvenance(source),
+      });
       const castedFact = shape.operator === 'trunc' ? truncateFact(sourceFact, bits)
         : shape.operator === 'zext' ? zeroExtendFact(sourceFact, bits)
           : signExtendFact(sourceFact, bits);
@@ -391,7 +435,10 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
           if (folded != null) return { cell: constantCell(folded), range: singleton(folded) };
         }
         if (sourceRange != null) {
-          const sourceFact = factOfValue(operands[0]) ?? factFromRange(sourceRange, { valueId: operands[0]?.id ?? null });
+          const sourceFact = factOfValue(operands[0]) ?? factFromRange(sourceRange, {
+            valueId: operands[0]?.id ?? null,
+            provenance: valueProvenance(operands[0]),
+          });
           const castedFact = signExtendFact(sourceFact, bits);
           return { cell: overdefined('operand is not constant'), range: castedFact.range, fact: Object.freeze({ ...castedFact, valueId: value.id }) };
         }
@@ -421,8 +468,14 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
       const rightRange = rightFact?.range ?? rangeOfValue(operands[1]);
       if (leftRange == null || rightRange == null) return { cell: overdefined('operand has no range'), range: fullRange(bits) };
       const combined = evaluateBinaryFact(shape.operator,
-        leftFact ?? factFromRange(leftRange, { valueId: operands[0]?.id ?? null }),
-        rightFact ?? factFromRange(rightRange, { valueId: operands[1]?.id ?? null }));
+        leftFact ?? factFromRange(leftRange, {
+          valueId: operands[0]?.id ?? null,
+          provenance: valueProvenance(operands[0]),
+        }),
+        rightFact ?? factFromRange(rightRange, {
+          valueId: operands[1]?.id ?? null,
+          provenance: valueProvenance(operands[1]),
+        }));
       return {
         cell: overdefined(`operands of ${shape.operator} are not both constant`),
         range: combined.range.bits === bits ? combined.range : fullRange(bits),
@@ -460,7 +513,10 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
           const chosenRange = chosenFact?.range ?? rangeOfValue(chosenValue);
           const resultFact = chosenFact && chosenFact.bits === bits
             ? Object.freeze({ ...chosenFact, valueId: value.id })
-            : factFromRange(chosenRange && chosenRange.bits === bits ? chosenRange : fullRange(bits), { valueId: value.id });
+            : factFromRange(chosenRange && chosenRange.bits === bits ? chosenRange : fullRange(bits), {
+              valueId: value.id,
+              provenance: valueProvenance(chosenValue),
+            });
           return { cell: chosen, range: resultFact.range, fact: resultFact };
         }
       }
@@ -478,8 +534,16 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
 
   function evaluate(value) {
     const result = evaluateValue(value);
-    if (result == null || result.fact != null || result.range == null) return result;
-    return { ...result, fact: factFromRange(result.range, { valueId: value.id, reason: result.cell?.reason }) };
+    if (result == null || result.range == null) return result;
+    if (result.fact != null) return { ...result, fact: attachValueProvenance(result.fact, value) };
+    return {
+      ...result,
+      fact: factFromRange(result.range, {
+        valueId: value.id,
+        reason: result.cell?.reason,
+        provenance: valueProvenance(value),
+      }),
+    };
   }
 
   function edgeKey(from, to, kind) { return `${from}->${to}:${kind}`; }
@@ -522,8 +586,14 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
     const operands = argumentValues(definition);
     if (operands.length < 2) return new Map();
     return refineComparisonFacts(definition.sub,
-      factOfValue(operands[0]) ?? factFromRange(rangeOfValue(operands[0]), { valueId: operands[0]?.id ?? null }),
-      factOfValue(operands[1]) ?? factFromRange(rangeOfValue(operands[1]), { valueId: operands[1]?.id ?? null }),
+          factOfValue(operands[0]) ?? factFromRange(rangeOfValue(operands[0]), {
+            valueId: operands[0]?.id ?? null,
+            provenance: valueProvenance(operands[0]),
+          }),
+      factOfValue(operands[1]) ?? factFromRange(rangeOfValue(operands[1]), {
+        valueId: operands[1]?.id ?? null,
+        provenance: valueProvenance(operands[1]),
+      }),
       truth);
   }
 
@@ -539,11 +609,14 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
     // can discard impossible case/default edges without stale reachability
     // surviving from this first visit.
     if (selector == null || selectorFact == null) {
-      if (selector == null || widthOf(selector) != null) return;
+      // A missing value is malformed evidence, not an unevaluated producer.
+      // Keeping all switch successors executable is the only sound response;
+      // deferring here would make every successor look unreachable forever.
+      if (selector != null && valueById.has(selector.id) && widthOf(selector) != null) return;
       for (const edge of edges) {
         recordEdgeFact(block.index, edge, {
           reachable: true,
-          predicate: { kind: 'switch', conditionId: selector.id ?? null, malformed: true },
+          predicate: { kind: 'switch', conditionId: selector?.id ?? null, malformed: true },
         });
         markEdge(block.index, edge.to, edge.kind ?? 'switch');
       }
@@ -641,7 +714,7 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
       // An unsupported-width condition never received an initial lattice cell;
       // it is malformed evidence, not an unevaluated value.  Keep both arms
       // reachable conservatively rather than inventing an unreachable block.
-      if (condition == null || widthOf(condition) == null) {
+      if (condition == null || !valueById.has(condition.id) || widthOf(condition) == null) {
         for (const edge of edges) {
           recordEdgeFact(block.index, edge, {
             reachable: true,
@@ -706,7 +779,11 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
     if (bits != null) {
       const range = known != null ? singleton(known) : fullRange(bits);
       ranges.set(value.id, range);
-      facts.set(value.id, factFromRange(range, { valueId: value.id, reason: known == null ? 'function argument' : null }));
+      facts.set(value.id, factFromRange(range, {
+        valueId: value.id,
+        reason: known == null ? 'function argument' : null,
+        provenance: valueProvenance(value),
+      }));
     }
   }
 
@@ -822,13 +899,69 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
   const provenConstants = budgetExhausted
     ? []
     : [...outputFacts.entries()]
-      .filter(([, fact]) => fact?.constant != null && !['partial', 'malformed', 'unknown'].includes(fact.status));
+      .filter(([, fact]) => fact?.constant != null && ['exact', 'conservative'].includes(fact.status));
   const newlyProven = provenConstants.filter(([valueId]) => {
     const value = valueById.get(valueId);
     return value != null && constantOfValue(value) == null;
   });
   const inputIdentity = context.analysisIdentity ?? context.identity ?? context.artifactIdentity ?? null;
   const inputVersions = typeof analysis?.snapshot === 'function' ? analysis.snapshot() : null;
+
+  const boundedDiagnostics = diagnostics.slice(0, 24);
+  if (budgetExhausted) {
+    boundedDiagnostics.push({
+      severity: 'warning',
+      code: 'phase8.sccp.budget',
+      message: 'SCCP stopped before reaching a fixed point.',
+      reason: `The worklist exceeded ${limits.maxWorkItems} items or the pass was cancelled; the published ranges are sound but not maximally precise.`,
+    });
+  }
+  if (widened > 0) {
+    boundedDiagnostics.push({
+      severity: 'info',
+      code: 'phase8.sccp.widened',
+      message: `${widened} value ranges were widened to reach a fixed point.`,
+      reason: `A value revisited more than ${limits.maxVisitsPerValue} times is widened rather than chased, so convergence is bounded.`,
+    });
+  }
+
+  const digestFact = (fact) => fact == null ? null : ({
+    valueId: fact.valueId ?? null,
+    bits: fact.bits,
+    range: fact.range,
+    knownZero: fact.knownZero,
+    knownOne: fact.knownOne,
+    congruence: fact.congruence,
+    alignment: fact.alignment,
+    pointerOffset: fact.pointerOffset,
+    constant: fact.constant,
+    status: fact.status,
+    reason: fact.reason,
+    provenance: fact.provenance,
+  });
+  const digestFactMap = (source) => [...source.entries()]
+    .map(([valueId, fact]) => [valueId, digestFact(fact)]);
+  const digestEdgeMap = (source) => [...source.entries()].map(([key, edge]) => [key, {
+    edgeId: edge.edgeId,
+    from: edge.from,
+    to: edge.to,
+    kind: edge.kind,
+    reachable: edge.reachable,
+    status: edge.status,
+    predicate: edge.predicate,
+    facts: digestFactMap(edge.facts),
+    provenance: edge.provenance,
+  }]);
+  const digestBlockFacts = (source) => [...source.entries()]
+    .map(([block, valueFacts]) => [block, digestFactMap(valueFacts)]);
+  const digestMap = (source) => [...source.entries()];
+  const budgetEvidence = Object.freeze({
+    maxVisitsPerValue: limits.maxVisitsPerValue,
+    maxWorkItems: limits.maxWorkItems,
+    workItems: work,
+    widenedValueCount: widened,
+    exhausted: budgetExhausted,
+  });
 
   const result = {
     contractVersion: SCCP_PASS.contractVersion,
@@ -865,27 +998,36 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
     // Truthfully partial when the worklist was cut off: a fixed point that was
     // not reached is not a fixed point.
     completeness: budgetExhausted ? 'partial' : 'complete',
+    budget: budgetEvidence,
+    diagnostics: boundedDiagnostics,
   };
 
-  if (area != null) area.stage('ranges', Object.freeze(result));
+  // The scalar artifact has its own digest in addition to the enclosing Phase 8
+  // ledger digest.  Maps, closures, and compatibility getters are intentionally
+  // projected into sorted data so replay identity covers semantic facts and
+  // diagnostics without depending on object insertion order or runtime timing.
+  result.publicationDigest = stableDigest({
+    contractVersion: result.contractVersion,
+    passVersion: result.passVersion,
+    identity: result.identity,
+    provenance: result.provenance,
+    constants: [...result.constants.entries()],
+    facts: digestFactMap(outputFacts),
+    ranges: digestFactMap(outputFacts),
+    edgeFacts: digestEdgeMap(outputEdges),
+    blockEntryFacts: digestBlockFacts(outputBlockEntryFacts),
+    executableEdges: result.executableEdges,
+    unreachableBlockIndexes: result.unreachableBlockIndexes,
+    overdefinedReasons: digestMap(result.overdefinedReasons),
+    widenedValueCount: result.widenedValueCount,
+    workItems: result.workItems,
+    visitCounts: digestMap(result.visitCounts),
+    completeness: result.completeness,
+    budget: result.budget,
+    diagnostics: result.diagnostics,
+  });
 
-  const boundedDiagnostics = diagnostics.slice(0, 24);
-  if (budgetExhausted) {
-    boundedDiagnostics.push({
-      severity: 'warning',
-      code: 'phase8.sccp.budget',
-      message: 'SCCP stopped before reaching a fixed point.',
-      reason: `The worklist exceeded ${limits.maxWorkItems} items or the pass was cancelled; the published ranges are sound but not maximally precise.`,
-    });
-  }
-  if (widened > 0) {
-    boundedDiagnostics.push({
-      severity: 'info',
-      code: 'phase8.sccp.widened',
-      message: `${widened} value ranges were widened to reach a fixed point.`,
-      reason: `A value revisited more than ${limits.maxVisitsPerValue} times is widened rather than chased, so convergence is bounded.`,
-    });
-  }
+  if (area != null) area.stage('ranges', Object.freeze(result));
 
   return createPassResult({
     descriptor: SCCP_PASS,

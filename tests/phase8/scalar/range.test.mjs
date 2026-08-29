@@ -222,6 +222,25 @@ test('alignment and pointer-offset evidence survives only an agreeing join and e
   assert.equal(disagreement.alignment, null);
 });
 
+test('pointer arithmetic shifts canonical offset and alignment without minting provenance', () => {
+  const pointer = factFromRange(rangeOf(0n, 10n, 32), {
+    valueId: 5,
+    alignment: { modulus: 16n, remainder: 0n },
+    pointerOffset: { baseId: 'p', offset: 4n },
+  });
+  const amount = singletonFact(bitvector(4n, 32), { valueId: 6 });
+  const advanced = evaluateBinaryFact('add', pointer, amount);
+  assert.deepEqual(advanced.pointerOffset, { baseId: 'p', offset: 8n });
+  assert.deepEqual(advanced.alignment, { modulus: 16n, remainder: 4n });
+
+  const rewound = evaluateBinaryFact('sub', advanced, amount);
+  assert.deepEqual(rewound.pointerOffset, { baseId: 'p', offset: 4n });
+  assert.deepEqual(rewound.alignment, { modulus: 16n, remainder: 0n });
+
+  const numericOnly = evaluateBinaryFact('add', factFromRange(rangeOf(0n, 10n, 32)), amount);
+  assert.equal(numericOnly.pointerOffset, null, 'numeric facts alone cannot mint pointer provenance');
+});
+
 test('malformed widths and unsupported operations stay conservative', () => {
   assert.throws(() => fullRange(24), /unsupported-width/);
   const malformed = factFromRange({ bits: 24, kind: 'interval', lower: 0n, upper: 1n });
@@ -229,6 +248,8 @@ test('malformed widths and unsupported operations stay conservative', () => {
   const unsupported = evaluateBinaryFact('rotl', fullFact(32), fullFact(32));
   assert.equal(isFull(unsupported.range), true);
   assert.equal(unsupported.constant, null);
+  const unsupportedSingleton = singletonFact(bitvector(7n, 8), { status: 'unsupported' });
+  assert.equal(unsupportedSingleton.constant, null, 'unsupported singleton-shaped evidence must not become exact');
   const incomplete = emptyFact(8, { status: 'partial' });
   assert.equal(incomplete.constant, null);
 });

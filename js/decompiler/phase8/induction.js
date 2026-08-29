@@ -232,7 +232,7 @@ function constantOf(value, rangeFacts) {
   // an exact loop bound; the legacy constants map is only a compatibility view.
   const canonical = rangeFacts?.facts?.get?.(value.id) ?? null;
   if (rangeFacts?.completeness === 'complete' && canonical?.constant != null
-      && !['partial', 'malformed', 'unknown'].includes(canonical.status)) {
+      && ['exact', 'conservative'].includes(canonical.status)) {
     return BigInt(canonical.constant.value);
   }
   const proven = rangeFacts?.constants?.get?.(value.id) ?? null;
