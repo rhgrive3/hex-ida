@@ -56,7 +56,7 @@ env:
   HEX_FIXTURE_YWP_URL: https://raw.githubusercontent.com/rhgrive3/hex/bd7bd61d093592d07fdd9e9b14a859e19dd4c3a9/tests/YWP
   ORACLE_PYTHON_VERSION: '3.12.13'
   # Keep two persistent pseudocode workers, but run their memory-heavy phase
-  # after the two non-pseudocode lanes so the runner never hosts both pools at once.
+  # only after both non-pseudocode partitions complete sequentially.
   LOCAL_PSEUDOC_WORKERS: 2
 
 jobs:
@@ -226,42 +226,32 @@ jobs:
           pseudoc_output="accuracy-part-${{ matrix.target.name }}-pseudoc.json"
           rm -f "${core_output}.tmp" "${pinpoint_output}.tmp" "${pseudoc_output}.tmp"
 
-          declare -a pids=()
-          declare -a labels=()
-
-          # Core + pinpoint share two persistent parser processes instead of
-          # six separate GitHub jobs/processes. Each process opens the fixture
-          # once and evaluates a disjoint feature set.
+          # Both non-pseudocode partitions may use a 4 GiB V8 heap. Run them
+          # sequentially on the fixture runner so those memory envelopes never
+          # overlap, while preserving the exact feature sets and result files.
           if [[ "$CORE_CACHE_HIT" != "true" || "$PINPOINT_CACHE_HIT" != "true" ]]; then
-            node --max-old-space-size=4096 tests/accuracy.mjs \
+            if ! node --max-old-space-size=4096 tests/accuracy.mjs \
               --target="$target" \
               --oracle="$oracle" \
               --only='sections,funcs,funcs-guess,disasm,kinds,calls,refs,imports,objc,selstub,pinpoint' \
               --json > accuracy-local-nonpseudoc-0.json \
-              2> accuracy-local-nonpseudoc-0.log &
-            pids+=("$!")
-            labels+=("nonpseudoc-0")
+              2> accuracy-local-nonpseudoc-0.log; then
+              cat accuracy-local-nonpseudoc-0.log
+              exit 1
+            fi
+            cat accuracy-local-nonpseudoc-0.log
 
-            node --max-old-space-size=4096 tests/accuracy.mjs \
+            if ! node --max-old-space-size=4096 tests/accuracy.mjs \
               --target="$target" \
               --oracle="$oracle" \
               --only='strings,xrefs,funcname,selffield,role,apimeaning,summary,expr,formula,pinpoint-partial' \
               --json > accuracy-local-nonpseudoc-1.json \
-              2> accuracy-local-nonpseudoc-1.log &
-            pids+=("$!")
-            labels+=("nonpseudoc-1")
+              2> accuracy-local-nonpseudoc-1.log; then
+              cat accuracy-local-nonpseudoc-1.log
+              exit 1
+            fi
+            cat accuracy-local-nonpseudoc-1.log
           fi
-
-          # Join both non-pseudocode lanes before starting pseudocode. The
-          # feature sets and worker counts are unchanged; only their memory-heavy
-          # phases no longer overlap on the same hosted runner.
-          status=0
-          for i in "${!pids[@]}"; do
-            if ! wait "${pids[$i]}"; then status=1; fi
-            log="accuracy-local-${labels[$i]}.log"
-            if [[ -f "$log" ]]; then cat "$log"; fi
-          done
-          if [[ "$status" -ne 0 ]]; then exit "$status"; fi
 
           if [[ "$PSEUDOC_CACHE_HIT" != "true" ]]; then
             if ! node tests/accuracy-pseudoc-parallel.mjs \
