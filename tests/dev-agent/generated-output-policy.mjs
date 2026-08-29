@@ -84,13 +84,16 @@ function runResolver(fakeNodeBody = null) {
     GITHUB_REF: '',
     GITHUB_OUTPUT: outputFile,
   };
+  delete environment.npm_config_prefix;
+  const nodeDir = path.dirname(process.execPath);
+  environment.PATH = `${nodeDir}${path.delimiter}${environment.PATH || ''}`;
   if (fakeNodeBody != null) {
     const fakeBin = path.join(directory, 'bin');
     fs.mkdirSync(fakeBin);
     const fakeNode = path.join(fakeBin, 'node');
     fs.writeFileSync(fakeNode, `#!/usr/bin/env bash\n${fakeNodeBody}\n`, 'utf8');
     fs.chmodSync(fakeNode, 0o755);
-    environment.PATH = `${fakeBin}${path.delimiter}${process.env.PATH || ''}`;
+    environment.PATH = `${fakeBin}${path.delimiter}${environment.PATH || ''}`;
   }
   try {
     const result = spawnSync('bash', ['-c', resolverScript], {

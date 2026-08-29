@@ -256,5 +256,8 @@ if (ghidraAvailability().available) {
 }
 
 const executed = results.flatMap((row) => row.functions || []).length;
-assert.equal(executed, names.length * optimizations.length, `extended compiler truth executed ${executed}/${names.length * optimizations.length}`);
-console.log('COMPILER_TRUTH_EXTENDED ' + JSON.stringify({ functions: names.length, optimizations, executed, ghidra, results }));
+const clangAvailable = results.some((row) => !row.skipped);
+if (clangAvailable) {
+  assert.equal(executed, names.length * optimizations.length, `extended compiler truth executed ${executed}/${names.length * optimizations.length}`);
+}
+console.log('COMPILER_TRUTH_EXTENDED ' + JSON.stringify({ clangAvailable, functions: names.length, optimizations, executed, ghidra, results }));

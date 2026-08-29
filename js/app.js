@@ -38,6 +38,7 @@ import { PluginHost } from './plugins.js';
 import { showTools, prettyName } from './tools.js';
 import { NavigationHistory } from './navigation.js';
 import { STRING_SCAN_BUDGET, StringCollectionBudget } from './string-budget.js';
+import { productDescriptor } from './platform/product-descriptor.js';
 import { ProductWorkspace } from './workspace.js';
 import { AnalysisQueryAPI, createAppAnalysisQueryAdapter } from './analysis/query/index.js';
 
@@ -372,8 +373,9 @@ class App {
     const info = this.store.get('fileInfo');
     const region = this.store.get('currentRegion');
     const has = !!info;
+    const desc = has ? productDescriptor(info, this.currentSlice()) : null;
     this.dom.sections.disabled = !has;
-    this.dom.struct.disabled = !has;
+    this.dom.struct.disabled = !has || (desc && desc.formatId && desc.formatId !== 'macho');
     this.dom.strings.disabled = !has;
     this.dom.investigate.disabled = !has;
     this.dom.tools.disabled = !has;
