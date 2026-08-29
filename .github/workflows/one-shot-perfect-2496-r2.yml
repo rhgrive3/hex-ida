@@ -1,0 +1,52 @@
+name: One-shot perfect PR 2496 r2
+on:
+  push:
+    branches:
+      - fix/unlinked-issues-2377-2388-2393-2478
+permissions:
+  contents: write
+jobs:
+  harden:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/unlinked-issues-2377-2388-2393-2478
+          fetch-depth: 0
+      - name: Apply hardened patch from canonical runner
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re, textwrap
+          path=Path('.github/workflows/one-shot-perfect-2496.yml')
+          lines=path.read_text().splitlines()
+          start=next(i for i,l in enumerate(lines) if "python3 - <<'PY'" in l)+1
+          end=next(i for i in range(start,len(lines)) if lines[i].strip()=='PY')
+          script=textwrap.dedent('\n'.join(lines[start:end]))
+          pattern=r'old="""    \} else \{\n\s+nameAddr = cleanPointer\(get, u64\(b, 0\)\);\n\s+imp = cleanPointer\(get, u64\(b, 16\)\);\n\s+\}"""'
+          replacement='old="""    } else {\n      nameAddr = cleanPointer(get, u64(b, 0));\n      imp = cleanPointer(get, u64(b, 16));\n    }"""'
+          script,n=re.subn(pattern,replacement,script,count=1)
+          if n!=1: raise SystemExit(f'runner anchor repair expected 1 replacement, got {n}')
+          exec(compile(script,'one-shot-perfect-2496.py','exec'),{'__name__':'__main__'})
+          PY
+          node --check js/swift.js
+          node --check js/binary/macho-core.js
+          node --check js/objc-legacy.js
+          node --check js/objc.js
+          node --check js/apple/objc-metadata.js
+          node --check js/apple/objc-runtime.js
+          node tests/issue-2377-swift-vtable-autoproject.mjs
+          node tests/issue-2388-compact-unwind-soundness.mjs
+          node tests/issue-2393-objc-imp-validation.mjs
+          git diff --check
+      - name: Commit hardened source
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add js/app.js js/swift.js js/binary/macho-core.js js/objc-legacy.js js/objc.js tests/issue-2377-swift-vtable-autoproject.mjs tests/issue-2388-compact-unwind-soundness.mjs tests/issue-2393-objc-imp-validation.mjs
+          git diff --cached --quiet && exit 0
+          git commit -m "fix: complete Swift unwind and ObjC soundness contracts"
+          git push origin HEAD:fix/unlinked-issues-2377-2388-2393-2478
