@@ -1,4 +1,5 @@
 import './issue-2601-pinpoint-architecture-query.mjs';
+import './issue-2596-range-copy-variable-width.mjs';
 import { matchRoute, ProductRouter } from '../../js/ui/router.js';
 import {
   ROUTES, PRIMARY_NAV, EXPLORER_SCOPES, FUNCTION_TABS, LEGACY_MIGRATION,
@@ -46,9 +47,6 @@ check('every audited legacy screen has a migration disposition', legacyRequired.
 check('migration table has no un-audited screen names', Object.keys(LEGACY_MIGRATION).every((name) => legacyRequired.includes(name)));
 check('migration table has only explicit dispositions', Object.values(LEGACY_MIGRATION).every((value) => /^(merge|redirect|deprecated):/.test(value)));
 
-/* A render failure must not manufacture a browser-history entry. Result sheets
-   use navigate()'s boolean to decide whether they may close, so URL/history,
-   router.current and the visible view must commit together. */
 const previousWindow = globalThis.window;
 const previousHistory = globalThis.history;
 const pushes = [];
