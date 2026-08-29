@@ -653,7 +653,7 @@ export function enhanceSemanticDecompilation(result, model, opts = {}) {
     { name: 'typed-semantic-ast', run(s) { s.semanticAst = semanticAstOf(s, s.facts); return s; } },
     { name: 'c-ast', run(s) { s.cAst = cAstFromLines(result, s); return s; } },
     { name: 'pretty-print', run(s) { s.printed = printProgram(s.cAst, { columnWidth: opts.columnWidth || opts.prettyColumnWidth || 88 }); return s; } },
-  ], { timeBudgetMs: Number(opts.decompilerTimeBudgetMs || 50), nodeBudget: Number(opts.decompilerNodeBudget || 12000), maxIterations: Number(opts.decompilerIterationCap || 16) });
+  ], { timeBudgetMs: Number(opts.decompilerTimeBudgetMs || 250), nodeBudget: Number(opts.decompilerNodeBudget || 12000), maxIterations: Number(opts.decompilerIterationCap || 16) });
   const advanced = manager.run(state);
   // Budgets are a degradation boundary, not a validity boundary. If a large function
   // exhausts the optional pass budget, finish the mandatory representation layers
