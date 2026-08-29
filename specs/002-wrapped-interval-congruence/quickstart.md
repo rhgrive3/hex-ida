@@ -1,9 +1,9 @@
 # Quickstart and Evidence Gates: HEX-C2-02
 
 This document records reproducible lane commands. Commands are run from the
-repository root of the isolated worktree. It deliberately records pre-fix
-failure only; post-fix lines remain to be filled after Sol approves production
-implementation.
+repository root of the isolated worktree. The pre-fix failure is retained
+unchanged beside the post-fix proof; review, CI, merge, and post-merge evidence
+remain open until the supervisor closes those gates.
 
 ## Base and identity
 
@@ -58,18 +58,33 @@ symbolic `x <u 10` branches executable but publishes no `edgeFacts` map.
 This proves the first divergence without weakening any expectation. The test
 also asserts that the global `x` fact remains full once edge facts are added.
 
-## Post-fix evidence placeholders
+## Post-fix evidence
 
 After implementation, run the identical test and record the exact SHA/output:
 
 ```bash
-POST_FIX_SHA=$(git rev-parse HEAD)
+POST_FIX_SHA=0902585b2b6113db996404768a58a88e85293255
 node --test tests/phase8/scalar/c2-02-pre-fix.test.mjs
 ```
 
-Expected: `PASS`, with both original assertions unchanged. Then record
-`POST_FIX_COMMAND` and `POST_FIX_PASS` in the implementation checkpoint and PR
-body. Do not replace this expected result with an implementation-derived oracle.
+`POST_FIX_COMMAND`: `node --test tests/phase8/scalar/c2-02-pre-fix.test.mjs`.
+`POST_FIX_PASS`: 2 tests, 2 pass, 0 fail at the implementation head above. Both
+original assertions are unchanged; the edge object retains a compatibility
+`.get()` view while publishing structured edge facts.
+
+Additional implementation-head evidence:
+
+```text
+T0: git diff --check; node --check range.js; node --check sccp.js — PASS
+T1: range.test.mjs + sccp.test.mjs + pre-fix regression — PASS
+T2: npm run phase8:test — PASS (296 tests, 30/30 discovered files)
+Downstream: c2-02-downstream-range.test.mjs — PASS (2 tests)
+Generated output: no generated files changed; canonical generator not owned by this lane.
+```
+
+The implementation commit is `0902585b2b6113db996404768a58a88e85293255`.
+Subsequent documentation-only evidence updates must not be confused with this
+production/test head when reproducing the pre/post comparison.
 
 ## Staged validation
 
