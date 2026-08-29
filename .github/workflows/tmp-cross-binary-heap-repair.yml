@@ -6,12 +6,55 @@ on:
     paths:
       - '.github/workflows/tmp-cross-binary-heap-repair.yml'
 
+permissions:
+  contents: write
+
 concurrency:
   group: tmp-cross-binary-heap-repair
   cancel-in-progress: true
 
 jobs:
-  superseded:
-    runs-on: ubuntu-latest
+  repair:
+    runs-on: macos-latest
+    timeout-minutes: 10
     steps:
-      - run: echo 'Superseded by serialized cross-binary OOM repair; no repository writes.'
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Raise only the existing parallel lane heap bound
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object .github/workflows/cross-binary-accuracy.yml)" = "dc42adedaa9ce9ed6ab3e837111ea3caed57e522"
+          test "$(git hash-object tests/issue-497-cross-binary-workflow.mjs)" = "2a7cc796fc52767eb6d4d3d0445618a62e048e17"
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('.github/workflows/cross-binary-accuracy.yml')
+          text = p.read_text()
+          needle = '--max-old-space-size=2600'
+          if text.count(needle) != 2:
+              raise SystemExit('expected exactly two bounded non-pseudocode lanes')
+          text = text.replace(needle, '--max-old-space-size=4096')
+          p.write_text(text)
+          PY
+          git diff --check
+          node tests/issue-497-cross-binary-workflow.mjs
+          test "$(grep -c -- '--max-old-space-size=4096' .github/workflows/cross-binary-accuracy.yml)" -eq 2
+          test "$(grep -c -- '--max-old-space-size=2600' .github/workflows/cross-binary-accuracy.yml)" -eq 0
+          grep -Fq 'pids+=("$!")' .github/workflows/cross-binary-accuracy.yml
+          grep -Fq 'if ! wait "${pids[$i]}"; then status=1; fi' .github/workflows/cross-binary-accuracy.yml
+      - name: Materialize validated candidate commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm .github/workflows/tmp-cross-binary-heap-repair.yml
+          git add .github/workflows/cross-binary-accuracy.yml
+          git commit -m 'fix(ci): raise cross-binary parallel lane heap bound'
+          git rev-parse HEAD
+          git push origin HEAD:main
