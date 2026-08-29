@@ -104,9 +104,16 @@ function gpRegister(num) {
   return { k: 'reg', cls: 'gp', num, bits: 64, text: `x${num}` };
 }
 
+function hasValidControlRegisterNumber(operand) {
+  if (!Number.isInteger(operand?.num) || operand.num < 0 || operand.num > 31) return false;
+  if (operand.cls === 'zr') return operand.num === 31;
+  return operand.cls === 'gp' && operand.num <= 30;
+}
+
 function isIndirectControlRegister(operand) {
   return operand?.k === 'reg'
     && (operand.cls === 'gp' || operand.cls === 'zr')
+    && hasValidControlRegisterNumber(operand)
     && Number(operand.bits) === 64
     && operand.shift == null
     && operand.extend == null;
@@ -123,6 +130,7 @@ function directTargetOperandShapeValid(instruction, operand, kind = 'branch') {
 function isBranchTestRegister(operand) {
   return operand?.k === 'reg'
     && (operand.cls === 'gp' || operand.cls === 'zr')
+    && hasValidControlRegisterNumber(operand)
     && (Number(operand.bits) === 32 || Number(operand.bits) === 64)
     && operand.shift == null
     && operand.extend == null;
