@@ -38,6 +38,7 @@ on:
       - 'tests/userscript-*.mjs'
       - 'tests/chatgpt-*.mjs'
       - '.github/workflows/userscript-host.yml'
+  workflow_dispatch:
 
 permissions:
   contents: read
