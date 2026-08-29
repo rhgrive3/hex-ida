@@ -5,7 +5,7 @@ function u16(bytes, off, v) { new DataView(bytes.buffer).setUint16(off, v, true)
 function u32(bytes, off, v) { new DataView(bytes.buffer).setUint32(off, v, true); }
 function u64(bytes, off, v) { new DataView(bytes.buffer).setBigUint64(off, v, true); }
 
-function fixture(raw, imports) {
+function fixture(raw, imports, { importsComplete = true } = {}) {
   const bytes = new Uint8Array(0x300);
   const view = new DataView(bytes.buffer);
   u32(bytes, 4, 28);       // starts_offset
@@ -29,7 +29,7 @@ function fixture(raw, imports) {
   const segment = { address: 0x1000n, size: 0x1000n, fileOffset: 0x100n, fileSize: 0x200n };
   const image = {
     imageBase: 0x1000n,
-    metadata: { chainedFixups: { complete: true, importsComplete: true } },
+    metadata: { chainedFixups: { complete: importsComplete, importsComplete } },
     warnings: [],
     segments: [segment],
     addressToOffset(address) {
@@ -65,6 +65,15 @@ for (const ordinal of [1, 5, 0xffffff]) {
   assert.equal(status.complete, false);
   assert.equal(status.bindingSitesComplete, false);
   assert.equal(status.bindingSites, 0);
+}
+
+{
+  const imports = [{ name: '_ok', sites: [] }];
+  const { status } = fixture((1n << 63n) | 0n, imports, { importsComplete: false });
+  assert.equal(status.complete, false, 'partial import table must keep chained-fixups partial');
+  assert.equal(status.bindingSitesComplete, false, 'binding-site completeness must inherit known import incompleteness');
+  assert.equal(imports[0].sites.length, 1, 'positive site recovery may continue without claiming complete coverage');
+  assert.ok(status.bindingSiteReasons.some((x) => x.includes('import table is incomplete')));
 }
 
 {

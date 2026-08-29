@@ -153,6 +153,9 @@ export function parseChainedBindingSites(r,dc,image,imports,segments=image.segme
     const warning = `chained-fixups: ${message}`;
     if (!image.warnings.includes(warning)) image.warnings.push(warning);
   };
+  if (status.importsComplete === false) {
+    fail('chained import table is incomplete; binding-site coverage cannot be complete');
+  }
   const startsOffset = r.u32(base + 4);
   if (!startsOffset || base + startsOffset + 4 > payloadEnd) {
     fail('starts-in-image header is missing or truncated');

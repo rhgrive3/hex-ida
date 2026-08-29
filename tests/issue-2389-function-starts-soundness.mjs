@@ -48,6 +48,13 @@ function fixture(deltas, { terminator = true } = {}) {
   assert.equal(image.metadata.functionStarts.partialReason,'invalid-entry');
 }
 {
+  const image=parseMachO(fixture([0xfffffffffffff000n]));
+  assert.equal(image.metadata.functionStarts.complete,false);
+  assert.equal(image.metadata.functionStarts.partialReason,'address-overflow');
+  assert.ok(image.warnings.some((x)=>x.includes('address overflow')));
+  assert.equal(image.functions.filter((f)=>f.source==='function_starts').length,0);
+}
+{
   const image=parseMachO(fixture([4n],{terminator:false}));
   assert.equal(image.metadata.functionStarts.complete,false);
   assert.equal(image.metadata.functionStarts.partialReason,'missing-terminator');
