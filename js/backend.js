@@ -809,7 +809,7 @@ export class Backend {
       ? (options.riscvIsa || resolveRiscvIsaProfile(formatMetadata.riscvIsa, addr, { allowAssumed:true }))
       : null;
     if (riscvIsa?.code === false) return { supported:true, architecture, found:true, instructions:[], region:read.region ?? null, fileOffset:read.fileOffset ?? null, riscvIsa };
-    const result = await awaitCancellableProducer(this._disassembleBytes(read.bytes, addr, architecture, uiEpoch, { riscvIsa }), options.signal ?? null);
+    const result = await awaitCancellableProducer(this._disassembleBytes(read.bytes, addr, architecture, uiEpoch, { riscvIsa, priority: options.priority, signal: options.signal }), options.signal ?? null);
     if (uiEpoch !== this.gen) throw new StaleRequestError();
     return { supported: true, architecture, found: true, region:read.region ?? null, fileOffset:read.fileOffset ?? null, ...(riscvIsa == null ? {} : { riscvIsa }), ...result };
   }
@@ -834,10 +834,11 @@ export class Backend {
     }
     const id = this._disasmSeq++;
     const copy = bytes instanceof Uint8Array ? bytes.slice() : new Uint8Array(bytes);
+    const priority = decodeContext.priority || 'current';
     const promise = new Promise((resolve, reject) => {
-      this._disasmPending.set(id, { resolve, reject, uiEpoch });
+      this._disasmPending.set(id, { resolve, reject, uiEpoch, priority });
       try {
-        this._disasmWorker.postMessage({ id, architecture, address, bytes: copy, riscvIsa:decodeContext.riscvIsa ?? null }, [copy.buffer]);
+        this._disasmWorker.postMessage({ id, architecture, address, bytes: copy, riscvIsa:decodeContext.riscvIsa ?? null, priority }, [copy.buffer]);
       } catch (error) {
         this._disasmPending.delete(id);
         reject(error);
@@ -847,8 +848,18 @@ export class Backend {
       const pending = this._disasmPending.get(id);
       if (!pending) return;
       this._disasmPending.delete(id);
+      try {
+        this._disasmWorker?.postMessage({ t: 'cancel', id });
+      } catch {}
       pending.reject(cancelledRequestError('disassembly cancelled'));
     };
+    if (decodeContext.signal) {
+      if (decodeContext.signal.aborted) {
+        promise.cancel();
+      } else {
+        decodeContext.signal.addEventListener('abort', () => promise.cancel(), { once: true });
+      }
+    }
     return promise;
   }
 
@@ -920,20 +931,40 @@ export class Backend {
     return carryCancellation(mapped, request);
   }
 
-  request(regionId, chunk, wantAsm) {
+  request(regionId, chunk, wantAsm, options = {}) {
+    const priority = options?.priority ?? 'visible';
     const key = this.key(regionId, chunk);
     const inflight = this.inflight.get(key);
     if (inflight) {
       if (wantAsm && !inflight.wantAsm) inflight.wantAsm = true;
+      if (priority === 'visible' && inflight.priority === 'prefetch') {
+        inflight.priority = 'visible';
+        const qIdx = this.queue.indexOf(inflight);
+        if (qIdx > 0) {
+          this.queue.splice(qIdx, 1);
+          const insertIdx = this.queue.findIndex((j) => j.priority === 'prefetch');
+          if (insertIdx >= 0) this.queue.splice(insertIdx, 0, inflight);
+          else this.queue.push(inflight);
+        }
+      }
       return;
     }
     const cached = this.cache.get(key);
     if (cached && (!wantAsm || cached.mn)) return;
-    const job = { regionId, chunk, wantAsm: !!wantAsm, key, gen: this.gen, dispatchedWantAsm: null };
+    const job = { regionId, chunk, wantAsm: !!wantAsm, priority, key, gen: this.gen, dispatchedWantAsm: null };
     this.inflight.set(key, job);
     const dispatched = this.inflight.size - this.queue.length;
-    if (dispatched > MAX_INFLIGHT) this.queue.push(job);
-    else this._dispatch(job);
+    if (dispatched > MAX_INFLIGHT) {
+      if (priority === 'visible') {
+        const insertIdx = this.queue.findIndex((j) => j.priority === 'prefetch');
+        if (insertIdx >= 0) this.queue.splice(insertIdx, 0, job);
+        else this.queue.push(job);
+      } else {
+        this.queue.push(job);
+      }
+    } else {
+      this._dispatch(job);
+    }
   }
 
   _dispatch(job) {
