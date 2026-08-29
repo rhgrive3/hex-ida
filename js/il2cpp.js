@@ -235,10 +235,74 @@ function chooseLayout(ctx,candidates,budget){
   return parseLayout(ctx,best.layout,budget);
 }
 
+async function parseLayoutAsync(ctx,layout,budget,options={}){
+  const {dv,version}=ctx,stringAt=makeStringAt(ctx),warnings=[];
+  const typeDefs=ctx.pair('typeDefinitions'),methodDefs=ctx.pair('methods');
+  const typeCount=recordCount(typeDefs,layout.type),methodCount=recordCount(methodDefs,layout.method);
+  if(typeCount==null||methodCount==null||typeCount>200000||methodCount>500000)return null;
+  const literalCount=Math.floor((ctx.pair('stringLiteral')?.size||0)/8);
+  const imagePair=ctx.pair('images');
+  const estimatedObjects=typeCount+methodCount+Math.min(literalCount,200000)+Math.min(Math.floor((imagePair?.size||0)/24),10000);
+  budget.check(0,estimatedObjects,estimatedObjects*192);
+  const classes=[];let validTypeNames=0;
+  for(let i=0;i<typeCount;i++){
+    if((i&1023)===0){budget.check(1024);if(options.yield!==false)await cooperativeYield();}
+    const o=typeDefs.offset+i*layout.type;if(o<typeDefs.offset||o+8>typeDefs.end)return null;
+    const name=stringAt(dv.getInt32(o,true)),ns=stringAt(dv.getInt32(o+4,true));
+    if(!name)continue;validTypeNames++;
+    classes.push({index:i,name,namespace:ns||'',full:ns?ns+'.'+name:name});
+  }
+  const methods=[];let validOwners=0,validTokens=0,validMethodNames=0;
+  const tokenAt=version>=27?24:40;
+  for(let i=0;i<methodCount;i++){
+    if((i&1023)===0){budget.check(1024);if(options.yield!==false)await cooperativeYield();}
+    const o=methodDefs.offset+i*layout.method;if(o<methodDefs.offset||o+8>methodDefs.end)return null;
+    const name=stringAt(dv.getInt32(o,true)),owner=dv.getInt32(o+4,true);
+    if(owner<0||owner>=typeCount)continue;validOwners++;
+    if(!name)continue;validMethodNames++;
+    const token=o+tokenAt+4<=o+layout.method?dv.getUint32(o+tokenAt,true):0;
+    if((token>>>24)===0x06||token===0)validTokens++;
+    methods.push({index:i,name,classIndex:owner,token});
+  }
+  const byIndex=new Map(classes.map((c)=>[c.index,c]));
+  for(let i=0;i<methods.length;i++){
+    if((i&2047)===0){budget.check(2048);if(options.yield!==false)await cooperativeYield();}
+    const m=methods[i];const c=byIndex.get(m.classIndex);m.className=c?c.full:null;m.full=(c?c.full+'::':'')+m.name;
+  }
+  const images=parseImages(ctx,ctx.pair('images'),stringAt,typeCount,budget);
+  const literals=parseLiterals(ctx,budget);
+  const score=(validTypeNames/Math.max(1,typeCount))*4+(validMethodNames/Math.max(1,methodCount))*3+(validOwners/Math.max(1,methodCount))*5+(validTokens/Math.max(1,validMethodNames))*2+(images.length?1:0);
+  return{version,classes,methods,literals,images,warnings,typeSize:layout.type,methodSize:layout.method,layout:layout.label,_layoutScore:score,_counts:{typeCount,methodCount}};
+}
+
+async function chooseLayoutAsync(ctx,candidates,budget,options={}){
+  const scored=[];
+  for(const layout of candidates){let item;try{item=scoreLayout(ctx,layout,budget);}catch(error){throw error;}if(item)scored.push(item);}
+  scored.sort((a,b)=>b.score-a.score || a.layout.type-b.layout.type || a.layout.method-b.layout.method);
+  const best=scored[0],second=scored[1]; if(!best)return null;
+  const expected=layoutCandidates(ctx.version)[0];
+  if(second && Math.abs(best.score-second.score)<1e-9) {
+    const canonical=scored.find((x)=>x.layout.type===expected.type&&x.layout.method===expected.method&&Math.abs(x.score-best.score)<1e-9);
+    if(canonical) return parseLayoutAsync(ctx,canonical.layout,budget,options);
+    throw budgetError('IL2CPP_METADATA_AMBIGUOUS','metadata record layout is ambiguous.');
+  }
+  return parseLayoutAsync(ctx,best.layout,budget,options);
+}
+
 function parseMetadataCommon(buffer,candidates,options={}){
   const byteLength=buffer?.byteLength ?? buffer?.length ?? 0;
   const budget=metadataBudget(options,byteLength);
   const ctx=headerContext(buffer),res=chooseLayout(ctx,candidates,budget);
+  if(!res)throw new Error('metadata record layoutを安全に判定できませんでした。');
+  res.parseBudget=budget.snapshot();
+  delete res._layoutScore;delete res._counts;
+  return {ctx,res};
+}
+
+async function parseMetadataCommonAsync(buffer,candidates,options={}){
+  const byteLength=buffer?.byteLength ?? buffer?.length ?? 0;
+  const budget=metadataBudget(options,byteLength);
+  const ctx=headerContext(buffer),res=await chooseLayoutAsync(ctx,candidates,budget,options);
   if(!res)throw new Error('metadata record layoutを安全に判定できませんでした。');
   res.parseBudget=budget.snapshot();
   delete res._layoutScore;delete res._counts;
@@ -263,6 +327,17 @@ export function parseMetadataAuto(buffer,options={}){
   const candidates=[...layoutCandidates(ctx.version),{type:92,method:40,label:'probe-92/40'},{type:96,method:52,label:'probe-96/52'},{type:100,method:56,label:'probe-100/56'},{type:88,method:40,label:'probe-88/40'}];
   const unique=[...new Map(candidates.map((x)=>[`${x.type}/${x.method}`,x])).values()];
   const {res}=parseMetadataCommon(buffer,unique,options);
+  const expected=layoutCandidates(ctx.version)[0];
+  if(res.typeSize!==expected.type||res.methodSize!==expected.method)res.warnings.push(`版の既定形ではなく、owner/token/range整合性が最も高い形（${res.typeSize} / ${res.methodSize} バイト）を採用しました。`);
+  return res;
+}
+
+export async function parseMetadataAutoAsync(buffer,options={}){
+  assertMetadataPreflight(buffer,options);
+  const ctx=headerContext(buffer);
+  const candidates=[...layoutCandidates(ctx.version),{type:92,method:40,label:'probe-92/40'},{type:96,method:52,label:'probe-96/52'},{type:100,method:56,label:'probe-100/56'},{type:88,method:40,label:'probe-88/40'}];
+  const unique=[...new Map(candidates.map((x)=>[`${x.type}/${x.method}`,x])).values()];
+  const {res}=await parseMetadataCommonAsync(buffer,unique,options);
   const expected=layoutCandidates(ctx.version)[0];
   if(res.typeSize!==expected.type||res.methodSize!==expected.method)res.warnings.push(`版の既定形ではなく、owner/token/range整合性が最も高い形（${res.typeSize} / ${res.methodSize} バイト）を採用しました。`);
   return res;
@@ -325,6 +400,7 @@ async function pointerValues(ctx,table,count,indices) {
 
 export async function bindMethodAddresses(meta, opts) {
   const o=opts||{}, regions=o.regions||[], read=o.read;
+  if (o.signal?.aborted) throw budgetError('ABORT_ERR', 'IL2CPP method binding was cancelled.');
   if(!meta||!meta.methods||!meta.methods.length||typeof read!=='function')return{bound:0,candidate:null};
   meta.warnings ||= [];
   const budget=bindingBudget(o);
