@@ -988,7 +988,13 @@ function renderFunctionWorkspace(app, router, route) {
     try {
       await app.ensureProgram();
       if (!viewCurrent()) return;
-      if (!app.program) { content.replaceChildren(emptyState(text('呼び出し関係がありません', 'No call graph available'), text('このバイナリでは呼び出し索引を作れませんでした。', 'A call index could not be built for this binary.'))); return; }
+      if (!app.program || app.program.unsupported || (app.program.graphCompleteness && !app.program.graphCompleteness.supported)) {
+        content.replaceChildren(emptyState(
+          text('呼び出し関係を構築できません', 'Call graph unsupported'),
+          text('このアーキテクチャまたはフォーマットではプログラム全体の呼び出し索引に対応していません。', 'Whole-program call index is not supported for this architecture or format.'),
+        ));
+        return;
+      }
       const graph = callGraph(app.program, app.symbols, addr, {
         depth: 2, limit: 8, label: (a) => functionName(app, a),
         onNode: (a) => router.navigate('/function/' + BigInt(a).toString() + '/overview'),

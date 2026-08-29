@@ -134,12 +134,73 @@ function fitObservation(value, maxBytes) {
   return byteLength(candidate) <= maxBytes ? candidate : { kind: value.kind, trust: value.trust, tool: value.tool, truncated: true };
 }
 function compactMessages(values) { return values.slice(-8).map((message) => ({ role: message.role === 'assistant' ? 'assistant' : 'user', content: String(message.content || '').slice(0, 3000) })); }
+function trimQueue(context, queue, maxBytes) {
+  if (!queue.length || byteLength(context) <= maxBytes) return;
+  const original = queue.slice();
+  let low = 0, high = original.length;
+  while (low < high) {
+    const mid = Math.floor((low + high) / 2);
+    queue.length = 0;
+    queue.push(...original.slice(mid));
+    if (byteLength(context) <= maxBytes) {
+      high = mid;
+    } else {
+      low = mid + 1;
+    }
+  }
+  queue.length = 0;
+  queue.push(...original.slice(low));
+}
+
 function trimToBudget(context, maxBytes) {
-  const queues = [context.recentMessages, context.recentObservations, context.activeHypotheses, context.pinnedEvidence, context.verifiedEvidence].filter(Array.isArray);
-  for (const queue of queues) while (byteLength(context) > maxBytes && queue.length) queue.shift();
-  if (byteLength(context) > maxBytes && context.current?.function && !context.current.function.containmentOnly) { delete context.current.function.instructions; if (context.current.function.assembly) context.current.function.assembly = context.current.function.assembly.slice(0, 4000); if (context.current.function.pseudocode) context.current.function.pseudocode = context.current.function.pseudocode.slice(0, 4000); context.current.function.truncated = true; }
-  if (byteLength(context) > maxBytes && context.investigation) { context.investigation.importantPriorActions = []; context.investigation.rejectedHypotheses = []; context.investigation.unresolvedQuestions = (context.investigation.unresolvedQuestions || []).slice(-8); }
-  if (byteLength(context) > maxBytes && context.conversationSummary) context.conversationSummary = context.conversationSummary.slice(0, 1000);
+  if (byteLength(context) <= maxBytes) return;
+
+  if (context.current?.function && !context.current.function.containmentOnly) {
+    delete context.current.function.instructions;
+    if (context.current.function.assembly) context.current.function.assembly = context.current.function.assembly.slice(0, 2000);
+    if (context.current.function.pseudocode) context.current.function.pseudocode = context.current.function.pseudocode.slice(0, 2000);
+    context.current.function.truncated = true;
+    if (byteLength(context) <= maxBytes) return;
+  }
+
+  const queues = [
+    context.recentObservations,
+    context.verifiedEvidence,
+    context.activeHypotheses,
+    context.pinnedEvidence,
+  ].filter(Array.isArray);
+
+  for (const queue of queues) {
+    trimQueue(context, queue, maxBytes);
+    if (byteLength(context) <= maxBytes) return;
+  }
+
+  if (context.investigation) {
+    context.investigation.importantPriorActions = [];
+    context.investigation.rejectedHypotheses = [];
+    context.investigation.unresolvedQuestions = (context.investigation.unresolvedQuestions || []).slice(-4);
+    if (byteLength(context) <= maxBytes) return;
+  }
+  if (context.conversationSummary) {
+    context.conversationSummary = context.conversationSummary.slice(0, 500);
+    if (byteLength(context) <= maxBytes) return;
+  }
+  if (Array.isArray(context.recentMessages) && context.recentMessages.length > 1) {
+    const original = context.recentMessages.slice();
+    let low = 0, high = original.length - 1;
+    while (low < high) {
+      const mid = Math.floor((low + high) / 2);
+      context.recentMessages.length = 0;
+      context.recentMessages.push(...original.slice(mid));
+      if (byteLength(context) <= maxBytes) {
+        high = mid;
+      } else {
+        low = mid + 1;
+      }
+    }
+    context.recentMessages.length = 0;
+    context.recentMessages.push(...original.slice(low));
+  }
 }
 function byteLength(value) { return new TextEncoder().encode(JSON.stringify(jsonSafe(value))).byteLength; }
 function removeUndefined(value) { return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined)); }

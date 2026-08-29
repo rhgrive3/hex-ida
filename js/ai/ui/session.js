@@ -202,6 +202,11 @@ export class AiSession {
       });
       if (!next) this.conversations.push(this.current);
     }
+    if (typeof this.engine?.deleteSession === 'function') {
+      try { this.engine.deleteSession(id); } catch { /* best effort */ }
+    } else if (typeof this.engine?.runtime?.sessionStore?.delete === 'function') {
+      try { this.engine.runtime.sessionStore.delete(id); } catch { /* best effort */ }
+    }
     this.scheduleSave();
     this.emit({ type: 'conversation', conversation: this.current });
     return true;

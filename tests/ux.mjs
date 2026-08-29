@@ -121,3 +121,5 @@ await import('./issues-router-plugins-pe-2621-2630.mjs');
 await import('./issue-2630-pe-tls-zero-fill.test.mjs');
 await import('./issues-shapes-schema-2614-2618.mjs');
 await import('./issues-reopened-explorer-structure-findings-2570-2576.mjs');
+await import('./issues-2615-2616-2617-backend-sessions-program.mjs');
+await import('./issues-2613-2612-2609-ai-sessions-broker.mjs');

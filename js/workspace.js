@@ -2,6 +2,7 @@ import { Backend } from './backend.js';
 import { SymbolIndex } from './symbols.js';
 import { createHexProject, exportHexProject, importHexProject, serializeHexProject, parseHexProject } from './project/index.js';
 import { diffFunctions } from './diff/index.js';
+import { stripSecrets } from './ai/session-core/index.js';
 
 const LOCAL_PREFIX='hex.project.v1.';
 const MAX_PROJECT_AI_TURNS=200;
@@ -81,6 +82,14 @@ export function snapshotWorkspace(app, identity){
   const notes=app.notes;
   const navigation=app.navigation;
   const bookmarks=(app.bookmarks?.list?.()||[]).slice(-500);
+  const activeSessions = app?.aiRuntime?.sessionStore?.list?.(identity?.hash || identity?.binaryId)
+    || (app?.aiRuntime?.sessionStore?.sessions ? Array.from(app.aiRuntime.sessionStore.sessions.values()) : null)
+    || (Array.isArray(app?.investigationSessions) ? app.investigationSessions : (Array.isArray(app?.project?.findings?.investigationSessions) ? app.project.findings.investigationSessions : []));
+  const rawTurns = aiTurns();
+  const safeTurns = rawTurns.map((turn) => stripSecrets(turn));
+  const safeSessions = Array.isArray(activeSessions) && activeSessions.length
+    ? activeSessions.map((s) => stripSecrets(s))
+    : (safeTurns.length ? [{ id: 'default', binaryId: identity?.hash || identity?.binaryId || null, turns: safeTurns }] : []);
   const project=createHexProject({
     binary:identity,
     userNames:noteEntries(notes?.names),
@@ -92,8 +101,8 @@ export function snapshotWorkspace(app, identity){
     patches:patchEntries(app.patches),
     confirmedFindings:safeFindings(app),
     evidence:safeEvidence(app),
-    investigationSessions:aiTurns().length?[{turns:aiTurns()}]:[],
-    agentAnswers:aiTurns().filter((t)=>t.role==='assistant'&&t.status==='done'),
+    investigationSessions:safeSessions,
+    agentAnswers:safeTurns.filter((t)=>t.role==='assistant'&&t.status==='done'),
     analysisSettings:{ language:app?.prefs?.lang||null, explain:app?.prefs?.explain??null, textSize:app?.prefs?.textSize||null },
     navigation:{
       currentFunction:app?.store?.get?.('currentAddress')??null,
@@ -129,6 +138,18 @@ export function applyWorkspaceProject(app, project){
       report:{confirmed:project.findings.confirmed||[],settled:project.findings.confirmed||[],deep:project.findings.evidence||[],pinned:project.findings.confirmed||[],notes:['restored-project']},
       key:app.codeRegion?.()?.id||null,gen:app.symbols?.gen||0,restored:true,
     };
+  }
+  if(Array.isArray(project.findings?.investigationSessions)){
+    const currentHash = app?.backend?.contentHash || app?.store?.get?.('fileInfo')?.hash || null;
+    for(const session of project.findings.investigationSessions){
+      if(session && typeof session === 'object'){
+        const sessionBinaryId = session.binaryId || null;
+        if(sessionBinaryId && currentHash && sessionBinaryId !== currentHash) continue;
+        if(session.id && app?.aiRuntime?.sessionStore?.register){
+          app.aiRuntime.sessionStore.register(session);
+        }
+      }
+    }
   }
   // Restore analysis settings
   if(project.analysis?.settings){

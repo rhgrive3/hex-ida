@@ -45,6 +45,21 @@ export function createInvestigationSession(input = {}) {
 export class InvestigationSessionStore {
   constructor({ persistence } = {}) { this.persistence = persistence || null; this.sessions = new Map(); }
 
+  register(session) {
+    if (!session || !session.id) return null;
+    const validated = createInvestigationSession(session);
+    this.sessions.set(validated.id, validated);
+    return validated;
+  }
+
+  async delete(id) {
+    const key = String(id);
+    this.sessions.delete(key);
+    if (this.persistence && typeof this.persistence.delete === 'function') {
+      await this.persistence.delete(key);
+    }
+  }
+
   async create(input) {
     const session = createInvestigationSession(input);
     this.sessions.set(session.id, session);
@@ -120,6 +135,15 @@ export function createProjectSessionPersistence(project, { onChange } = {}) {
       if (index >= 0) project.findings.investigationSessions[index] = safe; else project.findings.investigationSessions.push(safe);
       project.updatedAt = new Date().toISOString();
       if (typeof onChange === 'function') onChange(project, safe);
+    },
+    async delete(id) {
+      const key = String(id);
+      const index = project.findings.investigationSessions.findIndex((item) => item && String(item.id) === key);
+      if (index >= 0) {
+        project.findings.investigationSessions.splice(index, 1);
+        project.updatedAt = new Date().toISOString();
+        if (typeof onChange === 'function') onChange(project, null);
+      }
     },
   };
 }
