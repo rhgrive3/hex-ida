@@ -82,7 +82,11 @@ export function decodeWireValue(value, depth = 0) {
   if (Array.isArray(value)) return value.map((v) => decodeWireValue(v, depth + 1));
   if (!value || typeof value !== 'object') return value;
   if (value[WIRE_TAG] === BIGINT_TAG) {
-    if (Object.keys(value).some((k) => ![WIRE_TAG, 'value'].includes(k)) || !/^-?\d+$/.test(String(value.value || ''))) {
+    if (
+      Object.keys(value).some((k) => ![WIRE_TAG, 'value'].includes(k)) ||
+      typeof value.value !== 'string' ||
+      !/^-?\d+$/.test(value.value)
+    ) {
       throw new DebugAdapterError('malformed-packet', 'invalid bigint wire value');
     }
     return BigInt(value.value);
