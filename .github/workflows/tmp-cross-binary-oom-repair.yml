@@ -95,3 +95,5 @@ jobs:
           git add .github/workflows/cross-binary-accuracy.yml
           git commit -m 'fix(ci): bound cross-binary accuracy peak memory'
           git push origin HEAD:main
+
+# armed
