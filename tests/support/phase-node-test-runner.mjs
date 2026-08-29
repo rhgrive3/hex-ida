@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
@@ -31,6 +32,17 @@ export function selectPhaseTests(files, { root, group }) {
   });
 }
 
+export function phaseTestConcurrency(env = process.env) {
+  const fallback = env.CI ? Math.min(4, Math.max(1, os.availableParallelism())) : Math.min(2, Math.max(1, os.availableParallelism()));
+  const raw = env.HEX_PHASE_TEST_CONCURRENCY;
+  if (raw == null || raw === "") return fallback;
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > 4) {
+    throw new TypeError("HEX_PHASE_TEST_CONCURRENCY must be an integer in [1,4]");
+  }
+  return parsed;
+}
+
 export function runPhaseNodeTests({
   phase,
   root,
@@ -49,7 +61,8 @@ export function runPhaseNodeTests({
     process.stdout.write(`[${phase}] ${path.relative(root, file).replaceAll("\\", "/")}\n`);
   }
 
-  const child = spawn(process.execPath, ["--test", "--test-reporter=spec", "--test-concurrency=1", ...selected], {
+  const concurrency = spawn === spawnSync ? phaseTestConcurrency() : 1;
+  const child = spawn(process.execPath, ["--test", "--test-reporter=spec", `--test-concurrency=${concurrency}`, ...selected], {
     cwd,
     encoding: "utf8",
     maxBuffer: 512 * 1024 * 1024,
@@ -60,6 +73,6 @@ export function runPhaseNodeTests({
   if (child.error) throw child.error;
   if (child.status !== 0) throw new Error(`${phase}: test runner failed with status ${child.status ?? "signal"}`);
 
-  console.log(`${phase}: PASS (${selected.length}/${all.length} discovered test files${group ? `, group ${group}` : ""})`);
+  console.log(`${phase}: PASS (${selected.length}/${all.length} discovered test files${group ? `, group ${group}` : ""}; concurrency=${concurrency})`);
   return Object.freeze({ selected: selected.length, total: all.length, group });
 }

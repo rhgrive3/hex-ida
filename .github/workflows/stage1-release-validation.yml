@@ -20,6 +20,7 @@ on:
       - 'tests/phase11/**'
       - 'tools/validation/phase11/**'
       - 'tests/machine-effects/**'
+      - 'tests/support/phase-node-test-runner.mjs'
       - '.github/workflows/stage1-release-validation.yml'
       - 'tools/validation/stage2/completion-scope.lock.json'
       - 'tools/validation/stage2/closure-ledger.json'
@@ -36,66 +37,78 @@ on:
 permissions:
   contents: read
 
-# Only the newest commit on a PR needs exact head + merge-tree proof. Manual
-# exact-candidate dispatches remain isolated because their group uses run_id.
 concurrency:
   group: stage1-analysis-truth-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
 jobs:
-  head:
-    if: github.event_name == 'pull_request'
+  exact-stage1:
+    name: exact-stage1
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout exact merge candidate
+        uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci --no-audit --no-fund
-      - name: Verify exact Stage 1 candidate head
-        env:
-          VERIFY_SHA: ${{ github.event.pull_request.head.sha }}
-        run: node tools/validation/stage1/verify.mjs --expect-sha "$VERIFY_SHA"
+          ref: ${{ github.event_name == 'pull_request' && github.sha || inputs.expect_sha }}
+          fetch-depth: 2
 
-  candidate-merge-tree:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.sha }}
-          fetch-depth: 0
-      - uses: actions/setup-node@v4
+      - name: Set up Node
+        uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-      - run: npm ci --no-audit --no-fund
-      - name: Verify exact Stage 1 candidate merge tree
-        env:
-          VERIFY_SHA: ${{ github.sha }}
-        run: node tools/validation/stage1/verify.mjs --expect-sha "$VERIFY_SHA"
 
-  dispatch-exact-candidate:
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.expect_sha }}
-          fetch-depth: 0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci --no-audit --no-fund
-      - name: Verify exact Stage 1 dispatched candidate
+      - name: Install dependencies once
+        run: npm ci --no-audit --no-fund
+
+      - name: Verify exact head and merge tree on one hosted runner
+        if: github.event_name == 'pull_request'
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          MERGE_SHA: ${{ github.sha }}
+          HEX_STAGE1_CI_CONCURRENCY: 2
+          HEX_PHASE_TEST_CONCURRENCY: 2
+          HEX_INVARIANT_CONCURRENCY: 2
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin "$HEAD_SHA"
+          head_dir="$RUNNER_TEMP/stage1-head"
+          merge_dir="$RUNNER_TEMP/stage1-merge"
+          rm -rf "$head_dir" "$merge_dir"
+          git clone --quiet --shared "$GITHUB_WORKSPACE" "$head_dir"
+          git clone --quiet --shared "$GITHUB_WORKSPACE" "$merge_dir"
+          git -C "$head_dir" checkout --quiet --detach "$HEAD_SHA"
+          git -C "$merge_dir" checkout --quiet --detach "$MERGE_SHA"
+          ln -s "$GITHUB_WORKSPACE/node_modules" "$head_dir/node_modules"
+          ln -s "$GITHUB_WORKSPACE/node_modules" "$merge_dir/node_modules"
+
+          (
+            cd "$head_dir"
+            node tools/validation/stage1/verify.mjs --expect-sha "$HEAD_SHA"
+          ) >"$RUNNER_TEMP/stage1-head.log" 2>&1 &
+          head_pid=$!
+          (
+            cd "$merge_dir"
+            node tools/validation/stage1/verify.mjs --expect-sha "$MERGE_SHA"
+          ) >"$RUNNER_TEMP/stage1-merge.log" 2>&1 &
+          merge_pid=$!
+
+          status=0
+          wait "$head_pid" || status=1
+          wait "$merge_pid" || status=1
+          echo '===== exact head ====='
+          cat "$RUNNER_TEMP/stage1-head.log"
+          echo '===== exact merge tree ====='
+          cat "$RUNNER_TEMP/stage1-merge.log"
+          exit "$status"
+
+      - name: Verify exact dispatched candidate
+        if: github.event_name == 'workflow_dispatch'
         env:
           VERIFY_SHA: ${{ inputs.expect_sha }}
+          HEX_STAGE1_CI_CONCURRENCY: 4
+          HEX_PHASE_TEST_CONCURRENCY: 3
+          HEX_INVARIANT_CONCURRENCY: 3
         run: node tools/validation/stage1/verify.mjs --expect-sha "$VERIFY_SHA"

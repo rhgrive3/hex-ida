@@ -14,98 +14,18 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  plan:
-    name: check-plan
+  invariant-gates:
+    name: invariant-gates
     runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      matrix: ${{ steps.plan.outputs.matrix }}
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - name: Build deduplicated npm-check shard matrix
-        id: plan
-        shell: bash
-        run: |
-          node --input-type=module <<'NODE'
-          import fs from 'node:fs';
-
-          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-          const parts = String(pkg.scripts?.check || '')
-            .split(/\s+&&\s+/)
-            .map((command) => command.trim())
-            .filter(Boolean);
-          if (parts.length < 2) throw new Error('npm check must contain at least two independent top-level commands');
-
-          // Keep the slow, self-contained proof suites as their own jobs instead
-          // of serializing them behind unrelated contracts. In particular,
-          // invariants:test already owns the complete MachineEffects contract;
-          // adding effects:test here would execute the same 52-test denominator
-          // twice on every PR without adding any proof strength.
-          const isolated = new Map([
-            ['npm run invariants:test', 'invariants'],
-            ['npm run semantic-v2:test', 'semantic-v2'],
-            ['npm run phase8:test', 'phase8:test'],
-            ['npm test', 'test'],
-            ['npm run phase6:test', 'phase6:test'],
-            ['npm run benchmark:baseline', 'benchmark:baseline'],
-          ]);
-          const contracts = parts.filter((command) => !isolated.has(command));
-          if (!contracts.length) throw new Error('npm check must contain contract commands');
-
-          // Keep the low-overhead checks together, but preserve the dedicated
-          // frozen-toolchain lane for Phase 4/5. Every npm-check top-level
-          // command is still executed exactly once by the matrix.
-          const phaseCommands = new Set(['npm run phase4:test', 'npm run phase5:test']);
-          const coreContracts = contracts.filter((command) => !phaseCommands.has(command));
-          const phaseContracts = contracts.filter((command) => phaseCommands.has(command));
-          if (!coreContracts.length || !phaseContracts.length) {
-            throw new Error('npm check contract layout changed; rebalance invariant shards explicitly');
-          }
-
-          const include = [
-            { name: 'contracts-core', command: coreContracts.join(' && ') },
-            { name: 'contracts-phase', command: phaseContracts.join(' && ') },
-            ...parts
-              .filter((command) => isolated.has(command))
-              .map((command) => ({ name: isolated.get(command), command })),
-          ];
-
-          const scheduled = include.flatMap(({ command }) => command.split(/\s+&&\s+/));
-          const scheduledCounts = new Map();
-          for (const command of scheduled) scheduledCounts.set(command, (scheduledCounts.get(command) || 0) + 1);
-          if (
-            scheduled.length !== parts.length ||
-            parts.some((command) => scheduledCounts.get(command) !== 1) ||
-            scheduled.some((command) => !parts.includes(command))
-          ) {
-            const expected = JSON.stringify(parts);
-            const actual = JSON.stringify(scheduled);
-            throw new Error(`npm-check shard plan must execute each top-level command exactly once (expected=${expected}, actual=${actual})`);
-          }
-
-          fs.appendFileSync(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify({ include })}\n`);
-          NODE
-
-  check-shards:
-    name: check-${{ matrix.name }}
-    needs: plan
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      max-parallel: 8
-      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
-    steps:
-      - name: Checkout
+      - name: Checkout exact candidate
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 2
 
-      - name: Resolve current main for ownership proof
-        run: git fetch --no-tags origin main:refs/remotes/origin/main
+      - name: Fetch current main for invariant baseline
+        run: git fetch --no-tags --depth=1 origin main:refs/remotes/origin/main
 
       - name: Set up Node
         uses: actions/setup-node@v4
@@ -114,61 +34,21 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --no-audit --no-fund
 
-      # Phase 5's real-byte verification corpus is intentionally pinned to
-      # Clang/LLD 18. Keep the invariant shard on that same frozen provider
-      # instead of silently falling back to the runner's default Clang 17.
-      - name: Install the frozen Phase 5 toolchain
-        if: matrix.name == 'contracts-phase'
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y clang-18 lld-18 llvm-18
-
-      - name: Prepare generated userscript for canonical Phase 5 component semantic check
-        if: >-
-          github.event_name == 'pull_request' &&
-          github.base_ref == 'hex/p5-x86-integration' &&
-          (matrix.name == 'contracts-core' || matrix.name == 'semantic-v2') &&
-          (
-            github.head_ref == 'hex/p5-1-x86-int-control' ||
-            github.head_ref == 'hex/p5-2-x86-memory-atomic' ||
-            github.head_ref == 'hex/p5-3-x86-fp-simd-system' ||
-            github.head_ref == 'hex/p5-4-x86-abis' ||
-            github.head_ref == 'hex/p5-5-variable-viewer' ||
-            github.head_ref == 'hex/p5-6-x86-verification'
-          )
-        run: npm run userscript:build
-
-      - name: Verify invariant baseline classifier contract
-        if: matrix.name == 'invariants'
-        run: node tests/invariant-pr-baseline.mjs
-
-      - name: Run exact check shard
-        if: matrix.name != 'invariants'
-        run: ${{ matrix.command }}
-
-      - name: Run exact invariant shard with current-main regression isolation
-        if: matrix.name == 'invariants'
-        env:
-          HEX_INVARIANT_BASE_REF: refs/remotes/origin/main
-        run: node tools/validation/invariant-pr-baseline.mjs
-
-  invariant-gates:
-    name: invariant-gates
-    if: always()
-    needs: [plan, check-shards]
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Require complete repository check
-        env:
-          PLAN_RESULT: ${{ needs.plan.result }}
-          SHARD_RESULT: ${{ needs.check-shards.result }}
+      - name: Ensure frozen Phase 4/5 toolchain
         shell: bash
         run: |
-          if [[ "$PLAN_RESULT" != "success" || "$SHARD_RESULT" != "success" ]]; then
-            echo "::error::Repository check failed (plan=$PLAN_RESULT, shards=$SHARD_RESULT)."
-            exit 1
+          set -euo pipefail
+          if command -v clang-18 >/dev/null && command -v lld-18 >/dev/null && command -v llvm-mc-18 >/dev/null; then
+            exit 0
           fi
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clang-18 lld-18 llvm-18
+
+      - name: Run every npm-check contract exactly once with bounded local parallelism
+        env:
+          HEX_CHECK_CONCURRENCY: 4
+          HEX_PHASE_TEST_CONCURRENCY: 2
+          HEX_INVARIANT_CONCURRENCY: 2
+        run: node tools/validation/ci-parallel-check.mjs
