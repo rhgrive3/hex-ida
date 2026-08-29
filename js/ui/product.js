@@ -26,7 +26,8 @@ import { classifyOmnibox, intentLabel } from '../ai/interaction/omnibox.js';
 import { askAiMenuItem, functionAiItems } from '../ai/interaction/contextual.js';
 import { productDescriptor } from '../platform/product-descriptor.js';
 import { queryFunctions, queryStrings } from './explorer-index.js';
-import { findFindingById, findingAddress, findingIdentity } from './finding-route.js';
+import { findingAddress, findingIdentity } from './finding-route.js';
+import { renderFindingDetail } from './finding-view.js';
 import { genericEvidenceStatus, ownerEvidence, summaryEvidenceStatus, provenanceStatus } from './evidence-model.js';
 import { uiRoot } from '../ui-root.js';
 
@@ -64,8 +65,15 @@ function architectureOf(app) {
   const value = capability.architecture || app?.store?.get?.('architecture') || info.architecture || info.arch || info.cpu || 'unknown';
   return String(value).toLowerCase();
 }
-function instructionBytes(app) { return Math.max(1,Number(app?.store?.get?.('instructionAlignment') || app?.store?.get?.('capability')?.instructionAlignment || 4)); }
-function fixedArm64Rows(app) { return !!app?.store?.get?.('canDisassemble') && instructionBytes(app)>0; }
+function instructionBytes(app) {
+  const cap = app?.store?.get?.('capability') || {};
+  if (cap && Object.prototype.hasOwnProperty.call(cap, 'fixedInstructionSize')) {
+    const fixed = cap.fixedInstructionSize;
+    return (typeof fixed === 'number' && fixed > 0) ? fixed : null;
+  }
+  return null;
+}
+function fixedArm64Rows(app) { return !!app?.store?.get?.('canDisassemble') && instructionBytes(app) != null; }
 const EXPLORER_SOURCE_LIMIT=50000;
 function annotateCollection(items,{complete=true,total=items?.length||0,scannedCount=items?.length||0,truncationReason=null,provenance='canonical-app-state'}={}) {
   if(items && typeof items==='object'){items.complete=!!complete;items.total=total;items.scannedCount=scannedCount;items.truncationReason=truncationReason;items.provenance=provenance;}
@@ -114,11 +122,6 @@ function rememberQuery(query) {
   try { sessionStorage.setItem('hex.ui.recentQueries', JSON.stringify(next)); } catch { /* private mode */ }
 }
 
-/*
- * Canonical Investigate no longer opens the legacy question sheet and then
- * searches its DOM for an input to fake an Enter key. The Goal Compiler is the
- * domain boundary; only the candidate presentation remains a compatibility Sheet.
- */
 function runInvestigation(app, query) {
   return requireFile(app, () => {
     try {
@@ -167,20 +170,20 @@ function renderInvestigate(app, router) {
     text('ガチャの結果を決める処理', 'where gacha results are decided'),
   ]) suggestions.append(uiButton(q, { cls: 'ui-suggestion', onClick: () => { input.value = q; rememberQuery(q); runInvestigation(app, q); } }));
   const commonGoals = h('div', 'ui-goal-suggestions ui-purpose-presets');
-for (const preset of [
-  { label:text('HP・体力', 'HP / health'), query:text('HPを書き換える処理', 'where HP is written') },
-  { label:text('攻撃力', 'Attack power'), query:text('攻撃力を決める・書き換える処理', 'where attack power is calculated or written') },
-  { label:text('ダメージ計算', 'Damage calculation'), query:text('ダメージを計算して適用する処理', 'where damage is calculated and applied') },
-  { label:text('所持金・コイン', 'Money / coins'), query:text('所持金・コインを増減・保存する処理', 'where money or coins are changed and stored') },
-  { label:text('アイテム・所持品', 'Items / inventory'), query:text('アイテム・所持品を増減・保存する処理', 'where inventory items are changed and stored') },
-]) {
-  commonGoals.append(uiButton(preset.label, {
-    cls:'ui-suggestion ui-purpose-chip',
-    onClick:() => { input.value = preset.query; rememberQuery(preset.query); runInvestigation(app, preset.query); },
-  }));
-}
-hero.body.append(suggestions, sectionTitle(text('よくある目的', 'Common goals')), commonGoals);
-s.body.append(hero.root);
+  for (const preset of [
+    { label:text('HP・体力', 'HP / health'), query:text('HPを書き換える処理', 'where HP is written') },
+    { label:text('攻撃力', 'Attack power'), query:text('攻撃力を決める・書き換える処理', 'where attack power is calculated or written') },
+    { label:text('ダメージ計算', 'Damage calculation'), query:text('ダメージを計算して適用する処理', 'where damage is calculated and applied') },
+    { label:text('所持金・コイン', 'Money / coins'), query:text('所持金・コインを増減・保存する処理', 'where money or coins are changed and stored') },
+    { label:text('アイテム・所持品', 'Items / inventory'), query:text('アイテム・所持品を増減・保存する処理', 'where inventory items are changed and stored') },
+  ]) {
+    commonGoals.append(uiButton(preset.label, {
+      cls:'ui-suggestion ui-purpose-chip',
+      onClick:() => { input.value = preset.query; rememberQuery(preset.query); runInvestigation(app, preset.query); },
+    }));
+  }
+  hero.body.append(suggestions, sectionTitle(text('よくある目的', 'Common goals')), commonGoals);
+  s.body.append(hero.root);
 
   const overview = card(text('自動で分かったこと', 'Automatic overview'), {
     subtitle: text('ファイル全体の地図を作り、候補・根拠・未確認点をまとめます。',
@@ -555,6 +558,49 @@ function renderFunctionWorkspace(app, router, route) {
     content.replaceChildren(toolbar, code);
   };
 
+  const routeController = new AbortController();
+  const routeSignal = routeController.signal;
+
+  const renderPseudocodeTab = async () => {
+    if (app.analysisQueries) {
+      try {
+        const snapshot = await app.analysisQueries.snapshot({ signal: routeSignal });
+        const res = await app.analysisQueries.decompile(snapshot, addr, { signal: routeSignal });
+        if (!viewCurrent()) return;
+        if (res.completeness === 'unsupported' || !res.value) {
+          content.replaceChildren(emptyState(text('このアーキテクチャの疑似Cは未対応です', 'Pseudocode is unavailable for this architecture'), text('現在のSemantic DecompilerはARM64を対象にしています。未対応のCPUをARM64として表示することはしません。', 'The Semantic Decompiler currently targets ARM64; Hex will not reinterpret another CPU as ARM64.')));
+          return;
+        }
+        const val = res.value;
+        const out = typeof val === 'string' ? val : (val.code ?? decompiledText(val));
+        const toolbar = h('div', 'ui-code-toolbar');
+        const code = h('pre', 'ui-pseudocode mono');
+        code.tabIndex = 0;
+        code.textContent = typeof out === 'string' ? out : decompiledText(out);
+        let wrap = false;
+        toolbar.append(
+          uiButton(text('コピー', 'Copy'), { cls: 'ui-secondary-action', onClick: () => copyText(code.textContent, text('疑似C', 'Pseudocode')) }),
+          uiButton(text('折り返し', 'Wrap'), { cls: 'ui-secondary-action', onClick: (e) => { wrap = !wrap; code.classList.toggle('wrap', wrap); e.currentTarget.setAttribute('aria-pressed', String(wrap)); } }),
+          uiButton(text('アセンブリへ', 'Assembly'), { cls: 'ui-secondary-action', onClick: () => router.navigate('/code/' + addr.toString()) }),
+        );
+        content.replaceChildren(toolbar, code);
+        return;
+      } catch (err) {
+        if (routeSignal.aborted) return;
+        throw err;
+      }
+    }
+    const map = rowMapper();
+    if (!map.supported) {
+      content.replaceChildren(emptyState(text('このアーキテクチャの疑似Cは未対応です', 'Pseudocode is unavailable for this architecture'), text('現在のSemantic DecompilerはARM64を対象にしています。未対応のCPUをARM64として表示することはしません。', 'The Semantic Decompiler currently targets ARM64; Hex will not reinterpret another CPU as ARM64.')));
+      return;
+    }
+    const res = await app.analyzeFunctionAt(addr, { signal: routeSignal });
+    if (!viewCurrent()) return;
+    if (!res || !res.model) { content.replaceChildren(errorState(text('関数を解析できません', 'Could not analyse function'), text('このアドレスは現在のコード領域の関数として解析できませんでした。', 'This address could not be analysed as a function in the current code region.'))); return; }
+    renderPseudocode(res);
+  };
+
   const renderFlow = (res) => {
     const map = rowMapper();
     if (!map.supported) {
@@ -579,18 +625,58 @@ function renderFunctionWorkspace(app, router, route) {
     content.replaceChildren(mode);
   };
 
+  const renderFlowTab = async () => {
+    if (app.analysisQueries) {
+      try {
+        const snapshot = await app.analysisQueries.snapshot({ signal: routeSignal });
+        const res = await app.analysisQueries.cfg(snapshot, addr, { signal: routeSignal });
+        if (!viewCurrent()) return;
+        if (res.completeness === 'unsupported' || !res.value) {
+          content.replaceChildren(emptyState(text('このアーキテクチャのCFG表示は未対応です', 'CFG view is unavailable for this architecture'), text('固定4バイト行を前提にせず、安全側で表示を止めています。', 'This view is disabled rather than assuming fixed four-byte instruction rows.')));
+          return;
+        }
+        const cfg = res.value;
+        const nodes = Array.isArray(cfg.blocks) ? cfg.blocks.map((b, index) => ({ id: b.id ?? `b${index}`, label: b.label || b.name || `Block ${index + 1}`, addr: b.startAddress ?? b.address ?? b.start ?? null, title: b.title ?? b.label })) : [];
+        const edges = Array.isArray(cfg.edges) ? cfg.edges.map((e) => ({ from: e.from ?? e.source, to: e.to ?? e.target, kind: e.kind ?? 'unconditional' })) : [];
+        if (!nodes.length) { content.replaceChildren(emptyState(text('フローを作れませんでした', 'No control flow available'), text('この関数には図にできるブロック情報がありません。', 'This function has no graphable block information.'))); return; }
+        const mode = h('div', 'ui-graph-shell');
+        const graphHost = h('div', 'ui-graph-host');
+        graphHost.append(renderGraph(nodes, edges, {}));
+        const list = h('details', 'ui-graph-text');
+        list.append(h('summary', null, text('テキスト一覧でも見る', 'View as text list')));
+        const rows = h('div', 'ui-list');
+        nodes.forEach((node, index) => rows.append(listRow({ title: String(node.label || node.title || node.id || `Block ${index + 1}`), subtitle: node.addr != null ? addressText(node.addr) : '', onClick: node.addr != null ? () => router.navigate('/code/' + BigInt(node.addr).toString()) : null })));
+        list.append(rows);
+        mode.append(graphHost, graphLegend('cfg'), list);
+        content.replaceChildren(mode);
+        return;
+      } catch (err) {
+        if (routeSignal.aborted) return;
+        throw err;
+      }
+    }
+    const map = rowMapper();
+    if (!map.supported) { content.replaceChildren(emptyState(text('このアーキテクチャのCFG表示は未対応です', 'CFG view is unavailable for this architecture'), text('固定4バイト行を前提にせず、安全側で表示を止めています。', 'This view is disabled rather than assuming fixed four-byte instruction rows.'))); return; }
+    const res = await app.analyzeFunctionAt(addr, { signal: routeSignal });
+    if (!viewCurrent()) return;
+    if (!res || !res.model) { content.replaceChildren(errorState(text('関数を解析できません', 'Could not analyse function'), text('このアドレスは現在のコード領域の関数として解析できませんでした。', 'This address could not be analysed as a function in the current code region.'))); return; }
+    renderFlow(res);
+  };
+
   const renderCalls = async () => {
     content.replaceChildren(loadingState(text('呼び出し関係を集めています…', 'Mapping calls…')));
-    await app.ensureProgram();
-    if (!viewCurrent()) return;
-    if (!app.program) { content.replaceChildren(emptyState(text('呼び出し関係がありません', 'No call graph available'), text('このバイナリでは呼び出し索引を作れませんでした。', 'A call index could not be built for this binary.'))); return; }
-    const graph = callGraph(app.program, app.symbols, addr, {
-      depth: 2, limit: 8, label: (a) => functionName(app, a),
-      onNode: (a) => router.navigate('/function/' + BigInt(a).toString() + '/overview'),
-    });
-    const shell = h('div', 'ui-graph-shell');
-    shell.append(renderGraph(graph.nodes, graph.edges, {}), graphLegend('call'));
-    content.replaceChildren(shell);
+    try {
+      await app.ensureProgram();
+      if (!viewCurrent()) return;
+      if (!app.program) { content.replaceChildren(emptyState(text('呼び出し関係がありません', 'No call graph available'), text('このバイナリでは呼び出し索引を作れませんでした。', 'A call index could not be built for this binary.'))); return; }
+      const graph = callGraph(app.program, app.symbols, addr, { depth: 2, limit: 8, label: (a) => functionName(app, a), onNode: (a) => router.navigate('/function/' + BigInt(a).toString() + '/overview') });
+      const shell = h('div', 'ui-graph-shell');
+      shell.append(renderGraph(graph.nodes, graph.edges, {}), graphLegend('call'));
+      content.replaceChildren(shell);
+    } catch (err) {
+      if (routeSignal.aborted) return;
+      throw err;
+    }
   };
 
   const renderEvidence = (res) => {
@@ -602,28 +688,12 @@ function renderFunctionWorkspace(app, router, route) {
     const nameStatus = provenanceStatus(nameEvidence);
     stack.append(listRow({ title: text('関数境界', 'Function boundary'), subtitle: addressText(addr), meta: boundaryEvidence?.source || text('由来不明', 'unknown source'), badge: evidenceBadge(boundaryStatus === 'manual' ? 'unverified' : boundaryStatus) }));
     stack.append(listRow({ title: text('関数名', 'Function name'), subtitle: name || text('シンボル名なし', 'No symbol name'), meta: nameStatus === 'manual' ? text('手動 / User', 'Manual / User') : (nameEvidence?.source || ''), badge: evidenceBadge(nameStatus === 'manual' ? 'unverified' : nameStatus) }));
-
     const deterministic = Array.isArray(res.evidence) ? res.evidence : [];
-    deterministic.slice(0, 80).forEach((item, index) => stack.append(listRow({
-      title: evidenceTitle(item, index),
-      subtitle: evidenceSubtitle(item),
-      badge: evidenceBadge(evidenceStatus(item)),
-    })));
-
+    deterministic.slice(0, 80).forEach((item, index) => stack.append(listRow({ title: evidenceTitle(item, index), subtitle: evidenceSubtitle(item), badge: evidenceBadge(evidenceStatus(item)) })));
     const runtime = runtimeEvidenceForApp(app, addr);
-    runtime.slice(-20).forEach((item, index) => stack.append(listRow({
-      title: text('実行時観測: ', 'Runtime observation: ') + evidenceTitle(item, index),
-      subtitle: evidenceSubtitle(item),
-      badge: evidenceBadge(evidenceStatus(item)),
-    })));
-
+    runtime.slice(-20).forEach((item, index) => stack.append(listRow({ title: text('実行時観測: ', 'Runtime observation: ') + evidenceTitle(item, index), subtitle: evidenceSubtitle(item), badge: evidenceBadge(evidenceStatus(item)) })));
     const proof = Array.isArray(res.rewriteProof) ? res.rewriteProof : [];
-    proof.slice(0, 30).forEach((item) => stack.append(listRow({
-      title: text('逆コンパイル変換: ', 'Decompiler rewrite: ') + String(item.rule || item.name || item.proof?.kind || 'rewrite'),
-      subtitle: item.proof?.detail || item.detail || '',
-      badge: evidenceBadge('confirmed'),
-    })));
-
+    proof.slice(0, 30).forEach((item) => stack.append(listRow({ title: text('逆コンパイル変換: ', 'Decompiler rewrite: ') + String(item.rule || item.name || item.proof?.kind || 'rewrite'), subtitle: item.proof?.detail || item.detail || '', badge: evidenceBadge('confirmed') })));
     const note = card(text('表示の意味', 'How to read this'), { subtitle: text('「確認済み」はバイナリまたは実行観測に直接結び付いた事実です。推論は「可能性が高い」「未確認」のまま分離します。ランキング点を確率として表示しません。', 'Confirmed is reserved for facts tied directly to binary/runtime evidence. Inference remains Likely or Unverified; ranking scores are not presented as probabilities.') });
     const nodes = [note.root, stack];
     if (Array.isArray(res.warnings) && res.warnings.length) {
@@ -634,17 +704,58 @@ function renderFunctionWorkspace(app, router, route) {
     content.replaceChildren(...nodes);
   };
 
-  const renderRuntime = (res) => {
+  const renderEvidenceTab = async () => {
+    content.replaceChildren(loadingState(text('根拠を集めています…', 'Collecting evidence…')));
+    if (app.analysisQueries) {
+      try {
+        const snapshot = await app.analysisQueries.snapshot({ signal: routeSignal });
+        const res = await app.analysisQueries.evidence(snapshot, { functionId: addr }, { limit: 100 }, { signal: routeSignal });
+        if (!viewCurrent()) return;
+        const stack = h('div', 'ui-evidence-stack');
+        const name = app.symbols?.nameAt?.(addr);
+        const boundaryEvidence = app.symbols?.functionEvidence?.(addr);
+        const nameEvidence = app.symbols?.nameEvidence?.(addr);
+        const boundaryStatus = provenanceStatus(boundaryEvidence);
+        const nameStatus = provenanceStatus(nameEvidence);
+        stack.append(listRow({ title: text('関数境界', 'Function boundary'), subtitle: addressText(addr), meta: boundaryEvidence?.source || text('由来不明', 'unknown source'), badge: evidenceBadge(boundaryStatus === 'manual' ? 'unverified' : boundaryStatus) }));
+        stack.append(listRow({ title: text('関数名', 'Function name'), subtitle: name || text('シンボル名なし', 'No symbol name'), meta: nameStatus === 'manual' ? text('手動 / User', 'Manual / User') : (nameEvidence?.source || ''), badge: evidenceBadge(nameStatus === 'manual' ? 'unverified' : nameStatus) }));
+        const items = Array.isArray(res.value) ? res.value : [];
+        items.forEach((item, index) => {
+          const itemEvidence = item?.evidence ?? item;
+          const status = item?.verdict ?? evidenceStatus(itemEvidence);
+          stack.append(listRow({ title: evidenceTitle(itemEvidence, index), subtitle: evidenceSubtitle(itemEvidence), badge: evidenceBadge(status) }));
+        });
+        const note = card(text('表示の意味', 'How to read this'), { subtitle: text('「確認済み」はバイナリまたは実行観測に直接結び付いた事実です。推論は「可能性が高い」「未確認」のまま分離します。ランキング点を確率として表示しません。', 'Confirmed is reserved for facts tied directly to binary/runtime evidence. Inference remains Likely or Unverified; ranking scores are not presented as probabilities.') });
+        content.replaceChildren(note.root, stack);
+        return;
+      } catch (err) {
+        if (routeSignal.aborted) return;
+        throw err;
+      }
+    }
+    const res = await app.analyzeFunctionAt(addr, { signal: routeSignal });
+    if (!viewCurrent()) return;
+    if (!res || !res.model) { content.replaceChildren(errorState(text('関数を解析できません', 'Could not analyse function'), text('このアドレスは現在のコード領域の関数として解析できませんでした。', 'This address could not be analysed as a function in the current code region.'))); return; }
+    renderEvidence(res);
+  };
+
+  const renderRuntimeTab = () => {
+    let activeRunController = null;
     const root = h('div', 'ui-card-grid');
     const c = card(text('実行時に確かめる', 'Verify at runtime'), { subtitle: text('新しいRuntime Analysis Platformで、この関数だけを安全なローカルsandbox上で実行・観測します。', 'Run this function in the Runtime Analysis Platform local sandbox and record evidence.') });
     const resultHost = h('div', 'ui-runtime-result');
     const run = uiButton(text('ローカル実行で観測する', 'Run local observation'), { cls: 'ui-primary-action' });
     run.addEventListener('click', async () => {
       run.disabled = true;
+      activeRunController?.abort();
+      activeRunController = new AbortController();
+      const runSignal = activeRunController.signal;
+      const onRouteAbort = () => activeRunController?.abort();
+      routeSignal.addEventListener('abort', onRouteAbort, { once: true });
       resultHost.replaceChildren(loadingState(text('実行して観測しています…', 'Running and collecting observations…')));
       try {
-        const result = await traceAppFunction(app, addr, { maxSteps: 12000, timeoutMs: 1500, limit: 4096 });
-        if (!viewCurrent()) return;
+        const result = await traceAppFunction(app, addr, { signal: runSignal, maxSteps: 12000, timeoutMs: 1500, limit: 4096 });
+        if (!viewCurrent() || runSignal.aborted) return;
         const obs = result.observation || {};
         const stop = obs.stop?.kind || 'unknown';
         const direct = stop === 'return' ? 'confirmed' : 'unverified';
@@ -657,65 +768,54 @@ function renderFunctionWorkspace(app, router, route) {
         list.append(listRow({ title: text('Runtime evidence', 'Runtime evidence'), meta: String(result.evidence?.length || 0), badge: evidenceBadge(result.evidence?.length ? 'confirmed' : 'unverified') }));
         resultHost.replaceChildren(list);
       } catch (error) {
-        if (!disposed) resultHost.replaceChildren(errorState(text('ローカル実行を完了できませんでした', 'Local runtime observation could not complete'), String(error?.message || error)));
+        if (!disposed && !runSignal.aborted && !routeSignal.aborted) resultHost.replaceChildren(errorState(text('ローカル実行を完了できませんでした', 'Local runtime observation could not complete'), String(error?.message || error)));
       } finally {
+        routeSignal.removeEventListener('abort', onRouteAbort);
         if (!disposed) run.disabled = false;
       }
     });
     c.body.append(run, resultHost);
     root.append(c.root);
-
     const capability = card(text('Live Debugger', 'Live Debugger'), { subtitle: text('Safari単体ではiOSプロセスへ任意attachできません。LLDB/Frida互換のlive観測は外部Hex bridge接続時のみ有効です。', 'Safari cannot arbitrarily attach to an iOS process. LLDB/Frida-compatible live observation requires an external Hex bridge.') });
     capability.body.append(uiButton(text('高度なDebuggerを開く', 'Open advanced debugger'), { cls: 'ui-secondary-action', onClick: () => showDebugger(app, addr) }));
     root.append(capability.root);
     content.replaceChildren(root);
-    void res;
   };
 
   (async () => {
     try {
-      const res = await app.analyzeFunctionAt(addr);
-      if (!viewCurrent()) return;
-      if (!res || !res.model) { content.replaceChildren(errorState(text('関数を解析できません', 'Could not analyse function'), text('このアドレスは現在のコード領域の関数として解析できませんでした。', 'This address could not be analysed as a function in the current code region.'))); return; }
-      if (tab === 'overview') renderOverview(res);
-      else if (tab === 'pseudocode') renderPseudocode(res);
-      else if (tab === 'flow') renderFlow(res);
-      else if (tab === 'calls') await renderCalls(res);
-      else if (tab === 'evidence') renderEvidence(res);
-      else renderRuntime(res);
+      if (tab === 'calls') await renderCalls();
+      else if (tab === 'runtime') renderRuntimeTab();
+      else if (tab === 'pseudocode') await renderPseudocodeTab();
+      else if (tab === 'flow') await renderFlowTab();
+      else if (tab === 'evidence') await renderEvidenceTab();
+      else {
+        const res = await app.analyzeFunctionAt(addr, { signal: routeSignal });
+        if (!viewCurrent()) return;
+        if (!res || !res.model) { content.replaceChildren(errorState(text('関数を解析できません', 'Could not analyse function'), text('このアドレスは現在のコード領域の関数として解析できませんでした。', 'This address could not be analysed as a function in the current code region.'))); return; }
+        renderOverview(res);
+      }
     } catch (err) {
-      if (viewCurrent()) content.replaceChildren(errorState(text('表示できませんでした', 'Could not render this view'), String(err && err.message || err)));
+      if (viewCurrent() && !routeSignal.aborted) content.replaceChildren(errorState(text('表示できませんでした', 'Could not render this view'), String(err && err.message || err)));
     }
   })();
 
-  return { root: s.root, getState: () => ({ scrollTop: s.body.scrollTop }), restoreState: (state) => { if (state) s.body.scrollTop = Number(state.scrollTop) || 0; }, dispose: () => { disposed = true; } };
-}
-
-function reportFindings(app) {
-  const report = app.autoReport && app.autoReport.report;
-  const findings = report && (report.findings || report.results || report.goals);
-  return Array.isArray(findings) ? findings : [];
-}
-
-function findingTitle(item) {
-  return String(item?.title || item?.label || item?.goal?.text || item?.goal || text('解析結果', 'Finding'));
-}
-
-function findingBadge(item) {
-  return evidenceBadge(item?.confirmed ? 'confirmed' : item?.confidence > 0.7 ? 'likely' : 'unverified');
+  return { root: s.root, getState: () => ({ scrollTop: s.body.scrollTop }), restoreState: (state) => { if (state) s.body.scrollTop = Number(state.scrollTop) || 0; }, dispose: () => { disposed = true; routeController.abort(); } };
 }
 
 function renderResults(app, router) {
   const s = screen(text('結果', 'Results'), { id: 'results', subtitle: text('確認した答え、根拠、履歴、ピンをここへ集めます。', 'Confirmed answers, evidence, history and pins live here.') });
-  const findings = reportFindings(app);
-  if (findings.length) {
+  const report = app.autoReport && app.autoReport.report;
+  const findings = report && (report.findings || report.results || report.goals);
+  if (Array.isArray(findings) && findings.length) {
     const renderFinding = (item) => {
+      const title = item.title || item.label || item.goal?.text || item.goal || text('解析結果', 'Finding');
       const address = findingAddress(item);
       const id = findingIdentity(item);
       const onClick = id != null
         ? () => router.navigate('/finding/' + encodeURIComponent(id))
         : address != null ? () => router.navigate('/function/' + BigInt(address).toString() + '/overview') : null;
-      return listRow({ title: findingTitle(item), subtitle: address != null ? addressText(address) : '', badge: findingBadge(item), onClick });
+      return listRow({ title: String(title), subtitle: address != null ? addressText(address) : '', badge: evidenceBadge(item.confirmed ? 'confirmed' : item.confidence > 0.7 ? 'likely' : 'unverified'), onClick });
     };
     if (findings.length > 80) s.body.append(new VirtualList({ items: findings, rowHeight: 64, ariaLabel: text('解析結果', 'Analysis results'), renderRow: renderFinding }).root);
     else {
@@ -726,53 +826,6 @@ function renderResults(app, router) {
   } else {
     s.body.append(emptyState(text('まだ確定した結果がありません', 'No confirmed results yet'), text('「調べる」で目的を入力すると、答えと根拠をここから辿れるようになります。', 'Investigate a goal to create results you can revisit.'), uiButton(text('調べるへ', 'Go to Investigate'), { cls: 'ui-primary-action', onClick: () => router.navigate('/investigate') })));
   }
-  return { root: s.root };
-}
-
-function renderFindingDetail(app, router, route) {
-  const id = route?.params?.id == null ? null : String(route.params.id);
-  const item = findFindingById(reportFindings(app), id);
-  const s = screen(item ? findingTitle(item) : text('結果が見つかりません', 'Finding not found'), {
-    id: 'finding',
-    subtitle: item ? text('保存された解析結果の詳細', 'Saved analysis finding detail') : text('指定された結果IDは現在の解析スナップショットにありません。', 'That finding id is not present in the current analysis snapshot.'),
-  });
-  if (!item) {
-    s.body.append(emptyState(
-      text('この結果は見つかりません', 'Finding not found'),
-      text('一覧へ戻って現在の解析結果を確認してください。別の結果へ黙って置き換えることはしません。', 'Return to Results to inspect the current findings. Hex will not silently substitute another finding.'),
-      uiButton(text('結果一覧へ', 'Back to Results'), { cls: 'ui-primary-action', onClick: () => router.navigate('/results') }),
-    ));
-    return { root: s.root };
-  }
-
-  const address = findingAddress(item);
-  const summary = item.summary || item.reason || item.why || item.description || '';
-  const detail = card(text('解析結果', 'Finding'));
-  if (summary) detail.body.append(h('p', 'ui-lead', String(summary)));
-  detail.body.append(listRow({ title: text('識別子', 'Finding id'), meta: findingIdentity(item) || '—', mono: true }));
-  detail.body.append(listRow({ title: text('状態', 'Status'), badge: findingBadge(item) }));
-  if (address != null) detail.body.append(listRow({ title: text('関連アドレス', 'Related address'), meta: addressText(address), mono: true, onClick: () => router.navigate('/function/' + BigInt(address).toString() + '/overview') }));
-  const provenance = item.snapshotId ?? item.runId ?? item.provenance?.snapshotId ?? item.provenance?.runId ?? null;
-  if (provenance != null) detail.body.append(listRow({ title: text('解析スナップショット', 'Analysis snapshot'), meta: String(provenance), mono: true }));
-  s.body.append(detail.root);
-
-  const evidence = Array.isArray(item.evidence) ? item.evidence : [];
-  if (evidence.length) {
-    const list = h('div', 'ui-evidence-stack');
-    evidence.slice(0, 100).forEach((entry, index) => list.append(listRow({
-      title: evidenceTitle(entry, index),
-      subtitle: evidenceSubtitle(entry),
-      badge: evidenceBadge(evidenceStatus(entry)),
-    })));
-    const evidenceCard = card(text('根拠', 'Evidence'));
-    evidenceCard.body.append(list);
-    s.body.append(evidenceCard.root);
-  }
-
-  const actions = h('div', 'ui-actions');
-  if (address != null) actions.append(uiButton(text('関連関数を開く', 'Open related function'), { cls: 'ui-primary-action', onClick: () => router.navigate('/function/' + BigInt(address).toString() + '/overview') }));
-  actions.append(uiButton(text('結果一覧へ', 'Back to Results'), { cls: 'ui-secondary-action', onClick: () => router.navigate('/results') }));
-  s.body.append(actions);
   return { root: s.root };
 }
 
@@ -853,15 +906,6 @@ function symbolAddress(app, name) {
   return null;
 }
 
-/*
- * One omnibox.
- *
- * Search, jump, command palette and "ask the assistant" were four different
- * entry points; they are one field now because the user rarely knows in
- * advance which of the four their question is. The intent is classified as
- * they type (js/ai/interaction/omnibox.js) and shown next to the field, so
- * pressing Enter is never a surprise.
- */
 function installCommandCenter(app, router, actions, host, getAssistant) {
   const form = h('form', 'ui-command-center');
   const input = h('input', 'ui-global-command');
@@ -873,14 +917,8 @@ function installCommandCenter(app, router, actions, host, getAssistant) {
   hint.setAttribute('aria-live', 'polite');
   const go = uiButton(text('実行', 'Go'), { cls: 'ui-command-go' });
   form.append(input, hint, go);
-
-  const refreshHint = () => {
-    const intent = classifyOmnibox(input.value);
-    hint.textContent = intent.kind === 'empty' ? '' : intentLabel(intent.kind, ja());
-    form.dataset.intent = intent.kind;
-  };
+  const refreshHint = () => { const intent = classifyOmnibox(input.value); hint.textContent = intent.kind === 'empty' ? '' : intentLabel(intent.kind, ja()); form.dataset.intent = intent.kind; };
   input.addEventListener('input', refreshHint);
-
   const runCommand = (intent) => {
     switch (intent.command) {
       case 'code': router.navigate('/code'); return true;
@@ -895,31 +933,16 @@ function installCommandCenter(app, router, actions, host, getAssistant) {
       default: return false;
     }
   };
-
   form.addEventListener('submit', (event) => {
     event.preventDefault();
     const intent = classifyOmnibox(input.value);
     if (intent.kind === 'empty') return;
     input.blur();
-    if (intent.kind === 'ai') {
-      const assistant = getAssistant();
-      if (assistant) { assistant.ask(intent.value); input.value = ''; refreshHint(); return; }
-      router.navigate('/investigate');
-      return;
-    }
+    if (intent.kind === 'ai') { const assistant = getAssistant(); if (assistant) { assistant.ask(intent.value); input.value = ''; refreshHint(); return; } router.navigate('/investigate'); return; }
     if (intent.kind === 'command' && runCommand(intent)) return;
-    if (intent.kind === 'address') {
-      const addr = parseAddress(intent.value);
-      if (addr != null) { app.goToAddress(addr, { announce: true }); router.navigate('/code/' + addr.toString()); return; }
-    }
-    if (intent.kind === 'symbol') {
-      const addr = symbolAddress(app, intent.value);
-      if (addr != null) { router.navigate('/function/' + BigInt(addr).toString() + '/overview'); return; }
-    }
-    if (intent.kind === 'string') {
-      router.navigate('/explorer/strings?q=' + encodeURIComponent(intent.value));
-      return;
-    }
+    if (intent.kind === 'address') { const addr = parseAddress(intent.value); if (addr != null) { app.goToAddress(addr, { announce: true }); router.navigate('/code/' + addr.toString()); return; } }
+    if (intent.kind === 'symbol') { const addr = symbolAddress(app, intent.value); if (addr != null) { router.navigate('/function/' + BigInt(addr).toString() + '/overview'); return; } }
+    if (intent.kind === 'string') { router.navigate('/explorer/strings?q=' + encodeURIComponent(intent.value)); return; }
     router.navigate('/explorer/functions?q=' + encodeURIComponent(intent.value));
   });
   host.append(form);
@@ -941,22 +964,9 @@ export function installProductUI(app) {
   titlebar?.after(chrome);
   const addrbar = appRoot.querySelector('.addrbar');
   if (addrbar) appRoot.insertBefore(routeHost, addrbar); else appRoot.append(routeHost);
-  /*
-   * The destinations live in the chrome row, not in a rail down the left edge.
-   * On a wide screen they are compact tabs beside the omnibox, which returns
-   * 76px of width to the disassembly; below 900px the same element is pinned
-   * to the bottom of the viewport where a thumb can reach it. `position:
-   * fixed` still resolves against the viewport here because the chrome uses a
-   * plain background — a backdrop-filter on the parent would have trapped it.
-   */
   chrome.append(nav);
 
   const router = new ProductRouter(ROUTES, {
-    /*
-     * Code first, including before a file exists: the landing state is the
-     * workbench with its compact open/sample card, not a question screen that
-     * has nothing to answer questions about yet.
-     */
     defaultPath: '/code',
     onRoute: (route) => {
       appRoot.classList.toggle('ui-code-route', route.route.id === 'code');
@@ -982,11 +992,7 @@ export function installProductUI(app) {
       routeHost.append(view.root);
       requestAnimationFrame(() => routeHost.focus({ preventScroll: true }));
       const originalGet = view.getState;
-      return {
-        ...view,
-        getState: () => ({ ...(originalGet ? originalGet() : {}), routeScroll: routeHost.scrollTop }),
-        restoreState: (state) => { view.restoreState?.(state); routeHost.scrollTop = Number(state?.routeScroll) || 0; },
-      };
+      return { ...view, getState: () => ({ ...(originalGet ? originalGet() : {}), routeScroll: routeHost.scrollTop }), restoreState: (state) => { view.restoreState?.(state); routeHost.scrollTop = Number(state?.routeScroll) || 0; } };
     },
   });
 
@@ -996,11 +1002,7 @@ export function installProductUI(app) {
     app.selectSlice = async (...args) => {
       const beforeEpoch = app.backend?.gen;
       const result = await originalSelectSlice(...args);
-      if (app.backend?.gen !== beforeEpoch) {
-        router.navigate('/code', { replace: true });
-        assistant?.refresh();
-        assistant?.collapse();
-      }
+      if (app.backend?.gen !== beforeEpoch) { router.navigate('/code', { replace: true }); assistant?.refresh(); assistant?.collapse(); }
       return result;
     };
   }
@@ -1023,7 +1025,7 @@ export function installProductUI(app) {
     nav.append(b);
   }
   actions.register('navigate.investigate', () => router.navigate('/investigate'));
-  actions.register('navigate.code', () => router.navigate('/code/' + (currentAddress(app)?.toString() || '')));
+  actions.register('navigate.code', () => router.navigate('/code/' + (currentAddress(app)?.toString() || ''));
   actions.register('navigate.explorer', () => router.navigate('/explorer/functions'));
   actions.register('navigate.results', () => router.navigate('/results'));
   actions.register('function.open', (addr, tab = 'overview') => router.navigate('/function/' + BigInt(addr).toString() + '/' + tab));
@@ -1036,24 +1038,11 @@ export function installProductUI(app) {
     if (!typing && event.key === '/') { event.preventDefault(); actions.run('command.focus'); }
   };
   document.addEventListener('keydown', shortcut, true);
-
   uiRoot()?.classList.add('product-ui-ready');
   router.start();
 
-  /*
-   * Code first. Opening a file used to land on the question screen (or behind
-   * an overview sheet); the workbench now goes straight to the disassembly,
-   * and the assistant is the thing you call when you have a question about it.
-   */
-  const onFileOpened = () => {
-    router.navigate('/code');
-    assistant?.refresh();
-    /* On a phone or a narrow split the panel covers the code it is about to
-       be asked about; step aside and leave the launcher. */
-    assistant?.collapse();
-  };
+  const onFileOpened = () => { router.navigate('/code'); assistant?.refresh(); assistant?.collapse(); };
   document.addEventListener('hex:file-opened', onFileOpened);
-
   assistant = installAssistant(app, { router, actions });
   actions.register('ai.open', () => assistant?.open());
   actions.register('ai.ask', (question, options) => assistant?.ask(question, options));
