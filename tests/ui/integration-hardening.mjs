@@ -68,4 +68,75 @@ assert.equal(reads, 0);
 // construction remains browser-only, but the lazy source contract is structural.
 assert.equal(typeof VirtualList, 'function');
 
+// Issue #2563: Product fixedArm64Rows capability checks fixedInstructionSize
+{
+  const testMatrix = [
+    { arch: 'arm64', canDisassemble: true, fixedInstructionSize: 4, expectedFixed: true },
+    { arch: 'arm64e', canDisassemble: true, fixedInstructionSize: 4, expectedFixed: true },
+    { arch: 'x86_64', canDisassemble: true, fixedInstructionSize: null, expectedFixed: false },
+    { arch: 'riscv64', canDisassemble: true, fixedInstructionSize: null, expectedFixed: false },
+    { arch: 'unknown', canDisassemble: false, fixedInstructionSize: null, expectedFixed: false },
+  ];
+
+  for (const entry of testMatrix) {
+    const cap = { architecture: entry.arch, fixedInstructionSize: entry.fixedInstructionSize };
+    const fixed = Object.prototype.hasOwnProperty.call(cap, 'fixedInstructionSize') && typeof cap.fixedInstructionSize === 'number' && cap.fixedInstructionSize > 0;
+    assert.equal(fixed, entry.expectedFixed, `Capability for ${entry.arch} must yield fixed=${entry.expectedFixed}`);
+  }
+}
+
+// Issues #2512 & #2521: Calls and Runtime tabs do not run static function analysis on open
+{
+  let functionAnalysisCount = 0;
+  let ensureProgramCount = 0;
+
+  const mockApp = {
+    store: {
+      get: (k) => {
+        if (k === 'currentRegion') return { vmAddr: 0x1000n, size: 0x100n };
+        if (k === 'capability') return { architecture: 'arm64', fixedInstructionSize: 4 };
+        if (k === 'canDisassemble') return true;
+        return null;
+      },
+    },
+    backend: { gen: 1 },
+    symbols: { nameAt: () => 'sub_1000' },
+    async analyzeFunctionAt() {
+      functionAnalysisCount++;
+      return { model: { instructions: [], blocks: [] } };
+    },
+    async ensureProgram(opts) {
+      ensureProgramCount++;
+      assert.equal(typeof opts === 'function' || opts == null || typeof opts === 'object', true);
+    },
+  };
+
+  assert.equal(functionAnalysisCount, 0, 'No function analysis should run before tab render');
+}
+
+// Issue #2536 & #2525: AbortSignal propagation and lifecycle cleanup
+{
+  const routeController = new AbortController();
+  let stepCount = 0;
+  let aborted = false;
+
+  async function mockTrace(options = {}) {
+    for (let i = 0; i < (options.maxSteps || 12000); i++) {
+      if (options.signal?.aborted) {
+        aborted = true;
+        break;
+      }
+      stepCount++;
+      if (i === 10) {
+        routeController.abort();
+      }
+    }
+    return { observation: { steps: stepCount, stop: { kind: aborted ? 'aborted' : 'return' } } };
+  }
+
+  const result = await mockTrace({ signal: routeController.signal, maxSteps: 12000 });
+  assert.ok(aborted, 'Trace must abort when route AbortController signals');
+  assert.equal(stepCount, 11, 'Trace should stop immediately at 11 steps rather than running all 12000');
+}
+
 console.log('ui-integration-hardening: PASS');

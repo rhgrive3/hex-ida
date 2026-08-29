@@ -644,6 +644,7 @@ class App {
 
   /** Build one global ProgramIndex from every executable region. */
   async ensureProgram(onProgress) {
+    const progressFn = typeof onProgress === 'function' ? onProgress : (typeof onProgress === 'object' && typeof onProgress?.onProgress === 'function' ? onProgress.onProgress : null);
     const regions=this.programRegions();
     if(!regions.length)return null;
     const key=regions.map((r)=>r.id).join('|');
@@ -654,7 +655,7 @@ class App {
     if(this.programBusy&&this.programBusyEpoch===epoch)return this.programBusy;
     this.programBusyEpoch=epoch;
     this.programBusy=(async()=>{
-      await this.ensureFunctions(primary,onProgress);
+      await this.ensureFunctions(primary,progressFn);
       if(epoch!==this.backend.gen)return null;
       const scans=[], failures=[];
       let calls=PROGRAM_MERGE_LIMITS.calls, refs=PROGRAM_MERGE_LIMITS.refs, kinds=PROGRAM_MERGE_LIMITS.kindWords;
@@ -664,7 +665,7 @@ class App {
         const r=regions[i], size=BigInt(r.size);
         if(epoch!==this.backend.gen)return null;
         try{
-          const scan=await this.backend.scanProgram(r.id,onProgress&&((p)=>onProgress({phase:'scan',done:i+(p.all?Math.min(1,p.done/p.all):0),all:regions.length,region:r.id})),{
+          const scan=await this.backend.scanProgram(r.id,progressFn&&((p)=>progressFn({phase:'scan',done:i+(p.all?Math.min(1,p.done/p.all):0),all:regions.length,region:r.id})),{
             callLimit:share(calls,size,remainingBytes),refLimit:share(refs,size,remainingBytes),kindLimit:share(kinds,size,remainingBytes),
           });
           if(scan&&!scan.cancelled){scans.push(scan);calls=Math.max(0,calls-(scan.callCount??scan.callFrom?.length??0));refs=Math.max(0,refs-(scan.refCount??scan.refFrom?.length??0));kinds=Math.max(0,kinds-(scan.kindsCovered??scan.kinds?.length??0));}
