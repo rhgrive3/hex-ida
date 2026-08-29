@@ -1,0 +1,10 @@
++    } catch (error) {
++      if (!controller.signal.aborted && error?.name !== 'AbortError' && sheet.root.isConnected) {
++        status.textContent = '実行を続けられませんでした: ' + (error?.message || error);
++      }
++    } finally {
++      if (activeRun === controller) activeRun = null;
++    }
+   }));
+   sheet.body.append(chips, status);
+ 
