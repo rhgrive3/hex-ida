@@ -1,3 +1,5 @@
+import { objcIvarRangeWithinInstance } from './objc-ivar-layout.js';
+
 /*
  * Objective-C のクラス表を読んで、関数に本当の名前を戻す。
  *
@@ -216,7 +218,7 @@ async function cstring(get, addr) {
 function newLegacyCompleteness(present, declared = 0) {
   return {
     present: !!present, declared, scanned: 0, parsed: 0, capped: false,
-    unreadableSlots: 0, invalidEntries: 0, incompleteMethodLists: 0,
+    unreadableSlots: 0, invalidEntries: 0, invalidIvars: 0, incompleteMethodLists: 0,
     misalignedBytes: 0, sizeValid: true, reasons: [], complete: !present,
   };
 }
@@ -363,7 +365,7 @@ async function ivarOffset(get, slotAddr) {
 }
 
 /** ivar_list_t を読む。読めない項目は黙って飛ばす。 */
-async function readIvars(get, listAddr) {
+async function readIvars(get, listAddr, instanceSize, completeness = null) {
   const out = [];
   if (listAddr == null) return out;
   const head = await get(listAddr, 8);
@@ -396,12 +398,19 @@ async function readIvars(get, listAddr) {
     const name = await cstring(get, cleanPointer(get, u64(b, 8)));
     if (!name) continue;                      // 名前が読めないものだけ採らない
     const typeEnc = await cstring(get, cleanPointer(get, u64(b, 16)));
-    const size = u32(b, 28);
+    const rawSize = u32(b, 28);
+    const size = rawSize > 0 && rawSize <= 4096 ? rawSize : null;
+    if (offset == null) {
+      markLegacyPartial(completeness, 'ivar-offset-unresolved', 'invalidIvars');
+    } else if (!objcIvarRangeWithinInstance(offset, rawSize > 0 ? rawSize : null, instanceSize)) {
+      markLegacyPartial(completeness, 'ivar-layout-out-of-bounds', 'invalidIvars');
+      continue;
+    }
     out.push({
       name,
       offset,
       offsetVar,
-      size: size > 0 && size <= 4096 ? size : null,
+      size,
       type: decodeTypeEncoding(typeEnc),
     });
   }
@@ -536,7 +545,7 @@ async function readClass(get, classAddr, out, seen, meta, completeness = null) {
   // ivar とプロパティはインスタンス側にしかない（クラスメソッド側には持たせない）
   if (!meta) {
     try {
-      info.ivars = await readIvars(get, cleanPointer(get, u64(ro, RO_IVARS)));
+      info.ivars = await readIvars(get, cleanPointer(get, u64(ro, RO_IVARS)), info.instanceSize, completeness);
     } catch { info.ivars = []; }
     try {
       // 表が短くて baseProperties まで届かないことがある。届かなければ空のまま。
