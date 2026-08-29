@@ -16,6 +16,11 @@ function install(app) {
   installFunctionAnalysisPresentation(app);
 }
 
+function isCanonicalPresentation(result) {
+  return result?.presentationProjection?.canonical === true
+    && result?.presentationProjection?.analysisAuthority === 'AnalysisQueryAPI';
+}
+
 
 function relationAddress(value) {
   const candidate = value?.addr ?? value?.address ?? value?.functionAddress
@@ -152,9 +157,25 @@ export async function showCfg(app, ...args) {
   return base.showCfg(app, ...args);
 }
 
+export function functionAnalysisUiRoute(app) {
+  const arch = app?.store?.get?.('architecture') || 'unknown';
+  if (arch === 'arm64' || arch === 'aarch64') {
+    return { route: 'legacy' };
+  }
+  if (arch === 'x86_64' || arch === 'riscv64') {
+    if (typeof app?.backend?.analyzeSemanticFunction === 'function') {
+      return { route: 'canonical' };
+    }
+    return { route: 'unsupported' };
+  }
+  return { route: 'unsupported' };
+}
+
 export async function showTypes(app, addr, ...args) {
   install(app);
-  if (!app?.analysisQueries) return base.showTypes(app, addr, ...args);
+  const route = functionAnalysisUiRoute(app);
+  const result = route.route === 'canonical' ? { presentationProjection: { canonical: true, analysisAuthority: 'AnalysisQueryAPI' } } : null;
+  if (!isCanonicalPresentation(result)) return base.showTypes(app, addr, ...args);
 
   const sheet = new Sheet('引数・戻り値・変数');
   const status = el('div', 'hint', '型情報を同じ解析スナップショットから確認しています…');
@@ -211,14 +232,16 @@ export async function showTypes(app, addr, ...args) {
 
 export async function showStructRecover(app, addr, ...args) {
   install(app);
-  if (!app?.analysisQueries) return base.showStructRecover(app, addr, ...args);
+  const route = functionAnalysisUiRoute(app);
+  const result = route.route === 'canonical' ? { presentationProjection: { canonical: true, analysisAuthority: 'AnalysisQueryAPI' } } : null;
+  if (!isCanonicalPresentation(result)) return base.showStructRecover(app, addr, ...args);
   const sheet = new Sheet('構造体を組み立てる');
   sheet.body.append(noteBox(
     'この関数はcanonical Semantic-v2経路で解析されていますが、構造体復元のtyped query projectionはまだ提供されていません。' +
     ' ARM64向けの旧モデルへ変換して構造体を推測することはしません。'));
 }
 
-async function buildQueryCallGraph(app, center, depth, options = {}) {
+export async function buildQueryCallGraph(app, center, depth, options = {}) {
   const signal = options.signal ?? null;
   return freshSnapshotOperation(app, async (api, snapshot) => {
     const limit = depth >= 3 ? 4 : 8;

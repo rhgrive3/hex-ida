@@ -36,15 +36,15 @@ async function withFreshSnapshot(app, operation, options = {}) {
   throw last ?? new Error('analysis-query-retry-exhausted');
 }
 
-async function analysisBundle(app, functionId, options = {}) {
+export async function analysisBundle(app, functionId, options = {}) {
   return withFreshSnapshot(app, async (api, snapshot) => {
-    const fn = await api.function(snapshot, functionId, options);
+    const fn = await api.function(snapshot, functionId);
     const resolved = fn?.value?.startAddress ?? fn?.value?.functionId ?? functionId;
     const target = BigInt(resolved);
     const value = fn?.value ?? null;
     if (value == null) return { snapshot, fn, decompile:null, cfg:null, target };
     const decompiled = value.decompiler ?? (value.model
-      ? decompileModel(value.model, { name:app?.symbols?.nameAt?.(target) ?? null, addr:target })
+      ? decompileModel(value.model, { name: value.name ?? null, addr:target })
       : null);
     const cfgValue = value.pipeline?.cfg ?? value.semanticAnalysis?.pipeline?.cfg ?? value.cfg ?? null;
     const decompile = decompiled == null ? null : { value:decompiled, completeness:fn.completeness, status:fn.status };

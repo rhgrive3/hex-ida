@@ -99,13 +99,18 @@ function needFunction(app) {
 }
 
 /** 関数を解析して model を得る。 */
-async function modelOf(app, addr) {
+export async function modelOf(app, addr) {
   const region = app.store.get('currentRegion');
   if (!region) return null;
   const owner = app.executableRegionFor?.(addr) ?? app.regionForAddress?.(addr) ?? null;
   if (owner?.exec && owner !== region) app.selectRegion(owner, { silent:true });
-  // Known functions are demand-loaded through the canonical function query.
-  // Unknown boundaries fail closed instead of forcing whole-slice discovery.
+  const fn = app.symbols?.functionAt?.(addr);
+  if (!fn && owner?.exec && app.backend?.guessFunctions) {
+    const res = await app.backend.guessFunctions(owner.id);
+    if (res?.starts?.length && app.symbols?.addFunctions) {
+      app.symbols.addFunctions(res.starts);
+    }
+  }
   return app.analyzeFunctionAt(addr);
 }
 
