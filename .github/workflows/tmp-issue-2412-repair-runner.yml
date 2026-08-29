@@ -66,8 +66,8 @@ jobs:
           node tests/semantic-v2/issue-817-canonical-stack-offsets.test.mjs
           node tests/semantic-v2/repair-region-provenance-core.test.mjs
           node tests/phase7/pointsto/a2-local.test.mjs
-          npm run semantic-v2:test
           npm run userscript:build
+          npm run semantic-v2:test
           git diff --check
       - name: Publish repaired PR head
         if: steps.target.outputs.needed == 'true'
