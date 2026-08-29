@@ -11,7 +11,7 @@ permissions:
 
 concurrency:
   group: issue-2396-repair-runner
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   repair:
@@ -34,9 +34,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "34d217e6da2e94a0864d86922ac00e2b1506087b"
+          test "$(git rev-parse HEAD)" = "fb8e28bae96945233bdb658cd4ad48315d2c88bb"
           test "$(git hash-object js/swift.js)" = "b4dba0b2f5c22c9e98db405756c0728d160e618b"
           test -f tools/tmp-issue-2396.patch.gz.b64
+          test -f tools/tmp-issue-2396-policy-v2
           node --input-type=module <<'JS'
           import { parseSwiftFieldDescriptor } from './js/swift.js';
           const mem = new Uint8Array(0x200);
@@ -82,7 +83,7 @@ jobs:
           npm run decompiler:test
           npm run integration:test
 
-      - name: Canonical generated sync and broad validation
+      - name: Ephemeral canonical build and broad validation
         shell: bash
         run: |
           set -euo pipefail
@@ -92,6 +93,11 @@ jobs:
           npm run invariants:test
           npm test
           git diff --check
+          # Component lanes validate generated output ephemerally. Do not publish
+          # the committed projection from this PR; current main owns that boundary.
+          git restore -- userscript/hex.user.template.js userscript/release-version.json
+          git diff --exit-code -- userscript/hex.user.template.js userscript/release-version.json
+          git diff --check
 
       - name: Publish canonical implementation
         shell: bash
@@ -99,7 +105,11 @@ jobs:
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git rm tools/tmp-issue-2396.patch.gz.b64
+          git rm tools/tmp-issue-2396.patch.gz.b64 tools/tmp-issue-2396-policy-v2
           git add -A
+          if git diff --cached --name-only | grep -E '^userscript/(hex\.user\.template\.js|release-version\.json)$'; then
+            echo 'component PR attempted to publish generated outputs' >&2
+            exit 1
+          fi
           git commit -m 'fix(swift): preserve symbolic field type manglings'
           git push origin HEAD:fix/2396-swift-symbolic-mangled-name
