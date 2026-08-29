@@ -13,16 +13,17 @@
  * contract refuses to build such a summary at all.
  */
 
-import { createAnalysisStatus, mergeAnalysisStatus } from '../status.js';
+import { createAnalysisStatus, isCompleteStatus, mergeAnalysisStatus } from '../status.js';
 import {
   classifyCallTargetProof,
   createFunctionSummary,
   createMemoryEffect,
   createUnknownCallEffect,
+  summaryIdentityMatches,
 } from './contract.js';
 
 export const LOCAL_SUMMARY_ANALYZER_ID = 'phase7.summary.local';
-export const LOCAL_SUMMARY_ANALYZER_VERSION = '1.0.1';
+export const LOCAL_SUMMARY_ANALYZER_VERSION = '1.1.0';
 
 const DEFAULT_ADDRESS_SPACES = Object.freeze(['memory']);
 
@@ -161,9 +162,122 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
 
   const returnProvenance = [];
   const nodeByOutput = new Map();
+  const valueById = new Map((ir.values ?? []).map((value) => [String(value.id), value]));
   for (const n of ir.nodes ?? []) {
     for (const out of n.outputs ?? []) nodeByOutput.set(out, n);
   }
+
+  const formalArgumentIndex = (valueId) => {
+    if (Array.isArray(ir.inputs)) return ir.inputs.indexOf(valueId);
+    const value = valueById.get(String(valueId));
+    const explicit = value?.metadata?.argumentIndex
+      ?? value?.metadata?.argIndex
+      ?? value?.metadata?.abiArgIndex;
+    const index = explicit == null ? null : Number(explicit);
+    return Number.isSafeInteger(index) && index >= 0 ? index : -1;
+  };
+
+  const summaryIdentityOptions = (functionId) => {
+    const configured = options.summaryIdentity ?? options.expectedSummaryIdentity;
+    const identity = configured && typeof configured === 'object' && !Array.isArray(configured)
+      ? configured
+      : {};
+    return {
+      functionId,
+      snapshotId: options.snapshotId ?? 'snapshot-unbound',
+      analyzerId: options.summaryAnalyzerId ?? options.expectedSummaryAnalyzerId ?? identity.analyzerId ?? null,
+      analyzerVersion: options.summaryAnalyzerVersion
+        ?? options.expectedSummaryAnalyzerVersion
+        ?? identity.analyzerVersion
+        ?? null,
+    };
+  };
+
+  const callInfo = (node) => {
+    const targetProof = classifyCallTargetProof(node.call);
+    const targets = targetProof.candidateEntityIds;
+    const calleeId = targetProof.exactSingletonEntityId;
+    const supplied = calleeId == null ? null : calleeSummaries.get(calleeId);
+    const current = supplied != null && summaryIdentityMatches(supplied, summaryIdentityOptions(calleeId))
+      ? supplied
+      : null;
+    return {
+      targetProof,
+      targets,
+      supplied,
+      resolved: current,
+      identityMismatch: supplied != null && current == null,
+    };
+  };
+
+  /**
+   * Compose a call-produced return through the current function. A call result
+   * is a boundary, not an argument of the current function; only a complete,
+   * identity-matched callee summary can turn it into one of the finite return
+   * facts. Any unrecognised alternative remains an explicit unknown member.
+   */
+  const composeCallReturnProvenance = (callNode, outputValueId, outerReturnIndex, outerOffset) => {
+    const info = callInfo(callNode);
+    const callee = info.resolved;
+    if (!callee || !isCompleteStatus(callee.status) || callee.unknownCallEffects.length > 0) return null;
+    const callReturnIndex = (callNode.outputs ?? []).indexOf(outputValueId);
+    if (callReturnIndex < 0) return null;
+    const alternatives = (callee.returnProvenance ?? []).filter(
+      (provenance) => Number(provenance.returnIndex ?? 0) === callReturnIndex,
+    );
+    if (!alternatives.length) return null;
+    const argumentIds = callNode.call?.arguments?.length ? callNode.call.arguments : callNode.inputs;
+    const composed = [];
+    for (const provenance of alternatives) {
+      let offset;
+      try { offset = BigInt(outerOffset ?? 0n) + BigInt(provenance.offset ?? 0n); }
+      catch {
+        composed.push({ kind: 'unknown', returnIndex: outerReturnIndex });
+        continue;
+      }
+      if (provenance.kind === 'arg') {
+        const argumentId = provenance.argIndex == null ? null : argumentIds?.[provenance.argIndex];
+        if (argumentId == null) {
+          composed.push({ kind: 'unknown', returnIndex: outerReturnIndex });
+          continue;
+        }
+        // Semantic IR v2 carries actual call argument values. Use the
+        // explicit formal mapping (legacy `ir.inputs` or value metadata); an
+        // ABI call ordinal alone is not proof that an internal value is a
+        // current function argument.
+        const callerArgIndex = formalArgumentIndex(argumentId);
+        if (!Number.isSafeInteger(callerArgIndex) || callerArgIndex < 0) {
+          composed.push({ kind: 'unknown', returnIndex: outerReturnIndex });
+          continue;
+        }
+        composed.push({
+          kind: 'arg',
+          returnIndex: outerReturnIndex,
+          argIndex: callerArgIndex,
+          offset: offset.toString(10),
+        });
+        continue;
+      }
+      if (provenance.kind === 'root' || provenance.kind === 'allocation') {
+        const rootEntityId = provenance.rootEntityId ?? provenance.allocationSiteId ?? null;
+        if (rootEntityId == null || !String(rootEntityId).trim()) {
+          composed.push({ kind: 'unknown', returnIndex: outerReturnIndex });
+          continue;
+        }
+        const fact = {
+          kind: provenance.kind,
+          returnIndex: outerReturnIndex,
+          rootEntityId: String(rootEntityId),
+          offset: offset.toString(10),
+        };
+        if (provenance.allocationSiteId != null) fact.allocationSiteId = String(provenance.allocationSiteId);
+        composed.push(fact);
+        continue;
+      }
+      composed.push({ kind: 'unknown', returnIndex: outerReturnIndex });
+    }
+    return composed;
+  };
 
   for (const node of ir.nodes ?? []) {
     if (node.kind === 'load' || node.kind === 'store') {
@@ -223,7 +337,15 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
             } else break;
           } else break;
         }
-        const inputIndex = ir.inputs ? ir.inputs.indexOf(curr) : -1;
+        const terminalProducer = nodeByOutput.get(curr);
+        const composed = terminalProducer?.kind === 'call'
+          ? composeCallReturnProvenance(terminalProducer, curr, retIdx, offset)
+          : null;
+        if (composed) {
+          returnProvenance.push(...composed);
+          continue;
+        }
+        const inputIndex = formalArgumentIndex(curr);
         if (inputIndex >= 0) {
           returnProvenance.push({
             kind: 'arg',
@@ -260,11 +382,7 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
 
     if (node.kind !== 'call') continue;
 
-    const targetProof = classifyCallTargetProof(node.call);
-    const targets = targetProof.candidateEntityIds;
-    const resolved = targetProof.exactSingletonEntityId == null
-      ? null
-      : calleeSummaries.get(targetProof.exactSingletonEntityId);
+    const { targetProof, targets, resolved, identityMismatch } = callInfo(node);
 
     if (resolved) {
       // A callee summary can be exact only after the call-site target universe
@@ -309,7 +427,9 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
     if (!complete || !readOk || !writeOk || nonExhaustiveIndirect) {
       unknownCallEffects.push(createUnknownCallEffect({
         callSiteId: node.id,
-        reason: nonExhaustiveIndirect
+        reason: identityMismatch
+          ? 'summary-stale'
+          : nonExhaustiveIndirect
           ? 'indirect-incomplete-target-set'
           : targets.length ? 'summary-missing' : 'unresolved-target',
         targetEntityIds: targets,

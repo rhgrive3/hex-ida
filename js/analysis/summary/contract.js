@@ -16,8 +16,8 @@
 import { deepFreeze, stableDigest } from '../../core/identity/index.js';
 import { createAnalysisStatus, isCompleteStatus } from '../status.js';
 
-export const FUNCTION_SUMMARY_SCHEMA_VERSION = 1;
-export const FUNCTION_SUMMARY_CONTRACT_VERSION = '1.0.0';
+export const FUNCTION_SUMMARY_SCHEMA_VERSION = 2;
+export const FUNCTION_SUMMARY_CONTRACT_VERSION = '1.1.0';
 
 /**
  * Where an effect's authority comes from, in the priority order P7-INV-004
@@ -50,6 +50,14 @@ function fail(code) { throw new TypeError(code); }
 function nonEmpty(value, code) {
   const text = String(value ?? '').trim();
   if (!text) fail(code);
+  return text;
+}
+
+function optionalReturnIdentity(value) {
+  if (value == null) return null;
+  if (typeof value !== 'string') fail('function-summary-invalid-return-provenance-identity');
+  const text = value.trim();
+  if (!text) fail('function-summary-invalid-return-provenance-identity');
   return text;
 }
 
@@ -163,7 +171,8 @@ function createReturnProvenance(input = {}) {
   const argIndex = input.argIndex == null ? null : Number(input.argIndex);
   const returnIndex = input.returnIndex == null ? null : Number(input.returnIndex);
   const offset = input.offset == null ? null : BigInt(input.offset);
-  const rootEntityId = input.rootEntityId == null ? null : String(input.rootEntityId);
+  const rootEntityId = optionalReturnIdentity(input.rootEntityId);
+  const allocationSiteId = optionalReturnIdentity(input.allocationSiteId);
   if (input.argIndex != null && (!Number.isSafeInteger(argIndex) || argIndex < 0)) {
     fail('function-summary-invalid-return-provenance-arg-index');
   }
@@ -176,6 +185,7 @@ function createReturnProvenance(input = {}) {
     offset: offset == null ? null : offset.toString(10),
     rootEntityId,
   };
+  if (input.allocationSiteId != null) out.allocationSiteId = allocationSiteId;
   // Keep old summaries wire-compatible: an omitted returnIndex still means the
   // primary return position. New producers set it explicitly for multi-return
   // ABIs so alternatives from different return positions never get joined.
@@ -192,14 +202,66 @@ function canonicalReturnProvenance(values) {
       value.argIndex ?? '',
       value.offset ?? '',
       value.rootEntityId ?? '',
+      value.allocationSiteId ?? '',
     ].join('\u0000');
     if (!byKey.has(key)) byKey.set(key, value);
   }
   return [...byKey.values()].sort((left, right) => {
-    const leftKey = [left.returnIndex ?? 0, left.kind, left.argIndex ?? -1, left.offset ?? '', left.rootEntityId ?? ''].join('\u0000');
-    const rightKey = [right.returnIndex ?? 0, right.kind, right.argIndex ?? -1, right.offset ?? '', right.rootEntityId ?? ''].join('\u0000');
+    const leftKey = [left.returnIndex ?? 0, left.kind, left.argIndex ?? -1, left.offset ?? '', left.rootEntityId ?? '', left.allocationSiteId ?? ''].join('\u0000');
+    const rightKey = [right.returnIndex ?? 0, right.kind, right.argIndex ?? -1, right.offset ?? '', right.rootEntityId ?? '', right.allocationSiteId ?? ''].join('\u0000');
     return leftKey.localeCompare(rightKey);
   });
+}
+
+/**
+ * Checks the identity envelope before a consumer treats a summary as current.
+ * Completeness is intentionally separate: a current partial summary is still
+ * not an exact answer, while a complete summary from another snapshot is
+ * stale evidence and must not be consumed at all.
+ */
+export function summaryIdentityMatches(summary, {
+  functionId = null,
+  snapshotId = null,
+  analyzerId = null,
+  analyzerVersion = null,
+} = {}) {
+  if (!summary || typeof summary !== 'object' || Array.isArray(summary)) return false;
+  if (summary.schemaVersion !== FUNCTION_SUMMARY_SCHEMA_VERSION
+    || summary.contractVersion !== FUNCTION_SUMMARY_CONTRACT_VERSION) return false;
+  // Identity alone is not enough to consume an untrusted serialized summary:
+  // a forged envelope with a non-array returnProvenance would otherwise pass
+  // this gate and make call-result transfer throw while inspecting it. Keep the
+  // consumer boundary fail-closed for malformed/future-shaped artifacts.
+  if (typeof summary.functionId !== 'string' || !summary.functionId.trim()) return false;
+  for (const field of [
+    'inputs', 'returnValues', 'returnProvenance', 'registerEffects',
+    'memoryReadRegions', 'memoryWriteRegions', 'escapes', 'allocations',
+    'frees', 'directCalls', 'indirectCallSets', 'unknownCallEffects',
+    'semanticFacts',
+  ]) {
+    if (!Array.isArray(summary[field])) return false;
+  }
+  if (!summary.returnProvenance.every((value) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    for (const field of ['rootEntityId', 'allocationSiteId']) {
+      if (value[field] != null && (typeof value[field] !== 'string' || !value[field].trim())) return false;
+    }
+    if (value.kind === 'root' || value.kind === 'allocation') {
+      const identity = value.rootEntityId ?? value.allocationSiteId ?? null;
+      if (typeof identity !== 'string' || !identity.trim()) return false;
+    }
+    return true;
+  })) return false;
+  if (functionId != null && String(summary.functionId ?? '') !== String(functionId)) return false;
+  const status = summary.status;
+  if (!status || typeof status !== 'object' || Array.isArray(status)) return false;
+  if (typeof status.snapshotId !== 'string' || !status.snapshotId.trim()
+    || typeof status.analyzerId !== 'string' || !status.analyzerId.trim()
+    || typeof status.analyzerVersion !== 'string' || !status.analyzerVersion.trim()) return false;
+  if (snapshotId != null && status.snapshotId !== String(snapshotId)) return false;
+  if (analyzerId != null && status.analyzerId !== String(analyzerId)) return false;
+  if (analyzerVersion != null && status.analyzerVersion !== String(analyzerVersion)) return false;
+  return true;
 }
 
 /**
