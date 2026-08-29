@@ -102,16 +102,24 @@ function constantOfValue(value) {
   try { return bitvector(raw, bits); } catch { return null; }
 }
 
+const VALUE_PROVENANCE_CACHE = new WeakMap();
+
 function valueProvenance(value) {
+  if (value != null && typeof value === 'object') {
+    const cached = VALUE_PROVENANCE_CACHE.get(value);
+    if (cached != null) return cached;
+  }
   const ids = [
     ...(Array.isArray(value?.origin?.instructionIds) ? value.origin.instructionIds : []),
     ...(Array.isArray(value?.def?.origin?.instructionIds) ? value.def.origin.instructionIds : []),
   ];
-  return {
+  const provenance = Object.freeze({
     valueId: value?.id ?? null,
     definitionBlock: value?.def?.block ?? null,
-    instructionIds: [...new Set(ids)].sort(),
-  };
+    instructionIds: Object.freeze([...new Set(ids)].sort()),
+  });
+  if (value != null && typeof value === 'object') VALUE_PROVENANCE_CACHE.set(value, provenance);
+  return provenance;
 }
 
 function attachValueProvenance(fact, value) {

@@ -134,6 +134,7 @@ function maskFactsForConstant(mask, bits, operand) {
 
 function immutableProvenance(provenance) {
   if (!provenance || typeof provenance !== 'object') return Object.freeze({});
+  if (Object.isFrozen(provenance)) return provenance;
   const copy = {};
   for (const key of Object.keys(provenance).sort()) {
     const value = provenance[key];
@@ -144,6 +145,7 @@ function immutableProvenance(provenance) {
 
 function immutableEvidence(value) {
   if (value == null || typeof value !== 'object') return value;
+  if (Object.isFrozen(value)) return value;
   if (Array.isArray(value)) return Object.freeze(value.map((item) => immutableEvidence(item)));
   const copy = {};
   for (const key of Object.keys(value).sort()) copy[key] = immutableEvidence(value[key]);
@@ -151,6 +153,11 @@ function immutableEvidence(value) {
 }
 
 function mergeProvenance(left, right) {
+  if (left === right && left != null) return left;
+  if (left == null && right == null) return Object.freeze({});
+  if (left == null) return immutableProvenance(right);
+  if (right == null) return immutableProvenance(left);
+  if (sameProvenance(left, right)) return left;
   const merged = {};
   for (const source of [left, right]) {
     if (!source || typeof source !== 'object') continue;
@@ -161,6 +168,27 @@ function mergeProvenance(left, right) {
     }
   }
   return immutableProvenance(merged);
+}
+
+// Provenance is on the hot path of every product-fact join.  Keep the generic
+// descriptor comparator for alignment/pointer evidence, but compare the
+// canonical provenance shape without sorting object keys or recursing through
+// its instruction-id array on every revisit.
+function sameProvenance(left, right) {
+  if (left === right) return true;
+  if (left == null || right == null || typeof left !== 'object' || typeof right !== 'object') return false;
+  if (left.valueId !== right.valueId || left.definitionBlock !== right.definitionBlock) return false;
+  const leftIds = left.instructionIds;
+  const rightIds = right.instructionIds;
+  if (leftIds === rightIds) return true;
+  if (!Array.isArray(leftIds) || !Array.isArray(rightIds) || leftIds.length !== rightIds.length) return false;
+  for (let index = 0; index < leftIds.length; index += 1) {
+    if (leftIds[index] !== rightIds[index]) return false;
+  }
+  const leftKeys = Object.keys(left).filter((key) => key !== 'valueId' && key !== 'definitionBlock' && key !== 'instructionIds').sort();
+  const rightKeys = Object.keys(right).filter((key) => key !== 'valueId' && key !== 'definitionBlock' && key !== 'instructionIds').sort();
+  return leftKeys.length === rightKeys.length
+    && leftKeys.every((key, index) => key === rightKeys[index] && sameEvidence(left[key], right[key]));
 }
 
 /* Descriptors are upstream evidence and may contain BigInt offsets.  Keep a
