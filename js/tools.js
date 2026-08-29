@@ -1,10 +1,15 @@
-import * as base from './tools-base.js';
 import { installFunctionAnalysisPresentation } from './ui/function-analysis-presentation.js';
 import { Sheet, el, button, list, groupRow, tapRow, toast, noteBox } from './ui.js';
 import { addrHex } from './format.js';
-import { renderGraph, graphLegend } from './graphview.js';
+import { isMangled, shortName, readableName } from './rtti.js';
 
-export * from './tools-base.js';
+let _toolsBasePromise = null;
+function loadToolsBase() {
+  if (!_toolsBasePromise) {
+    _toolsBasePromise = import('./tools-base.js');
+  }
+  return _toolsBasePromise;
+}
 
 const FACT = 'fact';
 const INFER = 'infer';
@@ -78,8 +83,48 @@ function confidenceMark(confidence) {
   return count ? `${'★'.repeat(count)}${'☆'.repeat(3 - count)}` : '';
 }
 
+export function currentFunctionAddr(app) {
+  const sym = app.symbols;
+  const row = app.viewer ? app.viewer.selectedRow : -1;
+  const region = app.store.get('currentRegion');
+  if (region && row >= 0) {
+    const addr = app.viewer?.rowAddress ? app.viewer.rowAddress(row) : null;
+    if (addr == null) return null;
+    const fn = sym && sym.functionCount ? sym.functionAt(addr) : null;
+    if (fn) return fn.start;
+    return addr;
+  }
+  if (app.semantic && app.semantic.result) return app.semantic.result.startAddr;
+  const list2 = sym && sym.functionCount ? sym.functionList(app.codeRegion(), 1) : [];
+  return list2.length ? list2[0].addr : null;
+}
+
+export async function modelOf(app, addr) {
+  const base = await loadToolsBase();
+  return base.modelOf(app, addr);
+}
+
+export function parseDebuggerArgument(value) {
+  const raw = String(value ?? '');
+  if (!raw || raw !== raw.trim() || !/^-?(?:0[xX][0-9a-fA-F]+|[0-9]+)$/.test(raw)) {
+    return { ok: false, value: null, error: '10進整数か0x付き16進整数を入力してください。' };
+  }
+  try { return { ok: true, value: BigInt(raw), error: null }; }
+  catch { return { ok: false, value: null, error: '整数として読み取れません。' }; }
+}
+
+export function prettyName(name) {
+  if (!name) return name;
+  return isMangled(name) ? shortName(name) : name;
+}
+
+export function fullName(name) {
+  if (!name) return name;
+  return isMangled(name) ? readableName(name) : name;
+}
+
 function needFunction(app) {
-  const address = base.currentFunctionAddr(app);
+  const address = currentFunctionAddr(app);
   if (address == null) {
     toast('先に関数を選んでください（「関数」から選ぶか、命令をタップします）。');
     return null;
@@ -87,10 +132,29 @@ function needFunction(app) {
   return address;
 }
 
+const base = {
+  get showTypes() { return (async (...args) => (await loadToolsBase()).showTypes(...args)); },
+  get showStructRecover() { return (async (...args) => (await loadToolsBase()).showStructRecover(...args)); },
+  get showDecompiler() { return (async (...args) => (await loadToolsBase()).showDecompiler(...args)); },
+  get showCfg() { return (async (...args) => (await loadToolsBase()).showCfg(...args)); },
+  get showDebugger() { return (async (...args) => (await loadToolsBase()).showDebugger(...args)); },
+  get showRename() { return (async (...args) => (await loadToolsBase()).showRename(...args)); },
+  get showLinkage() { return (async (...args) => (await loadToolsBase()).showLinkage(...args)); },
+  get showGlobals() { return (async (...args) => (await loadToolsBase()).showGlobals(...args)); },
+  get showCxxClasses() { return (async (...args) => (await loadToolsBase()).showCxxClasses(...args)); },
+  get showIl2cpp() { return (async (...args) => (await loadToolsBase()).showIl2cpp(...args)); },
+  get showPatches() { return (async (...args) => (await loadToolsBase()).showPatches(...args)); },
+  get showNotes() { return (async (...args) => (await loadToolsBase()).showNotes(...args)); },
+  get showStructs() { return (async (...args) => (await loadToolsBase()).showStructs(...args)); },
+  get showScript() { return (async (...args) => (await loadToolsBase()).showScript(...args)); },
+  get showPlugins() { return (async (...args) => (await loadToolsBase()).showPlugins(...args)); },
+  currentFunctionAddr,
+};
+
 export function showTools(app) {
   install(app);
   const sheet = new Sheet('解析');
-  const address = base.currentFunctionAddr(app);
+  const address = currentFunctionAddr(app);
   if (address != null) {
     const head = el('div', 'block');
     head.append(el('div', 'bigval mono', labelFor(app, BigInt(address))));
@@ -316,6 +380,7 @@ export async function showCallGraphPanel(app, addr) {
       void draw();
     }));
   }
+  const { renderGraph, graphLegend } = await import('./graphview.js');
   sheet.body.append(chips, graphLegend('call'));
 
   async function draw() {
@@ -343,5 +408,67 @@ export async function showCallGraphPanel(app, addr) {
 
 export async function showDebugger(app, ...args) {
   install(app);
+  const base = await loadToolsBase();
   return base.showDebugger(app, ...args);
 }
+
+export async function showRename(app, ...args) {
+  const base = await loadToolsBase();
+  return base.showRename(app, ...args);
+}
+
+export async function showComment(app, ...args) {
+  const base = await loadToolsBase();
+  return base.showComment(app, ...args);
+}
+
+export async function showNotes(app, ...args) {
+  const base = await loadToolsBase();
+  return base.showNotes(app, ...args);
+}
+
+export async function showPatches(app, ...args) {
+  const base = await loadToolsBase();
+  return base.showPatches(app, ...args);
+}
+
+export async function showPatchEditor(app, ...args) {
+  const base = await loadToolsBase();
+  return base.showPatchEditor(app, ...args);
+}
+
+export async function showStructs(app, ...args) {
+  const base = await loadToolsBase();
+  return base.showStructs(app, ...args);
+}
+
+export async function showCxxClasses(app, ...args) {
+  const base = await loadToolsBase();
+  return base.showCxxClasses(app, ...args);
+}
+
+export async function showLinkage(app, ...args) {
+  const base = await loadToolsBase();
+  return base.showLinkage(app, ...args);
+}
+
+export async function showGlobals(app, ...args) {
+  const base = await loadToolsBase();
+  return base.showGlobals(app, ...args);
+}
+
+export async function showScript(app, ...args) {
+  const base = await loadToolsBase();
+  return base.showScript(app, ...args);
+}
+
+export async function showPlugins(app, ...args) {
+  const base = await loadToolsBase();
+  return base.showPlugins(app, ...args);
+}
+
+export async function showIl2cpp(app, ...args) {
+  const base = await loadToolsBase();
+  return base.showIl2cpp(app, ...args);
+}
+
