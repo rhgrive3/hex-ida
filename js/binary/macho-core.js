@@ -474,47 +474,261 @@ function selectFatSlice(bytes, kind, preferredArch) {
 }
 
 export function parseCompactUnwind(r, image, metadataBudget = null) {
-  const sec=image.sections.find((s)=>s.name==='__unwind_info'||s.name==='__TEXT,__unwind_info');
-  if(!sec)return;
-  const budget=ensureMachOMetadataBudget(image,metadataBudget);let complete=true;
-  const partial=(reason)=>{complete=false;budget.partial(`compact-unwind:${reason}`);};
-  if(sec.fileOffset==null||sec.fileSize==null||sec.fileSize<28n){partial('section-too-small');return;}
-  const fileOff=Number(sec.fileOffset),fileSize=Number(sec.fileSize);
-  if(!Number.isSafeInteger(fileOff)||!Number.isSafeInteger(fileSize)||fileOff<0||fileSize<28||fileOff+fileSize>r.length){partial('section-out-of-range');return;}
-  if(!budget.take({inputBytes:28,records:1,objects:1,operations:1,estimatedHeapBytes:64},'compact-unwind-header'))return;
-  const version=r.u32(fileOff);if(version!==1){partial('unsupported-version');return;}
-  const indexOff=r.u32(fileOff+20),indexCount=r.u32(fileOff+24);
-  if(indexCount<2||indexOff>fileSize||indexCount>(fileSize-indexOff)/12){partial('index-out-of-range');return;}
-  const textSeg=image.segments.find((s)=>s.name==='__TEXT');
-  const imageBase=textSeg?textSeg.address:(image.segments[0]?image.segments[0].address:0n);
-  const alignment=(image.arch==='arm64'||image.arch==='arm64e'||image.arch==='arm64_32')?4n:image.arch==='arm'?2n:1n;
-  const functionAddresses=new Set();
-  outer: for(let i=0;i<indexCount-1;i++){
-    if(!budget.take({inputBytes:12,records:1,objects:1,operations:1,estimatedHeapBytes:48},'compact-unwind-index')){complete=false;break;}
-    const e=fileOff+indexOff+i*12,next=e+12,lower=r.u32(e),upper=r.u32(next),pageOff=r.u32(e+4);
-    if(upper<=lower){partial('nonmonotonic-first-level-range');continue;}
-    if(!pageOff||pageOff+8>fileSize){partial('page-out-of-range');continue;}
-    const pageAbs=fileOff+pageOff,pageBytes=Math.min(4096,fileSize-pageOff),kind=r.u32(pageAbs),entryOff=r.u16(pageAbs+4),count=r.u16(pageAbs+6);
-    const stride=kind===2?8:kind===3?4:0;
-    if(!stride){partial('unsupported-second-level-kind');continue;}
-    if(entryOff<8||entryOff>pageBytes||count>(pageBytes-entryOff)/stride){partial('entry-array-out-of-page');continue;}
-    for(let k=0;k<count;k++){
-      if(!budget.take({inputBytes:stride,records:1,objects:1,operations:2,estimatedHeapBytes:48},'compact-unwind-entry')){complete=false;break outer;}
-      const at=pageAbs+entryOff+k*stride;
-      let functionOffset;
-      if(kind===2)functionOffset=r.u32(at);
-      else functionOffset=lower+(r.u32(at)&0x00ffffff);
-      if(functionOffset<lower||functionOffset>=upper){partial('entry-outside-first-level-range');continue;}
-      functionAddresses.add(imageBase+BigInt(functionOffset));
+  const sec = image.sections.find((s) => s.name === '__unwind_info' || s.name === '__TEXT,__unwind_info');
+  if (!sec) return;
+
+  const budget = ensureMachOMetadataBudget(image, metadataBudget);
+  const status = image.metadata.compactUnwind = {
+    present: true,
+    complete: true,
+    recovered: 0,
+    invalidEntries: 0,
+    partialReason: null,
+  };
+  const fail = (reason, warning = null, invalidEntry = false) => {
+    status.complete = false;
+    if (status.partialReason == null) status.partialReason = reason;
+    if (invalidEntry) status.invalidEntries++;
+    markMachOMetadataPartial(image, `compact-unwind:${reason}`);
+    if (warning && !budget.signal?.aborted) budget.warn(`compact unwind: ${warning}`);
+    return false;
+  };
+  const take = (cost, reason) => {
+    if (budget.take(cost, `compact-unwind-${reason}`)) return true;
+    fail('metadata-budget');
+    return false;
+  };
+  const notFunctionStartMask = 0x80000000;
+
+  if (sec.fileOffset == null || sec.fileSize == null || sec.fileSize < 28n) {
+    fail('section-truncated', 'section is too small for the compact-unwind header');
+    return;
+  }
+  const fileOff = Number(sec.fileOffset);
+  const fileSize = Number(sec.fileSize);
+  if (!Number.isSafeInteger(fileOff) || !Number.isSafeInteger(fileSize)
+      || fileOff < 0 || fileSize < 28 || fileOff > r.length || fileSize > r.length - fileOff) {
+    fail('section-range-invalid', 'section file range is outside the input');
+    return;
+  }
+  if (!take({ inputBytes:28, records:1, operations:1, estimatedHeapBytes:64 }, 'header')) return;
+
+  const version = r.u32(fileOff);
+  if (version !== 1) {
+    fail('unsupported-version', `unsupported version ${version}`);
+    return;
+  }
+  const commonOff = r.u32(fileOff + 4);
+  const commonCount = r.u32(fileOff + 8);
+  const personalityOff = r.u32(fileOff + 12);
+  const personalityCount = r.u32(fileOff + 16);
+  const indexOff = r.u32(fileOff + 20);
+  const indexCount = r.u32(fileOff + 24);
+  const arrayFits = (offset, count, stride) => {
+    if (!count) return offset === 0 || offset <= fileSize;
+    const bytes = count * stride;
+    return Number.isSafeInteger(bytes) && offset >= 28 && offset <= fileSize && bytes <= fileSize - offset;
+  };
+  if (!arrayFits(commonOff, commonCount, 4)) {
+    fail('common-encodings-range-invalid', 'common encoding array escapes the section');
+    return;
+  }
+  if (!arrayFits(personalityOff, personalityCount, 4)) {
+    fail('personality-range-invalid', 'personality array escapes the section');
+    return;
+  }
+  if (indexCount < 2) {
+    fail('index-missing-sentinel', 'first-level index requires at least one page plus a sentinel');
+    return;
+  }
+  const indexBytes = indexCount * 12;
+  if (!Number.isSafeInteger(indexBytes) || indexOff < 28 || indexOff > fileSize || indexBytes > fileSize - indexOff) {
+    fail('index-range-invalid', 'first-level index escapes the section');
+    return;
+  }
+  const indexEnd = indexOff + indexBytes;
+  const ancillaryBytes = commonCount * 4 + personalityCount * 4;
+  if (!take({ inputBytes:indexBytes + ancillaryBytes, records:indexCount, operations:indexCount, estimatedHeapBytes:indexCount*40 }, 'index')) return;
+
+  const indexes = [];
+  const pageOffsets = new Set();
+  for (let i = 0; i < indexCount; i++) {
+    const e = fileOff + indexOff + i * 12;
+    const functionOffset = r.u32(e);
+    const pageOff = r.u32(e + 4);
+    const lsdaOff = r.u32(e + 8);
+    if (i > 0 && functionOffset <= indexes[i - 1].functionOffset) {
+      fail('index-order-invalid', 'first-level function offsets must be strictly increasing');
+      return;
+    }
+    if (lsdaOff > fileSize) {
+      fail('lsda-range-invalid', 'LSDA index offset escapes the section');
+      return;
+    }
+    const sentinel = i === indexCount - 1;
+    if (sentinel) {
+      if (pageOff !== 0) {
+        fail('sentinel-page-invalid', 'sentinel must not own a second-level page');
+        return;
+      }
+    } else {
+      if (!pageOff || pageOff < indexEnd || pageOff > fileSize - 8) {
+        fail('page-range-invalid', `page ${i} header escapes or overlaps the first-level index`);
+        return;
+      }
+      if (pageOffsets.has(pageOff)) {
+        fail('page-offset-duplicate', `page ${i} reuses a second-level page offset`);
+        return;
+      }
+      pageOffsets.add(pageOff);
+    }
+    indexes.push({ functionOffset, pageOff, lsdaOff });
+  }
+
+  const physicalPageOffsets = [...pageOffsets].sort((a, b) => a - b);
+  const pageEndByOffset = new Map();
+  for (let i = 0; i < physicalPageOffsets.length; i++) {
+    const pageOff = physicalPageOffsets[i];
+    const nextPhysical = physicalPageOffsets[i + 1] ?? fileSize;
+    pageEndByOffset.set(pageOff, Math.min(fileSize, pageOff + 4096, nextPhysical));
+  }
+
+  const candidateRanges = [];
+  for (let i = 0; i < indexCount - 1; i++) {
+    const lower = indexes[i].functionOffset;
+    const upper = indexes[i + 1].functionOffset;
+    const pageOff = indexes[i].pageOff;
+    const pageEnd = pageEndByOffset.get(pageOff) ?? pageOff;
+    const pageSpan = pageEnd - pageOff;
+    if (pageSpan < 8 || !take({ inputBytes:8, records:1, operations:1, estimatedHeapBytes:32 }, 'page-header')) return;
+
+    const pageAbs = fileOff + pageOff;
+    const kind = r.u32(pageAbs);
+    const entries = [];
+    if (kind === 2) {
+      const entryOff = r.u16(pageAbs + 4);
+      const count = r.u16(pageAbs + 6);
+      const entryBytes = count * 8;
+      if (!count || entryOff < 8 || !Number.isSafeInteger(entryBytes) || entryOff > pageSpan || entryBytes > pageSpan - entryOff) {
+        fail('regular-page-range-invalid', `regular page ${i} entry array escapes its page`);
+        return;
+      }
+      if (!take({ inputBytes:entryBytes, records:count, operations:count, estimatedHeapBytes:count*24 }, 'regular-entry')) return;
+      for (let k = 0; k < count; k++) {
+        const at = pageAbs + entryOff + k * 8;
+        entries.push({ functionOffset:r.u32(at), encoding:r.u32(at + 4) });
+      }
+    } else if (kind === 3) {
+      if (pageSpan < 12) {
+        fail('compressed-page-header-truncated', `compressed page ${i} header is truncated`);
+        return;
+      }
+      const entryOff = r.u16(pageAbs + 4);
+      const count = r.u16(pageAbs + 6);
+      const encodingsOff = r.u16(pageAbs + 8);
+      const encodingsCount = r.u16(pageAbs + 10);
+      const entryBytes = count * 4;
+      const encodingBytes = encodingsCount * 4;
+      if (!count || entryOff < 12 || !Number.isSafeInteger(entryBytes) || entryOff > pageSpan || entryBytes > pageSpan - entryOff) {
+        fail('compressed-page-range-invalid', `compressed page ${i} entry array escapes its page`);
+        return;
+      }
+      if (encodingsCount && (encodingsOff < 12 || encodingsOff > pageSpan || encodingBytes > pageSpan - encodingsOff)) {
+        fail('compressed-encodings-range-invalid', `compressed page ${i} encoding array escapes its page`);
+        return;
+      }
+      if (encodingsCount && encodingsOff < entryOff + entryBytes) {
+        fail('compressed-page-layout-invalid', `compressed page ${i} encoding array overlaps its entry array`);
+        return;
+      }
+      if (!take({ inputBytes:entryBytes + encodingBytes, records:count, operations:count, estimatedHeapBytes:count*24 }, 'compressed-entry')) return;
+      const encodingDomain = commonCount + encodingsCount;
+      for (let k = 0; k < count; k++) {
+        const entry = r.u32(pageAbs + entryOff + k * 4);
+        const encodingIndex = entry >>> 24;
+        if (encodingIndex >= encodingDomain) {
+          fail('compressed-encoding-index-invalid', `compressed page ${i} uses encoding index ${encodingIndex} outside ${encodingDomain}`, true);
+          return;
+        }
+        const encoding = encodingIndex < commonCount
+          ? r.u32(fileOff + commonOff + encodingIndex * 4)
+          : r.u32(pageAbs + encodingsOff + (encodingIndex - commonCount) * 4);
+        entries.push({ functionOffset:lower + (entry & 0x00ffffff), encoding });
+      }
+    } else {
+      fail('page-kind-unsupported', `second-level page ${i} has unsupported kind ${kind}`);
+      return;
+    }
+
+    if (entries[0].functionOffset !== lower) {
+      fail('page-first-entry-mismatch', `page ${i} first function offset does not match its first-level owner`, true);
+      return;
+    }
+    for (let k = 0; k < entries.length; k++) {
+      const { functionOffset, encoding } = entries[k];
+      if (functionOffset < lower || functionOffset >= upper) {
+        fail('entry-out-of-range', `function offset 0x${functionOffset.toString(16)} escapes [0x${lower.toString(16)},0x${upper.toString(16)})`, true);
+        return;
+      }
+      if (k > 0 && functionOffset <= entries[k - 1].functionOffset) {
+        fail('entry-order-invalid', `page ${i} function offsets must be strictly increasing`, true);
+        return;
+      }
+      const endOffset = entries[k + 1]?.functionOffset ?? upper;
+      if (endOffset <= functionOffset) {
+        fail('entry-extent-invalid', `page ${i} produced a non-positive function extent`, true);
+        return;
+      }
+      candidateRanges.push({ startOffset:functionOffset, endOffset, encoding });
     }
   }
-  if(!complete)return;
-  const sortedAddresses=[...functionAddresses].sort((a,b)=>a<b?-1:a>b?1:0);
-  for(const addr of sortedAddresses){const seg=image.segmentAt(addr);if(!seg||seg.perms?.execute!==true||(alignment>1n&&addr%alignment!==0n)){partial('entry-not-executable-or-aligned');break;}}
-  if(!complete)return;
-  for(let i=0;i<sortedAddresses.length;i++){
-    const start=sortedAddresses[i],end=sortedAddresses[i+1]??null,sizeBytes=end!=null?Number(end-start):null;
-    image.unwindEntries.push({start,end,sizeBytes,primary:true,source:'compact-unwind'});
-    image.functions.push(functionSeed(start,{source:'unwind',confidence:0.95}));
+
+  const textSeg = image.segments.find((s) => s.name === '__TEXT');
+  const imageBase = textSeg ? textSeg.address : (image.segments[0] ? image.segments[0].address : 0n);
+  const alignment = (image.arch === 'arm64' || image.arch === 'arm64e' || image.arch === 'arm64_32') ? 4n : image.arch === 'arm' ? 2n : 1n;
+  const ranges = [];
+  let currentOwnerStart = null;
+  for (const candidate of candidateRanges) {
+    const start = imageBase + BigInt(candidate.startOffset);
+    const end = imageBase + BigInt(candidate.endOffset);
+    const seg = image.segmentAt(start);
+    if (!seg || seg.perms?.execute !== true || (alignment > 1n && start % alignment !== 0n)) {
+      fail('entry-mapping-invalid', `function offset 0x${candidate.startOffset.toString(16)} is not executable/aligned`, true);
+      return;
+    }
+    if (end <= start) {
+      fail('entry-extent-invalid', `function offset 0x${candidate.startOffset.toString(16)} has an invalid end`, true);
+      return;
+    }
+    if (end > seg.address + seg.size || image.segmentAt(end - 1n) !== seg) {
+      fail('entry-extent-mapping-invalid', `function range 0x${candidate.startOffset.toString(16)}..0x${candidate.endOffset.toString(16)} escapes its executable mapping`, true);
+      return;
+    }
+    const continuation = (candidate.encoding & notFunctionStartMask) !== 0;
+    if (continuation) {
+      if (currentOwnerStart == null) {
+        fail('continuation-owner-missing', `continuation range at 0x${candidate.startOffset.toString(16)} has no preceding primary function`, true);
+        return;
+      }
+      ranges.push({ start, end, primary:false, ownerStart:currentOwnerStart });
+    } else {
+      currentOwnerStart = start;
+      ranges.push({ start, end, primary:true, ownerStart:null });
+    }
   }
+
+  if (!take({ objects:ranges.length*2, operations:ranges.length, estimatedHeapBytes:ranges.length*256 }, 'output')) return;
+  for (const range of ranges) {
+    const sizeBytes = Number(range.end - range.start);
+    image.unwindEntries.push({
+      start:range.start,
+      end:range.end,
+      sizeBytes,
+      primary:range.primary,
+      ...(range.primary ? {} : { ownerStart:range.ownerStart }),
+      source:'compact-unwind',
+    });
+    if (range.primary) image.functions.push(functionSeed(range.start, { source:'unwind', confidence:0.95 }));
+  }
+  status.recovered = ranges.length;
 }

@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import { BinaryImage } from '../js/binary/model.js';
+import { ByteView } from '../js/binary/reader.js';
 import { parsePE } from '../js/binary/pe.js';
+import { parseCompactUnwind } from '../js/binary/macho-core.js';
+import { createMachOMetadataBudget } from '../js/binary/macho-budget.js';
 
 const data = new Uint8Array(0x300);
 data.set([0xaa, 0xbb, 0xcc, 0xdd], 0x100);
@@ -93,4 +96,147 @@ assert.equal(parsePE(rawOffsetPE(0x9ff)).sections[0].fileOffset,0x800n,'0x9ff al
 }
 assert.equal(parsePE(rawOffsetPE(0x800)).metadata.peSectionRawMappings[0].roundedDown,false,'aligned raw offset remains unchanged');
 
-console.log('issue 970 mapping-aware BinaryImage virtual read regression + issue 2476 PE raw-offset mapping: PASS');
+function compactUnwindFixture({
+  kind=2,
+  lower=0x1000,
+  upper=0x2000,
+  offsets=[0x1000],
+  pageOff=80,
+  sentinelPageOff=0,
+  entryOff=null,
+  encodingsOff=null,
+  encodingIndices=null,
+  regularEncodings=null,
+  commonCount=1,
+  commonEncoding=0x01000000,
+  localEncodingCount=0,
+  localEncodings=null,
+}={}) {
+  const b=new Uint8Array(512),v=new DataView(b.buffer);
+  const u32=(o,x)=>v.setUint32(o,x>>>0,true),u16=(o,x)=>v.setUint16(o,x,true);
+  u32(0,1);
+  u32(4,commonCount?28:0);u32(8,commonCount);
+  if(commonCount)u32(28,commonEncoding);
+  u32(12,0);u32(16,0);u32(20,32);u32(24,2);
+  u32(32,lower);u32(36,pageOff);u32(40,0);
+  u32(44,upper);u32(48,sentinelPageOff);u32(52,0);
+  u32(pageOff,kind);
+  if(kind===2){
+    const eo=entryOff??8;u16(pageOff+4,eo);u16(pageOff+6,offsets.length);
+    offsets.forEach((offset,i)=>{u32(pageOff+eo+i*8,offset);u32(pageOff+eo+i*8+4,regularEncodings?.[i]??0);});
+  }else if(kind===3){
+    const eo=entryOff??12;u16(pageOff+4,eo);u16(pageOff+6,offsets.length);
+    const localCount=localEncodings?.length??localEncodingCount;
+    const encOff=encodingsOff??(eo+offsets.length*4);u16(pageOff+8,encOff);u16(pageOff+10,localCount);
+    offsets.forEach((offset,i)=>u32(pageOff+eo+i*4,(((encodingIndices?.[i]??0)&0xff)<<24)|((offset-lower)&0x00ffffff)));
+    for(let i=0;i<localCount;i++)u32(pageOff+encOff+i*4,localEncodings?.[i]??(0x02000000+i));
+  }
+  return b;
+}
+function compactUnwindImage(bytes){
+  const base=0x100000000n;
+  const seg={name:'__TEXT',address:base,size:0x10000n,perms:{execute:true}};
+  return {
+    bytes,arch:'arm64',bits:64,
+    sections:[{name:'__unwind_info',fileOffset:0n,fileSize:BigInt(bytes.length)}],
+    segments:[seg],unwindEntries:[],functions:[],metadata:{},warnings:[],
+    segmentAt(addr){return addr>=base&&addr<base+seg.size?seg:null;},
+  };
+}
+function parseUnwindFixture(options={},budgetOptions=null){
+  const bytes=compactUnwindFixture(options),image=compactUnwindImage(bytes);
+  const budget=budgetOptions?createMachOMetadataBudget(image,budgetOptions):null;
+  parseCompactUnwind(new ByteView(bytes),image,budget);
+  return image;
+}
+{
+  const image=parseUnwindFixture();
+  assert.equal(image.unwindEntries.length,1,'regular compact-unwind page remains publishable');
+  assert.equal(image.unwindEntries[0].start,0x100001000n);
+  assert.equal(image.unwindEntries[0].end,0x100002000n,'sentinel upper bound must close the final function extent');
+  assert.equal(image.metadata.compactUnwind.complete,true);
+}
+{
+  const image=parseUnwindFixture({kind:3});
+  assert.equal(image.unwindEntries.length,1,'valid compressed compact-unwind page remains publishable');
+  assert.equal(image.unwindEntries[0].end,0x100002000n);
+}
+for(const kind of [2,3]){
+  const image=parseUnwindFixture({kind,offsets:[0x1000,0x3000]});
+  assert.equal(image.unwindEntries.length,0,`kind ${kind} out-of-range entry must publish no unwind evidence`);
+  assert.equal(image.functions.length,0);
+  assert.equal(image.metadata.compactUnwind.complete,false);
+  assert.equal(image.metadata.compactUnwind.partialReason,'entry-out-of-range');
+}
+{
+  const image=parseUnwindFixture({kind:3,entryOff:8});
+  assert.equal(image.unwindEntries.length,0,'compressed entry array may not overlap its 12-byte header');
+  assert.equal(image.metadata.compactUnwind.partialReason,'compressed-page-range-invalid');
+}
+{
+  const image=parseUnwindFixture({kind:3,encodingIndices:[1]});
+  assert.equal(image.unwindEntries.length,0,'compressed encoding index outside common+local domain must fail closed');
+  assert.equal(image.metadata.compactUnwind.partialReason,'compressed-encoding-index-invalid');
+}
+{
+  const image=parseUnwindFixture({kind:3,offsets:[0x1000,0x1100],localEncodingCount:1,encodingsOff:16});
+  assert.equal(image.unwindEntries.length,0,'compressed local encoding array may not overlap its entry array');
+  assert.equal(image.functions.length,0);
+  assert.equal(image.metadata.compactUnwind.partialReason,'compressed-page-layout-invalid');
+}
+{
+  const image=parseUnwindFixture({offsets:[0x1000,0x1100],regularEncodings:[0,0x80000000]});
+  assert.equal(image.unwindEntries.length,2,'regular continuation must remain canonical unwind evidence');
+  assert.equal(image.functions.length,1,'regular continuation must not mint an independent function seed');
+  assert.equal(image.unwindEntries[0].primary,true);
+  assert.equal(image.unwindEntries[1].primary,false);
+  assert.equal(image.unwindEntries[1].ownerStart,0x100001000n);
+}
+{
+  const image=parseUnwindFixture({kind:3,offsets:[0x1000,0x1100],encodingIndices:[0,1],localEncodings:[0x80000000]});
+  assert.equal(image.unwindEntries.length,2,'compressed continuation must remain canonical unwind evidence');
+  assert.equal(image.functions.length,1,'compressed continuation must not mint an independent function seed');
+  assert.equal(image.unwindEntries[1].primary,false);
+  assert.equal(image.unwindEntries[1].ownerStart,0x100001000n);
+}
+{
+  const image=parseUnwindFixture({regularEncodings:[0x80000000]});
+  assert.equal(image.unwindEntries.length,0,'continuation without a preceding primary owner must fail closed');
+  assert.equal(image.functions.length,0);
+  assert.equal(image.metadata.compactUnwind.partialReason,'continuation-owner-missing');
+}
+{
+  const image=parseUnwindFixture({upper:0x20000});
+  assert.equal(image.unwindEntries.length,0,'compact-unwind extent may not escape the executable mapping');
+  assert.equal(image.functions.length,0);
+  assert.equal(image.metadata.compactUnwind.partialReason,'entry-extent-mapping-invalid');
+}
+{
+  const image=parseUnwindFixture({sentinelPageOff:120});
+  assert.equal(image.unwindEntries.length,0,'first-level sentinel must not own a second-level page');
+  assert.equal(image.metadata.compactUnwind.partialReason,'sentinel-page-invalid');
+}
+{
+  const image=parseUnwindFixture({pageOff:40});
+  assert.equal(image.unwindEntries.length,0,'second-level page must not overlap first-level index storage');
+  assert.equal(image.metadata.compactUnwind.partialReason,'page-range-invalid');
+}
+{
+  const image=parseUnwindFixture({}, {limits:{records:1}});
+  assert.equal(image.unwindEntries.length,0,'metadata budget exhaustion must publish no compact-unwind evidence');
+  assert.equal(image.metadata.compactUnwind.complete,false);
+  assert.equal(image.metadata.compactUnwind.partialReason,'metadata-budget');
+  assert.ok(image.metadata.machoMetadata.reasons.some((reason)=>reason.startsWith('budget:compact-unwind-index:records')));
+}
+{
+  let checks=0;
+  const signal={get aborted(){checks++;return checks>=3;}};
+  const image=parseUnwindFixture({}, {signal});
+  assert.ok(checks>=3);
+  assert.equal(image.unwindEntries.length,0,'cancelled compact-unwind scan must publish no evidence');
+  assert.equal(image.functions.length,0);
+  assert.equal(image.metadata.compactUnwind.partialReason,'metadata-budget');
+  assert.ok(image.metadata.machoMetadata.reasons.includes('budget:aborted'));
+}
+
+console.log('issue 970 mapping-aware BinaryImage virtual read regression + issue 2476 PE raw-offset mapping + issue 2370 compact-unwind soundness: PASS');
