@@ -1,0 +1,75 @@
+name: Temporary issue 2409 repair runner
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: issue-2409-repair-runner
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/2409-proven-function-extents
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Verify pinned unlinked baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "63bf439568846cea46f769b99d390d99d1735f06"
+          test -f tools/tmp-issue-2409.patch.gz.b64
+          node --input-type=module <<'JS'
+          import { SymbolIndex } from './js/symbols.js';
+          const region={id:'text',vmAddr:0x1000n,size:0x1000n,exec:true};
+          const index=new SymbolIndex({funcs:new BigUint64Array([0x1000n,0x1100n]),regions:[region]});
+          const owner=index.functionAt(0x1080n);
+          if (owner?.start !== 0x1000n || owner?.end !== 0x1100n) throw new Error('issue-2409-precondition-no-longer-reproduces');
+          JS
+          base64 -d tools/tmp-issue-2409.patch.gz.b64 | gzip -d > /tmp/issue-2409.patch
+          git apply --check /tmp/issue-2409.patch
+      - name: Apply reviewed repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          git apply /tmp/issue-2409.patch
+          git diff --check
+      - name: Install dependencies
+        run: npm ci
+      - name: Focused and broad validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check js/symbols.js
+          node --check js/program.js
+          node --check js/app.js
+          node --check js/analysis/query/app-adapter.js
+          node --check js/platform/analysis-result.js
+          node tests/issue-2409-function-extent-boundary.mjs
+          node tests/symbol-identity.mjs
+          node tests/issues-521-527.mjs
+          node tests/run.js
+          npm run phase7:test
+          npm run userscript:build
+          npm run semantic-v2:test
+          git diff --check
+      - name: Publish canonical implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm tools/tmp-issue-2409.patch.gz.b64
+          git add -A
+          git commit -m 'fix(symbols): preserve only proven function extents'
+          git push origin HEAD:fix/2409-proven-function-extents
