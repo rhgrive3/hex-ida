@@ -2,11 +2,40 @@ import { ensureMachOMetadataBudget } from './macho-budget.js';
 import { functionSeed } from './model.js';
 
 const CHAINED_POINTER_SITES = new WeakMap();
+const CHAINED_POINTER_COVERAGE = new WeakMap();
 
 function rememberChainedPointerSite(image, address, raw, pointerFormat, decoded) {
   let sites = CHAINED_POINTER_SITES.get(image);
   if (!sites) { sites = new Map(); CHAINED_POINTER_SITES.set(image, sites); }
   sites.set(BigInt(address), { raw: BigInt(raw), pointerFormat, decoded });
+}
+
+function rememberChainedPointerCoverage(image, start, end) {
+  const rangeStart = BigInt(start);
+  const rangeEnd = BigInt(end);
+  if (rangeEnd <= rangeStart) return null;
+  let ranges = CHAINED_POINTER_COVERAGE.get(image);
+  if (!ranges) { ranges = new Map(); CHAINED_POINTER_COVERAGE.set(image, ranges); }
+  const key = `${rangeStart.toString(16)}:${rangeEnd.toString(16)}`;
+  // Re-observing a declared page starts conservatively. Only a full successful
+  // walk below may promote this ownership range to complete.
+  ranges.set(key, { start: rangeStart, end: rangeEnd, complete: false });
+  return key;
+}
+
+function markChainedPointerCoverageComplete(image, key) {
+  if (key == null) return;
+  const range = CHAINED_POINTER_COVERAGE.get(image)?.get(key);
+  if (range) range.complete = true;
+}
+
+function chainedPointerCoverageAt(image, address) {
+  if (address == null) return null;
+  const target = BigInt(address);
+  for (const range of CHAINED_POINTER_COVERAGE.get(image)?.values() ?? []) {
+    if (target >= range.start && target < range.end) return range;
+  }
+  return null;
 }
 
 export function resolveMachOPointer(image, rawValue, options = {}) {
@@ -25,6 +54,14 @@ export function resolveMachOPointer(image, rawValue, options = {}) {
     if (!decoded || decoded.bind || decoded.target == null) return null;
     return BigInt(decoded.target);
   }
+
+  // A declared chained page remains loader-owned even when malformed input,
+  // unsupported encoding or a metadata budget prevents the exact chain site
+  // from being recovered. In that state the encoded word must never be
+  // reinterpreted as an ordinary absolute VA merely because its numeric value
+  // happens to map into this image.
+  const coverage = chainedPointerCoverageAt(image, address);
+  if (coverage && !coverage.complete) return null;
 
   // A metadata field that is defined by Swift as an absolute pointer may also
   // contain an ordinary materialized VA rather than a chained fixup. Accept it
@@ -106,7 +143,9 @@ export function parseChainedBindingSites(r,dc,image,imports,segments=image.segme
   status.bindingSitesComplete = status.bindingSitesComplete !== false;
   status.bindingSiteReasons ||= [];
   let decoded = 0;
+  let failureEpoch = 0;
   const fail = (message) => {
+    failureEpoch++;
     status.complete = false;
     status.bindingSitesComplete = false;
     if (!status.bindingSiteReasons.includes(message)) status.bindingSiteReasons.push(message);
@@ -126,14 +165,31 @@ export function parseChainedBindingSites(r,dc,image,imports,segments=image.segme
     status.bindingSites = decoded;
     return status;
   }
-  if (segCount !== segments.length) fail(`segment count ${segCount} does not match Mach-O load-command segment count ${segments.length}`);
+  if (segCount !== segments.length) {
+    fail(`segment count ${segCount} does not match Mach-O load-command segment count ${segments.length}`);
+    // If the starts table omits load-command segments, no page-level ownership
+    // proof exists for those omitted segments. Keep the uncertainty scoped to
+    // those segments instead of globally disabling ordinary pointer recovery.
+    for (let i = segCount; i < segments.length; i++) {
+      const missing = segments[i];
+      if (!missing) continue;
+      const start = BigInt(missing.address ?? 0);
+      const size = BigInt(missing.size ?? 0);
+      if (size > 0n) rememberChainedPointerCoverage(image, start, start + size);
+    }
+  }
   const count = Math.min(segCount, segments.length);
   for (let segIndex = 0; segIndex < count; segIndex++) {
     const rel = r.u32(startsBase + 4 + segIndex * 4);
     if (!rel) continue;
     const seg = segments[segIndex];
+    const segAddress = BigInt(seg?.address ?? 0);
+    const segSize = BigInt(seg?.size ?? 0);
+    const markSegmentIncomplete = () => {
+      if (seg && segSize > 0n) rememberChainedPointerCoverage(image, segAddress, segAddress + segSize);
+    };
     const p = startsBase + rel;
-    if (!seg || p + 22 > payloadEnd) { fail(`segment ${segIndex} starts record is truncated`); continue; }
+    if (!seg || p + 22 > payloadEnd) { markSegmentIncomplete(); fail(`segment ${segIndex} starts record is truncated`); continue; }
     const structSize = r.u32(p);
     const pageSize = r.u16(p + 4);
     const pointerFormat = r.u16(p + 6);
@@ -141,34 +197,54 @@ export function parseChainedBindingSites(r,dc,image,imports,segments=image.segme
     const maxValidPointer = r.u32(p + 16);
     const pageCount = r.u16(p + 20);
     if (structSize < 22 || p + structSize > payloadEnd || 22 + pageCount * 2 > structSize) {
-      fail(`segment ${segIndex} starts record size/page table is invalid`); continue;
+      markSegmentIncomplete(); fail(`segment ${segIndex} starts record size/page table is invalid`); continue;
     }
     if (pageSize !== 0x1000 && pageSize !== 0x4000) {
-      fail(`segment ${segIndex} has invalid chained page size 0x${pageSize.toString(16)}`); continue;
+      markSegmentIncomplete(); fail(`segment ${segIndex} has invalid chained page size 0x${pageSize.toString(16)}`); continue;
     }
-    const width = chainedPointerWidth(pointerFormat);
-    if (!width) { markUnsupportedChainedFormat(image, pointerFormat); fail(`segment ${segIndex} uses unsupported pointer format ${pointerFormat}`); continue; }
-    const segAddress = BigInt(seg.address ?? 0);
-    const segSize = BigInt(seg.size ?? 0);
     const segFileOffset = BigInt(seg.fileOffset ?? 0);
     const segFileSize = BigInt(seg.fileSize ?? seg.size ?? 0);
     if (segAddress < image.imageBase || segmentOffset !== segAddress - image.imageBase) {
-      fail(`segment ${segIndex} segment_offset does not identify its Mach-O segment`); continue;
+      markSegmentIncomplete(); fail(`segment ${segIndex} segment_offset does not identify its Mach-O segment`); continue;
     }
     const pageSizeBig = BigInt(pageSize);
     const maxPages = segSize === 0n ? 0n : (segSize + pageSizeBig - 1n) / pageSizeBig;
     if (BigInt(pageCount) > maxPages) {
-      fail(`segment ${segIndex} page_count exceeds segment VM range`); continue;
+      markSegmentIncomplete(); fail(`segment ${segIndex} page_count exceeds segment VM range`); continue;
     }
     const structEnd = p + structSize;
     const overflowBase = p + 22 + pageCount * 2;
-    if ((structEnd - overflowBase) % 2 !== 0) { fail(`segment ${segIndex} chain_starts array is misaligned`); continue; }
+    if ((structEnd - overflowBase) % 2 !== 0) { markSegmentIncomplete(); fail(`segment ${segIndex} chain_starts array is misaligned`); continue; }
     const overflowCount = (structEnd - overflowBase) / 2;
+
+    // Page ownership is established by the starts table itself, before decoding
+    // any site. Pre-registering every declared page means budget exhaustion,
+    // malformed multi-start data, unsupported formats, or a broken chain can
+    // never erase the fact that raw bytes in that page are encoded candidates.
+    const coverageKeys = new Map();
+    for (let page = 0; page < pageCount; page++) {
+      const start = r.u16(p + 22 + page * 2);
+      if (start === 0xffff) continue;
+      const pageOffset = BigInt(page) * pageSizeBig;
+      if (pageOffset >= segSize) continue;
+      const pageVmEnd = pageOffset + pageSizeBig < segSize ? pageOffset + pageSizeBig : segSize;
+      const key = rememberChainedPointerCoverage(
+        image,
+        segAddress + pageOffset,
+        segAddress + pageVmEnd,
+      );
+      coverageKeys.set(page, key);
+    }
+
+    const width = chainedPointerWidth(pointerFormat);
+    if (!width) { markUnsupportedChainedFormat(image, pointerFormat); fail(`segment ${segIndex} uses unsupported pointer format ${pointerFormat}`); continue; }
 
     for (let page = 0; page < pageCount; page++) {
       if(!budget.take({inputBytes:2,records:1,operations:1,estimatedHeapBytes:16},'chained-page')){fail('shared metadata budget exhausted while decoding pages');status.bindingSites=decoded;return status;}
       const start = r.u16(p + 22 + page * 2);
       if (start === 0xffff) continue;
+      const pageFailureEpoch = failureEpoch;
+      const coverageKey = coverageKeys.get(page) ?? null;
       const pageOffset = BigInt(page) * pageSizeBig;
       if (pageOffset >= segSize) { fail(`segment ${segIndex} page ${page} starts outside segment`); continue; }
       const pageVmEnd = pageOffset + pageSizeBig < segSize ? pageOffset + pageSizeBig : segSize;
@@ -225,8 +301,9 @@ export function parseChainedBindingSites(r,dc,image,imports,segments=image.segme
           }
           address = nextAddress;
         }
-        if (!terminated && status.bindingSitesComplete && starts.length) fail(`segment ${segIndex} page ${page} chain exceeded iteration budget`);
+        if (!terminated && failureEpoch === pageFailureEpoch && starts.length) fail(`segment ${segIndex} page ${page} chain exceeded iteration budget`);
       }
+      if (failureEpoch === pageFailureEpoch) markChainedPointerCoverageComplete(image, coverageKey);
     }
     void maxValidPointer; // value classification for 32-bit pointers, never an address-ownership bound
   }
