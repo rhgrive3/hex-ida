@@ -1,0 +1,105 @@
+name: Temporary issue 2396 repair runner
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/tmp-issue-2396-repair-runner.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: issue-2396-repair-runner
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout exact staged target
+        uses: actions/checkout@v4
+        with:
+          ref: fix/2396-swift-symbolic-mangled-name
+          fetch-depth: 0
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Verify exact unlinked baseline and reproduce issue
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "34d217e6da2e94a0864d86922ac00e2b1506087b"
+          test "$(git hash-object js/swift.js)" = "b4dba0b2f5c22c9e98db405756c0728d160e618b"
+          test -f tools/tmp-issue-2396.patch.gz.b64
+          node --input-type=module <<'JS'
+          import { parseSwiftFieldDescriptor } from './js/swift.js';
+          const mem = new Uint8Array(0x200);
+          const dv = new DataView(mem.buffer);
+          const i32 = (a,v) => dv.setInt32(a,v,true);
+          const u16 = (a,v) => dv.setUint16(a,v,true);
+          const u32 = (a,v) => dv.setUint32(a,v,true);
+          const desc = 0x20, rec = 0x30, type = 0x80, name = 0xa0;
+          i32(desc,0); i32(desc+4,0); u16(desc+8,0); u16(desc+10,12); u32(desc+12,1);
+          u32(rec,2); i32(rec+4,type-(rec+4)); i32(rec+8,name-(rec+8));
+          mem.set([0x01,0x20,0x00,0x00,0x00,0x79,0x00],type);
+          mem.set(new TextEncoder().encode('value\0'),name);
+          const read = async (addr,len) => mem.subarray(Number(addr), Math.min(mem.length, Number(addr)+len));
+          const fields = await parseSwiftFieldDescriptor(read, BigInt(desc));
+          if (fields.length !== 1 || fields[0].mangledType !== null || Object.hasOwn(fields[0], 'mangledTypeEncoding')) {
+            throw new Error('issue-2396-precondition-no-longer-reproduces');
+          }
+          JS
+          base64 -d tools/tmp-issue-2396.patch.gz.b64 | gzip -d > /tmp/issue-2396.patch
+          echo 'fe3bbbdedb60984e9cd978bcb7e9bd433d45f7ecb7dd3e755b4189060ac044a8  /tmp/issue-2396.patch' | sha256sum -c -
+          git apply --check /tmp/issue-2396.patch
+
+      - name: Apply guarded repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          git apply /tmp/issue-2396.patch
+          git diff --check
+          test "$(git hash-object js/swift.js)" = "e28d03147cb45786e70baf49176355f75af293ed"
+          test "$(git hash-object tests/issue-2396-swift-symbolic-mangled-name.mjs)" = "c24316f2ebc29dbbf88dfd0af25e77f620af8cf2"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Focused Swift validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check js/swift.js
+          node tests/issue-2396-swift-symbolic-mangled-name.mjs
+          node tests/swift-runtime.mjs
+          node tests/issues-194-244.mjs
+          npm run decompiler:test
+          npm run integration:test
+
+      - name: Canonical generated sync and broad validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run userscript:build
+          npm run semantic-v2:test
+          npm run phase7:test
+          npm run invariants:test
+          npm test
+          git diff --check
+
+      - name: Publish canonical implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm tools/tmp-issue-2396.patch.gz.b64
+          git add -A
+          git commit -m 'fix(swift): preserve symbolic field type manglings'
+          git push origin HEAD:fix/2396-swift-symbolic-mangled-name
