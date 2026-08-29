@@ -934,6 +934,7 @@ test('PROGRAM: 呼び出し元・呼び出し先を辺からたどれる', () =>
     kinds: Uint8Array.from([0, 0, 0]),
     names: '_battle\n_calcDamage\n_applyDamage',
     funcs: BigUint64Array.from([PC, PC + 0x40n, PC + 0x80n]),
+    funcEnds: BigUint64Array.from([PC + 0x40n, PC + 0x80n, 0n]),
   });
   const scan = fakeScan({
     calls: [
@@ -963,6 +964,7 @@ test('PROGRAM: 文字列を参照している関数を、参照命令から特�
     kinds: Uint8Array.from([0]),
     names: '_calcDamage',
     funcs: BigUint64Array.from([PC, PC + 0x40n]),
+    funcEnds: BigUint64Array.from([PC + 0x40n, 0n]),
   });
   const STR = 0x200000000n;
   const scan = fakeScan({
@@ -1052,6 +1054,7 @@ test('RANK: 名前だけの一致より、参照と命令の裏づけがある�
     kinds: Uint8Array.from([0, 0]),
     names: '_damageLabelText\nsub_realwork',
     funcs: BigUint64Array.from([NAMED, REAL, PC + 0x80n]),
+    funcEnds: BigUint64Array.from([REAL, PC + 0x80n, 0n]),
   });
   const K = W.KIND;
   const scan = fakeScan({
@@ -1503,6 +1506,7 @@ function tinyWorld() {
     kinds: Uint8Array.from([0, 0]),
     names: '_calcDamage\n_battleTurn',
     funcs: BigUint64Array.from([CALC, CALLER, PC + 0x80n]),
+    funcEnds: BigUint64Array.from([CALLER, PC + 0x80n, 0n]),
   });
   const K = W.KIND;
   const scan = fakeScan({
@@ -1816,6 +1820,7 @@ test('MAP: クラスがないバイナリでも、文字列から粗い地図を
   const symbols = new SymbolIndex({
     addrs: BigUint64Array.from([PC]), kinds: Uint8Array.from([0]),
     names: 'sub_a', funcs: BigUint64Array.from([PC, PC + 0x40n]),
+    funcEnds: BigUint64Array.from([PC + 0x40n, 0n]),
   });
   const STR = 0x200000000n;
   const program = new ProgramIndex(fakeScan({ refs: [[PC + 4n, STR, 0]] }), symbols,

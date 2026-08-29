@@ -245,21 +245,11 @@ export class SymbolIndex {
     if (index < 0 || index >= this.funcs.length) return null;
     const start = this.funcs[index];
     const region = this._functionRegion(start);
-    if (this.funcEnds && index < this.funcEnds.length) {
-      const explicit = this.funcEnds[index];
-      if (explicit != null && explicit > start) {
-        if (region && explicit > region.end) return null;
-        return explicit;
-      }
-    }
-    if (index + 1 >= this.funcs.length) return null;
-    const next = this.funcs[index + 1];
-    if (next <= start || next - start > 0x40000n) return null;
-    if (this.functionRegions.length) {
-      const nextRegion = this._functionRegion(next);
-      if (!region || !nextRegion || nextRegion !== region) return null;
-    }
-    return next;
+    if (!this.funcEnds || index >= this.funcEnds.length) return null;
+    const explicit = this.funcEnds[index];
+    if (explicit == null || explicit <= start) return null;
+    if (region && explicit > region.end) return null;
+    return explicit;
   }
 
   /** そのアドレスを含む関数の {start, end}。分からなければ null。 */
@@ -361,7 +351,13 @@ export class SymbolIndex {
   addFunctions(list, provenance = { source: 'metadata', confidence: 0.7, confirmed: false }) {
     if (!list || !list.length) return 0;
     const have = new Set();
-    for (let i = 0; i < this.funcs.length; i++) have.add(this.funcs[i]);
+    const exactEnds = new Map();
+    for (let i = 0; i < this.funcs.length; i++) {
+      const start = this.funcs[i];
+      have.add(start);
+      const end = this.funcEnds && i < this.funcEnds.length ? this.funcEnds[i] : null;
+      if (end != null && end > start) exactEnds.set(start.toString(), end);
+    }
     const all = Array.from(have);
     let added = 0;
     for (const a of list) {
@@ -372,9 +368,15 @@ export class SymbolIndex {
     if (!added) return 0;
     all.sort((x, y) => (x < y ? -1 : x > y ? 1 : 0));
     const out = new BigUint64Array(all.length);
-    for (let i = 0; i < all.length; i++) out[i] = all[i];
+    const ends = new BigUint64Array(all.length);
+    let hasExactEnd = false;
+    for (let i = 0; i < all.length; i++) {
+      out[i] = all[i];
+      const end = exactEnds.get(all[i].toString());
+      if (end != null) { ends[i] = end; hasExactEnd = true; }
+    }
     this.funcs = out;
-    this.funcEnds = null;
+    this.funcEnds = hasExactEnd ? ends : null;
     this.gen = ++SymbolIndex.gen;
     return added;
   }

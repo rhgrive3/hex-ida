@@ -118,16 +118,17 @@ function rangeFor(app, id) {
   if (!fn) return { ok:false, reason:'function-symbol-missing' };
   const region = executableRegion(app, fn.start);
   if (!region) return { ok:false, reason:'function-start-not-executable', function:fn };
+  if (fn.end == null) return { ok:false, reason:'function-end-unproven', function:fn, region };
   const regionEnd = BigInt(region.vmAddr) + BigInt(region.size);
-  let end = fn.end == null ? regionEnd : BigInt(fn.end);
+  let end = BigInt(fn.end);
   if (end <= fn.start) return { ok:false, reason:'invalid-function-range', function:fn, region };
   const crossed = end > regionEnd;
   if (crossed) end = regionEnd;
   return {
     ok:true, start:BigInt(fn.start), end, region, function:fn,
-    complete:fn.end != null && !crossed,
-    reason:fn.end == null ? 'function-end-unproven' : crossed ? 'symbol-range-crosses-executable-region' : null,
-    provenance:'executable-region+symbol-boundary',
+    complete:!crossed,
+    reason:crossed ? 'symbol-range-crosses-executable-region' : null,
+    provenance:'executable-region+proven-function-extent',
   };
 }
 
