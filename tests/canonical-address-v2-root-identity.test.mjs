@@ -88,20 +88,29 @@ function descriptorIr(canonicalRoot) {
     linearOffsets: true,
   }), 'v-root');
   assert.equal(proof.kind, 'rooted');
-  assert.equal(proof.rootEntityId, 'entity_root_valid ');
+  assert.equal(proof.rootEntityId, 'entity_root_valid');
   assert.equal(proof.offset, 8n);
 }
 
-for (const rootEntityId of [{
- id: 'A' }, ['entity'], 1, false]) {
-  const proof = deriveCanonicalAddressProof(descriptorIr(kind: 'rooted-object', rootEntityId, baseOffset: 0, addressSpace: 'memory' }), 'v-root');
+for (const rootEntityId of [{ id: 'A' }, ['entity'], 1, false]) {
+  const proof = deriveCanonicalAddressProof(descriptorIr({
+    kind: 'rooted-object',
+    rootEntityId,
+    baseOffset: 0,
+    addressSpace: 'memory',
+  }), 'v-root');
   assert.equal(proof.kind, 'unknown');
   assert.equal(proof.reason, 'canonical-root-descriptor-invalid');
 }
 
 {
   let request = null;
-  const proof = deriveCanonicalAddressProof(entryIr(), 'v-entry', { rootDescriptorProvider(value) { request = value; return { kind: 'rooted-object', rootEntityId: { id: 'bad' }, baseOffset: 0 }; } });
+  const proof = deriveCanonicalAddressProof(entryIr(), 'v-entry', {
+    rootDescriptorProvider(value) {
+      request = value;
+      return { kind: 'rooted-object', rootEntityId: { id: 'bad' }, baseOffset: 0 };
+    },
+  });
   assert.equal(request.functionId, 'fn-main');
   assert.equal(request.valueId, 'v-entry');
   assert.equal(proof.kind, 'unknown');
