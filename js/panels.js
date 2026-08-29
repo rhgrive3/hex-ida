@@ -4,3 +4,4 @@
  * they can consume AnalysisQueryAPI without duplicating the rest of the UI. */
 export * from './panels-base.js';
 export { showFunctions, showFunctionSummary } from './ui/panels/function-analysis.js';
+export { showStrings, showXrefs } from './ui/panels/navigation.js';
