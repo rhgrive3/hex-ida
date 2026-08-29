@@ -92,10 +92,29 @@ assert.match(measure, /node tests\/accuracy-pseudoc-parallel\.mjs/,
   'pseudoc must retain persistent runner-local workers');
 assert.match(measure, /--workers="\$LOCAL_PSEUDOC_WORKERS"/,
   'the persistent pseudoc pool size must remain explicitly bounded');
-assert.match(measure, /pids\+=\("\$!"\)/,
-  'independent local lanes must execute concurrently inside one runner');
-assert.match(measure, /if ! wait "\$\{pids\[\$i\]\}"; then status=1; fi/,
-  'all local workers must be joined and failures propagated');
+
+const measureScript = measure.slice(
+  measure.indexOf('name: Measure missing accuracy partitions runner-locally'),
+  measure.indexOf('name: Save exact core result cache'),
+);
+const firstNonPseudoc = measureScript.indexOf("--only='sections,funcs,funcs-guess,disasm,kinds,calls,refs,imports,objc,selstub,pinpoint'");
+const secondNonPseudoc = measureScript.indexOf("--only='strings,xrefs,funcname,selffield,role,apimeaning,summary,expr,formula,pinpoint-partial'");
+const pseudoc = measureScript.indexOf('node tests/accuracy-pseudoc-parallel.mjs');
+assert.ok(firstNonPseudoc >= 0 && secondNonPseudoc > firstNonPseudoc,
+  'both non-pseudocode feature partitions must remain present in their original order');
+assert.ok(pseudoc > secondNonPseudoc,
+  'pseudocode workers must start only after both memory-heavy non-pseudocode partitions finish');
+assert.equal(
+  (measureScript.match(/if ! node --max-old-space-size=4096 tests\/accuracy\.mjs/g) || []).length,
+  2,
+  'each non-pseudocode partition must run as a directly joined fail-closed process',
+);
+assert.doesNotMatch(measureScript, /accuracy-local-nonpseudoc-[01]\.log\s*&/,
+  'two 4 GiB non-pseudocode processes must never run concurrently on one hosted runner');
+assert.doesNotMatch(measureScript, /pids\+=\("\$!"\)|wait "\$\{pids/,
+  'non-pseudocode memory safety must not depend on background-process joining');
+assert.match(measureScript, /cat accuracy-local-nonpseudoc-0\.log[\s\S]*cat accuracy-local-nonpseudoc-1\.log/,
+  'both sequential partitions must retain failure diagnostics');
 
 for (const partition of ['core', 'pinpoint']) {
   assert.match(measure, new RegExp(`accuracy-part-\\$\\{\\{ matrix\\.target\\.name \\}\\}-${partition}\\.json\\.tmp`),
@@ -147,4 +166,4 @@ assert.match(workflow, /push:\s*\n\s*branches:\s*\[[^\]]*\bmain\b[^\]]*\]/,
 assert.match(workflow, /cancel-in-progress:\s*true/,
   'stale accuracy runs should be cancelled when a newer revision supersedes them');
 
-console.log('issue #497 cross-binary workflow gate regression passed');
+console.log('issue #497/#2484 cross-binary workflow gate regression passed');
