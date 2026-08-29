@@ -4,7 +4,7 @@ export {
   evaluateArm64Bitfield,
 } from './integer-core.js';
 import { liftArm64IntegerEffects as liftArm64IntegerEffectsCore } from './integer-core.js';
-import { createArm64EffectContext } from './common.js';
+import { createArm64EffectContext, immediateOf } from './common.js';
 
 const ADD_SUB_BASE = new Set(['add','adds','sub','subs']);
 const ADD_SUB_ALL = new Set(['add','adds','sub','subs','adc','adcs','sbc','sbcs','neg','negs','ngc','ngcs']);
@@ -13,6 +13,7 @@ const LOGICAL_IMMEDIATE_SP_DEST = new Set(['and','orr','eor']);
 const EXTEND_KINDS = new Set(['uxtb','uxth','uxtw','uxtx','sxtb','sxth','sxtw','sxtx']);
 const CONDITIONAL_SELECT_MNEMONICS = new Set(['csel','csinc','csinv','csneg','cset','csetm','cinc','cneg','cinv']);
 const MOVE_WIDE_MNEMONICS = new Set(['movz','movn','movk']);
+const BITFIELD_MNEMONICS = new Set(['ubfm','sbfm','bfm','ubfx','sbfx','ubfiz','sbfiz','bfxil','bfi','bfc']);
 
 function expectedOperandCount(mnemonic) {
   if (['lsl','lslv','lsr','lsrv','asr','asrv','ror','rorv'].includes(mnemonic)) return 3;
@@ -33,7 +34,7 @@ function isGpOrZr(op) { return op?.k === 'reg' && ['gp','zr'].includes(regClass(
 function isGpOrSp(op) { return op?.k === 'reg' && ['gp','sp'].includes(regClass(op)); }
 
 function validImm12(op) {
-  if (op?.k !== 'imm') return false;
+  if (op?.k !== 'imm' || op.extend != null) return false;
   let value;
   try { value = BigInt(op.value); } catch { return false; }
   if (value < 0n || value > 0xfffn) return false;
@@ -74,7 +75,7 @@ const LOGICAL_IMMEDIATE_MASKS = Object.freeze({
 });
 
 function logicalImmediateEncodable(op, widthBits) {
-  if (op?.k !== 'imm' || (widthBits !== 32 && widthBits !== 64) || op.shift != null) return false;
+  if (op?.k !== 'imm' || (widthBits !== 32 && widthBits !== 64) || op.shift != null || op.extend != null) return false;
   let immediate;
   try { immediate = BigInt(op.value); } catch { return false; }
   return LOGICAL_IMMEDIATE_MASKS[widthBits].has(BigInt.asUintN(widthBits, immediate).toString());
@@ -160,7 +161,7 @@ function validMovEncoding(mnemonic, ops) {
   const bits = regBits(dst);
   if (bits !== 32 && bits !== 64) return false;
   if (dst.shift != null || dst.extend != null) return false;
-  if (src?.k === 'imm') return dstClass !== 'sp';
+  if (src?.k === 'imm') return dstClass !== 'sp' && src.shift == null && src.extend == null;
   const srcClass = regClass(src);
   if (!['gp','zr','sp'].includes(srcClass) || regBits(src) !== bits || src.shift != null || src.extend != null) return false;
   const spInvolved = dstClass === 'sp' || srcClass === 'sp';
@@ -198,12 +199,69 @@ function validConditionalOperand(mnemonic, ops) {
     && condition.extend == null;
 }
 
+function validAddressEncoding(instruction, ops) {
+  const mnemonic = String(instruction?.mnemonic || '').toLowerCase();
+  if (mnemonic !== 'adr' && mnemonic !== 'adrp') return true;
+  if (ops.length !== 2) return false;
+  const destination = ops[0];
+  const targetOperand = ops[1];
+  if (!isGpOrZr(destination) || regBits(destination) !== 64
+    || destination.shift != null || destination.extend != null) return false;
+  if (!['imm','other'].includes(String(targetOperand?.k || ''))
+    || targetOperand?.shift != null || targetOperand?.extend != null) return false;
+  const rawAddress = instruction?.address;
+  const rawTarget = instruction?.pcRelTarget ?? immediateOf(targetOperand);
+  if (rawAddress == null || rawTarget == null) return false;
+  let address, target;
+  try { address = BigInt(rawAddress); } catch { return false; }
+  try { target = BigInt(rawTarget); } catch { return false; }
+  if (targetOperand?.k === 'imm' && immediateOf(targetOperand) !== target) return false;
+  if (mnemonic === 'adr') {
+    const delta = BigInt.asIntN(64, target - address);
+    return delta >= -(1n << 20n) && delta <= (1n << 20n) - 1n;
+  }
+  if ((target & 0xfffn) !== 0n) return false;
+  const pageBase = address & ~0xfffn;
+  const pageDelta = BigInt.asIntN(64, target - pageBase) / 4096n;
+  return pageDelta >= -(1n << 20n) && pageDelta <= (1n << 20n) - 1n;
+}
+
+function validBitfieldRegisterShape(mnemonic, ops) {
+  if (!BITFIELD_MNEMONICS.has(mnemonic)) return true;
+  const destination = ops[0];
+  const bits = regBits(destination);
+  if (!isGpOrZr(destination) || ![32,64].includes(bits)
+    || destination.shift != null || destination.extend != null) return false;
+  if (mnemonic === 'bfc') return true;
+  const source = ops[1];
+  return isGpOrZr(source) && regBits(source) === bits
+    && source.shift == null && source.extend == null;
+}
+
+function modifierFreeImmediate(op) {
+  return op?.k === 'imm' && op.shift == null && op.extend == null;
+}
+
+function validScalarImmediateModifiers(mnemonic, ops) {
+  if (['lsl','lsr','asr','ror'].includes(mnemonic) && ops[2]?.k === 'imm') return modifierFreeImmediate(ops[2]);
+  if (mnemonic === 'extr') return modifierFreeImmediate(ops[3]);
+  if (['ubfm','sbfm','bfm','ubfx','sbfx','ubfiz','sbfiz','bfxil','bfi'].includes(mnemonic)) {
+    return modifierFreeImmediate(ops[2]) && modifierFreeImmediate(ops[3]);
+  }
+  if (mnemonic === 'bfc') return modifierFreeImmediate(ops[1]) && modifierFreeImmediate(ops[2]);
+  return true;
+}
+
 export function liftArm64IntegerEffects(instruction, options = {}) {
   const mnemonic = String(instruction?.mnemonic || '').toLowerCase();
   const ops = Array.isArray(instruction?.ops) ? instruction.ops : [];
   const expected = expectedOperandCount(mnemonic);
   if (expected != null && ops.length !== expected) {
     return liftArm64IntegerEffectsCore({ ...instruction, ops: [] }, options);
+  }
+  if (!validAddressEncoding(instruction, ops)) {
+    return createArm64EffectContext(instruction, options).partial(
+      `arm64-${mnemonic}-address-operand-unencodable`, ['registers','other']);
   }
   if (!validMoveWideEncoding(mnemonic, ops)) {
     return createArm64EffectContext(instruction, options).partial(
@@ -215,6 +273,14 @@ export function liftArm64IntegerEffects(instruction, options = {}) {
   if (!validConditionalOperand(mnemonic, ops)) {
     return createArm64EffectContext(instruction, options).partial(
       `arm64-${mnemonic}-condition-operand-unencodable`, ['registers','flags','other']);
+  }
+  if (!validBitfieldRegisterShape(mnemonic, ops)) {
+    return createArm64EffectContext(instruction, options).partial(
+      `arm64-${mnemonic}-bitfield-register-shape-unencodable`, ['registers','other']);
+  }
+  if (!validScalarImmediateModifiers(mnemonic, ops)) {
+    return createArm64EffectContext(instruction, options).partial(
+      `arm64-${mnemonic}-immediate-modifier-unencodable`, ['registers','other']);
   }
   if (!validMovEncoding(mnemonic, ops)) {
     return createArm64EffectContext(instruction, options).partial(
