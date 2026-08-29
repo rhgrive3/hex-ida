@@ -153,7 +153,10 @@ function preferredProtocolName(p){return p.qualifiedName||p.fullName||(p.moduleN
 function canonicalTypeKey(t){return t?.address!=null?`type@${t.address.toString()}`:null;}
 function canonicalProtocolKey(p){return p?.address!=null?`protocol@${p.address.toString()}`:null;}
 function addNameCandidate(map,name,value){if(!name)return;let items=map.get(name);if(!items)map.set(name,items=[]);if(!items.includes(value))items.push(value);}
-function finalizeUniqueNames(candidates,out){for(const [name,items] of candidates)if(items.length===1)out.set(name,items[0]);}
+/* #2397 条件6: module/parent 情報が未証明（universe 未完走）のとき、
+   裸の simple name を exact identity に昇格しない。qualified name（module 付き）
+   と address identity は引き続き有効。universe が証明済みなら単独 simple name も可。 */
+function finalizeUniqueNames(candidates,out,namesProven){for(const [name,items] of candidates)if(items.length===1&&(namesProven||name!==items[0].name))out.set(name,items[0]);}
 function resolveTypeIdentity(index,value){if(value==null)return null;const raw=String(value);if(raw.startsWith('type@')&&index.typesByAddress.has(raw.slice(5)))return raw;const byAddress=index.typesByAddress.get(raw);if(byAddress)return canonicalTypeKey(byAddress);const byName=index.typesByName.get(raw);return byName?canonicalTypeKey(byName):null;}
 function resolveProtocolIdentity(index,value){if(value==null)return null;const raw=String(value);if(raw.startsWith('protocol@')&&index.protocolsByAddress.has(raw.slice(9)))return raw;const byAddress=index.protocolsByAddress.get(raw);if(byAddress)return canonicalProtocolKey(byAddress);const byName=index.protocolsByName.get(raw);return byName?canonicalProtocolKey(byName):null;}
 
@@ -161,9 +164,10 @@ export function buildSwiftRuntimeIndex(model={}){
   const typesByAddress=new Map(),typesByName=new Map(),typesBySimpleName=new Map(),protocolsByAddress=new Map(),protocolsByName=new Map(),protocolsBySimpleName=new Map();
   const typeNameCandidates=new Map(),protocolNameCandidates=new Map(),conformancesByType=new Map(),vtablesByType=new Map(),witnessesByPair=new Map();
   for(const t of model.types||[]){if(t.address!=null)typesByAddress.set(t.address.toString(),t);if(t.name){let a=typesBySimpleName.get(t.name);if(!a)typesBySimpleName.set(t.name,a=[]);a.push(t);addNameCandidate(typeNameCandidates,t.name,t);addNameCandidate(typeNameCandidates,preferredTypeName(t),t);}}
-  finalizeUniqueNames(typeNameCandidates,typesByName);
+  const namesProven=model.complete===true;
+  finalizeUniqueNames(typeNameCandidates,typesByName,namesProven);
   for(const p of model.protocols||[]){if(p.address!=null)protocolsByAddress.set(p.address.toString(),p);if(p.name){let a=protocolsBySimpleName.get(p.name);if(!a)protocolsBySimpleName.set(p.name,a=[]);a.push(p);addNameCandidate(protocolNameCandidates,p.name,p);addNameCandidate(protocolNameCandidates,preferredProtocolName(p),p);}}
-  finalizeUniqueNames(protocolNameCandidates,protocolsByName);
+  finalizeUniqueNames(protocolNameCandidates,protocolsByName,namesProven);
   for(const c of model.conformances||[]){const type=c.typeReferenceKind<=1&&c.typeRef!=null?typesByAddress.get(c.typeRef.toString())||null:null,proto=protocolsByAddress.get(c.protocol?.toString())||null,typeKey=canonicalTypeKey(type),protoKey=canonicalProtocolKey(proto);if(typeKey){let a=conformancesByType.get(typeKey);if(!a){a=[];conformancesByType.set(typeKey,a);}a.push({...c,typeName:preferredTypeName(type),typeIdentity:typeKey,protocolName:preferredProtocolName(proto||{}),protocolIdentity:protoKey});if(protoKey)witnessesByPair.set(`${typeKey}:${protoKey}`,c);}}
   for(const v of model.vtables||[]){const owner=typesByAddress.get(String(v.typeAddress))||(v.typeName?typesByName.get(v.typeName):null),key=canonicalTypeKey(owner);if(key)vtablesByType.set(key,v.methods||[]);}for(const t of model.types||[]){const key=canonicalTypeKey(t);if(key&&t.vtable?.length)vtablesByType.set(key,t.vtable);}
   return{runtime:'swift',model,typesByAddress,typesByName,typesBySimpleName,protocolsByAddress,protocolsByName,protocolsBySimpleName,conformancesByType,vtablesByType,witnessesByPair};

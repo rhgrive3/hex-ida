@@ -87,4 +87,39 @@ assert.equal(
   'descriptor identities must resolve the matching existential witness entry',
 );
 
+/* #2397 regression #6: with incomplete module/parent metadata a unique bare
+   simple name must not be promoted to an exact dispatch identity; only
+   addresses or qualified names are trusted. With a proven-complete universe
+   the same unique bare name resolves. */
+const soloType = { address: 0x7000n, name: 'SoloThing', vtable: [{ index: 0, impl: 0xc001n }] };
+const incompleteIndex = buildSwiftRuntimeIndex({
+  types: [soloType], protocols: [], conformances: [], witnessTables: [],
+});
+assert.equal(incompleteIndex.typesByName.has('SoloThing'), false,
+  'unique bare simple name must not register while the universe is unproven');
+assert.equal(
+  resolveSwiftDispatch(incompleteIndex, { kind: 'vtable', typeName: 'SoloThing', slot: 0 }).resolved,
+  null,
+  'bare simple name dispatch must fail closed on an incomplete universe',
+);
+assert.equal(
+  resolveSwiftDispatch(incompleteIndex, { kind: 'vtable', typeName: 'SoloThing', slot: 0 }).complete,
+  false,
+  'failed resolution on an incomplete universe must report complete:false',
+);
+assert.equal(
+  resolveSwiftDispatch(incompleteIndex, { kind: 'vtable', typeAddress: 0x7000n, slot: 0 }).resolved?.impl,
+  0xc001n,
+  'address identity remains exact even when the universe is incomplete',
+);
+const completeIndex = buildSwiftRuntimeIndex({
+  complete: true,
+  types: [soloType], protocols: [], conformances: [], witnessTables: [],
+});
+assert.equal(
+  resolveSwiftDispatch(completeIndex, { kind: 'vtable', typeName: 'SoloThing', slot: 0 }).resolved?.impl,
+  0xc001n,
+  'unique bare simple name resolves once the universe is proven complete',
+);
+
 console.log('swift runtime dispatch identity collision regression passed');
