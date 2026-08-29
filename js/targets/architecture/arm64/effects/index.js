@@ -42,6 +42,7 @@ const ARM64_VARIABLE_SHIFT_MNEMONICS = Object.freeze(new Set(['lslv','lsrv','asr
 
 function validImm12WithOptionalLsl12(op) {
   if (op?.k !== 'imm') return true;
+  if (op.extend != null) return false;
   const immediate = immediateOf(op);
   if (immediate == null || immediate < 0n || immediate > 0xfffn) return false;
   if (op.shift == null) return true;
@@ -81,7 +82,7 @@ const LOGICAL_IMMEDIATE_MASKS = Object.freeze({
 });
 
 function logicalImmediateEncodable(op, widthBits) {
-  if (op?.k !== 'imm' || (widthBits !== 32 && widthBits !== 64) || op.shift != null) return false;
+  if (op?.k !== 'imm' || (widthBits !== 32 && widthBits !== 64) || op.shift != null || op.extend != null) return false;
   const immediate = immediateOf(op);
   if (immediate == null) return false;
   return LOGICAL_IMMEDIATE_MASKS[widthBits].has(BigInt.asUintN(widthBits, immediate).toString());
@@ -100,7 +101,7 @@ function singleWideMoveEncodable(pattern, widthBits) {
 }
 
 function movImmediateEncodable(op, widthBits) {
-  if (op?.k !== 'imm' || (widthBits !== 32 && widthBits !== 64) || op.shift != null) return false;
+  if (op?.k !== 'imm' || (widthBits !== 32 && widthBits !== 64) || op.shift != null || op.extend != null) return false;
   const immediate = immediateOf(op);
   if (immediate == null) return false;
   const pattern = BigInt.asUintN(widthBits, immediate);
