@@ -248,6 +248,19 @@ function irForAddressRootDerivation(ir) {
   };
 }
 
+// Both derivations are pure functions of the IR object. Rebuilding them for
+// every memory access makes region classification quadratic; the core proof
+// cache also needs a stable IR identity to hit, so memoize per source IR.
+const addressProofIrMemo = new WeakMap();
+function addressProofIrFor(ir) {
+  let derived = addressProofIrMemo.get(ir);
+  if (derived === undefined) {
+    derived = normalizeAddressProofIr(irForAddressRootDerivation(ir));
+    addressProofIrMemo.set(ir, derived);
+  }
+  return derived;
+}
+
 export function classifySemanticMemoryRegion(ir, nodeOrId, options = {}) {
   const nodes = Array.isArray(ir?.nodes) ? ir.nodes : [];
   const values = Array.isArray(ir?.values) ? ir.values : [];
@@ -273,7 +286,7 @@ export function classifySemanticMemoryRegion(ir, nodeOrId, options = {}) {
   let proof = null;
   let graphDescriptor = null;
   if (!explicitDescriptor && addressValueId) {
-    const proofIr = normalizeAddressProofIr(irForAddressRootDerivation(ir));
+    const proofIr = addressProofIrFor(ir);
     proof = deriveCanonicalAddressProof(proofIr, addressValueId, {
       addressSpace: node.memory.addressSpace,
       ssa: options.ssa,

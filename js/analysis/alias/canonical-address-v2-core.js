@@ -296,7 +296,53 @@ function rootFromDescriptor(descriptor, fallbackIdentity, expectedAddressSpace, 
   });
 }
 
+// Validity and index construction both scan the whole graph, so re-running
+// them for every address query makes multi-query passes (region
+// classification over every load/store, pointer analysis over every value)
+// quadratic in function size. Built IR/SSA graphs are immutable after
+// construction, but each entry is still keyed on the exact `ir` object and
+// the `ssa` identity plus array lengths, so any change in graph shape
+// revalidates and rebuilds.
+const graphStructureMemo = new WeakMap();
+
+function structureShape(ir, ssa) {
+  return [
+    Array.isArray(ir.values) ? ir.values.length : -1,
+    Array.isArray(ir.nodes) ? ir.nodes.length : -1,
+    Array.isArray(ir.blocks) ? ir.blocks.length : -1,
+    Array.isArray(ssa?.definitions) ? ssa.definitions.length : -1,
+    Array.isArray(ssa?.uses) ? ssa.uses.length : -1,
+  ];
+}
+
+function sameStructureShape(cached, shape) {
+  for (let index = 0; index < cached.length; index += 1) {
+    if (cached[index] !== shape[index]) return false;
+  }
+  return true;
+}
+
+function getGraphValidity(ir, options) {
+  const cached = graphStructureMemo.get(ir) ?? { ssa: null, shape: [], valid: null, core: null };
+  graphStructureMemo.set(ir, cached);
+  const shape = structureShape(ir, options.ssa);
+  if (cached.valid !== null && cached.ssa === options.ssa && sameStructureShape(cached.shape, shape)) {
+    return cached.valid;
+  }
+  cached.ssa = options.ssa;
+  cached.shape = shape;
+  cached.core = null;
+  cached.valid = identityGraphIsValid(ir, options);
+  return cached.valid;
+}
+
 function buildContext(ir, options) {
+  const cached = graphStructureMemo.get(ir) ?? { ssa: null, shape: [], valid: null, core: null };
+  graphStructureMemo.set(ir, cached);
+  const shape = structureShape(ir, options.ssa);
+  if (cached.core !== null && cached.ssa === options.ssa && sameStructureShape(cached.shape, shape)) {
+    return { ir, options, ...cached.core };
+  }
   const values = new Map((ir.values ?? []).map((value) => [String(value.id), value]));
   const nodes = new Map((ir.nodes ?? []).map((node) => [String(node.id), node]));
   const blocks = new Map((ir.blocks ?? []).map((block) => [String(block.id), block]));
@@ -313,7 +359,10 @@ function buildContext(ir, options) {
     ssaUsesByEntity.set(key, list);
   }
   for (const list of ssaUsesByEntity.values()) list.sort((a, b) => String(a.useId).localeCompare(String(b.useId)));
-  return { ir, options, values, nodes, blocks, nodePosition, ssaDefinitions, ssaUsesByEntity };
+  cached.ssa = options.ssa;
+  cached.shape = shape;
+  cached.core = { values, nodes, blocks, nodePosition, ssaDefinitions, ssaUsesByEntity };
+  return { ir, options, ...cached.core };
 }
 
 function constantFromNode(value, node) {
@@ -687,7 +736,7 @@ export function deriveCanonicalAddressProof(ir, addressValueId, options = {}) {
   if (!ir || typeof ir !== 'object' || Array.isArray(ir)) return unknown('canonical-address-ir-required');
   if (addressValueId == null) return unknown('canonical-address-value-id-required');
   const normalizedAddressValueId = identityString(addressValueId);
-  if (normalizedAddressValueId == null || !identityGraphIsValid(ir, options)) return unknown('canonical-address-identity-invalid');
+  if (normalizedAddressValueId == null || !getGraphValidity(ir, options)) return unknown('canonical-address-identity-invalid');
   const expectedAddressSpace = options.addressSpace == null ? 'memory' : identityString(options.addressSpace);
   if (expectedAddressSpace == null) return unknown('canonical-address-address-space-invalid');
   const ctx = buildContext(ir, options);
