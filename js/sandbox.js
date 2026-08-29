@@ -311,21 +311,13 @@ export function runInSandbox({ source, mode = 'script', index = 0, api, out, tim
     };
     window.addEventListener('message', onFrameReady);
 
-    const onAbort = () => finish({ error: 'キャンセルされました。', aborted: true });
-    if (signal) {
-      if (signal.aborted) {
-        onAbort();
-        return;
-      }
-      signal.addEventListener('abort', onAbort, { once: true });
-    }
-
+    let onAbort = null;
     const finish = (value) => {
       if (settled) return;
       settled = true;
       runController.abort(value?.error || 'sandbox-finished');
       clearTimeout(timer);
-      if (signal) signal.removeEventListener('abort', onAbort);
+      if (signal && onAbort) signal.removeEventListener('abort', onAbort);
       window.removeEventListener('message', onFrameReady);
       window.removeEventListener('pagehide', onPageHide);
       terminate();
@@ -333,6 +325,15 @@ export function runInSandbox({ source, mode = 'script', index = 0, api, out, tim
       frame.remove();
       resolve(value);
     };
+
+    onAbort = () => finish({ error: 'キャンセルされました。', aborted: true });
+    if (signal) {
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+      signal.addEventListener('abort', onAbort, { once: true });
+    }
 
     const failBudget = (message) => finish({ error: message });
     const onPageHide = () => finish({ error: 'ページが閉じられたため実行を停止しました。' });
