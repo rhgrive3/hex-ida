@@ -498,6 +498,7 @@ export function parseCompactUnwind(r, image, metadataBudget = null) {
     fail('metadata-budget');
     return false;
   };
+  const notFunctionStartMask = 0x80000000;
 
   if (sec.fileOffset == null || sec.fileSize == null || sec.fileSize < 28n) {
     fail('section-truncated', 'section is too small for the compact-unwind header');
@@ -603,7 +604,7 @@ export function parseCompactUnwind(r, image, metadataBudget = null) {
 
     const pageAbs = fileOff + pageOff;
     const kind = r.u32(pageAbs);
-    const offsets = [];
+    const entries = [];
     if (kind === 2) {
       const entryOff = r.u16(pageAbs + 4);
       const count = r.u16(pageAbs + 6);
@@ -613,7 +614,10 @@ export function parseCompactUnwind(r, image, metadataBudget = null) {
         return;
       }
       if (!take({ inputBytes:entryBytes, records:count, operations:count, estimatedHeapBytes:count*24 }, 'regular-entry')) return;
-      for (let k = 0; k < count; k++) offsets.push(r.u32(pageAbs + entryOff + k * 8));
+      for (let k = 0; k < count; k++) {
+        const at = pageAbs + entryOff + k * 8;
+        entries.push({ functionOffset:r.u32(at), encoding:r.u32(at + 4) });
+      }
     } else if (kind === 3) {
       if (pageSpan < 12) {
         fail('compressed-page-header-truncated', `compressed page ${i} header is truncated`);
@@ -633,6 +637,10 @@ export function parseCompactUnwind(r, image, metadataBudget = null) {
         fail('compressed-encodings-range-invalid', `compressed page ${i} encoding array escapes its page`);
         return;
       }
+      if (encodingsCount && encodingsOff < entryOff + entryBytes) {
+        fail('compressed-page-layout-invalid', `compressed page ${i} encoding array overlaps its entry array`);
+        return;
+      }
       if (!take({ inputBytes:entryBytes + encodingBytes, records:count, operations:count, estimatedHeapBytes:count*24 }, 'compressed-entry')) return;
       const encodingDomain = commonCount + encodingsCount;
       for (let k = 0; k < count; k++) {
@@ -642,33 +650,36 @@ export function parseCompactUnwind(r, image, metadataBudget = null) {
           fail('compressed-encoding-index-invalid', `compressed page ${i} uses encoding index ${encodingIndex} outside ${encodingDomain}`, true);
           return;
         }
-        offsets.push(lower + (entry & 0x00ffffff));
+        const encoding = encodingIndex < commonCount
+          ? r.u32(fileOff + commonOff + encodingIndex * 4)
+          : r.u32(pageAbs + encodingsOff + (encodingIndex - commonCount) * 4);
+        entries.push({ functionOffset:lower + (entry & 0x00ffffff), encoding });
       }
     } else {
       fail('page-kind-unsupported', `second-level page ${i} has unsupported kind ${kind}`);
       return;
     }
 
-    if (offsets[0] !== lower) {
+    if (entries[0].functionOffset !== lower) {
       fail('page-first-entry-mismatch', `page ${i} first function offset does not match its first-level owner`, true);
       return;
     }
-    for (let k = 0; k < offsets.length; k++) {
-      const functionOffset = offsets[k];
+    for (let k = 0; k < entries.length; k++) {
+      const { functionOffset, encoding } = entries[k];
       if (functionOffset < lower || functionOffset >= upper) {
         fail('entry-out-of-range', `function offset 0x${functionOffset.toString(16)} escapes [0x${lower.toString(16)},0x${upper.toString(16)})`, true);
         return;
       }
-      if (k > 0 && functionOffset <= offsets[k - 1]) {
+      if (k > 0 && functionOffset <= entries[k - 1].functionOffset) {
         fail('entry-order-invalid', `page ${i} function offsets must be strictly increasing`, true);
         return;
       }
-      const endOffset = offsets[k + 1] ?? upper;
+      const endOffset = entries[k + 1]?.functionOffset ?? upper;
       if (endOffset <= functionOffset) {
         fail('entry-extent-invalid', `page ${i} produced a non-positive function extent`, true);
         return;
       }
-      candidateRanges.push({ startOffset:functionOffset, endOffset });
+      candidateRanges.push({ startOffset:functionOffset, endOffset, encoding });
     }
   }
 
@@ -676,6 +687,7 @@ export function parseCompactUnwind(r, image, metadataBudget = null) {
   const imageBase = textSeg ? textSeg.address : (image.segments[0] ? image.segments[0].address : 0n);
   const alignment = (image.arch === 'arm64' || image.arch === 'arm64e' || image.arch === 'arm64_32') ? 4n : image.arch === 'arm' ? 2n : 1n;
   const ranges = [];
+  let currentOwnerStart = null;
   for (const candidate of candidateRanges) {
     const start = imageBase + BigInt(candidate.startOffset);
     const end = imageBase + BigInt(candidate.endOffset);
@@ -688,7 +700,21 @@ export function parseCompactUnwind(r, image, metadataBudget = null) {
       fail('entry-extent-invalid', `function offset 0x${candidate.startOffset.toString(16)} has an invalid end`, true);
       return;
     }
-    ranges.push({ start, end });
+    if (end > seg.address + seg.size || image.segmentAt(end - 1n) !== seg) {
+      fail('entry-extent-mapping-invalid', `function range 0x${candidate.startOffset.toString(16)}..0x${candidate.endOffset.toString(16)} escapes its executable mapping`, true);
+      return;
+    }
+    const continuation = (candidate.encoding & notFunctionStartMask) !== 0;
+    if (continuation) {
+      if (currentOwnerStart == null) {
+        fail('continuation-owner-missing', `continuation range at 0x${candidate.startOffset.toString(16)} has no preceding primary function`, true);
+        return;
+      }
+      ranges.push({ start, end, primary:false, ownerStart:currentOwnerStart });
+    } else {
+      currentOwnerStart = start;
+      ranges.push({ start, end, primary:true, ownerStart:null });
+    }
   }
 
   if (!take({ objects:ranges.length*2, operations:ranges.length, estimatedHeapBytes:ranges.length*256 }, 'output')) return;
@@ -698,10 +724,11 @@ export function parseCompactUnwind(r, image, metadataBudget = null) {
       start:range.start,
       end:range.end,
       sizeBytes,
-      primary:true,
+      primary:range.primary,
+      ...(range.primary ? {} : { ownerStart:range.ownerStart }),
       source:'compact-unwind',
     });
-    image.functions.push(functionSeed(range.start, { source:'unwind', confidence:0.95 }));
+    if (range.primary) image.functions.push(functionSeed(range.start, { source:'unwind', confidence:0.95 }));
   }
   status.recovered = ranges.length;
 }
