@@ -466,71 +466,51 @@ function selectFatSlice(bytes, kind, preferredArch) {
 function parseCompactUnwind(r, image, metadataBudget = null) {
   const sec = image.sections.find((s) => s.name === '__unwind_info' || s.name === '__TEXT,__unwind_info');
   if (!sec || sec.fileOffset == null || sec.fileSize == null || sec.fileSize < 28n) return;
-  const fileOff = Number(sec.fileOffset);
-  const fileSize = Number(sec.fileSize);
-  if (!Number.isSafeInteger(fileOff) || !Number.isSafeInteger(fileSize) || fileOff < 0 || fileSize < 28 || fileOff + fileSize > r.length) return;
-
+  const budget = ensureMachOMetadataBudget(image, metadataBudget);
+  const status = image.metadata.compactUnwind = { present:true, complete:true, recovered:0, partialReasons:[] };
+  const partial = (reason, warning = null) => {
+    status.complete = false;
+    if (!status.partialReasons.includes(reason)) status.partialReasons.push(reason);
+    markMachOMetadataPartial(image, `compact-unwind:${reason}`);
+    if (warning) image.warnings.push(warning);
+  };
+  const fileOff = Number(sec.fileOffset), fileSize = Number(sec.fileSize);
+  if (!Number.isSafeInteger(fileOff) || !Number.isSafeInteger(fileSize) || fileOff < 0 || fileSize < 28 || fileOff > r.length || fileSize > r.length - fileOff) { partial('section-range'); return; }
   const version = r.u32(fileOff);
-  if (version !== 1) return;
-  const indexOff = r.u32(fileOff + 20);
-  const indexCount = r.u32(fileOff + 24);
-  if (!indexCount || indexCount < 1 || indexOff + indexCount * 12 > fileSize) return;
-
+  if (version !== 1) { partial('unsupported-version'); return; }
+  const indexOff = r.u32(fileOff + 20), indexCount = r.u32(fileOff + 24);
+  if (indexCount < 2 || indexOff > fileSize || indexCount > Math.floor((fileSize - indexOff) / 12)) { partial('index-range'); return; }
   const textSeg = image.segments.find((s) => s.name === '__TEXT');
   const imageBase = textSeg ? textSeg.address : (image.segments[0] ? image.segments[0].address : 0n);
   const alignment = (image.arch === 'arm64' || image.arch === 'arm64e' || image.arch === 'arm64_32') ? 4n : image.arch === 'arm' ? 2n : 1n;
-
   const functionAddresses = new Set();
-
-  for (let i = 0; i < indexCount; i++) {
-    const e = fileOff + indexOff + i * 12;
-    const funcOffset = r.u32(e);
-    const pageOff = r.u32(e + 4);
-    if (!pageOff || pageOff + 8 > fileSize) continue;
-    const pageAbs = fileOff + pageOff;
-    const kind = r.u32(pageAbs);
-    if (kind === 2) {
-      const entryOff = r.u16(pageAbs + 4);
-      const count = r.u16(pageAbs + 6);
-      if (entryOff + count * 8 > fileSize - pageOff) continue;
-      for (let k = 0; k < count; k++) {
-        const p = pageAbs + entryOff + k * 8;
-        if (p + 8 > r.length) break;
-        const funcOff = r.u32(p);
-        const addr = imageBase + BigInt(funcOff);
-        functionAddresses.add(addr);
-      }
-    } else if (kind === 3) {
-      const entryOff = r.u16(pageAbs + 4);
-      const count = r.u16(pageAbs + 6);
-      if (entryOff + count * 4 > fileSize - pageOff) continue;
-      for (let k = 0; k < count; k++) {
-        const p = pageAbs + entryOff + k * 4;
-        if (p + 4 > r.length) break;
-        const entry = r.u32(p);
-        const funcOff = funcOffset + (entry & 0x00ffffff);
-        const addr = imageBase + BigInt(funcOff);
-        functionAddresses.add(addr);
-      }
+  for (let i = 0; i + 1 < indexCount; i++) {
+    if (!budget.take({ records:1, operations:2, estimatedHeapBytes:64 }, 'compact-unwind-page')) { partial('metadata-budget'); break; }
+    const e = fileOff + indexOff + i * 12, next = e + 12;
+    const rangeStart = r.u32(e), rangeEnd = r.u32(next), pageOff = r.u32(e + 4);
+    if (rangeEnd <= rangeStart) { partial('first-level-range'); continue; }
+    if (!pageOff || pageOff > fileSize - 8) { partial('page-range'); continue; }
+    const pageAbs = fileOff + pageOff, kind = r.u32(pageAbs), entryOff = r.u16(pageAbs + 4), count = r.u16(pageAbs + 6);
+    const entrySize = kind === 2 ? 8 : kind === 3 ? 4 : 0;
+    if (!entrySize) { partial('page-kind'); continue; }
+    if (entryOff < 8 || entryOff > fileSize - pageOff || count > Math.floor((fileSize - pageOff - entryOff) / entrySize)) { partial('entry-range'); continue; }
+    for (let k = 0; k < count; k++) {
+      if (!budget.take({ inputBytes:entrySize, records:1, operations:2, estimatedHeapBytes:48 }, 'compact-unwind-entry')) { partial('metadata-budget'); break; }
+      const p = pageAbs + entryOff + k * entrySize;
+      const funcOff = kind === 2 ? r.u32(p) : rangeStart + (r.u32(p) & 0x00ffffff);
+      if (funcOff < rangeStart || funcOff >= rangeEnd) { partial('function-outside-first-level-range'); continue; }
+      const addr = imageBase + BigInt(funcOff), seg = image.segmentAt(addr);
+      if (!seg?.perms?.execute || (alignment > 1n && addr % alignment !== 0n)) { partial('function-not-executable'); continue; }
+      functionAddresses.add(addr);
     }
+    if (!status.complete && status.partialReasons.includes('metadata-budget')) break;
   }
-
-  const sortedAddresses = [...functionAddresses].filter((addr) => {
-    const seg = image.segmentAt(addr);
-    return seg && seg.perms?.execute === true && (alignment <= 1n || addr % alignment === 0n);
-  }).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
-
-  for (let i = 0; i < sortedAddresses.length; i++) {
-    const start = sortedAddresses[i];
-    const end = sortedAddresses[i + 1] ?? null;
-    const sizeBytes = end != null ? Number(end - start) : null;
-    image.unwindEntries.push({
-      start,
-      end,
-      sizeBytes,
-      primary: true,
-      source: 'compact-unwind',
-    });
-    image.functions.push(functionSeed(start, { source: 'unwind', confidence: 0.95 }));
+  if (!status.complete) return;
+  const sortedAddresses=[...functionAddresses].sort((a,b)=>(a<b?-1:a>b?1:0));
+  for(let i=0;i<sortedAddresses.length;i++){
+    const start=sortedAddresses[i],end=sortedAddresses[i+1]??null,sizeBytes=end!=null?Number(end-start):null;
+    image.unwindEntries.push({start,end,sizeBytes,primary:true,source:'compact-unwind'});
+    image.functions.push(functionSeed(start,{source:'unwind',confidence:0.95}));
+    status.recovered++;
   }
 }

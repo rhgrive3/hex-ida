@@ -218,7 +218,7 @@ async function cstring(get, addr) {
 function newLegacyCompleteness(present, declared = 0) {
   return {
     present: !!present, declared, scanned: 0, parsed: 0, capped: false,
-    unreadableSlots: 0, invalidEntries: 0, invalidIvars: 0, incompleteMethodLists: 0,
+    unreadableSlots: 0, invalidEntries: 0, invalidIvars: 0, invalidImps: 0, incompleteMethodLists: 0,
     misalignedBytes: 0, sizeValid: true, reasons: [], complete: !present,
   };
 }
@@ -247,6 +247,11 @@ async function pointer(get, addr) {
  * indirect form は selector-reference を 1 段たどれた場合だけ採用し、解決失敗時に
  * storage 自身を direct C string として読み替えない。
  */
+async function validateMethodImp(get, imp) {
+  if (imp == null || typeof get.isExecutableAddress !== 'function') return { known:false, valid:imp != null };
+  try { return { known:true, valid:!!(await get.isExecutableAddress(BigInt(imp))) }; } catch { return { known:true, valid:false }; }
+}
+
 async function readMethods(get, listAddr, out, className, prefix, budget, completeness = null) {
   if (listAddr == null) return;
   const head = await get(listAddr, 8);
@@ -287,10 +292,12 @@ async function readMethods(get, listAddr, out, className, prefix, budget, comple
       imp = cleanPointer(get, u64(b, 16));
     }
     if (imp == null) { markLegacyPartial(completeness, 'method-imp-unresolved', 'incompleteMethodLists'); continue; }
+    const rawImp = imp, impProof = await validateMethodImp(get, imp);
+    if (impProof.known && !impProof.valid) { markLegacyPartial(completeness, 'method-imp-not-executable', 'invalidImps'); imp = null; }
     const sel = await cstring(get, nameAddr);
     if (!sel) { markLegacyPartial(completeness, 'method-selector-invalid', 'incompleteMethodLists'); continue; }
     out.push({
-      addr: imp,
+      addr: imp, rawImp, implementationVerified:impProof.known ? impProof.valid : undefined,
       name: prefix + '[' + className + ' ' + sel + ']',
       sel, kind: prefix, className,
     });
@@ -526,10 +533,11 @@ async function readClass(get, classAddr, out, seen, meta, completeness = null) {
   const name = await cstring(get, cleanPointer(get, u64(ro, RO_NAME)));
   if (!name) { markLegacyPartial(completeness, 'class-name-invalid'); return null; }
 
-  const before = out.length;
-  await readMethods(get, cleanPointer(get, u64(ro, RO_METHODS)), out, name,
+  const parsedMethods = [];
+  await readMethods(get, cleanPointer(get, u64(ro, RO_METHODS)), parsedMethods, name,
     meta ? '+' : '-', MAX_METHODS, completeness);
-  const methods = out.slice(before);
+  out.push(...parsedMethods.filter((method) => method.addr != null));
+  const methods = parsedMethods;
 
   const info = {
     name,
@@ -579,7 +587,7 @@ async function readClass(get, classAddr, out, seen, meta, completeness = null) {
  *   chained fixups のポインタを組み立てるのに要る。渡されなければ
  *   クラス表の位置から推定する（iOS のアプリは 4 GiB 境界に置かれる）。
  */
-export async function buildObjcModel(read, classList, onProgress, imageBase, pointerFormat) {
+export async function buildObjcModel(read, classList, onProgress, imageBase, pointerFormat, opts = {}) {
   const names = [];
   const classes = [];
   const seen = new Set();
@@ -606,6 +614,7 @@ export async function buildObjcModel(read, classList, onProgress, imageBase, poi
     ? BigInt(imageBase)
     : (classList.vmAddr / 0x100000000n) * 0x100000000n;
   get.pointerFormat = pointerFormat ?? classList.pointerFormat ?? classList.pointer_format ?? null;
+  get.isExecutableAddress = opts.isExecutableAddress || null;
   const total = Math.min(declared, MAX_CLASSES);
 
   for (let i = 0; i < total && names.length < MAX_METHODS; i++) {
@@ -644,7 +653,7 @@ export async function buildObjcModel(read, classList, onProgress, imageBase, poi
 /**
  * 実装アドレス → 名前 の一覧だけが欲しいとき（既存の呼び出し元向け）。
  */
-export async function buildObjcNames(read, classList, onProgress, imageBase, pointerFormat) {
-  const model = await buildObjcModel(read, classList, onProgress, imageBase, pointerFormat);
+export async function buildObjcNames(read, classList, onProgress, imageBase, pointerFormat, opts = {}) {
+  const model = await buildObjcModel(read, classList, onProgress, imageBase, pointerFormat, opts);
   return { names: model.names, classes: model.count };
 }

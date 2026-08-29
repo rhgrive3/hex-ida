@@ -43,7 +43,8 @@ function categoryNames(categories = []) {
 /** Full Apple-runtime Objective-C model used by the App. */
 export async function buildObjcRuntimeModel(read, classList, runtimeSections = {}, onProgress, imageBase, pointerFormat) {
   const effectivePointerFormat = pointerFormat ?? classList?.pointerFormat ?? classList?.pointer_format ?? null;
-  const base = await buildLegacyObjcModel(read, classList, onProgress, imageBase, effectivePointerFormat);
+  const isExecutableAddress = typeof runtimeSections?.isExecutableAddress === 'function' ? runtimeSections.isExecutableAddress : null;
+  const base = await buildLegacyObjcModel(read, classList, onProgress, imageBase, effectivePointerFormat, { isExecutableAddress });
   const binaryImage = runtimeSections?.binaryImage || null;
   let resolvePointer = typeof runtimeSections?.resolvePointer === 'function'
     ? runtimeSections.resolvePointer
@@ -68,6 +69,7 @@ export async function buildObjcRuntimeModel(read, classList, runtimeSections = {
     imageBase,
     classes: base.classes || [],
     resolvePointer,
+    isExecutableAddress,
   });
   const names = (base.names || []).slice();
   const seen = new Set(names.map((entry) => `${entry.addr}:${entry.name}`));

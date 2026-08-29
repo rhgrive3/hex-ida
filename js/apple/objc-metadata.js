@@ -49,6 +49,11 @@ function emptyListCompleteness(present = false) {
   return { present, declared: 0, scanned: 0, parsed: 0, capped: false, unreadableEntries: 0, invalidEntries: 0, complete: !present };
 }
 
+async function validateMethodImp(get, imp) {
+  if (imp == null || typeof get.isExecutableAddress !== 'function') return { known:false, valid:imp != null };
+  try { return { known:true, valid:!!(await get.isExecutableAddress(BigInt(imp))) }; } catch { return { known:true, valid:false }; }
+}
+
 async function methodList(get, listAddr, owner, classMethod, source) {
   const items = [];
   if (listAddr == null) return { items, completeness: { ...emptyListCompleteness(false), complete: true } };
@@ -84,9 +89,12 @@ async function methodList(get, listAddr, owner, classMethod, source) {
       typeAddr = await decodedPointer(get, u64(b, 8), at + 8n);
       imp = await decodedPointer(get, u64(b, 16), at + 16n);
     }
+    const rawImp = imp;
+    const impProof = source.startsWith('protocol') ? { known:true, valid:false } : await validateMethodImp(get, imp);
+    if (!source.startsWith('protocol') && impProof.known && !impProof.valid) { invalidEntries++; imp = null; }
     const sel = await cstring(get, nameAddr);
     if (!sel) { invalidEntries++; continue; }
-    items.push({ sel, selector: sel, types: await cstring(get, typeAddr), addr: imp, imp, className: owner || null, classMethod: !!classMethod, source, kind: classMethod ? '+' : '-', name: owner ? `${classMethod ? '+' : '-'}[${owner} ${sel}]` : sel });
+    items.push({ sel, selector: sel, types: await cstring(get, typeAddr), addr: imp, imp, rawImp, implementationVerified:source.startsWith('protocol')?false:(impProof.known?impProof.valid:undefined), className: owner || null, classMethod: !!classMethod, source, kind: classMethod ? '+' : '-', name: owner ? `${classMethod ? '+' : '-'}[${owner} ${sel}]` : sel });
   }
   return {
     items,
@@ -207,6 +215,7 @@ export async function parseObjcExtendedMetadata(read, sections = {}, opts = {}) 
   const get = pagedReader(read, opts.pageBytes || 65536, opts.maxPages || 96);
   get.base = opts.imageBase != null ? BigInt(opts.imageBase) : null;
   get.resolvePointer = opts.resolvePointer || opts.binaryImage?.resolvePointer || opts.binaryImage?.decodePointer || null;
+  get.isExecutableAddress = opts.isExecutableAddress || null;
   const classByAddress = new Map((opts.classes || []).filter((c) => c?.addr != null).map((c) => [c.addr.toString(), c]));
   const protocolTable = await pointerTable(get, sections.protocolList, MAX_PROTOCOLS, (address) => parseProtocol(get, address));
   const categoryTable = await pointerTable(get, sections.categoryList, MAX_CATEGORIES, (address) => parseCategory(get, address, classByAddress));

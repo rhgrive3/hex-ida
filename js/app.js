@@ -1047,7 +1047,7 @@ class App {
         const info = this.store.get('fileInfo');
         const sl = info && info.slices ? info.slices[slice] : null;
         const imageBase = sl && sl.info ? sl.info.textVM : null;
-        const model = await buildObjcRuntimeModel(read, list, { protocolList, categoryList }, null, imageBase);
+        const model = await buildObjcRuntimeModel(read, list, { protocolList, categoryList, isExecutableAddress:(addr)=>!!this.executableRegionFor(addr) }, null, imageBase);
         if (epoch !== this.backend.gen || this.store.get('sliceIndex') !== slice) return this.fields;
         model.runtimeIndex = model.runtimeIndex || buildObjcRuntimeIndex(model);
         this.objcModel = model;
@@ -1084,7 +1084,7 @@ class App {
     this.swiftBusy=(async()=>{
       const read=(addr,len)=>this.backend.readAt(addr,len).then((r)=>(r&&r.found?r.bytes:null)).catch(()=>null);
       try {
-        const model=await buildSwiftMetadataModel(read,regions,{budget:20000});
+        const model=await buildSwiftMetadataModel(read,regions,{budget:20000,isExecutableAddress:(addr)=>!!this.executableRegionFor(addr)});
         if(epoch!==this.backend.gen || this.store.get('sliceIndex')!==slice) return null;
         this.swiftModel=model; this.swiftRuntime=buildSwiftRuntimeIndex(model);
         const exec=this.executableRegions(); const names=[];
