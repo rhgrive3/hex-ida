@@ -55,7 +55,16 @@ export class AgentJobManager {
     if (job.status === 'complete' || job.status === 'hard-limit') return checkpoint(job);
     if (job.status === 'running') throw new Error('Agent job already has an active slice');
     if (hardLimit(job)) { job.status = 'hard-limit'; job.updatedAt = new Date().toISOString(); await this.save(job); return checkpoint(job); }
-    job.status = 'running'; await this.save(job);
+    const previousStatus = job.status;
+    const previousUpdatedAt = job.updatedAt;
+    job.status = 'running';
+    try {
+      await this.save(job);
+    } catch (error) {
+      job.status = previousStatus;
+      job.updatedAt = previousUpdatedAt;
+      throw error;
+    }
     try {
       const result = await this.runtime.turn({
         ...job.request, goal: job.goal, mode: 'agent', scope: job.effectiveScope,
