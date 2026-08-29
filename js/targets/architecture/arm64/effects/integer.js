@@ -33,7 +33,7 @@ function isGpOrZr(op) { return op?.k === 'reg' && ['gp','zr'].includes(regClass(
 function isGpOrSp(op) { return op?.k === 'reg' && ['gp','sp'].includes(regClass(op)); }
 
 function validImm12(op) {
-  if (op?.k !== 'imm') return false;
+  if (op?.k !== 'imm' || op.extend != null) return false;
   let value;
   try { value = BigInt(op.value); } catch { return false; }
   if (value < 0n || value > 0xfffn) return false;
@@ -74,7 +74,7 @@ const LOGICAL_IMMEDIATE_MASKS = Object.freeze({
 });
 
 function logicalImmediateEncodable(op, widthBits) {
-  if (op?.k !== 'imm' || (widthBits !== 32 && widthBits !== 64) || op.shift != null) return false;
+  if (op?.k !== 'imm' || (widthBits !== 32 && widthBits !== 64) || op.shift != null || op.extend != null) return false;
   let immediate;
   try { immediate = BigInt(op.value); } catch { return false; }
   return LOGICAL_IMMEDIATE_MASKS[widthBits].has(BigInt.asUintN(widthBits, immediate).toString());
@@ -160,7 +160,7 @@ function validMovEncoding(mnemonic, ops) {
   const bits = regBits(dst);
   if (bits !== 32 && bits !== 64) return false;
   if (dst.shift != null || dst.extend != null) return false;
-  if (src?.k === 'imm') return dstClass !== 'sp';
+  if (src?.k === 'imm') return dstClass !== 'sp' && src.shift == null && src.extend == null;
   const srcClass = regClass(src);
   if (!['gp','zr','sp'].includes(srcClass) || regBits(src) !== bits || src.shift != null || src.extend != null) return false;
   const spInvolved = dstClass === 'sp' || srcClass === 'sp';
