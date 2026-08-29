@@ -1,0 +1,81 @@
+name: Temporary issue 2412 repair runner
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: issue-2412-repair-runner
+  cancel-in-progress: false
+
+jobs:
+  restack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/2412-canonical-root-identity
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Merge current main without laundering conflicts
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch origin main
+          if git merge-base --is-ancestor origin/main HEAD; then
+            echo 'already-current=true' >> "$GITHUB_ENV"
+            exit 0
+          fi
+          set +e
+          git merge --no-commit --no-ff origin/main
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            mapfile -t conflicts < <(git diff --name-only --diff-filter=U)
+            printf 'conflict: %s\n' "${conflicts[@]}"
+            for path in "${conflicts[@]}"; do
+              case "$path" in
+                userscript/hex.user.template.js|userscript/release-version.json)
+                  git checkout --theirs -- "$path"
+                  git add -- "$path"
+                  ;;
+                *)
+                  echo "unexpected semantic conflict: $path" >&2
+                  exit 1
+                  ;;
+              esac
+            done
+          fi
+          test -z "$(git diff --name-only --diff-filter=U)"
+          echo 'already-current=false' >> "$GITHUB_ENV"
+      - name: Rebuild canonical generated output and validate
+        if: env.already-current != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run userscript:build
+          node --check js/analysis/alias/canonical-address-v2-core.js
+          node --check js/analysis/pointsto/local.js
+          node tests/canonical-address-v2-root-identity.test.mjs
+          node tests/semantic-v2/issue-817-canonical-stack-offsets.test.mjs
+          node tests/semantic-v2/repair-region-provenance-core.test.mjs
+          node tests/phase7/pointsto/a2-local.test.mjs
+          npm run semantic-v2:test
+          git diff --check
+      - name: Publish restacked PR head
+        if: env.already-current != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add -A
+          git commit -m 'merge: restack issue 2412 on current main'
+          git push origin HEAD:fix/2412-canonical-root-identity
