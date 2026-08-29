@@ -53,7 +53,8 @@ function makeIndex() {
       { id:'data', vmAddr:0x2000n, size:0x1000n, exec:false },
     ],
   });
-  assert.deepEqual(index.functionAt(0x1080n), { start:0x1000n, end:0x1100n, index:0 });
+  assert.deepEqual(index.functionAt(0x1000n), { start:0x1000n, end:null, index:0 });
+  assert.equal(index.functionAt(0x1080n), null, 'next function start is not proof of the previous function extent');
   assert.deepEqual(index.functionAt(0x1100n), { start:0x1100n, end:null, index:1 });
   assert.equal(index.functionAt(0x1180n), null);
   assert.equal(index.functionAt(0x2800n), null);
@@ -70,6 +71,17 @@ function makeIndex() {
   assert.equal(index.functionAt(0x1080n), null);
 }
 
+
+{
+  const index = new SymbolIndex({
+    funcs: new BigUint64Array([0x1000n]),
+    funcEnds: new BigUint64Array([0x1080n]),
+    regions: [{ id:'text', vmAddr:0x1000n, size:0x1000n, exec:true }],
+  });
+  index.addFunctions([0x1100n]);
+  assert.deepEqual(index.functionAt(0x107cn), { start:0x1000n, end:0x1080n, index:0 }, 'adding a start must preserve independently proven extents');
+  assert.deepEqual(index.functionAt(0x1100n), { start:0x1100n, end:null, index:1 });
+}
 
 // #464 re-audit: ProgramIndex must observe the same executable-region trust
 // boundary as Script lookups. A short global next-start gap in another region

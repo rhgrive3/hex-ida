@@ -98,9 +98,32 @@ export function analysisFromBinaryImage(image) {
   for (let i = 0; i < sorted.length; i++) { addrs[i] = sorted[i].address; kinds[i] = sorted[i].kind; flags[i] = sorted[i].exported ? 1 : 0; }
 
   const seedByAddress = new Map();
-  for (const seed of image.functions || []) if (seed?.address != null) seedByAddress.set(u64Address(seed.address).toString(), seed);
+  const exactEndByAddress = new Map();
+  const conflictingExactEnds = new Set();
+  for (const seed of image.functions || []) {
+    if (seed?.address == null) continue;
+    const address = u64Address(seed.address);
+    const key = address.toString();
+    seedByAddress.set(key, seed);
+    const extentConfidence = Number(seed.extentConfidence ?? 0);
+    if (!isExactFunctionSeed(seed) || seed.extentInferred === true || !Number.isFinite(extentConfidence) || extentConfidence < 0.9) continue;
+    let end = null;
+    try {
+      if (seed.end != null) end = u64Address(seed.end);
+      else if (seed.size != null) {
+        const size = BigInt(seed.size);
+        if (size > 0n && address <= 0xffffffffffffffffn - size) end = address + size;
+      }
+    } catch { end = null; }
+    if (end == null || end <= address) continue;
+    const previous = exactEndByAddress.get(key);
+    if (previous != null && previous !== end) { conflictingExactEnds.add(key); exactEndByAddress.delete(key); }
+    else if (!conflictingExactEnds.has(key)) exactEndByAddress.set(key, end);
+  }
   const functions = [...seedByAddress.keys()].map(BigInt).sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
   const funcs = new BigUint64Array(functions);
+  const funcEnds = new BigUint64Array(functions.length);
+  for (let i = 0; i < functions.length; i++) funcEnds[i] = exactEndByAddress.get(functions[i].toString()) ?? 0n;
   const functionProvenance = functions.map((addr) => {
     const seed = seedByAddress.get(addr.toString()) || {};
     const confirmed = isExactFunctionSeed(seed);
@@ -110,22 +133,22 @@ export function analysisFromBinaryImage(image) {
   const allSeedsExact = functions.length > 0 && (image.functions || []).every(isExactFunctionSeed);
   const discoveryComplete = image.metadata?.functionDiscovery?.complete === true;
   return {
-    addrs, kinds, flags, names: sorted.map((x) => x.name), funcs, functionProvenance, nameProvenance,
+    addrs, kinds, flags, names: sorted.map((x) => x.name), funcs, funcEnds, functionProvenance, nameProvenance,
     symbolCount: addrs.length, funcCount: funcs.length, capped: false,
     allSeedsExact, discoveryComplete, functionStartsExact: discoveryComplete && allSeedsExact,
     functionDiscovery: { complete: discoveryComplete, capped: false, reasons: discoveryComplete ? [] : ['platform-function-seeds-not-exhaustive'] },
     symbolTruth: machoSymbolTruth(image),
-    __transfer: [addrs.buffer, kinds.buffer, flags.buffer, funcs.buffer],
+    __transfer: [addrs.buffer, kinds.buffer, flags.buffer, funcs.buffer, funcEnds.buffer],
   };
 }
 
 export function emptyAnalysis() {
-  const addrs = new BigUint64Array(0), kinds = new Uint8Array(0), flags = new Uint8Array(0), funcs = new BigUint64Array(0);
+  const addrs = new BigUint64Array(0), kinds = new Uint8Array(0), flags = new Uint8Array(0), funcs = new BigUint64Array(0), funcEnds = new BigUint64Array(0);
   return {
-    addrs, kinds, flags, names: [], funcs, symbolCount: 0, funcCount: 0, capped: false,
+    addrs, kinds, flags, names: [], funcs, funcEnds, symbolCount: 0, funcCount: 0, capped: false,
     allSeedsExact: false, discoveryComplete: false, functionStartsExact: false,
     functionDiscovery: { complete:false, capped:false, reasons:['platform-function-seeds-not-exhaustive'] },
     symbolTruth: null,
-    __transfer: [addrs.buffer, kinds.buffer, flags.buffer, funcs.buffer],
+    __transfer: [addrs.buffer, kinds.buffer, flags.buffer, funcs.buffer, funcEnds.buffer],
   };
 }

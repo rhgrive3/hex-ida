@@ -230,7 +230,7 @@ export class ProgramIndex {
     const fn = this.symbols.functionAt(addr);
     if (!fn) return null;
     const owner=this._regionFor(fn.start) || this.region;
-    return { start: fn.start, end: fn.end != null ? fn.end : (owner ? BigInt(owner.vmAddr) + BigInt(owner.size) : null), region:owner };
+    return { start: fn.start, end: fn.end != null ? fn.end : null, region:owner };
   }
   callSitesTo(target, limit = 500) {
     limit = queryLimit(limit, 500);
