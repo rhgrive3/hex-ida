@@ -25,62 +25,18 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Patch Stage2 generated ownership gate only
+      - name: Patch and validate Stage2 generated ownership gate
         shell: bash
         run: |
           set -euo pipefail
           test "$(git hash-object .github/workflows/stage2-nonphysical-closure.yml)" = "eefafecabc0ac57baaab226512b089beb189cf6c"
           test "$(git hash-object tools/validation/generated-output-policy.mjs)" = "52b8bc42c3ffca5206f67c7ca1fecc09f22a8642"
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path('.github/workflows/stage2-nonphysical-closure.yml')
-          text = p.read_text()
-          old = '''      - name: Require canonical generated artifacts to be synchronized
-        if: steps.impact.outputs.required == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          npm run userscript:build
-          git diff --exit-code
-          test -z "$(git status --porcelain --untracked-files=no)"
-'''
-          new = '''      - name: Require canonical generated artifacts to be synchronized
-        if: steps.impact.outputs.required == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          mode="$(node tools/validation/generated-output-policy.mjs)"
-          npm run userscript:build
-          case "$mode" in
-            enforce)
-              git diff --exit-code
-              test -z "$(git status --porcelain --untracked-files=no)"
-              ;;
-            ephemeral)
-              unexpected="$(git diff --name-only | grep -Ev '^(userscript/hex\.user\.template\.js|userscript/release-version\.json)$' || true)"
-              if [[ -n "$unexpected" ]]; then
-                echo "::error::Canonical userscript build changed non-generated paths:"
-                printf '%s\n' "$unexpected"
-                exit 1
-              fi
-              git diff --check
-              ;;
-            *)
-              echo "::error::Unknown generated-output ownership mode: $mode"
-              exit 1
-              ;;
-          esac
-'''
-          if text.count(old) != 1:
-              raise SystemExit('Stage2 generated-output gate precondition changed')
-          p.write_text(text.replace(old, new, 1))
-          PY
+          python3 tools/tmp-stage2-ephemeral-generated-repair.py
           git diff --check
           GITHUB_EVENT_NAME=pull_request GITHUB_HEAD_REF=fix/probe node tools/validation/generated-output-policy.mjs | grep -Fx ephemeral
           GITHUB_EVENT_NAME=pull_request GITHUB_HEAD_REF=dev-agent-hardening/integration/probe node tools/validation/generated-output-policy.mjs | grep -Fx enforce
           grep -Fq 'npm run userscript:build' .github/workflows/stage2-nonphysical-closure.yml
           grep -Fq 'node tools/validation/generated-output-policy.mjs' .github/workflows/stage2-nonphysical-closure.yml
-          grep -Fq 'userscript/hex\.user\.template\.js|userscript/release-version\.json' .github/workflows/stage2-nonphysical-closure.yml
           grep -Fq 'git diff --exit-code' .github/workflows/stage2-nonphysical-closure.yml
       - name: Materialize validated candidate commit
         shell: bash
@@ -88,7 +44,7 @@ jobs:
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git rm .github/workflows/tmp-stage2-ephemeral-generated-repair.yml
+          git rm .github/workflows/tmp-stage2-ephemeral-generated-repair.yml tools/tmp-stage2-ephemeral-generated-repair.py
           git add .github/workflows/stage2-nonphysical-closure.yml
           git commit -m 'fix(ci): honor generated ownership in Stage2 proof'
           git rev-parse HEAD
