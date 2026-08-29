@@ -1,5 +1,6 @@
 name: Temporary cross-binary heap repair
 
+# registered-trigger
 on:
   push:
     branches: [main]
