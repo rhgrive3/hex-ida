@@ -59,13 +59,14 @@ export class VariableInstructionIndex {
     this.resyncBytes=int(resyncBytes,'variable-viewer-invalid-resync-bytes',X86_MAX_INSTRUCTION_BYTES,4096);
     this.onPublish=typeof onPublish==='function'?onPublish:null;
     this.region=null; this.generation=0; this.pages=new Map(); this.inflight=new Map(); this.known=new Map();
+    this.knownOwners=new Map(); this.retainedInstructionCount=0;
     this.currentPageKey=null; this.currentAddress=null; this._clock=0;
-    this._metrics={decodeRequestCount:0,requestedDecodeBytes:0,decodedInstructionCount:0,cacheHits:0,cacheMisses:0,evictions:0,cancelledRequests:0,staleResultsDiscarded:0};
+    this._metrics={decodeRequestCount:0,requestedDecodeBytes:0,decodedInstructionCount:0,cacheHits:0,cacheMisses:0,evictions:0,evictionInstructionCount:0,duplicateOwnerHits:0,cancelledRequests:0,staleResultsDiscarded:0};
   }
 
   configureRegion(region,{architecture=null}={}) {
     this.cancelAll('region-changed');
-    this.generation++; this.pages.clear(); this.inflight.clear(); this.known.clear();
+    this.generation++; this.pages.clear(); this.inflight.clear(); this.known.clear(); this.knownOwners.clear(); this.retainedInstructionCount=0;
     this.currentPageKey=null; this.currentAddress=null;
     if(!region){this.region=null;return;}
     const start=toBigInt(region.vmAddr,'variable-viewer-region-start-required');
@@ -76,7 +77,7 @@ export class VariableInstructionIndex {
   }
 
   dispose(){
-    this.cancelAll('viewer-disposed'); this.generation++; this.pages.clear(); this.inflight.clear(); this.known.clear();
+    this.cancelAll('viewer-disposed'); this.generation++; this.pages.clear(); this.inflight.clear(); this.known.clear(); this.knownOwners.clear(); this.retainedInstructionCount=0;
     this.region=null; this.currentPageKey=null; this.currentAddress=null;
   }
 
@@ -97,9 +98,9 @@ export class VariableInstructionIndex {
   }
 
   metrics(){
-    let retainedInstructions=0,retainedBytes=0;
-    for(const page of this.pages.values()){retainedInstructions+=page.entries.length;retainedBytes+=page.retainedBytes;}
-    return Object.freeze({...this._metrics,retainedPages:this.pages.size,retainedInstructions,retainedBytes,inflightRequests:this.inflight.size,pageBytes:this.pageBytes,overlapBytes:this.overlapBytes,maxDecodeRequestBytes:this.pageBytes+this.overlapBytes,maxPrefetchPages:this.maxPrefetchPages,maxPages:this.maxPages,maxInstructions:this.maxInstructions,generation:this.generation});
+    let retainedBytes=0;
+    for(const page of this.pages.values())retainedBytes+=page.retainedBytes;
+    return Object.freeze({...this._metrics,retainedPages:this.pages.size,retainedInstructions:this.retainedInstructionCount,retainedBytes,inflightRequests:this.inflight.size,pageBytes:this.pageBytes,overlapBytes:this.overlapBytes,maxDecodeRequestBytes:this.pageBytes+this.overlapBytes,maxPrefetchPages:this.maxPrefetchPages,maxPages:this.maxPages,maxInstructions:this.maxInstructions,generation:this.generation});
   }
 
   _assertInRegion(address,{allowEnd=false}={}){
@@ -224,22 +225,36 @@ export class VariableInstructionIndex {
 
   _publish(key,page,{protect=true}={}){
     this.pages.set(key,page);
-    for(const entry of page.entries)this.known.set(entry.address.toString(16),entry);
+    this.retainedInstructionCount+=page.entries.length;
+    for(const entry of page.entries){
+      const addressKey=entry.address.toString(16);
+      let owners=this.knownOwners.get(addressKey);
+      if(!owners){owners=new Map();this.knownOwners.set(addressKey,owners);}else if(owners.size)this._metrics.duplicateOwnerHits++;
+      owners.set(key,entry);
+      this.known.set(addressKey,entry);
+    }
     if(protect){this.currentPageKey=key;this.currentAddress=page.entries[0]?.address??page.start;}
     this._evict(); this.onPublish?.(page);
   }
 
   _evict(){
-    const retainedCount=()=>{let n=0;for(const page of this.pages.values())n+=page.entries.length;return n;};
-    while(this.pages.size>this.maxPages||retainedCount()>this.maxInstructions){
+    while(this.pages.size>this.maxPages||this.retainedInstructionCount>this.maxInstructions){
       let victimKey=null,victim=null;
       for(const[key,page]of this.pages){if(key===this.currentPageKey)continue;if(!victim||page.lastUsed<victim.lastUsed){victimKey=key;victim=page;}}
       if(!victimKey)break;
       this.pages.delete(victimKey);
+      this.retainedInstructionCount-=victim.entries.length;
       for(const entry of victim.entries){
         const addressKey=entry.address.toString(16);
-        const ownedElsewhere=Array.from(this.pages.values()).some((page)=>page.entries.some((candidate)=>candidate.address===entry.address));
-        if(!ownedElsewhere)this.known.delete(addressKey);
+        const owners=this.knownOwners.get(addressKey);
+        owners?.delete(victimKey);
+        if(!owners?.size){
+          this.knownOwners.delete(addressKey);
+          this.known.delete(addressKey);
+        }else{
+          this.known.set(addressKey,owners.values().next().value);
+        }
+        this._metrics.evictionInstructionCount++;
       }
       this._metrics.evictions++;
     }
