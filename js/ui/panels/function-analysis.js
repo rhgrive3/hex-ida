@@ -2,6 +2,7 @@ import { Sheet, el, button, list, tapRow, toast, alertDialog, userError, noteBox
 import { addrHex, sizeText } from '../../format.js';
 import { showDecompiler, showCfg, showCallGraphPanel } from '../../tools.js';
 import { functionViews, openFunctionView } from '../next-views.js';
+import { decompile as decompileModel } from '../../decompile.js';
 
 const COMPLETENESS_JA = Object.freeze({
   complete:'完全',
@@ -35,18 +36,21 @@ async function withFreshSnapshot(app, operation, options = {}) {
   throw last ?? new Error('analysis-query-retry-exhausted');
 }
 
-async function analysisBundle(app, functionId) {
+async function analysisBundle(app, functionId, options = {}) {
   return withFreshSnapshot(app, async (api, snapshot) => {
-    const fn = await api.function(snapshot, functionId);
+    const fn = await api.function(snapshot, functionId, options);
     const resolved = fn?.value?.startAddress ?? fn?.value?.functionId ?? functionId;
     const target = BigInt(resolved);
-    if (fn?.value == null) return { snapshot, fn, decompile:null, cfg:null, target };
-    const [decompile, cfg] = await Promise.all([
-      api.decompile(snapshot, target),
-      api.cfg(snapshot, target),
-    ]);
+    const value = fn?.value ?? null;
+    if (value == null) return { snapshot, fn, decompile:null, cfg:null, target };
+    const decompiled = value.decompiler ?? (value.model
+      ? decompileModel(value.model, { name:app?.symbols?.nameAt?.(target) ?? null, addr:target })
+      : null);
+    const cfgValue = value.pipeline?.cfg ?? value.semanticAnalysis?.pipeline?.cfg ?? value.cfg ?? null;
+    const decompile = decompiled == null ? null : { value:decompiled, completeness:fn.completeness, status:fn.status };
+    const cfg = cfgValue == null ? null : { value:cfgValue, completeness:fn.completeness, status:fn.status };
     return { snapshot, fn, decompile, cfg, target };
-  });
+  }, options);
 }
 
 async function functionPage(app, text, signal) {
@@ -178,13 +182,15 @@ export function showFunctionSummary(app, row) {
     return;
   }
 
-  const sheet = new Sheet('関数の要約');
+  const controller = new AbortController();
+  const sheet = new Sheet('関数の要約', { onClose:() => controller.abort('function-summary-closed') });
   const status = el('div', 'hint', '同じ解析スナップショットから要約を作っています…');
   sheet.body.append(status);
 
   void (async () => {
     try {
-      const bundle = await analysisBundle(app, BigInt(address));
+      const bundle = await analysisBundle(app, BigInt(address), { signal:controller.signal });
+      if (controller.signal.aborted || !sheet.root.isConnected) return;
       status.remove();
 
       const fn = bundle.fn;
@@ -239,6 +245,7 @@ export function showFunctionSummary(app, row) {
       const views = summaryNextViews(app, sheet, target);
       if (views) sheet.body.append(views);
     } catch (error) {
+      if (controller.signal.aborted || error?.name === 'AbortError') return;
       status.textContent = '';
       alertDialog('解析できませんでした', userError(error));
     }
