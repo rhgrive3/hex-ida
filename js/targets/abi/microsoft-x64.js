@@ -409,7 +409,6 @@ export const MICROSOFT_X64_ABI = new ABIPlugin({
   callerSaved:()=>CALLER_SAVED,
   calleeSaved:()=>CALLEE_SAVED,
   stackRules:()=>Object.freeze({
-    stackPointer:'rsp', stackPointerAliases:Object.freeze(['rsp']), entryArgumentOffset:40,
     alignment:16,
     stackGrows:'down',
     argumentSlotBytes:8,

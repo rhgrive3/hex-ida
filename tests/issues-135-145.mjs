@@ -45,21 +45,19 @@ function make(lines, base=0x100000000n) {
 }
 
 // #143/#144: both FP register bank and entry-SP stack arguments are represented.
-// These historical regressions are specifically AAPCS64; make that ABI explicit now
-// that prototype recovery intentionally fails closed when the ABI is unresolved.
 {
   const v0={id:20,uses:[{}]}, x0={id:10,uses:[{}]}, sp={id:30,uses:[]};
   const ir={args:new Map([['x0',x0],['v0',v0],['sp',sp]]),instructions:[{op:'load',loc:{kind:'stack',baseReg:'sp',frameEpoch:30,disp:0n,key:'stack:sp:e30:0'},memUse:{kind:'entry'},dst:{id:40}}]};
-  const p=recoverFunctionPrototype(ir,{values:new Map(),ret:{kind:'double',name:'double',bits:64,confidence:0.9}},{architecture:'arm64'});
+  const p=recoverFunctionPrototype(ir,{values:new Map(),ret:{kind:'double',name:'double',bits:64,confidence:0.9}});
   assert.ok(p.argumentBanks.integer.some((a)=>a.reg==='x0'));
   assert.ok(p.argumentBanks.fp.some((a)=>a.reg==='v0'));
   assert.equal(p.argumentBanks.stack[0].stackOffset,0n);
   assert.equal(p.returnLocations[0].reg,'v0');
 }
 
-// #145: <=128-bit aggregate return occupies x0/x1 under AAPCS64 when type evidence proves it.
+// #145: <=128-bit aggregate return occupies x0/x1 when type evidence proves it.
 {
-  const p=recoverFunctionPrototype({args:new Map(),instructions:[]},{values:new Map(),ret:{kind:'aggregate',name:'Pair',bits:128,confidence:0.8}},{architecture:'arm64'});
+  const p=recoverFunctionPrototype({args:new Map(),instructions:[]},{values:new Map(),ret:{kind:'aggregate',name:'Pair',bits:128,confidence:0.8}});
   assert.deepEqual(p.returnLocations.map((x)=>x.reg),['x0','x1']);
 }
 

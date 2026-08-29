@@ -463,7 +463,6 @@ export const SYSV_AMD64_ABI = new ABIPlugin({
   callerSaved:()=>CALLER_SAVED,
   calleeSaved:()=>CALLEE_SAVED,
   stackRules:()=>Object.freeze({
-    stackPointer:'rsp', stackPointerAliases:Object.freeze(['rsp']), entryArgumentOffset:8,
     alignment:16,
     stackGrows:'down',
     argumentSlotBytes:8,
