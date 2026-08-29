@@ -51,22 +51,35 @@ function attachSeparationAuthority(proof, options = {}) {
   return Object.freeze({ ...proof, separationClass: kind, separationAuthority: 'root-descriptor' });
 }
 
+// The rewrite below is a pure function of the incoming SSA. Cache it by SSA
+// identity so repeated queries in one pass keep the same normalized SSA
+// reference, which the core proof cache keys on.
+const normalizedSsaMemo = new WeakMap();
+function normalizedImplicitUndefSsa(ssa) {
+  let normalized = normalizedSsaMemo.get(ssa);
+  if (normalized === undefined) {
+    const definitions = ssa?.definitions;
+    normalized = definitions.some((definition) =>
+      definition?.kind === 'undef' && definition?.proof?.kind === 'implicit-undef')
+      ? {
+        ...ssa,
+        definitions: definitions.map((definition) =>
+          definition?.kind === 'undef' && definition?.proof?.kind === 'implicit-undef'
+            ? { ...definition, kind: 'entry' }
+            : definition),
+      }
+      : ssa;
+    normalizedSsaMemo.set(ssa, normalized);
+  }
+  return normalized;
+}
+
 function addressProofOptions(options = {}) {
   const definitions = options?.ssa?.definitions;
-  if (!Array.isArray(definitions)
-      || !definitions.some((definition) => definition?.kind === 'undef' && definition?.proof?.kind === 'implicit-undef')) {
-    return options;
-  }
-  return {
-    ...options,
-    ssa: {
-      ...options.ssa,
-      definitions: definitions.map((definition) =>
-        definition?.kind === 'undef' && definition?.proof?.kind === 'implicit-undef'
-          ? { ...definition, kind: 'entry' }
-          : definition),
-    },
-  };
+  if (!Array.isArray(definitions)) return options;
+  const ssa = normalizedImplicitUndefSsa(options.ssa);
+  if (ssa === options.ssa) return options;
+  return { ...options, ssa };
 }
 
 export {
