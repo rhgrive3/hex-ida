@@ -733,7 +733,8 @@ class App {
         if (!program) { this.schemas = []; return this.schemas; }
         const read = (addr, len) => this.backend.readAt(addr, len)
           .then((r) => (r && r.found ? r.bytes : null)).catch(() => null);
-        const schemas = await recoverSchemas({ strings, program, read, onProgress,
+        const arch = this.store.get('architecture') || this.currentSlice?.()?.capability?.architecture;
+        const schemas = await recoverSchemas({ strings, program, read, onProgress, architecture: arch,
           isCancelled: () => epoch !== this.backend.gen });
         if (epoch === this.backend.gen) this.schemas = schemas;
       } catch {
