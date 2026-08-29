@@ -104,27 +104,32 @@ function compactUnwindFixture({
   pageOff=80,
   sentinelPageOff=0,
   entryOff=null,
+  encodingsOff=null,
   encodingIndices=null,
+  regularEncodings=null,
   commonCount=1,
+  commonEncoding=0x01000000,
   localEncodingCount=0,
+  localEncodings=null,
 }={}) {
   const b=new Uint8Array(512),v=new DataView(b.buffer);
   const u32=(o,x)=>v.setUint32(o,x>>>0,true),u16=(o,x)=>v.setUint16(o,x,true);
   u32(0,1);
   u32(4,commonCount?28:0);u32(8,commonCount);
-  if(commonCount)u32(28,0x01000000);
+  if(commonCount)u32(28,commonEncoding);
   u32(12,0);u32(16,0);u32(20,32);u32(24,2);
   u32(32,lower);u32(36,pageOff);u32(40,0);
   u32(44,upper);u32(48,sentinelPageOff);u32(52,0);
   u32(pageOff,kind);
   if(kind===2){
     const eo=entryOff??8;u16(pageOff+4,eo);u16(pageOff+6,offsets.length);
-    offsets.forEach((offset,i)=>{u32(pageOff+eo+i*8,offset);u32(pageOff+eo+i*8+4,0);});
+    offsets.forEach((offset,i)=>{u32(pageOff+eo+i*8,offset);u32(pageOff+eo+i*8+4,regularEncodings?.[i]??0);});
   }else if(kind===3){
     const eo=entryOff??12;u16(pageOff+4,eo);u16(pageOff+6,offsets.length);
-    const encOff=eo+offsets.length*4;u16(pageOff+8,encOff);u16(pageOff+10,localEncodingCount);
+    const localCount=localEncodings?.length??localEncodingCount;
+    const encOff=encodingsOff??(eo+offsets.length*4);u16(pageOff+8,encOff);u16(pageOff+10,localCount);
     offsets.forEach((offset,i)=>u32(pageOff+eo+i*4,(((encodingIndices?.[i]??0)&0xff)<<24)|((offset-lower)&0x00ffffff)));
-    for(let i=0;i<localEncodingCount;i++)u32(pageOff+encOff+i*4,0x02000000+i);
+    for(let i=0;i<localCount;i++)u32(pageOff+encOff+i*4,localEncodings?.[i]??(0x02000000+i));
   }
   return b;
 }
@@ -172,6 +177,39 @@ for(const kind of [2,3]){
   const image=parseUnwindFixture({kind:3,encodingIndices:[1]});
   assert.equal(image.unwindEntries.length,0,'compressed encoding index outside common+local domain must fail closed');
   assert.equal(image.metadata.compactUnwind.partialReason,'compressed-encoding-index-invalid');
+}
+{
+  const image=parseUnwindFixture({kind:3,offsets:[0x1000,0x1100],localEncodingCount:1,encodingsOff:16});
+  assert.equal(image.unwindEntries.length,0,'compressed local encoding array may not overlap its entry array');
+  assert.equal(image.functions.length,0);
+  assert.equal(image.metadata.compactUnwind.partialReason,'compressed-page-layout-invalid');
+}
+{
+  const image=parseUnwindFixture({offsets:[0x1000,0x1100],regularEncodings:[0,0x80000000]});
+  assert.equal(image.unwindEntries.length,2,'regular continuation must remain canonical unwind evidence');
+  assert.equal(image.functions.length,1,'regular continuation must not mint an independent function seed');
+  assert.equal(image.unwindEntries[0].primary,true);
+  assert.equal(image.unwindEntries[1].primary,false);
+  assert.equal(image.unwindEntries[1].ownerStart,0x100001000n);
+}
+{
+  const image=parseUnwindFixture({kind:3,offsets:[0x1000,0x1100],encodingIndices:[0,1],localEncodings:[0x80000000]});
+  assert.equal(image.unwindEntries.length,2,'compressed continuation must remain canonical unwind evidence');
+  assert.equal(image.functions.length,1,'compressed continuation must not mint an independent function seed');
+  assert.equal(image.unwindEntries[1].primary,false);
+  assert.equal(image.unwindEntries[1].ownerStart,0x100001000n);
+}
+{
+  const image=parseUnwindFixture({regularEncodings:[0x80000000]});
+  assert.equal(image.unwindEntries.length,0,'continuation without a preceding primary owner must fail closed');
+  assert.equal(image.functions.length,0);
+  assert.equal(image.metadata.compactUnwind.partialReason,'continuation-owner-missing');
+}
+{
+  const image=parseUnwindFixture({upper:0x20000});
+  assert.equal(image.unwindEntries.length,0,'compact-unwind extent may not escape the executable mapping');
+  assert.equal(image.functions.length,0);
+  assert.equal(image.metadata.compactUnwind.partialReason,'entry-extent-mapping-invalid');
 }
 {
   const image=parseUnwindFixture({sentinelPageOff:120});
