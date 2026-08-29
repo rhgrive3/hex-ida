@@ -287,8 +287,19 @@ export function createApi(app, out) {
 
     /** 文字列を検索する。 */
     findStrings(query, limit = 200) {
-      const q = String(query).toLowerCase();
-      return (app.stringIndex || []).filter((s) => s.text.toLowerCase().includes(q)).slice(0, limit);
+      const q = String(query ?? '').toLowerCase();
+      const max = Math.max(1, Math.min(5000, Number(limit) || 200));
+      const source = app.stringIndex || (app.strings?.items) || [];
+      const results = [];
+      for (const s of source) {
+        const text = s?.text;
+        if (typeof text !== 'string') continue;
+        if (!q || text.toLowerCase().includes(q)) {
+          results.push(s);
+          if (results.length >= max) break;
+        }
+      }
+      return results;
     },
 
     /* ── Objective-C ──────────────────────────────────── */
