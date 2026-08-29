@@ -1199,9 +1199,14 @@ async function instructionAt(app, addr) {
 }
 
 export async function showPatchEditor(app, addr, insnArg) {
-  const insn = insnArg || await instructionAt(app, addr);
   const sheet = new Sheet('命令を書き換える');
-  const region = app.codeRegion();
+  const arch = String(app.store.get('architecture') || '').toLowerCase();
+  if (arch && arch !== 'arm64' && arch !== 'arm64e') {
+    sheet.body.append(noteBox(`パッチ機能（ARM64アセンブラ）はこのアーキテクチャ（${arch}）では未対応です。`));
+    return;
+  }
+  const insn = insnArg || await instructionAt(app, addr);
+  const region = (app.regionForAddress ? app.regionForAddress(addr) : null) || app.codeRegion();
   if (!region) { sheet.body.append(noteBox('コードのセクションが見つかりません。')); return; }
   const file = app.store.get('file');
   const range = validatePatchRange(region, addr, 4, file && file.size, true);

@@ -107,6 +107,17 @@ export function createApi(app, out) {
 
     /** 関数の一覧。[{addr, name, size}] */
     functions(limit = 100000) {
+      const regions = app.store?.get?.('regions') || [];
+      const execRegions = regions.filter((r) => r && r.exec);
+      if (execRegions.length > 1) {
+        const out = [];
+        for (const r of execRegions) {
+          const list = app.symbols.functionList(r, limit - out.length);
+          out.push(...list);
+          if (out.length >= limit) break;
+        }
+        return out;
+      }
       const r = region();
       return app.symbols.functionList(r, limit);
     },
@@ -203,13 +214,25 @@ export function createApi(app, out) {
 
     /** 逆コンパイル結果（文字列）。 */
     async decompile(addr) {
+      const arch = architecture();
+      const archAdapter = adapter();
+      if (archAdapter.fixedInstructionSize == null && arch !== 'arm64' && arch !== 'arm64e') {
+        return unsupportedArchitectureResult('decompile', arch);
+      }
       const res = await app.analyzeFunctionAt(BigInt(addr));
-      if (!res) return null;
+      if (!res || !res.model) return null;
       const r = region();
+      const map = archAdapter.fixedInstructionSize != null ? {
+        rowOfAddress: (a) => rowOf(a),
+        addrOfRow: (row) => addressOfRow(row),
+      } : {
+        rowOfAddress: (a) => a,
+        addrOfRow: (row) => row,
+      };
       const out2 = decompile(res.model, {
         name: api.name(addr), addr: BigInt(addr),
-        rowOfAddress: (a) => rowOf(a),
-        addrOfRow: (row) => r.vmAddr + BigInt(row) * 4n,
+        rowOfAddress: map.rowOfAddress,
+        addrOfRow: map.addrOfRow,
         symbolFor: (a) => app.symbols.nameAt(a),
         notes: app.notes,
       });
@@ -231,7 +254,8 @@ export function createApi(app, out) {
     /* ── 参照関係 ─────────────────────────────────────── */
 
     /** そのアドレスを呼んでいる場所。 */
-    xrefsTo(addr, limit = 200) {
+    async xrefsTo(addr, limit = 200) {
+      await app.ensureProgram?.().catch(() => null);
       const p = app.program;
       if (!p) return [];
       const a = BigInt(addr);
@@ -239,7 +263,8 @@ export function createApi(app, out) {
     },
 
     /** その関数が呼んでいる先。 */
-    xrefsFrom(addr, limit = 200) {
+    async xrefsFrom(addr, limit = 200) {
+      await app.ensureProgram?.().catch(() => null);
       const p = app.program;
       if (!p) return [];
       const range = p.functionRange(BigInt(addr));
@@ -248,7 +273,10 @@ export function createApi(app, out) {
     },
 
     /** よく呼ばれている関数の順位。 */
-    mostCalled(limit = 20) { return app.program ? app.program.mostCalled(limit) : []; },
+    async mostCalled(limit = 20) {
+      await app.ensureProgram?.().catch(() => null);
+      return app.program ? app.program.mostCalled(limit) : [];
+    },
 
     /* ── 文字列 ───────────────────────────────────────── */
 
