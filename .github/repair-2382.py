@@ -37,12 +37,14 @@ path.write_text(s)
 hits=[]
 for p in Path('js').rglob('*.js'):
     text=p.read_text()
-    old1="result?.complete !== false &&\n        app.swiftModel?.complete !== false"
-    old2="result?.complete !== false && app.swiftModel?.complete !== false"
-    if old1 in text:
-        p.write_text(text.replace(old1,"result?.complete === true &&\n        app.swiftModel?.complete === true")); hits.append(str(p))
-    elif old2 in text:
-        p.write_text(text.replace(old2,"result?.complete === true && app.swiftModel?.complete === true")); hits.append(str(p))
+    replacements = [
+      ("result?.complete !== false &&\n        app.swiftModel?.complete !== false", "result?.complete === true &&\n        app.swiftModel?.complete === true"),
+      ("result?.complete !== false && app.swiftModel?.complete !== false", "result?.complete === true && app.swiftModel?.complete === true"),
+      ("result?.complete!==false && app.swiftModel?.complete!==false", "result?.complete===true && app.swiftModel?.complete===true"),
+    ]
+    for old,new in replacements:
+        if old in text:
+            p.write_text(text.replace(old,new)); hits.append(str(p)); break
 if not hits:
     raise SystemExit('AI Swift completeness adapter not found')
 print('patched adapter:', ', '.join(hits))
