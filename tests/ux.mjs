@@ -119,3 +119,4 @@ await import('./issues-frontend-wiring-2511-2555.mjs');
 await import('./issues-explorer-script-optimizations-2627-2629.mjs');
 await import('./issues-router-plugins-pe-2621-2630.mjs');
 await import('./issue-2630-pe-tls-zero-fill.test.mjs');
+await import('./issues-shapes-schema-2614-2618.mjs');
