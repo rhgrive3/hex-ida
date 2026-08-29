@@ -8,16 +8,20 @@ assert.ok(
   'core/pinpoint lane must retain its exact feature set',
 );
 assert.ok(
-  workflow.includes("--only='strings,xrefs,funcname,selffield,role'"),
-  'first heavy non-pseudocode shard must retain strings/xrefs/name/role coverage',
+  workflow.includes("--only='strings,xrefs'"),
+  'strings/xrefs shard must retain its exact feature set',
+);
+assert.ok(
+  workflow.includes("--only='funcname,selffield,role'"),
+  'name/field/role shard must retain its exact feature set',
 );
 assert.ok(
   workflow.includes("--only='apimeaning,summary,expr,formula,pinpoint-partial'"),
-  'second heavy non-pseudocode shard must retain semantic/pinpoint-partial coverage',
+  'semantic/pinpoint-partial shard must retain its exact feature set',
 );
 assert.ok(
-  workflow.includes('const rows = [0, 1, 2].flatMap'),
-  'result merge must include all three non-pseudocode shards',
+  workflow.includes('const rows = [0, 1, 2, 3].flatMap'),
+  'result merge must include all four non-pseudocode shards',
 );
 
 for (const line of workflow.split('\n')) {
