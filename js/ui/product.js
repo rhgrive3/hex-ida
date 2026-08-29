@@ -26,6 +26,7 @@ import { classifyOmnibox, intentLabel } from '../ai/interaction/omnibox.js';
 import { askAiMenuItem, functionAiItems } from '../ai/interaction/contextual.js';
 import { productDescriptor } from '../platform/product-descriptor.js';
 import { queryFunctions, queryStrings } from './explorer-index.js';
+import { findFindingById, findingAddress, findingIdentity } from './finding-route.js';
 import { genericEvidenceStatus, ownerEvidence, summaryEvidenceStatus, provenanceStatus } from './evidence-model.js';
 import { uiRoot } from '../ui-root.js';
 
@@ -690,15 +691,31 @@ function renderFunctionWorkspace(app, router, route) {
   return { root: s.root, getState: () => ({ scrollTop: s.body.scrollTop }), restoreState: (state) => { if (state) s.body.scrollTop = Number(state.scrollTop) || 0; }, dispose: () => { disposed = true; } };
 }
 
-function renderResults(app, router) {
-  const s = screen(text('結果', 'Results'), { id: 'results', subtitle: text('確認した答え、根拠、履歴、ピンをここへ集めます。', 'Confirmed answers, evidence, history and pins live here.') });
+function reportFindings(app) {
   const report = app.autoReport && app.autoReport.report;
   const findings = report && (report.findings || report.results || report.goals);
-  if (Array.isArray(findings) && findings.length) {
+  return Array.isArray(findings) ? findings : [];
+}
+
+function findingTitle(item) {
+  return String(item?.title || item?.label || item?.goal?.text || item?.goal || text('解析結果', 'Finding'));
+}
+
+function findingBadge(item) {
+  return evidenceBadge(item?.confirmed ? 'confirmed' : item?.confidence > 0.7 ? 'likely' : 'unverified');
+}
+
+function renderResults(app, router) {
+  const s = screen(text('結果', 'Results'), { id: 'results', subtitle: text('確認した答え、根拠、履歴、ピンをここへ集めます。', 'Confirmed answers, evidence, history and pins live here.') });
+  const findings = reportFindings(app);
+  if (findings.length) {
     const renderFinding = (item) => {
-      const title = item.title || item.label || item.goal?.text || item.goal || text('解析結果', 'Finding');
-      const address = item.addr ?? item.address ?? item.functionAddr ?? item.function;
-      return listRow({ title: String(title), subtitle: address != null ? addressText(address) : '', badge: evidenceBadge(item.confirmed ? 'confirmed' : item.confidence > 0.7 ? 'likely' : 'unverified'), onClick: address != null ? () => router.navigate('/function/' + BigInt(address).toString() + '/overview') : null });
+      const address = findingAddress(item);
+      const id = findingIdentity(item);
+      const onClick = id != null
+        ? () => router.navigate('/finding/' + encodeURIComponent(id))
+        : address != null ? () => router.navigate('/function/' + BigInt(address).toString() + '/overview') : null;
+      return listRow({ title: findingTitle(item), subtitle: address != null ? addressText(address) : '', badge: findingBadge(item), onClick });
     };
     if (findings.length > 80) s.body.append(new VirtualList({ items: findings, rowHeight: 64, ariaLabel: text('解析結果', 'Analysis results'), renderRow: renderFinding }).root);
     else {
@@ -709,6 +726,53 @@ function renderResults(app, router) {
   } else {
     s.body.append(emptyState(text('まだ確定した結果がありません', 'No confirmed results yet'), text('「調べる」で目的を入力すると、答えと根拠をここから辿れるようになります。', 'Investigate a goal to create results you can revisit.'), uiButton(text('調べるへ', 'Go to Investigate'), { cls: 'ui-primary-action', onClick: () => router.navigate('/investigate') })));
   }
+  return { root: s.root };
+}
+
+function renderFindingDetail(app, router, route) {
+  const id = route?.params?.id == null ? null : String(route.params.id);
+  const item = findFindingById(reportFindings(app), id);
+  const s = screen(item ? findingTitle(item) : text('結果が見つかりません', 'Finding not found'), {
+    id: 'finding',
+    subtitle: item ? text('保存された解析結果の詳細', 'Saved analysis finding detail') : text('指定された結果IDは現在の解析スナップショットにありません。', 'That finding id is not present in the current analysis snapshot.'),
+  });
+  if (!item) {
+    s.body.append(emptyState(
+      text('この結果は見つかりません', 'Finding not found'),
+      text('一覧へ戻って現在の解析結果を確認してください。別の結果へ黙って置き換えることはしません。', 'Return to Results to inspect the current findings. Hex will not silently substitute another finding.'),
+      uiButton(text('結果一覧へ', 'Back to Results'), { cls: 'ui-primary-action', onClick: () => router.navigate('/results') }),
+    ));
+    return { root: s.root };
+  }
+
+  const address = findingAddress(item);
+  const summary = item.summary || item.reason || item.why || item.description || '';
+  const detail = card(text('解析結果', 'Finding'));
+  if (summary) detail.body.append(h('p', 'ui-lead', String(summary)));
+  detail.body.append(listRow({ title: text('識別子', 'Finding id'), meta: findingIdentity(item) || '—', mono: true }));
+  detail.body.append(listRow({ title: text('状態', 'Status'), badge: findingBadge(item) }));
+  if (address != null) detail.body.append(listRow({ title: text('関連アドレス', 'Related address'), meta: addressText(address), mono: true, onClick: () => router.navigate('/function/' + BigInt(address).toString() + '/overview') }));
+  const provenance = item.snapshotId ?? item.runId ?? item.provenance?.snapshotId ?? item.provenance?.runId ?? null;
+  if (provenance != null) detail.body.append(listRow({ title: text('解析スナップショット', 'Analysis snapshot'), meta: String(provenance), mono: true }));
+  s.body.append(detail.root);
+
+  const evidence = Array.isArray(item.evidence) ? item.evidence : [];
+  if (evidence.length) {
+    const list = h('div', 'ui-evidence-stack');
+    evidence.slice(0, 100).forEach((entry, index) => list.append(listRow({
+      title: evidenceTitle(entry, index),
+      subtitle: evidenceSubtitle(entry),
+      badge: evidenceBadge(evidenceStatus(entry)),
+    })));
+    const evidenceCard = card(text('根拠', 'Evidence'));
+    evidenceCard.body.append(list);
+    s.body.append(evidenceCard.root);
+  }
+
+  const actions = h('div', 'ui-actions');
+  if (address != null) actions.append(uiButton(text('関連関数を開く', 'Open related function'), { cls: 'ui-primary-action', onClick: () => router.navigate('/function/' + BigInt(address).toString() + '/overview') }));
+  actions.append(uiButton(text('結果一覧へ', 'Back to Results'), { cls: 'ui-secondary-action', onClick: () => router.navigate('/results') }));
+  s.body.append(actions);
   return { root: s.root };
 }
 
@@ -910,7 +974,8 @@ export function installProductUI(app) {
       if (route.route.id === 'investigate') view = renderInvestigate(app, router);
       else if (route.route.id === 'explorer') view = renderExplorer(app, router, route);
       else if (route.route.id === 'function') view = renderFunctionWorkspace(app, router, route);
-      else if (route.route.id === 'results' || route.route.id === 'finding') view = renderResults(app, router);
+      else if (route.route.id === 'results') view = renderResults(app, router);
+      else if (route.route.id === 'finding') view = renderFindingDetail(app, router, route);
       else if (route.route.id === 'diff') view = renderDiff(app, router);
       else if (route.route.id === 'advanced') view = renderAdvanced(app);
       else view = renderSecondaryRoute(app, router, route);
