@@ -18,6 +18,7 @@ import { rangeCopyMenu } from './rangecopy.js';
 import { askAiMenuItem, instructionAiItems, stringAiItems } from './ai/interaction/contextual.js';
 import { t, isJa, pick } from './i18n.js';
 import { explain, operandNotes, categoryLabel, isBranch, isCall } from './arm64.js';
+import { supportsBeginnerInstructionNotes } from './viewer/architecture-presentation.js';
 import { GLOSSARY, searchGlossary } from './glossary.js';
 import { CHAPTERS, loadProgress, saveProgress } from './learn.js';
 import { analyzeFunctionCached, describeFunction } from './analyze.js';
@@ -172,7 +173,19 @@ export function showFunctionSummary(app, row) {
   const region = app.store.get('currentRegion');
   if (!region) return;
   const sym = app.symbols;
-  const addr = region.vmAddr + BigInt(row) * 4n;
+  const addr = app.viewer?.rowAddress?.(row) ?? (region.vmAddr + BigInt(row) * 4n);
+  const architecture = String(
+    app.store.get('architecture')
+      ?? app.store.get('capability')?.architecture
+      ?? ''
+  ).trim().toLowerCase();
+  const isVariable = app.viewer?.isVariableAsm?.() ?? false;
+  if (isVariable || !supportsBeginnerInstructionNotes(architecture)) {
+    if (app.router?.navigate) {
+      app.router.navigate(`/function/${addr}/overview`);
+      return;
+    }
+  }
 
   let startRow = row, endRow = row;
   let name = null;
@@ -822,6 +835,12 @@ function renderDetail(app, sheet, root, d, row, region) {
   const mn = d.mnemonic;
   const ops = d.operands || '';
   const sym = app.symbols;
+  const architecture = String(
+    app.store.get('architecture')
+      ?? app.store.get('capability')?.architecture
+      ?? ''
+  ).trim().toLowerCase();
+  const canExplain = canAsm && supportsBeginnerInstructionNotes(architecture);
 
   if (mn == null) {
     root.append(para(t('detail.notLoaded')));
@@ -835,7 +854,7 @@ function renderDetail(app, sheet, root, d, row, region) {
     prev: prevRow(app, row),
     next: null,
   };
-  const e = canAsm ? explain(mn, ops, d.address, ctx) : null;
+  const e = canExplain ? explain(mn, ops, d.address, ctx) : null;
 
   /* 見出し: アドレスと、関数の中の位置 */
   const head = el('div', 'det-head');
@@ -875,7 +894,7 @@ function renderDetail(app, sheet, root, d, row, region) {
    * ARM64 → 処理 → 関数 → 機能 と、逆向きに辿れるようにする。
    * 解析済みの関数を見ているときだけ出る（ここで解析は始めない）。
    */
-  const sb = region ? semanticBlockAt(app, row) : null;
+  const sb = (region && canExplain) ? semanticBlockAt(app, row) : null;
   if (sb) {
     const bb = block(pick('この行が属する処理', 'The step this line belongs to'));
     bb.append(el('div', 'det-title', blockHeading(sb)));
@@ -960,7 +979,7 @@ function renderDetail(app, sheet, root, d, row, region) {
   if (d.bytes) {
     const b = block(t('detail.bytes'));
     b.append(bigValue(d.bytes, () => copyText(d.bytes, t('toast.copyHex'))));
-    const word = wordValue(d.bytes);
+    const word = canExplain ? wordValue(d.bytes) : null;
     if (word != null) {
       b.append(para(t('detail.bytesHelp', {
         stored: d.bytes,
@@ -981,7 +1000,7 @@ function renderDetail(app, sheet, root, d, row, region) {
 
   /* 場所 */
   if (region) {
-    const off = region.fileOffset + BigInt(row) * 4n;
+    const off = region.fileOffset + (d.address - region.vmAddr);
     const b = block(t('detail.where'));
     b.append(para(t('detail.whereText', {
       region: region.name,
@@ -1028,8 +1047,8 @@ function renderDetail(app, sheet, root, d, row, region) {
       sheet.close(); showFunctionReport(app, d.address, app.lastGoal);
     }));
     // 解析済みの関数の中の行なら、その値がこのあとどこへ行くかまで辿れる
-    if (app.semantic && app.semantic.regionId === (region && region.id) &&
-        app.semantic.model.blockOfRow(row)) {
+    if (canExplain && app.semantic && app.semantic.regionId === (region && region.id) &&
+        app.semantic.model?.blockOfRow?.(row)) {
       actions.append(button(pick('この値の行き先を追う', 'Follow this value'), 'chip', () => {
         sheet.close(); showValueFlow(app, app.semantic.model, row, region);
       }));

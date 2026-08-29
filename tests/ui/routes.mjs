@@ -1,5 +1,6 @@
 import './issue-2601-pinpoint-architecture-query.mjs';
 import './issue-2596-range-copy-variable-width.mjs';
+import './issue-2594-showdetail-variable-width.mjs';
 import { matchRoute, ProductRouter } from '../../js/ui/router.js';
 import {
   ROUTES, PRIMARY_NAV, EXPLORER_SCOPES, FUNCTION_TABS, LEGACY_MIGRATION,
