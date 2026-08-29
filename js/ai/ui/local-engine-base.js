@@ -171,19 +171,18 @@ function candidateEvidence(plan) {
 }
 
 async function runAgent({ app, localContext, question, mode, style, signal, onActivity }) {
-  onActivity({ label: pick('索引を準備', 'Preparing indexes'), state: 'running' });
-  try { await app.ensureStrings(); } catch { /* the planner copes without strings */ }
-  try { await app.ensureProgram(); } catch { /* and without a call graph */ }
-  onActivity({
-    label: pick('索引を準備', 'Preparing indexes'),
-    detail: ((app.stringIndex || []).length) + pick(' 文字列', ' strings'),
-  });
-  if (signal && signal.aborted) throw new Error('cancelled');
+  if (signal?.aborted) throw new Error('cancelled');
 
+  // The deterministic planner is already demand-driven: it compiles the goal,
+  // requests only the search/graph/semantic tools it needs, and forwards its
+  // budget AbortSignal to every tool invocation. Do not pre-build whole-file
+  // strings or ProgramIndex here; those unrelated global producers were the
+  // dominant first-answer cost and could outlive a cancelled Assistant turn.
   onActivity({ label: pick('候補を探索', 'Searching candidates'), state: 'running' });
   const started = Date.now();
   const result = await runDeterministicAgent(question, localContext || {}, {
     maxFunctions: 24, maxDisassembly: 40000, timeoutMs: 20000,
+    signal,
     isCancelled: () => !!(signal && signal.aborted),
   });
   const plan = result.plan || {};
