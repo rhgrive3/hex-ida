@@ -199,6 +199,22 @@ export async function parseSwiftFieldDescriptor(read, address, budget = 4096, op
 
 export async function parseSwiftProtocolDescriptor(read,address){const addr=BigInt(address),b=await exact(read,addr,24);if(!b)return null;const flags=u32(b,0);if(contextKind(flags)!=='protocol')return null;const name=await relativeString(read,addr+8n,i32(b,8));if(!name)return null;return{runtime:'swift',kind:'protocol',address:addr,flags,name,parent:rel(addr+4n,i32(b,4)),numRequirementsInSignature:u32(b,12),numRequirements:u32(b,16),associatedTypeNames:rel(addr+20n,i32(b,20)),requirements:[]};}
 
+const SWIFT_GENERIC_REQUIREMENT_BYTES=12;
+const SWIFT_PROTOCOL_REQUIREMENT_BYTES=8;
+function swiftProtocolRequirementKind(flags){const kind=Number(flags)&0x0f;return{kind,callable:kind>=1&&kind<=6};}
+async function parseSwiftProtocolRequirements(read,protocol,budget=4096){
+  const declared=Number(protocol?.numRequirements||0),signature=Number(protocol?.numRequirementsInSignature||0),limit=normalizeBudget(budget,4096,100000);
+  if(!Number.isInteger(declared)||declared<0||!Number.isInteger(signature)||signature<0||declared>limit)return{requirements:[],complete:false,reason:'protocol-requirement-budget'};
+  const start=BigInt(protocol.address)+24n+BigInt(signature*SWIFT_GENERIC_REQUIREMENT_BYTES),requirements=[];
+  for(let i=0;i<declared;i++){
+    const at=start+BigInt(i*SWIFT_PROTOCOL_REQUIREMENT_BYTES),b=await exact(read,at,SWIFT_PROTOCOL_REQUIREMENT_BYTES);
+    if(!b)return{requirements,complete:false,reason:'protocol-requirement-unreadable'};
+    const flags=u32(b,0),kindInfo=swiftProtocolRequirementKind(flags);
+    requirements.push({index:i,address:at,flags,kind:kindInfo.kind,witnessCallable:kindInfo.callable,defaultImplementation:rel(at+4n,i32(b,4))});
+  }
+  return{requirements,complete:true,reason:null};
+}
+
 async function resolveAbsolutePointer(read,address,options={}) {
   const b=await exact(read,address,8); if(!b)return null; const raw=u64(b);
   const resolver=options.resolvePointer||options.binaryImage?.resolvePointer||options.binaryImage?.decodePointer;
@@ -245,6 +261,12 @@ export async function buildSwiftMetadataModel(read,sections,opts={}){
   const typeScan=await relativePointerSection(read,typeSec,budget,parseSwiftNominalDescriptor), protoScan=await relativePointerSection(read,protoSec,budget,parseSwiftProtocolDescriptor), confScan=await relativePointerSection(read,confSec,budget,(r,a)=>parseSwiftConformanceDescriptor(r,a,opts));
   const types=typeScan.items,protocols=protoScan.items,conformances=confScan.items;
   const warnings=[];
+  for(const p of protocols){
+    const scan=await parseSwiftProtocolRequirements(read,p,Math.min(budget,4096));
+    p.requirements=scan.requirements;
+    p.requirementsComplete=scan.complete;
+    if(!scan.complete){protoScan.completeness.complete=false;protoScan.completeness.invalidEntries++;warnings.push(`Swift protocol ${p.name||p.address}: requirement metadata is partial (${scan.reason||'unknown'}).`);}
+  }
   for(const t of types)if(t.fieldDescriptor!=null){try{
     t.fields=await parseSwiftFieldDescriptor(read,t.fieldDescriptor,Math.min(budget,4096),opts);
     for(const f of t.fields){
@@ -253,7 +275,19 @@ export async function buildSwiftMetadataModel(read,sections,opts={}){
     }
   }catch{t.fields=[];warnings.push(`Swift type ${t.name||t.address}: field metadata could not be parsed.`);typeScan.completeness.complete=false;typeScan.completeness.invalidEntries++;}}
   const vtables=[];let vtablesComplete=true;for(const v of opts.vtables||[]){const methods=await parseSwiftVTable(read,v.address,v.count,budget),expected=Math.min(normalizeBudget(v.count,0,100000),budget),x={...v,methods};if(methods.length!==expected||Number(v.count)>budget)vtablesComplete=false;vtables.push(x);const owner=types.find((t)=>t.address.toString()===String(v.typeAddress));if(owner){owner.vtable=methods;owner.methods=methods;}}
-  const witnessTables=[];let witnessTablesComplete=true;for(const w of opts.witnessTables||[]){const entries=await parseSwiftWitnessTable(read,w.address,w.count,budget,opts),expected=Math.min(normalizeBudget(w.count,0,100000),budget);if(entries.length!==expected||Number(w.count)>budget||entries.some((x)=>x.resolved!==true))witnessTablesComplete=false;witnessTables.push({...w,entries});}
+  const witnessTables=[];let witnessTablesComplete=true;
+  const witnessSeeds=[...(opts.witnessTables||[])],seedAddresses=new Set(witnessSeeds.map((w)=>String(w.address)));
+  for(const c of conformances){
+    if(c.witnessTable==null||seedAddresses.has(c.witnessTable.toString()))continue;
+    const protocol=protocols.find((p)=>p.address.toString()===c.protocol?.toString()),type=c.typeReferenceKind<=1&&c.typeRef!=null?types.find((t)=>t.address.toString()===c.typeRef.toString()):null;
+    if(!protocol||!type||c.conditionalRequirements!==0||c.resilientWitnesses===true||protocol.requirementsComplete!==true){witnessTablesComplete=false;warnings.push(`Swift conformance ${c.address}: witness table layout is not proof-safe for automatic projection.`);continue;}
+    const requirements=protocol.requirements||[];
+    if(requirements.length!==Number(protocol.numRequirements)||requirements.some((r)=>r.witnessCallable!==true)){witnessTablesComplete=false;warnings.push(`Swift conformance ${c.address}: non-callable protocol requirements prevent exact witness projection.`);continue;}
+    if(!requirements.length)continue;
+    const seed={address:c.witnessTable,count:requirements.length,typeAddress:type.address,typeName:type.name,protocolAddress:protocol.address,protocolName:protocol.name,source:'conformance'};
+    witnessSeeds.push(seed);seedAddresses.add(c.witnessTable.toString());
+  }
+  for(const w of witnessSeeds){const entries=await parseSwiftWitnessTable(read,w.address,w.count,budget,opts),expected=Math.min(normalizeBudget(w.count,0,100000),budget);if(entries.length!==expected||Number(w.count)>budget||entries.some((x)=>x.resolved!==true))witnessTablesComplete=false;witnessTables.push({...w,entries});}
   const completeness={types:typeScan.completeness,protocols:protoScan.completeness,conformances:confScan.completeness,vtables:{complete:vtablesComplete},witnessTables:{complete:witnessTablesComplete}};
   completeness.complete=Object.values(completeness).every((x)=>x?.complete===true);
   return{runtime:'swift',types,protocols,conformances,vtables,witnessTables,completeness,complete:completeness.complete,warnings};
