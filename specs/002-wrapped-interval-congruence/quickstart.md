@@ -25,8 +25,9 @@ newest SHA before implementation acceptance. Its moving-main delta touches
 only AI/query, ARM64, runtime, project, UI, and generated userscript files plus
 their tests; it does not overlap this lane's canonical range/SCCP files,
 scalar/integration tests, or generated inputs. The latest implementation
-preflight resolved `origin/main=c8dfa360496f37adfe5815be2c83485915d3db1f` at
-`2026-08-29T19:56:13Z`; a fresh remote/open-PR check remains required before
+preflight resolved `origin/main=590f2b07f8ab5e3a0a8c2bb34a1455e6552624fd` at
+`2026-08-29T21:24:50Z`; the Review 1 correction preflight refreshed the same
+live SHA at `2026-08-29T21:24:50Z`. A fresh remote/open-PR check remains required before
 Review 2 and merge.
 
 ## Minimum pre-fix regression
@@ -92,6 +93,29 @@ updates do not alter the semantic head. The publication digest covers canonical
 facts, edge/block-entry refinements, identity/provenance, completeness, budget,
 and diagnostics. Subsequent documentation-only evidence updates must not be
 confused with the original pre-fix comparison.
+
+## Review 1 correction evidence
+
+Review 1 identified six soundness and lifecycle gaps at implementation head
+`4610456206e659f5a6142e4e5c307d79f5a82c9c`. The following permanent
+regressions were added before the corresponding production corrections:
+
+```text
+wrapped join [0,2] U [2,0] at 8 bits covers every member of both inputs;
+non-divisor residues are dropped rather than propagated through machine wrap;
+known-bit/congruence/range contradictions, out-of-width masks, cyclic evidence,
+and incompatible switch labels fail closed; a partial vertical run preserves a
+prior complete artifact; canonical identity is required and stale SCCP/GVN/
+induction inputs are rejected; replacing ranges invalidates valueNumbers,
+induction, and aggregates.
+```
+
+The identical focused regressions pass at semantic correction commit
+`534e7e89c9d6c3d6ee06a48223e88720810a8c7c`: 125 tests, 125 pass, 0 fail.
+The implementation uses the existing `range.js`/`sccp.js` scalar owner and a
+shared identity-validation boundary; it does not add a competing value or
+range engine. Reviewer-owned checklist items remain open for the supervisor's
+independent review passes.
 
 ## Staged validation
 
