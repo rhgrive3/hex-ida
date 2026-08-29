@@ -28,20 +28,17 @@ jobs:
         run: |
           python3 <<'PY'
           from pathlib import Path
+          import re
+
           p = Path('js/app.js')
           text = p.read_text()
-          old = """  validatedFunctionRange(addr) {
-            const fn=this.symbols?.functionAt?.(BigInt(addr)); if(!fn) return {ok:false,reason:'function-symbol-missing'};
-            const region=this.executableRegionFor(fn.start); if(!region) return {ok:false,reason:'function-start-not-executable',function:fn};
-            if(fn.end==null)return {ok:false,reason:'function-end-unproven',function:fn,region};
-            const regionEnd=region.vmAddr+region.size;
-            let end=BigInt(fn.end);
-            let complete=true,reason=null;
-            if(end<=fn.start){return {ok:false,reason:'invalid-function-range',function:fn,region};}
-            if(end>regionEnd){end=regionEnd;complete=false;reason='symbol-range-crosses-executable-region';}
-            return {ok:true,start:fn.start,end,region,function:fn,complete,reason,provenance:'executable-region+proven-function-extent'};
-          }
-          """
+          pattern = re.compile(
+              r"[ \t]*validatedFunctionRange\(addr\) \{\s*"
+              r"const fn=this\.symbols\?\.functionAt\?\.\(BigInt\(addr\)\);.*?"
+              r"return \{ok:true,start:fn\.start,end,region,function:fn,complete,reason,provenance:'executable-region\+proven-function-extent'\};\s*"
+              r"\}",
+              re.S,
+          )
           new = """  validatedFunctionRange(addr) {
             const sym=this.symbols;
             const fn=sym?.functionAt?.(BigInt(addr)); if(!fn) return {ok:false,reason:'function-symbol-missing'};
@@ -49,20 +46,21 @@ jobs:
             const regionEnd=region.vmAddr+region.size;
             if(fn.end==null){
               /*
-               * A proven function start does not prove its end.  When the whole
-               * function-start universe is complete and every seed is exact,
-               * however, the next exact start in the same executable region is
-               * a safe non-overlap ceiling for a bounded analysis.  This ceiling
-               * is deliberately NOT published as the function's exact end: the
-               * result remains partial with function-end-unproven provenance.
+               * A proven function start does not prove its end. When the full
+               * function-start universe is complete and exact, the next
+               * confirmed start in this executable region is nevertheless a
+               * safe non-overlap ceiling for bounded analysis. It is not
+               * published as an exact function end: completeness stays partial.
                */
               const index=Number(fn.index);
-              const next=index>=0 && Number.isSafeInteger(index) && index+1<sym.funcs.length
+              const next=Number.isSafeInteger(index) && index>=0 && index+1<sym.funcs.length
                 ? BigInt(sym.funcs[index+1]) : null;
               const nextEvidence=next==null?null:sym.functionEvidence?.(next);
-              const completeExactUniverse=sym.functionStartsComplete===true && sym.allSeedsExact===true;
-              const nextIsConfirmed=nextEvidence?.confirmed===true;
-              if(completeExactUniverse && nextIsConfirmed && next>fn.start && next<regionEnd && this.executableRegionFor(next)===region){
+              const completeExactUniverse=
+                sym.functionStartsComplete===true &&
+                sym.functionStartsExact===true &&
+                sym.allSeedsExact===true;
+              if(completeExactUniverse && nextEvidence?.confirmed===true && next>fn.start && next<regionEnd && this.executableRegionFor(next)===region){
                 return {
                   ok:true,start:fn.start,end:next,region,function:fn,complete:false,
                   reason:'function-end-unproven',
@@ -77,12 +75,11 @@ jobs:
             if(end<=fn.start){return {ok:false,reason:'invalid-function-range',function:fn,region};}
             if(end>regionEnd){end=regionEnd;complete=false;reason='symbol-range-crosses-executable-region';}
             return {ok:true,start:fn.start,end,region,function:fn,complete,reason,provenance:'executable-region+proven-function-extent'};
-          }
-          """
-          count = text.count(old)
-          if count != 1:
-              raise SystemExit(f'validatedFunctionRange anchor mismatch: {count}')
-          p.write_text(text.replace(old, new))
+          }"""
+          matches = list(pattern.finditer(text))
+          if len(matches) != 1:
+              raise SystemExit(f'validatedFunctionRange regex mismatch: {len(matches)}')
+          p.write_text(pattern.sub(new, text, count=1))
           PY
           node --check js/app.js
           git diff --check
