@@ -21,5 +21,3 @@ export function resolveUserscriptReleaseVersion(previous, { releaseIdentity, bui
     state,
   });
 }
-
-// Temporary integration-lane generated-sync trigger; reverted before merge.
