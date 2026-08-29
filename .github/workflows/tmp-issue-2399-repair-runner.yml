@@ -1,0 +1,97 @@
+name: Temporary issue 2399 repair runner
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: issue-2399-repair-runner
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/2399-objc-ivar-layout-bounds
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Verify exact unlinked baseline and reproduce issue
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "741bad813735b4389fa971243fc26bf7637193e7"
+          test "$(git hash-object js/objc-legacy.js)" = "266720597540f9836cf9680e8541400fbb1d25e0"
+          test "$(git hash-object js/fields.js)" = "13affc5975259ebfe8153338257a259d76d93a3b"
+          test "$(git hash-object js/sample.js)" = "d0d34725dd4f518fb618ac24a31010c825c8f63e"
+          test ! -e js/objc-ivar-layout.js
+          test ! -e tests/issue-2399-objc-ivar-layout.mjs
+          node --input-type=module <<'JS'
+          import { FieldIndex } from './js/fields.js';
+          import { buildObjcModel } from './js/objc.js';
+          import { buildSampleBinary } from './js/sample.js';
+          const fields = new FieldIndex({ classes:[{
+            name:'Player', instanceSize:0x40,
+            ivars:[{ name:'_hp', offset:0x1000, size:4, offsetVar:0x9000n }],
+            properties:[], methods:[], classMethods:[],
+          }] });
+          const exact = fields.resolveAccess({ self:true, base:'x0', disp:0x1000n }, 'Player');
+          if (!exact?.exact || !exact?.certain) throw new Error('issue-2399-fieldindex-precondition-no-longer-reproduces');
+          const bytes = buildSampleBinary().slice();
+          new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).setUint32(0x41c8, 0x20, true);
+          const base = 0x100000000n;
+          const read = async (addr, len) => {
+            const off = Number(addr - base);
+            if (!Number.isSafeInteger(off) || off < 0 || off >= bytes.length) return null;
+            return bytes.subarray(off, Math.min(bytes.length, off + len));
+          };
+          const model = await buildObjcModel(read, { vmAddr:0x100004100n, size:8n });
+          const cls = model.classes.find((x) => x.name === 'BattleManager');
+          if (!cls?.ivars.some((x) => x.offset === 0x20)) throw new Error('issue-2399-parser-precondition-no-longer-reproduces');
+          JS
+      - name: Apply guarded repair payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 -d tools/tmp-issue-2399.py.gz.b64 | gzip -d > /tmp/issue-2399.py
+          python3 /tmp/issue-2399.py
+          git diff --check
+      - name: Install dependencies
+        run: npm ci
+      - name: Focused validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check js/objc-ivar-layout.js
+          node --check js/objc-legacy.js
+          node --check js/fields.js
+          node tests/issue-2399-objc-ivar-layout.mjs
+          node tests/reopened-31-final.mjs
+          node tests/objc-runtime.mjs
+      - name: Canonical generated sync and broad validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run userscript:build
+          npm test
+          npm run semantic-v2:test
+          npm run phase7:test
+          npm run invariants:test
+          git diff --check
+      - name: Publish canonical implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm tools/tmp-issue-2399.py.gz.b64
+          git add -A
+          git commit -m 'fix(objc): reject ivars outside class instance layout'
+          git push origin HEAD:fix/2399-objc-ivar-layout-bounds
