@@ -218,7 +218,7 @@ export function showStructure(app) {
 
   body.append(para(t("struct.hint")));
 
-  if (!slice || !slice.info) {
+  if (!slice || !slice.info || (info.formatId && info.formatId !== 'macho') || !slice.info.ncmds) {
     body.append(noteBox(t("file.rawOnly")));
     return;
   }

@@ -11,11 +11,12 @@ import { addrHex, parseAddress } from '../format.js';
 import { pick } from '../i18n.js';
 import { menu, copyText, toast } from '../ui.js';
 import {
-  showFileInfo, showSections, showStructure, showCandidates,
+  showFileInfo, showSections, showStructure, showCandidates, showClass,
 } from '../panels.js';
 import {
-  currentFunctionAddr, showTools, showRename, showComment, showDebugger,
+  currentFunctionAddr, showTools, showRename, showComment, showDebugger, showGlobals,
 } from '../tools.js';
+import { findGlobals } from '../linkage.js';
 import { compileGoal } from '../goalc.js';
 import { decompile, decompiledText } from '../decompile.js';
 import { cfgGraph, callGraph, renderGraph, graphLegend } from '../graphview.js';
@@ -255,10 +256,94 @@ async function stringItems(app, query, options) {
   const rows = await app.ensureStrings();
   return queryStrings(rows || [], query, options);
 }
+function classItems(app, query) {
+  const q = String(query || '').trim().toLowerCase();
+  const list = [];
+  if (app.fields && app.fields.classes) {
+    for (const [name, info] of app.fields.classes.entries()) {
+      if (!q || name.toLowerCase().includes(q)) {
+        const methods = (info.methods?.length || info.methodList?.length || 0);
+        const ivars = (info.ivars?.length || 0);
+        const superName = info.superName || '';
+        const metaParts = [];
+        if (methods) metaParts.push(text(`${methods} メソッド`, `${methods} methods`));
+        if (ivars) metaParts.push(text(`${ivars} フィールド`, `${ivars} fields`));
+        if (superName) metaParts.push(text(`${superName} を継承`, `extends ${superName}`));
+        list.push({
+          name,
+          methods,
+          ivars,
+          superName,
+          meta: metaParts.join(' · '),
+        });
+      }
+    }
+  }
+  return list;
+}
+
+function dataItems(app, query) {
+  const q = String(query || '').trim().toLowerCase();
+  const list = [];
+  const regions = app.store?.get?.('regions') || [];
+  const dataRegions = regions.filter((r) => r && !r.exec && (r.read || r.write));
+  if (app.symbols && app.program) {
+    try {
+      const globals = findGlobals(app.symbols, app.program, regions, { limit: 400 });
+      for (const g of globals) {
+        const name = g.readable || (g.addr != null ? addressText(g.addr) : 'global');
+        if (!q || name.toLowerCase().includes(q) || (g.region && g.region.toLowerCase().includes(q))) {
+          list.push({
+            name,
+            addr: g.addr,
+            region: g.region,
+            meta: g.refs != null ? text(`${g.refs} か所から参照`, `${g.refs} refs`) : '',
+          });
+        }
+      }
+    } catch { /* ignore fallback */ }
+  }
+  if (!list.length && dataRegions.length) {
+    for (const r of dataRegions) {
+      const name = r.section || r.name || r.id;
+      if (!q || String(name).toLowerCase().includes(q)) {
+        list.push({
+          name: String(name),
+          addr: r.vmAddr,
+          region: r.segment || r.name,
+          meta: r.size ? `${r.size} bytes` : '',
+        });
+      }
+    }
+  }
+  return list;
+}
+
 function externalItems(app, query) {
   const descriptor = productDescriptor(app.store.get('fileInfo'), app.currentSlice?.());
   const q = String(query || '').trim().toLowerCase();
-  return (descriptor.dependencies || []).filter((name) => !q || name.toLowerCase().includes(q)).map((name) => ({ name }));
+  const list = [];
+  const seen = new Set();
+  for (const name of descriptor.dependencies || []) {
+    if (!q || name.toLowerCase().includes(q)) {
+      if (!seen.has(name)) {
+        seen.add(name);
+        list.push({ name, kind: 'dylib', addr: null });
+      }
+    }
+  }
+  const imports = app.symbols?.imports || [];
+  for (const imp of imports) {
+    const name = String(imp.name || imp);
+    const addr = imp.addr ?? imp.address ?? null;
+    if (!q || name.toLowerCase().includes(q)) {
+      if (!seen.has(name)) {
+        seen.add(name);
+        list.push({ name, kind: 'import', addr });
+      }
+    }
+  }
+  return list;
 }
 
 function renderExplorer(app, router, route) {
@@ -329,7 +414,11 @@ function renderExplorer(app, router, route) {
     }
     if (scope === 'external') {
       const items = externalItems(app, q);
-      showRows(items, (item) => listRow({ title: item.name }), text('外部ライブラリ情報がありません。', 'No external library information is available.'));
+      showRows(items, (item) => listRow({
+        title: item.name,
+        subtitle: item.addr != null ? addressText(item.addr) : (item.kind === 'dylib' ? text('外部ライブラリ', 'Dynamic library') : text('外部シンボル', 'External symbol')),
+        onClick: item.addr != null ? () => router.navigate('/code/' + BigInt(item.addr).toString()) : null,
+      }), text('外部ライブラリ情報がありません。', 'No external library information is available.'));
       return;
     }
     if (scope === 'strings') {
@@ -345,16 +434,24 @@ function renderExplorer(app, router, route) {
       return;
     }
     if (scope === 'classes') {
-      const c = card(text('型 / クラス', 'Types / Classes'), { subtitle: text('Objective-C / Swift / C++ の型情報を、同じ索引の一部として扱います。', 'Runtime and recovered types live in this explorer scope.') });
-      const count = app.fields && app.fields.classCount ? app.fields.classCount : 0;
-      c.body.append(h('p', 'ui-metric', text(`${count.toLocaleString()} クラスを認識`, `${count.toLocaleString()} classes recognized`)));
-      c.body.append(uiButton(text('クラスと構造を見る', 'Open class/structure index'), { cls: 'ui-secondary-action', onClick: () => requireFile(app, () => showStructure(app)) }));
-      content.replaceChildren(c.root);
+      const items = classItems(app, q);
+      showRows(items, (item) => listRow({
+        title: item.name,
+        subtitle: item.meta,
+        onClick: () => requireFile(app, () => showClass(app, item.name)),
+      }), text('クラス情報がありません。', 'No class information is available.'));
       return;
     }
-    const c = card(text('データ', 'Data'), { subtitle: text('グローバル・構造体・復元したデータ表をまとめます。', 'Globals, structures and recovered data tables are grouped here.') });
-    c.body.append(uiButton(text('データ構造を開く', 'Open data structures'), { cls: 'ui-secondary-action', onClick: () => requireFile(app, () => showStructure(app)) }));
-    content.replaceChildren(c.root);
+    if (scope === 'data') {
+      const items = dataItems(app, q);
+      showRows(items, (item) => listRow({
+        title: item.name,
+        subtitle: item.addr != null ? addressText(item.addr) + (item.region ? ' · ' + item.region : '') : '',
+        meta: item.meta || '',
+        onClick: item.addr != null ? () => router.navigate('/code/' + BigInt(item.addr).toString()) : () => requireFile(app, () => showGlobals(app)),
+      }), text('データ構造・グローバル変数情報がありません。', 'No data structures or global variables found.'));
+      return;
+    }
   };
 
   search.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(update, 120); });
@@ -857,20 +954,78 @@ function renderFunctionWorkspace(app, router, route) {
   return { root: s.root, getState: () => ({ scrollTop: s.body.scrollTop }), restoreState: (state) => { if (state) s.body.scrollTop = Number(state.scrollTop) || 0; }, dispose: () => { disposed = true; routeController.abort(); } };
 }
 
-function renderResults(app, router) {
+function renderFindingDetail(app, router, findingId) {
+  const report = app.autoReport && app.autoReport.report;
+  const findings = (report && (report.findings || report.results || report.goals)) || [];
+  const item = findings.find((f, idx) => String(f.id ?? f.claimId ?? f.key ?? idx) === String(findingId));
+  const s = screen(text('結果の詳細', 'Finding Detail'), {
+    id: 'finding',
+    subtitle: item ? (item.title || item.label || item.goal?.text || item.goal || text('解析結果', 'Finding')) : text('結果が見つかりません', 'Finding not found'),
+  });
+  if (!item) {
+    s.body.append(emptyState(
+      text('結果が見つかりません', 'Finding not found'),
+      text('このIDの結果は現在の解析結果に存在しないか、更新されました。', 'This finding ID is not present in current analysis results or has expired.'),
+      uiButton(text('結果一覧へ', 'Back to Results'), { cls: 'ui-primary-action', onClick: () => router.navigate('/results') })
+    ));
+    return { root: s.root };
+  }
+  const title = item.title || item.label || item.goal?.text || item.goal || text('解析結果', 'Finding');
+  const address = item.addr ?? item.address ?? item.functionAddr ?? item.function;
+  const c = card(String(title), { subtitle: address != null ? addressText(address) : '' });
+  const verdict = item.verdict || (item.confirmed ? 'confirmed' : item.confidence > 0.7 ? 'likely' : 'unverified');
+  c.body.append(listRow({
+    title: text('確信度 / 状態', 'Verdict / Status'),
+    meta: item.confidence != null ? `confidence ${Number(item.confidence).toFixed(2)}` : '',
+    badge: evidenceBadge(verdict),
+  }));
+  if (item.summary || item.description || item.detail) {
+    c.body.append(h('p', 'ui-lead', String(item.summary || item.description || item.detail)));
+  }
+  const actions = h('div', 'ui-actions');
+  if (address != null) {
+    actions.append(uiButton(text('該当関数を開く', 'Open function overview'), {
+      cls: 'ui-primary-action',
+      onClick: () => router.navigate('/function/' + BigInt(address).toString() + '/overview'),
+    }));
+    actions.append(uiButton(text('根拠を確認する', 'Review evidence'), {
+      cls: 'ui-secondary-action',
+      onClick: () => router.navigate('/function/' + BigInt(address).toString() + '/evidence'),
+    }));
+  }
+  actions.append(uiButton(text('結果一覧に戻る', 'Back to Results'), {
+    cls: 'ui-secondary-action',
+    onClick: () => router.navigate('/results'),
+  }));
+  c.body.append(actions);
+  s.body.append(c.root);
+  return { root: s.root };
+}
+
+function renderResults(app, router, route) {
+  if (route?.route?.id === 'finding' || route?.params?.id != null) {
+    return renderFindingDetail(app, router, route.params.id);
+  }
   const s = screen(text('結果', 'Results'), { id: 'results', subtitle: text('確認した答え、根拠、履歴、ピンをここへ集めます。', 'Confirmed answers, evidence, history and pins live here.') });
   const report = app.autoReport && app.autoReport.report;
   const findings = report && (report.findings || report.results || report.goals);
   if (Array.isArray(findings) && findings.length) {
-    const renderFinding = (item) => {
+    const renderFinding = (item, index) => {
       const title = item.title || item.label || item.goal?.text || item.goal || text('解析結果', 'Finding');
       const address = item.addr ?? item.address ?? item.functionAddr ?? item.function;
-      return listRow({ title: String(title), subtitle: address != null ? addressText(address) : '', badge: evidenceBadge(item.confirmed ? 'confirmed' : item.confidence > 0.7 ? 'likely' : 'unverified'), onClick: address != null ? () => router.navigate('/function/' + BigInt(address).toString() + '/overview') : null });
+      const findingId = item.id ?? item.claimId ?? item.key ?? index;
+      const verdict = item.verdict || (item.confirmed ? 'confirmed' : item.confidence > 0.7 ? 'likely' : 'unverified');
+      return listRow({
+        title: String(title),
+        subtitle: address != null ? addressText(address) : '',
+        badge: evidenceBadge(verdict),
+        onClick: () => router.navigate('/finding/' + encodeURIComponent(String(findingId))),
+      });
     };
     if (findings.length > 80) s.body.append(new VirtualList({ items: findings, rowHeight: 64, ariaLabel: text('解析結果', 'Analysis results'), renderRow: renderFinding }).root);
     else {
       const list = h('div', 'ui-list');
-      for (const item of findings) list.append(renderFinding(item));
+      findings.forEach((item, index) => list.append(renderFinding(item, index)));
       s.body.append(list);
     }
   } else {
@@ -1077,7 +1232,7 @@ export function installProductUI(app) {
       if (route.route.id === 'investigate') view = renderInvestigate(app, router);
       else if (route.route.id === 'explorer') view = renderExplorer(app, router, route);
       else if (route.route.id === 'function') view = renderFunctionWorkspace(app, router, route);
-      else if (route.route.id === 'results' || route.route.id === 'finding') view = renderResults(app, router);
+      else if (route.route.id === 'results' || route.route.id === 'finding') view = renderResults(app, router, route);
       else if (route.route.id === 'diff') view = renderDiff(app, router);
       else if (route.route.id === 'advanced') view = renderAdvanced(app);
       else view = renderSecondaryRoute(app, router, route);
