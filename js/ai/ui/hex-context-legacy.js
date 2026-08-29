@@ -208,7 +208,7 @@ export function createHexAIContext(app) {
     async resolveSwiftDispatch(call = {}) {
       try { await app.ensureSwift?.(); } catch {}
       const result=app.resolveSwiftCall?.(call) || {resolved:null,candidates:[],confidence:0,reason:'swift-runtime-unavailable'};
-      return { ...result, candidates:(result?.candidates||[]).slice(0,32), requirements:(result?.requirements||[]).slice(0,32), complete:result?.complete!==false && app.swiftModel?.complete!==false };
+      return { ...result, candidates:(result?.candidates||[]).slice(0,32), requirements:(result?.requirements||[]).slice(0,32), complete:result?.complete===true && app.swiftModel?.complete===true };
     },
     pseudocodeFor(address, model) {
       if (!model || !fixedRows(app)) return null;

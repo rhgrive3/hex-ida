@@ -134,15 +134,18 @@ export async function parseSwiftWitnessTable(read,address,count,budget=4096,opti
   }return out;
 }
 
-async function relativePointerSection(read,range,budget,parser){const out=[];if(!range)return out;const count=Math.min(Number(range.size/4n),budget);for(let i=0;i<count;i++){const field=range.addr+BigInt(i*4),b=await exact(read,field,4);if(!b)break;const target=rel(field,i32(b,0));if(target==null)continue;try{const value=await parser(read,target);if(value)out.push(value);}catch{}}return out;}
+async function relativePointerSection(read,range,budget,parser){const items=[];if(!range)return{items,completeness:{present:false,declared:0,scanned:0,parsed:0,capped:false,unreadableEntries:0,invalidEntries:0,misalignedBytes:0,complete:true}};const size=range.size,misalignedBytes=Number(size%4n),declared=Number(size/4n),count=Math.min(declared,budget);let scanned=0,unreadableEntries=0,invalidEntries=0;for(let i=0;i<count;i++){const field=range.addr+BigInt(i*4),b=await exact(read,field,4);if(!b){unreadableEntries++;break;}scanned++;const target=rel(field,i32(b,0));if(target==null){invalidEntries++;continue;}try{const value=await parser(read,target);if(value)items.push(value);else invalidEntries++;}catch{invalidEntries++;}}const capped=declared>budget,complete=misalignedBytes===0&&!capped&&unreadableEntries===0&&invalidEntries===0&&scanned===declared&&items.length===declared;return{items,completeness:{present:true,declared,scanned,parsed:items.length,capped,unreadableEntries,invalidEntries,misalignedBytes,complete}};}
 
 export async function buildSwiftMetadataModel(read,sections,opts={}){
   const budget=normalizeBudget(opts.budget,DEFAULT_BUDGET,100000), typeSec=sectionRange(sections,['__swift5_types']), protoSec=sectionRange(sections,['__swift5_protos']), confSec=sectionRange(sections,['__swift5_proto']);
-  const types=await relativePointerSection(read,typeSec,budget,parseSwiftNominalDescriptor), protocols=await relativePointerSection(read,protoSec,budget,parseSwiftProtocolDescriptor), conformances=await relativePointerSection(read,confSec,budget,(r,a)=>parseSwiftConformanceDescriptor(r,a,opts));
-  for(const t of types)if(t.fieldDescriptor!=null){try{t.fields=await parseSwiftFieldDescriptor(read,t.fieldDescriptor,Math.min(budget,4096));}catch{t.fields=[];}}
-  const vtables=[];for(const v of opts.vtables||[]){const methods=await parseSwiftVTable(read,v.address,v.count,budget),x={...v,methods};vtables.push(x);const owner=types.find((t)=>t.address.toString()===String(v.typeAddress));if(owner){owner.vtable=methods;owner.methods=methods;}}
-  const witnessTables=[];for(const w of opts.witnessTables||[])witnessTables.push({...w,entries:await parseSwiftWitnessTable(read,w.address,w.count,budget,opts)});
-  return{runtime:'swift',types,protocols,conformances,vtables,witnessTables,warnings:[]};
+  const typeScan=await relativePointerSection(read,typeSec,budget,parseSwiftNominalDescriptor), protoScan=await relativePointerSection(read,protoSec,budget,parseSwiftProtocolDescriptor), confScan=await relativePointerSection(read,confSec,budget,(r,a)=>parseSwiftConformanceDescriptor(r,a,opts));
+  const types=typeScan.items,protocols=protoScan.items,conformances=confScan.items;
+  for(const t of types)if(t.fieldDescriptor!=null){try{t.fields=await parseSwiftFieldDescriptor(read,t.fieldDescriptor,Math.min(budget,4096));}catch{t.fields=[];typeScan.completeness.complete=false;typeScan.completeness.invalidEntries++;}}
+  const vtables=[];let vtablesComplete=true;for(const v of opts.vtables||[]){const methods=await parseSwiftVTable(read,v.address,v.count,budget),expected=Math.min(normalizeBudget(v.count,0,100000),budget),x={...v,methods};if(methods.length!==expected||Number(v.count)>budget)vtablesComplete=false;vtables.push(x);const owner=types.find((t)=>t.address.toString()===String(v.typeAddress));if(owner){owner.vtable=methods;owner.methods=methods;}}
+  const witnessTables=[];let witnessTablesComplete=true;for(const w of opts.witnessTables||[]){const entries=await parseSwiftWitnessTable(read,w.address,w.count,budget,opts),expected=Math.min(normalizeBudget(w.count,0,100000),budget);if(entries.length!==expected||Number(w.count)>budget||entries.some((x)=>x.resolved!==true))witnessTablesComplete=false;witnessTables.push({...w,entries});}
+  const completeness={types:typeScan.completeness,protocols:protoScan.completeness,conformances:confScan.completeness,vtables:{complete:vtablesComplete},witnessTables:{complete:witnessTablesComplete}};
+  completeness.complete=Object.values(completeness).every((x)=>x?.complete===true);
+  return{runtime:'swift',types,protocols,conformances,vtables,witnessTables,completeness,complete:completeness.complete,warnings:[]};
 }
 
 function preferredTypeName(t){return t.qualifiedName||t.fullName||(t.moduleName&&t.name?`${t.moduleName}.${t.name}`:t.name)||null;}
@@ -159,10 +162,13 @@ export function buildSwiftRuntimeIndex(model={}){
 }
 
 export function resolveSwiftDispatch(index,call={}){
-  if(!call)return{resolved:null,candidates:[],confidence:0};if(call.target!=null)return{kind:'direct',resolved:{target:call.target,name:call.name||null},candidates:[],confidence:call.name?0.99:0.9};if(!index)return{kind:call.kind||'indirect',resolved:null,candidates:[],confidence:0};
-  if(call.kind==='vtable'&&call.typeName!=null&&call.slot!=null){const methods=index.vtablesByType.get(call.typeName)||[],m=methods.find((x)=>x.index===Number(call.slot));return m?{kind:'vtable',resolved:m,candidates:[m],confidence:0.9}:{kind:'vtable',resolved:null,candidates:[],confidence:0.2};}
-  if((call.kind==='witness'||call.kind==='existential')&&call.typeName&&call.protocolName&&call.slot!=null){const conf=index.witnessesByPair.get(`${call.typeName}:${call.protocolName}`),table=(index.model.witnessTables||[]).find((w)=>(conf?.witnessTable!=null&&String(w.address)===conf.witnessTable.toString())||(w.typeName===call.typeName&&w.protocolName===call.protocolName)),entry=table?.entries?.find((x)=>x.index===Number(call.slot));if(entry)return{kind:call.kind,resolved:entry,candidates:[entry],confidence:0.86,conformance:conf||null};return{kind:call.kind,resolved:null,candidates:[],confidence:conf?0.55:0.2,conformance:conf||null};}
-  return{kind:call.kind||'indirect',resolved:null,candidates:[],confidence:0.15};
+  if(!call)return{resolved:null,candidates:[],confidence:0,complete:false};
+  if(call.target!=null)return{kind:'direct',resolved:{target:call.target,name:call.name||null},candidates:[],confidence:call.name?0.99:0.9,complete:true};
+  if(!index)return{kind:call.kind||'indirect',resolved:null,candidates:[],confidence:0,complete:false};
+  const universeComplete=index.model?.complete===true;
+  if(call.kind==='vtable'&&call.typeName!=null&&call.slot!=null){const methods=index.vtablesByType.get(call.typeName)||[],m=methods.find((x)=>x.index===Number(call.slot));return m?{kind:'vtable',resolved:m,candidates:[m],confidence:0.9,complete:true}:{kind:'vtable',resolved:null,candidates:[],confidence:0.2,complete:universeComplete};}
+  if((call.kind==='witness'||call.kind==='existential')&&call.typeName&&call.protocolName&&call.slot!=null){const conf=index.witnessesByPair.get(`${call.typeName}:${call.protocolName}`),table=(index.model.witnessTables||[]).find((w)=>(conf?.witnessTable!=null&&String(w.address)===conf.witnessTable.toString())||(w.typeName===call.typeName&&w.protocolName===call.protocolName)),entry=table?.entries?.find((x)=>x.index===Number(call.slot));if(entry)return{kind:call.kind,resolved:entry,candidates:[entry],confidence:0.86,conformance:conf||null,complete:true};return{kind:call.kind,resolved:null,candidates:[],confidence:conf?0.55:0.2,conformance:conf||null,complete:universeComplete};}
+  return{kind:call.kind||'indirect',resolved:null,candidates:[],confidence:0.15,complete:universeComplete};
 }
 
 export function swiftCallingConvention({name='',mangled='',metadata=null,attributes=null}={}){const sym=demangleSwiftSymbol(mangled||name),a=attributes||{},async=a.async!=null?!!a.async:!!sym.async,throws=a.throws!=null?!!a.throws:!!sym.throws;return{runtime:'swift',swiftself:a.swiftself!==false,swiftasync:async,swiftthrows:throws,indirectResult:!!a.indirectResult,context:a.context!==false,errorResult:throws||!!a.errorResult,metadataArguments:Number(a.metadataArguments||(metadata?.generic?1:0)),representation:async&&throws?'await-throwing':async?'await':throws?'throwing':'normal'};}
