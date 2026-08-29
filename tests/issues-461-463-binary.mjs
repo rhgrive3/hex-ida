@@ -88,7 +88,7 @@ function rejected(image, fragment) {
   rejected(parsePE(peFixture({ executable: false })), 'section is not executable');
   rejected(parsePE(peFixture({ entryRva: 0x100 })), 'not mapped by a section');
   rejected(parsePE(peFixture({ entryRva: 0x1800 })), 'not mapped by a section');
-  rejected(parsePE(peFixture({ entryRva: 0x1080, virtualSize: 0x100, rawSize: 0x40 })), 'no file-backed instruction byte');
+  rejected(parsePE(peFixture({ entryRva: 0x1280, virtualSize: 0x300, rawSize: 0x40 })), 'no file-backed instruction byte');
   rejected(parsePE(peFixture({ entryRva: 0x4000 })), 'outside SizeOfImage');
   rejected(parsePE(peFixture({ entryRva: 0x1002, machine: 0xaa64 })), 'not 4-byte aligned');
 }

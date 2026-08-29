@@ -23,6 +23,25 @@ function windowsImageSectionRawMapping(pointerToRawData) {
   };
 }
 
+function isPowerOfTwo(value) {
+  return Number.isInteger(value) && value > 0 && (value & (value - 1)) === 0;
+}
+
+function validPEFileAlignment(fileAlignment, sectionAlignment) {
+  if (!isPowerOfTwo(fileAlignment)) return false;
+  if (sectionAlignment > 0 && sectionAlignment < 0x1000) return fileAlignment === sectionAlignment;
+  return fileAlignment >= 0x200 && fileAlignment <= 0x10000;
+}
+
+function windowsImageSectionRawSize(sizeOfRawData, fileAlignment, sectionAlignment) {
+  const alignmentValid = validPEFileAlignment(fileAlignment, sectionAlignment);
+  if (sizeOfRawData === 0 || !alignmentValid) {
+    return { effectiveRawSize: sizeOfRawData, alignmentValid, roundedUp: false };
+  }
+  const effectiveRawSize = Math.ceil(sizeOfRawData / fileAlignment) * fileAlignment;
+  return { effectiveRawSize, alignmentValid: true, roundedUp: effectiveRawSize !== sizeOfRawData };
+}
+
 function seedValidatedEntrypoint(image, entryRva, sizeOfImage, machine) {
   const address = image.imageBase + BigInt(entryRva);
   const reject = (reason) => {
@@ -110,7 +129,7 @@ export function parsePE(input, options = {}) {
   const image = new BinaryImage(bytes, {
     format: 'pe', arch: peMachineName(machine), bits, endian: 'little', platform: 'windows',
     imageBase, entrypoint: entryRva ? imageBase + BigInt(entryRva) : null,
-    metadata: { machine, timestamp, characteristics, subsystem, sectionAlignment, fileAlignment, sizeOfImage, sizeOfHeaders, directories, peSectionRawMappings: [] },
+    metadata: { machine, timestamp, characteristics, subsystem, sectionAlignment, fileAlignment, sizeOfImage, sizeOfHeaders, directories, peSectionRawMappings: [], peSectionRawSizes: [] },
   });
 
   image.addSegment({ name: 'headers', address: imageBase, size: BigInt(sizeOfHeaders), fileOffset: 0n, fileSize: BigInt(Math.min(sizeOfHeaders, bytes.length)), perms: { read: true, write: false, execute: false }, source: 'PE-headers' });
@@ -127,9 +146,10 @@ export function parsePE(input, options = {}) {
     const address = imageBase + BigInt(virtualAddress);
     const virtualExtent = BigInt(virtualSize || sizeRaw);
     const rawMapping = windowsImageSectionRawMapping(ptrRaw);
-    const rawAvailable = rawMapping.fileBacked
-      ? BigInt(Math.min(sizeRaw, Math.max(0, bytes.length - rawMapping.effectiveFileOffset)))
-      : 0n;
+    const rawSize = windowsImageSectionRawSize(sizeRaw, fileAlignment, sectionAlignment);
+    const availableFileBytes = rawMapping.fileBacked ? Math.max(0, bytes.length - rawMapping.effectiveFileOffset) : 0;
+    const rawAvailableNumber = rawMapping.fileBacked ? Math.min(rawSize.effectiveRawSize, availableFileBytes) : 0;
+    const rawAvailable = BigInt(rawAvailableNumber);
     const mappedFileSize = rawAvailable < virtualExtent ? rawAvailable : virtualExtent;
     const perms = { read: !!(flags & 0x40000000), write: !!(flags & 0x80000000), execute: !!(flags & 0x20000000) };
     image.metadata.peSectionRawMappings.push({
@@ -142,8 +162,28 @@ export function parsePE(input, options = {}) {
       roundedDown: rawMapping.roundedDown,
       policy: 'windows-image-loader-0x200-round-down',
     });
+    image.metadata.peSectionRawSizes.push({
+      sectionIndex: i + 1,
+      name,
+      declaredRawSize: sizeRaw,
+      effectiveRawSize: rawSize.effectiveRawSize,
+      fileAlignment,
+      alignmentValid: rawSize.alignmentValid,
+      roundedUp: rawSize.roundedUp,
+      clippedToFile: rawMapping.fileBacked && rawAvailableNumber < rawSize.effectiveRawSize,
+      clippedToVirtual: BigInt(rawSize.effectiveRawSize) > virtualExtent,
+      policy: rawSize.alignmentValid ? 'windows-image-loader-file-alignment-round-up' : 'declared-size-fallback-invalid-file-alignment',
+    });
     if (rawMapping.roundedDown) {
       image.warnings.push(`PE section ${name || `#${i + 1}`} PointerToRawData 0x${ptrRaw.toString(16)} is nonconforming; Windows image-loader mapping uses 0x${rawMapping.effectiveFileOffset.toString(16)}`);
+    }
+    if (!rawSize.alignmentValid && sizeRaw > 0) {
+      image.warnings.push(`PE section ${name || `#${i + 1}`} has invalid FileAlignment 0x${fileAlignment.toString(16)}; raw-size mapping falls back to declared SizeOfRawData`);
+    } else if (rawSize.roundedUp) {
+      image.warnings.push(`PE section ${name || `#${i + 1}`} SizeOfRawData 0x${sizeRaw.toString(16)} is nonconforming; Windows image-loader mapping uses 0x${rawSize.effectiveRawSize.toString(16)} bytes`);
+    }
+    if (rawMapping.fileBacked && rawAvailableNumber < rawSize.effectiveRawSize) {
+      image.warnings.push(`PE section ${name || `#${i + 1}`} raw mapping is truncated: 0x${rawAvailableNumber.toString(16)} of 0x${rawSize.effectiveRawSize.toString(16)} bytes are available`);
     }
     const effectiveFileOffset = BigInt(rawMapping.effectiveFileOffset);
     image.addSegment({ name, address, size: virtualExtent, fileOffset: effectiveFileOffset, fileSize: mappedFileSize, perms, flags, source: 'PE-section' });
