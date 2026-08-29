@@ -1,5 +1,6 @@
 name: Temporary Stage2 ephemeral generated repair
 
+# registered-trigger
 on:
   push:
     branches: [main]
