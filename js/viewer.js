@@ -516,11 +516,11 @@ export class CodeViewer {
     const wantAsm=this.wantAsm(); let chunkIdx=-1,entry=null,asmEntry=null;
     for(let r=startRow,i=0;r<endRow;r++,i++){
       const el=this.pool[i],c=Math.floor(r/CHUNK_ROWS);
-      if(c!==chunkIdx){chunkIdx=c;entry=this.backend.peek(this.region.id,c,false);asmEntry=wantAsm?this.backend.peek(this.region.id,c,true):null;if(!entry||(wantAsm&&!asmEntry))this.backend.request(this.region.id,c,wantAsm);}
+      if(c!==chunkIdx){chunkIdx=c;entry=this.backend.peek(this.region.id,c,false);asmEntry=wantAsm?this.backend.peek(this.region.id,c,true):null;if(!entry||(wantAsm&&!asmEntry))this.backend.request(this.region.id,c,wantAsm,{priority:'visible'});}
       this._paintFixedRow(el,r,entry,asmEntry,(r-this.baseRow)*this.rowH);
     }
     const firstChunk=Math.floor(startRow/CHUNK_ROWS),lastChunk=Math.floor((endRow-1)/CHUNK_ROWS),maxChunk=Math.floor((this.totalRows-1)/CHUNK_ROWS);
-    for(let c=Math.max(0,firstChunk-PREFETCH_CHUNKS);c<=Math.min(maxChunk,lastChunk+PREFETCH_CHUNKS);c++){if(c>=firstChunk&&c<=lastChunk)continue;this.backend.request(this.region.id,c,wantAsm);}
+    for(let c=Math.max(0,firstChunk-PREFETCH_CHUNKS);c<=Math.min(maxChunk,lastChunk+PREFETCH_CHUNKS);c++){if(c>=firstChunk&&c<=lastChunk)continue;this.backend.request(this.region.id,c,wantAsm,{priority:'prefetch'});}
   }
 
   _ensurePool(n) {
