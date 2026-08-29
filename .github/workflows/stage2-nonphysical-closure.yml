@@ -116,14 +116,62 @@ jobs:
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "tree=$tree" >> "$GITHUB_OUTPUT"
 
-      - name: Require canonical generated artifacts to be synchronized
+      - name: Resolve generated-output ownership policy
         if: steps.impact.outputs.required == 'true'
+        id: generated-policy
         shell: bash
         run: |
           set -euo pipefail
+          mode="$(node tools/validation/generated-output-policy.mjs)"
+          case "$mode" in
+            enforce|ephemeral) ;;
+            *) echo "unknown generated-output policy mode: $mode" >&2; exit 1 ;;
+          esac
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+
+      - name: Validate canonical generated artifacts under ownership policy
+        if: steps.impact.outputs.required == 'true'
+        id: generated-artifacts
+        shell: bash
+        env:
+          GENERATED_MODE: ${{ steps.generated-policy.outputs.mode }}
+        run: |
+          set -euo pipefail
           npm run userscript:build
-          git diff --exit-code
-          test -z "$(git status --porcelain --untracked-files=no)"
+
+          build_identity="$(node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const release = JSON.parse(fs.readFileSync('userscript/release-version.json', 'utf8'));
+          if (!/^[0-9a-f]{64}$/.test(String(release.releaseIdentity || ''))) throw new TypeError('stage2-release-identity-invalid');
+          if (!/^[0-9a-f]{24}$/.test(String(release.buildId || ''))) throw new TypeError('stage2-build-id-invalid');
+          if (!Number.isSafeInteger(release.serial) || release.serial < 1) throw new TypeError('stage2-release-serial-invalid');
+          process.stdout.write(`userscript-release:${release.releaseIdentity}:build:${release.buildId}:serial:${release.serial}`);
+          NODE
+          )"
+          echo "build_identity=$build_identity" >> "$GITHUB_OUTPUT"
+
+          git restore --source=HEAD --worktree -- js/userscript/deployment-identity.generated.js
+          unexpected="$(git status --porcelain --untracked-files=all | awk '{print $2}' | grep -Ev '^(userscript/hex\.user\.template\.js|userscript/release-version\.json)$' || true)"
+          if [[ -n "$unexpected" ]]; then
+            echo 'userscript:build changed files outside the generated-output allowlist:' >&2
+            printf '%s\n' "$unexpected" >&2
+            exit 1
+          fi
+
+          case "$GENERATED_MODE" in
+            enforce)
+              git diff --exit-code -- userscript/hex.user.template.js userscript/release-version.json
+              test -z "$(git status --porcelain --untracked-files=no)"
+              ;;
+            ephemeral)
+              git restore --source=HEAD --worktree -- userscript/hex.user.template.js userscript/release-version.json
+              test -z "$(git status --porcelain --untracked-files=no)"
+              ;;
+            *)
+              echo "unknown generated-output policy mode: $GENERATED_MODE" >&2
+              exit 1
+              ;;
+          esac
 
       - name: Run canonical A2 machine-effects proof with visible diagnostics
         shell: bash
@@ -165,20 +213,23 @@ jobs:
           SHA: ${{ steps.identity.outputs.sha }}
           TREE: ${{ steps.identity.outputs.tree }}
           PROFILE_PATH: ${{ steps.profile.outputs.profile_path }}
+          GENERATED_BUILD_IDENTITY: ${{ steps.generated-artifacts.outputs.build_identity }}
         run: |
           set -euo pipefail
           node --input-type=module <<'NODE'
           import fs from 'node:fs';
-          import path from 'node:path';
           const profile = JSON.parse(fs.readFileSync(process.env.PROFILE_PATH, 'utf8'));
-          const release = JSON.parse(fs.readFileSync('userscript/release-version.json', 'utf8'));
+          const generatedBuildIdentity = String(process.env.GENERATED_BUILD_IDENTITY || '');
+          if (!/^userscript-release:[0-9a-f]{64}:build:[0-9a-f]{24}:serial:[1-9][0-9]*$/.test(generatedBuildIdentity)) {
+            throw new TypeError('stage2-generated-build-identity-invalid');
+          }
           const record = {
             schemaVersion: 'hex-stage2-nonphysical-candidate/v1',
             verdict: 'BLOCKED_ONLY_ON_PHYSICAL_IPAD_EVIDENCE',
             candidateCommitSha: process.env.SHA,
             candidateTreeSha: process.env.TREE,
             profileEvidenceId: profile.evidenceId,
-            generatedBuildIdentity: `userscript-release:${release.releaseIdentity}:build:${release.buildId}:serial:${release.serial}`,
+            generatedBuildIdentity,
             remainingBlockers: ['S2-IPAD-PHYSICAL'],
           };
           fs.mkdirSync('reports/stage2', { recursive: true });
