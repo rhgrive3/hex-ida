@@ -53,7 +53,11 @@ const sections = {
   protocolList: { vmAddr: 0x100n, size: 8n },
   categoryList: { vmAddr: 0x200n, size: 8n },
 };
-const opts = { classes: [{ name: 'PlayerData', addr: 0x2000n }] };
+const opts = {
+  classes: [{ name: 'PlayerData', addr: 0x2000n }],
+  resolvePointer: (raw) => BigInt(raw),
+  isExecutableAddress: (addr) => BigInt(addr) % 4n === 0n,
+};
 const parsed = await parseObjcExtendedMetadata(read, sections, opts);
 
 assert.equal(parsed.protocols.length, 1);
