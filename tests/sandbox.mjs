@@ -65,6 +65,7 @@ await e.destroy();`,
     const normalOutput=await runInSandbox({source:"for(let i=0;i<8;i++) print('ok',i)",api:{},out:(...args)=>normalLines.push(args),timeout:5000});
     const giantOutput=await runInSandbox({source:'print(new Uint8Array(300000))',api:{},out:()=>{},timeout:5000});
     const floodOutput=await runInSandbox({source:"for(let i=0;i<500;i++) print('x')",api:{},out:()=>{},timeout:5000});
+    const directOutput=await runInSandbox({source:'postMessage(new Uint8Array(300000)); await new Promise(r=>setTimeout(r,1000))',api:{},out:()=>{},timeout:5000});
     const abortCtrl = new AbortController();
     abortCtrl.abort();
     const abortOutput = await runInSandbox({ source: 'while(true){}', api: {}, out: () => {}, signal: abortCtrl.signal, timeout: 5000 });
