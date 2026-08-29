@@ -18,6 +18,21 @@ import { compactGuidance, composePrompt } from '../prompts/compose.js';
 import { analyzeModelAt } from './hex-context.js';
 
 const MAX_ASSEMBLY_LINES = 240;
+const FUNCTION_QUESTION_RE = /\b(function|method|caller|callee|call graph|xref|basic block)\b|関数|メソッド|呼び出し元|呼び出し先|コールグラフ|基本ブロック/i;
+const ASSEMBLY_QUESTION_RE = /\b(assembly|disassembly|instruction|instructions|opcode|mnemonic|arm64|aarch64)\b|アセンブリ|逆アセンブル|逆アセンブリ|命令|オペコード|ニーモニック/i;
+
+export function localChatDependencies({ question, scope, hasFunction = false } = {}) {
+  if (!hasFunction) return { functionContext: false, assembly: false };
+  const normalizedScope = String(scope || '').trim().toLowerCase();
+  if (normalizedScope === 'file' || normalizedScope === 'project') {
+    return { functionContext: false, assembly: false };
+  }
+  const functionContext = normalizedScope === 'function' || FUNCTION_QUESTION_RE.test(String(question || ''));
+  return {
+    functionContext,
+    assembly: functionContext && ASSEMBLY_QUESTION_RE.test(String(question || '')),
+  };
+}
 
 function assemblyText(model) {
   const rows = (model && model.instructions) || [];
@@ -83,19 +98,25 @@ function localChatAnswer({ name, address, model, selection }) {
 
 async function runChat({ app, question, mode, style, scope, context, signal, onActivity, onText }) {
   const fn = context.function || null;
-  const addr = fn ? fn.addressValue : null;
-  onActivity({ label: pick('現在の関数を読み込み', 'Loading current function'), state: 'running' });
-  const model = addr == null ? null : await analyzeModelAt(app, addr);
-  const name = fn ? fn.name : pick('この関数', 'this function');
-  const address = fn ? fn.address : '—';
-  onActivity({
-    label: pick('現在の関数を読み込み', 'Loading current function'),
-    detail: model ? (model.instructions || []).length + pick(' 命令', ' instructions') : pick('解析できません', 'unavailable'),
-  });
+  const dependencies = localChatDependencies({ question, scope, hasFunction: !!fn });
+  const activeFn = dependencies.functionContext ? fn : null;
+  const addr = activeFn ? activeFn.addressValue : null;
+  let model = null;
 
+  if (addr != null) {
+    onActivity({ label: pick('現在の関数を読み込み', 'Loading current function'), state: 'running' });
+    model = await analyzeModelAt(app, addr, null, { signal });
+    onActivity({
+      label: pick('現在の関数を読み込み', 'Loading current function'),
+      detail: model ? (model.instructions || []).length + pick(' 命令', ' instructions') : pick('解析できません', 'unavailable'),
+    });
+  }
+
+  const name = activeFn ? activeFn.name : pick('この関数', 'this function');
+  const address = activeFn ? activeFn.address : '—';
   const prompt = composePrompt({ mode, style, scope, question, context });
-  const assembly = assemblyText(model);
-  const evidence = evidenceFromModel(model, addr, fn ? fn.name : null);
+  const assembly = dependencies.assembly ? assemblyText(model) : '';
+  const evidence = evidenceFromModel(model, addr, activeFn ? activeFn.name : null);
   const base = {
     mode, style, confidence: null, evidence,
     actions: addr == null ? [] : [{ kind: 'open-function', target: addrHex(addr), label: pick('関数を開く', 'Open function') }],
@@ -109,7 +130,7 @@ async function runChat({ app, question, mode, style, scope, context, signal, onA
   const payload = {
     question: (compactGuidance(prompt) + '\n\n' + question).slice(0, 6000),
     thinkingLevel: style === 'analyst' ? 'high' : 'medium',
-    currentFunction: { address, name: fn ? fn.name : null, assembly, pseudocode: null },
+    currentFunction: { address, name: activeFn ? activeFn.name : null, assembly, pseudocode: null },
     xrefs: [], callers: [], callees: [], strings: [], globals: [],
   };
   let streamed = '';
