@@ -233,7 +233,7 @@ jobs:
           # six separate GitHub jobs/processes. Each process opens the fixture
           # once and evaluates a disjoint feature set.
           if [[ "$CORE_CACHE_HIT" != "true" || "$PINPOINT_CACHE_HIT" != "true" ]]; then
-            node --max-old-space-size=2600 tests/accuracy.mjs \
+            node --max-old-space-size=4096 tests/accuracy.mjs \
               --target="$target" \
               --oracle="$oracle" \
               --only='sections,funcs,funcs-guess,disasm,kinds,calls,refs,imports,objc,selstub,pinpoint' \
@@ -242,7 +242,7 @@ jobs:
             pids+=("$!")
             labels+=("nonpseudoc-0")
 
-            node --max-old-space-size=2600 tests/accuracy.mjs \
+            node --max-old-space-size=4096 tests/accuracy.mjs \
               --target="$target" \
               --oracle="$oracle" \
               --only='strings,xrefs,funcname,selffield,role,apimeaning,summary,expr,formula,pinpoint-partial' \
