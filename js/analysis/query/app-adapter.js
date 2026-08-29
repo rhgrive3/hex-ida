@@ -350,19 +350,59 @@ export function createAppAnalysisQueryAdapter(app) {
       if (!symbols?.funcs) return unsupported(null, 'function-index-unavailable');
       const needle = String(query.text ?? query.name ?? '').trim().toLowerCase();
       const exactAddress = addressOf(query.address);
+      const { offset, limit } = pageOf(page);
       const count = Math.min(symbols.funcs.length, MAX_FUNCTION_SCAN);
-      const rows = [];
-      for (let i = 0; i < count; i++) {
+      const indexComplete = symbols.functionStartsComplete === true && count === symbols.funcs.length;
+      const abortIfNeeded = () => {
         if (options.signal?.aborted) throw options.signal.reason ?? Object.assign(new Error('AbortError'), { name:'AbortError' });
+      };
+      const rowAt = (address, name = symbols.nameAt?.(address) ?? null) => {
+        const fn = symbols.functionAt?.(address);
+        return { id:functionId(address), address, name, end:fn?.end ?? null, size:fn?.end != null ? fn.end - address : null, evidence:symbols.functionEvidence?.(address) ?? null };
+      };
+
+      if (exactAddress == null && !needle) {
+        const start = Math.min(offset, count);
+        const end = Math.min(count, start + limit);
+        const rows = [];
+        for (let i = start; i < end; i++) {
+          abortIfNeeded();
+          const address = BigInt(symbols.funcs[i]);
+          rows.push(rowAt(address));
+        }
+        return {
+          value:rows,
+          page:{ offset, limit, returned:rows.length, total:indexComplete ? count : null, next:end < count ? end : null },
+          status:{ completeness:indexComplete ? 'complete' : 'partial', paged:true, reason:indexComplete ? null : count < symbols.funcs.length ? 'function-scan-budget' : 'function-discovery-incomplete' },
+        };
+      }
+
+      const rows = [];
+      let matched = 0;
+      let hasMore = false;
+      let exhausted = true;
+      for (let i = 0; i < count; i++) {
+        abortIfNeeded();
         const address = BigInt(symbols.funcs[i]);
         const name = symbols.nameAt?.(address) ?? null;
         if (exactAddress != null && address !== exactAddress) continue;
         if (needle && !String(name ?? '').toLowerCase().includes(needle) && !address.toString(16).includes(needle.replace(/^0x/, ''))) continue;
-        const fn = symbols.functionAt?.(address);
-        rows.push({ id:functionId(address), address, name, end:fn?.end ?? null, size:fn?.end != null ? fn.end - address : null, evidence:symbols.functionEvidence?.(address) ?? null });
+        if (matched++ < offset) continue;
+        if (rows.length >= limit) {
+          hasMore = true;
+          exhausted = false;
+          break;
+        }
+        rows.push(rowAt(address, name));
+        if (exactAddress != null) break;
       }
-      const complete = symbols.functionStartsComplete === true && count === symbols.funcs.length;
-      return paged(rows, page, complete ? 'complete' : 'partial', { reason:complete ? null : count < symbols.funcs.length ? 'function-scan-budget' : 'function-discovery-incomplete' });
+      const scanComplete = exhausted && count === symbols.funcs.length;
+      const complete = indexComplete && scanComplete;
+      return {
+        value:rows,
+        page:{ offset, limit, returned:rows.length, total:complete ? matched : null, next:hasMore ? offset + rows.length : null },
+        status:{ completeness:complete ? 'complete' : 'partial', paged:true, reason:complete ? null : count < symbols.funcs.length ? 'function-scan-budget' : !scanComplete ? 'function-filter-page-bounded' : 'function-discovery-incomplete' },
+      };
     },
 
     async functionById(_snapshot, id, options = {}) { return loadFunction(id, options); },
