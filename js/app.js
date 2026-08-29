@@ -1029,7 +1029,7 @@ class App {
    *
    * 裏で走らせて、できたところで画面を差し替える。失敗しても表示は続く。
    */
-  async ensureObjc(sliceIndex) {
+  async ensureObjc(sliceIndex, options = {}) {
     const epoch = this.backend.gen;
     if (this.objcModel && this.objcRuntime) return this.fields;
     if (this.objcBusy && this.objcBusyEpoch === epoch) return this.objcBusy;
@@ -1053,7 +1053,7 @@ class App {
         const imageBase = sl && sl.info ? sl.info.textVM : null;
         const executableRanges=regions.filter((r)=>r?.exec===true&&r.size>0n).map((r)=>({vmAddr:r.vmAddr,size:r.size}));
         const architecture=sl?.name||sl?.info?.arch||sl?.info?.architecture||null;
-        const model = await buildObjcRuntimeModel(read, list, { protocolList, categoryList, executableRanges, architecture }, null, imageBase);
+        const model = await buildObjcRuntimeModel(read, list, { protocolList, categoryList, executableRanges, architecture }, null, imageBase, null, options);
         if (epoch !== this.backend.gen || this.store.get('sliceIndex') !== slice) return this.fields;
         model.runtimeIndex = model.runtimeIndex || buildObjcRuntimeIndex(model);
         this.objcModel = model;

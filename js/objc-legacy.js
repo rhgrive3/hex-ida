@@ -614,6 +614,17 @@ export async function buildObjcModel(read, classList, onProgress, imageBase, poi
   const total = Math.min(declared, MAX_CLASSES);
 
   for (let i = 0; i < total && names.length < MAX_METHODS; i++) {
+    if (options?.signal?.aborted) {
+      markLegacyPartial(classesCompleteness, 'cancelled');
+      break;
+    }
+    if ((i & 63) === 0 && i > 0) {
+      await new Promise((r) => setTimeout(r, 0));
+      if (options?.signal?.aborted) {
+        markLegacyPartial(classesCompleteness, 'cancelled');
+        break;
+      }
+    }
     const slot = classList.vmAddr + BigInt(i) * BigInt(PTR);
     let ptr;
     try { ptr = await pointer(get, slot); }
