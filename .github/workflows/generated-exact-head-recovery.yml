@@ -1,6 +1,10 @@
 name: Generated exact-head recovery
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/generated-exact-head-recovery.yml'
   workflow_run:
     workflows:
       - Generated userscript autofix
