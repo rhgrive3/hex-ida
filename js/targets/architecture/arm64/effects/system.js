@@ -128,7 +128,8 @@ function isGpDestination(op) {
 }
 function isSystemXt(op) {
   return op?.k === 'reg'
-    && (op.cls === 'gp' || op.cls === 'zr')
+    && Number.isInteger(op.num)
+    && ((op.cls === 'gp' && op.num >= 0 && op.num <= 30) || (op.cls === 'zr' && op.num === 31))
     && Number(op.bits) === 64
     && op.shift == null
     && op.extend == null;
@@ -517,7 +518,6 @@ function eret(instruction, context) {
     metadata:{ environmentBoundary:true, environmentFootprintComplete:true },
   });
 }
-
 function genericHint(instruction, context, ops) {
   const operand = ops[0];
   if (!isPlainImmediate(operand)) {
