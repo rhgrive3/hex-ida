@@ -1,0 +1,104 @@
+name: One-shot fix issue 2394
+
+on:
+  push:
+    branches:
+      - fix/2394-objc-open-world-dispatch
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/2394-objc-open-world-dispatch
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Apply minimal soundness repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('js/apple/objc-runtime.js')
+          s = p.read_text()
+          old = """  const categoryComplete = index.completeness?.categories?.complete === true;\n  const metadataComplete = index.completeness?.complete === true;\n  const partialBlocksVerification = cleanReceiver ? !categoryComplete : !metadataComplete;\n  const unambiguous = uniqueByEvidence && !partialBlocksVerification;\n"""
+          new = """  const categoryComplete = index.completeness?.categories?.complete === true;\n  // A complete scan of the current Mach-O image is not proof that every\n  // Objective-C implementation available to the runtime has been indexed.\n  // Without a proven receiver type, keep current-image hits as candidates\n  // rather than turning local uniqueness into a process-wide exact target.\n  const partialBlocksVerification = cleanReceiver ? !categoryComplete : true;\n  const unambiguous = uniqueByEvidence && !partialBlocksVerification;\n"""
+          if old not in s:
+              raise SystemExit('expected objc dispatch proof boundary not found')
+          s = s.replace(old, new, 1)
+          old_reason = """    reason: unambiguous ? top.reason : (partialBlocksVerification ? 'Objective-C runtime metadata is partial; unseen category/implementation may change dispatch' : 'multiple plausible Objective-C implementations'),\n"""
+          new_reason = """    reason: unambiguous ? top.reason : (partialBlocksVerification\n      ? (cleanReceiver\n        ? 'Objective-C runtime metadata is partial; unseen category/implementation may change dispatch'\n        : 'receiver type is unknown and the Objective-C runtime universe is open; current-image uniqueness is not a unique dispatch proof')\n      : 'multiple plausible Objective-C implementations'),\n"""
+          if old_reason not in s:
+              raise SystemExit('expected objc dispatch reason boundary not found')
+          p.write_text(s.replace(old_reason, new_reason, 1))
+          PY
+
+          cat > tests/issue-2394-objc-open-world-dispatch.mjs <<'TEST'
+          import assert from 'node:assert/strict';
+          import { buildObjcRuntimeIndex, resolveObjcDispatch } from '../js/apple/objc-runtime.js';
+
+          function model(classes, runtimeCompleteness = { complete: true, categories: { complete: true } }) {
+            return { classes, categories: [], protocols: [], runtimeCompleteness };
+          }
+
+          const unique = buildObjcRuntimeIndex(model([
+            { name: 'LocalThing', methods: [{ sel: 'description', addr: 0x1000n }] },
+          ]));
+
+          const unknownReceiver = resolveObjcDispatch(unique, {
+            receiverType: null,
+            selector: 'description',
+          });
+          assert.equal(unknownReceiver.resolved, null, 'current-image uniqueness must not exact-resolve an unknown receiver');
+          assert.equal(unknownReceiver.candidates.length, 1, 'the local implementation should remain available as a candidate');
+          assert.equal(unknownReceiver.candidates[0].imp, 0x1000n);
+          assert.equal(unknownReceiver.partial, true, 'open runtime-world coverage must block exact verification');
+          assert.match(unknownReceiver.reason, /runtime universe is open/);
+
+          const knownReceiver = resolveObjcDispatch(unique, {
+            receiverType: 'LocalThing',
+            selector: 'description',
+          });
+          assert.equal(knownReceiver.resolved?.imp, 0x1000n, 'a proven receiver class with complete category coverage may still resolve');
+          assert.equal(knownReceiver.partial, false);
+
+          const multiple = buildObjcRuntimeIndex(model([
+            { name: 'A', methods: [{ sel: 'work', addr: 0x2000n }] },
+            { name: 'B', methods: [{ sel: 'work', addr: 0x3000n }] },
+          ]));
+          const ambiguous = resolveObjcDispatch(multiple, { selector: 'work' });
+          assert.equal(ambiguous.resolved, null);
+          assert.equal(ambiguous.candidates.length, 2);
+
+          console.log('issue #2394 Objective-C open-world dispatch regression: ok');
+          TEST
+
+      - name: Validate focused and related runtime tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check js/apple/objc-runtime.js
+          node tests/issue-2394-objc-open-world-dispatch.mjs
+          if test -f tests/runtime-intelligence.mjs; then node tests/runtime-intelligence.mjs; fi
+          if test -f tests/runtime-intelligence-imports.mjs; then node tests/runtime-intelligence-imports.mjs; fi
+          git diff --check
+
+      - name: Commit repair and remove one-shot workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/one-shot-2394.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add js/apple/objc-runtime.js tests/issue-2394-objc-open-world-dispatch.mjs .github/workflows/one-shot-2394.yml
+          git commit -m 'fix(objc): keep unknown-receiver dispatch open-world'
+          git push origin HEAD:fix/2394-objc-open-world-dispatch
