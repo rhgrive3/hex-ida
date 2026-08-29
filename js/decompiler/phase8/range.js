@@ -50,11 +50,24 @@ export function singleton(constant) {
 }
 
 const NO_CONGRUENCE = Object.freeze({ remainder: 0n, modulus: 1n });
+const EMPTY_PROVENANCE = Object.freeze({});
+const COMPARISON_OPERATORS = new Set(['eq', 'ne', 'ult', 'ule', 'ugt', 'uge', 'slt', 'sle', 'sgt', 'sge', '=', '==', '!=', '<', '<=', '>', '>=']);
+const VALID_FACT_STATUSES = new Set(['exact', 'conservative']);
 
 function widthMask(bits) { return maxUnsigned(bits); }
 
 function asMask(value, bits) {
   try { return unsignedOf(value ?? 0n, bits); } catch { return 0n; }
+}
+
+function validMaskEvidence(value) {
+  if (value == null) return true;
+  try {
+    BigInt(value);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function gcd(left, right) {
@@ -65,17 +78,26 @@ function gcd(left, right) {
 }
 
 function normalizeCongruenceValue(congruence, bits) {
+  const parsed = parseCongruenceValue(congruence, bits);
+  return parsed == null || parsed.modulus <= 1n ? NO_CONGRUENCE : parsed;
+}
+
+/* Keep malformed upstream residue evidence distinguishable from the valid
+ * modulus-one spelling of "no useful residue".  Callers that only need a
+ * conservative projection use normalizeCongruenceValue(); publication uses
+ * this parser to prevent malformed evidence from retaining exactness. */
+function parseCongruenceValue(congruence, bits) {
   const width = 1n << BigInt(bits);
-  if (!congruence || typeof congruence !== 'object') return NO_CONGRUENCE;
+  if (congruence == null || typeof congruence !== 'object') return null;
   let modulus;
   let remainder;
   try {
     modulus = BigInt(congruence.modulus);
     remainder = BigInt(congruence.remainder);
   } catch {
-    return NO_CONGRUENCE;
+    return null;
   }
-  if (modulus <= 0n || modulus > width) return NO_CONGRUENCE;
+  if (modulus <= 0n || modulus > width) return null;
   remainder = ((remainder % modulus) + modulus) % modulus;
   return Object.freeze({ remainder, modulus });
 }
@@ -117,6 +139,14 @@ function singletonValue(range) {
   return !isEmpty(range) && cardinality(range) === 1n ? range.lower : null;
 }
 
+function combinedFactStatus(left, right, exactStatus = 'conservative') {
+  const statuses = [left?.status, right?.status].filter((status) => status != null);
+  const invalid = statuses.find((status) => !VALID_FACT_STATUSES.has(status));
+  if (invalid != null) return invalid;
+  if (statuses.includes('conservative')) return 'conservative';
+  return exactStatus;
+}
+
 function maskFactsForConstant(mask, bits, operand) {
   const normalizedMask = asMask(mask, bits);
   const widthMaskValue = widthMask(bits);
@@ -132,20 +162,23 @@ function maskFactsForConstant(mask, bits, operand) {
   };
 }
 
+function deeplyFrozen(value, seen = new Set()) {
+  if (value == null || typeof value !== 'object') return true;
+  if (!Object.isFrozen(value)) return false;
+  if (seen.has(value)) return true;
+  seen.add(value);
+  return Object.keys(value).every((key) => deeplyFrozen(value[key], seen));
+}
+
 function immutableProvenance(provenance) {
-  if (!provenance || typeof provenance !== 'object') return Object.freeze({});
-  if (Object.isFrozen(provenance)) return provenance;
-  const copy = {};
-  for (const key of Object.keys(provenance).sort()) {
-    const value = provenance[key];
-    copy[key] = Array.isArray(value) ? Object.freeze([...value]) : value;
-  }
-  return Object.freeze(copy);
+  if (!provenance || typeof provenance !== 'object') return EMPTY_PROVENANCE;
+  if (deeplyFrozen(provenance)) return provenance;
+  return immutableEvidence(provenance);
 }
 
 function immutableEvidence(value) {
   if (value == null || typeof value !== 'object') return value;
-  if (Object.isFrozen(value)) return value;
+  if (deeplyFrozen(value)) return value;
   if (Array.isArray(value)) return Object.freeze(value.map((item) => immutableEvidence(item)));
   const copy = {};
   for (const key of Object.keys(value).sort()) copy[key] = immutableEvidence(value[key]);
@@ -154,7 +187,7 @@ function immutableEvidence(value) {
 
 function mergeProvenance(left, right) {
   if (left === right && left != null) return left;
-  if (left == null && right == null) return Object.freeze({});
+  if (left == null && right == null) return EMPTY_PROVENANCE;
   if (left == null) return immutableProvenance(right);
   if (right == null) return immutableProvenance(left);
   if (sameProvenance(left, right)) return left;
@@ -242,6 +275,18 @@ function shiftedPointerOffset(pointerOffset, delta) {
   }
 }
 
+function validPointerOffsetEvidence(pointerOffset) {
+  if (pointerOffset == null) return true;
+  if (typeof pointerOffset !== 'object' || Array.isArray(pointerOffset)) return false;
+  if (pointerOffset.baseId == null || pointerOffset.offset == null) return false;
+  try {
+    BigInt(pointerOffset.offset);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function validRangeShape(range) {
   if (range == null || !isSupportedWidth(range.bits)) return false;
   if (!['full', 'empty', 'interval', 'wrapped'].includes(range.kind)) return false;
@@ -272,23 +317,49 @@ export function factFromRange(range, options = {}) {
   }
   const bits = Number(range.bits);
   const mask = widthMask(bits);
-  let knownZero = asMask(options.knownZero, bits) & mask;
-  let knownOne = asMask(options.knownOne, bits) & mask;
+  const knownZeroEvidence = options.knownZero == null ? null : asMask(options.knownZero, bits) & mask;
+  const knownOneEvidence = options.knownOne == null ? null : asMask(options.knownOne, bits) & mask;
+  const maskEvidenceMalformed = !validMaskEvidence(options.knownZero) || !validMaskEvidence(options.knownOne);
+  let knownZero = knownZeroEvidence ?? 0n;
+  let knownOne = knownOneEvidence ?? 0n;
   let status = options.status ?? null;
   let reason = options.reason ?? null;
-  if ((knownZero & knownOne) !== 0n) {
+  if (maskEvidenceMalformed || (knownZero & knownOne) !== 0n) {
     knownZero = 0n;
     knownOne = 0n;
     status = 'malformed';
-    reason = reason ?? 'known-zero and known-one masks overlap';
+    reason = reason ?? (maskEvidenceMalformed ? 'malformed known-bit evidence' : 'known-zero and known-one masks overlap');
   }
   const value = singletonValue(range);
+  const singletonMaskConflict = value != null
+    && ((knownZeroEvidence != null && (knownZeroEvidence & value) !== 0n)
+      || (knownOneEvidence != null && (knownOneEvidence & (mask ^ value)) !== 0n));
+  if (singletonMaskConflict) {
+    status = 'malformed';
+    reason = reason ?? 'known-bit evidence conflicts with singleton range';
+  }
   if (value != null && options.deriveKnownBits !== false) {
     knownZero = mask ^ value;
     knownOne = value;
   }
   const alignmentCongruence = congruenceFromAlignment(options.alignment);
-  const requestedCongruence = options.congruence ?? alignmentCongruence;
+  const alignmentMalformed = options.alignment != null
+    && (alignmentCongruence == null || parseCongruenceValue(alignmentCongruence, bits) == null);
+  const congruenceMalformed = options.congruence != null
+    && parseCongruenceValue(options.congruence, bits) == null;
+  const pointerOffsetMalformed = !validPointerOffsetEvidence(options.pointerOffset);
+  const requestedCongruence = congruenceMalformed ? null : options.congruence ?? alignmentCongruence;
+  const requestedCongruenceValue = requestedCongruence == null ? null : parseCongruenceValue(requestedCongruence, bits);
+  const singletonCongruenceConflict = value != null && requestedCongruenceValue != null
+    && ((value - requestedCongruenceValue.remainder) % requestedCongruenceValue.modulus + requestedCongruenceValue.modulus)
+      % requestedCongruenceValue.modulus !== 0n;
+  if (alignmentMalformed || congruenceMalformed || pointerOffsetMalformed || singletonCongruenceConflict) {
+    status = 'malformed';
+    reason = reason ?? (alignmentMalformed ? 'malformed alignment evidence'
+      : congruenceMalformed ? 'malformed congruence evidence'
+        : pointerOffsetMalformed ? 'malformed pointer-offset evidence'
+          : 'congruence evidence conflicts with singleton range');
+  }
   const congruence = requestedCongruence == null && value != null
     ? Object.freeze({ remainder: value, modulus: 1n << BigInt(bits) })
     : normalizeCongruenceValue(requestedCongruence, bits);
@@ -308,8 +379,8 @@ export function factFromRange(range, options = {}) {
     knownZero,
     knownOne,
     congruence,
-    alignment: immutableEvidence(options.alignment ?? null),
-    pointerOffset: immutableEvidence(options.pointerOffset ?? null),
+    alignment: alignmentMalformed ? null : immutableEvidence(options.alignment ?? null),
+    pointerOffset: pointerOffsetMalformed ? null : immutableEvidence(options.pointerOffset ?? null),
     constant,
     status,
     reason,
@@ -342,12 +413,18 @@ export function sameFact(left, right) {
 }
 
 /** Sound union of two product facts. */
-export function joinFacts(left, right) {
+export function joinFacts(left, right, options = {}) {
   if (left == null) return right;
   if (right == null) return left;
   if (left.bits !== right.bits) return fullFact(Math.max(left.bits, right.bits), { reason: 'fact widths disagree' });
-  if (isEmpty(left.range)) return right;
-  if (isEmpty(right.range)) return left;
+  if (isEmpty(left.range)) {
+    if (!VALID_FACT_STATUSES.has(left.status)) return fullFact(left.bits, { status: left.status, reason: 'invalid empty fact' });
+    return right;
+  }
+  if (isEmpty(right.range)) {
+    if (!VALID_FACT_STATUSES.has(right.status)) return fullFact(right.bits, { status: right.status, reason: 'invalid empty fact' });
+    return left;
+  }
   const range = join(left.range, right.range);
   return factFromRange(range, {
     knownZero: left.knownZero & right.knownZero,
@@ -355,10 +432,10 @@ export function joinFacts(left, right) {
     congruence: commonCongruence(left.congruence, right.congruence, left.bits),
     alignment: left.alignment != null && right.alignment != null && sameEvidence(left.alignment, right.alignment) ? left.alignment : null,
     pointerOffset: left.pointerOffset != null && right.pointerOffset != null && sameEvidence(left.pointerOffset, right.pointerOffset) ? left.pointerOffset : null,
-    status: 'conservative',
+    status: combinedFactStatus(left, right),
     reason: left.reason === right.reason ? left.reason : 'joined scalar facts',
     deriveKnownBits: false,
-    provenance: mergeProvenance(left.provenance, right.provenance),
+    provenance: options.provenance === false ? null : mergeProvenance(left.provenance, right.provenance),
   });
 }
 
@@ -372,7 +449,7 @@ export function widenFacts(previous, next) {
     knownZero: previous.knownZero & next.knownZero,
     knownOne: previous.knownOne & next.knownOne,
     congruence: NO_CONGRUENCE,
-    status: 'conservative',
+    status: combinedFactStatus(previous, next),
     reason: 'product fact widened at bounded fixed point',
     deriveKnownBits: false,
     provenance: mergeProvenance(previous.provenance, next.provenance),
@@ -395,7 +472,7 @@ function constantFromFact(fact) {
 }
 
 /** Width-exact product-domain binary evaluation. */
-export function evaluateBinaryFact(operator, leftInput, rightInput) {
+export function evaluateBinaryFact(operator, leftInput, rightInput, options = {}) {
   const left = factInput(leftInput);
   const right = factInput(rightInput);
   const bits = Number(left?.bits ?? right?.bits ?? 0);
@@ -414,17 +491,19 @@ export function evaluateBinaryFact(operator, leftInput, rightInput) {
   let pointerOffset = null;
   const leftConstant = constantFromFact(left);
   const rightConstant = constantFromFact(right);
-  const comparison = new Set(['eq', 'ne', 'ult', 'ule', 'ugt', 'uge', 'slt', 'sle', 'sgt', 'sge', '=', '==', '!=', '<', '<=', '>', '>=']);
-  if (comparison.has(operator)) {
+  if (COMPARISON_OPERATORS.has(operator)) {
     if (left.bits !== right.bits) return fullFact(1, { status: 'malformed', reason: 'comparison operands have different widths' });
     if (leftConstant != null && rightConstant != null) {
       const folded = evaluateBinary(normalizedComparison(operator), bitvector(leftConstant, left.bits), bitvector(rightConstant, right.bits));
-      if (folded != null) return singletonFact(folded, { provenance: mergeProvenance(left.provenance, right.provenance) });
+      if (folded != null) return factFromRange(singleton(folded), {
+        status: combinedFactStatus(left, right, 'exact'),
+        provenance: options.provenance === false ? null : mergeProvenance(left.provenance, right.provenance),
+      });
     }
     return fullFact(1, {
       status: 'conservative',
       reason: `comparison ${operator} is not a proven singleton`,
-      provenance: mergeProvenance(left.provenance, right.provenance),
+      provenance: options.provenance === false ? null : mergeProvenance(left.provenance, right.provenance),
     });
   }
   const mask = widthMask(bits);
@@ -494,10 +573,10 @@ export function evaluateBinaryFact(operator, leftInput, rightInput) {
     congruence,
     alignment,
     pointerOffset,
-    status: combined.exact && cardinality(combined.range) === 1n ? 'exact' : 'conservative',
+    status: combinedFactStatus(left, right, combined.exact && cardinality(combined.range) === 1n ? 'exact' : 'conservative'),
     reason: combined.reason,
     deriveKnownBits: false,
-    provenance: mergeProvenance(left.provenance, right.provenance),
+    provenance: options.provenance === false ? null : mergeProvenance(left.provenance, right.provenance),
   });
 }
 
@@ -564,7 +643,7 @@ function castFact(factInputValue, toBits, cast) {
     knownZero,
     knownOne,
     congruence,
-    status: result.exact ? fact.status : 'conservative',
+    status: combinedFactStatus(fact, null, result.exact ? fact.status : 'conservative'),
     reason: result.reason,
     deriveKnownBits: false,
     provenance: fact.provenance,
@@ -589,13 +668,14 @@ function restrictFactToRange(factInputValue, targetRange, reason = 'edge refinem
     congruence: fact.congruence,
     alignment: fact.alignment,
     pointerOffset: fact.pointerOffset,
-    status: narrowed.kind === 'empty' ? 'conservative' : fact.status,
+    status: narrowed.kind === 'empty' ? combinedFactStatus(fact, null, 'conservative') : fact.status,
     reason,
     deriveKnownBits: narrowed.kind !== 'empty',
     provenance: fact.provenance,
   });
 }
 
+const COMPARISON_ALIASES = Object.freeze({ '=': 'eq', '==': 'eq', '!=': 'ne', '<': 'slt', '<=': 'sle', '>': 'sgt', '>=': 'sge' });
 const COMPARISON_NEGATIONS = Object.freeze({
   eq: 'ne', ne: 'eq', '=': 'ne', '!=': 'eq',
   ult: 'uge', ule: 'ugt', ugt: 'ule', uge: 'ult',
@@ -604,8 +684,7 @@ const COMPARISON_NEGATIONS = Object.freeze({
 });
 
 function normalizedComparison(operator) {
-  const aliases = { '=': 'eq', '==': 'eq', '!=': 'ne', '<': 'slt', '<=': 'sle', '>': 'sgt', '>=': 'sge' };
-  return aliases[operator] ?? operator;
+  return COMPARISON_ALIASES[operator] ?? operator;
 }
 
 function compareConstantValues(operator, left, right, bits) {
@@ -835,7 +914,13 @@ export function evaluateBinaryRange(operator, left, right) {
 export function zeroExtendRange(range, toBits) {
   if (!isSupportedWidth(toBits) || toBits < range.bits) return { range: fullRange(toBits), exact: false, reason: 'invalid extension width' };
   if (isEmpty(range)) return { range: emptyRange(toBits), exact: true, reason: null };
-  if (range.kind === 'wrapped' || isFull(range)) {
+  if (isFull(range)) {
+    // Every source bit pattern zero-extends into one contiguous target
+    // interval.  Treating `full` like a wrapped range needlessly discards a
+    // proof that remains exactly representable at the wider width.
+    return { range: rangeOf(0n, maxUnsigned(range.bits), toBits), exact: true, reason: null };
+  }
+  if (range.kind === 'wrapped') {
     // A wrapped source range becomes two disjoint intervals once extended, which
     // this domain cannot represent. The bound that is still true is the source
     // width's maximum.

@@ -113,10 +113,17 @@ function valueProvenance(value) {
     ...(Array.isArray(value?.origin?.instructionIds) ? value.origin.instructionIds : []),
     ...(Array.isArray(value?.def?.origin?.instructionIds) ? value.def.origin.instructionIds : []),
   ];
+  const inputValueIds = [
+    ...(Array.isArray(value?.def?.args) ? value.def.args.map((argument) => argument?.value?.id) : []),
+    ...(Array.isArray(value?.def?.incoming) ? value.def.incoming.map((incoming) => incoming?.value?.id) : []),
+  ].filter((id) => id != null).sort((left, right) => Number(left) - Number(right));
   const provenance = Object.freeze({
     valueId: value?.id ?? null,
     definitionBlock: value?.def?.block ?? null,
     instructionIds: Object.freeze([...new Set(ids)].sort()),
+    inputValueIds: Object.freeze([...new Set(inputValueIds)]),
+    operation: value?.def?.op ?? null,
+    operator: value?.def?.sub ?? null,
   });
   if (value != null && typeof value === 'object') VALUE_PROVENANCE_CACHE.set(value, provenance);
   return provenance;
@@ -125,9 +132,21 @@ function valueProvenance(value) {
 function attachValueProvenance(fact, value) {
   if (fact == null) return fact;
   const prior = fact.provenance ?? {};
+  const own = valueProvenance(value);
+  if (Object.keys(prior).length === 0) {
+    return Object.freeze({
+      ...fact,
+      valueId: value?.id ?? fact.valueId ?? null,
+      provenance: own,
+    });
+  }
   const instructionIds = [
     ...(Array.isArray(prior.instructionIds) ? prior.instructionIds : []),
-    ...valueProvenance(value).instructionIds,
+    ...own.instructionIds,
+  ];
+  const inputValueIds = [
+    ...(Array.isArray(prior.inputValueIds) ? prior.inputValueIds : []),
+    ...own.inputValueIds,
   ];
   return Object.freeze({
     ...fact,
@@ -137,6 +156,9 @@ function attachValueProvenance(fact, value) {
       valueId: value?.id ?? fact.valueId ?? null,
       definitionBlock: value?.def?.block ?? prior.definitionBlock ?? null,
       instructionIds: Object.freeze([...new Set(instructionIds)].sort()),
+      inputValueIds: Object.freeze([...new Set(inputValueIds)].sort((left, right) => Number(left) - Number(right))),
+      operation: own.operation ?? prior.operation ?? null,
+      operator: own.operator ?? prior.operator ?? null,
     }),
   });
 }
@@ -220,7 +242,7 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
     if (known != null) return known;
     const range = ranges.get(value.id);
     const bits = widthOf(value);
-    return range == null || bits == null ? null : factFromRange(range, { valueId: value.id, provenance: valueProvenance(value) });
+    return range == null || bits == null ? null : factFromRange(range, { valueId: value.id });
   };
   const rangeOfValue = (value) => {
     if (value == null) return null;
@@ -232,8 +254,48 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
     return bits == null ? null : fullRange(bits);
   };
 
+  // Worklists are queues, not stacks.  Keeping a cursor avoids O(n) Array.shift
+  // churn on loop-heavy functions, while the pending sets collapse the many
+  // duplicate notifications produced when one fact change fans out to several
+  // uses.  A queued value is always evaluated after the latest predecessor
+  // update, so coalescing notifications does not skip a fixed-point step.
   const valueWorklist = [];
+  let valueWorkHead = 0;
+  const pendingValues = new Set();
+  const enqueueValue = (valueId) => {
+    if (valueId == null || pendingValues.has(valueId)) return;
+    pendingValues.add(valueId);
+    valueWorklist.push(valueId);
+  };
+  const hasValueWork = () => valueWorkHead < valueWorklist.length;
+  const takeValue = () => {
+    const valueId = valueWorklist[valueWorkHead++];
+    pendingValues.delete(valueId);
+    if (valueWorkHead > 1024 && valueWorkHead * 2 >= valueWorklist.length) {
+      valueWorklist.splice(0, valueWorkHead);
+      valueWorkHead = 0;
+    }
+    return valueId;
+  };
+
   const blockWorklist = [];
+  let blockWorkHead = 0;
+  const pendingBlocks = new Set();
+  const enqueueBlock = (blockIndex) => {
+    if (blockIndex == null || pendingBlocks.has(blockIndex)) return;
+    pendingBlocks.add(blockIndex);
+    blockWorklist.push(blockIndex);
+  };
+  const hasBlockWork = () => blockWorkHead < blockWorklist.length;
+  const takeBlock = () => {
+    const blockIndex = blockWorklist[blockWorkHead++];
+    pendingBlocks.delete(blockIndex);
+    if (blockWorkHead > 1024 && blockWorkHead * 2 >= blockWorklist.length) {
+      blockWorklist.splice(0, blockWorkHead);
+      blockWorkHead = 0;
+    }
+    return blockIndex;
+  };
 
   function markEdge(from, to, kind) {
     const key = `${from}->${to}:${kind}`;
@@ -243,18 +305,18 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
     executablePredecessors.get(to).add(from);
     if (!executableBlocks.has(to)) {
       executableBlocks.add(to);
-      blockWorklist.push(to);
+      enqueueBlock(to);
     } else {
       // The block was already reachable, but a new incoming edge changes every
       // phi in it: a predecessor that used to contribute nothing now does.
-      for (const phi of blockByIndex.get(to)?.phis ?? []) if (phi?.dst?.id != null) valueWorklist.push(phi.dst.id);
+      for (const phi of blockByIndex.get(to)?.phis ?? []) if (phi?.dst?.id != null) enqueueValue(phi.dst.id);
     }
   }
 
   function setCell(valueId, proposed, proposedRange, proposedFact = null) {
     const previous = cells.get(valueId) ?? TOP;
     const previousFact = facts.get(valueId) ?? (ranges.get(valueId)
-      ? factFromRange(ranges.get(valueId), { valueId, provenance: valueProvenance(valueById.get(valueId)) })
+      ? factFromRange(ranges.get(valueId), { valueId })
       : null);
     const previousRange = previousFact?.range ?? ranges.get(valueId) ?? null;
     const seen = (visits.get(valueId) ?? 0) + 1;
@@ -270,14 +332,14 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
     // Product facts ascend by union for the same reason: a monotone chain plus
     // widening is what bounds convergence. The compatibility range is derived
     // from this one product, never maintained as a second truth.
-    let candidateFact = proposedFact ?? (proposedRange == null ? null : factFromRange(proposedRange, {
-      valueId,
-      provenance: valueProvenance(valueById.get(valueId)),
-    }));
+    let candidateFact = proposedFact ?? (proposedRange == null ? null : factFromRange(proposedRange, { valueId }));
     if (candidateFact != null && candidateFact.valueId !== valueId) candidateFact = Object.freeze({ ...candidateFact, valueId });
     let effectiveFact = candidateFact;
     if (previousFact != null && candidateFact != null && previousFact.bits === candidateFact.bits) {
-      effectiveFact = joinFacts(previousFact, candidateFact);
+      // Provenance is attached once, when a changed fact is committed below;
+      // keeping it out of the lattice join avoids repeatedly unioning origin
+      // arrays while a loop revisits a scalar value.
+      effectiveFact = joinFacts(previousFact, candidateFact, { provenance: false });
       if (!sameFact(previousFact, effectiveFact) && seen > limits.maxVisitsPerValue) {
         // A value that keeps moving is widened rather than chased; the
         // alternative is a fixed point that exists in theory and not inside a
@@ -288,6 +350,9 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
       if (effectiveFact.valueId !== valueId) effectiveFact = Object.freeze({ ...effectiveFact, valueId });
     }
     const effectiveRange = effectiveFact?.range ?? proposedRange;
+    if (effectiveFact != null) {
+      effectiveFact = attachValueProvenance(effectiveFact, valueById.get(valueId));
+    }
 
     // Two cells are equal when the state matches and either both carry no
     // constant or they carry the same one. `sameBitvector(null, null)` is false
@@ -306,7 +371,7 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
     if (effectiveFact != null) facts.set(valueId, effectiveFact);
     for (const use of valueById.get(valueId)?.uses ?? []) {
       const target = use?.dst?.id ?? use?.id;
-      if (target != null) valueWorklist.push(target);
+      if (target != null) enqueueValue(target);
     }
     // A use list that does not cover phis in successor blocks would leave a phi
     // stale, so successors' phis are re-queued explicitly.
@@ -314,7 +379,7 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
     const block = definition?.block;
     if (block != null) {
       for (const successor of blockByIndex.get(block)?.succ ?? []) {
-        for (const phi of blockByIndex.get(successor)?.phis ?? []) if (phi?.dst?.id != null) valueWorklist.push(phi.dst.id);
+        for (const phi of blockByIndex.get(successor)?.phis ?? []) if (phi?.dst?.id != null) enqueueValue(phi.dst.id);
       }
     }
   }
@@ -339,11 +404,10 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
       cell = meet(cell, cellOf(source));
       const sourceFact = factOfValue(source);
       const sourceRange = sourceFact?.range ?? rangeOfValue(source);
-      if (bits != null && sourceFact != null && sourceFact.bits === bits) fact = joinFacts(fact, sourceFact);
+      if (bits != null && sourceFact != null && sourceFact.bits === bits) fact = joinFacts(fact, sourceFact, { provenance: false });
       else if (bits != null && sourceRange != null && sourceRange.bits === bits) fact = joinFacts(fact, factFromRange(sourceRange, {
         valueId: value.id,
-        provenance: valueProvenance(source),
-      }));
+      }), { provenance: false });
       else if (bits != null) fact = fullFact(bits, { valueId: value.id, reason: 'phi incoming width disagrees' });
     }
     range = fact?.range ?? range;
@@ -394,7 +458,6 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
         ? sourceFact
         : factFromRange(sourceRange && sourceRange.bits === bits ? sourceRange : fullRange(bits), {
           valueId: value.id,
-          provenance: valueProvenance(source),
         });
       return { cell, range: copiedFact.range, fact: Object.freeze({ ...copiedFact, valueId: value.id }) };
     }
@@ -412,7 +475,6 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
       if (sourceRange == null) return { cell: overdefined('cast source has no range'), range: fullRange(bits) };
       const sourceFact = factOfValue(source) ?? factFromRange(sourceRange, {
         valueId: source?.id ?? null,
-        provenance: valueProvenance(source),
       });
       const castedFact = shape.operator === 'trunc' ? truncateFact(sourceFact, bits)
         : shape.operator === 'zext' ? zeroExtendFact(sourceFact, bits)
@@ -445,7 +507,6 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
         if (sourceRange != null) {
           const sourceFact = factOfValue(operands[0]) ?? factFromRange(sourceRange, {
             valueId: operands[0]?.id ?? null,
-            provenance: valueProvenance(operands[0]),
           });
           const castedFact = signExtendFact(sourceFact, bits);
           return { cell: overdefined('operand is not constant'), range: castedFact.range, fact: Object.freeze({ ...castedFact, valueId: value.id }) };
@@ -478,12 +539,10 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
       const combined = evaluateBinaryFact(shape.operator,
         leftFact ?? factFromRange(leftRange, {
           valueId: operands[0]?.id ?? null,
-          provenance: valueProvenance(operands[0]),
         }),
         rightFact ?? factFromRange(rightRange, {
           valueId: operands[1]?.id ?? null,
-          provenance: valueProvenance(operands[1]),
-        }));
+        }), { provenance: false });
       return {
         cell: overdefined(`operands of ${shape.operator} are not both constant`),
         range: combined.range.bits === bits ? combined.range : fullRange(bits),
@@ -523,7 +582,6 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
             ? Object.freeze({ ...chosenFact, valueId: value.id })
             : factFromRange(chosenRange && chosenRange.bits === bits ? chosenRange : fullRange(bits), {
               valueId: value.id,
-              provenance: valueProvenance(chosenValue),
             });
           return { cell: chosen, range: resultFact.range, fact: resultFact };
         }
@@ -533,7 +591,7 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
       return {
         cell: meet(operandCells[1] ?? overdefined('select arm missing'), operandCells[2] ?? overdefined('select arm missing')),
         range: armRanges.length === 2 ? join(armRanges[0], armRanges[1]) : fullRange(bits),
-        fact: armFacts.length === 2 ? Object.freeze({ ...joinFacts(armFacts[0], armFacts[1]), valueId: value.id }) : fullFact(bits, { valueId: value.id, reason: 'select arm fact missing' }),
+        fact: armFacts.length === 2 ? Object.freeze({ ...joinFacts(armFacts[0], armFacts[1], { provenance: false }), valueId: value.id }) : fullFact(bits, { valueId: value.id, reason: 'select arm fact missing' }),
       };
     }
 
@@ -543,13 +601,12 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
   function evaluate(value) {
     const result = evaluateValue(value);
     if (result == null || result.range == null) return result;
-    if (result.fact != null) return { ...result, fact: attachValueProvenance(result.fact, value) };
+    if (result.fact != null) return result;
     return {
       ...result,
       fact: factFromRange(result.range, {
         valueId: value.id,
         reason: result.cell?.reason,
-        provenance: valueProvenance(value),
       }),
     };
   }
@@ -596,11 +653,9 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
     return refineComparisonFacts(definition.sub,
           factOfValue(operands[0]) ?? factFromRange(rangeOfValue(operands[0]), {
             valueId: operands[0]?.id ?? null,
-            provenance: valueProvenance(operands[0]),
           }),
       factOfValue(operands[1]) ?? factFromRange(rangeOfValue(operands[1]), {
         valueId: operands[1]?.id ?? null,
-        provenance: valueProvenance(operands[1]),
       }),
       truth);
   }
@@ -798,7 +853,7 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
   const entry = blocks.find((block) => block.isEntry) ?? blocks[0];
   if (entry != null) {
     executableBlocks.add(entry.index);
-    blockWorklist.push(entry.index);
+    enqueueBlock(entry.index);
   }
 
   const aborted = () => {
@@ -806,35 +861,40 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
     catch { return true; }
   };
 
-  while ((blockWorklist.length > 0 || valueWorklist.length > 0) && !budgetExhausted) {
+  while ((hasBlockWork() || hasValueWork()) && !budgetExhausted) {
     if (work >= limits.maxWorkItems || aborted()) { budgetExhausted = true; break; }
     work += 1;
 
-    if (blockWorklist.length > 0) {
-      const index = blockWorklist.shift();
+    if (hasBlockWork()) {
+      const index = takeBlock();
       const block = blockByIndex.get(index);
       if (!block) continue;
-      for (const phi of block.phis ?? []) if (phi?.dst?.id != null) valueWorklist.push(phi.dst.id);
+      for (const phi of block.phis ?? []) if (phi?.dst?.id != null) enqueueValue(phi.dst.id);
       for (const instruction of block.insts ?? []) {
         const destination = instruction?.dst;
-        if (destination?.id != null) valueWorklist.push(destination.id);
+        if (destination?.id != null) enqueueValue(destination.id);
         // The branch condition is an operand, not a destination. If it is
         // defined in another executable block it has a cell already; queueing it
         // here costs one evaluation and removes the ordering dependency.
-        if (instruction?.op === 'cbr' && instruction.conditionValue?.id != null) valueWorklist.push(instruction.conditionValue.id);
+        if (instruction?.op === 'cbr' && instruction.conditionValue?.id != null) enqueueValue(instruction.conditionValue.id);
       }
       processTerminator(block);
       continue;
     }
 
-    const valueId = valueWorklist.shift();
+    const valueId = takeValue();
     const value = valueById.get(valueId);
     if (!value) continue;
     const definitionBlock = value.def?.block;
     // A value defined in a block nobody can reach has no meaning yet.
     if (definitionBlock != null && !executableBlocks.has(definitionBlock)) continue;
-    const { cell, range } = evaluate(value);
-    setCell(valueId, cell, range);
+    const evaluated = evaluate(value);
+    const { cell, range } = evaluated;
+    // Keep the complete product returned by the canonical range owner.  The
+    // compatibility range is only one projection; dropping `fact` here would
+    // silently discard known bits, congruence, alignment, and pointer-offset
+    // evidence before publication.
+    setCell(valueId, cell, range, evaluated.fact);
     // Folding a branch condition can make an edge executable, so exactly the
     // terminators this value decides are reconsidered — not every terminator.
     for (const owner of conditionOwners.get(valueId) ?? []) {
