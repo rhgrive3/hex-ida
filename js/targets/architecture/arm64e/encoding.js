@@ -25,6 +25,36 @@ function operandList(decoded) {
   return String(text || '').split(',').map((part) => part.trim()).filter(Boolean);
 }
 
+function normalizeRegisterIdentity(raw) {
+  if (raw == null || (typeof raw !== 'string' && typeof raw !== 'number')) return null;
+  let text = String(raw).trim().toLowerCase().replace(/^%/, '');
+  if (text === 'lr') text = 'x30';
+  if (text === 'fp') text = 'x29';
+  if (text === 'sp' || text === 'xzr') return text;
+  if (/^x(?:[0-9]|[12][0-9]|30)$/.test(text)) return text;
+  return null;
+}
+
+function structuredRegisterIdentity(operand) {
+  if (operand?.k !== 'reg') return null;
+  if (operand.cls === 'sp') return 'sp';
+  if (operand.cls === 'zr') return 'xzr';
+  if (operand.cls === 'gp' && Number.isInteger(operand.num) && operand.num >= 0 && operand.num <= 30) return `x${operand.num}`;
+  return null;
+}
+
+function selectedPresentationRegisterIdentity(operand) {
+  if (!operand || typeof operand !== 'object' || Array.isArray(operand)) return { present:false, identity:null };
+  const raw = operand.registerId
+    ?? operand.register
+    ?? operand.reg
+    ?? operand.name
+    ?? operand.text
+    ?? operand.value?.registerId
+    ?? operand.value?.reg;
+  return { present:raw != null, identity:normalizeRegisterIdentity(raw) };
+}
+
 function registerClassOf(operand) {
   if (operand == null) return null;
   if (operand && typeof operand === 'object' && !Array.isArray(operand)) {
@@ -34,6 +64,11 @@ function registerClassOf(operand) {
       ?? operand.value?.bits
       ?? operand.value?.widthBits;
     if (explicitWidth != null && Number(explicitWidth) !== 64) return null;
+    const structuredIdentity = structuredRegisterIdentity(operand);
+    if (structuredIdentity != null) {
+      const presented = selectedPresentationRegisterIdentity(operand);
+      if (presented.present && presented.identity !== structuredIdentity) return null;
+    }
     if (operand.k === 'reg' && operand.cls === 'sp') return 'sp';
     if (operand.k === 'reg' && operand.cls === 'zr') return 'zr';
     if (operand.k === 'reg' && operand.cls === 'gp' && Number.isInteger(operand.num) && operand.num >= 0 && operand.num <= 30) return 'x';
@@ -42,13 +77,10 @@ function registerClassOf(operand) {
   const raw = typeof operand === 'string'
     ? operand
     : operand.registerId ?? operand.register ?? operand.reg ?? operand.name ?? operand.text ?? operand.value?.registerId ?? operand.value?.reg;
-  if (raw == null || (typeof raw !== 'string' && typeof raw !== 'number')) return null;
-  let text = String(raw).trim().toLowerCase().replace(/^%/, '');
-  if (text === 'lr') text = 'x30';
-  if (text === 'fp') text = 'x29';
-  if (text === 'sp') return 'sp';
-  if (text === 'xzr') return 'zr';
-  if (/^x(?:[0-9]|[12][0-9]|30)$/.test(text)) return 'x';
+  const identity = normalizeRegisterIdentity(raw);
+  if (identity === 'sp') return 'sp';
+  if (identity === 'xzr') return 'zr';
+  if (identity != null) return 'x';
   return null;
 }
 
