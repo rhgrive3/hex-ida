@@ -51,6 +51,9 @@ export function singleton(constant) {
 
 const NO_CONGRUENCE = Object.freeze({ remainder: 0n, modulus: 1n });
 const EMPTY_PROVENANCE = Object.freeze({});
+const DEEPLY_FROZEN_CACHE = new WeakMap();
+const ACYCLIC_EVIDENCE_CACHE = new WeakMap();
+const EVIDENCE_FIELDS = Object.freeze(['knownZero', 'knownOne', 'congruence', 'alignment', 'pointerOffset', 'provenance']);
 const COMPARISON_OPERATORS = new Set(['eq', 'ne', 'ult', 'ule', 'ugt', 'uge', 'slt', 'sle', 'sgt', 'sge', '=', '==', '!=', '<', '<=', '>', '>=']);
 const VALID_FACT_STATUSES = new Set(['exact', 'conservative']);
 
@@ -173,6 +176,7 @@ function maskFactsForConstant(mask, bits, operand) {
 
 function deeplyFrozen(value, seen = new Set()) {
   if (value == null || typeof value !== 'object') return true;
+  if (DEEPLY_FROZEN_CACHE.get(value) === true) return true;
   if (!Object.isFrozen(value)) return false;
   if (seen.has(value)) return false;
   seen.add(value);
@@ -183,6 +187,7 @@ function deeplyFrozen(value, seen = new Set()) {
     result = false;
   }
   seen.delete(value);
+  if (result) DEEPLY_FROZEN_CACHE.set(value, true);
   return result;
 }
 
@@ -220,6 +225,8 @@ function immutableEvidenceWithSeen(value, seen) {
 /** Returns false for a cyclic or hostile evidence object without recursing. */
 function acyclicEvidence(root) {
   if (root == null || typeof root !== 'object') return true;
+  const cached = ACYCLIC_EVIDENCE_CACHE.get(root);
+  if (cached != null) return cached;
   const active = new Set();
   const visited = new Set();
   const stack = [{ value: root, exit: false }];
@@ -239,10 +246,17 @@ function acyclicEvidence(root) {
       stack.push({ value, exit: true });
       for (const key of Object.keys(value)) stack.push({ value: value[key], exit: false });
     }
+    // A positive cache entry is safe only for a deeply frozen graph; otherwise
+    // a caller could mutate a nested evidence object into a cycle later.
+    if (deeplyFrozen(root)) ACYCLIC_EVIDENCE_CACHE.set(root, true);
     return true;
   } catch {
     return false;
   }
+}
+
+function evidenceIsAcyclic(options) {
+  return EVIDENCE_FIELDS.every((field) => acyclicEvidence(options?.[field]));
 }
 
 function mergeProvenance(left, right) {
@@ -376,8 +390,10 @@ export function factFromRange(range, options = {}) {
     options = { ...options, status: 'malformed', reason: options.reason ?? 'malformed range' };
   }
   const bits = Number(range.bits);
+  const hasEvidence = EVIDENCE_FIELDS.some((field) => options[field] != null);
+  if (!hasEvidence) return simpleFactFromRange(range, options, bits);
   const mask = widthMask(bits);
-  const cyclicEvidence = !acyclicEvidence(options);
+  const cyclicEvidence = !evidenceIsAcyclic(options);
   const parsedKnownZero = cyclicEvidence ? { value: null, malformed: true } : parseBoundedMaskEvidence(options.knownZero, bits);
   const parsedKnownOne = cyclicEvidence ? { value: null, malformed: true } : parseBoundedMaskEvidence(options.knownOne, bits);
   const knownZeroEvidence = parsedKnownZero.value;
@@ -389,7 +405,8 @@ export function factFromRange(range, options = {}) {
   let reason = options.reason ?? null;
   const masksOverlap = knownZeroEvidence != null && knownOneEvidence != null
     && (knownZeroEvidence & knownOneEvidence) !== 0n;
-  const masksHaveNoCommonValue = !maskEvidenceMalformed
+  const masksHaveNoCommonValue = (knownZeroEvidence != null || knownOneEvidence != null)
+    && !maskEvidenceMalformed
     && !masksOverlap
     && !rangeHasMaskValue(range, knownZero, knownOne);
   if (cyclicEvidence || maskEvidenceMalformed || masksOverlap || masksHaveNoCommonValue) {
@@ -690,9 +707,14 @@ function rangeSegments(range) {
  */
 function rangeHasMaskValue(range, knownZero, knownOne) {
   if (isEmpty(range)) return true;
+  // Every non-overlapping mask assignment has a witness in the full machine
+  // domain. This is the common conservative fact and avoids a bit-DP walk on
+  // every unconstrained SCCP value.
+  if (isFull(range)) return true;
   const bits = Number(range.bits);
   const mask = widthMask(bits);
   const fixed = (knownZero | knownOne) & mask;
+  if (fixed === 0n) return true;
   const choose = (lower, upper) => {
     const memo = new Map();
     const solve = (bit, tight) => {
@@ -745,12 +767,36 @@ function rangeHasMaskAndCongruenceValue(range, knownZero, knownOne, congruence) 
   // rejected before the range search so an overlap cannot be silently resolved
   // in favour of known-one bits.
   if ((knownZero & residue) !== 0n || (knownOne & (residueMask ^ residue)) !== 0n) return false;
+  if (isFull(range)) return true;
   return rangeHasMaskValue(range, knownZero | (residueMask ^ residue), knownOne | residue);
 }
 
 function rangeContainsRange(container, member) {
   return rangeSegments(member).every(([memberLower, memberUpper]) => rangeSegments(container)
     .some(([containerLower, containerUpper]) => containerLower <= memberLower && memberUpper <= containerUpper));
+}
+
+function simpleFactFromRange(range, options, bits) {
+  const mask = widthMask(bits);
+  const value = singletonValue(range);
+  const status = options.status ?? (value == null ? 'conservative' : 'exact');
+  let reason = options.reason ?? null;
+  if (isFull(range) && reason == null) reason = 'unconstrained';
+  const finalStatus = isEmpty(range) && status === 'exact' ? 'conservative' : status;
+  return Object.freeze({
+    valueId: options.valueId ?? null,
+    bits,
+    range,
+    knownZero: value != null && options.deriveKnownBits !== false ? mask ^ value : 0n,
+    knownOne: value != null && options.deriveKnownBits !== false ? value : 0n,
+    congruence: value == null ? NO_CONGRUENCE : Object.freeze({ remainder: value, modulus: 1n << BigInt(bits) }),
+    alignment: null,
+    pointerOffset: null,
+    constant: value == null || !['exact', 'conservative'].includes(finalStatus) ? null : bitvector(value, bits),
+    status: finalStatus,
+    reason,
+    provenance: EMPTY_PROVENANCE,
+  });
 }
 
 function rangeFromSegments(segments, bits) {

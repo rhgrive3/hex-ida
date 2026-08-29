@@ -119,6 +119,12 @@ export function canonicalAnalysisIdentity(context = {}) {
     values: seededSsa?.values ?? [],
     origin: seededOrigins?.functionOrigin ?? null,
   } : null);
+  // The vertical resolves this once against the canonical IR and passes the
+  // result through its private context.  Recomputing the full shape digest in
+  // SCCP, GVN and induction is needlessly expensive on the corpus hot path;
+  // only accept the cache when it is tied to the exact same IR object.
+  const cached = context?.__phase8CanonicalIdentity;
+  if (cached?.ir != null && cached.ir === ir && cached.result != null) return cached.result;
   const source = sourceIdentity(context, ir);
   if (explicitlyMissingIdentity(context, ir)) return { identity: null, valid: false, reason: 'analysis identity is null' };
   if (source != null && (typeof source !== 'object' || Array.isArray(source))) {

@@ -20,6 +20,7 @@
 import { stableDigest } from '../../core/identity/index.js';
 
 import { PHASE8_CONTRACT_VERSION, PASS_STAGES, createPassResult } from './contract.js';
+import { canonicalAnalysisIdentity } from './analysis-identity.js';
 import { IDENTITY_PASS, identityPassObservation, runIdentityPass } from './identity-pass.js';
 import { commitAnalysisState, forkAnalysisState, runPassTransaction, seedAnalysisState } from './transaction.js';
 import { SCCP_PASS, runSccpPass } from './sccp.js';
@@ -268,7 +269,16 @@ export function runPhase8Vertical(context = {}, budget = {}) {
       analysis: authoritative,
     };
   }
-  const passContext = { ...context, analysis };
+  const canonicalIdentity = canonicalAnalysisIdentity({ ...context, analysis: authoritative });
+  const passContext = {
+    ...context,
+    analysis,
+    // Keep the validation boundary shared by all consumers, while avoiding a
+    // repeated whole-IR digest in each scalar pass. The helper verifies the IR
+    // object identity before using this private cache.
+    __phase8CanonicalIdentity: context.ir == null
+      ? null : { ir: context.ir, result: canonicalIdentity },
+  };
   const results = [];
   const timings = [];
   const observations = {};
@@ -314,7 +324,15 @@ export function runPhase8Vertical(context = {}, budget = {}) {
       };
     }
 
-    if (outcome.result.completeness !== 'complete' || outcome.result.status === 'degraded') {
+    // Provider failures are intentionally local to the optional refinement
+    // layer. Their partial providerHints artifact is useful audit evidence and
+    // must not withhold the complete generic result. Other incomplete passes
+    // still discard the private vertical, so budget/cancel/truncation cannot
+    // publish a mixed or partial optimizer set.
+    const providerPartial = pass.descriptor.id === 'phase8.providers'
+      && outcome.result.status === 'changed'
+      && outcome.result.completeness === 'partial';
+    if (!providerPartial && (outcome.result.completeness !== 'complete' || outcome.result.status === 'degraded')) {
       return {
         ledger: withheldLedger('cancelled', `pass-incomplete:${pass.descriptor.id}`, [{
           severity: 'warning',
