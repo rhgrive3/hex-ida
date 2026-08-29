@@ -73,6 +73,7 @@ jobs:
               tools/validation/phase11/*|\
               tools/validation/phase12/*|\
               tools/validation/rebuild-independent-oracle.mjs|\
+              .github/workflows/stage2-nonphysical-closure.yml|\
               package.json|package-lock.json)
                 required=true
                 break
@@ -92,15 +93,27 @@ jobs:
           node-version: 22
           cache: npm
 
-      - name: Install active native proof providers
+      - name: Bootstrap native providers and npm dependencies concurrently
         if: steps.impact.outputs.required == 'true'
+        shell: bash
         run: |
-          sudo apt-get update
-          sudo apt-get install -y clang-18 lld-18 llvm-18 lldb-18 qemu-user
-
-      - name: Install dependencies
-        if: steps.impact.outputs.required == 'true'
-        run: npm ci --no-audit --no-fund
+          set -euo pipefail
+          ensure_native() {
+            if command -v clang-18 >/dev/null && command -v ld.lld-18 >/dev/null && \
+               command -v llvm-objdump-18 >/dev/null && command -v lldb-18 >/dev/null && \
+               command -v qemu-aarch64 >/dev/null; then
+              echo "Frozen native proof providers already present; skipping apt."
+              return 0
+            fi
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends clang-18 lld-18 llvm-18 lldb-18 qemu-user
+          }
+          ensure_native & native_pid=$!
+          npm ci --no-audit --no-fund & npm_pid=$!
+          status=0
+          wait "$native_pid" || status=1
+          wait "$npm_pid" || status=1
+          exit "$status"
 
       - name: Assert exact candidate identity
         if: steps.impact.outputs.required == 'true'
