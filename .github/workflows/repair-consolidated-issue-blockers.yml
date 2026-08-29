@@ -1,0 +1,326 @@
+name: Repair consolidated issue blockers
+
+on:
+  push:
+    branches:
+      - integration/all-open-prs-20260829
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Patch blocking issue closures
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          def replace(path, old, new):
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{path}: expected one match, got {count}')
+              p.write_text(text.replace(old, new))
+
+          # #2411: present-but-malformed identity is invalid evidence, not absence.
+          replace('js/analysis/alias/regions-v2.js',
+          """function strictNonEmptyString(value) {
+            if (typeof value !== 'string') return null;
+            const text = value.trim();
+            return text || null;
+          }
+          """,
+          """function strictNonEmptyString(value) {
+            if (typeof value !== 'string') return null;
+            const text = value.trim();
+            return text || null;
+          }
+
+          function optionalIdentityString(value, label) {
+            if (value == null) return null;
+            const text = strictNonEmptyString(value);
+            if (!text) throw new TypeError(`alias-region-invalid-${label}`);
+            return text;
+          }
+          """)
+
+          replace('js/analysis/alias/regions-v2.js',
+          """function uniqueBinaryId(origin, explicit) {
+            const direct = strictNonEmptyString(explicit);
+            if (direct) return direct;
+            const ids = new Set((origin?.byteRanges ?? []).map((range) => strictNonEmptyString(range.binaryId)).filter(Boolean));
+            return ids.size === 1 ? [...ids][0] : null;
+          }
+          """,
+          """function uniqueBinaryId(origin, explicit) {
+            const direct = optionalIdentityString(explicit, 'binary-id');
+            if (direct) return direct;
+            const ids = new Set();
+            for (const range of origin?.byteRanges ?? []) {
+              if (range?.binaryId == null) continue;
+              ids.add(optionalIdentityString(range.binaryId, 'binary-id'));
+            }
+            return ids.size === 1 ? [...ids][0] : null;
+          }
+          """)
+
+          replace('js/analysis/alias/regions-v2.js',
+                  "  const kind = nonEmpty(descriptor.kind);",
+                  "  const kind = optionalIdentityString(descriptor.kind, 'kind');")
+          replace('js/analysis/alias/regions-v2.js',
+          """    sourceEntityId: strictNonEmptyString(sourceEntityId),
+              addressValueId: strictNonEmptyString(addressValueId),
+              addressSpace: nonEmpty(addressSpace),""",
+          """    sourceEntityId: optionalIdentityString(sourceEntityId, 'source-entity-id'),
+              addressValueId: optionalIdentityString(addressValueId, 'address-value-id'),
+              addressSpace: optionalIdentityString(addressSpace, 'address-space'),""")
+          replace('js/analysis/alias/regions-v2.js',
+                  "    const rootEntityId = strictNonEmptyString(descriptor.rootEntityId ?? descriptor.rootId);",
+                  "    const rootEntityId = optionalIdentityString(descriptor.rootEntityId ?? descriptor.rootId, 'root-entity-id');")
+          replace('js/analysis/alias/regions-v2.js',
+                  "    const explicitSpace = nonEmpty(descriptor.addressSpace ?? addressSpace);",
+                  "    const explicitSpace = optionalIdentityString(descriptor.addressSpace ?? addressSpace, 'address-space');")
+          replace('js/analysis/alias/regions-v2.js',
+          """  const functionId = strictNonEmptyString(input.functionId);
+            const binaryId = uniqueBinaryId(origin, input.binaryId);
+            const widthBits = Number(memory.widthBits ?? input.widthBits);
+            const addressSpace = nonEmpty(memory.addressSpace ?? input.addressSpace);
+            const addressValueId = strictNonEmptyString(memory.addressExpr?.valueId ?? input.addressValueId);""",
+          """  const functionId = optionalIdentityString(input.functionId, 'function-id');
+            const binaryId = uniqueBinaryId(origin, input.binaryId);
+            const widthBits = Number(memory.widthBits ?? input.widthBits);
+            const addressSpace = optionalIdentityString(memory.addressSpace ?? input.addressSpace, 'address-space');
+            const addressValueId = optionalIdentityString(memory.addressExpr?.valueId ?? input.addressValueId, 'address-value-id');""")
+          replace('js/analysis/alias/regions-v2.js',
+          """      functionId: strictNonEmptyString(ir?.functionId),
+                binaryId: strictNonEmptyString(options.binaryId),""",
+          """      functionId: optionalIdentityString(ir?.functionId, 'function-id'),
+                binaryId: optionalIdentityString(options.binaryId, 'binary-id'),""")
+          replace('js/analysis/alias/regions-v2.js',
+                  "  const addressValueId = strictNonEmptyString(node.memory.addressExpr?.valueId);",
+                  "  const addressValueId = optionalIdentityString(node.memory.addressExpr?.valueId, 'address-value-id');")
+
+          Path('tests/phase7/alias/region-identity-coercion.test.mjs').write_text("""import assert from 'node:assert/strict';
+          import { deriveMemoryRegion } from '../../../js/analysis/alias/regions-v2.js';
+
+          assert.throws(
+            () => deriveMemoryRegion({ functionId: { source: 'A' } }),
+            /alias-region-invalid-function-id/,
+            'object function IDs must fail closed instead of becoming an absent scope',
+          );
+
+          assert.throws(
+            () => deriveMemoryRegion({ binaryId: { source: 'A' } }),
+            /alias-region-invalid-binary-id/,
+            'object binary IDs must fail closed instead of becoming an absent scope',
+          );
+
+          assert.throws(
+            () => deriveMemoryRegion({
+              binaryId: { source: 'explicit-malformed' },
+              widthBits: 8,
+              origin: { byteRanges: [{ binaryId: 'origin-bin', start: 0, end: 1 }] },
+            }),
+            /alias-region-invalid-binary-id/,
+            'a malformed explicit binary identity must not fall back to an origin identity',
+          );
+
+          assert.throws(
+            () => deriveMemoryRegion({
+              functionId: 'fn:1',
+              widthBits: 64,
+              origin: { instructionIds: ['insn:1'] },
+              regionEvidence: { kind: 'rooted-offset', rootEntityId: { source: 'root-A' }, offset: 0 },
+            }),
+            /alias-region-invalid-root-entity-id/,
+            'malformed root identity must fail before a MemoryRegion ID is minted',
+          );
+
+          assert.throws(
+            () => deriveMemoryRegion({
+              functionId: 'fn:1',
+              widthBits: 64,
+              origin: { instructionIds: ['insn:1'] },
+              sourceEntityId: { source: 'load-A' },
+            }),
+            /alias-region-invalid-source-entity-id/,
+            'malformed uncertainty identity must not collapse to the same null identity as absence',
+          );
+
+          assert.throws(
+            () => deriveMemoryRegion({ functionId: 'fn:1', addressSpace: { kind: 'tls' } }),
+            /alias-region-invalid-address-space/,
+            'address-space identity must be an explicit non-empty string',
+          );
+
+          const a = deriveMemoryRegion({ functionId: ' fn:1 ', widthBits: 8, sourceEntityId: ' load:a ' });
+          const b = deriveMemoryRegion({ functionId: 'fn:1', widthBits: 8, sourceEntityId: 'load:b' });
+          assert.equal(a.functionId, 'fn:1');
+          assert.notEqual(a.id, b.id, 'distinct valid identity strings must remain distinct');
+
+          console.log('alias region identity coercion regression: PASS');
+          """)
+
+          # #2390: known-partial import universe must make binding-site coverage partial.
+          replace('js/binary/macho-dyld.js',
+          """  const fail = (message) => {
+              failureEpoch++;
+              status.complete = false;
+              status.bindingSitesComplete = false;
+              if (!status.bindingSiteReasons.includes(message)) status.bindingSiteReasons.push(message);
+              const warning = `chained-fixups: ${message}`;
+              if (!image.warnings.includes(warning)) image.warnings.push(warning);
+            };
+            const startsOffset = r.u32(base + 4);""",
+          """  const fail = (message) => {
+              failureEpoch++;
+              status.complete = false;
+              status.bindingSitesComplete = false;
+              if (!status.bindingSiteReasons.includes(message)) status.bindingSiteReasons.push(message);
+              const warning = `chained-fixups: ${message}`;
+              if (!image.warnings.includes(warning)) image.warnings.push(warning);
+            };
+            if (status.importsComplete === false) {
+              fail('chained import table is incomplete; binding-site coverage cannot be complete');
+            }
+            const startsOffset = r.u32(base + 4);""")
+
+          p = Path('tests/issue-2390-chained-bind-ordinal.mjs')
+          text = p.read_text()
+          needle = """{
+            const imports = new Array(1); // parsed import hole
+            const { status } = fixture(1n << 63n, imports);
+            assert.equal(status.complete, false);
+            assert.equal(status.bindingSitesComplete, false);
+            assert.equal(status.bindingSites, 0);
+          }
+
+          {
+            const imports = [{ name: '_unused', sites: [] }];"""
+          replacement = """{
+            const imports = new Array(1); // parsed import hole
+            const { status } = fixture(1n << 63n, imports);
+            assert.equal(status.complete, false);
+            assert.equal(status.bindingSitesComplete, false);
+            assert.equal(status.bindingSites, 0);
+          }
+
+          {
+            const imports = [{ name: '_ok', sites: [] }];
+            const { status, image } = fixture((1n << 63n) | 0n, imports);
+            image.metadata.chainedFixups.importsComplete = false;
+            // Re-run against the same structurally valid bind while the canonical import universe is known partial.
+            const rerun = parseChainedBindingSites({
+              length: 0x300,
+              bytes: (() => { throw new Error('unreachable'); })(),
+            }, {}, image, imports, image.segments);
+            void rerun;
+          }
+
+          {
+            const imports = [{ name: '_unused', sites: [] }];"""
+          # Build the partial-import regression without a fake reader by extending fixture options instead.
+          if text.count(needle) != 1:
+              raise SystemExit('issue-2390 test insertion anchor mismatch')
+          text = text.replace("function fixture(raw, imports) {", "function fixture(raw, imports, { importsComplete = true } = {}) {")
+          text = text.replace("metadata: { chainedFixups: { complete: true, importsComplete: true } },", "metadata: { chainedFixups: { complete: importsComplete, importsComplete } },")
+          text = text.replace(needle, """{
+            const imports = new Array(1); // parsed import hole
+            const { status } = fixture(1n << 63n, imports);
+            assert.equal(status.complete, false);
+            assert.equal(status.bindingSitesComplete, false);
+            assert.equal(status.bindingSites, 0);
+          }
+
+          {
+            const imports = [{ name: '_ok', sites: [] }];
+            const { status } = fixture((1n << 63n) | 0n, imports, { importsComplete: false });
+            assert.equal(status.complete, false, 'partial import table must keep chained-fixups partial');
+            assert.equal(status.bindingSitesComplete, false, 'binding-site completeness must inherit known import incompleteness');
+            assert.equal(imports[0].sites.length, 1, 'positive site recovery may continue without claiming complete coverage');
+            assert.ok(status.bindingSiteReasons.some((x) => x.includes('import table is incomplete')));
+          }
+
+          {
+            const imports = [{ name: '_unused', sites: [] }];""")
+          p.write_text(text)
+
+          # #2389: enforce the Mach-O address-width ceiling instead of relying on BigInt wraparound.
+          replace('js/binary/macho-core.js',
+          """  let addr = image.imageBase;
+            const alignment = (image.arch === 'arm64' || image.arch === 'arm64e' || image.arch === 'arm64_32') ? 4n : image.arch === 'arm' ? 2n : 1n;
+            const status = image.metadata.functionStarts = { complete: true, recovered: 0, partialReason: null };""",
+          """  let addr = image.imageBase;
+            const maxAddress = image.bits === 32 ? 0xffffffffn : 0xffffffffffffffffn;
+            const alignment = (image.arch === 'arm64' || image.arch === 'arm64e' || image.arch === 'arm64_32') ? 4n : image.arch === 'arm' ? 2n : 1n;
+            const status = image.metadata.functionStarts = { complete: true, recovered: 0, partialReason: null };""")
+          replace('js/binary/macho-core.js',
+          """    const next = addr + x.value;
+              if (next < addr) {
+                status.complete = false; status.partialReason = 'address-overflow';
+                image.warnings.push('LC_FUNCTION_STARTS address overflow'); break;
+              }
+              addr = next;""",
+          """    if (addr < 0n || addr > maxAddress || x.value > maxAddress - addr) {
+                status.complete = false; status.partialReason = 'address-overflow';
+                image.warnings.push('LC_FUNCTION_STARTS address overflow'); break;
+              }
+              const next = addr + x.value;
+              addr = next;""")
+
+          p = Path('tests/issue-2389-function-starts-soundness.mjs')
+          text = p.read_text()
+          anchor = """{
+            const image=parseMachO(fixture([2n]));
+            assert.equal(image.metadata.functionStarts.complete,false);
+            assert.equal(image.metadata.functionStarts.partialReason,'invalid-entry');
+          }
+          {
+            const image=parseMachO(fixture([4n],{terminator:false}));"""
+          insertion = """{
+            const image=parseMachO(fixture([2n]));
+            assert.equal(image.metadata.functionStarts.complete,false);
+            assert.equal(image.metadata.functionStarts.partialReason,'invalid-entry');
+          }
+          {
+            const image=parseMachO(fixture([0xfffffffffffff000n]));
+            assert.equal(image.metadata.functionStarts.complete,false);
+            assert.equal(image.metadata.functionStarts.partialReason,'address-overflow');
+            assert.ok(image.warnings.some((x)=>x.includes('address overflow')));
+            assert.equal(image.functions.filter((f)=>f.source==='function_starts').length,0);
+          }
+          {
+            const image=parseMachO(fixture([4n],{terminator:false}));"""
+          if text.count(anchor) != 1:
+              raise SystemExit('issue-2389 test insertion anchor mismatch')
+          p.write_text(text.replace(anchor, insertion))
+          PY
+      - name: Syntax and focused regressions
+        run: |
+          node --check js/analysis/alias/regions-v2.js
+          node --check js/binary/macho-dyld.js
+          node --check js/binary/macho-core.js
+          node tests/phase7/alias/region-identity-coercion.test.mjs
+          node tests/issue-2390-chained-bind-ordinal.mjs
+          node tests/issue-2389-function-starts-soundness.mjs
+          git diff --check
+      - name: Commit repaired combined tree
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git rm .github/workflows/repair-consolidated-issue-blockers.yml
+          git add js/analysis/alias/regions-v2.js js/binary/macho-dyld.js js/binary/macho-core.js tests/phase7/alias/region-identity-coercion.test.mjs tests/issue-2390-chained-bind-ordinal.mjs tests/issue-2389-function-starts-soundness.mjs
+          git commit -m "fix: close consolidated issue-review blockers"
+          git push origin HEAD:integration/all-open-prs-20260829
