@@ -31,6 +31,40 @@ const PAGE = 4096;
 const TRACE_MAX = 4000;
 
 export const STACK_TOP = 0x0000700000000000n;
+
+function abortError(signal) {
+  const reason = signal?.reason;
+  if (reason instanceof Error) return reason;
+  const error = new Error(reason == null ? 'Emulator run cancelled' : String(reason));
+  error.name = 'AbortError';
+  error.code = 'ABORT_ERR';
+  return error;
+}
+
+function throwIfAborted(signal) {
+  if (signal?.aborted) throw abortError(signal);
+}
+
+
+async function awaitAbortable(operation, signal) {
+  if (!signal) return operation;
+  throwIfAborted(signal);
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener('abort', onAbort);
+      fn(value);
+    };
+    const onAbort = () => {
+      try { operation?.cancel?.(); } catch { /* consumer cancellation is authoritative */ }
+      finish(reject, abortError(signal));
+    };
+    signal.addEventListener('abort', onAbort, { once:true });
+    Promise.resolve(operation).then((value) => finish(resolve, value), (error) => finish(reject, error));
+  });
+}
 const STACK_SIZE = 1 << 20;
 const HEAP_BASE = 0x0000600000000000n;
 const HEAP_SIZE = 0x100000n;
@@ -252,10 +286,13 @@ export class Emulator {
     this.callStack = [{ addr: BigInt(addr), ret: 0n }];
   }
 
-  async step() {
+  async step(options = {}) {
+    const signal = options?.signal ?? null;
+    throwIfAborted(signal);
     if (this.stopped) return { ok: false, text: '', reason: this.stopped };
     const at = this.pc;
-    const insn = this.io.fetch ? await this.io.fetch(at) : null;
+    const insn = this.io.fetch ? await awaitAbortable(this.io.fetch(at, { signal }), signal) : null;
+    throwIfAborted(signal);
     if (!insn || !insn.mn) {
       this.stopped = '0x' + at.toString(16).toUpperCase() + ' の命令が読めませんでした。';
       return { ok: false, text: '', reason: this.stopped };
@@ -278,19 +315,30 @@ export class Emulator {
     return { ok: !this.stopped, text, reason: this.stopped };
   }
 
-  async run(maxSteps = 20000, onProgress) {
+  async run(maxSteps = 20000, onProgress, options = {}) {
+    if (onProgress && typeof onProgress === 'object') {
+      options = onProgress;
+      onProgress = options.onProgress;
+    }
+    const signal = options?.signal ?? null;
     const limit = Number(maxSteps);
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000000) throw new EmulatorFault('invalid-step-budget', 'maxSteps must be an integer in 1..1000000');
     let n = 0;
     while (n < limit && !this.stopped) {
+      throwIfAborted(signal);
       if (this.breakpoints.has(this.pc.toString())) {
         return { hitBreakpoint: true, steps: n, traceTruncated:this.traceTruncated, traceDropped:this.traceDropped };
       }
-      const r = await this.step();
+      const r = await this.step({ signal });
       n++;
       if (!r.ok) break;
-      if (onProgress && (n % 500) === 0) { onProgress(n); await new Promise((res) => setTimeout(res, 0)); }
+      if (onProgress && (n % 500) === 0) {
+        onProgress(n);
+        await new Promise((res) => setTimeout(res, 0));
+        throwIfAborted(signal);
+      }
     }
+    throwIfAborted(signal);
     if (n >= limit && !this.stopped) this.stopped = limit.toLocaleString() + ' 命令ぶん進んだので、いったん止めました。';
     return { hitBreakpoint: false, steps: n, traceTruncated:this.traceTruncated, traceDropped:this.traceDropped };
   }

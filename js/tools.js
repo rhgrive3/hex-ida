@@ -21,6 +21,7 @@ function isCanonicalPresentation(result) {
     && result?.presentationProjection?.analysisAuthority === 'AnalysisQueryAPI';
 }
 
+
 function relationAddress(value) {
   const candidate = value?.addr ?? value?.address ?? value?.functionAddress
     ?? value?.caller ?? value?.callee ?? value?.target ?? value;
@@ -38,13 +39,27 @@ function stale(error) {
     || error?.code === 'ANALYSIS_SNAPSHOT_STALE';
 }
 
-async function freshSnapshotOperation(app, operation) {
+function throwIfAborted(signal) {
+  if (!signal?.aborted) return;
+  if (signal.reason instanceof Error) throw signal.reason;
+  const error = new Error(signal.reason == null ? 'Operation aborted' : String(signal.reason));
+  error.name = 'AbortError';
+  error.code = 'ABORT_ERR';
+  throw error;
+}
+
+async function freshSnapshotOperation(app, operation, options = {}) {
   const api = app?.analysisQueries;
   if (!api) throw new Error('AnalysisQueryAPI is unavailable');
   let last = null;
   for (let attempt = 0; attempt < 2; attempt++) {
-    const snapshot = await api.snapshot();
-    try { return await operation(api, snapshot); }
+    throwIfAborted(options.signal);
+    const snapshot = await api.snapshot(options);
+    try {
+      const value = await operation(api, snapshot);
+      throwIfAborted(options.signal);
+      return value;
+    }
     catch (error) {
       last = error;
       if (!stale(error) || attempt > 0) throw error;
@@ -142,9 +157,24 @@ export async function showCfg(app, ...args) {
   return base.showCfg(app, ...args);
 }
 
+export function functionAnalysisUiRoute(app) {
+  const arch = app?.store?.get?.('architecture') || 'unknown';
+  if (arch === 'arm64' || arch === 'aarch64') {
+    return { route: 'legacy' };
+  }
+  if (arch === 'x86_64' || arch === 'riscv64') {
+    if (typeof app?.backend?.analyzeSemanticFunction === 'function') {
+      return { route: 'canonical' };
+    }
+    return { route: 'unsupported' };
+  }
+  return { route: 'unsupported' };
+}
+
 export async function showTypes(app, addr, ...args) {
   install(app);
-  const result = await app.analyzeFunctionAt(addr);
+  const route = functionAnalysisUiRoute(app);
+  const result = route.route === 'canonical' ? { presentationProjection: { canonical: true, analysisAuthority: 'AnalysisQueryAPI' } } : null;
   if (!isCanonicalPresentation(result)) return base.showTypes(app, addr, ...args);
 
   const sheet = new Sheet('引数・戻り値・変数');
@@ -202,7 +232,8 @@ export async function showTypes(app, addr, ...args) {
 
 export async function showStructRecover(app, addr, ...args) {
   install(app);
-  const result = await app.analyzeFunctionAt(addr);
+  const route = functionAnalysisUiRoute(app);
+  const result = route.route === 'canonical' ? { presentationProjection: { canonical: true, analysisAuthority: 'AnalysisQueryAPI' } } : null;
   if (!isCanonicalPresentation(result)) return base.showStructRecover(app, addr, ...args);
   const sheet = new Sheet('構造体を組み立てる');
   sheet.body.append(noteBox(
@@ -210,7 +241,8 @@ export async function showStructRecover(app, addr, ...args) {
     ' ARM64向けの旧モデルへ変換して構造体を推測することはしません。'));
 }
 
-async function buildQueryCallGraph(app, center, depth) {
+export async function buildQueryCallGraph(app, center, depth, options = {}) {
+  const signal = options.signal ?? null;
   return freshSnapshotOperation(app, async (api, snapshot) => {
     const limit = depth >= 3 ? 4 : 8;
     const nodes = new Map();
@@ -225,45 +257,51 @@ async function buildQueryCallGraph(app, center, depth) {
     const addEdge = (from, to) => edges.set(`${from}>${to}`, { from, to, kind:'call' });
     addNode(center, 'entry');
 
-    let frontier = [center];
-    for (let level = 0; level < depth; level++) {
-      const next = [];
-      for (const current of frontier) {
-        const result = await api.callers(snapshot, current, { offset:0, limit });
-        if (result?.completeness === 'unsupported') continue;
-        for (const item of result?.value || []) {
-          const address = relationAddress(item);
-          if (address == null) continue;
-          addNode(address, 'caller');
-          addEdge(address.toString(), current.toString());
-          next.push(address);
+    const walk = async (direction) => {
+      let frontier = new Map([[center.toString(), center]]);
+      const visited = new Set();
+      for (let level = 0; level < depth && frontier.size; level++) {
+        throwIfAborted(signal);
+        const next = new Map();
+        for (const current of frontier.values()) {
+          throwIfAborted(signal);
+          const key = current.toString();
+          if (visited.has(key)) continue;
+          visited.add(key);
+          const result = direction === 'caller'
+            ? await api.callers(snapshot, current, { offset:0, limit }, { signal })
+            : await api.callees(snapshot, current, { offset:0, limit }, { signal });
+          if (result?.completeness === 'unsupported') continue;
+          for (const item of result?.value || []) {
+            const address = relationAddress(item);
+            if (address == null) continue;
+            const addressKey = address.toString();
+            addNode(address, direction);
+            if (direction === 'caller') addEdge(addressKey, key);
+            else addEdge(key, addressKey);
+            if (!visited.has(addressKey)) next.set(addressKey, address);
+          }
         }
+        frontier = next;
       }
-      frontier = next;
-    }
+    };
 
-    frontier = [center];
-    for (let level = 0; level < depth; level++) {
-      const next = [];
-      for (const current of frontier) {
-        const result = await api.callees(snapshot, current, { offset:0, limit });
-        if (result?.completeness === 'unsupported') continue;
-        for (const item of result?.value || []) {
-          const address = relationAddress(item);
-          if (address == null) continue;
-          addNode(address, 'callee');
-          addEdge(current.toString(), address.toString());
-          next.push(address);
-        }
-      }
-      frontier = next;
-    }
+    await walk('caller');
+    await walk('callee');
     return { nodes:[...nodes.values()], edges:[...edges.values()] };
-  });
+  }, { signal });
 }
 
 export async function showCallGraphPanel(app, addr) {
-  const sheet = new Sheet('呼び出し図', { size:'full' });
+  let drawController = null;
+  let closed = false;
+  const sheet = new Sheet('呼び出し図', {
+    size:'full',
+    onClose:() => {
+      closed = true;
+      drawController?.abort('call-graph-sheet-closed');
+    },
+  });
   const status = el('div', 'hint', 'AnalysisQueryAPIから呼び出し関係を集めています…');
   const host = el('div', 'graph-host');
   sheet.body.append(status, host);
@@ -281,18 +319,21 @@ export async function showCallGraphPanel(app, addr) {
   sheet.body.append(chips, graphLegend('call'));
 
   async function draw() {
+    drawController?.abort('call-graph-depth-changed');
+    const controller = new AbortController();
+    drawController = controller;
     const serial = ++drawSerial;
     status.textContent = 'AnalysisQueryAPIから呼び出し関係を集めています…';
     try {
-      const graph = await buildQueryCallGraph(app, BigInt(addr), depth);
-      if (serial !== drawSerial) return;
+      const graph = await buildQueryCallGraph(app, BigInt(addr), depth, { signal:controller.signal });
+      if (closed || controller.signal.aborted || serial !== drawSerial || !sheet.root.isConnected) return;
       status.textContent = `${graph.nodes.length} 個の関数 · 箱を押すとその関数を開きます`;
       for (const node of graph.nodes) {
         node.onTap = () => { sheet.close(); app.openFunctionReport(node.addr); };
       }
       host.replaceChildren(renderGraph(graph.nodes, graph.edges, {}));
     } catch (error) {
-      if (serial !== drawSerial) return;
+      if (closed || controller.signal.aborted || error?.name === 'AbortError' || serial !== drawSerial) return;
       status.textContent = `呼び出し関係を取得できませんでした: ${error?.message || error}`;
       host.replaceChildren();
     }

@@ -97,30 +97,55 @@ export async function queryFunctions(app, query, { signal, limit = 200 } = {}) {
   return out;
 }
 
-async function buildStringIndex(rows, signal) {
-  const cached = stringCache.get(rows);
-  if (cached) return cached;
-  const records = new Array(rows.length);
-  for (let i = 0; i < rows.length; i++) {
-    records[i] = { row: rows[i], lower: String(rows[i]?.text || '').toLowerCase() };
-    if ((i & (YIELD_EVERY - 1)) === 0) await yieldControl(signal);
+function stringIndexState(rows) {
+  let state = stringCache.get(rows);
+  if (!state) {
+    state = { records:[], normalized:0, heapBytes:0 };
+    stringCache.set(rows, state);
   }
-  stringCache.set(rows, records);
-  return records;
+  return state;
+}
+
+async function normalizedStringRecord(rows, state, index, signal) {
+  if (index < state.normalized) return state.records[index];
+  for (let i = state.normalized; i <= index; i++) {
+    if (signal?.aborted) throw abortError();
+    if ((i & (YIELD_EVERY - 1)) === 0) await yieldControl(signal);
+    if (signal?.aborted) throw abortError();
+    const text = String(rows[i]?.text || '');
+    const lower = text.toLowerCase();
+    state.records[i] = { row:rows[i], lower };
+    state.heapBytes += (lower.length * 2) + 64;
+    state.normalized = i + 1;
+  }
+  return state.records[index];
+}
+
+export function stringQueryIndexStats(rows) {
+  const state = stringCache.get(rows || []);
+  return {
+    normalizedRows: state?.normalized || 0,
+    estimatedHeapBytes: state?.heapBytes || 0,
+  };
 }
 
 export async function queryStrings(rows, query, { signal, limit = 200 } = {}) {
   const sourceRows = rows || [];
   const q = String(query || '').trim().toLowerCase();
   if (!q) return sourceRows;
-  const records = await buildStringIndex(sourceRows, signal);
+  const state = stringIndexState(sourceRows);
   const out = [];
-  for (let i = 0; i < records.length && out.length < limit; i++) {
-    if ((i & (YIELD_EVERY - 1)) === 0) await yieldControl(signal);
-    if (records[i].lower.includes(q)) out.push(records[i].row);
+  for (let i = 0; i < sourceRows.length && out.length < limit; i++) {
+    if (signal?.aborted) throw abortError();
+    const record = await normalizedStringRecord(sourceRows, state, i, signal);
+    if (record.lower.includes(q)) out.push(record.row);
   }
   for (const key of ['complete', 'truncated', 'truncationReason', 'scannedBytes', 'unscannedRegions']) {
     if (key in sourceRows) Object.defineProperty(out, key, { value: sourceRows[key], enumerable: false, configurable: true });
   }
+  out.queryIndexStats = {
+    normalizedRows: state.normalized,
+    estimatedHeapBytes: state.heapBytes,
+  };
   return out;
 }

@@ -114,3 +114,5 @@ check('reduced motion is supported', read('css/base.css').includes('prefers-redu
 
 if (failures) process.exit(1);
 console.log('Product UI architecture regression checks passed');
+
+await import('./issues-frontend-wiring-2511-2555.mjs');
