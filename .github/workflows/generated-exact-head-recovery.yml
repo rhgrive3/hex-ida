@@ -1,0 +1,136 @@
+name: Generated exact-head recovery
+
+on:
+  workflow_run:
+    workflows:
+      - Generated userscript autofix
+      - Phase 7 ownership
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: generated-exact-head-recovery
+  cancel-in-progress: false
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Re-dispatch blocked exact-head checks
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const sameRepo = `${owner}/${repo}`;
+            const ignoredPaths = new Set([
+              '.github/workflows/generated-userscript-autofix.yml',
+              '.github/workflows/generated-exact-head-recovery.yml',
+            ]);
+            const terminalFailure = new Set(['failure', 'timed_out', 'startup_failure']);
+
+            function dispatchInputs(path, pr) {
+              if (path.endsWith('/stage1-release-validation.yml') || path.endsWith('/stage2-nonphysical-closure.yml')) {
+                return { expect_sha: pr.head.sha };
+              }
+              if (path.endsWith('/phase7-ownership.yml')) {
+                return { base: pr.base.sha, head: pr.head.sha };
+              }
+              if (path.endsWith('/phase7-release-validation.yml')) {
+                return { sha: pr.head.sha, shadow: 'false' };
+              }
+              return {};
+            }
+
+            const prs = await github.paginate(github.rest.pulls.list, {
+              owner,
+              repo,
+              state: 'open',
+              per_page: 100,
+            });
+
+            for (const pr of prs) {
+              if (pr.head.repo?.full_name !== sameRepo) {
+                core.info(`#${pr.number}: fork PR; exact-head recovery does not mutate external branches.`);
+                continue;
+              }
+
+              const branchRuns = await github.paginate(github.rest.actions.listWorkflowRunsForRepo, {
+                owner,
+                repo,
+                branch: pr.head.ref,
+                event: 'pull_request',
+                per_page: 100,
+              });
+              if (!branchRuns.length) {
+                core.info(`#${pr.number}: no historical pull_request workflow set; nothing to recover.`);
+                continue;
+              }
+
+              branchRuns.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+              const currentRuns = branchRuns.filter((run) => run.head_sha === pr.head.sha);
+              const realCurrentFailure = currentRuns.find((run) => terminalFailure.has(run.conclusion));
+              if (realCurrentFailure) {
+                core.info(`#${pr.number}: current head has a real failing workflow (${realCurrentFailure.name}); preserve it for diagnosis.`);
+                continue;
+              }
+
+              const anchorSha = currentRuns.length ? pr.head.sha : branchRuns[0].head_sha;
+              const anchorRuns = branchRuns.filter((run) => run.head_sha === anchorSha);
+              const latestByWorkflow = new Map();
+              for (const run of anchorRuns) {
+                if (!latestByWorkflow.has(run.workflow_id)) latestByWorkflow.set(run.workflow_id, run);
+              }
+
+              const dispatched = [];
+              for (const [workflowId, anchorRun] of latestByWorkflow) {
+                const path = String(anchorRun.path || '');
+                if (ignoredPaths.has(path)) continue;
+
+                const currentForWorkflow = currentRuns.filter((run) => run.workflow_id === workflowId);
+                if (currentForWorkflow.some((run) => run.conclusion === 'success')) continue;
+                if (currentForWorkflow.some((run) => run.status === 'queued' || run.status === 'in_progress' || run.status === 'waiting' || run.status === 'pending')) continue;
+
+                let definition;
+                try {
+                  definition = await github.rest.repos.getContent({ owner, repo, path, ref: pr.base.ref });
+                } catch (error) {
+                  core.info(`#${pr.number}: ${path} no longer exists on ${pr.base.ref}; historical workflow is obsolete.`);
+                  continue;
+                }
+                if (Array.isArray(definition.data) || !definition.data?.content) {
+                  throw new Error(`#${pr.number}: cannot read workflow definition ${path}`);
+                }
+                const yaml = Buffer.from(definition.data.content, 'base64').toString('utf8');
+                if (!/\bworkflow_dispatch\s*:/.test(yaml)) {
+                  throw new Error(`#${pr.number}: ${path} lacks the permanent workflow_dispatch exact-head path required by EP-012`);
+                }
+
+                const inputs = dispatchInputs(path, pr);
+                core.info(`#${pr.number}: dispatch ${path} at ${pr.head.sha}`);
+                await github.rest.actions.createWorkflowDispatch({
+                  owner,
+                  repo,
+                  workflow_id: workflowId,
+                  ref: pr.head.ref,
+                  inputs,
+                });
+                dispatched.push(path);
+              }
+
+              const blockedRuns = currentRuns.filter((run) => run.conclusion === 'action_required');
+              const generatedSyncCovered = currentRuns.some((run) => run.name === 'Generated userscript sync' && run.conclusion === 'success')
+                || dispatched.includes('.github/workflows/generated-sync.yml');
+              if (blockedRuns.length && generatedSyncCovered) {
+                for (const run of blockedRuns) {
+                  core.info(`#${pr.number}: delete zero-job action_required run ${run.id} (${run.name}); replacement exact-head validation has been dispatched.`);
+                  await github.rest.actions.deleteWorkflowRun({ owner, repo, run_id: run.id });
+                }
+              }
+            }
