@@ -34,3 +34,4 @@ tests/.real-fixtures/
 /reports/stage2/
 /reports/competitive/
 
+tests/.accuracy-active-*.mjs
