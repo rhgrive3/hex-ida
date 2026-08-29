@@ -231,17 +231,44 @@ export class NoteStore {
     }
   }
 
+  /* ── トランザクション ─────────────────────────────────── */
+
+  transaction(fn) {
+    this._transactionDepth = (this._transactionDepth || 0) + 1;
+    try {
+      return fn();
+    } finally {
+      this._transactionDepth--;
+      if (this._transactionDepth === 0 && this.dirty) {
+        this.save();
+      }
+    }
+  }
+
+  async transactionAsync(fn) {
+    this._transactionDepth = (this._transactionDepth || 0) + 1;
+    try {
+      return await fn();
+    } finally {
+      this._transactionDepth--;
+      if (this._transactionDepth === 0 && this.dirty) {
+        this.save();
+      }
+    }
+  }
+
   /* ── 名前 ─────────────────────────────────────────────── */
 
   nameOf(addr) { return this.names.get(key(addr)) || null; }
 
-  setName(addr, name) {
+  setName(addr, name, { save = true } = {}) {
     const k = key(addr);
     if (!k) return this._saveFailure('INVALID_KEY');
     const clean = cleanName(name);
     if (clean) this.names.set(k, clean);
     else this.names.delete(k);
     this.dirty = true;
+    if (this._transactionDepth > 0 || !save) return true;
     return this.save();
   }
 
@@ -258,13 +285,14 @@ export class NoteStore {
 
   comment(addr) { return this.comments.get(key(addr)) || null; }
 
-  setComment(addr, text) {
+  setComment(addr, text, { save = true } = {}) {
     const k = key(addr);
     if (!k) return this._saveFailure('INVALID_KEY');
     const clean = (text || '').toString().slice(0, 500).trim();
     if (clean) this.comments.set(k, clean);
     else this.comments.delete(k);
     this.dirty = true;
+    if (this._transactionDepth > 0 || !save) return true;
     return this.save();
   }
 
@@ -274,25 +302,27 @@ export class NoteStore {
 
   varName(func, k) { return this.vars.get(key(func) + ':' + k) || null; }
 
-  setVarName(func, k, name) {
+  setVarName(func, k, name, { save = true } = {}) {
     const kk = key(func) + ':' + k;
     if (!key(func)) return this._saveFailure('INVALID_KEY');
     const clean = cleanName(name);
     if (clean) this.vars.set(kk, clean);
     else this.vars.delete(kk);
     this.dirty = true;
+    if (this._transactionDepth > 0 || !save) return true;
     return this.save();
   }
 
   typeOf(func, k) { return this.types.get(key(func) + ':' + k) || null; }
 
-  setType(func, k, type) {
+  setType(func, k, type, { save = true } = {}) {
     const kk = key(func) + ':' + k;
     if (!key(func)) return this._saveFailure('INVALID_KEY');
     const clean = (type || '').toString().slice(0, 80).trim();
     if (clean) this.types.set(kk, clean);
     else this.types.delete(kk);
     this.dirty = true;
+    if (this._transactionDepth > 0 || !save) return true;
     return this.save();
   }
 

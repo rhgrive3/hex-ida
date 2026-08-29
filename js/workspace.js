@@ -80,13 +80,15 @@ function aiTurns(){
 export function snapshotWorkspace(app, identity){
   const notes=app.notes;
   const navigation=app.navigation;
+  const bookmarks=(app.bookmarks?.list?.()||navigation?.bookmarks||[]).slice(-500);
   const project=createHexProject({
     binary:identity,
     userNames:noteEntries(notes?.names),
     comments:noteEntries(notes?.comments),
     types:[...((notes?.types)||[])].map(([key,value])=>({key,value})),
+    vars:[...((notes?.vars)||[])].map(([key,value])=>({key,value})),
     structs:Array.isArray(notes?.structs)?notes.structs:[],
-    bookmarks:(navigation?.entries||[]).slice(-500),
+    bookmarks:bookmarks.slice(-500),
     patches:patchEntries(app.patches),
     confirmedFindings:safeFindings(app),
     evidence:safeEvidence(app),
@@ -96,7 +98,7 @@ export function snapshotWorkspace(app, identity){
     navigation:{
       currentFunction:app?.store?.get?.('currentAddress')??null,
       history:(navigation?.entries||[]).slice(-500),
-      bookmarks:(navigation?.entries||[]).slice(-100),
+      bookmarks:bookmarks.slice(-500),
       lastQuery:app?.lastGoal?.text||null,
     },
   });
@@ -111,6 +113,7 @@ export function applyWorkspaceProject(app, project){
   for(const entry of project.user.names||[])if(entry?.address!=null&&entry.value)notes.names.set(BigInt(entry.address).toString(),String(entry.value));
   for(const entry of project.user.comments||[])if(entry?.address!=null&&entry.value)notes.comments.set(BigInt(entry.address).toString(),String(entry.value));
   for(const entry of project.user.types||[])if(entry?.key)notes.types.set(String(entry.key),String(entry.value||''));
+  for(const entry of (project.user.vars||project.user.varNames||[]))if(entry?.key)notes.vars.set(String(entry.key),String(entry.value||''));
   notes.structs=Array.isArray(project.user.structs)?project.user.structs.slice():[];
   notes.dirty=true;
   if(!notes.save())throw new Error(notes.lastSaveError?.code||'notes-save-failed');
@@ -128,6 +131,11 @@ export function applyWorkspaceProject(app, project){
   }
   const history=project.navigation?.history||[];
   if(app.navigation&&history.length){app.navigation.entries=history.slice(-app.navigation.limit);app.navigation.index=app.navigation.entries.length-1;app.navigation.onChange(app.navigation.snapshot());}
+  const bookmarks=project.navigation?.bookmarks||project.user?.bookmarks||[];
+  if(bookmarks.length){
+    if(app.navigation)app.navigation.bookmarks=bookmarks.slice(-500);
+    if(app.bookmarks?.restore)app.bookmarks.restore(bookmarks);
+  }
   return true;
 }
 

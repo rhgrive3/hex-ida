@@ -61,7 +61,8 @@ export function createHexProject(input = {}) {
     binary: { hash: input.binaryHash || input.binary?.hash || null, metadata: input.binaryMetadata || input.binary?.metadata || null, embedded: false },
     user: {
       names: list(input.userNames ?? input.user?.names, 'user.names'), comments: list(input.comments ?? input.user?.comments, 'user.comments'),
-      types: list(input.types ?? input.user?.types, 'user.types'), structs: list(input.structs ?? input.user?.structs, 'user.structs'),
+      types: list(input.types ?? input.user?.types, 'user.types'), vars: list(input.vars ?? input.user?.vars ?? input.varNames ?? input.user?.varNames, 'user.vars'),
+      structs: list(input.structs ?? input.user?.structs, 'user.structs'),
       bookmarks: list(input.bookmarks ?? input.user?.bookmarks, 'user.bookmarks'), patches: list(input.patches ?? input.user?.patches, 'user.patches'),
     },
     findings: {
@@ -203,6 +204,7 @@ export function normalizeHexProjectV1(project) {
       names: list(project.user?.names, 'user.names'),
       comments: list(project.user?.comments, 'user.comments'),
       types: list(project.user?.types, 'user.types'),
+      vars: list(project.user?.vars ?? project.user?.varNames, 'user.vars'),
       structs: list(project.user?.structs, 'user.structs'),
       bookmarks: list(project.user?.bookmarks, 'user.bookmarks'),
       patches: list(project.user?.patches, 'user.patches'),
