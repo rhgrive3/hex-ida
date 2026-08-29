@@ -73,9 +73,9 @@ export function makePinpointAnalyzer(app, region, parentSignal = null, analyze =
       if (linked.signal?.aborted) throw abortError(linked.signal);
       const startRow = Number((addr - region.vmAddr) / 4n);
       if (!(startRow >= 0) || startRow >= totalRows) return null;
-      /* end が未証明でも隣接関数へは伸びない: 次の関数開始で窓を締める。 */
-      const nextStart = end == null ? app.symbols?.nextFunctionStart?.(addr) ?? null : null;
-      const stop = end != null ? end : nextStart;
+      /* end が未証明でも隣接関数へは伸びない: 局所的な境界（証明済み end か
+         次の関数開始、#464 ガード付き）で窓を締める。 */
+      const stop = end != null ? end : app.symbols?.functionWindowBound?.(addr) ?? null;
       const endRow = stop != null
         ? Math.min(totalRows - 1, Number((stop - region.vmAddr) / 4n) - 1)
         : Math.min(totalRows - 1, startRow + 512);

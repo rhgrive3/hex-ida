@@ -1106,7 +1106,13 @@ class App {
   validatedFunctionRange(addr) {
     const fn=this.symbols?.functionAt?.(BigInt(addr)); if(!fn) return {ok:false,reason:'function-symbol-missing'};
     const region=this.executableRegionFor(fn.start); if(!region) return {ok:false,reason:'function-start-not-executable',function:fn};
-    if(fn.end==null)return {ok:false,reason:'function-end-unproven',function:fn,region};
+    if(fn.end==null){
+      /* end の証明はしない。局所的な境界（証明済み end か同一領域内の次開始）
+         で締めた解析窓として返し、complete:false で未証明を正直に伝える。 */
+      const windowEnd=this.symbols?.functionWindowBound?.(fn.start)??null;
+      if(windowEnd==null)return {ok:false,reason:'function-end-unproven',function:fn,region};
+      return {ok:true,start:fn.start,end:windowEnd,region,function:fn,complete:false,reason:'function-end-unproven',provenance:'executable-region+analysis-window'};
+    }
     const regionEnd=region.vmAddr+region.size;
     let end=BigInt(fn.end);
     let complete=true,reason=null;

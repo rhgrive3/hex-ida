@@ -33,6 +33,65 @@ import { makePinpointAnalyzer } from '../js/ui/pinpoint-runtime.js';
   assert.equal(symbols.functionAt(0x1080n), null, 'next-function-start must not become an extent claim');
 }
 
+/* ── 1b. functionStartAt: containment without extent claims ─────────── */
+{
+  const region = { id: 'text', vmAddr: 0x1000n, size: 0x2000n, exec: true };
+  const symbols = new SymbolIndex({ funcs: new BigUint64Array([0x1000n, 0x1100n, 0x1200n]), regions: [region] });
+  // Mid-function addresses resolve to their owning start even when the end
+  // is unproven — this is containment, not the extent assertion #2409 froze.
+  assert.equal(symbols.functionStartAt(0x1080n), 0x1000n);
+  assert.equal(symbols.functionStartAt(0x1000n), 0x1000n);
+  assert.equal(symbols.functionStartAt(0x1180n), 0x1100n);
+  assert.equal(symbols.functionStartAt(0x500n), null, 'below all starts has no floor');
+  // A proven end still bounds containment.
+  const proven = new SymbolIndex({
+    funcs: new BigUint64Array([0x1000n, 0x1100n]),
+    funcEnds: new BigUint64Array([0x1040n, 0x0n]),
+    regions: [region],
+  });
+  assert.equal(proven.functionStartAt(0x1040n), null, 'past a proven end is not inside that function');
+  assert.equal(proven.functionStartAt(0x1020n), 0x1000n);
+  // Region gaps still refuse containment (#464): a next start that leaves the
+  // start's executable region is no local boundary, so mid-addresses unproven
+  // are not owned — exactly the pre-#2458 window rule.
+  const gap = new SymbolIndex({
+    funcs: new BigUint64Array([0x1000n, 0x5000n]),
+    regions: [
+      { id: 'text-a', vmAddr: 0x1000n, size: 0x100n, exec: true },
+      { id: 'data', vmAddr: 0x2000n, size: 0x1000n, exec: false },
+    ],
+  });
+  assert.equal(gap.functionStartAt(0x1000n), 0x1000n, 'exact start is always owned');
+  assert.equal(gap.functionStartAt(0x1080n), null, 'next start across a gap is no boundary');
+  // A next start inside the same region is a real boundary, so mid-addresses
+  // up to it are owned (this is what made #2482 formula resolve again).
+  const bounded = new SymbolIndex({
+    funcs: new BigUint64Array([0x1000n, 0x10C0n]),
+    regions: [{ id: 'text-a', vmAddr: 0x1000n, size: 0x1000n, exec: true }],
+  });
+  assert.equal(bounded.functionStartAt(0x1080n), 0x1000n);
+}
+
+/* ── 1c. ProgramIndex callers resolve through functionStartOf ───────── */
+{
+  const { ProgramIndex } = await import('../js/program.js');
+  const region = { id: 'text', vmAddr: 0x1000n, size: 0x2000n, exec: true };
+  const symbols = new SymbolIndex({ funcs: new BigUint64Array([0x1000n, 0x1100n]), regions: [region] });
+  const program = new ProgramIndex({
+    vmAddr: region.vmAddr, words: Number(region.size / 4n), kindsCovered: 0,
+    kinds: new Uint8Array(0),
+    callFrom: new BigUint64Array([0x1080n]), callTo: new BigUint64Array([0x1100n]),
+    refFrom: new BigUint64Array([0x1084n]), refTo: new BigUint64Array([0x9000n]),
+    refKind: new Uint8Array([1]),
+  }, symbols, region);
+  // A call/ref site mid-function (end unproven) must still name its caller.
+  assert.equal(program.functionStartOf(0x1080n), 0x1000n,
+    'reference owners must resolve without an extent claim (this made #2482 formula null)');
+  const refs = program.functionsReferencing(0x9000n, 1n, 8);
+  assert.equal(refs[0].addr, 0x1000n, 'functionsReferencing must resolve the owning start');
+  assert.equal(refs[0].site, 0x1084n, 'the raw site is still reported for audit');
+}
+
 /* ── 2. pinpoint window clamping ───────────────────────────────────── */
 {
   const region = { id: 'text', vmAddr: 0x1000n, size: 0x10000n };
