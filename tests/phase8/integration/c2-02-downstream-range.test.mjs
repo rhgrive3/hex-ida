@@ -41,3 +41,16 @@ test('induction refuses singleton-looking partial canonical facts', () => {
   assert.equal(resolved.step, null);
   assert.equal(resolved.reason, 'the step is a variable value');
 });
+
+test('induction does not fall back to a stale compatibility constant beside a partial fact', () => {
+  const { counter, amount, update } = stepFixture();
+  const partialFact = singletonFact(bitvector(7n, 32), { valueId: amount.id, status: 'partial' });
+  const canonical = {
+    completeness: 'partial',
+    facts: new Map([[amount.id, partialFact]]),
+    constants: new Map([[amount.id, bitvector(7n, 32)]]),
+  };
+  const resolved = resolveStep(update, counter, { rangeFacts: canonical });
+  assert.equal(resolved.step, null);
+  assert.equal(resolved.reason, 'the step is a variable value');
+});

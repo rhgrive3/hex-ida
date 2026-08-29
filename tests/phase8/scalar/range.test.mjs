@@ -67,6 +67,10 @@ test('zero extension is exact for an interval and honest about a wrapped source'
   assert.equal(exact.range.lower, 1n);
   assert.equal(exact.range.upper, 100n);
 
+  const unconstrained = zeroExtendRange(fullRange(32), 64);
+  assert.equal(unconstrained.exact, true, 'zero extension of every source bit pattern is one representable interval');
+  assert.deepEqual([unconstrained.range.lower, unconstrained.range.upper], [0n, 0xFFFF_FFFFn]);
+
   // A wrapped 32-bit range becomes two disjoint intervals at 64 bits, which this
   // domain cannot represent. The bound that survives is the source width.
   const wrapped = zeroExtendRange(rangeOf(0xFFFFFFF0n, 0x0Fn, 32), 64);
@@ -245,6 +249,17 @@ test('malformed widths and unsupported operations stay conservative', () => {
   assert.throws(() => fullRange(24), /unsupported-width/);
   const malformed = factFromRange({ bits: 24, kind: 'interval', lower: 0n, upper: 1n });
   assert.equal(malformed.status, 'malformed');
+  for (const evidence of [
+    { congruence: { modulus: 'not-an-integer', remainder: 0n } },
+    { alignment: { modulus: 'not-an-integer' } },
+    { pointerOffset: { baseId: 'p', offset: 'not-an-integer' } },
+    { knownOne: 2n },
+    { congruence: { modulus: 4n, remainder: 1n } },
+  ]) {
+    const malformedEvidence = factFromRange(singleton(bitvector(0n, 8)), evidence);
+    assert.equal(malformedEvidence.status, 'malformed');
+    assert.equal(malformedEvidence.constant, null, 'malformed scalar evidence must not publish an exact singleton');
+  }
   const unsupported = evaluateBinaryFact('rotl', fullFact(32), fullFact(32));
   assert.equal(isFull(unsupported.range), true);
   assert.equal(unsupported.constant, null);
@@ -252,4 +267,10 @@ test('malformed widths and unsupported operations stay conservative', () => {
   assert.equal(unsupportedSingleton.constant, null, 'unsupported singleton-shaped evidence must not become exact');
   const incomplete = emptyFact(8, { status: 'partial' });
   assert.equal(incomplete.constant, null);
+  for (const status of ['partial', 'unknown', 'stale', 'cancelled', 'truncated', 'budget']) {
+    const incompleteSingleton = singletonFact(bitvector(7n, 8), { status });
+    const propagated = evaluateBinaryFact('add', incompleteSingleton, singletonFact(bitvector(1n, 8)));
+    assert.equal(propagated.status, status);
+    assert.equal(propagated.constant, null, `${status} evidence must not launder into an exact binary result`);
+  }
 });

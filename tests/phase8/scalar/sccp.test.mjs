@@ -266,6 +266,20 @@ test('an unsupported width is unknown rather than approximated', () => {
   assert.match(facts.overdefinedReasons.get(odd.id) ?? '', /unsupported width/);
 });
 
+test('the SCCP publication keeps the canonical product bits and congruence', () => {
+  const f = fixture('published-product');
+  f.block(0);
+  const input = f.opaque(8);
+  const masked = f.binary('and', input, f.constant(0xFC, 8), 8);
+  f.ret();
+  const { facts } = analyze(f.build());
+  const product = facts.facts.get(masked.id);
+  assert.ok(product, 'the produced value must have one canonical product fact');
+  assert.equal(product.knownZero & 0x03n, 0x03n);
+  assert.deepEqual(product.congruence, { remainder: 0n, modulus: 4n });
+  assert.equal(product.constant, null, 'a masked non-singleton must not become exact');
+});
+
 function branchFacts(operator, inputValue, boundValue, bits = 8) {
   const f = fixture(`branch-${operator}`);
   f.block(0);
@@ -313,6 +327,20 @@ test('signed and unsigned comparisons use different bitvector domains', () => {
   const lower = branchFacts('uge', null, 0x80);
   const lowerTrue = edge(lower, '0->1:conditional-true').facts.get(lower.input.id).range;
   assert.deepEqual([lowerTrue.lower, lowerTrue.upper], [0x80n, 0xFFn]);
+
+  const greater = branchFacts('ugt', null, 0x80);
+  const greaterTrue = edge(greater, '0->1:conditional-true').facts.get(greater.input.id).range;
+  assert.deepEqual([greaterTrue.lower, greaterTrue.upper], [0x81n, 0xFFn]);
+
+  // The textual aliases are normalized in the canonical range owner too. `>`
+  // is signed ordering in the generic IR vocabulary, so 0x80 means INT_MIN
+  // here and the true set wraps around the unsigned representation.
+  const signedGreater = branchFacts('>', null, 0x80);
+  const signedGreaterTrue = edge(signedGreater, '0->1:conditional-true').facts.get(signedGreater.input.id).range;
+  assert.equal(signedGreaterTrue.kind, 'wrapped');
+  assert.equal(contains(signedGreaterTrue, 0x81n), true);
+  assert.equal(contains(signedGreaterTrue, 0x7Fn), true);
+  assert.equal(contains(signedGreaterTrue, 0x80n), false);
 });
 
 function factsFor(facts, key) { return facts.edgeFacts.get(key); }

@@ -204,10 +204,14 @@ export function runGvnPass(context = {}, budget = {}, area = null) {
   };
 
   const constantKey = (valueId) => {
-    const canonical = scalarFacts?.facts?.get?.(valueId) ?? null;
-    if (scalarFacts?.completeness === 'complete' && canonical?.constant != null
-        && ['exact', 'conservative'].includes(canonical.status)) {
-      return `const:${canonical.constant.bits}:${canonical.constant.value}`;
+    const canonicalFacts = scalarFacts?.facts;
+    const canonical = canonicalFacts?.get?.(valueId) ?? null;
+    if (canonicalFacts != null) {
+      if (scalarFacts?.completeness === 'complete' && canonical?.constant != null
+          && ['exact', 'conservative'].includes(canonical.status)) {
+        return `const:${canonical.constant.bits}:${canonical.constant.value}`;
+      }
+      return null;
     }
     const constant = scalarFacts?.constants?.get(valueId);
     return constant == null ? null : `const:${constant.bits}:${constant.value}`;
