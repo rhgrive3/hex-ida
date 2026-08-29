@@ -80,7 +80,7 @@ function aiTurns(){
 export function snapshotWorkspace(app, identity){
   const notes=app.notes;
   const navigation=app.navigation;
-  const bookmarks=(app.bookmarks?.list?.()||navigation?.bookmarks||[]).slice(-500);
+  const bookmarks=(app.bookmarks?.list?.()||[]).slice(-500);
   const project=createHexProject({
     binary:identity,
     userNames:noteEntries(notes?.names),
@@ -98,6 +98,7 @@ export function snapshotWorkspace(app, identity){
     navigation:{
       currentFunction:app?.store?.get?.('currentAddress')??null,
       history:(navigation?.entries||[]).slice(-500),
+      cursorIndex:navigation?.index??null,
       bookmarks:bookmarks.slice(-500),
       lastQuery:app?.lastGoal?.text||null,
     },
@@ -129,8 +130,37 @@ export function applyWorkspaceProject(app, project){
       key:app.codeRegion?.()?.id||null,gen:app.symbols?.gen||0,restored:true,
     };
   }
+  // Restore analysis settings
+  if(project.analysis?.settings){
+    const s = project.analysis.settings;
+    if(s.language && app.prefs) app.prefs.lang = s.language;
+    if(s.explain != null && app.prefs) app.prefs.explain = s.explain;
+    if(s.textSize && app.prefs) app.prefs.textSize = s.textSize;
+  }
+  // Restore last query
+  if(project.navigation?.lastQuery){
+    app.lastGoal = { text: project.navigation.lastQuery };
+  }
+  // Restore navigation history & cursor
   const history=project.navigation?.history||[];
-  if(app.navigation&&history.length){app.navigation.entries=history.slice(-app.navigation.limit);app.navigation.index=app.navigation.entries.length-1;app.navigation.onChange(app.navigation.snapshot());}
+  if(app.navigation&&history.length){
+    app.navigation.entries=history.slice(-app.navigation.limit);
+    const cursor = project.navigation?.cursorIndex;
+    app.navigation.index = (cursor != null && !isNaN(Number(cursor)))
+      ? Math.max(0, Math.min(app.navigation.entries.length - 1, Number(cursor)))
+      : app.navigation.entries.length - 1;
+    app.navigation.onChange?.(app.navigation.snapshot());
+  }
+  // Restore currentFunction if present and within valid range
+  if(project.navigation?.currentFunction != null){
+    const curAddr = BigInt(project.navigation.currentFunction);
+    const region = (app.regionForAddress ? app.regionForAddress(curAddr) : null) || app.codeRegion?.();
+    if(region && curAddr >= region.vmAddr && curAddr < region.vmAddr + region.size){
+      app.store?.set?.({ currentAddress: curAddr });
+      app.viewer?.goToAddress?.(curAddr);
+    }
+  }
+  // Restore bookmarks
   const bookmarks=project.navigation?.bookmarks||project.user?.bookmarks||[];
   if(bookmarks.length){
     if(app.navigation)app.navigation.bookmarks=bookmarks.slice(-500);
