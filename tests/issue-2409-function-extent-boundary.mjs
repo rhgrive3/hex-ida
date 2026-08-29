@@ -32,7 +32,12 @@ assert.equal(transportedIndex.functionAt(0x1080n), null);
 assert.deepEqual(transportedIndex.functionAt(0x1230n), { start:0x1200n, end:0x1240n, index:2 });
 
 const appSource = await readFile(new URL('../js/app.js', import.meta.url), 'utf8');
-assert.match(appSource, /if\(fn\.end==null\)return \{ok:false,reason:'function-end-unproven'/);
+// An unproven end must never be reported as a proven extent. The app may
+// still offer an analysis window (#2482), but only flagged complete:false
+// with reason 'function-end-unproven' and an honest provenance label.
+assert.match(appSource, /reason:'function-end-unproven'/);
+assert.match(appSource, /complete:false[^}]*reason:'function-end-unproven'/);
+assert.match(appSource, /provenance:'executable-region\+analysis-window'/);
 assert.doesNotMatch(appSource, /fn\.end!=null\?BigInt\(fn\.end\):regionEnd/);
 const adapterSource = await readFile(new URL('../js/analysis/query/app-adapter.js', import.meta.url), 'utf8');
 assert.match(adapterSource, /if \(fn\.end == null\) return \{ ok:false, reason:'function-end-unproven'/);

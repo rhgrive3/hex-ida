@@ -252,6 +252,63 @@ export class SymbolIndex {
     return explicit;
   }
 
+  /*
+   * 解析ウィンドウ用の境界: addr より後ろにある既知の関数開始のうち一番近いもの。
+   * これは関数 extent の主張ではない（#2458 の end 契約とは別物）。
+   * 末尾関数など次が無い場合は null。
+   */
+  nextFunctionStart(addr) {
+    const i = this._floor(this.funcs, addr);
+    if (i < 0 || i + 1 >= this.funcs.length) return null;
+    const next = this.funcs[i + 1];
+    return next > addr ? next : null;
+  }
+
+  /**
+   * 関数先頭から見て、窓を右から締める既知の境界（#464 ガード付き:
+   * 別領域・非実行域・0x40000 超の彼方は境界とみなさない）。無ければ null。
+   * extent の主張ではなく解析窓の境界だけの話。
+   */
+  _containmentBound(index) {
+    if (index < 0 || index >= this.funcs.length) return null;
+    const start = this.funcs[index];
+    const end = this._functionEnd(index);
+    if (end != null) return end;
+    if (index + 1 >= this.funcs.length) return null;
+    const next = this.funcs[index + 1];
+    if (next <= start || next - start > 0x40000n) return null;
+    if (this.functionRegions.length) {
+      const region = this._functionRegion(start);
+      if (!region || this._functionRegion(next) !== region) return null;
+    }
+    return next;
+  }
+
+  /** addr を含む関数の解析窓の右端（先頭でなくても、floor した関数の窓）。締める境界が無ければ null。 */
+  functionWindowBound(addr) {
+    return this._containmentBound(this._floor(this.funcs, addr));
+  }
+
+  /**
+   * そのアドレスを含む関数の先頭（ containment ）。end（範囲の証明）は主張しない。
+   *
+   * functionAt は #2409 のとおり「範囲が未証明なら途中アドレスを返さない」。
+   * でも「この命令がどの関数の中か」は範囲の証明がなくても安全に答えられる。
+   * ルールは #2458 以前の窓（旧 _functionEnd の next-start 派生）と同一。
+   * exact start は常に自身の所有。
+   */
+  functionStartAt(addr) {
+    const i = this._floor(this.funcs, addr);
+    if (i < 0) return null;
+    const start = this.funcs[i];
+    if (start === addr) return start;
+    const bound = this._containmentBound(i);
+    if (bound == null || addr >= bound) return null;
+    if (this.functionRegions.length
+      && this._functionRegion(addr) !== this._functionRegion(start)) return null;
+    return start;
+  }
+
   /** そのアドレスを含む関数の {start, end}。分からなければ null。 */
   functionAt(addr) {
     const i = this._floor(this.funcs, addr);

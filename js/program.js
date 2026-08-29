@@ -217,9 +217,9 @@ export class ProgramIndex {
   }
   functionStartOf(addr) {
     if (!this.symbols || !this.symbols.functionCount) return null;
+    if (this.symbols.functionStartAt) return this.symbols.functionStartAt(addr);
     const fn = this.symbols.functionAt(addr);
-    if (!fn || (fn.end != null && addr >= fn.end)) return null;
-    return fn.start;
+    return fn && !(fn.end != null && addr >= fn.end) ? fn.start : null;
   }
   _regionFor(addr) {
     const a=BigInt(addr);
