@@ -198,6 +198,20 @@ function validConditionalOperand(mnemonic, ops) {
     && condition.extend == null;
 }
 
+function modifierFreeImmediate(op) {
+  return op?.k === 'imm' && op.shift == null && op.extend == null;
+}
+
+function validScalarImmediateModifiers(mnemonic, ops) {
+  if (['lsl','lsr','asr','ror'].includes(mnemonic) && ops[2]?.k === 'imm') return modifierFreeImmediate(ops[2]);
+  if (mnemonic === 'extr') return modifierFreeImmediate(ops[3]);
+  if (['ubfm','sbfm','bfm','ubfx','sbfx','ubfiz','sbfiz','bfxil','bfi'].includes(mnemonic)) {
+    return modifierFreeImmediate(ops[2]) && modifierFreeImmediate(ops[3]);
+  }
+  if (mnemonic === 'bfc') return modifierFreeImmediate(ops[1]) && modifierFreeImmediate(ops[2]);
+  return true;
+}
+
 export function liftArm64IntegerEffects(instruction, options = {}) {
   const mnemonic = String(instruction?.mnemonic || '').toLowerCase();
   const ops = Array.isArray(instruction?.ops) ? instruction.ops : [];
@@ -215,6 +229,10 @@ export function liftArm64IntegerEffects(instruction, options = {}) {
   if (!validConditionalOperand(mnemonic, ops)) {
     return createArm64EffectContext(instruction, options).partial(
       `arm64-${mnemonic}-condition-operand-unencodable`, ['registers','flags','other']);
+  }
+  if (!validScalarImmediateModifiers(mnemonic, ops)) {
+    return createArm64EffectContext(instruction, options).partial(
+      `arm64-${mnemonic}-immediate-modifier-unencodable`, ['registers','other']);
   }
   if (!validMovEncoding(mnemonic, ops)) {
     return createArm64EffectContext(instruction, options).partial(

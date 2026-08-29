@@ -248,9 +248,30 @@ function multiplyDivideEncodingFailure(instruction) {
   return null;
 }
 
+function modifierFreeImmediate(op) {
+  return op?.k === 'imm' && op.shift == null && op.extend == null;
+}
+
+function scalarImmediateModifierEncodingFailure(mnemonic, ops) {
+  if (['lsl','lsr','asr','ror'].includes(mnemonic) && ops[2]?.k === 'imm' && !modifierFreeImmediate(ops[2])) {
+    return `arm64-${mnemonic}-immediate-modifier-unencodable`;
+  }
+  if (mnemonic === 'extr' && !modifierFreeImmediate(ops[3])) return 'arm64-extr-immediate-modifier-unencodable';
+  if (['ubfm','sbfm','bfm','ubfx','sbfx','ubfiz','sbfiz','bfxil','bfi'].includes(mnemonic)
+    && (!modifierFreeImmediate(ops[2]) || !modifierFreeImmediate(ops[3]))) {
+    return `arm64-${mnemonic}-immediate-modifier-unencodable`;
+  }
+  if (mnemonic === 'bfc' && (!modifierFreeImmediate(ops[1]) || !modifierFreeImmediate(ops[2]))) {
+    return 'arm64-bfc-immediate-modifier-unencodable';
+  }
+  return null;
+}
+
 function registerOnlyIntegerEncodingFailure(instruction) {
   const mnemonic = instructionMnemonic(instruction);
   const ops = Array.isArray(instruction?.ops) ? instruction.ops : [];
+  const immediateFailure = scalarImmediateModifierEncodingFailure(mnemonic, ops);
+  if (immediateFailure) return immediateFailure;
   if (!isGpOrZrRegister(ops[0])) return null;
   const widthBits = Number(ops[0]?.bits || 0);
   const widthSensitiveIndices = mnemonic === 'extr' ? [1,2]
