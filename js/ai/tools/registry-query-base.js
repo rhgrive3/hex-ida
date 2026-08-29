@@ -55,34 +55,10 @@ function queryPaging(registry, tool, params, cursor) {
   return { offset, makeCursor };
 }
 
-function assemblyLine(row) {
-  return [addressText(row?.address), row?.mnemonic, row?.operands].filter(Boolean).join(' ');
-}
-
-async function augmentFunctionSummary(context, registry, base, address) {
-  if (!base?.found || typeof context.getInstructions !== 'function') return base;
-  const page = await context.getInstructions(address, {
-    offset:0,
-    limit:160,
-    signal:registry.executionSignal,
-  });
-  const rows = pageRows(page);
-  let pseudocode = base.pseudocodeExcerpt ?? null;
-  if (!pseudocode && typeof context.decompile === 'function') {
-    try {
-      const text = await context.decompile(address, { signal:registry.executionSignal });
-      if (typeof text === 'string') pseudocode = text.slice(0, 16000);
-    } catch { /* decompile is optional; function truth still stands */ }
-  }
-  return {
-    ...base,
-    assemblyExcerpt:rows.map(assemblyLine).join('\n').slice(0, 30000),
-    assemblyReturned:rows.length,
-    assemblyTotal:Number.isFinite(Number(page?.total)) ? Number(page.total) : null,
-    assemblyComplete:page?.complete === true,
-    pseudocodeExcerpt:pseudocode,
-    analysisAuthority:'AnalysisQueryAPI',
-  };
+function markQueryAuthority(value) {
+  return value && typeof value === 'object'
+    ? { ...value, analysisAuthority:'AnalysisQueryAPI' }
+    : value;
 }
 
 function installQueryOverrides(registry, context) {
@@ -90,15 +66,11 @@ function installQueryOverrides(registry, context) {
 
   const originalGetFunction = registry.get('get_function')?.execute;
   if (originalGetFunction) replace(registry, 'get_function', async (args) =>
-    augmentFunctionSummary(context, registry, await originalGetFunction(args), args.address));
+    markQueryAuthority(await originalGetFunction(args)));
 
   const originalCurrent = registry.get('get_current_function')?.execute;
-  if (originalCurrent) replace(registry, 'get_current_function', async (args) => {
-    const base = await originalCurrent(args);
-    return base?.found && base.address != null
-      ? augmentFunctionSummary(context, registry, base, base.address)
-      : base;
-  });
+  if (originalCurrent) replace(registry, 'get_current_function', async (args) =>
+    markQueryAuthority(await originalCurrent(args)));
 
   const originalInspect = registry.get('inspect_function_region')?.execute;
   if (originalInspect) replace(registry, 'inspect_function_region', async (args) => {
