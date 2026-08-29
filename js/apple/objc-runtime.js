@@ -223,8 +223,11 @@ export function resolveObjcDispatch(index, { receiverType = null, selector, clas
   const sameImplementation = !!top && top.imp != null && candidates.every((m) => m.imp != null && m.imp.toString() === top.imp.toString());
   const uniqueByEvidence = !!top && top.imp != null && (!second || sameImplementation || (!cleanReceiver && top.score - second.score >= 0.16));
   const categoryComplete = index.completeness?.categories?.complete === true;
-  const metadataComplete = index.completeness?.complete === true;
-  const partialBlocksVerification = cleanReceiver ? !categoryComplete : !metadataComplete;
+  // A complete scan of the current Mach-O image is not proof that every
+  // Objective-C implementation available to the runtime has been indexed.
+  // Without a proven receiver type, keep current-image hits as candidates
+  // rather than turning local uniqueness into a process-wide exact target.
+  const partialBlocksVerification = cleanReceiver ? !categoryComplete : true;
   const unambiguous = uniqueByEvidence && !partialBlocksVerification;
   return {
     resolved: unambiguous ? top : null,
@@ -234,7 +237,11 @@ export function resolveObjcDispatch(index, { receiverType = null, selector, clas
     receiverType: cleanReceiver,
     selector,
     classMethod: !!classMethod,
-    reason: unambiguous ? top.reason : (partialBlocksVerification ? 'Objective-C runtime metadata is partial; unseen category/implementation may change dispatch' : 'multiple plausible Objective-C implementations'),
+    reason: unambiguous ? top.reason : (partialBlocksVerification
+      ? (cleanReceiver
+        ? 'Objective-C runtime metadata is partial; unseen category/implementation may change dispatch'
+        : 'receiver type is unknown and the Objective-C runtime universe is open; current-image uniqueness is not a unique dispatch proof')
+      : 'multiple plausible Objective-C implementations'),
     partial: partialBlocksVerification,
   };
 }

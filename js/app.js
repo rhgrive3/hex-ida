@@ -1084,7 +1084,10 @@ class App {
     this.swiftBusy=(async()=>{
       const read=(addr,len)=>this.backend.readAt(addr,len).then((r)=>(r&&r.found?r.bytes:null)).catch(()=>null);
       try {
-        const model=await buildSwiftMetadataModel(read,regions,{budget:20000});
+        const model=await buildSwiftMetadataModel(read,regions,{
+          budget:20000,
+          resolvePointer:(raw,context)=>this.backend.resolvePointer(raw,{...context,sliceIndex:slice}),
+        });
         if(epoch!==this.backend.gen || this.store.get('sliceIndex')!==slice) return null;
         this.swiftModel=model; this.swiftRuntime=buildSwiftRuntimeIndex(model);
         const exec=this.executableRegions(); const names=[];

@@ -380,8 +380,10 @@ function parseFunctionStarts(r, dc, image, sharedBudget = null) {
   let p = dc.offset;
   const end = dc.offset + dc.size;
   let addr = image.imageBase;
+  const maxAddress = image.bits === 32 ? 0xffffffffn : 0xffffffffffffffffn;
   const alignment = (image.arch === 'arm64' || image.arch === 'arm64e' || image.arch === 'arm64_32') ? 4n : image.arch === 'arm' ? 2n : 1n;
   const status = image.metadata.functionStarts = { complete: true, recovered: 0, partialReason: null };
+  let terminated = false;
   while (p < end) {
     if (!budget.take({ records:1, operations:1, estimatedHeapBytes:32 }, 'function-start-record')) { status.complete=false; status.partialReason='metadata-budget'; break; }
     let x;
@@ -392,18 +394,26 @@ function parseFunctionStarts(r, dc, image, sharedBudget = null) {
       image.warnings.push(`LC_FUNCTION_STARTS: ${e.message}`); break;
     }
     p = x.next;
-    if (x.value === 0n) break;
+    if (x.value === 0n) { terminated = true; break; }
+    if (addr < 0n || addr > maxAddress || x.value > maxAddress - addr) {
+      status.complete = false; status.partialReason = 'address-overflow';
+      image.warnings.push('LC_FUNCTION_STARTS address overflow'); break;
+    }
     const next = addr + x.value;
-    if (next < addr) { image.warnings.push('LC_FUNCTION_STARTS address overflow'); break; }
     addr = next;
     const seg = image.segmentAt(addr);
     if (!seg || !seg.perms.execute || (alignment > 1n && addr % alignment !== 0n)) {
+      status.complete = false; status.partialReason = 'invalid-entry';
       image.warnings.push(`invalid LC_FUNCTION_STARTS entry 0x${addr.toString(16)}`);
-      continue;
+      break;
     }
     if (!budget.take({ inputBytes:x.bytes, objects:1, estimatedHeapBytes:128 }, 'function-start-output')) { status.complete=false; status.partialReason='metadata-budget'; break; }
     image.functions.push(functionSeed(addr, { source: 'function_starts', confidence: 0.995 }));
     status.recovered++;
+  }
+  if (!terminated && p >= end && status.complete) {
+    status.complete = false; status.partialReason = 'missing-terminator';
+    image.warnings.push('LC_FUNCTION_STARTS stream is missing its zero terminator');
   }
 }
 

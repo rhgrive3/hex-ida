@@ -715,6 +715,9 @@ export class Backend {
   strings(params, onProgress) { return this.call('strings', params, null, onProgress); }
   xrefs(params, onProgress) { return this.call('xrefs', params, null, onProgress); }
   readAt(addr, len, text) { return this.call('readAt', { addr, len, text }); }
+  resolvePointer(raw, context = {}) {
+    return this._callTo('platform', 'resolvePointer', { raw, address: context?.address ?? null, sliceIndex: context?.sliceIndex ?? null });
+  }
   binaryMetadata(kind = 'summary', start = 0, limit = 500) {
     if (this.formatId !== 'macho') return this._callTo('platform', 'metadata', { kind, start, limit });
     const slice = this.legacyInfo?.slices?.[0] || null;
