@@ -164,16 +164,29 @@ function u64(b, o) {
  * read(addr, len) を、64 KiB ごとにまとめて読むように包む。
  * クラス表は飛び飛びに読むので、素直に呼ぶと往復が多くなりすぎる。
  */
-export function pagedReader(read, pageBytes = 65536, maxPages = 96) {
+export function pagedReader(read, pageBytes = 65536, maxPages = 96, options = {}) {
+  const signal = options?.signal ?? null;
   const pages = new Map();
   const direct = async (addr, len, soft) => {
+    if (signal?.aborted) return null;
     const got = await read(addr, len);
     if (!got || !got.length) return null;
     // soft: 短くても受け取る（0 で終わる文字列は、区画の端に置かれていることがある）
     if (got.length >= len) return got.subarray(0, len);
-    return soft ? got : null;
+    if (soft) return got;
+    if (got.length < len) {
+      const rest = await direct(BigInt(addr) + BigInt(got.length), len - got.length, soft);
+      if (rest && rest.length >= len - got.length) {
+        const combined = new Uint8Array(len);
+        combined.set(got, 0);
+        combined.set(rest.subarray(0, len - got.length), got.length);
+        return combined;
+      }
+    }
+    return null;
   };
   return async function get(addr, len, soft) {
+    if (signal?.aborted) return null;
     if (addr == null || len <= 0) return null;
     const page = (addr / BigInt(pageBytes)) * BigInt(pageBytes);
     const off = Number(addr - page);
@@ -181,6 +194,7 @@ export function pagedReader(read, pageBytes = 65536, maxPages = 96) {
       const key = page.toString();
       let buf = pages.get(key);
       if (buf === undefined) {
+        if (signal?.aborted) return null;
         buf = await read(page, pageBytes);
         if (pages.size >= maxPages) pages.delete(pages.keys().next().value);
         pages.set(key, buf || null);

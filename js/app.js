@@ -84,6 +84,7 @@ class App {
     this.swiftModel = null;
     this.swiftRuntime = null;
     this.swiftBusy = null;
+    this.swiftBusyAbort = null;
     this.swiftBusyEpoch = -1;
     this.recognition = null;
     this.recognitionBusy = null;
@@ -548,9 +549,11 @@ class App {
       this.fields = EMPTY_FIELDS;
       this.objcModel = null;
       this.objcRuntime = null;
+      this.swiftBusyAbort?.abort('swift-reset');
       this.swiftModel = null;
       this.swiftRuntime = null;
       this.swiftBusy = null;
+      this.swiftBusyAbort = null;
       this.swiftBusyEpoch = -1;
       this.recognition = null;
       this.recognitionBusy = null;
@@ -1080,30 +1083,37 @@ class App {
   }
 
   async ensureSwift() {
-    const epoch=this.backend.gen;
+    const epoch = this.backend.gen;
     if (this.swiftModel && this.swiftRuntime) return this.swiftModel;
-    if (this.swiftBusy && this.swiftBusyEpoch===epoch) return this.swiftBusy;
-    const regions=this.store.get('regions') || [];
-    if (!regions.some((r)=>/^__swift5_/.test(r.section||''))) return null;
-    const slice=this.store.get('sliceIndex');
-    this.swiftBusyEpoch=epoch;
-    this.swiftBusy=(async()=>{
-      const read=(addr,len)=>this.backend.readAt(addr,len).then((r)=>(r&&r.found?r.bytes:null)).catch(()=>null);
+    if (this.swiftBusy && this.swiftBusyEpoch === epoch) return this.swiftBusy;
+    const regions = this.store.get('regions') || [];
+    if (!regions.some((r) => /^__swift5_/.test(r.section || ''))) return null;
+    const slice = this.store.get('sliceIndex');
+    this.swiftBusyAbort?.abort('swift-slice-superseded');
+    const controller = new AbortController();
+    this.swiftBusyAbort = controller;
+    this.swiftBusyEpoch = epoch;
+    this.swiftBusy = (async () => {
+      const read = (addr, len) => this.backend.readAt(addr, len).then((r) => (r && r.found ? r.bytes : null)).catch(() => null);
       try {
         const model=await buildSwiftMetadataModel(read,regions,{
           budget:20000,
+          signal:controller.signal,
           resolvePointer:(raw,context)=>this.backend.resolvePointer(raw,{...context,sliceIndex:slice}),
         });
-        if(epoch!==this.backend.gen || this.store.get('sliceIndex')!==slice) return null;
-        this.swiftModel=model; this.swiftRuntime=buildSwiftRuntimeIndex(model);
-        const exec=this.executableRegions(); const names=[];
-        for(const type of model.types||[]) for(const method of type.methods||type.vtable||[]) {
-          if(method?.impl!=null && exec.some((r)=>method.impl>=r.vmAddr&&method.impl<r.vmAddr+r.size)) names.push({addr:method.impl,name:`${type.name||'SwiftType'}::method_${method.index}`,source:'swift-metadata'});
+        if (controller.signal.aborted || epoch !== this.backend.gen || this.store.get('sliceIndex') !== slice) return null;
+        this.swiftModel = model; this.swiftRuntime = buildSwiftRuntimeIndex(model);
+        const exec = this.executableRegions(); const names = [];
+        for (const type of model?.types || []) for (const method of type.methods || type.vtable || []) {
+          if (method?.impl != null && exec.some((r) => method.impl >= r.vmAddr && method.impl < r.vmAddr + r.size)) names.push({ addr: method.impl, name: `${type.name || 'SwiftType'}::method_${method.index}`, source: 'swift-metadata' });
         }
-        if(names.length){this.symbols.addNames(names);this.symbols.addFunctions(names.map((x)=>x.addr));this.viewer.setSymbols(this.symbols);}
+        if (names.length) { this.symbols.addNames(names); this.symbols.addFunctions(names.map((x) => x.addr)); this.viewer.setSymbols(this.symbols); }
         return model;
       } catch { return null; }
-      finally { if(this.swiftBusyEpoch===epoch){this.swiftBusy=null;this.swiftBusyEpoch=-1;} }
+      finally {
+        if (this.swiftBusyEpoch === epoch) { this.swiftBusy = null; this.swiftBusyEpoch = -1; }
+        if (this.swiftBusyAbort === controller) { this.swiftBusyAbort = null; }
+      }
     })();
     return this.swiftBusy;
   }
