@@ -754,9 +754,10 @@ async function swiftReflectionFunctionStarts(slice, lo, hi, requestId) {
       addRelative(desc + 12n, hv.getInt32(12, true));
 
       const generic = !!(flags & 0x80);
-      const specific = (flags >>> 16) & 0xffff;
-      const metadataInit = specific & 0x3;
-      const resilientSuperclass = kind === 16 && !!(specific & (1 << 13));
+      const classLayout = kind === 16 ? globalThis.HexSwiftAbiLayout.classDescriptorTail(flags) : null;
+      const specific = classLayout?.specific ?? ((flags >>> 16) & 0xffff);
+      const metadataInit = classLayout?.metadataInitKind ?? (specific & 0x3);
+      const resilientSuperclass = classLayout?.hasResilientSuperclass ?? false;
       const fixedSize = kind === 16 ? 44 : 28;
 
       // For non-generic/non-resilient descriptors the initialization record is
@@ -779,7 +780,7 @@ async function swiftReflectionFunctionStarts(slice, lo, hi, requestId) {
       // Simple class descriptors place VTableDescriptorHeader immediately
       // after the 44-byte fixed record: uint32 offset, uint32 count, then
       // {flags, relative-impl} method descriptors.
-      const hasVTable = kind === 16 && !!(specific & (1 << 15));
+      const hasVTable = classLayout?.hasVTable === true;
       if (hasVTable && !generic && !resilientSuperclass && metadataInit === 0) {
         const vh = await readMappedVM(slice, desc + 44n, 8);
         if (vh) {

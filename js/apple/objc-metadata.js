@@ -49,8 +49,9 @@ function emptyListCompleteness(present = false) {
   return { present, declared: 0, scanned: 0, parsed: 0, capped: false, unreadableEntries: 0, invalidEntries: 0, complete: !present };
 }
 
-async function validateMethodImp(get, imp) {
-  if (imp == null || typeof get.isExecutableAddress !== 'function') return { known:false, valid:imp != null };
+async function validateMethodImp(get, imp, pointerProven = true) {
+  if (!pointerProven) return { known:true, valid:false };
+  if (imp == null || typeof get.isExecutableAddress !== 'function') return { known:false, valid:false };
   try { return { known:true, valid:!!(await get.isExecutableAddress(BigInt(imp))) }; } catch { return { known:true, valid:false }; }
 }
 
@@ -89,8 +90,8 @@ async function methodList(get, listAddr, owner, classMethod, source) {
       typeAddr = await decodedPointer(get, u64(b, 8), at + 8n);
       imp = await decodedPointer(get, u64(b, 16), at + 16n);
     }
-    const rawImp = imp;
-    const impProof = source.startsWith('protocol') ? { known:true, valid:false } : await validateMethodImp(get, imp);
+    const rawImp = imp, pointerProven = relative || typeof get.resolvePointer === 'function';
+    const impProof = source.startsWith('protocol') ? { known:true, valid:false } : await validateMethodImp(get, imp, pointerProven);
     if (!source.startsWith('protocol') && impProof.known && !impProof.valid) { invalidEntries++; imp = null; }
     const sel = await cstring(get, nameAddr);
     if (!sel) { invalidEntries++; continue; }

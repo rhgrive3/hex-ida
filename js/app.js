@@ -44,6 +44,20 @@ import { AnalysisQueryAPI, createAppAnalysisQueryAdapter } from './analysis/quer
 const $ = (id) => document.getElementById(id);
 const FUNCTION_DISCOVERY_GLOBAL_CAP = 400_000;
 
+function executableInstructionAddress(app, address) {
+  const addr = BigInt(address);
+  if (!app.executableRegionFor(addr)) return false;
+  const info = app.store?.get?.('fileInfo') || {};
+  const arch = String(info.arch || info.architecture || app.backend?.arch || '').toLowerCase();
+  let alignment = null;
+  if (arch.includes('arm64') || arch.includes('aarch64')) alignment = 4n;
+  else if (arch === 'arm' || arch.includes('armv7')) alignment = 2n;
+  else if (arch.includes('x86') || arch.includes('amd64') || arch.includes('x64')) alignment = 1n;
+  else if (arch.includes('riscv')) alignment = 2n;
+  if (alignment == null) return false;
+  return addr % alignment === 0n;
+}
+
 class App {
   get analysisEpoch() { return this.backend ? this.backend.analysisEpoch : -1; }
 
@@ -1047,7 +1061,7 @@ class App {
         const info = this.store.get('fileInfo');
         const sl = info && info.slices ? info.slices[slice] : null;
         const imageBase = sl && sl.info ? sl.info.textVM : null;
-        const model = await buildObjcRuntimeModel(read, list, { protocolList, categoryList, isExecutableAddress:(addr)=>!!this.executableRegionFor(addr) }, null, imageBase);
+        const model = await buildObjcRuntimeModel(read, list, { protocolList, categoryList, isExecutableAddress:(addr)=>executableInstructionAddress(this,addr) }, null, imageBase);
         if (epoch !== this.backend.gen || this.store.get('sliceIndex') !== slice) return this.fields;
         model.runtimeIndex = model.runtimeIndex || buildObjcRuntimeIndex(model);
         this.objcModel = model;
@@ -1084,7 +1098,7 @@ class App {
     this.swiftBusy=(async()=>{
       const read=(addr,len)=>this.backend.readAt(addr,len).then((r)=>(r&&r.found?r.bytes:null)).catch(()=>null);
       try {
-        const model=await buildSwiftMetadataModel(read,regions,{budget:20000,isExecutableAddress:(addr)=>!!this.executableRegionFor(addr)});
+        const model=await buildSwiftMetadataModel(read,regions,{budget:20000,isExecutableAddress:(addr)=>executableInstructionAddress(this,addr)});
         if(epoch!==this.backend.gen || this.store.get('sliceIndex')!==slice) return null;
         this.swiftModel=model; this.swiftRuntime=buildSwiftRuntimeIndex(model);
         const exec=this.executableRegions(); const names=[];

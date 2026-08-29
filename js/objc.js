@@ -44,7 +44,6 @@ function categoryNames(categories = []) {
 export async function buildObjcRuntimeModel(read, classList, runtimeSections = {}, onProgress, imageBase, pointerFormat) {
   const effectivePointerFormat = pointerFormat ?? classList?.pointerFormat ?? classList?.pointer_format ?? null;
   const isExecutableAddress = typeof runtimeSections?.isExecutableAddress === 'function' ? runtimeSections.isExecutableAddress : null;
-  const base = await buildLegacyObjcModel(read, classList, onProgress, imageBase, effectivePointerFormat, { isExecutableAddress });
   const binaryImage = runtimeSections?.binaryImage || null;
   let resolvePointer = typeof runtimeSections?.resolvePointer === 'function'
     ? runtimeSections.resolvePointer
@@ -65,6 +64,7 @@ export async function buildObjcRuntimeModel(read, classList, runtimeSections = {
       effectivePointerFormat,
     );
   }
+  const base = await buildLegacyObjcModel(read, classList, onProgress, imageBase, effectivePointerFormat, { isExecutableAddress, resolvePointer });
   const extra = await parseObjcExtendedMetadata(read, runtimeSections, {
     imageBase,
     classes: base.classes || [],

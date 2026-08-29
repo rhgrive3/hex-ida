@@ -483,7 +483,7 @@ function parseCompactUnwind(r, image, metadataBudget = null) {
   const textSeg = image.segments.find((s) => s.name === '__TEXT');
   const imageBase = textSeg ? textSeg.address : (image.segments[0] ? image.segments[0].address : 0n);
   const alignment = (image.arch === 'arm64' || image.arch === 'arm64e' || image.arch === 'arm64_32') ? 4n : image.arch === 'arm' ? 2n : 1n;
-  const functionAddresses = new Set();
+  const functionUpperBounds = new Map();
   for (let i = 0; i + 1 < indexCount; i++) {
     if (!budget.take({ records:1, operations:2, estimatedHeapBytes:64 }, 'compact-unwind-page')) { partial('metadata-budget'); break; }
     const e = fileOff + indexOff + i * 12, next = e + 12;
@@ -501,14 +501,15 @@ function parseCompactUnwind(r, image, metadataBudget = null) {
       if (funcOff < rangeStart || funcOff >= rangeEnd) { partial('function-outside-first-level-range'); continue; }
       const addr = imageBase + BigInt(funcOff), seg = image.segmentAt(addr);
       if (!seg?.perms?.execute || (alignment > 1n && addr % alignment !== 0n)) { partial('function-not-executable'); continue; }
-      functionAddresses.add(addr);
+      functionUpperBounds.set(addr, imageBase + BigInt(rangeEnd));
     }
     if (!status.complete && status.partialReasons.includes('metadata-budget')) break;
   }
   if (!status.complete) return;
-  const sortedAddresses=[...functionAddresses].sort((a,b)=>(a<b?-1:a>b?1:0));
+  const sortedAddresses=[...functionUpperBounds.keys()].sort((a,b)=>(a<b?-1:a>b?1:0));
   for(let i=0;i<sortedAddresses.length;i++){
-    const start=sortedAddresses[i],end=sortedAddresses[i+1]??null,sizeBytes=end!=null?Number(end-start):null;
+    const start=sortedAddresses[i],next=sortedAddresses[i+1]??null,pageEnd=functionUpperBounds.get(start)??null;
+    const end=next!=null&&pageEnd!=null&&next<=pageEnd?next:pageEnd,sizeBytes=end!=null?Number(end-start):null;
     image.unwindEntries.push({start,end,sizeBytes,primary:true,source:'compact-unwind'});
     image.functions.push(functionSeed(start,{source:'unwind',confidence:0.95}));
     status.recovered++;

@@ -2,6 +2,7 @@
 
 /* Preserve the latest main worker implementation byte-for-byte in
  * worker-legacy.js, then override only audited entry points. */
+importScripts('./swift-abi-layout.js');
 importScripts('./worker-legacy.js');
 importScripts('./worker-fixes.js');
 importScripts('./worker-xref-memory-fix.js');

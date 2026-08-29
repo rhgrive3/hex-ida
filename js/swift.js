@@ -1,4 +1,8 @@
+import './swift-abi-layout.js';
+
 /* Swift ABI metadata intelligence. */
+const SwiftAbiLayout = globalThis.HexSwiftAbiLayout;
+if (!SwiftAbiLayout) throw new Error('Swift ABI layout helper unavailable');
 const MAX_NAME = 512;
 const DEFAULT_BUDGET = 20000;
 
@@ -93,7 +97,30 @@ export async function parseSwiftFieldDescriptor(read, address, budget = 4096) {
   const out=[]; for(let i=0;i<count;i++){const at=addr+16n+BigInt(i*recordSize),r=await exact(read,at,12);if(!r)break;const flags=u32(r,0),type=await relativeString(read,at+4n,i32(r,4)),name=await relativeString(read,at+8n,i32(r,8));out.push({index:i,flags,name:name||`field_${i}`,mangledType:type,indirect:!!(flags&1),var:!!(flags&2)});} return out;
 }
 
-export async function parseSwiftProtocolDescriptor(read,address){const addr=BigInt(address),b=await exact(read,addr,24);if(!b)return null;const flags=u32(b,0);if(contextKind(flags)!=='protocol')return null;const name=await relativeString(read,addr+8n,i32(b,8));if(!name)return null;return{runtime:'swift',kind:'protocol',address:addr,flags,name,parent:rel(addr+4n,i32(b,4)),numRequirementsInSignature:u32(b,12),numRequirements:u32(b,16),associatedTypeNames:rel(addr+20n,i32(b,20)),requirements:[]};}
+export async function parseSwiftProtocolDescriptor(read,address){
+  const addr=BigInt(address),b=await exact(read,addr,24);if(!b)return null;
+  const flags=u32(b,0);if(contextKind(flags)!=='protocol')return null;
+  const name=await relativeString(read,addr+8n,i32(b,8));if(!name)return null;
+  return{runtime:'swift',kind:'protocol',address:addr,flags,name,parent:rel(addr+4n,i32(b,4)),numRequirementsInSignature:u32(b,12),numRequirements:u32(b,16),associatedTypeNames:rel(addr+20n,i32(b,20)),resilient:SwiftAbiLayout.protocolDescriptor(flags).isResilient,requirements:[],requirementsComplete:false};
+}
+
+async function parseSwiftProtocolRequirements(read,protocol,budget=4096){
+  const declared=Number(protocol?.numRequirements||0),limit=Math.min(normalizeBudget(budget,4096,100000),4096);
+  if(protocol?.numRequirementsInSignature!==0)return{items:[],declared,scanned:0,complete:false,reason:'generic-requirement-signature-unsupported'};
+  if(protocol?.resilient)return{items:[],declared,scanned:0,complete:false,reason:'resilient-protocol-layout-unsupported'};
+  if(!Number.isSafeInteger(declared)||declared<0||declared>limit)return{items:[],declared,scanned:0,complete:false,reason:'protocol-requirement-budget'};
+  const items=[];let scanned=0;
+  for(let i=0;i<declared;i++){
+    const at=protocol.address+24n+BigInt(i*8),b=await exact(read,at,8);
+    if(!b)return{items,declared,scanned,complete:false,reason:'protocol-requirement-unreadable'};
+    scanned++;
+    const decoded=SwiftAbiLayout.protocolRequirement(u32(b,0));
+    if(!decoded.known)return{items,declared,scanned,complete:false,reason:'protocol-requirement-kind-unsupported'};
+    items.push({...decoded,index:i,address:at,defaultImplementation:rel(at+4n,i32(b,4))});
+  }
+  return{items,declared,scanned,complete:items.length===declared,reason:null};
+}
+
 
 async function resolveAbsolutePointer(read,address,options={}) {
   const b=await exact(read,address,8); if(!b)return null; const raw=u64(b);
@@ -182,9 +209,8 @@ async function executableTarget(options,address){
 }
 function vtableShape(type){
   if(type?.kind!=='class')return{present:false,eligible:false};
-  const specific=(type.flags>>>16)&0xffff,hasVTable=!!(specific&(1<<15));
-  if(!hasVTable)return{present:false,eligible:false};
-  return{present:true,eligible:!type.generic&&!(specific&(1<<13))&&(specific&3)===0,specific};
+  const layout=SwiftAbiLayout.classDescriptorTail(type.flags);
+  return{...layout,present:layout.hasVTable,eligible:layout.hasVTable&&layout.canParseTail};
 }
 
 export async function buildSwiftMetadataModel(read,sections,opts={}){
@@ -199,6 +225,15 @@ export async function buildSwiftMetadataModel(read,sections,opts={}){
     else warnings.push(`Swift ${item.kind||'context'} ${item.name||item.address}: ${identity.reason}`);
   }
   const identityStatus=scanCompleteness({declared:types.length+protocols.length,scanned:types.length+protocols.length,parsed:identityResolved,invalidEntries:types.length+protocols.length-identityResolved});
+  let protocolRequirementParsed=0,protocolRequirementUnsupported=0,protocolRequirementUnreadable=0;
+  for(const proto of protocols){
+    const parsed=await parseSwiftProtocolRequirements(read,proto,Math.min(budget,4096));
+    proto.requirements=parsed.items;proto.requirementsComplete=parsed.complete;proto.requirementsStatus=parsed;
+    if(parsed.complete)protocolRequirementParsed++;
+    else if(parsed.reason?.includes('unsupported')||parsed.reason?.includes('budget'))protocolRequirementUnsupported++;
+    else protocolRequirementUnreadable++;
+  }
+  const protocolRequirementStatus=scanCompleteness({present:protocols.length>0,declared:protocols.length,scanned:protocols.length,parsed:protocolRequirementParsed,unsupported:protocolRequirementUnsupported,unreadableSlots:protocolRequirementUnreadable});
   for(const t of types)if(t.fieldDescriptor!=null){try{t.fields=await parseSwiftFieldDescriptor(read,t.fieldDescriptor,Math.min(budget,4096));}catch{t.fields=[];warnings.push(`Swift fields unreadable for ${t.name||t.address}`);typeScan.status.complete=false;typeScan.status.invalidEntries=(typeScan.status.invalidEntries||0)+1;}}
 
   const vtables=[];let vtableDeclared=0,vtableUnsupported=0,vtableUnreadable=0,vtableInvalidTargets=0,vtableParsed=0;
@@ -226,18 +261,25 @@ export async function buildSwiftMetadataModel(read,sections,opts={}){
     const key=String(seed.address);if(seenWitness.has(key))return;seenWitness.add(key);witnessDeclared++;
     const count=Number(seed.count);if(!Number.isSafeInteger(count)||count<0||count>Math.min(budget,4096)){witnessUnsupported++;return;}
     const entries=await parseSwiftWitnessTable(read,seed.address,count,budget,opts);if(entries.length!==count)witnessUnreadable++;
-    const checked=[];for(const entry of entries){const proof=await executableTarget(opts,entry.target);if(entry.rawTarget!=null&&!proof.verified)witnessInvalidTargets++;checked.push({...entry,rawResolvedTarget:entry.target,target:proof.target,resolved:proof.verified});}
+    const requirements=Array.isArray(seed.requirements)?seed.requirements:null,checked=[];
+    for(const entry of entries){
+      const requirement=requirements?.[entry.index]||null,dispatchable=requirement?requirement.isFunctionImplementation===true:true;
+      const proof=dispatchable?await executableTarget(opts,entry.target):{target:null,verified:false};
+      if(dispatchable&&entry.rawTarget!=null&&!proof.verified)witnessInvalidTargets++;
+      checked.push({...entry,requirement,dispatchable,rawResolvedTarget:entry.target,target:proof.target,resolved:dispatchable&&proof.verified});
+    }
     witnessTables.push({...seed,entries:checked});witnessParsed++;
   };
   for(const c of conformances){
     if(c.witnessTable==null)continue;
     const type=c.typeReferenceKind<=1&&c.typeRef!=null?typesByAddress.get(c.typeRef.toString()):null,proto=protocolsByAddress.get(c.protocol?.toString());
-    if(!type||!proto||c.conditionalRequirements!==0||c.resilientWitnesses||proto.numRequirementsInSignature!==0){witnessDeclared++;witnessUnsupported++;continue;}
-    await addWitness({address:c.witnessTable,typeAddress:type.address,protocolAddress:proto.address,typeName:preferredTypeName(type),protocolName:preferredTypeName(proto)||proto.name,count:proto.numRequirements,source:'conformance-descriptor'});
+    const requirements=proto?.requirements||[];
+    if(!type||!proto||c.conditionalRequirements!==0||c.resilientWitnesses||proto.requirementsComplete!==true||requirements.some((r)=>r.isFunctionImplementation!==true)){witnessDeclared++;witnessUnsupported++;continue;}
+    await addWitness({address:c.witnessTable,typeAddress:type.address,protocolAddress:proto.address,typeName:preferredTypeName(type),protocolName:preferredTypeName(proto)||proto.name,count:requirements.length,requirements,source:'conformance-descriptor'});
   }
   for(const w of opts.witnessTables||[])await addWitness({...w,source:w.source||'explicit'});
   const witnessStatus=scanCompleteness({present:witnessDeclared>0,declared:witnessDeclared,scanned:witnessDeclared,parsed:witnessParsed,unsupported:witnessUnsupported,unreadableSlots:witnessUnreadable,invalidTargets:witnessInvalidTargets});
-  const completeness={types:typeScan.status,protocols:protoScan.status,conformances:confScan.status,identity:identityStatus,vtables:vtableStatus,witnessTables:witnessStatus};
+  const completeness={types:typeScan.status,protocols:protoScan.status,protocolRequirements:protocolRequirementStatus,conformances:confScan.status,identity:identityStatus,vtables:vtableStatus,witnessTables:witnessStatus};
   completeness.complete=Object.values(completeness).every((x)=>x&&x.complete===true);
   if(!completeness.complete)warnings.push('Swift runtime metadata is partial; negative dispatch results are not exhaustive');
   return{runtime:'swift',types,protocols,conformances,vtables,witnessTables,warnings,completeness,complete:completeness.complete,truncated:!completeness.complete};
@@ -262,7 +304,7 @@ function dispatchComplete(index,kind){const c=index?.model?.completeness;return 
 export function resolveSwiftDispatch(index,call={}){
   if(!call)return{resolved:null,candidates:[],confidence:0,complete:false};if(call.target!=null)return{kind:'direct',resolved:{target:call.target,name:call.name||null},candidates:[],confidence:call.name?0.99:0.9,complete:true};if(!index)return{kind:call.kind||'indirect',resolved:null,candidates:[],confidence:0,complete:false};
   if(call.kind==='vtable'&&call.slot!=null){const type=dispatchType(index,call),id=addressKey('type',type?.address),methods=(id&&index.vtablesByTypeId.get(id))||(call.typeName!=null?index.vtablesByType.get(call.typeName):null)||[],m=methods.find((x)=>x.index===Number(call.slot));const positive=!!m&&m.impl!=null;const complete=dispatchComplete(index,'vtables');return positive?{kind:'vtable',resolved:m,candidates:[m],confidence:0.9,complete:true}:{kind:'vtable',resolved:null,candidates:m?[m]:[],confidence:0.2,complete,partial:!complete,reason:type?'vtable slot unresolved':'Swift type identity is ambiguous or unavailable'};}
-  if((call.kind==='witness'||call.kind==='existential')&&call.slot!=null){const type=dispatchType(index,call),proto=dispatchProtocol(index,call),pair=type&&proto?`${addressKey('type',type.address)}:${addressKey('protocol',proto.address)}`:null,conf=(pair&&index.witnessesByPairId.get(pair))||(call.typeName&&call.protocolName?index.witnessesByPair.get(`${call.typeName}:${call.protocolName}`):null),table=(index.model.witnessTables||[]).find((w)=>(conf?.witnessTable!=null&&String(w.address)===conf.witnessTable.toString())||(type&&proto&&String(w.typeAddress)===String(type.address)&&String(w.protocolAddress)===String(proto.address))),entry=table?.entries?.find((x)=>x.index===Number(call.slot));const positive=!!entry&&entry.target!=null,complete=dispatchComplete(index,'witnessTables');return positive?{kind:call.kind,resolved:entry,candidates:[entry],confidence:0.86,conformance:conf||null,complete:true}:{kind:call.kind,resolved:null,candidates:entry?[entry]:[],confidence:conf?0.55:0.2,conformance:conf||null,complete,partial:!complete,reason:type&&proto?'witness slot unresolved':'Swift type/protocol identity is ambiguous or unavailable'};}
+  if((call.kind==='witness'||call.kind==='existential')&&call.slot!=null){const type=dispatchType(index,call),proto=dispatchProtocol(index,call),pair=type&&proto?`${addressKey('type',type.address)}:${addressKey('protocol',proto.address)}`:null,conf=(pair&&index.witnessesByPairId.get(pair))||(call.typeName&&call.protocolName?index.witnessesByPair.get(`${call.typeName}:${call.protocolName}`):null),table=(index.model.witnessTables||[]).find((w)=>(conf?.witnessTable!=null&&String(w.address)===conf.witnessTable.toString())||(type&&proto&&String(w.typeAddress)===String(type.address)&&String(w.protocolAddress)===String(proto.address))),entry=table?.entries?.find((x)=>x.index===Number(call.slot));const positive=!!entry&&entry.dispatchable!==false&&entry.target!=null,complete=dispatchComplete(index,'witnessTables');return positive?{kind:call.kind,resolved:entry,candidates:[entry],confidence:0.86,conformance:conf||null,complete:true}:{kind:call.kind,resolved:null,candidates:entry?[entry]:[],confidence:conf?0.55:0.2,conformance:conf||null,complete,partial:!complete,reason:type&&proto?'witness slot unresolved':'Swift type/protocol identity is ambiguous or unavailable'};}
   return{kind:call.kind||'indirect',resolved:null,candidates:[],confidence:0.15,complete:false};
 }
 

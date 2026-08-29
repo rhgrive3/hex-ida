@@ -231,6 +231,14 @@ function markLegacyPartial(status, reason, field = null) {
 }
 
 function cleanPointer(get, value) { return sanitizePointer(value, get.base, get.pointerFormat); }
+async function canonicalPointer(get, value, storageAddress = null) {
+  if (!value) return null;
+  if (typeof get.resolvePointer === 'function') {
+    try { const resolved=await get.resolvePointer(value,{address:storageAddress,imageBase:get.base}); return resolved==null?null:BigInt(resolved); }
+    catch { return null; }
+  }
+  return cleanPointer(get,value);
+}
 
 async function pointer(get, addr) {
   const b = await get(addr, PTR);
@@ -247,9 +255,10 @@ async function pointer(get, addr) {
  * indirect form は selector-reference を 1 段たどれた場合だけ採用し、解決失敗時に
  * storage 自身を direct C string として読み替えない。
  */
-async function validateMethodImp(get, imp) {
-  if (imp == null || typeof get.isExecutableAddress !== 'function') return { known:false, valid:imp != null };
-  try { return { known:true, valid:!!(await get.isExecutableAddress(BigInt(imp))) }; } catch { return { known:true, valid:false }; }
+async function validateMethodImp(get, imp, pointerProven = true) {
+  if (!pointerProven) return { known:true, valid:false, reason:'pointer-resolution-unproven' };
+  if (imp == null || typeof get.isExecutableAddress !== 'function') return { known:false, valid:false, reason:'executable-proof-unavailable' };
+  try { return { known:true, valid:!!(await get.isExecutableAddress(BigInt(imp))), reason:null }; } catch { return { known:true, valid:false, reason:'executable-proof-failed' }; }
 }
 
 async function readMethods(get, listAddr, out, className, prefix, budget, completeness = null) {
@@ -289,10 +298,11 @@ async function readMethods(get, listAddr, out, className, prefix, budget, comple
       }
     } else {
       nameAddr = cleanPointer(get, u64(b, 0));
-      imp = cleanPointer(get, u64(b, 16));
+      imp = await canonicalPointer(get, u64(b, 16), entry + 16n);
     }
     if (imp == null) { markLegacyPartial(completeness, 'method-imp-unresolved', 'incompleteMethodLists'); continue; }
-    const rawImp = imp, impProof = await validateMethodImp(get, imp);
+    const rawImp = imp, pointerProven = relative || typeof get.resolvePointer === 'function' || get.pointerFormat != null;
+    const impProof = await validateMethodImp(get, imp, pointerProven);
     if (impProof.known && !impProof.valid) { markLegacyPartial(completeness, 'method-imp-not-executable', 'invalidImps'); imp = null; }
     const sel = await cstring(get, nameAddr);
     if (!sel) { markLegacyPartial(completeness, 'method-selector-invalid', 'incompleteMethodLists'); continue; }
@@ -614,6 +624,7 @@ export async function buildObjcModel(read, classList, onProgress, imageBase, poi
     ? BigInt(imageBase)
     : (classList.vmAddr / 0x100000000n) * 0x100000000n;
   get.pointerFormat = pointerFormat ?? classList.pointerFormat ?? classList.pointer_format ?? null;
+  get.resolvePointer = opts.resolvePointer || null;
   get.isExecutableAddress = opts.isExecutableAddress || null;
   const total = Math.min(declared, MAX_CLASSES);
 
