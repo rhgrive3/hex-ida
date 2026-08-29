@@ -8,25 +8,24 @@ remain open until the supervisor closes those gates.
 ## Base and identity
 
 ```text
-BASE_SHA=8a614ccd0184d6c25257c25d930b68af7e9ac81f
+BASE_SHA=609c9560104da321eb21487f05c12c73a851fc66
+PRE_FIX_BASE_SHA=8a614ccd0184d6c25257c25d930b68af7e9ac81f
 BRANCH=codex/hex-c2-02
 FEATURE=specs/002-wrapped-interval-congruence
 ```
 
 The authoritative remote is `https://github.com/rhgrive3/ida-245.git`, which
 GitHub resolves to `rhgrive3/hex-ida`. The initial live-main preflight was
-`8a614ccd0184d6c25257c25d930b68af7e9ac81f`; before this checkpoint live
-`origin/main` first advanced to `be5636b1baeadfaef5ae10d81406f02118dca780`
+`8a614ccd0184d6c25257c25d930b68af7e9ac81f`; live `origin/main` subsequently
+advanced through `be5636b1baeadfaef5ae10d81406f02118dca780`
 (the C3 prototype-recovery merge) and then to
-`03def51c52da869b53929ee537546aedddbe689b` (the cross-binary CI scheduling
-merge). The cumulative moving-main delta changes only
-`js/decompiler/types/prototype.js`,
-`tests/phase8/integration/issue-2478-abi-prototype-recovery.test.mjs`,
-`.github/workflows/cross-binary-accuracy.yml`, and
-`tests/issue-497-cross-binary-workflow.mjs`; it does not overlap this lane's
-canonical range/SCCP files or pre-fix test. The lane remains based on the stable
-`BASE_SHA` until the required reconciliation before Review 2. A fresh
-`git ls-remote` and open-PR check are required again before Review 2 and merge.
+`03def51c52da869b53929ee537546aedddbe689b`, `48a0b429...`, and finally
+`609c9560104da321eb21487f05c12c73a851fc66`. The lane was reconciled onto that
+newest SHA before implementation acceptance. Its moving-main delta touches
+only AI/query and ARM64 control-register files plus their tests; it does not
+overlap this lane's canonical range/SCCP files, scalar/integration tests, or
+generated inputs. A fresh remote/open-PR check remains required before Review 2
+and merge.
 
 ## Minimum pre-fix regression
 
@@ -63,7 +62,7 @@ also asserts that the global `x` fact remains full once edge facts are added.
 After implementation, run the identical test and record the exact SHA/output:
 
 ```bash
-POST_FIX_SHA=0902585b2b6113db996404768a58a88e85293255
+POST_FIX_SHA=61788968c61d97c9371a05c33a4517e40417ee12
 node --test tests/phase8/scalar/c2-02-pre-fix.test.mjs
 ```
 
@@ -77,14 +76,17 @@ Additional implementation-head evidence:
 ```text
 T0: git diff --check; node --check range.js; node --check sccp.js — PASS
 T1: range.test.mjs + sccp.test.mjs + pre-fix regression — PASS
-T2: npm run phase8:test — PASS (296 tests, 30/30 discovered files)
+T2: npm run phase8:test — PASS (298 tests, 30/30 discovered files)
 Downstream: c2-02-downstream-range.test.mjs — PASS (2 tests)
 Generated output: no generated files changed; canonical generator not owned by this lane.
 ```
 
-The implementation commit is `0902585b2b6113db996404768a58a88e85293255`.
-Subsequent documentation-only evidence updates must not be confused with this
-production/test head when reproducing the pre/post comparison.
+The implementation is represented by the commits through
+`61788968c61d97c9371a05c33a4517e40417ee12`, with the final source head recorded
+again after this documentation update. The publication digest covers canonical
+facts, edge/block-entry refinements, identity/provenance, completeness, budget,
+and diagnostics. Subsequent documentation-only evidence updates must not be
+confused with the original pre-fix comparison.
 
 ## Staged validation
 
@@ -132,8 +134,11 @@ After convergence and both independent reviews:
 Use the installed Spec Kit workflow through `specify`, clarify (no unresolved
 questions), actual Graft trace, plan, checklist, tasks, read-only analyze, implementation, and
 converge. `ANALYZE=CLEAN` and Sol's architecture/soundness spot-check are required
-before changing production files. Every semantic head change invalidates both
-review approvals and requires convergence plus both review passes again.
+before changing production files. The implementation lane reached
+`CONVERGENCE_RESULT=CLEAN` after the final source/test changes; reviewer-owned
+tasks T037–T050 remain open for the supervisor's review, reconciliation, CI,
+merge, and post-merge gates. Every semantic head change invalidates both review
+approvals and requires convergence plus both review passes again.
 
 The two independent review passes must inspect the actual final diff. Review 1
 constructs fresh malformed, stale, incomplete/cancelled, ambiguity, and boundary
