@@ -1,0 +1,73 @@
+name: Diagnose UI semantic model
+on:
+  push:
+    branches: [integration/all-open-prs-20260829]
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm install --no-save --save-exact playwright@1.55.0
+      - run: npx --no-install playwright install chromium
+      - name: Dump semantic query state
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import { chromium } from 'playwright';
+          import { openApp } from './tests/ai-ui-support.mjs';
+          const browser = await chromium.launch({ headless:true, args:['--no-sandbox'] });
+          const { context, page } = await openApp(browser, { width:1440, height:900, sample:true });
+          const state = await page.evaluate(async () => {
+            const app = window.__app;
+            if (app.symbolsReady) { try { await app.symbolsReady; } catch {} }
+            await app.ensureFunctions(app.codeRegion());
+            const region = app.codeRegion();
+            const list = app.symbols?.functionList?.(region, 4) || [];
+            const addr = list[0]?.addr ?? null;
+            if (addr == null) return { error:'no-function' };
+            const snap = await app.analysisQueries.snapshot();
+            const q = await app.analysisQueries.function(snap, addr);
+            let direct = null, directError = null;
+            try { direct = await app.analyzeFunctionAt(addr); } catch (e) { directError = String(e?.stack || e); }
+            const range = app.validatedFunctionRange(addr);
+            const clean = (v) => {
+              if (typeof v === 'bigint') return '0x' + v.toString(16);
+              if (Array.isArray(v)) return v.slice(0,8).map(clean);
+              if (v && typeof v === 'object') {
+                const out = {};
+                for (const [k,x] of Object.entries(v)) {
+                  if (['bytes','rawBytes'].includes(k)) continue;
+                  try { out[k]=clean(x); } catch {}
+                }
+                return out;
+              }
+              return v;
+            };
+            return clean({
+              addr,
+              architecture: app.store.get('architecture'),
+              capability: app.store.get('capability'),
+              canDisassemble: app.store.get('canDisassemble'),
+              functionCount: app.symbols?.functionCount,
+              range,
+              queryCompleteness:q.completeness,
+              queryStatus:q.status,
+              queryValueKeys:q.value ? Object.keys(q.value) : null,
+              queryHasModel:!!q.value?.model,
+              queryModelKeys:q.value?.model ? Object.keys(q.value.model) : null,
+              directKeys:direct ? Object.keys(direct) : null,
+              directHasModel:!!direct?.model,
+              directError,
+            });
+          });
+          console.log('SEMANTIC_DIAG=' + JSON.stringify(state));
+          await context.close();
+          await browser.close();
+          NODE
