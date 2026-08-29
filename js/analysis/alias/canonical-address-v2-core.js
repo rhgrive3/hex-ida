@@ -18,6 +18,63 @@ export const GENERIC_ROOT_DESCRIPTOR_KINDS = Object.freeze([
 
 const ROOT_KINDS = new Set(GENERIC_ROOT_DESCRIPTOR_KINDS);
 const MAX_DERIVATION_DEPTH = 128;
+const INVALID_ROOT_DESCRIPTOR = Symbol('invalid-root-descriptor');
+
+function identityString(value, { trim = false } = {}) {
+  if (typeof value !== 'string' || !value.trim()) return null;
+  return trim ? value.trim() : value;
+}
+
+function allIdentityStrings(values) {
+  return Array.isArray(values) && values.every((value) => identityString(value) != null);
+}
+
+function identityGraphIsValid(ir, options) {
+  if (identityString(ir.functionId) == null) return false;
+  const values = Array.isArray(ir.values) ? ir.values : [];
+  const nodes = Array.isArray(ir.nodes) ? ir.nodes : [];
+  const blocks = Array.isArray(ir.blocks) ? ir.blocks : [];
+  const valueIds = new Set();
+  for (const value of values) {
+    const id = identityString(value?.id);
+    if (id == null || valueIds.has(id)) return false;
+    valueIds.add(id);
+    if (value.definitionNodeId != null && identityString(value.definitionNodeId) == null) return false;
+    if (value.variableKey != null && identityString(value.variableKey) == null) return false;
+  }
+  const nodeIds = new Set();
+  for (const node of nodes) {
+    const id = identityString(node?.id);
+    if (id == null || nodeIds.has(id)) return false;
+    nodeIds.add(id);
+    if (node.inputs != null && !allIdentityStrings(node.inputs)) return false;
+    if (node.outputs != null && !allIdentityStrings(node.outputs)) return false;
+    if (node.variable?.key != null && identityString(node.variable.key) == null) return false;
+  }
+  const blockIds = new Set();
+  for (const block of blocks) {
+    const id = identityString(block?.id);
+    if (id == null || blockIds.has(id) || !allIdentityStrings(block.nodeIds ?? [])) return false;
+    blockIds.add(id);
+  }
+  const ssaDefinitions = Array.isArray(options.ssa?.definitions) ? options.ssa.definitions : [];
+  const ssaValueIds = new Set();
+  for (const definition of ssaDefinitions) {
+    const id = identityString(definition?.valueId);
+    if (id == null || ssaValueIds.has(id)) return false;
+    ssaValueIds.add(id);
+    if (definition.variableKey != null && identityString(definition.variableKey) == null) return false;
+    if (definition.proof?.sourceSemanticValueId != null && identityString(definition.proof.sourceSemanticValueId) == null) return false;
+    if (definition.proof?.variableIdentity?.key != null && identityString(definition.proof.variableIdentity.key) == null) return false;
+    for (const incoming of definition.incoming ?? []) if (identityString(incoming?.valueId) == null) return false;
+  }
+  for (const use of options.ssa?.uses ?? []) {
+    if (identityString(use?.sourceEntityId) == null || identityString(use?.valueId) == null) return false;
+    const variableKey = use.proof?.variableIdentity?.key ?? use.proof?.sourceVariableKey;
+    if (variableKey != null && identityString(variableKey) == null) return false;
+  }
+  return true;
+}
 
 function parseInteger(value) {
   if (value && typeof value === 'object' && !Array.isArray(value) && Object.hasOwn(value, 'value')) value = value.value;
@@ -81,13 +138,18 @@ function rootIdentityKey(root) {
 // root as the exact canonical derivation. Two spellings of one root identity
 // would silently split every A2 refinement away from the A1 answer.
 export function normalizeRootIdentity(variable, functionId) {
+  const normalizedFunctionId = identityString(functionId);
+  const variableKey = identityString(variable?.key);
+  const variableKind = variable?.kind == null ? 'unknown-state' : identityString(variable.kind);
+  const variableScope = variable?.scope == null ? 'unknown' : identityString(variable.scope);
+  if (normalizedFunctionId == null || variableKey == null || variableKind == null || variableScope == null) return null;
   const identity = {
     kind: 'semantic-state-root',
-    functionId: String(functionId),
+    functionId: normalizedFunctionId,
     variable: {
-      key: String(variable?.key ?? ''),
-      kind: String(variable?.kind ?? 'unknown-state'),
-      scope: String(variable?.scope ?? 'unknown'),
+      key: variableKey,
+      kind: variableKind,
+      scope: variableScope,
       ...(variable?.physicalIdentity == null ? {} : { physicalIdentity: jsonSafe(variable.physicalIdentity) }),
     },
   };
@@ -95,6 +157,7 @@ export function normalizeRootIdentity(variable, functionId) {
 }
 
 export function defaultRootEntityId(rootIdentity) {
+  if (!rootIdentity || typeof rootIdentity !== 'object' || Array.isArray(rootIdentity)) return null;
   return `entity_memory_root_${stableDigest({
     version: CANONICAL_ADDRESS_DERIVATION_VERSION,
     rootIdentity,
@@ -103,9 +166,10 @@ export function defaultRootEntityId(rootIdentity) {
 
 function normalizeGenericDescriptor(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
-  const kind = String(input.kind ?? '');
-  if (!ROOT_KINDS.has(kind)) return null;
-  const addressSpace = input.addressSpace == null ? null : String(input.addressSpace);
+  const kind = identityString(input.kind);
+  if (kind == null || !ROOT_KINDS.has(kind)) return null;
+  const addressSpace = input.addressSpace == null ? null : identityString(input.addressSpace);
+  if (input.addressSpace != null && addressSpace == null) return null;
   if (kind === 'stack-like') {
     const baseOffset = parseInteger(input.baseOffset ?? 0);
     if (baseOffset == null) return null;
@@ -120,8 +184,8 @@ function normalizeGenericDescriptor(input) {
   if (kind === 'rooted-object' || kind === 'global-like' || kind === 'heap-like' || kind === 'tls-like') {
     const baseOffset = parseInteger(input.baseOffset ?? 0);
     if (baseOffset == null) return null;
-    const rootEntityId = input.rootEntityId == null ? null : String(input.rootEntityId).trim();
-    if (input.rootEntityId != null && !rootEntityId) return null;
+    const rootEntityId = input.rootEntityId == null ? null : identityString(input.rootEntityId, { trim: true });
+    if (input.rootEntityId != null && rootEntityId == null) return null;
     const resolvedSpace = addressSpace ?? (kind === 'tls-like' ? 'tls' : null);
     return deepFreeze({
       kind: 'rooted-object',
@@ -161,15 +225,15 @@ function semanticDescriptorCandidates(value, node, variable) {
 function suppliedRootDescriptor(ctx, value, node, variable, expectedAddressSpace) {
   for (const candidate of semanticDescriptorCandidates(value, node, variable)) {
     const normalized = normalizeGenericDescriptor(candidate);
-    if (normalized) return normalized;
+    return normalized ?? INVALID_ROOT_DESCRIPTOR;
   }
 
   const keys = [
     ...(variable?.key == null ? [] : [`variable:${String(variable.key)}`, String(variable.key)]),
     ...(value?.id == null ? [] : [`value:${String(value.id)}`, String(value.id)]),
   ];
-  const fromTable = normalizeGenericDescriptor(descriptorLookup(ctx.options.rootDescriptors, keys));
-  if (fromTable) return fromTable;
+  const rawFromTable = descriptorLookup(ctx.options.rootDescriptors, keys);
+  if (rawFromTable != null) return normalizeGenericDescriptor(rawFromTable) ?? INVALID_ROOT_DESCRIPTOR;
 
   const provider = ctx.options.rootDescriptorProvider;
   if (typeof provider !== 'function') return null;
@@ -188,10 +252,12 @@ function suppliedRootDescriptor(ctx, value, node, variable, expectedAddressSpace
   });
   const raw = provider(request);
   if (raw && typeof raw.then === 'function') throw new TypeError('canonical-address-async-root-provider-unsupported');
-  return normalizeGenericDescriptor(raw);
+  if (raw == null) return null;
+  return normalizeGenericDescriptor(raw) ?? INVALID_ROOT_DESCRIPTOR;
 }
 
 function rootFromDescriptor(descriptor, fallbackIdentity, expectedAddressSpace, widthBits) {
+  if (descriptor === INVALID_ROOT_DESCRIPTOR) return unknown('canonical-root-descriptor-invalid');
   if (!descriptor) return null;
   const addressSpace = descriptor.addressSpace ?? expectedAddressSpace ?? 'memory';
   if (expectedAddressSpace != null && descriptor.addressSpace != null && String(expectedAddressSpace) !== descriptor.addressSpace) {
@@ -350,6 +416,7 @@ function hasPotentialEarlierNonlocalMutation(ctx, node, variableKey) {
 
 function entryRoot(ctx, value, node, variable, expectedAddressSpace) {
   const identity = normalizeRootIdentity(variable, ctx.ir.functionId);
+  if (identity == null) return unknown('canonical-address-root-identity-invalid');
   const descriptor = suppliedRootDescriptor(ctx, value, node, variable, expectedAddressSpace);
   const supplied = rootFromDescriptor(descriptor, identity, expectedAddressSpace, addressWidth(value, node));
   if (supplied) return supplied;
@@ -619,9 +686,12 @@ export function canonicalAddressProofToRegionEvidence(proof) {
 export function deriveCanonicalAddressProof(ir, addressValueId, options = {}) {
   if (!ir || typeof ir !== 'object' || Array.isArray(ir)) return unknown('canonical-address-ir-required');
   if (addressValueId == null) return unknown('canonical-address-value-id-required');
+  const normalizedAddressValueId = identityString(addressValueId);
+  if (normalizedAddressValueId == null || !identityGraphIsValid(ir, options)) return unknown('canonical-address-identity-invalid');
+  const expectedAddressSpace = options.addressSpace == null ? 'memory' : identityString(options.addressSpace);
+  if (expectedAddressSpace == null) return unknown('canonical-address-address-space-invalid');
   const ctx = buildContext(ir, options);
-  const expectedAddressSpace = options.addressSpace == null ? 'memory' : String(options.addressSpace);
-  let proof = deriveValue(ctx, String(addressValueId), expectedAddressSpace, { visiting: new Set(), depth: 0 });
+  let proof = deriveValue(ctx, normalizedAddressValueId, expectedAddressSpace, { visiting: new Set(), depth: 0 });
   if (proof.kind === 'constant') {
     proof = deepFreeze({
       kind: 'absolute',

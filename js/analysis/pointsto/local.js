@@ -476,6 +476,7 @@ function entryRootTarget(definition, functionId, values) {
     scope: 'function',
   };
   const identity = normalizeRootIdentity(variable, functionId);
+  if (identity == null) return null;
   const semanticValue = definition.proof?.sourceSemanticValueId == null
     ? null
     : values.get(String(definition.proof.sourceSemanticValueId));
@@ -620,12 +621,14 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
       // clobber. Treat it as the incoming entry root rather than as TOP,
       // matching the canonical derivation's reading of the same sentinel.
       if (definition.proof?.kind === 'implicit-undef') {
-        return createPointsToSet({ targets: [entryRootTarget(definition, functionId, values)] });
+        const target = entryRootTarget(definition, functionId, values);
+        return target == null ? topPointsTo('unsupported-operation') : createPointsToSet({ targets: [target] });
       }
       return topPointsTo('unsupported-operation');
     }
     if (definition.kind === 'entry') {
-      return createPointsToSet({ targets: [entryRootTarget(definition, functionId, values)] });
+      const target = entryRootTarget(definition, functionId, values);
+      return target == null ? topPointsTo('unsupported-operation') : createPointsToSet({ targets: [target] });
     }
     if (definition.kind === 'phi') {
       let merged = BOTTOM_POINTS_TO;
