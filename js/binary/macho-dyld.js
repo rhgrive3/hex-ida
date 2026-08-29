@@ -414,8 +414,12 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
     return !!seg && segOffset >= 0n && segOffset <= seg.size && ptrSize <= seg.size - segOffset;
   };
   const bind = () => {
-    if (!symbol) return;
-    if (threadedTable && threadedTable.length < threadedTableLimit) { threadedTable.push(snapshotImport()); return; }
+    if (!symbol) { fail('bind encountered before a symbol was set'); return; }
+    if (threadedTable) {
+      if (threadedTable.length < threadedTableLimit) { threadedTable.push(snapshotImport()); return; }
+      fail(`threaded ordinal table exceeds declared ${threadedTableLimit} entries`);
+      return;
+    }
     if (!validLocation()) { fail(`bind location is outside segment ${segIndex} at +0x${segOffset.toString(16)}`); return; }
     const seg = segments[segIndex];
     const address = seg.address + segOffset;
