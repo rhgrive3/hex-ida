@@ -1117,11 +1117,11 @@ class App {
       return {ok:true,start:fn.start,end:windowEnd,region,function:fn,complete:false,reason:'function-end-unproven',provenance:'executable-region+analysis-window'};
     }
     const regionEnd=region.vmAddr+region.size;
-    let end=fn.end!=null?BigInt(fn.end):regionEnd;
+    let end=BigInt(fn.end);
     let complete=true,reason=null;
     if(end<=fn.start){return {ok:false,reason:'invalid-function-range',function:fn,region};}
     if(end>regionEnd){end=regionEnd;complete=false;reason='symbol-range-crosses-executable-region';}
-    return {ok:true,start:fn.start,end,region,function:fn,complete,reason,provenance:'executable-region+symbol-boundary'};
+    return {ok:true,start:fn.start,end,region,function:fn,complete,reason,provenance:'executable-region+proven-function-extent'};
   }
 
   async ensureRecognition(options={}) {
