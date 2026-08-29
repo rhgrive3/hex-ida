@@ -9,7 +9,7 @@ permissions:
 
 concurrency:
   group: cross-binary-oom-repair
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   repair:
@@ -39,4 +39,6 @@ jobs:
           git rm .github/workflows/tmp-cross-binary-oom-repair.yml tools/tmp-cross-binary-oom-repair.py
           git add .github/workflows/cross-binary-accuracy.yml
           git commit -m 'fix(ci): bound cross-binary accuracy peak memory'
+          git fetch origin main
+          git rebase origin/main
           git push origin HEAD:main
