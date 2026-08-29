@@ -17,6 +17,92 @@ async function cstring(read, addr, max = MAX_NAME) {
   if (!end || end === b.length) return null;
   try { return new TextDecoder('utf-8', { fatal: true }).decode(b.subarray(0, end)); } catch { return null; }
 }
+
+function swiftSymbolicReferencePayloadBytes(kind, pointerBytes = 8) {
+  if (kind >= 0x01 && kind <= 0x17) return 4;
+  if (kind >= 0x18 && kind <= 0x1f) return pointerBytes === 4 ? 4 : 8;
+  return 0;
+}
+
+function swiftMangledFragment(bytes) {
+  if (!bytes.length) return null;
+  try { return new TextDecoder('utf-8', { fatal: true }).decode(Uint8Array.from(bytes)); } catch { return null; }
+}
+
+export async function readSwiftMangledName(read, address, options = {}) {
+  if (address == null || typeof read !== 'function') return { complete:false, reason:'unreadable', text:null, rawBytes:[], fragments:[], symbolicReferences:[] };
+  const maxBytes = normalizeBudget(options.maxBytes, MAX_NAME, 4096);
+  const pointerBytes = Number(options.pointerBytes ?? options.pointerSize ?? 8) === 4 ? 4 : 8;
+  let bytes;
+  try { bytes = await read(BigInt(address), maxBytes); } catch { bytes = null; }
+  if (!bytes || !bytes.length) return { complete:false, reason:'unreadable', text:null, rawBytes:[], fragments:[], symbolicReferences:[] };
+
+  const base = BigInt(address), refs = [], fragments = [], fragment = [], paddingOffsets = [];
+  let i = 0, terminated = false, relativeReferenceSeen = false;
+  const flushFragment = () => { const text = swiftMangledFragment(fragment); if (text != null && text) fragments.push(text); fragment.length = 0; };
+  while (i < bytes.length) {
+    const byte = bytes[i];
+    if (byte === 0) { terminated = true; break; }
+    if (byte >= 0x01 && byte <= 0x1f) {
+      flushFragment();
+      if (options.compilerMetadata !== true) return { complete:false, reason:'symbolic-reference-not-authorized', text:null, rawBytes:Array.from(bytes.subarray(0, i + 1)), fragments, symbolicReferences:refs };
+      const payloadBytes = swiftSymbolicReferencePayloadBytes(byte, pointerBytes);
+      if (!payloadBytes || i + 1 + payloadBytes > bytes.length) {
+        return { complete:false, reason:'symbolic-reference-truncated', text:null, rawBytes:Array.from(bytes.subarray(0, Math.min(bytes.length, i + 1))), fragments, symbolicReferences:refs };
+      }
+      const payload = bytes.subarray(i + 1, i + 1 + payloadBytes);
+      const referenceAddress = base + BigInt(i);
+      let candidateTarget = null, rawTarget = null;
+      if (byte <= 0x17) {
+        relativeReferenceSeen = true;
+        candidateTarget = referenceAddress + BigInt(i32(payload, 0));
+      } else {
+        rawTarget = payloadBytes === 8 ? u64(payload, 0) : BigInt(u32(payload, 0));
+      }
+      const resolver = options.resolveSwiftSymbolicReference;
+      let resolvedTarget = null;
+      if (typeof resolver === 'function') {
+        try {
+          const resolved = await resolver({ kind:byte, address:referenceAddress, candidateTarget, rawTarget, payloadBytes:Array.from(payload) });
+          if (resolved != null) resolvedTarget = BigInt(resolved);
+        } catch { resolvedTarget = null; }
+      } else if (byte >= 0x18) {
+        const pointerResolver = options.resolvePointer || options.binaryImage?.resolvePointer || options.binaryImage?.decodePointer;
+        if (typeof pointerResolver === 'function') {
+          try {
+            const resolved = await pointerResolver(rawTarget, { address:referenceAddress, swiftSymbolicReferenceKind:byte });
+            if (resolved != null) resolvedTarget = BigInt(resolved);
+          } catch { resolvedTarget = null; }
+        }
+      }
+      refs.push({ kind:byte, address:referenceAddress, relative:byte <= 0x17, payloadBytes:Array.from(payload), candidateTarget, rawTarget, resolvedTarget, resolved:resolvedTarget != null });
+      i += 1 + payloadBytes;
+      continue;
+    }
+    if (byte === 0xff) { paddingOffsets.push(i); i++; continue; }
+    if (byte < 0x20 || byte === 0x7f) return { complete:false, reason:'invalid-control-byte', text:null, rawBytes:Array.from(bytes.subarray(0, i + 1)), fragments, symbolicReferences:refs };
+    fragment.push(byte);
+    i++;
+  }
+  flushFragment();
+  if (!terminated) return { complete:false, reason:'unterminated', text:null, rawBytes:Array.from(bytes.subarray(0, i)), fragments, symbolicReferences:refs };
+  if (i === 0) return { complete:false, reason:'empty', text:null, rawBytes:[], fragments:[], symbolicReferences:[] };
+  if (paddingOffsets.length && !relativeReferenceSeen) return { complete:false, reason:'unexpected-symbolic-padding', text:null, rawBytes:Array.from(bytes.subarray(0, i)), fragments, symbolicReferences:refs };
+
+  const rawBytes = Array.from(bytes.subarray(0, i));
+  if (!refs.length) {
+    try {
+      const text = new TextDecoder('utf-8', { fatal:true }).decode(bytes.subarray(0, i));
+      return { complete:true, reason:null, text, rawBytes, fragments:[text], symbolicReferences:[], referencesResolved:true };
+    } catch {
+      return { complete:false, reason:'invalid-utf8', text:null, rawBytes, fragments, symbolicReferences:[] };
+    }
+  }
+  return {
+    complete:true, reason:null, text:null, rawBytes, fragments, symbolicReferences:refs,
+    referencesResolved:refs.every((ref) => ref.resolved),
+  };
+}
 function contextKind(flags) { switch (flags & 0x1f) { case 0:return 'module'; case 1:return 'extension'; case 2:return 'anonymous'; case 3:return 'protocol'; case 16:return 'class'; case 17:return 'struct'; case 18:return 'enum'; default:return 'unknown'; } }
 function sectionRange(sections, wanted) {
   const list = Array.isArray(sections) ? sections : Object.values(sections || {});
@@ -87,10 +173,28 @@ export async function parseSwiftNominalDescriptor(read, address) {
   return out;
 }
 
-export async function parseSwiftFieldDescriptor(read, address, budget = 4096) {
+export async function parseSwiftFieldDescriptor(read, address, budget = 4096, options = {}) {
+  if (budget && typeof budget === 'object') { options=budget; budget=4096; }
   if (address == null) return []; const addr=BigInt(address), h=await exact(read,addr,16); if(!h)return[];
   const recordSize=u16(h,10), count=u32(h,12), limit=normalizeBudget(budget,4096,100000); if(recordSize<12||count>limit)return[];
-  const out=[]; for(let i=0;i<count;i++){const at=addr+16n+BigInt(i*recordSize),r=await exact(read,at,12);if(!r)break;const flags=u32(r,0),type=await relativeString(read,at+4n,i32(r,4)),name=await relativeString(read,at+8n,i32(r,8));out.push({index:i,flags,name:name||`field_${i}`,mangledType:type,indirect:!!(flags&1),var:!!(flags&2)});} return out;
+  const out=[];
+  for(let i=0;i<count;i++){
+    const at=addr+16n+BigInt(i*recordSize),r=await exact(read,at,12);if(!r)break;
+    const flags=u32(r,0),typeTarget=rel(at+4n,i32(r,4)),name=await relativeString(read,at+8n,i32(r,8));
+    const typeInfo=typeTarget==null?null:await readSwiftMangledName(read,typeTarget,{...options,compilerMetadata:true});
+    const symbolic=!!typeInfo?.symbolicReferences?.length;
+    out.push({
+      index:i,flags,name:name||`field_${i}`,
+      mangledType:typeInfo?.complete===true&&!symbolic?typeInfo.text:null,
+      mangledTypeEncoding:symbolic||typeInfo?.complete===false?{
+        address:typeTarget, complete:typeInfo?.complete===true, reason:typeInfo?.reason||null,
+        rawBytes:typeInfo?.rawBytes||[], fragments:typeInfo?.fragments||[],
+        symbolicReferences:typeInfo?.symbolicReferences||[], referencesResolved:typeInfo?.referencesResolved===true,
+      }:null,
+      indirect:!!(flags&1),var:!!(flags&2),
+    });
+  }
+  return out;
 }
 
 export async function parseSwiftProtocolDescriptor(read,address){const addr=BigInt(address),b=await exact(read,addr,24);if(!b)return null;const flags=u32(b,0);if(contextKind(flags)!=='protocol')return null;const name=await relativeString(read,addr+8n,i32(b,8));if(!name)return null;return{runtime:'swift',kind:'protocol',address:addr,flags,name,parent:rel(addr+4n,i32(b,4)),numRequirementsInSignature:u32(b,12),numRequirements:u32(b,16),associatedTypeNames:rel(addr+20n,i32(b,20)),requirements:[]};}
@@ -140,12 +244,19 @@ export async function buildSwiftMetadataModel(read,sections,opts={}){
   const budget=normalizeBudget(opts.budget,DEFAULT_BUDGET,100000), typeSec=sectionRange(sections,['__swift5_types']), protoSec=sectionRange(sections,['__swift5_protos']), confSec=sectionRange(sections,['__swift5_proto']);
   const typeScan=await relativePointerSection(read,typeSec,budget,parseSwiftNominalDescriptor), protoScan=await relativePointerSection(read,protoSec,budget,parseSwiftProtocolDescriptor), confScan=await relativePointerSection(read,confSec,budget,(r,a)=>parseSwiftConformanceDescriptor(r,a,opts));
   const types=typeScan.items,protocols=protoScan.items,conformances=confScan.items;
-  for(const t of types)if(t.fieldDescriptor!=null){try{t.fields=await parseSwiftFieldDescriptor(read,t.fieldDescriptor,Math.min(budget,4096));}catch{t.fields=[];typeScan.completeness.complete=false;typeScan.completeness.invalidEntries++;}}
+  const warnings=[];
+  for(const t of types)if(t.fieldDescriptor!=null){try{
+    t.fields=await parseSwiftFieldDescriptor(read,t.fieldDescriptor,Math.min(budget,4096),opts);
+    for(const f of t.fields){
+      if(f.mangledTypeEncoding?.complete===false)warnings.push(`Swift field ${t.name||t.address}.${f.name}: mangled type metadata is partial (${f.mangledTypeEncoding.reason||'unknown'}).`);
+      else if(f.mangledTypeEncoding?.symbolicReferences?.length&&!f.mangledTypeEncoding.referencesResolved)warnings.push(`Swift field ${t.name||t.address}.${f.name}: symbolic mangled type reference remains unresolved.`);
+    }
+  }catch{t.fields=[];warnings.push(`Swift type ${t.name||t.address}: field metadata could not be parsed.`);typeScan.completeness.complete=false;typeScan.completeness.invalidEntries++;}}
   const vtables=[];let vtablesComplete=true;for(const v of opts.vtables||[]){const methods=await parseSwiftVTable(read,v.address,v.count,budget),expected=Math.min(normalizeBudget(v.count,0,100000),budget),x={...v,methods};if(methods.length!==expected||Number(v.count)>budget)vtablesComplete=false;vtables.push(x);const owner=types.find((t)=>t.address.toString()===String(v.typeAddress));if(owner){owner.vtable=methods;owner.methods=methods;}}
   const witnessTables=[];let witnessTablesComplete=true;for(const w of opts.witnessTables||[]){const entries=await parseSwiftWitnessTable(read,w.address,w.count,budget,opts),expected=Math.min(normalizeBudget(w.count,0,100000),budget);if(entries.length!==expected||Number(w.count)>budget||entries.some((x)=>x.resolved!==true))witnessTablesComplete=false;witnessTables.push({...w,entries});}
   const completeness={types:typeScan.completeness,protocols:protoScan.completeness,conformances:confScan.completeness,vtables:{complete:vtablesComplete},witnessTables:{complete:witnessTablesComplete}};
   completeness.complete=Object.values(completeness).every((x)=>x?.complete===true);
-  return{runtime:'swift',types,protocols,conformances,vtables,witnessTables,completeness,complete:completeness.complete,warnings:[]};
+  return{runtime:'swift',types,protocols,conformances,vtables,witnessTables,completeness,complete:completeness.complete,warnings};
 }
 
 function preferredTypeName(t){return t.qualifiedName||t.fullName||(t.moduleName&&t.name?`${t.moduleName}.${t.name}`:t.name)||null;}
