@@ -142,9 +142,16 @@ if (isMain) {
     if (!outputPath) throw new TypeError('stage1-gate-output-required');
     const { stage1GateDefinitions } = await import('./verify.mjs');
     const gates = stage1GateDefinitions();
-    const concurrency = Number.isSafeInteger(requestedConcurrency) && requestedConcurrency > 0
+    const requested = Number.isSafeInteger(requestedConcurrency) && requestedConcurrency > 0
       ? Math.min(requestedConcurrency, gates.length)
       : Math.min(2, gates.length);
+    // GitHub-hosted runners have enough independent process capacity to avoid
+    // serializing nine isolated gates in pairs. The direct library contract is
+    // unchanged; only the CI CLI raises its floor, and the value remains bounded.
+    const ciFloor = process.env.GITHUB_ACTIONS === 'true'
+      ? Math.min(Number(process.env.HEX_STAGE1_CI_CONCURRENCY || 6), gates.length)
+      : 1;
+    const concurrency = Math.max(requested, Number.isSafeInteger(ciFloor) && ciFloor > 0 ? ciFloor : 1);
     const results = await runIsolatedGateBatch({
       repositoryRoot: path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..'),
       headSha,
