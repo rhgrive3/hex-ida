@@ -37,8 +37,8 @@ function normalizeRegisterIdentity(raw) {
 
 function structuredRegisterIdentity(operand) {
   if (operand?.k !== 'reg') return null;
-  if (operand.cls === 'sp') return 'sp';
-  if (operand.cls === 'zr') return 'xzr';
+  if (operand.cls === 'sp') return operand.num == null || operand.num === 31 ? 'sp' : null;
+  if (operand.cls === 'zr') return operand.num == null || operand.num === 31 ? 'xzr' : null;
   if (operand.cls === 'gp' && Number.isInteger(operand.num) && operand.num >= 0 && operand.num <= 30) return `x${operand.num}`;
   return null;
 }
