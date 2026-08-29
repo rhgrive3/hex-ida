@@ -23,6 +23,15 @@ function analyze(ir) {
 
 const congruent = (facts, left, right) => facts.numbers.get(left.id) === facts.numbers.get(right.id);
 
+const VALID_IDENTITY = Object.freeze({
+  binaryId: 'binary-b',
+  functionId: 'function-f',
+  snapshotId: 'snapshot-s',
+  semanticIrId: 'semantic-ir-1',
+  ssaId: 'ssa-1',
+  analyzerVersion: 'phase8-test-1',
+});
+
 test('the same computation over the same operands is one class', () => {
   const f = fixture('cse');
   f.block(0);
@@ -34,6 +43,29 @@ test('the same computation over the same operands is one class', () => {
   const { facts } = analyze(f.build());
   assert.equal(congruent(facts, first, second), true);
   assert.equal(facts.reuseCandidates.some((entry) => entry.valueId === second.id && entry.reuseOf === first.id), true);
+});
+
+test('GVN refuses a scalar artifact with stale identity', () => {
+  const f = fixture('gvn-stale-ranges');
+  f.block(0);
+  f.constant(7, 32);
+  f.ret();
+  const ir = f.build();
+  const state = seedAnalysisState(ir);
+  state.__write('ranges', Object.freeze({
+    completeness: 'complete',
+    identity: { ...VALID_IDENTITY, snapshotId: 'old-snapshot' },
+    facts: new Map(),
+    constants: new Map(),
+  }));
+  const outcome = runPassTransaction(state, { descriptor: GVN_PASS, run: runGvnPass }, {
+    analysis: state,
+    ir,
+    analysisIdentity: VALID_IDENTITY,
+  }, {});
+  assert.equal(outcome.committed, true);
+  assert.equal(outcome.result.status, 'unsupported');
+  assert.equal(state.get('valueNumbers'), null, 'stale scalar facts cannot feed a new value-number artifact');
 });
 
 test('a commutative operator is congruent with its operands swapped, a non-commutative one is not', () => {

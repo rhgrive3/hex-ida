@@ -33,6 +33,7 @@
 
 import { maxSigned, maxUnsigned, minSigned, signedOf, unsignedOf } from './bitvector.js';
 import { createPassDescriptor, createPassResult } from './contract.js';
+import { analysisIdentityMatches, canonicalAnalysisIdentity, isValidatedAnalysisIdentity } from './analysis-identity.js';
 
 export const INDUCTION_PASS = createPassDescriptor({
   id: 'phase8.induction',
@@ -224,7 +225,7 @@ function sameValue(left, right) {
 }
 
 /** A constant from the IR, or from the constants P8-2 proved. */
-function constantOf(value, rangeFacts) {
+function constantOf(value, rangeFacts, expectedIdentity = null) {
   if (value == null) return null;
   if (value.const != null) return BigInt(value.const);
   // The product fact is the canonical scalar owner.  A partial or malformed
@@ -233,14 +234,16 @@ function constantOf(value, rangeFacts) {
   const canonicalFacts = rangeFacts?.facts;
   const canonical = canonicalFacts?.get?.(value.id) ?? null;
   if (canonicalFacts != null) {
-    if (rangeFacts?.completeness === 'complete' && canonical?.constant != null
+    if (isValidatedAnalysisIdentity(rangeFacts?.identity)
+        && (expectedIdentity == null || analysisIdentityMatches(rangeFacts.identity, expectedIdentity))
+        && rangeFacts?.completeness === 'complete' && canonical?.constant != null
         && ['exact', 'conservative'].includes(canonical.status)) {
       return BigInt(canonical.constant.value);
     }
     return null;
   }
-  const proven = rangeFacts?.constants?.get?.(value.id) ?? null;
-  if (proven != null && proven.value != null) return BigInt(proven.value);
+  // A legacy constants projection has no canonical identity and therefore
+  // cannot establish that it belongs to this function/snapshot.
   return null;
 }
 
@@ -250,7 +253,9 @@ function constantOf(value, rangeFacts) {
  * Answers with a reason on every path. `step: null` with no reason would be a
  * fact nobody can act on.
  */
-export function resolveStep(incomingValue, phiValue, { rangeFacts = null, limits = DEFAULT_LIMITS } = {}) {
+export function resolveStep(incomingValue, phiValue, {
+  rangeFacts = null, limits = DEFAULT_LIMITS, analysisIdentity = null,
+} = {}) {
   const { value: resolved, chain } = unwrapCopies(incomingValue, limits);
   const origins = chain.flatMap((instruction) => originIdsOf(instruction));
   const definition = resolved?.def ?? null;
@@ -279,7 +284,7 @@ export function resolveStep(incomingValue, phiValue, { rangeFacts = null, limits
     return { step: null, reason: 'the update subtracts the loop variable from a value, which is not a monotone step', origins: updateOrigins, copies: chain.length };
   }
   const other = leftIsPhi ? right : left;
-  const constant = constantOf(other, rangeFacts);
+  const constant = constantOf(other, rangeFacts, analysisIdentity);
   if (constant == null) {
     return { step: null, reason: 'the step is a variable value', origins: updateOrigins, copies: chain.length, update: resolved };
   }
@@ -436,6 +441,22 @@ export function runInductionPass(context = {}, budget = {}, area = null) {
   const ssa = analysis?.get('ssa');
   const loopFacts = analysis?.get('loops');
   const rangeFacts = analysis?.get('ranges');
+  const resolvedIdentity = canonicalAnalysisIdentity(context);
+  if (!resolvedIdentity.valid || !analysisIdentityMatches(rangeFacts?.identity, resolvedIdentity.identity)) {
+    return createPassResult({
+      descriptor: INDUCTION_PASS,
+      status: 'unsupported',
+      changed: false,
+      completeness: 'unknown',
+      stopReason: `invalid-identity:${resolvedIdentity.valid ? 'scalar range artifact is stale or missing identity' : resolvedIdentity.reason}`,
+      diagnostics: [{
+        severity: 'warning',
+        code: 'phase8.induction.identity',
+        message: 'Induction refused to consume scalar facts without a matching canonical identity.',
+        reason: resolvedIdentity.valid ? 'scalar range artifact is stale or missing identity' : resolvedIdentity.reason,
+      }],
+    });
+  }
   const dominates = createDominance(analysis?.get('dominators'));
   const limits = { ...DEFAULT_LIMITS, ...(budget.limits ?? {}) };
 
@@ -584,9 +605,11 @@ export function runInductionPass(context = {}, budget = {}, area = null) {
       const initValues = [...new Map(outside.map((entry) => [entry.value?.id ?? null, entry.value])).values()];
       const init = initValues.length === 1 ? initValues[0] : null;
       if (init == null) evidence.push('the loop is entered with more than one distinct initial value');
-      const initConstant = constantOf(init, rangeFacts);
+      const initConstant = constantOf(init, rangeFacts, resolvedIdentity.identity);
 
-      const resolutions = inside.map((entry) => resolveStep(entry.value, target, { rangeFacts, limits }));
+      const resolutions = inside.map((entry) => resolveStep(entry.value, target, {
+        rangeFacts, limits, analysisIdentity: resolvedIdentity.identity,
+      }));
       for (const resolution of resolutions) for (const id of resolution.origins) origins.add(id);
       const distinctSteps = new Set(resolutions.map((resolution) => (resolution.step == null ? 'unknown' : String(resolution.step))));
       let step = null;
@@ -630,12 +653,14 @@ export function runInductionPass(context = {}, budget = {}, area = null) {
         const matches = (candidate) => sameValue(candidate, target) || (updateValue != null && sameValue(candidate, updateValue));
         if (matches(left)) {
           predicate = guard.predicate;
-          bound = guard.rightIsZero ? { valueId: null, constant: 0n } : { valueId: right?.id ?? null, constant: constantOf(right, rangeFacts) };
+          bound = guard.rightIsZero ? { valueId: null, constant: 0n } : {
+            valueId: right?.id ?? null, constant: constantOf(right, rangeFacts, resolvedIdentity.identity),
+          };
           comparesUpdated = updateValue != null && sameValue(left, updateValue) && !sameValue(left, target);
         } else if (right != null && matches(right)) {
           // The variable is on the right, so the predicate reads the other way.
           predicate = PREDICATES[guard.predicate].mirror;
-          bound = { valueId: left?.id ?? null, constant: constantOf(left, rangeFacts) };
+          bound = { valueId: left?.id ?? null, constant: constantOf(left, rangeFacts, resolvedIdentity.identity) };
           comparesUpdated = updateValue != null && sameValue(right, updateValue) && !sameValue(right, target);
         } else {
           boundReason = 'the loop guard does not compare this variable';

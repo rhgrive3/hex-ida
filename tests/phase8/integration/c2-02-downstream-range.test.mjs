@@ -21,16 +21,52 @@ function stepFixture() {
   return { counter, amount, update };
 }
 
+const VALID_IDENTITY = Object.freeze({
+  binaryId: 'binary-b',
+  functionId: 'function-f',
+  snapshotId: 'snapshot-s',
+  semanticIrId: 'semantic-ir-1',
+  ssaId: 'ssa-1',
+  analyzerVersion: 'phase8-test-1',
+});
+
 test('induction consumes an exact canonical scalar fact without a duplicate analysis', () => {
   const { counter, amount, update } = stepFixture();
   const canonical = {
     completeness: 'complete',
+    identity: VALID_IDENTITY,
     facts: new Map([[amount.id, singletonFact(bitvector(7n, 32), { valueId: amount.id })]]),
     constants: new Map(),
   };
   const resolved = resolveStep(update, counter, { rangeFacts: canonical });
   assert.equal(resolved.step, 7n);
   assert.equal(resolved.reason, null);
+});
+
+test('induction refuses canonical scalar facts without a validated identity', () => {
+  const { counter, amount, update } = stepFixture();
+  const canonical = {
+    completeness: 'complete',
+    identity: null,
+    facts: new Map([[amount.id, singletonFact(bitvector(7n, 32), { valueId: amount.id })]]),
+    constants: new Map(),
+  };
+  const resolved = resolveStep(update, counter, { rangeFacts: canonical });
+  assert.equal(resolved.step, null);
+  assert.equal(resolved.reason, 'the step is a variable value');
+});
+
+test('induction rejects a range artifact whose identity is stale for the caller', () => {
+  const { counter, amount, update } = stepFixture();
+  const canonical = {
+    completeness: 'complete',
+    identity: { ...VALID_IDENTITY, semanticIrId: 'old-semantic-ir' },
+    facts: new Map([[amount.id, singletonFact(bitvector(7n, 32), { valueId: amount.id })]]),
+    constants: new Map(),
+  };
+  const resolved = resolveStep(update, counter, { rangeFacts: canonical, analysisIdentity: VALID_IDENTITY });
+  assert.equal(resolved.step, null);
+  assert.equal(resolved.reason, 'the step is a variable value');
 });
 
 test('induction refuses singleton-looking partial canonical facts', () => {

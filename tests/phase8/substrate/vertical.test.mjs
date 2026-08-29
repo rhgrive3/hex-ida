@@ -63,6 +63,26 @@ test('cancellation observed after a pass still withholds the whole ledger', () =
   assert.deepEqual(ledger.passes, []);
 });
 
+test('an incomplete optimizer run cannot overwrite a prior complete result', () => {
+  const ir = { ...CONTEXT.ir, blocks: [{ id: 'entry', index: 0 }] };
+  const state = seedAnalysisState(ir);
+  const priorRanges = Object.freeze({ completeness: 'complete', marker: 'authoritative' });
+  state.__write('ranges', priorRanges);
+  const before = state.snapshot();
+  const { ledger, analysis } = runPhase8Vertical({
+    ...CONTEXT,
+    ir,
+    analysis: state,
+    enabledStages: ['scalar-optimization'],
+    sccpLimits: { maxWorkItems: 0 },
+  }, {});
+  assert.equal(ledger.published, false, 'a budget-truncated optimizer set is withheld');
+  assert.equal(ledger.status, 'failed');
+  assert.equal(analysis, state);
+  assert.deepEqual(state.snapshot(), before, 'the authoritative versions stay untouched');
+  assert.equal(state.get('ranges'), priorRanges, 'the complete artifact remains authoritative');
+});
+
 test('a cancellation predicate that throws is treated as cancelled', () => {
   const { ledger } = runPhase8Vertical(CONTEXT, { shouldAbort() { throw new Error('gone'); } });
   assert.equal(ledger.published, false);

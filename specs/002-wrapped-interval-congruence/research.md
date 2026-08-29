@@ -1,7 +1,7 @@
 # Research Notes: HEX-C2-02
 
-**Date**: 2026-08-29  
-**Base**: `8a614ccd0184d6c25257c25d930b68af7e9ac81f`  
+**Date**: 2026-08-29
+**Base**: `8a614ccd0184d6c25257c25d930b68af7e9ac81f`
 **Finding**: `HEX-C2-02`
 
 ## Scope and repository evidence

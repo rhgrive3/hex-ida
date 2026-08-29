@@ -21,7 +21,7 @@ import { stableDigest } from '../../core/identity/index.js';
 
 import { PHASE8_CONTRACT_VERSION, PASS_STAGES, createPassResult } from './contract.js';
 import { IDENTITY_PASS, identityPassObservation, runIdentityPass } from './identity-pass.js';
-import { runPassTransaction, seedAnalysisState } from './transaction.js';
+import { commitAnalysisState, forkAnalysisState, runPassTransaction, seedAnalysisState } from './transaction.js';
 import { SCCP_PASS, runSccpPass } from './sccp.js';
 import { GVN_PASS, runGvnPass } from './valuenumber.js';
 import { DCE_PASS, runDcePass } from './dce.js';
@@ -33,7 +33,7 @@ import { PROVIDER_PASS, runProviderPass } from './providers.js';
 export { PHASE8_CONTRACT_VERSION, PASS_STAGES } from './contract.js';
 export { createPassDescriptor, createPassResult, unchangedResult, ANALYSIS_KEYS, PASS_STATUSES, COMPLETENESS, BUDGET_CLASSES } from './contract.js';
 export { createPhase8ArtifactDescriptor, PHASE8_ARTIFACT_KINDS, PHASE8_ARTIFACT_SCHEMA_VERSION } from './artifact-identity.js';
-export { createAnalysisState, invalidationFor, runPassTransaction, seedAnalysisState, transactionDigest } from './transaction.js';
+export { commitAnalysisState, createAnalysisState, forkAnalysisState, invalidationFor, runPassTransaction, seedAnalysisState, transactionDigest } from './transaction.js';
 export { SCCP_PASS, describeSccp, runSccpPass } from './sccp.js';
 export {
   cardinality, contains, describeRange, emptyFact, emptyRange, evaluateBinaryFact,
@@ -217,9 +217,9 @@ export function runPhase8Vertical(context = {}, budget = {}) {
   // them, and a digest over the full registry would make those two ledgers
   // indistinguishable.
   const registryDigest = passRegistryDigest(passes);
-  let analysis;
+  let authoritative;
   try {
-    analysis = context.analysis ?? seedAnalysisState(context.ir, { types: context.types ?? null });
+    authoritative = context.analysis ?? seedAnalysisState(context.ir, { types: context.types ?? null });
   } catch (error) {
     // Seeding reads upstream facts. If reading them throws, Phase 8 knows
     // nothing about this function and must say so rather than proceeding with a
@@ -235,7 +235,7 @@ export function runPhase8Vertical(context = {}, budget = {}) {
       analysis: null,
     };
   }
-  const before = analysis.snapshot();
+  const before = authoritative.snapshot();
 
   if (aborted(budget)) {
     return {
@@ -246,10 +246,28 @@ export function runPhase8Vertical(context = {}, budget = {}) {
         reason: 'The decompiler budget was already exhausted when the Phase 8 stage was reached.',
       }], registryDigest, before),
       timings: Object.freeze([]),
-      analysis,
+      analysis: authoritative,
     };
   }
 
+  let analysis;
+  try {
+    // Every pass in this vertical sees a private state.  A partial optimizer
+    // set therefore cannot replace a complete artifact that was already
+    // authoritative before the set started.
+    analysis = forkAnalysisState(authoritative);
+  } catch (error) {
+    return {
+      ledger: withheldLedger('failed', 'analysis-fork-failed', [{
+        severity: 'error',
+        code: 'phase8.analysis.fork-failed',
+        message: 'Phase 8 could not create an isolated analysis snapshot.',
+        reason: String(error?.message ?? error),
+      }], registryDigest, before),
+      timings: Object.freeze([]),
+      analysis: authoritative,
+    };
+  }
   const passContext = { ...context, analysis };
   const results = [];
   const timings = [];
@@ -292,13 +310,39 @@ export function runPhase8Vertical(context = {}, budget = {}) {
           reason,
         }], registryDigest, before),
         timings: Object.freeze(timings),
-        analysis,
+        analysis: authoritative,
+      };
+    }
+
+    if (outcome.result.completeness !== 'complete' || outcome.result.status === 'degraded') {
+      return {
+        ledger: withheldLedger('cancelled', `pass-incomplete:${pass.descriptor.id}`, [{
+          severity: 'warning',
+          code: 'phase8.pass.incomplete',
+          message: `Phase 8 pass did not reach a complete fixed point: ${pass.descriptor.id}`,
+          reason: `The pass reported completeness=${outcome.result.completeness} and its private state was discarded.`,
+        }], registryDigest, before),
+        timings: Object.freeze(timings),
+        analysis: authoritative,
       };
     }
 
     results.push(outcome.result);
     for (const key of outcome.invalidated) invalidated.add(key);
     if (typeof pass.observe === 'function') observations[pass.descriptor.id] = pass.observe(passContext);
+  }
+
+  if (!commitAnalysisState(authoritative, analysis, before)) {
+    return {
+      ledger: withheldLedger('failed', 'analysis-concurrent-change', [{
+        severity: 'error',
+        code: 'phase8.analysis.concurrent-change',
+        message: 'Phase 8 discarded its private result because authoritative analysis changed during the run.',
+        reason: 'The initial analysis version snapshot no longer matches the commit boundary.',
+      }], registryDigest, before),
+      timings: Object.freeze(timings),
+      analysis: authoritative,
+    };
   }
 
   const diagnostics = results.flatMap((result) => result.diagnostics);
@@ -320,11 +364,11 @@ export function runPhase8Vertical(context = {}, budget = {}) {
     enabledStages: Object.freeze(enabledStages == null ? [...PASS_STAGES] : [...enabledStages]),
     // Analysis versions before and after. Invalidation is a property a consumer
     // can check, not a claim it has to believe.
-    analysisVersions: Object.freeze({ before, after: analysis.snapshot() }),
+    analysisVersions: Object.freeze({ before, after: authoritative.snapshot() }),
     stopReason: null,
   };
   ledger.publicationDigest = stableDigest({ ...ledger, publicationDigest: undefined });
-  return { ledger: Object.freeze(ledger), timings: Object.freeze(timings), analysis };
+  return { ledger: Object.freeze(ledger), timings: Object.freeze(timings), analysis: authoritative };
 }
 
 /**

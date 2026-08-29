@@ -1,8 +1,8 @@
 # Internal Contract: Canonical Phase 8 Scalar Facts
 
 **Owner**: `js/decompiler/phase8/range.js` (domain) and
-`js/decompiler/phase8/sccp.js` (producer/publication).  
-**Finding**: `HEX-C2-02`  
+`js/decompiler/phase8/sccp.js` (producer/publication).
+**Finding**: `HEX-C2-02`
 **Status**: design contract; implementation must preserve existing public
 compatibility views unless a versioned contract change is required.
 

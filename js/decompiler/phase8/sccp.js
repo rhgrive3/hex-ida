@@ -24,7 +24,7 @@
 
 import {
   bitvector, evaluateBinary, evaluateUnary, extractField, insertField,
-  isSupportedWidth, sameBitvector, signExtend, truncate, zeroExtend,
+  isSupportedWidth, maxUnsigned, sameBitvector, signExtend, truncate, zeroExtend,
 } from './bitvector.js';
 import {
   describeRange, emptyRange, fullRange, join, sameRange, singleton,
@@ -34,6 +34,7 @@ import {
 } from './range.js';
 import { createPassDescriptor, createPassResult } from './contract.js';
 import { stableDigest } from '../../core/identity/index.js';
+import { canonicalAnalysisIdentity } from './analysis-identity.js';
 
 export const SCCP_PASS = createPassDescriptor({
   id: 'phase8.sccp',
@@ -41,10 +42,11 @@ export const SCCP_PASS = createPassDescriptor({
   stage: 'scalar-optimization',
   budgetClass: 'standard',
   consumes: ['cfg', 'ssa'],
-  // It reads nothing about memory, types or loops and rewrites nothing, so every
-  // other analysis survives it untouched.
-  preserves: ['cfg', 'dominators', 'loops', 'ssa', 'memorySsa', 'alias', 'effects', 'valueNumbers', 'deadCode', 'induction', 'types', 'aggregates', 'summaries', 'origins', 'structuredRegions', 'providerHints'],
-  invalidates: [],
+  // Ranges are the canonical scalar input to these derived products. Replacing
+  // them makes an older value-number, induction or aggregate result stale even
+  // though SCCP itself does not rewrite the program.
+  preserves: ['cfg', 'dominators', 'loops', 'ssa', 'memorySsa', 'alias', 'effects', 'deadCode', 'types', 'summaries', 'origins', 'structuredRegions', 'providerHints'],
+  invalidates: ['aggregates', 'induction', 'valueNumbers'],
   produces: ['ranges'],
   description: 'Executable-edge-aware constant propagation with an exact-width wrapped range domain.',
 });
@@ -213,6 +215,22 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
   const ssa = analysis?.get('ssa');
   const blocks = cfg?.blocks ?? [];
   const values = ssa?.values ?? [];
+  const resolvedIdentity = canonicalAnalysisIdentity(context);
+  if (!resolvedIdentity.valid) {
+    return createPassResult({
+      descriptor: SCCP_PASS,
+      status: 'unsupported',
+      changed: false,
+      completeness: 'unknown',
+      stopReason: `invalid-identity:${resolvedIdentity.reason}`,
+      diagnostics: [{
+        severity: 'warning',
+        code: 'phase8.sccp.identity',
+        message: 'SCCP refused to publish scalar facts without a validated canonical identity.',
+        reason: resolvedIdentity.reason,
+      }],
+    });
+  }
   const limits = { ...DEFAULT_LIMITS, ...(context.sccpLimits ?? {}) };
 
   const cells = new Map();
@@ -697,11 +715,13 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
       }
     }).filter((entry) => entry.value != null && entry.to != null);
     const complete = terminator.casesComplete === true || terminator.extra?.casesComplete === true;
+    const selectorMax = maxUnsigned(selectorFact.bits);
+    const labelWidthMismatch = normalizedCases.some((entry) => entry.value < 0n || entry.value > selectorMax);
     const malformed = !Array.isArray(rawCases) || cases.some((entry, index) => {
       const normalized = normalizedCases.find((candidate) => candidate.index === index);
       return normalized == null || normalized.malformed;
     }) || normalizedCases.some((entry, index, all) => all.some((other) => other !== entry
-      && other.value === entry.value && other.to !== entry.to));
+      && other.value === entry.value && other.to !== entry.to)) || labelWidthMismatch;
     const byTarget = new Map();
     for (const entry of normalizedCases) {
       if (!byTarget.has(entry.to)) byTarget.set(entry.to, []);
@@ -972,7 +992,7 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
     const value = valueById.get(valueId);
     return value != null && constantOfValue(value) == null;
   });
-  const inputIdentity = context.analysisIdentity ?? context.identity ?? context.artifactIdentity ?? null;
+  const inputIdentity = resolvedIdentity.identity;
   const inputVersions = typeof analysis?.snapshot === 'function' ? analysis.snapshot() : null;
 
   const boundedDiagnostics = diagnostics.slice(0, 24);
