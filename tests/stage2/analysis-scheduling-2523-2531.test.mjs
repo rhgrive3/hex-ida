@@ -98,7 +98,7 @@ function pointerBytes(value) {
 // dispatching 96 readAt requests at once. Coverage stays at 96 references.
 {
   const refs = Array.from({ length: 96 }, (_, i) => ({ addr: BigInt(i + 1) }));
-  const model = { addressRefs: refs };
+  const model = { addressRefs: refs, semantic: [], facts: { stringRefs: [], strings: [] }, calls: [] };
   let active = 0;
   let peak = 0;
   let reads = 0;

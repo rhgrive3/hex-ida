@@ -329,12 +329,17 @@ function cacheKey(region, startRow, endRow, symbols, maxRows = MAX_INSTRUCTIONS)
 function makeShared(map, key, producer) {
   const controller = new AbortController();
   const entry = { controller, promise: null, waiters: 0, settled: false };
-  entry.promise = Promise.resolve()
-    .then(() => producer(controller.signal))
-    .finally(() => {
-      entry.settled = true;
-      if (map.get(key) === entry) map.delete(key);
-    });
+  try {
+    entry.promise = Promise.resolve(producer(controller.signal))
+      .finally(() => {
+        entry.settled = true;
+        if (map.get(key) === entry) map.delete(key);
+      });
+  } catch (error) {
+    entry.settled = true;
+    entry.promise = Promise.reject(error);
+    if (map.get(key) === entry) map.delete(key);
+  }
   map.set(key, entry);
   return entry;
 }
