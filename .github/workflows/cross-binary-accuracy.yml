@@ -55,8 +55,8 @@ env:
   HEX_FIXTURE_TSUMTSUM_URL: https://raw.githubusercontent.com/rhgrive3/hex/bd7bd61d093592d07fdd9e9b14a859e19dd4c3a9/tests/TsumTsum
   HEX_FIXTURE_YWP_URL: https://raw.githubusercontent.com/rhgrive3/hex/bd7bd61d093592d07fdd9e9b14a859e19dd4c3a9/tests/YWP
   ORACLE_PYTHON_VERSION: '3.12.13'
-  # Two non-pseudocode processes + two persistent pseudocode workers fit the
-  # four CPUs of the public ubuntu runner without creating another Actions job.
+  # Keep two persistent pseudocode workers, but run their memory-heavy phase
+  # after the two non-pseudocode lanes so the runner never hosts both pools at once.
   LOCAL_PSEUDOC_WORKERS: 2
 
 jobs:
@@ -252,17 +252,9 @@ jobs:
             labels+=("nonpseudoc-1")
           fi
 
-          if [[ "$PSEUDOC_CACHE_HIT" != "true" ]]; then
-            node tests/accuracy-pseudoc-parallel.mjs \
-              --target="$target" \
-              --oracle="$oracle" \
-              --workers="$LOCAL_PSEUDOC_WORKERS" \
-              --json > "${pseudoc_output}.tmp" \
-              2> accuracy-local-pseudoc.log &
-            pids+=("$!")
-            labels+=("pseudoc")
-          fi
-
+          # Join both non-pseudocode lanes before starting pseudocode. The
+          # feature sets and worker counts are unchanged; only their memory-heavy
+          # phases no longer overlap on the same hosted runner.
           status=0
           for i in "${!pids[@]}"; do
             if ! wait "${pids[$i]}"; then status=1; fi
@@ -270,6 +262,19 @@ jobs:
             if [[ -f "$log" ]]; then cat "$log"; fi
           done
           if [[ "$status" -ne 0 ]]; then exit "$status"; fi
+
+          if [[ "$PSEUDOC_CACHE_HIT" != "true" ]]; then
+            if ! node tests/accuracy-pseudoc-parallel.mjs \
+              --target="$target" \
+              --oracle="$oracle" \
+              --workers="$LOCAL_PSEUDOC_WORKERS" \
+              --json > "${pseudoc_output}.tmp" \
+              2> accuracy-local-pseudoc.log; then
+              cat accuracy-local-pseudoc.log
+              exit 1
+            fi
+            cat accuracy-local-pseudoc.log
+          fi
 
           if [[ "$CORE_CACHE_HIT" != "true" || "$PINPOINT_CACHE_HIT" != "true" ]]; then
             node --input-type=module <<'NODE'
