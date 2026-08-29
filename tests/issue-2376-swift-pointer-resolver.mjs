@@ -1,3 +1,4 @@
+// Regression boundary: only loader-proven Swift pointer targets may become exact metadata references.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { ByteView } from '../js/binary/reader.js';
