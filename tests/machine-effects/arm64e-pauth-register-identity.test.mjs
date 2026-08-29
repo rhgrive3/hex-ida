@@ -64,6 +64,21 @@ assertIdentityContradictionFailClosed('pacga', [gp(0), zr('x3'), sp()]);
 assertIdentityContradictionFailClosed('braa', [gp(16, 'x17'), sp()]);
 assertIdentityContradictionFailClosed('blraa', [gp(16), sp('x17')]);
 
+// Invalid canonical register fields must not fall through to a presentation
+// string that happens to name an encodable register.
+assertIdentityContradictionFailClosed('pacia', [
+  { k:'reg', cls:'gp', num:31, bits:64, text:'x0' },
+  gp(2),
+]);
+assertIdentityContradictionFailClosed('pacia', [
+  { k:'reg', cls:'gp', num:99, bits:64, text:'x0' },
+  gp(2),
+]);
+assertIdentityContradictionFailClosed('pacia', [
+  { k:'reg', cls:'unknown', num:0, bits:64, text:'x0' },
+  gp(2),
+]);
+
 // effects.js prefers registerId/register/reg/name over text. Pin that exact
 // selection order too so a higher-priority conflicting identity cannot bypass
 // canonical validation merely because text happens to agree.
