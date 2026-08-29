@@ -129,7 +129,7 @@ The matrix is deterministic and no row is removed to obtain a passing score.
 
 The original RISC-V/unsupported-ABI smoke regression is now green after the
 merged PR #2499 and is not evidence for a new fix. A read-only audit was rerun
-against live `origin/main` at `390741dcf6f8d391017b7f1ba224e35b49b973d3`.
+against live `origin/main` at `48a0b42913e63f33a03783f9676994268d8a06e8`.
 The direct canonical classifier/profile rows are covered for Apple arm64 and
 arm64e, AAPCS64, SysV AMD64, Microsoft x64/vectorcall, and RISC-V
 LP64/LP64F/LP64D, including scalar arguments/returns, aggregate boundaries,
@@ -149,10 +149,10 @@ in the prototype consumer:
 
 The minimum deterministic current-main regressions are retained in
 `tests/phase8/abi/hex-c3-02-profile-matrix.test.mjs`. They intentionally fail
-2 of 4 subtests on current main: stale ABI identity is accepted and an
+2 of 4 subtests on the pre-fix base: stale ABI identity is accepted and an
 AAPCS64 two-register aggregate is split into two arguments. These failures are
-the revised counterexamples; production edits remain gated on `ANALYZE=CLEAN`
-and Sol approval.
+the revised counterexamples; the implementation proceeded only after
+`ANALYZE=CLEAN` and Sol approval.
 
 ## Requirements *(mandatory)*
 

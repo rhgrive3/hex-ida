@@ -98,6 +98,19 @@ function normalizeAbiResult(raw) {
     returnReg: raw.returnReg == null ? null : String(raw.returnReg),
     returnBits: raw.returnBits == null ? null : Number(raw.returnBits),
     returnEvidence: raw.returnEvidence ?? null,
+    returnLocations: Array.isArray(raw.returnLocations) ? raw.returnLocations : [],
+    returnPieces: Array.isArray(raw.returnPieces) ? raw.returnPieces : null,
+    returnAggregate: raw.returnAggregate === true,
+    returnIndirect: raw.returnIndirect === true,
+    returnHiddenResultPointer: raw.returnHiddenResultPointer ?? null,
+    abiId:raw.abiId == null ? null : String(raw.abiId),
+    abiSemanticVersion:raw.abiSemanticVersion == null ? null : String(raw.abiSemanticVersion),
+    abiSemanticIdentity:raw.abiSemanticIdentity == null ? null : String(raw.abiSemanticIdentity),
+    abiIdentity:raw.abiIdentity ?? null,
+    abiProvenance:raw.provenance ?? null,
+    abiInvalidation:raw.invalidation ?? null,
+    completeness:raw.completeness ?? null,
+    partial:raw.partial === true,
   };
 }
 

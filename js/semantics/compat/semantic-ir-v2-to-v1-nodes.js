@@ -477,9 +477,22 @@ export function projectNode(node, context) {
         mayThrow: node.call.mayThrow,
         summarySource: node.call.summarySource,
         returnValueIds: node.call.returns.slice(),
+        returnLocations: abi.returnLocations,
+        returnPieces: abi.returnPieces,
+        returnAggregate: abi.returnAggregate,
+        returnIndirect: abi.returnIndirect,
+        returnHiddenResultPointer: abi.returnHiddenResultPointer,
         callCompleteness: node.call.completeness,
         unknownEffects: node.call.unknownEffects,
         abiAdapterStatus: abi.adapterStatus,
+        abiId: abi.abiId,
+        abiSemanticVersion: abi.abiSemanticVersion,
+        abiSemanticIdentity: abi.abiSemanticIdentity,
+        abiIdentity: abi.abiIdentity,
+        abiProvenance: abi.abiProvenance,
+        abiInvalidation: abi.abiInvalidation,
+        abiCompleteness: abi.completeness,
+        abiPartial: abi.partial,
       };
       inst.callArguments = abi.callArguments;
       inst.stackArguments = abi.stackArguments;

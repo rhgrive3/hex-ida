@@ -3,6 +3,11 @@
 **Historical base**: `8a614ccd0184d6c25257c25d930b68af7e9ac81f`  
 **Current pre-implementation base**: `390741dcf6f8d391017b7f1ba224e35b49b973d3`
 
+The final pre-edit reconciliation advanced the implementation branch to live
+`origin/main` `48a0b42913e63f33a03783f9676994268d8a06e8` (PR #2498 merge). The
+same two deterministic consumer regressions and the same locked 66-row matrix
+failures were reproduced there before production edits.
+
 ## Decision: retain one ABI owner
 
 The canonical owner is the registered ABI plugin in `js/targets/abi/**`, with
@@ -187,10 +192,10 @@ TEST_OWNER:
   tests/phase8/abi/hex-c3-02-profile-matrix.test.mjs
 COLLISIONS:
   merged PR #2499 owns the prior prototype overlap; after reconciliation, live
-  main is 390741dcf6f8d391017b7f1ba224e35b49b973d3. Its delta from the #2499
+  main is 48a0b42913e63f33a03783f9676994268d8a06e8. Its delta from the #2499
   merge is PR #2493's ARM64 SIMD GP/ZR guard and test, with no ABI semantic
-  overlap; open PR #2498 changes compact-unwind metadata only. The owner still
-  requires Sol implementation approval.
+  overlap; PR #2498 changes compact-unwind metadata only and is now merged.
+  The implementation was approved by Sol after refreshed clean analysis.
 ```
 
 ## Current-main profile matrix (read-only)
@@ -202,7 +207,7 @@ Command 1 is the minimum deterministic regression and is the required
 node --test tests/phase8/abi/hex-c3-02-profile-matrix.test.mjs
 ```
 
-At `390741dcf6f8d391017b7f1ba224e35b49b973d3`, it reports four subtests:
+At `48a0b42913e63f33a03783f9676994268d8a06e8`, it reports four subtests:
 two pass (selected RISC-V profile and unsupported ABI) and two fail (stale
 `aapcs64@1` accepted as supported; canonical AAPCS64 x0/x1 aggregate split
 into two prototype arguments). Exit status is `1`.
@@ -238,6 +243,39 @@ and SysV explicit aggregate return pieces are omitted. The RISC-V soft/hard
 float class expectations and x86 physical-register aliasing were corrected in
 the final run (`xmmN` is stored as canonical physical `ymmN`); no such harness
 rows remain in the 12 failures.
+
+## Implementation evidence
+
+The implementation was approved after `ANALYZE_RESULT: CLEAN` and the #2499
+collision was closed by its merge. It keeps the registered profile classifier
+as the only placement authority. The adapter now carries semantic identity,
+architecture/profile identity, canonical provenance, and binary/slice/function
+invalidation keys. Prototype recovery consumes canonical argument/return
+classification, preserves aggregate pieces and split register/stack entries,
+and rejects stale, unsupported, malformed, incomplete, cancelled, truncated,
+budget-limited, indirect-call, and caller/callee-conflict evidence.
+
+```text
+IMPLEMENTATION_BASE_SHA: 48a0b42913e63f33a03783f9676994268d8a06e8
+PRE_FIX_COMMAND_1: node --test tests/phase8/abi/hex-c3-02-profile-matrix.test.mjs
+PRE_FIX_RESULT_1: FAIL (exit 1; 2 passing, 2 failing)
+PRE_FIX_COMMAND_2: node tests/phase8/abi/hex-c3-02-required-profile-matrix.mjs
+PRE_FIX_RESULT_2: FAIL (exit 1; MATRIX_SUMMARY total=66 passed=54 failed=12)
+POST_FIX_COMMAND_1: node --test tests/phase8/abi/hex-c3-02-boundaries.test.mjs tests/phase8/abi/hex-c3-02-profile-matrix.test.mjs
+POST_FIX_RESULT_1: PASS (17 tests)
+POST_FIX_COMMAND_2: node tests/phase8/abi/hex-c3-02-required-profile-matrix.mjs
+POST_FIX_RESULT_2: PASS (MATRIX_SUMMARY total=66 passed=66 failed=0)
+POST_FIX_COMMAND_3: npm run phase8:test
+POST_FIX_RESULT_3: PASS (30/30 discovered files; 290 tests)
+FOCUSED_SUBSYSTEM_RESULT: PASS (selected phase5/phase6 ABI, compatibility, and decompiler suites; 42 tests)
+PHASE5_RESULT: PRE_EXISTING_BASELINE (275 pass, 4 fail; exact frozen Clang/LLD unavailable)
+PHASE6_RESULT: PRE_EXISTING_BASELINE (105 pass, 10 fail; exact frozen RISC-V toolchain unavailable)
+CONVERGENCE_RESULT: CLEAN (implementation scope accounted for; no generated tasks)
+```
+
+The full phase5/phase6 failures are environment/toolchain gates with
+`P5_6_TOOLCHAIN_MISMATCH`/`P6_TOOLCHAIN_MISMATCH`, not failures in the changed
+ABI/decompiler suites. No generated artifact input was changed.
 
 ## Alternatives rejected
 
