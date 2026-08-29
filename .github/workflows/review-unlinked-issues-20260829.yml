@@ -36,6 +36,10 @@ jobs:
           node tests/unlinked-swift-runtime.test.mjs
           node tests/unlinked-runtime-hardening.test.mjs
           node tests/unlinked-macho-compact-unwind.test.mjs
+      - name: Install build dependencies
+        run: |
+          rm -rf node_modules
+          npm ci --no-audit --no-fund
       - name: Canonical generated artifact
         run: npm run userscript:build
       - name: Commit reviewed tree
@@ -45,5 +49,5 @@ jobs:
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add -A
-          git commit -m 'fix: harden Swift ABI and runtime target proofs'
+          git commit -m 'fix: resolve unlinked runtime soundness issues'
           git push origin HEAD:fix/unlinked-issues-20260829
