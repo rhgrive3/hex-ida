@@ -53,6 +53,10 @@ assertAccepted('pacia', [zr(), sp()]);
 assertAccepted('pacga', [gp(0), zr(), sp()]);
 assertAccepted('braa', [gp(16), sp()]);
 assertAccepted('blraa', [gp(16), gp(17)]);
+// Preserve compatibility with canonical structured records that omit the
+// encoded register number for semantic SP/XZR but otherwise agree.
+assertAccepted('pacia', [gp(0), { k:'reg', cls:'sp', bits:64, text:'sp' }]);
+assertAccepted('pacia', [{ k:'reg', cls:'zr', bits:64, text:'xzr' }, sp()]);
 
 // The finite validator must not validate one canonical register identity and
 // then let effects consume a conflicting presentation/raw identity.
@@ -77,6 +81,16 @@ assertIdentityContradictionFailClosed('pacia', [
 assertIdentityContradictionFailClosed('pacia', [
   { k:'reg', cls:'unknown', num:0, bits:64, text:'x0' },
   gp(2),
+]);
+// If the encoding field is explicitly present for semantic SP/XZR it must be
+// register 31; otherwise the structured record contradicts the A64 domain.
+assertIdentityContradictionFailClosed('pacia', [
+  gp(0),
+  { k:'reg', cls:'sp', num:0, bits:64, text:'sp' },
+]);
+assertIdentityContradictionFailClosed('pacia', [
+  { k:'reg', cls:'zr', num:0, bits:64, text:'xzr' },
+  sp(),
 ]);
 
 // effects.js prefers registerId/register/reg/name over text. Pin that exact
