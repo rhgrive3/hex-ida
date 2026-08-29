@@ -9,45 +9,88 @@ data.set([0x51, 0x52], 0x200);
 
 function imageWithTail(bytes = data) {
   const image = new BinaryImage(bytes, { format:'elf' });
-  image.addSegment({ name:'LOAD0', address:0x1000n, size:8n, fileOffset:0x100n, fileSize:4n, perms:{ read:true }, source:'PT_LOAD' });
+  image.addSegment({
+    name:'LOAD0', address:0x1000n, size:8n,
+    fileOffset:0x100n, fileSize:4n,
+    perms:{ read:true }, source:'PT_LOAD',
+  });
   return image;
 }
 
 const resident = imageWithTail();
-assert.deepEqual([...resident.readVirtual(0x1000n, 4)], [0xaa,0xbb,0xcc,0xdd]);
-assert.deepEqual([...resident.readVirtual(0x1002n, 4)], [0xcc,0xdd,0,0]);
-assert.deepEqual([...resident.readVirtual(0x1004n, 4)], [0,0,0,0]);
-assert.equal(resident.addressToOffset(0x1004n), null);
+assert.deepEqual([...resident.readVirtual(0x1000n, 4)], [0xaa,0xbb,0xcc,0xdd], 'fully file-backed reads remain unchanged');
+assert.deepEqual([...resident.readVirtual(0x1002n, 4)], [0xcc,0xdd,0,0], 'file-backed -> BSS tail must compose mapped bytes plus zero-fill');
+assert.deepEqual([...resident.readVirtual(0x1004n, 4)], [0,0,0,0], 'fully zero-fill reads must synthesize zero bytes');
+assert.equal(resident.addressToOffset(0x1004n), null, 'zero-fill VA must not resolve to unrelated raw-file bytes');
 assert.equal(resident.resolveVirtualMapping(0x1004n)?.kind, 'zero');
+
 const gap = new BinaryImage(data, { format:'elf' });
 gap.addSegment({ address:0x1000n, size:4n, fileOffset:0x100n, fileSize:4n, perms:{read:true} });
 gap.addSegment({ address:0x2000n, size:2n, fileOffset:0x200n, fileSize:2n, perms:{read:true} });
-assert.equal(gap.readVirtual(0x1002n, 4), null);
+assert.equal(gap.readVirtual(0x1002n, 4), null, 'file-backed -> unmapped gap must fail closed');
+
 const contiguous = new BinaryImage(data, { format:'pe' });
 contiguous.addSegment({ address:0x3000n, size:2n, fileOffset:0x100n, fileSize:2n, perms:{read:true} });
 contiguous.addSegment({ address:0x3002n, size:2n, fileOffset:0x200n, fileSize:2n, perms:{read:true} });
-assert.deepEqual([...contiguous.readVirtual(0x3000n, 4)], [0xaa,0xbb,0x51,0x52]);
+assert.deepEqual([...contiguous.readVirtual(0x3000n, 4)], [0xaa,0xbb,0x51,0x52], 'VA-contiguous mappings with non-contiguous file offsets must compose per mapping');
+
 const machoSparse = new BinaryImage(data, { format:'macho' });
 machoSparse.addSegment({ address:0x4000n, size:8n, fileOffset:0x100n, fileSize:8n, perms:{read:true}, source:'LC_SEGMENT_64' });
 machoSparse.addSection({ name:'__bss', segment:'__DATA', address:0x4004n, size:4n, fileOffset:0n, fileSize:0n, perms:{read:true,write:true}, source:'LC_SEGMENT_64' });
-assert.deepEqual([...machoSparse.readVirtual(0x4002n, 4)], [0xcc,0xdd,0,0]);
-const source = { size: BigInt(data.length), async readExactly(offset, size) { const o=Number(offset), n=Number(size); return data.slice(o,o+n); } };
-const streamed = imageWithTail(); streamed.attachSource(source,{discardBytes:true});
-assert.deepEqual([...await streamed.readVirtualAsync(0x1002n,4n)],[0xcc,0xdd,0,0]);
-assert.deepEqual([...await streamed.readVirtualAsync(0x1004n,4n)],[0,0,0,0]);
-const streamedGap = new BinaryImage(null,{format:'elf',source,fileSize:source.size});
-streamedGap.addSegment({address:0x1000n,size:4n,fileOffset:0x100n,fileSize:4n,perms:{read:true}});
-streamedGap.addSegment({address:0x2000n,size:2n,fileOffset:0x200n,fileSize:2n,perms:{read:true}});
-assert.equal(await streamedGap.readVirtualAsync(0x1002n,4n),null);
+assert.deepEqual([...machoSparse.readVirtual(0x4002n, 4)], [0xcc,0xdd,0,0], 'zero-fill child section must override broader segment raw-file continuity');
+
+const source = {
+  size: BigInt(data.length),
+  async readExactly(offset, size) {
+    const o = Number(offset), n = Number(size);
+    assert.ok(Number.isSafeInteger(o) && Number.isSafeInteger(n) && o >= 0 && n >= 0 && o + n <= data.length);
+    return data.slice(o, o + n);
+  },
+};
+const streamed = imageWithTail();
+streamed.attachSource(source, { discardBytes:true });
+assert.deepEqual([...await streamed.readVirtualAsync(0x1002n, 4n)], [0xcc,0xdd,0,0], 'streaming path must share resident mapping semantics');
+assert.deepEqual([...await streamed.readVirtualAsync(0x1004n, 4n)], [0,0,0,0], 'streaming zero-fill must not read source bytes');
+
+const streamedGap = new BinaryImage(null, { format:'elf', source, fileSize:source.size });
+streamedGap.addSegment({ address:0x1000n, size:4n, fileOffset:0x100n, fileSize:4n, perms:{read:true} });
+streamedGap.addSegment({ address:0x2000n, size:2n, fileOffset:0x200n, fileSize:2n, perms:{read:true} });
+assert.equal(await streamedGap.readVirtualAsync(0x1002n, 4n), null, 'streaming path must fail closed across unmapped VA gaps');
 
 function w16(b,o,v){b[o]=v&255;b[o+1]=(v>>>8)&255;}
 function w32(b,o,v){b[o]=v&255;b[o+1]=(v>>>8)&255;b[o+2]=(v>>>16)&255;b[o+3]=(v>>>24)&255;}
 function w64(b,o,v){let n=BigInt(v);for(let i=0;i<8;i++){b[o+i]=Number(n&255n);n>>=8n;}}
-function rawOffsetPE(ptr){const b=new Uint8Array(0x1200),pe=0x80,coff=pe+4,opt=coff+20,os=0xf0,s=opt+os;w16(b,0,0x5a4d);w32(b,0x3c,pe);w32(b,pe,0x4550);w16(b,coff,0x8664);w16(b,coff+2,1);w16(b,coff+16,os);w16(b,opt,0x20b);w64(b,opt+24,0x140000000n);w32(b,opt+32,0x1000);w32(b,opt+36,0x200);w32(b,opt+56,0x2000);w32(b,opt+60,0x200);w16(b,opt+68,3);b.set(new TextEncoder().encode('.text\0\0\0'),s);w32(b,s+8,0x200);w32(b,s+12,0x1000);w32(b,s+16,0x200);w32(b,s+20,ptr);w32(b,s+36,0x60000020);return b;}
-const va=0x140001000n;
-{const b=rawOffsetPE(0x820);b[0x800]=0x41;b[0x820]=0x43;const i=parsePE(b);assert.equal(i.sections[0].fileOffset,0x800n);assert.equal(i.readVirtual(va,1)?.[0],0x41);assert.equal(i.metadata.peSectionRawMappings[0].declaredFileOffset,0x820);assert.equal(i.metadata.peSectionRawMappings[0].effectiveFileOffset,0x800);assert.ok(i.warnings.some(x=>x.includes('0x820')&&x.includes('0x800')));}
-{const i=parsePE(rawOffsetPE(0x9ff));assert.equal(i.sections[0].fileOffset,0x800n);}
-{const i=parsePE(rawOffsetPE(0));assert.equal(i.sections[0].fileSize,0n);assert.equal(i.addressToOffset(va),null);assert.equal(i.readVirtual(va,1)?.[0],0);assert.equal(i.metadata.peSectionRawMappings[0].fileBacked,false);}
-{const i=parsePE(rawOffsetPE(1));assert.equal(i.sections[0].fileOffset,0n);assert.equal(i.sections[0].fileSize,0x200n);assert.equal(i.addressToOffset(va),0n);assert.equal(i.metadata.peSectionRawMappings[0].fileBacked,true);}
-{const i=parsePE(rawOffsetPE(0x800));assert.equal(i.sections[0].fileOffset,0x800n);assert.equal(i.metadata.peSectionRawMappings[0].roundedDown,false);}
-console.log('issue 970 + PE raw-offset mapping regressions: PASS');
+function rawOffsetPE(ptr){
+  const b=new Uint8Array(0x1200),pe=0x80,coff=pe+4,opt=coff+20,os=0xf0,s=opt+os;
+  w16(b,0,0x5a4d); w32(b,0x3c,pe); w32(b,pe,0x4550); w16(b,coff,0x8664); w16(b,coff+2,1); w16(b,coff+16,os);
+  w16(b,opt,0x20b); w64(b,opt+24,0x140000000n); w32(b,opt+32,0x1000); w32(b,opt+36,0x200); w32(b,opt+56,0x2000); w32(b,opt+60,0x200); w16(b,opt+68,3);
+  b.set(new TextEncoder().encode('.text\0\0\0'),s); w32(b,s+8,0x200); w32(b,s+12,0x1000); w32(b,s+16,0x200); w32(b,s+20,ptr); w32(b,s+36,0x60000020);
+  return b;
+}
+const peSectionAddress=0x140001000n;
+{
+  const bytes=rawOffsetPE(0x820); bytes[0x800]=0x41; bytes[0x820]=0x43; const image=parsePE(bytes);
+  assert.equal(image.sections[0].fileOffset,0x800n,'PE non-zero raw offset rounds down to Windows loader boundary');
+  assert.equal(image.readVirtual(peSectionAddress,1)?.[0],0x41,'PE virtual reads use effective raw start');
+  assert.equal(image.metadata.peSectionRawMappings[0].declaredFileOffset,0x820);
+  assert.equal(image.metadata.peSectionRawMappings[0].effectiveFileOffset,0x800);
+  assert.ok(image.warnings.some((x)=>x.includes('0x820')&&x.includes('0x800')));
+}
+assert.equal(parsePE(rawOffsetPE(0x9ff)).sections[0].fileOffset,0x800n,'0x9ff also rounds to 0x800');
+{
+  const image=parsePE(rawOffsetPE(0));
+  assert.equal(image.sections[0].fileSize,0n,'PointerToRawData zero remains non-file-backed');
+  assert.equal(image.addressToOffset(peSectionAddress),null);
+  assert.equal(image.readVirtual(peSectionAddress,1)?.[0],0);
+  assert.equal(image.metadata.peSectionRawMappings[0].fileBacked,false);
+}
+{
+  const image=parsePE(rawOffsetPE(1));
+  assert.equal(image.sections[0].fileOffset,0n,'non-zero raw offset may round to zero while remaining file-backed');
+  assert.equal(image.sections[0].fileSize,0x200n);
+  assert.equal(image.addressToOffset(peSectionAddress),0n);
+  assert.equal(image.metadata.peSectionRawMappings[0].fileBacked,true);
+}
+assert.equal(parsePE(rawOffsetPE(0x800)).metadata.peSectionRawMappings[0].roundedDown,false,'aligned raw offset remains unchanged');
+
+console.log('issue 970 mapping-aware BinaryImage virtual read regression + issue 2476 PE raw-offset mapping: PASS');
