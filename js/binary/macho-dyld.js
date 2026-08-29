@@ -194,6 +194,8 @@ export function parseChainedBindingSites(r,dc,image,imports,segments=image.segme
     const structSize = r.u32(p);
     const pageSize = r.u16(p + 4);
     const pointerFormat = r.u16(p + 6);
+    const width = chainedPointerWidth(pointerFormat);
+    if (!width) markUnsupportedChainedFormat(image, pointerFormat);
     const segmentOffset = r.u64(p + 8);
     const maxValidPointer = r.u32(p + 16);
     const pageCount = r.u16(p + 20);
@@ -237,8 +239,7 @@ export function parseChainedBindingSites(r,dc,image,imports,segments=image.segme
       coverageKeys.set(page, key);
     }
 
-    const width = chainedPointerWidth(pointerFormat);
-    if (!width) { markUnsupportedChainedFormat(image, pointerFormat); fail(`segment ${segIndex} uses unsupported pointer format ${pointerFormat}`); continue; }
+    if (!width) { fail(`segment ${segIndex} uses unsupported pointer format ${pointerFormat}`); continue; }
 
     for (let page = 0; page < pageCount; page++) {
       if(!budget.take({inputBytes:2,records:1,operations:1,estimatedHeapBytes:16},'chained-page')){fail('shared metadata budget exhausted while decoding pages');status.bindingSites=decoded;return status;}
