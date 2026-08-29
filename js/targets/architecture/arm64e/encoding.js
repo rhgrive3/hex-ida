@@ -64,14 +64,15 @@ function registerClassOf(operand) {
       ?? operand.value?.bits
       ?? operand.value?.widthBits;
     if (explicitWidth != null && Number(explicitWidth) !== 64) return null;
-    const structuredIdentity = structuredRegisterIdentity(operand);
-    if (structuredIdentity != null) {
+    if (operand.k === 'reg') {
+      const structuredIdentity = structuredRegisterIdentity(operand);
+      if (structuredIdentity == null) return null;
       const presented = selectedPresentationRegisterIdentity(operand);
       if (presented.present && presented.identity !== structuredIdentity) return null;
+      if (operand.cls === 'sp') return 'sp';
+      if (operand.cls === 'zr') return 'zr';
+      return 'x';
     }
-    if (operand.k === 'reg' && operand.cls === 'sp') return 'sp';
-    if (operand.k === 'reg' && operand.cls === 'zr') return 'zr';
-    if (operand.k === 'reg' && operand.cls === 'gp' && Number.isInteger(operand.num) && operand.num >= 0 && operand.num <= 30) return 'x';
   }
 
   const raw = typeof operand === 'string'
