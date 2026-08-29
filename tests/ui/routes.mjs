@@ -26,6 +26,9 @@ for (const tab of FUNCTION_TABS) {
   check(`function tab ${tab.id} resolves`, hit?.route.id === 'function' && hit.params.address === '4096' && hit.params.tab === tab.id);
 }
 
+const findingHit = matchRoute(ROUTES, '/finding/finding-123');
+check('finding detail route resolves with id param', findingHit?.route.id === 'finding' && findingHit.params.id === 'finding-123');
+
 const legacyRequired = [
   'showFileInfo','showSections','showStructure','showFunctions','showFunctionSummary','showBlockDetail',
   'showFeatures','showStrings','showJump','showSearch','showXrefs','showDetail','showOverview','showAppMap',

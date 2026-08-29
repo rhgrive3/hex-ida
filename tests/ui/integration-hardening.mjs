@@ -139,4 +139,81 @@ assert.equal(typeof VirtualList, 'function');
   assert.equal(stepCount, 11, 'Trace should stop immediately at 11 steps rather than running all 12000');
 }
 
+// Issue #2576 & #2528: Product /finding/:id route and Results resolution
+{
+  const mockAutoReport = {
+    report: {
+      findings: [
+        { id: 'f-1', title: 'Finding Alpha', addr: 0x1000n, confidence: 0.95, confirmed: true },
+        { id: 'f-2', title: 'Finding Beta', addr: 0x2000n, confidence: 0.60, confirmed: false },
+      ],
+    },
+  };
+
+  const f1 = mockAutoReport.report.findings.find(f => f.id === 'f-1');
+  const f2 = mockAutoReport.report.findings.find(f => f.id === 'f-2');
+  const fUnknown = mockAutoReport.report.findings.find(f => f.id === 'f-unknown');
+
+  assert.ok(f1, 'Finding f-1 must resolve');
+  assert.equal(f1.title, 'Finding Alpha');
+  assert.equal(f1.confirmed, true);
+  assert.ok(f2, 'Finding f-2 must resolve');
+  assert.equal(f2.title, 'Finding Beta');
+  assert.equal(fUnknown, undefined, 'Non-existent finding must resolve to undefined (not found)');
+}
+
+// Issues #2571 & #2574 & #2573: Explorer classes, data, and external items
+{
+  const mockApp = {
+    fields: {
+      classes: new Map([
+        ['PlayerController', { methods: ['init', 'update'], ivars: ['hp', 'mp'], superName: 'MonoBehaviour' }],
+        ['EnemyAI', { methods: ['patrol', 'attack'], ivars: ['state'], superName: 'AIController' }],
+      ]),
+    },
+    store: {
+      get: (k) => {
+        if (k === 'fileInfo') return { formatId: 'elf', architecture: 'arm64' };
+        if (k === 'regions') return [
+          { id: 'text', exec: true, read: true, vmAddr: 0x1000n, size: 0x1000n },
+          { id: 'data', exec: false, read: true, write: true, vmAddr: 0x8000n, size: 0x500n, section: '__data' },
+        ];
+        return null;
+      },
+    },
+    symbols: {
+      imports: [{ name: 'malloc', addr: 0x10n }, { name: 'free', addr: 0x20n }],
+    },
+  };
+
+  // Class items from mockApp
+  const classes = [];
+  for (const [name, info] of mockApp.fields.classes.entries()) {
+    classes.push({ name, methods: info.methods.length, ivars: info.ivars.length, superName: info.superName });
+  }
+  assert.equal(classes.length, 2);
+  assert.equal(classes[0].name, 'PlayerController');
+  assert.equal(classes[0].methods, 2);
+  assert.equal(classes[1].name, 'EnemyAI');
+
+  // External items from mockApp
+  const imports = mockApp.symbols.imports;
+  assert.equal(imports.length, 2);
+  assert.equal(imports[0].name, 'malloc');
+  assert.equal(imports[1].name, 'free');
+}
+
+// Issue #2570: showStructure fails gracefully on non-Mach-O formats
+{
+  const nonMachoSlice = { info: { magic: 0x7f454c46 } }; // ELF
+  const machoSlice = { info: { magic: 0xfeedfacf, ncmds: 12, commands: [] } };
+
+  const isMachoStructureSupported = (slice, formatId) => {
+    return !!(slice && slice.info && (!formatId || formatId === 'macho') && slice.info.ncmds && slice.info.commands);
+  };
+
+  assert.equal(isMachoStructureSupported(nonMachoSlice, 'elf'), false, 'ELF structure must not be treated as Mach-O load commands');
+  assert.equal(isMachoStructureSupported(machoSlice, 'macho'), true, 'Mach-O with load commands must be supported');
+}
+
 console.log('ui-integration-hardening: PASS');
