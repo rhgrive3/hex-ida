@@ -5,9 +5,10 @@
  * (package.json sets `"type": "module"`, so every `.js`/`.mjs` here is ESM and
  * the module-goal parse matches `node --check` acceptance — verified byte-for-
  * byte against the old spawn-per-file runner across the full tree). Parsing
- * 1.6k files in-process takes well under a second instead of ~70 s of process
- * startup overhead. If `vm.SourceTextModule` is unavailable, fall back to the
- * original one-process-per-file check.
+ * 1.6k files in-process takes a second or two instead of ~70 s of process
+ * startup overhead. On Node <23 the API hides behind `--experimental-vm-modules`,
+ * so we re-exec ourselves once with that flag; if it is still unavailable,
+ * fall back to the original one-process-per-file check.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -22,6 +23,19 @@ for (const dir of ['js', 'tests', 'tools/validation']) {
 }
 
 let failed = 0;
+if (typeof vm.SourceTextModule !== 'function' && process.env.HEX_CHECK_VM_REEXEC !== '1') {
+  // Node 22 hides vm.SourceTextModule behind --experimental-vm-modules; one
+  // self re-exec with the flag unlocks it without changing how callers invoke us.
+  const { spawnSync } = await import('node:child_process');
+  const result = spawnSync(
+    process.execPath,
+    ['--no-warnings', '--experimental-vm-modules', ...process.execArgv, fileURLToPath(import.meta.url)],
+    { cwd: root, env: { ...process.env, HEX_CHECK_VM_REEXEC: '1' }, encoding: 'utf8' },
+  );
+  process.stdout.write(result.stdout || '');
+  process.stderr.write(result.stderr || '');
+  process.exit(result.status ?? 1);
+}
 if (typeof vm.SourceTextModule === 'function') {
   for (const file of files) {
     const source = fs.readFileSync(file, 'utf8');
