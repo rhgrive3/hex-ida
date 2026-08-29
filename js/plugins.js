@@ -56,6 +56,7 @@ export class PluginHost {
   constructor(app) {
     this.app = app;
     this.plugins = [];
+    this.installations = new Map();
     this.ready = this.load();
   }
 
@@ -69,9 +70,35 @@ export class PluginHost {
       const legacySeen = new Set();
       for (const p of list) {
         if (!p || typeof p.source !== 'string') continue;
-        /* v1 stored the same source once per discovered definition. Collapse
-           those legacy duplicates only; v2 deliberately permits installing the
-           same source twice because each installation has a distinct UUID. */
+        // v3 manifest fast path: restore registry directly without sandbox execution
+        if (p.v === 3 && Array.isArray(p.definitions) && p.definitions.length > 0 && p.installationId) {
+          const installationId = String(p.installationId);
+          const enabled = Array.isArray(p.enabledIndexes)
+            ? new Set(p.enabledIndexes.map(Number).filter(Number.isInteger))
+            : new Set(p.definitions.map((d) => d.index));
+          const all = p.definitions.map((def) => ({
+            id: `${installationId}:${def.index}`,
+            installationId,
+            name: def.name,
+            description: def.description,
+            index: def.index,
+            source: p.source,
+            origin: p.origin || '保存されたもの',
+          }));
+          const added = all.filter((plugin) => enabled.has(plugin.index));
+          this.plugins.push(...added);
+          this.installations.set(installationId, {
+            v: 3,
+            installationId,
+            source: p.source,
+            origin: p.origin || '保存されたもの',
+            definitions: p.definitions,
+            enabledIndexes: Array.from(enabled),
+          });
+          continue;
+        }
+
+        /* v1/v2 legacy fallback */
         if (!p.installationId) {
           const legacyKey = `${p.origin || ''}\u0000${p.source}`;
           if (legacySeen.has(legacyKey)) continue;
@@ -87,25 +114,35 @@ export class PluginHost {
   }
 
   save() {
-    /* Persist source/package state once per installation rather than duplicating
-       the entire source for every definition discovered from that source. */
-    const groups = new Map();
+    const list = [];
+    const seen = new Set();
+    for (const [id, inst] of this.installations.entries()) {
+      seen.add(id);
+      const activeIndexes = this.plugins.filter((p) => p.installationId === id).map((p) => p.index);
+      list.push({
+        v: 3,
+        installationId: id,
+        source: inst.source,
+        origin: inst.origin,
+        definitions: inst.definitions || [],
+        enabledIndexes: activeIndexes,
+      });
+    }
     for (const p of this.plugins) {
-      let row = groups.get(p.installationId);
-      if (!row) {
-        row = {
-          v: 2,
-          installationId: p.installationId,
-          source: p.source,
-          origin: p.origin,
-          enabledIndexes: [],
-        };
-        groups.set(p.installationId, row);
-      }
-      row.enabledIndexes.push(p.index);
+      if (seen.has(p.installationId)) continue;
+      seen.add(p.installationId);
+      const activePlugins = this.plugins.filter((x) => x.installationId === p.installationId);
+      list.push({
+        v: 3,
+        installationId: p.installationId,
+        source: p.source,
+        origin: p.origin,
+        definitions: activePlugins.map((x) => ({ index: x.index, name: x.name, description: x.description })),
+        enabledIndexes: activePlugins.map((x) => x.index),
+      });
     }
     try {
-      localStorage.setItem(STORE_KEY, JSON.stringify(Array.from(groups.values())));
+      localStorage.setItem(STORE_KEY, JSON.stringify(list));
       return { ok: true };
     } catch (error) {
       return { ok: false, error: (error && error.message) || 'plugin storage failed' };
@@ -124,12 +161,17 @@ export class PluginHost {
     const enabled = Array.isArray(opts.enabledIndexes)
       ? new Set(opts.enabledIndexes.map(Number).filter(Number.isInteger))
       : null;
-    const all = (discovered.value || []).map((def, index) => ({
-      id: `${installationId}:${index}`,
+    const definitions = (discovered.value || []).map((def, index) => ({
+      index,
+      name: def.name,
+      description: def.description,
+    }));
+    const all = definitions.map((def) => ({
+      id: `${installationId}:${def.index}`,
       installationId,
       name: def.name,
       description: def.description,
-      index,
+      index: def.index,
       source,
       origin: origin || '不明',
     }));
@@ -138,6 +180,15 @@ export class PluginHost {
     /* A persisted installation may intentionally have no enabled definitions;
        a fresh installation may not. */
     if (!added.length && !enabled) return { error: 'プラグインが 1 つも登録されませんでした（hex.plugin({…}) を呼んでください）。' };
+
+    this.installations.set(installationId, {
+      v: 3,
+      installationId,
+      source,
+      origin: origin || '不明',
+      definitions,
+      enabledIndexes: added.map((p) => p.index),
+    });
 
     const before = this.plugins.slice();
     this.plugins.push(...added);
@@ -179,6 +230,7 @@ export class PluginHost {
   clear() {
     const before = this.plugins.slice();
     this.plugins = [];
+    this.installations.clear();
     const saved = this.save();
     if (!saved.ok) {
       this.plugins = before;
