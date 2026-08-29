@@ -446,6 +446,7 @@ function viewportRect() {
 }
 
 function armMenuDismiss(entry) {
+  const created = Date.now();
   const outside = (e) => {
     if (!openMenu || openMenu !== entry || entry.m.contains(e.target)) return;
     // Native context menus consume the first outside tap. Do the same here so
@@ -463,6 +464,7 @@ function armMenuDismiss(entry) {
   };
   const move = (e) => {
     if (e && e.target && entry.m.contains(e.target)) return;
+    if (Date.now() - created < 40 && (e?.type === 'resize' || e?.type === 'scroll')) return;
     closeMenu();
   };
 

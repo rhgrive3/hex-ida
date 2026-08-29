@@ -14,14 +14,37 @@ function strictSliceIndex(value) {
   const index = Number(text);
   return Number.isSafeInteger(index) ? index : -1;
 }
+function architectureEvidence(value) {
+  if (value == null) return null;
+  const text = String(value).trim();
+  if (!text || text.toLowerCase() === 'unknown') return null;
+  return text;
+}
+function activeArchitecture(app) {
+  const info=currentFileToken(app);
+  const index=strictSliceIndex(app?.store?.get?.('sliceIndex'));
+  const slice=index>=0 ? info?.slices?.[index] : null;
+  const detail=slice?.info || {};
+  return architectureEvidence(app?.store?.get?.('capability')?.architecture)
+    || architectureEvidence(app?.store?.get?.('architecture'))
+    || architectureEvidence(slice?.capability?.architecture)
+    || architectureEvidence(detail.architecture)
+    || architectureEvidence(detail.cpuSub)
+    || architectureEvidence(detail.cpu)
+    || 'unknown';
+}
 function activeSliceIdentity(app) {
   const info=currentFileToken(app);
   const index=strictSliceIndex(app?.store?.get?.('sliceIndex'));
   const slice=index>=0 ? info?.slices?.[index] : null;
   const detail=slice?.info || {};
-  const arch=String(slice?.capability?.architecture || detail.architecture || detail.cpuSub || detail.cpu || app?.store?.get?.('architecture') || 'unknown');
+  const arch=activeArchitecture(app);
   const uuid=detail.uuid || null;
   return `slice:${index}:${uuid || '-'}:${arch}`;
+}
+function localSandboxSupportsArchitecture(architecture) {
+  const arch=String(architecture || '').trim().toLowerCase();
+  return arch === 'arm64' || arch === 'arm64e' || arch === 'aarch64';
 }
 async function binaryHashOf(app) {
   const info=currentFileToken(app);
@@ -58,10 +81,11 @@ export function createAppRuntimeIO(app) {
     fetch: async (addr) => {
       const region = regionAt(addr);
       if (!region) return null;
-      // The local concrete sandbox is ARM64 today. Do not silently reinterpret
-      // variable-width architectures through the fixed-width worker row model.
-      const arch = String(app?.capabilities?.architecture || app?.store?.get?.('fileInfo')?.architecture || 'arm64').toLowerCase();
-      if (!/arm64|aarch64/.test(arch)) return null;
+      // The local concrete sandbox is ARM64 today. Resolve architecture from
+      // the same active-slice truth as the runtime identity and fail closed for
+      // unknown or variable-width targets instead of defaulting to ARM64.
+      const arch = activeArchitecture(app);
+      if (!localSandboxSupportsArchitecture(arch)) return null;
       const row = Number((addr - region.vmAddr) / 4n);
       const chunk = Math.floor(row / 1024);
       const decoded = await app.backend.fetchChunk(region.id, chunk, true);
