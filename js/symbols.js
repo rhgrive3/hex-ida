@@ -252,6 +252,18 @@ export class SymbolIndex {
     return explicit;
   }
 
+  /*
+   * 解析ウィンドウ用の境界: addr より後ろにある既知の関数開始のうち一番近いもの。
+   * これは関数 extent の主張ではない（#2458 の end 契約とは別物）。
+   * 末尾関数など次が無い場合は null。
+   */
+  nextFunctionStart(addr) {
+    const i = this._floor(this.funcs, addr);
+    if (i < 0 || i + 1 >= this.funcs.length) return null;
+    const next = this.funcs[i + 1];
+    return next > addr ? next : null;
+  }
+
   /** そのアドレスを含む関数の {start, end}。分からなければ null。 */
   functionAt(addr) {
     const i = this._floor(this.funcs, addr);

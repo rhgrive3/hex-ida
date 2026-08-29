@@ -250,6 +250,8 @@ export async function openBinary(file, opts) {
       const fn = symbols.functionAt(BigInt(addr));
       if (fn && fn.end != null) stop = fn.end;
     }
+    /* end が未証明でも隣接関数へは伸びない: 次の関数開始で窓を締める（#2409 以前の窓と一致）。 */
+    if (stop == null) stop = symbols.nextFunctionStart(BigInt(addr));
     const endRow = stop != null
       ? Math.min(totalRows - 1, Number((BigInt(stop) - region.vmAddr) / 4n) - 1)
       : Math.min(totalRows - 1, startRow + 512);
