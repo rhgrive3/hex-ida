@@ -21,3 +21,5 @@ export function resolveUserscriptReleaseVersion(previous, { releaseIdentity, bui
     state,
   });
 }
+
+// Temporary generated-sync autofix trigger; reverted before merge.
