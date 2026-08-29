@@ -39,7 +39,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git hash-object js/analysis/alias/canonical-address-v2-core.js)" = "e733a43a60ec1a657bc91d71f358e686ce2c1397"
-          test "$(git hash-object js/analysis/pointsto/local.js)" = "294ac252ba5f602e0a1caf56dd41458082276c26"
+          test "$(git hash-object js/analysis/pointsto/local.js)" = "294b44ae8363a253d51ee52fb9d59fe4c04395f4"
           node --input-type=module <<'JS'
           import { normalizeRootIdentity, defaultRootEntityId } from './js/analysis/alias/canonical-address-v2-core.js';
           const variable = { key: 'x0', kind: 'register', scope: 'function' };
