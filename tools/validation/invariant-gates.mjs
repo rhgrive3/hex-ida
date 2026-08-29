@@ -21,6 +21,7 @@ const gates = Object.freeze([
   { name:'large-input-source-backed', invariants:['INV-011','INV-012','INV-015'], file:'tests/universal-binary-source.mjs' },
   { name:'analysis-budget-fail-closed', invariants:['INV-010','INV-011','INV-012','INV-015'], file:'tests/ai-analysis-boundary.mjs' },
   { name:'analysis-window-bounds', invariants:['INV-011','INV-012'], file:'tests/issue-2484-analysis-window.mjs' },
+  { name:'bigint-wire-fail-closed', invariants:['INV-008'], file:'tests/remote-protocol-bigint-wire.test.mjs' },
   { name:'machine-effects-contract', invariants:['INV-002','INV-003','INV-004','INV-005','INV-012','INV-014','INV-015'], file:'tests/machine-effects/run.mjs' },
   { name:'arm64-compiler-truth', invariants:['INV-014'], file:'tests/compiler-truth/run.mjs' },
 ]);
