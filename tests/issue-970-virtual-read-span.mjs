@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { BinaryImage } from '../js/binary/model.js';
+import { parsePE } from '../js/binary/pe.js';
 
 const data = new Uint8Array(0x300);
 data.set([0xaa, 0xbb, 0xcc, 0xdd], 0x100);
@@ -56,4 +57,40 @@ streamedGap.addSegment({ address:0x1000n, size:4n, fileOffset:0x100n, fileSize:4
 streamedGap.addSegment({ address:0x2000n, size:2n, fileOffset:0x200n, fileSize:2n, perms:{read:true} });
 assert.equal(await streamedGap.readVirtualAsync(0x1002n, 4n), null, 'streaming path must fail closed across unmapped VA gaps');
 
-console.log('issue 970 mapping-aware BinaryImage virtual read regression: PASS');
+function w16(b,o,v){b[o]=v&255;b[o+1]=(v>>>8)&255;}
+function w32(b,o,v){b[o]=v&255;b[o+1]=(v>>>8)&255;b[o+2]=(v>>>16)&255;b[o+3]=(v>>>24)&255;}
+function w64(b,o,v){let n=BigInt(v);for(let i=0;i<8;i++){b[o+i]=Number(n&255n);n>>=8n;}}
+function rawOffsetPE(ptr){
+  const b=new Uint8Array(0x1200),pe=0x80,coff=pe+4,opt=coff+20,os=0xf0,s=opt+os;
+  w16(b,0,0x5a4d); w32(b,0x3c,pe); w32(b,pe,0x4550); w16(b,coff,0x8664); w16(b,coff+2,1); w16(b,coff+16,os);
+  w16(b,opt,0x20b); w64(b,opt+24,0x140000000n); w32(b,opt+32,0x1000); w32(b,opt+36,0x200); w32(b,opt+56,0x2000); w32(b,opt+60,0x200); w16(b,opt+68,3);
+  b.set(new TextEncoder().encode('.text\0\0\0'),s); w32(b,s+8,0x200); w32(b,s+12,0x1000); w32(b,s+16,0x200); w32(b,s+20,ptr); w32(b,s+36,0x60000020);
+  return b;
+}
+const peSectionAddress=0x140001000n;
+{
+  const bytes=rawOffsetPE(0x820); bytes[0x800]=0x41; bytes[0x820]=0x43; const image=parsePE(bytes);
+  assert.equal(image.sections[0].fileOffset,0x800n,'PE non-zero raw offset rounds down to Windows loader boundary');
+  assert.equal(image.readVirtual(peSectionAddress,1)?.[0],0x41,'PE virtual reads use effective raw start');
+  assert.equal(image.metadata.peSectionRawMappings[0].declaredFileOffset,0x820);
+  assert.equal(image.metadata.peSectionRawMappings[0].effectiveFileOffset,0x800);
+  assert.ok(image.warnings.some((x)=>x.includes('0x820')&&x.includes('0x800')));
+}
+assert.equal(parsePE(rawOffsetPE(0x9ff)).sections[0].fileOffset,0x800n,'0x9ff also rounds to 0x800');
+{
+  const image=parsePE(rawOffsetPE(0));
+  assert.equal(image.sections[0].fileSize,0n,'PointerToRawData zero remains non-file-backed');
+  assert.equal(image.addressToOffset(peSectionAddress),null);
+  assert.equal(image.readVirtual(peSectionAddress,1)?.[0],0);
+  assert.equal(image.metadata.peSectionRawMappings[0].fileBacked,false);
+}
+{
+  const image=parsePE(rawOffsetPE(1));
+  assert.equal(image.sections[0].fileOffset,0n,'non-zero raw offset may round to zero while remaining file-backed');
+  assert.equal(image.sections[0].fileSize,0x200n);
+  assert.equal(image.addressToOffset(peSectionAddress),0n);
+  assert.equal(image.metadata.peSectionRawMappings[0].fileBacked,true);
+}
+assert.equal(parsePE(rawOffsetPE(0x800)).metadata.peSectionRawMappings[0].roundedDown,false,'aligned raw offset remains unchanged');
+
+console.log('issue 970 mapping-aware BinaryImage virtual read regression + issue 2476 PE raw-offset mapping: PASS');
