@@ -60,13 +60,17 @@ function asMask(value, bits) {
   try { return unsignedOf(value ?? 0n, bits); } catch { return 0n; }
 }
 
-function validMaskEvidence(value) {
-  if (value == null) return true;
+function parseBoundedMaskEvidence(value, bits) {
+  if (value == null) return { value: null, malformed: false };
+  if (typeof value === 'number' && (!Number.isSafeInteger(value) || value < 0)) {
+    return { value: null, malformed: true };
+  }
   try {
-    BigInt(value);
-    return true;
+    const parsed = BigInt(value);
+    if (parsed < 0n || parsed > widthMask(bits)) return { value: null, malformed: true };
+    return { value: parsed, malformed: false };
   } catch {
-    return false;
+    return { value: null, malformed: true };
   }
 }
 
@@ -79,7 +83,12 @@ function gcd(left, right) {
 
 function normalizeCongruenceValue(congruence, bits) {
   const parsed = parseCongruenceValue(congruence, bits);
-  return parsed == null || parsed.modulus <= 1n ? NO_CONGRUENCE : parsed;
+  // A residue class survives adding the machine modulus only when its modulus
+  // divides that modulus. Keeping a non-divisor through wraparound would make
+  // the published class depend on an operation that changed the represented
+  // integer, which is false exactness.
+  const width = 1n << BigInt(bits);
+  return parsed == null || parsed.modulus <= 1n || width % parsed.modulus !== 0n ? NO_CONGRUENCE : parsed;
 }
 
 /* Keep malformed upstream residue evidence distinguishable from the valid
@@ -165,9 +174,16 @@ function maskFactsForConstant(mask, bits, operand) {
 function deeplyFrozen(value, seen = new Set()) {
   if (value == null || typeof value !== 'object') return true;
   if (!Object.isFrozen(value)) return false;
-  if (seen.has(value)) return true;
+  if (seen.has(value)) return false;
   seen.add(value);
-  return Object.keys(value).every((key) => deeplyFrozen(value[key], seen));
+  let result = false;
+  try {
+    result = Object.keys(value).every((key) => deeplyFrozen(value[key], seen));
+  } catch {
+    result = false;
+  }
+  seen.delete(value);
+  return result;
 }
 
 function immutableProvenance(provenance) {
@@ -177,12 +193,56 @@ function immutableProvenance(provenance) {
 }
 
 function immutableEvidence(value) {
+  return immutableEvidenceWithSeen(value, new Set());
+}
+
+function immutableEvidenceWithSeen(value, seen) {
   if (value == null || typeof value !== 'object') return value;
   if (deeplyFrozen(value)) return value;
-  if (Array.isArray(value)) return Object.freeze(value.map((item) => immutableEvidence(item)));
+  if (seen.has(value)) return null;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    const copy = value.map((item) => immutableEvidenceWithSeen(item, seen));
+    seen.delete(value);
+    return Object.freeze(copy);
+  }
   const copy = {};
-  for (const key of Object.keys(value).sort()) copy[key] = immutableEvidence(value[key]);
+  try {
+    for (const key of Object.keys(value).sort()) copy[key] = immutableEvidenceWithSeen(value[key], seen);
+  } catch {
+    seen.delete(value);
+    return null;
+  }
+  seen.delete(value);
   return Object.freeze(copy);
+}
+
+/** Returns false for a cyclic or hostile evidence object without recursing. */
+function acyclicEvidence(root) {
+  if (root == null || typeof root !== 'object') return true;
+  const active = new Set();
+  const visited = new Set();
+  const stack = [{ value: root, exit: false }];
+  try {
+    while (stack.length > 0) {
+      const frame = stack.pop();
+      const value = frame.value;
+      if (value == null || typeof value !== 'object') continue;
+      if (frame.exit) {
+        active.delete(value);
+        continue;
+      }
+      if (active.has(value)) return false;
+      if (visited.has(value)) continue;
+      visited.add(value);
+      active.add(value);
+      stack.push({ value, exit: true });
+      for (const key of Object.keys(value)) stack.push({ value: value[key], exit: false });
+    }
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function mergeProvenance(left, right) {
@@ -317,18 +377,29 @@ export function factFromRange(range, options = {}) {
   }
   const bits = Number(range.bits);
   const mask = widthMask(bits);
-  const knownZeroEvidence = options.knownZero == null ? null : asMask(options.knownZero, bits) & mask;
-  const knownOneEvidence = options.knownOne == null ? null : asMask(options.knownOne, bits) & mask;
-  const maskEvidenceMalformed = !validMaskEvidence(options.knownZero) || !validMaskEvidence(options.knownOne);
+  const cyclicEvidence = !acyclicEvidence(options);
+  const parsedKnownZero = cyclicEvidence ? { value: null, malformed: true } : parseBoundedMaskEvidence(options.knownZero, bits);
+  const parsedKnownOne = cyclicEvidence ? { value: null, malformed: true } : parseBoundedMaskEvidence(options.knownOne, bits);
+  const knownZeroEvidence = parsedKnownZero.value;
+  const knownOneEvidence = parsedKnownOne.value;
+  const maskEvidenceMalformed = parsedKnownZero.malformed || parsedKnownOne.malformed;
   let knownZero = knownZeroEvidence ?? 0n;
   let knownOne = knownOneEvidence ?? 0n;
   let status = options.status ?? null;
   let reason = options.reason ?? null;
-  if (maskEvidenceMalformed || (knownZero & knownOne) !== 0n) {
+  const masksOverlap = knownZeroEvidence != null && knownOneEvidence != null
+    && (knownZeroEvidence & knownOneEvidence) !== 0n;
+  const masksHaveNoCommonValue = !maskEvidenceMalformed
+    && !masksOverlap
+    && !rangeHasMaskValue(range, knownZero, knownOne);
+  if (cyclicEvidence || maskEvidenceMalformed || masksOverlap || masksHaveNoCommonValue) {
     knownZero = 0n;
     knownOne = 0n;
     status = 'malformed';
-    reason = reason ?? (maskEvidenceMalformed ? 'malformed known-bit evidence' : 'known-zero and known-one masks overlap');
+    reason = reason ?? (cyclicEvidence ? 'cyclic evidence'
+      : maskEvidenceMalformed ? 'malformed or out-of-width known-bit evidence'
+        : masksOverlap ? 'known-zero and known-one masks overlap'
+          : 'known-bit evidence conflicts with range');
   }
   const value = singletonValue(range);
   const singletonMaskConflict = value != null
@@ -338,31 +409,56 @@ export function factFromRange(range, options = {}) {
     status = 'malformed';
     reason = reason ?? 'known-bit evidence conflicts with singleton range';
   }
-  if (value != null && options.deriveKnownBits !== false) {
+  if (value != null && options.deriveKnownBits !== false && !maskEvidenceMalformed && !masksHaveNoCommonValue
+      && !cyclicEvidence && !singletonMaskConflict && (knownZeroEvidence == null || knownOneEvidence == null
+        || !masksOverlap)) {
     knownZero = mask ^ value;
     knownOne = value;
   }
-  const alignmentCongruence = congruenceFromAlignment(options.alignment);
-  const alignmentMalformed = options.alignment != null
-    && (alignmentCongruence == null || parseCongruenceValue(alignmentCongruence, bits) == null);
-  const congruenceMalformed = options.congruence != null
-    && parseCongruenceValue(options.congruence, bits) == null;
-  const pointerOffsetMalformed = !validPointerOffsetEvidence(options.pointerOffset);
+  const alignmentCongruence = cyclicEvidence ? null : congruenceFromAlignment(options.alignment);
+  const alignmentValue = alignmentCongruence == null ? null : parseCongruenceValue(alignmentCongruence, bits);
+  const congruenceValue = cyclicEvidence || options.congruence == null ? null : parseCongruenceValue(options.congruence, bits);
+  const alignmentMalformed = cyclicEvidence || (options.alignment != null
+    && (alignmentCongruence == null || alignmentValue == null));
+  const congruenceMalformed = cyclicEvidence || (options.congruence != null && congruenceValue == null);
+  const pointerOffsetMalformed = cyclicEvidence || !validPointerOffsetEvidence(options.pointerOffset);
   const requestedCongruence = congruenceMalformed ? null : options.congruence ?? alignmentCongruence;
   const requestedCongruenceValue = requestedCongruence == null ? null : parseCongruenceValue(requestedCongruence, bits);
   const singletonCongruenceConflict = value != null && requestedCongruenceValue != null
     && ((value - requestedCongruenceValue.remainder) % requestedCongruenceValue.modulus + requestedCongruenceValue.modulus)
       % requestedCongruenceValue.modulus !== 0n;
-  if (alignmentMalformed || congruenceMalformed || pointerOffsetMalformed || singletonCongruenceConflict) {
+  const rangeCongruenceConflict = !alignmentMalformed && !congruenceMalformed
+    && requestedCongruenceValue != null && !rangeHasCongruenceValue(range, requestedCongruenceValue);
+  // A mask and a residue are conjunctive evidence about one abstract set.  It
+  // is not enough for each projection to intersect the range independently:
+  // `x & 1 == 0` and `x == 1 (mod 2)` have no common value even over fullRange.
+  // Only divisor-of-2^bits residues are retained; non-divisor residues are
+  // deliberately dropped as a conservative projection below.
+  const normalizedRequestedCongruence = requestedCongruenceValue == null
+    ? NO_CONGRUENCE : normalizeCongruenceValue(requestedCongruenceValue, bits);
+  const maskCongruenceConflict = !alignmentMalformed && !congruenceMalformed
+    && normalizedRequestedCongruence.modulus > 1n
+    && !rangeHasMaskAndCongruenceValue(range, knownZero, knownOne, normalizedRequestedCongruence);
+  if (alignmentMalformed || congruenceMalformed || pointerOffsetMalformed || singletonCongruenceConflict
+      || rangeCongruenceConflict || maskCongruenceConflict) {
+    if (singletonCongruenceConflict || rangeCongruenceConflict || maskCongruenceConflict) {
+      knownZero = 0n;
+      knownOne = 0n;
+    }
     status = 'malformed';
-    reason = reason ?? (alignmentMalformed ? 'malformed alignment evidence'
+    reason = reason ?? (cyclicEvidence ? 'cyclic evidence'
+      : alignmentMalformed ? 'malformed alignment evidence'
       : congruenceMalformed ? 'malformed congruence evidence'
         : pointerOffsetMalformed ? 'malformed pointer-offset evidence'
-          : 'congruence evidence conflicts with singleton range');
+          : singletonCongruenceConflict ? 'congruence evidence conflicts with singleton range'
+            : rangeCongruenceConflict ? 'congruence evidence conflicts with range'
+              : 'known-bit and congruence evidence have no common value');
   }
-  const congruence = requestedCongruence == null && value != null
+  const congruence = requestedCongruence == null && value != null && !cyclicEvidence
+      && !alignmentMalformed && !congruenceMalformed
     ? Object.freeze({ remainder: value, modulus: 1n << BigInt(bits) })
-    : normalizeCongruenceValue(requestedCongruence, bits);
+    : (rangeCongruenceConflict || singletonCongruenceConflict || maskCongruenceConflict || cyclicEvidence
+      ? NO_CONGRUENCE : normalizeCongruenceValue(requestedCongruence, bits));
   if (status == null) status = value == null ? 'conservative' : 'exact';
   // Only a complete, valid fact may carry an exact constant.  In particular,
   // an unsupported or stale singleton-shaped payload is still not permission
@@ -384,7 +480,7 @@ export function factFromRange(range, options = {}) {
     constant,
     status,
     reason,
-    provenance: immutableProvenance(options.provenance),
+    provenance: cyclicEvidence ? EMPTY_PROVENANCE : immutableProvenance(options.provenance),
   });
 }
 
@@ -585,6 +681,76 @@ function rangeSegments(range) {
   if (isFull(range)) return [[0n, widthMask(range.bits)]];
   if (range.kind === 'wrapped') return [[range.lower, widthMask(range.bits)], [0n, range.upper]];
   return [[range.lower, range.upper]];
+}
+
+/**
+ * Evidence may refine an interval without being implied by its hull.  Validate
+ * consistency by asking whether the intersection is non-empty, rather than
+ * requiring every value in the deliberately lossy hull to carry the evidence.
+ */
+function rangeHasMaskValue(range, knownZero, knownOne) {
+  if (isEmpty(range)) return true;
+  const bits = Number(range.bits);
+  const mask = widthMask(bits);
+  const fixed = (knownZero | knownOne) & mask;
+  const choose = (lower, upper) => {
+    const memo = new Map();
+    const solve = (bit, tight) => {
+      if (bit < 0) return 0n;
+      const key = `${bit}:${tight ? 1 : 0}`;
+      if (memo.has(key)) return memo.get(key);
+      const lowerBit = (lower >> BigInt(bit)) & 1n;
+      const choices = tight ? [lowerBit, 1n] : [0n, 1n];
+      for (const choice of choices) {
+        if (tight && choice < lowerBit) continue;
+        const bitMask = 1n << BigInt(bit);
+        if ((fixed & bitMask) !== 0n) {
+          const required = (knownOne & bitMask) !== 0n ? 1n : 0n;
+          if (choice !== required) continue;
+        }
+        const suffix = solve(bit - 1, tight && choice === lowerBit);
+        if (suffix != null) {
+          const result = (choice << BigInt(bit)) | suffix;
+          // A lower-bound satisfying assignment can still overshoot the
+          // segment only when the suffix search was already unconstrained; the
+          // caller checks the upper bound, so retain it for that comparison.
+          memo.set(key, result);
+          return result;
+        }
+      }
+      memo.set(key, null);
+      return null;
+    };
+    const candidate = solve(bits - 1, true);
+    return candidate != null && candidate <= upper;
+  };
+  return rangeSegments(range).some(([lower, upper]) => choose(lower, upper));
+}
+
+function rangeHasCongruenceValue(range, congruence) {
+  if (congruence == null || congruence.modulus <= 1n || isEmpty(range)) return true;
+  const modulus = congruence.modulus;
+  const remainder = congruence.remainder;
+  return rangeSegments(range).some(([lower, upper]) => {
+    const delta = ((remainder - (lower % modulus)) + modulus) % modulus;
+    return lower + delta <= upper;
+  });
+}
+
+function rangeHasMaskAndCongruenceValue(range, knownZero, knownOne, congruence) {
+  if (congruence == null || congruence.modulus <= 1n) return rangeHasMaskValue(range, knownZero, knownOne);
+  const residueMask = congruence.modulus - 1n;
+  const residue = congruence.remainder & residueMask;
+  // A divisor of 2^bits fixes exactly its low bits.  Contradictory evidence is
+  // rejected before the range search so an overlap cannot be silently resolved
+  // in favour of known-one bits.
+  if ((knownZero & residue) !== 0n || (knownOne & (residueMask ^ residue)) !== 0n) return false;
+  return rangeHasMaskValue(range, knownZero | (residueMask ^ residue), knownOne | residue);
+}
+
+function rangeContainsRange(container, member) {
+  return rangeSegments(member).every(([memberLower, memberUpper]) => rangeSegments(container)
+    .some(([containerLower, containerUpper]) => containerLower <= memberLower && memberUpper <= containerUpper));
 }
 
 function rangeFromSegments(segments, bits) {
@@ -824,11 +990,10 @@ export function join(left, right) {
   if (isEmpty(left)) return right;
   if (isEmpty(right)) return left;
   if (isFull(left) || isFull(right)) return fullRange(left.bits);
-  if (contains(left, right.lower) && contains(left, right.upper) && cardinality(left) >= cardinality(right)) return left;
-  if (contains(right, left.lower) && contains(right, left.upper) && cardinality(right) >= cardinality(left)) return right;
+  if (rangeContainsRange(left, right) && cardinality(left) >= cardinality(right)) return left;
+  if (rangeContainsRange(right, left) && cardinality(right) >= cardinality(left)) return right;
   const candidates = [rangeOf(left.lower, right.upper, left.bits), rangeOf(right.lower, left.upper, left.bits)]
-    .filter((candidate) => contains(candidate, left.lower) && contains(candidate, left.upper)
-      && contains(candidate, right.lower) && contains(candidate, right.upper));
+    .filter((candidate) => rangeContainsRange(candidate, left) && rangeContainsRange(candidate, right));
   if (candidates.length === 0) return fullRange(left.bits);
   return candidates.reduce((best, candidate) => (cardinality(candidate) < cardinality(best) ? candidate : best));
 }

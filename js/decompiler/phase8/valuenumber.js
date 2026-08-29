@@ -20,6 +20,7 @@
  */
 
 import { createPassDescriptor, createPassResult } from './contract.js';
+import { analysisIdentityMatches, canonicalAnalysisIdentity } from './analysis-identity.js';
 
 export const GVN_PASS = createPassDescriptor({
   id: 'phase8.gvn',
@@ -172,6 +173,22 @@ export function runGvnPass(context = {}, budget = {}, area = null) {
   const blocks = cfg?.blocks ?? [];
   const values = ssa?.values ?? [];
   if (area == null) fail('phase8-gvn-requires-staging-area');
+  const resolvedIdentity = canonicalAnalysisIdentity(context);
+  if (!resolvedIdentity.valid || !analysisIdentityMatches(scalarFacts?.identity, resolvedIdentity.identity)) {
+    return createPassResult({
+      descriptor: GVN_PASS,
+      status: 'unsupported',
+      changed: false,
+      completeness: 'unknown',
+      stopReason: `invalid-identity:${resolvedIdentity.valid ? 'scalar range artifact is stale or missing identity' : resolvedIdentity.reason}`,
+      diagnostics: [{
+        severity: 'warning',
+        code: 'phase8.gvn.identity',
+        message: 'GVN refused to consume scalar facts without a matching canonical identity.',
+        reason: resolvedIdentity.valid ? 'scalar range artifact is stale or missing identity' : resolvedIdentity.reason,
+      }],
+    });
+  }
 
   const numbers = new Map();
   const classes = new Map();

@@ -202,6 +202,16 @@ get_feature_paths() {
             echo "ERROR: Feature directory not found. Set SPECIFY_FEATURE_DIRECTORY or ensure .specify/feature.json contains feature_directory." >&2
             return 1
         fi
+    elif [[ -n "${SPECIFY_FEATURE:-}" ]]; then
+        # A checked-out Spec Kit branch is a valid feature context even when a
+        # caller has not persisted feature.json yet.  Accept both the normal
+        # feature name and the explicit specs/<feature> spelling, but keep the
+        # resolution rooted in this repository.
+        if [[ "$SPECIFY_FEATURE" == specs/* ]]; then
+            feature_dir="$repo_root/$SPECIFY_FEATURE"
+        else
+            feature_dir="$repo_root/specs/$SPECIFY_FEATURE"
+        fi
     else
         echo "ERROR: Feature directory not found. Set SPECIFY_FEATURE_DIRECTORY or run the specify command to create .specify/feature.json." >&2
         return 1

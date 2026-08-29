@@ -55,6 +55,14 @@ test('join is idempotent, which is what makes the ascending chain finite', () =>
   assert.equal(sameRange(join(join(range, range), range), range), true);
 });
 
+test('wrapped join contains every member of both circular ranges', () => {
+  const left = rangeOf(0n, 2n, 8);
+  const right = rangeOf(2n, 0n, 8);
+  const merged = join(left, right);
+  assert.equal(isFull(merged), true, 'the union covers the complete 8-bit domain');
+  assert.equal(contains(merged, 1n), true, 'the interval interior cannot be dropped');
+});
+
 test('widening goes to full rather than climbing forever', () => {
   const previous = rangeOf(0n, 10n, 32);
   assert.equal(sameRange(widen(previous, previous), previous), true, 'a stable range is not widened');
@@ -196,6 +204,61 @@ test('known bits and congruence are projections of the same masked/shifted value
   const shifted = evaluateBinaryFact('shl', masked, singletonFact(bitvector(1n, 8), { valueId: 12 }));
   assert.equal(shifted.knownZero & 0x01n, 0x01n);
   assert.equal(shifted.congruence.modulus, 8n);
+});
+
+test('non-divisor congruence is dropped before modular wrap propagation', () => {
+  const left = factFromRange(rangeOf(255n, 255n, 8), {
+    valueId: 13,
+    deriveKnownBits: false,
+    congruence: { remainder: 0n, modulus: 3n },
+  });
+  const right = factFromRange(rangeOf(1n, 1n, 8), {
+    valueId: 14,
+    deriveKnownBits: false,
+    congruence: { remainder: 1n, modulus: 3n },
+  });
+  const result = evaluateBinaryFact('add', left, right);
+  assert.deepEqual(result.congruence, { remainder: 0n, modulus: 1n });
+  assert.equal(result.status, 'exact');
+});
+
+test('cross-fact evidence rejects truncation and contradictions', () => {
+  const outOfWidth = factFromRange(rangeOf(0n, 1n, 8), { knownZero: 0x100n });
+  assert.equal(outOfWidth.status, 'malformed');
+  assert.equal(outOfWidth.knownZero, 0n, 'out-of-width masks are not silently truncated');
+  assert.equal(outOfWidth.constant, null);
+
+  const impossibleBits = factFromRange(rangeOf(0n, 2n, 8), { knownOne: 4n });
+  assert.equal(impossibleBits.status, 'malformed');
+  assert.equal(impossibleBits.knownOne, 0n, 'known bits must be implied by every value in the range');
+
+  const impossibleResidue = factFromRange(rangeOf(0n, 2n, 8), {
+    congruence: { remainder: 3n, modulus: 4n },
+  });
+  assert.equal(impossibleResidue.status, 'malformed');
+  assert.deepEqual(impossibleResidue.congruence, { remainder: 0n, modulus: 1n });
+});
+
+test('cross-fact evidence rejects a mask/residue intersection with no value', () => {
+  const contradictory = factFromRange(fullRange(8), {
+    deriveKnownBits: false,
+    knownZero: 1n,
+    congruence: { remainder: 1n, modulus: 2n },
+  });
+  assert.equal(contradictory.status, 'malformed');
+  assert.equal(contradictory.knownZero, 0n, 'conflicting evidence must not be retained as a scalar fact');
+  assert.deepEqual(contradictory.congruence, { remainder: 0n, modulus: 1n });
+});
+
+test('cyclic evidence is rejected without recursive failure', () => {
+  const cycle = {};
+  cycle.self = cycle;
+  assert.doesNotThrow(() => {
+    const malformed = factFromRange(rangeOf(0n, 1n, 8), { provenance: cycle });
+    assert.equal(malformed.status, 'malformed');
+    assert.equal(malformed.constant, null);
+    assert.deepEqual(malformed.provenance, {});
+  });
 });
 
 test('product joins and widening never promote a non-singleton to an exact constant', () => {

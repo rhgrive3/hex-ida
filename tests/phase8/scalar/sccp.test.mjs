@@ -382,6 +382,39 @@ test('switch case labels, shared targets, and default remain conservative and de
   assert.deepEqual([...exact.unreachableBlockIndexes], [2, 3]);
 });
 
+test('width-incompatible switch labels remain conservative', () => {
+  const f = fixture('switch-width-mismatch');
+  f.block(0);
+  const selector = f.constant(0, 8);
+  f.switchBranch(selector, [[0x100n, 1]], 2);
+  f.block(1).ret();
+  f.block(2).ret();
+  const facts = analyze(f.build()).facts;
+  const caseEdge = edge(facts, '0->1:switch-case');
+  const defaultEdge = edge(facts, '0->2:switch-default');
+  assert.equal(caseEdge.reachable, true, 'malformed labels keep the case edge conservative');
+  assert.equal(defaultEdge.reachable, true, 'malformed labels cannot exclude the default edge');
+  assert.equal(caseEdge.facts.has(selector.id), false, 'malformed labels cannot refine the selector');
+  assert.equal(defaultEdge.facts.has(selector.id), false, 'malformed labels cannot refine the default');
+});
+
+test('replacing canonical ranges invalidates dependent scalar analyses', () => {
+  const f = fixture('sccp-invalidation');
+  f.block(0);
+  f.constant(1, 8);
+  f.ret();
+  const state = seedAnalysisState(f.build());
+  state.__write('valueNumbers', Object.freeze({ completeness: 'complete' }));
+  state.__write('induction', Object.freeze({ completeness: 'complete' }));
+  state.__write('aggregates', Object.freeze({ completeness: 'complete' }));
+  const outcome = runPassTransaction(state, PASS, { analysis: state }, {});
+  assert.equal(outcome.committed, true);
+  assert.deepEqual(outcome.invalidated, ['aggregates', 'induction', 'valueNumbers']);
+  assert.equal(state.get('valueNumbers'), null);
+  assert.equal(state.get('induction'), null);
+  assert.equal(state.get('aggregates'), null);
+});
+
 test('edge facts do not leak into the global phi/range fact', () => {
   const f = fixture('edge-local-phi');
   f.block(0);
@@ -435,7 +468,12 @@ test('malformed predicates and stale producer identities fail closed', () => {
   assert.equal(facts.edgeFacts.get('0->2:conditional-false').reachable, true);
   assert.equal(facts.passVersion, SCCP_PASS.version);
   const identityFacts = analyze(f.build(), { analysisIdentity: { binaryId: 'b', snapshotId: 's' } }).facts;
-  assert.deepEqual(identityFacts.identity, { binaryId: 'b', snapshotId: 's' });
+  assert.equal(identityFacts.identity.binaryId, 'b');
+  assert.equal(identityFacts.identity.snapshotId, 's');
+  assert.ok(identityFacts.identity.functionId);
+  assert.ok(identityFacts.identity.semanticIrId);
+  assert.ok(identityFacts.identity.ssaId);
+  assert.ok(identityFacts.identity.analyzerVersion);
   const stale = { ...facts, passVersion: '0.0.0' };
   assert.notEqual(stale.passVersion, SCCP_PASS.version, 'a stale producer identity cannot be mistaken for this result');
 
@@ -446,6 +484,32 @@ test('malformed predicates and stale producer identities fail closed', () => {
   unsupported.block(2).ret();
   const unsupportedFacts = analyze(unsupported.build()).facts;
   assert.deepEqual([...unsupportedFacts.unreachableBlockIndexes], [], 'unsupported branch evidence keeps both arms conservative');
+});
+
+test('SCCP refuses to publish when the caller explicitly supplies no identity', () => {
+  const f = fixture('missing-analysis-identity');
+  f.block(0);
+  f.constant(1, 8);
+  f.ret();
+  const state = seedAnalysisState(f.build());
+  const outcome = runPassTransaction(state, PASS, { analysis: state, analysisIdentity: null }, {});
+  assert.equal(outcome.committed, true, 'an unsupported pass result is a committed observation, not fabricated facts');
+  assert.equal(outcome.result.status, 'unsupported');
+  assert.equal(state.get('ranges'), null, 'missing identity cannot publish scalar facts');
+});
+
+test('SCCP refuses a canonical IR that explicitly carries no identity', () => {
+  const f = fixture('missing-ir-analysis-identity');
+  f.block(0);
+  f.constant(1, 8);
+  f.ret();
+  const ir = f.build();
+  ir.analysisIdentity = null;
+  const state = seedAnalysisState(ir);
+  const outcome = runPassTransaction(state, PASS, { analysis: state, ir }, {});
+  assert.equal(outcome.committed, true);
+  assert.equal(outcome.result.status, 'unsupported');
+  assert.equal(state.get('ranges'), null, 'an IR without canonical identity cannot publish scalar facts');
 });
 
 test('missing branch or switch selector evidence keeps every successor conservative', () => {

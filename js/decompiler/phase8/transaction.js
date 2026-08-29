@@ -34,12 +34,16 @@ const ANALYSIS_SET = new Set(ANALYSIS_KEYS);
  * I cached was derived from ssa@3 and ssa is now at 4", which is the difference
  * between reuse and stale reuse.
  */
-export function createAnalysisState(initial = {}) {
+export function createAnalysisState(initial = {}, initialVersions = null) {
   const values = new Map();
   const versions = new Map();
   for (const key of ANALYSIS_KEYS) {
-    values.set(key, Object.hasOwn(initial, key) ? initial[key] : null);
-    versions.set(key, Object.hasOwn(initial, key) ? 1 : 0);
+    const present = Object.hasOwn(initial, key);
+    const requestedVersion = initialVersions?.[key];
+    const version = Number.isInteger(requestedVersion) && requestedVersion >= 0
+      ? requestedVersion : (present ? 1 : 0);
+    values.set(key, present ? initial[key] : null);
+    versions.set(key, version);
   }
 
   const api = {
@@ -73,6 +77,40 @@ export function createAnalysisState(initial = {}) {
     },
   };
   return api;
+}
+
+/** Clone an authoritative state without resetting the evidence versions. */
+export function forkAnalysisState(source) {
+  if (source == null || typeof source.snapshot !== 'function' || typeof source.get !== 'function') {
+    fail('phase8-analysis-state-required');
+  }
+  const versions = source.snapshot();
+  const initial = {};
+  for (const key of ANALYSIS_KEYS) if (versions[key] > 0) initial[key] = source.get(key);
+  return createAnalysisState(initial, versions);
+}
+
+/**
+ * Commit a private vertical state while preserving the exact version delta.
+ * The snapshot guard makes a concurrent writer a failed publication rather
+ * than silently overwriting newer authoritative evidence.
+ */
+export function commitAnalysisState(target, working, before) {
+  if (target == null || working == null || before == null) return false;
+  const current = target.snapshot();
+  if (ANALYSIS_KEYS.some((key) => current[key] !== before[key])) return false;
+  for (const key of ANALYSIS_KEYS) {
+    const delta = working.version(key) - before[key];
+    if (delta < 0) return false;
+    if (delta === 0) continue;
+    const finalValue = working.get(key);
+    for (let step = 0; step < delta; step += 1) {
+      const last = step === delta - 1;
+      if (last && finalValue == null && target.version(key) > 0) target.__drop(key);
+      else target.__write(key, last ? finalValue : null);
+    }
+  }
+  return true;
 }
 
 /**
@@ -173,6 +211,18 @@ export function runPassTransaction(state, pass, context = {}, budget = {}) {
   const stagedKeys = [...stagedWrites.keys()].sort().join(',');
   const declaredKeys = [...result.produced].sort().join(',');
   if (stagedKeys !== declaredKeys) return refuse(`staged-production-mismatch:${descriptor.id}:${stagedKeys || 'none'}!=${declaredKeys || 'none'}`);
+
+  // A partial result may be useful when there is no prior artifact, but it can
+  // never replace a complete authoritative result.  The vertical runner uses
+  // a private state as well, so this guard also protects direct pass callers.
+  if (result.completeness !== 'complete') {
+    const completeKey = result.produced.find((key) => state.get(key)?.completeness === 'complete');
+    if (completeKey != null) return refuse(`incomplete-result-would-overwrite-complete:${descriptor.id}:${completeKey}`);
+  }
+
+  // Last check immediately before the only mutation point.  A cancellation
+  // that arrives while validating the staged result must not become a commit.
+  if (aborted(budget)) return refuse('cancelled-before-commit');
 
   // Commit. Nothing above this line touched authoritative state.
   const invalidated = invalidationFor(descriptor, { changed: result.changed });
