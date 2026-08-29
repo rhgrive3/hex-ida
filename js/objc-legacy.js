@@ -287,12 +287,15 @@ async function readMethods(get, listAddr, out, className, prefix, budget, comple
       imp = cleanPointer(get, u64(b, 16));
     }
     if (imp == null) { markLegacyPartial(completeness, 'method-imp-unresolved', 'incompleteMethodLists'); continue; }
+    let implementationProven=!get.requireImplementationProof,implementationValidationReason=null;
+    if(typeof get.validateImplementation==='function'){try{const proof=await get.validateImplementation(imp);implementationProven=proof===true||proof?.ok===true;if(!implementationProven)implementationValidationReason=proof?.reason||'method-imp-not-executable';}catch{implementationProven=false;implementationValidationReason='method-imp-validation-error';}}
+    if(get.requireImplementationProof&&!implementationProven)markLegacyPartial(completeness,implementationValidationReason||'method-imp-unproven','incompleteMethodLists');
     const sel = await cstring(get, nameAddr);
     if (!sel) { markLegacyPartial(completeness, 'method-selector-invalid', 'incompleteMethodLists'); continue; }
     out.push({
       addr: imp,
       name: prefix + '[' + className + ' ' + sel + ']',
-      sel, kind: prefix, className,
+      sel, kind: prefix, className, implementationProven, implementationValidationReason,
     });
   }
   if (scanned < count) markLegacyPartial(completeness, 'method-budget', 'incompleteMethodLists');
@@ -579,7 +582,7 @@ async function readClass(get, classAddr, out, seen, meta, completeness = null) {
  *   chained fixups のポインタを組み立てるのに要る。渡されなければ
  *   クラス表の位置から推定する（iOS のアプリは 4 GiB 境界に置かれる）。
  */
-export async function buildObjcModel(read, classList, onProgress, imageBase, pointerFormat) {
+export async function buildObjcModel(read, classList, onProgress, imageBase, pointerFormat, options = {}) {
   const names = [];
   const classes = [];
   const seen = new Set();
@@ -606,6 +609,8 @@ export async function buildObjcModel(read, classList, onProgress, imageBase, poi
     ? BigInt(imageBase)
     : (classList.vmAddr / 0x100000000n) * 0x100000000n;
   get.pointerFormat = pointerFormat ?? classList.pointerFormat ?? classList.pointer_format ?? null;
+  get.validateImplementation = typeof options.validateImplementation === 'function' ? options.validateImplementation : null;
+  get.requireImplementationProof = options.requireImplementationProof === true;
   const total = Math.min(declared, MAX_CLASSES);
 
   for (let i = 0; i < total && names.length < MAX_METHODS; i++) {

@@ -590,6 +590,7 @@ function createRiscvAbi(profile) {
     callerSaved:(request)=>callerSavedFor(request),
     calleeSaved:(request)=>calleeSavedFor(request),
     stackRules:()=>Object.freeze({
+      stackPointer:'x2', stackPointerAliases:Object.freeze(['x2','sp']), entryArgumentOffset:0,
       alignment:16,
       stackGrows:'down',
       argumentSlotBytes:8,

@@ -86,7 +86,9 @@ async function methodList(get, listAddr, owner, classMethod, source) {
     }
     const sel = await cstring(get, nameAddr);
     if (!sel) { invalidEntries++; continue; }
-    items.push({ sel, selector: sel, types: await cstring(get, typeAddr), addr: imp, imp, className: owner || null, classMethod: !!classMethod, source, kind: classMethod ? '+' : '-', name: owner ? `${classMethod ? '+' : '-'}[${owner} ${sel}]` : sel });
+    const concrete=source!=='protocol'&&source!=='protocol-optional';let implementationProven=false,implementationValidationReason=null;
+    if(concrete){if(imp!=null&&typeof get.validateImplementation==='function'){try{const proof=await get.validateImplementation(imp);implementationProven=proof===true||proof?.ok===true;if(!implementationProven)implementationValidationReason=proof?.reason||'method-imp-not-executable';}catch{implementationValidationReason='method-imp-validation-error';}}else if(imp!=null&&!get.requireImplementationProof)implementationProven=true;if(get.requireImplementationProof&&!implementationProven)invalidEntries++;}
+    items.push({ sel, selector: sel, types: await cstring(get, typeAddr), addr: imp, imp, className: owner || null, classMethod: !!classMethod, source, kind: classMethod ? '+' : '-', name: owner ? `${classMethod ? '+' : '-'}[${owner} ${sel}]` : sel, implementationProven, implementationValidationReason });
   }
   return {
     items,
@@ -207,6 +209,8 @@ export async function parseObjcExtendedMetadata(read, sections = {}, opts = {}) 
   const get = pagedReader(read, opts.pageBytes || 65536, opts.maxPages || 96);
   get.base = opts.imageBase != null ? BigInt(opts.imageBase) : null;
   get.resolvePointer = opts.resolvePointer || opts.binaryImage?.resolvePointer || opts.binaryImage?.decodePointer || null;
+  get.validateImplementation = typeof opts.validateImplementation === 'function' ? opts.validateImplementation : null;
+  get.requireImplementationProof = opts.requireImplementationProof === true;
   const classByAddress = new Map((opts.classes || []).filter((c) => c?.addr != null).map((c) => [c.addr.toString(), c]));
   const protocolTable = await pointerTable(get, sections.protocolList, MAX_PROTOCOLS, (address) => parseProtocol(get, address));
   const categoryTable = await pointerTable(get, sections.categoryList, MAX_CATEGORIES, (address) => parseCategory(get, address, classByAddress));

@@ -196,6 +196,7 @@ export const DARWIN_ARM64_ABI = new ABIPlugin({
   callerSaved:()=>DARWIN_CALLER_SAVED,
   calleeSaved:()=>DARWIN_CALLEE_SAVED,
   stackRules:()=>Object.freeze({
+    stackPointer:'sp', stackPointerAliases:Object.freeze(['sp']), entryArgumentOffset:0,
     alignment:16,
     stackGrows:'down',
     compactArgumentSlots:true,
