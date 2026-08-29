@@ -5,7 +5,7 @@
 
 **Implementation gate**: Production source edits are forbidden until the
 `ANALYZE=CLEAN` refreshed checkpoint is approved by Sol and the merged PR #2499
-head is reconciled/re-audited against live main `390741dc`.
+head is reconciled/re-audited against live main `48a0b429`.
 
 ## Phase 1: Setup and ownership
 
@@ -36,7 +36,7 @@ head is reconciled/re-audited against live main `390741dc`.
 ## Phase 2A: Current-main correction (before production)
 
 - [x] T036 Reconcile the branch to current `origin/main` at
-  `390741dcf6f8d391017b7f1ba224e35b49b973d3`, refresh the #2499 collision
+  `48a0b42913e63f33a03783f9676994268d8a06e8`, refresh the #2499 collision
   status, and confirm current open PRs #2498/#2493 do not own ABI semantics.
 - [x] T037 Run the read-only 66-row ABI/profile matrix covering every registered
   profile, scalar/aggregate/HFA/HVA/sret/vararg/unknown case, and stale,
@@ -56,33 +56,33 @@ piece ordering.
 
 ### Tests first
 
-- [ ] T010 [P] [US1] Extend
+- [x] T010 [P] [US1] Extend
   `tests/phase8/abi/hex-c3-02-profile-matrix.test.mjs` with integer, FP,
   pointer, integer/FP return, small/multi-register aggregate, split
   register/stack, stack alignment/padding, and caller/callee agreement rows.
-- [ ] T011 [P] [US1] Add profile-specific positive rows for Apple arm64 and
+- [x] T011 [P] [US1] Add profile-specific positive rows for Apple arm64 and
   arm64e, AAPCS64, SysV AMD64, Microsoft x64/vectorcall, and RISC-V
   LP64/LP64F/LP64D in the phase8 ABI matrix.
-- [ ] T012 [P] [US1] Add downstream integration assertions proving the same
+- [x] T012 [P] [US1] Add downstream integration assertions proving the same
   identity and locations in Semantic IR, summaries, and decompiler prototype
   output without editing the existing #2499-owned test file.
 
 ### Implementation
 
-- [ ] T013 [US1] Extend the canonical adapter boundary in
+- [x] T013 [US1] Extend the canonical adapter boundary in
   `js/analysis/semantic-function-base.js` only as needed to preserve ABI
   identity, provenance, completeness, aggregate pieces, and hidden-result
   state; do not introduce a classifier.
-- [ ] T014 [US1] Update the selected canonical consumer(s), including
+- [x] T014 [US1] Update the selected canonical consumer(s), including
   `js/decompiler/types/prototype.js` after #2499 reconciliation, to consume
   adapter classifications for arguments and returns rather than register
   literals or architecture heuristics.
-- [ ] T015 [US1] Preserve piece order and profile-specific aggregate, HFA/HVA,
+- [x] T015 [US1] Preserve piece order and profile-specific aggregate, HFA/HVA,
   split, stack, alignment, padding, and sret semantics through
   `js/decompiler/pipeline-core.js`, `js/decompiler/type-recovery.js`,
   `js/decompiler/semantic-core.js`, and summary consumers where their actual
   changed-file inventory proves a need.
-- [ ] T016 [US1] Verify direct downstream behavior with the focused ABI matrix,
+- [x] T016 [US1] Verify direct downstream behavior with the focused ABI matrix,
   existing phase5/phase6 ABI contracts, and the immediate decompiler/summary
   subsystem tests.
 
@@ -93,26 +93,26 @@ ambiguous evidence is promoted to an exact ABI/prototype fact.
 
 ### Tests first
 
-- [ ] T017 [P] [US2] Add paired negatives for unsupported ABI, stale profile or
+- [x] T017 [P] [US2] Add paired negatives for unsupported ABI, stale profile or
   architecture identity, malformed classifier evidence, incomplete aggregate
   layout, and profile mismatch.
-- [ ] T018 [P] [US2] Add negatives for anonymous/unknown variadic frontier,
+- [x] T018 [P] [US2] Add negatives for anonymous/unknown variadic frontier,
   indirect calls, contradictory caller/callee observations, thunk/tail-call
   ambiguity, and hidden-sret ambiguity.
-- [ ] T019 [P] [US2] Add cancellation, deadline, truncation, budget exhaustion,
+- [x] T019 [P] [US2] Add cancellation, deadline, truncation, budget exhaustion,
   failed-classifier, and deterministic replay rows; prove no staged exact
   result is published.
 
 ### Implementation
 
-- [ ] T020 [US2] Preserve explicit partial/unknown/unsupported/conflict states
+- [x] T020 [US2] Preserve explicit partial/unknown/unsupported/conflict states
   across adapter, summaries, prototype, and decompiler publication; reject
   stale or malformed identity/evidence atomically.
-- [ ] T021 [US2] Implement or wire profile-specific known-vararg fixed prefixes,
+- [x] T021 [US2] Implement or wire profile-specific known-vararg fixed prefixes,
   anonymous frontiers, HFA/HVA evidence limits, indirect-call uncertainty,
   and caller/callee conflict handling without majority or confidence
   laundering.
-- [ ] T022 [US2] Run paired-negative and downstream tests; any false exactness
+- [x] T022 [US2] Run paired-negative and downstream tests; any false exactness
   is a hard blocker and must be fixed before convergence.
 
 ## Phase 5: User Story 3 — locked profile matrix (P2)
@@ -120,18 +120,18 @@ ambiguous evidence is promoted to an exact ABI/prototype fact.
 **Goal**: all supported shared-layer profiles have explicit terminal positive or
 conservative outcomes without shrinking the denominator.
 
-- [ ] T023 [P] [US3] Complete the locked matrix for integer/FP/pointer arguments,
+- [x] T023 [P] [US3] Complete the locked matrix for integer/FP/pointer arguments,
   returns, aggregate boundaries, register classes, stack placement, alignment,
   padding, sret, HFA/HVA, and variadic cases.
-- [ ] T024 [P] [US3] Complete arm64e profile identity rows and unsupported/stale
+- [x] T024 [P] [US3] Complete arm64e profile identity rows and unsupported/stale
   ABI identity rows; prove architecture compatibility does not silently select
   an Apple platform ABI.
-- [ ] T025 [US3] Compare direct classifier, adapter, Semantic IR, summary, and
+- [x] T025 [US3] Compare direct classifier, adapter, Semantic IR, summary, and
   prototype outcomes and record every row's identity/completeness/diagnostic.
 
 ## Phase 6: Convergence, independent reviews, and delivery
 
-- [ ] T026 Run Spec Kit converge; process every generated task through
+- [x] T026 Run Spec Kit converge; process every generated task through
   implementation, focused tests, and another converge until `CLEAN`.
 - [ ] T027 Have a non-owner Luna perform adversarial Review Pass 1 on the exact
   implementation head with at least five fresh malformed, stale, incomplete,

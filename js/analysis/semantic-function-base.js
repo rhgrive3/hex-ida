@@ -120,11 +120,129 @@ export function partitionDecodedFunction(instructions, architecturePlugin, optio
 }
 
 export function semanticAbiAdapter(abiPlugin, options = {}) {
-  const stackRules = (() => { try { return abiPlugin.stackRules() ?? {}; } catch { return {}; } })();
-  const unwindRules = (() => { try { return abiPlugin.unwindRules() ?? {}; } catch { return {}; } })();
+  const plugin = abiPlugin && typeof abiPlugin === 'object' ? abiPlugin : null;
+  const pluginId = String(plugin?.id || 'unknown');
+  const semanticVersion = plugin?.semanticVersion == null ? null : String(plugin.semanticVersion);
+  const semanticIdentity = plugin?.semanticIdentity == null ? null : String(plugin.semanticIdentity);
+  const architectureId = plugin?.architectureId == null ? null : String(plugin.architectureId);
+  const targetArchitecture = options?.architectureId || options?.architecture || architectureId;
+  const platformId = options?.platformId || options?.platform || null;
+  const supported = !!plugin && plugin.supported !== false && pluginId !== 'unknown'
+    && !!semanticVersion && !!semanticIdentity && !!architectureId;
+  const identity = Object.freeze({
+    id:pluginId,
+    semanticVersion,
+    semanticIdentity,
+    architectureId,
+    targetArchitecture:targetArchitecture == null ? null : String(targetArchitecture),
+    platform:platformId == null ? null : String(platformId),
+    architectureProfile:options?.architectureProfile ?? null,
+  });
+  const provenance = Object.freeze({
+    source:'canonical-abi-registry',
+    abiId:pluginId,
+    semanticIdentity,
+    semanticVersion,
+    architectureId,
+  });
+  const invalidation = Object.freeze({
+    abiSemanticIdentity:semanticIdentity,
+    abiSemanticVersion:semanticVersion,
+    architectureId,
+    targetArchitecture:identity.targetArchitecture,
+    architectureProfile:identity.architectureProfile,
+    binaryId:options?.binaryId ?? null,
+    sliceId:options?.sliceId ?? null,
+    functionId:options?.functionId ?? null,
+    semanticFunctionRoute:SEMANTIC_FUNCTION_ROUTE,
+  });
+  const stackRules = (() => { try { return plugin?.stackRules?.() ?? {}; } catch { return {}; } })();
+  const unwindRules = (() => { try { return plugin?.unwindRules?.() ?? {}; } catch { return {}; } })();
+
+  function classifyCanonicalArguments({ functionPrototype = null, call = null } = {}) {
+    if (!plugin?.classifyArguments) return null;
+    const prototype = functionPrototype ?? call?.callPrototype ?? options?.callPrototype ?? null;
+    const instruction = {
+      callTarget:call?.target ?? call?.callTarget ?? null,
+      callPrototype:prototype,
+    };
+    const classifyOptions = { ...options, callPrototype:prototype };
+    try { return plugin.classifyArguments(instruction, classifyOptions) || null; }
+    catch { return null; }
+  }
+
+  function classifyCanonicalFunctionReturn({ functionPrototype = null, ...returnOptions } = {}) {
+    if (!plugin?.classifyFunctionReturn) return null;
+    const prototype = functionPrototype ?? options?.functionPrototype ?? null;
+    try {
+      return plugin.classifyFunctionReturn({
+        functionPrototype:prototype,
+        prototype,
+        ...returnOptions,
+      }) || null;
+    } catch { return null; }
+  }
+
+  function canonicalReturnLocations(classified) {
+    if (!classified || classified.partial === true || classified.unsupported === true) return [];
+    const pieces = Array.isArray(classified.pieces) && classified.pieces.length
+      ? classified.pieces
+      : Array.isArray(classified.parts) && classified.parts.length
+        ? classified.parts
+        : null;
+    const rawRegisters = pieces
+      ? pieces.map((piece) => piece?.reg).filter((reg) => typeof reg === 'string' && reg.length > 0)
+      : Array.isArray(classified.regs) && classified.regs.length
+        ? classified.regs
+        : typeof classified.reg === 'string' && classified.reg.length > 0 ? [classified.reg] : [];
+    const locations = rawRegisters.map((rawReg, index) => {
+      const piece = pieces?.[index] ?? null;
+      return {
+        kind:'register',
+        reg:String(rawReg),
+        abiClass:piece?.abiClass ?? classified.abiClass ?? null,
+        pieceIndex:Number.isInteger(Number(piece?.index)) ? Number(piece.index) : index,
+        bits:piece?.bits ?? classified.bits ?? null,
+        byteOffset:piece?.byteOffset ?? null,
+        stackOffset:piece?.stackOffset ?? null,
+        order:index,
+        aggregate:classified.aggregate === true || rawRegisters.length > 1,
+      };
+    });
+    if (locations.length || classified.indirect !== true) return locations;
+    const hidden = typeof classified.hiddenResultPointer === 'string'
+      ? classified.hiddenResultPointer
+      : classified.hiddenResultPointer?.input;
+    return hidden ? [{ kind:'indirect', reg:String(hidden), role:'result-address', aggregate:true }] : [];
+  }
+
   return Object.freeze({
-    id:abiPlugin.id,
-    semanticVersion:abiPlugin.semanticVersion,
+    id:pluginId,
+    semanticVersion,
+    semanticIdentity,
+    architectureId,
+    targetArchitecture:identity.targetArchitecture,
+    platformId:identity.platform,
+    architectureProfile:identity.architectureProfile,
+    supported,
+    identity,
+    provenance,
+    invalidation,
+    completeness:supported ? 'canonical' : 'unsupported',
+    stackRules:() => stackRules,
+    unwindRules:() => unwindRules,
+    /**
+     * Canonical ABI classification entry points.  These deliberately return
+     * the registry classifier's evidence object unchanged: the adapter carries
+     * identity/provenance around the one ABI truth, but never reimplements
+     * placement or aggregate classification.
+     */
+    classifyArguments:classifyCanonicalArguments,
+    classifyFunctionReturn:classifyCanonicalFunctionReturn,
+    classifyEntryRegister(reg) {
+      try { return plugin?.classifyEntryRegister?.(reg) || null; }
+      catch { return null; }
+    },
     /**
      * Physical register that carries a returned value of `returnType`, or null
      * when the ABI does not designate one. Generic decompiler code must ask for
@@ -137,7 +255,7 @@ export function semanticAbiAdapter(abiPlugin, options = {}) {
       if (!type || type.toLowerCase() === 'void') return null;
       let classified = null;
       try {
-        classified = abiPlugin.classifyFunctionReturn({
+        classified = plugin?.classifyFunctionReturn?.({
           functionPrototype:{ returnType:type, returnsValue:true },
           returnType:type,
           returnsValue:true,
@@ -153,10 +271,7 @@ export function semanticAbiAdapter(abiPlugin, options = {}) {
      * lose arguments, it reports the stack pointer as one.
      */
     argumentLocations({ functionPrototype = null } = {}) {
-      let classified = null;
-      const instruction = functionPrototype == null ? {} : { callPrototype:functionPrototype };
-      const classifyOptions = functionPrototype == null ? {} : { callPrototype:functionPrototype };
-      try { classified = abiPlugin.classifyArguments(instruction, classifyOptions); } catch { classified = null; }
+      const classified = classifyCanonicalArguments({ functionPrototype });
       const locations = [];
       const seen = new Set();
       for (const entry of classified?.arguments ?? []) {
@@ -172,6 +287,13 @@ export function semanticAbiAdapter(abiPlugin, options = {}) {
             index:Number.isInteger(Number(entry.index)) ? Number(entry.index) : locations.length,
             reg,
             abiClass:entry.abiClass ?? null,
+            aggregate:entry.aggregate === true || Array.isArray(entry.pieces) || registers.length > 1,
+            pieceIndex:Array.isArray(entry.pieces)
+              ? (entry.pieces.findIndex((piece) => String(piece?.reg || '') === reg) >= 0
+                ? entry.pieces.findIndex((piece) => String(piece?.reg || '') === reg)
+                : null)
+              : null,
+            pieces:Array.isArray(entry.pieces) ? entry.pieces : null,
           }));
         }
       }
@@ -192,38 +314,55 @@ export function semanticAbiAdapter(abiPlugin, options = {}) {
       ].filter((value) => typeof value === 'string' && value.length > 0);
       return Object.freeze([...new Set(named)]);
     },
-    classifyCall({ call }) {
-      const instruction = { callTarget:call?.target ?? null, callPrototype:options.callPrototype ?? null };
-      const classified = abiPlugin.classifyArguments(instruction, options);
-      const returned = abiPlugin.classifyCallReturn(instruction, options) ?? null;
-      const explicitArguments = Array.isArray(classified.arguments) ? classified.arguments : null;
-      const implicitInputs = Array.isArray(classified.implicitInputs)
+      classifyCall({ call }) {
+      const classified = classifyCanonicalArguments({ call });
+      const instruction = {
+        callTarget:call?.target ?? null,
+        callPrototype:options.callPrototype ?? call?.callPrototype ?? null,
+      };
+      let returned = null;
+      try { returned = plugin?.classifyCallReturn?.(instruction, { ...options, callPrototype:instruction.callPrototype }) ?? null; }
+      catch { returned = null; }
+      const returnLocations = canonicalReturnLocations(returned);
+      const explicitArguments = Array.isArray(classified?.arguments) ? classified.arguments : null;
+      const implicitInputs = Array.isArray(classified?.implicitInputs)
         ? classified.implicitInputs.map((input, index) => Object.freeze({
           ...input,
           index:`implicit:${index}`,
           location:input.location ?? 'register',
           abiClass:input.abiClass ?? 'abi-implicit-input',
           implicit:true,
-          variadicVectorRegisterCount:classified.variadicVectorRegisterCount ?? null,
-          countKnown:Number.isSafeInteger(classified.variadicVectorRegisterCount),
+          variadicVectorRegisterCount:classified?.variadicVectorRegisterCount ?? null,
+          countKnown:Number.isSafeInteger(classified?.variadicVectorRegisterCount),
         }))
         : [];
       return {
         arguments:explicitArguments == null ? (implicitInputs.length ? implicitInputs : null) : [...explicitArguments, ...implicitInputs],
         explicitArguments,
         implicitInputs,
-        variadicVectorRegisterCount:classified.variadicVectorRegisterCount ?? null,
-        partial:classified.partial === true,
-        completeness:classified.partial === true ? 'partial' : 'complete',
-        stackArguments:classified.stackArguments ?? null,
-        stackArgsUnknown:classified.stackArgsUnknown ?? true,
-        stackArgsMayContainPointers:classified.stackArgsMayContainPointers ?? true,
-        argumentEvidence:classified.evidence ?? `abi-${abiPlugin.id}`,
-        clobbers:abiPlugin.callerSaved(),
+        variadicVectorRegisterCount:classified?.variadicVectorRegisterCount ?? null,
+        partial:classified?.partial === true || classified == null,
+        completeness:classified == null || classified?.unsupported === true ? 'unknown' : classified.partial === true ? 'partial' : 'complete',
+        stackArguments:classified?.stackArguments ?? null,
+        stackArgsUnknown:classified?.stackArgsUnknown ?? true,
+        stackArgsMayContainPointers:classified?.stackArgsMayContainPointers ?? true,
+        argumentEvidence:classified?.evidence ?? `abi-${pluginId}`,
+        clobbers:(() => { try { return plugin?.callerSaved?.(options) ?? []; } catch { return []; } })(),
         returnReg:returned?.reg ?? null,
         returnBits:returned?.bits ?? null,
-        returnEvidence:returned == null ? null : `abi-${abiPlugin.id}-return`,
+        returnEvidence:returned == null ? null : `abi-${pluginId}-return`,
+        returnLocations,
+        returnPieces:Array.isArray(returned?.pieces) ? returned.pieces : Array.isArray(returned?.parts) ? returned.parts : null,
+        returnAggregate:returned?.aggregate === true,
+        returnIndirect:returned?.indirect === true,
+        returnHiddenResultPointer:returned?.hiddenResultPointer ?? null,
         noreturn:callNoreturnState(options),
+        abiId:pluginId,
+        abiSemanticVersion:semanticVersion,
+        abiSemanticIdentity:semanticIdentity,
+        abiIdentity:identity,
+        provenance,
+        invalidation,
       };
     },
   });

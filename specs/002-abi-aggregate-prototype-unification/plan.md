@@ -17,9 +17,8 @@ return, aggregate, hidden-result, stack, and variadic placement facts.
 Prototype, summary, type-recovery, and decompiler projections will consume a
 provenance-bearing ABI classification and publish unknown/partial results when
 identity, support, or completeness is insufficient. PR #2499 merged as
-`be5636b1`; the branch is now reconciled to live main `390741dc` and remains
-implementation-blocked pending the refreshed counterexample plan and Sol
-approval.
+`be5636b1`; the branch was reconciled to live main `48a0b429`, and the
+refreshed counterexample plan received Sol approval before implementation.
 
 ## Technical Context
 
@@ -166,7 +165,7 @@ an AAPCS64 default when the selected profile is unsupported or unknown.
    the merged #2499 head and current-main ownership inventory remain separate
    delivery gates.
 
-## Phase 2 — Implementation Boundary (blocked pending Sol)
+## Phase 2 — Implementation Boundary
 
 1. After Sol clears the collision and approves the refreshed checkpoint,
    reconcile to newest live main and re-run collision preflight.
@@ -206,15 +205,16 @@ requirement-coverage, task-order, or canonical-ownership inconsistency. The
 merged #2499 reconciliation and current-main matrix are explicit delivery
 gates represented in both plan and tasks, not unresolved design ambiguities.
 The refreshed read-only Spec Kit analysis found no such inconsistency;
-`ANALYZE_RESULT: CLEAN`. T039 remains unchecked solely because Sol's separate
-implementation spot-check/approval is still required.
+`ANALYZE_RESULT: CLEAN`. Sol's implementation spot-check approved the
+canonical-owner, counterexample, and fail-closed boundary before production
+edits.
 
 ```text
 HISTORICAL_PRE_FIX_SHA: 8a614ccd0184d6c25257c25d930b68af7e9ac81f
 HISTORICAL_PRE_FIX_COMMAND: node --test tests/phase8/abi/hex-c3-02-profile-matrix.test.mjs
 HISTORICAL_PRE_FIX_FAILURE: RISC-V adapter still reports AAPCS64; unsupported
                              ABI lacks explicit unknown contract (exit 1)
-CURRENT_MAIN_SHA: 390741dcf6f8d391017b7f1ba224e35b49b973d3
+CURRENT_MAIN_SHA: 48a0b42913e63f33a03783f9676994268d8a06e8
 CURRENT_PRE_FIX_COMMAND: node --test tests/phase8/abi/hex-c3-02-profile-matrix.test.mjs
 CURRENT_PRE_FIX_FAILURE: 2 of 4 subtests fail: stale aapcs64@1 is accepted as
                          supported; canonical AAPCS64 x0/x1 aggregate is
@@ -224,7 +224,8 @@ CURRENT_MATRIX_RESULT: 66 rows; 54 PASS, 12 FAIL, all 12 in prototype
                        identity/aggregate projection (exit 1)
 POST_FIX_SHA: recorded at implementation checkpoint
 POST_FIX_COMMAND: same focused command plus required profile/subsystem gates
-POST_FIX_PASS: recorded from exact-head validation
+POST_FIX_PASS: focused matrix, 66-row matrix, and phase8 gate pass; phase5/6
+                full runners retain pre-existing frozen-toolchain blockers
 ```
 
 ## Complexity Tracking

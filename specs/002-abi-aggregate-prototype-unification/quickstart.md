@@ -15,7 +15,7 @@ Expected pre-fix result: `FAIL` (exit 1). The RISC-V row receives hard-coded
 `conventionKnown: false` contract.
 
 Current pre-implementation baseline at live main
-`390741dcf6f8d391017b7f1ba224e35b49b973d3`:
+`48a0b42913e63f33a03783f9676994268d8a06e8`:
 
 ```sh
 node --test tests/phase8/abi/hex-c3-02-profile-matrix.test.mjs
@@ -29,11 +29,19 @@ gaps, while direct canonical profile rows pass.
 
 ## Focused post-fix proof
 
-Run the identical commands after implementation. They must pass, and the tests
-must also assert that a selected profile's identity, argument/return pieces,
-hidden sret, and completeness reach the prototype consumer. Add paired negatives for
-unsupported, stale, malformed, incomplete, conflict, cancellation, truncation,
-and budget-limited evidence; these must remain non-exact.
+Run the identical commands after implementation. They pass, and the tests also
+assert that a selected profile's identity, argument/return pieces, hidden sret,
+and completeness reach the prototype consumer. Paired negatives for unsupported,
+stale, malformed, incomplete, conflict, cancellation, truncation, and
+budget-limited evidence remain non-exact.
+
+The implementation proof additionally runs:
+
+```sh
+node --test tests/phase8/abi/hex-c3-02-boundaries.test.mjs tests/phase8/abi/hex-c3-02-profile-matrix.test.mjs
+```
+
+Expected result: 17 passing tests. The locked matrix remains `66 PASS, 0 FAIL`.
 
 ## Profile and subsystem gates
 

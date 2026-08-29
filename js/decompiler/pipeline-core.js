@@ -40,6 +40,9 @@ function abiArgumentLocationsForState(state) {
         index:Number.isInteger(Number(location.index)) ? Number(location.index) : ordinal,
         reg:String(location.reg),
         abiClass:location.abiClass ?? null,
+        aggregate:location.aggregate === true,
+        pieceIndex:location.pieceIndex ?? null,
+        pieces:location.pieces ?? null,
       }));
     const registers = state.opts?.abiAdapter?.argumentRegisters?.({ functionPrototype });
     return Array.isArray(registers) ? registers.map((reg, index) => ({ index, reg:String(reg), abiClass:null })) : [];
