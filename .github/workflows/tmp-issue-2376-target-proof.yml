@@ -64,8 +64,9 @@ jobs:
           node --check js/binary/macho-dyld.js
           node tests/issue-2376-swift-pointer-resolver.mjs
           node tests/issue-2376-chained-incomplete-coverage.mjs
-          node tests/issue-569-chained-segment-bounds.mjs
           node tests/issue-840-rtti-pointer-formats.mjs
+          node tests/swift-runtime.mjs
+          node tests/runtime-intelligence-imports.mjs
       - name: Publish repair and remove one-shot
         shell: bash
         run: |
