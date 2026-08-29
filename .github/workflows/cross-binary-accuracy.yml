@@ -243,7 +243,7 @@ jobs:
             node --max-old-space-size=4096 tests/accuracy.mjs \
               --target="$target" \
               --oracle="$oracle" \
-              --only='strings,xrefs,funcname,selffield,role' \
+              --only='strings,xrefs' \
               --json > accuracy-local-nonpseudoc-1.json \
               2> accuracy-local-nonpseudoc-1.log
             cat accuracy-local-nonpseudoc-1.log
@@ -251,10 +251,18 @@ jobs:
             node --max-old-space-size=4096 tests/accuracy.mjs \
               --target="$target" \
               --oracle="$oracle" \
-              --only='apimeaning,summary,expr,formula,pinpoint-partial' \
+              --only='funcname,selffield,role' \
               --json > accuracy-local-nonpseudoc-2.json \
               2> accuracy-local-nonpseudoc-2.log
             cat accuracy-local-nonpseudoc-2.log
+
+            node --max-old-space-size=4096 tests/accuracy.mjs \
+              --target="$target" \
+              --oracle="$oracle" \
+              --only='apimeaning,summary,expr,formula,pinpoint-partial' \
+              --json > accuracy-local-nonpseudoc-3.json \
+              2> accuracy-local-nonpseudoc-3.log
+            cat accuracy-local-nonpseudoc-3.log
           fi
 
           if [[ "$PSEUDOC_CACHE_HIT" != "true" ]]; then
@@ -273,7 +281,7 @@ jobs:
           if [[ "$CORE_CACHE_HIT" != "true" || "$PINPOINT_CACHE_HIT" != "true" ]]; then
             node --input-type=module <<'NODE'
           import fs from 'node:fs';
-          const rows = [0, 1, 2].flatMap((i) => JSON.parse(fs.readFileSync(`accuracy-local-nonpseudoc-${i}.json`, 'utf8')));
+          const rows = [0, 1, 2, 3].flatMap((i) => JSON.parse(fs.readFileSync(`accuracy-local-nonpseudoc-${i}.json`, 'utf8')));
           const coreIds = new Set(['sections','funcs','funcs-guess','disasm','kinds','calls','refs','imports','objc','selstub','strings','xrefs','funcname','selffield','role','apimeaning','summary','expr','formula']);
           const pinpointIds = new Set(['pinpoint', 'pinpoint-partial']);
           const core = rows.filter((row) => coreIds.has(row.id));
