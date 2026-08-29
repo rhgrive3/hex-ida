@@ -1,3 +1,5 @@
+import { objcIvarRangeWithinInstance } from './objc-ivar-layout.js';
+
 /*
  * フィールド（ivar）の索引 — 「x0 + 0x20」を「self の hp」に変える層。
  *
@@ -43,8 +45,10 @@ export class FieldIndex {
     for (const c of list) {
       if (!c || !c.name) continue;
       const byOffset = new Map();
-      for (const iv of c.ivars || []) {
-        if (iv.offset != null && Number.isFinite(Number(iv.offset))) byOffset.set(Number(iv.offset), iv);
+      const ivars = (c.ivars || []).filter((iv) =>
+        objcIvarRangeWithinInstance(iv?.offset, iv?.size ?? null, c.instanceSize));
+      for (const iv of ivars) {
+        byOffset.set(Number(iv.offset), iv);
         if (iv.offsetVar != null) {
           this.byOffsetVar.set(iv.offsetVar.toString(), { className: c.name, field: iv });
         }
@@ -60,7 +64,7 @@ export class FieldIndex {
         const key = p.ivar || ('_' + p.name);
         if (!propByIvar.has(key)) propByIvar.set(key, p);
       }
-      for (const iv of c.ivars || []) {
+      for (const iv of ivars) {
         const p = propByIvar.get(iv.name);
         if (p) {
           iv.property = p;
@@ -73,7 +77,7 @@ export class FieldIndex {
         name: c.name,
         superName: c.superName || null,
         instanceSize: c.instanceSize || 0,
-        ivars: c.ivars || [],
+        ivars,
         properties: c.properties || [],
         propertyByIvar: propByIvar,
         byOffset,
@@ -95,7 +99,7 @@ export class FieldIndex {
         else if (text && !text.includes(':')) plain = text;
         if (!plain) return null;
         const want = plain.replace(/^_+/, '').toLowerCase();
-        for (const iv of c.ivars || []) {
+        for (const iv of ivars) {
           const names = [iv.name, iv.property && iv.property.name]
             .filter(Boolean).map((x) => plainFieldName(x).toLowerCase());
           if (names.includes(want)) return iv;
