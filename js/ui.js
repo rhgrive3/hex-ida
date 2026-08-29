@@ -464,7 +464,7 @@ function armMenuDismiss(entry) {
   };
   const move = (e) => {
     if (e && e.target && entry.m.contains(e.target)) return;
-    if (Date.now() - created < 40 && (e?.type === 'resize' || e?.type === 'scroll')) return;
+    if (Date.now() - created < 100 && (e?.type === 'resize' || e?.type === 'scroll' || e?.type === 'orientationchange')) return;
     closeMenu();
   };
 
