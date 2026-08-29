@@ -11,17 +11,19 @@ assert.ok(
   workflow.includes("--only='strings,xrefs'"),
   'strings/xrefs shard must retain its exact feature set',
 );
-assert.ok(
-  workflow.includes("--only='funcname,selffield,role'"),
-  'name/field/role shard must retain its exact feature set',
-);
+for (const feature of ['funcname', 'selffield', 'role']) {
+  assert.ok(
+    workflow.includes(`--only='${feature}'`),
+    `${feature} must run in its own bounded shard`,
+  );
+}
 assert.ok(
   workflow.includes("--only='apimeaning,summary,expr,formula,pinpoint-partial'"),
   'semantic/pinpoint-partial shard must retain its exact feature set',
 );
 assert.ok(
-  workflow.includes('const rows = [0, 1, 2, 3].flatMap'),
-  'result merge must include all four non-pseudocode shards',
+  workflow.includes('const rows = [0, 1, 2, 3, 4, 5].flatMap'),
+  'result merge must include all six non-pseudocode shards',
 );
 
 for (const line of workflow.split('\n')) {
