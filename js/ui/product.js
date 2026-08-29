@@ -7,7 +7,7 @@ import {
   tabs, sectionTitle, listRow, VirtualList,
 } from './primitives.js';
 import { renderSecondaryRoute } from './secondary.js';
-import { addrHex, parseAddress } from '../format.js';
+import { addrHex, parseAddress, sizeText } from '../format.js';
 import { pick } from '../i18n.js';
 import { menu, copyText, toast } from '../ui.js';
 import {
@@ -16,7 +16,8 @@ import {
 import {
   currentFunctionAddr, showTools, showRename, showComment, showDebugger, showGlobals,
 } from '../tools.js';
-import { findGlobals } from '../linkage.js';
+import { findGlobals, importList } from '../linkage.js';
+import { findCxxClasses } from '../rtti.js';
 import { compileGoal } from '../goalc.js';
 import { decompile, decompiledText } from '../decompile.js';
 import { cfgGraph, callGraph, renderGraph, graphLegend } from '../graphview.js';
@@ -261,35 +262,100 @@ let cachedClassEntities = null;
 
 function getClassEntities(app) {
   const classes = app.fields?.classes || app.objcModel?.classes;
-  if (!classes) return [];
-  if (cachedClassesRef === classes && cachedClassEntities) {
+  const swiftTypes = app.swiftModel?.types || app.swiftRuntime?.types || [];
+  const cxxClasses = app.symbols ? findCxxClasses(app.symbols) : [];
+  const il2cppTypes = app.il2cppModel?.types || app.il2cpp?.types || [];
+
+  if (cachedClassesRef && cachedClassesRef.classes === classes && cachedClassesRef.swift === swiftTypes && cachedClassesRef.cxx === cxxClasses && cachedClassesRef.il2cpp === il2cppTypes && cachedClassEntities) {
     return cachedClassEntities;
   }
-  const entries = (classes instanceof Map)
-    ? classes.entries()
-    : Array.isArray(classes)
-      ? classes.map((c) => [c.name, c])
-      : Object.entries(classes);
+
   const items = [];
-  for (const [name, info] of entries) {
-    if (!name) continue;
-    const methods = (info?.methods?.length || info?.methodList?.length || 0);
-    const ivars = (info?.ivars?.length || 0);
-    const superName = info?.superName || info?.superclass || '';
-    const metaParts = [];
-    if (methods) metaParts.push(text(`${methods} メソッド`, `${methods} methods`));
-    if (ivars) metaParts.push(text(`${ivars} フィールド`, `${ivars} fields`));
-    if (superName) metaParts.push(text(`${superName} を継承`, `extends ${superName}`));
-    items.push({
-      name: String(name),
-      normalizedName: String(name).toLowerCase(),
-      methods,
-      ivars,
-      superName,
-      meta: metaParts.join(' · '),
-    });
+  const seen = new Set();
+
+  if (classes) {
+    const entries = (classes instanceof Map)
+      ? classes.entries()
+      : Array.isArray(classes)
+        ? classes.map((c) => [c.name, c])
+        : Object.entries(classes);
+    for (const [name, info] of entries) {
+      if (!name || seen.has('objc:' + name)) continue;
+      seen.add('objc:' + name);
+      const methods = (info?.methods?.length || info?.methodList?.length || 0);
+      const ivars = (info?.ivars?.length || 0);
+      const superName = info?.superName || info?.superclass || '';
+      const metaParts = [text('Objective-C クラス', 'Objective-C Class')];
+      if (methods) metaParts.push(text(`${methods} メソッド`, `${methods} methods`));
+      if (ivars) metaParts.push(text(`${ivars} フィールド`, `${ivars} fields`));
+      if (superName) metaParts.push(text(`${superName} を継承`, `extends ${superName}`));
+      items.push({
+        name: String(name),
+        normalizedName: String(name).toLowerCase(),
+        kind: 'objc',
+        methods,
+        ivars,
+        superName,
+        meta: metaParts.join(' · '),
+        addr: info?.addr ?? info?.address ?? null,
+      });
+    }
   }
-  cachedClassesRef = classes;
+
+  if (Array.isArray(swiftTypes)) {
+    for (const t of swiftTypes) {
+      const name = t?.name || t?.typeName;
+      if (!name || seen.has('swift:' + name)) continue;
+      seen.add('swift:' + name);
+      const kindLabel = t.kind === 'struct' ? text('Swift 構造体', 'Swift Struct') : t.kind === 'enum' ? text('Swift 列挙型', 'Swift Enum') : text('Swift クラス', 'Swift Class');
+      const fields = t.fields?.length || 0;
+      const metaParts = [kindLabel];
+      if (fields) metaParts.push(text(`${fields} フィールド`, `${fields} fields`));
+      items.push({
+        name: String(name),
+        normalizedName: String(name).toLowerCase(),
+        kind: 'swift',
+        meta: metaParts.join(' · '),
+        addr: t?.addr ?? t?.address ?? null,
+      });
+    }
+  }
+
+  if (Array.isArray(cxxClasses)) {
+    for (const c of cxxClasses) {
+      const name = c?.name;
+      if (!name || seen.has('cxx:' + name)) continue;
+      seen.add('cxx:' + name);
+      const metaParts = [text('C++ クラス (RTTI/vtable)', 'C++ Class (RTTI/vtable)')];
+      if (c.vtable != null) metaParts.push('vtable ' + addressText(c.vtable));
+      items.push({
+        name: String(name),
+        normalizedName: String(name).toLowerCase(),
+        kind: 'cxx',
+        meta: metaParts.join(' · '),
+        addr: c.vtable ?? c.typeinfo ?? null,
+      });
+    }
+  }
+
+  if (Array.isArray(il2cppTypes)) {
+    for (const t of il2cppTypes) {
+      const name = t?.name || t?.fullName;
+      if (!name || seen.has('il2cpp:' + name)) continue;
+      seen.add('il2cpp:' + name);
+      const metaParts = [text('IL2CPP 型', 'IL2CPP Type')];
+      if (t.namespace) metaParts.push(t.namespace);
+      items.push({
+        name: String(name),
+        normalizedName: String(name).toLowerCase(),
+        kind: 'il2cpp',
+        meta: metaParts.join(' · '),
+        addr: t?.addr ?? t?.address ?? null,
+      });
+    }
+  }
+
+  cachedClassesRef = { classes, swift: swiftTypes, cxx: cxxClasses, il2cpp: il2cppTypes };
   cachedClassEntities = items;
   return items;
 }
@@ -307,38 +373,100 @@ export function classItems(app, query) {
   return list;
 }
 
-function dataItems(app, query) {
-  const q = String(query || '').trim().toLowerCase();
-  const list = [];
+function getDataEntities(app) {
+  const items = [];
+  const seen = new Set();
   const regions = app.store?.get?.('regions') || [];
   const dataRegions = regions.filter((r) => r && !r.exec && (r.read || r.write));
-  if (app.symbols && app.program) {
+
+  if (app.symbols) {
     try {
-      const globals = findGlobals(app.symbols, app.program, regions, { limit: 400 });
+      const globals = findGlobals(app.symbols, app.program || null, regions, { limit: 400 });
       for (const g of globals) {
         const name = g.readable || (g.addr != null ? addressText(g.addr) : 'global');
-        if (!q || name.toLowerCase().includes(q) || (g.region && g.region.toLowerCase().includes(q))) {
-          list.push({
-            name,
-            addr: g.addr,
-            region: g.region,
-            meta: g.refs != null ? text(`${g.refs} か所から参照`, `${g.refs} refs`) : '',
-          });
-        }
+        if (seen.has('global:' + g.addr)) continue;
+        seen.add('global:' + g.addr);
+        const metaParts = [text('グローバル変数', 'Global Variable')];
+        if (g.region) metaParts.push(g.region);
+        if (g.refs != null) metaParts.push(text(`${g.refs} か所から参照`, `${g.refs} refs`));
+        items.push({
+          name: String(name),
+          normalizedName: (String(name) + ' ' + (g.region || '')).toLowerCase(),
+          kind: 'global',
+          addr: g.addr,
+          meta: metaParts.join(' · '),
+        });
       }
     } catch { /* ignore fallback */ }
   }
-  if (!list.length && dataRegions.length) {
-    for (const r of dataRegions) {
-      const name = r.section || r.name || r.id;
-      if (!q || String(name).toLowerCase().includes(q)) {
-        list.push({
-          name: String(name),
-          addr: r.vmAddr,
-          region: r.segment || r.name,
-          meta: r.size ? `${r.size} bytes` : '',
-        });
-      }
+
+  const structs = app.structs || app.types?.structs || [];
+  if (Array.isArray(structs) || (structs instanceof Map)) {
+    const list = structs instanceof Map ? structs.values() : structs;
+    for (const s of list) {
+      const name = s?.name;
+      if (!name || seen.has('struct:' + name)) continue;
+      seen.add('struct:' + name);
+      const fieldCount = s.fields?.length || s.members?.length || 0;
+      const metaParts = [text('構造体', 'Struct')];
+      if (s.size) metaParts.push(sizeText(s.size));
+      if (fieldCount) metaParts.push(text(`${fieldCount} メンバ`, `${fieldCount} members`));
+      items.push({
+        name: String(name),
+        normalizedName: String(name).toLowerCase(),
+        kind: 'struct',
+        addr: s.addr ?? null,
+        meta: metaParts.join(' · '),
+      });
+    }
+  }
+
+  const schemas = app.schemas || app.store?.get?.('schemas') || [];
+  if (Array.isArray(schemas)) {
+    for (const sch of schemas) {
+      const files = sch.files?.join(', ') || '';
+      const name = files || (sch.loader != null ? addressText(sch.loader) : 'table');
+      if (seen.has('table:' + name)) continue;
+      seen.add('table:' + name);
+      const cols = sch.best?.columns || 0;
+      const metaParts = [text('復元データ表', 'Recovered Schema')];
+      if (cols) metaParts.push(text(`${cols} 列`, `${cols} columns`));
+      items.push({
+        name: String(name),
+        normalizedName: (String(name) + ' ' + files).toLowerCase(),
+        kind: 'table',
+        addr: sch.loader ?? null,
+        meta: metaParts.join(' · '),
+      });
+    }
+  }
+
+  for (const r of dataRegions) {
+    const name = r.section || r.name || r.id;
+    if (!name || seen.has('region:' + name)) continue;
+    seen.add('region:' + name);
+    const metaParts = [text('データ領域', 'Data Region')];
+    if (r.size) metaParts.push(sizeText(r.size));
+    items.push({
+      name: String(name),
+      normalizedName: String(name).toLowerCase(),
+      kind: 'region',
+      addr: r.vmAddr,
+      meta: metaParts.join(' · '),
+    });
+  }
+
+  return items;
+}
+
+export function dataItems(app, query) {
+  const q = String(query || '').trim().toLowerCase();
+  const all = getDataEntities(app);
+  if (!q) return all;
+  const list = [];
+  for (const item of all) {
+    if (item.normalizedName.includes(q)) {
+      list.push(item);
     }
   }
   return list;
@@ -350,28 +478,61 @@ let cachedExternalItems = null;
 function getExternalEntities(app) {
   const slice = app.currentSlice?.();
   const fileInfo = app.store?.get?.('fileInfo');
-  if (cachedExternalDescriptor && cachedExternalDescriptor.fileInfo === fileInfo && cachedExternalDescriptor.slice === slice && cachedExternalDescriptor.imports === app.symbols?.imports) {
+  const symbols = app.symbols;
+  if (cachedExternalDescriptor && cachedExternalDescriptor.fileInfo === fileInfo && cachedExternalDescriptor.slice === slice && cachedExternalDescriptor.symbols === symbols && cachedExternalItems) {
     return cachedExternalItems;
   }
   const descriptor = productDescriptor(fileInfo, slice);
   const items = [];
   const seen = new Set();
   for (const name of descriptor.dependencies || []) {
-    if (!seen.has(name)) {
-      seen.add(name);
-      items.push({ name, normalizedName: name.toLowerCase(), kind: 'dylib', addr: null });
+    if (!seen.has('dylib:' + name)) {
+      seen.add('dylib:' + name);
+      items.push({
+        name,
+        normalizedName: name.toLowerCase(),
+        kind: 'dylib',
+        meta: text('依存ライブラリ', 'Dependency Library'),
+        addr: null,
+      });
     }
   }
-  const imports = app.symbols?.imports || [];
-  for (const imp of imports) {
-    const name = String(imp.name || imp);
-    const addr = imp.addr ?? imp.address ?? null;
-    if (!seen.has(name)) {
-      seen.add(name);
-      items.push({ name, normalizedName: name.toLowerCase(), kind: 'import', addr });
+  if (symbols) {
+    if (Array.isArray(symbols.imports)) {
+      for (const imp of symbols.imports) {
+        const name = String(imp.readable || imp.name || imp);
+        const rawName = String(imp.name || imp);
+        if (!name || seen.has('import:' + rawName)) continue;
+        seen.add('import:' + rawName);
+        const addr = imp.addr ?? imp.address ?? null;
+        items.push({
+          name,
+          normalizedName: (name + ' ' + rawName).toLowerCase(),
+          kind: 'import',
+          meta: text('インポート関数', 'Imported API'),
+          addr,
+        });
+      }
+    } else if (symbols.symbolCount) {
+      const imports = importList(symbols, app.program || null);
+      for (const imp of imports) {
+        const name = String(imp.readable || imp.name || '');
+        const rawName = String(imp.name || '');
+        if (!name || seen.has('import:' + rawName)) continue;
+        seen.add('import:' + rawName);
+        const metaParts = [imp.framework || text('インポート関数', 'Imported API')];
+        if (imp.calls) metaParts.push(text(`${imp.calls} か所から呼出`, `${imp.calls} calls`));
+        items.push({
+          name,
+          normalizedName: (name + ' ' + rawName).toLowerCase(),
+          kind: 'import',
+          meta: metaParts.join(' · '),
+          addr: imp.addr ?? null,
+        });
+      }
     }
   }
-  cachedExternalDescriptor = { fileInfo, slice, imports: app.symbols?.imports };
+  cachedExternalDescriptor = { fileInfo, slice, symbols };
   cachedExternalItems = items;
   return items;
 }
@@ -997,10 +1158,30 @@ function renderFunctionWorkspace(app, router, route) {
   return { root: s.root, getState: () => ({ scrollTop: s.body.scrollTop }), restoreState: (state) => { if (state) s.body.scrollTop = Number(state.scrollTop) || 0; }, dispose: () => { disposed = true; routeController.abort(); } };
 }
 
+export function findingIdentifier(item, idx) {
+  if (item?.id != null && item.id !== '') return String(item.id);
+  if (item?.findingId != null && item.findingId !== '') return String(item.findingId);
+  if (item?.claimId != null && item.claimId !== '') return String(item.claimId);
+  if (item?.key != null && item.key !== '') return String(item.key);
+  const goal = item?.goal?.text || item?.goal?.id || item?.goal || item?.title || item?.name || 'finding';
+  const addr = item?.addr ?? item?.address ?? item?.functionAddr ?? item?.function;
+  const addrStr = addr != null ? BigInt(addr).toString(16) : 'global';
+  const kind = item?.kind || item?.type || item?.claimType || item?.verdict || '';
+  const evidenceId = item?.evidenceId || item?.evidence?.id || '';
+  const rawKey = `${goal}:${addrStr}:${kind}:${evidenceId}`;
+  let hash = 5381;
+  for (let i = 0; i < rawKey.length; i++) {
+    hash = ((hash << 5) + hash) + rawKey.charCodeAt(i);
+    hash = hash & hash;
+  }
+  return 'f-' + (hash >>> 0).toString(16);
+}
+
 function renderFindingDetail(app, router, findingId) {
   const report = app.autoReport && app.autoReport.report;
   const findings = (report && (report.findings || report.results || report.goals)) || [];
-  const item = findings.find((f, idx) => String(f.id ?? f.claimId ?? f.key ?? idx) === String(findingId));
+  const targetId = String(findingId ?? '');
+  const item = findings.find((f, idx) => findingIdentifier(f, idx) === targetId || String(f.id ?? f.claimId ?? f.key ?? '') === targetId);
   const s = screen(text('結果の詳細', 'Finding Detail'), {
     id: 'finding',
     subtitle: item ? (item.title || item.label || item.goal?.text || item.goal || text('解析結果', 'Finding')) : text('結果が見つかりません', 'Finding not found'),
@@ -1056,7 +1237,7 @@ function renderResults(app, router, route) {
     const renderFinding = (item, index) => {
       const title = item.title || item.label || item.goal?.text || item.goal || text('解析結果', 'Finding');
       const address = item.addr ?? item.address ?? item.functionAddr ?? item.function;
-      const findingId = item.id ?? item.claimId ?? item.key ?? index;
+      const findingId = findingIdentifier(item, index);
       const verdict = item.verdict || (item.confirmed ? 'confirmed' : item.confidence > 0.7 ? 'likely' : 'unverified');
       return listRow({
         title: String(title),
