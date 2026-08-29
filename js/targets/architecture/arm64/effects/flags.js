@@ -24,6 +24,7 @@ function validRegisterLhs(mnemonic, op) {
 
 function validSpImmediateRhs(op) {
   if (op?.k !== 'imm') return true;
+  if (op.extend != null) return false;
   let immediate;
   try { immediate = BigInt(op.value); } catch { return false; }
   if (immediate < 0n || immediate > 0xfffn) return false;
@@ -83,7 +84,7 @@ export function liftArm64FlagEffects(instruction, options = {}) {
   if (STRICT_REGISTER_LHS.has(mnemonic) && !validRegisterLhs(mnemonic, ops[0])) {
     return liftArm64FlagEffectsCore({ ...instruction, ops: [] }, options);
   }
-  if (SP_LHS_MNEMONICS.has(mnemonic) && String(ops[0]?.cls || '').toLowerCase() === 'sp' && !validSpImmediateRhs(ops[1])) {
+  if (SP_LHS_MNEMONICS.has(mnemonic) && !validSpImmediateRhs(ops[1])) {
     return liftArm64FlagEffectsCore({ ...instruction, ops: [] }, options);
   }
   if (STRICT_REGISTER_LHS.has(mnemonic) && !validRegisterRhs(mnemonic, ops[0], ops[1])) {
