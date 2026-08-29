@@ -28,7 +28,7 @@ import {
   functionStory, blockTitle, blockHeading, blockSummary, roleTag, buildOverlay,
   confidenceText, evidenceText, describeValue,
 } from './narrate.js';
-import { groupByFeature, detectEngine } from './features.js';
+import { groupByFeature, detectEngine, classifyFeaturesAndEngineAsync } from './features.js';
 import { SAMPLE_GUIDE } from './sample.js';
 import { GOALS, goalFromPreset, parseGoal, goalLabel } from './goals.js';
 import { rankCandidates, breakdown, reasonKind } from './rank.js';
@@ -526,8 +526,13 @@ function rawSection(app, sheet, res, name, region) {
 export function showFeatures(app) {
   const info = app.store.get('fileInfo');
   if (!info) { toast(t('err.openFirst')); return; }
+  const controller = new AbortController();
   const sheet = new Sheet(pick('機能から探す', 'Find by feature'), {
-    onClose: () => { app.backend.cancelSearch(); app.backend.onScanProgress = null; },
+    onClose: () => {
+      controller.abort('features-sheet-closed');
+      app.backend.cancelSearch();
+      app.backend.onScanProgress = null;
+    },
   });
 
   const status = el('div', 'hint', pick(
@@ -580,15 +585,19 @@ export function showFeatures(app) {
     if (!p.all) return;
     fill.style.width = Math.min(100, Math.round((p.done / p.all) * 100)) + '%';
   };
-  collectStrings(app, progress).then((strings) => {
-    const index = {
-      features: groupByFeature(strings),
-      engine: detectEngine(strings),
-      count: strings.length,
-    };
+  collectStrings(app, progress).then(async (strings) => {
+    if (controller.signal.aborted || !sheet.root.isConnected) return;
+    const index = await classifyFeaturesAndEngineAsync(strings, {
+      signal: controller.signal,
+      onProgress: (done, all) => {
+        if (all) fill.style.width = Math.min(100, Math.round((done / all) * 100)) + '%';
+      },
+    });
+    if (controller.signal.aborted || !sheet.root.isConnected) return;
     app.featureIndex = index;
     render(index);
   }).catch((err) => {
+    if (controller.signal.aborted) return;
     bar.remove();
     status.textContent = '';
     alertDialog(t('search.failed'), userError(err));
