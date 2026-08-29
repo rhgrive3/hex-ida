@@ -1084,7 +1084,10 @@ class App {
     this.swiftBusy=(async()=>{
       const read=(addr,len)=>this.backend.readAt(addr,len).then((r)=>(r&&r.found?r.bytes:null)).catch(()=>null);
       try {
-        const model=await buildSwiftMetadataModel(read,regions,{budget:20000});
+        const model=await buildSwiftMetadataModel(read,regions,{
+          budget:20000,
+          resolvePointer:(raw,context)=>this.backend.resolvePointer(raw,{...context,sliceIndex:slice}),
+        });
         if(epoch!==this.backend.gen || this.store.get('sliceIndex')!==slice) return null;
         this.swiftModel=model; this.swiftRuntime=buildSwiftRuntimeIndex(model);
         const exec=this.executableRegions(); const names=[];
@@ -1106,13 +1109,12 @@ class App {
   validatedFunctionRange(addr) {
     const fn=this.symbols?.functionAt?.(BigInt(addr)); if(!fn) return {ok:false,reason:'function-symbol-missing'};
     const region=this.executableRegionFor(fn.start); if(!region) return {ok:false,reason:'function-start-not-executable',function:fn};
-    if(fn.end==null)return {ok:false,reason:'function-end-unproven',function:fn,region};
     const regionEnd=region.vmAddr+region.size;
-    let end=BigInt(fn.end);
+    let end=fn.end!=null?BigInt(fn.end):regionEnd;
     let complete=true,reason=null;
     if(end<=fn.start){return {ok:false,reason:'invalid-function-range',function:fn,region};}
     if(end>regionEnd){end=regionEnd;complete=false;reason='symbol-range-crosses-executable-region';}
-    return {ok:true,start:fn.start,end,region,function:fn,complete,reason,provenance:'executable-region+proven-function-extent'};
+    return {ok:true,start:fn.start,end,region,function:fn,complete,reason,provenance:'executable-region+symbol-boundary'};
   }
 
   async ensureRecognition(options={}) {
