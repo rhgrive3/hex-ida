@@ -19,8 +19,8 @@ export const MAX_CONVERSATIONS = 20;
 export const MAX_PERSISTED_TURNS = 40;
 export const MAX_PERSISTED_TEXT = 4000;
 export const MAX_TITLE = 28;
-const MAX_NAMESPACES = 6;
-const STORAGE_KEY = 'hex.ai.conversations.v1';
+export const LEGACY_STORAGE_KEY = 'hex.ai.conversations.v1';
+export const STORAGE_KEY = 'hex.ai.conversations.v2';
 
 let counter = 0;
 /** Ids stay unique inside a page even when two conversations are made in the same millisecond. */
@@ -117,6 +117,9 @@ export function reviveConversation(raw, namespace) {
  * full quota) is not an error the user should ever see: history is a
  * convenience, the live conversation lives in memory.
  */
+const MAX_NAMESPACES = 6;
+const INDEX_KEY = 'hex.ai.conversations.v2.index';
+
 export function createConversationStore({ namespace, storage, key = STORAGE_KEY } = {}) {
   const backing = () => {
     if (storage) return storage;
@@ -127,49 +130,122 @@ export function createConversationStore({ namespace, storage, key = STORAGE_KEY 
     try { value = typeof namespace === 'function' ? namespace() : namespace; } catch { value = null; }
     return value == null || value === '' ? 'default' : String(value);
   };
-  const readAll = () => {
+  const bucketKey = (space) => `${key}.${space}`;
+
+  const readIndex = () => {
     const store = backing();
     if (!store) return {};
     try {
-      const raw = store.getItem(key);
+      const raw = store.getItem(key === STORAGE_KEY ? INDEX_KEY : `${key}.index`);
       const parsed = raw ? JSON.parse(raw) : null;
       return parsed && typeof parsed === 'object' ? parsed : {};
     } catch { return {}; }
   };
 
+  const writeIndex = (index) => {
+    const store = backing();
+    if (!store) return false;
+    try {
+      store.setItem(key === STORAGE_KEY ? INDEX_KEY : `${key}.index`, JSON.stringify(index));
+      return true;
+    } catch { return false; }
+  };
+
+  const migrateLegacyIfNeeded = () => {
+    const store = backing();
+    if (!store) return;
+    try {
+      const legacyRaw = store.getItem(LEGACY_STORAGE_KEY);
+      if (!legacyRaw) return;
+      const legacyAll = JSON.parse(legacyRaw);
+      if (legacyAll && typeof legacyAll === 'object') {
+        const index = readIndex();
+        for (const [sp, list] of Object.entries(legacyAll)) {
+          if (Array.isArray(list) && list.length) {
+            const bk = bucketKey(sp);
+            if (!store.getItem(bk)) {
+              store.setItem(bk, JSON.stringify(list));
+              index[sp] = lastTouched(list);
+            }
+          }
+        }
+        writeIndex(index);
+        store.removeItem(LEGACY_STORAGE_KEY);
+      }
+    } catch { /* best effort */ }
+  };
+
   return {
-    key,
+    get key() {
+      return bucketKey(currentNamespace());
+    },
     namespace: currentNamespace,
     available: () => !!backing(),
     load(space = currentNamespace()) {
-      const bucket = readAll()[space];
-      if (!Array.isArray(bucket)) return [];
-      return bucket.map((raw) => reviveConversation(raw, space));
+      const store = backing();
+      if (!store) return [];
+      migrateLegacyIfNeeded();
+      try {
+        const raw = store.getItem(bucketKey(space));
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) return parsed.map((item) => reviveConversation(item, space));
+        }
+        const legacyRaw = store.getItem(LEGACY_STORAGE_KEY);
+        if (legacyRaw) {
+          const parsed = JSON.parse(legacyRaw);
+          if (parsed && typeof parsed === 'object' && Array.isArray(parsed[space])) {
+            return parsed[space].map((item) => reviveConversation(item, space));
+          }
+        }
+      } catch { return []; }
+      return [];
     },
     save(conversations, space = currentNamespace()) {
       const store = backing();
       if (!store) return false;
-      const all = readAll();
+      migrateLegacyIfNeeded();
       const keep = conversations
         .filter((item) => item.turns.length)
         .slice(-MAX_CONVERSATIONS)
         .map(serializeConversation);
-      if (keep.length) all[space] = keep;
-      else delete all[space];
-      /* Oldest binary buckets go first: the current one must always fit. */
-      const spaces = Object.keys(all);
+
+      const bk = bucketKey(space);
+      const index = readIndex();
+      try {
+        if (keep.length) {
+          store.setItem(bk, JSON.stringify(keep));
+          index[space] = lastTouched(keep);
+        } else {
+          store.removeItem(bk);
+          delete index[space];
+        }
+      } catch { return false; }
+
+      const spaces = Object.keys(index);
       if (spaces.length > MAX_NAMESPACES) {
         const ranked = spaces
           .filter((name) => name !== space)
-          .sort((a, b) => lastTouched(all[a]) - lastTouched(all[b]));
-        for (const name of ranked.slice(0, spaces.length - MAX_NAMESPACES)) delete all[name];
+          .sort((a, b) => (index[a] || 0) - (index[b] || 0));
+        for (const name of ranked.slice(0, spaces.length - MAX_NAMESPACES)) {
+          delete index[name];
+          try { store.removeItem(bucketKey(name)); } catch { /* best effort */ }
+        }
       }
-      try { store.setItem(key, JSON.stringify(all)); return true; } catch { return false; }
+      writeIndex(index);
+      return true;
     },
     clear() {
       const store = backing();
       if (!store) return;
-      try { store.removeItem(key); } catch { /* nothing to clear */ }
+      try {
+        const index = readIndex();
+        for (const space of Object.keys(index)) {
+          try { store.removeItem(bucketKey(space)); } catch { /* best effort */ }
+        }
+        store.removeItem(INDEX_KEY);
+        store.removeItem(LEGACY_STORAGE_KEY);
+      } catch { /* best effort */ }
     },
   };
 }

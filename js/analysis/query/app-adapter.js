@@ -459,6 +459,12 @@ export function createAppAnalysisQueryAdapter(app) {
       if (address == null || typeof app?.ensureProgram !== 'function') return unsupported(id, 'program-index-unavailable');
       const program = await app.ensureProgram(options.onProgress);
       if (!program?.callersOf) return unsupported(id, 'program-index-unavailable');
+      if (program.graphCompleteness && (!program.graphCompleteness.supported || program.graphCompleteness.unsupported)) {
+        return unsupported(id, program.graphCompleteness.reasons?.[0] || program.queryIncompleteReason || 'unsupported-program-analysis');
+      }
+      if (program.unsupported) {
+        return unsupported(id, program.queryIncompleteReason || 'unsupported-program-analysis');
+      }
       const { offset, limit } = pageOf(page);
       const source = program.callersOf(address, Math.min(MAX_PAGE, offset + limit));
       return paged(Array.from(source || []), page, source?.complete === false ? 'partial' : 'complete', { reason:source?.incompleteReason ?? null });
@@ -469,6 +475,12 @@ export function createAppAnalysisQueryAdapter(app) {
       if (!range.ok || typeof app?.ensureProgram !== 'function') return unsupported(id, range.reason || 'program-index-unavailable');
       const program = await app.ensureProgram(options.onProgress);
       if (!program?.calleesOf) return unsupported(id, 'program-index-unavailable');
+      if (program.graphCompleteness && (!program.graphCompleteness.supported || program.graphCompleteness.unsupported)) {
+        return unsupported(id, program.graphCompleteness.reasons?.[0] || program.queryIncompleteReason || 'unsupported-program-analysis');
+      }
+      if (program.unsupported) {
+        return unsupported(id, program.queryIncompleteReason || 'unsupported-program-analysis');
+      }
       const { offset, limit } = pageOf(page);
       const source = program.calleesOf(range.start, range.end, Math.min(MAX_PAGE, offset + limit));
       return paged(Array.from(source || []), page, source?.complete === false ? 'partial' : 'complete', { reason:source?.incompleteReason ?? null });
@@ -479,6 +491,12 @@ export function createAppAnalysisQueryAdapter(app) {
       if (address == null || typeof app?.ensureProgram !== 'function') return unsupported(id, 'program-index-unavailable');
       const program = await app.ensureProgram(options.onProgress);
       if (!program) return unsupported(id, 'program-index-unavailable');
+      if (program.graphCompleteness && (!program.graphCompleteness.supported || program.graphCompleteness.unsupported)) {
+        return unsupported(id, program.graphCompleteness.reasons?.[0] || program.queryIncompleteReason || 'unsupported-program-analysis');
+      }
+      if (program.unsupported) {
+        return unsupported(id, program.queryIncompleteReason || 'unsupported-program-analysis');
+      }
       const { offset, limit } = pageOf(page);
       const cap = Math.min(MAX_PAGE, offset + limit);
       const refs = program.refSitesTo?.(address, 1n, cap) || [];

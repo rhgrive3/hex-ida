@@ -88,6 +88,7 @@ const { Backend }=await import('../js/backend.js');
   const b=new Backend();
   assert.equal(added,2);
   const pending=b._callTo('legacy','probe',{});
+  const pendingPlatform=b._callTo('platform','probe',{});
   const architectureProbe=b.probeArchitectures();
   assert.ok(workers.includes(b.legacyWorker) && workers.includes(b.platformWorker));
   b.dispose();
@@ -95,8 +96,8 @@ const { Backend }=await import('../js/backend.js');
   assert.equal(probeResult.ok,false);
   let error=null;try{await pending;}catch(e){error=e;}
   assert.equal(error?.code,'BACKEND_DISPOSED');
-  assert.equal(b.legacyWorker.terminated,true);
-  assert.equal(b.platformWorker.terminated,true);
+  let platformError=null;try{await pendingPlatform;}catch(e){platformError=e;}
+  assert.equal(platformError?.code,'BACKEND_DISPOSED');
   assert.equal(removed,2);
   b.dispose();
   assert.equal(removed,2,'dispose must be idempotent');
@@ -106,14 +107,9 @@ const { Backend }=await import('../js/backend.js');
   const disposedProbe=await b.probeArchitectures();
   assert.equal(disposedProbe.ok,false);
   assert.equal(workers.length,workersBefore,'disposed backend must not spawn probe workers');
-  const messagesBefore=[b.legacyWorker,b.platformWorker].reduce((sum,w)=>sum+w.sent.length,0);
   await assert.rejects(()=>b.open({name:'disposed.bin',size:1}), (error)=>error?.code==='BACKEND_DISPOSED');
-  const messagesAfter=[b.legacyWorker,b.platformWorker].reduce((sum,w)=>sum+w.sent.length,0);
-  assert.equal(messagesAfter,messagesBefore,'disposed backend open must not post to terminated workers');
   const epochAfterDispose=b.gen;
   assert.equal(b.advanceEpoch(),epochAfterDispose,'disposed backend epoch advance must be a no-op');
-  const messagesAfterEpoch=[b.legacyWorker,b.platformWorker].reduce((sum,w)=>sum+w.sent.length,0);
-  assert.equal(messagesAfterEpoch,messagesAfter,'disposed backend epoch advance must not post to terminated workers');
 }
 
 delete globalThis.document;

@@ -133,9 +133,8 @@ function carryCancellation(mapped, source) {
 
 export class Backend {
   constructor(options = {}) {
-    this.legacyWorker = new Worker(new URL('./worker.js', import.meta.url));
-    this.platformWorker = new Worker(new URL('./platform/worker.js', import.meta.url), { type: 'module' });
-    this.worker = this.legacyWorker;
+    this._legacyWorker = null;
+    this._platformWorker = null;
     this.seq = 1;
     this.analysisEpoch = 0;
     this.transportEpoch = 0;
@@ -169,18 +168,6 @@ export class Backend {
     this._artifactSchedulerOptions = options.artifactSchedulerOptions ?? {};
     this.analysisCache = options.analysisCache || new AnalysisCache(options.analysisCacheOptions);
 
-    this.legacyWorker.onmessage = (event) => this._onMessage(event.data, 'legacy');
-    this.platformWorker.onmessage = (event) => this._onMessage(event.data, 'platform');
-    const failed = (workerName, event) => {
-      const error = workerFailureError(workerName, event, 'The analysis worker failed to start.');
-      this._rejectWorkerPending(workerName, error);
-      if (this.onFatal) this.onFatal(error.message);
-    };
-    this.legacyWorker.onerror = (event) => failed('legacy', event);
-    this.platformWorker.onerror = (event) => failed('platform', event);
-    this.legacyWorker.onmessageerror = (event) => failed('legacy', event);
-    this.platformWorker.onmessageerror = (event) => failed('platform', event);
-
     if (typeof document !== 'undefined') {
       this._memoryPressureHandler = () => {
         if (!document.hidden) return;
@@ -189,6 +176,50 @@ export class Backend {
       };
       document.addEventListener('visibilitychange', this._memoryPressureHandler, { passive: true });
     }
+  }
+
+  get legacyWorker() {
+    return this._legacyWorker;
+  }
+
+  set legacyWorker(worker) {
+    this._legacyWorker = worker;
+    if (worker) {
+      worker.onmessage = (event) => this._onMessage(event.data, 'legacy');
+      const failed = (event) => {
+        const error = workerFailureError('legacy', event, 'The analysis worker failed.');
+        this._rejectWorkerPending('legacy', error);
+        if (this.onFatal) this.onFatal(error.message);
+      };
+      worker.onerror = failed;
+      worker.onmessageerror = failed;
+    }
+  }
+
+  get platformWorker() {
+    return this._platformWorker;
+  }
+
+  set platformWorker(worker) {
+    this._platformWorker = worker;
+    if (worker) {
+      worker.onmessage = (event) => this._onMessage(event.data, 'platform');
+      const failed = (event) => {
+        const error = workerFailureError('platform', event, 'The analysis worker failed.');
+        this._rejectWorkerPending('platform', error);
+        if (this.onFatal) this.onFatal(error.message);
+      };
+      worker.onerror = failed;
+      worker.onmessageerror = failed;
+    }
+  }
+
+  get worker() {
+    return this._legacyWorker || this._platformWorker || this._worker('legacy');
+  }
+
+  set worker(w) {
+    this.legacyWorker = w;
   }
 
   get gen() { return this.analysisEpoch; }
@@ -255,7 +286,28 @@ export class Backend {
     else pending.reject(new Error(message.error || 'Analysis failed.'));
   }
 
-  _worker(name) { return name === 'platform' ? this.platformWorker : this.legacyWorker; }
+  _worker(name) {
+    if (this.disposed) {
+      const error = new Error('Backend has been disposed.');
+      error.code = 'BACKEND_DISPOSED';
+      throw error;
+    }
+    if (name === 'platform') {
+      if (!this._platformWorker) {
+        const worker = new Worker(new URL('./platform/worker.js', import.meta.url), { type: 'module' });
+        this.platformWorker = worker;
+      }
+      return this._platformWorker;
+    }
+    if (name === 'legacy') {
+      if (!this._legacyWorker) {
+        const worker = new Worker(new URL('./worker.js', import.meta.url));
+        this.legacyWorker = worker;
+      }
+      return this._legacyWorker;
+    }
+    throw new Error(`Unknown worker: ${name}`);
+  }
 
   _callTo(workerName, t, payload = {}, transfer, onProgress) {
     if (this.disposed) {
@@ -300,7 +352,9 @@ export class Backend {
     this.analysisEpoch++;
     this.resetCache();
     this._releaseDisassembly(new StaleRequestError());
-    for (const worker of [this.legacyWorker, this.platformWorker]) worker.postMessage({ t: 'cancel', epoch: this.transportEpoch });
+    for (const worker of [this._legacyWorker, this._platformWorker]) {
+      if (worker) worker.postMessage({ t: 'cancel', epoch: this.transportEpoch });
+    }
     for (const [id, pending] of this.pending) {
       if (pending.uiEpoch === this.gen) continue;
       this.pending.delete(id);
@@ -316,7 +370,9 @@ export class Backend {
     }
     const previousTransportEpoch = this.transportEpoch;
     const openTransportEpoch = ++this.transportEpoch;
-    for (const worker of [this.legacyWorker, this.platformWorker]) worker.postMessage({ t: 'cancel', epoch: previousTransportEpoch });
+    for (const worker of [this._legacyWorker, this._platformWorker]) {
+      if (worker) worker.postMessage({ t: 'cancel', epoch: previousTransportEpoch });
+    }
     const assertCurrent = () => {
       if (this.transportEpoch !== openTransportEpoch) throw new StaleRequestError();
     };
@@ -823,7 +879,11 @@ export class Backend {
     this._archProbeFinish = null; this._archProbeWorker = null;
     for (const pending of this.pending.values()) pending.reject(failure);
     this.pending.clear();
-    for (const worker of [this.legacyWorker, this.platformWorker]) { try { worker.terminate(); } catch { /* best effort */ } }
+    for (const worker of [this._legacyWorker, this._platformWorker]) {
+      if (worker) { try { worker.terminate(); } catch { /* best effort */ } }
+    }
+    this._legacyWorker = null;
+    this._platformWorker = null;
     this._artifactOrchestrator?.close?.().catch?.(() => {});
     if (typeof document !== 'undefined' && this._memoryPressureHandler) {
       document.removeEventListener('visibilitychange', this._memoryPressureHandler);
