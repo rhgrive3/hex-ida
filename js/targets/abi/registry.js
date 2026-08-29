@@ -1,4 +1,8 @@
 const ABI_PLUGINS = new Map();
+const APPLE_ARM64E_PLATFORMS = new Set([
+  'apple', 'darwin', 'macos', 'macosx', 'ios', 'ios-simulator', 'ipados',
+  'tvos', 'watchos', 'visionos',
+]);
 
 function canonicalId(value) { return String(value || '').trim().toLowerCase(); }
 function frozenArray(value) { return Object.freeze(Array.isArray(value) ? value.slice() : []); }
@@ -81,6 +85,10 @@ export function findABIPlugin({ id = null, architecture = null, platform = null,
   }
   const arch = canonicalId(architecture);
   const platformId = canonicalId(platform);
+  // arm64e is not enough to choose an ABI.  In particular, silently treating
+  // an architecture-only arm64e target as AAPCS64 would invent register and
+  // aggregate placement facts for non-Apple binaries.
+  if (arch === 'arm64e' && !APPLE_ARM64E_PLATFORMS.has(platformId)) return abiPlugin('unknown');
   for (const plugin of ABI_PLUGINS.values()) {
     if (!plugin.supported || plugin.id === 'unknown') continue;
     if (arch && plugin.architectureId !== arch && !(arch === 'arm64e' && plugin.architectureId === 'arm64')) continue;

@@ -12,6 +12,22 @@ export const V1_VK = Object.freeze({ ARG: 'arg', CONST: 'const', DEF: 'def', PHI
 export const V1_MK = Object.freeze({ STACK: 'stack', FIELD: 'field', GLOBAL: 'global', UNKNOWN: 'unknown' });
 
 const CONTROL_KINDS = new Set(['branch', 'conditional-branch', 'switch', 'return', 'trap', 'unknown-control-effect']);
+const NON_EXACT_ABI_STATES = new Set([
+  'stale', 'malformed', 'conflict', 'cancelled', 'canceled', 'deadline',
+  'deadline-exceeded', 'truncated', 'budget', 'budget-exhausted',
+  'resource-exhausted', 'unsupported', 'invalid', 'failed', 'error',
+  'indirect-call', 'ambiguous', 'unknown', 'incomplete', 'partial', 'not-proven',
+]);
+
+function abiNonExact(raw) {
+  if (raw?.partial === true || raw?.unsupported === true) return true;
+  const values = [
+    raw?.status, raw?.analysisStatus, raw?.completeness, raw?.evidenceStatus,
+    raw?.invalidation?.status, raw?.invalidation?.state, raw?.invalidation?.completeness,
+    raw?.abiInvalidation?.status, raw?.abiInvalidation?.state, raw?.abiInvalidation?.completeness,
+  ];
+  return values.some((value) => NON_EXACT_ABI_STATES.has(String(value ?? '').trim().toLowerCase().replace(/_/g, '-')));
+}
 
 export function safeBigInt(value) {
   if (value == null) return null;
@@ -86,31 +102,51 @@ function stateIdentityByVariableKey(ir, ssa) {
 
 function normalizeAbiResult(raw) {
   if (!raw || typeof raw !== 'object') return null;
-  const callArguments = Array.isArray(raw.callArguments) ? raw.callArguments
+  const rawCallArguments = Array.isArray(raw.callArguments) ? raw.callArguments
     : Array.isArray(raw.arguments) ? raw.arguments : null;
+  const nonExact = abiNonExact(raw);
+  const callArguments = nonExact && rawCallArguments
+    ? rawCallArguments.map((argument) => ({ ...argument, possible:true, mustUse:false, exact:false, certainty:'unknown' }))
+    : rawCallArguments;
+  // A partial/stale result may contain a producer's provisional locations.
+  // Dropping every physical placement at this boundary prevents a legacy
+  // scalar field from laundering incomplete canonical ABI evidence.
+  const returnLocations = nonExact ? [] : Array.isArray(raw.returnLocations) ? raw.returnLocations : [];
+  const hasAggregateReturn = raw.returnAggregate === true || raw.returnIndirect === true
+    || (Array.isArray(raw.returnPieces) && raw.returnPieces.length > 1)
+    || returnLocations.length > 1;
+  const scalarReturnLocation = !hasAggregateReturn && returnLocations.length === 1
+    && returnLocations[0]?.kind === 'register'
+    && returnLocations[0]?.aggregate !== true
+    ? returnLocations[0].reg : null;
+  const fallbackScalarReturn = !nonExact && !hasAggregateReturn && returnLocations.length === 0
+    && raw.returnReg != null ? String(raw.returnReg) : null;
   return {
     callArguments,
-    stackArguments: Array.isArray(raw.stackArguments) ? raw.stackArguments : null,
+    stackArguments: nonExact ? null : Array.isArray(raw.stackArguments) ? raw.stackArguments : null,
     stackArgsUnknown: raw.stackArgsUnknown == null ? callArguments == null : !!raw.stackArgsUnknown,
     stackArgsMayContainPointers: raw.stackArgsMayContainPointers == null ? true : !!raw.stackArgsMayContainPointers,
     argumentEvidence: raw.argumentEvidence == null ? 'injected-abi-adapter' : String(raw.argumentEvidence),
     clobbers: unique(asArray(raw.clobbers).map(String)),
-    returnReg: raw.returnReg == null ? null : String(raw.returnReg),
-    returnBits: raw.returnBits == null ? null : Number(raw.returnBits),
-    returnEvidence: raw.returnEvidence ?? null,
-    returnLocations: Array.isArray(raw.returnLocations) ? raw.returnLocations : [],
-    returnPieces: Array.isArray(raw.returnPieces) ? raw.returnPieces : null,
-    returnAggregate: raw.returnAggregate === true,
-    returnIndirect: raw.returnIndirect === true,
-    returnHiddenResultPointer: raw.returnHiddenResultPointer ?? null,
+    // A legacy scalar field cannot represent an aggregate or an indirect
+    // result.  Never let a producer's first-register convenience field erase
+    // the complete canonical location list.
+    returnReg:nonExact ? null : returnLocations.length ? scalarReturnLocation : fallbackScalarReturn,
+    returnBits: nonExact ? null : raw.returnBits == null ? null : Number(raw.returnBits),
+    returnEvidence:nonExact ? null : raw.returnEvidence ?? null,
+    returnLocations,
+    returnPieces: nonExact ? null : Array.isArray(raw.returnPieces) ? raw.returnPieces : null,
+    returnAggregate:nonExact ? false : raw.returnAggregate === true,
+    returnIndirect:nonExact ? false : raw.returnIndirect === true,
+    returnHiddenResultPointer:nonExact ? null : raw.returnHiddenResultPointer ?? null,
     abiId:raw.abiId == null ? null : String(raw.abiId),
     abiSemanticVersion:raw.abiSemanticVersion == null ? null : String(raw.abiSemanticVersion),
     abiSemanticIdentity:raw.abiSemanticIdentity == null ? null : String(raw.abiSemanticIdentity),
     abiIdentity:raw.abiIdentity ?? null,
     abiProvenance:raw.provenance ?? null,
     abiInvalidation:raw.invalidation ?? null,
-    completeness:raw.completeness ?? null,
-    partial:raw.partial === true,
+    completeness:raw.completeness ?? (nonExact ? 'unknown' : null),
+    partial:nonExact,
   };
 }
 

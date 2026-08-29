@@ -3,14 +3,13 @@ import { abiPlugin as registeredABIPlugin } from '../../targets/abi/index.js';
 
 const ARCH_META_CACHE = new Map();
 const REGISTER_CANDIDATE_CACHE = new Map();
-const AGGREGATE_CANDIDATE_CACHE = new Map();
 const STACK_LAYOUT_CACHE = new Map();
 
 const INVALID_ABI_STATES = new Set([
   'stale', 'malformed', 'conflict', 'cancelled', 'canceled', 'deadline',
   'deadline-exceeded', 'truncated', 'budget', 'budget-exhausted',
   'resource-exhausted', 'unsupported', 'invalid', 'failed', 'error',
-  'indirect-call', 'ambiguous', 'unknown', 'incomplete', 'not-proven',
+  'indirect-call', 'ambiguous', 'unknown', 'incomplete', 'partial', 'not-proven',
 ]);
 
 function record(value) { return !!value && typeof value === 'object' && !Array.isArray(value); }
@@ -26,6 +25,48 @@ function compatibleArchitecture(target, canonical) {
   return actual === expected || (actual === 'arm64e' && expected === 'arm64');
 }
 
+function firstDefined(object, fields) {
+  for (const field of fields) if (object?.[field] != null) return object[field];
+  return null;
+}
+
+function identityToken(value) {
+  if (!record(value)) return value;
+  return firstDefined(value, ['semanticIdentity', 'abiSemanticIdentity', 'profileIdentity', 'id', 'value']);
+}
+
+function sameIdentity(left, right) {
+  const a = identityToken(left);
+  const b = identityToken(right);
+  if (a == null || b == null) return a == null && b == null;
+  return String(a) === String(b);
+}
+
+function sameIdentityValue(left, right) {
+  if (Object.is(left, right)) return true;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
+    return left.every((value, index) => sameIdentityValue(value, right[index]));
+  }
+  if (record(left) || record(right)) {
+    if (!record(left) || !record(right)) return false;
+    const keys = Object.keys(right);
+    return keys.length === Object.keys(left).length
+      && keys.every((key) => Object.hasOwn(left, key) && sameIdentityValue(left[key], right[key]));
+  }
+  return sameIdentity(left, right);
+}
+
+function requireIdentityMirrors(container, mirrors, prefix) {
+  if (!record(container)) return `${prefix}-record-malformed`;
+  for (const [field, expected] of mirrors) {
+    if (!Object.hasOwn(container, field) || !sameIdentityValue(container[field], expected)) {
+      return `${prefix}-${field}-mismatch`;
+    }
+  }
+  return null;
+}
+
 function requestedInvalidationState(adapter, opts = {}) {
   if (opts.cancelled === true || opts.canceled === true || opts.signal?.aborted === true) return 'cancelled';
   if (opts.deadlineExceeded === true || opts.deadlineExpired === true) return 'deadline-exceeded';
@@ -37,6 +78,7 @@ function requestedInvalidationState(adapter, opts = {}) {
   if (opts.malformedEvidence === true || opts.classifierFailed === true) return 'malformed';
   for (const value of [
     opts.status, opts.analysisStatus, opts.completeness, opts.evidenceStatus,
+    opts.invalidation?.status, opts.invalidation?.state, opts.invalidation?.completeness,
     adapter?.status, adapter?.analysisStatus, adapter?.completeness,
     adapter?.invalidation?.status, adapter?.invalidation?.state,
   ]) {
@@ -72,11 +114,16 @@ function validateABIIdentity(adapter, plugin, opts = {}) {
   if (normalized(adapter.architectureId) !== normalized(plugin.architectureId)) {
     return { supported:false, status:'profile-mismatch', reason:'abi-architecture-profile-mismatch' };
   }
-  const targetArchitecture = adapter.targetArchitecture || opts.architectureId || opts.architecture || null;
+  const targetArchitecture = firstDefined(adapter, ['targetArchitecture'])
+    ?? firstDefined(opts, ['targetArchitecture', 'architecture', 'arch', 'architectureId']);
+  if (!targetArchitecture) {
+    return { supported:false, status:'profile-mismatch', reason:'abi-target-architecture-required' };
+  }
   if (!compatibleArchitecture(targetArchitecture, plugin.architectureId)) {
     return { supported:false, status:'profile-mismatch', reason:'abi-target-architecture-mismatch' };
   }
-  const platform = adapter.platformId || adapter.platform || opts.platformId || opts.platform || null;
+  const platform = firstDefined(adapter, ['platformId', 'platform'])
+    ?? firstDefined(opts, ['platformId', 'platform', 'os']);
   if (platform && typeof plugin.platformPredicate === 'function') {
     let platformMatches = false;
     try {
@@ -88,42 +135,164 @@ function validateABIIdentity(adapter, plugin, opts = {}) {
     if (!platformMatches) return { supported:false, status:'profile-mismatch', reason:'abi-platform-profile-mismatch' };
   }
   const profile = adapter.architectureProfile || opts.architectureProfile || null;
-  if (record(profile)) {
-    const profileArchitecture = profile.architectureId || profile.architecture || profile.arch;
-    if (profileArchitecture && !compatibleArchitecture(profileArchitecture, plugin.architectureId)) {
-      return { supported:false, status:'profile-mismatch', reason:'abi-profile-architecture-mismatch' };
-    }
-    const profileIdentity = profile.semanticIdentity || profile.abiSemanticIdentity;
-    if (profileIdentity && String(profileIdentity) !== String(plugin.semanticIdentity)) {
-      return { supported:false, status:'stale', reason:'abi-profile-semantic-identity-mismatch' };
-    }
+  if (!record(profile)) {
+    return { supported:false, status:'malformed', reason:'abi-profile-identity-required' };
   }
-  if (adapter.identity != null) {
-    if (!record(adapter.identity)) return { supported:false, status:'malformed', reason:'abi-identity-record-malformed' };
-    for (const field of required) {
-      if (adapter.identity[field] == null || String(adapter.identity[field]) !== String(adapter[field])) {
-        return { supported:false, status:'stale', reason:`abi-nested-${field}-mismatch` };
-      }
-    }
+  const profileArchitecture = firstDefined(profile, ['architectureId', 'architecture', 'arch']);
+  if (!profileArchitecture || !compatibleArchitecture(profileArchitecture, targetArchitecture)) {
+    return { supported:false, status:'profile-mismatch', reason:'abi-profile-architecture-mismatch' };
   }
-  if (adapter.provenance.source !== 'canonical-abi-registry'
-    || String(adapter.provenance.abiId ?? '') !== String(plugin.id)
-    || String(adapter.provenance.semanticVersion ?? '') !== String(plugin.semanticVersion)
-    || String(adapter.provenance.semanticIdentity ?? '') !== String(plugin.semanticIdentity)
-    || String(adapter.provenance.architectureId ?? '') !== String(plugin.architectureId)) {
+  const profileIdentity = firstDefined(profile, ['profileIdentity', 'semanticIdentity', 'abiSemanticIdentity', 'id']);
+  if (!profileIdentity || String(profileIdentity) !== String(plugin.semanticIdentity)) {
+    return { supported:false, status:'stale', reason:'abi-profile-semantic-identity-mismatch' };
+  }
+  const canonicalProfileIdentity = firstDefined(adapter, ['profileIdentity'])
+    ?? firstDefined(adapter.identity, ['profileIdentity'])
+    ?? profileIdentity;
+  if (String(canonicalProfileIdentity) !== String(plugin.semanticIdentity)) {
+    return { supported:false, status:'stale', reason:'abi-profile-identity-mismatch' };
+  }
+  // arm64e is an ISA/profile variant, not an ABI authorization.  It is valid
+  // only with an explicit Apple platform/profile identity; architecture text
+  // alone must never select Darwin or AAPCS64 placement.
+  if (normalized(targetArchitecture) === 'arm64e'
+    && (!platform || !['apple', 'darwin', 'macos', 'macosx', 'ios', 'ios-simulator', 'ipados', 'tvos', 'watchos', 'visionos'].includes(normalized(platform)))) {
+    return { supported:false, status:'profile-mismatch', reason:'abi-arm64e-platform-profile-required' };
+  }
+  if (normalized(targetArchitecture) === 'arm64e' && normalized(plugin.id) !== 'darwin-arm64') {
+    return { supported:false, status:'profile-mismatch', reason:'abi-arm64e-darwin-profile-required' };
+  }
+
+  if (!record(adapter.identity)) return { supported:false, status:'malformed', reason:'abi-identity-record-malformed' };
+  const profileMirrors = [
+    ['id', plugin.semanticIdentity],
+    ['profileIdentity', plugin.semanticIdentity],
+    ['semanticIdentity', plugin.semanticIdentity],
+    ['abiSemanticIdentity', plugin.semanticIdentity],
+    ['abiId', plugin.id],
+    ['architectureId', targetArchitecture],
+    ['architecture', targetArchitecture],
+    ['platform', platform],
+    ['platformId', platform],
+  ];
+  const profileMirrorError = requireIdentityMirrors(profile, profileMirrors, 'abi-profile');
+  if (profileMirrorError) {
+    return { supported:false, status:'stale', reason:profileMirrorError };
+  }
+  const identityMirrors = [
+    ['id', adapter.id],
+    ['semanticVersion', adapter.semanticVersion],
+    ['semanticIdentity', adapter.semanticIdentity],
+    ['architectureId', adapter.architectureId],
+    ['targetArchitecture', targetArchitecture],
+    ['platform', platform],
+    ['profileIdentity', canonicalProfileIdentity],
+    ['abiId', adapter.id],
+    ['schemaVersion', adapter.schemaVersion ?? null],
+    ['snapshotId', adapter.snapshotId ?? null],
+    ['analyzerId', adapter.analyzerId ?? null],
+    ['analyzerVersion', adapter.analyzerVersion ?? null],
+    ['binaryId', adapter.binaryId ?? null],
+    ['sliceId', adapter.sliceId ?? null],
+    ['functionId', adapter.functionId ?? null],
+    ['architectureProfile', profile],
+  ];
+  const identityMirrorError = requireIdentityMirrors(adapter.identity, identityMirrors, 'abi-nested');
+  if (identityMirrorError) {
+    return { supported:false, status:'stale', reason:identityMirrorError };
+  }
+
+  const provenanceMirrors = [
+    ['abiId', plugin.id],
+    ['semanticVersion', plugin.semanticVersion],
+    ['semanticIdentity', plugin.semanticIdentity],
+    ['architectureId', plugin.architectureId],
+    ['profileIdentity', canonicalProfileIdentity],
+    ['targetArchitecture', targetArchitecture],
+    ['platformId', platform],
+    ['schemaVersion', adapter.schemaVersion ?? null],
+    ['snapshotId', adapter.snapshotId ?? null],
+    ['analyzerId', adapter.analyzerId ?? null],
+    ['analyzerVersion', adapter.analyzerVersion ?? null],
+    ['binaryId', adapter.binaryId ?? null],
+    ['sliceId', adapter.sliceId ?? null],
+    ['functionId', adapter.functionId ?? null],
+    ['architectureProfile', profile],
+  ];
+  if (adapter.provenance.source !== 'canonical-abi-registry') {
     return { supported:false, status:'stale', reason:'abi-provenance-mismatch' };
   }
-  if (String(adapter.invalidation.abiSemanticIdentity ?? '') !== String(plugin.semanticIdentity)
-    || String(adapter.invalidation.abiSemanticVersion ?? '') !== String(plugin.semanticVersion)
-    || String(adapter.invalidation.architectureId ?? '') !== String(plugin.architectureId)) {
-    return { supported:false, status:'stale', reason:'abi-invalidation-mismatch' };
+  const provenanceMirrorError = requireIdentityMirrors(adapter.provenance, provenanceMirrors, 'abi-provenance');
+  if (provenanceMirrorError) {
+    return { supported:false, status:'stale', reason:provenanceMirrorError };
   }
-  for (const field of ['binaryId', 'sliceId', 'functionId']) {
-    const expected = opts?.[field];
+
+  const invalidationMirrors = [
+    ['abiId', plugin.id],
+    ['abiSemanticIdentity', plugin.semanticIdentity],
+    ['abiSemanticVersion', plugin.semanticVersion],
+    ['architectureId', plugin.architectureId],
+    ['targetArchitecture', targetArchitecture],
+    ['platformId', platform],
+    ['profileIdentity', canonicalProfileIdentity],
+    ['schemaVersion', adapter.schemaVersion ?? null],
+    ['snapshotId', adapter.snapshotId ?? null],
+    ['analyzerId', adapter.analyzerId ?? null],
+    ['analyzerVersion', adapter.analyzerVersion ?? null],
+    ['binaryId', adapter.binaryId ?? null],
+    ['sliceId', adapter.sliceId ?? null],
+    ['functionId', adapter.functionId ?? null],
+    ['architectureProfile', profile],
+  ];
+  const invalidationMirrorError = requireIdentityMirrors(adapter.invalidation, invalidationMirrors, 'abi-invalidation');
+  if (invalidationMirrorError) {
+    return { supported:false, status:'stale', reason:invalidationMirrorError };
+  }
+
+  const expectedIdentityFields = [
+    ['binaryId', ['binaryId', 'binaryIdentity']],
+    ['sliceId', ['sliceId', 'sliceIdentity']],
+    ['functionId', ['functionId', 'functionIdentity', 'semanticFunctionId']],
+    ['snapshotId', ['snapshotId', 'analysisSnapshotId', 'snapshotIdentity']],
+    ['analyzerId', ['analyzerId', 'analysisAnalyzerId']],
+    ['analyzerVersion', ['analyzerVersion', 'analysisAnalyzerVersion']],
+    ['schemaVersion', ['schemaVersion', 'semanticIrSchemaVersion', 'semanticIRSchemaVersion']],
+  ];
+  for (const [field, optionFields] of expectedIdentityFields) {
+    const expected = firstDefined(opts, optionFields);
+    if (expected == null) continue;
     const observed = adapter.invalidation?.[field];
-    if (expected != null && observed != null && String(expected) !== String(observed)) {
+    if (observed == null || !sameIdentity(observed, expected)) {
       return { supported:false, status:'stale', reason:`abi-${field}-identity-mismatch` };
     }
+  }
+  const expectedArchitecture = firstDefined(opts, ['architecture', 'arch']);
+  if (expectedArchitecture != null && !sameIdentity(targetArchitecture, expectedArchitecture)) {
+    return { supported:false, status:'profile-mismatch', reason:'abi-target-architecture-identity-mismatch' };
+  }
+  const expectedCanonicalArchitecture = opts.architectureId;
+  if (expectedCanonicalArchitecture != null && !sameIdentity(adapter.architectureId, expectedCanonicalArchitecture)) {
+    return { supported:false, status:'profile-mismatch', reason:'abi-architecture-identity-mismatch' };
+  }
+  const expectedPlatform = firstDefined(opts, ['platformId', 'platform', 'os']);
+  if (expectedPlatform != null && !sameIdentity(platform, expectedPlatform)) {
+    return { supported:false, status:'profile-mismatch', reason:'abi-platform-identity-mismatch' };
+  }
+  const expectedProfile = firstDefined(opts, ['profileIdentity', 'architectureProfileId']);
+  if (expectedProfile != null && !sameIdentity(canonicalProfileIdentity, expectedProfile)) {
+    return { supported:false, status:'stale', reason:'abi-profile-identity-mismatch' };
+  }
+  const expectedAbi = firstDefined(opts, ['abiId', 'abi', 'callingConvention', 'convention']);
+  if (typeof expectedAbi === 'string' && !sameIdentity(plugin.id, expectedAbi)) {
+    return { supported:false, status:'stale', reason:'abi-id-identity-mismatch' };
+  }
+  const expectedVersion = firstDefined(opts, ['semanticVersion', 'abiSemanticVersion']);
+  if (expectedVersion != null && !sameIdentity(plugin.semanticVersion, expectedVersion)) {
+    return { supported:false, status:'stale', reason:'abi-version-identity-mismatch' };
+  }
+  const expectedSemanticIdentity = firstDefined(opts, ['semanticIdentity', 'abiSemanticIdentity']);
+  if (expectedSemanticIdentity != null && !sameIdentity(plugin.semanticIdentity, expectedSemanticIdentity)) {
+    return { supported:false, status:'stale', reason:'abi-semantic-identity-mismatch' };
   }
   if (adapter.supported === false) return { supported:false, status:'unsupported', reason:'abi-adapter-unsupported' };
   return { supported:true, status:'canonical', reason:null };
@@ -184,6 +353,12 @@ function abiContext(opts = {}) {
       semanticIdentity:String(plugin.semanticIdentity), architectureId:String(plugin.architectureId),
       targetArchitecture:adapter?.targetArchitecture ?? null,
       platform:adapter?.platformId ?? adapter?.platform ?? null,
+      profileIdentity:adapter?.profileIdentity ?? adapter?.identity?.profileIdentity ?? null,
+      abiId:adapter?.abiId ?? adapter?.id ?? null,
+      schemaVersion:adapter?.schemaVersion ?? adapter?.identity?.schemaVersion ?? null,
+      snapshotId:adapter?.snapshotId ?? adapter?.identity?.snapshotId ?? null,
+      analyzerId:adapter?.analyzerId ?? adapter?.identity?.analyzerId ?? null,
+      analyzerVersion:adapter?.analyzerVersion ?? adapter?.identity?.analyzerVersion ?? null,
       architectureProfile:adapter?.architectureProfile ?? null,
       invalidation:adapter?.invalidation ?? null,
     } : null,
@@ -226,70 +401,6 @@ function registerCandidates(ctx) {
   }
   REGISTER_CANDIDATE_CACHE.set(ctx.cacheKey, out);
   return out;
-}
-
-// These are deliberately only canonical ABI classifier queries.  The
-// consumer needs a shape-independent way to recognise a multi-register
-// parameter when entry SSA does not retain the source declaration, but it
-// must not grow a second placement engine of its own.  Each probe asks the
-// selected profile for a known aggregate/HFA/HVA shape and retains only an
-// exact, must-use result.
-function canonicalAggregateCandidates(ctx) {
-  if (!ctx.supported) return [];
-  const cached = AGGREGATE_CANDIDATE_CACHE.get(ctx.cacheKey);
-  if (cached) return cached;
-  const probes = [
-    { type:'struct Pair', aggregate:true, bits:128, eightbyteClasses:['INTEGER','INTEGER'] },
-    { type:'struct FPair', aggregate:true, bits:128, eightbyteClasses:['SSE','SSE'] },
-    { type:'struct HFA', aggregate:true, hfa:true, members:4, elementBits:32, bits:128 },
-    { type:'struct HVA', aggregate:true, hva:true, members:4, elementBits:64, bits:256 },
-    { type:'struct Aggregate', aggregate:true, bits:128 },
-  ];
-  const byKey = new Map();
-  for (const parameter of probes) {
-    const classified = classifyArguments(ctx, { parameters:[parameter] });
-    for (const entry of classified?.arguments || []) {
-      if (!entry || entry.possible === true || entry.mustUse === false) continue;
-      const regs = (Array.isArray(entry.regs) ? entry.regs : typeof entry.reg === 'string' ? [entry.reg] : [])
-        .map((reg) => ctx.canonical(reg)).filter(Boolean);
-      if (!regs.length) continue;
-      const abiClass = String(entry.abiClass || '').toLowerCase();
-      const aggregate = entry.aggregate === true || Array.isArray(entry.pieces) || Array.isArray(entry.parts)
-        || regs.length > 1 || /aggregate|hfa|hva|eightbyte|wide-integer|integer-pair/.test(abiClass);
-      if (!aggregate) continue;
-      const pieces = Array.isArray(entry.pieces) ? entry.pieces
-        : Array.isArray(entry.parts) ? entry.parts
-          : regs.map((reg, index) => ({ piece:index, index, reg, bits:entry.bits ?? null }));
-      const normalizedPieces = pieces.map((piece, index) => ({
-        ...piece,
-        piece:Number.isInteger(Number(piece?.piece)) ? Number(piece.piece) : Number.isInteger(Number(piece?.index)) ? Number(piece.index) : index,
-        index:Number.isInteger(Number(piece?.index)) ? Number(piece.index) : index,
-        reg:piece?.reg ? ctx.canonical(piece.reg) : null,
-      }));
-      const key = regs.join(',');
-      const candidate = {
-        regs:[...new Set(regs)],
-        reg:regs[0],
-        location:entry.location || 'register',
-        abiClass:entry.abiClass || 'aggregate',
-        pointer:entry.pointer === true,
-        bits:Number.isFinite(Number(entry.bits)) ? Number(entry.bits) : null,
-        pointeeBits:Number.isFinite(Number(entry.pointeeBits)) ? Number(entry.pointeeBits) : null,
-        alignment:Number.isFinite(Number(entry.alignment)) ? Number(entry.alignment) : null,
-        pieces:normalizedPieces,
-        source:'canonical-abi-classifier',
-        evidence:classified.evidence || null,
-      };
-      const prior = byKey.get(key);
-      // Prefer the profile's explicitly aggregate class over a generic wide
-      // integer label when two probes describe the same physical lanes.
-      if (!prior || (/aggregate|hfa|hva/.test(String(candidate.abiClass).toLowerCase())
-        && !/aggregate|hfa|hva/.test(String(prior.abiClass).toLowerCase()))) byKey.set(key, candidate);
-    }
-  }
-  const result = Object.freeze([...byKey.values()].sort((left, right) => right.regs.length - left.regs.length));
-  AGGREGATE_CANDIDATE_CACHE.set(ctx.cacheKey, result);
-  return result;
 }
 
 function isFpAbiClass(value) {
@@ -388,7 +499,6 @@ function registerArguments(ir, types, opts, ctx) {
   if (!ctx.supported) return [];
   const candidates = registerCandidates(ctx);
   const canonicalEntries = canonicalFunctionArgumentEntries(ctx, opts);
-  const aggregateCandidates = canonicalEntries ? [] : canonicalAggregateCandidates(ctx);
   const out = [];
   const seen = new Set();
   for (const [rawReg, value] of ir?.args?.entries?.() || []) {
@@ -429,6 +539,12 @@ function registerArguments(ir, types, opts, ctx) {
       name:opts.argNames?.[reg] || opts.argNames?.[fallbackIndex] || `${bank === 'fp' ? 'fpArg' : 'arg'}${fallbackIndex + 1}`,
       type:tname(recovered), confidence:recovered?.confidence || 0.45,
       valueId:value.id ?? null, used:true, sourceOrderKnown:false,
+      ...(!canonicalEntries ? {
+        possible:true,
+        mustUse:false,
+        exact:false,
+        certainty:'unknown',
+      } : {}),
       evidence:`entry SSA use classified by ABI ${ctx.adapter.id}`,
       ...(candidate.aggregate ? {
         aggregate:true,
@@ -486,54 +602,11 @@ function registerArguments(ir, types, opts, ctx) {
     });
   }
 
-  const byReg = new Map(out.map((argument) => [argument.reg, argument]));
-  const selected = [];
-  const claimed = new Set();
-  for (const candidate of aggregateCandidates) {
-    if (!candidate.regs.every((reg) => byReg.has(reg))) continue;
-    if (candidate.regs.some((reg) => claimed.has(reg))) continue;
-    const members = candidate.regs.map((reg) => byReg.get(reg));
-    const first = members[0];
-      const aggregate = {
-      ...first,
-      reg:candidate.regs[0],
-      regs:candidate.regs.slice(),
-      aggregate:true,
-      pointer:candidate.pointer,
-      abiClass:candidate.abiClass || first.abiClass,
-      bits:candidate.bits ?? first.bits ?? null,
-      ...(candidate.pointeeBits != null ? { pointeeBits:candidate.pointeeBits } : {}),
-      ...(candidate.alignment != null ? { alignment:candidate.alignment } : {}),
-      pieces:candidate.pieces.map((piece, index) => ({
-        ...piece,
-        piece:index,
-        index:Number.isInteger(Number(piece.index)) ? Number(piece.index) : index,
-        reg:piece.reg || candidate.regs[index] || null,
-        valueId:byReg.get(piece.reg || candidate.regs[index])?.valueId ?? null,
-      })),
-      valueIds:members.map((member) => member.valueId ?? null),
-      pieceValueIds:members.map((member) => member.valueId ?? null),
-      aggregateEvidence:'canonical-abi-classifier-probe-without-source-prototype',
-      aggregateLayoutComplete:false,
-      partial:true,
-      evidence:`canonical ABI ${ctx.adapter.semanticIdentity} aggregate classification`,
-      sourceOrderKnown:false,
-    };
-    selected.push({ firstIndex:out.indexOf(first), argument:aggregate });
-    for (const reg of candidate.regs) claimed.add(reg);
-  }
-  const merged = [];
-  const byFirst = new Map(selected.map((entry) => [entry.firstIndex, entry.argument]));
-  for (let index = 0; index < out.length; index++) {
-    const grouped = byFirst.get(index);
-    if (grouped) {
-      merged.push(grouped);
-      continue;
-    }
-    if (claimed.has(out[index].reg)) continue;
-    merged.push(out[index]);
-  }
-  return merged;
+  // Without a source-level prototype each live register is only an individual
+  // ABI entry candidate.  Physical adjacency does not prove that two values
+  // form one aggregate; grouping is owned exclusively by the canonical
+  // classifier queried with the actual function prototype above.
+  return out;
 }
 
 function stackLayout(ctx) {
@@ -695,25 +768,59 @@ function indirectResultCandidate(ctx) {
 }
 
 function returnLocations(classified, indirectRegister, ctx) {
+  const classifierState = invalidState(classified?.status)
+    || invalidState(classified?.analysisStatus)
+    || invalidState(classified?.completeness)
+    || invalidState(classified?.evidenceStatus)
+    || invalidState(classified?.invalidation?.status)
+    || invalidState(classified?.invalidation?.state)
+    || invalidState(classified?.invalidation?.completeness);
+  // A placement list is an all-or-nothing canonical fact.  Do not retain a
+  // hidden-result sentinel or surviving lanes when the classifier says the
+  // result is partial, stale, unsupported, or otherwise not proven.
+  if (classifierState || classified?.partial === true || classified?.unsupported === true) return [];
   // Keep the established hidden-result projection shape stable.  Identity and
   // provenance travel on the enclosing prototype; consumers must not infer a
   // second ABI fact from extra fields on this sentinel location.
   if (indirectRegister) return [{ kind:'indirect', reg:indirectRegister, role:'result-address' }];
   if (!classified) return [];
-  if (classified.partial === true || classified.unsupported === true) return [];
+  // The adapter owns the canonical return-piece interpretation.  The
+  // decompiler only attaches consumer-facing identity and register aliases;
+  // it must not collapse a multi-register result to the legacy scalar field.
+  if (typeof ctx.adapter?.returnLocations === 'function') {
+    try {
+      const canonical = ctx.adapter.returnLocations({ classified });
+      if (Array.isArray(canonical)) {
+        const normalized = canonical.map((location, index) => ({
+          ...location,
+          ...(location?.reg ? { reg:ctx.canonical(location.reg) } : {}),
+          pieceIndex:Number.isInteger(Number(location?.pieceIndex)) ? Number(location.pieceIndex) : index,
+          order:Number.isInteger(Number(location?.order)) ? Number(location.order) : index,
+          abiSemanticIdentity:ctx.identity?.semanticIdentity ?? null,
+        }));
+        if (!normalized.length || normalized.some((location) => !location
+          || (location.kind === 'register' && !location.reg)
+          || (location.kind === 'stack' && location.stackOffset == null)
+          || (location.kind === 'indirect' && !location.reg))) return [];
+        return normalized;
+      }
+    } catch { /* fall through to the strict shape-preserving projection */ }
+  }
   const pieces = Array.isArray(classified.pieces) && classified.pieces.length
     ? classified.pieces
     : Array.isArray(classified.parts) && classified.parts.length
       ? classified.parts
       : null;
   if (pieces) {
-    return pieces.map((piece, index) => {
+    const normalized = pieces.map((piece, index) => {
       const reg = piece?.reg ? ctx.canonical(piece.reg) : null;
       if (!reg) return null;
       return {
         kind:'register', reg,
         abiClass:piece.abiClass ?? classified.abiClass ?? (classified.aggregate === true ? 'aggregate-piece' : null),
-        pieceIndex:Number.isInteger(Number(piece.index)) ? Number(piece.index) : index,
+        pieceIndex:Number.isInteger(Number(piece.pieceIndex)) ? Number(piece.pieceIndex)
+          : Number.isInteger(Number(piece.piece)) ? Number(piece.piece)
+            : Number.isInteger(Number(piece.index)) ? Number(piece.index) : index,
         bits:piece.bits ?? null,
         byteOffset:piece.byteOffset ?? null,
         stackOffset:piece.stackOffset ?? null,
@@ -721,13 +828,15 @@ function returnLocations(classified, indirectRegister, ctx) {
         aggregate:classified.aggregate === true || pieces.length > 1,
         abiSemanticIdentity:ctx.identity?.semanticIdentity ?? null,
       };
-    }).filter(Boolean);
+    });
+    return normalized.every(Boolean) ? normalized : [];
   }
   const regs = Array.isArray(classified.regs) && classified.regs.length
     ? classified.regs
     : classified.reg ? [classified.reg] : [];
-  return regs.map((rawReg, index) => {
+  const normalizedRegs = regs.map((rawReg, index) => {
     const reg = ctx.canonical(rawReg);
+    if (!reg) return null;
     return {
       kind:'register', reg, abiClass:classified.abiClass ?? (classified.aggregate === true ? 'aggregate-piece' : null),
       pieceIndex:regs.length > 1 ? index : null,
@@ -736,7 +845,10 @@ function returnLocations(classified, indirectRegister, ctx) {
       aggregate:classified.aggregate === true || regs.length > 1,
       abiSemanticIdentity:ctx.identity?.semanticIdentity ?? null,
     };
-  }).filter((location) => location.reg);
+  });
+  // Fallback register metadata is also a complete canonical fact: retaining
+  // surviving lanes would expose a partial aggregate as a valid placement.
+  return normalizedRegs.every(Boolean) ? normalizedRegs : [];
 }
 
 export function recoverFunctionPrototype(ir, types, opts = {}) {
@@ -753,7 +865,9 @@ export function recoverFunctionPrototype(ir, types, opts = {}) {
   const ret = types?.ret || null;
   const classifiedReturn = classifyReturn(ctx, ret, opts);
   let indirectRegister = classifiedReturn?.indirect === true ? hiddenResultRegisterFrom(classifiedReturn, ctx) : null;
-  if (!indirectRegister) {
+  if (!indirectRegister && opts.indirectResult === true) {
+    // An explicit indirect-result fact permits one canonical classifier query;
+    // an untyped entry register alone never invents a hidden sret placement.
     const candidate = indirectResultCandidate(ctx);
     if (candidate) {
       const entry = entryValueForBase(ir, ctx, candidate);

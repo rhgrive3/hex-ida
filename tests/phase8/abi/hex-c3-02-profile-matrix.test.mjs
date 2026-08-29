@@ -57,7 +57,7 @@ test('HEX-C3-02: canonical aggregate pieces remain one prototype argument', () =
   const prototype = recoverFunctionPrototype(
     { args:new Map([['x0',x0],['x1',x1]]), instructions:[] },
     { values:new Map() },
-    { abiAdapter:semanticAbiAdapter(AAPCS64_ABI) },
+    { abiAdapter:semanticAbiAdapter(AAPCS64_ABI), functionPrototype:{ parameters:[parameter] } },
   );
 
   assert.equal(canonical.partial, false);
