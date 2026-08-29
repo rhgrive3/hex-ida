@@ -157,7 +157,7 @@ function parseUnwindFixture(options={},budgetOptions=null){
   assert.equal(image.unwindEntries[0].end,0x100002000n);
 }
 for(const kind of [2,3]){
-  const image=parseUnwindFixture({kind,offsets:[0x3000]});
+  const image=parseUnwindFixture({kind,offsets:[0x1000,0x3000]});
   assert.equal(image.unwindEntries.length,0,`kind ${kind} out-of-range entry must publish no unwind evidence`);
   assert.equal(image.functions.length,0);
   assert.equal(image.metadata.compactUnwind.complete,false);
