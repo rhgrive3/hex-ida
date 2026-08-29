@@ -6,6 +6,7 @@ import { hashByteSource } from './hash.js';
 import { boundedOffset, checkedChunkIndex, chunkLength, exactExternalInteger, regionSize, utf8Len, isExactFunctionSeed } from './worker-validation.js';
 import { analysisFromBinaryImage, emptyAnalysis } from './analysis-result.js';
 import { analyzeDecodedSemanticFunction } from '../targets/architecture/x86_64/semantic-function.js';
+import { resolveMachOPointer } from '../binary/macho-dyld.js';
 
 const ROW_BYTES = 4;
 const CHUNK_ROWS = 1024;
@@ -21,6 +22,7 @@ let source = null;
 let image = null;
 let descriptor = null;
 let regions = new Map();
+let pointerImages = new Map();
 let currentEpoch = 0;
 let openChain = Promise.resolve();
 const active = new Map();
@@ -78,6 +80,7 @@ async function handle(msg, signal) {
     case 'strings': return scanStrings(msg, signal);
     case 'search': return runSearch(msg, signal);
     case 'readAt': return readAtAddress(msg, signal);
+    case 'resolvePointer': return resolvePointer(msg, signal);
     case 'guessFunctions': return genericFunctionSeeds();
     case 'xrefs': return { results: [], cancelled: false, capped: false, unsupported: true };
     case 'scanProgram': return emptyProgramScan(msg.regionId);
@@ -150,12 +153,43 @@ async function openFile(msg, signal) {
     image = candidateImage;
     descriptor = candidateDescriptor;
     regions = candidateRegions;
+    pointerImages = new Map();
     if (previousSource && previousSource !== candidateSource) previousSource.clear?.();
     return candidateDescriptor;
   } catch (error) {
     candidateSource.clear?.();
     throw error;
   }
+}
+
+
+async function pointerImageForSlice(sliceIndex, signal) {
+  if (!image || image.format !== 'macho' || !image.metadata?.fat?.slices?.length || sliceIndex == null) return image;
+  const index = Number(sliceIndex);
+  if (!Number.isSafeInteger(index) || index < 0 || index >= image.metadata.fat.slices.length) return null;
+  if (pointerImages.has(index)) return pointerImages.get(index);
+  const selected = await parseMachOSource(source, {
+    sliceIndex:index,
+    signal,
+    ranges:{ pageSize:64 * 1024, maxPageSize:2 * 1024 * 1024, maxCachedBytes:16 * 1024 * 1024, maxReads:4096 },
+  });
+  if (signal.aborted) throw new Error('Pointer resolution cancelled');
+  pointerImages.set(index, selected);
+  return selected;
+}
+
+async function resolvePointer(msg, signal) {
+  if (!image) return null;
+  let raw, address = null;
+  try {
+    raw = BigInt(msg.raw);
+    if (msg.address != null) address = BigInt(msg.address);
+  } catch { return null; }
+  if (raw < 0n || raw > 0xffffffffffffffffn || (address != null && address < 0n)) return null;
+  const selected = await pointerImageForSlice(msg.sliceIndex, signal);
+  if (!selected) return null;
+  if (selected.format === 'macho') return resolveMachOPointer(selected, raw, { address });
+  return selected.sectionAt?.(raw) || selected.segmentAt?.(raw) ? raw : null;
 }
 
 function setRegions(list) {

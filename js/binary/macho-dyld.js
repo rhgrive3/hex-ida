@@ -1,6 +1,37 @@
 import { ensureMachOMetadataBudget } from './macho-budget.js';
 import { functionSeed } from './model.js';
 
+const CHAINED_POINTER_SITES = new WeakMap();
+
+function rememberChainedPointerSite(image, address, raw, pointerFormat, decoded) {
+  let sites = CHAINED_POINTER_SITES.get(image);
+  if (!sites) { sites = new Map(); CHAINED_POINTER_SITES.set(image, sites); }
+  sites.set(BigInt(address), { raw: BigInt(raw), pointerFormat, decoded });
+}
+
+export function resolveMachOPointer(image, rawValue, options = {}) {
+  if (!image) return null;
+  let raw, address = null;
+  try {
+    raw = BigInt(rawValue);
+    if (options.address != null) address = BigInt(options.address);
+  } catch { return null; }
+  if (raw <= 0n || raw > 0xffffffffffffffffn) return null;
+
+  const site = address == null ? null : CHAINED_POINTER_SITES.get(image)?.get(address);
+  if (site) {
+    if (site.raw !== raw) return null;
+    const decoded = site.decoded;
+    if (!decoded || decoded.bind || decoded.target == null) return null;
+    return BigInt(decoded.target);
+  }
+
+  // A metadata field that is defined by Swift as an absolute pointer may also
+  // contain an ordinary materialized VA rather than a chained fixup. Accept it
+  // only when the loader can prove that the value belongs to this image.
+  return image.sectionAt?.(raw) || image.segmentAt?.(raw) ? raw : null;
+}
+
 export function parseChainedImports(r,dc,image,sharedBudget=null){
   const budget=ensureMachOMetadataBudget(image,sharedBudget);
   if (!dc?.size || dc.offset + dc.size > r.length || dc.size < 28) {
@@ -178,8 +209,9 @@ export function parseChainedBindingSites(r,dc,image,imports,segments=image.segme
             fail(`segment ${segIndex} page ${page} chain address is not backed by its owning segment`); break;
           }
           const raw = width === 4 ? BigInt(r.u32(Number(expectedOff))) : r.u64(Number(expectedOff));
-          const d = decodeChainedPointer(raw, pointerFormat);
+          const d = decodeChainedPointer(raw, pointerFormat, image.imageBase);
           if (!d) { markUnsupportedChainedFormat(image, pointerFormat); fail(`segment ${segIndex} pointer format ${pointerFormat} could not be decoded`); break; }
+          rememberChainedPointerSite(image, address, raw, pointerFormat, d);
           if (d.bind && d.ordinal >= 0 && d.ordinal < imports.length && imports[d.ordinal]) {
             if(!budget.take({objects:1,operations:1,estimatedHeapBytes:112},'chained-bind-site')){fail('shared metadata budget exhausted while recording bind site');status.bindingSites=decoded;return status;}
             imports[d.ordinal].sites.push({ address, offset: expectedOff, kind: 'chained-bind', pointerFormat, addend: d.addend });
@@ -214,32 +246,39 @@ function markUnsupportedChainedFormat(image, format) {
   const list = image.metadata.chainedFixups.unsupportedPointerFormats ||= [];
   if (!list.includes(format)) { list.push(format); image.warnings.push(`chained pointer format ${format} is not supported; binding sites are partial`); }
 }
-function decodeChainedPointer(raw, format) {
+function decodeChainedPointer(raw, format, imageBase = null) {
+  const base = imageBase == null ? null : BigInt(imageBase);
   if (format === 3) {
     const bind = !!((raw >> 31n) & 1n);
     const next = Number((raw >> 26n) & 0x1fn);
-    if (!bind) return { bind: false, ordinal: -1, addend: 0n, next, stride: 4 };
+    if (!bind) return { bind: false, ordinal: -1, addend: 0n, next, stride: 4, target: null };
     const ordinal = Number(raw & 0xfffffn);
     let addend = Number((raw >> 20n) & 0x3fn);
     if (addend & 0x20) addend -= 0x40;
-    return { bind: true, ordinal, addend: BigInt(addend), next, stride: 4 };
+    return { bind: true, ordinal, addend: BigInt(addend), next, stride: 4, target: null };
   }
   if (format === 2 || format === 6) {
     const bind = !!(raw >> 63n);
     const next = Number((raw >> 51n) & 0xfffn);
-    if (!bind) return { bind: false, ordinal: -1, addend: 0n, next, stride: 4 };
+    if (!bind) {
+      const target = raw & 0xfffffffffn;
+      const high8 = (raw >> 36n) & 0xffn;
+      const reconstructed = target | (high8 << 56n);
+      const resolved = format === 6 ? (base == null ? null : base + reconstructed) : reconstructed;
+      return { bind: false, ordinal: -1, addend: 0n, next, stride: 4, target: resolved };
+    }
     const ordinal = Number(raw & 0xffffffn);
     let addend = Number((raw >> 24n) & 0xffn);
     if (addend & 0x80) addend -= 0x100;
-    return { bind: true, ordinal, addend: BigInt(addend), next, stride: 4 };
+    return { bind: true, ordinal, addend: BigInt(addend), next, stride: 4, target: null };
   }
   if ([1, 7, 9, 10, 12].includes(format)) {
+    const auth = !!((raw >> 63n) & 1n);
     const bind = !!((raw >> 62n) & 1n);
     const next = Number((raw >> 51n) & 0x7ffn);
     const ordinalBits = format === 12 ? 24n : 16n;
     const ordinalMask = (1n << ordinalBits) - 1n;
     const ordinal = Number(raw & ordinalMask);
-    const auth = !!((raw >> 63n) & 1n);
     let addend = 0n;
     if (bind && !auth) {
       let a = Number((raw >> 32n) & 0x7ffffn);
@@ -247,7 +286,17 @@ function decodeChainedPointer(raw, format) {
       addend = BigInt(a);
     }
     const stride = format === 7 || format === 10 ? 4 : 8;
-    return { bind, ordinal, addend, next, stride };
+    if (bind) return { bind, ordinal, addend, next, stride, target: null, authenticated: auth };
+    if (auth) {
+      const target = base == null ? null : base + (raw & 0xffffffffn);
+      return { bind, ordinal: -1, addend: 0n, next, stride, target, authenticated: true };
+    }
+    const target = raw & 0x7ffffffffffn;
+    const high8 = (raw >> 43n) & 0xffn;
+    const reconstructed = target | (high8 << 56n);
+    const vmOffset = format === 7 || format === 9 || format === 12;
+    const resolved = vmOffset ? (base == null ? null : base + reconstructed) : reconstructed;
+    return { bind, ordinal: -1, addend: 0n, next, stride, target: resolved, authenticated: false };
   }
   return null;
 }
