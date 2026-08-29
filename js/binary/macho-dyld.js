@@ -52,7 +52,8 @@ export function resolveMachOPointer(image, rawValue, options = {}) {
     if (site.raw !== raw) return null;
     const decoded = site.decoded;
     if (!decoded || decoded.bind || decoded.target == null) return null;
-    return BigInt(decoded.target);
+    const target = BigInt(decoded.target);
+    return image.sectionAt?.(target) || image.segmentAt?.(target) ? target : null;
   }
 
   // A declared chained page remains loader-owned even when malformed input,
