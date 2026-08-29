@@ -84,6 +84,8 @@ function runResolver(fakeNodeBody = null) {
     GITHUB_REF: '',
     GITHUB_OUTPUT: outputFile,
   };
+  delete environment.npm_config_prefix;
+  delete environment.NPM_CONFIG_PREFIX;
   if (fakeNodeBody != null) {
     const fakeBin = path.join(directory, 'bin');
     fs.mkdirSync(fakeBin);

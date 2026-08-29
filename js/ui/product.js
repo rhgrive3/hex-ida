@@ -63,8 +63,15 @@ function architectureOf(app) {
   const value = capability.architecture || app?.store?.get?.('architecture') || info.architecture || info.arch || info.cpu || 'unknown';
   return String(value).toLowerCase();
 }
-function instructionBytes(app) { return Math.max(1,Number(app?.store?.get?.('instructionAlignment') || app?.store?.get?.('capability')?.instructionAlignment || 4)); }
-function fixedArm64Rows(app) { return !!app?.store?.get?.('canDisassemble') && instructionBytes(app)>0; }
+function instructionBytes(app) {
+  const cap = app?.store?.get?.('capability') || {};
+  if (cap && Object.prototype.hasOwnProperty.call(cap, 'fixedInstructionSize')) {
+    const fixed = cap.fixedInstructionSize;
+    return (typeof fixed === 'number' && fixed > 0) ? fixed : null;
+  }
+  return null;
+}
+function fixedArm64Rows(app) { return !!app?.store?.get?.('canDisassemble') && instructionBytes(app) != null; }
 const EXPLORER_SOURCE_LIMIT=50000;
 function annotateCollection(items,{complete=true,total=items?.length||0,scannedCount=items?.length||0,truncationReason=null,provenance='canonical-app-state'}={}) {
   if(items && typeof items==='object'){items.complete=!!complete;items.total=total;items.scannedCount=scannedCount;items.truncationReason=truncationReason;items.provenance=provenance;}
@@ -554,6 +561,46 @@ function renderFunctionWorkspace(app, router, route) {
     content.replaceChildren(toolbar, code);
   };
 
+  const renderPseudocodeTab = async () => {
+    if (app.analysisQueries) {
+      try {
+        const snapshot = await app.analysisQueries.snapshot({ signal: routeSignal });
+        const res = await app.analysisQueries.decompile(snapshot, addr, { signal: routeSignal });
+        if (!viewCurrent()) return;
+        if (res.completeness === 'unsupported' || !res.value) {
+          content.replaceChildren(emptyState(text('このアーキテクチャの疑似Cは未対応です', 'Pseudocode is unavailable for this architecture'), text('現在のSemantic DecompilerはARM64を対象にしています。未対応のCPUをARM64として表示することはしません。', 'The Semantic Decompiler currently targets ARM64; Hex will not reinterpret another CPU as ARM64.')));
+          return;
+        }
+        const val = res.value;
+        const out = typeof val === 'string' ? val : (val.code ?? decompiledText(val));
+        const toolbar = h('div', 'ui-code-toolbar');
+        const code = h('pre', 'ui-pseudocode mono');
+        code.tabIndex = 0;
+        code.textContent = typeof out === 'string' ? out : decompiledText(out);
+        let wrap = false;
+        toolbar.append(
+          uiButton(text('コピー', 'Copy'), { cls: 'ui-secondary-action', onClick: () => copyText(code.textContent, text('疑似C', 'Pseudocode')) }),
+          uiButton(text('折り返し', 'Wrap'), { cls: 'ui-secondary-action', onClick: (e) => { wrap = !wrap; code.classList.toggle('wrap', wrap); e.currentTarget.setAttribute('aria-pressed', String(wrap)); } }),
+          uiButton(text('アセンブリへ', 'Assembly'), { cls: 'ui-secondary-action', onClick: () => router.navigate('/code/' + addr.toString()) }),
+        );
+        content.replaceChildren(toolbar, code);
+        return;
+      } catch (err) {
+        if (routeSignal.aborted) return;
+        throw err;
+      }
+    }
+    const map = rowMapper();
+    if (!map.supported) {
+      content.replaceChildren(emptyState(text('このアーキテクチャの疑似Cは未対応です', 'Pseudocode is unavailable for this architecture'), text('現在のSemantic DecompilerはARM64を対象にしています。未対応のCPUをARM64として表示することはしません。', 'The Semantic Decompiler currently targets ARM64; Hex will not reinterpret another CPU as ARM64.')));
+      return;
+    }
+    const res = await app.analyzeFunctionAt(addr, { signal: routeSignal });
+    if (!viewCurrent()) return;
+    if (!res || !res.model) { content.replaceChildren(errorState(text('関数を解析できません', 'Could not analyse function'), text('このアドレスは現在のコード領域の関数として解析できませんでした。', 'This address could not be analysed as a function in the current code region.'))); return; }
+    renderPseudocode(res);
+  };
+
   const renderFlow = (res) => {
     const map = rowMapper();
     if (!map.supported) {
@@ -578,18 +625,80 @@ function renderFunctionWorkspace(app, router, route) {
     content.replaceChildren(mode);
   };
 
+  const renderFlowTab = async () => {
+    if (app.analysisQueries) {
+      try {
+        const snapshot = await app.analysisQueries.snapshot({ signal: routeSignal });
+        const res = await app.analysisQueries.cfg(snapshot, addr, { signal: routeSignal });
+        if (!viewCurrent()) return;
+        if (res.completeness === 'unsupported' || !res.value) {
+          content.replaceChildren(emptyState(text('このアーキテクチャのCFG表示は未対応です', 'CFG view is unavailable for this architecture'), text('固定4バイト行を前提にせず、安全側で表示を止めています。', 'This view is disabled rather than assuming fixed four-byte instruction rows.')));
+          return;
+        }
+        const cfg = res.value;
+        const nodes = Array.isArray(cfg.blocks) ? cfg.blocks.map((b, index) => ({
+          id: b.id ?? `b${index}`,
+          label: b.label || b.name || `Block ${index + 1}`,
+          addr: b.startAddress ?? b.address ?? b.start ?? null,
+          title: b.title ?? b.label,
+        })) : [];
+        const edges = Array.isArray(cfg.edges) ? cfg.edges.map((e) => ({
+          from: e.from ?? e.source,
+          to: e.to ?? e.target,
+          kind: e.kind ?? 'unconditional',
+        })) : [];
+        if (!nodes.length) {
+          content.replaceChildren(emptyState(text('フローを作れませんでした', 'No control flow available'), text('この関数には図にできるブロック情報がありません。', 'This function has no graphable block information.')));
+          return;
+        }
+        const mode = h('div', 'ui-graph-shell');
+        const graphHost = h('div', 'ui-graph-host');
+        graphHost.append(renderGraph(nodes, edges, {}));
+        const list = h('details', 'ui-graph-text');
+        list.append(h('summary', null, text('テキスト一覧でも見る', 'View as text list')));
+        const rows = h('div', 'ui-list');
+        nodes.forEach((node, index) => rows.append(listRow({
+          title: String(node.label || node.title || node.id || `Block ${index + 1}`),
+          subtitle: node.addr != null ? addressText(node.addr) : '',
+          onClick: node.addr != null ? () => router.navigate('/code/' + BigInt(node.addr).toString()) : null,
+        })));
+        list.append(rows);
+        mode.append(graphHost, graphLegend('cfg'), list);
+        content.replaceChildren(mode);
+        return;
+      } catch (err) {
+        if (routeSignal.aborted) return;
+        throw err;
+      }
+    }
+    const map = rowMapper();
+    if (!map.supported) {
+      content.replaceChildren(emptyState(text('このアーキテクチャのCFG表示は未対応です', 'CFG view is unavailable for this architecture'), text('固定4バイト行を前提にせず、安全側で表示を止めています。', 'This view is disabled rather than assuming fixed four-byte instruction rows.')));
+      return;
+    }
+    const res = await app.analyzeFunctionAt(addr, { signal: routeSignal });
+    if (!viewCurrent()) return;
+    if (!res || !res.model) { content.replaceChildren(errorState(text('関数を解析できません', 'Could not analyse function'), text('このアドレスは現在のコード領域の関数として解析できませんでした。', 'This address could not be analysed as a function in the current code region.'))); return; }
+    renderFlow(res);
+  };
+
   const renderCalls = async () => {
     content.replaceChildren(loadingState(text('呼び出し関係を集めています…', 'Mapping calls…')));
-    await app.ensureProgram();
-    if (!viewCurrent()) return;
-    if (!app.program) { content.replaceChildren(emptyState(text('呼び出し関係がありません', 'No call graph available'), text('このバイナリでは呼び出し索引を作れませんでした。', 'A call index could not be built for this binary.'))); return; }
-    const graph = callGraph(app.program, app.symbols, addr, {
-      depth: 2, limit: 8, label: (a) => functionName(app, a),
-      onNode: (a) => router.navigate('/function/' + BigInt(a).toString() + '/overview'),
-    });
-    const shell = h('div', 'ui-graph-shell');
-    shell.append(renderGraph(graph.nodes, graph.edges, {}), graphLegend('call'));
-    content.replaceChildren(shell);
+    try {
+      await app.ensureProgram({ signal: routeSignal });
+      if (!viewCurrent()) return;
+      if (!app.program) { content.replaceChildren(emptyState(text('呼び出し関係がありません', 'No call graph available'), text('このバイナリでは呼び出し索引を作れませんでした。', 'A call index could not be built for this binary.'))); return; }
+      const graph = callGraph(app.program, app.symbols, addr, {
+        depth: 2, limit: 8, label: (a) => functionName(app, a),
+        onNode: (a) => router.navigate('/function/' + BigInt(a).toString() + '/overview'),
+      });
+      const shell = h('div', 'ui-graph-shell');
+      shell.append(renderGraph(graph.nodes, graph.edges, {}), graphLegend('call'));
+      content.replaceChildren(shell);
+    } catch (err) {
+      if (routeSignal.aborted) return;
+      throw err;
+    }
   };
 
   const renderEvidence = (res) => {
@@ -633,17 +742,63 @@ function renderFunctionWorkspace(app, router, route) {
     content.replaceChildren(...nodes);
   };
 
-  const renderRuntime = (res) => {
+  const renderEvidenceTab = async () => {
+    content.replaceChildren(loadingState(text('根拠を集めています…', 'Collecting evidence…')));
+    if (app.analysisQueries) {
+      try {
+        const snapshot = await app.analysisQueries.snapshot({ signal: routeSignal });
+        const res = await app.analysisQueries.evidence(snapshot, { functionId: addr }, { limit: 100 }, { signal: routeSignal });
+        if (!viewCurrent()) return;
+        const stack = h('div', 'ui-evidence-stack');
+        const name = app.symbols?.nameAt?.(addr);
+        const boundaryEvidence = app.symbols?.functionEvidence?.(addr);
+        const nameEvidence = app.symbols?.nameEvidence?.(addr);
+        const boundaryStatus = provenanceStatus(boundaryEvidence);
+        const nameStatus = provenanceStatus(nameEvidence);
+        stack.append(listRow({ title: text('関数境界', 'Function boundary'), subtitle: addressText(addr), meta: boundaryEvidence?.source || text('由来不明', 'unknown source'), badge: evidenceBadge(boundaryStatus === 'manual' ? 'unverified' : boundaryStatus) }));
+        stack.append(listRow({ title: text('関数名', 'Function name'), subtitle: name || text('シンボル名なし', 'No symbol name'), meta: nameStatus === 'manual' ? text('手動 / User', 'Manual / User') : (nameEvidence?.source || ''), badge: evidenceBadge(nameStatus === 'manual' ? 'unverified' : nameStatus) }));
+
+        const items = Array.isArray(res.value) ? res.value : [];
+        items.forEach((item, index) => {
+          const itemEvidence = item?.evidence ?? item;
+          const status = item?.verdict ?? evidenceStatus(itemEvidence);
+          stack.append(listRow({
+            title: evidenceTitle(itemEvidence, index),
+            subtitle: evidenceSubtitle(itemEvidence),
+            badge: evidenceBadge(status),
+          }));
+        });
+        const note = card(text('表示の意味', 'How to read this'), { subtitle: text('「確認済み」はバイナリまたは実行観測に直接結び付いた事実です。推論は「可能性が高い」「未確認」のまま分離します。ランキング点を確率として表示しません。', 'Confirmed is reserved for facts tied directly to binary/runtime evidence. Inference remains Likely or Unverified; ranking scores are not presented as probabilities.') });
+        content.replaceChildren(note.root, stack);
+        return;
+      } catch (err) {
+        if (routeSignal.aborted) return;
+        throw err;
+      }
+    }
+    const res = await app.analyzeFunctionAt(addr, { signal: routeSignal });
+    if (!viewCurrent()) return;
+    if (!res || !res.model) { content.replaceChildren(errorState(text('関数を解析できません', 'Could not analyse function'), text('このアドレスは現在のコード領域の関数として解析できませんでした。', 'This address could not be analysed as a function in the current code region.'))); return; }
+    renderEvidence(res);
+  };
+
+  const renderRuntimeTab = () => {
+    let activeRunController = null;
     const root = h('div', 'ui-card-grid');
     const c = card(text('実行時に確かめる', 'Verify at runtime'), { subtitle: text('新しいRuntime Analysis Platformで、この関数だけを安全なローカルsandbox上で実行・観測します。', 'Run this function in the Runtime Analysis Platform local sandbox and record evidence.') });
     const resultHost = h('div', 'ui-runtime-result');
     const run = uiButton(text('ローカル実行で観測する', 'Run local observation'), { cls: 'ui-primary-action' });
     run.addEventListener('click', async () => {
       run.disabled = true;
+      activeRunController?.abort();
+      activeRunController = new AbortController();
+      const runSignal = activeRunController.signal;
+      const onRouteAbort = () => activeRunController?.abort();
+      routeSignal.addEventListener('abort', onRouteAbort, { once: true });
       resultHost.replaceChildren(loadingState(text('実行して観測しています…', 'Running and collecting observations…')));
       try {
-        const result = await traceAppFunction(app, addr, { maxSteps: 12000, timeoutMs: 1500, limit: 4096 });
-        if (!viewCurrent()) return;
+        const result = await traceAppFunction(app, addr, { signal: runSignal, maxSteps: 12000, timeoutMs: 1500, limit: 4096 });
+        if (!viewCurrent() || runSignal.aborted) return;
         const obs = result.observation || {};
         const stop = obs.stop?.kind || 'unknown';
         const direct = stop === 'return' ? 'confirmed' : 'unverified';
@@ -656,8 +811,11 @@ function renderFunctionWorkspace(app, router, route) {
         list.append(listRow({ title: text('Runtime evidence', 'Runtime evidence'), meta: String(result.evidence?.length || 0), badge: evidenceBadge(result.evidence?.length ? 'confirmed' : 'unverified') }));
         resultHost.replaceChildren(list);
       } catch (error) {
-        if (!disposed) resultHost.replaceChildren(errorState(text('ローカル実行を完了できませんでした', 'Local runtime observation could not complete'), String(error?.message || error)));
+        if (!disposed && !runSignal.aborted && !routeSignal.aborted) {
+          resultHost.replaceChildren(errorState(text('ローカル実行を完了できませんでした', 'Local runtime observation could not complete'), String(error?.message || error)));
+        }
       } finally {
+        routeSignal.removeEventListener('abort', onRouteAbort);
         if (!disposed) run.disabled = false;
       }
     });
@@ -668,26 +826,35 @@ function renderFunctionWorkspace(app, router, route) {
     capability.body.append(uiButton(text('高度なDebuggerを開く', 'Open advanced debugger'), { cls: 'ui-secondary-action', onClick: () => showDebugger(app, addr) }));
     root.append(capability.root);
     content.replaceChildren(root);
-    void res;
   };
+
+  const routeController = new AbortController();
+  const routeSignal = routeController.signal;
 
   (async () => {
     try {
-      const res = await app.analyzeFunctionAt(addr);
-      if (!viewCurrent()) return;
-      if (!res || !res.model) { content.replaceChildren(errorState(text('関数を解析できません', 'Could not analyse function'), text('このアドレスは現在のコード領域の関数として解析できませんでした。', 'This address could not be analysed as a function in the current code region.'))); return; }
-      if (tab === 'overview') renderOverview(res);
-      else if (tab === 'pseudocode') renderPseudocode(res);
-      else if (tab === 'flow') renderFlow(res);
-      else if (tab === 'calls') await renderCalls(res);
-      else if (tab === 'evidence') renderEvidence(res);
-      else renderRuntime(res);
+      if (tab === 'calls') {
+        await renderCalls();
+      } else if (tab === 'runtime') {
+        renderRuntimeTab();
+      } else if (tab === 'pseudocode') {
+        await renderPseudocodeTab();
+      } else if (tab === 'flow') {
+        await renderFlowTab();
+      } else if (tab === 'evidence') {
+        await renderEvidenceTab();
+      } else {
+        const res = await app.analyzeFunctionAt(addr, { signal: routeSignal });
+        if (!viewCurrent()) return;
+        if (!res || !res.model) { content.replaceChildren(errorState(text('関数を解析できません', 'Could not analyse function'), text('このアドレスは現在のコード領域の関数として解析できませんでした。', 'This address could not be analysed as a function in the current code region.'))); return; }
+        renderOverview(res);
+      }
     } catch (err) {
-      if (viewCurrent()) content.replaceChildren(errorState(text('表示できませんでした', 'Could not render this view'), String(err && err.message || err)));
+      if (viewCurrent() && !routeSignal.aborted) content.replaceChildren(errorState(text('表示できませんでした', 'Could not render this view'), String(err && err.message || err)));
     }
   })();
 
-  return { root: s.root, getState: () => ({ scrollTop: s.body.scrollTop }), restoreState: (state) => { if (state) s.body.scrollTop = Number(state.scrollTop) || 0; }, dispose: () => { disposed = true; } };
+  return { root: s.root, getState: () => ({ scrollTop: s.body.scrollTop }), restoreState: (state) => { if (state) s.body.scrollTop = Number(state.scrollTop) || 0; }, dispose: () => { disposed = true; routeController.abort(); } };
 }
 
 function renderResults(app, router) {
