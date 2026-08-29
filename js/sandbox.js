@@ -301,33 +301,44 @@ export function runInSandbox({ source, mode = 'script', index = 0, api, out, tim
     let rpcInputBytes = 0;
     let rpcOutputBytes = 0;
 
-    const terminate = () => {
+    function terminate() {
       try { channel.port1.postMessage({ t: 'terminate' }); } catch { /* ignore */ }
-    };
+    }
 
-    const onFrameReady = (event) => {
+    function onFrameReady(event) {
       if (event.source !== frame.contentWindow || !event.data || event.data.t !== 'hexSandboxFrameReady') return;
       window.removeEventListener('message', onFrameReady);
       frame.contentWindow.postMessage({ t: 'init' }, '*', [channel.port2]);
-    };
+    }
     window.addEventListener('message', onFrameReady);
 
-    let onAbort = null;
-    const finish = (value) => {
+    function onAbort() {
+      finish({ error: 'キャンセルされました。', aborted: true });
+    }
+
+    function onPageHide() {
+      finish({ error: 'ページが閉じられたため実行を停止しました。' });
+    }
+    window.addEventListener('pagehide', onPageHide, { once: true });
+
+    function failBudget(message) {
+      finish({ error: message });
+    }
+
+    function finish(value) {
       if (settled) return;
       settled = true;
       runController.abort(value?.error || 'sandbox-finished');
       if (timer) clearTimeout(timer);
-      if (signal && onAbort) signal.removeEventListener('abort', onAbort);
+      if (signal) signal.removeEventListener('abort', onAbort);
       window.removeEventListener('message', onFrameReady);
       window.removeEventListener('pagehide', onPageHide);
       terminate();
       channel.port1.close();
       frame.remove();
       resolve(value);
-    };
+    }
 
-    onAbort = () => finish({ error: 'キャンセルされました。', aborted: true });
     if (signal) {
       if (signal.aborted) {
         onAbort();
@@ -335,10 +346,6 @@ export function runInSandbox({ source, mode = 'script', index = 0, api, out, tim
       }
       signal.addEventListener('abort', onAbort, { once: true });
     }
-
-    const failBudget = (message) => finish({ error: message });
-    const onPageHide = () => finish({ error: 'ページが閉じられたため実行を停止しました。' });
-    window.addEventListener('pagehide', onPageHide, { once: true });
 
     timer = setTimeout(
       () => finish({ error: '実行が時間制限を超えたため、安全に停止しました。' }),
