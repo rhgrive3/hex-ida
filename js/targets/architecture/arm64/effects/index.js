@@ -39,6 +39,7 @@ const ARM64_UNARY_REGISTER_MNEMONICS = Object.freeze(new Set([
 ]));
 const ARM64_SHIFT_MNEMONICS = Object.freeze(new Set(['lsl','lslv','lsr','lsrv','asr','asrv','ror','rorv']));
 const ARM64_VARIABLE_SHIFT_MNEMONICS = Object.freeze(new Set(['lslv','lsrv','asrv','rorv']));
+const ARM64_BITFIELD_MNEMONICS = Object.freeze(new Set(['ubfm','sbfm','bfm','ubfx','sbfx','ubfiz','sbfiz','bfxil','bfi','bfc']));
 
 function validImm12WithOptionalLsl12(op) {
   if (op?.k !== 'imm') return true;
@@ -268,11 +269,27 @@ function scalarImmediateModifierEncodingFailure(mnemonic, ops) {
   return null;
 }
 
+function bitfieldRegisterShapeEncodingFailure(mnemonic, ops) {
+  if (!ARM64_BITFIELD_MNEMONICS.has(mnemonic)) return null;
+  const destination = ops[0];
+  const widthBits = Number(destination?.bits || 0);
+  if (!isGpOrZrRegister(destination) || ![32,64].includes(widthBits)
+    || destination.shift != null || destination.extend != null) {
+    return `arm64-${mnemonic}-destination-register-unencodable`;
+  }
+  if (mnemonic === 'bfc') return null;
+  return isPlainGpSourceOfWidth(ops[1], widthBits)
+    ? null
+    : `arm64-${mnemonic}-source-register-unencodable`;
+}
+
 function registerOnlyIntegerEncodingFailure(instruction) {
   const mnemonic = instructionMnemonic(instruction);
   const ops = Array.isArray(instruction?.ops) ? instruction.ops : [];
   const immediateFailure = scalarImmediateModifierEncodingFailure(mnemonic, ops);
   if (immediateFailure) return immediateFailure;
+  const bitfieldFailure = bitfieldRegisterShapeEncodingFailure(mnemonic, ops);
+  if (bitfieldFailure) return bitfieldFailure;
   if (!isGpOrZrRegister(ops[0])) return null;
   const widthBits = Number(ops[0]?.bits || 0);
   const widthSensitiveIndices = mnemonic === 'extr' ? [1,2]
@@ -349,9 +366,24 @@ const A64_PAGE_BYTES = 4096n;
 function addressImmediateEncodingFailure(instruction) {
   const mnemonic = instructionMnemonic(instruction);
   if (mnemonic !== 'adr' && mnemonic !== 'adrp') return null;
+  const ops = Array.isArray(instruction?.ops) ? instruction.ops : [];
+  if (ops.length !== 2) return `arm64-${mnemonic}-operand-shape-unencodable`;
+  const destination = ops[0];
+  const targetOperand = ops[1];
+  if (!isGpOrZrRegister(destination) || Number(destination.bits) !== 64
+    || destination.shift != null || destination.extend != null) {
+    return `arm64-${mnemonic}-destination-unencodable`;
+  }
+  if (!['imm','other'].includes(String(targetOperand?.k || ''))
+    || targetOperand?.shift != null || targetOperand?.extend != null) {
+    return `arm64-${mnemonic}-target-operand-unencodable`;
+  }
   const address = asBigIntOrNull(instruction?.address);
   const target = asBigIntOrNull(instruction?.pcRelTarget);
   if (address == null || target == null) return `arm64-${mnemonic}-encoding-address-unavailable`;
+  if (targetOperand?.k === 'imm' && immediateOf(targetOperand) !== target) {
+    return `arm64-${mnemonic}-target-evidence-mismatch`;
+  }
   if (mnemonic === 'adr') {
     const delta = BigInt.asIntN(64, target - address);
     return delta < SIGNED_IMM21_MIN || delta > SIGNED_IMM21_MAX
