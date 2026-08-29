@@ -12,12 +12,11 @@ function artifactVersionsEqual(left = {}, right = {}) {
 }
 
 function safeNonNegativeInteger(value) {
-  const number = Number(value);
-  return Number.isSafeInteger(number) && number >= 0 ? number : null;
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
 
 function sameSnapshotIdentity(snapshot, current) {
-  const currentRevision = safeNonNegativeInteger(current?.projectRevision ?? 0);
+  const currentRevision = safeNonNegativeInteger(current?.projectRevision === undefined ? 0 : current?.projectRevision);
   const currentEpoch = safeNonNegativeInteger(current?.analysisEpoch);
   if (currentRevision == null || currentEpoch == null || typeof current?.binaryId !== "string") return false;
   return current.binaryId === snapshot.binaryId

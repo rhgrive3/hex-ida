@@ -14,9 +14,8 @@ export class AnalysisSnapshotStaleError extends Error {
 }
 
 function nonNegativeSafeInteger(value, code) {
-  const number = Number(value);
-  if (!Number.isSafeInteger(number) || number < 0) throw new TypeError(code);
-  return number;
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) throw new TypeError(code);
+  return value;
 }
 
 function nonEmptyString(value, code) {
@@ -47,7 +46,7 @@ function identityTuple(value) {
   return {
     schemaVersion: ANALYSIS_SNAPSHOT_SCHEMA_VERSION,
     binaryId: nonEmptyString(value.binaryId, "analysis-snapshot-binary-id-required"),
-    projectRevision: nonNegativeSafeInteger(value.projectRevision ?? 0, "analysis-snapshot-project-revision-invalid"),
+    projectRevision: nonNegativeSafeInteger(value.projectRevision, "analysis-snapshot-project-revision-invalid"),
     analysisEpoch: nonNegativeSafeInteger(value.analysisEpoch, "analysis-snapshot-epoch-invalid"),
     artifactVersions: normalizeArtifacts(value.artifactVersions),
   };
