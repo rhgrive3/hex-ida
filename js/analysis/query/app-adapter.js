@@ -467,7 +467,9 @@ export function createAppAnalysisQueryAdapter(app) {
       }
       const { offset, limit } = pageOf(page);
       const source = program.callersOf(address, Math.min(MAX_PAGE, offset + limit));
-      return paged(Array.from(source || []), page, source?.complete === false ? 'partial' : 'complete', { reason:source?.incompleteReason ?? null });
+      const result = paged(Array.from(source || []), page, source?.complete === false ? 'partial' : 'complete', { reason:source?.incompleteReason ?? null });
+      if (source?.queryLimited === true && result.page.next == null && result.page.returned > 0) result.page.next = result.page.offset + result.page.returned;
+      return result;
     },
 
     async callees(_snapshot, id, page = {}, options = {}) {
@@ -483,7 +485,9 @@ export function createAppAnalysisQueryAdapter(app) {
       }
       const { offset, limit } = pageOf(page);
       const source = program.calleesOf(range.start, range.end, Math.min(MAX_PAGE, offset + limit));
-      return paged(Array.from(source || []), page, source?.complete === false ? 'partial' : 'complete', { reason:source?.incompleteReason ?? null });
+      const result = paged(Array.from(source || []), page, source?.complete === false ? 'partial' : 'complete', { reason:source?.incompleteReason ?? null });
+      if (source?.queryLimited === true && result.page.next == null && result.page.returned > 0) result.page.next = result.page.offset + result.page.returned;
+      return result;
     },
 
     async xrefs(_snapshot, id, page = {}, options = {}) {
