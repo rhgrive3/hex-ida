@@ -54,6 +54,14 @@ function makeChainedFixture({ pointerFormat = 9, raw = 0x800n, imageBase = 0x100
   assert.equal(resolveMachOPointer(image,targetOffset+8n,{address:storage}), null, 'raw mismatch cannot borrow a recorded site');
 }
 
+// A decoded chained rebase still needs mapped-image proof before becoming exact.
+{
+  const targetOffset=0x200000n;
+  const {image,storage}=makeChainedFixture({pointerFormat:9,raw:targetOffset});
+  assert.equal(image.segmentAt(image.imageBase+targetOffset),null);
+  assert.equal(resolveMachOPointer(image,targetOffset,{address:storage}),null);
+}
+
 // DYLD_CHAINED_PTR_64_OFFSET reconstructs high8 and adds image base.
 {
   const high8=0n, target=0x880n;
