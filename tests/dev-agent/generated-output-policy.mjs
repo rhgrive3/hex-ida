@@ -49,6 +49,16 @@ for (const workflow of [
   }
 }
 
+const recoveryWorkflow = fs.readFileSync(path.join(ROOT, '.github/workflows/generated-exact-head-recovery.yml'), 'utf8');
+assert.match(recoveryWorkflow, /Generated userscript autofix/, 'generated autofix completion must trigger exact-head recovery');
+assert.match(recoveryWorkflow, /createWorkflowDispatch/, 'recovery must invoke the existing verifier workflows');
+assert.match(recoveryWorkflow, /generatedSyncCovered/, 'blocked runs may be removed only after generated-sync replacement coverage is queued or green');
+assert.match(recoveryWorkflow, /deleteWorkflowRun/, 'zero-job action_required runs must be removable after replacement validation is queued');
+assert.doesNotMatch(recoveryWorkflow, /createCommitStatus|checks\.create|checkRuns\.create/, 'recovery must never synthesize a green status/check');
+
+const userscriptHostWorkflow = fs.readFileSync(path.join(ROOT, '.github/workflows/userscript-host.yml'), 'utf8');
+assert.match(userscriptHostWorkflow, /\bworkflow_dispatch\s*:/, 'userscript host must expose a permanent manual exact-head path');
+
 const phase7Workflow = fs.readFileSync(path.join(ROOT, '.github/workflows/phase7-release-validation.yml'), 'utf8');
 const resolverMatch = /      - name: Resolve generated-output ownership policy[\s\S]*?        run: \|\n((?:          .*\n)+?)      - name: Generated-output synchronization/.exec(phase7Workflow);
 assert.ok(resolverMatch, 'Phase 7 generated-output resolver step must remain extractable for fail-closed testing');
