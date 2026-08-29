@@ -9,6 +9,19 @@ const IMAGE_DIRECTORY_ENTRY_BASERELOC = 5;
 const IMAGE_DIRECTORY_ENTRY_TLS = 9;
 const IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG = 10;
 const IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT = 13;
+const WINDOWS_IMAGE_RAW_ALIGNMENT = 0x200;
+
+function windowsImageSectionRawMapping(pointerToRawData) {
+  if (pointerToRawData === 0) {
+    return { effectiveFileOffset: 0, fileBacked: false, roundedDown: false };
+  }
+  const effectiveFileOffset = pointerToRawData - (pointerToRawData % WINDOWS_IMAGE_RAW_ALIGNMENT);
+  return {
+    effectiveFileOffset,
+    fileBacked: true,
+    roundedDown: effectiveFileOffset !== pointerToRawData,
+  };
+}
 
 function seedValidatedEntrypoint(image, entryRva, sizeOfImage, machine) {
   const address = image.imageBase + BigInt(entryRva);
@@ -97,7 +110,7 @@ export function parsePE(input, options = {}) {
   const image = new BinaryImage(bytes, {
     format: 'pe', arch: peMachineName(machine), bits, endian: 'little', platform: 'windows',
     imageBase, entrypoint: entryRva ? imageBase + BigInt(entryRva) : null,
-    metadata: { machine, timestamp, characteristics, subsystem, sectionAlignment, fileAlignment, sizeOfImage, sizeOfHeaders, directories },
+    metadata: { machine, timestamp, characteristics, subsystem, sectionAlignment, fileAlignment, sizeOfImage, sizeOfHeaders, directories, peSectionRawMappings: [] },
   });
 
   image.addSegment({ name: 'headers', address: imageBase, size: BigInt(sizeOfHeaders), fileOffset: 0n, fileSize: BigInt(Math.min(sizeOfHeaders, bytes.length)), perms: { read: true, write: false, execute: false }, source: 'PE-headers' });
@@ -113,11 +126,28 @@ export function parsePE(input, options = {}) {
     const flags = r.u32(p + 36);
     const address = imageBase + BigInt(virtualAddress);
     const virtualExtent = BigInt(virtualSize || sizeRaw);
-    const rawAvailable = BigInt(Math.min(sizeRaw, Math.max(0, bytes.length - ptrRaw)));
+    const rawMapping = windowsImageSectionRawMapping(ptrRaw);
+    const rawAvailable = rawMapping.fileBacked
+      ? BigInt(Math.min(sizeRaw, Math.max(0, bytes.length - rawMapping.effectiveFileOffset)))
+      : 0n;
     const mappedFileSize = rawAvailable < virtualExtent ? rawAvailable : virtualExtent;
     const perms = { read: !!(flags & 0x40000000), write: !!(flags & 0x80000000), execute: !!(flags & 0x20000000) };
-    image.addSegment({ name, address, size: virtualExtent, fileOffset: BigInt(ptrRaw), fileSize: mappedFileSize, perms, flags, source: 'PE-section' });
-    image.addSection({ name, address, size: virtualExtent, fileOffset: BigInt(ptrRaw), fileSize: mappedFileSize, perms, flags, type: null, index: i + 1, source: 'PE-section' });
+    image.metadata.peSectionRawMappings.push({
+      sectionIndex: i + 1,
+      name,
+      declaredFileOffset: ptrRaw,
+      effectiveFileOffset: rawMapping.effectiveFileOffset,
+      sizeOfRawData: sizeRaw,
+      fileBacked: rawMapping.fileBacked,
+      roundedDown: rawMapping.roundedDown,
+      policy: 'windows-image-loader-0x200-round-down',
+    });
+    if (rawMapping.roundedDown) {
+      image.warnings.push(`PE section ${name || `#${i + 1}`} PointerToRawData 0x${ptrRaw.toString(16)} is nonconforming; Windows image-loader mapping uses 0x${rawMapping.effectiveFileOffset.toString(16)}`);
+    }
+    const effectiveFileOffset = BigInt(rawMapping.effectiveFileOffset);
+    image.addSegment({ name, address, size: virtualExtent, fileOffset: effectiveFileOffset, fileSize: mappedFileSize, perms, flags, source: 'PE-section' });
+    image.addSection({ name, address, size: virtualExtent, fileOffset: effectiveFileOffset, fileSize: mappedFileSize, perms, flags, type: null, index: i + 1, source: 'PE-section' });
   }
 
   if (entryRva) seedValidatedEntrypoint(image, entryRva, sizeOfImage, machine);
