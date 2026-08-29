@@ -34,7 +34,7 @@ import { importList, importsByFramework, exportList, findGlobals } from './linka
 import { assemble, suggestPatches, parseHexBytes, hexOf, validatePatchRange } from './patch.js';
 import { runScript, SAMPLES, makeEmulator } from './script.js';
 import { EXAMPLE_PLUGIN, MAX_PLUGIN_SOURCE_BYTES } from './plugins.js';
-import { parseMetadataAuto, looksLikeUnity, bindMethodAddresses, MAX_IL2CPP_METADATA_BYTES } from './il2cpp.js';
+import { parseMetadataAuto, parseMetadataAutoAsync, looksLikeUnity, bindMethodAddresses, MAX_IL2CPP_METADATA_BYTES } from './il2cpp.js';
 import { brief } from './arm64.js';
 
 /* ── 小道具 ─────────────────────────────────────────────── */
@@ -1685,6 +1685,15 @@ export function showPlugins(app) {
 
 export function showIl2cpp(app) {
   const sheet = new Sheet('Unity（IL2CPP）');
+  let activeController = null;
+  const abortActive = () => {
+    if (activeController) {
+      activeController.abort();
+      activeController = null;
+    }
+  };
+  sheet.onClose = abortActive;
+
   sheet.body.append(el('div', 'hint',
     'Unity のアプリは C# で書かれていますが、出荷時にはクラス名やメソッド名が\n' +
     '実行ファイルから消え、global-metadata.dat という別ファイルに移ります。\n' +
@@ -1712,26 +1721,38 @@ export function showIl2cpp(app) {
         body.replaceChildren(el('div', 'hint', `global-metadata.dat が大きすぎます (${Math.ceil(f.size/1024/1024)} MiB)。安全上 ${MAX_IL2CPP_METADATA_BYTES/1024/1024} MiB までです。`));
         return;
       }
+      abortActive();
       const controller = new AbortController();
+      activeController = controller;
       body.replaceChildren(el('div', 'hint', '読み込んでいます…'));
       try {
-        const meta = parseMetadataAuto(await f.arrayBuffer(), { signal:controller.signal });
+        const buf = await f.arrayBuffer();
+        if (controller.signal.aborted || !sheet.root.isConnected) return;
+        const meta = await parseMetadataAutoAsync(buf, { signal: controller.signal });
+        if (controller.signal.aborted || !sheet.root.isConnected) return;
         await bindMethodAddresses(meta, {
-          regions: app.store.get('regions') || [], signal:controller.signal,
+          regions: app.store.get('regions') || [], signal: controller.signal,
           read: (addr, len) => app.backend.readAt(addr, len)
             .then((r) => (r && r.found ? r.bytes : null)),
         });
+        if (controller.signal.aborted || !sheet.root.isConnected) return;
         const named = meta.methods.filter((m) => m.address != null)
           .map((m) => ({ addr: m.address, name: m.full }));
-        if (named.length) {
+        if (named.length && !controller.signal.aborted && sheet.root.isConnected) {
           app.symbols.addNames(named);
           app.symbols.addFunctions(named.map((n) => n.addr));
           app.viewer.setSymbols(app.symbols);
         }
-        show(meta);
+        if (!controller.signal.aborted && sheet.root.isConnected) {
+          show(meta);
+        }
       } catch (err) {
+        if (controller.signal.aborted || err?.code === 'ABORT_ERR' || err?.name === 'AbortError') return;
+        if (!sheet.root.isConnected) return;
         body.replaceChildren(el('div', 'hint warn', userError(err,
           'IL2CPPメタデータを解析できませんでした。別の解析ツールは引き続き利用できます。')));
+      } finally {
+        if (activeController === controller) activeController = null;
       }
     });
     picker.click();
