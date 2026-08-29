@@ -116,3 +116,4 @@ if (failures) process.exit(1);
 console.log('Product UI architecture regression checks passed');
 
 await import('./issues-frontend-wiring-2511-2555.mjs');
+await import('./issues-explorer-script-optimizations-2627-2629.mjs');

@@ -256,27 +256,52 @@ async function stringItems(app, query, options) {
   const rows = await app.ensureStrings();
   return queryStrings(rows || [], query, options);
 }
-function classItems(app, query) {
+let cachedClassesRef = null;
+let cachedClassEntities = null;
+
+function getClassEntities(app) {
+  const classes = app.fields?.classes || app.objcModel?.classes;
+  if (!classes) return [];
+  if (cachedClassesRef === classes && cachedClassEntities) {
+    return cachedClassEntities;
+  }
+  const entries = (classes instanceof Map)
+    ? classes.entries()
+    : Array.isArray(classes)
+      ? classes.map((c) => [c.name, c])
+      : Object.entries(classes);
+  const items = [];
+  for (const [name, info] of entries) {
+    if (!name) continue;
+    const methods = (info?.methods?.length || info?.methodList?.length || 0);
+    const ivars = (info?.ivars?.length || 0);
+    const superName = info?.superName || info?.superclass || '';
+    const metaParts = [];
+    if (methods) metaParts.push(text(`${methods} メソッド`, `${methods} methods`));
+    if (ivars) metaParts.push(text(`${ivars} フィールド`, `${ivars} fields`));
+    if (superName) metaParts.push(text(`${superName} を継承`, `extends ${superName}`));
+    items.push({
+      name: String(name),
+      normalizedName: String(name).toLowerCase(),
+      methods,
+      ivars,
+      superName,
+      meta: metaParts.join(' · '),
+    });
+  }
+  cachedClassesRef = classes;
+  cachedClassEntities = items;
+  return items;
+}
+
+export function classItems(app, query) {
   const q = String(query || '').trim().toLowerCase();
+  const all = getClassEntities(app);
+  if (!q) return all;
   const list = [];
-  if (app.fields && app.fields.classes) {
-    for (const [name, info] of app.fields.classes.entries()) {
-      if (!q || name.toLowerCase().includes(q)) {
-        const methods = (info.methods?.length || info.methodList?.length || 0);
-        const ivars = (info.ivars?.length || 0);
-        const superName = info.superName || '';
-        const metaParts = [];
-        if (methods) metaParts.push(text(`${methods} メソッド`, `${methods} methods`));
-        if (ivars) metaParts.push(text(`${ivars} フィールド`, `${ivars} fields`));
-        if (superName) metaParts.push(text(`${superName} を継承`, `extends ${superName}`));
-        list.push({
-          name,
-          methods,
-          ivars,
-          superName,
-          meta: metaParts.join(' · '),
-        });
-      }
+  for (const item of all) {
+    if (item.normalizedName.includes(q)) {
+      list.push(item);
     }
   }
   return list;
@@ -319,28 +344,46 @@ function dataItems(app, query) {
   return list;
 }
 
-function externalItems(app, query) {
-  const descriptor = productDescriptor(app.store.get('fileInfo'), app.currentSlice?.());
-  const q = String(query || '').trim().toLowerCase();
-  const list = [];
+let cachedExternalDescriptor = null;
+let cachedExternalItems = null;
+
+function getExternalEntities(app) {
+  const slice = app.currentSlice?.();
+  const fileInfo = app.store?.get?.('fileInfo');
+  if (cachedExternalDescriptor && cachedExternalDescriptor.fileInfo === fileInfo && cachedExternalDescriptor.slice === slice && cachedExternalDescriptor.imports === app.symbols?.imports) {
+    return cachedExternalItems;
+  }
+  const descriptor = productDescriptor(fileInfo, slice);
+  const items = [];
   const seen = new Set();
   for (const name of descriptor.dependencies || []) {
-    if (!q || name.toLowerCase().includes(q)) {
-      if (!seen.has(name)) {
-        seen.add(name);
-        list.push({ name, kind: 'dylib', addr: null });
-      }
+    if (!seen.has(name)) {
+      seen.add(name);
+      items.push({ name, normalizedName: name.toLowerCase(), kind: 'dylib', addr: null });
     }
   }
   const imports = app.symbols?.imports || [];
   for (const imp of imports) {
     const name = String(imp.name || imp);
     const addr = imp.addr ?? imp.address ?? null;
-    if (!q || name.toLowerCase().includes(q)) {
-      if (!seen.has(name)) {
-        seen.add(name);
-        list.push({ name, kind: 'import', addr });
-      }
+    if (!seen.has(name)) {
+      seen.add(name);
+      items.push({ name, normalizedName: name.toLowerCase(), kind: 'import', addr });
+    }
+  }
+  cachedExternalDescriptor = { fileInfo, slice, imports: app.symbols?.imports };
+  cachedExternalItems = items;
+  return items;
+}
+
+export function externalItems(app, query) {
+  const q = String(query || '').trim().toLowerCase();
+  const all = getExternalEntities(app);
+  if (!q) return all;
+  const list = [];
+  for (const item of all) {
+    if (item.normalizedName.includes(q)) {
+      list.push(item);
     }
   }
   return list;
