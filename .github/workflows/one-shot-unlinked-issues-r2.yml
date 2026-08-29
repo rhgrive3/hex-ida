@@ -1,0 +1,47 @@
+name: One-shot unlinked issue runner repair
+
+on:
+  push:
+    branches:
+      - fix/unlinked-issues-2377-2388-2393-2478
+    paths:
+      - .github/workflows/one-shot-unlinked-issues-r2.yml
+
+permissions:
+  contents: write
+
+jobs:
+  repair-runner:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/unlinked-issues-2377-2388-2393-2478
+          fetch-depth: 0
+      - name: Fix ABI entry-register discovery and retrigger original runner
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('.github/workflows/one-shot-unlinked-issues.yml')
+          s=p.read_text()
+          old="function classifiedArgumentLocations(ctx,opts={}){"
+          new="function classifiedArgumentLocations(ir,ctx,opts={}){"
+          if old not in s: raise SystemExit('signature anchor missing')
+          s=s.replace(old,new,1)
+          old="  const push=(x)=>{if(!x?.reg)return;const reg=String(x.reg);if(!out.some((y)=>y.reg===reg))out.push({...x,reg});};\n  try{const locs=ctx.adapter?.argumentLocations?.({functionPrototype:opts.functionPrototype||opts.prototype||null});"
+          new="  const push=(x)=>{if(!x?.reg)return;const reg=String(x.reg);if(!out.some((y)=>y.reg===reg))out.push({...x,reg});};\n  if(ctx.plugin&&ir?.args?.keys)for(const reg of ir.args.keys())try{const c=ctx.plugin.classifyEntryRegister?.(reg);if(c?.kind==='argument')push({...c,reg:c.reg||reg});}catch{}\n  try{const locs=ctx.adapter?.argumentLocations?.({functionPrototype:opts.functionPrototype||opts.prototype||null});"
+          if old not in s: raise SystemExit('entry-register anchor missing')
+          s=s.replace(old,new,1)
+          old="for(const loc of classifiedArgumentLocations(ctx,opts)){"
+          new="for(const loc of classifiedArgumentLocations(ir,ctx,opts)){"
+          if old not in s: raise SystemExit('call anchor missing')
+          s=s.replace(old,new,1)
+          p.write_text(s)
+          PY
+          rm .github/workflows/one-shot-unlinked-issues-r2.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add .github/workflows/one-shot-unlinked-issues.yml .github/workflows/one-shot-unlinked-issues-r2.yml
+          git commit -m 'chore: fix one-shot ABI entry register discovery'
+          git push origin HEAD:fix/unlinked-issues-2377-2388-2393-2478
