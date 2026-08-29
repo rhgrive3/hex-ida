@@ -286,7 +286,7 @@ function valueSize(value, seen = new Set(), limit = MAX_RPC_OUTPUT_BYTES + 1) {
   return n;
 }
 
-export function runInSandbox({ source, mode = 'script', index = 0, api, out, timeout = 30000 }) {
+export function runInSandbox({ source, mode = 'script', index = 0, api, out, timeout = 30000, signal }) {
   return new Promise((resolve) => {
     const frame = document.createElement('iframe');
     frame.hidden = true;
@@ -311,11 +311,21 @@ export function runInSandbox({ source, mode = 'script', index = 0, api, out, tim
     };
     window.addEventListener('message', onFrameReady);
 
+    const onAbort = () => finish({ error: 'キャンセルされました。', aborted: true });
+    if (signal) {
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+      signal.addEventListener('abort', onAbort, { once: true });
+    }
+
     const finish = (value) => {
       if (settled) return;
       settled = true;
       runController.abort(value?.error || 'sandbox-finished');
       clearTimeout(timer);
+      if (signal) signal.removeEventListener('abort', onAbort);
       window.removeEventListener('message', onFrameReady);
       window.removeEventListener('pagehide', onPageHide);
       terminate();

@@ -108,4 +108,55 @@ function fakeApp(architecture, overrides = {}) {
   assert.equal(result.operation, 'disassemble');
 }
 
+// Issue #2558: hex.functions() multi-region scanning
+{
+  const region1 = { id:'text1', vmAddr:0x1000n, size:0x1000n, exec:true, name:'__TEXT' };
+  const region2 = { id:'text2', vmAddr:0x2000n, size:0x1000n, exec:true, name:'__TEXT_EXEC' };
+  const symbols = {
+    functionList(r, _limit) {
+      if (r === region1) return [{ addr:0x1000n, name:'f1', size:0x20 }];
+      if (r === region2) return [{ addr:0x2000n, name:'f2', size:0x20 }];
+      return [];
+    }
+  };
+  const app = fakeApp('arm64', {
+    store: { get: (k) => k === 'regions' ? [region1, region2] : null },
+    symbols,
+    codeRegion: () => region1,
+  });
+  const { api } = createApi(app, () => {});
+  const funcs = api.functions();
+  assert.equal(funcs.length, 2, 'hex.functions() must collect functions across all executable regions');
+}
+
+// Issue #2561: hex.decompile() capability guard on non-ARM64
+{
+  const app = fakeApp('x86_64');
+  const { api } = createApi(app, () => {});
+  const decomp = await api.decompile(0x1000n);
+  assert.equal(decomp?.code, 'unsupported-architecture');
+  assert.equal(decomp?.operation, 'decompile');
+}
+
+// Issue #2559: hex.xrefsTo / xrefsFrom program integration
+{
+  const app = fakeApp('arm64', {
+    ensureProgram: async () => {},
+    program: {
+      callSitesTo: (addr, limit) => [{ addr: 0x2000n, target: addr }],
+      refSitesTo: () => [],
+      functionRange: () => ({ start: 0x1000n, end: 0x1040n }),
+      calleesOf: () => [{ addr: 0x3000n }],
+      mostCalled: () => [{ addr: 0x3000n, count: 5 }],
+    },
+  });
+  const { api } = createApi(app, () => {});
+  const to = await api.xrefsTo(0x1000n);
+  assert.equal(to.length, 1);
+  const from = await api.xrefsFrom(0x1000n);
+  assert.equal(from.length, 1);
+  const most = await api.mostCalled(10);
+  assert.equal(most.length, 1);
+}
+
 console.log('issues #454/#455 script architecture regressions passed');
