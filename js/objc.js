@@ -55,11 +55,17 @@ function categoryNames(categories = []) {
 }
 
 /** Full Apple-runtime Objective-C model used by the App. */
-export async function buildObjcRuntimeModel(read, classList, runtimeSections = {}, onProgress, imageBase, pointerFormat) {
+export async function buildObjcRuntimeModel(read, classList, runtimeSections = {}, onProgress, imageBase, pointerFormat, options = {}) {
   const effectivePointerFormat = pointerFormat ?? classList?.pointerFormat ?? classList?.pointer_format ?? null;
   const binaryImage = runtimeSections?.binaryImage || null;
   const validateImplementation=createImplementationValidator(runtimeSections,binaryImage);
-  const base = await buildLegacyObjcModel(read, classList, onProgress, imageBase, effectivePointerFormat, { validateImplementation, requireImplementationProof:true });
+  const base = await buildLegacyObjcModel(read, classList, onProgress, imageBase, effectivePointerFormat, {
+    validateImplementation,
+    requireImplementationProof:true,
+    signal: options?.signal || null,
+    priority: options?.priority || 'idle',
+    ...(options || {}),
+  });
   let resolvePointer = typeof runtimeSections?.resolvePointer === 'function'
     ? runtimeSections.resolvePointer
     : null;
@@ -83,6 +89,9 @@ export async function buildObjcRuntimeModel(read, classList, runtimeSections = {
     imageBase,
     classes: base.classes || [],
     resolvePointer, validateImplementation, requireImplementationProof:true,
+    signal: options?.signal || null,
+    priority: options?.priority || 'idle',
+    ...(options || {}),
   });
   const names = (base.names || []).filter((entry)=>entry?.implementationProven===true);
   const seen = new Set(names.map((entry) => `${entry.addr}:${entry.name}`));
