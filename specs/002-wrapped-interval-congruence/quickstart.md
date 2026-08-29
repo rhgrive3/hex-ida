@@ -25,10 +25,12 @@ newest SHA before implementation acceptance. Its moving-main delta touches
 only AI/query, ARM64, runtime, project, UI, and generated userscript files plus
 their tests; it does not overlap this lane's canonical range/SCCP files,
 scalar/integration tests, or generated inputs. The latest implementation
-preflight resolved `origin/main=590f2b07f8ab5e3a0a8c2bb34a1455e6552624fd` at
-`2026-08-29T21:24:50Z`; the Review 1 correction preflight refreshed the same
-live SHA at `2026-08-29T21:24:50Z`. A fresh remote/open-PR check remains required before
-Review 2 and merge.
+preflight resolved `origin/main=44e8fecb9af615a25f59b1ed9439bb11c0585077` at
+`2026-08-29T23:09:56Z`. Since the lane base, no current-main commit touches
+the Phase 8 canonical owner, C2-02 tests, or this feature's Spec Kit inputs;
+the moving-main changes remain outside this semantic/test/generated input
+surface. A fresh remote/open-PR check remains required before Review 2 and
+merge.
 
 ## Minimum pre-fix regression
 
@@ -65,31 +67,35 @@ also asserts that the global `x` fact remains full once edge facts are added.
 After implementation, run the identical test and record the exact SHA/output:
 
 ```bash
-POST_FIX_SHA=3bc879a8245f757c266288eaf1edf4cbd9d042e1
+POST_FIX_SHA=d361c5330f65fa295b3dc63bd4d82ffa5d5ca347
 node --test tests/phase8/scalar/c2-02-pre-fix.test.mjs
 ```
 
 `POST_FIX_COMMAND`: `node --test tests/phase8/scalar/c2-02-pre-fix.test.mjs`.
-`POST_FIX_PASS`: 2 tests, 2 pass, 0 fail at the implementation head above. Both
+`POST_FIX_PASS`: the focused C2-02 suite is 148 tests, 148 pass, 0 fail at the
+implementation head above. Both
 original assertions are unchanged; the edge object retains a compatibility
 `.get()` view while publishing structured edge facts.
 
 Additional implementation-head evidence:
 
 ```text
-T0: git diff --check; node --check range.js; node --check sccp.js; npm run lint — PASS
-T1: range.test.mjs + sccp.test.mjs + pre-fix regression — PASS
-T2: npm run phase8:test — PASS (300 tests, 30/30 discovered files)
-Downstream: c2-02-downstream-range.test.mjs — PASS (3 tests)
+T0: git diff --check; node --check index.js/range.js/sccp.js; npm run lint — PASS
+T1: range.test.mjs + sccp.test.mjs + pre-fix regression + downstream/lifecycle suites — PASS (148 tests)
+T2: `npm run phase8:test` — 312/313 passed; one no-op corpus assertion can
+  observe a deadline-cancelled ARM64 optimizer run under load, so the run is
+  not claimed as a pass. The identical target is complete on isolated replay.
+Downstream: c2-02-downstream-range.test.mjs — PASS; GVN/induction/vertical
+  stale-identity and atomic-publication regressions — PASS
 Ownership: npm run phase8:ownership — PASS
 Convergence: Spec Kit artifacts rechecked after implementation; no remaining
 spec/plan/task gap was found; `CONVERGENCE_RESULT=CLEAN`.
 Generated output: no generated files changed; canonical generator not owned by this lane.
 ```
 
-The implementation is represented by the source/test commit
-`3bc879a8245f757c266288eaf1edf4cbd9d042e1`; documentation-only evidence
-updates do not alter the semantic head. The publication digest covers canonical
+The implementation is represented by source commits through
+`d361c5330f65fa295b3dc63bd4d82ffa5d5ca347`; this evidence update is
+documentation-only. The publication digest covers canonical
 facts, edge/block-entry refinements, identity/provenance, completeness, budget,
 and diagnostics. Subsequent documentation-only evidence updates must not be
 confused with the original pre-fix comparison.
@@ -168,6 +174,13 @@ before changing production files. The implementation lane reached
 tasks T037–T050 remain open for the supervisor's review, reconciliation, CI,
 merge, and post-merge gates. Every semantic head change invalidates both review
 approvals and requires convergence plus both review passes again.
+
+The clean-tree verifier run at `d361c5330f65fa295b3dc63bd4d82ffa5d5ca347`
+reported `P8_VERDICT=BLOCKING`: all measured hard-zero safety counters were
+zero, but two transform-determinism observations were caused by complete versus
+deadline-cancelled optimizer ledgers, and the active-function median was
+490.9 ms against the 250 ms profile limit. No expectation or budget was weakened;
+the generated verifier reports were restored and are not part of the lane diff.
 
 The two independent review passes must inspect the actual final diff. Review 1
 constructs fresh malformed, stale, incomplete/cancelled, ambiguity, and boundary
