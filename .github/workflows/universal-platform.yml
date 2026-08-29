@@ -131,8 +131,8 @@ jobs:
           fi
 
   benchmark:
+    # This proof does not consume verify-shard output; start it immediately.
     if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
-    needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
