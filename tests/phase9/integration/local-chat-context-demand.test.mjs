@@ -37,3 +37,13 @@ test('local fallback preserves the turn AbortSignal when loading function contex
   assert.match(source, /analyzeModelAt\(app, addr, null, \{ signal \}\)/);
   assert.doesNotMatch(source, /analyzeModelAt\(app, addr\)\s*;/);
 });
+
+test('local agent delegates acquisition to the demand-driven planner', async () => {
+  const source = await readFile(SOURCE_URL, 'utf8');
+  const runAgent = source.slice(source.indexOf('async function runAgent('), source.indexOf('/**\n * @param {object} app'));
+
+  assert.doesNotMatch(runAgent, /app\.ensureStrings\s*\(/);
+  assert.doesNotMatch(runAgent, /app\.ensureProgram\s*\(/);
+  assert.match(runAgent, /runDeterministicAgent\(question, localContext \|\| \{\}, \{/);
+  assert.match(runAgent, /\n\s*signal,\n/);
+});
