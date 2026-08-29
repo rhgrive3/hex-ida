@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   repair:
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
         with:
@@ -36,7 +36,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python - <<'PY'
+          python3 - <<'PY'
           from pathlib import Path
 
           p = Path('js/binary/macho-dyld.js')
@@ -76,4 +76,6 @@ jobs:
           git add js/binary/macho-dyld.js tests/issue-2376-swift-pointer-resolver.mjs
           git diff --cached --check
           git commit -m 'fix(swift): require mapped proof for decoded rebases'
+          git fetch origin fix/issue-2376-swift-pointer-resolver
+          test "$(git rev-parse origin/fix/issue-2376-swift-pointer-resolver)" = "${GITHUB_SHA}"
           git push origin HEAD:fix/issue-2376-swift-pointer-resolver
