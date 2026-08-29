@@ -70,17 +70,24 @@ function storeValue(app, key) {
 }
 
 function activeArchitecture(app) {
-  return String(
-    storeValue(app, 'architecture')
-      ?? storeValue(app, 'capability')?.architecture
-      ?? app?.currentSlice?.()?.capability?.architecture
-      ?? '',
-  ).trim().toLowerCase();
+  const val = storeValue(app, 'architecture')
+    ?? storeValue(app, 'capability')?.architecture
+    ?? (typeof app?.currentSlice === 'function' ? app.currentSlice()?.capability?.architecture : null);
+  return typeof val === 'string' ? val.trim().toLowerCase() : '';
 }
 
 function fixedInstructionSize(app) {
-  const explicit = storeValue(app, 'capability')?.fixedInstructionSize;
-  return Number.isFinite(Number(explicit)) ? Number(explicit) : null;
+  const cap = storeValue(app, 'capability');
+  const explicit = cap && typeof cap === 'object' ? cap.fixedInstructionSize : null;
+  return explicit != null && Number.isFinite(Number(explicit)) ? Number(explicit) : null;
+}
+
+function isLegacyArm64Candidate(app) {
+  const arch = activeArchitecture(app);
+  const fixed = fixedInstructionSize(app);
+  if (arch && !supportsArm64SemanticAnalysis(arch)) return false;
+  if (fixed != null && fixed !== 4) return false;
+  return true;
 }
 
 async function canonicalPinpointModel(app, addr, signal, options) {
@@ -98,8 +105,7 @@ async function canonicalPinpointModel(app, addr, signal, options) {
 
 export function makePinpointAnalyzer(app, region, parentSignal = null, analyze = analyzeFunctionCached) {
   if (!region || !app?.store?.get?.('canDisassemble')) return null;
-  const architecture = activeArchitecture(app);
-  const legacyArm64 = supportsArm64SemanticAnalysis(architecture) && fixedInstructionSize(app) === 4;
+  const legacyArm64 = isLegacyArm64Candidate(app);
   const totalRows = legacyArm64 ? Number(region.size / 4n) : 0;
 
   return async (addr, end, options = {}) => {
