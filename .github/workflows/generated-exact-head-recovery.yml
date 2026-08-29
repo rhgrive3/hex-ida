@@ -46,7 +46,7 @@ jobs:
               if (path.endsWith('/phase7-ownership.yml')) {
                 return { base: pr.base.sha, head: pr.head.sha };
               }
-              if (path.endsWith('/phase7-release-validation.yml')) {
+              if (path.endsWith('/phase6-release-validation.yml') || path.endsWith('/phase7-release-validation.yml')) {
                 return { sha: pr.head.sha, shadow: 'false' };
               }
               return {};
