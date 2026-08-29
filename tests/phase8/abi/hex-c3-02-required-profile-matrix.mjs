@@ -215,27 +215,27 @@ for (const [name, adapter] of [
 }
 row('consumer publishes ABI semantic identity', () => assert.equal(recover(AAPCS64_ABI, ['x0']).abiSemanticIdentity, 'aapcs64@2'));
 row('consumer groups AAPCS64 aggregate pieces', () => {
-  const prototype = recover(AAPCS64_ABI, ['x0','x1']);
+  const prototype = recover(AAPCS64_ABI, ['x0','x1'], {}, { functionPrototype:{ parameters:[aggregate16] } });
   assert.equal(prototype.arguments.length, 1);
   assert.deepEqual(prototype.arguments[0].regs, ['x0','x1']);
 });
 row('consumer groups Darwin HFA pieces', () => {
-  const prototype = recover(DARWIN_ARM64_ABI, ['v0','v1','v2','v3']);
+  const prototype = recover(DARWIN_ARM64_ABI, ['v0','v1','v2','v3'], {}, { functionPrototype:{ parameters:[hfa4] } });
   assert.equal(prototype.arguments.length, 1);
   assert.deepEqual(prototype.arguments[0].regs, ['v0','v1','v2','v3']);
 });
 row('consumer groups vectorcall HVA pieces', () => {
-  const prototype = recover(MICROSOFT_VECTORCALL_ABI, ['xmm0','xmm1','xmm2','xmm3']);
+  const prototype = recover(MICROSOFT_VECTORCALL_ABI, ['xmm0','xmm1','xmm2','xmm3'], {}, { functionPrototype:{ parameters:[hva4] } });
   assert.equal(prototype.arguments.length, 1);
   assert.deepEqual(prototype.arguments[0].regs, ['ymm0','ymm1','ymm2','ymm3']);
 });
 row('consumer preserves Microsoft aggregate-indirect class', () => {
-  const prototype = recover(MICROSOFT_X64_ABI, ['rcx']);
+  const prototype = recover(MICROSOFT_X64_ABI, ['rcx'], {}, { functionPrototype:{ parameters:[aggregate16] } });
   assert.equal(prototype.arguments[0].abiClass, 'aggregate-indirect');
   assert.equal(prototype.arguments[0].pointer, true);
 });
 row('consumer groups RISC-V LP64 aggregate pieces', () => {
-  const prototype = recover(RISCV_LP64_ABI, ['x10','x11']);
+  const prototype = recover(RISCV_LP64_ABI, ['x10','x11'], {}, { functionPrototype:{ parameters:[aggregate16] } });
   assert.equal(prototype.arguments.length, 1);
   assert.deepEqual(prototype.arguments[0].regs, ['x10','x11']);
 });

@@ -28,6 +28,71 @@ import { decompileSemantic } from '../decompiler/semantic.js';
  */
 export const SEMANTIC_FUNCTION_ROUTE = 'phase5-shadow-v2';
 
+const ABI_NON_EXACT_STATES = new Set([
+  'stale', 'malformed', 'conflict', 'cancelled', 'canceled', 'deadline',
+  'deadline-exceeded', 'truncated', 'budget', 'budget-exhausted',
+  'resource-exhausted', 'unsupported', 'invalid', 'failed', 'error',
+  'ambiguous', 'unknown', 'incomplete', 'partial', 'not-proven',
+]);
+
+function abiInvalidState(value) {
+  const state = String(value ?? '').trim().toLowerCase().replace(/_/g, '-');
+  return ABI_NON_EXACT_STATES.has(state) ? state : null;
+}
+
+function abiResultInvalidState(value) {
+  return abiInvalidState(value?.status)
+    || abiInvalidState(value?.analysisStatus)
+    || abiInvalidState(value?.completeness)
+    || abiInvalidState(value?.evidenceStatus)
+    || abiInvalidState(value?.invalidation?.status)
+    || abiInvalidState(value?.invalidation?.state)
+    || abiInvalidState(value?.invalidation?.completeness);
+}
+
+// Identity records cross several cache/publication boundaries.  Copying and
+// recursively freezing the profile keeps the producer's nested evidence from
+// becoming an accidental mutable second source of ABI truth.
+function frozenAbiRecord(value, seen = new WeakMap()) {
+  if (!value || typeof value !== 'object') return value;
+  if (seen.has(value)) return seen.get(value);
+  const copy = Array.isArray(value) ? [] : {};
+  seen.set(value, copy);
+  for (const [key, child] of Object.entries(value)) copy[key] = frozenAbiRecord(child, seen);
+  return Object.freeze(copy);
+}
+
+function optionalIdentity(value) { return value == null ? null : String(value); }
+
+function abiEvidenceState(options = {}, call = null, adapter = null) {
+  if (options.cancelled === true || options.canceled === true || options.signal?.aborted === true
+    || call?.cancelled === true || call?.canceled === true || call?.signal?.aborted === true) return 'cancelled';
+  if (options.deadlineExceeded === true || options.deadlineExpired === true
+    || call?.deadlineExceeded === true || call?.deadlineExpired === true) return 'deadline-exceeded';
+  if (options.truncated === true || options.truncatedRun === true || call?.truncated === true) return 'truncated';
+  if (options.budgetExhausted === true || options.resourceBudgetExhausted === true
+    || call?.budgetExhausted === true || call?.resourceBudgetExhausted === true) return 'budget-exhausted';
+  if (options.callerCalleeConflict === true || options.callerCalleeAgreement === false
+    || call?.callerCalleeConflict === true || call?.callerCalleeAgreement === false) return 'conflict';
+  if (options.malformedEvidence === true || options.classifierFailed === true
+    || call?.malformedEvidence === true || call?.classifierFailed === true) return 'malformed';
+  for (const value of [
+    options.status, options.analysisStatus, options.completeness, options.evidenceStatus,
+    // A call summary's completeness describes callee effects (memory/state),
+    // not the ABI classifier's placement evidence.  Keep ABI argument
+    // candidates available as explicitly-uncertain inputs while the call
+    // effects remain unknown; ABI exactness is still governed by the
+    // classifier result below.
+    call?.status, call?.analysisStatus, call?.evidenceStatus,
+    adapter?.status, adapter?.analysisStatus, adapter?.completeness,
+    adapter?.invalidation?.status, adapter?.invalidation?.state,
+  ]) {
+    const state = abiInvalidState(value);
+    if (state) return state;
+  }
+  return null;
+}
+
 function abortIfRequested(signal) {
   if (!signal?.aborted) return;
   const error = signal.reason instanceof Error ? signal.reason : new Error('semantic-function-analysis-cancelled');
@@ -127,8 +192,39 @@ export function semanticAbiAdapter(abiPlugin, options = {}) {
   const architectureId = plugin?.architectureId == null ? null : String(plugin.architectureId);
   const targetArchitecture = options?.architectureId || options?.architecture || architectureId;
   const platformId = options?.platformId || options?.platform || null;
+  const profileIdentity = String(options?.profileIdentity
+    || options?.architectureProfile?.semanticIdentity
+    || options?.architectureProfile?.abiSemanticIdentity
+    || semanticIdentity || '');
+  const schemaVersion = options?.schemaVersion ?? options?.semanticIrSchemaVersion
+    ?? options?.semanticIRSchemaVersion ?? null;
+  const snapshotId = options?.snapshotId ?? options?.analysisSnapshotId ?? null;
+  const analyzerId = options?.analyzerId ?? options?.analysisAnalyzerId ?? null;
+  const analyzerVersion = options?.analyzerVersion ?? options?.analysisAnalyzerVersion ?? null;
+  const binaryId = options?.binaryId ?? null;
+  const sliceId = options?.sliceId ?? null;
+  const functionId = options?.functionId ?? null;
   const supported = !!plugin && plugin.supported !== false && pluginId !== 'unknown'
     && !!semanticVersion && !!semanticIdentity && !!architectureId;
+  // A profile descriptor is an identity record, not a placement classifier.
+  // Supplying it here makes every adapter carry an explicit canonical profile
+  // even when a legacy caller omitted target metadata.  arm64e still requires
+  // a real Apple platform at the consumer validation boundary.
+  const architectureProfile = frozenAbiRecord({
+    ...(options?.architectureProfile && typeof options.architectureProfile === 'object'
+      ? options.architectureProfile : {}),
+    id:options?.architectureProfile?.id ?? profileIdentity,
+    profileIdentity:options?.architectureProfile?.profileIdentity ?? profileIdentity,
+    semanticIdentity:options?.architectureProfile?.semanticIdentity ?? semanticIdentity,
+    abiSemanticIdentity:options?.architectureProfile?.abiSemanticIdentity ?? semanticIdentity,
+    abiId:options?.architectureProfile?.abiId ?? pluginId,
+    architectureId:options?.architectureProfile?.architectureId
+      ?? (targetArchitecture == null ? null : String(targetArchitecture)),
+    architecture:options?.architectureProfile?.architecture
+      ?? (targetArchitecture == null ? null : String(targetArchitecture)),
+    platform:options?.architectureProfile?.platform ?? (platformId == null ? null : String(platformId)),
+    platformId:options?.architectureProfile?.platformId ?? (platformId == null ? null : String(platformId)),
+  });
   const identity = Object.freeze({
     id:pluginId,
     semanticVersion,
@@ -136,7 +232,16 @@ export function semanticAbiAdapter(abiPlugin, options = {}) {
     architectureId,
     targetArchitecture:targetArchitecture == null ? null : String(targetArchitecture),
     platform:platformId == null ? null : String(platformId),
-    architectureProfile:options?.architectureProfile ?? null,
+    profileIdentity,
+    abiId:pluginId,
+    schemaVersion:schemaVersion == null ? null : String(schemaVersion),
+    snapshotId:snapshotId == null ? null : String(snapshotId),
+    analyzerId:analyzerId == null ? null : String(analyzerId),
+    analyzerVersion:analyzerVersion == null ? null : String(analyzerVersion),
+    binaryId:optionalIdentity(binaryId),
+    sliceId:optionalIdentity(sliceId),
+    functionId:optionalIdentity(functionId),
+    architectureProfile,
   });
   const provenance = Object.freeze({
     source:'canonical-abi-registry',
@@ -144,16 +249,35 @@ export function semanticAbiAdapter(abiPlugin, options = {}) {
     semanticIdentity,
     semanticVersion,
     architectureId,
+    profileIdentity,
+    targetArchitecture:identity.targetArchitecture,
+    platformId:identity.platform,
+    schemaVersion:identity.schemaVersion,
+    snapshotId:identity.snapshotId,
+    analyzerId:identity.analyzerId,
+    analyzerVersion:identity.analyzerVersion,
+    binaryId:identity.binaryId,
+    sliceId:identity.sliceId,
+    functionId:identity.functionId,
+    architectureProfile,
   });
   const invalidation = Object.freeze({
     abiSemanticIdentity:semanticIdentity,
     abiSemanticVersion:semanticVersion,
     architectureId,
     targetArchitecture:identity.targetArchitecture,
-    architectureProfile:identity.architectureProfile,
-    binaryId:options?.binaryId ?? null,
-    sliceId:options?.sliceId ?? null,
-    functionId:options?.functionId ?? null,
+    architectureProfile,
+    profileIdentity,
+    abiId:pluginId,
+    platformId:identity.platform,
+    schemaVersion:identity.schemaVersion,
+    snapshotId:identity.snapshotId,
+    analyzerId:identity.analyzerId,
+    analyzerVersion:identity.analyzerVersion,
+    binaryId:identity.binaryId,
+    sliceId:identity.sliceId,
+    functionId:identity.functionId,
+    status:options?.invalidation?.status ?? options?.status ?? null,
     semanticFunctionRoute:SEMANTIC_FUNCTION_ROUTE,
   });
   const stackRules = (() => { try { return plugin?.stackRules?.() ?? {}; } catch { return {}; } })();
@@ -184,32 +308,56 @@ export function semanticAbiAdapter(abiPlugin, options = {}) {
   }
 
   function canonicalReturnLocations(classified) {
-    if (!classified || classified.partial === true || classified.unsupported === true) return [];
+    if (!classified || classified.partial === true || classified.unsupported === true
+      || abiResultInvalidState(classified)) return [];
     const pieces = Array.isArray(classified.pieces) && classified.pieces.length
       ? classified.pieces
       : Array.isArray(classified.parts) && classified.parts.length
         ? classified.parts
         : null;
-    const rawRegisters = pieces
-      ? pieces.map((piece) => piece?.reg).filter((reg) => typeof reg === 'string' && reg.length > 0)
-      : Array.isArray(classified.regs) && classified.regs.length
-        ? classified.regs
-        : typeof classified.reg === 'string' && classified.reg.length > 0 ? [classified.reg] : [];
+    if (pieces) {
+      const locations = pieces.map((piece, index) => {
+        const rawReg = piece?.reg ?? piece?.register ?? null;
+        const stackOffset = piece?.stackOffset ?? piece?.offset ?? null;
+        if (typeof rawReg !== 'string' && stackOffset == null) return null;
+        const kind = typeof rawReg === 'string' && rawReg.length ? 'register' : 'stack';
+        return {
+          kind,
+          ...(kind === 'register' ? { reg:String(rawReg) } : {}),
+          abiClass:piece?.abiClass ?? classified.abiClass ?? (classified.aggregate === true ? 'aggregate-piece' : null),
+          pieceIndex:Number.isInteger(Number(piece?.pieceIndex)) ? Number(piece.pieceIndex)
+            : Number.isInteger(Number(piece?.piece)) ? Number(piece.piece) : Number.isInteger(Number(piece?.index)) ? Number(piece.index) : index,
+          bits:piece?.bits ?? classified.bits ?? null,
+          byteOffset:piece?.byteOffset ?? null,
+          ...(stackOffset == null ? {} : { stackOffset }),
+          bytes:piece?.bytes ?? null,
+          order:Number.isInteger(Number(piece?.order)) ? Number(piece.order) : index,
+          aggregate:classified.aggregate === true || pieces.length > 1,
+        };
+      });
+      // A missing lane is not a scalar lane.  Preserve the complete canonical
+      // location list only when every piece has a physical destination.
+      if (locations.every(Boolean)) return locations;
+      return [];
+    }
+    const rawRegisters = Array.isArray(classified.regs) && classified.regs.length
+      ? classified.regs
+      : typeof classified.reg === 'string' && classified.reg.length ? [classified.reg] : [];
     const locations = rawRegisters.map((rawReg, index) => {
-      const piece = pieces?.[index] ?? null;
+      if (typeof rawReg !== 'string' || !rawReg.length) return null;
       return {
         kind:'register',
         reg:String(rawReg),
-        abiClass:piece?.abiClass ?? classified.abiClass ?? null,
-        pieceIndex:Number.isInteger(Number(piece?.index)) ? Number(piece.index) : index,
-        bits:piece?.bits ?? classified.bits ?? null,
-        byteOffset:piece?.byteOffset ?? null,
-        stackOffset:piece?.stackOffset ?? null,
+        abiClass:classified.abiClass ?? null,
+        pieceIndex:rawRegisters.length > 1 ? index : null,
+        bits:classified.bits ?? null,
+        byteOffset:null,
+        stackOffset:null,
         order:index,
         aggregate:classified.aggregate === true || rawRegisters.length > 1,
       };
     });
-    if (locations.length || classified.indirect !== true) return locations;
+    if (locations.every(Boolean) && (locations.length || classified.indirect !== true)) return locations;
     const hidden = typeof classified.hiddenResultPointer === 'string'
       ? classified.hiddenResultPointer
       : classified.hiddenResultPointer?.input;
@@ -224,6 +372,15 @@ export function semanticAbiAdapter(abiPlugin, options = {}) {
     targetArchitecture:identity.targetArchitecture,
     platformId:identity.platform,
     architectureProfile:identity.architectureProfile,
+    profileIdentity,
+    abiId:pluginId,
+    schemaVersion:identity.schemaVersion,
+    snapshotId:identity.snapshotId,
+    analyzerId:identity.analyzerId,
+    analyzerVersion:identity.analyzerVersion,
+    binaryId:identity.binaryId,
+    sliceId:identity.sliceId,
+    functionId:identity.functionId,
     supported,
     identity,
     provenance,
@@ -231,6 +388,8 @@ export function semanticAbiAdapter(abiPlugin, options = {}) {
     completeness:supported ? 'canonical' : 'unsupported',
     stackRules:() => stackRules,
     unwindRules:() => unwindRules,
+    callerSaved:() => { try { return Object.freeze([...(plugin?.callerSaved?.(options) ?? [])]); } catch { return Object.freeze([]); } },
+    calleeSaved:() => { try { return Object.freeze([...(plugin?.calleeSaved?.(options) ?? [])]); } catch { return Object.freeze([]); } },
     /**
      * Canonical ABI classification entry points.  These deliberately return
      * the registry classifier's evidence object unchanged: the adapter carries
@@ -250,18 +409,32 @@ export function semanticAbiAdapter(abiPlugin, options = {}) {
      * is RISC-V's hardwired *zero* register, so a hardcoded name is not merely
      * imprecise, it reads the wrong location.
      */
-    returnRegister({ returnType = null } = {}) {
-      const type = String(returnType ?? '').trim();
+    returnLocations({ classified = null, functionPrototype = null, returnType = null, ...returnOptions } = {}) {
+      if (abiEvidenceState(returnOptions, null, plugin)) return Object.freeze([]);
+      const prototype = functionPrototype ?? (returnType == null ? null : {
+        returnType, returnsValue:true,
+      });
+      const result = classified ?? classifyCanonicalFunctionReturn({
+        functionPrototype:prototype,
+        returnType,
+        ...returnOptions,
+      });
+      return Object.freeze(canonicalReturnLocations(result));
+    },
+    returnRegister(options = {}) {
+      const type = String(options?.returnType
+        ?? options?.functionPrototype?.returnType
+        ?? options?.functionPrototype?.type
+        ?? '').trim();
       if (!type || type.toLowerCase() === 'void') return null;
-      let classified = null;
-      try {
-        classified = plugin?.classifyFunctionReturn?.({
-          functionPrototype:{ returnType:type, returnsValue:true },
-          returnType:type,
-          returnsValue:true,
-        });
-      } catch { classified = null; }
-      return classified?.reg ?? null;
+      const functionPrototype = options?.functionPrototype
+        ?? (options && typeof options === 'object' ? options : null);
+      if (abiEvidenceState(options, null, plugin)) return null;
+      const classified = classifyCanonicalFunctionReturn({
+        ...options, functionPrototype, returnType:type,
+      });
+      const locations = canonicalReturnLocations(classified);
+      return locations.length === 1 && locations[0]?.kind === 'register' ? locations[0].reg : null;
     },
     /**
      * Ordered physical registers that carry incoming integer arguments. Generic
@@ -314,7 +487,7 @@ export function semanticAbiAdapter(abiPlugin, options = {}) {
       ].filter((value) => typeof value === 'string' && value.length > 0);
       return Object.freeze([...new Set(named)]);
     },
-      classifyCall({ call }) {
+    classifyCall({ call = null } = {}) {
       const classified = classifyCanonicalArguments({ call });
       const instruction = {
         callTarget:call?.target ?? null,
@@ -323,9 +496,22 @@ export function semanticAbiAdapter(abiPlugin, options = {}) {
       let returned = null;
       try { returned = plugin?.classifyCallReturn?.(instruction, { ...options, callPrototype:instruction.callPrototype }) ?? null; }
       catch { returned = null; }
-      const returnLocations = canonicalReturnLocations(returned);
-      const explicitArguments = Array.isArray(classified?.arguments) ? classified.arguments : null;
-      const implicitInputs = Array.isArray(classified?.implicitInputs)
+      const evidenceState = abiEvidenceState(options, call, plugin);
+      const classifierState = abiResultInvalidState(classified);
+      const returnState = abiResultInvalidState(returned);
+      const hardInvalid = evidenceState || classified == null || classified?.unsupported === true || classifierState;
+      const partial = !!hardInvalid || classified?.partial === true || !!returnState || returned?.partial === true || returned?.unsupported === true;
+      const markUncertain = (entry) => ({
+        ...entry,
+        possible:true,
+        mustUse:false,
+        exact:false,
+        certainty:'unknown',
+      });
+      const explicitArguments = hardInvalid ? null : Array.isArray(classified?.arguments)
+        ? (partial ? classified.arguments.map(markUncertain) : classified.arguments)
+        : null;
+      const implicitInputs = hardInvalid ? [] : Array.isArray(classified?.implicitInputs)
         ? classified.implicitInputs.map((input, index) => Object.freeze({
           ...input,
           index:`implicit:${index}`,
@@ -334,28 +520,35 @@ export function semanticAbiAdapter(abiPlugin, options = {}) {
           implicit:true,
           variadicVectorRegisterCount:classified?.variadicVectorRegisterCount ?? null,
           countKnown:Number.isSafeInteger(classified?.variadicVectorRegisterCount),
+          ...(partial ? { possible:true, mustUse:false, exact:false, certainty:'unknown' } : {}),
         }))
         : [];
+      const publishableReturn = !evidenceState && !classifierState && !returnState
+        && classified != null && classified?.partial !== true && classified?.unsupported !== true
+        && returned != null && returned?.partial !== true && returned?.unsupported !== true;
+      const returnLocations = publishableReturn ? canonicalReturnLocations(returned) : [];
+      const returnRegister = returnLocations.length === 1 && returnLocations[0]?.kind === 'register'
+        ? returnLocations[0].reg : null;
       return {
-        arguments:explicitArguments == null ? (implicitInputs.length ? implicitInputs : null) : [...explicitArguments, ...implicitInputs],
+        arguments:hardInvalid ? null : explicitArguments == null ? (implicitInputs.length ? implicitInputs : null) : [...explicitArguments, ...implicitInputs],
         explicitArguments,
         implicitInputs,
         variadicVectorRegisterCount:classified?.variadicVectorRegisterCount ?? null,
-        partial:classified?.partial === true || classified == null,
-        completeness:classified == null || classified?.unsupported === true ? 'unknown' : classified.partial === true ? 'partial' : 'complete',
-        stackArguments:classified?.stackArguments ?? null,
-        stackArgsUnknown:classified?.stackArgsUnknown ?? true,
-        stackArgsMayContainPointers:classified?.stackArgsMayContainPointers ?? true,
+        partial,
+        completeness:evidenceState || classifierState || returnState || (classified == null || classified?.unsupported === true ? 'unknown' : partial ? 'partial' : 'complete'),
+        stackArguments:hardInvalid || partial ? null : classified?.stackArguments ?? null,
+        stackArgsUnknown:hardInvalid || partial ? true : classified?.stackArgsUnknown ?? true,
+        stackArgsMayContainPointers:hardInvalid || partial ? true : classified?.stackArgsMayContainPointers ?? true,
         argumentEvidence:classified?.evidence ?? `abi-${pluginId}`,
         clobbers:(() => { try { return plugin?.callerSaved?.(options) ?? []; } catch { return []; } })(),
-        returnReg:returned?.reg ?? null,
-        returnBits:returned?.bits ?? null,
-        returnEvidence:returned == null ? null : `abi-${pluginId}-return`,
+        returnReg:returnRegister,
+        returnBits:publishableReturn ? returned?.bits ?? null : null,
+        returnEvidence:publishableReturn && returned != null ? `abi-${pluginId}-return` : null,
         returnLocations,
-        returnPieces:Array.isArray(returned?.pieces) ? returned.pieces : Array.isArray(returned?.parts) ? returned.parts : null,
-        returnAggregate:returned?.aggregate === true,
-        returnIndirect:returned?.indirect === true,
-        returnHiddenResultPointer:returned?.hiddenResultPointer ?? null,
+        returnPieces:publishableReturn && Array.isArray(returned?.pieces) ? returned.pieces : publishableReturn && Array.isArray(returned?.parts) ? returned.parts : null,
+        returnAggregate:publishableReturn && returned?.aggregate === true,
+        returnIndirect:publishableReturn && returned?.indirect === true,
+        returnHiddenResultPointer:publishableReturn ? returned?.hiddenResultPointer ?? null : null,
         noreturn:callNoreturnState(options),
         abiId:pluginId,
         abiSemanticVersion:semanticVersion,

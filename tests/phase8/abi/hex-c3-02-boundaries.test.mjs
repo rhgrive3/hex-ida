@@ -4,8 +4,10 @@ import test from 'node:test';
 import { semanticAbiAdapter } from '../../../js/analysis/semantic-function.js';
 import { recoverFunctionPrototype } from '../../../js/decompiler/types/prototype.js';
 import { projectSemanticIrV2ToLegacyV1 } from '../../../js/semantics/compat/semantic-ir-v2-to-v1.js';
+import { classifyCallArguments } from '../../../js/ir-core.js';
 import {
   AAPCS64_ABI, DARWIN_ARM64_ABI, SYSV_AMD64_ABI, MICROSOFT_X64_ABI, RISCV_LP64_ABI,
+  resolveABIPlugin,
 } from '../../../js/targets/abi/index.js';
 
 function value(id, reg) { return { id, reg, uses:[{}] }; }
@@ -31,7 +33,9 @@ test('C3-02 canonical adapter carries one ABI identity through classification', 
   assert.equal(adapter.provenance.source, 'canonical-abi-registry');
   assert.deepEqual(classified.arguments[0].regs, ['x0','x1']);
 
-  const prototype = recover(adapter, ['x0', 'x1']);
+  const prototype = recover(adapter, ['x0', 'x1'], {}, {
+    functionPrototype:{ parameters:[pair] },
+  });
   assert.equal(prototype.abiSemanticIdentity, adapter.semanticIdentity);
   assert.equal(prototype.abiIdentity.invalidation.binaryId, 'binary-c3-02');
   assert.equal(prototype.provenance, 'canonical-abi-registry');
@@ -87,6 +91,20 @@ test('C3-02 unknown source prototype does not promote entry registers to paramet
   assert.deepEqual(prototype.arguments, []);
 });
 
+test('C3-02 unprototyped live registers remain separate uncertain candidates', () => {
+  const prototype = recover(semanticAbiAdapter(AAPCS64_ABI), ['x0', 'x1']);
+  assert.equal(prototype.arguments.length, 2);
+  assert.equal(prototype.arguments.some((argument) => argument.aggregate === true), false);
+  assert.equal(prototype.arguments.every((argument) => argument.possible === true && argument.mustUse === false), true);
+});
+
+test('C3-02 unrelated unprototyped live registers are never invented as one aggregate', () => {
+  const prototype = recover(semanticAbiAdapter(AAPCS64_ABI), ['x0', 'x3']);
+  assert.deepEqual(prototype.arguments.map((argument) => argument.reg), ['x0', 'x3']);
+  assert.equal(prototype.arguments.some((argument) => argument.aggregate === true || Array.isArray(argument.regs)), false);
+  assert.equal(prototype.arguments.every((argument) => argument.possible === true && argument.mustUse === false), true);
+});
+
 test('C3-02 explicit scalar parameters are not merged by a synthetic aggregate probe', () => {
   const prototype = recover(semanticAbiAdapter(AAPCS64_ABI), ['x0', 'x1'], {}, {
     functionPrototype:{ parameters:[{ type:'int64', bits:64 }, { type:'int64', bits:64 }] },
@@ -135,6 +153,31 @@ test('C3-02 arm64e retains the requested Apple profile and rejects a mismatched 
   const wrong = recover(semanticAbiAdapter(AAPCS64_ABI, { architecture:'arm64e', platform:'darwin' }), ['x0']);
   assert.equal(wrong.conventionKnown, false);
   assert.deepEqual(wrong.arguments, []);
+
+  const noPlatform = recover(semanticAbiAdapter(DARWIN_ARM64_ABI, { architecture:'arm64e' }), ['x0']);
+  assert.equal(noPlatform.conventionKnown, false);
+  assert.deepEqual(noPlatform.arguments, []);
+});
+
+test('C3-02 architecture-only arm64e cannot resolve an ABI profile', () => {
+  assert.equal(resolveABIPlugin({ architecture:'arm64e' }).id, 'unknown');
+  assert.equal(resolveABIPlugin({ architecture:'arm64e', platform:'linux' }).id, 'unknown');
+  assert.equal(resolveABIPlugin({ architecture:'arm64e', platform:'darwin' }).id, 'darwin-arm64');
+});
+
+test('C3-02 legacy compatibility classifier routes through the selected canonical ABI', () => {
+  const riscv = classifyCallArguments(
+    { callPrototype:{ args:[{ type:'int64', bits:64 }] } },
+    { architecture:'riscv64', platform:'linux', abiId:'lp64' },
+  );
+  assert.equal(riscv.arguments[0].reg, 'x10');
+  assert.notEqual(riscv.arguments[0].reg, 'x0');
+
+  const sysv = classifyCallArguments(
+    { callPrototype:{ args:[{ type:'int64', bits:64 }] } },
+    { architecture:'x86_64', platform:'linux', abiId:'sysv-amd64' },
+  );
+  assert.equal(sysv.arguments[0].reg, 'rdi');
 });
 
 test('C3-02 invalidates an adapter reused for a different binary snapshot', () => {
@@ -154,6 +197,72 @@ test('C3-02 malformed canonical provenance cannot publish a supported prototype'
   const prototype = recover(malformed, ['x0']);
   assert.equal(prototype.conventionKnown, false);
   assert.deepEqual(prototype.arguments, []);
+});
+
+test('C3-02 nested snapshot and schema identity mismatches invalidate ABI evidence', () => {
+  const adapter = semanticAbiAdapter(AAPCS64_ABI, {
+    binaryId:'binary-c3-02', snapshotId:'snapshot-old', schemaVersion:'abi-v1',
+  });
+  const snapshotMismatch = recover(adapter, ['x0'], {}, {
+    snapshotId:'snapshot-new', schemaVersion:'abi-v1',
+  });
+  assert.equal(snapshotMismatch.conventionKnown, false);
+  assert.deepEqual(snapshotMismatch.arguments, []);
+  const schemaMismatch = recover(adapter, ['x0'], {}, {
+    snapshotId:'snapshot-old', schemaVersion:'abi-v2',
+  });
+  assert.equal(schemaMismatch.conventionKnown, false);
+  assert.deepEqual(schemaMismatch.arguments, []);
+});
+
+test('C3-02 every nested identity record is validated before publication', () => {
+  const canonical = semanticAbiAdapter(AAPCS64_ABI, {
+    architecture:'arm64', platform:'linux', binaryId:'binary-c3-02', sliceId:'slice-c3-02',
+    functionId:'function-c3-02', snapshotId:'snapshot-c3-02', schemaVersion:'abi-v1',
+    analyzerId:'analyzer-c3-02', analyzerVersion:'1.0.0',
+  });
+  const tampered = [
+    {
+      ...canonical,
+      identity:{ ...canonical.identity,
+        architectureProfile:{ ...canonical.identity.architectureProfile, semanticIdentity:'tampered-profile' } },
+    },
+    {
+      ...canonical,
+      provenance:{ ...canonical.provenance,
+        architectureProfile:{ ...canonical.provenance.architectureProfile, platform:'tampered-platform' } },
+    },
+    {
+      ...canonical,
+      invalidation:{ ...canonical.invalidation,
+        architectureProfile:{ ...canonical.invalidation.architectureProfile, abiId:'tampered-abi' } },
+    },
+    { ...canonical, identity:{ ...canonical.identity, snapshotId:'tampered-snapshot' } },
+    { ...canonical, invalidation:{ ...canonical.invalidation, analyzerVersion:'tampered-analyzer' } },
+  ];
+  for (const adapter of tampered) {
+    const prototype = recover(adapter, ['x0']);
+    assert.equal(prototype.conventionKnown, false);
+    assert.deepEqual(prototype.arguments, []);
+    assert.deepEqual(prototype.returnLocations, []);
+  }
+});
+
+test('C3-02 aggregate returns keep full canonical locations and reject scalar collapse', () => {
+  const adapter = semanticAbiAdapter(AAPCS64_ABI);
+  const functionPrototype = { returnType:'struct Pair', aggregate:true, bits:128, returnsValue:true };
+  assert.deepEqual(adapter.returnLocations({ functionPrototype }).map(({ reg, pieceIndex }) => ({ reg, pieceIndex })), [
+    { reg:'x0', pieceIndex:0 }, { reg:'x1', pieceIndex:1 },
+  ]);
+  assert.equal(adapter.returnRegister({ returnType:'struct Pair', functionPrototype }), null);
+  const partial = semanticAbiAdapter(AAPCS64_ABI, { callPrototype:{
+    parameters:[{ type:'int64', bits:64 }], variadic:true,
+    returnType:'struct Pair', aggregate:true, bits:128, returnsValue:true,
+  } }).classifyCall({ call:{} });
+  assert.equal(partial.partial, true);
+  assert.equal(partial.returnReg, null);
+  assert.deepEqual(partial.returnLocations, []);
+  assert.equal(partial.arguments.every((argument) => argument.possible === true && argument.mustUse === false), true);
 });
 
 test('C3-02 preserves a canonical split register/stack aggregate as one parameter', () => {
@@ -224,5 +333,60 @@ test('C3-02 Semantic IR call publication retains canonical ABI identity and aggr
   assert.deepEqual(call.callArguments[0].regs, ['x0', 'x1']);
   assert.deepEqual(call.extra.returnLocations.map(({ reg, pieceIndex }) => ({ reg, pieceIndex })), [
     { reg:'x0', pieceIndex:0 }, { reg:'x1', pieceIndex:1 },
+  ]);
+
+  const partialProjected = projectSemanticIrV2ToLegacyV1(ir, {
+    abiAdapter:{
+      classifyCall() {
+        return {
+          callArguments:[], partial:true, completeness:'partial', returnReg:'x0', returnBits:64,
+          returnLocations:[{ kind:'register', reg:'x0' }], returnPieces:[{ reg:'x0' }],
+        };
+      },
+    },
+  });
+  const partialCall = partialProjected.instructions.find((instruction) => instruction.semanticNodeId === 'call');
+  assert.equal(partialCall.returnReg ?? null, null);
+  assert.equal(partialCall.returnBits ?? null, null);
+  assert.deepEqual(partialCall.extra.returnLocations, []);
+  assert.equal(partialCall.extra.returnPieces, null);
+
+  const aggregateProjected = projectSemanticIrV2ToLegacyV1(ir, {
+    abiAdapter:{
+      classifyCall() {
+        return {
+          callArguments:[], completeness:'complete', returnReg:'x0', returnBits:128,
+          returnAggregate:true,
+          returnLocations:[
+            { kind:'register', reg:'x0', aggregate:true, pieceIndex:0 },
+            { kind:'register', reg:'x1', aggregate:true, pieceIndex:1 },
+          ],
+          returnPieces:[{ reg:'x0' }, { reg:'x1' }],
+        };
+      },
+    },
+  });
+  const aggregateCall = aggregateProjected.instructions.find((instruction) => instruction.semanticNodeId === 'call');
+  assert.equal(aggregateCall.returnReg ?? null, null);
+  assert.deepEqual(aggregateCall.extra.returnLocations.map(({ reg, pieceIndex }) => ({ reg, pieceIndex })), [
+    { reg:'x0', pieceIndex:0 }, { reg:'x1', pieceIndex:1 },
+  ]);
+
+  const oneLaneAggregateProjected = projectSemanticIrV2ToLegacyV1(ir, {
+    abiAdapter:{
+      classifyCall() {
+        return {
+          callArguments:[], completeness:'complete', returnReg:'x0', returnBits:64,
+          returnAggregate:true,
+          returnLocations:[{ kind:'register', reg:'x0', aggregate:false, pieceIndex:0 }],
+          returnPieces:[{ reg:'x0' }],
+        };
+      },
+    },
+  });
+  const oneLaneAggregateCall = oneLaneAggregateProjected.instructions.find((instruction) => instruction.semanticNodeId === 'call');
+  assert.equal(oneLaneAggregateCall.returnReg ?? null, null);
+  assert.deepEqual(oneLaneAggregateCall.extra.returnLocations.map(({ reg, pieceIndex }) => ({ reg, pieceIndex })), [
+    { reg:'x0', pieceIndex:0 },
   ]);
 });

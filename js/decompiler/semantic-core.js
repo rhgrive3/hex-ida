@@ -168,9 +168,21 @@ function returnRegisterForContext(ctx) {
   // result register is an AArch64 fact; on RISC-V `x0` is hardwired zero, so a
   // hardcoded name would read the wrong location entirely. Callers that supply
   // no ABI adapter are the legacy AArch64 IR facade, whose behaviour is kept.
-  const fromAbi = ctx.opts?.abiAdapter?.returnRegister?.({ returnType: type });
+  const adapter = ctx.opts?.abiAdapter || null;
+  // A scalar compatibility value is publishable only when the canonical ABI
+  // reports exactly one complete register location.  Aggregate returns must
+  // remain represented by their complete physical pieces downstream.
+  if (typeof adapter?.returnLocations === 'function') {
+    let locations = null;
+    try { locations = adapter.returnLocations({ returnType:type }); }
+    catch { return null; }
+    if (!Array.isArray(locations)) return null;
+    if (locations.length !== 1 || locations[0]?.kind !== 'register' || locations[0]?.aggregate === true) return null;
+    return locations[0]?.reg == null ? null : String(locations[0].reg);
+  }
+  const fromAbi = adapter?.returnRegister?.({ returnType: type });
   if (fromAbi) return String(fromAbi);
-  if (ctx.opts?.abiAdapter) return null;
+  if (adapter) return null;
   return /^(float|double|__fp16)/.test(type) || /vector|simd/.test(type) ? 'v0' : 'x0';
 }
 

@@ -21,9 +21,31 @@ import {
   buildSemanticV2CompatibilityPipeline,
 } from './semantics/compat/index.js';
 import { ARM64_ARCHITECTURE } from './targets/architecture/index.js';
-import { AAPCS64_ABI, classifyAAPCS64Arguments } from './targets/abi/aapcs64.js';
+import { resolveABIPlugin } from './targets/abi/index.js';
+import { semanticAbiAdapter } from './analysis/semantic-function-base.js';
 
-export { classifyAAPCS64Arguments as classifyCallArguments };
+// Historical callers receive the canonical registry classifier through this
+// compatibility name.  The v2 compatibility pipeline itself always uses the
+// identity-carrying adapter below and never runs a private ABI classifier.
+export function classifyCallArguments(instruction = {}, options = {}) {
+  const source = instruction && typeof instruction === 'object' ? instruction : {};
+  const target = {
+    ...options,
+    abiId:options.abiId ?? source.abiId,
+    abi:options.abi ?? source.abi,
+    callingConvention:options.callingConvention ?? source.callingConvention,
+    architectureId:options.architectureId ?? source.architectureId,
+    architecture:options.architecture ?? source.architecture ?? source.architectureId,
+    platformId:options.platformId ?? source.platformId,
+    platform:options.platform ?? source.platform ?? source.platformId,
+    callPrototype:source.callPrototype ?? options.callPrototype,
+  };
+  const adapter = canonicalCompatibilityAbiAdapter(target);
+  return adapter.classifyArguments({
+    callTarget:source.callTarget ?? source.target ?? null,
+    callPrototype:target.callPrototype ?? null,
+  });
+}
 
 let semanticMigrationMode = SEMANTIC_V2_MIGRATION_MODES.V2_COMPAT;
 let lastSemanticV2Instrumentation = null;
@@ -80,51 +102,19 @@ function ephemeralBinaryId(model) {
   return `migration-model-${stableDigest(identity)}`;
 }
 
-function aapcs64FunctionReturnLocation(options = {}) {
-  const proto = options.functionPrototype || options.prototype || null;
-  const type = String(options.returnType || proto?.returnType || proto?.ret || proto?.result || '').toLowerCase();
-  const cls = String(options.returnClass || proto?.returnClass || proto?.abiClass || proto?.resultClass || '').toLowerCase();
-  if (options.returnsValue === false || proto?.returnsValue === false || proto?.void === true || type === 'void' || cls === 'void') return null;
-  if (proto?.indirectResult === true || cls === 'indirect') return null;
-  if (cls.includes('fp') || cls.includes('float') || cls.includes('vector') || /^(float|double|__fp16)/.test(type)) {
-    return { reg:'v0', bits:Number(proto?.returnBits || proto?.bits || options.returnBits || 64) || 64 };
-  }
-  if (type || cls || options.returnsValue === true || proto?.returnsValue === true) {
-    return { reg:'x0', bits:Number(proto?.returnBits || proto?.bits || options.returnBits || 64) || 64 };
-  }
-  return null;
-}
-
-function aapcs64CompatAbiAdapter(options) {
-  return {
-    classifyCall({ node }) {
-      const control = node?.attributes?.machineControlEffect ?? null;
-      const callSite = {
-        callTarget: control?.target ?? null,
-        callPrototype: node?.attributes?.callPrototype ?? null,
-      };
-      const classified = classifyAAPCS64Arguments(callSite, options);
-      const returnValue = AAPCS64_ABI.classifyCallReturn(callSite, options);
-      const callArguments = (classified.srcs ?? [])
-        .filter((source) => source?.t === 'reg' && source.reg)
-        .map((source) => ({ reg: String(source.reg), bits: Number(source.bits ?? 0) || null }));
-      return {
-        callArguments,
-        stackArguments: classified.stackArguments ?? [],
-        stackArgsUnknown: classified.stackArgsUnknown !== false,
-        stackArgsMayContainPointers: classified.stackArgsMayContainPointers !== false,
-        argumentEvidence: classified.evidence ?? 'aapcs64-plugin',
-        clobbers: AAPCS64_ABI.callerSaved(),
-        returnReg: returnValue?.reg ?? null,
-        returnBits: returnValue?.bits ?? null,
-        returnEvidence: returnValue == null ? null : 'aapcs64-plugin',
-      };
-    },
-    classifyFunctionReturn() {
-      const result = aapcs64FunctionReturnLocation(options);
-      return result == null ? null : { ...result, evidence:'prototype-aapcs64' };
-    },
-  };
+function canonicalCompatibilityAbiAdapter(options = {}, binaryId = null, sliceId = null) {
+  const plugin = resolveABIPlugin({
+    ...options,
+    architecture:options.architecture ?? options.architectureId ?? 'arm64',
+    binaryId:binaryId ?? options.binaryId,
+    sliceId:sliceId ?? options.sliceId,
+  }, { legacyDefault:true });
+  return semanticAbiAdapter(plugin, {
+    ...options,
+    architecture:options.architecture ?? options.architectureId ?? plugin.architectureId,
+    binaryId:binaryId ?? options.binaryId,
+    sliceId:sliceId ?? options.sliceId,
+  });
 }
 
 function aapcs64RegionRootDescriptorProvider(options = {}) {
@@ -242,17 +232,20 @@ function replaceLegacyArg(inst, from, to) {
 
 /*
  * Generic SSA is deliberately ABI-neutral and therefore treats an unknown call's
- * state category as a broad clobber. At this AAPCS64 facade we may recover only
- * a callee-preserved physical register state. Memory effects are not changed.
+ * state category as a broad clobber. The selected canonical ABI adapter may
+ * recover only a callee-preserved physical register state. Memory effects are
+ * not changed.
  */
-function restoreAapcs64PreservedStateReads(projected) {
-  const callerSaved = new Set(AAPCS64_ABI.callerSaved().map(String));
+function restoreCanonicalPreservedStateReads(projected, adapter) {
+  let callerSaved = [];
+  try { callerSaved = adapter?.callerSaved?.() ?? []; } catch { callerSaved = []; }
+  const callerSavedSet = new Set(callerSaved.map(String));
   for (const inst of projected.instructions ?? []) {
     if (inst.op !== LEGACY_OP.MOV || !inst.extra?.stateRead || inst.args?.length !== 1) continue;
     const identity = inst.extra.stateRead?.physicalIdentity;
     if (identity?.kind !== 'register') continue;
     const reg = String(identity.registerId ?? '');
-    if (!reg || callerSaved.has(reg)) continue;
+    if (!reg || callerSavedSet.has(reg)) continue;
     const unknown = inst.args[0]?.value;
     const call = unknown?.def;
     if (unknown?.kind !== LEGACY_VK.UNDEF || call?.op !== LEGACY_OP.CALL) continue;
@@ -260,7 +253,7 @@ function restoreAapcs64PreservedStateReads(projected) {
     if (!reaching) continue;
     replaceLegacyArg(inst, unknown, reaching);
     inst.extra.abiPreservedState = true;
-    inst.extra.abiPreservedStateEvidence = 'aapcs64-callee-preserved';
+    inst.extra.abiPreservedStateEvidence = `canonical-${adapter?.id || 'abi'}-callee-preserved`;
   }
 }
 
@@ -374,11 +367,12 @@ function restoreAapcs64PublicLocations(projected) {
   }
 }
 
-function attachAapcs64CallArguments(projected) {
+function attachCanonicalCallArguments(projected) {
   for (const inst of projected.instructions ?? []) {
     if (inst.op !== LEGACY_OP.CALL || !Array.isArray(inst.callArguments)) continue;
     detachLegacyArguments(inst);
     const seen = new Set();
+    const uncertainValueIds = [];
     for (const descriptor of inst.callArguments) {
       const reg = descriptor?.reg == null ? null : String(descriptor.reg);
       if (!reg) continue;
@@ -388,22 +382,41 @@ function attachAapcs64CallArguments(projected) {
       inst.args.push({ value, bits:value.bits || descriptor.bits || 64 });
       if (!Array.isArray(value.uses)) value.uses = [];
       if (!value.uses.includes(inst)) value.uses.push(inst);
+      if (descriptor?.possible === true || descriptor?.mustUse === false || descriptor?.exact === false) {
+        uncertainValueIds.push(value.semanticSsaValueId ?? value.semanticValueId ?? value.id);
+      }
     }
     inst.extra = {
       ...(inst.extra ?? {}),
       abiProjectedArgumentValueIds: inst.args.map((arg) => arg.value?.semanticSsaValueId ?? arg.value?.semanticValueId ?? arg.value?.id),
+      abiPossibleArgumentValueIds: uncertainValueIds,
     };
   }
 }
 
-function attachAapcs64TypedCallResults(projected, instructionByRow, options = {}) {
+function attachCanonicalTypedCallResults(projected, instructionByRow, adapter, options = {}) {
   for (const inst of projected.instructions ?? []) {
     if (inst.op !== LEGACY_OP.CALL || inst.dst) continue;
     const decoded = instructionByRow.get(inst.row) ?? null;
-    const result = decoded == null ? null : AAPCS64_ABI.classifyCallReturn(decoded, options);
-    if (!result?.reg) continue;
-    const reg = String(result.reg);
-    const bits = Number(result.bits || 64);
+    const prototype = (() => {
+      try { return decoded == null ? null : options.callPrototypeFor?.(decoded.callTarget ?? null, decoded) ?? options.callPrototype ?? null; }
+      catch { return null; }
+    })();
+    const result = adapter?.classifyCall?.({
+      call:{ target:decoded?.callTarget ?? null, callPrototype:prototype },
+    }) ?? null;
+    // A legacy scalar destination is valid only for one complete canonical
+    // register location. Aggregate/multi-register returns stay in the full
+    // returnLocations metadata carried by the call node.
+    const returnLocations = Array.isArray(result?.returnLocations) ? result.returnLocations : [];
+    if (result?.partial === true || result?.completeness !== 'complete'
+      || returnLocations.length !== 1
+      || returnLocations[0]?.kind !== 'register'
+      || returnLocations[0]?.aggregate === true
+      || !result?.returnReg
+      || String(returnLocations[0]?.reg ?? '') !== String(result.returnReg)) continue;
+    const reg = String(result.returnReg);
+    const bits = Number(result.returnBits || 64);
     const candidates = (projected.values ?? [])
       .filter((value) => value?.reg === reg
         && value?.sourceEntityId === inst.semanticNodeId
@@ -447,11 +460,13 @@ function attachAapcs64TypedCallResults(projected, instructionByRow, options = {}
     inst.dst = value;
     inst.returnReg = reg;
     inst.returnBits = bits;
-    inst.returnEvidence = 'prototype-aapcs64-call';
+    inst.returnEvidence = result.returnEvidence || `canonical-${adapter?.id || 'abi'}-call`;
     inst.extra = {
       ...(inst.extra ?? {}),
       compatTypedCallResult: true,
       compatTypedCallResultEvidence: inst.returnEvidence,
+      returnLocations,
+      returnPieces:result.returnPieces ?? null,
     };
   }
 }
@@ -553,21 +568,45 @@ function restoreProvenNoEscapeStackForwarding(projected) {
  * Semantic IR return nodes carry the architectural control target (for A64 RET,
  * typically the link register). That is not a source-language return value.
  */
-function attachAapcs64FunctionReturns(projected, adapter) {
-  const result = adapter?.classifyFunctionReturn?.() ?? null;
+function attachCanonicalFunctionReturns(projected, adapter, options = {}) {
+  const returnEvidence = (() => {
+    try {
+      const classified = adapter?.classifyFunctionReturn?.({
+        functionPrototype:options.functionPrototype ?? null,
+        returnType:options.returnType ?? null,
+        returnClass:options.returnClass ?? null,
+        returnBits:options.returnBits ?? null,
+        returnsValue:options.returnsValue,
+      });
+      return classified?.evidence
+        ?? (adapter?.id === 'aapcs64' ? 'prototype-aapcs64' : `canonical-${adapter?.id || 'abi'}-return`);
+    } catch { return `canonical-${adapter?.id || 'abi'}-return`; }
+  })();
+  const locations = adapter?.returnLocations?.({
+    functionPrototype:options.functionPrototype ?? null,
+    returnType:options.returnType ?? null,
+    returnClass:options.returnClass ?? null,
+    returnBits:options.returnBits ?? null,
+    returnsValue:options.returnsValue,
+  }) ?? [];
   for (const inst of projected?.instructions ?? []) {
     if (inst.op !== LEGACY_OP.RET) continue;
     detachLegacyArguments(inst);
     inst.returnReg = null;
     inst.returnEvidence = null;
-    if (!result?.reg) continue;
+    inst.extra = {
+      ...(inst.extra ?? {}),
+      abiReturnLocations:locations,
+    };
+    if (locations.length !== 1 || locations[0]?.kind !== 'register' || locations[0]?.aggregate === true) continue;
+    const result = locations[0];
     const value = selectReachingRegisterValue(projected, inst, result.reg, result.bits ?? null);
     if (!value) continue;
     inst.args = [{ value, bits:value.bits || result.bits || 64 }];
     if (!Array.isArray(value.uses)) value.uses = [];
     if (!value.uses.includes(inst)) value.uses.push(inst);
     inst.returnReg = result.reg;
-    inst.returnEvidence = result.evidence ?? 'aapcs64-plugin';
+    inst.returnEvidence = returnEvidence;
     inst.extra = {
       ...(inst.extra ?? {}),
       abiProjectedReturnValueId: value.semanticSsaValueId ?? value.semanticValueId ?? value.id,
@@ -606,7 +645,7 @@ function buildV2CompatFromLegacyModel(model, opts = {}) {
   });
   const binaryId = String(opts.binaryId ?? model.binaryId ?? ephemeralBinaryId(model));
   const sliceId = String(opts.sliceId ?? model.sliceId ?? `migration-slice-${stableDigest({ binaryId, architecture: 'arm64' })}`);
-  const abiAdapter = opts.abiAdapter ?? aapcs64CompatAbiAdapter(opts);
+  const abiAdapter = opts.abiAdapter ?? canonicalCompatibilityAbiAdapter(opts, binaryId, sliceId);
   const result = buildSemanticV2CompatibilityPipeline({
     architecturePlugin: ARM64_ARCHITECTURE,
     decoderSemanticVersion: String(opts.decoderSemanticVersion ?? 'legacy-model-decoder-v1'),
@@ -637,14 +676,14 @@ function buildV2CompatFromLegacyModel(model, opts = {}) {
       ...(opts.compatOptions ?? {}),
     },
   });
-  restoreAapcs64PreservedStateReads(result.legacyV1);
+  restoreCanonicalPreservedStateReads(result.legacyV1, abiAdapter);
   restoreAapcs64PublicLocations(result.legacyV1);
   propagateExactLegacyConstants(result.legacyV1);
-  attachAapcs64CallArguments(result.legacyV1);
-  attachAapcs64TypedCallResults(result.legacyV1, instructionByRow, opts);
+  attachCanonicalCallArguments(result.legacyV1);
+  attachCanonicalTypedCallResults(result.legacyV1, instructionByRow, abiAdapter, opts);
   invalidateEscapedStackForwarding(result.legacyV1);
   restoreProvenNoEscapeStackForwarding(result.legacyV1);
-  attachAapcs64FunctionReturns(result.legacyV1, abiAdapter);
+  attachCanonicalFunctionReturns(result.legacyV1, abiAdapter, opts);
   lastSemanticV2Instrumentation = result.instrumentation;
   return result.legacyV1;
 }
