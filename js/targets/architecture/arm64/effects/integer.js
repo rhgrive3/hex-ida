@@ -198,6 +198,20 @@ function validConditionalOperand(mnemonic, ops) {
     && condition.extend == null;
 }
 
+const BITFIELD_MNEMONICS = new Set(['ubfm','sbfm','bfm','ubfx','sbfx','ubfiz','sbfiz','bfxil','bfi','bfc']);
+
+function validBitfieldRegisterShape(mnemonic, ops) {
+  if (!BITFIELD_MNEMONICS.has(mnemonic)) return true;
+  const destination = ops[0];
+  const bits = regBits(destination);
+  if (!isGpOrZr(destination) || ![32,64].includes(bits)
+    || destination.shift != null || destination.extend != null) return false;
+  if (mnemonic === 'bfc') return true;
+  const source = ops[1];
+  return isGpOrZr(source) && regBits(source) === bits
+    && source.shift == null && source.extend == null;
+}
+
 export function liftArm64IntegerEffects(instruction, options = {}) {
   const mnemonic = String(instruction?.mnemonic || '').toLowerCase();
   const ops = Array.isArray(instruction?.ops) ? instruction.ops : [];
@@ -215,6 +229,10 @@ export function liftArm64IntegerEffects(instruction, options = {}) {
   if (!validConditionalOperand(mnemonic, ops)) {
     return createArm64EffectContext(instruction, options).partial(
       `arm64-${mnemonic}-condition-operand-unencodable`, ['registers','flags','other']);
+  }
+  if (!validBitfieldRegisterShape(mnemonic, ops)) {
+    return createArm64EffectContext(instruction, options).partial(
+      `arm64-${mnemonic}-bitfield-register-shape-unencodable`, ['registers','other']);
   }
   if (!validMovEncoding(mnemonic, ops)) {
     return createArm64EffectContext(instruction, options).partial(

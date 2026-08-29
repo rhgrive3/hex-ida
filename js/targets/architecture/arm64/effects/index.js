@@ -248,9 +248,27 @@ function multiplyDivideEncodingFailure(instruction) {
   return null;
 }
 
+const ARM64_BITFIELD_MNEMONICS = Object.freeze(new Set(['ubfm','sbfm','bfm','ubfx','sbfx','ubfiz','sbfiz','bfxil','bfi','bfc']));
+
+function bitfieldRegisterShapeEncodingFailure(mnemonic, ops) {
+  if (!ARM64_BITFIELD_MNEMONICS.has(mnemonic)) return null;
+  const destination = ops[0];
+  const widthBits = Number(destination?.bits || 0);
+  if (!isGpOrZrRegister(destination) || ![32,64].includes(widthBits)
+    || destination.shift != null || destination.extend != null) {
+    return `arm64-${mnemonic}-destination-register-unencodable`;
+  }
+  if (mnemonic === 'bfc') return null;
+  return isPlainGpSourceOfWidth(ops[1], widthBits)
+    ? null
+    : `arm64-${mnemonic}-source-register-unencodable`;
+}
+
 function registerOnlyIntegerEncodingFailure(instruction) {
   const mnemonic = instructionMnemonic(instruction);
   const ops = Array.isArray(instruction?.ops) ? instruction.ops : [];
+  const bitfieldFailure = bitfieldRegisterShapeEncodingFailure(mnemonic, ops);
+  if (bitfieldFailure) return bitfieldFailure;
   if (!isGpOrZrRegister(ops[0])) return null;
   const widthBits = Number(ops[0]?.bits || 0);
   const widthSensitiveIndices = mnemonic === 'extr' ? [1,2]
