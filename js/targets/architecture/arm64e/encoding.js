@@ -56,11 +56,9 @@ function selectedPresentationRegisterIdentity(operand) {
 }
 
 function explicitRegisterWidthValid(operand) {
-  const explicitWidth = operand.bits
-    ?? operand.widthBits
-    ?? operand.value?.bits
-    ?? operand.value?.widthBits;
-  return explicitWidth == null || (typeof explicitWidth === 'number' && Number.isInteger(explicitWidth) && explicitWidth === 64);
+  const widths = [operand.bits, operand.widthBits, operand.value?.bits, operand.value?.widthBits]
+    .filter((value) => value != null);
+  return widths.every((value) => typeof value === 'number' && Number.isInteger(value) && value === 64);
 }
 
 function registerClassOf(operand) {
