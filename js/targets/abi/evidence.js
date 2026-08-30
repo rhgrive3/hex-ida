@@ -1,0 +1,407 @@
+/*
+ * Shared ABI evidence contract.
+ *
+ * ABI placement is a canonical fact produced by a registered profile.  These
+ * helpers only validate the evidence envelope at publication boundaries; they
+ * do not classify parameters or invent physical locations.
+ */
+
+export const ABI_NON_EXACT_STATES = Object.freeze([
+  'stale', 'malformed', 'conflict', 'cancelled', 'canceled', 'cancellation',
+  'cancel', 'deadline', 'deadline-exceeded', 'deadline-expired', 'timeout',
+  'timed-out', 'truncated', 'budget', 'budget-exhausted', 'budget-limited',
+  'resource-exhausted', 'resource-budget-exhausted', 'resource-budget-limited',
+  'unsupported', 'unsupported-profile', 'profile-mismatch', 'identity-mismatch',
+  'invalid', 'failed', 'error', 'indirect-call', 'ambiguous',
+  'unknown', 'incomplete', 'incomplete-run', 'partial', 'provisional',
+  'unverified', 'not-proven', 'not-complete',
+]);
+
+const NON_EXACT = new Set(ABI_NON_EXACT_STATES);
+
+export function abiInvalidState(value) {
+  const state = String(value ?? '').trim().toLowerCase().replace(/[_\s]+/g, '-');
+  return NON_EXACT.has(state) ? state : null;
+}
+
+export function abiResultInvalidState(value) {
+  if (!value || typeof value !== 'object') return null;
+  // Producers use both a normalized status string and boolean terminal flags.
+  // Treat either form as the same fail-closed observation; otherwise an
+  // adapter could attach `partial: true` (or a cancellation/budget flag) to a
+  // result that still contains exact-looking placements and have a consumer
+  // accept those placements.
+  if (value.unsupported === true) return 'unsupported';
+  if (value.partial === true) return 'partial';
+  if (value.malformed === true || value.malformedEvidence === true) return 'malformed';
+  if (value.cancelled === true || value.canceled === true || value.cancellation === true) return 'cancelled';
+  if (value.deadlineExceeded === true || value.deadlineExpired === true) return 'deadline-exceeded';
+  if (value.truncated === true || value.truncatedRun === true) return 'truncated';
+  if (value.budgetExhausted === true || value.resourceBudgetExhausted === true) return 'budget-exhausted';
+  if (value.budgetLimited === true || value.resourceBudgetLimited === true) return 'budget-limited';
+  const states = [
+    value.status, value.analysisStatus, value.state, value.completeness, value.evidenceStatus,
+    value.identity?.status, value.identity?.state, value.identity?.completeness,
+    value.identity?.invalidation?.status, value.identity?.invalidation?.state,
+    value.identity?.invalidation?.completeness,
+    value.provenance?.status, value.provenance?.state, value.provenance?.completeness,
+    value.provenance?.invalidation?.status, value.provenance?.invalidation?.state,
+    value.provenance?.invalidation?.completeness,
+    value.invalidation?.status, value.invalidation?.state, value.invalidation?.completeness,
+    value.abiInvalidation?.status, value.abiInvalidation?.state, value.abiInvalidation?.completeness,
+  ].map(abiInvalidState).filter(Boolean);
+  // A hard terminal status must not be hidden by a simultaneous `partial:true`
+  // convenience flag.  Only an explicitly partial envelope may use the
+  // conservative unknown-prototype path in consumers.
+  const hardState = states.find((state) => state !== 'partial');
+  return hardState || (value.partial === true ? 'partial' : states[0] || null);
+}
+
+function record(value) {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function sameScalar(left, right) {
+  if (left == null || right == null) return left == null && right == null;
+  return String(left) === String(right);
+}
+
+function sameProfile(left, right) {
+  if (!record(left) || !record(right)) return false;
+  const fields = [
+    'id', 'profileIdentity', 'semanticIdentity', 'abiSemanticIdentity', 'abiId',
+    'architectureId', 'architecture', 'platform', 'platformId',
+  ];
+  return fields.every((field) => sameScalar(left[field], right[field]));
+}
+
+/*
+ * Validate the identity/provenance/invalidation envelope emitted by
+ * semanticAbiAdapter.classifyCall().  An adapter that supplies placements but
+ * omits this envelope is not a compatibility adapter; accepting it would let
+ * arbitrary decompiler-local ABI guesses become canonical facts.
+ */
+export function canonicalAbiEvidence(raw) {
+  if (!record(raw)) return false;
+  const required = ['abiId', 'abiSemanticVersion', 'abiSemanticIdentity'];
+  if (required.some((field) => typeof raw[field] !== 'string' || !raw[field].trim())) return false;
+  if (!record(raw.abiIdentity) || !record(raw.provenance) || !record(raw.invalidation)) return false;
+  if (raw.provenance.source !== 'canonical-abi-registry') return false;
+
+  const identity = raw.abiIdentity;
+  const profile = identity.architectureProfile;
+  if (!record(profile) || !sameProfile(profile, raw.invalidation.architectureProfile)
+    || !sameProfile(profile, raw.provenance.architectureProfile)) return false;
+  const profileRequired = [
+    'id', 'profileIdentity', 'semanticIdentity', 'abiSemanticIdentity', 'abiId',
+    'architectureId', 'architecture',
+  ];
+  if (profileRequired.some((field) => typeof profile[field] !== 'string' || !profile[field].trim())) return false;
+  if (!sameScalar(profile.architecture, profile.architectureId)
+    || !sameScalar(profile.platform, profile.platformId)) return false;
+  const profileMirrors = [
+    ['id', raw.abiSemanticIdentity],
+    ['profileIdentity', raw.abiSemanticIdentity],
+    ['semanticIdentity', raw.abiSemanticIdentity],
+    ['abiSemanticIdentity', raw.abiSemanticIdentity],
+    ['abiId', raw.abiId],
+  ];
+  if (profileMirrors.some(([field, expected]) => !sameScalar(profile[field], expected))) return false;
+  const identityRequired = [
+    'id', 'semanticVersion', 'semanticIdentity', 'architectureId',
+    'targetArchitecture', 'profileIdentity', 'abiId',
+  ];
+  if (identityRequired.some((field) => typeof identity[field] !== 'string' || !identity[field].trim())) return false;
+
+  const identityFields = [
+    ['id', raw.abiId],
+    ['semanticVersion', raw.abiSemanticVersion],
+    ['semanticIdentity', raw.abiSemanticIdentity],
+    ['profileIdentity', profile.profileIdentity],
+    ['abiId', raw.abiId],
+    ['architectureId', profile.architectureId],
+    ['targetArchitecture', profile.architecture],
+  ];
+  if (identityFields.some(([field, expected]) => !sameScalar(identity[field], expected))) return false;
+
+  const provenanceFields = [
+    ['abiId', raw.abiId],
+    ['semanticVersion', raw.abiSemanticVersion],
+    ['semanticIdentity', raw.abiSemanticIdentity],
+    ['profileIdentity', profile.profileIdentity],
+    ['targetArchitecture', identity.targetArchitecture],
+    ['platformId', identity.platform],
+    ['architectureProfile', profile],
+  ];
+  if (provenanceFields.some(([field, expected]) => {
+    if (field === 'architectureProfile') return !sameProfile(raw.provenance[field], expected);
+    return !sameScalar(raw.provenance[field], expected);
+  })) return false;
+
+  const invalidationFields = [
+    ['abiId', raw.abiId],
+    ['abiSemanticVersion', raw.abiSemanticVersion],
+    ['abiSemanticIdentity', raw.abiSemanticIdentity],
+    ['profileIdentity', profile.profileIdentity],
+    ['targetArchitecture', identity.targetArchitecture],
+    ['platformId', identity.platform],
+    ['architectureProfile', profile],
+  ];
+  if (invalidationFields.some(([field, expected]) => {
+    if (field === 'architectureProfile') return !sameProfile(raw.invalidation[field], expected);
+    return !sameScalar(raw.invalidation[field], expected);
+  })) return false;
+
+  // The nested invalidation record is checked before any consumer is allowed
+  // to inspect return locations.  Matching only the top-level ABI id is not
+  // sufficient because snapshot, analyzer, and profile changes invalidate the
+  // placement fact too.
+  for (const field of [
+    'schemaVersion', 'snapshotId', 'analyzerId', 'analyzerVersion',
+    'binaryId', 'sliceId', 'functionId',
+  ]) {
+    if (!sameScalar(identity[field], raw.invalidation[field])) return false;
+    if (!sameScalar(identity[field], raw.provenance[field])) return false;
+  }
+  return true;
+}
+
+/*
+ * Hidden sret is a separate proof boundary from the enclosing return result.
+ * A register name copied onto an otherwise valid result is not enough: the
+ * pointer's input, location, profile, provenance, and invalidation records
+ * must all describe the same canonical ABI fact.  Keep this check shared by
+ * the adapter, prototype recovery, and v2 compatibility projection.
+ */
+export function canonicalAbiHiddenResult(raw, hidden) {
+  if (!canonicalAbiEvidence(raw) || !record(hidden)) return false;
+  if (abiResultInvalidState(hidden)) return false;
+  const input = hidden.input;
+  const identity = raw.abiIdentity;
+  const profile = identity.architectureProfile;
+  if (typeof input !== 'string' || !input.trim()
+    || hidden.canonicalInput !== input
+    || hidden.location !== 'register'
+    || !Number.isSafeInteger(Number(hidden.pointerBits)) || Number(hidden.pointerBits) <= 0
+    || !sameScalar(hidden.profileIdentity, profile.profileIdentity)
+    || !sameScalar(hidden.abiId, raw.abiId)
+    || !sameScalar(hidden.abiSemanticIdentity, raw.abiSemanticIdentity)) return false;
+
+  if (!record(hidden.abiIdentity) || !record(hidden.provenance) || !record(hidden.invalidation)) return false;
+  const identityFields = [
+    ['id', identity.id],
+    ['semanticVersion', identity.semanticVersion],
+    ['semanticIdentity', identity.semanticIdentity],
+    ['architectureId', identity.architectureId],
+    ['targetArchitecture', identity.targetArchitecture],
+    ['platform', identity.platform],
+    ['profileIdentity', identity.profileIdentity],
+    ['abiId', identity.abiId],
+    ['schemaVersion', identity.schemaVersion],
+    ['snapshotId', identity.snapshotId],
+    ['analyzerId', identity.analyzerId],
+    ['analyzerVersion', identity.analyzerVersion],
+    ['binaryId', identity.binaryId],
+    ['sliceId', identity.sliceId],
+    ['functionId', identity.functionId],
+    ['architectureProfile', profile],
+  ];
+  if (identityFields.some(([field, expected]) => field === 'architectureProfile'
+    ? !sameProfile(hidden.abiIdentity[field], expected)
+    : !sameScalar(hidden.abiIdentity[field], expected))) return false;
+  if (hidden.provenance.source !== 'canonical-abi-registry') return false;
+  const provenanceFields = [
+    ['abiId', raw.provenance.abiId],
+    ['semanticVersion', raw.provenance.semanticVersion],
+    ['semanticIdentity', raw.provenance.semanticIdentity],
+    ['architectureId', raw.provenance.architectureId],
+    ['profileIdentity', raw.provenance.profileIdentity],
+    ['targetArchitecture', raw.provenance.targetArchitecture],
+    ['platformId', raw.provenance.platformId],
+    ['schemaVersion', raw.provenance.schemaVersion],
+    ['snapshotId', raw.provenance.snapshotId],
+    ['analyzerId', raw.provenance.analyzerId],
+    ['analyzerVersion', raw.provenance.analyzerVersion],
+    ['binaryId', raw.provenance.binaryId],
+    ['sliceId', raw.provenance.sliceId],
+    ['functionId', raw.provenance.functionId],
+    ['architectureProfile', profile],
+  ];
+  if (provenanceFields.some(([field, expected]) => field === 'architectureProfile'
+    ? !sameProfile(hidden.provenance[field], expected)
+    : !sameScalar(hidden.provenance[field], expected))) return false;
+  const invalidationFields = [
+    ['abiId', raw.invalidation.abiId],
+    ['abiSemanticVersion', raw.invalidation.abiSemanticVersion],
+    ['abiSemanticIdentity', raw.invalidation.abiSemanticIdentity],
+    ['architectureId', raw.invalidation.architectureId],
+    ['targetArchitecture', raw.invalidation.targetArchitecture],
+    ['platformId', raw.invalidation.platformId],
+    ['profileIdentity', raw.invalidation.profileIdentity],
+    ['schemaVersion', raw.invalidation.schemaVersion],
+    ['snapshotId', raw.invalidation.snapshotId],
+    ['analyzerId', raw.invalidation.analyzerId],
+    ['analyzerVersion', raw.invalidation.analyzerVersion],
+    ['binaryId', raw.invalidation.binaryId],
+    ['sliceId', raw.invalidation.sliceId],
+    ['functionId', raw.invalidation.functionId],
+    ['architectureProfile', profile],
+  ];
+  return !invalidationFields.some(([field, expected]) => field === 'architectureProfile'
+    ? !sameProfile(hidden.invalidation[field], expected)
+    : !sameScalar(hidden.invalidation[field], expected));
+}
+
+function positiveInteger(value) {
+  const number = Number(value);
+  return Number.isSafeInteger(number) && number > 0 ? number : null;
+}
+
+function nonNegativeInteger(value) {
+  const number = Number(value);
+  return Number.isSafeInteger(number) && number >= 0 ? number : null;
+}
+
+function offsetValue(value) {
+  if (value == null) return null;
+  try {
+    const offset = typeof value === 'bigint' ? value : BigInt(value);
+    return offset >= 0n ? offset : null;
+  } catch {
+    return null;
+  }
+}
+
+/*
+ * Normalize a canonical aggregate's physical pieces without filling a hole.
+ * Every physical span and position must be emitted by the canonical producer;
+ * this helper only validates and copies it.  The caller may then attach its
+ * own register aliases.
+ */
+export function normalizeAbiPieces(container, rawPieces, { defaultAbiClass = null } = {}) {
+  if (!record(container) || !Array.isArray(rawPieces) || rawPieces.length === 0) return null;
+  // Both logical width and physical span are canonical facts.  Inferring one
+  // from the other would erase ABI padding and permit a truncated aggregate
+  // to be laundered as complete.
+  if (!Object.hasOwn(container, 'bits') || !Object.hasOwn(container, 'bytes')) return null;
+  const totalBits = positiveInteger(container.bits);
+  const totalBytes = positiveInteger(container.bytes);
+  if (totalBits == null || totalBytes == null) return null;
+  const minimumBytes = Math.ceil(totalBits / 8);
+  const pieces = [];
+  const pieceIndexes = new Set();
+  const orders = new Set();
+  const ranges = [];
+  const declaredRegisters = Array.isArray(container.regs)
+    ? container.regs.filter((reg) => typeof reg === 'string' && reg.trim()).map(String)
+    : typeof container.reg === 'string' && container.reg.trim() ? [String(container.reg)] : [];
+  const declaredRegisterSet = new Set(declaredRegisters);
+  if (declaredRegisters.length !== declaredRegisterSet.size) return null;
+  const expectedClasses = Array.isArray(container.eightbyteClasses)
+    ? container.eightbyteClasses
+    : Array.isArray(container.pieceClasses) ? container.pieceClasses
+      : Array.isArray(container.registerClasses) ? container.registerClasses : null;
+  const pieceRegisters = new Set();
+  let cursor = 0;
+  let coveredBits = 0;
+
+  for (let index = 0; index < rawPieces.length; index++) {
+    const piece = rawPieces[index];
+    if (!record(piece)) return null;
+    const rawReg = piece.reg ?? piece.register ?? null;
+    const rawStackOffset = piece.stackOffset ?? piece.offset ?? null;
+    const hasRegister = typeof rawReg === 'string' && rawReg.trim().length > 0;
+    const hasStack = rawStackOffset != null;
+    if (hasRegister === hasStack) return null;
+    if (hasRegister) {
+      if (declaredRegisterSet.size > 0 && !declaredRegisterSet.has(String(rawReg))) return null;
+      pieceRegisters.add(String(rawReg));
+    }
+    const stackOffset = hasStack ? offsetValue(rawStackOffset) : null;
+    if (hasStack && stackOffset == null) return null;
+
+    // Canonical pieces must carry both logical width and physical byte span.
+    // Deriving either one here would let a malformed adapter launder a missing
+    // lane into an exact aggregate.
+    if (!Object.hasOwn(piece, 'bits') || !Object.hasOwn(piece, 'bytes')) return null;
+    const normalizedBits = positiveInteger(piece.bits);
+    const bytes = positiveInteger(piece.bytes);
+    if (normalizedBits == null || bytes == null || Math.ceil(normalizedBits / 8) > bytes) return null;
+    if (!Object.hasOwn(piece, 'abiClass')) return null;
+    const abiClass = piece.abiClass;
+    if (typeof abiClass !== 'string' || !abiClass.trim()) return null;
+
+    // Aggregate positions are evidence, not presentation defaults.  A
+    // compatibility adapter that omits any one of them cannot establish which
+    // physical lane owns which bytes, even if the array happens to be ordered.
+    if (!Object.hasOwn(piece, 'pieceIndex') || !Object.hasOwn(piece, 'order')
+      || !Object.hasOwn(piece, 'byteOffset')) return null;
+    const pieceIndex = nonNegativeInteger(piece.pieceIndex);
+    const order = nonNegativeInteger(piece.order);
+    if (pieceIndex == null || order == null || pieceIndexes.has(pieceIndex) || orders.has(order)) return null;
+    if (Object.hasOwn(piece, 'pieceIndex') && Object.hasOwn(piece, 'index')
+      && nonNegativeInteger(piece.index) !== pieceIndex) return null;
+    pieceIndexes.add(pieceIndex);
+    orders.add(order);
+
+    if (expectedClasses && !(expectedClasses.length === 1
+      && String(expectedClasses[0]).toLowerCase() === 'memory')
+      && (expectedClasses[pieceIndex] == null
+        || String(expectedClasses[pieceIndex]).toLowerCase() !== String(abiClass).toLowerCase())) return null;
+    const expectedPosition = Array.isArray(container.piecePositions)
+      ? container.piecePositions[pieceIndex]
+      : Array.isArray(container.registerPositions) ? container.registerPositions[pieceIndex] : null;
+    if (expectedPosition != null && String(expectedPosition) !== String(rawReg ?? rawStackOffset)) return null;
+
+    const byteOffset = nonNegativeInteger(piece.byteOffset);
+    if (byteOffset == null) return null;
+    const end = byteOffset + bytes;
+    if (totalBytes != null && end > totalBytes) return null;
+    if (ranges.some(([start, finish]) => byteOffset < finish && start < end)) return null;
+    ranges.push([byteOffset, end]);
+    cursor = Math.max(cursor, end);
+    coveredBits += normalizedBits;
+    pieces.push({
+      ...piece,
+      ...(hasRegister ? { reg:String(rawReg), stackOffset:undefined } : {
+        reg:null,
+        // Preserve the producer's scalar representation for compatibility
+        // (legacy stack consumers use numbers), while validating it as an
+        // exact non-negative integer above.
+        stackOffset:typeof rawStackOffset === 'bigint' ? stackOffset : Number(stackOffset),
+      }),
+      abiClass,
+      pieceIndex,
+      order,
+      bits:normalizedBits,
+      bytes,
+      byteOffset,
+    });
+  }
+
+  const expectedIndexes = Array.from({ length:pieces.length }, (_value, index) => index);
+  if (pieces.some((piece) => !expectedIndexes.includes(piece.pieceIndex))) return null;
+  const orderedPieces = pieces.slice().sort((left, right) => left.order - right.order);
+  if (orderedPieces.some((piece, index) => piece.order !== index || piece.pieceIndex !== index)) return null;
+  if (expectedClasses && expectedClasses.length !== pieces.length
+    && !(expectedClasses.length === 1 && String(expectedClasses[0]).toLowerCase() === 'memory')) return null;
+  const expectedPositions = Array.isArray(container.piecePositions)
+    ? container.piecePositions
+    : Array.isArray(container.registerPositions) ? container.registerPositions : null;
+  if (expectedPositions && expectedPositions.length !== pieces.length) return null;
+  if (declaredRegisterSet.size > 0 && pieceRegisters.size !== declaredRegisterSet.size) return null;
+  // A physical aggregate layout is ordered byte coverage, not merely a list
+  // of distinct destinations.  Reject holes even when the summed widths look
+  // large enough; otherwise a consumer could mistake an absent lane for
+  // padding or silently fabricate its value.
+  const orderedRanges = ranges.slice().sort(([left], [right]) => left - right);
+  let coveredEnd = 0;
+  for (const [start, end] of orderedRanges) {
+    if (start !== coveredEnd) return null;
+    coveredEnd = end;
+  }
+  if (coveredEnd !== cursor || (totalBytes != null && coveredEnd !== totalBytes)) return null;
+  if (totalBits != null && coveredBits !== totalBits) return null;
+  if (minimumBytes != null && coveredEnd < minimumBytes) return null;
+  return pieces;
+}

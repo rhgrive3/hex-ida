@@ -225,22 +225,32 @@ export function classifySysVAMD64Arguments(instruction, options = {}) {
           if (abiClass === 'INTEGER') {
             const reg = INTEGER_ARGUMENT_REGISTERS[integerIndex++];
             appendRegisterSource(srcs, seenSources, reg, 64, { purpose:'aggregate-eightbyte' });
-            pieces.push({ index:pieceIndex, abiClass, reg, bits:Math.min(64, Math.max(0, classified.bits - pieceIndex * 64)) || 64 });
+            const pieceBits = Math.min(64, Math.max(1, classified.bits - pieceIndex * 64));
+            pieces.push({ index:pieceIndex, pieceIndex, order:pieceIndex, abiClass, reg,
+              bits:pieceBits, bytes:8, byteOffset:pieceIndex * 8 });
           } else if (abiClass === 'SSE') {
             activeVectorRegister = VECTOR_ARGUMENT_REGISTERS[vectorIndex++];
             appendRegisterSource(srcs, seenSources, activeVectorRegister, 128, { purpose:'aggregate-eightbyte' });
-            pieces.push({ index:pieceIndex, abiClass, reg:activeVectorRegister, bits:64, byteOffset:0 });
+            const pieceBits = Math.min(64, Math.max(1, classified.bits - pieceIndex * 64));
+            pieces.push({ index:pieceIndex, pieceIndex, order:pieceIndex, abiClass, reg:activeVectorRegister, bits:pieceBits, bytes:8, byteOffset:pieceIndex * 8 });
           } else if (abiClass === 'SSEUP') {
-            pieces.push({ index:pieceIndex, abiClass, reg:activeVectorRegister, bits:64, byteOffset:8 });
+            const pieceBits = Math.min(64, Math.max(1, classified.bits - pieceIndex * 64));
+            pieces.push({ index:pieceIndex, pieceIndex, order:pieceIndex, abiClass, reg:activeVectorRegister, bits:pieceBits, bytes:8, byteOffset:pieceIndex * 8 });
           }
         }
-        arguments_.push({ index, location:'registers', regs:Array.from(new Set(pieces.map((piece) => piece.reg))), pieces, abiClass:'aggregate-eightbytes', pointer:classified.pointer, bits:classified.bits });
+        arguments_.push({ index, location:'registers', regs:Array.from(new Set(pieces.map((piece) => piece.reg))), pieces, abiClass:'aggregate-eightbytes', pointer:classified.pointer, bits:classified.bits, bytes:aggregateClasses.length * 8 });
         stackArgsMayContainPointers ||= classified.pointer;
         return;
       }
       const bytes = align(Math.max(8, Math.ceil(classified.bits / 8)), 8);
       stackOffset = align(stackOffset, Math.min(16, Math.max(8, Number(parameter?.alignment || 8))));
-      const entry = { index, location:'stack', offset:stackOffset, offsetBase:'incoming-stack-arguments', calleeEntryOffset:8 + stackOffset, bytes, abiClass:'aggregate-memory', pointer:classified.pointer, bits:classified.bits, eightbyteClasses:aggregateClasses };
+      const pieces = Array.from({ length:Math.max(1, Math.ceil(bytes / 8)) }, (_unused, pieceIndex) => ({
+        index:pieceIndex, pieceIndex, order:pieceIndex,
+        stackOffset:stackOffset + pieceIndex * 8,
+        bits:Math.min(64, Math.max(1, classified.bits - pieceIndex * 64)),
+        bytes:8, byteOffset:pieceIndex * 8, abiClass:'aggregate-memory',
+      }));
+      const entry = { index, location:'stack', offset:stackOffset, offsetBase:'incoming-stack-arguments', calleeEntryOffset:8 + stackOffset, bytes, abiClass:'aggregate-memory', pointer:classified.pointer, bits:classified.bits, eightbyteClasses:aggregateClasses, pieces };
       arguments_.push(entry); stackArguments.push(entry); stackOffset += bytes; stackArgsMayContainPointers ||= classified.pointer;
       return;
     }
@@ -273,9 +283,18 @@ export function classifySysVAMD64Arguments(instruction, options = {}) {
         integerIndex += 2;
         const pieces = regs.map((reg, pieceIndex) => {
           appendRegisterSource(srcs, seenSources, reg, 64, { purpose:'integer-eightbyte' });
-          return { index:pieceIndex, abiClass:'INTEGER', reg, bits:64 };
+          return {
+            index:pieceIndex,
+            pieceIndex,
+            order:pieceIndex,
+            abiClass:'INTEGER',
+            reg,
+            bits:64,
+            bytes:8,
+            byteOffset:pieceIndex * 8,
+          };
         });
-        arguments_.push({ index, location:'registers', regs, pieces, abiClass:'integer-eightbytes', pointer:false, bits:128 });
+        arguments_.push({ index, location:'registers', regs, pieces, abiClass:'integer-eightbytes', pointer:false, bits:128, bytes:16 });
       } else {
         stackOffset = align(stackOffset, 16);
         const entry = {
@@ -290,6 +309,10 @@ export function classifySysVAMD64Arguments(instruction, options = {}) {
           eightbyteClasses:['INTEGER','INTEGER'],
           pointer:false,
           bits:128,
+          pieces:[
+            { index:0, pieceIndex:0, order:0, abiClass:'INTEGER', stackOffset:stackOffset, bits:64, bytes:8, byteOffset:0 },
+            { index:1, pieceIndex:1, order:1, abiClass:'INTEGER', stackOffset:stackOffset + 8, bits:64, bytes:8, byteOffset:8 },
+          ],
         };
         stackArguments.push(entry);
         arguments_.push(entry);
@@ -400,15 +423,18 @@ function classifyReturn(prototype, options = {}) {
   if (prototype.aggregate === true || /aggregate|struct|union|record|array/.test(`${type} ${abiClass}`)) {
     const classes = explicitEightbyteClasses({ eightbyteClasses:options.returnEightbyteClasses ?? prototype.returnEightbyteClasses ?? prototype.eightbyteClasses });
     if (!classes || classes[0] === 'MEMORY') return { reg:null, partial:true, reason:'sysv-amd64-aggregate-return-classification-not-proven' };
+    const returnBits = Number(prototype.returnBits || options.returnBits || classes.length * 64);
+    if (!Number.isSafeInteger(returnBits) || returnBits <= 0) return { reg:null, partial:true, reason:'sysv-amd64-aggregate-return-width-not-proven' };
     const pieces = [];
     let integerIndex = 0, vectorIndex = 0, activeVectorRegister = null;
     for (let index = 0; index < classes.length; index++) {
       const current = classes[index];
-      if (current === 'INTEGER') pieces.push({ index, abiClass:current, reg:['rax','rdx'][integerIndex++], bits:64 });
-      else if (current === 'SSE') { activeVectorRegister = ['xmm0','xmm1'][vectorIndex++]; pieces.push({ index, abiClass:current, reg:activeVectorRegister, bits:64, byteOffset:0 }); }
-      else if (current === 'SSEUP') pieces.push({ index, abiClass:current, reg:activeVectorRegister, bits:64, byteOffset:8 });
+      const pieceBits = Math.min(64, Math.max(1, returnBits - index * 64));
+      if (current === 'INTEGER') pieces.push({ index, pieceIndex:index, order:index, abiClass:current, reg:['rax','rdx'][integerIndex++], bits:pieceBits, bytes:Math.ceil(pieceBits / 8), byteOffset:index * 8 });
+      else if (current === 'SSE') { activeVectorRegister = ['xmm0','xmm1'][vectorIndex++]; pieces.push({ index, pieceIndex:index, order:index, abiClass:current, reg:activeVectorRegister, bits:pieceBits, bytes:Math.ceil(pieceBits / 8), byteOffset:index * 8 }); }
+      else if (current === 'SSEUP') pieces.push({ index, pieceIndex:index, order:index, abiClass:current, reg:activeVectorRegister, bits:pieceBits, bytes:Math.ceil(pieceBits / 8), byteOffset:index * 8 });
     }
-    return { reg:pieces[0]?.reg || null, regs:Array.from(new Set(pieces.map((piece) => piece.reg))), pieces, bits:Number(prototype.returnBits || options.returnBits || classes.length * 64), aggregate:true };
+    return { reg:pieces[0]?.reg || null, regs:Array.from(new Set(pieces.map((piece) => piece.reg))), pieces, bits:returnBits, bytes:pieces.length * 8, aggregate:true };
   }
   const vector = prototype.vector === true || options.vector === true || /vector|simd|sse|__m(?:128|256|512)/.test(`${type} ${abiClass}`);
   const floating = vector || /(^|\s)(?:float|double)(?:\s|$)|\bfp\b/.test(`${type} ${abiClass}`);
@@ -425,10 +451,10 @@ function classifyReturn(prototype, options = {}) {
   const bits = Math.min(128, saneBits);
   if (!floating && bits === 128) {
     const pieces = [
-      { index:0, abiClass:'INTEGER', reg:'rax', bits:64 },
-      { index:1, abiClass:'INTEGER', reg:'rdx', bits:64 },
+      { index:0, pieceIndex:0, order:0, abiClass:'INTEGER', reg:'rax', bits:64, bytes:8, byteOffset:0 },
+      { index:1, pieceIndex:1, order:1, abiClass:'INTEGER', reg:'rdx', bits:64, bytes:8, byteOffset:8 },
     ];
-    return { reg:'rax', regs:['rax','rdx'], pieces, bits:128, abiClass:'integer-eightbytes' };
+    return { reg:'rax', regs:['rax','rdx'], pieces, bits:128, bytes:16, abiClass:'integer-eightbytes' };
   }
   if (floating) return { reg:'xmm0', bits };
   if (type || abiClass || options.returnsValue === true || prototype.returnsValue === true) return { reg:'rax', bits };

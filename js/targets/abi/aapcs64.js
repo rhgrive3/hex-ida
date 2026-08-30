@@ -42,6 +42,19 @@ function normalizeAAPCS64StackLayout(result, params) {
       bits: argument.bits,
       alignment: argument.alignment,
       mayContainPointers: argument.mayContainPointers,
+      // The wrapper deliberately spills the whole aggregate when the core
+      // allocator reaches x7.  Preserve that canonical memory layout as one
+      // explicit physical piece rather than making consumers reconstruct it
+      // from total width and a stack offset.
+      pieces: [{
+        pieceIndex: 0,
+        order: 0,
+        stackOffset: argument.offset,
+        bits: argument.bits,
+        bytes: argument.bytes,
+        byteOffset: 0,
+        abiClass: 'aggregate',
+      }],
       possible: false,
       mustUse: true,
     };
@@ -56,6 +69,12 @@ function normalizeAAPCS64StackLayout(result, params) {
     cursor = Math.ceil(cursor / alignment) * alignment;
     argument.offset = cursor;
     argument.alignment = alignment;
+    if (argument.abiClass === 'aggregate' && Array.isArray(argument.pieces)) {
+      argument.pieces = argument.pieces.map((piece) => ({
+        ...piece,
+        stackOffset: argument.offset + Number(piece.byteOffset || 0),
+      }));
+    }
     stackArguments.push(argument);
     cursor += Number(argument.bytes || 0);
   }

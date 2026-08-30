@@ -1,5 +1,8 @@
 import { analyzeSemanticDominance, createSemanticCfg } from '../cfg/index.js';
 import { analyzeGraph } from '../../controlflow.js';
+import {
+  abiResultInvalidState, canonicalAbiEvidence, canonicalAbiHiddenResult, normalizeAbiPieces,
+} from '../../targets/abi/evidence.js';
 
 /** Internal architecture-neutral helpers for the Semantic IR v2 -> v1 projection. */
 
@@ -12,21 +15,8 @@ export const V1_VK = Object.freeze({ ARG: 'arg', CONST: 'const', DEF: 'def', PHI
 export const V1_MK = Object.freeze({ STACK: 'stack', FIELD: 'field', GLOBAL: 'global', UNKNOWN: 'unknown' });
 
 const CONTROL_KINDS = new Set(['branch', 'conditional-branch', 'switch', 'return', 'trap', 'unknown-control-effect']);
-const NON_EXACT_ABI_STATES = new Set([
-  'stale', 'malformed', 'conflict', 'cancelled', 'canceled', 'deadline',
-  'deadline-exceeded', 'truncated', 'budget', 'budget-exhausted',
-  'resource-exhausted', 'unsupported', 'invalid', 'failed', 'error',
-  'indirect-call', 'ambiguous', 'unknown', 'incomplete', 'partial', 'not-proven',
-]);
-
 function abiNonExact(raw) {
-  if (raw?.partial === true || raw?.unsupported === true) return true;
-  const values = [
-    raw?.status, raw?.analysisStatus, raw?.completeness, raw?.evidenceStatus,
-    raw?.invalidation?.status, raw?.invalidation?.state, raw?.invalidation?.completeness,
-    raw?.abiInvalidation?.status, raw?.abiInvalidation?.state, raw?.abiInvalidation?.completeness,
-  ];
-  return values.some((value) => NON_EXACT_ABI_STATES.has(String(value ?? '').trim().toLowerCase().replace(/_/g, '-')));
+  return raw?.partial === true || raw?.unsupported === true || !!abiResultInvalidState(raw);
 }
 
 export function safeBigInt(value) {
@@ -100,8 +90,95 @@ function stateIdentityByVariableKey(ir, ssa) {
   return map;
 }
 
+function normalizedReturnLocations(raw) {
+  if (!Array.isArray(raw.returnLocations) || raw.returnLocations.length === 0) return [];
+  if (raw.returnLocations.some((location) => !location || typeof location !== 'object')) return null;
+  const indirect = raw.returnIndirect === true || raw.returnLocations.some((location) => location.kind === 'indirect');
+  if (indirect) {
+    if (raw.returnLocations.length !== 1 || raw.returnIndirect !== true) return null;
+    const location = raw.returnLocations[0];
+    const hidden = raw.returnHiddenResultPointer;
+    if (location.kind !== 'indirect' || typeof location.reg !== 'string' || !location.reg
+      || !hidden || typeof hidden !== 'object' || hidden.input !== location.reg
+      || !canonicalAbiHiddenResult(raw, hidden)) return null;
+    const indirectBits = Number(location.bits ?? hidden.pointerBits);
+    const indirectBytes = Number(location.bytes ?? 8);
+    if (!Number.isSafeInteger(indirectBits) || indirectBits <= 0
+      || !Number.isSafeInteger(indirectBytes) || indirectBytes <= 0) return null;
+    return [{
+      ...location,
+      bits:indirectBits,
+      bytes:indirectBytes,
+      aggregate:true,
+    }];
+  }
+  const aggregate = raw.returnAggregate === true || raw.returnLocations.length > 1
+    || raw.returnLocations.some((location) => location.aggregate === true);
+  if (!aggregate) {
+    if (raw.returnLocations.length !== 1) return null;
+    const location = raw.returnLocations[0];
+    if (location.kind !== 'register' || typeof location.reg !== 'string' || !location.reg
+      || location.aggregate === true || !Number.isSafeInteger(Number(location.bits))
+      || Number(location.bits) <= 0) return null;
+    const scalarBits = Number(location.bits);
+    const scalarBytes = Number(location.bytes ?? Math.ceil(scalarBits / 8));
+    if (!Number.isSafeInteger(scalarBytes) || scalarBytes <= 0) return null;
+    return [{
+      ...location,
+      bits:scalarBits,
+      bytes:scalarBytes,
+      aggregate:false,
+    }];
+  }
+  const pieces = raw.returnLocations.map((location, index) => {
+    if (!['register','stack'].includes(location.kind)) return null;
+    return {
+      ...(location.kind === 'register' ? { reg:location.reg } : { stackOffset:location.stackOffset }),
+      abiClass:location.abiClass,
+      pieceIndex:location.pieceIndex ?? index,
+      order:location.order ?? index,
+      bits:location.bits,
+      bytes:location.bytes,
+      byteOffset:location.byteOffset,
+    };
+  });
+  const normalized = normalizeAbiPieces({
+    bits:raw.returnBits,
+    bytes:raw.returnBytes,
+    regs:raw.returnLocations.filter((location) => location.kind === 'register').map((location) => location.reg),
+    abiClass:raw.returnAggregate === true ? 'aggregate-piece' : raw.abiClass,
+  }, pieces, { defaultAbiClass:'aggregate-piece' });
+  if (!normalized) return null;
+  if (Array.isArray(raw.returnPieces)) {
+    const rawNormalized = normalizeAbiPieces({
+      bits:raw.returnBits,
+      bytes:raw.returnBytes,
+      regs:raw.returnLocations.filter((location) => location.kind === 'register').map((location) => location.reg),
+      abiClass:raw.returnAggregate === true ? 'aggregate-piece' : raw.abiClass,
+    }, raw.returnPieces, { defaultAbiClass:'aggregate-piece' });
+    if (!rawNormalized || rawNormalized.length !== normalized.length
+      || rawNormalized.some((piece, index) => piece.reg !== normalized[index].reg
+        || piece.stackOffset !== normalized[index].stackOffset
+        || piece.bits !== normalized[index].bits
+        || piece.bytes !== normalized[index].bytes
+        || piece.byteOffset !== normalized[index].byteOffset
+        || piece.abiClass !== normalized[index].abiClass)) return null;
+  }
+  return normalized.map((piece) => ({
+    kind:piece.reg ? 'register' : 'stack',
+    ...(piece.reg ? { reg:piece.reg } : { stackOffset:piece.stackOffset }),
+    abiClass:piece.abiClass,
+    pieceIndex:piece.pieceIndex,
+    order:piece.order,
+    bits:piece.bits,
+    bytes:piece.bytes,
+    byteOffset:piece.byteOffset,
+    aggregate:true,
+  }));
+}
+
 function normalizeAbiResult(raw) {
-  if (!raw || typeof raw !== 'object') return null;
+  if (!raw || typeof raw !== 'object' || !canonicalAbiEvidence(raw)) return null;
   const rawCallArguments = Array.isArray(raw.callArguments) ? raw.callArguments
     : Array.isArray(raw.arguments) ? raw.arguments : null;
   const nonExact = abiNonExact(raw);
@@ -111,16 +188,16 @@ function normalizeAbiResult(raw) {
   // A partial/stale result may contain a producer's provisional locations.
   // Dropping every physical placement at this boundary prevents a legacy
   // scalar field from laundering incomplete canonical ABI evidence.
-  const returnLocations = nonExact ? [] : Array.isArray(raw.returnLocations) ? raw.returnLocations : [];
+  const candidateReturnLocations = nonExact ? [] : normalizedReturnLocations(raw);
+  const returnLocations = candidateReturnLocations == null ? [] : candidateReturnLocations;
   const hasAggregateReturn = raw.returnAggregate === true || raw.returnIndirect === true
     || (Array.isArray(raw.returnPieces) && raw.returnPieces.length > 1)
-    || returnLocations.length > 1;
+    || returnLocations.length > 1
+    || returnLocations.some((location) => location.aggregate === true);
   const scalarReturnLocation = !hasAggregateReturn && returnLocations.length === 1
     && returnLocations[0]?.kind === 'register'
     && returnLocations[0]?.aggregate !== true
     ? returnLocations[0].reg : null;
-  const fallbackScalarReturn = !nonExact && !hasAggregateReturn && returnLocations.length === 0
-    && raw.returnReg != null ? String(raw.returnReg) : null;
   return {
     callArguments,
     stackArguments: nonExact ? null : Array.isArray(raw.stackArguments) ? raw.stackArguments : null,
@@ -131,7 +208,7 @@ function normalizeAbiResult(raw) {
     // A legacy scalar field cannot represent an aggregate or an indirect
     // result.  Never let a producer's first-register convenience field erase
     // the complete canonical location list.
-    returnReg:nonExact ? null : returnLocations.length ? scalarReturnLocation : fallbackScalarReturn,
+    returnReg:nonExact ? null : scalarReturnLocation,
     returnBits: nonExact ? null : raw.returnBits == null ? null : Number(raw.returnBits),
     returnEvidence:nonExact ? null : raw.returnEvidence ?? null,
     returnLocations,
