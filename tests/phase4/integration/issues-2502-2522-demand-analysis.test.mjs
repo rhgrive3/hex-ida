@@ -101,4 +101,8 @@ function testCanonicalWiring() {
   }
 }
 
-await testMachOSSelectedSliceSingleFlight?.();
+await testMachOSelectedSliceSingleFlight();
+testRecognitionInputIdentity();
+testInvestigationDependencyPlan();
+testCanonicalWiring();
+console.log('issues-2502-2522-demand-analysis: PASS');
