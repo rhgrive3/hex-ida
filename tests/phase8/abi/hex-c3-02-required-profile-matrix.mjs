@@ -30,10 +30,13 @@ function classifyReturn(abi, prototype) {
 function value(id, reg) { return { id, reg, uses:[{}] }; }
 
 function recover(abi, registers, types = {}, opts = {}) {
+  const adapterOptions = abi.id === 'darwin-arm64'
+    ? { architecture:'arm64', platform:'darwin' }
+    : {};
   return recoverFunctionPrototype(
     { args:new Map(registers.map((reg, index) => [reg, value(index + 1, reg)])), instructions:[] },
     { values:new Map(), ...types },
-    { ...opts, abiAdapter:semanticAbiAdapter(abi) },
+    { ...opts, abiAdapter:semanticAbiAdapter(abi, adapterOptions) },
   );
 }
 
