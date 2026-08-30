@@ -219,8 +219,8 @@ function readForm(cursor, form, unit, sections, implicitConst) {
     case DW_FORM.string: {
       const start = cursor.offset;
       let end = start;
-      while (end < cursor.bytes.length && cursor.bytes[end] !== 0) end += 1;
-      if (end === cursor.bytes.length) return { value: null, unsupported: true, fatal: true };
+      while (end < cursor.limit && cursor.bytes[end] !== 0) end += 1;
+      if (end === cursor.limit) throw new RangeError('dwarf-read-past-limit');
       const text = new TextDecoder('utf8').decode(cursor.bytes.subarray(start, end));
       cursor.offset = end + 1;
       return { value: text };
@@ -420,6 +420,11 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET) {
     units.push(unit);
     cursor.offset = unitEnd;
     cursor.limit = info.length;   // the unit-end advance itself is not unit-local
+  }
+
+  if (complete && cursor.offset < info.length) {
+    diagnostics.push(`truncated compilation unit at 0x${cursor.offset.toString(16)}`);
+    complete = false;
   }
 
   return { dies, units, diagnostics, complete };
