@@ -5,5 +5,7 @@
 export * from './panels-base.js';
 export { showFunctions, showFunctionSummary } from './ui/panels/function-analysis.js';
 export { showStrings, showXrefs } from './ui/panels/navigation.js';
+export { showField } from './ui/panels/field-access.js';
+export { showDataTables } from './ui/panels/schema-recovery.js';
 export { showSearch } from './ui/panels/search.js';
 export { showCandidates, showOverview } from './ui/panels/investigation.js';

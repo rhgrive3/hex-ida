@@ -2,6 +2,7 @@ import { Backend } from './backend.js';
 import { SymbolIndex } from './symbols.js';
 import { createHexProject, exportHexProject, importHexProject, serializeHexProject, parseHexProject } from './project/index.js';
 import { runDiffInWorker } from './diff/runtime.js';
+import { createCompactFunctionSet, demoteLowInformationAbsenceClaims } from './diff/compact-function-set.js';
 import { stripSecrets } from './ai/session-core/index.js';
 
 const LOCAL_PREFIX='hex.project.v1.';
@@ -295,7 +296,7 @@ export class ProductWorkspace{
       const hash=await other.ensureContentHash(null,signal);throwIfAborted(signal);assertCurrent();
       const result=await other.analyze(sliceIndex,{signal});throwIfAborted(signal);assertCurrent();
       const symbols=new SymbolIndex({...result,regions:slice?.regions||[]});
-      const functions=functionsFromSymbols(symbols);assertCurrent();
+      const functions=createCompactFunctionSet(symbols,arch,MAX_DIFF_FUNCTIONS);assertCurrent();
       const previous=this.baseline;
       this.baseline={file,backend:other,ownedBackend,info,sliceIndex,slice,architecture:arch,hash,symbols,functions,complete:functions.complete===true};
       if(previous?.ownedBackend&&previous.backend!==other)previous.backend?.dispose?.();
@@ -313,15 +314,16 @@ export class ProductWorkspace{
       throwIfAborted(options.signal);
       try{await this.app.ensureRecognition?.({maxFunctions:MAX_DIFF_FUNCTIONS,knowledgeLimit:0,signal:options.signal});}catch(error){if(options.signal?.aborted)throwIfAborted(options.signal);/* symbol fallback remains valid */}
       throwIfAborted(options.signal);assertCurrent();
-      const current=currentDiffFunctions(this.app), before=baseline.functions;
-      const result=await runDiffInWorker(before,current,{mode:'fast',signal:options.signal,threshold:options.threshold??0.62,matchBudget:options.matchBudget||{maxCandidateEvaluations:1500000,maxEdges:300000,maxComponentNodes:4096,maxComponentEdges:65536}});
+      const current=createCompactFunctionSet(this.app?.symbols,this.identity?.metadata?.architecture,MAX_DIFF_FUNCTIONS), before=baseline.functions;
+      let result=await runDiffInWorker(before,current,{mode:'fast',signal:options.signal,threshold:options.threshold??0.62,matchBudget:options.matchBudget||{maxCandidateEvaluations:1500000,maxEdges:300000,maxComponentNodes:4096,maxComponentEdges:65536}});
       assertCurrent();
+      result=demoteLowInformationAbsenceClaims(result);
       const inputsComplete=before.complete===true&&current.complete===true;
-      result.completeness={complete:inputsComplete&&result.truncated!==true,reasons:[],baseline:{complete:before.complete===true,total:before.total,scanned:before.scanned,reason:before.truncationReason},current:{complete:current.complete===true,total:current.total,scanned:current.scanned,reason:current.truncationReason}};
+      result.completeness={complete:false,reasons:['low-information-symmetric-profile'],evidenceProfile:before.evidenceProfile,evidenceSymmetric:true,baseline:{complete:before.complete===true,total:before.total,scanned:before.count,reason:before.truncationReason},current:{complete:current.complete===true,total:current.total,scanned:current.count,reason:current.truncationReason}};
       if(!before.complete)result.completeness.reasons.push('baseline-function-set-incomplete');
       if(!current.complete)result.completeness.reasons.push('current-function-set-incomplete');
       if(result.truncated)result.completeness.reasons.push('matcher-truncated');
-      result.provenance={baselineHash:baseline.hash,currentHash:this.identity?.hash||null,architecture:baseline.architecture,currentArchitecture:this.identity?.metadata?.architecture||null,baselineName:baseline.info?.name||baseline.file?.name||null,currentName:this.identity?.metadata?.name||null,complete:result.completeness.complete};
+      result.provenance={baselineHash:baseline.hash,currentHash:this.identity?.hash||null,architecture:baseline.architecture,currentArchitecture:this.identity?.metadata?.architecture||null,baselineName:baseline.info?.name||baseline.file?.name||null,currentName:this.identity?.metadata?.name||null,complete:false,functionSetsComplete:inputsComplete,fingerprintProfile:before.evidenceProfile,evidenceSymmetric:true};
       assertCurrent();
       this.diffState=result;return result;
     })().finally(()=>{if(this.busy===task)this.busy=null;});

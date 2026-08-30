@@ -1,5 +1,5 @@
 /* Compatibility bootstrap only. Canonical product UI lives under js/ui/*. */
-import { installProductUI } from './ui/product.js';
+import { installHardenedProductUI as installProductUI } from './ui/product-hardened.js';
 import { installViewerDragReturnGuard } from './ui/viewer-gesture-guard.js';
 import { closeMenu } from './ui.js';
 import { installDemandDrivenAnalysis } from './analysis/demand-driven-runtime.js';
