@@ -21,6 +21,18 @@ jobs:
         run: npm ci
       - name: Apply semantic repair
         run: python .github/reopened-route-diff-repair.py
+      - name: Update route lifecycle regression contract
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('tests/ui/integration-hardening.mjs')
+          s=p.read_text()
+          old="assert.equal(product.includes('renderSecondaryRoute(app, router, route)'), true, 'settings/help/learn must render as canonical routes');"
+          new="assert.equal(product.includes('renderSecondaryRoute(app, router, route, routeContext)'), true, 'settings/help/learn must render as canonical routes under the router-owned task scope');"
+          if old not in s: raise SystemExit('secondary route assertion changed unexpectedly')
+          p.write_text(s.replace(old,new,1))
+          PY
       - name: Focused regressions
         run: node tests/reopened-route-diff-contracts.mjs
       - name: Existing route and diff tests
