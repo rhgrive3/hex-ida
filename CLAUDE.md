@@ -22,6 +22,17 @@ When I ask a question, answer it. Do not implement it.
 
 When in doubt, assume it's a question. Answer first. Act when I say go.
 
+## Low-token test execution
+
+For broad tests, do not stream thousands of successful test lines into the model context.
+
+- Full repository gate: `node scripts/run-quiet-command.mjs --label check -- npm run check`
+- Full regression chain: `node scripts/run-quiet-command.mjs --label test -- npm test`
+- Shared Phase 8–10 runners are quiet by default; use the whole-command wrapper for other broad suites.
+- On failure, use the bounded failure tail first. Open the retained full log only when the tail is insufficient.
+- Rerun only the smallest failing command with `HEX_TEST_OUTPUT=verbose` when full diagnostics are needed.
+- Quiet mode changes output only. Never weaken, skip, replace, or shrink canonical tests, verifiers, denominators, exact-head checks, or release gates to save tokens.
+
 ## Graft — GitHub Codespaces only
 
 Use Graft **only** when running inside GitHub Codespaces.

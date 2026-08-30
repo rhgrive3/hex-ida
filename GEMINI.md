@@ -1,3 +1,14 @@
+## Low-token test execution
+
+For broad test runs, keep successful output out of model context.
+
+- Full repository gate: `node scripts/run-quiet-command.mjs --label check -- npm run check`
+- Full regression chain: `node scripts/run-quiet-command.mjs --label test -- npm test`
+- Shared Phase 8–10 runners are quiet by default; use the whole-command wrapper for other broad suites.
+- Read the bounded failure tail first; inspect the retained full log only when needed.
+- Use `HEX_TEST_OUTPUT=verbose` only for the smallest failing command that needs full diagnostics.
+- Quiet execution changes presentation only. Do not weaken or skip canonical tests, verifiers, denominators, exact-head checks, or release gates.
+
 <!-- graft:start -->
 ## Graft — repo context graph
 
