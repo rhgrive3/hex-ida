@@ -1,0 +1,38 @@
+name: Remaining runtime closure 20260831
+on:
+  push:
+    branches: [fix/remaining-runtime-closure-20260831]
+permissions:
+  contents: write
+jobs:
+  patch-test-commit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/remaining-runtime-closure-20260831
+          fetch-depth: 0
+          persist-credentials: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Apply production and closure proof
+        run: python3 tools/patch-remaining-runtime-closure-20260831.py
+      - name: Focused closure proof
+        run: node tests/remaining-runtime-closure-20260831.mjs
+      - name: Repository regression
+        run: |
+          npm run lint --silent
+          npm run module-boundaries:test --silent
+          npm run ui:test --silent
+          npm test --silent
+      - name: Commit verified changes
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add js/appmap.js tests/remaining-runtime-closure-20260831.mjs
+          git commit -m 'fix(runtime): close remaining cancellation identity and appmap gaps'
+          git push origin HEAD:fix/remaining-runtime-closure-20260831
