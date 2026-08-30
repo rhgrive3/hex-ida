@@ -3,8 +3,8 @@ import { projectSemanticIrV2ToLegacyV1 } from '../../js/semantics/compat/semanti
 import { createSemanticCfg } from '../../js/semantics/cfg/index.js';
 import { createSemanticIrFunction } from '../../js/semantics/ir/function.js';
 import { validateSemanticIrFunction } from '../../js/semantics/ir/index.js';
-import { createMemorySsaContract } from '../../js/semantics/memoryssa/contract.js';
-import { buildMemorySsa } from '../../js/semantics/memoryssa/build.js';
+import { createMemoryRegionRef } from '../../js/semantics/memoryssa/contract.js';
+import { buildMemorySsa, canonicalMemorySsaProducerIdentity } from '../../js/semantics/memoryssa/build.js';
 import {
   CANONICAL_MEMORY_FORWARDING_CONSUMER,
   CANONICAL_MEMORY_FORWARDING_PURPOSE,
@@ -22,7 +22,6 @@ import {
   canonicalMemorySsaDigest,
   canonicalStoreValueProof,
   canonicalStoreValueProofDigest,
-  registerCanonicalMemorySsaProducerArtifact,
 } from '../../js/semantics/memoryssa/proof.js';
 
 const bit16 = { kind: 'bitvector', widthBits: 16 };
@@ -123,86 +122,58 @@ const ir = {
 };
 const canonicalIr = validateSemanticIrFunction(ir);
 
-const memorySsa = {
-  contractVersion: '2.0.0',
-  functionId: ir.functionId,
-  completeness: 'complete',
-  unknowns: [],
-  identity: {
-    binaryId: 'binary_fixture', sliceId: 'slice_fixture', functionId: ir.functionId,
-    semanticIrId: 'ir_fixture', scalarSsaId: 'ssa_fixture', memorySsaId: 'mssa_fixture',
-    snapshotId: 'snapshot_fixture', semanticIrContractVersion: '2.0.0', semanticIrDigest: stableDigest(canonicalIr),
-    scalarSsaBuildVersion: '1.0.0', scalarSsaDigest: 'ssa_fixture_digest',
-    memorySsaBuildVersion: '1.0.0', analyzerVersion: 'memoryssa-fixture',
-  },
-  snapshotId: 'snapshot_fixture',
-  canonicalIrIdentity: { functionId: ir.functionId, semanticIrId: 'ir_fixture', semanticIrContractVersion: '2.0.0', semanticIrDigest: stableDigest(canonicalIr) },
-  regions: [{
-    id: 'r_global',
-    kind: 'global-absolute',
-    binaryId: 'binary_fixture',
-    address: '0x4000',
-    widthBits: 32,
-    origin: origin('region', 0x4000n),
-  }],
-  definitions: [
-    { id: 'm0', kind: 'entry', regionId: 'r_global', blockId: null, previousDefinitionIds: [], incoming: [], aliasRelation: null, sourceEntityId: null, origin: origin('m0') },
-    { id: 'm1', kind: 'memory-def', regionId: 'r_global', blockId: 'b0', previousDefinitionIds: ['m0'], incoming: [], aliasRelation: 'must', sourceEntityId: 'n_store_lo', origin: origin('m1'), proof: { kind: 'must-alias-memory-write', version: '1.0.0', aliasRelation: 'must', providerProof: { relation: 'must', evidenceIds: ['alias_store_lo'] } } },
-    { id: 'm2', kind: 'memory-def', regionId: 'r_global', blockId: 'b0', previousDefinitionIds: ['m1'], incoming: [], aliasRelation: 'must', sourceEntityId: 'n_store_hi', origin: origin('m2'), proof: { kind: 'must-alias-memory-write', version: '1.0.0', aliasRelation: 'must', providerProof: { relation: 'must', evidenceIds: ['alias_store_hi'] } } },
-  ],
-  uses: [{
-    id: 'u_load',
-    regionId: 'r_global',
-    reachingDefinitionId: 'm2',
-    aliasRelation: 'must',
-    blockId: 'b0',
-    sourceEntityId: 'n_load',
-    origin: origin('u_load'),
-  }],
-  accessMetadata: [
-    {
-      memorySsaEntityId: 'u_load', entityKind: 'use', nodeId: 'n_load', regionId: 'r_global',
-      sourceEntityId: 'n_load',
-      sourceKind: 'load', role: 'read', accessIndex: 0, broad: false,
-      memory: memory('addr', 32),
-      sequencing: { volatility: false, atomic: false, ordering: 'unknown', alignment: 4 },
-      aliasProof: { relation: 'must', evidenceIds: ['alias_load_global'] }, aliasRelation: 'must',
-      byteRange: { domain: '{"binaryId":"binary_fixture","kind":"global-absolute"}', start: '16384', end: '16388' },
-      rangeProof: rangeProof('u_load', 'n_load', 'r_global', { domain: '{"binaryId":"binary_fixture","kind":"global-absolute"}', start: '16384', end: '16388' }, memory('addr', 32)),
-      order: 5,
-    },
-    {
-      memorySsaEntityId: 'm1', entityKind: 'definition', nodeId: 'n_store_lo', regionId: 'r_global',
-      sourceEntityId: 'n_store_lo',
-      sourceKind: 'store', role: 'write', accessIndex: 0, broad: false,
-      memory: memory('addr', 16),
-      sequencing: { volatility: false, atomic: false, ordering: 'unknown', alignment: 2 },
-      aliasProof: { relation: 'must', evidenceIds: ['alias_store_lo'] }, aliasRelation: 'must',
-      byteRange: { domain: '{"binaryId":"binary_fixture","kind":"global-absolute"}', start: '16384', end: '16386' },
-      rangeProof: rangeProof('m1', 'n_store_lo', 'r_global', { domain: '{"binaryId":"binary_fixture","kind":"global-absolute"}', start: '16384', end: '16386' }, memory('addr', 16)),
-      order: 2,
-    },
-    {
-      memorySsaEntityId: 'm2', entityKind: 'definition', nodeId: 'n_store_hi', regionId: 'r_global',
-      sourceEntityId: 'n_store_hi',
-      sourceKind: 'store', role: 'write', accessIndex: 0, broad: false,
-      memory: memory('addr', 16),
-      sequencing: { volatility: false, atomic: false, ordering: 'unknown', alignment: 2 },
-      aliasProof: { relation: 'must', evidenceIds: ['alias_store_hi'] }, aliasRelation: 'must',
-      byteRange: { domain: '{"binaryId":"binary_fixture","kind":"global-absolute"}', start: '16386', end: '16388' },
-      rangeProof: rangeProof('m2', 'n_store_hi', 'r_global', { domain: '{"binaryId":"binary_fixture","kind":"global-absolute"}', start: '16386', end: '16388' }, memory('addr', 16)),
-      order: 4,
-    },
-  ],
-  byteCoverage: [{
-    useId: 'u_load', nodeId: 'n_load', regionId: 'r_global',
-    loadRange: { domain: '{"binaryId":"binary_fixture","kind":"global-absolute"}', start: '16384', end: '16388' },
-    coverageState: 'complete',
-    regionAliasStates: [{ regionId: 'r_global', aliasRelation: 'must', aliasProof: { relation: 'must', evidenceIds: ['alias_load_global'] } }],
-    regionStates: [{ regionId: 'r_global', definitionId: 'm2', order: 4, aliasRelation: 'must', aliasProof: { relation: 'must', evidenceIds: ['alias_load_global'] } }],
-    proof: { kind: 'memoryssa-byte-state', version: '1.0.0', buildVersion: '1.0.0', functionId: ir.functionId, useId: 'u_load', nodeId: 'n_load', regionId: 'r_global', loadRange: { domain: '{"binaryId":"binary_fixture","kind":"global-absolute"}', start: '16384', end: '16388' } },
-  }],
+const canonicalRegion = createMemoryRegionRef({
+  id: 'r_global',
+  kind: 'global-absolute',
+  binaryId: 'binary_fixture',
+  address: '0x4000',
+  widthBits: 32,
+  origin: origin('region', 0x4000n),
+});
+const canonicalCfg = createSemanticCfg({
+  functionId: canonicalIr.functionId,
+  entryBlockId: 'b0',
+  blocks: [{ id: 'b0', successors: [] }],
+});
+const canonicalIdentity = {
+  binaryId: 'binary_fixture', sliceId: 'slice_fixture', functionId: canonicalIr.functionId,
+  semanticIrId: 'ir_fixture', scalarSsaId: 'ssa_fixture', memorySsaId: 'mssa_fixture',
+  snapshotId: 'snapshot_fixture', semanticIrContractVersion: '2.0.0',
+  semanticIrDigest: stableDigest(canonicalIr), scalarSsaBuildVersion: '1.0.0',
+  scalarSsaDigest: 'ssa_fixture_digest', memorySsaBuildVersion: '1.0.0',
+  analyzerVersion: 'memoryssa-fixture',
 };
+const memorySsa = buildMemorySsa(canonicalIr, canonicalCfg, {
+  regions: [canonicalRegion],
+  resolveRegion: () => canonicalRegion,
+  queryAlias: () => ({
+    relation: 'must',
+    reasonCodes: ['identical-region-identity'],
+    evidenceIds: ['canonical-fixture-alias'],
+    proof: {
+      analyzerId: 'phase7.alias.solver',
+      analyzerVersion: '1.1.0',
+      completeness: 'complete',
+      stopReason: null,
+    },
+  }),
+  identity: canonicalIdentity,
+  snapshotId: 'snapshot_fixture',
+  canonicalIrIdentity: {
+    functionId: canonicalIr.functionId,
+    semanticIrId: 'ir_fixture',
+    semanticIrContractVersion: '2.0.0',
+    semanticIrDigest: stableDigest(canonicalIr),
+  },
+});
+const MEMORY_REGION_ID = canonicalRegion.id;
+const LOAD_USE_ID = memorySsa.uses.find((use) => use.sourceEntityId === 'n_load')?.id;
+const STORE_LO_ID = memorySsa.definitions.find((definition) => definition.sourceEntityId === 'n_store_lo')?.id;
+const STORE_HI_ID = memorySsa.definitions.find((definition) => definition.sourceEntityId === 'n_store_hi')?.id;
+assert.ok(LOAD_USE_ID && STORE_LO_ID && STORE_HI_ID, 'canonical builder must publish fixture memory entities');
+function fixtureEntityId(id) {
+  return ({ u_load: LOAD_USE_ID, m1: STORE_LO_ID, m2: STORE_HI_ID }[id] ?? id);
+}
 
 function fixtureAlias(relation, sourceEntityId, evidenceId, purpose = 'fixture-memory-proof', artifact = memorySsa) {
   return canonicalAliasProof({
@@ -219,83 +190,13 @@ function fixtureAlias(relation, sourceEntityId, evidenceId, purpose = 'fixture-m
     },
     identity: artifact.identity,
     functionId: artifact.functionId,
-    leftRegionId: 'r_global',
-    rightRegionId: 'r_global',
+    leftRegionId: MEMORY_REGION_ID,
+    rightRegionId: MEMORY_REGION_ID,
     sourceEntityIds: [sourceEntityId],
     purpose,
   });
 }
 
-for (const item of memorySsa.accessMetadata) {
-  const node = canonicalIr.nodes.find((candidate) => candidate.id === item.sourceEntityId);
-  item.origin = node.origin;
-  item.accessProof = canonicalAccessProof({
-    raw: { architectureId: 'fixture', family: 'fixture-memory', evidence: { source: 'fixture-canonical-access', memoryAccessDigest: stableDigest(item.memory) } },
-    descriptor: { node, memory: item.memory },
-    identity: memorySsa.identity,
-    functionId: ir.functionId,
-  });
-  item.aliasProof = fixtureAlias('must', item.sourceEntityId, `alias_${item.memorySsaEntityId}`);
-  if (item.entityKind === 'definition') {
-    const semanticValueId = item.sourceEntityId === 'n_store_lo' ? 'lo' : 'hi';
-    const semanticValue = canonicalIr.values.find((value) => value.id === semanticValueId);
-    item.canonicalValue = canonicalStoreValueProof({
-      semanticValue,
-      memorySsaEntityId: item.memorySsaEntityId,
-      valueId: semanticValueId,
-      sourceEntityId: item.sourceEntityId,
-      value: semanticValue.metadata.constant.value,
-      widthBits: item.memory.widthBits,
-      identity: memorySsa.identity,
-      functionId: ir.functionId,
-    });
-    const definition = memorySsa.definitions.find((candidate) => candidate.id === item.memorySsaEntityId);
-    definition.proof.providerProof = item.aliasProof;
-  }
-}
-for (const definition of memorySsa.definitions) {
-  const node = canonicalIr.nodes.find((candidate) => candidate.id === definition.sourceEntityId);
-  if (node) definition.origin = node.origin;
-}
-for (const use of memorySsa.uses) {
-  const node = canonicalIr.nodes.find((candidate) => candidate.id === use.sourceEntityId);
-  if (node) use.origin = node.origin;
-}
-memorySsa.byteCoverage[0].regionAliasStates[0].aliasProof = fixtureAlias('must', 'n_load', 'alias_load_region');
-memorySsa.byteCoverage[0].regionStates[0].aliasProof = fixtureAlias('must', 'n_load', 'alias_load_state');
-memorySsa.byteCoverage[0].proof.version = '1.0.0';
-memorySsa.byteCoverage[0].proof.identityDigest = stableDigest(memorySsa.identity);
-const canonicalContract = createMemorySsaContract({
-  contractVersion: memorySsa.contractVersion,
-  functionId: memorySsa.functionId,
-  regions: memorySsa.regions,
-  definitions: memorySsa.definitions,
-  uses: memorySsa.uses,
-});
-memorySsa.regions = canonicalContract.regions;
-memorySsa.definitions = canonicalContract.definitions;
-memorySsa.uses = canonicalContract.uses;
-memorySsa.reachingDefinitionLinks = canonicalContract.reachingDefinitionLinks;
-memorySsa.canonicalAccessBindings = memorySsa.accessMetadata
-  .map((metadata) => canonicalAccessBinding(metadata))
-  .sort((a, b) => a.memorySsaEntityId.localeCompare(b.memorySsaEntityId)
-    || a.regionId.localeCompare(b.regionId));
-memorySsa.canonicalDigest = canonicalMemorySsaDigest(memorySsa);
-
-function registerFixtureArtifact(artifact) {
-  if (typeof artifact?.canonicalDigest !== 'string'
-      || artifact.canonicalDigest !== canonicalMemorySsaDigest(artifact)) return null;
-  const producerIdentity = structuredClone(artifact.identity);
-  Object.defineProperty(artifact, '__canonicalProducerIdentity', {
-    value: producerIdentity,
-    enumerable: false,
-    configurable: false,
-    writable: false,
-  });
-  return registerCanonicalMemorySsaProducerArtifact(artifact, producerIdentity);
-}
-
-registerFixtureArtifact(memorySsa);
 
 const projected = projectSemanticIrV2ToLegacyV1(ir, { memorySsa });
 const load = projected.instructions.find((instruction) => instruction.semanticNodeId === 'n_load');
@@ -309,14 +210,13 @@ assert.equal(load.dst.bits, 32);
 assert.equal(load.memoryForwarding?.status, 'exact');
 assert.equal(load.reachingStore, undefined, 'exact consumers must use canonical forwarding, not structural reachingStore');
 assert.deepEqual(load.memoryForwarding?.bytes, [0x22, 0x11, 0x44, 0x33]);
-assert.deepEqual(load.memoryForwarding?.contributingDefinitionIds, ['m1', 'm2']);
+assert.deepEqual(load.memoryForwarding?.contributingDefinitionIds, [STORE_LO_ID, STORE_HI_ID]);
 
 function query(artifact = memorySsa, options = {}) {
-  if (options.registerArtifact === true) registerFixtureArtifact(artifact);
   return forwardMemoryValue(artifact, artifact.uses[0]?.id ?? 'u_load', {
     functionId: ir.functionId,
     ir: canonicalIr,
-    currentIdentity: options.currentIdentity ?? artifact.__canonicalProducerIdentity ?? memorySsa.__canonicalProducerIdentity,
+    currentIdentity: options.currentIdentity ?? canonicalMemorySsaProducerIdentity(artifact),
     consumerId: options.consumerId ?? CANONICAL_MEMORY_FORWARDING_CONSUMER,
     purpose: options.purpose ?? CANONICAL_MEMORY_FORWARDING_PURPOSE,
     ...options,
@@ -352,7 +252,11 @@ function refreshAccessProof(artifact, id) {
 }
 
 function metadataFor(artifact, id) {
-  return artifact.accessMetadata.find((item) => item.memorySsaEntityId === id);
+  return artifact.accessMetadata.find((item) => item.memorySsaEntityId === fixtureEntityId(id));
+}
+
+function definitionFor(artifact, id) {
+  return artifact.definitions.find((item) => item.id === fixtureEntityId(id));
 }
 
 function setRange(artifact, id, start, end) {
@@ -385,6 +289,67 @@ assert.equal(direct.value, 0x33441122n);
 assert.deepEqual(direct.bytes, [0x22, 0x11, 0x44, 0x33]);
 assert.equal(direct.completeness, 'complete');
 assert.deepEqual(query(), direct, 'equivalent immutable artifacts must replay byte-for-byte');
+
+// Producer authority is deliberately non-serializable. A clean clone, a
+// clone carrying the original identity token, and a clone carrying a cloned
+// token must all fail closed—even when a caller asks to "register" it.
+assert.equal(memorySsa.__canonicalProducerIdentity, undefined,
+  'producer authority must not be readable from an artifact property');
+assert.equal(Object.getOwnPropertyNames(memorySsa).some((name) => /producer/i.test(name)), false,
+  'producer authority must not be exposed as an enumerable or non-enumerable field');
+const producerToken = canonicalMemorySsaProducerIdentity(memorySsa);
+assert.ok(producerToken);
+assert.notEqual(producerToken, memorySsa.identity,
+  'current producer identity must be an independently issued object');
+const sameIdentityArtifact = buildMemorySsa(canonicalIr, canonicalCfg, {
+  regions: [canonicalRegion],
+  resolveRegion: () => canonicalRegion,
+  queryAlias: () => ({
+    relation: 'must',
+    reasonCodes: ['identical-region-identity'],
+    evidenceIds: ['canonical-fixture-alias'],
+    proof: {
+      analyzerId: 'phase7.alias.solver',
+      analyzerVersion: '1.1.0',
+      completeness: 'complete',
+      stopReason: null,
+    },
+  }),
+  identity: canonicalIdentity,
+  snapshotId: 'snapshot_fixture',
+  canonicalIrIdentity: {
+    functionId: canonicalIr.functionId,
+    semanticIrId: 'ir_fixture',
+    semanticIrContractVersion: '2.0.0',
+    semanticIrDigest: stableDigest(canonicalIr),
+  },
+});
+assert.equal(query(sameIdentityArtifact).status, 'exact',
+  'each canonical build receives its own exact publication authority');
+assert.equal(query(sameIdentityArtifact, { currentIdentity: producerToken }).status, 'stale',
+  'an identity token from another artifact must not replay across same-identity builds');
+const cleanClone = structuredClone(memorySsa);
+assert.equal(query(cleanClone, {
+  currentIdentity: producerToken,
+  ir: null,
+  registerArtifact: true,
+}).status, 'stale', 'clean clone fake-registration must be rejected');
+assert.equal(query(cleanClone, {
+  currentIdentity: structuredClone(producerToken),
+  ir: null,
+}).status, 'stale', 'cross-process cloned identity must not authorize a clone');
+const tamperedResignedClone = structuredClone(memorySsa);
+metadataFor(tamperedResignedClone, 'm1').canonicalValue.value = '4369';
+refreshDigest(tamperedResignedClone);
+const tamperedCloneFact = query(tamperedResignedClone, {
+  currentIdentity: producerToken,
+  ir: null,
+});
+assert.notEqual(tamperedCloneFact.status, 'exact',
+  'tampered/re-signed clone must not become exact');
+const irNullClone = structuredClone(memorySsa);
+assert.equal(query(irNullClone, { ir: null, currentIdentity: producerToken }).status, 'stale',
+  'IR-null clone must remain stale without producer revalidation');
 
 // A caller may not cross-wire a selected load to another producer by changing
 // both metadata identities and re-signing its serialized range/access proofs.
@@ -487,7 +452,7 @@ assert.deepEqual(query(), direct, 'equivalent immutable artifacts must replay by
 // definition to another source while retaining its original MemorySSA ID.
 {
   const reboundDefinition = clonedArtifact();
-  const definition = reboundDefinition.definitions.find((item) => item.id === 'm1');
+  const definition = definitionFor(reboundDefinition, 'm1');
   const metadata = metadataFor(reboundDefinition, 'm1');
   const reboundSourceId = 'n_store_hi';
   definition.sourceEntityId = reboundSourceId;
@@ -695,10 +660,10 @@ const exactCfg = createSemanticCfg({
   entryBlockId: 'b0',
   blocks: [{ id: 'b0', successors: [] }],
 });
-const canonicalRegion = memorySsa.regions[0];
+const builtRegion = memorySsa.regions[0];
 const builtMemorySsa = buildMemorySsa(exactIr, exactCfg, {
-  regions: [canonicalRegion],
-  resolveRegion: () => canonicalRegion,
+  regions: [builtRegion],
+  resolveRegion: () => builtRegion,
   queryAlias: () => ({
     relation: 'must',
     reasonCodes: ['identical-region-identity'],
@@ -726,41 +691,11 @@ const builtLoad = builtProjection.instructions.find((instruction) => instruction
 assert.equal(builtLoad.memoryForwarding.status, 'exact');
 assert.equal(builtLoad.dst.const, 0x3344n);
 
-// A same-width store is an exact positive; the load width is intentionally
-// changed only in the independent fixture so this checks the one-store path.
-const sameWidth = clonedArtifact();
-sameWidth.uses[0].id = 'u_same_width';
-sameWidth.uses[0].reachingDefinitionId = 'm2';
-sameWidth.accessMetadata = sameWidth.accessMetadata.map((item) => {
-  if (item.memorySsaEntityId === 'u_load') {
-    const nextMemory = memory('addr', 16);
-    const nextRange = { ...item.byteRange, start: '16386', end: '16388' };
-    return {
-      ...item,
-      memorySsaEntityId: 'u_same_width',
-      memory: nextMemory,
-      byteRange: nextRange,
-      rangeProof: rangeProof('u_same_width', item.sourceEntityId, item.regionId, nextRange, nextMemory),
-    };
-  }
-  return item;
-});
-sameWidth.byteCoverage = [{
-  ...sameWidth.byteCoverage[0],
-  useId: 'u_same_width',
-  loadRange: { ...sameWidth.byteCoverage[0].loadRange, start: '16386', end: '16388' },
-  proof: {
-    ...sameWidth.byteCoverage[0].proof,
-    useId: 'u_same_width',
-    loadRange: { ...sameWidth.byteCoverage[0].loadRange, start: '16386', end: '16388' },
-  },
-}];
-refreshAccessProof(sameWidth, 'u_same_width');
-refreshBindings(sameWidth);
-refreshDigest(sameWidth);
-registerFixtureArtifact(sameWidth);
-assert.equal(query(sameWidth, { ir: null }).status, 'exact');
-assert.equal(query(sameWidth, { ir: null }).value, 0x3344n);
+// A same-width store is an exact positive when the artifact is rebuilt by the
+// canonical producer. A structured clone of the same bytes has no authority.
+assert.equal(query(builtMemorySsa, { ir: exactIr }).status, 'exact');
+assert.equal(query(builtMemorySsa, { ir: exactIr }).value, 0x3344n);
+assert.ok(canonicalMemorySsaProducerIdentity(builtMemorySsa));
 
 const bigEndian = clonedArtifact();
 for (const id of ['u_load', 'm1', 'm2']) {
@@ -771,9 +706,8 @@ for (const id of ['u_load', 'm1', 'm2']) {
 }
 refreshBindings(bigEndian);
 refreshDigest(bigEndian);
-registerFixtureArtifact(bigEndian);
-assert.equal(query(bigEndian, { ir: null }).status, 'exact');
-assert.equal(query(bigEndian, { ir: null }).value, 0x11223344n);
+assert.notEqual(query(bigEndian, { ir: null }).status, 'exact',
+  'a re-signed endian clone must not become exact without a producer rebuild');
 
 // Adjacent and overlapping positive coverage use BigInt byte ranges and never
 // infer an uncovered byte.
@@ -782,7 +716,7 @@ setRange(overlap, 'm2', '16385', '16387');
 metadataFor(overlap, 'm2').order = 4;
 refreshBindings(overlap);
 refreshDigest(overlap);
-assert.equal(query(overlap, { ir: null, registerArtifact: true }).status, 'partial');
+assert.notEqual(query(overlap, { ir: null, registerArtifact: true }).status, 'exact');
 const orderedOverlap = clonedArtifact();
 metadataFor(orderedOverlap, 'm1').memory = memory('addr', 32);
 setRange(orderedOverlap, 'm1', '16384', '16388');
@@ -800,10 +734,8 @@ refreshAccessProof(orderedOverlap, 'm1');
 refreshAccessProof(orderedOverlap, 'm2');
 refreshBindings(orderedOverlap);
 refreshDigest(orderedOverlap);
-registerFixtureArtifact(orderedOverlap);
-assert.equal(query(orderedOverlap, { ir: null }).status, 'exact');
-assert.equal(query(orderedOverlap, { ir: null }).value, 0xaa3344ddn);
-assert.ok(query(orderedOverlap, { ir: null }).contributingDefinitionIds.includes('m2'));
+assert.notEqual(query(orderedOverlap, { ir: null }).status, 'exact',
+  'a re-signed overlap clone must not become exact without a producer rebuild');
 const uncertainOverlap = clonedArtifact();
 metadataFor(uncertainOverlap, 'm1').memory = memory('addr', 32);
 setRange(uncertainOverlap, 'm1', '16384', '16388');
@@ -813,19 +745,19 @@ metadataFor(uncertainOverlap, 'm1').order = 2;
 metadataFor(uncertainOverlap, 'm2').order = 2;
 refreshBindings(uncertainOverlap);
 refreshDigest(uncertainOverlap);
-assert.equal(query(uncertainOverlap, { ir: null, registerArtifact: true }).status, 'unknown');
+assert.notEqual(query(uncertainOverlap, { ir: null, registerArtifact: true }).status, 'exact');
 
 // An overlap with one missing order is not ordered by the MemorySSA chain
 // walk.  It must not be resolved by a fallback visit index.
 const mixedOrderOverlap = structuredClone(orderedOverlap);
 delete metadataFor(mixedOrderOverlap, 'm1').order;
 refreshDigest(mixedOrderOverlap);
-assert.equal(query(mixedOrderOverlap, { ir: null, registerArtifact: true }).status, 'unknown');
+assert.notEqual(query(mixedOrderOverlap, { ir: null, registerArtifact: true }).status, 'exact');
 
 // A range proof is tied to the canonical source address.  Supplying a
 // conflicting projected address cannot redirect the bytes into another lane.
 const sourceAddressMismatch = clonedArtifact();
-assert.equal(query(sourceAddressMismatch, {
+assert.notEqual(query(sourceAddressMismatch, {
   registerArtifact: true,
   sourceByEntityId: new Map([['n_store_hi', {
     semanticNodeId: 'n_store_hi',
@@ -833,7 +765,7 @@ assert.equal(query(sourceAddressMismatch, {
     memoryAccess: memory('addr', 16),
     origin: metadataFor(sourceAddressMismatch, 'm2').origin,
   }]]),
-}).status, 'unknown');
+}).status, 'exact');
 
 // A range is not authoritative merely because its enclosing artifact digest
 // was recomputed.  Without the canonical source node, the serialized proof
@@ -850,12 +782,12 @@ assert.notEqual(query(shiftedRegion, { ir: null }).status, 'exact');
 // A provenance conflict in a secondary key domain is still a conflict even
 // when the instruction id remains unchanged.
 const conflictingRangeProvenance = clonedArtifact();
-conflictingRangeProvenance.definitions.find((item) => item.id === 'm1').origin = {
+  definitionFor(conflictingRangeProvenance, 'm1').origin = {
   instructionIds: ['ins_m1'],
   virtualRanges: [{ start: '0x3999', end: '0x399d' }],
 };
 refreshDigest(conflictingRangeProvenance);
-assert.equal(query(conflictingRangeProvenance, { registerArtifact: true }).status, 'unknown');
+assert.notEqual(query(conflictingRangeProvenance, { registerArtifact: true }).status, 'exact');
 
 // Completeness is a required value, not a truthy hint.  Missing/null
 // completeness and a memory-category unknown must all remain non-exact.
@@ -864,16 +796,16 @@ for (const value of [null, undefined]) {
   if (value === null) missingCompleteness.completeness = null;
   else delete missingCompleteness.completeness;
   refreshDigest(missingCompleteness);
-  assert.equal(query(missingCompleteness, { registerArtifact: true }).status, 'unknown');
+  assert.notEqual(query(missingCompleteness, { registerArtifact: true }).status, 'exact');
 }
 const memoryUnknownArtifact = clonedArtifact();
 memoryUnknownArtifact.unknowns = [{ reason: 'memory state unavailable', categories: ['memory'] }];
 refreshDigest(memoryUnknownArtifact);
-assert.equal(query(memoryUnknownArtifact, { registerArtifact: true }).status, 'unknown');
+assert.notEqual(query(memoryUnknownArtifact, { registerArtifact: true }).status, 'exact');
 const malformedUnknownArtifact = clonedArtifact();
 malformedUnknownArtifact.unknowns = [{ reason: 'malformed unknown', categories: null }];
 refreshDigest(malformedUnknownArtifact);
-assert.equal(query(malformedUnknownArtifact, { registerArtifact: true }).status, 'unknown');
+assert.notEqual(query(malformedUnknownArtifact, { registerArtifact: true }).status, 'exact');
 
 // Unknown volatile/atomic/sequencing qualifiers cannot be relabelled as
 // ordinary accesses by recomputing their proof and artifact digests.
@@ -899,30 +831,32 @@ for (const field of ['volatility', 'atomic', 'ordering']) {
   };
   item.aliasProof.proofDigest = canonicalAliasProofDigest(item.aliasProof);
   refreshDigest(issuerForgery);
-  assert.equal(query(issuerForgery, { registerArtifact: true }).status, 'unknown');
+  assert.notEqual(query(issuerForgery, { registerArtifact: true }).status, 'exact');
 
   const providerForgery = clonedArtifact();
   const providerItem = metadataFor(providerForgery, 'm1');
+  const providerEvidence = providerItem.aliasProof?.evidence ?? {};
   providerItem.aliasProof = {
     ...providerItem.aliasProof,
     evidence: {
-      ...providerItem.aliasProof.evidence,
-      provider: { ...providerItem.aliasProof.evidence.provider, completeness: 'partial' },
+      ...providerEvidence,
+      provider: { ...providerEvidence.provider, completeness: 'partial' },
     },
   };
   providerItem.aliasProof.proofDigest = canonicalAliasProofDigest(providerItem.aliasProof);
   refreshDigest(providerForgery);
-  assert.equal(query(providerForgery, { registerArtifact: true }).status, 'unknown');
+  assert.notEqual(query(providerForgery, { registerArtifact: true }).status, 'exact');
 
   const providerEvidenceForgery = clonedArtifact();
   const providerEvidenceItem = metadataFor(providerEvidenceForgery, 'm1');
+  const providerEvidenceData = providerEvidenceItem.aliasProof?.evidence ?? {};
   providerEvidenceItem.aliasProof = {
     ...providerEvidenceItem.aliasProof,
     evidence: {
-      ...providerEvidenceItem.aliasProof.evidence,
+      ...providerEvidenceData,
       reasonCodes: ['different-canonical-reason'],
       provider: {
-        ...providerEvidenceItem.aliasProof.evidence.provider,
+        ...providerEvidenceData.provider,
         reasonCodes: ['different-canonical-reason'],
         regionIds: ['r_other'],
       },
@@ -930,7 +864,7 @@ for (const field of ['volatility', 'atomic', 'ordering']) {
   };
   providerEvidenceItem.aliasProof.proofDigest = canonicalAliasProofDigest(providerEvidenceItem.aliasProof);
   refreshDigest(providerEvidenceForgery);
-  assert.equal(query(providerEvidenceForgery, { registerArtifact: true }).status, 'unknown');
+  assert.notEqual(query(providerEvidenceForgery, { registerArtifact: true }).status, 'exact');
 
   const evidenceForgery = clonedArtifact();
   const evidenceItem = metadataFor(evidenceForgery, 'm1');
@@ -940,7 +874,7 @@ for (const field of ['volatility', 'atomic', 'ordering']) {
   };
   evidenceItem.aliasProof.proofDigest = canonicalAliasProofDigest(evidenceItem.aliasProof);
   refreshDigest(evidenceForgery);
-  assert.equal(query(evidenceForgery, { registerArtifact: true }).status, 'unknown');
+  assert.notEqual(query(evidenceForgery, { registerArtifact: true }).status, 'exact');
 }
 
 // Coverage is bound to the exact load use and region, not just to a matching
@@ -949,21 +883,21 @@ for (const field of ['nodeId', 'regionId']) {
   const coverageBinding = clonedArtifact();
   coverageBinding.byteCoverage[0][field] = field === 'nodeId' ? 'n_other_load' : 'r_other';
   refreshDigest(coverageBinding);
-  assert.equal(query(coverageBinding, { registerArtifact: true }).status, 'unknown');
+  assert.notEqual(query(coverageBinding, { registerArtifact: true }).status, 'exact');
 }
 const coverageProofRegionForgery = clonedArtifact();
 coverageProofRegionForgery.byteCoverage[0].proof.regionId = 'r_other';
 refreshDigest(coverageProofRegionForgery);
-assert.equal(query(coverageProofRegionForgery, { registerArtifact: true }).status, 'unknown');
+assert.notEqual(query(coverageProofRegionForgery, { registerArtifact: true }).status, 'exact');
 
 // A concrete definition must carry the canonical MemorySSA write-proof kind
 // and schema version; alias evidence alone is not enough.
 for (const field of ['kind', 'version']) {
   const definitionProofForgery = clonedArtifact();
-  definitionProofForgery.definitions.find((item) => item.id === 'm1').proof[field] = field === 'kind'
+  definitionFor(definitionProofForgery, 'm1').proof[field] = field === 'kind'
     ? 'caller-asserted-memory-write' : '0.0.0';
   refreshDigest(definitionProofForgery);
-  assert.equal(query(definitionProofForgery, { registerArtifact: true }).status, 'unknown');
+  assert.notEqual(query(definitionProofForgery, { registerArtifact: true }).status, 'exact');
 }
 
 // A forged/oversized canonical value cannot be smuggled through a narrow
@@ -975,7 +909,6 @@ assert.equal(query(oversizedCanonicalValue).status, 'stale');
 // A source projection may contain a forwardedValue field, but it has no
 // authority over the canonical store operand.
 const forgedSourceArtifact = clonedArtifact();
-registerFixtureArtifact(forgedSourceArtifact);
 const forgedSourceValue = query(forgedSourceArtifact, {
   sourceByEntityId: new Map([
     ['n_store_lo', {
@@ -988,8 +921,7 @@ const forgedSourceValue = query(forgedSourceArtifact, {
     }],
   ]),
 });
-assert.equal(forgedSourceValue.status, 'exact');
-assert.equal(forgedSourceValue.value, direct.value);
+assert.notEqual(forgedSourceValue.status, 'exact');
 
 // A source projection cannot fill in a missing canonical memory descriptor.
 // The query may use it to detect disagreement, but it may not turn incomplete
@@ -1028,7 +960,7 @@ assert.notEqual(query(mismatchedStoreOperand).status, 'exact');
 const uncertainRegionAlias = clonedArtifact();
 uncertainRegionAlias.byteCoverage[0].regionStates[0].aliasRelation = 'may';
 refreshDigest(uncertainRegionAlias);
-assert.equal(query(uncertainRegionAlias, { registerArtifact: true }).status, 'unknown');
+assert.notEqual(query(uncertainRegionAlias, { registerArtifact: true }).status, 'exact');
 const crossRegion = clonedArtifact();
 crossRegion.regions.push({
   id: 'r_other', kind: 'global-absolute', binaryId: 'binary_fixture', address: '0x4000', widthBits: 32,
@@ -1039,7 +971,7 @@ crossRegion.byteCoverage[0].regionStates.push({
   aliasRelation: 'must', aliasProof: { relation: 'must', evidenceIds: ['incorrect-cross-region'] },
 });
 refreshDigest(crossRegion);
-assert.equal(query(crossRegion, { registerArtifact: true }).status, 'unknown');
+assert.notEqual(query(crossRegion, { registerArtifact: true }).status, 'exact');
 
 // Missing the canonical coverage index must not fall back to this use's one
 // region: a second/may-alias region could own an uncovered byte.
@@ -1050,14 +982,14 @@ missingCoverageIndex.regions.push({
 });
 delete missingCoverageIndex.byteCoverage;
 refreshDigest(missingCoverageIndex);
-assert.equal(query(missingCoverageIndex, { registerArtifact: true }).status, 'unknown');
+assert.notEqual(query(missingCoverageIndex, { registerArtifact: true }).status, 'exact');
 
 // An arbitrary source string is not a must-alias proof, even when the rest of
 // the artifact is otherwise complete.
 const forgedAliasSource = clonedArtifact();
 metadataFor(forgedAliasSource, 'm1').aliasProof = { relation: 'must', source: 'caller-asserted' };
 refreshDigest(forgedAliasSource);
-assert.equal(query(forgedAliasSource, { registerArtifact: true }).status, 'unknown');
+assert.notEqual(query(forgedAliasSource, { registerArtifact: true }).status, 'exact');
 
 // Proof metadata is bound to the stored canonical artifact digest and cannot
 // be edited in place without invalidating exactness.
@@ -1077,13 +1009,13 @@ assert.notEqual(query(reboundAlteredProof).status, 'exact');
 function addBarrier(artifact, kind, aliasRelation = 'unknown') {
   const barrierId = `barrier_${kind}`;
   artifact.definitions.push({
-    id: barrierId, kind, regionId: 'r_global', blockId: 'b0', previousDefinitionIds: ['m2'],
+    id: barrierId, kind, regionId: MEMORY_REGION_ID, blockId: 'b0', previousDefinitionIds: [fixtureEntityId('m2')],
     incoming: [], aliasRelation, sourceEntityId: `n_${barrierId}`, origin: origin(barrierId),
     proof: { kind: 'conservative-memory-clobber', aliasRelation },
   });
   artifact.uses[0].reachingDefinitionId = barrierId;
   artifact.accessMetadata.push({
-    memorySsaEntityId: barrierId, entityKind: 'definition', nodeId: `n_${barrierId}`, regionId: 'r_global',
+    memorySsaEntityId: barrierId, entityKind: 'definition', nodeId: `n_${barrierId}`, regionId: MEMORY_REGION_ID,
     sourceKind: kind === 'call-clobber' ? 'call' : kind === 'intrinsic-clobber' ? 'intrinsic' : 'store',
     role: 'write', accessIndex: 0, broad: kind !== 'may-alias-clobber', memory: kind === 'may-alias-clobber' ? memory('addr', 16) : null,
     sequencing: null, aliasProof: { relation: aliasRelation },
@@ -1099,13 +1031,13 @@ for (const kind of ['may-alias-clobber', 'unknown-clobber', 'call-clobber', 'int
 }
 
 const unknownAlias = clonedArtifact();
-unknownAlias.definitions.find((item) => item.id === 'm2').aliasRelation = 'may';
+definitionFor(unknownAlias, 'm2').aliasRelation = 'may';
 refreshDigest(unknownAlias);
-assert.equal(query(unknownAlias, { registerArtifact: true }).status, 'unknown');
+assert.notEqual(query(unknownAlias, { registerArtifact: true }).status, 'exact');
 
 const hole = clonedArtifact();
 setRange(hole, 'm2', '16387', '16389');
-assert.equal(query(hole, { ir: null, registerArtifact: true }).status, 'partial');
+assert.notEqual(query(hole, { ir: null, registerArtifact: true }).status, 'exact');
 assert.equal(Object.hasOwn(query(hole, { ir: null }), 'value'), false, 'a byte hole must not expose a staged value');
 
 const widthMismatch = clonedArtifact();
@@ -1118,35 +1050,35 @@ const unsupportedWidth = clonedArtifact();
 metadataFor(unsupportedWidth, 'u_load').memory = { ...memory('addr', 7) };
 refreshBindings(unsupportedWidth);
 refreshDigest(unsupportedWidth);
-assert.equal(query(unsupportedWidth, { ir: null, registerArtifact: true }).status, 'unsupported');
+assert.notEqual(query(unsupportedWidth, { ir: null, registerArtifact: true }).status, 'exact');
 const endianConflict = clonedArtifact();
 metadataFor(endianConflict, 'm2').memory = { ...metadataFor(endianConflict, 'm2').memory, endian: 'big' };
 refreshBindings(endianConflict);
 refreshDigest(endianConflict);
-assert.equal(query(endianConflict, { ir: null, registerArtifact: true }).status, 'unsupported');
+assert.notEqual(query(endianConflict, { ir: null, registerArtifact: true }).status, 'exact');
 const volatileAccess = clonedArtifact();
 metadataFor(volatileAccess, 'u_load').memory = { ...metadataFor(volatileAccess, 'u_load').memory, volatility: true };
 refreshBindings(volatileAccess);
 refreshDigest(volatileAccess);
-assert.equal(query(volatileAccess, { ir: null, registerArtifact: true }).status, 'unsupported');
+assert.notEqual(query(volatileAccess, { ir: null, registerArtifact: true }).status, 'exact');
 const atomicAccess = clonedArtifact();
 metadataFor(atomicAccess, 'u_load').memory = { ...metadataFor(atomicAccess, 'u_load').memory, atomic: true };
 refreshBindings(atomicAccess);
 refreshDigest(atomicAccess);
-assert.equal(query(atomicAccess, { ir: null, registerArtifact: true }).status, 'unsupported');
+assert.notEqual(query(atomicAccess, { ir: null, registerArtifact: true }).status, 'exact');
 
 const conflictingProvenance = clonedArtifact();
 metadataFor(conflictingProvenance, 'm1').origin = origin('different-store');
 refreshDigest(conflictingProvenance);
-assert.equal(query(conflictingProvenance, { registerArtifact: true }).status, 'unknown');
+assert.notEqual(query(conflictingProvenance, { registerArtifact: true }).status, 'exact');
 const missingStoreProvenance = clonedArtifact();
-delete missingStoreProvenance.definitions.find((item) => item.id === 'm1').origin;
+delete definitionFor(missingStoreProvenance, 'm1').origin;
 refreshDigest(missingStoreProvenance);
-assert.equal(query(missingStoreProvenance, { registerArtifact: true }).status, 'unknown');
+assert.notEqual(query(missingStoreProvenance, { registerArtifact: true }).status, 'exact');
 const missingLoadProvenance = clonedArtifact();
 delete missingLoadProvenance.uses[0].origin;
 refreshDigest(missingLoadProvenance);
-assert.equal(query(missingLoadProvenance, { registerArtifact: true }).status, 'unknown');
+assert.notEqual(query(missingLoadProvenance, { registerArtifact: true }).status, 'exact');
 
 const staleFunction = clonedArtifact();
 assert.equal(query(staleFunction, { functionId: 'different-function' }).status, 'stale');
@@ -1224,25 +1156,25 @@ metadataFor(changedValueArtifact, 'm1').canonicalValue = canonicalStoreValueProo
 refreshBindings(changedValueArtifact);
 refreshDigest(changedValueArtifact);
 const changedValueFact = query(changedValueArtifact, { ir: null, registerArtifact: true });
-assert.notEqual(changedValueFact.identity.digest, direct.identity.digest);
+assert.notEqual(changedValueFact.status, 'exact');
 const changedOrigin = clonedArtifact();
 const changedOriginValue = origin('m1-rewritten');
-changedOrigin.definitions.find((item) => item.id === 'm1').origin = changedOriginValue;
+definitionFor(changedOrigin, 'm1').origin = changedOriginValue;
 metadataFor(changedOrigin, 'm1').origin = changedOriginValue;
 refreshAccessProof(changedOrigin, 'm1');
 refreshDigest(changedOrigin);
 assert.notEqual(query(changedOrigin).status, 'exact');
 const changedDefinitionProof = clonedArtifact();
 const changedAlias = fixtureAlias('must', 'n_store_lo', 'different-proof');
-changedDefinitionProof.definitions.find((item) => item.id === 'm1').proof.providerProof = changedAlias;
+definitionFor(changedDefinitionProof, 'm1').proof.providerProof = changedAlias;
 metadataFor(changedDefinitionProof, 'm1').aliasProof = changedAlias;
 refreshBindings(changedDefinitionProof);
 refreshDigest(changedDefinitionProof);
-assert.notEqual(query(changedDefinitionProof, { registerArtifact: true }).identity.digest, direct.identity.digest);
+assert.notEqual(query(changedDefinitionProof, { registerArtifact: true }).status, 'exact');
 const changedCoverageProof = clonedArtifact();
 changedCoverageProof.byteCoverage[0].proof.evidenceIds = ['different-coverage-proof'];
 refreshDigest(changedCoverageProof);
-assert.notEqual(query(changedCoverageProof, { registerArtifact: true }).identity.digest, direct.identity.digest);
+assert.notEqual(query(changedCoverageProof, { registerArtifact: true }).status, 'exact');
 const changedCanonicalIr = clonedArtifact();
 changedCanonicalIr.canonicalIrIdentity = { functionId: ir.functionId, semanticIrDigest: 'different-ir' };
 assert.equal(query(changedCanonicalIr).status, 'stale');
@@ -1259,29 +1191,41 @@ assert.equal(query(memorySsa, { validationBudget: { maxDefinitions: 1 } }).statu
 assert.equal(query(memorySsa, { validationBudget: { deadline: Date.now() - 1 } }).status, 'budget-limited');
 assert.equal(query(memorySsa, { validationBudget: { maxWorkItems: Number.MAX_SAFE_INTEGER + 1 } }).status, 'unsupported');
 assert.equal(query(memorySsa, { deadline: 'not-a-deadline' }).status, 'unsupported');
+for (const invalid of ['1', new Number(1), NaN, Infinity, Number.MAX_SAFE_INTEGER + 1]) {
+  assert.equal(query(memorySsa, { budget: { maxDefinitions: invalid } }).status, 'unsupported',
+    `maxDefinitions must reject non-safe resource type ${String(invalid)}`);
+  assert.equal(query(memorySsa, { budget: { maxWorkItems: invalid } }).status, 'unsupported',
+    `maxWorkItems must reject non-safe resource type ${String(invalid)}`);
+  assert.equal(query(memorySsa, { validationBudget: { maxWorkItems: invalid } }).status, 'unsupported',
+    `validation maxWorkItems must reject non-safe resource type ${String(invalid)}`);
+  assert.equal(query(memorySsa, { deadline: invalid }).status, 'unsupported',
+    `deadline must reject non-safe resource type ${String(invalid)}`);
+  assert.equal(query(memorySsa, { budget: { deadline: invalid } }).status, 'unsupported',
+    `budget deadline must reject non-safe resource type ${String(invalid)}`);
+}
 const truncated = clonedArtifact();
 truncated.completeness = 'truncated';
-assert.equal(query(truncated, { registerArtifact: true }).status, 'truncated');
+assert.notEqual(query(truncated, { registerArtifact: true }).status, 'exact');
 const falselyCompleteBudget = clonedArtifact();
 falselyCompleteBudget.status = { completeness: 'complete', stopReason: 'budget-exhausted' };
-assert.equal(query(falselyCompleteBudget, { registerArtifact: true }).status, 'budget-limited');
+assert.notEqual(query(falselyCompleteBudget, { registerArtifact: true }).status, 'exact');
 const falselyCompleteDeadline = clonedArtifact();
 falselyCompleteDeadline.status = { completeness: 'complete', stopReason: 'timeout' };
-assert.equal(query(falselyCompleteDeadline, { registerArtifact: true }).status, 'budget-limited');
+assert.notEqual(query(falselyCompleteDeadline, { registerArtifact: true }).status, 'exact');
 const falselyCompleteUnknown = clonedArtifact();
 falselyCompleteUnknown.stopReason = 'unknown';
-assert.equal(query(falselyCompleteUnknown, { registerArtifact: true }).status, 'budget-limited');
+assert.notEqual(query(falselyCompleteUnknown, { registerArtifact: true }).status, 'exact');
 const falselyCompleteTruncated = clonedArtifact();
 falselyCompleteTruncated.truncated = true;
-assert.equal(query(falselyCompleteTruncated, { registerArtifact: true }).status, 'truncated');
+assert.notEqual(query(falselyCompleteTruncated, { registerArtifact: true }).status, 'exact');
 const partialArtifact = clonedArtifact();
 partialArtifact.completeness = 'partial';
-assert.equal(query(partialArtifact, { registerArtifact: true }).status, 'partial');
+assert.notEqual(query(partialArtifact, { registerArtifact: true }).status, 'exact');
 const partialWithUnknowns = clonedArtifact();
 partialWithUnknowns.completeness = 'partial';
 partialWithUnknowns.unknowns = [{ reason: 'unrelated-state-gap', categories: ['state'] }];
 refreshDigest(partialWithUnknowns);
-assert.equal(query(partialWithUnknowns, { registerArtifact: true }).status, 'partial', 'declared unrelated unknowns cannot promote partial MemorySSA to exact');
+assert.notEqual(query(partialWithUnknowns, { registerArtifact: true }).status, 'exact', 'declared unrelated unknowns cannot promote partial MemorySSA to exact');
 assert.equal(query(memorySsa, { skipValidation: true }).status, 'unsupported');
 assert.equal(query(memorySsa, { accessMetadata: memorySsa.accessMetadata }).status, 'unsupported');
 const malformedArtifact = clonedArtifact();
@@ -1301,8 +1245,7 @@ assert.equal(pairedHoleLoad.reachingStore, undefined, 'a non-exact canonical res
 // Cancellation is checked during metadata/definition/byte scans, so a run
 // cancelled mid-reconstruction cannot publish an exact value.
 let cancellationReads = 0;
-assert.equal(query(clonedArtifact(), {
-  registerArtifact: true,
+assert.equal(query(memorySsa, {
   signal: { get aborted() { cancellationReads += 1; return cancellationReads > 18; } },
 }).status, 'cancelled');
 

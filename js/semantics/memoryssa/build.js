@@ -25,7 +25,6 @@ import {
   canonicalMemorySsaDigest,
   canonicalStoreValueProof,
   MEMORY_SSA_PROOF_VERSION,
-  registerCanonicalMemorySsaProducerArtifact,
 } from './proof.js';
 
 export const MEMORY_SSA_BUILD_VERSION = '1.0.0';
@@ -37,6 +36,30 @@ export const MEMORY_SSA_BUILD_DEFAULT_BUDGET = Object.freeze({
 
 const ALIAS_RELATIONS = new Set(MEMORY_SSA_ALIAS_RELATIONS);
 
+// Producer authority belongs to this module because buildMemorySsa is the
+// canonical MemorySSA producer.  The WeakMaps are intentionally private: no
+// consumer can register an arbitrary object or transfer authority to a
+// structured-clone by copying fields.  Queries can only observe a binding for
+// the exact object issued by this builder.
+const canonicalProducerArtifactBindings = new WeakMap();
+const canonicalProducerIdentityBindings = new WeakMap();
+
+export function canonicalMemorySsaProducerBinding(artifact) {
+  return artifact && typeof artifact === 'object' && !Array.isArray(artifact)
+    ? canonicalProducerArtifactBindings.get(artifact) ?? null
+    : null;
+}
+
+export function canonicalMemorySsaProducerIdentity(artifact) {
+  return canonicalMemorySsaProducerBinding(artifact)?.producerIdentity ?? null;
+}
+
+export function canonicalMemorySsaIdentityBinding(identity) {
+  return identity && typeof identity === 'object' && !Array.isArray(identity)
+    ? canonicalProducerIdentityBindings.get(identity) ?? null
+    : null;
+}
+
 function fail(code) { throw new TypeError(code); }
 function assertNotAborted(options) {
   if (options?.signal?.aborted) {
@@ -46,9 +69,8 @@ function assertNotAborted(options) {
   }
 }
 function positiveInteger(value, code) {
-  const number = Number(value);
-  if (!Number.isSafeInteger(number) || number <= 0) fail(code);
-  return number;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) fail(code);
+  return value;
 }
 function budgetLimit(options, key, fallback = MEMORY_SSA_BUILD_DEFAULT_BUDGET[key]) {
   if (options?.budget?.[key] == null) return fallback;
@@ -1028,13 +1050,19 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
     ...artifact,
     canonicalDigest: canonicalMemorySsaDigest(artifact),
   };
-  Object.defineProperty(unpublished, '__canonicalProducerIdentity', {
-    value: producerIdentity,
-    enumerable: false,
-    configurable: false,
-    writable: false,
-  });
   const published = deepFreeze(unpublished);
-  registerCanonicalMemorySsaProducerArtifact(published, producerIdentity);
+  const artifactDigest = published.canonicalDigest;
+  const identityDigest = stableDigest(published.identity);
+  const binding = Object.freeze({
+    artifact: published,
+    artifactDigest,
+    identity: published.identity,
+    identityDigest,
+    producerIdentity,
+    snapshotId: published.snapshotId == null ? null : String(published.snapshotId),
+    functionId: published.functionId == null ? null : String(published.functionId),
+  });
+  canonicalProducerArtifactBindings.set(published, binding);
+  canonicalProducerIdentityBindings.set(producerIdentity, binding);
   return published;
 }

@@ -54,9 +54,13 @@ function nonEmpty(value, code) {
   return text;
 }
 function positiveInteger(value, code) {
-  const number = Number(value);
-  if (!Number.isSafeInteger(number) || number <= 0) fail(code);
-  return number;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) fail(code);
+  return value;
+}
+
+function deadlineInteger(value, code) {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value)) fail(code);
+  return value;
 }
 function array(value, code) {
   if (!Array.isArray(value)) fail(code);
@@ -95,8 +99,7 @@ function validationWorkGuard(options) {
     ?? options?.budget?.deadline ?? options?.budget?.deadlineAt ?? null;
   const deadline = rawDeadline == null
     ? null
-    : (rawDeadline instanceof Date ? rawDeadline.getTime() : Number(rawDeadline));
-  if (deadline != null && !Number.isFinite(deadline)) fail('memory-ssa-invalid-budget-deadline');
+    : deadlineInteger(rawDeadline, 'memory-ssa-invalid-budget-deadline');
   let used = 0;
   return () => {
     assertNotAborted(options);
