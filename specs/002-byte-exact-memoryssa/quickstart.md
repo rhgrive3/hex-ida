@@ -74,7 +74,13 @@ SEMANTIC_TEST: direct C2-01 and touched semantic-v2 consumers PASS; the npm wrap
   reports node not found), so its current-corpus report is 0/25 for infrastructure reasons
 DECOMPILER_DIRECT_TESTS: PASS — `npm run decompiler:test` and all touched direct suites
 PHASE7_TEST: PASS — 356 tests, 58 discovered files on current main
-PHASE7_OWNERSHIP: PASS — manifest valid
+PHASE7_OWNERSHIP: PASS — manifest valid; feature inventory PASS (40/40 paths match the amended
+  path-exact allowlist, with no outside or missing paths)
+EXACT_HEAD_VERIFIER: READY on source candidate 553ca27d8d34d2f30dc1a14e6fcc2921fea8b1b8;
+  frozen corpus matches, all P7 checkpoints present, zero failures; verifier tree
+  518c8c8c823857e7489cf400c752d3bfa2bed4e5
+CANDIDATE_MERGE_TREE: conflict-free for origin/main 1645b4e4a2b5cd9baf37e2efe5b2e6045481b1aa
+  plus source candidate 553ca27d8d34d2f30dc1a14e6fcc2921fea8b1b8
 MODULE_BOUNDARIES: PASS
 EVIDENCE_WRITERS: PASS
 MIGRATION_GUARDRAILS: PASS
