@@ -71,6 +71,25 @@ test('P10.9 runtime event preserves distinct valid string identities', () => {
   assert.deepEqual(event.predecessorIds, ['a', 'b']);
 });
 
+test('P10.9 non-identity process/thread/module scalar keys retain compatibility', () => {
+  const event = createRuntimeEvent({
+    runtimeSessionId: 'session',
+    providerId: 'provider',
+    kind: 'trace-marker',
+    processKey: 7,
+    threadKey: 8,
+    moduleBindingKey: 9,
+  });
+  assert.equal(event.processKey, '7');
+  assert.equal(event.threadKey, '8');
+  assert.equal(event.moduleBindingKey, '9');
+});
+
+test('P10.9 stream/provider event identities do not accept numeric coercion', () => {
+  assert.throws(() => createRuntimeEvent({ runtimeSessionId: 'session', providerId: 'provider', kind: 'trace-marker', streamId: 7 }), /streamId must be a string/);
+  assert.throws(() => createRuntimeEvent({ runtimeSessionId: 'session', providerId: 'provider', kind: 'trace-marker', providerEventId: 7 }), /providerEventId must be a string/);
+});
+
 test('P10.9 intervention ledger does not coerce lookup identities', () => {
   const ledger = new InterventionLedger();
   const record = ledger.add({
