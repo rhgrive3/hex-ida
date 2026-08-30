@@ -56,7 +56,7 @@ assert.match(workspace, /async loadBaseline\(file,\{backend=null,signal=null\}=\
 assert.match(workspace, /ensureContentHash\(null,signal\)/);
 assert.match(workspace, /analyze\(sliceIndex,\{signal\}\)/);
 assert.match(workspace, /createCompactFunctionSet\(/);
-assert.match(workspace, /other\.dispose\?\.\(\)/);
+assert.match(workspace, /if\(owned\)other\.dispose\(\)/);
 assert.match(workspace, /baselineSequence/);
 
 console.log('remaining runtime closure 20260831: PASS');
