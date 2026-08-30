@@ -16,7 +16,20 @@ jobs:
           ref: fix/reopened-audit-final-20260830
           fetch-depth: 0
       - name: Apply repair
-        run: python .github/reopened-final-repair.py
+        shell: bash
+        run: |
+          set +e
+          python .github/reopened-final-repair.py > .github/reopened-repair-output.txt 2>&1
+          status=$?
+          cat .github/reopened-repair-output.txt
+          if [ "$status" -ne 0 ]; then
+            git config user.name github-actions[bot]
+            git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+            git add .github/reopened-repair-output.txt
+            git commit -m 'chore: capture reopened repair failure'
+            git push origin HEAD:fix/reopened-audit-final-20260830
+            exit "$status"
+          fi
       - name: Syntax and focused contracts
         shell: bash
         run: |
@@ -38,6 +51,7 @@ jobs:
         run: |
           rm -f .github/reopened-final-repair.py
           rm -f .github/reopened-final-inspection.txt
+          rm -f .github/reopened-repair-output.txt
           rm -f .github/workflows/reopened-final-repair-runner.yml
       - name: Commit repaired branch
         shell: bash
