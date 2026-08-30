@@ -369,7 +369,9 @@ export function parseTpiStream(bytes, budget = DEBUG_DEFAULT_BUDGET) {
       const properties = view.getUint16(body + 2, true);
       const fieldList = leaf === LF_UNION ? 0 : view.getUint32(body + 4, true);
       const sizeOffset = leaf === LF_UNION ? body + 8 : body + 16;
-      const { value: sizeBytes, next } = readNumeric(view, bytes, sizeOffset);
+      const numeric = readNumeric(view, bytes, sizeOffset, end);
+      if (!numeric) break;
+      const { value: sizeBytes, next } = numeric;
       const keyword = leaf === LF_UNION ? 'union' : leaf === LF_CLASS ? 'class' : 'struct';
       types.set(index, {
         leaf, kind: 'aggregate', keyword,
@@ -393,7 +395,9 @@ export function parseTpiStream(bytes, budget = DEBUG_DEFAULT_BUDGET) {
         argumentList: view.getUint32(body + 8, true),
       });
     } else if (leaf === LF_ARRAY) {
-      const { value: sizeBytes } = readNumeric(view, bytes, body + 8);
+      const numeric = readNumeric(view, bytes, body + 8, end);
+      if (!numeric) break;
+      const { value: sizeBytes } = numeric;
       types.set(index, { leaf, kind: 'array', elementType: view.getUint32(body, true), sizeBytes });
     } else if (leaf === LF_ENUM) {
       types.set(index, { leaf, kind: 'enum', underlying: view.getUint32(body + 4, true), name: null });
@@ -415,9 +419,15 @@ export function parseTpiStream(bytes, budget = DEBUG_DEFAULT_BUDGET) {
  * CodeView numeric leaves: a value below 0x8000 is the value itself; otherwise
  * the value's width is encoded in the leaf.
  */
-function readNumeric(view, bytes, offset) {
+function readNumeric(view, bytes, offset, end = bytes.length) {
+  if (offset + 2 > end) return null;
   const raw = view.getUint16(offset, true);
   if (raw < 0x8000) return { value: raw, next: offset + 2 };
+  const requiredEnd = raw === 0x8000 ? offset + 3
+    : (raw === 0x8001 || raw === 0x8002) ? offset + 4
+      : (raw === 0x8003 || raw === 0x8004) ? offset + 6
+        : offset + 2;
+  if (requiredEnd > end) return null;
   switch (raw) {
     case 0x8000: return { value: view.getInt8(offset + 2), next: offset + 3 };
     case 0x8001: return { value: view.getInt16(offset + 2, true), next: offset + 4 };
@@ -431,11 +441,13 @@ function readNumeric(view, bytes, offset) {
 function parseFieldList(view, bytes, start, end) {
   const members = [];
   let offset = start;
-  while (offset + 4 <= end) {
+  while (offset + 8 <= end) {
     const leaf = view.getUint16(offset, true);
     if (leaf !== LF_MEMBER) break;
     const typeIndex = view.getUint32(offset + 4, true);
-    const { value: fieldOffset, next } = readNumeric(view, bytes, offset + 8);
+    const numeric = readNumeric(view, bytes, offset + 8, end);
+    if (!numeric) break;
+    const { value: fieldOffset, next } = numeric;
     const nameEntry = cstringWithNext(bytes, next, end);
     if (!nameEntry) break;
     members.push({ name: nameEntry.value, typeIndex, offset: fieldOffset });
