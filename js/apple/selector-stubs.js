@@ -1,7 +1,7 @@
 /* Modern Objective-C selector/message stub resolution. */
 
 function selectorFromSymbol(name) {
-  const n = String(name || '');
+  const n = typeof name === 'string' ? name : '';
   let m = n.match(/(?:^|_)objc_msgSend\$([^\s]+)$/);
   if (m) return m[1];
   m = n.match(/(?:^|_)objc_msgSend(?:_fixup)?[_$]([^\s]+)$/);
