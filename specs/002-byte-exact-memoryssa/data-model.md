@@ -3,11 +3,11 @@
 ## `ByteForwardingQuery`
 
 An immutable query input containing the current validated MemorySSA artifact, the load use or
-entity identifier, access metadata, current producer identity, exact consumer/purpose context,
-cancellation signal, and bounded resource options. The producer identity is independently issued
-by the canonical builder/session; passing a copy of the artifact's serialized identity is not
-sufficient. It is not a new analysis artifact and has no independent alias or reaching-definition
-state.
+entity identifier, access metadata, optional current identity context, exact consumer/purpose
+context, cancellation signal, and bounded resource options. Publication authority is privately
+issued by the canonical builder and bound to the exact artifact object; passing a copy of the
+artifact or its serialized identity is not sufficient. It is not a new analysis artifact and has
+no independent alias or reaching-definition state.
 
 ## `ByteForwardingResult`
 
