@@ -1,0 +1,13 @@
+file:///home/runner/work/hex-ida/hex-ida/js/analysis/investigation-service.js:187
+  const error = new Error('investigation-analysis-binding-changed');
+                ^
+
+Error: investigation-analysis-binding-changed
+    at assertAnalysisBinding (file:///home/runner/work/hex-ida/hex-ida/js/analysis/investigation-service.js:187:17)
+    at InvestigationService.prepareGoal (file:///home/runner/work/hex-ida/hex-ida/js/analysis/investigation-service.js:413:5)
+    at async file:///home/runner/work/hex-ida/hex-ida/tests/reopened-final-seven-contracts.mjs:57:17 {
+  code: 'ANALYSIS_SNAPSHOT_STALE',
+  stale: true
+}
+
+Node.js v22.23.2
