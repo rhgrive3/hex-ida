@@ -86,7 +86,7 @@ The correction run completed with Phase 5 `44/44` files and `279` tests,
 Phase 6 `23/23` files and `116` tests, and Phase 8 `30/30` files and `327`
 tests. The requested implementation base is
 `42d472c310c12685e59dbf13a59e7572e8429ae2`; latest fetched `origin/main` is
-the descendant `1645b4e4a2b5cd9baf37e2efe5b2e6045481b1aa` of requested
+the descendant `7fb8e58daf542ac8a12807fb5adf2796a9aa01af` of requested
 checkpoint `66a5640359c5b39526fb89f6937e023294e54bdd`. Their moving-main
 comparison and candidate-tree result must be recorded before delivery.
 

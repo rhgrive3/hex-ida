@@ -22,7 +22,7 @@ validation, duplicate-evidence rejection, and object/generation-bound cache
 invalidation. The requested implementation base is
 `42d472c310c12685e59dbf13a59e7572e8429ae2`; requested moving-main checkpoint
 is `66a5640359c5b39526fb89f6937e023294e54bdd`, and the currently fetched
-`origin/main` is its descendant `1645b4e4a2b5cd9baf37e2efe5b2e6045481b1aa`.
+`origin/main` is its descendant `7fb8e58daf542ac8a12807fb5adf2796a9aa01af`.
 Both remain explicit moving-main/candidate-tree reconciliation gates.
 
 ## Technical Context
@@ -181,7 +181,7 @@ an AAPCS64 default when the selected profile is unsupported or unknown.
 
 1. After the implementation base is verified, compare and reconcile to the
    requested live-main checkpoint `66a5640359c5b39526fb89f6937e023294e54bdd`
-   and its fetched descendant `1645b4e4a2b5cd9baf37e2efe5b2e6045481b1aa`;
+   and its fetched descendant `7fb8e58daf542ac8a12807fb5adf2796a9aa01af`;
    re-run collision preflight without weakening the exact-head or ownership
    gates.
 2. Preserve the merged #2499 changes; modify only the canonical ABI
