@@ -1,7 +1,7 @@
 import { Backend } from './backend.js';
 import { SymbolIndex } from './symbols.js';
 import { createHexProject, exportHexProject, importHexProject, serializeHexProject, parseHexProject } from './project/index.js';
-import { diffFunctions } from './diff/index.js';
+import { runDiffInWorker } from './diff/runtime.js';
 import { stripSecrets } from './ai/session-core/index.js';
 
 const LOCAL_PREFIX='hex.project.v1.';
@@ -18,6 +18,7 @@ function identityKey(identity){
   return [identity?.hash||'',meta.sliceIndex,meta.sliceOffset,meta.sliceSize,meta.uuid,meta.architecture].map(keyOf).join('\0');
 }
 function staleWorkspaceError(){const error=new Error('workspace-binding-changed');error.code='HEX_WORKSPACE_STALE';return error;}
+function throwIfAborted(signal){if(!signal?.aborted)return;if(signal.reason instanceof Error)throw signal.reason;const error=new Error(signal.reason==null?'Operation aborted':String(signal.reason));error.name='AbortError';error.code='ABORT_ERR';throw error;}
 
 export function binaryIdentity(app, hash=null){
   const info=app?.store?.get?.('fileInfo')||null;
@@ -274,21 +275,24 @@ export class ProductWorkspace{
   }
   _localKey(identity){return LOCAL_PREFIX+identity.hash+':'+keyOf(identity.metadata?.sliceIndex)+':'+keyOf(identity.metadata?.uuid||identity.metadata?.architecture);}
   _loadLocal(identity){if(!this.storage)return null;try{const raw=this.storage.getItem(this._localKey(identity));return raw?parseHexProject(raw):null;}catch{return null;}}
-  async loadBaseline(file,{backend=null}={}){
+  async loadBaseline(file,{backend=null,signal=null}={}){
     if(!file)throw new Error('baseline-file-required');
     if(!this.identity)await this.bind();
     if(!this.identity)throw staleWorkspaceError();
     const revision=this.bindingRevision, request=++this.baselineSequence;
     const assertCurrent=()=>{this._assertBinding(revision);if(request!==this.baselineSequence)throw staleWorkspaceError();};
     const ownedBackend=!backend, other=backend||this.backendFactory();
+    const onAbort=()=>{if(ownedBackend)other?.dispose?.();};
+    if(signal?.aborted)throwIfAborted(signal);
+    signal?.addEventListener('abort',onAbort,{once:true});
     try{
-      const info=await other.open(file);assertCurrent();
+      const info=await other.open(file);throwIfAborted(signal);assertCurrent();
       const currentArch=this.identity?.metadata?.architecture||null;const sliceIndex=chooseSlice(info,currentArch);
       if(sliceIndex<0)throw new Error('baseline-slice-unavailable');
       const slice=info.slices[sliceIndex];const arch=slice?.capability?.architecture||slice?.info?.architecture||slice?.info?.cpu||null;
       if(currentArch&&arch&&currentArch!==arch){const error=new Error(`architecture mismatch: ${currentArch} vs ${arch}`);error.code='DIFF_ARCH_MISMATCH';throw error;}
-      const hash=await other.ensureContentHash();assertCurrent();
-      const result=await other.analyze(sliceIndex);assertCurrent();
+      const hash=await other.ensureContentHash(null,signal);throwIfAborted(signal);assertCurrent();
+      const result=await other.analyze(sliceIndex,{signal});throwIfAborted(signal);assertCurrent();
       const symbols=new SymbolIndex({...result,regions:slice?.regions||[]});
       const functions=functionsFromSymbols(symbols);assertCurrent();
       const previous=this.baseline;
@@ -296,6 +300,7 @@ export class ProductWorkspace{
       if(previous?.ownedBackend&&previous.backend!==other)previous.backend?.dispose?.();
       this.diffState=null;this.busy=null;return this.baseline;
     }catch(error){if(ownedBackend)other?.dispose?.();throw error;}
+    finally{signal?.removeEventListener('abort',onAbort);}
   }
   async diff(options={}){
     if(this.busy)return this.busy;
@@ -304,10 +309,11 @@ export class ProductWorkspace{
     task=(async()=>{
       if(!baseline)throw new Error('baseline-not-loaded');
       const assertCurrent=()=>{this._assertBinding(revision);if(this.baseline!==baseline)throw staleWorkspaceError();};
-      try{await this.app.ensureRecognition?.({maxFunctions:MAX_DIFF_FUNCTIONS,knowledgeLimit:0});}catch{/* symbol fallback remains valid */}
-      assertCurrent();
+      throwIfAborted(options.signal);
+      try{await this.app.ensureRecognition?.({maxFunctions:MAX_DIFF_FUNCTIONS,knowledgeLimit:0,signal:options.signal});}catch(error){if(options.signal?.aborted)throwIfAborted(options.signal);/* symbol fallback remains valid */}
+      throwIfAborted(options.signal);assertCurrent();
       const current=currentDiffFunctions(this.app), before=baseline.functions;
-      const result=diffFunctions(before,current,{mode:'fast',signal:options.signal,threshold:options.threshold??0.62,matchBudget:options.matchBudget||{maxCandidateEvaluations:1500000,maxEdges:300000,maxComponentNodes:4096,maxComponentEdges:65536}});
+      const result=await runDiffInWorker(before,current,{mode:'fast',signal:options.signal,threshold:options.threshold??0.62,matchBudget:options.matchBudget||{maxCandidateEvaluations:1500000,maxEdges:300000,maxComponentNodes:4096,maxComponentEdges:65536}});
       assertCurrent();
       const inputsComplete=before.complete===true&&current.complete===true;
       result.completeness={complete:inputsComplete&&result.truncated!==true,reasons:[],baseline:{complete:before.complete===true,total:before.total,scanned:before.scanned,reason:before.truncationReason},current:{complete:current.complete===true,total:current.total,scanned:current.scanned,reason:current.truncationReason}};
