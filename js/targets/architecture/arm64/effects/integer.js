@@ -29,7 +29,10 @@ function expectedOperandCount(mnemonic) {
 }
 
 function regClass(op) { return op?.k === 'reg' ? String(op.cls || '').toLowerCase() : ''; }
-function regBits(op) { return Number(op?.bits || 0); }
+function regBits(op) {
+  const bits = op?.bits;
+  return typeof bits === 'number' && Number.isInteger(bits) && (bits === 32 || bits === 64) ? bits : 0;
+}
 function isGpOrZr(op) { return op?.k === 'reg' && ['gp','zr'].includes(regClass(op)); }
 function isGpOrSp(op) { return op?.k === 'reg' && ['gp','sp'].includes(regClass(op)); }
 
