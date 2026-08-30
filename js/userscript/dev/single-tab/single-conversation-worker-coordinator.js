@@ -152,10 +152,6 @@ export class SingleConversationWorkerCoordinator {
     if (this.controller.isActive()) {
       throw workerError(DEV_WORKER_FAILURE.WORKER_BUSY, 'Cannot release the single-tab Worker while it is generating.');
     }
-    /* A terminal controller event may already have stopped generation while
-       finishTerminal() is still restoring the Supervisor surface. Do not clear
-       the claim underneath that async fence: doing so would make
-       finishTerminal() return before resolving runWorkerTurn(). */
     const pending = this.pendingTerminal;
     if (pending) await pending.promise.catch(() => null);
     if (this.closed) throw workerError(DEV_WORKER_FAILURE.TRANSPORT_FAILURE, 'Single-tab Worker coordinator is closed.');
@@ -254,21 +250,26 @@ export class SingleConversationWorkerCoordinator {
     try {
       await this.restoreSupervisor();
     } catch (error) {
+      /* Worker completion is an execution fact and may already include external
+         repository/API side effects. A later navigation failure must never turn
+         that completed workload into worker.failed and invite a duplicate retry.
+         Keep the terminal kind/status and attach a separate restoration fault so
+         the Supervisor can recover its surface without replaying the Worker. */
+      const restore = Object.freeze({
+        code: DEV_WORKER_FAILURE.CONVERSATION_MISMATCH,
+        message: String(error?.message || 'Supervisor conversation restore failed.').slice(0, 512),
+      });
       normalized = Object.freeze({
-        type: 'worker.failed',
+        ...normalized,
         data: Object.freeze({
-          runId: claim.runId,
-          workerId: claim.workerId,
-          code: DEV_WORKER_FAILURE.CONVERSATION_MISMATCH,
-          message: String(error?.message || 'Supervisor conversation restore failed.').slice(0, 512),
+          ...(normalized.data || {}),
+          supervisorRestoreError: restore,
           workerResponseCaptured: !!this.lastResult?.responseText,
         }),
-        observedAt: this.now(),
       });
       this.lastResult = Object.freeze({
         ...this.lastResult,
-        status: DEV_WORKER_STATE.FAILED,
-        restoreError: DEV_WORKER_FAILURE.CONVERSATION_MISMATCH,
+        supervisorRestoreError: restore,
       });
     }
     if (this.closed || generation !== this.generation || this.claimed !== claim) return;
@@ -341,13 +342,6 @@ export class SingleConversationWorkerCoordinator {
       });
     }
 
-    // `currentConversation()` intentionally rejects a route whose complete
-    // remembered history has not rehydrated. That is too strict for returning to
-    // a Supervisor on iPad: old turns may remain permanently virtualized even
-    // though the correct route, composer and current Supervisor turns are live.
-    // Route first without a historical-turn requirement, then adopt only a
-    // settled target surface. If we came from the Worker route, reject its stale
-    // user-turn surface until React has actually swapped the conversation DOM.
     const rawBefore = this.controller.adapter.conversation?.() || null;
     const sourceAnchors = rawBefore?.id && rawBefore.id !== claim.supervisorConversation.id
       ? (this.controller.currentUserAnchors?.() || [])
