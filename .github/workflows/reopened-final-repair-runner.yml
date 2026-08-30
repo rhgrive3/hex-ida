@@ -18,31 +18,31 @@ jobs:
       - name: Repair patcher target
         run: python .github/reopened-final-patcher-fix.py
       - name: Apply repair
-        shell: bash
-        run: |
-          set +e
-          python .github/reopened-final-repair.py > .github/reopened-repair-output.txt 2>&1
-          status=$?
-          cat .github/reopened-repair-output.txt
-          if [ "$status" -ne 0 ]; then
-            git config user.name github-actions[bot]
-            git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-            git add .github/reopened-repair-output.txt
-            git commit -m 'chore: capture reopened repair failure'
-            git push origin HEAD:fix/reopened-audit-final-20260830
-            exit "$status"
-          fi
+        run: python .github/reopened-final-repair.py
       - name: Syntax and focused contracts
         shell: bash
         run: |
-          node --check js/app.js
-          node --check js/analysis/demand-driven-runtime.js
-          node --check js/analysis/investigation-service.js
-          node tests/reopened-final-seven-contracts.mjs
-          node tests/phase4/integration/issues-2502-2522-demand-analysis.test.mjs
-          node tests/phase4/integration/issues-2507-2518-resource-contracts.test.mjs
-          node tests/reopened-route-diff-contracts.mjs
-          node tools/benchmarks/reopened-final-demand-paths.mjs
+          set +e
+          {
+            node --check js/app.js &&
+            node --check js/analysis/demand-driven-runtime.js &&
+            node --check js/analysis/investigation-service.js &&
+            node tests/reopened-final-seven-contracts.mjs &&
+            node tests/phase4/integration/issues-2502-2522-demand-analysis.test.mjs &&
+            node tests/phase4/integration/issues-2507-2518-resource-contracts.test.mjs &&
+            node tests/reopened-route-diff-contracts.mjs &&
+            node tools/benchmarks/reopened-final-demand-paths.mjs
+          } > .github/reopened-test-output.txt 2>&1
+          status=$?
+          cat .github/reopened-test-output.txt
+          if [ "$status" -ne 0 ]; then
+            git config user.name github-actions[bot]
+            git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+            git add .github/reopened-test-output.txt
+            git commit -m 'chore: capture reopened focused test failure'
+            git push origin HEAD:fix/reopened-audit-final-20260830
+            exit "$status"
+          fi
       - name: Full test suites
         shell: bash
         run: |
@@ -55,6 +55,7 @@ jobs:
           rm -f .github/reopened-final-patcher-fix.py
           rm -f .github/reopened-final-inspection.txt
           rm -f .github/reopened-repair-output.txt
+          rm -f .github/reopened-test-output.txt
           rm -f .github/workflows/reopened-final-repair-runner.yml
       - name: Commit repaired branch
         shell: bash
