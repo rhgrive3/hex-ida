@@ -1,1 +1,1 @@
-export { ContextBroker, UNTRUSTED_NOTICE } from './broker.js';
+export { ContextBroker, UNTRUSTED_NOTICE } from './indexed-broker.js';
