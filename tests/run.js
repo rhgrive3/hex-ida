@@ -3728,10 +3728,18 @@ test('NAMES: fingerprint導入前のメモを新しいkeyへ安全に移す', as
       vars: {}, types: {}, structs: [],
     }));
     const store = new NoteStore('v2|new-fingerprint', [old]);
+    eq(store.nameOf(4096n), null);
+    eq(store.comment(4100n), null);
+    eq(store.migratedFrom, null);
+    eq(store.legacyCandidate?.sourceId, old);
+    ok(!mem.has('hex.notes.v2|new-fingerprint'), '未確認のlegacyメモを自動昇格している');
+    ok(mem.has('hex.notes.' + old), '確認前に旧データを消している');
+
+    ok(store.importLegacyCandidate(), '明示importに失敗した');
     eq(store.nameOf(4096n), 'hpUpdate');
     eq(store.comment(4100n), 'old note');
     eq(store.migratedFrom, old);
-    ok(mem.has('hex.notes.v2|new-fingerprint'), '新形式へコピーされていない');
+    ok(mem.has('hex.notes.v2|new-fingerprint'), '明示import後も新形式へコピーされていない');
     ok(mem.has('hex.notes.' + old), '移行時に旧データを消している');
   } finally {
     if (saved === undefined) delete globalThis.localStorage;
