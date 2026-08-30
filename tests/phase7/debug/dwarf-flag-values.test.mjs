@@ -4,6 +4,7 @@ import test from 'node:test';
 
 const dwarfSource = new URL('../../../js/analysis/debug/dwarf.js', import.meta.url);
 
+// Keep both decoded DW_FORM_flag=0 and DW_FORM_flag_present covered.
 test('DWARF boolean attributes use flag values, not attribute presence', async () => {
   const source = await readFile(dwarfSource, 'utf8');
   assert.match(source, /function attributeFlag\(die, attribute\)/);
