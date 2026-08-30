@@ -1,0 +1,33 @@
+name: Final open issues 20260831
+on:
+  push:
+    branches: [fix/final-open-issues-20260831]
+permissions:
+  contents: write
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Apply minimal repairs
+        run: python3 tools/patch-final-open-issues-20260831.py
+      - name: Focused closure tests
+        run: |
+          set -euo pipefail
+          node tests/final-open-issues-20260831.test.mjs
+          node tests/machine-effects/run.mjs
+          git diff --check
+      - name: Commit repaired tree
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add js tests
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'fix: close remaining runtime and ARM64 issues'
+          git push
