@@ -31,6 +31,7 @@ function waitForProducer(promise, signal) {
       }
     };
     signal.addEventListener('abort', onAbort, { once: true });
+    if (signal.aborted) { onAbort(); return; }
     promise.then(
       (value) => finish(resolve, value),
       (error) => finish(reject, error),
