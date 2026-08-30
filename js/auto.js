@@ -99,7 +99,10 @@ export function notableFunctions(program, symbols, region, limit = 12) {
     out.push({ addr: f.addr, name: f.name, score, reasons, stats, called, range, sampleComplete: list.complete !== false });
   }
   out.sort((a, b) => b.score - a.score || (a.addr < b.addr ? -1 : 1));
-  const result = out.slice(0, Math.max(0, Number(limit)));
+  const normalizedLimit = (typeof limit === 'number' && Number.isFinite(limit) && Number.isInteger(limit))
+    ? Math.max(0, limit)
+    : 12;
+  const result = out.slice(0, normalizedLimit);
   Object.defineProperties(result, {
     complete: { value: list.complete !== false, enumerable: false },
     sampled: { value: list.sampled === true, enumerable: false },

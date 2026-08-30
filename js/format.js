@@ -78,7 +78,8 @@ export function parseAddress(text) {
  * "?" matches any nibble.
  */
 export function parseHexPattern(text) {
-  const s = String(text).replace(/0x/gi, '').replace(/[\s,_-]/g, '');
+  if (typeof text !== 'string') return null;
+  const s = text.replace(/0x/gi, '').replace(/[\s,_-]/g, '');
   if (!s.length || s.length % 2 !== 0) return null;
   if (!/^[0-9a-f?]+$/i.test(s)) return null;
   const n = s.length / 2;

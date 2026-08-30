@@ -102,8 +102,12 @@ export function scopeAllowsTool(snapshot, scope, tool, args) { return new ScopeC
 function atLeast(scope, minimum) { return (RANK[scope] ?? -1) >= RANK[minimum]; }
 function collectAddresses(value, key = '') {
   const out = [];
+  if (isAddressKey(key)) {
+    if (value != null) out.push(value);
+    return out;
+  }
   if (Array.isArray(value)) { for (const item of value) out.push(...collectAddresses(item, key)); return out; }
-  if (!value || typeof value !== 'object') { if (isAddressKey(key) && toBigInt(value) != null) out.push(value); return out; }
+  if (!value || typeof value !== 'object') return out;
   for (const [childKey, child] of Object.entries(value)) out.push(...collectAddresses(child, childKey));
   return out;
 }
@@ -133,8 +137,9 @@ function inRange(target, start, end) {
 function sameAddress(a, b) { const x = toBigInt(a), y = toBigInt(b); return x != null && y != null && x === y; }
 function toBigInt(value) {
   try {
-    if (value == null || typeof value === 'boolean') return null;
-    if (typeof value === 'string' && value.trim() === '') return null;
-    return BigInt(value);
+    if (typeof value === 'bigint') return value;
+    if (typeof value === 'number') return Number.isSafeInteger(value) ? BigInt(value) : null;
+    if (typeof value === 'string') return value.trim() === '' ? null : BigInt(value);
+    return null;
   } catch { return null; }
 }
