@@ -1,23 +1,30 @@
-name: Fix unlinked top-10 batch
+name: Fix unlinked top10 batch
+
 on:
   push:
-    branches: [fix/unlinked-top10-20260830]
-    paths: [.github/workflows/fix-unlinked-top10.yml]
+    branches:
+      - fix/unlinked-top10-20260830
+
 permissions:
   contents: write
+
 jobs:
-  patch-and-test:
-    if: github.event.head_commit.message == 'chore: stage unlinked issue workflow'
+  patch:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
           ref: fix/unlinked-top10-20260830
-      - uses: actions/setup-node@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: '22'
+
       - name: Apply guarded patch
         run: python3 tools/.tmp-fix-unlinked-top10.py
+
       - name: Syntax checks
         run: |
           node --check js/app.js
@@ -28,16 +35,18 @@ jobs:
           node --check js/ui/product.js
           node --check js/ui/pinpoint-runtime.js
           node --check js/panels-base.js
+
       - name: Focused regressions
         run: |
           node tests/unlinked-top10-wiring-regression.mjs
           node tests/analysis-query-api.mjs
           npm run ui:test
+
       - name: Commit tested source only
         run: |
           rm -f tools/.tmp-fix-unlinked-top10.py .github/workflows/fix-unlinked-top10.yml
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
           git diff --cached --check
           git commit -m 'fix(ui): resolve top unlinked analysis wiring issues'
