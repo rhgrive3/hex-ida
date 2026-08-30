@@ -7,10 +7,30 @@ function abortError(signal, fallback = 'Field-access search aborted') {
 }
 
 function resultState(result) {
-  const complete = result?.complete !== false && result?.truncated !== true;
+  const unsupported = result?.unsupported === true
+    || result?.supported === false
+    || result?.completeness?.supported === false;
+  const capped = result?.capped === true || result?.results?.capped === true;
+  const queryLimited = result?.queryLimited === true || result?.results?.queryLimited === true;
+  const explicitIncomplete = result?.complete === false
+    || result?.truncated === true
+    || result?.completeness?.complete === false
+    || result?.results?.complete === false;
+  const complete = !unsupported && !capped && !queryLimited && !explicitIncomplete;
+  const upstreamReason = result?.reason
+    || result?.incompleteReason
+    || result?.truncationReason
+    || result?.completeness?.reasons?.[0]
+    || result?.results?.incompleteReason
+    || null;
   return {
     complete,
-    reason:complete ? null : (result?.reason || result?.incompleteReason || result?.truncationReason || 'field-access-incomplete'),
+    unsupported,
+    reason:complete ? null : (upstreamReason
+      || (unsupported ? 'unsupported-field-access' : null)
+      || (capped ? 'field-access-source-capped' : null)
+      || (queryLimited ? 'query-limit' : null)
+      || 'field-access-incomplete'),
   };
 }
 
@@ -51,7 +71,7 @@ function entryFor(backend, region, offset, size) {
 }
 
 export function fieldAccessRegion(backend, region, offset, size, { signal } = {}) {
-  if (!backend || !region?.id) return Promise.resolve({ regionId:region?.id || null, results:[], complete:false, reason:'field-access-unavailable' });
+  if (!backend || !region?.id) return Promise.resolve({ regionId:region?.id || null, results:[], complete:false, unsupported:true, reason:'field-access-unavailable' });
   const entry = entryFor(backend, region, offset, size);
   if (entry.result) return Promise.resolve(entry.result);
   entry.waiters++;
@@ -86,18 +106,21 @@ function aggregate(parts, regions, completedIds) {
   const results = [];
   const reasons = [];
   let sourcesComplete = true;
+  let unsupported = false;
   for (const part of parts.values()) {
     results.push(...part.results);
+    unsupported ||= part.unsupported === true;
     if (!part.complete) { sourcesComplete = false; if (part.reason) reasons.push(part.reason); }
   }
   const unscannedRegionIds = regions.map((region) => region.id).filter((id) => !completedIds.has(id));
-  const complete = unscannedRegionIds.length === 0 && sourcesComplete;
+  const complete = unscannedRegionIds.length === 0 && sourcesComplete && !unsupported;
   return Object.freeze({
     results:Object.freeze(results),
     complete,
+    unsupported,
     scannedRegionIds:Object.freeze(Array.from(completedIds)),
     unscannedRegionIds:Object.freeze(unscannedRegionIds),
-    reason:complete ? null : (reasons[0] || (unscannedRegionIds.length ? 'regions-pending' : 'field-access-incomplete')),
+    reason:complete ? null : (reasons[0] || (unsupported ? 'unsupported-field-access' : null) || (unscannedRegionIds.length ? 'regions-pending' : 'field-access-incomplete')),
   });
 }
 
