@@ -21,16 +21,23 @@ export class DebugAdapterError extends Error {
 
 export function asAddress(value, name = 'address') {
   try {
-    if (value == null || typeof value === 'boolean') throw new Error('missing');
+    if (typeof value === 'bigint') {
+      if (value < 0n) throw new Error('negative');
+      return value;
+    }
     if (typeof value === 'number') {
       if (!Number.isSafeInteger(value)) throw new Error('unsafe-number');
       if (value < 0) throw new Error('negative');
       return BigInt(value);
     }
-    if (typeof value === 'string' && !value.trim()) throw new Error('empty');
-    const out = typeof value === 'bigint' ? value : BigInt(value);
-    if (out < 0n) throw new Error('negative');
-    return out;
+    if (typeof value === 'string') {
+      const text = value.trim();
+      if (!text) throw new Error('empty');
+      const out = BigInt(text);
+      if (out < 0n) throw new Error('negative');
+      return out;
+    }
+    throw new Error('invalid-type');
   } catch {
     throw new DebugAdapterError('invalid-address', `${name} must be a non-negative integer`);
   }
@@ -65,8 +72,10 @@ function breakpointId(value, fallback) {
 }
 
 export function normalizeBreakpoint(spec) {
-  if (!spec || typeof spec !== 'object') throw new DebugAdapterError('invalid-breakpoint', 'breakpoint must be an object');
-  const kind = spec.kind || (spec.address != null ? 'address' : spec.function ? 'function' : null);
+  if (!spec || typeof spec !== 'object' || Array.isArray(spec)) throw new DebugAdapterError('invalid-breakpoint', 'breakpoint must be an object');
+  const kind = spec.kind == null
+    ? (spec.address != null ? 'address' : typeof spec.function === 'string' && spec.function.trim() ? 'function' : null)
+    : spec.kind;
   if (!BREAKPOINT_KINDS.includes(kind)) throw new DebugAdapterError('invalid-breakpoint', `unsupported breakpoint kind: ${kind}`);
   if (kind === 'address') {
     const address = asAddress(spec.address);
@@ -74,7 +83,8 @@ export function normalizeBreakpoint(spec) {
     return { id, kind, address, enabled: spec.enabled !== false };
   }
   if (kind === 'function') {
-    const fn = String(spec.function || '').trim();
+    if (typeof spec.function !== 'string') throw new DebugAdapterError('invalid-breakpoint', 'function breakpoint requires function');
+    const fn = spec.function.trim();
     if (!fn) throw new DebugAdapterError('invalid-breakpoint', 'function breakpoint requires function');
     const address = spec.address == null ? null : asAddress(spec.address);
     const id = breakpointId(spec.id, `bp:function:${fn}:${address ?? ''}`);
@@ -83,7 +93,8 @@ export function normalizeBreakpoint(spec) {
   if (kind === 'conditional') {
     if (spec.address == null) throw new DebugAdapterError('invalid-breakpoint', 'conditional breakpoint requires address');
     const address = asAddress(spec.address);
-    const condition = String(spec.condition || '').trim();
+    if (typeof spec.condition !== 'string') throw new DebugAdapterError('invalid-breakpoint', 'conditional breakpoint requires condition');
+    const condition = spec.condition.trim();
     if (!condition) throw new DebugAdapterError('invalid-breakpoint', 'conditional breakpoint requires condition');
     const id = breakpointId(spec.id, `bp:conditional:${address}:${condition}`);
     return { id, kind, address, condition, enabled: spec.enabled !== false };
