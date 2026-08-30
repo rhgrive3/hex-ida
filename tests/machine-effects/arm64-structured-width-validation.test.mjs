@@ -28,6 +28,8 @@ assert.ok(add && add.completeness !== 'partial' && add.operations.length > 0, 'n
 assertFailClosed(lift('add', [{ ...gp(0), bits:'64' }, gp(1), gp(2)]), 'ADD string width');
 assertFailClosed(lift('add', [gp(0), { ...gp(1), bits:true }, gp(2)]), 'ADD boolean width');
 assertFailClosed(lift('add', [gp(0), gp(1), { ...gp(2), bits:64.5 }]), 'ADD fractional width');
+assertFailClosed(lift('add', [{ ...gp(0), cls:{ toString(){ return 'gp'; } } }, gp(1), gp(2)]), 'ADD object register class');
+assertFailClosed(lift('add', [gp(0), { ...gp(1), cls:['gp'] }, gp(2)]), 'ADD array register class');
 
 const fadd = lift('fadd', [fp(0), fp(1), fp(2)]);
 assert.ok(fadd && fadd.completeness !== 'partial' && fadd.operations.length > 0, 'numeric-width FADD remains semantic');

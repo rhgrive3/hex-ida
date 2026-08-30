@@ -115,7 +115,7 @@ function asBigIntOrNull(value) {
 }
 
 function isGpOrZrRegister(operand) {
-  return operand?.k === 'reg' && ['gp','zr'].includes(String(operand.cls || '').toLowerCase());
+  return operand?.k === 'reg' && typeof operand.cls === 'string' && ['gp','zr'].includes(operand.cls.toLowerCase());
 }
 
 function isPlainGpSource(operand) {

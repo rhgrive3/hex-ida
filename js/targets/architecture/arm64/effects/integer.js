@@ -28,7 +28,7 @@ function expectedOperandCount(mnemonic) {
   return null;
 }
 
-function regClass(op) { return op?.k === 'reg' ? String(op.cls || '').toLowerCase() : ''; }
+function regClass(op) { return op?.k === 'reg' && typeof op.cls === 'string' ? op.cls.toLowerCase() : ''; }
 function regBits(op) {
   const bits = op?.bits;
   return typeof bits === 'number' && Number.isInteger(bits) && (bits === 32 || bits === 64) ? bits : 0;
