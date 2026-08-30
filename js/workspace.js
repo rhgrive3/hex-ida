@@ -120,11 +120,12 @@ export function snapshotWorkspace(app, identity){
 export function applyWorkspaceProject(app, project){
   const notes=app.notes;
   if(!notes||!notes.id)throw new Error('notes-unavailable');
-  notes.names.clear();notes.comments.clear();notes.types.clear();notes.vars.clear();
+  const replaceVars = project.user?.varsPresent !== false;
+  notes.names.clear();notes.comments.clear();notes.types.clear();if(replaceVars)notes.vars.clear();
   for(const entry of project.user.names||[])if(entry?.address!=null&&entry.value)notes.names.set(BigInt(entry.address).toString(),String(entry.value));
   for(const entry of project.user.comments||[])if(entry?.address!=null&&entry.value)notes.comments.set(BigInt(entry.address).toString(),String(entry.value));
   for(const entry of project.user.types||[])if(entry?.key)notes.types.set(String(entry.key),String(entry.value||''));
-  for(const entry of (project.user.vars||project.user.varNames||[]))if(entry?.key)notes.vars.set(String(entry.key),String(entry.value||''));
+  if(replaceVars)for(const entry of (project.user.vars||project.user.varNames||[]))if(entry?.key)notes.vars.set(String(entry.key),String(entry.value||''));
   notes.structs=Array.isArray(project.user.structs)?project.user.structs.slice():[];
   notes.dirty=true;
   if(!notes.save())throw new Error(notes.lastSaveError?.code||'notes-save-failed');

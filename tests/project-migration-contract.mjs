@@ -69,7 +69,7 @@ function cloneWithBigInt(value) {
   console.log("  ok Case 3 serialize is pure");
 }
 
-// Case 4 — v1 parse unchanged
+// Case 4 — current-version parse round-trip
 {
   const original = createHexProject({
     binaryHash: "sha256_fixture",
@@ -78,10 +78,29 @@ function cloneWithBigInt(value) {
   const serialized = serializeHexProject(original);
   const parsed = parseHexProject(serialized);
   assert.equal(parsed.format, "hexproj");
-  assert.equal(parsed.version, 1);
+  assert.equal(parsed.version, HEX_PROJECT_VERSION);
+  assert.equal(parsed.version, 2);
   assert.equal(parsed.binary.hash, "sha256_fixture");
   assert.deepEqual(parsed.user.names, [{ address: 0x1000n, name: "entry" }]);
-  console.log("  ok Case 4 v1 parse round-trip");
+  console.log("  ok Case 4 current-version parse round-trip");
+}
+
+// Case 4b — legacy v1 remains import-compatible via the explicit v1 -> v2 migration
+{
+  const legacyV1 = {
+    format: "hexproj",
+    version: 1,
+    binary: { hash: "legacy_fixture", metadata: null, embedded: false },
+    user: { names: [{ address: 0x2000n, name: "legacy" }] },
+  };
+  const parsed = parseHexProject(serializeHexProject(legacyV1));
+  assert.equal(parsed.version, HEX_PROJECT_VERSION);
+  assert.equal(parsed.version, 2);
+  assert.equal(parsed.binary.hash, "legacy_fixture");
+  assert.deepEqual(parsed.user.names, [{ address: 0x2000n, name: "legacy" }]);
+  assert.equal(parsed.user.varsPresent, false);
+  assert.deepEqual(parsed.user.vars, []);
+  console.log("  ok Case 4b legacy v1 migrates to current v2");
 }
 
 // Case 5 — future version remains rejected
