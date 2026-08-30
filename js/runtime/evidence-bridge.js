@@ -8,7 +8,8 @@ const RELATIONS = Object.freeze(['supports', 'contradicts', 'refines']);
 const COMPLETENESS_RANK = Object.freeze({ unsupported: 0, truncated: 1, partial: 2, bounded: 3, complete: 4 });
 
 function required(value, code, message) {
-  const text = String(value ?? '').trim();
+  if (typeof value !== 'string') throw new DebugAdapterError(code, message || code);
+  const text = value.trim();
   if (!text) throw new DebugAdapterError(code, message || code);
   return text;
 }
@@ -16,7 +17,10 @@ function required(value, code, message) {
 function stringArray(value, name) {
   if (value == null) return Object.freeze([]);
   if (!Array.isArray(value)) throw new DebugAdapterError('runtime-invalid-array', `${name} must be an array`);
-  return Object.freeze([...new Set(value.map(String).filter(Boolean))].sort());
+  for (const item of value) {
+    if (typeof item !== 'string' || !item) throw new DebugAdapterError('runtime-invalid-array', `${name} must contain only non-empty strings`);
+  }
+  return Object.freeze([...new Set(value)].sort());
 }
 
 function optionalSequence(value) {
@@ -77,8 +81,11 @@ export function createInterventionRecord(input = {}) {
     sequence,
     parentInterventionIds,
   };
+  const interventionId = input.interventionId == null
+    ? `intervention_${stableDigest(identity)}`
+    : required(input.interventionId, 'runtime-intervention-id-invalid', 'intervention id must be a non-empty string');
   return deepFreeze({
-    interventionId: String(input.interventionId || `intervention_${stableDigest(identity)}`),
+    interventionId,
     runtimeSessionId,
     providerId,
     kind,
@@ -110,7 +117,7 @@ export class InterventionLedger {
     return record;
   }
 
-  get(id) { return this.#records.get(String(id)) || null; }
+  get(id) { return this.#records.get(id) || null; }
   all() { return Object.freeze([...this.#records.values()]); }
 
   ancestry(ids = []) {
