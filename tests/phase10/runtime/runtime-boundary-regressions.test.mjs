@@ -24,6 +24,20 @@ function appWithSliceIndex(sliceIndex) {
   };
 }
 
+function appWithHash(hash, ensureContentHash = null) {
+  return {
+    store: {
+      get(key) {
+        if (key === 'fileInfo') return { hash, slices:[] };
+        if (key === 'sliceIndex') return -1;
+        if (key === 'architecture') return 'unknown';
+        return null;
+      },
+    },
+    backend: ensureContentHash ? { ensureContentHash } : null,
+  };
+}
+
 test('P10 runtime app identity rejects coercive slice indexes (#1633)', async () => {
   for (const value of [false, true, '', '   ', NaN, Infinity, 1.5, [], {}]) {
     const identity = await runtimeIdentityForApp(appWithSliceIndex(value));
@@ -32,6 +46,25 @@ test('P10 runtime app identity rejects coercive slice indexes (#1633)', async ()
 
   assert.match((await runtimeIdentityForApp(appWithSliceIndex(0))).sliceIdentity, /^slice:0:slice-0:arm64$/);
   assert.match((await runtimeIdentityForApp(appWithSliceIndex('1'))).sliceIdentity, /^slice:1:slice-1:arm64e$/);
+});
+
+test('P10 runtime app identity rejects non-string content hashes (#2714)', async () => {
+  for (const value of [{ source:'A' }, { source:'B' }, [], 1, true, '   ']) {
+    await assert.rejects(runtimeIdentityForApp(appWithHash(value)), /runtime binary identity is unavailable/);
+  }
+
+  const exact = await runtimeIdentityForApp(appWithHash('sha256:fixture'));
+  assert.equal(exact.contentHash, 'sha256:fixture');
+  assert.match(exact.key, /^sha256:fixture\|slice:-1:/);
+});
+
+test('P10 runtime app identity validates ensureContentHash results (#2714)', async () => {
+  await assert.rejects(
+    runtimeIdentityForApp(appWithHash(null, async () => ({ source:'backend' }))),
+    /runtime binary identity is unavailable/,
+  );
+  const exact = await runtimeIdentityForApp(appWithHash(null, async () => 'sha256:backend'));
+  assert.equal(exact.contentHash, 'sha256:backend');
 });
 
 test('P10 runtime memory rejects coercive size and maxTransfer inputs (#1634)', () => {
