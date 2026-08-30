@@ -1,0 +1,26 @@
+name: Isolated PR2677 restack
+
+on:
+  push:
+    branches:
+      - tmp/pr2677-restack-safety
+    paths:
+      - '.github/workflows/tmp-pr2677-restack.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  restack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: tmp/pr2677-restack-safety
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Safely restack PR2677 onto current main
+        run: python3 tools/pr2677-restack.py
