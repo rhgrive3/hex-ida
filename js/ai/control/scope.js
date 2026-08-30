@@ -133,8 +133,9 @@ function inRange(target, start, end) {
 function sameAddress(a, b) { const x = toBigInt(a), y = toBigInt(b); return x != null && y != null && x === y; }
 function toBigInt(value) {
   try {
-    if (value == null || typeof value === 'boolean') return null;
-    if (typeof value === 'string' && value.trim() === '') return null;
-    return BigInt(value);
+    if (typeof value === 'bigint') return value;
+    if (typeof value === 'number') return Number.isSafeInteger(value) ? BigInt(value) : null;
+    if (typeof value === 'string') return value.trim() === '' ? null : BigInt(value);
+    return null;
   } catch { return null; }
 }
