@@ -8,7 +8,7 @@ permissions:
 jobs:
   repair:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
         with:
@@ -20,12 +20,14 @@ jobs:
       - name: Install dependencies
         run: |
           npm ci
-          npx playwright install chromium
+          npx playwright install chromium webkit
       - name: Extract and apply repair
         shell: bash
         run: |
           awk '/python - <<'\''PY'\''/{flag=1;next} /^          PY$/{flag=0} flag { sub(/^          /, ""); print }' .github/reopened-script-repair.payload > /tmp/repair.py
           python /tmp/repair.py
+      - name: Build canonical userscript runtime
+        run: npm run userscript:build
       - name: Focused regressions
         run: node tests/reopened-script-contracts.mjs
       - name: Existing sandbox script plugin tests
