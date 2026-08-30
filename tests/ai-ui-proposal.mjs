@@ -96,8 +96,9 @@ await run(async ({ browser }) => {
     };
   });
   check('a proposal renders as a before/after card', !!card && /名前の変更/.test(card.title || ''), JSON.stringify(card && card.title));
+  const displayedCurrentName = card?.liveName == null ? '—' : card.liveName;
   check('the card states current, proposed, reason and evidence count',
-    card && card.before === card.liveName && card.after === 'updateExperience' && /報酬計算/.test(card.reason) && /3/.test(card.evidence), JSON.stringify(card));
+    card && card.before === displayedCurrentName && card.after === 'updateExperience' && /報酬計算/.test(card.reason) && /3/.test(card.evidence), JSON.stringify(card));
   check('the card offers exactly one apply and one reject', card && card.buttons.length === 2, JSON.stringify(card && card.buttons));
   check('nothing is applied before the user acts', card && card.status === 'pending' && card.applied !== 'updateExperience', String(card && card.applied));
 
