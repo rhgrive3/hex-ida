@@ -21,7 +21,8 @@ export const RUNTIME_EVENT_KINDS = Object.freeze([
 const COMPLETENESS_RANK = Object.freeze({ unsupported: 0, truncated: 1, partial: 2, bounded: 3, complete: 4 });
 
 function required(value, code, message) {
-  const text = String(value ?? '').trim();
+  if (typeof value !== 'string') throw new DebugAdapterError(code, message || code);
+  const text = value.trim();
   if (!text) throw new DebugAdapterError(code, message || code);
   return text;
 }
@@ -36,12 +37,19 @@ function safeInteger(value, fallback, name, { min = 0 } = {}) {
   return n;
 }
 
-function optionalText(value) { return value == null ? null : String(value); }
+function optionalText(value, name = 'runtime event identity') {
+  if (value == null) return null;
+  if (typeof value !== 'string') throw new DebugAdapterError('runtime-invalid-event-identity', `${name} must be a string`);
+  return value;
+}
 
 function arrayOfStrings(value, name) {
   if (value == null) return Object.freeze([]);
   if (!Array.isArray(value)) throw new DebugAdapterError('runtime-invalid-event-array', `${name} must be an array`);
-  return Object.freeze([...new Set(value.map(String).filter(Boolean))]);
+  for (const item of value) {
+    if (typeof item !== 'string' || !item) throw new DebugAdapterError('runtime-invalid-event-array', `${name} must contain only non-empty strings`);
+  }
+  return Object.freeze([...new Set(value)]);
 }
 
 function normalizeCompleteness(value, fallback = 'partial') {
@@ -63,8 +71,8 @@ function normalizeMode(value) {
 }
 
 function dedupeIdentity(input) {
-  if (input.providerEventId != null) return `provider:${String(input.providerEventId)}`;
-  if (input.streamId != null && input.sequence != null) return `stream:${String(input.streamId)}:${input.sequence}`;
+  if (input.providerEventId != null) return `provider:${input.providerEventId}`;
+  if (input.streamId != null && input.sequence != null) return `stream:${input.streamId}:${input.sequence}`;
   return null;
 }
 
@@ -84,31 +92,33 @@ export function createRuntimeEvent(input = {}) {
     providerId,
     providerVersion,
     sessionEpoch,
-    streamId: optionalText(input.streamId),
+    streamId: optionalText(input.streamId, 'streamId'),
     sequence,
-    providerEventId: optionalText(input.providerEventId),
+    providerEventId: optionalText(input.providerEventId, 'providerEventId'),
     kind,
-    processKey: optionalText(input.processKey),
-    threadKey: optionalText(input.threadKey),
-    moduleBindingKey: optionalText(input.moduleBindingKey),
+    processKey: optionalText(input.processKey, 'processKey'),
+    threadKey: optionalText(input.threadKey, 'threadKey'),
+    moduleBindingKey: optionalText(input.moduleBindingKey, 'moduleBindingKey'),
     moduleGeneration,
     payload,
   };
-  const eventId = optionalText(input.eventId) || `runtimeevent_${stableDigest(identity)}`;
+  const eventId = input.eventId == null
+    ? `runtimeevent_${stableDigest(identity)}`
+    : required(input.eventId, 'runtime-event-id-invalid', 'runtime event id must be a non-empty string');
   return deepFreeze({
     eventId,
     runtimeSessionId,
     providerId,
     providerVersion,
     sessionEpoch,
-    streamId: optionalText(input.streamId),
+    streamId: optionalText(input.streamId, 'streamId'),
     sequence,
     predecessorIds: arrayOfStrings(input.predecessorIds, 'predecessorIds'),
-    providerEventId: optionalText(input.providerEventId),
+    providerEventId: optionalText(input.providerEventId, 'providerEventId'),
     timestamp: input.timestamp == null ? null : String(input.timestamp),
-    processKey: optionalText(input.processKey),
-    threadKey: optionalText(input.threadKey),
-    moduleBindingKey: optionalText(input.moduleBindingKey),
+    processKey: optionalText(input.processKey, 'processKey'),
+    threadKey: optionalText(input.threadKey, 'threadKey'),
+    moduleBindingKey: optionalText(input.moduleBindingKey, 'moduleBindingKey'),
     moduleGeneration,
     kind,
     payload,
