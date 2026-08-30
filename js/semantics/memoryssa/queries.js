@@ -5,10 +5,7 @@ import {
 } from '../../core/identity/index.js';
 import { createOriginSet } from '../../core/identity/origin.js';
 import { validateMemorySsa } from './validate.js';
-import {
-  canonicalMemorySsaProducerBinding,
-  canonicalMemorySsaIdentityBinding,
-} from './build.js';
+import { isCanonicalMemorySsaProducerArtifact } from './build.js';
 import {
   CANONICAL_ACCESS_ISSUER,
   CANONICAL_ALIAS_ISSUERS,
@@ -1021,19 +1018,21 @@ function forwardingStatusFromArtifact(memorySsa, options) {
     throw new ForwardingStop('stale', 'memoryssa-canonical-digest-mismatch');
   }
   // The artifact's serialized identity is not an authority for itself. Exact
-  // publication requires a producer-issued artifact token plus a separately
-  // supplied current identity token. A caller passing a re-signed clone's own
-  // identity has neither token and is rejected even if every digest agrees.
-  const producerBinding = canonicalMemorySsaProducerBinding(artifact);
-  const currentIdentity = options.currentIdentity;
-  const identityBinding = canonicalMemorySsaIdentityBinding(currentIdentity);
-  if (!producerBinding || producerBinding.artifact !== artifact) {
+  // publication requires the private producer binding created by
+  // buildMemorySsa. Only the exact object issued by that builder can carry the
+  // binding; a clone or a re-signed object cannot register itself. A caller
+  // may optionally provide a current identity for freshness checking, but that
+  // value is context—not a capability—and is never used to mint authority.
+  if (!isCanonicalMemorySsaProducerArtifact(artifact)) {
     throw new ForwardingStop('stale', 'memoryssa-independent-producer-identity-unavailable');
   }
-  if (!identityBinding || identityBinding !== producerBinding
-      || identityBinding.identityDigest !== producerBinding.identityDigest
-      || stableDigest(currentIdentity) !== stableDigest(artifact.identity)) {
-    throw new ForwardingStop('stale', 'memoryssa-independent-current-identity-mismatch');
+  if (Object.hasOwn(options, 'currentIdentity')) {
+    const currentIdentity = options.currentIdentity;
+    if (!forwardingObject(currentIdentity)
+        || currentIdentity === artifact.identity
+        || stableDigest(currentIdentity) !== stableDigest(artifact.identity)) {
+      throw new ForwardingStop('stale', 'memoryssa-independent-current-identity-mismatch');
+    }
   }
 }
 
@@ -1897,8 +1896,8 @@ export function forwardMemoryValue(memorySsa, useOrId, options = {}) {
     });
     // Preserve the producer-published object when validation succeeds.  The
     // validator may return a normalized overlay, but that new object must not
-    // silently lose the producer publication token required for exactness.
-    const artifact = canonicalMemorySsaProducerBinding(memorySsa)
+    // silently lose the private producer binding required for exactness.
+    const artifact = isCanonicalMemorySsaProducerArtifact(memorySsa)
       ? memorySsa
       : (validated ?? memorySsa);
     const use = useOrId && typeof useOrId === 'object'

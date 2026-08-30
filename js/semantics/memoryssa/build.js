@@ -37,27 +37,16 @@ export const MEMORY_SSA_BUILD_DEFAULT_BUDGET = Object.freeze({
 const ALIAS_RELATIONS = new Set(MEMORY_SSA_ALIAS_RELATIONS);
 
 // Producer authority belongs to this module because buildMemorySsa is the
-// canonical MemorySSA producer.  The WeakMaps are intentionally private: no
+// canonical MemorySSA producer. The WeakSet is intentionally private: no
 // consumer can register an arbitrary object or transfer authority to a
-// structured-clone by copying fields.  Queries can only observe a binding for
-// the exact object issued by this builder.
-const canonicalProducerArtifactBindings = new WeakMap();
-const canonicalProducerIdentityBindings = new WeakMap();
+// structured-clone by copying fields. Consumers can ask whether an exact
+// object was issued by this builder, but cannot read or mint its authority.
+const canonicalProducerArtifacts = new WeakSet();
 
-export function canonicalMemorySsaProducerBinding(artifact) {
+export function isCanonicalMemorySsaProducerArtifact(artifact) {
   return artifact && typeof artifact === 'object' && !Array.isArray(artifact)
-    ? canonicalProducerArtifactBindings.get(artifact) ?? null
-    : null;
-}
-
-export function canonicalMemorySsaProducerIdentity(artifact) {
-  return canonicalMemorySsaProducerBinding(artifact)?.producerIdentity ?? null;
-}
-
-export function canonicalMemorySsaIdentityBinding(identity) {
-  return identity && typeof identity === 'object' && !Array.isArray(identity)
-    ? canonicalProducerIdentityBindings.get(identity) ?? null
-    : null;
+    ? canonicalProducerArtifacts.has(artifact)
+    : false;
 }
 
 function fail(code) { throw new TypeError(code); }
@@ -519,16 +508,14 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
   if (regionById.size > budgetLimit(options, 'maxRegions')) fail('memory-ssa-build-budget-exceeded-maxRegions');
   const regions = [...regionById.values()].sort((a, b) => a.id.localeCompare(b.id));
   const regionIds = regions.map((region) => region.id);
-  // Keep the serialized artifact identity separate from the producer/session
-  // identity token.  The latter is retained only in-process and is required
-  // by the exact query gate; copying the artifact cannot copy publication
-  // authority.
-  const producerIdentity = deepFreeze(jsonSafe(options.identity ?? {
+  // The serialized identity describes the canonical build, but is not an
+  // authority for publication. The exact artifact object is bound privately
+  // below; copying or re-signing its fields cannot copy that binding.
+  const identity = deepFreeze(jsonSafe(options.identity ?? {
     functionId: irFunction.functionId,
     memorySsaBuildVersion: MEMORY_SSA_BUILD_VERSION,
     analyzerVersion: MEMORY_SSA_BUILD_VERSION,
   }));
-  const identity = jsonSafe(producerIdentity);
 
   const aliasCache = new Map();
   const queryAlias = (left, right, purpose) => {
@@ -1052,18 +1039,6 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
     canonicalDigest: canonicalMemorySsaDigest(artifact),
   };
   const published = deepFreeze(unpublished);
-  const artifactDigest = published.canonicalDigest;
-  const identityDigest = stableDigest(published.identity);
-  const binding = Object.freeze({
-    artifact: published,
-    artifactDigest,
-    identity: published.identity,
-    identityDigest,
-    producerIdentity,
-    snapshotId: published.snapshotId == null ? null : String(published.snapshotId),
-    functionId: published.functionId == null ? null : String(published.functionId),
-  });
-  canonicalProducerArtifactBindings.set(published, binding);
-  canonicalProducerIdentityBindings.set(producerIdentity, binding);
+  canonicalProducerArtifacts.add(published);
   return published;
 }

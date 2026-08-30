@@ -7,7 +7,6 @@ import {
   CANONICAL_MEMORY_FORWARDING_PURPOSE,
   forwardMemoryValue,
 } from '../memoryssa/queries.js';
-import { canonicalMemorySsaProducerIdentity } from '../memoryssa/build.js';
 import { propagateScalarConstants } from './semantic-ir-v2-to-v1-finalize.js';
 
 const MEMORY_CLOBBER_KINDS = new Set(['may-alias-clobber', 'unknown-clobber', 'call-clobber', 'intrinsic-clobber']);
@@ -192,10 +191,7 @@ export function attachMemorySsa(projected, memorySsa, valuesById, instructionByS
       queriedLoads.add(source);
       const fact = forwardMemoryValue(memorySsa, use, {
         functionId: projected.functionId,
-        requireIdentity: true,
         ...(memorySsa.buildVersion == null ? {} : { memorySsaBuildVersion: memorySsa.buildVersion }),
-        ...(canonicalMemorySsaProducerIdentity(memorySsa) == null
-          ? {} : { currentIdentity: canonicalMemorySsaProducerIdentity(memorySsa) }),
         consumerId: CANONICAL_MEMORY_FORWARDING_CONSUMER,
         purpose: CANONICAL_MEMORY_FORWARDING_PURPOSE,
         ...(canonicalIr == null ? {} : { ir: canonicalIr }),
