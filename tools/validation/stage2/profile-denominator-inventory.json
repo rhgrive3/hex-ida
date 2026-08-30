@@ -48,6 +48,8 @@
         "arm64e:a64+pac:pac-mnemonic:braaz",
         "arm64e:a64+pac:pac-mnemonic:brab",
         "arm64e:a64+pac:pac-mnemonic:brabz",
+        "arm64e:a64+pac:pac-mnemonic:eretaa",
+        "arm64e:a64+pac:pac-mnemonic:eretab",
         "arm64e:a64+pac:pac-mnemonic:pacda",
         "arm64e:a64+pac:pac-mnemonic:pacdb",
         "arm64e:a64+pac:pac-mnemonic:pacdza",
