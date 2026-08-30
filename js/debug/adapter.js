@@ -101,7 +101,10 @@ export function normalizeBreakpoint(spec) {
   }
   const address = asAddress(spec.address);
   const size = boundedInteger(spec.size, 1, 1, 4096, 'watchpoint size');
-  const access = spec.access == null ? 'write' : String(spec.access).toLowerCase();
+  if (spec.access != null && typeof spec.access !== 'string') {
+    throw new DebugAdapterError('invalid-watchpoint-access', 'watchpoint access must be a string', { access: spec.access, allowed: WATCHPOINT_ACCESS });
+  }
+  const access = spec.access == null ? 'write' : spec.access.toLowerCase();
   if (!WATCHPOINT_ACCESS.includes(access)) {
     throw new DebugAdapterError('invalid-watchpoint-access', `unsupported watchpoint access: ${spec.access}`, { access: spec.access, allowed: WATCHPOINT_ACCESS });
   }
