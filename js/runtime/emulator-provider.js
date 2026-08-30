@@ -38,11 +38,21 @@ function completenessFor(termination) {
   return 'bounded';
 }
 
+function engineText(value, fallback, code) {
+  const resolved = value ?? fallback;
+  if (typeof resolved !== 'string' || !resolved.trim()) {
+    throw new DebugAdapterError(code, code === 'emulator-engine-id-invalid'
+      ? 'emulator engine id must be a non-empty string'
+      : 'emulator engine version must be a non-empty string');
+  }
+  return resolved;
+}
+
 function normalizeEngineDescriptor(engine, options) {
   const source = typeof engine?.descriptor === 'function' ? engine.descriptor() : {};
   return deepFreeze({
-    id: String(options.engineId ?? source.id ?? engine?.id ?? 'emulator'),
-    version: String(options.engineVersion ?? source.version ?? engine?.version ?? 'unknown'),
+    id: engineText(options.engineId ?? source.id ?? engine?.id, 'emulator', 'emulator-engine-id-invalid'),
+    version: engineText(options.engineVersion ?? source.version ?? engine?.version, 'unknown', 'emulator-engine-version-invalid'),
     architecture: options.architecture ?? source.architecture ?? null,
     environment: options.environment ?? source.environment ?? 'unknown',
     deterministic: options.deterministic ?? source.deterministic ?? engine?.deterministic !== false,
