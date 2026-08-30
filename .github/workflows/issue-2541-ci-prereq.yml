@@ -18,48 +18,16 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Restore deterministic anchor progress
-        run: |
-          python3 <<'PY'
-          from pathlib import Path
-          p = Path('js/ai/ui/local-engine-base.js')
-          s = p.read_text()
-          old = "async function runAgent({ app, localContext, question, mode, style, signal, onActivity }) {\n  if (signal?.aborted) throw new Error('cancelled');\n\n"
-          new = """async function runAgent({ app, localContext, question, mode, style, signal, onActivity, context }) {
-  if (signal?.aborted) throw new Error('cancelled');
-
-  const anchor = context?.function || null;
-  const anchorParts = [];
-  if (anchor?.address) anchorParts.push(String(anchor.address));
-  if (anchor?.name) anchorParts.push(pick('関数: ' + anchor.name, 'function: ' + anchor.name));
-  onActivity({
-    label: pick('解析地点を特定', 'Locating analysis target'),
-    detail: anchorParts.join(pick('、', ', ')) || pick('現在の解析コンテキスト', 'current analysis context'),
-  });
-
-"""
-          if s.count(old) != 1:
-              raise SystemExit(f'runAgent anchor insertion expected one match, got {s.count(old)}')
-          p.write_text(s.replace(old, new, 1))
-          PY
-          node --check js/ai/ui/local-engine-base.js
-      - name: Run focused offline AI regression
-        run: |
-          npm install --no-save --save-exact playwright@1.55.0
-          npx --no-install playwright install chromium
-          node tests/ai-ui-fallback.mjs
-      - name: Commit source-only repair
-        run: |
-          rm .github/workflows/issue-2541-ci-prereq.yml
+      - run: python3 .github/issue-2541-ci-prereq.py
+      - run: node --check js/ai/ui/local-engine-base.js
+      - run: npm install --no-save --save-exact playwright@1.55.0
+      - run: npx --no-install playwright install chromium
+      - run: node tests/ai-ui-fallback.mjs
+      - run: |
+          rm .github/workflows/issue-2541-ci-prereq.yml .github/issue-2541-ci-prereq.py
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
           git diff --cached --check
-          python3 <<'PY'
-          import subprocess
-          files = set(subprocess.check_output(['git','diff','--cached','--name-only'], text=True).splitlines())
-          if files != {'js/ai/ui/local-engine-base.js', '.github/workflows/issue-2541-ci-prereq.yml'}:
-              raise SystemExit(f'unexpected repair scope: {sorted(files)}')
-          PY
           git commit -m "fix(ai): restore offline agent anchor progress"
           git push origin HEAD:fix/2541-address-owned-analysis
