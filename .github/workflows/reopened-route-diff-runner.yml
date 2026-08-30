@@ -1,0 +1,41 @@
+name: Reopened route diff repair
+on:
+  push:
+    branches:
+      - fix/reopened-route-diff-contracts-v2
+permissions:
+  contents: write
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/reopened-route-diff-contracts-v2
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install dependencies
+        run: npm ci
+      - name: Apply semantic repair
+        run: python .github/reopened-route-diff-repair.py
+      - name: Focused regressions
+        run: node tests/reopened-route-diff-contracts.mjs
+      - name: Existing route and diff tests
+        shell: bash
+        run: |
+          shopt -s nullglob
+          for f in tests/*router*.mjs tests/*route*.mjs tests/*diff*.mjs; do node "$f"; done
+      - name: UI tests
+        run: npm run ui:test
+      - name: Commit repair
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git rm .github/reopened-route-diff-repair.py .github/workflows/reopened-route-diff-runner.yml
+          git add js tests
+          git commit -m 'fix(ui,diff): wire route lifetime through worker matching'
+          git push origin HEAD:fix/reopened-route-diff-contracts-v2
