@@ -1,0 +1,48 @@
+name: Generated userscript main sync
+
+# Push-only on purpose: a job that holds
+# contents: write lets a same-repo PR branch (whose YAML is the one that
+# runs) escalate the token and push anywhere. This file never executes in
+# a pull_request context, so its write scope cannot be steered by a PR.
+# The main push lane is the integration lane (EP-003: integration owns
+# canonical committed generated output), and the committed template is
+# stale by construction against every js merge (it can never embed its
+# own content hash). This job rebuilds, commits only the userscript-owned
+# generated paths, and pushes the sync commit to main; everything else
+# fails closed inside scripts/sync-generated-userscript.mjs.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: generated-userscript-main-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Resolve generated-output ownership policy
+        id: generated-policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          mode="$(node tools/validation/generated-output-policy.mjs)"
+          case "$mode" in
+            enforce|ephemeral) ;;
+            *) echo "unknown generated-output policy mode: $mode" >&2; exit 1 ;;
+          esac
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+      - name: Rebuild and commit canonical generated outputs to main
+        if: steps.generated-policy.outputs.mode == 'enforce'
+        run: node scripts/sync-generated-userscript.mjs --rebuild

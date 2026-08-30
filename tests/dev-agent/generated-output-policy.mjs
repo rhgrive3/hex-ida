@@ -33,6 +33,7 @@ assert.equal(generatedOutputMode({ eventName: 'pull_request', headRef: '' }), GE
 
 for (const workflow of [
   '.github/workflows/generated-sync.yml',
+  '.github/workflows/generated-userscript-main-sync.yml',
   '.github/workflows/generated-userscript-autofix.yml',
   '.github/workflows/userscript-host.yml',
   '.github/workflows/phase7-release-validation.yml',
@@ -50,6 +51,22 @@ for (const workflow of [
     }
   }
 }
+
+const canonicalSyncWorkflow = fs.readFileSync(path.join(ROOT, '.github/workflows/generated-sync.yml'), 'utf8');
+assert.doesNotMatch(canonicalSyncWorkflow, /contents: write|sync-generated-userscript/,
+  'the assertion workflow must stay read-only; PR-triggered jobs must never carry a committable token');
+
+const mainSyncWorkflow = fs.readFileSync(path.join(ROOT, '.github/workflows/generated-userscript-main-sync.yml'), 'utf8');
+assert.match(mainSyncWorkflow, /\n  push:\n    branches: \[main\]/,
+  'the main sync workflow must be push-only so no pull_request context can ever run its write token');
+assert.doesNotMatch(mainSyncWorkflow.replace(/^\s*#.*$/gm, ''), /\bpull_request\b|\bworkflow_dispatch\b/,
+  'the main sync workflow must not expose pull_request or manual triggers (comments excluded)');
+assert.match(mainSyncWorkflow, /contents: write/, 'the main sync workflow must own the canonical commit');
+assert.match(mainSyncWorkflow, /node scripts\/sync-generated-userscript\.mjs --rebuild/,
+  'the main sync workflow must delegate to the canonical sync script (single machine-readable policy)');
+assert.match(mainSyncWorkflow, /steps\.generated-policy\.outputs\.mode == 'enforce'/,
+  'the main sync workflow must honor the canonical policy before committing');
+assert.match(mainSyncWorkflow, /cancel-in-progress: false/, 'sync pushes must serialize to avoid self-races');
 
 const recoveryWorkflow = fs.readFileSync(path.join(ROOT, '.github/workflows/generated-exact-head-recovery.yml'), 'utf8');
 assert.match(recoveryWorkflow, /Generated userscript autofix/, 'generated autofix completion must trigger exact-head recovery');
