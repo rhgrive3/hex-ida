@@ -6,7 +6,7 @@ import sys
 
 REPO = pathlib.Path('.').resolve()
 TARGET = 'fix/reopened-ai-project-contracts'
-EXPECTED_TARGET = 'c728482ffcca28939df805af184117b50d29f5d9'
+EXPECTED_TARGET = 'e5292b37a79b782121cf372b980ba4e377b01d43'
 BASE = '818bc11c8ef6cd8f7a57f468fe0a0f321fd158b7'
 FILES = [
     'js/ai/context/broker.js',
@@ -53,6 +53,76 @@ def write(path, text):
     dest = REPO / path
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(text)
+
+
+def merge_broker_priority():
+    p = REPO / 'js/ai/context/broker.js'
+    s = p.read_text()
+    old = """function trimToBudget(context, maxBytes) {
+  if (byteLength(context) <= maxBytes) return;
+
+  // Preserve the original semantic priority exactly: transcript history is
+  // dropped first, followed by observations, hypotheses, pinned evidence and
+  // finally verified evidence. trimQueue performs the same prefix removal as
+  // repeated shift(), but finds the boundary with O(log N) full encodes.
+  const queues = [
+    context.recentMessages,
+    context.recentObservations,
+    context.activeHypotheses,
+    context.pinnedEvidence,
+    context.verifiedEvidence,
+  ].filter(Array.isArray);
+  for (const queue of queues) {
+    trimQueue(context, queue, maxBytes);
+    if (byteLength(context) <= maxBytes) return;
+  }
+
+  if (context.current?.function && !context.current.function.containmentOnly) {
+"""
+    new = """function trimMessagesToLatestUser(context, maxBytes) {
+  const queue = context.recentMessages;
+  if (!Array.isArray(queue) || !queue.length || byteLength(context) <= maxBytes) return;
+  let anchor = -1;
+  for (let index = queue.length - 1; index >= 0; index--) {
+    if (queue[index]?.role === 'user') { anchor = index; break; }
+  }
+  if (anchor <= 0) return;
+  queue.splice(0, anchor);
+}
+
+function trimToBudget(context, maxBytes) {
+  if (byteLength(context) <= maxBytes) return;
+
+  // Drop older transcript history first, but keep the latest user turn as an
+  // anchor while lower-priority observations/hypotheses/evidence are trimmed.
+  // If an extreme budget still cannot fit, the anchor itself may then be
+  // removed before we degrade current-function detail. This satisfies both
+  // normal conversational continuity and the original #2600 fallback order.
+  trimMessagesToLatestUser(context, maxBytes);
+  if (byteLength(context) <= maxBytes) return;
+
+  const queues = [
+    context.recentObservations,
+    context.activeHypotheses,
+    context.pinnedEvidence,
+    context.verifiedEvidence,
+  ].filter(Array.isArray);
+  for (const queue of queues) {
+    trimQueue(context, queue, maxBytes);
+    if (byteLength(context) <= maxBytes) return;
+  }
+
+  // Under a very small budget, retaining the current function is more useful
+  // than an oversized transcript anchor. Use the same O(log N) prefix trim.
+  if (Array.isArray(context.recentMessages)) {
+    trimQueue(context, context.recentMessages, maxBytes);
+    if (byteLength(context) <= maxBytes) return;
+  }
+
+  if (context.current?.function && !context.current.function.containmentOnly) {
+"""
+    s = replace_once(s, old, new, 'ContextBroker staged transcript priority')
+    p.write_text(s)
 
 
 def merge_names():
@@ -249,6 +319,7 @@ def main():
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dest)
 
+    merge_broker_priority()
     merge_names()
     merge_workspace()
 
