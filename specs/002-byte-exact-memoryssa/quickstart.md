@@ -76,6 +76,8 @@ DECOMPILER_DIRECT_TESTS: PASS — `npm run decompiler:test` and all touched dire
 PHASE7_TEST: PASS — 356 tests, 58 discovered files on current main
 PHASE7_OWNERSHIP: PASS — manifest valid; feature inventory PASS (40/40 paths match the amended
   path-exact allowlist, with no outside or missing paths)
+PHASE7_GLOBAL_OWNERSHIP: NOT APPLICABLE — the generic p7 lane intentionally rejects these
+  feature-owned semantic/decompiler paths; no global Phase 7 allowlist was relaxed
 EXACT_HEAD_VERIFIER: READY on source candidate 553ca27d8d34d2f30dc1a14e6fcc2921fea8b1b8;
   frozen corpus matches, all P7 checkpoints present, zero failures; verifier tree
   518c8c8c823857e7489cf400c752d3bfa2bed4e5
