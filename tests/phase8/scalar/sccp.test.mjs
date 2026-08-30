@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import { createAnalysisState, runPassTransaction, seedAnalysisState } from '../../../js/decompiler/phase8/transaction.js';
 import { SCCP_PASS, runSccpPass } from '../../../js/decompiler/phase8/sccp.js';
+import { canonicalAnalysisIdentity } from '../../../js/decompiler/phase8/analysis-identity.js';
 import { contains, isEmpty, isFull } from '../../../js/decompiler/phase8/range.js';
 import { fixture } from '../helpers/ir-fixtures.mjs';
 
@@ -484,6 +485,70 @@ test('malformed predicates and stale producer identities fail closed', () => {
   unsupported.block(2).ret();
   const unsupportedFacts = analyze(unsupported.build()).facts;
   assert.deepEqual([...unsupportedFacts.unreachableBlockIndexes], [], 'unsupported branch evidence keeps both arms conservative');
+});
+
+function identityShapeFixture(name = 'identity-shape') {
+  const f = fixture(name);
+  f.block(0);
+  const input = f.opaque(8);
+  const add = f.binary('add', input, f.constant(1, 8), 8);
+  const condition = f.binary('ult', add, f.constant(10, 8), 1);
+  f.conditionalBranch(condition, 1, 2);
+  const left = (() => { f.block(1); const value = f.constant(2, 8); f.branch(3); return value; })();
+  const right = (() => { f.block(2); const value = f.constant(3, 8); f.branch(3); return value; })();
+  f.block(3);
+  f.phi([[1, left], [2, right]], 8);
+  f.ret();
+  return f.build();
+}
+
+test('canonical identity changes when semantic incoming, extra, origin, or edge-kind facts change', () => {
+  const mutations = [
+    ['phi incoming', (ir) => {
+      const phi = ir.values.find((value) => value.kind === 'phi');
+      phi.def.incoming[0].value = phi.def.incoming[1].value;
+    }],
+    ['definition extra', (ir) => {
+      const binary = ir.values.find((value) => value.def?.op === 'bin');
+      binary.def.extra = { semanticMarker: 'changed' };
+    }],
+    ['value origin', (ir) => {
+      ir.values.find((value) => value.kind === 'arg').origin.instructionIds[0] = 'changed-origin';
+    }],
+    ['cfg edge kind', (ir) => {
+      ir.blocks[0].successorEdges[0].kind = 'exceptional';
+    }],
+  ];
+  for (const [label, mutate] of mutations) {
+    const ir = identityShapeFixture(`identity-${label.replaceAll(' ', '-')}`);
+    const before = canonicalAnalysisIdentity({ ir });
+    assert.equal(before.valid, true, `${label}: baseline identity must be valid`);
+    mutate(ir);
+    const after = canonicalAnalysisIdentity({ ir });
+    assert.equal(after.valid, true, `${label}: mutated IR still has a canonical fallback identity`);
+    assert.notEqual(after.identity.semanticIrId, before.identity.semanticIrId, `${label}: semantic mutation must invalidate the old identity`);
+  }
+});
+
+test('a supplied identity is rejected when it is not bound to the supplied IR shape', () => {
+  const source = identityShapeFixture('identity-source');
+  const supplied = canonicalAnalysisIdentity({ ir: source });
+  assert.equal(supplied.valid, true);
+  const changed = identityShapeFixture('identity-changed');
+  changed.blocks[0].successorEdges[0].kind = 'exceptional';
+  const result = canonicalAnalysisIdentity({ ir: changed, analysisIdentity: supplied.identity });
+  assert.equal(result.valid, false, 'an identity from a different semantic IR must fail closed');
+});
+
+test('comparison products always publish one-bit facts, even if malformed IR declares a wider result', () => {
+  const f = fixture('comparison-result-width');
+  f.block(0);
+  const comparison = f.binary('eq', f.constant(7, 8), f.constant(7, 8), 8);
+  f.ret();
+  const product = analyze(f.build()).facts.facts.get(comparison.id);
+  assert.equal(product.bits, 1);
+  assert.equal(product.range.bits, 1);
+  assert.equal(product.constant, null, 'a malformed-width comparison must not publish an exact value');
 });
 
 test('SCCP refuses to publish when the caller explicitly supplies no identity', () => {

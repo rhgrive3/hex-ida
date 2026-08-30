@@ -57,6 +57,7 @@ export const CONSTANT = 'constant';
 export const OVERDEFINED = 'overdefined';
 
 const TOP = Object.freeze({ state: UNDEFINED, constant: null, reason: null });
+const COMPARISON_OPERATORS = new Set(['eq', 'ne', 'ult', 'ule', 'ugt', 'uge', 'slt', 'sle', 'sgt', 'sge', '=', '==', '!=', '<', '<=', '>', '>=']);
 
 function constantCell(constant) {
   return Object.freeze({ state: CONSTANT, constant, reason: null });
@@ -539,9 +540,28 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
     }
 
     if (shape.kind === 'binary') {
+      const isComparison = COMPARISON_OPERATORS.has(shape.operator);
+      // A comparison is a one-bit semantic value regardless of the width a
+      // malformed producer put on its destination.  Never widen the result to
+      // the operand/destination width: that would publish a fabricated scalar
+      // (and can make a branch treat arbitrary bits as a predicate).
+      const resultBits = isComparison ? 1 : bits;
+      if (isComparison && bits !== 1) {
+        const malformed = fullFact(1, {
+          valueId: value.id,
+          status: 'malformed',
+          reason: 'comparison result width is not one bit',
+          provenance: valueProvenance(value),
+        });
+        return {
+          cell: overdefined('comparison result width is not one bit'),
+          range: malformed.range,
+          fact: malformed,
+        };
+      }
       if (allConstant) {
         const folded = evaluateBinary(shape.operator, constants[0], constants[1]);
-        if (folded != null && folded.bits === bits) return { cell: constantCell(folded), range: singleton(folded) };
+        if (folded != null && folded.bits === resultBits) return { cell: constantCell(folded), range: singleton(folded) };
         if (folded == null) {
           const reason = `binary ${shape.operator} is not exactly modelled for these operands`;
           diagnostics.push({
@@ -550,15 +570,15 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
             message: `Value ${value.id} was not folded.`,
             reason,
           });
-          return { cell: overdefined(reason), range: fullRange(bits) };
+          return { cell: overdefined(reason), range: fullRange(resultBits) };
         }
-        return { cell: overdefined('binary result width disagrees with the value width'), range: fullRange(bits) };
+        return { cell: overdefined('binary result width disagrees with the value width'), range: fullRange(resultBits) };
       }
       const leftFact = factOfValue(operands[0]);
       const rightFact = factOfValue(operands[1]);
       const leftRange = leftFact?.range ?? rangeOfValue(operands[0]);
       const rightRange = rightFact?.range ?? rangeOfValue(operands[1]);
-      if (leftRange == null || rightRange == null) return { cell: overdefined('operand has no range'), range: fullRange(bits) };
+      if (leftRange == null || rightRange == null) return { cell: overdefined('operand has no range'), range: fullRange(resultBits) };
       const combined = evaluateBinaryFact(shape.operator,
         leftFact ?? factFromRange(leftRange, {
           valueId: operands[0]?.id ?? null,
@@ -568,7 +588,7 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
         }), { provenance: false });
       return {
         cell: overdefined(`operands of ${shape.operator} are not both constant`),
-        range: combined.range.bits === bits ? combined.range : fullRange(bits),
+        range: combined.range.bits === resultBits ? combined.range : fullRange(resultBits),
         fact: Object.freeze({ ...combined, valueId: value.id }),
       };
     }

@@ -56,6 +56,19 @@ const ACYCLIC_EVIDENCE_CACHE = new WeakMap();
 const EVIDENCE_FIELDS = Object.freeze(['knownZero', 'knownOne', 'congruence', 'alignment', 'pointerOffset', 'provenance']);
 const COMPARISON_OPERATORS = new Set(['eq', 'ne', 'ult', 'ule', 'ugt', 'uge', 'slt', 'sle', 'sgt', 'sge', '=', '==', '!=', '<', '<=', '>', '>=']);
 const VALID_FACT_STATUSES = new Set(['exact', 'conservative']);
+const FACT_INPUT_CACHE = new WeakMap();
+
+function isEvidenceContainer(value) {
+  if (value == null || typeof value !== 'object') return true;
+  try {
+    if (Array.isArray(value)) return true;
+    const prototype = Object.getPrototypeOf(value);
+    return prototype === Object.prototype || prototype === null;
+  } catch {
+    // A revoked or hostile Proxy is not a snapshotable evidence container.
+    return false;
+  }
+}
 
 function widthMask(bits) { return maxUnsigned(bits); }
 
@@ -175,20 +188,28 @@ function maskFactsForConstant(mask, bits, operand) {
 }
 
 function deeplyFrozen(value, seen = new Set()) {
-  if (value == null || typeof value !== 'object') return true;
-  if (DEEPLY_FROZEN_CACHE.get(value) === true) return true;
-  if (!Object.isFrozen(value)) return false;
-  if (seen.has(value)) return false;
-  seen.add(value);
-  let result = false;
+  if (value == null || ['string', 'boolean', 'number', 'bigint'].includes(typeof value)) return true;
+  if (typeof value === 'undefined' || typeof value === 'function' || typeof value === 'symbol') return false;
   try {
-    result = Object.keys(value).every((key) => deeplyFrozen(value[key], seen));
+    if (DEEPLY_FROZEN_CACHE.get(value) === true) return true;
+    if (!Object.isFrozen(value)) return false;
+    // Host containers such as Map, Set, Date, and typed views can retain mutable
+    // internal state even after Object.freeze. They are not evidence snapshots.
+    if (!isEvidenceContainer(value)) return false;
+    if (seen.has(value)) return false;
+    seen.add(value);
+    let result = false;
+    result = Object.keys(value).every((key) => {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      return descriptor != null && 'value' in descriptor && deeplyFrozen(descriptor.value, seen);
+    });
+    seen.delete(value);
+    if (result) DEEPLY_FROZEN_CACHE.set(value, true);
+    return result;
   } catch {
-    result = false;
+    seen.delete(value);
+    return false;
   }
-  seen.delete(value);
-  if (result) DEEPLY_FROZEN_CACHE.set(value, true);
-  return result;
 }
 
 function immutableProvenance(provenance) {
@@ -203,23 +224,24 @@ function immutableEvidence(value) {
 
 function immutableEvidenceWithSeen(value, seen) {
   if (value == null || typeof value !== 'object') return value;
+  if (!isEvidenceContainer(value)) return null;
   if (deeplyFrozen(value)) return value;
   if (seen.has(value)) return null;
   seen.add(value);
-  if (Array.isArray(value)) {
-    const copy = value.map((item) => immutableEvidenceWithSeen(item, seen));
+  try {
+    if (Array.isArray(value)) {
+      const copy = value.map((item) => immutableEvidenceWithSeen(item, seen));
+      seen.delete(value);
+      return Object.freeze(copy);
+    }
+    const copy = {};
+    for (const key of Object.keys(value).sort()) copy[key] = immutableEvidenceWithSeen(value[key], seen);
     seen.delete(value);
     return Object.freeze(copy);
-  }
-  const copy = {};
-  try {
-    for (const key of Object.keys(value).sort()) copy[key] = immutableEvidenceWithSeen(value[key], seen);
   } catch {
     seen.delete(value);
     return null;
   }
-  seen.delete(value);
-  return Object.freeze(copy);
 }
 
 /** Returns false for a cyclic or hostile evidence object without recursing. */
@@ -235,6 +257,7 @@ function acyclicEvidence(root) {
       const frame = stack.pop();
       const value = frame.value;
       if (value == null || typeof value !== 'object') continue;
+      if (!isEvidenceContainer(value)) return false;
       if (frame.exit) {
         active.delete(value);
         continue;
@@ -377,17 +400,59 @@ function validRangeShape(range) {
 }
 
 /**
+ * Facts cross an analysis boundary, so a caller-owned mutable range cannot be
+ * retained as the canonical product.  Normalize the scalar fields into one of
+ * the constructors above; frozen ranges are already immutable snapshots and
+ * can be reused without an allocation.
+ */
+function canonicalRange(range) {
+  if (!validRangeShape(range)) return null;
+  const bits = Number(range.bits);
+  if (Object.isFrozen(range)
+      && (range.kind === 'full' || range.kind === 'empty' || range.kind === 'interval' || range.kind === 'wrapped')) return range;
+  try {
+    if (range.kind === 'full') return fullRange(bits);
+    if (range.kind === 'empty') return emptyRange(bits);
+    return rangeOf(range.lower, range.upper, bits);
+  } catch {
+    return null;
+  }
+}
+
+function validFactConstant(constant, range) {
+  if (constant == null) return true;
+  if (typeof constant !== 'object' || Array.isArray(constant)) return false;
+  if (!isSupportedWidth(constant.bits) || Number(constant.bits) !== Number(range.bits)) return false;
+  const value = singletonValue(range);
+  if (value == null) return false;
+  try {
+    return unsignedOf(constant.value, range.bits) === value;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Build the one canonical scalar fact used by SCCP and its consumers.
  *
  * `range` remains the compatibility representation. Masks and residues are
  * evidence about that same set, never an independent value analysis.
  */
 export function factFromRange(range, options = {}) {
-  if (!validRangeShape(range)) {
+  const normalizedRange = canonicalRange(range);
+  if (normalizedRange == null) {
     const bits = Number(options.bits ?? range?.bits ?? 1);
     if (!isSupportedWidth(bits)) return Object.freeze({ bits, range: null, status: 'malformed', reason: 'unsupported width', provenance: Object.freeze({}) });
     range = fullRange(bits);
     options = { ...options, status: 'malformed', reason: options.reason ?? 'malformed range' };
+  } else {
+    range = normalizedRange;
+    // `constant` is compatibility evidence supplied by older producers.  It
+    // must agree with the range before it can influence any downstream fold;
+    // retain it only as a validation input, never as a second scalar truth.
+    if (!validFactConstant(options.constant, range)) {
+      options = { ...options, status: 'malformed', reason: options.reason ?? 'constant conflicts with range' };
+    }
   }
   const bits = Number(range.bits);
   const hasEvidence = EVIDENCE_FIELDS.some((field) => options[field] != null);
@@ -538,16 +603,16 @@ export function sameFact(left, right) {
 
 /** Sound union of two product facts. */
 export function joinFacts(left, right, options = {}) {
-  if (left == null) return right;
-  if (right == null) return left;
+  if (left == null) return canonicalFactSnapshot(right, options);
+  if (right == null) return canonicalFactSnapshot(left, options);
   if (left.bits !== right.bits) return fullFact(Math.max(left.bits, right.bits), { reason: 'fact widths disagree' });
   if (isEmpty(left.range)) {
     if (!VALID_FACT_STATUSES.has(left.status)) return fullFact(left.bits, { status: left.status, reason: 'invalid empty fact' });
-    return right;
+    return canonicalFactSnapshot(right, options);
   }
   if (isEmpty(right.range)) {
     if (!VALID_FACT_STATUSES.has(right.status)) return fullFact(right.bits, { status: right.status, reason: 'invalid empty fact' });
-    return left;
+    return canonicalFactSnapshot(left, options);
   }
   const range = join(left.range, right.range);
   return factFromRange(range, {
@@ -565,8 +630,8 @@ export function joinFacts(left, right, options = {}) {
 
 /** Monotone bounded widening for the product domain. */
 export function widenFacts(previous, next) {
-  if (previous == null) return next;
-  if (next == null) return previous;
+  if (previous == null) return canonicalFactSnapshot(next);
+  if (next == null) return canonicalFactSnapshot(previous);
   if (sameFact(previous, next)) return next;
   const range = widen(previous.range, next.range);
   return factFromRange(range, {
@@ -581,10 +646,72 @@ export function widenFacts(previous, next) {
 }
 
 function factInput(value) {
-  if (value?.range && value?.bits != null) {
-    return validRangeShape(value.range) && Number(value.bits) === Number(value.range.bits) ? value : null;
+  try {
+    if (value?.range && value?.bits != null) {
+      if (value == null || typeof value !== 'object' || Array.isArray(value)) return null;
+      const cached = FACT_INPUT_CACHE.get(value);
+      if (cached != null && deeplyFrozen(value)) return cached;
+      const range = canonicalRange(value.range);
+      if (range == null || Number(value.bits) !== Number(range.bits)) return null;
+      const constantValid = validFactConstant(value.constant, range);
+      const options = {
+        valueId: value.valueId ?? null,
+        bits: range.bits,
+        status: value.status,
+        reason: value.reason,
+        knownZero: value.knownZero,
+        knownOne: value.knownOne,
+        congruence: value.congruence,
+        alignment: value.alignment,
+        pointerOffset: value.pointerOffset,
+        provenance: value.provenance,
+        deriveKnownBits: false,
+        constant: value.constant,
+      };
+      if (!constantValid) {
+        options.status = 'malformed';
+        options.reason = options.reason ?? 'constant conflicts with range';
+      }
+      const canonical = factFromRange(range, options);
+      if (deeplyFrozen(value)) FACT_INPUT_CACHE.set(value, canonical);
+      return canonical;
+    }
+    return value?.bits != null && value?.kind != null ? factFromRange(value) : null;
+  } catch {
+    return null;
   }
-  return value?.bits != null && value?.kind != null ? factFromRange(value) : null;
+}
+
+// Joins and widening are also publication boundaries. Their no-op branches
+// must not return a caller-owned mutable fact, otherwise a later producer can
+// mutate a nested range/evidence object after the product was published.
+function canonicalFactSnapshot(value, options = {}) {
+  const fact = factInput(value);
+  if (fact == null) {
+    let bits = 32;
+    try {
+      const candidate = Number(value?.bits);
+      if (isSupportedWidth(candidate)) bits = candidate;
+    } catch {
+      // Keep the conservative fallback width.
+    }
+    return fullFact(bits, { status: 'malformed', reason: 'invalid scalar fact' });
+  }
+  if (options.provenance !== false) return fact;
+  return factFromRange(fact.range, {
+    valueId: fact.valueId,
+    bits: fact.bits,
+    status: fact.status,
+    reason: fact.reason,
+    knownZero: fact.knownZero,
+    knownOne: fact.knownOne,
+    congruence: fact.congruence,
+    alignment: fact.alignment,
+    pointerOffset: fact.pointerOffset,
+    constant: fact.constant,
+    deriveKnownBits: false,
+    provenance: null,
+  });
 }
 
 function constantFromFact(fact) {
