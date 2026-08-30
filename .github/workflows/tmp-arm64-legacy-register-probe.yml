@@ -32,3 +32,4 @@ jobs:
           assert.ok(bundle && bundle.completeness !== 'partial' && bundle.operations.length>0,'contradictory legacy base currently reaches definite LDR effects');
           console.log('legacy ARM64 register coercion reproduced');
           EOF
+          # trigger-v2
