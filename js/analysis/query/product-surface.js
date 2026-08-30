@@ -17,11 +17,11 @@ function abortIfNeeded(signal) {
 }
 
 function pageOf(page = {}) {
-  const offset = Number(page.offset ?? 0);
-  const limit = Number(page.limit ?? 200);
+  const offset = page.offset ?? 0;
+  const limit = page.limit ?? 200;
   return {
-    offset: Number.isSafeInteger(offset) && offset >= 0 ? offset : 0,
-    limit: Number.isSafeInteger(limit) && limit > 0 ? Math.min(5000, limit) : 200,
+    offset: typeof offset === 'number' && Number.isSafeInteger(offset) && offset >= 0 ? offset : 0,
+    limit: typeof limit === 'number' && Number.isSafeInteger(limit) && limit > 0 ? Math.min(5000, limit) : 200,
   };
 }
 
@@ -114,6 +114,7 @@ function waitForShared(entry, signal) {
       fn(value);
     };
     const onAbort = () => {
+      if (settled) return;
       entry.waiters = Math.max(0, entry.waiters - 1);
       signal.removeEventListener('abort', onAbort);
       settled = true;
@@ -121,6 +122,10 @@ function waitForShared(entry, signal) {
       reject(abortError(signal));
     };
     signal.addEventListener('abort', onAbort, { once:true });
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
     entry.promise.then((value) => finish(resolve, value), (error) => finish(reject, error));
   });
 }
