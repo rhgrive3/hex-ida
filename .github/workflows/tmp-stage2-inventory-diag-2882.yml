@@ -1,0 +1,43 @@
+name: tmp stage2 inventory diag 2882
+on:
+  push:
+    branches:
+      - fix/2588-restack-final
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Baseline profile inventory check
+        shell: bash
+        run: |
+          set -uo pipefail
+          node tests/stage2/profile-denominator-inventory.test.mjs > /tmp/profile-before.out 2> /tmp/profile-before.err
+          rc=$?
+          echo "PROFILE_BEFORE_RC=$rc"
+          cat /tmp/profile-before.out
+          cat /tmp/profile-before.err
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import { buildStage2ProfileDenominatorInventory } from './tools/validation/stage2/build-profile-denominator-inventory.mjs';
+          const tracked = JSON.parse(fs.readFileSync('./tools/validation/stage2/profile-denominator-inventory.json', 'utf8'));
+          const generated = buildStage2ProfileDenominatorInventory();
+          for (const id of [...new Set([...Object.keys(tracked.items || {}), ...Object.keys(generated.items || {})])].sort()) {
+            const a = JSON.stringify(tracked.items?.[id]);
+            const b = JSON.stringify(generated.items?.[id]);
+            if (a !== b) {
+              console.log(`DIFF_ITEM=${id}`);
+              console.log(`TRACKED=${a}`);
+              console.log(`GENERATED=${b}`);
+            }
+          }
+          NODE
+          exit "$rc"
