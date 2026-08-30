@@ -63,3 +63,43 @@ test('the Phase 8 stage is a small fraction of whole-function decompilation', ()
   assert.ok(stageMs <= Math.max(1, wholeFunctionMs * 0.25),
     `Phase 8 stage ${stageMs.toFixed(2)} ms is disproportionate to the ${wholeFunctionMs.toFixed(2)} ms function`);
 });
+
+test('the default optimizer budget is invariant under delayed scheduling', () => {
+  const corpus = loadCorpus();
+  const entry = corpus.functions.find((item) => item.id === 'quality.loop_nested.O2');
+  const outcome = decompileEntry(entry, { phase8Optimize: false, deterministicTransforms: false });
+  assert.ok(outcome.result, outcome.failure);
+  const context = { ir: outcome.result.ir, opts: {} };
+  const first = runPhase8Stage(context, { stages: ['canonical-facts', 'scalar-optimization', 'memory-optimization', 'loop-facts', 'high-level-recovery', 'structuring', 'refinement'] });
+  let delayed = false;
+  const second = runPhase8Stage(context, {
+    stages: ['canonical-facts', 'scalar-optimization', 'memory-optimization', 'loop-facts', 'high-level-recovery', 'structuring', 'refinement'],
+    shouldAbort: () => {
+      if (!delayed) {
+        const until = performance.now() + 8;
+        while (performance.now() < until) {}
+        delayed = true;
+      }
+      return false;
+    },
+  });
+  assert.equal(first.ledger.published, true);
+  assert.equal(second.ledger.published, true);
+  assert.equal(first.ledger.completeness, 'complete');
+  assert.equal(second.ledger.completeness, 'complete');
+  assert.equal(first.ledger.publicationDigest, second.ledger.publicationDigest);
+  assert.equal(first.analysis.get('ranges').publicationDigest, second.analysis.get('ranges').publicationDigest);
+});
+
+test('the public decoded-function pipeline has the same deterministic default', () => {
+  const entry = loadCorpus().functions.find((item) => item.id === 'quality.loop_nested.O2');
+  const first = decompileEntry(entry, { phase8Optimize: true, deterministicTransforms: false });
+  const second = decompileEntry(entry, { phase8Optimize: true, deterministicTransforms: false });
+  assert.ok(first.result, first.failure);
+  assert.ok(second.result, second.failure);
+  assert.equal(first.result.phase8?.published, true);
+  assert.equal(second.result.phase8?.published, true);
+  assert.equal(first.result.phase8?.completeness, 'complete');
+  assert.equal(second.result.phase8?.completeness, 'complete');
+  assert.equal(first.result.phase8.publicationDigest, second.result.phase8.publicationDigest);
+});

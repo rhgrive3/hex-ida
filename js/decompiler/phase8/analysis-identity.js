@@ -37,6 +37,32 @@ const NON_SEMANTIC_KEYS = new Set(['dst', 'uses']);
 const NO_SKIPPED_KEYS = new Set();
 const DEEPLY_FROZEN_CACHE = new WeakMap();
 
+/* Semantic identity only accepts enumerable, own, data properties.  Reading a
+ * getter while issuing an artifact ID would make identity depend on timing or
+ * hidden state, while ignoring symbols/non-enumerables would let an in-place
+ * semantic mutation reuse a stale product.  Arrays have one intrinsic
+ * non-enumerable `length` descriptor; all other descriptors are required to be
+ * explicit enumerable data. */
+function semanticOwnKeys(value) {
+  const keys = [];
+  for (const key of Reflect.ownKeys(value)) {
+    if (typeof key === 'symbol') throw new TypeError('identity-symbol-semantic-metadata');
+    if (Array.isArray(value) && key === 'length') continue;
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (descriptor == null || !('value' in descriptor) || !descriptor.enumerable) {
+      throw new TypeError('identity-unsupported-semantic-descriptor');
+    }
+    keys.push(key);
+  }
+  return keys;
+}
+
+function arrayIndexKey(key) {
+  if (!/^(?:0|[1-9]\d*)$/.test(key)) return false;
+  const number = Number(key);
+  return Number.isSafeInteger(number) && number >= 0 && number < 0xffffffff && String(number) === key;
+}
+
 // The legacy projection keeps several indexes and compatibility views beside
 // the canonical block/value graph.  They either contain back references to
 // that graph (`instructions`, `args`, `byRow`, `locations`) or executable
@@ -68,7 +94,7 @@ function deeplyFrozen(value, active = new Set()) {
   active.add(value);
   let result = true;
   try {
-    for (const key of Object.keys(value)) {
+    for (const key of semanticOwnKeys(value)) {
       const descriptor = Object.getOwnPropertyDescriptor(value, key);
       if (descriptor == null || !('value' in descriptor) || !deeplyFrozen(descriptor.value, active)) {
         result = false;
@@ -81,65 +107,6 @@ function deeplyFrozen(value, active = new Set()) {
   active.delete(value);
   if (result) DEEPLY_FROZEN_CACHE.set(value, true);
   return result;
-}
-
-// `stableDigest` intentionally uses BigInt FNV and JSON-safe allocation because
-// it is a general public identity primitive.  OriginSets are already validated,
-// deeply frozen, and used on the phase8 deadline hot path, so serialize their
-// fixed data graph directly into four uint32 lanes.  This preserves a 128-bit
-// deterministic fingerprint while avoiding a large JSON clone and BigInt
-// multiply for every provenance character.  The generic semantic walk remains
-// the fallback for mutable/untrusted metadata.
-function fastOriginDigest(root) {
-  let hash0 = 0x811c9dc5;
-  let hash1 = 0x9e3779b9;
-  let hash2 = 0x243f6a88;
-  let hash3 = 0xb7e15162;
-  const active = new Set();
-  const write = (text) => {
-    const value = String(text);
-    for (let index = 0; index < value.length; index += 1) {
-      const code = value.charCodeAt(index);
-      hash0 = Math.imul(hash0 ^ code, 0x01000193) >>> 0;
-      hash1 = Math.imul(hash1 ^ code, 0x85ebca6b) >>> 0;
-      hash2 = Math.imul(hash2 ^ code, 0xc2b2ae35) >>> 0;
-      hash3 = Math.imul(hash3 ^ code, 0x27d4eb2f) >>> 0;
-    }
-  };
-  const visit = (value) => {
-    if (value == null) { write(value === null ? 'null;' : 'undefined;'); return; }
-    switch (typeof value) {
-      case 'string': write(`s${value.length}:${value};`); return;
-      case 'boolean': write(value ? 'b1;' : 'b0;'); return;
-      case 'number': write(`n${Number.isFinite(value) ? value : 'nonfinite'};`); return;
-      case 'bigint': write(`i${value};`); return;
-      case 'undefined':
-      case 'function':
-      case 'symbol':
-        throw new TypeError('identity-invalid-semantic-metadata');
-      default: break;
-    }
-    if (typeof value !== 'object' || active.has(value)) throw new TypeError('identity-invalid-frozen-origin');
-    active.add(value);
-    if (Array.isArray(value)) {
-      write(`a${value.length}[`);
-      for (const item of value) visit(item);
-      write('];');
-    } else {
-      const prototype = Object.getPrototypeOf(value);
-      if (prototype !== Object.prototype && prototype !== null) throw new TypeError('identity-unsupported-semantic-metadata');
-      const keys = Object.keys(value).sort();
-      write(`o${keys.length}{`);
-      for (const key of keys) {
-        write(`k${key.length}:${key};`);
-        visit(value[key]);
-      }
-      write('};');
-    }
-    active.delete(value);
-  };
-  visit(root);
-  return [hash0, hash1, hash2, hash3].map((hash) => hash.toString(16).padStart(8, '0')).join('');
 }
 
 function fastJsonTextDigest(text) {
@@ -161,12 +128,20 @@ function fastFrozenOriginDigest(value) {
   return fastJsonGraphDigest(value);
 }
 
+function canonicalSortText(value) {
+  // Sorting by the complete typed representation keeps semantically equivalent
+  // Maps/Sets independent of insertion order even when two values happen to
+  // share the short diagnostic digest used elsewhere in the identity.
+  return typedIdentityText(value);
+}
+
 function typedIdentityText(root) {
   const active = new Set();
   const visit = (value) => {
     if (value === null) return 'null;';
     switch (typeof value) {
       case 'undefined':
+        return 'undefined;';
       case 'function':
       case 'symbol':
         throw new TypeError('identity-invalid-semantic-metadata');
@@ -182,26 +157,44 @@ function typedIdentityText(root) {
     if (active.has(value)) throw new TypeError('identity-cyclic-semantic-metadata');
     active.add(value);
     try {
+      const keys = semanticOwnKeys(value);
+      const properties = (propertyKeys) => propertyKeys.length === 0 ? '' : `properties:${propertyKeys.length}{${propertyKeys.sort()
+        .map((key) => {
+          const descriptor = Object.getOwnPropertyDescriptor(value, key);
+          return `key:${key.length}:${key};${visit(descriptor.value)}`;
+        }).join('')}}`;
       if (Array.isArray(value)) {
-        return `array:${value.length}[${value.map(visit).join('')}]`;
+        const ownKeys = new Set(keys);
+        let items = '';
+        for (let index = 0; index < value.length; index += 1) {
+          const key = String(index);
+          items += ownKeys.has(key) ? visit(Object.getOwnPropertyDescriptor(value, key).value) : 'hole;';
+        }
+        return `array:${value.length}[${items}]${properties(keys.filter((key) => !arrayIndexKey(key)))}`;
       }
       if (value instanceof Map) {
         const entries = [...value.entries()]
           .map(([key, item]) => `${visit(key)}=>${visit(item)}`)
           .sort();
-        return `map:${entries.length}{${entries.join('')}}`;
+        return `map:${entries.length}{${entries.join('')}}${properties(keys)}`;
       }
       if (value instanceof Set) {
         const values = [...value.values()].map(visit).sort();
-        return `set:${values.length}{${values.join('')}}`;
+        return `set:${values.length}{${values.join('')}}${properties(keys)}`;
       }
-      if (value instanceof Date) return `date:${value.toISOString().length}:${value.toISOString()};`;
+      if (value instanceof Date) {
+        const iso = value.toISOString();
+        return `date:${iso.length}:${iso};${properties(keys)}`;
+      }
       const prototype = Object.getPrototypeOf(value);
       if (prototype !== Object.prototype && prototype !== null) {
         throw new TypeError('identity-unsupported-semantic-metadata');
       }
-      const keys = Object.keys(value).sort();
-      return `object:${keys.length}{${keys.map((key) => `key:${key.length}:${key};${visit(value[key])}`).join('')}}`;
+      const sortedKeys = keys.sort();
+      return `object:${sortedKeys.length}{${sortedKeys.map((key) => {
+        const descriptor = Object.getOwnPropertyDescriptor(value, key);
+        return `key:${key.length}:${key};${visit(descriptor.value)}`;
+      }).join('')}}`;
     } finally {
       active.delete(value);
     }
@@ -209,38 +202,8 @@ function typedIdentityText(root) {
   return visit(root);
 }
 
-function identityJsonReplacer(key, item) {
-  const source = this != null && Object.hasOwn(this, key) ? this[key] : item;
-  if (source === null) return null;
-  const type = typeof source;
-  if (type === 'undefined' || type === 'function' || type === 'symbol') {
-    throw new TypeError('identity-invalid-semantic-metadata');
-  }
-  if (type === 'string') return source.startsWith('\u0000') ? `\u0000${source}` : source;
-  if (type === 'bigint') return `\u0000bigint:${source}`;
-  if (type === 'number') {
-    if (!Number.isFinite(source)) throw new TypeError('identity-non-finite-number');
-    return Object.is(source, -0) ? '\u0000number:-0' : source;
-  }
-  if (type === 'object') {
-    if (source instanceof Date) {
-      const iso = source.toISOString();
-      return `\u0000date:${iso.length}:${iso}`;
-    }
-    if (source instanceof Map) return `\u0000map:${typedIdentityText(source)}`;
-    if (source instanceof Set) return `\u0000set:${typedIdentityText(source)}`;
-    const prototype = Object.getPrototypeOf(source);
-    if (prototype !== Object.prototype && prototype !== null && !Array.isArray(source)) {
-      throw new TypeError('identity-unsupported-semantic-metadata');
-    }
-  }
-  return item;
-}
-
 function fastJsonGraphDigest(value) {
-  const text = JSON.stringify(value, identityJsonReplacer);
-  if (text === undefined) throw new TypeError('identity-invalid-semantic-metadata');
-  return fastJsonTextDigest(text);
+  return fastJsonTextDigest(typedIdentityText(value));
 }
 
 /**
@@ -252,7 +215,7 @@ function fastJsonGraphDigest(value) {
  * current.
  */
 function semanticObject(value, seen = new Set(), skip = NO_SKIPPED_KEYS, path = '$', memo = null) {
-  if (value == null || typeof value === 'string' || typeof value === 'boolean'
+  if (value === null || typeof value === 'undefined' || typeof value === 'string' || typeof value === 'boolean'
       || typeof value === 'bigint') return value;
   if (typeof value === 'number') {
     if (!Number.isFinite(value)) throw new TypeError('identity-non-finite-number');
@@ -269,9 +232,34 @@ function semanticObject(value, seen = new Set(), skip = NO_SKIPPED_KEYS, path = 
   const memoizable = memo != null && skip === NO_SKIPPED_KEYS;
   if (memoizable && memo.has(value)) return memo.get(value);
   seen.add(value);
+  const ownKeys = semanticOwnKeys(value);
+  const semanticProperties = (keys, propertyPath = path) => {
+    const properties = {};
+    for (const key of keys.sort()) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      Object.defineProperty(properties, key, {
+        value: semanticObject(descriptor.value, seen, NO_SKIPPED_KEYS, `${propertyPath}.${key}`, memo),
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
+    }
+    return properties;
+  };
   let result;
   if (Array.isArray(value)) {
-    result = value.map((item, index) => semanticObject(item, seen, NO_SKIPPED_KEYS, `${path}[${index}]`, memo));
+    result = [];
+    result.length = value.length;
+    for (const key of ownKeys.sort()) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      Object.defineProperty(result, key, {
+        value: semanticObject(descriptor.value, seen, NO_SKIPPED_KEYS,
+          arrayIndexKey(key) ? `${path}[${Number(key)}]` : `${path}.${key}`, memo),
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
+    }
   } else if (value instanceof Map) {
     result = {
       type: 'Map',
@@ -280,34 +268,49 @@ function semanticObject(value, seen = new Set(), skip = NO_SKIPPED_KEYS, path = 
           semanticObject(key, seen, NO_SKIPPED_KEYS, `${path}.mapKey[${index}]`, memo),
           semanticObject(item, seen, NO_SKIPPED_KEYS, `${path}.mapValue[${index}]`, memo),
         ])
-        .sort((left, right) => fastJsonGraphDigest(left).localeCompare(fastJsonGraphDigest(right))),
+        .sort((left, right) => canonicalSortText(left).localeCompare(canonicalSortText(right))),
     };
+    if (ownKeys.length > 0) result.properties = semanticProperties(ownKeys);
   } else if (value instanceof Set) {
     result = {
       type: 'Set',
       values: [...value.values()]
         .map((item, index) => semanticObject(item, seen, NO_SKIPPED_KEYS, `${path}.set[${index}]`, memo))
-        .sort((left, right) => fastJsonGraphDigest(left).localeCompare(fastJsonGraphDigest(right))),
+        .sort((left, right) => canonicalSortText(left).localeCompare(canonicalSortText(right))),
     };
+    if (ownKeys.length > 0) result.properties = semanticProperties(ownKeys);
   } else if (value instanceof Date) {
     result = { type: 'Date', value: value.toISOString() };
+    if (ownKeys.length > 0) result.properties = semanticProperties(ownKeys);
   } else {
     const prototype = Object.getPrototypeOf(value);
     if (prototype !== Object.prototype && prototype !== null) {
       throw new TypeError('identity-unsupported-semantic-metadata');
     }
     result = {};
-    for (const key of Object.keys(value).sort()) {
+    for (const key of ownKeys.sort()) {
       if (skip.has(key)) continue;
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
       // A skip list describes this known wrapper object only.  Applying it to
       // nested `extra`/metadata objects would silently erase a semantic field
       // whose name happens to be `uses` or `dst`.
-      result[key] = semanticObject(value[key], seen, NO_SKIPPED_KEYS, `${path}.${key}`, memo);
+      Object.defineProperty(result, key, {
+        value: semanticObject(descriptor.value, seen, NO_SKIPPED_KEYS, `${path}.${key}`, memo),
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
     }
   }
   seen.delete(value);
   if (memoizable) memo.set(value, result);
   return result;
+}
+
+function metadataProjection(value, skip, path, memo) {
+  if (value == null || typeof value !== 'object') return null;
+  const projection = semanticObject(value, new Set(), skip, path, memo);
+  return Object.keys(projection).length === 0 ? null : projection;
 }
 
 function semanticDigest(value, memo, digests, path, trustedFrozen = false) {
@@ -373,7 +376,7 @@ function incomingShape(incoming, memo, digests) {
 // valid loop with a memory phi is mistaken for malformed cyclic IR.
 function memoryNodeShape(node, memo, digests) {
   if (node == null || typeof node !== 'object') return node ?? null;
-  return {
+  const shape = {
     kind: node.kind ?? null,
     key: node.key ?? null,
     definitionId: token(node.definitionId),
@@ -394,11 +397,17 @@ function memoryNodeShape(node, memo, digests) {
     proofDigest: semanticDigest(node.proof, memo, digests, '$.memory.proof'),
     originDigest: semanticDigest(node.origin, memo, digests, '$.memory.origin', true),
   };
+  const metadata = metadataProjection(node, new Set([
+    'kind', 'key', 'definitionId', 'regionId', 'block', 'reason', 'unknownAlias', 'aliasRelation',
+    'inst', 'prev', 'previous', 'incoming', 'effectSummary', 'proof', 'origin',
+  ]), '$.memory.metadata', memo);
+  if (metadata != null) shape.metadata = metadata;
+  return shape;
 }
 
 function memoryLocationShape(location, memo, digests) {
   if (location == null || typeof location !== 'object') return location ?? null;
-  return {
+  const shape = {
     key: location.key ?? null,
     kind: location.kind ?? null,
     size: location.size ?? null,
@@ -411,6 +420,12 @@ function memoryLocationShape(location, memo, digests) {
     uncertaintyIdentityDigest: semanticDigest(location.uncertaintyIdentity, memo, digests, '$.memory.uncertainty'),
     originDigest: semanticDigest(location.origin, memo, digests, '$.memory.location.origin', true),
   };
+  const metadata = metadataProjection(location, new Set([
+    'key', 'kind', 'size', 'regionId', 'base', 'index', 'scale', 'address', 'disp',
+    'uncertaintyIdentity', 'origin',
+  ]), '$.memory.location.metadata', memo);
+  if (metadata != null) shape.metadata = metadata;
+  return shape;
 }
 
 function definitionShape(definition, extraSkip = [], memo = null, digests = null, definitionCache = null) {
@@ -453,7 +468,7 @@ function definitionShape(definition, extraSkip = [], memo = null, digests = null
 
 function valueShape(value, memo, digests, definitionCache) {
   if (value == null || typeof value !== 'object') return value ?? null;
-  return {
+  const shape = {
     id: token(value.id),
     bits: value.bits ?? null,
     kind: value.kind ?? null,
@@ -462,6 +477,11 @@ function valueShape(value, memo, digests, definitionCache) {
     originDigest: semanticDigest(value.origin, memo, digests, '$.value.origin', true),
     definition: definitionShape(value.def, [], memo, digests, definitionCache),
   };
+  const metadata = metadataProjection(value, new Set([
+    'id', 'bits', 'kind', 'signed', 'const', 'origin', 'def', 'uses',
+  ]), '$.value.metadata', memo);
+  if (metadata != null) shape.metadata = metadata;
+  return shape;
 }
 
 function instructionShape(instruction, memo, digests, definitionCache) {
@@ -532,25 +552,60 @@ function irShape(ir) {
   }
 }
 
-function sourceIdentity(context, ir) {
-  const candidates = [
-    context?.analysisIdentity,
-    context?.identity,
-    context?.artifactIdentity,
-    ir?.analysisIdentity,
-    ir?.identity,
-  ];
-  return candidates.find((candidate) => candidate != null) ?? null;
+const IDENTITY_SOURCE_KEYS = Object.freeze(['analysisIdentity', 'identity', 'artifactIdentity']);
+
+function ownDataProperty(source, key) {
+  if (source == null || typeof source !== 'object') return { present: false, value: undefined, malformed: false };
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(source, key);
+    if (descriptor == null) return { present: false, value: undefined, malformed: false };
+    if (!('value' in descriptor) || !descriptor.enumerable) {
+      return { present: true, value: undefined, malformed: true };
+    }
+    return { present: true, value: descriptor.value, malformed: false };
+  } catch {
+    return { present: true, value: undefined, malformed: true };
+  }
 }
 
-function explicitlyMissingIdentity(context, ir) {
-  return [context, ir].some((source) => ['analysisIdentity', 'identity', 'artifactIdentity'].some((key) => Object.hasOwn(source ?? {}, key)
-    && source[key] == null));
+function identitySourceEntries(context, ir) {
+  return [context, ir].flatMap((source) => IDENTITY_SOURCE_KEYS.map((key) => ({
+    source,
+    key,
+    ...ownDataProperty(source, key),
+  })));
+}
+
+function unsupportedIdentityMetadata(entries) {
+  return entries.some((entry) => {
+    if (entry.malformed) return true;
+    if (!entry.present || entry.value == null) return false;
+    try {
+      // Validate the complete candidate, including unknown metadata, before
+      // reading any identity field. This rejects symbols, hidden descriptors,
+      // accessors, cycles, and non-finite values instead of silently ignoring
+      // them at the identity boundary.
+      typedIdentityText(entry.value);
+      return false;
+    } catch {
+      return true;
+    }
+  });
+}
+
+function sourceIdentity(entries) {
+  return entries.find((entry) => !entry.malformed && entry.value != null)?.value ?? null;
+}
+
+function explicitlyMissingIdentity(entries) {
+  return entries.some((entry) => entry.present && entry.value == null);
 }
 
 function field(candidate, ...names) {
   for (const name of names) {
-    const value = token(candidate?.[name]);
+    const property = ownDataProperty(candidate, name);
+    if (property.malformed) return null;
+    const value = token(property.value);
     if (value != null) return value;
   }
   return null;
@@ -566,8 +621,10 @@ function hasMalformedIdentityFields(candidate) {
   try {
     for (const names of aliases) {
       for (const name of names) {
-        if (!Object.hasOwn(candidate, name)) continue;
-        const raw = candidate[name];
+        const property = ownDataProperty(candidate, name);
+        if (!property.present) continue;
+        if (property.malformed) return true;
+        const raw = property.value;
         if (raw == null || token(raw) == null) return true;
       }
     }
@@ -629,7 +686,10 @@ function ssaIdentityDigest(semanticIrId, values) {
 
 export function isValidatedAnalysisIdentity(identity) {
   if (identity == null || typeof identity !== 'object' || Array.isArray(identity)) return false;
-  return REQUIRED_FIELDS.every((name) => typeof identity[name] === 'string' && identity[name].trim().length > 0);
+  return REQUIRED_FIELDS.every((name) => {
+    const property = ownDataProperty(identity, name);
+    return !property.malformed && typeof property.value === 'string' && property.value.trim().length > 0;
+  });
 }
 
 export function analysisIdentityMatches(observed, expected) {
@@ -652,13 +712,20 @@ export function canonicalAnalysisIdentity(context = {}) {
     values: seededSsa?.values ?? [],
     origin: seededOrigins?.functionOrigin ?? null,
   } : null);
-  const source = sourceIdentity(context, ir);
-  if (explicitlyMissingIdentity(context, ir)) return { identity: null, valid: false, reason: 'analysis identity is null' };
+  const sourceEntries = identitySourceEntries(context, ir);
+  if (unsupportedIdentityMetadata(sourceEntries)) {
+    return { identity: null, valid: false, reason: 'analysis identity is malformed' };
+  }
+  const source = sourceIdentity(sourceEntries);
+  if (explicitlyMissingIdentity(sourceEntries)) return { identity: null, valid: false, reason: 'analysis identity is null' };
   if (source != null && (typeof source !== 'object' || Array.isArray(source))) {
     return { identity: null, valid: false, reason: 'analysis identity is malformed' };
   }
+  const irAnalysisIdentity = sourceEntries.find((entry) => entry.source === ir && entry.key === 'analysisIdentity')?.value;
+  const irIdentity = sourceEntries.find((entry) => entry.source === ir && entry.key === 'identity')?.value;
+  const irSourceIdentity = irAnalysisIdentity ?? irIdentity ?? null;
   if (hasMalformedIdentityFields(source)
-      || hasMalformedIdentityFields(ir?.analysisIdentity ?? ir?.identity)) {
+      || hasMalformedIdentityFields(irSourceIdentity)) {
     return { identity: null, valid: false, reason: 'analysis identity is malformed' };
   }
   const shape = irShape(ir);
@@ -682,9 +749,9 @@ export function canonicalAnalysisIdentity(context = {}) {
     ?? field(ir, 'analyzerVersion', 'semanticSchemaVersion') ?? 'phase8-analysis-v1';
   const identity = Object.freeze({ binaryId, functionId, snapshotId, semanticIrId, ssaId, analyzerVersion });
   if (!isValidatedAnalysisIdentity(identity)) return { identity: null, valid: false, reason: 'analysis identity fields are invalid' };
-  if (!sameKnownSourceFields(identity, source) || !sameKnownSourceFields(identity, ir?.analysisIdentity ?? ir?.identity)
+  if (!sameKnownSourceFields(identity, source) || !sameKnownSourceFields(identity, irSourceIdentity)
       || !sourceIsBoundToShape(source, identity, shapeDigest, shape)
-      || !sourceIsBoundToShape(ir?.analysisIdentity ?? ir?.identity, identity, shapeDigest, shape)) {
+      || !sourceIsBoundToShape(irSourceIdentity, identity, shapeDigest, shape)) {
     return { identity: null, valid: false, reason: 'analysis identity is stale for the Semantic IR' };
   }
   return { identity, valid: true, reason: null };

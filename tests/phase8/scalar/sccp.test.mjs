@@ -610,6 +610,32 @@ test('canonical identity distinguishes typed scalar metadata and rejects non-fin
   }
 });
 
+test('canonical identity is independent of definition.extra insertion order', () => {
+  const ir = identityShapeFixture('identity-extra-order');
+  const firstDefinition = ir.values.find((value) => value.def?.op === 'bin').def;
+  firstDefinition.extra = { alpha: 1, nested: { left: 2, right: 3 }, omega: ['x', 'y'] };
+  const firstIdentity = canonicalAnalysisIdentity({ ir });
+  firstDefinition.extra = { omega: ['x', 'y'], nested: { right: 3, left: 2 }, alpha: 1 };
+  const secondIdentity = canonicalAnalysisIdentity({ ir });
+  assert.equal(firstIdentity.valid, true);
+  assert.equal(secondIdentity.valid, true);
+  assert.equal(firstIdentity.identity.semanticIrId, secondIdentity.identity.semanticIrId);
+});
+
+test('canonical identity rejects non-enumerable and symbol-key semantic metadata', () => {
+  const hidden = identityShapeFixture('identity-hidden-metadata');
+  const hiddenDefinition = hidden.values.find((value) => value.def?.op === 'bin').def;
+  hiddenDefinition.extra = { visible: 1 };
+  Object.defineProperty(hiddenDefinition.extra, 'hidden', { value: 2, enumerable: false });
+  assert.equal(canonicalAnalysisIdentity({ ir: hidden }).valid, false);
+
+  const symbol = identityShapeFixture('identity-symbol-metadata');
+  const symbolDefinition = symbol.values.find((value) => value.def?.op === 'bin').def;
+  symbolDefinition.extra = { visible: 1 };
+  symbolDefinition.extra[Symbol('hidden')] = 2;
+  assert.equal(canonicalAnalysisIdentity({ ir: symbol }).valid, false);
+});
+
 test('canonical identity rejects malformed non-finite or null source IDs', () => {
   const ir = identityShapeFixture('identity-source-malformed');
   const valid = canonicalAnalysisIdentity({ ir });

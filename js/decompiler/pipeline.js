@@ -198,7 +198,8 @@ function fullPhase8Projection(result, model, opts) {
     { ir:result.ir, types:result.types, opts },
     {
       stages:PHASE8_ALL_STAGES,
-      timeBudgetMs:Number(opts.phase8TimeBudgetMs ?? 250),
+      ...(opts.phase8TimeBudgetMs != null ? { timeBudgetMs:Number(opts.phase8TimeBudgetMs) } : {}),
+      ...(opts.phase8WorkBudget != null ? { maxWorkItems:opts.phase8WorkBudget } : {}),
       shouldAbort:opts.shouldAbort,
       budgetClass:'standard',
     },

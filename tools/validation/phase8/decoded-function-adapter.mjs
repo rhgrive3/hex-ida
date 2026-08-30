@@ -101,7 +101,8 @@ export function decompileDecodedProductFunction(input, options = {}) {
     deterministicTransforms:options.deterministicTransforms === true,
     phase8Optimize:options.phase8Optimize === true,
     decompilerTimeBudgetMs:Number(options.decompilerTimeBudgetMs ?? 5000),
-    phase8TimeBudgetMs:Number(options.phase8TimeBudgetMs ?? 250),
+    ...(options.phase8TimeBudgetMs != null ? { phase8TimeBudgetMs:Number(options.phase8TimeBudgetMs) } : {}),
+    ...(options.phase8WorkBudget != null ? { phase8WorkBudget:options.phase8WorkBudget } : {}),
   };
   const raw = decompileSemantic(model, decompilerOptions);
   if (!raw) throw new Error('phase8-measurement-product-decompiler-produced-no-result');
