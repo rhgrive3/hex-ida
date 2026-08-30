@@ -5,9 +5,12 @@
 
 **Implementation gate (historical checkpoint)**: Production source edits were
 forbidden until the `ANALYZE=CLEAN` refreshed checkpoint was approved by Sol
-and the merged PR #2499 head was reconciled/re-audited against live main
-`48a0b429`. The implementation-owner branch is now restacked onto fetched
-`origin/main` `204c82de`; delivery/review tasks remain open.
+and the merged PR #2499 head was reconciled/re-audited against live main. That
+historical gate was satisfied before the implementation-owner restack. This
+resume is bound to requested base `42d472c310c12685e59dbf13a59e7572e8429ae2`,
+requested main checkpoint `66a5640359c5b39526fb89f6937e023294e54bdd`, and its
+fetched descendant `1645b4e4a2b5cd9baf37e2efe5b2e6045481b1aa`, plus the five
+Review 1 counterexamples below. Delivery/review tasks remain open.
 
 ## Phase 1: Setup and ownership
 
@@ -50,10 +53,11 @@ and the merged PR #2499 head was reconciled/re-audited against live main
 - [x] T039 Re-run Spec Kit analyze after the correction and obtain Sol's
   implementation spot-check approval before touching a production file.
 
-Implementation-owner reconciliation after T039: fetched `origin/main` at
-`204c82dec563a7f87b67dcfbae848f65de9be9f4`, preserved the previous head under
-`backup/c3-02-before-restack`, and replayed only C3-02 commits onto that exact
-head. T027–T035 remain intentionally open for independent review and delivery.
+Implementation-owner reconciliation after T039 (historical): fetched
+`origin/main` at `204c82dec563a7f87b67dcfbae848f65de9be9f4`, preserved the
+previous head under `backup/c3-02-before-restack`, and replayed only C3-02
+commits onto that exact head. T027–T035 remain intentionally open for
+independent review and delivery.
 
 ## Phase 3: User Story 1 — one ABI fact reaches every consumer (P1)
 
@@ -138,8 +142,8 @@ conservative outcomes without shrinking the denominator.
 
 ## Phase 6: Convergence, independent reviews, and delivery
 
-- [x] T026 Run Spec Kit converge; process every generated task through
-  implementation, focused tests, and another converge until `CLEAN`.
+- [x] T026 Historical Spec Kit converge completed the original implementation;
+  the resume correction has its own convergence tasks appended below.
 - [ ] T027 Have a non-owner Luna perform adversarial Review Pass 1 on the exact
   implementation head with at least five fresh malformed, stale, incomplete,
   ambiguous, and boundary attacks plus finding-specific ABI attacks.
@@ -196,6 +200,9 @@ conservative outcomes without shrinking the denominator.
 | FR-009, FR-010, FR-011 | T017–T022, T026, T032 |
 | FR-012 | T010–T012, T017–T019, T023–T025 |
 | FR-013 | T004, T014–T015, T030–T033 |
+| FR-014 | T040–T041, T045 |
+| FR-015 | T040, T042–T043, T045 |
+| FR-016 | T040, T043–T044, T045 |
 | SC-001, SC-004 | T010–T016, T023, T025 |
 | SC-002, SC-006 | T017–T022 |
 | SC-003 | T011, T023–T025 |
@@ -203,3 +210,47 @@ conservative outcomes without shrinking the denominator.
 | SC-007 | T012, T016, T022 |
 | SC-008 | T016–T019, T032 |
 | SC-009 | T026–T035 |
+| SC-010 | T040–T049 |
+
+## Phase 7: Review 1 correction convergence (resume)
+
+These tasks were appended after Review 1 produced five concrete counterexamples.
+They are implementation/convergence work, not reviewer approval: T027–T035
+remain open and must not be marked complete by the implementation owner.
+
+- [x] T040 [P] Add counterexample-first regressions for forced-stack AAPCS64
+  HFA/HVA physical slots, fully located aggregate padding, unsafe/string/
+  non-finite/overflowing coordinates, duplicate scalar stack evidence, and
+  same-identity registry replacement/cache staleness.
+- [x] T041 Fix canonical AAPCS64 HFA/HVA layout derivation and forced-stack
+  placement so physical element slots use `max(8, elementBytes)`, preserve
+  wider elements, and keep downstream aggregate aliases grouped.
+- [x] T042 Make `canonicalAggregateLayout` require complete deterministic
+  member-plus-padding coverage, reject duplicate/unlocated/overlapping
+  padding, and reject unsafe or overflowing layout spans.
+- [x] T043 Make ABI piece normalization and global argument/return interval
+  validation accept only finite safe integer coordinates, reject overflow and
+  ambiguous overlap, and preserve only proven canonical split semantics.
+- [x] T044 Bind ABI registry/cache evidence to the exact registered profile
+  object plus monotonic generation/classifier digest so replacement or
+  registry spoofing cannot reuse stale stack layout or candidate caches.
+- [x] T045 Run focused boundaries/profile/downstream tests, the locked 66-row
+  profile matrix, Phase 5, Phase 6, and Phase 8; preserve all existing
+  assertions and record the 45-test pre-fix five-failure run.
+- [x] T046 Create and validate the dedicated C3-02 ownership inventory for all
+  38 feature paths, generated paths, governance paths, and explicit cross-lane
+  decisions without changing the Phase 8 manifest.
+- [ ] T047 Restore canonical dependencies and run the userscript generator
+  twice after final candidate context; commit only the first expected
+  generated diff and require zero additional diff on the second run. Record
+  an exact blocker after `npm ci` if the build environment cannot complete;
+  generated applicability remains YES.
+- [ ] T048 Reconcile against requested main checkpoint
+  `66a5640359c5b39526fb89f6937e023294e54bdd` and fetched descendant
+  `1645b4e4a2b5cd9baf37e2efe5b2e6045481b1aa`, rerun collision/ownership and
+  impacted gates, then run the actual installed Spec Kit analyze and converge
+  workflows until CLEAN. Append any newly generated implementation tasks and
+  process them before delivery.
+- [ ] T049 Record the final exact base/main/head, changed-file inventory,
+  generated two-run result, analyze/converge evidence, and clean worktree;
+  leave T027–T035 and any later independent review/delivery tasks open.

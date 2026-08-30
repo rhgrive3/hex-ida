@@ -12,13 +12,16 @@
 function record(value) { return !!value && typeof value === 'object' && !Array.isArray(value); }
 
 function positiveInteger(value) {
-  const number = Number(value);
-  return Number.isSafeInteger(number) && number > 0 ? number : null;
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : null;
 }
 
 function nonNegativeInteger(value) {
-  const number = Number(value);
-  return Number.isSafeInteger(number) && number >= 0 ? number : null;
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+function safeEnd(offset, bytes) {
+  const end = offset + bytes;
+  return Number.isSafeInteger(end) && end > offset ? end : null;
 }
 
 function firstDefined(...values) { return values.find((value) => value != null); }
@@ -51,8 +54,9 @@ function paddingList(parameter) {
     parameter?.paddingBytes, layout?.padding, layout?.paddings, layout?.paddingBytes);
   if (Array.isArray(padding)) return padding;
   if (padding == null) return [];
-  // A scalar padding byte count is only useful for trailing padding. Keep it
-  // explicit so a caller cannot accidentally turn an interior hole exact.
+  // A scalar padding byte count has no physical location. Keep it as an
+  // explicitly unlocated entry so canonicalAggregateLayout rejects it below;
+  // an unknown trailing span is not exact evidence.
   const bytes = positiveInteger(padding);
   return bytes == null ? [] : [{ byteOffset:null, bytes }];
 }
@@ -63,7 +67,8 @@ function paddingSpan(entry) {
   if (bytes == null) return null;
   const rawOffset = firstDefined(entry.byteOffset, entry.offsetBytes, entry.offset);
   const offset = rawOffset == null ? null : nonNegativeInteger(rawOffset);
-  return { offset, bytes, end:offset == null ? null : offset + bytes };
+  const end = offset == null ? null : safeEnd(offset, bytes);
+  return { offset, bytes, end };
 }
 
 function explicitTotalBytes(parameter, bits) {
@@ -100,8 +105,8 @@ export function canonicalAggregateLayout(parameter) {
     const byteOffset = memberOffset(member);
     if (bitsForMember == null || bytes == null || byteOffset == null
       || Math.ceil(bitsForMember / 8) > bytes) return null;
-    const end = byteOffset + bytes;
-    if (end > totalBytes) return null;
+    const end = safeEnd(byteOffset, bytes);
+    if (end == null || end > totalBytes) return null;
     if (spans.some(([start, finish]) => byteOffset < finish && start < end)) return null;
     // The member list is canonical order. Do not silently sort it and thereby
     // launder an adapter that emitted the wrong order.
@@ -112,23 +117,21 @@ export function canonicalAggregateLayout(parameter) {
     normalizedMembers.push({ ...member, bits:bitsForMember, bytes, byteOffset });
     spans.push([byteOffset, end]);
     memberBitsTotal += bitsForMember;
+    if (!Number.isSafeInteger(memberBitsTotal)) return null;
   }
 
   const paddings = paddingList(parameter).map(paddingSpan);
-  if (paddings.some((padding) => !padding)) return null;
+  // Every padding span must carry an exact physical offset. Accepting one
+  // unlocated trailing span (or ignoring duplicate unknown spans) makes two
+  // contradictory layouts serialize to the same "exact" aggregate.
+  if (paddings.some((padding) => !padding || padding.offset == null || padding.end == null)) return null;
   const covered = [...spans.map(([offset, end]) => ({ offset, end, kind:'member' })),
-    ...paddings.filter((padding) => padding.offset != null)
-      .map(({ offset, end }) => ({ offset, end, kind:'padding' }))]
+    ...paddings.map(({ offset, end }) => ({ offset, end, kind:'padding' }))]
     .sort((left, right) => left.offset - right.offset || left.end - right.end);
   let cursor = 0;
   for (const span of covered) {
     if (span.offset !== cursor || span.end <= span.offset) return null;
     cursor = span.end;
-  }
-  const trailingPadding = paddings.find((padding) => padding.offset == null);
-  if (trailingPadding) {
-    if (cursor + trailingPadding.bytes !== totalBytes) return null;
-    cursor = totalBytes;
   }
   if (cursor !== totalBytes) return null;
   if (memberBitsTotal > bits) return null;

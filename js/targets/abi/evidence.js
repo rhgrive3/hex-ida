@@ -271,23 +271,20 @@ export function canonicalAbiHiddenResult(raw, hidden) {
 }
 
 function positiveInteger(value) {
-  const number = Number(value);
-  return Number.isSafeInteger(number) && number > 0 ? number : null;
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : null;
 }
 
 function nonNegativeInteger(value) {
-  const number = Number(value);
-  return Number.isSafeInteger(number) && number >= 0 ? number : null;
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
 
 function offsetValue(value) {
-  if (value == null) return null;
-  try {
-    const offset = typeof value === 'bigint' ? value : BigInt(value);
-    return offset >= 0n ? offset : null;
-  } catch {
-    return null;
-  }
+  return nonNegativeInteger(value);
+}
+
+function safeEnd(offset, bytes) {
+  const end = offset + bytes;
+  return Number.isSafeInteger(end) && end > offset ? end : null;
 }
 
 /*
@@ -359,8 +356,9 @@ export function normalizeAbiPieces(container, rawPieces, { defaultAbiClass = nul
       const alignment = rawAlignment == null
         ? (bytes >= 8 ? 8 : bytes >= 4 ? 4 : bytes >= 2 ? 2 : 1)
         : positiveInteger(rawAlignment);
-      if (alignment == null || stackOffset % BigInt(alignment) !== 0n) return null;
-      const physicalEnd = stackOffset + BigInt(bytes);
+      if (alignment == null || stackOffset % alignment !== 0) return null;
+      const physicalEnd = safeEnd(stackOffset, bytes);
+      if (physicalEnd == null) return null;
       if (physicalStackRanges.some(({ start, end }) => stackOffset < end && start < physicalEnd)) return null;
       physicalStackRanges.push({ start:stackOffset, end:physicalEnd, order:piece.order, pieceIndex:piece.pieceIndex });
     }
@@ -389,8 +387,8 @@ export function normalizeAbiPieces(container, rawPieces, { defaultAbiClass = nul
 
     const byteOffset = nonNegativeInteger(piece.byteOffset);
     if (byteOffset == null) return null;
-    const end = byteOffset + bytes;
-    if (totalBytes != null && end > totalBytes) return null;
+    const end = safeEnd(byteOffset, bytes);
+    if (end == null || (totalBytes != null && end > totalBytes)) return null;
     if (ranges.some(([start, finish]) => byteOffset < finish && start < end)) return null;
     ranges.push([byteOffset, end]);
     cursor = Math.max(cursor, end);
@@ -399,10 +397,10 @@ export function normalizeAbiPieces(container, rawPieces, { defaultAbiClass = nul
       ...piece,
       ...(hasRegister ? { reg:String(rawReg), stackOffset:undefined } : {
         reg:null,
-        // Preserve the producer's scalar representation for compatibility
-        // (legacy stack consumers use numbers), while validating it as an
-        // exact non-negative integer above.
-        stackOffset:typeof rawStackOffset === 'bigint' ? stackOffset : Number(stackOffset),
+        // Canonical stack coordinates stay finite safe integers. Do not round
+        // strings or BigInts through Number: doing so can turn two distinct
+        // physical intervals into one cache/publication key.
+        stackOffset,
       }),
       abiClass,
       pieceIndex,
@@ -441,4 +439,116 @@ export function normalizeAbiPieces(container, rawPieces, { defaultAbiClass = nul
   if (totalBits != null && coveredBits !== totalBits) return null;
   if (minimumBytes != null && coveredEnd < minimumBytes) return null;
   return pieces;
+}
+
+function physicalInterval(offset, bytes) {
+  if (typeof offset !== 'number' || !Number.isSafeInteger(offset) || offset < 0
+    || typeof bytes !== 'number' || !Number.isSafeInteger(bytes) || bytes <= 0) return null;
+  const end = safeEnd(offset, bytes);
+  return end == null ? null : { start:offset, end };
+}
+
+function entryStackIntervals(entry) {
+  if (!record(entry)) return null;
+  // Possible/unknown frontier entries intentionally carry no physical span;
+  // they are conservative candidates, not contradictory stack evidence.
+  if (entry.possible === true || entry.mustUse === false || entry.partial === true) return [];
+  const pieces = Array.isArray(entry.pieces)
+    ? entry.pieces
+    : Array.isArray(entry.parts) ? entry.parts : null;
+  if (pieces) {
+    const intervals = [];
+    for (const piece of pieces) {
+      if (!record(piece)) return null;
+      const offset = piece.stackOffset ?? piece.offset ?? null;
+      if (offset == null) continue;
+      const span = physicalInterval(offset, piece.bytes);
+      if (!span) return null;
+      intervals.push({ ...span, pieceIndex:piece.pieceIndex ?? piece.index ?? null });
+    }
+    const location = String(entry.location || '').toLowerCase();
+    if (location === 'stack' && intervals.length !== pieces.length) return null;
+    if (location === 'stack' && intervals.length) {
+      const ordered = intervals.slice().sort((left, right) => left.start - right.start);
+      const first = ordered[0].start;
+      let end = first;
+      for (const span of ordered) {
+        if (span.start !== end) return null;
+        end = span.end;
+      }
+      const declaredOffset = entry.offset ?? entry.stackOffset ?? null;
+      const declaredBytes = entry.bytes ?? entry.stackBytes ?? null;
+      const declared = physicalInterval(declaredOffset, declaredBytes);
+      if (!declared || declared.start !== first || declared.end !== end) return null;
+    }
+    return intervals;
+  }
+  const location = String(entry.location || '').toLowerCase();
+  const offset = entry.stackOffset ?? entry.offset ?? entry.calleeEntryOffset ?? null;
+  if (offset == null) return ['stack', 'stack-fragment', 'register-stack', 'register-and-stack'].includes(location)
+    ? null : [];
+  const bytes = entry.bytes ?? entry.stackBytes ?? null;
+  const span = physicalInterval(offset, bytes);
+  return span ? [{ ...span, pieceIndex:null }] : null;
+}
+
+function sameCanonicalSplit(left, right) {
+  const splitLocations = new Set(['register-stack', 'register-and-stack', 'stack-fragment']);
+  const leftLocation = String(left?.location || '').toLowerCase();
+  const rightLocation = String(right?.location || '').toLowerCase();
+  if (!splitLocations.has(leftLocation) && !splitLocations.has(rightLocation)) return false;
+  if (left?.index == null || right?.index == null || String(left.index) !== String(right.index)) return false;
+  return true;
+}
+
+function sameSpan(left, right) { return left.start === right.start && left.end === right.end; }
+
+function intervalsOverlap(left, right) { return left.start < right.end && right.start < left.end; }
+
+/**
+ * Validate all exact argument/return stack spans in one classifier result.
+ * `arguments` and `stackArguments` commonly expose the same canonical split
+ * entry through two projections; that one explicitly identified projection is
+ * allowed. Distinct scalar entries, duplicate evidence, and every ambiguous
+ * overlap are rejected before a consumer can publish an exact prototype.
+ */
+export function abiPhysicalIntervalsValid(result) {
+  if (!record(result)) return false;
+  const validateGroup = (entries, supplemental = [], label = 'argument') => {
+    const intervals = [];
+    const seenObjects = new Set();
+    const all = [
+      ...(Array.isArray(entries) ? entries.map((entry) => ({ entry, source:'canonical' })) : []),
+      ...(Array.isArray(supplemental) ? supplemental.map((entry) => ({ entry, source:'supplemental' })) : []),
+    ];
+    for (const { entry, source } of all) {
+      if (!record(entry)) return false;
+      if (seenObjects.has(entry)) continue;
+      seenObjects.add(entry);
+      const spans = entryStackIntervals(entry);
+      if (spans == null) return false;
+      for (const span of spans) {
+        const duplicate = intervals.find((candidate) => intervalsOverlap(candidate.span, span));
+        if (!duplicate) {
+          intervals.push({ span, entry, source, label });
+          continue;
+        }
+        // One aggregate split entry is deliberately projected into both
+        // `arguments` and `stackArguments`. It is the only duplicate physical
+        // span that can be proven canonical without guessing ownership.
+        if (sameSpan(duplicate.span, span)
+          && duplicate.source !== source
+          && sameCanonicalSplit(duplicate.entry, entry)) continue;
+        return false;
+      }
+    }
+    return true;
+  };
+
+  if (!validateGroup(result.arguments, result.stackArguments, 'argument')) return false;
+  const returnEntries = Array.isArray(result.returnLocations)
+    ? result.returnLocations
+    : Array.isArray(result.pieces) ? result.pieces
+      : Array.isArray(result.parts) ? result.parts : [];
+  return validateGroup(returnEntries, [], 'return');
 }

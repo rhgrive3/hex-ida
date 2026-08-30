@@ -320,7 +320,8 @@ SPECKIT_CONVERGENCE_RESULT: CLEAN (no additional implementation tasks; T027-T035
 PHASE5_RESULT: PASS (44/44 discovered files; 279 tests)
 PHASE6_RESULT: PASS (23/23 discovered files; 116 tests)
 PHASE8_RESULT: PASS (30/30 discovered files; 322 tests)
-GENERATED_DOUBLE_RUN: NOT_APPLICABLE (no generated input or generated consumer changed)
+HISTORICAL_GENERATED_DOUBLE_RUN: NOT_APPLICABLE (historical checkpoint; the
+current semantic-function-base change makes generated applicability YES)
 REVIEW_TASKS: OPEN (T027-T035 intentionally unchanged)
 ```
 
@@ -336,3 +337,125 @@ REVIEW_TASKS: OPEN (T027-T035 intentionally unchanged)
 - **Merge around #2499 without reconciliation**: rejected because two changes
   would compete for the canonical prototype owner and invalidate review/CI
   evidence.
+
+## Review 1 correction/resume evidence (2026-08-30)
+
+This resume starts from the requested clean exact head
+`42d472c310c12685e59dbf13a59e7572e8429ae2`. The C3-02 scope inventory remains
+anchored at `3ac625938333636bcc6c00634d2e21648778ce0f` and contains exactly 38
+feature paths. The requested moving-main checkpoint
+`66a5640359c5b39526fb89f6937e023294e54bdd` is an ancestor of the currently
+fetched `origin/main` `1645b4e4a2b5cd9baf37e2efe5b2e6045481b1aa`; the latter
+also contains unrelated identity-hardening commits. The moving-main decision
+is therefore recorded as a candidate-tree gate, not silently substituted with
+the historical `66a` SHA. The origin-main changes from scope base touch only
+project/runtime identity surfaces and their tests, with no semantic ABI owner
+overlap.
+
+Graft was not invoked: this worktree is outside GitHub Codespaces (`CODESPACES`
+is unset), and the repository guardrail explicitly forbids installing,
+emulating, or requiring Graft in that environment.
+
+### Counterexample-first correction
+
+The first correction run deliberately executed the new five tests before the
+production changes:
+
+```text
+node --test tests/phase8/abi/hex-c3-02-boundaries.test.mjs
+PRE_FIX_CORRECTION_RESULT: 45 total, 40 pass, 5 fail (exit 1)
+```
+
+The failures were the forced-stack HFA/HVA physical-slot overlap, unlocated
+aggregate padding accepted as exact, unsafe/string/non-finite/overflowing
+coordinates accepted by piece normalization, duplicate scalar stack evidence
+accepted, and stale stack-layout cache after same-identity registry
+replacement. The unchanged assertions now pass:
+
+```text
+node --test tests/phase8/abi/hex-c3-02-boundaries.test.mjs
+POST_FIX_BOUNDARIES: 45 pass, 0 fail
+node --test tests/phase8/abi/hex-c3-02-boundaries.test.mjs tests/phase8/abi/hex-c3-02-profile-matrix.test.mjs
+POST_FIX_BOUNDARY_PROFILE: 49 pass, 0 fail
+node --test tests/phase8/abi/hex-c3-02-boundaries.test.mjs tests/phase8/abi/hex-c3-02-profile-matrix.test.mjs tests/phase8/integration/issue-2478-abi-prototype-recovery.test.mjs
+POST_FIX_BOUNDARY_PROFILE_DOWNSTREAM: 50 pass, 0 fail
+node tests/phase8/abi/hex-c3-02-required-profile-matrix.mjs
+POST_FIX_REQUIRED_PROFILE_MATRIX: MATRIX_SUMMARY total=66 passed=66 failed=0
+```
+
+The AAPCS64 producer now derives homogeneous physical spans from the canonical
+member layout and uses `max(8, elementBytes)` for each forced-stack element;
+the wrapper and prototype consumer preserve those offsets and group the lanes
+under one canonical parameter. Aggregate layout evidence requires every
+member-plus-padding byte to be located, ordered, non-overlapping, and covered.
+Piece normalization rejects non-number, unsafe, non-finite, and overflowed
+coordinates. A single validator checks exact stack spans across argument and
+return projections and allows only an explicitly identified canonical split;
+duplicate scalar evidence fails closed. Registry bindings now carry a monotonic
+generation and classifier digest, while prototype caches are keyed by the
+exact registered profile object and adapter identity requires that same object
+and digest.
+
+### Ownership and lifecycle truth
+
+The Phase 8 lane manifest was not widened. The dedicated
+`tools/validation/phase-ownership/c3-02.json` manifest explicitly assigns all
+38 feature paths to `abi-canonical`, `adapter-and-compat`,
+`prototype-consumer`, `spec-and-lifecycle`, or `cross-phase-regressions` and
+lists generated paths and governance paths separately. Its cross-lane
+decisions explain that Phase 5 owns canonical producer behavior, Phase 6 owns
+compatibility contracts, Phase 7 owns the shared adapter seam, Phase 8 owns
+prototype consumers, and integration owns generated output. The dedicated
+gate currently reports:
+
+```text
+node tools/validation/c3-02-ownership.mjs --check-manifest
+OWNERSHIP_MANIFEST: valid=true featurePaths=38 generatedPaths=2
+node tools/validation/c3-02-ownership.mjs --base-sha 3ac625938333636bcc6c00634d2e21648778ce0f --head-sha 42d472c310c12685e59dbf13a59e7572e8429ae2
+OWNERSHIP_INVENTORY: featureCount=38 generatedCount=0 governanceCount=0 violations=0
+```
+
+The installed Spec Kit was discovered rather than inferred:
+
+```text
+specify --version: 1.0.1
+specify workflow list/info speckit: Full SDD Cycle v1.0.0
+.specify/scripts/bash/check-prerequisites.sh --json --require-tasks --include-tasks: PASS
+.specify/scripts/bash/setup-tasks.sh --json: PASS
+specify bundle list: no project bundles
+specify bundle validate: expected no-bundle error (not a project bundle)
+specify integration status: warning/error for unsafe multi-install `agy`; no files changed
+```
+
+No unsupported `specify speckit` command or fabricated resource was used. The
+current artifacts explicitly retain specify, clarify, plan, checklist, tasks,
+analyze, implement, and converge evidence; T027–T035 and delivery work remain
+open. The refreshed analyze/converge result is intentionally recorded only
+after the final task ledger and moving-main/generated gates complete.
+
+### Test and generated-output status
+
+The owning suites currently pass after the correction: Phase 5 `44/44` files
+and `279` tests, Phase 6 `23/23` files and `116` tests, and Phase 8 `30/30`
+files and `327` tests. Generated applicability is YES because
+`js/analysis/semantic-function-base.js` reaches the bundled worker graph used
+by `scripts/build-userscript.mjs`. The canonical dependency restore and two-run
+generator transaction are still required; no generated output is hand-edited.
+
+The dependency restore and a deterministic pre-candidate generator transaction
+completed successfully:
+
+```text
+npm ci: PASS (42 packages added; npm reported one existing high-severity audit finding)
+npm run userscript:build (first run): PASS; expected generated paths only
+  userscript/hex.user.template.js
+  userscript/release-version.json
+FIRST_GENERATED_DIFF_DIGEST: 3a8c775c477eada799ac768e7f6756e88d26009a875a0a80b714b012fe3e3ee5
+npm run userscript:build (second run): PASS
+SECOND_GENERATED_DIFF_DIGEST: 3a8c775c477eada799ac768e7f6756e88d26009a875a0a80b714b012fe3e3ee5
+GENERATED_ADDITIONAL_DIFF: ZERO
+```
+
+This transaction was repeated once more to verify stability, but the final
+candidate-context transaction remains a delivery task (T047/T048) and must be
+recorded after the final source head is committed.

@@ -2,6 +2,7 @@ import { stableDigest } from '../../core/identity/index.js';
 
 const ABI_PLUGINS = new Map();
 const ABI_REGISTRY_BINDINGS = new WeakMap();
+let ABI_REGISTRY_GENERATION = 0;
 const APPLE_ARM64E_PLATFORMS = new Set([
   'apple', 'darwin', 'macos', 'macosx', 'ios', 'ios-simulator', 'ipados',
   'tvos', 'watchos', 'visionos',
@@ -60,7 +61,29 @@ export class ABIPlugin {
   }
 }
 
-function registryDescriptor(plugin) {
+function classifierDescriptor(plugin) {
+  // Function values are intentionally represented by their source text: the
+  // identity digest must cover replacement-sensitive classifier behavior, not
+  // just the public id/version fields. A monotonic binding generation still
+  // distinguishes two frozen objects whose closures happen to stringify the
+  // same way.
+  return {
+    platformPredicate:String(plugin?.platformPredicate ?? ''),
+    callingConventions:String(plugin?.callingConventions ?? ''),
+    classifyArguments:String(plugin?.classifyArguments ?? ''),
+    classifyCallReturn:String(plugin?.classifyCallReturn ?? ''),
+    classifyFunctionReturn:String(plugin?.classifyFunctionReturn ?? ''),
+    classifyEntryRegister:String(plugin?.classifyEntryRegister ?? ''),
+    callerSaved:String(plugin?.callerSaved ?? ''),
+    calleeSaved:String(plugin?.calleeSaved ?? ''),
+    stackRules:String(plugin?.stackRules ?? ''),
+    redZone:String(plugin?.redZone ?? ''),
+    unwindRules:String(plugin?.unwindRules ?? ''),
+    defaultUnknownCallEffects:String(plugin?.defaultUnknownCallEffects ?? ''),
+  };
+}
+
+function registryDescriptor(plugin, { generation = null, classifierDigest = null } = {}) {
   return {
     id:plugin?.id ?? null,
     semanticVersion:plugin?.semanticVersion ?? null,
@@ -68,12 +91,26 @@ function registryDescriptor(plugin) {
     architectureId:plugin?.architectureId ?? null,
     supported:plugin?.supported !== false,
     callingConventions:claimedCallingConventions(plugin),
+    ...(generation == null ? {} : { generation }),
+    ...(classifierDigest == null ? {} : { classifierDigest }),
   };
+}
+
+function expectedRegistryDigest(plugin, binding) {
+  return `abi-registry:${stableDigest(registryDescriptor(plugin, {
+    generation:binding.generation,
+    classifierDigest:binding.classifierDigest,
+  }))}`;
 }
 
 export function abiPluginRegistryDigest(plugin) {
   const binding = plugin && typeof plugin === 'object' ? ABI_REGISTRY_BINDINGS.get(plugin) : null;
   return binding?.digest ?? null;
+}
+
+export function abiPluginRegistryGeneration(plugin) {
+  const binding = plugin && typeof plugin === 'object' ? ABI_REGISTRY_BINDINGS.get(plugin) : null;
+  return binding?.generation ?? null;
 }
 
 /*
@@ -86,7 +123,7 @@ export function isRegisteredABIPlugin(plugin) {
   if (!plugin || typeof plugin !== 'object') return false;
   const binding = ABI_REGISTRY_BINDINGS.get(plugin);
   return !!binding && ABI_PLUGINS.get(binding.id) === plugin
-    && binding.digest === `abi-registry:${stableDigest(registryDescriptor(plugin))}`;
+    && binding.digest === expectedRegistryDigest(plugin, binding);
 }
 
 export function registerABIPlugin(definition, { replace = false } = {}) {
@@ -99,10 +136,16 @@ export function registerABIPlugin(definition, { replace = false } = {}) {
     throw new Error(`ABI already registered: ${plugin.id}`);
   }
   ABI_PLUGINS.set(plugin.id, plugin);
-  ABI_REGISTRY_BINDINGS.set(plugin, {
+  const generation = ++ABI_REGISTRY_GENERATION;
+  const classifierDigest = stableDigest(classifierDescriptor(plugin));
+  const binding = {
     id:plugin.id,
-    digest:`abi-registry:${stableDigest(registryDescriptor(plugin))}`,
-  });
+    generation,
+    classifierDigest,
+    digest:null,
+  };
+  binding.digest = expectedRegistryDigest(plugin, binding);
+  ABI_REGISTRY_BINDINGS.set(plugin, binding);
   return plugin;
 }
 
