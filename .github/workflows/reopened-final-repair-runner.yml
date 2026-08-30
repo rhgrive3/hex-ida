@@ -19,6 +19,8 @@ jobs:
         run: python .github/reopened-final-patcher-fix.py
       - name: Apply repair
         run: python .github/reopened-final-repair.py
+      - name: Align focused fixture
+        run: python .github/reopened-final-fixture-fix.py
       - name: Syntax and focused contracts
         shell: bash
         run: |
@@ -53,6 +55,7 @@ jobs:
         run: |
           rm -f .github/reopened-final-repair.py
           rm -f .github/reopened-final-patcher-fix.py
+          rm -f .github/reopened-final-fixture-fix.py
           rm -f .github/reopened-final-inspection.txt
           rm -f .github/reopened-repair-output.txt
           rm -f .github/reopened-test-output.txt
