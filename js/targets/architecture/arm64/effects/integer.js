@@ -42,7 +42,11 @@ function validImm12(op) {
   try { value = BigInt(op.value); } catch { return false; }
   if (value < 0n || value > 0xfffn) return false;
   if (op.shift == null) return true;
-  return String(op.shift.op || '').toLowerCase() === 'lsl' && Number(op.shift.amount) === 12;
+  return typeof op.shift.op === 'string'
+    && op.shift.op.toLowerCase() === 'lsl'
+    && typeof op.shift.amount === 'number'
+    && Number.isInteger(op.shift.amount)
+    && op.shift.amount === 12;
 }
 
 function rotateRightElement(value, amount, widthBits) {
@@ -88,9 +92,10 @@ function validExtendedSource(rhs, targetBits) {
   if (!isGpOrZr(rhs)) return false;
   const modifier = rhs.shift || rhs.extend || null;
   if (modifier == null) return regBits(rhs) === targetBits;
-  const kind = String(modifier.op || '').toLowerCase();
-  const amount = Number(modifier.amount ?? 0);
-  if (!Number.isInteger(amount) || amount < 0 || amount > 4) return false;
+  if (typeof modifier.op !== 'string') return false;
+  const kind = modifier.op.toLowerCase();
+  const amount = modifier.amount ?? 0;
+  if (typeof amount !== 'number' || !Number.isInteger(amount) || amount < 0 || amount > 4) return false;
   if (kind === 'lsl') return regBits(rhs) === targetBits;
   if (!EXTEND_KINDS.has(kind)) return false;
   if (targetBits === 32) return regBits(rhs) === 32;
@@ -101,10 +106,11 @@ function validShiftedSource(rhs, targetBits) {
   if (!isGpOrZr(rhs) || regBits(rhs) !== targetBits) return false;
   const modifier = rhs.shift || rhs.extend || null;
   if (modifier == null) return true;
-  const kind = String(modifier.op || '').toLowerCase();
-  const amount = Number(modifier.amount ?? 0);
+  if (typeof modifier.op !== 'string') return false;
+  const kind = modifier.op.toLowerCase();
+  const amount = modifier.amount ?? 0;
   return ['lsl','lsr','asr'].includes(kind)
-    && Number.isInteger(amount) && amount >= 0 && amount < targetBits;
+    && typeof amount === 'number' && Number.isInteger(amount) && amount >= 0 && amount < targetBits;
 }
 
 function validAddSubRegister31Encoding(mnemonic, ops) {
@@ -127,7 +133,7 @@ function validAddSubRegister31Encoding(mnemonic, ops) {
   const dstClass = regClass(dst);
   const lhsClass = regClass(lhs);
   const modifier = rhs.shift || rhs.extend || null;
-  const explicitExtend = EXTEND_KINDS.has(String(modifier?.op || '').toLowerCase());
+  const explicitExtend = typeof modifier?.op === 'string' && EXTEND_KINDS.has(modifier.op.toLowerCase());
   const usesExtendedEncoding = dstClass === 'sp' || lhsClass === 'sp' || explicitExtend;
 
   if (usesExtendedEncoding) {
@@ -183,9 +189,9 @@ function validMoveWideEncoding(mnemonic, ops) {
   try { immediate = BigInt(src.value); } catch { return false; }
   if (immediate < 0n || immediate > 0xffffn) return false;
   if (src.shift == null) return true;
-  if (String(src.shift.op || '').toLowerCase() !== 'lsl') return false;
-  const amount = Number(src.shift.amount);
-  if (!Number.isInteger(amount)) return false;
+  if (typeof src.shift.op !== 'string' || src.shift.op.toLowerCase() !== 'lsl') return false;
+  const amount = src.shift.amount;
+  if (typeof amount !== 'number' || !Number.isInteger(amount)) return false;
   return bits === 32 ? amount === 0 || amount === 16 : [0,16,32,48].includes(amount);
 }
 

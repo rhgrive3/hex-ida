@@ -225,8 +225,8 @@ export function createArm64EffectContext(instruction, options = {}) {
   }
 
   function shiftImmediate(value, widthBits, kind, amount) {
-    const n = Number(amount);
-    if (!Number.isInteger(n) || n < 0 || n >= widthBits) return null;
+    const n = amount;
+    if (typeof n !== 'number' || !Number.isInteger(n) || n < 0 || n >= widthBits) return null;
     return valueOp(kind, [value, constant(widthBits, BigInt(n))], widthBits, { widthBits, amount: n });
   }
 
@@ -235,8 +235,10 @@ export function createArm64EffectContext(instruction, options = {}) {
       if (sourceBits === targetBits) return value;
       return sourceBits < targetBits ? zeroExtend(value, sourceBits, targetBits) : truncate(value, sourceBits, targetBits);
     }
-    const kind = String(modifier.op || '').toLowerCase();
-    const amount = modifier.amount == null ? 0 : Number(modifier.amount);
+    if (typeof modifier.op !== 'string') return null;
+    const kind = modifier.op.toLowerCase();
+    const amount = modifier.amount == null ? 0 : modifier.amount;
+    if (typeof amount !== 'number' || !Number.isInteger(amount)) return null;
     const extendBits = {
       uxtb: 8, uxth: 16, uxtw: 32, uxtx: 64,
       sxtb: 8, sxth: 16, sxtw: 32, sxtx: 64,
@@ -261,7 +263,7 @@ export function createArm64EffectContext(instruction, options = {}) {
       return applyModifier(base, targetBits, op.shift || null, targetBits);
     }
     if (op.k === 'reg') {
-      const modifierKind = String(op.shift?.op || '').toLowerCase();
+      const modifierKind = typeof op.shift?.op === 'string' ? op.shift.op.toLowerCase() : '';
       const widenedXModifier = (modifierKind === 'uxtx' || modifierKind === 'sxtx') && instructionBits(op, targetBits) === 32;
       const sourceOperand = widenedXModifier
         ? { ...op, bits:64, text:op.cls === 'zr' ? 'xzr' : `x${op.num}` }

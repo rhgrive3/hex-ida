@@ -169,9 +169,10 @@ function extendIndex(expr, reg, shift, accessWidthBits = null) {
     if (reg.bits === 64) return expr;
     fail('arm64-register-offset-needs-extension', { register: reg.view });
   }
-  const op = String(shift.op || '').toLowerCase();
-  const amount = shift.amount == null ? 0 : Number(shift.amount);
-  if (!Number.isInteger(amount) || amount < 0 || amount > 4) fail('arm64-invalid-register-offset-shift');
+  if (typeof shift.op !== 'string') fail('arm64-invalid-register-offset-shift');
+  const op = shift.op.toLowerCase();
+  const amount = shift.amount == null ? 0 : shift.amount;
+  if (typeof amount !== 'number' || !Number.isInteger(amount) || amount < 0 || amount > 4) fail('arm64-invalid-register-offset-shift');
   if (accessWidthBits != null && amount !== 0) {
     const bytes = Number(accessWidthBits) / 8;
     const expected = Number.isInteger(bytes) && bytes > 0 ? Math.log2(bytes) : NaN;
