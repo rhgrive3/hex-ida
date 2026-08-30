@@ -54,8 +54,26 @@ export class AgentJobManager {
     const job = await this.require(jobOrId);
     if (job.status === 'complete' || job.status === 'hard-limit') return checkpoint(job);
     if (job.status === 'running') throw new Error('Agent job already has an active slice');
-    if (hardLimit(job)) { job.status = 'hard-limit'; job.updatedAt = new Date().toISOString(); await this.save(job); return checkpoint(job); }
-    job.status = 'running'; await this.save(job);
+    if (hardLimit(job)) {
+      const prevStatus = job.status;
+      job.status = 'hard-limit';
+      job.updatedAt = new Date().toISOString();
+      try {
+        await this.save(job);
+      } catch (saveError) {
+        job.status = prevStatus;
+        throw saveError;
+      }
+      return checkpoint(job);
+    }
+    const prevStatus = job.status;
+    job.status = 'running';
+    try {
+      await this.save(job);
+    } catch (saveError) {
+      job.status = prevStatus;
+      throw saveError;
+    }
     try {
       const result = await this.runtime.turn({
         ...job.request, goal: job.goal, mode: 'agent', scope: job.effectiveScope,
@@ -70,7 +88,11 @@ export class AgentJobManager {
     } catch (error) {
       job.status = options.signal?.aborted ? 'checkpointed' : 'failed';
       job.unresolvedWork = unique([...job.unresolvedWork, String(error?.message || error)]).slice(-32);
-      job.updatedAt = new Date().toISOString(); await this.save(job); throw error;
+      job.updatedAt = new Date().toISOString();
+      try {
+        await this.save(job);
+      } catch {}
+      throw error;
     }
   }
 

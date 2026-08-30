@@ -146,8 +146,13 @@ export class NoteStore {
     this.id = id || null;
     this.legacyIds = Array.from(new Set((legacyIds || []).filter((x) => x && x !== this.id)));
     this.migratedFrom = null;
+    this.legacyCandidate = null;
     this.lastSaveError = null;
     this.lastMutationSaved = true;
+    this._snapshotBytes = 0;
+    this._deltaBytes = new Map();
+    this._deltaTotalBytes = 0;
+    this._deltaPrefix = this.id ? `${PREFIX}${this.id}.delta.` : null;
     this.names = new Map();      // addr -> 名前
     this.comments = new Map();   // addr -> メモ
     this.vars = new Map();       // 'func:key' -> 呼び名
@@ -159,40 +164,109 @@ export class NoteStore {
 
   /* ── 読み書き ─────────────────────────────────────────── */
 
+  _applyPayload(o) {
+    for (const [k, v] of Object.entries(o.names || {})) this.names.set(k, v);
+    for (const [k, v] of Object.entries(o.comments || {})) this.comments.set(k, v);
+    for (const [k, v] of Object.entries(o.vars || {})) this.vars.set(k, v);
+    for (const [k, v] of Object.entries(o.types || {})) this.types.set(k, v);
+    this.structs = Array.isArray(o.structs) ? o.structs : [];
+  }
+
   load() {
     if (!this.id) return;
     let raw = null;
-    let sourceId = this.id;
-    try {
-      raw = localStorage.getItem(PREFIX + this.id);
-      if (!raw) {
-        for (const old of this.legacyIds) {
-          raw = localStorage.getItem(PREFIX + old);
-          if (raw) { sourceId = old; break; }
+    try { raw = localStorage.getItem(PREFIX + this.id); } catch { return; }
+    if (raw) {
+      try {
+        this._snapshotBytes = new TextEncoder().encode(raw).byteLength;
+        const o = JSON.parse(raw);
+        if (o && o.cleared === true) {
+          this.dirty = false; this.lastSaveError = null; this.lastMutationSaved = true;
+          this.migratedFrom = null; this.legacyCandidate = null; return;
         }
-      }
-    } catch { return; }
-    if (!raw) return;
+        this._applyPayload(o || {});
+        this._loadDeltas();
+      } catch { }
+      return;
+    }
+    for (const old of this.legacyIds) {
+      let legacyRaw = null;
+      try { legacyRaw = localStorage.getItem(PREFIX + old); } catch { return; }
+      if (!legacyRaw) continue;
+      try {
+        const payload = JSON.parse(legacyRaw);
+        if (!payload || payload.cleared === true) continue;
+        this.legacyCandidate = { sourceId: old, payload };
+      } catch { }
+      return;
+    }
+  }
+
+  importLegacyCandidate({ save = true } = {}) {
+    const candidate = this.legacyCandidate;
+    if (!candidate?.payload) return false;
+    this._applyPayload(candidate.payload);
+    this.dirty = true;
+    if (save && !this.save()) return false;
+    this.migratedFrom = candidate.sourceId;
+    this.legacyCandidate = null;
+    return true;
+  }
+
+  _mapForDelta(kind) {
+    return kind === 'names' ? this.names : kind === 'comments' ? this.comments : kind === 'vars' ? this.vars : kind === 'types' ? this.types : null;
+  }
+
+  _deltaKey(kind, recordKey) {
+    return `${this._deltaPrefix}${encodeURIComponent(kind)}.${encodeURIComponent(String(recordKey))}`;
+  }
+
+  _loadDeltas() {
+    if (!this._deltaPrefix || typeof localStorage === 'undefined') return;
+    this._deltaBytes.clear(); this._deltaTotalBytes = 0;
+    const keys = [];
     try {
-      const o = JSON.parse(raw);
-      if (o && o.cleared === true) {
-        this.dirty = false;
-        this.lastSaveError = null;
-        this.lastMutationSaved = true;
-        this.migratedFrom = null;
-        return;
+      for (let index = 0; index < localStorage.length; index++) {
+        const storageKey = localStorage.key(index);
+        if (storageKey?.startsWith(this._deltaPrefix)) keys.push(storageKey);
       }
-      for (const [k, v] of Object.entries(o.names || {})) this.names.set(k, v);
-      for (const [k, v] of Object.entries(o.comments || {})) this.comments.set(k, v);
-      for (const [k, v] of Object.entries(o.vars || {})) this.vars.set(k, v);
-      for (const [k, v] of Object.entries(o.types || {})) this.types.set(k, v);
-      this.structs = Array.isArray(o.structs) ? o.structs : [];
-      if (sourceId !== this.id) {
-        /* Copy, do not delete. The old version can still be opened safely, and
-           a failed write never destroys the only copy of the user's notes. */
-        if (this.save()) this.migratedFrom = sourceId;
+      keys.sort();
+      for (const storageKey of keys) {
+        const raw = localStorage.getItem(storageKey);
+        if (raw == null) continue;
+        const bytes = new TextEncoder().encode(raw).byteLength;
+        this._deltaBytes.set(storageKey, bytes); this._deltaTotalBytes += bytes;
+        const delta = JSON.parse(raw);
+        const map = this._mapForDelta(delta?.kind);
+        if (!map || typeof delta?.key !== 'string') continue;
+        if (delta.deleted) map.delete(delta.key); else map.set(delta.key, String(delta.value ?? ''));
       }
-    } catch { /* 壊れていたら無かったことにする（消しはしない） */ }
+    } catch { /* base snapshot remains valid if a delta is unreadable */ }
+  }
+
+  _clearDeltas() {
+    for (const storageKey of this._deltaBytes.keys()) { try { localStorage.removeItem(storageKey); } catch { /* stale overlay is idempotent */ } }
+    this._deltaBytes.clear(); this._deltaTotalBytes = 0;
+  }
+
+  _persistDelta(kind, recordKey, value) {
+    if (!this.id || !this._deltaPrefix) return this._saveFailure('NO_ID');
+    // A delta overlay needs a durable base. The first mutation of a fresh store
+    // creates that base once; subsequent ordinary mutations stay record-local.
+    if (this._snapshotBytes === 0) return this.save();
+    const storageKey = this._deltaKey(kind, recordKey);
+    const text = JSON.stringify({ kind, key:String(recordKey), deleted:value == null, ...(value == null ? {} : { value:String(value) }) });
+    const bytes = new TextEncoder().encode(text).byteLength;
+    const previousBytes = this._deltaBytes.get(storageKey) || 0;
+    const projected = this._snapshotBytes + this._deltaTotalBytes - previousBytes + bytes;
+    if (projected > MAX_BYTES) return this.save();
+    try {
+      localStorage.setItem(storageKey, text);
+      this._deltaBytes.set(storageKey, bytes);
+      this._deltaTotalBytes += bytes - previousBytes;
+      this.dirty = false; this.lastSaveError = null; this.lastMutationSaved = true;
+      return true;
+    } catch (error) { return this._saveFailure(error?.name || 'STORAGE_ERROR', error); }
   }
 
   _saveFailure(code, error = null, detail = {}) {
@@ -222,6 +296,8 @@ export class NoteStore {
     if (bytes > MAX_BYTES) return this._saveFailure('TOO_LARGE', null, { bytes, maxBytes: MAX_BYTES });
     try {
       localStorage.setItem(PREFIX + this.id, text);
+      this._snapshotBytes = bytes;
+      this._clearDeltas();
       this.dirty = false;
       this.lastSaveError = null;
       this.lastMutationSaved = true;
@@ -231,18 +307,45 @@ export class NoteStore {
     }
   }
 
+  /* ── トランザクション ─────────────────────────────────── */
+
+  transaction(fn) {
+    this._transactionDepth = (this._transactionDepth || 0) + 1;
+    try {
+      return fn();
+    } finally {
+      this._transactionDepth--;
+      if (this._transactionDepth === 0 && this.dirty) {
+        this.save();
+      }
+    }
+  }
+
+  async transactionAsync(fn) {
+    this._transactionDepth = (this._transactionDepth || 0) + 1;
+    try {
+      return await fn();
+    } finally {
+      this._transactionDepth--;
+      if (this._transactionDepth === 0 && this.dirty) {
+        this.save();
+      }
+    }
+  }
+
   /* ── 名前 ─────────────────────────────────────────────── */
 
   nameOf(addr) { return this.names.get(key(addr)) || null; }
 
-  setName(addr, name) {
+  setName(addr, name, { save = true } = {}) {
     const k = key(addr);
     if (!k) return this._saveFailure('INVALID_KEY');
     const clean = cleanName(name);
     if (clean) this.names.set(k, clean);
     else this.names.delete(k);
     this.dirty = true;
-    return this.save();
+    if (this._transactionDepth > 0 || !save) return true;
+    return this._persistDelta('names', k, clean || null);
   }
 
   /** 保存済みの名前をぜんぶ [{addr, name}] で返す（起動時に索引へ流し込む）。 */
@@ -258,14 +361,15 @@ export class NoteStore {
 
   comment(addr) { return this.comments.get(key(addr)) || null; }
 
-  setComment(addr, text) {
+  setComment(addr, text, { save = true } = {}) {
     const k = key(addr);
     if (!k) return this._saveFailure('INVALID_KEY');
     const clean = (text || '').toString().slice(0, 500).trim();
     if (clean) this.comments.set(k, clean);
     else this.comments.delete(k);
     this.dirty = true;
-    return this.save();
+    if (this._transactionDepth > 0 || !save) return true;
+    return this._persistDelta('comments', k, clean || null);
   }
 
   commentCount() { return this.comments.size; }
@@ -274,26 +378,28 @@ export class NoteStore {
 
   varName(func, k) { return this.vars.get(key(func) + ':' + k) || null; }
 
-  setVarName(func, k, name) {
+  setVarName(func, k, name, { save = true } = {}) {
     const kk = key(func) + ':' + k;
     if (!key(func)) return this._saveFailure('INVALID_KEY');
     const clean = cleanName(name);
     if (clean) this.vars.set(kk, clean);
     else this.vars.delete(kk);
     this.dirty = true;
-    return this.save();
+    if (this._transactionDepth > 0 || !save) return true;
+    return this._persistDelta('vars', kk, clean || null);
   }
 
   typeOf(func, k) { return this.types.get(key(func) + ':' + k) || null; }
 
-  setType(func, k, type) {
+  setType(func, k, type, { save = true } = {}) {
     const kk = key(func) + ':' + k;
     if (!key(func)) return this._saveFailure('INVALID_KEY');
     const clean = (type || '').toString().slice(0, 80).trim();
     if (clean) this.types.set(kk, clean);
     else this.types.delete(kk);
     this.dirty = true;
-    return this.save();
+    if (this._transactionDepth > 0 || !save) return true;
+    return this._persistDelta('types', kk, clean || null);
   }
 
   /* ── まとめて ─────────────────────────────────────────── */
@@ -308,7 +414,10 @@ export class NoteStore {
     // Keep the legacy payload intact for old app versions, but atomically write
     // a primary-key tombstone so this version never migrates it again.
     try {
-      localStorage.setItem(PREFIX + this.id, JSON.stringify({ v: 2, cleared: true }));
+      const tombstone = JSON.stringify({ v: 2, cleared: true });
+      localStorage.setItem(PREFIX + this.id, tombstone);
+      this._snapshotBytes = new TextEncoder().encode(tombstone).byteLength;
+      this._clearDeltas();
       this.dirty = false;
       this.lastSaveError = null;
       this.lastMutationSaved = true;

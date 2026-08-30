@@ -33,6 +33,18 @@ import { Emulator } from './emu.js';
 export { UnsupportedArchitectureError } from './architecture/index.js';
 import { runInSandbox } from './sandbox.js';
 
+function executableRegionForAddress(app, address) {
+  const target = BigInt(address);
+  return (app?.store?.get?.('regions') || []).find((region) => {
+    if (!region?.exec) return false;
+    try {
+      const start = BigInt(region.vmAddr);
+      const size = BigInt(region.size ?? region.declaredSize ?? 0);
+      return size > 0n && target >= start && target < start + size;
+    } catch { return false; }
+  }) || null;
+}
+
 /**
  * スクリプトから触れる道具一式を作る。
  * @param {object} app
@@ -107,6 +119,17 @@ export function createApi(app, out) {
 
     /** 関数の一覧。[{addr, name, size}] */
     functions(limit = 100000) {
+      const regions = app.store?.get?.('regions') || [];
+      const execRegions = regions.filter((r) => r && r.exec);
+      if (execRegions.length > 1) {
+        const out = [];
+        for (const r of execRegions) {
+          const list = app.symbols.functionList(r, limit - out.length);
+          out.push(...list);
+          if (out.length >= limit) break;
+        }
+        return out;
+      }
       const r = region();
       return app.symbols.functionList(r, limit);
     },
@@ -161,9 +184,9 @@ export function createApi(app, out) {
 
     /** 逆アセンブル。[{addr, mn, ops}] */
     async disasm(addr, count = 16) {
-      const r = region();
-      if (!r) return [];
       const a = BigInt(addr);
+      const r = executableRegionForAddress(app, a);
+      if (!r) return [];
       const arch = architecture();
       const archAdapter = adapter();
       const limit = Math.max(0, Math.min(10000, Math.trunc(Number(count) || 0)));
@@ -173,10 +196,10 @@ export function createApi(app, out) {
       // the architecture adapter. Variable-length ISAs must use decoder output.
       if (archAdapter.fixedInstructionSize != null) {
         const out2 = [];
-        let row = rowOf(a);
+        let row = archAdapter.rowForAddress(r, a);
         if (row == null) return [];
         for (let i = 0; i < limit; i++, row++) {
-          const instructionAddress = addressOfRow(row);
+          const instructionAddress = archAdapter.addressForRow(r, row);
           if (instructionAddress == null) break;
           const chunk = Math.floor(row / 1024);
           const e = await app.backend.fetchChunk(r.id, chunk, true);
@@ -203,13 +226,27 @@ export function createApi(app, out) {
 
     /** 逆コンパイル結果（文字列）。 */
     async decompile(addr) {
-      const res = await app.analyzeFunctionAt(BigInt(addr));
-      if (!res) return null;
-      const r = region();
+      const a = BigInt(addr);
+      const arch = architecture();
+      const archAdapter = adapter();
+      if (archAdapter.fixedInstructionSize == null && arch !== 'arm64' && arch !== 'arm64e') {
+        return unsupportedArchitectureResult('decompile', arch);
+      }
+      const r = executableRegionForAddress(app, a);
+      if (!r) return null;
+      const res = await app.analyzeFunctionAt(a);
+      if (!res || !res.model) return null;
+      const map = archAdapter.fixedInstructionSize != null ? {
+        rowOfAddress: (value) => archAdapter.rowForAddress(r, BigInt(value)),
+        addrOfRow: (row) => archAdapter.addressForRow(r, row),
+      } : {
+        rowOfAddress: (a) => a,
+        addrOfRow: (row) => row,
+      };
       const out2 = decompile(res.model, {
-        name: api.name(addr), addr: BigInt(addr),
-        rowOfAddress: (a) => rowOf(a),
-        addrOfRow: (row) => r.vmAddr + BigInt(row) * 4n,
+        name: api.name(a), addr:a,
+        rowOfAddress: map.rowOfAddress,
+        addrOfRow: map.addrOfRow,
         symbolFor: (a) => app.symbols.nameAt(a),
         notes: app.notes,
       });
@@ -231,7 +268,8 @@ export function createApi(app, out) {
     /* ── 参照関係 ─────────────────────────────────────── */
 
     /** そのアドレスを呼んでいる場所。 */
-    xrefsTo(addr, limit = 200) {
+    async xrefsTo(addr, limit = 200) {
+      await app.ensureProgram?.().catch(() => null);
       const p = app.program;
       if (!p) return [];
       const a = BigInt(addr);
@@ -239,7 +277,8 @@ export function createApi(app, out) {
     },
 
     /** その関数が呼んでいる先。 */
-    xrefsFrom(addr, limit = 200) {
+    async xrefsFrom(addr, limit = 200) {
+      await app.ensureProgram?.().catch(() => null);
       const p = app.program;
       if (!p) return [];
       const range = p.functionRange(BigInt(addr));
@@ -248,7 +287,10 @@ export function createApi(app, out) {
     },
 
     /** よく呼ばれている関数の順位。 */
-    mostCalled(limit = 20) { return app.program ? app.program.mostCalled(limit) : []; },
+    async mostCalled(limit = 20) {
+      await app.ensureProgram?.().catch(() => null);
+      return app.program ? app.program.mostCalled(limit) : [];
+    },
 
     /* ── 文字列 ───────────────────────────────────────── */
 
@@ -259,8 +301,19 @@ export function createApi(app, out) {
 
     /** 文字列を検索する。 */
     findStrings(query, limit = 200) {
-      const q = String(query).toLowerCase();
-      return (app.stringIndex || []).filter((s) => s.text.toLowerCase().includes(q)).slice(0, limit);
+      const q = String(query ?? '').toLowerCase();
+      const max = Math.max(1, Math.min(5000, Number(limit) || 200));
+      const source = app.stringIndex || (app.strings?.items) || [];
+      const results = [];
+      for (const s of source) {
+        const text = s?.text;
+        if (typeof text !== 'string') continue;
+        if (!q || text.toLowerCase().includes(q)) {
+          results.push(s);
+          if (results.length >= max) break;
+        }
+      }
+      return results;
     },
 
     /* ── Objective-C ──────────────────────────────────── */
@@ -287,7 +340,7 @@ export function createApi(app, out) {
     /** 書き換えを登録する（保存するまでファイルは変わりません）。 */
     async patch(addr, textOrHex) {
       const a = BigInt(addr);
-      const r = region();
+      const r = executableRegionForAddress(app, a);
       if (!r) return { error: 'セクションが選ばれていません。' };
       const raw = isHexBytes(textOrHex);
       const arch = architecture();

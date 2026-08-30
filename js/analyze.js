@@ -16,6 +16,7 @@ import { LRU } from './lru.js';
 const MAX_INSTRUCTIONS = 40000;
 const MAX_MODEL_ROWS = 6000;
 const MODEL_TEXTS = 96;
+const MODEL_TEXT_READ_CONCURRENCY = 6;
 const ARM64_SEMANTIC_ARCHES = new Set(['arm64', 'arm64e', 'arm64_32']);
 
 export function supportsArm64SemanticAnalysis(architecture) {
@@ -316,6 +317,8 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
 
 const CACHE_MAX = 24;
 const cache = new LRU(CACHE_MAX);
+const analysisInflight = new Map();
+const textInflight = new Map();
 
 function cacheKey(region, startRow, endRow, symbols, maxRows = MAX_INSTRUCTIONS) {
   const symbolGen = symbols && symbols.gen != null ? symbols.gen : 0;
@@ -323,7 +326,75 @@ function cacheKey(region, startRow, endRow, symbols, maxRows = MAX_INSTRUCTIONS)
   return [symbolGen, region?.id, String(region?.vmAddr ?? ''), String(region?.size ?? ''), regionRevision, startRow, endRow, 'rows=' + maxRows].join(':');
 }
 
-export function clearAnalysisCache() { cache.clear(); }
+function makeShared(map, key, producer) {
+  const controller = new AbortController();
+  const entry = { controller, promise: null, waiters: 0, settled: false };
+  try {
+    entry.promise = Promise.resolve(producer(controller.signal))
+      .finally(() => {
+        entry.settled = true;
+        if (map.get(key) === entry) map.delete(key);
+      });
+  } catch (error) {
+    entry.settled = true;
+    entry.promise = Promise.reject(error);
+    if (map.get(key) === entry) map.delete(key);
+  }
+  map.set(key, entry);
+  return entry;
+}
+
+function waitShared(map, key, entry, signal) {
+  throwIfAborted(signal);
+  entry.waiters++;
+  let done = false;
+  let onAbort = null;
+  return new Promise((resolve, reject) => {
+    const finish = (fn, value) => {
+      if (done) return;
+      done = true;
+      if (signal && onAbort) signal.removeEventListener('abort', onAbort);
+      entry.waiters = Math.max(0, entry.waiters - 1);
+      if (!entry.settled && entry.waiters === 0) {
+        if (map.get(key) === entry) map.delete(key);
+        entry.controller.abort('analysis-no-waiters');
+      }
+      fn(value);
+    };
+    onAbort = () => finish(reject, abortError(signal));
+    if (signal) signal.addEventListener('abort', onAbort, { once: true });
+    entry.promise.then(
+      (value) => finish(resolve, value),
+      (error) => finish(reject, error),
+    );
+  });
+}
+
+function cancelShared(map, reason) {
+  for (const entry of map.values()) {
+    try { entry.controller.abort(reason); } catch { /* best effort */ }
+  }
+  map.clear();
+}
+
+export function clearAnalysisCache() {
+  cache.clear();
+  cancelShared(analysisInflight, 'analysis-cache-cleared');
+  cancelShared(textInflight, 'analysis-cache-cleared');
+}
+
+async function ensureTextsForKey(key, backend, res, signal) {
+  if (res.textsResolved) return res;
+  let entry = textInflight.get(key);
+  if (!entry) {
+    entry = makeShared(textInflight, key, async (producerSignal) => {
+      await resolveModelTexts(backend, res.model, MODEL_TEXTS, { signal: producerSignal });
+      res.textsResolved = true;
+      return res;
+    });
+  }
+  return waitShared(textInflight, key, entry, signal);
+}
 
 export async function analyzeFunctionCached(backend, region, startRow, endRow, symbols, onProgress, opts = {}) {
   const signal = opts?.signal || null;
@@ -331,35 +402,51 @@ export async function analyzeFunctionCached(backend, region, startRow, endRow, s
   const budget = rowBudget(opts);
   const key = cacheKey(region, startRow, endRow, symbols, budget);
   const wantTexts = opts.texts !== false;
-  const hit = cache.get(key);
-  if (hit) {
+  let res = cache.get(key);
+  if (res) {
     if (onProgress) onProgress(1);
-    if (wantTexts && !hit.textsResolved) {
-      try {
-        await resolveModelTexts(backend, hit.model, MODEL_TEXTS, { signal });
-        hit.textsResolved = true;
-      } catch (error) {
-        if (isAbort(error, signal)) throw error;
-        /* keep analysis */
-      }
+  } else {
+    let entry = analysisInflight.get(key);
+    if (!entry) {
+      entry = makeShared(analysisInflight, key, async (producerSignal) => {
+        const value = await analyzeFunction(
+          backend, region, startRow, endRow, symbols, onProgress,
+          { ...opts, maxRows: budget, signal: producerSignal },
+        );
+        value.textsResolved = false;
+        cache.set(key, value);
+        return value;
+      });
     }
-    throwIfAborted(signal);
-    return hit;
+    res = await waitShared(analysisInflight, key, entry, signal);
   }
-  const res = await analyzeFunction(backend, region, startRow, endRow, symbols, onProgress, { ...opts, maxRows: budget, signal });
-  res.textsResolved = false;
-  if (wantTexts) {
+  if (wantTexts && !res.textsResolved) {
     try {
-      await resolveModelTexts(backend, res.model, MODEL_TEXTS, { signal });
-      res.textsResolved = true;
+      await ensureTextsForKey(key, backend, res, signal);
     } catch (error) {
       if (isAbort(error, signal)) throw error;
       /* keep analysis */
     }
   }
   throwIfAborted(signal);
-  cache.set(key, res);
   return res;
+}
+
+async function mapBounded(items, limit, mapper, signal) {
+  if (!items.length) return [];
+  const out = new Array(items.length);
+  let next = 0;
+  const workers = Math.max(1, Math.min(items.length, Math.floor(limit) || 1));
+  await Promise.all(Array.from({ length: workers }, async () => {
+    while (true) {
+      throwIfAborted(signal);
+      const index = next++;
+      if (index >= items.length) return;
+      out[index] = await mapper(items[index], index);
+    }
+  }));
+  throwIfAborted(signal);
+  return out;
 }
 
 export async function resolveModelTexts(backend, model, limit = MODEL_TEXTS, opts = {}) {
@@ -385,7 +472,7 @@ export async function resolveModelTexts(backend, model, limit = MODEL_TEXTS, opt
   };
   const texts = new Map();
   const indirect = new Set();
-  const got = await Promise.all(wanted.map(read));
+  const got = await mapBounded(wanted, MODEL_TEXT_READ_CONCURRENCY, read, signal);
   throwIfAborted(signal);
   const deref = [];
   got.forEach((g, i) => {
@@ -394,7 +481,12 @@ export async function resolveModelTexts(backend, model, limit = MODEL_TEXTS, opt
   });
   if (deref.length) {
     const ptrs = deref.map((d) => pointerAt(d.bytes));
-    const got2 = await Promise.all(ptrs.map((ptr) => ptr == null ? Promise.resolve(null) : read(ptr)));
+    const got2 = await mapBounded(
+      ptrs,
+      MODEL_TEXT_READ_CONCURRENCY,
+      (ptr) => ptr == null ? Promise.resolve(null) : read(ptr),
+      signal,
+    );
     throwIfAborted(signal);
     got2.forEach((g, k) => {
       if (!looksLikeText(g)) return;

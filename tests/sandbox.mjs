@@ -66,8 +66,11 @@ await e.destroy();`,
     const giantOutput=await runInSandbox({source:'print(new Uint8Array(300000))',api:{},out:()=>{},timeout:5000});
     const floodOutput=await runInSandbox({source:"for(let i=0;i<500;i++) print('x')",api:{},out:()=>{},timeout:5000});
     const directOutput=await runInSandbox({source:'postMessage(new Uint8Array(300000)); await new Promise(r=>setTimeout(r,1000))',api:{},out:()=>{},timeout:5000});
+    const abortCtrl = new AbortController();
+    abortCtrl.abort();
+    const abortOutput = await runInSandbox({ source: 'while(true){}', api: {}, out: () => {}, signal: abortCtrl.signal, timeout: 5000 });
     return { value, lines, leak: window.__sandboxLeak, discovered, plugin, pluginLines,
-      emulator, emuLines, runaway, runawayMs, normalOutput, normalLines, giantOutput, floodOutput, directOutput };
+      emulator, emuLines, runaway, runawayMs, normalOutput, normalLines, giantOutput, floodOutput, directOutput, abortOutput };
   });
   const line = result.lines[0] || [];
   const unexpected = errors.filter((e) => !/connect-src 'none'|Refused to connect|violates.*Content Security Policy/i.test(e));
@@ -78,6 +81,7 @@ await e.destroy();`,
       line.join(' ') !== 'sandbox undefined undefined undefined undefined undefined false 42' ||
       !result.emulator.ok || emuLine.join(' ') !== 'emu 3 function emu-test' ||
       !result.runaway.error || !/時間制限/.test(result.runaway.error) || result.runawayMs > 2000 ||
+      !result.abortOutput.aborted ||
       !result.normalOutput.ok || result.normalLines.length !== 8 ||
       !/安全上限/.test(result.giantOutput.error || '') || !/安全上限/.test(result.floodOutput.error || '') || !/安全上限/.test(result.directOutput.error || '') ||
       unexpected.length) {

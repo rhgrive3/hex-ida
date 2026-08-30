@@ -1,4 +1,4 @@
-import { ProductRouter } from './router.js';
+import { ProductRouter, createChildTaskScope } from './router.js';
 import {
   ROUTES, PRIMARY_NAV, EXPLORER_SCOPES, FUNCTION_TABS, createActionRegistry,
 } from './registry.js';
@@ -7,15 +7,17 @@ import {
   tabs, sectionTitle, listRow, VirtualList,
 } from './primitives.js';
 import { renderSecondaryRoute } from './secondary.js';
-import { addrHex, parseAddress } from '../format.js';
+import { addrHex, parseAddress, sizeText } from '../format.js';
 import { pick } from '../i18n.js';
 import { menu, copyText, toast } from '../ui.js';
 import {
-  showFileInfo, showSections, showStructure, showCandidates,
+  showFileInfo, showSections, showStructure, showCandidates, showClass,
 } from '../panels.js';
 import {
-  currentFunctionAddr, showTools, showRename, showComment, showDebugger,
+  currentFunctionAddr, showTools, showRename, showComment, showDebugger, showGlobals,
 } from '../tools.js';
+import { findGlobals, importList } from '../linkage.js';
+import { findCxxClasses } from '../rtti.js';
 import { compileGoal } from '../goalc.js';
 import { decompile, decompiledText } from '../decompile.js';
 import { cfgGraph, callGraph, renderGraph, graphLegend } from '../graphview.js';
@@ -63,8 +65,15 @@ function architectureOf(app) {
   const value = capability.architecture || app?.store?.get?.('architecture') || info.architecture || info.arch || info.cpu || 'unknown';
   return String(value).toLowerCase();
 }
-function instructionBytes(app) { return Math.max(1,Number(app?.store?.get?.('instructionAlignment') || app?.store?.get?.('capability')?.instructionAlignment || 4)); }
-function fixedArm64Rows(app) { return !!app?.store?.get?.('canDisassemble') && instructionBytes(app)>0; }
+function instructionBytes(app) {
+  const cap = app?.store?.get?.('capability') || {};
+  if (cap && Object.prototype.hasOwnProperty.call(cap, 'fixedInstructionSize')) {
+    const fixed = cap.fixedInstructionSize;
+    return (typeof fixed === 'number' && fixed > 0) ? fixed : null;
+  }
+  return null;
+}
+function fixedArm64Rows(app) { return !!app?.store?.get?.('canDisassemble') && instructionBytes(app) != null; }
 const EXPLORER_SOURCE_LIMIT=50000;
 function annotateCollection(items,{complete=true,total=items?.length||0,scannedCount=items?.length||0,truncationReason=null,provenance='canonical-app-state'}={}) {
   if(items && typeof items==='object'){items.complete=!!complete;items.total=total;items.scannedCount=scannedCount;items.truncationReason=truncationReason;items.provenance=provenance;}
@@ -209,31 +218,8 @@ function lowerBoundBigInt(array, value) {
   return lo;
 }
 
-function functionSource(app) {
-  void app.ensureRecognition?.({maxFunctions:350000});
-  const ranked=app.recognition?.records;
-  if(Array.isArray(ranked) && ranked.length){
-    const count=Math.min(ranked.length,EXPLORER_SOURCE_LIMIT);
-    return {
-      length:count, complete:app.recognition.complete===true && ranked.length<=EXPLORER_SOURCE_LIMIT,
-      total:app.recognition.total, scannedCount:app.recognition.scannedCount,
-      truncationReason:ranked.length>EXPLORER_SOURCE_LIMIT?'explorer-source-budget':app.recognition.truncationReason,
-      provenance:'recognition/classifier+knowledge',
-      itemAt(index){const item=ranked[index];return {addr:item.address,name:item.name||functionName(app,item.address),classification:item.classification,recognitionScore:item.score,recognitionConfidence:item.confidence};}
-    };
-  }
-  const sym = app.symbols;
-  const funcs = sym?.funcs || [];
-  const total=funcs.length, count=Math.min(total,EXPLORER_SOURCE_LIMIT);
-  return {
-    length:count, complete:count===total,total,scannedCount:count,truncationReason:count===total?null:'explorer-source-budget',provenance:'symbol-index',
-    itemAt(index){const addr=funcs[index],next=index+1<total?funcs[index+1]:null,exact=sym?.exact?.(addr);return {addr,name:exact?.name||functionName(app,addr),size:next!=null&&next>addr?next-addr:null,classification:'UNKNOWN'};}
-  };
-}
-
 async function matchingFunctionItems(app, query, options) {
   const q = String(query || '').trim();
-  if (!q) return functionSource(app);
   return queryFunctions(app, q, options);
 }
 function sectionItems(app, query) {
@@ -248,13 +234,302 @@ async function stringItems(app, query, options) {
   const rows = await app.ensureStrings();
   return queryStrings(rows || [], query, options);
 }
-function externalItems(app, query) {
-  const descriptor = productDescriptor(app.store.get('fileInfo'), app.currentSlice?.());
-  const q = String(query || '').trim().toLowerCase();
-  return (descriptor.dependencies || []).filter((name) => !q || name.toLowerCase().includes(q)).map((name) => ({ name }));
+let cachedClassesRef = null;
+let cachedClassEntities = null;
+
+function getClassEntities(app) {
+  const classes = app.fields?.classes || app.objcModel?.classes;
+  const swiftTypes = app.swiftModel?.types || app.swiftRuntime?.types || [];
+  const cxxClasses = app.symbols ? findCxxClasses(app.symbols) : [];
+  const il2cppTypes = app.il2cppModel?.types || app.il2cpp?.types || [];
+
+  if (cachedClassesRef && cachedClassesRef.classes === classes && cachedClassesRef.swift === swiftTypes && cachedClassesRef.cxx === cxxClasses && cachedClassesRef.il2cpp === il2cppTypes && cachedClassEntities) {
+    return cachedClassEntities;
+  }
+
+  const items = [];
+  const seen = new Set();
+
+  if (classes) {
+    const entries = (classes instanceof Map)
+      ? classes.entries()
+      : Array.isArray(classes)
+        ? classes.map((c) => [c.name, c])
+        : Object.entries(classes);
+    for (const [name, info] of entries) {
+      if (!name || seen.has('objc:' + name)) continue;
+      seen.add('objc:' + name);
+      const methods = (info?.methods?.length || info?.methodList?.length || 0);
+      const ivars = (info?.ivars?.length || 0);
+      const superName = info?.superName || info?.superclass || '';
+      const metaParts = [text('Objective-C クラス', 'Objective-C Class')];
+      if (methods) metaParts.push(text(`${methods} メソッド`, `${methods} methods`));
+      if (ivars) metaParts.push(text(`${ivars} フィールド`, `${ivars} fields`));
+      if (superName) metaParts.push(text(`${superName} を継承`, `extends ${superName}`));
+      items.push({
+        name: String(name),
+        normalizedName: String(name).toLowerCase(),
+        kind: 'objc',
+        methods,
+        ivars,
+        superName,
+        meta: metaParts.join(' · '),
+        addr: info?.addr ?? info?.address ?? null,
+      });
+    }
+  }
+
+  if (Array.isArray(swiftTypes)) {
+    for (const t of swiftTypes) {
+      const name = t?.name || t?.typeName;
+      if (!name || seen.has('swift:' + name)) continue;
+      seen.add('swift:' + name);
+      const kindLabel = t.kind === 'struct' ? text('Swift 構造体', 'Swift Struct') : t.kind === 'enum' ? text('Swift 列挙型', 'Swift Enum') : text('Swift クラス', 'Swift Class');
+      const fields = t.fields?.length || 0;
+      const metaParts = [kindLabel];
+      if (fields) metaParts.push(text(`${fields} フィールド`, `${fields} fields`));
+      items.push({
+        name: String(name),
+        normalizedName: String(name).toLowerCase(),
+        kind: 'swift',
+        meta: metaParts.join(' · '),
+        addr: t?.addr ?? t?.address ?? null,
+      });
+    }
+  }
+
+  if (Array.isArray(cxxClasses)) {
+    for (const c of cxxClasses) {
+      const name = c?.name;
+      if (!name || seen.has('cxx:' + name)) continue;
+      seen.add('cxx:' + name);
+      const metaParts = [text('C++ クラス (RTTI/vtable)', 'C++ Class (RTTI/vtable)')];
+      if (c.vtable != null) metaParts.push('vtable ' + addressText(c.vtable));
+      items.push({
+        name: String(name),
+        normalizedName: String(name).toLowerCase(),
+        kind: 'cxx',
+        meta: metaParts.join(' · '),
+        addr: c.vtable ?? c.typeinfo ?? null,
+      });
+    }
+  }
+
+  if (Array.isArray(il2cppTypes)) {
+    for (const t of il2cppTypes) {
+      const name = t?.name || t?.fullName;
+      if (!name || seen.has('il2cpp:' + name)) continue;
+      seen.add('il2cpp:' + name);
+      const metaParts = [text('IL2CPP 型', 'IL2CPP Type')];
+      if (t.namespace) metaParts.push(t.namespace);
+      items.push({
+        name: String(name),
+        normalizedName: String(name).toLowerCase(),
+        kind: 'il2cpp',
+        meta: metaParts.join(' · '),
+        addr: t?.addr ?? t?.address ?? null,
+      });
+    }
+  }
+
+  cachedClassesRef = { classes, swift: swiftTypes, cxx: cxxClasses, il2cpp: il2cppTypes };
+  cachedClassEntities = items;
+  return items;
 }
 
-function renderExplorer(app, router, route) {
+export function classItems(app, query) {
+  const q = String(query || '').trim().toLowerCase();
+  const all = getClassEntities(app);
+  if (!q) return all;
+  const list = [];
+  for (const item of all) {
+    if (item.normalizedName.includes(q)) {
+      list.push(item);
+    }
+  }
+  return list;
+}
+
+function getDataEntities(app) {
+  const items = [];
+  const seen = new Set();
+  const regions = app.store?.get?.('regions') || [];
+  const dataRegions = regions.filter((r) => r && !r.exec && (r.read || r.write));
+
+  if (app.symbols) {
+    try {
+      const globals = findGlobals(app.symbols, app.program || null, regions, { limit: 400 });
+      for (const g of globals) {
+        const name = g.readable || (g.addr != null ? addressText(g.addr) : 'global');
+        if (seen.has('global:' + g.addr)) continue;
+        seen.add('global:' + g.addr);
+        const metaParts = [text('グローバル変数', 'Global Variable')];
+        if (g.region) metaParts.push(g.region);
+        if (g.refs != null && g.refsComplete !== false) metaParts.push(text(`${g.refs} か所から参照`, `${g.refs} refs`));
+        else if (g.refs != null && g.refs > 0) metaParts.push(text(`少なくとも ${g.refs} か所から参照`, `at least ${g.refs} refs`));
+        else if (g.relationSupported === false || g.relationComplete === false) metaParts.push(text('参照範囲は未確定', 'reference coverage unknown'));
+        items.push({
+          name: String(name),
+          normalizedName: (String(name) + ' ' + (g.region || '')).toLowerCase(),
+          kind: 'global',
+          addr: g.addr,
+          meta: metaParts.join(' · '),
+        });
+      }
+    } catch { /* ignore fallback */ }
+  }
+
+  const structs = app.structs || app.types?.structs || [];
+  if (Array.isArray(structs) || (structs instanceof Map)) {
+    const list = structs instanceof Map ? structs.values() : structs;
+    for (const s of list) {
+      const name = s?.name;
+      if (!name || seen.has('struct:' + name)) continue;
+      seen.add('struct:' + name);
+      const fieldCount = s.fields?.length || s.members?.length || 0;
+      const metaParts = [text('構造体', 'Struct')];
+      if (s.size) metaParts.push(sizeText(s.size));
+      if (fieldCount) metaParts.push(text(`${fieldCount} メンバ`, `${fieldCount} members`));
+      items.push({
+        name: String(name),
+        normalizedName: String(name).toLowerCase(),
+        kind: 'struct',
+        addr: s.addr ?? null,
+        meta: metaParts.join(' · '),
+      });
+    }
+  }
+
+  const schemas = app.schemas || app.store?.get?.('schemas') || [];
+  if (Array.isArray(schemas)) {
+    for (const sch of schemas) {
+      const files = sch.files?.join(', ') || '';
+      const name = files || (sch.loader != null ? addressText(sch.loader) : 'table');
+      if (seen.has('table:' + name)) continue;
+      seen.add('table:' + name);
+      const cols = sch.best?.columns || 0;
+      const metaParts = [text('復元データ表', 'Recovered Schema')];
+      if (cols) metaParts.push(text(`${cols} 列`, `${cols} columns`));
+      items.push({
+        name: String(name),
+        normalizedName: (String(name) + ' ' + files).toLowerCase(),
+        kind: 'table',
+        addr: sch.loader ?? null,
+        meta: metaParts.join(' · '),
+      });
+    }
+  }
+
+  for (const r of dataRegions) {
+    const name = r.section || r.name || r.id;
+    if (!name || seen.has('region:' + name)) continue;
+    seen.add('region:' + name);
+    const metaParts = [text('データ領域', 'Data Region')];
+    if (r.size) metaParts.push(sizeText(r.size));
+    items.push({
+      name: String(name),
+      normalizedName: String(name).toLowerCase(),
+      kind: 'region',
+      addr: r.vmAddr,
+      meta: metaParts.join(' · '),
+    });
+  }
+
+  return items;
+}
+
+export function dataItems(app, query) {
+  const q = String(query || '').trim().toLowerCase();
+  const all = getDataEntities(app);
+  if (!q) return all;
+  const list = [];
+  for (const item of all) {
+    if (item.normalizedName.includes(q)) {
+      list.push(item);
+    }
+  }
+  return list;
+}
+
+let cachedExternalDescriptor = null;
+let cachedExternalItems = null;
+
+function getExternalEntities(app) {
+  const slice = app.currentSlice?.();
+  const fileInfo = app.store?.get?.('fileInfo');
+  const symbols = app.symbols;
+  if (cachedExternalDescriptor && cachedExternalDescriptor.fileInfo === fileInfo && cachedExternalDescriptor.slice === slice && cachedExternalDescriptor.symbols === symbols && cachedExternalItems) {
+    return cachedExternalItems;
+  }
+  const descriptor = productDescriptor(fileInfo, slice);
+  const items = [];
+  const seen = new Set();
+  for (const name of descriptor.dependencies || []) {
+    if (!seen.has('dylib:' + name)) {
+      seen.add('dylib:' + name);
+      items.push({
+        name,
+        normalizedName: name.toLowerCase(),
+        kind: 'dylib',
+        meta: text('依存ライブラリ', 'Dependency Library'),
+        addr: null,
+      });
+    }
+  }
+  if (symbols) {
+    if (Array.isArray(symbols.imports)) {
+      for (const imp of symbols.imports) {
+        const name = String(imp.readable || imp.name || imp);
+        const rawName = String(imp.name || imp);
+        if (!name || seen.has('import:' + rawName)) continue;
+        seen.add('import:' + rawName);
+        const addr = imp.addr ?? imp.address ?? null;
+        items.push({
+          name,
+          normalizedName: (name + ' ' + rawName).toLowerCase(),
+          kind: 'import',
+          meta: text('インポート関数', 'Imported API'),
+          addr,
+        });
+      }
+    } else if (symbols.symbolCount) {
+      const imports = importList(symbols, app.program || null);
+      for (const imp of imports) {
+        const name = String(imp.readable || imp.name || '');
+        const rawName = String(imp.name || '');
+        if (!name || seen.has('import:' + rawName)) continue;
+        seen.add('import:' + rawName);
+        const metaParts = [imp.framework || text('インポート関数', 'Imported API')];
+        if (imp.calls) metaParts.push(text(`${imp.calls} か所から呼出`, `${imp.calls} calls`));
+        items.push({
+          name,
+          normalizedName: (name + ' ' + rawName).toLowerCase(),
+          kind: 'import',
+          meta: metaParts.join(' · '),
+          addr: imp.addr ?? null,
+        });
+      }
+    }
+  }
+  cachedExternalDescriptor = { fileInfo, slice, symbols };
+  cachedExternalItems = items;
+  return items;
+}
+
+export function externalItems(app, query) {
+  const q = String(query || '').trim().toLowerCase();
+  const all = getExternalEntities(app);
+  if (!q) return all;
+  const list = [];
+  for (const item of all) {
+    if (item.normalizedName.includes(q)) {
+      list.push(item);
+    }
+  }
+  return list;
+}
+
+function renderExplorer(app, router, route, routeContext = {}) {
   const scope = EXPLORER_SCOPES.some((x) => x.id === route.params.scope) ? route.params.scope : 'functions';
   const s = screen(text('索引', 'Explorer'), {
     id: 'explorer',
@@ -279,8 +554,10 @@ function renderExplorer(app, router, route) {
   let disposed = false;
   let virtual = null;
   let timer = 0;
-  let queryController = null;
   let querySerial = 0;
+  const fallbackRouteController = routeContext.signal ? null : new AbortController();
+  const routeSignal = routeContext.signal || fallbackRouteController.signal;
+  const queryScope = createChildTaskScope(routeSignal);
 
   const showRows = (items, renderRow, emptyText) => {
     virtual?.dispose(); virtual = null;
@@ -293,11 +570,9 @@ function renderExplorer(app, router, route) {
 
   const update = async () => {
     if (disposed) return;
-    queryController?.abort();
-    const controller = new AbortController();
-    queryController = controller;
+    const signal = queryScope.spawn('explorer-query-replaced');
     const serial = ++querySerial;
-    const current = () => !disposed && !controller.signal.aborted && serial === querySerial;
+    const current = () => !disposed && !routeSignal.aborted && !signal.aborted && serial === querySerial;
     const q = search.value.trim();
     const parsed = parseAddress(q);
     if (parsed != null && q) {
@@ -307,7 +582,7 @@ function renderExplorer(app, router, route) {
     if (scope === 'functions') {
       if (q) content.replaceChildren(loadingState(text('索引を検索しています…', 'Searching index…')));
       try {
-        const items = await matchingFunctionItems(app, q, { signal: controller.signal, limit: 200 });
+        const items = await matchingFunctionItems(app, q, { signal: signal, limit: 200 });
         if (!current()) return;
         showRows(items, (item) => listRow({ title: item.name, subtitle: addressText(item.addr), meta: item.size != null ? String(item.size) + ' B' : '', onClick: () => router.navigate('/function/' + BigInt(item.addr).toString() + '/overview') }), text('関数名がまだ復元されていない可能性があります。', 'Function names may not be recovered yet.'));
       } catch (err) {
@@ -322,13 +597,17 @@ function renderExplorer(app, router, route) {
     }
     if (scope === 'external') {
       const items = externalItems(app, q);
-      showRows(items, (item) => listRow({ title: item.name }), text('外部ライブラリ情報がありません。', 'No external library information is available.'));
+      showRows(items, (item) => listRow({
+        title: item.name,
+        subtitle: item.addr != null ? addressText(item.addr) : (item.kind === 'dylib' ? text('外部ライブラリ', 'Dynamic library') : text('外部シンボル', 'External symbol')),
+        onClick: item.addr != null ? () => router.navigate('/code/' + BigInt(item.addr).toString()) : null,
+      }), text('外部ライブラリ情報がありません。', 'No external library information is available.'));
       return;
     }
     if (scope === 'strings') {
       content.replaceChildren(loadingState(text('文字列を集めています…', 'Collecting strings…')));
       try {
-        const items = await stringItems(app, q, { signal: controller.signal, limit: 200 });
+        const items = await stringItems(app, q, { signal: signal, limit: 200 });
         if (!current()) return;
         showRows(items, (item) => listRow({ title: item.text, subtitle: addressText(item.addr), onClick: () => { app.goToStringAddress(item.region, item.addr); router.navigate('/code/' + BigInt(item.addr).toString()); } }), text('文字列が見つかりません。', 'No strings were found.'));
         if (items?.complete === false) content.prepend(h('p', 'ui-partial-note', text('結果はメモリ上限内の一部です。未走査領域を「該当なし」とは扱いません。', 'Results are partial within the memory budget; unscanned regions are not treated as negative evidence.')));
@@ -338,16 +617,24 @@ function renderExplorer(app, router, route) {
       return;
     }
     if (scope === 'classes') {
-      const c = card(text('型 / クラス', 'Types / Classes'), { subtitle: text('Objective-C / Swift / C++ の型情報を、同じ索引の一部として扱います。', 'Runtime and recovered types live in this explorer scope.') });
-      const count = app.fields && app.fields.classCount ? app.fields.classCount : 0;
-      c.body.append(h('p', 'ui-metric', text(`${count.toLocaleString()} クラスを認識`, `${count.toLocaleString()} classes recognized`)));
-      c.body.append(uiButton(text('クラスと構造を見る', 'Open class/structure index'), { cls: 'ui-secondary-action', onClick: () => requireFile(app, () => showStructure(app)) }));
-      content.replaceChildren(c.root);
+      const items = classItems(app, q);
+      showRows(items, (item) => listRow({
+        title: item.name,
+        subtitle: item.meta,
+        onClick: () => requireFile(app, () => showClass(app, item.name)),
+      }), text('クラス情報がありません。', 'No class information is available.'));
       return;
     }
-    const c = card(text('データ', 'Data'), { subtitle: text('グローバル・構造体・復元したデータ表をまとめます。', 'Globals, structures and recovered data tables are grouped here.') });
-    c.body.append(uiButton(text('データ構造を開く', 'Open data structures'), { cls: 'ui-secondary-action', onClick: () => requireFile(app, () => showStructure(app)) }));
-    content.replaceChildren(c.root);
+    if (scope === 'data') {
+      const items = dataItems(app, q);
+      showRows(items, (item) => listRow({
+        title: item.name,
+        subtitle: item.addr != null ? addressText(item.addr) + (item.region ? ' · ' + item.region : '') : '',
+        meta: item.meta || '',
+        onClick: item.addr != null ? () => router.navigate('/code/' + BigInt(item.addr).toString()) : () => requireFile(app, () => showGlobals(app)),
+      }), text('データ構造・グローバル変数情報がありません。', 'No data structures or global variables found.'));
+      return;
+    }
   };
 
   search.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(update, 120); });
@@ -356,7 +643,7 @@ function renderExplorer(app, router, route) {
     root: s.root,
     getState: () => ({ query: search.value, virtual: virtual?.getState() || null }),
     restoreState: (state) => { if (state?.query != null) search.value = state.query; setTimeout(() => virtual?.restoreState(state?.virtual), 0); },
-    dispose: () => { disposed = true; queryController?.abort(); clearTimeout(timer); virtual?.dispose(); },
+    dispose: () => { disposed = true; queryScope.abort('explorer-disposed'); fallbackRouteController?.abort('explorer-disposed'); clearTimeout(timer); virtual?.dispose(); },
   };
 }
 
@@ -429,7 +716,7 @@ function evidenceSubtitle(item) {
   return bits.join(' · ');
 }
 
-function renderFunctionWorkspace(app, router, route) {
+function renderFunctionWorkspace(app, router, route, routeContext = {}) {
   let addr;
   try { addr = BigInt(route.params.address); } catch { addr = currentFunctionAddr(app); }
   if (addr == null) {
@@ -554,6 +841,46 @@ function renderFunctionWorkspace(app, router, route) {
     content.replaceChildren(toolbar, code);
   };
 
+  const renderPseudocodeTab = async () => {
+    if (app.analysisQueries) {
+      try {
+        const snapshot = await app.analysisQueries.snapshot({ signal: routeSignal });
+        const res = await app.analysisQueries.decompile(snapshot, addr, { signal: routeSignal });
+        if (!viewCurrent()) return;
+        if (res.completeness === 'unsupported' || !res.value) {
+          content.replaceChildren(emptyState(text('このアーキテクチャの疑似Cは未対応です', 'Pseudocode is unavailable for this architecture'), text('現在のSemantic DecompilerはARM64を対象にしています。未対応のCPUをARM64として表示することはしません。', 'The Semantic Decompiler currently targets ARM64; Hex will not reinterpret another CPU as ARM64.')));
+          return;
+        }
+        const val = res.value;
+        const out = typeof val === 'string' ? val : (val.code ?? decompiledText(val));
+        const toolbar = h('div', 'ui-code-toolbar');
+        const code = h('pre', 'ui-pseudocode mono');
+        code.tabIndex = 0;
+        code.textContent = typeof out === 'string' ? out : decompiledText(out);
+        let wrap = false;
+        toolbar.append(
+          uiButton(text('コピー', 'Copy'), { cls: 'ui-secondary-action', onClick: () => copyText(code.textContent, text('疑似C', 'Pseudocode')) }),
+          uiButton(text('折り返し', 'Wrap'), { cls: 'ui-secondary-action', onClick: (e) => { wrap = !wrap; code.classList.toggle('wrap', wrap); e.currentTarget.setAttribute('aria-pressed', String(wrap)); } }),
+          uiButton(text('アセンブリへ', 'Assembly'), { cls: 'ui-secondary-action', onClick: () => router.navigate('/code/' + addr.toString()) }),
+        );
+        content.replaceChildren(toolbar, code);
+        return;
+      } catch (err) {
+        if (routeSignal.aborted) return;
+        throw err;
+      }
+    }
+    const map = rowMapper();
+    if (!map.supported) {
+      content.replaceChildren(emptyState(text('このアーキテクチャの疑似Cは未対応です', 'Pseudocode is unavailable for this architecture'), text('現在のSemantic DecompilerはARM64を対象にしています。未対応のCPUをARM64として表示することはしません。', 'The Semantic Decompiler currently targets ARM64; Hex will not reinterpret another CPU as ARM64.')));
+      return;
+    }
+    const res = await app.analyzeFunctionAt(addr, { signal: routeSignal });
+    if (!viewCurrent()) return;
+    if (!res || !res.model) { content.replaceChildren(errorState(text('関数を解析できません', 'Could not analyse function'), text('このアドレスは現在のコード領域の関数として解析できませんでした。', 'This address could not be analysed as a function in the current code region.'))); return; }
+    renderPseudocode(res);
+  };
+
   const renderFlow = (res) => {
     const map = rowMapper();
     if (!map.supported) {
@@ -578,18 +905,86 @@ function renderFunctionWorkspace(app, router, route) {
     content.replaceChildren(mode);
   };
 
+  const renderFlowTab = async () => {
+    if (app.analysisQueries) {
+      try {
+        const snapshot = await app.analysisQueries.snapshot({ signal: routeSignal });
+        const res = await app.analysisQueries.cfg(snapshot, addr, { signal: routeSignal });
+        if (!viewCurrent()) return;
+        if (res.completeness === 'unsupported' || !res.value) {
+          content.replaceChildren(emptyState(text('このアーキテクチャのCFG表示は未対応です', 'CFG view is unavailable for this architecture'), text('固定4バイト行を前提にせず、安全側で表示を止めています。', 'This view is disabled rather than assuming fixed four-byte instruction rows.')));
+          return;
+        }
+        const cfg = res.value;
+        const nodes = Array.isArray(cfg.blocks) ? cfg.blocks.map((b, index) => ({
+          id: b.id ?? `b${index}`,
+          label: b.label || b.name || `Block ${index + 1}`,
+          addr: b.startAddress ?? b.address ?? b.start ?? null,
+          title: b.title ?? b.label,
+        })) : [];
+        const edges = Array.isArray(cfg.edges) ? cfg.edges.map((e) => ({
+          from: e.from ?? e.source,
+          to: e.to ?? e.target,
+          kind: e.kind ?? 'unconditional',
+        })) : [];
+        if (!nodes.length) {
+          content.replaceChildren(emptyState(text('フローを作れませんでした', 'No control flow available'), text('この関数には図にできるブロック情報がありません。', 'This function has no graphable block information.')));
+          return;
+        }
+        const mode = h('div', 'ui-graph-shell');
+        const graphHost = h('div', 'ui-graph-host');
+        graphHost.append(renderGraph(nodes, edges, {}));
+        const list = h('details', 'ui-graph-text');
+        list.append(h('summary', null, text('テキスト一覧でも見る', 'View as text list')));
+        const rows = h('div', 'ui-list');
+        nodes.forEach((node, index) => rows.append(listRow({
+          title: String(node.label || node.title || node.id || `Block ${index + 1}`),
+          subtitle: node.addr != null ? addressText(node.addr) : '',
+          onClick: node.addr != null ? () => router.navigate('/code/' + BigInt(node.addr).toString()) : null,
+        })));
+        list.append(rows);
+        mode.append(graphHost, graphLegend('cfg'), list);
+        content.replaceChildren(mode);
+        return;
+      } catch (err) {
+        if (routeSignal.aborted) return;
+        throw err;
+      }
+    }
+    const map = rowMapper();
+    if (!map.supported) {
+      content.replaceChildren(emptyState(text('このアーキテクチャのCFG表示は未対応です', 'CFG view is unavailable for this architecture'), text('固定4バイト行を前提にせず、安全側で表示を止めています。', 'This view is disabled rather than assuming fixed four-byte instruction rows.')));
+      return;
+    }
+    const res = await app.analyzeFunctionAt(addr, { signal: routeSignal });
+    if (!viewCurrent()) return;
+    if (!res || !res.model) { content.replaceChildren(errorState(text('関数を解析できません', 'Could not analyse function'), text('このアドレスは現在のコード領域の関数として解析できませんでした。', 'This address could not be analysed as a function in the current code region.'))); return; }
+    renderFlow(res);
+  };
+
   const renderCalls = async () => {
     content.replaceChildren(loadingState(text('呼び出し関係を集めています…', 'Mapping calls…')));
-    await app.ensureProgram();
-    if (!viewCurrent()) return;
-    if (!app.program) { content.replaceChildren(emptyState(text('呼び出し関係がありません', 'No call graph available'), text('このバイナリでは呼び出し索引を作れませんでした。', 'A call index could not be built for this binary.'))); return; }
-    const graph = callGraph(app.program, app.symbols, addr, {
-      depth: 2, limit: 8, label: (a) => functionName(app, a),
-      onNode: (a) => router.navigate('/function/' + BigInt(a).toString() + '/overview'),
-    });
-    const shell = h('div', 'ui-graph-shell');
-    shell.append(renderGraph(graph.nodes, graph.edges, {}), graphLegend('call'));
-    content.replaceChildren(shell);
+    try {
+      await app.ensureProgram();
+      if (!viewCurrent()) return;
+      if (!app.program || app.program.unsupported || (app.program.graphCompleteness && !app.program.graphCompleteness.supported)) {
+        content.replaceChildren(emptyState(
+          text('呼び出し関係を構築できません', 'Call graph unsupported'),
+          text('このアーキテクチャまたはフォーマットではプログラム全体の呼び出し索引に対応していません。', 'Whole-program call index is not supported for this architecture or format.'),
+        ));
+        return;
+      }
+      const graph = callGraph(app.program, app.symbols, addr, {
+        depth: 2, limit: 8, label: (a) => functionName(app, a),
+        onNode: (a) => router.navigate('/function/' + BigInt(a).toString() + '/overview'),
+      });
+      const shell = h('div', 'ui-graph-shell');
+      shell.append(renderGraph(graph.nodes, graph.edges, {}), graphLegend('call'));
+      content.replaceChildren(shell);
+    } catch (err) {
+      if (routeSignal.aborted) return;
+      throw err;
+    }
   };
 
   const renderEvidence = (res) => {
@@ -633,17 +1028,59 @@ function renderFunctionWorkspace(app, router, route) {
     content.replaceChildren(...nodes);
   };
 
-  const renderRuntime = (res) => {
+  const renderEvidenceTab = async () => {
+    content.replaceChildren(loadingState(text('根拠を集めています…', 'Collecting evidence…')));
+    if (app.analysisQueries) {
+      try {
+        const snapshot = await app.analysisQueries.snapshot({ signal: routeSignal });
+        const res = await app.analysisQueries.evidence(snapshot, { functionId: addr }, { limit: 100 }, { signal: routeSignal });
+        if (!viewCurrent()) return;
+        const stack = h('div', 'ui-evidence-stack');
+        const name = app.symbols?.nameAt?.(addr);
+        const boundaryEvidence = app.symbols?.functionEvidence?.(addr);
+        const nameEvidence = app.symbols?.nameEvidence?.(addr);
+        const boundaryStatus = provenanceStatus(boundaryEvidence);
+        const nameStatus = provenanceStatus(nameEvidence);
+        stack.append(listRow({ title: text('関数境界', 'Function boundary'), subtitle: addressText(addr), meta: boundaryEvidence?.source || text('由来不明', 'unknown source'), badge: evidenceBadge(boundaryStatus === 'manual' ? 'unverified' : boundaryStatus) }));
+        stack.append(listRow({ title: text('関数名', 'Function name'), subtitle: name || text('シンボル名なし', 'No symbol name'), meta: nameStatus === 'manual' ? text('手動 / User', 'Manual / User') : (nameEvidence?.source || ''), badge: evidenceBadge(nameStatus === 'manual' ? 'unverified' : nameStatus) }));
+
+        const items = Array.isArray(res.value) ? res.value : [];
+        items.forEach((item, index) => {
+          const itemEvidence = item?.evidence ?? item;
+          const status = item?.verdict ?? evidenceStatus(itemEvidence);
+          stack.append(listRow({
+            title: evidenceTitle(itemEvidence, index),
+            subtitle: evidenceSubtitle(itemEvidence),
+            badge: evidenceBadge(status),
+          }));
+        });
+        const note = card(text('表示の意味', 'How to read this'), { subtitle: text('「確認済み」はバイナリまたは実行観測に直接結び付いた事実です。推論は「可能性が高い」「未確認」のまま分離します。ランキング点を確率として表示しません。', 'Confirmed is reserved for facts tied directly to binary/runtime evidence. Inference remains Likely or Unverified; ranking scores are not presented as probabilities.') });
+        content.replaceChildren(note.root, stack);
+        return;
+      } catch (err) {
+        if (routeSignal.aborted) return;
+        throw err;
+      }
+    }
+    const res = await app.analyzeFunctionAt(addr, { signal: routeSignal });
+    if (!viewCurrent()) return;
+    if (!res || !res.model) { content.replaceChildren(errorState(text('関数を解析できません', 'Could not analyse function'), text('このアドレスは現在のコード領域の関数として解析できませんでした。', 'This address could not be analysed as a function in the current code region.'))); return; }
+    renderEvidence(res);
+  };
+
+  const renderRuntimeTab = () => {
+    const runScope = createChildTaskScope(routeSignal);
     const root = h('div', 'ui-card-grid');
     const c = card(text('実行時に確かめる', 'Verify at runtime'), { subtitle: text('新しいRuntime Analysis Platformで、この関数だけを安全なローカルsandbox上で実行・観測します。', 'Run this function in the Runtime Analysis Platform local sandbox and record evidence.') });
     const resultHost = h('div', 'ui-runtime-result');
     const run = uiButton(text('ローカル実行で観測する', 'Run local observation'), { cls: 'ui-primary-action' });
     run.addEventListener('click', async () => {
       run.disabled = true;
+      const runSignal = runScope.spawn('runtime-run-replaced');
       resultHost.replaceChildren(loadingState(text('実行して観測しています…', 'Running and collecting observations…')));
       try {
-        const result = await traceAppFunction(app, addr, { maxSteps: 12000, timeoutMs: 1500, limit: 4096 });
-        if (!viewCurrent()) return;
+        const result = await traceAppFunction(app, addr, { signal: runSignal, maxSteps: 12000, timeoutMs: 1500, limit: 4096 });
+        if (!viewCurrent() || runSignal.aborted) return;
         const obs = result.observation || {};
         const stop = obs.stop?.kind || 'unknown';
         const direct = stop === 'return' ? 'confirmed' : 'unverified';
@@ -656,9 +1093,11 @@ function renderFunctionWorkspace(app, router, route) {
         list.append(listRow({ title: text('Runtime evidence', 'Runtime evidence'), meta: String(result.evidence?.length || 0), badge: evidenceBadge(result.evidence?.length ? 'confirmed' : 'unverified') }));
         resultHost.replaceChildren(list);
       } catch (error) {
-        if (!disposed) resultHost.replaceChildren(errorState(text('ローカル実行を完了できませんでした', 'Local runtime observation could not complete'), String(error?.message || error)));
+        if (!disposed && !runSignal.aborted && !routeSignal.aborted) {
+          resultHost.replaceChildren(errorState(text('ローカル実行を完了できませんでした', 'Local runtime observation could not complete'), String(error?.message || error)));
+        }
       } finally {
-        if (!disposed) run.disabled = false;
+        if (!disposed && !routeSignal.aborted) run.disabled = false;
       }
     });
     c.body.append(run, resultHost);
@@ -668,42 +1107,129 @@ function renderFunctionWorkspace(app, router, route) {
     capability.body.append(uiButton(text('高度なDebuggerを開く', 'Open advanced debugger'), { cls: 'ui-secondary-action', onClick: () => showDebugger(app, addr) }));
     root.append(capability.root);
     content.replaceChildren(root);
-    void res;
   };
+
+  const fallbackRouteController = routeContext.signal ? null : new AbortController();
+  const routeSignal = routeContext.signal || fallbackRouteController.signal;
 
   (async () => {
     try {
-      const res = await app.analyzeFunctionAt(addr);
-      if (!viewCurrent()) return;
-      if (!res || !res.model) { content.replaceChildren(errorState(text('関数を解析できません', 'Could not analyse function'), text('このアドレスは現在のコード領域の関数として解析できませんでした。', 'This address could not be analysed as a function in the current code region.'))); return; }
-      if (tab === 'overview') renderOverview(res);
-      else if (tab === 'pseudocode') renderPseudocode(res);
-      else if (tab === 'flow') renderFlow(res);
-      else if (tab === 'calls') await renderCalls(res);
-      else if (tab === 'evidence') renderEvidence(res);
-      else renderRuntime(res);
+      if (tab === 'calls') {
+        await renderCalls();
+      } else if (tab === 'runtime') {
+        renderRuntimeTab();
+      } else if (tab === 'pseudocode') {
+        await renderPseudocodeTab();
+      } else if (tab === 'flow') {
+        await renderFlowTab();
+      } else if (tab === 'evidence') {
+        await renderEvidenceTab();
+      } else {
+        const res = await app.analyzeFunctionAt(addr, { signal: routeSignal });
+        if (!viewCurrent()) return;
+        if (!res || !res.model) { content.replaceChildren(errorState(text('関数を解析できません', 'Could not analyse function'), text('このアドレスは現在のコード領域の関数として解析できませんでした。', 'This address could not be analysed as a function in the current code region.'))); return; }
+        renderOverview(res);
+      }
     } catch (err) {
-      if (viewCurrent()) content.replaceChildren(errorState(text('表示できませんでした', 'Could not render this view'), String(err && err.message || err)));
+      if (viewCurrent() && !routeSignal.aborted) content.replaceChildren(errorState(text('表示できませんでした', 'Could not render this view'), String(err && err.message || err)));
     }
   })();
 
-  return { root: s.root, getState: () => ({ scrollTop: s.body.scrollTop }), restoreState: (state) => { if (state) s.body.scrollTop = Number(state.scrollTop) || 0; }, dispose: () => { disposed = true; } };
+  return { root: s.root, getState: () => ({ scrollTop: s.body.scrollTop }), restoreState: (state) => { if (state) s.body.scrollTop = Number(state.scrollTop) || 0; }, dispose: () => { disposed = true; fallbackRouteController?.abort('function-workspace-disposed'); } };
 }
 
-function renderResults(app, router) {
+export function findingIdentifier(item, idx) {
+  if (item?.id != null && item.id !== '') return String(item.id);
+  if (item?.findingId != null && item.findingId !== '') return String(item.findingId);
+  if (item?.claimId != null && item.claimId !== '') return String(item.claimId);
+  if (item?.key != null && item.key !== '') return String(item.key);
+  const goal = item?.goal?.text || item?.goal?.id || item?.goal || item?.title || item?.name || 'finding';
+  const addr = item?.addr ?? item?.address ?? item?.functionAddr ?? item?.function;
+  const addrStr = addr != null ? BigInt(addr).toString(16) : 'global';
+  const kind = item?.kind || item?.type || item?.claimType || item?.verdict || '';
+  const evidenceId = item?.evidenceId || item?.evidence?.id || '';
+  const rawKey = `${goal}:${addrStr}:${kind}:${evidenceId}`;
+  let hash = 5381;
+  for (let i = 0; i < rawKey.length; i++) {
+    hash = ((hash << 5) + hash) + rawKey.charCodeAt(i);
+    hash = hash & hash;
+  }
+  return 'f-' + (hash >>> 0).toString(16);
+}
+
+function renderFindingDetail(app, router, findingId) {
+  const report = app.autoReport && app.autoReport.report;
+  const findings = (report && (report.findings || report.results || report.goals)) || [];
+  const targetId = String(findingId ?? '');
+  const item = findings.find((f, idx) => findingIdentifier(f, idx) === targetId || String(f.id ?? f.claimId ?? f.key ?? '') === targetId);
+  const s = screen(text('結果の詳細', 'Finding Detail'), {
+    id: 'finding',
+    subtitle: item ? (item.title || item.label || item.goal?.text || item.goal || text('解析結果', 'Finding')) : text('結果が見つかりません', 'Finding not found'),
+  });
+  if (!item) {
+    s.body.append(emptyState(
+      text('結果が見つかりません', 'Finding not found'),
+      text('このIDの結果は現在の解析結果に存在しないか、更新されました。', 'This finding ID is not present in current analysis results or has expired.'),
+      uiButton(text('結果一覧へ', 'Back to Results'), { cls: 'ui-primary-action', onClick: () => router.navigate('/results') })
+    ));
+    return { root: s.root };
+  }
+  const title = item.title || item.label || item.goal?.text || item.goal || text('解析結果', 'Finding');
+  const address = item.addr ?? item.address ?? item.functionAddr ?? item.function;
+  const c = card(String(title), { subtitle: address != null ? addressText(address) : '' });
+  const verdict = item.verdict || (item.confirmed ? 'confirmed' : item.confidence > 0.7 ? 'likely' : 'unverified');
+  c.body.append(listRow({
+    title: text('確信度 / 状態', 'Verdict / Status'),
+    meta: item.confidence != null ? `confidence ${Number(item.confidence).toFixed(2)}` : '',
+    badge: evidenceBadge(verdict),
+  }));
+  if (item.summary || item.description || item.detail) {
+    c.body.append(h('p', 'ui-lead', String(item.summary || item.description || item.detail)));
+  }
+  const actions = h('div', 'ui-actions');
+  if (address != null) {
+    actions.append(uiButton(text('該当関数を開く', 'Open function overview'), {
+      cls: 'ui-primary-action',
+      onClick: () => router.navigate('/function/' + BigInt(address).toString() + '/overview'),
+    }));
+    actions.append(uiButton(text('根拠を確認する', 'Review evidence'), {
+      cls: 'ui-secondary-action',
+      onClick: () => router.navigate('/function/' + BigInt(address).toString() + '/evidence'),
+    }));
+  }
+  actions.append(uiButton(text('結果一覧に戻る', 'Back to Results'), {
+    cls: 'ui-secondary-action',
+    onClick: () => router.navigate('/results'),
+  }));
+  c.body.append(actions);
+  s.body.append(c.root);
+  return { root: s.root };
+}
+
+function renderResults(app, router, route) {
+  if (route?.route?.id === 'finding' || route?.params?.id != null) {
+    return renderFindingDetail(app, router, route.params.id);
+  }
   const s = screen(text('結果', 'Results'), { id: 'results', subtitle: text('確認した答え、根拠、履歴、ピンをここへ集めます。', 'Confirmed answers, evidence, history and pins live here.') });
   const report = app.autoReport && app.autoReport.report;
   const findings = report && (report.findings || report.results || report.goals);
   if (Array.isArray(findings) && findings.length) {
-    const renderFinding = (item) => {
+    const renderFinding = (item, index) => {
       const title = item.title || item.label || item.goal?.text || item.goal || text('解析結果', 'Finding');
       const address = item.addr ?? item.address ?? item.functionAddr ?? item.function;
-      return listRow({ title: String(title), subtitle: address != null ? addressText(address) : '', badge: evidenceBadge(item.confirmed ? 'confirmed' : item.confidence > 0.7 ? 'likely' : 'unverified'), onClick: address != null ? () => router.navigate('/function/' + BigInt(address).toString() + '/overview') : null });
+      const findingId = findingIdentifier(item, index);
+      const verdict = item.verdict || (item.confirmed ? 'confirmed' : item.confidence > 0.7 ? 'likely' : 'unverified');
+      return listRow({
+        title: String(title),
+        subtitle: address != null ? addressText(address) : '',
+        badge: evidenceBadge(verdict),
+        onClick: () => router.navigate('/finding/' + encodeURIComponent(String(findingId))),
+      });
     };
     if (findings.length > 80) s.body.append(new VirtualList({ items: findings, rowHeight: 64, ariaLabel: text('解析結果', 'Analysis results'), renderRow: renderFinding }).root);
     else {
       const list = h('div', 'ui-list');
-      for (const item of findings) list.append(renderFinding(item));
+      findings.forEach((item, index) => list.append(renderFinding(item, index)));
       s.body.append(list);
     }
   } else {
@@ -737,18 +1263,31 @@ async function importProjectFromProduct(app) {
   catch(error){const mismatch=error?.code==='HEX_PROJECT_BINARY_MISMATCH';toast(mismatch?text('このプロジェクトは現在のバイナリ/スライス用ではありません。','This project belongs to a different binary or slice.'):text('プロジェクトを読み込めませんでした: ','Could not import project: ')+String(error?.message||error));}
 }
 
-function renderDiff(app,router) {
+function renderDiff(app,router,routeContext = {}) {
   const s=screen(text('バイナリ差分','Binary Diff'),{id:'diff',subtitle:text('前のバージョンと現在のバージョンを関数単位で比較します。','Compare a previous version with the current binary at function granularity.')});
   const host=h('div','ui-stack');s.body.append(host);
+  const fallbackRouteController=routeContext.signal?null:new AbortController();
+  const routeSignal=routeContext.signal||fallbackRouteController.signal;
+  const compareScope=createChildTaskScope(routeSignal);
   if(!app.store.get('fileInfo')){host.append(emptyState(text('先に現在のバイナリを開いてください','Open the current binary first'),'',uiButton(text('コードへ','Go to Code'),{onClick:()=>router.navigate('/code')})));return {root:s.root};}
   const state=app.getBinaryDiff?.(); const baseline=app.workspace?.baseline;
   const controls=h('div','ui-actions');
   controls.append(uiButton(baseline?text('比較元を変更','Change baseline'):text('前のバージョンを選ぶ','Choose previous version'),{cls:'ui-primary-action',onClick:async()=>{
-    const file=await pickOneFile();if(!file)return;host.replaceChildren(loadingState(text('比較元を解析しています…','Analysing baseline…')));
-    try{await app.loadDiffBaseline(file);await app.runBinaryDiff();router.navigate('/diff',{replace:true});}
-    catch(error){host.replaceChildren(errorState(text('比較できませんでした','Could not compare'),String(error?.message||error)));}
+    const file=await pickOneFile();if(!file||routeSignal.aborted)return;
+    const signal=compareScope.spawn('diff-baseline-replaced');
+    host.replaceChildren(loadingState(text('比較元を解析しています…','Analysing baseline…')));
+    try{
+      await app.workspace.loadBaseline(file,{signal});
+      await app.workspace.diff({signal});
+      if(!signal.aborted&&!routeSignal.aborted)router.navigate('/diff',{replace:true});
+    } catch(error){if(!signal.aborted&&!routeSignal.aborted)host.replaceChildren(errorState(text('比較できませんでした','Could not compare'),String(error?.message||error)));}
   }}));
-  if(baseline)controls.append(uiButton(text('再比較','Compare again'),{onClick:async()=>{host.replaceChildren(loadingState(text('比較しています…','Comparing…')));try{await app.runBinaryDiff();router.navigate('/diff',{replace:true});}catch(error){host.replaceChildren(errorState(text('比較できませんでした','Could not compare'),String(error?.message||error)));}}}));
+  if(baseline)controls.append(uiButton(text('再比較','Compare again'),{onClick:async()=>{
+    const signal=compareScope.spawn('diff-rerun-replaced');
+    host.replaceChildren(loadingState(text('比較しています…','Comparing…')));
+    try{await app.workspace.diff({signal});if(!signal.aborted&&!routeSignal.aborted)router.navigate('/diff',{replace:true});}
+    catch(error){if(!signal.aborted&&!routeSignal.aborted)host.replaceChildren(errorState(text('比較できませんでした','Could not compare'),String(error?.message||error)));}
+  }}));
   host.append(controls);
   if(!state){host.append(emptyState(text('比較元を選ぶと変更された関数を抽出します','Choose a baseline to find changed functions'),text('同一CPU/スライスだけを比較し、不完全な探索では new/deleted を断定しません。','Only matching architectures/slices are compared; incomplete matching never invents new/deleted certainty.')));return {root:s.root};}
   const counts={same:0,moved:0,changed:0,rewritten:0,new:0,deleted:0,unresolved:0};
@@ -760,7 +1299,7 @@ function renderDiff(app,router) {
   const interesting=(state.changes||[]).filter((c)=>c.changeType!=='same').slice(0,5000);
   const render=(c)=>{const current=c.after?.address??null;const previous=c.before?.address??null;const title=c.after?.name||c.before?.name||(current!=null?functionName(app,current):text('削除された関数','Deleted function'));const tags=c.semanticChange?.tags?.join(', ')||'';return listRow({title,subtitle:[c.changeType,current!=null?addressText(current):previous!=null?'old '+addressText(previous):'',tags].filter(Boolean).join(' · '),badge:evidenceBadge(c.changeType==='unresolved'?'unverified':c.confidence>=0.82?'confirmed':'likely'),onClick:current!=null?()=>router.navigate('/function/'+BigInt(current).toString()+'/overview'):null});};
   if(interesting.length>100)host.append(new VirtualList({items:interesting,rowHeight:64,ariaLabel:text('変更関数','Changed functions'),renderRow:render}).root);else{const list=h('div','ui-list');for(const c of interesting)list.append(render(c));host.append(list);}
-  return {root:s.root};
+  return {root:s.root,dispose:()=>{compareScope.abort('diff-route-disposed');fallbackRouteController?.abort('diff-route-disposed');}};
 }
 
 function renderAdvanced(app) {
@@ -894,7 +1433,7 @@ export function installProductUI(app) {
      * has nothing to answer questions about yet.
      */
     defaultPath: '/code',
-    onRoute: (route) => {
+    onRoute: (route, routeContext = {}) => {
       appRoot.classList.toggle('ui-code-route', route.route.id === 'code');
       appRoot.classList.toggle('ui-screen-route', route.route.id !== 'code');
       for (const b of nav.querySelectorAll('[data-route-id]')) b.setAttribute('aria-current', b.dataset.routeId === route.route.id ? 'page' : 'false');
@@ -907,13 +1446,13 @@ export function installProductUI(app) {
       routeHost.hidden = false;
       routeHost.replaceChildren();
       let view;
-      if (route.route.id === 'investigate') view = renderInvestigate(app, router);
-      else if (route.route.id === 'explorer') view = renderExplorer(app, router, route);
-      else if (route.route.id === 'function') view = renderFunctionWorkspace(app, router, route);
-      else if (route.route.id === 'results' || route.route.id === 'finding') view = renderResults(app, router);
-      else if (route.route.id === 'diff') view = renderDiff(app, router);
+      if (route.route.id === 'investigate') view = renderInvestigate(app, router, routeContext);
+      else if (route.route.id === 'explorer') view = renderExplorer(app, router, route, routeContext);
+      else if (route.route.id === 'function') view = renderFunctionWorkspace(app, router, route, routeContext);
+      else if (route.route.id === 'results' || route.route.id === 'finding') view = renderResults(app, router, route);
+      else if (route.route.id === 'diff') view = renderDiff(app, router, routeContext);
       else if (route.route.id === 'advanced') view = renderAdvanced(app);
-      else view = renderSecondaryRoute(app, router, route);
+      else view = renderSecondaryRoute(app, router, route, routeContext);
       routeHost.append(view.root);
       requestAnimationFrame(() => routeHost.focus({ preventScroll: true }));
       const originalGet = view.getState;

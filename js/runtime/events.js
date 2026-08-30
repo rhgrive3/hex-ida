@@ -21,7 +21,8 @@ export const RUNTIME_EVENT_KINDS = Object.freeze([
 const COMPLETENESS_RANK = Object.freeze({ unsupported: 0, truncated: 1, partial: 2, bounded: 3, complete: 4 });
 
 function required(value, code, message) {
-  const text = String(value ?? '').trim();
+  if (typeof value !== 'string') throw new DebugAdapterError(code, message || code);
+  const text = value.trim();
   if (!text) throw new DebugAdapterError(code, message || code);
   return text;
 }
@@ -38,10 +39,19 @@ function safeInteger(value, fallback, name, { min = 0 } = {}) {
 
 function optionalText(value) { return value == null ? null : String(value); }
 
+function optionalIdentity(value, name) {
+  if (value == null) return null;
+  if (typeof value !== 'string' || value.length === 0) throw new DebugAdapterError('runtime-invalid-event-identity', `${name} must be a non-empty string`);
+  return value;
+}
+
 function arrayOfStrings(value, name) {
   if (value == null) return Object.freeze([]);
   if (!Array.isArray(value)) throw new DebugAdapterError('runtime-invalid-event-array', `${name} must be an array`);
-  return Object.freeze([...new Set(value.map(String).filter(Boolean))]);
+  for (const item of value) {
+    if (typeof item !== 'string' || !item) throw new DebugAdapterError('runtime-invalid-event-array', `${name} must contain only non-empty strings`);
+  }
+  return Object.freeze([...new Set(value)]);
 }
 
 function normalizeCompleteness(value, fallback = 'partial') {
@@ -63,8 +73,8 @@ function normalizeMode(value) {
 }
 
 function dedupeIdentity(input) {
-  if (input.providerEventId != null) return `provider:${String(input.providerEventId)}`;
-  if (input.streamId != null && input.sequence != null) return `stream:${String(input.streamId)}:${input.sequence}`;
+  if (input.providerEventId != null) return `provider:${input.providerEventId}`;
+  if (input.streamId != null && input.sequence != null) return `stream:${input.streamId}:${input.sequence}`;
   return null;
 }
 
@@ -84,9 +94,9 @@ export function createRuntimeEvent(input = {}) {
     providerId,
     providerVersion,
     sessionEpoch,
-    streamId: optionalText(input.streamId),
+    streamId: optionalIdentity(input.streamId, 'streamId'),
     sequence,
-    providerEventId: optionalText(input.providerEventId),
+    providerEventId: optionalIdentity(input.providerEventId, 'providerEventId'),
     kind,
     processKey: optionalText(input.processKey),
     threadKey: optionalText(input.threadKey),
@@ -94,17 +104,19 @@ export function createRuntimeEvent(input = {}) {
     moduleGeneration,
     payload,
   };
-  const eventId = optionalText(input.eventId) || `runtimeevent_${stableDigest(identity)}`;
+  const eventId = input.eventId == null
+    ? `runtimeevent_${stableDigest(identity)}`
+    : required(input.eventId, 'runtime-event-id-invalid', 'runtime event id must be a non-empty string');
   return deepFreeze({
     eventId,
     runtimeSessionId,
     providerId,
     providerVersion,
     sessionEpoch,
-    streamId: optionalText(input.streamId),
+    streamId: optionalIdentity(input.streamId, 'streamId'),
     sequence,
     predecessorIds: arrayOfStrings(input.predecessorIds, 'predecessorIds'),
-    providerEventId: optionalText(input.providerEventId),
+    providerEventId: optionalIdentity(input.providerEventId, 'providerEventId'),
     timestamp: input.timestamp == null ? null : String(input.timestamp),
     processKey: optionalText(input.processKey),
     threadKey: optionalText(input.threadKey),
@@ -159,33 +171,39 @@ export function normalizeLegacyRuntimeEvent(input, context = {}) {
 
 function estimatePayloadSize(value, maxBytes) {
   let size = 0;
-  function walk(v) {
-    if (size > maxBytes) return;
-    if (v == null) { size += 4; return; }
-    if (typeof v === 'boolean') { size += 5; return; }
-    if (typeof v === 'number') { size += 8; return; }
-    if (typeof v === 'string') { size += v.length * 2 + 2; return; }
-    if (typeof v === 'bigint') { size += 16; return; }
-    if (ArrayBuffer.isView(v)) { size += v.byteLength * 4; return; }
-    if (v instanceof ArrayBuffer) { size += v.byteLength * 4; return; }
-    if (Array.isArray(v)) {
-      size += 2;
-      for (const item of v) {
-        walk(item);
-        if (size > maxBytes) return;
-      }
-      return;
+  const active = new WeakSet();
+  const stack = [{ value, exit: false }];
+  while (stack.length && size <= maxBytes) {
+    const frame = stack.pop();
+    const v = frame.value;
+    if (frame.exit) {
+      active.delete(v);
+      continue;
     }
+    if (v == null) { size += 4; continue; }
+    if (typeof v === 'boolean') { size += 5; continue; }
+    if (typeof v === 'number') { size += 8; continue; }
+    if (typeof v === 'string') { size += v.length * 2 + 2; continue; }
+    if (typeof v === 'bigint') { size += 16; continue; }
+    if (ArrayBuffer.isView(v)) { size += v.byteLength * 4; continue; }
+    if (v instanceof ArrayBuffer) { size += v.byteLength * 4; continue; }
     if (typeof v === 'object') {
+      if (active.has(v)) return maxBytes + 1;
+      active.add(v);
+      stack.push({ value: v, exit: true });
       size += 2;
-      for (const k of Object.keys(v)) {
-        size += k.length * 2 + 4;
-        walk(v[k]);
-        if (size > maxBytes) return;
+      if (Array.isArray(v)) {
+        for (let i = v.length - 1; i >= 0; i--) stack.push({ value: v[i], exit: false });
+      } else {
+        const keys = Object.keys(v);
+        for (let i = keys.length - 1; i >= 0; i--) {
+          const key = keys[i];
+          size += key.length * 2 + 4;
+          stack.push({ value: v[key], exit: false });
+        }
       }
     }
   }
-  walk(value);
   return size;
 }
 

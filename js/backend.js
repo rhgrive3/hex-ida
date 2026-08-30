@@ -133,9 +133,8 @@ function carryCancellation(mapped, source) {
 
 export class Backend {
   constructor(options = {}) {
-    this.legacyWorker = new Worker(new URL('./worker.js', import.meta.url));
-    this.platformWorker = new Worker(new URL('./platform/worker.js', import.meta.url), { type: 'module' });
-    this.worker = this.legacyWorker;
+    this._legacyWorker = null;
+    this._platformWorker = null;
     this.seq = 1;
     this.analysisEpoch = 0;
     this.transportEpoch = 0;
@@ -169,18 +168,6 @@ export class Backend {
     this._artifactSchedulerOptions = options.artifactSchedulerOptions ?? {};
     this.analysisCache = options.analysisCache || new AnalysisCache(options.analysisCacheOptions);
 
-    this.legacyWorker.onmessage = (event) => this._onMessage(event.data, 'legacy');
-    this.platformWorker.onmessage = (event) => this._onMessage(event.data, 'platform');
-    const failed = (workerName, event) => {
-      const error = workerFailureError(workerName, event, 'The analysis worker failed to start.');
-      this._rejectWorkerPending(workerName, error);
-      if (this.onFatal) this.onFatal(error.message);
-    };
-    this.legacyWorker.onerror = (event) => failed('legacy', event);
-    this.platformWorker.onerror = (event) => failed('platform', event);
-    this.legacyWorker.onmessageerror = (event) => failed('legacy', event);
-    this.platformWorker.onmessageerror = (event) => failed('platform', event);
-
     if (typeof document !== 'undefined') {
       this._memoryPressureHandler = () => {
         if (!document.hidden) return;
@@ -189,6 +176,50 @@ export class Backend {
       };
       document.addEventListener('visibilitychange', this._memoryPressureHandler, { passive: true });
     }
+  }
+
+  get legacyWorker() {
+    return this._legacyWorker;
+  }
+
+  set legacyWorker(worker) {
+    this._legacyWorker = worker;
+    if (worker) {
+      worker.onmessage = (event) => this._onMessage(event.data, 'legacy');
+      const failed = (event) => {
+        const error = workerFailureError('legacy', event, 'The analysis worker failed.');
+        this._rejectWorkerPending('legacy', error);
+        if (this.onFatal) this.onFatal(error.message);
+      };
+      worker.onerror = failed;
+      worker.onmessageerror = failed;
+    }
+  }
+
+  get platformWorker() {
+    return this._platformWorker;
+  }
+
+  set platformWorker(worker) {
+    this._platformWorker = worker;
+    if (worker) {
+      worker.onmessage = (event) => this._onMessage(event.data, 'platform');
+      const failed = (event) => {
+        const error = workerFailureError('platform', event, 'The analysis worker failed.');
+        this._rejectWorkerPending('platform', error);
+        if (this.onFatal) this.onFatal(error.message);
+      };
+      worker.onerror = failed;
+      worker.onmessageerror = failed;
+    }
+  }
+
+  get worker() {
+    return this._legacyWorker || this._platformWorker || this._worker('legacy');
+  }
+
+  set worker(w) {
+    this.legacyWorker = w;
   }
 
   get gen() { return this.analysisEpoch; }
@@ -255,7 +286,28 @@ export class Backend {
     else pending.reject(new Error(message.error || 'Analysis failed.'));
   }
 
-  _worker(name) { return name === 'platform' ? this.platformWorker : this.legacyWorker; }
+  _worker(name) {
+    if (this.disposed) {
+      const error = new Error('Backend has been disposed.');
+      error.code = 'BACKEND_DISPOSED';
+      throw error;
+    }
+    if (name === 'platform') {
+      if (!this._platformWorker) {
+        const worker = new Worker(new URL('./platform/worker.js', import.meta.url), { type: 'module' });
+        this.platformWorker = worker;
+      }
+      return this._platformWorker;
+    }
+    if (name === 'legacy') {
+      if (!this._legacyWorker) {
+        const worker = new Worker(new URL('./worker.js', import.meta.url));
+        this.legacyWorker = worker;
+      }
+      return this._legacyWorker;
+    }
+    throw new Error(`Unknown worker: ${name}`);
+  }
 
   _callTo(workerName, t, payload = {}, transfer, onProgress) {
     if (this.disposed) {
@@ -300,7 +352,9 @@ export class Backend {
     this.analysisEpoch++;
     this.resetCache();
     this._releaseDisassembly(new StaleRequestError());
-    for (const worker of [this.legacyWorker, this.platformWorker]) worker.postMessage({ t: 'cancel', epoch: this.transportEpoch });
+    for (const worker of [this._legacyWorker, this._platformWorker]) {
+      if (worker) worker.postMessage({ t: 'cancel', epoch: this.transportEpoch });
+    }
     for (const [id, pending] of this.pending) {
       if (pending.uiEpoch === this.gen) continue;
       this.pending.delete(id);
@@ -316,7 +370,9 @@ export class Backend {
     }
     const previousTransportEpoch = this.transportEpoch;
     const openTransportEpoch = ++this.transportEpoch;
-    for (const worker of [this.legacyWorker, this.platformWorker]) worker.postMessage({ t: 'cancel', epoch: previousTransportEpoch });
+    for (const worker of [this._legacyWorker, this._platformWorker]) {
+      if (worker) worker.postMessage({ t: 'cancel', epoch: previousTransportEpoch });
+    }
     const assertCurrent = () => {
       if (this.transportEpoch !== openTransportEpoch) throw new StaleRequestError();
     };
@@ -700,7 +756,15 @@ export class Backend {
   }
 
   guessFunctions(regionId, limit, onProgress) { return this.call('guessFunctions', { regionId, limit }, null, onProgress); }
-  scanProgram(regionId, onProgress, limits = {}) { return this.call('scanProgram', { regionId, ...limits }, null, onProgress); }
+  scanProgram(regionId, onProgress, limits = {}) {
+    const architecture = String(limits?.architecture || '').toLowerCase();
+    const payload = { regionId, ...limits };
+    if (this.formatId === 'macho' && architecture) {
+      const legacyAarch64 = architecture === 'arm64' || architecture === 'arm64e' || architecture === 'arm64_32';
+      return this._callTo(legacyAarch64 ? 'legacy' : 'platform', 'scanProgram', payload, null, onProgress);
+    }
+    return this.call('scanProgram', payload, null, onProgress);
+  }
   fieldAccess(params, onProgress) { return this.call('fieldAccess', params, null, onProgress); }
   valueShapes(regionId, onProgress) { return this.call('valueShapes', { regionId }, null, onProgress); }
   fieldAccessMany(regionId, offsets) {
@@ -714,7 +778,10 @@ export class Backend {
   }
   strings(params, onProgress) { return this.call('strings', params, null, onProgress); }
   xrefs(params, onProgress) { return this.call('xrefs', params, null, onProgress); }
-  readAt(addr, len, text) { return this.call('readAt', { addr, len, text }); }
+  readAt(addr, len, text, options = {}) {
+    const priority = options?.priority === 'background' ? 'background' : 'current';
+    return this.call('readAt', { addr, len, text, priority });
+  }
   resolvePointer(raw, context = {}) {
     return this._callTo('platform', 'resolvePointer', { raw, address: context?.address ?? null, sliceIndex: context?.sliceIndex ?? null });
   }
@@ -753,7 +820,7 @@ export class Backend {
       ? (options.riscvIsa || resolveRiscvIsaProfile(formatMetadata.riscvIsa, addr, { allowAssumed:true }))
       : null;
     if (riscvIsa?.code === false) return { supported:true, architecture, found:true, instructions:[], region:read.region ?? null, fileOffset:read.fileOffset ?? null, riscvIsa };
-    const result = await awaitCancellableProducer(this._disassembleBytes(read.bytes, addr, architecture, uiEpoch, { riscvIsa }), options.signal ?? null);
+    const result = await awaitCancellableProducer(this._disassembleBytes(read.bytes, addr, architecture, uiEpoch, { riscvIsa, priority: options.priority, signal: options.signal }), options.signal ?? null);
     if (uiEpoch !== this.gen) throw new StaleRequestError();
     return { supported: true, architecture, found: true, region:read.region ?? null, fileOffset:read.fileOffset ?? null, ...(riscvIsa == null ? {} : { riscvIsa }), ...result };
   }
@@ -778,10 +845,11 @@ export class Backend {
     }
     const id = this._disasmSeq++;
     const copy = bytes instanceof Uint8Array ? bytes.slice() : new Uint8Array(bytes);
+    const priority = decodeContext.priority || 'current';
     const promise = new Promise((resolve, reject) => {
-      this._disasmPending.set(id, { resolve, reject, uiEpoch });
+      this._disasmPending.set(id, { resolve, reject, uiEpoch, priority });
       try {
-        this._disasmWorker.postMessage({ id, architecture, address, bytes: copy, riscvIsa:decodeContext.riscvIsa ?? null }, [copy.buffer]);
+        this._disasmWorker.postMessage({ id, architecture, address, bytes: copy, riscvIsa:decodeContext.riscvIsa ?? null, priority }, [copy.buffer]);
       } catch (error) {
         this._disasmPending.delete(id);
         reject(error);
@@ -791,8 +859,18 @@ export class Backend {
       const pending = this._disasmPending.get(id);
       if (!pending) return;
       this._disasmPending.delete(id);
+      try {
+        this._disasmWorker?.postMessage({ t: 'cancel', id });
+      } catch {}
       pending.reject(cancelledRequestError('disassembly cancelled'));
     };
+    if (decodeContext.signal) {
+      if (decodeContext.signal.aborted) {
+        promise.cancel();
+      } else {
+        decodeContext.signal.addEventListener('abort', () => promise.cancel(), { once: true });
+      }
+    }
     return promise;
   }
 
@@ -823,7 +901,11 @@ export class Backend {
     this._archProbeFinish = null; this._archProbeWorker = null;
     for (const pending of this.pending.values()) pending.reject(failure);
     this.pending.clear();
-    for (const worker of [this.legacyWorker, this.platformWorker]) { try { worker.terminate(); } catch { /* best effort */ } }
+    for (const worker of [this._legacyWorker, this._platformWorker]) {
+      if (worker) { try { worker.terminate(); } catch { /* best effort */ } }
+    }
+    this._legacyWorker = null;
+    this._platformWorker = null;
     this._artifactOrchestrator?.close?.().catch?.(() => {});
     if (typeof document !== 'undefined' && this._memoryPressureHandler) {
       document.removeEventListener('visibilitychange', this._memoryPressureHandler);
@@ -860,20 +942,40 @@ export class Backend {
     return carryCancellation(mapped, request);
   }
 
-  request(regionId, chunk, wantAsm) {
+  request(regionId, chunk, wantAsm, options = {}) {
+    const priority = options?.priority ?? 'visible';
     const key = this.key(regionId, chunk);
     const inflight = this.inflight.get(key);
     if (inflight) {
       if (wantAsm && !inflight.wantAsm) inflight.wantAsm = true;
+      if (priority === 'visible' && inflight.priority === 'prefetch') {
+        inflight.priority = 'visible';
+        const qIdx = this.queue.indexOf(inflight);
+        if (qIdx > 0) {
+          this.queue.splice(qIdx, 1);
+          const insertIdx = this.queue.findIndex((j) => j.priority === 'prefetch');
+          if (insertIdx >= 0) this.queue.splice(insertIdx, 0, inflight);
+          else this.queue.push(inflight);
+        }
+      }
       return;
     }
     const cached = this.cache.get(key);
     if (cached && (!wantAsm || cached.mn)) return;
-    const job = { regionId, chunk, wantAsm: !!wantAsm, key, gen: this.gen, dispatchedWantAsm: null };
+    const job = { regionId, chunk, wantAsm: !!wantAsm, priority, key, gen: this.gen, dispatchedWantAsm: null };
     this.inflight.set(key, job);
     const dispatched = this.inflight.size - this.queue.length;
-    if (dispatched > MAX_INFLIGHT) this.queue.push(job);
-    else this._dispatch(job);
+    if (dispatched > MAX_INFLIGHT) {
+      if (priority === 'visible') {
+        const insertIdx = this.queue.findIndex((j) => j.priority === 'prefetch');
+        if (insertIdx >= 0) this.queue.splice(insertIdx, 0, job);
+        else this.queue.push(job);
+      } else {
+        this.queue.push(job);
+      }
+    } else {
+      this._dispatch(job);
+    }
   }
 
   _dispatch(job) {

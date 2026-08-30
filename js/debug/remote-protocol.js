@@ -150,11 +150,10 @@ export function validateRemotePacket(packet) {
   validateValue(packet);
   if (jsonByteSize(packet) > MAX_PACKET_BYTES) throw new DebugAdapterError('packet-too-large', 'remote packet exceeds 1 MiB');
   validateEpoch(packet);
-  if (packet.method && BLOCKED_METHODS.test(String(packet.method))) throw new DebugAdapterError('blocked-method', 'host command execution is prohibited');
   if ((packet.type === 'request' || packet.type === 'response' || packet.type === 'cancel') && (!Number.isSafeInteger(packet.id) || packet.id < 1)) throw new DebugAdapterError('malformed-packet', 'request id must be a positive safe integer');
   if (packet.type === 'request') {
-    const method = String(packet.method || '');
-    if (!method || method.length > 128) throw new DebugAdapterError('malformed-packet', 'request method must be 1..128 characters');
+    if (typeof packet.method !== 'string' || !packet.method || packet.method.length > 128) throw new DebugAdapterError('malformed-packet', 'request method must be a 1..128 character string');
+    if (BLOCKED_METHODS.test(packet.method)) throw new DebugAdapterError('blocked-method', 'host command execution is prohibited');
   }
   return packet;
 }
@@ -189,8 +188,8 @@ export class RemoteProtocolClient {
     return this.nextId++;
   }
   setEpoch(epoch) {
-    const next = Number(epoch);
-    if (!Number.isSafeInteger(next) || next < 0) throw new DebugAdapterError('invalid-epoch', 'epoch must be a non-negative safe integer');
+    if (!Number.isSafeInteger(epoch) || epoch < 0) throw new DebugAdapterError('invalid-epoch', 'epoch must be a non-negative safe integer');
+    const next = epoch;
     if (next === this.epoch) return this.epoch;
     const previous = this.epoch;
     this.epoch = next;
@@ -212,18 +211,19 @@ export class RemoteProtocolClient {
   }
   request(method, params = {}, options = {}) {
     if (this.closed) return Promise.reject(new DebugAdapterError('disconnected', 'remote protocol is closed'));
-    if (BLOCKED_METHODS.test(String(method))) return Promise.reject(new DebugAdapterError('blocked-method', 'host command execution is prohibited'));
+    if (typeof method !== 'string' || !method || method.length > 128) return Promise.reject(new DebugAdapterError('malformed-packet', 'request method must be a 1..128 character string'));
+    if (BLOCKED_METHODS.test(method)) return Promise.reject(new DebugAdapterError('blocked-method', 'host command execution is prohibited'));
     if (this.pending.size >= this.maxPending) return Promise.reject(new DebugAdapterError('backpressure', 'too many pending remote requests'));
     if (options.signal && options.signal.aborted) return Promise.reject(new DebugAdapterError('cancelled', String(options.signal.reason ?? 'cancelled')));
     const id = this._allocateId();
-    const epoch = options.epoch == null ? this.epoch : Number(options.epoch);
+    const epoch = options.epoch == null ? this.epoch : options.epoch;
     if (!Number.isSafeInteger(epoch) || epoch < 0) return Promise.reject(new DebugAdapterError('invalid-epoch', 'epoch must be a non-negative safe integer'));
     let timeoutMs;
     try { timeoutMs = boundedInteger(options.timeoutMs, this.timeoutMs, 10, 60000, 'timeoutMs'); }
     catch (error) { return Promise.reject(error); }
-    const packet = { version:DEBUG_PROTOCOL_VERSION, type:'request', id, epoch, method:String(method), params };
+    const packet = { version:DEBUG_PROTOCOL_VERSION, type:'request', id, epoch, method, params };
     return new Promise((resolve,reject) => {
-      const pending = { resolve, reject, timer:null, epoch, method:String(method), signal:options.signal || null, abortHandler:null };
+      const pending = { resolve, reject, timer:null, epoch, method, signal:options.signal || null, abortHandler:null };
       pending.timer = setTimeout(() => {
         if (!this.pending.has(id)) return;
         this._cleanupPending(id, pending);

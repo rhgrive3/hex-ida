@@ -23,6 +23,7 @@ export function createInvestigationSession(input = {}) {
     binaryId: input.binaryId == null ? null : String(input.binaryId),
     binaryIdentity: input.binaryIdentity && typeof input.binaryIdentity === 'object' ? { ...input.binaryIdentity } : null,
     projectId: input.projectId == null ? null : String(input.projectId),
+    conversationId: input.conversationId == null ? null : String(input.conversationId),
     mode: AI_MODES.includes(input.mode) ? input.mode : 'chat',
     style: AI_STYLES.includes(input.style) ? input.style : 'analyst',
     scope: AI_SCOPES.includes(input.scope) ? input.scope : 'auto',
@@ -45,6 +46,21 @@ export function createInvestigationSession(input = {}) {
 export class InvestigationSessionStore {
   constructor({ persistence } = {}) { this.persistence = persistence || null; this.sessions = new Map(); }
 
+  register(session) {
+    if (!session || !session.id) return null;
+    const validated = createInvestigationSession(session);
+    this.sessions.set(validated.id, validated);
+    return validated;
+  }
+
+  async delete(id) {
+    const key = String(id);
+    this.sessions.delete(key);
+    if (this.persistence && typeof this.persistence.delete === 'function') {
+      await this.persistence.delete(key);
+    }
+  }
+
   async create(input) {
     const session = createInvestigationSession(input);
     this.sessions.set(session.id, session);
@@ -65,7 +81,7 @@ export class InvestigationSessionStore {
   async update(id, patch = {}) {
     const current = await this.get(id);
     if (!current) return null;
-    const allowed = ['binaryId','binaryIdentity','projectId','mode','style','scope','effectiveScope','goal','messages','summary','investigationMemory','pinnedEvidence','hypotheses','confirmedFindings','rejectedHypotheses','proposedActions','lastActivity'];
+    const allowed = ['binaryId','binaryIdentity','projectId','conversationId','mode','style','scope','effectiveScope','goal','messages','summary','investigationMemory','pinnedEvidence','hypotheses','confirmedFindings','rejectedHypotheses','proposedActions','lastActivity'];
     for (const key of allowed) if (Object.prototype.hasOwnProperty.call(patch, key)) current[key] = key === 'investigationMemory' ? createInvestigationMemory(patch[key]) : patch[key];
     // Identity upgrades must update both representations atomically. Otherwise
     // a legacy/weak session can accept a strong hash on this turn but be
@@ -113,6 +129,7 @@ export function createProjectSessionPersistence(project, { onChange } = {}) {
   if (!project || typeof project !== 'object') throw new Error('project-required');
   project.findings ||= {}; project.findings.investigationSessions ||= [];
   return {
+    list() { return project.findings.investigationSessions.slice(); },
     async load(id) { return project.findings.investigationSessions.find((session) => session && session.id === String(id)) || null; },
     async save(session) {
       const safe = stripSecrets(session);
@@ -120,6 +137,15 @@ export function createProjectSessionPersistence(project, { onChange } = {}) {
       if (index >= 0) project.findings.investigationSessions[index] = safe; else project.findings.investigationSessions.push(safe);
       project.updatedAt = new Date().toISOString();
       if (typeof onChange === 'function') onChange(project, safe);
+    },
+    async delete(id) {
+      const key = String(id);
+      const index = project.findings.investigationSessions.findIndex((item) => item && String(item.id) === key);
+      if (index >= 0) {
+        project.findings.investigationSessions.splice(index, 1);
+        project.updatedAt = new Date().toISOString();
+        if (typeof onChange === 'function') onChange(project, null);
+      }
     },
   };
 }

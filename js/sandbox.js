@@ -286,7 +286,7 @@ function valueSize(value, seen = new Set(), limit = MAX_RPC_OUTPUT_BYTES + 1) {
   return n;
 }
 
-export function runInSandbox({ source, mode = 'script', index = 0, api, out, timeout = 30000 }) {
+export function runInSandbox({ source, mode = 'script', index = 0, api, out, timeout = 30000, signal }) {
   return new Promise((resolve) => {
     const frame = document.createElement('iframe');
     frame.hidden = true;
@@ -295,40 +295,59 @@ export function runInSandbox({ source, mode = 'script', index = 0, api, out, tim
     const channel = new MessageChannel();
     const runController = new AbortController();
     let settled = false;
+    let timer = null;
     let rpcTotal = 0;
     let rpcConcurrent = 0;
     let rpcInputBytes = 0;
     let rpcOutputBytes = 0;
 
-    const terminate = () => {
+    function terminate() {
       try { channel.port1.postMessage({ t: 'terminate' }); } catch { /* ignore */ }
-    };
+    }
 
-    const onFrameReady = (event) => {
+    function onFrameReady(event) {
       if (event.source !== frame.contentWindow || !event.data || event.data.t !== 'hexSandboxFrameReady') return;
       window.removeEventListener('message', onFrameReady);
       frame.contentWindow.postMessage({ t: 'init' }, '*', [channel.port2]);
-    };
+    }
     window.addEventListener('message', onFrameReady);
 
-    const finish = (value) => {
+    function onAbort() {
+      finish({ error: 'キャンセルされました。', aborted: true });
+    }
+
+    function onPageHide() {
+      finish({ error: 'ページが閉じられたため実行を停止しました。' });
+    }
+    window.addEventListener('pagehide', onPageHide, { once: true });
+
+    function failBudget(message) {
+      finish({ error: message });
+    }
+
+    function finish(value) {
       if (settled) return;
       settled = true;
       runController.abort(value?.error || 'sandbox-finished');
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
+      if (signal) signal.removeEventListener('abort', onAbort);
       window.removeEventListener('message', onFrameReady);
       window.removeEventListener('pagehide', onPageHide);
       terminate();
       channel.port1.close();
       frame.remove();
       resolve(value);
-    };
+    }
 
-    const failBudget = (message) => finish({ error: message });
-    const onPageHide = () => finish({ error: 'ページが閉じられたため実行を停止しました。' });
-    window.addEventListener('pagehide', onPageHide, { once: true });
+    if (signal) {
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+      signal.addEventListener('abort', onAbort, { once: true });
+    }
 
-    const timer = setTimeout(
+    timer = setTimeout(
       () => finish({ error: '実行が時間制限を超えたため、安全に停止しました。' }),
       Math.max(50, Number(timeout) || 30000)
     );

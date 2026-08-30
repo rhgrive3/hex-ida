@@ -1,7 +1,9 @@
 import { Backend } from './backend.js';
 import { SymbolIndex } from './symbols.js';
 import { createHexProject, exportHexProject, importHexProject, serializeHexProject, parseHexProject } from './project/index.js';
-import { diffFunctions } from './diff/index.js';
+import { runDiffInWorker } from './diff/runtime.js';
+import { createCompactFunctionSet, demoteLowInformationAbsenceClaims } from './diff/compact-function-set.js';
+import { stripSecrets } from './ai/session-core/index.js';
 
 const LOCAL_PREFIX='hex.project.v1.';
 const MAX_PROJECT_AI_TURNS=200;
@@ -17,6 +19,7 @@ function identityKey(identity){
   return [identity?.hash||'',meta.sliceIndex,meta.sliceOffset,meta.sliceSize,meta.uuid,meta.architecture].map(keyOf).join('\0');
 }
 function staleWorkspaceError(){const error=new Error('workspace-binding-changed');error.code='HEX_WORKSPACE_STALE';return error;}
+function throwIfAborted(signal){if(!signal?.aborted)return;if(signal.reason instanceof Error)throw signal.reason;const error=new Error(signal.reason==null?'Operation aborted':String(signal.reason));error.name='AbortError';error.code='ABORT_ERR';throw error;}
 
 export function binaryIdentity(app, hash=null){
   const info=app?.store?.get?.('fileInfo')||null;
@@ -80,23 +83,34 @@ function aiTurns(){
 export function snapshotWorkspace(app, identity){
   const notes=app.notes;
   const navigation=app.navigation;
+  const bookmarks=(app.bookmarks?.list?.()||[]).slice(-500);
+  const activeSessions = app?.aiRuntime?.sessionStore?.list?.(identity?.hash || identity?.binaryId)
+    || (app?.aiRuntime?.sessionStore?.sessions ? Array.from(app.aiRuntime.sessionStore.sessions.values()) : null)
+    || (Array.isArray(app?.investigationSessions) ? app.investigationSessions : (Array.isArray(app?.project?.findings?.investigationSessions) ? app.project.findings.investigationSessions : []));
+  const rawTurns = aiTurns();
+  const safeTurns = rawTurns.map((turn) => stripSecrets(turn));
+  const safeSessions = Array.isArray(activeSessions) && activeSessions.length
+    ? activeSessions.map((s) => stripSecrets(s))
+    : (safeTurns.length ? [{ id: 'default', binaryId: identity?.hash || identity?.binaryId || null, turns: safeTurns }] : []);
   const project=createHexProject({
     binary:identity,
     userNames:noteEntries(notes?.names),
     comments:noteEntries(notes?.comments),
     types:[...((notes?.types)||[])].map(([key,value])=>({key,value})),
+    vars:[...((notes?.vars)||[])].map(([key,value])=>({key,value})),
     structs:Array.isArray(notes?.structs)?notes.structs:[],
-    bookmarks:(navigation?.entries||[]).slice(-500),
+    bookmarks:bookmarks.slice(-500),
     patches:patchEntries(app.patches),
     confirmedFindings:safeFindings(app),
     evidence:safeEvidence(app),
-    investigationSessions:aiTurns().length?[{turns:aiTurns()}]:[],
-    agentAnswers:aiTurns().filter((t)=>t.role==='assistant'&&t.status==='done'),
+    investigationSessions:safeSessions,
+    agentAnswers:safeTurns.filter((t)=>t.role==='assistant'&&t.status==='done'),
     analysisSettings:{ language:app?.prefs?.lang||null, explain:app?.prefs?.explain??null, textSize:app?.prefs?.textSize||null },
     navigation:{
       currentFunction:app?.store?.get?.('currentAddress')??null,
       history:(navigation?.entries||[]).slice(-500),
-      bookmarks:(navigation?.entries||[]).slice(-100),
+      cursorIndex:navigation?.index??null,
+      bookmarks:bookmarks.slice(-500),
       lastQuery:app?.lastGoal?.text||null,
     },
   });
@@ -107,10 +121,12 @@ export function snapshotWorkspace(app, identity){
 export function applyWorkspaceProject(app, project){
   const notes=app.notes;
   if(!notes||!notes.id)throw new Error('notes-unavailable');
-  notes.names.clear();notes.comments.clear();notes.types.clear();notes.vars.clear();
+  const replaceVars = project.user?.varsPresent !== false;
+  notes.names.clear();notes.comments.clear();notes.types.clear();if(replaceVars)notes.vars.clear();
   for(const entry of project.user.names||[])if(entry?.address!=null&&entry.value)notes.names.set(BigInt(entry.address).toString(),String(entry.value));
   for(const entry of project.user.comments||[])if(entry?.address!=null&&entry.value)notes.comments.set(BigInt(entry.address).toString(),String(entry.value));
   for(const entry of project.user.types||[])if(entry?.key)notes.types.set(String(entry.key),String(entry.value||''));
+  if(replaceVars)for(const entry of (project.user.vars||project.user.varNames||[]))if(entry?.key)notes.vars.set(String(entry.key),String(entry.value||''));
   notes.structs=Array.isArray(project.user.structs)?project.user.structs.slice():[];
   notes.dirty=true;
   if(!notes.save())throw new Error(notes.lastSaveError?.code||'notes-save-failed');
@@ -126,8 +142,54 @@ export function applyWorkspaceProject(app, project){
       key:app.codeRegion?.()?.id||null,gen:app.symbols?.gen||0,restored:true,
     };
   }
+  if(Array.isArray(project.findings?.investigationSessions)){
+    const currentHash = app?.backend?.contentHash || app?.store?.get?.('fileInfo')?.hash || null;
+    for(const session of project.findings.investigationSessions){
+      if(session && typeof session === 'object'){
+        const sessionBinaryId = session.binaryId || null;
+        if(sessionBinaryId && currentHash && sessionBinaryId !== currentHash) continue;
+        if(session.id && app?.aiRuntime?.sessionStore?.register){
+          app.aiRuntime.sessionStore.register(session);
+        }
+      }
+    }
+  }
+  // Restore analysis settings
+  if(project.analysis?.settings){
+    const s = project.analysis.settings;
+    if(s.language && app.prefs) app.prefs.lang = s.language;
+    if(s.explain != null && app.prefs) app.prefs.explain = s.explain;
+    if(s.textSize && app.prefs) app.prefs.textSize = s.textSize;
+  }
+  // Restore last query
+  if(project.navigation?.lastQuery){
+    app.lastGoal = { text: project.navigation.lastQuery };
+  }
+  // Restore navigation history & cursor
   const history=project.navigation?.history||[];
-  if(app.navigation&&history.length){app.navigation.entries=history.slice(-app.navigation.limit);app.navigation.index=app.navigation.entries.length-1;app.navigation.onChange(app.navigation.snapshot());}
+  if(app.navigation&&history.length){
+    app.navigation.entries=history.slice(-app.navigation.limit);
+    const cursor = project.navigation?.cursorIndex;
+    app.navigation.index = (cursor != null && !isNaN(Number(cursor)))
+      ? Math.max(0, Math.min(app.navigation.entries.length - 1, Number(cursor)))
+      : app.navigation.entries.length - 1;
+    app.navigation.onChange?.(app.navigation.snapshot());
+  }
+  // Restore currentFunction if present and within valid range
+  if(project.navigation?.currentFunction != null){
+    const curAddr = BigInt(project.navigation.currentFunction);
+    const region = (app.regionForAddress ? app.regionForAddress(curAddr) : null) || app.codeRegion?.();
+    if(region && curAddr >= region.vmAddr && curAddr < region.vmAddr + region.size){
+      app.store?.set?.({ currentAddress: curAddr });
+      app.viewer?.goToAddress?.(curAddr);
+    }
+  }
+  // Restore bookmarks
+  const bookmarks=project.navigation?.bookmarks||project.user?.bookmarks||[];
+  if(bookmarks.length){
+    if(app.navigation)app.navigation.bookmarks=bookmarks.slice(-500);
+    if(app.bookmarks?.restore)app.bookmarks.restore(bookmarks);
+  }
   return true;
 }
 
@@ -215,28 +277,32 @@ export class ProductWorkspace{
   }
   _localKey(identity){return LOCAL_PREFIX+identity.hash+':'+keyOf(identity.metadata?.sliceIndex)+':'+keyOf(identity.metadata?.uuid||identity.metadata?.architecture);}
   _loadLocal(identity){if(!this.storage)return null;try{const raw=this.storage.getItem(this._localKey(identity));return raw?parseHexProject(raw):null;}catch{return null;}}
-  async loadBaseline(file,{backend=null}={}){
+  async loadBaseline(file,{backend=null,signal=null}={}){
     if(!file)throw new Error('baseline-file-required');
     if(!this.identity)await this.bind();
     if(!this.identity)throw staleWorkspaceError();
     const revision=this.bindingRevision, request=++this.baselineSequence;
     const assertCurrent=()=>{this._assertBinding(revision);if(request!==this.baselineSequence)throw staleWorkspaceError();};
     const ownedBackend=!backend, other=backend||this.backendFactory();
+    const onAbort=()=>{if(ownedBackend)other?.dispose?.();};
+    if(signal?.aborted)throwIfAborted(signal);
+    signal?.addEventListener('abort',onAbort,{once:true});
     try{
-      const info=await other.open(file);assertCurrent();
+      const info=await other.open(file);throwIfAborted(signal);assertCurrent();
       const currentArch=this.identity?.metadata?.architecture||null;const sliceIndex=chooseSlice(info,currentArch);
       if(sliceIndex<0)throw new Error('baseline-slice-unavailable');
       const slice=info.slices[sliceIndex];const arch=slice?.capability?.architecture||slice?.info?.architecture||slice?.info?.cpu||null;
       if(currentArch&&arch&&currentArch!==arch){const error=new Error(`architecture mismatch: ${currentArch} vs ${arch}`);error.code='DIFF_ARCH_MISMATCH';throw error;}
-      const hash=await other.ensureContentHash();assertCurrent();
-      const result=await other.analyze(sliceIndex);assertCurrent();
+      const hash=await other.ensureContentHash(null,signal);throwIfAborted(signal);assertCurrent();
+      const result=await other.analyze(sliceIndex,{signal});throwIfAborted(signal);assertCurrent();
       const symbols=new SymbolIndex({...result,regions:slice?.regions||[]});
-      const functions=functionsFromSymbols(symbols);assertCurrent();
+      const functions=createCompactFunctionSet(symbols,arch,MAX_DIFF_FUNCTIONS);assertCurrent();
       const previous=this.baseline;
       this.baseline={file,backend:other,ownedBackend,info,sliceIndex,slice,architecture:arch,hash,symbols,functions,complete:functions.complete===true};
       if(previous?.ownedBackend&&previous.backend!==other)previous.backend?.dispose?.();
       this.diffState=null;this.busy=null;return this.baseline;
     }catch(error){if(ownedBackend)other?.dispose?.();throw error;}
+    finally{signal?.removeEventListener('abort',onAbort);}
   }
   async diff(options={}){
     if(this.busy)return this.busy;
@@ -245,17 +311,19 @@ export class ProductWorkspace{
     task=(async()=>{
       if(!baseline)throw new Error('baseline-not-loaded');
       const assertCurrent=()=>{this._assertBinding(revision);if(this.baseline!==baseline)throw staleWorkspaceError();};
-      try{await this.app.ensureRecognition?.({maxFunctions:MAX_DIFF_FUNCTIONS,knowledgeLimit:0});}catch{/* symbol fallback remains valid */}
+      throwIfAborted(options.signal);
+      try{await this.app.ensureRecognition?.({maxFunctions:MAX_DIFF_FUNCTIONS,knowledgeLimit:0,signal:options.signal});}catch(error){if(options.signal?.aborted)throwIfAborted(options.signal);/* symbol fallback remains valid */}
+      throwIfAborted(options.signal);assertCurrent();
+      const current=createCompactFunctionSet(this.app?.symbols,this.identity?.metadata?.architecture,MAX_DIFF_FUNCTIONS), before=baseline.functions;
+      let result=await runDiffInWorker(before,current,{mode:'fast',signal:options.signal,threshold:options.threshold??0.62,matchBudget:options.matchBudget||{maxCandidateEvaluations:1500000,maxEdges:300000,maxComponentNodes:4096,maxComponentEdges:65536}});
       assertCurrent();
-      const current=currentDiffFunctions(this.app), before=baseline.functions;
-      const result=diffFunctions(before,current,{mode:'fast',threshold:options.threshold??0.62,matchBudget:options.matchBudget||{maxCandidateEvaluations:1500000,maxEdges:300000,maxComponentNodes:4096,maxComponentEdges:65536}});
-      assertCurrent();
+      result=demoteLowInformationAbsenceClaims(result);
       const inputsComplete=before.complete===true&&current.complete===true;
-      result.completeness={complete:inputsComplete&&result.truncated!==true,reasons:[],baseline:{complete:before.complete===true,total:before.total,scanned:before.scanned,reason:before.truncationReason},current:{complete:current.complete===true,total:current.total,scanned:current.scanned,reason:current.truncationReason}};
+      result.completeness={complete:false,reasons:['low-information-symmetric-profile'],evidenceProfile:before.evidenceProfile,evidenceSymmetric:true,baseline:{complete:before.complete===true,total:before.total,scanned:before.count,reason:before.truncationReason},current:{complete:current.complete===true,total:current.total,scanned:current.count,reason:current.truncationReason}};
       if(!before.complete)result.completeness.reasons.push('baseline-function-set-incomplete');
       if(!current.complete)result.completeness.reasons.push('current-function-set-incomplete');
       if(result.truncated)result.completeness.reasons.push('matcher-truncated');
-      result.provenance={baselineHash:baseline.hash,currentHash:this.identity?.hash||null,architecture:baseline.architecture,currentArchitecture:this.identity?.metadata?.architecture||null,baselineName:baseline.info?.name||baseline.file?.name||null,currentName:this.identity?.metadata?.name||null,complete:result.completeness.complete};
+      result.provenance={baselineHash:baseline.hash,currentHash:this.identity?.hash||null,architecture:baseline.architecture,currentArchitecture:this.identity?.metadata?.architecture||null,baselineName:baseline.info?.name||baseline.file?.name||null,currentName:this.identity?.metadata?.name||null,complete:false,functionSetsComplete:inputsComplete,fingerprintProfile:before.evidenceProfile,evidenceSymmetric:true};
       assertCurrent();
       this.diffState=result;return result;
     })().finally(()=>{if(this.busy===task)this.busy=null;});

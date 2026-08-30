@@ -83,8 +83,10 @@ export function rankCandidates({ goal, strings, program, symbols, region, limit 
     c.score += points;
   };
 
+  const matcher = combinedMatcher(goal);
   const matchedStrings = [];
   for (const s of strings || []) {
+    if (matcher && !matcher.test(s.text)) continue;
     const m = matchText(goal, s.text);
     if (m) matchedStrings.push({ addr: s.addr, text: s.text, score: m.score, term: m.term, region: s.region });
   }
@@ -114,7 +116,6 @@ export function rankCandidates({ goal, strings, program, symbols, region, limit 
 
   /* Preserve latest-main behaviour: collect all name matches, sort by match
      quality, then cap. An address-order first-400 cap is biased. */
-  const matcher = combinedMatcher(goal);
   if (matcher && symbols?.symbolCount) {
     const lo = region ? region.vmAddr : null, hi = region ? region.vmAddr + region.size : null;
     const matches = [];

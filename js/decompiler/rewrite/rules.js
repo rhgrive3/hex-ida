@@ -238,8 +238,12 @@ const selectRules = [{
     // the result bitvector. This keeps WZR and #0 equivalent after width-aware
     // operand reconstruction while retaining strict structural matching for
     // non-constant expressions.
-    const sameArm = (a,b) => sameExpr(a,b) || (isConst(a) && isConst(b)
-      && BigInt.asUintN(Number(n.bits || q.left?.bits || 64), a.value) === BigInt.asUintN(Number(n.bits || q.left?.bits || 64), b.value));
+    const unwrapCast = (x) => x?.kind === 'cast' ? unwrapCast(x.arg) : x;
+    const sameArm = (a,b) => {
+      const ua = unwrapCast(a), ub = unwrapCast(b);
+      return sameExpr(a,b) || sameExpr(ua, ub) || (isConst(a) && isConst(b)
+        && BigInt.asUintN(Number(n.bits || q.left?.bits || 64), a.value) === BigInt.asUintN(Number(n.bits || q.left?.bits || 64), b.value));
+    };
     const ta = sameArm(n.whenTrue, q.left), tb = sameArm(n.whenTrue, q.right);
     const fa = sameArm(n.whenFalse, q.left), fb = sameArm(n.whenFalse, q.right);
     if (!(isStable(q.left) && isStable(q.right))) return null;
@@ -260,9 +264,14 @@ const selectRules = [{
     if (n?.kind !== 'select' || n.condition?.kind !== 'compare') return null;
     const q = n.condition;
     if (!isConst(q.right, 0) || !isStable(q.left)) return null;
-    const neg = (x) => x?.kind === 'unary' && x.op === 'neg' && sameExpr(x.arg, q.left);
-    if ((q.op === 'lt' || q.op === 'le') && neg(n.whenTrue) && sameExpr(n.whenFalse, q.left)) return {};
-    if ((q.op === 'ge' || q.op === 'gt') && sameExpr(n.whenTrue, q.left) && neg(n.whenFalse)) return {};
+    const unwrapCast = (x) => x?.kind === 'cast' ? unwrapCast(x.arg) : x;
+    const neg = (x) => {
+      const ux = unwrapCast(x);
+      return ux?.kind === 'unary' && ux.op === 'neg' && (sameExpr(ux.arg, q.left) || sameExpr(unwrapCast(ux.arg), unwrapCast(q.left)));
+    };
+    const sameL = (x) => sameExpr(x, q.left) || sameExpr(unwrapCast(x), unwrapCast(q.left));
+    if ((q.op === 'lt' || q.op === 'le') && neg(n.whenTrue) && sameL(n.whenFalse)) return {};
+    if ((q.op === 'ge' || q.op === 'gt') && sameL(n.whenTrue) && neg(n.whenFalse)) return {};
     return null;
   },
   rewrite: (n) => expr.intrinsic('abs', [n.condition.left], n.bits, true, n.source),

@@ -95,6 +95,52 @@ function fail(code) { throw new TypeError(code); }
 function assertAllowedKeys(input, allowed, code) {
   for (const key of Object.keys(input)) if (!allowed.has(key)) fail(`${code}:${key}`);
 }
+// Pre-built field whitelists. Same members as the per-call literal sets they
+// replace; hoisted so millions of normalize calls allocate no Set objects.
+const ALLOWED_FIELDS = Object.freeze({
+  bitvectorValue: new Set(['kind', 'widthBits', 'value']),
+  floatValue: new Set(['kind', 'widthBits', 'format', 'bitPattern', 'semanticValue']),
+  vectorValue: new Set(['kind', 'laneCount', 'elementType']),
+  predicateValue: new Set(['kind', 'widthBits', 'laneCount']),
+  registerValue: new Set(['kind', 'registerId', 'widthBits', 'view']),
+  flagValue: new Set(['kind', 'flagId', 'widthBits']),
+  temporaryValue: new Set(['kind', 'temporaryId', 'id', 'valueType']),
+  locationValue: new Set(['kind', 'addressExpr', 'widthBits']),
+  memoryAccess: new Set(['space', 'addressExpr', 'widthBits', 'alignment', 'endian', 'volatility', 'atomic', 'ordering']),
+  controlEffect: new Set(['kind', 'target', 'targets', 'condition', 'fallthrough', 'reason']),
+  fault: new Set(['kind', 'condition', 'detail']),
+  intrinsicMemoryScope: new Set(['scope', 'accesses', 'spaces', 'detail']),
+  intrinsicSummary: new Set(['inputs', 'outputs', 'registersRead', 'registersWritten', 'memoryRead', 'memoryWrite', 'controlEffects', 'determinism', 'symbolicDetail']),
+  unknownEffects: new Set(['categories', 'reason', 'detail', 'preservation']),
+  statePreservation: new Set(['proven', 'reason']),
+  bundle: new Set(['schemaVersion', 'contractVersion', 'instructionId', 'architectureId', 'mode', 'operations', 'controlEffect', 'possibleFaults', 'origin', 'completeness', 'unknownEffects', 'statePreservation', 'metadata']),
+});
+const OPERATION_FIELDS_BY_KIND = Object.freeze({
+  value: new Set(['kind', 'id', 'metadata', 'opcode', 'inputs', 'outputs']),
+  'register-read': new Set(['kind', 'id', 'metadata', 'register', 'value']),
+  'register-write': new Set(['kind', 'id', 'metadata', 'register', 'value']),
+  'flag-read': new Set(['kind', 'id', 'metadata', 'flag', 'value']),
+  'flag-write': new Set(['kind', 'id', 'metadata', 'flag', 'value']),
+  'memory-read': new Set(['kind', 'id', 'metadata', 'access', 'value']),
+  'memory-write': new Set(['kind', 'id', 'metadata', 'access', 'value']),
+  intrinsic: new Set(['kind', 'id', 'metadata', 'intrinsicId', 'effectSummary']),
+  barrier: new Set(['kind', 'id', 'metadata', 'scope']),
+  unknown: new Set(['kind', 'id', 'metadata', 'reason', 'categories']),
+});
+// Canonical registries. Objects produced by the normalizers below are already
+// fully validated, budget-compliant, and deep-frozen, so re-entering them is
+// a proven identity: the full path would rebuild an object with identical
+// fields and stableStringify the same bytes. The lift/audit path normalizes
+// every bundle at least twice (create then validate), so this memo removes a
+// complete duplicate normalization pass per instruction. Re-normalization is
+// only skipped when default budgets apply: a caller-supplied tighter budget
+// must still be able to reject an over-budget structure.
+const CANONICAL_VALUES = new WeakSet();
+const CANONICAL_OPERATIONS = new WeakSet();
+const CANONICAL_BUNDLES = new WeakSet();
+function usesDefaultBudget(options) {
+  return options?.budget == null;
+}
 function object(value, code) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) fail(code);
   return value;
@@ -176,7 +222,7 @@ function bigintValue(value, code) {
 }
 
 function normalizeBitvectorValue(input) {
-  assertAllowedKeys(input, new Set(['kind','widthBits','value']), 'machine-effects-unexpected-value-field');
+  assertAllowedKeys(input, ALLOWED_FIELDS.bitvectorValue, 'machine-effects-unexpected-value-field');
   const widthBits = positiveInteger(input.widthBits, 'machine-effects-invalid-bitvector-width');
   const out = { kind: 'bitvector', widthBits };
   if (input.value != null) {
@@ -188,7 +234,7 @@ function normalizeBitvectorValue(input) {
 }
 
 function normalizeFloatValue(input) {
-  assertAllowedKeys(input, new Set(['kind','widthBits','format','bitPattern','semanticValue']), 'machine-effects-unexpected-value-field');
+  assertAllowedKeys(input, ALLOWED_FIELDS.floatValue, 'machine-effects-unexpected-value-field');
   const widthBits = positiveInteger(input.widthBits, 'machine-effects-invalid-float-width');
   const format = nonEmpty(input.format, 'machine-effects-float-format-required');
   const out = { kind: 'float', widthBits, format };
@@ -203,6 +249,7 @@ function normalizeFloatValue(input) {
 
 export function createMachineValue(input, options = {}) {
   assertNotAborted(options);
+  if (CANONICAL_VALUES.has(input) && usesDefaultBudget(options)) return input;
   input = object(input, 'machine-effects-invalid-value');
   const kind = enumValue(input.kind, SETS.values, 'machine-effects-invalid-value-kind');
   let out;
@@ -211,7 +258,7 @@ export function createMachineValue(input, options = {}) {
     case 'bitvector': out = normalizeBitvectorValue(input); break;
     case 'float': out = normalizeFloatValue(input); break;
     case 'vector': {
-      assertAllowedKeys(input, new Set(['kind','laneCount','elementType']), 'machine-effects-unexpected-value-field');
+      assertAllowedKeys(input, ALLOWED_FIELDS.vectorValue, 'machine-effects-unexpected-value-field');
       const laneCount = positiveInteger(input.laneCount, 'machine-effects-invalid-vector-lane-count');
       const elementType = createMachineValue(input.elementType, options);
       if (!['bitvector', 'float', 'predicate'].includes(elementType.kind)) fail('machine-effects-invalid-vector-element-type');
@@ -219,13 +266,13 @@ export function createMachineValue(input, options = {}) {
       break;
     }
     case 'predicate': {
-      assertAllowedKeys(input, new Set(['kind','widthBits','laneCount']), 'machine-effects-unexpected-value-field');
+      assertAllowedKeys(input, ALLOWED_FIELDS.predicateValue, 'machine-effects-unexpected-value-field');
       out = { kind, widthBits: positiveInteger(input.widthBits, 'machine-effects-invalid-predicate-width') };
       if (input.laneCount != null) out.laneCount = positiveInteger(input.laneCount, 'machine-effects-invalid-predicate-lane-count');
       break;
     }
     case 'register':
-      assertAllowedKeys(input, new Set(['kind','registerId','widthBits','view']), 'machine-effects-unexpected-value-field');
+      assertAllowedKeys(input, ALLOWED_FIELDS.registerValue, 'machine-effects-unexpected-value-field');
       out = {
         kind,
         registerId: nonEmpty(input.registerId, 'machine-effects-register-id-required'),
@@ -234,7 +281,7 @@ export function createMachineValue(input, options = {}) {
       if (input.view != null) out.view = nonEmpty(input.view, 'machine-effects-invalid-register-view');
       break;
     case 'flag':
-      assertAllowedKeys(input, new Set(['kind','flagId','widthBits']), 'machine-effects-unexpected-value-field');
+      assertAllowedKeys(input, ALLOWED_FIELDS.flagValue, 'machine-effects-unexpected-value-field');
       out = {
         kind,
         flagId: nonEmpty(input.flagId, 'machine-effects-flag-id-required'),
@@ -242,7 +289,7 @@ export function createMachineValue(input, options = {}) {
       };
       break;
     case 'temporary':
-      assertAllowedKeys(input, new Set(['kind','temporaryId','id','valueType']), 'machine-effects-unexpected-value-field');
+      assertAllowedKeys(input, ALLOWED_FIELDS.temporaryValue, 'machine-effects-unexpected-value-field');
       out = {
         kind,
         temporaryId: nonEmpty(input.temporaryId ?? input.id, 'machine-effects-temporary-id-required'),
@@ -253,7 +300,7 @@ export function createMachineValue(input, options = {}) {
     case 'code':
     case 'tls':
     case 'io':
-      assertAllowedKeys(input, new Set(['kind','addressExpr','widthBits']), 'machine-effects-unexpected-value-field');
+      assertAllowedKeys(input, ALLOWED_FIELDS.locationValue, 'machine-effects-unexpected-value-field');
       out = {
         kind,
         addressExpr: serializable(input.addressExpr, 'machine-effects-invalid-address-expression'),
@@ -264,7 +311,9 @@ export function createMachineValue(input, options = {}) {
       fail('machine-effects-invalid-value-kind');
   }
 
-  return deepFreeze(out);
+  const frozen = deepFreeze(out);
+  CANONICAL_VALUES.add(frozen);
+  return frozen;
 }
 
 export function createBitVectorValue(widthBits, value) {
@@ -296,7 +345,7 @@ export function createLocationValue(kind, addressExpr, widthBits) {
 export function createMemoryAccess(input, options = {}) {
   assertNotAborted(options);
   input = object(input, 'machine-effects-invalid-memory-access');
-  assertAllowedKeys(input, new Set(['space','addressExpr','widthBits','alignment','endian','volatility','atomic','ordering']), 'machine-effects-unexpected-memory-access-field');
+  assertAllowedKeys(input, ALLOWED_FIELDS.memoryAccess, 'machine-effects-unexpected-memory-access-field');
   const space = enumValue(input.space, SETS.spaces, 'machine-effects-invalid-memory-space');
   if (space === 'register' || space === 'unique') fail('machine-effects-memory-space-not-addressable');
   const out = {
@@ -321,7 +370,7 @@ export function createMemoryAccess(input, options = {}) {
 function normalizeControlEffect(input, options = {}) {
   assertNotAborted(options);
   input = object(input, 'machine-effects-control-effect-required');
-  assertAllowedKeys(input, new Set(['kind','target','targets','condition','fallthrough','reason']), 'machine-effects-unexpected-control-effect-field');
+  assertAllowedKeys(input, ALLOWED_FIELDS.controlEffect, 'machine-effects-unexpected-control-effect-field');
   const kind = enumValue(input.kind, SETS.controls, 'machine-effects-invalid-control-effect');
   const out = { kind };
   if (input.target != null) out.target = serializable(input.target, 'machine-effects-invalid-control-target');
@@ -335,7 +384,7 @@ function normalizeControlEffect(input, options = {}) {
 
 function normalizeFault(input) {
   input = object(input, 'machine-effects-invalid-fault');
-  assertAllowedKeys(input, new Set(['kind','condition','detail']), 'machine-effects-unexpected-fault-field');
+  assertAllowedKeys(input, ALLOWED_FIELDS.fault, 'machine-effects-unexpected-fault-field');
   const out = { kind: nonEmpty(input.kind, 'machine-effects-fault-kind-required') };
   if (input.condition != null) out.condition = serializable(input.condition, 'machine-effects-invalid-fault-condition');
   if (input.detail != null) out.detail = serializable(input.detail, 'machine-effects-invalid-fault-detail');
@@ -345,7 +394,7 @@ function normalizeFault(input) {
 function normalizeIntrinsicMemoryScope(input, options = {}) {
   assertNotAborted(options);
   input = object(input, 'machine-effects-intrinsic-memory-scope-required');
-  assertAllowedKeys(input, new Set(['scope','accesses','spaces','detail']), 'machine-effects-unexpected-intrinsic-memory-field');
+  assertAllowedKeys(input, ALLOWED_FIELDS.intrinsicMemoryScope, 'machine-effects-unexpected-intrinsic-memory-field');
   const scope = enumValue(input.scope, SETS.intrinsicMemoryScopes, 'machine-effects-invalid-intrinsic-memory-scope');
   if (scope !== 'accesses' && input.accesses != null) fail('machine-effects-intrinsic-memory-accesses-not-allowed');
   if (scope !== 'all' && input.spaces != null) fail('machine-effects-intrinsic-memory-spaces-not-allowed');
@@ -368,7 +417,7 @@ function normalizeIntrinsicMemoryScope(input, options = {}) {
 export function createIntrinsicEffectSummary(input, options = {}) {
   assertNotAborted(options);
   input = object(input, 'machine-effects-intrinsic-summary-required');
-  assertAllowedKeys(input, new Set(['inputs','outputs','registersRead','registersWritten','memoryRead','memoryWrite','controlEffects','determinism','symbolicDetail']), 'machine-effects-unexpected-intrinsic-summary-field');
+  assertAllowedKeys(input, ALLOWED_FIELDS.intrinsicSummary, 'machine-effects-unexpected-intrinsic-summary-field');
   const out = {
     inputs: boundedArray(input.inputs, 'machine-effects-intrinsic-inputs-required', options, 'maxIntrinsicValues').map((value) => createMachineValue(value, options)),
     outputs: boundedArray(input.outputs, 'machine-effects-intrinsic-outputs-required', options, 'maxIntrinsicValues').map((value) => createMachineValue(value, options)),
@@ -391,21 +440,12 @@ function intrinsicSummaryIsComplete(summary) {
 
 export function createMachineOperation(input, options = {}) {
   assertNotAborted(options);
+  if (CANONICAL_OPERATIONS.has(input) && usesDefaultBudget(options)) return input;
   input = object(input, 'machine-effects-invalid-operation');
   const kind = enumValue(input.kind, SETS.operations, 'machine-effects-invalid-operation-kind');
-  const fieldsByKind = {
-    value: ['opcode','inputs','outputs'],
-    'register-read': ['register','value'],
-    'register-write': ['register','value'],
-    'flag-read': ['flag','value'],
-    'flag-write': ['flag','value'],
-    'memory-read': ['access','value'],
-    'memory-write': ['access','value'],
-    intrinsic: ['intrinsicId','effectSummary'],
-    barrier: ['scope'],
-    unknown: ['reason','categories'],
-  };
-  assertAllowedKeys(input, new Set(['kind','id','metadata', ...fieldsByKind[kind]]), 'machine-effects-unexpected-operation-field');
+  const allowedFields = OPERATION_FIELDS_BY_KIND[kind];
+  if (!allowedFields) fail('machine-effects-invalid-operation-kind');
+  assertAllowedKeys(input, allowedFields, 'machine-effects-unexpected-operation-field');
   const out = { kind };
   if (input.id != null) out.id = nonEmpty(input.id, 'machine-effects-invalid-operation-id');
 
@@ -439,12 +479,14 @@ export function createMachineOperation(input, options = {}) {
   }
 
   if (input.metadata != null) out.metadata = serializable(input.metadata, 'machine-effects-invalid-operation-metadata');
-  return deepFreeze(out);
+  const frozen = deepFreeze(out);
+  CANONICAL_OPERATIONS.add(frozen);
+  return frozen;
 }
 
 export function createUnknownEffects(input) {
   input = object(input, 'machine-effects-unknown-effects-required');
-  assertAllowedKeys(input, new Set(['categories','reason','detail','preservation']), 'machine-effects-unexpected-unknown-effects-field');
+  assertAllowedKeys(input, ALLOWED_FIELDS.unknownEffects, 'machine-effects-unexpected-unknown-effects-field');
   const categories = uniqueSortedStrings(input.categories, 'machine-effects-unknown-categories-required');
   if (categories.length === 0 || categories.some((category) => !SETS.unknownCategories.has(category))) {
     fail('machine-effects-invalid-unknown-categories');
@@ -461,7 +503,7 @@ export function createUnknownEffects(input) {
 
 function normalizeStatePreservation(input) {
   input = object(input, 'machine-effects-state-preservation-proof-required');
-  assertAllowedKeys(input, new Set(['proven','reason']), 'machine-effects-unexpected-state-preservation-field');
+  assertAllowedKeys(input, ALLOWED_FIELDS.statePreservation, 'machine-effects-unexpected-state-preservation-field');
   if (input.proven !== true) fail('machine-effects-state-preservation-proof-required');
   return deepFreeze({ proven: true, reason: nonEmpty(input.reason, 'machine-effects-state-preservation-reason-required') });
 }
@@ -497,8 +539,11 @@ function validateCompletenessSemantics(bundle) {
 
 function normalizeBundle(input, options = {}, requireVersion = false) {
   assertNotAborted(options);
+  // A canonical bundle already embeds the current schema/contract versions, so
+  // the requireVersion path is satisfied by construction.
+  if (CANONICAL_BUNDLES.has(input) && usesDefaultBudget(options)) return input;
   input = object(input, 'machine-effects-invalid-bundle');
-  assertAllowedKeys(input, new Set(['schemaVersion','contractVersion','instructionId','architectureId','mode','operations','controlEffect','possibleFaults','origin','completeness','unknownEffects','statePreservation','metadata']), 'machine-effects-unexpected-bundle-field');
+  assertAllowedKeys(input, ALLOWED_FIELDS.bundle, 'machine-effects-unexpected-bundle-field');
 
   if (requireVersion) {
     if (input.schemaVersion !== MACHINE_EFFECTS_SCHEMA_VERSION || input.contractVersion !== MACHINE_EFFECTS_CONTRACT_VERSION) {
@@ -531,7 +576,9 @@ function normalizeBundle(input, options = {}, requireVersion = false) {
   if (input.metadata != null) bundle.metadata = serializable(input.metadata, 'machine-effects-invalid-metadata');
 
   validateCompletenessSemantics(bundle);
-  return deepFreeze(bundle);
+  const frozen = deepFreeze(bundle);
+  CANONICAL_BUNDLES.add(frozen);
+  return frozen;
 }
 
 export function createMachineEffectBundle(input, options = {}) {

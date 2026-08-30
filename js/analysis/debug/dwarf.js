@@ -219,8 +219,8 @@ function readForm(cursor, form, unit, sections, implicitConst) {
     case DW_FORM.string: {
       const start = cursor.offset;
       let end = start;
-      while (end < cursor.bytes.length && cursor.bytes[end] !== 0) end += 1;
-      if (end === cursor.bytes.length) return { value: null, unsupported: true, fatal: true };
+      while (end < cursor.limit && cursor.bytes[end] !== 0) end += 1;
+      if (end === cursor.limit) throw new RangeError('dwarf-read-past-limit');
       const text = new TextDecoder('utf8').decode(cursor.bytes.subarray(start, end));
       cursor.offset = end + 1;
       return { value: text };
@@ -422,11 +422,22 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET) {
     cursor.limit = info.length;   // the unit-end advance itself is not unit-local
   }
 
+  if (complete && cursor.offset < info.length) {
+    diagnostics.push(`truncated compilation unit at 0x${cursor.offset.toString(16)}`);
+    complete = false;
+  }
+
   return { dies, units, diagnostics, complete };
 }
 
 function attributeValue(die, attribute) {
   return die.attributes.get(attribute)?.value ?? null;
+}
+
+// DW_FORM_flag carries an explicit value; presence alone is not truth.
+function attributeFlag(die, attribute) {
+  const value = attributeValue(die, attribute);
+  return value != null && value !== 0n && value !== 0 && value !== false;
 }
 
 function attributeName(die) {
@@ -498,7 +509,7 @@ function describeType(die, dies, depth = 0, seen = new Set()) {
         sizeBytes: byteSize == null ? null : Number(byteSize),
         // A DW_AT_declaration DIE is a forward declaration: it names the type
         // but says nothing about its layout, so it is not a complete fact.
-        complete: die.complete && attributeValue(die, DW_AT.declaration) == null && byteSize != null,
+        complete: die.complete && !attributeFlag(die, DW_AT.declaration) && byteSize != null,
         isAggregate: true,
         isUnion: die.tag === DW_TAG.union_type,
       };
@@ -697,7 +708,7 @@ export class DwarfDebugInfoProvider extends DebugInfoProvider {
         name: attributeName(die),
         address: toAddress(lowPc),
         sizeBytes,
-        descriptor: { isFunction, external: attributeValue(die, DW_AT.external) != null, complete: die.complete },
+        descriptor: { isFunction, external: attributeFlag(die, DW_AT.external), complete: die.complete },
         providerId: result.providerId,
         providerVersion: result.providerVersion,
         buildIdentity: result.identity.observed,

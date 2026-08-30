@@ -32,6 +32,38 @@ function optionalInteger(value, code) {
   return value == null ? null : integer(value, code);
 }
 
+function sameStructuredRegisterIdentity(canonical, presented) {
+  if (!canonical || !presented || canonical.bits !== presented.bits) return false;
+  if (canonical.zero) return presented.zero === true && presented.num === 31;
+  return presented.zero !== true
+    && canonical.kind === presented.kind
+    && canonical.physicalId === presented.physicalId
+    && canonical.num === presented.num;
+}
+
+function canonicalStructuredRegister(input) {
+  const bits = Number(input?.bits);
+  const num = input?.num == null ? null : Number(input.num);
+  if (input?.cls === 'gp') {
+    if (!Number.isInteger(num) || num < 0 || num > 30 || ![32,64].includes(bits)) return null;
+    return { kind:'gp', physicalId:`x${num}`, view:`${bits === 32 ? 'w' : 'x'}${num}`, bits, num, zero:false };
+  }
+  if (input?.cls === 'sp') {
+    if ((num != null && num !== 31) || ![32,64].includes(bits)) return null;
+    return { kind:'sp', physicalId:'sp', view:bits === 32 ? 'wsp' : 'sp', bits, num:31, zero:false };
+  }
+  if (input?.cls === 'zr') {
+    if ((num != null && num !== 31) || ![32,64].includes(bits)) return null;
+    return { kind:'zero', physicalId:null, view:bits === 32 ? 'wzr' : 'xzr', bits, num:31, zero:true };
+  }
+  if (input?.cls === 'fp' || input?.cls === 'vec') {
+    if (!Number.isInteger(num) || num < 0 || num > 31 || ![8,16,32,64,128].includes(bits)) return null;
+    const prefix = ({8:'b',16:'h',32:'s',64:'d',128:'q'})[bits];
+    return { kind:'vector', physicalId:`v${num}`, view:`${prefix}${num}`, bits, num, zero:false };
+  }
+  return null;
+}
+
 export function arm64RegisterOperand(input) {
   if (typeof input === 'string') {
     const text = input.trim().toLowerCase();
@@ -52,25 +84,19 @@ export function arm64RegisterOperand(input) {
   }
 
   if (!input || typeof input !== 'object') return null;
+  if (input.k === 'reg') {
+    const canonical = canonicalStructuredRegister(input);
+    if (!canonical) return null;
+    if (input.text != null) {
+      const presented = arm64RegisterOperand(String(input.text));
+      if (!sameStructuredRegisterIdentity(canonical, presented)) return null;
+      canonical.view = String(input.text).trim().toLowerCase();
+    }
+    return canonical;
+  }
   if (typeof input.physicalId === 'string' && typeof input.kind === 'string') {
     const parsed = arm64RegisterOperand(input.view || input.physicalId);
     if (parsed) return { ...parsed, bits:Number(input.bits || parsed.bits), kind:input.kind, zero:!!input.zero };
-  }
-  if (input.k === 'reg') {
-    if (input.cls === 'zr') return arm64RegisterOperand(input.text || (Number(input.bits) === 32 ? 'wzr' : 'xzr'));
-    if (input.cls === 'sp') return arm64RegisterOperand(input.text || (Number(input.bits) === 32 ? 'wsp' : 'sp'));
-    if (input.cls === 'gp') {
-      const num = Number(input.num);
-      if (!Number.isInteger(num) || num < 0 || num > 30) return null;
-      return arm64RegisterOperand(input.text || `${Number(input.bits) === 32 ? 'w' : 'x'}${num}`);
-    }
-    if (input.cls === 'fp' || input.cls === 'vec') {
-      const num = Number(input.num);
-      if (!Number.isInteger(num) || num < 0 || num > 31) return null;
-      if (input.text) return arm64RegisterOperand(input.text);
-      const prefix = ({8:'b',16:'h',32:'s',64:'d',128:'q'})[Number(input.bits)] || 'q';
-      return arm64RegisterOperand(`${prefix}${num}`);
-    }
   }
 
   if (typeof input.registerId === 'string') {

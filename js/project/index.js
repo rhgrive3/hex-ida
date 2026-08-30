@@ -5,7 +5,7 @@ import {
   PROJECT_MIGRATIONS,
 } from './migrations.js';
 
-export const HEX_PROJECT_VERSION = 1;
+export const HEX_PROJECT_VERSION = 2;
 export const HEX_PROJECT_MIME = 'application/vnd.hex.project+json';
 export const MAX_PROJECT_BYTES = 16 * 1024 * 1024;
 const MAX_COLLECTION_ITEMS = 1_000_000;
@@ -61,7 +61,8 @@ export function createHexProject(input = {}) {
     binary: { hash: input.binaryHash || input.binary?.hash || null, metadata: input.binaryMetadata || input.binary?.metadata || null, embedded: false },
     user: {
       names: list(input.userNames ?? input.user?.names, 'user.names'), comments: list(input.comments ?? input.user?.comments, 'user.comments'),
-      types: list(input.types ?? input.user?.types, 'user.types'), structs: list(input.structs ?? input.user?.structs, 'user.structs'),
+      types: list(input.types ?? input.user?.types, 'user.types'), vars: list(input.vars ?? input.user?.vars ?? input.varNames ?? input.user?.varNames, 'user.vars'), varsPresent: true,
+      structs: list(input.structs ?? input.user?.structs, 'user.structs'),
       bookmarks: list(input.bookmarks ?? input.user?.bookmarks, 'user.bookmarks'), patches: list(input.patches ?? input.user?.patches, 'user.patches'),
     },
     findings: {
@@ -79,7 +80,13 @@ export function createHexProject(input = {}) {
 
 export function normalizeNavigation(value = {}) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new ProjectFormatError('navigation must be an object');
-  return { currentFunction: value.currentFunction ?? null, history: list(value.history, 'navigation.history').slice(-500), bookmarks: list(value.bookmarks, 'navigation.bookmarks'), lastQuery: value.lastQuery ?? null };
+  return {
+    currentFunction: value.currentFunction ?? null,
+    history: list(value.history, 'navigation.history').slice(-500),
+    cursorIndex: value.cursorIndex != null ? Number(value.cursorIndex) : null,
+    bookmarks: list(value.bookmarks, 'navigation.bookmarks').slice(-500),
+    lastQuery: value.lastQuery ?? null,
+  };
 }
 
 /*
@@ -203,6 +210,8 @@ export function normalizeHexProjectV1(project) {
       names: list(project.user?.names, 'user.names'),
       comments: list(project.user?.comments, 'user.comments'),
       types: list(project.user?.types, 'user.types'),
+      vars: list(project.user?.vars ?? project.user?.varNames, 'user.vars'),
+      varsPresent: project.user?.varsPresent !== false && (Object.prototype.hasOwnProperty.call(project.user || {}, 'vars') || Object.prototype.hasOwnProperty.call(project.user || {}, 'varNames')),
       structs: list(project.user?.structs, 'user.structs'),
       bookmarks: list(project.user?.bookmarks, 'user.bookmarks'),
       patches: list(project.user?.patches, 'user.patches'),

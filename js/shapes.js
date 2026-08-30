@@ -54,11 +54,16 @@ function newEntry(offset, size, identity, key) {
  */
 export function foldShapes(scan) {
   const out = new Map();
+  const unsupported = scan?.unsupported === true;
+  const isCapped = !!scan?.capped;
+  const isExplicitlyIncomplete = scan?.complete === false || scan?.completeness?.complete === false;
   Object.defineProperties(out, {
-    complete: { value: !scan?.capped, enumerable: false, configurable: true },
+    complete: { value: !scan?.capped && !unsupported && !isExplicitlyIncomplete, enumerable: false, configurable: true },
     capped: { value: !!scan?.capped, enumerable: false, configurable: true },
+    unsupported: { value: unsupported, enumerable: false, configurable: true },
+    incompleteReason: { value: scan?.incompleteReason || (unsupported ? 'unsupported-architecture' : (isCapped ? 'capped' : null)), enumerable: false, configurable: true },
   });
-  if (!scan || !scan.count) return out;
+  if (!scan || !scan.count || unsupported) return out;
   const { disp, size, flags, amtKind, amtDisp, addr } = scan;
   const span = scan.span || null;
   const bases = identityArray(scan, false);

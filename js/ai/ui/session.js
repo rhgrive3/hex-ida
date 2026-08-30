@@ -202,9 +202,44 @@ export class AiSession {
       });
       if (!next) this.conversations.push(this.current);
     }
+    this._releaseConversation(conversation, 'user-delete');
     this.scheduleSave();
     this.emit({ type: 'conversation', conversation: this.current });
     return true;
+  }
+
+  _releaseConversation(conversation, reason) {
+    if (!conversation?.id) return;
+    const id = String(conversation.id);
+    const deletePersisted = reason === 'user-delete';
+    if (typeof this.engine?.deleteSession === 'function') {
+      Promise.resolve(this.engine.deleteSession(id, { reason })).catch(() => {});
+      return;
+    }
+
+    // Embedding/tests may inject AIRuntime (or just its sessionStore) directly
+    // instead of the full UI bridge. Preserve the same retention-vs-explicit
+    // deletion contract in that shape as well.
+    const runtime = this.engine?.runtime;
+    if (runtime && typeof runtime !== 'function') {
+      if (typeof runtime.releaseSession === 'function') {
+        Promise.resolve(runtime.releaseSession(id, { deletePersisted })).catch(() => {});
+        return;
+      }
+      const store = runtime.sessionStore;
+      if (store) {
+        if (deletePersisted && typeof store.delete === 'function') {
+          Promise.resolve(store.delete(id)).catch(() => {});
+        } else {
+          store.sessions?.delete?.(id);
+        }
+        return;
+      }
+    }
+
+    if (typeof this.engine?.forgetAIConversation === 'function') {
+      try { this.engine.forgetAIConversation(id); } catch { /* best effort */ }
+    }
   }
 
   /**
@@ -352,7 +387,10 @@ export class AiSession {
     const oldest = this.conversations
       .filter((item) => item !== this.current)
       .sort((a, b) => (a.updatedAt || 0) - (b.updatedAt || 0))[0];
-    if (oldest) this.conversations.splice(this.conversations.indexOf(oldest), 1);
+    if (oldest) {
+      this.conversations.splice(this.conversations.indexOf(oldest), 1);
+      this._releaseConversation(oldest, 'retention-eviction');
+    }
   }
 
   scheduleSave() {

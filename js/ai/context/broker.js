@@ -35,7 +35,9 @@ export class ContextBroker {
       },
       turn: snapshot ? compactSnapshot(snapshot) : undefined,
       investigation: structuredMemory(session),
-      verifiedEvidence: evidenceStore ? evidenceStore.all().filter((item) => item.status === 'verified').slice(-32).map(compactEvidence) : [],
+      verifiedEvidence: evidenceStore ? (typeof evidenceStore.recentByStatus === 'function'
+        ? evidenceStore.recentByStatus('verified', 32)
+        : evidenceStore.all().filter((item) => item.status === 'verified').slice(-32)).map(compactEvidence) : [],
       pinnedEvidence: evidenceStore ? evidenceStore.pinned(session?.pinnedEvidence).slice(-32).map(compactEvidence) : [],
       activeHypotheses: hypotheses.filter((item) => item.status === 'open' || item.status === 'supported').slice(-20).map(compactHypothesis),
       recentObservations: compactObservations(observations, this.maxObservationBytes),
@@ -134,12 +136,80 @@ function fitObservation(value, maxBytes) {
   return byteLength(candidate) <= maxBytes ? candidate : { kind: value.kind, trust: value.trust, tool: value.tool, truncated: true };
 }
 function compactMessages(values) { return values.slice(-8).map((message) => ({ role: message.role === 'assistant' ? 'assistant' : 'user', content: String(message.content || '').slice(0, 3000) })); }
+function trimQueue(context, queue, maxBytes) {
+  if (!queue.length || byteLength(context) <= maxBytes) return;
+  const original = queue.slice();
+  let low = 0, high = original.length;
+  while (low < high) {
+    const mid = Math.floor((low + high) / 2);
+    queue.length = 0;
+    queue.push(...original.slice(mid));
+    if (byteLength(context) <= maxBytes) {
+      high = mid;
+    } else {
+      low = mid + 1;
+    }
+  }
+  queue.length = 0;
+  queue.push(...original.slice(low));
+}
+
+function trimMessagesToLatestUser(context, maxBytes) {
+  const queue = context.recentMessages;
+  if (!Array.isArray(queue) || !queue.length || byteLength(context) <= maxBytes) return;
+  let anchor = -1;
+  for (let index = queue.length - 1; index >= 0; index--) {
+    if (queue[index]?.role === 'user') { anchor = index; break; }
+  }
+  if (anchor <= 0) return;
+  queue.splice(0, anchor);
+}
+
 function trimToBudget(context, maxBytes) {
-  const queues = [context.recentMessages, context.recentObservations, context.activeHypotheses, context.pinnedEvidence, context.verifiedEvidence].filter(Array.isArray);
-  for (const queue of queues) while (byteLength(context) > maxBytes && queue.length) queue.shift();
-  if (byteLength(context) > maxBytes && context.current?.function && !context.current.function.containmentOnly) { delete context.current.function.instructions; if (context.current.function.assembly) context.current.function.assembly = context.current.function.assembly.slice(0, 4000); if (context.current.function.pseudocode) context.current.function.pseudocode = context.current.function.pseudocode.slice(0, 4000); context.current.function.truncated = true; }
-  if (byteLength(context) > maxBytes && context.investigation) { context.investigation.importantPriorActions = []; context.investigation.rejectedHypotheses = []; context.investigation.unresolvedQuestions = (context.investigation.unresolvedQuestions || []).slice(-8); }
-  if (byteLength(context) > maxBytes && context.conversationSummary) context.conversationSummary = context.conversationSummary.slice(0, 1000);
+  if (byteLength(context) <= maxBytes) return;
+
+  // Drop older transcript history first, but keep the latest user turn as an
+  // anchor while lower-priority observations/hypotheses/evidence are trimmed.
+  // If an extreme budget still cannot fit, the anchor itself may then be
+  // removed before we degrade current-function detail. This satisfies both
+  // normal conversational continuity and the original #2600 fallback order.
+  trimMessagesToLatestUser(context, maxBytes);
+  if (byteLength(context) <= maxBytes) return;
+
+  const queues = [
+    context.recentObservations,
+    context.activeHypotheses,
+    context.pinnedEvidence,
+    context.verifiedEvidence,
+  ].filter(Array.isArray);
+  for (const queue of queues) {
+    trimQueue(context, queue, maxBytes);
+    if (byteLength(context) <= maxBytes) return;
+  }
+
+  // Under a very small budget, retaining the current function is more useful
+  // than an oversized transcript anchor. Use the same O(log N) prefix trim.
+  if (Array.isArray(context.recentMessages)) {
+    trimQueue(context, context.recentMessages, maxBytes);
+    if (byteLength(context) <= maxBytes) return;
+  }
+
+  if (context.current?.function && !context.current.function.containmentOnly) {
+    delete context.current.function.instructions;
+    if (context.current.function.assembly) context.current.function.assembly = context.current.function.assembly.slice(0, 2000);
+    if (context.current.function.pseudocode) context.current.function.pseudocode = context.current.function.pseudocode.slice(0, 2000);
+    context.current.function.truncated = true;
+    if (byteLength(context) <= maxBytes) return;
+  }
+  if (context.investigation) {
+    context.investigation.importantPriorActions = [];
+    context.investigation.rejectedHypotheses = [];
+    context.investigation.unresolvedQuestions = (context.investigation.unresolvedQuestions || []).slice(-4);
+    if (byteLength(context) <= maxBytes) return;
+  }
+  if (context.conversationSummary) {
+    context.conversationSummary = context.conversationSummary.slice(0, 500);
+  }
 }
 function byteLength(value) { return new TextEncoder().encode(JSON.stringify(jsonSafe(value))).byteLength; }
 function removeUndefined(value) { return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined)); }

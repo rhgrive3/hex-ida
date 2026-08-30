@@ -302,8 +302,17 @@ export function looksLikeDataFile(text) { return /\.(csv|tsv|json|plist|dat|txt)
 
 export async function recoverSchemas(opts) {
   const o = opts || {};
-  const { strings, program, read } = o;
-  if (!strings || !program || !read) return [];
+  const { strings, program, read, architecture } = o;
+  const arch = String(architecture || program?.architecture || '').toLowerCase();
+  const unsupported = !!arch && arch !== 'arm64' && arch !== 'aarch64';
+  const isComplete = !unsupported && program?.complete !== false && program?.unsupported !== true;
+  const out = [];
+  Object.defineProperties(out, {
+    complete: { value: isComplete, enumerable: false, configurable: true },
+    unsupported: { value: unsupported || !!program?.unsupported, enumerable: false, configurable: true },
+    incompleteReason: { value: unsupported ? 'unsupported-architecture' : (program?.incompleteReason || null), enumerable: false, configurable: true },
+  });
+  if (unsupported || !strings || !program || !read || program.unsupported) return out;
   const limit = o.limit || 300;
   const cancelled = o.isCancelled || (() => false);
   const progress = o.onProgress || (() => {});
@@ -319,13 +328,11 @@ export async function recoverSchemas(opts) {
       if (e.files.length < 40 && !e.files.includes(s.text)) e.files.push(s.text);
     }
   }
-  if (!byFunction.size) return [];
+  if (!byFunction.size) return out;
   const targets = Array.from(byFunction.values()).map((e) => {
     const r = program.functionRange(e.addr);
     return Object.assign({}, e, { range: r, size: r ? Number(r.end - r.start) : 0 });
   }).filter((e) => e.range && e.size > 16 && e.size <= 64 * 1024).sort((a, b) => b.files.length - a.files.length).slice(0, limit);
-
-  const out = [];
   for (let i = 0; i < targets.length; i++) {
     if (cancelled()) break;
     progress({ phase: 'schema', done: i, all: targets.length });

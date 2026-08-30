@@ -58,10 +58,39 @@ export function routeHistoryUrl(path, locationRef = globalThis.location) {
   return '#' + route;
 }
 
+export function createChildTaskScope(parentSignal) {
+  let currentController = null;
+  let removeParentAbort = null;
+  const detachParent = () => { removeParentAbort?.(); removeParentAbort = null; };
+  return {
+    get signal() { return currentController?.signal ?? null; },
+    spawn(reason = 'new-task-started') {
+      currentController?.abort(reason);
+      detachParent();
+      const controller = currentController = new AbortController();
+      if (parentSignal) {
+        if (parentSignal.aborted) controller.abort(parentSignal.reason);
+        else {
+          const onParentAbort = () => controller.abort(parentSignal.reason);
+          parentSignal.addEventListener('abort', onParentAbort, { once:true });
+          removeParentAbort = () => parentSignal.removeEventListener('abort', onParentAbort);
+        }
+      }
+      return controller.signal;
+    },
+    abort(reason = 'task-scope-aborted') {
+      currentController?.abort(reason);
+      currentController = null;
+      detachParent();
+    },
+  };
+}
+
 export class ProductRouter {
   constructor(routes, { defaultPath = '/investigate', onRoute, onState, onError } = {}) {
     this.routes = routes; this.defaultPath = normalize(defaultPath); this.onRoute = onRoute || (() => null); this.onState = onState || (() => {}); this.onError = onError || (() => {});
     this.current = null; this.view = null; this.serial = 0; this.started = false; this.renderGeneration = 0; this.depth = 0;
+    this.routeController = null;
     this.onPop = () => { const state = history.state?.hexUi ? history.state : null; if (state) this.depth = Math.max(0, Number(state.depth) || 0); this._render(this.locationPath(), { historyNavigation: true }); };
     this.onHash = () => { const path = this.locationPath(); if (this.current?.fullPath === path) return; this._render(path, { historyNavigation: true, hashNavigation: true }); };
   }
@@ -84,6 +113,8 @@ export class ProductRouter {
     if (!this.started) return;
     this.capture();
     window.removeEventListener('popstate', this.onPop); window.removeEventListener('hashchange', this.onHash);
+    this.routeController?.abort('router-stopped');
+    this.routeController = null;
     this.disposeView(); this.started = false; this.renderGeneration++;
   }
 
@@ -143,17 +174,34 @@ export class ProductRouter {
       ? meta.restoredState
       : (history.state && history.state.hexUi ? history.state.viewState : null);
     const previousView = this.view;
+    const previousController = this.routeController;
+    const controller = new AbortController();
+    const routeGeneration = ++this.renderGeneration;
     let nextView;
-    try { nextView = this.onRoute(nextCurrent, { ...meta, restoredState: state }) || null; }
-    catch (error) { this._handleError(error, { phase: 'render', current: nextCurrent }); return false; }
+    try {
+      nextView = this.onRoute(nextCurrent, {
+        ...meta,
+        restoredState: state,
+        signal: controller.signal,
+        routeGeneration,
+      }) || null;
+    }
+    catch (error) {
+      controller.abort('route-render-failed');
+      this._handleError(error, { phase: 'render', current: nextCurrent });
+      return false;
+    }
 
+    if (previousController && previousController !== controller) {
+      previousController.abort('route-changed');
+    }
+    this.routeController = controller;
     this.current = nextCurrent;
     this.view = nextView;
     if (previousView && previousView !== nextView) this.disposeView(previousView);
-    const generation = ++this.renderGeneration;
     if (state && nextView && typeof nextView.restoreState === 'function') {
       requestAnimationFrame(() => {
-        if (generation !== this.renderGeneration || this.view !== nextView) return;
+        if (routeGeneration !== this.renderGeneration || this.view !== nextView) return;
         try { nextView.restoreState(state); } catch (error) { this._handleError(error, { phase: 'restore', current: nextCurrent }); }
       });
     }

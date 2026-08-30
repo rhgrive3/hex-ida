@@ -11,7 +11,8 @@ export const RUNTIME_FACETS = Object.freeze(['debugger', 'instrumentation', 'tra
 export const RUNTIME_SESSION_STATES = Object.freeze(['opening', 'ready', 'running', 'paused', 'degraded', 'disconnected', 'closing', 'closed', 'failed']);
 
 function required(value, code, message) {
-  const text = String(value ?? '').trim();
+  if (typeof value !== 'string') throw new DebugAdapterError(code, message || code);
+  const text = value.trim();
   if (!text) throw new DebugAdapterError(code, message || code);
   return text;
 }
@@ -19,7 +20,10 @@ function required(value, code, message) {
 function normalizeFacetNames(value) {
   if (value == null) return Object.freeze([]);
   const source = Array.isArray(value) ? value : Object.keys(value).filter((key) => value[key]);
-  const out = [...new Set(source.map(String))];
+  for (const facet of source) {
+    if (typeof facet !== 'string') throw new DebugAdapterError('runtime-invalid-facet', 'runtime facet names must be strings');
+  }
+  const out = [...new Set(source)];
   for (const facet of out) if (!RUNTIME_FACETS.includes(facet)) throw new DebugAdapterError('runtime-invalid-facet', `unsupported runtime facet: ${facet}`);
   return Object.freeze(out.sort());
 }
@@ -81,7 +85,8 @@ export class RuntimeProviderSession {
   }
 
   setState(next) {
-    const state = String(next);
+    if (typeof next !== 'string') throw new DebugAdapterError('runtime-invalid-session-state', 'runtime session state must be a string');
+    const state = next;
     if (!RUNTIME_SESSION_STATES.includes(state)) throw new DebugAdapterError('runtime-invalid-session-state', `invalid runtime session state: ${state}`);
     if (this.closed && state !== 'closed') throw new DebugAdapterError('runtime-session-closed', 'cannot transition a closed runtime provider session');
     this.state = state;
@@ -135,8 +140,8 @@ export class RuntimeProviderRegistry {
     return provider;
   }
 
-  unregister(id) { return this.providers.delete(String(id)); }
-  get(id) { return this.providers.get(String(id)) || null; }
+  unregister(id) { return this.providers.delete(id); }
+  get(id) { return this.providers.get(id) || null; }
   list() { return Object.freeze([...this.providers.values()].map((provider) => createRuntimeProviderDescriptor(provider.descriptor()))); }
 
   async openSession(providerId, request = {}, options = {}) {
@@ -244,9 +249,6 @@ export class DebugAdapterRuntimeProvider {
         finally { if (this.activeSession === session) this.activeSession = null; }
       },
     });
-    // The provider session owns the event/request generation. Reusable remote
-    // adapters keep their own protocol counter across disconnects, so align it
-    // to the newly-created session before connect or facet publication.
     session.epoch = nextSessionEpoch;
     if (typeof this.adapter.setEpoch === 'function') this.adapter.setEpoch(session.epoch);
     this.sessionEpoch = session.epoch;

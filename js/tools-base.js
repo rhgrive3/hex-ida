@@ -35,6 +35,7 @@ import { assemble, suggestPatches, parseHexBytes, hexOf, validatePatchRange } fr
 import { runScript, SAMPLES, makeEmulator } from './script.js';
 import { EXAMPLE_PLUGIN, MAX_PLUGIN_SOURCE_BYTES } from './plugins.js';
 import { parseMetadataAuto, looksLikeUnity, bindMethodAddresses, MAX_IL2CPP_METADATA_BYTES } from './il2cpp.js';
+import { parseMetadataFileInWorker } from './il2cpp-runtime.js';
 import { brief } from './arm64.js';
 
 /* ── 小道具 ─────────────────────────────────────────────── */
@@ -99,16 +100,19 @@ function needFunction(app) {
 }
 
 /** 関数を解析して model を得る。 */
-async function modelOf(app, addr) {
+export async function modelOf(app, addr) {
   const region = app.store.get('currentRegion');
   if (!region) return null;
-  const code = app.codeRegion();
-  if (code && region !== code && addr >= code.vmAddr && addr < code.vmAddr + code.size) {
-    app.selectRegion(code, { silent: true });
+  const owner = app.executableRegionFor?.(addr) ?? app.regionForAddress?.(addr) ?? null;
+  if (owner?.exec && owner !== region) app.selectRegion(owner, { silent:true });
+  const fn = app.symbols?.functionAt?.(addr);
+  if (!fn && owner?.exec && app.backend?.guessFunctions) {
+    const res = await app.backend.guessFunctions(owner.id);
+    if (res?.starts?.length && app.symbols?.addFunctions) {
+      app.symbols.addFunctions(res.starts);
+    }
   }
-  await app.ensureFunctions(app.codeRegion());
-  const res = await app.analyzeFunctionAt(addr);
-  return res;
+  return app.analyzeFunctionAt(addr);
 }
 
 function rowMapper(app) {
@@ -831,7 +835,8 @@ async function showVtable(app, cls) {
   const status = el('div', 'hint', '読み込んでいます…');
   sheet.body.append(status);
   const read = (a, len) => app.backend.readAt(a, len).then((r) => (r && r.found ? r.bytes : null)).catch(() => null);
-  const vt = await readVtable(read, cls.vtable, app.symbols);
+  const pointerContext = app.pointerResolutionContextFor?.(cls.vtable) ?? {};
+  const vt = await readVtable(read, cls.vtable, app.symbols, 64, pointerContext);
   if (!vt || !vt.slots.length) { status.textContent = '仮想関数の表を読めませんでした。'; return; }
   status.remove();
 
@@ -842,6 +847,15 @@ async function showVtable(app, cls) {
 
   const l = list();
   for (const s of vt.slots) {
+    if (s.addr == null) {
+      const raw = s.raw == null ? '' : `raw 0x${BigInt(s.raw).toString(16).toUpperCase()}`;
+      const reason = s.binding ? `binding ${String(s.binding)}` : String(s.reason || 'pointer-unresolved');
+      l.append(tapRow(`#${s.index}  解決できないポインタ`, {
+        sub:[raw, reason].filter(Boolean).join(' · '),
+        disabled:true,
+      }));
+      continue;
+    }
     l.append(tapRow('#' + s.index + '  ' + (s.readable || s.name || 'sub_' + s.addr.toString(16).toUpperCase()), {
       sub: addrHex(s.addr) + (s.name && s.readable !== s.name ? '\n' + s.name : ''),
       onTap: () => { sheet.close(); app.openFunctionReport(s.addr); },
@@ -855,14 +869,15 @@ async function showVtable(app, cls) {
    ══════════════════════════════════════════════════════════ */
 
 export async function showLinkage(app) {
-  const sheet = new Sheet('外とのつながり');
+  const controller = new AbortController();
+  const sheet = new Sheet('外とのつながり', { onClose:() => controller.abort('linkage-sheet-closed') });
   sheet.body.append(el('div', 'hint',
     'アプリ単体では画面も出せません。iOS が用意したライブラリを借りて動いています。\n' +
     '何を借りているかを見るだけで、アプリが何をするものかが半分わかります。'));
 
-  await app.ensureProgram().catch(() => null);
-  const imports = importList(app.symbols, app.program);
-  const groups = importsByFramework(imports);
+  let imports = importList(app.symbols, null);
+  let groups = importsByFramework(imports);
+  let usageComplete = false;
   const slice = app.currentSlice();
   const dylibs = slice && slice.info ? slice.info.dylibs || [] : [];
 
@@ -871,22 +886,23 @@ export async function showLinkage(app) {
   const views = {
     imports: () => {
       body.replaceChildren();
-      body.append(el('div', 'hint', '借りている関数 ' + imports.length + ' 個。呼ばれている回数の多い順です。'));
+      body.append(el('div', 'hint', usageComplete
+        ? `借りている関数 ${imports.length} 個。呼ばれている回数の多い順です。`
+        : `借りている関数 ${imports.length} 個。呼び出し回数は解析中です。`));
       for (const g of groups) {
-        const d = disclosure(g.name + '（' + g.items.length + '）', {
+        body.append(disclosure(g.name + '（' + g.items.length + '）', {
           build: (into) => {
             const l = list();
             for (const i of g.items.slice(0, 200)) {
               l.append(tapRow(i.readable || i.name, {
-                sub: addrHex(i.addr) + (i.calls ? '  ·  ' + i.calls + ' 回呼ばれています' : '') +
+                sub: addrHex(i.addr) + (usageComplete && i.calls ? '  ·  ' + i.calls + ' 回呼ばれています' : '') +
                   (i.readable !== i.name ? '\n' + i.name : ''),
                 onTap: () => { sheet.close(); app.goToAddress(i.addr, { announce: true }); },
               }));
             }
             into.append(l);
           },
-        });
-        body.append(d);
+        }));
       }
       body.append(noteBox('どの framework のものかは、名前からの推測です（バイナリには対応表が残っていません）。'));
     },
@@ -913,9 +929,9 @@ export async function showLinkage(app) {
       const l = list();
       for (const d of dylibs) {
         const short = d.split('/').pop();
-        l.append(tapRow(short, { sub: d, onTap: () => copyText(d, 'パス') }));
+        l.append(tapRow(short, { sub:d, onTap:() => copyText(d, 'パス') }));
       }
-      if (!dylibs.length) l.append(tapRow('ありません', { disabled: true }));
+      if (!dylibs.length) l.append(tapRow('ありません', { disabled:true }));
       body.append(l);
     },
   };
@@ -931,6 +947,16 @@ export async function showLinkage(app) {
   }
   sheet.body.append(tabs, body);
   views.imports();
+
+  // Import/dylib facts are available immediately. ProgramIndex only enriches
+  // call counts; closing the sheet detaches this consumer from late publish.
+  Promise.resolve().then(() => app.ensureProgram?.()).then((program) => {
+    if (controller.signal.aborted || !sheet.root.isConnected || !program) return;
+    imports = importList(app.symbols, program);
+    groups = importsByFramework(imports);
+    usageComplete = true;
+    if (current === 'imports') views.imports();
+  }).catch(() => { /* base linkage facts remain valid */ });
 }
 
 /* ══════════════════════════════════════════════════════════
@@ -1179,9 +1205,14 @@ async function instructionAt(app, addr) {
 }
 
 export async function showPatchEditor(app, addr, insnArg) {
-  const insn = insnArg || await instructionAt(app, addr);
   const sheet = new Sheet('命令を書き換える');
-  const region = app.codeRegion();
+  const arch = String(app.store.get('architecture') || '').toLowerCase();
+  if (arch && arch !== 'arm64' && arch !== 'arm64e') {
+    sheet.body.append(noteBox(`パッチ機能（ARM64アセンブラ）はこのアーキテクチャ（${arch}）では未対応です。`));
+    return;
+  }
+  const insn = insnArg || await instructionAt(app, addr);
+  const region = (app.regionForAddress ? app.regionForAddress(addr) : null) || app.codeRegion();
   if (!region) { sheet.body.append(noteBox('コードのセクションが見つかりません。')); return; }
   const file = app.store.get('file');
   const range = validatePatchRange(region, addr, 4, file && file.size, true);
@@ -1266,7 +1297,12 @@ async function savePatched(app) {
    ══════════════════════════════════════════════════════════ */
 
 export function showDebugger(app, addr) {
-  const sheet = new Sheet('実行してみる');
+  let activeRun = null;
+  const abortRun = (reason = 'debugger-operation-replaced') => {
+    if (activeRun && !activeRun.signal.aborted) activeRun.abort(reason);
+    activeRun = null;
+  };
+  const sheet = new Sheet('実行してみる', { onClose:() => abortRun('debugger-sheet-closed') });
   const emu = makeEmulator(app);
   let args = [0n, 0n, 0n, 0n];
 
@@ -1298,6 +1334,7 @@ export function showDebugger(app, addr) {
   const bpBox = el('div');
 
   const start = () => {
+    abortRun('debugger-reset');
     const parsed = argInputs.map((n) => parseDebuggerArgument(n.value));
     let invalid = false;
     parsed.forEach((result, i) => {
@@ -1332,12 +1369,25 @@ export function showDebugger(app, addr) {
     render();
   }));
   chips.append(button('最後まで走らせる', 'chip strong', async () => {
+    abortRun('debugger-run-replaced');
+    const controller = new AbortController();
+    activeRun = controller;
     status.textContent = '走らせています…';
-    const r = await emu.run(50000, (n) => { status.textContent = n + ' 命令…'; });
-    status.textContent = (emu.stopped || 'ブレークポイントで止まりました。') +
-      '\n合計 ' + emu.steps + ' 命令、戻り値 x0 = ' + hexBig(emu.x[0]) + '（10 進で ' + emu.x[0].toString() + '）';
-    void r;
-    render();
+    try {
+      await emu.run(50000, (n) => {
+        if (!controller.signal.aborted && sheet.root.isConnected) status.textContent = n + ' 命令…';
+      }, { signal:controller.signal });
+      if (controller.signal.aborted || activeRun !== controller || !sheet.root.isConnected) return;
+      status.textContent = (emu.stopped || 'ブレークポイントで止まりました。') +
+        '\n合計 ' + emu.steps + ' 命令、戻り値 x0 = ' + hexBig(emu.x[0]) + '（10 進で ' + emu.x[0].toString() + '）';
+      render();
+    } catch (error) {
+      if (!controller.signal.aborted && error?.name !== 'AbortError' && sheet.root.isConnected) {
+        status.textContent = '実行を続けられませんでした: ' + (error?.message || error);
+      }
+    } finally {
+      if (activeRun === controller) activeRun = null;
+    }
   }));
   sheet.body.append(chips, status);
 
@@ -1636,6 +1686,15 @@ export function showPlugins(app) {
 
 export function showIl2cpp(app) {
   const sheet = new Sheet('Unity（IL2CPP）');
+  let activeController = null;
+  const abortActive = () => {
+    if (activeController) {
+      activeController.abort();
+      activeController = null;
+    }
+  };
+  sheet.onClose = abortActive;
+
   sheet.body.append(el('div', 'hint',
     'Unity のアプリは C# で書かれていますが、出荷時にはクラス名やメソッド名が\n' +
     '実行ファイルから消え、global-metadata.dat という別ファイルに移ります。\n' +
@@ -1663,26 +1722,36 @@ export function showIl2cpp(app) {
         body.replaceChildren(el('div', 'hint', `global-metadata.dat が大きすぎます (${Math.ceil(f.size/1024/1024)} MiB)。安全上 ${MAX_IL2CPP_METADATA_BYTES/1024/1024} MiB までです。`));
         return;
       }
+      abortActive();
       const controller = new AbortController();
+      activeController = controller;
       body.replaceChildren(el('div', 'hint', '読み込んでいます…'));
       try {
-        const meta = parseMetadataAuto(await f.arrayBuffer(), { signal:controller.signal });
+        const meta = await parseMetadataFileInWorker(f, { signal:controller.signal });
+        if (controller.signal.aborted || !sheet.root.isConnected) return;
         await bindMethodAddresses(meta, {
-          regions: app.store.get('regions') || [], signal:controller.signal,
+          regions: app.store.get('regions') || [], signal: controller.signal,
           read: (addr, len) => app.backend.readAt(addr, len)
             .then((r) => (r && r.found ? r.bytes : null)),
         });
+        if (controller.signal.aborted || !sheet.root.isConnected) return;
         const named = meta.methods.filter((m) => m.address != null)
           .map((m) => ({ addr: m.address, name: m.full }));
-        if (named.length) {
+        if (named.length && !controller.signal.aborted && sheet.root.isConnected) {
           app.symbols.addNames(named);
           app.symbols.addFunctions(named.map((n) => n.addr));
           app.viewer.setSymbols(app.symbols);
         }
-        show(meta);
+        if (!controller.signal.aborted && sheet.root.isConnected) {
+          show(meta);
+        }
       } catch (err) {
+        if (controller.signal.aborted || err?.code === 'ABORT_ERR' || err?.name === 'AbortError') return;
+        if (!sheet.root.isConnected) return;
         body.replaceChildren(el('div', 'hint warn', userError(err,
           'IL2CPPメタデータを解析できませんでした。別の解析ツールは引き続き利用できます。')));
+      } finally {
+        if (activeController === controller) activeController = null;
       }
     });
     picker.click();

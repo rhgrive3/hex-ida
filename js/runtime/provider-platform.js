@@ -66,7 +66,10 @@ export class RuntimeProviderPlatform {
     return session;
   }
 
-  getSession(runtimeSessionId) { return this.sessions.get(String(runtimeSessionId)) || null; }
+  getSession(runtimeSessionId) {
+    if (typeof runtimeSessionId !== 'string' || runtimeSessionId.trim() === '') return null;
+    return this.sessions.get(runtimeSessionId) || null;
+  }
 
   switchSession(runtimeSessionId) {
     const session = this.getSession(runtimeSessionId);

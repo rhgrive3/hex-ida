@@ -63,6 +63,7 @@ const activeRequests = new Map();             // request id -> epoch
 const cancelledRequests = new Set();
 
 const blocks = new Map();             // blockIndex -> Uint8Array (insertion-ordered LRU)
+const blockInflight = new Map();       // blockIndex -> { epoch, file, promise }
 
 /* ── Messaging ──────────────────────────────────────────────── */
 
@@ -271,14 +272,26 @@ async function readRange(offset, length) {
 async function getBlock(bi) {
   const hit = blocks.get(bi);
   if (hit) { blocks.delete(bi); blocks.set(bi, hit); return hit; }
+  const epoch = currentEpoch;
+  const sourceFile = file;
+  const pending = blockInflight.get(bi);
+  if (pending && pending.epoch === epoch && pending.file === sourceFile) return pending.promise;
   const start = bi * BLOCK_BYTES;
   if (start >= num(fileSize)) return new Uint8Array(0);
   const end = Math.min(start + BLOCK_BYTES, num(fileSize));
-  const buf = await file.slice(start, end).arrayBuffer();
-  const u8 = new Uint8Array(buf);
-  blocks.set(bi, u8);
-  while (blocks.size > BLOCK_CACHE) blocks.delete(blocks.keys().next().value);
-  return u8;
+  const entry = { epoch, file: sourceFile, promise: null };
+  entry.promise = (async () => {
+    const buf = await sourceFile.slice(start, end).arrayBuffer();
+    const u8 = new Uint8Array(buf);
+    if (currentEpoch === epoch && file === sourceFile) {
+      blocks.set(bi, u8);
+      while (blocks.size > BLOCK_CACHE) blocks.delete(blocks.keys().next().value);
+    }
+    return u8;
+  })();
+  blockInflight.set(bi, entry);
+  try { return await entry.promise; }
+  finally { if (blockInflight.get(bi) === entry) blockInflight.delete(bi); }
 }
 
 /* ── open ───────────────────────────────────────────────────── */
@@ -289,6 +302,7 @@ async function openFile(f) {
     file = f;
   fileSize = BigInt(f.size);
   blocks.clear();
+  blockInflight.clear();
   regions = new Map();
   slices = [];
 

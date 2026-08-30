@@ -78,7 +78,7 @@ export function matchFunctions(beforeFunctions = [], afterFunctions = [], option
   const fastMode = options.mode === 'fast';
   // Start every time/abort/memory/work budget before the first raw function is
   // fingerprinted. This is the trust boundary for the full matching pipeline.
-  const budget = createMatchBudget(options.matchBudget || {});
+  const budget = createMatchBudget({ signal: options.signal, ...(options.matchBudget || {}) });
   const incompletePreprocessing = (index = null) => {
     const matchingBudget = budget.snapshot();
     return {

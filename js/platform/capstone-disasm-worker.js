@@ -56,10 +56,29 @@ async function handleFor(architecture, decodeProfile = null) {
   }
 }
 
-self.onmessage = async (event) => {
-  const msg = event.data;
+const PRIORITY_ORDER = {
+  visible: 0,
+  current: 0,
+  near: 1,
+  prefetch: 2,
+  idle: 3,
+};
+
+function priorityValueOf(p) {
+  return PRIORITY_ORDER[String(p).toLowerCase()] ?? 0;
+}
+
+const queue = [];
+let processing = false;
+const cancelledIds = new Set();
+
+async function decodeMessage(msg) {
   try {
     const { M, handle, out } = await handleFor(msg.architecture, msg.riscvIsa || null);
+    if (cancelledIds.has(msg.id)) {
+      cancelledIds.delete(msg.id);
+      return;
+    }
     const bytes = msg.bytes instanceof Uint8Array ? msg.bytes : new Uint8Array(msg.bytes || 0);
     if (bytes.length > 1024 * 1024) throw new Error('disassembly request exceeds 1 MiB');
     const buf = M._malloc(Math.max(1, bytes.length));
@@ -102,9 +121,55 @@ self.onmessage = async (event) => {
       } finally {
         if (base) M.ccall('cs_free', 'void', ['number','number'], [base, count]);
       }
+      if (cancelledIds.has(msg.id)) {
+        cancelledIds.delete(msg.id);
+        return;
+      }
       self.postMessage({ id: msg.id, ok: true, instructions, bytesConsumed: consumed });
     } finally { M._free(buf); }
   } catch (error) {
+    if (cancelledIds.has(msg.id)) {
+      cancelledIds.delete(msg.id);
+      return;
+    }
     self.postMessage({ id: msg.id, ok: false, error: error?.message || String(error) });
   }
+}
+
+async function processQueue() {
+  if (processing) return;
+  processing = true;
+  while (queue.length > 0) {
+    const msg = queue.shift();
+    if (cancelledIds.has(msg.id)) {
+      cancelledIds.delete(msg.id);
+      continue;
+    }
+    await decodeMessage(msg);
+  }
+  processing = false;
+}
+
+self.onmessage = (event) => {
+  const msg = event.data;
+  if (!msg) return;
+  if (msg.t === 'cancel') {
+    if (msg.id != null) {
+      cancelledIds.add(msg.id);
+      const idx = queue.findIndex((j) => j.id === msg.id);
+      if (idx >= 0) queue.splice(idx, 1);
+    }
+    return;
+  }
+
+  const pVal = priorityValueOf(msg.priority);
+  let insertIdx = queue.length;
+  for (let i = 0; i < queue.length; i++) {
+    if (priorityValueOf(queue[i].priority) > pVal) {
+      insertIdx = i;
+      break;
+    }
+  }
+  queue.splice(insertIdx, 0, msg);
+  processQueue();
 };

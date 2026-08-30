@@ -1,3 +1,6 @@
+import './issue-2601-pinpoint-architecture-query.mjs';
+import './issue-2596-range-copy-variable-width.mjs';
+import './issue-2594-showdetail-variable-width.mjs';
 import { matchRoute, ProductRouter } from '../../js/ui/router.js';
 import {
   ROUTES, PRIMARY_NAV, EXPLORER_SCOPES, FUNCTION_TABS, LEGACY_MIGRATION,
@@ -26,6 +29,9 @@ for (const tab of FUNCTION_TABS) {
   check(`function tab ${tab.id} resolves`, hit?.route.id === 'function' && hit.params.address === '4096' && hit.params.tab === tab.id);
 }
 
+const findingHit = matchRoute(ROUTES, '/finding/finding-123');
+check('finding detail route resolves with id param', findingHit?.route.id === 'finding' && findingHit.params.id === 'finding-123');
+
 const legacyRequired = [
   'showFileInfo','showSections','showStructure','showFunctions','showFunctionSummary','showBlockDetail',
   'showFeatures','showStrings','showJump','showSearch','showXrefs','showDetail','showOverview','showAppMap',
@@ -42,9 +48,6 @@ check('every audited legacy screen has a migration disposition', legacyRequired.
 check('migration table has no un-audited screen names', Object.keys(LEGACY_MIGRATION).every((name) => legacyRequired.includes(name)));
 check('migration table has only explicit dispositions', Object.values(LEGACY_MIGRATION).every((value) => /^(merge|redirect|deprecated):/.test(value)));
 
-/* A render failure must not manufacture a browser-history entry. Result sheets
-   use navigate()'s boolean to decide whether they may close, so URL/history,
-   router.current and the visible view must commit together. */
 const previousWindow = globalThis.window;
 const previousHistory = globalThis.history;
 const pushes = [];

@@ -178,32 +178,49 @@ function featureRetentionLimit(value, fallback = 200) {
     : fallback;
 }
 
+function insertSorted(list, item, limit) {
+  if (limit <= 0) return;
+  if (list.length >= limit && item.score <= list[list.length - 1].score) {
+    return;
+  }
+  let low = 0, high = list.length;
+  while (low < high) {
+    const mid = (low + high) >>> 1;
+    if (list[mid].score < item.score) {
+      high = mid;
+    } else {
+      low = mid + 1;
+    }
+  }
+  list.splice(low, 0, item);
+  if (list.length > limit) {
+    list.pop();
+  }
+}
+
 /**
  * 文字列の一覧を機能ごとに束ねる。
  *
  * @param {Array} strings  [{addr, text}] — worker が拾ったもの
  * @param {number} perFeature 機能あたりの上限
+ * @param {object} [options]
  */
-export function groupByFeature(strings, perFeature = 200) {
+export function groupByFeature(strings, perFeature = 200, options = {}) {
   const limit = featureRetentionLimit(perFeature);
   const buckets = new Map();
   for (const f of FEATURES) buckets.set(f.id, []);
+  const signal = options?.signal || null;
 
-  // Evaluate every matching string.  The limit is a retention bound, not an
+  // Evaluate every matching string. The limit is a retention bound, not an
   // evaluation bound: a late strong hit must be able to evict an early weak hit.
   for (const s of strings || []) {
+    if (signal?.aborted) break;
     const hits = classifyString(s.text);
     for (const h of hits) {
       const list = buckets.get(h.id);
       if (!list || limit <= 0) continue;
       const item = { addr: s.addr, text: s.text, score: strength(s.text, h.weak) };
-      if (list.length < limit) {
-        list.push(item);
-        list.sort((a, b) => b.score - a.score);
-      } else if (item.score > list[list.length - 1].score) {
-        list[list.length - 1] = item;
-        list.sort((a, b) => b.score - a.score);
-      }
+      insertSorted(list, item, limit);
     }
   }
 
@@ -211,9 +228,55 @@ export function groupByFeature(strings, perFeature = 200) {
   for (const f of FEATURES) {
     const list = buckets.get(f.id);
     if (!list.length) continue;
-    list.sort((a, b) => b.score - a.score);
     out.push({ id: f.id, label: pick(f.ja, f.en), items: list });
   }
   out.sort((a, b) => b.items.length - a.items.length);
   return out;
+}
+
+/**
+ * Asynchronously classify features and engine across chunks, yielding to event loop.
+ */
+export async function classifyFeaturesAndEngineAsync(strings, options = {}) {
+  const limit = featureRetentionLimit(options.perFeature ?? 200);
+  const signal = options.signal || null;
+  const chunkSize = Math.max(100, Math.min(5000, options.chunkSize || 1000));
+  const buckets = new Map();
+  for (const f of FEATURES) buckets.set(f.id, []);
+  let detectedEngine = null;
+
+  const total = strings?.length || 0;
+  for (let i = 0; i < total; i++) {
+    if (signal?.aborted) break;
+    if (i > 0 && i % chunkSize === 0) {
+      options.onProgress?.(i, total);
+      await new Promise((r) => setTimeout(r, 0));
+      if (signal?.aborted) break;
+    }
+    const s = strings[i];
+    if (!detectedEngine) {
+      for (const e of ENGINES) {
+        if (e.re.test(s.text)) {
+          detectedEngine = { id: e.id, note: pick(e.ja, e.en), sample: s.text, addr: s.addr };
+          break;
+        }
+      }
+    }
+    const hits = classifyString(s.text);
+    for (const h of hits) {
+      const list = buckets.get(h.id);
+      if (!list || limit <= 0) continue;
+      const item = { addr: s.addr, text: s.text, score: strength(s.text, h.weak) };
+      insertSorted(list, item, limit);
+    }
+  }
+
+  const out = [];
+  for (const f of FEATURES) {
+    const list = buckets.get(f.id);
+    if (!list.length) continue;
+    out.push({ id: f.id, label: pick(f.ja, f.en), items: list });
+  }
+  out.sort((a, b) => b.items.length - a.items.length);
+  return { features: out, engine: detectedEngine, count: total };
 }

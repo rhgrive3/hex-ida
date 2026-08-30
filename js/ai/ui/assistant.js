@@ -54,6 +54,7 @@ export function installAssistant(app, ui) {
   if (document.getElementById('ai-launcher')) return window.__hexAi || null;
 
   const engine = createAiEngine(app);
+  app.aiRuntime = engine;
   const devSettings = new DevAgentUiSettings();
   const devSupervisor = new DevSupervisorV0();
   const sessionEngine = createAgentProfileEngine({ standardEngine: engine, settings: devSettings, supervisor: devSupervisor });
@@ -246,6 +247,7 @@ export function installAssistant(app, ui) {
         launcher.destroy();
         uiRoot()?.classList.remove('ai-open', 'ai-docked');
         if (window.__hexAi && window.__hexAi.panel === panel) delete window.__hexAi;
+        if (app.aiRuntime === engine) app.aiRuntime = null;
       },
     };
   }

@@ -26,6 +26,8 @@ function statusFor(changeType) {
 
 export function diffFunctions(beforeFunctions, afterFunctions, options = {}) {
   const matched=matchFunctions(beforeFunctions,afterFunctions,{
+    mode:options.mode,
+    signal:options.signal,
     threshold:options.threshold ?? 0.55,
     ambiguityWindow:options.ambiguityWindow ?? 0.04,
     neighborhoodIterations:options.neighborhoodIterations ?? 2,

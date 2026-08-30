@@ -28,7 +28,7 @@ import {
 export const PDB_PROVIDER_ID = 'phase7.debug.pdb';
 export const PDB_PROVIDER_VERSION = '1.0.0';
 
-const MSF_MAGIC = 'Microsoft C/C++ MSF 7.00\r\nDS\0\0\0';
+const MSF_MAGIC = 'Microsoft C/C++ MSF 7.00\r\n\u001aDS\0\0\0';
 
 /** CodeView symbol record kinds this provider models. */
 const S_PUB32 = 0x110e;
@@ -303,6 +303,8 @@ export function parseSymbolRecords(bytes, budget = DEBUG_DEFAULT_BUDGET) {
         : end;
     if (fieldEnd > end) break;
     if (kind === S_PUB32) {
+      const nameEntry = cstringWithNext(bytes, offset + 14, end);
+      if (!nameEntry) break;
       const flags = view.getUint32(offset + 4, true);
       symbols.push({
         kind: 'public',
@@ -311,12 +313,14 @@ export function parseSymbolRecords(bytes, budget = DEBUG_DEFAULT_BUDGET) {
         offsetInSegment: view.getUint32(offset + 8, true),
         segment: view.getUint16(offset + 12, true),
         sizeBytes: null,
-        name: cstring(bytes, offset + 14, end),
+        name: nameEntry.value,
         recordOffset: offset,
       });
     } else if (kind === S_GPROC32 || kind === S_LPROC32 || kind === S_GPROC32_ID || kind === S_LPROC32_ID) {
       // PROCSYM32: parent/end/next (12) + length/dbgStart/dbgEnd (12) + typeIndex (4)
       // + offset (4) + segment (2) + flags (1) + name
+      const nameEntry = cstringWithNext(bytes, offset + 39, end);
+      if (!nameEntry) break;
       symbols.push({
         kind: 'procedure',
         isFunction: true,
@@ -324,7 +328,7 @@ export function parseSymbolRecords(bytes, budget = DEBUG_DEFAULT_BUDGET) {
         typeIndex: view.getUint32(offset + 28, true),
         offsetInSegment: view.getUint32(offset + 32, true),
         segment: view.getUint16(offset + 36, true),
-        name: cstring(bytes, offset + 39, end),
+        name: nameEntry.value,
         recordOffset: offset,
       });
     } else {
@@ -369,7 +373,9 @@ export function parseTpiStream(bytes, budget = DEBUG_DEFAULT_BUDGET) {
       const properties = view.getUint16(body + 2, true);
       const fieldList = leaf === LF_UNION ? 0 : view.getUint32(body + 4, true);
       const sizeOffset = leaf === LF_UNION ? body + 8 : body + 16;
-      const { value: sizeBytes, next } = readNumeric(view, bytes, sizeOffset);
+      const numeric = readNumeric(view, bytes, sizeOffset, end);
+      if (!numeric) break;
+      const { value: sizeBytes, next } = numeric;
       const keyword = leaf === LF_UNION ? 'union' : leaf === LF_CLASS ? 'class' : 'struct';
       types.set(index, {
         leaf, kind: 'aggregate', keyword,
@@ -393,7 +399,9 @@ export function parseTpiStream(bytes, budget = DEBUG_DEFAULT_BUDGET) {
         argumentList: view.getUint32(body + 8, true),
       });
     } else if (leaf === LF_ARRAY) {
-      const { value: sizeBytes } = readNumeric(view, bytes, body + 8);
+      const numeric = readNumeric(view, bytes, body + 8, end);
+      if (!numeric) break;
+      const { value: sizeBytes } = numeric;
       types.set(index, { leaf, kind: 'array', elementType: view.getUint32(body, true), sizeBytes });
     } else if (leaf === LF_ENUM) {
       types.set(index, { leaf, kind: 'enum', underlying: view.getUint32(body + 4, true), name: null });
@@ -415,9 +423,15 @@ export function parseTpiStream(bytes, budget = DEBUG_DEFAULT_BUDGET) {
  * CodeView numeric leaves: a value below 0x8000 is the value itself; otherwise
  * the value's width is encoded in the leaf.
  */
-function readNumeric(view, bytes, offset) {
+function readNumeric(view, bytes, offset, end = bytes.length) {
+  if (offset + 2 > end) return null;
   const raw = view.getUint16(offset, true);
   if (raw < 0x8000) return { value: raw, next: offset + 2 };
+  const requiredEnd = raw === 0x8000 ? offset + 3
+    : (raw === 0x8001 || raw === 0x8002) ? offset + 4
+      : (raw === 0x8003 || raw === 0x8004) ? offset + 6
+        : offset + 2;
+  if (requiredEnd > end) return null;
   switch (raw) {
     case 0x8000: return { value: view.getInt8(offset + 2), next: offset + 3 };
     case 0x8001: return { value: view.getInt16(offset + 2, true), next: offset + 4 };
@@ -431,11 +445,13 @@ function readNumeric(view, bytes, offset) {
 function parseFieldList(view, bytes, start, end) {
   const members = [];
   let offset = start;
-  while (offset + 4 <= end) {
+  while (offset + 8 <= end) {
     const leaf = view.getUint16(offset, true);
     if (leaf !== LF_MEMBER) break;
     const typeIndex = view.getUint32(offset + 4, true);
-    const { value: fieldOffset, next } = readNumeric(view, bytes, offset + 8);
+    const numeric = readNumeric(view, bytes, offset + 8, end);
+    if (!numeric) break;
+    const { value: fieldOffset, next } = numeric;
     const nameEntry = cstringWithNext(bytes, next, end);
     if (!nameEntry) break;
     members.push({ name: nameEntry.value, typeIndex, offset: fieldOffset });
@@ -580,11 +596,18 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
     // begins with a 4-byte signature before its symbol records.
     const modules = parseModuleInfo(dbiBytes, dbi);
     for (const module of modules) {
-      if (module.streamIndex < 0 || module.streamIndex >= msf.streams.length) continue;
+      if (module.streamIndex < 0 || module.streamIndex >= msf.streams.length) {
+        if (module.symbolByteSize > 4) symbols.complete = false;
+        continue;
+      }
       const moduleBytes = msf.streams[module.streamIndex].read();
-      if (!moduleBytes || moduleBytes.length <= 4) continue;
+      if (!moduleBytes || moduleBytes.length <= 4) {
+        if (module.symbolByteSize > 4) symbols.complete = false;
+        continue;
+      }
       const size = Math.min(module.symbolByteSize > 4 ? module.symbolByteSize : moduleBytes.length, moduleBytes.length);
       const moduleSymbols = parseSymbolRecords(moduleBytes.subarray(4, size), budget);
+      symbols.complete = symbols.complete && moduleSymbols.complete;
       for (const symbol of moduleSymbols.symbols) {
         if (symbol.kind !== 'procedure') continue;
         symbols.symbols.push({ ...symbol, recordOffset: `${module.streamIndex}:${symbol.recordOffset}` });

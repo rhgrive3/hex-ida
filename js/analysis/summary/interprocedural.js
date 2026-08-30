@@ -142,11 +142,20 @@ function mergeEffects(lists, cap) {
     if (!byKey.has(key)) byKey.set(key, effect);
   }
   const specific = [...byKey.values()];
-  if (broad) return [broad, ...specific].slice(0, effectiveCap);
+  if (broad) {
+    const combined = [broad, ...specific];
+    if (combined.length <= effectiveCap) return combined;
+    const dropped = combined.slice(effectiveCap);
+    const allDroppedSpaces = dropped.flatMap((eff) => eff.addressSpaces || []);
+    const mergedSpaces = [...new Set([...(broad.addressSpaces || []), ...allDroppedSpaces])].sort();
+    const finalBroad = createMemoryEffect({ ...broad, addressSpaces: mergedSpaces });
+    return [finalBroad, ...combined.slice(1, effectiveCap)];
+  }
   if (specific.length > effectiveCap) {
     // Rather than truncate a list a consumer would read as exhaustive, collapse
-    // to one broad effect: less precise, still sound.
-    return [broadEffect('unknown-call-fallback')];
+    // to one broad effect across all present address spaces: less precise, still sound.
+    const spaces = [...new Set(specific.flatMap((eff) => eff.addressSpaces || ['memory']))].sort();
+    return [broadEffect('unknown-call-fallback', spaces.length ? spaces : ['memory'])];
   }
   return specific;
 }

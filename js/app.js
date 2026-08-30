@@ -38,6 +38,7 @@ import { PluginHost } from './plugins.js';
 import { showTools, prettyName } from './tools.js';
 import { NavigationHistory } from './navigation.js';
 import { STRING_SCAN_BUDGET, StringCollectionBudget } from './string-budget.js';
+import { productDescriptor } from './platform/product-descriptor.js';
 import { ProductWorkspace } from './workspace.js';
 import { AnalysisQueryAPI, createAppAnalysisQueryAdapter } from './analysis/query/index.js';
 
@@ -83,6 +84,7 @@ class App {
     this.swiftModel = null;
     this.swiftRuntime = null;
     this.swiftBusy = null;
+    this.swiftBusyAbort = null;
     this.swiftBusyEpoch = -1;
     this.recognition = null;
     this.recognitionBusy = null;
@@ -372,8 +374,9 @@ class App {
     const info = this.store.get('fileInfo');
     const region = this.store.get('currentRegion');
     const has = !!info;
+    const desc = has ? productDescriptor(info, this.currentSlice()) : null;
     this.dom.sections.disabled = !has;
-    this.dom.struct.disabled = !has;
+    this.dom.struct.disabled = !has || (desc && desc.formatId && desc.formatId !== 'macho');
     this.dom.strings.disabled = !has;
     this.dom.investigate.disabled = !has;
     this.dom.tools.disabled = !has;
@@ -546,9 +549,11 @@ class App {
       this.fields = EMPTY_FIELDS;
       this.objcModel = null;
       this.objcRuntime = null;
+      this.swiftBusyAbort?.abort('swift-reset');
       this.swiftModel = null;
       this.swiftRuntime = null;
       this.swiftBusy = null;
+      this.swiftBusyAbort = null;
       this.swiftBusyEpoch = -1;
       this.recognition = null;
       this.recognitionBusy = null;
@@ -644,6 +649,7 @@ class App {
 
   /** Build one global ProgramIndex from every executable region. */
   async ensureProgram(onProgress) {
+    const progressFn = typeof onProgress === 'function' ? onProgress : (typeof onProgress === 'object' && typeof onProgress?.onProgress === 'function' ? onProgress.onProgress : null);
     const regions=this.programRegions();
     if(!regions.length)return null;
     const key=regions.map((r)=>r.id).join('|');
@@ -654,7 +660,7 @@ class App {
     if(this.programBusy&&this.programBusyEpoch===epoch)return this.programBusy;
     this.programBusyEpoch=epoch;
     this.programBusy=(async()=>{
-      await this.ensureFunctions(primary,onProgress);
+      await this.ensureFunctions(primary,progressFn);
       if(epoch!==this.backend.gen)return null;
       const scans=[], failures=[];
       let calls=PROGRAM_MERGE_LIMITS.calls, refs=PROGRAM_MERGE_LIMITS.refs, kinds=PROGRAM_MERGE_LIMITS.kindWords;
@@ -664,7 +670,8 @@ class App {
         const r=regions[i], size=BigInt(r.size);
         if(epoch!==this.backend.gen)return null;
         try{
-          const scan=await this.backend.scanProgram(r.id,onProgress&&((p)=>onProgress({phase:'scan',done:i+(p.all?Math.min(1,p.done/p.all):0),all:regions.length,region:r.id})),{
+          const scan=await this.backend.scanProgram(r.id,progressFn&&((p)=>progressFn({phase:'scan',done:i+(p.all?Math.min(1,p.done/p.all):0),all:regions.length,region:r.id})),{
+            architecture:this.store.get('architecture') || this.currentSlice?.()?.capability?.architecture || 'unknown',
             callLimit:share(calls,size,remainingBytes),refLimit:share(refs,size,remainingBytes),kindLimit:share(kinds,size,remainingBytes),
           });
           if(scan&&!scan.cancelled){scans.push(scan);calls=Math.max(0,calls-(scan.callCount??scan.callFrom?.length??0));refs=Math.max(0,refs-(scan.refCount??scan.refFrom?.length??0));kinds=Math.max(0,kinds-(scan.kindsCovered??scan.kinds?.length??0));}
@@ -732,7 +739,8 @@ class App {
         if (!program) { this.schemas = []; return this.schemas; }
         const read = (addr, len) => this.backend.readAt(addr, len)
           .then((r) => (r && r.found ? r.bytes : null)).catch(() => null);
-        const schemas = await recoverSchemas({ strings, program, read, onProgress,
+        const arch = this.store.get('architecture') || this.currentSlice?.()?.capability?.architecture;
+        const schemas = await recoverSchemas({ strings, program, read, onProgress, architecture: arch,
           isCancelled: () => epoch !== this.backend.gen });
         if (epoch === this.backend.gen) this.schemas = schemas;
       } catch {
@@ -1002,8 +1010,10 @@ class App {
         for (const e of this.notes.nameEntries()) this.symbols.rename(e.addr, e.name);
         this.viewer.setSymbols(this.symbols);
         this.updateChrome();
+        // ObjC recovery is intentionally demand-driven. It can traverse large
+        // runtime metadata and must not be a hidden prerequisite of opening a file.
+        // Swift/recognition keep their existing background warmup behavior.
         return Promise.allSettled([
-          this.ensureObjc(sliceIndex),
           this.ensureSwift(),
           this.ensureRecognition({ maxFunctions: 350000 }),
         ]);
@@ -1025,7 +1035,7 @@ class App {
    *
    * 裏で走らせて、できたところで画面を差し替える。失敗しても表示は続く。
    */
-  async ensureObjc(sliceIndex) {
+  async ensureObjc(sliceIndex, options = {}) {
     const epoch = this.backend.gen;
     if (this.objcModel && this.objcRuntime) return this.fields;
     if (this.objcBusy && this.objcBusyEpoch === epoch) return this.objcBusy;
@@ -1049,7 +1059,7 @@ class App {
         const imageBase = sl && sl.info ? sl.info.textVM : null;
         const executableRanges=regions.filter((r)=>r?.exec===true&&r.size>0n).map((r)=>({vmAddr:r.vmAddr,size:r.size}));
         const architecture=sl?.name||sl?.info?.arch||sl?.info?.architecture||null;
-        const model = await buildObjcRuntimeModel(read, list, { protocolList, categoryList, executableRanges, architecture }, null, imageBase);
+        const model = await buildObjcRuntimeModel(read, list, { protocolList, categoryList, executableRanges, architecture }, null, imageBase, null, options);
         if (epoch !== this.backend.gen || this.store.get('sliceIndex') !== slice) return this.fields;
         model.runtimeIndex = model.runtimeIndex || buildObjcRuntimeIndex(model);
         this.objcModel = model;
@@ -1076,30 +1086,38 @@ class App {
   }
 
   async ensureSwift() {
-    const epoch=this.backend.gen;
+    const epoch = this.backend.gen;
     if (this.swiftModel && this.swiftRuntime) return this.swiftModel;
-    if (this.swiftBusy && this.swiftBusyEpoch===epoch) return this.swiftBusy;
-    const regions=this.store.get('regions') || [];
-    if (!regions.some((r)=>/^__swift5_/.test(r.section||''))) return null;
-    const slice=this.store.get('sliceIndex');
-    this.swiftBusyEpoch=epoch;
-    this.swiftBusy=(async()=>{
-      const read=(addr,len)=>this.backend.readAt(addr,len).then((r)=>(r&&r.found?r.bytes:null)).catch(()=>null);
+    if (this.swiftBusy && this.swiftBusyEpoch === epoch) return this.swiftBusy;
+    const regions = this.store.get('regions') || [];
+    if (!regions.some((r) => /^__swift5_/.test(r.section || ''))) return null;
+    const slice = this.store.get('sliceIndex');
+    this.swiftBusyAbort?.abort('swift-slice-superseded');
+    const controller = new AbortController();
+    this.swiftBusyAbort = controller;
+    this.swiftBusyEpoch = epoch;
+    this.swiftBusy = (async () => {
+      const read = (addr, len) => this.backend.readAt(addr, len, false, { priority:'background' })
+        .then((r) => (r && r.found ? r.bytes : null)).catch(() => null);
       try {
         const model=await buildSwiftMetadataModel(read,regions,{
           budget:20000,
+          signal:controller.signal,
           resolvePointer:(raw,context)=>this.backend.resolvePointer(raw,{...context,sliceIndex:slice}),
         });
-        if(epoch!==this.backend.gen || this.store.get('sliceIndex')!==slice) return null;
-        this.swiftModel=model; this.swiftRuntime=buildSwiftRuntimeIndex(model);
-        const exec=this.executableRegions(); const names=[];
-        for(const type of model.types||[]) for(const method of type.methods||type.vtable||[]) {
-          if(method?.impl!=null && exec.some((r)=>method.impl>=r.vmAddr&&method.impl<r.vmAddr+r.size)) names.push({addr:method.impl,name:`${type.name||'SwiftType'}::method_${method.index}`,source:'swift-metadata'});
+        if (controller.signal.aborted || epoch !== this.backend.gen || this.store.get('sliceIndex') !== slice) return null;
+        this.swiftModel = model; this.swiftRuntime = buildSwiftRuntimeIndex(model);
+        const exec = this.executableRegions(); const names = [];
+        for (const type of model?.types || []) for (const method of type.methods || type.vtable || []) {
+          if (method?.impl != null && exec.some((r) => method.impl >= r.vmAddr && method.impl < r.vmAddr + r.size)) names.push({ addr: method.impl, name: `${type.name || 'SwiftType'}::method_${method.index}`, source: 'swift-metadata' });
         }
-        if(names.length){this.symbols.addNames(names);this.symbols.addFunctions(names.map((x)=>x.addr));this.viewer.setSymbols(this.symbols);}
+        if (names.length) { this.symbols.addNames(names); this.symbols.addFunctions(names.map((x) => x.addr)); this.viewer.setSymbols(this.symbols); }
         return model;
       } catch { return null; }
-      finally { if(this.swiftBusyEpoch===epoch){this.swiftBusy=null;this.swiftBusyEpoch=-1;} }
+      finally {
+        if (this.swiftBusyEpoch === epoch) { this.swiftBusy = null; this.swiftBusyEpoch = -1; }
+        if (this.swiftBusyAbort === controller) { this.swiftBusyAbort = null; }
+      }
     })();
     return this.swiftBusy;
   }

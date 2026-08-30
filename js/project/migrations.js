@@ -8,7 +8,21 @@ export class ProjectMigrationError extends Error {
   }
 }
 
-export const PROJECT_MIGRATIONS = Object.freeze({});
+export const PROJECT_MIGRATIONS = Object.freeze({
+  1(project) {
+    const sourceUser = project?.user && typeof project.user === 'object' && !Array.isArray(project.user) ? project.user : {};
+    const hasVars = Object.prototype.hasOwnProperty.call(sourceUser, 'vars') || Object.prototype.hasOwnProperty.call(sourceUser, 'varNames');
+    return {
+      ...project,
+      version: 2,
+      user: {
+        ...sourceUser,
+        vars: hasVars ? (sourceUser.vars ?? sourceUser.varNames ?? []) : [],
+        varsPresent: hasVars,
+      },
+    };
+  },
+});
 
 export function migrateHexProject(raw, {
   currentVersion,

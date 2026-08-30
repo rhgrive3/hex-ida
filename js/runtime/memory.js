@@ -7,8 +7,11 @@ const MAX_REGION_SIZE = 64 * 1024 * 1024;
 const MAX_TRANSFER = 4 * 1024 * 1024;
 
 function normalizePermissions(value) {
-  const s = String(value == null ? 'rw' : value).toLowerCase();
-  return Object.freeze({ read: s.includes('r'), write: s.includes('w'), execute: s.includes('x') });
+  if (value == null) value = 'rw';
+  if (typeof value !== 'string' || !/^[rwx]*$/.test(value)) {
+    throw new MemoryAccessError('invalid-permissions', 'memory permissions must contain only r, w, and x', { value });
+  }
+  return Object.freeze({ read: value.includes('r'), write: value.includes('w'), execute: value.includes('x') });
 }
 
 function strictSize(value, fallback, max, name) {
@@ -36,7 +39,9 @@ export class MemoryRegion {
     this.start = asAddress(spec.start);
     this.size = strictSize(spec.size, 1, MAX_REGION_SIZE, 'region size');
     this.end = this.start + BigInt(this.size);
-    this.kind = MEMORY_KINDS.includes(spec.kind) ? spec.kind : 'mapped';
+    if (spec.kind == null) this.kind = 'mapped';
+    else if (MEMORY_KINDS.includes(spec.kind)) this.kind = spec.kind;
+    else throw new MemoryAccessError('invalid-region-kind', `unsupported memory region kind: ${spec.kind}`, { kind:spec.kind, allowed:MEMORY_KINDS });
     this.name = spec.name == null ? null : String(spec.name).slice(0, 256);
     this.permissions = normalizePermissions(spec.permissions);
     this.objectId = spec.objectId == null ? null : String(spec.objectId).slice(0, 256);
@@ -91,7 +96,7 @@ export function createSandboxMemoryMap({ objectBase = 0x600000001000n, objectSiz
   map.map({ start:asAddress(objectBase,'objectBase'), size:objectSize, kind:'object', permissions:'rw', name:'fake-object' });
   map.map({ start:asAddress(heapBase,'heapBase'), size:heapSize, kind:'heap', permissions:'rw', name:'fake-heap' });
   map.map({ start:asAddress(stackTop,'stackTop') - BigInt(stackSize), size:stackSize, kind:'stack', permissions:'rw', name:'stack' });
-  for (const g of globals) map.map({ ...g, kind:g.kind || 'global' });
+  for (const g of globals) map.map({ ...g, kind:g.kind == null ? 'global' : g.kind });
   for (const m of mappings) map.map(m);
   return map;
 }

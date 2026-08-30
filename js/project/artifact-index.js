@@ -3,7 +3,8 @@ export const PROJECT_ARTIFACT_INDEX_VERSION = 'hex-project-artifact-index-v1';
 export const MAX_PROJECT_ARTIFACT_REFS = 50_000;
 
 function required(value, code) {
-  const text = String(value ?? '').trim();
+  if (typeof value !== 'string') throw new TypeError(code);
+  const text = value.trim();
   if (!text) throw new TypeError(code);
   return text;
 }
@@ -61,7 +62,12 @@ export class ProjectArtifactIndex {
     for (const ref of refs) this.bind(ref);
   }
 
-  static key(scope, kind) { return JSON.stringify([String(scope ?? '').trim(), String(kind ?? '').trim()]); }
+  static key(scope, kind) {
+    return JSON.stringify([
+      required(scope, 'artifact-ref-scope-required'),
+      required(kind, 'artifact-ref-kind-required'),
+    ]);
+  }
 
   get size() { return this.refs.size; }
 

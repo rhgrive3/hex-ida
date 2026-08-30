@@ -47,17 +47,27 @@ function evidenceStoreBindings(full, rootDir, codeLines) {
   const bindings = new Set(["EvidenceStore"]);
   const evidenceModule = path.resolve(rootDir, "ai/evidence.js");
   const fullCode = codeLines.join('\n');
+  const resolvesToEvidenceModule = (specifier) => {
+    if (!specifier.startsWith(".")) return false;
+    let target = path.resolve(path.dirname(full), specifier);
+    if (!path.extname(target)) target += ".js";
+    return path.normalize(target) === path.normalize(evidenceModule);
+  };
+
   const importRegex = /\bimport\s*\{([^}]*)\}\s*from\s*(["'])([^"']+)\2/gs;
   let match;
   while ((match = importRegex.exec(fullCode)) !== null) {
-    if (!match[3].startsWith(".")) continue;
-    let target = path.resolve(path.dirname(full), match[3]);
-    if (!path.extname(target)) target += ".js";
-    if (path.normalize(target) !== path.normalize(evidenceModule)) continue;
+    if (!resolvesToEvidenceModule(match[3])) continue;
     for (const specifier of match[1].split(",")) {
       const binding = /^\s*EvidenceStore(?:\s+as\s+([A-Za-z_$][\w$]*))?\s*$/.exec(specifier);
       if (binding) bindings.add(binding[1] || "EvidenceStore");
     }
+  }
+
+  const namespaceImportRegex = /\bimport\s*\*\s*as\s*([A-Za-z_$][\w$]*)\s*from\s*(["'])([^"']+)\2/gs;
+  while ((match = namespaceImportRegex.exec(fullCode)) !== null) {
+    if (!resolvesToEvidenceModule(match[3])) continue;
+    bindings.add(`${match[1]}.EvidenceStore`);
   }
   return bindings;
 }

@@ -18,16 +18,17 @@ import { rangeCopyMenu } from './rangecopy.js';
 import { askAiMenuItem, instructionAiItems, stringAiItems } from './ai/interaction/contextual.js';
 import { t, isJa, pick } from './i18n.js';
 import { explain, operandNotes, categoryLabel, isBranch, isCall } from './arm64.js';
+import { supportsBeginnerInstructionNotes } from './viewer/architecture-presentation.js';
 import { GLOSSARY, searchGlossary } from './glossary.js';
 import { CHAPTERS, loadProgress, saveProgress } from './learn.js';
-import { analyzeFunctionCached, describeFunction } from './analyze.js';
+import { analyzeFunctionCached, describeFunction, supportsArm64SemanticAnalysis } from './analyze.js';
 import { makePinpointAnalyzer, makePinpointAccessScanner } from './ui/pinpoint-runtime.js';
 import { levelOf } from './blocks.js';
 import {
   functionStory, blockTitle, blockHeading, blockSummary, roleTag, buildOverlay,
   confidenceText, evidenceText, describeValue,
 } from './narrate.js';
-import { groupByFeature, detectEngine } from './features.js';
+import { groupByFeature, detectEngine, classifyFeaturesAndEngineAsync } from './features.js';
 import { SAMPLE_GUIDE } from './sample.js';
 import { GOALS, goalFromPreset, parseGoal, goalLabel } from './goals.js';
 import { rankCandidates, breakdown, reasonKind } from './rank.js';
@@ -172,7 +173,19 @@ export function showFunctionSummary(app, row) {
   const region = app.store.get('currentRegion');
   if (!region) return;
   const sym = app.symbols;
-  const addr = region.vmAddr + BigInt(row) * 4n;
+  const addr = app.viewer?.rowAddress?.(row) ?? (region.vmAddr + BigInt(row) * 4n);
+  const architecture = String(
+    app.store.get('architecture')
+      ?? app.store.get('capability')?.architecture
+      ?? ''
+  ).trim().toLowerCase();
+  const isVariable = app.viewer?.isVariableAsm?.() ?? false;
+  if (isVariable || !supportsBeginnerInstructionNotes(architecture)) {
+    if (app.router?.navigate) {
+      app.router.navigate(`/function/${addr}/overview`);
+      return;
+    }
+  }
 
   let startRow = row, endRow = row;
   let name = null;
@@ -513,8 +526,13 @@ function rawSection(app, sheet, res, name, region) {
 export function showFeatures(app) {
   const info = app.store.get('fileInfo');
   if (!info) { toast(t('err.openFirst')); return; }
+  const controller = new AbortController();
   const sheet = new Sheet(pick('機能から探す', 'Find by feature'), {
-    onClose: () => { app.backend.cancelSearch(); app.backend.onScanProgress = null; },
+    onClose: () => {
+      controller.abort('features-sheet-closed');
+      app.backend.cancelSearch();
+      app.backend.onScanProgress = null;
+    },
   });
 
   const status = el('div', 'hint', pick(
@@ -567,15 +585,19 @@ export function showFeatures(app) {
     if (!p.all) return;
     fill.style.width = Math.min(100, Math.round((p.done / p.all) * 100)) + '%';
   };
-  collectStrings(app, progress).then((strings) => {
-    const index = {
-      features: groupByFeature(strings),
-      engine: detectEngine(strings),
-      count: strings.length,
-    };
+  collectStrings(app, progress).then(async (strings) => {
+    if (controller.signal.aborted || !sheet.root.isConnected) return;
+    const index = await classifyFeaturesAndEngineAsync(strings, {
+      signal: controller.signal,
+      onProgress: (done, all) => {
+        if (all) fill.style.width = Math.min(100, Math.round((done / all) * 100)) + '%';
+      },
+    });
+    if (controller.signal.aborted || !sheet.root.isConnected) return;
     app.featureIndex = index;
     render(index);
   }).catch((err) => {
+    if (controller.signal.aborted) return;
     bar.remove();
     status.textContent = '';
     alertDialog(t('search.failed'), userError(err));
@@ -822,6 +844,12 @@ function renderDetail(app, sheet, root, d, row, region) {
   const mn = d.mnemonic;
   const ops = d.operands || '';
   const sym = app.symbols;
+  const architecture = String(
+    app.store.get('architecture')
+      ?? app.store.get('capability')?.architecture
+      ?? ''
+  ).trim().toLowerCase();
+  const canExplain = canAsm && supportsBeginnerInstructionNotes(architecture);
 
   if (mn == null) {
     root.append(para(t('detail.notLoaded')));
@@ -835,7 +863,7 @@ function renderDetail(app, sheet, root, d, row, region) {
     prev: prevRow(app, row),
     next: null,
   };
-  const e = canAsm ? explain(mn, ops, d.address, ctx) : null;
+  const e = canExplain ? explain(mn, ops, d.address, ctx) : null;
 
   /* 見出し: アドレスと、関数の中の位置 */
   const head = el('div', 'det-head');
@@ -875,7 +903,7 @@ function renderDetail(app, sheet, root, d, row, region) {
    * ARM64 → 処理 → 関数 → 機能 と、逆向きに辿れるようにする。
    * 解析済みの関数を見ているときだけ出る（ここで解析は始めない）。
    */
-  const sb = region ? semanticBlockAt(app, row) : null;
+  const sb = (region && canExplain) ? semanticBlockAt(app, row) : null;
   if (sb) {
     const bb = block(pick('この行が属する処理', 'The step this line belongs to'));
     bb.append(el('div', 'det-title', blockHeading(sb)));
@@ -960,7 +988,7 @@ function renderDetail(app, sheet, root, d, row, region) {
   if (d.bytes) {
     const b = block(t('detail.bytes'));
     b.append(bigValue(d.bytes, () => copyText(d.bytes, t('toast.copyHex'))));
-    const word = wordValue(d.bytes);
+    const word = canExplain ? wordValue(d.bytes) : null;
     if (word != null) {
       b.append(para(t('detail.bytesHelp', {
         stored: d.bytes,
@@ -981,7 +1009,7 @@ function renderDetail(app, sheet, root, d, row, region) {
 
   /* 場所 */
   if (region) {
-    const off = region.fileOffset + BigInt(row) * 4n;
+    const off = region.fileOffset + (d.address - region.vmAddr);
     const b = block(t('detail.where'));
     b.append(para(t('detail.whereText', {
       region: region.name,
@@ -1028,8 +1056,8 @@ function renderDetail(app, sheet, root, d, row, region) {
       sheet.close(); showFunctionReport(app, d.address, app.lastGoal);
     }));
     // 解析済みの関数の中の行なら、その値がこのあとどこへ行くかまで辿れる
-    if (app.semantic && app.semantic.regionId === (region && region.id) &&
-        app.semantic.model.blockOfRow(row)) {
+    if (canExplain && app.semantic && app.semantic.regionId === (region && region.id) &&
+        app.semantic.model?.blockOfRow?.(row)) {
       actions.append(button(pick('この値の行き先を追う', 'Follow this value'), 'chip', () => {
         sheet.close(); showValueFlow(app, app.semantic.model, row, region);
       }));
@@ -2243,15 +2271,15 @@ function appendNumberFlow(app, parent, addr, offset, fallback) {
 }
 
 async function attachIrFlow(app, host, addr, offset) {
-  if (!host || addr == null) return;
-  const region = app.codeRegion ? app.codeRegion() : null;
-  if (!region || !app.store.get('canDisassemble')) return;
+  if (!host || addr == null || !app.store.get('canDisassemble')) return;
+  const window = functionAnalysisWindow(app, addr);
+  if (!window) return;
+  const { region, start, end } = window;
   const analyze = makeAnalyzer(app, region);
   if (!analyze) return;
   let model = null;
   try {
-    const fn = app.symbols ? app.symbols.functionAt(BigInt(addr)) : null;
-    model = await analyze(BigInt(addr), fn && fn.end != null ? fn.end : null);
+    model = await analyze(start, end);
   } catch { return; }
   if (!model || !host.isConnected) return;
   const rowOfAddress = (a) => {
@@ -3843,23 +3871,59 @@ function comprehensionSection(app, c, sheet, region) {
 
 /* ── 関数レポート（事実 / 推測 / 不明を分けて出す） ─────── */
 
-export function showFunctionReport(app, addr, goal) {
-  const region = app.codeRegion() || app.store.get('currentRegion');
-  if (!region) { toast(t('err.openFirst')); return; }
-  if (app.store.get('currentRegion') !== region) app.selectRegion(region, { silent: true });
+function functionAnalysisWindow(app, addr) {
+  const target = BigInt(addr);
+  const architecture = app?.store?.get?.('architecture')
+    ?? app?.store?.get?.('capability')?.architecture
+    ?? null;
+  const fixed = app?.store?.get?.('capability')?.fixedInstructionSize ?? null;
+  if (architecture && !supportsArm64SemanticAnalysis(architecture)) return null;
+  if (fixed != null && Number(fixed) !== 4) return null;
 
   const sym = app.symbols;
-  const fn = sym.functionCount ? sym.functionAt(addr) : null;
-  const start = fn ? fn.start : addr;
+  const validated = typeof app.validatedFunctionRange === 'function'
+    ? app.validatedFunctionRange(target) : null;
+  if (validated?.ok && validated.region) {
+    const region = validated.region;
+    const totalRows = Number(region.size / 4n);
+    const start = BigInt(validated.start);
+    const end = BigInt(validated.end);
+    const startRow = Number((start - region.vmAddr) / 4n);
+    const endRow = Math.min(totalRows - 1, Number((end - region.vmAddr) / 4n) - 1);
+    if (!(startRow >= 0) || startRow >= totalRows || endRow < startRow) return null;
+    return { region, start, end, startRow, endRow, function: validated.function || null };
+  }
+  // A known function that failed canonical range validation remains failed.
+  if (validated?.function) return null;
+  const fn = sym?.functionCount ? sym.functionAt(target) : null;
+  if (fn) return null;
+  const region = typeof app.executableRegionFor === 'function'
+    ? app.executableRegionFor(target) : null;
+  if (!region) return null;
+  const totalRows = Number(region.size / 4n);
+  const start = target;
   const startRow = Number((start - region.vmAddr) / 4n);
-  const endRow = fn && fn.end != null
-    ? Math.min(app.viewer.totalRows - 1, Number((fn.end - region.vmAddr) / 4n) - 1)
-    : Math.min(app.viewer.totalRows - 1, startRow + 2048);
-  if (!(startRow >= 0) || endRow < startRow) {
+  if (!(startRow >= 0) || startRow >= totalRows) return null;
+  const regionEnd = region.vmAddr + region.size;
+  let end = sym?.functionWindowBound?.(start) ?? null;
+  if (end != null) end = BigInt(end);
+  if (end != null && end > regionEnd) end = regionEnd;
+  if (end != null && end <= start) return null;
+  const endRow = end != null
+    ? Math.min(totalRows - 1, Number((end - region.vmAddr) / 4n) - 1)
+    : Math.min(totalRows - 1, startRow + 2048);
+  if (endRow < startRow) return null;
+  return { region, start, end, startRow, endRow, function: null };
+}
+
+export function showFunctionReport(app, addr, goal) {
+  const window = functionAnalysisWindow(app, addr);
+  if (!window) {
     toast(pick('この場所は関数として読めませんでした。', 'This place could not be read as a function.'));
     return;
   }
-
+  const { region, start, startRow, endRow } = window;
+  const sym = app.symbols;
   const name = sym.nameAt(start);
   const sheet = new Sheet(pick('この関数について', 'About this function'), { size: 'wide' });
   sheet.root.classList.add('function-report-sheet');
@@ -3966,11 +4030,9 @@ function renderFunctionReport(app, sheet, body, report, res, region, goal) {
           sub: f.row >= 0 ? addrHex(region.vmAddr + BigInt(f.row) * 4n) : null,
           disabled: f.row < 0,
           onTap: f.row >= 0 ? () => {
-            sheet.close();
-            app.viewer.goToRow(f.row, 'third');
-            app.viewer.select(f.row, false);
-            app.viewer.mark(f.row);
-          } : null,
+          sheet.close();
+          app.goToAddress(region.vmAddr + BigInt(f.row) * 4n, { announce: true });
+        } : null,
         }));
       }
       if (!shown) {

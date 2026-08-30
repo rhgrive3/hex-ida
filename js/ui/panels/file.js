@@ -218,8 +218,13 @@ export function showStructure(app) {
 
   body.append(para(t("struct.hint")));
 
-  if (!slice || !slice.info) {
-    body.append(noteBox(t("file.rawOnly")));
+  const desc = productDescriptor(info, slice);
+  if (!slice || !slice.info || (desc && desc.formatId && desc.formatId !== 'macho') || !slice.info.ncmds) {
+    const isUnsupported = desc && desc.formatId && desc.formatId !== 'macho';
+    body.append(noteBox(isUnsupported
+      ? pick('ファイル構造はMach-O形式のロードコマンド構造を表示します。ELF/PE形式のヘッダー・セクション構造は「ファイル情報」および「セクション」画面で確認できます。',
+             'File Structure displays Mach-O load command layout. ELF and PE headers and sections can be inspected via File Info and Sections.')
+      : t("file.rawOnly")));
     return;
   }
   const m = slice.info;

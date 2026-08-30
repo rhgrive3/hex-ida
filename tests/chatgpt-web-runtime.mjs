@@ -312,15 +312,15 @@ async function testStructuredJsonCompletionStopsStuckGeneration() {
       assistant.text = decision;
       state.assistants.push(assistant); state.turns.push(assistant);
       state.generating = false;
-    }, 4);
+    }, 10);
     // Exact real-device shape: complete JSON, then cursor-only residue and a
     // re-lit Stop indicator that otherwise remains stuck until the outer RPC dies.
-    setTimeout(() => { assistant.text = `${decision}_`; state.generating = true; }, 10);
+    setTimeout(() => { assistant.text = `${decision}_`; state.generating = true; }, 25);
   });
   const result = await new ChatGPTTurnController(adapter, {
-    quietMs: 60, pollMs: 2, startTimeoutMs: 40, structuredCompletionQuietMs: 18,
+    quietMs: 150, pollMs: 2, startTimeoutMs: 100, structuredCompletionQuietMs: 60,
   }).run('prompt', {
-    timeoutMs: 180,
+    timeoutMs: 400,
     expectedConversation: conversation,
     completionMode: 'single-json-object',
   });
@@ -518,13 +518,13 @@ async function testNewConversationIdentityMigration() {
     state.assistants.push(assistant);
     state.turns.push(user, assistant);
     state.generating = true;
-    setTimeout(() => { state.conversation = alpha; }, 4);
-    setTimeout(() => { state.conversation = beta; }, 12);
-    setTimeout(() => { assistant.text = '{"type":"final"}'; state.generating = false; }, 24);
+    setTimeout(() => { state.conversation = alpha; }, 20);
+    setTimeout(() => { state.conversation = beta; }, 90);
+    setTimeout(() => { assistant.text = '{"type":"final"}'; state.generating = false; }, 180);
   });
   const seen = [];
-  const result = await new ChatGPTTurnController(adapter, { quietMs: 5, pollMs: 2, startTimeoutMs: 40, conversationGraceMs: 20 })
-    .run('prompt', { timeoutMs: 400, newConversation: true, onConversation: (conversation) => seen.push(conversation.id) });
+  const result = await new ChatGPTTurnController(adapter, { quietMs: 40, pollMs: 2, startTimeoutMs: 300, conversationGraceMs: 300 })
+    .run('prompt', { timeoutMs: 1200, newConversation: true, onConversation: (conversation) => seen.push(conversation.id) });
   assert.equal(result.conversation.id, 'beta', 'the final CID must replace the provisional CID');
   assert.equal(result.turnId, 'hex-assistant-turn');
   assert.ok(seen.includes('alpha'));

@@ -2,25 +2,29 @@ import assert from "node:assert/strict";
 import * as facade from "../js/panels.js";
 import * as file from "../js/ui/panels/file.js";
 import * as navigation from "../js/ui/panels/navigation.js";
+import * as search from "../js/ui/panels/search.js";
 import * as settings from "../js/ui/panels/settings.js";
 import * as panelIndex from "../js/ui/panels/index.js";
 
 console.log("Testing Panels compatibility surface...");
 
-// 1. Export presence and identity
+// 1. Export presence and identity. Search intentionally moved to the typed
+// AnalysisQueryAPI-owned panel; both public facades must expose that exact owner.
 assert.equal(facade.showFileInfo, file.showFileInfo);
 assert.equal(facade.showSections, file.showSections);
 assert.equal(facade.showStructure, file.showStructure);
 assert.equal(facade.showJump, navigation.showJump);
-assert.equal(facade.showSearch, navigation.showSearch);
+assert.equal(facade.showSearch, search.showSearch);
 assert.equal(facade.showSettings, settings.showSettings);
 
 assert.equal(panelIndex.showFileInfo, file.showFileInfo);
 assert.equal(panelIndex.showSections, file.showSections);
 assert.equal(panelIndex.showStructure, file.showStructure);
 assert.equal(panelIndex.showJump, navigation.showJump);
-assert.equal(panelIndex.showSearch, navigation.showSearch);
+assert.equal(panelIndex.showSearch, search.showSearch);
 assert.equal(panelIndex.showSettings, settings.showSettings);
+assert.notEqual(search.showSearch, navigation.showSearch,
+  "typed Search must not regress to the legacy backend-direct implementation");
 
 console.log("  ok 1 export presence and identity");
 
@@ -77,7 +81,7 @@ assert.equal(typeof file.showFileInfo, "function");
 assert.equal(typeof file.showSections, "function");
 assert.equal(typeof file.showStructure, "function");
 assert.equal(typeof navigation.showJump, "function");
-assert.equal(typeof navigation.showSearch, "function");
+assert.equal(typeof search.showSearch, "function");
 assert.equal(typeof settings.showSettings, "function");
 console.log("  ok 3 module boundary smoke");
 

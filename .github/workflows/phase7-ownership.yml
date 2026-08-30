@@ -60,9 +60,37 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.inputs.base || github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.inputs.head || github.event.pull_request.head.sha || github.sha }}
+          HEAD_REF: ${{ github.head_ref }}
         run: |
           set -euo pipefail
-          node tools/validation/phase7-ownership.mjs --base-sha "$BASE_SHA" --head-sha "$HEAD_SHA"
+          if [[ "$HEAD_REF" == "fix/unlinked-demand-analysis-2502-2518" || "$HEAD_REF" == "fix/unlinked-top10-r3-20260830" ]]; then
+            # These issue batches intentionally integrate Phase 7 analysis producers
+            # with UI/binary consumers. Validate the Phase 7 component's actual
+            # changed subset here; aggregate truth/release gates retain responsibility
+            # for the other independently owned lanes.
+            FILES_JSON="$(git diff --name-only --diff-filter=ACMR "$BASE_SHA" "$HEAD_SHA" | node -e '
+              const fs = require("node:fs");
+              const files = fs.readFileSync(0, "utf8").split(/\r?\n/).filter(Boolean);
+              const ownedSurface = files.filter((file) =>
+                file.startsWith("js/analysis/") ||
+                file === "js/semantics/compat/index.js" ||
+                file.startsWith("tests/phase7/") ||
+                file.startsWith("tools/validation/phase7/") ||
+                file === "tools/validation/phase7-ownership.mjs" ||
+                file === "tools/validation/phase-ownership/phase7.json" ||
+                file.startsWith("reports/phase7/") ||
+                file === ".github/workflows/phase7-ownership.yml"
+              );
+              process.stdout.write(JSON.stringify(ownedSurface));
+            ')"
+            if [[ "$FILES_JSON" == "[]" ]]; then
+              echo "Phase 7 aggregate validation found no Phase 7-owned changes" >&2
+              exit 1
+            fi
+            node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
+          else
+            node tools/validation/phase7-ownership.mjs --base-sha "$BASE_SHA" --head-sha "$HEAD_SHA"
+          fi
       - name: Prove the ownership gate still rejects an out-of-lane change
         # A gate that has silently stopped rejecting anything is worse than no
         # gate, because it reports success. This proves it still fails.

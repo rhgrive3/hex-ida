@@ -98,8 +98,10 @@ function originInput(instruction, instructionId, operationIds) {
 function registerDescriptor(op) {
   if (!op || op.k !== 'reg') return null;
   const bits = instructionBits(op);
-  if (op.cls === 'zr') return { kind: 'zero', bits };
+  const register31 = op.num == null || (Number.isInteger(op.num) && op.num === 31);
+  if (op.cls === 'zr') return register31 ? { kind: 'zero', bits } : null;
   if (op.cls === 'sp') {
+    if (!register31) return null;
     return { kind: 'register', registerId: 'sp', bits, view: bits === 32 ? 'wsp' : 'sp' };
   }
   if (op.cls === 'gp' && Number.isInteger(op.num) && op.num >= 0 && op.num <= 30) {
@@ -157,11 +159,6 @@ export function createArm64EffectContext(instruction, options = {}) {
     const descriptor = registerDescriptor(op);
     if (!descriptor) return null;
     if (descriptor.kind === 'zero') return constant(descriptor.bits, 0n);
-    // AArch64 W registers are low-32 views of the same 64-bit physical X
-    // register. Model the physical state read at storage width, then project the
-    // W view with an explicit truncation. This matches W writes (which already
-    // zext into the 64-bit physical state) and lets generic SSA see one physical
-    // state cell without architecture-specific W/X alias rules.
     const physicalBits = descriptor.bits === 32 ? 64 : descriptor.bits;
     const physicalView = descriptor.bits === 32
       ? (descriptor.registerId === 'sp' ? 'sp' : descriptor.registerId)
