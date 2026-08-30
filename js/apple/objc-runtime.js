@@ -220,6 +220,10 @@ export function resolveObjcDispatch(index, { receiverType = null, selector, clas
         reason: 'selector candidates contradict the explicit receiver type',
       };
     }
+    // Objective-C lookup stops at the first class in the receiver hierarchy
+    // that provides this selector. Implementations on deeper superclasses are
+    // shadowed, not competing dispatch candidates. Keep every method at the
+    // winning level so category collisions remain conservative.
     const nearestRank = Math.min(...narrowed.map((m) => ranks.get(m.className)));
     candidates = narrowed.filter((m) => ranks.get(m.className) === nearestRank);
   }
@@ -230,6 +234,10 @@ export function resolveObjcDispatch(index, { receiverType = null, selector, clas
   const sameImplementation = !!top && top.imp != null && candidates.every((m) => m.imp != null && m.imp.toString() === top.imp.toString());
   const uniqueByEvidence = !!top && top.imp != null && (!second || sameImplementation || (!cleanReceiver && top.score - second.score >= 0.16));
   const categoryComplete = index.completeness?.categories?.complete === true;
+  // A complete scan of the current Mach-O image is not proof that every
+  // Objective-C implementation available to the runtime has been indexed.
+  // Without a proven receiver type, keep current-image hits as candidates
+  // rather than turning local uniqueness into a process-wide exact target.
   const partialBlocksVerification = cleanReceiver ? !categoryComplete : true;
   const unambiguous = uniqueByEvidence && !partialBlocksVerification;
   return {
