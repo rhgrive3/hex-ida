@@ -4,6 +4,7 @@ import test from 'node:test';
 
 const url = new URL('../../../js/names.js', import.meta.url);
 
+// Keep this focused regression on the human-authored exact head after clean restacks.
 test('weak legacy notes are candidates, not automatic strong-identity data', async () => {
   const source = await readFile(url, 'utf8');
   const loadAndImport = source.slice(source.indexOf('  load() {'), source.indexOf('  _saveFailure('));
