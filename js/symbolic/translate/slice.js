@@ -13,6 +13,26 @@ import {
   ASSUMPTION_TRUST,
   COMPLETENESS_STATUS,
 } from './support-matrix.js';
+import { isCanonicalExactMemoryForwarding } from '../../semantics/memoryssa/queries.js';
+
+function canonicalDefinitionIds(load) {
+  if (!isCanonicalExactMemoryForwarding(load?.memoryForwarding)) return new Set();
+  return new Set((load.memoryForwarding.contributingDefinitionIds || []).map(String));
+}
+
+function canonicalStoreInstructions(load, ir) {
+  const definitionIds = canonicalDefinitionIds(load);
+  if (!definitionIds.size) return [];
+  return (ir?.instructions || []).filter((candidate) => {
+    if (candidate?.op !== OP.STORE) return false;
+    const ids = [
+      candidate.memDef?.definitionId,
+      ...(candidate.memDefs || []).map((item) => item?.definitionId),
+      candidate.extra?.memoryDefinitionId,
+    ].filter((id) => id != null).map(String);
+    return ids.some((id) => definitionIds.has(id));
+  });
+}
 
 export function backwardDependencySlice(target, options = {}) {
   const ir = options.ir || null;
@@ -115,9 +135,13 @@ export function backwardDependencySlice(target, options = {}) {
       }
     }
 
-    // Traverse reaching store if load
-    if (inst.op === OP.LOAD && inst.reachingStore) {
-      visitInstruction(inst.reachingStore, depth + 1);
+    // Traverse only stores named by the canonical capability. A structural
+    // reachingStore link is intentionally ignored, including when no IR map
+    // is supplied to resolve the canonical definition IDs.
+    if (inst.op === OP.LOAD) {
+      for (const store of canonicalStoreInstructions(inst, ir)) {
+        visitInstruction(store, depth + 1);
+      }
     }
 
     if (instId) {

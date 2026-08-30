@@ -39,6 +39,23 @@ function memorySsaContractInput(input) {
   };
 }
 
+// Keep the validated MemorySSA contract as the canonical semantic object while
+// carrying its proof-bearing query indexes through the compatibility boundary.
+// These fields are produced by the MemorySSA builder; they are not a second
+// memory model and are deliberately copied without interpretation here.
+function memorySsaProjectionArtifact(input, contract) {
+  if (!input || typeof input !== 'object') return contract;
+  const artifact = { ...contract };
+  for (const key of [
+    'buildVersion', 'accessMetadata', 'byteCoverage', 'identity', 'snapshotId',
+    'canonicalIrIdentity', 'canonicalAccessBindings', 'completeness', 'status', 'unknowns', 'cancelled', 'truncated',
+    'useDefLinks', 'defUseLinks', 'blockStates', 'canonicalDigest',
+  ]) {
+    if (Object.hasOwn(input, key)) artifact[key] = input[key];
+  }
+  return artifact;
+}
+
 function sameInstruction(node, instructionIds) {
   return sourceInstructionIds(node.origin).some((id) => instructionIds.has(id));
 }
@@ -287,9 +304,10 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
     semanticSsaContractInput(ssaInput), options.ssaValidationOptions || {},
   );
   const memorySsaInput = options.memorySsa ?? null;
-  const memorySsa = memorySsaInput == null ? null : createMemorySsaContract(
+  const memorySsaContract = memorySsaInput == null ? null : createMemorySsaContract(
     memorySsaContractInput(memorySsaInput), options.memorySsaValidationOptions || {},
   );
+  const memorySsa = memorySsaInput == null ? null : memorySsaProjectionArtifact(memorySsaInput, memorySsaContract);
   const canonicalCfg = options.cfg ?? options.semanticCfg ?? null;
   if (ssa && ssa.functionId !== ir.functionId) throw new TypeError('semantic-v2-v1-compat-ssa-function-mismatch');
   if (memorySsa && memorySsa.functionId !== ir.functionId) throw new TypeError('semantic-v2-v1-compat-memoryssa-function-mismatch');
@@ -421,7 +439,7 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
   addScalarSsaPhis(projected, ssa, valuesById, blockIndexById, instructionBySemanticId);
   appendFunctionUnknowns(projected, ir);
 
-  if (memorySsa) attachMemorySsa(projected, memorySsa, valuesById, instructionBySemanticId, blockIndexById);
+  if (memorySsa) attachMemorySsa(projected, memorySsa, valuesById, instructionBySemanticId, blockIndexById, ir);
   else attachFallbackMemory(projected);
 
   for (const inst of projected.instructions) {
