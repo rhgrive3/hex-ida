@@ -60,6 +60,12 @@ function address(value, code) {
   } catch { fail(code); return 0n; }
 }
 
+function producerId(value) {
+  if (value == null) return 'unknown';
+  if (typeof value !== 'string' || value.length === 0) fail('discovery-evidence-invalid-producer-id');
+  return value;
+}
+
 /**
  * How much of a function's extent one piece of evidence describes.
  *
@@ -87,9 +93,9 @@ export function createDiscoveryEvidence(input = {}) {
     extentRole,
     start: input.start == null ? null : address(input.start, 'discovery-evidence-invalid-start').toString(),
     regions: deepFreeze((input.regions ?? []).map((region) => createRegion(region))),
-    // The producer that supplied this. Architecture-specific producers are
-    // fine; what must not happen is the *fusion* knowing what they mean.
-    producerId: String(input.producerId ?? 'unknown'),
+    // Producer identity participates in corroboration. Pre-registry evidence
+    // may omit it, but any explicit identity must already be canonical.
+    producerId: producerId(input.producerId),
     architectureId: input.architectureId == null ? null : String(input.architectureId),
     name: input.name == null ? null : String(input.name),
     confidence: input.confidence == null ? null : String(input.confidence),
