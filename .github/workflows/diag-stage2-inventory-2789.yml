@@ -3,7 +3,7 @@ on:
   push:
     branches: [diag/stage2-inventory-2789]
 permissions:
-  contents: read
+  contents: write
 jobs:
   inventory-diff:
     runs-on: ubuntu-latest
@@ -12,8 +12,16 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Regenerate and show canonical diff
+      - name: Regenerate canonical inventory
         run: |
           set -euo pipefail
           node tools/validation/stage2/build-profile-denominator-inventory.mjs
-          git diff -- tools/validation/stage2/profile-denominator-inventory.json
+          git diff --check
+          if git diff --quiet -- tools/validation/stage2/profile-denominator-inventory.json; then
+            exit 0
+          fi
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add tools/validation/stage2/profile-denominator-inventory.json
+          git commit -m 'test(stage2): sync canonical denominator inventory'
+          git push
