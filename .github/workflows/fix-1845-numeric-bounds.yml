@@ -1,0 +1,90 @@
+name: fix-1845-numeric-bounds
+on:
+  push:
+    branches: [fix/1845-pdb-numeric-record-bounds]
+    paths: [.github/workflows/fix-1845-numeric-bounds.yml]
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/1845-pdb-numeric-record-bounds
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Apply record-local numeric bounds
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('js/analysis/debug/pdb.js')
+          s=p.read_text()
+          s=s.replace("const { value: sizeBytes, next } = readNumeric(view, bytes, sizeOffset);", "const numeric = readNumeric(view, bytes, sizeOffset, end);\n      if (!numeric) break;\n      const { value: sizeBytes, next } = numeric;", 1)
+          s=s.replace("const { value: sizeBytes } = readNumeric(view, bytes, body + 8);\n      types.set(index, { leaf, kind: 'array', elementType: view.getUint32(body, true), sizeBytes });", "const numeric = readNumeric(view, bytes, body + 8, end);\n      if (!numeric) break;\n      const { value: sizeBytes } = numeric;\n      types.set(index, { leaf, kind: 'array', elementType: view.getUint32(body, true), sizeBytes });", 1)
+          old="""function readNumeric(view, bytes, offset) {
+  const raw = view.getUint16(offset, true);
+  if (raw < 0x8000) return { value: raw, next: offset + 2 };
+  switch (raw) {
+    case 0x8000: return { value: view.getInt8(offset + 2), next: offset + 3 };
+    case 0x8001: return { value: view.getInt16(offset + 2, true), next: offset + 4 };
+    case 0x8002: return { value: view.getUint16(offset + 2, true), next: offset + 4 };
+    case 0x8003: return { value: view.getInt32(offset + 2, true), next: offset + 6 };
+    case 0x8004: return { value: view.getUint32(offset + 2, true), next: offset + 6 };
+    default: return { value: null, next: offset + 2 };
+  }
+}
+"""
+          new="""function readNumeric(view, bytes, offset, end = bytes.length) {
+  if (offset + 2 > end) return null;
+  const raw = view.getUint16(offset, true);
+  if (raw < 0x8000) return { value: raw, next: offset + 2 };
+  const requiredEnd = raw === 0x8000 ? offset + 3
+    : (raw === 0x8001 || raw === 0x8002) ? offset + 4
+      : (raw === 0x8003 || raw === 0x8004) ? offset + 6
+        : offset + 2;
+  if (requiredEnd > end) return null;
+  switch (raw) {
+    case 0x8000: return { value: view.getInt8(offset + 2), next: offset + 3 };
+    case 0x8001: return { value: view.getInt16(offset + 2, true), next: offset + 4 };
+    case 0x8002: return { value: view.getUint16(offset + 2, true), next: offset + 4 };
+    case 0x8003: return { value: view.getInt32(offset + 2, true), next: offset + 6 };
+    case 0x8004: return { value: view.getUint32(offset + 2, true), next: offset + 6 };
+    default: return { value: null, next: offset + 2 };
+  }
+}
+"""
+          if old not in s: raise SystemExit('readNumeric source drifted')
+          s=s.replace(old,new,1)
+          old="""  while (offset + 4 <= end) {
+    const leaf = view.getUint16(offset, true);
+    if (leaf !== LF_MEMBER) break;
+    const typeIndex = view.getUint32(offset + 4, true);
+    const { value: fieldOffset, next } = readNumeric(view, bytes, offset + 8);
+    const nameEntry = cstringWithNext(bytes, next, end);
+"""
+          new="""  while (offset + 8 <= end) {
+    const leaf = view.getUint16(offset, true);
+    if (leaf !== LF_MEMBER) break;
+    const typeIndex = view.getUint32(offset + 4, true);
+    const numeric = readNumeric(view, bytes, offset + 8, end);
+    if (!numeric) break;
+    const { value: fieldOffset, next } = numeric;
+    const nameEntry = cstringWithNext(bytes, next, end);
+"""
+          if old not in s: raise SystemExit('field list source drifted')
+          s=s.replace(old,new,1)
+          p.write_text(s)
+          t=Path('tests/phase7/debug/pdb-numeric-record-bounds-1845.test.mjs')
+          t.write_text("""import assert from 'node:assert/strict';\nimport test from 'node:test';\nimport { parseTpiStream } from '../../../js/analysis/debug/pdb.js';\n\nfunction tpi(recordBytes) {\n  const bytes = new Uint8Array(56 + recordBytes.length);\n  const view = new DataView(bytes.buffer);\n  view.setUint32(4, 56, true);\n  view.setUint32(8, 0x1000, true);\n  bytes.set(recordBytes, 56);\n  return bytes;\n}\n\ntest('LF_ARRAY without its numeric leaf fails closed at record end', () => {\n  const record = Uint8Array.from([0x0a,0x00,0x03,0x15, 0,0,0,0, 0,0,0,0]);\n  assert.doesNotThrow(() => parseTpiStream(tpi(record)));\n  const parsed = parseTpiStream(tpi(record));\n  assert.equal(parsed.types.size, 0);\n  assert.equal(parsed.complete, false);\n});\n\ntest('LF_ARRAY never consumes the next record as its numeric leaf', () => {\n  const first = [0x0a,0x00,0x03,0x15, 0,0,0,0, 0,0,0,0];\n  const next = [0x02,0x00,0x01,0x12];\n  const parsed = parseTpiStream(tpi(Uint8Array.from([...first, ...next])));\n  assert.equal(parsed.types.has(0x1000), false);\n});\n\ntest('short LF_FIELDLIST member cannot read type or numeric data past its record', () => {\n  const record = Uint8Array.from([0x06,0x00,0x03,0x12, 0x0d,0x15,0x00,0x00]);\n  assert.doesNotThrow(() => parseTpiStream(tpi(record)));\n  const parsed = parseTpiStream(tpi(record));\n  assert.deepEqual(parsed.types.get(0x1000)?.members, []);\n});\n""")
+          Path('.github/workflows/fix-1845-numeric-bounds.yml').unlink()
+          PY
+          git diff --check
+          node --test tests/phase7/debug/pdb-numeric-record-bounds-1845.test.mjs
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m "fix(pdb): bound numeric leaves to CodeView records (#1845)"
+          git push origin HEAD:fix/1845-pdb-numeric-record-bounds
