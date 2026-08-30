@@ -59,7 +59,8 @@ s = s.replace('Number(ops[0]?.bits || 0)', 'structuredRegisterWidth(ops[0])')
 p.write_text(s)
 
 # Add a focused public-path regression. Legal numeric widths stay semantic;
-# malformed structured widths must not produce definite operations.
+# malformed structured widths may carry only explicit unknown markers, never
+# definite register/value/memory/system operations.
 test = r'''import assert from 'node:assert/strict';
 
 import { liftArm64MachineEffects } from '../../js/targets/architecture/arm64/effects/index.js';
@@ -76,7 +77,7 @@ function lift(mnemonic, ops) {
 function assertFailClosed(bundle, label) {
   assert.ok(bundle, `${label}: family remains explicitly owned`);
   assert.equal(bundle.completeness, 'partial', `${label}: malformed structured width must be partial`);
-  assert.equal(bundle.operations.length, 0, `${label}: malformed structured width must emit no definite operation`);
+  assert.ok(bundle.operations.every((operation) => operation.kind === 'unknown'), `${label}: malformed width must emit no definite operation`);
 }
 
 assert.equal(instructionBits({ bits:64 }), 64);
