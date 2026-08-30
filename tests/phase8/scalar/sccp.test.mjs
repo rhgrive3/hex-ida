@@ -93,6 +93,18 @@ test('a phi over two reachable predecessors with different constants is not cons
   assert.equal(facts.ranges.get(merged.id) != null, true);
 });
 
+test('a reachable phi with no incoming predecessors is unknown, never an empty set', () => {
+  const f = fixture('phi-no-incoming');
+  f.block(0).branch(1);
+  f.block(1);
+  const merged = f.phi([], 32);
+  f.ret();
+  const facts = analyze(f.build()).facts;
+  assert.equal(constantOf(facts, merged), null);
+  assert.equal(isFull(facts.ranges.get(merged.id)), true, 'a reachable predecessor-less phi cannot prove no values');
+  assert.match(facts.overdefinedReasons.get(merged.id) ?? '', /no executable predecessors/);
+});
+
 test('an unresolved branch leaves both arms executable', () => {
   const f = fixture('unresolved');
   f.block(0).conditionalBranch(f.opaque(1), 1, 2);
@@ -235,6 +247,27 @@ test('a work budget that runs out reports partial, not complete', () => {
   runPassTransaction(state, PASS, { analysis: state, sccpLimits: { maxWorkItems: 20, maxVisitsPerValue: 2 } }, {});
   const facts = state.get('ranges');
   assert.equal(facts.completeness, 'partial', 'a fixed point that was not reached is not a fixed point');
+});
+
+test('non-finite and coerced work limits publish conservative partial facts', () => {
+  for (const invalidLimit of [
+    { maxWorkItems: Number.NaN },
+    { maxWorkItems: Number.POSITIVE_INFINITY },
+    { maxWorkItems: '20' },
+    { maxVisitsPerValue: '2' },
+  ]) {
+    const f = fixture(`invalid-limit-${Object.keys(invalidLimit)[0]}-${String(Object.values(invalidLimit)[0])}`);
+    f.block(0);
+    const value = f.binary('add', f.constant(1, 32), f.constant(2, 32), 32);
+    f.ret();
+    const state = seedAnalysisState(f.build());
+    runPassTransaction(state, PASS, { analysis: state, sccpLimits: invalidLimit }, {});
+    const facts = state.get('ranges');
+    assert.equal(facts.completeness, 'partial', `${JSON.stringify(invalidLimit)} must not bypass the resource bound`);
+    assert.equal(facts.constants.size, 0);
+    assert.equal(facts.facts.get(value.id)?.status, 'partial');
+    assert.equal(isFull(facts.facts.get(value.id)?.range), true);
+  }
 });
 
 test('two runs over the same input agree exactly', () => {
@@ -487,6 +520,23 @@ test('malformed predicates and stale producer identities fail closed', () => {
   assert.deepEqual([...unsupportedFacts.unreachableBlockIndexes], [], 'unsupported branch evidence keeps both arms conservative');
 });
 
+test('a malformed or non-one-bit comparator cannot refine or prune either CFG edge', () => {
+  const f = fixture('malformed-comparator-branch');
+  f.block(0);
+  const input = f.opaque(8);
+  const malformed = f.binary('eq', input, f.constant(0, 8), 8);
+  f.conditionalBranch(malformed, 1, 2);
+  f.block(1).ret();
+  f.block(2).ret();
+  const facts = analyze(f.build()).facts;
+  const trueEdge = facts.edgeFacts.get('0->1:conditional-true');
+  const falseEdge = facts.edgeFacts.get('0->2:conditional-false');
+  assert.equal(trueEdge.reachable, true);
+  assert.equal(falseEdge.reachable, true);
+  assert.equal(trueEdge.facts.has(input.id), false, 'malformed predicate evidence cannot narrow the true edge');
+  assert.equal(falseEdge.facts.has(input.id), false, 'malformed predicate evidence cannot narrow the false edge');
+});
+
 function identityShapeFixture(name = 'identity-shape') {
   const f = fixture(name);
   f.block(0);
@@ -528,6 +578,104 @@ test('canonical identity changes when semantic incoming, extra, origin, or edge-
     assert.equal(after.valid, true, `${label}: mutated IR still has a canonical fallback identity`);
     assert.notEqual(after.identity.semanticIrId, before.identity.semanticIrId, `${label}: semantic mutation must invalidate the old identity`);
   }
+});
+
+test('canonical identity re-derives the current IR after an in-place mutation', () => {
+  const ir = identityShapeFixture('identity-in-place-cache');
+  const first = canonicalAnalysisIdentity({ ir });
+  assert.equal(first.valid, true);
+  ir.blocks[0].successorEdges[0].kind = 'exceptional';
+  const second = canonicalAnalysisIdentity({
+    ir,
+    __phase8CanonicalIdentity: { ir, result: first },
+  });
+  assert.equal(second.valid, true);
+  assert.notEqual(second.identity.semanticIrId, first.identity.semanticIrId);
+});
+
+test('canonical identity distinguishes typed scalar metadata and rejects non-finite metadata', () => {
+  const bigint = identityShapeFixture('identity-bigint');
+  bigint.identityMarker = 1n;
+  const taggedString = identityShapeFixture('identity-tagged-string');
+  taggedString.identityMarker = 'bigint:1';
+  const bigintIdentity = canonicalAnalysisIdentity({ ir: bigint });
+  const stringIdentity = canonicalAnalysisIdentity({ ir: taggedString });
+  assert.equal(bigintIdentity.valid, true);
+  assert.equal(stringIdentity.valid, true);
+  assert.notEqual(bigintIdentity.identity.semanticIrId, stringIdentity.identity.semanticIrId);
+  for (const marker of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+    const malformed = identityShapeFixture(`identity-non-finite-${String(marker)}`);
+    malformed.identityMarker = marker;
+    assert.equal(canonicalAnalysisIdentity({ ir: malformed }).valid, false, `${String(marker)} must fail closed`);
+  }
+});
+
+test('canonical identity rejects malformed non-finite or null source IDs', () => {
+  const ir = identityShapeFixture('identity-source-malformed');
+  const valid = canonicalAnalysisIdentity({ ir });
+  assert.equal(valid.valid, true);
+  for (const field of ['binaryId', 'functionId', 'snapshotId', 'semanticIrId', 'ssaId', 'analyzerVersion']) {
+    for (const malformed of [null, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+      const source = { [field]: malformed };
+      const result = canonicalAnalysisIdentity({ ir, analysisIdentity: source });
+      assert.equal(result.valid, false, `${field}=${String(malformed)} must fail closed`);
+    }
+  }
+});
+
+test('flat instruction containers participate in canonical identity', () => {
+  const ir = identityShapeFixture('identity-flat-instructions');
+  ir.instructions = [{
+    op: 'metadata', sub: 'flat', block: 0, row: 99, args: [],
+    extra: { marker: 'first' }, origin: { instructionIds: ['flat-instruction'] },
+  }];
+  const before = canonicalAnalysisIdentity({ ir });
+  assert.equal(before.valid, true);
+  ir.instructions[0].extra.marker = 'changed';
+  const after = canonicalAnalysisIdentity({ ir });
+  assert.equal(after.valid, true);
+  assert.notEqual(after.identity.semanticIrId, before.identity.semanticIrId);
+});
+
+test('value provenance is recomputed when an origin mutates in place', () => {
+  const ir = identityShapeFixture('identity-provenance-recompute');
+  const input = ir.values.find((value) => value.kind === 'arg');
+  const first = analyze(ir, { ir }).facts;
+  const firstOrigin = first.facts.get(input.id).provenance.instructionIds;
+  input.origin.instructionIds[0] = 'mutated-origin';
+  const second = analyze(ir, { ir }).facts;
+  const secondOrigin = second.facts.get(input.id).provenance.instructionIds;
+  assert.equal(firstOrigin.length, 1);
+  assert.deepEqual([...secondOrigin], ['mutated-origin']);
+  assert.notDeepEqual([...secondOrigin], [...firstOrigin]);
+});
+
+test('published SCCP maps and nested provenance are immutable snapshots', () => {
+  const f = fixture('immutable-publication');
+  f.block(0).conditionalBranch(f.constant(1, 1), 1, 2);
+  f.block(1).ret();
+  f.block(2).ret();
+  const ir = f.build();
+  const facts = analyze(ir, { ir }).facts;
+  assert.equal(typeof facts.facts.set, 'undefined');
+  assert.equal(typeof facts.edgeFacts.get('0->1:conditional-true').facts.set, 'undefined');
+  assert.throws(() => facts.facts.set('forged', null), TypeError);
+  assert.throws(() => facts.edgeFacts.get('0->1:conditional-true').facts.set('forged', null), TypeError);
+  const product = facts.facts.get(ir.values.find((value) => value.def?.op === 'const').id);
+  assert.throws(() => product.provenance.instructionIds.push('forged'), TypeError);
+  assert.equal(facts.publicationDigest, analyze(ir, { ir }).facts.publicationDigest);
+
+  const switched = fixture('immutable-switch-predicate');
+  switched.block(0);
+  const selector = switched.opaque(8);
+  switched.switchBranch(selector, [[1n, 1], [2n, 1]], 2);
+  switched.block(1).ret();
+  switched.block(2).ret();
+  const switchFacts = analyze(switched.build()).facts;
+  const sharedTarget = switchFacts.edgeFacts.get('0->1:switch-case');
+  assert.equal(Object.isFrozen(sharedTarget.predicate), true);
+  assert.equal(Object.isFrozen(sharedTarget.predicate.caseValue), true);
+  assert.throws(() => sharedTarget.predicate.caseValue.push(3n), TypeError);
 });
 
 test('a supplied identity is rejected when it is not bound to the supplied IR shape', () => {

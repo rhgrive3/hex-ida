@@ -13,12 +13,21 @@ const REQUIRED_FIELDS = Object.freeze([
 ]);
 
 function token(value) {
-  if (typeof value === 'string') return value.trim() || null;
-  if (typeof value === 'bigint') return value.toString();
-  if (typeof value === 'number') return Number.isSafeInteger(value) ? String(value) : null;
+  if (typeof value === 'string') {
+    const text = value.trim();
+    if (!text) return null;
+    // Reserve the scalar tags used for non-string IDs so a string such as
+    // `bigint:1` cannot alias the canonical identity of 1n.
+    return /^(?:bigint|number):/.test(text) ? `string:${text}` : text;
+  }
+  if (typeof value === 'bigint') return `bigint:${value}`;
+  if (typeof value === 'number') return Number.isSafeInteger(value) ? `number:${Object.is(value, -0) ? '-0' : value}` : null;
   if (value == null) return null;
   try {
-    return `id:${stableDigest(value)}`;
+    // IDs are occasionally represented by structured scalar handles. Use the
+    // same collision-free typed encoding as the semantic graph; the generic
+    // JSON digest would collapse null, NaN and Infinity into one spelling.
+    return `id:${fastJsonGraphDigest(value)}`;
   } catch {
     return null;
   }
@@ -149,26 +158,88 @@ function fastJsonTextDigest(text) {
 }
 
 function fastFrozenOriginDigest(value) {
-  // Canonical OriginSets contain only JSON data and their producer fixes the
-  // property order. JSON.stringify's native traversal is substantially cheaper
-  // than repeatedly allocating tagged strings in the generic walker.
-  return fastJsonTextDigest(JSON.stringify(value));
+  return fastJsonGraphDigest(value);
+}
+
+function typedIdentityText(root) {
+  const active = new Set();
+  const visit = (value) => {
+    if (value === null) return 'null;';
+    switch (typeof value) {
+      case 'undefined':
+      case 'function':
+      case 'symbol':
+        throw new TypeError('identity-invalid-semantic-metadata');
+      case 'string': return `string:${value.length}:${value};`;
+      case 'boolean': return value ? 'boolean:1;' : 'boolean:0;';
+      case 'number': {
+        if (!Number.isFinite(value)) throw new TypeError('identity-non-finite-number');
+        return `number:${Object.is(value, -0) ? '-0' : String(value)};`;
+      }
+      case 'bigint': return `bigint:${value};`;
+      default: break;
+    }
+    if (active.has(value)) throw new TypeError('identity-cyclic-semantic-metadata');
+    active.add(value);
+    try {
+      if (Array.isArray(value)) {
+        return `array:${value.length}[${value.map(visit).join('')}]`;
+      }
+      if (value instanceof Map) {
+        const entries = [...value.entries()]
+          .map(([key, item]) => `${visit(key)}=>${visit(item)}`)
+          .sort();
+        return `map:${entries.length}{${entries.join('')}}`;
+      }
+      if (value instanceof Set) {
+        const values = [...value.values()].map(visit).sort();
+        return `set:${values.length}{${values.join('')}}`;
+      }
+      if (value instanceof Date) return `date:${value.toISOString().length}:${value.toISOString()};`;
+      const prototype = Object.getPrototypeOf(value);
+      if (prototype !== Object.prototype && prototype !== null) {
+        throw new TypeError('identity-unsupported-semantic-metadata');
+      }
+      const keys = Object.keys(value).sort();
+      return `object:${keys.length}{${keys.map((key) => `key:${key.length}:${key};${visit(value[key])}`).join('')}}`;
+    } finally {
+      active.delete(value);
+    }
+  };
+  return visit(root);
+}
+
+function identityJsonReplacer(key, item) {
+  const source = this != null && Object.hasOwn(this, key) ? this[key] : item;
+  if (source === null) return null;
+  const type = typeof source;
+  if (type === 'undefined' || type === 'function' || type === 'symbol') {
+    throw new TypeError('identity-invalid-semantic-metadata');
+  }
+  if (type === 'string') return source.startsWith('\u0000') ? `\u0000${source}` : source;
+  if (type === 'bigint') return `\u0000bigint:${source}`;
+  if (type === 'number') {
+    if (!Number.isFinite(source)) throw new TypeError('identity-non-finite-number');
+    return Object.is(source, -0) ? '\u0000number:-0' : source;
+  }
+  if (type === 'object') {
+    if (source instanceof Date) {
+      const iso = source.toISOString();
+      return `\u0000date:${iso.length}:${iso}`;
+    }
+    if (source instanceof Map) return `\u0000map:${typedIdentityText(source)}`;
+    if (source instanceof Set) return `\u0000set:${typedIdentityText(source)}`;
+    const prototype = Object.getPrototypeOf(source);
+    if (prototype !== Object.prototype && prototype !== null && !Array.isArray(source)) {
+      throw new TypeError('identity-unsupported-semantic-metadata');
+    }
+  }
+  return item;
 }
 
 function fastJsonGraphDigest(value) {
-  const text = JSON.stringify(value, (_key, item) => {
-    if (item == null) return item;
-    const type = typeof item;
-    if (type === 'bigint') return `bigint:${item}`;
-    if (type === 'undefined' || type === 'function' || type === 'symbol') {
-      throw new TypeError('identity-invalid-semantic-metadata');
-    }
-    if (type === 'object' && !Array.isArray(item)) {
-      const prototype = Object.getPrototypeOf(item);
-      if (prototype !== Object.prototype && prototype !== null) throw new TypeError('identity-unsupported-semantic-metadata');
-    }
-    return item;
-  });
+  const text = JSON.stringify(value, identityJsonReplacer);
+  if (text === undefined) throw new TypeError('identity-invalid-semantic-metadata');
   return fastJsonTextDigest(text);
 }
 
@@ -182,7 +253,11 @@ function fastJsonGraphDigest(value) {
  */
 function semanticObject(value, seen = new Set(), skip = NO_SKIPPED_KEYS, path = '$', memo = null) {
   if (value == null || typeof value === 'string' || typeof value === 'boolean'
-      || typeof value === 'number' || typeof value === 'bigint') return value;
+      || typeof value === 'bigint') return value;
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) throw new TypeError('identity-non-finite-number');
+    return value;
+  }
   if (typeof value === 'undefined' || typeof value === 'function' || typeof value === 'symbol') {
     throw new TypeError('identity-non-semantic-value');
   }
@@ -205,18 +280,22 @@ function semanticObject(value, seen = new Set(), skip = NO_SKIPPED_KEYS, path = 
           semanticObject(key, seen, NO_SKIPPED_KEYS, `${path}.mapKey[${index}]`, memo),
           semanticObject(item, seen, NO_SKIPPED_KEYS, `${path}.mapValue[${index}]`, memo),
         ])
-        .sort((left, right) => stableDigest(left).localeCompare(stableDigest(right))),
+        .sort((left, right) => fastJsonGraphDigest(left).localeCompare(fastJsonGraphDigest(right))),
     };
   } else if (value instanceof Set) {
     result = {
       type: 'Set',
       values: [...value.values()]
         .map((item, index) => semanticObject(item, seen, NO_SKIPPED_KEYS, `${path}.set[${index}]`, memo))
-        .sort((left, right) => stableDigest(left).localeCompare(stableDigest(right))),
+        .sort((left, right) => fastJsonGraphDigest(left).localeCompare(fastJsonGraphDigest(right))),
     };
   } else if (value instanceof Date) {
     result = { type: 'Date', value: value.toISOString() };
   } else {
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) {
+      throw new TypeError('identity-unsupported-semantic-metadata');
+    }
     result = {};
     for (const key of Object.keys(value).sort()) {
       if (skip.has(key)) continue;
@@ -427,6 +506,14 @@ function irShape(ir) {
     shape.values = Array.isArray(ir.values)
       ? ir.values.map((value) => valueShape(value, memo, digests, definitionCache))
         .sort((left, right) => String(left.id).localeCompare(String(right.id))) : [];
+    // Some canonical IR producers expose a flat instruction table in addition
+    // to block-local `insts`. It is semantic input, not derived bookkeeping:
+    // omitting it lets an in-place instruction mutation reuse a stale product.
+    shape.instructions = ir.instructions == null
+      ? null
+      : Array.isArray(ir.instructions)
+        ? ir.instructions.map((instruction) => instructionShape(instruction, memo, digests, definitionCache))
+        : semanticObject(ir.instructions, new Set(), NO_SKIPPED_KEYS, '$.instructions', memo);
     // Loop/back-edge facts are canonical upstream inputs to widening.  Keep
     // their scalar shape when present, while avoiding Maps/Sets used only as
     // derived lookup caches in graph products.
@@ -437,7 +524,7 @@ function irShape(ir) {
     try {
       shape.originTableDigest = `origin-table:${fastFrozenOriginDigest(digests.originValues)}`;
     } catch {
-      shape.originTableDigest = stableDigest(digests.originValues);
+      return null;
     }
     return shape;
   } catch {
@@ -467,6 +554,27 @@ function field(candidate, ...names) {
     if (value != null) return value;
   }
   return null;
+}
+
+function hasMalformedIdentityFields(candidate) {
+  if (candidate == null) return false;
+  if (typeof candidate !== 'object' || Array.isArray(candidate)) return true;
+  const aliases = [
+    ['binaryId'], ['functionId'], ['snapshotId'], ['semanticIrId', 'semanticIRId'],
+    ['ssaId'], ['analyzerVersion', 'semanticSchemaVersion'],
+  ];
+  try {
+    for (const names of aliases) {
+      for (const name of names) {
+        if (!Object.hasOwn(candidate, name)) continue;
+        const raw = candidate[name];
+        if (raw == null || token(raw) == null) return true;
+      }
+    }
+    return false;
+  } catch {
+    return true;
+  }
 }
 
 function sameKnownSourceFields(identity, source) {
@@ -516,7 +624,7 @@ function sourceIsBoundToShape(source, identity, shapeDigest, shape) {
 
 function ssaIdentityDigest(semanticIrId, values) {
   try { return fastJsonGraphDigest({ semanticIrId, values }); }
-  catch { return stableDigest({ semanticIrId, values }); }
+  catch { return null; }
 }
 
 export function isValidatedAnalysisIdentity(identity) {
@@ -544,33 +652,32 @@ export function canonicalAnalysisIdentity(context = {}) {
     values: seededSsa?.values ?? [],
     origin: seededOrigins?.functionOrigin ?? null,
   } : null);
-  // The vertical resolves this once against the canonical IR and passes the
-  // result through its private context.  Recomputing the full shape digest in
-  // SCCP, GVN and induction is needlessly expensive on the corpus hot path;
-  // only accept the cache when it is tied to the exact same IR object.
-  const cached = context?.__phase8CanonicalIdentity;
-  if (cached?.ir != null && cached.ir === ir && cached.result != null) return cached.result;
   const source = sourceIdentity(context, ir);
   if (explicitlyMissingIdentity(context, ir)) return { identity: null, valid: false, reason: 'analysis identity is null' };
   if (source != null && (typeof source !== 'object' || Array.isArray(source))) {
     return { identity: null, valid: false, reason: 'analysis identity is malformed' };
   }
+  if (hasMalformedIdentityFields(source)
+      || hasMalformedIdentityFields(ir?.analysisIdentity ?? ir?.identity)) {
+    return { identity: null, valid: false, reason: 'analysis identity is malformed' };
+  }
   const shape = irShape(ir);
   if (shape == null) return { identity: null, valid: false, reason: 'canonical Semantic IR identity is unavailable' };
-  // `shape` is the acyclic plain projection assembled above.  Use the same
-  // width-preserving direct serializer as canonical origins; falling back to
-  // the public digest keeps malformed/host values fail-closed if a future IR
-  // field escapes the projection contract.
+  // `shape` is the acyclic plain projection assembled above. Use the same
+  // width-preserving typed serializer as canonical origins; malformed values
+  // fail closed instead of falling back to a lossy alternate representation.
   let shapeDigest;
   try { shapeDigest = `shape:${fastJsonGraphDigest(shape)}`; }
-  catch { shapeDigest = stableDigest(shape); }
+  catch { return { identity: null, valid: false, reason: 'canonical Semantic IR identity is unavailable' }; }
   const functionId = field(source, 'functionId') ?? field(ir, 'functionId') ?? `function:${shapeDigest}`;
   const binaryId = field(source, 'binaryId') ?? field(ir, 'binaryId') ?? `binary:${stableDigest({ functionId, shapeDigest })}`;
   const snapshotId = field(source, 'snapshotId') ?? field(ir, 'snapshotId') ?? `snapshot:${stableDigest({ binaryId, functionId, shapeDigest })}`;
   const semanticIrId = field(source, 'semanticIrId', 'semanticIRId') ?? field(ir, 'semanticIrId', 'semanticIRId')
     ?? `semantic-ir:${stableDigest({ snapshotId, functionId, shapeDigest })}`;
+  const computedSsaDigest = ssaIdentityDigest(semanticIrId, shape.values);
+  if (computedSsaDigest == null) return { identity: null, valid: false, reason: 'canonical SSA identity is unavailable' };
   const ssaId = field(source, 'ssaId') ?? field(ir, 'ssaId')
-    ?? `ssa:${ssaIdentityDigest(semanticIrId, shape.values)}`;
+    ?? `ssa:${computedSsaDigest}`;
   const analyzerVersion = field(source, 'analyzerVersion', 'semanticSchemaVersion')
     ?? field(ir, 'analyzerVersion', 'semanticSchemaVersion') ?? 'phase8-analysis-v1';
   const identity = Object.freeze({ binaryId, functionId, snapshotId, semanticIrId, ssaId, analyzerVersion });

@@ -269,22 +269,17 @@ export function runPhase8Vertical(context = {}, budget = {}) {
       analysis: authoritative,
     };
   }
-  // The interactive canonical-facts stage does not publish scalar products and
-  // therefore does not need to hash the entire IR.  Deferring this work keeps
-  // the low-latency path bounded even for a large function; optimizer passes
-  // share one validation result when they are actually enabled.
+  // Scalar passes share one identity proof for this isolated, non-mutating
+  // vertical. The identity module itself never caches by object; direct callers
+  // and later runs always re-derive it from the current IR.
   const needsScalarIdentity = passes.some(({ descriptor }) =>
     ['phase8.sccp', 'phase8.gvn', 'phase8.induction'].includes(descriptor.id));
-  const canonicalIdentity = needsScalarIdentity
+  const resolvedAnalysisIdentity = needsScalarIdentity
     ? canonicalAnalysisIdentity({ ...context, analysis: authoritative }) : null;
   const passContext = {
     ...context,
     analysis,
-    // Keep the validation boundary shared by all consumers, while avoiding a
-    // repeated whole-IR digest in each scalar pass. The helper verifies the IR
-    // object identity before using this private cache.
-    __phase8CanonicalIdentity: context.ir == null
-      ? null : { ir: context.ir, result: canonicalIdentity },
+    resolvedAnalysisIdentity,
   };
   const results = [];
   const timings = [];

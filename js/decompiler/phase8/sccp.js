@@ -92,6 +92,30 @@ const DEFAULT_LIMITS = Object.freeze({
   maxWorkItems: 50000,
 });
 
+function normalizeLimits(raw) {
+  const limits = { ...DEFAULT_LIMITS };
+  const invalid = [];
+  if (raw == null) return { limits, invalid };
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    return {
+      limits: { ...limits, maxVisitsPerValue: 0, maxWorkItems: 0 },
+      invalid: ['sccpLimits must be a plain object'],
+    };
+  }
+  for (const key of Object.keys(DEFAULT_LIMITS)) {
+    if (!Object.hasOwn(raw, key)) continue;
+    let value;
+    try { value = raw[key]; } catch { value = null; }
+    if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) {
+      limits[key] = value;
+    } else {
+      limits[key] = 0;
+      invalid.push(`${key} must be a finite non-negative safe integer`);
+    }
+  }
+  return { limits, invalid };
+}
+
 function widthOf(value) {
   const bits = Number(value?.bits ?? 0);
   return isSupportedWidth(bits) ? bits : null;
@@ -105,13 +129,7 @@ function constantOfValue(value) {
   try { return bitvector(raw, bits); } catch { return null; }
 }
 
-const VALUE_PROVENANCE_CACHE = new WeakMap();
-
 function valueProvenance(value) {
-  if (value != null && typeof value === 'object') {
-    const cached = VALUE_PROVENANCE_CACHE.get(value);
-    if (cached != null) return cached;
-  }
   const ids = [
     ...(Array.isArray(value?.origin?.instructionIds) ? value.origin.instructionIds : []),
     ...(Array.isArray(value?.def?.origin?.instructionIds) ? value.def.origin.instructionIds : []),
@@ -128,8 +146,46 @@ function valueProvenance(value) {
     operation: value?.def?.op ?? null,
     operator: value?.def?.sub ?? null,
   });
-  if (value != null && typeof value === 'object') VALUE_PROVENANCE_CACHE.set(value, provenance);
   return provenance;
+}
+
+// A frozen Map is still mutable through Map.prototype.set. Publication uses a
+// small read-only view backed by a private snapshot so consumers can inspect
+// facts without changing the digest-bearing artifact after the pass returns.
+function readonlyMap(source) {
+  const snapshot = new Map(source);
+  const view = {
+    get size() { return snapshot.size; },
+    get(key) { return snapshot.get(key); },
+    has(key) { return snapshot.has(key); },
+    keys() { return snapshot.keys(); },
+    values() { return snapshot.values(); },
+    entries() { return snapshot.entries(); },
+    forEach(callback, thisArg) {
+      return snapshot.forEach((value, key) => callback.call(thisArg, value, key, view));
+    },
+    [Symbol.iterator]() { return snapshot[Symbol.iterator](); },
+  };
+  return Object.freeze(view);
+}
+
+function immutableSnapshot(value, active = new Set()) {
+  if (value == null || typeof value === 'string' || typeof value === 'boolean' || typeof value === 'bigint') return value;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (typeof value !== 'object' || active.has(value)) return null;
+  active.add(value);
+  try {
+    if (Array.isArray(value)) return Object.freeze(value.map((item) => immutableSnapshot(item, active)));
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) return null;
+    const copy = {};
+    for (const key of Object.keys(value).sort()) copy[key] = immutableSnapshot(value[key], active);
+    return Object.freeze(copy);
+  } catch {
+    return null;
+  } finally {
+    active.delete(value);
+  }
 }
 
 function attachValueProvenance(fact, value) {
@@ -216,7 +272,7 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
   const ssa = analysis?.get('ssa');
   const blocks = cfg?.blocks ?? [];
   const values = ssa?.values ?? [];
-  const resolvedIdentity = canonicalAnalysisIdentity(context);
+  const resolvedIdentity = context.resolvedAnalysisIdentity ?? canonicalAnalysisIdentity(context);
   if (!resolvedIdentity.valid) {
     return createPassResult({
       descriptor: SCCP_PASS,
@@ -232,7 +288,8 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
       }],
     });
   }
-  const limits = { ...DEFAULT_LIMITS, ...(context.sccpLimits ?? {}) };
+  const normalizedLimits = normalizeLimits(context.sccpLimits);
+  const limits = normalizedLimits.limits;
 
   const cells = new Map();
   const ranges = new Map();
@@ -249,7 +306,15 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
   const diagnostics = [];
   let widened = 0;
   let work = 0;
-  let budgetExhausted = false;
+  if (normalizedLimits.invalid.length > 0) {
+    diagnostics.push({
+      severity: 'warning',
+      code: 'phase8.sccp.invalid-budget',
+      message: 'SCCP received an invalid resource limit and published a conservative partial result.',
+      reason: normalizedLimits.invalid.join('; '),
+    });
+  }
+  let budgetExhausted = normalizedLimits.invalid.length > 0;
 
   const valueById = new Map(values.map((value) => [value.id, value]));
   const blockByIndex = new Map(blocks.map((block) => [block.index, block]));
@@ -414,6 +479,7 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
     let cell = TOP;
     let range = bits == null ? null : emptyRange(bits);
     let fact = bits == null ? null : emptyFact(bits, { valueId: value.id });
+    let contributed = false;
     for (const incoming of definition?.incoming ?? []) {
       const from = incoming?.from;
       const source = incoming?.value;
@@ -425,6 +491,7 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
       // Only executable predecessors contribute. This is the whole point of the
       // "conditional" in SCCP.
       if (!executablePredecessors.get(definition.block)?.has(from)) continue;
+      contributed = true;
       cell = meet(cell, cellOf(source));
       const sourceFact = factOfValue(source);
       const sourceRange = sourceFact?.range ?? rangeOfValue(source);
@@ -433,6 +500,16 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
         valueId: value.id,
       }), { provenance: false });
       else if (bits != null) fact = fullFact(bits, { valueId: value.id, reason: 'phi incoming width disagrees' });
+    }
+    // A reachable phi with no executable incoming edge is not the empty set.
+    // The empty seed is an implementation detail; publishing it would let a
+    // missing predecessor masquerade as a proof that the value is dead.
+    if (!contributed && bits != null) {
+      return {
+        cell: overdefined('phi has no executable predecessors'),
+        range: fullRange(bits),
+        fact: fullFact(bits, { valueId: value.id, reason: 'phi has no executable predecessors' }),
+      };
     }
     range = fact?.range ?? range;
     if (fact?.valueId !== value.id && fact != null) fact = Object.freeze({ ...fact, valueId: value.id });
@@ -675,13 +752,16 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
       kind: edge.kind ?? 'branch',
       reachable: finalReachability,
       status: budgetExhausted ? 'partial' : 'complete',
-      predicate: predicate == null ? null : Object.freeze({ ...predicate }),
+      // Predicates may carry a shared-target switch-label array. Snapshot the
+      // complete evidence graph so mutating a nested publication field cannot
+      // change what consumers observe without changing the digest.
+      predicate: predicate == null ? null : immutableSnapshot(predicate),
       facts: factMap,
       // The direct getter preserves the small pre-fix edge-fact API while the
       // structured `facts` map carries metadata and remains the canonical
       // projection for new consumers.
       get: (valueId) => factMap.get(valueId),
-      provenance: Object.freeze({
+      provenance: immutableSnapshot({
         edge: `${from}->${edge.to}`,
         condition: predicate?.conditionId ?? null,
       }),
@@ -830,6 +910,30 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
           });
           markEdge(block.index, edge.to, edge.kind ?? 'branch');
         }
+      }
+      return;
+    }
+    const conditionFact = factOfValue(condition);
+    const conditionProof = condition != null
+      && widthOf(condition) === 1
+      && conditionFact?.bits === 1
+      && ['exact', 'conservative'].includes(conditionFact.status);
+    // Refinement and CFG pruning require a proved one-bit predicate. A
+    // malformed comparator (including a destination declared wider than one
+    // bit) is not a truth value, even if its operands happen to look useful.
+    if (!conditionProof) {
+      for (const edge of edges) {
+        recordEdgeFact(block.index, edge, {
+          reachable: true,
+          predicate: {
+            kind: 'branch',
+            conditionId: condition?.id ?? null,
+            truth: null,
+            malformed: true,
+            proofStatus: conditionFact?.status ?? null,
+          },
+        });
+        markEdge(block.index, edge.to, edge.kind ?? 'branch');
       }
       return;
     }
@@ -982,7 +1086,18 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
       provenance: fact.provenance,
     });
   const publishedFacts = budgetExhausted
-    ? new Map([...facts.entries()].map(([valueId, fact]) => [valueId, degradePartialFact(fact)]))
+    ? new Map(values
+      .map((value) => {
+        const known = facts.get(value.id);
+        const bits = widthOf(value);
+        const fallback = known ?? (bits == null ? null : fullFact(bits, {
+          valueId: value.id,
+          status: 'partial',
+          reason: 'fixed point not reached before budget exhaustion',
+        }));
+        return [value.id, degradePartialFact(fallback)];
+      })
+      .filter(([, fact]) => fact != null))
     : facts;
   const publishedRanges = budgetExhausted
     ? new Map([...publishedFacts.entries()].map(([valueId, fact]) => [valueId, fact.range]))
@@ -1005,13 +1120,13 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
     : blockEntryFacts;
   const numericMap = (source) => new Map([...source].sort(([left], [right]) => Number(left) - Number(right)));
   const lexicalMap = (source) => new Map([...source].sort(([left], [right]) => String(left).localeCompare(String(right))));
-  const outputFacts = numericMap(publishedFacts);
-  const outputRanges = numericMap(publishedRanges);
-  const outputEdges = lexicalMap(publishedEdgeFacts);
-  const outputBlockEntryFacts = numericMap(publishedBlockEntryFacts);
+  const outputFactsMutable = numericMap(publishedFacts);
+  const outputRangesMutable = numericMap(publishedRanges);
+  const outputEdgesMutable = lexicalMap(publishedEdgeFacts);
+  const outputBlockEntryFactsMutable = numericMap(publishedBlockEntryFacts);
   const provenConstants = budgetExhausted
     ? []
-    : [...outputFacts.entries()]
+    : [...outputFactsMutable.entries()]
       .filter(([, fact]) => fact?.constant != null && ['exact', 'conservative'].includes(fact.status));
   const newlyProven = provenConstants.filter(([valueId]) => {
     const value = valueById.get(valueId);
@@ -1022,11 +1137,14 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
 
   const boundedDiagnostics = diagnostics.slice(0, 24);
   if (budgetExhausted) {
+    const budgetReason = normalizedLimits.invalid.length > 0
+      ? `Invalid resource limits: ${normalizedLimits.invalid.join('; ')}`
+      : `The worklist exceeded ${limits.maxWorkItems} items or the pass was cancelled`;
     boundedDiagnostics.push({
       severity: 'warning',
       code: 'phase8.sccp.budget',
       message: 'SCCP stopped before reaching a fixed point.',
-      reason: `The worklist exceeded ${limits.maxWorkItems} items or the pass was cancelled; the published ranges are sound but not maximally precise.`,
+      reason: `${budgetReason}; the published ranges are sound but not maximally precise.`,
     });
   }
   if (widened > 0) {
@@ -1078,6 +1196,30 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
     exhausted: budgetExhausted,
   });
 
+  const outputFacts = readonlyMap(outputFactsMutable);
+  const outputRanges = readonlyMap(outputRangesMutable);
+  const outputEdges = readonlyMap([...outputEdgesMutable.entries()].map(([key, edge]) => {
+    const factsView = readonlyMap(edge.facts);
+    return [key, Object.freeze({
+      ...edge,
+      facts: factsView,
+      get: (valueId) => factsView.get(valueId),
+    })];
+  }));
+  const outputBlockEntryFacts = readonlyMap([...outputBlockEntryFactsMutable.entries()]
+    .map(([block, valueFacts]) => [block, readonlyMap(valueFacts)]));
+  const outputConstants = readonlyMap(budgetExhausted ? [] : provenConstants.map(([valueId, cell]) => [valueId, cell.constant]));
+  const outputOverdefinedReasons = readonlyMap([...cells.entries()]
+    .filter(([, cell]) => cell.state === OVERDEFINED && cell.reason)
+    .map(([valueId, cell]) => [valueId, cell.reason]));
+  const outputVisitCounts = readonlyMap(visits);
+  const outputDiagnostics = Object.freeze(boundedDiagnostics
+    .map((diagnostic) => immutableSnapshot(diagnostic) ?? Object.freeze({
+      severity: 'warning', code: 'phase8.sccp.invalid-diagnostic', message: 'Invalid SCCP diagnostic omitted.',
+    })));
+  const outputFunctionOrigin = immutableSnapshot(context.ir?.origin ?? null);
+  const outputInputVersions = immutableSnapshot(inputVersions);
+
   const result = {
     contractVersion: SCCP_PASS.contractVersion,
     passVersion: SCCP_PASS.version,
@@ -1086,12 +1228,12 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
       producer: SCCP_PASS.id,
       producerVersion: SCCP_PASS.version,
       canonicalOwner: 'phase8/range.js + phase8/sccp.js',
-      inputVersions,
-      functionOrigin: context.ir?.origin ?? null,
+      inputVersions: outputInputVersions,
+      functionOrigin: outputFunctionOrigin,
     }),
     // Constants the IR did not already carry. Reporting the total would flatter
     // the pass with facts it did not produce.
-    constants: new Map(budgetExhausted ? [] : provenConstants.map(([valueId, cell]) => [valueId, cell.constant])),
+    constants: outputConstants,
     newlyProvenConstantCount: newlyProven.length,
     // The product fact map is the sole scalar semantic truth. Compatibility
     // ranges/constants below are projections retained for existing consumers.
@@ -1101,20 +1243,18 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
     blockEntryFacts: outputBlockEntryFacts,
     executableEdges: Object.freeze([...executableEdges].sort()),
     unreachableBlockIndexes: Object.freeze(unreachableBlocks.sort((left, right) => left - right)),
-    overdefinedReasons: new Map([...cells.entries()]
-      .filter(([, cell]) => cell.state === OVERDEFINED && cell.reason)
-      .map(([valueId, cell]) => [valueId, cell.reason])),
+    overdefinedReasons: outputOverdefinedReasons,
     widenedValueCount: widened,
     workItems: work,
     // Per-value revisit counts. A value that dominates this map is the value
     // whose lattice or range is not converging, which is the first thing to look
     // at when the pass reports `partial`.
-    visitCounts: visits,
+    visitCounts: outputVisitCounts,
     // Truthfully partial when the worklist was cut off: a fixed point that was
     // not reached is not a fixed point.
     completeness: budgetExhausted ? 'partial' : 'complete',
     budget: budgetEvidence,
-    diagnostics: boundedDiagnostics,
+    diagnostics: outputDiagnostics,
   };
 
   // The scalar artifact has its own digest in addition to the enclosing Phase 8
@@ -1146,7 +1286,8 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
     diagnostics: result.diagnostics,
   });
 
-  if (area != null) area.stage('ranges', Object.freeze(result));
+  Object.freeze(result);
+  if (area != null) area.stage('ranges', result);
 
   return createPassResult({
     descriptor: SCCP_PASS,
@@ -1159,7 +1300,7 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
     // the published facts themselves, keyed by SSA value id.
     transforms: [],
     produced: ['ranges'],
-    diagnostics: boundedDiagnostics,
+    diagnostics: outputDiagnostics,
     invalidated: [],
   });
 }
