@@ -1,4 +1,4 @@
-import { createAgentTools as createBaseAgentTools } from './tools.js';
+import { createAgentTools as createBaseAgentTools } from './tools-base.js';
 
 const MONITORED = new Set(['callersOf', 'calleesOf', 'refSitesTo', 'functionsReferencing']);
 
