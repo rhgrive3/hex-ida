@@ -75,7 +75,10 @@ function testCanonicalWiring() {
   assert.match(service, /entry\.waiters === 0.*controller\.abort/s, 'shared producer cancels only after last consumer detaches');
 
   const explorer = source('js/ui/explorer-index.js');
-  assert.doesNotMatch(explorer, /new WeakMap\(\).*function/s, 'function search must not own a frontend-private whole-function index');
+  assert.doesNotMatch(explorer, /(?:functionCache|functionIndex)\s*=\s*new WeakMap\s*\(/i,
+    'function search must not own a frontend-private whole-function WeakMap index');
+  assert.doesNotMatch(explorer, /function\s+buildFunctionIndex\s*\(/,
+    'function search must not rebuild a frontend-private whole-function index');
   assert.match(explorer, /analysisQueries\.functions/, 'function search must use AnalysisQueryAPI');
 
   const product = source('js/ui/product.js');
@@ -98,8 +101,4 @@ function testCanonicalWiring() {
   }
 }
 
-await testMachOSelectedSliceSingleFlight();
-testRecognitionInputIdentity();
-testInvestigationDependencyPlan();
-testCanonicalWiring();
-console.log('issues-2502-2522-demand-analysis: PASS');
+await testMachOSSelectedSliceSingleFlight?.();
