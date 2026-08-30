@@ -60,28 +60,28 @@ export function routeHistoryUrl(path, locationRef = globalThis.location) {
 
 export function createChildTaskScope(parentSignal) {
   let currentController = null;
+  let removeParentAbort = null;
+  const detachParent = () => { removeParentAbort?.(); removeParentAbort = null; };
   return {
-    get signal() {
-      return currentController?.signal ?? null;
-    },
+    get signal() { return currentController?.signal ?? null; },
     spawn(reason = 'new-task-started') {
       currentController?.abort(reason);
-      currentController = new AbortController();
+      detachParent();
+      const controller = currentController = new AbortController();
       if (parentSignal) {
-        if (parentSignal.aborted) {
-          currentController.abort(parentSignal.reason);
-        } else {
-          const onParentAbort = () => {
-            currentController?.abort(parentSignal.reason);
-          };
-          parentSignal.addEventListener('abort', onParentAbort, { once: true });
+        if (parentSignal.aborted) controller.abort(parentSignal.reason);
+        else {
+          const onParentAbort = () => controller.abort(parentSignal.reason);
+          parentSignal.addEventListener('abort', onParentAbort, { once:true });
+          removeParentAbort = () => parentSignal.removeEventListener('abort', onParentAbort);
         }
       }
-      return currentController.signal;
+      return controller.signal;
     },
     abort(reason = 'task-scope-aborted') {
       currentController?.abort(reason);
       currentController = null;
+      detachParent();
     },
   };
 }
