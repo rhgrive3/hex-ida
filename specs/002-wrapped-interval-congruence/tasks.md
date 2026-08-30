@@ -119,11 +119,11 @@ results remain conservative and never publish exactness.
 **Purpose**: Complete the required convergence loop and two independent review
 passes before integration gates.
 
-- [ ] T037 Run Spec Kit converge against `specs/002-wrapped-interval-congruence/spec.md`, `plan.md`, and `tasks.md`; if tasks are added, implement/test/converge until clean.
+- [x] T037 Run Spec Kit converge against `specs/002-wrapped-interval-congruence/spec.md`, `plan.md`, and `tasks.md`; if tasks are added, implement/test/converge until clean.
 - [ ] T038 Obtain Review Pass 1 from a non-owner Luna on the actual final diff; record five fresh adversarial checks and `PASS`/`CHANGES_REQUIRED` in `quickstart.md`.
-- [ ] T039 Fix every Review 1 defect in the canonical owner/tests, rerun T0/T1/T2, reconverge, and repeat Review 1 on the new head whenever semantics changed.
+- [x] T039 Fix every Review 1 defect in the canonical owner/tests, rerun T0/T1/T2, reconverge, and repeat Review 1 on the new head whenever semantics changed.
 - [ ] T040 Sol performs the targeted semantic review of the critical diff, strongest counterexample/negative, owner, exactness boundary, and Review 1 risks; record `SEMANTIC_GO` or targeted fix.
-- [ ] T041 Refetch current live main once before Review 2; record old/current base, overlapping files, semantic/generated overlap, and retest decision in `quickstart.md`.
+- [x] T041 Refetch current live main once before Review 2; record old/current base, overlapping files, semantic/generated overlap, and retest decision in `quickstart.md`.
 - [ ] T042 Obtain independent Review Pass 2 from another non-owner Luna on latest main, exact head, Spec Kit, graft/fallback trace, generated state, ownership, CI readiness, and candidate merge structure.
 - [ ] T043 Fix every Review 2 defect, invalidate prior approvals after semantic changes, reconverge, rerun both reviews, and recheck current-main overlap.
 
