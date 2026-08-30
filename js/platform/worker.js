@@ -27,6 +27,17 @@ let currentEpoch = 0;
 let openChain = Promise.resolve();
 const active = new Map();
 
+function cooperativeYield() { return new Promise((resolve) => setTimeout(resolve, 0)); }
+async function waitForForegroundDrain(epoch) {
+  // Background metadata performs many small paged reads. Do not enqueue the
+  // next page while any interactive request for the same binary epoch is live.
+  // A currently executing page is bounded, so foreground work is never held
+  // behind an unbounded metadata scan.
+  while ([...active.values()].some((entry) => entry.epoch === epoch && entry.priority !== 'background')) {
+    await cooperativeYield();
+  }
+}
+
 self.onmessage = async (event) => {
   const msg = event.data;
   if (!msg || typeof msg.t !== 'string') return;
@@ -43,10 +54,13 @@ self.onmessage = async (event) => {
   }
   const execute = async () => {
     if (msg.epoch !== currentEpoch) throw new Error('Stale platform request.');
+    const priority = msg.priority === 'background' ? 'background' : 'current';
+    if (priority === 'background') await waitForForegroundDrain(msg.epoch);
+    if (msg.epoch !== currentEpoch) throw new Error('Stale platform request.');
     const controller = new AbortController();
     const requestKey = msg.id == null ? null : `${msg.epoch}:${msg.id}`;
     if (requestKey != null && active.has(requestKey)) throw new Error(`Duplicate active request id ${msg.id} for epoch ${msg.epoch}.`);
-    if (requestKey != null) active.set(requestKey, { id: msg.id, epoch: msg.epoch, controller });
+    if (requestKey != null) active.set(requestKey, { id: msg.id, epoch: msg.epoch, controller, priority });
     try { return await handle(msg, controller.signal); }
     finally { if (requestKey != null && active.get(requestKey)?.controller === controller) active.delete(requestKey); }
   };

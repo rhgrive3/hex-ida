@@ -34,7 +34,8 @@ import { importList, importsByFramework, exportList, findGlobals } from './linka
 import { assemble, suggestPatches, parseHexBytes, hexOf, validatePatchRange } from './patch.js';
 import { runScript, SAMPLES, makeEmulator } from './script.js';
 import { EXAMPLE_PLUGIN, MAX_PLUGIN_SOURCE_BYTES } from './plugins.js';
-import { parseMetadataAuto, parseMetadataAutoAsync, looksLikeUnity, bindMethodAddresses, MAX_IL2CPP_METADATA_BYTES } from './il2cpp.js';
+import { parseMetadataAuto, looksLikeUnity, bindMethodAddresses, MAX_IL2CPP_METADATA_BYTES } from './il2cpp.js';
+import { parseMetadataFileInWorker } from './il2cpp-runtime.js';
 import { brief } from './arm64.js';
 
 /* ── 小道具 ─────────────────────────────────────────────── */
@@ -1726,9 +1727,7 @@ export function showIl2cpp(app) {
       activeController = controller;
       body.replaceChildren(el('div', 'hint', '読み込んでいます…'));
       try {
-        const buf = await f.arrayBuffer();
-        if (controller.signal.aborted || !sheet.root.isConnected) return;
-        const meta = await parseMetadataAutoAsync(buf, { signal: controller.signal });
+        const meta = await parseMetadataFileInWorker(f, { signal:controller.signal });
         if (controller.signal.aborted || !sheet.root.isConnected) return;
         await bindMethodAddresses(meta, {
           regions: app.store.get('regions') || [], signal: controller.signal,

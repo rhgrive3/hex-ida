@@ -770,7 +770,10 @@ export class Backend {
   }
   strings(params, onProgress) { return this.call('strings', params, null, onProgress); }
   xrefs(params, onProgress) { return this.call('xrefs', params, null, onProgress); }
-  readAt(addr, len, text) { return this.call('readAt', { addr, len, text }); }
+  readAt(addr, len, text, options = {}) {
+    const priority = options?.priority === 'background' ? 'background' : 'current';
+    return this.call('readAt', { addr, len, text, priority });
+  }
   resolvePointer(raw, context = {}) {
     return this._callTo('platform', 'resolvePointer', { raw, address: context?.address ?? null, sliceIndex: context?.sliceIndex ?? null });
   }
