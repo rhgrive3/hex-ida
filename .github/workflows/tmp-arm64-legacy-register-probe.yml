@@ -1,0 +1,34 @@
+name: Temporary ARM64 legacy register coercion probe
+on:
+  push:
+    branches: [audit/arm64-legacy-register-coercion-probe]
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Probe current-main structured register authority
+        run: |
+          node --input-type=module <<'EOF'
+          import assert from 'node:assert/strict';
+          import { arm64RegisterOperand } from './js/targets/architecture/arm64/effects/addressing.js';
+          import { liftArm64MachineEffects } from './js/targets/architecture/arm64/effects/index.js';
+          const gp=(num)=>({k:'reg',cls:'gp',num,bits:64,text:`x${num}`});
+          const widthString=arm64RegisterOperand({kind:'gp',physicalId:'x2',view:'x2',bits:'64',zero:false});
+          assert.equal(widthString?.bits,64,'string bits currently coerces to numeric width');
+          const viewOverride=arm64RegisterOperand({kind:'gp',physicalId:'x2',view:'x3',bits:64,zero:false});
+          assert.equal(viewOverride?.physicalId,'x3','view currently overrides physicalId');
+          const kindOverride=arm64RegisterOperand({kind:'sp',physicalId:'x2',view:'x2',bits:64,zero:false});
+          assert.equal(kindOverride?.kind,'sp','kind currently overrides parsed register class');
+          const registerIdOverride=arm64RegisterOperand({registerId:'x2',view:'x3',widthBits:'64'});
+          assert.equal(registerIdOverride?.physicalId,'x3','view currently overrides registerId');
+          const badBase={kind:'sp',physicalId:'x2',view:'x2',bits:64,zero:false};
+          const instructionId='legacy-register-probe';
+          const bundle=liftArm64MachineEffects({instructionId,mnemonic:'ldr',mode:'a64',ops:[gp(0),{k:'mem',base:badBase,mode:'offset',disp:0n}],origin:{instructionIds:[instructionId]}});
+          assert.ok(bundle && bundle.completeness !== 'partial' && bundle.operations.length>0,'contradictory legacy base currently reaches definite LDR effects');
+          console.log('legacy ARM64 register coercion reproduced');
+          EOF
