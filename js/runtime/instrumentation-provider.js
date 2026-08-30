@@ -21,14 +21,21 @@ function moduleKey(module, index) {
   return module?.bindingKey ?? module?.moduleKey ?? module?.id ?? module?.uuid ?? module?.name ?? `instrumentation-module:${index}`;
 }
 
+function normalizeProbeHandle(value) {
+  if (value == null) return null;
+  if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'bigint') {
+    throw new DebugAdapterError('runtime-invalid-probe-handle', 'probe handle must be a string, number, or bigint');
+  }
+  if (typeof value === 'string' && !value) throw new DebugAdapterError('runtime-invalid-probe-handle', 'probe handle must not be empty');
+  return value;
+}
+
 function probeHandle(result) {
-  const value = result?.handle ?? result?.id ?? result?.probeId ?? null;
-  return value == null ? null : String(value);
+  return normalizeProbeHandle(result?.handle ?? result?.id ?? result?.probeId ?? null);
 }
 
 function eventProbeHandle(raw) {
-  const value = raw?.probeHandle ?? raw?.handle ?? raw?.payload?.probeHandle ?? raw?.payload?.handle ?? null;
-  return value == null ? null : String(value);
+  return normalizeProbeHandle(raw?.probeHandle ?? raw?.handle ?? raw?.payload?.probeHandle ?? raw?.payload?.handle ?? null);
 }
 
 export class InstrumentationProvider {
@@ -141,18 +148,20 @@ export class InstrumentationProvider {
       },
       removeProbe: async (handle, callOptions = {}) => {
         const remove = requiredMethod(this.backend, 'removeProbe', 'probe removal');
-        const parent = probes.get(String(handle));
+        const normalizedHandle = normalizeProbeHandle(handle);
+        if (normalizedHandle == null) throw new DebugAdapterError('runtime-invalid-probe-handle', 'probe handle is required');
+        const parent = probes.get(normalizedHandle);
         const draft = validateInterventionDraft(interventions, {
           runtimeSessionId: session.runtimeSessionId,
           providerId: session.providerId,
           kind: 'probe-remove',
-          target: { handle: String(handle) },
+          target: { handle: normalizedHandle },
           requestedChange: { remove: true },
           parentInterventionIds: [...new Set([...(callOptions.parentInterventionIds ?? []), ...(parent ? [parent] : [])])],
         });
         const result = await remove(handle, callOptions);
         const intervention = interventions.add({ ...draft, acknowledgedResult: result });
-        probes.delete(String(handle));
+        probes.delete(normalizedHandle);
         return { result, intervention };
       },
       intercept: async (spec, callOptions = {}) => {
