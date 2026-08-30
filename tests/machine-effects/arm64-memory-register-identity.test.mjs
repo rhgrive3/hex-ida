@@ -66,6 +66,18 @@ assert.equal(arm64RegisterOperand({ k:'reg', cls:'gp', num:0, bits:16, text:'x0'
 assert.equal(arm64RegisterOperand({ k:'reg', cls:'sp', num:0, bits:64, text:'sp' }), null);
 assert.equal(arm64RegisterOperand({ k:'reg', cls:'zr', num:0, bits:64, text:'xzr' }), null);
 
+
+// Legacy/internal structured forms must preserve their canonical physical identity.
+assert.equal(arm64RegisterOperand({ kind:'gp', physicalId:'x2', view:'x2', bits:64, zero:false }).physicalId, 'x2');
+assert.equal(arm64RegisterOperand({ kind:'gp', physicalId:'x2', view:'w2', bits:32, zero:false }).bits, 32);
+assert.equal(arm64RegisterOperand({ registerId:'x2', view:'x2', widthBits:64 }).physicalId, 'x2');
+assert.equal(arm64RegisterOperand({ kind:'gp', physicalId:'x2', view:'x2', bits:'64', zero:false }), null);
+assert.equal(arm64RegisterOperand({ kind:'gp', physicalId:'x2', view:'x3', bits:64, zero:false }), null);
+assert.equal(arm64RegisterOperand({ kind:'sp', physicalId:'x2', view:'x2', bits:64, zero:false }), null);
+assert.equal(arm64RegisterOperand({ kind:'gp', physicalId:'x2', view:'x2', bits:64, zero:'false' }), null);
+assert.equal(arm64RegisterOperand({ registerId:'x2', view:'x3', widthBits:64 }), null);
+assert.equal(arm64RegisterOperand({ registerId:'x2', view:'x2', widthBits:'64' }), null);
+
 // Existing exact boundaries remain exact.
 assertLegal('ldr', [gp(0), mem(gp(2))]);
 assertLegal('str', [gp(29, 64, 'fp'), mem(gp(30, 64, 'lr'))]);
@@ -74,6 +86,11 @@ assertLegal('ldr', [zr(), mem(gp(2))]);
 assertLegal('ldr', [gp(0), mem(gp(2), { index:gp(3), shift:{ op:'lsl', amount:3 } })]);
 assertLegal('ldxr', [gp(0), mem(gp(2))]);
 assertLegal('cas', [gp(0), gp(1), mem(gp(2))]);
+
+assertLegal('ldr', [gp(0), mem({ kind:'gp', physicalId:'x2', view:'x2', bits:64, zero:false })]);
+assertFailClosed('ldr', [gp(0), mem({ kind:'sp', physicalId:'x2', view:'x2', bits:64, zero:false })]);
+assertFailClosed('ldr', [gp(0), mem({ kind:'gp', physicalId:'x2', view:'x3', bits:64, zero:false })]);
+assertFailClosed('ldr', [gp(0), mem({ kind:'gp', physicalId:'x2', view:'x2', bits:'64', zero:false })]);
 
 // Data register contradictions must not turn canonical X0/V0 into a different
 // exact destination/source merely because text names a legal register.
