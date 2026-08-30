@@ -1,0 +1,88 @@
+name: Reopened AI project repair
+
+on:
+  push:
+    branches:
+      - fix/reopened-ai-project-contracts
+    paths:
+      - '.github/workflows/reopened-ai-project-repair.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/reopened-ai-project-contracts
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Bridge conversation release to runtime-only engines
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('js/ai/ui/session.js')
+          s = p.read_text()
+          old = """  _releaseConversation(conversation, reason) {
+    if (!conversation?.id) return;
+    if (typeof this.engine?.deleteSession === 'function') {
+      Promise.resolve(this.engine.deleteSession(conversation.id, { reason })).catch(() => {});
+    } else if (typeof this.engine?.forgetAIConversation === 'function') {
+      try { this.engine.forgetAIConversation(conversation.id); } catch { /* best effort */ }
+    }
+  }
+"""
+          new = """  _releaseConversation(conversation, reason) {
+    if (!conversation?.id) return;
+    const id = String(conversation.id);
+    const deletePersisted = reason === 'user-delete';
+    if (typeof this.engine?.deleteSession === 'function') {
+      Promise.resolve(this.engine.deleteSession(id, { reason })).catch(() => {});
+      return;
+    }
+
+    // Embedding/tests may inject AIRuntime (or just its sessionStore) directly
+    // instead of the full UI bridge. Preserve the same retention-vs-explicit
+    // deletion contract in that shape as well.
+    const runtime = this.engine?.runtime;
+    if (runtime && typeof runtime !== 'function') {
+      if (typeof runtime.releaseSession === 'function') {
+        Promise.resolve(runtime.releaseSession(id, { deletePersisted })).catch(() => {});
+        return;
+      }
+      const store = runtime.sessionStore;
+      if (store) {
+        if (deletePersisted && typeof store.delete === 'function') {
+          Promise.resolve(store.delete(id)).catch(() => {});
+        } else {
+          store.sessions?.delete?.(id);
+        }
+        return;
+      }
+    }
+
+    if (typeof this.engine?.forgetAIConversation === 'function') {
+      try { this.engine.forgetAIConversation(id); } catch { /* best effort */ }
+    }
+  }
+"""
+          if s.count(old) != 1:
+              raise SystemExit(f'_releaseConversation source drifted: {s.count(old)} matches')
+          p.write_text(s.replace(old, new, 1))
+          Path('.github/workflows/reopened-ai-project-repair.yml').unlink()
+          PY
+          node tests/issues-2613-2612-2609-ai-sessions-broker.mjs
+          node tests/reopened-ai-project-contracts.mjs
+          git add -A
+          git diff --cached --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'fix(ai): release runtime-only core sessions on chat deletion'
+          git push origin HEAD:fix/reopened-ai-project-contracts
