@@ -48,8 +48,9 @@ function fileLike(bytes, name = 'game.bin') {
   assert.match(newA, /sha256tree:v1:/, 'modern runtime should use cryptographic tree SHA-256');
 }
 
-// #478: migration -> explicit clear -> reload must stay empty, while preserving
-// the old payload for backward compatibility.
+// #478 / #2572: a weak legacy identity is recoverable but cannot be promoted
+// automatically. After explicit import, clear -> reload must stay empty while
+// preserving the old payload for backward compatibility.
 {
   localStorage.clear();
   const legacyId = 'legacy-note-key';
@@ -57,14 +58,22 @@ function fileLike(bytes, name = 'game.bin') {
   const oldPayload = JSON.stringify({ v: 1, names: { '4096': 'coins' }, comments: { '4096': 'confirmed' } });
   localStorage.setItem('hex.notes.' + legacyId, oldPayload);
   const first = new NoteStore(currentId, [legacyId]);
+  assert.equal(first.nameOf(4096n), null, 'weak legacy identity must not auto-promote notes');
+  assert.equal(first.migratedFrom, null);
+  assert.equal(first.legacyCandidate?.sourceId, legacyId);
+  assert.equal(localStorage.getItem('hex.notes.' + currentId), null, 'candidate discovery must not create strong-current storage');
+
+  assert.equal(first.importLegacyCandidate(), true, 'legacy recovery requires an explicit import');
   assert.equal(first.nameOf(4096n), 'coins');
   assert.equal(first.migratedFrom, legacyId);
+  assert.equal(first.legacyCandidate, null);
   assert.equal(first.clear(), true);
   assert.equal(localStorage.getItem('hex.notes.' + legacyId), oldPayload, 'clear must not destroy backward-compatible legacy data');
   assert.equal(JSON.parse(localStorage.getItem('hex.notes.' + currentId)).cleared, true, 'current key must contain a migration-blocking tombstone');
   const reopened = new NoteStore(currentId, [legacyId]);
   assert.equal(reopened.count, 0);
   assert.equal(reopened.nameOf(4096n), null, 'deleted migrated notes must not resurrect');
+  assert.equal(reopened.legacyCandidate, null, 'strong-current tombstone must block legacy candidate resurrection');
 }
 
 // #477: quota failures are observable; the in-memory edit stays dirty so it can
