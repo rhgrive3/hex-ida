@@ -87,6 +87,10 @@ export function canonicalAbiEvidence(raw) {
   if (required.some((field) => typeof raw[field] !== 'string' || !raw[field].trim())) return false;
   if (!record(raw.abiIdentity) || !record(raw.provenance) || !record(raw.invalidation)) return false;
   if (raw.provenance.source !== 'canonical-abi-registry') return false;
+  if (typeof raw.registryDigest !== 'string' || !raw.registryDigest.trim()
+    || !sameScalar(raw.abiIdentity.registryDigest, raw.registryDigest)
+    || !sameScalar(raw.provenance.registryDigest, raw.registryDigest)
+    || !sameScalar(raw.invalidation.registryDigest, raw.registryDigest)) return false;
 
   const identity = raw.abiIdentity;
   const profile = identity.architectureProfile;
@@ -117,7 +121,7 @@ export function canonicalAbiEvidence(raw) {
   if (profileMirrors.some(([field, expected]) => !sameScalar(profile[field], expected))) return false;
   const identityRequired = [
     'id', 'semanticVersion', 'semanticIdentity', 'architectureId',
-    'targetArchitecture', 'profileIdentity', 'abiId',
+    'targetArchitecture', 'profileIdentity', 'abiId', 'registryDigest',
   ];
   if (identityRequired.some((field) => typeof identity[field] !== 'string' || !identity[field].trim())) return false;
 
@@ -136,6 +140,7 @@ export function canonicalAbiEvidence(raw) {
     ['abiId', raw.abiId],
     ['semanticVersion', raw.abiSemanticVersion],
     ['semanticIdentity', raw.abiSemanticIdentity],
+    ['registryDigest', raw.registryDigest],
     ['profileIdentity', profile.profileIdentity],
     ['targetArchitecture', identity.targetArchitecture],
     ['platformId', identity.platform],
@@ -150,6 +155,7 @@ export function canonicalAbiEvidence(raw) {
     ['abiId', raw.abiId],
     ['abiSemanticVersion', raw.abiSemanticVersion],
     ['abiSemanticIdentity', raw.abiSemanticIdentity],
+    ['registryDigest', raw.registryDigest],
     ['profileIdentity', profile.profileIdentity],
     ['targetArchitecture', identity.targetArchitecture],
     ['platformId', identity.platform],
@@ -193,7 +199,8 @@ export function canonicalAbiHiddenResult(raw, hidden) {
     || !Number.isSafeInteger(Number(hidden.pointerBits)) || Number(hidden.pointerBits) <= 0
     || !sameScalar(hidden.profileIdentity, profile.profileIdentity)
     || !sameScalar(hidden.abiId, raw.abiId)
-    || !sameScalar(hidden.abiSemanticIdentity, raw.abiSemanticIdentity)) return false;
+    || !sameScalar(hidden.abiSemanticIdentity, raw.abiSemanticIdentity)
+    || !sameScalar(hidden.registryDigest, raw.registryDigest)) return false;
 
   if (!record(hidden.abiIdentity) || !record(hidden.provenance) || !record(hidden.invalidation)) return false;
   const identityFields = [
@@ -205,6 +212,7 @@ export function canonicalAbiHiddenResult(raw, hidden) {
     ['platform', identity.platform],
     ['profileIdentity', identity.profileIdentity],
     ['abiId', identity.abiId],
+    ['registryDigest', identity.registryDigest],
     ['schemaVersion', identity.schemaVersion],
     ['snapshotId', identity.snapshotId],
     ['analyzerId', identity.analyzerId],
@@ -222,6 +230,7 @@ export function canonicalAbiHiddenResult(raw, hidden) {
     ['abiId', raw.provenance.abiId],
     ['semanticVersion', raw.provenance.semanticVersion],
     ['semanticIdentity', raw.provenance.semanticIdentity],
+    ['registryDigest', raw.provenance.registryDigest],
     ['architectureId', raw.provenance.architectureId],
     ['profileIdentity', raw.provenance.profileIdentity],
     ['targetArchitecture', raw.provenance.targetArchitecture],
@@ -242,6 +251,7 @@ export function canonicalAbiHiddenResult(raw, hidden) {
     ['abiId', raw.invalidation.abiId],
     ['abiSemanticVersion', raw.invalidation.abiSemanticVersion],
     ['abiSemanticIdentity', raw.invalidation.abiSemanticIdentity],
+    ['registryDigest', raw.invalidation.registryDigest],
     ['architectureId', raw.invalidation.architectureId],
     ['targetArchitecture', raw.invalidation.targetArchitecture],
     ['platformId', raw.invalidation.platformId],
@@ -310,6 +320,7 @@ export function normalizeAbiPieces(container, rawPieces, { defaultAbiClass = nul
     : Array.isArray(container.pieceClasses) ? container.pieceClasses
       : Array.isArray(container.registerClasses) ? container.registerClasses : null;
   const pieceRegisters = new Set();
+  const physicalStackRanges = [];
   let cursor = 0;
   let coveredBits = 0;
 
@@ -338,6 +349,21 @@ export function normalizeAbiPieces(container, rawPieces, { defaultAbiClass = nul
     if (!Object.hasOwn(piece, 'abiClass')) return null;
     const abiClass = piece.abiClass;
     if (typeof abiClass !== 'string' || !abiClass.trim()) return null;
+
+    if (hasStack) {
+      // A stack destination is a physical byte range, not just a scalar
+      // offset copied through to a consumer. Validate its alignment and keep
+      // the ranges separate from logical byteOffset coverage so duplicate or
+      // overlapping destinations cannot masquerade as a complete aggregate.
+      const rawAlignment = piece.stackAlignment ?? container.stackAlignment;
+      const alignment = rawAlignment == null
+        ? (bytes >= 8 ? 8 : bytes >= 4 ? 4 : bytes >= 2 ? 2 : 1)
+        : positiveInteger(rawAlignment);
+      if (alignment == null || stackOffset % BigInt(alignment) !== 0n) return null;
+      const physicalEnd = stackOffset + BigInt(bytes);
+      if (physicalStackRanges.some(({ start, end }) => stackOffset < end && start < physicalEnd)) return null;
+      physicalStackRanges.push({ start:stackOffset, end:physicalEnd, order:piece.order, pieceIndex:piece.pieceIndex });
+    }
 
     // Aggregate positions are evidence, not presentation defaults.  A
     // compatibility adapter that omits any one of them cannot establish which
@@ -391,6 +417,9 @@ export function normalizeAbiPieces(container, rawPieces, { defaultAbiClass = nul
   if (pieces.some((piece) => !expectedIndexes.includes(piece.pieceIndex))) return null;
   const orderedPieces = pieces.slice().sort((left, right) => left.order - right.order);
   if (orderedPieces.some((piece, index) => piece.order !== index || piece.pieceIndex !== index)) return null;
+  const orderedPhysicalStackRanges = physicalStackRanges.slice().sort((left, right) => left.order - right.order);
+  if (orderedPhysicalStackRanges.some((range, index) => index > 0
+    && range.start < orderedPhysicalStackRanges[index - 1].start)) return null;
   if (expectedClasses && expectedClasses.length !== pieces.length
     && !(expectedClasses.length === 1 && String(expectedClasses[0]).toLowerCase() === 'memory')) return null;
   const expectedPositions = Array.isArray(container.piecePositions)

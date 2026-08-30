@@ -65,11 +65,17 @@ test('integer arguments allocate a0-a7 then the stack', () => {
 });
 
 test('aggregates follow the psABI size rule and returns use a0/a1', () => {
-  const small = lp64.classifyArguments({ callPrototype: { args: [{ type: 'struct', aggregate: true, bits: 128 }] } });
+  const small = lp64.classifyArguments({ callPrototype: { args: [{
+    type: 'struct', aggregate: true, bits: 128,
+    members: [{ type: 'uint64_t', bits: 64, byteOffset: 0 }, { type: 'uint64_t', bits: 64, byteOffset: 8 }],
+  }] } });
   assert.equal(small.arguments[0].location, 'registers');
   assert.deepEqual(small.arguments[0].regs, ['x10', 'x11'], 'up to 2*XLEN passes in two integer registers');
 
-  const large = lp64.classifyArguments({ callPrototype: { args: [{ type: 'struct', aggregate: true, bits: 256 }] } });
+  const large = lp64.classifyArguments({ callPrototype: { args: [{
+    type: 'struct', aggregate: true, bits: 256,
+    members: Array.from({ length: 4 }, (_unused, index) => ({ type: 'uint64_t', bits: 64, byteOffset: index * 8 })),
+  }] } });
   assert.equal(large.arguments[0].abiClass, 'aggregate-by-reference', 'beyond 2*XLEN the aggregate is passed by reference');
   assert.equal(large.arguments[0].pointer, true);
 
@@ -77,7 +83,10 @@ test('aggregates follow the psABI size rule and returns use a0/a1', () => {
     { reg: 'x10', abiName: 'a0', bits: 64 });
   const wide = lp64.classifyFunctionReturn({ functionPrototype: { returnType: 'int128', returnBits: 128, returnsValue: true } });
   assert.deepEqual(wide.regs, ['x10', 'x11'], 'a 2*XLEN scalar returns in a0-a1');
-  const indirect = lp64.classifyFunctionReturn({ functionPrototype: { returnType: 'struct', aggregate: true, returnBits: 512, returnsValue: true } });
+  const indirect = lp64.classifyFunctionReturn({ functionPrototype: {
+    returnType: 'struct', aggregate: true, returnBits: 512, returnsValue: true,
+    members: Array.from({ length: 8 }, (_unused, index) => ({ type: 'uint64_t', bits: 64, byteOffset: index * 8 })),
+  } });
   assert.equal(indirect.indirect, true, 'a return larger than 2*XLEN is returned in memory');
 });
 

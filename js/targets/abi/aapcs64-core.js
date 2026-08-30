@@ -1,4 +1,5 @@
 import { ABIPlugin } from './registry.js';
+import { canonicalAggregateLayout } from './aggregate-layout.js';
 
 function callPrototypeOf(insn, opts) {
   let proto = insn?.callPrototype || null;
@@ -33,24 +34,31 @@ function parameterAbiClass(param) {
   const aggregate = !scalableClass && !pointer && !homogeneous && (param?.aggregate === true || param?.isAggregate === true || /aggregate|struct|union|record|array|composite/.test(type + ' ' + cls));
   const fp = !scalableClass && !aggregate && (homogeneous || vector || cls.includes('float') || cls.includes('fp') || /^(float|double|__fp16)/.test(type));
   const rawMembers = param?.members ?? param?.elements ?? param?.count;
-  const declaredMembers = Number(rawMembers);
+  const memberArray = Array.isArray(rawMembers) ? rawMembers : null;
+  const declaredMembers = memberArray ? memberArray.length : Number(rawMembers);
   const members = homogeneous && Number.isSafeInteger(declaredMembers) && declaredMembers >= 1 && declaredMembers <= 4
     ? declaredMembers : homogeneous ? 0 : 1;
   const explicitBits = Number(param?.bits ?? param?.sizeBits);
-  const explicitElementBits = Number(param?.elementBits ?? param?.memberBits);
+  const firstMemberBits = memberArray?.length ? Number(memberArray[0]?.bits ?? memberArray[0]?.sizeBits) : null;
+  const explicitElementBits = Number(param?.elementBits ?? param?.memberBits ?? firstMemberBits);
   const explicitTotalBitsProven = Number.isSafeInteger(explicitBits) && explicitBits > 0;
   const elementBits = homogeneous
     ? Number.isSafeInteger(explicitElementBits) && explicitElementBits > 0 ? explicitElementBits
       : 0
     : null;
+  const layoutEvidence = homogeneous || aggregate ? canonicalAggregateLayout(param) : null;
+  const homogeneousMembersMatch = !homogeneous || !!layoutEvidence
+    && layoutEvidence.members.length === members
+    && layoutEvidence.members.every((member) => member.bits === elementBits);
   const homogeneousSizeMatches = !homogeneous || !explicitTotalBitsProven
     || (members >= 1 && elementBits > 0 && explicitBits === members * elementBits);
   const homogeneousLayoutProven = !homogeneous
-    || (members >= 1 && members <= 4 && elementBits >= 8 && Number.isSafeInteger(elementBits) && homogeneousSizeMatches);
+    || (!!layoutEvidence && members >= 1 && members <= 4 && elementBits >= 8
+      && Number.isSafeInteger(elementBits) && homogeneousSizeMatches && homogeneousMembersMatch);
   // A plain aggregate has no ABI placement until its logical size is proven.
   // Do not let the scalar fallback below turn an un-sized struct/union into a
   // one-register exact argument.
-  const aggregateLayoutProven = !aggregate || explicitTotalBitsProven;
+  const aggregateLayoutProven = !aggregate || !!layoutEvidence;
   const int128 = !pointer && !aggregate && !fp && /(?:unsigned\s+)?__int128|int128_t|uint128_t/.test(type + ' ' + cls);
   const rawBits = homogeneous
     ? homogeneousLayoutProven ? elementBits * members : explicitTotalBitsProven ? explicitBits : 0
@@ -307,8 +315,9 @@ function homogeneousReturnInfo(proto, cls, returnBits) {
   if (!homogeneous) return null;
   const rawMembers = proto?.members ?? proto?.memberCount ?? proto?.elements
     ?? proto?.count ?? proto?.hfaCount ?? proto?.hvaCount;
-  const members = Number(rawMembers);
-  const rawElementBits = proto?.elementBits ?? proto?.memberBits ?? proto?.returnElementBits;
+  const members = Array.isArray(rawMembers) ? rawMembers.length : Number(rawMembers);
+  const rawElementBits = proto?.elementBits ?? proto?.memberBits ?? proto?.returnElementBits
+    ?? (Array.isArray(rawMembers) ? rawMembers[0]?.bits ?? rawMembers[0]?.sizeBits : null);
   const elementBits = Number(rawElementBits);
   // HFA/HVA is exact only when the member count, member type width, and total
   // layout agree.  In particular, do not turn absent metadata into a
@@ -321,6 +330,19 @@ function homogeneousReturnInfo(proto, cls, returnBits) {
   const kind = proto?.hva === true || cls.includes('hva') ? 'hva' : 'hfa';
   const bytes = Math.ceil(elementBits / 8);
   return { kind, members, elementBits, bits:returnBits, bytes:bytes * members };
+}
+
+function aggregateReturnLayout(proto, returnBits = null) {
+  const normalized = { ...proto };
+  if (Number.isSafeInteger(returnBits) && returnBits > 0) normalized.bits = returnBits;
+  const direct = canonicalAggregateLayout(normalized);
+  if (direct) return direct;
+  if (proto?.returnAggregate && typeof proto.returnAggregate === 'object') {
+    const nested = { ...proto, ...proto.returnAggregate };
+    if (Number.isSafeInteger(returnBits) && returnBits > 0) nested.bits = returnBits;
+    return canonicalAggregateLayout(nested);
+  }
+  return null;
 }
 
 function aggregateReturnPieces(bits, abiClass = 'aggregate') {
@@ -361,6 +383,11 @@ export function classifyAAPCS64CallReturn(insn, opts = {}) {
   if (proto.void === true || type === 'void' || cls === 'void') return null;
   const aggregate=proto.aggregate===true||proto.isAggregate===true||/aggregate|struct|union|record|array|composite/.test(type+' '+cls);
   const explicitReturnBits = explicitReturnBitsOf(proto.returnBits, proto.bits);
+  const aggregateLayout = aggregate ? aggregateReturnLayout(proto, explicitReturnBits) : null;
+  if (aggregate && !aggregateLayout) {
+    return { reg:null, regs:[], bits:explicitReturnBits, bytes:null, aggregate:true, partial:true,
+      reason:'aapcs64-aggregate-return-size-layout-unproven' };
+  }
   if ((proto.indirectResult === true || cls === 'indirect') && aggregate && explicitReturnBits == null) {
     return { reg:null, regs:[], bits:null, bytes:null, aggregate:true, partial:true,
       reason:'aapcs64-aggregate-return-size-not-proven' };
@@ -410,6 +437,11 @@ export function classifyAAPCS64FunctionReturn(opts = {}) {
   if (opts?.returnsValue === false || proto?.returnsValue === false || proto?.void === true || type === 'void' || cls === 'void') return null;
   const aggregate=proto?.aggregate===true||proto?.isAggregate===true||/aggregate|struct|union|record|array|composite/.test(type+' '+cls);
   const explicitReturnBits = explicitReturnBitsOf(proto?.returnBits, proto?.bits, opts?.returnBits);
+  const aggregateLayout = aggregate ? aggregateReturnLayout(proto, explicitReturnBits) : null;
+  if (aggregate && !aggregateLayout) {
+    return { reg:null, regs:[], bits:explicitReturnBits, bytes:null, aggregate:true, partial:true,
+      reason:'aapcs64-aggregate-return-size-layout-unproven' };
+  }
   if ((proto?.indirectResult === true || cls === 'indirect') && aggregate && explicitReturnBits == null) {
     return { reg:null, regs:[], bits:null, bytes:null, aggregate:true, partial:true,
       reason:'aapcs64-aggregate-return-size-not-proven' };

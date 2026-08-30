@@ -1,5 +1,7 @@
 import { architecturePluginV2 } from '../../targets/architecture/index.js';
-import { abiPlugin as registeredABIPlugin } from '../../targets/abi/index.js';
+import {
+  abiPlugin as registeredABIPlugin, isRegisteredABIPlugin, abiPluginRegistryDigest,
+} from '../../targets/abi/index.js';
 import {
   abiInvalidState, abiResultInvalidState, canonicalAbiEvidence, canonicalAbiHiddenResult,
   normalizeAbiPieces,
@@ -90,6 +92,13 @@ function validateABIIdentity(adapter, plugin, opts = {}) {
   if (!record(adapter)) return { supported:false, status:'malformed', reason:'abi-adapter-object-required' };
   if (!record(plugin) || plugin.supported === false || normalized(plugin.id) === 'unknown') {
     return { supported:false, status:'unsupported', reason:'abi-plugin-unsupported' };
+  }
+  if (!isRegisteredABIPlugin(plugin) || adapter.registryPlugin !== plugin) {
+    return { supported:false, status:'malformed', reason:'abi-registry-object-binding-required' };
+  }
+  const registryDigest = abiPluginRegistryDigest(plugin);
+  if (!registryDigest || adapter.registryDigest !== registryDigest) {
+    return { supported:false, status:'stale', reason:'abi-registry-digest-mismatch' };
   }
   const required = ['id', 'semanticVersion', 'semanticIdentity', 'architectureId'];
   if (required.some((field) => typeof adapter[field] !== 'string' || adapter[field].trim() === '')) {
@@ -186,6 +195,7 @@ function validateABIIdentity(adapter, plugin, opts = {}) {
     ['platform', platform],
     ['profileIdentity', canonicalProfileIdentity],
     ['abiId', adapter.id],
+    ['registryDigest', registryDigest],
     ['schemaVersion', adapter.schemaVersion ?? null],
     ['snapshotId', adapter.snapshotId ?? null],
     ['analyzerId', adapter.analyzerId ?? null],
@@ -204,6 +214,7 @@ function validateABIIdentity(adapter, plugin, opts = {}) {
     ['abiId', plugin.id],
     ['semanticVersion', plugin.semanticVersion],
     ['semanticIdentity', plugin.semanticIdentity],
+    ['registryDigest', registryDigest],
     ['architectureId', plugin.architectureId],
     ['profileIdentity', canonicalProfileIdentity],
     ['targetArchitecture', targetArchitecture],
@@ -229,6 +240,7 @@ function validateABIIdentity(adapter, plugin, opts = {}) {
     ['abiId', plugin.id],
     ['abiSemanticIdentity', plugin.semanticIdentity],
     ['abiSemanticVersion', plugin.semanticVersion],
+    ['registryDigest', registryDigest],
     ['architectureId', plugin.architectureId],
     ['targetArchitecture', targetArchitecture],
     ['platformId', platform],
@@ -820,11 +832,22 @@ function hiddenResultRegisterFrom(classified, ctx) {
   return ctx.canonical(raw);
 }
 
-function indirectResultCandidate(ctx) {
-  if (!ctx.supported) return null;
+function indirectResultCandidate(ctx, opts = {}) {
+  // A hidden-result probe is still a classifier query.  It must not revive a
+  // placement after cancellation, budget exhaustion, or another invalidated
+  // evidence state was already observed for this recovery request.
+  if (!ctx.supported || ctx.classifierState || requestedInvalidationState(ctx.adapter, opts)) return null;
+  // The explicit `indirectResult` request is itself the hidden-result shape
+  // proof.  Do not probe it through a bits-only aggregate: aggregate width
+  // alone is intentionally insufficient evidence for direct placement, and
+  // the strict profile classifiers therefore (correctly) reject that probe.
+  // Using the non-aggregate indirect marker asks the selected canonical
+  // profile only for its designated hidden input register; the enclosing
+  // caller still requires a live entry pointer and validates the complete
+  // identity-bearing hidden-result envelope below.
   const probes = [
-    { returnType:'struct aggregate', returnClass:'aggregate', returnBits:256, aggregate:true, returnsValue:true },
-    { returnType:'struct aggregate', returnClass:'indirect', returnBits:256, aggregate:true, indirectResult:true, returnsValue:true },
+    { returnType:'indirect-result', returnClass:'indirect', returnBits:64,
+      indirectResult:true, returnsValue:true },
   ];
   for (const functionPrototype of probes) {
     let classified = null;
@@ -997,7 +1020,7 @@ export function recoverFunctionPrototype(ir, types, opts = {}) {
   if (!indirectRegister && opts.indirectResult === true) {
     // An explicit indirect-result fact permits one canonical classifier query;
     // an untyped entry register alone never invents a hidden sret placement.
-    const candidate = indirectResultCandidate(ctx);
+    const candidate = indirectResultCandidate(ctx, opts);
     const candidateRegister = hiddenResultRegisterFrom(candidate, ctx);
     if (candidateRegister) {
       const entry = entryValueForBase(ir, ctx, candidateRegister);

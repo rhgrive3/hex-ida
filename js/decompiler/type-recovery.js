@@ -170,6 +170,11 @@ function applyRuntimeHints(ir, evidences, runtime) {
 
 export function inferSemanticTypes(ir, model, opts = {}) {
   if (!ir) return { args:[], locals:[], ret:{type:'void',conf:0.2}, values:new Map(), locations:new Map(), warnings:['Semantic IR unavailable'] };
+  const legacyAArch64 = opts.legacyAArch64 === true
+    || (!opts.abiAdapter && ir?.compat?.projection !== 'semantic-ir-v2-to-v1');
+  const firstArgumentRegister = opts.abiAdapter?.supported === true
+    ? (opts.abiAdapter.argumentRegisters?.()?.[0] ?? null)
+    : legacyAArch64 ? 'x0' : null;
   const ev = new Map(), locEv = new Map();
   const eFor = (v) => { if (!v) return null; if (!ev.has(v.id)) ev.set(v.id, evidence()); return ev.get(v.id); };
   const lFor = (loc) => { if (!loc) return null; if (!locEv.has(loc.key)) locEv.set(loc.key, evidence()); return locEv.get(loc.key); };
@@ -240,13 +245,13 @@ export function inferSemanticTypes(ir, model, opts = {}) {
 
     if (inst.op === OP.CALL) {
       const name = String((inst.extra && inst.extra.name) || (inst.insn && inst.insn.callName) || '');
-      if (/objc_msgSend/.test(name)) {
-        const recv = reachingRegisterTypeValue(ir, inst, 'x0');
+      if (/objc_msgSend/.test(name) && firstArgumentRegister) {
+        const recv = reachingRegisterTypeValue(ir, inst, firstArgumentRegister);
         const re = eFor(recv); if (re) score(re, 'objc', 6, `row ${inst.row}: Objective-C message receiver`);
       }
       if (/^_?swift_/.test(name) && dst) score(dst, 'swift', 2, `row ${inst.row}: Swift runtime call`);
-      if (/(?:^|_)Block_(?:copy|release)$/.test(name)) {
-        const block = reachingRegisterTypeValue(ir, inst, 'x0');
+      if (/(?:^|_)Block_(?:copy|release)$/.test(name) && firstArgumentRegister) {
+        const block = reachingRegisterTypeValue(ir, inst, firstArgumentRegister);
         const ce = eFor(block); if (ce) score(ce, 'closure', 7, `row ${inst.row}: Objective-C block runtime`);
       }
     }
@@ -263,8 +268,11 @@ export function inferSemanticTypes(ir, model, opts = {}) {
   // and is kept only for legacy callers that supply no ABI adapter; on RISC-V
   // those same ids name the zero register, ra, sp, gp, tp and temporaries, so
   // assuming them would report the stack pointer as an argument.
-  const argumentRegisters = opts.abiAdapter?.argumentRegisters?.()
-    ?? Array.from({ length:8 }, (_unused, i) => `x${i}`);
+  const argumentRegisters = opts.abiAdapter?.supported === true
+    ? (opts.abiAdapter.argumentRegisters?.() ?? [])
+    : legacyAArch64
+      ? Array.from({ length:8 }, (_unused, i) => `x${i}`)
+      : [];
   const args = [];
   argumentRegisters.forEach((reg, i) => {
     const v = ir.args && ir.args.get ? ir.args.get(reg) : null;

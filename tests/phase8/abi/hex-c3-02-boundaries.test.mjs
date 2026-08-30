@@ -9,8 +9,9 @@ import { classifyCallArguments } from '../../../js/ir-core.js';
 import {
   AAPCS64_ABI, DARWIN_ARM64_ABI, SYSV_AMD64_ABI, MICROSOFT_X64_ABI,
   MICROSOFT_VECTORCALL_ABI, RISCV_LP64_ABI, RISCV_LP64F_ABI, RISCV_LP64D_ABI,
-  resolveABIPlugin,
+  resolveABIPlugin, UNKNOWN_ABI,
 } from '../../../js/targets/abi/index.js';
+import { normalizeAbiPieces } from '../../../js/targets/abi/evidence.js';
 
 function value(id, reg) { return { id, reg, uses:[{}] }; }
 
@@ -46,7 +47,8 @@ test('C3-02 canonical adapter carries one ABI identity through classification', 
     architecture:'arm64', platform:'linux', binaryId:'binary-c3-02',
     sliceId:'slice-c3-02', functionId:'fn-c3-02',
   });
-  const pair = { type:'struct Pair', aggregate:true, bits:128 };
+  const pair = { type:'struct Pair', aggregate:true, bits:128,
+    members:[{ type:'uint64', bits:64, byteOffset:0 }, { type:'uint64', bits:64, byteOffset:8 }] };
   const classified = adapter.classifyArguments({ functionPrototype:{ parameters:[pair] } });
   assert.equal(adapter.semanticIdentity, 'aapcs64@2');
   assert.equal(adapter.identity.semanticIdentity, 'aapcs64@2');
@@ -136,7 +138,8 @@ test('C3-02 adapter publication rejects every terminal classifier state', () => 
 });
 
 test('C3-02 malformed aggregate pieces never fill missing or overlapping lanes', () => {
-  const pair = { returnType:'struct Pair', aggregate:true, bits:128, returnsValue:true };
+  const pair = { returnType:'struct Pair', aggregate:true, bits:128, returnsValue:true,
+    members:[{ type:'uint64', bits:64, byteOffset:0 }, { type:'uint64', bits:64, byteOffset:8 }] };
   const canonical = semanticAbiAdapter(AAPCS64_ABI, { architecture:'arm64', platform:'linux' });
   const returned = canonical.classifyFunctionReturn({ functionPrototype:pair });
   const malformedPieces = [
@@ -163,7 +166,8 @@ test('C3-02 malformed aggregate pieces never fill missing or overlapping lanes',
 });
 
 test('C3-02 aggregate register lists without canonical pieces are not exact', () => {
-  const pair = { returnType:'struct Pair', aggregate:true, bits:128, returnsValue:true };
+  const pair = { returnType:'struct Pair', aggregate:true, bits:128, returnsValue:true,
+    members:[{ type:'uint64', bits:64, byteOffset:0 }, { type:'uint64', bits:64, byteOffset:8 }] };
   const canonical = semanticAbiAdapter(AAPCS64_ABI, { architecture:'arm64', platform:'linux' });
   const returned = canonical.classifyFunctionReturn({ functionPrototype:pair });
   const { pieces:unusedPieces, parts:unusedParts, ...withoutPieces } = returned;
@@ -175,7 +179,8 @@ test('C3-02 aggregate register lists without canonical pieces are not exact', ()
   assert.deepEqual(prototype.returnLocations, []);
   assert.equal(prototype.returnLocationKnown, false);
 
-  const parameter = { type:'struct Pair', aggregate:true, bits:128 };
+  const parameter = { type:'struct Pair', aggregate:true, bits:128,
+    members:[{ type:'uint64', bits:64, byteOffset:0 }, { type:'uint64', bits:64, byteOffset:8 }] };
   const classified = canonical.classifyArguments({ functionPrototype:{ parameters:[parameter] } });
   const { pieces:unusedArgumentPieces, parts:unusedArgumentParts, ...argumentWithoutPieces } = classified.arguments[0];
   const argumentAdapter = {
@@ -191,7 +196,8 @@ test('C3-02 aggregate register lists without canonical pieces are not exact', ()
 });
 
 test('C3-02 malformed aggregate argument pieces never create a prototype parameter', () => {
-  const parameter = { type:'struct Pair', aggregate:true, bits:128 };
+  const parameter = { type:'struct Pair', aggregate:true, bits:128,
+    members:[{ type:'uint64', bits:64, byteOffset:0 }, { type:'uint64', bits:64, byteOffset:8 }] };
   const canonical = semanticAbiAdapter(AAPCS64_ABI, { architecture:'arm64', platform:'linux' });
   const classified = canonical.classifyArguments({ functionPrototype:{ parameters:[parameter] } });
   const malformed = classified.arguments[0].pieces.map((piece, index) => index
@@ -208,7 +214,8 @@ test('C3-02 malformed aggregate argument pieces never create a prototype paramet
 });
 
 test('C3-02 hidden sret requires complete pointer, location, and profile proof', () => {
-  const big = { returnType:'struct Big', aggregate:true, bits:256, returnsValue:true };
+  const big = { returnType:'struct Big', aggregate:true, bits:256, returnsValue:true,
+    members:Array.from({ length:4 }, (_unused, index) => ({ type:'uint64', bits:64, byteOffset:index * 8 })) };
   const canonical = semanticAbiAdapter(AAPCS64_ABI, { architecture:'arm64', platform:'linux' });
   const returned = canonical.classifyFunctionReturn({ functionPrototype:big });
   const tampered = [
@@ -255,7 +262,8 @@ test('C3-02 HFA/HVA without member layout stays partial for every supported prof
 test('C3-02 whole-spilled AAPCS aggregate retains an explicit canonical stack piece', () => {
   const parameters = [
     ...Array.from({ length:7 }, () => ({ type:'uint64_t', bits:64 })),
-    { type:'struct Pair', aggregate:true, bits:128 },
+    { type:'struct Pair', aggregate:true, bits:128,
+      members:[{ type:'uint64', bits:64, byteOffset:0 }, { type:'uint64', bits:64, byteOffset:8 }] },
   ];
   const result = AAPCS64_ABI.classifyArguments({ callPrototype:{ parameters } });
   const aggregate = result.arguments.at(-1);
@@ -454,7 +462,8 @@ test('C3-02 every nested identity record is validated before publication', () =>
 
 test('C3-02 aggregate returns keep full canonical locations and reject scalar collapse', () => {
   const adapter = semanticAbiAdapter(AAPCS64_ABI);
-  const functionPrototype = { returnType:'struct Pair', aggregate:true, bits:128, returnsValue:true };
+  const functionPrototype = { returnType:'struct Pair', aggregate:true, bits:128, returnsValue:true,
+    members:[{ type:'uint64', bits:64, byteOffset:0 }, { type:'uint64', bits:64, byteOffset:8 }] };
   assert.deepEqual(adapter.returnLocations({ functionPrototype }).map(({ reg, pieceIndex }) => ({ reg, pieceIndex })), [
     { reg:'x0', pieceIndex:0 }, { reg:'x1', pieceIndex:1 },
   ]);
@@ -462,6 +471,7 @@ test('C3-02 aggregate returns keep full canonical locations and reject scalar co
   const partial = semanticAbiAdapter(AAPCS64_ABI, { callPrototype:{
     parameters:[{ type:'int64', bits:64 }], variadic:true,
     returnType:'struct Pair', aggregate:true, bits:128, returnsValue:true,
+    members:[{ type:'uint64', bits:64, byteOffset:0 }, { type:'uint64', bits:64, byteOffset:8 }],
   } }).classifyCall({ call:{} });
   assert.equal(partial.partial, true);
   assert.equal(partial.returnReg, null);
@@ -517,7 +527,8 @@ test('C3-02 hard-float RISC-V aggregates require explicit member offsets before 
 
 test('C3-02 hidden sret consumers reject partial and budget-limited canonical results', () => {
   const base = semanticAbiAdapter(AAPCS64_ABI, { architecture:'arm64', platform:'linux' });
-  const prototype = { returnType:'struct Large', aggregate:true, bits:256, returnsValue:true };
+  const prototype = { returnType:'struct Large', aggregate:true, bits:256, returnsValue:true,
+    members:Array.from({ length:4 }, (_unused, index) => ({ type:'uint64', bits:64, byteOffset:index * 8 })) };
   const complete = base.classifyFunctionReturn({ functionPrototype:prototype });
   assert.equal(complete?.indirect, true);
   for (const state of [{ partial:true }, { budgetLimited:true }, { status:'budget-limited' }]) {
@@ -526,10 +537,24 @@ test('C3-02 hidden sret consumers reject partial and budget-limited canonical re
       classifyFunctionReturn() { return { ...complete, ...state }; },
     };
     assert.deepEqual(adapter.returnLocations({ classified:{ ...complete, ...state } }), []);
-    const recovered = recover(adapter, ['x8'], { ret:{ type:'struct Large', aggregate:true, bits:256 } });
+    const recovered = recover(adapter, ['x8'], { ret:{ type:'struct Large', aggregate:true, bits:256,
+      members:Array.from({ length:4 }, (_unused, index) => ({ type:'uint64', bits:64, byteOffset:index * 8 })) } });
     assert.equal(recovered.indirectResult, false);
     assert.equal(recovered.indirectResultRegister, null);
     assert.deepEqual(recovered.returnLocations, []);
+  }
+});
+
+test('C3-02 explicit hidden-sret probes cannot bypass cancellation or budget invalidation', () => {
+  const adapter = semanticAbiAdapter(AAPCS64_ABI, { architecture:'arm64', platform:'linux' });
+  const large = { type:'struct Large', aggregate:true, bits:256, returnsValue:true,
+    members:Array.from({ length:4 }, (_unused, index) => ({ type:'uint64', bits:64, byteOffset:index * 8 })) };
+  for (const state of [{ cancelled:true }, { budgetExhausted:true }, { budgetLimited:true }]) {
+    const recovered = recover(adapter, ['x8'], { ret:large }, { ...state, indirectResult:true });
+    assert.equal(recovered.indirectResult, false, `${JSON.stringify(state)} must not publish hidden sret`);
+    assert.equal(recovered.indirectResultRegister, null, `${JSON.stringify(state)} must not publish its register`);
+    assert.deepEqual(recovered.returnLocations, [], `${JSON.stringify(state)} must remain conservative`);
+    assert.equal(recovered.conventionKnown, false, `${JSON.stringify(state)} must invalidate the ABI context`);
   }
 });
 
@@ -569,7 +594,8 @@ test('C3-02 preserves a canonical split register/stack aggregate as one paramete
   const adapter = semanticAbiAdapter(RISCV_LP64_ABI);
   const parameters = [
     ...Array.from({ length:7 }, () => ({ type:'int64', bits:64 })),
-    { type:'struct Pair', aggregate:true, bits:128 },
+    { type:'struct Pair', aggregate:true, bits:128,
+      members:[{ type:'uint64', bits:64, byteOffset:0 }, { type:'uint64', bits:64, byteOffset:8 }] },
   ];
   const args = [
     ['x2', value(99, 'x2')],
@@ -599,8 +625,10 @@ test('C3-02 Semantic IR call publication retains canonical ABI identity and aggr
   const adapter = semanticAbiAdapter(AAPCS64_ABI, {
     architecture:'arm64', platform:'linux', binaryId:'binary-c3-02', sliceId:'slice-c3-02',
     functionId:'fn-c3-02',
-    callPrototype:{ parameters:[{ type:'struct Pair', aggregate:true, bits:128 }],
-      returnType:'struct Pair', aggregate:true, bits:128, returnsValue:true },
+    callPrototype:{ parameters:[{ type:'struct Pair', aggregate:true, bits:128,
+      members:[{ type:'uint64', bits:64, byteOffset:0 }, { type:'uint64', bits:64, byteOffset:8 }] }],
+      returnType:'struct Pair', aggregate:true, bits:128, returnsValue:true,
+      members:[{ type:'uint64', bits:64, byteOffset:0 }, { type:'uint64', bits:64, byteOffset:8 }] },
   });
   const origin = (id) => ({ instructionIds:[id], virtualRanges:[{ start:0x1000n, end:0x1004n }] });
   const arg = {
@@ -705,4 +733,74 @@ test('C3-02 Semantic IR call publication retains canonical ABI identity and aggr
   assert.equal(oneLaneAggregateCall.returnReg ?? null, null);
   assert.deepEqual(oneLaneAggregateCall.extra.returnLocations ?? [], []);
   assert.equal(oneLaneAggregateCall.extra.returnPieces ?? null, null);
+});
+
+test('C3-02 bits alone never proves a small aggregate on AAPCS64, Darwin, or RISC-V', () => {
+  const profiles = [AAPCS64_ABI, DARWIN_ARM64_ABI, RISCV_LP64_ABI, RISCV_LP64F_ABI, RISCV_LP64D_ABI];
+  for (const abi of profiles) {
+    const aggregate = { type:'struct BitsOnly', aggregate:true, bits:128 };
+    const argumentsResult = abi.classifyArguments({ callPrototype:{ parameters:[aggregate] } });
+    assert.equal(argumentsResult?.partial, true, `${abi.id} bits-only argument must remain partial`);
+    assert.equal(argumentsResult?.arguments?.[0]?.location, 'unknown', `${abi.id} bits-only argument must be unknown`);
+    const returnResult = abi.classifyFunctionReturn({
+      functionPrototype:{ ...aggregate, returnType:'struct BitsOnly', returnsValue:true },
+    });
+    assert.equal(returnResult?.partial, true, `${abi.id} bits-only return must remain partial`);
+    assert.equal(returnResult?.reg ?? null, null, `${abi.id} bits-only return must not expose a register`);
+    assert.equal(returnResult?.regs?.length ?? 0, 0, `${abi.id} bits-only return must not expose lanes`);
+  }
+});
+
+test('C3-02 aggregate normalization rejects duplicate, overlapping, and misaligned physical stack lanes', () => {
+  const base = {
+    aggregate:true, bits:128, bytes:16, alignment:8,
+    pieceClasses:['aggregate-memory', 'aggregate-memory'],
+  };
+  const piece = (stackOffset, byteOffset) => ({
+    pieceIndex:byteOffset / 8, order:byteOffset / 8, stackOffset,
+    bits:64, bytes:8, byteOffset, abiClass:'aggregate-memory',
+  });
+  assert.equal(normalizeAbiPieces(base, [piece(0, 0), piece(0, 8)]), null);
+  assert.equal(normalizeAbiPieces(base, [piece(0, 0), piece(4, 8)]), null);
+});
+
+test('C3-02 known variadic RISC-V profiles preserve the named prefix and anonymous frontier', () => {
+  for (const abi of [RISCV_LP64_ABI, RISCV_LP64F_ABI, RISCV_LP64D_ABI]) {
+    const result = abi.classifyArguments({ callPrototype:{
+      parameters:[{ type:'int64', bits:64 }], variadic:true,
+    } });
+    assert.equal(result?.partial, true, `${abi.id} variadic classification must be partial`);
+    assert.equal(result?.completeness, 'partial', `${abi.id} variadic completeness must be partial`);
+    const fixed = result?.arguments?.find((entry) => entry.index === 0);
+    assert.equal(fixed?.reg, 'x10', `${abi.id} fixed prefix must retain a0`);
+    assert.equal(fixed?.possible ?? null, false, `${abi.id} fixed prefix must be exact`);
+    assert.equal(fixed?.mustUse ?? null, true, `${abi.id} fixed prefix must be required`);
+    const frontier = result?.arguments?.find((entry) => entry.index == null);
+    assert.equal(frontier?.possible ?? null, true, `${abi.id} must expose anonymous candidates`);
+    assert.equal(frontier?.mustUse ?? null, false, `${abi.id} anonymous candidates must be conservative`);
+  }
+});
+
+test('C3-02 architecture-only identity never selects an ABI default', () => {
+  for (const architecture of ['arm64', 'x86_64', 'riscv64']) {
+    const resolved = resolveABIPlugin({ architecture });
+    assert.equal(resolved?.id, 'unknown', `${architecture} must require a profile or platform identity`);
+  }
+});
+
+test('C3-02 unregistered plugin-like adapters cannot publish canonical ABI identity', () => {
+  const spoof = {
+    id:'aapcs64', semanticVersion:'2', semanticIdentity:'aapcs64@2', architectureId:'arm64',
+    classifyArguments:() => ({ arguments:[], partial:false, completeness:'exact' }),
+    classifyFunctionReturn:() => null,
+  };
+  assert.equal(resolveABIPlugin({ abiPlugin:spoof }), UNKNOWN_ABI,
+    'resolver must reject an unregistered plugin object, even with copied identity');
+  const adapter = semanticAbiAdapter(spoof, { architecture:'arm64', platform:'linux' });
+  assert.equal(adapter.supported, false);
+  assert.equal(adapter.provenance?.source, 'unregistered-abi-adapter');
+  const prototype = recover(adapter, ['x0']);
+  assert.equal(prototype.conventionKnown, false);
+  assert.deepEqual(prototype.arguments, []);
+  assert.deepEqual(prototype.returnLocations, []);
 });
