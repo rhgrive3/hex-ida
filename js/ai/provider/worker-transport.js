@@ -7,7 +7,10 @@ export const RETRY_MAX_DELAY_MS = 4000;
 export const RETRYABLE_UPSTREAM_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
 const AI_QUOTA_BINDING = 'AI_QUOTA';
 
-export function isJsonRequest(request) { return (request.headers.get('content-type') || '').toLowerCase().startsWith('application/json'); }
+export function isJsonRequest(request) {
+  const mediaType = (request.headers.get('content-type') || '').split(';', 1)[0].trim().toLowerCase();
+  return mediaType === 'application/json';
+}
 export function byteLength(value) { return new TextEncoder().encode(typeof value === 'string' ? value : JSON.stringify(value)).byteLength; }
 export function boundedText(value, max) { return typeof value === 'string' ? value.slice(0, max) : ''; }
 
