@@ -5,7 +5,10 @@ function cleanClassName(name) {
   return name.replace(/^class\s+/, '').replace(/\s*\*+\s*$/, '').replace(/^@?"|"$/g, '').trim() || null;
 }
 
-function methodKey(classMethod, selector) { return `${classMethod ? '+' : '-'}:${selector || ''}`; }
+function methodKey(classMethod, selector) {
+  if (typeof selector !== 'string' || !selector) return null;
+  return `${classMethod ? '+' : '-'}:${selector}`;
+}
 
 function pushIndex(map, key, value) {
   if (!key) return;
@@ -15,7 +18,11 @@ function pushIndex(map, key, value) {
 }
 
 function normalizeMethod(m, owner, classMethod, source = 'class', proofRequired = false) {
-  const selector = m && (m.sel || m.selector || m.name && String(m.name).match(/\s([^\]]+)\]$/)?.[1]);
+  if (!m) return null;
+  let selector = null;
+  if (typeof m.sel === 'string') selector = m.sel;
+  else if (typeof m.selector === 'string') selector = m.selector;
+  else if (typeof m.name === 'string') selector = m.name.match(/\s([^\]]+)\]$/)?.[1] || null;
   if (!selector) return null;
   return {
     selector,
@@ -175,7 +182,7 @@ function protocolRequirements(index, key, allowedProtocols) {
  * as separate evidence.
  */
 export function resolveObjcDispatch(index, { receiverType = null, selector, classMethod = false, protocols = null } = {}) {
-  if (!index || !selector) return { resolved: null, candidates: [], requirements: [], confidence: 0, reason: 'missing runtime index or selector' };
+  if (!index || typeof selector !== 'string' || !selector) return { resolved: null, candidates: [], requirements: [], confidence: 0, reason: 'missing runtime index or selector' };
   const key = methodKey(classMethod, selector);
   const cleanReceiver = cleanClassName(receiverType);
   const chain = hierarchy(index, cleanReceiver);
@@ -213,10 +220,6 @@ export function resolveObjcDispatch(index, { receiverType = null, selector, clas
         reason: 'selector candidates contradict the explicit receiver type',
       };
     }
-    // Objective-C lookup stops at the first class in the receiver hierarchy
-    // that provides this selector. Implementations on deeper superclasses are
-    // shadowed, not competing dispatch candidates. Keep every method at the
-    // winning level so category collisions remain conservative.
     const nearestRank = Math.min(...narrowed.map((m) => ranks.get(m.className)));
     candidates = narrowed.filter((m) => ranks.get(m.className) === nearestRank);
   }
@@ -227,10 +230,6 @@ export function resolveObjcDispatch(index, { receiverType = null, selector, clas
   const sameImplementation = !!top && top.imp != null && candidates.every((m) => m.imp != null && m.imp.toString() === top.imp.toString());
   const uniqueByEvidence = !!top && top.imp != null && (!second || sameImplementation || (!cleanReceiver && top.score - second.score >= 0.16));
   const categoryComplete = index.completeness?.categories?.complete === true;
-  // A complete scan of the current Mach-O image is not proof that every
-  // Objective-C implementation available to the runtime has been indexed.
-  // Without a proven receiver type, keep current-image hits as candidates
-  // rather than turning local uniqueness into a process-wide exact target.
   const partialBlocksVerification = cleanReceiver ? !categoryComplete : true;
   const unambiguous = uniqueByEvidence && !partialBlocksVerification;
   return {
