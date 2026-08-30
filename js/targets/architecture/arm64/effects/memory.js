@@ -580,6 +580,10 @@ function prefetchOperand(decoded) {
     if (!named) return null;
     const [, type, level, policy] = named;
     const code = (({ ld:0, li:1, st:2 })[type] << 3) | ((Number(level) - 1) << 1) | (policy === 'strm' ? 1 : 0);
+    const hasEncodingEvidence = decoded?.word != null || decoded?.encodingWord != null || decoded?.rawBytes != null || decoded?.bytes != null;
+    const word = arm64DecodedEncodingWord(decoded);
+    if (hasEncodingEvidence && word == null) return null;
+    if (word != null && (word & 0x1f) !== code) return null;
     return Object.freeze({
       code, spelling:printed, named:true,
       operation:PREFETCH_TYPES[type], cacheLevel:Number(level), policy:PREFETCH_POLICIES[policy],

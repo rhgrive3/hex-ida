@@ -49,6 +49,20 @@ function returnsFromTrace(trace) {
 }
 function isConditionalBranch(text) { return /^((b\.[a-z]+)|cbz|cbnz|tbz|tbnz)\b/i.test(text || ''); }
 function isRegisterName(reg) { return /^(x([0-9]|[12][0-9]|30)|w([0-9]|[12][0-9]|30)|sp|pc)$/.test(reg); }
+function initialMemorySize(value) {
+  if (value == null) return 8;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || ![1, 2, 4, 8].includes(value)) {
+    throw new DebugAdapterError('invalid-argument', 'initial memory size must be 1, 2, 4, or 8 bytes');
+  }
+  return value;
+}
+function initialMemoryValue(value) {
+  if (value == null) return 0n;
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value);
+  if (typeof value === 'string' && /^-?(?:0x[0-9a-f]+|[0-9]+)$/i.test(value)) return BigInt(value);
+  throw new DebugAdapterError('invalid-argument', 'initial memory value must be an integer scalar');
+}
 
 function remoteArray(result, key, max, name) {
   const value = Array.isArray(result) ? result : result && Array.isArray(result[key]) ? result[key] : null;
@@ -148,8 +162,8 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
       objectMemory:spec.objectMemory || spec.fakeObject || [], stackMemory:spec.stack || spec.stackMemory || [], watch:spec.watch || [],
       breakpoints:[...this.breakpoints.values()].filter((b) => b.enabled && b.address != null).map((b) => b.address)
     });
-    for (const item of spec.heap || []) await emu.store(asAddress(item.address), Number(item.size ?? 8), BigInt(item.value || 0));
-    for (const item of spec.globalValues || []) await emu.store(asAddress(item.address), Number(item.size ?? 8), BigInt(item.value || 0));
+    for (const item of spec.heap || []) await emu.store(asAddress(item.address), initialMemorySize(item.size), initialMemoryValue(item.value));
+    for (const item of spec.globalValues || []) await emu.store(asAddress(item.address), initialMemorySize(item.size), initialMemoryValue(item.value));
     const initialRegisters = cloneRegisters(emu);
     initializing = false;
     if (launchGeneration !== this.launchGeneration) {

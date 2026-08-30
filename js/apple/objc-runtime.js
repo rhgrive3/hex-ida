@@ -1,8 +1,8 @@
 /* Objective-C runtime intelligence built on top of objc.js metadata parsing. */
 
 function cleanClassName(name) {
-  if (!name) return null;
-  return String(name).replace(/^class\s+/, '').replace(/\s*\*+\s*$/, '').replace(/^@?"|"$/g, '').trim() || null;
+  if (name == null || typeof name !== 'string') return null;
+  return name.replace(/^class\s+/, '').replace(/\s*\*+\s*$/, '').replace(/^@?"|"$/g, '').trim() || null;
 }
 
 function methodKey(classMethod, selector) { return `${classMethod ? '+' : '-'}:${selector || ''}`; }
@@ -41,10 +41,12 @@ export function buildObjcRuntimeIndex(objcModel = {}) {
   const proofRequired = objcModel.implementationProofRequired === true;
 
   for (const c of objcModel.classes || []) {
-    if (!c || !c.name) continue;
+    if (!c) continue;
+    const className = cleanClassName(c.name);
+    if (!className) continue;
     const info = {
       ...c,
-      name: cleanClassName(c.name),
+      name: className,
       superName: cleanClassName(c.superName),
       protocols: (c.protocols || []).map((p) => cleanClassName(p.name || p)).filter(Boolean),
     };
@@ -64,8 +66,9 @@ export function buildObjcRuntimeIndex(objcModel = {}) {
   }
 
   for (const p of objcModel.protocols || []) {
-    if (!p || !p.name) continue;
+    if (!p) continue;
     const name = cleanClassName(p.name);
+    if (!name) continue;
     const copy = { ...p, name };
     protocols.set(name, copy);
     for (const m of p.instanceMethods || p.methods || []) {
