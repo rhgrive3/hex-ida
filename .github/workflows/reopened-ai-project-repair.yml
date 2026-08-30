@@ -30,49 +30,8 @@ jobs:
           from pathlib import Path
           p = Path('js/ai/ui/session.js')
           s = p.read_text()
-          old = """  _releaseConversation(conversation, reason) {
-    if (!conversation?.id) return;
-    if (typeof this.engine?.deleteSession === 'function') {
-      Promise.resolve(this.engine.deleteSession(conversation.id, { reason })).catch(() => {});
-    } else if (typeof this.engine?.forgetAIConversation === 'function') {
-      try { this.engine.forgetAIConversation(conversation.id); } catch { /* best effort */ }
-    }
-  }
-"""
-          new = """  _releaseConversation(conversation, reason) {
-    if (!conversation?.id) return;
-    const id = String(conversation.id);
-    const deletePersisted = reason === 'user-delete';
-    if (typeof this.engine?.deleteSession === 'function') {
-      Promise.resolve(this.engine.deleteSession(id, { reason })).catch(() => {});
-      return;
-    }
-
-    // Embedding/tests may inject AIRuntime (or just its sessionStore) directly
-    // instead of the full UI bridge. Preserve the same retention-vs-explicit
-    // deletion contract in that shape as well.
-    const runtime = this.engine?.runtime;
-    if (runtime && typeof runtime !== 'function') {
-      if (typeof runtime.releaseSession === 'function') {
-        Promise.resolve(runtime.releaseSession(id, { deletePersisted })).catch(() => {});
-        return;
-      }
-      const store = runtime.sessionStore;
-      if (store) {
-        if (deletePersisted && typeof store.delete === 'function') {
-          Promise.resolve(store.delete(id)).catch(() => {});
-        } else {
-          store.sessions?.delete?.(id);
-        }
-        return;
-      }
-    }
-
-    if (typeof this.engine?.forgetAIConversation === 'function') {
-      try { this.engine.forgetAIConversation(id); } catch { /* best effort */ }
-    }
-  }
-"""
+          old = "  _releaseConversation(conversation, reason) {\n    if (!conversation?.id) return;\n    if (typeof this.engine?.deleteSession === 'function') {\n      Promise.resolve(this.engine.deleteSession(conversation.id, { reason })).catch(() => {});\n    } else if (typeof this.engine?.forgetAIConversation === 'function') {\n      try { this.engine.forgetAIConversation(conversation.id); } catch { /* best effort */ }\n    }\n  }\n"
+          new = "  _releaseConversation(conversation, reason) {\n    if (!conversation?.id) return;\n    const id = String(conversation.id);\n    const deletePersisted = reason === 'user-delete';\n    if (typeof this.engine?.deleteSession === 'function') {\n      Promise.resolve(this.engine.deleteSession(id, { reason })).catch(() => {});\n      return;\n    }\n\n    // Embedding/tests may inject AIRuntime (or just its sessionStore) directly\n    // instead of the full UI bridge. Preserve the same retention-vs-explicit\n    // deletion contract in that shape as well.\n    const runtime = this.engine?.runtime;\n    if (runtime && typeof runtime !== 'function') {\n      if (typeof runtime.releaseSession === 'function') {\n        Promise.resolve(runtime.releaseSession(id, { deletePersisted })).catch(() => {});\n        return;\n      }\n      const store = runtime.sessionStore;\n      if (store) {\n        if (deletePersisted && typeof store.delete === 'function') {\n          Promise.resolve(store.delete(id)).catch(() => {});\n        } else {\n          store.sessions?.delete?.(id);\n        }\n        return;\n      }\n    }\n\n    if (typeof this.engine?.forgetAIConversation === 'function') {\n      try { this.engine.forgetAIConversation(id); } catch { /* best effort */ }\n    }\n  }\n"
           if s.count(old) != 1:
               raise SystemExit(f'_releaseConversation source drifted: {s.count(old)} matches')
           p.write_text(s.replace(old, new, 1))
