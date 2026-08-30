@@ -3,6 +3,7 @@ import { installHardenedProductUI as installProductUI } from './ui/product-harde
 import { installViewerDragReturnGuard } from './ui/viewer-gesture-guard.js';
 import { closeMenu } from './ui.js';
 import { installDemandDrivenAnalysis } from './analysis/demand-driven-runtime.js';
+import { installSharedAppArtifacts } from './analysis/shared-app-artifacts.js';
 import { installSharedWorkerBinaryIdentity } from './analysis/shared-binary-identity.js';
 
 const LEGACY_ACTION_IDS = [
@@ -63,6 +64,7 @@ function migrateRootControls(ui) {
 function boot() {
   if (!window.__app) return;
   installDemandDrivenAnalysis(window.__app);
+  installSharedAppArtifacts(window.__app);
   installSharedWorkerBinaryIdentity(window.__app);
   installViewerDragReturnGuard(window.__app.viewer);
   retireLegacyActionDom();
