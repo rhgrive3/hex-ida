@@ -4,6 +4,8 @@ from pathlib import Path
 def rep(path, old, new):
     p = Path(path)
     s = p.read_text()
+    if new in s:
+        return
     if old not in s:
         raise SystemExit(f"guard failed: {path}: {old[:100]!r}")
     p.write_text(s.replace(old, new, 1))
