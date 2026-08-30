@@ -89,7 +89,8 @@ const CLASS_NAME_HINTS = [
 
 /** クラス名だけから分類する。当たらなければ空。 */
 export function classifyClassName(name) {
-  const s = String(name || '');
+  if (typeof name !== 'string') return [];
+  const s = name;
   const out = [];
   for (const h of CLASS_NAME_HINTS) {
     if (h.re.test(s)) out.push({ id: h.id, points: h.points });
