@@ -92,7 +92,11 @@ function clone(value) {
 
 function capabilityList(value) {
   if (!Array.isArray(value)) return [];
-  const out = [...new Set(value.map(String).filter(Boolean))].sort();
+  const normalized = value.map((capability) => {
+    if (typeof capability !== 'string' || !capability.trim()) throw new TypeError('runtime-capability-invalid');
+    return capability.trim();
+  });
+  const out = [...new Set(normalized)].sort();
   for (const capability of out) if (!DEBUG_CAPABILITY_SET.has(capability)) throw new TypeError(`runtime-capability-unknown:${capability}`);
   return out;
 }
@@ -157,22 +161,41 @@ function observationIdentity(observation) {
 }
 
 function profileAllowed(value) {
-  const text = String(value ?? '').trim();
-  return PROVIDER_PROFILE_PATTERNS.some((pattern) => pattern.test(text));
+  if (typeof value !== 'string') return false;
+  const text = value.trim();
+  return !!text && PROVIDER_PROFILE_PATTERNS.some((pattern) => pattern.test(text));
 }
 
 function targetProfileAllowed(value) {
-  const text = String(value ?? '').trim();
-  return NATIVE_TARGET_PROFILES.has(text) || MANAGED_TARGET_PROFILE.test(text);
+  if (typeof value !== 'string') return false;
+  const text = value.trim();
+  return !!text && (NATIVE_TARGET_PROFILES.has(text) || MANAGED_TARGET_PROFILE.test(text));
+}
+
+function authorityText(value) {
+  if (value == null) return null;
+  if (typeof value !== 'string') return false;
+  const text = value.trim();
+  return text || false;
+}
+
+function authoritySha(value) {
+  const text = authorityText(value);
+  if (text == null || text === false) return text;
+  const normalized = text.toLowerCase();
+  return /^[0-9a-f]{40}$/.test(normalized) ? normalized : false;
 }
 
 function mismatchReason(binding, providerProfileId, targetProfileId, expectedBuildIdentity, proof = {}) {
   const boundProviderProfileId = binding.providerProfileId;
   const boundTargetProfileId = binding.targetProfileId;
-  const proofProviderProfileId = proof.providerProfileId == null ? null : String(proof.providerProfileId).trim();
-  const proofTargetProfileId = proof.targetProfileId == null ? null : String(proof.targetProfileId).trim();
-  const proofProviderIdentity = proof.providerIdentity == null ? null : String(proof.providerIdentity).trim();
-  const proofBuildIdentity = proof.buildIdentity ?? proof.runtimeBuildIdentity ?? null;
+  const proofProviderProfileId = authorityText(proof.providerProfileId);
+  const proofTargetProfileId = authorityText(proof.targetProfileId);
+  const proofProviderIdentity = authorityText(proof.providerIdentity);
+  const proofBuildIdentity = authorityText(proof.buildIdentity ?? proof.runtimeBuildIdentity ?? null);
+  if (proofProviderProfileId === false || proofTargetProfileId === false || proofProviderIdentity === false || proofBuildIdentity === false) return 'runtime-proof-identity-invalid';
+  const expectedBuild = authorityText(expectedBuildIdentity);
+  if (expectedBuild === false) return 'runtime-build-identity-invalid';
   if (!profileAllowed(providerProfileId)) return 'runtime-provider-profile-unsupported';
   if (!targetProfileAllowed(targetProfileId)) return 'runtime-target-profile-unsupported';
   if (NATIVE_TARGET_PROVIDER_PROFILE[targetProfileId] && NATIVE_TARGET_PROVIDER_PROFILE[targetProfileId] !== providerProfileId) return 'runtime-provider-target-profile-mismatch';
@@ -181,8 +204,8 @@ function mismatchReason(binding, providerProfileId, targetProfileId, expectedBui
   if (proofProviderProfileId != null && proofProviderProfileId !== providerProfileId) return 'runtime-proof-provider-profile-mismatch';
   if (proofTargetProfileId != null && proofTargetProfileId !== targetProfileId) return 'runtime-proof-target-profile-mismatch';
   if (proofProviderIdentity != null && proofProviderIdentity !== binding.providerIdentity) return 'runtime-proof-provider-identity-mismatch';
-  if (expectedBuildIdentity != null && binding.buildIdentity !== String(expectedBuildIdentity)) return 'runtime-build-identity-mismatch';
-  if (proofBuildIdentity != null && String(proofBuildIdentity) !== binding.buildIdentity) return 'runtime-proof-build-identity-mismatch';
+  if (expectedBuild != null && binding.buildIdentity !== expectedBuild) return 'runtime-build-identity-mismatch';
+  if (proofBuildIdentity != null && proofBuildIdentity !== binding.buildIdentity) return 'runtime-proof-build-identity-mismatch';
   return null;
 }
 
@@ -326,14 +349,15 @@ export function runtimeProfileSupport({
     && proof.capabilityTests === true
     && proof.moduleMappingTests === true
     && proof.mutationAuthorityTests === true;
-  const normalizedProviderProfileId = providerProfileId == null ? null : String(providerProfileId).trim();
-  const normalizedTargetProfileId = targetProfileId == null ? null : String(targetProfileId).trim();
+  const normalizedProviderProfileId = authorityText(providerProfileId);
+  const normalizedTargetProfileId = authorityText(targetProfileId);
   let reason = null;
   if (!hasBinding) reason = 'runtime-binding-identity-invalid';
+  else if (normalizedProviderProfileId === false || normalizedTargetProfileId === false) reason = 'runtime-profile-identity-invalid';
   else if (!normalizedProviderProfileId || !normalizedTargetProfileId) reason = 'runtime-profile-identity-required';
   else reason = mismatchReason(canonical, normalizedProviderProfileId, normalizedTargetProfileId, expectedBuildIdentity, proof);
 
-  const managedMatch = normalizedTargetProfileId?.match(/^managed:(wasm|dex|cil|jvm):m6$/) || null;
+  const managedMatch = typeof normalizedTargetProfileId === 'string' ? normalizedTargetProfileId.match(/^managed:(wasm|dex|cil|jvm):m6$/) : null;
   const profileItemId = managedMatch ? `S2-M6-${managedMatch[1].toUpperCase()}` : 'S2-A7-NATIVE';
   const profileEvidenceComplete = normalizedTargetProfileId
     && isValidatedStage2CapabilityProof(profileProof, { itemId: profileItemId, profileIds: [normalizedTargetProfileId] })
@@ -345,15 +369,16 @@ export function runtimeProfileSupport({
   // authority record and any caller-supplied expected revision.  A boolean
   // exactHead flag alone is not an identity.
   if (!reason && hasBinding) {
-    const proofHeadSha = proof.headSha ?? proof.commitSha ?? null;
-    const proofTreeSha = proof.treeSha ?? null;
-    const expectedHead = expectedHeadSha ?? proof.expectedHeadSha ?? null;
-    const expectedTree = expectedTreeSha ?? proof.expectedTreeSha ?? null;
-    if (canonical.commitSha == null || canonical.treeSha == null || proofHeadSha == null || proofTreeSha == null) reason = 'runtime-proof-exact-identity-required';
-    else if (String(proofHeadSha).toLowerCase() !== canonical.commitSha) reason = 'runtime-proof-stale-head';
-    else if (String(proofTreeSha).toLowerCase() !== canonical.treeSha) reason = 'runtime-proof-stale-tree';
-    else if (expectedHead != null && (canonical.commitSha !== String(expectedHead).toLowerCase() || String(proofHeadSha).toLowerCase() !== String(expectedHead).toLowerCase())) reason = 'runtime-proof-stale-head';
-    else if (expectedTree != null && (canonical.treeSha !== String(expectedTree).toLowerCase() || String(proofTreeSha).toLowerCase() !== String(expectedTree).toLowerCase())) reason = 'runtime-proof-stale-tree';
+    const proofHeadSha = authoritySha(proof.headSha ?? proof.commitSha ?? null);
+    const proofTreeSha = authoritySha(proof.treeSha ?? null);
+    const expectedHead = authoritySha(expectedHeadSha ?? proof.expectedHeadSha ?? null);
+    const expectedTree = authoritySha(expectedTreeSha ?? proof.expectedTreeSha ?? null);
+    if ([proofHeadSha, proofTreeSha, expectedHead, expectedTree].includes(false)) reason = 'runtime-proof-exact-identity-invalid';
+    else if (canonical.commitSha == null || canonical.treeSha == null || proofHeadSha == null || proofTreeSha == null) reason = 'runtime-proof-exact-identity-required';
+    else if (proofHeadSha !== canonical.commitSha) reason = 'runtime-proof-stale-head';
+    else if (proofTreeSha !== canonical.treeSha) reason = 'runtime-proof-stale-tree';
+    else if (expectedHead != null && (canonical.commitSha !== expectedHead || proofHeadSha !== expectedHead)) reason = 'runtime-proof-stale-head';
+    else if (expectedTree != null && (canonical.treeSha !== expectedTree || proofTreeSha !== expectedTree)) reason = 'runtime-proof-stale-tree';
   }
   const proven = hasBinding
     && declared.length > 0
