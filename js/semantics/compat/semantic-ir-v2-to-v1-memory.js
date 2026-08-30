@@ -7,7 +7,7 @@ import {
   CANONICAL_MEMORY_FORWARDING_PURPOSE,
   forwardMemoryValue,
 } from '../memoryssa/queries.js';
-import { canonicalMemorySsaProducerIdentity } from '../memoryssa/proof.js';
+import { canonicalMemorySsaProducerIdentity } from '../memoryssa/build.js';
 import { propagateScalarConstants } from './semantic-ir-v2-to-v1-finalize.js';
 
 const MEMORY_CLOBBER_KINDS = new Set(['may-alias-clobber', 'unknown-clobber', 'call-clobber', 'intrinsic-clobber']);
