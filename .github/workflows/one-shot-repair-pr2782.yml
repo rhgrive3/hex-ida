@@ -1,0 +1,55 @@
+name: One-shot repair PR2782 Stage2 lock
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/one-shot-repair-pr2782.yml]
+permissions:
+  contents: write
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/unlinked-arm64-closure-20260830
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci --no-audit --no-fund
+      - name: Regenerate canonical Stage2 denominator inventory and lock
+        shell: bash
+        run: |
+          node tools/validation/stage2/build-profile-denominator-inventory.mjs
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import { spawnSync } from 'node:child_process';
+          import { createStage2DenominatorLock } from './js/platform/stage2-profile-evidence.js';
+          const scope = JSON.parse(fs.readFileSync('tools/validation/stage2/completion-scope.lock.json', 'utf8'));
+          const inventory = JSON.parse(fs.readFileSync('tools/validation/stage2/profile-denominator-inventory.json', 'utf8'));
+          const resolveInventoryIdentity = (ref, itemId) => {
+            if (!inventory.items[itemId]?.inventoryRefs.includes(ref)) return null;
+            const result = spawnSync('git', ['rev-parse', `HEAD:${ref}`], { encoding: 'utf8' });
+            return result.status === 0 ? result.stdout.trim() : null;
+          };
+          const resolveDenominatorUnitIds = (itemId, refs) => {
+            const item = inventory.items[itemId];
+            if (!item) return [];
+            const actual = [...new Set((refs || []).map(String))].sort();
+            const expected = [...item.inventoryRefs].sort();
+            return actual.length === expected.length && actual.every((value, i) => value === expected[i]) ? item.unitIds : [];
+          };
+          const lock = createStage2DenominatorLock({ items: inventory.items }, { scope, resolveInventoryIdentity, resolveDenominatorUnitIds });
+          fs.writeFileSync('tools/validation/stage2/profile-denominators.lock.json', `${JSON.stringify(lock, null, 2)}\n`);
+          NODE
+      - run: node tests/stage2/profile-denominator-inventory.test.mjs
+      - run: node tests/stage2/run.mjs
+      - name: Commit canonical generated proof
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add tools/validation/stage2/profile-denominator-inventory.json tools/validation/stage2/profile-denominators.lock.json
+          if git diff --cached --quiet; then echo 'No proof changes required'; exit 0; fi
+          git commit -m 'fix(stage2): regenerate denominator lock after ARM64e closure'
+          git push origin HEAD:fix/unlinked-arm64-closure-20260830
