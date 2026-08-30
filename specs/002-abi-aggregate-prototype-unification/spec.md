@@ -4,7 +4,7 @@
 
 **Created**: 2026-08-29
 
-**Status**: Draft — current-main correction required before implementation
+**Status**: Implementation checkpoint complete — independent review and delivery gates pending
 
 **Input**: User description: "Close HEX-C3-02 ABI aggregate/prototype unification with one canonical ABI model across profiles, calls, summaries, and decompiler consumers."
 
