@@ -1,0 +1,647 @@
+
+> test
+> node tests/arm64-presentation-compat.mjs && node tests/phase-runner-contract.mjs && node tests/reopened-31-final.mjs && node tests/issues-961-971.mjs && node tests/issues-802-805-810-835-840.mjs && node tests/phase4/integration/backend-open-race-current-oracle.test.mjs && node tests/review-cross-binary-state.mjs && node tests/backend-disposal.mjs && node tests/issues-521-527.mjs && node tests/issues-526-954-955-958-959.mjs && node tests/worker-classic-harness.mjs && node tests/issues-550-559.mjs && node tests/issue-2059-program-merge.mjs && node tests/issue-193-matching.mjs && node tests/issue-456-report-completeness.mjs && node tests/issues-434-450-regressions.mjs && node tests/issues-437-438-interproc.mjs && node tests/issue-428-schema-provenance.mjs && node tests/issues-350-399.mjs && node tests/issues-245-298.mjs && node tests/issues-194-244.mjs && node tests/issues-97-100-146-147.mjs && node tests/issues-101-145.mjs && node tests/run.js && node tests/evidence-verdict.mjs && npm run core:test && node tests/ir.mjs && node tests/cfg-structuring.mjs && node tests/graph-routing.mjs && node tests/ux.mjs && node tests/ui/routes.mjs && node tests/ui/integration-hardening.mjs && npm run ai:test && node tests/gemini.mjs && node tests/words.mjs && node tests/api.mjs && node tests/symbol-identity.mjs && npm run integration:test && node tests/integrated-issues-hardening.mjs
+
+Testing ARM64 presentation compatibility...
+  ok 1 operand corpus deep equality
+  ok 2 immediate/display corpus
+  ok 3 condition corpus
+  ok 4 register role corpus
+  ok 5 public facade smoke
+  ok 6 atomic category variants
+  ok 7 SIMD/FP register and vector-lane bounds (#2068 #2070)
+  ok 8 shifted ADD/SUB immediate analyzer regression (#2051)
+All ARM64 presentation compatibility tests PASS!
+Testing Phase test runner contract...
+  ok 1 recursive discovery
+  ok 2 deterministic byte ordering
+  ok 3 no-test failure
+  ok 4 argv contract
+  ok 5 file group selection
+  ok 6 directory group selection
+  ok 7 empty group failure
+testphase: PASS (1/1 discovered test files)
+  ok 8 spawn argv lock
+testphase: PASS (1/1 discovered test files)
+  ok 9 spawn options lock
+  ok 10 child error propagation
+[testphase] rerun with HEX_TEST_OUTPUT=verbose for full test output.
+  ok 11 non-zero status
+testphase: PASS (1/1 discovered test files)
+  ok 12 success result
+  ok 13 wrapper discovery parity
+  ok 14 wrapper execution parity
+  ok 15 real current discovery non-empty
+  ok 16 Phase 8 recursive-discovery invariant
+  ok 17 output modes
+  ok 18 reporter behavior
+  ok 19 whole-command parser
+  ok 20 whole-command success
+  ok 21 whole-command failure
+  ok 22 whole-command spawn error
+All Phase test runner contract tests PASS!
+reopened 31 reconciliation focused regressions: PASS
+issues-961-971: ok
+issues 802/805/810/835/840 regressions: PASS
+phase4 backend open-race/current compatibility oracle: PASS
+cross-binary workspace/AI identity regressions: PASS
+backend/workspace disposal regressions: PASS
+issues #521/#527 normalized Mach-O truth + supplemental budget regressions: PASS
+issues #526/#954/#955/#958/#959 ABI regressions: PASS
+classic worker harness regression passed
+issues 550-559 regressions: ok
+issue 840 RTTI chained-pointer formats: ok
+issue #2059 program merge completeness regressions passed
+issue-193-matching: PASS
+issue #456 report completeness regressions passed
+ok #450 bounded sandbox budget
+ok #440 setter x2 provenance
+ok #439 divergent PHI arithmetic
+ok #438 arithmetic summary width
+ok #437 weak terminal x0 inference
+ok #436 Memory SSA PHI forward slice
+ok #435 call path completeness
+ok #434 runtime fact completeness
+ok #441 protocol requirement vs IMP
+ok #443 chained vtable pointer identity
+ok #446 ARM64E kernel chained stride
+ok #447 dynamic ABI minimum entry size
+ok #448 bounded PE import thunks
+ok #466 source read cancellation
+issues #434-#450 regressions PASS
+issues #437/#438/#831 interproc regressions PASS
+issue #428 schema provenance regressions passed
+  ok  #351 CCMP fallback NZCV is retained
+  ok  #352 32-bit variable shift masks by 31
+  ok  #354 SMADDL constant fold sign-extends 32-bit inputs
+  ok  #355 caller-saved clobber stops reaching query
+  ok  #359 overlapping partial store kills wider reaching store
+  ok  #359 field stores do not clobber private stack slots
+  ok  #358 unknown indexed store is counted as a blocked concrete proof
+  ok  #360 plain LDR is not positive unsigned evidence
+  ok  #356 W-register reads keep 32-bit semantics
+  ok  #356 width preservation keeps signed CSEL clamp recognizable
+  ok  #364 exclusive store may fail without monitor
+  ok  #365 FDIV follows IEEE infinity
+  ok  #367 FCMP unordered is NZCV=0011
+  ok  #368 FP register preserves NaN
+  ok  #369 S register rounds to binary32
+  ok  #371 SBFIZ sign extends inserted sign bit
+  ok  #377 FCVTZU negative saturates to zero
+  ok  #381 c is signed char and B is bool
+  ok  #380 direct selector flag decoded
+  ok  #388 fusion fails closed without complete identity
+  ok  #390 last memory delta is final fallback
+  ok  #393 ambiguity remains sticky
+  ok  #394 weak SDK signature does not hard-suppress strong app evidence
+  ok  #394 exact high confidence signature can hard-suppress
+  ok  #398 function extent does not cross executable section
+  ok  #398 contiguous starts in same section still infer
+  ok  #399 UTF-8/UTF-16 multilingual strings
+  ok  #399 invalid UTF-8 is not merged into valid text
+  ok  #387 source-backed and resident fingerprint digests agree
+  ok  #395 truncated memory candidate set cannot auto-accept
+
+issues 350-399 regression: 30 passed
+issues 245-298 regression tests passed
+issues-194-244: PASS
+issues-97-100-146-147: ok
+issues-101-112: ok
+issues-113-128: ok
+issues-129-134: ok
+issue-130 compatibility regression: ok
+issue-130 interproc compatibility: ok
+issue-130 symbolic compatibility: ok
+issues-135-145: ok
+issues-101-145: all focused regressions passed
+  ok  A: 関数入口・呼び出し・後片付け・出口を検出できる
+  ok  A: 説明にレジスタ名も命令名も出てこない
+  ok  B: adrp+add+mov+mov+bl memcpy が 1 つの「データをコピー」になる
+  ok  B: 呼び出しの引数がデータフローとして残る
+  ok  C: 比較と条件分岐が 1 つの「条件を確認」になる
+  ok  D: 前へ戻る分岐をループとして検出できる
+  ok  E: adrp+add がアドレスになり、文字列を流し込める
+  ok  E: adrp 単体では「完成していない住所」として扱う
+  ok  F: 確保したメモリが別レジスタへ渡っても意味を保つ
+  ok  G: 呼び出し直後の判定を「結果を確認」にする
+  ok  DF: register→register / immediate→register
+  ok  DF: memory→register / register→memory / stack local
+  ok  DF: function return→register / register→call argument
+  ok  DF: address calculation
+  ok  DF: 引数レジスタを、書く前に読んでいれば引数とみなす
+  ok  DF: 分岐で飛び込まれる場所では推測を捨てる
+  ok  API: 名前から意味を引ける／知らない名前は null
+  ok  API: 機能（アプリから見た分類）まで集約される
+  ok  STORY: 流れが日本語のステップとして並ぶ
+  ok  STORY: 手がかりがなければ「特定できません」と言う
+  ok  OVERLAY: 行 → 見出しの表ができ、先頭行だけに題が付く
+  ok  異常: 空の命令列
+  ok  異常: 不完全な命令列（オペランドなし・途中で終わる）
+  ok  異常: 知らないニーモニック
+  ok  異常: 命令として読めないデータ (.byte)
+  ok  異常: 分岐先が分からない (br/blr)
+  ok  異常: シンボルなし・API 名なしでも断定しない
+  ok  異常: データフローを追えないときは「不明な値」
+  ok  異常: 巨大な入力でも上限で打ち切る
+  ok  異常: 壊れたオペランド文字列でも makeInstruction は落ちない
+  ok  異常: すべての役割で説明文が作れる（欠けがない）
+  ok  FEATURE: ゲームの言葉を機能に振り分けられる
+  ok  FEATURE: 機能ごとに束ね、濃い手がかりを先に出す
+  ok  FEATURE: 実行エンジンの見当がつく／分からなければ null
+  ok  OBJC: セレクタをポインタごしに解決して「何を呼ぶか」まで言える
+  ok  OBJC: chained fixups で上位ビットが立ったポインタをほどく
+  ok  OBJC: chained fixups の距離形式は、イメージ先頭を足して初めて読める
+  ok  SYMBOLS: 復元した名前と関数の先頭を、順番を保ったまま足せる
+  ok  SYMBOLS: 部分的なmetadata関数一覧をLC_FUNCTION_STARTS完全表と取り違えない
+  ok  OBJC: 従来形式のクラス表も読める
+  ok  WORDS: 実物のエンコードを正しく分類できる
+  ok  WORDS: 分岐と呼び出しの飛び先を計算できる
+  ok  WORDS: メモリアクセスの大きさとずらし幅を正しく読む
+  ok  WORDS: adrp + add / adrp + ldr でアドレスを組み立てられる
+  ok  WORDS: 分からない語は分類しない（でっちあげない）
+  ok  OBJC: 相対形式のクラス表から -[Class method] を取り出せる
+  ok  PROGRAM: 呼び出し元・呼び出し先を辺からたどれる
+  ok  PROGRAM: 文字列を参照している関数を、参照命令から特定できる
+  ok  PROGRAM: 関数ごとの命令の内訳を数えられる（推測ではなく計数）
+  ok  PROGRAM: 索引がなくても落ちない
+  ok  OBJC: 距離形式で書かれたクラス表から、名前とフィールドを取り戻せる
+  ok  GOAL: 自由入力を、探せる語に開ける
+  ok  GOAL: 手がかりの濃さで点が変わる（記号だらけは下げる）
+  ok  RANK: 名前だけの一致より、参照と命令の裏づけがある関数を上に出す
+  ok  RANK: 点数の内訳の合計が、表示している点数と一致する
+  ok  RANK: 手がかりがなければ候補を作らない（無理に埋めない）
+  ok  RANK: 一致した文字列を誰も参照していないときは、そう言える
+  ok  FLOW: 読む → 足す → 同じ場所へ書き戻す、をひとつながりに拾える
+  ok  FLOW: 別の場所へ移しているだけなら「往復」と言わない
+  ok  FLOW: ARC property helper への tail-call setter を getter と逆判定しない
+  ok  FLOW: lazy getter は同じ field への書き込みがあっても return-read を残す
+  ok  FLOW: 掛け算をはさむ計算も追える（ダメージ計算の形）
+  ok  FLOW: この値が次にどこで使われるかを追える
+  ok  FLOW: しきい値との比較を拾える
+  ok  FLOW: よく触っている場所をまとめられる
+  ok  FLOW 異常: 読み出しのない書き込み・壊れた列でも落ちない
+  ok  CFG: if / else と合流を見分けられる
+  ok  CFG: ループ（後ろへの分岐）を見分けられる
+  ok  CFG: 途中で帰る道（early return）を見分けられる
+  ok  CFG: 行き先が実行時に決まる分岐は「分からない」ままにする
+  ok  REPORT: 事実・推測・不明が混ざらない
+  ok  REPORT: 変更候補には必ず但し書きが付く
+  ok  REPORT: 目的を渡すと、関係の有無を根拠つきで言う
+  ok  REPORT: 次に何をすればいいかを必ず出す
+  ok  REPORT 異常: 空の関数でも落ちず、分からないと言える
+  ok  NARRATE: 新しいコードがすべて日本語になる（言い漏らしがない）
+  ok  AUTO: 通信先や改造検知を、参照元つきで拾う
+  ok  AUTO: 名前や文字列に頼らず「注目すべき処理」を選べる
+  ok  OBJC: プロパティの属性から、型と裏の ivar 名を取り出せる
+  ok  OBJC: 型の書き方を、意味の分かる形にほどける
+  ok  FIELDS 異常: クラス表がなくても落ちない
+  ok  MAP: クラス名から担当を見分けられる
+  ok  MAP: アプリを部品ごとに束ねる（1 画面に出るものを減らす）
+  ok  MAP: クラスがないバイナリでも、文字列から粗い地図を作れる
+  ok  ONELINER: 変更がなければ、別の言い方に落とす
+  ok  ONELINER: 演算の言い換えに漏れがない
+  ok  ONELINER: 型と場所の言い換え
+  ok  EVIDENCE: 候補が多いほど、同じ証拠でも確からしさは低くなる
+  ok  EVIDENCE: 同じ系統の証拠をいくら並べても確定にはならない
+  ok  EVIDENCE: 打ち消す証拠は確からしさを下げる
+  ok  EVIDENCE: 確定を名乗るには、検証・独立性・差の 3 つがそろう必要がある
+  ok  EVIDENCE: 名前が読めない相手を「確定」と呼ばせない
+  ok  EVIDENCE: 内訳の掛け算が、出している確からしさと一致する
+  ok  VERIFY: getter を逆アセンブルして、位置が合っているか確かめられる
+  ok  VERIFY: setter が、引数の値を書いているところまで見る
+  ok  VERIFY: 長すぎる関数をアクセサとは呼ばない
+  ok  VERIFY: self を持ち回っているレジスタだけを self として数える
+  ok  VERIFY: 読んで計算して書き戻す形と、しきい値の判定を拾える
+  ok  VERIFY 異常: 空・壊れた命令列でも落ちない
+  ok  OBJC: クラス表から、値の名前・型・位置まで取り出せる
+  ok  FIELDS: [x0, #0x20] を self の hp として解決できる
+  ok  FIELDS: 名前で値を探せる（HP を探したい、に答える）
+  ok  ONELINER: 値の変更を、まず 1 行で言える
+  ok  PINPOINT: 裏づけだけの証拠は、目的への結びつきが無いと効かない
+  ok  PINPOINT 語彙: 変数名を正規化してから当てる
+  ok  NARRATE: 特定まわりの言葉に、言い漏らしがない
+  ok  ROLE: 名前が読めるなら「アイテムを 1 増やす処理」まで名指しできる
+  ok  ROLE: なぜそう言えるのかを、証拠のまま並べられる
+  ok  ROLE: 名前が残っていないバイナリでも、動作と場所までは言う
+  ok  ROLE: 「+1 しているから」だけでは、機能を名乗らない
+  ok  ROLE: 機能の手がかりが割れているときは、言い切らない
+  ok  ROLE: 手がかりが無ければ「名指しできません」と言う
+  ok  ROLE: 減らす処理・保存する処理も、それぞれの言葉になる
+  ok  ROLE: 一覧向けの下見からは、絶対に「確定」を出さない
+  ok  ROLE: 値を触らない処理は、日本語として読める形で名指しする
+  ok  ROLE: 動作の言葉と、足りない理由に、言い漏らしがない
+  ok  PINPOINT: 型が合わない値は候補から外す
+  ok  PINPOINT: 逆アセンブルできないときは、確定ではなく「足りない」と言う
+  ok  PINPOINT: 途中でやめられる
+  ok  PINPOINT: 当てはまる値がなければ、無いと言う
+  ok  PINPOINT: スタックの一時置き場を「アプリが持っている値」と言わない
+  ok  PINPOINT: クラス表がなくても、形から場所を特定できる
+  ok  VENDORS: Swift の記号名からモジュール名を取り出せる
+  ok  VENDORS: 名前の分かる SDK は、接頭辞ごとまとめて見分けられる
+  ok  VENDORS: 長い接頭辞と短い接頭辞の両方が当たったら、裏の取れているほうを採る
+  ok  VENDORS: 名前が分からないライブラリも、まとまり方だけで見分けられる
+  ok  VENDORS: 広告を調べているときは、広告 SDK を外さない
+  ok  PINPOINT: 逆アセンブルの回数は予算で頭打ちになる
+  ok  PINPOINT: 特定した値を書き換えている処理を、命令で確かめて選ぶ
+  ok  PINPOINT: 広告 SDK の「報酬の数」を、ゲームの所持金として確定しない
+  ok  PINPOINT: プロパティ表から、潰された ivar 名を補える
+  ok  SHAPES: 減って増えて 0 で止まる値を、資源として拾える
+  ok  SHAPES: 他人の資源を減らす量を、攻撃力として拾える
+  ok  SHAPES: C++ の容器の頭（要素数・参照カウンタ）を、ゲームの値と間違えない
+  ok  SHAPES: 大きな構造体の中にある同じ位置なら、ゲームの値として残す
+  ok  SHAPES: 8 バイトで持たれている値を、ゲームの数値として出さない
+  ok  SHAPES: 目的に合ったふるまいだけを証拠にする
+  ok  SHAPES: 所持金は、自分の中だけで増減する値として分ける
+  ok  SHAPES: 何も無い走査結果でも落ちない
+  ok  ROLE: 下見は、関数の先頭でないアドレスには何も言わない
+  ok  PINPOINT: HP を選ぶだけで BattleManager.hp が 1 個に決まる
+  ok  PINPOINT: 上限（maxHp）を、今の値（hp）より上に出さない
+  ok  PINPOINT: アクセサが位置と食い違うときは確定させない
+  ok  PINPOINT: 書き換えている場所まで出す
+  ok  SCHEMA: 読み込みの命令から「何列目がどこか」を読み取れる
+  ok  SCHEMA: 列番号とずらし幅を、どちらからでも引ける
+  ok  SCHEMA: つじつまが合わないときは、合わないと言う
+  ok  SCHEMA: 1 ずつ増えていない添字を、列数として使わない
+  ok  SCHEMA: 読み込んだあとに掛かる倍率を拾える
+  ok  SCHEMA: SUBを増加と扱わず、別tableの倍率・別loopの比較を混ぜない
+  ok  SCHEMA: SP baseの固定storeをtableとして拾わない
+  ok  SCHEMA: 展開して書いてある表（添字を使わない形）も読める
+  ok  SCHEMA: 表が無い関数には、表があることにしない
+  ok  SCHEMA: データファイルらしい名前だけを拾う
+  ok  SCHEMA: 材料が無くても落ちない
+  ok  SCHEMA: ファイル名から読み込み処理をたどって表を組み立てる
+  ok  PATCH: SP moveはADD alias、幅違いはerrorになる
+  ok  PATCH: branch alignmentとstrict hexを検証する
+  ok  EXPR: 掛けてずらす形から、割り算を逆算できる（32 ビット・符号あり）
+  ok  EXPR: 大小を選ぶ定型は、min / max として読む
+  ok  EXPR: 条件つき代入の条件を、比べた式として書く
+  ok  EXPR: 比べたものが分からなければ、min とは言わない
+  ok  EXPR: ずらしが 2 命令に割れていても、割り算に戻せる
+  ok  EXPR: 割り算でないずらしを、割り算だと言わない
+  ok  EXPR: ずらしと足し算でできた掛け算を、掛け算に戻す
+  ok  EXPR: movz と movk で組み立てた定数を 1 つの数にする
+  ok  EXPR: 分岐で飛ばされる範囲が値を壊さないなら、値を持ち越す
+  ok  COMPREHEND: 持ち回っている値と、その作り変えを並べられる
+  ok  COMPREHEND: 文言に書かれた計算式と、復元した式を突き合わせる
+  ok  COMPREHEND: 記号 * / が入っているだけの文字列を、計算式と呼ばない
+  ok  COMPREHEND: 計算式が無ければ、合ったことにしない
+  ok  COMPREHEND: レジスタが別の用途に移ったら、そこで区間を切る
+  ok  DECOMPILE: 同じ置き場は、どの書き方で来ても同じ名前になる
+  ok  DECOMPILE: sp を定数で動かさない関数では、置き場に名前を付けない
+  ok  PATCH: range外を登録・保存成功にしない
+  ok  PINPOINT: 目的に結びつかない値を「確定」と言わない（防御力を探して HP を出さない）
+  ok  PINPOINT: 本物のクラス表（練習用サンプル）から、アクセサ無しでも確定できる
+  ok  EVIDENCE: hold-out calibrationのBrier/reliabilityを計算できる
+  ok  NAMES: fingerprint導入前のメモを新しいkeyへ安全に移す
+  ok  IL2CPP: 検証できたCodeRegistrationだけMethod→addressへ結ぶ
+  ok  IL2CPP: modern codegen moduleをimage名とtokenで結ぶ
+  ok  BACKEND: epochで古いrequestを破棄し、progressをrequest単位へ送る
+  ok  SCRIPT: Emulatorはclone可能なhandle RPCで操作できる
+issue #496 IL2CPP binding trust: PASS
+  ok  IL2CPP: #496 binding trust regressions stay fail-closed
+  ok  OBJC: 壊れた表では名前を付けずに黙って飛ばす
+  ok  NAMES: fingerprintは同名同サイズの別内容・別sliceを分離する
+  ok  AUTO: 何も指示しなくても、目的ごとの最有力候補まで出す
+  ok  AUTO: 途中でやめられる（大きなファイルで待たせない）
+  ok  AUTO: 上位だけ中身まで読み、値の書き換えを自動で見つける
+  ok  PINPOINT: 自動解析に組み込まれ、決着したものが先に出る
+  ok  AUTO 異常: 手がかりが何もなくても落ちず、そう言える
+
+191 passed, 0 failed
+ai-schema: PASS
+ai-context: PASS
+ai-tools: PASS
+ai-runtime: PASS
+ai-approval: PASS
+ai-worker: PASS
+ai-performance: PASS (4.4ms, IR functions=0, candidates=40)
+ai-agent-integration: PASS
+  ok  前提: 名前とクラスの担当は、同じ出どころ (metadata) になる
+  ok  前提: 命令での裏取りは dataflow、開発者の文言は semantic
+  ok  A: 系統 3 つでも、出どころが 2 つなら確定にしない
+  ok  B: 出どころが 3 つそろえば確定できる
+  ok  B2: 出どころが増えるのは A に 1 件足しただけ（他の条件は同じ）
+  ok  C: 名前系の証拠を大量に足しても、出どころ 1 つでは確定にしない
+  ok  C2: 名前系を足しても、確からしさは天井 (metadata の上限) を超えない
+  ok  D: 2 位が拮抗していれば、条件がそろっていても確定にしない
+  ok  D2: 差がわずかに足りないだけでも確定にしない
+  ok  E: 目的に結びつく証拠が無ければ、出どころが 3 つでも確定にしない
+  ok  E2: 命令での裏取りだけでは確定にしない（dataflow 1 出どころ）
+  ok  E3: 裏取りが無ければ確定にしない
+  ok  independentGroupCount: fuse の結果をそのまま読める
+  ok  independentGroupCount: 群が入っていない古い結果は、証拠から数え直す
+  ok  independentGroupCount: 何も分からないときは 0（緩いほうへ倒さない）
+  ok  families は説明用として残っている（消していない）
+  ok  missing の言葉が「出どころ」の話になっている（系統の話ではない）
+  ok  calib: groupedFusion も、裏取りが無ければ天井で止まる
+  ok  calib: 裏取りがあれば天井は掛からない
+  ok  calib: fitCalibration の返り値を calibrateProbability がそのまま食える
+  ok  calib: 校正曲線を渡しても fuse が落ちない（形が合っている）
+
+21 passed, 0 failed
+
+> core:test
+> node tests/core-identity-contracts.mjs && node tests/core-evidence-contracts.mjs && node tests/core-budget-scopes.mjs && node tests/evidence-canonical-roundtrip.mjs
+
+core identity contracts: ok
+core evidence contracts: ok
+Testing ResourceBudget composable scopes...
+  ok 1 root legacy accounting
+  ok 2 child consume increments child and root
+  ok 3 grandchild increments 3 levels
+  ok 4 child-local exhaustion
+  ok 5 root exhaustion from child consume
+  ok 6 failed preflight increments no scope
+  ok 7 remaining minimum capacity
+  ok 8 unbounded child inherits ancestor remaining
+  ok 9 custom domain meter
+  ok 10 sibling aggregation
+  ok 11 duplicate sibling rejected
+  ok 12 invalid scope name rejected
+  ok 13 child shares abort signal
+  ok 14 backward compatible snapshot
+  ok 15 recursive snapshot sorted and frozen
+  ok #1176 ResourceBudget limits validation
+All core budget scope tests PASS!
+Testing Evidence canonical roundtrip...
+  ok fixtures round trip
+All Evidence canonical roundtrip tests PASS!
+  ok  SSA: 同じレジスタへの再代入に別々の版が付く
+  ok  SSA: 定数が畳まれて最後の値まで届く
+  ok  SSA: use-def が張られる
+  ok  SSA: 合流点に φ が立ち、両方の道の値を持つ
+  ok  SSA: 分からない命令は unknown のまま残る（埋めない）
+  ok  MemSSA: フィールドへの store を、同じフィールドの load が指す
+  ok  MemSSA: 別のオフセットは別の場所（誤って結びつけない）
+  ok  MemSSA: 呼び出しをまたぐとフィールドは壊れる（古い値を使い回さない）
+  ok  MemSSA: スタック変数は呼び出しをまたいでも生き残る（番地を渡していないとき）
+  ok  MemSSA: スタック変数に名前が付く
+  ok  MemSSA: 添字つきアクセスは unknown の場所（言い切らない）
+  ok  alias: 同じベースの別オフセットは「別」と言い切れる
+  ok  RMW: self->coins = min(self->coins + amount, max) を 1 つの意味として拾う
+  ok  RMW: 読んだ場所と書いた場所が違えば、更新ではない
+  ok  writers / readers: 場所から命令を引ける
+  ok  slice: 後ろ向きスライスが、書いた値の由来だけを残す
+  ok  slice: 前向きスライスが、その値の行き先を集める
+  ok  valueChain: 値の流れを人に見せられる段に畳む
+  ok  causalChain: 段数の上限を守り、途中を畳む
+  ok  goalc: 「戦闘終了時にXPが増える場所」を問い合わせに変える
+  ok  goalc: 「コインはどこで増える？」も同じ形に落ちる
+  ok  goalc: 「ガチャでレア度を決めてるところ」は乱数と分岐を期待する
+  ok  goalc: 分からない問いは、分からないと言う（でっち上げない）
+  ok  goalc: 問い合わせを日本語で説明できる
+  ok  calib: 同じ出どころの証拠は、独立した証拠として数えない
+  ok  calib: 群ごとの上限が効く（名前だけでは確定しない）
+  ok  calib: Brier / ECE が計算できる
+  ok  calib: 「確定」と言って外した率を出せる
+  ok  壊れた命令列でも落ちない
+  ok  命令が無ければ null（空の IR を作らない）
+
+30 passed, 0 failed
+cfg-structuring regression: ok
+graph-routing: ok
+ok    compatibility CSS entrypoint remains loaded
+ok    compatibility JS bootstrap remains loaded
+ok    ux.js is a thin product bootstrap
+ok    legacy hidden-button architecture is not recreated
+ok    legacy analysis actions are not delegated through DOM click
+ok    file picker activation is an explicit canonical action
+ok    viewer drag-return guard is installed by compatibility bootstrap
+ok    ux.css is only a canonical stylesheet entrypoint
+ok    viewer gesture guard installs once
+ok    drag-return pointerup cannot be reinterpreted as a tap
+ok    normal tap pointerup remains untouched
+ok    invalid gesture tolerance fails closed
+ok    modern copy path retained
+ok    legacy Safari copy fallback retained
+ok    outside menu handler cleanup retained
+ok    context menu closes on scroll
+ok    context menu scroll cleanup retained
+ok    legacy Sheet remains compatibility-only primitive
+ok    primary navigation is task-centric and <= 5 items
+ok    canonical routes have unique ids
+ok    canonical route patterns are unique
+ok    default investigate route resolves
+ok    optional code address resolves without trailing slash
+ok    code address deep link resolves
+ok    function tab deep link resolves
+ok    explorer scope resolves
+ok    unknown path does not falsely resolve
+ok    action registry runs the canonical action
+ok    action registry rejects duplicate sources of truth
+ok    legacy screens have migration dispositions
+ok    summary/report are merged into function workspace
+ok    decompiler and CFG are function workspace tabs
+ok    search and jump are not top-level duplicates
+ok    product UI owns browser-backed router
+ok    global search recognizes addresses and commands
+ok    function workspace renders canonical tabs
+ok    Explorer uses windowed rendering
+ok    visualViewport keyboard bridge exists
+ok    route views save state instead of DOM nodes
+ok    evidence semantic state is separate from ranking
+ok    canonical z-index layers are tokenized
+ok    new screens do not horizontally overflow body by design
+ok    phone navigation is persistent
+ok    landscape phone compresses navigation chrome
+ok    safe-area variables are used for fixed mobile chrome
+ok    phone code hides bytes only in ASM mode
+ok    decompiler supports local horizontal scrolling/wrap
+ok    graphs include a text representation style
+ok    touch targets use the shared 44px token
+ok    reduced motion is supported
+Product UI architecture regression checks passed
+issues #2511/#2514/#2526/#2533/#2539/#2542/#2544/#2548/#2551/#2555 regressions passed
+close-audit #2520/#2528/#2530/#2543/#2545 regression tests passed
+Issue #2627, #2628, #2629 regression tests PASS!
+Issue #2623, #2621, #2630 regression tests PASS!
+Issue #2630 PE TLS zero-fill callback test PASS!
+Issue #2614, #2618 regression tests PASS!
+Issues #2570, #2571, #2573, #2574, #2576 regression tests PASS!
+Issues #2615, #2616, #2617 regression tests PASS!
+Issues #2613, #2612, #2609, #2600 regression tests PASS!
+issue-2594-showdetail-variable-width: PASS
+issue-2601-pinpoint-architecture-query: PASS
+issue-2596 variable-width range-copy regression passed
+ok    all canonical route ids are present
+ok    each route has a screen kind
+ok    each primary nav destination resolves
+ok    no duplicate primary route id
+ok    investigate is the first primary task
+ok    tools are not a primary task
+ok    explorer scope functions resolves
+ok    explorer scope strings resolves
+ok    explorer scope classes resolves
+ok    explorer scope data resolves
+ok    explorer scope external resolves
+ok    explorer scope sections resolves
+ok    function tab overview resolves
+ok    function tab pseudocode resolves
+ok    function tab flow resolves
+ok    function tab calls resolves
+ok    function tab evidence resolves
+ok    function tab runtime resolves
+ok    finding detail route resolves with id param
+ok    audited legacy inventory contains 54 exported screens
+ok    migration table contains exactly the audited 54 screens
+ok    every audited legacy screen has a migration disposition
+ok    migration table has no un-audited screen names
+ok    migration table has only explicit dispositions
+ok    render failure returns false without committing history
+ok    render failure preserves route and back depth
+Canonical route manifest checks passed
+ui-integration-hardening: PASS
+
+> ai:test
+> node tests/ai-tool-registry-module-boundary.mjs && npm run dev-agent:test && node tests/ai-analysis-boundary.mjs && node tests/ai-quota.mjs && node tests/ai-worker.mjs && node tests/ai-prompt-compose.mjs && node tests/ai-ui-mode.mjs && node tests/ai-ui-conversations.mjs && node tests/ai-ui-evidence.mjs && node tests/issue-467-ai-context.mjs && node tests/ai-control-plane.mjs && node tests/ai-scope-hardening.mjs && node tests/ai-chatgpt-web-provider.mjs && node tests/chatgpt-web-runtime.mjs && node tests/chatgpt-new-chat-routing.mjs && node tests/chatgpt-web-agent-loop.mjs && node tests/chatgpt-web-production-dom.mjs && node tests/ai-conversation-routing.mjs && node tests/agent-capability-plane.mjs
+
+Testing AI Tool Registry Module Boundary...
+  ok 1 public export identity
+  ok 2 direct core export identity
+  ok 3 built-in factory compatibility
+  ok 4 tool-name surface unchanged
+  ok 5 representative definition lock
+  ok 6 schema builder exactness
+  ok 7 validation behavior unchanged
+  ok 8 scope behavior unchanged
+  ok 9 observer/activity behavior unchanged
+  ok 10 cache/accounting behavior unchanged
+  ok 11 failure normalization unchanged
+  ok 12 abort normalization unchanged
+  ok 13 static dependency guard passed
+All AI Tool Registry module boundary tests PASS!
+
+> dev-agent:test
+> node tests/dev-agent/round1-foundation.mjs && node tests/dev-agent/round2-single-worker.mjs && node tests/dev-agent/round2-single-tab-supervisor.mjs && node tests/dev-agent/supervisor-conversation-continuity.mjs && node tests/dev-agent/pool-completion-event-resume.mjs && node tests/dev-agent/task-graph-completion-event-resume.mjs && node tests/dev-agent/pool-followup-completion-resume.mjs && node tests/dev-agent/iframe-worker-pool.mjs && node tests/dev-agent/iframe-worker-pool-cancellation.mjs && node tests/dev-agent/dynamic-task-graph.mjs && node tests/dev-agent/dynamic-task-graph-ready-trace.mjs && node tests/dev-agent/worker-submission-ownership.mjs && node tests/dev-agent/generated-output-policy.mjs && node tests/dev-agent/tool-contract-parity.mjs && node tests/dev-agent/observation-batch.mjs && node tests/dev-agent/context-contracts.mjs && node tests/dev-agent/context-selection.mjs && node tests/dev-agent/supervisor-prompt-modes.mjs && node tests/dev-agent/continuation-structured-completion.mjs
+
+Dev Agent Seed Round 4 bootstrap gate tests passed
+ok    dev-profile-admin-visibility
+ok    dev-policy-normal-yolo
+ok    dev-analysis-scope-none
+ok    dev-supervisor-protocol
+ok    dev-run-state
+ok    dev-profile-engine-isolation
+ok    standard-agent-policy-isolation
+ok    standard-agent-scope-regression
+
+dev-agent round1 foundation: PASS
+Round 2 protected Dev Worker tests passed
+Round 2 single-tab Supervisor loop passed
+dev-agent supervisor conversation continuity: ok
+Dev Supervisor tool error recovery: ok
+Dev self-update activation gate: ok
+pool completion event resume regression: ok
+task graph completion event resume regression: ok
+pool followup completion resume regression: ok
+iframe worker pool: ok
+iframe worker pool cancellation: ok
+dynamic task graph: ok
+dynamic task graph READY trace: ok
+Worker submission ownership regression passed
+generated output policy: ok
+dev tool contract parity: ok
+dev observation batch: ok
+dev context contracts: ok
+dev context selection: ok
+dev supervisor prompt modes: ok
+dev supervisor continuation structured completion: ok
+ai semantic analysis boundary regressions: PASS
+ai QueryAPI authority cutover regressions: PASS
+[ai-quota] acquire failed { message: 'namespace unavailable' }
+issues #469-#470 distributed AI quota regressions PASS
+ai-worker: PASS
+ok    core rules are always present
+ok    chat and agent modes contribute different instructions
+ok    beginner and analyst styles contribute different instructions
+ok    unknown mode, style and scope fall back instead of leaking through
+ok    every scope states its boundary
+ok    the workbench block is labelled as state, not as a result
+ok    workbench and intent values cannot terminate prompt delimiters
+ok    an empty workbench contributes no block at all
+ok    task detection covers the documented intents
+ok    a bare "explain" follows the current selection
+ok    an unclassifiable question adds no task hint
+ok    every task id has a hint and every hint has an id
+ok    a forced task overrides detection
+ok    compact guidance drops the core prompt but keeps per-turn parts
+ok    composition is deterministic
+ok    modes and styles are the two documented pairs
+
+ai-prompt-compose: PASS
+ok    a turn records the mode, style and resolved scope it ran under
+ok    activity events reach the turn
+ok    mode and style changes do not rewrite finished turns
+ok    cancel stops the turn and clears busy
+ok    an engine failure becomes an error turn, not a rejection
+ok    retry replaces the failed exchange instead of stacking it
+ok    an empty question is ignored and a second question is refused while busy
+ok    history stays bounded and text-only
+ok    the transcript is trimmed to its cap
+ok    Auto resolves to the narrowest usable scope
+ok    mode, style and scope vocabularies are labelled in both languages
+ok    the omnibox classifies each documented input shape
+ok    the omnibox strips its prefixes and resolves known commands
+ok    every intent has a label the user can read before pressing Enter
+
+ai-ui-mode: PASS
+ok    the flat session API keeps working on top of conversations
+ok    New chat keeps the old transcript and starts an empty one
+ok    New chat inherits how the user works, not what was asked
+ok    an untouched blank chat is not duplicated
+ok    A to B to A keeps both transcripts apart
+ok    conversation ids are unique and stable
+ok    the first question titles the chat, without an LLM call
+ok    rename replaces the derived title
+ok    delete removes one chat and never leaves the session empty
+ok    a running turn blocks New chat, switching and delete
+ok    an answer lands in the chat it was asked in
+ok    engine.run receives the conversation id and the model selection
+ok    history is restored per binary and never mixes two binaries
+ok    a restored transcript carries text, not evidence or binary data
+ok    a binary switch swaps the visible history in place
+ok    capabilities normalize from whatever shape the engine advertises
+ok    with no capability API the picker still offers the hosts Hex can use
+ok    the chip names the model, and never renames an unavailable one
+ok    picking a provider takes its default model and drops a foreign one
+ok    the capability API is feature detected, on the engine or globally
+
+all conversation UI checks passed
+ok    a core result normalizes without loss
+ok    unknown top-level fields are reported, not dropped in silence
+ok    every status the core can emit maps to a UI state with a word and a glyph
+ok    every action kind the core can emit is renderable
+ok    an unknown or unaddressed action is refused rather than rendered dead
+ok    evidence and hypotheses survive a schema that only sends strings
+ok    a non-object response still produces an answer
+ok    answer prose parses into blocks without executing markup
+ok    a percentage is shown only for a fused probability
+ok    addresses normalize to one canonical form
+ok    repeated activity labels collapse into one row
+ok    a large evidence list is carried whole but stays addressable
+ok    an error result keeps its message
+
+ai-ui-evidence: PASS
+issue #467 AI assembly completeness regressions PASS
+ai-control-plane: PASS
+ai-scope-hardening: PASS
+ai-chatgpt-web-provider: ok
+chatgpt-web-runtime: ok
+chatgpt-new-chat-routing: ok
+chatgpt-web-agent-loop: ok
+node:internal/modules/package_json_reader:314
+  throw new ERR_MODULE_NOT_FOUND(packageName, fileURLToPath(base), null);
+        ^
+
+Error [ERR_MODULE_NOT_FOUND]: Cannot find package 'esbuild' imported from /home/runner/work/hex-ida/hex-ida/tests/chatgpt-web-production-dom.mjs
+    at Object.getPackageJSONURL (node:internal/modules/package_json_reader:314:9)
+    at packageResolve (node:internal/modules/esm/resolve:768:81)
+    at moduleResolve (node:internal/modules/esm/resolve:855:18)
+    at defaultResolve (node:internal/modules/esm/resolve:985:11)
+    at #cachedDefaultResolve (node:internal/modules/esm/loader:747:20)
+    at ModuleLoader.resolve (node:internal/modules/esm/loader:724:38)
+    at ModuleLoader.getModuleJobForImport (node:internal/modules/esm/loader:320:38)
+    at ModuleJob._link (node:internal/modules/esm/module_job:182:49) {
+  code: 'ERR_MODULE_NOT_FOUND'
+}
+
+Node.js v22.23.2
