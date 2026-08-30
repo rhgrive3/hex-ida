@@ -1,0 +1,38 @@
+name: temporary ARM64 PAC inventory sync
+on:
+  push:
+    branches: [fix/unlinked-arm64-closure-20260830]
+permissions:
+  contents: write
+jobs:
+  sync:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/unlinked-arm64-closure-20260830
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Sync A2 PAC inventory from live production denominator
+        run: python3 tools/maintenance/sync-arm64e-pac-a2-inventory.py
+      - name: Verify exact ARM64e proof chain
+        run: |
+          set -euo pipefail
+          node tests/machine-effects/arm64e-pac-denominator.test.mjs
+          node tests/machine-effects/arm64e-a64-delegation-denominator.test.mjs
+          node tools/validation/machine-effects/a2-denominator.mjs
+          node tests/unlinked-arm64-closure.mjs
+          node tests/arm64-presentation-compat.mjs
+      - name: Commit measured proof inventory
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add tests/machine-effects/a2-denominator-inventory.json
+          git diff --cached --quiet && { echo 'No inventory drift to repair'; exit 1; }
+          git commit -m 'test(arm64e): sync measured PAC A2 denominator inventory'
+          git push origin HEAD:fix/unlinked-arm64-closure-20260830
