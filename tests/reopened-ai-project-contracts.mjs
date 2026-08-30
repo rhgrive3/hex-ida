@@ -27,6 +27,7 @@ assert.ok((trimmed.context.recentMessages?.length || 0) < 8);
 assert.ok(Array.isArray(trimmed.context.current?.function?.instructions), 'function detail must survive while lower-priority history can satisfy the budget');
 
 // #2568: legacy v1 absence is distinct from an explicitly empty v2 vars set.
+// This locks migration semantics rather than preserving the obsolete v1 current-version literal.
 assert.equal(HEX_PROJECT_VERSION, 2);
 const legacy = { format:'hexproj', version:1, createdAt:new Date(0).toISOString(), updatedAt:new Date(0).toISOString(), binary:{hash:'h',metadata:{},embedded:false}, user:{names:[],comments:[],types:[],structs:[],bookmarks:[],patches:[]}, findings:{confirmed:[],agentAnswers:[],evidence:[],investigationSessions:[]}, analysis:{settings:{},cacheReferences:[]}, navigation:{} };
 const migrated = parseHexProject(JSON.stringify(legacy));
