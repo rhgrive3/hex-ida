@@ -18,23 +18,73 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - name: Restack on current main
+        shell: bash
+        run: |
+          cp tools/tmp-unlinked-strict-batch.py /tmp/unlinked-strict.py
+          git fetch origin main
+          git reset --hard origin/main
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('/tmp/unlinked-strict.py')
+          s=p.read_text()
+          start=s.find('# #2865')
+          end=s.find('# #2871', start)
+          if start >= 0 and end > start:
+              s=s[:start]+s[end:]
+          p.write_text(s)
+          PY
       - run: npm ci
       - name: Apply strict boundary fixes
         shell: bash
         run: |
-          python3 tools/tmp-unlinked-strict-batch.py
+          python3 /tmp/unlinked-strict.py
           python3 - <<'PY'
           from pathlib import Path
-          p=Path('tests/unlinked-strict-boundaries-20260831.mjs')
+          p=Path('js/targets/architecture/arm64/effects/system.js')
           s=p.read_text()
-          s=s.replace("import { liftArm64MachineEffects } from '../js/targets/architecture/arm64/effects/index.js';", "import { liftArm64MachineEffects } from '../js/targets/architecture/arm64/effects/index.js';\nimport { parseOperands } from '../js/arm64.js';")
-          s=s.replace("for (const text of [{toString(){return 'ish';}}, ['ish']]) {\n  failClosed(lift('dmb',[{k:'barrier',text}]), 'barrier selector must be string');\n}", "const barrierOperand = parseOperands('ish')[0];\nfor (const text of [{toString(){return 'ish';}}, ['ish']]) {\n  failClosed(lift('dmb',[{...barrierOperand,text}]), 'barrier selector must be string');\n}")
-          p.write_text(s)
+          old="""function barrier(instruction, context, mnemonic, ops) {
+            const operand = ops[0];
+            const scope = {
+              architecture:'arm64',
+              barrier:mnemonic,
+              domain:String(operand?.text || instruction?.operands || 'sy').toLowerCase(),
+              semantics:mnemonic === 'isb' ? 'instruction-synchronization' : mnemonic === 'dsb' ? 'data-synchronization' : 'data-memory-ordering',
+            };"""
+          new="""function barrier(instruction, context, mnemonic, ops) {
+            const operand = ops[0];
+            let domain = 'sy';
+            if (operand?.k === 'imm') {
+              const printed = typeof operand.text === 'string' ? operand.text.trim().toLowerCase() : '';
+              domain = printed || `imm4:${BigInt(operand.value).toString(16)}`;
+            } else if (operand != null) {
+              domain = textOperand(operand);
+              if (!domain) return partial(instruction, context, `${mnemonic}-barrier-selector-invalid`, ['other']);
+            } else if (instruction?.operands != null) {
+              if (typeof instruction.operands !== 'string') return partial(instruction, context, `${mnemonic}-barrier-selector-invalid`, ['other']);
+              domain = instruction.operands.trim().toLowerCase() || 'sy';
+            }
+            const scope = {
+              architecture:'arm64',
+              barrier:mnemonic,
+              domain,
+              semantics:mnemonic === 'isb' ? 'instruction-synchronization' : mnemonic === 'dsb' ? 'data-synchronization' : 'data-memory-ordering',
+            };"""
+          if old not in s:
+              raise SystemExit('barrier producer anchor missing')
+          p.write_text(s.replace(old,new,1))
+
+          t=Path('tests/unlinked-strict-boundaries-20260831.mjs')
+          x=t.read_text()
+          x=x.replace("import { liftArm64MachineEffects } from '../js/targets/architecture/arm64/effects/index.js';\nimport { parseOperands } from '../js/arm64.js';", "import { liftArm64MachineEffects } from '../js/targets/architecture/arm64/effects/index.js';")
+          x=x.replace("const barrierOperand = parseOperands('ish')[0];\nfor (const text of [{toString(){return 'ish';}}, ['ish']]) {\n  failClosed(lift('dmb',[{...barrierOperand,text}]), 'barrier selector must be string');\n}", "for (const text of [{toString(){return 'ish';}}, ['ish'], true, 3]) {\n  failClosed(lift('dmb',[{k:'other',text}]), 'barrier selector must be string');\n}\nassert.notEqual(lift('dmb',[{k:'other',text:'ish'}]).completeness,'partial');")
+          t.write_text(x)
           PY
       - name: Focused regression
         run: |
           node tests/unlinked-strict-boundaries-20260831.mjs
           node tests/machine-effects/arm64-int-arithmetic.test.mjs
+          node tests/machine-effects/arm64-a64-system-denominator.test.mjs
           npm run effects:test
           npm run semantic-v2:test
       - name: Syntax check
@@ -43,20 +93,19 @@ jobs:
           node --check js/analysis/investigation-service.js
           node --check js/analysis/query/app-adapter.js
           node --check js/analysis/query/product-adapter.js
-          node --check js/analysis/query/product-surface.js
           node --check js/semantics/memoryssa/build.js
           node --check js/semantics/memoryssa/contract.js
           node --check js/semantics/memoryssa/validate.js
           node --check js/semantics/cfg/index.js
           node --check js/analyze.js
+          node --check js/targets/architecture/arm64/effects/system.js
       - name: Commit focused repair
         shell: bash
         run: |
-          git checkout origin/main -- .github/workflows/one-shot-repair-2784.yml
-          rm -f tools/tmp-unlinked-strict-batch.py
+          rm -f tools/tmp-unlinked-strict-batch.py .github/workflows/one-shot-repair-2784.yml
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add -A
           git diff --cached --quiet && exit 0
           git commit -m 'fix: close unlinked strict-boundary issues'
-          git push origin HEAD:fix/unlinked-strict-batch-20260831
+          git push --force-with-lease origin HEAD:fix/unlinked-strict-batch-20260831
