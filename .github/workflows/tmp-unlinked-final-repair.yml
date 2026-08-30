@@ -2,7 +2,6 @@ name: Temporary unlinked final repair
 on:
   push:
     branches: [dev-agent-hardening/integration/unlinked-final-20260831]
-    paths: [tools/tmp-unlinked-final-repair.py]
 permissions:
   contents: write
 jobs:
@@ -19,7 +18,10 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: python3 tools/tmp-unlinked-final-repair.py
+      - name: Apply focused source repairs
+        run: |
+          sed -i 's/base\.function(snapshot, target, options)/base.functionById(snapshot, target, options)/' tools/tmp-unlinked-final-repair.py
+          python3 tools/tmp-unlinked-final-repair.py
       - name: Focused validation
         run: |
           node tests/unlinked-final-strict-evidence-macho.mjs
