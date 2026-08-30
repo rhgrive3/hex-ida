@@ -9,9 +9,11 @@ import { classifyCallArguments } from '../../../js/ir-core.js';
 import {
   AAPCS64_ABI, DARWIN_ARM64_ABI, SYSV_AMD64_ABI, MICROSOFT_X64_ABI,
   MICROSOFT_VECTORCALL_ABI, RISCV_LP64_ABI, RISCV_LP64F_ABI, RISCV_LP64D_ABI,
-  resolveABIPlugin, UNKNOWN_ABI,
+  ABIPlugin, abiPluginRegistryDigest, abiPluginRegistryGeneration,
+  registerABIPlugin, resolveABIPlugin, UNKNOWN_ABI,
 } from '../../../js/targets/abi/index.js';
-import { normalizeAbiPieces } from '../../../js/targets/abi/evidence.js';
+import { abiPhysicalIntervalsValid, normalizeAbiPieces } from '../../../js/targets/abi/evidence.js';
+import { canonicalAggregateLayout } from '../../../js/targets/abi/aggregate-layout.js';
 
 function value(id, reg) { return { id, reg, uses:[{}] }; }
 
@@ -803,4 +805,204 @@ test('C3-02 unregistered plugin-like adapters cannot publish canonical ABI ident
   assert.equal(prototype.conventionKnown, false);
   assert.deepEqual(prototype.arguments, []);
   assert.deepEqual(prototype.returnLocations, []);
+});
+
+test('C3-02 forced-stack homogeneous aggregates use canonical physical element slots', () => {
+  const hfa32 = {
+    type:'HFA32x2', aggregate:true, hfa:true, elementBits:32, bits:64, bytes:8,
+    members:[
+      { type:'float', bits:32, bytes:4, byteOffset:0 },
+      { type:'float', bits:32, bytes:4, byteOffset:4 },
+    ],
+  };
+  const hfa64 = {
+    type:'HFA64x2', aggregate:true, hfa:true, elementBits:64, bits:128, bytes:16,
+    members:[
+      { type:'double', bits:64, bytes:8, byteOffset:0 },
+      { type:'double', bits:64, bytes:8, byteOffset:8 },
+    ],
+  };
+  const hva128 = {
+    type:'HVA128x2', aggregate:true, hva:true, elementBits:128, bits:256, bytes:32,
+    members:[
+      { type:'vector', bits:128, bytes:16, byteOffset:0 },
+      { type:'vector', bits:128, bytes:16, byteOffset:16 },
+    ],
+  };
+  for (const [name, aggregate, elementBytes] of [
+    ['hfa32', hfa32, 4], ['hfa64', hfa64, 8], ['hva128', hva128, 16],
+  ]) {
+    const parameters = [
+      ...Array.from({ length:8 }, () => ({ type:'int64', bits:64 })),
+      ...Array.from({ length:8 }, () => ({ type:'double', bits:64 })),
+      aggregate,
+      { type:'int64', bits:64 },
+    ];
+    const classified = AAPCS64_ABI.classifyArguments({ callPrototype:{ parameters } });
+    const entry = classified.arguments[16];
+    const next = classified.arguments[17];
+    assert.equal(entry.location, 'stack', `${name} must be forced to stack`);
+    const physicalElementBytes = Math.max(8, elementBytes);
+    assert.equal(entry.bytes, physicalElementBytes * aggregate.members.length, `${name} physical size`);
+    assert.deepEqual(entry.pieces.map(({ pieceIndex, byteOffset, stackOffset, bytes }) => ({
+      pieceIndex, byteOffset, stackOffset, bytes,
+    })), aggregate.members.map((_member, piece) => ({
+      pieceIndex:piece, byteOffset:piece * physicalElementBytes,
+      stackOffset:piece * physicalElementBytes, bytes:physicalElementBytes,
+    })), `${name} pieces must use element slots`);
+    assert.equal(next.offset, entry.bytes, `${name} next stack argument must not overlap`);
+  }
+  assert.equal(normalizeAbiPieces({ aggregate:true, bits:64, bytes:16, pieceClasses:['hfa', 'hfa'] }, [
+    { pieceIndex:0, order:0, stackOffset:0, bits:32, bytes:8, byteOffset:0, abiClass:'hfa' },
+    { pieceIndex:1, order:1, stackOffset:4, bits:32, bytes:8, byteOffset:8, abiClass:'hfa' },
+  ]), null, 'contradictory physical HFA placement must fail closed');
+
+  // The same physical proof must survive the consumer-side prototype alias,
+  // where each stack load is mapped back to one canonical aggregate parameter.
+  const parameters = [
+    ...Array.from({ length:8 }, () => ({ type:'int64', bits:64 })),
+    ...Array.from({ length:8 }, () => ({ type:'double', bits:64 })),
+    hfa32,
+    { type:'int64', bits:64 },
+  ];
+  const instructions = [0, 8, 16].map((disp, index) => ({
+    op:'load', loc:{ kind:'stack', baseReg:'sp', frameEpoch:99, disp:BigInt(disp), key:`c3-02:hfa:${index}` },
+    memUse:{ kind:'entry' }, dst:{ id:300 + index, bits:64 },
+  }));
+  const registers = ['sp', ...Array.from({ length:8 }, (_unused, index) => `x${index}`),
+    ...Array.from({ length:8 }, (_unused, index) => `v${index}`)];
+  const prototype = recoverFunctionPrototype(
+    { args:new Map(registers.map((reg, index) => [reg, reg === 'sp' ? value(99, reg) : value(index + 1, reg)])), instructions },
+    { values:new Map() },
+    { abiAdapter:semanticAbiAdapter(AAPCS64_ABI, { architecture:'arm64', platform:'linux' }),
+      functionPrototype:{ parameters } },
+  );
+  const aggregate = prototype.arguments.find((argument) => argument.canonicalParameterIndex === 16);
+  assert.ok(aggregate, 'prototype alias must retain the HFA parameter');
+  assert.equal(aggregate.aggregate, true);
+  assert.equal(aggregate.canonicalLocation, 'stack');
+  assert.deepEqual(aggregate.pieces.map(({ pieceIndex, stackOffset, bytes }) => ({ pieceIndex, stackOffset, bytes })), [
+    { pieceIndex:0, stackOffset:0, bytes:8 }, { pieceIndex:1, stackOffset:8, bytes:8 },
+  ]);
+  assert.equal(prototype.arguments.filter((argument) => argument.canonicalParameterIndex === 16).length, 1);
+  assert.equal(prototype.arguments.find((argument) => argument.canonicalParameterIndex === 17)?.stackOffset, 16n);
+});
+
+test('C3-02 aggregate layouts require fully located deterministic padding coverage', () => {
+  const base = {
+    aggregate:true, bits:64, bytes:16,
+    members:[
+      { type:'uint32', bits:32, bytes:4, byteOffset:0 },
+      { type:'uint32', bits:32, bytes:4, byteOffset:4 },
+    ],
+  };
+  assert.equal(canonicalAggregateLayout({ ...base, padding:[{ bytes:8 }] }), null,
+    'unlocated trailing padding is not exact physical evidence');
+  assert.equal(canonicalAggregateLayout({ ...base, padding:[{ bytes:8 }, { bytes:8 }] }), null,
+    'duplicate unlocated padding cannot be ignored');
+  assert.equal(canonicalAggregateLayout({ ...base, padding:8 }), null,
+    'scalar padding cannot be treated as an exact location');
+  assert.deepEqual(canonicalAggregateLayout({ ...base, padding:[{ byteOffset:8, bytes:8 }] })?.padding[0],
+    { offset:8, bytes:8, end:16 });
+  assert.equal(canonicalAggregateLayout({ ...base, padding:[
+    { byteOffset:8, bytes:8 }, { byteOffset:12, bytes:4 },
+  ] }), null, 'overlapping located padding must fail');
+});
+
+test('C3-02 ABI piece normalization rejects string, unsafe, non-finite, and overflowing stack coordinates', () => {
+  const base = { aggregate:true, bits:128, bytes:16, pieceClasses:['aggregate-memory', 'aggregate-memory'] };
+  const piece = (stackOffset, byteOffset, overrides = {}) => ({
+    pieceIndex:byteOffset / 8, order:byteOffset / 8, stackOffset,
+    bits:64, bytes:8, byteOffset, abiClass:'aggregate-memory', ...overrides,
+  });
+  for (const offset of ['8', '9007199254740992', 9007199254740992, Infinity]) {
+    assert.equal(normalizeAbiPieces(base, [piece(0, 0), piece(offset, 8)]), null,
+      `unsafe stack offset ${String(offset)} must be rejected`);
+  }
+  assert.equal(normalizeAbiPieces(base, [piece(Number.MAX_SAFE_INTEGER, 0), piece(Number.MAX_SAFE_INTEGER, 8)]), null,
+    'safe offset plus byte span overflow must be rejected');
+  assert.equal(normalizeAbiPieces(base, [piece(0, 0, { bytes:'8' }), piece(8, 8)]), null,
+    'string physical sizes must be rejected');
+  assert.equal(normalizeAbiPieces(base, [piece(0, 0, { byteOffset:'0' }), piece(8, 8)]), null,
+    'string logical offsets must be rejected');
+});
+
+test('C3-02 duplicate scalar stack evidence invalidates the complete argument result', () => {
+  const plugin = AAPCS64_ABI;
+  const base = semanticAbiAdapter(plugin, { architecture:'arm64', platform:'linux' });
+  const functionPrototype = { parameters:[
+    ...Array.from({ length:8 }, () => ({ type:'int64', bits:64 })),
+    { type:'int64', bits:64 },
+  ] };
+  const canonical = base.classifyArguments({ functionPrototype });
+  const duplicate = { ...canonical.arguments[8], index:9, offset:canonical.arguments[8].offset };
+  const adapter = {
+    ...base,
+    classifyArguments() {
+      return { ...canonical, arguments:[...canonical.arguments, duplicate], stackArguments:[...canonical.stackArguments, duplicate] };
+    },
+  };
+  const instructions = [{
+    op:'load', loc:{ kind:'stack', baseReg:'sp', frameEpoch:99, disp:0n, key:'c3-02:duplicate-stack' },
+    memUse:{ kind:'entry' }, dst:{ id:401, bits:64 },
+  }];
+  const registers = ['sp', ...Array.from({ length:8 }, (_unused, index) => `x${index}`)];
+  const prototype = recoverFunctionPrototype(
+    { args:new Map(registers.map((reg, index) => [reg, value(index + 1, reg)])), instructions },
+    { values:new Map() }, { abiAdapter:adapter, functionPrototype },
+  );
+  assert.equal(prototype.conventionKnown, false);
+  assert.deepEqual(prototype.arguments, [], 'ambiguous duplicate stack interval must publish no argument');
+  assert.deepEqual(prototype.returnLocations, []);
+  assert.equal(abiPhysicalIntervalsValid({
+    arguments:[], stackArguments:[],
+    returnLocations:[
+      { kind:'stack', stackOffset:0, bytes:8 },
+      { kind:'stack', stackOffset:0, bytes:8 },
+    ],
+  }), false, 'ambiguous duplicate return interval must be rejected too');
+});
+
+test('C3-02 ABI replacement invalidates stack-layout caches by registered object', () => {
+  const id = 'c3-02-cache-lifecycle';
+  const make = (firstStackArgumentOffset) => new ABIPlugin({
+    id, semanticVersion:'1', semanticIdentity:`${id}@1`, architectureId:'x86_64',
+    platformPredicate:() => true,
+    classifyArguments:() => {
+      const argument = {
+        index:0, location:'stack', offset:firstStackArgumentOffset, bytes:8,
+        bits:64, abiClass:'integer', possible:false, mustUse:true,
+      };
+      return {
+        srcs:[], arguments:[argument], stackArguments:[argument], stackArgsUnknown:false,
+        stackArgsMayContainPointers:false, completeness:'exact', partial:false,
+      };
+    },
+    classifyFunctionReturn:() => null,
+    classifyEntryRegister:() => ({ kind:'incoming-register-state' }),
+    stackRules:() => ({ firstStackArgumentOffset, argumentSlotBytes:8 }),
+  });
+  const first = registerABIPlugin(make(8));
+  const firstAdapter = semanticAbiAdapter(first, { architecture:'x86_64', platform:'linux' });
+  const recoverStack = (adapter, disp) => recoverFunctionPrototype(
+    { args:new Map([['rsp', value(99, 'rsp')]]), instructions:[{
+      op:'load', loc:{ kind:'stack', baseReg:'rsp', frameEpoch:99, disp:BigInt(disp), key:`c3-02:cache:${disp}` },
+      memUse:{ kind:'entry' }, dst:{ id:501 + disp, bits:64 },
+    }] }, { values:new Map() }, { abiAdapter:adapter, functionPrototype:{ parameters:[{ type:'int64', bits:64 }] } },
+  );
+  const before = recoverStack(firstAdapter, 8);
+  assert.equal(before.arguments.length, 1);
+  const firstDigest = abiPluginRegistryDigest(first);
+  const firstGeneration = abiPluginRegistryGeneration(first);
+
+  const replacement = registerABIPlugin(make(64), { replace:true });
+  assert.notEqual(abiPluginRegistryDigest(replacement), firstDigest,
+    'replacement classifier/rules must get a new registry digest');
+  assert.ok(abiPluginRegistryGeneration(replacement) > firstGeneration,
+    'replacement must advance the registry generation');
+  const replacementAdapter = semanticAbiAdapter(replacement, { architecture:'x86_64', platform:'linux' });
+  const after = recoverStack(replacementAdapter, 8);
+  assert.equal(after.arguments.length, 0, 'replacement profile must not reuse old stack rules');
+  const atReplacementOffset = recoverStack(replacementAdapter, 64);
+  assert.equal(atReplacementOffset.arguments.length, 1);
 });

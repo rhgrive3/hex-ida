@@ -4,7 +4,8 @@
 
 **Created**: 2026-08-29
 
-**Status**: Implementation checkpoint complete — independent review and delivery gates pending
+**Status**: Review 1 correction checkpoint complete — convergence, moving-main,
+generated-output, independent review, and delivery gates pending
 
 **Input**: User description: "Close HEX-C3-02 ABI aggregate/prototype unification with one canonical ABI model across profiles, calls, summaries, and decompiler consumers."
 
@@ -25,7 +26,7 @@
 - **POSITIVE_CASES**: supported and identity-valid AAPCS64/Darwin ARM64/arm64e, SysV AMD64, Microsoft x64, Microsoft vectorcall, and supported generic RISC-V LP64-family classifier rows for integer, FP, pointer, aggregate, split-register, stack, HFA/HVA, hidden-sret, and return cases.
 - **NEGATIVE_CASES**: unsupported ABI, stale/mismatched architecture or profile identity, malformed adapter/classifier evidence, conflicting ABI completeness, unknown/anonymous variadic frontier, incomplete aggregate member/layout data, indirect-call uncertainty, contradictory caller/callee observations, thunk/tail-call ambiguity, and any conflicting ABI classifications.
 - **CONSERVATIVE_BOUNDARY**: publish an exact argument/return location or exact prototype only when the selected canonical profile is supported, identity-valid, complete for the requested fact, and free of unresolved aggregate/variadic/caller-callee conflict. Otherwise publish explicit partial, unknown, unsupported, or ambiguous state and retain alternatives where the existing schema permits.
-- **NON_GOALS**: inventing a new ABI, broadening unsupported profile coverage, replacing the canonical ABI registry/classifiers, solving recursive structural types, inferring arity from merely-live registers, or changing generated artifacts outside the integration owner.
+- **NON_GOALS**: inventing a new ABI, broadening unsupported profile coverage, replacing the canonical ABI registry/classifiers, solving recursive structural types, inferring arity from merely-live registers, or hand-editing generated artifacts. The semantic-function adapter reaches bundled workers, so generated applicability is YES; only the canonical generator and integration owner may update generated output.
 - **FORBIDDEN_SHORTCUTS**: decompiler-private ABI rules; points-to-private ABI rules; architecture-name heuristics; hard-coded register literals in generic consumers; unsupported-to-exact or partial-to-complete promotion; truthy capability checks; caller/callee consensus as a substitute for ABI proof; test-only expectation changes; generated-file hand edits; and denominator/assertion weakening.
 
 ## User Scenarios & Testing *(mandatory)*
@@ -193,6 +194,20 @@ the revised counterexamples; the implementation proceeded only after
 - **FR-013**: The actual changed-file inventory MUST contain only C3-02 specification, canonical ABI
   integration, owned regressions/verifiers, and integration-owned generated outputs; unrelated
   Issue work and decompiler-private ABI logic are prohibited.
+- **FR-014**: When AAPCS64 passes an HFA/HVA to the stack, each physical element MUST use the
+  canonical element-layout span with an ABI stack slot of at least eight bytes; the aggregate
+  physical size, alignment, piece byte offsets, stack offsets, and following-argument offset MUST
+  agree. Contradictory placement MUST remain malformed/unknown, and the downstream prototype
+  alias MUST preserve one aggregate parameter and all canonical pieces.
+- **FR-015**: Canonical aggregate padding MUST be fully located, non-overlapping, deterministic,
+  and cover every physical byte not occupied by a member. ABI piece offsets, sizes, and interval
+  endpoints MUST be finite safe integers with overflow-safe arithmetic; strings, unsafe numbers,
+  non-finite values, and unlocated or duplicate padding MUST not establish exact evidence.
+- **FR-016**: All exact argument and return physical stack intervals MUST be globally validated;
+  ambiguous overlap or duplicate scalar evidence MUST invalidate publication unless the duplicate
+  is the explicitly proven projection of one canonical split aggregate. ABI registry caches MUST
+  bind to the registered profile object, generation, and classifier digest so replacement with a
+  stable semantic id cannot reuse stale placement rules.
 
 ### Key Entities
 
@@ -233,6 +248,9 @@ the revised counterexamples; the implementation proceeded only after
 - **SC-009**: Actual changed-file ownership, Spec Kit convergence, exact-head CI, candidate merge
   tree validation, expected-head merge, and post-merge live-main verification all bind to one exact
   product identity.
+- **SC-010**: Forced-stack HFA/HVA, padding/interval, duplicate-evidence, and registry-replacement
+  counterexamples fail before the fix and pass after it without weakening existing assertions;
+  the canonical generated transaction reports the expected first diff and zero second diff.
 
 ## Assumptions
 
@@ -246,7 +264,9 @@ the revised counterexamples; the implementation proceeded only after
   preserved as an existing regression, not duplicated or weakened.
 - C1-02 return-summary work is a prerequisite dependency only; it is not reopened unless current
   main proves a C3-02-relevant regression.
-- Generated userscript or release artifacts are integration-owned and are not committed by this
-  component lane.
+- Generated userscript or release artifacts are integration-owned. Because the semantic-function
+  adapter is reachable from the bundled worker graph, the generated applicability decision is YES;
+  output is changed only by `npm run userscript:build`, with the integration owner recording both
+  runs and committing the canonical result.
 - If a profile cannot prove all requested aggregate or variadic details, the appropriate outcome
   is partial/unknown/unsupported rather than widening the exactness claim.

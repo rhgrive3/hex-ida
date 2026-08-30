@@ -1,6 +1,6 @@
 # Implementation Plan: HEX-C3-02 ABI Aggregate/Prototype Unification
 
-**Branch**: `feat/analysis-hex-c3-02-abi-unification` | **Date**: 2026-08-29 | **Spec**: [spec.md](./spec.md)
+**Branch**: `feat/analysis-hex-c3-02-abi-unification` | **Date**: 2026-08-30 | **Spec**: [spec.md](./spec.md)
 
 **Input**: Feature specification from `/specs/002-abi-aggregate-prototype-unification/spec.md`
 
@@ -8,20 +8,22 @@
 
 HEX-C3-02 closes the remaining ABI/prototype semantic divergence after PR
 #2499. The canonical `js/targets/abi/**` classifiers now select the correct
-profile for scalar and several aggregate cases, but the decompiler prototype
-consumer still accepts adapters by `id` without validating semantic identity,
-flattens multi-register aggregate arguments into independent physical values,
-and drops aggregate return piece metadata. The implementation will make the
+profile for scalar and aggregate cases, while the decompiler prototype
+consumer is required to validate semantic identity, preserve aggregate pieces,
+and reject ambiguous physical evidence. The implementation makes the
 canonical classifier and `semanticAbiAdapter` the only source of ABI argument,
 return, aggregate, hidden-result, stack, and variadic placement facts.
-Prototype, summary, type-recovery, and decompiler projections will consume a
+Prototype, summary, type-recovery, and decompiler projections consume a
 provenance-bearing ABI classification and publish unknown/partial results when
-identity, support, or completeness is insufficient. PR #2499 merged as
-`be5636b1`; the historical implementation checkpoint was reconciled to live
-main `48a0b429`. The implementation-owner branch was subsequently restacked
-from fetched `origin/main` `204c82de` with the prior merge commit's unrelated
-main-side changes excluded; the refreshed counterexample plan received Sol
-approval before implementation.
+identity, support, or completeness is insufficient. Review 1 exposed five
+soundness gaps; this resume adds counterexamples first, canonical AAPCS64
+forced-stack HFA/HVA slots, deterministic aggregate coverage, safe interval
+validation, duplicate-evidence rejection, and object/generation-bound cache
+invalidation. The requested implementation base is
+`42d472c310c12685e59dbf13a59e7572e8429ae2`; requested moving-main checkpoint
+is `66a5640359c5b39526fb89f6937e023294e54bdd`, and the currently fetched
+`origin/main` is its descendant `1645b4e4a2b5cd9baf37e2efe5b2e6045481b1aa`.
+Both remain explicit moving-main/candidate-tree reconciliation gates.
 
 ## Technical Context
 
@@ -74,10 +76,11 @@ unrelated architecture or type-system redesign
 - **Exact product/integration proof**: PASS pending delivery gates. Exact-head
   CI, current-main reconciliation, candidate merge-tree validation, and
   post-merge live-main verification are required.
-- **External ownership collision**: RECONCILIATION GATE, not a constitution
+- **External ownership collision**: RECONCILED GATE, not a constitution
   violation. PR #2499 merged as `be5636b1` after directly editing the canonical
-  prototype owner and its integration test surface. Production implementation
-  remains forbidden until the branch is restacked/re-audited and Sol clears it.
+  prototype owner and its integration test surface. The implementation branch
+  was restacked/re-audited before this correction; the dedicated C3-02
+  inventory and current-main comparison remain required delivery evidence.
 
 ## Project Structure
 
@@ -111,11 +114,15 @@ tests/phase5/abi/                     # existing ABI contracts
 tests/phase6/abi/                     # existing profile/PSABI contracts
 tests/phase8/abi/                     # HEX-C3-02 profile regressions
 tests/phase8/integration/             # downstream integration contracts
+tools/validation/c3-02-ownership.mjs # C3-02 ownership inventory gate
+tools/validation/phase-ownership/     # explicit C3-02 manifest
 ```
 
 **Structure Decision**: Keep canonical classification in the existing ABI
 plugin/adaptor boundary and test the downstream projection through phase8 ABI
-and integration contracts. No new semantic engine or ABI owner is introduced.
+and integration contracts. The dedicated C3-02 inventory gate records the 38
+feature paths and explicit cross-lane decisions; it does not reuse or widen the
+Phase 8 lane manifest. No new semantic engine or ABI owner is introduced.
 
 ## Architecture and Ownership
 
@@ -151,7 +158,9 @@ an AAPCS64 default when the selected profile is unsupported or unknown.
    preserve the failing output as `PRE_FIX_FAILURE`; no expected value is
    sourced from the implementation.
 4. Resolve all planning unknowns in `research.md`, including the current-main
-   profile matrix and the first remaining consumer divergence after #2499.
+   profile matrix, the first remaining consumer divergence after #2499, the
+   latest-main comparison, generated-output applicability, and the C3-02
+   ownership inventory.
 
 ## Phase 1 — Design Contracts
 
@@ -165,13 +174,16 @@ an AAPCS64 default when the selected profile is unsupported or unknown.
 3. Record runnable validation commands and expected results in `quickstart.md`.
 4. Re-run the Spec Kit analyze gate after the current-main correction. The
    refreshed `ANALYZE_RESULT` must be CLEAN before production implementation;
-   the merged #2499 head and current-main ownership inventory remain separate
-   delivery gates.
+   the merged #2499 head, latest-main comparison, C3-02 ownership inventory,
+   and generated applicability remain separate delivery gates.
 
 ## Phase 2 — Implementation Boundary
 
-1. After Sol clears the collision and approves the refreshed checkpoint,
-   reconcile to newest live main and re-run collision preflight.
+1. After the implementation base is verified, compare and reconcile to the
+   requested live-main checkpoint `66a5640359c5b39526fb89f6937e023294e54bdd`
+   and its fetched descendant `1645b4e4a2b5cd9baf37e2efe5b2e6045481b1aa`;
+   re-run collision preflight without weakening the exact-head or ownership
+   gates.
 2. Preserve the merged #2499 changes; modify only the canonical ABI
    adapter/consumer boundary and owned phase8 tests. Do not create a decompiler-
    private classifier.
@@ -181,8 +193,11 @@ an AAPCS64 default when the selected profile is unsupported or unknown.
    provenance, completeness, invalidation, cancellation, budget, and stale
    evidence.
 4. Run the required positive matrix and paired negative matrix, then run
-   Spec Kit converge until CLEAN. Any generated output is rebuilt only through
-   its canonical generator.
+   Spec Kit converge until CLEAN. Because the semantic-function-base path
+   reaches bundled workers, generated applicability is YES: restore canonical
+   dependencies, run the canonical userscript generator twice, and require the
+   expected generated diff on the first run and zero additional diff on the
+   second. Any generated output is rebuilt only through its canonical generator.
 
 ## Phase 3 — Verification and Delivery
 
@@ -225,13 +240,37 @@ CURRENT_PRE_FIX_FAILURE: 2 of 4 subtests fail: stale aapcs64@1 is accepted as
 CURRENT_MATRIX_COMMAND: node tests/phase8/abi/hex-c3-02-required-profile-matrix.mjs
 CURRENT_MATRIX_RESULT: 66 rows; 54 PASS, 12 FAIL, all 12 in prototype
                        identity/aggregate projection (exit 1)
-POST_FIX_SHA: 439816bf34c1e26d0039c1126f33b1b85f90a06e (code restack head)
-POST_FIX_COMMAND: same focused command plus required profile/subsystem gates
-POST_FIX_PASS: focused matrix (44 tests), downstream-inclusive focused matrix
-               (45 tests), 66-row matrix, Phase 5 (279 tests), Phase 6 (116
-               tests), and Phase 8 (322 tests) pass; no generated double-run
-               applies because no generated input/consumer changed
+POST_FIX_SHA: pending final implementation commit
+POST_FIX_COMMAND: focused boundary/profile/downstream commands plus required
+                  profile, Phase 5, Phase 6, Phase 8, ownership, and generated
+                  double-run gates
+POST_FIX_PASS: focused matrix (45 tests), downstream-inclusive focused matrix
+               (49 tests with the profile matrix), 66-row matrix, Phase 5
+               (279 tests), Phase 6 (116 tests), and Phase 8 (327 tests) pass
+               before final generated/main reconciliation. Generated output is
+               applicable because semantic-function-base reaches bundled
+               workers; the canonical build transaction remains a required
+               final gate.
 ```
+
+### Review 1 correction acceptance
+
+The correction has five deterministic counterexamples in
+`tests/phase8/abi/hex-c3-02-boundaries.test.mjs`. They cover forced-stack
+HFA32/HFA64/HVA128 physical slots, unlocated/duplicate aggregate padding,
+unsafe/string/non-finite/overflowing coordinates, duplicate scalar stack
+evidence, and a same-identity registry replacement. Before the production
+fixes these tests reported `45 total, 40 pass, 5 fail`; after the fixes they
+report `45 pass`. The correction is accepted only when the same assertions,
+the 66-row matrix, the downstream projection, and all owning phase suites stay
+green.
+
+The C3-02 ownership decision is explicit and independent of the Phase 8 lane
+manifest. `tools/validation/phase-ownership/c3-02.json` inventories all 38
+feature paths from scope base `3ac625938333636bcc6c00634d2e21648778ce0f`,
+with generated outputs and governance paths listed separately. The dedicated
+`tools/validation/c3-02-ownership.mjs --check-manifest` gate must report zero
+violations and justify every cross-lane owner before delivery.
 
 ## Complexity Tracking
 

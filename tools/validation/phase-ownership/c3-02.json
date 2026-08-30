@@ -1,0 +1,127 @@
+{
+  "feature": "HEX-C3-02",
+  "version": 1,
+  "scopeBase": "3ac625938333636bcc6c00634d2e21648778ce0f",
+  "checkpointHead": "42d472c310c12685e59dbf13a59e7572e8429ae2",
+  "note": "C3-02 owns one explicit cross-phase inventory. This manifest is a C3 governance gate; the Phase 8 manifest remains unchanged and is not used as an allowlist for ABI or semantic files.",
+  "featurePaths": [
+    "js/analysis/semantic-function-base.js",
+    "js/decompiler/passes/stack-return-recovery.js",
+    "js/decompiler/pipeline-core.js",
+    "js/decompiler/pipeline.js",
+    "js/decompiler/semantic-core.js",
+    "js/decompiler/type-recovery.js",
+    "js/decompiler/types/high-variables.js",
+    "js/decompiler/types/prototype.js",
+    "js/ir-core.js",
+    "js/semantics/compat/semantic-ir-v2-to-v1-core.js",
+    "js/semantics/compat/semantic-ir-v2-to-v1-nodes.js",
+    "js/targets/abi/aapcs64-core.js",
+    "js/targets/abi/aapcs64.js",
+    "js/targets/abi/aggregate-layout.js",
+    "js/targets/abi/darwin-arm64.js",
+    "js/targets/abi/evidence.js",
+    "js/targets/abi/index.js",
+    "js/targets/abi/microsoft-vectorcall.js",
+    "js/targets/abi/microsoft-x64.js",
+    "js/targets/abi/registry.js",
+    "js/targets/abi/riscv-lp64.js",
+    "js/targets/abi/sysv-amd64.js",
+    "specs/002-abi-aggregate-prototype-unification/checklists/abi-contract.md",
+    "specs/002-abi-aggregate-prototype-unification/checklists/requirements.md",
+    "specs/002-abi-aggregate-prototype-unification/contracts/abi-prototype.md",
+    "specs/002-abi-aggregate-prototype-unification/data-model.md",
+    "specs/002-abi-aggregate-prototype-unification/plan.md",
+    "specs/002-abi-aggregate-prototype-unification/quickstart.md",
+    "specs/002-abi-aggregate-prototype-unification/research.md",
+    "specs/002-abi-aggregate-prototype-unification/spec.md",
+    "specs/002-abi-aggregate-prototype-unification/tasks.md",
+    "tests/phase5/abi/plugins.test.mjs",
+    "tests/phase6/abi/issues-2110-2111.test.mjs",
+    "tests/phase6/abi/riscv-psabi.test.mjs",
+    "tests/phase8/abi/hex-c3-02-boundaries.test.mjs",
+    "tests/phase8/abi/hex-c3-02-profile-matrix.test.mjs",
+    "tests/phase8/abi/hex-c3-02-required-profile-matrix.mjs",
+    "tests/semantic-v2/compat-v1-core.test.mjs"
+  ],
+  "generatedPaths": [
+    "userscript/hex.user.template.js",
+    "userscript/release-version.json"
+  ],
+  "governancePaths": [
+    "tools/validation/c3-02-ownership.mjs",
+    "tools/validation/phase-ownership/c3-02.json"
+  ],
+  "owners": {
+    "abi-canonical": [
+      "js/targets/abi/aapcs64-core.js",
+      "js/targets/abi/aapcs64.js",
+      "js/targets/abi/aggregate-layout.js",
+      "js/targets/abi/darwin-arm64.js",
+      "js/targets/abi/evidence.js",
+      "js/targets/abi/index.js",
+      "js/targets/abi/microsoft-vectorcall.js",
+      "js/targets/abi/microsoft-x64.js",
+      "js/targets/abi/registry.js",
+      "js/targets/abi/riscv-lp64.js",
+      "js/targets/abi/sysv-amd64.js"
+    ],
+    "adapter-and-compat": [
+      "js/analysis/semantic-function-base.js",
+      "js/ir-core.js",
+      "js/semantics/compat/semantic-ir-v2-to-v1-core.js",
+      "js/semantics/compat/semantic-ir-v2-to-v1-nodes.js"
+    ],
+    "prototype-consumer": [
+      "js/decompiler/passes/stack-return-recovery.js",
+      "js/decompiler/pipeline-core.js",
+      "js/decompiler/pipeline.js",
+      "js/decompiler/semantic-core.js",
+      "js/decompiler/type-recovery.js",
+      "js/decompiler/types/high-variables.js",
+      "js/decompiler/types/prototype.js"
+    ],
+    "spec-and-lifecycle": [
+      "specs/002-abi-aggregate-prototype-unification/checklists/abi-contract.md",
+      "specs/002-abi-aggregate-prototype-unification/checklists/requirements.md",
+      "specs/002-abi-aggregate-prototype-unification/contracts/abi-prototype.md",
+      "specs/002-abi-aggregate-prototype-unification/data-model.md",
+      "specs/002-abi-aggregate-prototype-unification/plan.md",
+      "specs/002-abi-aggregate-prototype-unification/quickstart.md",
+      "specs/002-abi-aggregate-prototype-unification/research.md",
+      "specs/002-abi-aggregate-prototype-unification/spec.md",
+      "specs/002-abi-aggregate-prototype-unification/tasks.md"
+    ],
+    "cross-phase-regressions": [
+      "tests/phase5/abi/plugins.test.mjs",
+      "tests/phase6/abi/issues-2110-2111.test.mjs",
+      "tests/phase6/abi/riscv-psabi.test.mjs",
+      "tests/phase8/abi/hex-c3-02-boundaries.test.mjs",
+      "tests/phase8/abi/hex-c3-02-profile-matrix.test.mjs",
+      "tests/phase8/abi/hex-c3-02-required-profile-matrix.mjs",
+      "tests/semantic-v2/compat-v1-core.test.mjs"
+    ],
+    "generated-output": [
+      "userscript/hex.user.template.js",
+      "userscript/release-version.json"
+    ],
+    "governance": [
+      "tools/validation/c3-02-ownership.mjs",
+      "tools/validation/phase-ownership/c3-02.json"
+    ]
+  },
+  "crossLaneDecisions": {
+    "phase5-abi": "The target ABI files are canonical producer truth. C3 owns the semantic fix set for this feature with Phase 5 ABI gates rerun read-only; no Phase 8 allowlist is widened.",
+    "phase6-compat": "The shared compatibility and IR projections are downstream seams needed to carry the canonical ABI envelope. Phase 6 contracts are rerun read-only; no RISC-V implementation is re-owned.",
+    "phase7-adapter": "The semantic-function adapter is the one shared producer-to-consumer boundary. C3 changes only ABI identity/evidence forwarding and validates it with Phase 7-style identity checks.",
+    "phase8-prototype": "Prototype and decompiler files are consumer ownership. C3 changes the consumer to ask the adapter and keeps ABI placement out of decompiler code.",
+    "integration-generated": "The semantic-function adapter reaches the bundled worker graph, so generated output applicability is YES. The integration owner must run npm run userscript:build twice and commit only canonical builder output; no generated file is hand-edited."
+  },
+  "requiredGates": [
+    "tools/validation/c3-02-ownership.mjs",
+    "tests/phase5/run.mjs",
+    "tests/phase6/run.mjs",
+    "tests/phase8/run.mjs",
+    "tests/phase8/abi/hex-c3-02-required-profile-matrix.mjs"
+  ]
+}

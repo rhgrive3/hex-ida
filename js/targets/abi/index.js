@@ -1,6 +1,6 @@
 import {
   ABIPlugin, registerABIPlugin, abiPlugin, abiPlugins, findABIPlugin,
-  isRegisteredABIPlugin, abiPluginRegistryDigest,
+  isRegisteredABIPlugin, abiPluginRegistryDigest, abiPluginRegistryGeneration,
 } from './registry.js';
 import { AAPCS64_ABI } from './aapcs64.js';
 import { DARWIN_ARM64_ABI } from './darwin-arm64.js';
@@ -36,7 +36,7 @@ registerABIPlugin(UNKNOWN_ABI);
 
 export {
   ABIPlugin, registerABIPlugin, abiPlugin, abiPlugins, findABIPlugin,
-  isRegisteredABIPlugin, abiPluginRegistryDigest,
+  isRegisteredABIPlugin, abiPluginRegistryDigest, abiPluginRegistryGeneration,
   AAPCS64_ABI, DARWIN_ARM64_ABI,
   SYSV_AMD64_ABI, MICROSOFT_X64_ABI, MICROSOFT_VECTORCALL_ABI, UNKNOWN_ABI,
   RISCV_LP64_ABI, RISCV_LP64F_ABI, RISCV_LP64D_ABI,

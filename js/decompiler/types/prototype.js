@@ -1,15 +1,19 @@
 import { architecturePluginV2 } from '../../targets/architecture/index.js';
 import {
   abiPlugin as registeredABIPlugin, isRegisteredABIPlugin, abiPluginRegistryDigest,
+  abiPluginRegistryGeneration,
 } from '../../targets/abi/index.js';
 import {
   abiInvalidState, abiResultInvalidState, canonicalAbiEvidence, canonicalAbiHiddenResult,
-  normalizeAbiPieces,
+  normalizeAbiPieces, abiPhysicalIntervalsValid,
 } from '../../targets/abi/evidence.js';
 
-const ARCH_META_CACHE = new Map();
-const REGISTER_CANDIDATE_CACHE = new Map();
-const STACK_LAYOUT_CACHE = new Map();
+// Cache by the exact registered profile object. A semantic id is not a cache
+// identity: registry replacement can keep id/version stable while changing
+// stack rules, register classifiers, or architecture aliases.
+const ARCH_META_CACHE = new WeakMap();
+const REGISTER_CANDIDATE_CACHE = new WeakMap();
+const STACK_LAYOUT_CACHE = new WeakMap();
 
 function record(value) { return !!value && typeof value === 'object' && !Array.isArray(value); }
 function normalized(value) { return String(value ?? '').trim().toLowerCase(); }
@@ -99,6 +103,11 @@ function validateABIIdentity(adapter, plugin, opts = {}) {
   const registryDigest = abiPluginRegistryDigest(plugin);
   if (!registryDigest || adapter.registryDigest !== registryDigest) {
     return { supported:false, status:'stale', reason:'abi-registry-digest-mismatch' };
+  }
+  const registryGeneration = abiPluginRegistryGeneration(plugin);
+  if (!Number.isSafeInteger(registryGeneration)
+    || (adapter.registryGeneration != null && adapter.registryGeneration !== registryGeneration)) {
+    return { supported:false, status:'stale', reason:'abi-registry-generation-mismatch' };
   }
   const required = ['id', 'semanticVersion', 'semanticIdentity', 'architectureId'];
   if (required.some((field) => typeof adapter[field] !== 'string' || adapter[field].trim() === '')) {
@@ -326,8 +335,9 @@ function abiContext(opts = {}) {
     ? { supported:false, status:invalidation, reason:`abi-evidence-${invalidation}` }
     : identity;
   const supported = validation.supported === true;
-  const cacheKey = supported ? String(plugin.semanticIdentity || `${plugin.id}@${plugin.semanticVersion || '1'}`) : 'unknown';
-  let meta = ARCH_META_CACHE.get(cacheKey) || null;
+  const registryGeneration = supported ? abiPluginRegistryGeneration(plugin) : null;
+  const cacheKey = supported && registryGeneration != null ? plugin : null;
+  let meta = supported ? ARCH_META_CACHE.get(cacheKey) || null : null;
   if (!meta) {
     let architecture = null;
     try { if (supported) architecture = architecturePluginV2(plugin.architectureId); } catch { architecture = null; }
@@ -352,12 +362,12 @@ function abiContext(opts = {}) {
       }
     }
     meta = { aliases, stackPointers };
-    ARCH_META_CACHE.set(cacheKey, meta);
+    if (supported) ARCH_META_CACHE.set(cacheKey, meta);
   }
   const canonical = (reg) => meta.aliases.get(String(reg || '').toLowerCase()) || String(reg || '');
   return {
     adapter, plugin, supported, status:validation.status, reason:validation.reason,
-    canonical, stackPointers:meta.stackPointers, cacheKey,
+    canonical, stackPointers:meta.stackPointers, cacheKey, registryGeneration,
     identity:supported ? {
       id:String(plugin.id), semanticVersion:String(plugin.semanticVersion),
       semanticIdentity:String(plugin.semanticIdentity), architectureId:String(plugin.architectureId),
@@ -366,6 +376,7 @@ function abiContext(opts = {}) {
       profileIdentity:adapter?.profileIdentity ?? adapter?.identity?.profileIdentity ?? null,
       abiId:adapter?.abiId ?? adapter?.id ?? null,
       schemaVersion:adapter?.schemaVersion ?? adapter?.identity?.schemaVersion ?? null,
+      registryGeneration:adapter?.registryGeneration ?? registryGeneration,
       snapshotId:adapter?.snapshotId ?? adapter?.identity?.snapshotId ?? null,
       analyzerId:adapter?.analyzerId ?? adapter?.identity?.analyzerId ?? null,
       analyzerVersion:adapter?.analyzerVersion ?? adapter?.identity?.analyzerVersion ?? null,
@@ -379,6 +390,10 @@ function classifyArguments(ctx, functionPrototype) {
   if (!ctx?.supported || !ctx.adapter?.classifyArguments) return null;
   try {
     const classified = ctx.adapter.classifyArguments({ functionPrototype }) || null;
+    if (classified && !abiPhysicalIntervalsValid(classified)) {
+      ctx.classifierState ||= 'malformed';
+      return null;
+    }
     const state = abiResultInvalidState(classified);
     // An unprototyped call deliberately carries possible register candidates
     // as a conservative frontier.  Keep that uncertainty available, but do
@@ -710,7 +725,7 @@ function entryValueForBase(ir, ctx, canonicalBase) {
 function entryStackArguments(ir, types, ctx, opts = {}) {
   const layout = stackLayout(ctx);
   const canonicalEntries = canonicalFunctionArgumentEntries(ctx, opts);
-  if (!layout) return [];
+  if (!layout || ctx.classifierState) return [];
   const byKey = new Map();
   for (const inst of ir?.instructions || []) {
     if (inst?.op !== 'load' || inst.loc?.kind !== 'stack') continue;
@@ -744,7 +759,35 @@ function entryStackArguments(ir, types, ctx, opts = {}) {
       } : {}),
     });
   }
-  return [...byKey.values()].sort((a,b) => a.stackOffset < b.stackOffset ? -1 : a.stackOffset > b.stackOffset ? 1 : 0);
+  const grouped = new Map();
+  for (const argument of byKey.values()) {
+    const canonicalIndex = argument.aggregate === true && argument.canonicalParameterIndex != null
+      ? String(argument.canonicalParameterIndex) : null;
+    if (canonicalIndex == null) {
+      grouped.set(`stack:${String(argument.stackOffset)}`, argument);
+      continue;
+    }
+    const existing = grouped.get(`canonical:${canonicalIndex}`);
+    if (!existing) {
+      grouped.set(`canonical:${canonicalIndex}`, argument);
+      continue;
+    }
+    const pieces = [...(existing.pieces || [])];
+    for (const piece of argument.pieces || []) {
+      const key = `${String(piece?.pieceIndex ?? piece?.index ?? '')}:${String(piece?.stackOffset ?? '')}`;
+      if (!pieces.some((current) => `${String(current?.pieceIndex ?? current?.index ?? '')}:${String(current?.stackOffset ?? '')}` === key)) {
+        pieces.push(piece);
+      }
+    }
+    grouped.set(`canonical:${canonicalIndex}`, {
+      ...existing,
+      stackOffset:existing.stackOffset < argument.stackOffset ? existing.stackOffset : argument.stackOffset,
+      stackBytes:existing.stackBytes ?? argument.stackBytes,
+      pieces,
+      evidence:`${existing.evidence}; canonical aggregate stack lanes grouped`,
+    });
+  }
+  return [...grouped.values()].sort((a,b) => a.stackOffset < b.stackOffset ? -1 : a.stackOffset > b.stackOffset ? 1 : 0);
 }
 
 function mergeCanonicalSplitArguments(registerArgs, stackArgs) {
@@ -815,6 +858,10 @@ function classifyReturn(ctx, ret, opts = {}) {
       returnsValue:functionPrototype.returnsValue,
     }) || null;
     const state = abiResultInvalidState(classified);
+    if (classified && !abiPhysicalIntervalsValid(classified)) {
+      ctx.classifierState ||= 'malformed';
+      return null;
+    }
     if (!classified || state || classified.unsupported === true) {
       ctx.classifierState ||= state || (classified?.unsupported === true ? 'unsupported' : 'unknown');
       return null;

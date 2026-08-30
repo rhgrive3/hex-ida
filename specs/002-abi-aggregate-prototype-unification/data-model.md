@@ -43,7 +43,17 @@ identifies its register or stack location, width, offset, ABI class, and
 alignment/padding relation. Split register/stack placement remains split; a
 consumer may not repack pieces. Hidden sret records both the hidden input
 location and the fact that the user-visible return is indirect. HFA/HVA records
-member count and class only when member/layout evidence is complete.
+member count and class only when member/layout evidence is complete. For a
+forced-stack AAPCS64 HFA/HVA, the physical element span comes from the canonical
+member layout and each element occupies an ABI stack slot of at least eight
+bytes; the aggregate byte span, alignment, piece `byteOffset`, and `stackOffset`
+are derived from that same physical layout. A following stack argument may not
+overlap any element slot.
+
+Padding is evidence, not a size hint: every padding span has a finite safe
+integer byte offset and size, no padding/member spans overlap, and the sorted
+member-plus-padding spans cover the aggregate exactly. Unlocated, duplicate, or
+overflowing padding is malformed evidence.
 
 ## Variadic and unknown prototype state
 
@@ -61,6 +71,14 @@ Semantic IR schema/pass versions; source prototype/type/layout evidence; summary
 digest; classifier input/evidence digest; and cancellation/deadline/budget state.
 Publication must be atomic: an invalid or incomplete replacement cannot leave a
 previous exact result visible under a new identity.
+
+Physical stack intervals are validated globally for each exact argument and
+return result. Overlap is rejected, including duplicate scalar evidence at one
+interval; the sole permitted duplicate is an explicitly identified projection
+of one canonical split aggregate. Registry-backed caches bind to the actual
+frozen plugin object and to a deterministic registry generation/classifier
+digest, so replacing a profile with the same semantic id invalidates old
+placement rules.
 
 ## State transitions
 

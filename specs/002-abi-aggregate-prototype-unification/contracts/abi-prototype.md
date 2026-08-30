@@ -22,6 +22,14 @@ Every published prototype or summary must preserve:
    dependencies;
 7. caller/callee agreement or an explicit conflict/unknown state.
 
+For forced-stack AAPCS64 HFA/HVA, the output must use one canonical physical
+element-slot layout (at least eight bytes per element, with wider element spans
+retained), expose the full aggregate span, and place the next argument after
+that span. Every padding and stack interval is finite, safe-integer, located,
+non-overlapping evidence. Duplicate scalar stack intervals invalidate the
+result; only a same-index register/stack aggregate split may be duplicated
+across its canonical projections.
+
 ## Exactness rule
 
 An exact location or prototype may be published only when the selected supported
@@ -43,6 +51,9 @@ The consumer must reject or explicitly mark stale/malformed evidence when the
 ABI identity, architecture, platform, Semantic IR version, binary/slice/function
 identity, source type/layout, or summary digest does not match. Cancellation,
 deadline, truncation, and budget exhaustion invalidate staged exact output.
+Unsafe/string/non-finite offsets and sizes, contradictory aggregate piece
+placement, and registry replacement with stale cached rules are malformed or
+stale rather than exact.
 
 ## Consumer responsibilities
 

@@ -1,10 +1,11 @@
 import { architecturePluginV2 } from '../targets/architecture/index.js';
 import {
   resolveABIPlugin, isRegisteredABIPlugin, abiPluginRegistryDigest,
+  abiPluginRegistryGeneration,
 } from '../targets/abi/index.js';
 import {
   abiInvalidState, abiResultInvalidState, canonicalAbiEvidence, canonicalAbiHiddenResult,
-  normalizeAbiPieces,
+  normalizeAbiPieces, abiPhysicalIntervalsValid,
 } from '../targets/abi/evidence.js';
 import { buildSemanticV2CompatibilityPipeline } from '../semantics/compat/index.js';
 import { decompileSemantic } from '../decompiler/semantic.js';
@@ -204,6 +205,7 @@ export function semanticAbiAdapter(abiPlugin, options = {}) {
   const plugin = abiPlugin && typeof abiPlugin === 'object' ? abiPlugin : null;
   const registryRegistered = isRegisteredABIPlugin(plugin);
   const registryDigest = registryRegistered ? abiPluginRegistryDigest(plugin) : null;
+  const registryGeneration = registryRegistered ? abiPluginRegistryGeneration(plugin) : null;
   const pluginId = String(plugin?.id || 'unknown');
   const semanticVersion = plugin?.semanticVersion == null ? null : String(plugin.semanticVersion);
   const semanticIdentity = plugin?.semanticIdentity == null ? null : String(plugin.semanticIdentity);
@@ -282,6 +284,7 @@ export function semanticAbiAdapter(abiPlugin, options = {}) {
     profileIdentity,
     abiId:pluginId,
     registryDigest,
+    registryGeneration,
     schemaVersion:schemaVersion == null ? null : String(schemaVersion),
     snapshotId:snapshotId == null ? null : String(snapshotId),
     analyzerId:analyzerId == null ? null : String(analyzerId),
@@ -295,6 +298,7 @@ export function semanticAbiAdapter(abiPlugin, options = {}) {
     source:registryRegistered ? 'canonical-abi-registry' : 'unregistered-abi-adapter',
     abiId:pluginId,
     registryDigest,
+    registryGeneration,
     semanticIdentity,
     semanticVersion,
     architectureId,
@@ -319,6 +323,7 @@ export function semanticAbiAdapter(abiPlugin, options = {}) {
     profileIdentity,
     abiId:pluginId,
     registryDigest,
+    registryGeneration,
     platformId:identity.platform,
     schemaVersion:identity.schemaVersion,
     snapshotId:identity.snapshotId,
@@ -335,9 +340,14 @@ export function semanticAbiAdapter(abiPlugin, options = {}) {
 
   function annotateCanonicalResult(result) {
     if (!result || typeof result !== 'object') return result || null;
+    const physicalEvidenceValid = abiPhysicalIntervalsValid(result);
     const annotated = {
       ...result,
       ...(supported ? {} : { status:'unsupported', completeness:'unsupported', unsupported:true }),
+      ...(!physicalEvidenceValid ? {
+        malformedEvidence:true, status:'malformed', completeness:'malformed',
+        evidence:'canonical ABI physical stack interval validation failed',
+      } : {}),
       abiId:pluginId,
       abiSemanticVersion:semanticVersion,
       abiSemanticIdentity:semanticIdentity,
@@ -512,6 +522,7 @@ export function semanticAbiAdapter(abiPlugin, options = {}) {
     profileIdentity,
     abiId:pluginId,
     registryDigest,
+    registryGeneration,
     schemaVersion:identity.schemaVersion,
     snapshotId:identity.snapshotId,
     analyzerId:identity.analyzerId,

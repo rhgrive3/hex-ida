@@ -31,8 +31,9 @@
 
 ## Notes
 
-- Validation iteration 1 passed all items; the current-main correction is
-  tracked in the plan and research ledger.
-- PR #2499 is merged and its owner collision is reconciled. Current open PRs
-  #2498/#2493 do not own this ABI surface; this does not authorize production
-  implementation before the refreshed analysis and Sol gate.
+- Validation iteration 1 passed all items; Review 1 correction requirements
+  FR-014–FR-016 and SC-010 are now recorded in `spec.md` and covered by the
+  appended implementation/convergence tasks.
+- PR #2499 is merged and its owner collision is reconciled. The requested
+  implementation base and latest-main comparison are recorded in the plan and
+  research ledger; independent review and delivery gates remain open.

@@ -50,11 +50,19 @@ function parameterAbiClass(param) {
   const homogeneousMembersMatch = !homogeneous || !!layoutEvidence
     && layoutEvidence.members.length === members
     && layoutEvidence.members.every((member) => member.bits === elementBits);
+  const homogeneousElementBytes = homogeneous && layoutEvidence?.members?.length
+    ? layoutEvidence.members[0].bytes : null;
+  const homogeneousBytesMatch = !homogeneous || !!homogeneousElementBytes
+    && layoutEvidence.members.every((member) => member.bytes === homogeneousElementBytes);
+  const homogeneousOffsetsMatch = !homogeneous || !!homogeneousElementBytes
+    && layoutEvidence.members.every((member, index) => member.byteOffset === index * homogeneousElementBytes);
   const homogeneousSizeMatches = !homogeneous || !explicitTotalBitsProven
     || (members >= 1 && elementBits > 0 && explicitBits === members * elementBits);
   const homogeneousLayoutProven = !homogeneous
     || (!!layoutEvidence && members >= 1 && members <= 4 && elementBits >= 8
-      && Number.isSafeInteger(elementBits) && homogeneousSizeMatches && homogeneousMembersMatch);
+      && Number.isSafeInteger(elementBits) && Number.isSafeInteger(homogeneousElementBytes)
+      && homogeneousSizeMatches && homogeneousMembersMatch && homogeneousBytesMatch
+      && homogeneousOffsetsMatch);
   // A plain aggregate has no ABI placement until its logical size is proven.
   // Do not let the scalar fallback below turn an un-sized struct/union into a
   // one-register exact argument.
@@ -74,7 +82,8 @@ function parameterAbiClass(param) {
   const mayContainPointers = param?.mayContainPointers === true || param?.containsPointers === true;
   return {
     pointer, hfa, hva, homogeneous, homogeneousLayoutProven, aggregateLayoutProven, vector, aggregate, fp,
-    members, elementBits, bits, wideIntegral, alignment, mayContainPointers, scalableClass,
+    members, elementBits, elementBytes:homogeneousElementBytes, bits, wideIntegral, alignment,
+    mayContainPointers, scalableClass,
   };
 }
 
@@ -141,7 +150,7 @@ export function classifyAAPCS64Arguments(insn, opts = {}) {
         regs.push(reg);
         srcs.push({t:'reg',reg,bits:c.homogeneous ? c.elementBits : c.vector ? 128 : c.bits,possible:false,mustUse:true});
       }
-      const homogeneousBytes = c.homogeneous ? Math.ceil(c.elementBits / 8) : null;
+      const homogeneousBytes = c.homogeneous ? c.elementBytes : null;
       arguments_.push({
         index,location:'register',regs,reg:regs[0],abiClass:c.hfa?'hfa':c.hva?'hva':c.vector?'vector':'fp',
         pointer:c.pointer,bits:c.bits,bytes:c.homogeneous ? homogeneousBytes * c.members : Math.ceil(c.bits / 8),
@@ -247,19 +256,27 @@ export function classifyAAPCS64Arguments(insn, opts = {}) {
     }
     const slots=Math.max(1,Math.ceil(c.bits/64));
     if (c.homogeneous && fp + regsNeeded > 8) fp = 8;
-    const homogeneousElementBytes = c.homogeneous ? Math.ceil(c.elementBits / 8) : null;
-    const stackBytes=c.homogeneous ? homogeneousElementBytes * c.members : slots * 8;
+    const homogeneousElementBytes = c.homogeneous ? c.elementBytes : null;
+    // AAPCS64 spills each homogeneous element into its own ABI stack slot.
+    // The slot is at least one 8-byte slot even when the logical element is a
+    // 32-bit HFA member; wider HVA members retain their canonical physical
+    // element span and alignment. Derive all offsets from this one layout.
+    const homogeneousStackElementBytes = c.homogeneous ? Math.max(8, homogeneousElementBytes) : null;
+    const stackBytes=c.homogeneous ? homogeneousStackElementBytes * c.members : slots * 8;
     const entry={index,location:'stack',offset:stackOffset,bytes:stackBytes,abiClass:c.hfa?'hfa':c.hva?'hva':c.vector?'vector':c.fp?'fp':c.pointer?'pointer':'integer',pointer:c.pointer,bits:c.bits,possible:false,mustUse:true,
       ...(c.homogeneous ? {
         aggregate:true, members:c.members, memberCount:c.members, elementBits:c.elementBits,
-        elementBytes:Math.ceil(c.elementBits/8), homogeneousLayoutProven:true,
+        elementBytes:homogeneousElementBytes, stackElementBytes:homogeneousStackElementBytes,
+        homogeneousLayoutProven:true,
         pieces:Array.from({length:c.members}, (_unused,piece) => ({
-          pieceIndex:piece, order:piece, stackOffset:stackOffset + piece*8,
-          bits:c.elementBits, bytes:homogeneousElementBytes, byteOffset:piece*homogeneousElementBytes, abiClass:c.hfa?'hfa':'hva',
+          pieceIndex:piece, order:piece,
+          stackOffset:stackOffset + piece * homogeneousStackElementBytes,
+          bits:c.elementBits, bytes:homogeneousStackElementBytes,
+          byteOffset:piece * homogeneousStackElementBytes, abiClass:c.hfa?'hfa':'hva',
         })),
       } : {}),
     };
-    stackArguments.push(entry);arguments_.push(entry);stackOffset+=slots*8;
+    stackArguments.push(entry);arguments_.push(entry);stackOffset+=stackBytes;
     if(c.pointer || c.mayContainPointers) stackArgsMayContainPointers=true;
   });
 
