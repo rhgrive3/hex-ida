@@ -1,6 +1,6 @@
 # HEX-C3-02 Research Record
 
-**Historical base**: `8a614ccd0184d6c25257c25d930b68af7e9ac81f`  
+**Historical base**: `8a614ccd0184d6c25257c25d930b68af7e9ac81f`
 **Current pre-implementation base**: `390741dcf6f8d391017b7f1ba224e35b49b973d3`
 
 The final pre-edit reconciliation advanced the implementation branch to live
@@ -276,6 +276,29 @@ CONVERGENCE_RESULT: CLEAN (implementation scope accounted for; no generated task
 The full phase5/phase6 failures are environment/toolchain gates with
 `P5_6_TOOLCHAIN_MISMATCH`/`P6_TOOLCHAIN_MISMATCH`, not failures in the changed
 ABI/decompiler suites. No generated artifact input was changed.
+
+## Review 1 correction refresh (implementation owner)
+
+The worktree was refreshed from live `origin/main` at
+`4900032916b6b5ba3171e73d1d1cccc2a0d45067` before applying the Review 1
+corrections. The correction set adds permanent regressions and fail-closed
+paths for unproven aggregate size/member layout on AAPCS64, Darwin arm64, and
+RISC-V LP64-family profiles; rejects partial and budget-limited hidden sret
+evidence; validates aggregate argument byte spans/classes/order at the
+compatibility boundary; requires an explicit Darwin platform identity; and
+preserves known variadic fixed prefixes while keeping anonymous candidates
+uncertain. The Spec Kit feature resolver was exercised through both
+`.specify/feature.json` and `SPECIFY_FEATURE_DIRECTORY`; both resolved the same
+absolute feature directory without changing the ledger. Trailing whitespace in
+the ABI checklist and research header was removed. Review and delivery tasks
+remain open for their independent gates.
+
+```text
+REFRESHED_LIVE_MAIN_SHA: 4900032916b6b5ba3171e73d1d1cccc2a0d45067
+CORRECTION_TEST_COMMAND: node --test tests/phase8/abi/hex-c3-02-boundaries.test.mjs tests/phase8/abi/hex-c3-02-profile-matrix.test.mjs
+CORRECTION_TEST_RESULT: PASS (38 tests)
+LOCKED_PROFILE_MATRIX_RESULT: PASS (66/66 rows)
+```
 
 ## Alternatives rejected
 

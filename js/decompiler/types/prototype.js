@@ -376,7 +376,11 @@ function classifyArguments(ctx, functionPrototype) {
       .some((field) => Array.isArray(functionPrototype?.[field]));
     const uncertainUnknownPrototype = classified?.partial === true
       && classified?.unsupported !== true && !hasParameterList;
-    if (!classified || (state && !uncertainUnknownPrototype) || classified.unsupported === true) {
+    const knownVariadicPartial = classified?.partial === true
+      && classified?.unsupported !== true && hasParameterList
+      && (functionPrototype?.variadic === true || functionPrototype?.varargs === true)
+      && state === 'partial';
+    if (!classified || (state && !uncertainUnknownPrototype && !knownVariadicPartial) || classified.unsupported === true) {
       ctx.classifierState ||= state || (classified?.unsupported === true ? 'unsupported' : 'unknown');
       return null;
     }
@@ -810,7 +814,7 @@ function classifyReturn(ctx, ret, opts = {}) {
 function hiddenResultRegisterFrom(classified, ctx) {
   const hidden = classified?.hiddenResultPointer;
   const raw = typeof hidden === 'object' ? hidden.input : null;
-  if (classified?.indirect !== true || classified?.resultLocation !== 'memory'
+  if (abiResultInvalidState(classified) || classified?.indirect !== true || classified?.resultLocation !== 'memory'
     || !raw || typeof raw !== 'string'
     || !canonicalAbiHiddenResult(classified, hidden)) return null;
   return ctx.canonical(raw);
@@ -1013,7 +1017,10 @@ export function recoverFunctionPrototype(ir, types, opts = {}) {
     status:ctx.status,
     provenance:'canonical-abi-registry',
   } : null;
-  const anonymousArgumentFrontier = opts.variadic === true && ctx.supported ? {
+  const sourcePrototype = opts.functionPrototype || opts.prototype || null;
+  const variadic = opts.variadic === true || opts.varargs === true
+    || sourcePrototype?.variadic === true || sourcePrototype?.varargs === true;
+  const anonymousArgumentFrontier = variadic && ctx.supported ? {
     location:'unknown', possible:true, mustUse:false,
     reason:'anonymous-vararg-frontier-not-source-prototyped',
   } : null;
@@ -1027,7 +1034,7 @@ export function recoverFunctionPrototype(ir, types, opts = {}) {
     returnLocationKnown:conventionKnown && locations.length > 0,
     indirectResult:indirectRegister != null,
     indirectResultRegister:indirectRegister,
-    variadic:opts.variadic === true,
+    variadic,
     anonymousArgumentFrontier,
     completeness:status,
     abiSemanticIdentity:conventionKnown ? ctx.identity?.semanticIdentity ?? null : null,

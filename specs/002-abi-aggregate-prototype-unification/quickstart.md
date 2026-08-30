@@ -41,7 +41,7 @@ The implementation proof additionally runs:
 node --test tests/phase8/abi/hex-c3-02-boundaries.test.mjs tests/phase8/abi/hex-c3-02-profile-matrix.test.mjs
 ```
 
-Expected result: 33 passing tests. The locked matrix remains `66 PASS, 0 FAIL`.
+Expected result: 38 passing tests. The locked matrix remains `66 PASS, 0 FAIL`.
 
 ## Profile and subsystem gates
 

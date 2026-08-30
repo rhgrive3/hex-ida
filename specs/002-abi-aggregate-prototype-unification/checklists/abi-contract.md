@@ -1,8 +1,8 @@
 # HEX-C3-02 Delivery Checklist
 
-**Feature**: [spec.md](../spec.md)  
-**Plan**: [plan.md](../plan.md)  
-**Owner**: Luna C3-02  
+**Feature**: [spec.md](../spec.md)
+**Plan**: [plan.md](../plan.md)
+**Owner**: Luna C3-02
 **Status**: pre-implementation; current-main correction is recorded, and the
 production gate awaits refreshed `ANALYZE=CLEAN` plus Sol approval
 
