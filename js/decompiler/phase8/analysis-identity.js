@@ -508,10 +508,15 @@ function sourceIsBoundToShape(source, identity, shapeDigest, shape) {
       functionId: identity.functionId,
       shapeDigest,
     })}`;
-    const expectedSsa = `ssa:${stableDigest({ semanticIrId: expectedSemantic, values: shape.values })}`;
+    const expectedSsa = `ssa:${ssaIdentityDigest(expectedSemantic, shape.values)}`;
     if (suppliedSsa !== expectedSsa) return false;
   }
   return true;
+}
+
+function ssaIdentityDigest(semanticIrId, values) {
+  try { return fastJsonGraphDigest({ semanticIrId, values }); }
+  catch { return stableDigest({ semanticIrId, values }); }
 }
 
 export function isValidatedAnalysisIdentity(identity) {
@@ -565,7 +570,7 @@ export function canonicalAnalysisIdentity(context = {}) {
   const semanticIrId = field(source, 'semanticIrId', 'semanticIRId') ?? field(ir, 'semanticIrId', 'semanticIRId')
     ?? `semantic-ir:${stableDigest({ snapshotId, functionId, shapeDigest })}`;
   const ssaId = field(source, 'ssaId') ?? field(ir, 'ssaId')
-    ?? `ssa:${stableDigest({ semanticIrId, values: shape.values })}`;
+    ?? `ssa:${ssaIdentityDigest(semanticIrId, shape.values)}`;
   const analyzerVersion = field(source, 'analyzerVersion', 'semanticSchemaVersion')
     ?? field(ir, 'analyzerVersion', 'semanticSchemaVersion') ?? 'phase8-analysis-v1';
   const identity = Object.freeze({ binaryId, functionId, snapshotId, semanticIrId, ssaId, analyzerVersion });
