@@ -1,0 +1,28 @@
+name: Temporary ARM64 sysreg text coercion probe
+on:
+  push:
+    branches: [audit/arm64-sysreg-text-coercion-probe]
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Probe public MRS/MSR path
+        run: |
+          node --input-type=module <<'EOF'
+          import assert from 'node:assert/strict';
+          import { liftArm64MachineEffects } from './js/targets/architecture/arm64/effects/index.js';
+          let seq=0;
+          const gp=(num)=>({k:'reg',cls:'gp',num,bits:64,text:`x${num}`});
+          const lift=(mnemonic,ops)=>liftArm64MachineEffects({instructionId:`sysreg-probe:${++seq}`,mnemonic,mode:'a64',ops,origin:{instructionIds:[`sysreg-probe:${seq}`]}});
+          const objectText={toString(){return 'nzcv';}};
+          const mrs=lift('mrs',[gp(0),{k:'sysreg',text:objectText}]);
+          const msr=lift('msr',[{k:'sysreg',text:objectText},gp(0)]);
+          assert.ok(mrs && mrs.completeness !== 'partial' && mrs.operations.some(op=>op.kind!=='unknown'),'object sysreg text currently promoted in MRS');
+          assert.ok(msr && msr.completeness !== 'partial' && msr.operations.some(op=>op.kind!=='unknown'),'object sysreg text currently promoted in MSR');
+          console.log('ARM64 sysreg object-text coercion reproduced');
+          EOF
