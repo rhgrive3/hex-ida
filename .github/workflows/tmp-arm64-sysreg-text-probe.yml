@@ -26,3 +26,4 @@ jobs:
           assert.ok(msr && msr.completeness !== 'partial' && msr.operations.some(op=>op.kind!=='unknown'),'object sysreg text currently promoted in MSR');
           console.log('ARM64 sysreg object-text coercion reproduced');
           EOF
+          # trigger-v2
