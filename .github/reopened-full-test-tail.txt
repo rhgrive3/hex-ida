@@ -1,0 +1,200 @@
+ok    phone code hides bytes only in ASM mode
+ok    decompiler supports local horizontal scrolling/wrap
+ok    graphs include a text representation style
+ok    touch targets use the shared 44px token
+ok    reduced motion is supported
+Product UI architecture regression checks passed
+issues #2511/#2514/#2526/#2533/#2539/#2542/#2544/#2548/#2551/#2555 regressions passed
+close-audit #2520/#2528/#2530/#2543/#2545 regression tests passed
+Issue #2627, #2628, #2629 regression tests PASS!
+Issue #2623, #2621, #2630 regression tests PASS!
+Issue #2630 PE TLS zero-fill callback test PASS!
+Issue #2614, #2618 regression tests PASS!
+Issues #2570, #2571, #2573, #2574, #2576 regression tests PASS!
+Issues #2615, #2616, #2617 regression tests PASS!
+Issues #2613, #2612, #2609, #2600 regression tests PASS!
+issue-2594-showdetail-variable-width: PASS
+issue-2601-pinpoint-architecture-query: PASS
+issue-2596 variable-width range-copy regression passed
+ok    all canonical route ids are present
+ok    each route has a screen kind
+ok    each primary nav destination resolves
+ok    no duplicate primary route id
+ok    investigate is the first primary task
+ok    tools are not a primary task
+ok    explorer scope functions resolves
+ok    explorer scope strings resolves
+ok    explorer scope classes resolves
+ok    explorer scope data resolves
+ok    explorer scope external resolves
+ok    explorer scope sections resolves
+ok    function tab overview resolves
+ok    function tab pseudocode resolves
+ok    function tab flow resolves
+ok    function tab calls resolves
+ok    function tab evidence resolves
+ok    function tab runtime resolves
+ok    finding detail route resolves with id param
+ok    audited legacy inventory contains 54 exported screens
+ok    migration table contains exactly the audited 54 screens
+ok    every audited legacy screen has a migration disposition
+ok    migration table has no un-audited screen names
+ok    migration table has only explicit dispositions
+ok    render failure returns false without committing history
+ok    render failure preserves route and back depth
+Canonical route manifest checks passed
+ui-integration-hardening: PASS
+
+> ai:test
+> node tests/ai-tool-registry-module-boundary.mjs && npm run dev-agent:test && node tests/ai-analysis-boundary.mjs && node tests/ai-quota.mjs && node tests/ai-worker.mjs && node tests/ai-prompt-compose.mjs && node tests/ai-ui-mode.mjs && node tests/ai-ui-conversations.mjs && node tests/ai-ui-evidence.mjs && node tests/issue-467-ai-context.mjs && node tests/ai-control-plane.mjs && node tests/ai-scope-hardening.mjs && node tests/ai-chatgpt-web-provider.mjs && node tests/chatgpt-web-runtime.mjs && node tests/chatgpt-new-chat-routing.mjs && node tests/chatgpt-web-agent-loop.mjs && node tests/chatgpt-web-production-dom.mjs && node tests/ai-conversation-routing.mjs && node tests/agent-capability-plane.mjs
+
+Testing AI Tool Registry Module Boundary...
+  ok 1 public export identity
+  ok 2 direct core export identity
+  ok 3 built-in factory compatibility
+  ok 4 tool-name surface unchanged
+  ok 5 representative definition lock
+  ok 6 schema builder exactness
+  ok 7 validation behavior unchanged
+  ok 8 scope behavior unchanged
+  ok 9 observer/activity behavior unchanged
+  ok 10 cache/accounting behavior unchanged
+  ok 11 failure normalization unchanged
+  ok 12 abort normalization unchanged
+  ok 13 static dependency guard passed
+All AI Tool Registry module boundary tests PASS!
+
+> dev-agent:test
+> node tests/dev-agent/round1-foundation.mjs && node tests/dev-agent/round2-single-worker.mjs && node tests/dev-agent/round2-single-tab-supervisor.mjs && node tests/dev-agent/supervisor-conversation-continuity.mjs && node tests/dev-agent/pool-completion-event-resume.mjs && node tests/dev-agent/task-graph-completion-event-resume.mjs && node tests/dev-agent/pool-followup-completion-resume.mjs && node tests/dev-agent/iframe-worker-pool.mjs && node tests/dev-agent/iframe-worker-pool-cancellation.mjs && node tests/dev-agent/dynamic-task-graph.mjs && node tests/dev-agent/dynamic-task-graph-ready-trace.mjs && node tests/dev-agent/worker-submission-ownership.mjs && node tests/dev-agent/generated-output-policy.mjs && node tests/dev-agent/tool-contract-parity.mjs && node tests/dev-agent/observation-batch.mjs && node tests/dev-agent/context-contracts.mjs && node tests/dev-agent/context-selection.mjs && node tests/dev-agent/supervisor-prompt-modes.mjs && node tests/dev-agent/continuation-structured-completion.mjs
+
+Dev Agent Seed Round 4 bootstrap gate tests passed
+ok    dev-profile-admin-visibility
+ok    dev-policy-normal-yolo
+ok    dev-analysis-scope-none
+ok    dev-supervisor-protocol
+ok    dev-run-state
+ok    dev-profile-engine-isolation
+ok    standard-agent-policy-isolation
+ok    standard-agent-scope-regression
+
+dev-agent round1 foundation: PASS
+Round 2 protected Dev Worker tests passed
+Round 2 single-tab Supervisor loop passed
+dev-agent supervisor conversation continuity: ok
+Dev Supervisor tool error recovery: ok
+Dev self-update activation gate: ok
+pool completion event resume regression: ok
+task graph completion event resume regression: ok
+pool followup completion resume regression: ok
+iframe worker pool: ok
+iframe worker pool cancellation: ok
+dynamic task graph: ok
+dynamic task graph READY trace: ok
+Worker submission ownership regression passed
+generated output policy: ok
+dev tool contract parity: ok
+dev observation batch: ok
+dev context contracts: ok
+dev context selection: ok
+dev supervisor prompt modes: ok
+dev supervisor continuation structured completion: ok
+ai semantic analysis boundary regressions: PASS
+ai QueryAPI authority cutover regressions: PASS
+[ai-quota] acquire failed { message: 'namespace unavailable' }
+issues #469-#470 distributed AI quota regressions PASS
+ai-worker: PASS
+ok    core rules are always present
+ok    chat and agent modes contribute different instructions
+ok    beginner and analyst styles contribute different instructions
+ok    unknown mode, style and scope fall back instead of leaking through
+ok    every scope states its boundary
+ok    the workbench block is labelled as state, not as a result
+ok    workbench and intent values cannot terminate prompt delimiters
+ok    an empty workbench contributes no block at all
+ok    task detection covers the documented intents
+ok    a bare "explain" follows the current selection
+ok    an unclassifiable question adds no task hint
+ok    every task id has a hint and every hint has an id
+ok    a forced task overrides detection
+ok    compact guidance drops the core prompt but keeps per-turn parts
+ok    composition is deterministic
+ok    modes and styles are the two documented pairs
+
+ai-prompt-compose: PASS
+ok    a turn records the mode, style and resolved scope it ran under
+ok    activity events reach the turn
+ok    mode and style changes do not rewrite finished turns
+ok    cancel stops the turn and clears busy
+ok    an engine failure becomes an error turn, not a rejection
+ok    retry replaces the failed exchange instead of stacking it
+ok    an empty question is ignored and a second question is refused while busy
+ok    history stays bounded and text-only
+ok    the transcript is trimmed to its cap
+ok    Auto resolves to the narrowest usable scope
+ok    mode, style and scope vocabularies are labelled in both languages
+ok    the omnibox classifies each documented input shape
+ok    the omnibox strips its prefixes and resolves known commands
+ok    every intent has a label the user can read before pressing Enter
+
+ai-ui-mode: PASS
+ok    the flat session API keeps working on top of conversations
+ok    New chat keeps the old transcript and starts an empty one
+ok    New chat inherits how the user works, not what was asked
+ok    an untouched blank chat is not duplicated
+ok    A to B to A keeps both transcripts apart
+ok    conversation ids are unique and stable
+ok    the first question titles the chat, without an LLM call
+ok    rename replaces the derived title
+ok    delete removes one chat and never leaves the session empty
+ok    a running turn blocks New chat, switching and delete
+ok    an answer lands in the chat it was asked in
+ok    engine.run receives the conversation id and the model selection
+ok    history is restored per binary and never mixes two binaries
+ok    a restored transcript carries text, not evidence or binary data
+ok    a binary switch swaps the visible history in place
+ok    capabilities normalize from whatever shape the engine advertises
+ok    with no capability API the picker still offers the hosts Hex can use
+ok    the chip names the model, and never renames an unavailable one
+ok    picking a provider takes its default model and drops a foreign one
+ok    the capability API is feature detected, on the engine or globally
+
+all conversation UI checks passed
+ok    a core result normalizes without loss
+ok    unknown top-level fields are reported, not dropped in silence
+ok    every status the core can emit maps to a UI state with a word and a glyph
+ok    every action kind the core can emit is renderable
+ok    an unknown or unaddressed action is refused rather than rendered dead
+ok    evidence and hypotheses survive a schema that only sends strings
+ok    a non-object response still produces an answer
+ok    answer prose parses into blocks without executing markup
+ok    a percentage is shown only for a fused probability
+ok    addresses normalize to one canonical form
+ok    repeated activity labels collapse into one row
+ok    a large evidence list is carried whole but stays addressable
+ok    an error result keeps its message
+
+ai-ui-evidence: PASS
+issue #467 AI assembly completeness regressions PASS
+ai-control-plane: PASS
+ai-scope-hardening: PASS
+ai-chatgpt-web-provider: ok
+chatgpt-web-runtime: ok
+chatgpt-new-chat-routing: ok
+chatgpt-web-agent-loop: ok
+node:internal/modules/package_json_reader:314
+  throw new ERR_MODULE_NOT_FOUND(packageName, fileURLToPath(base), null);
+        ^
+
+Error [ERR_MODULE_NOT_FOUND]: Cannot find package 'esbuild' imported from /home/runner/work/hex-ida/hex-ida/tests/chatgpt-web-production-dom.mjs
+    at Object.getPackageJSONURL (node:internal/modules/package_json_reader:314:9)
+    at packageResolve (node:internal/modules/esm/resolve:768:81)
+    at moduleResolve (node:internal/modules/esm/resolve:855:18)
+    at defaultResolve (node:internal/modules/esm/resolve:985:11)
+    at #cachedDefaultResolve (node:internal/modules/esm/loader:747:20)
+    at ModuleLoader.resolve (node:internal/modules/esm/loader:724:38)
+    at ModuleLoader.getModuleJobForImport (node:internal/modules/esm/loader:320:38)
+    at ModuleJob._link (node:internal/modules/esm/module_job:182:49) {
+  code: 'ERR_MODULE_NOT_FOUND'
+}
+
+Node.js v22.23.2
