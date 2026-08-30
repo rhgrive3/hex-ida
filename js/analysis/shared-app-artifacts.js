@@ -175,7 +175,7 @@ async function accumulateGlobalRefs(counts, scan, ranges, { signal = null, yield
   }
   return count;
 }
-function statsFor(program, counts, scannedRefs) {
+function statsFor(program, counts, scannedRefs, metadata = {}) {
   const graph = program?.graphCompleteness;
   const complete = !!program && program.unsupported !== true && program.refsCapped !== true && program.completeness?.complete !== false && graph?.refsComplete !== false;
   return Object.freeze({
@@ -184,6 +184,8 @@ function statsFor(program, counts, scannedRefs) {
     complete,
     reason:complete ? null : (program?.queryIncompleteReason || graph?.reasons?.[0] || (program?.refsCapped ? 'refs-source-capped' : 'program-analysis-incomplete')),
     producer:'program-region-ref-aggregate/v1',
+    producerPriority:metadata.priority ?? 'user-visible',
+    producerBudgetSupplied:metadata.budget != null,
   });
 }
 
@@ -319,9 +321,7 @@ function createProgramEntry(app, key, regions, initialOptions = {}) {
     if (epoch !== epochOf(app)) throw Object.assign(new Error('stale shared program'), { stale:true });
     const merged = mergeProgramScans(scans, { regions, reasons:failures, limits:PROGRAM_MERGE_LIMITS });
     const program = new ProgramIndex(merged, app.symbols, primary);
-    const stats = statsFor(program, counts, scannedRefs);
-    Object.defineProperty(stats, 'producerPriority', { value:entry.producerOptions.priority, enumerable:true });
-    Object.defineProperty(stats, 'producerBudgetSupplied', { value:entry.producerOptions.budget != null, enumerable:true });
+    const stats = statsFor(program, counts, scannedRefs, entry.producerOptions);
     Object.defineProperty(program, 'globalReferenceStats', { value:stats, enumerable:false, configurable:true });
     Object.defineProperty(merged, 'globalReferenceStats', { value:stats, enumerable:false, configurable:true });
     app.programScan = merged;
