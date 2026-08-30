@@ -322,7 +322,7 @@ withTempDir((temp) => {
     const result = await runQuietCommand({
       label: "agent-test",
       command: process.execPath,
-      args: ["-e", "for(let i=0;i<3000;i++) console.log('line-'+i); console.error('fatal-marker'); process.exit(7)"],
+      args: ["-e", "for(let i=0;i<3000;i++) console.log('line-'+i); console.error('fatal-marker'); process.exitCode = 7"],
       env: { ...process.env, HEX_TEST_OUTPUT: "quiet" },
       stdout: stdout.stream,
       stderr: stderr.stream,

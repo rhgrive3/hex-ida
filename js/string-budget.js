@@ -6,9 +6,9 @@ export const STRING_SCAN_BUDGET = Object.freeze({
 
 export class StringCollectionBudget {
   constructor(config = STRING_SCAN_BUDGET) {
-    const inputBytes = Number(config.inputBytes);
-    const resultLimit = Number(config.resultLimit);
-    const estimatedHeapBytes = Number(config.estimatedHeapBytes);
+    const inputBytes = typeof config.inputBytes === 'number' ? config.inputBytes : NaN;
+    const resultLimit = typeof config.resultLimit === 'number' ? config.resultLimit : NaN;
+    const estimatedHeapBytes = typeof config.estimatedHeapBytes === 'number' ? config.estimatedHeapBytes : NaN;
     this.inputRemaining = Number.isFinite(inputBytes) ? Math.max(0, inputBytes) : 0;
     this.resultLimit = Number.isFinite(resultLimit) ? Math.max(1, Math.floor(resultLimit)) : 1;
     this.heapLimit = Number.isFinite(estimatedHeapBytes) ? Math.max(1, estimatedHeapBytes) : 1;
@@ -19,7 +19,7 @@ export class StringCollectionBudget {
 
   requestBytes(size) {
     if (this.inputRemaining <= 0) return 0;
-    const requested = Number(size);
+    const requested = typeof size === 'number' ? size : NaN;
     const n = Number.isFinite(requested)
       ? Math.min(this.inputRemaining, Math.max(0, requested))
       : 0;
