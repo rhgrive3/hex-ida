@@ -15,6 +15,8 @@ import {
   canonicalAccessBindingDigest,
   canonicalAccessProofDigest,
   canonicalAliasProofDigest,
+  canonicalMemorySsaProducerBinding,
+  canonicalMemorySsaIdentityBinding,
   canonicalMemorySsaDigest,
   canonicalStoreValueProofDigest,
 } from './proof.js';
@@ -99,6 +101,13 @@ const MEMORY_BARRIER_KINDS = new Set([
   'memory-phi',
 ]);
 
+// A fact is issued for this precise semantic purpose.  Downstream gates pass
+// the same context together with the load identity; a fact copied to another
+// load, snapshot, artifact, or consumer therefore cannot be replayed merely by
+// matching its serialized shape.
+export const CANONICAL_MEMORY_FORWARDING_CONSUMER = 'semantic-memoryssa-forwarding';
+export const CANONICAL_MEMORY_FORWARDING_PURPOSE = 'canonical-load-value';
+
 class ForwardingStop extends Error {
   constructor(status, reason, detail = null) {
     super(reason);
@@ -116,6 +125,75 @@ const forwardingFactBindings = new WeakMap();
 
 function forwardingObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+}
+
+function forwardingContextObject(value) {
+  if (!forwardingObject(value)) return null;
+  const nested = forwardingObject(value.load) ?? value;
+  const range = nested.loadRange ?? nested.range ?? value.loadRange ?? value.range ?? null;
+  return {
+    artifact: value.artifact ?? null,
+    artifactDigest: value.artifactDigest ?? value.artifact?.canonicalDigest ?? null,
+    snapshotId: value.snapshotId ?? null,
+    useId: nested.useId ?? value.useId ?? null,
+    sourceEntityId: nested.sourceEntityId ?? value.sourceEntityId ?? null,
+    nodeId: nested.nodeId ?? value.nodeId ?? null,
+    entityId: nested.entityId ?? value.entityId ?? null,
+    regionId: nested.regionId ?? value.regionId ?? null,
+    range,
+    consumerId: value.consumerId ?? null,
+    purpose: value.purpose ?? null,
+  };
+}
+
+/*
+ * Build the explicit context expected by an exact downstream gate.  The load
+ * identity fields are intentionally not inferred from the fact: a caller must
+ * supply the identity of the load it is about to consume.  This is what makes
+ * cross-load and cross-consumer replay fail closed.
+ */
+export function canonicalMemoryForwardingContext(fact, context = {}) {
+  const expected = forwardingContextObject(context) ?? {};
+  return Object.freeze({
+    artifact: expected.artifact ?? null,
+    artifactDigest: expected.artifactDigest ?? fact?.artifactDigest ?? null,
+    snapshotId: expected.snapshotId ?? fact?.snapshotId ?? null,
+    useId: expected.useId ?? null,
+    sourceEntityId: expected.sourceEntityId ?? null,
+    nodeId: expected.nodeId ?? null,
+    entityId: expected.entityId ?? null,
+    regionId: expected.regionId ?? null,
+    range: expected.range ?? null,
+    consumerId: expected.consumerId ?? null,
+    purpose: expected.purpose ?? null,
+  });
+}
+
+/* Convenience for consumers that retain the projected load instruction.  The
+ * instruction contributes the caller-owned node/source identity; artifact,
+ * use, range, and capability purpose still come from the independently
+ * produced fact and are checked by the gate. */
+export function canonicalMemoryForwardingContextForLoad(fact, load, context = {}) {
+  const sourceEntityId = context.sourceEntityId
+    ?? load?.semanticNodeId
+    ?? load?.sourceEntityId
+    ?? load?.extra?.semanticNodeId
+    ?? load?.extra?.sourceEntityId
+    ?? null;
+  return canonicalMemoryForwardingContext(fact, {
+    ...context,
+    useId: context.useId ?? fact?.useId,
+    sourceEntityId,
+    nodeId: context.nodeId ?? load?.semanticNodeId ?? load?.sourceEntityId
+      ?? load?.extra?.semanticNodeId ?? load?.extra?.sourceEntityId ?? null,
+    entityId: context.entityId ?? fact?.loadEntityId,
+    regionId: context.regionId ?? fact?.loadRegionId,
+    range: context.range ?? fact?.loadRange,
+    artifactDigest: context.artifactDigest ?? fact?.artifactDigest,
+    snapshotId: context.snapshotId ?? fact?.snapshotId,
+    consumerId: context.consumerId ?? CANONICAL_MEMORY_FORWARDING_CONSUMER,
+    purpose: context.purpose ?? CANONICAL_MEMORY_FORWARDING_PURPOSE,
+  });
 }
 
 function forwardingBigInt(value) {
@@ -634,7 +712,16 @@ function forwardingValueFromRaw(raw) {
 
 function forwardingValueForDefinition(definition, metadata, memorySsa, options) {
   const proof = metadata?.canonicalValue;
-  const parsedValue = forwardingValueFromRaw(proof?.value);
+  const valueKind = String(proof?.valueKind ?? '');
+  const hasOwnValue = forwardingObject(proof) && Object.hasOwn(proof, 'value');
+  // Never read a value through the prototype chain.  Bitvector proofs are
+  // canonical primitive decimal strings; address proofs are identity-only.
+  let parsedValue = null;
+  if (valueKind === 'bitvector' && hasOwnValue
+      && typeof proof.value === 'string'
+      && /^(?:0|[1-9][0-9]*)$/.test(proof.value)) {
+    try { parsedValue = BigInt(proof.value); } catch { parsedValue = null; }
+  }
   if (!forwardingObject(proof)
       || proof.kind !== 'canonical-semantic-store-operand'
       || String(proof.version ?? '') !== MEMORY_SSA_PROOF_VERSION
@@ -648,14 +735,12 @@ function forwardingValueForDefinition(definition, metadata, memorySsa, options) 
       || String(proof.issuer.id ?? '') !== CANONICAL_STORE_VALUE_ISSUER
       || proof.issuer.version !== MEMORY_SSA_PROOF_VERSION
       || !proof.semanticValueDigest
-      || !['address', 'bitvector'].includes(String(proof.valueKind ?? ''))
-      // Address operands are identity-only.  Read the candidate before this
-      // check, so an inherited/prototype `value` cannot be reinterpreted as a
-      // numeric byte constant at the query boundary.
-      || (String(proof.valueKind) === 'address'
-        && (Object.hasOwn(proof, 'value') || parsedValue != null))
-      || (Object.hasOwn(proof, 'value') && parsedValue == null)
-      || (parsedValue == null && String(proof.valueKind) !== 'address')
+      || !['address', 'bitvector'].includes(valueKind)
+      // Address operands are identity-only.  An inherited value is rejected
+      // by the own-property proof below just as an own numeric value is.
+      || (valueKind === 'address' && hasOwnValue)
+      || (valueKind === 'bitvector' && (!hasOwnValue || parsedValue == null
+        || parsedValue.toString() !== proof.value))
       || String(proof.proofDigest ?? '') !== canonicalStoreValueProofDigest(proof)
       || Number(proof.widthBits) !== forwardingWidthBits(metadata.memory)) {
     throw new ForwardingStop('unknown', 'memory-forwarding-store-canonical-value-unproven');
@@ -809,6 +894,10 @@ function forwardingStatusFromArtifact(memorySsa, options) {
   }
   const artifact = forwardingObject(memorySsa);
   if (!artifact) throw new ForwardingStop('unknown', 'memoryssa-artifact-missing');
+  if (options.consumerId !== CANONICAL_MEMORY_FORWARDING_CONSUMER
+      || options.purpose !== CANONICAL_MEMORY_FORWARDING_PURPOSE) {
+    throw new ForwardingStop('unsupported', 'memory-forwarding-consumer-context-invalid');
+  }
   if (options.skipValidation === true) {
     throw new ForwardingStop('unsupported', 'memory-forwarding-validation-bypass-forbidden');
   }
@@ -923,16 +1012,23 @@ function forwardingStatusFromArtifact(memorySsa, options) {
       throw new ForwardingStop('stale', 'memoryssa-canonical-ir-identity-mismatch');
     }
   }
-  if (options.identity != null && stableDigest(artifact.identity ?? null) !== stableDigest(options.identity)) {
-    throw new ForwardingStop('stale', 'memoryssa-identity-mismatch');
-  }
-  if (artifact.identity != null && options.expectedIdentity != null
-      && stableDigest(artifact.identity) !== stableDigest(options.expectedIdentity)) {
-    throw new ForwardingStop('stale', 'memoryssa-identity-mismatch');
-  }
   if (typeof artifact.canonicalDigest !== 'string' || !artifact.canonicalDigest.trim()
       || artifact.canonicalDigest !== canonicalMemorySsaDigest(artifact)) {
     throw new ForwardingStop('stale', 'memoryssa-canonical-digest-mismatch');
+  }
+  // The artifact's serialized identity is not an authority for itself. Exact
+  // publication requires a producer-issued artifact token plus a separately
+  // supplied current identity token. A caller passing a re-signed clone's own
+  // identity has neither token and is rejected even if every digest agrees.
+  const producerBinding = canonicalMemorySsaProducerBinding(artifact);
+  const currentIdentity = options.currentIdentity;
+  const identityBinding = canonicalMemorySsaIdentityBinding(currentIdentity);
+  if (!producerBinding || producerBinding.artifact !== artifact) {
+    throw new ForwardingStop('stale', 'memoryssa-independent-producer-identity-unavailable');
+  }
+  if (!identityBinding || identityBinding.identityDigest !== producerBinding.identityDigest
+      || stableDigest(currentIdentity) !== stableDigest(artifact.identity)) {
+    throw new ForwardingStop('stale', 'memoryssa-independent-current-identity-mismatch');
   }
 }
 
@@ -1200,7 +1296,9 @@ function forwardingIdentity(memorySsa, use, loadMeta, winners, stores, coverage,
         order: winner.order,
         sourceEntityId: winner.definition.sourceEntityId,
       })),
-      optionsIdentity: options.identity ?? options.expectedIdentity ?? null,
+      optionsIdentity: options.currentIdentity ?? null,
+      consumerId: options.consumerId ?? null,
+      purpose: options.purpose ?? null,
       canonicalIrDigest: options.ir == null ? null : stableDigest(options.ir),
     }),
     functionId: memorySsa.functionId,
@@ -1219,6 +1317,19 @@ function forwardingResult(status, reason, details = {}) {
   });
 }
 
+function forwardingCapabilityDetails(artifact, use, context, options) {
+  return {
+    useId: String(use.id),
+    loadSourceEntityId: String(use.sourceEntityId ?? ''),
+    loadNodeId: String(context.useMeta?.nodeId ?? use.sourceEntityId ?? ''),
+    loadEntityId: String(context.useMeta?.memorySsaEntityId ?? use.id),
+    loadRegionId: String(use.regionId ?? ''),
+    snapshotId: artifact.snapshotId == null ? null : String(artifact.snapshotId),
+    consumerId: options.consumerId,
+    purpose: options.purpose,
+  };
+}
+
 function forwardingRegisterExactFact(fact, artifact, use, context) {
   if (!forwardingObject(fact) || !forwardingObject(artifact) || !forwardingObject(use) || !context) return fact;
   forwardingFactBindings.set(fact, Object.freeze({
@@ -1228,6 +1339,11 @@ function forwardingRegisterExactFact(fact, artifact, use, context) {
     snapshotId: String(artifact.snapshotId ?? ''),
     artifactDigest: String(fact.artifactDigest ?? ''),
     identityDigest: String(fact.identity?.digest ?? ''),
+    nodeId: String(context.useMeta?.nodeId ?? use.sourceEntityId ?? ''),
+    entityId: String(context.useMeta?.memorySsaEntityId ?? use.id),
+    regionId: String(use.regionId ?? ''),
+    consumerId: String(fact.consumerId ?? ''),
+    purpose: String(fact.purpose ?? ''),
     loadRange: {
       domain: String(context.loadRange?.domain ?? ''),
       start: context.loadRange?.start?.toString?.() ?? '',
@@ -1237,9 +1353,20 @@ function forwardingRegisterExactFact(fact, artifact, use, context) {
   return fact;
 }
 
-function forwardingFactBindingIsCurrent(fact) {
+function forwardingFactBindingIsCurrent(fact, expectedContext = null) {
   const binding = forwardingFactBindings.get(fact);
   if (!binding) return false;
+  const expected = forwardingContextObject(expectedContext);
+  if (!expected
+      || expected.consumerId !== binding.consumerId
+      || expected.purpose !== binding.purpose
+      || String(expected.artifactDigest ?? '') !== binding.artifactDigest
+      || String(expected.snapshotId ?? '') !== binding.snapshotId
+      || String(expected.useId ?? '') !== binding.useId
+      || String(expected.sourceEntityId ?? '') !== binding.sourceEntityId
+      || String(expected.nodeId ?? '') !== binding.nodeId
+      || String(expected.entityId ?? '') !== binding.entityId
+      || String(expected.regionId ?? '') !== binding.regionId) return false;
   const artifact = binding.artifact;
   try {
     if (!forwardingObject(artifact)
@@ -1247,7 +1374,19 @@ function forwardingFactBindingIsCurrent(fact) {
         || String(canonicalMemorySsaDigest(artifact)) !== binding.artifactDigest
         || String(artifact.snapshotId ?? '') !== binding.snapshotId
         || String(fact.artifactDigest ?? '') !== binding.artifactDigest
-        || String(fact.identity?.digest ?? '') !== binding.identityDigest) return false;
+        || String(fact.identity?.digest ?? '') !== binding.identityDigest
+        || String(fact.useId ?? '') !== binding.useId
+        || String(fact.loadSourceEntityId ?? '') !== binding.sourceEntityId
+        || String(fact.loadNodeId ?? '') !== binding.nodeId
+        || String(fact.loadEntityId ?? '') !== binding.entityId
+        || String(fact.loadRegionId ?? '') !== binding.regionId
+        || String(fact.consumerId ?? '') !== binding.consumerId
+        || String(fact.purpose ?? '') !== binding.purpose) return false;
+    if (expected.artifact != null && expected.artifact !== artifact) return false;
+    const expectedRange = forwardingRawRange(expected.range, binding.loadRange.domain);
+    if (!expectedRange
+        || expectedRange.start.toString() !== binding.loadRange.start
+        || expectedRange.end.toString() !== binding.loadRange.end) return false;
     const use = (artifact.uses ?? []).find((item) => String(item?.id ?? '') === binding.useId);
     if (!use || String(use.sourceEntityId ?? '') !== binding.sourceEntityId) return false;
     const metadata = (artifact.accessMetadata ?? []).find((item) =>
@@ -1271,7 +1410,7 @@ function forwardingFactBindingIsCurrent(fact) {
  * gate instead of structural `reachingStore`.  Keeping the predicate beside
  * the canonical query prevents a consumer from accidentally treating a
  * partial/legacy shape as a proven value. */
-export function isCanonicalExactMemoryForwarding(fact) {
+export function isCanonicalExactMemoryForwarding(fact, expectedContext = null) {
   if (!forwardingObject(fact)
       || fact.status !== FORWARD_EXACT
       || fact.exact !== true
@@ -1290,13 +1429,15 @@ export function isCanonicalExactMemoryForwarding(fact) {
       || !fact.contributingDefinitionIds.length
       || new Set(fact.contributingDefinitionIds.map(String)).size !== fact.contributingDefinitionIds.length
       || fact.contributingDefinitionIds.some((id) => !String(id).trim())
+      || !Object.hasOwn(fact, 'value')
+      || typeof fact.value !== 'bigint'
       || !forwardingObject(fact.provenance)
       || !Array.isArray(fact.provenance.sourceEntityIds)
       || fact.provenance.sourceEntityIds.length !== fact.contributingDefinitionIds.length
       || !Array.isArray(fact.provenance.definitionOrigins)
       || fact.provenance.definitionOrigins.length !== fact.contributingDefinitionIds.length) return false;
   const widthBits = Number(fact.widthBits);
-  const value = forwardingValueFromRaw(fact.value);
+  const value = fact.value;
   if (value == null) return false;
   const unsigned = BigInt.asUintN(widthBits, value);
   const signed = BigInt.asIntN(widthBits, value);
@@ -1308,7 +1449,7 @@ export function isCanonicalExactMemoryForwarding(fact) {
     const expected = Number((unsigned >> BigInt(shift * 8)) & 0xffn);
     if (fact.bytes[index] !== expected) return false;
   }
-  return forwardingFactBindingIsCurrent(fact);
+  return forwardingFactBindingIsCurrent(fact, expectedContext);
 }
 
 /*
@@ -1319,7 +1460,7 @@ export function isCanonicalExactMemoryForwarding(fact) {
  * operand) and is consumed only by the canonical points-to boundary; generic
  * scalar/decompiler consumers must continue to require numeric bytes.
  */
-export function isCanonicalExactMemoryOperandForwarding(fact) {
+export function isCanonicalExactMemoryOperandForwarding(fact, expectedContext = null) {
   if (!forwardingObject(fact)
       || fact.status !== FORWARD_EXACT
       || fact.exact !== true
@@ -1330,7 +1471,7 @@ export function isCanonicalExactMemoryOperandForwarding(fact) {
       || typeof fact.artifactDigest !== 'string' || !fact.artifactDigest.trim()
       || !forwardingObject(fact.identity)
       || typeof fact.identity.digest !== 'string' || !fact.identity.digest.trim()
-      || !['address', 'bitvector'].includes(String(fact.operandKind ?? ''))
+      || String(fact.operandKind ?? '') !== 'address'
       || !String(fact.storedValueId ?? '').trim()
       || !String(fact.storedSourceEntityId ?? '').trim()
       || typeof fact.semanticValueDigest !== 'string' || !fact.semanticValueDigest.trim()
@@ -1345,7 +1486,7 @@ export function isCanonicalExactMemoryOperandForwarding(fact) {
       || String(fact.provenance.sourceEntityIds[0] ?? '') !== String(fact.storedSourceEntityId)
       || !Array.isArray(fact.provenance.definitionOrigins)
       || fact.provenance.definitionOrigins.length !== 1) return false;
-  return forwardingFactBindingIsCurrent(fact);
+  return forwardingFactBindingIsCurrent(fact, expectedContext);
 }
 
 function forwardingExactOperand(stores, context, state) {
@@ -1749,7 +1890,12 @@ export function forwardMemoryValue(memorySsa, useOrId, options = {}) {
       budget: options.validationBudget,
       cfg: options.cfg,
     });
-    const artifact = validated ?? memorySsa;
+    // Preserve the producer-published object when validation succeeds.  The
+    // validator may return a normalized overlay, but that new object must not
+    // silently lose the producer publication token required for exactness.
+    const artifact = canonicalMemorySsaProducerBinding(memorySsa)
+      ? memorySsa
+      : (validated ?? memorySsa);
     const use = useOrId && typeof useOrId === 'object'
       ? useMap(artifact).get(String(useOrId.id ?? ''))
       : useFrom(artifact, useOrId);
@@ -1795,6 +1941,7 @@ export function forwardMemoryValue(memorySsa, useOrId, options = {}) {
         options,
       );
       return forwardingRegisterExactFact(forwardingResult(FORWARD_EXACT, null, {
+        ...forwardingCapabilityDetails(artifact, use, context, options),
         proofKind: 'canonical-memoryssa-operand-forwarding',
         proofVersion: MEMORY_SSA_PROOF_VERSION,
         artifactDigest: artifact.canonicalDigest,
@@ -1850,6 +1997,7 @@ export function forwardMemoryValue(memorySsa, useOrId, options = {}) {
       : null;
     const proofIdentity = forwardingIdentity(artifact, use, context.useMeta, winners, stores, coverage, context, options);
     return forwardingRegisterExactFact(forwardingResult(FORWARD_EXACT, null, {
+      ...forwardingCapabilityDetails(artifact, use, context, options),
       proofKind: 'canonical-memoryssa-byte-forwarding',
       proofVersion: MEMORY_SSA_PROOF_VERSION,
       artifactDigest: artifact.canonicalDigest,
@@ -1874,6 +2022,15 @@ export function forwardMemoryValue(memorySsa, useOrId, options = {}) {
         ...(error.detail == null ? {} : error.detail),
         completeness: error.status === 'exact' ? 'complete' : error.status,
       });
+    }
+    if (error?.status === 'budget-limited'
+        || /^memory-ssa-(?:budget|validation-deadline)/.test(String(error?.message ?? error?.code ?? ''))) {
+      return forwardingResult('budget-limited', String(error.message ?? error.code ?? 'memory-ssa-validation-budget-exhausted'), {
+        completeness: 'budget-limited',
+      });
+    }
+    if (/^memory-ssa-invalid-budget(?:-|$)/.test(String(error?.message ?? error?.code ?? ''))) {
+      return forwardingResult('unsupported', String(error.message ?? error.code), { completeness: 'unsupported' });
     }
     if (options.signal?.aborted || error?.name === 'AbortError') {
       return forwardingResult('cancelled', 'analysis-cancelled', { completeness: 'cancelled' });

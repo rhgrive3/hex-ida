@@ -25,6 +25,7 @@ export const MEMORY_SSA_DEFAULT_BUDGET = Object.freeze({
   maxRegions: 65536,
   maxDefinitions: 262144,
   maxUses: 1048576,
+  maxWorkItems: 4194304,
 });
 
 const ALIAS_SET = new Set(MEMORY_SSA_ALIAS_RELATIONS);
@@ -32,6 +33,17 @@ const REGION_SET = new Set(MEMORY_REGION_KINDS);
 const DEF_SET = new Set(MEMORY_SSA_DEFINITION_KINDS);
 
 function fail(code) { throw new TypeError(code); }
+
+export class MemorySsaBudgetError extends TypeError {
+  constructor(code) {
+    super(code);
+    this.name = 'MemorySsaBudgetError';
+    this.code = code;
+    this.status = 'budget-limited';
+  }
+}
+
+function budgetFail(code) { throw new MemorySsaBudgetError(code); }
 function object(value, code) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) fail(code);
   return value;
@@ -72,6 +84,26 @@ function assertNotAborted(options) {
     error.name = 'AbortError';
     throw error;
   }
+}
+
+function validationWorkGuard(options) {
+  const rawMaximum = options?.budget?.maxWorkItems;
+  const maximum = rawMaximum == null
+    ? MEMORY_SSA_DEFAULT_BUDGET.maxWorkItems
+    : positiveInteger(rawMaximum, 'memory-ssa-invalid-budget-maxWorkItems');
+  const rawDeadline = options?.deadline ?? options?.deadlineAt
+    ?? options?.budget?.deadline ?? options?.budget?.deadlineAt ?? null;
+  const deadline = rawDeadline == null
+    ? null
+    : (rawDeadline instanceof Date ? rawDeadline.getTime() : Number(rawDeadline));
+  if (deadline != null && !Number.isFinite(deadline)) fail('memory-ssa-invalid-budget-deadline');
+  let used = 0;
+  return () => {
+    assertNotAborted(options);
+    if (deadline != null && Date.now() >= deadline) budgetFail('memory-ssa-validation-deadline-exhausted');
+    used += 1;
+    if (used > maximum) budgetFail('memory-ssa-budget-exceeded-maxWorkItems');
+  };
 }
 function limit(options, key) {
   if (options?.budget?.[key] == null) return MEMORY_SSA_DEFAULT_BUDGET[key];
@@ -193,6 +225,8 @@ function cfgMap(cfg) {
 
 export function createMemorySsaContract(input, options = {}) {
   assertNotAborted(options);
+  const work = validationWorkGuard(options);
+  work();
   input = object(input, 'memory-ssa-invalid-contract');
   assertAllowedKeys(input, new Set(['contractVersion','functionId','regions','definitions','uses']), 'memory-ssa-unexpected-contract-field');
   if (input.contractVersion != null && String(input.contractVersion) !== MEMORY_SSA_CONTRACT_VERSION) {
@@ -200,26 +234,28 @@ export function createMemorySsaContract(input, options = {}) {
   }
 
   const regions = array(input.regions, 'memory-ssa-regions-required')
-    .map(createMemoryRegionRef)
+    .map((region) => { work(); return createMemoryRegionRef(region); })
     .sort((a, b) => a.id.localeCompare(b.id));
   const definitions = array(input.definitions, 'memory-ssa-definitions-required')
-    .map(normalizeDefinition)
+    .map((definition) => { work(); return normalizeDefinition(definition); })
     .sort((a, b) => a.id.localeCompare(b.id));
   const uses = array(input.uses, 'memory-ssa-uses-required')
-    .map(normalizeUse)
+    .map((use) => { work(); return normalizeUse(use); })
     .sort((a, b) => a.id.localeCompare(b.id));
-  if (regions.length > limit(options, 'maxRegions')) fail('memory-ssa-budget-exceeded-maxRegions');
-  if (definitions.length > limit(options, 'maxDefinitions')) fail('memory-ssa-budget-exceeded-maxDefinitions');
-  if (uses.length > limit(options, 'maxUses')) fail('memory-ssa-budget-exceeded-maxUses');
+  if (regions.length > limit(options, 'maxRegions')) budgetFail('memory-ssa-budget-exceeded-maxRegions');
+  if (definitions.length > limit(options, 'maxDefinitions')) budgetFail('memory-ssa-budget-exceeded-maxDefinitions');
+  if (uses.length > limit(options, 'maxUses')) budgetFail('memory-ssa-budget-exceeded-maxUses');
 
   const regionById = new Map();
   for (const region of regions) {
+    work();
     if (regionById.has(region.id)) fail('memory-ssa-duplicate-region-id');
     regionById.set(region.id, region);
   }
   const definitionById = new Map();
   for (const definition of definitions) {
     assertNotAborted(options);
+    work();
     if (definitionById.has(definition.id)) fail('memory-ssa-duplicate-definition-id');
     if (!regionById.has(definition.regionId)) fail('memory-ssa-invalid-definition-region');
     definitionById.set(definition.id, definition);
@@ -227,13 +263,16 @@ export function createMemorySsaContract(input, options = {}) {
 
   const blocks = cfgMap(options.cfg);
   for (const definition of definitions) {
+    work();
     if (blocks && definition.blockId != null && !blocks.has(definition.blockId)) fail('memory-ssa-invalid-definition-block');
     for (const previousId of definition.previousDefinitionIds) {
+      work();
       const previous = definitionById.get(previousId);
       if (!previous) fail('memory-ssa-dangling-previous-definition');
       if (previous.regionId !== definition.regionId) fail('memory-ssa-cross-region-definition-link');
     }
     for (const incoming of definition.incoming) {
+      work();
       const prior = definitionById.get(incoming.definitionId);
       if (!prior) fail('memory-ssa-dangling-phi-definition');
       if (prior.regionId !== definition.regionId) fail('memory-ssa-cross-region-definition-link');
@@ -245,6 +284,7 @@ export function createMemorySsaContract(input, options = {}) {
     const incomingPreds = definition.incoming.map((item) => item.predecessorBlockId);
     if (new Set(incomingPreds).size !== incomingPreds.length) fail('memory-ssa-duplicate-phi-predecessor');
     for (const pred of incomingPreds) {
+      work();
       if (!block.predecessors.includes(pred)) fail('memory-ssa-phi-predecessor-not-in-cfg');
     }
     if (stableStringify(incomingPreds.slice().sort()) !== stableStringify(block.predecessors.slice().sort())) {
@@ -256,6 +296,7 @@ export function createMemorySsaContract(input, options = {}) {
   const reachingDefinitionLinks = [];
   for (const use of uses) {
     assertNotAborted(options);
+    work();
     if (useIds.has(use.id)) fail('memory-ssa-duplicate-use-id');
     useIds.add(use.id);
     if (!regionById.has(use.regionId)) fail('memory-ssa-invalid-use-region');
@@ -269,6 +310,7 @@ export function createMemorySsaContract(input, options = {}) {
       regionId: use.regionId,
       aliasRelation: use.aliasRelation,
     }));
+    work();
   }
   reachingDefinitionLinks.sort((a, b) => a.useId.localeCompare(b.useId));
 

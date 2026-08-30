@@ -4,7 +4,7 @@
 
 **Created**: 2026-08-29
 
-**Status**: Draft
+**Status**: Draft — implementation candidate; independent review and delivery gates pending
 
 **Input**: User description: "Close HEX-C2-01 byte-exact MemorySSA forwarding with canonical
 MemorySSA proof, wrapped byte coverage, ordered reconstruction, conservative barriers, and
@@ -71,6 +71,70 @@ downstream precision without a second memory truth."
   are zero; trusting stale or malformed evidence; using names/rendering/confidence as authority;
   creating a private memory graph; weakening assertions or denominators; or publishing a staged
   value before completeness and identity checks finish.
+
+## Amended downstream-gate ownership decision
+
+The implementation evidence justifies a narrow, path-exact ownership exception for existing
+downstream gates. The canonical owner remains `js/semantics/memoryssa/**`; the downstream files
+listed below are touched only to require the producer-issued forwarding capability and its exact
+load/snapshot/range/consumer context. They do not compute memory truth, alias relations, reaching
+definitions, or replacement values. This is an additive exception for HEX-C2-01 and does not
+relax the Phase 7 allowlist or authorize generic edits under `js/decompiler/**`,
+`js/analysis/pointsto/**`, `js/symbolic/**`, or `js/ir-core.js`.
+
+The candidate's exact 39-path downstream/process inventory is:
+
+```text
+js/analysis/pointsto/local.js
+js/decompiler/passes/stack-return-recovery.js
+js/decompiler/pipeline-core.js
+js/decompiler/pipeline.js
+js/decompiler/semantic-core.js
+js/decompiler/semantic.js
+js/ir-core.js
+js/semantics/compat/index.js
+js/semantics/compat/semantic-ir-v2-to-v1-finalize.js
+js/semantics/compat/semantic-ir-v2-to-v1-memory.js
+js/semantics/compat/semantic-ir-v2-to-v1.js
+js/semantics/memoryssa/build.js
+js/semantics/memoryssa/index.js
+js/semantics/memoryssa/proof.js
+js/semantics/memoryssa/queries.js
+js/slice.js
+js/symbolic/translate/semantic-ir.js
+js/symbolic/translate/slice.js
+js/symbolic/translate/support-matrix.js
+specs/002-byte-exact-memoryssa/checklists/requirements.md
+specs/002-byte-exact-memoryssa/checklists/soundness.md
+specs/002-byte-exact-memoryssa/contracts/byte-forwarding.md
+specs/002-byte-exact-memoryssa/data-model.md
+specs/002-byte-exact-memoryssa/plan.md
+specs/002-byte-exact-memoryssa/quickstart.md
+specs/002-byte-exact-memoryssa/research.md
+specs/002-byte-exact-memoryssa/spec.md
+specs/002-byte-exact-memoryssa/tasks.md
+tests/decompiler-semantic.mjs
+tests/ir-alias.mjs
+tests/ir-dataflow.mjs
+tests/ir.mjs
+tests/issue-430-memory-escape.mjs
+tests/phase7/pointsto/loaded-pointer-recovery.test.mjs
+tests/phase9/translate/support-matrix.test.mjs
+tests/phase9/translate/translator.test.mjs
+tests/semantic-v2/compat-v1-memory.test.mjs
+tests/semantic-v2/compat-v1-stackflow-linearization.test.mjs
+tests/semantic-v2/issue-c2-01-byte-exact-forwarding.test.mjs
+```
+
+Only the first 19 source paths are production ownership (the compatibility, points-to,
+decompiler, symbolic, and IR entries are constrained downstream gates); the remaining 20 paths
+are feature specifications, evidence, or regression tests. Any path outside this inventory remains
+forbidden unless a new evidence-backed decision is recorded.
+
+The validation-budget correction necessarily adds `js/semantics/memoryssa/contract.js` as a
+canonical-owner extension (the contract itself was not modified by the original 39-path commit).
+It is the sole additional production path, bringing the full candidate diff to 40 paths; it does
+not widen downstream ownership or the allowlist.
 
 ## User Scenarios & Testing *(mandatory)*
 

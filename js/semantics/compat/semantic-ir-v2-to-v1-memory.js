@@ -2,7 +2,12 @@ import {
   V1_OP, V1_VK, V1_MK, safeBigInt, bytesForBits, firstAddress,
   sourceInstructionIds, unique, asArray, makeArg, addUse, legacyPublicStateIdentity,
 } from './semantic-ir-v2-to-v1-core.js';
-import { forwardMemoryValue } from '../memoryssa/queries.js';
+import {
+  CANONICAL_MEMORY_FORWARDING_CONSUMER,
+  CANONICAL_MEMORY_FORWARDING_PURPOSE,
+  forwardMemoryValue,
+} from '../memoryssa/queries.js';
+import { canonicalMemorySsaProducerIdentity } from '../memoryssa/proof.js';
 import { propagateScalarConstants } from './semantic-ir-v2-to-v1-finalize.js';
 
 const MEMORY_CLOBBER_KINDS = new Set(['may-alias-clobber', 'unknown-clobber', 'call-clobber', 'intrinsic-clobber']);
@@ -189,7 +194,10 @@ export function attachMemorySsa(projected, memorySsa, valuesById, instructionByS
         functionId: projected.functionId,
         requireIdentity: true,
         ...(memorySsa.buildVersion == null ? {} : { memorySsaBuildVersion: memorySsa.buildVersion }),
-        ...(memorySsa.identity == null ? {} : { expectedIdentity: memorySsa.identity }),
+        ...(canonicalMemorySsaProducerIdentity(memorySsa) == null
+          ? {} : { currentIdentity: canonicalMemorySsaProducerIdentity(memorySsa) }),
+        consumerId: CANONICAL_MEMORY_FORWARDING_CONSUMER,
+        purpose: CANONICAL_MEMORY_FORWARDING_PURPOSE,
         ...(canonicalIr == null ? {} : { ir: canonicalIr }),
       });
       const mergedFact = mergeForwardingFacts(source.memoryForwarding, fact);

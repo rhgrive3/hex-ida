@@ -4,6 +4,7 @@ export {
   MEMORY_REGION_KINDS,
   MEMORY_SSA_DEFINITION_KINDS,
   MEMORY_SSA_DEFAULT_BUDGET,
+  MemorySsaBudgetError,
   createMemoryRegionRef,
   createMemorySsaContract,
 } from './contract.js';
@@ -19,6 +20,10 @@ export {
   reachingConcreteStore,
   forwardMemoryValue,
   reconstructMemoryValue,
+  CANONICAL_MEMORY_FORWARDING_CONSUMER,
+  CANONICAL_MEMORY_FORWARDING_PURPOSE,
+  canonicalMemoryForwardingContext,
+  canonicalMemoryForwardingContextForLoad,
   isCanonicalExactMemoryForwarding,
   isCanonicalExactMemoryOperandForwarding,
   memoryUsesOfDefinition,

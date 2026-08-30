@@ -16,7 +16,10 @@ import { INTERACTIVE_STAGES as PHASE8_INTERACTIVE_STAGES, PASS_STAGES as PHASE8_
 import { printExpression, printProgram, expressionReadability } from './pretty/c.js';
 import { explainSemanticFacts } from './explain.js';
 import { buildNZCVConditionExpression } from './flag-semantics.js';
-import { isCanonicalExactMemoryForwarding } from '../semantics/memoryssa/queries.js';
+import {
+  canonicalMemoryForwardingContextForLoad,
+  isCanonicalExactMemoryForwarding,
+} from '../semantics/memoryssa/queries.js';
 
 function valueOf(a) { return a?.value || null; }
 function safeIdent(s, fallback = 'value') {
@@ -284,7 +287,9 @@ function buildValue(v, state, flags = {}) {
       // Only the canonical proof-bearing fact may produce a value. A
       // structural reachingStore link is deliberately ignored here once the
       // canonical MemorySSA boundary has published a result.
-      if (isCanonicalExactMemoryForwarding(d.memoryForwarding) && d.memoryForwarding.value != null) {
+      if (isCanonicalExactMemoryForwarding(d.memoryForwarding,
+        canonicalMemoryForwardingContextForLoad(d.memoryForwarding, d))
+        && d.memoryForwarding.value != null) {
         out = constNode(v, d.memoryForwarding.value);
       } else {
         out = expr.load(loc, v.bits || Number((d.size || 8) * 8), origin(d, v), { signed: d.signed ?? signedFor(state, v), volatile: !!d.volatile });
@@ -426,7 +431,8 @@ function isElidableReturnSpillStore(store, state) {
     (inst.op === 'load' || inst.op === 'store') && inst.loc?.key === store.loc.key);
   const storeDefinitionId = store.memDef?.definitionId ?? store.extra?.memoryDefinitionId ?? null;
   const loads = sameLocationMemory.filter((inst) => {
-    if (inst.op !== 'load' || !isCanonicalExactMemoryForwarding(inst.memoryForwarding)) return false;
+    if (inst.op !== 'load' || !isCanonicalExactMemoryForwarding(inst.memoryForwarding,
+      canonicalMemoryForwardingContextForLoad(inst.memoryForwarding, inst))) return false;
     return storeDefinitionId != null
       && inst.memoryForwarding.contributingDefinitionIds.includes(String(storeDefinitionId));
   });

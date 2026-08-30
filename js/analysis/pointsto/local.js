@@ -27,7 +27,11 @@ import {
 } from '../alias/canonical-address-v2.js';
 import { MEMORY_SSA_BUILD_VERSION } from '../../semantics/memoryssa/build.js';
 import { MEMORY_SSA_CONTRACT_VERSION } from '../../semantics/memoryssa/contract.js';
+import { canonicalMemorySsaProducerIdentity } from '../../semantics/memoryssa/proof.js';
 import {
+  CANONICAL_MEMORY_FORWARDING_CONSUMER,
+  CANONICAL_MEMORY_FORWARDING_PURPOSE,
+  canonicalMemoryForwardingContext,
   forwardMemoryValue,
   isCanonicalExactMemoryOperandForwarding,
 } from '../../semantics/memoryssa/queries.js';
@@ -318,14 +322,28 @@ function prepareMemoryBoundary(ir, nodes, values, options, budget) {
         functionId: ir.functionId,
         snapshotId: binding.snapshotId,
         memorySsaBuildVersion: memorySsa.buildVersion,
-        expectedIdentity: memorySsa.identity,
+        currentIdentity: canonicalMemorySsaProducerIdentity(memorySsa),
+        consumerId: CANONICAL_MEMORY_FORWARDING_CONSUMER,
+        purpose: CANONICAL_MEMORY_FORWARDING_PURPOSE,
         ir,
         signal: options.signal,
       });
     } catch {
       forwarding = null;
     }
-    if (!isCanonicalExactMemoryOperandForwarding(forwarding)) {
+    if (!isCanonicalExactMemoryOperandForwarding(forwarding, canonicalMemoryForwardingContext(forwarding, {
+      artifact: memorySsa,
+      artifactDigest: forwarding?.artifactDigest ?? memorySsa.canonicalDigest,
+      snapshotId: binding.snapshotId,
+      useId: use.id,
+      sourceEntityId: node.id,
+      nodeId: node.id,
+      entityId: use.id,
+      regionId: use.regionId,
+      range: forwarding?.loadRange ?? useMetadata.byteRange,
+      consumerId: CANONICAL_MEMORY_FORWARDING_CONSUMER,
+      purpose: CANONICAL_MEMORY_FORWARDING_PURPOSE,
+    }))) {
       reject(valueId, use.aliasRelation === 'may' ? 'load-use-may-alias' : 'load-store-not-concrete');
       continue;
     }

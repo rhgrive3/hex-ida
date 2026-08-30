@@ -25,6 +25,7 @@ import {
   canonicalMemorySsaDigest,
   canonicalStoreValueProof,
   MEMORY_SSA_PROOF_VERSION,
+  registerCanonicalMemorySsaProducerArtifact,
 } from './proof.js';
 
 export const MEMORY_SSA_BUILD_VERSION = '1.0.0';
@@ -495,11 +496,16 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
   if (regionById.size > budgetLimit(options, 'maxRegions')) fail('memory-ssa-build-budget-exceeded-maxRegions');
   const regions = [...regionById.values()].sort((a, b) => a.id.localeCompare(b.id));
   const regionIds = regions.map((region) => region.id);
-  const identity = jsonSafe(options.identity ?? {
+  // Keep the serialized artifact identity separate from the producer/session
+  // identity token.  The latter is retained only in-process and is required
+  // by the exact query gate; copying the artifact cannot copy publication
+  // authority.
+  const producerIdentity = deepFreeze(jsonSafe(options.identity ?? {
     functionId: irFunction.functionId,
     memorySsaBuildVersion: MEMORY_SSA_BUILD_VERSION,
     analyzerVersion: MEMORY_SSA_BUILD_VERSION,
-  });
+  }));
+  const identity = jsonSafe(producerIdentity);
 
   const aliasCache = new Map();
   const queryAlias = (left, right, purpose) => {
@@ -1018,8 +1024,17 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
     byteCoverage,
     blockStates,
   };
-  return deepFreeze({
+  const unpublished = {
     ...artifact,
     canonicalDigest: canonicalMemorySsaDigest(artifact),
+  };
+  Object.defineProperty(unpublished, '__canonicalProducerIdentity', {
+    value: producerIdentity,
+    enumerable: false,
+    configurable: false,
+    writable: false,
   });
+  const published = deepFreeze(unpublished);
+  registerCanonicalMemorySsaProducerArtifact(published, producerIdentity);
+  return published;
 }
