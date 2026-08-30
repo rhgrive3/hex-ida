@@ -1,0 +1,50 @@
+name: Rebase open-issue final lane
+
+on:
+  push:
+    branches: [fix/open-issues-final-20260830-r5]
+    paths:
+      - .github/workflows/rebase-open-issues-final.yml
+      - tools/rebase-overlap-final-20260830.py
+
+permissions:
+  contents: write
+
+jobs:
+  apply-test-commit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/open-issues-final-20260830-r5
+          fetch-depth: 0
+          persist-credentials: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Apply current-main overlap residuals
+        run: python3 tools/rebase-overlap-final-20260830.py
+      - name: Focused contracts
+        run: |
+          node tests/open-issues-analysis-wiring-20260830.mjs
+          node tests/open-issues-script-wiring-20260830.mjs
+          node tests/plugin-sandbox-cancellation-20260830.mjs
+      - name: Static and relevant suites
+        run: |
+          npm run lint --silent
+          npm run module-boundaries:test --silent
+          npm run phase4:test --silent
+          npm run platform:test --silent
+          npm run ui:test --silent
+      - name: Full default suite
+        run: npm test --silent
+      - name: Commit rebased verified overlap
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add js/app.js js/analysis/demand-driven-runtime.js
+          git commit -m 'fix: rebase reopened-issue residuals onto current main'
+          git push origin HEAD:fix/open-issues-final-20260830-r5
