@@ -1,12 +1,12 @@
-name: One-shot 2528 current-main restack
+name: one-shot-2528-restack
 on:
   push:
-    branches: [fix/2528-current-main-final]
+    branches:
+      - fix/2528-current-main-final
 permissions:
   contents: write
 jobs:
   restack:
-    if: github.event.head_commit.message == 'ci: launch 2528 current-main restack'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -15,23 +15,21 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Apply intended Product Results repair only
+      - name: Restack and validate
+        shell: bash
         run: |
+          set -euo pipefail
+          if [ "$(git log -1 --pretty=%s)" != "ci: launch 2528 restack v2" ]; then
+            echo "not launcher commit; no-op"
+            exit 0
+          fi
           git fetch origin fix/reopen-2528-canonical-product-results
-          git diff feaef542c0a1b5f12eb3c5d6ff5642d1e35157af..733745bd77ea94d04b3f55f5675c21754bdd08d1 -- \
-            js/ui/product-base.js \
-            js/ui/product-results.js \
-            js/ui/product.js \
-            tests/issue-2528-product-results-claims.mjs > /tmp/2528.patch
+          git diff feaef542c0a1b5f12eb3c5d6ff5642d1e35157af..733745bd77ea94d04b3f55f5675c21754bdd08d1 -- js/ui/product-base.js js/ui/product-results.js js/ui/product.js tests/issue-2528-product-results-claims.mjs > /tmp/2528.patch
           git apply --3way /tmp/2528.patch
-      - name: Validate focused and UI architecture regressions
-        run: |
           node tests/issue-2528-product-results-claims.mjs
           npm run ui:test
-      - name: Commit and push production restack
-        run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add js/ui/product-base.js js/ui/product-results.js js/ui/product.js tests/issue-2528-product-results-claims.mjs
-          git commit -m 'fix(ui): restore canonical Product Results authority'
+          git commit -m "fix(ui): restore canonical Product Results authority"
           git push origin HEAD:fix/2528-current-main-final
