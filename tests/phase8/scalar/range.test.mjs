@@ -337,3 +337,74 @@ test('malformed widths and unsupported operations stay conservative', () => {
     assert.equal(propagated.constant, null, `${status} evidence must not launder into an exact binary result`);
   }
 });
+
+test('fact inputs reject contradictory supplied constants instead of folding them', () => {
+  const contradictory = {
+    bits: 8,
+    range: rangeOf(0n, 0n, 8),
+    status: 'exact',
+    constant: bitvector(1n, 8),
+    knownZero: 0xFFn,
+    knownOne: 0n,
+    congruence: { remainder: 0n, modulus: 256n },
+    alignment: null,
+    pointerOffset: null,
+    provenance: {},
+  };
+  const result = evaluateBinaryFact('eq', contradictory, singletonFact(bitvector(1n, 8)));
+  assert.equal(result.bits, 1);
+  assert.equal(result.constant, null, 'contradictory evidence must not become an exact comparison');
+  assert.notEqual(result.status, 'exact');
+});
+
+test('fact ranges are canonical immutable snapshots, not aliases to mutable caller objects', () => {
+  const mutableRange = { bits: 8, kind: 'interval', lower: 0n, upper: 1n };
+  const fact = factFromRange(mutableRange, { valueId: 99 });
+  assert.equal(fact.status, 'conservative');
+  assert.notEqual(fact.range, mutableRange);
+  assert.equal(Object.isFrozen(fact.range), true);
+  mutableRange.lower = 7n;
+  assert.equal(fact.range.lower, 0n);
+  assert.throws(() => { fact.range.upper = 7n; }, TypeError);
+});
+
+test('no-op product joins snapshot mutable facts and reject host evidence containers', () => {
+  const mutableFact = {
+    bits: 8,
+    range: { bits: 8, kind: 'interval', lower: 0n, upper: 3n },
+    status: 'conservative',
+    knownZero: 0n,
+    knownOne: 0n,
+    congruence: { remainder: 0n, modulus: 1n },
+    alignment: { modulus: 4n, remainder: 0n },
+    pointerOffset: { baseId: 'p', offset: 2n },
+    provenance: { source: { instructionId: 'i0' } },
+  };
+  const joined = joinFacts(null, mutableFact);
+  assert.notEqual(joined, mutableFact);
+  assert.equal(Object.isFrozen(joined), true);
+  assert.equal(Object.isFrozen(joined.range), true);
+  assert.equal(Object.isFrozen(joined.congruence), true);
+  assert.equal(Object.isFrozen(joined.alignment), true);
+  assert.equal(Object.isFrozen(joined.pointerOffset), true);
+  assert.equal(Object.isFrozen(joined.provenance), true);
+  assert.equal(Object.isFrozen(joined.provenance.source), true);
+  mutableFact.range.lower = 7n;
+  mutableFact.alignment.modulus = 2n;
+  mutableFact.provenance.source.instructionId = 'mutated';
+  assert.equal(joined.range.lower, 0n);
+  assert.equal(joined.alignment.modulus, 4n);
+  assert.equal(joined.provenance.source.instructionId, 'i0');
+
+  const hostEvidence = new Map([['instructionId', 'i0']]);
+  Object.freeze(hostEvidence);
+  const malformed = factFromRange(singleton(bitvector(1n, 8)), { provenance: hostEvidence });
+  assert.equal(malformed.status, 'malformed');
+  assert.equal(malformed.constant, null);
+
+  const { proxy, revoke } = Proxy.revocable({}, {});
+  revoke();
+  const revoked = factFromRange(singleton(bitvector(1n, 8)), { provenance: proxy });
+  assert.equal(revoked.status, 'malformed');
+  assert.equal(revoked.constant, null);
+});
