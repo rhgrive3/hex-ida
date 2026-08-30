@@ -1,0 +1,76 @@
+name: Temporary fix 2852
+on:
+  push:
+    branches: [fix/2852-app-adapter-strict-metadata]
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/2852-app-adapter-strict-metadata
+          fetch-depth: 0
+      - name: Apply minimal strict metadata patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('fs');
+          const path = 'js/analysis/query/app-adapter.js';
+          let src = fs.readFileSync(path, 'utf8');
+          const replacements = [
+            [
+              "function architectureOf(app) {\n  return String(storeValue(app, 'architecture') ?? storeValue(app, 'capability')?.architecture ?? currentSlice(app)?.capability?.architecture ?? '').toLowerCase();\n}\nfunction formatOf(app) { return String(app?.backend?.formatId ?? currentInfo(app)?.formatId ?? '').toLowerCase(); }",
+              "function architectureOf(app) {\n  const value = storeValue(app, 'architecture') ?? storeValue(app, 'capability')?.architecture ?? currentSlice(app)?.capability?.architecture ?? '';\n  return typeof value === 'string' ? value.trim().toLowerCase() : '';\n}\nfunction formatOf(app) {\n  const value = app?.backend?.formatId ?? currentInfo(app)?.formatId ?? '';\n  return typeof value === 'string' ? value.trim().toLowerCase() : '';\n}"
+            ],
+            [
+              "function normalizePlatform(value) {\n  const p = String(value ?? '').trim().toLowerCase();",
+              "function normalizePlatform(value) {\n  if (typeof value !== 'string') return null;\n  const p = value.trim().toLowerCase();"
+            ],
+          ];
+          for (const [before, after] of replacements) {
+            const count = src.split(before).length - 1;
+            if (count !== 1) throw new Error(`expected exactly one patch target, found ${count}`);
+            src = src.replace(before, after);
+          }
+          fs.writeFileSync(path, src);
+          NODE
+
+          cat > tests/analysis-query-app-adapter-metadata-types.test.mjs <<'EOF'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+
+          const source = fs.readFileSync(new URL('../js/analysis/query/app-adapter.js', import.meta.url), 'utf8');
+
+          assert.match(source, /function architectureOf\(app\) \{[\s\S]*?typeof value === 'string' \? value\.trim\(\)\.toLowerCase\(\) : '';/);
+          assert.match(source, /function formatOf\(app\) \{[\s\S]*?typeof value === 'string' \? value\.trim\(\)\.toLowerCase\(\) : '';/);
+          assert.match(source, /function normalizePlatform\(value\) \{\n  if \(typeof value !== 'string'\) return null;\n  const p = value\.trim\(\)\.toLowerCase\(\);/);
+
+          assert.doesNotMatch(source, /function architectureOf\(app\)[\s\S]*?return String\(/);
+          assert.doesNotMatch(source, /function formatOf\(app\) \{ return String\(/);
+          assert.doesNotMatch(source, /function normalizePlatform\(value\)[\s\S]*?String\(value/);
+
+          const normalize = (value) => typeof value === 'string' ? value.trim().toLowerCase() : null;
+          assert.equal(normalize(' ARM64 '), 'arm64');
+          assert.equal(normalize(['arm64']), null);
+          assert.equal(normalize({ toString(){ return 'arm64'; } }), null);
+          assert.equal(normalize(64), null);
+          assert.equal(normalize(true), null);
+
+          console.log('analysis query app-adapter strict metadata tests passed');
+          EOF
+
+          node tests/analysis-query-app-adapter-metadata-types.test.mjs
+          git rm .github/workflows/tmp-fix-2852.yml
+          git diff --check
+      - name: Commit focused repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add js/analysis/query/app-adapter.js tests/analysis-query-app-adapter-metadata-types.test.mjs .github/workflows/tmp-fix-2852.yml
+          git commit -m "fix(query): reject coerced analysis metadata (#2852)"
+          git push origin HEAD:fix/2852-app-adapter-strict-metadata
