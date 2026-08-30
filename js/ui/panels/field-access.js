@@ -124,29 +124,29 @@ export function showField(app, className, field) {
   body.append(status, results);
 
   let latest = { results:[], complete:false, scannedRegionIds:[], unscannedRegionIds:[] };
-  const programPromise = Promise.resolve(app.ensureProgram?.()).catch(() => null);
-  const render = async (aggregate) => {
+  const render = (aggregate) => {
     latest = aggregate;
     if (controller.signal.aborted || !sheet.root.isConnected) return;
-    const program = await programPromise;
-    if (controller.signal.aborted || !sheet.root.isConnected) return;
-    renderResults(app, sheet, results, className, field, aggregate, program);
+    // Function ownership enrichment is optional. Never start a whole-program
+    // ProgramIndex just to render field-access partials; use it only when another
+    // consumer has already produced it.
+    renderResults(app, sheet, results, className, field, aggregate, app.program ?? null);
   };
 
   fieldAccessAcrossExecutableRegions(app, field.offset, field.size || 0, {
     signal:controller.signal,
     concurrency:2,
-    onPartial:(aggregate) => { void render(aggregate); },
-  }).then(async (aggregate) => {
+    onPartial:(aggregate) => { render(aggregate); },
+  }).then((aggregate) => {
     if (controller.signal.aborted || !sheet.root.isConnected) return;
     status.textContent = aggregate.complete
       ? pick('コード全体の確認が完了しました。', 'Executable-region scan complete.')
       : pick(`一部の解析が不完全です（${aggregate.reason || 'unknown'}）。`, `Some analysis remains incomplete (${aggregate.reason || 'unknown'}).`);
-    await render(aggregate);
+    render(aggregate);
   }).catch((error) => {
     if (error?.name === 'AbortError' || controller.signal.aborted) return;
     status.textContent = pick('アクセス解析を完了できませんでした。', 'Field-access analysis could not complete.');
-    void render({ ...latest, complete:false, reason:error?.message || 'field-access-failed' });
+    render({ ...latest, complete:false, reason:error?.message || 'field-access-failed' });
   });
 
   return sheet;
