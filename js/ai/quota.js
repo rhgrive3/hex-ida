@@ -10,7 +10,7 @@ export const AI_QUOTA = Object.freeze({
 const MAX_SESSION_ID = 128;
 
 export function normalizeQuotaSessionId(value) {
-  const text = String(value == null ? '' : value).trim().slice(0, MAX_SESSION_ID);
+  const text = typeof value === 'string' ? value.trim().slice(0, MAX_SESSION_ID) : '';
   return text || 'anonymous';
 }
 
@@ -114,7 +114,7 @@ export function acquireQuotaState(raw, request = {}, config = AI_QUOTA) {
     };
   }
 
-  const token = String(request.token || '').trim();
+  const token = typeof request.token === 'string' ? request.token.trim() : '';
   if (!token) throw new TypeError('quota acquisition requires a lease token');
   const existingLease = hasOwn(state.leases, token) ? state.leases[token] : null;
   if (existingLease) {
@@ -148,7 +148,7 @@ export function acquireQuotaState(raw, request = {}, config = AI_QUOTA) {
 
 export function releaseQuotaState(raw, token, now = Date.now(), config = AI_QUOTA) {
   const state = normalizeQuotaState(raw, now, config);
-  const key = String(token || '').trim();
+  const key = typeof token === 'string' ? token.trim() : '';
   const released = !!(key && hasOwn(state.leases, key));
   if (released) delete state.leases[key];
   return { state, released };
