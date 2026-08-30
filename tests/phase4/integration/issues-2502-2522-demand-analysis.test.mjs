@@ -57,7 +57,7 @@ function testCanonicalWiring() {
   assert.match(runtime, /ensureContentHash\(options\.onProgress, options\.signal/, 'BinaryId must reuse worker-backed content hashing');
   assert.match(runtime, /RECOGNITION_INPUTS_CHANGED/, 'recognition must reject publication after input-version races');
   assert.match(runtime, /function installCancellableFunctionDiscovery\(app\)/, 'function discovery must have one runtime owner');
-  assert.match(runtime, /entry\.request\.cancel\?\.\(\)/, 'last discovery waiter must cancel its producer');
+  assert.match(runtime, /entry\.request(?:\?\.|\.)cancel\?\.\(\)/, 'last discovery waiter must cancel its producer');
   assert.match(runtime, /const key = recognitionInputKey\(app\)[\s\S]*const after = recognitionInputKey\(app\)[\s\S]*after === key/,
     'recognition must publish only when start/end input identity matches');
 
