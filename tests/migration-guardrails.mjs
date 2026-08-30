@@ -87,7 +87,7 @@ requireExports(pluginApi, 'js/platform/plugin-api.js', [
 
 // .hexproj v1 remains a portable exchange format. Cache data stays a reference.
 {
-  assert.equal(projectApi.HEX_PROJECT_VERSION, 1, '.hexproj v1 import/export compatibility is required');
+  assert.equal(projectApi.HEX_PROJECT_VERSION, 2, '.hexproj current version contract drifted');
   const project = projectApi.createHexProject({
     binaryHash: 'guardrail:binary',
     userNames: [{ addr: 0x1000n, name: 'guarded' }],
@@ -95,10 +95,19 @@ requireExports(pluginApi, 'js/platform/plugin-api.js', [
     navigation: { currentFunction: 0x1000n },
   });
   const roundtrip = projectApi.parseHexProject(projectApi.serializeHexProject(project));
-  assert.equal(roundtrip.version, 1);
+  assert.equal(roundtrip.version, 2);
   assert.equal(roundtrip.binary.embedded, false);
   assert.deepEqual(roundtrip.analysis.cacheReferences, ['analysis:summary']);
   assert.equal(roundtrip.user.names[0].addr, 0x1000n);
+
+  const legacyV1 = JSON.parse(projectApi.serializeHexProject(project));
+  legacyV1.version = 1;
+  delete legacyV1.user.vars;
+  delete legacyV1.user.varsPresent;
+  const migrated = projectApi.parseHexProject(JSON.stringify(legacyV1));
+  assert.equal(migrated.version, 2);
+  assert.equal(migrated.user.varsPresent, false);
+  assert.deepEqual(migrated.user.vars, []);
 }
 
 // Plugin API v1 registration surface stays compatible and additive.
