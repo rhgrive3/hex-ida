@@ -2,14 +2,10 @@ name: Temporary unlinked final repair
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [synchronize, reopened]
 
 permissions:
   contents: write
-
-concurrency:
-  group: tmp-unlinked-final-repair-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
 
 jobs:
   repair:
@@ -19,224 +15,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.ref }}
+          ref: dev-agent-hardening/integration/unlinked-final-20260831
           fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: Apply focused final fixes
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
-
-          def replace(path, old, new):
-              p=Path(path); s=p.read_text()
-              if old not in s:
-                  raise SystemExit(f'anchor missing: {path}: {old[:80]!r}')
-              p.write_text(s.replace(old,new,1))
-
-          # #2784: class-name identity is string-only.
-          replace('js/appmap.js',
-              "export function classifyClassName(name) {\n  const s = String(name || '');",
-              "export function classifyClassName(name) {\n  if (typeof name !== 'string') return [];\n  const s = name;")
-
-          # #2788: architecture identity is string-only.
-          replace('js/targets/architecture/registry.js',
-              "export function canonicalArchitectureId(value) { return String(value || '').trim().toLowerCase(); }",
-              "export function canonicalArchitectureId(value) {\n  return typeof value === 'string' ? value.trim().toLowerCase() : '';\n}")
-
-          # #2588 residual: do not coerce structured width evidence.
-          replace('js/targets/architecture/arm64/effects/common.js',
-              "export function instructionBits(op, fallback = 64) {\n  const bits = Number(op?.bits ?? fallback);\n  return bits === 32 || bits === 64 ? bits : fallback;\n}",
-              "export function instructionBits(op, fallback = 64) {\n  const raw = op?.bits;\n  if (raw == null) return fallback === 32 || fallback === 64 ? fallback : 0;\n  return typeof raw === 'number' && Number.isInteger(raw) && (raw === 32 || raw === 64) ? raw : 0;\n}")
-          replace('js/targets/architecture/arm64/effects/integer.js',
-              "function regBits(op) { return Number(op?.bits || 0); }",
-              "function regBits(op) {\n  const bits = op?.bits;\n  return typeof bits === 'number' && Number.isInteger(bits) && (bits === 32 || bits === 64) ? bits : 0;\n}")
-
-          # #2791: malformed limits cannot silently shrink coverage.
-          replace('js/auto.js',
-              "  const result = out.slice(0, Math.max(0, Number(limit)));",
-              "  const safeLimit = typeof limit === 'number' && Number.isFinite(limit) && Number.isInteger(limit) ? Math.max(0, limit) : 12;\n  const result = out.slice(0, safeLimit);")
-
-          # #2516: seed the selected FAT BinaryImage from open and share it with analysis/pointer resolution.
-          replace('js/platform/worker.js',
-              "    regions = candidateRegions;\n    pointerImages = new Map();\n    if (previousSource && previousSource !== candidateSource) previousSource.clear?.();",
-              "    regions = candidateRegions;\n    pointerImages = new Map();\n    const fat = candidateImage.metadata?.fat;\n    if (candidateImage.format === 'macho' && fat?.selected && Array.isArray(fat.slices)) {\n      const selectedIndex = fat.slices.findIndex((slice) =>\n        slice?.offset === fat.selected.offset && slice?.size === fat.selected.size\n        && slice?.cpu === fat.selected.cpu && slice?.subtype === fat.selected.subtype);\n      if (selectedIndex >= 0) {\n        pointerImages.set(selectedIndex, candidateImage);\n        candidateDescriptor.platform.selectedSliceParseReused = true;\n        candidateDescriptor.platform.selectedSliceIndex = selectedIndex;\n      }\n    }\n    if (previousSource && previousSource !== candidateSource) previousSource.clear?.();")
-          replace('js/platform/worker.js',
-              "  let selected = image;\n  if (image.metadata?.fat?.slices?.length && msg.sliceIndex != null) {\n    selected = await parseMachOSource(source, {\n      sliceIndex: msg.sliceIndex,\n      signal,\n      ranges: { pageSize: 64 * 1024, maxPageSize: 2 * 1024 * 1024, maxCachedBytes: 16 * 1024 * 1024, maxReads: 4096 },\n    });\n  }",
-              "  let selected = image;\n  if (image.metadata?.fat?.slices?.length && msg.sliceIndex != null) {\n    selected = await pointerImageForSlice(msg.sliceIndex, signal);\n    if (!selected) throw new Error('Invalid Mach-O slice index.');\n  }")
-
-          # #2519: canonical evidence aggregation belongs to the product query adapter.
-          p=Path('js/analysis/query/product-adapter.js'); s=p.read_text()
-          helper="""
-function queryAddress(value) {
-  if (typeof value === 'bigint') return value;
-  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return BigInt(value);
-  if (typeof value === 'string' && value.trim()) { try { return BigInt(value.trim().replace(/^(?:fn|function):/i, '')); } catch { return null; } }
-  return null;
-}
-function evidenceVerdict(value, fallback = 'supported') {
-  const raw = typeof value === 'string' ? value.trim().toLowerCase() : '';
-  return ['confirmed','supported','likely','unverified','contradicted','unknown'].includes(raw) ? raw : fallback;
-}
-function evidencePage(page = {}) {
-  const offset = typeof page.offset === 'number' && Number.isSafeInteger(page.offset) && page.offset >= 0 ? page.offset : 0;
-  const limit = typeof page.limit === 'number' && Number.isSafeInteger(page.limit) && page.limit > 0 ? Math.min(5000, page.limit) : 200;
-  return { offset, limit };
-}
-function evidenceRow(input, defaults = {}) {
-  const item = input && typeof input === 'object' ? input : { detail:String(input ?? '') };
-  const evidence = item.evidence && typeof item.evidence === 'object' ? item.evidence : item;
-  const verdict = evidenceVerdict(item.verdict ?? evidence.verdict, defaults.verdict ?? 'supported');
-  return Object.freeze({
-    evidenceId:String(item.evidenceId ?? evidence.evidenceId ?? defaults.evidenceId ?? `${defaults.kind || evidence.kind || 'evidence'}:${defaults.index ?? 0}`),
-    kind:String(item.kind ?? evidence.kind ?? defaults.kind ?? 'evidence'),
-    title:String(item.title ?? defaults.title ?? evidence.reason ?? evidence.kind ?? evidence.type ?? evidence.source ?? 'Evidence'),
-    subtitle:String(item.subtitle ?? defaults.subtitle ?? evidence.detail ?? evidence.text ?? ''),
-    verdict,
-    completeness:item.completeness ?? defaults.completeness ?? 'complete',
-    source:item.source ?? evidence.source ?? defaults.source ?? null,
-    assumptions:Array.isArray(item.assumptions) ? item.assumptions.slice() : [],
-    origin:item.origin ?? evidence.origin ?? null,
-    supports:item.supports ?? evidence.supports ?? null,
-    contradicts:item.contradicts ?? evidence.contradicts ?? null,
-    evidence,
-  });
-}
-"""
-          anchor="const SAFE_ROUTE = Symbol('analysis-query-safe-ui-route');\n"
-          if helper.strip() not in s:
-              s=s.replace(anchor, anchor+helper,1)
-          needle="""    async functions(snapshot, query = {}, page = {}, options = {}) {
-      await ensureFunctionDiscovery(app, options);
-      return base.functions(snapshot, query, page, options);
-    },
-"""
-          override="""    async functions(snapshot, query = {}, page = {}, options = {}) {
-      await ensureFunctionDiscovery(app, options);
-      return base.functions(snapshot, query, page, options);
-    },
-    async evidence(snapshot, query = {}, page = {}, options = {}) {
-      abortIfNeeded(options.signal);
-      const target = queryAddress(query?.functionId ?? query?.address ?? null);
-      const raw = await base.evidence(snapshot, query, { offset:0, limit:5000 }, options);
-      const rows = Array.from(raw?.value || [], (item, index) => evidenceRow(item, { index }));
-      let completeness = raw?.status?.completeness ?? raw?.completeness ?? 'complete';
-      if (target != null) {
-        const fid = `0x${target.toString(16)}`;
-        const boundary = app?.symbols?.functionEvidence?.(target) ?? null;
-        const nameEvidence = app?.symbols?.nameEvidence?.(target) ?? null;
-        const name = app?.symbols?.nameAt?.(target) ?? null;
-        rows.unshift(evidenceRow(boundary || {}, { evidenceId:`boundary:${fid}`, kind:'function-boundary', title:'Function boundary', subtitle:fid, source:boundary?.source ?? null, verdict:boundary?.verdict ? undefined : (boundary ? 'supported' : 'unverified') }));
-        rows.splice(1, 0, evidenceRow(nameEvidence || {}, { evidenceId:`name:${fid}`, kind:'function-name', title:'Function name', subtitle:name || 'No symbol name', source:nameEvidence?.source ?? null, verdict:nameEvidence?.verdict ? undefined : (nameEvidence ? 'supported' : 'unverified') }));
-        const fn = await base.function(snapshot, target, options);
-        if (fn?.status?.completeness && fn.status.completeness !== 'complete') completeness = fn.status.completeness;
-        const proof = fn?.value?.rewriteProof ?? fn?.value?.decompiler?.rewriteProof ?? [];
-        for (let index=0; index<proof.length; index++) {
-          const item=proof[index];
-          const verified=item?.verified===true || item?.confirmed===true || item?.proof?.verified===true || item?.proof?.confirmed===true;
-          rows.push(evidenceRow(item, { evidenceId:`rewrite:${fid}:${index}`, kind:'rewrite-proof', title:`Decompiler rewrite: ${item?.rule || item?.name || item?.proof?.kind || 'rewrite'}`, subtitle:item?.proof?.detail || item?.detail || '', verdict:verified ? 'confirmed' : 'supported', index }));
-        }
-        try {
-          const { runtimeEvidenceForApp } = await import('../../runtime/app-runtime.js');
-          const runtime = runtimeEvidenceForApp(app, target) || [];
-          for (let index=0; index<runtime.length; index++) {
-            const item=runtime[index];
-            rows.push(evidenceRow(item, { evidenceId:`runtime:${fid}:${index}`, kind:'runtime', title:`Runtime observation: ${item?.kind || item?.type || 'observation'}`, verdict:evidenceVerdict(item?.verdict, 'supported'), index }));
-          }
-        } catch { /* runtime evidence is optional but never synthesized by UI */ }
-      }
-      abortIfNeeded(options.signal);
-      const { offset, limit } = evidencePage(page);
-      const value = rows.slice(offset, offset + limit);
-      return {
-        value,
-        page:{ offset, limit, returned:value.length, total:rows.length, next:offset + value.length < rows.length ? offset + value.length : null },
-        status:{ ...(raw?.status || {}), completeness, producer:'canonical-product-evidence/v2', paged:true },
-      };
-    },
-"""
-          if needle not in s: raise SystemExit('product-adapter insertion anchor missing')
-          p.write_text(s.replace(needle,override,1))
-
-          # #2519: Product evidence UI is a pure projection of canonical query rows.
-          p=Path('js/ui/product.js'); s=p.read_text()
-          start=s.index('  const renderEvidence = (res) => {')
-          end=s.index('  const renderRuntimeTab = () => {', start)
-          new_block="""  const renderEvidenceTab = async () => {
-    content.replaceChildren(loadingState(text('根拠を集めています…', 'Collecting evidence…')));
-    if (!app.analysisQueries) {
-      content.replaceChildren(errorState(text('根拠queryを利用できません', 'Evidence query unavailable'), text('live stateをUIで再合成せず、安全側で表示を停止しました。', 'The UI will not reconstruct evidence from live state.')));
-      return;
-    }
-    const snapshot = await app.analysisQueries.snapshot({ signal: routeSignal });
-    const res = await app.analysisQueries.evidence(snapshot, { functionId:addr }, { offset:0, limit:200 }, { signal:routeSignal });
-    if (!viewCurrent()) return;
-    const stack = h('div', 'ui-evidence-stack');
-    const items = Array.isArray(res.value) ? res.value : [];
-    for (const item of items) {
-      stack.append(listRow({
-        title:String(item?.title || item?.kind || 'Evidence'),
-        subtitle:String(item?.subtitle || ''),
-        meta:item?.source ? String(item.source) : '',
-        badge:evidenceBadge(item?.verdict || 'unverified'),
-      }));
-    }
-    if (!items.length) stack.append(emptyState(text('根拠がありません', 'No evidence available'), text('現在のsnapshotには表示できる根拠がありません。', 'The current snapshot has no displayable evidence.')));
-    const note = card(text('表示の意味', 'How to read this'), { subtitle:text('verdict・completeness・provenanceはcanonical evidence queryが決定し、UIは再判定しません。', 'Verdict, completeness and provenance are decided by the canonical evidence query; the UI does not reclassify them.') });
-    const nodes=[note.root, stack];
-    if ((res?.page?.next ?? null) != null || res?.completeness === 'partial' || res?.status?.completeness === 'partial') nodes.unshift(h('p','ui-partial-note',text('根拠集合は部分的です。未取得を「根拠なし」とは扱いません。','The evidence set is partial; unreturned evidence is not treated as absent.')));
-    content.replaceChildren(...nodes);
-  };
-
-"""
-          p.write_text(s[:start]+new_block+s[end:])
-
-          test=Path('tests/unlinked-final-strict-evidence-macho.mjs')
-          test.write_text(r'''import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import { classifyClassName } from '../js/appmap.js';
-import { canonicalArchitectureId } from '../js/targets/architecture/registry.js';
-import { instructionBits } from '../js/targets/architecture/arm64/effects/common.js';
-import { liftArm64IntegerEffects } from '../js/targets/architecture/arm64/effects/integer.js';
-import { notableFunctions } from '../js/auto.js';
-
-assert.deepEqual(classifyClassName({toString(){return 'BattleManager';}}), []);
-assert.deepEqual(classifyClassName(['LoginManager']), []);
-assert.ok(classifyClassName('BattleManager').some((x)=>x.id==='battle'));
-assert.equal(canonicalArchitectureId(' ARM64 '), 'arm64');
-assert.equal(canonicalArchitectureId(['arm64']), '');
-assert.equal(canonicalArchitectureId({toString(){return 'arm64';}}), '');
-assert.equal(instructionBits({bits:32}),32); assert.equal(instructionBits({bits:'32'}),0);
-const bad=liftArm64IntegerEffects({instructionId:'strict-bits',mnemonic:'add',mode:'a64',ops:[{k:'reg',cls:'gp',num:0,bits:'64',text:'x0'},{k:'reg',cls:'gp',num:1,bits:'64',text:'x1'},{k:'reg',cls:'gp',num:2,bits:'64',text:'x2'}],origin:{instructionIds:['strict-bits']}});
-assert.equal(bad.completeness,'partial'); assert.equal(bad.operations.length,0);
-const funcs=Array.from({length:20},(_,i)=>BigInt(0x1000+i*4));
-const symbols={functionCount:20,funcs,functionAt:(a)=>({start:a,end:a+4n}),nameAt:(a)=>`f${Number((a-0x1000n)/4n)}`};
-const region={vmAddr:0x1000n,size:0x1000n};
-const program={functionRange:(a)=>({start:a,end:a+4n}),statsOf:()=>({total:10,numeric:3,mul:1,div:0,fmul:0,store:1,load:1,cmp:2}),callCountOf:()=>3};
-for(const invalid of [['1'],[],true,false,'1',NaN,Infinity,1.5,{valueOf(){return 1;}}]) assert.equal(notableFunctions(program,symbols,region,invalid).length,12);
-assert.equal(notableFunctions(program,symbols,region,1).length,1); assert.equal(notableFunctions(program,symbols,region,0).length,0);
-const worker=fs.readFileSync(new URL('../js/platform/worker.js',import.meta.url),'utf8');
-assert.match(worker,/pointerImages\.set\(selectedIndex, candidateImage\)/); assert.match(worker,/selected = await pointerImageForSlice\(msg\.sliceIndex, signal\)/);
-const product=fs.readFileSync(new URL('../js/ui/product.js',import.meta.url),'utf8');
-const ev=product.slice(product.indexOf('const renderEvidenceTab'),product.indexOf('const renderRuntimeTab'));
-assert.match(ev,/analysisQueries\.evidence/); assert.doesNotMatch(ev,/app\.symbols|runtimeEvidenceForApp|rewriteProof|evidenceBadge\('confirmed'\)/);
-const adapter=fs.readFileSync(new URL('../js/analysis/query/product-adapter.js',import.meta.url),'utf8');
-assert.match(adapter,/canonical-product-evidence\/v2/); assert.match(adapter,/await import\('\.\.\/\.\.\/runtime\/app-runtime\.js'\)/); assert.match(adapter,/verified \? 'confirmed' : 'supported'/);
-console.log('unlinked final strict/evidence/macho: PASS');
-''')
-
-          # Make the focused regression part of the default test contract.
-          p=Path('package.json'); s=p.read_text()
-          anchor='"test": "node tests/arm64-presentation-compat.mjs'
-          if anchor not in s: raise SystemExit('package test anchor missing')
-          s=s.replace(anchor,'"test": "node tests/unlinked-final-strict-evidence-macho.mjs && node tests/arm64-presentation-compat.mjs',1)
-          p.write_text(s)
-          PY
+      - run: python3 tools/tmp-unlinked-final-repair.py
       - name: Focused validation
         run: |
           node tests/unlinked-final-strict-evidence-macho.mjs
@@ -246,13 +32,12 @@ console.log('unlinked final strict/evidence/macho: PASS');
           node tests/universal-binary-source.mjs
           node tests/ui/integration-hardening.mjs
           npm run ui:test
-      - name: Remove temporary runner and commit
-        shell: bash
+      - name: Commit repair and remove temporary runner
         run: |
-          rm -f .github/workflows/tmp-unlinked-final-repair.yml
+          rm -f .github/workflows/tmp-unlinked-final-repair.yml tools/tmp-unlinked-final-repair.py
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
           git diff --cached --quiet && exit 0
-          git commit -m 'fix: close remaining strict evidence and Mach-O gaps'
-          git push origin HEAD:${{ github.event.pull_request.head.ref }}
+          git commit -m 'fix: close strict evidence and Mach-O gaps'
+          git push origin HEAD:dev-agent-hardening/integration/unlinked-final-20260831
