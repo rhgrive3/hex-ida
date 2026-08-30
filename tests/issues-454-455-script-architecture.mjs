@@ -138,25 +138,54 @@ function fakeApp(architecture, overrides = {}) {
   assert.equal(decomp?.operation, 'decompile');
 }
 
-// Issue #2559: hex.xrefsTo / xrefsFrom program integration
+// Issue #2559: hex.xrefsTo / xrefsFrom use the canonical query API while the
+// global most-called statistic reuses an already-complete shared ProgramIndex.
 {
-  const app = fakeApp('arm64', {
-    ensureProgram: async () => {},
-    program: {
-      callSitesTo: (addr, limit) => [{ addr: 0x2000n, target: addr }],
-      refSitesTo: () => [],
-      functionRange: () => ({ start: 0x1000n, end: 0x1040n }),
-      calleesOf: () => [{ addr: 0x3000n }],
-      mostCalled: () => [{ addr: 0x3000n, count: 5 }],
+  const program = {
+    gen:undefined,
+    callSitesTo: (addr, limit) => [{ site:0x2000n, target:addr }].slice(0, limit),
+    refSitesTo: () => [],
+    functionRange: () => ({ start:0x1000n, end:0x1040n }),
+    calleesOf: () => [{ addr:0x3000n }],
+    mostCalled: () => [{ addr:0x3000n, count:5 }],
+    graphCompleteness:{ complete:true, supported:true },
+    callsCapped:false,
+    refsCapped:false,
+    statsComplete:true,
+  };
+  const analysisQueries = {
+    async snapshot() { return { id:'fixture-snapshot' }; },
+    async xrefs(_snapshot, addr, page) {
+      return {
+        value:[{ kind:'call', site:0x2000n, target:addr }],
+        page:{ offset:Number(page?.offset || 0), limit:Number(page?.limit || 200), returned:1, total:1, next:null },
+        status:{ completeness:'complete', scannedRegionIds:['text'], unscannedRegionIds:[] },
+      };
     },
+    async callees(_snapshot, _addr, page) {
+      return {
+        value:[{ addr:0x3000n }],
+        page:{ offset:Number(page?.offset || 0), limit:Number(page?.limit || 200), returned:1, total:1, next:null },
+        status:{ completeness:'complete', scannedRegionIds:['text'], unscannedRegionIds:[] },
+      };
+    },
+  };
+  const app = fakeApp('arm64', {
+    ensureProgram: async () => program,
+    program,
+    programKey:'text',
+    analysisQueries,
   });
   const { api } = createApi(app, () => {});
   const to = await api.xrefsTo(0x1000n);
   assert.equal(to.length, 1);
+  assert.equal(to.completeness, 'complete');
   const from = await api.xrefsFrom(0x1000n);
   assert.equal(from.length, 1);
+  assert.equal(from.completeness, 'complete');
   const most = await api.mostCalled(10);
   assert.equal(most.length, 1);
+  assert.equal(most.completeness, 'complete');
 }
 
 console.log('issues #454/#455 script architecture regressions passed');
