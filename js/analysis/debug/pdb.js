@@ -28,7 +28,7 @@ import {
 export const PDB_PROVIDER_ID = 'phase7.debug.pdb';
 export const PDB_PROVIDER_VERSION = '1.0.0';
 
-const MSF_MAGIC = 'Microsoft C/C++ MSF 7.00\r\nDS\0\0\0';
+const MSF_MAGIC = 'Microsoft C/C++ MSF 7.00\r\n\u001aDS\0\0\0';
 
 /** CodeView symbol record kinds this provider models. */
 const S_PUB32 = 0x110e;
@@ -596,11 +596,18 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
     // begins with a 4-byte signature before its symbol records.
     const modules = parseModuleInfo(dbiBytes, dbi);
     for (const module of modules) {
-      if (module.streamIndex < 0 || module.streamIndex >= msf.streams.length) continue;
+      if (module.streamIndex < 0 || module.streamIndex >= msf.streams.length) {
+        if (module.symbolByteSize > 4) symbols.complete = false;
+        continue;
+      }
       const moduleBytes = msf.streams[module.streamIndex].read();
-      if (!moduleBytes || moduleBytes.length <= 4) continue;
+      if (!moduleBytes || moduleBytes.length <= 4) {
+        if (module.symbolByteSize > 4) symbols.complete = false;
+        continue;
+      }
       const size = Math.min(module.symbolByteSize > 4 ? module.symbolByteSize : moduleBytes.length, moduleBytes.length);
       const moduleSymbols = parseSymbolRecords(moduleBytes.subarray(4, size), budget);
+      symbols.complete = symbols.complete && moduleSymbols.complete;
       for (const symbol of moduleSymbols.symbols) {
         if (symbol.kind !== 'procedure') continue;
         symbols.symbols.push({ ...symbol, recordOffset: `${module.streamIndex}:${symbol.recordOffset}` });
