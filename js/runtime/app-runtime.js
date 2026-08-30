@@ -46,12 +46,15 @@ function localSandboxSupportsArchitecture(architecture) {
   const arch=String(architecture || '').trim().toLowerCase();
   return arch === 'arm64' || arch === 'arm64e' || arch === 'aarch64';
 }
+function validContentHash(value) {
+  return typeof value === 'string' && value.trim() !== '' ? value : null;
+}
 async function binaryHashOf(app) {
   const info=currentFileToken(app);
   const existing=info?.hash || info?.sha256 || app?.project?.binaryHash || app?.backend?.contentHash || null;
-  if(existing) return existing;
+  if(existing) return validContentHash(existing);
   if(typeof app?.backend?.ensureContentHash === 'function') {
-    try { return await app.backend.ensureContentHash(); } catch { return null; }
+    try { return validContentHash(await app.backend.ensureContentHash()); } catch { return null; }
   }
   return null;
 }
