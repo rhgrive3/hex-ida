@@ -249,6 +249,25 @@ function programQuery(ctx, method, args) {
   try { return { supported: true, results: fn.apply(ctx.program, args) || [] }; }
   catch (error) { throw new AgentToolError('tool-failed', `${method} failed`, { method, cause: String(error && error.message || error) }); }
 }
+function programResultCompleteness(results, localComplete, cappedReason) {
+  const meta = results && typeof results === 'object' ? results : {};
+  const nested = meta.completeness && typeof meta.completeness === 'object' ? meta.completeness : {};
+  const upstreamComplete = meta.complete !== false
+    && nested.complete !== false
+    && meta.truncated !== true
+    && meta.queryLimited !== true
+    && meta.capped !== true;
+  const complete = upstreamComplete && localComplete;
+  if (complete) return { complete: true, upstreamComplete: true, reason: null };
+  if (upstreamComplete) return { complete: false, upstreamComplete: true, reason: 'result-limit' };
+  const reason = meta.incompleteReason
+    ?? meta.reason
+    ?? nested.reason
+    ?? (meta.queryLimited === true ? 'query-limit' : null)
+    ?? (meta.capped === true ? cappedReason : null)
+    ?? 'upstream-incomplete';
+  return { complete: false, upstreamComplete: false, reason };
+}
 
 export function createAgentTools(context, opts) {
   const ctx = context || {};
@@ -314,9 +333,10 @@ export function createAgentTools(context, opts) {
       const raw = Array.isArray(q.results) ? q.results : [];
       const page = raw.slice(offset, offset + limit);
       const results = page.map((r) => ({ ...r, name: nameFor(ctx, r.addr ?? r.function ?? r.functionAddress) }));
-      const complete = raw.length < request || offset + results.length >= raw.length;
-      const total = raw.length < request ? raw.length : null;
-      return { tool: 'get_callers', address: addr, supported:q.supported, results, offset, returned:results.length, total, complete, truncated:!complete, reason:complete ? null : 'result-limit', cost:{ functions:0, disassembly:0 } };
+      const localComplete = raw.length < request || offset + results.length >= raw.length;
+      const status = programResultCompleteness(raw, localComplete, 'calls-source-capped');
+      const total = status.upstreamComplete && raw.length < request ? raw.length : null;
+      return { tool: 'get_callers', address: addr, supported:q.supported, results, offset, returned:results.length, total, complete:status.complete, truncated:!status.complete, reason:status.reason, cost:{ functions:0, disassembly:0 } };
     },
     async get_callees(address, options) {
       const addr = requiredAddress(address); const limit = bounded(options && options.limit, 100, 1, 1000);
@@ -328,9 +348,10 @@ export function createAgentTools(context, opts) {
       const raw = Array.isArray(q.results) ? q.results : [];
       const page = raw.slice(offset, offset + limit);
       const results = page.map((r) => ({ ...r, name: nameFor(ctx, r.addr ?? r.function ?? r.functionAddress) }));
-      const complete = raw.length < request || offset + results.length >= raw.length;
-      const total = raw.length < request ? raw.length : null;
-      return { tool: 'get_callees', address: addr, supported:q.supported, results, offset, returned:results.length, total, complete, truncated:!complete, reason:complete ? null : 'result-limit', cost:{ functions:0, disassembly:0 } };
+      const localComplete = raw.length < request || offset + results.length >= raw.length;
+      const status = programResultCompleteness(raw, localComplete, 'calls-source-capped');
+      const total = status.upstreamComplete && raw.length < request ? raw.length : null;
+      return { tool: 'get_callees', address: addr, supported:q.supported, results, offset, returned:results.length, total, complete:status.complete, truncated:!status.complete, reason:status.reason, cost:{ functions:0, disassembly:0 } };
     },
     async get_xrefs(address, options) {
       const addr = requiredAddress(address); const span = options && options.span != null ? requiredAddress(options.span, 'span') : 1n;
@@ -344,12 +365,14 @@ export function createAgentTools(context, opts) {
       const rawFunctions = Array.isArray(functions.results) ? functions.results : [];
       const siteRows = rawSites.slice(offset, offset + limit);
       const functionRows = rawFunctions.slice(offset, offset + limit);
-      const sitesComplete = rawSites.length < request || offset + siteRows.length >= rawSites.length;
-      const functionsComplete = rawFunctions.length < request || offset + functionRows.length >= rawFunctions.length;
-      const complete = sitesComplete && functionsComplete;
-      const siteTotal = rawSites.length < request ? rawSites.length : null;
-      const functionTotal = rawFunctions.length < request ? rawFunctions.length : null;
-      return { tool: 'get_xrefs', address: addr, supported:{sites:sites.supported,functions:functions.supported}, sites:siteRows, functions:functionRows, offset, returned:Math.max(siteRows.length, functionRows.length), total:siteTotal != null && functionTotal != null ? Math.max(siteTotal, functionTotal) : null, totals:{sites:siteTotal,functions:functionTotal}, complete, truncated:!complete, reason:complete ? null : 'result-limit', cost:{ functions:0, disassembly:0 } };
+      const sitesLocalComplete = rawSites.length < request || offset + siteRows.length >= rawSites.length;
+      const functionsLocalComplete = rawFunctions.length < request || offset + functionRows.length >= rawFunctions.length;
+      const sitesStatus = programResultCompleteness(rawSites, sitesLocalComplete, 'refs-source-capped');
+      const functionsStatus = programResultCompleteness(rawFunctions, functionsLocalComplete, 'refs-source-capped');
+      const complete = sitesStatus.complete && functionsStatus.complete;
+      const siteTotal = sitesStatus.upstreamComplete && rawSites.length < request ? rawSites.length : null;
+      const functionTotal = functionsStatus.upstreamComplete && rawFunctions.length < request ? rawFunctions.length : null;
+      return { tool: 'get_xrefs', address: addr, supported:{sites:sites.supported,functions:functions.supported}, sites:siteRows, functions:functionRows, offset, returned:Math.max(siteRows.length, functionRows.length), total:siteTotal != null && functionTotal != null ? Math.max(siteTotal, functionTotal) : null, totals:{sites:siteTotal,functions:functionTotal}, complete, truncated:!complete, reason:complete ? null : (sitesStatus.reason || functionsStatus.reason), cost:{ functions:0, disassembly:0 } };
     },
 
     async slice_backward(functionAddress, seed, options) {
