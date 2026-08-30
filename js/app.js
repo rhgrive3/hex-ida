@@ -45,6 +45,38 @@ import { AnalysisQueryAPI, createAppAnalysisQueryAdapter } from './analysis/quer
 const $ = (id) => document.getElementById(id);
 const FUNCTION_DISCOVERY_GLOBAL_CAP = 400_000;
 
+function appProducerAbortError(signal, message='Analysis producer aborted') {
+  if (signal?.reason instanceof Error) return signal.reason;
+  const error = new Error(signal?.reason == null ? message : String(signal.reason));
+  error.name = 'AbortError';
+  error.code = 'ABORT_ERR';
+  return error;
+}
+function waitForAppProducer(entry, signal) {
+  if (signal?.aborted) return Promise.reject(appProducerAbortError(signal));
+  entry.waiters++;
+  return new Promise((resolve, reject) => {
+    let done = false;
+    const finish = (fn, value) => {
+      if (done) return;
+      done = true;
+      signal?.removeEventListener('abort', onAbort);
+      entry.waiters = Math.max(0, entry.waiters - 1);
+      fn(value);
+    };
+    const onAbort = () => {
+      if (done) return;
+      done = true;
+      signal?.removeEventListener('abort', onAbort);
+      entry.waiters = Math.max(0, entry.waiters - 1);
+      if (!entry.settled && entry.waiters === 0) entry.controller.abort('analysis-producer-no-consumers');
+      reject(appProducerAbortError(signal));
+    };
+    signal?.addEventListener('abort', onAbort, { once:true });
+    entry.promise.then((value) => finish(resolve, value), (error) => finish(reject, error));
+  });
+}
+
 class App {
   get analysisEpoch() { return this.backend ? this.backend.analysisEpoch : -1; }
 
@@ -1010,12 +1042,11 @@ class App {
         for (const e of this.notes.nameEntries()) this.symbols.rename(e.addr, e.name);
         this.viewer.setSymbols(this.symbols);
         this.updateChrome();
-        // ObjC recovery is intentionally demand-driven. It can traverse large
-        // runtime metadata and must not be a hidden prerequisite of opening a file.
-        // Swift/recognition keep their existing background warmup behavior.
+        // ObjC and whole-binary recognition are intentionally demand-driven.
+        // Swift metadata may warm in the background, but recognition only starts
+        // from an explicit consumer (Overview/Explorer/etc.).
         return Promise.allSettled([
           this.ensureSwift(),
-          this.ensureRecognition({ maxFunctions: 350000 }),
         ]);
       }).catch(() => { /* シンボルがなくても読める */ });
     }
@@ -1038,7 +1069,7 @@ class App {
   async ensureObjc(sliceIndex, options = {}) {
     const epoch = this.backend.gen;
     if (this.objcModel && this.objcRuntime) return this.fields;
-    if (this.objcBusy && this.objcBusyEpoch === epoch) return this.objcBusy;
+    if (this.objcBusy && this.objcBusyEpoch === epoch && this.objcBusyState) return waitForAppProducer(this.objcBusyState, options.signal ?? null);
     const regions = this.store.get('regions') || [];
     const list = regions.find((r) => r.section === '__objc_classlist' && r.size > 0n) || null;
     const protocolList = regions.find((r) => r.section === '__objc_protolist' && r.size > 0n) || null;
@@ -1051,15 +1082,33 @@ class App {
     }
     const slice = sliceIndex != null ? sliceIndex : this.store.get('sliceIndex');
     this.objcBusyEpoch = epoch;
-    this.objcBusy = (async () => {
-      const read = (addr, len) => this.backend.readAt(addr, len).then((r) => (r && r.found ? r.bytes : null)).catch(() => null);
+    const producerController = new AbortController();
+    const producerState = { controller:producerController, waiters:0, settled:false, promise:null };
+    const producerOptions = { ...options, signal:producerController.signal };
+    producerState.promise = (async () => {
+      const read = async (addr, len) => {
+        if (producerController.signal.aborted) throw appProducerAbortError(producerController.signal, 'Objective-C metadata read aborted');
+        const request = this.backend.readAt(addr, len, false, { priority:producerOptions.priority === 'background' ? 'background' : 'current' });
+        const onAbort = () => request.cancel?.();
+        producerController.signal.addEventListener('abort', onAbort, { once:true });
+        try {
+          const r = await request;
+          if (producerController.signal.aborted) throw appProducerAbortError(producerController.signal, 'Objective-C metadata read aborted');
+          return r && r.found ? r.bytes : null;
+        } catch (error) {
+          if (producerController.signal.aborted || error?.name === 'AbortError') throw error;
+          return null;
+        } finally {
+          producerController.signal.removeEventListener('abort', onAbort);
+        }
+      };
       try {
         const info = this.store.get('fileInfo');
         const sl = info && info.slices ? info.slices[slice] : null;
         const imageBase = sl && sl.info ? sl.info.textVM : null;
         const executableRanges=regions.filter((r)=>r?.exec===true&&r.size>0n).map((r)=>({vmAddr:r.vmAddr,size:r.size}));
         const architecture=sl?.name||sl?.info?.arch||sl?.info?.architecture||null;
-        const model = await buildObjcRuntimeModel(read, list, { protocolList, categoryList, executableRanges, architecture }, null, imageBase, null, options);
+        const model = await buildObjcRuntimeModel(read, list, { protocolList, categoryList, executableRanges, architecture }, null, imageBase, null, producerOptions);
         if (epoch !== this.backend.gen || this.store.get('sliceIndex') !== slice) return this.fields;
         model.runtimeIndex = model.runtimeIndex || buildObjcRuntimeIndex(model);
         this.objcModel = model;
@@ -1078,27 +1127,48 @@ class App {
                 ' field names from ' + model.count + ' classes'));
           }
         }
-      } catch { /* fail-soft on partial Apple metadata */ }
-      finally { if (this.objcBusyEpoch === epoch) { this.objcBusy=null; this.objcBusyEpoch=-1; } }
+      } catch (error) {
+        if (producerController.signal.aborted || error?.name === 'AbortError') throw error;
+        /* fail-soft on partial Apple metadata */
+      }
+      finally { if (this.objcBusyEpoch === epoch) { this.objcBusy=null; this.objcBusyEpoch=-1; this.objcBusyState=null; } }
       return epoch === this.backend.gen ? this.fields : EMPTY_FIELDS;
     })();
-    return this.objcBusy;
+    producerState.promise = producerState.promise.finally(() => { producerState.settled = true; });
+    this.objcBusyState = producerState;
+    this.objcBusy = producerState.promise;
+    return waitForAppProducer(producerState, options.signal ?? null);
   }
 
-  async ensureSwift() {
+  async ensureSwift(options = {}) {
     const epoch = this.backend.gen;
     if (this.swiftModel && this.swiftRuntime) return this.swiftModel;
-    if (this.swiftBusy && this.swiftBusyEpoch === epoch) return this.swiftBusy;
+    if (this.swiftBusy && this.swiftBusyEpoch === epoch && this.swiftBusyState) return waitForAppProducer(this.swiftBusyState, options.signal ?? null);
     const regions = this.store.get('regions') || [];
     if (!regions.some((r) => /^__swift5_/.test(r.section || ''))) return null;
     const slice = this.store.get('sliceIndex');
     this.swiftBusyAbort?.abort('swift-slice-superseded');
     const controller = new AbortController();
+    const producerState = { controller, waiters:0, settled:false, promise:null };
     this.swiftBusyAbort = controller;
     this.swiftBusyEpoch = epoch;
-    this.swiftBusy = (async () => {
-      const read = (addr, len) => this.backend.readAt(addr, len, false, { priority:'background' })
-        .then((r) => (r && r.found ? r.bytes : null)).catch(() => null);
+    producerState.promise = (async () => {
+      const read = async (addr, len) => {
+        if (controller.signal.aborted) throw appProducerAbortError(controller.signal, 'Swift metadata read aborted');
+        const request = this.backend.readAt(addr, len, false, { priority:options.priority === 'background' ? 'background' : 'current' });
+        const onAbort = () => request.cancel?.();
+        controller.signal.addEventListener('abort', onAbort, { once:true });
+        try {
+          const r = await request;
+          if (controller.signal.aborted) throw appProducerAbortError(controller.signal, 'Swift metadata read aborted');
+          return r && r.found ? r.bytes : null;
+        } catch (error) {
+          if (controller.signal.aborted || error?.name === 'AbortError') throw error;
+          return null;
+        } finally {
+          controller.signal.removeEventListener('abort', onAbort);
+        }
+      };
       try {
         const model=await buildSwiftMetadataModel(read,regions,{
           budget:20000,
@@ -1113,13 +1183,19 @@ class App {
         }
         if (names.length) { this.symbols.addNames(names); this.symbols.addFunctions(names.map((x) => x.addr)); this.viewer.setSymbols(this.symbols); }
         return model;
-      } catch { return null; }
+      } catch (error) {
+        if (controller.signal.aborted || error?.name === 'AbortError') throw error;
+        return null;
+      }
       finally {
-        if (this.swiftBusyEpoch === epoch) { this.swiftBusy = null; this.swiftBusyEpoch = -1; }
+        if (this.swiftBusyEpoch === epoch) { this.swiftBusy = null; this.swiftBusyEpoch = -1; this.swiftBusyState = null; }
         if (this.swiftBusyAbort === controller) { this.swiftBusyAbort = null; }
       }
     })();
-    return this.swiftBusy;
+    producerState.promise = producerState.promise.finally(() => { producerState.settled = true; });
+    this.swiftBusyState = producerState;
+    this.swiftBusy = producerState.promise;
+    return waitForAppProducer(producerState, options.signal ?? null);
   }
 
   resolveSwiftCall(call) { return this.swiftRuntime ? resolveSwiftDispatch(this.swiftRuntime, call || {}) : {resolved:null,candidates:[],confidence:0,reason:'swift-runtime-unavailable'}; }
@@ -1262,7 +1338,7 @@ class App {
     const project=await this.workspace.importProject(file);this.activeProject=project;this.updateChrome();return project;
   }
 
-  async loadDiffBaseline(file){return this.workspace.loadBaseline(file);}
+  async loadDiffBaseline(file, options={}){return this.workspace.loadBaseline(file, options);}
   async runBinaryDiff(options){return this.workspace.diff(options);}
   getBinaryDiff(){return this.workspace.getBinaryDiff();}
   saveWorkspace(){return this.workspace.autosave();}
