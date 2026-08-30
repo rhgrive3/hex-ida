@@ -11,10 +11,22 @@
 export const ARM64_ENCODING_WORD_CONTRACT_VERSION = 'arm64-encoding-word/v1';
 export const ARM64_INSTRUCTION_SIZE_BYTES = 4;
 
+function isByte(value) {
+  return typeof value === 'number'
+    && Number.isInteger(value)
+    && value >= 0
+    && value <= 0xff;
+}
+
 function fromBytes(bytes, offset) {
   if (offset < 0 || offset + ARM64_INSTRUCTION_SIZE_BYTES > bytes.length) return null;
+  const b0 = bytes[offset];
+  const b1 = bytes[offset + 1];
+  const b2 = bytes[offset + 2];
+  const b3 = bytes[offset + 3];
+  if (![b0, b1, b2, b3].every(isByte)) return null;
   return (
-    (bytes[offset] | (bytes[offset + 1] << 8) | (bytes[offset + 2] << 16) | (bytes[offset + 3] << 24)) >>> 0
+    (b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)) >>> 0
   );
 }
 
