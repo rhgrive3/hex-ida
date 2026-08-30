@@ -35,7 +35,9 @@ export class ContextBroker {
       },
       turn: snapshot ? compactSnapshot(snapshot) : undefined,
       investigation: structuredMemory(session),
-      verifiedEvidence: evidenceStore ? evidenceStore.all().filter((item) => item.status === 'verified').slice(-32).map(compactEvidence) : [],
+      verifiedEvidence: evidenceStore ? (typeof evidenceStore.recentByStatus === 'function'
+        ? evidenceStore.recentByStatus('verified', 32)
+        : evidenceStore.all().filter((item) => item.status === 'verified').slice(-32)).map(compactEvidence) : [],
       pinnedEvidence: evidenceStore ? evidenceStore.pinned(session?.pinnedEvidence).slice(-32).map(compactEvidence) : [],
       activeHypotheses: hypotheses.filter((item) => item.status === 'open' || item.status === 'supported').slice(-20).map(compactHypothesis),
       recentObservations: compactObservations(observations, this.maxObservationBytes),
@@ -155,6 +157,22 @@ function trimQueue(context, queue, maxBytes) {
 function trimToBudget(context, maxBytes) {
   if (byteLength(context) <= maxBytes) return;
 
+  // Preserve the original semantic priority exactly: transcript history is
+  // dropped first, followed by observations, hypotheses, pinned evidence and
+  // finally verified evidence. trimQueue performs the same prefix removal as
+  // repeated shift(), but finds the boundary with O(log N) full encodes.
+  const queues = [
+    context.recentMessages,
+    context.recentObservations,
+    context.activeHypotheses,
+    context.pinnedEvidence,
+    context.verifiedEvidence,
+  ].filter(Array.isArray);
+  for (const queue of queues) {
+    trimQueue(context, queue, maxBytes);
+    if (byteLength(context) <= maxBytes) return;
+  }
+
   if (context.current?.function && !context.current.function.containmentOnly) {
     delete context.current.function.instructions;
     if (context.current.function.assembly) context.current.function.assembly = context.current.function.assembly.slice(0, 2000);
@@ -162,19 +180,6 @@ function trimToBudget(context, maxBytes) {
     context.current.function.truncated = true;
     if (byteLength(context) <= maxBytes) return;
   }
-
-  const queues = [
-    context.recentObservations,
-    context.verifiedEvidence,
-    context.activeHypotheses,
-    context.pinnedEvidence,
-  ].filter(Array.isArray);
-
-  for (const queue of queues) {
-    trimQueue(context, queue, maxBytes);
-    if (byteLength(context) <= maxBytes) return;
-  }
-
   if (context.investigation) {
     context.investigation.importantPriorActions = [];
     context.investigation.rejectedHypotheses = [];
@@ -183,23 +188,6 @@ function trimToBudget(context, maxBytes) {
   }
   if (context.conversationSummary) {
     context.conversationSummary = context.conversationSummary.slice(0, 500);
-    if (byteLength(context) <= maxBytes) return;
-  }
-  if (Array.isArray(context.recentMessages) && context.recentMessages.length > 1) {
-    const original = context.recentMessages.slice();
-    let low = 0, high = original.length - 1;
-    while (low < high) {
-      const mid = Math.floor((low + high) / 2);
-      context.recentMessages.length = 0;
-      context.recentMessages.push(...original.slice(mid));
-      if (byteLength(context) <= maxBytes) {
-        high = mid;
-      } else {
-        low = mid + 1;
-      }
-    }
-    context.recentMessages.length = 0;
-    context.recentMessages.push(...original.slice(low));
   }
 }
 function byteLength(value) { return new TextEncoder().encode(JSON.stringify(jsonSafe(value))).byteLength; }

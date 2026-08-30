@@ -64,7 +64,7 @@ export async function executeTurn(input = {}, options = {}) {
       }
       if (!session) {
         session = await this.sessionStore.create({
-          binaryId: snapshot.binaryId, binaryIdentity: snapshot.binaryIdentity, projectId: snapshot.projectIdentity,
+          binaryId: snapshot.binaryId, binaryIdentity: snapshot.binaryIdentity, projectId: snapshot.projectIdentity, conversationId: request.conversationId || null,
           mode: request.mode, style: request.style, scope: request.scope, effectiveScope: scopeController.effectiveScope, goal: request.goal,
           investigationMemory: { goal: request.goal, anchor: memoryAnchor(snapshot, scopeController.effectiveScope) },
         });
@@ -78,6 +78,7 @@ export async function executeTurn(input = {}, options = {}) {
 
       await this.sessionStore.update(session.id, {
         mode: request.mode, style: request.style, scope: request.scope, effectiveScope: scopeController.effectiveScope, goal: request.goal,
+        conversationId: request.conversationId ?? session.conversationId ?? null,
         binaryIdentity: snapshot.binaryIdentity, projectId: snapshot.projectIdentity,
       });
       await this.sessionStore.updateMemory(session.id, { goal: request.goal, anchor: memoryAnchor(snapshot, scopeController.effectiveScope) });
@@ -213,7 +214,9 @@ export async function executeTurn(input = {}, options = {}) {
       });
       await this.sessionStore.update(session.id, {
         effectiveScope: scopeController.effectiveScope, hypotheses: this.hypothesisStore.all(),
-        confirmedFindings: this.evidenceStore.all().filter((item) => item.status === 'verified'), proposedActions: this.proposalStore.all(),
+        confirmedFindings: typeof this.evidenceStore.byStatus === 'function'
+          ? this.evidenceStore.byStatus('verified')
+          : this.evidenceStore.all().filter((item) => item.status === 'verified'), proposedActions: this.proposalStore.all(),
         lastActivity: activity[activity.length - 1] || null,
       });
       result.sessionId = session.id;

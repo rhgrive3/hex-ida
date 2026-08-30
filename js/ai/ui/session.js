@@ -202,14 +202,19 @@ export class AiSession {
       });
       if (!next) this.conversations.push(this.current);
     }
-    if (typeof this.engine?.deleteSession === 'function') {
-      try { this.engine.deleteSession(id); } catch { /* best effort */ }
-    } else if (typeof this.engine?.runtime?.sessionStore?.delete === 'function') {
-      try { this.engine.runtime.sessionStore.delete(id); } catch { /* best effort */ }
-    }
+    this._releaseConversation(conversation, 'user-delete');
     this.scheduleSave();
     this.emit({ type: 'conversation', conversation: this.current });
     return true;
+  }
+
+  _releaseConversation(conversation, reason) {
+    if (!conversation?.id) return;
+    if (typeof this.engine?.deleteSession === 'function') {
+      Promise.resolve(this.engine.deleteSession(conversation.id, { reason })).catch(() => {});
+    } else if (typeof this.engine?.forgetAIConversation === 'function') {
+      try { this.engine.forgetAIConversation(conversation.id); } catch { /* best effort */ }
+    }
   }
 
   /**
@@ -357,7 +362,10 @@ export class AiSession {
     const oldest = this.conversations
       .filter((item) => item !== this.current)
       .sort((a, b) => (a.updatedAt || 0) - (b.updatedAt || 0))[0];
-    if (oldest) this.conversations.splice(this.conversations.indexOf(oldest), 1);
+    if (oldest) {
+      this.conversations.splice(this.conversations.indexOf(oldest), 1);
+      this._releaseConversation(oldest, 'retention-eviction');
+    }
   }
 
   scheduleSave() {

@@ -5,8 +5,9 @@ import { composePrompt } from '../prompts/compose.js';
 import { createCapabilityCatalog } from '../capabilities/catalog.js';
 import { createCapabilityExecutor } from '../capabilities/executor.js';
 import { createProposalExecutor } from '../interaction/proposal-executor.js';
+import { createProjectSessionPersistence } from '../session-core/index.js';
 
-async function loadCoreRuntime(localContext) {
+async function loadCoreRuntime(localContext, persistence = null) {
   const runtimeModule = await import('../runtime.js');
   if (!runtimeModule || typeof runtimeModule.createAIRuntime !== 'function') return null;
   let provider = null;
@@ -24,7 +25,7 @@ async function loadCoreRuntime(localContext) {
       if (providerModule && typeof providerModule.WorkerAIProvider === 'function') provider = new providerModule.WorkerAIProvider();
     }
   } catch { /* deterministic core remains available */ }
-  return runtimeModule.createAIRuntime({ context: localContext, provider });
+  return runtimeModule.createAIRuntime({ context: localContext, provider, persistence });
 }
 
 export function createAiEngine(app, options = {}) {
@@ -34,7 +35,8 @@ export function createAiEngine(app, options = {}) {
   const local = createLocalEngine(app, localContext);
   const capabilityCatalog = createCapabilityCatalog();
   const capabilityExecutor = createCapabilityExecutor({ catalog: capabilityCatalog, app, binaryId: () => localContext.binaryId, runtimePlatform: () => localContext.runtime?.platform?.() });
-  const loadCore = options.loadCore || loadCoreRuntime;
+  const sessionPersistence = createLiveProjectSessionPersistence(app);
+  const loadCore = options.loadCore || ((context) => loadCoreRuntime(context, sessionPersistence));
   let corePromise = null, core = null;
   const sessions = loadConversationBindings();
   let defaultSessionId = null;
@@ -46,6 +48,7 @@ export function createAiEngine(app, options = {}) {
 
   return {
     id: 'bridge', localContext, runtime,
+    get sessionStore() { return core?.sessionStore || null; },
     proposals: () => (core && core.proposalStore) || null,
     capabilities: () => capabilityCatalog.list(capabilityExecutor.context()),
     capabilityExecutor,
@@ -57,6 +60,7 @@ export function createAiEngine(app, options = {}) {
       const { question, mode, style, scope, signal, onActivity, context } = input;
       const conversationKey = input.conversationId == null ? null : String(input.conversationId);
       let sessionId = conversationKey ? (sessions.get(conversationKey) || null) : defaultSessionId;
+      if (!sessionId) sessionId = persistedSessionForConversation(sessionPersistence, conversationKey, localContext);
       const prompt = composePrompt({ mode, style, scope, question, context });
       const engine = await runtime();
       if (engine && typeof engine.turn === 'function') {
@@ -126,11 +130,59 @@ export function createAiEngine(app, options = {}) {
       if (typeof engine?.provider?.setSelection !== 'function') throw new Error('The active AI provider does not support model selection.');
       return engine.provider.setSelection(selection, options);
     },
+    async deleteSession(conversationId, { reason = 'user-delete' } = {}) {
+      if (conversationId == null) return false;
+      const key = String(conversationId);
+      const sessionId = sessions.get(key) || null;
+      const removed = sessions.delete(key);
+      persistConversationBindings(sessions);
+      if (!sessionId) return removed;
+      const deletePersisted = reason === 'user-delete';
+      if (core?.releaseSession) await core.releaseSession(sessionId, { deletePersisted });
+      else if (deletePersisted) await sessionPersistence.delete(sessionId);
+      return true;
+    },
     forgetAIConversation(conversationId) {
       if (conversationId == null) return false;
       const removed = sessions.delete(String(conversationId)); persistConversationBindings(sessions); return removed;
     },
   };
+}
+
+function createLiveProjectSessionPersistence(app) {
+  let saveTimer = null;
+  const projectFor = () => app?.workspace?.project || app?.activeProject || app?.project || null;
+  const ensureProject = () => projectFor() || app?.workspace?.snapshot?.() || null;
+  const changed = (project) => {
+    if (app?.workspace) app.workspace.project = project;
+    app.activeProject = project;
+    if (saveTimer != null || typeof setTimeout !== 'function') return;
+    saveTimer = setTimeout(() => { saveTimer = null; try { app?.workspace?.autosave?.(); } catch { /* optional autosave */ } }, 250);
+  };
+  const adapterFor = (project) => project ? createProjectSessionPersistence(project, { onChange: changed }) : null;
+  return {
+    list() { return adapterFor(projectFor())?.list?.() || []; },
+    async load(id) { return (await adapterFor(projectFor())?.load?.(id)) || null; },
+    async save(session) { const adapter = adapterFor(ensureProject()); if (adapter) await adapter.save(session); },
+    async delete(id) { const adapter = adapterFor(projectFor()); if (adapter) await adapter.delete(id); },
+  };
+}
+
+function persistedSessionForConversation(persistence, conversationId, context) {
+  const sessions = persistence?.list?.() || [];
+  const binaryId = context?.binaryIdentity?.id || context?.binaryId || null;
+  const projectId = context?.projectId || null;
+  const compatible = sessions.filter((session) => {
+    if (!session?.id) return false;
+    if (binaryId && session.binaryId && String(session.binaryId) !== String(binaryId)) return false;
+    if (projectId && session.projectId && String(session.projectId) !== String(projectId)) return false;
+    return true;
+  });
+  if (conversationId != null) {
+    const exact = compatible.find((session) => String(session.conversationId || '') === String(conversationId));
+    if (exact) return String(exact.id);
+  }
+  return compatible.length === 1 ? String(compatible[0].id) : null;
 }
 
 function exposeStableIdentityInputs(context, app) {

@@ -83,6 +83,17 @@ export class AIRuntime {
     };
   }
 
+  async releaseSession(sessionId, { deletePersisted = false } = {}) {
+    if (sessionId == null) return false;
+    const id = String(sessionId);
+    for (const key of Array.from(this.storeNamespaces.keys())) {
+      if (key.endsWith(`::${id}`)) this.storeNamespaces.delete(key);
+    }
+    if (deletePersisted) await this.sessionStore.delete(id);
+    else this.sessionStore.sessions?.delete?.(id);
+    return true;
+  }
+
   cancel() { for (const controller of this.activeControllers) controller.abort('cancelled'); this.activeControllers.clear(); if (this.provider && typeof this.provider.cancel === 'function') this.provider.cancel(); }
 }
 
