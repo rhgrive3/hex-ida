@@ -16,11 +16,12 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
+          import re
           p=Path('.github/workflows/temporary-unlinked-strict-boundaries-final.yml')
           s=p.read_text()
-          old="    if: ${{ github.actor != 'github-actions[bot]' }}\n"
-          if old not in s: raise SystemExit('actor guard not found')
-          s=s.replace(old,'',1)
+          s2,n=re.subn(r'(?m)^    if: .*\n','',s,count=1)
+          if n != 1: raise SystemExit('actor guard not found')
+          s=s2
           needle="          rep('js/runtime/authority.js', '''  if (!hasBinding) reason = 'runtime-binding-identity-invalid';\n            else if (!normalizedProviderProfileId || !normalizedTargetProfileId) reason = 'runtime-profile-identity-required';''', '''  if (!hasBinding) reason = 'runtime-binding-identity-invalid';\n            else if (normalizedProviderProfileId === false || normalizedTargetProfileId === false) reason = 'runtime-profile-identity-invalid';\n            else if (!normalizedProviderProfileId || !normalizedTargetProfileId) reason = 'runtime-profile-identity-required';''')\n"
           insert=needle+"          rep('js/runtime/authority.js', \"  const managedMatch = normalizedTargetProfileId?.match(/^managed:(wasm|dex|cil|jvm):m6$/) || null;\", \"  const managedMatch = typeof normalizedTargetProfileId === 'string' ? normalizedTargetProfileId.match(/^managed:(wasm|dex|cil|jvm):m6$/) : null;\")\n"
           if needle not in s: raise SystemExit('managed insertion guard not found')
