@@ -3,13 +3,6 @@ import { webcrypto } from 'node:crypto';
 import { DynamicTaskGraphHost } from '../../js/userscript/dev/task-graph/dynamic-task-graph.js';
 import { SingleConversationWorkerCoordinator } from '../../js/userscript/dev/single-tab/single-conversation-worker-coordinator.js';
 
-await testSupervisorWatchdogBoundsUnattendedWait();
-await testRunScopedRetryUsesBackoff();
-await testCompletionDeliveryCannotRewriteSuccess();
-await testSuccessfulWorkIsNotRetriedForCleanupFailure();
-await testSupervisorRestoreFailurePreservesWorkerCompletion();
-console.log('agent loop resilience: ok');
-
 async function testSupervisorWatchdogBoundsUnattendedWait() {
   const pool = new FakePool([{ hang: true }]);
   const host = graphHost(pool, { supervisorWatchdogTimeoutMs: 25, retryBaseDelayMs: 0 });
@@ -253,3 +246,10 @@ function abortError(reason) {
   return error;
 }
 function delay(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
+
+await testSupervisorWatchdogBoundsUnattendedWait();
+await testRunScopedRetryUsesBackoff();
+await testCompletionDeliveryCannotRewriteSuccess();
+await testSuccessfulWorkIsNotRetriedForCleanupFailure();
+await testSupervisorRestoreFailurePreservesWorkerCompletion();
+console.log('agent loop resilience: ok');
