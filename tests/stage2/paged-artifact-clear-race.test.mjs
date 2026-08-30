@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { ByteSource } from '../../js/binary/source.js';
 import { PagedArtifactReader } from '../../js/core/artifacts/paging/index.js';
 
+// Regression for #2701: clear() is a publication barrier even for non-cooperative sources.
 class DeferredNonCooperativeSource extends ByteSource {
   constructor() {
     super(4n, { maxReadLength:4 });
