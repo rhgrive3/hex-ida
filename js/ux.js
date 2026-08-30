@@ -5,6 +5,7 @@ import { closeMenu } from './ui.js';
 import { installDemandDrivenAnalysis } from './analysis/demand-driven-runtime.js';
 import { installSharedAppArtifacts } from './analysis/shared-app-artifacts.js';
 import { installSharedWorkerBinaryIdentity } from './analysis/shared-binary-identity.js';
+import { installSymmetricWorkspaceDiff } from './diff/symmetric-workspace-runtime.js';
 
 const LEGACY_ACTION_IDS = [
   'btn-help', 'btn-more',
@@ -66,6 +67,7 @@ function boot() {
   installDemandDrivenAnalysis(window.__app);
   installSharedAppArtifacts(window.__app);
   installSharedWorkerBinaryIdentity(window.__app);
+  installSymmetricWorkspaceDiff(window.__app);
   installViewerDragReturnGuard(window.__app.viewer);
   retireLegacyActionDom();
   const ui = installProductUI(window.__app);
