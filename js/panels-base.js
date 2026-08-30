@@ -3925,27 +3925,40 @@ export function showFunctionReport(app, addr, goal) {
   const { region, start, startRow, endRow } = window;
   const sym = app.symbols;
   const name = sym.nameAt(start);
-  const sheet = new Sheet(pick('この関数について', 'About this function'), { size: 'wide' });
+  const controller = new AbortController();
+  const sheet = new Sheet(pick('この関数について', 'About this function'), { size:'wide', onClose:() => controller.abort('function-report-closed') });
   sheet.root.classList.add('function-report-sheet');
   const body = sheet.body;
   const box = progressBox(body, t('functions.analyzing'));
   const later = el('div');
   body.append(later);
 
-  Promise.all([
-    analyzeFunctionCached(app.backend, region, startRow, endRow, sym, (p) => box.set({ done: p, all: 1 })),
-    app.ensureProgram(),
-  ]).then(([res, program]) => {
+  analyzeFunctionCached(app.backend, region, startRow, endRow, sym, (p) => box.set({ done:p, all:1 }))
+  .then((res) => {
     box.done();
-    if (!sheet.root.isConnected) return;
+    if (controller.signal.aborted || !sheet.root.isConnected) return;
     applySemantic(app, region, res);
-    const report = buildFunctionReport({
-      model: res.model, region, symbols: sym, program, goal, name,
-      // クラスとフィールドが読めていれば、x0+0x20 は self.hp として説明される
-      fields: app.fields, owner: app.ownerOf(start),
-    });
-    report.role = roleFromReport(report, { apis: res.model.facts.apis });
-    renderFunctionReport(app, sheet, later, report, res, region, goal);
+    const render = (program) => {
+      if (controller.signal.aborted || !sheet.root.isConnected) return;
+      const report = buildFunctionReport({
+        model:res.model, region, symbols:sym, program, goal, name,
+        fields:app.fields, owner:app.ownerOf(start),
+      });
+      report.role = roleFromReport(report, { apis:res.model.facts.apis });
+      later.replaceChildren();
+      renderFunctionReport(app, sheet, later, report, res, region, goal);
+      if (!program) later.prepend(para(pick(
+        '呼び出し関係は別に取得中です。ここまでの内容はこの関数自身の命令から得た結果です。',
+        'Call relationships are loading separately; the report shown now comes from this function itself.'), 'sub'));
+    };
+    // First useful paint is function-local and cannot be failed by global graph work.
+    render(null);
+    Promise.resolve().then(() => {
+      if (controller.signal.aborted) return null;
+      return app.ensureProgram();
+    }).then((program) => {
+      if (program) render(program);
+    }).catch(() => { /* relationship enrichment is optional */ });
   }).catch((err) => {
     box.done();
     if (sheet.root.isConnected) {

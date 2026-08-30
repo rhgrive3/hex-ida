@@ -5,7 +5,7 @@ class ControlledWorker {
   constructor(url){this.url=String(url);this.sent=[];this.onmessage=null;this.onerror=null;this.terminated=false;workers.push(this);}
   postMessage(message){this.sent.push(message);}
   terminate(){this.terminated=true;}
-  reply(request,result,{ok=true,error=null}={}){this.onmessage?.({data:ok?{t:'ok',id:request.id,epoch:request.epoch,result}:{t:'err',id:request.id,epoch:request.epoch,error:error||'failed'}});}
+  reply(request,result,{ok=true,error=null}={}){assert.ok(request,'reply requires an observed request');this.onmessage?.({data:ok?{t:'ok',id:request.id,epoch:request.epoch,result}:{t:'err',id:request.id,epoch:request.epoch,error:error||'failed'}});}
 }
 globalThis.Worker=ControlledWorker;
 
@@ -25,23 +25,32 @@ const openAObserved=openA.catch((error)=>{staleA=error;return null;});
 await tick();
 const platformA=getPlatform();
 assert.ok(platformA);
-const detectA=find(platformA,(m)=>m.t==='detect'&&m.file===fileA); platformA.reply(detectA,{formatId:'macho'});
+// #2516: the source-backed platform open is now also the format detector.  A
+// normal open transaction must not parse the same source once for `detect` and
+// again for `open`.
+assert.equal(platformA.sent.some((m)=>m.t==='detect'&&m.file===fileA),false);
+const platformOpenA=find(platformA,(m)=>m.t==='open'&&m.file===fileA);
+platformA.reply(platformOpenA,{formatId:'macho',detection:{formatId:'macho'},capability:{architecture:'arm64'},slices:[],raw:{id:'platform-raw-a'}});
 await tick();
 const legacyA=getLegacy();
 assert.ok(legacyA);
 const legacyOpenA=find(legacyA,(m)=>m.t==='open'&&m.file===fileA);
+assert.ok(legacyOpenA);
+assert.equal(platformA.sent.filter((m)=>m.t==='open'&&m.file===fileA).length,1);
+
 const openB=backend.open(fileB);
 await tick();
 const platformB=getPlatform();
-const detectB=find(platformB,(m)=>m.t==='detect'&&m.file===fileB); platformB.reply(detectB,{formatId:'pe'});
-await tick();
+assert.equal(platformB.sent.some((m)=>m.t==='detect'&&m.file===fileB),false);
 const platformOpenB=find(platformB,(m)=>m.t==='open'&&m.file===fileB);
-legacyA.reply(legacyOpenA,{format:'Mach-O 64-bit',slices:[],raw:{id:'raw'}});
+platformB.reply(platformOpenB,{formatId:'pe',detection:{formatId:'pe'},capability:{architecture:'x86_64'},slices:[],raw:{id:'raw-b'}});
+await openB;
+
+// Completing A after B has replaced the transport epoch must never publish A.
+legacyA.reply(legacyOpenA,{format:'Mach-O 64-bit',slices:[],raw:{id:'legacy-raw-a'}});
 await openAObserved;
 assert.equal(staleA?.stale,true);
-assert.equal(platformB.sent.some((m)=>m.t==='open'&&m.file===fileA),false);
-platformB.reply(platformOpenB,{formatId:'pe',capability:{architecture:'x86_64'},slices:[],raw:{id:'raw'}});
-await openB;
+assert.equal(platformB.sent.filter((m)=>m.t==='open'&&m.file===fileA).length,1);
 assert.equal(backend.file,fileB);
 
 // This half explicitly verifies the retained current compatibility oracle.

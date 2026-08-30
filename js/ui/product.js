@@ -11,9 +11,6 @@ import { addrHex, parseAddress, sizeText } from '../format.js';
 import { pick } from '../i18n.js';
 import { menu, copyText, toast } from '../ui.js';
 import {
-  showFileInfo, showSections, showStructure, showCandidates, showClass,
-} from '../panels.js';
-import {
   currentFunctionAddr, showTools, showRename, showComment, showDebugger, showGlobals,
 } from '../tools.js';
 import { findGlobals, importList } from '../linkage.js';
@@ -30,6 +27,16 @@ import { productDescriptor } from '../platform/product-descriptor.js';
 import { queryFunctions, queryStrings } from './explorer-index.js';
 import { genericEvidenceStatus, ownerEvidence, summaryEvidenceStatus, provenanceStatus } from './evidence-model.js';
 import { uiRoot } from '../ui-root.js';
+
+
+let _productPanelsPromise = null;
+function productPanels() { return _productPanelsPromise ||= import('../panels.js'); }
+function lazyProductPanel(name) { return (...args) => productPanels().then((module) => module[name](...args)); }
+const showFileInfo = lazyProductPanel('showFileInfo');
+const showSections = lazyProductPanel('showSections');
+const showStructure = lazyProductPanel('showStructure');
+const showCandidates = lazyProductPanel('showCandidates');
+const showClass = lazyProductPanel('showClass');
 
 const ja = () => (uiRoot()?.lang || navigator.language || 'ja').toLowerCase().startsWith('ja');
 const text = (j, e) => ja() ? j : e;
