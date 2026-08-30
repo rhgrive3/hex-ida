@@ -94,8 +94,8 @@ function partial(instruction, context, reason, categories = ['registers','flags'
 }
 
 function scalarWidth(op) {
-  const bits = Number(op?.bits || 0);
-  return Number.isSafeInteger(bits) && bits > 0 ? bits : null;
+  const bits = op?.bits;
+  return typeof bits === 'number' && Number.isSafeInteger(bits) && bits > 0 ? bits : null;
 }
 
 function floatType(bits) {
