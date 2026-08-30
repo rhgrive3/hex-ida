@@ -85,9 +85,11 @@ test('P10.9 non-identity process/thread/module scalar keys retain compatibility'
   assert.equal(event.moduleBindingKey, '9');
 });
 
-test('P10.9 stream/provider event identities do not accept numeric coercion', () => {
-  assert.throws(() => createRuntimeEvent({ runtimeSessionId: 'session', providerId: 'provider', kind: 'trace-marker', streamId: 7 }), /streamId must be a string/);
-  assert.throws(() => createRuntimeEvent({ runtimeSessionId: 'session', providerId: 'provider', kind: 'trace-marker', providerEventId: 7 }), /providerEventId must be a string/);
+test('P10.9 stream/provider event identities reject non-string and empty values', () => {
+  assert.throws(() => createRuntimeEvent({ runtimeSessionId: 'session', providerId: 'provider', kind: 'trace-marker', streamId: 7 }), /streamId must be a non-empty string/);
+  assert.throws(() => createRuntimeEvent({ runtimeSessionId: 'session', providerId: 'provider', kind: 'trace-marker', providerEventId: 7 }), /providerEventId must be a non-empty string/);
+  assert.throws(() => createRuntimeEvent({ runtimeSessionId: 'session', providerId: 'provider', kind: 'trace-marker', streamId: '' }), /streamId must be a non-empty string/);
+  assert.throws(() => createRuntimeEvent({ runtimeSessionId: 'session', providerId: 'provider', kind: 'trace-marker', providerEventId: '' }), /providerEventId must be a non-empty string/);
 });
 
 test('P10.9 intervention ledger does not coerce lookup identities', () => {
