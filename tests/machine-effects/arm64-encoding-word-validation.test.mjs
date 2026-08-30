@@ -15,6 +15,7 @@ assert.equal(arm64DecodedEncodingWord({ rawBytes:bytes }), word);
 assert.equal(arm64DecodedEncodingWord({ bytes:Uint8Array.from(bytes) }), word);
 assert.equal(arm64DecodedEncodingWord({ word }), word);
 assert.equal(arm64DecodedEncodingWord({ encodingWord:BigInt(word) }), word);
+assert.equal(arm64DecodedEncodingWord({ word, encodingWord:BigInt(word), rawBytes:bytes, bytes:Uint8Array.from(bytes) }), word);
 
 const malformedByteRuns = [
   ['255', 0x0b, 0x9f, 0xd6],
@@ -33,6 +34,7 @@ for (const malformed of malformedByteRuns) {
   assert.equal(arm64EncodingWord(malformed, 0), null);
   assert.equal(arm64DecodedEncodingWord({ rawBytes:malformed }), null);
   assert.equal(arm64DecodedEncodingWord({ bytes:malformed }), null);
+  assert.equal(arm64DecodedEncodingWord({ word, rawBytes:malformed }), null);
 }
 
 assert.equal(arm64EncodingWord([0xff, 0x0b, 0x9f], 0), null);
@@ -44,4 +46,9 @@ assert.equal(arm64DecodedEncodingWord({ word:'0xd69f0bff' }), null);
 assert.equal(arm64DecodedEncodingWord({ word:-1 }), null);
 assert.equal(arm64DecodedEncodingWord({ word:0x1_0000_0000 }), null);
 
-console.log('ARM64 encoding-word byte validation: PASS');
+assert.equal(arm64DecodedEncodingWord({ word, encodingWord:word ^ 1 }), null);
+assert.equal(arm64DecodedEncodingWord({ word, rawBytes:[0, 0, 0, 0] }), null);
+assert.equal(arm64DecodedEncodingWord({ rawBytes:bytes, bytes:[0, 0, 0, 0] }), null);
+assert.equal(arm64DecodedEncodingWord({ encodingWord:word, bytes:[...bytes.slice(0, 3), bytes[3] ^ 1] }), null);
+
+console.log('ARM64 encoding-word validation: PASS');
