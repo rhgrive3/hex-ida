@@ -3,7 +3,7 @@ import { buildSelectorIndex, resolveSelectorStub } from './selector-stubs.js';
 import { buildSwiftRuntimeIndex, classifySwiftRuntimeCall, resolveSwiftDispatch, swiftCallingConvention, formatSwiftCall } from '../swift.js';
 
 export function runtimeOriginForSymbol(name) {
-  const n = String(name || '');
+  const n = typeof name === 'string' ? name : '';
   if (/^_?\$[sS]/.test(n) || /^_?swift_/.test(n)) return 'swift';
   if (/^[+-]\[/.test(n) || /^_?objc_/.test(n) || /objc_msgSend/.test(n)) return 'objc';
   if (/^__?Z|^_Z/.test(n)) return 'cpp';
@@ -20,7 +20,8 @@ export function buildAppleRuntimeIndex({ objc = null, swift = null, selectorRefs
 }
 
 export function classifyRuntimeCall(name) {
-  return classifyObjcRuntimeCall(name) || classifySwiftRuntimeCall(name) || { runtime: runtimeOriginForSymbol(name), noise: false, category: 'call', name: String(name || '') };
+  const symbol = typeof name === 'string' ? name : '';
+  return classifyObjcRuntimeCall(symbol) || classifySwiftRuntimeCall(symbol) || { runtime: runtimeOriginForSymbol(symbol), noise: false, category: 'call', name: symbol };
 }
 
 /** Suppress only well-known compiler/runtime bookkeeping, retaining expert evidence. */
