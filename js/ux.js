@@ -4,6 +4,7 @@ import { installViewerDragReturnGuard } from './ui/viewer-gesture-guard.js';
 import { closeMenu } from './ui.js';
 import { installDemandDrivenAnalysis } from './analysis/demand-driven-runtime.js';
 import { installSharedAppArtifacts } from './analysis/shared-app-artifacts.js';
+import { installAutoReportIdentityBoundary } from './analysis/auto-report-identity.js';
 import { installSharedWorkerBinaryIdentity } from './analysis/shared-binary-identity.js';
 import { installSymmetricWorkspaceDiff } from './diff/symmetric-workspace-runtime.js';
 
@@ -66,6 +67,7 @@ function boot() {
   if (!window.__app) return;
   installDemandDrivenAnalysis(window.__app);
   installSharedAppArtifacts(window.__app);
+  installAutoReportIdentityBoundary(window.__app);
   installSharedWorkerBinaryIdentity(window.__app);
   installSymmetricWorkspaceDiff(window.__app);
   installViewerDragReturnGuard(window.__app.viewer);
