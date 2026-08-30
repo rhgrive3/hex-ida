@@ -25,7 +25,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
       - name: Apply repairs
-        run: python3 tools/unlinked-repair-20260830.py
+        run: |
+          python3 tools/unlinked-repair-compat-20260830.py
+          python3 tools/unlinked-repair-20260830.py
       - name: Regression test
         run: node tests/unlinked-current-regressions.mjs
       - name: Lint
