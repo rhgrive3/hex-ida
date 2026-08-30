@@ -1,0 +1,41 @@
+name: Reopened program capability repair
+on:
+  push:
+    branches:
+      - fix/reopened-program-capability-contract-v2
+permissions:
+  contents: write
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/reopened-program-capability-contract-v2
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install dependencies
+        run: npm ci
+      - name: Apply semantic repair
+        run: python .github/reopened-program-capability-repair.py
+      - name: Focused regression
+        run: node tests/reopened-program-capability-contract.mjs
+      - name: Program and product regressions
+        shell: bash
+        run: |
+          shopt -s nullglob
+          for f in tests/*program*.mjs tests/*linkage*.mjs tests/ui/*product*.mjs; do node "$f"; done
+      - name: UI tests
+        run: npm run ui:test
+      - name: Commit repair
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git rm .github/reopened-program-capability-repair.py .github/workflows/reopened-program-capability-runner.yml
+          git add js tests
+          git commit -m 'fix(program): preserve relation capability through consumers'
+          git push origin HEAD:fix/reopened-program-capability-contract-v2
