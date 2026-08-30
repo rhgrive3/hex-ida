@@ -17,6 +17,40 @@ const cfg=createSemanticCfg({functionId:'function_fixture',entryBlockId:'entry',
   {definitionId:'def_undef',valueId:'value_undef',kind:'undef',blockId:'entry',variableKey:'state:d',sourceEntityId:'entity_undef',origin}],uses:[{useId:'use_phi',valueId:'value_phi',blockId:'join',sourceEntityId:'entity_return',origin}]},{cfg});
  assert.equal(ssa.useDefLinks[0].definitionId,'def_phi');assert.deepEqual(ssa.defUseLinks.find((link)=>link.definitionId==='def_phi').useIds,['use_phi']);assert.ok(Object.isFrozen(ssa));
 }
+{
+ const valid={functionId:' function_fixture ',definitions:[{definitionId:' def_entry ',valueId:' value_entry ',kind:' entry ',blockId:' entry ',variableKey:' state:v ',sourceEntityId:' entity_entry ',origin}],uses:[{useId:' use_entry ',valueId:' value_entry ',blockId:' entry ',sourceEntityId:' entity_use ',origin}]};
+ const normalized=createSemanticSsaContract(valid,{cfg});
+ assert.equal(normalized.functionId,'function_fixture');
+ assert.equal(normalized.definitions[0].definitionId,'def_entry');
+ assert.equal(normalized.definitions[0].kind,'entry');
+ assert.equal(normalized.uses[0].useId,'use_entry');
+ const malformed=[
+  (input,value)=>{input.functionId=value;},
+  (input,value)=>{input.definitions[0].definitionId=value;},
+  (input,value)=>{input.definitions[0].valueId=value;},
+  (input,value)=>{input.definitions[0].kind=value;},
+  (input,value)=>{input.definitions[0].blockId=value;},
+  (input,value)=>{input.definitions[0].variableKey=value;},
+  (input,value)=>{input.definitions[0].sourceEntityId=value;},
+  (input,value)=>{input.uses[0].useId=value;},
+  (input,value)=>{input.uses[0].valueId=value;},
+  (input,value)=>{input.uses[0].blockId=value;},
+  (input,value)=>{input.uses[0].sourceEntityId=value;},
+ ];
+ for(const mutate of malformed){
+  for(const value of [['coerced'],{toString:()=> 'coerced'}]){
+   const input=structuredClone(valid);mutate(input,value);assert.throws(()=>createSemanticSsaContract(input,{cfg}),TypeError);
+  }
+ }
+ const phiBase={functionId:'function_fixture',definitions:[
+  {definitionId:'def_entry',valueId:'value_entry',kind:'entry',blockId:null,variableKey:null,sourceEntityId:null,origin},
+  {definitionId:'def_phi',valueId:'value_phi',kind:'phi',blockId:null,variableKey:null,sourceEntityId:null,incoming:[{predecessorBlockId:'pred',valueId:'value_entry'}],origin}],uses:[]};
+ for(const key of ['predecessorBlockId','valueId']){
+  for(const value of [['coerced'],{toString:()=> 'coerced'}]){
+   const input=structuredClone(phiBase);input.definitions[1].incoming[0][key]=value;assert.throws(()=>createSemanticSsaContract(input),TypeError);
+  }
+ }
+}
 assert.throws(()=>createSemanticSsaContract({functionId:'function_fixture',definitions:[{definitionId:'def_left',valueId:'value_left',kind:'definition',blockId:'left',sourceEntityId:'entity_left',origin},{definitionId:'def_bad_phi',valueId:'value_bad_phi',kind:'phi',blockId:'join',sourceEntityId:'entity_phi',incoming:[{predecessorBlockId:'entry',valueId:'value_left'}],origin}],uses:[]},{cfg}),/phi-predecessor-not-in-cfg|phi-predecessor-set-incomplete/);
 const regions=[
  createMemoryRegionRef({id:'region_stack',kind:'stack-fixed',functionId:'function_fixture',binaryId:'bin_fixture',offset:-16,widthBits:8}),
