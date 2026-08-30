@@ -5,7 +5,8 @@ const RESOLUTION_STATES = Object.freeze(['exact', 'resolved', 'ambiguous', 'unre
 const BINDING_STATES = Object.freeze(['exact', 'resolved', 'unresolved', 'mismatch']);
 
 function required(value, code, message) {
-  const text = String(value ?? '').trim();
+  if (typeof value !== 'string') throw new DebugAdapterError(code, message || code);
+  const text = value.trim();
   if (!text) throw new DebugAdapterError(code, message || code);
   return text;
 }
@@ -48,13 +49,19 @@ function ownedClone(value) {
 function freezeEvidenceIds(value) {
   if (value == null) return Object.freeze([]);
   if (!Array.isArray(value)) throw new DebugAdapterError('invalid-evidence-ids', 'evidence ids must be an array');
-  return Object.freeze([...new Set(value.map(String).filter(Boolean))].sort());
+  if (value.some((id) => typeof id !== 'string' || id.length === 0)) {
+    throw new DebugAdapterError('invalid-evidence-ids', 'evidence ids must contain only non-empty strings');
+  }
+  return Object.freeze([...new Set(value)].sort());
 }
 
 function freezeEntityIds(value) {
   if (value == null) return Object.freeze([]);
   if (!Array.isArray(value)) throw new DebugAdapterError('invalid-target-entity-ids', 'target entity ids must be an array');
-  return Object.freeze(value.map(String).filter(Boolean));
+  if (value.some((id) => typeof id !== 'string' || id.length === 0)) {
+    throw new DebugAdapterError('invalid-target-entity-ids', 'target entity ids must contain only non-empty strings');
+  }
+  return Object.freeze([...value]);
 }
 
 export function createRuntimeProviderSessionId(input = {}) {
