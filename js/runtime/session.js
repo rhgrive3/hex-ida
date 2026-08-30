@@ -18,10 +18,16 @@ function eventEpoch(value) {
   return Number.isSafeInteger(n) && n >= 1 ? n : null;
 }
 
+function debugSessionId(value) {
+  if (value == null) return `debug:${nextSession++}`;
+  if (typeof value !== 'string' || !value.trim()) throw new DebugAdapterError('session-id', 'debug session id must be a non-empty string');
+  return value;
+}
+
 export class DebugSession {
   constructor(adapter, options = {}) {
     if (!adapter) throw new DebugAdapterError('adapter','DebugSession requires an adapter');
-    this.id = String(options.id || `debug:${nextSession++}`); this.adapter = adapter; this.backend = adapter.kind;
+    this.id = debugSessionId(options.id); this.adapter = adapter; this.backend = adapter.kind;
     this.binaryHash = options.binaryHash || null; this.modules=[]; this.threads=[]; this.breakpoints=[]; this.experiments=[]; this.observations=[];
     this.traces = new TraceRingBuffer(options.trace || {}); this.epoch=1; this.connected=false; this.closed=false; this.controllers=new Set(); this._unsubscribe=null;
     this.refreshErrors={modules:null,threads:null}; this._onClosed=typeof options.onClosed==='function'?options.onClosed:null;
