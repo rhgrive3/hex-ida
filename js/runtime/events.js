@@ -159,33 +159,39 @@ export function normalizeLegacyRuntimeEvent(input, context = {}) {
 
 function estimatePayloadSize(value, maxBytes) {
   let size = 0;
-  function walk(v) {
-    if (size > maxBytes) return;
-    if (v == null) { size += 4; return; }
-    if (typeof v === 'boolean') { size += 5; return; }
-    if (typeof v === 'number') { size += 8; return; }
-    if (typeof v === 'string') { size += v.length * 2 + 2; return; }
-    if (typeof v === 'bigint') { size += 16; return; }
-    if (ArrayBuffer.isView(v)) { size += v.byteLength * 4; return; }
-    if (v instanceof ArrayBuffer) { size += v.byteLength * 4; return; }
-    if (Array.isArray(v)) {
-      size += 2;
-      for (const item of v) {
-        walk(item);
-        if (size > maxBytes) return;
-      }
-      return;
+  const active = new WeakSet();
+  const stack = [{ value, exit: false }];
+  while (stack.length && size <= maxBytes) {
+    const frame = stack.pop();
+    const v = frame.value;
+    if (frame.exit) {
+      active.delete(v);
+      continue;
     }
+    if (v == null) { size += 4; continue; }
+    if (typeof v === 'boolean') { size += 5; continue; }
+    if (typeof v === 'number') { size += 8; continue; }
+    if (typeof v === 'string') { size += v.length * 2 + 2; continue; }
+    if (typeof v === 'bigint') { size += 16; continue; }
+    if (ArrayBuffer.isView(v)) { size += v.byteLength * 4; continue; }
+    if (v instanceof ArrayBuffer) { size += v.byteLength * 4; continue; }
     if (typeof v === 'object') {
+      if (active.has(v)) return maxBytes + 1;
+      active.add(v);
+      stack.push({ value: v, exit: true });
       size += 2;
-      for (const k of Object.keys(v)) {
-        size += k.length * 2 + 4;
-        walk(v[k]);
-        if (size > maxBytes) return;
+      if (Array.isArray(v)) {
+        for (let i = v.length - 1; i >= 0; i--) stack.push({ value: v[i], exit: false });
+      } else {
+        const keys = Object.keys(v);
+        for (let i = keys.length - 1; i >= 0; i--) {
+          const key = keys[i];
+          size += key.length * 2 + 4;
+          stack.push({ value: v[key], exit: false });
+        }
       }
     }
   }
-  walk(value);
   return size;
 }
 
