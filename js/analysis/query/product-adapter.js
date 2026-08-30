@@ -1,6 +1,7 @@
 import { createAppAnalysisQueryAdapter as createBaseAdapter } from './app-adapter.js';
 
 const SAFE_ROUTE = Symbol('analysis-query-safe-ui-route');
+const SAFE_FUNCTION_DISCOVERY = Symbol('analysis-query-function-discovery-single-flight');
 
 function abortIfNeeded(signal) {
   if (!signal?.aborted) return;
@@ -8,6 +9,33 @@ function abortIfNeeded(signal) {
   const error = new Error('AbortError');
   error.name = 'AbortError';
   throw error;
+}
+
+function waitForProducer(promise, signal) {
+  abortIfNeeded(signal);
+  if (!signal) return promise;
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const cleanup = () => signal.removeEventListener('abort', onAbort);
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      fn(value);
+    };
+    const onAbort = () => {
+      try {
+        abortIfNeeded(signal);
+      } catch (error) {
+        finish(reject, error);
+      }
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(
+      (value) => finish(resolve, value),
+      (error) => finish(reject, error),
+    );
+  });
 }
 
 function storeValue(app, key) {
@@ -103,6 +131,45 @@ async function canonicalIdentity(app, options = {}) {
   };
 }
 
+function discoveryOptions(value) {
+  if (typeof value === 'function') return { onProgress: value, signal: null };
+  if (value && typeof value === 'object') return value;
+  return {};
+}
+
+function discoveryKey(app, region) {
+  const epoch = Number(app?.backend?.gen ?? app?.analysisEpoch ?? 0);
+  let regions = [];
+  try { regions = typeof app?.programRegions === 'function' ? app.programRegions() || [] : []; } catch { regions = []; }
+  const ids = regions.filter((item) => item?.exec !== false).map((item) => String(item?.id ?? ''));
+  if (region?.exec !== false && region?.id != null && !ids.includes(String(region.id))) ids.push(String(region.id));
+  return `${epoch}:${ids.join('|')}`;
+}
+
+function settleFunctionDiscoveryRoute(app) {
+  const routed = app?.ensureFunctions;
+  if (typeof routed !== 'function' || routed[SAFE_FUNCTION_DISCOVERY]) return;
+  const producers = new Map();
+  const safe = function singleFlightEnsureFunctions(region, rawOptions = {}) {
+    const options = discoveryOptions(rawOptions);
+    abortIfNeeded(options.signal);
+    const key = discoveryKey(app, region);
+    let producer = producers.get(key);
+    if (!producer) {
+      producer = Promise.resolve().then(() => routed.call(app, region, options.onProgress));
+      producers.set(key, producer);
+      producer.finally(() => {
+        if (producers.get(key) === producer) producers.delete(key);
+      }).catch(() => {});
+    }
+    // Consumer cancellation only detaches this waiter. The shared discovery
+    // producer remains alive for compatible searches/program-index consumers.
+    return waitForProducer(producer, options.signal);
+  };
+  Object.defineProperty(safe, SAFE_FUNCTION_DISCOVERY, { value: true });
+  app.ensureFunctions = safe;
+}
+
 async function ensureFunctionDiscovery(app, options = {}) {
   abortIfNeeded(options.signal);
   if (typeof app?.ensureFunctions !== 'function') return;
@@ -111,7 +178,7 @@ async function ensureFunctionDiscovery(app, options = {}) {
   let region = null;
   try { region = typeof app?.codeRegion === 'function' ? app.codeRegion() : null; } catch { /* use current region */ }
   region ??= storeValue(app, 'currentRegion');
-  await app.ensureFunctions(region ?? null, options.onProgress);
+  await app.ensureFunctions(region ?? null, { signal: options.signal, onProgress: options.onProgress });
   abortIfNeeded(options.signal);
 }
 
@@ -134,6 +201,7 @@ function settleUiRoute(app) {
 }
 
 export function createAppAnalysisQueryAdapter(app) {
+  settleFunctionDiscoveryRoute(app);
   const base = createBaseAdapter(app);
   settleUiRoute(app);
   return {
