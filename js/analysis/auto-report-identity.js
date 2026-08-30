@@ -28,7 +28,9 @@ function bindValue(app, value) {
   const identity = liveIdentity(app);
   const report = value.report && typeof value.report === 'object' ? value.report : null;
   const snapshotId = value.snapshotId ?? report?.snapshotId ?? null;
-  if (report && !report.snapshotId && snapshotId) report.snapshotId = snapshotId;
+  if (report && !report.snapshotId && snapshotId) {
+    try { report.snapshotId = snapshotId; } catch { /* compatibility report may be frozen */ }
+  }
   const sourceIdentity = Object.freeze({ ...identity, snapshotId });
   if (report) {
     try { Object.defineProperty(report, 'sourceIdentity', { value:sourceIdentity, enumerable:true, configurable:true }); }
