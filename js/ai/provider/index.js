@@ -26,13 +26,62 @@ export class WorkerAIProvider extends AIProvider {
     this.controllers = new Set();
     this.capabilitiesPrepared = false;
     this.capabilitiesPromise = null;
+    this.capabilitiesController = null;
+    this.capabilitiesWaiters = 0;
   }
 
   async prepareCapabilities(options = {}) {
     if (this.capabilitiesPrepared) return this.getCapabilities();
-    if (this.capabilitiesPromise) return this.capabilitiesPromise;
-    this.capabilitiesPromise = this.#loadCapabilities(options).finally(() => { this.capabilitiesPromise = null; });
-    return this.capabilitiesPromise;
+    if (options.signal?.aborted) throw new AIError('cancelled', 'AI investigation was cancelled.');
+    if (!this.capabilitiesPromise) {
+      const controller = new AbortController();
+      this.capabilitiesController = controller;
+      const promise = this.#loadCapabilities({ timeoutMs: options.timeoutMs, signal: controller.signal })
+        .finally(() => {
+          if (this.capabilitiesPromise === promise) this.capabilitiesPromise = null;
+          if (this.capabilitiesController === controller) this.capabilitiesController = null;
+        });
+      this.capabilitiesPromise = promise;
+    }
+    return this.#waitForCapabilities(this.capabilitiesPromise, options.signal);
+  }
+
+  #waitForCapabilities(promise, signal) {
+    this.capabilitiesWaiters += 1;
+    let released = false;
+    const release = (cancelled = false) => {
+      if (released) return;
+      released = true;
+      this.capabilitiesWaiters = Math.max(0, this.capabilitiesWaiters - 1);
+      if (cancelled && this.capabilitiesWaiters === 0 && this.capabilitiesPromise === promise) {
+        this.capabilitiesController?.abort(signal?.reason ?? 'cancelled');
+      }
+    };
+    if (!signal) return promise.finally(() => release(false));
+    return new Promise((resolve, reject) => {
+      const onAbort = () => {
+        signal.removeEventListener('abort', onAbort);
+        release(true);
+        reject(new AIError('cancelled', 'AI investigation was cancelled.'));
+      };
+      signal.addEventListener('abort', onAbort, { once: true });
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+      promise.then(
+        (value) => {
+          signal.removeEventListener('abort', onAbort);
+          release(false);
+          resolve(value);
+        },
+        (error) => {
+          signal.removeEventListener('abort', onAbort);
+          release(false);
+          reject(error);
+        },
+      );
+    });
   }
 
   async #loadCapabilities(options = {}) {
