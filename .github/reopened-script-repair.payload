@@ -1,0 +1,534 @@
+name: Reopened Script repair
+on:
+  push:
+    branches: [fix/reopened-script-contracts]
+permissions:
+  contents: write
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/reopened-script-contracts
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Apply Script semantic repairs
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          def read(p): return Path(p).read_text()
+          def write(p,t): Path(p).write_text(t)
+          def rep(p,a,b,n=1):
+            t=read(p)
+            if a not in t: raise SystemExit(f'missing in {p}: {a[:100]!r}')
+            write(p,t.replace(a,b,n))
+          def sub(p,pat,repl,n=1):
+            t=read(p); out,c=re.subn(pat,repl,t,count=n,flags=re.S)
+            if c!=n: raise SystemExit(f'regex {c}!={n} in {p}: {pat[:100]}')
+            write(p,out)
+
+          # #2552: sandbox already owns an external signal on current main. Add a
+          # host invocation seam so execution context is never smuggled as a user
+          # positional argument (zero-argument APIs previously received {signal}
+          # as their first semantic argument).
+          rep('js/sandbox.js',
+              "export function runInSandbox({ source, mode = 'script', index = 0, api, out, timeout = 30000, signal }) {",
+              "export function runInSandbox({ source, mode = 'script', index = 0, api, invoke = null, out, timeout = 30000, signal }) {")
+          rep('js/sandbox.js',
+              """          value = await fn(...(m.args || []), { signal: runController.signal });""",
+              """          value = invoke
+            ? await invoke(m.method, m.args || [], { signal: runController.signal })
+            : await fn(...(m.args || []));""")
+
+          # Script API: address ownership is resolved per target. UI codeRegion is
+          # not an analysis owner.
+          rep('js/script.js',
+              """  const region = () => app.codeRegion();
+  const architecture = () => String(""",
+              """  const region = () => app.codeRegion();
+  const ownerRegion = (addr) => {
+    const a = BigInt(addr);
+    if (typeof app.executableRegionFor === 'function') return app.executableRegionFor(a);
+    return (app.store?.get?.('regions') || []).find((r) => r?.exec === true && a >= BigInt(r.vmAddr) && a < BigInt(r.vmAddr) + BigInt(r.size)) || null;
+  };
+  const architecture = () => String(""")
+          rep('js/script.js',
+              """  const adapter = () => architectureAdapter(architecture());
+  const rowOf = (addr) => adapter().rowForAddress(region(), BigInt(addr));
+  const addressOfRow = (row) => adapter().addressForRow(region(), row);""",
+              """  const adapter = () => architectureAdapter(architecture());
+  const rowOf = (r, addr) => r ? adapter().rowForAddress(r, BigInt(addr)) : null;
+  const addressOfRow = (r, row) => r ? adapter().addressForRow(r, row) : null;
+  const abortError = (signal) => {
+    const reason = signal?.reason;
+    if (reason instanceof Error) return reason;
+    const error = new Error(reason == null ? 'Script execution cancelled' : String(reason));
+    error.name = 'AbortError'; error.code = 'ABORT_ERR'; return error;
+  };
+  const throwIfAborted = (signal) => { if (signal?.aborted) throw abortError(signal); };
+  const awaitAbortable = (operation, signal) => {
+    if (!signal) return Promise.resolve(operation);
+    throwIfAborted(signal);
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (fn, value) => { if (settled) return; settled = true; signal.removeEventListener('abort', onAbort); fn(value); };
+      const onAbort = () => { try { operation?.cancel?.(); } catch {} finish(reject, abortError(signal)); };
+      signal.addEventListener('abort', onAbort, { once:true });
+      Promise.resolve(operation).then((v)=>finish(resolve,v),(e)=>finish(reject,e));
+    });
+  };
+  const decorateRows = (rows, meta = {}) => {
+    const out = Array.from(rows || []);
+    for (const [key, value] of Object.entries(meta)) Object.defineProperty(out, key, { value, enumerable:true, configurable:true });
+    return out;
+  };
+  const queryApi = () => app.analysisQueries || null;
+  const normalizeFunctionRow = (row) => ({ ...row, addr: row?.addr ?? row?.address ?? row?.start ?? null });
+  async function queryFunctionsPage(options = {}, execution = {}) {
+    const api = queryApi();
+    if (!api) return { results:[], complete:false, capped:false, total:null, next:null, reason:'analysis-query-unavailable', snapshotId:null };
+    const signal = execution?.signal ?? null; throwIfAborted(signal);
+    const offset = Math.max(0, Math.trunc(Number(options?.offset) || 0));
+    const limit = Math.max(1, Math.min(5000, Math.trunc(Number(options?.limit) || 1000)));
+    const snapshot = await api.snapshot({ signal });
+    const result = await api.functions(snapshot, options?.query || {}, { offset, limit }, { signal });
+    const next = result.page?.next ?? null;
+    const complete = result.completeness === 'complete' && next == null;
+    return {
+      results:(result.value || []).map(normalizeFunctionRow),
+      complete,
+      capped:next != null,
+      total:result.page?.total ?? null,
+      next,
+      reason:result.status?.reason ?? (complete ? null : next != null ? 'page-continuation' : result.completeness),
+      snapshotId:result.snapshotId,
+      completeness:result.completeness,
+    };
+  }
+  async function queryRelation(kind, addr, options = {}, execution = {}) {
+    const api = queryApi();
+    if (!api) return { results:[], complete:false, total:null, next:null, reason:'analysis-query-unavailable', snapshotId:null };
+    const signal = execution?.signal ?? null; throwIfAborted(signal);
+    const offset = Math.max(0, Math.trunc(Number(options?.offset) || 0));
+    const limit = Math.max(1, Math.min(5000, Math.trunc(Number(options?.limit) || 200)));
+    const snapshot = await api.snapshot({ signal });
+    const method = kind === 'to' ? 'xrefs' : 'callees';
+    const result = await api[method](snapshot, BigInt(addr), { offset, limit }, { signal });
+    const next = result.page?.next ?? null;
+    const complete = result.completeness === 'complete' && next == null;
+    return { results:Array.from(result.value || []), complete, capped:next != null, total:result.page?.total ?? null, next,
+      reason:result.status?.reason ?? (complete ? null : next != null ? 'page-continuation' : result.completeness), snapshotId:result.snapshotId, completeness:result.completeness };
+  }
+  const pageRows = (page) => decorateRows(page?.results || [], { complete:page?.complete === true, capped:page?.capped === true,
+    total:page?.total ?? null, next:page?.next ?? null, reason:page?.reason ?? null, snapshotId:page?.snapshotId ?? null, completeness:page?.completeness ?? (page?.complete ? 'complete' : 'partial') });
+  const sandboxRows = (rows) => ({ __hexScriptRows:true, rows:Array.from(rows || []), complete:rows?.complete === true, capped:rows?.capped === true,
+    total:rows?.total ?? null, next:rows?.next ?? null, reason:rows?.reason ?? null, snapshotId:rows?.snapshotId ?? null, completeness:rows?.completeness ?? (rows?.complete ? 'complete' : 'partial') });""")
+
+          # #2558: canonical file/slice-wide query + explicit paging. The legacy
+          # array remains iterable, but cannot silently look complete when capped.
+          sub('js/script.js',
+              r"    /\*\* 関数の一覧。\[\{addr, name, size\}\] \*/\n    functions\(limit = 100000\) \{.*?\n    \},\n\n    /\*\* そのアドレスの関数名",
+              """    /** 関数の一覧。既存for...of互換の配列にcompleteness metadataを保持する。 */
+    async functions(limit = 100000, execution = {}) {
+      const max = Math.max(1, Math.min(400000, Math.trunc(Number(limit) || 100000)));
+      const results = [];
+      let offset = 0, last = null;
+      while (results.length < max) {
+        throwIfAborted(execution?.signal);
+        last = await queryFunctionsPage({ offset, limit:Math.min(5000, max - results.length) }, execution);
+        results.push(...last.results);
+        if (last.next == null || !last.results.length) break;
+        offset = last.next;
+      }
+      const intentionalCap = last?.next != null && results.length >= max;
+      return decorateRows(results, {
+        complete:last?.complete === true && !intentionalCap,
+        capped:intentionalCap || last?.capped === true,
+        total:last?.total ?? null,
+        next:last?.next ?? null,
+        reason:intentionalCap ? 'script-limit' : last?.reason ?? null,
+        snapshotId:last?.snapshotId ?? null,
+        completeness:last?.completeness ?? 'partial',
+      });
+    },
+
+    async queryFunctions(options = {}, execution = {}) { return queryFunctionsPage(options, execution); },
+
+    /** そのアドレスの関数名""")
+
+          # target-owned disassembly/decompilation/patch, plus cancellable reads.
+          rep('js/script.js',
+              """    async bytes(addr, len = 16) {
+      const r = await app.backend.readAt(BigInt(addr), len);""",
+              """    async bytes(addr, len = 16, execution = {}) {
+      const r = await awaitAbortable(app.backend.readAt(BigInt(addr), len), execution?.signal);""")
+          rep('js/script.js',
+              """    async string(addr, max = 200) {
+      const r = await app.backend.readAt(BigInt(addr), max, true);""",
+              """    async string(addr, max = 200, execution = {}) {
+      const r = await awaitAbortable(app.backend.readAt(BigInt(addr), max, true), execution?.signal);""")
+          rep('js/script.js',
+              """    async disasm(addr, count = 16) {
+      const r = region();
+      if (!r) return [];
+      const a = BigInt(addr);""",
+              """    async disasm(addr, count = 16, execution = {}) {
+      const a = BigInt(addr);
+      const r = ownerRegion(a);
+      if (!r) return { unsupported:true, complete:false, reason:'address-not-in-executable-region', instructions:[] };""")
+          rep('js/script.js', "let row = rowOf(a);", "let row = rowOf(r, a);")
+          rep('js/script.js', "const instructionAddress = addressOfRow(row);", "const instructionAddress = addressOfRow(r, row);")
+          rep('js/script.js',
+              """          const e = await app.backend.fetchChunk(r.id, chunk, true);""",
+              """          const e = await awaitAbortable(app.backend.fetchChunk(r.id, chunk, true), execution?.signal);""",1)
+          rep('js/script.js',
+              """        length:Math.min(1024 * 1024, Math.max(64, limit * 16)),
+      });""",
+              """        length:Math.min(1024 * 1024, Math.max(64, limit * 16)),
+        signal:execution?.signal ?? null,
+      });""")
+          rep('js/script.js',
+              """    async decompile(addr) {
+      const arch = architecture();""",
+              """    async decompile(addr, execution = {}) {
+      const arch = architecture();""")
+          rep('js/script.js',
+              """      const res = await app.analyzeFunctionAt(BigInt(addr));
+      if (!res || !res.model) return null;
+      const r = region();
+      const map = archAdapter.fixedInstructionSize != null ? {
+        rowOfAddress: (a) => rowOf(a),
+        addrOfRow: (row) => addressOfRow(row),""",
+              """      const a = BigInt(addr);
+      const r = ownerRegion(a);
+      if (!r) return { unsupported:true, complete:false, reason:'address-not-in-executable-region' };
+      const res = await app.analyzeFunctionAt(a, { signal:execution?.signal ?? null });
+      if (!res || !res.model) return null;
+      const map = archAdapter.fixedInstructionSize != null ? {
+        rowOfAddress: (address) => rowOf(r, address),
+        addrOfRow: (row) => addressOfRow(r, row),""")
+          rep('js/script.js',
+              """    async types(addr) {
+      const res = await app.analyzeFunctionAt(BigInt(addr));""",
+              """    async types(addr, execution = {}) {
+      const res = await app.analyzeFunctionAt(BigInt(addr), { signal:execution?.signal ?? null });""")
+          rep('js/script.js',
+              """    async struct(addr, reg) {
+      const res = await app.analyzeFunctionAt(BigInt(addr));""",
+              """    async struct(addr, reg, execution = {}) {
+      const res = await app.analyzeFunctionAt(BigInt(addr), { signal:execution?.signal ?? null });""")
+
+          # #2559: public query is relation authority; warm mutable ProgramIndex is
+          # no longer the semantic prerequisite for xrefs/callees.
+          sub('js/script.js',
+              r"    /\*\* そのアドレスを呼んでいる場所。 \*/\n    async xrefsTo\(addr, limit = 200\) \{.*?\n    /\* ── 文字列",
+              """    /** そのアドレスを参照している場所。 */
+    async xrefsTo(addr, limit = 200, execution = {}) {
+      return pageRows(await queryRelation('to', addr, { offset:0, limit }, execution));
+    },
+    async queryXrefsTo(addr, options = {}, execution = {}) { return queryRelation('to', addr, options, execution); },
+
+    /** その関数が呼んでいる先。 */
+    async xrefsFrom(addr, limit = 200, execution = {}) {
+      return pageRows(await queryRelation('from', addr, { offset:0, limit }, execution));
+    },
+    async queryXrefsFrom(addr, options = {}, execution = {}) { return queryRelation('from', addr, options, execution); },
+
+    /** よく呼ばれている関数の順位。Global ordering requires global ProgramIndex. */
+    async mostCalled(limit = 20, execution = {}) {
+      throwIfAborted(execution?.signal);
+      // Global top-N cannot be proven from a local relation page. Build/reuse the
+      // canonical global index, but keep its completeness visible to scripts.
+      let program = null;
+      try { program = await awaitAbortable(app.ensureProgram?.({ signal:execution?.signal ?? null }), execution?.signal); }
+      catch (error) { if (execution?.signal?.aborted) throw error; }
+      if (!program) return decorateRows([], { complete:false, capped:false, total:null, next:null, reason:'program-index-unavailable', completeness:'unsupported' });
+      const rows = program.mostCalled(Math.max(1, Math.min(5000, Number(limit) || 20)));
+      const discoveryComplete = app.symbols?.functionStartsComplete === true && app.programScan?.complete !== false && app.programScan?.completeness?.complete !== false;
+      return decorateRows(rows, { complete:discoveryComplete, capped:false, total:null, next:null,
+        reason:discoveryComplete ? null : app.programScan?.completeness?.reason || 'program-index-partial', completeness:discoveryComplete ? 'complete' : 'partial' });
+    },
+
+    /* ── 文字列""")
+
+          rep('js/script.js',
+              """    async loadStrings() { return app.ensureStrings(); },""",
+              """    async loadStrings(execution = {}) { return awaitAbortable(app.ensureStrings({ signal:execution?.signal ?? null }), execution?.signal); },""")
+
+          rep('js/script.js',
+              """    async patch(addr, textOrHex) {
+      const a = BigInt(addr);
+      const r = region();
+      if (!r) return { error: 'セクションが選ばれていません。' };""",
+              """    async patch(addr, textOrHex, execution = {}) {
+      const a = BigInt(addr);
+      const r = ownerRegion(a);
+      if (!r) return { error:'書き換え先が実行可能領域にありません。', unsupported:true, complete:false, reason:'address-not-in-executable-region' };
+      throwIfAborted(execution?.signal);""")
+          rep('js/script.js',
+              """      const before = await api.bytes(a, built.bytes.length);""",
+              """      const before = await api.bytes(a, built.bytes.length, execution);""")
+          rep('js/script.js',
+              """    async run(addr, args = [], maxSteps = 20000) {
+      const emu = makeEmulator(app);""",
+              """    async run(addr, args = [], maxSteps = 20000, execution = {}) {
+      const emu = makeEmulator(app);""")
+          rep('js/script.js',
+              """      await emu.run(boundedSteps(maxSteps));""",
+              """      await emu.run(boundedSteps(maxSteps), { signal:execution?.signal ?? null });""",1)
+          rep('js/script.js',
+              """    async emulatorStep(id) {
+      const emu = emulatorOf(id);
+      const result = await emu.step();""",
+              """    async emulatorStep(id, execution = {}) {
+      const emu = emulatorOf(id);
+      throwIfAborted(execution?.signal);
+      const result = await emu.step({ signal:execution?.signal ?? null });""")
+          rep('js/script.js',
+              """    async emulatorRun(id, maxSteps = 20000) {
+      const emu = emulatorOf(id);
+      const result = await emu.run(boundedSteps(maxSteps));""",
+              """    async emulatorRun(id, maxSteps = 20000, execution = {}) {
+      const emu = emulatorOf(id);
+      const result = await emu.run(boundedSteps(maxSteps), { signal:execution?.signal ?? null });""")
+
+          # Trusted host dispatcher: positional user args are preserved and only
+          # cancellable methods receive execution context in their declared slot.
+          rep('js/script.js',
+              """  return { api, print };
+}""",
+              """  const invoke = (method, args = [], execution = {}) => {
+    const fn = api?.[method];
+    if (typeof fn !== 'function') throw new Error('許可されていないAPIです: ' + method);
+    switch (method) {
+      case 'functions': return api.functions(args.length ? args[0] : 100000, execution).then(sandboxRows);
+      case 'queryFunctions': return api.queryFunctions(args[0] || {}, execution);
+      case 'bytes': return api.bytes(args[0], args.length > 1 ? args[1] : 16, execution);
+      case 'string': return api.string(args[0], args.length > 1 ? args[1] : 200, execution);
+      case 'disasm': return api.disasm(args[0], args.length > 1 ? args[1] : 16, execution);
+      case 'decompile': return api.decompile(args[0], execution);
+      case 'types': return api.types(args[0], execution);
+      case 'struct': return api.struct(args[0], args[1], execution);
+      case 'xrefsTo': return api.xrefsTo(args[0], args.length > 1 ? args[1] : 200, execution).then(sandboxRows);
+      case 'queryXrefsTo': return api.queryXrefsTo(args[0], args[1] || {}, execution);
+      case 'xrefsFrom': return api.xrefsFrom(args[0], args.length > 1 ? args[1] : 200, execution).then(sandboxRows);
+      case 'queryXrefsFrom': return api.queryXrefsFrom(args[0], args[1] || {}, execution);
+      case 'mostCalled': return api.mostCalled(args.length ? args[0] : 20, execution).then(sandboxRows);
+      case 'loadStrings': return api.loadStrings(execution);
+      case 'patch': return api.patch(args[0], args[1], execution);
+      case 'run': return api.run(args[0], args[1] || [], args.length > 2 ? args[2] : 20000, execution);
+      case 'emulatorStep': return api.emulatorStep(args[0], execution);
+      case 'emulatorRun': return api.emulatorRun(args[0], args.length > 1 ? args[1] : 20000, execution);
+      default: return fn(...args);
+    }
+  };
+  return { api, print, invoke };
+}""")
+
+          rep('js/script.js',
+              """export async function runScript(code, app, out) {
+  const { api, print } = createApi(app, out);
+  return runInSandbox({ source: code, mode: 'script', api, out: (...args) => print(...args) });
+}""",
+              """export async function runScript(code, app, out, options = {}) {
+  const { api, print, invoke } = createApi(app, out);
+  return runInSandbox({ source: code, mode: 'script', api, invoke, out: (...args) => print(...args), signal:options.signal ?? null });
+}""")
+
+          # Plugin parity: install/discovery/run can share the same external task scope.
+          rep('js/plugins.js',
+              """  async install(source, origin, opts = {}) {""",
+              """  async install(source, origin, opts = {}) {""")
+          rep('js/plugins.js',
+              """      source, mode: 'discover', api: Object.create(null), out: () => {}, timeout: 10000,
+    });""",
+              """      source, mode: 'discover', api: Object.create(null), out: () => {}, timeout: 10000, signal:opts.signal ?? null,
+    });""")
+          rep('js/plugins.js',
+              """  async run(id, out) {
+    const p = this.plugins.find((x) => x.id === id);""",
+              """  async run(id, out, options = {}) {
+    const p = this.plugins.find((x) => x.id === id);""")
+          rep('js/plugins.js',
+              """    const { api, print } = createApi(this.app, out);
+    return runInSandbox({ source: p.source, mode: 'plugin', index: p.index, api,
+      out: (...args) => print(...args) });""",
+              """    const { api, print, invoke } = createApi(this.app, out);
+    return runInSandbox({ source: p.source, mode: 'plugin', index: p.index, api, invoke,
+      out: (...args) => print(...args), signal:options.signal ?? null });""")
+
+          # Script Sheet lifecycle: close or re-run aborts the previous sandbox.
+          rep('js/tools-base.js',
+              """export function showScript(app) {
+  const sheet = new Sheet('スクリプト');""",
+              """export function showScript(app) {
+  let runController = null;
+  const sheet = new Sheet('スクリプト', { onClose:() => { runController?.abort('script-sheet-closed'); runController = null; } });""")
+          rep('js/tools-base.js',
+              """    write('— 実行しています —');
+    const res = await runScript(ta.value, app, write);""",
+              """    runController?.abort('script-run-replaced');
+    const controller = runController = new AbortController();
+    write('— 実行しています —');
+    const res = await runScript(ta.value, app, write, { signal:controller.signal });
+    if (runController === controller) runController = null;
+    if (controller.signal.aborted || !sheet.root.isConnected) return;""")
+
+          # Plugin run buttons get per-run controllers and cancel when their sheet closes.
+          # One controller per Plugins sheet is enough; a second click replaces the old run.
+          rep('js/tools-base.js',
+              """export function showPlugins(app) {
+  const sheet = new Sheet('プラグイン');""",
+              """export function showPlugins(app) {
+  let pluginRunController = null;
+  const sheet = new Sheet('プラグイン', { onClose:() => { pluginRunController?.abort('plugin-sheet-closed'); pluginRunController = null; } });""")
+          rep('js/tools-base.js',
+              """    app.plugins.run(p.id, write).then((res) => {""",
+              """    pluginRunController?.abort('plugin-run-replaced');
+    const controller = pluginRunController = new AbortController();
+    app.plugins.run(p.id, write, { signal:controller.signal }).then((res) => {
+      if (pluginRunController === controller) pluginRunController = null;
+      if (controller.signal.aborted || !sheet.root.isConnected) return;""")
+
+          # Make Script strings producer a real cancellable shared producer. Existing
+          # callers may still pass a progress callback; object options are additive.
+          rep('js/app.js',
+              """    this.stringsBusy = null;
+    this.stringsBusyEpoch = -1;""",
+              """    this.stringsBusy = null;
+    this.stringsBusyEpoch = -1;
+    this.stringsBusyController = null;
+    this.stringsBusyWaiters = 0;""",1)
+          sub('js/app.js',
+              r"  async ensureStrings\(onProgress\) \{.*?\n  \}\n\n  /\*\* 関数レポート",
+              """  async ensureStrings(rawOptions = {}) {
+    const options = typeof rawOptions === 'function' ? { onProgress:rawOptions } : (rawOptions && typeof rawOptions === 'object' ? rawOptions : {});
+    const onProgress = options.onProgress;
+    const signal = options.signal ?? null;
+    const abortError = () => { const error = signal?.reason instanceof Error ? signal.reason : new Error('String collection cancelled'); error.name ||= 'AbortError'; error.code ||= 'ABORT_ERR'; return error; };
+    if (signal?.aborted) throw abortError();
+    if (this.stringIndex) return this.stringIndex;
+    const epoch = this.backend.gen;
+    const wait = (producer, controller) => {
+      this.stringsBusyWaiters++;
+      let settled = false;
+      return new Promise((resolve,reject)=>{
+        const finish=(fn,value)=>{ if(settled)return; settled=true; signal?.removeEventListener('abort',onAbort); this.stringsBusyWaiters=Math.max(0,this.stringsBusyWaiters-1); if(this.stringsBusyWaiters===0 && this.stringsBusy===producer && !this.stringIndex) controller?.abort('no-string-consumers'); fn(value); };
+        const onAbort=()=>finish(reject,abortError());
+        signal?.addEventListener('abort',onAbort,{once:true});
+        Promise.resolve(producer).then((v)=>finish(resolve,v),(e)=>finish(reject,e));
+      });
+    };
+    if (this.stringsBusy && this.stringsBusyEpoch === epoch) return wait(this.stringsBusy, this.stringsBusyController);
+    const controller = new AbortController();
+    this.stringsBusyController = controller;
+    this.stringsBusyEpoch = epoch;
+    const producer = this.stringsBusy = (async () => {
+      const regions = this.store.get('regions') || [];
+      const priority = (r) => { const s=r.section||''; if(r.cstrings||/^__(cstring|objc_methname|objc_classname|swift5_reflstr|oslogstring)$/.test(s))return 0; if(/string|objc_method|objc_class|ustring/i.test(s))return 1; return 2; };
+      const targets=regions.filter((r)=>r.size>0n&&(r.cstrings||/string|cstring|objc_methname|objc_method|objc_classname|objc_class|oslogstring|const|ustring|swift5_reflstr/i.test(r.section||''))).sort((a,b)=>priority(a)-priority(b));
+      const current=this.store.get('currentRegion'); const collectionBudget=new StringCollectionBudget(STRING_SCAN_BUDGET); const use=[], skipped=[];
+      for(const r of targets){const bytes=collectionBudget.requestBytes(Number(r.size));if(bytes<=0){skipped.push(r);continue;}use.push({region:r,bytes});if(bytes<Number(r.size))skipped.push(r);}
+      if(!use.length&&current){const bytes=collectionBudget.requestBytes(Number(current.size));if(bytes>0)use.push({region:current,bytes});}
+      const out=[]; let scannedBytes=0, backendIncomplete=false;
+      try {
+        for(let itemIndex=0;itemIndex<use.length;itemIndex++){
+          if(controller.signal.aborted) throw Object.assign(new Error('String collection cancelled'),{name:'AbortError',code:'ABORT_ERR'});
+          if(epoch!==this.backend.gen)return null;
+          if(collectionBudget.exhausted){for(const rest of use.slice(itemIndex))if(!skipped.includes(rest.region))skipped.push(rest.region);break;}
+          const item=use[itemIndex], r=item.region, remaining=collectionBudget.requestLimit();
+          if(remaining<=0){collectionBudget.truncationReason||='result-budget';break;}
+          const request=this.backend.strings({regionId:r.id,min:4,maxBytes:item.bytes,limit:remaining},onProgress&&((p)=>onProgress({phase:'strings',done:p.done,all:p.all,region:r.id})));
+          const res=await new Promise((resolve,reject)=>{
+            const cancel=()=>{try{request?.cancel?.();}catch{};reject(Object.assign(new Error('String collection cancelled'),{name:'AbortError',code:'ABORT_ERR'}));};
+            if(controller.signal.aborted)return cancel(); controller.signal.addEventListener('abort',cancel,{once:true});
+            Promise.resolve(request).then((v)=>{controller.signal.removeEventListener('abort',cancel);resolve(v);},(e)=>{controller.signal.removeEventListener('abort',cancel);reject(e);});
+          });
+          scannedBytes+=res.scannedBytes||0;if(!res.complete){backendIncomplete=true;if(!skipped.includes(r))skipped.push(r);}
+          for(const s of res.results||[]){if(!collectionBudget.accept(s.text))break;out.push({addr:s.addr,text:s.text,region:r});}
+          if(res.capped&&!collectionBudget.truncationReason)collectionBudget.truncationReason=res.truncationReason||'result-budget';
+        }
+      } finally {}
+      const truncated=!!collectionBudget.truncationReason||skipped.length>0||backendIncomplete;
+      out.complete=!truncated;out.truncated=truncated;out.truncationReason=collectionBudget.truncationReason||(skipped.length?'input-budget':backendIncomplete?'backend-partial':null);
+      out.skippedRegions=skipped.map((r)=>({id:r.id,name:r.name,section:r.section,size:r.size}));out.unscannedRegions=out.skippedRegions;out.scannedBytes=scannedBytes;
+      if(epoch===this.backend.gen&&!controller.signal.aborted)this.stringIndex=out;
+      return epoch===this.backend.gen&&!controller.signal.aborted?out:null;
+    })().finally(()=>{if(this.stringsBusyEpoch===epoch&&this.stringsBusy===producer){this.stringsBusy=null;this.stringsBusyEpoch=-1;this.stringsBusyController=null;}});
+    return wait(producer, controller);
+  }
+
+  /** 関数レポート""")
+
+          # Focused source/behavior regressions.
+          Path('tests/reopened-script-contracts.mjs').write_text(r'''import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          import { createApi } from '../js/script.js';
+
+          const controller = new AbortController();
+          let functionQueries=0, xrefQueries=0, calleeQueries=0;
+          const symbols={ functionStartsComplete:true, functionAt:(a)=>({start:a,end:a+16n}), nameAt:()=>null, label:()=>null };
+          const regions=[{id:'A',exec:true,vmAddr:0x1000n,size:0x100n},{id:'B',exec:true,vmAddr:0x5000n,size:0x100n}];
+          const app={
+            store:{get:(k)=>({regions,architecture:'arm64',canDisassemble:true}[k] ?? null)},
+            currentSlice:()=>({capability:{architecture:'arm64'}}), symbols, notes:{setName(){},setComment(){}}, viewer:{setSymbols(){}}, patches:{add(){}},
+            executableRegionFor:(a)=>regions.find((r)=>a>=r.vmAddr&&a<r.vmAddr+r.size)||null,
+            analysisQueries:{
+              async snapshot({signal}={}){assert.equal(signal,controller.signal);return {snapshotId:'s'};},
+              async functions(_s,_q,page,{signal}={}){functionQueries++;assert.equal(signal,controller.signal);return {snapshotId:'s',completeness:'partial',status:{reason:'function-discovery-incomplete'},page:{...page,total:null,next:null},value:[{address:0x1000n,name:'A'},{address:0x5000n,name:'B'}]};},
+              async xrefs(_s,id,page,{signal}={}){xrefQueries++;assert.equal(id,0x5000n);assert.equal(signal,controller.signal);return {snapshotId:'s',completeness:'partial',status:{reason:'region-pending'},page:{...page,total:null,next:null},value:[]};},
+              async callees(_s,id,page,{signal}={}){calleeQueries++;assert.equal(id,0x5000n);assert.equal(signal,controller.signal);return {snapshotId:'s',completeness:'complete',status:{},page:{...page,total:1,next:null},value:[{addr:0x1000n}]};},
+            },
+            backend:{
+              readAt(){const p=Promise.resolve({found:true,bytes:new Uint8Array([1,2,3,4])});p.cancel=()=>{};return p;},
+              fetchChunk:async(id)=>({mn:['ret'],ops:['']}),
+            },
+            analyzeFunctionAt:async()=>({model:{blocks:[],instructions:[]}}),
+            ensureProgram:async()=>null,
+            ensureStrings:async()=>[],
+          };
+          const {api,invoke}=createApi(app,()=>{});
+          const funcs=await api.functions(100, {signal:controller.signal});
+          assert.deepEqual(funcs.map((x)=>x.addr),[0x1000n,0x5000n]);
+          assert.equal(funcs.complete,false);assert.equal(funcs.reason,'function-discovery-incomplete');assert.equal(functionQueries,1);
+          const xr=await api.xrefsTo(0x5000n,200,{signal:controller.signal});
+          assert.equal(xr.length,0);assert.equal(xr.complete,false);assert.equal(xr.reason,'region-pending');assert.equal(xrefQueries,1);
+          const from=await api.xrefsFrom(0x5000n,200,{signal:controller.signal});assert.equal(from.complete,true);assert.equal(calleeQueries,1);
+          const boxed=await invoke('functions',[],{signal:controller.signal});assert.equal(boxed.__hexScriptRows,true);assert.equal(boxed.complete,false);
+
+          const script=fs.readFileSync(new URL('../js/script.js',import.meta.url),'utf8');
+          const sandbox=fs.readFileSync(new URL('../js/sandbox.js',import.meta.url),'utf8');
+          const tools=fs.readFileSync(new URL('../js/tools-base.js',import.meta.url),'utf8');
+          assert.match(script,/ownerRegion\(a\)/);
+          assert.doesNotMatch(script,/async xrefsTo[\s\S]{0,300}app\.program/);
+          assert.match(sandbox,/invoke\s*\?\s*await invoke/);
+          assert.match(tools,/script-sheet-closed/);
+          assert.match(tools,/plugin-sheet-closed/);
+          console.log('reopened Script contracts: ok');
+          ''')
+          PY
+      - name: Focused Script regressions
+        run: node tests/reopened-script-contracts.mjs
+      - name: Existing sandbox/script tests
+        shell: bash
+        run: |
+          for f in tests/*sandbox*.mjs tests/*script*.mjs tests/*plugin*.mjs; do
+            [ -f "$f" ] || continue
+            node "$f"
+          done
+      - name: UI tests
+        run: npm run ui:test
+      - name: Commit repaired source
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git rm .github/workflows/reopened-script-repair.yml
+          git add js tests
+          git commit -m "fix(script): close reopened automation and cancellation gaps"
+          git push origin HEAD:fix/reopened-script-contracts

@@ -1,0 +1,44 @@
+name: Reopened Script repair runner
+on:
+  push:
+    branches:
+      - fix/reopened-script-contracts-v2
+permissions:
+  contents: write
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/reopened-script-contracts-v2
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install dependencies
+        run: npm ci
+      - name: Extract and apply repair
+        shell: bash
+        run: |
+          awk '/python - <<'\''PY'\''/{flag=1;next} /^          PY$/{flag=0} flag { sub(/^          /, ""); print }' .github/reopened-script-repair.payload > /tmp/repair.py
+          python /tmp/repair.py
+      - name: Focused regressions
+        run: node tests/reopened-script-contracts.mjs
+      - name: Existing sandbox script plugin tests
+        shell: bash
+        run: |
+          shopt -s nullglob
+          for f in tests/*sandbox*.mjs tests/*script*.mjs tests/*plugin*.mjs; do node "$f"; done
+      - name: UI tests
+        run: npm run ui:test
+      - name: Commit repair
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git rm .github/reopened-script-repair.payload .github/workflows/reopened-script-runner.yml
+          git add js tests
+          git commit -m 'fix(script): close reopened automation and cancellation gaps'
+          git push origin HEAD:fix/reopened-script-contracts-v2
