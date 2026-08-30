@@ -20,7 +20,17 @@ jobs:
           cache: npm
       - run: npm ci
       - name: Apply strict boundary fixes
-        run: python3 tools/tmp-unlinked-strict-batch.py
+        shell: bash
+        run: |
+          python3 tools/tmp-unlinked-strict-batch.py
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('tests/unlinked-strict-boundaries-20260831.mjs')
+          s=p.read_text()
+          s=s.replace("import { liftArm64MachineEffects } from '../js/targets/architecture/arm64/effects/index.js';", "import { liftArm64MachineEffects } from '../js/targets/architecture/arm64/effects/index.js';\nimport { parseOperands } from '../js/arm64.js';")
+          s=s.replace("for (const text of [{toString(){return 'ish';}}, ['ish']]) {\n  failClosed(lift('dmb',[{k:'barrier',text}]), 'barrier selector must be string');\n}", "const barrierOperand = parseOperands('ish')[0];\nfor (const text of [{toString(){return 'ish';}}, ['ish']]) {\n  failClosed(lift('dmb',[{...barrierOperand,text}]), 'barrier selector must be string');\n}")
+          p.write_text(s)
+          PY
       - name: Focused regression
         run: |
           node tests/unlinked-strict-boundaries-20260831.mjs
