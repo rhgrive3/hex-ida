@@ -22,7 +22,7 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
     refTo:new BigUint64Array([0x2008n,0x2008n,0x3000n,0x200cn]),
     refKind:new Uint8Array([1,1,1,1]),
   };
-  const scanned = __sharedAppArtifactInternalsForTests.accumulateGlobalRefs(counts, scan, ranges);
+  const scanned = await __sharedAppArtifactInternalsForTests.accumulateGlobalRefs(counts, scan, ranges);
   assert.equal(scanned, 4);
   assert.equal(counts.get(String(0x2008n)).refs, 2);
   assert.equal(counts.get(String(0x200cn)).refs, 1);
@@ -35,8 +35,31 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 {
+  // A large ref aggregate must yield often enough for cancellation to run instead
+  // of pinning the main realm until the whole reference set has been counted.
+  const total = 50_000;
+  const dataRegion = { id:'data', section:'__data', vmAddr:0x2000n, size:0x100n, exec:false };
+  const ranges = [{ region:dataRegion, lo:0x2000n, hi:0x2100n }];
+  const scan = {
+    refCount:total,
+    refFrom:new BigUint64Array(total),
+    refTo:new BigUint64Array(total).fill(0x2008n),
+    refKind:new Uint8Array(total),
+  };
+  const controller = new AbortController();
+  const work = __sharedAppArtifactInternalsForTests.accumulateGlobalRefs(new Map(), scan, ranges, {
+    signal:controller.signal,
+    yieldEvery:1024,
+  });
+  setTimeout(() => controller.abort('aggregate-cancelled'), 0);
+  await assert.rejects(work, (error) => error?.name === 'AbortError');
+}
+
+{
   let cancelCount = 0;
   let scanStarted = false;
+  let functionOptions = null;
+  let scanLimits = null;
   const pendingScan = new Promise(() => {});
   pendingScan.cancel = () => { cancelCount++; };
   const execRegion = { id:'text', section:'__text', vmAddr:0x1000n, size:0x100n, exec:true };
@@ -47,24 +70,28 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
     ['architecture','arm64'],
   ]);
   const symbols = { gen:7, functionStartsComplete:true, functionCount:0 };
+  const producerBudget = { maxSchemas:123 };
   const app = {
     backend:{
       gen:3,
-      scanProgram() { scanStarted = true; return pendingScan; },
+      scanProgram(_id, _progress, limits) { scanStarted = true; scanLimits = limits; return pendingScan; },
       strings() { throw new Error('not used'); },
     },
     store:{ get:(key) => store.get(key) },
     symbols,
     programRegions:() => [execRegion],
-    ensureFunctions:async () => symbols,
+    ensureFunctions:async (_region, options) => { functionOptions = options; return symbols; },
   };
   installSharedAppArtifacts(app);
   const first = new AbortController();
   const second = new AbortController();
-  const p1 = app.ensureProgram({ signal:first.signal });
+  const p1 = app.ensureProgram({ signal:first.signal, priority:'interactive', budget:producerBudget });
   const p2 = app.ensureProgram({ signal:second.signal });
   await tick();
   assert.equal(scanStarted, true);
+  assert.equal(functionOptions.priority, 'interactive');
+  assert.equal(functionOptions.budget, producerBudget);
+  assert.equal(scanLimits.analysisPriority, 'interactive');
   first.abort('first-consumer-left');
   await assert.rejects(p1, (error) => error?.name === 'AbortError');
   assert.equal(cancelCount, 0, 'shared producer must survive while another consumer remains');
@@ -99,22 +126,39 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 {
   const values = new Map([['sliceIndex',0], ['fileInfo',{ binaryId:'bin-a' }]]);
+  let currentSnapshotId = 'snapshot-a';
   const app = {
     backend:{ gen:4, binaryId:'bin-a' },
     store:{ get:(key) => values.get(key) },
     workspace:{ bindingRevision:2, project:{ revision:9 } },
+    analysisQueries:{ snapshot:async () => ({ snapshotId:currentSnapshotId }) },
   };
   installAutoReportIdentityBoundary(app);
   const report = { snapshotId:'snapshot-a', findings:[] };
   app.autoReport = { report, snapshotId:'snapshot-a' };
+  await app.analysisQueries.snapshot();
   assert.equal(app.autoReport?.sourceIdentity?.sliceIndex, 0);
   assert.equal(app.autoReport?.sourceIdentity?.projectRevision, 9);
-  values.set('sliceIndex', 1);
-  assert.equal(app.autoReport, null, 'slice change must retire the previous report from current Results authority');
+
+  currentSnapshotId = 'snapshot-b';
+  await app.analysisQueries.snapshot();
+  assert.equal(app.autoReport, null, 'snapshot change must retire the previous report even when slice/epoch remain stable');
   assert.equal(app.historicalAutoReport?.snapshotId, 'snapshot-a');
 
-  app.autoReport = { report:{ findings:[] }, restored:true };
-  assert.ok(app.autoReport, 'verified restored-project reports remain available on the current identity');
+  currentSnapshotId = 'snapshot-c';
+  await app.analysisQueries.snapshot();
+  const frozenReport = Object.freeze({ snapshotId:'snapshot-c', findings:[] });
+  assert.doesNotThrow(() => { app.autoReport = { report:frozenReport, snapshotId:'snapshot-c' }; });
+  assert.equal(app.autoReport?.snapshotId, 'snapshot-c');
+
+  values.set('sliceIndex', 1);
+  assert.equal(app.autoReport, null, 'slice change must retire the previous report from current Results authority');
+  assert.equal(app.historicalAutoReport?.snapshotId, 'snapshot-c');
+
+  currentSnapshotId = 'snapshot-d';
+  await app.analysisQueries.snapshot();
+  app.autoReport = { report:{ snapshotId:'snapshot-d', findings:[] }, restored:true, snapshotId:'snapshot-d' };
+  assert.ok(app.autoReport, 'identity-bound restored reports may be shown on the exact current snapshot');
   app.workspace.project.revision = 10;
   assert.equal(app.autoReport, null, 'project revision change must retire stale restored findings');
 }
