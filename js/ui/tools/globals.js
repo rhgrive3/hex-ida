@@ -45,22 +45,39 @@ function boundedTopGlobals(limit) {
     },
   };
 }
+function namedReferenceCount(stats, address) {
+  // Legacy findGlobals() used ProgramIndex.refSitesTo(addr, 8n, 200).length.
+  // The producer artifact stores exact target counts, so reproduce that range
+  // count without touching ProgramIndex.refTo again.
+  if (!stats?.counts) return 0;
+  const start = BigInt(address);
+  let refs = 0;
+  for (let offset = 0n; offset < 8n && refs < 200; offset++) {
+    refs += Number(stats.counts.get((start + offset).toString())?.refs || 0);
+  }
+  return Math.min(200, refs);
+}
 
 export function mergeGlobals(named, stats, limit = 400) {
   const cap = Math.max(0, Math.floor(Number(limit) || 0));
+  const namedRows = [];
   const seen = new Set();
-  const top = boundedTopGlobals(cap);
-  for (const row of named || []) {
+
+  // Preserve legacy membership semantics: named globals occupy the first slots
+  // before unnamed hot targets are admitted. Only the expensive unnamed tail is
+  // selected with a bounded heap.
+  for (const row of (named || []).slice(0, cap)) {
     const key = BigInt(row.addr).toString();
-    const counted = stats?.counts?.get?.(key);
     seen.add(key);
-    top.offer({ ...row, refs:counted?.refs ?? 0 });
+    namedRows.push({ ...row, refs:namedReferenceCount(stats, row.addr) });
   }
-  if (stats?.counts) {
+
+  const hot = boundedTopGlobals(Math.max(0, cap - namedRows.length));
+  if (stats?.counts && namedRows.length < cap) {
     for (const hit of stats.counts.values()) {
       const key = hit.addr.toString();
       if (seen.has(key) || hit.refs < 2) continue;
-      top.offer({
+      hot.offer({
         addr:hit.addr,
         name:null,
         readable:'off_' + hit.addr.toString(16).toUpperCase(),
@@ -70,7 +87,8 @@ export function mergeGlobals(named, stats, limit = 400) {
       });
     }
   }
-  return top.values();
+  return [...namedRows, ...hot.values()]
+    .sort((a, b) => b.refs - a.refs || (a.addr < b.addr ? -1 : a.addr > b.addr ? 1 : 0));
 }
 
 function renderRows(app, sheet, host, rows, { pending = false, complete = true, reason = null } = {}) {
