@@ -167,17 +167,72 @@ this lane.
 5. **Subsystem/convergence** — run T0–T2 tests, canonical generated checks if applicable, Spec Kit
    converge until CLEAN, then prepare the actual diff for independent review and exact-head gates.
 
+## Amended downstream-gate ownership decision
+
+Implementation review identified an exact, constrained downstream-gate exception. The canonical
+memory truth remains owned by `js/semantics/memoryssa/**`; the listed compatibility, points-to,
+decompiler, symbolic, and IR files only validate and consume the producer-issued capability with
+the expected load, source/entity, range, artifact, snapshot, consumer, and purpose context. They
+must not compute memory truth, alias relations, reaching definitions, or replacement values. This
+decision is specific to HEX-C2-01 and does not widen any Phase 7 or subsystem allowlist.
+
+The candidate's 39-path downstream/process inventory is intentionally fixed:
+
+```text
+js/analysis/pointsto/local.js
+js/decompiler/passes/stack-return-recovery.js
+js/decompiler/pipeline-core.js
+js/decompiler/pipeline.js
+js/decompiler/semantic-core.js
+js/decompiler/semantic.js
+js/ir-core.js
+js/semantics/compat/index.js
+js/semantics/compat/semantic-ir-v2-to-v1-finalize.js
+js/semantics/compat/semantic-ir-v2-to-v1-memory.js
+js/semantics/compat/semantic-ir-v2-to-v1.js
+js/semantics/memoryssa/build.js
+js/semantics/memoryssa/index.js
+js/semantics/memoryssa/proof.js
+js/semantics/memoryssa/queries.js
+js/slice.js
+js/symbolic/translate/semantic-ir.js
+js/symbolic/translate/slice.js
+js/symbolic/translate/support-matrix.js
+specs/002-byte-exact-memoryssa/checklists/requirements.md
+specs/002-byte-exact-memoryssa/checklists/soundness.md
+specs/002-byte-exact-memoryssa/contracts/byte-forwarding.md
+specs/002-byte-exact-memoryssa/data-model.md
+specs/002-byte-exact-memoryssa/plan.md
+specs/002-byte-exact-memoryssa/quickstart.md
+specs/002-byte-exact-memoryssa/research.md
+specs/002-byte-exact-memoryssa/spec.md
+specs/002-byte-exact-memoryssa/tasks.md
+tests/decompiler-semantic.mjs
+tests/ir-alias.mjs
+tests/ir-dataflow.mjs
+tests/ir.mjs
+tests/issue-430-memory-escape.mjs
+tests/phase7/pointsto/loaded-pointer-recovery.test.mjs
+tests/phase9/translate/support-matrix.test.mjs
+tests/phase9/translate/translator.test.mjs
+tests/semantic-v2/compat-v1-memory.test.mjs
+tests/semantic-v2/compat-v1-stackflow-linearization.test.mjs
+tests/semantic-v2/issue-c2-01-byte-exact-forwarding.test.mjs
+```
+
+These are the only permitted production/test/process paths for this candidate. Architecture
+effect producers, legacy private MemorySSA in `js/architecture/compat/**`, unrelated findings,
+workflows/CI, generated userscript, and distribution artifacts remain forbidden. A future path
+requires a new evidence-backed ownership decision rather than a generic allowlist relaxation.
+
+The validation-budget correction necessarily adds `js/semantics/memoryssa/contract.js` as a
+canonical-owner extension (the contract itself was not modified by the original 39-path commit).
+It is the sole additional production path, bringing the full candidate diff to 40 paths; it does
+not widen downstream ownership or the allowlist.
+
 ## Changed-File Allowlist / Forbidden Surface
 
-Expected production files are limited to the canonical MemorySSA builder/query and direct
-compatibility/value consumer, plus their direct tests. Spec Kit files under
-`specs/002-byte-exact-memoryssa/` are expected process artifacts. No generated output is
-expected.
-
-Forbidden unless a later evidence-backed ownership decision is recorded: architecture effect
-producers, `js/analysis/pointsto/**`, `js/decompiler/**`, legacy private MemorySSA in
-`js/architecture/compat/**`, unrelated finding specs/tests, workflows/CI, and generated userscript
-or distribution artifacts.
+The exact inventory above is the allowlist. No generated output is expected.
 
 ## Complexity Tracking
 

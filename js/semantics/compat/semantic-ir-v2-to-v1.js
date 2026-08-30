@@ -11,6 +11,7 @@ import {
   attachMemorySsa, attachFallbackMemory, addScalarSsaPhis, appendFunctionUnknowns,
   assignInstructionIds, memorySafetySummary,
 } from './semantic-ir-v2-to-v1-memory.js';
+import { transferCanonicalMemorySsaProducerBinding } from '../memoryssa/proof.js';
 
 function rowForNode(node, fallback, options) {
   if (typeof options.rowOfNode === 'function') {
@@ -308,6 +309,9 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
     memorySsaContractInput(memorySsaInput), options.memorySsaValidationOptions || {},
   );
   const memorySsa = memorySsaInput == null ? null : memorySsaProjectionArtifact(memorySsaInput, memorySsaContract);
+  if (memorySsaInput != null && memorySsa !== memorySsaInput) {
+    transferCanonicalMemorySsaProducerBinding(memorySsaInput, memorySsa);
+  }
   const canonicalCfg = options.cfg ?? options.semanticCfg ?? null;
   if (ssa && ssa.functionId !== ir.functionId) throw new TypeError('semantic-v2-v1-compat-ssa-function-mismatch');
   if (memorySsa && memorySsa.functionId !== ir.functionId) throw new TypeError('semantic-v2-v1-compat-memoryssa-function-mismatch');

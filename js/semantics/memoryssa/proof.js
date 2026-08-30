@@ -21,6 +21,24 @@ export const CANONICAL_ALIAS_ISSUER_VERSIONS = Object.freeze({
 export const CANONICAL_ACCESS_ISSUER = 'semantic-memoryssa.access';
 export const CANONICAL_STORE_VALUE_ISSUER = 'semantic-memoryssa.store-operand';
 
+/*
+ * A serialized artifact can reproduce every digest in its payload, including
+ * the identity it presents.  That is useful for transport integrity, but it
+ * is not an independent statement that the canonical producer published this
+ * exact artifact.  Keep the producer publication token private to this module
+ * and hand it to the builder/query boundary through WeakMaps.  The maps are
+ * deliberately not exported from the public MemorySSA index: callers can
+ * provide a current producer identity, but cannot mint one by copying an
+ * artifact's fields.
+ */
+const canonicalProducerArtifactBindings = new WeakMap();
+const canonicalProducerIdentityBindings = new WeakMap();
+const PRODUCER_IDENTITY_PROPERTY = '__canonicalProducerIdentity';
+
+function weakObject(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+}
+
 function withoutDigest(value, key = 'proofDigest') {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
   const { [key]: ignored, ...rest } = value;
@@ -75,6 +93,102 @@ export function canonicalMemorySsaPayload(artifact) {
 
 export function canonicalMemorySsaDigest(artifact) {
   return stableDigest(canonicalMemorySsaPayload(artifact));
+}
+
+/**
+ * Record a canonical producer publication.  This is intentionally an
+ * internal proof-boundary hook used by the builder and focused fixture tests;
+ * it is not re-exported from `memoryssa/index.js`.
+ *
+ * `independentIdentities` lets a pipeline retain the producer/session identity
+ * object it already owns while the artifact carries the canonicalized copy.
+ * A candidate identity is accepted only when its digest is exactly the one
+ * emitted on the published artifact.
+ */
+export function registerCanonicalMemorySsaProducerArtifact(artifact, independentIdentities = []) {
+  const published = weakObject(artifact);
+  const identity = weakObject(published?.identity);
+  if (!published || !identity) return null;
+  const artifactDigest = String(published.canonicalDigest ?? canonicalMemorySsaDigest(published));
+  if (!artifactDigest.trim() || artifactDigest !== canonicalMemorySsaDigest(published)) return null;
+  const identityDigest = canonicalIdentityDigest(identity);
+  const candidates = Array.isArray(independentIdentities) ? independentIdentities : [independentIdentities];
+  const producerIdentity = candidates.find((candidate) => {
+    const value = weakObject(candidate);
+    return value && value !== identity && canonicalIdentityDigest(value) === identityDigest;
+  }) ?? null;
+  if (!producerIdentity) return null;
+  const existingProducerIdentity = Object.hasOwn(published, PRODUCER_IDENTITY_PROPERTY)
+    ? published[PRODUCER_IDENTITY_PROPERTY] : null;
+  if (existingProducerIdentity != null && existingProducerIdentity !== producerIdentity) return null;
+  if (existingProducerIdentity == null) {
+    try {
+      Object.defineProperty(published, PRODUCER_IDENTITY_PROPERTY, {
+        value: producerIdentity,
+        enumerable: false,
+        configurable: false,
+        writable: false,
+      });
+    } catch {
+      return null;
+    }
+  }
+  const binding = Object.freeze({
+    artifact: published,
+    artifactDigest,
+    identity,
+    identityDigest,
+    producerIdentity,
+    snapshotId: published.snapshotId == null ? null : String(published.snapshotId),
+    functionId: published.functionId == null ? null : String(published.functionId),
+  });
+  canonicalProducerArtifactBindings.set(published, binding);
+  canonicalProducerIdentityBindings.set(producerIdentity, binding);
+  return binding;
+}
+
+export function canonicalMemorySsaProducerBinding(artifact) {
+  return weakObject(artifact) ? canonicalProducerArtifactBindings.get(artifact) ?? null : null;
+}
+
+export function canonicalMemorySsaProducerIdentity(artifact) {
+  return canonicalMemorySsaProducerBinding(artifact)?.producerIdentity ?? null;
+}
+
+export function canonicalMemorySsaIdentityBinding(identity) {
+  return weakObject(identity) ? canonicalProducerIdentityBindings.get(identity) ?? null : null;
+}
+
+/* A validated compatibility projection may be a new object, but it is
+ * eligible only when it is byte-for-byte the producer's artifact and retains
+ * the producer-owned identity object.  Arbitrary clones cannot transfer this
+ * binding because this function is never exposed through the public API. */
+export function transferCanonicalMemorySsaProducerBinding(source, projection) {
+  const binding = canonicalMemorySsaProducerBinding(source);
+  const target = weakObject(projection);
+  if (!binding || !target
+      || canonicalIdentityDigest(target.identity) !== binding.identityDigest
+      || target.identity !== binding.identity) return null;
+  const targetDigest = canonicalMemorySsaDigest(target);
+  if (!targetDigest.trim() || targetDigest !== binding.artifactDigest) return null;
+  const existingProducerIdentity = Object.hasOwn(target, PRODUCER_IDENTITY_PROPERTY)
+    ? target[PRODUCER_IDENTITY_PROPERTY] : null;
+  if (existingProducerIdentity != null && existingProducerIdentity !== binding.producerIdentity) return null;
+  if (existingProducerIdentity == null) {
+    try {
+      Object.defineProperty(target, PRODUCER_IDENTITY_PROPERTY, {
+        value: binding.producerIdentity,
+        enumerable: false,
+        configurable: false,
+        writable: false,
+      });
+    } catch {
+      return null;
+    }
+  }
+  const projectionBinding = Object.freeze({ ...binding, artifact: target, artifactDigest: targetDigest });
+  canonicalProducerArtifactBindings.set(target, projectionBinding);
+  return projectionBinding;
 }
 
 /*
@@ -273,6 +387,43 @@ export function canonicalStoreValueProof({
   // reinterpret a pointer identity as a byte literal at the forwarding
   // boundary, so the canonical proof producer must reject it outright.
   if (valueKind === 'address' && value != null) return null;
+  const width = Number(widthBits);
+  if (!Number.isSafeInteger(width) || width <= 0 || width % 8 !== 0) return null;
+  if (Number(semanticValue.machineType?.widthBits) !== width) return null;
+  let canonicalValue = null;
+  if (valueKind === 'bitvector') {
+    // Bitvector proofs always carry an own, primitive decimal representation.
+    // In particular, do not let an object/string wrapper or inherited member
+    // become a value merely because a consumer later calls BigInt().
+    try {
+      if (typeof value === 'bigint') canonicalValue = value;
+      else if (typeof value === 'number' && Number.isSafeInteger(value)) canonicalValue = BigInt(value);
+      else if (typeof value === 'string' && /^[+-]?(?:0|[1-9][0-9]*)$/.test(value)) canonicalValue = BigInt(value);
+      else return null;
+    } catch {
+      return null;
+    }
+    const unsigned = BigInt.asUintN(width, canonicalValue);
+    const signed = BigInt.asIntN(width, canonicalValue);
+    if (canonicalValue !== unsigned && canonicalValue !== signed) return null;
+    canonicalValue = unsigned;
+    const constant = weakObject(semanticValue.metadata?.constant);
+    if (!constant || constant.kind !== 'bitvector'
+        || Number(constant.widthBits) !== width || constant.value == null) return null;
+    let canonicalConstant;
+    try {
+      if (typeof constant.value === 'bigint') canonicalConstant = constant.value;
+      else if (typeof constant.value === 'number' && Number.isSafeInteger(constant.value)) canonicalConstant = BigInt(constant.value);
+      else if (typeof constant.value === 'string' && /^[+-]?(?:0|[1-9][0-9]*)$/.test(constant.value)) canonicalConstant = BigInt(constant.value);
+      else return null;
+    } catch {
+      return null;
+    }
+    const constantUnsigned = BigInt.asUintN(width, canonicalConstant);
+    const constantSigned = BigInt.asIntN(width, canonicalConstant);
+    if ((canonicalConstant !== constantUnsigned && canonicalConstant !== constantSigned)
+        || constantUnsigned !== canonicalValue) return null;
+  }
   const base = {
     kind: 'canonical-semantic-store-operand',
     version: MEMORY_SSA_PROOF_VERSION,
@@ -289,9 +440,9 @@ export function canonicalStoreValueProof({
       functionId: String(functionId ?? ''),
       digest: canonicalIdentityDigest(identity),
     },
-    widthBits: Number(widthBits),
+    widthBits: width,
     valueKind,
-    ...(value == null ? {} : { value: String(value) }),
+    ...(valueKind === 'bitvector' ? { value: canonicalValue.toString() } : {}),
   };
   return {
     ...base,

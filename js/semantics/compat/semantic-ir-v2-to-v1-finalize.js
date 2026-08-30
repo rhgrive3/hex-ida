@@ -1,5 +1,10 @@
 import { V1_OP, V1_VK, V1_MK, addUse, safeBigInt } from './semantic-ir-v2-to-v1-core.js';
-import { isCanonicalExactMemoryForwarding } from '../memoryssa/queries.js';
+import {
+  CANONICAL_MEMORY_FORWARDING_CONSUMER,
+  CANONICAL_MEMORY_FORWARDING_PURPOSE,
+  canonicalMemoryForwardingContext,
+  isCanonicalExactMemoryForwarding,
+} from '../memoryssa/queries.js';
 
 function resolveAlias(value, aliases) {
   let current = value ?? null;
@@ -230,7 +235,18 @@ function foldInstruction(inst) {
   }
   if (inst.op === V1_OP.LOAD && Object.hasOwn(inst, 'memoryForwarding')) {
     const forwarding = inst.memoryForwarding;
-    if (isCanonicalExactMemoryForwarding(forwarding) && forwarding.value != null) {
+    if (isCanonicalExactMemoryForwarding(forwarding, canonicalMemoryForwardingContext(forwarding, {
+      useId: forwarding?.useId,
+      sourceEntityId: inst.semanticNodeId ?? inst.sourceEntityId,
+      nodeId: inst.semanticNodeId ?? inst.sourceEntityId,
+      entityId: forwarding?.loadEntityId,
+      regionId: forwarding?.loadRegionId,
+      range: forwarding?.loadRange,
+      artifactDigest: forwarding?.artifactDigest,
+      snapshotId: forwarding?.snapshotId,
+      consumerId: CANONICAL_MEMORY_FORWARDING_CONSUMER,
+      purpose: CANONICAL_MEMORY_FORWARDING_PURPOSE,
+    })) && forwarding.value != null) {
       return uint(forwarding.value, bits);
     }
     // The legacy reachingStore field is structural compatibility metadata, not

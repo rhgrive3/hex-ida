@@ -4,7 +4,10 @@ import { expr, sourceOf } from './ast/nodes.js';
 import { printProgram } from './pretty/c.js';
 import { PASS_STAGES as PHASE8_ALL_STAGES, runPhase8Stage } from './phase8/index.js';
 import { applyPhase8Projection } from './phase8/projection.js';
-import { isCanonicalExactMemoryForwarding } from '../semantics/memoryssa/queries.js';
+import {
+  canonicalMemoryForwardingContextForLoad,
+  isCanonicalExactMemoryForwarding,
+} from '../semantics/memoryssa/queries.js';
 
 export { buildExpressionForTesting } from './pipeline-core.js';
 
@@ -128,7 +131,8 @@ function reanchorRecoveredReturnSource(result, opts = {}) {
       if (inst?.op !== 'load' || inst?.loc?.kind !== 'stack' || inst?.row == null || ret.row == null || inst.row >= ret.row) continue;
       if (!sourceRows.has(String(inst.row))) continue;
       const fact = inst.memoryForwarding;
-      if (!isCanonicalExactMemoryForwarding(fact)) continue;
+      if (!isCanonicalExactMemoryForwarding(fact,
+        canonicalMemoryForwardingContextForLoad(fact, inst))) continue;
       const store = (result.ir.instructions || []).find((candidate) => {
         const definitionId = candidate?.memDef?.definitionId ?? candidate?.extra?.memoryDefinitionId ?? null;
         return candidate?.op === 'store'
@@ -143,7 +147,8 @@ function reanchorRecoveredReturnSource(result, opts = {}) {
       if (!load || inst.row > load.row) load = inst;
     }
     const spillFact = load?.memoryForwarding;
-    const spill = isCanonicalExactMemoryForwarding(spillFact)
+    const spill = isCanonicalExactMemoryForwarding(spillFact,
+      canonicalMemoryForwardingContextForLoad(spillFact, load))
       ? (result.ir.instructions || []).find((candidate) => {
         const definitionId = candidate?.memDef?.definitionId ?? candidate?.extra?.memoryDefinitionId ?? null;
         return candidate?.op === 'store'
