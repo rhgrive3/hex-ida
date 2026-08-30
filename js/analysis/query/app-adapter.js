@@ -30,12 +30,22 @@ function addressOf(value) {
 
 const functionId = (value) => value == null ? null : `0x${BigInt(value).toString(16)}`;
 
+function nonNegativeSafeInteger(value, fallback = 0) {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : fallback;
+}
+
+function positiveSafeIntegerScalar(value) {
+  if (typeof value === 'number') return Number.isSafeInteger(value) && value > 0 ? value : null;
+  if (typeof value === 'bigint') return value > 0n && value <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(value) : null;
+  return null;
+}
+
 function pageOf(page = {}) {
-  const rawOffset = Number(page.offset ?? page.start ?? 0);
-  const rawLimit = Number(page.limit ?? page.size ?? 200);
+  const rawOffset = page.offset ?? page.start ?? 0;
+  const rawLimit = page.limit ?? page.size ?? 200;
   return {
-    offset:Number.isSafeInteger(rawOffset) && rawOffset >= 0 ? rawOffset : 0,
-    limit:Number.isSafeInteger(rawLimit) && rawLimit > 0 ? Math.min(MAX_PAGE, rawLimit) : 200,
+    offset:nonNegativeSafeInteger(rawOffset, 0),
+    limit:typeof rawLimit === 'number' && Number.isSafeInteger(rawLimit) && rawLimit > 0 ? Math.min(MAX_PAGE, rawLimit) : 200,
   };
 }
 
@@ -331,9 +341,9 @@ export function createAppAnalysisQueryAdapter(app) {
         error.code = 'ANALYSIS_QUERY_BINARY_UNBOUND';
         throw error;
       }
-      const projectRevision = Number(project?.revision ?? app?.projectRevision ?? app?.workspace?.bindingRevision ?? 0);
-      const analysisEpoch = Number(app?.backend?.gen ?? app?.analysisEpoch ?? 0);
-      return { binaryId:binaryId.trim(), projectRevision:Number.isFinite(projectRevision) ? projectRevision : 0, artifactVersions:artifactVersions(app), analysisEpoch:Number.isFinite(analysisEpoch) ? analysisEpoch : 0 };
+      const projectRevision = project?.revision ?? app?.projectRevision ?? app?.workspace?.bindingRevision ?? 0;
+      const analysisEpoch = app?.backend?.gen ?? app?.analysisEpoch ?? 0;
+      return { binaryId:binaryId.trim(), projectRevision:nonNegativeSafeInteger(projectRevision, 0), artifactVersions:artifactVersions(app), analysisEpoch:nonNegativeSafeInteger(analysisEpoch, 0) };
     },
 
     async binaryInfo(snapshot) {
@@ -353,7 +363,9 @@ export function createAppAnalysisQueryAdapter(app) {
     async functions(_snapshot, query = {}, page = {}, options = {}) {
       const symbols = app?.symbols;
       if (!symbols?.funcs) return unsupported(null, 'function-index-unavailable');
-      const needle = String(query.text ?? query.name ?? '').trim().toLowerCase();
+      const rawNeedle = query.text ?? query.name ?? '';
+      if (typeof rawNeedle !== 'string') return unsupported(null, 'function-query-text-invalid');
+      const needle = rawNeedle.trim().toLowerCase();
       const exactAddress = addressOf(query.address);
       const { offset, limit } = pageOf(page);
       const count = Math.min(symbols.funcs.length, MAX_FUNCTION_SCAN);
@@ -423,8 +435,9 @@ export function createAppAnalysisQueryAdapter(app) {
         end = fnRange.end;
       }
       if (start == null) return unsupported(null, 'instruction-range-start-required');
-      let length = Number(request.length ?? (end == null ? 4096n : end - start));
-      if (!Number.isSafeInteger(length) || length <= 0) return unsupported(null, 'instruction-range-invalid');
+      const rawLength = request.length ?? (end == null ? 4096 : end - start);
+      let length = positiveSafeIntegerScalar(rawLength);
+      if (length == null) return unsupported(null, 'instruction-range-invalid');
       const truncated = length > 1024 * 1024;
       length = Math.min(length, 1024 * 1024);
       if (typeof app?.backend?.disassembleAt === 'function') {
