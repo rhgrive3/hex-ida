@@ -133,21 +133,35 @@ function fuseExtent(evidence) {
   const complete = pool.filter((item) => item.extentRole !== 'partial');
   if (complete.length === 0 && partial.length > 0) {
     const merged = new Map();
+    const ownershipByRange = new Map();
     for (const item of partial) {
-      for (const region of item.regions) merged.set(`${region.start}-${region.end}`, region);
+      for (const region of item.regions) {
+        const rangeKey = `${region.start}-${region.end}`;
+        const priorOwnership = ownershipByRange.get(rangeKey);
+        if (priorOwnership != null && priorOwnership !== region.ownership) {
+          return {
+            regions: [],
+            state: 'unknown',
+            conflicts: [{ kind: 'extent', detail: 'partial extent ownership evidence disagrees', alternatives: [...new Set([priorOwnership, region.ownership])].sort() }],
+          };
+        }
+        ownershipByRange.set(rangeKey, region.ownership);
+        merged.set(`${rangeKey}-${region.ownership}`, region);
+      }
     }
-    const regions = [...merged.values()].sort((left, right) => (BigInt(left.start) < BigInt(right.start) ? -1 : 1));
-    return {
-      regions,
-      state: authoritative.length > 0 ? 'exact' : 'heuristic',
-      conflicts: [],
-    };
+    const regions = [...merged.values()].sort((left, right) => {
+      const byStart = BigInt(left.start) < BigInt(right.start) ? -1 : BigInt(left.start) > BigInt(right.start) ? 1 : 0;
+      if (byStart !== 0) return byStart;
+      const byEnd = BigInt(left.end) < BigInt(right.end) ? -1 : BigInt(left.end) > BigInt(right.end) ? 1 : 0;
+      return byEnd || left.ownership.localeCompare(right.ownership);
+    });
+    return { regions, state: authoritative.length > 0 ? 'exact' : 'heuristic', conflicts: [] };
   }
   const considered = complete.length > 0 ? complete : pool;
 
   const signatures = new Map();
   for (const item of considered) {
-    const signature = item.regions.map((region) => `${region.start}-${region.end}`).join(',');
+    const signature = regionSignature(item);
     if (!signatures.has(signature)) signatures.set(signature, { regions: item.regions, sources: [] });
     signatures.get(signature).sources.push(item.producerId);
   }
