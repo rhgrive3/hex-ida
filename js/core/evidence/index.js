@@ -46,9 +46,15 @@ export const EVIDENCE_COMPLETENESS = Object.freeze([
 
 function fail(code) { throw new TypeError(code); }
 function required(value, code) {
-  const text = String(value ?? '').trim();
+  if (typeof value !== 'string') fail(code);
+  const text = value.trim();
   if (!text) fail(code);
   return text;
+}
+function optionalString(value, code) {
+  if (value == null) return null;
+  if (typeof value !== 'string') fail(code);
+  return value;
 }
 function stringArray(value, code) {
   if (value == null) return [];
@@ -81,7 +87,8 @@ function confidence(value) {
   return n;
 }
 function enumValue(value, allowed, fallback, code) {
-  const normalized = value == null ? fallback : String(value);
+  if (value != null && typeof value !== 'string') fail(code);
+  const normalized = value == null ? fallback : value;
   if (!allowed.includes(normalized)) fail(code);
   return normalized;
 }
@@ -93,15 +100,15 @@ export function createEvidenceNode(input = {}) {
   const node = {
     id: required(input.id, 'evidence-id-required'),
     family,
-    binaryId: input.binaryId == null ? null : String(input.binaryId),
+    binaryId: optionalString(input.binaryId, 'evidence-invalid-binary-id'),
     targetEntityIds: stringArray(input.targetEntityIds, 'evidence-invalid-targets'),
-    semanticKind: input.semanticKind == null ? null : String(input.semanticKind),
+    semanticKind: optionalString(input.semanticKind, 'evidence-invalid-semantic-kind'),
     completeness: enumValue(input.completeness, EVIDENCE_COMPLETENESS, 'partial', 'evidence-invalid-completeness'),
     confidence: confidence(input.confidence),
     deterministic: input.deterministic === true,
     origin: createOriginSet(input.origin ?? {}),
     payload: jsonSafe(input.payload ?? {}),
-    createdAt: input.createdAt == null ? null : String(input.createdAt),
+    createdAt: optionalString(input.createdAt, 'evidence-invalid-created-at'),
   };
   return deepFreeze(node);
 }
@@ -123,7 +130,7 @@ export function createClaimNode(input = {}) {
   return deepFreeze({
     id: required(input.id, 'evidence-id-required'),
     family: 'Claim',
-    binaryId: input.binaryId == null ? null : String(input.binaryId),
+    binaryId: optionalString(input.binaryId, 'evidence-invalid-binary-id'),
     targetEntityIds,
     scope,
     semanticKind,
@@ -136,7 +143,7 @@ export function createClaimNode(input = {}) {
     confidence: confidence(input.confidence),
     origin: createOriginSet(input.origin ?? {}),
     payload: jsonSafe(input.payload ?? {}),
-    createdAt: input.createdAt == null ? null : String(input.createdAt),
+    createdAt: optionalString(input.createdAt, 'evidence-invalid-created-at'),
   });
 }
 
