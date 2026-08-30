@@ -6,6 +6,10 @@ import {
 import { createOriginSet } from '../../core/identity/origin.js';
 import { validateMemorySsa } from './validate.js';
 import {
+  canonicalMemorySsaProducerBinding,
+  canonicalMemorySsaIdentityBinding,
+} from './build.js';
+import {
   CANONICAL_ACCESS_ISSUER,
   CANONICAL_ALIAS_ISSUERS,
   CANONICAL_ALIAS_ISSUER_VERSIONS,
@@ -15,8 +19,6 @@ import {
   canonicalAccessBindingDigest,
   canonicalAccessProofDigest,
   canonicalAliasProofDigest,
-  canonicalMemorySsaProducerBinding,
-  canonicalMemorySsaIdentityBinding,
   canonicalMemorySsaDigest,
   canonicalStoreValueProofDigest,
 } from './proof.js';
@@ -30,9 +32,8 @@ function assertNotAborted(options) {
   }
 }
 function positiveInteger(value, code) {
-  const number = Number(value);
-  if (!Number.isSafeInteger(number) || number <= 0) fail(code);
-  return number;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) fail(code);
+  return value;
 }
 function analysisObject(memorySsa) {
   if (!memorySsa || typeof memorySsa !== 'object') fail('memory-ssa-query-analysis-required');
@@ -210,9 +211,10 @@ function forwardingBigInt(value) {
 }
 
 function forwardingPositiveInteger(value, code) {
-  const number = Number(value);
-  if (!Number.isSafeInteger(number) || number <= 0) throw new ForwardingStop('unsupported', code);
-  return number;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) {
+    throw new ForwardingStop('unsupported', code);
+  }
+  return value;
 }
 
 function forwardingWidthBits(memory, fallback = null) {
@@ -793,11 +795,13 @@ function forwardingOriginComplete(origin) {
 }
 
 function forwardingDeadlineMs(options) {
-  const raw = options.deadline ?? options.deadlineAt ?? null;
+  const raw = options.deadline ?? options.deadlineAt
+    ?? options.budget?.deadline ?? options.budget?.deadlineAt ?? null;
   if (raw == null) return null;
-  const value = raw instanceof Date ? raw.getTime() : Number(raw);
-  if (!Number.isFinite(value)) throw new ForwardingStop('unsupported', 'memory-forwarding-deadline-invalid');
-  return value;
+  if (typeof raw !== 'number' || !Number.isSafeInteger(raw)) {
+    throw new ForwardingStop('unsupported', 'memory-forwarding-deadline-invalid');
+  }
+  return raw;
 }
 
 function forwardingSourceMap(options) {
@@ -1026,7 +1030,8 @@ function forwardingStatusFromArtifact(memorySsa, options) {
   if (!producerBinding || producerBinding.artifact !== artifact) {
     throw new ForwardingStop('stale', 'memoryssa-independent-producer-identity-unavailable');
   }
-  if (!identityBinding || identityBinding.identityDigest !== producerBinding.identityDigest
+  if (!identityBinding || identityBinding !== producerBinding
+      || identityBinding.identityDigest !== producerBinding.identityDigest
       || stableDigest(currentIdentity) !== stableDigest(artifact.identity)) {
     throw new ForwardingStop('stale', 'memoryssa-independent-current-identity-mismatch');
   }

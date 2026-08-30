@@ -27,7 +27,7 @@ import {
 } from '../alias/canonical-address-v2.js';
 import { MEMORY_SSA_BUILD_VERSION } from '../../semantics/memoryssa/build.js';
 import { MEMORY_SSA_CONTRACT_VERSION } from '../../semantics/memoryssa/contract.js';
-import { canonicalMemorySsaProducerIdentity } from '../../semantics/memoryssa/proof.js';
+import { canonicalMemorySsaProducerIdentity } from '../../semantics/memoryssa/build.js';
 import {
   CANONICAL_MEMORY_FORWARDING_CONSUMER,
   CANONICAL_MEMORY_FORWARDING_PURPOSE,
