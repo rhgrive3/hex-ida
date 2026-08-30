@@ -23,6 +23,4 @@ jobs:
         with:
           node-version: '22'
       - name: Safely restack PR2677 onto current main
-        run: |
-          sed -i "s/c728482ffcca28939df805af184117b50d29f5d9/e5292b37a79b782121cf372b980ba4e377b01d43/" tools/pr2677-restack.py
-          python3 tools/pr2677-restack.py
+        run: python3 tools/pr2677-restack.py
