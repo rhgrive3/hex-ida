@@ -1,0 +1,34 @@
+name: Temporary ARM64 shift coercion probe
+on:
+  push:
+    branches: [audit/arm64-shift-coercion-probe]
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: audit/arm64-shift-coercion-probe
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Probe public MachineEffects path
+        run: |
+          node --input-type=module <<'EOF'
+          import assert from 'node:assert/strict';
+          import { liftArm64MachineEffects } from './js/targets/architecture/arm64/effects/index.js';
+          let seq = 0;
+          const gp = (num, bits = 64, shift = null) => ({ k:'reg', cls:'gp', num, bits, text:`x${num}`, ...(shift ? {shift} : {}) });
+          const imm = (value, shift = null) => ({ k:'imm', value:BigInt(value), text:`#${value}`, ...(shift ? {shift} : {}) });
+          const lift = (ops) => liftArm64MachineEffects({ instructionId:`shift-probe:${++seq}`, mnemonic:'add', mode:'a64', ops });
+          const legal = lift([gp(0), gp(1), gp(2, 64, {op:'lsl', amount:1})]);
+          const stringShift = lift([gp(0), gp(1), gp(2, 64, {op:'lsl', amount:'1'})]);
+          const boolShift = lift([gp(0), gp(1), gp(2, 64, {op:'lsl', amount:true})]);
+          const immString12 = lift([gp(0), gp(1), imm(1, {op:'lsl', amount:'12'})]);
+          assert.ok(legal && legal.completeness !== 'partial' && legal.operations.length > 0);
+          assert.ok(stringShift && stringShift.completeness !== 'partial' && stringShift.operations.length > 0, 'string register shift is currently promoted');
+          assert.ok(boolShift && boolShift.completeness !== 'partial' && boolShift.operations.length > 0, 'boolean register shift is currently promoted');
+          assert.ok(immString12 && immString12.completeness !== 'partial' && immString12.operations.length > 0, 'string immediate shift is currently promoted');
+          console.log(JSON.stringify({legal:legal.completeness,stringShift:stringShift.completeness,boolShift:boolShift.completeness,immString12:immString12.completeness}));
+          EOF
