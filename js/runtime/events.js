@@ -37,7 +37,9 @@ function safeInteger(value, fallback, name, { min = 0 } = {}) {
   return n;
 }
 
-function optionalText(value, name = 'runtime event identity') {
+function optionalText(value) { return value == null ? null : String(value); }
+
+function optionalIdentity(value, name) {
   if (value == null) return null;
   if (typeof value !== 'string') throw new DebugAdapterError('runtime-invalid-event-identity', `${name} must be a string`);
   return value;
@@ -92,13 +94,13 @@ export function createRuntimeEvent(input = {}) {
     providerId,
     providerVersion,
     sessionEpoch,
-    streamId: optionalText(input.streamId, 'streamId'),
+    streamId: optionalIdentity(input.streamId, 'streamId'),
     sequence,
-    providerEventId: optionalText(input.providerEventId, 'providerEventId'),
+    providerEventId: optionalIdentity(input.providerEventId, 'providerEventId'),
     kind,
-    processKey: optionalText(input.processKey, 'processKey'),
-    threadKey: optionalText(input.threadKey, 'threadKey'),
-    moduleBindingKey: optionalText(input.moduleBindingKey, 'moduleBindingKey'),
+    processKey: optionalText(input.processKey),
+    threadKey: optionalText(input.threadKey),
+    moduleBindingKey: optionalText(input.moduleBindingKey),
     moduleGeneration,
     payload,
   };
@@ -111,14 +113,14 @@ export function createRuntimeEvent(input = {}) {
     providerId,
     providerVersion,
     sessionEpoch,
-    streamId: optionalText(input.streamId, 'streamId'),
+    streamId: optionalIdentity(input.streamId, 'streamId'),
     sequence,
     predecessorIds: arrayOfStrings(input.predecessorIds, 'predecessorIds'),
-    providerEventId: optionalText(input.providerEventId, 'providerEventId'),
+    providerEventId: optionalIdentity(input.providerEventId, 'providerEventId'),
     timestamp: input.timestamp == null ? null : String(input.timestamp),
-    processKey: optionalText(input.processKey, 'processKey'),
-    threadKey: optionalText(input.threadKey, 'threadKey'),
-    moduleBindingKey: optionalText(input.moduleBindingKey, 'moduleBindingKey'),
+    processKey: optionalText(input.processKey),
+    threadKey: optionalText(input.threadKey),
+    moduleBindingKey: optionalText(input.moduleBindingKey),
     moduleGeneration,
     kind,
     payload,
