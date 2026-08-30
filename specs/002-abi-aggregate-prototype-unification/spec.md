@@ -125,11 +125,11 @@ The matrix is deterministic and no row is removed to obtain a passing score.
 - Cancellation, deadline, budget exhaustion, truncation, malformed ABI metadata, and failed
   classifier calls publish no staged exact result.
 
-## Current-main correction (pre-implementation)
+## Historical current-main correction (pre-implementation)
 
 The original RISC-V/unsupported-ABI smoke regression is now green after the
 merged PR #2499 and is not evidence for a new fix. A read-only audit was rerun
-against live `origin/main` at `48a0b42913e63f33a03783f9676994268d8a06e8`.
+against historical live `origin/main` at `48a0b42913e63f33a03783f9676994268d8a06e8`.
 The direct canonical classifier/profile rows are covered for Apple arm64 and
 arm64e, AAPCS64, SysV AMD64, Microsoft x64/vectorcall, and RISC-V
 LP64/LP64F/LP64D, including scalar arguments/returns, aggregate boundaries,

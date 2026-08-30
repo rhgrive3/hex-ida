@@ -3,16 +3,18 @@
 **Input**: `spec.md`, `plan.md`, `research.md`, `data-model.md`, and
 `contracts/abi-prototype.md` in this feature directory.
 
-**Implementation gate**: Production source edits are forbidden until the
-`ANALYZE=CLEAN` refreshed checkpoint is approved by Sol and the merged PR #2499
-head is reconciled/re-audited against live main `48a0b429`.
+**Implementation gate (historical checkpoint)**: Production source edits were
+forbidden until the `ANALYZE=CLEAN` refreshed checkpoint was approved by Sol
+and the merged PR #2499 head was reconciled/re-audited against live main
+`48a0b429`. The implementation-owner branch is now restacked onto fetched
+`origin/main` `204c82de`; delivery/review tasks remain open.
 
 ## Phase 1: Setup and ownership
 
 - [x] T001 Record authoritative repository, base SHA, PR #2499 merge, merged #2500,
   active ABI branches, and generated state in `research.md`.
-- [x] T002 [P] Record the Graft-backed compressed producer/consumer trace and the
-  outside-Codespaces Graft guardrail in `research.md`.
+- [x] T002 [P] Record the local producer/consumer trace and the outside-Codespaces
+  Graft guardrail in `research.md`; do not invoke Graft outside Codespaces.
 - [x] T003 [P] Create the feature specification and requirements checklist in
   `spec.md` and `checklists/requirements.md`.
 - [x] T004 Reconcile the merged #2499 changes against newest live main; record
@@ -35,7 +37,7 @@ head is reconciled/re-audited against live main `48a0b429`.
 
 ## Phase 2A: Current-main correction (before production)
 
-- [x] T036 Reconcile the branch to current `origin/main` at
+- [x] T036 Reconcile the historical branch to `origin/main` at
   `48a0b42913e63f33a03783f9676994268d8a06e8`, refresh the #2499 collision
   status, and confirm current open PRs #2498/#2493 do not own ABI semantics.
 - [x] T037 Run the read-only 66-row ABI/profile matrix covering every registered
@@ -47,6 +49,11 @@ head is reconciled/re-audited against live main `48a0b429`.
   changing production code.
 - [x] T039 Re-run Spec Kit analyze after the correction and obtain Sol's
   implementation spot-check approval before touching a production file.
+
+Implementation-owner reconciliation after T039: fetched `origin/main` at
+`204c82dec563a7f87b67dcfbae848f65de9be9f4`, preserved the previous head under
+`backup/c3-02-before-restack`, and replayed only C3-02 commits onto that exact
+head. T027–T035 remain intentionally open for independent review and delivery.
 
 ## Phase 3: User Story 1 — one ABI fact reaches every consumer (P1)
 

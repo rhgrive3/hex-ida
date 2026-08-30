@@ -1,12 +1,12 @@
 # HEX-C3-02 Research Record
 
 **Historical base**: `8a614ccd0184d6c25257c25d930b68af7e9ac81f`
-**Current pre-implementation base**: `390741dcf6f8d391017b7f1ba224e35b49b973d3`
+**Historical pre-implementation base (superseded)**: `390741dcf6f8d391017b7f1ba224e35b49b973d3`
 
 The final pre-edit reconciliation advanced the implementation branch to live
-`origin/main` `48a0b42913e63f33a03783f9676994268d8a06e8` (PR #2498 merge). The
-same two deterministic consumer regressions and the same locked 66-row matrix
-failures were reproduced there before production edits.
+`origin/main` `48a0b42913e63f33a03783f9676994268d8a06e8` (PR #2498 merge). This
+is historical baseline evidence; the final implementation-owner restack is
+bound to the newer main head recorded below.
 
 ## Decision: retain one ABI owner
 
@@ -39,9 +39,9 @@ them into a prototype.
 
 ## Decision: profile audit scope
 
-The locked profile audit covers the following currently registered canonical
-profiles. The identity/version values below were read from the registry at the
-current pre-implementation base `390741dcf6f8d391017b7f1ba224e35b49b973d3`.
+The locked profile audit covers the following canonical profiles. The
+identity/version values below were read from the registry at the historical
+pre-implementation base `390741dcf6f8d391017b7f1ba224e35b49b973d3`.
 
 | Profile | Identity | Architecture | Important conservative boundary |
 |---|---|---|---|
@@ -65,7 +65,7 @@ this distinction.
 
 PR #2499 corrected the historical consumer bug: the original RISC-V and
 unsupported-ABI smoke regression now passes. The branch was fast-forwarded to
-current live main `390741dcf6f8d391017b7f1ba224e35b49b973d3`, and a read-only
+the then-current live main `390741dcf6f8d391017b7f1ba224e35b49b973d3`, and a read-only
 profile/ABI matrix was run before any production edit. It found the first
 remaining soundness divergence in `abiContext`:
 
@@ -103,7 +103,7 @@ PRE_FIX_FAILURE_2: expected unsupported conventionKnown=false, received undefine
 Recorded current-main baseline:
 
 ```text
-CURRENT_MAIN_SHA: 390741dcf6f8d391017b7f1ba224e35b49b973d3
+HISTORICAL_CURRENT_MAIN_SHA: 390741dcf6f8d391017b7f1ba224e35b49b973d3
 CURRENT_PRE_FIX_COMMAND: node --test tests/phase8/abi/hex-c3-02-profile-matrix.test.mjs
 CURRENT_PRE_FIX_RESULT: FAIL (exit 1; 2 passing, 2 failing)
 CURRENT_PRE_FIX_FAILURE_1: stale adapter aapcs64@1 yields conventionKnown=true
@@ -125,80 +125,34 @@ revised pre-implementation checkpoint awaiting Sol's plan-correction approval.
 The specification, current failing regression, and design artifacts are safe
 to prepare; no production file has been edited.
 
-## Graft/context-graph trace
+## Context-graph trace and environment gate
 
-Graft was run against this worktree. `graft map .` refreshed the graph from the
-main checkout and reported 1,628 files, 14,535 symbols, and 45,570 edges. The
-following compressed trace is evidence-backed by these calls:
-
-```text
-graft ask --source --limit 8 "selected ABI profile canonical classifier semanticAbiAdapter prototype recovery aggregate return hidden sret" .
-graft callers recoverFunctionPrototype .
-graft callers semanticAbiAdapter .
-graft callers --direction out --depth 2 enhanceSemanticDecompilation .
-graft callers classifyCallWithAbi .
-graft callers --direction out --depth 2 analyzeSemanticFunction .
-```
+Graft was not run for this implementation-owner turn. The repository guardrail
+permits Graft only inside GitHub Codespaces; this worktree has `CODESPACES`
+unset, so installing, invoking, or emulating Graft would violate the gate. The
+context audit therefore used local `git`, `rg`, exact source spans, and the
+Spec Kit artifacts below. No Graft token or graph-savings claim is made.
 
 ```text
-PRODUCER:
+GRAFT_STATUS: NOT_RUN_BY_OUTSIDE_CODESPACES_GUARD
+GRAFT_SAVINGS: NOT_APPLICABLE (0 tokens claimed)
+LOCAL_TRACE:
   resolveABIPlugin -> registered ABI profile classifier
-  evidence: js/targets/abi/index.js:L47-L64;
-  js/targets/abi/riscv-lp64.js:L553-L618;
-  js/targets/abi/riscv-lp64.js:L198-L551;
-  js/targets/abi/sysv-amd64.js:L150-L387;
-  js/targets/abi/microsoft-x64.js:L170-L357
-CANONICAL_OWNER:
-  ABI plugins under js/targets/abi/**; adapter
-  js/analysis/semantic-function-base.js:L122-L230
-CANONICAL_OBJECT:
-  classifier argument/return pieces, classes, stack, sret, and variadic state;
-  adapter publishes argument locations and call return fields
-  (semantic-function-base.js:L122-L230)
-IDENTITY:
-  profile id, semantic version/identity, architecture/profile selection, and
-  analysis identity; selection path is analyzeSemanticFunction
-  (js/analysis/semantic-function.js:L198-L302) -> resolveABIPlugin
-  (js/targets/abi/index.js:L47-L64)
-PROVENANCE:
-  classifier evidence and Semantic IR node/origin path; adapter call evidence
-  is consumed by compat projectNode through classifyCallWithAbi
-  (js/semantics/compat/semantic-ir-v2-to-v1-core.js:L104-L141;
-  js/semantics/compat/semantic-ir-v2-to-v1-nodes.js:L460-L460)
-COMPLETENESS:
-  classifier partial/unsupported/unknown and stack uncertainty are retained by
-  adapter; profile-specific partial results are visible in classifier spans
-  above and adapter normalization (semantic-function-base.js:L122-L230)
-PUBLICATION:
-  analyzeSemanticFunction -> Semantic IR/compat -> call summaries and
-  decompiler pipeline; enhanceSemanticDecompilation invokes prototype recovery,
-  aggregate layouts, high variables, and C-AST publication
-  (js/decompiler/pipeline-core.js:L615-L714)
-INVALIDATION:
-  summary identity gates function/snapshot/analyzer identity
-  (js/analysis/summary/local.js:L180-L194;
-  js/analysis/summary/contract.js:L222-L265); phase8 invalidation derives
-  changed producer/consumer keys (js/decompiler/phase8/transaction.js:L114-L118)
-DIRECT_CONSUMERS:
-  recoverFunctionPrototype (js/decompiler/types/prototype.js:L237-L277),
-  pipeline ABI argument locations (js/decompiler/pipeline-core.js:L33-L47),
-  compat projectNode/classifyCallWithAbi, summaries, and type/layout recovery
-DOWNSTREAM:
-  enhanceSemanticDecompilation -> runPhase8Stage, recoverAggregateLayouts,
-  recoverHighVariables, semantic AST/C-AST and printed decompiler output
-  (js/decompiler/pipeline-core.js:L615-L714)
-TEST_OWNER:
-  existing phase5/phase6 ABI contracts, issue-135-145 AAPCS contract, and
-  tests/phase8/abi/hex-c3-02-profile-matrix.test.mjs
-COLLISIONS:
-  merged PR #2499 owns the prior prototype overlap; after reconciliation, live
-  main is 48a0b42913e63f33a03783f9676994268d8a06e8. Its delta from the #2499
-  merge is PR #2493's ARM64 SIMD GP/ZR guard and test, with no ABI semantic
-  overlap; PR #2498 changes compact-unwind metadata only and is now merged.
-  The implementation was approved by Sol after refreshed clean analysis.
+  evidence: js/targets/abi/index.js; js/targets/abi/riscv-lp64.js;
+           js/targets/abi/sysv-amd64.js; js/targets/abi/microsoft-x64.js
+  canonical owner: js/targets/abi/** and js/analysis/semantic-function-base.js
+  direct consumers: js/decompiler/types/prototype.js,
+                    js/decompiler/pipeline-core.js,
+                    js/decompiler/type-recovery.js,
+                    js/decompiler/semantic-core.js,
+                    js/semantics/compat/**
+  downstream: enhanceSemanticDecompilation -> phase8, aggregate layouts,
+              high variables, semantic AST/C-AST, and printed output
+  tests: tests/phase5/abi/**, tests/phase6/abi/**,
+         tests/phase8/abi/hex-c3-02-*.mjs
 ```
 
-## Current-main profile matrix (read-only)
+## Historical current-main profile matrix (read-only)
 
 Command 1 is the minimum deterministic regression and is the required
 `CURRENT_PRE_FIX_COMMAND`:
@@ -207,7 +161,7 @@ Command 1 is the minimum deterministic regression and is the required
 node --test tests/phase8/abi/hex-c3-02-profile-matrix.test.mjs
 ```
 
-At `48a0b42913e63f33a03783f9676994268d8a06e8`, it reports four subtests:
+At historical main `48a0b42913e63f33a03783f9676994268d8a06e8`, it reports four subtests:
 two pass (selected RISC-V profile and unsupported ABI) and two fail (stale
 `aapcs64@1` accepted as supported; canonical AAPCS64 x0/x1 aggregate split
 into two prototype arguments). Exit status is `1`.
@@ -244,7 +198,7 @@ float class expectations and x86 physical-register aliasing were corrected in
 the final run (`xmmN` is stored as canonical physical `ymmN`); no such harness
 rows remain in the 12 failures.
 
-## Implementation evidence
+## Historical implementation evidence (superseded checkpoint)
 
 The implementation was approved after `ANALYZE_RESULT: CLEAN` and the #2499
 collision was closed by its merge. It keeps the registered profile classifier
@@ -329,6 +283,44 @@ moving-main change before Review 2/merge.
 MOVING_MAIN_LATEST: 9cca81bb2317cfea9b4e3379825265d92a26f55c
 MOVING_MAIN_LATEST_OVERLAP: NO
 MOVING_MAIN_LATEST_ACTION: retain reviewed implementation head; parent campaign reconciles before Review 2/merge
+```
+
+## Final implementation-owner reconciliation
+
+The implementation-owner worktree was safely restacked after fetching the
+newest available `origin/main`. The prior dirty work and pre-restack commits
+remain recoverable under `backup/c3-02-before-restack`; the old merge commit's
+unrelated main-side changes were not replayed. The intended branch now starts
+at the exact fetched main head and contains only the C3-02 finding/doc/test
+commits. Review and delivery tasks remain open.
+
+```text
+FETCHED_ORIGIN_MAIN: 204c82dec563a7f87b67dcfbae848f65de9be9f4
+RESTACK_BASE: 204c82dec563a7f87b67dcfbae848f65de9be9f4
+CODE_RESTACK_HEAD: 439816bf34c1e26d0039c1126f33b1b85f90a06e
+RESTACK_METHOD: backup old head; new branch from origin/main; cherry-pick C3-02 commits; skip old merge commit
+RESTACK_SHARED_ROOT_RESET: NO
+RESTACK_DISCARD: NO
+```
+
+Final implementation-owner evidence:
+
+```text
+FOCUSED_COMMAND: node --test tests/phase8/abi/hex-c3-02-boundaries.test.mjs tests/phase8/abi/hex-c3-02-profile-matrix.test.mjs tests/phase8/integration/issue-2478-abi-prototype-recovery.test.mjs
+FOCUSED_RESULT: PASS (45 tests)
+LOCKED_PROFILE_MATRIX_COMMAND: node tests/phase8/abi/hex-c3-02-required-profile-matrix.mjs
+LOCKED_PROFILE_MATRIX_RESULT: PASS (66/66 rows)
+DOWNSTREAM_COMMAND: node tests/issue-914-stack-return-reanchor.mjs; node tests/decompiler-pipeline.mjs; node --test tests/phase6/generic-core/issues-907-909-910-913.test.mjs
+DOWNSTREAM_RESULT: PASS (issue 914, pipeline, and 17 generic-core tests)
+LEGACY_REGISTER_AUDIT: PASS; generic consumers query canonical adapter locations; x0/x0..x7 literals remain only in explicit legacy presentation paths
+SPECKIT_PREREQUISITES: PASS (feature directory, required tasks, and available design artifacts resolved)
+SPECKIT_ANALYZE_RESULT: CLEAN (13 functional requirements, 9 success criteria, and 39 tasks mapped; no contradictions or coverage gaps)
+SPECKIT_CONVERGENCE_RESULT: CLEAN (no additional implementation tasks; T027-T035 remain open review/delivery gates by instruction)
+PHASE5_RESULT: PASS (44/44 discovered files; 279 tests)
+PHASE6_RESULT: PASS (23/23 discovered files; 116 tests)
+PHASE8_RESULT: PASS (30/30 discovered files; 322 tests)
+GENERATED_DOUBLE_RUN: NOT_APPLICABLE (no generated input or generated consumer changed)
+REVIEW_TASKS: OPEN (T027-T035 intentionally unchanged)
 ```
 
 ## Alternatives rejected
