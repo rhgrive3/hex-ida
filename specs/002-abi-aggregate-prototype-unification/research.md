@@ -287,18 +287,19 @@ MOVING_MAIN_LATEST_ACTION: retain reviewed implementation head; parent campaign 
 
 ## Final implementation-owner reconciliation
 
-The implementation-owner worktree was safely restacked after fetching the
-newest available `origin/main`. The prior dirty work and pre-restack commits
-remain recoverable under `backup/c3-02-before-restack`; the old merge commit's
-unrelated main-side changes were not replayed. The intended branch now starts
-at the exact fetched main head and contains only the C3-02 finding/doc/test
-commits. Review and delivery tasks remain open.
+The implementation-owner worktree was safely restacked again after fetching
+the newest available `origin/main`. The prior dirty work and pre-restack
+commits remain recoverable under `backup/c3-02-before-restack` and
+`backup/c3-02-before-latest-restack`; the old merge commit's unrelated
+main-side changes were not replayed. The intended branch now starts at the
+exact fetched main head and contains only the C3-02 finding/doc/test commits.
+Review and delivery tasks remain open.
 
 ```text
-FETCHED_ORIGIN_MAIN: 204c82dec563a7f87b67dcfbae848f65de9be9f4
-RESTACK_BASE: 204c82dec563a7f87b67dcfbae848f65de9be9f4
-CODE_RESTACK_HEAD: 439816bf34c1e26d0039c1126f33b1b85f90a06e
-RESTACK_METHOD: backup old head; new branch from origin/main; cherry-pick C3-02 commits; skip old merge commit
+FETCHED_ORIGIN_MAIN: 3ac625938333636bcc6c00634d2e21648778ce0f
+RESTACK_BASE: 3ac625938333636bcc6c00634d2e21648778ce0f
+CODE_RESTACK_HEAD: 3b868746cbdd3823a82e73fac4c52cb631ef6d4c
+RESTACK_METHOD: backup old heads; new branch from latest origin/main; cherry-pick only C3-02 commits after 204c; skip old merge commit
 RESTACK_SHARED_ROOT_RESET: NO
 RESTACK_DISCARD: NO
 ```
