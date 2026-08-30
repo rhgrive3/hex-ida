@@ -1,0 +1,305 @@
+name: Reopened AI project repair
+
+on:
+  push:
+    branches:
+      - fix/reopened-ai-project-contracts
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/reopened-ai-project-contracts
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Apply semantic repairs
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          def read(path): return Path(path).read_text()
+          def write(path, text): Path(path).write_text(text)
+          def replace(path, old, new, count=1):
+              text=read(path)
+              if old not in text:
+                  raise SystemExit(f'missing pattern in {path}: {old[:120]!r}')
+              text=text.replace(old,new,count)
+              write(path,text)
+          def sub(path, pattern, repl, count=1):
+              text=read(path)
+              new,n=re.subn(pattern,repl,text,count=count,flags=re.S)
+              if n!=count:
+                  raise SystemExit(f'pattern count {n} != {count} in {path}: {pattern[:120]}')
+              write(path,new)
+
+          # #2612: keep a status index in EvidenceStore so model-call context does not
+          # materialize/filter the entire cumulative store for the newest 32 verified rows.
+          replace('js/ai/evidence.js',
+          """    this.records = new Map();\n    this.sourcePayloads = new Map();""",
+          """    this.records = new Map();\n    this.recordOrder = new Map();\n    this.statusIds = new Map(EVIDENCE_STATUSES.map((status) => [status, []]));\n    this.nextRecordOrder = 0;\n    this.sourcePayloads = new Map();""")
+          replace('js/ai/evidence.js',
+          """    this.records.set(id, { ...previous, ...record });\n    const storedRecord = this.records.get(id);\n    if (storedRecord?.sourceRef?.detailRef) this.observationStore?.pin?.(storedRecord.sourceRef.detailRef);\n    return storedRecord;""",
+          """    if (!this.recordOrder.has(id)) this.recordOrder.set(id, this.nextRecordOrder++);\n    this.records.set(id, { ...previous, ...record });\n    const storedRecord = this.records.get(id);\n    this._indexStatus(id, previous?.status || null, storedRecord?.status || null);\n    if (storedRecord?.sourceRef?.detailRef) this.observationStore?.pin?.(storedRecord.sourceRef.detailRef);\n    return storedRecord;""")
+          replace('js/ai/evidence.js',
+          """  sourceDataFor(id) {""",
+          """  _indexStatus(id, previousStatus, nextStatus) {\n    if (previousStatus === nextStatus) return;\n    if (previousStatus && this.statusIds.has(previousStatus)) {\n      const previous = this.statusIds.get(previousStatus);\n      const at = previous.indexOf(id);\n      if (at >= 0) previous.splice(at, 1);\n    }\n    if (!nextStatus) return;\n    if (!this.statusIds.has(nextStatus)) this.statusIds.set(nextStatus, []);\n    const target = this.statusIds.get(nextStatus);\n    const order = this.recordOrder.get(id) ?? Number.MAX_SAFE_INTEGER;\n    let low = 0, high = target.length;\n    while (low < high) {\n      const mid = (low + high) >> 1;\n      const other = this.recordOrder.get(target[mid]) ?? Number.MAX_SAFE_INTEGER;\n      if (other < order) low = mid + 1; else high = mid;\n    }\n    target.splice(low, 0, id);\n  }\n\n  recentByStatus(status, limit = 32) {\n    const ids = this.statusIds.get(String(status)) || [];\n    const count = Math.max(0, Math.trunc(Number(limit) || 0));\n    const start = Math.max(0, ids.length - count);\n    const out = [];\n    for (let index = start; index < ids.length; index++) {\n      const record = this.records.get(ids[index]);\n      if (record) out.push(record);\n    }\n    return out;\n  }\n\n  byStatus(status) {\n    const ids = this.statusIds.get(String(status)) || [];\n    const out = [];\n    for (const id of ids) { const record = this.records.get(id); if (record) out.push(record); }\n    return out;\n  }\n\n  sourceDataFor(id) {""")
+          replace('js/ai/evidence.js',
+          """  verifiedIds() { return this.all().filter((item) => item.status === 'verified').map((item) => item.id); }""",
+          """  verifiedIds() { return this.byStatus('verified').map((item) => item.id); }""")
+
+          replace('js/ai/context/broker.js',
+          """      verifiedEvidence: evidenceStore ? evidenceStore.all().filter((item) => item.status === 'verified').slice(-32).map(compactEvidence) : [],""",
+          """      verifiedEvidence: evidenceStore ? (typeof evidenceStore.recentByStatus === 'function'\n        ? evidenceStore.recentByStatus('verified', 32)\n        : evidenceStore.all().filter((item) => item.status === 'verified').slice(-32)).map(compactEvidence) : [],""")
+          sub('js/ai/context/broker.js',
+          r"function trimToBudget\(context, maxBytes\) \{.*?\n\}\nfunction byteLength",
+          """function trimToBudget(context, maxBytes) {\n  if (byteLength(context) <= maxBytes) return;\n\n  // Preserve the original semantic priority exactly: transcript history is\n  // dropped first, followed by observations, hypotheses, pinned evidence and\n  // finally verified evidence. trimQueue performs the same prefix removal as\n  // repeated shift(), but finds the boundary with O(log N) full encodes.\n  const queues = [\n    context.recentMessages,\n    context.recentObservations,\n    context.activeHypotheses,\n    context.pinnedEvidence,\n    context.verifiedEvidence,\n  ].filter(Array.isArray);\n  for (const queue of queues) {\n    trimQueue(context, queue, maxBytes);\n    if (byteLength(context) <= maxBytes) return;\n  }\n\n  if (context.current?.function && !context.current.function.containmentOnly) {\n    delete context.current.function.instructions;\n    if (context.current.function.assembly) context.current.function.assembly = context.current.function.assembly.slice(0, 2000);\n    if (context.current.function.pseudocode) context.current.function.pseudocode = context.current.function.pseudocode.slice(0, 2000);\n    context.current.function.truncated = true;\n    if (byteLength(context) <= maxBytes) return;\n  }\n  if (context.investigation) {\n    context.investigation.importantPriorActions = [];\n    context.investigation.rejectedHypotheses = [];\n    context.investigation.unresolvedQuestions = (context.investigation.unresolvedQuestions || []).slice(-4);\n    if (byteLength(context) <= maxBytes) return;\n  }\n  if (context.conversationSummary) {\n    context.conversationSummary = context.conversationSummary.slice(0, 500);\n  }\n}\nfunction byteLength""")
+
+          replace('js/ai/control/turn-executor.js',
+          """        confirmedFindings: this.evidenceStore.all().filter((item) => item.status === 'verified'), proposedActions: this.proposalStore.all(),""",
+          """        confirmedFindings: typeof this.evidenceStore.byStatus === 'function'\n          ? this.evidenceStore.byStatus('verified')\n          : this.evidenceStore.all().filter((item) => item.status === 'verified'), proposedActions: this.proposalStore.all(),""")
+
+          # #2613: runtime-level release owns both session and per-session stores.
+          replace('js/ai/runtime.js',
+          """  cancel() { for (const controller of this.activeControllers) controller.abort('cancelled'); this.activeControllers.clear(); if (this.provider && typeof this.provider.cancel === 'function') this.provider.cancel(); }""",
+          """  async releaseSession(sessionId, { deletePersisted = false } = {}) {\n    if (sessionId == null) return false;\n    const id = String(sessionId);\n    for (const key of Array.from(this.storeNamespaces.keys())) {\n      if (key.endsWith(`::${id}`)) this.storeNamespaces.delete(key);\n    }\n    if (deletePersisted) await this.sessionStore.delete(id);\n    else this.sessionStore.sessions?.delete?.(id);\n    return true;\n  }\n\n  cancel() { for (const controller of this.activeControllers) controller.abort('cancelled'); this.activeControllers.clear(); if (this.provider && typeof this.provider.cancel === 'function') this.provider.cancel(); }""")
+
+          # #2615: persist conversation identity with the semantic investigation.
+          replace('js/ai/session-core/index.js',
+          """    projectId: input.projectId == null ? null : String(input.projectId),\n    mode:""",
+          """    projectId: input.projectId == null ? null : String(input.projectId),\n    conversationId: input.conversationId == null ? null : String(input.conversationId),\n    mode:""")
+          replace('js/ai/session-core/index.js',
+          """    const allowed = ['binaryId','binaryIdentity','projectId','mode','style','scope','effectiveScope','goal','messages','summary','investigationMemory','pinnedEvidence','hypotheses','confirmedFindings','rejectedHypotheses','proposedActions','lastActivity'];""",
+          """    const allowed = ['binaryId','binaryIdentity','projectId','conversationId','mode','style','scope','effectiveScope','goal','messages','summary','investigationMemory','pinnedEvidence','hypotheses','confirmedFindings','rejectedHypotheses','proposedActions','lastActivity'];""")
+          replace('js/ai/session-core/index.js',
+          """  return {\n    async load(id) { return project.findings.investigationSessions.find((session) => session && session.id === String(id)) || null; },""",
+          """  return {\n    list() { return project.findings.investigationSessions.slice(); },\n    async load(id) { return project.findings.investigationSessions.find((session) => session && session.id === String(id)) || null; },""")
+          replace('js/ai/control/turn-executor.js',
+          """          binaryId: snapshot.binaryId, binaryIdentity: snapshot.binaryIdentity, projectId: snapshot.projectIdentity,\n          mode:""",
+          """          binaryId: snapshot.binaryId, binaryIdentity: snapshot.binaryIdentity, projectId: snapshot.projectIdentity, conversationId: request.conversationId || null,\n          mode:""")
+          replace('js/ai/control/turn-executor.js',
+          """        mode: request.mode, style: request.style, scope: request.scope, effectiveScope: scopeController.effectiveScope, goal: request.goal,\n        binaryIdentity:""",
+          """        mode: request.mode, style: request.style, scope: request.scope, effectiveScope: scopeController.effectiveScope, goal: request.goal,\n        conversationId: request.conversationId ?? session.conversationId ?? null,\n        binaryIdentity:""")
+
+          # #2615 production bridge: a stable live adapter delegates every operation
+          # to the currently-bound project instead of capturing a stale project object.
+          replace('js/ai/ui/bridge.js',
+          """import { createProposalExecutor } from '../interaction/proposal-executor.js';""",
+          """import { createProposalExecutor } from '../interaction/proposal-executor.js';\nimport { createProjectSessionPersistence } from '../session-core/index.js';""")
+          replace('js/ai/ui/bridge.js',
+          """async function loadCoreRuntime(localContext) {""",
+          """async function loadCoreRuntime(localContext, persistence = null) {""")
+          replace('js/ai/ui/bridge.js',
+          """  return runtimeModule.createAIRuntime({ context: localContext, provider });""",
+          """  return runtimeModule.createAIRuntime({ context: localContext, provider, persistence });""")
+          replace('js/ai/ui/bridge.js',
+          """  const capabilityExecutor = createCapabilityExecutor({ catalog: capabilityCatalog, app, binaryId: () => localContext.binaryId, runtimePlatform: () => localContext.runtime?.platform?.() });\n  const loadCore = options.loadCore || loadCoreRuntime;""",
+          """  const capabilityExecutor = createCapabilityExecutor({ catalog: capabilityCatalog, app, binaryId: () => localContext.binaryId, runtimePlatform: () => localContext.runtime?.platform?.() });\n  const sessionPersistence = createLiveProjectSessionPersistence(app);\n  const loadCore = options.loadCore || ((context) => loadCoreRuntime(context, sessionPersistence));""")
+          replace('js/ai/ui/bridge.js',
+          """    id: 'bridge', localContext, runtime,\n    proposals:""",
+          """    id: 'bridge', localContext, runtime,\n    get sessionStore() { return core?.sessionStore || null; },\n    proposals:""")
+          replace('js/ai/ui/bridge.js',
+          """      let sessionId = conversationKey ? (sessions.get(conversationKey) || null) : defaultSessionId;\n      const prompt""",
+          """      let sessionId = conversationKey ? (sessions.get(conversationKey) || null) : defaultSessionId;\n      if (!sessionId) sessionId = persistedSessionForConversation(sessionPersistence, conversationKey, localContext);\n      const prompt""")
+          replace('js/ai/ui/bridge.js',
+          """    forgetAIConversation(conversationId) {\n      if (conversationId == null) return false;\n      const removed = sessions.delete(String(conversationId)); persistConversationBindings(sessions); return removed;\n    },""",
+          """    async deleteSession(conversationId, { reason = 'user-delete' } = {}) {\n      if (conversationId == null) return false;\n      const key = String(conversationId);\n      const sessionId = sessions.get(key) || null;\n      const removed = sessions.delete(key);\n      persistConversationBindings(sessions);\n      if (!sessionId) return removed;\n      const deletePersisted = reason === 'user-delete';\n      if (core?.releaseSession) await core.releaseSession(sessionId, { deletePersisted });\n      else if (deletePersisted) await sessionPersistence.delete(sessionId);\n      return true;\n    },\n    forgetAIConversation(conversationId) {\n      if (conversationId == null) return false;\n      const removed = sessions.delete(String(conversationId)); persistConversationBindings(sessions); return removed;\n    },""")
+          replace('js/ai/ui/bridge.js',
+          """function exposeStableIdentityInputs(context, app) {""",
+          """function createLiveProjectSessionPersistence(app) {\n  let saveTimer = null;\n  const projectFor = () => app?.workspace?.project || app?.activeProject || app?.project || null;\n  const ensureProject = () => projectFor() || app?.workspace?.snapshot?.() || null;\n  const changed = (project) => {\n    if (app?.workspace) app.workspace.project = project;\n    app.activeProject = project;\n    if (saveTimer != null || typeof setTimeout !== 'function') return;\n    saveTimer = setTimeout(() => { saveTimer = null; try { app?.workspace?.autosave?.(); } catch { /* optional autosave */ } }, 250);\n  };\n  const adapterFor = (project) => project ? createProjectSessionPersistence(project, { onChange: changed }) : null;\n  return {\n    list() { return adapterFor(projectFor())?.list?.() || []; },\n    async load(id) { return (await adapterFor(projectFor())?.load?.(id)) || null; },\n    async save(session) { const adapter = adapterFor(ensureProject()); if (adapter) await adapter.save(session); },\n    async delete(id) { const adapter = adapterFor(projectFor()); if (adapter) await adapter.delete(id); },\n  };\n}\n\nfunction persistedSessionForConversation(persistence, conversationId, context) {\n  const sessions = persistence?.list?.() || [];\n  const binaryId = context?.binaryIdentity?.id || context?.binaryId || null;\n  const projectId = context?.projectId || null;\n  const compatible = sessions.filter((session) => {\n    if (!session?.id) return false;\n    if (binaryId && session.binaryId && String(session.binaryId) !== String(binaryId)) return false;\n    if (projectId && session.projectId && String(session.projectId) !== String(projectId)) return false;\n    return true;\n  });\n  if (conversationId != null) {\n    const exact = compatible.find((session) => String(session.conversationId || '') === String(conversationId));\n    if (exact) return String(exact.id);\n  }\n  return compatible.length === 1 ? String(compatible[0].id) : null;\n}\n\nfunction exposeStableIdentityInputs(context, app) {""")
+
+          # #2613 UI eviction/delete must reach the bridge/runtime. Do not delete
+          # durable project state for retention-only eviction.
+          sub('js/ai/ui/session.js',
+          r"    if \(typeof this\.engine\?\.deleteSession === 'function'\) \{.*?\n    \}\n    this\.scheduleSave\(\);",
+          """    this._releaseConversation(conversation, 'user-delete');\n    this.scheduleSave();""")
+          replace('js/ai/ui/session.js',
+          """  /**\n   * Re-read history when the binary under the panel changed.""",
+          """  _releaseConversation(conversation, reason) {\n    if (!conversation?.id) return;\n    if (typeof this.engine?.deleteSession === 'function') {\n      Promise.resolve(this.engine.deleteSession(conversation.id, { reason })).catch(() => {});\n    } else if (typeof this.engine?.forgetAIConversation === 'function') {\n      try { this.engine.forgetAIConversation(conversation.id); } catch { /* best effort */ }\n    }\n  }\n\n  /**\n   * Re-read history when the binary under the panel changed.""")
+          replace('js/ai/ui/session.js',
+          """    if (oldest) this.conversations.splice(this.conversations.indexOf(oldest), 1);""",
+          """    if (oldest) {\n      this.conversations.splice(this.conversations.indexOf(oldest), 1);\n      this._releaseConversation(oldest, 'retention-eviction');\n    }""")
+
+          # Expose the bridge to ProductWorkspace so semantic sessions, not UI-only
+          # transcript fragments, are what .hexproj snapshots persist.
+          replace('js/ai/ui/assistant.js',
+          """  const engine = createAiEngine(app);\n  const devSettings""",
+          """  const engine = createAiEngine(app);\n  app.aiRuntime = engine;\n  const devSettings""")
+          replace('js/ai/ui/assistant.js',
+          """        if (window.__hexAi && window.__hexAi.panel === panel) delete window.__hexAi;""",
+          """        if (window.__hexAi && window.__hexAi.panel === panel) delete window.__hexAi;\n        if (app.aiRuntime === engine) app.aiRuntime = null;""")
+
+          # #2568: v2 schema distinguishes legacy field absence from explicit empty.
+          replace('js/project/migrations.js',
+          """export const PROJECT_MIGRATIONS = Object.freeze({});""",
+          """export const PROJECT_MIGRATIONS = Object.freeze({\n  1(project) {\n    const sourceUser = project?.user && typeof project.user === 'object' && !Array.isArray(project.user) ? project.user : {};\n    const hasVars = Object.prototype.hasOwnProperty.call(sourceUser, 'vars') || Object.prototype.hasOwnProperty.call(sourceUser, 'varNames');\n    return {\n      ...project,\n      version: 2,\n      user: {\n        ...sourceUser,\n        vars: hasVars ? (sourceUser.vars ?? sourceUser.varNames ?? []) : [],\n        varsPresent: hasVars,\n      },\n    };\n  },\n});""")
+          replace('js/project/index.js', "export const HEX_PROJECT_VERSION = 1;", "export const HEX_PROJECT_VERSION = 2;")
+          replace('js/project/index.js',
+          """      types: list(input.types ?? input.user?.types, 'user.types'), vars: list(input.vars ?? input.user?.vars ?? input.varNames ?? input.user?.varNames, 'user.vars'),""",
+          """      types: list(input.types ?? input.user?.types, 'user.types'), vars: list(input.vars ?? input.user?.vars ?? input.varNames ?? input.user?.varNames, 'user.vars'), varsPresent: true,""")
+          replace('js/project/index.js',
+          """      vars: list(project.user?.vars ?? project.user?.varNames, 'user.vars'),\n      structs:""",
+          """      vars: list(project.user?.vars ?? project.user?.varNames, 'user.vars'),\n      varsPresent: project.user?.varsPresent !== false && (Object.prototype.hasOwnProperty.call(project.user || {}, 'vars') || Object.prototype.hasOwnProperty.call(project.user || {}, 'varNames')),\n      structs:""")
+          replace('js/workspace.js',
+          """  notes.names.clear();notes.comments.clear();notes.types.clear();notes.vars.clear();\n  for(const entry of project.user.names||[])""",
+          """  const replaceVars = project.user?.varsPresent !== false;\n  notes.names.clear();notes.comments.clear();notes.types.clear();if(replaceVars)notes.vars.clear();\n  for(const entry of project.user.names||[])""")
+          replace('js/workspace.js',
+          """  for(const entry of (project.user.vars||project.user.varNames||[]))if(entry?.key)notes.vars.set(String(entry.key),String(entry.value||''));""",
+          """  if(replaceVars)for(const entry of (project.user.vars||project.user.varNames||[]))if(entry?.key)notes.vars.set(String(entry.key),String(entry.value||''));""")
+
+          # #2564: ordinary annotation mutations are immediately durable through
+          # per-record deltas; full-map serialization is reserved for transaction/
+          # explicit compaction. A bounded delta overlay preserves the 2 MiB guard.
+          replace('js/names.js',
+          """    this.lastMutationSaved = true;\n    this.names = new Map();""",
+          """    this.lastMutationSaved = true;\n    this._snapshotBytes = 0;\n    this._deltaBytes = new Map();\n    this._deltaTotalBytes = 0;\n    this._deltaPrefix = this.id ? `${PREFIX}${this.id}.delta.` : null;\n    this.names = new Map();""")
+          replace('js/names.js',
+          """      const o = JSON.parse(raw);\n      if (o && o.cleared === true) {""",
+          """      this._snapshotBytes = new TextEncoder().encode(raw).byteLength;\n      const o = JSON.parse(raw);\n      if (o && o.cleared === true) {""")
+          replace('js/names.js',
+          """      this.structs = Array.isArray(o.structs) ? o.structs : [];\n      if (sourceId !== this.id) {""",
+          """      this.structs = Array.isArray(o.structs) ? o.structs : [];\n      if (sourceId === this.id) this._loadDeltas();\n      if (sourceId !== this.id) {""")
+          replace('js/names.js',
+          """  save() {\n    if (!this.id) return this._saveFailure('NO_ID');""",
+          """  _mapForDelta(kind) {\n    return kind === 'names' ? this.names : kind === 'comments' ? this.comments : kind === 'vars' ? this.vars : kind === 'types' ? this.types : null;\n  }\n\n  _deltaKey(kind, recordKey) {\n    return `${this._deltaPrefix}${encodeURIComponent(kind)}.${encodeURIComponent(String(recordKey))}`;\n  }\n\n  _loadDeltas() {\n    if (!this._deltaPrefix || typeof localStorage === 'undefined') return;\n    this._deltaBytes.clear(); this._deltaTotalBytes = 0;\n    const keys = [];\n    try {\n      for (let index = 0; index < localStorage.length; index++) {\n        const storageKey = localStorage.key(index);\n        if (storageKey?.startsWith(this._deltaPrefix)) keys.push(storageKey);\n      }\n      keys.sort();\n      for (const storageKey of keys) {\n        const raw = localStorage.getItem(storageKey);\n        if (raw == null) continue;\n        const bytes = new TextEncoder().encode(raw).byteLength;\n        this._deltaBytes.set(storageKey, bytes); this._deltaTotalBytes += bytes;\n        const delta = JSON.parse(raw);\n        const map = this._mapForDelta(delta?.kind);\n        if (!map || typeof delta?.key !== 'string') continue;\n        if (delta.deleted) map.delete(delta.key); else map.set(delta.key, String(delta.value ?? ''));\n      }\n    } catch { /* base snapshot remains valid if a delta is unreadable */ }\n  }\n\n  _clearDeltas() {\n    for (const storageKey of this._deltaBytes.keys()) { try { localStorage.removeItem(storageKey); } catch { /* stale overlay is idempotent */ } }\n    this._deltaBytes.clear(); this._deltaTotalBytes = 0;\n  }\n\n  _persistDelta(kind, recordKey, value) {\n    if (!this.id || !this._deltaPrefix) return this._saveFailure('NO_ID');\n    const storageKey = this._deltaKey(kind, recordKey);\n    const text = JSON.stringify({ kind, key:String(recordKey), deleted:value == null, ...(value == null ? {} : { value:String(value) }) });\n    const bytes = new TextEncoder().encode(text).byteLength;\n    const previousBytes = this._deltaBytes.get(storageKey) || 0;\n    const projected = this._snapshotBytes + this._deltaTotalBytes - previousBytes + bytes;\n    // Near the safety ceiling, compact once into the canonical snapshot rather\n    // than rejecting a logically-small store because the overlay duplicates data.\n    if (projected > MAX_BYTES) return this.save();\n    try {\n      localStorage.setItem(storageKey, text);\n      this._deltaBytes.set(storageKey, bytes);\n      this._deltaTotalBytes += bytes - previousBytes;\n      this.dirty = false; this.lastSaveError = null; this.lastMutationSaved = true;\n      return true;\n    } catch (error) { return this._saveFailure(error?.name || 'STORAGE_ERROR', error); }\n  }\n\n  save() {\n    if (!this.id) return this._saveFailure('NO_ID');""")
+          replace('js/names.js',
+          """      localStorage.setItem(PREFIX + this.id, text);\n      this.dirty = false;""",
+          """      localStorage.setItem(PREFIX + this.id, text);\n      this._snapshotBytes = bytes;\n      this._clearDeltas();\n      this.dirty = false;""")
+          # Replace the four normal mutation full-save calls only, leaving transaction
+          # and structural save() paths as deliberate compaction boundaries.
+          replace('js/names.js',
+          """    if (this._transactionDepth > 0 || !save) return true;\n    return this.save();""",
+          """    if (this._transactionDepth > 0 || !save) return true;\n    return this._persistDelta('names', k, clean || null);""",1)
+          replace('js/names.js',
+          """    if (this._transactionDepth > 0 || !save) return true;\n    return this.save();""",
+          """    if (this._transactionDepth > 0 || !save) return true;\n    return this._persistDelta('comments', k, clean || null);""",1)
+          replace('js/names.js',
+          """    if (this._transactionDepth > 0 || !save) return true;\n    return this.save();""",
+          """    if (this._transactionDepth > 0 || !save) return true;\n    return this._persistDelta('vars', kk, clean || null);""",1)
+          replace('js/names.js',
+          """    if (this._transactionDepth > 0 || !save) return true;\n    return this.save();""",
+          """    if (this._transactionDepth > 0 || !save) return true;\n    return this._persistDelta('types', kk, clean || null);""",1)
+          replace('js/names.js',
+          """      localStorage.setItem(PREFIX + this.id, JSON.stringify({ v: 2, cleared: true }));\n      this.dirty = false;""",
+          """      const tombstone = JSON.stringify({ v: 2, cleared: true });\n      localStorage.setItem(PREFIX + this.id, tombstone);\n      this._snapshotBytes = new TextEncoder().encode(tombstone).byteLength;\n      this._clearDeltas();\n      this.dirty = false;""")
+
+          # Focused regression file: behavior + production wiring, not implementation-only grep.
+          Path('tests/reopened-ai-project-contracts.mjs').write_text(r'''import assert from 'node:assert/strict';
+          import { EvidenceStore } from '../js/ai/evidence.js';
+          import { ContextBroker } from '../js/ai/context/broker.js';
+          import { AIRuntime } from '../js/ai/runtime.js';
+          import { InvestigationSessionStore, createProjectSessionPersistence } from '../js/ai/session-core/index.js';
+          import { createHexProject, parseHexProject, serializeHexProject, HEX_PROJECT_VERSION } from '../js/project/index.js';
+          import { NoteStore } from '../js/names.js';
+          import { AiSession } from '../js/ai/ui/session.js';
+          import fs from 'node:fs';
+
+          // #2612: recent verified extraction must not require EvidenceStore.all().
+          const evidence = new EvidenceStore();
+          evidence.restorePersistedConfirmed(Array.from({ length: 80 }, (_, i) => ({ id:`v${i}`, kind:'test', status:'verified', title:`E${i}` })));
+          const originalAll = evidence.all.bind(evidence);
+          evidence.all = () => { throw new Error('full-store-scan'); };
+          const broker = new ContextBroker({}, { maxBytes: 128 * 1024 });
+          const built = broker.buildModelContext({ request:{ mode:'chat', style:'analyst', scope:'function' }, session:{ messages:[] }, evidenceStore:evidence });
+          assert.deepEqual(built.context.verifiedEvidence.map((x) => x.id), Array.from({ length:32 }, (_,i)=>`v${48+i}`));
+          evidence.all = originalAll;
+
+          // #2600: original trim priority is preserved: transcript is removed before
+          // compacting the current function projection.
+          const bigSession = { messages:Array.from({ length:8 }, (_,i)=>({ role:i%2?'assistant':'user', content:'m'.repeat(3000) })), investigationMemory:{ goal:'x' } };
+          const trimBroker = new ContextBroker({ currentFunction:{ address:'0x1000', instructions:Array.from({length:40},(_,i)=>({address:`0x${(0x1000+i*4).toString(16)}`,mnemonic:'mov',operands:'x0, x1'})) } }, { maxBytes:4096 });
+          const trimmed = trimBroker.buildModelContext({ request:{mode:'chat',style:'analyst',scope:'function'}, session:bigSession, evidenceStore:new EvidenceStore() });
+          assert.ok((trimmed.context.recentMessages?.length || 0) < 8);
+          assert.ok(Array.isArray(trimmed.context.current?.function?.instructions), 'function detail must survive while lower-priority history can satisfy the budget');
+
+          // #2568: legacy v1 absence is distinct from an explicitly empty v2 vars set.
+          assert.equal(HEX_PROJECT_VERSION, 2);
+          const legacy = { format:'hexproj', version:1, createdAt:new Date(0).toISOString(), updatedAt:new Date(0).toISOString(), binary:{hash:'h',metadata:{},embedded:false}, user:{names:[],comments:[],types:[],structs:[],bookmarks:[],patches:[]}, findings:{confirmed:[],agentAnswers:[],evidence:[],investigationSessions:[]}, analysis:{settings:{},cacheReferences:[]}, navigation:{} };
+          const migrated = parseHexProject(JSON.stringify(legacy));
+          assert.equal(migrated.user.varsPresent, false);
+          const current = parseHexProject(serializeHexProject(createHexProject({ binary:{hash:'h',metadata:{}}, vars:[] })));
+          assert.equal(current.user.varsPresent, true);
+
+          // #2613/#2615: release memory independently from durable project deletion.
+          const project = createHexProject({ binary:{hash:'bin',metadata:{}}, investigationSessions:[] });
+          const persistence = createProjectSessionPersistence(project);
+          const store = new InvestigationSessionStore({ persistence });
+          const session = await store.create({ id:'s1', binaryId:'bin', conversationId:'c1', goal:'g' });
+          const runtime = new AIRuntime({ context:{ binaryId:'bin' }, sessionStore:store, planner:false });
+          runtime.storesFor(session, 'bin');
+          assert.equal(runtime.storeNamespaces.size, 1);
+          await runtime.releaseSession('s1', { deletePersisted:false });
+          assert.equal(runtime.storeNamespaces.size, 0);
+          assert.equal(store.sessions.has('s1'), false);
+          assert.equal(project.findings.investigationSessions.some((x)=>x.id==='s1'), true);
+          await store.get('s1');
+          await runtime.releaseSession('s1', { deletePersisted:true });
+          assert.equal(project.findings.investigationSessions.some((x)=>x.id==='s1'), false);
+
+          // #2613 UI retention and explicit delete use different lifecycle reasons.
+          const releases=[];
+          const ui = new AiSession({ engine:{ run:async()=>({answer:'ok'}), deleteSession:(id,opts)=>{ releases.push([id,opts?.reason]); } }, storage:null });
+          for (let i=0;i<24;i++) { ui.current.turns.push({role:'user',text:'x'}); ui.newConversation(); }
+          await new Promise((r)=>setTimeout(r,0));
+          assert.ok(releases.some(([,reason])=>reason==='retention-eviction'));
+          const victim = ui.list().find((x)=>x!==ui.current && !x.busy);
+          assert.ok(victim && ui.deleteConversation(victim.id));
+          await new Promise((r)=>setTimeout(r,0));
+          assert.ok(releases.some(([id,reason])=>id===victim.id && reason==='user-delete'));
+
+          // #2564: after one bulk snapshot, an ordinary mutation writes a tiny delta,
+          // not the whole NoteStore, and a fresh instance observes it immediately.
+          class MemoryStorage {
+            constructor(){ this.map=new Map(); this.writes=[]; }
+            get length(){ return this.map.size; }
+            key(i){ return Array.from(this.map.keys())[i] ?? null; }
+            getItem(k){ return this.map.has(k)?this.map.get(k):null; }
+            setItem(k,v){ this.map.set(k,String(v)); this.writes.push([k,String(v)]); }
+            removeItem(k){ this.map.delete(k); }
+          }
+          globalThis.localStorage = new MemoryStorage();
+          const notes = new NoteStore('delta-test');
+          notes.transaction(()=>{ for(let i=0;i<2000;i++) notes.setName(BigInt(0x1000+i*4), `name_${i}`); });
+          const rootBytes = globalThis.localStorage.getItem('hex.notes.delta-test').length;
+          globalThis.localStorage.writes.length=0;
+          assert.equal(notes.setName(0x1000n,'renamed'), true);
+          assert.equal(globalThis.localStorage.writes.length,1);
+          assert.ok(globalThis.localStorage.writes[0][0].includes('.delta.'));
+          assert.ok(globalThis.localStorage.writes[0][1].length < rootBytes / 20);
+          const restored = new NoteStore('delta-test');
+          assert.equal(restored.nameOf(0x1000n),'renamed');
+
+          // Production wiring must pass project persistence to the core and expose it
+          // to ProductWorkspace; source assertions guard the lazy bridge seam.
+          const bridgeSource = fs.readFileSync(new URL('../js/ai/ui/bridge.js', import.meta.url),'utf8');
+          const assistantSource = fs.readFileSync(new URL('../js/ai/ui/assistant.js', import.meta.url),'utf8');
+          assert.match(bridgeSource, /createAIRuntime\(\{ context: localContext, provider, persistence \}\)/);
+          assert.match(assistantSource, /app\.aiRuntime = engine/);
+
+          console.log('reopened AI/project contracts: ok');
+          ''')
+          PY
+      - name: Focused reopened regressions
+        run: node tests/reopened-ai-project-contracts.mjs
+      - name: Project roundtrip regressions
+        run: node tests/project-roundtrip.mjs
+      - name: AI tests
+        run: npm run ai:test
+      - name: Commit repaired source
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git rm .github/workflows/reopened-ai-project-repair.yml
+          git add js tests
+          git commit -m "fix(ai,project): close reopened persistence and context gaps"
+          git push origin HEAD:fix/reopened-ai-project-contracts
