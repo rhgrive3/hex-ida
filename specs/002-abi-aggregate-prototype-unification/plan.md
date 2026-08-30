@@ -17,8 +17,11 @@ return, aggregate, hidden-result, stack, and variadic placement facts.
 Prototype, summary, type-recovery, and decompiler projections will consume a
 provenance-bearing ABI classification and publish unknown/partial results when
 identity, support, or completeness is insufficient. PR #2499 merged as
-`be5636b1`; the branch was reconciled to live main `48a0b429`, and the
-refreshed counterexample plan received Sol approval before implementation.
+`be5636b1`; the historical implementation checkpoint was reconciled to live
+main `48a0b429`. The implementation-owner branch was subsequently restacked
+from fetched `origin/main` `204c82de` with the prior merge commit's unrelated
+main-side changes excluded; the refreshed counterexample plan received Sol
+approval before implementation.
 
 ## Technical Context
 
@@ -214,7 +217,7 @@ HISTORICAL_PRE_FIX_SHA: 8a614ccd0184d6c25257c25d930b68af7e9ac81f
 HISTORICAL_PRE_FIX_COMMAND: node --test tests/phase8/abi/hex-c3-02-profile-matrix.test.mjs
 HISTORICAL_PRE_FIX_FAILURE: RISC-V adapter still reports AAPCS64; unsupported
                              ABI lacks explicit unknown contract (exit 1)
-CURRENT_MAIN_SHA: 48a0b42913e63f33a03783f9676994268d8a06e8
+HISTORICAL_CURRENT_MAIN_SHA: 48a0b42913e63f33a03783f9676994268d8a06e8
 CURRENT_PRE_FIX_COMMAND: node --test tests/phase8/abi/hex-c3-02-profile-matrix.test.mjs
 CURRENT_PRE_FIX_FAILURE: 2 of 4 subtests fail: stale aapcs64@1 is accepted as
                          supported; canonical AAPCS64 x0/x1 aggregate is
@@ -222,10 +225,12 @@ CURRENT_PRE_FIX_FAILURE: 2 of 4 subtests fail: stale aapcs64@1 is accepted as
 CURRENT_MATRIX_COMMAND: node tests/phase8/abi/hex-c3-02-required-profile-matrix.mjs
 CURRENT_MATRIX_RESULT: 66 rows; 54 PASS, 12 FAIL, all 12 in prototype
                        identity/aggregate projection (exit 1)
-POST_FIX_SHA: recorded at implementation checkpoint
+POST_FIX_SHA: 439816bf34c1e26d0039c1126f33b1b85f90a06e (code restack head)
 POST_FIX_COMMAND: same focused command plus required profile/subsystem gates
-POST_FIX_PASS: focused matrix, 66-row matrix, and phase8 gate pass; phase5/6
-                full runners retain pre-existing frozen-toolchain blockers
+POST_FIX_PASS: focused matrix (44 tests), downstream-inclusive focused matrix
+               (45 tests), 66-row matrix, Phase 5 (279 tests), Phase 6 (116
+               tests), and Phase 8 (322 tests) pass; no generated double-run
+               applies because no generated input/consumer changed
 ```
 
 ## Complexity Tracking
