@@ -42,8 +42,11 @@ function sameStructuredRegisterIdentity(canonical, presented) {
 }
 
 function canonicalStructuredRegister(input) {
-  const bits = Number(input?.bits);
-  const num = input?.num == null ? null : Number(input.num);
+  const bits = input?.bits;
+  if (typeof bits !== 'number' || !Number.isInteger(bits)) return null;
+  const hasNum = own(input, 'num') && input.num != null;
+  const num = hasNum ? input.num : null;
+  if (hasNum && (typeof num !== 'number' || !Number.isInteger(num))) return null;
   if (input?.cls === 'gp') {
     if (!Number.isInteger(num) || num < 0 || num > 30 || ![32,64].includes(bits)) return null;
     return { kind:'gp', physicalId:`x${num}`, view:`${bits === 32 ? 'w' : 'x'}${num}`, bits, num, zero:false };
