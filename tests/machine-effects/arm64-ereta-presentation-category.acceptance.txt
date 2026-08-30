@@ -1,3 +1,0 @@
-ERETAA/ERETAB => system
-RETAA/RETAB => flow + normal return
-Malformed ERET* aliases => not system
