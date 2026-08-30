@@ -756,7 +756,15 @@ export class Backend {
   }
 
   guessFunctions(regionId, limit, onProgress) { return this.call('guessFunctions', { regionId, limit }, null, onProgress); }
-  scanProgram(regionId, onProgress, limits = {}) { return this.call('scanProgram', { regionId, ...limits }, null, onProgress); }
+  scanProgram(regionId, onProgress, limits = {}) {
+    const architecture = String(limits?.architecture || '').toLowerCase();
+    const payload = { regionId, ...limits };
+    if (this.formatId === 'macho' && architecture) {
+      const legacyAarch64 = architecture === 'arm64' || architecture === 'arm64e' || architecture === 'arm64_32';
+      return this._callTo(legacyAarch64 ? 'legacy' : 'platform', 'scanProgram', payload, null, onProgress);
+    }
+    return this.call('scanProgram', payload, null, onProgress);
+  }
   fieldAccess(params, onProgress) { return this.call('fieldAccess', params, null, onProgress); }
   valueShapes(regionId, onProgress) { return this.call('valueShapes', { regionId }, null, onProgress); }
   fieldAccessMany(regionId, offsets) {
