@@ -1,0 +1,29 @@
+name: Agent loop resilience
+
+on:
+  pull_request:
+    paths:
+      - 'js/userscript/dev/**'
+      - 'tests/dev-agent/agent-loop-resilience.mjs'
+      - '.github/workflows/agent-loop-resilience.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'js/userscript/dev/**'
+      - 'tests/dev-agent/agent-loop-resilience.mjs'
+      - '.github/workflows/agent-loop-resilience.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  resilience:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Run unattended agent loop regressions
+        run: node tests/dev-agent/agent-loop-resilience.mjs
