@@ -146,6 +146,7 @@ export class NoteStore {
     this.id = id || null;
     this.legacyIds = Array.from(new Set((legacyIds || []).filter((x) => x && x !== this.id)));
     this.migratedFrom = null;
+    this.legacyCandidate = null;
     this.lastSaveError = null;
     this.lastMutationSaved = true;
     this.names = new Map();      // addr -> 名前
@@ -159,40 +160,51 @@ export class NoteStore {
 
   /* ── 読み書き ─────────────────────────────────────────── */
 
+  _applyPayload(o) {
+    for (const [k, v] of Object.entries(o.names || {})) this.names.set(k, v);
+    for (const [k, v] of Object.entries(o.comments || {})) this.comments.set(k, v);
+    for (const [k, v] of Object.entries(o.vars || {})) this.vars.set(k, v);
+    for (const [k, v] of Object.entries(o.types || {})) this.types.set(k, v);
+    this.structs = Array.isArray(o.structs) ? o.structs : [];
+  }
+
   load() {
     if (!this.id) return;
     let raw = null;
-    let sourceId = this.id;
-    try {
-      raw = localStorage.getItem(PREFIX + this.id);
-      if (!raw) {
-        for (const old of this.legacyIds) {
-          raw = localStorage.getItem(PREFIX + old);
-          if (raw) { sourceId = old; break; }
+    try { raw = localStorage.getItem(PREFIX + this.id); } catch { return; }
+    if (raw) {
+      try {
+        const o = JSON.parse(raw);
+        if (o && o.cleared === true) {
+          this.dirty = false; this.lastSaveError = null; this.lastMutationSaved = true;
+          this.migratedFrom = null; this.legacyCandidate = null; return;
         }
-      }
-    } catch { return; }
-    if (!raw) return;
-    try {
-      const o = JSON.parse(raw);
-      if (o && o.cleared === true) {
-        this.dirty = false;
-        this.lastSaveError = null;
-        this.lastMutationSaved = true;
-        this.migratedFrom = null;
-        return;
-      }
-      for (const [k, v] of Object.entries(o.names || {})) this.names.set(k, v);
-      for (const [k, v] of Object.entries(o.comments || {})) this.comments.set(k, v);
-      for (const [k, v] of Object.entries(o.vars || {})) this.vars.set(k, v);
-      for (const [k, v] of Object.entries(o.types || {})) this.types.set(k, v);
-      this.structs = Array.isArray(o.structs) ? o.structs : [];
-      if (sourceId !== this.id) {
-        /* Copy, do not delete. The old version can still be opened safely, and
-           a failed write never destroys the only copy of the user's notes. */
-        if (this.save()) this.migratedFrom = sourceId;
-      }
-    } catch { /* 壊れていたら無かったことにする（消しはしない） */ }
+        this._applyPayload(o || {});
+      } catch { }
+      return;
+    }
+    for (const old of this.legacyIds) {
+      let legacyRaw = null;
+      try { legacyRaw = localStorage.getItem(PREFIX + old); } catch { return; }
+      if (!legacyRaw) continue;
+      try {
+        const payload = JSON.parse(legacyRaw);
+        if (!payload || payload.cleared === true) continue;
+        this.legacyCandidate = { sourceId: old, payload };
+      } catch { }
+      return;
+    }
+  }
+
+  importLegacyCandidate({ save = true } = {}) {
+    const candidate = this.legacyCandidate;
+    if (!candidate?.payload) return false;
+    this._applyPayload(candidate.payload);
+    this.dirty = true;
+    if (save && !this.save()) return false;
+    this.migratedFrom = candidate.sourceId;
+    this.legacyCandidate = null;
+    return true;
   }
 
   _saveFailure(code, error = null, detail = {}) {
