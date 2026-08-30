@@ -103,7 +103,7 @@ function atLeast(scope, minimum) { return (RANK[scope] ?? -1) >= RANK[minimum]; 
 function collectAddresses(value, key = '') {
   const out = [];
   if (isAddressKey(key)) {
-    if (toBigInt(value) != null) out.push(value);
+    if (value != null) out.push(value);
     return out;
   }
   if (Array.isArray(value)) { for (const item of value) out.push(...collectAddresses(item, key)); return out; }
