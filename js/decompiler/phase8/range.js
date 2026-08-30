@@ -353,13 +353,21 @@ function congruenceFromAlignment(alignment) {
 
 function shiftedAlignment(alignment, delta, bits) {
   if (alignment == null || delta == null) return null;
-  const congruence = normalizeCongruenceValue(congruenceFromAlignment(alignment), bits);
-  if (congruence.modulus <= 1n) return alignment;
-  const remainder = ((congruence.remainder + delta) % congruence.modulus + congruence.modulus) % congruence.modulus;
+  const source = congruenceFromAlignment(alignment);
+  const parsed = parseCongruenceValue(source, bits);
+  const width = 1n << BigInt(bits);
+  // Alignment is a low-bit fact about a machine word. A modulus that does not
+  // divide 2^bits is not representable by this domain; retaining and shifting
+  // it would publish a mathematically unrelated class (for example, mod-3
+  // alignment after adding one).
+  if (parsed == null || parsed.modulus <= 1n || width % parsed.modulus !== 0n) return null;
+  let offset;
+  try { offset = BigInt(delta); } catch { return null; }
+  const remainder = ((parsed.remainder + offset) % parsed.modulus + parsed.modulus) % parsed.modulus;
   if (typeof alignment === 'number' || typeof alignment === 'bigint') {
-    return Object.freeze({ modulus: congruence.modulus, remainder });
+    return Object.freeze({ modulus: parsed.modulus, remainder });
   }
-  return Object.freeze({ ...alignment, modulus: congruence.modulus, remainder });
+  return Object.freeze({ ...alignment, modulus: parsed.modulus, remainder });
 }
 
 function shiftedPointerOffset(pointerOffset, delta) {
@@ -372,11 +380,33 @@ function shiftedPointerOffset(pointerOffset, delta) {
   }
 }
 
-function validPointerOffsetEvidence(pointerOffset) {
+function sameTypedIdentity(left, right) {
+  if (typeof left !== typeof right) return false;
+  if (typeof left === 'number' && !Number.isSafeInteger(left)) return false;
+  if (!['string', 'number', 'bigint'].includes(typeof left)) return left === right;
+  return left === right;
+}
+
+function canonicalPointerBinding(provenance) {
+  if (provenance == null || typeof provenance !== 'object' || Array.isArray(provenance)) return null;
+  const valueId = provenance.valueId ?? provenance.sourceValueId;
+  const baseId = provenance.pointerBaseId ?? provenance.baseId ?? provenance.source?.baseId;
+  if (valueId == null || baseId == null) return null;
+  if (!['string', 'number', 'bigint'].includes(typeof baseId)) return null;
+  if (typeof baseId === 'number' && !Number.isSafeInteger(baseId)) return null;
+  return { valueId, baseId };
+}
+
+function validPointerOffsetEvidence(pointerOffset, provenance, valueId) {
   if (pointerOffset == null) return true;
   if (typeof pointerOffset !== 'object' || Array.isArray(pointerOffset)) return false;
   if (pointerOffset.baseId == null || pointerOffset.offset == null) return false;
+  const binding = canonicalPointerBinding(provenance);
+  if (binding == null || !sameTypedIdentity(pointerOffset.baseId, binding.baseId)) return false;
+  const sourceValueId = pointerOffset.sourceValueId ?? pointerOffset.valueId ?? valueId ?? binding.valueId;
+  if (sourceValueId == null || !sameTypedIdentity(sourceValueId, binding.valueId)) return false;
   try {
+    if (typeof pointerOffset.offset === 'number' && !Number.isSafeInteger(pointerOffset.offset)) return false;
     BigInt(pointerOffset.offset);
     return true;
   } catch {
@@ -511,11 +541,24 @@ export function factFromRange(range, options = {}) {
   const alignmentCongruence = cyclicEvidence ? null : congruenceFromAlignment(options.alignment);
   const alignmentValue = alignmentCongruence == null ? null : parseCongruenceValue(alignmentCongruence, bits);
   const congruenceValue = cyclicEvidence || options.congruence == null ? null : parseCongruenceValue(options.congruence, bits);
+  const width = 1n << BigInt(bits);
   const alignmentMalformed = cyclicEvidence || (options.alignment != null
-    && (alignmentCongruence == null || alignmentValue == null));
+    && (alignmentCongruence == null || alignmentValue == null
+      || alignmentValue.modulus <= 1n || width % alignmentValue.modulus !== 0n));
   const congruenceMalformed = cyclicEvidence || (options.congruence != null && congruenceValue == null);
-  const pointerOffsetMalformed = cyclicEvidence || !validPointerOffsetEvidence(options.pointerOffset);
-  const requestedCongruence = congruenceMalformed ? null : options.congruence ?? alignmentCongruence;
+  const pointerOffsetMalformed = cyclicEvidence
+    || !validPointerOffsetEvidence(options.pointerOffset, options.provenance, options.valueId);
+  const alignmentCongruenceConflict = !alignmentMalformed && !congruenceMalformed
+    && alignmentValue != null && congruenceValue != null
+    && ((alignmentValue.remainder - congruenceValue.remainder)
+      % gcd(alignmentValue.modulus, congruenceValue.modulus)
+      + gcd(alignmentValue.modulus, congruenceValue.modulus))
+      % gcd(alignmentValue.modulus, congruenceValue.modulus) !== 0n;
+  // Explicit congruence is stronger only when it intersects the alignment
+  // class. Contradictory projections are one malformed fact, never two
+  // independently published scalar truths.
+  const requestedCongruence = congruenceMalformed || alignmentCongruenceConflict
+    ? null : options.congruence ?? alignmentCongruence;
   const requestedCongruenceValue = requestedCongruence == null ? null : parseCongruenceValue(requestedCongruence, bits);
   const singletonCongruenceConflict = value != null && requestedCongruenceValue != null
     && ((value - requestedCongruenceValue.remainder) % requestedCongruenceValue.modulus + requestedCongruenceValue.modulus)
@@ -532,7 +575,7 @@ export function factFromRange(range, options = {}) {
   const maskCongruenceConflict = !alignmentMalformed && !congruenceMalformed
     && normalizedRequestedCongruence.modulus > 1n
     && !rangeHasMaskAndCongruenceValue(range, knownZero, knownOne, normalizedRequestedCongruence);
-  if (alignmentMalformed || congruenceMalformed || pointerOffsetMalformed || singletonCongruenceConflict
+  if (alignmentMalformed || congruenceMalformed || pointerOffsetMalformed || alignmentCongruenceConflict || singletonCongruenceConflict
       || rangeCongruenceConflict || maskCongruenceConflict) {
     if (singletonCongruenceConflict || rangeCongruenceConflict || maskCongruenceConflict) {
       knownZero = 0n;
@@ -543,14 +586,16 @@ export function factFromRange(range, options = {}) {
       : alignmentMalformed ? 'malformed alignment evidence'
       : congruenceMalformed ? 'malformed congruence evidence'
         : pointerOffsetMalformed ? 'malformed pointer-offset evidence'
-          : singletonCongruenceConflict ? 'congruence evidence conflicts with singleton range'
-            : rangeCongruenceConflict ? 'congruence evidence conflicts with range'
-              : 'known-bit and congruence evidence have no common value');
+          : alignmentCongruenceConflict ? 'alignment and congruence evidence conflict'
+            : singletonCongruenceConflict ? 'congruence evidence conflicts with singleton range'
+              : rangeCongruenceConflict ? 'congruence evidence conflicts with range'
+                : 'known-bit and congruence evidence have no common value');
   }
   const congruence = requestedCongruence == null && value != null && !cyclicEvidence
-      && !alignmentMalformed && !congruenceMalformed
+      && !alignmentMalformed && !congruenceMalformed && !pointerOffsetMalformed && !alignmentCongruenceConflict
     ? Object.freeze({ remainder: value, modulus: 1n << BigInt(bits) })
-    : (rangeCongruenceConflict || singletonCongruenceConflict || maskCongruenceConflict || cyclicEvidence
+    : (alignmentMalformed || congruenceMalformed || pointerOffsetMalformed || alignmentCongruenceConflict
+      || rangeCongruenceConflict || singletonCongruenceConflict || maskCongruenceConflict || cyclicEvidence
       ? NO_CONGRUENCE : normalizeCongruenceValue(requestedCongruence, bits));
   if (status == null) status = value == null ? 'conservative' : 'exact';
   // Only a complete, valid fact may carry an exact constant.  In particular,
@@ -568,7 +613,7 @@ export function factFromRange(range, options = {}) {
     knownZero,
     knownOne,
     congruence,
-    alignment: alignmentMalformed ? null : immutableEvidence(options.alignment ?? null),
+    alignment: alignmentMalformed || alignmentCongruenceConflict ? null : immutableEvidence(options.alignment ?? null),
     pointerOffset: pointerOffsetMalformed ? null : immutableEvidence(options.pointerOffset ?? null),
     constant,
     status,

@@ -275,8 +275,9 @@ test('product joins and widening never promote a non-singleton to an exact const
 test('alignment and pointer-offset evidence survives only an agreeing join and edge restriction', () => {
   const alignment = { modulus: 16n, remainder: 0n };
   const pointerOffset = { baseId: 'p', offset: 4n };
-  const first = factFromRange(rangeOf(0n, 10n, 32), { valueId: 4, alignment, pointerOffset });
-  const second = factFromRange(rangeOf(20n, 30n, 32), { valueId: 4, alignment, pointerOffset });
+  const provenance = { valueId: 4, pointerBaseId: 'p', instructionIds: ['ptr-4'], inputValueIds: [], operation: 'ptr' };
+  const first = factFromRange(rangeOf(0n, 10n, 32), { valueId: 4, alignment, pointerOffset, provenance });
+  const second = factFromRange(rangeOf(20n, 30n, 32), { valueId: 4, alignment, pointerOffset, provenance });
   const joined = joinFacts(first, second);
   assert.deepEqual(joined.alignment, alignment);
   assert.deepEqual(joined.pointerOffset, pointerOffset);
@@ -284,16 +285,18 @@ test('alignment and pointer-offset evidence survives only an agreeing join and e
   assert.deepEqual(restricted.alignment, alignment);
   assert.deepEqual(restricted.pointerOffset, pointerOffset);
   const disagreement = joinFacts(first, factFromRange(rangeOf(40n, 50n, 32), {
-    valueId: 4, alignment: { modulus: 8n, remainder: 0n }, pointerOffset,
+    valueId: 4, alignment: { modulus: 8n, remainder: 0n }, pointerOffset, provenance,
   }));
   assert.equal(disagreement.alignment, null);
 });
 
 test('pointer arithmetic shifts canonical offset and alignment without minting provenance', () => {
+  const provenance = { valueId: 5, pointerBaseId: 'p', instructionIds: ['ptr-5'], inputValueIds: [], operation: 'ptr' };
   const pointer = factFromRange(rangeOf(0n, 10n, 32), {
     valueId: 5,
     alignment: { modulus: 16n, remainder: 0n },
     pointerOffset: { baseId: 'p', offset: 4n },
+    provenance,
   });
   const amount = singletonFact(bitvector(4n, 32), { valueId: 6 });
   const advanced = evaluateBinaryFact('add', pointer, amount);
@@ -306,6 +309,42 @@ test('pointer arithmetic shifts canonical offset and alignment without minting p
 
   const numericOnly = evaluateBinaryFact('add', factFromRange(rangeOf(0n, 10n, 32)), amount);
   assert.equal(numericOnly.pointerOffset, null, 'numeric facts alone cannot mint pointer provenance');
+});
+
+test('non-divisor alignment is rejected instead of being shifted into false precision', () => {
+  const provenance = { valueId: 7, pointerBaseId: 'p', instructionIds: ['ptr-7'], inputValueIds: [], operation: 'ptr' };
+  const pointer = factFromRange(rangeOf(0n, 10n, 8), {
+    valueId: 7,
+    alignment: { modulus: 3n, remainder: 0n },
+    pointerOffset: { baseId: 'p', offset: 0n },
+    provenance,
+  });
+  assert.equal(pointer.status, 'malformed');
+  assert.equal(pointer.alignment, null);
+  const shifted = evaluateBinaryFact('add', pointer, singletonFact(bitvector(1n, 8), { valueId: 8 }));
+  assert.equal(shifted.alignment, null, 'a non-divisor alignment must not survive +1 as a congruence');
+});
+
+test('contradictory alignment and explicit congruence fail closed as one malformed fact', () => {
+  const fact = factFromRange(rangeOf(0n, 31n, 8), {
+    valueId: 9,
+    alignment: { modulus: 16n, remainder: 0n },
+    congruence: { modulus: 16n, remainder: 4n },
+    provenance: { valueId: 9, pointerBaseId: 'p', instructionIds: ['ptr-9'], inputValueIds: [], operation: 'ptr' },
+  });
+  assert.equal(fact.status, 'malformed');
+  assert.equal(fact.alignment, null);
+  assert.deepEqual(fact.congruence, { remainder: 0n, modulus: 1n });
+});
+
+test('forged pointer provenance is rejected without canonical source binding', () => {
+  const forged = factFromRange(rangeOf(0n, 10n, 32), {
+    valueId: 10,
+    pointerOffset: { baseId: 'forged', offset: 0n },
+  });
+  assert.equal(forged.status, 'malformed');
+  assert.equal(forged.pointerOffset, null);
+  assert.equal(forged.constant, null);
 });
 
 test('malformed widths and unsupported operations stay conservative', () => {
@@ -378,7 +417,8 @@ test('no-op product joins snapshot mutable facts and reject host evidence contai
     congruence: { remainder: 0n, modulus: 1n },
     alignment: { modulus: 4n, remainder: 0n },
     pointerOffset: { baseId: 'p', offset: 2n },
-    provenance: { source: { instructionId: 'i0' } },
+    valueId: 99,
+    provenance: { valueId: 99, pointerBaseId: 'p', source: { instructionId: 'i0' } },
   };
   const joined = joinFacts(null, mutableFact);
   assert.notEqual(joined, mutableFact);

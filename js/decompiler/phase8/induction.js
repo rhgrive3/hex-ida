@@ -441,7 +441,7 @@ export function runInductionPass(context = {}, budget = {}, area = null) {
   const ssa = analysis?.get('ssa');
   const loopFacts = analysis?.get('loops');
   const rangeFacts = analysis?.get('ranges');
-  const resolvedIdentity = canonicalAnalysisIdentity(context);
+  const resolvedIdentity = context.resolvedAnalysisIdentity ?? canonicalAnalysisIdentity(context);
   if (!resolvedIdentity.valid || !analysisIdentityMatches(rangeFacts?.identity, resolvedIdentity.identity)) {
     return createPassResult({
       descriptor: INDUCTION_PASS,

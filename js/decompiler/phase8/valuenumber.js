@@ -173,7 +173,7 @@ export function runGvnPass(context = {}, budget = {}, area = null) {
   const blocks = cfg?.blocks ?? [];
   const values = ssa?.values ?? [];
   if (area == null) fail('phase8-gvn-requires-staging-area');
-  const resolvedIdentity = canonicalAnalysisIdentity(context);
+  const resolvedIdentity = context.resolvedAnalysisIdentity ?? canonicalAnalysisIdentity(context);
   if (!resolvedIdentity.valid || !analysisIdentityMatches(scalarFacts?.identity, resolvedIdentity.identity)) {
     return createPassResult({
       descriptor: GVN_PASS,

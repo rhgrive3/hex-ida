@@ -285,6 +285,11 @@ export function verifyPhase8({ shadow = false, expectedSha = null, gates = false
 }
 
 function renderMarkdown(report) {
+  const targets = Array.isArray(report.corpus?.toolchain?.targets)
+    ? report.corpus.toolchain.targets
+      .map((target) => `${target.architectureId ?? 'unknown'}:${target.target ?? 'unknown'}`)
+      .join(', ')
+    : (report.corpus?.toolchain?.target ?? 'unknown');
   const lines = [
     `# Phase 8 release evidence — ${report.verdict}`,
     '',
@@ -292,7 +297,7 @@ function renderMarkdown(report) {
     `- verifier: ${report.verifierId} ${report.verifierVersion} (source sha256 \`${report.verifierSourceSha256.slice(0, 16)}\`)`,
     `- profile version: ${report.profileVersion}`,
     `- corpus: ${report.corpus.corpusId} v${report.corpus.corpusVersion}, digest \`${report.corpus.corpusDigest}\``,
-    `- toolchain: ${report.corpus.toolchain.compiler} (${report.corpus.toolchain.target})`,
+    `- toolchain: ${report.corpus.toolchain.compiler} (${targets})`,
     `- baseline: \`${report.corpus.frozenBaselineDigest}\` captured at \`${report.corpus.baselineCommit}\``,
     `- pass registry: \`${report.registry.passRegistryDigest}\` (${report.registry.passes.map((pass) => `${pass.id}@${pass.version}`).join(', ')})`,
     '',
