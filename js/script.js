@@ -33,6 +33,18 @@ import { Emulator } from './emu.js';
 export { UnsupportedArchitectureError } from './architecture/index.js';
 import { runInSandbox } from './sandbox.js';
 
+function executableRegionForAddress(app, address) {
+  const target = BigInt(address);
+  return (app?.store?.get?.('regions') || []).find((region) => {
+    if (!region?.exec) return false;
+    try {
+      const start = BigInt(region.vmAddr);
+      const size = BigInt(region.size ?? region.declaredSize ?? 0);
+      return size > 0n && target >= start && target < start + size;
+    } catch { return false; }
+  }) || null;
+}
+
 /**
  * スクリプトから触れる道具一式を作る。
  * @param {object} app
@@ -172,9 +184,9 @@ export function createApi(app, out) {
 
     /** 逆アセンブル。[{addr, mn, ops}] */
     async disasm(addr, count = 16) {
-      const r = region();
-      if (!r) return [];
       const a = BigInt(addr);
+      const r = executableRegionForAddress(app, a);
+      if (!r) return [];
       const arch = architecture();
       const archAdapter = adapter();
       const limit = Math.max(0, Math.min(10000, Math.trunc(Number(count) || 0)));
@@ -184,10 +196,10 @@ export function createApi(app, out) {
       // the architecture adapter. Variable-length ISAs must use decoder output.
       if (archAdapter.fixedInstructionSize != null) {
         const out2 = [];
-        let row = rowOf(a);
+        let row = archAdapter.rowForAddress(r, a);
         if (row == null) return [];
         for (let i = 0; i < limit; i++, row++) {
-          const instructionAddress = addressOfRow(row);
+          const instructionAddress = archAdapter.addressForRow(r, row);
           if (instructionAddress == null) break;
           const chunk = Math.floor(row / 1024);
           const e = await app.backend.fetchChunk(r.id, chunk, true);
@@ -214,23 +226,25 @@ export function createApi(app, out) {
 
     /** 逆コンパイル結果（文字列）。 */
     async decompile(addr) {
+      const a = BigInt(addr);
       const arch = architecture();
       const archAdapter = adapter();
       if (archAdapter.fixedInstructionSize == null && arch !== 'arm64' && arch !== 'arm64e') {
         return unsupportedArchitectureResult('decompile', arch);
       }
-      const res = await app.analyzeFunctionAt(BigInt(addr));
+      const r = executableRegionForAddress(app, a);
+      if (!r) return null;
+      const res = await app.analyzeFunctionAt(a);
       if (!res || !res.model) return null;
-      const r = region();
       const map = archAdapter.fixedInstructionSize != null ? {
-        rowOfAddress: (a) => rowOf(a),
-        addrOfRow: (row) => addressOfRow(row),
+        rowOfAddress: (value) => archAdapter.rowForAddress(r, BigInt(value)),
+        addrOfRow: (row) => archAdapter.addressForRow(r, row),
       } : {
         rowOfAddress: (a) => a,
         addrOfRow: (row) => row,
       };
       const out2 = decompile(res.model, {
-        name: api.name(addr), addr: BigInt(addr),
+        name: api.name(a), addr:a,
         rowOfAddress: map.rowOfAddress,
         addrOfRow: map.addrOfRow,
         symbolFor: (a) => app.symbols.nameAt(a),
@@ -326,7 +340,7 @@ export function createApi(app, out) {
     /** 書き換えを登録する（保存するまでファイルは変わりません）。 */
     async patch(addr, textOrHex) {
       const a = BigInt(addr);
-      const r = region();
+      const r = executableRegionForAddress(app, a);
       if (!r) return { error: 'セクションが選ばれていません。' };
       const raw = isHexBytes(textOrHex);
       const arch = architecture();

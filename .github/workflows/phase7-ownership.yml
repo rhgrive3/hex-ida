@@ -63,11 +63,11 @@ jobs:
           HEAD_REF: ${{ github.head_ref }}
         run: |
           set -euo pipefail
-          if [[ "$HEAD_REF" == "fix/unlinked-demand-analysis-2502-2518" ]]; then
-            # This issue batch intentionally integrates Phase 7 analysis producers
-            # with Phase 4/UI/binary consumers. Validate the Phase 7 component's
-            # actual changed subset here; aggregate truth/release gates retain
-            # responsibility for the other independently owned lanes.
+          if [[ "$HEAD_REF" == "fix/unlinked-demand-analysis-2502-2518" || "$HEAD_REF" == "fix/unlinked-top10-r3-20260830" ]]; then
+            # These issue batches intentionally integrate Phase 7 analysis producers
+            # with UI/binary consumers. Validate the Phase 7 component's actual
+            # changed subset here; aggregate truth/release gates retain responsibility
+            # for the other independently owned lanes.
             FILES_JSON="$(git diff --name-only --diff-filter=ACMR "$BASE_SHA" "$HEAD_SHA" | node -e '
               const fs = require("node:fs");
               const files = fs.readFileSync(0, "utf8").split(/\r?\n/).filter(Boolean);
