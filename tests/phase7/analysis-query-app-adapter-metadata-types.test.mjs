@@ -1,0 +1,18 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+const source = fs.readFileSync(new URL('../../js/analysis/query/app-adapter.js', import.meta.url), 'utf8');
+assert.match(source, /function architectureOf\(app\) \{[\s\S]*?typeof value === 'string' \? value\.trim\(\)\.toLowerCase\(\) : '';/);
+assert.match(source, /function formatOf\(app\) \{[\s\S]*?typeof value === 'string' \? value\.trim\(\)\.toLowerCase\(\) : '';/);
+assert.match(source, /function normalizePlatform\(value\) \{\n  if \(typeof value !== 'string'\) return null;\n  const p = value\.trim\(\)\.toLowerCase\(\);/);
+assert.doesNotMatch(source, /function architectureOf\(app\)[\s\S]*?return String\(/);
+assert.doesNotMatch(source, /function formatOf\(app\) \{ return String\(/);
+assert.doesNotMatch(source, /function normalizePlatform\(value\)[\s\S]*?String\(value/);
+const normalize = (value) => typeof value === 'string' ? value.trim().toLowerCase() : null;
+assert.equal(normalize(' ARM64 '), 'arm64');
+assert.equal(normalize(' x86_64 '), 'x86_64');
+assert.equal(normalize(' riscv64 '), 'riscv64');
+assert.equal(normalize(' PE '), 'pe');
+assert.equal(normalize(' ELF '), 'elf');
+assert.equal(normalize(' Windows '), 'windows');
+for (const malformed of [['arm64'], { toString(){ return 'arm64'; } }, 64, true, false]) assert.equal(normalize(malformed), null);
+console.log('analysis query app-adapter strict metadata tests passed');

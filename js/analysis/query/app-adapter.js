@@ -85,9 +85,13 @@ function currentSlice(app) {
   return index >= 0 ? currentInfo(app)?.slices?.[index] ?? null : null;
 }
 function architectureOf(app) {
-  return String(storeValue(app, 'architecture') ?? storeValue(app, 'capability')?.architecture ?? currentSlice(app)?.capability?.architecture ?? '').toLowerCase();
+  const value = storeValue(app, 'architecture') ?? storeValue(app, 'capability')?.architecture ?? currentSlice(app)?.capability?.architecture ?? '';
+  return typeof value === 'string' ? value.trim().toLowerCase() : '';
 }
-function formatOf(app) { return String(app?.backend?.formatId ?? currentInfo(app)?.formatId ?? '').toLowerCase(); }
+function formatOf(app) {
+  const value = app?.backend?.formatId ?? currentInfo(app)?.formatId ?? '';
+  return typeof value === 'string' ? value.trim().toLowerCase() : '';
+}
 function executableRegion(app, address) {
   if (typeof app?.executableRegionFor === 'function') {
     try { return app.executableRegionFor(BigInt(address)); } catch { return null; }
@@ -136,7 +140,8 @@ function semanticIR(value) { return value?.pipeline?.semanticIr ?? value?.semant
 function semanticCFG(value) { return value?.pipeline?.cfg ?? value?.semanticAnalysis?.pipeline?.cfg ?? value?.cfg ?? null; }
 
 function normalizePlatform(value) {
-  const p = String(value ?? '').trim().toLowerCase();
+  if (typeof value !== 'string') return null;
+  const p = value.trim().toLowerCase();
   if (!p) return null;
   if (p.includes('windows') || p === 'win32') return 'windows';
   if (p.includes('linux')) return 'linux';
