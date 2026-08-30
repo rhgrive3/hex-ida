@@ -6,6 +6,8 @@ import { StringCollectionBudget } from '../js/string-budget.js';
 import { productDescriptor } from '../js/platform/product-descriptor.js';
 import { ownerEvidence, summaryEvidenceStatus, provenanceStatus } from '../js/ui/evidence-model.js';
 import { queryFunctions, queryStrings } from '../js/ui/explorer-index.js';
+import { AnalysisQueryAPI } from '../js/analysis/query/api.js';
+import { createAppAnalysisQueryAdapter } from '../js/analysis/query/app-adapter.js';
 import { SymbolIndex } from '../js/symbols.js';
 import '../js/worker-budget.js';
 
@@ -66,6 +68,9 @@ import '../js/worker-budget.js';
 }
 
 // #550: indexed search is cancellable/top-N and no longer scans/materializes hundreds of thousands on each keystroke.
+// The Product Explorer now owns no private function index, so this regression deliberately
+// exercises the same canonical AnalysisQueryAPI route used by production instead of
+// reintroducing a SymbolIndex-direct fallback only for the old fixture.
 {
   const count = 25_000;
   const funcs = new BigUint64Array(count);
@@ -73,7 +78,13 @@ import '../js/worker-budget.js';
   const names = [];
   for (let i = 0; i < count; i++) { funcs[i] = 0x1000n + BigInt(i * 4); addrs[i] = funcs[i]; names.push(`Function_${i}`); }
   const sym = new SymbolIndex({ addrs, kinds: new Uint8Array(count), names: names.join('\n'), funcs, functionStartsExact: true });
-  const app = { symbols: sym, codeRegion: () => ({ vmAddr: 0x1000n, size: BigInt(count * 4 + 4) }), store: { get: () => null } };
+  const app = {
+    symbols: sym,
+    backend: { binaryId: `bin_sha256_${'00'.repeat(32)}`, gen: 1, formatId: 'macho' },
+    codeRegion: () => ({ vmAddr: 0x1000n, size: BigInt(count * 4 + 4) }),
+    store: { get: () => null },
+  };
+  app.analysisQueries = new AnalysisQueryAPI(createAppAnalysisQueryAdapter(app));
   const rows = await queryFunctions(app, 'Function_249', { limit: 10 });
   assert(rows.length <= 10 && rows.length > 0);
   const strings = Array.from({ length: 20_000 }, (_, i) => ({ text: `row-${i}`, addr: BigInt(i) }));

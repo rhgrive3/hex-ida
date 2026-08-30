@@ -218,31 +218,8 @@ function lowerBoundBigInt(array, value) {
   return lo;
 }
 
-function functionSource(app) {
-  void app.ensureRecognition?.({maxFunctions:350000});
-  const ranked=app.recognition?.records;
-  if(Array.isArray(ranked) && ranked.length){
-    const count=Math.min(ranked.length,EXPLORER_SOURCE_LIMIT);
-    return {
-      length:count, complete:app.recognition.complete===true && ranked.length<=EXPLORER_SOURCE_LIMIT,
-      total:app.recognition.total, scannedCount:app.recognition.scannedCount,
-      truncationReason:ranked.length>EXPLORER_SOURCE_LIMIT?'explorer-source-budget':app.recognition.truncationReason,
-      provenance:'recognition/classifier+knowledge',
-      itemAt(index){const item=ranked[index];return {addr:item.address,name:item.name||functionName(app,item.address),classification:item.classification,recognitionScore:item.score,recognitionConfidence:item.confidence};}
-    };
-  }
-  const sym = app.symbols;
-  const funcs = sym?.funcs || [];
-  const total=funcs.length, count=Math.min(total,EXPLORER_SOURCE_LIMIT);
-  return {
-    length:count, complete:count===total,total,scannedCount:count,truncationReason:count===total?null:'explorer-source-budget',provenance:'symbol-index',
-    itemAt(index){const addr=funcs[index],next=index+1<total?funcs[index+1]:null,exact=sym?.exact?.(addr);return {addr,name:exact?.name||functionName(app,addr),size:next!=null&&next>addr?next-addr:null,classification:'UNKNOWN'};}
-  };
-}
-
 async function matchingFunctionItems(app, query, options) {
   const q = String(query || '').trim();
-  if (!q) return functionSource(app);
   return queryFunctions(app, q, options);
 }
 function sectionItems(app, query) {

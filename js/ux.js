@@ -2,6 +2,8 @@
 import { installProductUI } from './ui/product.js';
 import { installViewerDragReturnGuard } from './ui/viewer-gesture-guard.js';
 import { closeMenu } from './ui.js';
+import { installDemandDrivenAnalysis } from './analysis/demand-driven-runtime.js';
+import { installSharedWorkerBinaryIdentity } from './analysis/shared-binary-identity.js';
 
 const LEGACY_ACTION_IDS = [
   'btn-help', 'btn-more',
@@ -60,6 +62,8 @@ function migrateRootControls(ui) {
 
 function boot() {
   if (!window.__app) return;
+  installDemandDrivenAnalysis(window.__app);
+  installSharedWorkerBinaryIdentity(window.__app);
   installViewerDragReturnGuard(window.__app.viewer);
   retireLegacyActionDom();
   const ui = installProductUI(window.__app);

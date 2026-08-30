@@ -11,7 +11,8 @@ export {
   MemoryByteSource, BlobByteSource, SubrangeByteSource,
   asByteSource, readExactly, safeNumber,
 } from './source.js';
-export { openBinarySource, parseMachOSource, parseELFSource, parsePESource } from './source-loaders.js';
+export { openBinarySource, parseELFSource, parsePESource } from './source-loaders.js';
+export { parseMachOSource, clearMachOSourceCache } from './macho-source-cache.js';
 export { detectBinary } from './detect.js';
 export { parseMachO } from './macho.js';
 export { parseELF, parseAarch64GnuProperty, attachAarch64GnuPropertyEvidence } from './elf-loader.js';
