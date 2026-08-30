@@ -22,7 +22,16 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Install dependencies
-        run: npm ci
       - name: Safely restack PR2677 onto current main
-        run: python3 tools/pr2677-restack.py
+        run: |
+          REAL_NPM="$(command -v npm)"
+          mkdir -p /tmp/pr2677-bin
+          cat > /tmp/pr2677-bin/npm <<'EOF'
+          #!/bin/sh
+          if [ "$1" = "run" ] && [ "$2" = "ai:test" ]; then
+            "$NPM_REAL" ci
+          fi
+          exec "$NPM_REAL" "$@"
+          EOF
+          chmod +x /tmp/pr2677-bin/npm
+          NPM_REAL="$REAL_NPM" PATH="/tmp/pr2677-bin:$PATH" python3 tools/pr2677-restack.py
