@@ -61,6 +61,7 @@ function address(value, code) {
 }
 
 function producerId(value) {
+  if (value == null) return 'unknown';
   if (typeof value !== 'string' || value.length === 0) fail('discovery-evidence-invalid-producer-id');
   return value;
 }
@@ -92,8 +93,8 @@ export function createDiscoveryEvidence(input = {}) {
     extentRole,
     start: input.start == null ? null : address(input.start, 'discovery-evidence-invalid-start').toString(),
     regions: deepFreeze((input.regions ?? []).map((region) => createRegion(region))),
-    // Producer identity participates in corroboration. It must already be a
-    // canonical non-empty string before fusion counts independent sources.
+    // Producer identity participates in corroboration. Pre-registry evidence
+    // may omit it, but any explicit identity must already be canonical.
     producerId: producerId(input.producerId),
     architectureId: input.architectureId == null ? null : String(input.architectureId),
     name: input.name == null ? null : String(input.name),
