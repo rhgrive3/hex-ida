@@ -1,0 +1,60 @@
+name: Temporary fix 2830
+on:
+  push:
+    branches: [fix/2830-machine-effects-strict-identities]
+permissions:
+  contents: write
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/2830-machine-effects-strict-identities
+          fetch-depth: 0
+      - name: Apply and test MachineEffects strict identity repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('fs');
+          const path = 'js/semantics/effects/index.js';
+          let src = fs.readFileSync(path, 'utf8');
+          const before = "function nonEmpty(value, code) {\n  const text = String(value ?? '').trim();\n  if (!text) fail(code);\n  return text;\n}";
+          const after = "function nonEmpty(value, code) {\n  if (typeof value !== 'string') fail(code);\n  const text = value.trim();\n  if (!text) fail(code);\n  return text;\n}";
+          const count = src.split(before).length - 1;
+          if (count !== 1) throw new Error(`expected exactly one nonEmpty target, found ${count}`);
+          src = src.replace(before, after);
+          fs.writeFileSync(path, src);
+          NODE
+          cat > tests/machine-effects-strict-identities.test.mjs <<'EOF'
+          import assert from 'node:assert/strict';
+          import { createMachineValue } from '../js/semantics/effects/index.js';
+
+          const valid = createMachineValue({ kind:'register', registerId:' x0 ', widthBits:64 });
+          assert.equal(valid.kind, 'register');
+          assert.equal(valid.registerId, 'x0');
+
+          const malformed = [
+            { kind:['register'], registerId:'x0', widthBits:64 },
+            { kind:'register', registerId:['x0'], widthBits:64 },
+            { kind:'register', registerId:{ toString(){ return 'x0'; } }, widthBits:64 },
+            { kind:'flag', flagId:['nzcv'], widthBits:1 },
+            { kind:'temporary', temporaryId:['t0'], valueType:{ kind:'bitvector', widthBits:64 } },
+          ];
+          for (const input of malformed) assert.throws(() => createMachineValue(input), TypeError);
+
+          console.log('MachineEffects strict identity tests passed');
+          EOF
+          node tests/machine-effects-strict-identities.test.mjs
+          rm -f .github/workflows/tmp-fix-2830.yml
+          git diff --check
+      - name: Commit focused repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m "fix(machine-effects): reject coerced identities (#2830)"
+          git push origin HEAD:fix/2830-machine-effects-strict-identities
