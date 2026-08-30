@@ -90,6 +90,13 @@ function isLegacyArm64Candidate(app) {
   return true;
 }
 
+function analysisRegionFor(app, addr, fallbackRegion) {
+  if (typeof app?.executableRegionFor === 'function') {
+    return app.executableRegionFor(BigInt(addr));
+  }
+  return fallbackRegion || null;
+}
+
 async function canonicalPinpointModel(app, addr, signal, options) {
   const queries = app?.analysisQueries;
   if (!queries || typeof queries.snapshot !== 'function' || typeof queries.function !== 'function') return undefined;
@@ -104,9 +111,9 @@ async function canonicalPinpointModel(app, addr, signal, options) {
 }
 
 export function makePinpointAnalyzer(app, region, parentSignal = null, analyze = analyzeFunctionCached) {
-  if (!region || !app?.store?.get?.('canDisassemble')) return null;
+  if (!app?.store?.get?.('canDisassemble')) return null;
+  if (!region && typeof app?.executableRegionFor !== 'function') return null;
   const legacyArm64 = isLegacyArm64Candidate(app);
-  const totalRows = legacyArm64 ? Number(region.size / 4n) : 0;
 
   return async (addr, end, options = {}) => {
     const linked = combineSignals(parentSignal, options?.signal || null);
@@ -117,18 +124,27 @@ export function makePinpointAnalyzer(app, region, parentSignal = null, analyze =
       if (canonical !== undefined) return canonical;
 
       // Compatibility fallback is deliberately finite: the row-based analyzer is
-      // valid only for proven 4-byte ARM64/AArch64 instruction streams.
+      // valid only for proven 4-byte ARM64/AArch64 instruction streams. Resolve
+      // the owning executable region from the candidate address; the caller's UI
+      // region is only a presentation hint and must not select another byte range.
       if (!legacyArm64) return null;
-      const startRow = Number((addr - region.vmAddr) / 4n);
+      const owner = analysisRegionFor(app, addr, region);
+      if (!owner) return null;
+      const totalRows = Number(owner.size / 4n);
+      const target = BigInt(addr);
+      const startRow = Number((target - owner.vmAddr) / 4n);
       if (!(startRow >= 0) || startRow >= totalRows) return null;
       /* end が未証明でも隣接関数へは伸びない: 局所的な境界（証明済み end か
          次の関数開始、#464 ガード付き）で窓を締める。 */
-      const stop = end != null ? end : app.symbols?.functionWindowBound?.(addr) ?? null;
-      const endRow = stop != null
-        ? Math.min(totalRows - 1, Number((stop - region.vmAddr) / 4n) - 1)
+      const stop = end != null ? BigInt(end) : app.symbols?.functionWindowBound?.(target) ?? null;
+      const ownerEnd = owner.vmAddr + owner.size;
+      const boundedStop = stop != null && stop > ownerEnd ? ownerEnd : stop;
+      if (boundedStop != null && boundedStop <= target) return null;
+      const endRow = boundedStop != null
+        ? Math.min(totalRows - 1, Number((boundedStop - owner.vmAddr) / 4n) - 1)
         : Math.min(totalRows - 1, startRow + 512);
       if (endRow < startRow) return null;
-      const res = await analyze(app.backend, region, startRow, endRow,
+      const res = await analyze(app.backend, owner, startRow, endRow,
         app.symbols, null, { ...(options || {}), texts: false, signal: linked.signal });
       return res?.model || null;
     } finally {

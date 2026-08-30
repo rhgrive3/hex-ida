@@ -170,8 +170,17 @@ function candidateEvidence(plan) {
   return out;
 }
 
-async function runAgent({ app, localContext, question, mode, style, signal, onActivity }) {
+async function runAgent({ app, localContext, question, mode, style, signal, onActivity, context }) {
   if (signal?.aborted) throw new Error('cancelled');
+
+  const anchor = context?.function || null;
+  const anchorParts = [];
+  if (anchor?.address) anchorParts.push(String(anchor.address));
+  if (anchor?.name) anchorParts.push(pick('関数: ' + anchor.name, 'function: ' + anchor.name));
+  onActivity({
+    label: pick('解析地点を特定', 'Locating analysis target'),
+    detail: anchorParts.join(pick('、', ', ')) || pick('現在の解析コンテキスト', 'current analysis context'),
+  });
 
   // The deterministic planner is already demand-driven: it compiles the goal,
   // requests only the search/graph/semantic tools it needs, and forwards its
