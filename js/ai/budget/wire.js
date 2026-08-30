@@ -75,5 +75,5 @@ function bytes(value) {
   }
   return new TextEncoder().encode(text ?? 'null').byteLength;
 }
-function finiteNumber(value, fallback) { const n = Number(value); return Number.isFinite(n) ? n : fallback; }
-function positiveLimit(value, fallback) { const n = Number(value); return Number.isFinite(n) && n > 0 ? n : fallback; }
+function finiteNumber(value, fallback) { return typeof value === 'number' && Number.isFinite(value) ? value : fallback; }
+function positiveLimit(value, fallback) { return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback; }
