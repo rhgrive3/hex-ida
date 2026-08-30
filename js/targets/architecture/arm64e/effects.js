@@ -77,6 +77,11 @@ const AUTH_RETURN = Object.freeze({
   retab: { key: 'ib' },
 });
 
+const AUTH_EXCEPTION_RETURN = Object.freeze({
+  eretaa: { key: 'ia' },
+  eretab: { key: 'ib' },
+});
+
 // This is the production pointer-authentication family registry.  Keep the
 // list beside the dispatch tables so denominator/audit code cannot silently
 // omit a newly supported alias.
@@ -88,6 +93,7 @@ const ARM64E_POINTER_AUTHENTICATION_MNEMONICS = Object.freeze([
   ...Object.keys(AUTH_BRANCH),
   ...Object.keys(AUTH_CALL),
   ...Object.keys(AUTH_RETURN),
+  ...Object.keys(AUTH_EXCEPTION_RETURN),
 ]);
 
 function mnemonicOf(decoded) {
@@ -530,6 +536,59 @@ function authenticateControlTarget(decoded, context, instructionId, descriptor, 
   });
 }
 
+function authenticateExceptionReturn(decoded, context, instructionId, descriptor) {
+  const operands = operandList(decoded);
+  if (operands.length !== 0) {
+    return partialMissing(decoded, context, instructionId, 'authenticated exception-return operand shape is invalid', { control: true, fault: true });
+  }
+
+  const operations = [];
+  const modifier = modifierInput(operations, { ...descriptor, modifier: 'sp' }, operands, 0, instructionId);
+  if (!modifier) {
+    return partialMissing(decoded, context, instructionId, 'authenticated exception-return SP modifier is unavailable', { control: true, fault: true });
+  }
+  const { keyId } = readPAuthState(operations, descriptor.key, instructionId);
+  const reason = 'authenticated exception-return environment restore is not fully represented';
+  const categories = ['control', 'registers', 'memory', 'faults', 'other'];
+  operations.push(createMachineOperation({
+    kind: 'unknown',
+    reason,
+    categories,
+  }));
+  const controlEffect = {
+    kind: 'indirect',
+    target: { kind: 'exception-return-address' },
+    reason: 'authenticated-exception-return',
+  };
+  return baseBundle(decoded, context, instructionId, operations, controlEffect, 'partial', {
+    possibleFaults: [
+      authFault(mnemonicOf(decoded), keyId, 'control-target'),
+      authenticatedTargetAlignmentFault(),
+      { kind: 'illegal-exception-return', condition: { kind: 'architectural-exception-return-check' } },
+    ],
+    unknownEffects: {
+      categories,
+      reason,
+      detail: {
+        keyIdentity: keyId,
+        modifier: 'sp',
+        targetSource: 'exception-return-address',
+        environmentRestore: true,
+      },
+    },
+    metadata: {
+      transform: 'authenticate',
+      authenticatedExceptionReturn: true,
+      exceptionReturn: true,
+      keyIdentity: keyId,
+      modifier: modifier.metadata,
+      architectureStateInput: PAUTH_STATE_ID,
+      environmentBoundary: true,
+      environmentFootprintComplete: false,
+    },
+  });
+}
+
 export function isArm64ePointerAuthenticationInstruction(decoded) {
   const mnemonic = mnemonicOf(decoded);
   return mnemonic === 'pacga'
@@ -538,7 +597,8 @@ export function isArm64ePointerAuthenticationInstruction(decoded) {
     || Object.hasOwn(STRIP, mnemonic)
     || Object.hasOwn(AUTH_BRANCH, mnemonic)
     || Object.hasOwn(AUTH_CALL, mnemonic)
-    || Object.hasOwn(AUTH_RETURN, mnemonic);
+    || Object.hasOwn(AUTH_RETURN, mnemonic)
+    || Object.hasOwn(AUTH_EXCEPTION_RETURN, mnemonic);
 }
 
 export function arm64ePointerAuthenticationMnemonics() {
@@ -561,6 +621,7 @@ export function liftArm64eEffects(decoded, context = {}) {
   if (Object.hasOwn(AUTH_BRANCH, mnemonic)) return authenticateControlTarget(decoded, context, instructionId, AUTH_BRANCH[mnemonic], 'branch');
   if (Object.hasOwn(AUTH_CALL, mnemonic)) return authenticateControlTarget(decoded, context, instructionId, AUTH_CALL[mnemonic], 'call');
   if (Object.hasOwn(AUTH_RETURN, mnemonic)) return authenticateControlTarget(decoded, context, instructionId, AUTH_RETURN[mnemonic], 'return');
+  if (Object.hasOwn(AUTH_EXCEPTION_RETURN, mnemonic)) return authenticateExceptionReturn(decoded, context, instructionId, AUTH_EXCEPTION_RETURN[mnemonic]);
   return null;
 }
 

@@ -16,8 +16,8 @@ import { createCapstoneArm64Session } from './helpers/arm64-capstone-session.mjs
 function bytes32(word) { const value=Number(word)>>>0; return Uint8Array.of(value&255,(value>>>8)&255,(value>>>16)&255,value>>>24); }
 const denominator = validateArm64ePacDenominator();
 assert.equal(denominator.denominatorId,ARM64E_PAC_DENOMINATOR_ID);
-assert.equal(denominator.encodingFamilyCount,38);
-assert.equal(denominator.encodingCaseCount,45_515);
+assert.equal(denominator.encodingFamilyCount,40);
+assert.equal(denominator.encodingCaseCount,45_517);
 
 // PACGA encodes its modifier in Rm and interprets Rm==31 as SP. This is a
 // valid discriminator boundary, not a reserved row to remove from the corpus.
@@ -40,7 +40,8 @@ try {
       const instructionId=`arm64e-pac-denominator:${item.id}`;
       const effects=liftArm64eEffects({ instructionId,address:raw.address,mnemonic:raw.mnemonic,opStr:raw.opStr,ops:parseOperands(raw.opStr),mode:'arm64e',origin:{instructionIds:[instructionId]} });
       assert.ok(effects,`${item.id}: escaped PAC ownership`);
-      assert.equal(effects.completeness,'exact-with-intrinsic',`${item.id}:${effects.unknownEffects?.reason}`);
+      const expectedCompleteness = item.mnemonic === 'eretaa' || item.mnemonic === 'eretab' ? 'partial' : 'exact-with-intrinsic';
+      assert.equal(effects.completeness,expectedCompleteness,`${item.id}:${effects.unknownEffects?.reason}`);
       assert.equal(effects.metadata.family,'arm64e-pointer-authentication');
       count++;
     }

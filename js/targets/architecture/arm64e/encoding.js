@@ -3,11 +3,11 @@ import { createMachineEffectBundle } from '../../../semantics/effects/index.js';
 const ARITY = Object.freeze(Object.fromEntries([
   ...['pacia','pacib','pacda','pacdb','autia','autib','autda','autdb','braa','brab','blraa','blrab'].map((mnemonic) => [mnemonic, 2]),
   ...['paciza','pacizb','pacdza','pacdzb','autiza','autizb','autdza','autdzb','xpaci','xpacd','braaz','brabz','blraaz','blrabz'].map((mnemonic) => [mnemonic, 1]),
-  ...['paciasp','pacibsp','pacia1716','pacib1716','autiasp','autibsp','autia1716','autib1716','xpaclri','retaa','retab'].map((mnemonic) => [mnemonic, 0]),
+  ...['paciasp','pacibsp','pacia1716','pacib1716','autiasp','autibsp','autia1716','autib1716','xpaclri','retaa','retab','eretaa','eretab'].map((mnemonic) => [mnemonic, 0]),
   ['pacga', 3],
 ]));
 
-const CONTROL = new Set(['braa','brab','braaz','brabz','blraa','blrab','blraaz','blrabz','retaa','retab']);
+const CONTROL = new Set(['braa','brab','braaz','brabz','blraa','blrab','blraaz','blrabz','retaa','retab','eretaa','eretab']);
 const POINTER_TRANSFORM_TWO = new Set(['pacia','pacib','pacda','pacdb','autia','autib','autda','autdb']);
 const POINTER_TRANSFORM_ONE = new Set(['paciza','pacizb','pacdza','pacdzb','autiza','autizb','autdza','autdzb','xpaci','xpacd']);
 const AUTHENTICATED_BRANCH_TWO = new Set(['braa','brab','blraa','blrab']);
