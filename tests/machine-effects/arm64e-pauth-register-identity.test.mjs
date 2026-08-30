@@ -93,6 +93,28 @@ assertIdentityContradictionFailClosed('pacia', [
   sp(),
 ]);
 
+// Explicit canonical widths are typed decoder evidence. Never coerce malformed
+// structured values into the A64 X-register width accepted by the finite gate.
+for (const bits of ['64', [64], true, false, {}, 64.5, NaN, Infinity, -Infinity, 32, 128]) {
+  assertIdentityContradictionFailClosed('pacia', [
+    { ...gp(0), bits },
+    gp(2),
+  ]);
+  assertIdentityContradictionFailClosed('braa', [
+    { ...gp(16), bits },
+    sp(),
+  ]);
+}
+assertIdentityContradictionFailClosed('pacia', [
+  { ...gp(0), bits:{ valueOf(){ return 64; } } },
+  gp(2),
+]);
+assertIdentityContradictionFailClosed('pacga', [
+  gp(0),
+  { ...gp(1), widthBits:'64' },
+  sp(),
+]);
+
 // effects.js prefers registerId/register/reg/name over text. Pin that exact
 // selection order too so a higher-priority conflicting identity cannot bypass
 // canonical validation merely because text happens to agree.
