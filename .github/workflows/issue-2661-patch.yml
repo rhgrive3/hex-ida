@@ -1,0 +1,130 @@
+name: issue-2661-focused-patch
+on:
+  push:
+    branches:
+      - fix/2661-discovery-ownership-fusion
+    paths:
+      - .github/workflows/issue-2661-patch.yml
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/2661-discovery-ownership-fusion
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Apply ownership-aware extent fusion
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('js/analysis/discovery/fusion.js'); s=p.read_text()
+          old="""  if (complete.length === 0 && partial.length > 0) {
+            const merged = new Map();
+            for (const item of partial) {
+              for (const region of item.regions) merged.set(`${region.start}-${region.end}`, region);
+            }
+            const regions = [...merged.values()].sort((left, right) => (BigInt(left.start) < BigInt(right.start) ? -1 : 1));
+            return {
+              regions,
+              state: authoritative.length > 0 ? 'exact' : 'heuristic',
+              conflicts: [],
+            };
+          }
+          """.replace(/^          /gm,'')
+          new="""  if (complete.length === 0 && partial.length > 0) {
+            const merged = new Map();
+            const ownershipByRange = new Map();
+            for (const item of partial) {
+              for (const region of item.regions) {
+                const rangeKey = `${region.start}-${region.end}`;
+                const priorOwnership = ownershipByRange.get(rangeKey);
+                if (priorOwnership != null && priorOwnership !== region.ownership) {
+                  return {
+                    regions: [],
+                    state: 'unknown',
+                    conflicts: [{
+                      kind: 'extent',
+                      detail: 'partial extent ownership evidence disagrees',
+                      alternatives: [...new Set([priorOwnership, region.ownership])].sort(),
+                    }],
+                  };
+                }
+                ownershipByRange.set(rangeKey, region.ownership);
+                merged.set(`${rangeKey}-${region.ownership}`, region);
+              }
+            }
+            const regions = [...merged.values()].sort((left, right) => {
+              const byStart = BigInt(left.start) < BigInt(right.start) ? -1 : BigInt(left.start) > BigInt(right.start) ? 1 : 0;
+              if (byStart !== 0) return byStart;
+              const byEnd = BigInt(left.end) < BigInt(right.end) ? -1 : BigInt(left.end) > BigInt(right.end) ? 1 : 0;
+              return byEnd || left.ownership.localeCompare(right.ownership);
+            });
+            return {
+              regions,
+              state: authoritative.length > 0 ? 'exact' : 'heuristic',
+              conflicts: [],
+            };
+          }
+          """.replace(/^          /gm,'')
+          if s.count(old)!=1: raise SystemExit('partial fusion source drifted')
+          s=s.replace(old,new,1)
+          old="const signature = item.regions.map((region) => `${region.start}-${region.end}`).join(',');"
+          new="const signature = regionSignature(item);"
+          if s.count(old)!=1: raise SystemExit('complete signature source drifted')
+          s=s.replace(old,new,1); p.write_text(s)
+
+          t=Path('tests/phase7/discovery/ownership-fusion-2661.test.mjs')
+          t.write_text("""import assert from 'node:assert/strict';
+          import test from 'node:test';
+          import { fuseFunctionCandidates } from '../../../js/analysis/discovery/fusion.js';
+
+          const evidence = (producerId, ownership, extentRole = 'complete') => ({
+            kind: 'loader-function-start', authority: 'authoritative', producerId,
+            start: '4096', extentRole,
+            regions: [{ start: '4096', end: '4112', ownership }],
+          });
+
+          test('same range and ownership still agrees exactly', () => {
+            const out = fuseFunctionCandidates([evidence('a', 'exclusive'), evidence('b', 'exclusive')]);
+            assert.equal(out.candidates[0].extentState, 'exact');
+            assert.equal(out.candidates[0].regions[0].ownership, 'exclusive');
+          });
+
+          test('complete ownership disagreement fails closed and is order independent', () => {
+            const input = [evidence('a', 'exclusive'), evidence('b', 'shared')];
+            for (const ordered of [input, [...input].reverse()]) {
+              const candidate = fuseFunctionCandidates(ordered).candidates[0];
+              assert.equal(candidate.extentState, 'unknown');
+              assert.deepEqual(candidate.regions, []);
+              assert.ok(candidate.conflicts.some((conflict) => conflict.kind === 'extent'));
+            }
+          });
+
+          test('partial ownership disagreement is never silently overwritten', () => {
+            const input = [evidence('a', 'exclusive', 'partial'), evidence('b', 'shared', 'partial')];
+            for (const ordered of [input, [...input].reverse()]) {
+              const candidate = fuseFunctionCandidates(ordered).candidates[0];
+              assert.equal(candidate.extentState, 'unknown');
+              assert.deepEqual(candidate.regions, []);
+              assert.ok(candidate.conflicts.some((conflict) => /ownership/.test(conflict.detail)));
+            }
+          });
+          """.replace(/^          /gm,''))
+          Path('.github/workflows/issue-2661-patch.yml').unlink()
+          PY
+          node --test tests/phase7/discovery/ownership-fusion-2661.test.mjs
+          git diff --check
+      - name: Commit focused fix
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m "fix(discovery): preserve extent ownership in fusion (#2661)"
+          git push origin HEAD:fix/2661-discovery-ownership-fusion
