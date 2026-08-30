@@ -1,4 +1,3 @@
-# Branch-local marker; execution is owned by main's one-shot runner.
 name: Fix unlinked top10 batch
 
 on:
@@ -11,14 +10,52 @@ permissions:
 
 jobs:
   patch:
+    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           ref: fix/unlinked-top10-20260830
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - name: Repair current-source patch anchor
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path=Path('tools/.tmp-fix-unlinked-top10.py')
+          src=path.read_text()
+          old="block2=block.replace('const region = app.codeRegion();','const region = app.executableRegionFor?.(addr) || null;',1)"
+          new="block2=block.replace('const region = app.codeRegion ? app.codeRegion() : null;','const region = app.executableRegionFor?.(addr) || null;',1)"
+          if src.count(old)!=1:
+              raise SystemExit(f'expected one attachIrFlow patch anchor, got {src.count(old)}')
+          path.write_text(src.replace(old,new,1))
+          PY
       - name: Apply guarded patch
         run: python3 tools/.tmp-fix-unlinked-top10.py
+      - name: Syntax checks
+        run: |
+          node --check js/app.js
+          node --check js/program.js
+          node --check js/linkage.js
+          node --check js/tools-base.js
+          node --check js/workspace.js
+          node --check js/ui/product.js
+          node --check js/ui/pinpoint-runtime.js
+          node --check js/panels-base.js
+      - name: Focused regressions
+        run: |
+          node tests/unlinked-top10-wiring-regression.mjs
+          node tests/analysis-query-api.mjs
+          npm run ui:test
+      - name: Commit tested source only
+        run: |
+          rm -f tools/.tmp-fix-unlinked-top10.py .github/workflows/fix-unlinked-top10.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'fix(ui): resolve top unlinked analysis wiring issues'
+          git push origin HEAD:fix/unlinked-top10-20260830
