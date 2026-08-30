@@ -4,7 +4,8 @@ import { createSemanticCfg } from '../../js/semantics/cfg/index.js';
 import { createSemanticIrFunction } from '../../js/semantics/ir/function.js';
 import { validateSemanticIrFunction } from '../../js/semantics/ir/index.js';
 import { createMemoryRegionRef } from '../../js/semantics/memoryssa/contract.js';
-import { buildMemorySsa, canonicalMemorySsaProducerIdentity } from '../../js/semantics/memoryssa/build.js';
+import { buildMemorySsa, isCanonicalMemorySsaProducerArtifact } from '../../js/semantics/memoryssa/build.js';
+import * as memorySsaBuild from '../../js/semantics/memoryssa/build.js';
 import {
   CANONICAL_MEMORY_FORWARDING_CONSUMER,
   CANONICAL_MEMORY_FORWARDING_PURPOSE,
@@ -216,7 +217,6 @@ function query(artifact = memorySsa, options = {}) {
   return forwardMemoryValue(artifact, artifact.uses[0]?.id ?? 'u_load', {
     functionId: ir.functionId,
     ir: canonicalIr,
-    currentIdentity: options.currentIdentity ?? canonicalMemorySsaProducerIdentity(artifact),
     consumerId: options.consumerId ?? CANONICAL_MEMORY_FORWARDING_CONSUMER,
     purpose: options.purpose ?? CANONICAL_MEMORY_FORWARDING_PURPOSE,
     ...options,
@@ -289,18 +289,32 @@ assert.equal(direct.value, 0x33441122n);
 assert.deepEqual(direct.bytes, [0x22, 0x11, 0x44, 0x33]);
 assert.equal(direct.completeness, 'complete');
 assert.deepEqual(query(), direct, 'equivalent immutable artifacts must replay byte-for-byte');
+const concurrentReplay = await Promise.all(
+  Array.from({ length: 4 }, () => Promise.resolve().then(() => query())),
+);
+for (const replay of concurrentReplay) {
+  assert.deepEqual(replay, direct, 'same-artifact concurrent replay must be deterministic');
+}
 
-// Producer authority is deliberately non-serializable. A clean clone, a
-// clone carrying the original identity token, and a clone carrying a cloned
-// token must all fail closed—even when a caller asks to "register" it.
+// Producer authority is deliberately non-serializable and is not exposed as a
+// token or registrar. A clean clone, a clone carrying a copied identity, and a
+// clone carrying a re-signed identity must all fail closed.
 assert.equal(memorySsa.__canonicalProducerIdentity, undefined,
   'producer authority must not be readable from an artifact property');
 assert.equal(Object.getOwnPropertyNames(memorySsa).some((name) => /producer/i.test(name)), false,
   'producer authority must not be exposed as an enumerable or non-enumerable field');
-const producerToken = canonicalMemorySsaProducerIdentity(memorySsa);
-assert.ok(producerToken);
-assert.notEqual(producerToken, memorySsa.identity,
-  'current producer identity must be an independently issued object');
+assert.equal(isCanonicalMemorySsaProducerArtifact(memorySsa), true,
+  'the exact object issued by the canonical builder must carry private authority');
+for (const exportedName of [
+  'canonicalMemorySsaProducerBinding',
+  'canonicalMemorySsaProducerIdentity',
+  'canonicalMemorySsaIdentityBinding',
+  'registerCanonicalMemorySsaProducerArtifact',
+  'transferCanonicalMemorySsaProducerBinding',
+]) {
+  assert.equal(typeof memorySsaBuild[exportedName], 'undefined',
+    `${exportedName} must not expose a readable or mintable producer capability`);
+}
 const sameIdentityArtifact = buildMemorySsa(canonicalIr, canonicalCfg, {
   regions: [canonicalRegion],
   resolveRegion: () => canonicalRegion,
@@ -326,29 +340,25 @@ const sameIdentityArtifact = buildMemorySsa(canonicalIr, canonicalCfg, {
 });
 assert.equal(query(sameIdentityArtifact).status, 'exact',
   'each canonical build receives its own exact publication authority');
-assert.equal(query(sameIdentityArtifact, { currentIdentity: producerToken }).status, 'stale',
-  'an identity token from another artifact must not replay across same-identity builds');
 const cleanClone = structuredClone(memorySsa);
 assert.equal(query(cleanClone, {
-  currentIdentity: producerToken,
   ir: null,
   registerArtifact: true,
 }).status, 'stale', 'clean clone fake-registration must be rejected');
 assert.equal(query(cleanClone, {
-  currentIdentity: structuredClone(producerToken),
+  currentIdentity: structuredClone(memorySsa.identity),
   ir: null,
 }).status, 'stale', 'cross-process cloned identity must not authorize a clone');
 const tamperedResignedClone = structuredClone(memorySsa);
 metadataFor(tamperedResignedClone, 'm1').canonicalValue.value = '4369';
 refreshDigest(tamperedResignedClone);
 const tamperedCloneFact = query(tamperedResignedClone, {
-  currentIdentity: producerToken,
   ir: null,
 });
 assert.notEqual(tamperedCloneFact.status, 'exact',
   'tampered/re-signed clone must not become exact');
 const irNullClone = structuredClone(memorySsa);
-assert.equal(query(irNullClone, { ir: null, currentIdentity: producerToken }).status, 'stale',
+assert.equal(query(irNullClone, { ir: null }).status, 'stale',
   'IR-null clone must remain stale without producer revalidation');
 
 // A caller may not cross-wire a selected load to another producer by changing
@@ -695,7 +705,7 @@ assert.equal(builtLoad.dst.const, 0x3344n);
 // canonical producer. A structured clone of the same bytes has no authority.
 assert.equal(query(builtMemorySsa, { ir: exactIr }).status, 'exact');
 assert.equal(query(builtMemorySsa, { ir: exactIr }).value, 0x3344n);
-assert.ok(canonicalMemorySsaProducerIdentity(builtMemorySsa));
+assert.equal(isCanonicalMemorySsaProducerArtifact(builtMemorySsa), true);
 
 const bigEndian = clonedArtifact();
 for (const id of ['u_load', 'm1', 'm2']) {
@@ -1093,8 +1103,8 @@ assert.equal(query(memorySsa, { currentIdentity: memorySsa.identity }).status, '
 {
   // Re-signing every serialized identity/proof/digest field still cannot
   // publish a stale artifact when the caller supplies that artifact's own
-  // identity. The independent producer publication token is intentionally
-  // absent from this clone.
+  // identity. The private producer binding is intentionally absent from this
+  // clone.
   const staleReSigned = clonedArtifact();
   staleReSigned.identity = { ...staleReSigned.identity, analyzerVersion: 'memoryssa-stale-resigned' };
   for (const item of staleReSigned.accessMetadata) {
