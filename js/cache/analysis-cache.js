@@ -70,8 +70,12 @@ export class AnalysisCache {
   #validRecord(record, hash, artifactId) {
     if (!record || record.schemaVersion !== this.schemaVersion) return false;
     if (artifactId) {
-      // Canonical compatibility never falls back to the weak legacy key.
-      return record.canonicalArtifactId === artifactId && (!hash || record.binaryHash === hash);
+      // Canonical artifact identity binds the binary, but derived analysis is
+      // still version/settings-sensitive. Do not let the artifact route bypass
+      // the same semantic cache identity enforced by the legacy route (#197).
+      return record.canonicalArtifactId === artifactId
+        && record.analysisIdentity === this.analysisIdentity
+        && (!hash || record.binaryHash === hash);
     }
     return record.binaryHash === hash && record.analysisIdentity === this.analysisIdentity && !record.canonicalArtifactId;
   }
@@ -131,7 +135,9 @@ export class AnalysisCache {
     const stale = (key, record) => {
       if (record?.canonicalArtifactId) {
         if (!CANONICAL_ARTIFACT_ID.test(record.canonicalArtifactId)) return true;
-        return record.schemaVersion !== this.schemaVersion || key !== this.canonicalKey(record.canonicalArtifactId);
+        return record.schemaVersion !== this.schemaVersion
+          || record.analysisIdentity !== this.analysisIdentity
+          || key !== this.canonicalKey(record.canonicalArtifactId);
       }
       return record?.schemaVersion !== this.schemaVersion || record?.analysisIdentity !== this.analysisIdentity || !key.startsWith(`${this.schemaVersion}:${this.analysisIdentity}:`);
     };
