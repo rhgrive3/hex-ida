@@ -134,7 +134,7 @@ function fuseExtent(evidence) {
   if (complete.length === 0 && partial.length > 0) {
     const merged = new Map();
     for (const item of partial) {
-      for (const region of item.regions) merged.set(`${region.start}-${region.end}`, region);
+      for (const region of item.regions) merged.set(`${region.start}-${region.end}-${region.ownership ?? ''}`, region);
     }
     const regions = [...merged.values()].sort((left, right) => (BigInt(left.start) < BigInt(right.start) ? -1 : 1));
     return {
@@ -147,7 +147,7 @@ function fuseExtent(evidence) {
 
   const signatures = new Map();
   for (const item of considered) {
-    const signature = item.regions.map((region) => `${region.start}-${region.end}`).join(',');
+    const signature = item.regions.map((region) => `${region.start}-${region.end}-${region.ownership ?? ''}`).join(',');
     if (!signatures.has(signature)) signatures.set(signature, { regions: item.regions, sources: [] });
     signatures.get(signature).sources.push(item.producerId);
   }
