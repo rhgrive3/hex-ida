@@ -1,15 +1,12 @@
 name: Temporary unlinked final repair
-
 on:
-  pull_request:
-    types: [synchronize, reopened]
-
+  push:
+    branches: [dev-agent-hardening/integration/unlinked-final-20260831]
+    paths: [tools/tmp-unlinked-final-repair.py]
 permissions:
   contents: write
-
 jobs:
   repair:
-    if: github.event.pull_request.head.ref == 'dev-agent-hardening/integration/unlinked-final-20260831'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -35,8 +32,8 @@ jobs:
       - name: Commit repair and remove temporary runner
         run: |
           rm -f .github/workflows/tmp-unlinked-final-repair.yml tools/tmp-unlinked-final-repair.py
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add -A
           git diff --cached --quiet && exit 0
           git commit -m 'fix: close strict evidence and Mach-O gaps'
