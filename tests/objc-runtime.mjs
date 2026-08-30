@@ -119,6 +119,42 @@ const index = buildObjcRuntimeIndex(model);
   assert.equal(r.candidates.length, 2);
 }
 
+// #2778: malformed selector metadata must never collide with canonical string selector identity.
+{
+  const malformedSelectors = [
+    ['run'],
+    { toString() { return 'run'; } },
+    1,
+    true,
+  ];
+  for (const selector of malformedSelectors) {
+    const malformed = buildObjcRuntimeIndex({
+      implementationProofRequired: false,
+      runtimeCompleteness: { complete: true, categories: { complete: true } },
+      classes: [{ name:'Victim', superName:null, methods:[{ selector, imp:0x4444n }], classMethods:[], protocols:[] }],
+      protocols: [],
+      categories: [],
+    });
+    const result = resolveObjcDispatch(malformed, { receiverType:'Victim', selector:'run' });
+    assert.equal(result.resolved, null, `non-string selector ${typeof selector} must not enter canonical selector index`);
+    assert.equal(result.candidates.length, 0);
+  }
+
+  const canonical = buildObjcRuntimeIndex({
+    implementationProofRequired: false,
+    runtimeCompleteness: { complete: true, categories: { complete: true } },
+    classes: [{ name:'Victim', superName:null, methods:[{ selector:'run', imp:0x5555n }], classMethods:[], protocols:[] }],
+    protocols: [],
+    categories: [],
+  });
+  assert.equal(resolveObjcDispatch(canonical, { receiverType:'Victim', selector:'run' }).resolved?.imp, 0x5555n);
+  for (const selector of [[ 'run' ], { toString() { return 'run'; } }, 1, true]) {
+    const result = resolveObjcDispatch(canonical, { receiverType:'Victim', selector });
+    assert.equal(result.resolved, null, 'non-string query selector must fail closed');
+    assert.equal(result.candidates.length, 0);
+  }
+}
+
 {
   const selectors = buildSelectorIndex({
     selectorRefs: [{ addr: 0x4000n, selector: 'addCoins:' }],
