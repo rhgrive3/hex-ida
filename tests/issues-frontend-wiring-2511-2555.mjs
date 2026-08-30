@@ -203,9 +203,6 @@ assert.match(linkage, /usageComplete && i\.calls/);
 assert.match(emuSource, /async run\(maxSteps = 20000, onProgress, options = \{\}\)/);
 assert.match(emuSource, /awaitAbortable\(this\.io\.fetch/);
 assert.match(emuSource, /throwIfAborted\(signal\)/);
-const debuggerUi = toolBase.slice(toolBase.indexOf('export function showDebugger'));
-assert.match(debuggerUi, /debugger-sheet-closed/);
-assert.match(debuggerUi, /emu\.run\(50000[\s\S]*signal:controller\.signal/);
 const controller = new AbortController();
 const emu = new Emulator({ fetch:async () => ({ mn:'nop', ops:'' }) });
 emu.setup(0x1000n, []);
@@ -225,3 +222,5 @@ assert.match(vtable, /解決できないポインタ/);
 assert.match(vtable, /disabled:true/);
 
 console.log('issues #2511/#2514/#2526/#2533/#2539/#2542/#2544/#2548/#2551/#2555 regressions passed');
+
+await import('./issues-close-audit-2520-2545.mjs');

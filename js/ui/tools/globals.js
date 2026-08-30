@@ -3,43 +3,81 @@ import { addrHex } from '../../format.js';
 import { findGlobals } from '../../linkage.js';
 import { globalReferenceStats } from '../../analysis/global-ref-stats.js';
 
-function abortError(signal) {
-  const error = signal?.reason instanceof Error ? signal.reason : new Error('Operation aborted');
-  if (!error.name || error.name === 'Error') error.name = 'AbortError';
-  return error;
+function betterGlobal(a, b) {
+  return a.refs > b.refs || (a.refs === b.refs && a.addr < b.addr);
 }
-
-function waitFor(promise, signal) {
-  if (!signal) return Promise.resolve(promise);
-  if (signal.aborted) return Promise.reject(abortError(signal));
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const finish = (fn, value) => {
-      if (settled) return;
-      settled = true;
-      signal.removeEventListener('abort', onAbort);
-      fn(value);
-    };
-    const onAbort = () => finish(reject, abortError(signal));
-    signal.addEventListener('abort', onAbort, { once:true });
-    Promise.resolve(promise).then((value) => finish(resolve, value), (error) => finish(reject, error));
-  });
+function worseGlobal(a, b) {
+  return a.refs < b.refs || (a.refs === b.refs && a.addr > b.addr);
+}
+function boundedTopGlobals(limit) {
+  const heap = [];
+  const swap = (a, b) => { const value = heap[a]; heap[a] = heap[b]; heap[b] = value; };
+  const up = (index) => {
+    while (index > 0) {
+      const parent = (index - 1) >> 1;
+      if (!worseGlobal(heap[index], heap[parent])) break;
+      swap(index, parent);
+      index = parent;
+    }
+  };
+  const down = (index) => {
+    for (;;) {
+      const left = index * 2 + 1;
+      const right = left + 1;
+      let worst = index;
+      if (left < heap.length && worseGlobal(heap[left], heap[worst])) worst = left;
+      if (right < heap.length && worseGlobal(heap[right], heap[worst])) worst = right;
+      if (worst === index) break;
+      swap(index, worst);
+      index = worst;
+    }
+  };
+  return {
+    offer(value) {
+      if (limit <= 0) return;
+      if (heap.length < limit) { heap.push(value); up(heap.length - 1); return; }
+      if (!betterGlobal(value, heap[0])) return;
+      heap[0] = value;
+      down(0);
+    },
+    values() {
+      return heap.sort((a, b) => b.refs - a.refs || (a.addr < b.addr ? -1 : a.addr > b.addr ? 1 : 0));
+    },
+  };
+}
+function namedReferenceCount(stats, address) {
+  // Legacy findGlobals() used ProgramIndex.refSitesTo(addr, 8n, 200).length.
+  // The producer artifact stores exact target counts, so reproduce that range
+  // count without touching ProgramIndex.refTo again.
+  if (!stats?.counts) return 0;
+  const start = BigInt(address);
+  let refs = 0;
+  for (let offset = 0n; offset < 8n && refs < 200; offset++) {
+    refs += Number(stats.counts.get((start + offset).toString())?.refs || 0);
+  }
+  return Math.min(200, refs);
 }
 
 export function mergeGlobals(named, stats, limit = 400) {
+  const cap = Math.max(0, Math.floor(Number(limit) || 0));
+  const namedRows = [];
   const seen = new Set();
-  const out = [];
-  for (const row of named || []) {
+
+  // Preserve legacy membership semantics: named globals occupy the first slots
+  // before unnamed hot targets are admitted. Only the expensive unnamed tail is
+  // selected with a bounded heap.
+  for (const row of (named || []).slice(0, cap)) {
     const key = BigInt(row.addr).toString();
-    const counted = stats?.counts?.get?.(key);
     seen.add(key);
-    out.push({ ...row, refs:counted?.refs ?? 0 });
+    namedRows.push({ ...row, refs:namedReferenceCount(stats, row.addr) });
   }
-  if (stats?.counts) {
+
+  const hot = boundedTopGlobals(Math.max(0, cap - namedRows.length));
+  if (stats?.counts && namedRows.length < cap) {
     for (const hit of stats.counts.values()) {
       const key = hit.addr.toString();
       if (seen.has(key) || hit.refs < 2) continue;
-      out.push({
+      hot.offer({
         addr:hit.addr,
         name:null,
         readable:'off_' + hit.addr.toString(16).toUpperCase(),
@@ -49,14 +87,14 @@ export function mergeGlobals(named, stats, limit = 400) {
       });
     }
   }
-  out.sort((a, b) => b.refs - a.refs || (a.addr < b.addr ? -1 : a.addr > b.addr ? 1 : 0));
-  return out.slice(0, limit);
+  return [...namedRows, ...hot.values()]
+    .sort((a, b) => b.refs - a.refs || (a.addr < b.addr ? -1 : a.addr > b.addr ? 1 : 0));
 }
 
 function renderRows(app, sheet, host, rows, { pending = false, complete = true, reason = null } = {}) {
   host.replaceChildren();
   host.append(el('div', 'hint', pending
-    ? '名前付きの共有データを先に表示しています。参照頻度はバックグラウンドで集計中です。'
+    ? '名前付きの共有データを先に表示しています。参照頻度は共有Program artifactから集計中です。'
     : complete
       ? '参照頻度まで確認済みです。'
       : `参照頻度は一部のみ確認済みです${reason ? `（${reason}）` : ''}。`));
@@ -87,13 +125,13 @@ export function showGlobals(app) {
   sheet.body.append(host);
   const regions = app.store.get('regions') || [];
 
-  // Named data is cheap and useful before ProgramIndex reference aggregation is ready.
+  // Named data is cheap and useful before the shared ProgramIndex is ready.
   const named = findGlobals(app.symbols, null, regions, { limit:400 });
   renderRows(app, sheet, host, named, { pending:true, complete:false });
 
   (async () => {
     try {
-      const program = await waitFor(app.ensureProgram?.(), controller.signal);
+      const program = await app.ensureProgram?.({ signal:controller.signal, priority:'user-visible' });
       if (!program || controller.signal.aborted || !sheet.root.isConnected) return;
       const stats = await globalReferenceStats(program, regions, { signal:controller.signal });
       if (controller.signal.aborted || !sheet.root.isConnected) return;
