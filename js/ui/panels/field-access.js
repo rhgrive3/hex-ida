@@ -52,12 +52,17 @@ function renderResults(app, sheet, host, className, field, aggregate, program) {
   host.replaceChildren();
   const sites = aggregate?.results || [];
   const complete = aggregate?.complete === true;
+  const unsupported = aggregate?.unsupported === true;
   const unscanned = aggregate?.unscannedRegionIds || [];
 
   if (!complete) {
     host.append(noteBox(pick(
-      `解析途中です。確認済み region: ${(aggregate?.scannedRegionIds || []).length}、未確認: ${unscanned.length}。未確認範囲を「アクセスなし」とは扱いません。`,
-      `Analysis is partial. Scanned regions: ${(aggregate?.scannedRegionIds || []).length}; unscanned: ${unscanned.length}. Unscanned code is not treated as evidence of absence.`)));
+      unsupported
+        ? `このarchitecture/regionではアクセス解析を完了できません（${aggregate?.reason || 'unsupported'}）。未解析を「アクセスなし」とは扱いません。`
+        : `解析途中です。確認済み region: ${(aggregate?.scannedRegionIds || []).length}、未確認: ${unscanned.length}。未確認範囲を「アクセスなし」とは扱いません。`,
+      unsupported
+        ? `Field-access analysis is unsupported/incomplete here (${aggregate?.reason || 'unsupported'}). Missing coverage is not treated as evidence of absence.`
+        : `Analysis is partial. Scanned regions: ${(aggregate?.scannedRegionIds || []).length}; unscanned: ${unscanned.length}. Unscanned code is not treated as evidence of absence.`)));
   }
 
   if (!sites.length) {
@@ -123,30 +128,38 @@ export function showField(app, className, field) {
   const results = el('div');
   body.append(status, results);
 
-  let latest = { results:[], complete:false, scannedRegionIds:[], unscannedRegionIds:[] };
-  const programPromise = Promise.resolve(app.ensureProgram?.()).catch(() => null);
-  const render = async (aggregate) => {
+  let latest = { results:[], complete:false, unsupported:false, scannedRegionIds:[], unscannedRegionIds:[] };
+  let program = null;
+  const render = (aggregate) => {
     latest = aggregate;
-    if (controller.signal.aborted || !sheet.root.isConnected) return;
-    const program = await programPromise;
     if (controller.signal.aborted || !sheet.root.isConnected) return;
     renderResults(app, sheet, results, className, field, aggregate, program);
   };
 
+  // Function ownership is enrichment only. Do not make first field-access evidence
+  // wait for the global ProgramIndex; redraw once it becomes available.
+  Promise.resolve(app.ensureProgram?.({ signal:controller.signal }))
+    .then((value) => {
+      if (controller.signal.aborted || !sheet.root.isConnected) return;
+      program = value || null;
+      render(latest);
+    })
+    .catch(() => {});
+
   fieldAccessAcrossExecutableRegions(app, field.offset, field.size || 0, {
     signal:controller.signal,
     concurrency:2,
-    onPartial:(aggregate) => { void render(aggregate); },
-  }).then(async (aggregate) => {
+    onPartial:render,
+  }).then((aggregate) => {
     if (controller.signal.aborted || !sheet.root.isConnected) return;
     status.textContent = aggregate.complete
       ? pick('コード全体の確認が完了しました。', 'Executable-region scan complete.')
       : pick(`一部の解析が不完全です（${aggregate.reason || 'unknown'}）。`, `Some analysis remains incomplete (${aggregate.reason || 'unknown'}).`);
-    await render(aggregate);
+    render(aggregate);
   }).catch((error) => {
     if (error?.name === 'AbortError' || controller.signal.aborted) return;
     status.textContent = pick('アクセス解析を完了できませんでした。', 'Field-access analysis could not complete.');
-    void render({ ...latest, complete:false, reason:error?.message || 'field-access-failed' });
+    render({ ...latest, complete:false, reason:error?.message || 'field-access-failed' });
   });
 
   return sheet;
