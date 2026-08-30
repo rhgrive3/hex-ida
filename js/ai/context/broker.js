@@ -136,10 +136,11 @@ function fitObservation(value, maxBytes) {
   return byteLength(candidate) <= maxBytes ? candidate : { kind: value.kind, trust: value.trust, tool: value.tool, truncated: true };
 }
 function compactMessages(values) { return values.slice(-8).map((message) => ({ role: message.role === 'assistant' ? 'assistant' : 'user', content: String(message.content || '').slice(0, 3000) })); }
-function trimQueue(context, queue, maxBytes) {
+function trimQueue(context, queue, maxBytes, minimumIndex = 0) {
   if (!queue.length || byteLength(context) <= maxBytes) return;
   const original = queue.slice();
-  let low = 0, high = original.length;
+  let low = 0, high = Math.max(0, Math.min(original.length, minimumIndex));
+  if (high === 0) high = original.length;
   while (low < high) {
     const mid = Math.floor((low + high) / 2);
     queue.length = 0;
@@ -154,15 +155,38 @@ function trimQueue(context, queue, maxBytes) {
   queue.push(...original.slice(low));
 }
 
+function trimRecentMessages(context, maxBytes) {
+  const queue = context.recentMessages;
+  if (!Array.isArray(queue) || !queue.length || byteLength(context) <= maxBytes) return;
+  const lastUser = queue.findLastIndex((message) => message?.role === 'user');
+  if (lastUser < 0) return trimQueue(context, queue, maxBytes);
+  // The newest user turn is the semantic anchor for the model request. Older
+  // transcript may be discarded, but this turn and any following assistant
+  // messages must survive budget trimming; lower-priority context is trimmed
+  // next instead.
+  if (lastUser > 0) {
+    const original = queue.slice();
+    let low = 0, high = lastUser;
+    while (low < high) {
+      const mid = Math.floor((low + high) / 2);
+      queue.length = 0;
+      queue.push(...original.slice(mid));
+      if (byteLength(context) <= maxBytes) high = mid;
+      else low = mid + 1;
+    }
+    queue.length = 0;
+    queue.push(...original.slice(low));
+  }
+}
+
 function trimToBudget(context, maxBytes) {
   if (byteLength(context) <= maxBytes) return;
 
-  // Preserve the original semantic priority exactly: transcript history is
-  // dropped first, followed by observations, hypotheses, pinned evidence and
-  // finally verified evidence. trimQueue performs the same prefix removal as
-  // repeated shift(), but finds the boundary with O(log N) full encodes.
+  // Preserve the current user turn while dropping older transcript first;
+  // observations, hypotheses and evidence remain progressively lower-priority.
+  trimRecentMessages(context, maxBytes);
+  if (byteLength(context) <= maxBytes) return;
   const queues = [
-    context.recentMessages,
     context.recentObservations,
     context.activeHypotheses,
     context.pinnedEvidence,
