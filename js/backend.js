@@ -389,8 +389,15 @@ export class Backend {
 
     let detection = null;
     let platformError = null;
-    try { detection = await step(this._callTo('platform', 'detect', { file })); }
-    catch (error) { if (error?.stale) throw error; platformError = error; }
+    let initialPlatformInfo = null;
+    // A platform open already performs source-backed format detection. Reuse that
+    // parsed result instead of sending the same File through detect() and open().
+    try {
+      initialPlatformInfo = await step(this._callTo('platform', 'open', { file }, null, (p) => this.onAnalysisProgress?.(p)));
+      detection = initialPlatformInfo?.detection ?? initialPlatformInfo?.detected ?? {
+        formatId: initialPlatformInfo?.formatId || initialPlatformInfo?.capability?.format || 'unknown',
+      };
+    } catch (error) { if (error?.stale) throw error; platformError = error; }
     assertCurrent();
 
     let nextFormat = 'unknown';
@@ -401,9 +408,7 @@ export class Backend {
     if (detection?.formatId === 'macho') {
       nextFormat = 'macho';
       const legacy = await step(this._callTo('legacy', 'open', { file }));
-      let normalized = null;
-      try { normalized = await step(this._callTo('platform', 'open', { file }, null, (p) => this.onAnalysisProgress?.(p))); }
-      catch (error) { if (error?.stale) throw error; platformError = error; }
+      const normalized = initialPlatformInfo;
       assertCurrent();
       legacy.formatId = 'macho';
       for (const slice of legacy.slices || []) slice.capability = legacySliceCapability(slice);
@@ -419,9 +424,7 @@ export class Backend {
         : { formatId:'macho', capability:legacy.capability, detection, normalizedDyldTruth:false, compatibility:'legacy-macho' };
       result = legacy;
     } else {
-      let platformInfo = null;
-      try { platformInfo = await step(this._callTo('platform', 'open', { file }, null, (p) => this.onAnalysisProgress?.(p))); }
-      catch (error) { if (error?.stale) throw error; platformError = error; }
+      const platformInfo = initialPlatformInfo;
       assertCurrent();
       if (platformInfo) {
         nextPlatform = platformInfo;

@@ -239,12 +239,14 @@ export class PluginHost {
     return { ok: true };
   }
 
-  async run(id, out) {
+  async run(id, out, options = {}) {
     const p = this.plugins.find((x) => x.id === id);
     if (!p) return { error: 'そのプラグインが見つかりません。' };
-    const { api, print } = createApi(this.app, out);
+    const signal = options?.signal ?? null;
+    if (signal?.aborted) return { error:'キャンセルされました。', aborted:true };
+    const { api, print } = createApi(this.app, out, options);
     return runInSandbox({ source: p.source, mode: 'plugin', index: p.index, api,
-      out: (...args) => print(...args) });
+      out: (...args) => print(...args), signal });
   }
 }
 

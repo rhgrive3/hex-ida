@@ -1489,7 +1489,8 @@ function dumpText(addr, bytes) {
    ══════════════════════════════════════════════════════════ */
 
 export function showScript(app) {
-  const sheet = new Sheet('スクリプト');
+  const controller = new AbortController();
+  const sheet = new Sheet('スクリプト', { onClose:() => controller.abort('script-sheet-closed') });
   sheet.body.append(el('div', 'hint',
     '同じ作業を何百回も繰り返すときの道具です（IDAPython にあたります）。\n' +
     '言語は JavaScript。hex.〜 で解析結果に触れて、print(…) で下に出します。'));
@@ -1521,7 +1522,7 @@ export function showScript(app) {
       out.scrollTop = out.scrollHeight;
     };
     write('— 実行しています —');
-    const res = await runScript(ta.value, app, write);
+    const res = await runScript(ta.value, app, write, { signal:controller.signal });
     if (res.error) {
       const row = el('div', 'cl warn');
       row.append(el('span', 'cl-text mono', '⚠ ' + res.error));
@@ -1578,7 +1579,10 @@ function showScriptHelp() {
    ══════════════════════════════════════════════════════════ */
 
 export function showPlugins(app) {
-  const sheet = new Sheet('プラグイン');
+  let runController = null;
+  const sheet = new Sheet('プラグイン', {
+    onClose: () => runController?.abort('plugin-sheet-closed'),
+  });
   sheet.body.append(el('div', 'hint',
     'このツールに無い調べ方は、JavaScript を 1 ファイル書いて足せます。\n' +
     '読み込んだプラグインは、この画面から実行できます。'));
@@ -1669,7 +1673,10 @@ export function showPlugins(app) {
       row.append(el('span', 'cl-text mono', line));
       out.append(row);
     };
-    app.plugins.run(p.id, write).then((res) => {
+    runController?.abort('plugin-run-replaced');
+    const controller = runController = new AbortController();
+    app.plugins.run(p.id, write, { signal:controller.signal }).then((res) => {
+      if (controller.signal.aborted || !sheet.root.isConnected) return;
       if (res.error) write('⚠ ' + res.error);
       else write('— おわり —');
     });
