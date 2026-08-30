@@ -169,7 +169,7 @@ function matchingStrings(state, needle) {
 
 export function canonicalClaimVerdict(item) {
   const raw = item?.verdict ?? item?.evidenceVerdict ?? item?.proof?.verdict ?? item?.claim?.verdict ?? null;
-  const normalized = raw == null ? null : String(raw).toLowerCase();
+  const normalized = typeof raw === 'string' ? raw.toLowerCase() : null;
   return normalized && CANONICAL_VERDICTS.has(normalized) ? normalized : 'unverified';
 }
 
