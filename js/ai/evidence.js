@@ -100,6 +100,9 @@ export class EvidenceStore {
       initial = [];
     }
     this.records = new Map();
+    this.recordOrder = new Map();
+    this.statusIds = new Map(EVIDENCE_STATUSES.map((status) => [status, []]));
+    this.nextRecordOrder = 0;
     this.sourcePayloads = new Map();
     this.observationStore = options.observationStore || null;
     for (const evidence of initial) this.add(evidence);
@@ -198,8 +201,10 @@ export class EvidenceStore {
       if (!sameSemanticRecord(previous, record)) return previous;
       return previous;
     }
+    if (!this.recordOrder.has(id)) this.recordOrder.set(id, this.nextRecordOrder++);
     this.records.set(id, { ...previous, ...record });
     const storedRecord = this.records.get(id);
+    this._indexStatus(id, previous?.status || null, storedRecord?.status || null);
     if (storedRecord?.sourceRef?.detailRef) this.observationStore?.pin?.(storedRecord.sourceRef.detailRef);
     return storedRecord;
   }
@@ -280,6 +285,45 @@ export class EvidenceStore {
     return uniqueById(out.filter(Boolean));
   }
 
+  _indexStatus(id, previousStatus, nextStatus) {
+    if (previousStatus === nextStatus) return;
+    if (previousStatus && this.statusIds.has(previousStatus)) {
+      const previous = this.statusIds.get(previousStatus);
+      const at = previous.indexOf(id);
+      if (at >= 0) previous.splice(at, 1);
+    }
+    if (!nextStatus) return;
+    if (!this.statusIds.has(nextStatus)) this.statusIds.set(nextStatus, []);
+    const target = this.statusIds.get(nextStatus);
+    const order = this.recordOrder.get(id) ?? Number.MAX_SAFE_INTEGER;
+    let low = 0, high = target.length;
+    while (low < high) {
+      const mid = (low + high) >> 1;
+      const other = this.recordOrder.get(target[mid]) ?? Number.MAX_SAFE_INTEGER;
+      if (other < order) low = mid + 1; else high = mid;
+    }
+    target.splice(low, 0, id);
+  }
+
+  recentByStatus(status, limit = 32) {
+    const ids = this.statusIds.get(String(status)) || [];
+    const count = Math.max(0, Math.trunc(Number(limit) || 0));
+    const start = Math.max(0, ids.length - count);
+    const out = [];
+    for (let index = start; index < ids.length; index++) {
+      const record = this.records.get(ids[index]);
+      if (record) out.push(record);
+    }
+    return out;
+  }
+
+  byStatus(status) {
+    const ids = this.statusIds.get(String(status)) || [];
+    const out = [];
+    for (const id of ids) { const record = this.records.get(id); if (record) out.push(record); }
+    return out;
+  }
+
   sourceDataFor(id) {
     const record = typeof id === 'object' ? id : this.get(id);
     if (!record?.sourceRef?.evidenceSourceId) return null;
@@ -294,7 +338,7 @@ export class EvidenceStore {
     const address = addressText(value);
     return !!address && this.all().some((item) => item.address === address || item.functionAddress === address);
   }
-  verifiedIds() { return this.all().filter((item) => item.status === 'verified').map((item) => item.id); }
+  verifiedIds() { return this.byStatus('verified').map((item) => item.id); }
   canonicalSnapshot() { return evidenceStoreToCanonicalGraph(this); }
 }
 
