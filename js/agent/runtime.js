@@ -43,9 +43,12 @@ function finiteConfidence(value, fallback = null) {
 
 function verificationVerdict(verification) {
   const raw = verification?.verdict;
-  const status = typeof raw === 'string' ? raw : (raw?.status || verification?.status || null);
+  let status = null;
+  if (typeof raw === 'string') status = raw;
+  else if (typeof raw?.status === 'string') status = raw.status;
+  else if (typeof verification?.status === 'string') status = verification.status;
   const confidence = finiteConfidence(raw && typeof raw === 'object' ? raw.confidence : verification?.confidence, null);
-  return { status: status ? String(status) : null, confidence };
+  return { status, confidence };
 }
 
 function confidenceFromEvidence({ semanticCount, explicitVerified, verdictStatus, verdictConfidence }) {
