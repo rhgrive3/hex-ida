@@ -15,6 +15,8 @@ jobs:
         with:
           ref: fix/reopened-audit-final-20260830
           fetch-depth: 0
+      - name: Install canonical dependencies
+        run: npm ci
       - name: Repair patcher target
         run: python .github/reopened-final-patcher-fix.py
       - name: Apply repair
