@@ -44,11 +44,12 @@ implementation also reconciled safely from that review lane onto current `origin
 discarding the prior owner's dirty work. The repaired boundary now covers structural
 `reachingStore` publication, canonical cross-region coverage, canonical store operand/value
 binding, issuer-bound alias proofs, canonical access qualifiers, artifact/proof digests, and
-producer-owned access/source binding. Exact publication additionally requires a distinct,
-non-serialized producer/session identity token; the artifact's own serialized identity is
-explicitly rejected as current authority. Validation enforces finite `maxDefinitions` and
-`maxWorkItems` with explicit budget-limited/deadline/cancelled outcomes and no partial exact
-publication. Those fixes are covered by permanent focused, semantic, point-to, decompiler, and
+producer-owned access/source binding. Exact publication additionally requires membership in a
+private, canonical-builder-issued object set; no producer token, registrar, transfer hook, or
+artifact property is readable by consumers, and the artifact's serialized identity is never
+authority. Validation enforces finite `maxDefinitions` and `maxWorkItems` with explicit
+budget-limited/deadline/cancelled outcomes and no partial exact publication. Those fixes are
+covered by permanent focused, concurrent-replay, semantic, point-to, decompiler, and
 support-matrix regressions.
 
 ```text
@@ -57,32 +58,34 @@ CONVERGENCE_RESULT: CLEAN — no new tasks appended
 IMPLEMENT_TASKS: T001–T027 complete
 REVIEW_DELIVERY_TASKS: T028–T039 intentionally remain reviewer/delivery-owned and unchecked
 BASE_SHA_PRESERVED: c6171cb4393847394be8d6d65c49ac8fd35c579f (backup/hex-c2-01-c6171cb4)
-MOVING_MAIN: current origin/main 1645b4e4a2b5cd9baf37e2efe5b2e6045481b1aa, including reviewer
-  66a56403 plus the two non-overlapping main commits 087ab51d and 1645b4e4; the candidate was
-  stashed, rebased, and reapplied without loss. The original 39-path inventory remains exact;
-  the validation-budget correction adds only canonical owner path
+MOVING_MAIN: current origin/main 99bb9a40420c5611601c0c4b6a28af22185ecbe0; the checkpoint
+  37c7221090d76366ff69c80469dba6bba3258726 was safely rebased onto it. Main changes since the
+  old merge-base, merged PR #2775, and open PR #2745 have zero path overlap with the feature
+  inventory; no semantic or generated collision was found. The original 39-path inventory
+  remains exact; the validation-budget correction adds only canonical owner path
   js/semantics/memoryssa/contract.js, for 40 changed paths in the full candidate diff.
-GRAFT: NOT RUN — repository guardrail scopes Graft to GitHub Codespaces; CODESPACES is unset in
-  this environment. Normal source inspection/rg was used; graph savings are 0 tokens/commands.
+GRAFT: PASS — actual `graft map` and three `graft ask --source` traces ran; aggregate graph
+  savings are approximately 3,910,178 tokens for this implementation turn.
 FOCUSED_C2_01: PASS — canonical, compatibility, point-to, decompiler, and support-matrix assertions
-PRODUCER_IDENTITY: PASS — exact query rejects artifact/self-attested identities and accepts only
-  the builder-issued non-serialized producer/session token
+PRODUCER_AUTHORITY: PASS — exact query accepts only the exact object issued by the canonical
+  builder's private WeakSet; exports contain no readable identity/binding token, registrar, or
+  transfer hook, and clones/tampered/re-signed/IR-null artifacts stay stale without rebuild.
 VALIDATION_BUDGET: PASS — maxDefinitions/maxWorkItems/deadline/cancel taxonomy and atomic no-
   partial-exact publication are covered by focused regressions
 SEMANTIC_TEST: direct C2-01 and touched semantic-v2 consumers PASS; the npm wrapper's child corpus
   phase remains environment-blocked (login-shell nvm rejects inherited npm_config_prefix and
   reports node not found), so its current-corpus report is 0/25 for infrastructure reasons
 DECOMPILER_DIRECT_TESTS: PASS — `npm run decompiler:test` and all touched direct suites
-PHASE7_TEST: PASS — 356 tests, 58 discovered files on current main
-PHASE7_OWNERSHIP: PASS — manifest valid; feature inventory PASS (40/40 paths match the amended
-  path-exact allowlist, with no outside or missing paths)
+PHASE7_TEST: PASS — 361 tests, 60/60 discovered files on current main
+PHASE7_OWNERSHIP: FEATURE INVENTORY PASS — 40/40 paths match the amended path-exact allowlist,
+  with no outside or missing paths; the generic Phase 7 manifest is intentionally not the C2-01
+  owner because it forbids the canonical MemorySSA paths this feature owns.
 PHASE7_GLOBAL_OWNERSHIP: NOT APPLICABLE — the generic p7 lane intentionally rejects these
   feature-owned semantic/decompiler paths; no global Phase 7 allowlist was relaxed
-EXACT_HEAD_VERIFIER: READY on source candidate 553ca27d8d34d2f30dc1a14e6fcc2921fea8b1b8;
-  frozen corpus matches, all P7 checkpoints present, zero failures; verifier tree
-  518c8c8c823857e7489cf400c752d3bfa2bed4e5
-CANDIDATE_MERGE_TREE: conflict-free for origin/main 1645b4e4a2b5cd9baf37e2efe5b2e6045481b1aa
-  plus source candidate 553ca27d8d34d2f30dc1a14e6fcc2921fea8b1b8
+EXACT_HEAD_VERIFIER: PENDING final clean candidate head; run with `--expect-sha` after the final
+  implementation commit and report the generated evidence identity in the implementation packet.
+CANDIDATE_MERGE_TREE: conflict-free for origin/main 99bb9a40420c5611601c0c4b6a28af22185ecbe0
+  plus the final source candidate
 MODULE_BOUNDARIES: PASS
 EVIDENCE_WRITERS: PASS
 MIGRATION_GUARDRAILS: PASS

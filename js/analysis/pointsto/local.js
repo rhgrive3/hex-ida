@@ -27,7 +27,6 @@ import {
 } from '../alias/canonical-address-v2.js';
 import { MEMORY_SSA_BUILD_VERSION } from '../../semantics/memoryssa/build.js';
 import { MEMORY_SSA_CONTRACT_VERSION } from '../../semantics/memoryssa/contract.js';
-import { canonicalMemorySsaProducerIdentity } from '../../semantics/memoryssa/build.js';
 import {
   CANONICAL_MEMORY_FORWARDING_CONSUMER,
   CANONICAL_MEMORY_FORWARDING_PURPOSE,
@@ -322,7 +321,6 @@ function prepareMemoryBoundary(ir, nodes, values, options, budget) {
         functionId: ir.functionId,
         snapshotId: binding.snapshotId,
         memorySsaBuildVersion: memorySsa.buildVersion,
-        currentIdentity: canonicalMemorySsaProducerIdentity(memorySsa),
         consumerId: CANONICAL_MEMORY_FORWARDING_CONSUMER,
         purpose: CANONICAL_MEMORY_FORWARDING_PURPOSE,
         ir,

@@ -11,7 +11,7 @@ import {
   attachMemorySsa, attachFallbackMemory, addScalarSsaPhis, appendFunctionUnknowns,
   assignInstructionIds, memorySafetySummary,
 } from './semantic-ir-v2-to-v1-memory.js';
-import { canonicalMemorySsaProducerBinding } from '../memoryssa/build.js';
+import { isCanonicalMemorySsaProducerArtifact } from '../memoryssa/build.js';
 
 function rowForNode(node, fallback, options) {
   if (typeof options.rowOfNode === 'function') {
@@ -313,7 +313,7 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
   // clones must be rebuilt by the true producer before exact forwarding can be
   // consumed.
   const memorySsa = memorySsaInput == null ? null
-    : (canonicalMemorySsaProducerBinding(memorySsaInput)
+    : (isCanonicalMemorySsaProducerArtifact(memorySsaInput)
       ? memorySsaInput
       : memorySsaProjectionArtifact(memorySsaInput, memorySsaContract));
   const canonicalCfg = options.cfg ?? options.semanticCfg ?? null;
