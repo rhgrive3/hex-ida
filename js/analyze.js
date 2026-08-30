@@ -20,11 +20,11 @@ const MODEL_TEXT_READ_CONCURRENCY = 6;
 const ARM64_SEMANTIC_ARCHES = new Set(['arm64', 'arm64e', 'arm64_32']);
 
 export function supportsArm64SemanticAnalysis(architecture) {
-  return ARM64_SEMANTIC_ARCHES.has(String(architecture || '').toLowerCase());
+  return typeof architecture === 'string' && ARM64_SEMANTIC_ARCHES.has(architecture.toLowerCase());
 }
 function rowBudget(opts = {}) {
-  const raw = Number(opts?.maxRows);
-  if (!Number.isFinite(raw)) return MAX_INSTRUCTIONS;
+  const raw = opts?.maxRows;
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) return MAX_INSTRUCTIONS;
   return Math.max(1, Math.min(MAX_INSTRUCTIONS, Math.floor(raw)));
 }
 
