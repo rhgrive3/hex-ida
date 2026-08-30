@@ -78,6 +78,10 @@ function budgetConfig(options, key, defaults) {
   return out;
 }
 
+function budgetProfileKey(config) {
+  return Object.keys(config).sort().map((key) => `${key}:${config[key]}`).join('|');
+}
+
 function waitShared(entry, signal) {
   abortIfNeeded(signal);
   entry.waiters++;
@@ -229,10 +233,12 @@ export class InvestigationService {
   }
 
   collectStrings(options = {}) {
-    if (this.app.stringIndex) return Promise.resolve(this.app.stringIndex);
+    if (this.app.stringIndex?.complete === true) return Promise.resolve(this.app.stringIndex);
     const epoch = epochOf(this.app);
-    return this.#shared(`strings:${epoch}`, async (signal) => {
-      const budget = new StringCollectionBudget(budgetConfig(options, 'strings', STRING_SCAN_BUDGET));
+    const config = budgetConfig(options, 'strings', STRING_SCAN_BUDGET);
+    const profile = budgetProfileKey(config);
+    return this.#shared(`strings:${epoch}:${profile}`, async (signal) => {
+      const budget = new StringCollectionBudget(config);
       const targets = stringTargets(this.app);
       const current = storeValue(this.app, 'currentRegion');
       const use = [], skipped = [];
@@ -273,7 +279,8 @@ export class InvestigationService {
         scannedBytes,
         unscannedRegions:[...new Set(skipped.map((r) => r.id))],
       });
-      if (epoch === epochOf(this.app)) this.app.stringIndex = rows;
+      Object.defineProperty(rows, 'budgetProfile', { value:Object.freeze({ ...config }), enumerable:false, configurable:true });
+      if (epoch === epochOf(this.app) && rows.complete === true) this.app.stringIndex = rows;
       return rows;
     }, options);
   }
