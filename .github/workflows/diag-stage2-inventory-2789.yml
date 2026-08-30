@@ -5,23 +5,46 @@ on:
 permissions:
   contents: write
 jobs:
-  inventory-diff:
+  inventory-lock:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Regenerate canonical inventory
+      - name: Regenerate canonical inventory and lock
         run: |
           set -euo pipefail
           node tools/validation/stage2/build-profile-denominator-inventory.mjs
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import { spawnSync } from 'node:child_process';
+          import { createStage2DenominatorLock } from './js/platform/stage2-profile-evidence.js';
+          const inventory = JSON.parse(fs.readFileSync('tools/validation/stage2/profile-denominator-inventory.json','utf8'));
+          const previous = JSON.parse(fs.readFileSync('tools/validation/stage2/profile-denominators.lock.json','utf8'));
+          const scope = JSON.parse(fs.readFileSync('tools/validation/stage2/completion-scope.lock.json','utf8'));
+          const resolveInventoryIdentity = (ref) => {
+            const result = spawnSync('git',['rev-parse',`HEAD:${ref}`],{encoding:'utf8'});
+            return result.status === 0 ? result.stdout.trim() : null;
+          };
+          const resolveDenominatorUnitIds = (itemId, refs) => {
+            const item = inventory.items[itemId];
+            const actual = [...new Set((refs || []).map(String))].sort();
+            return item && actual.length === item.inventoryRefs.length && actual.every((v,i)=>v===item.inventoryRefs[i]) ? item.unitIds : [];
+          };
+          const input = {items:{}};
+          for (const [id,item] of Object.entries(previous.items)) {
+            input.items[id] = {profiles:item.profiles, unitIds:inventory.items[id].unitIds, inventoryRefs:item.inventoryRefs};
+          }
+          const lock = createStage2DenominatorLock(input,{scope,resolveInventoryIdentity,resolveDenominatorUnitIds});
+          fs.writeFileSync('tools/validation/stage2/profile-denominators.lock.json', JSON.stringify(lock,null,2)+'\n');
+          NODE
           git diff --check
-          if git diff --quiet -- tools/validation/stage2/profile-denominator-inventory.json; then
-            exit 0
-          fi
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add tools/validation/stage2/profile-denominator-inventory.json
-          git commit -m 'test(stage2): sync canonical denominator inventory'
+          git add tools/validation/stage2/profile-denominator-inventory.json tools/validation/stage2/profile-denominators.lock.json
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'test(stage2): sync canonical denominator inventory and lock'
           git push
