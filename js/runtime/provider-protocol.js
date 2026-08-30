@@ -35,13 +35,15 @@ function epoch(value) {
 
 function facet(value) {
   if (value == null) return null;
-  const normalized = String(value);
+  if (typeof value !== 'string') throw new DebugAdapterError('malformed-provider-data', 'runtime facet must be a string');
+  const normalized = value;
   if (!RUNTIME_FACETS.includes(normalized)) throw new DebugAdapterError('protocol-mismatch', `unknown runtime facet: ${normalized}`);
   return normalized;
 }
 
 function validateMethod(method, packetFacet = null) {
-  const text = String(method ?? '');
+  if (typeof method !== 'string') throw new DebugAdapterError('malformed-provider-data', 'provider method must be a string');
+  const text = method;
   if (!text || text.length > 160 || !METHOD_NAMESPACE.test(text)) throw new DebugAdapterError('protocol-mismatch', `invalid provider method namespace: ${text || '<empty>'}`);
   if (BLOCKED_METHODS.test(text)) throw new DebugAdapterError('permission-denied', 'host command execution is prohibited');
   const namespace = text.split('.')[0];
@@ -53,7 +55,8 @@ function validateMethod(method, packetFacet = null) {
 
 function normalizeFacetList(value) {
   if (!Array.isArray(value)) throw new DebugAdapterError('malformed-provider-data', 'facets must be an array');
-  const out = [...new Set(value.map(String))];
+  if (value.some((item) => typeof item !== 'string')) throw new DebugAdapterError('malformed-provider-data', 'facets must contain only strings');
+  const out = [...new Set(value)];
   for (const item of out) facet(item);
   return out.sort();
 }
