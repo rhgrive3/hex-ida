@@ -3,8 +3,9 @@
 **Feature**: [spec.md](../spec.md)
 **Plan**: [plan.md](../plan.md)
 **Owner**: Luna C3-02
-**Status**: implementation and correction gates complete; independent review,
-moving-main, generated-output, and delivery gates remain open
+**Status**: implementation, correction, moving-main, generated-output, and
+candidate-tree gates complete; independent review, exact-head CI, and live-main
+delivery gates remain open
 
 ## Ownership and identity
 
@@ -68,7 +69,7 @@ moving-main, generated-output, and delivery gates remain open
 - [ ] Sol targeted semantic review is GO on the exact reviewed head.
 - [ ] Review Pass 2 is independent, fresh, and performed after moving-main
   reconciliation.
-- [ ] Canonical generated build is clean on repeated runs when applicable.
+- [x] Canonical generated build is clean on repeated runs when applicable.
 - [ ] Exact-head CI is successful or rule-driven skipped on the intended head.
-- [ ] Candidate merge tree is validated against newest live main.
+- [x] Candidate merge tree is validated against newest live main.
 - [ ] Live-main post-merge verification records `RESULT: PASS`.

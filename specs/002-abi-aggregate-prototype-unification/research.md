@@ -459,3 +459,84 @@ GENERATED_ADDITIONAL_DIFF: ZERO
 This transaction was repeated once more to verify stability, but the final
 candidate-context transaction remains a delivery task (T047/T048) and must be
 recorded after the final source head is committed.
+
+### Candidate-tree reconciliation after implementation commit
+
+The implementation commit is `9363140a65b81d56eb502814791bc2dd24c472a6`.
+During the final reconciliation, `origin/main` advanced from the requested
+checkpoint `66a5640359c5b39526fb89f6937e023294e54bdd` through independent
+runtime/project identity fixes to
+`7fb8e58daf542ac8a12807fb5adf2796a9aa01af`. The requested checkpoint is an
+ancestor of that fetched head. The origin-main delta from C3 scope base
+`3ac625938333636bcc6c00634d2e21648778ce0f` is limited to project/runtime
+identity files and Phase 10/project regressions; it has no semantic ABI owner
+overlap. A candidate merge tree was computed without changing branch history:
+
+```text
+git merge-tree --write-tree HEAD origin/main
+CANDIDATE_MERGE_TREE: 1534a6894be15859e15b5f2d4f30d8a8a17a46ae
+CANDIDATE_MERGE_CONFLICTS: none
+MERGE_BASE: 3ac625938333636bcc6c00634d2e21648778ce0f
+```
+
+The candidate tree preserves the 42 C3-owned tracked paths relative to the
+scope base (38 feature paths, two generated outputs, and two governance files)
+and adds only the nine independent origin-main paths listed above. No merge or
+PR was created, consistent with the implementation-owner handoff constraint.
+
+The final candidate-context generator transaction was repeated after this
+reconciliation. It retained only the two canonical generated paths and
+produced a zero-additional-diff digest on its second run.
+
+Final candidate-context generated transaction (after commit and candidate-tree
+selection) completed successfully:
+
+```text
+CANDIDATE_GENERATED_BASE: 42d472c310c12685e59dbf13a59e7572e8429ae2
+CANDIDATE_GENERATED_FIRST_RUN: PASS (userscript serial 2322242114; generated paths already contain the expected diff)
+CANDIDATE_GENERATED_EXPECTED_DIFF_DIGEST: 9fc1c9df4de139d093ec85202f821daee61f079874357126b8ccbb0ec4d6cf0c
+CANDIDATE_GENERATED_SECOND_RUN: PASS
+CANDIDATE_GENERATED_SECOND_DIFF_DIGEST: 9fc1c9df4de139d093ec85202f821daee61f079874357126b8ccbb0ec4d6cf0c
+CANDIDATE_GENERATED_ADDITIONAL_DIFF: ZERO
+```
+
+The ownership gate on the committed implementation reports
+`featureCount=38`, `generatedCount=2`, `governanceCount=2`, and
+`violations=0`, with inventory digest
+`32e07ef84727ec5035437df0065760958be2f797bba9ff2ffd6fd6a2811a119a`.
+
+`specify integration status` was also run against the installed CLI. It
+reports `ERROR unsafe-multi-install` because `agy` is not multi-install safe,
+plus ten managed-file modification/collision warnings for the Codex
+integration. No integration upgrade or generated skill rewrite was attempted;
+this is an environment/lifecycle warning, not a fabricated Spec Kit command or
+an artifact failure.
+
+### Final read-only Spec Kit analysis and convergence
+
+After the correction tasks and final candidate-context checks, the installed
+Spec Kit prerequisite resolver returned the feature directory and required
+tasks. A read-only cross-artifact analysis loaded the constitution plus
+`spec.md`, `plan.md`, and `tasks.md`; it found no placeholders, no uncovered
+requirements, no duplicate task IDs, no contradictory ownership decision, and
+no task-order inconsistency. All 16 functional requirements and 10 buildable
+success criteria map to the 49 unique tasks (11 remain open because they are
+independent review/delivery gates). No new convergence task was needed.
+
+```text
+SPECKIT_FINAL_ANALYZE_COMMAND: .specify/scripts/bash/check-prerequisites.sh --json --require-tasks --include-tasks
+SPECKIT_FINAL_ANALYZE_RESULT: CLEAN (26/26 requirements and success criteria covered; 49/49 unique tasks; no placeholders)
+SPECKIT_FINAL_CONVERGE_RESULT: CLEAN (all implementation/convergence work satisfied; no Phase 8 convergence section appended; review/delivery tasks remain open)
+SPECKIT_FINAL_IMPLEMENT_RESULT: COMPLETE for implementation tasks T040–T048; T027–T035 and T049 remain open by instruction
+```
+
+The converge assessment was intentionally limited to the artifacts' declared
+scope and did not turn independent reviewer, merge, exact-head CI, or live-main
+tasks into implementation findings.
+
+The final full Phase 8 run was executed after the generation-field change and
+candidate-tree reconciliation:
+
+```text
+npm run phase8:test: PASS (30/30 discovered files; 327 tests; 327 pass; 0 fail)
+```

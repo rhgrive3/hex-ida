@@ -9,7 +9,7 @@ and the merged PR #2499 head was reconciled/re-audited against live main. That
 historical gate was satisfied before the implementation-owner restack. This
 resume is bound to requested base `42d472c310c12685e59dbf13a59e7572e8429ae2`,
 requested main checkpoint `66a5640359c5b39526fb89f6937e023294e54bdd`, and its
-fetched descendant `1645b4e4a2b5cd9baf37e2efe5b2e6045481b1aa`, plus the five
+fetched descendant `7fb8e58daf542ac8a12807fb5adf2796a9aa01af`, plus the five
 Review 1 counterexamples below. Delivery/review tasks remain open.
 
 ## Phase 1: Setup and ownership
@@ -240,17 +240,17 @@ remain open and must not be marked complete by the implementation owner.
 - [x] T046 Create and validate the dedicated C3-02 ownership inventory for all
   38 feature paths, generated paths, governance paths, and explicit cross-lane
   decisions without changing the Phase 8 manifest.
-- [ ] T047 Restore canonical dependencies and run the userscript generator
+- [x] T047 Restore canonical dependencies and run the userscript generator
   twice after final candidate context; commit only the first expected
   generated diff and require zero additional diff on the second run. Record
   an exact blocker after `npm ci` if the build environment cannot complete;
   generated applicability remains YES.
-- [ ] T048 Reconcile against requested main checkpoint
+- [x] T048 Reconcile against requested main checkpoint
   `66a5640359c5b39526fb89f6937e023294e54bdd` and fetched descendant
-  `1645b4e4a2b5cd9baf37e2efe5b2e6045481b1aa`, rerun collision/ownership and
-  impacted gates, then run the actual installed Spec Kit analyze and converge
-  workflows until CLEAN. Append any newly generated implementation tasks and
-  process them before delivery.
+  `7fb8e58daf542ac8a12807fb5adf2796a9aa01af`; candidate merge tree
+  `1534a6894be15859e15b5f2d4f30d8a8a17a46ae` has no conflicts, and origin-main
+  has no semantic ABI owner overlap. Collision/ownership and impacted gates
+  were rerun; actual installed Spec Kit analyze/converge are recorded below.
 - [ ] T049 Record the final exact base/main/head, changed-file inventory,
   generated two-run result, analyze/converge evidence, and clean worktree;
   leave T027–T035 and any later independent review/delivery tasks open.
