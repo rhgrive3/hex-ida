@@ -1,23 +1,16 @@
 import { architecturePluginV2 } from '../../targets/architecture/index.js';
 import { abiPlugin as registeredABIPlugin } from '../../targets/abi/index.js';
+import {
+  abiInvalidState, abiResultInvalidState, canonicalAbiEvidence, canonicalAbiHiddenResult,
+  normalizeAbiPieces,
+} from '../../targets/abi/evidence.js';
 
 const ARCH_META_CACHE = new Map();
 const REGISTER_CANDIDATE_CACHE = new Map();
 const STACK_LAYOUT_CACHE = new Map();
 
-const INVALID_ABI_STATES = new Set([
-  'stale', 'malformed', 'conflict', 'cancelled', 'canceled', 'deadline',
-  'deadline-exceeded', 'truncated', 'budget', 'budget-exhausted',
-  'resource-exhausted', 'unsupported', 'invalid', 'failed', 'error',
-  'indirect-call', 'ambiguous', 'unknown', 'incomplete', 'partial', 'not-proven',
-]);
-
 function record(value) { return !!value && typeof value === 'object' && !Array.isArray(value); }
 function normalized(value) { return String(value ?? '').trim().toLowerCase(); }
-function invalidState(value) {
-  const state = normalized(value).replace(/_/g, '-');
-  return INVALID_ABI_STATES.has(state) ? state : null;
-}
 function compatibleArchitecture(target, canonical) {
   const actual = normalized(target);
   const expected = normalized(canonical);
@@ -68,10 +61,15 @@ function requireIdentityMirrors(container, mirrors, prefix) {
 }
 
 function requestedInvalidationState(adapter, opts = {}) {
+  const optionState = abiResultInvalidState(opts);
+  if (optionState) return optionState;
+  const adapterState = abiResultInvalidState(adapter);
+  if (adapterState) return adapterState;
   if (opts.cancelled === true || opts.canceled === true || opts.signal?.aborted === true) return 'cancelled';
   if (opts.deadlineExceeded === true || opts.deadlineExpired === true) return 'deadline-exceeded';
   if (opts.truncated === true || opts.truncatedRun === true) return 'truncated';
   if (opts.budgetExhausted === true || opts.resourceBudgetExhausted === true) return 'budget-exhausted';
+  if (opts.budgetLimited === true || opts.resourceBudgetLimited === true) return 'budget-limited';
   if (opts.callerCalleeConflict === true || opts.callerCalleeAgreement === false) return 'conflict';
   if (opts.thunkAmbiguous === true || opts.tailCallAmbiguous === true) return 'ambiguous';
   if (opts.indirectCall === true && opts.functionPrototype == null && opts.prototype == null) return 'indirect-call';
@@ -80,9 +78,9 @@ function requestedInvalidationState(adapter, opts = {}) {
     opts.status, opts.analysisStatus, opts.completeness, opts.evidenceStatus,
     opts.invalidation?.status, opts.invalidation?.state, opts.invalidation?.completeness,
     adapter?.status, adapter?.analysisStatus, adapter?.completeness,
-    adapter?.invalidation?.status, adapter?.invalidation?.state,
+    adapter?.invalidation?.status, adapter?.invalidation?.state, adapter?.invalidation?.completeness,
   ]) {
-    const state = invalidState(value);
+    const state = abiInvalidState(value);
     if (state) return state;
   }
   return null;
@@ -367,8 +365,23 @@ function abiContext(opts = {}) {
 
 function classifyArguments(ctx, functionPrototype) {
   if (!ctx?.supported || !ctx.adapter?.classifyArguments) return null;
-  try { return ctx.adapter.classifyArguments({ functionPrototype }) || null; }
-  catch { return null; }
+  try {
+    const classified = ctx.adapter.classifyArguments({ functionPrototype }) || null;
+    const state = abiResultInvalidState(classified);
+    // An unprototyped call deliberately carries possible register candidates
+    // as a conservative frontier.  Keep that uncertainty available, but do
+    // not let a partial result with a known prototype become a source of exact
+    // parameter entries.
+    const hasParameterList = ['parameters', 'params', 'args', 'arguments']
+      .some((field) => Array.isArray(functionPrototype?.[field]));
+    const uncertainUnknownPrototype = classified?.partial === true
+      && classified?.unsupported !== true && !hasParameterList;
+    if (!classified || (state && !uncertainUnknownPrototype) || classified.unsupported === true) {
+      ctx.classifierState ||= state || (classified?.unsupported === true ? 'unsupported' : 'unknown');
+      return null;
+    }
+    return classified;
+  } catch { ctx.classifierState ||= 'failed'; return null; }
 }
 
 function registerCandidates(ctx) {
@@ -407,6 +420,37 @@ function isFpAbiClass(value) {
   return /fp|float|sse|vector|hfa|hva|simd/.test(String(value || '').toLowerCase());
 }
 
+function aggregateKind(value) {
+  return /aggregate|hfa|hva|eightbyte|wide-integer|integer-pair/.test(String(value || '').toLowerCase());
+}
+
+function normalizeArgumentPieces(entry, regs, pieces) {
+  const kind = String(entry?.abiClass || '').toLowerCase();
+  const homogeneous = /hfa|hva|homogeneous/.test(kind) || entry?.hfa === true || entry?.hva === true;
+  // A multi-lane/aggregate register list is not enough evidence to recover a
+  // layout.  Require the canonical producer's explicit piece records instead
+  // of filling widths, byte offsets, or classes from register order.
+  // Aggregate placement is canonical only when the producer supplied every
+  // physical piece.  Register lists, total width, and a stack offset are not
+  // enough to recover padding, lane order, or a split register/stack layout.
+  if (!pieces?.length) return null;
+  const locations = pieces;
+  if (homogeneous) {
+    const memberCount = Number(entry.members ?? entry.memberCount ?? entry.elementCount);
+    const elementBits = Number(entry.elementBits ?? entry.memberBits);
+    if (!Number.isSafeInteger(memberCount) || memberCount < 1 || memberCount > 4
+      || !Number.isSafeInteger(elementBits) || elementBits <= 0
+      || locations.length !== memberCount) return null;
+  }
+  const normalized = normalizeAbiPieces({
+    ...entry,
+    bits:entry.bits,
+    bytes:entry.bytes,
+    elementBits:homogeneous ? Number(entry.elementBits ?? entry.memberBits) : entry.elementBits,
+  }, locations, { defaultAbiClass:aggregateKind(entry.abiClass) ? entry.abiClass : null });
+  return normalized;
+}
+
 function physicalArgumentView(argument, reg, pieceIndex, value) {
   const { regs:_regs, pieces:_pieces, valueIds:_valueIds, pieceValueIds:_pieceValueIds, ...rest } = argument;
   return {
@@ -438,20 +482,29 @@ function canonicalFunctionArgumentEntries(ctx, opts = {}) {
   const functionPrototype = opts?.functionPrototype || opts?.prototype || null;
   if (!functionPrototype || !ctx.supported) return null;
   const classified = classifyArguments(ctx, functionPrototype);
-  if (!classified || !Array.isArray(classified.arguments)) return null;
-  return classified.arguments.filter((entry) => entry && entry.possible !== true && entry.mustUse !== false).map((entry) => {
+  if (!classified || !Array.isArray(classified.arguments)) return [];
+  const entries = [];
+  for (const entry of classified.arguments.filter((candidate) => candidate
+    && candidate.partial !== true && candidate.unsupported !== true
+    && candidate.possible !== true && candidate.mustUse !== false)) {
     const regs = (Array.isArray(entry?.regs) ? entry.regs : typeof entry?.reg === 'string' ? [entry.reg] : [])
       .map((reg) => ctx.canonical(reg)).filter(Boolean);
     const pieces = Array.isArray(entry?.pieces) ? entry.pieces
-      : Array.isArray(entry?.parts) ? entry.parts
-        : entry?.stackOffset != null ? [
-          ...regs.map((reg, index) => ({
-            index, piece:index, reg,
-            bits:entry.bits == null ? null : Math.max(1, Number(entry.bits) - Number(entry.stackBytes ?? 8) * 8),
-          })),
-          { index:regs.length, piece:regs.length, reg:null, stackOffset:entry.stackOffset, bytes:entry.stackBytes ?? 8 },
-        ] : null;
-    return {
+      : Array.isArray(entry?.parts) ? entry.parts : null;
+    const aggregate = entry?.aggregate === true || regs.length > 1 || !!pieces
+      || /aggregate|hfa|hva|eightbyte|wide-integer|integer-pair/.test(String(entry?.abiClass || '').toLowerCase());
+    if (aggregate) {
+      const canonicalPieces = normalizeArgumentPieces(entry, regs, pieces);
+      if (!canonicalPieces) return [];
+      entries.push({
+        ...entry,
+        regs,
+        pieces:canonicalPieces,
+        aggregate:true,
+      });
+      continue;
+    }
+    entries.push({
       ...entry,
       regs,
       pieces:pieces?.map((piece, index) => ({
@@ -460,10 +513,10 @@ function canonicalFunctionArgumentEntries(ctx, opts = {}) {
         piece:Number.isInteger(Number(piece?.piece)) ? Number(piece.piece) : Number.isInteger(Number(piece?.index)) ? Number(piece.index) : index,
         reg:piece?.reg ? ctx.canonical(piece.reg) : null,
       })) ?? null,
-      aggregate:entry?.aggregate === true || regs.length > 1 || !!pieces
-        || /aggregate|hfa|hva|eightbyte|wide-integer|integer-pair/.test(String(entry?.abiClass || '').toLowerCase()),
-    };
-  });
+      aggregate:false,
+    });
+  }
+  return entries;
 }
 
 function explicitArgumentForRegister(entries, reg) {
@@ -520,6 +573,8 @@ function registerArguments(ir, types, opts, ctx) {
         canonicalLocation:explicit.location ?? null,
       }
       : canonicalEntries
+        ? null
+        : ctx.classifierState
         ? null
         : classified?.kind === 'argument'
         ? { reg, bankIndex:Number.isInteger(Number(classified.index)) ? Number(classified.index) : null, abiClass:classified.abiClass ?? null }
@@ -581,7 +636,7 @@ function registerArguments(ir, types, opts, ctx) {
           abiClass:entry.abiClass || first.abiClass,
           pointer:entry.pointer === true,
           bits:entry.bits ?? first.bits ?? null,
-          pieces:(entry.pieces || regs.map((reg, index) => ({ index, piece:index, reg, bits:entry.bits ?? null }))).map((piece, index) => ({
+          pieces:entry.pieces.map((piece, index) => ({
             ...piece,
             index:Number.isInteger(Number(piece?.index)) ? Number(piece.index) : index,
             piece:Number.isInteger(Number(piece?.piece)) ? Number(piece.piece) : index,
@@ -736,20 +791,29 @@ function classifyReturn(ctx, ret, opts = {}) {
   const functionPrototype = returnPrototype(ret, opts);
   if (!ret && !opts.returnType && !opts.returnClass && !opts.returnBits) return null;
   try {
-    return ctx.adapter.classifyFunctionReturn({
+    const classified = ctx.adapter.classifyFunctionReturn({
       functionPrototype, prototype:functionPrototype,
       returnType:functionPrototype.returnType,
       returnClass:functionPrototype.returnClass,
       returnBits:functionPrototype.returnBits,
       returnsValue:functionPrototype.returnsValue,
     }) || null;
-  } catch { return null; }
+    const state = abiResultInvalidState(classified);
+    if (!classified || state || classified.unsupported === true) {
+      ctx.classifierState ||= state || (classified?.unsupported === true ? 'unsupported' : 'unknown');
+      return null;
+    }
+    return classified;
+  } catch { ctx.classifierState ||= 'failed'; return null; }
 }
 
 function hiddenResultRegisterFrom(classified, ctx) {
   const hidden = classified?.hiddenResultPointer;
-  const raw = typeof hidden === 'string' ? hidden : hidden?.input;
-  return raw ? ctx.canonical(raw) : null;
+  const raw = typeof hidden === 'object' ? hidden.input : null;
+  if (classified?.indirect !== true || classified?.resultLocation !== 'memory'
+    || !raw || typeof raw !== 'string'
+    || !canonicalAbiHiddenResult(classified, hidden)) return null;
+  return ctx.canonical(raw);
 }
 
 function indirectResultCandidate(ctx) {
@@ -762,19 +826,74 @@ function indirectResultCandidate(ctx) {
     let classified = null;
     try { classified = ctx.adapter.classifyFunctionReturn({ functionPrototype, prototype:functionPrototype, ...functionPrototype }) || null; } catch { classified = null; }
     const reg = hiddenResultRegisterFrom(classified, ctx);
-    if (reg) return reg;
+    if (reg) return classified;
   }
   return null;
 }
 
+function normalizeReturnLocationList(canonical, classified, ctx) {
+  if (!Array.isArray(canonical) || !canonical.length || !canonicalAbiEvidence(classified)) return [];
+  if (canonical.length === 1 && canonical[0]?.kind === 'indirect') {
+    const hidden = hiddenResultRegisterFrom(classified, ctx);
+    if (!hidden || String(canonical[0]?.reg || '') !== hidden) return [];
+    return [{
+      kind:'indirect', reg:hidden, role:'result-address',
+    }];
+  }
+  const aggregate = classified.aggregate === true || canonical.length > 1
+    || canonical.some((location) => location?.aggregate === true);
+  if (!aggregate) {
+    if (canonical.length !== 1 || canonical[0]?.kind !== 'register'
+      || canonical[0]?.aggregate === true || typeof canonical[0]?.reg !== 'string'
+      || !Number.isSafeInteger(Number(canonical[0]?.bits)) || Number(canonical[0].bits) <= 0) return [];
+    const scalarBits = Number(canonical[0].bits);
+    const scalarBytes = canonical[0].bytes == null
+      ? Math.ceil(scalarBits / 8) : Number(canonical[0].bytes);
+    if (!Number.isSafeInteger(scalarBytes) || scalarBytes <= 0) return [];
+    return [{
+      ...canonical[0],
+      reg:ctx.canonical(canonical[0].reg),
+      bits:scalarBits,
+      bytes:scalarBytes,
+      pieceIndex:null,
+      order:0,
+      aggregate:false,
+      abiSemanticIdentity:ctx.identity.semanticIdentity,
+    }];
+  }
+  const pieces = canonical.map((location, index) => {
+    if (!location || !['register','stack'].includes(location.kind)) return null;
+    return {
+      ...(location.kind === 'register' ? { reg:location.reg } : { stackOffset:location.stackOffset }),
+      abiClass:location.abiClass ?? classified.abiClass,
+      pieceIndex:location.pieceIndex ?? index,
+      order:location.order ?? index,
+      bits:location.bits,
+      bytes:location.bytes,
+      byteOffset:location.byteOffset,
+    };
+  });
+  const normalizedPieces = normalizeAbiPieces({
+    ...classified,
+    abiClass:classified.abiClass ?? 'aggregate-piece',
+  }, pieces, { defaultAbiClass:'aggregate-piece' });
+  if (!normalizedPieces) return [];
+  return normalizedPieces.map((piece) => ({
+    kind:piece.reg ? 'register' : 'stack',
+    ...(piece.reg ? { reg:ctx.canonical(piece.reg) } : { stackOffset:piece.stackOffset }),
+    abiClass:piece.abiClass,
+    pieceIndex:piece.pieceIndex,
+    bits:piece.bits,
+    bytes:piece.bytes,
+    byteOffset:piece.byteOffset,
+    order:piece.order,
+    aggregate:true,
+    abiSemanticIdentity:ctx.identity.semanticIdentity,
+  }));
+}
+
 function returnLocations(classified, indirectRegister, ctx) {
-  const classifierState = invalidState(classified?.status)
-    || invalidState(classified?.analysisStatus)
-    || invalidState(classified?.completeness)
-    || invalidState(classified?.evidenceStatus)
-    || invalidState(classified?.invalidation?.status)
-    || invalidState(classified?.invalidation?.state)
-    || invalidState(classified?.invalidation?.completeness);
+  const classifierState = abiResultInvalidState(classified);
   // A placement list is an all-or-nothing canonical fact.  Do not retain a
   // hidden-result sentinel or surviving lanes when the classifier says the
   // result is partial, stale, unsupported, or otherwise not proven.
@@ -782,8 +901,19 @@ function returnLocations(classified, indirectRegister, ctx) {
   // Keep the established hidden-result projection shape stable.  Identity and
   // provenance travel on the enclosing prototype; consumers must not infer a
   // second ABI fact from extra fields on this sentinel location.
-  if (indirectRegister) return [{ kind:'indirect', reg:indirectRegister, role:'result-address' }];
+  if (indirectRegister) {
+    const proof = hiddenResultRegisterFrom(classified, ctx);
+    if (!proof || proof !== indirectRegister) return [];
+    return [{
+      // This is a legacy presentation sentinel.  The enclosing prototype
+      // carries the complete canonical hidden-sret proof and identity.
+      kind:'indirect', reg:indirectRegister, role:'result-address',
+    }];
+  }
   if (!classified) return [];
+  // A malformed hidden-result record must not fall through to a convenience
+  // `reg`/`regs` field and reappear as a direct aggregate return.
+  if (classified.indirect === true) return [];
   // The adapter owns the canonical return-piece interpretation.  The
   // decompiler only attaches consumer-facing identity and register aliases;
   // it must not collapse a multi-register result to the legacy scalar field.
@@ -791,18 +921,7 @@ function returnLocations(classified, indirectRegister, ctx) {
     try {
       const canonical = ctx.adapter.returnLocations({ classified });
       if (Array.isArray(canonical)) {
-        const normalized = canonical.map((location, index) => ({
-          ...location,
-          ...(location?.reg ? { reg:ctx.canonical(location.reg) } : {}),
-          pieceIndex:Number.isInteger(Number(location?.pieceIndex)) ? Number(location.pieceIndex) : index,
-          order:Number.isInteger(Number(location?.order)) ? Number(location.order) : index,
-          abiSemanticIdentity:ctx.identity?.semanticIdentity ?? null,
-        }));
-        if (!normalized.length || normalized.some((location) => !location
-          || (location.kind === 'register' && !location.reg)
-          || (location.kind === 'stack' && location.stackOffset == null)
-          || (location.kind === 'indirect' && !location.reg))) return [];
-        return normalized;
+        return normalizeReturnLocationList(canonical, classified, ctx);
       }
     } catch { /* fall through to the strict shape-preserving projection */ }
   }
@@ -812,43 +931,49 @@ function returnLocations(classified, indirectRegister, ctx) {
       ? classified.parts
       : null;
   if (pieces) {
-    const normalized = pieces.map((piece, index) => {
-      const reg = piece?.reg ? ctx.canonical(piece.reg) : null;
-      if (!reg) return null;
-      return {
-        kind:'register', reg,
-        abiClass:piece.abiClass ?? classified.abiClass ?? (classified.aggregate === true ? 'aggregate-piece' : null),
-        pieceIndex:Number.isInteger(Number(piece.pieceIndex)) ? Number(piece.pieceIndex)
-          : Number.isInteger(Number(piece.piece)) ? Number(piece.piece)
-            : Number.isInteger(Number(piece.index)) ? Number(piece.index) : index,
-        bits:piece.bits ?? null,
-        byteOffset:piece.byteOffset ?? null,
-        stackOffset:piece.stackOffset ?? null,
-        order:index,
-        aggregate:classified.aggregate === true || pieces.length > 1,
-        abiSemanticIdentity:ctx.identity?.semanticIdentity ?? null,
-      };
+    const normalizedPieces = normalizeAbiPieces(classified, pieces, {
+      defaultAbiClass:classified.aggregate === true ? 'aggregate-piece' : null,
     });
-    return normalized.every(Boolean) ? normalized : [];
+    if (!normalizedPieces) return [];
+    return normalizedPieces.map((piece) => ({
+      kind:piece.reg ? 'register' : 'stack',
+      ...(piece.reg ? { reg:ctx.canonical(piece.reg) } : { stackOffset:piece.stackOffset }),
+      abiClass:piece.abiClass,
+      pieceIndex:piece.pieceIndex,
+      bits:piece.bits,
+      bytes:piece.bytes,
+      byteOffset:piece.byteOffset,
+      order:piece.order,
+      aggregate:classified.aggregate === true || pieces.length > 1,
+      abiSemanticIdentity:ctx.identity?.semanticIdentity ?? null,
+    }));
   }
   const regs = Array.isArray(classified.regs) && classified.regs.length
     ? classified.regs
     : classified.reg ? [classified.reg] : [];
-  const normalizedRegs = regs.map((rawReg, index) => {
-    const reg = ctx.canonical(rawReg);
-    if (!reg) return null;
-    return {
-      kind:'register', reg, abiClass:classified.abiClass ?? (classified.aggregate === true ? 'aggregate-piece' : null),
-      pieceIndex:regs.length > 1 ? index : null,
-      bits:classified.bits ?? null,
-      order:index,
-      aggregate:classified.aggregate === true || regs.length > 1,
+  const aggregate = classified.aggregate === true || regs.length > 1;
+  if (aggregate) {
+    const pieces = Array.isArray(classified.pieces) && classified.pieces.length
+      ? classified.pieces
+      : Array.isArray(classified.parts) && classified.parts.length ? classified.parts : null;
+    if (!pieces) return [];
+    const normalizedPieces = normalizeAbiPieces(classified, pieces, { defaultAbiClass:'aggregate-piece' });
+    if (!normalizedPieces) return [];
+    return normalizedPieces.map((piece) => ({
+      kind:'register', reg:ctx.canonical(piece.reg), abiClass:piece.abiClass,
+      pieceIndex:piece.pieceIndex, bits:piece.bits, bytes:piece.bytes,
+      byteOffset:piece.byteOffset, order:piece.order, aggregate:true,
       abiSemanticIdentity:ctx.identity?.semanticIdentity ?? null,
-    };
-  });
-  // Fallback register metadata is also a complete canonical fact: retaining
-  // surviving lanes would expose a partial aggregate as a valid placement.
-  return normalizedRegs.every(Boolean) ? normalizedRegs : [];
+    }));
+  }
+  if (regs.length !== 1 || typeof regs[0] !== 'string' || !regs[0].length) return [];
+  const bits = Number(classified.bits);
+  if (!Number.isSafeInteger(bits) || bits <= 0) return [];
+  return [{
+    kind:'register', reg:ctx.canonical(regs[0]), abiClass:classified.abiClass ?? null,
+    pieceIndex:null, bits, bytes:Math.ceil(bits / 8), byteOffset:0, order:0,
+    aggregate:false, abiSemanticIdentity:ctx.identity?.semanticIdentity ?? null,
+  }];
 }
 
 export function recoverFunctionPrototype(ir, types, opts = {}) {
@@ -863,22 +988,27 @@ export function recoverFunctionPrototype(ir, types, opts = {}) {
   const stackArgs = split.stackArgs;
   const args = [...registerArgs, ...stackArgs];
   const ret = types?.ret || null;
-  const classifiedReturn = classifyReturn(ctx, ret, opts);
+  let classifiedReturn = classifyReturn(ctx, ret, opts);
   let indirectRegister = classifiedReturn?.indirect === true ? hiddenResultRegisterFrom(classifiedReturn, ctx) : null;
   if (!indirectRegister && opts.indirectResult === true) {
     // An explicit indirect-result fact permits one canonical classifier query;
     // an untyped entry register alone never invents a hidden sret placement.
     const candidate = indirectResultCandidate(ctx);
-    if (candidate) {
-      const entry = entryValueForBase(ir, ctx, candidate);
+    const candidateRegister = hiddenResultRegisterFrom(candidate, ctx);
+    if (candidateRegister) {
+      const entry = entryValueForBase(ir, ctx, candidateRegister);
       const recovered = entry ? types?.values?.get?.(entry.id) : null;
-      if (entry && used(entry) && (recovered?.kind === 'pointer' || opts.indirectResult === true)) indirectRegister = candidate;
+      if (entry && used(entry) && (recovered?.kind === 'pointer' || opts.indirectResult === true)) {
+        classifiedReturn = candidate;
+        indirectRegister = candidateRegister;
+      }
     }
   }
   const locations = returnLocations(classifiedReturn, indirectRegister, ctx);
   const retType = tname(ret, opts.returnType || 'unknown');
-  const status = ctx.supported ? 'partial' : ctx.status || 'unknown';
-  const identity = ctx.identity ? {
+  const conventionKnown = ctx.supported && !ctx.classifierState;
+  const status = conventionKnown ? 'partial' : ctx.classifierState || ctx.status || 'unknown';
+  const identity = conventionKnown && ctx.identity ? {
     ...ctx.identity,
     status:ctx.status,
     provenance:'canonical-abi-registry',
@@ -888,23 +1018,23 @@ export function recoverFunctionPrototype(ir, types, opts = {}) {
     reason:'anonymous-vararg-frontier-not-source-prototyped',
   } : null;
   return {
-    convention:ctx.supported ? String(ctx.adapter.id || ctx.plugin.id) : 'unknown',
-    conventionKnown:ctx.supported,
+    convention:conventionKnown ? String(ctx.adapter.id || ctx.plugin.id) : 'unknown',
+    conventionKnown,
     arguments:args,
     argumentBanks:{ integer:integerArgs, fp:fpArgs, stack:stackArgs },
     returnType:retType, returnConfidence:ret?.confidence || (locations.length ? 0.35 : 0),
     returnLocations:locations,
-    returnLocationKnown:ctx.supported && locations.length > 0,
+    returnLocationKnown:conventionKnown && locations.length > 0,
     indirectResult:indirectRegister != null,
     indirectResultRegister:indirectRegister,
     variadic:opts.variadic === true,
     anonymousArgumentFrontier,
     completeness:status,
-    abiSemanticIdentity:ctx.identity?.semanticIdentity ?? null,
-    abiSemanticVersion:ctx.identity?.semanticVersion ?? null,
-    abiArchitectureId:ctx.identity?.architectureId ?? null,
+    abiSemanticIdentity:conventionKnown ? ctx.identity?.semanticIdentity ?? null : null,
+    abiSemanticVersion:conventionKnown ? ctx.identity?.semanticVersion ?? null : null,
+    abiArchitectureId:conventionKnown ? ctx.identity?.architectureId ?? null : null,
     abiIdentity:identity,
-    provenance:ctx.supported ? 'canonical-abi-registry' : null,
+    provenance:conventionKnown ? 'canonical-abi-registry' : null,
     evidence:[
       ...(registerArgs.length ? [`entry SSA register uses classified by ABI ${ctx.adapter.id}`] : []),
       ...(stackArgs.length ? [`entry stack loads classified by ABI ${ctx.adapter.id} stack rules`] : []),

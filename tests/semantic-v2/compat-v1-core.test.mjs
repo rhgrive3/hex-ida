@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import { OP, VK, MK } from '../../js/ir-core.js';
+import { semanticAbiAdapter } from '../../js/analysis/semantic-function.js';
+import { AAPCS64_ABI } from '../../js/targets/abi/index.js';
 import { projectSemanticIrV2ToLegacyV1, SEMANTIC_IR_V2_V1_COMPAT } from '../../js/semantics/compat/semantic-ir-v2-to-v1.js';
 
 const bit1 = { kind: 'predicate', widthBits: 1 };
@@ -189,7 +191,9 @@ function callSummary({ args = [], returns = [], memoryWrite = 'none', completene
   assert.equal(functionUnknown.sourceEntityId, 'fn');
 }
 
-// Injected ABI adapter is honored without architecture knowledge in the projector.
+// Identity-less injected adapters are rejected at the v2 compatibility
+// boundary.  A local object that merely happens to contain register names is
+// not canonical ABI evidence and must not become a second semantic truth.
 {
   const arg = entryValue('arg', bit64, 'state:arg');
   const ret = defValue('retv', 'n_call', bit64, 'state:ret', 0x7000n);
@@ -208,11 +212,14 @@ function callSummary({ args = [], returns = [], memoryWrite = 'none', completene
   };
   const withAbi = projectSemanticIrV2ToLegacyV1(ir, { abiAdapter });
   const call = withAbi.instructions.find((inst) => inst.semanticNodeId === 'n_call');
-  assert.equal(call.callArguments[0].reg, 'opaque_arg_bank_0');
-  assert.deepEqual(call.clobbers, ['opaque_caller_saved']);
-  assert.equal(call.argumentEvidence, 'synthetic-abi');
-  assert.equal(call.returnReg, 'opaque_return');
-  assert.equal(call.returnBits, 64);
+  assert.equal(call.callArguments, null);
+  assert.equal(call.stackArguments, null);
+  assert.equal(call.stackArgsUnknown, true);
+  assert.equal(call.stackArgsMayContainPointers, true);
+  assert.equal(call.argumentEvidence, 'semantic-ir-v2-abi-adapter-unavailable');
+  assert.equal(call.returnReg ?? null, null);
+  assert.equal(call.returnBits ?? null, null);
+  assert.equal(call.extra.abiAdapterStatus, 'failed-or-unsupported');
 
   const withoutAbi = projectSemanticIrV2ToLegacyV1(ir);
   const conservative = withoutAbi.instructions.find((inst) => inst.semanticNodeId === 'n_call');
@@ -223,6 +230,21 @@ function callSummary({ args = [], returns = [], memoryWrite = 'none', completene
   assert.equal(conservative.argumentEvidence, 'semantic-ir-v2-no-abi-adapter');
   assert.ok(!JSON.stringify(conservative.extra).includes('x0'));
   assert.ok(!JSON.stringify(conservative.extra).includes('v0'));
+
+  const budgetLimited = projectSemanticIrV2ToLegacyV1(ir, {
+    abiAdapter:semanticAbiAdapter(AAPCS64_ABI, {
+      architecture:'arm64', platform:'linux', budgetLimited:true,
+      callPrototype:{ parameters:[{ type:'int64', bits:64 }] },
+    }),
+  });
+  const limitedCall = budgetLimited.instructions.find((inst) => inst.semanticNodeId === 'n_call');
+  assert.equal(limitedCall.callArguments, null);
+  assert.equal(limitedCall.returnReg ?? null, null);
+  assert.equal(limitedCall.returnBits ?? null, null);
+  assert.equal(limitedCall.extra.abiAdapterStatus, 'used');
+  assert.equal(limitedCall.extra.abiCompleteness, 'budget-limited');
+  assert.equal(limitedCall.extra.abiPartial, true);
+  assert.deepEqual(limitedCall.extra.returnLocations, []);
 }
 
 assert.equal(SEMANTIC_IR_V2_V1_COMPAT.legacyOps.BIN, OP.BIN);

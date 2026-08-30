@@ -142,7 +142,11 @@ export function classifyMicrosoftX64ReturnDecision(prototype, options = {}) {
     const trivial = options.returnTrivialForCalls === true || prototype.returnTrivialForCalls === true || prototype.trivialForCalls === true || prototype.pod === true;
     const nonTrivial = options.returnNonTrivialForCalls === true || prototype.returnNonTrivialForCalls === true || prototype.nonTrivialForCalls === true || prototype.nonTrivial === true;
     if (bitsProven && trivial && [8,16,32,64].includes(bits)) {
-      return { kind:'direct', reg:'rax', bits, aggregate:true, abiClass:'integer-aggregate' };
+      const bytes = Math.max(8, Math.ceil(bits / 8));
+      return {
+        kind:'direct', reg:'rax', bits, bytes, aggregate:true, abiClass:'integer-aggregate',
+        pieces:[{ pieceIndex:0, order:0, reg:'rax', abiClass:'integer-aggregate', bits, bytes, byteOffset:0 }],
+      };
     }
     if (nonTrivial || (bitsProven && ![8,16,32,64].includes(bits))) {
       return {
@@ -254,8 +258,12 @@ export function classifyMicrosoftX64Arguments(instruction, options = {}) {
         arguments_.push({
           index, location:'register', reg, abiClass:abiValueClass, pointer:indirect,
           bits:indirect ? 64 : classified.bits,
+          bytes:indirect ? 8 : Math.max(8, Math.ceil(classified.bits / 8)),
           pointeeBits:indirect ? classified.bits : undefined,
           requiredTemporaryAlignment:indirect ? 16 : undefined,
+          pieces:[{ pieceIndex:0, order:0, reg, abiClass:abiValueClass,
+            bits:indirect ? 64 : classified.bits,
+            bytes:indirect ? 8 : Math.max(8, Math.ceil(classified.bits / 8)), byteOffset:0 }],
           possible:false, mustUse:true,
         });
       } else {
@@ -266,6 +274,8 @@ export function classifyMicrosoftX64Arguments(instruction, options = {}) {
           bits:indirect ? 64 : classified.bits,
           pointeeBits:indirect ? classified.bits : undefined,
           requiredTemporaryAlignment:indirect ? 16 : undefined,
+          pieces:[{ pieceIndex:0, order:0, stackOffset:offset, abiClass:abiValueClass,
+            bits:indirect ? 64 : classified.bits, bytes:8, byteOffset:0 }],
           possible:false, mustUse:true,
         };
         arguments_.push(entry); stackArguments.push(entry);

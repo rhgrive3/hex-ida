@@ -183,6 +183,14 @@ function returnRegisterForContext(ctx) {
   const fromAbi = adapter?.returnRegister?.({ returnType: type });
   if (fromAbi) return String(fromAbi);
   if (adapter) return null;
+  // The v2->v1 compatibility projection is architecture-neutral.  Its
+  // canonical ABI adapter is the only authority allowed to publish a return
+  // location; a missing adapter therefore stays unknown instead of inheriting
+  // the legacy ARM64 x0/v0 convention.
+  if (ctx.ir?.compat?.projection === 'semantic-ir-v2-to-v1') return null;
+  // Legacy AArch64 IR has no ABI envelope.  Keep this presentation-only
+  // fallback for that explicit facade (covered by the legacy compatibility
+  // regression), but never let it leak into Semantic IR v2.
   return /^(float|double|__fp16)/.test(type) || /vector|simd/.test(type) ? 'v0' : 'x0';
 }
 
@@ -195,6 +203,9 @@ function frameBookkeepingRegisters(ctx) {
   const declared = ctx.opts?.abiAdapter?.frameBookkeepingRegisters?.();
   if (Array.isArray(declared)) return new Set(declared.map(canonicalRegister));
   if (ctx.opts?.abiAdapter) return new Set();
+  // No register-name fallback is valid for an architecture-neutral v2
+  // projection.  The legacy r29/r30 view is presentation-only.
+  if (ctx.ir?.compat?.projection === 'semantic-ir-v2-to-v1') return new Set();
   return new Set(['r29', 'r30']);
 }
 function returnValueAt(ret, ctx) {

@@ -136,7 +136,10 @@ test('Microsoft hidden result pointer consumes RCX and shifts positional FP regi
 test('Microsoft aggregate returns are exact when direct or derive canonical hidden sret', () => {
   assert.deepEqual(classifyMicrosoftX64FunctionReturn({
     functionPrototype:{ aggregate:true, returnBits:64, trivialForCalls:true },
-  }), { reg:'rax', bits:64, aggregate:true, abiClass:'integer-aggregate' });
+  }), {
+    reg:'rax', bits:64, bytes:8, aggregate:true, abiClass:'integer-aggregate',
+    pieces:[{ pieceIndex:0, order:0, reg:'rax', abiClass:'integer-aggregate', bits:64, bytes:8, byteOffset:0 }],
+  });
   const indirect = classifyMicrosoftX64FunctionReturn({
     functionPrototype:{ aggregate:true, returnBits:128, trivialForCalls:true },
   });

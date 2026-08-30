@@ -42,9 +42,16 @@ function appendSource(srcs, reg, bits, extra = {}) {
 function hvaInfo(parameter, classified) {
   const type = `${classified.type} ${classified.abiClass}`;
   const hva = parameter?.hva === true || parameter?.hfa === true || /hva|homogeneous vector/.test(type);
-  const members = Math.max(1, Math.min(4, Number(parameter?.members || parameter?.elements || parameter?.count || 1) || 1));
-  const elementBits = Math.max(64, Math.min(256, Number(parameter?.elementBits || parameter?.memberBits || (classified.bits / members) || classified.bits) || classified.bits));
-  return { hva, members, elementBits };
+  const rawMembers = parameter?.members ?? parameter?.elements ?? parameter?.count;
+  const declaredMembers = Number(rawMembers);
+  const members = hva && Number.isSafeInteger(declaredMembers) && declaredMembers >= 1 && declaredMembers <= 4
+    ? declaredMembers : hva ? 0 : 1;
+  const rawElementBits = Number(parameter?.elementBits ?? parameter?.memberBits);
+  const elementBits = Number.isSafeInteger(rawElementBits) && rawElementBits >= 64 && rawElementBits <= 256
+    ? rawElementBits : 0;
+  const layoutProven = !hva || (members > 0 && elementBits > 0 && Number.isSafeInteger(classified.bits)
+    && classified.bits === members * elementBits);
+  return { hva, members, elementBits, layoutProven };
 }
 
 export function classifyMicrosoftVectorcallArguments(instruction, options = {}) {
@@ -71,10 +78,20 @@ export function classifyMicrosoftVectorcallArguments(instruction, options = {}) 
   let vectorIndex = 0;
   let stackIndex = 0;
   let stackArgsMayContainPointers = false;
+  let aggregatePartial = false;
 
   parameters.forEach((parameter, index) => {
     const classified = parameterClass(parameter);
     const hva = hvaInfo(parameter, classified);
+    if (hva.hva && !hva.layoutProven) {
+      aggregatePartial = true;
+      arguments_.push({
+        index, location:'unknown', abiClass:'hva-unproven', aggregate:true,
+        partial:true, possible:true, mustUse:false,
+        reason:'microsoft-vectorcall-hva-member-layout-not-proven',
+      });
+      return;
+    }
     const vectorValue = classified.vector || hva.hva;
     if (vectorValue) {
       const regsNeeded = hva.hva ? hva.members : 1;
@@ -89,7 +106,16 @@ export function classifyMicrosoftVectorcallArguments(instruction, options = {}) 
         arguments_.push({
           index, location:'register', reg:regs[0], regs,
           abiClass:hva.hva?'hva':'vector', bits:classified.bits,
+          bytes:hva.hva ? Math.ceil(hva.elementBits / 8) * hva.members : Math.ceil(classified.bits / 8),
           vectorElementBits:elementBits, pointer:false,
+          ...(hva.hva ? {
+            aggregate:true, members:hva.members, memberCount:hva.members, elementBits:hva.elementBits,
+            elementBytes:Math.ceil(hva.elementBits / 8), homogeneousLayoutProven:true,
+            pieces:regs.map((reg,piece) => ({
+              pieceIndex:piece, order:piece, reg, abiClass:'hva', bits:hva.elementBits,
+              bytes:Math.ceil(hva.elementBits / 8), byteOffset:piece * Math.ceil(hva.elementBits / 8),
+            })),
+          } : {}),
           possible:false, mustUse:true,
         });
         return;
@@ -99,6 +125,8 @@ export function classifyMicrosoftVectorcallArguments(instruction, options = {}) 
         index, location:'stack', offset, offsetBase:'caller-stack-before-call', calleeEntryOffset:offset + 8,
         bytes:8, abiClass:hva.hva?'hva-indirect':'vector-indirect', pointer:true,
         bits:64, pointeeBits:classified.bits, requiredTemporaryAlignment:Math.min(32, Math.max(16, Math.ceil(classified.bits / 8))),
+        pieces:[{ pieceIndex:0, order:0, stackOffset:offset,
+          abiClass:hva.hva?'hva-indirect':'vector-indirect', bits:64, bytes:8, byteOffset:0 }],
         possible:false, mustUse:true,
       };
       arguments_.push(entry); stackArguments.push(entry); stackArgsMayContainPointers = true;
@@ -110,10 +138,14 @@ export function classifyMicrosoftVectorcallArguments(instruction, options = {}) 
       if (offsetOrPosition < INTEGER_ARGUMENT_REGISTERS.length) {
         const reg = INTEGER_ARGUMENT_REGISTERS[offsetOrPosition];
         appendSource(srcs, reg, 64, { purpose:'vectorcall-aggregate-by-reference' });
-        arguments_.push({ index, location:'register', reg, abiClass:'aggregate-indirect', pointer:true, bits:64, pointeeBits:classified.bits, possible:false, mustUse:true });
+        arguments_.push({ index, location:'register', reg, abiClass:'aggregate-indirect', pointer:true, bits:64, bytes:8,
+          pointeeBits:classified.bits, pieces:[{ pieceIndex:0, order:0, reg, abiClass:'aggregate-indirect', bits:64, bytes:8, byteOffset:0 }],
+          possible:false, mustUse:true });
       } else {
         const offset = 32 + stackIndex++ * 8;
-        const entry = { index, location:'stack', offset, offsetBase:'caller-stack-before-call', calleeEntryOffset:offset + 8, bytes:8, abiClass:'aggregate-indirect', pointer:true, bits:64, pointeeBits:classified.bits, possible:false, mustUse:true };
+        const entry = { index, location:'stack', offset, offsetBase:'caller-stack-before-call', calleeEntryOffset:offset + 8, bytes:8, abiClass:'aggregate-indirect', pointer:true, bits:64, pointeeBits:classified.bits,
+          pieces:[{ pieceIndex:0, order:0, stackOffset:offset, abiClass:'aggregate-indirect', bits:64, bytes:8, byteOffset:0 }],
+          possible:false, mustUse:true };
         arguments_.push(entry); stackArguments.push(entry);
       }
       stackArgsMayContainPointers = true;
@@ -143,7 +175,7 @@ export function classifyMicrosoftVectorcallArguments(instruction, options = {}) 
     srcs, arguments:arguments_, stackArguments,
     stackArgsUnknown:prototype?.variadic===true||prototype?.varargs===true,
     stackArgsMayContainPointers:stackArgsMayContainPointers || prototype?.variadic===true || prototype?.varargs===true,
-    partial:prototype?.variadic===true||prototype?.varargs===true,
+    partial:aggregatePartial || prototype?.variadic===true||prototype?.varargs===true,
     callingConvention:'vectorcall',
     evidence:'prototype-microsoft-vectorcall',
   };
@@ -156,6 +188,26 @@ function vectorcallReturn(prototype, options = {}) {
   const type = String(options.returnType || prototype.returnType || prototype.ret || prototype.result || '').trim().toLowerCase();
   const abiClass = String(options.returnClass || prototype.returnClass || prototype.abiClass || prototype.resultClass || '').trim().toLowerCase();
   if (options.returnsValue === false || prototype.returnsValue === false || prototype.void === true || type === 'void' || abiClass === 'void') return null;
+  const homogeneous = prototype.hva === true || prototype.hfa === true || abiClass.includes('hva') || abiClass.includes('homogeneous');
+  if (homogeneous) {
+    const members = Number(prototype.members ?? prototype.memberCount ?? prototype.elements ?? prototype.count);
+    const elementBits = Number(prototype.elementBits ?? prototype.memberBits);
+    const rawBits = Number(options.returnBits ?? prototype.returnBits ?? prototype.bits);
+    if (!Number.isSafeInteger(members) || members < 1 || members > 4
+      || !Number.isSafeInteger(elementBits) || elementBits < 64 || elementBits > 256
+      || !Number.isSafeInteger(rawBits) || rawBits !== members * elementBits) {
+      return { reg:null, partial:true, aggregate:true, reason:'microsoft-vectorcall-hva-return-layout-not-proven' };
+    }
+    const pieces = Array.from({ length:members }, (_unused,index) => ({
+      pieceIndex:index, order:index, reg:vectorRegister(index, elementBits), abiClass:'hva',
+      bits:elementBits, bytes:Math.ceil(elementBits / 8), byteOffset:index * Math.ceil(elementBits / 8),
+    }));
+    return {
+      reg:pieces[0].reg, regs:pieces.map((piece) => piece.reg), pieces,
+      bits:rawBits, bytes:Math.ceil(rawBits / 8), aggregate:true, abiClass:'hva',
+      members, elementBits, homogeneousLayoutProven:true,
+    };
+  }
   const vector = /vector|simd|sse|__m128|__m256/.test(`${type} ${abiClass}`);
   if (vector) {
     const rawBits = Number(options.returnBits ?? prototype.returnBits ?? prototype.bits ?? typeBits(type, /__m256/.test(type) ? 256 : 128));

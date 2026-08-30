@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import test from 'node:test';
 
 import { semanticAbiAdapter } from '../../../js/analysis/semantic-function.js';
@@ -6,7 +7,8 @@ import { recoverFunctionPrototype } from '../../../js/decompiler/types/prototype
 import { projectSemanticIrV2ToLegacyV1 } from '../../../js/semantics/compat/semantic-ir-v2-to-v1.js';
 import { classifyCallArguments } from '../../../js/ir-core.js';
 import {
-  AAPCS64_ABI, DARWIN_ARM64_ABI, SYSV_AMD64_ABI, MICROSOFT_X64_ABI, RISCV_LP64_ABI,
+  AAPCS64_ABI, DARWIN_ARM64_ABI, SYSV_AMD64_ABI, MICROSOFT_X64_ABI,
+  MICROSOFT_VECTORCALL_ABI, RISCV_LP64_ABI,
   resolveABIPlugin,
 } from '../../../js/targets/abi/index.js';
 
@@ -18,6 +20,25 @@ function recover(adapter, registers = ['x0'], types = {}, opts = {}) {
     { values:new Map(), ...types },
     { ...opts, abiAdapter:adapter },
   );
+}
+
+function classifierStateAdapter(state) {
+  const base = semanticAbiAdapter(AAPCS64_ABI, { architecture:'arm64', platform:'linux' });
+  const flag = state.startsWith('flag:') ? state.slice('flag:'.length) : null;
+  const annotate = (result) => result
+    ? flag ? { ...result, [flag]:true } : { ...result, status:state, completeness:state }
+    : result;
+  return {
+    ...base,
+    classifyArguments(input) {
+      const result = base.classifyArguments(input);
+      return annotate(result);
+    },
+    classifyFunctionReturn(input) {
+      const result = base.classifyFunctionReturn(input);
+      return annotate(result);
+    },
+  };
 }
 
 test('C3-02 canonical adapter carries one ABI identity through classification', () => {
@@ -59,6 +80,8 @@ test('C3-02 invalidated evidence never publishes exact prototype facts', () => {
     ['deadline', { deadlineExceeded:true }],
     ['truncated', { truncated:true }],
     ['budget', { budgetExhausted:true }],
+    ['budget-limited', { budgetLimited:true }],
+    ['incomplete', { completeness:'incomplete' }],
     ['indirect-call', { indirectCall:true }],
     ['caller-callee-conflict', { callerCalleeConflict:true }],
     ['malformed', { malformedEvidence:true }],
@@ -71,6 +94,187 @@ test('C3-02 invalidated evidence never publishes exact prototype facts', () => {
     assert.deepEqual(prototype.returnLocations, [], `${name} must not publish returns`);
     assert.notEqual(prototype.completeness, 'complete', `${name} must remain conservative`);
   }
+});
+
+test('C3-02 every classifier terminal state rejects ABI publication', () => {
+  const states = [
+    'stale', 'partial', 'incomplete', 'unsupported', 'malformed', 'cancelled',
+    'budget-exhausted', 'budget-limited', 'deadline', 'truncated',
+    'flag:partial', 'flag:unsupported', 'flag:malformedEvidence', 'flag:cancelled',
+    'flag:deadlineExceeded', 'flag:truncated', 'flag:budgetExhausted', 'flag:budgetLimited',
+  ];
+  for (const state of states) {
+    const prototype = recover(
+      classifierStateAdapter(state), ['x0'], { ret:{ type:'int64', bits:64 } },
+      { functionPrototype:{ parameters:[{ type:'int64', bits:64 }] } },
+    );
+    assert.equal(prototype.conventionKnown, false, `${state} must reject the profile`);
+    assert.equal(prototype.abiIdentity, null, `${state} must not publish identity`);
+    assert.deepEqual(prototype.arguments, [], `${state} must not publish arguments`);
+    assert.deepEqual(prototype.returnLocations, [], `${state} must not publish returns`);
+  }
+});
+
+test('C3-02 adapter publication rejects every terminal classifier state', () => {
+  const states = [
+    'stale', 'partial', 'incomplete', 'unsupported', 'malformed', 'cancelled',
+    'canceled', 'cancellation', 'budget', 'budget-exhausted', 'budget-limited',
+    'resource-budget-limited', 'deadline', 'deadline-exceeded', 'deadline-expired',
+    'truncated', 'timeout', 'timed-out',
+  ];
+  for (const state of states) {
+    const adapter = semanticAbiAdapter(AAPCS64_ABI, {
+      architecture:'arm64', platform:'linux', status:state,
+    });
+    const functionPrototype = { parameters:[{ type:'int64', bits:64 }],
+      returnType:'int64', returnBits:64, returnsValue:true };
+    assert.equal(adapter.classifyArguments({ functionPrototype }), null, `${state} arguments`);
+    assert.equal(adapter.classifyFunctionReturn({ functionPrototype }), null, `${state} return`);
+    assert.deepEqual(adapter.argumentLocations({ functionPrototype }), [], `${state} argument locations`);
+    assert.deepEqual(adapter.returnLocations({ functionPrototype }), [], `${state} return locations`);
+  }
+});
+
+test('C3-02 malformed aggregate pieces never fill missing or overlapping lanes', () => {
+  const pair = { returnType:'struct Pair', aggregate:true, bits:128, returnsValue:true };
+  const canonical = semanticAbiAdapter(AAPCS64_ABI, { architecture:'arm64', platform:'linux' });
+  const returned = canonical.classifyFunctionReturn({ functionPrototype:pair });
+  const malformedPieces = [
+    returned.pieces.map((piece) => ({ ...piece, bits:undefined })),
+    returned.pieces.map((piece) => ({ ...piece, bytes:undefined })),
+    returned.pieces.map((piece, index) => index ? { ...piece, byteOffset:16 } : piece),
+    returned.pieces.map((piece, index) => index ? { ...piece, byteOffset:4 } : piece),
+    returned.pieces.map((piece, index) => index ? { ...piece, pieceIndex:0 } : piece),
+    returned.pieces.map((piece) => { const { byteOffset:unused, ...rest } = piece; return rest; }),
+    returned.pieces.map((piece) => { const { order:unused, ...rest } = piece; return rest; }),
+    returned.pieces.map((piece) => { const { abiClass:unused, ...rest } = piece; return rest; }),
+    returned.pieces.map((piece, index) => index ? { ...piece, abiClass:'' } : piece),
+    returned.pieces.map((piece, index) => index ? { ...piece, reg:null, stackOffset:null } : piece),
+  ];
+  for (const pieces of malformedPieces) {
+    const adapter = {
+      ...canonical,
+      classifyFunctionReturn() { return { ...returned, pieces }; },
+    };
+    const prototype = recover(adapter, ['x0', 'x1'], { ret:pair });
+    assert.deepEqual(prototype.returnLocations, [], 'malformed aggregate evidence must be unknown');
+    assert.equal(prototype.returnLocationKnown, false);
+  }
+});
+
+test('C3-02 aggregate register lists without canonical pieces are not exact', () => {
+  const pair = { returnType:'struct Pair', aggregate:true, bits:128, returnsValue:true };
+  const canonical = semanticAbiAdapter(AAPCS64_ABI, { architecture:'arm64', platform:'linux' });
+  const returned = canonical.classifyFunctionReturn({ functionPrototype:pair });
+  const { pieces:unusedPieces, parts:unusedParts, ...withoutPieces } = returned;
+  const adapter = {
+    ...canonical,
+    classifyFunctionReturn() { return withoutPieces; },
+  };
+  const prototype = recover(adapter, ['x0', 'x1'], { ret:pair });
+  assert.deepEqual(prototype.returnLocations, []);
+  assert.equal(prototype.returnLocationKnown, false);
+
+  const parameter = { type:'struct Pair', aggregate:true, bits:128 };
+  const classified = canonical.classifyArguments({ functionPrototype:{ parameters:[parameter] } });
+  const { pieces:unusedArgumentPieces, parts:unusedArgumentParts, ...argumentWithoutPieces } = classified.arguments[0];
+  const argumentAdapter = {
+    ...canonical,
+    classifyArguments() {
+      return { ...classified, arguments:[argumentWithoutPieces] };
+    },
+  };
+  const argumentPrototype = recover(argumentAdapter, ['x0', 'x1'], {}, {
+    functionPrototype:{ parameters:[parameter] },
+  });
+  assert.deepEqual(argumentPrototype.arguments, []);
+});
+
+test('C3-02 malformed aggregate argument pieces never create a prototype parameter', () => {
+  const parameter = { type:'struct Pair', aggregate:true, bits:128 };
+  const canonical = semanticAbiAdapter(AAPCS64_ABI, { architecture:'arm64', platform:'linux' });
+  const classified = canonical.classifyArguments({ functionPrototype:{ parameters:[parameter] } });
+  const malformed = classified.arguments[0].pieces.map((piece, index) => index
+    ? { ...piece, byteOffset:16 }
+    : piece);
+  const adapter = {
+    ...canonical,
+    classifyArguments() {
+      return { ...classified, arguments:[{ ...classified.arguments[0], pieces:malformed }] };
+    },
+  };
+  const prototype = recover(adapter, ['x0', 'x1'], {}, { functionPrototype:{ parameters:[parameter] } });
+  assert.deepEqual(prototype.arguments, []);
+});
+
+test('C3-02 hidden sret requires complete pointer, location, and profile proof', () => {
+  const big = { returnType:'struct Big', aggregate:true, bits:256, returnsValue:true };
+  const canonical = semanticAbiAdapter(AAPCS64_ABI, { architecture:'arm64', platform:'linux' });
+  const returned = canonical.classifyFunctionReturn({ functionPrototype:big });
+  const tampered = [
+    { ...returned, hiddenResultPointer:{ ...returned.hiddenResultPointer, location:undefined } },
+    { ...returned, hiddenResultPointer:{ ...returned.hiddenResultPointer, input:'x9' } },
+    { ...returned, hiddenResultPointer:{ ...returned.hiddenResultPointer, profileIdentity:'wrong-profile' } },
+    { ...returned, hiddenResultPointer:{ ...returned.hiddenResultPointer,
+      provenance:{ ...returned.hiddenResultPointer.provenance, abiId:'wrong-abi' } } },
+    { ...returned, hiddenResultPointer:{ ...returned.hiddenResultPointer,
+      invalidation:{ ...returned.hiddenResultPointer.invalidation, snapshotId:'stale-snapshot' } } },
+    { ...returned, resultLocation:'register' },
+    { ...returned, invalidation:{ ...returned.invalidation, snapshotId:'stale-snapshot' } },
+  ];
+  for (const result of tampered) {
+    const adapter = { ...canonical, classifyFunctionReturn() { return result; } };
+    const prototype = recover(adapter, ['x8'], { ret:big });
+    assert.deepEqual(prototype.returnLocations, []);
+    assert.equal(prototype.indirectResult, false);
+  }
+});
+
+test('C3-02 HFA/HVA without member layout stays partial for every supported profile', () => {
+  const cases = [
+    [AAPCS64_ABI, { type:'struct H', hfa:true, bits:128 }],
+    [DARWIN_ARM64_ABI, { type:'struct H', hfa:true, bits:128 }],
+    [MICROSOFT_VECTORCALL_ABI, { type:'struct H', hva:true, bits:256 }],
+    [AAPCS64_ABI, { type:'struct H', hfa:true, members:4, bits:128 }],
+    [DARWIN_ARM64_ABI, { type:'struct H', hfa:true, members:4, bits:128 }],
+    [MICROSOFT_VECTORCALL_ABI, { type:'struct H', hva:true, members:4, bits:256 }],
+  ];
+  for (const [abi, parameter] of cases) {
+    const result = abi.classifyArguments({ callPrototype:{ parameters:[parameter] } });
+    assert.equal(result.partial, true);
+    assert.equal(result.arguments[0].possible, true);
+    assert.equal(Array.isArray(result.arguments[0].regs), false);
+    const returned = abi.classifyFunctionReturn({
+      functionPrototype:{ ...parameter, returnType:parameter.type, returnBits:parameter.bits, returnsValue:true },
+    });
+    assert.equal(returned.partial, true);
+    assert.equal(returned.indirect, undefined);
+  }
+});
+
+test('C3-02 whole-spilled AAPCS aggregate retains an explicit canonical stack piece', () => {
+  const parameters = [
+    ...Array.from({ length:7 }, () => ({ type:'uint64_t', bits:64 })),
+    { type:'struct Pair', aggregate:true, bits:128 },
+  ];
+  const result = AAPCS64_ABI.classifyArguments({ callPrototype:{ parameters } });
+  const aggregate = result.arguments.at(-1);
+  assert.equal(aggregate.location, 'stack');
+  assert.equal(aggregate.bytes, 16);
+  assert.deepEqual(aggregate.pieces, [{
+    pieceIndex:0, order:0, stackOffset:0, bits:128, bytes:16,
+    byteOffset:0, abiClass:'aggregate',
+  }]);
+});
+
+test('C3-02 v2 compatibility rejects identity-less ABI and legacy core keeps fallback presentation-only', () => {
+  const core = fs.readFileSync(new URL('../../../js/decompiler/semantic-core.js', import.meta.url), 'utf8');
+  assert.match(core, /v2->v1 compatibility projection is architecture-neutral/);
+  assert.match(core, /if \(ctx\.ir\?\.compat\?\.projection === 'semantic-ir-v2-to-v1'\) return null/);
+  assert.match(core, /Legacy AArch64 IR has no ABI envelope/);
+  const compat = fs.readFileSync(new URL('../../../js/ir-core.js', import.meta.url), 'utf8');
+  assert.match(compat, /Legacy v1 region-root presentation/);
+  assert.match(compat, /abiAdapter\?\.id.*aapcs64/);
 });
 
 test('C3-02 unknown adapter completeness is rejected even with a current identity', () => {
@@ -348,8 +552,8 @@ test('C3-02 Semantic IR call publication retains canonical ABI identity and aggr
   const partialCall = partialProjected.instructions.find((instruction) => instruction.semanticNodeId === 'call');
   assert.equal(partialCall.returnReg ?? null, null);
   assert.equal(partialCall.returnBits ?? null, null);
-  assert.deepEqual(partialCall.extra.returnLocations, []);
-  assert.equal(partialCall.extra.returnPieces, null);
+  assert.deepEqual(partialCall.extra.returnLocations ?? [], []);
+  assert.equal(partialCall.extra.returnPieces ?? null, null);
 
   const aggregateProjected = projectSemanticIrV2ToLegacyV1(ir, {
     abiAdapter:{
@@ -368,9 +572,8 @@ test('C3-02 Semantic IR call publication retains canonical ABI identity and aggr
   });
   const aggregateCall = aggregateProjected.instructions.find((instruction) => instruction.semanticNodeId === 'call');
   assert.equal(aggregateCall.returnReg ?? null, null);
-  assert.deepEqual(aggregateCall.extra.returnLocations.map(({ reg, pieceIndex }) => ({ reg, pieceIndex })), [
-    { reg:'x0', pieceIndex:0 }, { reg:'x1', pieceIndex:1 },
-  ]);
+  assert.deepEqual(aggregateCall.extra.returnLocations ?? [], []);
+  assert.equal(aggregateCall.extra.returnPieces ?? null, null);
 
   const oneLaneAggregateProjected = projectSemanticIrV2ToLegacyV1(ir, {
     abiAdapter:{
@@ -386,7 +589,6 @@ test('C3-02 Semantic IR call publication retains canonical ABI identity and aggr
   });
   const oneLaneAggregateCall = oneLaneAggregateProjected.instructions.find((instruction) => instruction.semanticNodeId === 'call');
   assert.equal(oneLaneAggregateCall.returnReg ?? null, null);
-  assert.deepEqual(oneLaneAggregateCall.extra.returnLocations.map(({ reg, pieceIndex }) => ({ reg, pieceIndex })), [
-    { reg:'x0', pieceIndex:0 },
-  ]);
+  assert.deepEqual(oneLaneAggregateCall.extra.returnLocations ?? [], []);
+  assert.equal(oneLaneAggregateCall.extra.returnPieces ?? null, null);
 });

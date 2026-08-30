@@ -117,13 +117,20 @@ function canonicalCompatibilityAbiAdapter(options = {}, binaryId = null, sliceId
   });
 }
 
-function aapcs64RegionRootDescriptorProvider(options = {}) {
+/*
+ * Legacy v1 region-root presentation.  Placement/classification authority is
+ * always the adapter selected above; this helper only describes the legacy
+ * memory-root view needed by the old ARM64 projection.  Refuse to manufacture
+ * xN roots when a different canonical profile is selected.
+ */
+function aapcs64RegionRootDescriptorProvider(options = {}, abiAdapter = null) {
   const explicit = options.rootDescriptorProvider ?? options.regionOptions?.rootDescriptorProvider ?? null;
   return (request) => {
     if (typeof explicit === 'function') {
       const supplied = explicit(request);
       if (supplied != null) return supplied;
     }
+    if (String(abiAdapter?.id || '').toLowerCase() !== 'aapcs64') return null;
     const identity = request?.variable?.physicalIdentity;
     if (identity?.kind !== 'register') return null;
     const registerId = String(identity.registerId ?? '');
@@ -135,7 +142,7 @@ function aapcs64RegionRootDescriptorProvider(options = {}) {
         linearOffsets: true,
         rootIdentity: {
           kind: 'abi-storage-root',
-          abi: 'aapcs64',
+          abi: abiAdapter.id,
           storageClass: 'function-local-stack',
           registerId,
         },
@@ -150,7 +157,7 @@ function aapcs64RegionRootDescriptorProvider(options = {}) {
       linearOffsets: true,
       rootIdentity: {
         kind: 'abi-entry-argument-root',
-        abi: 'aapcs64',
+        abi: abiAdapter.id,
         storageClass: 'external-entry-memory',
         argumentIndex: Number(argument[1]),
         registerId,
@@ -656,7 +663,7 @@ function buildV2CompatFromLegacyModel(model, opts = {}) {
     entryBlockKey: legacyCfg.entry >= 0 ? `legacy-block-${legacyCfg.entry}` : blocks[0]?.key,
     blocks,
     abiAdapter,
-    rootDescriptorProvider: aapcs64RegionRootDescriptorProvider(opts),
+    rootDescriptorProvider: aapcs64RegionRootDescriptorProvider(opts, abiAdapter),
   }, {
     signal: opts.signal,
     semanticIrOptions: opts.semanticIrOptions,
