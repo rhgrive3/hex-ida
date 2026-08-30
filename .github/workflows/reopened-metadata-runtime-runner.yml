@@ -1,0 +1,41 @@
+name: Reopened metadata runtime repair
+on:
+  push:
+    branches:
+      - fix/reopened-metadata-runtime-contracts-v2
+permissions:
+  contents: write
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/reopened-metadata-runtime-contracts-v2
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install dependencies
+        run: npm ci
+      - name: Apply semantic repair
+        run: python .github/reopened-metadata-runtime-repair.py
+      - name: Focused regressions
+        run: node tests/reopened-metadata-runtime-contracts.mjs
+      - name: Existing metadata regressions
+        shell: bash
+        run: |
+          shopt -s nullglob
+          for f in tests/*il2cpp*.mjs tests/*swift*.mjs; do node "$f"; done
+      - name: UI tests
+        run: npm run ui:test
+      - name: Commit repair
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git rm .github/reopened-metadata-runtime-repair.py .github/workflows/reopened-metadata-runtime-runner.yml
+          git add js tests
+          git commit -m 'fix(metadata): close reopened startup and IL2CPP gaps'
+          git push origin HEAD:fix/reopened-metadata-runtime-contracts-v2
