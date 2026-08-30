@@ -1,17 +1,21 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  QUIET_TEST_REPORTER,
   discoverPhaseTests,
   parsePhaseGroup,
+  parseTestOutputMode,
   selectPhaseTests,
   runPhaseNodeTests,
 } from "./support/phase-node-test-runner.mjs";
 import { discoverPhase8Tests } from "./phase8/run.mjs";
 import { discoverPhase9Tests } from "./phase9/run.mjs";
 import { discoverPhase10Tests } from "./phase10/run.mjs";
+import { parseQuietCommandArgs, runQuietCommand } from "../scripts/run-quiet-command.mjs";
 
 console.log("Testing Phase test runner contract...");
 
@@ -22,6 +26,14 @@ function withTempDir(fn) {
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+}
+
+function captureSink() {
+  const chunks = [];
+  return {
+    stream: { write(chunk) { chunks.push(String(chunk)); } },
+    text() { return chunks.join(""); },
+  };
 }
 
 // 1. recursive discovery
@@ -106,7 +118,7 @@ withTempDir((temp) => {
 // 8. spawn argv lock
 withTempDir((temp) => {
   fs.writeFileSync(path.join(temp, "a.test.mjs"), "");
-  let spawnCalls = [];
+  const spawnCalls = [];
   const fakeSpawn = (execPath, args, options) => {
     spawnCalls.push({ execPath, args, options });
     return { status: 0 };
@@ -115,7 +127,8 @@ withTempDir((temp) => {
   assert.equal(spawnCalls.length, 1);
   assert.equal(spawnCalls[0].execPath, process.execPath);
   assert.equal(spawnCalls[0].args[0], "--test");
-  assert.equal(spawnCalls[0].args[1], "--test-reporter=spec");
+  assert.match(spawnCalls[0].args[1], /^--test-reporter=.*quiet-test-reporter\.mjs$/);
+  assert.equal(spawnCalls[0].options.env.HEX_TEST_REPORTER_MACHINE, "0");
   assert.equal(spawnCalls[0].args[2], "--test-concurrency=1");
   assert.equal(spawnCalls[0].args[3], path.join(temp, "a.test.mjs"));
   console.log("  ok 8 spawn argv lock");
@@ -206,6 +219,169 @@ withTempDir((temp) => {
   const nested = p8.some((f) => path.dirname(f) !== phase8Root);
   assert.ok(nested, "Phase 8 must discover tests in subdirectories");
   console.log("  ok 16 Phase 8 recursive-discovery invariant");
+}
+
+// 17. output modes
+{
+  assert.equal(parseTestOutputMode({}), "quiet");
+  assert.equal(parseTestOutputMode({ HEX_TEST_OUTPUT: "machine" }), "machine");
+  assert.equal(parseTestOutputMode({ HEX_TEST_OUTPUT: "verbose" }), "verbose");
+  assert.equal(parseTestOutputMode({ HEX_TEST_OUTPUT: "full" }), "verbose");
+  assert.throws(() => parseTestOutputMode({ HEX_TEST_OUTPUT: "almost-quiet" }), TypeError);
+  console.log("  ok 17 output modes");
+}
+
+// 18. reporter suppresses pass chatter, preserves machine records, and explains failures
+withTempDir((temp) => {
+  const passFile = path.join(temp, "pass.test.mjs");
+  const failFile = path.join(temp, "fail.test.mjs");
+  const { NODE_TEST_CONTEXT: _nodeTestContext, ...childEnv } = process.env;
+  fs.writeFileSync(passFile, [
+    "import test from 'node:test';",
+    "test('pass', () => console.log('NOISY_PASS_LINE'));",
+    "console.log('TEST_PROOF={\\\"ok\\\":true}');",
+  ].join("\n"));
+  fs.writeFileSync(failFile, [
+    "import assert from 'node:assert/strict';",
+    "import test from 'node:test';",
+    "test('bad', () => { console.log('failure context'); assert.equal(1, 2); });",
+  ].join("\n"));
+
+  const quiet = spawnSync(process.execPath, ["--test", `--test-reporter=${QUIET_TEST_REPORTER}`, passFile], {
+    encoding: "utf8",
+    env: { ...childEnv, HEX_TEST_REPORTER_MACHINE: "0" },
+  });
+  assert.equal(quiet.status, 0, quiet.stderr);
+  assert.equal(quiet.stdout, "");
+
+  const machine = spawnSync(process.execPath, ["--test", `--test-reporter=${QUIET_TEST_REPORTER}`, passFile], {
+    encoding: "utf8",
+    env: { ...childEnv, HEX_TEST_REPORTER_MACHINE: "1" },
+  });
+  assert.equal(machine.status, 0, machine.stderr);
+  assert.match(machine.stdout, /TEST_PROOF=\{"ok":true\}/);
+  assert.doesNotMatch(machine.stdout, /NOISY_PASS_LINE/);
+
+  const failure = spawnSync(process.execPath, ["--test", `--test-reporter=${QUIET_TEST_REPORTER}`, failFile], {
+    encoding: "utf8",
+    env: { ...childEnv, HEX_TEST_REPORTER_MACHINE: "0" },
+  });
+  assert.equal(failure.status, 1);
+  assert.match(failure.stdout, /FAIL bad/);
+  assert.match(failure.stdout, /failure context/);
+  assert.match(failure.stdout, /AssertionError/);
+  console.log("  ok 18 reporter behavior");
+});
+
+// 19. whole-command parser
+{
+  assert.deepEqual(parseQuietCommandArgs(["--label", "check", "--", "npm", "run", "check"]), {
+    label: "check",
+    command: "npm",
+    args: ["run", "check"],
+  });
+  assert.throws(() => parseQuietCommandArgs(["npm", "run", "check"]), TypeError);
+  assert.throws(() => parseQuietCommandArgs(["--"]), TypeError);
+  console.log("  ok 19 whole-command parser");
+}
+
+// 20. successful whole-command run emits one line and deletes the full log
+{
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "hex-quiet-success-"));
+  try {
+    const stdout = captureSink();
+    const stderr = captureSink();
+    const result = await runQuietCommand({
+      label: "agent-check",
+      command: process.execPath,
+      args: ["-e", "for(let i=0;i<500;i++) console.log('success-log-'+i)"],
+      env: { ...process.env, HEX_TEST_OUTPUT: "quiet" },
+      stdout: stdout.stream,
+      stderr: stderr.stream,
+      tempRoot,
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.status, 0);
+    assert.equal(result.logPath, null);
+    assert.match(stdout.text(), /^agent-check: PASS \([0-9.]+s\)\n$/);
+    assert.doesNotMatch(stdout.text(), /success-log/);
+    assert.equal(stderr.text(), "");
+    assert.deepEqual(fs.readdirSync(tempRoot), []);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+  console.log("  ok 20 whole-command success");
+}
+
+// 21. failed whole-command run keeps the full log but bounds agent-visible output
+{
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "hex-quiet-failure-"));
+  try {
+    const stdout = captureSink();
+    const stderr = captureSink();
+    const result = await runQuietCommand({
+      label: "agent-test",
+      command: process.execPath,
+      args: ["-e", "for(let i=0;i<3000;i++) console.log('line-'+i); console.error('fatal-marker'); process.exit(7)"],
+      env: { ...process.env, HEX_TEST_OUTPUT: "quiet" },
+      stdout: stdout.stream,
+      stderr: stderr.stream,
+      tempRoot,
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 7);
+    assert.equal(stdout.text(), "");
+    assert.match(stderr.text(), /agent-test: FAIL \(exit 7,/);
+    assert.match(stderr.text(), /fatal-marker/);
+    assert.match(stderr.text(), /failure tail \(max 64 KiB\)/);
+    assert.match(stderr.text(), /Full log:/);
+    assert.match(stderr.text(), /HEX_TEST_OUTPUT=verbose/);
+    assert.ok(Buffer.byteLength(stderr.text()) < 70 * 1024, "diagnostic output must remain bounded");
+    assert.ok(result.logPath && fs.existsSync(result.logPath));
+    assert.equal(fs.statSync(result.logPath).mode & 0o777, 0o600);
+    const full = fs.readFileSync(result.logPath, "utf8");
+    assert.match(full, /line-0/);
+    assert.match(full, /line-2999/);
+    assert.match(full, /fatal-marker/);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+  console.log("  ok 21 whole-command failure");
+}
+
+// 22. command-not-found stays diagnostic and is retained in the private full log
+{
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "hex-quiet-spawn-error-"));
+  try {
+    const stdout = captureSink();
+    const stderr = captureSink();
+    const missingCommand = path.join(tempRoot, "definitely-missing-command");
+    const result = await runQuietCommand({
+      label: "agent-spawn",
+      command: missingCommand,
+      args: [],
+      env: { ...process.env, HEX_TEST_OUTPUT: "quiet" },
+      stdout: stdout.stream,
+      stderr: stderr.stream,
+      tempRoot,
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.status, null);
+    assert.equal(result.error?.code, "ENOENT");
+    assert.equal(stdout.text(), "");
+    assert.match(stderr.text(), /agent-spawn: FAIL \(spawn error: ENOENT,/);
+    assert.match(stderr.text(), /failure tail \(max 64 KiB\)/);
+    assert.match(stderr.text(), /ENOENT/);
+    assert.match(stderr.text(), /Full log:/);
+    assert.ok(result.logPath && fs.existsSync(result.logPath));
+    assert.equal(fs.statSync(result.logPath).mode & 0o777, 0o600);
+    const full = fs.readFileSync(result.logPath, "utf8");
+    assert.match(full, /ENOENT/);
+    assert.match(full, /definitely-missing-command/);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+  console.log("  ok 22 whole-command spawn error");
 }
 
 console.log("All Phase test runner contract tests PASS!");

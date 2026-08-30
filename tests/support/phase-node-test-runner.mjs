@@ -1,6 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+
+export const QUIET_TEST_REPORTER = fileURLToPath(new URL("./quiet-test-reporter.mjs", import.meta.url));
 
 export function discoverPhaseTests(root) {
   const discovered = [];
@@ -31,6 +34,14 @@ export function selectPhaseTests(files, { root, group }) {
   });
 }
 
+export function parseTestOutputMode(env = process.env) {
+  const value = String(env?.HEX_TEST_OUTPUT ?? "quiet").trim().toLowerCase();
+  if (value === "" || value === "quiet") return "quiet";
+  if (value === "machine") return "machine";
+  if (value === "verbose" || value === "full") return "verbose";
+  throw new TypeError(`HEX_TEST_OUTPUT must be quiet, machine, or verbose; got ${JSON.stringify(value)}`);
+}
+
 export function runPhaseNodeTests({
   phase,
   root,
@@ -38,28 +49,51 @@ export function runPhaseNodeTests({
   label = null,
   cwd = path.resolve(root, "../.."),
   spawn = spawnSync,
+  env = process.env,
+  stdout = process.stdout,
+  stderr = process.stderr,
 }) {
+  void label;
   const all = discoverPhaseTests(root);
   if (all.length === 0) throw new Error(`${phase}: no contract tests discovered`);
   const group = parsePhaseGroup(argv, { phase });
   const selected = selectPhaseTests(all, { root, group });
   if (selected.length === 0) throw new Error(`${phase}: group has no discovered tests: ${group}`);
 
-  for (const file of selected) {
-    process.stdout.write(`[${phase}] ${path.relative(root, file).replaceAll("\\", "/")}\n`);
+  const outputMode = parseTestOutputMode(env);
+  if (outputMode === "verbose") {
+    for (const file of selected) {
+      stdout.write(`[${phase}] ${path.relative(root, file).replaceAll("\\", "/")}\n`);
+    }
   }
 
-  const child = spawn(process.execPath, ["--test", "--test-reporter=spec", "--test-concurrency=1", ...selected], {
+  const reporter = outputMode === "verbose" ? "spec" : QUIET_TEST_REPORTER;
+  const child = spawn(process.execPath, ["--test", `--test-reporter=${reporter}`, "--test-concurrency=1", ...selected], {
     cwd,
     encoding: "utf8",
     maxBuffer: 512 * 1024 * 1024,
+    env: {
+      ...env,
+      HEX_TEST_REPORTER_MACHINE: outputMode === "machine" ? "1" : "0",
+    },
   });
 
-  if (child.stderr) process.stderr.write(child.stderr);
-  if (child.stdout) process.stdout.write(child.stdout);
   if (child.error) throw child.error;
-  if (child.status !== 0) throw new Error(`${phase}: test runner failed with status ${child.status ?? "signal"}`);
+  if (child.status !== 0) {
+    if (child.stderr) stderr.write(child.stderr);
+    if (child.stdout) stderr.write(child.stdout);
+    stderr.write(`[${phase}] rerun with HEX_TEST_OUTPUT=verbose for full test output.\n`);
+    throw new Error(`${phase}: test runner failed with status ${child.status ?? "signal"}`);
+  }
 
-  console.log(`${phase}: PASS (${selected.length}/${all.length} discovered test files${group ? `, group ${group}` : ""})`);
+  if (outputMode === "verbose") {
+    if (child.stderr) stderr.write(child.stderr);
+    if (child.stdout) stdout.write(child.stdout);
+  } else if (outputMode === "machine") {
+    if (child.stderr) stderr.write(child.stderr);
+    if (child.stdout) stdout.write(child.stdout);
+  }
+
+  stdout.write(`${phase}: PASS (${selected.length}/${all.length} discovered test files${group ? `, group ${group}` : ""})\n`);
   return Object.freeze({ selected: selected.length, total: all.length, group });
 }
