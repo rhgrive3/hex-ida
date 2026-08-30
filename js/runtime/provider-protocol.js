@@ -141,8 +141,17 @@ export class RuntimeProviderProtocolClient {
     const value = epoch(next);
     if (value === this.epoch) return value;
     this.epoch = value;
-    for (const [id, pending] of this.pending) {
+    for (const [id, pending] of [...this.pending]) {
       this.#finish(id, pending, new DebugAdapterError('cancelled', 'provider request invalidated by epoch change'));
+      try {
+        this.transport.send(validateProviderPacket({
+          protocol: RUNTIME_PROVIDER_PROTOCOL,
+          version: RUNTIME_PROVIDER_PROTOCOL_VERSION,
+          type: 'cancel',
+          id,
+          epoch: pending.epoch,
+        }));
+      } catch {}
     }
     return value;
   }
