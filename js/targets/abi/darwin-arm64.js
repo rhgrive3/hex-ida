@@ -27,10 +27,10 @@ function parameterClass(param) {
   const hfa = param?.hfa === true || param?.hva === true || cls.includes('hfa') || cls.includes('hva') || cls.includes('homogeneous');
   const hva = param?.hva === true || cls.includes('hva');
   const homogeneous = hfa || hva;
-  const vector = param?.vector === true || cls.includes('vector') || /vector|simd/.test(type);
-  const aggregate = !pointer && !homogeneous && !vector
-    && (param?.aggregate === true || param?.isAggregate === true
-      || /aggregate|struct|union|record|array|composite/.test(`${type} ${cls}`));
+  const aggregateHint = param?.aggregate === true || param?.isAggregate === true
+    || /aggregate|struct|union|record|array|composite/.test(`${type} ${cls}`);
+  const vector = !aggregateHint && (param?.vector === true || cls.includes('vector') || /vector|simd/.test(type));
+  const aggregate = !pointer && !homogeneous && aggregateHint;
   const fp = !aggregate && (hfa || vector || cls.includes('float') || cls.includes('fp') || /^(float|double|__fp16)/.test(type));
   const rawMembers = param?.members ?? param?.elements ?? param?.count;
   const declaredMembers = Number(rawMembers);

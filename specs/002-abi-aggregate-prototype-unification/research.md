@@ -300,6 +300,22 @@ CORRECTION_TEST_RESULT: PASS (38 tests)
 LOCKED_PROFILE_MATRIX_RESULT: PASS (66/66 rows)
 ```
 
+The moving-main reconciliation then refreshed `origin/main` to
+`4b5e87a2d76f5e7dff0614661fecc25a46004bd6`. Its post-`49000329` commits do
+not touch the C3-02 canonical ABI, prototype, compatibility, or regression
+surfaces; the only tracked noise change is the repository-wide node_modules
+untracking. The implementation branch retained its C3-02 files and recorded
+this as a no-semantic-overlap reconciliation; final tests were rerun after the
+refresh.
+
+```text
+MOVING_MAIN_OLD_BASE: 4900032916b6b5ba3171e73d1d1cccc2a0d45067
+MOVING_MAIN_CURRENT: 4b5e87a2d76f5e7dff0614661fecc25a46004bd6
+MOVING_MAIN_OVERLAPPING_FILES: node_modules only (tracking policy)
+MOVING_MAIN_SEMANTIC_OVERLAP: NO
+MOVING_MAIN_RETEST_REQUIRED: YES (focused/profile gates rerun)
+```
+
 ## Alternatives rejected
 
 - **Keep the existing prototype literals**: rejected because they fabricate
