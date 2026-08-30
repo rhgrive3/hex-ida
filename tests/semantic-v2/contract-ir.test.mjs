@@ -26,6 +26,35 @@ function baseFunction(overrides={}){return{schemaVersion:2,contractVersion:'2.0.
 }
 for(const[kind,category]of[['unknown-value','value'],['unknown-state-write','state'],['unknown-memory-effect','memory'],['unknown-control-effect','control']]){const node=createSemanticNode({id:`node_${kind}`,kind,blockId:entryBlockId,unknown:{reason:`${category} semantics unresolved`,categories:[category]},completeness:'unknown',origin});assert.equal(node.kind,kind);assert.equal(node.completeness,'unknown');}
 assert.doesNotThrow(()=>createSemanticNode({id:'node_incomplete',kind:'incomplete',blockId:entryBlockId,unknown:{reason:'partial semantics',categories:['state'],missing:['secondary-result']},completeness:'partial',origin}));
+{
+ const trimmed=baseFunction({functionId:' function_fixture ',entryBlockId:' block_entry ',completeness:' complete '});
+ trimmed.blocks=[{...trimmed.blocks[0],id:' block_entry ',nodeIds:[' node_load ',' node_return ']}];
+ trimmed.values=trimmed.values.map((value)=>({...value,id:` ${value.id} `,kind:` ${value.kind} `,definitionNodeId:value.definitionNodeId==null?value.definitionNodeId:` ${value.definitionNodeId} `,sourceEntityId:` ${value.sourceEntityId} `}));
+ trimmed.nodes=trimmed.nodes.map((node)=>({...node,id:` ${node.id} `,kind:` ${node.kind} `,blockId:' block_entry ',inputs:(node.inputs||[]).map((id)=>` ${id} `),outputs:(node.outputs||[]).map((id)=>` ${id} `),sourceEffectIds:(node.sourceEffectIds||[]).map((id)=>` ${id} `)}));
+ const normalized=createSemanticIrFunction(trimmed);assert.equal(normalized.functionId,'function_fixture');assert.equal(normalized.entryBlockId,'block_entry');assert.equal(normalized.completeness,'complete');
+}
+{
+ const mutations=[
+  (input,value)=>{input.functionId=value;},
+  (input,value)=>{input.entryBlockId=value;},
+  (input,value)=>{input.completeness=value;},
+  (input,value)=>{input.blocks[0].id=value;},
+  (input,value)=>{input.blocks[0].nodeIds[0]=value;},
+  (input,value)=>{input.values[0].id=value;},
+  (input,value)=>{input.values[0].kind=value;},
+  (input,value)=>{input.values[0].sourceEntityId=value;},
+  (input,value)=>{input.nodes[0].id=value;},
+  (input,value)=>{input.nodes[0].kind=value;},
+  (input,value)=>{input.nodes[0].blockId=value;},
+  (input,value)=>{input.nodes[0].inputs[0]=value;},
+  (input,value)=>{input.nodes[0].outputs[0]=value;},
+  (input,value)=>{input.nodes[0].sourceEffectIds[0]=value;},
+ ];
+ for(const mutate of mutations){for(const value of [['coerced'],{toString:()=> 'coerced'}]){const input=baseFunction();mutate(input,value);assert.throws(()=>createSemanticIrFunction(input),TypeError);}}
+ assert.throws(()=>createSemanticVariableRef({key:['state:arg0'],kind:'physical-state',scope:'function'}),TypeError);
+ assert.throws(()=>createSemanticVariableRef({key:'state:arg0',kind:['physical-state'],scope:'function'}),TypeError);
+ assert.throws(()=>createSemanticVariableRef({key:'state:arg0',kind:'physical-state',scope:['function']}),TypeError);
+}
 assert.throws(()=>createSemanticMachineType({kind:'bitvector',widthBits:0}),/invalid-width/);
 assert.throws(()=>createSemanticMemoryAccess({addressSpace:'memory',addressValueId:addrId,widthBits:-1,endian:'little'}),/invalid-memory-width/);
 assert.throws(()=>createSemanticNode({id:'missing_origin',kind:'copy',blockId:entryBlockId,inputs:[],outputs:[]}),/node-origin-required/);
