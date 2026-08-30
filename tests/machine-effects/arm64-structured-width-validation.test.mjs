@@ -7,9 +7,9 @@ let seq = 0;
 const gp = (num, bits = 64) => ({ k:'reg', cls:'gp', num, bits, text:`${bits === 32 ? 'w' : 'x'}${num}` });
 const fp = (num, bits = 64) => ({ k:'reg', cls:'fp', num, bits, text:`${bits === 32 ? 's' : 'd'}${num}` });
 const sysreg = (text) => ({ k:'sysreg', text });
-function lift(mnemonic, ops) {
+function lift(mnemonic, ops, extra = {}) {
   const instructionId = `arm64-structured-width:${++seq}`;
-  return liftArm64MachineEffects({ instructionId, mnemonic, mode:'a64', ops, origin:{ instructionIds:[instructionId] } });
+  return liftArm64MachineEffects({ instructionId, mnemonic, mode:'a64', ops, origin:{ instructionIds:[instructionId] }, ...extra });
 }
 function assertFailClosed(bundle, label) {
   assert.ok(bundle, `${label}: family remains explicitly owned`);
@@ -38,5 +38,17 @@ assertFailClosed(lift('fadd', [{ ...fp(0), bits:'64' }, fp(1), fp(2)]), 'FADD st
 const mrs = lift('mrs', [gp(0), sysreg('fpcr')]);
 assert.ok(mrs && mrs.completeness !== 'partial' && mrs.operations.length > 0, 'numeric-width MRS remains semantic');
 assertFailClosed(lift('mrs', [{ ...gp(0), bits:'64' }, sysreg('fpcr')]), 'MRS string width');
+
+const br = lift('br', [gp(3)]);
+assert.ok(br && br.completeness !== 'partial' && br.operations.length > 0, 'numeric-width BR remains semantic');
+const cbz = lift('cbz', [gp(0, 32), { k:'imm', value:0x1004n }], { address:0x1000n });
+assert.ok(cbz && cbz.completeness !== 'partial' && cbz.operations.length > 0, 'numeric-width CBZ remains semantic');
+const cmp = lift('cmp', [gp(0), gp(1)]);
+assert.ok(cmp && cmp.completeness !== 'partial' && cmp.operations.length > 0, 'numeric-width CMP remains semantic');
+for (const bits of ['64', true, {}, [], 64.5, NaN, Infinity]) {
+  assertFailClosed(lift('br', [{ ...gp(3), bits }]), `BR malformed width ${String(bits)}`);
+  assertFailClosed(lift('cbz', [{ ...gp(0, 32), bits }, { k:'imm', value:0x1004n }], { address:0x1000n }), `CBZ malformed width ${String(bits)}`);
+  assertFailClosed(lift('cmp', [gp(0), { ...gp(1), bits }]), `CMP malformed width ${String(bits)}`);
+}
 
 console.log('arm64-structured-width-validation: PASS');

@@ -13,9 +13,17 @@ const STRICT_REGISTER_LHS = new Set(['cmp','cmn','ccmp','ccmn']);
 const SP_LHS_MNEMONICS = new Set(['cmp','cmn']);
 const EXTEND_KINDS = new Set(['uxtb','uxth','uxtw','uxtx','sxtb','sxth','sxtw','sxtx']);
 
+function registerClass(op) {
+  return op?.k === 'reg' && typeof op.cls === 'string' ? op.cls.toLowerCase() : '';
+}
+
+function registerWidth(op) {
+  const bits = op?.bits;
+  return typeof bits === 'number' && Number.isInteger(bits) && (bits === 32 || bits === 64) ? bits : 0;
+}
+
 function validRegisterLhs(mnemonic, op) {
-  if (op?.k !== 'reg') return false;
-  const cls = String(op.cls || '').toLowerCase();
+  const cls = registerClass(op);
   if (cls === 'gp' || cls === 'zr') return true;
   // ADD/SUB aliases CMP/CMN have architectural forms whose Rn=31 is SP
   // (notably immediate/extended-register encodings). Conditional compares do not.
@@ -34,9 +42,9 @@ function validSpImmediateRhs(op) {
 
 function validRegisterRhs(mnemonic, lhs, rhs) {
   if (rhs?.k !== 'reg') return true;
-  const lhsBits = Number(lhs?.bits || 0);
-  const rhsBits = Number(rhs?.bits || 0);
-  if (![32,64].includes(lhsBits) || !['gp','zr'].includes(String(rhs.cls || '').toLowerCase())) return false;
+  const lhsBits = registerWidth(lhs);
+  const rhsBits = registerWidth(rhs);
+  if (![32,64].includes(lhsBits) || !['gp','zr'].includes(registerClass(rhs))) return false;
   const modifier = rhs.shift || rhs.extend || null;
 
   // Conditional compare has only the plain Wn/Wm or Xn/Xm register form.
@@ -46,7 +54,7 @@ function validRegisterRhs(mnemonic, lhs, rhs) {
   const kind = String(modifier.op || '').toLowerCase();
   const amount = Number(modifier.amount ?? 0);
   if (!Number.isInteger(amount) || amount < 0) return false;
-  const lhsClass = String(lhs?.cls || '').toLowerCase();
+  const lhsClass = registerClass(lhs);
 
   // SUBS/ADDS shifted-register encodings allow LSL/LSR/ASR only. When Rn is
   // SP, assembler LSL is the preferred spelling of the extended-register UXTX
@@ -63,7 +71,7 @@ function validRegisterRhs(mnemonic, lhs, rhs) {
 }
 
 function validTstRegisterClass(ops) {
-  return !ops.some((op) => op?.k === 'reg' && String(op.cls || '').toLowerCase() === 'sp');
+  return !ops.some((op) => op?.k === 'reg' && registerClass(op) === 'sp');
 }
 
 function validConditionalCompareCondition(op) {
