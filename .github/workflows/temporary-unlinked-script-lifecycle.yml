@@ -1,0 +1,44 @@
+name: temporary unlinked Script lifecycle closure
+on:
+  push:
+    branches: [fix/unlinked-script-lifecycle-20260830]
+permissions:
+  contents: write
+jobs:
+  repair:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/unlinked-script-lifecycle-20260830
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Apply guarded Script fixes
+        run: python3 tools/maintenance/fix-unlinked-script-lifecycle.py
+      - name: Verify Script lifecycle and query contracts
+        run: |
+          set -euo pipefail
+          node --check js/sandbox.js
+          node --check js/script.js
+          node --check js/plugins.js
+          node --check js/tools-base.js
+          node --check js/analysis/query/api.js
+          node --check js/analysis/query/app-adapter.js
+          node tests/unlinked-script-lifecycle.mjs
+          node tests/issues-454-455-script-architecture.mjs
+          node tests/issues-explorer-script-optimizations-2627-2629.mjs
+          node tests/phase4/integration/issues-2502-2522-demand-analysis.test.mjs
+          node tests/phase4/integration/issues-2507-2518-resource-contracts.test.mjs
+      - name: Commit verified product changes
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add js/sandbox.js js/script.js js/plugins.js js/tools-base.js js/analysis/query/api.js js/analysis/query/app-adapter.js tests/unlinked-script-lifecycle.mjs
+          git diff --cached --quiet && { echo 'No Script product changes produced'; exit 1; }
+          git commit -m 'fix(script): bind sandbox lifecycle to canonical analysis queries'
+          git push origin HEAD:fix/unlinked-script-lifecycle-20260830
