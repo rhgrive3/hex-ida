@@ -3,29 +3,6 @@ import { addrHex } from '../../format.js';
 import { findGlobals } from '../../linkage.js';
 import { globalReferenceStats } from '../../analysis/global-ref-stats.js';
 
-function abortError(signal) {
-  const error = signal?.reason instanceof Error ? signal.reason : new Error('Operation aborted');
-  if (!error.name || error.name === 'Error') error.name = 'AbortError';
-  return error;
-}
-
-function waitFor(promise, signal) {
-  if (!signal) return Promise.resolve(promise);
-  if (signal.aborted) return Promise.reject(abortError(signal));
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const finish = (fn, value) => {
-      if (settled) return;
-      settled = true;
-      signal.removeEventListener('abort', onAbort);
-      fn(value);
-    };
-    const onAbort = () => finish(reject, abortError(signal));
-    signal.addEventListener('abort', onAbort, { once:true });
-    Promise.resolve(promise).then((value) => finish(resolve, value), (error) => finish(reject, error));
-  });
-}
-
 export function mergeGlobals(named, stats, limit = 400) {
   const seen = new Set();
   const out = [];
@@ -56,7 +33,7 @@ export function mergeGlobals(named, stats, limit = 400) {
 function renderRows(app, sheet, host, rows, { pending = false, complete = true, reason = null } = {}) {
   host.replaceChildren();
   host.append(el('div', 'hint', pending
-    ? '名前付きの共有データを先に表示しています。参照頻度はバックグラウンドで集計中です。'
+    ? '名前付きの共有データを先に表示しています。参照頻度は共有Program artifactから集計中です。'
     : complete
       ? '参照頻度まで確認済みです。'
       : `参照頻度は一部のみ確認済みです${reason ? `（${reason}）` : ''}。`));
@@ -87,13 +64,13 @@ export function showGlobals(app) {
   sheet.body.append(host);
   const regions = app.store.get('regions') || [];
 
-  // Named data is cheap and useful before ProgramIndex reference aggregation is ready.
+  // Named data is cheap and useful before the shared ProgramIndex is ready.
   const named = findGlobals(app.symbols, null, regions, { limit:400 });
   renderRows(app, sheet, host, named, { pending:true, complete:false });
 
   (async () => {
     try {
-      const program = await waitFor(app.ensureProgram?.(), controller.signal);
+      const program = await app.ensureProgram?.({ signal:controller.signal, priority:'user-visible' });
       if (!program || controller.signal.aborted || !sheet.root.isConnected) return;
       const stats = await globalReferenceStats(program, regions, { signal:controller.signal });
       if (controller.signal.aborted || !sheet.root.isConnected) return;
