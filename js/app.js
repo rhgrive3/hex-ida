@@ -10,12 +10,6 @@ import { Backend } from './backend.js';
 import { CodeViewer } from './viewer.js';
 import { addrHex, addrText, sizeText } from './format.js';
 import { alertDialog, toast, closeTopSheet, closeAllSheets, closeMenu, menu } from './ui.js';
-import {
-  showFileInfo, showSections, showJump, showSearch, showDetail, showSettings,
-  instructionMenu, showFunctions, showStrings, showStructure, showHelp,
-  showLearn, showGlossary, showWelcome, showSampleGuide, showFunctionSummary,
-  showFeatures, showInvestigate, showOverview, showFunctionReport, showAccuracyNotes,
-} from './panels.js';
 import { rangeCopyMenu, copyRange } from './rangecopy.js';
 import { t, setLang, detectLang, lang, isJa, pick } from './i18n.js';
 import { SymbolIndex, EMPTY_INDEX } from './symbols.js';
@@ -31,7 +25,7 @@ import { makeSampleFile } from './sample.js';
 import { ProgramIndex, mergeProgramScans, PROGRAM_MERGE_LIMITS } from './program.js';
 import { foldShapes } from './shapes.js';
 import { recoverSchemas } from './schema.js';
-import { NoteStore, noteKeyFor, legacyV2NoteKeyFor, legacyNoteKeyForSlice, EMPTY_NOTES } from './names.js';
+import { NoteStore, noteKeyFromBinaryId, findLegacyV3NoteKey, legacyV2NoteKeyFor, legacyNoteKeyForSlice, EMPTY_NOTES } from './names.js';
 import { PatchSet } from './patch.js';
 import { uiRoot } from './ui-root.js';
 import { PluginHost } from './plugins.js';
@@ -41,6 +35,34 @@ import { STRING_SCAN_BUDGET, StringCollectionBudget } from './string-budget.js';
 import { productDescriptor } from './platform/product-descriptor.js';
 import { ProductWorkspace } from './workspace.js';
 import { AnalysisQueryAPI, createAppAnalysisQueryAdapter } from './analysis/query/index.js';
+
+
+let _panelsModulePromise = null;
+function panelsModule() { return _panelsModulePromise ||= import('./panels.js'); }
+function lazyPanel(name) {
+  return (...args) => panelsModule().then((module) => module[name](...args));
+}
+const showFileInfo = lazyPanel('showFileInfo');
+const showSections = lazyPanel('showSections');
+const showJump = lazyPanel('showJump');
+const showSearch = lazyPanel('showSearch');
+const showDetail = lazyPanel('showDetail');
+const showSettings = lazyPanel('showSettings');
+const instructionMenu = lazyPanel('instructionMenu');
+const showFunctions = lazyPanel('showFunctions');
+const showStrings = lazyPanel('showStrings');
+const showStructure = lazyPanel('showStructure');
+const showHelp = lazyPanel('showHelp');
+const showLearn = lazyPanel('showLearn');
+const showGlossary = lazyPanel('showGlossary');
+const showWelcome = lazyPanel('showWelcome');
+const showSampleGuide = lazyPanel('showSampleGuide');
+const showFunctionSummary = lazyPanel('showFunctionSummary');
+const showFeatures = lazyPanel('showFeatures');
+const showInvestigate = lazyPanel('showInvestigate');
+const showOverview = lazyPanel('showOverview');
+const showFunctionReport = lazyPanel('showFunctionReport');
+const showAccuracyNotes = lazyPanel('showAccuracyNotes');
 
 const $ = (id) => document.getElementById(id);
 const FUNCTION_DISCOVERY_GLOBAL_CAP = 400_000;
@@ -965,12 +987,16 @@ class App {
     const controller=new AbortController();
     this.noteAttachController=controller;
     try {
-      const [id, legacyV2] = await Promise.all([
-        noteKeyFor(file,info,sliceIndex,{signal:controller.signal}),
+      const [binaryId, legacyV2] = await Promise.all([
+        this.backend.ensureBinaryId({ signal:controller.signal }),
         legacyV2NoteKeyFor(file,info,sliceIndex),
       ]);
       if (controller.signal.aborted || epoch !== this.backend.gen || this.store.get('file') !== file || this.store.get('sliceIndex') !== sliceIndex) return null;
-      const notes=new NoteStore(id,[legacyV2,legacyNoteKeyForSlice(file,info,sliceIndex)]);
+      const id=noteKeyFromBinaryId(file,info,sliceIndex,binaryId);
+      // Discover an existing v3 namespace cheaply; do not re-hash the active slice
+      // on every cold open merely to learn whether migration data exists.
+      const legacyV3=findLegacyV3NoteKey(file,info,sliceIndex);
+      const notes=new NoteStore(id,[legacyV3,legacyV2,legacyNoteKeyForSlice(file,info,sliceIndex)]);
       this.notes=notes;
       if (this.symbols && this.symbols !== EMPTY_INDEX) {
         for (const entry of notes.nameEntries()) this.symbols.rename(entry.addr,entry.name);
