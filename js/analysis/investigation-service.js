@@ -9,6 +9,7 @@ import { makePinpointAnalyzer } from '../ui/pinpoint-runtime.js';
 import { autoAnalyze } from '../auto.js';
 
 const SERVICES = new WeakMap();
+const SCHEDULER_PRIORITIES = new Set(['user-blocking', 'user-visible', 'background']);
 
 function abortError(signal, message = 'Investigation cancelled') {
   if (signal?.reason instanceof Error) return signal.reason;
@@ -38,6 +39,44 @@ function regionForAddress(app, address) {
   return execRegions(app).find((r) => value >= BigInt(r.vmAddr) && value < BigInt(r.vmAddr) + BigInt(r.size)) ?? null;
 }
 function progress(options, value) { try { options?.onProgress?.(value); } catch { /* observer only */ } }
+function priorityOf(options) {
+  const value = String(options?.priority || 'user-visible');
+  return SCHEDULER_PRIORITIES.has(value) ? value : 'user-visible';
+}
+function scheduleProducer(options, signal) {
+  abortIfNeeded(signal);
+  const priority = priorityOf(options);
+  if (globalThis.scheduler?.postTask) {
+    return globalThis.scheduler.postTask(() => undefined, { priority, signal:signal ?? undefined });
+  }
+  if (priority === 'background' && typeof requestIdleCallback === 'function') {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (fn, value) => {
+        if (settled) return;
+        settled = true;
+        signal?.removeEventListener('abort', onAbort);
+        fn(value);
+      };
+      const onAbort = () => finish(reject, abortError(signal));
+      signal?.addEventListener('abort', onAbort, { once:true });
+      requestIdleCallback(() => finish(resolve), { timeout:250 });
+    });
+  }
+  return Promise.resolve();
+}
+function boundedBudget(value, fallback) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0) return fallback;
+  return Math.min(fallback, Math.floor(number));
+}
+function budgetConfig(options, key, defaults) {
+  const override = options?.budget?.[key];
+  if (!override || typeof override !== 'object') return defaults;
+  const out = { ...defaults };
+  for (const name of Object.keys(defaults)) out[name] = boundedBudget(override[name], defaults[name]);
+  return out;
+}
 
 function waitShared(entry, signal) {
   abortIfNeeded(signal);
@@ -130,7 +169,8 @@ export class InvestigationService {
     if (!entry) {
       const controller = new AbortController();
       entry = { controller, waiters:0, settled:false, promise:null };
-      entry.promise = Promise.resolve().then(() => producer(controller.signal))
+      entry.promise = scheduleProducer(options, controller.signal)
+        .then(() => producer(controller.signal))
         .then((value) => { entry.settled = true; return value; })
         .catch((error) => { this.shared.delete(key); throw error; });
       this.shared.set(key, entry);
@@ -142,7 +182,7 @@ export class InvestigationService {
     if (this.app.stringIndex) return Promise.resolve(this.app.stringIndex);
     const epoch = epochOf(this.app);
     return this.#shared(`strings:${epoch}`, async (signal) => {
-      const budget = new StringCollectionBudget(STRING_SCAN_BUDGET);
+      const budget = new StringCollectionBudget(budgetConfig(options, 'strings', STRING_SCAN_BUDGET));
       const targets = stringTargets(this.app);
       const current = storeValue(this.app, 'currentRegion');
       const use = [], skipped = [];
@@ -193,7 +233,12 @@ export class InvestigationService {
     if (!symbols || symbols.functionStartsComplete === true || symbols.functionDiscovery?.complete === true) return symbols;
     if (typeof this.app.ensureFunctions !== 'function') return symbols;
     const region = this.app.codeRegion?.() || execRegions(this.app)[0] || null;
-    return this.app.ensureFunctions(region, { signal:options.signal ?? null, onProgress:options.onProgress });
+    return this.app.ensureFunctions(region, {
+      signal:options.signal ?? null,
+      onProgress:options.onProgress,
+      priority:priorityOf(options),
+      budget:options.budget ?? null,
+    });
   }
 
   buildProgram(options = {}) {
@@ -207,7 +252,8 @@ export class InvestigationService {
       await this.discoverFunctions({ ...options, signal });
       abortIfNeeded(signal);
       const scans = [], failures = [];
-      let calls = PROGRAM_MERGE_LIMITS.calls, refs = PROGRAM_MERGE_LIMITS.refs, kinds = PROGRAM_MERGE_LIMITS.kindWords;
+      const limits = budgetConfig(options, 'program', PROGRAM_MERGE_LIMITS);
+      let calls = limits.calls, refs = limits.refs, kinds = limits.kindWords;
       let remainingBytes = regions.reduce((sum, region) => sum + BigInt(region.size), 0n);
       for (let index = 0; index < regions.length; index++) {
         abortIfNeeded(signal);
@@ -234,7 +280,7 @@ export class InvestigationService {
       if (app.symbols?.functionStartsComplete !== true) failures.push('function-discovery-incomplete');
       abortIfNeeded(signal);
       if (epoch !== epochOf(app)) throw Object.assign(new Error('stale investigation program'), { stale:true });
-      const merged = mergeProgramScans(scans, { regions, reasons:failures, limits:PROGRAM_MERGE_LIMITS });
+      const merged = mergeProgramScans(scans, { regions, reasons:failures, limits });
       const primary = regions.find((r) => r.section === '__text') || regions[0];
       const program = new ProgramIndex(merged, app.symbols, primary);
       app.programScan = merged;
@@ -247,7 +293,12 @@ export class InvestigationService {
   collectShapes(options = {}) {
     const epoch = epochOf(this.app);
     if (this.app.shapes) return Promise.resolve(this.app.shapes);
-    return this.#shared(`shapes:${epoch}`, (signal) => this.app.ensureShapes({ signal, onProgress:(p) => progress(options, p) }), options);
+    return this.#shared(`shapes:${epoch}`, (signal) => this.app.ensureShapes({
+      signal,
+      onProgress:(p) => progress(options, p),
+      priority:priorityOf(options),
+      budget:options.budget ?? null,
+    }), options);
   }
 
   ensureMetadata(options = {}) {
@@ -304,7 +355,8 @@ export class InvestigationService {
     const programP = metadataP.then(() => this.buildProgram(options));
     const [strings, program, shapes] = await Promise.all([stringsP, programP, shapesP]);
     abortIfNeeded(options.signal);
-    const snapshot = await this.app.analysisQueries.snapshot({ signal:options.signal });
+    const queryOptions = { signal:options.signal, priority:priorityOf(options), budget:options.budget ?? null };
+    const snapshot = await this.app.analysisQueries.snapshot(queryOptions);
     const context = {
       snapshot,
       snapshotId:snapshot.snapshotId,
@@ -347,7 +399,7 @@ export class InvestigationService {
         signal:options.signal || null,
         analyze:this.#addressAwareAnalyzer(options.signal || null),
         scanAccess:this.#globalAccessScanner(options.signal || null),
-        budget:{ left:48 },
+        budget:{ left:boundedBudget(options?.budget?.pinpoint, 48) },
         limit:12,
         onProgress:(value) => progress(options, { phase:'pinpoint', ...value }),
       };
@@ -369,7 +421,11 @@ export class InvestigationService {
       pin = candidate;
       if (!options.signal?.aborted) this.pinCache.set(cacheKey, pin);
     }
-    await this.app.analysisQueries.binaryInfo(context.snapshot, { signal:options.signal });
+    await this.app.analysisQueries.binaryInfo(context.snapshot, {
+      signal:options.signal,
+      priority:priorityOf(options),
+      budget:options.budget ?? null,
+    });
     return Object.freeze({
       snapshotId:context.snapshotId,
       snapshot:context.snapshot,
@@ -384,8 +440,15 @@ export class InvestigationService {
     const goal = { id:'overview', expects:{ numeric:true, store:true, call:true, compare:true } };
     const context = await this.prepareGoal(goal, options);
     let recognition = null;
-    try { recognition = await this.app.ensureRecognition({ signal:options.signal, maxFunctions:350000, knowledgeLimit:512 }); }
-    catch (error) { if (options.signal?.aborted) throw error; }
+    try {
+      recognition = await this.app.ensureRecognition({
+        signal:options.signal,
+        priority:priorityOf(options),
+        budget:options.budget ?? null,
+        maxFunctions:350000,
+        knowledgeLimit:512,
+      });
+    } catch (error) { if (options.signal?.aborted) throw error; }
     const report = await autoAnalyze({
       strings:context.strings,
       program:context.program,
@@ -399,7 +462,11 @@ export class InvestigationService {
       isCancelled:() => !!options.signal?.aborted,
       onProgress:(value) => progress(options, value),
     });
-    await this.app.analysisQueries.binaryInfo(context.snapshot, { signal:options.signal });
+    await this.app.analysisQueries.binaryInfo(context.snapshot, {
+      signal:options.signal,
+      priority:priorityOf(options),
+      budget:options.budget ?? null,
+    });
     report.snapshotId = context.snapshotId;
     report.completeness = context.completeness;
     return Object.freeze({ snapshotId:context.snapshotId, snapshot:context.snapshot, completeness:context.completeness, report, context });
@@ -413,4 +480,4 @@ export function investigationServiceFor(app) {
   return service;
 }
 
-export const __investigationInternalsForTests = Object.freeze({ needsShapeEvidence, completenessFor, beats, regionForAddress });
+export const __investigationInternalsForTests = Object.freeze({ needsShapeEvidence, completenessFor, beats, regionForAddress, priorityOf, budgetConfig });
