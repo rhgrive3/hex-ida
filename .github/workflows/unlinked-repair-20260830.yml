@@ -1,0 +1,48 @@
+name: Unlinked Repair 20260830
+
+on:
+  push:
+    branches:
+      - fix/unlinked-all-20260830-final
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    if: ${{ !contains(github.event.head_commit.message, 'fix: resolve current unlinked analysis issues') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Apply repairs
+        run: python3 tools/unlinked-repair-20260830.py
+      - name: Regression test
+        run: node tests/unlinked-current-regressions.mjs
+      - name: Lint
+        run: npm run lint
+      - name: Module boundaries
+        run: npm run module-boundaries:test
+      - name: Evidence writers
+        run: npm run evidence-writers:test
+      - name: Runtime tests
+        run: npm run runtime:test
+      - name: Platform tests
+        run: npm run platform:test
+      - name: Main test suite
+        run: npm test
+      - name: Commit verified repairs
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add js tests tools
+          git commit -m 'fix: resolve current unlinked analysis issues'
+          git push origin HEAD:fix/unlinked-all-20260830-final
