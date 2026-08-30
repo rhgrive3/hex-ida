@@ -88,7 +88,7 @@ function testCanonicalWiring() {
 
   const search = source('js/ui/panels/search.js');
   assert.match(search, /analysisQueries\.search/, 'standard Search panel must use AnalysisQueryAPI.search');
-  assert.match(search, /controller\.abort\('search-sheet-closed'\)/, 'Search close must abort its consumer');
+  assert.match(search, /runController\?\.abort\('search-sheet-closed'\)/, 'Search close must abort its consumer');
 
   for (const name of [
     'patch-product-explorer-2505.yml',
