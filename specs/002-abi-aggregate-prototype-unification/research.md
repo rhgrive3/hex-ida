@@ -316,6 +316,21 @@ MOVING_MAIN_SEMANTIC_OVERLAP: NO
 MOVING_MAIN_RETEST_REQUIRED: YES (focused/profile gates rerun)
 ```
 
+An immediate pre-handoff refresh advanced `origin/main` again to
+`9cca81bb2317cfea9b4e3379825265d92a26f55c`. That commit changes only the UI
+route/diff surface (`js/diff/**`, `js/ui/**`, `js/workspace.js`, and their
+regressions); it has no overlap with the C3-02 ABI classifier, adapter,
+prototype, compatibility, phase8 ABI, or Spec Kit implementation files. No
+semantic rebase was required; the final C3-02 gates remain bound to this
+branch's exact head and the parent campaign will reconcile this unrelated
+moving-main change before Review 2/merge.
+
+```text
+MOVING_MAIN_LATEST: 9cca81bb2317cfea9b4e3379825265d92a26f55c
+MOVING_MAIN_LATEST_OVERLAP: NO
+MOVING_MAIN_LATEST_ACTION: retain reviewed implementation head; parent campaign reconciles before Review 2/merge
+```
+
 ## Alternatives rejected
 
 - **Keep the existing prototype literals**: rejected because they fabricate
