@@ -1009,8 +1009,10 @@ class App {
         for (const e of this.notes.nameEntries()) this.symbols.rename(e.addr, e.name);
         this.viewer.setSymbols(this.symbols);
         this.updateChrome();
+        // ObjC recovery is intentionally demand-driven. It can traverse large
+        // runtime metadata and must not be a hidden prerequisite of opening a file.
+        // Swift/recognition keep their existing background warmup behavior.
         return Promise.allSettled([
-          this.ensureObjc(sliceIndex),
           this.ensureSwift(),
           this.ensureRecognition({ maxFunctions: 350000 }),
         ]);
@@ -1094,7 +1096,8 @@ class App {
     this.swiftBusyAbort = controller;
     this.swiftBusyEpoch = epoch;
     this.swiftBusy = (async () => {
-      const read = (addr, len) => this.backend.readAt(addr, len).then((r) => (r && r.found ? r.bytes : null)).catch(() => null);
+      const read = (addr, len) => this.backend.readAt(addr, len, false, { priority:'background' })
+        .then((r) => (r && r.found ? r.bytes : null)).catch(() => null);
       try {
         const model=await buildSwiftMetadataModel(read,regions,{
           budget:20000,
