@@ -96,6 +96,63 @@ export async function legacyV2NoteKeyFor(file, fileInfo, sliceIndex) {
   return identity + '|sha256:' + Array.from(digest).map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
+
+function noteSliceIdentityParts(file, fileInfo, sliceIndex) {
+  if (!file) return null;
+  const source = asByteSource(file);
+  const slices = fileInfo && fileInfo.slices || [];
+  const slice = Number.isInteger(sliceIndex) && sliceIndex >= 0 ? slices[sliceIndex] : null;
+  const info = slice && slice.info;
+  let sliceOffset = null, sliceSize = null;
+  if (slice && slice.offset != null && slice.size != null) {
+    try {
+      const offset = BigInt(slice.offset), size = BigInt(slice.size);
+      if (offset >= 0n && size >= 0n && offset <= source.size && size <= source.size - offset) {
+        sliceOffset = offset; sliceSize = size;
+      }
+    } catch { /* invalid coordinates remain explicitly unbound */ }
+  }
+  return {
+    sourceSize:source.size.toString(),
+    uuid:info && info.uuid || '',
+    cpu:info && info.cpu || '',
+    cpuSub:info && info.cpuSub || '',
+    architecture:info && (info.architecture || info.arch) || slice?.capability?.architecture || '',
+    sliceOffset:sliceOffset == null ? '' : sliceOffset.toString(),
+    sliceSize:sliceSize == null ? '' : sliceSize.toString(),
+  };
+}
+
+/** Exact note namespace without a second full traversal of the active slice. */
+export function noteKeyFromBinaryId(file, fileInfo, sliceIndex, binaryId) {
+  if (typeof binaryId !== 'string' || !binaryId.trim()) throw new TypeError('note-binary-id-required');
+  const p = noteSliceIdentityParts(file, fileInfo, sliceIndex);
+  if (!p) return null;
+  return ['v4', binaryId.trim(), p.sourceSize, p.uuid, p.cpu, p.cpuSub, p.architecture, p.sliceOffset, p.sliceSize].join('|');
+}
+
+/**
+ * Locate an already-persisted v3 namespace by its cheap identity prefix.  The
+ * expensive sha256tree suffix is already part of the localStorage key, so
+ * migration does not need to recompute it.
+ */
+export function findLegacyV3NoteKey(file, fileInfo, sliceIndex, storage = globalThis.localStorage) {
+  if (!storage || !file) return null;
+  const p = noteSliceIdentityParts(file, fileInfo, sliceIndex);
+  if (!p) return null;
+  const identity = ['v3', p.sourceSize, p.uuid, p.cpu, p.cpuSub, p.sliceOffset, p.sliceSize].join('|');
+  const prefix = PREFIX + identity + '|';
+  try {
+    for (let i = 0; i < storage.length; i++) {
+      const candidate = storage.key(i);
+      if (typeof candidate !== 'string' || !candidate.startsWith(prefix)) continue;
+      if (candidate.includes('.delta.', prefix.length)) continue;
+      return candidate.slice(PREFIX.length);
+    }
+  } catch { return null; }
+  return null;
+}
+
 export async function noteKeyFor(file, fileInfo, sliceIndex, options = {}) {
   if (!file) return null;
   const slices = fileInfo && fileInfo.slices || [];

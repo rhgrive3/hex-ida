@@ -1,0 +1,59 @@
+name: One-shot repair issue 2784
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/one-shot-repair-2784.yml]
+permissions:
+  contents: write
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/2784-appmap-strict-class-name
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Apply strict identity boundary
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('js/appmap.js')
+          s=p.read_text()
+          old="export function classifyClassName(name) {\n  const s = String(name || '');\n"
+          new="export function classifyClassName(name) {\n  if (typeof name !== 'string') return [];\n  const s = name;\n"
+          if old not in s:
+            raise SystemExit('guard failed: classifyClassName anchor drift')
+          p.write_text(s.replace(old,new,1))
+          Path('tests/issue-2784-appmap-class-name.mjs').write_text(r'''import assert from 'node:assert/strict';
+import { classifyClassName } from '../js/appmap.js';
+
+for (const value of [
+  ['LoginManager'],
+  { toString(){ return 'BattleManager'; } },
+  123,
+  true,
+  false,
+  null,
+  undefined,
+]) assert.deepEqual(classifyClassName(value), []);
+assert.ok(classifyClassName('BattleManager').some((x) => x.id === 'battle'));
+assert.ok(classifyClassName('LoginManager').some((x) => x.id === 'login'));
+assert.deepEqual(classifyClassName('DefinitelyUnclassifiedThing'), []);
+console.log('issue-2784-appmap-class-name: ok');
+''')
+          PY
+          rm -f .github/workflows/tmp-fix-2784.yml
+      - run: node tests/issue-2784-appmap-class-name.mjs
+      - run: node --check js/appmap.js
+      - name: Commit product repair
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A js/appmap.js tests/issue-2784-appmap-class-name.mjs .github/workflows/tmp-fix-2784.yml
+          git commit -m 'fix(appmap): reject non-string class identities (#2784)'
+          git push origin HEAD:fix/2784-appmap-strict-class-name

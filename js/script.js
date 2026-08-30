@@ -32,6 +32,7 @@ import { Emulator } from './emu.js';
 
 export { UnsupportedArchitectureError } from './architecture/index.js';
 import { runInSandbox } from './sandbox.js';
+import { investigationServiceFor } from './analysis/investigation-service.js';
 
 function executableRegionForAddress(app, address) {
   const target = BigInt(address);
@@ -45,15 +46,64 @@ function executableRegionForAddress(app, address) {
   }) || null;
 }
 
+
+function isExecutionContext(value) {
+  return !!value && typeof value === 'object' && !Array.isArray(value) && Object.prototype.hasOwnProperty.call(value, 'signal');
+}
+function scriptPage(result) {
+  const status = result?.status || {};
+  return {
+    results:Array.from(result?.value || []),
+    complete:status.completeness === 'complete',
+    completeness:status.completeness || 'unsupported',
+    reason:status.reason || null,
+    truncationReason:status.truncationReason || status.reason || null,
+    scannedRegionIds:Array.from(status.scannedRegionIds || []),
+    unscannedRegionIds:Array.from(status.unscannedRegionIds || []),
+    page:result?.page ? { ...result.page } : null,
+  };
+}
+function legacyRows(page) {
+  const rows = Array.from(page?.results || []);
+  Object.assign(rows, {
+    complete:page?.complete === true,
+    completeness:page?.completeness || 'unsupported',
+    reason:page?.reason || null,
+    truncationReason:page?.truncationReason || null,
+    scannedRegionIds:Array.from(page?.scannedRegionIds || []),
+    unscannedRegionIds:Array.from(page?.unscannedRegionIds || []),
+    page:page?.page ? { ...page.page } : null,
+  });
+  return rows;
+}
+function abortError(signal) {
+  if (signal?.reason instanceof Error) return signal.reason;
+  const error = new Error(signal?.reason == null ? 'Script execution cancelled' : String(signal.reason));
+  error.name = 'AbortError'; error.code = 'ABORT_ERR'; return error;
+}
+function throwIfAborted(signal) { if (signal?.aborted) throw abortError(signal); }
+function awaitRequest(request, signal) {
+  throwIfAborted(signal);
+  if (!signal || !request || typeof request.then !== 'function') return Promise.resolve(request);
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (fn, value) => { if (settled) return; settled = true; signal.removeEventListener('abort', onAbort); fn(value); };
+    const onAbort = () => { try { request.cancel?.(); } catch {} finish(reject, abortError(signal)); };
+    signal.addEventListener('abort', onAbort, { once:true });
+    Promise.resolve(request).then((value) => finish(resolve, value), (error) => finish(reject, error));
+  });
+}
+
 /**
  * スクリプトから触れる道具一式を作る。
  * @param {object} app
  * @param {function} out 1 行出力する関数
  */
-export function createApi(app, out) {
+export function createApi(app, out, options = {}) {
   const print = (...args) => {
     out(args.map((a) => format(a)).join(' '));
   };
+  const signalOf = (context) => isExecutionContext(context) ? context.signal : (options.signal ?? null);
 
   const region = () => app.codeRegion();
   const architecture = () => String(
@@ -117,21 +167,42 @@ export function createApi(app, out) {
 
     /* ── 関数 ─────────────────────────────────────────── */
 
-    /** 関数の一覧。[{addr, name, size}] */
-    functions(limit = 100000) {
+    /** 関数の一覧。legacy Array shapeを維持しつつpartial/capを明示する。 */
+    functions(limit = 100000, context = null) {
+      if (isExecutionContext(limit)) { context = limit; limit = 100000; }
+      const signal=signalOf(context); throwIfAborted(signal);
+      const max=Math.max(1,Math.min(400000,Math.trunc(Number(limit)||100000)));
       const regions = app.store?.get?.('regions') || [];
       const execRegions = regions.filter((r) => r && r.exec);
-      if (execRegions.length > 1) {
-        const out = [];
-        for (const r of execRegions) {
-          const list = app.symbols.functionList(r, limit - out.length);
-          out.push(...list);
-          if (out.length >= limit) break;
-        }
-        return out;
+      const rows = [];
+      for (const r of execRegions.length ? execRegions : [region()].filter(Boolean)) {
+        throwIfAborted(signal);
+        const list = app.symbols.functionList(r, Math.max(0, max - rows.length));
+        rows.push(...list);
+        if (rows.length >= max) break;
       }
-      const r = region();
-      return app.symbols.functionList(r, limit);
+      const total=Number(app.symbols?.funcs?.length ?? rows.length);
+      const complete=app.symbols?.functionStartsComplete === true && rows.length === total && rows.length < max + 1;
+      Object.assign(rows, {
+        complete,
+        completeness:complete?'complete':'partial',
+        total:app.symbols?.functionStartsComplete === true ? total : null,
+        capped:rows.length >= max && total > rows.length,
+        reason:complete?null:(rows.length >= max && total > rows.length?'function-limit':'function-discovery-incomplete'),
+        scannedRegionIds:execRegions.map((r)=>String(r.id)),
+        unscannedRegionIds:[],
+      });
+      return rows;
+    },
+
+    /** Paged canonical function query for >100k automation. */
+    async queryFunctions(page = {}, query = {}, context = null) {
+      if (isExecutionContext(page)) { context=page; page={}; query={}; }
+      else if (isExecutionContext(query)) { context=query; query={}; }
+      const signal=signalOf(context); throwIfAborted(signal);
+      const snapshot=await app.analysisQueries.snapshot({signal});
+      const result=await app.analysisQueries.functions(snapshot,query,page,{signal});
+      return scriptPage(result);
     },
 
     /** そのアドレスの関数名（自分で付けた名前が優先）。 */
@@ -171,19 +242,23 @@ export function createApi(app, out) {
     /* ── 中身を読む ───────────────────────────────────── */
 
     /** 生バイトを読む。 */
-    async bytes(addr, len = 16) {
-      const r = await app.backend.readAt(BigInt(addr), len);
+    async bytes(addr, len = 16, context = null) {
+      if (isExecutionContext(len)) { context=len; len=16; }
+      const r = await awaitRequest(app.backend.readAt(BigInt(addr), len), signalOf(context));
       return r && r.found ? r.bytes : null;
     },
 
     /** 0 終端の文字列として読む。 */
-    async string(addr, max = 200) {
-      const r = await app.backend.readAt(BigInt(addr), max, true);
+    async string(addr, max = 200, context = null) {
+      if (isExecutionContext(max)) { context=max; max=200; }
+      const r = await awaitRequest(app.backend.readAt(BigInt(addr), max, true), signalOf(context));
       return r && r.found ? (r.text || null) : null;
     },
 
     /** 逆アセンブル。[{addr, mn, ops}] */
-    async disasm(addr, count = 16) {
+    async disasm(addr, count = 16, context = null) {
+      if (isExecutionContext(count)) { context=count; count=16; }
+      const signal=signalOf(context); throwIfAborted(signal);
       const a = BigInt(addr);
       const r = executableRegionForAddress(app, a);
       if (!r) return [];
@@ -199,6 +274,7 @@ export function createApi(app, out) {
         let row = archAdapter.rowForAddress(r, a);
         if (row == null) return [];
         for (let i = 0; i < limit; i++, row++) {
+          throwIfAborted(signal);
           const instructionAddress = archAdapter.addressForRow(r, row);
           if (instructionAddress == null) break;
           const chunk = Math.floor(row / 1024);
@@ -214,6 +290,7 @@ export function createApi(app, out) {
       const decoded = await app.backend.disassembleAt(a, {
         architecture:arch,
         length:Math.min(1024 * 1024, Math.max(64, limit * 16)),
+        signal,
       });
       if (!decoded?.supported) return unsupportedArchitectureResult('disassemble', arch);
       return (decoded.instructions || []).slice(0, limit).map((instruction) => ({
@@ -225,7 +302,8 @@ export function createApi(app, out) {
     },
 
     /** 逆コンパイル結果（文字列）。 */
-    async decompile(addr) {
+    async decompile(addr, context = null) {
+      const signal=signalOf(context); throwIfAborted(signal);
       const a = BigInt(addr);
       const arch = architecture();
       const archAdapter = adapter();
@@ -234,7 +312,7 @@ export function createApi(app, out) {
       }
       const r = executableRegionForAddress(app, a);
       if (!r) return null;
-      const res = await app.analyzeFunctionAt(a);
+      const res = await app.analyzeFunctionAt(a, { signal });
       if (!res || !res.model) return null;
       const map = archAdapter.fixedInstructionSize != null ? {
         rowOfAddress: (value) => archAdapter.rowForAddress(r, BigInt(value)),
@@ -254,42 +332,64 @@ export function createApi(app, out) {
     },
 
     /** 引数・戻り値・ローカル変数の推定。 */
-    async types(addr) {
-      const res = await app.analyzeFunctionAt(BigInt(addr));
+    async types(addr, context = null) {
+      const res = await app.analyzeFunctionAt(BigInt(addr), { signal:signalOf(context) });
       return res ? inferTypes(res.model) : null;
     },
 
     /** 構造体の自動復元。 */
-    async struct(addr, reg) {
-      const res = await app.analyzeFunctionAt(BigInt(addr));
+    async struct(addr, reg, context = null) {
+      if (isExecutionContext(reg)) { context=reg; reg=null; }
+      const res = await app.analyzeFunctionAt(BigInt(addr), { signal:signalOf(context) });
       return res ? recoverStruct(res.model, reg) : null;
     },
 
     /* ── 参照関係 ─────────────────────────────────────── */
 
-    /** そのアドレスを呼んでいる場所。 */
-    async xrefsTo(addr, limit = 200) {
-      await app.ensureProgram?.().catch(() => null);
-      const p = app.program;
-      if (!p) return [];
-      const a = BigInt(addr);
-      return p.callSitesTo(a, limit).concat(p.refSitesTo(a, 1n, limit));
+    /** Canonical typed incoming references. */
+    async queryXrefsTo(addr, page = {}, context = null) {
+      if (isExecutionContext(page)) { context=page; page={}; }
+      const signal=signalOf(context); throwIfAborted(signal);
+      const snapshot=await app.analysisQueries.snapshot({signal});
+      return scriptPage(await app.analysisQueries.xrefs(snapshot,BigInt(addr),page,{signal}));
     },
 
-    /** その関数が呼んでいる先。 */
-    async xrefsFrom(addr, limit = 200) {
-      await app.ensureProgram?.().catch(() => null);
-      const p = app.program;
-      if (!p) return [];
-      const range = p.functionRange(BigInt(addr));
-      if (!range) return [];
-      return p.calleesOf(range.start, range.end, limit);
+    /** Legacy Array compatibility; completeness is preserved as metadata. */
+    async xrefsTo(addr, limit = 200, context = null) {
+      if (isExecutionContext(limit)) { context=limit; limit=200; }
+      const page=await api.queryXrefsTo(addr,{offset:0,limit:Math.max(1,Math.min(5000,Number(limit)||200))},context);
+      return legacyRows(page);
     },
 
-    /** よく呼ばれている関数の順位。 */
-    async mostCalled(limit = 20) {
-      await app.ensureProgram?.().catch(() => null);
-      return app.program ? app.program.mostCalled(limit) : [];
+    /** Canonical typed outgoing calls. */
+    async queryXrefsFrom(addr, page = {}, context = null) {
+      if (isExecutionContext(page)) { context=page; page={}; }
+      const signal=signalOf(context); throwIfAborted(signal);
+      const snapshot=await app.analysisQueries.snapshot({signal});
+      return scriptPage(await app.analysisQueries.callees(snapshot,BigInt(addr),page,{signal}));
+    },
+
+    async xrefsFrom(addr, limit = 200, context = null) {
+      if (isExecutionContext(limit)) { context=limit; limit=200; }
+      const page=await api.queryXrefsFrom(addr,{offset:0,limit:Math.max(1,Math.min(5000,Number(limit)||200))},context);
+      return legacyRows(page);
+    },
+
+    /** Global statistic: demand-start the shared Program producer, never read warm-cache presence. */
+    async queryMostCalled(limit = 20, context = null) {
+      if (isExecutionContext(limit)) { context=limit; limit=20; }
+      const signal=signalOf(context); throwIfAborted(signal);
+      const program=await investigationServiceFor(app).buildProgram({signal});
+      throwIfAborted(signal);
+      if (!program) return {results:[],complete:false,completeness:'unsupported',reason:'program-index-unavailable',page:null};
+      const results=Array.from(program.mostCalled(Math.max(1,Math.min(5000,Number(limit)||20))) || []);
+      const complete=program.graphCompleteness?.complete !== false && program.unsupported !== true && program.queryIncompleteReason == null;
+      return {results,complete,completeness:complete?'complete':'partial',reason:complete?null:(program.queryIncompleteReason||program.graphCompleteness?.reasons?.[0]||'program-partial'),page:null};
+    },
+
+    async mostCalled(limit = 20, context = null) {
+      if (isExecutionContext(limit)) { context=limit; limit=20; }
+      return legacyRows(await api.queryMostCalled(limit,context));
     },
 
     /* ── 文字列 ───────────────────────────────────────── */
@@ -297,7 +397,7 @@ export function createApi(app, out) {
     /** 集めた文字列（あらかじめ「文字列」画面を開くか、await hex.loadStrings() が要る）。 */
     strings() { return app.stringIndex || []; },
 
-    async loadStrings() { return app.ensureStrings(); },
+    async loadStrings(context = null) { return investigationServiceFor(app).collectStrings({ signal:signalOf(context) }); },
 
     /** 文字列を検索する。 */
     findStrings(query, limit = 200) {
@@ -514,9 +614,9 @@ function format(v) {
  * @param {object} app
  * @param {function} out 出力を受け取る
  */
-export async function runScript(code, app, out) {
-  const { api, print } = createApi(app, out);
-  return runInSandbox({ source: code, mode: 'script', api, out: (...args) => print(...args) });
+export async function runScript(code, app, out, options = {}) {
+  const { api, print } = createApi(app, out, options);
+  return runInSandbox({ source: code, mode: 'script', api, out: (...args) => print(...args), signal:options.signal ?? null });
 }
 
 /* ── はじめての人のためのお手本 ─────────────────────────── */

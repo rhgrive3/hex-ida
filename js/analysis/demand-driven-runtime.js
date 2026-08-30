@@ -397,7 +397,8 @@ function installDemandQueryAPI(app, recognitionVersion) {
       if (!program?.callersOf) return unsupported(reason || 'program-index-unavailable');
       if (graphUnsupported(program)) return unsupported(program.queryIncompleteReason || reason || 'unsupported-program-analysis');
       const { offset, limit } = pageOf(page); const source = program.callersOf(addressOf(id), Math.min(MAX_PAGE, offset + limit));
-      const result = paged(Array.from(source || []), page, source?.complete === false || reason ? 'partial' : 'complete', { reason:source?.incompleteReason ?? reason ?? null, scope:'active-neighborhood', scannedRegionIds, unscannedRegionIds });
+      const relationReason=source?.incompleteReason ?? reason ?? null;
+      const result = paged(Array.from(source || []), page, source?.complete === false || reason ? 'partial' : 'complete', { reason:relationReason, truncationReason:relationReason, scope:'active-neighborhood', scannedRegionIds, unscannedRegionIds });
       if (source?.queryLimited === true && result.page.next == null && result.page.returned > 0) result.page.next = result.page.offset + result.page.returned; return result;
     },
     async callees(_snapshot, id, page = {}, options = {}) {
@@ -407,7 +408,8 @@ function installDemandQueryAPI(app, recognitionVersion) {
       if (!program?.calleesOf) return unsupported(reason || 'program-index-unavailable');
       if (graphUnsupported(program)) return unsupported(program.queryIncompleteReason || reason || 'unsupported-program-analysis');
       const { offset, limit } = pageOf(page); const source = program.calleesOf(range.start, range.end, Math.min(MAX_PAGE, offset + limit));
-      const result = paged(Array.from(source || []), page, source?.complete === false || reason ? 'partial' : 'complete', { reason:source?.incompleteReason ?? reason ?? null, scope:'active-function', scannedRegionIds, unscannedRegionIds });
+      const relationReason=source?.incompleteReason ?? reason ?? null;
+      const result = paged(Array.from(source || []), page, source?.complete === false || reason ? 'partial' : 'complete', { reason:relationReason, truncationReason:relationReason, scope:'active-function', scannedRegionIds, unscannedRegionIds });
       if (source?.queryLimited === true && result.page.next == null && result.page.returned > 0) result.page.next = result.page.offset + result.page.returned; return result;
     },
     async xrefs(_snapshot, id, page = {}, options = {}) {
@@ -416,7 +418,8 @@ function installDemandQueryAPI(app, recognitionVersion) {
       if (graphUnsupported(program)) return unsupported(program.queryIncompleteReason || reason || 'unsupported-program-analysis');
       const { offset, limit } = pageOf(page); const cap = Math.min(MAX_PAGE, offset + limit); const refs = program.refSitesTo?.(address, 1n, cap) || []; const calls = program.callSitesTo?.(address, cap) || [];
       const rows = [...Array.from(refs).map((x) => ({ kind:'reference', site:x.site, target:x.target, refKind:x.kind ?? null })), ...Array.from(calls).map((x) => ({ kind:'call', site:x.site, target:address, caller:x.caller ?? null }))].sort((a,b) => BigInt(a.site) < BigInt(b.site) ? -1 : BigInt(a.site) > BigInt(b.site) ? 1 : 0);
-      return paged(rows, page, refs.complete === false || calls.complete === false || reason ? 'partial' : 'complete', { reason:refs.incompleteReason ?? calls.incompleteReason ?? reason ?? null, scope:'active-neighborhood', scannedRegionIds, unscannedRegionIds });
+      const relationReason=refs.incompleteReason ?? calls.incompleteReason ?? reason ?? null;
+      return paged(rows, page, refs.complete === false || calls.complete === false || reason ? 'partial' : 'complete', { reason:relationReason, truncationReason:relationReason, scope:'active-neighborhood', scannedRegionIds, unscannedRegionIds });
     },
     async search(_snapshot, query, page = {}, options = {}) {
       if (!query || typeof query !== 'object' || typeof app?.backend?.search !== 'function') return unsupported('typed-search-producer-unavailable');
