@@ -80,10 +80,14 @@ export function createHexProject(input = {}) {
 
 export function normalizeNavigation(value = {}) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new ProjectFormatError('navigation must be an object');
+  const cursorIndex = value.cursorIndex;
+  if (cursorIndex != null && (!Number.isSafeInteger(cursorIndex) || cursorIndex < 0)) {
+    throw new ProjectFormatError('navigation.cursorIndex must be a non-negative safe integer or null');
+  }
   return {
     currentFunction: value.currentFunction ?? null,
     history: list(value.history, 'navigation.history').slice(-500),
-    cursorIndex: value.cursorIndex != null ? Number(value.cursorIndex) : null,
+    cursorIndex: cursorIndex ?? null,
     bookmarks: list(value.bookmarks, 'navigation.bookmarks').slice(-500),
     lastQuery: value.lastQuery ?? null,
   };
