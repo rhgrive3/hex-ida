@@ -15,6 +15,7 @@ import { sourceOf, mergeSource } from './ast/nodes.js';
 import { isNZCVCondition, renderNZCVCondition } from './flag-semantics.js';
 import { renderIndexedMemory } from './address-semantics.js';
 import { integerText } from './pretty/c.js';
+import { isCanonicalExactMemoryForwarding } from '../semantics/memoryssa/queries.js';
 
 const MAX_EXPR_DEPTH = 48;
 const MAX_EXPR_NODES = 512;
@@ -153,12 +154,10 @@ function canonicalRegister(reg) {
 
 function loadReachedByStore(load, store, ctx) {
   if (load?.op !== OP.LOAD || load.loc?.key !== store.loc?.key || load.row <= store.row) return false;
-  if (load.reachingStore) return load.reachingStore === store;
-  // Conservative linear fallback for older IR producers without a reachingStore
-  // annotation. Cross-block cases require Memory SSA proof.
-  if (load.block !== store.block) return false;
-  return !(ctx.ir.blocks?.[load.block]?.insts || []).some((x) =>
-    x.op === OP.STORE && x.loc?.key === store.loc?.key && x.row > store.row && x.row < load.row);
+  const fact = load.memoryForwarding;
+  if (!isCanonicalExactMemoryForwarding(fact)) return false;
+  const definitionId = store.memDef?.definitionId ?? store.extra?.memoryDefinitionId ?? null;
+  return definitionId != null && fact.contributingDefinitionIds.includes(String(definitionId));
 }
 
 function returnRegisterForContext(ctx) {
@@ -550,8 +549,11 @@ export function renderValue(value, ctx, flags = {}) {
       const a = renderValue(valueOf(d.args?.[0]), ctx), b = renderValue(valueOf(d.args?.[1]), ctx), l=d.extra?.lsb ?? 0, w=d.extra?.width ?? '?';
       out = d.extra?.bitfieldKind === 'bfxil' ? `bit_insert(${a}, bit_extract(${b}, ${l}, ${w}), 0, ${w})` : `bit_insert(${a}, ${b}, ${l}, ${w})`;
     } else if (d.op === OP.LOAD) {
-      if (d.reachingStore && !flags.noMemoryFold && d.reachingStore !== d) out = renderValue(valueOf(d.reachingStore.args?.[0]), ctx);
-      else out = renderMemoryLocation(d.loc, d, ctx);
+      if (isCanonicalExactMemoryForwarding(d.memoryForwarding)
+          && !flags.noMemoryFold && d.memoryForwarding.value != null) {
+        out = formatConst(d.memoryForwarding.value, value.bits, value.signed ?? null);
+      }
+      if (!out) out = renderMemoryLocation(d.loc, d, ctx);
     } else if (d.op === OP.SEL) {
       out = selectAsMinMax(d, ctx);
       if (!out) {

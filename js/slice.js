@@ -83,7 +83,7 @@ export function backwardSlice(ir, seed, opts) {
       for(const clobber of origins.clobbers) pushInst(clobber);
       if(origins.ambiguous||origins.truncated) memoryAlternatives.push({loadId:inst.id,row:inst.row,...origins});
       if(origins.truncated) memoryTraversalTruncated=true;
-    } else if (throughMemory && inst.op === OP.LOAD && inst.reachingStore) pushInst(inst.reachingStore);
+    }
     if (inst.op === OP.PHI) for (const inc of inst.incoming || []) pushValue(inc.value);
   }
   instructions.sort(byPosition);
@@ -122,7 +122,7 @@ export function forwardSlice(ir, seed, opts) {
   const pushReaders = (store) => {
     if (!store || store.op !== OP.STORE || !store.loc) return;
     for (const reader of readersByLoc.get(store.loc.key) || []) {
-      if (reader.reachingStore === store || memoryNodeContainsStore(reader.memUse, store)) stack.push(reader);
+      if (memoryNodeContainsStore(reader.memUse, store)) stack.push(reader);
     }
   };
   if (seed && seed.op === OP.STORE) pushReaders(seed);

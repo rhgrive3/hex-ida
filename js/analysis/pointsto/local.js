@@ -27,7 +27,10 @@ import {
 } from '../alias/canonical-address-v2.js';
 import { MEMORY_SSA_BUILD_VERSION } from '../../semantics/memoryssa/build.js';
 import { MEMORY_SSA_CONTRACT_VERSION } from '../../semantics/memoryssa/contract.js';
-import { reachingConcreteStore } from '../../semantics/memoryssa/queries.js';
+import {
+  forwardMemoryValue,
+  isCanonicalExactMemoryOperandForwarding,
+} from '../../semantics/memoryssa/queries.js';
 import { deterministicTraversal } from '../../semantics/cfg/index.js';
 import {
   BOTTOM_POINTS_TO,
@@ -100,7 +103,11 @@ function ordinaryAccess(memory) {
     && (memory.endian === 'little' || memory.endian === 'big')
     && memory.volatility === false
     && memory.atomic === false
-    && memory.ordering === 'unknown';
+    && (memory.ordering == null || memory.ordering === 'unknown');
+}
+
+function memoryAddressValueId(memory) {
+  return memory?.addressExpr?.valueId ?? memory?.addressValueId ?? null;
 }
 
 function metadataFor(metadataByEntity, entityId) {
@@ -133,15 +140,6 @@ function storedPointerSetIsValid(set, value, widthBits) {
     }
   }
   return true;
-}
-
-function providerProofIsComplete(proof) {
-  if (!proof || typeof proof !== 'object') return false;
-  if (proof.completeness === 'complete') return true;
-  if (proof.proof?.completeness === 'complete') return true;
-  if (!Array.isArray(proof.alternatives) || proof.alternatives.length !== 1) return false;
-  return proof.alternatives.every((alternative) => alternative?.relation === 'must'
-    && providerProofIsComplete(alternative.proof));
 }
 
 function boundaryBinding(options, memorySsa) {
@@ -292,7 +290,7 @@ function prepareMemoryBoundary(ir, nodes, values, options, budget) {
       continue;
     }
     const widthBits = finiteWidth(node.memory.widthBits);
-    if (widthBits == null || widthOf(value, node) !== widthBits || node.memory.addressExpr?.valueId !== node.inputs[0]) {
+    if (widthBits == null || widthOf(value, node) !== widthBits || memoryAddressValueId(node.memory) !== node.inputs[0]) {
       reject(valueId, 'load-access-invalid');
       continue;
     }
@@ -314,11 +312,29 @@ function prepareMemoryBoundary(ir, nodes, values, options, budget) {
       reject(valueId, 'load-access-metadata-mismatch');
       continue;
     }
-    let definition;
-    try { definition = reachingConcreteStore(memorySsa, use); }
-    catch { definition = null; }
-    if (!definition || use.aliasRelation !== 'must' || definition.kind !== 'memory-def') {
+    let forwarding;
+    try {
+      forwarding = forwardMemoryValue(memorySsa, use, {
+        functionId: ir.functionId,
+        snapshotId: binding.snapshotId,
+        memorySsaBuildVersion: memorySsa.buildVersion,
+        expectedIdentity: memorySsa.identity,
+        ir,
+        signal: options.signal,
+      });
+    } catch {
+      forwarding = null;
+    }
+    if (!isCanonicalExactMemoryOperandForwarding(forwarding)) {
       reject(valueId, use.aliasRelation === 'may' ? 'load-use-may-alias' : 'load-store-not-concrete');
+      continue;
+    }
+    const definitionId = String(forwarding.definitionId ?? '');
+    const definition = definitionsById.get(definitionId) ?? null;
+    if (!definition || definition.kind !== 'memory-def'
+      || String(forwarding.storedSourceEntityId ?? '') !== String(definition.sourceEntityId ?? '')
+      || !forwarding.contributingDefinitionIds.includes(definitionId)) {
+      reject(valueId, 'load-store-proof-incomplete');
       continue;
     }
     if (String(definition.regionId) !== String(use.regionId) || !definitionsById.has(String(definition.id))) {
@@ -326,9 +342,11 @@ function prepareMemoryBoundary(ir, nodes, values, options, budget) {
       continue;
     }
     const storeNode = nodes.get(String(definition.sourceEntityId));
-    const storeValueId = storeNode?.inputs?.length === 2 ? String(storeNode.inputs[1]) : null;
+    const storeValueId = String(forwarding.storedValueId ?? '');
     const storeValue = storeValueId == null ? null : values.get(storeValueId);
     if (!storeNode || storeNode.kind !== 'store' || storeNode.completeness !== 'complete'
+      || !Array.isArray(storeNode.inputs) || storeNode.inputs.length !== 2
+      || String(storeNode.inputs[1]) !== storeValueId
       || !storeValueId || !storeValue || !pointerValue(storeValue)) {
       reject(valueId, 'store-value-missing');
       continue;
@@ -339,7 +357,7 @@ function prepareMemoryBoundary(ir, nodes, values, options, budget) {
       continue;
     }
     if (widthOf(storeValue, storeNode) !== widthBits || finiteWidth(storeNode.memory.widthBits) !== widthBits
-      || storeNode.memory.addressExpr?.valueId !== storeNode.inputs[0]) {
+      || memoryAddressValueId(storeNode.memory) !== storeNode.inputs[0]) {
       reject(valueId, 'store-access-invalid');
       continue;
     }
@@ -356,34 +374,7 @@ function prepareMemoryBoundary(ir, nodes, values, options, budget) {
       reject(valueId, 'load-store-region-invalid');
       continue;
     }
-    const providerProof = definition.proof?.providerProof;
-    if (definition.proof?.kind !== 'must-alias-memory-write' || definition.proof?.aliasRelation !== 'must'
-      || !providerProofIsComplete(providerProof)) {
-      reject(valueId, 'load-store-proof-incomplete');
-      continue;
-    }
-    const proofIdentity = stableDigest({
-      snapshotId: binding.snapshotId,
-      functionId: ir.functionId,
-      semanticIrVersion: ir.contractVersion,
-      memorySsaContractVersion: memorySsa.contractVersion,
-      memorySsaBuildVersion: memorySsa.buildVersion,
-      load: {
-        nodeId: node.id,
-        use,
-        accessMetadata: useMetadata,
-        memory: node.memory,
-      },
-      store: {
-        nodeId: storeNode.id,
-        definition,
-        accessMetadata: storeMetadata,
-        memory: storeNode.memory,
-      },
-      regionId: use.regionId,
-      widthBits,
-      endian: node.memory.endian,
-    });
+    const proofIdentity = forwarding.identity.digest;
     boundary.candidates.set(valueId, {
       valueId,
       loadNode: node,
@@ -395,6 +386,7 @@ function prepareMemoryBoundary(ir, nodes, values, options, budget) {
       storedValueId: storeValueId,
       widthBits,
       proofIdentity,
+      forwarding,
     });
   }
   return boundary;

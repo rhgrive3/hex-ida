@@ -20,6 +20,7 @@ import {
   SEMANTIC_V2_MIGRATION_MODES,
   buildSemanticV2CompatibilityPipeline,
 } from './semantics/compat/index.js';
+import { isCanonicalExactMemoryForwarding } from './semantics/memoryssa/queries.js';
 import { ARM64_ARCHITECTURE } from './targets/architecture/index.js';
 import { AAPCS64_ABI, classifyAAPCS64Arguments } from './targets/abi/aapcs64.js';
 
@@ -353,7 +354,8 @@ function restoreAapcs64PublicLocations(projected) {
       continue;
     }
     const base = canonicalAddressBase(inst.addr.base);
-    if (base?.def?.op !== LEGACY_OP.LOAD || !base.def.reachingStore) continue;
+    if (base?.def?.op !== LEGACY_OP.LOAD
+        || !isCanonicalExactMemoryForwarding(base.def.memoryForwarding)) continue;
     const disp = BigInt(inst.addr.disp ?? 0n);
     const size = inst.addr.size ?? inst.extra?.size ?? null;
     const key = `field:loaded:${base.id}+${disp.toString()}:s${size ?? '?'}`;
@@ -461,10 +463,6 @@ function valueMayCarryStackAddress(value) {
   return proof?.must === true || proof?.may === true;
 }
 
-function storeMayEscapeStackAddress(inst) {
-  return inst?.op === LEGACY_OP.STORE && valueMayCarryStackAddress(inst.args?.[0]?.value);
-}
-
 /*
  * Keep canonical MemorySSA conservative across unknown calls. For the legacy-v1
  * compatibility shape only, reconnect one same-block stack load to its previous
@@ -503,49 +501,6 @@ function invalidateEscapedStackForwarding(projected) {
       };
       break;
     }
-  }
-}
-
-function restoreProvenNoEscapeStackForwarding(projected) {
-  for (const load of projected.instructions ?? []) {
-    if (load.op !== LEGACY_OP.LOAD || load.loc?.kind !== LEGACY_MK.STACK || load.reachingStore) continue;
-    const block = projected.blocks?.[load.block];
-    if (!block) continue;
-    const priorStores = (block.insts ?? [])
-      .filter((inst) => {
-        if (inst.op !== LEGACY_OP.STORE || inst.loc?.kind !== LEGACY_MK.STACK || inst.loc.key !== load.loc.key || Number(inst.row) >= Number(load.row)) return false;
-        const loadSize = Number(load.loc?.size ?? load.extra?.size ?? 0);
-        const storeSize = Number(inst.loc?.size ?? inst.extra?.size ?? 0);
-        if (!(loadSize > 0 && storeSize > 0 && loadSize === storeSize)) return false;
-        if (load.extra?.signed === true || load.extra?.extension === 'sign') return false;
-        const loadBits = Number(load.dst?.bits ?? loadSize * 8);
-        const storeBits = Number(inst.args?.[0]?.bits ?? inst.args?.[0]?.value?.bits ?? storeSize * 8);
-        return loadBits === storeBits;
-      })
-      .sort((left, right) => Number(right.row) - Number(left.row));
-    const store = priorStores[0] ?? null;
-    if (!store) continue;
-    let blocked = false;
-    const evidence = [];
-    for (const inst of block.insts ?? []) {
-      if (Number(inst.row) <= Number(store.row) || Number(inst.row) >= Number(load.row)) continue;
-      if (inst.op === LEGACY_OP.UNKNOWN) { blocked = true; break; }
-      if (inst.op === LEGACY_OP.STORE) {
-        if (inst.loc?.key === load.loc.key || storeMayEscapeStackAddress(inst)) { blocked = true; break; }
-        continue;
-      }
-      if (inst.op !== LEGACY_OP.CALL) continue;
-      if ((inst.args ?? []).some((arg) => valueMayCarryStackAddress(arg?.value))) { blocked = true; break; }
-      evidence.push({ callInstructionId:inst.id, row:inst.row, proof:'no-stack-derived-call-argument' });
-    }
-    if (blocked) continue;
-    load.reachingStore = store;
-    load.extra = {
-      ...(load.extra ?? {}),
-      compatNoEscapeStackForwarding: true,
-      compatNoEscapeStackEvidence: evidence,
-      canonicalMemoryUsePreserved: load.memUse?.definitionId ?? null,
-    };
   }
 }
 
@@ -643,7 +598,6 @@ function buildV2CompatFromLegacyModel(model, opts = {}) {
   attachAapcs64CallArguments(result.legacyV1);
   attachAapcs64TypedCallResults(result.legacyV1, instructionByRow, opts);
   invalidateEscapedStackForwarding(result.legacyV1);
-  restoreProvenNoEscapeStackForwarding(result.legacyV1);
   attachAapcs64FunctionReturns(result.legacyV1, abiAdapter);
   lastSemanticV2Instrumentation = result.instrumentation;
   return result.legacyV1;

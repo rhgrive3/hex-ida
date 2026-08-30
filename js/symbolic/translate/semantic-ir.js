@@ -40,6 +40,7 @@ import {
   createCompleteness,
   classifyOpSupport,
 } from './support-matrix.js';
+import { isCanonicalExactMemoryForwarding } from '../../semantics/memoryssa/queries.js';
 
 export function translateSemanticIR(target, options = {}) {
   const ir = options.ir || null;
@@ -262,17 +263,21 @@ export function translateSemanticIR(target, options = {}) {
       }
 
       case OP.LOAD: {
-        if (inst.reachingStore && inst.reachingStore.args?.[0]?.value) {
-          return translateValue(inst.reachingStore.args[0].value, width);
-        }
-        if (inst.loc && inst.loc.kind !== MK.UNKNOWN) {
-          semanticUnknowns++;
-          unsupportedEntities.push({ id: inst.id, op: 'load', reason: 'missing-unique-reaching-store' });
-          return createUnknownSemantic(bvSort(width), 'missing-unique-reaching-store', { instructionId: inst.id });
+        // A structural reachingStore pointer is not a value proof. Only the
+        // canonical query capability may turn a load into a concrete solver
+        // value; forged/serialized/partial facts stay explicitly unknown.
+        if (isCanonicalExactMemoryForwarding(inst.memoryForwarding)
+            && inst.memoryForwarding.value != null) {
+          const value = createBv(width, inst.memoryForwarding.value);
+          recordOrigin(value, inst.origin, ...(inst.memoryForwarding.provenance?.sourceEntityIds || []));
+          return value;
         }
         semanticUnknowns++;
-        unsupportedEntities.push({ id: inst.id, op: 'load', reason: 'unknown-load-alias' });
-        return createUnknownSemantic(bvSort(width), 'unknown-load-alias', { instructionId: inst.id });
+        const reason = inst.loc && inst.loc.kind !== MK.UNKNOWN
+          ? 'missing-canonical-memory-proof'
+          : 'unknown-load-alias';
+        unsupportedEntities.push({ id: inst.id, op: 'load', reason });
+        return createUnknownSemantic(bvSort(width), reason, { instructionId: inst.id });
       }
 
       default: {

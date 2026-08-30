@@ -3,6 +3,7 @@ import { RewriteEngine } from '../rewrite/engine.js';
 import { DEFAULT_RULES } from '../rewrite/rules.js';
 import { printExpression, printProgram } from '../pretty/c.js';
 import { buildNZCVConditionExpression } from '../flag-semantics.js';
+import { isCanonicalExactMemoryForwarding } from '../../semantics/memoryssa/queries.js';
 
 const INVERSE = Object.freeze({ eq:'ne', ne:'eq', lt:'ge', le:'gt', gt:'le', ge:'lt' });
 
@@ -221,16 +222,6 @@ function reachingRegisterDefinition(ir, atInst, reg) {
   return best;
 }
 
-function latestStoreTo(ir, blockIndex, beforeRow, key) {
-  let best = null;
-  for (const inst of ir?.blocks?.[blockIndex]?.insts || []) {
-    if (inst?.op !== 'store' || inst.loc?.key !== key) continue;
-    if (beforeRow != null && inst.row >= beforeRow) continue;
-    if (!best || (inst.row ?? -1) > (best.row ?? -1)) best = inst;
-  }
-  return best;
-}
-
 function storeOfExactValue(ir, blockIndex, value) {
   let best = null;
   for (const inst of ir?.blocks?.[blockIndex]?.insts || []) {
@@ -278,7 +269,18 @@ function committedReturnValue(result, root, ret) {
   const reaching = reachingRegisterDefinition(result.ir, ret, 'x0');
   const load = reaching?.def;
   if (load?.op !== 'load' || load.loc?.key !== root.location.key) return null;
-  const stackStore = load.reachingStore || latestStoreTo(result.ir, load.block, load.row, root.location.key);
+  if (!isCanonicalExactMemoryForwarding(load.memoryForwarding)) return null;
+  const definitionIds = new Set(load.memoryForwarding.contributingDefinitionIds.map(String));
+  const stackStores = (result.ir.instructions || []).filter((candidate) => {
+    const definitionId = candidate?.memDef?.definitionId ?? candidate?.extra?.memoryDefinitionId ?? null;
+    return candidate?.op === 'store'
+      && candidate?.loc?.kind === 'stack'
+      && candidate.loc.key === root.location.key
+      && definitionId != null
+      && definitionIds.has(String(definitionId));
+  });
+  if (stackStores.length !== 1) return null;
+  const stackStore = stackStores[0];
   const spilled = valueOf(stackStore?.args?.[0]);
   const location = committedLocationForPhi(result, spilled);
   if (!location) return null;

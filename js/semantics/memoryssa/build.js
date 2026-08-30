@@ -18,6 +18,14 @@ import {
   createMemoryRegionRef,
   createMemorySsaContract,
 } from './contract.js';
+import {
+  canonicalAccessProof,
+  canonicalAccessBinding,
+  canonicalAliasProof,
+  canonicalMemorySsaDigest,
+  canonicalStoreValueProof,
+  MEMORY_SSA_PROOF_VERSION,
+} from './proof.js';
 
 export const MEMORY_SSA_BUILD_VERSION = '1.0.0';
 export const MEMORY_SSA_BUILD_DEFAULT_BUDGET = Object.freeze({
@@ -55,6 +63,103 @@ function createCounter(options, key) {
 }
 function entityId(prefix, payload) {
   return `${prefix}_${stableDigest({ version: MEMORY_SSA_BUILD_VERSION, ...payload })}`;
+}
+
+function memoryInteger(value) {
+  if (value == null) return null;
+  try {
+    if (typeof value === 'bigint') return value;
+    if (typeof value === 'number') return Number.isSafeInteger(value) ? BigInt(value) : null;
+    const text = String(value).trim();
+    if (!/^[+-]?(?:0x[0-9a-f]+|[0-9]+)$/i.test(text)) return null;
+    return BigInt(text);
+  } catch {
+    return null;
+  }
+}
+
+function memoryRegionDomain(region) {
+  if (!region || typeof region !== 'object') return null;
+  const identity = { kind: region.kind };
+  let hasScope = false;
+  for (const key of ['binaryId', 'functionId', 'rootEntityId', 'addressSpace', 'rootIdentity']) {
+    if (region[key] == null) continue;
+    identity[key] = key === 'rootIdentity' ? region[key] : String(region[key]);
+    hasScope = true;
+  }
+  return hasScope ? stableStringify(identity) : null;
+}
+
+function memoryRegionBase(region) {
+  if (!region || typeof region !== 'object') return null;
+  if (region.address != null) return memoryInteger(region.address);
+  if (region.offset != null) return memoryInteger(region.offset);
+  return null;
+}
+
+function memoryDescriptorDisplacement(node) {
+  const raw = node?.attributes?.machineEffects?.operationMetadata?.addressing?.addressDisplacement;
+  return raw == null ? 0n : memoryInteger(raw);
+}
+
+function memoryAddressExpr(memory) {
+  if (memory?.addressExpr && typeof memory.addressExpr === 'object'
+      && !Array.isArray(memory.addressExpr)) return memory.addressExpr;
+  if (memory?.addressValueId != null && String(memory.addressValueId).trim()) {
+    return { valueId: String(memory.addressValueId) };
+  }
+  return null;
+}
+
+function memoryByteRange(region, memory, node) {
+  const widthBits = Number(memory?.widthBits);
+  if (!Number.isSafeInteger(widthBits) || widthBits <= 0 || widthBits % 8 !== 0) return null;
+  const domain = memoryRegionDomain(region);
+  const base = memoryRegionBase(region);
+  const displacement = memoryDescriptorDisplacement(node);
+  if (domain == null || base == null || displacement == null) return null;
+  const start = base + displacement;
+  return {
+    domain,
+    start: start.toString(),
+    end: (start + BigInt(widthBits / 8)).toString(),
+  };
+}
+function memoryRangeProof(memorySsaEntityId, sourceEntityId, regionId, range, memory, node) {
+  if (range == null) return null;
+  const rawAddressExpr = memoryAddressExpr(memory);
+  if (!rawAddressExpr || typeof rawAddressExpr !== 'object' || Array.isArray(rawAddressExpr)) return null;
+  const addressExpr = jsonSafe(rawAddressExpr);
+  const addressValueId = addressExpr.valueId == null ? null : String(addressExpr.valueId);
+  const addressDigest = stableDigest(addressExpr);
+  const displacement = memoryDescriptorDisplacement(node);
+  return {
+    kind: 'canonical-memory-byte-range',
+    version: MEMORY_SSA_PROOF_VERSION,
+    memorySsaEntityId,
+    sourceEntityId,
+    regionId,
+    range,
+    addressValueId,
+    addressDigest,
+    addressExpr: jsonSafe(addressExpr),
+    addressSpace: memory.addressSpace,
+    addressDisplacement: displacement == null ? null : displacement.toString(),
+    widthBits: Number(memory.widthBits),
+    endian: memory.endian,
+    rangeDigest: stableDigest({
+      range: {
+        domain: String(range.domain),
+        start: String(range.start),
+        end: String(range.end),
+      },
+      addressValueId,
+      addressDigest,
+      addressDisplacement: displacement == null ? null : displacement.toString(),
+      widthBits: Number(memory.widthBits),
+      endian: memory.endian,
+    }),
+  };
 }
 function transformOrigin(origin, { ruleId, consumedEntityIds, producedEntityIds, proofKind }) {
   return appendTransform(origin, createTransformRecord({
@@ -125,13 +230,17 @@ function normalizeAliasResult(raw) {
   const normalized = relation ?? 'unknown';
   if (!ALIAS_RELATIONS.has(normalized)) fail('memory-ssa-build-invalid-alias-relation');
   const proof = raw && typeof raw === 'object' && !Array.isArray(raw)
-    ? jsonSafe({
-      reasonCodes: raw.reasonCodes ?? [],
-      evidenceIds: raw.evidenceIds ?? [],
-      proof: raw.proof ?? null,
-    })
+    && raw.proof && typeof raw.proof === 'object' && !Array.isArray(raw.proof)
+    ? jsonSafe(raw.proof)
     : null;
-  return { relation: normalized, proof };
+  return {
+    relation: normalized,
+    reasonCodes: raw && typeof raw === 'object' && Array.isArray(raw.reasonCodes)
+      ? raw.reasonCodes.map(String).sort() : [],
+    evidenceIds: raw && typeof raw === 'object' && Array.isArray(raw.evidenceIds)
+      ? raw.evidenceIds.map(String).sort() : [],
+    proof,
+  };
 }
 function combineAliasResults(results) {
   if (!results.length) return { relation: 'unknown', proof: null };
@@ -143,6 +252,8 @@ function combineAliasResults(results) {
   else relation = 'may';
   return {
     relation,
+    reasonCodes: [...new Set(results.flatMap((result) => result.reasonCodes ?? []))].sort(),
+    evidenceIds: [...new Set(results.flatMap((result) => result.evidenceIds ?? []))].sort(),
     proof: jsonSafe({ alternatives: results.map((result) => ({ relation: result.relation, proof: result.proof })) }),
   };
 }
@@ -306,6 +417,54 @@ function effectSummary(descriptor, relation) {
   }
   return jsonSafe(out);
 }
+function memoryAccessProof(descriptor, options, identity) {
+  const raw = typeof options?.accessProofForDescriptor === 'function'
+    ? options.accessProofForDescriptor(descriptor)
+    : null;
+  return canonicalAccessProof({
+    raw,
+    descriptor,
+    identity,
+    functionId: identity?.functionId ?? descriptor?.node?.functionId ?? null,
+  });
+}
+
+function canonicalStoreOperand(node, valuesById, identity, functionId, memorySsaEntityId) {
+  if (node?.kind !== 'store' || !Array.isArray(node.inputs) || node.inputs.length !== 2) return null;
+  const addressValueId = memoryAddressExpr(node.memory)?.valueId ?? null;
+  if (addressValueId == null || String(node.inputs[0]) !== String(addressValueId)) return null;
+  const valueId = node.inputs[1];
+  const semanticValue = valuesById.get(String(valueId)) ?? null;
+  const raw = semanticValue?.metadata?.constant ?? null;
+  const widthBits = Number(node.memory?.widthBits);
+  const valueWidthBits = Number(raw?.widthBits ?? semanticValue?.machineType?.widthBits);
+  if (!Number.isSafeInteger(widthBits) || widthBits <= 0 || widthBits % 8 !== 0
+      || valueWidthBits !== widthBits) return null;
+  let value = null;
+  if (raw?.kind === 'bitvector' && raw.value != null) {
+    value = memoryInteger(raw.value);
+    if (value == null) return null;
+    const unsigned = BigInt.asUintN(widthBits, value);
+    const signed = BigInt.asIntN(widthBits, value);
+    if (value !== unsigned && value !== signed) return null;
+    value = unsigned;
+  } else if (semanticValue.machineType?.kind !== 'address') {
+    // A symbolic scalar has no byte value that this query can reconstruct.
+    // Pointer operands are handled by the identity-only operand proof below,
+    // which is consumed only by the canonical points-to boundary.
+    return null;
+  }
+  return canonicalStoreValueProof({
+    semanticValue,
+    memorySsaEntityId,
+    valueId,
+    sourceEntityId: node.id,
+    value,
+    widthBits,
+    identity,
+    functionId,
+  });
+}
 function eventKind(descriptor, relation) {
   if (descriptor.sourceKind === 'call') return 'call-clobber';
   if (descriptor.sourceKind === 'intrinsic') return 'intrinsic-clobber';
@@ -326,6 +485,9 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
   const aliasTick = createCounter(options, 'maxAliasQueries');
   const fallbackRegion = defaultUnknownRegion(irFunction.functionId);
   const { descriptors, readsByNode, writesByNode } = discoverDescriptors(irFunction, cfg, options, fallbackRegion);
+  const orderedNodes = nodeOrder(irFunction, cfg, options);
+  const nodeOrderById = new Map(orderedNodes.map((node, index) => [node.id, index]));
+  const semanticValueById = new Map((irFunction.values ?? []).map((value) => [String(value.id), value]));
 
   const regionById = new Map();
   for (const region of options.regions ?? []) addRegion(regionById, region);
@@ -334,14 +496,32 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
   if (regionById.size > budgetLimit(options, 'maxRegions')) fail('memory-ssa-build-budget-exceeded-maxRegions');
   const regions = [...regionById.values()].sort((a, b) => a.id.localeCompare(b.id));
   const regionIds = regions.map((region) => region.id);
+  const identity = jsonSafe(options.identity ?? {
+    functionId: irFunction.functionId,
+    memorySsaBuildVersion: MEMORY_SSA_BUILD_VERSION,
+    analyzerVersion: MEMORY_SSA_BUILD_VERSION,
+  });
 
   const aliasCache = new Map();
   const queryAlias = (left, right, purpose) => {
     const key = `${left.key}\u0000${right.key}\u0000${purpose}`;
     if (aliasCache.has(key)) return aliasCache.get(key);
     aliasTick();
-    let raw = 'unknown';
-    if (typeof options.queryAlias === 'function') {
+    let raw = null;
+    if (typeof options.querySpecialAlias === 'function') {
+      raw = options.querySpecialAlias(left.region, right.region, {
+        function: irFunction,
+        cfg,
+        left,
+        right,
+        purpose,
+        signal: options.signal,
+        ssa: options.ssa ?? null,
+        rootDescriptorProvider: options.rootDescriptorProvider ?? null,
+      });
+      if (raw && typeof raw.then === 'function') fail('memory-ssa-build-async-special-alias-query-unsupported');
+    }
+    if (raw == null && typeof options.queryAlias === 'function') {
       raw = options.queryAlias(left.region, right.region, {
         function: irFunction,
         cfg,
@@ -349,10 +529,23 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
         right,
         purpose,
         signal: options.signal,
+        ssa: options.ssa ?? null,
+        rootDescriptorProvider: options.rootDescriptorProvider ?? null,
       });
       if (raw && typeof raw.then === 'function') fail('memory-ssa-build-async-alias-query-unsupported');
     }
+    if (raw == null) raw = 'unknown';
     const result = normalizeAliasResult(raw);
+    const canonicalProof = canonicalAliasProof({
+      result,
+      identity,
+      functionId: irFunction.functionId,
+      leftRegionId: left?.region?.id,
+      rightRegionId: right?.region?.id,
+      sourceEntityIds: [left?.descriptor?.node?.id, right?.descriptor?.node?.id],
+      purpose,
+    });
+    result.proof = canonicalProof;
     aliasCache.set(key, result);
     return result;
   };
@@ -379,7 +572,7 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
 
   const eventsByNode = new Map();
   const eventById = new Map();
-  for (const node of nodeOrder(irFunction, cfg, options)) {
+  for (const node of orderedNodes) {
     const writes = writesByNode.get(node.id) ?? [];
     for (const descriptor of writes) {
       for (const region of regions) {
@@ -563,6 +756,7 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
           effectSummary: effectSummary(event.descriptor, event.aliasRelation),
           proof: {
             kind: event.kind === 'memory-def' ? 'must-alias-memory-write' : 'conservative-memory-clobber',
+            version: MEMORY_SSA_PROOF_VERSION,
             aliasRelation: event.aliasRelation,
             providerProof: event.aliasProof,
           },
@@ -596,6 +790,7 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
 
   const uses = [];
   const accessMetadata = [];
+  const byteCoverageInputs = [];
   for (const blockId of traversal) {
     const state = cloneState(inStateByBlock.get(blockId));
     const block = irBlockById.get(blockId);
@@ -627,10 +822,20 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
               proofKind: 'memory-use-def-link',
             }),
           });
+          if (descriptor.sourceKind === 'load') {
+            byteCoverageInputs.push({
+              useId: id,
+              nodeId,
+              regionId: region.id,
+              descriptor,
+              state: cloneState(state),
+            });
+          }
           accessMetadata.push({
             memorySsaEntityId: id,
             entityKind: 'use',
             nodeId,
+            sourceEntityId: nodeId,
             regionId: region.id,
             sourceKind: descriptor.sourceKind,
             role: descriptor.role,
@@ -644,6 +849,27 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
               alignment: descriptor.memory.alignment,
             }),
             aliasProof: reaching.proof ?? null,
+            aliasRelation: reaching.relation === 'no' ? 'unknown' : reaching.relation,
+            accessProof: memoryAccessProof(descriptor, options, identity),
+            ...(descriptor.sourceKind === 'load' || descriptor.sourceKind === 'store'
+              ? (() => {
+                const canonicalValue = descriptor.role === 'write'
+                  ? canonicalStoreOperand(descriptor.node, semanticValueById, identity, irFunction.functionId, id)
+                  : null;
+                return canonicalValue == null ? {} : { canonicalValue };
+              })()
+              : {}),
+            origin: jsonSafe(descriptor.node.origin),
+            byteRange: memoryByteRange(region, descriptor.memory, descriptor.node),
+            rangeProof: memoryRangeProof(
+              id,
+              nodeId,
+              region.id,
+              memoryByteRange(region, descriptor.memory, descriptor.node),
+              descriptor.memory,
+              descriptor.node,
+            ),
+            order: nodeOrderById.get(nodeId) ?? null,
           });
         }
       }
@@ -657,6 +883,7 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
       memorySsaEntityId: event.id,
       entityKind: 'definition',
       nodeId: event.descriptor.node.id,
+      sourceEntityId: event.descriptor.node.id,
       regionId: event.regionId,
       sourceKind: event.descriptor.sourceKind,
       role: event.descriptor.role,
@@ -670,8 +897,85 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
         alignment: event.descriptor.memory.alignment,
       }),
       aliasProof: event.aliasProof,
+      aliasRelation: event.aliasRelation,
+      accessProof: memoryAccessProof(event.descriptor, options, identity),
+      ...(event.descriptor.role === 'write'
+        ? (() => {
+          const canonicalValue = canonicalStoreOperand(
+            event.descriptor.node,
+            semanticValueById,
+            identity,
+            irFunction.functionId,
+            event.id,
+          );
+          return canonicalValue == null ? {} : { canonicalValue };
+        })()
+        : {}),
+      origin: jsonSafe(event.descriptor.node.origin),
+      byteRange: memoryByteRange(regionById.get(event.regionId), event.descriptor.memory, event.descriptor.node),
+      rangeProof: memoryRangeProof(
+        event.id,
+        event.descriptor.node.id,
+        event.regionId,
+        memoryByteRange(regionById.get(event.regionId), event.descriptor.memory, event.descriptor.node),
+        event.descriptor.memory,
+        event.descriptor.node,
+      ),
+      order: nodeOrderById.get(event.descriptor.node.id) ?? null,
     });
   }
+
+  const definitionByIdForCoverage = new Map(definitions.map((definition) => [definition.id, definition]));
+  const byteCoverage = byteCoverageInputs.map((input) => {
+    const region = regionById.get(input.regionId) ?? null;
+    const loadRange = memoryByteRange(region, input.descriptor.memory, input.descriptor.node);
+    const regionAliases = regions.map((candidate) => {
+      const alias = descriptorToRegionAlias(input.descriptor, candidate, 'load-byte-region');
+      return {
+        regionId: candidate.id,
+        aliasRelation: alias.relation,
+        aliasProof: alias.proof,
+      };
+    });
+    const regionStates = regionAliases.map((aliasState) => {
+      if (aliasState.aliasRelation === 'no') return null;
+      const candidate = regionById.get(aliasState.regionId);
+      const definitionId = input.state.get(candidate.id) ?? null;
+      const definition = definitionId == null ? null : definitionByIdForCoverage.get(definitionId);
+      return {
+        regionId: candidate.id,
+        definitionId,
+        order: definition?.sourceEntityId == null
+          ? null
+          : nodeOrderById.get(definition.sourceEntityId) ?? null,
+        aliasRelation: aliasState.aliasRelation,
+        aliasProof: aliasState.aliasProof,
+      };
+    }).filter(Boolean);
+    const coverageProof = {
+      kind: 'memoryssa-byte-state',
+      version: MEMORY_SSA_PROOF_VERSION,
+      buildVersion: MEMORY_SSA_BUILD_VERSION,
+      functionId: irFunction.functionId,
+      useId: input.useId,
+      nodeId: input.nodeId,
+      regionId: input.regionId,
+      loadRange,
+      identityDigest: stableDigest(identity),
+    };
+    return {
+      useId: input.useId,
+      nodeId: input.nodeId,
+      regionId: input.regionId,
+      loadRange,
+      coverageState: loadRange != null && regionStates.every((item) => item.definitionId != null)
+        ? 'complete'
+        : 'partial',
+      regionAliasStates: regionAliases,
+      regionStates,
+      proof: coverageProof,
+    };
+  });
 
   const contract = createMemorySsaContract({
     functionId: irFunction.functionId,
@@ -693,12 +997,30 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
 
   accessMetadata.sort((a, b) => a.memorySsaEntityId.localeCompare(b.memorySsaEntityId)
     || a.regionId.localeCompare(b.regionId));
-  return deepFreeze({
+  const canonicalAccessBindings = accessMetadata
+    .map((metadata) => canonicalAccessBinding(metadata))
+    .sort((a, b) => a.memorySsaEntityId.localeCompare(b.memorySsaEntityId)
+      || a.regionId.localeCompare(b.regionId));
+  const artifact = {
     ...contract,
     buildVersion: MEMORY_SSA_BUILD_VERSION,
+    completeness: irFunction.completeness,
+    unknowns: jsonSafe(irFunction.unknowns ?? []),
+    ...(identity == null ? {} : { identity }),
+    canonicalIrIdentity: jsonSafe(options.canonicalIrIdentity ?? {
+      functionId: irFunction.functionId,
+      semanticIrDigest: identity?.semanticIrDigest ?? null,
+    }),
+    ...(options.snapshotId == null ? {} : { snapshotId: String(options.snapshotId) }),
     useDefLinks,
     defUseLinks,
     accessMetadata,
+    canonicalAccessBindings,
+    byteCoverage,
     blockStates,
+  };
+  return deepFreeze({
+    ...artifact,
+    canonicalDigest: canonicalMemorySsaDigest(artifact),
   });
 }

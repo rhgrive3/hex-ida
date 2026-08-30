@@ -16,6 +16,7 @@ import { INTERACTIVE_STAGES as PHASE8_INTERACTIVE_STAGES, PASS_STAGES as PHASE8_
 import { printExpression, printProgram, expressionReadability } from './pretty/c.js';
 import { explainSemanticFacts } from './explain.js';
 import { buildNZCVConditionExpression } from './flag-semantics.js';
+import { isCanonicalExactMemoryForwarding } from '../semantics/memoryssa/queries.js';
 
 function valueOf(a) { return a?.value || null; }
 function safeIdent(s, fallback = 'value') {
@@ -203,29 +204,6 @@ function selectExpression(d, state) {
   return expr.select(condition, t, f, d.dst?.bits || t.bits, signedFor(state, d.dst), origin(d, d.dst));
 }
 
-function targetBlock(ir, cbr, rowOfAddress) {
-  const addr = cbr?.extra?.target;
-  if (addr == null) return null;
-  const row = rowOfAddress?.(addr);
-  if (row == null) return null;
-  return ir.blocks.find((b) => row >= b.startRow && row <= b.endRow)?.index ?? null;
-}
-
-function blockTerm(block) {
-  const xs = block?.insts || [];
-  for (let i = xs.length - 1; i >= 0; i--) if (['cbr','br','ret'].includes(xs[i].op)) return xs[i];
-  return null;
-}
-
-function branchSucc(ir, block, term, state) {
-  const succ = block?.succ || [];
-  if (term?.op !== 'cbr' || succ.length !== 2) return { yes: null, no: null };
-  const yes = targetBlock(ir, term, state.opts?.rowOfAddress);
-  if (yes == null || !succ.includes(yes)) return { yes: null, no: null };
-  const no = succ.find((x) => x !== yes) ?? null;
-  return no == null ? { yes: null, no: null } : { yes, no };
-}
-
 function branchCondition(inst, state) {
   const kind = inst?.extra?.kind || inst?.sub || '';
   const v = valueOf(inst?.args?.[0]);
@@ -238,58 +216,6 @@ function branchCondition(inst, state) {
     return expr.compare(kind === 'tbz' ? 'eq' : 'ne', tested, expr.constant(0, value.bits || 64), false, origin(inst));
   }
   return compareFromFlags(valueOf(inst?.args?.at?.(-1)), inst?.cond || inst?.extra?.cond, state);
-}
-
-function canReach(ir, start, target, blocked, cap = 256) {
-  if (start == null || target == null) return false;
-  const q = [start], seen = new Set();
-  while (q.length && cap-- > 0) {
-    const b = q.shift();
-    if (b === target) return true;
-    if (b === blocked || seen.has(b)) continue;
-    seen.add(b);
-    for (const s of ir.blocks?.[b]?.succ || []) if (!seen.has(s)) q.push(s);
-  }
-  return false;
-}
-
-function controllingBranchForMemoryPhi(phi, state) {
-  const incoming = phi?.incoming || [];
-  if (incoming.length !== 2 || phi?.block == null) return null;
-  const candidates = [];
-  for (const block of state.ir.blocks || []) {
-    const term = blockTerm(block);
-    if (term?.op !== 'cbr' || block.succ.length !== 2) continue;
-    const { yes, no } = branchSucc(state.ir, block, term, state);
-    if (yes == null || no == null) continue;
-    const phiDom = state.ir.dominators?.[phi.block];
-    if (phiDom && !phiDom.has(block.index)) continue;
-    const yr = incoming.map((x) => canReach(state.ir, yes, x.from, phi.block));
-    const nr = incoming.map((x) => canReach(state.ir, no, x.from, phi.block));
-    const yesIndex = yr.findIndex(Boolean), noIndex = nr.findIndex(Boolean);
-    if (yesIndex < 0 || noIndex < 0 || yesIndex === noIndex) continue;
-    if (yr.filter(Boolean).length !== 1 || nr.filter(Boolean).length !== 1) continue;
-    if (yr[noIndex] || nr[yesIndex]) continue;
-    candidates.push({ term, yesIndex, noIndex, block:block.index });
-  }
-  return candidates.length === 1 ? candidates[0] : null;
-}
-
-function memoryNodeExpression(node, loadInst, state, seen = new Set()) {
-  if (!node || seen.has(node)) return null;
-  seen.add(node);
-  if (node.kind === 'store' && node.inst) return buildArg(node.inst.args?.[0], state);
-  if (node.kind !== 'phi') return null;
-  const incoming = (node.incoming || []).filter((x) => x?.node);
-  if (!incoming.length) return null;
-  const values = incoming.map((x) => memoryNodeExpression(x.node, loadInst, state, new Set(seen)));
-  if (values.some((x) => !x)) return null;
-  const unique = new Map(values.map((x) => [structuralKey(x), x]));
-  if (unique.size === 1) return values[0];
-  if (incoming.length !== 2) return null;
-  const control = controllingBranchForMemoryPhi(node, state);
-  if (!control) return null;
-  return expr.select(branchCondition(control.term, state), values[control.yesIndex], values[control.noIndex], loadInst?.dst?.bits || values[0].bits || 64, loadInst?.dst?.signed ?? null, origin(loadInst, loadInst?.dst, 'Memory SSA phi'));
 }
 
 function buildValue(v, state, flags = {}) {
@@ -355,10 +281,14 @@ function buildValue(v, state, flags = {}) {
       out = expr.variable(name ? safeIdent(name) : `global_${BigInt(address || 0).toString(16).toUpperCase()}`, 64, false, origin(d, v), { address });
     } else if (d.op === 'load') {
       const loc = memoryLocation(d, state);
-      // Memory SSA itself is the alias proof. If a reaching store survives to this
-      // load, unrelated intervening stores/calls did not kill this location version.
-      if (d.reachingStore && d.reachingStore !== d) out = buildArg(d.reachingStore.args?.[0], state);
-      else out = memoryNodeExpression(d.memUse, d, state) || expr.load(loc, v.bits || Number((d.size || 8) * 8), origin(d, v), { signed: d.signed ?? signedFor(state, v), volatile: !!d.volatile });
+      // Only the canonical proof-bearing fact may produce a value. A
+      // structural reachingStore link is deliberately ignored here once the
+      // canonical MemorySSA boundary has published a result.
+      if (isCanonicalExactMemoryForwarding(d.memoryForwarding) && d.memoryForwarding.value != null) {
+        out = constNode(v, d.memoryForwarding.value);
+      } else {
+        out = expr.load(loc, v.bits || Number((d.size || 8) * 8), origin(d, v), { signed: d.signed ?? signedFor(state, v), volatile: !!d.volatile });
+      }
     } else if (d.op === 'call') {
       out = expr.variable(`call_${d.id}`, v.bits || 64, signedFor(state, v), origin(d, v), { materializedCall: true });
     } else if (d.op === 'phi') {
@@ -494,7 +424,12 @@ function isElidableReturnSpillStore(store, state) {
   const instructions = state.ir?.instructions || [];
   const sameLocationMemory = instructions.filter((inst) =>
     (inst.op === 'load' || inst.op === 'store') && inst.loc?.key === store.loc.key);
-  const loads = sameLocationMemory.filter((inst) => inst.op === 'load' && inst.reachingStore === store);
+  const storeDefinitionId = store.memDef?.definitionId ?? store.extra?.memoryDefinitionId ?? null;
+  const loads = sameLocationMemory.filter((inst) => {
+    if (inst.op !== 'load' || !isCanonicalExactMemoryForwarding(inst.memoryForwarding)) return false;
+    return storeDefinitionId != null
+      && inst.memoryForwarding.contributingDefinitionIds.includes(String(storeDefinitionId));
+  });
   if (loads.length !== 1 || sameLocationMemory.some((inst) => inst.op === 'store' && inst !== store)) return false;
   const load = loads[0];
   if (store.row == null || load.row == null || Number(load.row) <= Number(store.row) || !load.dst) return false;

@@ -29,10 +29,13 @@ function irOf(lines) {
 function loadAt(ir, row) { return ir.instructions.find((i) => i.op === OP.LOAD && i.row === row); }
 function callAt(ir, row) { return ir.instructions.find((i) => i.op === OP.CALL && i.row === row); }
 
-// No opaque consumer: keep precise stack reaching-store information.
+// A structural MemorySSA edge is not an exact value proof. The v2
+// compatibility projection must keep the canonical memory fact authoritative
+// and leave reachingStore unset when the stored operand is not itself proven.
 {
   const ir = irOf(['str w1, [sp, #0x18]','add x9, sp, #0x18','mov x10, x9','ldr w2, [sp, #0x18]','ret']);
-  assert.equal(loadAt(ir, 3)?.reachingStore?.row, 0);
+  assert.equal(loadAt(ir, 3)?.reachingStore, undefined);
+  assert.notEqual(loadAt(ir, 3)?.memoryForwarding?.status, 'exact');
 }
 
 // Direct AAPCS64 argument escape must be represented as a CALL SSA use.

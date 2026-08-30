@@ -4,6 +4,7 @@ import { expr, sourceOf } from './ast/nodes.js';
 import { printProgram } from './pretty/c.js';
 import { PASS_STAGES as PHASE8_ALL_STAGES, runPhase8Stage } from './phase8/index.js';
 import { applyPhase8Projection } from './phase8/projection.js';
+import { isCanonicalExactMemoryForwarding } from '../semantics/memoryssa/queries.js';
 
 export { buildExpressionForTesting } from './pipeline-core.js';
 
@@ -126,12 +127,33 @@ function reanchorRecoveredReturnSource(result, opts = {}) {
     for (const inst of result.ir.instructions || []) {
       if (inst?.op !== 'load' || inst?.loc?.kind !== 'stack' || inst?.row == null || ret.row == null || inst.row >= ret.row) continue;
       if (!sourceRows.has(String(inst.row))) continue;
-      const store = inst.reachingStore;
-      if (store?.op !== 'store' || store?.loc?.kind !== 'stack' || store.loc.key !== inst.loc.key || store.row == null) continue;
+      const fact = inst.memoryForwarding;
+      if (!isCanonicalExactMemoryForwarding(fact)) continue;
+      const store = (result.ir.instructions || []).find((candidate) => {
+        const definitionId = candidate?.memDef?.definitionId ?? candidate?.extra?.memoryDefinitionId ?? null;
+        return candidate?.op === 'store'
+          && candidate?.loc?.kind === 'stack'
+          && candidate.loc.key === inst.loc.key
+          && candidate.row != null
+          && definitionId != null
+          && fact.contributingDefinitionIds.includes(String(definitionId));
+      });
+      if (!store || store.row == null) continue;
       if (!sourceRows.has(String(store.row))) continue;
       if (!load || inst.row > load.row) load = inst;
     }
-    const spill = load?.reachingStore;
+    const spillFact = load?.memoryForwarding;
+    const spill = isCanonicalExactMemoryForwarding(spillFact)
+      ? (result.ir.instructions || []).find((candidate) => {
+        const definitionId = candidate?.memDef?.definitionId ?? candidate?.extra?.memoryDefinitionId ?? null;
+        return candidate?.op === 'store'
+          && candidate?.loc?.kind === 'stack'
+          && candidate.loc.key === load.loc.key
+          && candidate.row != null
+          && definitionId != null
+          && spillFact.contributingDefinitionIds.includes(String(definitionId));
+      })
+      : null;
     if (!load || !spill) continue;
     const spillRow = String(spill.row);
     const alignedAddresses = current.addresses.length === current.rows.length;

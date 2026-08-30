@@ -103,7 +103,9 @@ function memorySsaFor({ barrierKind = null, barrierSource = null } = {}) {
   };
 }
 
-// Load/store + exact reaching store.
+// Load/store without the canonical proof indexes remains structural only; it
+// must not publish a reachingStore that downstream consumers could mistake for
+// byte-exact evidence.
 {
   const out = projectSemanticIrV2ToLegacyV1(memoryFixture(), { memorySsa: memorySsaFor() });
   const store = out.instructions.find((inst) => inst.semanticNodeId === 'n_store');
@@ -112,7 +114,7 @@ function memorySsaFor({ barrierKind = null, barrierSource = null } = {}) {
   assert.equal(load.op, OP.LOAD);
   assert.equal(store.loc.kind, MK.GLOBAL);
   assert.equal(load.loc.kind, MK.GLOBAL);
-  assert.equal(load.reachingStore, store);
+  assert.equal(load.reachingStore, undefined);
   assert.equal(load.memUse.kind, 'store');
   assert.equal(load.memoryAliasRelation, 'must');
 }
