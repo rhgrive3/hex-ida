@@ -1,0 +1,49 @@
+name: Unlinked Top10 Runner
+
+on:
+  push:
+    branches:
+      - fix/unlinked-top10-r2-20260830
+    paths:
+      - tools/maintenance/fix-unlinked-top10.mjs
+      - tools/maintenance/fix-unlinked-top10-trigger.txt
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/unlinked-top10-r2-20260830
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+      - name: Apply guarded fixes
+        run: node tools/maintenance/fix-unlinked-top10.mjs
+      - name: Syntax check touched JavaScript
+        run: |
+          node --check js/agent/tools.js
+          node --check js/script.js
+          node --check js/ai/context/index.js
+          node --check js/ai/control/turn-executor.js
+      - name: Targeted regression tests
+        run: node --test tests/unlinked-top10-regression.test.mjs tests/ai-evidence-status-index.test.mjs
+      - name: Full test suite
+        run: npm test
+      - name: Commit generated patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet && exit 0
+          git commit -m "fix: resolve unlinked analysis wiring issues"
+          git push origin HEAD:fix/unlinked-top10-r2-20260830
