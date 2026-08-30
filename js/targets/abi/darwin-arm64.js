@@ -1,4 +1,5 @@
 import { ABIPlugin } from './registry.js';
+import { canonicalAggregateLayout } from './aggregate-layout.js';
 import {
   AAPCS64_ABI,
   classifyAAPCS64CallReturn,
@@ -33,18 +34,25 @@ function parameterClass(param) {
   const aggregate = !pointer && !homogeneous && aggregateHint;
   const fp = !aggregate && (hfa || vector || cls.includes('float') || cls.includes('fp') || /^(float|double|__fp16)/.test(type));
   const rawMembers = param?.members ?? param?.elements ?? param?.count;
-  const declaredMembers = Number(rawMembers);
+  const memberArray = Array.isArray(rawMembers) ? rawMembers : null;
+  const declaredMembers = memberArray ? memberArray.length : Number(rawMembers);
   const members = homogeneous && Number.isSafeInteger(declaredMembers) && declaredMembers >= 1 && declaredMembers <= 4
     ? declaredMembers : homogeneous ? 0 : 1;
   const declaredBits = Number(param?.bits ?? param?.sizeBits);
-  const declaredElementBits = Number(param?.elementBits ?? param?.memberBits);
+  const firstMemberBits = memberArray?.length ? Number(memberArray[0]?.bits ?? memberArray[0]?.sizeBits) : null;
+  const declaredElementBits = Number(param?.elementBits ?? param?.memberBits ?? firstMemberBits);
   const elementBits = homogeneous && Number.isSafeInteger(declaredElementBits) && declaredElementBits > 0
     ? declaredElementBits : homogeneous ? 0 : null;
   const explicitTotalBitsProven = Number.isSafeInteger(declaredBits) && declaredBits > 0;
   const homogeneousSizeMatches = !homogeneous || !explicitTotalBitsProven
     || (members > 0 && elementBits > 0 && declaredBits === members * elementBits);
-  const homogeneousLayoutProven = !homogeneous || (members > 0 && elementBits > 0 && homogeneousSizeMatches);
-  const aggregateLayoutProven = !aggregate || explicitTotalBitsProven;
+  const layoutEvidence = homogeneous || aggregate ? canonicalAggregateLayout(param) : null;
+  const homogeneousMembersMatch = !homogeneous || !!layoutEvidence
+    && layoutEvidence.members.length === members
+    && layoutEvidence.members.every((member) => member.bits === elementBits);
+  const homogeneousLayoutProven = !homogeneous
+    || (!!layoutEvidence && members > 0 && elementBits > 0 && homogeneousSizeMatches && homogeneousMembersMatch);
+  const aggregateLayoutProven = !aggregate || !!layoutEvidence;
   const bits = homogeneous && members > 0 && elementBits > 0
     ? homogeneousSizeMatches ? Math.max(8, Math.min(512, elementBits * members))
       : Math.max(8, Math.min(512, explicitTotalBitsProven ? declaredBits : 64))

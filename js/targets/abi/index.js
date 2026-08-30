@@ -1,4 +1,7 @@
-import { ABIPlugin, registerABIPlugin, abiPlugin, abiPlugins, findABIPlugin } from './registry.js';
+import {
+  ABIPlugin, registerABIPlugin, abiPlugin, abiPlugins, findABIPlugin,
+  isRegisteredABIPlugin, abiPluginRegistryDigest,
+} from './registry.js';
 import { AAPCS64_ABI } from './aapcs64.js';
 import { DARWIN_ARM64_ABI } from './darwin-arm64.js';
 import { SYSV_AMD64_ABI } from './sysv-amd64.js';
@@ -33,6 +36,7 @@ registerABIPlugin(UNKNOWN_ABI);
 
 export {
   ABIPlugin, registerABIPlugin, abiPlugin, abiPlugins, findABIPlugin,
+  isRegisteredABIPlugin, abiPluginRegistryDigest,
   AAPCS64_ABI, DARWIN_ARM64_ABI,
   SYSV_AMD64_ABI, MICROSOFT_X64_ABI, MICROSOFT_VECTORCALL_ABI, UNKNOWN_ABI,
   RISCV_LP64_ABI, RISCV_LP64F_ABI, RISCV_LP64D_ABI,
@@ -45,8 +49,12 @@ function requestedCallingConvention(target = {}) {
 }
 
 export function resolveABIPlugin(target = {}, { legacyDefault = false } = {}) {
-  if (target?.abiPlugin && typeof target.abiPlugin === 'object') return target.abiPlugin;
-  if (target?.abi && typeof target.abi === 'object') return target.abi;
+  if (target?.abiPlugin && typeof target.abiPlugin === 'object') {
+    return isRegisteredABIPlugin(target.abiPlugin) ? target.abiPlugin : UNKNOWN_ABI;
+  }
+  if (target?.abi && typeof target.abi === 'object') {
+    return isRegisteredABIPlugin(target.abi) ? target.abi : UNKNOWN_ABI;
+  }
   const callingConvention = requestedCallingConvention(target);
   const explicit = target?.abiId || (typeof target?.abi === 'string' ? target.abi : null);
   if (explicit) return findABIPlugin({ id:explicit, callingConvention }) || UNKNOWN_ABI;

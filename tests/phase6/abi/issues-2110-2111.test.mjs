@@ -3,16 +3,24 @@ import assert from 'node:assert/strict';
 import { classifyAAPCS64Arguments } from '../../../js/targets/abi/aapcs64.js';
 
 const classify = (args) => classifyAAPCS64Arguments({ callPrototype:{ args } });
+const aggregate = (bits) => ({
+  type:`struct ${bits}`,
+  aggregate:true,
+  bits,
+  members:Array.from({ length:bits / 64 }, (_unused, index) => ({
+    type:'uint64_t', bits:64, byteOffset:index * 8,
+  })),
+});
 
 test('#2110 aggregate does not split across x7 and stack', () => {
-  const six = classify([...Array.from({length:6},()=>({type:'uint64_t',bits:64})),{type:'struct Pair',aggregate:true,bits:128}]);
+  const six = classify([...Array.from({length:6},()=>({type:'uint64_t',bits:64})),aggregate(128)]);
   assert.deepEqual(six.arguments[6].regs,['x6','x7']);
-  const seven = classify([...Array.from({length:7},()=>({type:'uint64_t',bits:64})),{type:'struct Pair',aggregate:true,bits:128}]);
+  const seven = classify([...Array.from({length:7},()=>({type:'uint64_t',bits:64})),aggregate(128)]);
   assert.equal(seven.arguments[7].location,'stack');
   assert.equal(seven.arguments[7].offset,0);
   assert.equal(seven.arguments[7].bytes,16);
   assert.equal(seven.srcs.some((source)=>source.reg==='x7'), false);
-  const eightByte = classify([...Array.from({length:7},()=>({type:'uint64_t',bits:64})),{type:'struct One',aggregate:true,bits:64}]);
+  const eightByte = classify([...Array.from({length:7},()=>({type:'uint64_t',bits:64})),aggregate(64)]);
   assert.deepEqual(eightByte.arguments[7].regs,['x7']);
 });
 

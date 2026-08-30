@@ -1,4 +1,5 @@
 import { ABIPlugin } from './registry.js';
+import { canonicalAggregateLayout } from './aggregate-layout.js';
 
 /**
  * RISC-V psABI integer calling conventions for RV64.
@@ -180,13 +181,13 @@ function parameterClass(parameter) {
   const floating = !aggregate && !vector && (parameter?.floating === true || isFloatingType(type) || /\bfp\b/.test(abiClass));
   const declaredBits = parameter?.bits ?? parameter?.sizeBits;
   const declaredBitsNumber = Number(declaredBits);
-  const aggregateLayoutProven = !aggregate
-    || (Number.isSafeInteger(declaredBitsNumber) && declaredBitsNumber > 0);
+  const aggregateLayout = aggregate ? canonicalAggregateLayout(parameter) : null;
+  const aggregateLayoutProven = !aggregate || aggregateLayout != null;
   const rawBits = aggregate
     ? aggregateLayoutProven ? declaredBitsNumber : 0
     : Number(declaredBits ?? (pointer ? XLEN : riscvTypeBits(type, XLEN)));
   const bits = Number.isSafeInteger(rawBits) && rawBits > 0 ? Math.min(1_000_000, rawBits) : 0;
-  return { type, abiClass, pointer, aggregate, aggregateLayoutProven, floating, vector, bits };
+  return { type, abiClass, pointer, aggregate, aggregateLayoutProven, aggregateLayout, floating, vector, bits };
 }
 
 function registerSource(reg, bits = XLEN, extra = {}) {
@@ -572,15 +573,62 @@ function createClassifier(profile) {
       stackArgsMayContainPointers ||= classified.pointer;
     });
 
+    // Make the proven named prefix explicit in the canonical result. Entries
+    // beyond a declared fixedParameterCount are type hints at most and must
+    // not look exact merely because the allocator found a register for them.
+    for (const entry of arguments_) {
+      if (!Number.isInteger(entry?.index) || entry.index < 0) continue;
+      if (variadic && entry.index >= fixedParameterCount) {
+        entry.possible = true;
+        entry.mustUse = false;
+        entry.exact = false;
+        entry.variadic = true;
+      } else if (entry.index < fixedParameterCount && entry.possible == null) {
+        entry.possible = false;
+        entry.mustUse = true;
+        entry.exact = true;
+      }
+    }
+
+    /*
+     * A known variadic prototype proves only its named prefix.  The psABI does
+     * not let a consumer infer the anonymous arguments from live registers or
+     * from the number of source parameters, so retain an explicit conservative
+     * frontier in the same form as the other canonical profiles.
+     */
+    const possibleRegisterInputs = [];
+    if (variadic) {
+      for (let index = integerIndex; index < INTEGER_ARGUMENT_REGISTERS.length; index += 1) {
+        const reg = INTEGER_ARGUMENT_REGISTERS[index];
+        const source = registerSource(reg, XLEN, {
+          possible:true, mustUse:false, purpose:'variadic-tail-candidate', abiClass:'variadic-unknown-integer',
+        });
+        srcs.push(source);
+        possibleRegisterInputs.push(source);
+        arguments_.push({ index:null, location:'register', reg, bits:XLEN,
+          abiClass:'variadic-unknown-integer', possible:true, mustUse:false, exact:false,
+          variadic:true, mayContainPointers:true });
+      }
+      arguments_.push({ index:null, location:'stack', offset:null, stackOffset:null,
+        bits:null, bytes:null, abiClass:'variadic-unknown-stack', possible:true,
+        mustUse:false, exact:false, variadic:true, mayContainPointers:true });
+      partial = true;
+    }
+
     return {
       srcs,
       arguments:arguments_,
       stackArguments,
+      possibleRegisterInputs,
       stackArgsUnknown:variadic,
       stackArgsMayContainPointers:stackArgsMayContainPointers || variadic,
       aggregateClassification:aggregatePartial ? 'partial-unproven' : aggregateProven ? 'proven' : 'not-required',
       variadicClassification:variadic ? 'proven-named-then-integer-varargs' : 'not-variadic',
-      partial:partial || aggregatePartial,
+      anonymousArgumentFrontier:variadic ? {
+        location:'unknown', possible:true, mustUse:false,
+        reason:'anonymous-vararg-frontier-not-source-prototyped',
+      } : undefined,
+      partial:partial || aggregatePartial || variadic,
       scope:profile.scope,
       evidence:`prototype-${profile.id}`,
       completeness:(partial || aggregatePartial || allocationUnknown) ? 'partial' : 'exact',
@@ -600,8 +648,20 @@ function createClassifier(profile) {
     const aggregate = prototype.aggregate === true || /aggregate|struct|union|record|array/.test(`${type} ${abiClass}`);
     const declaredBits = prototype.returnBits ?? prototype.bits ?? options.returnBits;
     const declaredBitsNumber = Number(declaredBits);
-    const aggregateLayoutProven = !aggregate
-      || (Number.isSafeInteger(declaredBitsNumber) && declaredBitsNumber > 0);
+    const aggregateLayoutParameter = aggregate
+      ? (prototype.returnAggregate && typeof prototype.returnAggregate === 'object'
+        ? { ...prototype, ...prototype.returnAggregate }
+        : { ...prototype })
+      : null;
+    // Return prototypes conventionally call the width `returnBits`; normalize
+    // it to the shared layout descriptor's `bits` field before proving spans.
+    if (aggregateLayoutParameter && Number.isSafeInteger(declaredBitsNumber) && declaredBitsNumber > 0) {
+      aggregateLayoutParameter.bits = declaredBitsNumber;
+    }
+    const aggregateLayout = aggregate
+      ? canonicalAggregateLayout(aggregateLayoutParameter)
+      : null;
+    const aggregateLayoutProven = !aggregate || aggregateLayout != null;
     if ((prototype.indirectResult === true || abiClass === 'indirect') && aggregate && !aggregateLayoutProven) {
       return { reg:null, bits:null, bytes:null, aggregate:true, partial:true, location:'unknown',
         reason:`${profile.id}-aggregate-return-size-layout-unproven` };

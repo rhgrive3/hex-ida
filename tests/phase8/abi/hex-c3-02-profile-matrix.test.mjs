@@ -47,7 +47,8 @@ test('HEX-C3-02: stale ABI semantic identity cannot publish a supported prototyp
 });
 
 test('HEX-C3-02: canonical aggregate pieces remain one prototype argument', () => {
-  const parameter = { type:'struct Pair', aggregate:true, bits:128 };
+  const parameter = { type:'struct Pair', aggregate:true, bits:128,
+    members:[{ type:'uint64', bits:64, byteOffset:0 }, { type:'uint64', bits:64, byteOffset:8 }] };
   const canonical = AAPCS64_ABI.classifyArguments(
     { callPrototype:{ parameters:[parameter] } },
     { callPrototype:{ parameters:[parameter] } },

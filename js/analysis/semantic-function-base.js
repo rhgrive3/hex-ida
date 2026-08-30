@@ -1,5 +1,7 @@
 import { architecturePluginV2 } from '../targets/architecture/index.js';
-import { resolveABIPlugin } from '../targets/abi/index.js';
+import {
+  resolveABIPlugin, isRegisteredABIPlugin, abiPluginRegistryDigest,
+} from '../targets/abi/index.js';
 import {
   abiInvalidState, abiResultInvalidState, canonicalAbiEvidence, canonicalAbiHiddenResult,
   normalizeAbiPieces,
@@ -200,6 +202,8 @@ export function partitionDecodedFunction(instructions, architecturePlugin, optio
 
 export function semanticAbiAdapter(abiPlugin, options = {}) {
   const plugin = abiPlugin && typeof abiPlugin === 'object' ? abiPlugin : null;
+  const registryRegistered = isRegisteredABIPlugin(plugin);
+  const registryDigest = registryRegistered ? abiPluginRegistryDigest(plugin) : null;
   const pluginId = String(plugin?.id || 'unknown');
   const semanticVersion = plugin?.semanticVersion == null ? null : String(plugin.semanticVersion);
   const semanticIdentity = plugin?.semanticIdentity == null ? null : String(plugin.semanticIdentity);
@@ -245,7 +249,8 @@ export function semanticAbiAdapter(abiPlugin, options = {}) {
   const arm64eProfileMatches = targetArchitectureText !== 'arm64e'
     || (pluginId === 'darwin-arm64' && platformId != null
       && appleArm64ePlatforms.has(String(platformId).trim().toLowerCase()));
-  const supported = !!plugin && plugin.supported !== false && pluginId !== 'unknown'
+  const supported = !!plugin && registryRegistered && !!registryDigest
+    && plugin.supported !== false && pluginId !== 'unknown'
     && !!semanticVersion && !!semanticIdentity && !!architectureId
     && architectureMatches && platformMatches && arm64eProfileMatches;
   // A profile descriptor is an identity record, not a placement classifier.
@@ -276,6 +281,7 @@ export function semanticAbiAdapter(abiPlugin, options = {}) {
     platform:platformId == null ? null : String(platformId),
     profileIdentity,
     abiId:pluginId,
+    registryDigest,
     schemaVersion:schemaVersion == null ? null : String(schemaVersion),
     snapshotId:snapshotId == null ? null : String(snapshotId),
     analyzerId:analyzerId == null ? null : String(analyzerId),
@@ -286,8 +292,9 @@ export function semanticAbiAdapter(abiPlugin, options = {}) {
     architectureProfile,
   });
   const provenance = Object.freeze({
-    source:'canonical-abi-registry',
+    source:registryRegistered ? 'canonical-abi-registry' : 'unregistered-abi-adapter',
     abiId:pluginId,
+    registryDigest,
     semanticIdentity,
     semanticVersion,
     architectureId,
@@ -311,6 +318,7 @@ export function semanticAbiAdapter(abiPlugin, options = {}) {
     architectureProfile,
     profileIdentity,
     abiId:pluginId,
+    registryDigest,
     platformId:identity.platform,
     schemaVersion:identity.schemaVersion,
     snapshotId:identity.snapshotId,
@@ -335,6 +343,7 @@ export function semanticAbiAdapter(abiPlugin, options = {}) {
       abiSemanticIdentity:semanticIdentity,
       profileIdentity,
       abiIdentity:identity,
+      registryDigest,
       provenance,
       invalidation,
     };
@@ -356,6 +365,7 @@ export function semanticAbiAdapter(abiPlugin, options = {}) {
           profileIdentity,
           abiSemanticIdentity:semanticIdentity,
           abiId:pluginId,
+          registryDigest,
           abiIdentity:identity,
           provenance,
           invalidation,
@@ -366,7 +376,7 @@ export function semanticAbiAdapter(abiPlugin, options = {}) {
   }
 
   function classifyCanonicalArguments({ functionPrototype = null, call = null } = {}) {
-    if (!plugin?.classifyArguments) return null;
+    if (!registryRegistered || !plugin?.classifyArguments) return null;
     if (abiEvidenceState(options, call, plugin)) return null;
     const prototype = functionPrototype ?? call?.callPrototype ?? options?.callPrototype ?? null;
     const instruction = {
@@ -379,7 +389,7 @@ export function semanticAbiAdapter(abiPlugin, options = {}) {
   }
 
   function classifyCanonicalFunctionReturn({ functionPrototype = null, ...returnOptions } = {}) {
-    if (!plugin?.classifyFunctionReturn) return null;
+    if (!registryRegistered || !plugin?.classifyFunctionReturn) return null;
     if (abiEvidenceState({ ...options, ...returnOptions }, null, plugin)) return null;
     const prototype = functionPrototype ?? options?.functionPrototype ?? null;
     try {
@@ -501,6 +511,7 @@ export function semanticAbiAdapter(abiPlugin, options = {}) {
     architectureProfile:identity.architectureProfile,
     profileIdentity,
     abiId:pluginId,
+    registryDigest,
     schemaVersion:identity.schemaVersion,
     snapshotId:identity.snapshotId,
     analyzerId:identity.analyzerId,
@@ -509,6 +520,10 @@ export function semanticAbiAdapter(abiPlugin, options = {}) {
     sliceId:identity.sliceId,
     functionId:identity.functionId,
     supported,
+    // Keep the actual registry object attached to the adapter. Matching an id
+    // and digest is insufficient: an unregistered classifier can copy both
+    // fields while implementing different placement rules.
+    registryPlugin:registryRegistered ? plugin : null,
     identity,
     provenance,
     invalidation,
@@ -717,6 +732,7 @@ export function semanticAbiAdapter(abiPlugin, options = {}) {
         returnHiddenResultPointer:publishableReturn ? returned?.hiddenResultPointer ?? null : null,
         noreturn:callNoreturnState(options),
         abiId:pluginId,
+        registryDigest,
         abiSemanticVersion:semanticVersion,
         abiSemanticIdentity:semanticIdentity,
         abiIdentity:identity,

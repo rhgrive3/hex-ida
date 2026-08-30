@@ -91,9 +91,12 @@ for (const [abi, name, integerReg, fpReg, pointerReg, fpClass] of scalarProfiles
   });
 }
 
-const aggregate16 = { type:'struct Pair', aggregate:true, bits:128 };
-const aggregate32 = { type:'struct Big', aggregate:true, bits:256 };
-const hfa4 = { type:'struct HFA', aggregate:true, hfa:true, members:4, elementBits:32, bits:128 };
+const aggregate16 = { type:'struct Pair', aggregate:true, bits:128,
+  members:[{ type:'uint64', bits:64, byteOffset:0 }, { type:'uint64', bits:64, byteOffset:8 }] };
+const aggregate32 = { type:'struct Big', aggregate:true, bits:256,
+  members:Array.from({ length:4 }, (_unused, index) => ({ type:'uint64', bits:64, byteOffset:index * 8 })) };
+const hfa4 = { type:'struct HFA', aggregate:true, hfa:true, elementBits:32, bits:128,
+  members:Array.from({ length:4 }, (_unused, index) => ({ type:'float', bits:32, byteOffset:index * 4 })) };
 const hva4 = { type:'struct HVA', aggregate:true, hva:true, members:4, elementBits:64, bits:256 };
 const sysvIntegerPair = { type:'struct Pair', aggregate:true, bits:128, eightbyteClasses:['INTEGER','INTEGER'] };
 const sysvSsePair = { type:'struct FPair', aggregate:true, bits:128, eightbyteClasses:['SSE','SSE'] };
@@ -139,10 +142,8 @@ row('Microsoft vectorcall HVA', () => {
 for (const [abi, name] of [[RISCV_LP64_ABI,'LP64'], [RISCV_LP64F_ABI,'LP64F'], [RISCV_LP64D_ABI,'LP64D']]) {
   row(`RISC-V ${name} aggregate boundaries`, () => {
     const small = classifyArguments(abi, [aggregate16]);
-    if (abi === RISCV_LP64_ABI) {
-      assert.equal(small.partial, false);
-      assert.deepEqual(registers(small.arguments[0]), ['x10','x11']);
-    } else assert.equal(small.partial, true);
+    assert.equal(small.partial, false);
+    assert.deepEqual(registers(small.arguments[0]), ['x10','x11']);
     const large = classifyArguments(abi, [aggregate32]);
     assert.equal(large.partial, false);
     assert.equal(large.arguments[0].pointer, true);
@@ -162,7 +163,7 @@ for (const [abi, name, parameter, expected] of [
   });
 }
 row('AAPCS64 hidden sret', () => {
-  const result = classifyReturn(AAPCS64_ABI, { returnType:'struct Big', aggregate:true, bits:256, returnsValue:true });
+  const result = classifyReturn(AAPCS64_ABI, { ...aggregate32, returnType:'struct Big', returnsValue:true });
   assert.equal(result.indirect, true);
   assert.equal(result.hiddenResultPointer, 'x8');
 });
@@ -172,7 +173,7 @@ row('Microsoft x64 hidden sret', () => {
   assert.equal(result.hiddenResultPointer.input, 'rcx');
 });
 row('RISC-V hidden sret', () => {
-  const result = classifyReturn(RISCV_LP64_ABI, { returnType:'struct Big', aggregate:true, bits:256, returnsValue:true });
+  const result = classifyReturn(RISCV_LP64_ABI, { ...aggregate32, returnType:'struct Big', returnsValue:true });
   assert.equal(result.indirect, true);
   assert.equal(result.hiddenResultPointer.input, 'x10');
 });
@@ -243,7 +244,7 @@ row('consumer groups RISC-V LP64 aggregate pieces', () => {
   assert.deepEqual(prototype.arguments[0].regs, ['x10','x11']);
 });
 row('consumer preserves aggregate return piece metadata', () => {
-  const prototype = recover(AAPCS64_ABI, ['x0','x1'], { ret:{ type:'struct Pair', aggregate:true, bits:128 } });
+  const prototype = recover(AAPCS64_ABI, ['x0','x1'], { ret:{ ...aggregate16, type:'struct Pair' } });
   assert.ok(prototype.returnLocations.every((location) => location.abiClass));
 });
 row('consumer projects SysV aggregate return pieces', () => {

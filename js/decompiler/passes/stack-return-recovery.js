@@ -273,9 +273,41 @@ function committedLocationForPhi(result, value) {
   return locations[0];
 }
 
-function committedReturnValue(result, root, ret) {
+function canonicalReturnRegister(result, root, opts = {}) {
+  const adapter = opts.abiAdapter || result?.abiAdapter || result?.ctx?.abiAdapter || null;
+  if (adapter?.supported === true && typeof adapter.returnLocations === 'function') {
+    const returnType = opts.returnType
+      ?? opts.functionPrototype?.returnType
+      ?? opts.prototype?.returnType
+      ?? result?.prototype?.returnType
+      ?? result?.types?.ret?.type
+      ?? (root?.bits ? `int${root.bits}` : null);
+    if (!returnType) return null;
+    try {
+      const locations = adapter.returnLocations({
+        functionPrototype:{ returnType, returnsValue:true },
+        returnType,
+      });
+      return Array.isArray(locations) && locations.length === 1
+        && locations[0]?.kind === 'register' && locations[0]?.aggregate !== true
+        ? String(locations[0].reg || '') || null : null;
+    } catch {
+      return null;
+    }
+  }
+  if (adapter) return null;
+  // The old ARM64 facade predates the canonical ABI envelope. Preserve its
+  // presentation-only x0 behavior, while a v2 IR without an adapter remains
+  // unknown instead of acquiring a private ABI rule.
+  if (opts.legacyAArch64 === true || result?.ir?.compat?.projection !== 'semantic-ir-v2-to-v1') return 'x0';
+  return null;
+}
+
+function committedReturnValue(result, root, ret, opts = {}) {
   if (root?.kind !== 'load' || root.location?.kind !== 'stack' || !root.location?.key) return null;
-  const reaching = reachingRegisterDefinition(result.ir, ret, 'x0');
+  const returnRegister = canonicalReturnRegister(result, root, opts);
+  if (!returnRegister) return null;
+  const reaching = reachingRegisterDefinition(result.ir, ret, returnRegister);
   const load = reaching?.def;
   if (load?.op !== 'load' || load.loc?.key !== root.location.key) return null;
   const stackStore = load.reachingStore || latestStoreTo(result.ir, load.block, load.row, root.location.key);
@@ -382,7 +414,7 @@ export function recoverExactStackReturn(result, opts = {}) {
     timeBudgetMs:Math.min(12, Math.max(4, Number(opts.decompilerTimeBudgetMs || 50) / 4)),
     maxApplications:512,
   });
-  const committed = committedReturnValue(result, root, ret);
+  const committed = committedReturnValue(result, root, ret, opts);
   const recovered = committed || resolve(result.ir, ret.block, ret.row, root.location.key, values, opts, engine, new Set());
   // A stack load means no useful reconstruction happened. A committed non-stack
   // field/global load is an intentional high-level return and must be retained.

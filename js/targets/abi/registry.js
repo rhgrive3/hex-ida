@@ -1,4 +1,7 @@
+import { stableDigest } from '../../core/identity/index.js';
+
 const ABI_PLUGINS = new Map();
+const ABI_REGISTRY_BINDINGS = new WeakMap();
 const APPLE_ARM64E_PLATFORMS = new Set([
   'apple', 'darwin', 'macos', 'macosx', 'ios', 'ios-simulator', 'ipados',
   'tvos', 'watchos', 'visionos',
@@ -57,10 +60,49 @@ export class ABIPlugin {
   }
 }
 
+function registryDescriptor(plugin) {
+  return {
+    id:plugin?.id ?? null,
+    semanticVersion:plugin?.semanticVersion ?? null,
+    semanticIdentity:plugin?.semanticIdentity ?? null,
+    architectureId:plugin?.architectureId ?? null,
+    supported:plugin?.supported !== false,
+    callingConventions:claimedCallingConventions(plugin),
+  };
+}
+
+export function abiPluginRegistryDigest(plugin) {
+  const binding = plugin && typeof plugin === 'object' ? ABI_REGISTRY_BINDINGS.get(plugin) : null;
+  return binding?.digest ?? null;
+}
+
+/*
+ * Registry membership is object identity, not a matching set of public fields.
+ * A plugin-like object can copy an id/version/classifier and still be a
+ * different implementation, so only the exact frozen object registered here
+ * may cross the canonical ABI boundary.
+ */
+export function isRegisteredABIPlugin(plugin) {
+  if (!plugin || typeof plugin !== 'object') return false;
+  const binding = ABI_REGISTRY_BINDINGS.get(plugin);
+  return !!binding && ABI_PLUGINS.get(binding.id) === plugin
+    && binding.digest === `abi-registry:${stableDigest(registryDescriptor(plugin))}`;
+}
+
 export function registerABIPlugin(definition, { replace = false } = {}) {
   const plugin = definition instanceof ABIPlugin ? definition : new ABIPlugin(definition);
-  if (ABI_PLUGINS.has(plugin.id) && !replace) throw new Error(`ABI already registered: ${plugin.id}`);
+  // A duplicate object may not silently steal publication.  An explicit
+  // replacement is allowed for registry lifecycle tooling, but it makes the
+  // previous object non-canonical immediately: isRegisteredABIPlugin() checks
+  // the map's exact object identity as well as each object's digest.
+  if (ABI_PLUGINS.has(plugin.id) && !replace) {
+    throw new Error(`ABI already registered: ${plugin.id}`);
+  }
   ABI_PLUGINS.set(plugin.id, plugin);
+  ABI_REGISTRY_BINDINGS.set(plugin, {
+    id:plugin.id,
+    digest:`abi-registry:${stableDigest(registryDescriptor(plugin))}`,
+  });
   return plugin;
 }
 
@@ -89,6 +131,11 @@ export function findABIPlugin({ id = null, architecture = null, platform = null,
   // an architecture-only arm64e target as AAPCS64 would invent register and
   // aggregate placement facts for non-Apple binaries.
   if (arch === 'arm64e' && !APPLE_ARM64E_PLATFORMS.has(platformId)) return abiPlugin('unknown');
+  // An architecture name is not an ABI identity. Require either an explicit
+  // registered calling convention or a platform-qualified architecture before
+  // selecting a profile; otherwise arm64/x86_64/riscv64 would silently pick a
+  // registry default.
+  if (!arch || (!platformId && !callingConvention)) return abiPlugin('unknown');
   for (const plugin of ABI_PLUGINS.values()) {
     if (!plugin.supported || plugin.id === 'unknown') continue;
     if (arch && plugin.architectureId !== arch && !(arch === 'arm64e' && plugin.architectureId === 'arm64')) continue;
