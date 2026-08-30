@@ -2,9 +2,10 @@ import { STRING_SCAN_BUDGET, StringCollectionBudget } from '../string-budget.js'
 import { ProgramIndex, mergeProgramScans, PROGRAM_MERGE_LIMITS } from '../program.js';
 import { investigationServiceFor } from './investigation-service.js';
 
-const INSTALL_VERSION = 'shared-app-artifacts/v2';
+const INSTALL_VERSION = 'shared-app-artifacts/v3';
 const STRING_ENTRIES = new WeakMap();
 const PROGRAM_ENTRIES = new WeakMap();
+const REF_YIELD_EVERY = 16_384;
 
 function abortError(signal, fallback = 'Analysis consumer aborted') {
   const error = signal?.reason instanceof Error ? signal.reason : new Error(String(signal?.reason || fallback));
@@ -22,6 +23,15 @@ function normalizeOptions(value) {
     priority:options.priority ?? 'user-visible',
     budget:options.budget ?? null,
   };
+}
+function producerOptions(options = {}) {
+  return Object.freeze({
+    priority:options.priority ?? 'user-visible',
+    // Budget remains consumer metadata. It is forwarded to dependency producers
+    // that understand the contract, but never used here to shrink canonical
+    // string/function/reference denominators.
+    budget:options.budget ?? null,
+  });
 }
 function mapFor(root, app) {
   let map = root.get(app);
@@ -75,6 +85,21 @@ function requestWithSignal(request, signal) {
     if (signal?.aborted) { onAbort(); return; }
     signal?.addEventListener?.('abort', onAbort, { once:true });
     Promise.resolve(request).then((value) => finish(resolve, value), (error) => finish(reject, error));
+  });
+}
+function yieldMainRealm(signal) {
+  throwIfAborted(signal);
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener?.('abort', onAbort);
+      fn(value);
+    };
+    const onAbort = () => finish(reject, abortError(signal));
+    signal?.addEventListener?.('abort', onAbort, { once:true });
+    setTimeout(() => finish(resolve), 0);
   });
 }
 function epochOf(app) { return Number(app?.backend?.gen ?? app?.analysisEpoch ?? -1); }
@@ -133,16 +158,20 @@ function boundedRefCount(scan) {
   const requested = Number.isSafeInteger(scan?.refCount) ? scan.refCount : (scan?.refTo?.length || 0);
   return Math.max(0, Math.min(requested, scan?.refFrom?.length || 0, scan?.refTo?.length || 0, scan?.refKind?.length || 0));
 }
-function accumulateGlobalRefs(counts, scan, ranges) {
+async function accumulateGlobalRefs(counts, scan, ranges, { signal = null, yieldEvery = REF_YIELD_EVERY } = {}) {
   const count = boundedRefCount(scan);
+  const cadence = Math.max(1, Number(yieldEvery) || REF_YIELD_EVERY);
   for (let index = 0; index < count; index++) {
+    throwIfAborted(signal);
     const address = BigInt(scan.refTo[index]);
     const region = dataRegionFor(ranges, address);
-    if (!region) continue;
-    const key = address.toString();
-    const previous = counts.get(key);
-    if (previous) previous.refs++;
-    else counts.set(key, { addr:address, refs:1, region:region.name || region.section || region.id || '' });
+    if (region) {
+      const key = address.toString();
+      const previous = counts.get(key);
+      if (previous) previous.refs++;
+      else counts.set(key, { addr:address, refs:1, region:region.name || region.section || region.id || '' });
+    }
+    if (index > 0 && index % cadence === 0) await yieldMainRealm(signal);
   }
   return count;
 }
@@ -158,9 +187,12 @@ function statsFor(program, counts, scannedRefs) {
   });
 }
 
-function createStringEntry(app, key) {
+function createStringEntry(app, key, initialOptions = {}) {
   const controller = new AbortController();
-  const entry = { controller, waiters:0, settled:false, subscribers:new Set(), result:null, promise:null };
+  const entry = {
+    controller, waiters:0, settled:false, subscribers:new Set(), result:null, promise:null,
+    producerOptions:producerOptions(initialOptions),
+  };
   const epoch = epochOf(app);
   entry.promise = (async () => {
     const budget = new StringCollectionBudget(STRING_SCAN_BUDGET);
@@ -186,7 +218,10 @@ function createStringEntry(app, key) {
       const { region, bytes } = use[index];
       const limit = budget.requestLimit();
       if (limit <= 0) break;
-      const request = app.backend.strings({ regionId:region.id, min:4, maxBytes:bytes, limit }, (progress) => publishProgress(entry, {
+      const request = app.backend.strings({
+        regionId:region.id, min:4, maxBytes:bytes, limit,
+        analysisPriority:String(entry.producerOptions.priority || 'user-visible'),
+      }, (progress) => publishProgress(entry, {
         phase:'strings', region:region.id,
         done:index + (progress?.all ? Math.min(1, progress.done / progress.all) : 0), all:use.length,
       }));
@@ -210,6 +245,8 @@ function createStringEntry(app, key) {
       skippedRegions:[...new Set(skipped.map((region) => region.id))],
       unscannedRegions:[...new Set(skipped.map((region) => region.id))],
       producer:'shared-string-artifact/v1',
+      producerPriority:entry.producerOptions.priority,
+      producerBudgetSupplied:entry.producerOptions.budget != null,
     });
     app.stringIndex = rows;
     entry.result = rows;
@@ -226,17 +263,20 @@ function createStringEntry(app, key) {
   return entry;
 }
 
-function createProgramEntry(app, key, regions) {
+function createProgramEntry(app, key, regions, initialOptions = {}) {
   const controller = new AbortController();
-  const entry = { controller, waiters:0, settled:false, subscribers:new Set(), result:null, promise:null };
+  const entry = {
+    controller, waiters:0, settled:false, subscribers:new Set(), result:null, promise:null,
+    producerOptions:producerOptions(initialOptions),
+  };
   const epoch = epochOf(app);
   entry.promise = (async () => {
     const primary = regions.find((region) => region.section === '__text') || regions[0];
     await app.ensureFunctions?.(primary, {
       signal:controller.signal,
       onProgress:(progress) => publishProgress(entry, progress),
-      priority:'user-visible',
-      budget:null,
+      priority:entry.producerOptions.priority,
+      budget:entry.producerOptions.budget,
     });
     throwIfAborted(controller.signal);
     if (epoch !== epochOf(app)) throw Object.assign(new Error('stale shared program'), { stale:true });
@@ -257,12 +297,13 @@ function createProgramEntry(app, key, regions) {
         callLimit:splitLimit(calls, size, remainingBytes),
         refLimit:splitLimit(refs, size, remainingBytes),
         kindLimit:splitLimit(kinds, size, remainingBytes),
+        analysisPriority:String(entry.producerOptions.priority || 'user-visible'),
       });
       try {
         const scan = await requestWithSignal(request, controller.signal);
         if (scan && !scan.cancelled) {
           scans.push(scan);
-          scannedRefs += accumulateGlobalRefs(counts, scan, ranges);
+          scannedRefs += await accumulateGlobalRefs(counts, scan, ranges, { signal:controller.signal });
           calls = Math.max(0, calls - Number(scan.callCount ?? scan.callFrom?.length ?? 0));
           refs = Math.max(0, refs - Number(scan.refCount ?? scan.refFrom?.length ?? 0));
           kinds = Math.max(0, kinds - Number(scan.kindsCovered ?? scan.kinds?.length ?? 0));
@@ -279,6 +320,8 @@ function createProgramEntry(app, key, regions) {
     const merged = mergeProgramScans(scans, { regions, reasons:failures, limits:PROGRAM_MERGE_LIMITS });
     const program = new ProgramIndex(merged, app.symbols, primary);
     const stats = statsFor(program, counts, scannedRefs);
+    Object.defineProperty(stats, 'producerPriority', { value:entry.producerOptions.priority, enumerable:true });
+    Object.defineProperty(stats, 'producerBudgetSupplied', { value:entry.producerOptions.budget != null, enumerable:true });
     Object.defineProperty(program, 'globalReferenceStats', { value:stats, enumerable:false, configurable:true });
     Object.defineProperty(merged, 'globalReferenceStats', { value:stats, enumerable:false, configurable:true });
     app.programScan = merged;
@@ -309,7 +352,7 @@ export function installSharedAppArtifacts(app) {
     const key = String(epoch);
     const map = mapFor(STRING_ENTRIES, app);
     let entry = map.get(key);
-    if (!entry) entry = createStringEntry(app, key);
+    if (!entry) entry = createStringEntry(app, key, options);
     return attach(entry, options);
   };
 
@@ -324,7 +367,7 @@ export function installSharedAppArtifacts(app) {
     const mapKey = `${epoch}:${key}`;
     const map = mapFor(PROGRAM_ENTRIES, app);
     let entry = map.get(mapKey);
-    if (!entry) entry = createProgramEntry(app, key, regions);
+    if (!entry) entry = createProgramEntry(app, key, regions, options);
     return attach(entry, options);
   };
 
