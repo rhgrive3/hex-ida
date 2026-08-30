@@ -101,6 +101,7 @@ function waitForShared(entry, signal) {
       reject(abortError(signal));
     };
     signal?.addEventListener('abort', onAbort, { once: true });
+    if (signal?.aborted) { onAbort(); return; }
     entry.promise.then((value) => finish(resolve, value), (error) => finish(reject, error));
   });
 }
@@ -151,6 +152,7 @@ function scheduleBackgroundIdentity(signal) {
     };
     const onAbort = () => finish(reject, abortError(signal, 'Binary identity scheduling aborted'));
     signal?.addEventListener('abort', onAbort, { once:true });
+    if (signal?.aborted) { onAbort(); return; }
     if (typeof requestIdleCallback === 'function') {
       requestIdleCallback(() => finish(resolve), { timeout:250 });
     } else {
@@ -241,8 +243,9 @@ function installMultiRegionShapes(app) {
           const request = app.backend.valueShapes(region.id, (progress) => onProgress?.({ phase:'shapes', region:region.id, done:index + (progress?.all ? Math.min(1, progress.done / progress.all) : 0), all:regions.length }));
           try {
             value = await new Promise((resolve, reject) => {
-              const onAbort = () => { request.cancel?.(); reject(abortError(signal)); };
+              const onAbort = () => { signal?.removeEventListener('abort', onAbort); request.cancel?.(); reject(abortError(signal)); };
               signal?.addEventListener('abort', onAbort, { once:true });
+              if (signal?.aborted) { onAbort(); return; }
               Promise.resolve(request).then(resolve, reject).finally(() => signal?.removeEventListener('abort', onAbort));
             });
             if (value && !value.cancelled) regionCache.set(cacheKey, value);
