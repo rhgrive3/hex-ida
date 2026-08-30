@@ -66,7 +66,11 @@ function deferredCapabilitiesFetch() {
 }
 
 async function rejectsCancelled(promise) {
-  await assert.rejects(promise, (error) => error?.code === 'cancelled');
+  await assert.rejects(promise, (error) => (
+    error?.type === 'cancelled'
+    && error?.message === 'AI investigation was cancelled.'
+    && error?.details === null
+  ));
 }
 
 {
