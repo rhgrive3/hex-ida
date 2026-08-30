@@ -429,6 +429,12 @@ function attributeValue(die, attribute) {
   return die.attributes.get(attribute)?.value ?? null;
 }
 
+// DW_FORM_flag carries an explicit value; presence alone is not truth.
+function attributeFlag(die, attribute) {
+  const value = attributeValue(die, attribute);
+  return value != null && value !== 0n && value !== 0 && value !== false;
+}
+
 function attributeName(die) {
   const value = attributeValue(die, DW_AT.name);
   return typeof value === 'string' ? value : null;
@@ -498,7 +504,7 @@ function describeType(die, dies, depth = 0, seen = new Set()) {
         sizeBytes: byteSize == null ? null : Number(byteSize),
         // A DW_AT_declaration DIE is a forward declaration: it names the type
         // but says nothing about its layout, so it is not a complete fact.
-        complete: die.complete && attributeValue(die, DW_AT.declaration) == null && byteSize != null,
+        complete: die.complete && !attributeFlag(die, DW_AT.declaration) && byteSize != null,
         isAggregate: true,
         isUnion: die.tag === DW_TAG.union_type,
       };
@@ -697,7 +703,7 @@ export class DwarfDebugInfoProvider extends DebugInfoProvider {
         name: attributeName(die),
         address: toAddress(lowPc),
         sizeBytes,
-        descriptor: { isFunction, external: attributeValue(die, DW_AT.external) != null, complete: die.complete },
+        descriptor: { isFunction, external: attributeFlag(die, DW_AT.external), complete: die.complete },
         providerId: result.providerId,
         providerVersion: result.providerVersion,
         buildIdentity: result.identity.observed,
