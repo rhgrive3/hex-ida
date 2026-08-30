@@ -20,7 +20,7 @@ jobs:
       - name: Install dependencies
         run: |
           npm ci
-          npx playwright install chromium webkit
+          npx playwright install --with-deps chromium webkit
       - name: Extract and apply repair
         shell: bash
         run: |
