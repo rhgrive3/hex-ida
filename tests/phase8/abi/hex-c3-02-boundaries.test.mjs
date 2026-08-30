@@ -483,6 +483,11 @@ test('C3-02 aggregate arguments and returns require proven size/layout on AAPCS6
     assert.equal(argumentsResult?.arguments?.[0]?.location, 'unknown', `${abi.id} aggregate argument must be unknown`);
     assert.equal('reg' in (argumentsResult?.arguments?.[0] || {}), false, `${abi.id} must not invent a scalar register`);
     assert.equal('regs' in (argumentsResult?.arguments?.[0] || {}), false, `${abi.id} must not invent aggregate registers`);
+    const vectorAggregate = abi.classifyArguments({ callPrototype:{ parameters:[{
+      type:'struct VectorAggregate', aggregate:true, vector:true,
+    }] } });
+    assert.equal(vectorAggregate?.partial, true, `${abi.id} vector aggregate must remain unproven`);
+    assert.equal(vectorAggregate?.arguments?.[0]?.location, 'unknown');
 
     const returnResult = abi.classifyFunctionReturn({
       functionPrototype:{ returnType:'struct UnknownAggregate', aggregate:true, returnsValue:true },
