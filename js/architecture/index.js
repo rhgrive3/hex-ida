@@ -35,7 +35,7 @@ export class ArchitectureAdapter {
     });
     this.addressForRow = definition.addressForRow || ((region, row) => {
       if (this.fixedInstructionSize == null || !region) return null;
-      const n = Number(row);
+      const n = row;
       if (!Number.isSafeInteger(n) || n < 0) return null;
       const size = BigInt(this.fixedInstructionSize);
       const address = BigInt(region.vmAddr) + BigInt(n) * size;
@@ -47,7 +47,7 @@ export class ArchitectureAdapter {
       const rel = BigInt(address) - BigInt(region.vmAddr);
       const size = BigInt(this.fixedInstructionSize);
       if (rel < 0n || rel + size > BigInt(region.size)) return { ok:false, code:'patch-range', error:'アドレスがコードのセクション範囲外です。' };
-      if (rel % BigInt(this.instructionAlignment) !== 0n || Number(length) !== this.fixedInstructionSize) {
+      if (rel % BigInt(this.instructionAlignment) !== 0n || !Number.isInteger(length) || length !== this.fixedInstructionSize) {
         return { ok:false, code:'instruction-placement', architecture:this.id, error:`${this.id} 命令の位置または長さが不正です。` };
       }
       return { ok:true };

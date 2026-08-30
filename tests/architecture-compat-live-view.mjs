@@ -161,4 +161,22 @@ console.log("  ok Case 2 control-flow projection parity");
   console.log("  ok Case 15 unsafe row numbers fail closed");
 }
 
+// Case 16 — placement inputs do not use JavaScript Number coercion
+{
+  const arm = new ArchitectureAdapter({ id: "arm64-strict-placement", fixedInstructionSize: 4, instructionAlignment: 4 });
+  const region = { vmAddr: 0x1000n, size: 0x100n };
+  assert.equal(arm.addressForRow(region, 0), 0x1000n);
+  assert.equal(arm.addressForRow(region, 3), 0x100cn);
+  for (const malformedRow of [[], [3], true, false, "3", { valueOf: () => 3 }]) {
+    assert.equal(arm.addressForRow(region, malformedRow), null);
+  }
+  assert.deepEqual(arm.validateInstructionPlacement(region, 0x1000n, 4), { ok: true });
+  for (const malformedLength of [[4], true, "4", { valueOf: () => 4 }]) {
+    const result = arm.validateInstructionPlacement(region, 0x1000n, malformedLength);
+    assert.equal(result.ok, false);
+    assert.equal(result.code, "instruction-placement");
+  }
+  console.log("  ok Case 16 placement coercion fails closed");
+}
+
 console.log("All architecture live view tests PASS!");
