@@ -57,7 +57,8 @@ function snapshotIdentity(tuple) {
 }
 
 function normalizeCreatedAt(value) {
-  const timestamp = String(value ?? "").trim();
+  if (typeof value !== "string") throw new TypeError("analysis-snapshot-created-at-invalid");
+  const timestamp = value.trim();
   if (!timestamp || !Number.isFinite(Date.parse(timestamp))) throw new TypeError("analysis-snapshot-created-at-invalid");
   return timestamp;
 }
