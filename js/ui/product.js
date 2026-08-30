@@ -388,7 +388,9 @@ function getDataEntities(app) {
         seen.add('global:' + g.addr);
         const metaParts = [text('グローバル変数', 'Global Variable')];
         if (g.region) metaParts.push(g.region);
-        if (g.refs != null) metaParts.push(text(`${g.refs} か所から参照`, `${g.refs} refs`));
+        if (g.refs != null && g.refsComplete !== false) metaParts.push(text(`${g.refs} か所から参照`, `${g.refs} refs`));
+        else if (g.refs != null && g.refs > 0) metaParts.push(text(`少なくとも ${g.refs} か所から参照`, `at least ${g.refs} refs`));
+        else if (g.relationSupported === false || g.relationComplete === false) metaParts.push(text('参照範囲は未確定', 'reference coverage unknown'));
         items.push({
           name: String(name),
           normalizedName: (String(name) + ' ' + (g.region || '')).toLowerCase(),

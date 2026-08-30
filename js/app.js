@@ -671,6 +671,7 @@ class App {
         if(epoch!==this.backend.gen)return null;
         try{
           const scan=await this.backend.scanProgram(r.id,progressFn&&((p)=>progressFn({phase:'scan',done:i+(p.all?Math.min(1,p.done/p.all):0),all:regions.length,region:r.id})),{
+            architecture:this.store.get('architecture') || this.currentSlice?.()?.capability?.architecture || 'unknown',
             callLimit:share(calls,size,remainingBytes),refLimit:share(refs,size,remainingBytes),kindLimit:share(kinds,size,remainingBytes),
           });
           if(scan&&!scan.cancelled){scans.push(scan);calls=Math.max(0,calls-(scan.callCount??scan.callFrom?.length??0));refs=Math.max(0,refs-(scan.refCount??scan.refFrom?.length??0));kinds=Math.max(0,kinds-(scan.kindsCovered??scan.kinds?.length??0));}

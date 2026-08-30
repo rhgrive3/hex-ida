@@ -151,6 +151,12 @@ export function findGlobals(symbols, program, regions, opts) {
   const o = opts || {};
   const limit = finiteOr(o.limit || 300, 300);
   const minRefs = finiteOr(o.minRefs || 2, 2);
+  const graph = program?.graphCompleteness || null;
+  const relationSupported = !!program && program.unsupported !== true && graph?.supported !== false;
+  const relationComplete = relationSupported && (graph ? graph.refsComplete === true : program?.completeness?.complete !== false && !program?.refsCapped);
+  const relationReason = relationSupported
+    ? (relationComplete ? null : program?.queryIncompleteReason || graph?.reasons?.[0] || 'program-relations-partial')
+    : (program ? 'unsupported-program-analysis' : 'program-relations-unavailable');
   const dataRegions = (regions || []).filter((r) =>
     !r.exec && (r.declaredSize ?? r.size ?? 0n) > 0n &&
     /__data|__bss|__common|__const|__cfstring|__objc_(ivar|const|data)/.test(r.section || ''));
@@ -164,9 +170,13 @@ export function findGlobals(symbols, program, regions, opts) {
       for (const s of symbols.symbolList({ region: r, kind: 0, max: 2000 })) {
         if (seen.has(s.addr.toString())) continue;
         seen.add(s.addr.toString());
+        const refSites = relationSupported ? program.refSitesTo(s.addr, 8n, 200) : null;
         out.push({
           addr: s.addr, name: s.name, readable: readableName(s.name),
-          region: r.name, refs: program ? program.refSitesTo(s.addr, 8n, 200).length : 0,
+          region: r.name,
+          refs: refSites ? refSites.length : null,
+          refsComplete: refSites ? refSites.complete === true : false,
+          relationSupported, relationComplete: refSites ? refSites.complete === true : false, relationReason,
           named: true,
         });
         if (out.length >= limit) break;
@@ -176,7 +186,7 @@ export function findGlobals(symbols, program, regions, opts) {
   }
 
   /* 2. よく参照されている名前なしの置き場 */
-  if (program && out.length < limit) {
+  if (relationSupported && out.length < limit) {
     const hot = hotDataAddresses(program, dataRegions, limit - out.length, minRefs);
     for (const h of hot) {
       if (seen.has(h.addr.toString())) continue;
@@ -184,12 +194,19 @@ export function findGlobals(symbols, program, regions, opts) {
       out.push({
         addr: h.addr, name: null,
         readable: 'off_' + h.addr.toString(16).toUpperCase(),
-        region: h.region, refs: h.refs, named: false,
+        region: h.region, refs: h.refs, refsComplete:relationComplete,
+        relationSupported:true, relationComplete, relationReason,
+        named: false,
       });
     }
   }
 
-  out.sort((a, b) => b.refs - a.refs);
+  out.sort((a, b) => Number(b.refs ?? -1) - Number(a.refs ?? -1));
+  Object.defineProperties(out, {
+    relationSupported:{value:relationSupported,enumerable:false,configurable:true},
+    relationComplete:{value:relationComplete,enumerable:false,configurable:true},
+    relationReason:{value:relationReason,enumerable:false,configurable:true},
+  });
   return out;
 }
 
