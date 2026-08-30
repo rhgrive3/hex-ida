@@ -11,7 +11,8 @@ export const RUNTIME_FACETS = Object.freeze(['debugger', 'instrumentation', 'tra
 export const RUNTIME_SESSION_STATES = Object.freeze(['opening', 'ready', 'running', 'paused', 'degraded', 'disconnected', 'closing', 'closed', 'failed']);
 
 function required(value, code, message) {
-  const text = String(value ?? '').trim();
+  if (typeof value !== 'string') throw new DebugAdapterError(code, message || code);
+  const text = value.trim();
   if (!text) throw new DebugAdapterError(code, message || code);
   return text;
 }
@@ -135,8 +136,8 @@ export class RuntimeProviderRegistry {
     return provider;
   }
 
-  unregister(id) { return this.providers.delete(String(id)); }
-  get(id) { return this.providers.get(String(id)) || null; }
+  unregister(id) { return this.providers.delete(id); }
+  get(id) { return this.providers.get(id) || null; }
   list() { return Object.freeze([...this.providers.values()].map((provider) => createRuntimeProviderDescriptor(provider.descriptor()))); }
 
   async openSession(providerId, request = {}, options = {}) {
