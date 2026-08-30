@@ -1,0 +1,19 @@
+name: Diagnose Stage2 inventory 2789
+on:
+  push:
+    branches: [diag/stage2-inventory-2789]
+permissions:
+  contents: read
+jobs:
+  inventory-diff:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Regenerate and show canonical diff
+        run: |
+          set -euo pipefail
+          node tools/validation/stage2/build-profile-denominator-inventory.mjs
+          git diff -- tools/validation/stage2/profile-denominator-inventory.json
