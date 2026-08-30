@@ -151,7 +151,10 @@ export class PagedArtifactReader {
   }
 
   clear() {
-    for (const entry of this.inflight.values()) entry.controller?.abort();
+    for (const entry of this.inflight.values()) {
+      entry.discard = true;
+      entry.controller?.abort();
+    }
     this.stats.pagesEvicted += this.pages.size;
     this.pages.clear();
     this.inflight.clear();
