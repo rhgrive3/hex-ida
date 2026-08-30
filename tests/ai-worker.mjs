@@ -43,6 +43,78 @@ assert.equal(capabilityFetches, 1, 'provider capability preflight is cached');
 assert.equal(provider.getCapabilities().maxRequestBytes, 24000);
 assert.equal(provider.getCapabilities().maxTools, 7);
 
+function deferredCapabilitiesFetch() {
+  let calls = 0;
+  let resolveFetch;
+  let aborted = false;
+  const fetchImpl = (_url, { signal } = {}) => {
+    calls += 1;
+    return new Promise((resolve, reject) => {
+      resolveFetch = () => resolve(new Response(JSON.stringify({ capabilities: { provider: 'test', maxTools: 17 } }), { status: 200 }));
+      signal?.addEventListener('abort', () => {
+        aborted = true;
+        reject(new DOMException('Aborted', 'AbortError'));
+      }, { once: true });
+    });
+  };
+  return {
+    fetchImpl,
+    get calls() { return calls; },
+    get aborted() { return aborted; },
+    resolve() { resolveFetch?.(); },
+  };
+}
+
+async function rejectsCancelled(promise) {
+  await assert.rejects(promise, (error) => (
+    error?.type === 'cancelled'
+    && error?.message === 'AI investigation was cancelled.'
+    && error?.details === null
+  ));
+}
+
+{
+  const fetch = deferredCapabilitiesFetch();
+  const sharedProvider = new WorkerAIProvider({ fetchImpl: fetch.fetchImpl });
+  const a = new AbortController();
+  const b = new AbortController();
+  const first = sharedProvider.prepareCapabilities({ signal: a.signal });
+  const second = sharedProvider.prepareCapabilities({ signal: b.signal });
+  assert.equal(fetch.calls, 1, 'capability preflight remains single-flight');
+  a.abort('caller-a-cancelled');
+  await rejectsCancelled(first);
+  assert.equal(fetch.aborted, false, 'one cancelled consumer must not cancel shared work');
+  fetch.resolve();
+  const capabilities = await second;
+  assert.equal(capabilities.provider, 'test');
+  assert.equal(capabilities.maxTools, 17);
+}
+
+{
+  const fetch = deferredCapabilitiesFetch();
+  const sharedProvider = new WorkerAIProvider({ fetchImpl: fetch.fetchImpl });
+  const a = new AbortController();
+  const b = new AbortController();
+  const first = sharedProvider.prepareCapabilities({ signal: a.signal });
+  const second = sharedProvider.prepareCapabilities({ signal: b.signal });
+  a.abort('caller-a-cancelled');
+  await rejectsCancelled(first);
+  assert.equal(fetch.aborted, false);
+  b.abort('caller-b-cancelled');
+  await rejectsCancelled(second);
+  assert.equal(fetch.aborted, true, 'shared work may stop after every consumer cancels');
+}
+
+{
+  const fetch = deferredCapabilitiesFetch();
+  const sharedProvider = new WorkerAIProvider({ fetchImpl: fetch.fetchImpl });
+  const first = sharedProvider.prepareCapabilities();
+  const second = sharedProvider.prepareCapabilities();
+  sharedProvider.cancel();
+  await Promise.all([rejectsCancelled(first), rejectsCancelled(second)]);
+  assert.equal(fetch.aborted, true, 'provider cancellation still terminates shared preflight');
+}
+
 const originalFetch = globalThis.fetch;
 globalThis.fetch = async (_url, options) => {
   const upstream = JSON.parse(options.body);

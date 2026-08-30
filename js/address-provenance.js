@@ -23,8 +23,8 @@
 
   function create(options) {
     const opts = options || {};
-    const window = Number.isFinite(Number(opts.pairWindow))
-      ? Math.max(0, Math.floor(Number(opts.pairWindow)))
+    const window = typeof opts.pairWindow === 'number' && Number.isFinite(opts.pairWindow)
+      ? Math.max(0, Math.floor(opts.pairWindow))
       : DEFAULT_WINDOW;
     const words = opts.words || global.Words;
     if (!words || !words.KIND) throw new Error('AddressProvenance requires Words');
@@ -73,7 +73,7 @@
       if (target == null || !inRange(target)) continue;
       const regs = new Set();
       for (const value of item[1] || []) {
-        const reg = Number(value);
+        const reg = value;
         if (Number.isInteger(reg) && reg >= 0 && reg < 32) regs.add(reg);
       }
       if (regs.size) entryKills.set(target, regs);
@@ -89,7 +89,7 @@
     }
 
     function invalidate(reg, preserveEntryFallback = false) {
-      const r = Number(reg);
+      const r = reg;
       if (!Number.isInteger(r) || r < 0 || r >= 32) return;
       pageOf[r] = null;
       pageAt[r] = -1;
@@ -104,7 +104,7 @@
     }
 
     function note(reg, value, index) {
-      const r = Number(reg), at = Number(index);
+      const r = reg, at = index;
       if (!Number.isInteger(r) || r < 0 || r >= 32 || !Number.isInteger(at)) return;
       const v = asBigInt(value);
       if (v == null) { kill(r); return; }
@@ -115,7 +115,7 @@
     }
 
     function base(reg, index, options) {
-      const r = Number(reg), at = Number(index);
+      const r = reg, at = index;
       if (!Number.isInteger(r) || r < 0 || r >= 32 || !Number.isInteger(at)) return null;
       const born = pageAt[r];
       if (born >= 0 && at >= born && at - born <= window) return pageOf[r];
@@ -158,7 +158,7 @@
       if (kills) {
         const scanIndex = scanIndexAt(pc);
         for (const reg of kills) {
-          const r = Number(reg);
+          const r = reg;
           // A complete exact address chain immediately before the target is
           // part of the first linear visit to that instruction. Preserve it
           // even when a later loop-carried path redefines the same register;

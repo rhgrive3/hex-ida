@@ -11,11 +11,29 @@
 export const ARM64_ENCODING_WORD_CONTRACT_VERSION = 'arm64-encoding-word/v1';
 export const ARM64_INSTRUCTION_SIZE_BYTES = 4;
 
+function isByte(value) {
+  return typeof value === 'number'
+    && Number.isInteger(value)
+    && value >= 0
+    && value <= 0xff;
+}
+
 function fromBytes(bytes, offset) {
   if (offset < 0 || offset + ARM64_INSTRUCTION_SIZE_BYTES > bytes.length) return null;
+  const b0 = bytes[offset];
+  const b1 = bytes[offset + 1];
+  const b2 = bytes[offset + 2];
+  const b3 = bytes[offset + 3];
+  if (![b0, b1, b2, b3].every(isByte)) return null;
   return (
-    (bytes[offset] | (bytes[offset + 1] << 8) | (bytes[offset + 2] << 16) | (bytes[offset + 3] << 24)) >>> 0
+    (b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)) >>> 0
   );
+}
+
+function directWord(value) {
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 && value <= 0xffffffff) return value >>> 0;
+  if (typeof value === 'bigint' && value >= 0n && value <= 0xffffffffn) return Number(value) >>> 0;
+  return null;
 }
 
 /** Read the A64 word at instruction index `index` of a fixed-width byte run. */
@@ -27,15 +45,30 @@ export function arm64EncodingWord(bytes, index) {
 
 /**
  * Recover the A64 word from a decoded instruction record, whichever shape the
- * producer used. Returns `null` when the record carries no encoding, which is
- * the signal for a lifter to stay fail-closed rather than invent a field.
+ * producer used. When a producer carries redundant encoding evidence, every
+ * present representation must be valid and agree on the same word; otherwise
+ * the record is contradictory and therefore not authoritative.
  */
 export function arm64DecodedEncodingWord(decoded) {
   if (!decoded || typeof decoded !== 'object') return null;
-  const direct = decoded.word ?? decoded.encodingWord ?? null;
-  if (typeof direct === 'number' && Number.isSafeInteger(direct) && direct >= 0 && direct <= 0xffffffff) return direct >>> 0;
-  if (typeof direct === 'bigint' && direct >= 0n && direct <= 0xffffffffn) return Number(direct) >>> 0;
-  const bytes = decoded.rawBytes ?? decoded.bytes ?? null;
-  if (bytes && typeof bytes.length === 'number' && bytes.length >= ARM64_INSTRUCTION_SIZE_BYTES) return fromBytes(bytes, 0);
-  return null;
+  const candidates = [];
+
+  for (const value of [decoded.word, decoded.encodingWord]) {
+    if (value == null) continue;
+    const parsed = directWord(value);
+    if (parsed == null) return null;
+    candidates.push(parsed);
+  }
+
+  for (const bytes of [decoded.rawBytes, decoded.bytes]) {
+    if (bytes == null) continue;
+    if (typeof bytes.length !== 'number' || bytes.length < ARM64_INSTRUCTION_SIZE_BYTES) return null;
+    const parsed = fromBytes(bytes, 0);
+    if (parsed == null) return null;
+    candidates.push(parsed);
+  }
+
+  if (candidates.length === 0) return null;
+  const first = candidates[0];
+  return candidates.every((candidate) => candidate === first) ? first : null;
 }

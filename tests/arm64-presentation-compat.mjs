@@ -123,7 +123,13 @@ for (const mnemonic of ["casx", "swpaa", "ldaddq", "ldsetall"]) {
 assert.equal(facade.categoryOf("ldxr"), "load", "exclusive loads retain their established presentation category");
 assert.equal(facade.categoryOf("stxr"), "store", "exclusive stores retain their established presentation category");
 assert.equal(facade.categoryOf("dmb"), "system", "barriers retain their established presentation category");
-console.log("  ok 6 atomic category variants");
+assert.equal(facade.categoryOf("eret"), "system");
+assert.equal(facade.categoryOf("eretaa"), "system");
+assert.equal(facade.categoryOf("ERETAB"), "system");
+assert.equal(facade.categoryOf("retaa"), "flow");
+assert.equal(facade.categoryOf("retab"), "flow");
+assert.notEqual(facade.categoryOf("eretax"), "system");
+console.log("  ok 6 atomic category variants + authenticated exception-return classification");
 
 // 7. Presentation parser must reject non-existent SIMD/FP registers and lanes (#2068, #2070).
 for (const valid of ["b31", "h31", "s31", "d31", "q31", "v31.16b"]) {

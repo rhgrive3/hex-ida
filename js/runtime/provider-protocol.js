@@ -33,6 +33,11 @@ function epoch(value) {
   return protocolInteger(value, 'provider epoch', 1);
 }
 
+function providerIdentity(value, name) {
+  if (typeof value !== 'string' || !value.trim()) throw new DebugAdapterError('malformed-provider-data', `${name} must be a non-empty string`);
+  return value;
+}
+
 function facet(value) {
   if (value == null) return null;
   if (typeof value !== 'string') throw new DebugAdapterError('malformed-provider-data', 'runtime facet must be a string');
@@ -94,8 +99,8 @@ export function createProviderHello(descriptor, extra = {}) {
     protocol: RUNTIME_PROVIDER_PROTOCOL,
     version: RUNTIME_PROVIDER_PROTOCOL_VERSION,
     type: 'hello',
-    providerId: String(descriptor.id),
-    providerVersion: String(descriptor.version ?? '1'),
+    providerId: providerIdentity(descriptor.id, 'providerId'),
+    providerVersion: providerIdentity(descriptor.version ?? '1', 'providerVersion'),
     facets: Array.from(descriptor.facets || []),
     capabilities: descriptor.capabilities || {},
     architecture: extra.architecture ?? null,
@@ -114,7 +119,7 @@ export function negotiateProviderHello(localDescriptor, remoteHello) {
   return Object.freeze({
     protocol: RUNTIME_PROVIDER_PROTOCOL,
     version: RUNTIME_PROVIDER_PROTOCOL_VERSION,
-    localProviderId: String(localDescriptor.id),
+    localProviderId: providerIdentity(localDescriptor.id, 'localProviderId'),
     remoteProviderId: remote.providerId,
     remoteProviderVersion: remote.providerVersion,
     facets: Object.freeze(facets),

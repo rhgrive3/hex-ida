@@ -282,13 +282,13 @@
             "arm64e:a64+pac:alias:baseline-a64-delegation",
             "arm64e:a64+pac:effect-family:fallback-unmatched-decoder-family"
           ],
-          "pacEncodingCaseCount": 45515,
-          "pacMnemonicCount": 38,
+          "pacEncodingCaseCount": 45517,
+          "pacMnemonicCount": 40,
           "knownBaselineEncodingCaseCount": 376186,
           "strictBaselineDisjointEncodingCaseCount": 376177,
           "baselineFeatureAliasOverlapCount": 9,
           "positiveDelegationSampleCount": 5,
-          "pacDispatchOwnerCount": 38,
+          "pacDispatchOwnerCount": 40,
           "fallbackDisposition": "null-after-single-canonical-arm64-attempt"
         },
         "pacDenominator": {
@@ -296,14 +296,15 @@
           "denominatorId": "arm64e:a64+pac:encoding-discriminators:v1",
           "source": "tools/validation/machine-effects/arm64e-pac-denominator.mjs",
           "test": "tests/machine-effects/arm64e-pac-denominator.test.mjs",
-          "encodingFamilyCount": 38,
-          "encodingCaseCount": 45515,
-          "mnemonicCount": 38,
+          "encodingFamilyCount": 40,
+          "encodingCaseCount": 45517,
+          "mnemonicCount": 40,
           "oracleIds": [
             "arm-architecture-reference-manual-pauth-encodings",
             "deployed-capstone-5-arm64",
             "llvm-mc-18-aarch64-pauth-disassembler"
-          ]
+          ],
+          "profileId": "arm64e:a64+pac"
         }
       },
       "aliases": [
@@ -362,7 +363,9 @@
         "blraaz",
         "blrabz",
         "retaa",
-        "retab"
+        "retab",
+        "eretaa",
+        "eretab"
       ],
       "effectRegistry": {
         "source": "js/targets/architecture/arm64e/effects.js",

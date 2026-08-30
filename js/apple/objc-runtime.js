@@ -1,11 +1,14 @@
 /* Objective-C runtime intelligence built on top of objc.js metadata parsing. */
 
 function cleanClassName(name) {
-  if (!name) return null;
-  return String(name).replace(/^class\s+/, '').replace(/\s*\*+\s*$/, '').replace(/^@?"|"$/g, '').trim() || null;
+  if (name == null || typeof name !== 'string') return null;
+  return name.replace(/^class\s+/, '').replace(/\s*\*+\s*$/, '').replace(/^@?"|"$/g, '').trim() || null;
 }
 
-function methodKey(classMethod, selector) { return `${classMethod ? '+' : '-'}:${selector || ''}`; }
+function methodKey(classMethod, selector) {
+  if (typeof selector !== 'string' || !selector) return null;
+  return `${classMethod ? '+' : '-'}:${selector}`;
+}
 
 function pushIndex(map, key, value) {
   if (!key) return;
@@ -15,7 +18,11 @@ function pushIndex(map, key, value) {
 }
 
 function normalizeMethod(m, owner, classMethod, source = 'class', proofRequired = false) {
-  const selector = m && (m.sel || m.selector || m.name && String(m.name).match(/\s([^\]]+)\]$/)?.[1]);
+  if (!m) return null;
+  let selector = null;
+  if (typeof m.sel === 'string') selector = m.sel;
+  else if (typeof m.selector === 'string') selector = m.selector;
+  else if (typeof m.name === 'string') selector = m.name.match(/\s([^\]]+)\]$/)?.[1] || null;
   if (!selector) return null;
   return {
     selector,
@@ -41,10 +48,12 @@ export function buildObjcRuntimeIndex(objcModel = {}) {
   const proofRequired = objcModel.implementationProofRequired === true;
 
   for (const c of objcModel.classes || []) {
-    if (!c || !c.name) continue;
+    if (!c) continue;
+    const className = cleanClassName(c.name);
+    if (!className) continue;
     const info = {
       ...c,
-      name: cleanClassName(c.name),
+      name: className,
       superName: cleanClassName(c.superName),
       protocols: (c.protocols || []).map((p) => cleanClassName(p.name || p)).filter(Boolean),
     };
@@ -64,8 +73,9 @@ export function buildObjcRuntimeIndex(objcModel = {}) {
   }
 
   for (const p of objcModel.protocols || []) {
-    if (!p || !p.name) continue;
+    if (!p) continue;
     const name = cleanClassName(p.name);
+    if (!name) continue;
     const copy = { ...p, name };
     protocols.set(name, copy);
     for (const m of p.instanceMethods || p.methods || []) {
@@ -172,7 +182,7 @@ function protocolRequirements(index, key, allowedProtocols) {
  * as separate evidence.
  */
 export function resolveObjcDispatch(index, { receiverType = null, selector, classMethod = false, protocols = null } = {}) {
-  if (!index || !selector) return { resolved: null, candidates: [], requirements: [], confidence: 0, reason: 'missing runtime index or selector' };
+  if (!index || typeof selector !== 'string' || !selector) return { resolved: null, candidates: [], requirements: [], confidence: 0, reason: 'missing runtime index or selector' };
   const key = methodKey(classMethod, selector);
   const cleanReceiver = cleanClassName(receiverType);
   const chain = hierarchy(index, cleanReceiver);

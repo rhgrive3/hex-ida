@@ -92,17 +92,32 @@ export function classifyCallTargetProof(call = {}) {
     return deepFreeze({ kind: 'unknown', candidateEntityIds: [], exhaustive: false, exactSingletonEntityId: null });
   }
   const candidates = [];
-  for (const value of call.targetEntityIds ?? []) candidates.push(String(value));
-  for (const value of [call.targetEntityId, call.callee, call.target]) {
-    if (value != null && String(value).trim()) candidates.push(String(value));
+  let malformedIdentity = false;
+  const addIdentity = (value, target) => {
+    if (value == null) return;
+    if (typeof value !== 'string' || !value.trim()) {
+      malformedIdentity = true;
+      return;
+    }
+    target.push(value.trim());
+  };
+  if (call.targetEntityIds != null) {
+    if (!Array.isArray(call.targetEntityIds)) malformedIdentity = true;
+    else for (const value of call.targetEntityIds) addIdentity(value, candidates);
   }
-  const candidateEntityIds = [...new Set(candidates.filter(Boolean))].sort();
-  const targetValueIds = [...new Set((call.targetValueIds ?? []).map(String).filter(Boolean))].sort();
-  const indirect = targetValueIds.length > 0;
+  for (const value of [call.targetEntityId, call.callee, call.target]) addIdentity(value, candidates);
+  const candidateEntityIds = [...new Set(candidates)].sort();
+  const targetValueIds = [];
+  if (call.targetValueIds != null) {
+    if (!Array.isArray(call.targetValueIds)) malformedIdentity = true;
+    else for (const value of call.targetValueIds) addIdentity(value, targetValueIds);
+  }
+  const canonicalTargetValueIds = [...new Set(targetValueIds)].sort();
+  const indirect = canonicalTargetValueIds.length > 0;
   const kind = indirect ? 'indirect' : candidateEntityIds.length ? 'direct' : 'unknown';
-  const exhaustive = kind === 'direct'
+  const exhaustive = !malformedIdentity && (kind === 'direct'
     ? candidateEntityIds.length === 1
-    : kind === 'indirect' && call.completeness === 'complete';
+    : kind === 'indirect' && call.completeness === 'complete');
   return deepFreeze({
     kind,
     candidateEntityIds,

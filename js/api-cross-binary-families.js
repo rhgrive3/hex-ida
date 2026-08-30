@@ -97,8 +97,9 @@ const EXTRA_API_TABLE = [
 ];
 
 export function extraApiInfo(name) {
-  if (!name) return null;
-  const clean = String(name).trim();
+  if (typeof name !== 'string') return null;
+  const clean = name.trim();
+  if (!clean) return null;
   for (const entry of EXTRA_API_TABLE) if (entry.re.test(clean)) return entry;
   return null;
 }

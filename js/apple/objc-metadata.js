@@ -174,13 +174,31 @@ async function parseCategory(get, address, classByAddress) {
   return { runtime: 'objc', kind: 'category', address, name, classAddress, className, methods: methods.items, instanceMethods: methods.items, classMethods: classMethods.items, protocols: protocols.items, instancePropertiesAddress: await decodedPointer(get, u64(b, 40), address + 40n), classPropertiesAddress: b.length >= 56 ? await decodedPointer(get, u64(b, 48), address + 48n) : null, completeness };
 }
 
+function pointerTableSize(value) {
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return value;
+  if (typeof value === 'bigint' && value >= 0n && value <= BigInt(Number.MAX_SAFE_INTEGER)) return Number(value);
+  return null;
+}
+function pointerTableAddress(value) {
+  if (typeof value === 'bigint' && value >= 0n) return value;
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return BigInt(value);
+  if (typeof value === 'string' && /^(?:0x[0-9a-f]+|[0-9]+)$/i.test(value.trim())) return BigInt(value.trim());
+  return null;
+}
 async function pointerTable(get, range, budget, parse, opts = {}) {
   const items = [];
-  if (!range || range.vmAddr == null || range.size == null || Number(range.size) === 0) {
+  if (!range) {
     return { items, completeness: { present: false, declared: 0, scanned: 0, parsed: 0, capped: false, unreadableSlots: 0, invalidEntries: 0, incompleteItems: 0, misalignedBytes: 0, sizeValid: true, complete: true } };
   }
-  const size = Number(range.size);
-  const sizeValid = Number.isSafeInteger(size) && size >= 0;
+  const size = pointerTableSize(range.size);
+  const base = pointerTableAddress(range.vmAddr);
+  if (size == null || base == null) {
+    return { items, completeness: { present: true, declared: 0, scanned: 0, parsed: 0, capped: false, unreadableSlots: 0, invalidEntries: 1, incompleteItems: 0, misalignedBytes: null, sizeValid: false, complete: false } };
+  }
+  if (size === 0) {
+    return { items, completeness: { present: false, declared: 0, scanned: 0, parsed: 0, capped: false, unreadableSlots: 0, invalidEntries: 0, incompleteItems: 0, misalignedBytes: 0, sizeValid: true, complete: true } };
+  }
+  const sizeValid = true;
   const misalignedBytes = sizeValid ? size % PTR : null;
   const declared = sizeValid ? Math.floor(size / PTR) : 0;
   const count = Math.min(declared, budget);
@@ -191,7 +209,7 @@ async function pointerTable(get, range, budget, parse, opts = {}) {
       await new Promise((r) => setTimeout(r, 0));
       if (opts?.signal?.aborted) break;
     }
-    const slot = BigInt(range.vmAddr) + BigInt(i * PTR);
+    const slot = base + BigInt(i * PTR);
     const raw = await get(slot, PTR);
     if (!raw || raw.length < PTR) { unreadableSlots++; continue; }
     scanned++;

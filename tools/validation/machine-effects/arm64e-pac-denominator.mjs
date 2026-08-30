@@ -16,6 +16,7 @@ const FIXED = Object.freeze([
   ['paciasp',0xd503233f],['pacibsp',0xd503237f],['pacia1716',0xd503211f],['pacib1716',0xd503215f],
   ['autiasp',0xd50323bf],['autibsp',0xd50323ff],['autia1716',0xd503219f],['autib1716',0xd50321df],
   ['xpaclri',0xd50320ff],['retaa',0xd65f0bff],['retab',0xd65f0fff],
+  ['eretaa',0xd69f0bff],['eretab',0xd69f0fff],
 ]);
 const BRANCH_TWO = Object.freeze([
   ['braa',0xd71f0800],['brab',0xd71f0c00],['blraa',0xd73f0800],['blrab',0xd73f0c00],

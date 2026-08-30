@@ -157,6 +157,56 @@ function beats(next, current) {
   return Number(next.top?.fusion?.probability || 0) > Number(current.top?.fusion?.probability || 0);
 }
 
+function captureAnalysisBinding(app, resolved = {}) {
+  const symbols = app?.symbols ?? null;
+  const region = app?.codeRegion?.() || execRegions(app)[0] || null;
+  return Object.freeze({
+    epoch:epochOf(app),
+    sliceIndex:Number(storeValue(app, 'sliceIndex') ?? -1),
+    symbols,
+    symbolsGen:Number(symbols?.gen || 0),
+    fields:resolved.fields ?? app?.fields ?? null,
+    program:resolved.program ?? app?.program ?? null,
+    shapes:resolved.shapes ?? app?.shapes ?? null,
+    region,
+    regionId:region?.id ?? null,
+  });
+}
+function analysisBindingCurrent(app, binding) {
+  if (!binding || epochOf(app) !== binding.epoch) return false;
+  if (Number(storeValue(app, 'sliceIndex') ?? -1) !== binding.sliceIndex) return false;
+  if (app?.symbols !== binding.symbols || Number(app?.symbols?.gen || 0) !== binding.symbolsGen) return false;
+  if ((binding.fields != null || app?.fields != null) && app?.fields !== binding.fields) return false;
+  if (binding.program != null && app?.program !== binding.program) return false;
+  if (binding.shapes != null && app?.shapes !== binding.shapes) return false;
+  const region = app?.codeRegion?.() || execRegions(app)[0] || null;
+  return (region?.id ?? null) === binding.regionId;
+}
+function assertAnalysisBinding(app, binding) {
+  if (analysisBindingCurrent(app, binding)) return;
+  const error = new Error('investigation-analysis-binding-changed');
+  error.code = 'ANALYSIS_SNAPSHOT_STALE';
+  error.stale = true;
+  throw error;
+}
+function typedRankedCandidates(ranked, context) {
+  const candidates = Array.from(ranked?.candidates || [], (candidate, index) => {
+    const address = candidate?.addr ?? candidate?.address ?? candidate?.function ?? null;
+    const evidenceIds = [...new Set((candidate?.reasons || []).flatMap((reason) => [reason?.evidenceId, reason?.id].filter(Boolean)).map(String))];
+    return Object.freeze({
+      ...candidate,
+      candidateId:`${context.snapshotId}:candidate:${address == null ? index : BigInt(address).toString(16)}`,
+      entityId:address == null ? null : `function:${BigInt(address).toString(16)}`,
+      verdict:candidate?.verdict ?? VERDICT.NONE,
+      evidenceIds,
+      completeness:context.completeness.complete ? 'complete' : 'partial',
+      missing:context.completeness.complete ? [] : context.completeness.reasons.slice(),
+      snapshotId:context.snapshotId,
+    });
+  });
+  return Object.freeze({ ...(ranked || {}), candidates });
+}
+
 export class InvestigationService {
   constructor(app) {
     this.app = app;
@@ -307,8 +357,9 @@ export class InvestigationService {
       abortIfNeeded(signal);
       const sliceIndex = Number(storeValue(this.app, 'sliceIndex') ?? -1);
       const work = [];
-      if (typeof this.app.ensureObjc === 'function' && sliceIndex >= 0) work.push(this.app.ensureObjc(sliceIndex));
-      if (typeof this.app.ensureSwift === 'function') work.push(this.app.ensureSwift());
+      const producerOptions = { signal, priority:priorityOf(options), budget:options.budget ?? null };
+      if (typeof this.app.ensureObjc === 'function' && sliceIndex >= 0) work.push(this.app.ensureObjc(sliceIndex, producerOptions));
+      if (typeof this.app.ensureSwift === 'function') work.push(this.app.ensureSwift(producerOptions));
       await Promise.allSettled(work);
       abortIfNeeded(signal);
       if (epoch !== epochOf(this.app)) throw Object.assign(new Error('stale investigation metadata'), { stale:true });
@@ -354,21 +405,26 @@ export class InvestigationService {
     const metadataP = shapeNeeded ? this.ensureMetadata(options) : Promise.resolve({ fields:this.app.fields });
     const programP = metadataP.then(() => this.buildProgram(options));
     const [strings, program, shapes] = await Promise.all([stringsP, programP, shapesP]);
+    const metadata = await metadataP;
     abortIfNeeded(options.signal);
+    const binding = captureAnalysisBinding(this.app, { program, shapes, fields:metadata?.fields ?? this.app.fields });
     const queryOptions = { signal:options.signal, priority:priorityOf(options), budget:options.budget ?? null };
     const snapshot = await this.app.analysisQueries.snapshot(queryOptions);
+    abortIfNeeded(options.signal);
+    assertAnalysisBinding(this.app, binding);
     const context = {
       snapshot,
       snapshotId:snapshot.snapshotId,
       strings,
-      program,
-      shapes,
-      symbols:this.app.symbols,
-      fields:this.app.fields,
-      region:this.app.codeRegion?.() || execRegions(this.app)[0] || null,
+      program:binding.program,
+      shapes:binding.shapes,
+      symbols:binding.symbols,
+      fields:binding.fields,
+      region:binding.region,
+      binding,
     };
     context.completeness = completenessFor(context);
-    return context;
+    return Object.freeze(context);
   }
 
   async investigate(goal, options = {}) {
@@ -426,11 +482,15 @@ export class InvestigationService {
       priority:priorityOf(options),
       budget:options.budget ?? null,
     });
+    abortIfNeeded(options.signal);
+    assertAnalysisBinding(this.app, context.binding);
+    const typedRanked = typedRankedCandidates(ranked, context);
     return Object.freeze({
       snapshotId:context.snapshotId,
       snapshot:context.snapshot,
       completeness:context.completeness,
-      ranked,
+      ranked:typedRanked,
+      candidates:typedRanked.candidates,
       pin,
       context,
     });
@@ -467,6 +527,8 @@ export class InvestigationService {
       priority:priorityOf(options),
       budget:options.budget ?? null,
     });
+    abortIfNeeded(options.signal);
+    assertAnalysisBinding(this.app, context.binding);
     report.snapshotId = context.snapshotId;
     report.completeness = context.completeness;
     return Object.freeze({ snapshotId:context.snapshotId, snapshot:context.snapshot, completeness:context.completeness, report, context });
@@ -480,4 +542,4 @@ export function investigationServiceFor(app) {
   return service;
 }
 
-export const __investigationInternalsForTests = Object.freeze({ needsShapeEvidence, completenessFor, beats, regionForAddress, priorityOf, budgetConfig });
+export const __investigationInternalsForTests = Object.freeze({ needsShapeEvidence, completenessFor, beats, regionForAddress, priorityOf, budgetConfig, captureAnalysisBinding, analysisBindingCurrent, typedRankedCandidates });

@@ -18,6 +18,39 @@ function validateInterventionDraft(ledger, input) {
   return record;
 }
 
+function moduleBindingKey(module, index) {
+  return module?.bindingKey ?? module?.moduleKey ?? module?.id ?? module?.uuid ?? module?.name ?? `module:${index}`;
+}
+
+function sameStructuredIdentity(left, right) {
+  if (Object.is(left, right)) return true;
+  if (left == null || right == null || typeof left !== 'object' || typeof right !== 'object') return false;
+  try {
+    const encode = (value) => JSON.stringify(value, (_key, item) => typeof item === 'bigint' ? `${item}n` : item);
+    return encode(left) === encode(right);
+  } catch {
+    return false;
+  }
+}
+
+function sameModuleBinding(current, next) {
+  if (!current || !next) return false;
+  const scalar = (value) => value == null ? null : String(value);
+  const currentEvidence = current.identityEvidenceIds ?? [];
+  const nextEvidence = next.identityEvidenceIds ?? [];
+  return scalar(current.runtimeBase) === scalar(next.runtimeBase)
+    && scalar(current.runtimeSize) === scalar(next.runtimeSize)
+    && scalar(current.staticBase) === scalar(next.staticBase)
+    && scalar(current.pathHint) === scalar(next.pathHint)
+    && scalar(current.binaryId) === scalar(next.binaryId)
+    && scalar(current.sliceId) === scalar(next.sliceId)
+    && scalar(current.imageId) === scalar(next.imageId)
+    && scalar(current.identityState) === scalar(next.identityState)
+    && sameStructuredIdentity(current.buildIdentity, next.buildIdentity)
+    && currentEvidence.length === nextEvidence.length
+    && currentEvidence.every((value, index) => value === nextEvidence[index]);
+}
+
 export class DebuggerProvider extends DebugAdapterRuntimeProvider {
   constructor(adapter, options = {}) {
     super(adapter, { ...options, kind: options.kind ?? adapter?.kind ?? 'debugger' });
@@ -113,7 +146,27 @@ export class DebuggerProvider extends DebugAdapterRuntimeProvider {
       refreshModules: async () => {
         if (!this.adapter.capabilities?.modules || typeof this.adapter.getModules !== 'function') return session.modules.active();
         const modules = await this.adapter.getModules();
-        return Array.isArray(modules) ? modules : [];
+        if (!Array.isArray(modules)) return [];
+
+        const next = new Map();
+        for (let i = 0; i < modules.length; i++) {
+          const module = modules[i] || {};
+          if ((module.runtimeBase ?? module.base) == null || (module.runtimeSize ?? module.size) == null) continue;
+          const bindingKey = moduleBindingKey(module, i);
+          const normalized = normalizeRuntimeModuleBinding(module, { bindingKey });
+          next.set(normalized.bindingKey, normalized);
+        }
+
+        for (const active of session.modules.active()) {
+          if (!next.has(active.bindingKey)) session.modules.unload(active.bindingKey);
+        }
+        for (const [bindingKey, normalized] of next) {
+          const active = session.modules.get(bindingKey);
+          if (active && sameModuleBinding(active, normalized)) continue;
+          if (active) session.modules.unload(bindingKey);
+          session.modules.load(normalized);
+        }
+        return modules;
       },
     });
     session.facets = Object.freeze({ ...session.facets, debugger: debuggerFacet });

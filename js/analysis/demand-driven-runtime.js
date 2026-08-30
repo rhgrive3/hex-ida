@@ -78,6 +78,15 @@ function regionScanLimits(count) {
   const share = (value) => Math.max(1, Math.floor(Number(value || 0) / divisor));
   return { callLimit: share(PROGRAM_MERGE_LIMITS.calls), refLimit: share(PROGRAM_MERGE_LIMITS.refs), kindLimit: share(PROGRAM_MERGE_LIMITS.kindWords) };
 }
+function localRegionPlan(app, address, kind) {
+  const allRegions = executableRegions(app);
+  const target = regionForAddress(app, address);
+  const current = storeValue(app, 'currentRegion');
+  const currentExec = current?.exec === true && BigInt(current?.size ?? 0) > 0n ? current : null;
+  const local = kind === 'callees' ? dedupeRegions([target].filter(Boolean)) : dedupeRegions([target, currentExec].filter(Boolean));
+  const unscanned = allRegions.filter((region) => !local.some((item) => item.id === region.id));
+  return { allRegions, target, local, unscanned };
+}
 function pruneCache(cache) { while (cache.size > MAX_LOCAL_SCAN_CACHE) cache.delete(cache.keys().next().value); }
 function waitForShared(entry, signal) {
   abortIfNeeded(signal); entry.waiters++;
@@ -341,25 +350,34 @@ function installCancellableFunctionDiscovery(app) {
 function installDemandQueryAPI(app, recognitionVersion) {
   const base = createBaseQueryAdapter(app); const regionScans = new Map();
   const scanRegion = async (region, options = {}, localCount = 1) => {
-    const epoch = Number(app?.backend?.gen ?? app?.analysisEpoch ?? 0); const key = `${epoch}:${region.id}`; let entry = regionScans.get(key);
+    const epoch = Number(app?.backend?.gen ?? app?.analysisEpoch ?? 0);
+    const limits = regionScanLimits(localCount);
+    const profile = `${limits.callLimit}:${limits.refLimit}:${limits.kindLimit}`;
+    const key = `${epoch}:${region.id}:${profile}`;
+    let entry = regionScans.get(key);
     if (!entry) {
-      const request = app.backend.scanProgram(region.id, options.onProgress, regionScanLimits(localCount)); entry = { request, promise:null, settled:false, waiters:0 };
+      const request = app.backend.scanProgram(region.id, options.onProgress, { ...limits, analysisPriority:options.priority || 'interactive' }); entry = { request, promise:null, settled:false, waiters:0 };
       entry.promise = Promise.resolve(request).then((scan) => { if (!scan || scan.cancelled) throw Object.assign(new Error('program scan cancelled'), { name:'AbortError' }); entry.settled = true; return scan; }).catch((error) => { regionScans.delete(key); throw error; });
       regionScans.set(key, entry); pruneCache(regionScans);
     }
     return waitForShared(entry, options.signal ?? null);
   };
   const localProgram = async (id, kind, options = {}) => {
-    abortIfNeeded(options.signal); const address = addressOf(id); if (address == null) return { program:null, reason:'function-address-invalid' };
-    const allRegions = executableRegions(app); const target = regionForAddress(app, address); const current = storeValue(app, 'currentRegion');
-    const currentExec = current?.exec === true && BigInt(current?.size ?? 0) > 0n ? current : null;
-    const local = kind === 'callees' ? dedupeRegions([target].filter(Boolean)) : dedupeRegions([target, currentExec].filter(Boolean));
-    if (!local.length) return { program:null, reason:'program-region-unavailable' };
+    abortIfNeeded(options.signal); const address = addressOf(id); if (address == null) return { program:null, reason:'function-address-invalid', scannedRegionIds:[], unscannedRegionIds:[] };
+    const { allRegions, target, local, unscanned } = localRegionPlan(app, address, kind);
+    if (!local.length) return { program:null, reason:'program-region-unavailable', scannedRegionIds:[], unscannedRegionIds:allRegions.map((r) => r.id) };
     const scans = []; for (const region of local) scans.push(await scanRegion(region, options, local.length)); abortIfNeeded(options.signal);
-    const unscanned = allRegions.filter((region) => !local.some((item) => item.id === region.id));
-    const reasons = unscanned.map((region) => `program-region-unscanned:${region.id}`);
-    const merged = mergeProgramScans(scans, { regions:allRegions, reasons, limits:PROGRAM_MERGE_LIMITS });
-    return { program:new ProgramIndex(merged, app.symbols, target ?? local[0]), reason:reasons[0] ?? null };
+    // Outgoing callees are function-local once the function extent is proven; incoming
+    // callers/xrefs still require the remaining executable regions for global absence.
+    const reasons = kind === 'callees' ? [] : unscanned.map((region) => `program-region-unscanned:${region.id}`);
+    const coverageRegions = kind === 'callees' ? local : allRegions;
+    const merged = mergeProgramScans(scans, { regions:coverageRegions, reasons, limits:PROGRAM_MERGE_LIMITS });
+    return {
+      program:new ProgramIndex(merged, app.symbols, target ?? local[0]),
+      reason:reasons[0] ?? null,
+      scannedRegionIds:local.map((r) => r.id),
+      unscannedRegionIds:unscanned.map((r) => r.id),
+    };
   };
   const graphUnsupported = (program) => program?.unsupported === true || (program?.graphCompleteness && (!program.graphCompleteness.supported || program.graphCompleteness.unsupported));
   const adapter = {
@@ -375,30 +393,30 @@ function installDemandQueryAPI(app, recognitionVersion) {
       return base.functions(snapshot, query, page, options);
     },
     async callers(_snapshot, id, page = {}, options = {}) {
-      const { program, reason } = await localProgram(id, 'callers', options);
+      const { program, reason, scannedRegionIds, unscannedRegionIds } = await localProgram(id, 'callers', options);
       if (!program?.callersOf) return unsupported(reason || 'program-index-unavailable');
       if (graphUnsupported(program)) return unsupported(program.queryIncompleteReason || reason || 'unsupported-program-analysis');
       const { offset, limit } = pageOf(page); const source = program.callersOf(addressOf(id), Math.min(MAX_PAGE, offset + limit));
-      const result = paged(Array.from(source || []), page, source?.complete === false || reason ? 'partial' : 'complete', { reason:source?.incompleteReason ?? reason ?? null, scope:'active-neighborhood' });
+      const result = paged(Array.from(source || []), page, source?.complete === false || reason ? 'partial' : 'complete', { reason:source?.incompleteReason ?? reason ?? null, scope:'active-neighborhood', scannedRegionIds, unscannedRegionIds });
       if (source?.queryLimited === true && result.page.next == null && result.page.returned > 0) result.page.next = result.page.offset + result.page.returned; return result;
     },
     async callees(_snapshot, id, page = {}, options = {}) {
       const address = addressOf(id); const range = address == null ? null : app.validatedFunctionRange?.(address);
       if (!range?.ok) return unsupported(range?.reason || 'function-range-unavailable');
-      const { program, reason } = await localProgram(address, 'callees', options);
+      const { program, reason, scannedRegionIds, unscannedRegionIds } = await localProgram(address, 'callees', options);
       if (!program?.calleesOf) return unsupported(reason || 'program-index-unavailable');
       if (graphUnsupported(program)) return unsupported(program.queryIncompleteReason || reason || 'unsupported-program-analysis');
       const { offset, limit } = pageOf(page); const source = program.calleesOf(range.start, range.end, Math.min(MAX_PAGE, offset + limit));
-      const result = paged(Array.from(source || []), page, source?.complete === false || reason ? 'partial' : 'complete', { reason:source?.incompleteReason ?? reason ?? null, scope:'active-function' });
+      const result = paged(Array.from(source || []), page, source?.complete === false || reason ? 'partial' : 'complete', { reason:source?.incompleteReason ?? reason ?? null, scope:'active-function', scannedRegionIds, unscannedRegionIds });
       if (source?.queryLimited === true && result.page.next == null && result.page.returned > 0) result.page.next = result.page.offset + result.page.returned; return result;
     },
     async xrefs(_snapshot, id, page = {}, options = {}) {
       const address = addressOf(id); if (address == null) return unsupported('function-address-invalid');
-      const { program, reason } = await localProgram(address, 'xrefs', options); if (!program) return unsupported(reason || 'program-index-unavailable');
+      const { program, reason, scannedRegionIds, unscannedRegionIds } = await localProgram(address, 'xrefs', options); if (!program) return unsupported(reason || 'program-index-unavailable');
       if (graphUnsupported(program)) return unsupported(program.queryIncompleteReason || reason || 'unsupported-program-analysis');
       const { offset, limit } = pageOf(page); const cap = Math.min(MAX_PAGE, offset + limit); const refs = program.refSitesTo?.(address, 1n, cap) || []; const calls = program.callSitesTo?.(address, cap) || [];
       const rows = [...Array.from(refs).map((x) => ({ kind:'reference', site:x.site, target:x.target, refKind:x.kind ?? null })), ...Array.from(calls).map((x) => ({ kind:'call', site:x.site, target:address, caller:x.caller ?? null }))].sort((a,b) => BigInt(a.site) < BigInt(b.site) ? -1 : BigInt(a.site) > BigInt(b.site) ? 1 : 0);
-      return paged(rows, page, refs.complete === false || calls.complete === false || reason ? 'partial' : 'complete', { reason:refs.incompleteReason ?? calls.incompleteReason ?? reason ?? null, scope:'active-neighborhood' });
+      return paged(rows, page, refs.complete === false || calls.complete === false || reason ? 'partial' : 'complete', { reason:refs.incompleteReason ?? calls.incompleteReason ?? reason ?? null, scope:'active-neighborhood', scannedRegionIds, unscannedRegionIds });
     },
     async search(_snapshot, query, page = {}, options = {}) {
       if (!query || typeof query !== 'object' || typeof app?.backend?.search !== 'function') return unsupported('typed-search-producer-unavailable');
@@ -425,4 +443,4 @@ export function installDemandDrivenAnalysis(app) {
   Object.defineProperty(app, '__demandDrivenAnalysisVersion', { value:RUNTIME_VERSION, configurable:true });
   return app.analysisQueries;
 }
-export const __demandDrivenInternalsForTests = Object.freeze({ addressOf, mergeShapeMaps, recognitionInputKey });
+export const __demandDrivenInternalsForTests = Object.freeze({ addressOf, mergeShapeMaps, recognitionInputKey, localRegionPlan, regionScanLimits });

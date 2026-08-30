@@ -16,7 +16,7 @@ const DSB_NXS_OPTIONS = new Set(['oshnxs','nshnxs','ishnxs','synxs']);
 const WAITS_AND_EVENTS = new Set(['yield','wfe','wfi','sev','sevl']);
 const TRAPS = new Set(['svc','hvc','smc','brk','hlt']);
 const MAINTENANCE = new Set(['dc','ic','tlbi']);
-const ARM64E_ONLY = /^(?:paci|pacd|auti|autd|xpac|retaa|retab|braa|brab|blraa|blrab)/;
+const ARM64E_ONLY = /^(?:paci|pacd|auti|autd|xpac|retaa|retab|eretaa|eretab|braa|brab|blraa|blrab)/;
 
 // These selector/arity sets are the finite shapes emitted by deployed Capstone
 // across arm64:a64:system-encoding-discriminators:v1 (262,330 encoding cases).

@@ -4,6 +4,17 @@ For any master-phase, component-lane, living-integration, release/cutover, gener
 
 Its `MUST` / `MUST NOT` rules are merge-blocking. Do not replace an exact-head, candidate-merge-tree, generated-output, independent-verifier, active-runtime, or target-device requirement with a weaker proxy. A repeated process failure must gain a permanent automated regression where technically possible. A phase is not done until the applicable completion checklist in that document is satisfied.
 
+## Low-token test execution
+
+When an agent needs a broad test or release-gate run, suppress successful chatter instead of sending thousands of passing lines back into model context.
+
+- Full repository gate: `node scripts/run-quiet-command.mjs --label check -- npm run check`
+- Full regression chain: `node scripts/run-quiet-command.mjs --label test -- npm test`
+- Shared Phase 8–10 runners are quiet by default; use the whole-command wrapper for other broad suites.
+- A successful quiet run prints only its bounded summary. A failed whole-command run prints a bounded failure tail and retains the complete local log path.
+- For diagnosis, rerun the smallest failing command with `HEX_TEST_OUTPUT=verbose` to restore full output.
+- Do not replace the canonical `npm run check`, verifier, denominator, exact-head, or release semantics. Quiet execution changes presentation only, never what is tested.
+
 <!-- graft:start -->
 ## Graft — repo context graph
 
