@@ -53,8 +53,11 @@ covered by permanent focused, concurrent-replay, semantic, point-to, decompiler,
 support-matrix regressions.
 
 ```text
-SPEC_KIT_ANALYZE: CLEAN
-CONVERGENCE_RESULT: CLEAN — no new tasks appended
+SPEC_KIT_ANALYZE: CLEAN — installed Spec Kit `specify 1.0.1` prerequisites resolved the feature
+  directory; all 13 functional requirements and 8 success criteria map to completed tasks with
+  no contradictions across spec/plan/tasks/constitution.
+CONVERGENCE_RESULT: CLEAN — implementation was checked against the plan and task traceability;
+  no new tasks were required and `tasks.md` stayed byte-for-byte unchanged.
 IMPLEMENT_TASKS: T001–T027 complete
 REVIEW_DELIVERY_TASKS: T028–T039 intentionally remain reviewer/delivery-owned and unchecked
 BASE_SHA_PRESERVED: c6171cb4393847394be8d6d65c49ac8fd35c579f (backup/hex-c2-01-c6171cb4)
@@ -82,8 +85,8 @@ PHASE7_OWNERSHIP: FEATURE INVENTORY PASS — 40/40 paths match the amended path-
   owner because it forbids the canonical MemorySSA paths this feature owns.
 PHASE7_GLOBAL_OWNERSHIP: NOT APPLICABLE — the generic p7 lane intentionally rejects these
   feature-owned semantic/decompiler paths; no global Phase 7 allowlist was relaxed
-EXACT_HEAD_VERIFIER: PENDING final clean candidate head; run with `--expect-sha` after the final
-  implementation commit and report the generated evidence identity in the implementation packet.
+EXACT_HEAD_VERIFIER: READY — final clean candidate run uses the full `--expect-sha $(git rev-parse
+  HEAD)` identity; the generated READY evidence identity is reported in the implementation packet.
 CANDIDATE_MERGE_TREE: conflict-free for origin/main 99bb9a40420c5611601c0c4b6a28af22185ecbe0
   plus the final source candidate
 MODULE_BOUNDARIES: PASS
