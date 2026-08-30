@@ -3,7 +3,7 @@ import { projectSemanticIrV2ToLegacyV1 } from '../../js/semantics/compat/semanti
 import { createSemanticCfg } from '../../js/semantics/cfg/index.js';
 import { createSemanticIrFunction } from '../../js/semantics/ir/function.js';
 import { validateSemanticIrFunction } from '../../js/semantics/ir/index.js';
-import { createMemoryRegionRef } from '../../js/semantics/memoryssa/contract.js';
+import { createMemoryRegionRef, createMemorySsaContract } from '../../js/semantics/memoryssa/contract.js';
 import { buildMemorySsa, isCanonicalMemorySsaProducerArtifact } from '../../js/semantics/memoryssa/build.js';
 import * as memorySsaBuild from '../../js/semantics/memoryssa/build.js';
 import {
@@ -1212,6 +1212,17 @@ for (const invalid of ['1', new Number(1), NaN, Infinity, Number.MAX_SAFE_INTEGE
     `deadline must reject non-safe resource type ${String(invalid)}`);
   assert.equal(query(memorySsa, { budget: { deadline: invalid } }).status, 'unsupported',
     `budget deadline must reject non-safe resource type ${String(invalid)}`);
+  assert.throws(() => buildMemorySsa(canonicalIr, canonicalCfg, {
+    budget: { maxWorkItems: invalid },
+  }), /memory-ssa-build-invalid-budget-maxWorkItems/,
+  `builder maxWorkItems must reject non-safe resource type ${String(invalid)}`);
+  assert.throws(() => createMemorySsaContract({
+    functionId: memorySsa.functionId,
+    regions: memorySsa.regions,
+    definitions: memorySsa.definitions,
+    uses: memorySsa.uses,
+  }, { budget: { maxWorkItems: invalid } }), /memory-ssa-invalid-budget-maxWorkItems/,
+  `contract maxWorkItems must reject non-safe resource type ${String(invalid)}`);
 }
 const truncated = clonedArtifact();
 truncated.completeness = 'truncated';
