@@ -1,0 +1,28 @@
+name: restack-2666
+on:
+  push:
+    branches: [fix/2661-discovery-ownership-fusion]
+    paths: [.github/workflows/restack-2666.yml]
+permissions:
+  contents: write
+jobs:
+  restack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/2661-discovery-ownership-fusion
+          fetch-depth: 0
+      - name: Rebase onto current main and self-clean
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git fetch origin main
+          git rebase origin/main
+          rm .github/workflows/restack-2666.yml
+          git add -A
+          git commit -m "chore: remove temporary restack workflow"
+          node --test tests/phase7/discovery/ownership-fusion-2661.test.mjs
+          git diff --check origin/main...HEAD
+          git push --force-with-lease origin HEAD:fix/2661-discovery-ownership-fusion
