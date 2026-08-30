@@ -66,8 +66,8 @@ assert.equal(arm64RegisterOperand({ k:'reg', cls:'gp', num:0, bits:16, text:'x0'
 assert.equal(arm64RegisterOperand({ k:'reg', cls:'sp', num:0, bits:64, text:'sp' }), null);
 assert.equal(arm64RegisterOperand({ k:'reg', cls:'zr', num:0, bits:64, text:'xzr' }), null);
 
-
-// Legacy/internal structured forms must preserve their canonical physical identity.
+// Legacy/internal structured forms carry redundant identity fields. Each field
+// must agree with the parsed architectural view; none may override another.
 assert.equal(arm64RegisterOperand({ kind:'gp', physicalId:'x2', view:'x2', bits:64, zero:false }).physicalId, 'x2');
 assert.equal(arm64RegisterOperand({ kind:'gp', physicalId:'x2', view:'w2', bits:32, zero:false }).bits, 32);
 assert.equal(arm64RegisterOperand({ registerId:'x2', view:'x2', widthBits:64 }).physicalId, 'x2');
