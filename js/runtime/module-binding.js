@@ -10,7 +10,7 @@ export function hasProvenRuntimeStaticIdentity(module) {
 
 export function normalizeRuntimeModuleBinding(module, { bindingKey: explicitKey, loadedSequence } = {}) {
   const rawKey = explicitKey ?? module?.bindingKey ?? module?.key;
-  const key = String(rawKey ?? "").trim();
+  const key = typeof rawKey === "string" ? rawKey.trim() : "";
   if (!key) {
     throw new DebugAdapterError("runtime-invalid-module-binding-key", "runtime module binding key is required");
   }
