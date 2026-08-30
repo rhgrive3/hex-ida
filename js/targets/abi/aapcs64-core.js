@@ -47,11 +47,17 @@ function parameterAbiClass(param) {
     || (members >= 1 && elementBits > 0 && explicitBits === members * elementBits);
   const homogeneousLayoutProven = !homogeneous
     || (members >= 1 && members <= 4 && elementBits >= 8 && Number.isSafeInteger(elementBits) && homogeneousSizeMatches);
+  // A plain aggregate has no ABI placement until its logical size is proven.
+  // Do not let the scalar fallback below turn an un-sized struct/union into a
+  // one-register exact argument.
+  const aggregateLayoutProven = !aggregate || explicitTotalBitsProven;
   const int128 = !pointer && !aggregate && !fp && /(?:unsigned\s+)?__int128|int128_t|uint128_t/.test(type + ' ' + cls);
   const rawBits = homogeneous
     ? homogeneousLayoutProven ? elementBits * members : explicitTotalBitsProven ? explicitBits : 0
-    : Number.isFinite(explicitBits) && explicitBits > 0 ? explicitBits : int128 ? 128 : 64;
-  const bits = Math.max(8, Math.min(1 << 20, Math.floor(rawBits)));
+    : aggregate
+      ? aggregateLayoutProven ? explicitBits : 0
+      : Number.isFinite(explicitBits) && explicitBits > 0 ? explicitBits : int128 ? 128 : 64;
+  const bits = rawBits > 0 ? Math.max(8, Math.min(1 << 20, Math.floor(rawBits))) : 0;
   const wideIntegral = !pointer && !aggregate && !fp && bits === 128;
   const declaredAlignment = Number(param?.alignment ?? param?.align ?? param?.alignmentBytes);
   const alignment = Number.isFinite(declaredAlignment) && declaredAlignment > 0
@@ -59,7 +65,7 @@ function parameterAbiClass(param) {
     : wideIntegral ? 16 : 8;
   const mayContainPointers = param?.mayContainPointers === true || param?.containsPointers === true;
   return {
-    pointer, hfa, hva, homogeneous, homogeneousLayoutProven, vector, aggregate, fp,
+    pointer, hfa, hva, homogeneous, homogeneousLayoutProven, aggregateLayoutProven, vector, aggregate, fp,
     members, elementBits, bits, wideIntegral, alignment, mayContainPointers, scalableClass,
   };
 }
@@ -108,6 +114,14 @@ export function classifyAAPCS64Arguments(insn, opts = {}) {
         index, location:'unknown', abiClass:c.hfa ? 'hfa-unproven' : 'hva-unproven',
         aggregate:true, partial:true, possible:true, mustUse:false,
         reason:'homogeneous-aggregate-member-layout-not-proven',
+      };
+      arguments_.push(entry); unsupported.push(entry); return;
+    }
+    if (c.aggregate && !c.aggregateLayoutProven) {
+      const entry={
+        index, location:'unknown', abiClass:'aggregate-unproven', aggregate:true,
+        partial:true, possible:true, mustUse:false,
+        reason:'aggregate-size-layout-not-proven',
       };
       arguments_.push(entry); unsupported.push(entry); return;
     }
@@ -280,6 +294,13 @@ function returnBitsOf(...values) {
   return Number.isFinite(bits) && Number.isInteger(bits) && bits > 0 ? bits : null;
 }
 
+function explicitReturnBitsOf(...values) {
+  const raw = values.find((value) => value != null);
+  if (raw == null) return null;
+  const bits = Number(raw);
+  return Number.isSafeInteger(bits) && bits > 0 ? bits : null;
+}
+
 function homogeneousReturnInfo(proto, cls, returnBits) {
   const homogeneous = proto?.hfa === true || proto?.hva === true
     || cls.includes('hfa') || cls.includes('hva') || cls.includes('homogeneous');
@@ -338,9 +359,19 @@ export function classifyAAPCS64CallReturn(insn, opts = {}) {
   const type = String(proto.returnType || proto.ret || proto.result || '').toLowerCase();
   const cls = String(proto.returnClass || proto.abiClass || proto.resultClass || '').toLowerCase();
   if (proto.void === true || type === 'void' || cls === 'void') return null;
+  const aggregate=proto.aggregate===true||proto.isAggregate===true||/aggregate|struct|union|record|array|composite/.test(type+' '+cls);
+  const explicitReturnBits = explicitReturnBitsOf(proto.returnBits, proto.bits);
+  if ((proto.indirectResult === true || cls === 'indirect') && aggregate && explicitReturnBits == null) {
+    return { reg:null, regs:[], bits:null, bytes:null, aggregate:true, partial:true,
+      reason:'aapcs64-aggregate-return-size-not-proven' };
+  }
   if (proto.indirectResult === true || cls === 'indirect') return indirectReturnResult();
   if (scalableReturnClass(proto,type,cls)) return null;
-  const returnBits = returnBitsOf(proto.returnBits, proto.bits);
+  const returnBits = aggregate ? explicitReturnBits : returnBitsOf(proto.returnBits, proto.bits);
+  if (aggregate && returnBits == null) {
+    return { reg:null, regs:[], bits:null, bytes:null, aggregate:true, partial:true,
+      reason:'aapcs64-aggregate-return-size-not-proven' };
+  }
   if (returnBits == null) return null;
   const homogeneous = homogeneousReturnInfo(proto, cls, returnBits);
   if (homogeneous?.invalid) return { reg:null, regs:[], bits:returnBits, aggregate:true, partial:true, reason:'aapcs64-homogeneous-return-layout-not-proven' };
@@ -356,7 +387,6 @@ export function classifyAAPCS64CallReturn(insn, opts = {}) {
   if (cls.includes('fp') || cls.includes('float') || cls.includes('vector') || /^(float|double|__fp16)/.test(type)) {
     return { reg:'v0', bits:returnBits };
   }
-  const aggregate=proto.aggregate===true||proto.isAggregate===true||/aggregate|struct|union|record|array|composite/.test(type+' '+cls);
   const wideInteger=!aggregate&&(/(?:unsigned\s+)?__int128|int128_t|uint128_t/.test(type+' '+cls)||returnBits===128);
   if (aggregate && returnBits>128) return indirectReturnResult();
   if ((aggregate && returnBits>64) || wideInteger) {
@@ -378,9 +408,19 @@ export function classifyAAPCS64FunctionReturn(opts = {}) {
   const type = String(opts?.returnType || proto?.returnType || proto?.ret || proto?.result || '').toLowerCase();
   const cls = String(opts?.returnClass || proto?.returnClass || proto?.abiClass || proto?.resultClass || '').toLowerCase();
   if (opts?.returnsValue === false || proto?.returnsValue === false || proto?.void === true || type === 'void' || cls === 'void') return null;
+  const aggregate=proto?.aggregate===true||proto?.isAggregate===true||/aggregate|struct|union|record|array|composite/.test(type+' '+cls);
+  const explicitReturnBits = explicitReturnBitsOf(proto?.returnBits, proto?.bits, opts?.returnBits);
+  if ((proto?.indirectResult === true || cls === 'indirect') && aggregate && explicitReturnBits == null) {
+    return { reg:null, regs:[], bits:null, bytes:null, aggregate:true, partial:true,
+      reason:'aapcs64-aggregate-return-size-not-proven' };
+  }
   if (proto?.indirectResult === true || cls === 'indirect') return indirectReturnResult();
   if (scalableReturnClass(proto,type,cls)) return null;
-  const returnBits = returnBitsOf(proto?.returnBits, proto?.bits, opts?.returnBits);
+  const returnBits = aggregate ? explicitReturnBits : returnBitsOf(proto?.returnBits, proto?.bits, opts?.returnBits);
+  if (aggregate && returnBits == null) {
+    return { reg:null, regs:[], bits:null, bytes:null, aggregate:true, partial:true,
+      reason:'aapcs64-aggregate-return-size-not-proven' };
+  }
   if (returnBits == null) return null;
   const homogeneous = homogeneousReturnInfo(proto, cls, returnBits);
   if (homogeneous?.invalid) return { reg:null, regs:[], bits:returnBits, aggregate:true, partial:true, reason:'aapcs64-homogeneous-return-layout-not-proven' };
@@ -397,7 +437,6 @@ export function classifyAAPCS64FunctionReturn(opts = {}) {
     return { reg:'v0', bits:returnBits };
   }
   if (type || cls || opts?.returnsValue === true || proto?.returnsValue === true) {
-    const aggregate=proto?.aggregate===true||proto?.isAggregate===true||/aggregate|struct|union|record|array|composite/.test(type+' '+cls);
     const wideInteger=!aggregate&&(/(?:unsigned\s+)?__int128|int128_t|uint128_t/.test(type+' '+cls)||returnBits===128);
     if (aggregate && returnBits>128) return indirectReturnResult();
     if ((aggregate && returnBits>64) || wideInteger) {

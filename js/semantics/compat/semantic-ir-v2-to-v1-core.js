@@ -19,6 +19,48 @@ function abiNonExact(raw) {
   return raw?.partial === true || raw?.unsupported === true || !!abiResultInvalidState(raw);
 }
 
+function provenAbiArgument(argument) {
+  return argument?.partial !== true && argument?.possible !== true
+    && argument?.mustUse !== false && argument?.exact !== false
+    && argument?.named !== false && argument?.variadic !== true;
+}
+
+/*
+ * Compatibility is a publication boundary, not a second ABI classifier.
+ * Validate every aggregate argument layout emitted by the canonical adapter;
+ * an exact-looking register list without complete byte pieces is rejected.
+ */
+function normalizeArgumentEvidence(rawArguments) {
+  if (!Array.isArray(rawArguments)) return rawArguments;
+  const normalized = [];
+  for (const argument of rawArguments) {
+    if (!argument || typeof argument !== 'object' || Array.isArray(argument)) return null;
+    const piecesPresent = Array.isArray(argument.pieces) || Array.isArray(argument.parts);
+    const pieces = Array.isArray(argument.pieces) ? argument.pieces
+      : Array.isArray(argument.parts) ? argument.parts : null;
+    const regs = Array.isArray(argument.regs)
+      ? argument.regs
+      : typeof argument.reg === 'string' && argument.reg ? [argument.reg] : [];
+    const aggregate = argument.aggregate === true || regs.length > 1 || piecesPresent
+      || /aggregate|hfa|hva|eightbyte|wide-integer|integer-pair/.test(String(argument.abiClass || '').toLowerCase());
+    if (aggregate) {
+      if (piecesPresent && pieces?.length) {
+        const validated = normalizeAbiPieces({ ...argument, regs }, pieces, { defaultAbiClass:'aggregate-piece' });
+        if (!validated) return null;
+        normalized.push({ ...argument, regs, pieces:validated, aggregate:true });
+        continue;
+      }
+      // A conservative/unknown aggregate may have no physical pieces yet;
+      // an exact aggregate may not omit them.
+      if (provenAbiArgument(argument)) return null;
+      normalized.push({ ...argument, aggregate:true });
+      continue;
+    }
+    normalized.push(argument);
+  }
+  return normalized;
+}
+
 export function safeBigInt(value) {
   if (value == null) return null;
   if (typeof value === 'object') {
@@ -182,9 +224,14 @@ function normalizeAbiResult(raw) {
   const rawCallArguments = Array.isArray(raw.callArguments) ? raw.callArguments
     : Array.isArray(raw.arguments) ? raw.arguments : null;
   const nonExact = abiNonExact(raw);
-  const callArguments = nonExact && rawCallArguments
-    ? rawCallArguments.map((argument) => ({ ...argument, possible:true, mustUse:false, exact:false, certainty:'unknown' }))
-    : rawCallArguments;
+  const normalizedArguments = normalizeArgumentEvidence(rawCallArguments);
+  if (rawCallArguments && !normalizedArguments) return null;
+  const rawState = abiResultInvalidState(raw);
+  const callArguments = nonExact && normalizedArguments
+    ? normalizedArguments.map((argument) => rawState === 'partial' && provenAbiArgument(argument)
+      ? argument
+      : { ...argument, possible:true, mustUse:false, exact:false, certainty:'unknown' })
+    : normalizedArguments;
   // A partial/stale result may contain a producer's provisional locations.
   // Dropping every physical placement at this boundary prevents a legacy
   // scalar field from laundering incomplete canonical ABI evidence.

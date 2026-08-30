@@ -28,7 +28,10 @@ function parameterClass(param) {
   const hva = param?.hva === true || cls.includes('hva');
   const homogeneous = hfa || hva;
   const vector = param?.vector === true || cls.includes('vector') || /vector|simd/.test(type);
-  const fp = hfa || vector || cls.includes('float') || cls.includes('fp') || /^(float|double|__fp16)/.test(type);
+  const aggregate = !pointer && !homogeneous && !vector
+    && (param?.aggregate === true || param?.isAggregate === true
+      || /aggregate|struct|union|record|array|composite/.test(`${type} ${cls}`));
+  const fp = !aggregate && (hfa || vector || cls.includes('float') || cls.includes('fp') || /^(float|double|__fp16)/.test(type));
   const rawMembers = param?.members ?? param?.elements ?? param?.count;
   const declaredMembers = Number(rawMembers);
   const members = homogeneous && Number.isSafeInteger(declaredMembers) && declaredMembers >= 1 && declaredMembers <= 4
@@ -41,11 +44,13 @@ function parameterClass(param) {
   const homogeneousSizeMatches = !homogeneous || !explicitTotalBitsProven
     || (members > 0 && elementBits > 0 && declaredBits === members * elementBits);
   const homogeneousLayoutProven = !homogeneous || (members > 0 && elementBits > 0 && homogeneousSizeMatches);
+  const aggregateLayoutProven = !aggregate || explicitTotalBitsProven;
   const bits = homogeneous && members > 0 && elementBits > 0
     ? homogeneousSizeMatches ? Math.max(8, Math.min(512, elementBits * members))
       : Math.max(8, Math.min(512, explicitTotalBitsProven ? declaredBits : 64))
-    : Math.max(8, Math.min(512, explicitTotalBitsProven ? declaredBits : 64));
-  const bytes = Math.max(1, Math.ceil(bits / 8));
+    : aggregate ? aggregateLayoutProven ? Math.max(8, Math.min(512, declaredBits)) : 0
+      : Math.max(8, Math.min(512, explicitTotalBitsProven ? declaredBits : 64));
+  const bytes = bits > 0 ? Math.max(1, Math.ceil(bits / 8)) : 0;
   const explicitAlignment = Number(param?.alignmentBytes || param?.alignBytes || param?.alignment || 0);
   let alignmentBytes = Number.isSafeInteger(explicitAlignment) && explicitAlignment > 0 ? explicitAlignment : 1;
   if (!(Number.isSafeInteger(explicitAlignment) && explicitAlignment > 0)) {
@@ -57,7 +62,7 @@ function parameterClass(param) {
   const signed = param?.signed === true || /(^|\s)(?:signed|int\d*)/.test(type);
   return {
     pointer, hfa, hva, homogeneous, homogeneousLayoutProven,
-    vector, fp, members, elementBits, bits, bytes, alignmentBytes, signed,
+    aggregate, aggregateLayoutProven, vector, fp, members, elementBits, bits, bytes, alignmentBytes, signed,
   };
 }
 
@@ -115,6 +120,15 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
       });
       continue;
     }
+    if (c.aggregate && !c.aggregateLayoutProven) {
+      aggregatePartial = true;
+      arguments_.push({
+        index, location:'unknown', abiClass:'aggregate-unproven', aggregate:true,
+        partial:true, possible:true, mustUse:false,
+        reason:'darwin-arm64-aggregate-size-layout-not-proven',
+      });
+      continue;
+    }
     if (c.fp) {
       const regsNeeded = c.homogeneous ? c.members : 1;
       if (fp + regsNeeded <= 8) {
@@ -165,16 +179,17 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
           location:'register',
           regs,
           reg:regs[0],
-          abiClass:c.pointer ? 'pointer' : regsNeeded > 1 ? 'wide-integer' : 'integer',
+          abiClass:c.aggregate ? 'aggregate' : c.pointer ? 'pointer' : regsNeeded > 1 ? 'wide-integer' : 'integer',
           pointer:c.pointer,
           bits:c.bits,
-          ...(regsNeeded > 1 ? {
+          ...(c.aggregate || regsNeeded > 1 ? {
             bytes:regsNeeded * 8,
             pieces:regs.map((reg,piece) => ({
               pieceIndex:piece, order:piece, reg, abiClass:c.aggregate ? 'aggregate' : 'wide-integer',
               bits:Math.min(64, Math.max(1, c.bits - piece * 64)), bytes:8, byteOffset:piece * 8,
             })),
           } : {}),
+          ...(c.aggregate ? { aggregate:true, alignmentBytes:c.alignmentBytes } : {}),
           possible:false,
           mustUse:true,
           ...(c.bits < 32 && !c.pointer ? {
@@ -195,9 +210,10 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
       offset:stackOffset,
       bytes:stackBytes,
       alignmentBytes:c.alignmentBytes,
-      abiClass:c.hfa ? 'hfa' : c.hva ? 'hva' : c.vector ? 'vector' : c.fp ? 'fp' : c.pointer ? 'pointer' : 'integer',
+      abiClass:c.aggregate ? 'aggregate' : c.hfa ? 'hfa' : c.hva ? 'hva' : c.vector ? 'vector' : c.fp ? 'fp' : c.pointer ? 'pointer' : 'integer',
       pointer:c.pointer,
       bits:c.bits,
+      ...(c.aggregate ? { aggregate:true } : {}),
       ...(c.homogeneous ? {
         aggregate:true, members:c.members, memberCount:c.members, elementBits:c.elementBits,
         elementBytes:Math.ceil(c.elementBits / 8), homogeneousLayoutProven:true,
@@ -205,7 +221,7 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
           pieceIndex:piece, order:piece, stackOffset:stackOffset + piece*8,
           bits:c.elementBits, bytes:8, byteOffset:piece*8, abiClass:c.hfa ? 'hfa' : 'hva',
         })),
-      } : c.bits > 64 ? {
+      } : c.aggregate || c.bits > 64 ? {
         pieces:Array.from({ length:Math.max(1, Math.ceil(c.bits / 64)) }, (_unused,piece) => ({
           pieceIndex:piece, order:piece, stackOffset:stackOffset + piece * 8,
           bits:Math.min(64, Math.max(1, c.bits - piece * 64)), bytes:8, byteOffset:piece * 8,

@@ -223,7 +223,14 @@ export function semanticAbiAdapter(abiPlugin, options = {}) {
   const architectureMatches = !targetArchitectureText
     || targetArchitectureText === String(architectureId || '').trim().toLowerCase()
     || (targetArchitectureText === 'arm64e' && String(architectureId || '').trim().toLowerCase() === 'arm64');
-  const platformMatches = !platformId || (() => {
+  const platformMatches = pluginId === 'darwin-arm64' ? (() => {
+    try {
+      return plugin?.platformPredicate?.({
+        architecture:targetArchitectureText || String(architectureId || '').trim().toLowerCase(),
+        platform:platformId == null ? null : String(platformId).trim().toLowerCase(),
+      }) === true;
+    } catch { return false; }
+  })() : !platformId || (() => {
     try {
       return plugin?.platformPredicate?.({
         architecture:targetArchitectureText || String(architectureId || '').trim().toLowerCase(),
@@ -571,13 +578,20 @@ export function semanticAbiAdapter(abiPlugin, options = {}) {
       // but never expose placements from a stale/partial-status result or an
       // unwrapped adapter object.
       const classifiedState = abiResultInvalidState(classified);
+      const knownVariadicPartial = classified?.partial === true
+        && classified?.unsupported !== true && functionPrototype != null
+        && (functionPrototype?.variadic === true || functionPrototype?.varargs === true)
+        && classifiedState === 'partial';
       const unknownPrototypePartial = classified?.partial === true
         && classified?.unsupported !== true && functionPrototype == null
         && classifiedState === 'partial';
       if (abiEvidenceState(options, null, plugin)
-        || !classified || (classified.partial === true && functionPrototype != null) || classified.unsupported === true
+        || !classified || (classified.partial === true && functionPrototype != null && !knownVariadicPartial) || classified.unsupported === true
         || (classifiedState && !unknownPrototypePartial) || !canonicalAbiEvidence(classified)) return Object.freeze([]);
       const uncertain = classified.partial === true;
+      const provenEntry = (entry) => entry?.partial !== true && entry?.possible !== true
+        && entry?.mustUse !== false && entry?.exact !== false
+        && entry?.named !== false && entry?.variadic !== true;
       const locations = [];
       const seen = new Set();
       for (const entry of classified?.arguments ?? []) {
@@ -594,9 +608,9 @@ export function semanticAbiAdapter(abiPlugin, options = {}) {
             reg,
             abiClass:entry.abiClass ?? null,
             aggregate:entry.aggregate === true || Array.isArray(entry.pieces) || registers.length > 1,
-            possible:uncertain,
-            mustUse:!uncertain,
-            exact:!uncertain,
+            possible:uncertain && !provenEntry(entry),
+            mustUse:!uncertain || provenEntry(entry),
+            exact:!uncertain || provenEntry(entry),
             pieceIndex:Array.isArray(entry.pieces)
               ? (entry.pieces.findIndex((piece) => String(piece?.reg || '') === reg) >= 0
                 ? entry.pieces.findIndex((piece) => String(piece?.reg || '') === reg)
@@ -657,8 +671,11 @@ export function semanticAbiAdapter(abiPlugin, options = {}) {
         exact:false,
         certainty:'unknown',
       });
+      const provenArgument = (entry) => entry?.partial !== true && entry?.possible !== true
+        && entry?.mustUse !== false && entry?.exact !== false
+        && entry?.named !== false && entry?.variadic !== true;
       const explicitArguments = hardInvalid ? null : Array.isArray(classified?.arguments)
-        ? (partial ? classified.arguments.map(markUncertain) : classified.arguments)
+        ? (partial ? classified.arguments.map((entry) => provenArgument(entry) ? entry : markUncertain(entry)) : classified.arguments)
         : null;
       const implicitInputs = hardInvalid ? [] : Array.isArray(classified?.implicitInputs)
         ? classified.implicitInputs.map((input, index) => Object.freeze({

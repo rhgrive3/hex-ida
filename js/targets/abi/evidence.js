@@ -99,6 +99,14 @@ export function canonicalAbiEvidence(raw) {
   if (profileRequired.some((field) => typeof profile[field] !== 'string' || !profile[field].trim())) return false;
   if (!sameScalar(profile.architecture, profile.architectureId)
     || !sameScalar(profile.platform, profile.platformId)) return false;
+  // Darwin arm64 is a platform/profile ABI, not an architecture synonym.
+  // A copied identity with only `arm64` must never authorize Apple aggregate
+  // placement or hidden sret publication.
+  if (raw.abiId === 'darwin-arm64'
+    && (typeof identity.platform !== 'string' || !identity.platform.trim()
+      || typeof profile.platform !== 'string' || !profile.platform.trim()
+      || !sameScalar(identity.platform, profile.platform)
+      || !sameScalar(identity.platform, profile.platformId))) return false;
   const profileMirrors = [
     ['id', raw.abiSemanticIdentity],
     ['profileIdentity', raw.abiSemanticIdentity],
@@ -174,7 +182,7 @@ export function canonicalAbiEvidence(raw) {
  * the adapter, prototype recovery, and v2 compatibility projection.
  */
 export function canonicalAbiHiddenResult(raw, hidden) {
-  if (!canonicalAbiEvidence(raw) || !record(hidden)) return false;
+  if (!canonicalAbiEvidence(raw) || abiResultInvalidState(raw) || !record(hidden)) return false;
   if (abiResultInvalidState(hidden)) return false;
   const input = hidden.input;
   const identity = raw.abiIdentity;

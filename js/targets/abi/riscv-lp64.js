@@ -114,6 +114,28 @@ function aggregateMembers(parameter) {
   return Array.isArray(candidates) && candidates.length ? candidates : null;
 }
 
+function aggregateMemberByteOffset(member) {
+  const raw = member?.byteOffset ?? member?.offsetBytes ?? member?.offset
+    ?? member?.layout?.byteOffset ?? member?.layout?.offset;
+  const offset = Number(raw);
+  return Number.isSafeInteger(offset) && offset >= 0 ? offset : null;
+}
+
+/* A member list is not a complete physical layout.  Exact hard-float
+ * flattening requires explicit ordered, gap-free member byte spans. */
+function aggregateMemberLayout(members, classifiedMembers) {
+  if (!Array.isArray(members) || !Array.isArray(classifiedMembers)
+    || members.length !== classifiedMembers.length || !members.length) return null;
+  let cursor = 0;
+  for (let index = 0; index < members.length; index += 1) {
+    const offset = aggregateMemberByteOffset(members[index]);
+    const bits = classifiedMembers[index]?.bits;
+    if (offset == null || !Number.isSafeInteger(bits) || bits <= 0 || offset !== cursor) return null;
+    cursor += Math.ceil(bits / 8);
+  }
+  return { bytes:cursor };
+}
+
 function callSymbol(instruction, options) {
   const target = instruction?.callTarget ?? null;
   if (target == null) return null;
@@ -153,13 +175,18 @@ function parameterClass(parameter) {
   const type = String(parameter?.type || parameter?.name || '').trim().toLowerCase();
   const abiClass = String(parameter?.abiClass || parameter?.class || parameter?.kind || '').trim().toLowerCase();
   const pointer = parameter?.pointer === true || parameter?.isPointer === true || /\*|pointer|ptr|object/.test(`${type} ${abiClass}`);
-  const aggregate = parameter?.aggregate === true || parameter?.isAggregate === true || /aggregate|struct|union|record|array/.test(`${type} ${abiClass}`);
+  const aggregate = !pointer && (parameter?.aggregate === true || parameter?.isAggregate === true || /aggregate|struct|union|record|array/.test(`${type} ${abiClass}`));
   const vector = !aggregate ? vectorDescriptor(parameter) : null;
   const floating = !aggregate && !vector && (parameter?.floating === true || isFloatingType(type) || /\bfp\b/.test(abiClass));
   const declaredBits = parameter?.bits ?? parameter?.sizeBits;
-  const rawBits = Number(declaredBits ?? (pointer ? XLEN : riscvTypeBits(type, XLEN)));
-  const bits = Number.isSafeInteger(rawBits) && rawBits > 0 ? Math.min(1_000_000, rawBits) : XLEN;
-  return { type, abiClass, pointer, aggregate, floating, vector, bits };
+  const declaredBitsNumber = Number(declaredBits);
+  const aggregateLayoutProven = !aggregate
+    || (Number.isSafeInteger(declaredBitsNumber) && declaredBitsNumber > 0);
+  const rawBits = aggregate
+    ? aggregateLayoutProven ? declaredBitsNumber : 0
+    : Number(declaredBits ?? (pointer ? XLEN : riscvTypeBits(type, XLEN)));
+  const bits = Number.isSafeInteger(rawBits) && rawBits > 0 ? Math.min(1_000_000, rawBits) : 0;
+  return { type, abiClass, pointer, aggregate, aggregateLayoutProven, floating, vector, bits };
 }
 
 function registerSource(reg, bits = XLEN, extra = {}) {
@@ -269,11 +296,13 @@ function createClassifier(profile) {
       if (!members) return null;
       if (members.length < 1 || members.length > 2) return { eligible:false, known:true };
       const classifiedMembers = members.map((member) => parameterClass(member));
+      const layout = aggregateMemberLayout(members, classifiedMembers);
+      if (!layout) return null;
       if (classifiedMembers.some((member) => member.aggregate || member.vector || member.bits > XLEN)) return { eligible:false, known:true };
       const floatMembers = classifiedMembers.filter((member) => member.floating && member.bits <= abiFlen);
       if (!floatMembers.length || classifiedMembers.some((member) => member.floating && member.bits > abiFlen)) return { eligible:false, known:true };
       if (classifiedMembers.some((member) => !member.floating && member.bits > XLEN)) return { eligible:false, known:true };
-      return { eligible:true, known:true, members:classifiedMembers };
+      return { eligible:true, known:true, members:classifiedMembers, layout };
     }
 
     /*
@@ -322,6 +351,11 @@ function createClassifier(profile) {
       }
 
       if (classified.aggregate) {
+        if (!classified.aggregateLayoutProven) {
+          aggregatePartial = true;
+          unknownArgument(index, classified, 'aggregate-size-layout-unproven', { candidates:['integer-convention','memory-by-reference'] });
+          return;
+        }
         const bytes = Math.ceil(classified.bits / 8);
         if (bytes > 2 * XLEN / 8) {
           /* Aggregates larger than 2*XLEN are passed by reference. */
@@ -563,10 +597,24 @@ function createClassifier(profile) {
     if (options.returnsValue === false || prototype.returnsValue === false || prototype.void === true || type === 'void' || abiClass === 'void') return null;
     const indirectResult = () => ({ reg:null, bits:XLEN, bytes:XLEN / 8, indirect:true, resultLocation:'memory', pointerBits:XLEN,
       hiddenResultPointer:{ input:'x10', location:'register', pointerBits:XLEN } });
-    if (prototype.indirectResult === true || abiClass === 'indirect') return indirectResult();
     const aggregate = prototype.aggregate === true || /aggregate|struct|union|record|array/.test(`${type} ${abiClass}`);
-    const rawBits = Number(prototype.returnBits || prototype.bits || options.returnBits || riscvTypeBits(type, XLEN));
-    const bits = Number.isSafeInteger(rawBits) && rawBits > 0 ? rawBits : XLEN;
+    const declaredBits = prototype.returnBits ?? prototype.bits ?? options.returnBits;
+    const declaredBitsNumber = Number(declaredBits);
+    const aggregateLayoutProven = !aggregate
+      || (Number.isSafeInteger(declaredBitsNumber) && declaredBitsNumber > 0);
+    if ((prototype.indirectResult === true || abiClass === 'indirect') && aggregate && !aggregateLayoutProven) {
+      return { reg:null, bits:null, bytes:null, aggregate:true, partial:true, location:'unknown',
+        reason:`${profile.id}-aggregate-return-size-layout-unproven` };
+    }
+    if (prototype.indirectResult === true || abiClass === 'indirect') return indirectResult();
+    const rawBits = aggregate
+      ? aggregateLayoutProven ? declaredBitsNumber : 0
+      : Number(declaredBits ?? riscvTypeBits(type, XLEN));
+    const bits = Number.isSafeInteger(rawBits) && rawBits > 0 ? rawBits : 0;
+    if (aggregate && !aggregateLayoutProven) {
+      return { reg:null, bits:null, bytes:null, aggregate:true, partial:true, location:'unknown',
+        reason:`${profile.id}-aggregate-return-size-layout-unproven` };
+    }
     const returnVector = vectorDescriptor({ type, abiClass, ...(prototype.returnVector || {}), vector:prototype.vectorReturn === true || prototype.returnVector?.vector === true, mask:prototype.returnVector?.mask, lmul:prototype.returnVector?.lmul, tupleCount:prototype.returnVector?.tupleCount, fixedLengthVector:prototype.returnVector?.fixedLengthVector });
     const vectorVariant = String(prototype.callingConvention || options.callingConvention || '').toLowerCase().replace('_cc','-variant') === 'riscv-vector-variant';
     if (returnVector) {
@@ -582,13 +630,18 @@ function createClassifier(profile) {
       const members = aggregateMembers(prototype.returnAggregate || prototype);
       if (hardFloat && members) {
         const classifiedMembers = members.map((member) => parameterClass(member));
+        const memberLayout = aggregateMemberLayout(members, classifiedMembers);
+        if (!memberLayout) {
+          return { reg:null, partial:true, location:'unknown', reason:`${profile.id}-small-aggregate-return-member-layout-unproven` };
+        }
         const eligible = classifiedMembers.length >= 1 && classifiedMembers.length <= 2
           && classifiedMembers.some((member) => member.floating && member.bits <= abiFlen)
           && classifiedMembers.every((member) => !member.aggregate && !member.vector && member.bits <= XLEN && (!member.floating || member.bits <= abiFlen));
         if (eligible) {
           const memberBits = classifiedMembers.reduce((sum, member) => sum + member.bits, 0);
           const memberBytes = classifiedMembers.reduce((sum, member) => sum + Math.ceil(member.bits / 8), 0);
-          if (memberBits !== bits || memberBytes !== Math.ceil(bits / 8)) {
+          if (memberBits !== bits || memberBytes !== Math.ceil(bits / 8)
+            || memberLayout.bytes !== Math.ceil(bits / 8)) {
             return { reg:null, partial:true, location:'unknown', reason:`${profile.id}-small-aggregate-return-layout-incomplete` };
           }
           let fp=0, integer=0;
