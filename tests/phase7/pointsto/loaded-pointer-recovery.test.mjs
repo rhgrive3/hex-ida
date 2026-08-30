@@ -13,6 +13,7 @@ import {
   createPhase7AliasSolver,
 } from '../../../js/analysis/alias/solver.js';
 import { pointsToDigest } from '../../../js/analysis/pointsto/lattice.js';
+import { stableDigest } from '../../../js/core/identity/index.js';
 import {
   PHASE7_ANALYSIS_CONTRACT_VERSION,
   createAnalysisSurface,
@@ -166,9 +167,35 @@ function loadedPointerFixture({ unknownCall = false } = {}) {
     ssa,
     options: { snapshotId: 'snapshot-loaded-pointer-fixture' },
   });
+  const snapshotId = 'snapshot-loaded-pointer-fixture';
+  const semanticIrDigest = stableDigest(ir);
+  const scalarSsaDigest = stableDigest(ssa);
+  const identity = {
+    binaryId: 'binary_loaded_pointer_fixture',
+    sliceId: 'slice_loaded_pointer_fixture',
+    functionId,
+    snapshotId,
+    semanticIrId: `ir-${semanticIrDigest}`,
+    semanticIrContractVersion: ir.contractVersion,
+    semanticIrDigest,
+    scalarSsaId: `ssa-${scalarSsaDigest}`,
+    scalarSsaBuildVersion: '1.0.0',
+    scalarSsaDigest,
+    memorySsaId: 'mssa-loaded-pointer-fixture',
+    memorySsaBuildVersion: '1.0.0',
+    analyzerVersion: 'memoryssa-fixture',
+  };
   const memorySsa = buildMemorySsa(ir, cfg, {
     resolveRegion,
     queryAlias: baselineSolver.queryAlias,
+    identity,
+    snapshotId,
+    canonicalIrIdentity: {
+      functionId,
+      semanticIrId: identity.semanticIrId,
+      semanticIrContractVersion: ir.contractVersion,
+      semanticIrDigest,
+    },
   });
   const loadUse = memorySsa.uses.find((use) => use.sourceEntityId === 'node_load');
   assert.ok(loadUse, 'fixture must contain one canonical MemorySSA load use');
@@ -249,7 +276,7 @@ test('loaded-pointer recovery is deterministic across identical replays', () => 
   assert.deepEqual(first.status, second.status);
 });
 
-test('provider proof identity changes without changing recovered target semantics', () => {
+test('altered provider proof is rejected even when target semantics look unchanged', () => {
   const built = loadedPointerFixture();
   const baseline = runWithMemory(built);
   const changedMemory = cloneMemorySsa(built, (memorySsa) => {
@@ -279,16 +306,11 @@ test('provider proof identity changes without changing recovered target semantic
       },
     };
   }));
-  assert.deepEqual(changedFirst.pointsTo.get('loaded').targets, baseline.pointsTo.get('loaded').targets);
-  assert.equal(changedFirst.pointsTo.get('loaded').top, false);
-  assert.notEqual(
-    changedFirst.recovery.proofs.loaded.proofIdentity,
-    baseline.recovery.proofs.loaded.proofIdentity,
-  );
-  assert.equal(
-    changedFirst.recovery.proofs.loaded.proofIdentity,
-    changedSecond.recovery.proofs.loaded.proofIdentity,
-  );
+  assertUnresolved(changedFirst, 'unresolved-load');
+  assertUnresolved(changedSecond, 'unresolved-load');
+  assert.equal(changedFirst.recovery.proofs.loaded, undefined);
+  assert.equal(changedSecond.recovery.proofs.loaded, undefined);
+  assert.equal(baseline.pointsTo.get('loaded').top, false);
 });
 
 test('MayAlias and unknown-clobber evidence never forwards a pointer', () => {

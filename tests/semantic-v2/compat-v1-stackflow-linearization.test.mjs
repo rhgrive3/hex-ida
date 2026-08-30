@@ -9,15 +9,15 @@ const source = fs.readFileSync(
   'utf8',
 );
 
-assert.match(source, /function stackDependentValueIds\(projected, roots\)/);
-assert.match(source, /const dependentsByValueId = new Map\(\)/);
-assert.match(source, /const queue = \[\.\.\.roots\]/);
-assert.match(source, /stackDependent\.has\(arg\.value\.id\)/);
-
-// Regression guard: the old per-call recursive walk cloned the visited set on
-// every SSA edge, causing shared dependency DAGs to explode exponentially on
-// real binaries. Stack escape reachability must remain a single indexed walk.
+// Structural stack-flow recovery was removed from the v2 projection. A
+// reaching store is not a value proof, so this file must never grow another
+// private dependency walk. Exact state reads are accepted only through the
+// canonical MemorySSA proof shared by all consumers.
+assert.match(source, /function recoverLocalStackFlow\(projected\)/);
+assert.match(source, /isCanonicalExactMemoryForwarding/);
+assert.doesNotMatch(source, /function stackDependentValueIds\(/);
+assert.doesNotMatch(source, /dependentsByValueId/);
+assert.doesNotMatch(source, /stackDependent\.has\(/);
 assert.doesNotMatch(source, /function valueDependsOnRoots\(/);
-assert.doesNotMatch(source, /new Set\(seen\)/);
 
 console.log('semantic-v2 stack escape traversal linearization: PASS');

@@ -7,6 +7,7 @@
  */
 
 import { OP, MK } from '../../ir-base.js';
+import { isCanonicalExactMemoryForwarding } from '../../semantics/memoryssa/queries.js';
 
 export const TRANSLATION_STATUS = Object.freeze({
   EXACT: 'exact',
@@ -99,7 +100,7 @@ export function classifyOpSupport(op, inst = null) {
     case OP.LOAD: {
       if (!inst?.loc) return TRANSLATION_STATUS.UNSUPPORTED;
       if (inst.loc.kind === MK.UNKNOWN) return TRANSLATION_STATUS.UNSUPPORTED;
-      if (inst.reachingStore) return TRANSLATION_STATUS.EXACT;
+      if (isCanonicalExactMemoryForwarding(inst.memoryForwarding)) return TRANSLATION_STATUS.EXACT;
       // A location name is not a reaching definition. Without a unique
       // MemorySSA/alias proof, treating the load as a fresh stable symbol
       // would turn incomplete memory semantics into an exact proof.

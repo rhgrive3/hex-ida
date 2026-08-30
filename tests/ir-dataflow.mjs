@@ -128,7 +128,7 @@ test('unknown indexed store clobbers an older concrete Memory-SSA store', () => 
   eq(ir.memorySafety.blockedLoads, 1);
 });
 
-test('unknown indexed store after a load does not erase earlier provenance', () => {
+test('unknown indexed store after a load cannot create structural exactness', () => {
   const model = modelOf([
     'str w1, [x19, #0x20]',
     'ldr w8, [x19, #0x20]',
@@ -137,8 +137,10 @@ test('unknown indexed store after a load does not erase earlier provenance', () 
   ]);
   const ir = irFor(model);
   const load = ir.instructions.find((i) => i.op === OP.LOAD && i.row === 1);
-  ok(load && load.reachingStore, 'the later unknown write cannot travel backward in time');
-  eq(load.reachingStore.row, 0);
+  ok(load, 'load exists');
+  ok(!load.reachingStore, 'structural reachingStore is never published as an exact fact');
+  ok(load.memoryForwarding?.status !== 'exact', 'the load has no canonical exact proof');
+  ok(load.memUse?.kind === 'store', 'the canonical MemorySSA use still records the prior store');
 });
 
 test('legacy traceOrigin applies MOVZ shift before reporting a constant', () => {

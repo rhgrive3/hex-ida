@@ -83,6 +83,29 @@ test('translator fails closed on unsupported operations and unknown memory locat
   assert.equal(evalRes.status, EVAL_STATUS.UNKNOWN);
 });
 
+test('translator and symbolic slicing ignore structural reachingStore links', () => {
+  const stored = { id: 'v_store', const: 0x33441122n, bits: 32, origin: '0x3000' };
+  const store = { id: 'i_store', op: OP.STORE, args: [{ value: stored }], origin: '0x3000' };
+  const load = {
+    id: 'i_load',
+    op: OP.LOAD,
+    loc: { kind: MK.STACK, key: 'sp+8' },
+    reachingStore: store,
+    origin: '0x3004',
+  };
+
+  const translated = translateSemanticIR(load, { bitWidth: 32 });
+  assert.equal(translated.status, TRANSLATION_STATUS.UNSUPPORTED);
+  assert.equal(translated.expression.kind, EXPR_KIND.UNKNOWN_SEMANTIC);
+
+  const sliced = backwardDependencySlice(load, {
+    ir: { instructions: [store, load] },
+    maxDepth: 10,
+  });
+  assert.equal(sliced.instructions.has(load.id), true);
+  assert.equal(sliced.instructions.has(store.id), false);
+});
+
 test('backward dependency slicing correctly traces dependencies and detects cycles', () => {
   const v0 = { id: 'v0', origin: '0x100' };
   const v1 = { id: 'v1', origin: '0x104' };

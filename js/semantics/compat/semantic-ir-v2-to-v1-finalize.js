@@ -1,4 +1,5 @@
 import { V1_OP, V1_VK, V1_MK, addUse, safeBigInt } from './semantic-ir-v2-to-v1-core.js';
+import { isCanonicalExactMemoryForwarding } from '../memoryssa/queries.js';
 
 function resolveAlias(value, aliases) {
   let current = value ?? null;
@@ -227,8 +228,15 @@ function foldInstruction(inst) {
       return uint(field, bits);
     }
   }
-  if (inst.op === V1_OP.LOAD && inst.reachingStore?.args?.[0]?.value?.const != null) {
-    return uint(inst.reachingStore.args[0].value.const, bits);
+  if (inst.op === V1_OP.LOAD && Object.hasOwn(inst, 'memoryForwarding')) {
+    const forwarding = inst.memoryForwarding;
+    if (isCanonicalExactMemoryForwarding(forwarding) && forwarding.value != null) {
+      return uint(forwarding.value, bits);
+    }
+    // The legacy reachingStore field is structural compatibility metadata, not
+    // an independent MemorySSA proof.  Once canonical forwarding ran, any
+    // non-exact result must remain unknown all the way to the public value.
+    return null;
   }
   return null;
 }
@@ -247,115 +255,30 @@ function propagateConstants(projected) {
   }
 }
 
-function addressSize(inst) {
-  return inst.loc?.size ?? inst.extra?.size ?? inst.addr?.size ?? null;
-}
-
-function addressKey(inst) {
-  const address = inst?.addr;
-  if (!address || address.index != null || address.base == null) return null;
-  const base = address.base;
-  const identity = base.stateKey ?? base.reg ?? base.semanticSsaVariableKey ?? null;
-  if (identity == null) return null;
-  const disp = safeBigInt(address.disp) ?? 0n;
-  return `${identity}\u0000${disp.toString()}\u0000${String(addressSize(inst) ?? '')}`;
-}
-
-function stackRootIds(projected) {
-  const roots = new Set();
-  for (const inst of projected.instructions) {
-    if (inst.loc?.kind !== V1_MK.STACK || !inst.addr?.base) continue;
-    roots.add(inst.addr.base.id);
-  }
-  return roots;
-}
-
-function stackDependentValueIds(projected, roots) {
-  const dependentsByValueId = new Map();
-  const addDependent = (dependency, value) => {
-    if (!dependency || !value) return;
-    let dependents = dependentsByValueId.get(dependency.id);
-    if (!dependents) {
-      dependents = new Set();
-      dependentsByValueId.set(dependency.id, dependents);
+// The canonical MemorySSA query may need the already-owned scalar SSA fact
+// feeding a store.  Populate those scalar constants before the query without
+// evaluating any memory load; memory loads remain gated by MemorySSA below.
+export function propagateScalarConstants(projected) {
+  const maximum = Math.max(4, projected.instructions.length * 2);
+  for (let round = 0; round < maximum; round++) {
+    let changed = false;
+    for (const inst of projected.instructions) {
+      if (inst.op === V1_OP.LOAD) continue;
+      const value = foldInstruction(inst);
+      if (value == null || !inst.dst || inst.dst.const === value) continue;
+      inst.dst.const = value;
+      changed = true;
     }
-    dependents.add(value.id);
-  };
-  for (const value of projected.values) {
-    const def = value?.def;
-    if (!def) continue;
-    for (const arg of def.args || []) addDependent(arg?.value, value);
-    addDependent(def.addr?.base, value);
-    addDependent(def.addr?.index, value);
+    if (!changed) break;
   }
-  const dependent = new Set(roots);
-  const queue = [...roots];
-  let cursor = 0;
-  while (cursor < queue.length) {
-    const sourceId = queue[cursor++];
-    for (const valueId of dependentsByValueId.get(sourceId) || []) {
-      if (dependent.has(valueId)) continue;
-      dependent.add(valueId);
-      queue.push(valueId);
-    }
-  }
-  return dependent;
-}
-
-function callEscapesLocalStack(inst, stackDependent) {
-  if (inst.op !== V1_OP.CALL) return false;
-  for (const arg of inst.args || []) {
-    if (arg?.value && stackDependent.has(arg.value.id)) return true;
-  }
-  return false;
 }
 
 function recoverLocalStackFlow(projected) {
-  const roots = stackRootIds(projected);
-  const stackDependent = stackDependentValueIds(projected, roots);
-  for (const block of projected.blocks) {
-    const ordered = projected.instructions
-      .filter((inst) => inst.block === block.index)
-      .slice()
-      .sort((left, right) => (left.row ?? 0) - (right.row ?? 0) || (left.id ?? 0) - (right.id ?? 0));
-    const stores = new Map();
-    for (const inst of ordered) {
-      if (inst.op === V1_OP.STORE) {
-        if (inst.loc?.kind === V1_MK.STACK) {
-          const key = addressKey(inst);
-          if (key != null) stores.set(key, inst);
-        } else if (!inst.loc || inst.loc.kind === V1_MK.UNKNOWN) {
-          stores.clear();
-        }
-        continue;
-      }
-      if (inst.op === V1_OP.CALL) {
-        if (callEscapesLocalStack(inst, stackDependent)) stores.clear();
-        continue;
-      }
-      if (inst.op === V1_OP.UNKNOWN && inst.memoryBarrier === true) {
-        stores.clear();
-        continue;
-      }
-      if (inst.op !== V1_OP.LOAD || inst.reachingStore) continue;
-      const key = addressKey(inst);
-      if (key == null) continue;
-      const store = stores.get(key) ?? null;
-      if (!store) continue;
-      if (inst.loc?.kind !== V1_MK.STACK) {
-        inst.loc = store.loc;
-        projected.locations.set(store.loc.key, store.loc);
-      }
-      inst.reachingStore = store;
-      if (store.memDef) inst.memUse = store.memDef;
-      inst.memoryAliasRelation = 'must';
-      inst.unknownAliasBarrier = null;
-      inst.compatStackCallPreservation = {
-        proof: 'canonical-stack-address-equality-and-no-derived-address-passed-to-intervening-call',
-        locationKey: store.loc.key,
-      };
-    }
-  }
+  // Stack-flow recovery used to mint a private linear reaching-definition
+  // relation after canonical MemorySSA had declined to publish a fact. That
+  // fallback could turn an unknown/call-clobbered load into an exact value.
+  // Canonical MemorySSA is now the sole producer of reaching-store facts.
+  void projected;
 }
 
 function recoverStackSlots(projected) {

@@ -21,10 +21,29 @@ test('support matrix correctly classifies exact, exact-with-assumptions, and uns
   assert.equal(classifyOpSupport(OP.CMP), TRANSLATION_STATUS.EXACT);
   assert.equal(classifyOpSupport(OP.SEL), TRANSLATION_STATUS.EXACT);
 
-  // Reaching store load is exact
+  // A structural reachingStore pointer is not a MemorySSA value proof. It must
+  // remain conservative even when the location is named.
   assert.equal(
     classifyOpSupport(OP.LOAD, { loc: { kind: MK.STACK, key: 'sp+8' }, reachingStore: { id: 's1' } }),
-    TRANSLATION_STATUS.EXACT
+    TRANSLATION_STATUS.UNSUPPORTED
+  );
+
+  // Shape-compatible payloads are not capabilities published by the canonical
+  // MemorySSA query, so a downstream consumer must reject this forged fact.
+  assert.equal(
+    classifyOpSupport(OP.LOAD, {
+      loc: { kind: MK.STACK, key: 'sp+8' },
+      memoryForwarding: {
+        status: 'exact', exact: true, reason: null, completeness: 'complete',
+        proofKind: 'canonical-memoryssa-byte-forwarding', proofVersion: '1.0.0',
+        artifactDigest: 'artifact-digest',
+        identity: { digest: 'proof-digest' },
+        widthBits: 16, endian: 'little', value: 0x1122n, bytes: [0x22, 0x11],
+        contributingDefinitionIds: ['m1'],
+        provenance: { sourceEntityIds: ['n_store'], definitionOrigins: [{}] },
+      },
+    }),
+    TRANSLATION_STATUS.UNSUPPORTED
   );
 
   // A named location without a unique reaching store is not proof-safe.

@@ -2,8 +2,25 @@ import {
   V1_OP, V1_VK, V1_MK, safeBigInt, bytesForBits, firstAddress,
   sourceInstructionIds, unique, asArray, makeArg, addUse, legacyPublicStateIdentity,
 } from './semantic-ir-v2-to-v1-core.js';
+import { forwardMemoryValue } from '../memoryssa/queries.js';
+import { propagateScalarConstants } from './semantic-ir-v2-to-v1-finalize.js';
 
 const MEMORY_CLOBBER_KINDS = new Set(['may-alias-clobber', 'unknown-clobber', 'call-clobber', 'intrinsic-clobber']);
+
+function mergeForwardingFacts(previous, next) {
+  if (!previous) return next;
+  if (previous.status !== 'exact') return previous;
+  if (next.status !== 'exact') return next;
+  if (previous.value === next.value
+      && JSON.stringify(previous.bytes ?? []) === JSON.stringify(next.bytes ?? [])
+      && previous.identity?.digest === next.identity?.digest) return previous;
+  return Object.freeze({
+    status: 'unknown',
+    exact: false,
+    reason: 'memory-forwarding-conflicting-use-facts',
+    completeness: 'partial',
+  });
+}
 
 function preciseProjectedAddress(address) {
   return address?.precise === true && address.index == null ? address : null;
@@ -72,7 +89,8 @@ function accessLocation(regionId, source, regionById, locationByRegion, valuesBy
   return address ? legacyLocation(region, valuesById, address) : canonical;
 }
 
-export function attachMemorySsa(projected, memorySsa, valuesById, instructionBySemanticId, blockIndexById) {
+export function attachMemorySsa(projected, memorySsa, valuesById, instructionBySemanticId, blockIndexById, canonicalIr = null) {
+  propagateScalarConstants(projected);
   const regionById = new Map(memorySsa.regions.map((region) => [region.id, region]));
   const locationByRegion = new Map();
   for (const region of memorySsa.regions) {
@@ -149,10 +167,60 @@ export function attachMemorySsa(projected, memorySsa, valuesById, instructionByS
     const reaching = memoryNodeById.get(use.reachingDefinitionId) ?? null;
     source.memUse = reaching;
     source.memoryAliasRelation = use.aliasRelation;
-    if (source.op === V1_OP.LOAD && use.aliasRelation === 'must' && reaching?.kind === 'store' && reaching.inst?.op === V1_OP.STORE) {
-      source.reachingStore = reaching.inst;
-    } else if (source.op === V1_OP.LOAD && reaching?.kind === 'clobber') {
+    if (source.op === V1_OP.LOAD && reaching?.kind === 'clobber') {
       source.unknownAliasBarrier = reaching.inst ?? null;
+    }
+  }
+
+  // Exact value recovery is a canonical MemorySSA query.  Only artifacts that
+  // carry the builder's proof indexes enter this path.  No projection path
+  // retains a structural reaching-store pointer as a substitute for the
+  // canonical byte proof.
+  const forwardingEligible = Array.isArray(memorySsa.accessMetadata)
+    || Array.isArray(memorySsa.byteCoverage)
+    || memorySsa.buildVersion != null;
+  if (forwardingEligible) {
+    const queriedLoads = new Set();
+    for (const use of memorySsa.uses) {
+      const source = instructionBySemanticId.get(use.sourceEntityId);
+      if (!source || source.op !== V1_OP.LOAD) continue;
+      queriedLoads.add(source);
+      const fact = forwardMemoryValue(memorySsa, use, {
+        functionId: projected.functionId,
+        requireIdentity: true,
+        ...(memorySsa.buildVersion == null ? {} : { memorySsaBuildVersion: memorySsa.buildVersion }),
+        ...(memorySsa.identity == null ? {} : { expectedIdentity: memorySsa.identity }),
+        ...(canonicalIr == null ? {} : { ir: canonicalIr }),
+      });
+      const mergedFact = mergeForwardingFacts(source.memoryForwarding, fact);
+      source.memoryForwarding = mergedFact;
+      source.extra = { ...source.extra, memoryForwarding: mergedFact };
+      if (mergedFact.status !== 'exact') {
+        delete source.compatStackCallPreservation;
+        // The canonical result owns this boundary. Never retain a structural
+        // reachingStore pointer for an ineligible or non-exact load: symbolic,
+        // decompiler, and support-matrix consumers must not mistake it for
+        // byte proof evidence.
+        delete source.reachingStore;
+        source.memoryAliasRelation = 'unknown';
+        source.unknownAliasBarrier = source.unknownAliasBarrier ?? source.memUse ?? null;
+      }
+    }
+    // A proof-bearing artifact with no canonical use for a projected load is a
+    // malformed/incomplete handoff, not permission to revive the old
+    // reachingStore or stack-flow fallback.
+    for (const source of projected.instructions) {
+      if (source.op !== V1_OP.LOAD || queriedLoads.has(source) || Object.hasOwn(source, 'memoryForwarding')) continue;
+      const fact = Object.freeze({
+        status: 'unknown',
+        exact: false,
+        reason: 'memory-forwarding-use-missing',
+        completeness: 'partial',
+      });
+      source.memoryForwarding = fact;
+      source.extra = { ...source.extra, memoryForwarding: fact };
+      delete source.reachingStore;
+      source.memoryAliasRelation = 'unknown';
     }
   }
 

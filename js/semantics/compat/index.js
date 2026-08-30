@@ -4,6 +4,7 @@ import {
   createFunctionId,
   createInstructionId,
   deepFreeze,
+  stableDigest,
   stableStringify,
 } from '../../core/identity/index.js';
 import { createOriginSet, mergeOriginSets } from '../../core/identity/origin.js';
@@ -200,6 +201,35 @@ function createRegionRootDescriptorProvider(architecturePlugin, architectureId, 
         registerId: String(identity.registerId),
       },
     };
+  };
+}
+
+function canonicalMemoryAccessProof(descriptor, architectureId) {
+  const memory = descriptor?.memory;
+  const machineEffects = descriptor?.node?.attributes?.machineEffects;
+  const family = machineEffects?.bundleMetadata?.family;
+  if (!memory || architectureId !== 'arm64' && architectureId !== 'arm64e'
+      || family !== 'arm64-memory') return null;
+  // The target producer deliberately leaves source-level qualifiers unknown at
+  // this boundary. Its ordinary memory-operation contract is the authority
+  // that these accesses are neither volatile nor atomic.
+  if (memory.ordering != null && memory.ordering !== 'unknown') return null;
+  if (memory.atomic === true || memory.volatility === true) return null;
+  return {
+    kind: 'canonical-memory-access-qualifiers',
+    sourceEntityId: String(descriptor.node.id),
+    architectureId: String(architectureId),
+    family,
+    widthBits: Number(memory.widthBits),
+    endian: memory.endian,
+    volatility: false,
+    atomic: false,
+    ordering: 'unknown',
+    evidence: {
+      operationKind: machineEffects.operationKind ?? null,
+      machineFamily: family,
+      sourceMnemonic: machineEffects.bundleMetadata?.mnemonic ?? null,
+    },
   };
 }
 
@@ -414,6 +444,16 @@ export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
   const ssa = buildSemanticSsa(ir, cfg, options.ssaOptions ?? {});
   validateSemanticSsa(ssa, ir, cfg, options.ssaValidationOptions ?? {});
 
+  const semanticIrDigest = stableDigest(ir);
+  const scalarSsaDigest = stableDigest(ssa);
+  const snapshotId = String(options.memorySsaOptions?.snapshotId ?? options.snapshotId ?? 'snapshot-unbound');
+  const semanticIrId = options.memorySsaOptions?.identity?.semanticIrId
+    ?? `semantic-ir-${stableDigest({ functionId, semanticIrDigest })}`;
+  const scalarSsaId = options.memorySsaOptions?.identity?.scalarSsaId
+    ?? `scalar-ssa-${stableDigest({ functionId, scalarSsaDigest })}`;
+  const memorySsaId = options.memorySsaOptions?.identity?.memorySsaId
+    ?? `memory-ssa-${stableDigest({ functionId, semanticIrDigest, scalarSsaDigest, buildVersion: MEMORY_SSA_BUILD_VERSION })}`;
+
   const regionOptions = options.regionOptions ?? {};
   const rootDescriptors = input.rootDescriptors ?? regionOptions.rootDescriptors ?? options.rootDescriptors;
   const rootDescriptorProvider = createRegionRootDescriptorProvider(architecturePlugin, architectureId, input, options);
@@ -436,6 +476,36 @@ export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
   });
   const memorySsa = buildMemorySsa(ir, cfg, {
     ...(options.memorySsaOptions ?? {}),
+    ssa,
+    rootDescriptorProvider,
+    accessProofForDescriptor: options.memorySsaOptions?.accessProofForDescriptor
+      ?? ((descriptor) => canonicalMemoryAccessProof(descriptor, architectureId)),
+    identity: {
+      ...(options.memorySsaOptions?.identity ?? {}),
+      binaryId,
+      sliceId,
+      functionId,
+      architectureId,
+      architectureSemanticVersion,
+      decoderSemanticVersion,
+      semanticIrContractVersion: ir.contractVersion,
+      semanticIrId,
+      semanticIrDigest,
+      snapshotId,
+      scalarSsaId,
+      scalarSsaBuildVersion: SEMANTIC_SSA_BUILD_VERSION,
+      scalarSsaDigest,
+      memorySsaId,
+      memorySsaBuildVersion: MEMORY_SSA_BUILD_VERSION,
+      analyzerVersion: MEMORY_SSA_BUILD_VERSION,
+    },
+    snapshotId,
+    canonicalIrIdentity: {
+      functionId,
+      semanticIrId,
+      semanticIrContractVersion: ir.contractVersion,
+      semanticIrDigest,
+    },
     resolveRegion(memory, context) {
       return classifySemanticMemoryRegion(ir, context.node, {
         binaryId,
