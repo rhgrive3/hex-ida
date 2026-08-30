@@ -20,7 +20,10 @@ import {
   SEMANTIC_V2_MIGRATION_MODES,
   buildSemanticV2CompatibilityPipeline,
 } from './semantics/compat/index.js';
-import { isCanonicalExactMemoryForwarding } from './semantics/memoryssa/queries.js';
+import {
+  canonicalMemoryForwardingContextForLoad,
+  isCanonicalExactMemoryForwarding,
+} from './semantics/memoryssa/queries.js';
 import { ARM64_ARCHITECTURE } from './targets/architecture/index.js';
 import { AAPCS64_ABI, classifyAAPCS64Arguments } from './targets/abi/aapcs64.js';
 
@@ -355,7 +358,8 @@ function restoreAapcs64PublicLocations(projected) {
     }
     const base = canonicalAddressBase(inst.addr.base);
     if (base?.def?.op !== LEGACY_OP.LOAD
-        || !isCanonicalExactMemoryForwarding(base.def.memoryForwarding)) continue;
+        || !isCanonicalExactMemoryForwarding(base.def.memoryForwarding,
+          canonicalMemoryForwardingContextForLoad(base.def.memoryForwarding, base.def))) continue;
     const disp = BigInt(inst.addr.disp ?? 0n);
     const size = inst.addr.size ?? inst.extra?.size ?? null;
     const key = `field:loaded:${base.id}+${disp.toString()}:s${size ?? '?'}`;

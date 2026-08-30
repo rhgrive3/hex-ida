@@ -15,7 +15,10 @@ import { sourceOf, mergeSource } from './ast/nodes.js';
 import { isNZCVCondition, renderNZCVCondition } from './flag-semantics.js';
 import { renderIndexedMemory } from './address-semantics.js';
 import { integerText } from './pretty/c.js';
-import { isCanonicalExactMemoryForwarding } from '../semantics/memoryssa/queries.js';
+import {
+  canonicalMemoryForwardingContextForLoad,
+  isCanonicalExactMemoryForwarding,
+} from '../semantics/memoryssa/queries.js';
 
 const MAX_EXPR_DEPTH = 48;
 const MAX_EXPR_NODES = 512;
@@ -155,7 +158,8 @@ function canonicalRegister(reg) {
 function loadReachedByStore(load, store, ctx) {
   if (load?.op !== OP.LOAD || load.loc?.key !== store.loc?.key || load.row <= store.row) return false;
   const fact = load.memoryForwarding;
-  if (!isCanonicalExactMemoryForwarding(fact)) return false;
+  if (!isCanonicalExactMemoryForwarding(fact,
+    canonicalMemoryForwardingContextForLoad(fact, load))) return false;
   const definitionId = store.memDef?.definitionId ?? store.extra?.memoryDefinitionId ?? null;
   return definitionId != null && fact.contributingDefinitionIds.includes(String(definitionId));
 }
@@ -549,7 +553,8 @@ export function renderValue(value, ctx, flags = {}) {
       const a = renderValue(valueOf(d.args?.[0]), ctx), b = renderValue(valueOf(d.args?.[1]), ctx), l=d.extra?.lsb ?? 0, w=d.extra?.width ?? '?';
       out = d.extra?.bitfieldKind === 'bfxil' ? `bit_insert(${a}, bit_extract(${b}, ${l}, ${w}), 0, ${w})` : `bit_insert(${a}, ${b}, ${l}, ${w})`;
     } else if (d.op === OP.LOAD) {
-      if (isCanonicalExactMemoryForwarding(d.memoryForwarding)
+      if (isCanonicalExactMemoryForwarding(d.memoryForwarding,
+        canonicalMemoryForwardingContextForLoad(d.memoryForwarding, d))
           && !flags.noMemoryFold && d.memoryForwarding.value != null) {
         out = formatConst(d.memoryForwarding.value, value.bits, value.signed ?? null);
       }

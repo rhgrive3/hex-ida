@@ -13,10 +13,14 @@ import {
   ASSUMPTION_TRUST,
   COMPLETENESS_STATUS,
 } from './support-matrix.js';
-import { isCanonicalExactMemoryForwarding } from '../../semantics/memoryssa/queries.js';
+import {
+  canonicalMemoryForwardingContextForLoad,
+  isCanonicalExactMemoryForwarding,
+} from '../../semantics/memoryssa/queries.js';
 
 function canonicalDefinitionIds(load) {
-  if (!isCanonicalExactMemoryForwarding(load?.memoryForwarding)) return new Set();
+  if (!isCanonicalExactMemoryForwarding(load?.memoryForwarding,
+    canonicalMemoryForwardingContextForLoad(load?.memoryForwarding, load))) return new Set();
   return new Set((load.memoryForwarding.contributingDefinitionIds || []).map(String));
 }
 

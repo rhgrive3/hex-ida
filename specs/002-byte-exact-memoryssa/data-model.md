@@ -3,9 +3,11 @@
 ## `ByteForwardingQuery`
 
 An immutable query input containing the current validated MemorySSA artifact, the load use or
-entity identifier, access metadata, current analysis identity, cancellation signal, and bounded
-resource options. It is not a new analysis artifact and has no independent alias or reaching-
-definition state.
+entity identifier, access metadata, current producer identity, exact consumer/purpose context,
+cancellation signal, and bounded resource options. The producer identity is independently issued
+by the canonical builder/session; passing a copy of the artifact's serialized identity is not
+sufficient. It is not a new analysis artifact and has no independent alias or reaching-definition
+state.
 
 ## `ByteForwardingResult`
 
@@ -19,6 +21,8 @@ An immutable result with:
 - `contributingDefinitionIds`: sorted or canonical-order IDs for every winning store;
 - `provenance`: load, region, alias-provider, definition, and source-origin evidence;
 - `identity`: proof digest and source artifact identities used for invalidation;
+- capability context: producer consumer/purpose plus exact load use/source/node/entity/region,
+  range, artifact digest, and snapshot binding;
 - `completeness`: validated artifact/provider/cancellation/budget state.
 
 No exact result may contain a missing lane. A non-exact result must not expose a staged value as
@@ -56,3 +60,7 @@ validated input -> bounded proof walk -> complete byte assignment -> exact publi
 
 The publication transition is atomic: no consumer observes a partially assigned byte buffer as
 exact.
+
+The validation budget accepts finite safe `maxDefinitions`, `maxWorkItems`, and deadline limits.
+Exhaustion is `budget-limited`; an aborted signal is `cancelled`; neither status exposes a partial
+contract or staged exact value.

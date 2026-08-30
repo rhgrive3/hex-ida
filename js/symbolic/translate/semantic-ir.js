@@ -40,7 +40,10 @@ import {
   createCompleteness,
   classifyOpSupport,
 } from './support-matrix.js';
-import { isCanonicalExactMemoryForwarding } from '../../semantics/memoryssa/queries.js';
+import {
+  canonicalMemoryForwardingContextForLoad,
+  isCanonicalExactMemoryForwarding,
+} from '../../semantics/memoryssa/queries.js';
 
 export function translateSemanticIR(target, options = {}) {
   const ir = options.ir || null;
@@ -266,7 +269,8 @@ export function translateSemanticIR(target, options = {}) {
         // A structural reachingStore pointer is not a value proof. Only the
         // canonical query capability may turn a load into a concrete solver
         // value; forged/serialized/partial facts stay explicitly unknown.
-        if (isCanonicalExactMemoryForwarding(inst.memoryForwarding)
+        if (isCanonicalExactMemoryForwarding(inst.memoryForwarding,
+          canonicalMemoryForwardingContextForLoad(inst.memoryForwarding, inst))
             && inst.memoryForwarding.value != null) {
           const value = createBv(width, inst.memoryForwarding.value);
           recordOrigin(value, inst.origin, ...(inst.memoryForwarding.provenance?.sourceEntityIds || []));

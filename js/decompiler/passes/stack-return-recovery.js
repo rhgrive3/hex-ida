@@ -3,7 +3,10 @@ import { RewriteEngine } from '../rewrite/engine.js';
 import { DEFAULT_RULES } from '../rewrite/rules.js';
 import { printExpression, printProgram } from '../pretty/c.js';
 import { buildNZCVConditionExpression } from '../flag-semantics.js';
-import { isCanonicalExactMemoryForwarding } from '../../semantics/memoryssa/queries.js';
+import {
+  canonicalMemoryForwardingContextForLoad,
+  isCanonicalExactMemoryForwarding,
+} from '../../semantics/memoryssa/queries.js';
 
 const INVERSE = Object.freeze({ eq:'ne', ne:'eq', lt:'ge', le:'gt', gt:'le', ge:'lt' });
 
@@ -269,7 +272,8 @@ function committedReturnValue(result, root, ret) {
   const reaching = reachingRegisterDefinition(result.ir, ret, 'x0');
   const load = reaching?.def;
   if (load?.op !== 'load' || load.loc?.key !== root.location.key) return null;
-  if (!isCanonicalExactMemoryForwarding(load.memoryForwarding)) return null;
+  if (!isCanonicalExactMemoryForwarding(load.memoryForwarding,
+    canonicalMemoryForwardingContextForLoad(load.memoryForwarding, load))) return null;
   const definitionIds = new Set(load.memoryForwarding.contributingDefinitionIds.map(String));
   const stackStores = (result.ir.instructions || []).filter((candidate) => {
     const definitionId = candidate?.memDef?.definitionId ?? candidate?.extra?.memoryDefinitionId ?? null;

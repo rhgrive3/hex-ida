@@ -32,7 +32,8 @@ PRE_FIX_FAILURE: AssertionError — actual load.dst.const=13124n (0x3344), expec
 ## Post-fix ledger (filled during implementation)
 
 ```text
-POST_FIX_SHA: recorded by `git rev-parse HEAD` after this ledger commit; exact value is in the implementation packet
+POST_FIX_SHA: exact candidate HEAD is recorded in the implementation packet (the source commit is
+  cleanly rebased on the latest origin/main)
 POST_FIX_COMMAND: node tests/semantic-v2/issue-c2-01-byte-exact-forwarding.test.mjs
 POST_FIX_PASS: PASS — HEX-C2-01 minimum byte-exact forwarding regression
 ```
@@ -43,29 +44,42 @@ implementation also reconciled safely from that review lane onto current `origin
 discarding the prior owner's dirty work. The repaired boundary now covers structural
 `reachingStore` publication, canonical cross-region coverage, canonical store operand/value
 binding, issuer-bound alias proofs, canonical access qualifiers, artifact/proof digests, and
-producer-owned access/source binding. Those fixes are covered by permanent focused, semantic,
-point-to, decompiler, and support-matrix regressions.
+producer-owned access/source binding. Exact publication additionally requires a distinct,
+non-serialized producer/session identity token; the artifact's own serialized identity is
+explicitly rejected as current authority. Validation enforces finite `maxDefinitions` and
+`maxWorkItems` with explicit budget-limited/deadline/cancelled outcomes and no partial exact
+publication. Those fixes are covered by permanent focused, semantic, point-to, decompiler, and
+support-matrix regressions.
 
 ```text
 SPEC_KIT_ANALYZE: CLEAN
 CONVERGENCE_RESULT: CLEAN — no new tasks appended
 IMPLEMENT_TASKS: T001–T027 complete
 REVIEW_DELIVERY_TASKS: T028–T039 intentionally remain reviewer/delivery-owned and unchecked
-MOVING_MAIN: current origin/main 76d83bee96b66f2cb0d2aaedeb0d1670da5bef5e; finding-only diff is
-  39 feature paths after safe stash/reapply and fast-forward reconciliation; no unrelated main
-  files remain in the lane diff
+BASE_SHA_PRESERVED: c6171cb4393847394be8d6d65c49ac8fd35c579f (backup/hex-c2-01-c6171cb4)
+MOVING_MAIN: current origin/main 1645b4e4a2b5cd9baf37e2efe5b2e6045481b1aa, including reviewer
+  66a56403 plus the two non-overlapping main commits 087ab51d and 1645b4e4; the candidate was
+  stashed, rebased, and reapplied without loss. The original 39-path inventory remains exact;
+  the validation-budget correction adds only canonical owner path
+  js/semantics/memoryssa/contract.js, for 40 changed paths in the full candidate diff.
+GRAFT: NOT RUN — repository guardrail scopes Graft to GitHub Codespaces; CODESPACES is unset in
+  this environment. Normal source inspection/rg was used; graph savings are 0 tokens/commands.
 FOCUSED_C2_01: PASS — canonical, compatibility, point-to, decompiler, and support-matrix assertions
-SEMANTIC_TEST: direct semantic-v2 runner reaches 11/11 semantic and 14/14 decompiler corpus cases;
-  the npm wrapper's child-gate phase is blocked by the environment's npm_config_prefix/node setup
-DECOMPILER_DIRECT_TESTS: PASS through all touched semantic/decompiler suites
-PHASE7_TEST: PASS — 356 tests, 58 discovered files on current main (the prior 349/55 ledger is
-  superseded by current-main additions)
+PRODUCER_IDENTITY: PASS — exact query rejects artifact/self-attested identities and accepts only
+  the builder-issued non-serialized producer/session token
+VALIDATION_BUDGET: PASS — maxDefinitions/maxWorkItems/deadline/cancel taxonomy and atomic no-
+  partial-exact publication are covered by focused regressions
+SEMANTIC_TEST: direct C2-01 and touched semantic-v2 consumers PASS; the npm wrapper's child corpus
+  phase remains environment-blocked (login-shell nvm rejects inherited npm_config_prefix and
+  reports node not found), so its current-corpus report is 0/25 for infrastructure reasons
+DECOMPILER_DIRECT_TESTS: PASS — `npm run decompiler:test` and all touched direct suites
+PHASE7_TEST: PASS — 356 tests, 58 discovered files on current main
 PHASE7_OWNERSHIP: PASS — manifest valid
 MODULE_BOUNDARIES: PASS
 EVIDENCE_WRITERS: PASS
 MIGRATION_GUARDRAILS: PASS
-SEMANTIC_V2_CORPUS: direct runner PASS — 11/11 semantic and 14/14 decompiler corpus cases;
-  npm wrapper required-gates phase is environment-blocked by inherited npm_config_prefix (`node: command not found`)
+SEMANTIC_V2_CORPUS: focused/direct touched corpus PASS; required-gates wrapper remains blocked by
+  inherited npm_config_prefix (`node: command not found`)
 COMPILER_TRUTH: environment limitation — clang unavailable, so extended truth executes 0/56
 PHASE9_RELEASE: environment failure — release evidence cannot import missing `playwright`;
   direct phase9 tests pass 106/107, with only that release fixture blocked
