@@ -102,8 +102,12 @@ export function scopeAllowsTool(snapshot, scope, tool, args) { return new ScopeC
 function atLeast(scope, minimum) { return (RANK[scope] ?? -1) >= RANK[minimum]; }
 function collectAddresses(value, key = '') {
   const out = [];
+  if (isAddressKey(key)) {
+    if (toBigInt(value) != null) out.push(value);
+    return out;
+  }
   if (Array.isArray(value)) { for (const item of value) out.push(...collectAddresses(item, key)); return out; }
-  if (!value || typeof value !== 'object') { if (isAddressKey(key) && toBigInt(value) != null) out.push(value); return out; }
+  if (!value || typeof value !== 'object') return out;
   for (const [childKey, child] of Object.entries(value)) out.push(...collectAddresses(child, childKey));
   return out;
 }
