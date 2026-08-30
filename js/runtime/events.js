@@ -41,7 +41,7 @@ function optionalText(value) { return value == null ? null : String(value); }
 
 function optionalIdentity(value, name) {
   if (value == null) return null;
-  if (typeof value !== 'string') throw new DebugAdapterError('runtime-invalid-event-identity', `${name} must be a string`);
+  if (typeof value !== 'string' || value.length === 0) throw new DebugAdapterError('runtime-invalid-event-identity', `${name} must be a non-empty string`);
   return value;
 }
 
