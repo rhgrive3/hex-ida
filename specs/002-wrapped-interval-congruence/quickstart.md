@@ -1,41 +1,45 @@
 # Quickstart and Evidence Gates: HEX-C2-02
 
-This document records reproducible lane commands. Commands are run from the
-repository root of the isolated worktree. The pre-fix failure is retained
-unchanged beside the post-fix proof; review, CI, merge, and post-merge evidence
-remain open until the supervisor closes those gates.
+This document records reproducible lane commands and the current implementation
+checkpoint. Commands run from the repository root of the isolated worktree.
+Implementation and convergence evidence is closed; independent review, CI,
+candidate-tree approval, merge, and post-merge delivery remain open.
 
-## Base and identity
+## Exact identities and moving-main record
 
 ```text
-BASE_SHA=609c9560104da321eb21487f05c12c73a851fc66
-PRE_FIX_BASE_SHA=8a614ccd0184d6c25257c25d930b68af7e9ac81f
+ORIGINAL_EXACT_HEAD=bccc757c8162cf36aaef76351298cecb289cb954
 BRANCH=codex/hex-c2-02
 FEATURE=specs/002-wrapped-interval-congruence
+INITIAL_LIVE_MAIN=99bb9a40420c5611601c0c4b6a28af22185ecbe0
+SEMANTIC_HEAD=80a53ff279d6e8b94f4e844d490f9e5cfb31941a
+RECONCILED_LIVE_MAIN=0c6df2d5981e64296a2b3fba380bed1e032fc726
+RECONCILED_HEAD=c908ef30b7118e3c1f571af4365d7f2624c78aa7
 ```
 
 The authoritative remote is `https://github.com/rhgrive3/ida-245.git`, which
-GitHub resolves to `rhgrive3/hex-ida`. The initial live-main preflight was
-`8a614ccd0184d6c25257c25d930b68af7e9ac81f`; live `origin/main` subsequently
-advanced through `be5636b1baeadfaef5ae10d81406f02118dca780`
-(the C3 prototype-recovery merge) and then to
-`03def51c52da869b53929ee537546aedddbe689b`, `48a0b429...`, and finally
-`609c9560104da321eb21487f05c12c73a851fc66`. The lane was reconciled onto that
-newest SHA before implementation acceptance. Its moving-main delta touches
-only AI/query, ARM64, runtime, project, UI, and generated userscript files plus
-their tests; it does not overlap this lane's canonical range/SCCP files,
-scalar/integration tests, or generated inputs. The latest implementation
-preflight resolved `origin/main=44e8fecb9af615a25f59b1ed9439bb11c0585077` at
-`2026-08-29T23:09:56Z`. Since the lane base, no current-main commit touches
-the Phase 8 canonical owner, C2-02 tests, or this feature's Spec Kit inputs;
-the moving-main changes remain outside this semantic/test/generated input
-surface. A fresh remote/open-PR check remains required before Review 2 and
-merge.
+GitHub resolves to `rhgrive3/hex-ida`. The initial live-main and open-PR
+preflight recorded PR #2777 at `470ac2e627bde450bd1194600e592926ec8504bf`
+and PR #2745 at `39d26ee928868b9c16fb75a6e3c96b22ebb5f009`; the reviewer
+reported no Phase 8 ownership overlap. After semantic work, the one required
+late fetch advanced `origin/main` through `776a3f898742180a7dd316adbe92a6eca4ee4a90`
+to `0c6df2d5981e64296a2b3fba380bed1e032fc726` (2026-08-30). The upstream
+64-file delta had no content overlap with the ten C2-02 files. It was merged
+once with the `ort` strategy as `c908ef30`; no further fetch/rebase was done.
+
+The final packet must record the clean evidence head and tree produced after
+the ledger commit with:
+
+```bash
+git rev-parse HEAD
+git rev-parse HEAD^{tree}
+git status --porcelain
+```
 
 ## Minimum pre-fix regression
 
-The deterministic regression is intentionally committed as a test-only proof
-before production changes:
+The deterministic regression was committed as a test-only proof before the
+production changes and is retained unchanged:
 
 ```bash
 node --test tests/phase8/scalar/c2-02-pre-fix.test.mjs
@@ -43,8 +47,8 @@ node --test tests/phase8/scalar/c2-02-pre-fix.test.mjs
 
 ### PRE_FIX_RESULT
 
-**FAIL (expected) at `8a614ccd0184d6c25257c25d930b68af7e9ac81f`.** The exact run
-reported two failing tests and zero passing tests:
+**FAIL (expected) at `8a614ccd0184d6c25257c25d930b68af7e9ac81f`.** The exact
+run reported two failing tests and zero passing tests:
 
 ```text
 tests 2
@@ -52,137 +56,151 @@ pass 0
 fail 2
 ```
 
-Failure 1: `mask-derived trailing-zero congruence must be published`; current
-`evaluateBinaryRange('and', fullRange(32), singleton(0xFC))` returns a `full`
-range with no `congruence` field (`undefined !== 4n`).
+Failure 1: a mask-derived trailing-zero congruence was missing. Failure 2: a
+symbolic unsigned-bound true-edge fact set was missing. The unchanged test
+also asserts that the global value remains full when edge facts are added.
 
-Failure 2: `true-edge fact set must be published`; current SCCP leaves the
-symbolic `x <u 10` branches executable but publishes no `edgeFacts` map.
+## Implementation and adversarial evidence
 
-This proves the first divergence without weakening any expectation. The test
-also asserts that the global `x` fact remains full once edge facts are added.
+`SEMANTIC_HEAD` contains the cumulative Review 1 corrections and permanent
+family-wide regressions. The implementation keeps `range.js`/SCCP as the
+single scalar owner and adds no alternate arithmetic, identity, cache, or
+publication engine. No gate, denominator, threshold, hard-zero counter, or
+generated artifact was weakened or edited.
 
-## Post-fix evidence
-
-After implementation, run the identical test and record the exact SHA/output:
-
-```bash
-POST_FIX_SHA=d361c5330f65fa295b3dc63bd4d82ffa5d5ca347
-node --test tests/phase8/scalar/c2-02-pre-fix.test.mjs
-```
-
-`POST_FIX_COMMAND`: `node --test tests/phase8/scalar/c2-02-pre-fix.test.mjs`.
-`POST_FIX_PASS`: the focused C2-02 suite is 148 tests, 148 pass, 0 fail at the
-implementation head above. Both
-original assertions are unchanged; the edge object retains a compatibility
-`.get()` view while publishing structured edge facts.
-
-Additional implementation-head evidence:
+The matrix covers every named Review 1 defect plus sibling public entrypoints:
 
 ```text
-T0: git diff --check; node --check index.js/range.js/sccp.js; npm run lint — PASS
-T1: range.test.mjs + sccp.test.mjs + pre-fix regression + downstream/lifecycle suites — PASS (148 tests)
-T2: `npm run phase8:test` — 312/313 passed; one no-op corpus assertion can
-  observe a deadline-cancelled ARM64 optimizer run under load, so the run is
-  not claimed as a pass. The identical target is complete on isolated replay.
-Downstream: c2-02-downstream-range.test.mjs — PASS; GVN/induction/vertical
-  stale-identity and atomic-publication regressions — PASS
-Ownership: npm run phase8:ownership — PASS
-Convergence: Spec Kit artifacts rechecked after implementation; no remaining
-spec/plan/task gap was found; `CONVERGENCE_RESULT=CLEAN`.
-Generated output: no generated files changed; canonical generator not owned by this lane.
+alignment, pointer offsets, constructors, casts, arithmetic, bitwise facts,
+comparison refinement, joins, widening, and cross-domain/root/value negatives;
+pure integer congruence remains separate from pointer alignment;
+definition.extra, instructions, blocks, edges, loops, root maps, value/memory
+metadata, Map/Set/object insertion order, sparse arrays, undefined/null,
+accessors, non-enumerable properties, symbol keys, cycles, and identity-source
+descriptors; default and explicit budgets, delayed scheduling, cancellation,
+invalid deadlines, and fail-closed partial publication.
 ```
 
-The implementation is represented by source commits through
-`d361c5330f65fa295b3dc63bd4d82ffa5d5ca347`; this evidence update is
-documentation-only. The publication digest covers canonical
-facts, edge/block-entry refinements, identity/provenance, completeness, budget,
-and diagnostics. Subsequent documentation-only evidence updates must not be
-confused with the original pre-fix comparison.
+## Reproducible test gates
 
-## Review 1 correction evidence
-
-Review 1 identified six soundness and lifecycle gaps at implementation head
-`4610456206e659f5a6142e4e5c307d79f5a82c9c`. The following permanent
-regressions were added before the corresponding production corrections:
+Focused post-fix evidence on the reconciled source tree:
 
 ```text
-wrapped join [0,2] U [2,0] at 8 bits covers every member of both inputs;
-non-divisor residues are dropped rather than propagated through machine wrap;
-known-bit/congruence/range contradictions, out-of-width masks, cyclic evidence,
-and incompatible switch labels fail closed; a partial vertical run preserves a
-prior complete artifact; canonical identity is required and stale SCCP/GVN/
-induction inputs are rejected; replacing ranges invalidates valueNumbers,
-induction, and aggregates.
+node --test tests/phase8/scalar/*.mjs --test-reporter=dot
+  PASS: 123 tests, 123 pass, 0 fail
+node --test tests/phase8/scalar/c2-02-adversarial-matrix.test.mjs --test-reporter=spec
+  PASS: 24 tests, 24 pass, 0 fail
+node --test tests/phase8/performance/budget.test.mjs --test-reporter=spec
+  PASS: 5 tests, 5 pass, 0 fail
+npm run lint
+  PASS: syntax lint: 1693 files ok
+npm run phase8:ownership
+  PASS: manifest version 1, lane p8 valid
+git diff --check; node --check <all ten changed JS/MJS files>
+  PASS
 ```
 
-The identical focused regressions pass at semantic correction commit
-`534e7e89c9d6c3d6ee06a48223e88720810a8c7c`: 125 tests, 125 pass, 0 fail.
-The implementation uses the existing `range.js`/`sccp.js` scalar owner and a
-shared identity-validation boundary; it does not add a competing value or
-range engine. Reviewer-owned checklist items remain open for the supervisor's
-independent review passes.
-
-## Staged validation
-
-### T0 — contract and hygiene
+The canonical full Phase 8 gate was run after the single moving-main
+reconciliation using the required quiet wrapper:
 
 ```bash
-git diff --check
-node --check js/decompiler/phase8/range.js
-node --check js/decompiler/phase8/sccp.js
-.specify/scripts/bash/check-prerequisites.sh --json --require-tasks --include-tasks
+node ../ida-245/scripts/run-quiet-command.mjs --label phase8 -- npm run phase8:test
 ```
 
-Also verify that changed files are within the expected component/test/spec set,
-no forbidden owner/generated file is present, and all task lines use the required
-checkbox/ID/path format.
+It completed with `phase8: PASS (339.5s)` across 31 discovered test files and
+the expanded scalar corpus remained 123/123. The final packet should also
+record the machine-reporter total if a count is required by the receiving
+supervisor; the command above is the canonical gate and its success is not
+replaced by a subset.
 
-### T1 — scalar and lifecycle proof
+The delayed-scheduling regressions prove that the public optimizer and decoded
+function pipeline produce the same publication/completeness/digest under
+different scheduling delays. The default path uses a deterministic bounded
+work budget. An explicit finite wall deadline remains supported; cancellation,
+invalid deadlines, and partial results remain fail-closed.
 
-Run the minimum test first, then the focused range/bitvector/SCCP suites and all
-required positive/paired-negative cases: modular add/subtract, signed extrema,
-signed/unsigned divergence, comparisons, switch/default, phi/loop, budget,
-known bits/residue, alignment/pointer offset, impossible branches, stale,
-malformed, cancellation, and deterministic replay.
+## Spec Kit convergence and task ledger
 
-### T2 — owning subsystem and downstream
+The prerequisite command passed:
 
-Use the repository's actual Phase 8 runner and package scripts discovered on the
-implementation head, then run the direct GVN/induction/aggregate/structuring or
-projection regression proving one observable precision gain. Do not substitute a
-single unit test for these gates.
+```bash
+bash .specify/scripts/bash/check-prerequisites.sh --json --require-tasks --include-tasks
+```
 
-### T3 — integration/release
+The `speckit-converge` assessment checked `spec.md`, `plan.md`, `tasks.md`, the
+constitution, named source paths, and the adversarial matrix. There were no
+missing, partial, contradictory, or unrequested implementation findings, so
+no convergence section was appended. `CONVERGENCE_RESULT=CLEAN`.
 
-After convergence and both independent reviews:
+Task reconciliation is intentionally limited to completed semantic/workflow
+items:
 
-1. refetch/reconcile current `main` once before Review 2 and again before merge;
-2. regenerate only through the canonical generator, build twice, and require no
-   second diff (this lane commits no generated output);
-3. run exact-head CI and require success or an explicitly rule-driven skip;
-4. verify the candidate merge tree against newest live `main`; and
-5. merge, refetch live `main`, and run post-merge verification.
+```text
+T037 [x] Spec Kit convergence audit is clean; no implementation tasks added.
+T038 [ ] independent Review 1 (reviewer-owned)
+T039 [x] Review 1 defects fixed and T0/T1/T2 rerun; fresh review remains open.
+T040 [ ] Sol semantic review (reviewer-owned)
+T041 [x] one late live-main fetch/reconciliation recorded above.
+T042 [ ] independent Review 2 (reviewer-owned)
+T043 [ ] Review 2 fixes/re-review lifecycle (reviewer-owned)
+T044 [ ] canonical generator/build delivery check
+T045 [ ] exact-head CI
+T046 [ ] candidate merge-tree validation
+T047 [ ] Sol final packet approval
+T048 [ ] merge to live main
+T049 [ ] post-merge verification
+T050 [ ] mark merged
+```
 
-## Convergence and review evidence
+No review, PR, CI approval, candidate merge-tree approval, merge, or post-merge
+claim is made by this lane. The ledger remains `FINDING_STATUS=IMPLEMENTED;
+DELIVERY_GATES_OPEN` until those owners act.
 
-Use the installed Spec Kit workflow through `specify`, clarify (no unresolved
-questions), actual Graft trace, plan, checklist, tasks, read-only analyze, implementation, and
-converge. `ANALYZE=CLEAN` and Sol's architecture/soundness spot-check are required
-before changing production files. The implementation lane reached
-`CONVERGENCE_RESULT=CLEAN` after the final source/test changes; reviewer-owned
-tasks T037–T050 remain open for the supervisor's review, reconciliation, CI,
-merge, and post-merge gates. Every semantic head change invalidates both review
-approvals and requires convergence plus both review passes again.
+## Ownership, generated output, and Graft handling
 
-The clean-tree verifier run at `d361c5330f65fa295b3dc63bd4d82ffa5d5ca347`
-reported `P8_VERDICT=BLOCKING`: all measured hard-zero safety counters were
-zero, but two transform-determinism observations were caused by complete versus
-deadline-cancelled optimizer ledgers, and the active-function median was
-490.9 ms against the 250 ms profile limit. No expectation or budget was weakened;
-the generated verifier reports were restored and are not part of the lane diff.
+The changed-file inventory is limited to:
 
-The two independent review passes must inspect the actual final diff. Review 1
-constructs fresh malformed, stale, incomplete/cancelled, ambiguity, and boundary
-attacks. Review 2 checks moving-main ownership, generated state, exact-head CI,
-candidate merge structure, and current consumer collisions.
+```text
+js/decompiler/phase8/analysis-identity.js
+js/decompiler/phase8/index.js
+js/decompiler/phase8/range.js
+js/decompiler/pipeline-core.js
+js/decompiler/pipeline.js
+tests/phase8/performance/budget.test.mjs
+tests/phase8/scalar/c2-02-adversarial-matrix.test.mjs
+tests/phase8/scalar/range.test.mjs
+tests/phase8/scalar/sccp.test.mjs
+tools/validation/phase8/decoded-function-adapter.mjs
+```
+
+`npm run phase8:ownership` is green. No generated userscript or release file
+was changed; generator/build delivery remains integration-owned. Reports under
+`reports/phase8/` are verifier-owned ignored outputs and are not committed as
+lane source. The final clean-tree verifier runs must regenerate them atomically
+and record their exact report path, product SHA/tree, verifier version, corpus,
+toolchain, and verdict.
+
+This environment is outside GitHub Codespaces (`CODESPACES` is unset). Per the
+guardrails, Graft was not installed, invoked, emulated, or treated as a
+blocker; normal repository inspection/search was used. Graft savings are
+therefore `$0` API/token/runtime savings, with no graph trace to report.
+
+## Exact verifier and remaining delivery commands
+
+Run each verifier invocation in a fresh shell on a clean exact head and record
+the output/report before the next invocation:
+
+```bash
+git status --porcelain
+HEAD_SHA="$(git rev-parse HEAD)"
+npm run phase8:verify -- --expect-sha "$HEAD_SHA"
+node -e "const r=require('./reports/phase8/phase8-release-evidence.json'); console.log(JSON.stringify({verdict:r.verdict,commit:r.product.commitSha,tree:r.product.treeSha,clean:r.product.workingTreeClean,determinism:r.safety.transformDeterminismFailureCount},null,2))"
+```
+
+The required final evidence is multiple isolated repetitions with
+`verdict=READY`, exact commit/tree identity, clean status, and
+`transformDeterminismFailureCount=0`. A `BLOCKING` result is recorded and
+diagnosed; thresholds and hard-zero rules must not be relaxed.
+
+After verifier evidence is complete, the supervisor may run the still-open
+delivery gates. This lane performs no review, PR, merge, or post-merge action.
