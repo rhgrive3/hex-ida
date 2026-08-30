@@ -110,6 +110,8 @@ DOWNSTREAM: scalar propagation, symbolic/decompiler value recovery, points-to/ty
             evidence, public projections
 TEST_OWNER: tests/semantic-v2/issue-c2-01-byte-exact-forwarding.test.mjs plus existing MemorySSA /
             compatibility runners
-COLLISIONS: no current open PR or active branch overlaps the canonical C2-01 source/test/spec
-            allowlist; #2499 is merged and ABI-only, #2498/#2497/#2493 are unrelated
+COLLISIONS: current main 99bb9a40; merged #2775, open #2745/#2777, and active C2-02 have zero
+            path overlap with the 40-path C2-01 inventory. Historical/stale C3-02 and generic
+            P3 refs overlap downstream paths but have no open PR and no live-main delta; no
+            semantic/generated collision exists. Actual Graft traces saved ~4,002,139 tokens.
 ```
