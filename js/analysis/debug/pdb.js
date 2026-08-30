@@ -303,6 +303,8 @@ export function parseSymbolRecords(bytes, budget = DEBUG_DEFAULT_BUDGET) {
         : end;
     if (fieldEnd > end) break;
     if (kind === S_PUB32) {
+      const nameEntry = cstringWithNext(bytes, offset + 14, end);
+      if (!nameEntry) break;
       const flags = view.getUint32(offset + 4, true);
       symbols.push({
         kind: 'public',
@@ -311,12 +313,14 @@ export function parseSymbolRecords(bytes, budget = DEBUG_DEFAULT_BUDGET) {
         offsetInSegment: view.getUint32(offset + 8, true),
         segment: view.getUint16(offset + 12, true),
         sizeBytes: null,
-        name: cstring(bytes, offset + 14, end),
+        name: nameEntry.value,
         recordOffset: offset,
       });
     } else if (kind === S_GPROC32 || kind === S_LPROC32 || kind === S_GPROC32_ID || kind === S_LPROC32_ID) {
       // PROCSYM32: parent/end/next (12) + length/dbgStart/dbgEnd (12) + typeIndex (4)
       // + offset (4) + segment (2) + flags (1) + name
+      const nameEntry = cstringWithNext(bytes, offset + 39, end);
+      if (!nameEntry) break;
       symbols.push({
         kind: 'procedure',
         isFunction: true,
@@ -324,7 +328,7 @@ export function parseSymbolRecords(bytes, budget = DEBUG_DEFAULT_BUDGET) {
         typeIndex: view.getUint32(offset + 28, true),
         offsetInSegment: view.getUint32(offset + 32, true),
         segment: view.getUint16(offset + 36, true),
-        name: cstring(bytes, offset + 39, end),
+        name: nameEntry.value,
         recordOffset: offset,
       });
     } else {
