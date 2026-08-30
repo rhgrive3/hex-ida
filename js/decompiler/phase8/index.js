@@ -74,15 +74,20 @@ const REGISTERED = Object.freeze([
  *
  * Only the canonical-facts stage. Optimizer stages are demand-driven: running a
  * whole middle end on every function the user scrolls past is the eager
- * whole-binary optimization the architecture rules out, and it also makes
- * publication depend on the clock — on the heaviest corpus function the 25 ms
- * interactive allowance is the binding constraint, so the ledger would be
- * published on a fast run and withheld on a slow one for the same input.
+ * whole-binary optimization the architecture rules out. The default stage uses
+ * a deterministic work budget, so publication cannot depend on whether the
+ * host happens to schedule this function quickly or slowly.
  *
  * A caller that wants the optimizer facts asks for them and gets a budget that
  * matches the work.
  */
 export const INTERACTIVE_STAGES = Object.freeze(['canonical-facts']);
+
+// The ordinary pipeline has no wall-clock acceptance rule.  A fixed work
+// budget bounds the same deterministic pass graph on every machine; callers
+// that explicitly provide `timeBudgetMs` still get the documented deadline and
+// cancellation semantics.
+export const PHASE8_DEFAULT_WORK_BUDGET = 1_000_000;
 
 /**
  * Orders passes within one stage so a producer runs before its consumers.
@@ -407,16 +412,42 @@ export function runPhase8Vertical(context = {}, budget = {}) {
  * pass.
  */
 export function runPhase8Stage(context = {}, options = {}) {
-  const timeBudgetMs = Math.max(0, Number(options.timeBudgetMs ?? 15));
   const stages = options.stages ?? INTERACTIVE_STAGES;
   const started = clock();
-  const deadline = started + timeBudgetMs;
   const external = typeof options.shouldAbort === 'function' ? options.shouldAbort : null;
+  const explicitDeadline = options.timeBudgetMs != null;
+  const parsedTimeBudget = explicitDeadline ? Number(options.timeBudgetMs) : null;
+  // Invalid explicit deadlines fail closed as an immediate cancellation. A
+  // NaN deadline would otherwise never compare true and silently disable the
+  // caller's requested resource bound.
+  const timeBudgetMs = explicitDeadline && Number.isFinite(parsedTimeBudget)
+    ? Math.max(0, parsedTimeBudget) : explicitDeadline ? 0 : null;
+  const deadline = explicitDeadline ? started + timeBudgetMs : null;
+  const parsedWorkBudget = Number(options.maxWorkItems ?? options.workBudget ?? PHASE8_DEFAULT_WORK_BUDGET);
+  const maxWorkItems = Number.isSafeInteger(parsedWorkBudget) && parsedWorkBudget >= 0
+    ? parsedWorkBudget : 0;
+  let workChecks = 0;
   const budget = {
     timeBudgetMs,
     deadline,
+    deterministic: !explicitDeadline,
+    maxWorkItems,
     budgetClass: options.budgetClass ?? 'interactive',
-    shouldAbort: () => (external ? external() === true : false) || clock() >= deadline,
+    shouldAbort: () => {
+      if (external != null) {
+        try {
+          if (external() === true) return true;
+        } catch {
+          return true;
+        }
+      }
+      if (!explicitDeadline) {
+        if (workChecks >= maxWorkItems) return true;
+        workChecks += 1;
+        return false;
+      }
+      return clock() >= deadline;
+    },
   };
   const outcome = runPhase8Vertical({ ...context, enabledStages: stages }, budget);
   return { ...outcome, elapsedMs: clock() - started };

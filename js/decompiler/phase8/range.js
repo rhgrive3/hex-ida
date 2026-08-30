@@ -70,6 +70,33 @@ function isEvidenceContainer(value) {
   }
 }
 
+/* Evidence is an input snapshot, not an arbitrary JavaScript object.  The
+ * enumerable string-keyed data model is the only representation this domain
+ * can freeze and compare without observing getters or silently dropping
+ * metadata.  Arrays have one intrinsic non-enumerable `length` descriptor;
+ * every other descriptor must be a plain data property. */
+function evidenceKeys(value) {
+  if (value == null || typeof value !== 'object') return [];
+  if (!isEvidenceContainer(value)) throw new TypeError('phase8-evidence-unsupported-container');
+  const keys = [];
+  for (const key of Reflect.ownKeys(value)) {
+    if (typeof key === 'symbol') throw new TypeError('phase8-evidence-symbol-key');
+    if (Array.isArray(value) && key === 'length') continue;
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (descriptor == null || !('value' in descriptor) || !descriptor.enumerable) {
+      throw new TypeError('phase8-evidence-unsupported-descriptor');
+    }
+    keys.push(key);
+  }
+  return keys;
+}
+
+function validEvidenceScalar(value) {
+  if (value == null) return true;
+  if (typeof value === 'number') return Number.isFinite(value);
+  return ['string', 'boolean', 'bigint'].includes(typeof value);
+}
+
 function widthMask(bits) { return maxUnsigned(bits); }
 
 function asMask(value, bits) {
@@ -199,7 +226,7 @@ function deeplyFrozen(value, seen = new Set()) {
     if (seen.has(value)) return false;
     seen.add(value);
     let result = false;
-    result = Object.keys(value).every((key) => {
+    result = evidenceKeys(value).every((key) => {
       const descriptor = Object.getOwnPropertyDescriptor(value, key);
       return descriptor != null && 'value' in descriptor && deeplyFrozen(descriptor.value, seen);
     });
@@ -230,12 +257,28 @@ function immutableEvidenceWithSeen(value, seen) {
   seen.add(value);
   try {
     if (Array.isArray(value)) {
-      const copy = value.map((item) => immutableEvidenceWithSeen(item, seen));
+      const copy = [];
+      copy.length = value.length;
+      for (const key of evidenceKeys(value).sort()) {
+        Object.defineProperty(copy, key, {
+          value: immutableEvidenceWithSeen(value[key], seen),
+          enumerable: true,
+          writable: true,
+          configurable: true,
+        });
+      }
       seen.delete(value);
       return Object.freeze(copy);
     }
     const copy = {};
-    for (const key of Object.keys(value).sort()) copy[key] = immutableEvidenceWithSeen(value[key], seen);
+    for (const key of evidenceKeys(value).sort()) {
+      Object.defineProperty(copy, key, {
+        value: immutableEvidenceWithSeen(value[key], seen),
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
+    }
     seen.delete(value);
     return Object.freeze(copy);
   } catch {
@@ -256,7 +299,11 @@ function acyclicEvidence(root) {
     while (stack.length > 0) {
       const frame = stack.pop();
       const value = frame.value;
-      if (value == null || typeof value !== 'object') continue;
+      if (value == null) continue;
+      if (typeof value !== 'object') {
+        if (!validEvidenceScalar(value)) return false;
+        continue;
+      }
       if (!isEvidenceContainer(value)) return false;
       if (frame.exit) {
         active.delete(value);
@@ -267,7 +314,10 @@ function acyclicEvidence(root) {
       visited.add(value);
       active.add(value);
       stack.push({ value, exit: true });
-      for (const key of Object.keys(value)) stack.push({ value: value[key], exit: false });
+      for (const key of evidenceKeys(value)) {
+        const descriptor = Object.getOwnPropertyDescriptor(value, key);
+        stack.push({ value: descriptor.value, exit: false });
+      }
     }
     // A positive cache entry is safe only for a deeply frozen graph; otherwise
     // a caller could mutate a nested evidence object into a cycle later.
@@ -305,15 +355,17 @@ function mergeProvenance(left, right) {
 // canonical provenance shape without sorting object keys or recursing through
 // its instruction-id array on every revisit.
 function sameProvenance(left, right) {
-  if (left === right) return true;
+  if (left === right) return left == null || acyclicEvidence(left);
   if (left == null || right == null || typeof left !== 'object' || typeof right !== 'object') return false;
+  if (!acyclicEvidence(left) || !acyclicEvidence(right)) return false;
   if (left.valueId !== right.valueId || left.definitionBlock !== right.definitionBlock) return false;
   const leftIds = left.instructionIds;
   const rightIds = right.instructionIds;
-  if (leftIds === rightIds) return true;
-  if (!Array.isArray(leftIds) || !Array.isArray(rightIds) || leftIds.length !== rightIds.length) return false;
-  for (let index = 0; index < leftIds.length; index += 1) {
-    if (leftIds[index] !== rightIds[index]) return false;
+  if (leftIds !== rightIds) {
+    if (!Array.isArray(leftIds) || !Array.isArray(rightIds) || leftIds.length !== rightIds.length) return false;
+    for (let index = 0; index < leftIds.length; index += 1) {
+      if (leftIds[index] !== rightIds[index]) return false;
+    }
   }
   const leftKeys = Object.keys(left).filter((key) => key !== 'valueId' && key !== 'definitionBlock' && key !== 'instructionIds').sort();
   const rightKeys = Object.keys(right).filter((key) => key !== 'valueId' && key !== 'definitionBlock' && key !== 'instructionIds').sort();
@@ -325,15 +377,21 @@ function sameProvenance(left, right) {
  * join from retaining one path's descriptor when the other disagrees without
  * using JSON.stringify (which cannot represent BigInt). */
 function sameEvidence(left, right) {
-  if (left === right) return true;
+  if (left === right) return left == null || typeof left !== 'object' || acyclicEvidence(left);
   if (left == null || right == null || typeof left !== typeof right) return false;
   if (typeof left === 'bigint' || typeof left !== 'object') return left === right;
+  if (!acyclicEvidence(left) || !acyclicEvidence(right)) return false;
   if (Array.isArray(left) || Array.isArray(right)) {
     if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
-    return left.every((value, index) => sameEvidence(value, right[index]));
   }
-  const leftKeys = Object.keys(left).sort();
-  const rightKeys = Object.keys(right).sort();
+  let leftKeys;
+  let rightKeys;
+  try {
+    leftKeys = evidenceKeys(left).sort();
+    rightKeys = evidenceKeys(right).sort();
+  } catch {
+    return false;
+  }
   return leftKeys.length === rightKeys.length
     && leftKeys.every((key, index) => key === rightKeys[index] && sameEvidence(left[key], right[key]));
 }
@@ -381,20 +439,58 @@ function shiftedPointerOffset(pointerOffset, delta) {
 }
 
 function sameTypedIdentity(left, right) {
-  if (typeof left !== typeof right) return false;
+  if (typeof left !== typeof right || !['string', 'number', 'bigint'].includes(typeof left)) return false;
+  if (typeof left === 'string' && !left.trim()) return false;
   if (typeof left === 'number' && !Number.isSafeInteger(left)) return false;
-  if (!['string', 'number', 'bigint'].includes(typeof left)) return left === right;
   return left === right;
 }
 
 function canonicalPointerBinding(provenance) {
   if (provenance == null || typeof provenance !== 'object' || Array.isArray(provenance)) return null;
-  const valueId = provenance.valueId ?? provenance.sourceValueId;
-  const baseId = provenance.pointerBaseId ?? provenance.baseId ?? provenance.source?.baseId;
-  if (valueId == null || baseId == null) return null;
-  if (!['string', 'number', 'bigint'].includes(typeof baseId)) return null;
+  // A numeric residue is not an address proof.  The producer must identify the
+  // pointer value, its canonical root, and the address domain in which that root
+  // lives before an alignment can be published.  `addressSpace` is the spelling
+  // used by Semantic IR; `addressDomain` is accepted for the small legacy Phase
+  // 8 fixture boundary.  Keeping both here does not create a second authority:
+  // they are merely aliases for the same canonical domain token.
+  const pointer = provenance.pointer === true
+    || provenance.kind === 'pointer'
+    || provenance.valueKind === 'pointer'
+    || provenance.pointerBaseId != null
+    || provenance.pointer?.baseId != null
+    || provenance.pointerProvenance?.baseId != null;
+  const valueId = provenance.valueId ?? provenance.sourceValueId
+    ?? provenance.pointer?.valueId ?? provenance.pointerProvenance?.valueId;
+  const baseId = provenance.pointerBaseId ?? provenance.baseId ?? provenance.source?.baseId
+    ?? provenance.pointer?.baseId ?? provenance.pointerProvenance?.baseId;
+  const addressDomain = provenance.addressDomain ?? provenance.addressSpace
+    ?? provenance.source?.addressDomain ?? provenance.source?.addressSpace
+    ?? provenance.pointer?.addressDomain ?? provenance.pointer?.addressSpace
+    ?? provenance.pointerProvenance?.addressDomain ?? provenance.pointerProvenance?.addressSpace
+    ?? provenance.machineType?.addressSpace;
+  if (!pointer || valueId == null || baseId == null || addressDomain == null) return null;
+  if (!sameTypedIdentity(valueId, valueId) || !sameTypedIdentity(baseId, baseId)) return null;
   if (typeof baseId === 'number' && !Number.isSafeInteger(baseId)) return null;
-  return { valueId, baseId };
+  if (typeof baseId === 'string' && !baseId.trim()) return null;
+  if (typeof addressDomain !== 'string' || !addressDomain.trim()) return null;
+  return { valueId, baseId, addressDomain: addressDomain.trim() };
+}
+
+function validCanonicalPointerEvidence(provenance, valueId) {
+  const binding = canonicalPointerBinding(provenance);
+  if (binding == null) return false;
+  return valueId == null || sameTypedIdentity(binding.valueId, valueId);
+}
+
+function sameCanonicalPointerEvidence(left, right, leftValueId = null, rightValueId = null) {
+  const first = canonicalPointerBinding(left);
+  const second = canonicalPointerBinding(right);
+  return first != null && second != null
+    && sameTypedIdentity(first.valueId, second.valueId)
+    && sameTypedIdentity(first.baseId, second.baseId)
+    && first.addressDomain === second.addressDomain
+    && validCanonicalPointerEvidence(left, leftValueId)
+    && validCanonicalPointerEvidence(right, rightValueId);
 }
 
 function validPointerOffsetEvidence(pointerOffset, provenance, valueId) {
@@ -538,12 +634,19 @@ export function factFromRange(range, options = {}) {
     knownZero = mask ^ value;
     knownOne = value;
   }
-  const alignmentCongruence = cyclicEvidence ? null : congruenceFromAlignment(options.alignment);
+  // Alignment is an address-domain claim, not a scalar residue supplied by a
+  // caller.  Only a canonical pointer binding (value, root, and address
+  // domain) can authorize it.  An explicit integer congruence remains an
+  // independent mathematical fact when alignment metadata is malformed.
+  const canonicalAlignmentEvidence = options.alignment == null
+    || validCanonicalPointerEvidence(options.provenance, options.valueId);
+  const alignmentCongruence = cyclicEvidence || !canonicalAlignmentEvidence
+    ? null : congruenceFromAlignment(options.alignment);
   const alignmentValue = alignmentCongruence == null ? null : parseCongruenceValue(alignmentCongruence, bits);
   const congruenceValue = cyclicEvidence || options.congruence == null ? null : parseCongruenceValue(options.congruence, bits);
   const width = 1n << BigInt(bits);
   const alignmentMalformed = cyclicEvidence || (options.alignment != null
-    && (alignmentCongruence == null || alignmentValue == null
+    && (!canonicalAlignmentEvidence || alignmentCongruence == null || alignmentValue == null
       || alignmentValue.modulus <= 1n || width % alignmentValue.modulus !== 0n));
   const congruenceMalformed = cyclicEvidence || (options.congruence != null && congruenceValue == null);
   const pointerOffsetMalformed = cyclicEvidence
@@ -563,7 +666,7 @@ export function factFromRange(range, options = {}) {
   const singletonCongruenceConflict = value != null && requestedCongruenceValue != null
     && ((value - requestedCongruenceValue.remainder) % requestedCongruenceValue.modulus + requestedCongruenceValue.modulus)
       % requestedCongruenceValue.modulus !== 0n;
-  const rangeCongruenceConflict = !alignmentMalformed && !congruenceMalformed
+  const rangeCongruenceConflict = !congruenceMalformed
     && requestedCongruenceValue != null && !rangeHasCongruenceValue(range, requestedCongruenceValue);
   // A mask and a residue are conjunctive evidence about one abstract set.  It
   // is not enough for each projection to intersect the range independently:
@@ -572,7 +675,7 @@ export function factFromRange(range, options = {}) {
   // deliberately dropped as a conservative projection below.
   const normalizedRequestedCongruence = requestedCongruenceValue == null
     ? NO_CONGRUENCE : normalizeCongruenceValue(requestedCongruenceValue, bits);
-  const maskCongruenceConflict = !alignmentMalformed && !congruenceMalformed
+  const maskCongruenceConflict = !congruenceMalformed
     && normalizedRequestedCongruence.modulus > 1n
     && !rangeHasMaskAndCongruenceValue(range, knownZero, knownOne, normalizedRequestedCongruence);
   if (alignmentMalformed || congruenceMalformed || pointerOffsetMalformed || alignmentCongruenceConflict || singletonCongruenceConflict
@@ -592,9 +695,9 @@ export function factFromRange(range, options = {}) {
                 : 'known-bit and congruence evidence have no common value');
   }
   const congruence = requestedCongruence == null && value != null && !cyclicEvidence
-      && !alignmentMalformed && !congruenceMalformed && !pointerOffsetMalformed && !alignmentCongruenceConflict
+      && !congruenceMalformed && !pointerOffsetMalformed && !alignmentCongruenceConflict
     ? Object.freeze({ remainder: value, modulus: 1n << BigInt(bits) })
-    : (alignmentMalformed || congruenceMalformed || pointerOffsetMalformed || alignmentCongruenceConflict
+    : (congruenceMalformed || alignmentCongruenceConflict
       || rangeCongruenceConflict || singletonCongruenceConflict || maskCongruenceConflict || cyclicEvidence
       ? NO_CONGRUENCE : normalizeCongruenceValue(requestedCongruence, bits));
   if (status == null) status = value == null ? 'conservative' : 'exact';
@@ -664,8 +767,12 @@ export function joinFacts(left, right, options = {}) {
     knownZero: left.knownZero & right.knownZero,
     knownOne: left.knownOne & right.knownOne,
     congruence: commonCongruence(left.congruence, right.congruence, left.bits),
-    alignment: left.alignment != null && right.alignment != null && sameEvidence(left.alignment, right.alignment) ? left.alignment : null,
-    pointerOffset: left.pointerOffset != null && right.pointerOffset != null && sameEvidence(left.pointerOffset, right.pointerOffset) ? left.pointerOffset : null,
+    alignment: left.alignment != null && right.alignment != null && sameEvidence(left.alignment, right.alignment)
+      && sameCanonicalPointerEvidence(left.provenance, right.provenance, left.valueId, right.valueId)
+      ? left.alignment : null,
+    pointerOffset: left.pointerOffset != null && right.pointerOffset != null && sameEvidence(left.pointerOffset, right.pointerOffset)
+      && sameCanonicalPointerEvidence(left.provenance, right.provenance, left.valueId, right.valueId)
+      ? left.pointerOffset : null,
     status: combinedFactStatus(left, right),
     reason: left.reason === right.reason ? left.reason : 'joined scalar facts',
     deriveKnownBits: false,

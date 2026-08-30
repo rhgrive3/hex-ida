@@ -275,7 +275,7 @@ test('product joins and widening never promote a non-singleton to an exact const
 test('alignment and pointer-offset evidence survives only an agreeing join and edge restriction', () => {
   const alignment = { modulus: 16n, remainder: 0n };
   const pointerOffset = { baseId: 'p', offset: 4n };
-  const provenance = { valueId: 4, pointerBaseId: 'p', instructionIds: ['ptr-4'], inputValueIds: [], operation: 'ptr' };
+  const provenance = { valueId: 4, pointerBaseId: 'p', addressSpace: 'memory', instructionIds: ['ptr-4'], inputValueIds: [], operation: 'ptr' };
   const first = factFromRange(rangeOf(0n, 10n, 32), { valueId: 4, alignment, pointerOffset, provenance });
   const second = factFromRange(rangeOf(20n, 30n, 32), { valueId: 4, alignment, pointerOffset, provenance });
   const joined = joinFacts(first, second);
@@ -291,7 +291,7 @@ test('alignment and pointer-offset evidence survives only an agreeing join and e
 });
 
 test('pointer arithmetic shifts canonical offset and alignment without minting provenance', () => {
-  const provenance = { valueId: 5, pointerBaseId: 'p', instructionIds: ['ptr-5'], inputValueIds: [], operation: 'ptr' };
+  const provenance = { valueId: 5, pointerBaseId: 'p', addressSpace: 'memory', instructionIds: ['ptr-5'], inputValueIds: [], operation: 'ptr' };
   const pointer = factFromRange(rangeOf(0n, 10n, 32), {
     valueId: 5,
     alignment: { modulus: 16n, remainder: 0n },
@@ -312,7 +312,7 @@ test('pointer arithmetic shifts canonical offset and alignment without minting p
 });
 
 test('non-divisor alignment is rejected instead of being shifted into false precision', () => {
-  const provenance = { valueId: 7, pointerBaseId: 'p', instructionIds: ['ptr-7'], inputValueIds: [], operation: 'ptr' };
+  const provenance = { valueId: 7, pointerBaseId: 'p', addressSpace: 'memory', instructionIds: ['ptr-7'], inputValueIds: [], operation: 'ptr' };
   const pointer = factFromRange(rangeOf(0n, 10n, 8), {
     valueId: 7,
     alignment: { modulus: 3n, remainder: 0n },
@@ -330,11 +330,51 @@ test('contradictory alignment and explicit congruence fail closed as one malform
     valueId: 9,
     alignment: { modulus: 16n, remainder: 0n },
     congruence: { modulus: 16n, remainder: 4n },
-    provenance: { valueId: 9, pointerBaseId: 'p', instructionIds: ['ptr-9'], inputValueIds: [], operation: 'ptr' },
+    provenance: { valueId: 9, pointerBaseId: 'p', addressSpace: 'memory', instructionIds: ['ptr-9'], inputValueIds: [], operation: 'ptr' },
   });
   assert.equal(fact.status, 'malformed');
   assert.equal(fact.alignment, null);
   assert.deepEqual(fact.congruence, { remainder: 0n, modulus: 1n });
+});
+
+test('alignment cannot mint pointer provenance or alignment-derived congruence', () => {
+  const alignment = { modulus: 16n, remainder: 0n };
+  const numericOnly = factFromRange(rangeOf(0n, 31n, 32), {
+    valueId: 20,
+    alignment,
+  });
+  assert.equal(numericOnly.status, 'malformed');
+  assert.equal(numericOnly.alignment, null);
+  assert.deepEqual(numericOnly.congruence, { remainder: 0n, modulus: 1n });
+
+  // An independently proved integer residue remains useful even when an
+  // unrelated alignment descriptor is rejected. Alignment is a pointer-only
+  // projection, not a second source of scalar truth.
+  const pureInteger = factFromRange(rangeOf(0n, 31n, 32), {
+    valueId: 21,
+    alignment,
+    congruence: { remainder: 0n, modulus: 4n },
+  });
+  assert.equal(pureInteger.status, 'malformed');
+  assert.equal(pureInteger.alignment, null);
+  assert.deepEqual(pureInteger.congruence, { remainder: 0n, modulus: 4n });
+
+  const pointer = factFromRange(rangeOf(0n, 31n, 32), {
+    valueId: 22,
+    alignment,
+    pointerOffset: { baseId: 'p', offset: 0n },
+    provenance: {
+      valueId: 22,
+      pointerBaseId: 'p',
+      addressDomain: 'memory',
+      instructionIds: ['ptr-22'],
+      inputValueIds: [],
+      operation: 'ptr',
+    },
+  });
+  assert.deepEqual(pointer.alignment, alignment);
+  assert.deepEqual(pointer.congruence, alignment);
+  assert.deepEqual(pointer.pointerOffset, { baseId: 'p', offset: 0n });
 });
 
 test('forged pointer provenance is rejected without canonical source binding', () => {
@@ -418,7 +458,13 @@ test('no-op product joins snapshot mutable facts and reject host evidence contai
     alignment: { modulus: 4n, remainder: 0n },
     pointerOffset: { baseId: 'p', offset: 2n },
     valueId: 99,
-    provenance: { valueId: 99, pointerBaseId: 'p', source: { instructionId: 'i0' } },
+    provenance: {
+      valueId: 99,
+      pointer: true,
+      pointerBaseId: 'p',
+      addressDomain: 'memory',
+      source: { instructionId: 'i0' },
+    },
   };
   const joined = joinFacts(null, mutableFact);
   assert.notEqual(joined, mutableFact);

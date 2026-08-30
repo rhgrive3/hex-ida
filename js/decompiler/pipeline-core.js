@@ -631,13 +631,15 @@ export function enhanceSemanticDecompilation(result, model, opts = {}) {
   // gets a budget sized for the work rather than an interactive allowance that
   // would make publication depend on how fast the machine is that day.
   const phase8Optimize = opts.phase8Optimize === true;
+  const phase8Budget = {
+    stages: phase8Optimize ? PHASE8_ALL_STAGES : PHASE8_INTERACTIVE_STAGES,
+    ...(opts.phase8TimeBudgetMs != null ? { timeBudgetMs: Number(opts.phase8TimeBudgetMs) } : {}),
+    ...(opts.phase8WorkBudget != null ? { maxWorkItems: opts.phase8WorkBudget } : {}),
+    shouldAbort: opts.shouldAbort,
+  };
   const phase8 = runPhase8Stage(
     { ir: state.ir, types: state.types, opts },
-    {
-      stages: phase8Optimize ? PHASE8_ALL_STAGES : PHASE8_INTERACTIVE_STAGES,
-      timeBudgetMs: Number(opts.phase8TimeBudgetMs ?? (phase8Optimize ? 250 : 15)),
-      shouldAbort: opts.shouldAbort,
-    },
+    phase8Budget,
   );
   state.phase8 = phase8.ledger;
   state.phase8Timings = phase8.timings;
