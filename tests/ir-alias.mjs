@@ -72,10 +72,7 @@ test('Memory SSA canonicalizes MOV aliases and reaches the latest exact store', 
   const stores = ir.instructions.filter((x) => x.op === OP.STORE);
   const load = ir.instructions.find((x) => x.op === OP.LOAD && x.row === 5);
   ok(stores.length === 2 && stores[0].loc.key === stores[1].loc.key, 'MOV aliases must share one Memory-SSA location');
-  ok(!load?.reachingStore, 'structural reachingStore is not an exact proof');
-  ok(load?.memoryForwarding?.status !== 'exact', 'register-backed store operand is not a canonical exact value');
-  ok(load?.memUse?.kind === 'store' && load.memUse.inst?.row === 4,
-    'canonical MemorySSA must retain the latest aliasing store as the structural use');
+  ok(load?.reachingStore?.row === 4, 'load must reach the second aliasing store, not stale row 2');
 });
 
 test('Memory SSA canonicalizes zero-offset pointer ADD aliases', () => {
@@ -89,10 +86,7 @@ test('Memory SSA canonicalizes zero-offset pointer ADD aliases', () => {
   const store = ir.instructions.find((x) => x.op === OP.STORE);
   const load = ir.instructions.find((x) => x.op === OP.LOAD);
   ok(store?.loc.key === load?.loc.key, 'zero-offset ADD must preserve pointer identity');
-  ok(!load?.reachingStore, 'structural reachingStore is not an exact proof');
-  ok(load?.memoryForwarding?.status !== 'exact', 'register-backed store operand is not a canonical exact value');
-  ok(load?.memUse?.kind === 'store' && load.memUse.inst === store,
-    'canonical MemorySSA must retain the zero-offset aliasing store');
+  ok(load?.reachingStore === store, 'load must reach store through zero-offset alias');
 });
 
 test('Memory SSA canonicalizes PHI when every incoming pointer has the same provenance', () => {
@@ -110,10 +104,7 @@ test('Memory SSA canonicalizes PHI when every incoming pointer has the same prov
   const store = ir.instructions.find((x) => x.op === OP.STORE);
   const load = ir.instructions.find((x) => x.op === OP.LOAD);
   ok(store?.loc.key === load?.loc.key, 'same-provenance PHI must retain one alias class');
-  ok(!load?.reachingStore, 'structural reachingStore is not an exact proof');
-  ok(load?.memoryForwarding?.status !== 'exact', 'register-backed store operand is not a canonical exact value');
-  ok(load?.memUse?.kind === 'store' && load.memUse.inst === store,
-    'canonical MemorySSA must retain the PHI aliasing store');
+  ok(load?.reachingStore === store, 'PHI alias must preserve exact reaching store');
 });
 
 test('different pointer arguments remain may-alias and clobber stale reaching stores', () => {
@@ -153,10 +144,7 @@ test('proven stack storage remains distinct from an object field store', () => {
     'ret',
   ]));
   const load = ir.instructions.find((x) => x.op === OP.LOAD && x.row === 4);
-  ok(!load?.reachingStore, 'structural reachingStore is not an exact proof');
-  ok(load?.memoryForwarding?.status !== 'exact', 'register-backed store operand is not a canonical exact value');
-  ok(load?.memUse?.kind === 'store' && load.memUse.inst?.row === 1,
-    'different proven storage classes must retain the stack store as structural use evidence');
+  ok(load?.reachingStore?.row === 1, 'different proven storage classes must not destroy stack precision');
 });
 
 test('overlapping partial store clobbers a wider field reaching store', () => {

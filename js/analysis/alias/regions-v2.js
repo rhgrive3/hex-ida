@@ -3,9 +3,11 @@ import {
   createMemoryRegionId,
   deepFreeze,
   jsonSafe,
+  stableDigest,
 } from '../../core/identity/index.js';
 import { createOriginSet, mergeOriginSets } from '../../core/identity/origin.js';
 import { createMemoryRegionRef } from '../../semantics/memoryssa/contract.js';
+import { isCanonicalMemorySsaProducerArtifact } from '../../semantics/memoryssa/build.js';
 import { normalizeAddressProofIr } from './address-ir-normalize-v2.js';
 import {
   canonicalAddressProofToRegionEvidence,
@@ -48,6 +50,11 @@ function optionalIdentityString(value, label) {
 function toBigIntString(value) {
   try { return (typeof value === 'bigint' ? value : BigInt(value)).toString(); }
   catch { return null; }
+}
+
+function memoryInteger(value) {
+  const normalized = toBigIntString(value);
+  return normalized == null ? null : BigInt(normalized);
 }
 
 function originHasEvidence(origin) {
@@ -103,16 +110,179 @@ function normalizeDescriptor(raw) {
   return { ...descriptor, kind };
 }
 
+function memoryNodeDisplacement(node) {
+  const machineEffects = node?.attributes?.machineEffects;
+  const raw = machineEffects?.operationMetadata?.addressing?.addressDisplacement
+    ?? machineEffects?.bundleMetadata?.addressing?.addressDisplacement;
+  if (raw == null) return 0n;
+  try {
+    if (typeof raw === 'bigint') return raw;
+    if (typeof raw === 'number' && Number.isSafeInteger(raw)) return BigInt(raw);
+    const text = String(raw).trim();
+    if (!/^[+-]?(?:0x[0-9a-f]+|[0-9]+)$/i.test(text)) return null;
+    return BigInt(text);
+  } catch {
+    return null;
+  }
+}
+
+function canonicalMemoryAccessRow(memorySsa, entityId, nodeId, sourceKind, role) {
+  const metadata = (memorySsa?.accessMetadata ?? []).find((item) =>
+    String(item?.memorySsaEntityId ?? '') === String(entityId));
+  if (!metadata
+      || String(metadata.sourceEntityId ?? '') !== String(nodeId)
+      || String(metadata.nodeId ?? '') !== String(nodeId)
+      || String(metadata.sourceKind ?? '') !== String(sourceKind)
+      || String(metadata.role ?? '') !== String(role)
+      || metadata.broad === true) return null;
+  return metadata;
+}
+
+/*
+ * A register reload can carry an incoming pointer through a caller-local
+ * stack slot.  The initial region pass cannot know that value's source (the
+ * load output is intentionally opaque to the address proof), so the pipeline
+ * may provide one already-built, branded MemorySSA artifact for a second
+ * producer pass.  This resolver follows only:
+ *
+ *   scalar state-read -> scalar renamed definition -> canonical memory load
+ *   -> canonical memory definition -> canonical store operand -> address root
+ *
+ * Every link is checked against the immutable artifact's own access table.
+ * No projected instruction, legacy location, or caller-supplied witness is
+ * consulted.  If any link is absent or ambiguous, classification stays
+ * unknown and the ordinary conservative path remains in force.
+ */
+function canonicalMemoryPointerRegionEvidence(ir, node, options = {}) {
+  const debug = process.env.HEX_DEBUG_C2_POINTER === '1';
+  const memorySsa = options.canonicalMemorySsa;
+  const ssa = options.ssa;
+  if (debug) process.stderr.write(`pointer-hint inputs ${String(node?.id)} brand=${isCanonicalMemorySsaProducerArtifact(memorySsa)} fn=${String(memorySsa?.functionId)} irfn=${String(ir?.functionId)} md=${String(memorySsa?.identity?.semanticIrDigest)} id=${stableDigest(ir)} uses=${Array.isArray(memorySsa?.uses)} defs=${Array.isArray(memorySsa?.definitions)} meta=${Array.isArray(memorySsa?.accessMetadata)} ssa=${Boolean(ssa)}\n`);
+  if (!isCanonicalMemorySsaProducerArtifact(memorySsa)
+      || String(memorySsa.functionId ?? '') !== String(ir?.functionId ?? '')
+      || String(memorySsa.identity?.semanticIrDigest ?? '') !== stableDigest(ir)
+      || !Array.isArray(memorySsa.uses)
+      || !Array.isArray(memorySsa.definitions)
+      || !Array.isArray(memorySsa.accessMetadata)
+      || !ssa || !Array.isArray(ssa.uses) || !Array.isArray(ssa.definitions)) {
+    if (debug) process.stderr.write(`pointer-hint precondition failed ${String(node?.id)}\n`);
+    return null;
+  }
+  const addressValueId = node?.memory?.addressExpr?.valueId;
+  if (addressValueId == null) return null;
+  const valuesById = new Map((ir.values ?? []).map((value) => [String(value.id), value]));
+  const nodesById = new Map((ir.nodes ?? []).map((value) => [String(value.id), value]));
+  const addressValue = valuesById.get(String(addressValueId));
+  const addressDefinition = addressValue?.definitionNodeId == null
+    ? null : nodesById.get(String(addressValue.definitionNodeId));
+  let addressRead = addressDefinition;
+  let addressReadValueId = addressValueId;
+  let addressOffset = 0n;
+  if (addressDefinition && ['address', 'binary', 'intrinsic'].includes(addressDefinition.kind)
+      && String(addressDefinition.operator ?? '').toLowerCase() === 'add'
+      && Array.isArray(addressDefinition.inputs) && addressDefinition.inputs.length === 2) {
+    const inputValues = addressDefinition.inputs.map((inputId) => valuesById.get(String(inputId)));
+    const constantIndex = inputValues.findIndex((value) => value?.metadata?.constant?.kind === 'bitvector');
+    const baseIndex = constantIndex === 0 ? 1 : constantIndex === 1 ? 0 : -1;
+    if (baseIndex >= 0) {
+      const constant = memoryInteger(inputValues[constantIndex]?.metadata?.constant?.value);
+      const baseValue = inputValues[baseIndex];
+      if (constant != null && baseValue?.definitionNodeId != null) {
+        addressOffset = constant;
+        addressReadValueId = baseValue.id;
+        addressRead = nodesById.get(String(baseValue.definitionNodeId));
+      }
+    }
+  }
+  if (!addressRead || addressRead.kind !== 'state-read') {
+    if (debug) process.stderr.write(`pointer-hint address read failed ${String(node?.id)} ${String(addressRead?.kind)}\n`);
+    return null;
+  }
+
+  const stateUses = ssa.uses.filter((use) => String(use.sourceEntityId ?? '') === String(addressRead.id)
+    && use.proof?.kind === 'renamed-use'
+    && String(use.proof?.sourceSemanticValueId ?? addressReadValueId) === String(addressReadValueId));
+  const candidates = [];
+  if (debug) process.stderr.write(`pointer-hint state uses ${String(node?.id)} ${stateUses.length}\n`);
+  for (const stateUse of stateUses) {
+    const scalarDefinition = ssa.definitions.find((definition) =>
+      String(definition.valueId ?? '') === String(stateUse.valueId ?? '')
+      && definition.proof?.kind === 'renamed-definition');
+    const loadedSemanticValueId = scalarDefinition?.proof?.sourceSemanticValueId;
+    const loadedValue = loadedSemanticValueId == null ? null : valuesById.get(String(loadedSemanticValueId));
+    const loadNode = loadedValue?.definitionNodeId == null
+      ? null : nodesById.get(String(loadedValue.definitionNodeId));
+    if (!loadNode || loadNode.kind !== 'load') continue;
+    const loadUses = memorySsa.uses.filter((use) => String(use.sourceEntityId ?? '') === String(loadNode.id)
+      && use.aliasRelation === 'must');
+    if (loadUses.length !== 1) continue;
+    const loadUse = loadUses[0];
+    const loadMetadata = canonicalMemoryAccessRow(memorySsa, loadUse.id, loadNode.id, 'load', 'read');
+    if (!loadMetadata) continue;
+    const reachingDefinition = memorySsa.definitions.find((definition) =>
+      String(definition.id ?? '') === String(loadUse.reachingDefinitionId ?? '')
+      && definition.kind === 'memory-def');
+    if (!reachingDefinition) continue;
+    const storeNode = nodesById.get(String(reachingDefinition.sourceEntityId ?? ''));
+    if (!storeNode || storeNode.kind !== 'store' || !Array.isArray(storeNode.inputs)
+        || storeNode.inputs.length !== 2) continue;
+    const storeMetadata = canonicalMemoryAccessRow(
+      memorySsa,
+      reachingDefinition.id,
+      storeNode.id,
+      'store',
+      'write',
+    );
+    if (!storeMetadata) continue;
+    // Semantic memory stores use [address, value]; the reloaded pointer is
+    // the stored value, not the stack-slot address.
+    const rootValueId = storeNode.inputs[1];
+    const rootProof = deriveCanonicalAddressProof(ir, rootValueId, {
+      addressSpace: node.memory?.addressSpace,
+      ssa,
+      rootDescriptors: options.rootDescriptors,
+      rootDescriptorProvider: options.rootDescriptorProvider,
+    });
+    const rootKind = rootProof?.kind === 'root-only' ? rootProof.rootKind : rootProof?.kind;
+    if (!['rooted', 'stack-like'].includes(String(rootKind))) continue;
+    const rootOffset = rootProof.kind === 'root-only' ? 0n : rootProof.offset;
+    if (rootOffset == null) continue;
+    const offset = rootOffset + addressOffset;
+    if (rootKind === 'stack-like') {
+      candidates.push({
+        kind: 'stack-fixed',
+        offset: offset.toString(),
+        metadata: { canonicalAddressIncludesOperationDisplacement: true },
+      });
+    } else if (rootProof.rootEntityId != null) {
+      candidates.push({
+        kind: 'rooted-offset',
+        rootEntityId: String(rootProof.rootEntityId),
+        offset: offset.toString(),
+        metadata: {
+          canonicalAddressIncludesOperationDisplacement: true,
+          ...(rootProof.rootIdentity?.storageClass == null ? {} : {
+            canonicalRootStorageClass: String(rootProof.rootIdentity.storageClass),
+          }),
+        },
+      });
+    }
+  }
+  if (debug) process.stderr.write(`pointer-hint candidates ${String(node?.id)} ${candidates.length}\n`);
+  if (candidates.length !== 1) return null;
+  return candidates[0];
+}
+
 function descriptorWithProofMetadata(descriptor, proof) {
   if (!descriptor || !proof) return descriptor;
   const rootIdentity = object(proof.rootIdentity);
   const storageClass = nonEmpty(rootIdentity?.storageClass);
-  if (!storageClass) return descriptor;
   return {
     ...descriptor,
     metadata: {
       ...(object(descriptor.metadata) ?? {}),
-      canonicalRootStorageClass: storageClass,
+      ...(storageClass == null ? {} : { canonicalRootStorageClass: storageClass }),
+      canonicalAddressIncludesOperationDisplacement: true,
     },
   };
 }
@@ -313,7 +483,10 @@ export function classifySemanticMemoryRegion(ir, nodeOrId, options = {}) {
     });
     graphDescriptor = descriptorWithProofMetadata(canonicalAddressProofToRegionEvidence(proof), proof);
   }
-  const descriptor = explicitDescriptor ?? graphDescriptor;
+  const memoryPointerDescriptor = !explicitDescriptor && graphDescriptor == null
+    ? canonicalMemoryPointerRegionEvidence(ir, node, options)
+    : null;
+  const descriptor = explicitDescriptor ?? graphDescriptor ?? memoryPointerDescriptor;
   const derivationMetadata = proof == null ? null : {
     canonicalAddressKind: proof.kind,
     ...(proof.reason == null ? {} : { canonicalAddressReason: proof.reason }),
@@ -321,7 +494,7 @@ export function classifySemanticMemoryRegion(ir, nodeOrId, options = {}) {
   // A canonical region is shared by every equivalent access. Its descriptor
   // therefore uses the function-level IR origin instead of an access-local
   // origin; otherwise equal MemoryRegionIds would carry conflicting objects.
-  const regionOrigin = graphDescriptor ? normalizedOrigin(ir.origin) : accessOrigin;
+  const regionOrigin = graphDescriptor || memoryPointerDescriptor ? normalizedOrigin(ir.origin) : accessOrigin;
 
   return deriveMemoryRegion({
     functionId: ir.functionId,

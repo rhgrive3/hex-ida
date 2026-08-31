@@ -270,7 +270,8 @@ export function translateSemanticIR(target, options = {}) {
         // canonical query capability may turn a load into a concrete solver
         // value; forged/serialized/partial facts stay explicitly unknown.
         if (isCanonicalExactMemoryForwarding(inst.memoryForwarding,
-          canonicalMemoryForwardingContextForLoad(inst.memoryForwarding, inst))
+          canonicalMemoryForwardingContextForLoad(inst.memoryForwarding, inst,
+            inst.memoryForwardingContext ?? inst.extra?.memoryForwardingContext))
             && inst.memoryForwarding.value != null) {
           const value = createBv(width, inst.memoryForwarding.value);
           recordOrigin(value, inst.origin, ...(inst.memoryForwarding.provenance?.sourceEntityIds || []));

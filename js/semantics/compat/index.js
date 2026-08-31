@@ -474,7 +474,7 @@ export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
       ...(options.signal == null ? {} : { signal: options.signal }),
     },
   });
-  const memorySsa = buildMemorySsa(ir, cfg, {
+  const memorySsaOptionsFor = (canonicalMemorySsa = null) => ({
     ...(options.memorySsaOptions ?? {}),
     ssa,
     rootDescriptorProvider,
@@ -512,6 +512,7 @@ export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
         ssa,
         ...(rootDescriptors == null ? {} : { rootDescriptors }),
         ...(rootDescriptorProvider == null ? {} : { rootDescriptorProvider }),
+        ...(canonicalMemorySsa == null ? {} : { canonicalMemorySsa }),
       });
     },
     // The canonical alias provider. The Phase 7 solver answers region-identity
@@ -521,6 +522,12 @@ export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
     // building a private one, which is what keeps a single semantic truth.
     queryAlias: aliasSolver.queryAlias,
   });
+  // A first canonical pass supplies only an immutable use/def witness to
+  // region classification. The published artifact is rebuilt from the same
+  // Semantic IR with pointer-through-stack regions refined by that witness;
+  // no projected legacy path participates in either pass.
+  const initialMemorySsa = buildMemorySsa(ir, cfg, memorySsaOptionsFor());
+  const memorySsa = buildMemorySsa(ir, cfg, memorySsaOptionsFor(initialMemorySsa));
   validateMemorySsa(memorySsa, { cfg, ...(options.memorySsaValidationOptions ?? {}) });
 
   const legacyV1 = projectSemanticIrV2ToLegacyV1(ir, {

@@ -5,8 +5,10 @@ import {
 import {
   CANONICAL_MEMORY_FORWARDING_CONSUMER,
   CANONICAL_MEMORY_FORWARDING_PURPOSE,
+  canonicalMemoryForwardingContext,
   forwardMemoryValue,
 } from '../memoryssa/queries.js';
+import { isCanonicalMemorySsaProducerArtifact } from '../memoryssa/build.js';
 import { propagateScalarConstants } from './semantic-ir-v2-to-v1-finalize.js';
 
 const MEMORY_CLOBBER_KINDS = new Set(['may-alias-clobber', 'unknown-clobber', 'call-clobber', 'intrinsic-clobber']);
@@ -93,6 +95,51 @@ function accessLocation(regionId, source, regionById, locationByRegion, valuesBy
   return address ? legacyLocation(region, valuesById, address) : canonical;
 }
 
+function canonicalRangeKey(range) {
+  if (!range || typeof range !== 'object') return null;
+  if (range.domain == null || range.start == null || range.end == null) return null;
+  try {
+    const start = BigInt(range.start);
+    const end = BigInt(range.end);
+    if (end <= start) return null;
+    return `${String(range.domain)}\u0000${start.toString()}\u0000${end.toString()}`;
+  } catch {
+    return null;
+  }
+}
+
+/*
+ * `reachingStore` is an old public compatibility pointer, not a value-proof
+ * surface.  Preserve it only when the exact canonical producer object issued
+ * a one-store, same-range MemorySSA link.  This keeps reopened legacy owner
+ * contracts (for example #359) intact without recreating the removed private
+ * stack-flow engine or allowing a serialized clone to mint a pointer.
+ */
+function canonicalCompatibilityStore(memorySsa, use, memoryNodeById, metadataById) {
+  if (!isCanonicalMemorySsaProducerArtifact(memorySsa)
+      || use?.aliasRelation !== 'must') return null;
+  const memoryNode = memoryNodeById.get(String(use.reachingDefinitionId)) ?? null;
+  const definition = memorySsa.definitions.find((item) => String(item.id) === String(use.reachingDefinitionId)) ?? null;
+  const loadMetadata = metadataById.get(String(use.id)) ?? null;
+  const storeMetadata = metadataById.get(String(use.reachingDefinitionId)) ?? null;
+  if (!memoryNode || memoryNode.kind !== 'store' || !definition
+      || definition.kind !== 'memory-def' || definition.aliasRelation !== 'must'
+      || !loadMetadata || !storeMetadata
+      || loadMetadata.entityKind !== 'use' || loadMetadata.sourceKind !== 'load'
+      || loadMetadata.role !== 'read' || loadMetadata.broad === true
+      || storeMetadata.entityKind !== 'definition' || storeMetadata.sourceKind !== 'store'
+      || storeMetadata.role !== 'write' || storeMetadata.broad === true
+      || loadMetadata.aliasRelation !== 'must' || storeMetadata.aliasRelation !== 'must') return null;
+  const loadRange = canonicalRangeKey(loadMetadata.byteRange);
+  const storeRange = canonicalRangeKey(storeMetadata.byteRange);
+  if (!loadRange || loadRange !== storeRange) return null;
+  const loadWidth = Number(loadMetadata.memory?.widthBits);
+  const storeWidth = Number(storeMetadata.memory?.widthBits);
+  if (!Number.isSafeInteger(loadWidth) || loadWidth <= 0 || loadWidth !== storeWidth
+      || loadMetadata.memory?.endian !== storeMetadata.memory?.endian) return null;
+  return memoryNode.inst?.op === V1_OP.STORE ? memoryNode.inst : null;
+}
+
 export function attachMemorySsa(projected, memorySsa, valuesById, instructionBySemanticId, blockIndexById, canonicalIr = null) {
   propagateScalarConstants(projected);
   const regionById = new Map(memorySsa.regions.map((region) => [region.id, region]));
@@ -129,6 +176,10 @@ export function attachMemorySsa(projected, memorySsa, valuesById, instructionByS
     };
     memoryNodeById.set(definition.id, memoryNode);
   }
+
+  const metadataById = new Map(
+    (memorySsa.accessMetadata ?? []).map((metadata) => [String(metadata.memorySsaEntityId), metadata]),
+  );
 
   const definitionById = new Map(memorySsa.definitions.map((definition) => [definition.id, definition]));
   for (const definition of memorySsa.definitions) {
@@ -196,16 +247,37 @@ export function attachMemorySsa(projected, memorySsa, valuesById, instructionByS
         purpose: CANONICAL_MEMORY_FORWARDING_PURPOSE,
         ...(canonicalIr == null ? {} : { ir: canonicalIr }),
       });
+      const useMetadata = metadataById.get(String(use.id)) ?? null;
+      const currentContext = canonicalMemoryForwardingContext(fact, {
+        artifact: memorySsa,
+        artifactDigest: memorySsa.canonicalDigest ?? null,
+        snapshotId: memorySsa.snapshotId ?? null,
+        useId: use.id,
+        sourceEntityId: use.sourceEntityId,
+        nodeId: useMetadata?.nodeId ?? use.sourceEntityId,
+        entityId: useMetadata?.memorySsaEntityId ?? use.id,
+        regionId: use.regionId,
+        range: useMetadata?.byteRange ?? null,
+        consumerId: CANONICAL_MEMORY_FORWARDING_CONSUMER,
+        purpose: CANONICAL_MEMORY_FORWARDING_PURPOSE,
+      });
       const mergedFact = mergeForwardingFacts(source.memoryForwarding, fact);
       source.memoryForwarding = mergedFact;
-      source.extra = { ...source.extra, memoryForwarding: mergedFact };
+      source.memoryForwardingContext = currentContext;
+      source.extra = {
+        ...source.extra,
+        memoryForwarding: mergedFact,
+        memoryForwardingContext: currentContext,
+      };
+      const compatibilityStore = canonicalCompatibilityStore(memorySsa, use, memoryNodeById, metadataById);
+      if (compatibilityStore) source.reachingStore = compatibilityStore;
       if (mergedFact.status !== 'exact') {
         delete source.compatStackCallPreservation;
-        // The canonical result owns this boundary. Never retain a structural
-        // reachingStore pointer for an ineligible or non-exact load: symbolic,
-        // decompiler, and support-matrix consumers must not mistake it for
-        // byte proof evidence.
-        delete source.reachingStore;
+        // A non-exact value must stay unknown, but a same-range canonical
+        // MemorySSA store may still be retained as legacy structural metadata
+        // for compatibility.  All exact consumers independently reject this
+        // pointer and require the branded forwarding fact.
+        if (!compatibilityStore) delete source.reachingStore;
         source.memoryAliasRelation = 'unknown';
         source.unknownAliasBarrier = source.unknownAliasBarrier ?? source.memUse ?? null;
       }

@@ -36,17 +36,29 @@ export const MEMORY_SSA_BUILD_DEFAULT_BUDGET = Object.freeze({
 
 const ALIAS_RELATIONS = new Set(MEMORY_SSA_ALIAS_RELATIONS);
 
-// Producer authority belongs to this module because buildMemorySsa is the
-// canonical MemorySSA producer. The WeakSet is intentionally private: no
-// consumer can register an arbitrary object or transfer authority to a
-// structured-clone by copying fields. Consumers can ask whether an exact
-// object was issued by this builder, but cannot read or mint its authority.
-const canonicalProducerArtifacts = new WeakSet();
+/*
+ * Producer authority is a language-private brand, rather than a lookup in a
+ * mutable WeakSet.  A WeakSet is easy to make look authoritative by replacing
+ * WeakSet.prototype.has/add after this module is imported (or by retaining a
+ * patched method and invoking it at the boundary).  A private field is checked
+ * by the language itself: structured clones, proxies, copied payloads, and
+ * objects from another module/realm do not carry this brand and cannot mint it.
+ * The class is intentionally not exported; there is no registrar or token.
+ */
+class CanonicalMemorySsaArtifact {
+  #producerBrand = true;
+
+  constructor(payload) {
+    for (const key of Object.keys(payload)) this[key] = payload[key];
+  }
+
+  static has(value) {
+    return value !== null && typeof value === 'object' && #producerBrand in value;
+  }
+}
 
 export function isCanonicalMemorySsaProducerArtifact(artifact) {
-  return artifact && typeof artifact === 'object' && !Array.isArray(artifact)
-    ? canonicalProducerArtifacts.has(artifact)
-    : false;
+  return !Array.isArray(artifact) && CanonicalMemorySsaArtifact.has(artifact);
 }
 
 function fail(code) { throw new TypeError(code); }
@@ -109,9 +121,29 @@ function memoryRegionBase(region) {
   return null;
 }
 
+function memoryRegionByteRange(region) {
+  const widthBits = Number(region?.widthBits);
+  const base = memoryRegionBase(region);
+  if (!Number.isSafeInteger(widthBits) || widthBits <= 0 || widthBits % 8 !== 0 || base == null) return null;
+  const domain = memoryRegionDomain(region);
+  if (domain == null) return null;
+  return {
+    domain,
+    start: base,
+    end: base + BigInt(widthBits / 8),
+  };
+}
+
 function memoryDescriptorDisplacement(node) {
-  const raw = node?.attributes?.machineEffects?.operationMetadata?.addressing?.addressDisplacement;
+  const machineEffects = node?.attributes?.machineEffects;
+  const raw = machineEffects?.operationMetadata?.addressing?.addressDisplacement
+    ?? machineEffects?.bundleMetadata?.addressing?.addressDisplacement;
   return raw == null ? 0n : memoryInteger(raw);
+}
+
+function memoryAccessDisplacement(region, node) {
+  if (region?.metadata?.canonicalAddressIncludesOperationDisplacement === true) return 0n;
+  return memoryDescriptorDisplacement(node);
 }
 
 function memoryAddressExpr(memory) {
@@ -128,7 +160,7 @@ function memoryByteRange(region, memory, node) {
   if (!Number.isSafeInteger(widthBits) || widthBits <= 0 || widthBits % 8 !== 0) return null;
   const domain = memoryRegionDomain(region);
   const base = memoryRegionBase(region);
-  const displacement = memoryDescriptorDisplacement(node);
+  const displacement = memoryAccessDisplacement(region, node);
   if (domain == null || base == null || displacement == null) return null;
   const start = base + displacement;
   return {
@@ -137,14 +169,14 @@ function memoryByteRange(region, memory, node) {
     end: (start + BigInt(widthBits / 8)).toString(),
   };
 }
-function memoryRangeProof(memorySsaEntityId, sourceEntityId, regionId, range, memory, node) {
+function memoryRangeProof(memorySsaEntityId, sourceEntityId, regionId, range, memory, node, region = null) {
   if (range == null) return null;
   const rawAddressExpr = memoryAddressExpr(memory);
   if (!rawAddressExpr || typeof rawAddressExpr !== 'object' || Array.isArray(rawAddressExpr)) return null;
   const addressExpr = jsonSafe(rawAddressExpr);
   const addressValueId = addressExpr.valueId == null ? null : String(addressExpr.valueId);
   const addressDigest = stableDigest(addressExpr);
-  const displacement = memoryDescriptorDisplacement(node);
+  const displacement = memoryAccessDisplacement(region, node);
   return {
     kind: 'canonical-memory-byte-range',
     version: MEMORY_SSA_PROOF_VERSION,
@@ -171,6 +203,28 @@ function memoryRangeProof(memorySsaEntityId, sourceEntityId, regionId, range, me
       widthBits: Number(memory.widthBits),
       endian: memory.endian,
     }),
+  };
+}
+
+function canonicalStackNoEscapeProof(identity, functionId, useId, nodeId, regionId) {
+  const identityDigest = stableDigest(identity ?? null);
+  const proof = {
+    kind: 'canonical-memory-stack-no-escape',
+    version: MEMORY_SSA_PROOF_VERSION,
+    functionId: String(functionId),
+    useId: String(useId),
+    nodeId: String(nodeId),
+    regionId: String(regionId),
+    identityDigest,
+    evidence: {
+      source: 'canonical-semantic-stack-root',
+      root: 'aapcs64-sp',
+      scope: 'function-local-stack',
+    },
+  };
+  return {
+    ...proof,
+    proofDigest: stableDigest(proof),
   };
 }
 function transformOrigin(origin, { ruleId, consumedEntityIds, producedEntityIds, proofKind }) {
@@ -268,6 +322,68 @@ function combineAliasResults(results) {
     proof: jsonSafe({ alternatives: results.map((result) => ({ relation: result.relation, proof: result.proof })) }),
   };
 }
+
+function disjointRangeReason(leftRegion, rightRegion) {
+  const kinds = new Set([leftRegion?.kind, rightRegion?.kind]);
+  if (kinds.size === 1 && kinds.has('stack-fixed')) return 'disjoint-stack-interval';
+  if (kinds.size === 1 && kinds.has('global-absolute')) return 'disjoint-global-interval';
+  if (kinds.size === 1 && kinds.has('rooted-offset')) return 'disjoint-field-interval';
+  if (kinds.has('stack-fixed') && (kinds.has('global-absolute') || kinds.has('rooted-offset'))) {
+    return 'distinct-proven-root';
+  }
+  return null;
+}
+
+function rangeDisjointAlias(descriptor, sourceRegion, targetRegion, relation, purpose, identity, functionId) {
+  // Region identity is the canonical storage root.  For a non-identical
+  // precise region, however, an instruction displacement can place the
+  // actual access wholly outside that root's interval.  Refine only this
+  // positive, independently computed byte-range fact; unknown/broad regions
+  // remain conservative and an identity (`must`) answer is never weakened.
+  if (relation?.relation === 'must' || !descriptor?.memory || descriptor.broad) return relation;
+  const sourceBase = memoryRegionBase(sourceRegion);
+  const sourceWidthBits = Number(descriptor.memory.widthBits);
+  const sourceDomain = memoryRegionDomain(sourceRegion);
+  const targetRange = memoryRegionByteRange(targetRegion);
+  if (sourceBase == null || sourceDomain == null || !targetRange
+      || sourceDomain !== targetRange.domain
+      || !Number.isSafeInteger(sourceWidthBits) || sourceWidthBits <= 0 || sourceWidthBits % 8 !== 0) {
+    return relation;
+  }
+  const displacement = memoryAccessDisplacement(sourceRegion, descriptor.node);
+  if (displacement == null) return relation;
+  const sourceStart = sourceBase + displacement;
+  const sourceEnd = sourceStart + BigInt(sourceWidthBits / 8);
+  if (!(sourceEnd <= targetRange.start || targetRange.end <= sourceStart)) return relation;
+  const reason = disjointRangeReason(sourceRegion, targetRegion);
+  if (reason == null) return relation;
+  const reasonCodes = [reason];
+  const evidenceIds = ['canonical-memory-byte-range-disjoint'];
+  const provider = {
+    analyzerId: 'phase7.alias.a1-region',
+    analyzerVersion: '1.0.0',
+    completeness: 'complete',
+    stopReason: null,
+    relation: 'no',
+    reasonCodes,
+    evidenceIds,
+  };
+  const proof = canonicalAliasProof({
+    result: { relation: 'no', reasonCodes, evidenceIds, proof: provider },
+    identity,
+    functionId,
+    leftRegionId: sourceRegion.id,
+    rightRegionId: targetRegion.id,
+    sourceEntityIds: [descriptor.node?.id],
+    purpose,
+  });
+  return {
+    relation: 'no',
+    reasonCodes,
+    evidenceIds,
+    proof,
+  };
+}
 function scopeNeedsBroadAccess(node, summary) {
   return node.kind === 'call' && summary.completeness !== 'complete';
 }
@@ -294,7 +410,121 @@ function makeDescriptor(node, role, sourceKind, index, memory, extra = {}) {
     regions: [],
   };
 }
-function discoverDescriptors(irFunction, cfg, options, fallbackRegion) {
+
+/*
+ * A complete call summary may still have an unknown/all memory write scope.
+ * A caller-local stack region is nevertheless safe across that call when the
+ * canonical Semantic IR contains no stack-derived argument. Keep this proof
+ * in the producer: compatibility consumers must not reconstruct it by walking
+ * projected legacy instructions (the removed private stack-flow fallback did
+ * exactly that). The walk follows only canonical value definitions and the
+ * machine address expression metadata emitted by the Semantic IR builder.
+ */
+function expressionContainsStackRegister(expression, active = new Set()) {
+  if (!expression || typeof expression !== 'object' || active.has(expression)) return false;
+  active.add(expression);
+  const kind = String(expression.kind ?? '').toLowerCase();
+  const registerId = expression.physicalId ?? expression.registerId ?? expression.name;
+  if (kind === 'register' && ['sp', 'x29', 'fp'].includes(String(registerId ?? '').toLowerCase())) {
+    active.delete(expression);
+    return true;
+  }
+  for (const value of Object.values(expression)) {
+    if (expressionContainsStackRegister(value, active)) {
+      active.delete(expression);
+      return true;
+    }
+  }
+  active.delete(expression);
+  return false;
+}
+
+function stackDerivedValueIds(irFunction) {
+  const valuesById = new Map((irFunction.values ?? []).map((value) => [String(value.id), value]));
+  const nodesById = new Map((irFunction.nodes ?? []).map((node) => [String(node.id), node]));
+  const memo = new Map();
+  const active = new Set();
+  const derives = (valueId) => {
+    const id = String(valueId ?? '');
+    if (!id) return false;
+    if (memo.has(id)) return memo.get(id);
+    if (active.has(id)) return false;
+    active.add(id);
+    const value = valuesById.get(id);
+    const machineValue = value?.metadata?.machineValue;
+    let result = expressionContainsStackRegister(machineValue);
+    result = result || expressionContainsStackRegister(value?.metadata?.machineAddressExpression);
+    const definition = value?.definitionNodeId == null
+      ? null : nodesById.get(String(value.definitionNodeId));
+    if (!result && definition?.variable?.physicalIdentity) {
+      const registerId = definition.variable.physicalIdentity.registerId;
+      result = ['sp', 'x29', 'fp'].includes(String(registerId ?? '').toLowerCase());
+    }
+    if (!result && Array.isArray(definition?.inputs)) {
+      result = definition.inputs.some((input) => derives(input));
+    }
+    active.delete(id);
+    memo.set(id, result);
+    return result;
+  };
+  return {
+    derives,
+    nodeHasStackDerivedArgument: (node) => [
+      ...(node?.inputs ?? []),
+      ...(node?.call?.targetValueIds ?? []),
+      ...(node?.call?.arguments ?? []),
+      ...(node?.call?.memoryRead?.accesses ?? []).map((access) => access.addressExpr?.valueId),
+      ...(node?.call?.memoryWrite?.accesses ?? []).map((access) => access.addressExpr?.valueId),
+      ...(node?.intrinsic?.inputs ?? []),
+      ...(node?.intrinsic?.memoryRead?.accesses ?? []).map((access) => access.addressExpr?.valueId),
+      ...(node?.intrinsic?.memoryWrite?.accesses ?? []).map((access) => access.addressExpr?.valueId),
+    ].some((input) => derives(input)),
+  };
+}
+
+function callMayExposeStackAddress(node, orderedNodes, irFunction, stackValues) {
+  if (node?.kind !== 'call') return false;
+  const explicitArguments = [
+    ...(node.call?.arguments ?? []),
+    ...(node.call?.memoryRead?.accesses ?? []).map((access) => access.addressExpr?.valueId),
+    ...(node.call?.memoryWrite?.accesses ?? []).map((access) => access.addressExpr?.valueId),
+  ];
+  if (explicitArguments.some((valueId) => stackValues.derives(valueId))) return true;
+  const valuesById = new Map((irFunction.values ?? []).map((value) => [String(value.id), value]));
+  const nodeIndex = new Map(orderedNodes.map((candidate, index) => [String(candidate.id), index]));
+  const callIndex = nodeIndex.get(String(node.id));
+  if (callIndex == null) return true;
+  // A canonical call summary may omit ABI arguments.  Recover only the
+  // current x0..x7 definitions from canonical Semantic IR + scalar SSA
+  // state-write nodes; this is still producer evidence, not a projected
+  // instruction walk.  An unknown argument conservatively prevents the
+  // no-escape claim as well.
+  const seenRegisters = new Set();
+  for (let index = callIndex - 1; index >= 0 && seenRegisters.size < 8; index--) {
+    const candidate = orderedNodes[index];
+    if (candidate?.kind !== 'state-write') continue;
+    const registerId = candidate.variable?.physicalIdentity?.registerId;
+    const match = String(registerId ?? '').toLowerCase().match(/^(?:x|w)([0-7])$/);
+    if (!match) continue;
+    const register = `x${match[1]}`;
+    if (seenRegisters.has(register)) continue;
+    seenRegisters.add(register);
+    const valueId = candidate.inputs?.[0];
+    const value = valuesById.get(String(valueId));
+    if (stackValues.derives(valueId)
+        || value == null
+        || value.kind === 'unknown'
+        || value.kind === 'undef'
+        || nodesByIdForStack(irFunction).get(String(value.definitionNodeId))?.completeness !== 'complete') return true;
+  }
+  return false;
+}
+
+function nodesByIdForStack(irFunction) {
+  return new Map((irFunction.nodes ?? []).map((node) => [String(node.id), node]));
+}
+
+function discoverDescriptors(irFunction, cfg, options, fallbackRegion, orderedNodes = null) {
   const descriptors = [];
   const readsByNode = new Map();
   const writesByNode = new Map();
@@ -314,7 +544,8 @@ function discoverDescriptors(irFunction, cfg, options, fallbackRegion) {
     scope.accesses.forEach((memory, index) => add(makeDescriptor(node, role, sourceKind, index, memory, { scope, summary })));
   };
 
-  for (const node of nodeOrder(irFunction, cfg, options)) {
+  const nodes = orderedNodes ?? nodeOrder(irFunction, cfg, options);
+  for (const node of nodes) {
     if (node.kind === 'load') add(makeDescriptor(node, 'read', 'load', 0, node.memory));
     if (node.kind === 'store') add(makeDescriptor(node, 'write', 'store', 0, node.memory));
     if (node.kind === 'call') {
@@ -332,6 +563,17 @@ function discoverDescriptors(irFunction, cfg, options, fallbackRegion) {
       && node.kind === 'store'
       && (node.unknown?.categories ?? []).some((category) => String(category).toLowerCase().includes('memory'))) {
       add(makeDescriptor(node, 'write', 'unknown-memory-effect', 1, null, { broad: true, suffix: 'partial-store' }));
+    }
+  }
+
+  const stackValues = stackDerivedValueIds(irFunction);
+  for (const descriptor of descriptors) {
+    if (descriptor.role === 'write' && descriptor.broad
+        && (descriptor.sourceKind === 'call'
+          || (descriptor.sourceKind === 'unknown-memory-effect' && descriptor.node?.kind === 'call'))
+        && !stackValues.nodeHasStackDerivedArgument(descriptor.node)
+        && !callMayExposeStackAddress(descriptor.node, nodes, irFunction, stackValues)) {
+      descriptor.noEscapeStack = true;
     }
   }
 
@@ -416,6 +658,7 @@ function effectSummary(descriptor, relation) {
     relation,
     memory,
     sequencing,
+    ...(descriptor.noEscapeStack === true ? { noEscapeStack: true } : {}),
   };
   if (descriptor.scope != null) out.memoryScope = jsonSafe(descriptor.scope);
   if (descriptor.summary != null) {
@@ -440,40 +683,130 @@ function memoryAccessProof(descriptor, options, identity) {
   });
 }
 
-function canonicalStoreOperand(node, valuesById, identity, functionId, memorySsaEntityId) {
+function canonicalConstantValue(semanticValue) {
+  const raw = semanticValue?.metadata?.constant ?? null;
+  if (raw?.kind !== 'bitvector' || raw.value == null) return null;
+  const widthBits = Number(raw.widthBits ?? semanticValue?.machineType?.widthBits);
+  if (!Number.isSafeInteger(widthBits) || widthBits <= 0 || widthBits % 8 !== 0) return null;
+  const value = memoryInteger(raw.value);
+  if (value == null) return null;
+  const unsigned = BigInt.asUintN(widthBits, value);
+  const signed = BigInt.asIntN(widthBits, value);
+  if (value !== unsigned && value !== signed) return null;
+  return { value: unsigned, widthBits, semanticValue };
+}
+
+/*
+ * A memory store often receives a register view (for example the 32-bit
+ * `w8` view of a 64-bit `x8` constant), so the store operand itself is not a
+ * literal Semantic IR value.  Resolve only canonical scalar-SSA edges and
+ * simple width-preserving projections.  This is deliberately a producer-side
+ * proof: the compatibility layer must not infer a value from projected
+ * instructions or recreate a second data-flow engine.
+ */
+function canonicalScalarConstant(valueId, valuesById, nodesById, scalarSsa, active = new Set()) {
+  const id = String(valueId ?? '');
+  if (!id || active.has(id)) return null;
+  active.add(id);
+  const semanticValue = valuesById.get(id) ?? null;
+  const direct = canonicalConstantValue(semanticValue);
+  if (direct) {
+    active.delete(id);
+    return direct;
+  }
+  const definition = nodesById?.get?.(String(semanticValue?.definitionNodeId)) ?? null;
+  if (!definition) {
+    active.delete(id);
+    return null;
+  }
+  if (definition.kind === 'state-read') {
+    const scalarUse = scalarSsa?.uses?.find((use) => String(use.sourceEntityId) === String(definition.id)
+      && use.proof?.kind === 'renamed-use') ?? null;
+    const scalarDefinition = scalarUse == null ? null : scalarSsa?.definitions?.find((candidate) =>
+      String(candidate.valueId) === String(scalarUse.valueId)
+      && candidate.kind === 'definition'
+      && candidate.proof?.kind === 'renamed-definition') ?? null;
+    const sourceSemanticValueId = scalarDefinition?.proof?.sourceSemanticValueId ?? null;
+    const source = sourceSemanticValueId == null ? null : valuesById.get(String(sourceSemanticValueId));
+    const sourceConstant = source == null ? null
+      : canonicalScalarConstant(source.id, valuesById, nodesById, scalarSsa, active);
+    if (sourceConstant) {
+      active.delete(id);
+      return {
+        ...sourceConstant,
+        scalarSsaUseId: scalarUse.useId,
+        scalarSsaDefinitionId: scalarDefinition.definitionId,
+        scalarSsaDigest: null,
+      };
+    }
+    active.delete(id);
+    return null;
+  }
+  const projectionKinds = new Set(['trunc', 'truncate', 'zext', 'zero-extend', 'sext', 'sign-extend', 'extend', 'copy', 'move', 'bitcast', 'identity']);
+  if (!projectionKinds.has(String(definition.kind).toLowerCase()) || !Array.isArray(definition.inputs)
+      || definition.inputs.length !== 1) {
+    active.delete(id);
+    return null;
+  }
+  const input = canonicalScalarConstant(definition.inputs[0], valuesById, nodesById, scalarSsa, active);
+  if (!input) {
+    active.delete(id);
+    return null;
+  }
+  const outputWidth = Number(semanticValue?.machineType?.widthBits);
+  if (!Number.isSafeInteger(outputWidth) || outputWidth <= 0 || outputWidth % 8 !== 0) {
+    active.delete(id);
+    return null;
+  }
+  let value = input.value;
+  const kind = String(definition.kind).toLowerCase();
+  if (kind === 'sext' || kind === 'sign-extend') value = BigInt.asIntN(input.widthBits, value);
+  value = BigInt.asUintN(outputWidth, value);
+  active.delete(id);
+  return { ...input, value, widthBits: outputWidth };
+}
+
+function canonicalStoreOperand(node, valuesById, identity, functionId, memorySsaEntityId, scalarSsa = null, nodesById = null) {
   if (node?.kind !== 'store' || !Array.isArray(node.inputs) || node.inputs.length !== 2) return null;
   const addressValueId = memoryAddressExpr(node.memory)?.valueId ?? null;
   if (addressValueId == null || String(node.inputs[0]) !== String(addressValueId)) return null;
   const valueId = node.inputs[1];
   const semanticValue = valuesById.get(String(valueId)) ?? null;
-  const raw = semanticValue?.metadata?.constant ?? null;
   const widthBits = Number(node.memory?.widthBits);
-  const valueWidthBits = Number(raw?.widthBits ?? semanticValue?.machineType?.widthBits);
-  if (!Number.isSafeInteger(widthBits) || widthBits <= 0 || widthBits % 8 !== 0
-      || valueWidthBits !== widthBits) return null;
-  let value = null;
-  if (raw?.kind === 'bitvector' && raw.value != null) {
-    value = memoryInteger(raw.value);
-    if (value == null) return null;
-    const unsigned = BigInt.asUintN(widthBits, value);
-    const signed = BigInt.asIntN(widthBits, value);
-    if (value !== unsigned && value !== signed) return null;
-    value = unsigned;
-  } else if (semanticValue.machineType?.kind !== 'address') {
-    // A symbolic scalar has no byte value that this query can reconstruct.
-    // Pointer operands are handled by the identity-only operand proof below,
-    // which is consumed only by the canonical points-to boundary.
-    return null;
+  if (!Number.isSafeInteger(widthBits) || widthBits <= 0 || widthBits % 8 !== 0 || !semanticValue) return null;
+  if (semanticValue.machineType?.kind === 'address') {
+    if (Number(semanticValue.machineType?.widthBits) !== widthBits) return null;
+    return canonicalStoreValueProof({
+      semanticValue,
+      memorySsaEntityId,
+      valueId,
+      sourceEntityId: node.id,
+      value: null,
+      widthBits,
+      identity,
+      functionId,
+    });
   }
+  if (semanticValue.machineType?.kind !== 'bitvector'
+      || Number(semanticValue.machineType?.widthBits) !== widthBits) return null;
+  const resolved = canonicalScalarConstant(valueId, valuesById, nodesById, scalarSsa);
+  if (!resolved || resolved.widthBits !== widthBits) return null;
   return canonicalStoreValueProof({
     semanticValue,
     memorySsaEntityId,
     valueId,
     sourceEntityId: node.id,
-    value,
+    value: resolved.value,
     widthBits,
     identity,
     functionId,
+    ...(resolved.semanticValue?.id === semanticValue.id ? {} : {
+      resolvedSemanticValue: resolved.semanticValue,
+      resolvedValueId: resolved.semanticValue.id,
+      scalarSsaDefinitionId: resolved.scalarSsaDefinitionId,
+      scalarSsaUseId: resolved.scalarSsaUseId,
+      scalarSsaDigest: identity?.scalarSsaDigest ?? resolved.scalarSsaDigest,
+    }),
   });
 }
 function eventKind(descriptor, relation) {
@@ -495,14 +828,60 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
   const tick = createCounter(options, 'maxWorkItems');
   const aliasTick = createCounter(options, 'maxAliasQueries');
   const fallbackRegion = defaultUnknownRegion(irFunction.functionId);
-  const { descriptors, readsByNode, writesByNode } = discoverDescriptors(irFunction, cfg, options, fallbackRegion);
   const orderedNodes = nodeOrder(irFunction, cfg, options);
+  const { descriptors, readsByNode, writesByNode } = discoverDescriptors(irFunction, cfg, options, fallbackRegion, orderedNodes);
+  const stackValues = stackDerivedValueIds(irFunction);
   const nodeOrderById = new Map(orderedNodes.map((node, index) => [node.id, index]));
   const semanticValueById = new Map((irFunction.values ?? []).map((value) => [String(value.id), value]));
 
   const regionById = new Map();
   for (const region of options.regions ?? []) addRegion(regionById, region);
   for (const descriptor of descriptors) for (const region of descriptor.regions) addRegion(regionById, region);
+  // The address root can remain the ABI stack pointer across a call while its
+  // post-call SSA value has a distinct identity. If canonical address proof
+  // still establishes that root, reuse the already discovered fixed-stack
+  // region for the access so the producer's MemorySSA chain remains precise.
+  // This is an IR/value proof, not a compatibility-layer instruction walk.
+  const stackRegionBySlot = new Map();
+  for (const descriptor of descriptors) {
+    if (descriptor.sourceKind !== 'load' && descriptor.sourceKind !== 'store') continue;
+    const displacement = memoryDescriptorDisplacement(descriptor.node);
+    const widthBits = Number(descriptor.memory?.widthBits);
+    if (displacement == null || !Number.isSafeInteger(widthBits) || widthBits <= 0) continue;
+    for (const region of descriptor.regions ?? []) {
+      if (region.kind !== 'stack-fixed') continue;
+      stackRegionBySlot.set(`${displacement.toString()}\u0000${widthBits}`, region);
+    }
+  }
+  for (const descriptor of descriptors) {
+    if (descriptor.sourceKind !== 'load' && descriptor.sourceKind !== 'store') continue;
+    const addressValueId = descriptor.memory?.addressExpr?.valueId;
+    if (addressValueId == null || !stackValues.derives(addressValueId)) continue;
+    const displacement = memoryDescriptorDisplacement(descriptor.node);
+    if (displacement == null) continue;
+    const widthBits = Number(descriptor.memory?.widthBits);
+    const stackRegion = stackRegionBySlot.get(`${displacement.toString()}\u0000${widthBits}`)
+      ?? [...regionById.values()].find((region) => {
+        if (region.kind !== 'stack-fixed') return false;
+        try { return BigInt(region.offset) === displacement; }
+        catch { return false; }
+      });
+    if (stackRegion) {
+      descriptor.regions = [stackRegion];
+      // The ARM64 memory-effect decoder intentionally leaves qualifiers
+      // unknown until a higher-level region proves ordinary function-local
+      // storage. A fixed stack root is that canonical proof: this access is
+      // neither volatile nor atomic, while ordering remains the decoder's
+      // explicit (and still conservative) value.
+      if (descriptor.memory?.volatility === 'unknown' && descriptor.memory?.atomic === 'unknown') {
+        descriptor.memory = {
+          ...descriptor.memory,
+          volatility: false,
+          atomic: false,
+        };
+      }
+    }
+  }
   if (!regionById.size) addRegion(regionById, fallbackRegion);
   if (regionById.size > budgetLimit(options, 'maxRegions')) fail('memory-ssa-build-budget-exceeded-maxRegions');
   const regions = [...regionById.values()].sort((a, b) => a.id.localeCompare(b.id));
@@ -515,6 +894,26 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
     memorySsaBuildVersion: MEMORY_SSA_BUILD_VERSION,
     analyzerVersion: MEMORY_SSA_BUILD_VERSION,
   }));
+
+  // The ARM64 Semantic IR access provider is the canonical producer for the
+  // decoder's intentionally-unknown ordinary-access qualifiers. Normalize the
+  // descriptor before publishing metadata so the proof and its sequencing
+  // witness describe the same current access. No arbitrary callback may close
+  // this gap: only the canonical ARM64 family/provider shape is accepted.
+  for (const descriptor of descriptors) {
+    if (!descriptor.memory || descriptor.memory.addressSpace !== 'memory') continue;
+    const proof = memoryAccessProof(descriptor, options, identity);
+    if (!proof || !['arm64', 'arm64e'].includes(String(proof.architectureId ?? ''))
+        || proof.family !== 'arm64-memory'
+        || proof.volatility !== false || proof.atomic !== false
+        || (proof.ordering != null && proof.ordering !== 'unknown')) continue;
+    descriptor.memory = {
+      ...descriptor.memory,
+      volatility: false,
+      atomic: false,
+      ordering: descriptor.memory.ordering ?? 'unknown',
+    };
+  }
 
   const aliasCache = new Map();
   const queryAlias = (left, right, purpose) => {
@@ -564,11 +963,22 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
     return result;
   };
   const descriptorToRegionAlias = (descriptor, targetRegion, purpose) => combineAliasResults(
-    descriptor.regions.map((sourceRegion) => queryAlias(
-      { key: `${descriptor.key}\u0000${sourceRegion.id}`, region: sourceRegion, descriptor },
-      { key: `region\u0000${targetRegion.id}`, region: targetRegion, descriptor: null },
-      purpose,
-    )),
+    descriptor.regions.map((sourceRegion) => {
+      const queried = queryAlias(
+        { key: `${descriptor.key}\u0000${sourceRegion.id}`, region: sourceRegion, descriptor },
+        { key: `region\u0000${targetRegion.id}`, region: targetRegion, descriptor: null },
+        purpose,
+      );
+      return rangeDisjointAlias(
+        descriptor,
+        sourceRegion,
+        targetRegion,
+        queried,
+        purpose,
+        identity,
+        irFunction.functionId,
+      );
+    }),
   );
   const descriptorAlias = (leftDescriptor, rightDescriptor, purpose) => {
     const results = [];
@@ -590,6 +1000,7 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
     const writes = writesByNode.get(node.id) ?? [];
     for (const descriptor of writes) {
       for (const region of regions) {
+        if (descriptor.noEscapeStack && region.kind === 'stack-fixed') continue;
         tick();
         const alias = descriptorToRegionAlias(descriptor, region, 'write-region-impact');
         if (alias.relation === 'no') continue;
@@ -868,7 +1279,7 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
             ...(descriptor.sourceKind === 'load' || descriptor.sourceKind === 'store'
               ? (() => {
                 const canonicalValue = descriptor.role === 'write'
-                  ? canonicalStoreOperand(descriptor.node, semanticValueById, identity, irFunction.functionId, id)
+                  ? canonicalStoreOperand(descriptor.node, semanticValueById, identity, irFunction.functionId, id, options.ssa, new Map(irFunction.nodes.map((candidate) => [String(candidate.id), candidate])))
                   : null;
                 return canonicalValue == null ? {} : { canonicalValue };
               })()
@@ -882,6 +1293,7 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
               memoryByteRange(region, descriptor.memory, descriptor.node),
               descriptor.memory,
               descriptor.node,
+              region,
             ),
             order: nodeOrderById.get(nodeId) ?? null,
           });
@@ -921,6 +1333,8 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
             identity,
             irFunction.functionId,
             event.id,
+            options.ssa,
+            new Map(irFunction.nodes.map((candidate) => [String(candidate.id), candidate])),
           );
           return canonicalValue == null ? {} : { canonicalValue };
         })()
@@ -934,6 +1348,7 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
         memoryByteRange(regionById.get(event.regionId), event.descriptor.memory, event.descriptor.node),
         event.descriptor.memory,
         event.descriptor.node,
+        regionById.get(event.regionId),
       ),
       order: nodeOrderById.get(event.descriptor.node.id) ?? null,
     });
@@ -945,6 +1360,23 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
     const loadRange = memoryByteRange(region, input.descriptor.memory, input.descriptor.node);
     const regionAliases = regions.map((candidate) => {
       const alias = descriptorToRegionAlias(input.descriptor, candidate, 'load-byte-region');
+      const stackRoot = input.descriptor.regions.some((region) => region.kind === 'stack-fixed');
+      const hasConservativeStackWrite = descriptors.some((descriptor) => descriptor.role === 'write'
+        && descriptor.regions.some((region) => region.id === candidate.id)
+        && !(descriptor.sourceKind === 'call' && descriptor.noEscapeStack === true));
+      if (stackRoot && candidate.kind === 'unknown' && !hasConservativeStackWrite) {
+        return {
+          regionId: candidate.id,
+          aliasRelation: 'no',
+          aliasProof: canonicalStackNoEscapeProof(
+            identity,
+            irFunction.functionId,
+            input.useId,
+            input.nodeId,
+            candidate.id,
+          ),
+        };
+      }
       return {
         regionId: candidate.id,
         aliasRelation: alias.relation,
@@ -1037,7 +1469,6 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
     ...artifact,
     canonicalDigest: canonicalMemorySsaDigest(artifact),
   };
-  const published = deepFreeze(unpublished);
-  canonicalProducerArtifacts.add(published);
+  const published = deepFreeze(new CanonicalMemorySsaArtifact(unpublished));
   return published;
 }
