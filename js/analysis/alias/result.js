@@ -76,9 +76,14 @@ function fail(code) { throw new TypeError(code); }
 function reasonList(values) {
   if (values == null) return [];
   if (!Array.isArray(values)) fail('alias-result-invalid-reason-codes');
-  const out = [...new Set(values.map((value) => String(value ?? '').trim()))];
-  for (const value of out) if (!REASON_SET.has(value)) fail(`alias-result-unknown-reason:${value}`);
-  return out.sort();
+  const out = [];
+  for (const value of values) {
+    if (typeof value !== 'string') fail('alias-result-invalid-reason-codes');
+    out.push(value.trim());
+  }
+  const unique = [...new Set(out)];
+  for (const value of unique) if (!REASON_SET.has(value)) fail(`alias-result-unknown-reason:${value}`);
+  return unique.sort();
 }
 
 function idList(values, code) {
@@ -106,7 +111,8 @@ function idList(values, code) {
  */
 export function createAliasResult(input = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) fail('alias-result-invalid');
-  const relation = String(input.relation ?? '').trim();
+  if (typeof input.relation !== 'string') fail('alias-result-invalid-relation');
+  const relation = input.relation.trim();
   if (!RELATION_SET.has(relation)) fail('alias-result-invalid-relation');
   const status = createAnalysisStatus(input.status ?? {});
   const reasonCodes = reasonList(input.reasonCodes);
