@@ -54,7 +54,8 @@ export const DEBUG_DEFAULT_BUDGET = Object.freeze({
 function fail(code) { throw new TypeError(code); }
 
 function nonEmpty(value, code) {
-  const text = String(value ?? '').trim();
+  if (typeof value !== 'string') fail(code);
+  const text = value.trim();
   if (!text) fail(code);
   return text;
 }
@@ -89,8 +90,8 @@ export function createDebugIdentity(input = {}) {
     verdict,
     providerId: nonEmpty(input.providerId, 'debug-identity-provider-required'),
     providerVersion: nonEmpty(input.providerVersion, 'debug-identity-provider-version-required'),
-    expected: input.expected == null ? null : String(input.expected),
-    observed: input.observed == null ? null : String(input.observed),
+    expected: input.expected == null ? null : strictNonEmptyString(input.expected, 'debug-identity-invalid-expected'),
+    observed: input.observed == null ? null : strictNonEmptyString(input.observed, 'debug-identity-invalid-observed'),
     method: nonEmpty(input.method ?? 'unavailable', 'debug-identity-method-required'),
     detail: input.detail == null ? null : String(input.detail),
     coverage: input.coverage == null ? null : Object.freeze({ ...input.coverage }),
