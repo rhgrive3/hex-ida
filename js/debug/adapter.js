@@ -59,7 +59,7 @@ export function boundedInteger(value, fallback, min, max, name = 'value') {
 export function normalizeCapabilities(input = {}) {
   const source = input instanceof Set ? Object.fromEntries([...input].map((k) => [k, true])) : input;
   const out = {};
-  for (const key of DEBUG_CAPABILITIES) out[key] = !!source[key];
+  for (const key of DEBUG_CAPABILITIES) out[key] = source[key] === true;
   return Object.freeze(out);
 }
 
