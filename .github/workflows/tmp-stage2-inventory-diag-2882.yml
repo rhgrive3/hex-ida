@@ -20,16 +20,23 @@ jobs:
         shell: bash
         run: |
           set -uo pipefail
+          set +e
           node tests/stage2/profile-denominator-inventory.test.mjs > /tmp/profile-before.out 2> /tmp/profile-before.err
           rc=$?
+          set -e
           echo "PROFILE_BEFORE_RC=$rc"
           cat /tmp/profile-before.out
           cat /tmp/profile-before.err
           node --input-type=module <<'NODE'
           import fs from 'node:fs';
           import { buildStage2ProfileDenominatorInventory } from './tools/validation/stage2/build-profile-denominator-inventory.mjs';
+          import { STAGE2_PROFILE_EVIDENCE_IDS } from './tools/validation/stage2/profile-contract.mjs';
           const tracked = JSON.parse(fs.readFileSync('./tools/validation/stage2/profile-denominator-inventory.json', 'utf8'));
           const generated = buildStage2ProfileDenominatorInventory();
+          console.log(`TRACKED_IDS=${JSON.stringify(Object.keys(tracked.items || {}).sort())}`);
+          console.log(`GENERATED_IDS=${JSON.stringify(Object.keys(generated.items || {}).sort())}`);
+          console.log(`CONTRACT_IDS=${JSON.stringify([...STAGE2_PROFILE_EVIDENCE_IDS].sort())}`);
+          console.log(`TOPLEVEL_EQUAL=${JSON.stringify(tracked) === JSON.stringify(generated)}`);
           for (const id of [...new Set([...Object.keys(tracked.items || {}), ...Object.keys(generated.items || {})])].sort()) {
             const a = JSON.stringify(tracked.items?.[id]);
             const b = JSON.stringify(generated.items?.[id]);
