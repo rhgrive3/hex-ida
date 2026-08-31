@@ -55,15 +55,17 @@ function selectedPresentationRegisterIdentity(operand) {
   return { present:raw != null, identity:normalizeRegisterIdentity(raw) };
 }
 
+function explicitRegisterWidthValid(operand) {
+  const widths = [operand.bits, operand.widthBits, operand.value?.bits, operand.value?.widthBits]
+    .filter((value) => value != null);
+  return widths.every((value) => typeof value === 'number' && Number.isInteger(value) && value === 64);
+}
+
 function registerClassOf(operand) {
   if (operand == null) return null;
   if (operand && typeof operand === 'object' && !Array.isArray(operand)) {
     if (operand.shift != null || operand.extend != null) return null;
-    const explicitWidth = operand.bits
-      ?? operand.widthBits
-      ?? operand.value?.bits
-      ?? operand.value?.widthBits;
-    if (explicitWidth != null && Number(explicitWidth) !== 64) return null;
+    if (!explicitRegisterWidthValid(operand)) return null;
     if (operand.k === 'reg') {
       const structuredIdentity = structuredRegisterIdentity(operand);
       if (structuredIdentity == null) return null;
