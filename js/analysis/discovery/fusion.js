@@ -92,6 +92,17 @@ function compareEvidence(left, right) {
     || regionSignature(left).localeCompare(regionSignature(right));
 }
 
+function canonicalStartKey(value) {
+  const type = typeof value;
+  if (type !== 'bigint' && type !== 'string' && !(type === 'number' && Number.isSafeInteger(value))) return null;
+  try {
+    const result = BigInt(value);
+    return result < 0n ? null : result.toString();
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Fuses start evidence into a state.
  *
@@ -211,7 +222,8 @@ export function fuseFunctionCandidates(evidence, options = {}) {
   const orderedEvidence = [...evidence].sort(compareEvidence);
   for (const item of orderedEvidence) {
     if (item.start == null) continue;
-    const key = BigInt(item.start).toString();
+    const key = canonicalStartKey(item.start);
+    if (key == null) continue;
     if (!byStart.has(key)) byStart.set(key, { items: [], overflow: false });
     const entry = byStart.get(key);
     if (entry.items.length < budget.maxEvidencePerCandidate) entry.items.push(item);
