@@ -1,0 +1,113 @@
+name: One-shot ARM64 mnemonic authority 3145
+on:
+  push:
+    branches: [fix/3145-arm64-mnemonic-type]
+permissions:
+  contents: write
+jobs:
+  materialize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Apply typed ARM64 mnemonic boundaries
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace(path, old, new, label):
+              p=Path(path); s=p.read_text()
+              if old not in s: raise SystemExit(f'{label} anchor drift')
+              p.write_text(s.replace(old,new,1))
+
+          replace('js/targets/architecture/arm64/effects/common.js',
+          """export function instructionMnemonic(instruction) {
+            return String(instruction?.mnemonic || '').trim().toLowerCase();
+          }""",
+          """export function instructionMnemonic(instruction) {
+            return typeof instruction?.mnemonic === 'string'
+              ? instruction.mnemonic.trim().toLowerCase()
+              : '';
+          }""", 'base mnemonic')
+
+          replace('js/targets/architecture/arm64/effects/index.js',
+          """export function liftArm64MachineEffects(decoded, context = {}) {
+            const instruction = normalizedInstruction(decoded, context);""",
+          """export function liftArm64MachineEffects(decoded, context = {}) {
+            if (typeof decoded?.mnemonic !== 'string') return null;
+            const instruction = normalizedInstruction(decoded, context);""", 'base lift boundary')
+
+          typed_old="""function mnemonicOf(decoded) {
+            return String(decoded?.mnemonic ?? decoded?.opcode ?? '').trim().toLowerCase();
+          }"""
+          typed_new="""function mnemonicOf(decoded) {
+            const raw = decoded?.mnemonic ?? decoded?.opcode;
+            return typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+          }"""
+          replace('js/targets/architecture/arm64e/encoding.js',typed_old,typed_new,'arm64e encoding mnemonic')
+          replace('js/targets/architecture/arm64e/effects.js',typed_old,typed_new,'arm64e effects mnemonic')
+
+          replace('js/targets/architecture/index.js',
+          """function arm64ControlFlow(instruction) {
+            const op = String(instruction?.mnemonic || '').toLowerCase();""",
+          """function arm64ControlFlow(instruction) {
+            if (typeof instruction?.mnemonic !== 'string') return 'unknown';
+            const op = instruction.mnemonic.trim().toLowerCase();""", 'arm64 control classification')
+
+          Path('tests/machine-effects/arm64-mnemonic-type-boundary.test.mjs').write_text(r'''import assert from 'node:assert/strict';
+          import { liftArm64MachineEffects } from '../../js/targets/architecture/arm64/effects/index.js';
+          import { liftArm64eEffects, isArm64ePointerAuthenticationInstruction } from '../../js/targets/architecture/arm64e/effects.js';
+          import { ARM64_ARCHITECTURE, ARM64E_ARCHITECTURE } from '../../js/targets/architecture/index.js';
+
+          const gp=(num)=>({k:'reg',cls:'gp',num,bits:64,text:`x${num}`});
+          let seq=0;
+          const instruction=(mnemonic,ops)=>({instructionId:`mnemonic:${++seq}`,mnemonic,mode:'a64',ops,origin:{instructionIds:[`mnemonic:${seq}`]}});
+
+          const add=liftArm64MachineEffects(instruction(' ADD ',[gp(0),gp(1),gp(2)]));
+          assert.ok(add && add.completeness !== 'partial','canonical ADD remains supported');
+          assert.equal(ARM64_ARCHITECTURE.classifyControlFlow({mnemonic:' BL '}),'call');
+
+          const pacia=instruction(' PACIA ',[gp(0),gp(1)]);
+          const paciaBundle=ARM64E_ARCHITECTURE.liftExact(pacia);
+          assert.ok(paciaBundle && paciaBundle.completeness === 'exact-with-intrinsic','canonical PACIA remains supported');
+          assert.equal(isArm64ePointerAuthenticationInstruction(pacia),true);
+
+          for (const bad of [ ['add'], {toString(){return 'add';}}, true, 1 ]) {
+            assert.equal(liftArm64MachineEffects(instruction(bad,[gp(0),gp(1),gp(2)])),null,'base malformed mnemonic must fail closed');
+            assert.equal(ARM64_ARCHITECTURE.classifyControlFlow({mnemonic:bad}),'unknown','malformed control mnemonic must be unknown');
+          }
+
+          for (const bad of [ ['pacia'], {toString(){return 'pacia';}}, true, 1 ]) {
+            const decoded=instruction(bad,[gp(0),gp(1)]);
+            assert.equal(isArm64ePointerAuthenticationInstruction(decoded),false,'malformed PAuth mnemonic must not claim ownership');
+            assert.equal(liftArm64eEffects(decoded),null,'direct ARM64e lifter must fail closed');
+            assert.equal(ARM64E_ARCHITECTURE.liftExact(decoded),null,'ARM64e plugin must fail closed');
+          }
+
+          assert.equal(isArm64ePointerAuthenticationInstruction({opcode:' PACIA ',ops:[gp(0),gp(1)]}),true,'legacy string opcode fallback remains supported when mnemonic is absent');
+          assert.equal(isArm64ePointerAuthenticationInstruction({mnemonic:['pacia'],opcode:'pacia',ops:[gp(0),gp(1)]}),false,'malformed mnemonic must not be laundered through opcode fallback');
+          console.log('arm64-mnemonic-type-boundary: PASS');
+          ''')
+          PY
+      - run: node --check js/targets/architecture/arm64/effects/common.js
+      - run: node --check js/targets/architecture/arm64/effects/index.js
+      - run: node --check js/targets/architecture/arm64e/encoding.js
+      - run: node --check js/targets/architecture/arm64e/effects.js
+      - run: node --check js/targets/architecture/index.js
+      - run: node tests/machine-effects/arm64-mnemonic-type-boundary.test.mjs
+      - run: node tests/machine-effects/run.mjs
+      - run: git diff --check
+      - name: Commit production result
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git rm .github/workflows/one-shot-arm64-mnemonic-3145.yml
+          git add js/targets/architecture/arm64/effects/common.js js/targets/architecture/arm64/effects/index.js js/targets/architecture/arm64e/encoding.js js/targets/architecture/arm64e/effects.js js/targets/architecture/index.js tests/machine-effects/arm64-mnemonic-type-boundary.test.mjs
+          git commit -m 'fix(arm64): reject coerced structured mnemonics (#3145)'
+          git push
