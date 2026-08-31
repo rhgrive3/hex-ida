@@ -1,0 +1,30 @@
+name: One-shot current-main ARM64 gates run4
+on:
+  push:
+    branches: [audit/current-main-arm64-gates-run4]
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: A2 denominator inventory
+        continue-on-error: true
+        run: node tests/machine-effects/a2-denominator.test.mjs
+      - name: Stage1 A4 semantic-v2
+        continue-on-error: true
+        run: npm run semantic-v2:test
+      - name: Focused ARM64 suite
+        continue-on-error: true
+        run: |
+          node tests/machine-effects/arm64-a64-simd-denominator.test.mjs
+          node tests/machine-effects/arm64-a64-system-denominator.test.mjs
+          node tests/machine-effects/arm64e-pac-denominator.test.mjs
+      - name: Mark diagnostic failed if inherited gates are red
+        run: |
+          node tests/machine-effects/a2-denominator.test.mjs
+          npm run semantic-v2:test
