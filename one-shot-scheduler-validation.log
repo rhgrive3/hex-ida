@@ -1,10 +1,18 @@
 === scheduler syntax ===
 === focused test ===
-file:///home/runner/work/hex-ida/hex-ida/tests/phase4/scheduler/strict-authority-boundaries.test.mjs:21
-  release();
-  ^
+phase4 scheduler strict authority boundaries: PASS
+node:internal/per_context/domexception:76
+    const self = new Error();
+                 ^
 
-TypeError: release is not a function
-    at file:///home/runner/work/hex-ida/hex-ida/tests/phase4/scheduler/strict-authority-boundaries.test.mjs:21:3
+DOMException [AbortError]: No active consumers
+    at new DOMException (node:internal/per_context/domexception:76:18)
+    at finish (file:///home/runner/work/hex-ida/hex-ida/js/core/scheduler/analysis-scheduler.js:166:35)
+    at file:///home/runner/work/hex-ida/hex-ida/js/core/scheduler/analysis-scheduler.js:177:9
+    at new Promise (<anonymous>)
+    at #attachConsumer (file:///home/runner/work/hex-ida/hex-ida/js/core/scheduler/analysis-scheduler.js:154:12)
+    at #request (file:///home/runner/work/hex-ida/hex-ida/js/core/scheduler/analysis-scheduler.js:146:32)
+    at AnalysisScheduler.request (file:///home/runner/work/hex-ida/hex-ida/js/core/scheduler/analysis-scheduler.js:113:42)
+    at file:///home/runner/work/hex-ida/hex-ida/tests/phase4/scheduler/strict-authority-boundaries.test.mjs:42:7
 
 Node.js v22.23.2
