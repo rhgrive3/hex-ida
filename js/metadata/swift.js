@@ -110,7 +110,9 @@ export class SwiftMetadataProvider extends LanguageMetadataProvider {
       detail: `Swift 5 ABI (${model.types?.length || 0} types, ${model.protocols?.length || 0} protocols)`,
       coverage: isComplete ? null : {
         recordKinds: ['type', 'vtable', 'conformance'],
-        addresses: (model.types || []).map((t) => `0x${t.address?.toString(16)}`),
+        addresses: (model.types || [])
+          .filter((t) => t.address != null)
+          .map((t) => `0x${t.address.toString(16)}`),
       },
     });
 
@@ -223,9 +225,9 @@ export class SwiftMetadataProvider extends LanguageMetadataProvider {
           ecosystem: 'swift',
           buildIdentity: this.binaryIdentity,
           descriptor: {
-            protocol: conf.protocol ? `0x${conf.protocol.toString(16)}` : null,
-            typeRef: conf.typeRef ? `0x${conf.typeRef.toString(16)}` : null,
-            witnessTable: conf.witnessTable ? `0x${conf.witnessTable.toString(16)}` : null,
+            protocol: conf.protocol != null ? `0x${conf.protocol.toString(16)}` : null,
+            typeRef: conf.typeRef != null ? `0x${conf.typeRef.toString(16)}` : null,
+            witnessTable: conf.witnessTable != null ? `0x${conf.witnessTable.toString(16)}` : null,
           },
         })
       );
