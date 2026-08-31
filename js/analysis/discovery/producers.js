@@ -18,6 +18,8 @@ import { regionFromSize } from './fusion.js';
 
 function toAddress(value) {
   if (value == null) return null;
+  const type = typeof value;
+  if (type !== 'bigint' && type !== 'string' && !(type === 'number' && Number.isSafeInteger(value))) return null;
   try { return BigInt(value).toString(); }
   catch { return null; }
 }
@@ -87,9 +89,10 @@ export const loaderProducer = Object.freeze({
       const address = isContinuation ? toAddress(entry.ownerStart) : toAddress(entry.start ?? entry.address);
       if (address == null) continue;
       const rangeStart = toAddress(entry.start ?? entry.address);
-      const region = entry.end != null
-        ? { start: rangeStart, end: BigInt(entry.end), ownership: 'exclusive' }
-        : entry.sizeBytes != null ? regionFromSize(rangeStart, entry.sizeBytes) : null;
+      const rangeEnd = entry.end == null ? null : toAddress(entry.end);
+      const region = rangeStart != null && rangeEnd != null
+        ? { start: rangeStart, end: rangeEnd, ownership: 'exclusive' }
+        : entry.end == null && entry.sizeBytes != null && rangeStart != null ? regionFromSize(rangeStart, entry.sizeBytes) : null;
       out.push(evidence('unwind-entry', {
         start: address,
         regions: region ? [region] : [],
@@ -283,7 +286,9 @@ export function createPatternProducer({ id, architectureId, patterns, alignment 
       const bytes = input?.image?.code;
       const base = input?.image?.codeBaseAddress;
       if (!bytes || base == null || compiled.length === 0) return [];
-      const baseAddress = BigInt(base);
+      const canonicalBase = toAddress(base);
+      if (canonicalBase == null) return [];
+      const baseAddress = BigInt(canonicalBase);
       const out = [];
       for (let offset = 0; offset + 1 <= bytes.length; offset += alignment) {
         for (const pattern of compiled) {
