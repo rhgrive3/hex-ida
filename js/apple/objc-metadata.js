@@ -234,7 +234,12 @@ export async function parseObjcExtendedMetadata(read, sections = {}, opts = {}) 
   get.resolvePointer = opts.resolvePointer || opts.binaryImage?.resolvePointer || opts.binaryImage?.decodePointer || null;
   get.validateImplementation = typeof opts.validateImplementation === 'function' ? opts.validateImplementation : null;
   get.requireImplementationProof = opts.requireImplementationProof === true;
-  const classByAddress = new Map((opts.classes || []).filter((c) => c?.addr != null).map((c) => [c.addr.toString(), c]));
+  const classByAddress = new Map(
+    (Array.isArray(opts.classes) ? opts.classes : [])
+      .map((c) => [pointerTableAddress(c?.addr), c])
+      .filter(([address]) => address != null)
+      .map(([address, c]) => [address.toString(), c]),
+  );
   const protocolTable = await pointerTable(get, sections.protocolList, MAX_PROTOCOLS, (address) => parseProtocol(get, address), opts);
   const categoryTable = await pointerTable(get, sections.categoryList, MAX_CATEGORIES, (address) => parseCategory(get, address, classByAddress), opts);
   const completeness = {
