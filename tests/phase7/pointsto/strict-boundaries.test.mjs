@@ -1,35 +1,4 @@
-from pathlib import Path
-
-ROOT = Path('.')
-
-def read(path):
-    return (ROOT / path).read_text()
-
-def write(path, text):
-    (ROOT / path).write_text(text)
-
-def replace_once(path, old, new):
-    text = read(path)
-    if old not in text:
-        raise SystemExit(f'anchor not found: {path}: {old[:120]!r}')
-    write(path, text.replace(old, new, 1))
-
-# #3020: only explicit primitive integer representations may become proof-bearing offsets.
-replace_once(
-    'js/analysis/pointsto/lattice.js',
-    """function big(value) {\n  if (value == null) return null;\n  try { return typeof value === 'bigint' ? value : BigInt(value); }\n  catch { return null; }\n}\n""",
-    """function big(value) {\n  if (value == null) return null;\n  if (typeof value === 'bigint') return value;\n  if (typeof value === 'number') {\n    if (!Number.isSafeInteger(value)) return null;\n    return BigInt(value);\n  }\n  if (typeof value !== 'string') return null;\n  const text = value.trim();\n  if (!text) return null;\n  try { return BigInt(text); }\n  catch { return null; }\n}\n""",
-)
-
-# #3018: separation proof metadata is authority-bearing and must not be String()-laundered.
-replace_once(
-    'js/analysis/pointsto/lattice.js',
-    """    separationClass: input.separationClass == null ? null : String(input.separationClass),\n    separationAuthority: input.separationAuthority == null ? null : String(input.separationAuthority),\n""",
-    """    separationClass: typeof input.separationClass === 'string' ? input.separationClass : null,\n    separationAuthority: typeof input.separationAuthority === 'string' ? input.separationAuthority : null,\n""",
-)
-
-Path('tests/phase7/pointsto/strict-boundaries.test.mjs').parent.mkdir(parents=True, exist_ok=True)
-Path('tests/phase7/pointsto/strict-boundaries.test.mjs').write_text(r'''import test from 'node:test';
+import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
@@ -131,4 +100,3 @@ test('#3018 non-string separation metadata cannot produce descriptor-backed NoAl
     widthBitsRight: 64,
   }).relation, 'no');
 });
-''')
