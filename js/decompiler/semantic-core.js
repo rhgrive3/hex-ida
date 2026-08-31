@@ -87,11 +87,36 @@ function dependencySource(value, ctx, seen = new Set(), depth = 0) {
   return mergeSource(...parts);
 }
 
-function controlSource(inst) {
+function controlSource(inst, ctx = null) {
   if (!inst) return sourceOf();
   const flags = valueOf(inst.args?.[inst.args.length - 1]);
   const cmp = cmpFromFlags(flags);
-  return mergeSource(sourceForInst(cmp, cmp ? 'condition compare' : null), sourceForInst(inst, 'control transfer'));
+  const parts = [
+    sourceForInst(cmp, cmp ? 'condition compare' : null),
+    sourceForInst(inst, 'control transfer'),
+  ];
+  if (ctx && inst.block != null) {
+    const block = ctx.ir?.blocks?.[inst.block];
+    if (block) {
+      const insts = block.insts || [];
+      let lastStatementRow = -1;
+      for (const i of insts) {
+        if (i === inst) break;
+        if (i.op === OP.STORE || i.op === OP.CALL || i.op === OP.RET) {
+          if (i.row != null && i.row > lastStatementRow) lastStatementRow = i.row;
+        }
+      }
+      for (const i of insts) {
+        if (i === inst) break;
+        if (i.row != null && i.row > lastStatementRow) {
+          if (i.op === OP.LOAD || i.op === OP.CMP || i.op === OP.MOV || i.op === OP.UN || i.op === OP.BIN || i.op === OP.CONST || i.op === OP.SEL || i.op === OP.BFX || i.op === OP.BFI) {
+            parts.push(sourceForInst(i));
+          }
+        }
+      }
+    }
+  }
+  return mergeSource(...parts);
 }
 
 function storeSource(inst, ctx) {
@@ -731,7 +756,7 @@ function loopRender(loop, block, term, ctx, state, indent, stop) {
     const step = iv.step === 1n ? `${iv.name}++` : iv.step === -1n ? `${iv.name}--` : `${iv.name} += ${iv.step}`;
     head = `for (${typeNameOf(ctx.types.values.get(iv.value.id)) === 'unknown' ? 'int64' : typeNameOf(ctx.types.values.get(iv.value.id))} ${iv.name} = ${init}; ${cond}; ${step})`;
   } else head = `while (${renderBranchCondition(term, ctx, invert)})`;
-  const lines = [line('ctrl', indent, `${head} {`, term.row, term.address, { source: controlSource(term) })];
+  const lines = [line('ctrl', indent, `${head} {`, term.row, term.address, { source: controlSource(term, ctx) })];
   const local = { ...state, activeLoop: loop, loopHeader: loop.header, loopExit: exit };
   emitRegion(bodyStart, loop.header, lines, ctx, local, indent + 1, loop.nodes);
   lines.push(line('ctrl', indent, '}'));
@@ -776,7 +801,7 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null) {
       const sw = ctx.switchByRow.get(term2.row);
       if (sw) {
         const expr = sw.expr || renderValue(reachingRegisterValue(ctx.ir, term2, sw.reg || 'x0'), ctx);
-        out.push(line('ctrl', indent, `switch (${expr}) {`, term2.row, term2.address, { source: controlSource(term2) }));
+        out.push(line('ctrl', indent, `switch (${expr}) {`, term2.row, term2.address, { source: controlSource(term2, ctx) }));
         for (const c of sw.cases || []) out.push(line('ctrl', indent + 1, `case ${c.value}: goto loc_${hex(ctx.blockAddress(c.block))};`));
         if (sw.defaultBlock != null) out.push(line('ctrl', indent + 1, `default: goto loc_${hex(ctx.blockAddress(sw.defaultBlock))};`));
         out.push(line('ctrl', indent, '}')); state.gotos += (sw.cases || []).length + (sw.defaultBlock != null ? 1 : 0); return;
@@ -791,12 +816,12 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null) {
           const invert = yesEmpty;
           const bodyStart = yesEmpty ? no : yes;
           const cond = renderBranchCondition(term2, ctx, invert);
-          out.push(line('ctrl', indent, `if (${cond}) {`, term2.row, term2.address, { source: controlSource(term2) }));
+          out.push(line('ctrl', indent, `if (${cond}) {`, term2.row, term2.address, { source: controlSource(term2, ctx) }));
           emitRegion(bodyStart, join, out, ctx, state, indent + 1, allowed);
           out.push(line('ctrl', indent, '}'));
         } else {
           const cond = renderBranchCondition(term2, ctx);
-          out.push(line('ctrl', indent, `if (${cond}) {`, term2.row, term2.address, { source: controlSource(term2) }));
+          out.push(line('ctrl', indent, `if (${cond}) {`, term2.row, term2.address, { source: controlSource(term2, ctx) }));
           emitRegion(yes, join, out, ctx, state, indent + 1, allowed);
           out.push(line('ctrl', indent, '} else {'));
           emitRegion(no, join, out, ctx, state, indent + 1, allowed);
@@ -805,7 +830,7 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null) {
         bi = join; continue;
       }
       const cond = renderBranchCondition(term2, ctx);
-      if (yes != null) out.push(line('ctrl', indent, `if (${cond}) goto loc_${hex(ctx.blockAddress(yes))};`, term2.row, term2.address, { source: controlSource(term2) }));
+      if (yes != null) out.push(line('ctrl', indent, `if (${cond}) goto loc_${hex(ctx.blockAddress(yes))};`, term2.row, term2.address, { source: controlSource(term2, ctx) }));
       if (no != null) out.push(line('stmt', indent, `goto loc_${hex(ctx.blockAddress(no))};`, term2.row, term2.address));
       state.gotos += (yes != null ? 1 : 0) + (no != null ? 1 : 0); return;
     }
@@ -825,7 +850,7 @@ function faithfulCfg(ctx, indent = 1) {
       out.push(line('stmt', indent + 1, rv ? `return ${renderValue(rv, ctx)};` : 'return;', term.row, term.address, { source: mergeSource(dependencySource(rv, ctx), sourceForInst(term, 'return')) }));
     } else if (term.op === OP.CBR) {
       const { yes, no } = branchSucc(ctx.ir, block, term, ctx);
-      if (yes != null) out.push(line('ctrl', indent + 1, `if (${renderBranchCondition(term, ctx)}) goto loc_${hex(ctx.blockAddress(yes))};`, term.row, term.address, { source: controlSource(term) }));
+      if (yes != null) out.push(line('ctrl', indent + 1, `if (${renderBranchCondition(term, ctx)}) goto loc_${hex(ctx.blockAddress(yes))};`, term.row, term.address, { source: controlSource(term, ctx) }));
       if (no != null) out.push(line('stmt', indent + 1, `goto loc_${hex(ctx.blockAddress(no))};`, term.row, term.address));
     } else if (term.op === OP.BR && block.succ[0] != null) out.push(line('stmt', indent + 1, `goto loc_${hex(ctx.blockAddress(block.succ[0]))};`, term.row, term.address));
   }
