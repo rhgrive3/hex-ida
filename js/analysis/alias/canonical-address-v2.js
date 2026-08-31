@@ -46,7 +46,7 @@ function rootDescriptorForProof(proof, options = {}) {
 
 function attachSeparationAuthority(proof, options = {}) {
   const descriptor = rootDescriptorForProof(proof, options);
-  const kind = descriptor == null ? null : String(descriptor.kind ?? '');
+  const kind = typeof descriptor?.kind === 'string' ? descriptor.kind.trim() : null;
   if (!PROVEN_SEPARATION_DESCRIPTOR_KINDS.has(kind)) return proof;
   return Object.freeze({ ...proof, separationClass: kind, separationAuthority: 'root-descriptor' });
 }

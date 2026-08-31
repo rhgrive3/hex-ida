@@ -252,7 +252,7 @@ function irForAddressRootDerivation(ir) {
   if (readsFlagState) return ir;
   const ignored = new Set(nodes.filter((node) => {
     if (node?.kind !== 'unknown-state-write') return false;
-    const categories = Array.isArray(node.unknown?.categories) ? node.unknown.categories.map(String) : [];
+    const categories = Array.isArray(node.unknown?.categories) ? node.unknown.categories : [];
     return categories.length > 0 && categories.every((category) => category === 'flags');
   }).map((node) => String(node.id)));
   if (!ignored.size) return ir;
