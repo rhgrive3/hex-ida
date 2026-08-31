@@ -1,0 +1,33 @@
+name: Temporary alias strict boundary materializer
+on:
+  push:
+    branches: [fix/2924-2926-2928-alias-strict-boundaries]
+permissions:
+  contents: write
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/2924-2926-2928-alias-strict-boundaries
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: python3 tools/tmp-alias-strict-2924-2928.py
+      - name: Focused regression
+        run: |
+          node tests/phase7/issues-2924-2926-2928-alias-strict-boundaries.mjs
+          npm run semantic-v2:test
+      - name: Commit production repair
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add js/analysis/alias/regions-v2.js js/analysis/alias/legacy-safety-floor.js js/analysis/alias/canonical-address-v2.js tests/phase7/issues-2924-2926-2928-alias-strict-boundaries.mjs
+          git diff --cached --quiet && exit 0
+          git commit -m 'fix(alias): reject coerced proof authority metadata'
+          git push origin HEAD:fix/2924-2926-2928-alias-strict-boundaries
