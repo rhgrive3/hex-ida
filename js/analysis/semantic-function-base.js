@@ -670,15 +670,18 @@ export function semanticAbiAdapter(abiPlugin, options = {}) {
       const seen = new Set();
       for (const entry of classified?.arguments ?? []) {
         if (!entry || !['register','registers'].includes(entry.location)) continue;
+        const hasExplicitIndex = entry.index != null;
+        if (hasExplicitIndex && (typeof entry.index !== 'number' || !Number.isSafeInteger(entry.index))) continue;
+        const index = hasExplicitIndex ? entry.index : locations.length;
         const registers = Array.isArray(entry.regs) ? entry.regs : typeof entry.reg === 'string' ? [entry.reg] : [];
         for (const register of registers) {
-          const reg = String(register || '');
-          if (!reg) continue;
-          const key = String(entry.index ?? locations.length) + ':' + reg;
+          if (typeof register !== 'string' || !register.length) continue;
+          const reg = register;
+          const key = index + ':' + reg;
           if (seen.has(key)) continue;
           seen.add(key);
           locations.push(Object.freeze({
-            index:Number.isInteger(Number(entry.index)) ? Number(entry.index) : locations.length,
+            index,
             reg,
             abiClass:entry.abiClass ?? null,
             aggregate:entry.aggregate === true || Array.isArray(entry.pieces) || registers.length > 1,
@@ -687,8 +690,8 @@ export function semanticAbiAdapter(abiPlugin, options = {}) {
             exact:!uncertain || provenEntry(entry),
             ...(uncertain && !provenEntry(entry) ? { certainty:'unknown' } : {}),
             pieceIndex:Array.isArray(entry.pieces)
-              ? (entry.pieces.findIndex((piece) => String(piece?.reg || '') === reg) >= 0
-                ? entry.pieces.findIndex((piece) => String(piece?.reg || '') === reg)
+              ? (entry.pieces.findIndex((piece) => typeof piece?.reg === 'string' && piece.reg === reg) >= 0
+                ? entry.pieces.findIndex((piece) => typeof piece?.reg === 'string' && piece.reg === reg)
                 : null)
               : null,
             pieces:Array.isArray(entry.pieces) ? entry.pieces : null,
