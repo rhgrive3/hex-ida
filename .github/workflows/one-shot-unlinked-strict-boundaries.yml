@@ -23,6 +23,7 @@ jobs:
           test -f tools/one-shot-2866-atomic-extension.py
           test -f tools/one-shot-2588-scalar-extension.py
           test -f tools/one-shot-close-proof-extension.py
+          test -f tools/one-shot-discovery-unlinked-only.py
       - name: Apply strict-boundary repairs
         run: |
           python3 tools/one-shot-unlinked-strict-boundaries.py
@@ -30,6 +31,10 @@ jobs:
           python3 tools/one-shot-2588-scalar-extension.py
           sed -i "s/assert\.ok(barrier\.operations\.some((op)=>op\.kind==='barrier');/assert.ok(barrier.operations.some((op)=>op.kind==='barrier'));/" tests/machine-effects/arm64-unlinked-strict-boundaries.test.mjs
           python3 tools/one-shot-close-proof-extension.py
+          # #3092/#3101 are now legitimately owned by open PR #3105. Reset the
+          # shared discovery file, then reapply only still-unlinked #3052/#3053.
+          git checkout HEAD -- js/analysis/discovery/fusion.js
+          python3 tools/one-shot-discovery-unlinked-only.py
       - name: Syntax and focused regression
         run: |
           node --check js/targets/architecture/arm64/effects/addressing.js
@@ -65,7 +70,7 @@ jobs:
           set -euo pipefail
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git rm .github/workflows/one-shot-unlinked-strict-boundaries.yml tools/one-shot-unlinked-strict-boundaries.py tools/one-shot-2866-atomic-extension.py tools/one-shot-2588-scalar-extension.py tools/one-shot-close-proof-extension.py
+          git rm .github/workflows/one-shot-unlinked-strict-boundaries.yml tools/one-shot-unlinked-strict-boundaries.py tools/one-shot-2866-atomic-extension.py tools/one-shot-2588-scalar-extension.py tools/one-shot-close-proof-extension.py tools/one-shot-discovery-unlinked-only.py
           git add js/targets/architecture/arm64/effects/addressing.js \
                   js/targets/architecture/arm64/effects/common.js \
                   js/targets/architecture/arm64/effects/control.js \
