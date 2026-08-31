@@ -230,11 +230,13 @@ export class RemoteProtocolClient {
         reject(new DebugAdapterError('timeout', `remote request timed out: ${method}`));
         this.sendPacket({ version:DEBUG_PROTOCOL_VERSION, type:'cancel', id, epoch:this.epoch, requestEpoch:epoch, reason:'timeout' }).catch(() => {});
       }, timeoutMs);
+      this.pending.set(id, pending);
       if (pending.signal) {
         pending.abortHandler = () => this.cancel(id, String(pending.signal.reason ?? 'cancelled'));
         pending.signal.addEventListener('abort', pending.abortHandler, { once:true });
+        if (pending.signal.aborted) pending.abortHandler();
       }
-      this.pending.set(id, pending);
+      if (!this.pending.has(id)) return;
       this.sendPacket(packet).catch((err) => {
         if (!this.pending.has(id)) return;
         this._cleanupPending(id, pending);

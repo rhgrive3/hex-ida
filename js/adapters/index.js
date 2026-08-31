@@ -49,6 +49,20 @@ function returnsFromTrace(trace) {
 }
 function isConditionalBranch(text) { return /^((b\.[a-z]+)|cbz|cbnz|tbz|tbnz)\b/i.test(text || ''); }
 function isRegisterName(reg) { return /^(x([0-9]|[12][0-9]|30)|w([0-9]|[12][0-9]|30)|sp|pc)$/.test(reg); }
+function breakpointRemovalId(id) {
+  const value = id && typeof id === 'object' && !Array.isArray(id) ? id.id : id;
+  if (typeof value !== 'string' || !value) throw new DebugAdapterError('invalid-breakpoint', 'breakpoint id must be a non-empty string');
+  return value;
+}
+function registerSelector(reg) {
+  if (typeof reg !== 'string' || !isRegisterName(reg)) throw new DebugAdapterError('invalid-register', 'unsupported register selector');
+  return reg;
+}
+function memoryReadSize(size, fallback) {
+  const value = size == null ? fallback : size;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) throw new DebugAdapterError('invalid-size','memory read size must be a positive safe integer');
+  return value;
+}
 function initialMemorySize(value) {
   if (value == null) return 8;
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || ![1, 2, 4, 8].includes(value)) {
@@ -222,7 +236,10 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
       run.sandbox.emulator.stopped = 'cancelled';
       if (this.activeRun === run) this.cancelled = true;
     };
-    if (options.signal && !options.signal.aborted) options.signal.addEventListener('abort', onAbort, { once:true });
+    if (options.signal && !options.signal.aborted) {
+      options.signal.addEventListener('abort', onAbort, { once:true });
+      if (options.signal.aborted) onAbort();
+    }
     if (run.cancelled) sandbox.emulator.stopped = 'cancelled';
     this.running = true;
     try {
@@ -294,7 +311,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
   }
   async removeBreakpoint(id) {
     this.require('removeBreakpoint');
-    const key = typeof id === 'object' ? id.id : String(id); const bp = this.breakpoints.get(key); if (!bp) return false;
+    const key = breakpointRemovalId(id); const bp = this.breakpoints.get(key); if (!bp) return false;
     this.breakpoints.delete(key);
     if (this.sandbox && bp.address != null && !this._hasEnabledAddressBreakpoint(bp.address)) this.sandbox.removeBreakpoint(bp.address);
     return true;
@@ -303,16 +320,14 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
   async readRegisters() { this.require('readRegisters'); return cloneRegisters(this.ensureSandbox().emulator); }
   async writeRegister(reg,value) {
     this.require('writeRegister');
-    const name = String(reg);
-    if (!isRegisterName(name)) throw new DebugAdapterError('invalid-register', `unsupported register: ${name}`);
+    const name = registerSelector(reg);
     const sandbox = this.ensureSandbox(); const v = BigInt(value);
     if (name === 'pc') sandbox.emulator.pc = asAddress(v,'pc'); else sandbox.setRegister(name,v);
     return { register:name, value:name === 'pc' ? sandbox.emulator.pc : sandbox.getRegister(name) };
   }
   async readMemory(address,size) {
     this.require('readMemory');
-    const sandbox = this.ensureSandbox(); const epoch = this.epoch; const memoryMap = this.memoryMap; const n = Number(size == null ? 8 : size);
-    if (!Number.isSafeInteger(n) || n < 1) throw new DebugAdapterError('invalid-size','memory read size must be a positive safe integer');
+    const sandbox = this.ensureSandbox(); const epoch = this.epoch; const memoryMap = this.memoryMap; const n = memoryReadSize(size, 8);
     if (n > 1024*1024) throw new DebugAdapterError('too-large','memory read exceeds 1 MiB');
     const start = asAddress(address); memoryMap.assert(start,n,'read');
     const bytes = await sandbox.emulator.dump(start,n);
@@ -442,11 +457,11 @@ export class RemoteDebugAdapter extends DebugAdapter {
   resume(options={}){const {signal,...params}=options||{};return this.call('resume',params,{signal})}
   stepInto(options={}){return this.call('stepInto',{},options)} stepOver(options={}){return this.call('stepOver',{},options)} stepOut(options={}){return this.call('stepOut',{},options)}
   setBreakpoint(spec){const bp=normalizeBreakpoint(spec); const cap=bp.kind==='address'?'breakpointAddress':bp.kind==='function'?'breakpointFunction':bp.kind==='conditional'?'breakpointConditional':'watchpointMemory'; this.require(cap); return this.protocol.request('setBreakpoint',bp,{epoch:this.epoch})}
-  removeBreakpoint(id){const key=typeof id==='object'?id.id:id;return this.call('removeBreakpoint',{id:String(key)})}
+  removeBreakpoint(id){return this.call('removeBreakpoint',{id:breakpointRemovalId(id)})}
   async listBreakpoints(){return remoteArray(await this.call('listBreakpoints'),'breakpoints',REMOTE_ARRAY_LIMITS.breakpoints,'breakpoints')}
   async readRegisters(threadId){return remoteRegisters(await this.call('readRegisters',{threadId}))}
-  writeRegister(reg,value,threadId){return this.call('writeRegister',{reg:String(reg),value:String(value),threadId})}
-  async readMemory(address,size){const n=Number(size==null?1:size); if(!Number.isSafeInteger(n)||n<1) throw new DebugAdapterError('invalid-size','memory read size must be a positive safe integer'); if(n>256*1024) throw new DebugAdapterError('too-large','remote memory read exceeds 256 KiB'); return remoteBytes(await this.call('readMemory',{address:String(asAddress(address)),size:n}),n)}
+  writeRegister(reg,value,threadId){return this.call('writeRegister',{reg:registerSelector(reg),value:String(value),threadId})}
+  async readMemory(address,size){const n=memoryReadSize(size,1); if(n>256*1024) throw new DebugAdapterError('too-large','remote memory read exceeds 256 KiB'); return remoteBytes(await this.call('readMemory',{address:String(asAddress(address)),size:n}),n)}
   async writeMemory(address,bytes){const data=bytes instanceof Uint8Array?[...bytes]:Array.from(bytes||[]); if(data.length>64*1024) throw new DebugAdapterError('too-large','remote memory write exceeds 64 KiB'); for(const b of data)if(!Number.isInteger(b)||b<0||b>255)throw new DebugAdapterError('invalid-byte','memory write contains a non-byte value'); const result=await this.call('writeMemory',{address:String(asAddress(address)),bytes:data}); if(result&&result.written!=null&&Number(result.written)!==data.length)throw new DebugAdapterError('short-write',`remote memory write wrote ${result.written} of ${data.length} bytes`); return result||{written:data.length}}
   async getThreads(){return remoteArray(await this.call('getThreads'),'threads',REMOTE_ARRAY_LIMITS.threads,'threads')}
   async getModules(){return remoteArray(await this.call('getModules'),'modules',REMOTE_ARRAY_LIMITS.modules,'modules')}
