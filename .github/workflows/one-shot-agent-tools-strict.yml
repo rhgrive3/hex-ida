@@ -1,0 +1,28 @@
+name: One-shot agent tools strict boundaries
+on:
+  push:
+    branches: [fix/agent-tools-strict-boundaries-2956-2957]
+permissions:
+  contents: write
+jobs:
+  materialize:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: python3 tools/tmp-agent-tools-strict.py
+      - name: Validate
+        run: |
+          node --check js/agent/tools.js
+          node tests/phase10/agent-tools-strict-boundaries.test.mjs
+      - name: Commit clean materialization
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm .github/workflows/one-shot-agent-tools-strict.yml tools/tmp-agent-tools-strict.py
+          git add js/agent/tools.js tests/phase10/agent-tools-strict-boundaries.test.mjs
+          git commit -m 'fix(agent): reject coerced seed and pagination metadata'
+          git push
