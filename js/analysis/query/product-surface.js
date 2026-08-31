@@ -29,6 +29,36 @@ function sameSnapshot(left, right) {
   return !!left && !!right && left.snapshotId === right.snapshotId;
 }
 
+function queryText(value) {
+  return typeof value === 'string' ? value.trim().toLowerCase() : '';
+}
+function claimIdFilter(value) {
+  if (value == null) return null;
+  if (typeof value !== 'string' || !value.trim()) throw new TypeError('analysis-product-claim-id-invalid');
+  return value.trim();
+}
+function verdictFilter(values) {
+  if (!Array.isArray(values) || !values.length) return null;
+  if (values.some((value) => typeof value !== 'string' || !value.trim())) throw new TypeError('analysis-product-verdict-invalid');
+  return new Set(values.map((value) => value.trim().toLowerCase()));
+}
+function functionAddress(value) {
+  if (typeof value === 'bigint') {
+    if (value < 0n) throw new TypeError('analysis-product-function-id-invalid');
+    return value;
+  }
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value) || value < 0) throw new TypeError('analysis-product-function-id-invalid');
+    return BigInt(value);
+  }
+  if (typeof value === 'string') {
+    const text = value.trim();
+    if (!/^(?:0[xX][0-9a-fA-F]+|[0-9]+)$/.test(text)) throw new TypeError('analysis-product-function-id-invalid');
+    return BigInt(text);
+  }
+  throw new TypeError('analysis-product-function-id-invalid');
+}
+
 async function assertCurrentSnapshot(app, snapshot, options = {}) {
   abortIfNeeded(options.signal);
   const current = await app.analysisQueries.snapshot(options);
@@ -243,7 +273,7 @@ export function createProductSurfaceQueries(app) {
     async strings(snapshot, query = {}, page = {}, options = {}) {
       await assertCurrentSnapshot(app, snapshot, options);
       const state = stringState(app);
-      const needle = String(query.text ?? query.query ?? '').trim().toLowerCase();
+      const needle = queryText(query.text ?? query.query ?? '');
       const { offset, limit } = pageOf(page);
       while (true) {
         abortIfNeeded(options.signal);
@@ -276,11 +306,10 @@ export function createProductSurfaceQueries(app) {
       }
       if (!bound) REPORT_BINDINGS.set(report, snapshot.snapshotId);
       let rows = claimRows(report, snapshot);
-      if (query.claimId != null) rows = rows.filter((row) => row.claimId === String(query.claimId));
-      if (Array.isArray(query.verdict) && query.verdict.length) {
-        const accepted = new Set(query.verdict.map((value) => String(value).toLowerCase()));
-        rows = rows.filter((row) => accepted.has(row.verdict));
-      }
+      const claimId = claimIdFilter(query.claimId);
+      if (claimId != null) rows = rows.filter((row) => row.claimId === claimId);
+      const accepted = verdictFilter(query.verdict);
+      if (accepted) rows = rows.filter((row) => accepted.has(row.verdict));
       const { offset, limit } = pageOf(page);
       const value = rows.slice(offset, offset + limit);
       await assertCurrentSnapshot(app, snapshot, options);
@@ -292,7 +321,7 @@ export function createProductSurfaceQueries(app) {
 
     async classification(snapshot, functionId, options = {}) {
       await assertCurrentSnapshot(app, snapshot, options);
-      const address = BigInt(functionId);
+      const address = functionAddress(functionId);
       let base = findRecognitionRecord(app, address);
       if (!base && typeof app.ensureRecognition === 'function') {
         const producer = Promise.resolve(app.ensureRecognition({ maxFunctions:350000 }));
