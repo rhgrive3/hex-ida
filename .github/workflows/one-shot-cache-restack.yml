@@ -1,0 +1,52 @@
+name: one-shot-cache-restack
+on:
+  push:
+    branches:
+      - fix/unlinked-cache-completeness-current
+permissions:
+  contents: write
+jobs:
+  restack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Apply, validate, and publish focused repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$(git log -1 --pretty=%s)" != "ci: launch cache completeness restack" ]; then
+            echo "not launcher commit; no-op"
+            exit 0
+          fi
+          git fetch origin fix/unlinked-cache-completeness-20260831
+          git diff 1790ea4fb718c92142d810b5c421fd94ff925f89..7384a04319f4edc3aa07726b5699af52c2964987 -- \
+            js/analysis/demand-driven-runtime.js \
+            js/analysis/investigation-service.js \
+            js/analysis/schema-recovery-task.js \
+            js/schema.js \
+            tests/unlinked-cache-completeness-20260831.mjs > /tmp/cache.patch
+          git apply --3way /tmp/cache.patch
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('.github/workflows/phase7-ownership.yml')
+          s=p.read_text()
+          needle='[[ "$HEAD_REF" == "fix/unlinked-demand-analysis-2502-2518"'
+          if 'fix/unlinked-cache-completeness-current' not in s:
+              s=s.replace(needle, '[[ "$HEAD_REF" == "fix/unlinked-cache-completeness-current" || "$HEAD_REF" == "fix/unlinked-demand-analysis-2502-2518"')
+          p.write_text(s)
+          PY
+          node tests/unlinked-cache-completeness-20260831.mjs
+          node --check js/analysis/demand-driven-runtime.js
+          node --check js/analysis/investigation-service.js
+          node --check js/analysis/schema-recovery-task.js
+          node --check js/schema.js
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add js/analysis/demand-driven-runtime.js js/analysis/investigation-service.js js/analysis/schema-recovery-task.js js/schema.js tests/unlinked-cache-completeness-20260831.mjs .github/workflows/phase7-ownership.yml
+          git commit -m "fix(analysis): make cache completeness and shared budgets sound"
+          git push origin HEAD:fix/unlinked-cache-completeness-current
