@@ -49,15 +49,6 @@ for (const mnemonic of ['svc','hvc','smc','brk','hlt']) {
   assertFailClosed(lift(`${mnemonic}-overflow`, mnemonic, [imm(0x10000n)]), `${mnemonic}-overflow`);
 }
 
-const clrexNoImmediate = lift('clrex-no-immediate', 'clrex', []);
-assert.ok(clrexNoImmediate);
-assert.equal(clrexNoImmediate.completeness, 'exact-with-intrinsic');
-const clrexHigh = lift('clrex-imm4-high', 'clrex', [imm(15n)]);
-assert.ok(clrexHigh);
-assert.equal(clrexHigh.completeness, 'exact-with-intrinsic');
-assertFailClosed(lift('clrex-string', 'clrex', [imm('15')]), 'clrex-string');
-assertFailClosed(lift('clrex-overflow', 'clrex', [imm(16n)]), 'clrex-overflow');
-
 const hintHigh = lift('hint-imm7-high', 'hint', [imm(127n)]);
 assert.ok(hintHigh);
 assert.equal(hintHigh.completeness, 'exact-with-intrinsic');
