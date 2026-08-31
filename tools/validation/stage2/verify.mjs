@@ -189,10 +189,10 @@ function readEvidenceJson(finalMode, evidencePath, requiredReason, missingReason
   catch (error) { return { required: true, status: 'failed', reason: invalidReason, detail: String(error?.message || error) }; }
 }
 
-export function stage2CanonicalBuildIdentity() {
-  const release = JSON.parse(fs.readFileSync(path.join(ROOT, 'userscript/release-version.json'), 'utf8'));
-  if (!/^[0-9a-f]{64}$/.test(String(release.releaseIdentity || ''))) throw new TypeError('stage2-release-identity-invalid');
-  if (!/^[0-9a-f]{24}$/.test(String(release.buildId || ''))) throw new TypeError('stage2-build-id-invalid');
+export function stage2CanonicalBuildIdentity(releaseInput = null) {
+  const release = releaseInput ?? JSON.parse(fs.readFileSync(path.join(ROOT, 'userscript/release-version.json'), 'utf8'));
+  if (typeof release.releaseIdentity !== 'string' || !/^[0-9a-f]{64}$/.test(release.releaseIdentity)) throw new TypeError('stage2-release-identity-invalid');
+  if (typeof release.buildId !== 'string' || !/^[0-9a-f]{24}$/.test(release.buildId)) throw new TypeError('stage2-build-id-invalid');
   if (!Number.isSafeInteger(release.serial) || release.serial < 1) throw new TypeError('stage2-release-serial-invalid');
   return `userscript-release:${release.releaseIdentity}:build:${release.buildId}:serial:${release.serial}`;
 }

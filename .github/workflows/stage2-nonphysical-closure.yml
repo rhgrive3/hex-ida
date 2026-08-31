@@ -142,8 +142,8 @@ jobs:
           build_identity="$(node --input-type=module <<'NODE'
           import fs from 'node:fs';
           const release = JSON.parse(fs.readFileSync('userscript/release-version.json', 'utf8'));
-          if (!/^[0-9a-f]{64}$/.test(String(release.releaseIdentity || ''))) throw new TypeError('stage2-release-identity-invalid');
-          if (!/^[0-9a-f]{24}$/.test(String(release.buildId || ''))) throw new TypeError('stage2-build-id-invalid');
+          if (typeof release.releaseIdentity !== 'string' || !/^[0-9a-f]{64}$/.test(release.releaseIdentity)) throw new TypeError('stage2-release-identity-invalid');
+          if (typeof release.buildId !== 'string' || !/^[0-9a-f]{24}$/.test(release.buildId)) throw new TypeError('stage2-build-id-invalid');
           if (!Number.isSafeInteger(release.serial) || release.serial < 1) throw new TypeError('stage2-release-serial-invalid');
           process.stdout.write(`userscript-release:${release.releaseIdentity}:build:${release.buildId}:serial:${release.serial}`);
           NODE
@@ -204,6 +204,7 @@ jobs:
           SHA: ${{ steps.identity.outputs.sha }}
         run: |
           set -euo pipefail
+          node tests/stage2/stage2-release-identity-strict.mjs
           node tools/validation/stage2/verify.mjs --expect-sha "$SHA" --full
 
       - name: Record non-physical candidate identity
