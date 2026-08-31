@@ -6,15 +6,12 @@ helper=anchor+"function requireArtifactId(value, code = 'artifact-id-required') 
 if 'function requireArtifactId(value' not in s:
     if anchor not in s: raise SystemExit('scheduler helper anchor drift')
     s=s.replace(anchor,helper,1)
-# dependency identities
 s=s.replace("const id = String(dependency?.descriptor?.artifactId || '');\n    if (!id) throw new SchedulerDependencyIdentityError(artifactId, request.descriptor?.upstreamArtifactIds || [], ['<missing-artifact-id>']);", "const rawId = dependency?.descriptor?.artifactId;\n    if (typeof rawId !== 'string' || !rawId) throw new SchedulerDependencyIdentityError(artifactId, request.descriptor?.upstreamArtifactIds || [], ['<missing-artifact-id>']);\n    const id = rawId;")
 s=s.replace("const actual = dependencies.map((dependency) => String(dependency.descriptor.artifactId));", "const actual = dependencies.map((dependency) => requireArtifactId(dependency.descriptor.artifactId, 'artifact-dependency-id-invalid'));")
 s=s.replace("if (upstream != null && !Array.isArray(upstream)) throw new SchedulerDependencyIdentityError(artifactId, [String(upstream)], actual);\n  const expected = (upstream || []).map(String).sort();", "if (upstream != null && !Array.isArray(upstream)) throw new SchedulerDependencyIdentityError(artifactId, ['<invalid-upstream-list>'], actual);\n  const expected = (upstream || []).map((id) => requireArtifactId(id, 'artifact-dependency-id-invalid')).sort();")
 s=s.replace("remove(artifactId) { const index=this.indices.get(String(artifactId));", "remove(artifactId) { const index=this.indices.get(requireArtifactId(artifactId));")
-# request authority key
 s=s.replace("const artifactId=String(descriptor?.artifactId||'');\n    if (!artifactId) return Promise.reject(new TypeError('artifact-request-descriptor-required'));", "let artifactId;\n    try { artifactId=requireArtifactId(descriptor?.artifactId,'artifact-request-descriptor-required'); }\n    catch (error) { return Promise.reject(error); }")
 s=s.replace("this.#registerDag(task.artifactId,dependencies.map((dependency)=>String(dependency.descriptor.artifactId)));", "this.#registerDag(task.artifactId,dependencies.map((dependency)=>requireArtifactId(dependency.descriptor.artifactId,'artifact-dependency-id-invalid')));")
-# AbortSignal check -> listen race: recheck after every listener is installed.
 old="""      for (const signal of active) {
         const listener=()=>finish(reject,abortError(signal),true);
         listeners.push([signal,listener]); signal.addEventListener('abort',listener,{once:true});
@@ -32,7 +29,6 @@ new="""      for (const signal of active) {
       task.promise.then((value)=>finish(resolve,value),(error)=>finish(reject,error));"""
 if old in s: s=s.replace(old,new,1)
 elif new not in s: raise SystemExit('scheduler abort anchor drift')
-# No authoritative artifactId coercions should remain.
 for needle in ["String(descriptor?.artifactId", "String(dependency.descriptor.artifactId)", "indices.get(String(artifactId))"]:
     if needle in s: raise SystemExit(f'scheduler coercion remains: {needle}')
 p.write_text(s)
@@ -48,6 +44,10 @@ function descriptor(name) {
   });
 }
 function scheduler() { return new AnalysisScheduler({ store:new ArtifactStore({ backend:new MemoryArtifactBackend() }), maxConcurrency:1 }); }
+async function waitFor(predicate, message) {
+  for (let i=0;i<200;i++) { if (predicate()) return; await Promise.resolve(); }
+  throw new Error(message);
+}
 
 // #2947: malformed artifactId must fail before inflight coalescing.
 {
@@ -55,6 +55,7 @@ function scheduler() { return new AnalysisScheduler({ store:new ArtifactStore({ 
   const good=descriptor('good');
   let release;
   const p=s.request({descriptor:good,produce:()=>new Promise((resolve)=>{release=()=>resolve({ok:true});})});
+  await waitFor(() => typeof release === 'function', 'producer did not start');
   const malformed={...good, artifactId:[good.artifactId]};
   await assert.rejects(s.request({descriptor:malformed,produce:async()=>({bad:true})}), /artifact-request-descriptor-required/);
   release();
