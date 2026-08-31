@@ -1,0 +1,111 @@
+name: One-shot ARM64 system selectors 2809 2866
+on:
+  push:
+    branches: [fix/arm64-system-selectors-current-2809-2866-v2]
+permissions:
+  contents: write
+jobs:
+  materialize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Apply focused system selector repairs
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('js/targets/architecture/arm64/effects/system.js'); s=p.read_text()
+          old="""function sysRegText(op) {
+            if (!hasNoOperandModifier(op)) return null;
+            const text = String(op?.text || '').trim().toLowerCase();
+            return /^[a-z][a-z0-9_]*$/.test(text) ? text : null;
+          }"""
+          new="""function sysRegText(op) {
+            if (!hasNoOperandModifier(op) || typeof op?.text !== 'string') return null;
+            const text = op.text.trim().toLowerCase();
+            return /^[a-z][a-z0-9_]*$/.test(text) ? text : null;
+          }"""
+          if old not in s: raise SystemExit('sysRegText anchor drift')
+          s=s.replace(old,new,1)
+          old="""function textOperand(op) {
+            if (!hasNoOperandModifier(op)) return null;
+            const text = String(op?.text || '').trim().toLowerCase();
+            return text || null;
+          }"""
+          new="""function textOperand(op) {
+            if (!hasNoOperandModifier(op) || typeof op?.text !== 'string') return null;
+            const text = op.text.trim().toLowerCase();
+            return text || null;
+          }"""
+          if old not in s: raise SystemExit('textOperand anchor drift')
+          s=s.replace(old,new,1)
+          old="""function barrier(instruction, context, mnemonic, ops) {
+            const operand = ops[0];
+            const scope = {
+              architecture:'arm64',
+              barrier:mnemonic,
+              domain:String(operand?.text || instruction?.operands || 'sy').toLowerCase(),
+              semantics:mnemonic === 'isb' ? 'instruction-synchronization' : mnemonic === 'dsb' ? 'data-synchronization' : 'data-memory-ordering',
+            };"""
+          new="""function barrier(instruction, context, mnemonic, ops) {
+            const operand = ops[0];
+            let domain = 'sy';
+            if (operand?.k === 'imm') {
+              domain = typeof operand.text === 'string' && operand.text.trim()
+                ? operand.text.trim().toLowerCase()
+                : `#${BigInt(operand.value).toString()}`;
+            } else if (operand != null) {
+              domain = textOperand(operand);
+              if (!domain) return partial(instruction, context, `${mnemonic}-operand-shape-invalid`, ['other']);
+            }
+            const scope = {
+              architecture:'arm64',
+              barrier:mnemonic,
+              domain,
+              semantics:mnemonic === 'isb' ? 'instruction-synchronization' : mnemonic === 'dsb' ? 'data-synchronization' : 'data-memory-ordering',
+            };"""
+          if old not in s: raise SystemExit('barrier anchor drift')
+          s=s.replace(old,new,1); p.write_text(s)
+
+          Path('tests/machine-effects/arm64-system-register-text-validation.test.mjs').write_text(r'''import assert from 'node:assert/strict';
+          import { liftArm64MachineEffects } from '../../js/targets/architecture/arm64/effects/index.js';
+          let seq=0;
+          const gp=(num)=>({k:'reg',cls:'gp',num,bits:64,text:`x${num}`});
+          const sys=(text,extra={})=>({k:'sysreg',text,...extra});
+          function lift(mnemonic,ops){const instructionId=`sysreg:${++seq}`;return liftArm64MachineEffects({instructionId,mnemonic,mode:'a64',ops,origin:{instructionIds:[instructionId]}});}
+          function failClosed(bundle,label){assert.equal(bundle?.completeness,'partial',label);assert.ok(bundle.operations.every(op=>op.kind==='unknown'),label);}
+          for(const [mnemonic,ops] of [['mrs',[gp(0),sys('nzcv')]],['msr',[sys('nzcv'),gp(0)]],['mrs',[gp(0),sys('fpcr')]]]){const r=lift(mnemonic,ops);assert.ok(r&&r.completeness!=='partial');assert.ok(r.operations.some(op=>op.kind!=='unknown'));}
+          for(const bad of [{toString(){return 'nzcv';}},['nzcv'],true,1,null]){failClosed(lift('mrs',[gp(0),sys(bad)]),'MRS malformed');failClosed(lift('msr',[sys(bad),gp(0)]),'MSR malformed');}
+          failClosed(lift('mrs',[gp(0),sys('nzcv',{shift:{op:'lsl',amount:1}})]),'modified sysreg');
+          console.log('arm64-system-register-text-validation: PASS');
+          ''')
+          Path('tests/machine-effects/arm64-barrier-selector-strict.test.mjs').write_text(r'''import assert from 'node:assert/strict';
+          import { liftArm64MachineEffects } from '../../js/targets/architecture/arm64/effects/index.js';
+          let seq=0;function lift(mnemonic,ops){const instructionId=`barrier:${++seq}`;return liftArm64MachineEffects({instructionId,mnemonic,mode:'a64',ops,origin:{instructionIds:[instructionId]}});}
+          function failClosed(r,label){assert.equal(r?.completeness,'partial',label);assert.equal(r.operations.some(op=>op.kind==='barrier'),false,label);}
+          for(const bad of [['sy'],{toString(){return 'ish';}},true,1]) failClosed(lift('dmb',[{k:'other',text:bad}]),'DMB malformed');
+          for(const [m,t] of [['dmb','sy'],['dmb','ish'],['dmb','ishst'],['dsb','synxs'],['isb','sy']]){const r=lift(m,[{k:'other',text:t}]);assert.equal(r.completeness,'exact');assert.ok(r.operations.some(op=>op.kind==='barrier'));}
+          const immediate=lift('dmb',[{k:'imm',value:15n,text:'#15'}]);assert.equal(immediate.completeness,'exact');assert.ok(immediate.operations.some(op=>op.kind==='barrier'));
+          failClosed(lift('dmb',[{k:'other',text:'bogus'}]),'unknown selector');
+          console.log('arm64-barrier-selector-strict: PASS');
+          ''')
+          PY
+      - run: node --check js/targets/architecture/arm64/effects/system.js
+      - run: node tests/machine-effects/arm64-system-register-text-validation.test.mjs
+      - run: node tests/machine-effects/arm64-barrier-selector-strict.test.mjs
+      - run: node tests/machine-effects/run.mjs
+      - run: git diff --check
+      - name: Commit production result
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git rm .github/workflows/one-shot-arm64-system-selectors-2809-2866.yml
+          git add js/targets/architecture/arm64/effects/system.js tests/machine-effects/arm64-system-register-text-validation.test.mjs tests/machine-effects/arm64-barrier-selector-strict.test.mjs
+          git commit -m 'fix(arm64): validate system register and barrier selectors'
+          git push
