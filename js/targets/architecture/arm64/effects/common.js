@@ -53,8 +53,8 @@ function decodedAbsoluteTargetOf(op) {
   // representation here, inside the ARM64 target boundary, before MachineEffects
   // are created. Generic semantic/SSA/compat consumers never inspect instruction
   // text and the resulting control effect remains the single semantic truth.
-  if (!op || op.k !== 'other') return null;
-  const text = String(op.text ?? '').trim();
+  if (!op || op.k !== 'other' || typeof op.text !== 'string') return null;
+  const text = op.text.trim();
   if (!/^#?(?:0x[0-9a-f]+|\d+)$/i.test(text)) return null;
   try { return BigInt(text.replace(/^#/, '')); } catch { return null; }
 }
