@@ -86,7 +86,7 @@ export class TraceRingBuffer {
   }
   clear() { this.events = []; this.bytes = 0; this.seen = 0; this.dropped = 0; this.aggregates.clear(); }
   snapshot({ limit = this.maxEvents } = {}) {
-    const requested = Number(limit);
+    const requested = typeof limit === 'number' ? limit : Number.NaN;
     const n = Number.isFinite(requested) ? Math.max(0, Math.min(this.events.length, Math.floor(requested))) : this.events.length;
     return { events:this.events.slice(this.events.length - n).map(publicEvent), seen:this.seen, dropped:this.dropped, bytes:this.bytes, aggregates:Object.fromEntries(this.aggregates) };
   }
