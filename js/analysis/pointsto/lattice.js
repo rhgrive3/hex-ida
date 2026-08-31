@@ -195,10 +195,12 @@ export function createPointsToTarget(input = {}) {
     addressSpace: input.addressSpace == null ? 'memory' : (typeof input.addressSpace === 'string' ? input.addressSpace : 'unknown'),
     rootKind: typeof input.rootKind === 'string' ? input.rootKind : 'unknown',
     rootIdentity: input.rootIdentity ?? null,
-    rootEntityId: input.rootEntityId == null ? null : String(input.rootEntityId),
+    rootEntityId: typeof input.rootEntityId === 'string' && input.rootEntityId.trim() ? input.rootEntityId : null,
     separationClass: typeof input.separationClass === 'string' ? input.separationClass : null,
     separationAuthority: typeof input.separationAuthority === 'string' ? input.separationAuthority : null,
-    address: input.address == null ? null : String(input.address),
+    address: typeof input.address === 'string' || typeof input.address === 'bigint'
+      ? String(input.address)
+      : (typeof input.address === 'number' && Number.isSafeInteger(input.address) ? String(input.address) : null),
     offsetRange: input.offsetRange ?? UNBOUNDED_RANGE,
     widthBits: input.widthBits == null ? null : Number(input.widthBits),
     evidenceIds: [...new Set((input.evidenceIds ?? []).map(String))].sort(),
