@@ -1,0 +1,31 @@
+name: One-shot runtime unlinked current
+on:
+  push:
+    branches: [fix/runtime-unlinked-current-2962-3006-v2]
+permissions:
+  contents: write
+jobs:
+  materialize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply reviewed materializer
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin fix/runtime-strict-unlinked-2962-3024
+          git show origin/fix/runtime-strict-unlinked-2962-3024:tools/tmp-runtime-strict-unlinked.py > /tmp/materialize.py
+          python3 /tmp/materialize.py
+      - run: node tests/phase10/runtime-unlinked-strict-boundaries.test.mjs
+      - run: npm run phase10:test
+      - name: Commit production result
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add js/adapters/index.js js/debug/remote-protocol.js js/runtime/evidence-bridge.js js/runtime/events.js js/runtime/authority.js js/runtime/debugger-provider.js tests/phase10/runtime-unlinked-strict-boundaries.test.mjs
+          git diff --cached --quiet || git commit -m 'fix(runtime): harden unlinked authority and cancellation boundaries'
+          git push
