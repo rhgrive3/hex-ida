@@ -1,5 +1,10 @@
 export const ARTIFACT_HOT_CACHE_VERSION = 'hex-artifact-hot-cache-v1';
 
+function canonicalArtifactId(value) {
+  if (typeof value !== 'string' || value.length === 0) throw new TypeError('artifact-hot-cache-id-invalid');
+  return value;
+}
+
 export class ArtifactHotCache {
   constructor({ maxBytes = 8 * 1024 * 1024, maxEntries = 256 } = {}) {
     if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) throw new TypeError('artifact-hot-cache-max-bytes-invalid');
@@ -21,7 +26,7 @@ export class ArtifactHotCache {
   }
 
   get(artifactId) {
-    const id = String(artifactId);
+    const id = canonicalArtifactId(artifactId);
     const entry = this.entries.get(id);
     if (!entry) {
       this.metrics.misses++;
@@ -36,7 +41,7 @@ export class ArtifactHotCache {
   }
 
   put(artifactId, value, sizeBytes) {
-    const id = String(artifactId);
+    const id = canonicalArtifactId(artifactId);
     const size = sizeBytes ?? 0;
     if (!Number.isSafeInteger(size) || size < 0) throw new TypeError('artifact-hot-cache-size-invalid');
     if (this.entries.has(id)) {
@@ -56,7 +61,7 @@ export class ArtifactHotCache {
   }
 
   delete(artifactId, countEviction = false) {
-    const id = String(artifactId);
+    const id = canonicalArtifactId(artifactId);
     const entry = this.entries.get(id);
     if (!entry) return false;
     this.entries.delete(id);
