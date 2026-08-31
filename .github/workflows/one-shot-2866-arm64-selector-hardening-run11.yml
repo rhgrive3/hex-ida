@@ -1,0 +1,134 @@
+name: One-shot ARM64 barrier maintenance atomic selector hardening 2866 run11
+on:
+  push:
+    branches: [fix/2866-arm64-barrier-maintenance-atomic-run11]
+permissions:
+  contents: write
+jobs:
+  materialize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Apply focused selector hardening
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p=Path('js/targets/architecture/arm64/effects/system.js')
+          s=p.read_text()
+          old="""function textOperand(op) {
+            if (!hasNoOperandModifier(op)) return null;
+            const text = String(op?.text || '').trim().toLowerCase();
+            return text || null;
+          }"""
+          new="""function textOperand(op) {
+            if (!hasNoOperandModifier(op) || typeof op?.text !== 'string') return null;
+            const text = op.text.trim().toLowerCase();
+            return text || null;
+          }"""
+          if old not in s: raise SystemExit('system textOperand anchor drift')
+          s=s.replace(old,new,1)
+          old="""  const scope = {
+            architecture:'arm64',
+            barrier:mnemonic,
+            domain:String(operand?.text || instruction?.operands || 'sy').toLowerCase(),"""
+          new="""  const scope = {
+            architecture:'arm64',
+            barrier:mnemonic,
+            domain:(typeof operand?.text === 'string' ? operand.text : 'sy').trim().toLowerCase() || 'sy',"""
+          if old not in s: raise SystemExit('system barrier domain anchor drift')
+          p.write_text(s.replace(old,new,1))
+
+          p=Path('js/targets/architecture/arm64/effects/atomic.js')
+          s=p.read_text()
+          old="""function immediateValue(operand) {
+            if (operand?.shift != null || operand?.extend != null) return null;
+            const raw = operand?.value;
+            if (typeof raw === 'bigint') return raw;
+            if (typeof raw === 'number' && Number.isSafeInteger(raw)) return BigInt(raw);
+            const text = typeof raw === 'string' ? raw : operand?.text;
+            const normalized = String(text || '').trim().replace(/^#/, '');
+            if (/^(?:0x[0-9a-f]+|\\d+)$/i.test(normalized)) return BigInt(normalized);
+            return null;
+          }"""
+          new="""function immediateValue(operand) {
+            if (operand?.shift != null || operand?.extend != null) return null;
+            return typeof operand?.value === 'bigint' ? operand.value : null;
+          }"""
+          if old not in s: raise SystemExit('atomic immediateValue anchor drift')
+          s=s.replace(old,new,1)
+          old="""function barrierOption(decoded) {
+            const op = operands(decoded)[0];
+            if (op && (op.shift != null || op.extend != null)) return null;
+            const raw = String(op?.text || op?.value || decoded?.barrierOption || decoded?.operandsText || '').trim().toLowerCase();
+            return raw.replace(/^#/, '') || 'sy';
+          }"""
+          new="""function barrierOption(decoded) {
+            const op = operands(decoded)[0];
+            if (!op || op.shift != null || op.extend != null || typeof op.text !== 'string') return null;
+            return op.text.trim().toLowerCase().replace(/^#/, '') || null;
+          }"""
+          if old not in s: raise SystemExit('atomic barrierOption anchor drift')
+          p.write_text(s.replace(old,new,1))
+
+          Path('tests/machine-effects/arm64-structured-system-selector-strict-validation.test.mjs').write_text(r'''import assert from 'node:assert/strict';
+          import { liftArm64SystemEffects } from '../../js/targets/architecture/arm64/effects/system.js';
+          let seq=0;
+          const gp=(num)=>({k:'reg',cls:'gp',num,bits:64,text:`x${num}`});
+          function lift(mnemonic,ops=[],extra={}){const instructionId=`structured-system-selector:${++seq}`;return liftArm64SystemEffects({instructionId,mnemonic,ops,mode:'a64',origin:{instructionIds:[instructionId]},...extra},{instructionId});}
+          function partialNoDefinite(bundle,label){assert.ok(bundle,label);assert.equal(bundle.completeness,'partial',label);assert.equal(bundle.operations.some(op=>['barrier','intrinsic','register-read'].includes(op.kind)),false,label);}
+          assert.notEqual(lift('dmb',[{k:'other',text:'sy'}]).completeness,'partial');
+          assert.notEqual(lift('dc',[{k:'other',text:'cvau'},gp(0)]).completeness,'partial');
+          assert.notEqual(lift('ic',[{k:'other',text:'iallu'}]).completeness,'partial');
+          assert.notEqual(lift('tlbi',[{k:'other',text:'vmalle1is'}]).completeness,'partial');
+          for(const bad of [['sy'],{toString(){return 'sy';}},true,1]) partialNoDefinite(lift('dmb',[{k:'other',text:bad}]),`DMB ${typeof bad}`);
+          for(const [m,selector,withXt] of [['dc','cvau',true],['ic','iallu',false],['tlbi','vmalle1is',false]]) {
+            for(const bad of [[selector],{toString(){return selector;}},true,1]) partialNoDefinite(lift(m,[{k:'other',text:bad},...(withXt?[gp(0)]:[])]),`${m} malformed selector`);
+          }
+          const noOperand=lift('dmb',[],{operands:['attacker-controlled']});
+          assert.notEqual(noOperand.completeness,'partial');
+          assert.equal(noOperand.operations.some(op=>op.kind==='barrier'),true);
+          assert.equal(noOperand.operations.find(op=>op.kind==='barrier')?.scope?.domain,'sy');
+          console.log('arm64 structured system selectors strict #2866: PASS');
+          ''')
+
+          Path('tests/machine-effects/arm64-atomic-selector-strict-validation.test.mjs').write_text(r'''import assert from 'node:assert/strict';
+          import { liftArm64AtomicEffects } from '../../js/targets/architecture/arm64/effects/atomic.js';
+          let seq=0;
+          function lift(mnemonic,ops=[]){const instructionId=`atomic-selector:${++seq}`;return liftArm64AtomicEffects({instructionId,mnemonic,ops,mode:'a64'},{instructionId});}
+          const imm=(value,text=`#${value}`)=>({k:'imm',value,text});
+          const option=(text)=>({k:'other',text});
+          for(const b of [lift('dmb',[imm(15n)]),lift('dsb',[imm(0n)]),lift('isb',[imm(15n)]),lift('dmb',[option('ish')]),lift('dsb',[option('sy')])]) assert.ok(b && b.completeness!=='partial');
+          for(const value of [15,'15',true,[15],{toString(){return '15';}}]) {
+            for(const m of ['dmb','dsb','isb']) { const b=lift(m,[imm(value)]); assert.ok(b); assert.equal(b.completeness,'partial',`${m} malformed immediate ${typeof value}`); assert.equal(b.operations.some(op=>op.kind==='barrier'),false); }
+          }
+          for(const bad of [['sy'],{toString(){return 'sy';}},true,1]) { const b=lift('dmb',[option(bad)]); assert.ok(b); assert.equal(b.completeness,'partial'); assert.equal(b.operations.some(op=>op.kind==='barrier'),false); }
+          assert.equal(lift('clrex').completeness,'exact-with-intrinsic');
+          assert.equal(lift('clrex',[imm(15n)]).completeness,'exact-with-intrinsic');
+          for(const bad of [15,'15',true,[15],{toString(){return '15';}},16n,-1n]) { const b=lift('clrex',[imm(bad)]); assert.ok(b); assert.equal(b.completeness,'partial',`CLREX malformed/range ${String(bad)}`); assert.equal(b.operations.some(op=>op.kind==='intrinsic'),false); }
+          console.log('arm64 atomic selectors strict #2866: PASS');
+          ''')
+          PY
+      - run: node --check js/targets/architecture/arm64/effects/system.js
+      - run: node --check js/targets/architecture/arm64/effects/atomic.js
+      - run: node tests/machine-effects/arm64-structured-system-selector-strict-validation.test.mjs
+      - run: node tests/machine-effects/arm64-atomic-selector-strict-validation.test.mjs
+      - run: node tests/machine-effects/arm64-barrier-imm4.test.mjs
+      - run: node tests/machine-effects/arm64-system-barrier-domain.test.mjs
+      - run: node tests/machine-effects/arm64-system-maintenance-operand-shape.test.mjs
+      - run: node tests/machine-effects/arm64-exclusive-monitor-state.test.mjs
+      - run: node tests/machine-effects/run.mjs
+      - run: git diff --check
+      - name: Commit production result
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git rm .github/workflows/one-shot-2866-arm64-selector-hardening-run11.yml
+          git add js/targets/architecture/arm64/effects/system.js js/targets/architecture/arm64/effects/atomic.js tests/machine-effects/arm64-structured-system-selector-strict-validation.test.mjs tests/machine-effects/arm64-atomic-selector-strict-validation.test.mjs
+          git commit -m 'fix(arm64): reject coerced barrier maintenance and CLREX selectors (#2866)'
+          git push
