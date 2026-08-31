@@ -74,7 +74,7 @@ export function pageRows(value, limit, offset = 0) {
   const rows = Array.isArray(value) ? value : (Array.isArray(meta.results) ? meta.results : []);
   const start = nonNegativeOffset(offset);
   const reportedRaw = meta.offset ?? meta.pageOffset ?? meta.pagination?.offset;
-  const reported = Number.isSafeInteger(Number(reportedRaw)) ? Number(reportedRaw) : null;
+  const reported = typeof reportedRaw === 'number' && Number.isSafeInteger(reportedRaw) && reportedRaw >= 0 ? reportedRaw : null;
   let sourceStart;
   if (reported === start) {
     sourceStart = 0;
@@ -101,7 +101,8 @@ export function pageRows(value, limit, offset = 0) {
     else complete = rows.length < limit && !upstreamTruncated;
   }
   const total = invalidTotal ? null : (explicitTotal ?? (complete ? start + returned : (rows.length > limit ? rows.length : null)));
-  let coverage = Number(meta.coverage ?? meta.completeness?.coverage);
+  const coverageRaw = meta.coverage ?? meta.completeness?.coverage;
+  let coverage = typeof coverageRaw === 'number' && Number.isFinite(coverageRaw) ? coverageRaw : NaN;
   if (!Number.isFinite(coverage)) coverage = total ? Math.min(1, (start + returned) / total) : (complete ? 1 : null);
   const reason = meta.reason ?? meta.completeness?.reason ?? (invalidTotal ? 'invalid-total' : (complete ? null : 'result-limit'));
   return {
@@ -227,13 +228,13 @@ function functionCandidateAddresses(ctx, requested, limit) {
 function seedInstruction(ir, spec) {
   if (!ir || !ir.instructions) return null;
   if (spec && spec.instructionId != null) {
-    const id = Number(spec.instructionId);
-    if (!Number.isSafeInteger(id) || id < 0) throw new AgentToolError('invalid-argument', 'instructionId must be a non-negative safe integer');
+    const id = spec.instructionId;
+    if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < 0) throw new AgentToolError('invalid-argument', 'instructionId must be a non-negative safe integer');
     return ir.instructions.find((i) => i.id === id) || null;
   }
   if (spec && spec.row != null) {
-    const row = Number(spec.row);
-    if (!Number.isSafeInteger(row) || row < 0) throw new AgentToolError('invalid-argument', 'row must be a non-negative safe integer');
+    const row = spec.row;
+    if (typeof row !== 'number' || !Number.isSafeInteger(row) || row < 0) throw new AgentToolError('invalid-argument', 'row must be a non-negative safe integer');
     return ir.instructions.find((i) => i.row === row && (!spec.op || i.op === spec.op)) || null;
   }
   const address = spec && spec.address != null ? requiredAddress(spec.address) : asAddress(spec);
