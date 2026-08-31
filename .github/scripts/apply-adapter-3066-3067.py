@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 
 path = Path('js/adapters/index.js')
 text = path.read_text()
@@ -41,16 +42,25 @@ replacements = [
         "writeRegister(reg,value,threadId){return this.call('writeRegister',{reg:String(reg),value:String(value),threadId})}",
         "writeRegister(reg,value,threadId){return this.call('writeRegister',{reg:registerSelector(reg),value:String(value),threadId})}"
     ),
-    (
-        "async readMemory(address,size){const n=Number(size==null?1:size); if(!Number.isSafeInteger(n)||n<1) throw new DebugAdapterError('invalid-size','remote memory read size must be a positive safe integer'); if(n>256*1024) throw new DebugAdapterError('too-large','remote memory read exceeds 256 KiB'); return remoteBytes(await this.call('readMemory',{address:String(asAddress(address)),size:n}),n)}",
-        "async readMemory(address,size){const n=memoryReadSize(size,1); if(n>256*1024) throw new DebugAdapterError('too-large','remote memory read exceeds 256 KiB'); return remoteBytes(await this.call('readMemory',{address:String(asAddress(address)),size:n}),n)}"
-    ),
 ]
 for old, new in replacements:
     count = text.count(old)
     if count != 1:
         raise SystemExit(f'expected exactly one match, found {count}: {old[:100]}')
     text = text.replace(old, new)
+
+remote_read_pattern = re.compile(
+    r"async readMemory\(address,size\)\{const n=Number\(size==null\?1:size\);\s*"
+    r"if\(!Number\.isSafeInteger\(n\)\|\|n<1\) throw new DebugAdapterError\('invalid-size','memory read size must be a positive safe integer'\);\s*"
+    r"if\(n>256\*1024\) throw new DebugAdapterError\('too-large','remote memory read exceeds 256 KiB'\);\s*"
+    r"return remoteBytes\(await this\.call\('readMemory',\{address:String\(asAddress\(address\)\),size:n\}\),n\)\}"
+)
+text, count = remote_read_pattern.subn(
+    "async readMemory(address,size){const n=memoryReadSize(size,1); if(n>256*1024) throw new DebugAdapterError('too-large','remote memory read exceeds 256 KiB'); return remoteBytes(await this.call('readMemory',{address:String(asAddress(address)),size:n}),n)}",
+    text,
+)
+if count != 1:
+    raise SystemExit(f'expected exactly one remote readMemory match, found {count}')
 path.write_text(text)
 
 Path('tests/phase10/adapter-strict-boundaries.test.mjs').write_text("""import assert from 'node:assert/strict';
