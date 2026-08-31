@@ -36,9 +36,8 @@ function evidenceFromObservation(obs, set) {
 }
 
 function finiteConfidence(value, fallback = null) {
-  const n = Number(value);
-  if (!Number.isFinite(n)) return fallback;
-  return Math.max(0, Math.min(1, n));
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.max(0, Math.min(1, value));
 }
 
 function verificationVerdict(verification) {
@@ -117,9 +116,8 @@ export function deterministicAnswer(plan) {
 
 function explicitLimit(value, fallback, minimum = 0) {
   if (value == null) return fallback;
-  const n = Number(value);
-  if (!Number.isFinite(n)) return fallback;
-  return Math.max(minimum, Math.floor(n));
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.max(minimum, Math.floor(value));
 }
 
 function budgetOf(opts) {
@@ -135,10 +133,10 @@ function budgetOf(opts) {
 function normalizeToolRequest(step) {
   if (!step || typeof step !== 'object') return null;
   const tool = step.tool || step.name;
-  if (!tool) return null;
+  if (typeof tool !== 'string' || !tool) return null;
   let args = step.args || step.arguments || [];
   if (!Array.isArray(args)) args = [args];
-  return { tool: String(tool), args };
+  return { tool, args };
 }
 
 function instructionCost(model) {
@@ -203,11 +201,18 @@ export async function runAgent(config) {
       const external = cfg.signal;
       let rejectExternalAbort;
       const externalAbortPromise = new Promise((_, reject) => { rejectExternalAbort = reject; });
+      let abortHandled = false;
       const abort = () => {
+        if (abortHandled) return;
+        abortHandled = true;
         controller.abort(external?.reason ?? 'cancelled');
         rejectExternalAbort(new Error('cancelled'));
       };
-      if (external?.aborted) abort(); else external?.addEventListener?.('abort', abort, {once:true});
+      if (external?.aborted) abort();
+      else {
+        external?.addEventListener?.('abort', abort, {once:true});
+        if (external?.aborted) abort();
+      }
       let timer;
       try {
         step = await Promise.race([
