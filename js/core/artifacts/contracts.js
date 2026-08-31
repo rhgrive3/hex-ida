@@ -29,8 +29,17 @@ export class ArtifactCorruptionError extends ArtifactError { constructor(code, m
 export class ArtifactStorageError extends ArtifactError { constructor(code, message = code, detail = null) { super(code, message, detail); this.name = 'ArtifactStorageError'; } }
 export class ArtifactUnsupportedError extends ArtifactError { constructor(code = 'artifact-storage-unsupported', message = code, detail = null) { super(code, message, detail); this.name = 'ArtifactUnsupportedError'; } }
 
-function required(value, code) { const text = String(value ?? '').trim(); if (!text) throw new ArtifactError(code); return text; }
-function optional(value) { return value == null ? null : String(value); }
+function required(value, code) {
+  if (typeof value !== 'string') throw new ArtifactError(code);
+  const text = value.trim();
+  if (!text) throw new ArtifactError(code);
+  return text;
+}
+function optional(value) {
+  if (value == null) return null;
+  if (typeof value !== 'string') throw new ArtifactError('artifact-optional-id-invalid');
+  return value;
+}
 function version(value, relevant = true) { if (!relevant) return ARTIFACT_NOT_APPLICABLE_VERSION; return required(value, 'artifact-version-required'); }
 function sortedStrings(values, code) {
   if (values == null) return [];
