@@ -1,0 +1,31 @@
+name: One-shot ARM64 barrier current 2866
+on:
+  push:
+    branches: [fix/arm64-barrier-current-2866-v2]
+permissions:
+  contents: write
+jobs:
+  materialize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply reviewed materializer
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin fix/2866-arm64-barrier-selector-current
+          git show origin/fix/2866-arm64-barrier-selector-current:tools/tmp-2866.py > /tmp/materialize.py
+          python3 /tmp/materialize.py
+      - run: node tests/machine-effects/arm64-barrier-selector-strict.test.mjs
+      - run: node tests/machine-effects/run.mjs
+      - name: Commit production result
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add js/targets/architecture/arm64/effects/system.js tests/machine-effects/arm64-barrier-selector-strict.test.mjs
+          git diff --cached --quiet || git commit -m 'fix(arm64): reject coerced barrier selectors'
+          git push
