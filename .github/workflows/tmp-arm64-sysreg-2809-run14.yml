@@ -1,0 +1,33 @@
+name: Temporary ARM64 sysreg text repair run14
+on:
+  push:
+    branches: [fix/2809-arm64-sysreg-text-current-main-run14]
+permissions:
+  contents: write
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/2809-arm64-sysreg-text-current-main-run14
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: python3 tools/tmp-arm64-sysreg-2809-repair-run14.py
+      - name: Focused regression
+        run: |
+          node tests/machine-effects/arm64-system-register-text-validation.test.mjs
+          node tests/machine-effects/arm64-system-register-write.test.mjs
+          node tests/machine-effects/arm64-system-semantics.test.mjs
+      - name: Commit repair and remove temporary runner
+        run: |
+          rm -f .github/workflows/tmp-arm64-sysreg-2809-run14.yml tools/tmp-arm64-sysreg-2809-repair-run14.py
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git diff --cached --quiet && exit 0
+          git commit -m 'fix(arm64): reject coerced system-register text (#2809)'
+          git push origin HEAD:fix/2809-arm64-sysreg-text-current-main-run14
