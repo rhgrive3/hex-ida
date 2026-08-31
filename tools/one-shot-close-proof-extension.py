@@ -40,7 +40,10 @@ for old,new in repls.items():
     s = s.replace(old,new,1)
 p.write_text(s)
 
-# #2809 follow-up explicitly includes BTI through shared textOperand(). Add a public-path proof.
+# #2809 follow-up explicitly includes BTI through shared textOperand(). A valid
+# BTI is exact only when mapped-page guard state is known; unknown page state is
+# intentionally partial. Supply guarded-page authority so this test isolates
+# selector typing rather than testing the separate BTI page-state contract.
 p = Path('tests/machine-effects/arm64-barrier-authority-2866.test.mjs')
 s = p.read_text()
 needle = "console.log('ARM64 barrier/maintenance/CLREX authority #2866: PASS');"
@@ -48,11 +51,12 @@ if needle not in s:
     raise SystemExit('BTI proof anchor drift')
 bti = r'''// #2809 shared system selector helper also owns BTI landing selectors.
 {
-  const valid=publicLift('bti',[{k:'other',text:'c'}]);
+  const liftBti=(text)=>{const instructionId=`barrier2866:bti:${++seq}`;return liftArm64MachineEffects({instructionId,mnemonic:'bti',mode:'a64',ops:[{k:'other',text}],origin:{instructionIds:[instructionId]}},{btiGuardedPage:true});};
+  const valid=liftBti('c');
   assert.ok(valid);assert.notEqual(valid.completeness,'partial');
   assert.ok(valid.operations.some((op)=>op.intrinsicId==='arm64.system.bti'));
   for (const bad of [['c'],{toString(){return 'c';}},true,1]) {
-    const malformed=publicLift('bti',[{k:'other',text:bad}]);
+    const malformed=liftBti(bad);
     assert.ok(malformed);assert.equal(malformed.completeness,'partial');
     assert.equal(malformed.operations.some((op)=>op.intrinsicId==='arm64.system.bti'),false);
   }
