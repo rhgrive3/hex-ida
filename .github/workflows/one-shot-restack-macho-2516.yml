@@ -1,0 +1,27 @@
+name: One-shot Mach-O selected slice restack 2516
+on:
+  push:
+    branches: [fix/macho-selected-slice-current-2516-v2]
+permissions:
+  contents: write
+jobs:
+  materialize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply reviewed focused diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin fix/2516-macho-selected-slice-reuse
+          base=$(git merge-base HEAD origin/fix/2516-macho-selected-slice-reuse)
+          git diff "$base"..origin/fix/2516-macho-selected-slice-reuse -- js/backend.js js/platform/worker.js tests/phase4/integration/issue-2516-macho-selected-slice-reuse.test.mjs | git apply --3way
+          node tests/phase4/integration/issue-2516-macho-selected-slice-reuse.test.mjs
+          npm run phase4:test
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add js/backend.js js/platform/worker.js tests/phase4/integration/issue-2516-macho-selected-slice-reuse.test.mjs
+          git diff --cached --quiet || git commit -m 'fix(macho): reuse selected slice image across analysis'
+          git push
