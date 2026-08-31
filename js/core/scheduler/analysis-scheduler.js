@@ -28,20 +28,25 @@ function priorityValue(value) {
   return strictSafeInteger(value, ANALYSIS_PRIORITY.current, 'analysis-priority-invalid');
 }
 function abortError(signal) { return signal?.reason ?? new DOMException('Aborted', 'AbortError'); }
+function requireArtifactId(value, code = 'artifact-id-required') {
+  if (typeof value !== 'string' || !value) throw new TypeError(code);
+  return value;
+}
 function sameStrings(a, b) { return a.length === b.length && a.every((value, index) => value === b[index]); }
 function canonicalDependencies(request, artifactId) {
   const supplied = Array.isArray(request.dependencies) ? request.dependencies : [];
   const byId = new Map();
   for (const dependency of supplied) {
-    const id = String(dependency?.descriptor?.artifactId || '');
-    if (!id) throw new SchedulerDependencyIdentityError(artifactId, request.descriptor?.upstreamArtifactIds || [], ['<missing-artifact-id>']);
+    const rawId = dependency?.descriptor?.artifactId;
+    if (typeof rawId !== 'string' || !rawId) throw new SchedulerDependencyIdentityError(artifactId, request.descriptor?.upstreamArtifactIds || [], ['<missing-artifact-id>']);
+    const id = rawId;
     if (!byId.has(id)) byId.set(id, dependency);
   }
   const dependencies = [...byId.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([, dependency]) => dependency);
-  const actual = dependencies.map((dependency) => String(dependency.descriptor.artifactId));
+  const actual = dependencies.map((dependency) => requireArtifactId(dependency.descriptor.artifactId, 'artifact-dependency-id-invalid'));
   const upstream = request.descriptor?.upstreamArtifactIds;
-  if (upstream != null && !Array.isArray(upstream)) throw new SchedulerDependencyIdentityError(artifactId, [String(upstream)], actual);
-  const expected = (upstream || []).map(String).sort();
+  if (upstream != null && !Array.isArray(upstream)) throw new SchedulerDependencyIdentityError(artifactId, ['<invalid-upstream-list>'], actual);
+  const expected = (upstream || []).map((id) => requireArtifactId(id, 'artifact-dependency-id-invalid')).sort();
   if (!sameStrings(expected, actual)) throw new SchedulerDependencyIdentityError(artifactId, expected, actual);
   return dependencies;
 }
@@ -61,7 +66,7 @@ class IndexedMinHeap {
   #down(index) { for (;;) { let best=index; const left=index*2+1,right=left+1; if (left<this.items.length&&this.#compare(this.items[left],this.items[best])<0) best=left; if (right<this.items.length&&this.#compare(this.items[right],this.items[best])<0) best=right; if (best===index) break; this.#swap(index,best); index=best; } }
   push(item) { if (this.indices.has(item.artifactId)) throw new Error('scheduler-queue-duplicate'); const index=this.items.length; this.items.push(item); this.indices.set(item.artifactId,index); this.#up(index); }
   pop() { if (!this.items.length) return null; const root=this.items[0]; this.remove(root.artifactId); return root; }
-  remove(artifactId) { const index=this.indices.get(String(artifactId)); if (index==null) return null; const removed=this.items[index]; const last=this.items.pop(); this.indices.delete(removed.artifactId); if (index<this.items.length) { this.items[index]=last; this.indices.set(last.artifactId,index); this.#up(index); this.#down(this.indices.get(last.artifactId)); } return removed; }
+  remove(artifactId) { const index=this.indices.get(requireArtifactId(artifactId)); if (index==null) return null; const removed=this.items[index]; const last=this.items.pop(); this.indices.delete(removed.artifactId); if (index<this.items.length) { this.items[index]=last; this.indices.set(last.artifactId,index); this.#up(index); this.#down(this.indices.get(last.artifactId)); } return removed; }
 }
 
 function priorityName(value) {
@@ -109,8 +114,9 @@ export class AnalysisScheduler {
 
   #request(request, ancestry, parentSignal) {
     const descriptor=request?.descriptor;
-    const artifactId=String(descriptor?.artifactId||'');
-    if (!artifactId) return Promise.reject(new TypeError('artifact-request-descriptor-required'));
+    let artifactId;
+    try { artifactId=requireArtifactId(descriptor?.artifactId,'artifact-request-descriptor-required'); }
+    catch (error) { return Promise.reject(error); }
     this.metrics.requests++;
     const priority = priorityValue(request.priority);
     this.#emit('request.received', artifactId, {
@@ -167,6 +173,8 @@ export class AnalysisScheduler {
         listeners.push([signal,listener]); signal.addEventListener('abort',listener,{once:true});
       }
       task.promise.then((value)=>finish(resolve,value),(error)=>finish(reject,error));
+      const abortedAfterRegistration=active.find((signal)=>signal.aborted);
+      if (abortedAfterRegistration) finish(reject,abortError(abortedAfterRegistration),true);
     });
   }
 
@@ -174,7 +182,7 @@ export class AnalysisScheduler {
     let dependencies;
     try { dependencies=canonicalDependencies(task.request,task.artifactId); }
     catch (error) { if (error instanceof SchedulerDependencyIdentityError) this.metrics.dependencyIdentityErrors++; throw error; }
-    this.#registerDag(task.artifactId,dependencies.map((dependency)=>String(dependency.descriptor.artifactId)));
+    this.#registerDag(task.artifactId,dependencies.map((dependency)=>requireArtifactId(dependency.descriptor.artifactId,'artifact-dependency-id-invalid')));
     this.states.set(task.artifactId,'waiting-dependency');
     const dependencyResults=await this.#waitForDependencies(task,dependencies,ancestry);
     if (task.controller.signal.aborted) throw abortError(task.controller.signal);

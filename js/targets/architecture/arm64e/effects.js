@@ -140,13 +140,14 @@ function pointerRegisterId(operand) {
   const registerId = operandRegisterId(operand);
   if (!registerId) return null;
   if (operand == null || typeof operand !== 'object' || Array.isArray(operand)) return registerId;
-  const explicitWidth = operand.bits
-    ?? operand.widthBits
-    ?? operand.value?.bits
-    ?? operand.value?.widthBits;
-  if (explicitWidth == null) return registerId;
-  const widthBits = Number(explicitWidth);
-  return Number.isInteger(widthBits) && widthBits === POINTER_BITS ? registerId : null;
+  const explicitWidths = [
+    operand.bits,
+    operand.widthBits,
+    operand.value?.bits,
+    operand.value?.widthBits,
+  ].filter((value) => value != null);
+  if (explicitWidths.some((value) => typeof value !== 'number' || !Number.isInteger(value) || value !== POINTER_BITS)) return null;
+  return registerId;
 }
 
 function authenticatedControlTargetRegisterId(operand) {
