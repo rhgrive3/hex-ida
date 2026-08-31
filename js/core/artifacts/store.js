@@ -34,6 +34,11 @@ function isAbort(error, signal) {
   return error?.name === 'AbortError' || !!signal?.aborted;
 }
 
+function requireArtifactId(value) {
+  if (typeof value !== 'string' || !value) throw new TypeError('artifact-id-required');
+  return value;
+}
+
 export class ArtifactStore {
   constructor({ backend = createArtifactBackend(), hotCache = new ArtifactHotCache(), corruptionPolicy = 'delete' } = {}) {
     if (!backend?.getRaw || !backend?.putAtomic || !backend?.delete || !backend?.capabilities) throw new TypeError('artifact-backend-invalid');
@@ -79,22 +84,22 @@ export class ArtifactStore {
   }
 
   #epoch(artifactId) {
-    return this.epochs.get(String(artifactId)) || 0;
+    return this.epochs.get(requireArtifactId(artifactId)) || 0;
   }
 
   #bumpEpoch(artifactId) {
-    const id = String(artifactId);
+    const id = requireArtifactId(artifactId);
     this.epochs.set(id, this.#epoch(id) + 1);
   }
 
   async #waitForMutation(artifactId) {
-    const active = this.mutations.get(String(artifactId));
+    const active = this.mutations.get(requireArtifactId(artifactId));
     if (!active) return;
     try { await active; } catch { /* reads observe the resulting old/new state */ }
   }
 
   async #withMutation(artifactId, operation) {
-    const id = String(artifactId);
+    const id = requireArtifactId(artifactId);
     const previous = this.mutations.get(id);
     const priorSettled = previous ? previous.catch(() => {}) : Promise.resolve();
     const current = priorSettled.then(async () => {
@@ -109,8 +114,7 @@ export class ArtifactStore {
 
   async get(descriptorOrId, options = {}) {
     const descriptor = typeof descriptorOrId === 'string' ? null : descriptorOrId;
-    const artifactId = String(descriptor?.artifactId ?? descriptorOrId ?? '');
-    if (!artifactId) throw new TypeError('artifact-id-required');
+    const artifactId = requireArtifactId(descriptor?.artifactId ?? descriptorOrId);
     aborted(options.signal);
     this.metrics.requests++;
 
@@ -198,7 +202,7 @@ export class ArtifactStore {
       maxNodes: Number.isSafeInteger(options.maxNodes) ? options.maxNodes : 10000,
       nodesVisited: 0,
     };
-    const currentId = String(record.artifactId);
+    const currentId = requireArtifactId(record.artifactId);
     if (ctx.activePath.has(currentId)) return false;
     ctx.activePath.add(currentId);
     try {
@@ -277,7 +281,7 @@ export class ArtifactStore {
   async publish(descriptor, payload, options = {}) {
     if (!descriptor?.artifactId) throw new TypeError('artifact-descriptor-required');
     assertCanonicalArtifactDescriptor(descriptor);
-    const artifactId = String(descriptor.artifactId);
+    const artifactId = requireArtifactId(descriptor.artifactId);
     aborted(options.signal);
 
     let payloadBytes;
@@ -384,8 +388,7 @@ export class ArtifactStore {
   }
 
   async delete(artifactId) {
-    const id = String(artifactId ?? '');
-    if (!id) throw new TypeError('artifact-id-required');
+    const id = requireArtifactId(artifactId);
     return this.#withMutation(id, async () => {
       this.hotCache.delete(id);
       let deleted;
@@ -402,9 +405,10 @@ export class ArtifactStore {
       this.hotCache.clear();
       return;
     }
-    this.#bumpEpoch(artifactId);
-    this.hotCache.delete(artifactId, true);
-    this.#bumpEpoch(artifactId);
+    const id = requireArtifactId(artifactId);
+    this.#bumpEpoch(id);
+    this.hotCache.delete(id, true);
+    this.#bumpEpoch(id);
   }
 
   async close() {
