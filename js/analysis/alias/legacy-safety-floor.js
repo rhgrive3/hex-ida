@@ -27,7 +27,9 @@ function sameScope(a, b) {
 
 function storageClass(region) {
   const value = region?.metadata?.canonicalRootStorageClass;
-  return value == null ? null : String(value);
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  return text || null;
 }
 
 function provenStackExternalSeparation(a, b) {

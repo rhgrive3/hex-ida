@@ -576,7 +576,7 @@ function deriveArithmetic(ctx, value, node, expectedAddressSpace, state) {
   if (!Array.isArray(node.inputs) || node.inputs.length !== 2) return unknown('canonical-address-arithmetic-arity');
   const left = deriveValue(ctx, node.inputs[0], expectedAddressSpace, state);
   const right = deriveValue(ctx, node.inputs[1], expectedAddressSpace, state);
-  const operator = String(node.operator ?? '').toLowerCase();
+  const operator = typeof node.operator === 'string' ? node.operator.toLowerCase() : '';
   const widthBits = addressWidth(value, node) ?? left.widthBits ?? right.widthBits ?? null;
   const leftConstant = constantValue(left);
   const rightConstant = constantValue(right);
@@ -624,7 +624,7 @@ function deriveAddWithCarry(ctx, value, node, expectedAddressSpace, state) {
   if (subtract) {
     const rhsValue = ctx.values.get(String(rhsId));
     const rhsNode = rhsValue?.definitionNodeId == null ? null : ctx.nodes.get(String(rhsValue.definitionNodeId));
-    if (rhsNode?.kind !== 'unary' || String(rhsNode.operator ?? '').toLowerCase() !== 'not' || rhsNode.inputs?.length !== 1) {
+    if (rhsNode?.kind !== 'unary' || typeof rhsNode.operator !== 'string' || rhsNode.operator.toLowerCase() !== 'not' || rhsNode.inputs?.length !== 1) {
       return unknown('canonical-address-add-with-carry-subtract-rhs-not-proven');
     }
     rhsId = rhsNode.inputs[0];
@@ -688,7 +688,7 @@ function deriveValue(ctx, valueId, expectedAddressSpace, state) {
     if (!Array.isArray(node.inputs) || node.inputs.length !== 1) return unknown('canonical-address-copy-arity');
     return deriveValue(ctx, node.inputs[0], expectedAddressSpace, nextState);
   }
-  if ((node.kind === 'intrinsic' || node.kind === 'binary') && String(node.operator ?? '').toLowerCase() === 'add-with-carry') {
+  if ((node.kind === 'intrinsic' || node.kind === 'binary') && typeof node.operator === 'string' && node.operator.toLowerCase() === 'add-with-carry') {
     return deriveAddWithCarry(ctx, value, node, expectedAddressSpace, nextState);
   }
   if (node.kind === 'address' || node.kind === 'binary') {
