@@ -18,8 +18,12 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --no-audit --no-fund
+      - name: Require full #2866 extension
+        run: test -f tools/one-shot-2866-atomic-extension.py
       - name: Apply strict-boundary repairs
-        run: python3 tools/one-shot-unlinked-strict-boundaries.py
+        run: |
+          python3 tools/one-shot-unlinked-strict-boundaries.py
+          python3 tools/one-shot-2866-atomic-extension.py
       - name: Syntax and focused regression
         run: |
           node --check js/targets/architecture/arm64/effects/addressing.js
@@ -27,12 +31,14 @@ jobs:
           node --check js/targets/architecture/arm64/effects/index.js
           node --check js/targets/architecture/arm64/effects/integer.js
           node --check js/targets/architecture/arm64/effects/system.js
+          node --check js/targets/architecture/arm64/effects/atomic.js
           node --check js/runtime/trace-provider.js
           node --check js/runtime/evidence-bridge.js
           node --check js/runtime/authority.js
           node --check js/runtime/debugger-provider.js
           node --check js/analysis/discovery/fusion.js
           node tests/machine-effects/arm64-unlinked-strict-boundaries.test.mjs
+          node tests/machine-effects/arm64-barrier-authority-2866.test.mjs
           node tests/phase10/runtime-unlinked-strict-boundaries.test.mjs
           node tests/phase7/discovery-unlinked-strict-boundaries.test.mjs
       - name: Subsystem regression
@@ -47,17 +53,20 @@ jobs:
           set -euo pipefail
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git rm .github/workflows/one-shot-unlinked-strict-boundaries.yml tools/one-shot-unlinked-strict-boundaries.py
+          git rm .github/workflows/one-shot-unlinked-strict-boundaries.yml tools/one-shot-unlinked-strict-boundaries.py tools/one-shot-2866-atomic-extension.py
           git add js/targets/architecture/arm64/effects/addressing.js \
                   js/targets/architecture/arm64/effects/common.js \
                   js/targets/architecture/arm64/effects/index.js \
                   js/targets/architecture/arm64/effects/integer.js \
                   js/targets/architecture/arm64/effects/system.js \
+                  js/targets/architecture/arm64/effects/atomic.js \
                   js/runtime/trace-provider.js js/runtime/evidence-bridge.js \
                   js/runtime/authority.js js/runtime/debugger-provider.js \
                   js/analysis/discovery/fusion.js \
                   tests/machine-effects/arm64-unlinked-strict-boundaries.test.mjs \
+                  tests/machine-effects/arm64-barrier-authority-2866.test.mjs \
                   tests/phase10/runtime-unlinked-strict-boundaries.test.mjs \
                   tests/phase7/discovery-unlinked-strict-boundaries.test.mjs
+          git diff --cached --check
           git commit -m 'fix: close remaining strict authority boundary gaps'
           git push origin HEAD:fix/all-unlinked-issues-20260831
