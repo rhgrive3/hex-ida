@@ -1,0 +1,23 @@
+name: One-shot agent tools current
+on:
+  push:
+    branches: [fix/agent-tools-current-2956-2957-v2]
+permissions:
+  contents: write
+jobs:
+  materialize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 tools/tmp-agent-tools-strict-v2.py
+      - run: node tests/phase10/agent-tools-strict-boundaries.test.mjs
+      - run: npm run phase10:test
+      - name: Commit production result
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add js/agent/tools.js tests/phase10/agent-tools-strict-boundaries.test.mjs
+          git diff --cached --quiet || git commit -m 'fix(agent): harden instruction and paging boundaries'
+          git push
