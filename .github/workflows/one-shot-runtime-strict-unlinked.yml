@@ -1,0 +1,33 @@
+name: One-shot runtime strict unlinked
+on:
+  push:
+    branches: [fix/runtime-strict-unlinked-2962-3024]
+permissions:
+  contents: write
+jobs:
+  materialize:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: python3 tools/tmp-runtime-strict-unlinked.py
+      - name: Validate
+        run: |
+          node --check js/adapters/index.js
+          node --check js/debug/remote-protocol.js
+          node --check js/runtime/evidence-bridge.js
+          node --check js/runtime/events.js
+          node --check js/runtime/authority.js
+          node --check js/runtime/debugger-provider.js
+          node tests/phase10/runtime-unlinked-strict-boundaries.test.mjs
+      - name: Commit clean materialization
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm .github/workflows/one-shot-runtime-strict-unlinked.yml tools/tmp-runtime-strict-unlinked.py
+          git add js/adapters/index.js js/debug/remote-protocol.js js/runtime/evidence-bridge.js js/runtime/events.js js/runtime/authority.js js/runtime/debugger-provider.js tests/phase10/runtime-unlinked-strict-boundaries.test.mjs
+          git commit -m 'fix(runtime): harden unlinked authority boundaries'
+          git push
