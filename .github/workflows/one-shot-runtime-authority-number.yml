@@ -15,7 +15,7 @@ jobs:
       - run: python3 tools/one-shot-runtime-authority-number.py
       - run: node --check js/runtime/authority.js
       - run: node tests/phase10/runtime-authority-strict-number.test.mjs
-      - run: node tests/phase10/run.mjs runtime-authority-strict-number.test.mjs
+      - run: node tests/phase10/run.mjs
       - name: Commit clean result
         run: |
           rm .github/workflows/one-shot-runtime-authority-number.yml tools/one-shot-runtime-authority-number.py
