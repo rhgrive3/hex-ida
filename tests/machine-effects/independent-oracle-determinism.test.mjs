@@ -8,6 +8,8 @@ import {
 import { runIndependentComparison } from '../../tools/validation/machine-effects/oracle-runner.mjs';
 import { canonicalStringify } from '../../tools/validation/machine-effects/oracle-schema.mjs';
 import { INDEPENDENT_ORACLE_CASE_FIXTURES } from './fixtures/independent-oracle-cases.mjs';
+import { createArchitecturalEvidence } from '../../tools/validation/machine-effects/oracle-evidence-v2.mjs';
+import { evidenceInputForOracleCase } from './fixtures/evidence-v2-cases.mjs';
 
 const PRODUCT_SHA = '1'.repeat(40);
 const BASE_SHA = '2'.repeat(40);
@@ -50,6 +52,7 @@ async function runOnce() {
     },
     a2Before: A2_SNAPSHOT,
     a2After: A2_SNAPSHOT,
+    architecturalEvidence: corpus.cases.map((caseValue) => createArchitecturalEvidence(evidenceInputForOracleCase(caseValue))),
   });
   return { corpus, results, report };
 }

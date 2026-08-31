@@ -152,6 +152,7 @@ function unknownInstruction(bundle, operation, options, reason, categories, writ
     extraWrites: writes.extraWrites || [],
     clobbers,
     unknownRegisters: categoriesList.includes('registers') && clobbers.length === 0,
+    ...(writes.undefinedResult == null ? {} : { undefinedResult: writes.undefinedResult }),
   });
 }
 
@@ -465,6 +466,17 @@ function lowerIntrinsic(bundle, operation, options) {
 }
 
 function lowerOperation(bundle, operation, options) {
+  if (operation.undefinedResult != null) {
+    const outputs = operation.kind === 'value' ? operation.outputs
+      : operation.kind === 'intrinsic' ? operation.effectSummary.outputs
+        : operation.kind === 'memory-read' ? [operation.value] : [];
+    return [unknownInstruction(bundle, operation, options,
+      `architecturally-undefined-result:${operation.undefinedResult.reason}`,
+      ['flags', 'registers', 'other'], {
+        ...writeFields(outputs),
+        undefinedResult: operation.undefinedResult,
+      })];
+  }
   switch (operation.kind) {
     case 'register-read': return lowerRegisterLikeRead(bundle, operation, options, operation.register, operation.value);
     case 'register-write': return lowerRegisterLikeWrite(bundle, operation, options, operation.register, operation.value);

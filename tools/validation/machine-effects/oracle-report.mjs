@@ -18,6 +18,12 @@ import {
 } from './oracle-schema.mjs';
 import { validateCorpus } from './oracle-corpus.mjs';
 import {
+  architecturalEvidenceInventory,
+  createArchitecturalEvidenceFromArtifactRecord,
+  validateArchitecturalEvidence,
+} from './oracle-evidence-v2.mjs';
+import { validateFormalEvidenceArtifacts } from './generate-formal-evidence.mjs';
+import {
   a2DenominatorReport,
   loadA2DenominatorInventory,
   validateA2DenominatorInventory,
@@ -74,6 +80,39 @@ const POLICY_KEYS = Object.freeze([
   'denominatorAuthoritySeparate',
 ]);
 const EXTERNAL_EVIDENCE_KEYS = Object.freeze(['profileId', 'authorityId', 'reference', 'toolchainIdentity', 'status']);
+const EXACT_CLAIM_KEYS = Object.freeze(['caseId', 'profileId']);
+const FORMAL_EVIDENCE_MANIFEST = new URL('./generated/formal-evidence-artifacts.json', import.meta.url);
+
+let generatedEvidenceIdsCache = null;
+function generatedEvidenceIds() {
+  if (generatedEvidenceIdsCache != null) return generatedEvidenceIdsCache;
+  const manifest = validateFormalEvidenceArtifacts(JSON.parse(fs.readFileSync(FORMAL_EVIDENCE_MANIFEST, 'utf8')));
+  generatedEvidenceIdsCache = new Set(manifest.records.map((record) => createArchitecturalEvidenceFromArtifactRecord(record).evidenceId));
+  return generatedEvidenceIdsCache;
+}
+
+function normalizeExactClaims(value) {
+  if (!Array.isArray(value)) fail('report-evidence-breadth-exact-claims-invalid');
+  const seen = new Set();
+  return value.map((claim) => {
+    exactKeys(claim, EXACT_CLAIM_KEYS, 'report-evidence-breadth-exact-claim-keys');
+    const caseId = digest(claim.caseId, 'report-evidence-breadth-exact-claim-case');
+    const profileId = identity(claim.profileId, 'report-evidence-breadth-exact-claim-profile');
+    if (!ORACLE_PROFILE_INVENTORY.some((profile) => profile.profileId === profileId)) fail('report-evidence-breadth-exact-claim-profile-invalid');
+    if (seen.has(caseId)) fail('report-evidence-breadth-exact-claim-duplicate', caseId);
+    seen.add(caseId);
+    return { caseId, profileId };
+  });
+}
+
+function unjustifiedExactCases(exactClaims, evidence) {
+  const generatedIds = generatedEvidenceIds();
+  return exactClaims
+    .filter((claim) => !evidence.some((item) => item.effect.caseId === claim.caseId
+      && item.profileId === claim.profileId && item.completeness === 'complete'
+      && generatedIds.has(item.evidenceId)))
+    .map((claim) => claim.caseId);
+}
 
 function statusCounts(results) {
   const counts = Object.fromEntries(RESULT_STATUSES.map((status) => [status, 0]));
@@ -216,6 +255,7 @@ export function createOracleReport({
   a2Before = null,
   a2After = null,
   externalEvidence = [],
+  architecturalEvidence = [],
 } = {}) {
   validateOraclePolicy();
   if (!corpus || typeof corpus !== 'object') fail('report-corpus-required');
@@ -237,6 +277,13 @@ export function createOracleReport({
     return validateOracleResult(result, caseValue);
   });
   const normalizedExternalEvidence = normalizeExternalEvidence(externalEvidence);
+  if (!Array.isArray(architecturalEvidence)) fail('report-architectural-evidence-invalid');
+  const normalizedArchitecturalEvidence = architecturalEvidence.map((item) => validateArchitecturalEvidence(item));
+  const evidenceCaseIds = new Set();
+  for (const item of normalizedArchitecturalEvidence) {
+    if (evidenceCaseIds.has(item.effect.caseId)) fail('report-architectural-evidence-case-duplicate', item.effect.caseId);
+    evidenceCaseIds.add(item.effect.caseId);
+  }
   const a2 = a2Before && a2After
     ? compareA2DenominatorSnapshots(a2Before, a2After)
     : { preserved: false, reason: 'a2-snapshot-not-provided' };
@@ -244,6 +291,10 @@ export function createOracleReport({
   const profiles = profileSummaries(normalizedCorpus, normalizedResults);
   const passCount = normalizedResults.filter((result) => PASS_STATUSES.includes(result.status)).length;
   const blockingResults = normalizedResults.filter((result) => BLOCKING_STATUSES.includes(result.status));
+  const exactClaims = normalizedResults
+    .filter((result) => PASS_STATUSES.includes(result.status))
+    .map((result) => ({ caseId: result.caseId, profileId: result.profileId }));
+  const unjustifiedCases = unjustifiedExactCases(exactClaims, normalizedArchitecturalEvidence);
   const reportWithoutId = {
     schemaVersion: REPORT_SCHEMA_VERSION,
     productSha: productSha.toLowerCase(),
@@ -268,6 +319,13 @@ export function createOracleReport({
     explicitGapCount: normalizedResults.filter((result) => ['unsupported', 'unavailable'].includes(result.status)).length,
     a2Preservation: a2,
     externalEvidence: normalizedExternalEvidence,
+    evidenceBreadth: {
+      schemaVersion: 'machine-effects-evidence-breadth-report/v1',
+      inventory: architecturalEvidenceInventory(),
+      evidence: normalizedArchitecturalEvidence,
+      exactClaims,
+      unjustifiedExactCases: unjustifiedCases,
+    },
     policy: {
       networkAllowed: false,
       productionEvaluatorIsOracle: false,
@@ -286,10 +344,10 @@ export function validateOracleReport(report) {
     'schemaVersion', 'reportId', 'productSha', 'baseSha', 'candidateTreeSha', 'verifierIdentity', 'verifierVersion',
     'corpusId', 'generatorIdentity', 'generatorVersion', 'oracleIdentity', 'oracleVersion', 'toolchain',
     'generatedArtifactIdentity', 'profileSummaries', 'counts', 'comparisonCounts', 'passCount', 'totalCount',
-    'nonPassReasons', 'blockingCount', 'explicitGapCount', 'a2Preservation', 'externalEvidence', 'policy',
+    'nonPassReasons', 'blockingCount', 'explicitGapCount', 'a2Preservation', 'externalEvidence', 'evidenceBreadth', 'policy',
   ]);
   for (const key of Object.keys(report)) if (!allowed.has(key)) fail('report-unknown-field', key);
-  for (const key of ['schemaVersion', 'reportId', 'productSha', 'baseSha', 'verifierIdentity', 'verifierVersion', 'corpusId', 'generatorIdentity', 'generatorVersion', 'oracleIdentity', 'oracleVersion', 'profileSummaries', 'counts', 'comparisonCounts', 'passCount', 'totalCount', 'nonPassReasons', 'blockingCount', 'explicitGapCount', 'a2Preservation', 'externalEvidence', 'policy']) {
+  for (const key of ['schemaVersion', 'reportId', 'productSha', 'baseSha', 'verifierIdentity', 'verifierVersion', 'corpusId', 'generatorIdentity', 'generatorVersion', 'oracleIdentity', 'oracleVersion', 'profileSummaries', 'counts', 'comparisonCounts', 'passCount', 'totalCount', 'nonPassReasons', 'blockingCount', 'explicitGapCount', 'a2Preservation', 'externalEvidence', 'evidenceBreadth', 'policy']) {
     if (!(key in report)) fail('report-missing-field', key);
   }
   if (report.schemaVersion !== REPORT_SCHEMA_VERSION) fail('report-schema-version');
@@ -357,6 +415,20 @@ export function validateOracleReport(report) {
     identity(reason.code, 'report-non-pass-reason-code');
   }
   normalizeExternalEvidence(report.externalEvidence);
+  exactKeys(report.evidenceBreadth, ['schemaVersion', 'inventory', 'evidence', 'exactClaims', 'unjustifiedExactCases'], 'report-evidence-breadth-keys');
+  if (report.evidenceBreadth.schemaVersion !== 'machine-effects-evidence-breadth-report/v1') fail('report-evidence-breadth-schema');
+  if (canonicalStringify(report.evidenceBreadth.inventory) !== canonicalStringify(architecturalEvidenceInventory())) fail('report-evidence-breadth-inventory');
+  if (!Array.isArray(report.evidenceBreadth.evidence) || !Array.isArray(report.evidenceBreadth.unjustifiedExactCases)) fail('report-evidence-breadth-invalid');
+  const breadthEvidence = report.evidenceBreadth.evidence.map((item) => validateArchitecturalEvidence(item));
+  const breadthIds = new Set();
+  for (const item of breadthEvidence) {
+    if (breadthIds.has(item.effect.caseId)) fail('report-evidence-breadth-case-duplicate');
+    breadthIds.add(item.effect.caseId);
+  }
+  const exactClaims = normalizeExactClaims(report.evidenceBreadth.exactClaims);
+  if (exactClaims.length !== report.passCount) fail('report-evidence-breadth-exact-claim-count');
+  const recomputedUnjustified = unjustifiedExactCases(exactClaims, breadthEvidence);
+  if (canonicalStringify(recomputedUnjustified) !== canonicalStringify(report.evidenceBreadth.unjustifiedExactCases)) fail('report-evidence-breadth-unjustified-mismatch');
   if (report.toolchain != null) normalizeToolchain(report.toolchain);
   if (report.generatedArtifactIdentity != null) identity(report.generatedArtifactIdentity, 'report-generated-identity');
   const a2Keys = new Set(['preserved', 'reason', 'beforeDigest', 'afterDigest', 'beforeRowCount', 'afterRowCount']);
@@ -386,7 +458,9 @@ export function assertReleaseReady(report, {
   if (requireA2Preservation && normalized.a2Preservation.preserved !== true) fail('report-a2-denominator-not-preserved');
   if (!normalized.toolchain || typeof normalized.toolchain.identity !== 'string' || normalized.toolchain.identity === '') fail('report-toolchain-required');
   if (normalized.blockingCount !== 0) fail('report-blocking-results', normalized.blockingCount);
+  if (normalized.evidenceBreadth.unjustifiedExactCases.length !== 0) fail('report-incomplete-architectural-evidence', normalized.evidenceBreadth.unjustifiedExactCases.length);
   if (normalized.profileSummaries.some((profile) => profile.caseCount === 0 || profile.passCount < profile.caseCount)) fail('report-profile-gap');
   if (normalized.totalCount !== normalized.passCount + normalized.explicitGapCount + Object.entries(normalized.counts).filter(([status]) => !PASS_STATUSES.includes(status) && !['unsupported', 'unavailable'].includes(status)).reduce((sum, [, count]) => sum + count, 0)) fail('report-result-count-inconsistent');
   return true;
 }
+import fs from 'node:fs';

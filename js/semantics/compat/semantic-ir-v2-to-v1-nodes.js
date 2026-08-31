@@ -250,6 +250,27 @@ export function projectNode(node, context) {
     inst.extra = { semanticNodeId: node.id, widthBits, attributes: attrs, completeness: node.completeness };
   };
 
+  const undefinedResult = attrs.machineEffects?.undefinedResult ?? null;
+  if (undefinedResult != null) {
+    const unknown = defaultUnknownInstruction(node, blockIndex, row, options, {
+      reason: `architecturally-undefined-result:${undefinedResult.reason}`,
+      unknownCategories: ['value'],
+      undefinedResult,
+    });
+    Object.assign(inst, unknown, {
+      semanticNodeId: node.id,
+      sourceEntityId: node.id,
+      sourceEffectIds: node.sourceEffectIds.slice(),
+      instructionId: sourceInstructionIds(node.origin)[0] ?? null,
+      sourceInstructionIds: sourceInstructionIds(node.origin),
+      origin: node.origin,
+    });
+    inst.dst = primaryOutput;
+    attachArgs(inst, inputValues);
+    if (primaryOutput && primaryOutput.def == null) primaryOutput.def = inst;
+    return [inst];
+  }
+
   switch (node.kind) {
     case 'const': {
       const c = constantPayload(node);

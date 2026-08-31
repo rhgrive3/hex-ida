@@ -1,7 +1,7 @@
 export const ORACLE_SCHEMA_VERSION = 'machine-effects-independent-oracle/v1';
 export const CASE_SCHEMA_VERSION = 'machine-effects-independent-oracle-case/v1';
 export const RESULT_SCHEMA_VERSION = 'machine-effects-independent-oracle-result/v1';
-export const REPORT_SCHEMA_VERSION = 'machine-effects-independent-oracle-report/v1';
+export const REPORT_SCHEMA_VERSION = 'machine-effects-independent-oracle-report/v2';
 
 export const INDEPENDENT_ORACLE_IDENTITY = 'hex-independent-machine-effects-oracle';
 export const INDEPENDENT_ORACLE_VERSION = '1.0.0';

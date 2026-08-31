@@ -11,7 +11,20 @@ import {
 const DEFAULT_ALLOWED_PREFIXES = Object.freeze([
   'tools/validation/machine-effects/',
   'tests/machine-effects/',
+  'tools/validation/machine-effects/generated/',
   'specs/004-independent-machine-effects-oracle/',
+  'specs/003-oracle-mask-matrix/',
+  'specs/005-machine-effects-evidence-breadth/',
+  'docs/analysis-improvement-finding-ledger.md',
+  'tests/semantic-v2/undefined-result-transport.test.mjs',
+  'tests/phase8/scalar/undefined-result-soundness.test.mjs',
+  'js/semantics/effects/index.js',
+  'js/semantics/ir/from-machine-effects.js',
+  'js/semantics/compat/machine-effects-to-v1.js',
+  'js/semantics/compat/semantic-ir-v2-to-v1-nodes.js',
+  'js/decompiler/phase8/sccp.js',
+  'js/targets/architecture/x86_64/effects/common.js',
+  'js/targets/architecture/x86_64/effects/flags.js',
 ]);
 
 function fail(code, detail = null) {

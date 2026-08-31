@@ -13,12 +13,16 @@ import {
   verifyExactHead,
 } from '../../tools/validation/machine-effects/oracle-release-verify.mjs';
 import { runIndependentComparison } from '../../tools/validation/machine-effects/oracle-runner.mjs';
+import { sha256Digest } from '../../tools/validation/machine-effects/oracle-schema.mjs';
 import { INDEPENDENT_ORACLE_CASE_FIXTURES } from './fixtures/independent-oracle-cases.mjs';
+import { createArchitecturalEvidence } from '../../tools/validation/machine-effects/oracle-evidence-v2.mjs';
+import { evidenceInputForOracleCase } from './fixtures/evidence-v2-cases.mjs';
 
 const currentHead = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
 const candidateTreeSha = spawnSync('git', ['merge-tree', '--write-tree', 'origin/main', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
 assert.match(candidateTreeSha, /^[0-9a-f]{40}$/);
-const assignedBase = 'e1a3de992640ebad97c8579688277ea9556d64af';
+const assignedBase = spawnSync('git', ['merge-base', 'origin/main', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+assert.match(assignedBase, /^[0-9a-f]{40}$/);
 const corpus = createCorpus(INDEPENDENT_ORACLE_CASE_FIXTURES);
 const results = [];
 for (const corpusCase of corpus.cases) {
@@ -35,6 +39,7 @@ for (const corpusCase of corpus.cases) {
 
 const a2Before = createA2DenominatorSnapshot();
 const a2After = createA2DenominatorSnapshot();
+const architecturalEvidence = corpus.cases.map((caseValue) => createArchitecturalEvidence(evidenceInputForOracleCase(caseValue)));
 const report = createOracleReport({
   productSha: currentHead,
   baseSha: assignedBase,
@@ -61,6 +66,7 @@ const report = createOracleReport({
     toolchainIdentity: item.provenance.toolchainIdentity,
     status: 'available',
   })),
+  architecturalEvidence,
 });
 
 assert.equal(report.policy.productionEvaluatorIsOracle, false);
@@ -73,12 +79,13 @@ assert.equal(report.blockingCount, 0);
 assert.equal(report.profileSummaries.length, 4);
 assert.equal(report.profileSummaries.every((profile) => profile.caseCount === 1 && profile.passCount === 1 && profile.gapCount === 0), true);
 assert.equal(report.externalEvidence.length, 4);
-assertReleaseReady(report, {
+assert.deepEqual(report.evidenceBreadth.unjustifiedExactCases, results.map((result) => result.caseId));
+assert.throws(() => assertReleaseReady(report, {
   expectedProductSha: currentHead,
   expectedBaseSha: assignedBase,
   expectedCandidateTreeSha: candidateTreeSha,
   requireCandidateTree: true,
-});
+}), /report-incomplete-architectural-evidence/);
 assert.throws(() => validateOracleReport({
   ...report,
   counts: { ...report.counts, unexpected: 0 },
@@ -92,28 +99,44 @@ assert.throws(() => createOracleReport({
   baseSha: assignedBase,
   corpus,
   results: [results[0], results[0]],
+  architecturalEvidence,
   a2Before,
   a2After,
 }), /report-result-case-duplicate/);
 
-const exactHead = verifyExactHead({
+const evidenceMissingReport = createOracleReport({
+  productSha: currentHead,
+  baseSha: assignedBase,
+  corpus,
+  results,
+  toolchain: 'unit-test-toolchain',
+  a2Before,
+  a2After,
+});
+assert.deepEqual(evidenceMissingReport.evidenceBreadth.unjustifiedExactCases, results.map((result) => result.caseId));
+assert.throws(() => assertReleaseReady(evidenceMissingReport), /report-incomplete-architectural-evidence/);
+
+const forgedBreadth = JSON.parse(JSON.stringify(report));
+forgedBreadth.evidenceBreadth.unjustifiedExactCases = [];
+forgedBreadth.evidenceBreadth.exactClaims[0].caseId = results[1].caseId;
+const { reportId: ignoredReportId, ...forgedBreadthPayload } = forgedBreadth;
+forgedBreadth.reportId = sha256Digest(forgedBreadthPayload);
+assert.throws(() => validateOracleReport(forgedBreadth), /exact-claim-duplicate|unjustified-mismatch/);
+
+assert.throws(() => verifyExactHead({
   report,
   expectedHead: currentHead,
   expectedBase: assignedBase,
   expectedCandidateTree: candidateTreeSha,
   requireClean: true,
   requireCandidateTree: true,
-});
-assert.equal(exactHead.valid, true);
-assert.equal(exactHead.headSha, currentHead);
-assert.equal(exactHead.baseSha, assignedBase);
+}), /report-incomplete-architectural-evidence/);
 
-const candidateTree = verifyCandidateMergeTree({
+assert.throws(() => verifyCandidateMergeTree({
   report,
   candidateTreeSha,
   expectedBase: assignedBase,
-});
-assert.equal(candidateTree.valid, true);
+}), /report-incomplete-architectural-evidence/);
 
 const partialCorpus = createCorpus([INDEPENDENT_ORACLE_CASE_FIXTURES[0]]);
 const partialReport = createOracleReport({
@@ -121,6 +144,7 @@ const partialReport = createOracleReport({
   baseSha: assignedBase,
   corpus: partialCorpus,
   results: [results[0]],
+  architecturalEvidence: [architecturalEvidence[0]],
   a2Before,
   a2After,
 });
