@@ -170,6 +170,15 @@ export function parsePclntabHeader(buf) {
     return { valid: false, reason: 'invalid-pointer-size', ptrSize };
   }
 
+  const requiredHeaderSize = magicInfo.version === '1.2'
+    ? 8 + ptrSize
+    : magicInfo.version === '1.16'
+      ? 8 + 7 * ptrSize
+      : 8 + 8 * ptrSize;
+  if (buf.length < requiredHeaderSize) {
+    return { valid: false, reason: 'buffer-too-small' };
+  }
+
   let nfunc = 0;
   let nfiles = 0;
   let textStart = 0n;
