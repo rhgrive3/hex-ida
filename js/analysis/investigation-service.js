@@ -60,6 +60,7 @@ function scheduleProducer(options, signal) {
       };
       const onAbort = () => finish(reject, abortError(signal));
       signal?.addEventListener('abort', onAbort, { once:true });
+      if (signal?.aborted) { onAbort(); return; }
       requestIdleCallback(() => finish(resolve), { timeout:250 });
     });
   }
@@ -103,6 +104,7 @@ function waitShared(entry, signal) {
       reject(abortError(signal));
     };
     signal?.addEventListener('abort', onAbort, { once:true });
+    if (signal?.aborted) { onAbort(); return; }
     entry.promise.then((value) => finish(resolve, value), (error) => finish(reject, error));
   });
 }
@@ -113,6 +115,7 @@ function requestWithSignal(request, signal) {
   return new Promise((resolve, reject) => {
     const onAbort = () => { try { request.cancel?.(); } catch { /* best effort */ } reject(abortError(signal)); };
     signal?.addEventListener('abort', onAbort, { once:true });
+    if (signal?.aborted) { onAbort(); signal?.removeEventListener('abort', onAbort); return; }
     Promise.resolve(request).then(resolve, reject).finally(() => signal?.removeEventListener('abort', onAbort));
   });
 }
