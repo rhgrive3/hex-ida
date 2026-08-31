@@ -12,6 +12,7 @@ function operationController(session, externalSignal) {
     else {
       listener = () => controller.abort(externalSignal.reason ?? 'cancelled');
       externalSignal.addEventListener('abort', listener, { once:true });
+      if (externalSignal.aborted) controller.abort(externalSignal.reason ?? 'cancelled');
     }
   }
   return {
@@ -196,11 +197,14 @@ export class RuntimeAnalysisPlatform {
       if (typeof resolveFunction !== 'function') return { status:'unsupported', reason:'binary-version-mismatch', sourceHash, targetHash, evidence:[] };
       const resolved = await resolveFunction({ functionAddress, fingerprint:original.functionFingerprint || source.functionFingerprint || null, sourceBinaryHash:sourceHash, targetBinaryHash:targetHash });
       if (resolved == null) return { status:'unsupported', reason:'function-re-resolution-failed', sourceHash, targetHash, evidence:[] };
-      const confidence = Number(resolved && typeof resolved === 'object' ? (resolved.identityConfidence ?? resolved.confidence ?? resolved.score) : NaN);
-      const margin = Number(resolved && typeof resolved === 'object' ? (resolved.ambiguityMargin ?? resolved.margin) : NaN);
+      const rawConfidence = resolved && typeof resolved === 'object' ? (resolved.identityConfidence ?? resolved.confidence ?? resolved.score) : undefined;
+      const rawMargin = resolved && typeof resolved === 'object' ? (resolved.ambiguityMargin ?? resolved.margin) : undefined;
+      const confidence = typeof rawConfidence === 'number' ? rawConfidence : NaN;
+      const margin = typeof rawMargin === 'number' ? rawMargin : NaN;
       const accepted = !!(resolved && typeof resolved === 'object' && resolved.accepted === true);
       const ambiguous = !!(resolved && typeof resolved === 'object' && resolved.ambiguous === true);
-      if (!accepted || !Number.isFinite(confidence) || confidence < 0.85 || ambiguous || (Number.isFinite(margin) && margin < 0.10)) {
+      const invalidMargin = rawMargin != null && !Number.isFinite(margin);
+      if (!accepted || !Number.isFinite(confidence) || confidence < 0.85 || ambiguous || invalidMargin || (Number.isFinite(margin) && margin < 0.10)) {
         return { status:'unsupported', reason:'function-re-resolution-ambiguous', sourceHash, targetHash, confidence:Number.isFinite(confidence)?confidence:null, ambiguityMargin:Number.isFinite(margin)?margin:null, evidence:[] };
       }
       functionAddress = asAddress(resolved.address);
