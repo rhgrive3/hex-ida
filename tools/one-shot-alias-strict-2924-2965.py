@@ -23,8 +23,8 @@ replace('js/analysis/alias/canonical-address-v2-core.js',
         "const operator = String(node.operator ?? '').toLowerCase();",
         "const operator = typeof node.operator === 'string' ? node.operator.toLowerCase() : '';" )
 replace('js/analysis/alias/canonical-address-v2-core.js',
-        "if (rhsNode?.kind !== 'unary' || String(rhsNode.operator ?? '').toLowerCase() !== 'not' || rhsNode.inputs?.length !== 1) return null;",
-        "if (rhsNode?.kind !== 'unary' || typeof rhsNode.operator !== 'string' || rhsNode.operator.toLowerCase() !== 'not' || rhsNode.inputs?.length !== 1) return null;")
+        "if (rhsNode?.kind !== 'unary' || String(rhsNode.operator ?? '').toLowerCase() !== 'not' || rhsNode.inputs?.length !== 1) {",
+        "if (rhsNode?.kind !== 'unary' || typeof rhsNode.operator !== 'string' || rhsNode.operator.toLowerCase() !== 'not' || rhsNode.inputs?.length !== 1) {")
 replace('js/analysis/alias/canonical-address-v2-core.js',
         "if ((node.kind === 'intrinsic' || node.kind === 'binary') && String(node.operator ?? '').toLowerCase() === 'add-with-carry') {",
         "if ((node.kind === 'intrinsic' || node.kind === 'binary') && typeof node.operator === 'string' && node.operator.toLowerCase() === 'add-with-carry') {")
