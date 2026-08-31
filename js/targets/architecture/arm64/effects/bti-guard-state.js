@@ -82,7 +82,16 @@ function landingKindOf(instruction) {
       : Array.isArray(instruction?.operandsParsed)
         ? instruction.operandsParsed
         : [];
-  const raw = String(operands[0]?.text || instruction?.operands || '').trim().toLowerCase();
+  const structuredText = operands[0]?.text;
+  let raw = '';
+  if (structuredText != null) {
+    if (typeof structuredText !== 'string') return null;
+    raw = structuredText;
+  } else if (instruction?.operands != null) {
+    if (typeof instruction.operands !== 'string') return null;
+    raw = instruction.operands;
+  }
+  raw = raw.trim().toLowerCase();
   if (!raw) return Object.freeze({ kind:'encoded', code:0 });
   const normalized = raw.replace(/^bti\s+/, '').trim();
   if (normalized === 'c') return Object.freeze({ kind:'c', code:1 });
@@ -114,6 +123,17 @@ function rebuildIntrinsic(operation, guardValue, landing) {
       guardedPageInput:true,
       inputOrder:['page-guarded','pstate.btype','landing-pad-kind'],
     },
+  });
+}
+
+function withoutResolvedLandingMetadata(operation) {
+  if (operation?.kind !== 'intrinsic' || operation?.intrinsicId !== 'arm64.system.bti') return operation;
+  return createMachineOperation({
+    kind:'intrinsic',
+    ...(operation.id == null ? {} : { id:operation.id }),
+    intrinsicId:operation.intrinsicId,
+    effectSummary:operation.effectSummary,
+    metadata:{ ...(operation.metadata || {}), landingPadKind:'unresolved' },
   });
 }
 
@@ -224,7 +244,7 @@ export function decorateArm64BtiGuardedPageEffects(instruction, bundle, context 
   const intrinsicIndex = bundle.operations.findIndex((operation) => operation.kind === 'intrinsic' && operation.intrinsicId === 'arm64.system.bti');
   if (intrinsicIndex < 0 || !landing) {
     return withArchitecturalBtypeReset(instruction, rebuiltBundle(bundle, {
-      operations:bundle.operations,
+      operations:landing ? bundle.operations : bundle.operations.map(withoutResolvedLandingMetadata),
       possibleFaults:bundle.possibleFaults,
       completeness:'partial',
       unknownEffects:{ categories:['control','faults'], reason:intrinsicIndex < 0 ? 'bti-intrinsic-missing' : 'bti-landing-pad-kind-unresolved' },
