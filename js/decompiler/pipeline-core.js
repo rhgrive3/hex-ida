@@ -284,14 +284,13 @@ function buildValue(v, state, flags = {}) {
       out = expr.variable(name ? safeIdent(name) : `global_${BigInt(address || 0).toString(16).toUpperCase()}`, 64, false, origin(d, v), { address });
     } else if (d.op === 'load') {
       const loc = memoryLocation(d, state);
-      // Only the canonical proof-bearing fact may produce a value. A
-      // structural reachingStore link is deliberately ignored here once the
-      // canonical MemorySSA boundary has published a result.
       if (isCanonicalExactMemoryForwarding(d.memoryForwarding,
         canonicalMemoryForwardingContextForLoad(d.memoryForwarding, d,
           d.memoryForwardingContext ?? d.extra?.memoryForwardingContext))
         && d.memoryForwarding.value != null) {
         out = constNode(v, d.memoryForwarding.value);
+      } else if (flags.forAddress && d.reachingStore && d.reachingStore !== d) {
+        out = buildArg(d.reachingStore.args?.[0], state, flags);
       } else {
         out = expr.load(loc, v.bits || Number((d.size || 8) * 8), origin(d, v), { signed: d.signed ?? signedFor(state, v), volatile: !!d.volatile });
       }
@@ -432,7 +431,9 @@ function isElidableReturnSpillStore(store, state) {
     (inst.op === 'load' || inst.op === 'store') && inst.loc?.key === store.loc.key);
   const storeDefinitionId = store.memDef?.definitionId ?? store.extra?.memoryDefinitionId ?? null;
   const loads = sameLocationMemory.filter((inst) => {
-    if (inst.op !== 'load' || !isCanonicalExactMemoryForwarding(inst.memoryForwarding,
+    if (inst.op !== 'load') return false;
+    if (inst.reachingStore === store) return true;
+    if (!isCanonicalExactMemoryForwarding(inst.memoryForwarding,
       canonicalMemoryForwardingContextForLoad(inst.memoryForwarding, inst,
         inst.memoryForwardingContext ?? inst.extra?.memoryForwardingContext))) return false;
     return storeDefinitionId != null

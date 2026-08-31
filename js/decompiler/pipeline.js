@@ -130,25 +130,25 @@ function reanchorRecoveredReturnSource(result, opts = {}) {
     for (const inst of result.ir.instructions || []) {
       if (inst?.op !== 'load' || inst?.loc?.kind !== 'stack' || inst?.row == null || ret.row == null || inst.row >= ret.row) continue;
       if (!sourceRows.has(String(inst.row))) continue;
-      const fact = inst.memoryForwarding;
-      if (!isCanonicalExactMemoryForwarding(fact,
+      const store = inst.reachingStore || ((isCanonicalExactMemoryForwarding(fact,
         canonicalMemoryForwardingContextForLoad(fact, inst,
-          inst.memoryForwardingContext ?? inst.extra?.memoryForwardingContext))) continue;
-      const store = (result.ir.instructions || []).find((candidate) => {
-        const definitionId = candidate?.memDef?.definitionId ?? candidate?.extra?.memoryDefinitionId ?? null;
-        return candidate?.op === 'store'
-          && candidate?.loc?.kind === 'stack'
-          && candidate.loc.key === inst.loc.key
-          && candidate.row != null
-          && definitionId != null
-          && fact.contributingDefinitionIds.includes(String(definitionId));
-      });
+          inst.memoryForwardingContext ?? inst.extra?.memoryForwardingContext)))
+        ? (result.ir.instructions || []).find((candidate) => {
+          const definitionId = candidate?.memDef?.definitionId ?? candidate?.extra?.memoryDefinitionId ?? null;
+          return candidate?.op === 'store'
+            && candidate?.loc?.kind === 'stack'
+            && candidate.loc.key === inst.loc.key
+            && candidate.row != null
+            && definitionId != null
+            && fact.contributingDefinitionIds.includes(String(definitionId));
+        })
+        : null);
       if (!store || store.row == null) continue;
       if (!sourceRows.has(String(store.row))) continue;
       if (!load || inst.row > load.row) load = inst;
     }
     const spillFact = load?.memoryForwarding;
-    const spill = isCanonicalExactMemoryForwarding(spillFact,
+    const spill = load?.reachingStore || (isCanonicalExactMemoryForwarding(spillFact,
       canonicalMemoryForwardingContextForLoad(spillFact, load,
         load?.memoryForwardingContext ?? load?.extra?.memoryForwardingContext))
       ? (result.ir.instructions || []).find((candidate) => {
@@ -160,7 +160,7 @@ function reanchorRecoveredReturnSource(result, opts = {}) {
           && definitionId != null
           && spillFact.contributingDefinitionIds.includes(String(definitionId));
       })
-      : null;
+      : null);
     if (!load || !spill) continue;
     const spillRow = String(spill.row);
     const alignedAddresses = current.addresses.length === current.rows.length;
