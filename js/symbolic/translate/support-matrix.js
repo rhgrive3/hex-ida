@@ -104,7 +104,8 @@ export function classifyOpSupport(op, inst = null) {
       if (!inst?.loc) return TRANSLATION_STATUS.UNSUPPORTED;
       if (inst.loc.kind === MK.UNKNOWN) return TRANSLATION_STATUS.UNSUPPORTED;
       if (isCanonicalExactMemoryForwarding(inst.memoryForwarding,
-        canonicalMemoryForwardingContextForLoad(inst.memoryForwarding, inst))) return TRANSLATION_STATUS.EXACT;
+        canonicalMemoryForwardingContextForLoad(inst.memoryForwarding, inst,
+          inst.memoryForwardingContext ?? inst.extra?.memoryForwardingContext))) return TRANSLATION_STATUS.EXACT;
       // A location name is not a reaching definition. Without a unique
       // MemorySSA/alias proof, treating the load as a fresh stable symbol
       // would turn incomplete memory semantics into an exact proof.

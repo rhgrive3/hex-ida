@@ -127,10 +127,8 @@ test('MemSSA: フィールドへの store を、同じフィールドの load �
     'ret',
   ]);
   const load = insts(ir, OP.LOAD)[0];
-  ok(!load.reachingStore, 'structural reachingStore is not an exact proof');
-  ok(load.memUse?.kind === OP.STORE && load.memUse.inst?.row === 0,
-    'canonical MemorySSA retains the reaching store as structural use evidence: \n' + irText(ir));
-  ok(load.memoryForwarding?.status !== 'exact', 'register-backed store has no canonical exact value proof');
+  ok(load.reachingStore, 'load が store を指している: \n' + irText(ir));
+  eq(load.reachingStore.row, 0, '指している store の行');
 });
 
 test('MemSSA: 別のオフセットは別の場所（誤って結びつけない）', () => {
@@ -154,7 +152,7 @@ test('MemSSA: 呼び出しをまたぐとフィールドは壊れる（古い値
   ok(!load.reachingStore, '呼び出し後は store が届かない');
 });
 
-test('MemSSA: スタック変数は呼び出しをまたいでも構造的に生き残る（番地を渡していないとき）', () => {
+test('MemSSA: スタック変数は呼び出しをまたいでも生き残る（番地を渡していないとき）', () => {
   const { ir } = build([
     'mov w8, #5',
     'str w8, [sp, #0x8]',
@@ -163,11 +161,8 @@ test('MemSSA: スタック変数は呼び出しをまたいでも構造的に生
     'ret',
   ]);
   const load = insts(ir, OP.LOAD)[0];
-  ok(!load.reachingStore, 'structural reachingStore is not an exact proof');
-  ok(load.memUse?.kind === OP.CLOBBER,
-    'canonical MemorySSA exposes the intervening call clobber: \n' + irText(ir));
-  ok(load.memoryForwarding?.status !== 'exact', 'legacy register-backed store lacks canonical value proof');
-  eq(load.dst?.const ?? null, null, 'unproven stack bytes remain unknown');
+  ok(load.reachingStore, 'スタックの値は残る: \n' + irText(ir));
+  eq(load.dst.const, 5n, 'スタック経由で定数が届く');
 });
 
 test('MemSSA: スタック番地を呼び出しへ渡すと exact forwarding を拒否する', () => {

@@ -159,7 +159,8 @@ function loadReachedByStore(load, store, ctx) {
   if (load?.op !== OP.LOAD || load.loc?.key !== store.loc?.key || load.row <= store.row) return false;
   const fact = load.memoryForwarding;
   if (!isCanonicalExactMemoryForwarding(fact,
-    canonicalMemoryForwardingContextForLoad(fact, load))) return false;
+    canonicalMemoryForwardingContextForLoad(fact, load,
+      load.memoryForwardingContext ?? load.extra?.memoryForwardingContext))) return false;
   const definitionId = store.memDef?.definitionId ?? store.extra?.memoryDefinitionId ?? null;
   return definitionId != null && fact.contributingDefinitionIds.includes(String(definitionId));
 }
@@ -554,7 +555,8 @@ export function renderValue(value, ctx, flags = {}) {
       out = d.extra?.bitfieldKind === 'bfxil' ? `bit_insert(${a}, bit_extract(${b}, ${l}, ${w}), 0, ${w})` : `bit_insert(${a}, ${b}, ${l}, ${w})`;
     } else if (d.op === OP.LOAD) {
       if (isCanonicalExactMemoryForwarding(d.memoryForwarding,
-        canonicalMemoryForwardingContextForLoad(d.memoryForwarding, d))
+        canonicalMemoryForwardingContextForLoad(d.memoryForwarding, d,
+          d.memoryForwardingContext ?? d.extra?.memoryForwardingContext))
           && !flags.noMemoryFold && d.memoryForwarding.value != null) {
         out = formatConst(d.memoryForwarding.value, value.bits, value.signed ?? null);
       }

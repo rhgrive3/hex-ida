@@ -359,7 +359,8 @@ function restoreAapcs64PublicLocations(projected) {
     const base = canonicalAddressBase(inst.addr.base);
     if (base?.def?.op !== LEGACY_OP.LOAD
         || !isCanonicalExactMemoryForwarding(base.def.memoryForwarding,
-          canonicalMemoryForwardingContextForLoad(base.def.memoryForwarding, base.def))) continue;
+          canonicalMemoryForwardingContextForLoad(base.def.memoryForwarding, base.def,
+            base.def.memoryForwardingContext ?? base.def.extra?.memoryForwardingContext))) continue;
     const disp = BigInt(inst.addr.disp ?? 0n);
     const size = inst.addr.size ?? inst.extra?.size ?? null;
     const key = `field:loaded:${base.id}+${disp.toString()}:s${size ?? '?'}`;
@@ -596,6 +597,63 @@ function buildV2CompatFromLegacyModel(model, opts = {}) {
       ...(opts.compatOptions ?? {}),
     },
   });
+  if (process.env.HEX_DEBUG_C2_MEM === '1') {
+    process.stderr.write(JSON.stringify(result.memorySsa?.regions ?? [], null, 2) + '\n');
+    process.stderr.write(JSON.stringify((result.memorySsa?.regions ?? []).filter((region) => region.kind === 'unknown').map((region) => {
+      const sourceId = region.uncertaintyIdentity?.sourceEntityId;
+      const node = result.semanticIr?.nodes?.find((candidate) => String(candidate.id) === String(sourceId));
+      const addressId = node?.memory?.addressExpr?.valueId;
+      const value = result.semanticIr?.values?.find((candidate) => String(candidate.id) === String(addressId));
+      const definition = result.semanticIr?.nodes?.find((candidate) => String(candidate.id) === String(value?.definitionNodeId));
+      const addressInputs = (definition?.inputs ?? []).map((inputId) => {
+        const inputValue = result.semanticIr?.values?.find((candidate) => String(candidate.id) === String(inputId));
+        const inputDefinition = result.semanticIr?.nodes?.find((candidate) => String(candidate.id) === String(inputValue?.definitionNodeId));
+        return {
+          valueId: inputValue?.id,
+          valueKind: inputValue?.kind,
+          definitionNodeId: inputValue?.definitionNodeId,
+          definitionKind: inputDefinition?.kind,
+          variable: inputDefinition?.variable?.physicalIdentity?.registerId ?? null,
+        };
+      });
+      const stateUses = (result.ssa?.uses ?? []).filter((use) => String(use.sourceEntityId) === String(definition?.inputs?.[0] ?? sourceId));
+      const readNodeIds = new Set(addressInputs.filter((input) => input.definitionKind === 'state-read').map((input) => String(input.definitionNodeId)));
+      const readUses = (result.ssa?.uses ?? []).filter((use) => readNodeIds.has(String(use.sourceEntityId)));
+      const readValueIds = new Set(readUses.map((use) => String(use.valueId)));
+      const pointerValue = result.semanticIr?.values?.find((candidate) => String(candidate.id) === 'semantic_value_3badd2c473b95936bb72aa67d5fb1655');
+      const pointerDefinition = result.semanticIr?.nodes?.find((candidate) => String(candidate.id) === String(pointerValue?.definitionNodeId));
+      const scalarUses = (result.ssa?.uses ?? []).filter((use) => String(use.sourceEntityId) === String(node?.id));
+      const relevantIds = new Set(scalarUses.map((use) => String(use.valueId)));
+      return {
+        region: { id: region.id, kind: region.kind, widthBits: region.widthBits },
+        node: { id: node?.id, kind: node?.kind, inputs: node?.inputs, address: node?.memory?.addressExpr },
+        addressValue: { id: value?.id, definitionNodeId: value?.definitionNodeId },
+        addressDefinition: { id: definition?.id, kind: definition?.kind, inputs: definition?.inputs },
+        addressInputs,
+        scalarSsa: {
+          uses: scalarUses.map((use) => ({ sourceEntityId: use.sourceEntityId, valueId: use.valueId, kind: use.proof?.kind, sem: use.proof?.sourceSemanticValueId })),
+          definitions: (result.ssa?.definitions ?? []).filter((candidate) => relevantIds.has(String(candidate.valueId))).map((candidate) => ({ valueId: candidate.valueId, kind: candidate.kind, src: candidate.sourceEntityId, proof: candidate.proof?.kind, sem: candidate.proof?.sourceSemanticValueId })),
+        },
+        readSsa: {
+          uses: readUses.map((use) => ({ sourceEntityId: use.sourceEntityId, valueId: use.valueId, kind: use.proof?.kind, sem: use.proof?.sourceSemanticValueId })),
+          definitions: (result.ssa?.definitions ?? []).filter((candidate) => readValueIds.has(String(candidate.valueId))).map((candidate) => ({ valueId: candidate.valueId, kind: candidate.kind, src: candidate.sourceEntityId, proof: candidate.proof?.kind, sem: candidate.proof?.sourceSemanticValueId })),
+        },
+        pointerSource: {
+          value: pointerValue ? { id: pointerValue.id, definitionNodeId: pointerValue.definitionNodeId, variableKey: pointerValue.variableKey } : null,
+          definition: pointerDefinition ? { id: pointerDefinition.id, kind: pointerDefinition.kind, variable: pointerDefinition.variable?.physicalIdentity?.registerId ?? null, inputs: pointerDefinition.inputs } : null,
+        },
+        stateUses,
+      };
+    }), null, 2) + '\n');
+    process.stderr.write(JSON.stringify(result.memorySsa?.accessMetadata?.filter((item) => item.entityKind === 'use' && item.sourceKind === 'load').map((item) => ({
+      id: item.memorySsaEntityId,
+      node: item.nodeId,
+      region: item.regionId,
+      range: item.byteRange,
+      proof: item.rangeProof,
+      coverage: result.memorySsa.byteCoverage?.find((coverage) => String(coverage.useId) === String(item.memorySsaEntityId)),
+    })), null, 2) + '\n');
+  }
   restoreAapcs64PreservedStateReads(result.legacyV1);
   restoreAapcs64PublicLocations(result.legacyV1);
   propagateExactLegacyConstants(result.legacyV1);
@@ -603,6 +661,16 @@ function buildV2CompatFromLegacyModel(model, opts = {}) {
   attachAapcs64TypedCallResults(result.legacyV1, instructionByRow, opts);
   invalidateEscapedStackForwarding(result.legacyV1);
   attachAapcs64FunctionReturns(result.legacyV1, abiAdapter);
+  if (process.env.HEX_DEBUG_C2_LEGACY === '1') {
+    process.stderr.write(JSON.stringify(result.legacyV1.instructions.filter((item) => item.op === 'load').map((item) => ({
+      row: item.row,
+      loc: item.loc?.key,
+      fwd: item.memoryForwarding?.status,
+      reason: item.memoryForwarding?.reason,
+      reach: item.reachingStore?.row,
+      context: item.memoryForwardingContext,
+    })), null, 2) + '\n');
+  }
   lastSemanticV2Instrumentation = result.instrumentation;
   return result.legacyV1;
 }

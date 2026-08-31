@@ -132,7 +132,8 @@ function reanchorRecoveredReturnSource(result, opts = {}) {
       if (!sourceRows.has(String(inst.row))) continue;
       const fact = inst.memoryForwarding;
       if (!isCanonicalExactMemoryForwarding(fact,
-        canonicalMemoryForwardingContextForLoad(fact, inst))) continue;
+        canonicalMemoryForwardingContextForLoad(fact, inst,
+          inst.memoryForwardingContext ?? inst.extra?.memoryForwardingContext))) continue;
       const store = (result.ir.instructions || []).find((candidate) => {
         const definitionId = candidate?.memDef?.definitionId ?? candidate?.extra?.memoryDefinitionId ?? null;
         return candidate?.op === 'store'
@@ -148,7 +149,8 @@ function reanchorRecoveredReturnSource(result, opts = {}) {
     }
     const spillFact = load?.memoryForwarding;
     const spill = isCanonicalExactMemoryForwarding(spillFact,
-      canonicalMemoryForwardingContextForLoad(spillFact, load))
+      canonicalMemoryForwardingContextForLoad(spillFact, load,
+        load?.memoryForwardingContext ?? load?.extra?.memoryForwardingContext))
       ? (result.ir.instructions || []).find((candidate) => {
         const definitionId = candidate?.memDef?.definitionId ?? candidate?.extra?.memoryDefinitionId ?? null;
         return candidate?.op === 'store'

@@ -288,7 +288,8 @@ function buildValue(v, state, flags = {}) {
       // structural reachingStore link is deliberately ignored here once the
       // canonical MemorySSA boundary has published a result.
       if (isCanonicalExactMemoryForwarding(d.memoryForwarding,
-        canonicalMemoryForwardingContextForLoad(d.memoryForwarding, d))
+        canonicalMemoryForwardingContextForLoad(d.memoryForwarding, d,
+          d.memoryForwardingContext ?? d.extra?.memoryForwardingContext))
         && d.memoryForwarding.value != null) {
         out = constNode(v, d.memoryForwarding.value);
       } else {
@@ -432,7 +433,8 @@ function isElidableReturnSpillStore(store, state) {
   const storeDefinitionId = store.memDef?.definitionId ?? store.extra?.memoryDefinitionId ?? null;
   const loads = sameLocationMemory.filter((inst) => {
     if (inst.op !== 'load' || !isCanonicalExactMemoryForwarding(inst.memoryForwarding,
-      canonicalMemoryForwardingContextForLoad(inst.memoryForwarding, inst))) return false;
+      canonicalMemoryForwardingContextForLoad(inst.memoryForwarding, inst,
+        inst.memoryForwardingContext ?? inst.extra?.memoryForwardingContext))) return false;
     return storeDefinitionId != null
       && inst.memoryForwarding.contributingDefinitionIds.includes(String(storeDefinitionId));
   });

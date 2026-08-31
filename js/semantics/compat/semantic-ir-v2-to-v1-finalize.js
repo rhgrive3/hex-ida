@@ -236,14 +236,7 @@ function foldInstruction(inst) {
   if (inst.op === V1_OP.LOAD && Object.hasOwn(inst, 'memoryForwarding')) {
     const forwarding = inst.memoryForwarding;
     if (isCanonicalExactMemoryForwarding(forwarding, canonicalMemoryForwardingContext(forwarding, {
-      useId: forwarding?.useId,
-      sourceEntityId: inst.semanticNodeId ?? inst.sourceEntityId,
-      nodeId: inst.semanticNodeId ?? inst.sourceEntityId,
-      entityId: forwarding?.loadEntityId,
-      regionId: forwarding?.loadRegionId,
-      range: forwarding?.loadRange,
-      artifactDigest: forwarding?.artifactDigest,
-      snapshotId: forwarding?.snapshotId,
+      ...inst.memoryForwardingContext,
       consumerId: CANONICAL_MEMORY_FORWARDING_CONSUMER,
       purpose: CANONICAL_MEMORY_FORWARDING_PURPOSE,
     })) && forwarding.value != null) {
