@@ -244,6 +244,21 @@ export function createDebugEvidenceProducer(debugEvidence) {
   });
 }
 
+function requiredPatternId(value, code) {
+  if (typeof value !== 'string' || value.length === 0) throw new TypeError(code);
+  return value;
+}
+
+function patternBytes(value, code) {
+  if (!(Array.isArray(value) || value instanceof Uint8Array) || value.length === 0) {
+    throw new TypeError(code);
+  }
+  if (Array.isArray(value) && value.some((byte) => !Number.isInteger(byte) || byte < 0 || byte > 0xff)) {
+    throw new TypeError(code);
+  }
+  return Uint8Array.from(value);
+}
+
 /**
  * A declarative byte-pattern producer.
  *
@@ -258,30 +273,32 @@ export function createPatternProducer({ id, architectureId, patterns, alignment 
   if (!Number.isSafeInteger(alignment) || alignment <= 0) {
     throw new TypeError('discovery-pattern-invalid-alignment');
   }
+  const producerId = requiredPatternId(id, 'discovery-pattern-invalid-id');
+  const producerArchitectureId = architectureId == null
+    ? null
+    : requiredPatternId(architectureId, 'discovery-pattern-invalid-architecture-id');
   if (!Array.isArray(patterns)) {
     throw new TypeError('discovery-pattern-empty-patterns');
   }
   const compiled = patterns.map((pattern) => {
-    if (!pattern || (!Array.isArray(pattern.bytes) && !(pattern.bytes instanceof Uint8Array)) || pattern.bytes.length === 0) {
-      throw new TypeError('discovery-pattern-invalid-bytes');
-    }
-    const bytes = Uint8Array.from(pattern.bytes);
+    if (!pattern) throw new TypeError('discovery-pattern-invalid-bytes');
+    const bytes = patternBytes(pattern.bytes, 'discovery-pattern-invalid-bytes');
     let mask = null;
-    if (pattern.mask) {
-      if (pattern.mask.length !== bytes.length) {
+    if (pattern.mask != null) {
+      mask = patternBytes(pattern.mask, 'discovery-pattern-invalid-mask');
+      if (mask.length !== bytes.length) {
         throw new TypeError('discovery-pattern-mask-length-mismatch');
       }
-      mask = Uint8Array.from(pattern.mask);
     }
     return {
-      id: String(pattern.id ?? 'pattern'),
+      id: pattern.id == null ? 'pattern' : requiredPatternId(pattern.id, 'discovery-pattern-invalid-id'),
       bytes,
       mask,
     };
   });
   return Object.freeze({
-    id: String(id),
-    architectureId: architectureId == null ? null : String(architectureId),
+    id: producerId,
+    architectureId: producerArchitectureId,
     produce(input) {
       const bytes = input?.image?.code;
       const base = input?.image?.codeBaseAddress;
