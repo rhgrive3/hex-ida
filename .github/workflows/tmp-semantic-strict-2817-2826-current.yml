@@ -1,0 +1,33 @@
+name: Temporary semantic strict boundary materializer
+on:
+  push:
+    branches: [fix/2817-2818-2823-2826-semantic-strict-current]
+permissions:
+  contents: write
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/2817-2818-2823-2826-semantic-strict-current
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: python3 tools/tmp-2817-2826-current.py
+      - name: Focused regression
+        run: |
+          node tests/semantic-memoryssa-cfg-strict.mjs
+          npm run semantic-v2:test
+      - name: Commit production repair
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add js/semantics/memoryssa/build.js js/semantics/memoryssa/contract.js js/semantics/memoryssa/validate.js js/semantics/cfg/index.js tests/semantic-memoryssa-cfg-strict.mjs
+          git diff --cached --quiet && exit 0
+          git commit -m 'fix(semantics): reject coerced MemorySSA and CFG identities'
+          git push origin HEAD:fix/2817-2818-2823-2826-semantic-strict-current
