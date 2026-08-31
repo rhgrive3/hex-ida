@@ -23,7 +23,7 @@ function make(lines){
   const {model,rowOfAddress}=make([`bl #0x${target.toString(16)}`,'ret','ret']);
   let ir=buildIR(model,{rowOfAddress});
   assert.equal(ir.instructions.find((i)=>i.op===OP.CALL).dst,null);
-  ir=buildIR(model,{rowOfAddress,callPrototypeFor:()=>({returnType:'double',returnClass:'fp',returnBits:64})});
+  ir=buildIR(model,{rowOfAddress,callPrototypeFor:()=>({returnType:'double',returnClass:'fp',returnBits:64,args:[]})});
   assert.equal(ir.instructions.find((i)=>i.op===OP.CALL).dst?.reg,'v0');
 }
 // #132: conditional branch outside function is TAKEN, while fallthrough remains local.

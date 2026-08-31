@@ -59,7 +59,7 @@ function make(lines, base=0x100000000n) {
 
 // #145: <=128-bit aggregate return occupies x0/x1 when type evidence proves it.
 {
-  const p=recoverFunctionPrototype({args:new Map(),instructions:[]},{values:new Map(),ret:{kind:'aggregate',name:'Pair',bits:128,confidence:0.8}},{abiAdapter:semanticAbiAdapter(AAPCS64_ABI)});
+  const p=recoverFunctionPrototype({args:new Map(),instructions:[]},{values:new Map(),ret:{kind:'aggregate',name:'Pair',bits:128,confidence:0.8,members:[{type:'uint64_t',bits:64,byteOffset:0},{type:'uint64_t',bits:64,byteOffset:8}]}},{abiAdapter:semanticAbiAdapter(AAPCS64_ABI)});
   assert.deepEqual(p.returnLocations.map((x)=>x.reg),['x0','x1']);
 }
 

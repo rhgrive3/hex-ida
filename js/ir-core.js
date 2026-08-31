@@ -423,7 +423,7 @@ function attachCanonicalTypedCallResults(projected, instructionByRow, adapter, o
     // register location. Aggregate/multi-register returns stay in the full
     // returnLocations metadata carried by the call node.
     const returnLocations = Array.isArray(result?.returnLocations) ? result.returnLocations : [];
-    if (result?.partial === true || result?.completeness !== 'complete'
+    if (result?.unsupported === true
       || returnLocations.length !== 1
       || returnLocations[0]?.kind !== 'register'
       || returnLocations[0]?.aggregate === true
