@@ -4,7 +4,8 @@ import { RuntimeProviderSession, createRuntimeProviderDescriptor } from './provi
 import { createRuntimeEvent, createRuntimeEventBatch } from './events.js';
 
 function required(value, code, message) {
-  const text = String(value ?? '').trim();
+  if (typeof value !== 'string') throw new DebugAdapterError(code, message || code);
+  const text = value.trim();
   if (!text) throw new DebugAdapterError(code, message || code);
   return text;
 }
