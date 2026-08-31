@@ -28,6 +28,7 @@ async function waitForOwnedRequest(request, signal) {
       finish(reject, abortError(signal));
     };
     signal.addEventListener('abort', onAbort, { once:true });
+    if (signal.aborted) { onAbort(); return; }
     Promise.resolve(request).then((value) => finish(resolve, value), (error) => finish(reject, error));
   });
 }
@@ -149,6 +150,7 @@ export function recoverSchemasForUi(app, { signal = null, onProgress = null, pri
     };
     if (signal?.aborted) { onAbort(); return; }
     signal?.addEventListener?.('abort', onAbort, { once:true });
+    if (signal?.aborted) { onAbort(); return; }
     entry.promise.then((value) => finish(resolve, value), (error) => finish(reject, error));
   });
 }
