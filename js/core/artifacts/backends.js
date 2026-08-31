@@ -22,6 +22,11 @@ function abortError(signal) {
   return signal?.reason ?? new DOMException('Aborted', 'AbortError');
 }
 
+function requireArtifactId(value) {
+  if (typeof value !== 'string' || !value) throw new TypeError('artifact-id-required');
+  return value;
+}
+
 function storageError(error, operation) {
   const quota = error?.name === 'QuotaExceededError' || error?.code === 22;
   return new ArtifactStorageError(
@@ -59,7 +64,7 @@ async function absorbTransactionFailure(done) {
 
 function storedRow(record, payload) {
   return {
-    artifactId:String(record.artifactId),
+    artifactId:requireArtifactId(record.artifactId),
     ...createStorageEnvelopeFields(record),
     record:clone(record),
     payload:exactArrayBuffer(payload),
@@ -106,7 +111,7 @@ export class MemoryArtifactBackend {
 
   async getRaw(artifactId) {
     this.metrics.reads++;
-    const raw = this.entries.get(String(artifactId));
+    const raw = this.entries.get(requireArtifactId(artifactId));
     if (!raw) return null;
     const result = cloneRaw(raw);
     this.metrics.readBytes += result.payload?.byteLength || 0;
@@ -115,7 +120,7 @@ export class MemoryArtifactBackend {
 
   async putAtomic(record, payload, { signal } = {}) {
     if (signal?.aborted) throw abortError(signal);
-    const id = String(record.artifactId);
+    const id = requireArtifactId(record.artifactId);
     const buffer = exactArrayBuffer(payload);
     const previous = this.entries.get(id);
     if (previous) {
@@ -135,7 +140,7 @@ export class MemoryArtifactBackend {
   }
 
   async delete(artifactId) {
-    const id = String(artifactId);
+    const id = requireArtifactId(artifactId);
     const previous = this.entries.get(id);
     if (!previous) {
       this.metrics.deleteMisses++;
@@ -149,7 +154,7 @@ export class MemoryArtifactBackend {
   }
 
   async deleteIfMatches(artifactId, record, payload) {
-    const id = String(artifactId);
+    const id = requireArtifactId(artifactId);
     const previous = this.entries.get(id);
     if (!previous) return false;
     if (!sameObservedArtifact(previous.record, record, previous.payload, payload)) return false;
@@ -158,7 +163,7 @@ export class MemoryArtifactBackend {
 
   async has(artifactId) {
     this.metrics.hasChecks++;
-    return this.entries.has(String(artifactId));
+    return this.entries.has(requireArtifactId(artifactId));
   }
 
   async close() {}
@@ -234,7 +239,7 @@ export class IndexedDbArtifactBackend {
       const db = await this.#db();
       const tx = db.transaction('artifacts', 'readonly');
       done = transactionPromise(tx);
-      const raw = await requestPromise(tx.objectStore('artifacts').get(String(artifactId)));
+      const raw = await requestPromise(tx.objectStore('artifacts').get(requireArtifactId(artifactId)));
       await done;
       if (!raw) return null;
       const result = cloneRaw(raw);
@@ -252,7 +257,7 @@ export class IndexedDbArtifactBackend {
     let tx = null;
     let done = null;
     let onAbort = null;
-    const id = String(record.artifactId);
+    const id = requireArtifactId(record.artifactId);
     const buffer = exactArrayBuffer(payload);
     try {
       const db = await this.#db();
@@ -302,7 +307,7 @@ export class IndexedDbArtifactBackend {
   }
 
   async delete(artifactId) {
-    const id = String(artifactId);
+    const id = requireArtifactId(artifactId);
     let done = null;
     try {
       const db = await this.#db();
@@ -327,7 +332,7 @@ export class IndexedDbArtifactBackend {
   }
 
   async deleteIfMatches(artifactId, record, payload) {
-    const id = String(artifactId);
+    const id = requireArtifactId(artifactId);
     let done = null;
     try {
       const db = await this.#db();
@@ -357,7 +362,7 @@ export class IndexedDbArtifactBackend {
       const db = await this.#db();
       const tx = db.transaction('artifacts', 'readonly');
       done = transactionPromise(tx);
-      const value = await requestPromise(tx.objectStore('artifacts').getKey(String(artifactId)));
+      const value = await requestPromise(tx.objectStore('artifacts').getKey(requireArtifactId(artifactId)));
       await done;
       return value != null;
     } catch (error) {
