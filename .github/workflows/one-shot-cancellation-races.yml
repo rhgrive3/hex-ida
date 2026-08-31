@@ -1,0 +1,26 @@
+name: One-shot cancellation races
+on:
+  push:
+    branches: [fix/cancellation-races-current-2848-2963]
+permissions:
+  contents: write
+jobs:
+  materialize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/cancellation-races-current-2848-2963
+          fetch-depth: 0
+      - run: python3 tools/one-shot-cancellation-races.py
+      - run: node --check js/analysis/investigation-service.js && node --check js/adapters/index.js && node --check js/debug/remote-protocol.js
+      - run: node tests/cancellation-races-2848-2962-2963.mjs
+      - run: node tests/integrated-issues-hardening.mjs
+      - name: Commit clean result
+        run: |
+          rm .github/workflows/one-shot-cancellation-races.yml tools/one-shot-cancellation-races.py
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m "fix: close cancellation listener races"
+          git push
