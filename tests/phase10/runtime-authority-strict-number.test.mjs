@@ -1,21 +1,4 @@
-from pathlib import Path
-
-p=Path('js/runtime/authority.js')
-s=p.read_text()
-old="""function numericPrimitive(value, code) {
-  if (typeof value === 'number') return value;
-  if (typeof value === 'string' && value.trim() !== '') return Number(value);
-  throw new TypeError(code);
-}"""
-new="""function numericPrimitive(value, code) {
-  if (typeof value !== 'number' || !Number.isFinite(value)) throw new TypeError(code);
-  return value;
-}"""
-if old not in s: raise SystemExit('runtime authority numericPrimitive anchor drift')
-s=s.replace(old,new,1)
-p.write_text(s)
-
-Path('tests/phase10/runtime-authority-strict-number.test.mjs').write_text(r'''import assert from 'node:assert/strict';
+import assert from 'node:assert/strict';
 import { createRuntimeAuthorityBinding, createRuntimeObservation, RuntimeAuthorityTracker } from '../../js/runtime/authority.js';
 
 const base = {
@@ -41,4 +24,3 @@ assert.throws(() => new RuntimeAuthorityTracker(binding, { maxObservations:'2' }
 const tracker = new RuntimeAuthorityTracker(binding, { maxObservations:2 });
 assert.equal(tracker.maxObservations, 2);
 console.log('runtime authority strict number boundary: PASS');
-''')

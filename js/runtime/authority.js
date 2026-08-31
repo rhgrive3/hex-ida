@@ -66,9 +66,8 @@ function identityAlias(input, primary, alias, code) {
 }
 
 function numericPrimitive(value, code) {
-  if (typeof value === 'number') return value;
-  if (typeof value === 'string' && value.trim() !== '') return Number(value);
-  throw new TypeError(code);
+  if (typeof value !== 'number' || !Number.isFinite(value)) throw new TypeError(code);
+  return value;
 }
 
 function uint(value, code) {
