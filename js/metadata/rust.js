@@ -98,7 +98,7 @@ function parseV0Identifier(str, pos) {
 }
 
 function parseV0Type(str, state, depth = 0) {
-  if (state.pos >= str.length || depth > 32) return null;
+  if (state.pos >= str.length || depth > state.maxDepth) return null;
   const c = str[state.pos];
   if (RUST_V0_BASIC_TYPES[c]) {
     state.pos++;
@@ -116,7 +116,7 @@ function parseV0Type(str, state, depth = 0) {
 }
 
 function parseV0Path(str, state, depth = 0) {
-  if (state.pos >= str.length || depth > 32) return null;
+  if (state.pos >= str.length || depth > state.maxDepth) return null;
   const tag = str[state.pos++];
 
   if (tag === 'C') {
@@ -179,7 +179,8 @@ export function demangleRustV0(symbol, maxDepth = 32) {
     return { original: symbol, demangled: symbol, parsed: false, reason: 'not-v0-symbol' };
   }
 
-  const state = { pos: 0 };
+  const depthLimit = Number.isSafeInteger(maxDepth) && maxDepth >= 0 ? maxDepth : 32;
+  const state = { pos: 0, maxDepth: depthLimit };
   let demangled = null;
 
   try {
