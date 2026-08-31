@@ -27,9 +27,15 @@ const forbidden = [
   '.github/workflows/',
   'reports/',
 ];
+const phase1AllowedPrefixes = [
+  'tools/validation/machine-effects/',
+  'tests/machine-effects/',
+];
 
-assert.equal(changedFilesWithinAllowlist(owned).valid, true);
-assert.equal(changedFilesWithinAllowlist([...owned, forbidden[0]]).valid, false);
+assert.equal(changedFilesWithinAllowlist(owned, phase1AllowedPrefixes).valid, true);
+assert.equal(changedFilesWithinAllowlist([...owned, forbidden[0]], phase1AllowedPrefixes).valid, false);
+assert.equal(changedFilesWithinAllowlist([...owned, forbidden[0]]).valid, true,
+  'Phase 2 release scope explicitly owns the canonical contract while Phase 1 remains isolated');
 assert.ok(owned.every((file) => file.startsWith('tools/validation/machine-effects/') || file.startsWith('tests/machine-effects/')));
 assert.ok(forbidden.every((file) => !owned.includes(file)));
 assert.notEqual(INDEPENDENT_ORACLE_IDENTITY, PRODUCTION_SUBJECT_IDENTITY);
