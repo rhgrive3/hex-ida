@@ -13,6 +13,7 @@ function exactRevision(value, fallback, code) {
     if (!Number.isSafeInteger(resolved)) fail(code);
     return String(resolved);
   }
+  if (typeof resolved === 'bigint') return String(resolved);
   return required(resolved, code);
 }
 function exactJson(value) {
