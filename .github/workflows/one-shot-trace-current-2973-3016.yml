@@ -1,0 +1,54 @@
+name: One-shot trace provider current 2973 3016
+on:
+  push:
+    branches: [fix/trace-provider-current-2973-3016-v3]
+permissions:
+  contents: write
+jobs:
+  materialize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply reviewed trace strictness and identity evidence fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin fix/3013-3016-trace-current-main-2
+          base=$(git merge-base HEAD origin/fix/3013-3016-trace-current-main-2)
+          git diff "$base"..origin/fix/3013-3016-trace-current-main-2 -- js/runtime/trace-provider.js | git apply --3way
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('js/runtime/trace-provider.js'); s=p.read_text()
+          old="""      const identityEvidenceIds = Array.isArray(module.identityEvidenceIds) ? module.identityEvidenceIds : [];
+      const hasProvenStaticIdentity = module.binaryId != null && (module.identityState === 'exact' || module.identityState === 'resolved' || identityEvidenceIds.length > 0);"""
+          new="""      const identityEvidenceIds = Array.isArray(module.identityEvidenceIds) ? module.identityEvidenceIds : [];
+      const hasValidIdentityEvidence = identityEvidenceIds.length > 0
+        && identityEvidenceIds.every((id) => typeof id === 'string' && id.trim().length > 0);
+      const hasProvenStaticIdentity = module.binaryId != null
+        && (module.identityState === 'exact' || module.identityState === 'resolved' || hasValidIdentityEvidence);"""
+          if old not in s: raise SystemExit('trace identity evidence anchor drift')
+          p.write_text(s.replace(old,new,1))
+          Path('tests/runtime-trace-provider-strict-boundaries.mjs').write_text(r'''import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          const source=fs.readFileSync(new URL('../js/runtime/trace-provider.js',import.meta.url),'utf8');
+          assert.ok(source.includes("typeof id === 'string' && id.trim().length > 0"));
+          assert.ok(source.includes('|| hasValidIdentityEvidence'));
+          assert.ok(!source.includes('|| identityEvidenceIds.length > 0'));
+          assert.ok(source.includes("typeof value !== 'string'"), 'recording identity helper must be string-only after restack');
+          assert.ok(source.includes("typeof rawType === 'string'"), 'trace event kind must preserve raw type boundary');
+          console.log('runtime-trace-provider-strict-boundaries: PASS');
+          ''')
+          PY
+      - run: node tests/runtime-trace-provider-strict-boundaries.mjs
+      - run: npm run runtime:test
+      - name: Commit production result
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add js/runtime/trace-provider.js tests/runtime-trace-provider-strict-boundaries.mjs
+          git diff --cached --quiet || git commit -m 'fix(runtime): harden trace import identity authority'
+          git push
