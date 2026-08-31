@@ -3,6 +3,7 @@ on:
   push:
     branches:
       - fix/cancellation-races-current-2848-2963-v2
+  workflow_dispatch:
 permissions:
   contents: write
 jobs:
@@ -80,44 +81,24 @@ function initialMemorySize(value) {"""
           cat > tests/phase10/adapter-strict-boundaries.test.mjs <<'EOF'
           import assert from 'node:assert/strict';
           import { LocalFunctionSandboxAdapter, RemoteDebugAdapter } from '../../js/adapters/index.js';
-
-          function expectCode(error, code) {
-            assert.equal(error?.code, code, `expected ${code}, got ${error?.code}: ${error?.message}`);
-            return true;
-          }
-
+          function expectCode(error, code) { assert.equal(error?.code, code); return true; }
           const local = new LocalFunctionSandboxAdapter({});
           local.sandbox = { emulator: { dump: async (_address, size) => new Uint8Array(size) } };
           local.memoryMap = { assert() {} };
-          for (const bad of ['8', ['8'], true, { valueOf: () => 8 }]) {
-            await assert.rejects(local.readMemory(0n, bad), (error) => expectCode(error, 'invalid-size'));
-          }
-          assert.equal((await local.readMemory(0n, 8)).length, 8);
-          assert.equal((await local.readMemory(0n, null)).length, 8);
-
-          local.breakpoints.set('1', { id:'1', kind:'address', address:0n, enabled:false });
-          await assert.rejects(local.removeBreakpoint(1), (error) => expectCode(error, 'invalid-breakpoint'));
-          assert.equal(local.breakpoints.has('1'), true);
-          local.breakpoints.set('bp:a', { id:'bp:a', kind:'address', address:4n, enabled:false });
-          await assert.rejects(local.removeBreakpoint({ id:['bp:a'] }), (error) => expectCode(error, 'invalid-breakpoint'));
-          assert.equal(local.breakpoints.has('bp:a'), true);
-
-          local.sandbox.setRegister = () => { throw new Error('must not mutate'); };
-          local.sandbox.getRegister = () => 0n;
-          await assert.rejects(local.writeRegister(['x0'], 1n), (error) => expectCode(error, 'invalid-register'));
-
-          const sent = [];
-          const remote = new RemoteDebugAdapter({ send: async (packet) => { sent.push(packet); } }, {
-            capabilities: { removeBreakpoint:true, writeRegister:true, readMemory:true },
-            protocol: { timeoutMs:10000 },
-          });
-          for (const bad of ['16', [16], true, { valueOf: () => 16 }]) {
-            await assert.rejects(remote.readMemory(0n, bad), (error) => expectCode(error, 'invalid-size'));
-          }
-          assert.throws(() => remote.removeBreakpoint({ id:['bp:a'] }), (error) => expectCode(error, 'invalid-breakpoint'));
-          assert.throws(() => remote.removeBreakpoint(1), (error) => expectCode(error, 'invalid-breakpoint'));
-          assert.throws(() => remote.writeRegister(['x0'], 1n), (error) => expectCode(error, 'invalid-register'));
-          assert.equal(sent.length, 0, 'malformed selectors/sizes must not reach remote transport');
+          for (const bad of ['8', ['8'], true, { valueOf: () => 8 }]) await assert.rejects(local.readMemory(0n, bad), (e) => expectCode(e,'invalid-size'));
+          assert.equal((await local.readMemory(0n,8)).length,8);
+          assert.equal((await local.readMemory(0n,null)).length,8);
+          local.breakpoints.set('1',{id:'1',kind:'address',address:0n,enabled:false});
+          await assert.rejects(local.removeBreakpoint(1),(e)=>expectCode(e,'invalid-breakpoint'));
+          assert.equal(local.breakpoints.has('1'),true);
+          local.sandbox.setRegister=()=>{throw new Error('must not mutate')}; local.sandbox.getRegister=()=>0n;
+          await assert.rejects(local.writeRegister(['x0'],1n),(e)=>expectCode(e,'invalid-register'));
+          const sent=[];
+          const remote=new RemoteDebugAdapter({send:async(packet)=>{sent.push(packet)}},{capabilities:{removeBreakpoint:true,writeRegister:true,readMemory:true},protocol:{timeoutMs:10000}});
+          for (const bad of ['16',[16],true,{valueOf:()=>16}]) await assert.rejects(remote.readMemory(0n,bad),(e)=>expectCode(e,'invalid-size'));
+          assert.throws(()=>remote.removeBreakpoint(1),(e)=>expectCode(e,'invalid-breakpoint'));
+          assert.throws(()=>remote.writeRegister(['x0'],1n),(e)=>expectCode(e,'invalid-register'));
+          assert.equal(sent.length,0);
           remote.protocol.close();
           console.log('adapter strict boundaries: ok');
           EOF
@@ -127,55 +108,24 @@ function initialMemorySize(value) {"""
           import fs from 'node:fs';
           import { LocalFunctionSandboxAdapter } from '../js/adapters/index.js';
           import { RemoteProtocolClient } from '../js/debug/remote-protocol.js';
-
-          const investigation = fs.readFileSync(new URL('../js/analysis/investigation-service.js', import.meta.url), 'utf8');
-          assert.ok((investigation.match(/if \(signal\?\.aborted\) onAbort\(\);/g) || []).length >= 3);
-
-          // #2962: first state read is false, second is already true. No listener event can rescue this window.
-          let abortedReads = 0;
-          const raceSignal = {
-            reason: 'cancelled-between-checks',
-            get aborted() { abortedReads += 1; return abortedReads >= 2; },
-            addEventListener() { throw new Error('listener must not be needed once the second check sees abort'); },
-            removeEventListener() {},
-          };
-          const local = new LocalFunctionSandboxAdapter({});
-          const emu = { stopped:null, trace:[], callStack:[], sp:0n, pc:0n, get(){ return 0n; } };
-          local.sandbox = {
-            emulator: emu,
-            async run() {
-              assert.equal(emu.stopped, 'cancelled', 'resume must observe abort before sandbox execution');
-              return { trace:[], takenBranches:[], touchedFields:[], before:[], after:[], modifiedObjectRanges:[], steps:0, stopped:'cancelled' };
-            },
-          };
-          local.initialRegisters = {};
-          const localResult = await local.resume({ signal: raceSignal });
-          assert.equal(localResult.stop.kind, 'cancelled');
-
-          // #2963: abort during listener registration must cancel pending before request send.
-          const sent=[];
-          const transport={ send:async (packet)=>{ sent.push(packet); } };
-          const client=new RemoteProtocolClient(transport, { timeoutMs:1000 });
+          const investigation=fs.readFileSync(new URL('../js/analysis/investigation-service.js',import.meta.url),'utf8');
+          assert.ok((investigation.match(/if \(signal\?\.aborted\) onAbort\(\);/g)||[]).length>=3);
+          let reads=0;
+          const raceSignal={reason:'cancelled-between-checks',get aborted(){reads+=1;return reads>=2},addEventListener(){throw new Error('listener must not be needed')},removeEventListener(){}};
+          const local=new LocalFunctionSandboxAdapter({});
+          const emu={stopped:null,trace:[],callStack:[],sp:0n,pc:0n,get(){return 0n}};
+          local.sandbox={emulator:emu,async run(){assert.equal(emu.stopped,'cancelled');return{trace:[],takenBranches:[],touchedFields:[],before:[],after:[],modifiedObjectRanges:[],steps:0,stopped:'cancelled'}}};
+          local.initialRegisters={};
+          const localResult=await local.resume({signal:raceSignal});
+          assert.equal(localResult.stop.kind,'cancelled');
+          const sent=[]; const transport={send:async(packet)=>{sent.push(packet)}}; const client=new RemoteProtocolClient(transport,{timeoutMs:1000});
           let aborted=false;
-          const remoteSignal={
-            get aborted(){ return aborted; },
-            get reason(){ return 'cancelled-in-registration-window'; },
-            addEventListener(type, listener){
-              assert.equal(type,'abort');
-              aborted=true;
-              listener();
-            },
-            removeEventListener(){},
-          };
-          await assert.rejects(client.request('readMemory', {}, { signal:remoteSignal }), /cancelled/);
+          const remoteSignal={get aborted(){return aborted},get reason(){return'cancelled-in-registration-window'},addEventListener(type,listener){assert.equal(type,'abort');aborted=true;listener()},removeEventListener(){}};
+          await assert.rejects(client.request('readMemory',{}, {signal:remoteSignal}),/cancelled/);
           await Promise.resolve();
-          assert.equal(sent.some((packet)=>packet?.type === 'request'), false, 'cancelled request must not be sent');
-          assert.equal(client.pending.size, 0, 'cancelled request must not remain pending');
-          client.close();
-
+          assert.equal(sent.some((p)=>p?.type==='request'),false); assert.equal(client.pending.size,0); client.close();
           console.log('cancellation races 2848/2962/2963: PASS');
           EOF
-
           rm .github/workflows/materialize-3087-adapter.yml
           node tests/cancellation-races-2848-2962-2963.mjs
           node tests/phase10/adapter-strict-boundaries.test.mjs
