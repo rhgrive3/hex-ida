@@ -26,9 +26,15 @@ function operandsOf(instruction) {
   return [];
 }
 
+function invalidStructuredRegisterWidth(op) {
+  return op?.k === 'reg'
+    && (typeof op.bits !== 'number' || !Number.isSafeInteger(op.bits) || op.bits <= 0);
+}
+
 function invalidFiniteShape(mnemonic, ops) {
   if (!FP_FINITE_SHAPE.has(mnemonic)) return false;
   if (ops.some((op) => op?.shift != null || op?.extend != null)) return true;
+  if (ops.some(invalidStructuredRegisterWidth)) return true;
   if (ops.some((op) => op?.k === 'reg' && (!Number.isInteger(op.num) || op.num < 0 || op.num >= 32))) return true;
   if (ops.some((op) => op?.k === 'reg' && op.cls === 'zr' && op.num !== 31)) return true;
   if (['fmov','fabs','fneg'].includes(mnemonic)) return ops.length !== 2;
