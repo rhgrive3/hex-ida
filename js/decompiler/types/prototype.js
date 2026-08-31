@@ -1091,7 +1091,7 @@ export function recoverFunctionPrototype(ir, types, opts = {}) {
   const variadic = opts.variadic === true || opts.varargs === true
     || sourcePrototype?.variadic === true || sourcePrototype?.varargs === true;
   const anonymousArgumentFrontier = variadic && ctx.supported ? {
-    location:'unknown', possible:true, mustUse:false,
+    location:'unknown', possible:true, mustUse:false, exact:false, certainty:'unknown',
     reason:'anonymous-vararg-frontier-not-source-prototyped',
   } : null;
   return {

@@ -73,7 +73,7 @@ test('C3-02 known variadic prototypes publish only a fixed prefix and unknown fr
   assert.equal(prototype.completeness, 'partial');
   assert.equal(prototype.variadic, true);
   assert.deepEqual(prototype.anonymousArgumentFrontier, {
-    location:'unknown', possible:true, mustUse:false,
+    location:'unknown', possible:true, mustUse:false, exact:false, certainty:'unknown',
     reason:'anonymous-vararg-frontier-not-source-prototyped',
   });
 });
@@ -484,6 +484,34 @@ test('C3-02 aggregate returns keep full canonical locations and reject scalar co
   assert.equal(fixedPrefix?.mustUse ?? null, true);
   assert.equal(anonymousCandidate?.possible ?? null, true);
   assert.equal(anonymousCandidate?.mustUse ?? null, false);
+});
+
+test('C3-02 SysV aggregate return lanes retain physical eightbyte width at tail boundaries', () => {
+  const returnAggregate = {
+    bits:96,
+    bytes:16,
+    members:[
+      { type:'uint64', bits:64, bytes:8, byteOffset:0 },
+      { type:'uint32', bits:32, bytes:4, byteOffset:8 },
+    ],
+    padding:[{ byteOffset:12, bytes:4 }],
+    eightbyteClasses:['INTEGER','INTEGER'],
+  };
+  const adapter = semanticAbiAdapter(SYSV_AMD64_ABI, { architecture:'x86_64', platform:'linux' });
+  const locations = adapter.returnLocations({ functionPrototype:{
+    returnType:'struct TailPadded', aggregate:true, bits:96, returnsValue:true,
+    returnAggregate,
+  } });
+  assert.deepEqual(locations.map(({ reg, bits, bytes, byteOffset }) => ({ reg, bits, bytes, byteOffset })), [
+    { reg:'rax', bits:64, bytes:8, byteOffset:0 },
+    { reg:'rdx', bits:32, bytes:8, byteOffset:8 },
+  ]);
+
+  const underfilled = adapter.returnLocations({ functionPrototype:{
+    returnType:'struct InvalidTail', aggregate:true, bits:64, returnsValue:true,
+    returnAggregate:{ ...returnAggregate, bits:64 },
+  } });
+  assert.deepEqual(underfilled, [], 'a two-lane class list must not invent a one-bit tail lane');
 });
 
 test('C3-02 aggregate arguments and returns require proven size/layout on AAPCS64, Darwin, and RISC-V', () => {
@@ -1005,4 +1033,615 @@ test('C3-02 ABI replacement invalidates stack-layout caches by registered object
   assert.equal(after.arguments.length, 0, 'replacement profile must not reuse old stack rules');
   const atReplacementOffset = recoverStack(replacementAdapter, 64);
   assert.equal(atReplacementOffset.arguments.length, 1);
+});
+
+test('C3-02 malformed padding never collapses to absent padding evidence', () => {
+  const fullyCovered = {
+    aggregate:true,
+    bits:128,
+    bytes:16,
+    members:[
+      { type:'uint64', bits:64, bytes:8, byteOffset:0 },
+      { type:'uint64', bits:64, bytes:8, byteOffset:8 },
+    ],
+  };
+  for (const padding of ['bad', {}, ['bad'], [{}], [{ bytes:'8', byteOffset:8 }]]) {
+    assert.equal(canonicalAggregateLayout({ ...fullyCovered, padding }), null,
+      `malformed padding ${JSON.stringify(padding)} must not establish exact layout`);
+  }
+});
+
+test('C3-02 interval validation rejects duplicate object and unproven split evidence globally', () => {
+  const scalar = {
+    index:0,
+    location:'stack',
+    stackOffset:0,
+    bytes:8,
+    possible:false,
+    mustUse:true,
+  };
+  assert.equal(abiPhysicalIntervalsValid({ arguments:[scalar, scalar] }), false,
+    'the same scalar evidence object cannot be repeated in one argument list');
+
+  const unprovenSplit = {
+    index:0,
+    location:'register-stack',
+    reg:'x0',
+    aggregate:false,
+    pieces:[{ reg:'x0', pieceIndex:0, order:0, bits:64, bytes:8, byteOffset:0, abiClass:'integer' },
+      { stackOffset:0, pieceIndex:1, order:1, bits:64, bytes:8, byteOffset:8, abiClass:'integer' }],
+  };
+  assert.equal(abiPhysicalIntervalsValid({
+    arguments:[unprovenSplit],
+    stackArguments:[unprovenSplit],
+  }), false, 'register-stack duplication requires an explicit canonical aggregate split proof');
+});
+
+test('C3-02 AAPCS64 aggregate stack extent includes canonical padding', () => {
+  const padded = {
+    type:'struct Padded',
+    aggregate:true,
+    bits:64,
+    bytes:16,
+    members:[{ type:'uint64', bits:64, bytes:8, byteOffset:0 }],
+    padding:[{ byteOffset:8, bytes:8 }],
+  };
+  const result = AAPCS64_ABI.classifyArguments({ callPrototype:{ parameters:[
+    ...Array.from({ length:8 }, () => ({ type:'int64', bits:64 })),
+    padded,
+    { type:'int64', bits:64 },
+  ] } });
+  const aggregate = result.arguments[8];
+  const next = result.arguments[9];
+  assert.equal(aggregate.location, 'stack');
+  assert.equal(aggregate.bytes, 16, 'physical aggregate size must include trailing padding');
+  assert.deepEqual(aggregate.pieces.map(({ byteOffset, stackOffset, bits, bytes }) => ({ byteOffset, stackOffset, bits, bytes })), [
+    { byteOffset:0, stackOffset:0, bits:64, bytes:16 },
+  ]);
+  assert.equal(next.offset, 16, 'the following stack argument must begin after the padded extent');
+});
+
+test('C3-02 Darwin forced-stack HVA uses exact 128-bit element extents', () => {
+  const hva128 = {
+    type:'struct HVA128',
+    aggregate:true,
+    hva:true,
+    bits:256,
+    bytes:32,
+    elementBits:128,
+    members:[
+      { type:'vector', bits:128, bytes:16, byteOffset:0 },
+      { type:'vector', bits:128, bytes:16, byteOffset:16 },
+    ],
+  };
+  const result = DARWIN_ARM64_ABI.classifyArguments({ callPrototype:{ parameters:[
+    ...Array.from({ length:8 }, () => ({ type:'int64', bits:64 })),
+    ...Array.from({ length:8 }, () => ({ type:'double', bits:64 })),
+    hva128,
+    { type:'int64', bits:64 },
+  ] } });
+  const aggregate = result.arguments[16];
+  const next = result.arguments[17];
+  assert.equal(aggregate.location, 'stack');
+  assert.equal(aggregate.bytes, 32);
+  assert.deepEqual(aggregate.pieces.map(({ byteOffset, stackOffset, bits, bytes }) => ({ byteOffset, stackOffset, bits, bytes })), [
+    { byteOffset:0, stackOffset:0, bits:128, bytes:16 },
+    { byteOffset:16, stackOffset:16, bits:128, bytes:16 },
+  ]);
+  assert.equal(next.offset, 32, 'the following argument must not overlap the HVA');
+});
+
+test('C3-02 register-only malformed aggregates are rejected before exact publication', () => {
+  const pair = {
+    type:'struct Pair',
+    aggregate:true,
+    bits:128,
+    members:[
+      { type:'uint64', bits:64, bytes:8, byteOffset:0 },
+      { type:'uint64', bits:64, bytes:8, byteOffset:8 },
+    ],
+  };
+  const malformedPlugin = registerABIPlugin(new ABIPlugin({
+    id:'c3-02-register-only-malformed',
+    semanticVersion:'1',
+    semanticIdentity:'c3-02-register-only-malformed@1',
+    architectureId:'arm64',
+    platformPredicate:() => true,
+    classifyArguments(instruction) {
+      const canonical = AAPCS64_ABI.classifyArguments(instruction);
+      const [first] = canonical.arguments;
+      const pieces = first.pieces.map((piece, index) => index === 1
+        ? { ...piece, byteOffset:0 }
+        : piece);
+      return { ...canonical, arguments:[{ ...first, pieces }] };
+    },
+    classifyFunctionReturn:() => null,
+  }));
+  const adapter = semanticAbiAdapter(malformedPlugin, { architecture:'arm64', platform:'linux' });
+  const functionPrototype = { parameters:[pair] };
+  assert.deepEqual(adapter.argumentLocations({ functionPrototype }), [],
+    'register-only aggregate layout must be validated before locations are published');
+  const call = adapter.classifyCall({ call:{ callPrototype:functionPrototype } });
+  assert.equal(call.partial, true);
+  assert.equal(call.completeness, 'malformed');
+  assert.equal(call.arguments, null, 'malformed aggregate arguments must not be published as exact');
+});
+
+test('C3-02 unknown SysV and RISC-V argument candidates are explicitly conservative', () => {
+  for (const [abi, options] of [
+    [SYSV_AMD64_ABI, { architecture:'x86_64', platform:'linux' }],
+    [RISCV_LP64_ABI, { architecture:'riscv64', platform:'linux' }],
+  ]) {
+    const adapter = semanticAbiAdapter(abi, options);
+    const locations = adapter.argumentLocations({});
+    assert.ok(locations.length > 0, `${abi.id} should retain possible input candidates`);
+    assert.equal(locations.every((entry) => entry.possible === true
+      && entry.mustUse === false && entry.exact === false && entry.certainty === 'unknown'), true,
+    `${abi.id} unknown candidates must never look exact`);
+    const call = adapter.classifyCall({ call:{} });
+    assert.ok(call.arguments?.length > 0, `${abi.id} unknown call should retain conservative candidates`);
+    assert.equal(call.arguments.every((entry) => entry.possible === true
+      && entry.mustUse === false && entry.exact === false && entry.certainty === 'unknown'), true,
+    `${abi.id} classifyCall candidates must remain conservative`);
+  }
+});
+
+test('C3-02 nested aggregate descriptors are the classifier source of truth', () => {
+  const nested = {
+    type:'struct NestedPair',
+    aggregate:true,
+    layout:{
+      bits:128,
+      bytes:16,
+      members:[
+        { type:'uint64', bits:64, bytes:8, byteOffset:0 },
+        { type:'uint64', bits:64, bytes:8, byteOffset:8 },
+      ],
+    },
+  };
+  for (const [abi, options] of [
+    [AAPCS64_ABI, { architecture:'arm64', platform:'linux' }],
+    [DARWIN_ARM64_ABI, { architecture:'arm64', platform:'darwin' }],
+  ]) {
+    const result = abi.classifyArguments({ callPrototype:{ parameters:[nested] } });
+    const aggregate = result.arguments[0];
+    assert.equal(aggregate.bits, 128, `${abi.id} must consume nested logical width`);
+    assert.equal(aggregate.bytes, 16, `${abi.id} must consume nested physical width`);
+    assert.equal(aggregate.regs?.length, 2, `${abi.id} must retain both nested aggregate lanes`);
+    assert.deepEqual(aggregate.pieces.map(({ byteOffset, bits, bytes }) => ({ byteOffset, bits, bytes })), [
+      { byteOffset:0, bits:64, bytes:8 },
+      { byteOffset:8, bits:64, bytes:8 },
+    ]);
+    const adapter = semanticAbiAdapter(abi, options);
+    assert.equal(adapter.argumentLocations({ functionPrototype:{ parameters:[nested] } }).length, 2);
+  }
+});
+
+test('C3-02 aggregate proof matrix rejects sibling malformed descriptors and preserves nested returns', () => {
+  const members = [
+    { type:'uint64', bits:64, bytes:8, byteOffset:0 },
+    { type:'uint64', bits:64, bytes:8, byteOffset:8 },
+  ];
+  const base = { type:'struct MatrixPair', aggregate:true, bits:128, bytes:16, members };
+  const profiles = [
+    [AAPCS64_ABI, { architecture:'arm64', platform:'linux' }],
+    [DARWIN_ARM64_ABI, { architecture:'arm64', platform:'darwin' }],
+    [RISCV_LP64_ABI, { architecture:'riscv64', platform:'linux' }],
+    [RISCV_LP64F_ABI, { architecture:'riscv64', platform:'linux' }],
+    [RISCV_LP64D_ABI, { architecture:'riscv64', platform:'linux' }],
+  ];
+  const malformed = [
+    { ...base, padding:'bad' },
+    { ...base, padding:{} },
+    { ...base, padding:[{ bytes:8 }] },
+    { ...base, layout:{ bits:64, bytes:16, members } },
+    { ...base, layout:{ bits:128, bytes:16, members:[members[0], { ...members[1], byteOffset:0 }] } },
+    { ...base, members:[{ ...members[0], layout:{ bits:32, bytes:8, byteOffset:0 } }, members[1]] },
+  ];
+  for (const parameter of malformed) {
+    assert.equal(canonicalAggregateLayout(parameter), null, 'malformed aggregate must stay unproven');
+    for (const [abi, options] of profiles) {
+      const adapter = semanticAbiAdapter(abi, options);
+      assert.deepEqual(adapter.argumentLocations({ functionPrototype:{ parameters:[parameter] } }), [],
+        `${abi.id} must not publish malformed aggregate arguments`);
+      assert.deepEqual(adapter.returnLocations({ functionPrototype:{
+        returnType:parameter.type, aggregate:true, returnsValue:true, ...parameter,
+      } }), [], `${abi.id} must not publish malformed aggregate returns`);
+    }
+  }
+
+  const nested = {
+    type:'struct MatrixNested', aggregate:true,
+    layout:{ bits:128, bytes:16, members },
+  };
+  for (const [abi, options] of profiles) {
+    const adapter = semanticAbiAdapter(abi, options);
+    const argumentLocations = adapter.argumentLocations({ functionPrototype:{ parameters:[nested] } });
+    assert.equal(argumentLocations.length, 2, `${abi.id} nested argument lanes`);
+    const returnMembers = abi === RISCV_LP64F_ABI || abi === RISCV_LP64D_ABI
+      ? members.map((member) => ({ ...member, type:'double' })) : members;
+    const returnLocations = adapter.returnLocations({ functionPrototype:{
+      returnType:nested.type, aggregate:true, returnsValue:true,
+      layout:{ ...nested.layout, members:returnMembers },
+    } });
+    if (abi === RISCV_LP64F_ABI) {
+      assert.deepEqual(returnLocations, [], 'lp64f must reject double aggregate returns beyond FLEN32');
+    } else {
+      assert.equal(returnLocations.length, 2, `${abi.id} nested return lanes`);
+      assert.deepEqual(returnLocations.map(({ bits, bytes, byteOffset }) => ({ bits, bytes, byteOffset })), [
+        { bits:64, bytes:8, byteOffset:0 }, { bits:64, bytes:8, byteOffset:8 },
+      ]);
+    }
+  }
+});
+
+test('C3-02 global interval matrix rejects scalar and malformed split duplicates', () => {
+  const scalar = { index:0, location:'stack', offset:0, bytes:8, bits:64, possible:false, mustUse:true };
+  assert.equal(abiPhysicalIntervalsValid({ arguments:[scalar], stackArguments:[scalar] }), false,
+    'same scalar object cannot masquerade as a second stack projection');
+  assert.equal(abiPhysicalIntervalsValid({ arguments:[scalar], stackArguments:[{ ...scalar }] }), false,
+    'cloned scalar stack intervals cannot overlap globally');
+
+  const full = {
+    index:0, location:'register-stack', aggregate:true, bits:128, bytes:16,
+    pieces:[
+      { reg:'x0', pieceIndex:0, order:0, bits:64, bytes:8, byteOffset:0, abiClass:'aggregate' },
+      { stackOffset:0, pieceIndex:1, order:1, bits:64, bytes:8, byteOffset:8, abiClass:'aggregate' },
+    ],
+  };
+  const validProjection = { index:0, location:'stack', offset:0, bytes:8, bits:64,
+    pieceIndex:1, order:1, byteOffset:8, abiClass:'aggregate' };
+  assert.equal(abiPhysicalIntervalsValid({ arguments:[full], stackArguments:[validProjection] }), true,
+    'only a canonical aggregate split may mirror its stack lane');
+  const malformedProjection = { ...validProjection, byteOffset:0 };
+  assert.equal(abiPhysicalIntervalsValid({ arguments:[full], stackArguments:[malformedProjection] }), false,
+    'a split projection with contradictory logical coordinates is not proof');
+  const overlappingFragment = {
+    index:0, location:'stack-fragment', aggregate:true, bits:128, bytes:16,
+    pieces:[
+      { stackOffset:0, pieceIndex:0, order:0, bits:64, bytes:8, byteOffset:0, abiClass:'aggregate' },
+      { stackOffset:4, pieceIndex:1, order:1, bits:64, bytes:8, byteOffset:8, abiClass:'aggregate' },
+    ],
+  };
+  assert.equal(abiPhysicalIntervalsValid({ arguments:[overlappingFragment] }), false,
+    'aggregate stack fragments cannot overlap physically');
+});
+
+test('C3-02 padded stack extents remain exact across integer aggregate profiles', () => {
+  const padded = {
+    type:'struct PaddedMatrix', aggregate:true, bits:64, bytes:16,
+    members:[{ bits:64, bytes:8, byteOffset:0 }], padding:[{ bytes:8, byteOffset:8 }],
+  };
+  for (const [abi, options, prefix] of [
+    [AAPCS64_ABI, { architecture:'arm64', platform:'linux' }, 8],
+    [DARWIN_ARM64_ABI, { architecture:'arm64', platform:'darwin' }, 8],
+    [RISCV_LP64_ABI, { architecture:'riscv64', platform:'linux' }, 8],
+  ]) {
+    const parameters = [...Array.from({ length:prefix }, () => ({ type:'int64', bits:64 })), padded,
+      { type:'int64', bits:64 }];
+    const result = abi.classifyArguments({ callPrototype:{ parameters } });
+    const aggregate = result.arguments[prefix];
+    const next = result.arguments[prefix + 1];
+    assert.equal(aggregate.location, 'stack', `${abi.id} padded aggregate must use stack when GP lanes are full`);
+    assert.equal(aggregate.bytes, 16, `${abi.id} padded aggregate extent`);
+    assert.equal(aggregate.pieces[0].bytes, 16, `${abi.id} canonical padded piece extent`);
+    assert.equal(next.offset, 16, `${abi.id} next stack argument must not overlap padding`);
+
+    const direct = abi.classifyArguments({ callPrototype:{ parameters:[padded] } });
+    assert.equal(direct.partial, true, `${abi.id} must fail closed for unrepresented register padding`);
+  }
+});
+
+test('C3-02 unknown frontier state is explicit for every arm64 and integer profile', () => {
+  for (const [abi, options] of [
+    [AAPCS64_ABI, { architecture:'arm64', platform:'linux' }],
+    [DARWIN_ARM64_ABI, { architecture:'arm64', platform:'darwin' }],
+    [SYSV_AMD64_ABI, { architecture:'x86_64', platform:'linux' }],
+    [RISCV_LP64_ABI, { architecture:'riscv64', platform:'linux' }],
+    [RISCV_LP64F_ABI, { architecture:'riscv64', platform:'linux' }],
+    [RISCV_LP64D_ABI, { architecture:'riscv64', platform:'linux' }],
+  ]) {
+    const adapter = semanticAbiAdapter(abi, options);
+    const locations = adapter.argumentLocations({});
+    assert.ok(locations.length > 0, `${abi.id} unknown frontier must retain candidates`);
+    assert.equal(locations.every((entry) => entry.possible === true && entry.mustUse === false
+      && entry.exact === false && entry.certainty === 'unknown'), true,
+    `${abi.id} argument locations must be explicitly conservative`);
+    const call = adapter.classifyCall({ call:{} });
+    assert.ok(call.arguments?.length > 0, `${abi.id} unknown call must retain candidates`);
+    assert.equal(call.arguments.every((entry) => entry.possible === true && entry.mustUse === false
+      && entry.exact === false && entry.certainty === 'unknown'), true,
+    `${abi.id} call arguments must be explicitly conservative`);
+  }
+});
+
+test('C3-02 cumulative descriptor matrix rejects every malformed top/nested alias', () => {
+  const members = [
+    { type:'uint64', bits:64, bytes:8, byteOffset:0 },
+    { type:'uint64', bits:64, bytes:8, byteOffset:8 },
+  ];
+  const base = {
+    type:'struct DescriptorMatrix', aggregate:true, bits:128, bytes:16, members,
+  };
+  const malformed = [
+    { ...base, padding:'bad' },
+    { ...base, padding:{} },
+    { ...base, padding:[{ bytes:8 }] },
+    { ...base, padding:[{ bytes:8, byteOffset:8 }, { bytes:8, byteOffset:8 }] },
+    { ...base, padding:[{ bytes:8, byteOffset:7 }] },
+    { ...base, layout:null },
+    { ...base, layout:{ bits:64, bytes:16, members } },
+    { ...base, layout:{ bits:128, bytes:8, members } },
+    { ...base, layout:{ bits:128, bytes:16, members:[members[0], { ...members[1], byteOffset:0 }] } },
+    { ...base, layout:{ bits:128, bytes:16, members }, returnAggregate:{ bits:64, bytes:16, members } },
+    { ...base, layout:{ bits:128, bytes:16, members }, returnAggregate:{ bits:128, bytes:16,
+      members:[members[0], { ...members[1], byteOffset:0 }] } },
+    { ...base, members:3, layout:{ bits:128, bytes:16, members } },
+    { ...base, bits:128, returnBits:64, returnAggregate:{ bits:128, bytes:16, members } },
+    { ...base, members:[{ ...members[0], bytes:'8' }, members[1]] },
+    { ...base, members:[{ ...members[0], byteOffset:Infinity }, members[1]] },
+    { ...base, members:[{ ...members[0], layout:'bad' }, members[1]] },
+    { ...base, padding:[{ bytes:8, byteOffset:8, layout:'bad' }] },
+    { ...base, returnAggregate:[] },
+    { ...base, returnAggregate:'bad' },
+  ];
+  const profiles = [
+    [AAPCS64_ABI, { architecture:'arm64', platform:'linux' }],
+    [DARWIN_ARM64_ABI, { architecture:'arm64', platform:'darwin' }],
+    [SYSV_AMD64_ABI, { architecture:'x86_64', platform:'linux' }],
+    [MICROSOFT_X64_ABI, { architecture:'x86_64', platform:'windows' }],
+    [MICROSOFT_VECTORCALL_ABI, { architecture:'x86_64', platform:'windows', callingConvention:'vectorcall' }],
+    [RISCV_LP64_ABI, { architecture:'riscv64', platform:'linux' }],
+    [RISCV_LP64F_ABI, { architecture:'riscv64', platform:'linux' }],
+    [RISCV_LP64D_ABI, { architecture:'riscv64', platform:'linux' }],
+  ];
+  for (const parameter of malformed) {
+    assert.equal(canonicalAggregateLayout(parameter), null,
+      `malformed descriptor must not canonicalize: ${JSON.stringify(parameter)}`);
+    for (const [abi, options] of profiles) {
+      const adapter = semanticAbiAdapter(abi, options);
+      const argumentPrototype = { parameters:[parameter] };
+      assert.deepEqual(adapter.argumentLocations({ functionPrototype:argumentPrototype }), [],
+        `${abi.id} malformed argument descriptor must not publish locations`);
+      const returnPrototype = {
+        returnType:parameter.type, aggregate:true, returnsValue:true, ...parameter,
+      };
+      assert.deepEqual(adapter.returnLocations({ functionPrototype:returnPrototype }), [],
+        `${abi.id} malformed return descriptor must not publish locations`);
+      const call = adapter.classifyCall({ call:{ callPrototype:argumentPrototype } });
+      assert.notEqual(call.completeness, 'complete', `${abi.id} malformed call must not be complete`);
+    }
+  }
+});
+
+test('C3-02 nested return descriptors remain one canonical source across profiles', () => {
+  const integerMembers = [
+    { type:'uint64', bits:64, bytes:8, byteOffset:0 },
+    { type:'uint64', bits:64, bytes:8, byteOffset:8 },
+  ];
+  const integerReturn = {
+    returnType:'struct NestedReturn', returnsValue:true,
+    returnAggregate:{ bits:128, bytes:16, members:integerMembers },
+  };
+  const integerCases = [
+    [AAPCS64_ABI, { architecture:'arm64', platform:'linux' }, 'lanes'],
+    [DARWIN_ARM64_ABI, { architecture:'arm64', platform:'darwin' }, 'lanes'],
+    [SYSV_AMD64_ABI, { architecture:'x86_64', platform:'linux' }, 'lanes'],
+    [MICROSOFT_X64_ABI, { architecture:'x86_64', platform:'windows' }, 'indirect'],
+    [MICROSOFT_VECTORCALL_ABI, { architecture:'x86_64', platform:'windows', callingConvention:'vectorcall' }, 'unknown'],
+    [RISCV_LP64_ABI, { architecture:'riscv64', platform:'linux' }, 'lanes'],
+    [RISCV_LP64F_ABI, { architecture:'riscv64', platform:'linux' }, 'unknown'],
+    [RISCV_LP64D_ABI, { architecture:'riscv64', platform:'linux' }, 'unknown'],
+  ];
+  for (const [abi, options, expected] of integerCases) {
+    const adapter = semanticAbiAdapter(abi, options);
+    const prototype = abi === SYSV_AMD64_ABI
+      ? { ...integerReturn, returnAggregate:{ ...integerReturn.returnAggregate, eightbyteClasses:['INTEGER','INTEGER'] } }
+      : abi === MICROSOFT_X64_ABI
+        ? { ...integerReturn, trivialForCalls:true }
+        : integerReturn;
+    const locations = adapter.returnLocations({ functionPrototype:prototype });
+    if (expected === 'lanes') {
+      assert.equal(locations.length, 2, `${abi.id} nested return must retain both lanes`);
+      assert.deepEqual(locations.map(({ bits, bytes, byteOffset }) => ({ bits, bytes, byteOffset })), [
+        { bits:64, bytes:8, byteOffset:0 }, { bits:64, bytes:8, byteOffset:8 },
+      ]);
+    } else if (expected === 'indirect') {
+      assert.deepEqual(locations, [{ kind:'indirect', reg:'rcx', role:'result-address' }],
+        `${abi.id} must preserve its canonical indirect aggregate result`);
+    } else {
+      assert.deepEqual(locations, [], `${abi.id} must remain conservative without its profile proof`);
+    }
+  }
+
+  const homogeneousMembers = [
+    { type:'double', bits:64, bytes:8, byteOffset:0 },
+    { type:'double', bits:64, bytes:8, byteOffset:8 },
+  ];
+  for (const [abi, options] of [
+    [AAPCS64_ABI, { architecture:'arm64', platform:'linux' }],
+    [DARWIN_ARM64_ABI, { architecture:'arm64', platform:'darwin' }],
+  ]) {
+    const locations = semanticAbiAdapter(abi, options).returnLocations({ functionPrototype:{
+      returnType:'struct NestedHFA', returnsValue:true,
+      returnAggregate:{ hfa:true, bits:128, bytes:16, members:homogeneousMembers },
+    } });
+    assert.equal(locations.length, 2, `${abi.id} nested HFA return lanes`);
+    assert.deepEqual(locations.map(({ reg, bits, bytes, byteOffset }) => ({ reg, bits, bytes, byteOffset })), [
+      { reg:'v0', bits:64, bytes:8, byteOffset:0 },
+      { reg:'v1', bits:64, bytes:8, byteOffset:8 },
+    ]);
+  }
+  const vectorLocations = semanticAbiAdapter(MICROSOFT_VECTORCALL_ABI, {
+    architecture:'x86_64', platform:'windows', callingConvention:'vectorcall',
+  }).returnLocations({ functionPrototype:{
+    returnType:'struct NestedHVA', returnsValue:true,
+    returnAggregate:{ hva:true, bits:256, bytes:32, members:[
+      { type:'vector', bits:128, bytes:16, byteOffset:0 },
+      { type:'vector', bits:128, bytes:16, byteOffset:16 },
+    ] },
+  } });
+  assert.deepEqual(vectorLocations.map(({ reg, bits, bytes, byteOffset }) => ({ reg, bits, bytes, byteOffset })), [
+    { reg:'xmm0', bits:128, bytes:16, byteOffset:0 },
+    { reg:'xmm1', bits:128, bytes:16, byteOffset:16 },
+  ]);
+});
+
+test('C3-02 nested ambiguity cannot be laundered by a classifier shortcut', () => {
+  const members = [
+    { type:'uint64', bits:64, bytes:8, byteOffset:0 },
+    { type:'uint64', bits:64, bytes:8, byteOffset:8 },
+  ];
+  const cases = [
+    { aggregate:true, bits:128, bytes:16, members,
+      layout:{ bits:128, bytes:16, members:[members[0], { ...members[1], byteOffset:0 }] } },
+    { aggregate:true, bits:128, bytes:16, members,
+      layout:{ bits:128, bytes:16, members }, returnAggregate:{ bits:128, bytes:16, members:[members[0]] } },
+    { aggregate:true, bits:0, bytes:16, members,
+      layout:{ bits:128, bytes:16, members } },
+    { aggregate:true, bits:128, bytes:16, members,
+      layout:{ bits:128, bytes:16, members }, returnBits:64 },
+  ];
+  for (const parameter of cases) {
+    assert.equal(canonicalAggregateLayout(parameter), null);
+    for (const [abi, options] of [
+      [AAPCS64_ABI, { architecture:'arm64', platform:'linux' }],
+      [DARWIN_ARM64_ABI, { architecture:'arm64', platform:'darwin' }],
+      [SYSV_AMD64_ABI, { architecture:'x86_64', platform:'linux' }],
+      [MICROSOFT_X64_ABI, { architecture:'x86_64', platform:'windows' }],
+      [MICROSOFT_VECTORCALL_ABI, { architecture:'x86_64', platform:'windows', callingConvention:'vectorcall' }],
+      [RISCV_LP64_ABI, { architecture:'riscv64', platform:'linux' }],
+    ]) {
+      const adapter = semanticAbiAdapter(abi, options);
+      assert.deepEqual(adapter.argumentLocations({ functionPrototype:{ parameters:[parameter] } }), [], abi.id);
+      assert.deepEqual(adapter.returnLocations({ functionPrototype:{
+        ...parameter, returnType:'struct Ambiguous', returnsValue:true,
+      } }), [], `${abi.id} return ambiguity`);
+    }
+  }
+});
+
+test('C3-02 layout-only descriptors cannot fall through to scalar exactness', () => {
+  const layoutOnly = {
+    layout:{ bits:64, bytes:8, members:[{ type:'uint64', bits:64, bytes:8, byteOffset:0 }] },
+  };
+  const profiles = [
+    [AAPCS64_ABI, { architecture:'arm64', platform:'linux' }],
+    [DARWIN_ARM64_ABI, { architecture:'arm64', platform:'darwin' }],
+    [SYSV_AMD64_ABI, { architecture:'x86_64', platform:'linux' }],
+    [MICROSOFT_X64_ABI, { architecture:'x86_64', platform:'windows' }],
+    [MICROSOFT_VECTORCALL_ABI, { architecture:'x86_64', platform:'windows', callingConvention:'vectorcall' }],
+    [RISCV_LP64_ABI, { architecture:'riscv64', platform:'linux' }],
+    [RISCV_LP64F_ABI, { architecture:'riscv64', platform:'linux' }],
+    [RISCV_LP64D_ABI, { architecture:'riscv64', platform:'linux' }],
+  ];
+  for (const [abi, options] of profiles) {
+    const adapter = semanticAbiAdapter(abi, options);
+    const classified = abi.classifyArguments({ callPrototype:{ parameters:[layoutOnly] } });
+    const entry = classified.arguments?.[0];
+    assert.ok(entry?.aggregate === true || entry?.partial === true,
+      `${abi.id} layout-only argument must remain aggregate/partial`);
+    if (entry?.possible !== true && entry?.mustUse !== false) {
+      assert.equal(entry.aggregate, true, `${abi.id} exact layout-only argument must be aggregate`);
+      assert.ok(Array.isArray(entry.pieces) || Array.isArray(entry.parts),
+        `${abi.id} exact layout-only argument must carry physical pieces`);
+    }
+    const locations = adapter.argumentLocations({ functionPrototype:{ parameters:[layoutOnly] } });
+    assert.equal(locations.length === 0 || locations.every((location) => location.aggregate === true), true,
+      `${abi.id} layout-only argument must not publish scalar exactness`);
+
+    const returned = abi.classifyFunctionReturn({ functionPrototype:{ ...layoutOnly,
+      returnType:'struct LayoutOnly', returnsValue:true } });
+    assert.ok(returned?.aggregate === true || returned?.partial === true,
+      `${abi.id} layout-only return must remain aggregate/partial`);
+    const returnLocations = adapter.returnLocations({ functionPrototype:{ ...layoutOnly,
+      returnType:'struct LayoutOnly', returnsValue:true } });
+    assert.equal(returnLocations.length === 0 || returnLocations.every((location) => location.aggregate === true), true,
+      `${abi.id} layout-only return must not publish scalar exactness`);
+  }
+});
+
+test('C3-02 global physical interval matrix covers widths, alignment, registers, and stack', () => {
+  for (const [index, bits] of [1, 8, 16, 32, 64, 128].entries()) {
+    const bytes = Math.ceil(bits / 8);
+    const scalar = {
+      index, location:'register', reg:`width${bits}`, bits, bytes,
+      possible:false, mustUse:true,
+    };
+    assert.equal(abiPhysicalIntervalsValid({ arguments:[scalar], stackArguments:[] }), true,
+      `scalar width ${bits} must be a valid exact register fact`);
+    assert.equal(abiPhysicalIntervalsValid({ arguments:[scalar, { ...scalar, index:index + 100 }] }), false,
+      `duplicate register width ${bits} must be rejected globally`);
+    const stack = {
+      index, location:'stack', offset:0, bytes, bits,
+      possible:false, mustUse:true,
+    };
+    assert.equal(abiPhysicalIntervalsValid({ arguments:[stack], stackArguments:[] }), true,
+      `stack width ${bits} must be valid at offset zero`);
+    if (bytes >= 8) assert.equal(abiPhysicalIntervalsValid({ arguments:[{ ...stack, offset:1 }], stackArguments:[] }), false,
+      `stack width ${bits} must honor its natural alignment`);
+  }
+  const split = {
+    index:0, location:'register-stack', aggregate:true, bits:128, bytes:16,
+    pieces:[
+      { pieceIndex:0, order:0, reg:'split-r0', bits:64, bytes:8, byteOffset:0, abiClass:'aggregate' },
+      { pieceIndex:1, order:1, stackOffset:16, bits:64, bytes:8, byteOffset:8, abiClass:'aggregate' },
+    ],
+  };
+  const projection = {
+    index:0, location:'stack', offset:16, bytes:8, bits:64,
+    pieceIndex:1, order:1, byteOffset:8, abiClass:'aggregate',
+  };
+  assert.equal(abiPhysicalIntervalsValid({ arguments:[split], stackArguments:[projection] }), true);
+  assert.equal(abiPhysicalIntervalsValid({ arguments:[split], stackArguments:[{ ...projection, offset:8 }] }), false);
+  assert.equal(abiPhysicalIntervalsValid({ arguments:[split], stackArguments:[{ ...projection, byteOffset:0 }] }), false);
+  assert.equal(abiPhysicalIntervalsValid({ arguments:[split], stackArguments:[{ ...projection, bits:32 }] }), false);
+});
+
+test('C3-02 unknown public candidates are conservative across every supported profile', () => {
+  const profiles = [
+    [AAPCS64_ABI, { architecture:'arm64', platform:'linux' }],
+    [DARWIN_ARM64_ABI, { architecture:'arm64', platform:'darwin' }],
+    [SYSV_AMD64_ABI, { architecture:'x86_64', platform:'linux' }],
+    [MICROSOFT_X64_ABI, { architecture:'x86_64', platform:'windows' }],
+    [MICROSOFT_VECTORCALL_ABI, { architecture:'x86_64', platform:'windows', callingConvention:'vectorcall' }],
+    [RISCV_LP64_ABI, { architecture:'riscv64', platform:'linux' }],
+    [RISCV_LP64F_ABI, { architecture:'riscv64', platform:'linux' }],
+    [RISCV_LP64D_ABI, { architecture:'riscv64', platform:'linux' }],
+  ];
+  for (const [abi, options] of profiles) {
+    const adapter = semanticAbiAdapter(abi, options);
+    const locations = adapter.argumentLocations({});
+    assert.ok(locations.length > 0, `${abi.id} must expose possible candidates`);
+    assert.equal(locations.every((entry) => entry.possible === true
+      && entry.mustUse === false && entry.exact === false && entry.certainty === 'unknown'), true,
+    `${abi.id} public argument candidates must be explicitly unknown`);
+    const call = adapter.classifyCall({ call:{} });
+    assert.ok(call.arguments?.length > 0, `${abi.id} call must retain candidates`);
+    assert.equal(call.arguments.every((entry) => entry.possible === true
+      && entry.mustUse === false && entry.exact === false && entry.certainty === 'unknown'), true,
+    `${abi.id} classifyCall candidates must be explicitly unknown`);
+    assert.equal(call.returnLocations.length, 0, `${abi.id} unknown call cannot publish return placement`);
+    assert.equal(call.returnReg, null, `${abi.id} unknown call cannot publish scalar return register`);
+  }
+});
+
+test('C3-02 a null callback resolution cannot authorize an exact call ABI', () => {
+  for (const [abi, options] of [
+    [AAPCS64_ABI, { architecture:'arm64', platform:'linux' }],
+    [DARWIN_ARM64_ABI, { architecture:'arm64', platform:'darwin' }],
+    [SYSV_AMD64_ABI, { architecture:'x86_64', platform:'linux' }],
+    [MICROSOFT_X64_ABI, { architecture:'x86_64', platform:'windows' }],
+    [MICROSOFT_VECTORCALL_ABI, { architecture:'x86_64', platform:'windows', callingConvention:'vectorcall' }],
+    [RISCV_LP64_ABI, { architecture:'riscv64', platform:'linux' }],
+  ]) {
+    const adapter = semanticAbiAdapter(abi, { ...options, callPrototypeFor:() => null });
+    const call = adapter.classifyCall({ call:{ target:0x1000 } });
+    assert.ok(call.arguments?.length > 0, `${abi.id} null resolver must retain candidates`);
+    assert.equal(call.arguments.every((entry) => entry.possible === true
+      && entry.mustUse === false && entry.exact === false && entry.certainty === 'unknown'), true,
+    `${abi.id} null resolver candidates must be conservative`);
+    assert.deepEqual(call.returnLocations, [], `${abi.id} null resolver must not publish return placement`);
+    assert.equal(call.returnReg, null, `${abi.id} null resolver must not publish return register`);
+  }
 });

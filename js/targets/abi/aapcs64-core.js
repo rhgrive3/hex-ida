@@ -1,5 +1,5 @@
 import { ABIPlugin } from './registry.js';
-import { canonicalAggregateLayout } from './aggregate-layout.js';
+import { aggregateLayoutDescriptorPresent, canonicalAggregateLayout } from './aggregate-layout.js';
 
 function callPrototypeOf(insn, opts) {
   let proto = insn?.callPrototype || null;
@@ -22,31 +22,59 @@ function scalableAAPCS64Class(type, cls) {
   return predicate ? 'sve-predicate' : 'sve-scalable-vector';
 }
 
+function nestedRecord(value) {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function aggregateBoolean(parameter, key) {
+  const owners = [parameter];
+  if (nestedRecord(parameter?.layout)) owners.push(parameter.layout);
+  if (nestedRecord(parameter?.returnAggregate)) owners.push(parameter.returnAggregate);
+  if (nestedRecord(parameter?.returnAggregate?.layout)) owners.push(parameter.returnAggregate.layout);
+  const values = owners.filter((owner) => Object.hasOwn(owner, key)).map((owner) => owner[key]);
+  if (!values.length) return { present:false, value:false };
+  if (values.some((value) => typeof value !== 'boolean')) return { present:true, value:null };
+  const normalized = values;
+  return { present:true, value:normalized.every((value) => value === normalized[0]) ? normalized[0] : null };
+}
+
 function parameterAbiClass(param) {
   const type = String(param?.type || param?.name || '').toLowerCase();
   const cls = String(param?.abiClass || param?.class || param?.kind || '').toLowerCase();
   const scalableClass = scalableAAPCS64Class(type, cls);
   const pointer = param?.pointer === true || param?.isPointer === true || /\*|pointer|ptr|object|class|block|closure/.test(type + ' ' + cls);
-  const hfa = param?.hfa === true || cls.includes('hfa') || cls.includes('homogeneous');
-  const hva = param?.hva === true || cls.includes('hva');
+  const hfaMeta = aggregateBoolean(param, 'hfa');
+  const hvaMeta = aggregateBoolean(param, 'hva');
+  const aggregateMetadataInvalid = (hfaMeta.present && hfaMeta.value === null)
+    || (hvaMeta.present && hvaMeta.value === null);
+  const hfa = hfaMeta.value === true || cls.includes('hfa') || cls.includes('homogeneous');
+  const hva = hvaMeta.value === true || cls.includes('hva');
   const homogeneous = hfa || hva;
+  const aggregateDescriptorPresent = aggregateLayoutDescriptorPresent(param);
   const vector = !scalableClass && (cls.includes('vector') || /vector|simd/.test(type));
-  const aggregate = !scalableClass && !pointer && !homogeneous && (param?.aggregate === true || param?.isAggregate === true || /aggregate|struct|union|record|array|composite/.test(type + ' ' + cls));
+  const aggregate = !scalableClass && !pointer && !homogeneous && (param?.aggregate === true || param?.isAggregate === true
+    || aggregateDescriptorPresent || /aggregate|struct|union|record|array|composite/.test(type + ' ' + cls));
   const fp = !scalableClass && !aggregate && (homogeneous || vector || cls.includes('float') || cls.includes('fp') || /^(float|double|__fp16)/.test(type));
-  const rawMembers = param?.members ?? param?.elements ?? param?.count;
+  // `layout` is the canonical aggregate descriptor when present.  Classifier
+  // fields are only aliases; consuming a top-level width/member list here
+  // would create a second truth and can turn a nested exact layout into bits=0
+  // or an invented one-lane placement.
+  const layoutEvidence = homogeneous || aggregate ? canonicalAggregateLayout(param) : null;
+  const canonicalMembers = layoutEvidence?.members ?? null;
+  const rawMembers = param?.members ?? param?.elements ?? canonicalMembers ?? param?.count;
   const memberArray = Array.isArray(rawMembers) ? rawMembers : null;
   const declaredMembers = memberArray ? memberArray.length : Number(rawMembers);
   const members = homogeneous && Number.isSafeInteger(declaredMembers) && declaredMembers >= 1 && declaredMembers <= 4
     ? declaredMembers : homogeneous ? 0 : 1;
-  const explicitBits = Number(param?.bits ?? param?.sizeBits);
+  const explicitBits = Number(layoutEvidence?.bits ?? param?.bits ?? param?.sizeBits);
   const firstMemberBits = memberArray?.length ? Number(memberArray[0]?.bits ?? memberArray[0]?.sizeBits) : null;
-  const explicitElementBits = Number(param?.elementBits ?? param?.memberBits ?? firstMemberBits);
+  const explicitElementBits = Number(canonicalMembers?.[0]?.bits
+    ?? param?.elementBits ?? param?.memberBits ?? firstMemberBits);
   const explicitTotalBitsProven = Number.isSafeInteger(explicitBits) && explicitBits > 0;
   const elementBits = homogeneous
     ? Number.isSafeInteger(explicitElementBits) && explicitElementBits > 0 ? explicitElementBits
       : 0
     : null;
-  const layoutEvidence = homogeneous || aggregate ? canonicalAggregateLayout(param) : null;
   const homogeneousMembersMatch = !homogeneous || !!layoutEvidence
     && layoutEvidence.members.length === members
     && layoutEvidence.members.every((member) => member.bits === elementBits);
@@ -58,15 +86,16 @@ function parameterAbiClass(param) {
     && layoutEvidence.members.every((member, index) => member.byteOffset === index * homogeneousElementBytes);
   const homogeneousSizeMatches = !homogeneous || !explicitTotalBitsProven
     || (members >= 1 && elementBits > 0 && explicitBits === members * elementBits);
-  const homogeneousLayoutProven = !homogeneous
+  const homogeneousLayoutProven = !homogeneous && !aggregateMetadataInvalid
     || (!!layoutEvidence && members >= 1 && members <= 4 && elementBits >= 8
       && Number.isSafeInteger(elementBits) && Number.isSafeInteger(homogeneousElementBytes)
       && homogeneousSizeMatches && homogeneousMembersMatch && homogeneousBytesMatch
-      && homogeneousOffsetsMatch);
+      && homogeneousOffsetsMatch && hfaMeta.value !== null && hvaMeta.value !== null
+      && !(hfaMeta.value === true && hvaMeta.value === true));
   // A plain aggregate has no ABI placement until its logical size is proven.
   // Do not let the scalar fallback below turn an un-sized struct/union into a
   // one-register exact argument.
-  const aggregateLayoutProven = !aggregate || !!layoutEvidence;
+  const aggregateLayoutProven = !aggregateMetadataInvalid && (!aggregate || !!layoutEvidence);
   const int128 = !pointer && !aggregate && !fp && /(?:unsigned\s+)?__int128|int128_t|uint128_t/.test(type + ' ' + cls);
   const rawBits = homogeneous
     ? homogeneousLayoutProven ? elementBits * members : explicitTotalBitsProven ? explicitBits : 0
@@ -83,12 +112,16 @@ function parameterAbiClass(param) {
   return {
     pointer, hfa, hva, homogeneous, homogeneousLayoutProven, aggregateLayoutProven, vector, aggregate, fp,
     members, elementBits, elementBytes:homogeneousElementBytes, bits, wideIntegral, alignment,
+    aggregateLayout:layoutEvidence,
+    aggregateBytes:aggregate ? layoutEvidence?.bytes ?? (bits > 0 ? Math.ceil(bits / 8) : null) : null,
+    aggregateMetadataInvalid,
     mayContainPointers, scalableClass,
   };
 }
 
 function possibleRegisterSource(reg, bits, abiClass) {
-  return { t:'reg', reg, bits, possible:true, mustUse:false, purpose:'variadic-tail-candidate', abiClass };
+  return { t:'reg', reg, bits, possible:true, mustUse:false, exact:false,
+    certainty:'unknown', purpose:'variadic-tail-candidate', abiClass };
 }
 
 export function classifyAAPCS64Arguments(insn, opts = {}) {
@@ -102,12 +135,12 @@ export function classifyAAPCS64Arguments(insn, opts = {}) {
   let stackArgsMayContainPointers = false;
   if (!params) {
     for (let i=0;i<8;i++) {
-      srcs.push({t:'reg',reg:`x${i}`,bits:64,possible:true,mustUse:false,abiClass:'unknown-gp'});
-      arguments_.push({index:i,location:'register',reg:`x${i}`,abiClass:'unknown-gp',possible:true,mustUse:false,mayContainPointers:true});
+      srcs.push({t:'reg',reg:`x${i}`,bits:64,possible:true,mustUse:false,exact:false,certainty:'unknown',abiClass:'unknown-gp'});
+      arguments_.push({index:i,location:'register',reg:`x${i}`,abiClass:'unknown-gp',possible:true,mustUse:false,exact:false,certainty:'unknown',mayContainPointers:true});
     }
     for (let i=0;i<8;i++) {
-      srcs.push({t:'reg',reg:`v${i}`,bits:128,possible:true,mustUse:false,abiClass:'unknown-fp-vector'});
-      arguments_.push({index:8+i,location:'register',reg:`v${i}`,abiClass:'unknown-fp-vector',possible:true,mustUse:false});
+      srcs.push({t:'reg',reg:`v${i}`,bits:128,possible:true,mustUse:false,exact:false,certainty:'unknown',abiClass:'unknown-fp-vector'});
+      arguments_.push({index:8+i,location:'register',reg:`v${i}`,abiClass:'unknown-fp-vector',possible:true,mustUse:false,exact:false,certainty:'unknown'});
     }
     return {
       srcs,
@@ -126,10 +159,16 @@ export function classifyAAPCS64Arguments(insn, opts = {}) {
       const entry={index,location:'unsupported',abiClass:c.scalableClass,pointer:false,scalable:true,evidence:'unsupported-aapcs64-sve'};
       arguments_.push(entry);unsupported.push(entry);return;
     }
+    if (c.aggregateMetadataInvalid) {
+      const entry={index,location:'unknown',abiClass:'aggregate-metadata-unproven',aggregate:true,
+        partial:true,possible:true,mustUse:false,exact:false,certainty:'unknown',
+        reason:'aggregate-hfa-hva-metadata-invalid'};
+      arguments_.push(entry);unsupported.push(entry);return;
+    }
     if (c.homogeneous && !c.homogeneousLayoutProven) {
       const entry={
         index, location:'unknown', abiClass:c.hfa ? 'hfa-unproven' : 'hva-unproven',
-        aggregate:true, partial:true, possible:true, mustUse:false,
+        aggregate:true, partial:true, possible:true, mustUse:false, exact:false, certainty:'unknown',
         reason:'homogeneous-aggregate-member-layout-not-proven',
       };
       arguments_.push(entry); unsupported.push(entry); return;
@@ -137,7 +176,7 @@ export function classifyAAPCS64Arguments(insn, opts = {}) {
     if (c.aggregate && !c.aggregateLayoutProven) {
       const entry={
         index, location:'unknown', abiClass:'aggregate-unproven', aggregate:true,
-        partial:true, possible:true, mustUse:false,
+        partial:true, possible:true, mustUse:false, exact:false, certainty:'unknown',
         reason:'aggregate-size-layout-not-proven',
       };
       arguments_.push(entry); unsupported.push(entry); return;
@@ -203,9 +242,24 @@ export function classifyAAPCS64Arguments(insn, opts = {}) {
     }
 
     if (c.aggregate) {
-      const bytes=Math.max(8,Math.ceil(c.bits/64)*8);
+      // Stack placement follows the canonical physical object extent, not
+      // merely ceil(logicalBits / 64).  Trailing padding is part of the ABI
+      // slot and must advance the next argument's offset.
+      const bytes=Math.max(8,Math.ceil((c.aggregateBytes ?? Math.ceil(c.bits / 8)) / 8) * 8);
       if (c.alignment >= 16 && (gp & 1) !== 0) gp += 1;
       const needed=Math.ceil(bytes/8);
+      // A register split cannot represent a trailing padding-only lane in the
+      // current canonical piece schema.  Preserve the exact stack path when
+      // no GP register remains, but fail closed rather than publishing bits
+      // copied into a padding lane when a register path would be selected.
+      if (c.aggregateBytes > Math.ceil(c.bits / 8) && gp < 8) {
+        const entry={ index, location:'unknown', abiClass:'aggregate-padding-register-layout-unproven',
+          aggregate:true, partial:true, possible:true, mustUse:false, exact:false, certainty:'unknown',
+          reason:'aggregate-physical-padding-register-layout-not-represented' };
+        arguments_.push(entry);
+        unsupported.push(entry);
+        return;
+      }
       if (gp + needed <= 8) {
         const regs=[];
         for(let n=0;n<needed;n++){
@@ -213,7 +267,7 @@ export function classifyAAPCS64Arguments(insn, opts = {}) {
           regs.push(reg);
           srcs.push({t:'reg',reg,bits:64,purpose:'aggregate-piece',possible:false,mustUse:true});
         }
-        arguments_.push({index,location:'registers',regs,reg:regs[0],abiClass:'aggregate',pointer:false,bits:c.bits,bytes,alignment:c.alignment,mayContainPointers:c.mayContainPointers,pieces:regs.map((reg,piece)=>{
+        arguments_.push({index,location:'registers',regs,reg:regs[0],aggregate:true,abiClass:'aggregate',pointer:false,bits:c.bits,bytes,alignment:c.alignment,mayContainPointers:c.mayContainPointers,pieces:regs.map((reg,piece)=>{
           const pieceBits=Math.min(64, Math.max(1,c.bits-piece*64));
           return {pieceIndex:piece,order:piece,reg,bits:pieceBits,bytes:8,byteOffset:piece*8,abiClass:'aggregate'};
         }),possible:false,mustUse:true});
@@ -233,16 +287,18 @@ export function classifyAAPCS64Arguments(insn, opts = {}) {
         const stackBytes=bytes-registerPieces*8;
         stackOffset = c.alignment >= 16 ? Math.ceil(stackOffset / 16) * 16 : stackOffset;
         const stackPieceBits = Math.max(1, c.bits - registerPieces * 64);
-        const stackEntry={index,location:'stack-fragment',offset:stackOffset,bytes:stackBytes,abiClass:'aggregate',pointer:false,bits:stackPieceBits,alignment:8,mayContainPointers:c.mayContainPointers,pieceOffsetBytes:registerPieces*8,possible:false,mustUse:true};
+        const stackEntry={index,location:'stack-fragment',offset:stackOffset,bytes:stackBytes,abiClass:'aggregate',aggregate:true,pointer:false,bits:stackPieceBits,alignment:8,mayContainPointers:c.mayContainPointers,pieceOffsetBytes:registerPieces*8,
+          pieces:[{pieceIndex:registerPieces,order:registerPieces,stackOffset,bytes:stackBytes,bits:stackPieceBits,byteOffset:registerPieces*8,abiClass:'aggregate'}],
+          possible:false,mustUse:true};
         stackArguments.push(stackEntry);
-        arguments_.push({index,location:'register-stack',regs,reg:regs[0],offset:stackOffset,stackBytes,bytes,abiClass:'aggregate',pointer:false,bits:c.bits,alignment:c.alignment,mayContainPointers:c.mayContainPointers,pieces:[...pieces,{pieceIndex:registerPieces,order:registerPieces,stackOffset,bytes:stackBytes,bits:stackPieceBits,byteOffset:registerPieces*8,abiClass:'aggregate'}],possible:false,mustUse:true});
+        arguments_.push({index,location:'register-stack',regs,reg:regs[0],offset:stackOffset,stackBytes,bytes,abiClass:'aggregate',aggregate:true,pointer:false,bits:c.bits,alignment:c.alignment,mayContainPointers:c.mayContainPointers,pieces:[...pieces,{pieceIndex:registerPieces,order:registerPieces,stackOffset,bytes:stackBytes,bits:stackPieceBits,byteOffset:registerPieces*8,abiClass:'aggregate'}],possible:false,mustUse:true});
         stackOffset+=stackBytes;
         if(c.mayContainPointers) stackArgsMayContainPointers=true;
         return;
       }
       gp = 8;
       stackOffset = c.alignment >= 16 ? Math.ceil(stackOffset / 16) * 16 : stackOffset;
-      const entry={index,location:'stack',offset:stackOffset,bytes,abiClass:'aggregate',pointer:false,bits:c.bits,alignment:c.alignment,mayContainPointers:c.mayContainPointers,pieces:[{pieceIndex:0,order:0,stackOffset:stackOffset,bits:c.bits,bytes,byteOffset:0,abiClass:'aggregate'}],possible:false,mustUse:true};
+      const entry={index,location:'stack',offset:stackOffset,bytes,aggregate:true,abiClass:'aggregate',pointer:false,bits:c.bits,alignment:c.alignment,mayContainPointers:c.mayContainPointers,pieces:[{pieceIndex:0,order:0,stackOffset:stackOffset,bits:c.bits,bytes,byteOffset:0,abiClass:'aggregate'}],possible:false,mustUse:true};
       stackArguments.push(entry);arguments_.push(entry);stackOffset+=bytes;
       if(c.mayContainPointers) stackArgsMayContainPointers=true;
       return;
@@ -287,13 +343,13 @@ export function classifyAAPCS64Arguments(insn, opts = {}) {
       const source=possibleRegisterSource(`x${i}`,64,'variadic-unknown-gp');
       srcs.push(source);
       possibleRegisterInputs.push(source);
-      arguments_.push({index:null,location:'register',reg:`x${i}`,bits:64,abiClass:'variadic-unknown-gp',possible:true,mustUse:false,mayContainPointers:true});
+      arguments_.push({index:null,location:'register',reg:`x${i}`,bits:64,abiClass:'variadic-unknown-gp',possible:true,mustUse:false,exact:false,certainty:'unknown',mayContainPointers:true});
     }
     for (let i=fp;i<8;i++) {
       const source=possibleRegisterSource(`v${i}`,128,'variadic-unknown-fp-vector');
       srcs.push(source);
       possibleRegisterInputs.push(source);
-      arguments_.push({index:null,location:'register',reg:`v${i}`,bits:128,abiClass:'variadic-unknown-fp-vector',possible:true,mustUse:false});
+      arguments_.push({index:null,location:'register',reg:`v${i}`,bits:128,abiClass:'variadic-unknown-fp-vector',possible:true,mustUse:false,exact:false,certainty:'unknown'});
     }
   }
   return {
@@ -326,15 +382,23 @@ function explicitReturnBitsOf(...values) {
   return Number.isSafeInteger(bits) && bits > 0 ? bits : null;
 }
 
-function homogeneousReturnInfo(proto, cls, returnBits) {
-  const homogeneous = proto?.hfa === true || proto?.hva === true
+function homogeneousReturnInfo(proto, cls, returnBits, layoutEvidence = null) {
+  const returnAggregate = nestedRecord(proto?.returnAggregate) ? proto.returnAggregate : null;
+  const hfaMeta = aggregateBoolean(proto, 'hfa');
+  const hvaMeta = aggregateBoolean(proto, 'hva');
+  const homogeneous = hfaMeta.value === true || hvaMeta.value === true
     || cls.includes('hfa') || cls.includes('hva') || cls.includes('homogeneous');
   if (!homogeneous) return null;
   const rawMembers = proto?.members ?? proto?.memberCount ?? proto?.elements
-    ?? proto?.count ?? proto?.hfaCount ?? proto?.hvaCount;
+    ?? proto?.count ?? proto?.hfaCount ?? proto?.hvaCount
+    ?? returnAggregate?.members ?? returnAggregate?.memberCount ?? returnAggregate?.elements
+    ?? returnAggregate?.count ?? returnAggregate?.hfaCount ?? returnAggregate?.hvaCount
+    ?? layoutEvidence?.members;
   const members = Array.isArray(rawMembers) ? rawMembers.length : Number(rawMembers);
   const rawElementBits = proto?.elementBits ?? proto?.memberBits ?? proto?.returnElementBits
-    ?? (Array.isArray(rawMembers) ? rawMembers[0]?.bits ?? rawMembers[0]?.sizeBits : null);
+    ?? (Array.isArray(rawMembers) ? rawMembers[0]?.bits ?? rawMembers[0]?.sizeBits : null)
+    ?? returnAggregate?.elementBits ?? returnAggregate?.memberBits ?? returnAggregate?.returnElementBits
+    ?? layoutEvidence?.members?.[0]?.bits;
   const elementBits = Number(rawElementBits);
   // HFA/HVA is exact only when the member count, member type width, and total
   // layout agree.  In particular, do not turn absent metadata into a
@@ -344,22 +408,25 @@ function homogeneousReturnInfo(proto, cls, returnBits) {
     || !Number.isSafeInteger(returnBits) || returnBits !== members * elementBits) {
     return { invalid:true };
   }
-  const kind = proto?.hva === true || cls.includes('hva') ? 'hva' : 'hfa';
-  const bytes = Math.ceil(elementBits / 8);
-  return { kind, members, elementBits, bits:returnBits, bytes:bytes * members };
+  const kind = hvaMeta.value === true || cls.includes('hva') ? 'hva' : 'hfa';
+  const elementBytes = layoutEvidence?.members?.[0]?.bytes ?? Math.ceil(elementBits / 8);
+  const bytes = layoutEvidence?.bytes ?? elementBytes * members;
+  if (layoutEvidence && (layoutEvidence.members.length !== members
+    || !Number.isSafeInteger(elementBytes) || elementBytes <= 0
+    || layoutEvidence.members.some((member, index) => member.bits !== elementBits
+      || member.bytes !== elementBytes || member.byteOffset !== index * elementBytes)
+    || bytes !== elementBytes * members
+    || hfaMeta.value === null || hvaMeta.value === null
+    || (hfaMeta.value === true && hvaMeta.value === true))) return { invalid:true };
+  return { kind, members, elementBits, bits:returnBits, bytes, elementBytes };
 }
 
 function aggregateReturnLayout(proto, returnBits = null) {
   const normalized = { ...proto };
   if (Number.isSafeInteger(returnBits) && returnBits > 0) normalized.bits = returnBits;
-  const direct = canonicalAggregateLayout(normalized);
-  if (direct) return direct;
-  if (proto?.returnAggregate && typeof proto.returnAggregate === 'object') {
-    const nested = { ...proto, ...proto.returnAggregate };
-    if (Number.isSafeInteger(returnBits) && returnBits > 0) nested.bits = returnBits;
-    return canonicalAggregateLayout(nested);
-  }
-  return null;
+  // canonicalAggregateLayout compares top-level and returnAggregate aliases;
+  // spreading the nested object here would erase conflicts before validation.
+  return canonicalAggregateLayout(normalized);
 }
 
 function aggregateReturnPieces(bits, abiClass = 'aggregate') {
@@ -367,7 +434,6 @@ function aggregateReturnPieces(bits, abiClass = 'aggregate') {
   const count = Math.ceil(bits / 64);
   return Array.from({ length:count }, (_unused, index) => {
     const pieceBits = Math.min(64, bits - index * 64);
-    const bytes = Math.ceil(pieceBits / 8);
     return {
       pieceIndex:index, order:index, reg:`x${index}`, abiClass,
       /* Each x-register is an eight-byte physical lane; the logical final
@@ -398,7 +464,15 @@ export function classifyAAPCS64CallReturn(insn, opts = {}) {
   const type = String(proto.returnType || proto.ret || proto.result || '').toLowerCase();
   const cls = String(proto.returnClass || proto.abiClass || proto.resultClass || '').toLowerCase();
   if (proto.void === true || type === 'void' || cls === 'void') return null;
-  const aggregate=proto.aggregate===true||proto.isAggregate===true||/aggregate|struct|union|record|array|composite/.test(type+' '+cls);
+  const returnAggregate = proto.returnAggregate && typeof proto.returnAggregate === 'object'
+    && !Array.isArray(proto.returnAggregate) ? proto.returnAggregate : null;
+  const malformedReturnAggregate = Object.hasOwn(proto, 'returnAggregate')
+    && proto.returnAggregate != null && typeof proto.returnAggregate !== 'boolean'
+    && !returnAggregate;
+  const aggregate=proto.aggregate===true||proto.isAggregate===true||!!returnAggregate
+    || aggregateLayoutDescriptorPresent(proto)
+    || malformedReturnAggregate
+    ||/aggregate|struct|union|record|array|composite/.test(type+' '+cls);
   const explicitReturnBits = explicitReturnBitsOf(proto.returnBits, proto.bits);
   const aggregateLayout = aggregate ? aggregateReturnLayout(proto, explicitReturnBits) : null;
   if (aggregate && !aggregateLayout) {
@@ -411,13 +485,22 @@ export function classifyAAPCS64CallReturn(insn, opts = {}) {
   }
   if (proto.indirectResult === true || cls === 'indirect') return indirectReturnResult();
   if (scalableReturnClass(proto,type,cls)) return null;
-  const returnBits = aggregate ? explicitReturnBits : returnBitsOf(proto.returnBits, proto.bits);
+  const returnBits = aggregate
+    ? explicitReturnBits ?? aggregateLayout?.bits ?? null
+    : returnBitsOf(proto.returnBits, proto.bits);
   if (aggregate && returnBits == null) {
     return { reg:null, regs:[], bits:null, bytes:null, aggregate:true, partial:true,
       reason:'aapcs64-aggregate-return-size-not-proven' };
   }
+  // Direct register-return pieces currently describe payload lanes, not a
+  // padding-only lane.  Refuse a padded aggregate return rather than
+  // collapsing its physical extent to the logical width.
+  if (aggregate && aggregateLayout?.bytes > Math.ceil(returnBits / 8)) {
+    return { reg:null, regs:[], bits:returnBits, bytes:aggregateLayout.bytes, aggregate:true, partial:true,
+      reason:'aapcs64-padded-aggregate-return-layout-not-represented' };
+  }
   if (returnBits == null) return null;
-  const homogeneous = homogeneousReturnInfo(proto, cls, returnBits);
+  const homogeneous = homogeneousReturnInfo(proto, cls, returnBits, aggregateLayout);
   if (homogeneous?.invalid) return { reg:null, regs:[], bits:returnBits, aggregate:true, partial:true, reason:'aapcs64-homogeneous-return-layout-not-proven' };
   if (homogeneous) {
     const pieces = homogeneousReturnPieces(homogeneous);
@@ -452,7 +535,15 @@ export function classifyAAPCS64FunctionReturn(opts = {}) {
   const type = String(opts?.returnType || proto?.returnType || proto?.ret || proto?.result || '').toLowerCase();
   const cls = String(opts?.returnClass || proto?.returnClass || proto?.abiClass || proto?.resultClass || '').toLowerCase();
   if (opts?.returnsValue === false || proto?.returnsValue === false || proto?.void === true || type === 'void' || cls === 'void') return null;
-  const aggregate=proto?.aggregate===true||proto?.isAggregate===true||/aggregate|struct|union|record|array|composite/.test(type+' '+cls);
+  const returnAggregate = proto?.returnAggregate && typeof proto.returnAggregate === 'object'
+    && !Array.isArray(proto.returnAggregate) ? proto.returnAggregate : null;
+  const malformedReturnAggregate = Object.hasOwn(proto || {}, 'returnAggregate')
+    && proto?.returnAggregate != null && typeof proto.returnAggregate !== 'boolean'
+    && !returnAggregate;
+  const aggregate=proto?.aggregate===true||proto?.isAggregate===true||!!returnAggregate
+    || aggregateLayoutDescriptorPresent(proto)
+    || malformedReturnAggregate
+    ||/aggregate|struct|union|record|array|composite/.test(type+' '+cls);
   const explicitReturnBits = explicitReturnBitsOf(proto?.returnBits, proto?.bits, opts?.returnBits);
   const aggregateLayout = aggregate ? aggregateReturnLayout(proto, explicitReturnBits) : null;
   if (aggregate && !aggregateLayout) {
@@ -465,13 +556,19 @@ export function classifyAAPCS64FunctionReturn(opts = {}) {
   }
   if (proto?.indirectResult === true || cls === 'indirect') return indirectReturnResult();
   if (scalableReturnClass(proto,type,cls)) return null;
-  const returnBits = aggregate ? explicitReturnBits : returnBitsOf(proto?.returnBits, proto?.bits, opts?.returnBits);
+  const returnBits = aggregate
+    ? explicitReturnBits ?? aggregateLayout?.bits ?? null
+    : returnBitsOf(proto?.returnBits, proto?.bits, opts?.returnBits);
   if (aggregate && returnBits == null) {
     return { reg:null, regs:[], bits:null, bytes:null, aggregate:true, partial:true,
       reason:'aapcs64-aggregate-return-size-not-proven' };
   }
+  if (aggregate && aggregateLayout?.bytes > Math.ceil(returnBits / 8)) {
+    return { reg:null, regs:[], bits:returnBits, bytes:aggregateLayout.bytes, aggregate:true, partial:true,
+      reason:'aapcs64-padded-aggregate-return-layout-not-represented' };
+  }
   if (returnBits == null) return null;
-  const homogeneous = homogeneousReturnInfo(proto, cls, returnBits);
+  const homogeneous = homogeneousReturnInfo(proto, cls, returnBits, aggregateLayout);
   if (homogeneous?.invalid) return { reg:null, regs:[], bits:returnBits, aggregate:true, partial:true, reason:'aapcs64-homogeneous-return-layout-not-proven' };
   if (homogeneous) {
     const pieces = homogeneousReturnPieces(homogeneous);

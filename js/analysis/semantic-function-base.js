@@ -338,11 +338,39 @@ export function semanticAbiAdapter(abiPlugin, options = {}) {
   const stackRules = (() => { try { return plugin?.stackRules?.() ?? {}; } catch { return {}; } })();
   const unwindRules = (() => { try { return plugin?.unwindRules?.() ?? {}; } catch { return {}; } })();
 
+  /*
+   * Canonical producers expose a complete stack argument in both public
+   * arrays.  Give that intentional projection an internal marker before the
+   * global interval validator runs; an unmarked duplicate (including a direct
+   * scalar object supplied to abiPhysicalIntervalsValid) remains invalid.
+   * Keep the marker non-enumerable so it cannot become a second public ABI
+   * field or a serialization key.
+   */
+  function prepareCanonicalStackMirrors(result) {
+    if (!result || typeof result !== 'object'
+      || !Array.isArray(result.arguments) || !Array.isArray(result.stackArguments)) return result;
+    const stackEntries = new Set(result.stackArguments);
+    const mirrors = new Map();
+    const mark = (entry) => {
+      if (!stackEntries.has(entry) || String(entry?.location || '').toLowerCase() !== 'stack') return entry;
+      if (mirrors.has(entry)) return mirrors.get(entry);
+      const marked = { ...entry };
+      Object.defineProperty(marked, 'canonicalStackMirror', { value:true, enumerable:false });
+      mirrors.set(entry, marked);
+      return marked;
+    };
+    const arguments_ = result.arguments.map(mark);
+    if (!mirrors.size) return result;
+    const stackArguments = result.stackArguments.map((entry) => mirrors.get(entry) ?? entry);
+    return { ...result, arguments:arguments_, stackArguments };
+  }
+
   function annotateCanonicalResult(result) {
     if (!result || typeof result !== 'object') return result || null;
-    const physicalEvidenceValid = abiPhysicalIntervalsValid(result);
+    const prepared = prepareCanonicalStackMirrors(result);
+    const physicalEvidenceValid = abiPhysicalIntervalsValid(prepared);
     const annotated = {
-      ...result,
+      ...prepared,
       ...(supported ? {} : { status:'unsupported', completeness:'unsupported', unsupported:true }),
       ...(!physicalEvidenceValid ? {
         malformedEvidence:true, status:'malformed', completeness:'malformed',
@@ -385,10 +413,21 @@ export function semanticAbiAdapter(abiPlugin, options = {}) {
     return annotated;
   }
 
-  function classifyCanonicalArguments({ functionPrototype = null, call = null } = {}) {
+  function resolveCallPrototype(call = null) {
+    const direct = call?.callPrototype ?? options?.callPrototype ?? null;
+    if (direct != null || typeof options?.callPrototypeFor !== 'function') return direct;
+    try {
+      return options.callPrototypeFor(call?.target ?? call?.callTarget ?? null, call) ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  function classifyCanonicalArguments({ functionPrototype = null, call = null, resolvePrototype = true } = {}) {
     if (!registryRegistered || !plugin?.classifyArguments) return null;
     if (abiEvidenceState(options, call, plugin)) return null;
-    const prototype = functionPrototype ?? call?.callPrototype ?? options?.callPrototype ?? null;
+    const prototype = functionPrototype ?? call?.callPrototype ?? options?.callPrototype
+      ?? (resolvePrototype && call != null ? resolveCallPrototype(call) : null);
     const instruction = {
       callTarget:call?.target ?? call?.callTarget ?? null,
       callPrototype:prototype,
@@ -413,7 +452,8 @@ export function semanticAbiAdapter(abiPlugin, options = {}) {
 
   function canonicalReturnLocations(classified) {
     if (!classified || classified.partial === true || classified.unsupported === true
-      || abiResultInvalidState(classified) || !canonicalAbiEvidence(classified)) return [];
+      || abiResultInvalidState(classified) || !canonicalAbiEvidence(classified)
+      || !abiPhysicalIntervalsValid(classified)) return [];
     if (classified.indirect === true) {
       // Hidden sret is a complete indirect-return proof, never an ordinary
       // aggregate lane list.  Check it before inspecting pieces so a copied
@@ -615,7 +655,8 @@ export function semanticAbiAdapter(abiPlugin, options = {}) {
         || !classified || (classified.partial === true && functionPrototype != null && !knownVariadicPartial) || classified.unsupported === true
         || (classifiedState && !unknownPrototypePartial) || !canonicalAbiEvidence(classified)) return Object.freeze([]);
       const uncertain = classified.partial === true;
-      const provenEntry = (entry) => entry?.partial !== true && entry?.possible !== true
+      const provenEntry = (entry) => !unknownPrototypePartial
+        && entry?.partial !== true && entry?.possible !== true
         && entry?.mustUse !== false && entry?.exact !== false
         && entry?.named !== false && entry?.variadic !== true;
       const locations = [];
@@ -637,6 +678,7 @@ export function semanticAbiAdapter(abiPlugin, options = {}) {
             possible:uncertain && !provenEntry(entry),
             mustUse:!uncertain || provenEntry(entry),
             exact:!uncertain || provenEntry(entry),
+            ...(uncertain && !provenEntry(entry) ? { certainty:'unknown' } : {}),
             pieceIndex:Array.isArray(entry.pieces)
               ? (entry.pieces.findIndex((piece) => String(piece?.reg || '') === reg) >= 0
                 ? entry.pieces.findIndex((piece) => String(piece?.reg || '') === reg)
@@ -664,10 +706,16 @@ export function semanticAbiAdapter(abiPlugin, options = {}) {
       return Object.freeze([...new Set(named)]);
     },
     classifyCall({ call = null } = {}) {
-      const classified = classifyCanonicalArguments({ call });
+      const callPrototype = resolveCallPrototype(call);
+      const classified = classifyCanonicalArguments({ call, functionPrototype:callPrototype, resolvePrototype:false });
+      // A call without a source prototype has no parameter grouping proof.
+      // Keep even an over-eager/custom classifier conservative at this shared
+      // boundary; a callback-based prototype resolver is the one exception
+      // because the canonical producer can bind the call to source evidence.
+      const unknownCallPrototype = callPrototype == null;
       const instruction = {
         callTarget:call?.target ?? null,
-        callPrototype:options.callPrototype ?? call?.callPrototype ?? null,
+        callPrototype,
       };
       let returned = null;
       try { returned = annotateCanonicalResult(plugin?.classifyCallReturn?.(instruction, { ...options, callPrototype:instruction.callPrototype }) ?? null); }
@@ -683,12 +731,12 @@ export function semanticAbiAdapter(abiPlugin, options = {}) {
       const hardEvidence = evidenceState && evidenceState !== 'partial';
       const hardClassifier = classifierState && classifierState !== 'partial';
       const hardInvalid = hardEvidence || classified == null || classified?.unsupported === true || hardClassifier;
-      const candidateReturnPublish = !hardEvidence && !hardClassifier && !returnState
+      const candidateReturnPublish = !unknownCallPrototype && !hardEvidence && !hardClassifier && !returnState
         && classified != null && classified?.partial !== true && classified?.unsupported !== true
         && returned != null && returned?.partial !== true && returned?.unsupported !== true;
       const candidateReturnLocations = candidateReturnPublish ? canonicalReturnLocations(returned) : [];
       const returnProofMissing = candidateReturnPublish && candidateReturnLocations.length === 0;
-      const partial = !!hardInvalid || classified?.partial === true || !!returnState
+      const partial = !!hardInvalid || unknownCallPrototype || classified?.partial === true || !!returnState
         || returned?.partial === true || returned?.unsupported === true || returnProofMissing;
       const markUncertain = (entry) => ({
         ...entry,
@@ -697,7 +745,8 @@ export function semanticAbiAdapter(abiPlugin, options = {}) {
         exact:false,
         certainty:'unknown',
       });
-      const provenArgument = (entry) => entry?.partial !== true && entry?.possible !== true
+      const provenArgument = (entry) => !unknownCallPrototype
+        && entry?.partial !== true && entry?.possible !== true
         && entry?.mustUse !== false && entry?.exact !== false
         && entry?.named !== false && entry?.variadic !== true;
       const explicitArguments = hardInvalid ? null : Array.isArray(classified?.arguments)

@@ -1,5 +1,5 @@
 import { ABIPlugin } from './registry.js';
-import { canonicalAggregateLayout } from './aggregate-layout.js';
+import { aggregateLayoutDescriptorPresent, canonicalAggregateLayout } from './aggregate-layout.js';
 import {
   AAPCS64_ABI,
   classifyAAPCS64CallReturn,
@@ -21,44 +21,84 @@ function parameterList(proto) {
   return Array.isArray(list) ? list : null;
 }
 
+function nestedRecord(value) {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function descriptorBoolean(parameter, key) {
+  const owners = [parameter];
+  if (nestedRecord(parameter?.layout)) owners.push(parameter.layout);
+  if (nestedRecord(parameter?.returnAggregate)) owners.push(parameter.returnAggregate);
+  if (nestedRecord(parameter?.returnAggregate?.layout)) owners.push(parameter.returnAggregate.layout);
+  const values = owners.filter((owner) => Object.hasOwn(owner, key)).map((owner) => owner[key]);
+  if (!values.length) return { present:false, value:false };
+  if (values.some((value) => typeof value !== 'boolean')) return { present:true, value:null };
+  const normalized = values;
+  return { present:true, value:normalized.every((value) => value === normalized[0]) ? normalized[0] : null };
+}
+
 function parameterClass(param) {
   const type = String(param?.type || param?.name || '').toLowerCase();
   const cls = String(param?.abiClass || param?.class || param?.kind || '').toLowerCase();
   const pointer = param?.pointer === true || param?.isPointer === true || /\*|pointer|ptr|object|class|block|closure/.test(`${type} ${cls}`);
-  const hfa = param?.hfa === true || param?.hva === true || cls.includes('hfa') || cls.includes('hva') || cls.includes('homogeneous');
-  const hva = param?.hva === true || cls.includes('hva');
+  const hfaMeta = descriptorBoolean(param, 'hfa');
+  const hvaMeta = descriptorBoolean(param, 'hva');
+  const aggregateMetadataInvalid = (hfaMeta.present && hfaMeta.value === null)
+    || (hvaMeta.present && hvaMeta.value === null);
+  const hfa = hfaMeta.value === true || param?.hfa === true || cls.includes('hfa') || cls.includes('homogeneous');
+  const hva = hvaMeta.value === true || cls.includes('hva');
   const homogeneous = hfa || hva;
+  const aggregateDescriptorPresent = aggregateLayoutDescriptorPresent(param);
   const aggregateHint = param?.aggregate === true || param?.isAggregate === true
-    || /aggregate|struct|union|record|array|composite/.test(`${type} ${cls}`);
+    || aggregateDescriptorPresent || /aggregate|struct|union|record|array|composite/.test(`${type} ${cls}`);
   const vector = !aggregateHint && (param?.vector === true || cls.includes('vector') || /vector|simd/.test(type));
   const aggregate = !pointer && !homogeneous && aggregateHint;
   const fp = !aggregate && (hfa || vector || cls.includes('float') || cls.includes('fp') || /^(float|double|__fp16)/.test(type));
-  const rawMembers = param?.members ?? param?.elements ?? param?.count;
+  // A nested layout descriptor is the canonical aggregate source.  Resolve it
+  // before reading legacy aliases so a classifier cannot publish bits/member
+  // lanes from one descriptor while the validated physical layout comes from
+  // another.
+  const layoutEvidence = homogeneous || aggregate ? canonicalAggregateLayout(param) : null;
+  const canonicalMembers = layoutEvidence?.members ?? null;
+  const rawMembers = param?.members ?? param?.elements ?? canonicalMembers ?? param?.count;
   const memberArray = Array.isArray(rawMembers) ? rawMembers : null;
   const declaredMembers = memberArray ? memberArray.length : Number(rawMembers);
   const members = homogeneous && Number.isSafeInteger(declaredMembers) && declaredMembers >= 1 && declaredMembers <= 4
     ? declaredMembers : homogeneous ? 0 : 1;
-  const declaredBits = Number(param?.bits ?? param?.sizeBits);
+  const declaredBits = Number(layoutEvidence?.bits ?? param?.bits ?? param?.sizeBits);
   const firstMemberBits = memberArray?.length ? Number(memberArray[0]?.bits ?? memberArray[0]?.sizeBits) : null;
-  const declaredElementBits = Number(param?.elementBits ?? param?.memberBits ?? firstMemberBits);
+  const declaredElementBits = Number(canonicalMembers?.[0]?.bits
+    ?? param?.elementBits ?? param?.memberBits ?? firstMemberBits);
   const elementBits = homogeneous && Number.isSafeInteger(declaredElementBits) && declaredElementBits > 0
     ? declaredElementBits : homogeneous ? 0 : null;
   const explicitTotalBitsProven = Number.isSafeInteger(declaredBits) && declaredBits > 0;
   const homogeneousSizeMatches = !homogeneous || !explicitTotalBitsProven
     || (members > 0 && elementBits > 0 && declaredBits === members * elementBits);
-  const layoutEvidence = homogeneous || aggregate ? canonicalAggregateLayout(param) : null;
   const homogeneousMembersMatch = !homogeneous || !!layoutEvidence
     && layoutEvidence.members.length === members
     && layoutEvidence.members.every((member) => member.bits === elementBits);
+  const homogeneousElementBytes = homogeneous && layoutEvidence?.members?.length
+    ? layoutEvidence.members[0].bytes : null;
+  const homogeneousBytesMatch = !homogeneous || !!homogeneousElementBytes
+    && layoutEvidence.members.every((member) => member.bytes === homogeneousElementBytes);
+  const homogeneousOffsetsMatch = !homogeneous || !!homogeneousElementBytes
+    && layoutEvidence.members.every((member, index) => member.byteOffset === index * homogeneousElementBytes);
   const homogeneousLayoutProven = !homogeneous
-    || (!!layoutEvidence && members > 0 && elementBits > 0 && homogeneousSizeMatches && homogeneousMembersMatch);
-  const aggregateLayoutProven = !aggregate || !!layoutEvidence;
+    || (!!layoutEvidence && members > 0 && elementBits > 0 && homogeneousSizeMatches
+      && homogeneousMembersMatch && homogeneousBytesMatch && homogeneousOffsetsMatch
+      && hfaMeta.value !== null && hvaMeta.value !== null
+      && !(hfaMeta.value === true && hvaMeta.value === true));
+  const aggregateLayoutProven = !aggregateMetadataInvalid && (!aggregate || !!layoutEvidence);
   const bits = homogeneous && members > 0 && elementBits > 0
     ? homogeneousSizeMatches ? Math.max(8, Math.min(512, elementBits * members))
       : Math.max(8, Math.min(512, explicitTotalBitsProven ? declaredBits : 64))
     : aggregate ? aggregateLayoutProven ? Math.max(8, Math.min(512, declaredBits)) : 0
       : Math.max(8, Math.min(512, explicitTotalBitsProven ? declaredBits : 64));
-  const bytes = bits > 0 ? Math.max(1, Math.ceil(bits / 8)) : 0;
+  const bytes = homogeneous
+    ? layoutEvidence?.bytes ?? (bits > 0 ? Math.max(1, Math.ceil(bits / 8)) : 0)
+    : aggregate
+    ? layoutEvidence?.bytes ?? (bits > 0 ? Math.max(1, Math.ceil(bits / 8)) : 0)
+    : bits > 0 ? Math.max(1, Math.ceil(bits / 8)) : 0;
   const explicitAlignment = Number(param?.alignmentBytes || param?.alignBytes || param?.alignment || 0);
   let alignmentBytes = Number.isSafeInteger(explicitAlignment) && explicitAlignment > 0 ? explicitAlignment : 1;
   if (!(Number.isSafeInteger(explicitAlignment) && explicitAlignment > 0)) {
@@ -69,8 +109,13 @@ function parameterClass(param) {
   }
   const signed = param?.signed === true || /(^|\s)(?:signed|int\d*)/.test(type);
   return {
-    pointer, hfa, hva, homogeneous, homogeneousLayoutProven,
-    aggregate, aggregateLayoutProven, vector, fp, members, elementBits, bits, bytes, alignmentBytes, signed,
+    pointer, hfa, hva, homogeneous, homogeneousLayoutProven, aggregateMetadataInvalid,
+    aggregate, aggregateLayoutProven, aggregateLayout:layoutEvidence,
+    aggregateBytes:aggregate ? bytes : null,
+    vector, fp, members, elementBits,
+    elementBytes:homogeneousElementBytes
+      ?? (homogeneous && elementBits > 0 ? Math.ceil(elementBits / 8) : null),
+    bits, bytes, alignmentBytes, signed,
   };
 }
 
@@ -97,12 +142,12 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
 
   if (!params) {
     for (let i = 0; i < 8; i++) {
-      srcs.push({ t:'reg', reg:`x${i}`, bits:64, possible:true, mustUse:false, abiClass:'unknown-gp' });
-      arguments_.push({ index:i, location:'register', reg:`x${i}`, bits:64, abiClass:'unknown-gp', possible:true, mustUse:false, mayContainPointers:true });
+      srcs.push({ t:'reg', reg:`x${i}`, bits:64, possible:true, mustUse:false, exact:false, certainty:'unknown', abiClass:'unknown-gp' });
+      arguments_.push({ index:i, location:'register', reg:`x${i}`, bits:64, abiClass:'unknown-gp', possible:true, mustUse:false, exact:false, certainty:'unknown', mayContainPointers:true });
     }
     for (let i = 0; i < 8; i++) {
-      srcs.push({ t:'reg', reg:`v${i}`, bits:128, possible:true, mustUse:false, abiClass:'unknown-fp-vector' });
-      arguments_.push({ index:8 + i, location:'register', reg:`v${i}`, bits:128, abiClass:'unknown-fp-vector', possible:true, mustUse:false });
+      srcs.push({ t:'reg', reg:`v${i}`, bits:128, possible:true, mustUse:false, exact:false, certainty:'unknown', abiClass:'unknown-fp-vector' });
+      arguments_.push({ index:8 + i, location:'register', reg:`v${i}`, bits:128, abiClass:'unknown-fp-vector', possible:true, mustUse:false, exact:false, certainty:'unknown' });
     }
     return {
       srcs,
@@ -119,11 +164,18 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
   for (let index = 0; index < params.length; index++) {
     const param = params[index];
     const c = parameterClass(param);
+    if (c.aggregateMetadataInvalid) {
+      aggregatePartial = true;
+      arguments_.push({ index, location:'unknown', abiClass:'aggregate-metadata-unproven', aggregate:true,
+        partial:true, possible:true, mustUse:false, exact:false, certainty:'unknown',
+        reason:'aggregate-hfa-hva-metadata-invalid' });
+      continue;
+    }
     if (c.homogeneous && !c.homogeneousLayoutProven) {
       aggregatePartial = true;
       arguments_.push({
         index, location:'unknown', abiClass:c.hfa ? 'hfa-unproven' : 'hva-unproven',
-        aggregate:true, partial:true, possible:true, mustUse:false,
+        aggregate:true, partial:true, possible:true, mustUse:false, exact:false, certainty:'unknown',
         reason:'darwin-arm64-homogeneous-aggregate-layout-not-proven',
       });
       continue;
@@ -132,7 +184,7 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
       aggregatePartial = true;
       arguments_.push({
         index, location:'unknown', abiClass:'aggregate-unproven', aggregate:true,
-        partial:true, possible:true, mustUse:false,
+        partial:true, possible:true, mustUse:false, exact:false, certainty:'unknown',
         reason:'darwin-arm64-aggregate-size-layout-not-proven',
       });
       continue;
@@ -157,10 +209,10 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
           bytes:c.bytes,
           ...(c.homogeneous ? {
             aggregate:true, members:c.members, memberCount:c.members, elementBits:c.elementBits,
-            elementBytes:Math.ceil(c.elementBits / 8), homogeneousLayoutProven:true,
+            elementBytes:c.elementBytes, homogeneousLayoutProven:true,
             pieces:regs.map((reg,piece) => ({
               pieceIndex:piece, order:piece, reg, abiClass:c.hfa ? 'hfa' : 'hva',
-              bits:c.elementBits, bytes:Math.ceil(c.elementBits / 8), byteOffset:piece * Math.ceil(c.elementBits / 8),
+              bits:c.elementBits, bytes:c.elementBytes, byteOffset:piece * c.elementBytes,
             })),
           } : regsNeeded > 1 ? {
             pieces:regs.map((reg,piece) => ({
@@ -175,6 +227,18 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
       }
     } else {
       const regsNeeded = Math.max(1, Math.ceil(c.bits / 64));
+      // A padded aggregate needs a physical lane proof that differs from its
+      // logical bit width.  Do not publish an invented register split until a
+      // dedicated register-padding representation exists; the stack path
+      // below carries the complete canonical extent exactly.
+      if (c.aggregate && c.aggregateBytes > Math.ceil(c.bits / 8)
+        && gp + regsNeeded <= 8) {
+        aggregatePartial = true;
+        arguments_.push({ index, location:'unknown', abiClass:'aggregate-padding-register-layout-unproven',
+          aggregate:true, partial:true, possible:true, mustUse:false, exact:false, certainty:'unknown',
+          reason:'aggregate-physical-padding-register-layout-not-represented' });
+        continue;
+      }
       if (gp + regsNeeded <= 8) {
         const regs = [];
         for (let n = 0; n < regsNeeded; n++) {
@@ -210,8 +274,10 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
     }
 
     stackOffset = alignUp(stackOffset, c.alignmentBytes);
-    const stackBytes = c.homogeneous ? c.members * 8
-      : c.aggregate || c.bits > 64 ? Math.max(8, Math.ceil(c.bits / 64) * 8) : c.bytes;
+    const homogeneousStackElementBytes = c.homogeneous ? Math.max(8, c.elementBytes ?? 0) : null;
+    const stackBytes = c.homogeneous ? homogeneousStackElementBytes * c.members
+      : c.aggregate ? Math.max(8, Math.ceil((c.aggregateBytes ?? c.bytes) / 8) * 8)
+        : c.bits > 64 ? Math.max(8, Math.ceil(c.bits / 64) * 8) : c.bytes;
     const entry = {
       index,
       location:'stack',
@@ -224,16 +290,20 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
       ...(c.aggregate ? { aggregate:true } : {}),
       ...(c.homogeneous ? {
         aggregate:true, members:c.members, memberCount:c.members, elementBits:c.elementBits,
-        elementBytes:Math.ceil(c.elementBits / 8), homogeneousLayoutProven:true,
+        elementBytes:c.elementBytes, stackElementBytes:homogeneousStackElementBytes, homogeneousLayoutProven:true,
         pieces:Array.from({ length:c.members }, (_unused,piece) => ({
-          pieceIndex:piece, order:piece, stackOffset:stackOffset + piece*8,
-          bits:c.elementBits, bytes:8, byteOffset:piece*8, abiClass:c.hfa ? 'hfa' : 'hva',
+          pieceIndex:piece, order:piece, stackOffset:stackOffset + piece * homogeneousStackElementBytes,
+          bits:c.elementBits, bytes:homogeneousStackElementBytes,
+          byteOffset:piece * homogeneousStackElementBytes, abiClass:c.hfa ? 'hfa' : 'hva',
         })),
       } : c.aggregate || c.bits > 64 ? {
-        pieces:Array.from({ length:Math.max(1, Math.ceil(c.bits / 64)) }, (_unused,piece) => ({
+        pieces:c.aggregate ? [{
+          pieceIndex:0, order:0, stackOffset, bits:c.bits, bytes:stackBytes, byteOffset:0,
+          abiClass:'aggregate',
+        }] : Array.from({ length:Math.max(1, Math.ceil(c.bits / 64)) }, (_unused,piece) => ({
           pieceIndex:piece, order:piece, stackOffset:stackOffset + piece * 8,
           bits:Math.min(64, Math.max(1, c.bits - piece * 64)), bytes:8, byteOffset:piece * 8,
-          abiClass:c.aggregate ? 'aggregate' : c.hfa ? 'hfa' : c.hva ? 'hva' : c.vector ? 'vector' : 'wide-integer',
+          abiClass:c.hfa ? 'hfa' : c.hva ? 'hva' : c.vector ? 'vector' : 'wide-integer',
         })),
       } : {}),
       possible:false,
@@ -258,6 +328,8 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
       location:'stack',
       possible:true,
       mustUse:false,
+      exact:false,
+      certainty:'unknown',
       slotAlignmentBytes:8,
       mayContainPointers:true,
       reason:'darwin-arm64-variadic-stage-c-stack-only',

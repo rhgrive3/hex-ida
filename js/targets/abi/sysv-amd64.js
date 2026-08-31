@@ -1,4 +1,5 @@
 import { ABIPlugin } from './registry.js';
+import { aggregateLayoutDescriptorPresent, canonicalAggregateLayout } from './aggregate-layout.js';
 
 const INTEGER_ARGUMENT_REGISTERS = Object.freeze(['rdi','rsi','rdx','rcx','r8','r9']);
 const VECTOR_ARGUMENT_REGISTERS = Object.freeze(Array.from({ length:8 }, (_value, index) => `xmm${index}`));
@@ -68,28 +69,57 @@ function parameterClass(parameter) {
   const pointer = parameter?.pointer === true || parameter?.isPointer === true
     || /\*|pointer|ptr|object|class|block|closure/.test(`${type} ${abiClass}`);
   const aggregate = !x87 && (parameter?.aggregate === true || parameter?.isAggregate === true
-    || /aggregate|struct|union|record|array/.test(`${type} ${abiClass}`));
+    || aggregateLayoutDescriptorPresent(parameter) || /aggregate|struct|union|record|array/.test(`${type} ${abiClass}`));
   const vector = !x87 && (parameter?.vector === true || /vector|simd|sse/.test(`${type} ${abiClass}`));
   const floating = !x87 && !aggregate && (parameter?.floating === true || /(^|\s)(?:float|double)(?:\s|$)|\bfp\b/.test(`${type} ${abiClass}`));
-  const declaredBits = parameter?.bits ?? parameter?.sizeBits;
+  const aggregateLayoutPresent = aggregate && aggregateLayoutDescriptorPresent(parameter);
+  const aggregateLayout = aggregate && aggregateLayoutPresent ? canonicalAggregateLayout(parameter) : null;
+  const aggregateLayoutProven = !aggregate || !aggregateLayoutPresent || aggregateLayout != null;
+  const declaredBits = aggregateLayout?.bits ?? parameter?.bits ?? parameter?.sizeBits;
   const rawBits = Number(declaredBits ?? (pointer ? 64 : typeBits(type, vector ? 128 : 64)));
   const bits = Number.isSafeInteger(rawBits) && rawBits > 0 ? Math.min(512, rawBits) : 64;
   const nonTrivialForCalls = parameter?.nonTrivialForCalls === true || parameter?.nonTrivial === true;
   const integerEightbytes = !pointer && !aggregate && !vector && !floating && !x87 && bits === 128 ? 2 : 1;
   return {
     type, abiClass, pointer, aggregate, vector, floating, bits, bitsProven:declaredBits != null,
+    aggregateLayoutPresent, aggregateLayoutProven, aggregateLayout,
+    aggregateBytes:aggregate ? aggregateLayout?.bytes ?? Math.ceil(bits / 8) : null,
     nonTrivialForCalls, x87, complexX87, integerEightbytes,
   };
 }
 
+function nestedRecords(parameter) {
+  if (!parameter || typeof parameter !== 'object' || Array.isArray(parameter)) return [];
+  const records = [parameter];
+  const add = (value) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value) || records.includes(value)) return;
+    records.push(value);
+    if (value.layout && typeof value.layout === 'object' && !Array.isArray(value.layout)) add(value.layout);
+  };
+  add(parameter.layout);
+  add(parameter.returnAggregate);
+  return records;
+}
+
 function explicitEightbyteClasses(parameter) {
-  const raw = parameter?.eightbyteClasses ?? parameter?.abiClasses;
-  if (!Array.isArray(raw) || raw.length < 1 || raw.length > 2) return null;
+  const candidates = [];
+  for (const owner of nestedRecords(parameter)) {
+    for (const field of ['eightbyteClasses', 'abiClasses']) {
+      if (Object.hasOwn(owner, field)) candidates.push(owner[field]);
+    }
+  }
+  if (!candidates.length || candidates.some((raw) => !Array.isArray(raw)
+    || raw.length < 1 || raw.length > 2)) return null;
+  const raw = candidates[0];
+  if (candidates.slice(1).some((candidate) => JSON.stringify(candidate) !== JSON.stringify(raw))) return null;
   const classes = raw.map((value) => String(value || '').trim().toUpperCase());
   if (classes.some((value) => !['INTEGER','SSE','SSEUP','MEMORY','NO_CLASS'].includes(value))) return null;
   if (classes.includes('MEMORY')) return ['MEMORY'];
-  if (classes[0] === 'SSEUP') return null;
-  if (classes[1] === 'SSEUP' && !['SSE','SSEUP'].includes(classes[0])) return null;
+  // NO_CLASS is padding/absence evidence, not a physical lane that this
+  // classifier can publish.  Refuse it rather than compressing the list and
+  // shifting all following byte/register positions.
+  if (classes.includes('NO_CLASS') || classes[0] === 'SSEUP') return null;
+  if (classes[1] === 'SSEUP' && classes[0] !== 'SSE') return null;
   return classes.filter((value) => value !== 'NO_CLASS');
 }
 
@@ -122,8 +152,10 @@ function vectorRegisterView(index, bits, options = {}) {
 
 function conservativeUnknownArguments() {
   const srcs = [
-    ...INTEGER_ARGUMENT_REGISTERS.map((reg) => ({ t:'reg', reg, bits:64 })),
-    ...VECTOR_ARGUMENT_REGISTERS.map((reg) => ({ t:'reg', reg, bits:128 })),
+    ...INTEGER_ARGUMENT_REGISTERS.map((reg) => ({ t:'reg', reg, bits:64,
+      possible:true, mustUse:false, exact:false, certainty:'unknown' })),
+    ...VECTOR_ARGUMENT_REGISTERS.map((reg) => ({ t:'reg', reg, bits:128,
+      possible:true, mustUse:false, exact:false, certainty:'unknown' })),
   ];
   return {
     srcs,
@@ -133,6 +165,10 @@ function conservativeUnknownArguments() {
       reg:source.reg,
       bits:source.bits,
       abiClass:source.reg.startsWith('xmm') ? 'unknown-sse' : 'unknown-integer',
+      possible:true,
+      mustUse:false,
+      exact:false,
+      certainty:'unknown',
     })),
     stackArguments:[],
     stackArgsUnknown:true,
@@ -173,6 +209,32 @@ export function classifySysVAMD64Arguments(instruction, options = {}) {
 
   parameters.forEach((parameter, index) => {
     const classified = parameterClass(parameter);
+    // An explicit aggregate descriptor is a proof input regardless of whether
+    // the eventual ABI path is an invisible reference, register class, or
+    // memory.  Do not let a malformed nested layout bypass validation through
+    // the non-trivial/reference shortcut below.
+    if (classified.aggregate && !classified.aggregateLayoutProven) {
+      aggregatePartial = true;
+      allocationUnknown = true;
+      const candidateRegisters = [
+        ...INTEGER_ARGUMENT_REGISTERS.slice(integerIndex),
+        ...VECTOR_ARGUMENT_REGISTERS.slice(vectorIndex),
+      ];
+      for (const reg of INTEGER_ARGUMENT_REGISTERS.slice(integerIndex)) appendRegisterSource(srcs, seenSources, reg, 64, {
+        possible:true, mustUse:false, exact:false, certainty:'unknown', purpose:'aggregate-layout-candidate',
+      });
+      for (const reg of VECTOR_ARGUMENT_REGISTERS.slice(vectorIndex)) appendRegisterSource(srcs, seenSources, reg, 128, {
+        possible:true, mustUse:false, exact:false, certainty:'unknown', purpose:'aggregate-layout-candidate',
+      });
+      arguments_.push({
+        index, location:'unknown', candidateRegisters, stackPossible:true,
+        abiClass:'aggregate-layout-unproven', aggregate:true, pointer:classified.pointer,
+        bits:classified.bits, possible:true, mustUse:false, exact:false, certainty:'unknown',
+        partial:true, reason:'sysv-amd64-aggregate-layout-not-proven',
+      });
+      stackArgsMayContainPointers = true;
+      return;
+    }
     const aggregateClasses = classified.aggregate && !classified.nonTrivialForCalls ? explicitEightbyteClasses(parameter) : null;
 
     if (!allocationUnknown && classified.x87) {
@@ -217,6 +279,41 @@ export function classifySysVAMD64Arguments(instruction, options = {}) {
       const vectorNeeded = aggregateClasses.filter((value) => value === 'SSE').length;
       const registersAvailable = integerIndex + integerNeeded <= INTEGER_ARGUMENT_REGISTERS.length
         && vectorIndex + vectorNeeded <= VECTOR_ARGUMENT_REGISTERS.length;
+      const logicalBytes = Math.ceil(classified.bits / 8);
+      const physicalBytes = Math.max(1, classified.aggregateBytes ?? logicalBytes);
+      const physicalPadding = physicalBytes > logicalBytes;
+      // An eightbyte register class list cannot express a padding-only lane.
+      // Preserve an exact memory extent below, but do not publish a register
+      // placement that silently drops or invents the padded bytes.
+      if (!memoryClass && physicalPadding && registersAvailable) {
+        aggregatePartial = true;
+        allocationUnknown = true;
+        const candidateRegisters = [
+          ...INTEGER_ARGUMENT_REGISTERS.slice(integerIndex),
+          ...VECTOR_ARGUMENT_REGISTERS.slice(vectorIndex),
+        ];
+        arguments_.push({ index, location:'unknown', candidateRegisters, stackPossible:true,
+          abiClass:'aggregate-padding-register-layout-unproven', aggregate:true, bits:classified.bits,
+          possible:true, mustUse:false, exact:false, certainty:'unknown', partial:true,
+          reason:'sysv-amd64-padded-aggregate-register-layout-not-represented' });
+        stackArgsMayContainPointers = true;
+        return;
+      }
+      if (!memoryClass && (classified.bits > 128 || physicalBytes > 16
+        || aggregateClasses.length * 8 !== physicalBytes)) {
+        aggregatePartial = true;
+        allocationUnknown = true;
+        const candidateRegisters = [
+          ...INTEGER_ARGUMENT_REGISTERS.slice(integerIndex),
+          ...VECTOR_ARGUMENT_REGISTERS.slice(vectorIndex),
+        ];
+        arguments_.push({ index, location:'unknown', candidateRegisters, stackPossible:true,
+          abiClass:'aggregate-eightbyte-layout-incomplete', aggregate:true, bits:classified.bits,
+          possible:true, mustUse:false, exact:false, certainty:'unknown', partial:true,
+          reason:'sysv-amd64-eightbyte-layout-incomplete' });
+        stackArgsMayContainPointers = true;
+        return;
+      }
       if (!memoryClass && registersAvailable) {
         const pieces = [];
         let activeVectorRegister = null;
@@ -238,19 +335,22 @@ export function classifySysVAMD64Arguments(instruction, options = {}) {
             pieces.push({ index:pieceIndex, pieceIndex, order:pieceIndex, abiClass, reg:activeVectorRegister, bits:pieceBits, bytes:8, byteOffset:pieceIndex * 8 });
           }
         }
-        arguments_.push({ index, location:'registers', regs:Array.from(new Set(pieces.map((piece) => piece.reg))), pieces, abiClass:'aggregate-eightbytes', pointer:classified.pointer, bits:classified.bits, bytes:aggregateClasses.length * 8 });
+        arguments_.push({ index, location:'registers', regs:Array.from(new Set(pieces.map((piece) => piece.reg))), pieces, aggregate:true, abiClass:'aggregate-eightbytes', pointer:classified.pointer, bits:classified.bits, bytes:physicalBytes });
         stackArgsMayContainPointers ||= classified.pointer;
         return;
       }
-      const bytes = align(Math.max(8, Math.ceil(classified.bits / 8)), 8);
+      const bytes = align(Math.max(8, physicalBytes), 8);
       stackOffset = align(stackOffset, Math.min(16, Math.max(8, Number(parameter?.alignment || 8))));
-      const pieces = Array.from({ length:Math.max(1, Math.ceil(bytes / 8)) }, (_unused, pieceIndex) => ({
-        index:pieceIndex, pieceIndex, order:pieceIndex,
-        stackOffset:stackOffset + pieceIndex * 8,
-        bits:Math.min(64, Math.max(1, classified.bits - pieceIndex * 64)),
-        bytes:8, byteOffset:pieceIndex * 8, abiClass:'aggregate-memory',
-      }));
-      const entry = { index, location:'stack', offset:stackOffset, offsetBase:'incoming-stack-arguments', calleeEntryOffset:8 + stackOffset, bytes, abiClass:'aggregate-memory', pointer:classified.pointer, bits:classified.bits, eightbyteClasses:aggregateClasses, pieces };
+      const pieces = physicalBytes > logicalBytes
+        ? [{ index:0, pieceIndex:0, order:0, stackOffset,
+          bits:classified.bits, bytes, byteOffset:0, abiClass:'aggregate-memory' }]
+        : Array.from({ length:Math.max(1, Math.ceil(bytes / 8)) }, (_unused, pieceIndex) => ({
+          index:pieceIndex, pieceIndex, order:pieceIndex,
+          stackOffset:stackOffset + pieceIndex * 8,
+          bits:Math.min(64, Math.max(1, classified.bits - pieceIndex * 64)),
+          bytes:8, byteOffset:pieceIndex * 8, abiClass:'aggregate-memory',
+        }));
+      const entry = { index, location:'stack', offset:stackOffset, offsetBase:'incoming-stack-arguments', calleeEntryOffset:8 + stackOffset, bytes, aggregate:true, abiClass:'aggregate-memory', pointer:classified.pointer, bits:classified.bits, eightbyteClasses:aggregateClasses, pieces };
       arguments_.push(entry); stackArguments.push(entry); stackOffset += bytes; stackArgsMayContainPointers ||= classified.pointer;
       return;
     }
@@ -261,17 +361,23 @@ export function classifySysVAMD64Arguments(instruction, options = {}) {
         ...INTEGER_ARGUMENT_REGISTERS.slice(integerIndex),
         ...VECTOR_ARGUMENT_REGISTERS.slice(vectorIndex),
       ];
-      for (const reg of INTEGER_ARGUMENT_REGISTERS.slice(integerIndex)) appendRegisterSource(srcs, seenSources, reg, 64);
-      for (const reg of VECTOR_ARGUMENT_REGISTERS.slice(vectorIndex)) appendRegisterSource(srcs, seenSources, reg, 128);
+      for (const reg of INTEGER_ARGUMENT_REGISTERS.slice(integerIndex)) appendRegisterSource(srcs, seenSources, reg, 64, {
+        possible:true, mustUse:false, exact:false, certainty:'unknown',
+        purpose:'allocation-after-unproven-aggregate',
+      });
+      for (const reg of VECTOR_ARGUMENT_REGISTERS.slice(vectorIndex)) appendRegisterSource(srcs, seenSources, reg, 128, {
+        possible:true, mustUse:false, exact:false, certainty:'unknown',
+        purpose:'allocation-after-unproven-aggregate',
+      });
       arguments_.push({
         index,
         location:'unknown',
         candidateRegisters,
         stackPossible:true,
-        abiClass:classified.aggregate ? 'aggregate-partial' : 'allocation-after-unclassified-aggregate',
-        pointer:classified.pointer,
-        bits:classified.bits,
-        partial:true,
+          abiClass:classified.aggregate ? 'aggregate-partial' : 'allocation-after-unclassified-aggregate',
+          pointer:classified.pointer,
+          bits:classified.bits,
+          partial:true, possible:true, mustUse:false, exact:false, certainty:'unknown',
       });
       stackArgsMayContainPointers = true;
       return;
@@ -331,20 +437,22 @@ export function classifySysVAMD64Arguments(instruction, options = {}) {
         arguments_.push({
           index, location:'unknown', candidateRegisters:[], stackPossible:true,
           abiClass:'sse-vector-unsupported-width', pointer:false, bits:classified.bits,
-          partial:true, unsupported:true, reason:'sysv-amd64-vector-width-outside-modeled-register-views',
+          partial:true, unsupported:true, possible:true, mustUse:false, exact:false, certainty:'unknown',
+          reason:'sysv-amd64-vector-width-outside-modeled-register-views',
         });
         return;
       }
       const unsupported = classified.vector && exactVectorView == null;
       vectorPartial ||= unsupported;
       appendRegisterSource(srcs, seenSources, architecturalView, classified.bits, unsupported
-        ? { partial:true, unsupported:true, purpose:'wide-vector-register-view' }
+        ? { partial:true, unsupported:true, possible:true, mustUse:false, exact:false,
+          certainty:'unknown', purpose:'wide-vector-register-view' }
         : {});
       arguments_.push({
         index, location:'register', reg:architecturalView,
         abiClass:classified.vector ? 'sse-vector' : 'sse-scalar',
         pointer:false, bits:classified.bits,
-        ...(unsupported ? { partial:true, unsupported:true, reason:'sysv-amd64-wide-vector-profile-not-proven' } : {}),
+        ...(unsupported ? { partial:true, unsupported:true, possible:true, mustUse:false, exact:false, certainty:'unknown', reason:'sysv-amd64-wide-vector-profile-not-proven' } : {}),
       });
       return;
     }
@@ -384,12 +492,12 @@ export function classifySysVAMD64Arguments(instruction, options = {}) {
   const variadicRegisterCandidates = [];
   if (variadic) {
     for (const reg of INTEGER_ARGUMENT_REGISTERS.slice(integerIndex)) {
-      variadicRegisterCandidates.push({ t:'reg', reg, bits:64, abiClass:'unknown-integer', possible:true });
-      appendRegisterSource(srcs, seenSources, reg, 64, { purpose:'variadic-register-candidate', possible:true });
+      variadicRegisterCandidates.push({ t:'reg', reg, bits:64, abiClass:'unknown-integer', possible:true, mustUse:false, exact:false, certainty:'unknown' });
+      appendRegisterSource(srcs, seenSources, reg, 64, { purpose:'variadic-register-candidate', possible:true, mustUse:false, exact:false, certainty:'unknown' });
     }
     for (const reg of VECTOR_ARGUMENT_REGISTERS.slice(vectorIndex)) {
-      variadicRegisterCandidates.push({ t:'reg', reg, bits:128, abiClass:'unknown-sse', possible:true });
-      appendRegisterSource(srcs, seenSources, reg, 128, { purpose:'variadic-register-candidate', possible:true });
+      variadicRegisterCandidates.push({ t:'reg', reg, bits:128, abiClass:'unknown-sse', possible:true, mustUse:false, exact:false, certainty:'unknown' });
+      appendRegisterSource(srcs, seenSources, reg, 128, { purpose:'variadic-register-candidate', possible:true, mustUse:false, exact:false, certainty:'unknown' });
     }
   }
   return {
@@ -409,32 +517,83 @@ export function classifySysVAMD64Arguments(instruction, options = {}) {
   };
 }
 
+function aggregateReturnDescriptor(prototype, options = {}, returnBits = null) {
+  if (!prototype || typeof prototype !== 'object') return { present:false, layout:null, malformed:false, bits:returnBits };
+  const source = { ...prototype };
+  const sourceBits = source.bits ?? source.sizeBits ?? source.returnBits ?? null;
+  const sourceBitsNumber = sourceBits == null ? null : Number(sourceBits);
+  if (returnBits != null && sourceBits != null
+    && (!Number.isSafeInteger(sourceBitsNumber) || sourceBitsNumber !== returnBits)) {
+    return { present:true, layout:null, malformed:true, bits:returnBits };
+  }
+  if (returnBits != null && sourceBits == null) source.bits = returnBits;
+  const present = aggregateLayoutDescriptorPresent(source);
+  const layout = present ? canonicalAggregateLayout(source) : null;
+  return { present, layout, malformed:present && layout == null, bits:layout?.bits ?? returnBits };
+}
+
 function classifyReturn(prototype, options = {}) {
   if (!prototype) return null;
   const type = normalizedType(options.returnType || prototype.returnType || prototype.ret || prototype.result || '');
   const abiClass = normalizedType(options.returnClass || prototype.returnClass || prototype.abiClass || prototype.resultClass || '');
   if (options.returnsValue === false || prototype.returnsValue === false || prototype.void === true || type === 'void' || abiClass === 'void') return null;
-  if (prototype.indirectResult === true || abiClass === 'indirect') {
+  const explicitlyIndirect = prototype.indirectResult === true || abiClass === 'indirect';
+  if (explicitlyIndirect && aggregateLayoutDescriptorPresent(prototype)) {
+    const descriptor = aggregateReturnDescriptor(prototype, options,
+      Number.isSafeInteger(Number(options.returnBits ?? prototype.returnBits))
+        && Number(options.returnBits ?? prototype.returnBits) > 0
+        ? Number(options.returnBits ?? prototype.returnBits) : null);
+    if (descriptor.malformed) return { reg:null, partial:true, aggregate:true,
+      reason:'sysv-amd64-aggregate-return-layout-not-proven' };
+  }
+  if (explicitlyIndirect) {
     return { reg:'rax', bits:64, indirect:true, hiddenResultPointer:{ input:'rdi', returned:'rax' } };
   }
   if (isComplexLongDouble(type, abiClass) || isLongDouble(type, abiClass)) {
     return { reg:null, partial:true, unsupported:true, reason:'sysv-amd64-x87-return-outside-claimed-scope' };
   }
-  if (prototype.aggregate === true || /aggregate|struct|union|record|array/.test(`${type} ${abiClass}`)) {
-    const classes = explicitEightbyteClasses({ eightbyteClasses:options.returnEightbyteClasses ?? prototype.returnEightbyteClasses ?? prototype.eightbyteClasses });
+  const aggregate = prototype.aggregate === true || prototype.isAggregate === true
+    || aggregateLayoutDescriptorPresent(prototype)
+    || (prototype.returnAggregate && typeof prototype.returnAggregate === 'object')
+    || (Object.hasOwn(prototype, 'returnAggregate') && prototype.returnAggregate != null
+      && typeof prototype.returnAggregate !== 'boolean')
+    || /aggregate|struct|union|record|array/.test(`${type} ${abiClass}`);
+  if (aggregate) {
+    const explicitReturnBits = options.returnBits ?? prototype.returnBits ?? null;
+    const returnBitsNumber = explicitReturnBits == null ? null : Number(explicitReturnBits);
+    const descriptor = aggregateReturnDescriptor(prototype, options,
+      Number.isSafeInteger(returnBitsNumber) && returnBitsNumber > 0 ? returnBitsNumber : null);
+    if (descriptor.malformed) return { reg:null, partial:true, aggregate:true, reason:'sysv-amd64-aggregate-return-layout-not-proven' };
+    const classPrototype = { ...prototype };
+    const requestedClasses = options.returnEightbyteClasses ?? prototype.returnEightbyteClasses
+      ?? prototype.eightbyteClasses;
+    if (requestedClasses != null) classPrototype.eightbyteClasses = requestedClasses;
+    const classes = explicitEightbyteClasses(classPrototype);
     if (!classes || classes[0] === 'MEMORY') return { reg:null, partial:true, reason:'sysv-amd64-aggregate-return-classification-not-proven' };
-    const returnBits = Number(prototype.returnBits || options.returnBits || classes.length * 64);
-    if (!Number.isSafeInteger(returnBits) || returnBits <= 0) return { reg:null, partial:true, reason:'sysv-amd64-aggregate-return-width-not-proven' };
+    const canonicalBits = descriptor.bits ?? (Number.isSafeInteger(returnBitsNumber) && returnBitsNumber > 0 ? returnBitsNumber : null);
+    const returnBits = Number(canonicalBits ?? classes.length * 64);
+    const physicalBytes = descriptor.layout?.bytes ?? classes.length * 8;
+    // Each SysV eightbyte is a physical eight-byte lane even when the final
+    // lane carries only the aggregate's logical tail bits.  Do not synthesize
+    // a one-bit lane for a class list whose declared logical size ended before
+    // that lane; that would make the piece proof cover more bits than the
+    // canonical aggregate and lets a malformed return look exact.
+    if (!Number.isSafeInteger(returnBits) || returnBits <= 0 || returnBits > 128
+      || returnBits <= (classes.length - 1) * 64
+      || !Number.isSafeInteger(physicalBytes) || physicalBytes <= 0 || physicalBytes !== classes.length * 8
+      || physicalBytes < Math.ceil(returnBits / 8)) {
+      return { reg:null, partial:true, aggregate:true, reason:'sysv-amd64-aggregate-return-width-layout-not-proven' };
+    }
     const pieces = [];
     let integerIndex = 0, vectorIndex = 0, activeVectorRegister = null;
     for (let index = 0; index < classes.length; index++) {
       const current = classes[index];
       const pieceBits = Math.min(64, Math.max(1, returnBits - index * 64));
-      if (current === 'INTEGER') pieces.push({ index, pieceIndex:index, order:index, abiClass:current, reg:['rax','rdx'][integerIndex++], bits:pieceBits, bytes:Math.ceil(pieceBits / 8), byteOffset:index * 8 });
-      else if (current === 'SSE') { activeVectorRegister = ['xmm0','xmm1'][vectorIndex++]; pieces.push({ index, pieceIndex:index, order:index, abiClass:current, reg:activeVectorRegister, bits:pieceBits, bytes:Math.ceil(pieceBits / 8), byteOffset:index * 8 }); }
-      else if (current === 'SSEUP') pieces.push({ index, pieceIndex:index, order:index, abiClass:current, reg:activeVectorRegister, bits:pieceBits, bytes:Math.ceil(pieceBits / 8), byteOffset:index * 8 });
+      if (current === 'INTEGER') pieces.push({ index, pieceIndex:index, order:index, abiClass:current, reg:['rax','rdx'][integerIndex++], bits:pieceBits, bytes:8, byteOffset:index * 8 });
+      else if (current === 'SSE') { activeVectorRegister = ['xmm0','xmm1'][vectorIndex++]; pieces.push({ index, pieceIndex:index, order:index, abiClass:current, reg:activeVectorRegister, bits:pieceBits, bytes:8, byteOffset:index * 8 }); }
+      else if (current === 'SSEUP') pieces.push({ index, pieceIndex:index, order:index, abiClass:current, reg:activeVectorRegister, bits:pieceBits, bytes:8, byteOffset:index * 8 });
     }
-    return { reg:pieces[0]?.reg || null, regs:Array.from(new Set(pieces.map((piece) => piece.reg))), pieces, bits:returnBits, bytes:pieces.length * 8, aggregate:true };
+    return { reg:pieces[0]?.reg || null, regs:Array.from(new Set(pieces.map((piece) => piece.reg))), pieces, bits:returnBits, bytes:physicalBytes, aggregate:true };
   }
   const vector = prototype.vector === true || options.vector === true || /vector|simd|sse|__m(?:128|256|512)/.test(`${type} ${abiClass}`);
   const floating = vector || /(^|\s)(?:float|double)(?:\s|$)|\bfp\b/.test(`${type} ${abiClass}`);
