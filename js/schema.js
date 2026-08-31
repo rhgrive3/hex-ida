@@ -313,7 +313,7 @@ export async function recoverSchemas(opts) {
     incompleteReason: { value: unsupported ? 'unsupported-architecture' : (program?.incompleteReason || null), enumerable: false, configurable: true },
   });
   if (unsupported || !strings || !program || !read || program.unsupported) return out;
-  const limit = o.limit || 300;
+  const limit = typeof o.limit === 'number' && Number.isSafeInteger(o.limit) && o.limit >= 0 ? o.limit : 300;
   const cancelled = o.isCancelled || (() => false);
   const progress = o.onProgress || (() => {});
   const byFunction = new Map();
@@ -329,10 +329,18 @@ export async function recoverSchemas(opts) {
     }
   }
   if (!byFunction.size) return out;
-  const targets = Array.from(byFunction.values()).map((e) => {
+  const candidates = Array.from(byFunction.values()).map((e) => {
     const r = program.functionRange(e.addr);
     return Object.assign({}, e, { range: r, size: r ? Number(r.end - r.start) : 0 });
-  }).filter((e) => e.range && e.size > 16 && e.size <= 64 * 1024).sort((a, b) => b.files.length - a.files.length).slice(0, limit);
+  }).filter((e) => e.range && e.size > 16 && e.size <= 64 * 1024).sort((a, b) => b.files.length - a.files.length);
+  const targets = candidates.slice(0, limit);
+  if (targets.length < candidates.length) {
+    const reasons = [...new Set([out.incompleteReason, 'schema-recovery-limit'].filter(Boolean))];
+    Object.defineProperties(out, {
+      complete: { value:false, enumerable:false, configurable:true },
+      incompleteReason: { value:reasons.join(';'), enumerable:false, configurable:true },
+    });
+  }
   for (let i = 0; i < targets.length; i++) {
     if (cancelled()) break;
     progress({ phase: 'schema', done: i, all: targets.length });
