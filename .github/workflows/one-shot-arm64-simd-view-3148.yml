@@ -1,0 +1,81 @@
+name: One-shot ARM64 SIMD view selector 3148
+on:
+  push:
+    branches: [fix/3148-arm64-simd-view-selectors]
+permissions:
+  contents: write
+jobs:
+  materialize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Apply focused SIMD selector repair
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('js/targets/architecture/arm64/effects/simd.js'); s=p.read_text()
+          old="""function parseArrangement(op, elementKind = 'bitvector') {
+            if (op?.k !== 'reg' || op.cls !== 'vec' || op.bits !== 128 || !validRegisterNumber(op)) return null;
+            const arr = String(op.arr || '').toLowerCase();"""
+          new="""function parseArrangement(op, elementKind = 'bitvector') {
+            if (op?.k !== 'reg' || op.cls !== 'vec' || op.bits !== 128 || !validRegisterNumber(op) || typeof op.arr !== 'string') return null;
+            const arr = op.arr.toLowerCase();"""
+          if old not in s: raise SystemExit('parseArrangement anchor drift')
+          s=s.replace(old,new,1)
+          old="""function elementInfo(op, elementKind = 'bitvector') {
+            if (op?.k !== 'elem' || !validRegisterNumber(op)) return null;
+            const size = String(op.size || '').toLowerCase();"""
+          new="""function elementInfo(op, elementKind = 'bitvector') {
+            if (op?.k !== 'elem' || !validRegisterNumber(op) || typeof op.size !== 'string') return null;
+            const size = op.size.toLowerCase();"""
+          if old not in s: raise SystemExit('elementInfo anchor drift')
+          p.write_text(s)
+
+          Path('tests/machine-effects/arm64-simd-view-selector-strict.test.mjs').write_text(r'''import assert from 'node:assert/strict';
+          import { liftArm64MachineEffects } from '../../js/targets/architecture/arm64/effects/index.js';
+          let seq=0;
+          function lift(mnemonic,ops){const instructionId=`simd-view:${++seq}`;return liftArm64MachineEffects({instructionId,mnemonic,mode:'a64',ops,origin:{instructionIds:[instructionId]}});}
+          const vec=(num,arr)=>({k:'reg',cls:'vec',num,bits:128,arr,text:`v${num}.${typeof arr==='string'?arr:'16b'}`});
+          const gp=(num,bits=32)=>({k:'reg',cls:'gp',num,bits,text:`${bits===32?'w':'x'}${num}`});
+          const elem=(num,size,index=0)=>({k:'elem',num,size,index,text:`v${num}.${typeof size==='string'?size:'b'}[${index}]`});
+          function hasDefiniteState(bundle){return !!bundle?.operations?.some(op=>['register-read','register-write','value','intrinsic','flag-write'].includes(op.kind));}
+          function failClosed(bundle,label){assert.ok(bundle==null || bundle.completeness==='partial',label);if(bundle) assert.equal(hasDefiniteState(bundle),false,label);}
+
+          for(const arr of ['16b','2d']){
+            const r=lift('add',[vec(0,arr),vec(1,arr),vec(2,arr)]);
+            assert.ok(r && r.completeness!=='partial',`valid ${arr}`);
+            assert.ok(hasDefiniteState(r));
+          }
+          for(const bad of [ ['16b'], {toString(){return '16b';}}, true, 16 ]){
+            failClosed(lift('add',[vec(0,bad),vec(1,bad),vec(2,bad)]),'malformed arrangement');
+          }
+          const validLane=lift('umov',[gp(0),elem(1,'b',0)]);
+          assert.ok(validLane && validLane.completeness!=='partial');
+          assert.ok(hasDefiniteState(validLane));
+          for(const bad of [ ['b'], {toString(){return 'b';}}, true, 8 ]){
+            failClosed(lift('umov',[gp(0),elem(1,bad,0)]),'malformed element size');
+          }
+          failClosed(lift('add',[vec(0,'bogus'),vec(1,'bogus'),vec(2,'bogus')]),'unknown arrangement');
+          failClosed(lift('umov',[gp(0),elem(1,'b',16)]),'lane out of range');
+          console.log('arm64-simd-view-selector-strict: PASS');
+          ''')
+          PY
+      - run: node --check js/targets/architecture/arm64/effects/simd.js
+      - run: node tests/machine-effects/arm64-simd-view-selector-strict.test.mjs
+      - run: node tests/machine-effects/run.mjs
+      - run: git diff --check
+      - name: Commit production result
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git rm .github/workflows/one-shot-arm64-simd-view-3148.yml
+          git add js/targets/architecture/arm64/effects/simd.js tests/machine-effects/arm64-simd-view-selector-strict.test.mjs
+          git commit -m 'fix(arm64): validate SIMD view selectors (#3148)'
+          git push
