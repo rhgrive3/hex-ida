@@ -10,6 +10,17 @@ function methodKey(classMethod, selector) {
   return `${classMethod ? '+' : '-'}:${selector}`;
 }
 
+function canonicalAddressKey(value) {
+  if (typeof value === 'bigint') return value >= 0n ? value.toString() : null;
+  if (typeof value === 'number') return Number.isSafeInteger(value) && value >= 0 ? BigInt(value).toString() : null;
+  if (typeof value === 'string') {
+    const s = value.trim();
+    if (!/^(?:0[xX][0-9a-fA-F]+|[0-9]+)$/.test(s)) return null;
+    try { return BigInt(s).toString(); } catch { return null; }
+  }
+  return null;
+}
+
 function pushIndex(map, key, value) {
   if (!key) return;
   let list = map.get(key);
@@ -24,11 +35,14 @@ function normalizeMethod(m, owner, classMethod, source = 'class', proofRequired 
   else if (typeof m.selector === 'string') selector = m.selector;
   else if (typeof m.name === 'string') selector = m.name.match(/\s([^\]]+)\]$/)?.[1] || null;
   if (!selector) return null;
+  const rawImp = proofRequired && source !== 'protocol' && source !== 'protocol-optional' && m?.implementationProven !== true
+    ? null
+    : (m.addr != null ? m.addr : (m.imp != null ? m.imp : null));
   return {
     selector,
     className: owner,
     classMethod: !!classMethod,
-    imp: proofRequired && source !== 'protocol' && source !== 'protocol-optional' && m?.implementationProven !== true ? null : (m.addr != null ? m.addr : (m.imp != null ? m.imp : null)),
+    imp: canonicalAddressKey(rawImp) == null ? null : rawImp,
     types: m.types || m.type || m.typeEncoding || null,
     typeEncoding: m.types || m.type || m.typeEncoding || null,
     source,
@@ -62,13 +76,15 @@ export function buildObjcRuntimeIndex(objcModel = {}) {
       const x = normalizeMethod(m, info.name, false, 'class', proofRequired);
       if (!x) continue;
       pushIndex(methodsBySelector, methodKey(false, x.selector), x);
-      if (x.imp != null) pushIndex(methodsByIMP, x.imp.toString(), x);
+      const impKey = canonicalAddressKey(x.imp);
+      if (impKey != null) pushIndex(methodsByIMP, impKey, x);
     }
     for (const m of info.classMethods || []) {
       const x = normalizeMethod(m, info.name, true, 'class', proofRequired);
       if (!x) continue;
       pushIndex(methodsBySelector, methodKey(true, x.selector), x);
-      if (x.imp != null) pushIndex(methodsByIMP, x.imp.toString(), x);
+      const impKey = canonicalAddressKey(x.imp);
+      if (impKey != null) pushIndex(methodsByIMP, impKey, x);
     }
   }
 
@@ -111,7 +127,8 @@ export function buildObjcRuntimeIndex(objcModel = {}) {
       if (x) {
         x.category = name;
         pushIndex(methodsBySelector, methodKey(false, x.selector), x);
-        if (x.imp != null) pushIndex(methodsByIMP, x.imp.toString(), x);
+        const impKey = canonicalAddressKey(x.imp);
+        if (impKey != null) pushIndex(methodsByIMP, impKey, x);
       }
     }
     for (const m of cat.classMethods || []) {
@@ -119,7 +136,8 @@ export function buildObjcRuntimeIndex(objcModel = {}) {
       if (x) {
         x.category = name;
         pushIndex(methodsBySelector, methodKey(true, x.selector), x);
-        if (x.imp != null) pushIndex(methodsByIMP, x.imp.toString(), x);
+        const impKey = canonicalAddressKey(x.imp);
+        if (impKey != null) pushIndex(methodsByIMP, impKey, x);
       }
     }
   }
@@ -231,8 +249,9 @@ export function resolveObjcDispatch(index, { receiverType = null, selector, clas
 
   const top = candidates[0];
   const second = candidates[1];
-  const sameImplementation = !!top && top.imp != null && candidates.every((m) => m.imp != null && m.imp.toString() === top.imp.toString());
-  const uniqueByEvidence = !!top && top.imp != null && (!second || sameImplementation || (!cleanReceiver && top.score - second.score >= 0.16));
+  const topImpKey = top ? canonicalAddressKey(top.imp) : null;
+  const sameImplementation = topImpKey != null && candidates.every((m) => canonicalAddressKey(m.imp) === topImpKey);
+  const uniqueByEvidence = !!top && topImpKey != null && (!second || sameImplementation || (!cleanReceiver && top.score - second.score >= 0.16));
   const categoryComplete = index.completeness?.categories?.complete === true;
   // A complete scan of the current Mach-O image is not proof that every
   // Objective-C implementation available to the runtime has been indexed.
