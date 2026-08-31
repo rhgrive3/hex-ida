@@ -65,8 +65,10 @@ if (!report) {
   const inheritedNodeOptions = String(process.env.NODE_OPTIONS ?? '').trim();
   const env = {
     ...process.env,
+    PATH: `${path.dirname(process.execPath)}:${process.env.PATH ?? ''}`,
     NODE_OPTIONS: [inheritedNodeOptions, `--import=${preloadUrl}`].filter(Boolean).join(' '),
   };
+  delete env.npm_config_prefix;
 
   const runCommand = (suite, index, command) => {
     const child = spawnSync('bash', ['-lc', command], {

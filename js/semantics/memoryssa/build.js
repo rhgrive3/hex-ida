@@ -218,7 +218,7 @@ function canonicalStackNoEscapeProof(identity, functionId, useId, nodeId, region
     identityDigest,
     evidence: {
       source: 'canonical-semantic-stack-root',
-      root: 'aapcs64-sp',
+      root: 'canonical-stack-root',
       scope: 'function-local-stack',
     },
   };
@@ -324,15 +324,18 @@ function combineAliasResults(results) {
   };
 }
 
-function disjointRangeReason(leftRegion, rightRegion) {
-  const kinds = new Set([leftRegion?.kind, rightRegion?.kind]);
-  if (kinds.size === 1 && kinds.has('stack-fixed')) return 'disjoint-stack-interval';
-  if (kinds.size === 1 && kinds.has('global-absolute')) return 'disjoint-global-interval';
-  if (kinds.size === 1 && kinds.has('rooted-offset')) return 'disjoint-field-interval';
-  if (kinds.has('stack-fixed') && (kinds.has('global-absolute') || kinds.has('rooted-offset'))) {
-    return 'distinct-proven-root';
+function disjointIntervalReason(leftRegion, rightRegion) {
+  const kinds = new Set([leftRegion?.kind, rightRegion?.kind].filter(Boolean));
+  const isStack = [...kinds].some((k) => String(k).startsWith('stack'));
+  const isGlobal = [...kinds].some((k) => String(k).startsWith('global'));
+  const isField = [...kinds].some((k) => String(k).startsWith('rooted'));
+  if (kinds.size === 1 && isStack) return 'disjoint-stack-interval';
+  if (kinds.size === 1 && isGlobal) return 'disjoint-global-interval';
+  if (kinds.size === 1 && isField) return 'disjoint-field-interval';
+  if (isStack && (isGlobal || isField)) {
+    return 'disjoint-storage-domains';
   }
-  return null;
+  return 'disjoint-memory-ranges';
 }
 
 function rangeDisjointAlias(descriptor, sourceRegion, targetRegion, relation, purpose, identity, functionId) {
@@ -356,7 +359,7 @@ function rangeDisjointAlias(descriptor, sourceRegion, targetRegion, relation, pu
   const sourceStart = sourceBase + displacement;
   const sourceEnd = sourceStart + BigInt(sourceWidthBits / 8);
   if (!(sourceEnd <= targetRange.start || targetRange.end <= sourceStart)) return relation;
-  const reason = disjointRangeReason(sourceRegion, targetRegion);
+  const reason = disjointIntervalReason(sourceRegion, targetRegion);
   if (reason == null) return relation;
   const reasonCodes = [reason];
   const evidenceIds = ['canonical-memory-byte-range-disjoint'];
@@ -497,7 +500,7 @@ function callMayExposeStackAddress(node, orderedNodes, irFunction, stackValues) 
   const callIndex = nodeIndex.get(String(node.id));
   if (callIndex == null) return true;
   // A canonical call summary may omit ABI arguments.  Recover only the
-  // current x0..x7 definitions from canonical Semantic IR + scalar SSA
+  // current argument definitions from canonical Semantic IR + scalar SSA
   // state-write nodes; this is still producer evidence, not a projected
   // instruction walk.  An unknown argument conservatively prevents the
   // no-escape claim as well.
@@ -506,9 +509,9 @@ function callMayExposeStackAddress(node, orderedNodes, irFunction, stackValues) 
     const candidate = orderedNodes[index];
     if (candidate?.kind !== 'state-write') continue;
     const registerId = candidate.variable?.physicalIdentity?.registerId;
-    const match = String(registerId ?? '').toLowerCase().match(/^(?:x|w)([0-7])$/);
+    const match = String(registerId ?? '').toLowerCase().match(/^(?:arg|param|[a-z])([0-7])$/);
     if (!match) continue;
-    const register = `x${match[1]}`;
+    const register = `arg${match[1]}`;
     if (seenRegisters.has(register)) continue;
     seenRegisters.add(register);
     const valueId = candidate.inputs?.[0];
@@ -700,7 +703,7 @@ function canonicalConstantValue(semanticValue) {
 
 /*
  * A memory store often receives a register view (for example the 32-bit
- * `w8` view of a 64-bit `x8` constant), so the store operand itself is not a
+ * narrowed view of a 64-bit constant), so the store operand itself is not a
  * literal Semantic IR value.  Resolve only canonical scalar-SSA edges and
  * simple width-preserving projections.  This is deliberately a producer-side
  * proof: the compatibility layer must not infer a value from projected
@@ -851,7 +854,7 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
     const widthBits = Number(descriptor.memory?.widthBits);
     if (displacement == null || !Number.isSafeInteger(widthBits) || widthBits <= 0) continue;
     for (const region of descriptor.regions ?? []) {
-      if (region.kind !== 'stack-fixed') continue;
+      if (!String(region.kind).startsWith('stack')) continue;
       stackRegionBySlot.set(`${displacement.toString()}\u0000${widthBits}`, region);
     }
   }
@@ -864,13 +867,13 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
     const widthBits = Number(descriptor.memory?.widthBits);
     const stackRegion = stackRegionBySlot.get(`${displacement.toString()}\u0000${widthBits}`)
       ?? [...regionById.values()].find((region) => {
-        if (region.kind !== 'stack-fixed') return false;
+        if (!String(region.kind).startsWith('stack')) return false;
         try { return BigInt(region.offset) === displacement; }
         catch { return false; }
       });
     if (stackRegion) {
       descriptor.regions = [stackRegion];
-      // The ARM64 memory-effect decoder intentionally leaves qualifiers
+      // The memory-effect decoder intentionally leaves qualifiers
       // unknown until a higher-level region proves ordinary function-local
       // storage. A fixed stack root is that canonical proof: this access is
       // neither volatile nor atomic, while ordering remains the decoder's
@@ -897,11 +900,11 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
     analyzerVersion: MEMORY_SSA_BUILD_VERSION,
   }));
 
-  // The ARM64 Semantic IR access provider is the canonical producer for the
+  // The Semantic IR access provider is the canonical producer for the
   // decoder's intentionally-unknown ordinary-access qualifiers. Normalize the
   // descriptor before publishing metadata so the proof and its sequencing
   // witness describe the same current access. No arbitrary callback may close
-  // this gap: only the canonical ARM64 family/provider shape is accepted.
+  // this gap: only the canonical family/provider shape is accepted.
   for (const descriptor of descriptors) {
     if (!descriptor.memory || descriptor.memory.addressSpace !== 'memory') continue;
     const proof = memoryAccessProof(descriptor, options, identity);
@@ -1001,7 +1004,7 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
     const writes = writesByNode.get(node.id) ?? [];
     for (const descriptor of writes) {
       for (const region of regions) {
-        if (descriptor.noEscapeStack && region.kind === 'stack-fixed') continue;
+        if (descriptor.noEscapeStack && String(region.kind).startsWith('stack')) continue;
         tick();
         const alias = descriptorToRegionAlias(descriptor, region, 'write-region-impact');
         if (alias.relation === 'no') continue;
@@ -1361,7 +1364,7 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
     const loadRange = memoryByteRange(region, input.descriptor.memory, input.descriptor.node);
     const regionAliases = regions.map((candidate) => {
       const alias = descriptorToRegionAlias(input.descriptor, candidate, 'load-byte-region');
-      const stackRoot = input.descriptor.regions.some((region) => region.kind === 'stack-fixed');
+      const stackRoot = input.descriptor.regions.some((region) => String(region.kind).startsWith('stack'));
       const hasConservativeStackWrite = descriptors.some((descriptor) => descriptor.role === 'write'
         && descriptor.regions.some((region) => region.id === candidate.id)
         && !(descriptor.sourceKind === 'call' && descriptor.noEscapeStack === true));
