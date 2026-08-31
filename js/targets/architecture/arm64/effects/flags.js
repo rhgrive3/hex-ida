@@ -12,13 +12,12 @@ import { liftArm64FlagEffects as liftArm64FlagEffectsCore } from './flags-core.j
 const STRICT_REGISTER_LHS = new Set(['cmp','cmn','ccmp','ccmn']);
 const SP_LHS_MNEMONICS = new Set(['cmp','cmn']);
 const EXTEND_KINDS = new Set(['uxtb','uxth','uxtw','uxtx','sxtb','sxth','sxtw','sxtx']);
+const CONDITION_CODES = new Set(['eq','ne','cs','hs','cc','lo','mi','pl','vs','vc','hi','ls','ge','lt','gt','le','al','nv']);
 
 function validRegisterLhs(mnemonic, op) {
   if (op?.k !== 'reg') return false;
   const cls = String(op.cls || '').toLowerCase();
   if (cls === 'gp' || cls === 'zr') return true;
-  // ADD/SUB aliases CMP/CMN have architectural forms whose Rn=31 is SP
-  // (notably immediate/extended-register encodings). Conditional compares do not.
   return cls === 'sp' && SP_LHS_MNEMONICS.has(mnemonic);
 }
 
@@ -38,25 +37,17 @@ function validRegisterRhs(mnemonic, lhs, rhs) {
   const rhsBits = Number(rhs?.bits || 0);
   if (![32,64].includes(lhsBits) || !['gp','zr'].includes(String(rhs.cls || '').toLowerCase())) return false;
   const modifier = rhs.shift || rhs.extend || null;
-
-  // Conditional compare has only the plain Wn/Wm or Xn/Xm register form.
   if (mnemonic === 'ccmp' || mnemonic === 'ccmn') return modifier == null && rhsBits === lhsBits;
-
   if (modifier == null) return rhsBits === lhsBits;
   const kind = String(modifier.op || '').toLowerCase();
   const amount = Number(modifier.amount ?? 0);
   if (!Number.isInteger(amount) || amount < 0) return false;
   const lhsClass = String(lhs?.cls || '').toLowerCase();
-
-  // SUBS/ADDS shifted-register encodings allow LSL/LSR/ASR only. When Rn is
-  // SP, assembler LSL is the preferred spelling of the extended-register UXTX
-  // (or UXTW) option and its imm3 range is 0..4.
   if (kind === 'lsl' || kind === 'lsr' || kind === 'asr') {
     if (lhsClass === 'sp') return kind === 'lsl' && rhsBits === lhsBits && amount <= 4;
     return rhsBits === lhsBits && amount < lhsBits;
   }
   if (kind === 'ror') return false;
-
   if (!EXTEND_KINDS.has(kind) || amount > 4 || lhsClass === 'zr') return false;
   if (lhsBits === 32) return rhsBits === 32;
   return kind.endsWith('x') ? rhsBits === 64 : rhsBits === 32;
@@ -67,14 +58,27 @@ function validTstRegisterClass(ops) {
 }
 
 function validConditionalCompareCondition(op) {
-  return op?.k === 'cond' && op.shift == null && op.extend == null;
+  return op?.k === 'cond'
+    && op.shift == null
+    && op.extend == null
+    && typeof op.text === 'string'
+    && CONDITION_CODES.has(op.text.toLowerCase());
+}
+
+function validCanonicalBigintImmediate(op, minimum, maximum) {
+  return op?.k === 'imm'
+    && op.shift == null
+    && op.extend == null
+    && typeof op.value === 'bigint'
+    && op.value >= minimum
+    && op.value <= maximum;
 }
 
 function validConditionalCompareImmediates(ops) {
   const comparison = ops[1];
   const fallback = ops[2];
-  if (comparison?.k === 'imm' && (comparison.shift != null || comparison.extend != null)) return false;
-  if (fallback?.k === 'imm' && (fallback.shift != null || fallback.extend != null)) return false;
+  if (comparison?.k === 'imm' && !validCanonicalBigintImmediate(comparison, 0n, 31n)) return false;
+  if (!validCanonicalBigintImmediate(fallback, 0n, 15n)) return false;
   return true;
 }
 
