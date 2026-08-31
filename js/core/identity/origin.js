@@ -17,6 +17,16 @@ function stringList(values, code) {
   }
   return values.filter(Boolean);
 }
+function stringValue(value, code) {
+  if (typeof value !== 'string') fail(code);
+  return value;
+}
+function requiredString(value, code) {
+  if (typeof value !== 'string') fail(code);
+  const text = value.trim();
+  if (!text) fail(code);
+  return text;
+}
 function bigintValue(value, code) {
   if (typeof value === 'bigint') return value;
   if (typeof value === 'number') {
@@ -44,7 +54,7 @@ function byteRange(range) {
     : range.length != null ? start + bigintValue(range.length, 'origin-invalid-byte-range') : null;
   if (end == null || start < 0n || end < start) fail('origin-invalid-byte-range');
   return {
-    ...(range.binaryId == null ? {} : { binaryId: String(range.binaryId) }),
+    ...(range.binaryId == null ? {} : { binaryId: stringValue(range.binaryId, 'origin-invalid-byte-range') }),
     start: start.toString(),
     end: end.toString(),
   };
@@ -59,8 +69,8 @@ function virtualRange(range) {
   else fail('origin-invalid-virtual-range');
   if (BigInt(end) < BigInt(start)) fail('origin-invalid-virtual-range');
   return {
-    ...(range.imageId == null ? {} : { imageId: String(range.imageId) }),
-    ...(range.sliceId == null ? {} : { sliceId: String(range.sliceId) }),
+    ...(range.imageId == null ? {} : { imageId: stringValue(range.imageId, 'origin-invalid-virtual-range') }),
+    ...(range.sliceId == null ? {} : { sliceId: stringValue(range.sliceId, 'origin-invalid-virtual-range') }),
     start,
     end,
   };
@@ -68,11 +78,10 @@ function virtualRange(range) {
 
 export function createTransformRecord(input = {}) {
   if (!input || typeof input !== 'object') fail('origin-invalid-transform');
-  const passId = String(input.passId ?? '').trim();
-  const passVersion = String(input.passVersion ?? '').trim();
-  const ruleId = String(input.ruleId ?? '').trim();
-  const proofKind = String(input.proofKind ?? '').trim();
-  if (!passId || !passVersion || !ruleId || !proofKind) fail('origin-invalid-transform');
+  const passId = requiredString(input.passId, 'origin-invalid-transform');
+  const passVersion = requiredString(input.passVersion, 'origin-invalid-transform');
+  const ruleId = requiredString(input.ruleId, 'origin-invalid-transform');
+  const proofKind = requiredString(input.proofKind, 'origin-invalid-transform');
   return deepFreeze({
     passId,
     passVersion,
@@ -81,7 +90,7 @@ export function createTransformRecord(input = {}) {
     producedEntityIds: uniqueSorted(stringList(input.producedEntityIds, 'origin-invalid-produced-ids')),
     preconditions: exactJson(input.preconditions ?? []),
     proofKind,
-    timestampOrBuildId: input.timestampOrBuildId == null ? null : String(input.timestampOrBuildId),
+    timestampOrBuildId: input.timestampOrBuildId == null ? null : stringValue(input.timestampOrBuildId, 'origin-invalid-transform'),
   });
 }
 
