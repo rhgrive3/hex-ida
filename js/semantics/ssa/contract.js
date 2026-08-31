@@ -114,7 +114,10 @@ export function createSemanticSsaContract(input, options = {}) {
   assertNotAborted(options);
   input = object(input, 'semantic-ssa-invalid-contract');
   assertAllowedKeys(input, new Set(['contractVersion','functionId','definitions','uses']), 'semantic-ssa-unexpected-contract-field');
-  if (input.contractVersion != null && String(input.contractVersion) !== SEMANTIC_SSA_CONTRACT_VERSION) {
+  if (input.contractVersion != null && (
+    typeof input.contractVersion !== 'string'
+    || input.contractVersion !== SEMANTIC_SSA_CONTRACT_VERSION
+  )) {
     fail('semantic-ssa-contract-version-mismatch');
   }
 

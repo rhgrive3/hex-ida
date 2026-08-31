@@ -2,26 +2,33 @@ const INSTALL_VERSION = 'auto-report-identity/v2';
 const STATE = new WeakMap();
 
 function storeValue(app, key) { try { return app?.store?.get?.(key) ?? null; } catch { return null; } }
-function numericIdentity(value, fallback) {
+function nonNegativeIdentity(value, fallback) {
   if (value == null) return fallback;
-  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+function sliceIdentity(value, fallback = -1) {
+  if (value == null) return fallback;
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= -1 ? value : null;
 }
 function projectRevision(app) {
   const project = storeValue(app, 'project') ?? app?.workspace?.project ?? app?.project ?? null;
-  return numericIdentity(project?.revision ?? app?.projectRevision ?? app?.workspace?.bindingRevision, 0);
+  return nonNegativeIdentity(project?.revision ?? app?.projectRevision ?? app?.workspace?.bindingRevision, 0);
 }
 function liveIdentity(app, currentSnapshotId = null) {
   return Object.freeze({
     binaryId:app?.backend?.binaryId ?? app?.backend?.contentHash ?? storeValue(app, 'fileInfo')?.binaryId ?? null,
-    sliceIndex:numericIdentity(storeValue(app, 'sliceIndex'), -1),
-    analysisEpoch:numericIdentity(app?.backend?.gen ?? app?.analysisEpoch, 0),
+    sliceIndex:sliceIdentity(storeValue(app, 'sliceIndex'), -1),
+    analysisEpoch:nonNegativeIdentity(app?.backend?.gen ?? app?.analysisEpoch, 0),
     projectRevision:projectRevision(app),
     snapshotId:currentSnapshotId,
   });
 }
 function sameIdentity(bound, live) {
   if (!bound || !live) return false;
-  if (![bound.analysisEpoch, bound.sliceIndex, bound.projectRevision, live.analysisEpoch, live.sliceIndex, live.projectRevision].every(Number.isFinite)) return false;
+  if (![bound.analysisEpoch, bound.projectRevision, live.analysisEpoch, live.projectRevision]
+    .every((value) => Number.isSafeInteger(value) && value >= 0)) return false;
+  if (![bound.sliceIndex, live.sliceIndex]
+    .every((value) => Number.isSafeInteger(value) && value >= -1)) return false;
   if (bound.analysisEpoch !== live.analysisEpoch) return false;
   if (bound.sliceIndex !== live.sliceIndex) return false;
   if (bound.projectRevision !== live.projectRevision) return false;

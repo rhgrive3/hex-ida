@@ -27,7 +27,9 @@ function sameSnapshotIdentity(snapshot, current) {
 
 function aborted(options) {
   if (!options?.signal?.aborted) return;
-  const err = options.signal.reason instanceof Error ? options.signal.reason : new Error("AbortError");
+  const reason = options.signal.reason;
+  if (reason instanceof Error && reason.name === "AbortError") throw reason;
+  const err = new Error(reason instanceof Error && reason.message ? reason.message : "AbortError");
   err.name = "AbortError";
   throw err;
 }
