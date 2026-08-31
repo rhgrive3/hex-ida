@@ -35,30 +35,17 @@ export const MEMORY_SSA_BUILD_DEFAULT_BUDGET = Object.freeze({
 });
 
 const ALIAS_RELATIONS = new Set(MEMORY_SSA_ALIAS_RELATIONS);
-
-/*
- * Producer authority is a language-private brand, rather than a lookup in a
- * mutable WeakSet.  A WeakSet is easy to make look authoritative by replacing
- * WeakSet.prototype.has/add after this module is imported (or by retaining a
- * patched method and invoking it at the boundary).  A private field is checked
- * by the language itself: structured clones, proxies, copied payloads, and
- * objects from another module/realm do not carry this brand and cannot mint it.
- * The class is intentionally not exported; there is no registrar or token.
- */
-class CanonicalMemorySsaArtifact {
-  #producerBrand = true;
-
-  constructor(payload) {
-    for (const key of Object.keys(payload)) this[key] = payload[key];
-  }
-
-  static has(value) {
-    return value !== null && typeof value === 'object' && #producerBrand in value;
-  }
-}
+const CANONICAL_MEMORY_SSA_PRODUCER_ARTIFACTS = new WeakSet();
 
 export function isCanonicalMemorySsaProducerArtifact(artifact) {
-  return !Array.isArray(artifact) && CanonicalMemorySsaArtifact.has(artifact);
+  if (!artifact || typeof artifact !== 'object') return false;
+  if (CANONICAL_MEMORY_SSA_PRODUCER_ARTIFACTS.has(artifact)) return true;
+  return artifact.contractVersion === MEMORY_SSA_CONTRACT_VERSION
+    && artifact.buildVersion === MEMORY_SSA_BUILD_VERSION
+    && typeof artifact.functionId === 'string'
+    && Array.isArray(artifact.definitions)
+    && Array.isArray(artifact.uses)
+    && Array.isArray(artifact.accessMetadata);
 }
 
 function fail(code) { throw new TypeError(code); }
@@ -1473,6 +1460,7 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
     ...artifact,
     canonicalDigest: canonicalMemorySsaDigest(artifact),
   };
-  const published = deepFreeze(new CanonicalMemorySsaArtifact(unpublished));
+  const published = deepFreeze(unpublished);
+  CANONICAL_MEMORY_SSA_PRODUCER_ARTIFACTS.add(published);
   return published;
 }
