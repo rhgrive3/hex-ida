@@ -127,3 +127,17 @@ assert.equal(compatGraph.allNodes().length, 2);
 }
 
 console.log('core evidence contracts: ok');
+
+
+// strict evidence authority boundaries #2943/#2949
+for (const badConfidence of ['0.9', ['0.9'], true, { valueOf(){ return 0.9; } }]) {
+  assert.throws(() => createEvidenceNode({ id:'bad-confidence', family:'RuntimeEvidence', confidence:badConfidence }), /evidence-invalid-confidence/);
+}
+assert.equal(createEvidenceNode({ id:'good-confidence', family:'RuntimeEvidence', confidence:0.9 }).confidence, 0.9);
+const strictLookupGraph = new EvidenceGraph({ nodes:[{ id:'claim-strict', family:'Claim', semanticKind:'strict', targetEntityIds:['entity-strict'] }], edges:[] });
+for (const malformedId of [['claim-strict'], 1, true, { toString(){ return 'claim-strict'; } }]) {
+  assert.throws(() => strictLookupGraph.getNode(malformedId), /evidence-id-required/);
+  assert.throws(() => strictLookupGraph.hasNode(malformedId), /evidence-id-required/);
+  assert.throws(() => strictLookupGraph.evaluateClaim(malformedId), /evidence-id-required/);
+}
+assert.equal(strictLookupGraph.getNode('claim-strict')?.id, 'claim-strict');

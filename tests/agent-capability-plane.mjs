@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import { pageRows } from '../js/agent/tools.js';
 import { createCapabilityCatalog, HEX_CAPABILITIES } from '../js/ai/capabilities/catalog.js';
 import { assertCapabilityParity, auditCapabilityParity } from '../js/ai/capabilities/parity.js';
 import { createCapabilityExecutor } from '../js/ai/capabilities/executor.js';
@@ -10,6 +12,17 @@ import { AgentJobManager } from '../js/ai/jobs/index.js';
 assert.equal(assertCapabilityParity(HEX_CAPABILITIES).ok, true);
 assert.equal(auditCapabilityParity([{ id: 'set-type', category: 'annotation', agentExposed: false, humanOnlyReason: 'not implemented' }]).ok, false);
 assert.equal(auditCapabilityParity([{ id: 'set-type', category: 'analysis', agentExposed: true }]).ok, false);
+
+// #2956/#2957: malformed tool IDs and upstream page metadata must not be coerced.
+const malformedPageOffset = pageRows({ offset:['10'], results:['r10','r11','r12'] }, 1, 11);
+assert.deepEqual(malformedPageOffset.results, []);
+const malformedCoverage = pageRows({ results:[], total:10, complete:false, coverage:['1'] }, 10, 0);
+assert.equal(malformedCoverage.coverage, 0);
+const agentToolsSource = fs.readFileSync(new URL('../js/agent/tools.js', import.meta.url), 'utf8');
+assert.doesNotMatch(agentToolsSource, /Number\(spec\.instructionId\)/);
+assert.doesNotMatch(agentToolsSource, /Number\(spec\.row\)/);
+assert.match(agentToolsSource, /typeof id !== 'number'/);
+assert.match(agentToolsSource, /typeof row !== 'number'/);
 
 const app = fakeApp();
 const catalog = createCapabilityCatalog();
