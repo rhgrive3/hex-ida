@@ -97,7 +97,10 @@ function waitForShared(entry, signal) {
     };
     const onAbort = () => {
       if (settled) return; settled = true; signal?.removeEventListener('abort', onAbort); entry.waiters = Math.max(0, entry.waiters - 1);
-      if (!entry.settled && entry.waiters === 0) entry.request?.cancel?.();
+      if (!entry.settled && entry.waiters === 0) {
+        entry.cancel?.();
+        entry.request?.cancel?.();
+      }
       reject(abortError(signal));
     };
     signal?.addEventListener('abort', onAbort, { once: true });
@@ -167,15 +170,33 @@ function installWorkerBackedIdentity(app) {
   backend.ensureBinaryId = function ensureBinaryIdFromPlatformWorker(options = {}) {
     if (this.binaryId) return Promise.resolve(this.binaryId);
     if (!this.file) return Promise.reject(new Error('binary-id-file-unavailable'));
-    if (!this._binaryIdPromise) {
+    let entry = this._binaryIdEntry;
+    if (!entry) {
       const file = this.file; const epoch = this.gen;
-      this._binaryIdPromise = scheduleBackgroundIdentity(options.signal).then(() => this.ensureContentHash(options.onProgress, options.signal ?? null)).then((hash) => {
-        abortIfNeeded(options.signal);
-        if (this.file !== file || this.gen !== epoch) { const error = new Error('stale binary identity'); error.stale = true; throw error; }
-        const binaryId = createBinaryIdFromDigest(hash); this.binaryId = binaryId; return binaryId;
-      }).catch((error) => { this._binaryIdPromise = null; throw error; });
+      const controller = new AbortController();
+      entry = {
+        controller,
+        waiters:0,
+        settled:false,
+        promise:null,
+        cancel:() => { if (!controller.signal.aborted) controller.abort('binary-id-no-consumers'); },
+      };
+      entry.promise = scheduleBackgroundIdentity(controller.signal)
+        .then(() => this.ensureContentHash(options.onProgress, controller.signal))
+        .then((hash) => {
+          abortIfNeeded(controller.signal);
+          if (this.file !== file || this.gen !== epoch) { const error = new Error('stale binary identity'); error.stale = true; throw error; }
+          const binaryId = createBinaryIdFromDigest(hash); this.binaryId = binaryId; return binaryId;
+        })
+        .finally(() => {
+          entry.settled = true;
+          if (this._binaryIdEntry === entry) this._binaryIdEntry = null;
+          if (this._binaryIdPromise === entry.promise) this._binaryIdPromise = null;
+        });
+      this._binaryIdEntry = entry;
+      this._binaryIdPromise = entry.promise;
     }
-    return this._binaryIdPromise;
+    return waitForShared(entry, options.signal ?? null);
   };
 }
 function installDemandRecognition(app) {
@@ -449,4 +470,4 @@ export function installDemandDrivenAnalysis(app) {
   Object.defineProperty(app, '__demandDrivenAnalysisVersion', { value:RUNTIME_VERSION, configurable:true });
   return app.analysisQueries;
 }
-export const __demandDrivenInternalsForTests = Object.freeze({ addressOf, mergeShapeMaps, recognitionInputKey, localRegionPlan, regionScanLimits });
+export const __demandDrivenInternalsForTests = Object.freeze({ addressOf, mergeShapeMaps, recognitionInputKey, localRegionPlan, regionScanLimits, installWorkerBackedIdentity });
