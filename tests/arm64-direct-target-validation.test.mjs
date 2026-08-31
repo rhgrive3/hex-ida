@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
 import { liftArm64MachineEffects } from '../js/targets/architecture/arm64/effects/index.js';
 
+let caseId = 0;
 function lift(mnemonic, ops, extra = {}) {
+  caseId += 1;
   return liftArm64MachineEffects({
-    instructionId: `arm64-direct-target-${mnemonic}-${Math.random()}`,
+    instructionId: `arm64-direct-target-${mnemonic}-${caseId}`,
     mnemonic,
     mode: 'a64',
     address: 0n,
