@@ -1,0 +1,67 @@
+name: One-shot ARM64 SIMD FP zero 3149
+on:
+  push:
+    branches: [fix/3149-arm64-simd-fp-zero]
+permissions:
+  contents: write
+jobs:
+  materialize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Apply focused SIMD FP zero repair
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('js/targets/architecture/arm64/effects/simd.js'); s=p.read_text()
+          old="""function immediateFloatZero(op, widthBits) {
+            if (op?.k !== 'imm') return null;
+            const zero = (op.float != null && Number(op.float) === 0) || op.value === 0n;
+            if (!zero || op.shift || op.extend != null) return null;"""
+          new="""function immediateFloatZero(op, widthBits) {
+            if (op?.k !== 'imm') return null;
+            const numericFloatZero = typeof op.float === 'number' && Number.isFinite(op.float) && Object.is(op.float, 0);
+            const zero = numericFloatZero || op.value === 0n;
+            if (!zero || op.shift || op.extend != null) return null;"""
+          if old not in s: raise SystemExit('immediateFloatZero anchor drift')
+          p.write_text(s.replace(old,new,1))
+
+          Path('tests/machine-effects/arm64-simd-fp-zero-strict.test.mjs').write_text(r'''import assert from 'node:assert/strict';
+          import { liftArm64MachineEffects } from '../../js/targets/architecture/arm64/effects/index.js';
+          let seq=0;
+          const fp=(num,bits=64)=>({k:'reg',cls:'fp',num,bits,text:`${bits===16?'h':bits===32?'s':'d'}${num}`});
+          function lift(mnemonic,imm){const instructionId=`simd-fp-zero:${++seq}`;return liftArm64MachineEffects({instructionId,mnemonic,mode:'a64',ops:[fp(0),fp(1),imm],origin:{instructionIds:[instructionId]}});}
+          const immFloat=(float,extra={})=>({k:'imm',float,text:'#0.0',...extra});
+          const immValue=(value,extra={})=>({k:'imm',value,text:'#0',...extra});
+          function definite(r){return !!r?.operations?.some(op=>['register-read','register-write','intrinsic','value','flag-write'].includes(op.kind));}
+          function failClosed(r,label){assert.ok(r==null || r.completeness==='partial',label);if(r) assert.equal(definite(r),false,label);}
+
+          for(const mnemonic of ['fcmeq','fcmge','fcmgt']){
+            const numeric=lift(mnemonic,immFloat(0));assert.ok(numeric&&numeric.completeness!=='partial');assert.ok(definite(numeric));
+            const encoded=lift(mnemonic,immValue(0n));assert.ok(encoded&&encoded.completeness!=='partial');assert.ok(definite(encoded));
+            for(const bad of ['0',[0],false,{valueOf(){return 0;}}]) failClosed(lift(mnemonic,immFloat(bad)),`${mnemonic} malformed zero`);
+            for(const bad of [1,NaN,Infinity,-Infinity]) failClosed(lift(mnemonic,immFloat(bad)),`${mnemonic} invalid numeric`);
+            failClosed(lift(mnemonic,immFloat(0,{shift:{op:'lsl',amount:0}})),`${mnemonic} modified zero`);
+          }
+          console.log('arm64-simd-fp-zero-strict: PASS');
+          ''')
+          PY
+      - run: node --check js/targets/architecture/arm64/effects/simd.js
+      - run: node tests/machine-effects/arm64-simd-fp-zero-strict.test.mjs
+      - run: node tests/machine-effects/run.mjs
+      - run: git diff --check
+      - name: Commit production result
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git rm .github/workflows/one-shot-arm64-simd-fp-zero-3149.yml
+          git add js/targets/architecture/arm64/effects/simd.js tests/machine-effects/arm64-simd-fp-zero-strict.test.mjs
+          git commit -m 'fix(arm64): reject coerced SIMD FP zero immediates (#3149)'
+          git push
