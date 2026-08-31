@@ -1,5 +1,6 @@
 /* Compatibility bootstrap only. Canonical product UI lives under js/ui/*. */
 import { installHardenedProductUI as installProductUI } from './ui/product-hardened.js';
+import { installCanonicalProductEvidence } from './ui/product-evidence-hardened.js';
 import { installViewerDragReturnGuard } from './ui/viewer-gesture-guard.js';
 import { closeMenu } from './ui.js';
 import { installDemandDrivenAnalysis } from './analysis/demand-driven-runtime.js';
@@ -72,7 +73,7 @@ function boot() {
   installSymmetricWorkspaceDiff(window.__app);
   installViewerDragReturnGuard(window.__app.viewer);
   retireLegacyActionDom();
-  const ui = installProductUI(window.__app);
+  const ui = installCanonicalProductEvidence(window.__app, installProductUI(window.__app));
   if (ui) migrateRootControls(ui);
 }
 
