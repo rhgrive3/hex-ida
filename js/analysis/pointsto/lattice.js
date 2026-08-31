@@ -47,7 +47,15 @@ function fail(code) { throw new TypeError(code); }
 
 function big(value) {
   if (value == null) return null;
-  try { return typeof value === 'bigint' ? value : BigInt(value); }
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value)) return null;
+    return BigInt(value);
+  }
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  if (!text) return null;
+  try { return BigInt(text); }
   catch { return null; }
 }
 
@@ -188,8 +196,8 @@ export function createPointsToTarget(input = {}) {
     rootKind: String(input.rootKind ?? 'unknown'),
     rootIdentity: input.rootIdentity ?? null,
     rootEntityId: input.rootEntityId == null ? null : String(input.rootEntityId),
-    separationClass: input.separationClass == null ? null : String(input.separationClass),
-    separationAuthority: input.separationAuthority == null ? null : String(input.separationAuthority),
+    separationClass: typeof input.separationClass === 'string' ? input.separationClass : null,
+    separationAuthority: typeof input.separationAuthority === 'string' ? input.separationAuthority : null,
     address: input.address == null ? null : String(input.address),
     offsetRange: input.offsetRange ?? UNBOUNDED_RANGE,
     widthBits: input.widthBits == null ? null : Number(input.widthBits),
