@@ -2,13 +2,18 @@ import { deepFreeze, jsonSafe, stableDigest, validateCanonicalIdentityNumbers } 
 
 function fail(code) { throw new TypeError(code); }
 function required(value, code) {
-  const text = String(value ?? '').trim();
+  if (typeof value !== 'string') fail(code);
+  const text = value.trim();
   if (!text) fail(code);
   return text;
 }
 function exactRevision(value, fallback, code) {
   const resolved = value ?? fallback;
-  if (typeof resolved === 'number' && !Number.isSafeInteger(resolved)) fail(code);
+  if (typeof resolved === 'number') {
+    if (!Number.isSafeInteger(resolved)) fail(code);
+    return String(resolved);
+  }
+  if (typeof resolved === 'bigint') return String(resolved);
   return required(resolved, code);
 }
 function exactJson(value) {
@@ -33,7 +38,7 @@ export function createDeterminismMetadata(input = {}) {
     optionsHash: required(input.optionsHash, 'determinism-options-hash-required'),
     inputArtifactIds: sortedStrings(input.inputArtifactIds, 'determinism-input-artifacts-invalid'),
     outputArtifactId: required(input.outputArtifactId, 'determinism-output-artifact-required'),
-    backend: input.backend == null ? 'local' : String(input.backend),
+    backend: input.backend == null ? 'local' : required(input.backend, 'determinism-backend-invalid'),
   });
 }
 
