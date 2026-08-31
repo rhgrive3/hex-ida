@@ -18,7 +18,8 @@ import { rangeRelation } from './lattice.js';
 export const A2_ALIAS_ANALYZER_ID = 'phase7.alias.a2-points-to';
 
 function widthBytes(widthBits) {
-  const bits = Number(widthBits);
+  if (typeof widthBits !== 'number') return null;
+  const bits = widthBits;
   if (!Number.isSafeInteger(bits) || bits <= 0) return null;
   return BigInt(Math.ceil(bits / 8));
 }
