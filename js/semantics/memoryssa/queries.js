@@ -637,7 +637,7 @@ function forwardingAliasProofIsNo(proof, context = {}, depth = 0) {
       && String(proof.identityDigest ?? '') === stableDigest(context.memorySsa?.identity ?? null)
       && forwardingObject(proof.evidence)
       && proof.evidence.source === 'canonical-semantic-stack-root'
-      && proof.evidence.root === 'aapcs64-sp'
+      && proof.evidence.root === 'canonical-stack-root'
       && proof.evidence.scope === 'function-local-stack'
       && String(proof.proofDigest ?? '') === stableDigest({
         kind: proof.kind,

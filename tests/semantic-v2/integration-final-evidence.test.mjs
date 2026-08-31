@@ -30,8 +30,10 @@ const legacyPreloadUrl = pathToFileURL(legacyPreloadFile).href;
 const inheritedNodeOptions = String(process.env.NODE_OPTIONS ?? '').trim();
 const legacyEnv = {
   ...process.env,
+  PATH: `${path.dirname(process.execPath)}:${process.env.PATH ?? ''}`,
   NODE_OPTIONS: [inheritedNodeOptions, `--import=${legacyPreloadUrl}`].filter(Boolean).join(' '),
 };
+delete legacyEnv.npm_config_prefix;
 
 function runLegacyCommand(suite, command) {
   const child = spawnSync('bash', ['-lc', command], {
