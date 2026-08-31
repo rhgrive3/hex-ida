@@ -1,0 +1,19 @@
+name: Temporary current-main compiler-truth O0 probe run11
+
+on:
+  push:
+    branches:
+      - audit/current-main-compiler-truth-o0-run11
+
+permissions:
+  contents: read
+
+jobs:
+  compiler-truth:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm run compiler-truth
