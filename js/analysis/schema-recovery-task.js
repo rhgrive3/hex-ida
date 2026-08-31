@@ -38,6 +38,22 @@ function taskMap(app) {
   return map;
 }
 
+function stableBudgetKey(value, seen = new Set()) {
+  if (value == null) return 'default';
+  const type = typeof value;
+  if (type === 'number') return Number.isFinite(value) ? `n:${value}` : `n:${String(value)}`;
+  if (type === 'string') return `s:${value}`;
+  if (type === 'boolean') return `b:${value}`;
+  if (type !== 'object') return `${type}:${String(value)}`;
+  if (seen.has(value)) return 'cycle';
+  seen.add(value);
+  const result = Array.isArray(value)
+    ? `[${value.map((item) => stableBudgetKey(item, seen)).join(',')}]`
+    : `{${Object.keys(value).sort().map((key) => `${key}:${stableBudgetKey(value[key], seen)}`).join(',')}}`;
+  seen.delete(value);
+  return result;
+}
+
 function dependencyCompleteness(strings, program) {
   const reasons = [];
   if (strings?.complete !== true) reasons.push(strings?.truncationReason || 'strings-partial');
@@ -63,7 +79,7 @@ function annotateSchemas(value, completeness) {
   return schemas;
 }
 
-function createTask(app, epoch, { onProgress, priority, budget } = {}) {
+function createTask(app, taskKey, epoch, { onProgress, priority, budget } = {}) {
   const controller = new AbortController();
   const signal = controller.signal;
   const map = taskMap(app);
@@ -113,22 +129,23 @@ function createTask(app, epoch, { onProgress, priority, budget } = {}) {
     entry.result = annotateSchemas(schemas, dependencyCompleteness(strings, program));
     // Preserve the existing app-level cache contract, but only publish fresh,
     // completed-or-explicitly-partial schema recovery—not an aborted/stale result.
-    app.schemas = entry.result;
+    if (entry.result.complete === true) app.schemas = entry.result;
     return entry.result;
   })().catch((error) => {
-    if (!entry.result) map.delete(epoch);
+    if (!entry.result) map.delete(taskKey);
     throw error;
   });
-  map.set(epoch, entry);
+  map.set(taskKey, entry);
   return entry;
 }
 
 export function recoverSchemasForUi(app, { signal = null, onProgress = null, priority = 'interactive', budget = null } = {}) {
-  if (app?.schemas) return Promise.resolve(app.schemas);
+  if (app?.schemas?.complete === true) return Promise.resolve(app.schemas);
   const epoch = app?.backend?.gen ?? -1;
   const map = taskMap(app);
-  let entry = map.get(epoch);
-  if (!entry) entry = createTask(app, epoch, { onProgress, priority, budget });
+  const taskKey = `${epoch}:${stableBudgetKey(budget)}`;
+  let entry = map.get(taskKey);
+  if (!entry) entry = createTask(app, taskKey, epoch, { onProgress, priority, budget });
   if (entry.result) return Promise.resolve(entry.result);
   entry.waiters++;
 
