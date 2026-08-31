@@ -46,8 +46,8 @@ function normalizeRecording(recording = {}, options = {}) {
   return deepFreeze({
     recordingId: required(recording.recordingId ?? recording.id ?? `trace:${recording.sourceProvider ?? 'unknown'}`, 'trace-recording-id-required', 'trace recording id is required'),
     schemaVersion: String(recording.schemaVersion ?? recording.version ?? '1'),
-    sourceProvider: String(recording.sourceProvider ?? recording.providerId ?? recording.backend ?? 'unknown'),
-    sourceProviderVersion: String(recording.sourceProviderVersion ?? recording.providerVersion ?? 'unknown'),
+    sourceProvider: required(recording.sourceProvider ?? recording.providerId ?? recording.backend ?? 'unknown', 'trace-source-provider-invalid', 'trace source provider must be a non-empty string'),
+    sourceProviderVersion: required(recording.sourceProviderVersion ?? recording.providerVersion ?? 'unknown', 'trace-source-provider-version-invalid', 'trace source provider version must be a non-empty string'),
     binaryId: recording.binaryId ?? recording.binaryHash ?? null,
     sliceId: recording.sliceId ?? recording.sliceIdentity ?? null,
     architecture: recording.architecture ?? null,
@@ -57,7 +57,7 @@ function normalizeRecording(recording = {}, options = {}) {
     events: ownedClone(events),
     interventions: ownedClone(Array.isArray(recording.interventions) ? recording.interventions : []),
     dropped,
-    completeness: truncated ? 'truncated' : String(recording.completeness ?? 'bounded'),
+    completeness: truncated ? 'truncated' : required(recording.completeness ?? 'bounded', 'trace-invalid-completeness', 'trace completeness must be a non-empty string'),
     sourceProvenance: ownedClone(recording.sourceProvenance ?? recording.provenance ?? null),
   });
 }
