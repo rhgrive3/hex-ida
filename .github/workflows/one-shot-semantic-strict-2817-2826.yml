@@ -1,0 +1,34 @@
+name: One-shot semantic strict boundaries 2817 2826
+on:
+  push:
+    branches: [fix/semantic-strict-boundaries-current-2817-2826]
+permissions:
+  contents: write
+jobs:
+  repair:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Apply focused repairs
+        run: python3 tools/one-shot-semantic-strict-2817-2826.py
+      - name: Focused validation
+        run: |
+          set -euo pipefail
+          node --test tests/phase7/semantic/strict-memoryssa-cfg-boundaries.test.mjs
+          git diff --check
+      - name: Commit clean production tree
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          rm -f tools/one-shot-semantic-strict-2817-2826.py .github/workflows/one-shot-semantic-strict-2817-2826.yml
+          git add -A
+          git diff --cached --check
+          git commit -m 'fix(semantics): harden MemorySSA and CFG identity boundaries'
+          git push
