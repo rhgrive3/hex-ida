@@ -53,6 +53,8 @@ function fail(code) { throw new TypeError(code); }
 
 function address(value, code) {
   if (value == null) fail(code);
+  const type = typeof value;
+  if (type !== 'bigint' && type !== 'string' && !(type === 'number' && Number.isSafeInteger(value))) fail(code);
   try {
     const result = BigInt(value);
     if (result < 0n) fail(code);
@@ -78,9 +80,9 @@ export const EXTENT_ROLES = Object.freeze(['complete', 'partial']);
 
 /** One piece of evidence about a start or an extent. */
 export function createDiscoveryEvidence(input = {}) {
-  const kind = String(input.kind ?? '');
+  const kind = typeof input.kind === 'string' ? input.kind : '';
   if (!KIND_SET.has(kind)) fail(`discovery-evidence-unknown-kind:${kind}`);
-  const extentRole = String(input.extentRole ?? 'complete');
+  const extentRole = input.extentRole == null ? 'complete' : (typeof input.extentRole === 'string' ? input.extentRole : '');
   if (!EXTENT_ROLES.includes(extentRole)) fail('discovery-evidence-invalid-extent-role');
   const evidenceIds = input.evidenceIds ?? [];
   if (!Array.isArray(evidenceIds)
@@ -107,7 +109,7 @@ export function createRegion(input = {}) {
   const start = address(input.start, 'discovery-region-invalid-start');
   const end = address(input.end, 'discovery-region-invalid-end');
   if (end <= start) fail('discovery-region-empty');
-  const ownership = String(input.ownership ?? 'exclusive');
+  const ownership = input.ownership == null ? 'exclusive' : (typeof input.ownership === 'string' ? input.ownership : '');
   if (!OWNERSHIP_SET.has(ownership)) fail('discovery-region-invalid-ownership');
   return deepFreeze({ start: start.toString(), end: end.toString(), ownership });
 }
@@ -125,9 +127,9 @@ export function regionsOverlap(a, b) {
  */
 export function createFunctionCandidate(input = {}) {
   const start = address(input.start, 'discovery-candidate-invalid-start');
-  const startState = String(input.startState ?? 'heuristic');
+  const startState = input.startState == null ? 'heuristic' : (typeof input.startState === 'string' ? input.startState : '');
   if (!CANDIDATE_STATES.includes(startState)) fail('discovery-candidate-invalid-start-state');
-  const extentState = input.extentState == null ? 'unknown' : String(input.extentState);
+  const extentState = input.extentState == null ? 'unknown' : (typeof input.extentState === 'string' ? input.extentState : '');
   if (extentState !== 'unknown' && !CANDIDATE_STATES.includes(extentState)) fail('discovery-candidate-invalid-extent-state');
 
   const regions = (input.regions ?? []).map((region) => createRegion(region));
