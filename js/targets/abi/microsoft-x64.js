@@ -1,4 +1,5 @@
 import { ABIPlugin } from './registry.js';
+import { aggregateLayoutDescriptorPresent, canonicalAggregateLayout } from './aggregate-layout.js';
 
 const INTEGER_ARGUMENT_REGISTERS = Object.freeze(['rcx','rdx','r8','r9']);
 const VECTOR_ARGUMENT_REGISTERS = Object.freeze(['xmm0','xmm1','xmm2','xmm3']);
@@ -64,19 +65,48 @@ export function parameterClass(parameter) {
   const pointer = parameter?.pointer === true || parameter?.isPointer === true
     || /\*|pointer|ptr|object|class|block|closure/.test(`${type} ${abiClass}`);
   const aggregate = parameter?.aggregate === true || parameter?.isAggregate === true
+    || aggregateLayoutDescriptorPresent(parameter)
     || /aggregate|struct|union|record|array/.test(`${type} ${abiClass}`);
   const vector = parameter?.vector === true || /vector|simd|sse|__m128|__m256/.test(`${type} ${abiClass}`);
   const floating = !aggregate && (parameter?.floating === true || /(^|\s)(?:float|double)(?:\s|$)|\bfp\b/.test(`${type} ${abiClass}`));
-  const declaredBits = parameter?.bits ?? parameter?.sizeBits;
+  const aggregateLayoutPresent = aggregate && aggregateLayoutDescriptorPresent(parameter);
+  const aggregateLayout = aggregate && aggregateLayoutPresent ? canonicalAggregateLayout(parameter) : null;
+  const aggregateLayoutProven = !aggregate || !aggregateLayoutPresent || aggregateLayout != null;
+  const declaredBits = aggregateLayout?.bits ?? parameter?.bits ?? parameter?.sizeBits;
   const rawBits = Number(declaredBits ?? (pointer ? 64 : typeBits(type, /__m256/.test(type) ? 256 : vector ? 128 : 64)));
   const bits = Number.isSafeInteger(rawBits) && rawBits > 0 ? Math.min(512, rawBits) : 64;
   const nonTrivialForCalls = parameter?.nonTrivialForCalls === true || parameter?.nonTrivial === true;
   const trivialForCalls = parameter?.trivialForCalls === true || parameter?.pod === true;
   return {
     type, abiClass, pointer, aggregate, vector, floating, bits,
-    bitsProven:declaredBits != null || /__m128|__m256/.test(type),
+    bitsProven:declaredBits != null || aggregateLayout != null || /__m128|__m256/.test(type),
+    aggregateLayoutPresent, aggregateLayoutProven, aggregateLayout,
+    aggregateBytes:aggregateLayout?.bytes ?? (bits > 0 ? Math.ceil(bits / 8) : null),
     nonTrivialForCalls, trivialForCalls,
   };
+}
+
+/* Return metadata uses `returnBits`, while aggregate descriptors use `bits`.
+ * Check the aliases agree before canonicalizing so a conflicting nested
+ * descriptor cannot be laundered by whichever spelling is read first. */
+function aggregateReturnDescriptor(prototype, options = {}) {
+  const source = { ...(prototype || {}) };
+  const explicit = options.returnBits ?? prototype?.returnBits ?? null;
+  const explicitBits = explicit == null ? null : Number(explicit);
+  const sourceBits = source.bits ?? source.sizeBits ?? source.returnBits ?? null;
+  const sourceBitsNumber = sourceBits == null ? null : Number(sourceBits);
+  if (explicitBits != null && sourceBits != null
+    && (!Number.isSafeInteger(explicitBits) || !Number.isSafeInteger(sourceBitsNumber)
+      || explicitBits <= 0 || sourceBitsNumber !== explicitBits)) {
+    return { present:true, layout:null, malformed:true, bits:explicitBits };
+  }
+  if (explicitBits != null && sourceBits == null && Number.isSafeInteger(explicitBits) && explicitBits > 0) {
+    source.bits = explicitBits;
+  }
+  const present = aggregateLayoutDescriptorPresent(source);
+  const layout = present ? canonicalAggregateLayout(source) : null;
+  return { present, layout, malformed:present && layout == null,
+    bits:layout?.bits ?? (Number.isSafeInteger(explicitBits) && explicitBits > 0 ? explicitBits : sourceBitsNumber) };
 }
 
 function appendSource(sources, seen, reg, bits, extra = {}) {
@@ -98,8 +128,8 @@ function unsupportedConventionArguments(convention) {
 
 function conservativeUnknownArguments(extra = {}) {
   const srcs = [
-    ...INTEGER_ARGUMENT_REGISTERS.map((reg) => ({ t:'reg', reg, bits:64, possible:true, mustUse:false })),
-    ...VECTOR_ARGUMENT_REGISTERS.map((reg) => ({ t:'reg', reg, bits:128, possible:true, mustUse:false })),
+    ...INTEGER_ARGUMENT_REGISTERS.map((reg) => ({ t:'reg', reg, bits:64, possible:true, mustUse:false, exact:false, certainty:'unknown' })),
+    ...VECTOR_ARGUMENT_REGISTERS.map((reg) => ({ t:'reg', reg, bits:128, possible:true, mustUse:false, exact:false, certainty:'unknown' })),
   ];
   return {
     srcs,
@@ -111,6 +141,8 @@ function conservativeUnknownArguments(extra = {}) {
       abiClass:source.reg.startsWith('xmm') ? 'unknown-vector-position' : 'unknown-integer-position',
       possible:true,
       mustUse:false,
+      exact:false,
+      certainty:'unknown',
     })),
     stackArguments:[],
     stackArgsUnknown:true,
@@ -133,22 +165,43 @@ export function classifyMicrosoftX64ReturnDecision(prototype, options = {}) {
   const type = String(options.returnType || prototype.returnType || prototype.ret || prototype.result || '').trim().toLowerCase();
   const abiClass = String(options.returnClass || prototype.returnClass || prototype.abiClass || prototype.resultClass || '').trim().toLowerCase();
   if (options.returnsValue === false || prototype.returnsValue === false || prototype.void === true || type === 'void' || abiClass === 'void') return { kind:'void' };
-  if (prototype.indirectResult === true || abiClass === 'indirect') return { kind:'indirect', bits:64, reason:'explicit-indirect-result' };
-  const aggregate = prototype.aggregate === true || /aggregate|struct|union|record|array/.test(`${type} ${abiClass}`);
+  const explicitlyIndirect = prototype.indirectResult === true || abiClass === 'indirect';
+  if (explicitlyIndirect && aggregateLayoutDescriptorPresent(prototype)) {
+    const descriptor = aggregateReturnDescriptor(prototype, options);
+    if (descriptor.malformed) return { kind:'unknown', partial:true, aggregate:true,
+      pointeeBits:descriptor.bits ?? null, hiddenResultPossible:true,
+      reason:'microsoft-x64-aggregate-return-layout-not-proven' };
+  }
+  if (explicitlyIndirect) return { kind:'indirect', bits:64, reason:'explicit-indirect-result' };
+  const aggregate = prototype.aggregate === true || prototype.isAggregate === true
+    || aggregateLayoutDescriptorPresent(prototype)
+    || (prototype.returnAggregate && typeof prototype.returnAggregate === 'object')
+    || (Object.hasOwn(prototype, 'returnAggregate') && prototype.returnAggregate != null
+      && typeof prototype.returnAggregate !== 'boolean')
+    || /aggregate|struct|union|record|array/.test(`${type} ${abiClass}`);
   if (aggregate) {
-    const declaredBits = options.returnBits ?? prototype.returnBits ?? prototype.bits;
+    const descriptor = aggregateReturnDescriptor(prototype, options);
+    if (descriptor.malformed) {
+      return { kind:'unknown', partial:true, aggregate:true,
+        pointeeBits:descriptor.bits ?? null, hiddenResultPossible:true,
+        reason:'microsoft-x64-aggregate-return-layout-not-proven' };
+    }
+    const declaredBits = descriptor.bits ?? prototype.bits;
     const bits = Number(declaredBits);
     const bitsProven = Number.isSafeInteger(bits) && bits > 0;
+    const physicalBytes = descriptor.layout?.bytes ?? (bitsProven ? Math.ceil(bits / 8) : null);
+    const physicalPadding = bitsProven && Number.isSafeInteger(physicalBytes)
+      && physicalBytes > Math.ceil(bits / 8);
     const trivial = options.returnTrivialForCalls === true || prototype.returnTrivialForCalls === true || prototype.trivialForCalls === true || prototype.pod === true;
     const nonTrivial = options.returnNonTrivialForCalls === true || prototype.returnNonTrivialForCalls === true || prototype.nonTrivialForCalls === true || prototype.nonTrivial === true;
-    if (bitsProven && trivial && [8,16,32,64].includes(bits)) {
+    if (bitsProven && !physicalPadding && trivial && [8,16,32,64].includes(bits)) {
       const bytes = Math.max(8, Math.ceil(bits / 8));
       return {
         kind:'direct', reg:'rax', bits, bytes, aggregate:true, abiClass:'integer-aggregate',
         pieces:[{ pieceIndex:0, order:0, reg:'rax', abiClass:'integer-aggregate', bits, bytes, byteOffset:0 }],
       };
     }
-    if (nonTrivial || (bitsProven && ![8,16,32,64].includes(bits))) {
+    if (nonTrivial || (bitsProven && !physicalPadding && ![8,16,32,64].includes(bits))) {
       return {
         kind:'indirect', bits:64, aggregate:true,
         pointeeBits:bitsProven ? bits : null,
@@ -219,8 +272,24 @@ export function classifyMicrosoftX64Arguments(instruction, options = {}) {
     const classified = parameterClass(parameter);
     const position = index + positionBias;
     const registerPosition = position < 4;
+    if (classified.aggregate && !classified.aggregateLayoutProven) {
+      aggregatePartial = true;
+      const entry = {
+        index, location:'unknown', candidateRegisters:registerPosition
+          ? [INTEGER_ARGUMENT_REGISTERS[position], VECTOR_ARGUMENT_REGISTERS[position]] : [],
+        stackPossible:true, abiClass:'aggregate-layout-unproven', pointer:true,
+        bits:classified.bits, partial:true, possible:true, mustUse:false,
+        exact:false, certainty:'unknown',
+        reason:'microsoft-x64-aggregate-layout-not-proven',
+      };
+      arguments_.push(entry);
+      stackArgsMayContainPointers = true;
+      return;
+    }
     if (classified.aggregate || classified.vector) {
-      const exactSmallAggregate = classified.aggregate && classified.bitsProven && classified.trivialForCalls
+      const physicalPadding = classified.aggregate && classified.aggregateBytes > Math.ceil(classified.bits / 8);
+      const exactSmallAggregate = classified.aggregate && !physicalPadding
+        && classified.bitsProven && classified.trivialForCalls
         && [8,16,32,64].includes(classified.bits);
       const exactIndirect = classified.bitsProven
         && (classified.vector || classified.nonTrivialForCalls || ![8,16,32,64].includes(classified.bits));
@@ -228,19 +297,19 @@ export function classifyMicrosoftX64Arguments(instruction, options = {}) {
         aggregatePartial = true;
         if (registerPosition) {
           const candidates = [INTEGER_ARGUMENT_REGISTERS[position], VECTOR_ARGUMENT_REGISTERS[position]];
-          appendSource(srcs, seenSources, candidates[0], 64, { purpose:'aggregate-candidate', possible:true, mustUse:false });
-          appendSource(srcs, seenSources, candidates[1], 128, { purpose:'aggregate-candidate', possible:true, mustUse:false });
+          appendSource(srcs, seenSources, candidates[0], 64, { purpose:'aggregate-candidate', possible:true, mustUse:false, exact:false, certainty:'unknown' });
+          appendSource(srcs, seenSources, candidates[1], 128, { purpose:'aggregate-candidate', possible:true, mustUse:false, exact:false, certainty:'unknown' });
           arguments_.push({
             index, location:'unknown', candidateRegisters:candidates, stackPossible:false,
             abiClass:'aggregate-unclassified-partial', pointer:true, bits:classified.bits,
-            partial:true, possible:true, mustUse:false,
+            partial:true, possible:true, mustUse:false, exact:false, certainty:'unknown',
           });
         } else {
           const offset = 32 + (position - 4) * 8;
           const entry = {
             index, location:'stack', offset, offsetBase:'caller-stack-before-call', calleeEntryOffset:offset + 8,
             bytes:8, abiClass:'aggregate-unclassified-partial', pointer:true, bits:classified.bits,
-            partial:true, possible:true, mustUse:false,
+            partial:true, possible:true, mustUse:false, exact:false, certainty:'unknown',
           };
           arguments_.push(entry); stackArguments.push(entry);
         }
@@ -255,8 +324,8 @@ export function classifyMicrosoftX64Arguments(instruction, options = {}) {
         appendSource(srcs, seenSources, reg, indirect ? 64 : classified.bits, {
           purpose:indirect ? 'by-reference-argument' : 'integer-aggregate', possible:false, mustUse:true,
         });
-        arguments_.push({
-          index, location:'register', reg, abiClass:abiValueClass, pointer:indirect,
+          arguments_.push({
+          index, location:'register', reg, aggregate:true, abiClass:abiValueClass, pointer:indirect,
           bits:indirect ? 64 : classified.bits,
           bytes:indirect ? 8 : Math.max(8, Math.ceil(classified.bits / 8)),
           pointeeBits:indirect ? classified.bits : undefined,
@@ -269,7 +338,7 @@ export function classifyMicrosoftX64Arguments(instruction, options = {}) {
       } else {
         const offset = 32 + (position - 4) * 8;
         const entry = {
-          index, location:'stack', offset, offsetBase:'caller-stack-before-call', calleeEntryOffset:offset + 8,
+          index, location:'stack', offset, offsetBase:'caller-stack-before-call', calleeEntryOffset:offset + 8, aggregate:true,
           bytes:8, abiClass:abiValueClass, pointer:indirect,
           bits:indirect ? 64 : classified.bits,
           pointeeBits:indirect ? classified.bits : undefined,
@@ -331,8 +400,8 @@ export function classifyMicrosoftX64Arguments(instruction, options = {}) {
     for (let position = firstUnknownPosition; position < 4; position++) {
       const gpr = INTEGER_ARGUMENT_REGISTERS[position];
       const xmm = VECTOR_ARGUMENT_REGISTERS[position];
-      appendSource(srcs, seenSources, gpr, 64, { purpose:'variadic-tail-candidate', possible:true, mustUse:false });
-      appendSource(srcs, seenSources, xmm, 128, { purpose:'variadic-tail-candidate', possible:true, mustUse:false });
+      appendSource(srcs, seenSources, gpr, 64, { purpose:'variadic-tail-candidate', possible:true, mustUse:false, exact:false, certainty:'unknown' });
+      appendSource(srcs, seenSources, xmm, 128, { purpose:'variadic-tail-candidate', possible:true, mustUse:false, exact:false, certainty:'unknown' });
       const frontier = {
         position,
         index:position - positionBias,
@@ -343,6 +412,8 @@ export function classifyMicrosoftX64Arguments(instruction, options = {}) {
         variadic:true,
         possible:true,
         mustUse:false,
+        exact:false,
+        certainty:'unknown',
         floatingMirrorRegister:gpr,
       };
       variadicRegisterFrontier.push(frontier);

@@ -307,8 +307,13 @@ export function normalizeAbiPieces(container, rawPieces, { defaultAbiClass = nul
   const pieceIndexes = new Set();
   const orders = new Set();
   const ranges = [];
+  if (Object.hasOwn(container, 'regs') && !Array.isArray(container.regs)) return null;
+  if (Array.isArray(container.regs)
+    && container.regs.some((reg) => typeof reg !== 'string' || !reg.trim())) return null;
+  if (Object.hasOwn(container, 'reg')
+    && (typeof container.reg !== 'string' || !container.reg.trim())) return null;
   const declaredRegisters = Array.isArray(container.regs)
-    ? container.regs.filter((reg) => typeof reg === 'string' && reg.trim()).map(String)
+    ? container.regs.map(String)
     : typeof container.reg === 'string' && container.reg.trim() ? [String(container.reg)] : [];
   const declaredRegisterSet = new Set(declaredRegisters);
   if (declaredRegisters.length !== declaredRegisterSet.size) return null;
@@ -331,6 +336,7 @@ export function normalizeAbiPieces(container, rawPieces, { defaultAbiClass = nul
     if (hasRegister === hasStack) return null;
     if (hasRegister) {
       if (declaredRegisterSet.size > 0 && !declaredRegisterSet.has(String(rawReg))) return null;
+      if (pieceRegisters.has(String(rawReg))) return null;
       pieceRegisters.add(String(rawReg));
     }
     const stackOffset = hasStack ? offsetValue(rawStackOffset) : null;
@@ -415,6 +421,8 @@ export function normalizeAbiPieces(container, rawPieces, { defaultAbiClass = nul
   if (pieces.some((piece) => !expectedIndexes.includes(piece.pieceIndex))) return null;
   const orderedPieces = pieces.slice().sort((left, right) => left.order - right.order);
   if (orderedPieces.some((piece, index) => piece.order !== index || piece.pieceIndex !== index)) return null;
+  if (orderedPieces.some((piece, index) => index > 0
+    && piece.byteOffset < orderedPieces[index - 1].byteOffset)) return null;
   const orderedPhysicalStackRanges = physicalStackRanges.slice().sort((left, right) => left.order - right.order);
   if (orderedPhysicalStackRanges.some((range, index) => index > 0
     && range.start < orderedPhysicalStackRanges[index - 1].start)) return null;
@@ -448,6 +456,18 @@ function physicalInterval(offset, bytes) {
   return end == null ? null : { start:offset, end };
 }
 
+function stackAlignmentValid(offset, entry, piece = null) {
+  const bytes = piece?.bytes ?? entry?.bytes ?? entry?.stackBytes ?? null;
+  const rawAlignment = piece?.stackAlignment ?? piece?.alignment
+    ?? entry?.stackAlignment ?? entry?.alignmentBytes ?? entry?.alignment;
+  const naturalAlignment = typeof bytes === 'number' && Number.isSafeInteger(bytes) && bytes > 0
+    ? bytes >= 8 ? 8 : bytes >= 4 ? 4 : bytes >= 2 ? 2 : 1
+    : null;
+  if (rawAlignment == null) return naturalAlignment == null || offset % naturalAlignment === 0;
+  return typeof rawAlignment === 'number' && Number.isSafeInteger(rawAlignment)
+    && rawAlignment > 0 && offset % rawAlignment === 0;
+}
+
 function entryStackIntervals(entry) {
   if (!record(entry)) return null;
   // Possible/unknown frontier entries intentionally carry no physical span;
@@ -464,6 +484,7 @@ function entryStackIntervals(entry) {
       if (offset == null) continue;
       const span = physicalInterval(offset, piece.bytes);
       if (!span) return null;
+      if (!stackAlignmentValid(offset, entry, piece)) return null;
       intervals.push({ ...span, pieceIndex:piece.pieceIndex ?? piece.index ?? null });
     }
     const location = String(entry.location || '').toLowerCase();
@@ -489,16 +510,197 @@ function entryStackIntervals(entry) {
     ? null : [];
   const bytes = entry.bytes ?? entry.stackBytes ?? null;
   const span = physicalInterval(offset, bytes);
+  if (span && !stackAlignmentValid(offset, entry)) return null;
   return span ? [{ ...span, pieceIndex:null }] : null;
 }
 
-function sameCanonicalSplit(left, right) {
-  const splitLocations = new Set(['register-stack', 'register-and-stack', 'stack-fragment']);
-  const leftLocation = String(left?.location || '').toLowerCase();
-  const rightLocation = String(right?.location || '').toLowerCase();
-  if (!splitLocations.has(leftLocation) && !splitLocations.has(rightLocation)) return false;
-  if (left?.index == null || right?.index == null || String(left.index) !== String(right.index)) return false;
-  return true;
+function aggregatePieces(entry) {
+  if (!record(entry)) return null;
+  if (Array.isArray(entry.pieces)) return entry.pieces;
+  if (Array.isArray(entry.parts)) return entry.parts;
+  return null;
+}
+
+function fragmentPiecesValid(entry, pieces) {
+  if (!Array.isArray(pieces) || pieces.length === 0) return false;
+  const pieceIndexes = new Set();
+  const orders = new Set();
+  const ranges = [];
+  const stackRanges = [];
+  for (const piece of pieces) {
+    if (!record(piece)) return false;
+    const hasRegister = typeof piece.reg === 'string' && piece.reg.trim().length > 0;
+    const hasStack = piece.stackOffset != null || piece.offset != null;
+    if (hasRegister === hasStack) return false;
+    if (!Object.hasOwn(piece, 'bits') || !Object.hasOwn(piece, 'bytes')
+      || !Object.hasOwn(piece, 'pieceIndex') || !Object.hasOwn(piece, 'order')
+      || !Object.hasOwn(piece, 'byteOffset')) return false;
+    const bits = positiveInteger(piece.bits);
+    const bytes = positiveInteger(piece.bytes);
+    const pieceIndex = nonNegativeInteger(piece.pieceIndex);
+    const order = nonNegativeInteger(piece.order);
+    const byteOffset = nonNegativeInteger(piece.byteOffset);
+    if (bits == null || bytes == null || Math.ceil(bits / 8) > bytes
+      || pieceIndex == null || order == null || byteOffset == null
+      || pieceIndexes.has(pieceIndex) || orders.has(order)
+      || typeof piece.abiClass !== 'string' || !piece.abiClass.trim()) return false;
+    const end = safeEnd(byteOffset, bytes);
+    if (end == null || ranges.some(([start, finish]) => byteOffset < finish && start < end)) return false;
+    if (hasStack) {
+      const offset = offsetValue(piece.stackOffset ?? piece.offset);
+      const stackEnd = offset == null ? null : safeEnd(offset, bytes);
+      if (stackEnd == null || !stackAlignmentValid(offset, entry, piece)) return false;
+      if (stackRanges.some(({ start, end }) => offset < end && start < stackEnd)) return false;
+      stackRanges.push({ start:offset, end:stackEnd });
+    }
+    pieceIndexes.add(pieceIndex);
+    orders.add(order);
+    ranges.push([byteOffset, end]);
+  }
+  // A fragment projection is still a complete physical proof.  When its
+  // envelope is present, reuse the same gap/width/class validation as every
+  // other aggregate instead of accepting a merely non-overlapping subset.
+  if (!Object.hasOwn(entry, 'bits') || !Object.hasOwn(entry, 'bytes')) return false;
+  const orderedPieces = pieces.slice().sort((left, right) => left.order - right.order);
+  const firstPieceIndex = orderedPieces[0]?.pieceIndex;
+  const firstOrder = orderedPieces[0]?.order;
+  const firstByteOffset = orderedPieces[0]?.byteOffset;
+  if (orderedPieces.some((piece, index) => piece.pieceIndex !== firstPieceIndex + index
+    || piece.order !== firstOrder + index
+    || piece.byteOffset !== firstByteOffset + orderedPieces.slice(0, index)
+      .reduce((total, prior) => total + prior.bytes, 0))) return false;
+  const location = String(entry.location || '').toLowerCase();
+  if (location === 'stack-fragment' && Object.hasOwn(entry, 'offset') && Object.hasOwn(entry, 'bytes')) {
+    const declared = physicalInterval(entry.offset, entry.bytes);
+    if (!declared) return false;
+    const orderedStackRanges = stackRanges.slice().sort((left, right) => left.start - right.start);
+    if (!orderedStackRanges.length || orderedStackRanges[0].start !== declared.start
+      || orderedStackRanges.at(-1).end !== declared.end) return false;
+    let stackCursor = declared.start;
+    for (const span of orderedStackRanges) {
+      if (span.start !== stackCursor) return false;
+      stackCursor = span.end;
+    }
+    if (stackCursor !== declared.end) return false;
+    if (!stackAlignmentValid(declared.start, entry)) return false;
+  }
+  // A split projection keeps the source aggregate's piece index (for example
+  // lane 1), while normalizeAbiPieces validates a standalone list from lane
+  // zero. Rebase only the validator copy; the source coordinates remain in the
+  // projection and are compared against the full aggregate below.
+  const rebased = orderedPieces.map((piece, index) => ({ ...piece,
+    index, pieceIndex:index, order:index, byteOffset:piece.byteOffset - firstByteOffset,
+  }));
+  const result = normalizeAbiPieces(entry, rebased);
+  return result != null;
+}
+
+/*
+ * Validate aggregate proof before looking at whether its lanes happen to be
+ * registers or stack slots.  A register-only result has no stack interval for
+ * the global interval pass to inspect, so normalize its canonical piece list
+ * here as well.
+ */
+function aggregatePhysicalProofValid(entry) {
+  if (!record(entry)) return false;
+  const pieces = aggregatePieces(entry);
+  // An indirect aggregate return is a hidden-result-pointer proof, not a
+  // direct register/stack lane list.  Validate that pointer through
+  // canonicalAbiHiddenResult at publication time; requiring aggregate pieces
+  // here would incorrectly reject the canonical no-lane indirect result, while
+  // accepting both a hidden pointer and direct lanes would permit two
+  // contradictory return locations.
+  if (entry.indirect === true) return !pieces || pieces.length === 0;
+  const aggregate = entry.aggregate === true || (pieces && pieces.length > 0);
+  // Unknown scalar/frontier candidates carry no physical proof to validate.
+  // Once an aggregate piece list is present, however, validate it even when a
+  // producer also labels the result partial; otherwise malformed register-only
+  // evidence could hide behind the uncertainty flag.
+  if (!aggregate) return true;
+  if (!pieces || pieces.length === 0) {
+    return entry.possible === true || entry.mustUse === false || entry.partial === true || entry.exact === false;
+  }
+  if (entry.possible === true || entry.mustUse === false || entry.exact === false) {
+    return normalizeAbiPieces(entry, pieces) != null;
+  }
+  const location = String(entry.location || '').toLowerCase();
+  if (location === 'stack-fragment') return fragmentPiecesValid(entry, pieces);
+  return normalizeAbiPieces(entry, pieces) != null;
+}
+
+function samePiece(left, right) {
+  if (!record(left) || !record(right)) return false;
+  const leftOffset = left.stackOffset ?? left.offset ?? null;
+  const rightOffset = right.stackOffset ?? right.offset ?? null;
+  return String(left.pieceIndex ?? left.index) === String(right.pieceIndex ?? right.index)
+    && String(left.order) === String(right.order)
+    && String(leftOffset) === String(rightOffset)
+    && String(left.byteOffset) === String(right.byteOffset)
+    && String(left.bytes) === String(right.bytes)
+    && String(left.bits) === String(right.bits)
+    && String(left.abiClass) === String(right.abiClass);
+}
+
+function canonicalSplitProof(left, right) {
+  if (!record(left) || !record(right)
+    || left === right
+    || left.index == null || right.index == null
+    || String(left.index) !== String(right.index)) return false;
+  const splitLocations = new Set(['register-stack', 'register-and-stack']);
+  const full = splitLocations.has(String(left.location || '').toLowerCase()) ? left
+    : splitLocations.has(String(right.location || '').toLowerCase()) ? right : null;
+  const projection = full === left ? right : full === right ? left : null;
+  if (!full || !projection || full.aggregate !== true) return false;
+  const fullPieces = aggregatePieces(full);
+  // The canonical classifiers expose the complete aggregate in `arguments`
+  // and project its stack lane into `stackArguments` as one direct entry.
+  // That projection is still a piece proof; do not require it to be wrapped in
+  // a second `pieces` array, but do require all per-lane coordinates below.
+  const projectionPieces = aggregatePieces(projection)
+    ?? (['stack', 'stack-fragment'].includes(String(projection.location || '').toLowerCase())
+      && Object.hasOwn(projection, 'pieceIndex')
+      && Object.hasOwn(projection, 'order')
+      && Object.hasOwn(projection, 'byteOffset')
+      ? [projection] : null);
+  if (!fullPieces || !projectionPieces || !fullPieces.some((piece) => piece?.reg)
+    || !fullPieces.some((piece) => piece?.stackOffset != null || piece?.offset != null)
+    || !aggregatePhysicalProofValid(full) || !fragmentPiecesValid(projection, projectionPieces)) {
+    return false;
+  }
+  const stackPieces = fullPieces.filter((piece) => piece?.stackOffset != null || piece?.offset != null);
+  const result = projectionPieces.length > 0
+    && projectionPieces.every((piece) => stackPieces.some((candidate) => samePiece(candidate, piece)));
+  return result;
+}
+
+/*
+ * The canonical result shape mirrors a complete stack entry in both
+ * `arguments` and `stackArguments`.  The same object in those two projections
+ * is one evidence record, not two scalar observations.  Cloned records still
+ * go through interval overlap rejection; split register/stack entries never
+ * qualify for this mirror exception.
+ */
+function sameCanonicalStackMirror(left, right) {
+  return left === right
+    && String(left?.location || '').toLowerCase() === 'stack'
+    && String(right?.location || '').toLowerCase() === 'stack'
+    && left?.canonicalStackMirror === true;
+}
+
+function entryRegisterNames(entry) {
+  if (!record(entry) || entry.possible === true || entry.mustUse === false
+    || entry.partial === true || entry.exact === false) return [];
+  const names = new Set();
+  const pieces = aggregatePieces(entry);
+  if (pieces) {
+    for (const piece of pieces) {
+      if (typeof piece?.reg === 'string' && piece.reg.trim()) names.add(piece.reg.trim());
+    }
+  }
+  if (Array.isArray(entry.regs)) {
+    for (const reg of entry.regs) if (typeof reg === 'string' && reg.trim()) names.add(reg.trim());
+  } else if (typeof entry.reg === 'string' && entry.reg.trim()) names.add(entry.reg.trim());
+  return [...names];
 }
 
 function sameSpan(left, right) { return left.start === right.start && left.end === right.end; }
@@ -514,31 +716,75 @@ function intervalsOverlap(left, right) { return left.start < right.end && right.
  */
 export function abiPhysicalIntervalsValid(result) {
   if (!record(result)) return false;
+  // Validate an aggregate result's own canonical piece envelope before
+  // iterating its projections. Otherwise a register-only return could expose
+  // malformed/overlapping pieces one at a time and evade the global check.
+  if (!aggregatePhysicalProofValid(result)) return false;
   const validateGroup = (entries, supplemental = [], label = 'argument') => {
     const intervals = [];
-    const seenObjects = new Set();
+    const seenObjects = new Map();
+    const seenIndexes = new Map();
+    const registerOwners = new Map();
     const all = [
       ...(Array.isArray(entries) ? entries.map((entry) => ({ entry, source:'canonical' })) : []),
       ...(Array.isArray(supplemental) ? supplemental.map((entry) => ({ entry, source:'supplemental' })) : []),
     ];
     for (const { entry, source } of all) {
       if (!record(entry)) return false;
-      if (seenObjects.has(entry)) continue;
-      seenObjects.add(entry);
+      if (!aggregatePhysicalProofValid(entry)) return false;
+      // A canonical argument index identifies one logical parameter across
+      // the primary and stack projections. A second record for that index is
+      // valid only when the canonical split proof binds its non-overlapping
+      // lanes (or the adapter marks the same complete stack mirror). Without
+      // this identity check a malformed projection can move its stack lane to
+      // a disjoint offset and evade interval-overlap detection entirely.
+      const indexKey = entry.index == null ? null : String(entry.index);
+      if (indexKey != null) {
+        const previousIndex = seenIndexes.get(indexKey);
+        if (previousIndex) {
+          if (previousIndex.source === source
+            || (!canonicalSplitProof(previousIndex.entry, entry)
+              && !sameCanonicalStackMirror(previousIndex.entry, entry))) return false;
+        } else {
+          seenIndexes.set(indexKey, { entry, source });
+        }
+      }
+      const previous = seenObjects.get(entry);
+      if (previous && previous.source === source) return false;
+      if (!previous) seenObjects.set(entry, { source, entry });
+      else if (!canonicalSplitProof(previous.entry, entry)
+        && !sameCanonicalStackMirror(previous.entry, entry)) return false;
       const spans = entryStackIntervals(entry);
       if (spans == null) return false;
+      for (const register of entryRegisterNames(entry)) {
+        const previousRegister = registerOwners.get(register);
+        if (!previousRegister) {
+          registerOwners.set(register, { entry, source });
+          continue;
+        }
+        if (previousRegister.entry === entry
+          || (previousRegister.source !== source
+            && (canonicalSplitProof(previousRegister.entry, entry)
+              || sameCanonicalStackMirror(previousRegister.entry, entry)))) continue;
+        // A register is one physical location.  Two exact-looking records may
+        // share it only when the same canonical aggregate projection proves
+        // that relationship; otherwise this is duplicate/overlapping ABI
+        // evidence even if no stack interval is present to catch it.
+        return false;
+      }
       for (const span of spans) {
         const duplicate = intervals.find((candidate) => intervalsOverlap(candidate.span, span));
         if (!duplicate) {
           intervals.push({ span, entry, source, label });
           continue;
         }
-        // One aggregate split entry is deliberately projected into both
-        // `arguments` and `stackArguments`. It is the only duplicate physical
-        // span that can be proven canonical without guessing ownership.
+        // One explicitly proven aggregate split entry may be projected into
+        // both `arguments` and `stackArguments`; all scalar duplicates and
+        // same-object stack mirrors are ambiguous evidence.
         if (sameSpan(duplicate.span, span)
           && duplicate.source !== source
-          && sameCanonicalSplit(duplicate.entry, entry)) continue;
+          && (canonicalSplitProof(duplicate.entry, entry)
+            || sameCanonicalStackMirror(duplicate.entry, entry))) continue;
         return false;
       }
     }
@@ -548,7 +794,6 @@ export function abiPhysicalIntervalsValid(result) {
   if (!validateGroup(result.arguments, result.stackArguments, 'argument')) return false;
   const returnEntries = Array.isArray(result.returnLocations)
     ? result.returnLocations
-    : Array.isArray(result.pieces) ? result.pieces
-      : Array.isArray(result.parts) ? result.parts : [];
+    : (Array.isArray(result.pieces) || Array.isArray(result.parts)) ? [result] : [];
   return validateGroup(returnEntries, [], 'return');
 }
