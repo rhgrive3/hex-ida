@@ -15,6 +15,14 @@ function optionalText(value) {
   return value == null ? null : String(value);
 }
 
+function optionalIdentity(value, name) {
+  if (value == null) return null;
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new DebugAdapterError('invalid-runtime-identity', `${name} must be a non-empty string`, { name, value });
+  }
+  return value;
+}
+
 function safeSequence(value, name = 'sequence') {
   if (value == null) return null;
   if (typeof value !== 'number' && !(typeof value === 'string' && value.trim() !== '')) {
@@ -95,9 +103,12 @@ function normalizeBinding(input, runtimeSessionId, generation) {
   const runtimeBase = asAddress(input.runtimeBase ?? input.base, 'runtimeBase');
   const runtimeSize = positiveSize(input.runtimeSize ?? input.size, 'runtimeSize');
   const staticBase = input.staticBase == null && input.imageBase == null ? null : asAddress(input.staticBase ?? input.imageBase, 'staticBase');
-  const identityState = input.identityState == null
-    ? (input.binaryId ? 'exact' : 'unresolved')
-    : String(input.identityState);
+  const binaryId = optionalIdentity(input.binaryId, 'binaryId');
+  const sliceId = optionalIdentity(input.sliceId, 'sliceId');
+  let identityState;
+  if (input.identityState == null) identityState = binaryId ? 'exact' : 'unresolved';
+  else if (typeof input.identityState === 'string') identityState = input.identityState;
+  else throw new DebugAdapterError('invalid-module-identity-state', 'module identity state must be a string');
   if (!BINDING_STATES.includes(identityState)) throw new DebugAdapterError('invalid-module-identity-state', `invalid module identity state: ${identityState}`);
   return deepFreeze({
     runtimeSessionId,
@@ -109,8 +120,8 @@ function normalizeBinding(input, runtimeSessionId, generation) {
     staticBase,
     permissions: optionalText(input.permissions),
     pathHint: optionalText(input.pathHint ?? input.path ?? input.name),
-    binaryId: optionalText(input.binaryId),
-    sliceId: optionalText(input.sliceId),
+    binaryId,
+    sliceId,
     imageId: optionalText(input.imageId),
     buildIdentity: input.buildIdentity == null ? null : ownedClone(input.buildIdentity),
     loadedSequence: safeSequence(input.loadedSequence, 'loadedSequence'),
@@ -122,11 +133,13 @@ function normalizeBinding(input, runtimeSessionId, generation) {
 
 function matchIsStrong(match, targetBinaryId) {
   if (!match || typeof match !== 'object' || match.accepted !== true || match.ambiguous === true) return false;
-  if (targetBinaryId && match.targetBinaryId && String(match.targetBinaryId) !== String(targetBinaryId)) return false;
-  const confidence = Number(match.identityConfidence ?? match.confidence ?? match.score);
-  if (!Number.isFinite(confidence) || confidence < 0.85) return false;
-  const margin = Number(match.ambiguityMargin ?? match.margin);
-  if (Number.isFinite(margin) && margin < 0.10) return false;
+  if (targetBinaryId && match.targetBinaryId != null) {
+    if (typeof match.targetBinaryId !== 'string' || !match.targetBinaryId.trim() || match.targetBinaryId !== targetBinaryId) return false;
+  }
+  const confidence = match.identityConfidence ?? match.confidence ?? match.score;
+  if (typeof confidence !== 'number' || !Number.isFinite(confidence) || confidence < 0.85) return false;
+  const margin = match.ambiguityMargin ?? match.margin;
+  if (margin != null && (typeof margin !== 'number' || !Number.isFinite(margin) || margin < 0.10)) return false;
   return true;
 }
 
@@ -186,8 +199,8 @@ export class RuntimeModuleBindingTable {
     }
 
     const binding = candidates[0];
-    const targetBinaryId = options.binaryId == null ? null : String(options.binaryId);
-    const targetSliceId = options.sliceId == null ? null : String(options.sliceId);
+    const targetBinaryId = optionalIdentity(options.binaryId, 'binaryId');
+    const targetSliceId = optionalIdentity(options.sliceId, 'sliceId');
 
     if (binding.identityState === 'mismatch') {
       return createRuntimeAddressResolution({ ...binding, runtimeAddress: address, state: 'mismatch', method: 'module-identity-mismatch', evidenceIds: binding.identityEvidenceIds });
@@ -244,8 +257,8 @@ export class RuntimeModuleBindingTable {
 }
 
 export function createRuntimeAddressResolution(input = {}) {
-  const state = String(input.state ?? 'unresolved');
-  if (!RESOLUTION_STATES.includes(state)) throw new DebugAdapterError('invalid-runtime-resolution-state', `invalid runtime address resolution state: ${state}`);
+  const state = input.state == null ? 'unresolved' : input.state;
+  if (typeof state !== 'string' || !RESOLUTION_STATES.includes(state)) throw new DebugAdapterError('invalid-runtime-resolution-state', `invalid runtime address resolution state: ${state}`);
   const runtimeAddress = asAddress(input.runtimeAddress, 'runtimeAddress');
   const staticAddress = input.staticAddress == null ? null : asAddress(input.staticAddress, 'staticAddress');
   return deepFreeze({
@@ -253,8 +266,8 @@ export function createRuntimeAddressResolution(input = {}) {
     moduleBindingKey: optionalText(input.moduleBindingKey ?? input.bindingKey),
     moduleGeneration: input.moduleGeneration ?? input.generation ?? null,
     runtimeAddress,
-    binaryId: optionalText(input.binaryId),
-    sliceId: optionalText(input.sliceId),
+    binaryId: optionalIdentity(input.binaryId, 'binaryId'),
+    sliceId: optionalIdentity(input.sliceId, 'sliceId'),
     imageId: optionalText(input.imageId),
     staticAddress,
     targetEntityIds: freezeEntityIds(input.targetEntityIds),
