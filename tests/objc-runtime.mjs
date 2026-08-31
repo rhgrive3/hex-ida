@@ -175,6 +175,35 @@ const index = buildObjcRuntimeIndex(model);
   const imp = resolveObjcIMP(index, 0x2000n, { receiverType: 'PlayerData *', selector: 'addCoins:' });
   assert.equal(imp.resolved?.selector, 'addCoins:');
   assert.equal(imp.confidence, 0.98);
+  assert.equal(resolveObjcIMP(index, '8192', { receiverType: 'PlayerData *', selector: 'addCoins:' }).resolved?.selector, 'addCoins:', 'canonical numeric address strings remain supported');
+}
+
+// #2953: malformed structured IMP inputs must not be coerced into authoritative resolution.
+{
+  const malformedAddresses = [
+    ['8192'],
+    { toString() { return '8192'; } },
+    true,
+  ];
+  for (const address of malformedAddresses) {
+    const imp = resolveObjcIMP(index, address, { receiverType: 'PlayerData *', selector: 'addCoins:' });
+    assert.equal(imp.resolved, null, 'non-canonical IMP address input must fail closed');
+    assert.equal(imp.candidates.length, 0);
+    assert.equal(imp.confidence, 0);
+  }
+
+  const malformedReceiverTypes = [
+    ['PlayerData'],
+    { toString() { return 'PlayerData'; } },
+    true,
+    1,
+  ];
+  for (const receiverType of malformedReceiverTypes) {
+    const imp = resolveObjcIMP(index, 0x2000n, { receiverType, selector: 'addCoins:' });
+    assert.equal(imp.resolved, null, 'non-string receiverType must not narrow Objective-C IMP candidates');
+    assert.equal(imp.candidates.length, 0);
+    assert.equal(imp.confidence, 0);
+  }
 }
 {
   const partial = buildObjcRuntimeIndex({ ...model, runtimeCompleteness: { complete: false, categories: { complete: false } } });

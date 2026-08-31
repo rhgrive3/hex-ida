@@ -1,6 +1,7 @@
 import { buildObjcRuntimeIndex, classifyObjcRuntimeCall, objcMessage } from './objc-runtime.js';
 import { buildSelectorIndex, resolveSelectorStub } from './selector-stubs.js';
 import { buildSwiftRuntimeIndex, classifySwiftRuntimeCall, resolveSwiftDispatch, swiftCallingConvention, formatSwiftCall } from '../swift.js';
+import { canonicalAddress } from '../core/identity/index.js';
 
 export function runtimeOriginForSymbol(name) {
   const n = typeof name === 'string' ? name : '';
@@ -31,13 +32,21 @@ export function shouldFoldRuntimeCall(name, opts = {}) {
   return !!c.noise;
 }
 
+function objcImpAddressKey(address) {
+  try { return BigInt(canonicalAddress(address)).toString(); }
+  catch { return null; }
+}
+
 /** Resolve an Objective-C IMP/function pointer without pretending duplicate IMPs are unique. */
 export function resolveObjcIMP(objcIndex, address, { receiverType = null, selector = null } = {}) {
   if (!objcIndex || address == null) return { resolved: null, candidates: [], confidence: 0 };
-  let candidates = (objcIndex.methodsByIMP?.get(BigInt(address).toString()) || []).slice();
+  const addressKey = objcImpAddressKey(address);
+  if (addressKey == null) return { resolved: null, candidates: [], confidence: 0 };
+  let candidates = (objcIndex.methodsByIMP?.get(addressKey) || []).slice();
   if (selector) candidates = candidates.filter((m) => m.selector === selector);
-  if (receiverType) {
-    const type = String(receiverType).replace(/\s*\*+\s*$/, '');
+  if (receiverType != null) {
+    if (typeof receiverType !== 'string') return { resolved: null, candidates: [], confidence: 0 };
+    const type = receiverType.replace(/\s*\*+\s*$/, '');
     const chain = new Set();
     let cur = type, guard = 0;
     while (cur && guard++ < 64 && !chain.has(cur)) {
