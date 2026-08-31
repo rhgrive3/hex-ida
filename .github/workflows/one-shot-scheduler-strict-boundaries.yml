@@ -47,7 +47,7 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git rm .github/workflows/one-shot-scheduler-strict-boundaries.yml tools/tmp-scheduler-strict-boundaries.py
-          rm -f one-shot-scheduler-validation.log
+          git rm -f one-shot-scheduler-validation.log 2>/dev/null || true
           git add js/core/scheduler/analysis-scheduler.js tests/phase4/scheduler/strict-authority-boundaries.test.mjs
           git commit -m 'fix(scheduler): harden artifact IDs and cancellation'
           git push
