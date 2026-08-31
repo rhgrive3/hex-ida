@@ -19,7 +19,7 @@ function required(value, code, message) {
 
 function normalizeFacetNames(value) {
   if (value == null) return Object.freeze([]);
-  const source = Array.isArray(value) ? value : Object.keys(value).filter((key) => value[key]);
+  const source = Array.isArray(value) ? value : Object.keys(value).filter((key) => value[key] === true);
   for (const facet of source) {
     if (typeof facet !== 'string') throw new DebugAdapterError('runtime-invalid-facet', 'runtime facet names must be strings');
   }
@@ -44,8 +44,8 @@ function ownedClone(value) {
 export function createRuntimeProviderDescriptor(input = {}) {
   return deepFreeze({
     id: required(input.id, 'runtime-provider-id-required', 'runtime provider id is required'),
-    version: String(input.version ?? '1'),
-    kind: String(input.kind ?? 'generic'),
+    version: required(input.version ?? '1', 'runtime-provider-version-required', 'runtime provider version must be a non-empty string'),
+    kind: required(input.kind ?? 'generic', 'runtime-provider-kind-required', 'runtime provider kind must be a non-empty string'),
     facets: normalizeFacetNames(input.facets),
     capabilities: input.capabilities && typeof input.capabilities === 'object' ? ownedClone(input.capabilities) : {},
   });
@@ -235,7 +235,7 @@ export class DebugAdapterRuntimeProvider {
 
   async openSession(request = {}, options = {}) {
     if (this.activeSession && !this.activeSession.closed) throw new DebugAdapterError('adapter-in-use', 'debug adapter compatibility provider supports one live session');
-    const adapterEpoch = Number(this.adapter?.epoch);
+    const adapterEpoch = this.adapter?.epoch;
     const nextSessionEpoch = Math.max(
       this.sessionEpoch + 1,
       Number.isSafeInteger(adapterEpoch) && adapterEpoch >= 0 ? adapterEpoch + 1 : 1,
