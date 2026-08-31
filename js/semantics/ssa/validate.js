@@ -7,9 +7,8 @@ const DEFAULT_MAX_WORK_ITEMS = 4194304;
 
 function fail(code) { throw new TypeError(code); }
 function positiveInteger(value, code) {
-  const number = Number(value);
-  if (!Number.isSafeInteger(number) || number <= 0) fail(code);
-  return number;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) fail(code);
+  return value;
 }
 function maxWorkItems(options) {
   return options?.budget?.maxWorkItems == null ? DEFAULT_MAX_WORK_ITEMS : positiveInteger(options.budget.maxWorkItems, 'semantic-ssa-invalid-budget-maxWorkItems');
