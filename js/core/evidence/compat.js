@@ -22,7 +22,7 @@ function targetIds(record = {}) {
 export function legacyAiEvidenceToCanonical(record = {}) {
   if (!record || typeof record !== 'object') throw new TypeError('evidence-compat-invalid-ai-record');
   return createEvidenceNode({
-    id: String(record.id || '').trim(),
+    id: record.id ?? '',
     family: familyFor(record),
     binaryId: record.binaryId ?? record.binaryHash ?? null,
     targetEntityIds: targetIds(record),
@@ -62,7 +62,7 @@ export function legacyAiEvidenceToCanonical(record = {}) {
 export function runtimeEvidenceToCanonical(record = {}) {
   if (!record || typeof record !== 'object') throw new TypeError('evidence-compat-invalid-runtime-record');
   return createEvidenceNode({
-    id: String(record.id || '').trim(),
+    id: record.id ?? '',
     family: 'RuntimeEvidence',
     binaryId: record.binaryId ?? record.binaryHash ?? null,
     targetEntityIds: targetIds(record),
