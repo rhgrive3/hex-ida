@@ -220,16 +220,14 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
         const amount = arm64AddSubImmediateValue(ops[2]);
         if (amount != null) res.frameBytes += Number(amount);
       }
-      if (/^stp?$/.test(b) || b === 'stp' || b === 'str') {
+      if (catg === 'load' || catg === 'store') {
         const mem = ops.find((x) => x.k === 'mem');
         if (mem && mem.base && mem.base.cls === 'sp') {
           res.stackAccess++;
-          if (mem.mode === 'pre' && mem.disp && mem.disp.value != null && mem.disp.value < 0n) res.frameBytes += Number(-mem.disp.value);
+          if (catg === 'store' && mem.mode === 'pre' && mem.disp && mem.disp.value != null && mem.disp.value < 0n) {
+            res.frameBytes += Number(-mem.disp.value);
+          }
         }
-      }
-      if (b === 'ldr' || b === 'ldp' || b === 'ldur') {
-        const mem = ops.find((x) => x.k === 'mem');
-        if (mem && mem.base && mem.base.cls === 'sp') res.stackAccess++;
       }
       for (const op of ops) {
         if (op.k === 'reg' && op.cls === 'gp') {
