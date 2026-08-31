@@ -425,8 +425,9 @@ function expressionContainsStackRegister(expression, active = new Set()) {
   if (!expression || typeof expression !== 'object' || active.has(expression)) return false;
   active.add(expression);
   const kind = String(expression.kind ?? '').toLowerCase();
-  const registerId = expression.physicalId ?? expression.registerId ?? expression.name;
-  if (kind === 'register' && ['sp', 'x29', 'fp'].includes(String(registerId ?? '').toLowerCase())) {
+  const role = String(expression.role ?? expression.storageRole ?? '').toLowerCase();
+  const registerId = String(expression.physicalId ?? expression.registerId ?? expression.name ?? '').toLowerCase();
+  if (kind === 'register' && (role === 'stack-pointer' || role === 'frame-pointer' || registerId === 'sp' || registerId === 'fp' || registerId.endsWith('_sp') || registerId.endsWith('_fp'))) {
     active.delete(expression);
     return true;
   }
@@ -904,8 +905,7 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
   for (const descriptor of descriptors) {
     if (!descriptor.memory || descriptor.memory.addressSpace !== 'memory') continue;
     const proof = memoryAccessProof(descriptor, options, identity);
-    if (!proof || !['arm64', 'arm64e'].includes(String(proof.architectureId ?? ''))
-        || proof.family !== 'arm64-memory'
+    if (!proof
         || proof.volatility !== false || proof.atomic !== false
         || (proof.ordering != null && proof.ordering !== 'unknown')) continue;
     descriptor.memory = {
