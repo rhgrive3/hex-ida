@@ -18,15 +18,36 @@ jobs:
       - name: Materialize repair
         run: python3 tools/tmp-scheduler-strict-boundaries.py
       - name: Validate focused contracts
+        id: validate
+        continue-on-error: true
         run: |
-          node --check js/core/scheduler/analysis-scheduler.js
-          node tests/phase4/scheduler/strict-authority-boundaries.test.mjs
-          node tools/validation/phase4-ownership.mjs --lane p4-2 --files js/core/scheduler/analysis-scheduler.js,tests/phase4/scheduler/strict-authority-boundaries.test.mjs
+          set -o pipefail
+          {
+            echo '=== scheduler syntax ==='
+            node --check js/core/scheduler/analysis-scheduler.js
+            echo '=== focused test ==='
+            node tests/phase4/scheduler/strict-authority-boundaries.test.mjs
+            echo '=== ownership ==='
+            node tools/validation/phase4-ownership.mjs --lane p4-2 --files js/core/scheduler/analysis-scheduler.js,tests/phase4/scheduler/strict-authority-boundaries.test.mjs
+          } 2>&1 | tee one-shot-scheduler-validation.log
+      - name: Persist diagnostic on failure
+        if: steps.validate.outcome == 'failure'
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add one-shot-scheduler-validation.log
+          git commit -m 'diagnostic: scheduler boundary validation failure'
+          git push
+      - name: Fail after diagnostic
+        if: steps.validate.outcome == 'failure'
+        run: exit 1
       - name: Commit clean materialization
+        if: steps.validate.outcome == 'success'
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git rm .github/workflows/one-shot-scheduler-strict-boundaries.yml tools/tmp-scheduler-strict-boundaries.py
+          rm -f one-shot-scheduler-validation.log
           git add js/core/scheduler/analysis-scheduler.js tests/phase4/scheduler/strict-authority-boundaries.test.mjs
           git commit -m 'fix(scheduler): harden artifact IDs and cancellation'
           git push
