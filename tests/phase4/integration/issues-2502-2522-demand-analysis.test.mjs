@@ -53,8 +53,9 @@ function testCanonicalWiring() {
   assert.match(runtime, /scope:'active-neighborhood'/, 'local xref/caller query must advertise partial neighborhood scope');
   assert.match(runtime, /request\.cancel\?\.\(\)/, 'AbortSignal must reach cancellable backend requests');
   assert.match(runtime, /executableRegions\(app\)/, 'shape producer must enumerate executable regions');
-  assert.match(runtime, /scheduleBackgroundIdentity\(options\.signal\)/, 'content identity must be scheduled behind interactive work');
-  assert.match(runtime, /ensureContentHash\(options\.onProgress, options\.signal/, 'BinaryId must reuse worker-backed content hashing');
+  assert.match(runtime, /scheduleBackgroundIdentity\(controller\.signal\)/, 'shared content identity must be scheduled with producer-owned cancellation');
+  assert.match(runtime, /ensureContentHash\(options\.onProgress, controller\.signal\)/, 'BinaryId producer must reuse worker-backed content hashing with producer-owned cancellation');
+  assert.match(runtime, /return waitForShared\(entry, options\.signal \?\? null\)/, 'individual consumer aborts must detach through the shared waiter boundary');
   assert.match(runtime, /RECOGNITION_INPUTS_CHANGED/, 'recognition must reject publication after input-version races');
   assert.match(runtime, /function installCancellableFunctionDiscovery\(app\)/, 'function discovery must have one runtime owner');
   assert.match(runtime, /entry\.request(?:\?\.|\.)cancel\?\.\(\)/, 'last discovery waiter must cancel its producer');
