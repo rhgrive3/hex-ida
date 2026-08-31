@@ -382,9 +382,15 @@ function reconcileOverlaps(candidates, { signal = null } = {}) {
  * fusion never has to interpret a raw length.
  */
 export function regionFromSize(start, sizeBytes, ownership = 'exclusive') {
-  const begin = BigInt(start);
-  const size = BigInt(sizeBytes);
-  if (size <= 0n) return null;
+  const canonicalInteger = (value) => {
+    if (typeof value === 'bigint') return value;
+    if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value);
+    if (typeof value === 'string' && /^[+-]?\d+$/.test(value.trim())) return BigInt(value.trim());
+    return null;
+  };
+  const begin = canonicalInteger(start);
+  const size = canonicalInteger(sizeBytes);
+  if (begin == null || size == null || size <= 0n) return null;
   return createRegion({ start: begin, end: begin + size, ownership });
 }
 
