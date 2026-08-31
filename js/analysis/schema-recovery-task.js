@@ -28,8 +28,12 @@ async function waitForOwnedRequest(request, signal) {
       finish(reject, abortError(signal));
     };
     signal.addEventListener('abort', onAbort, { once:true });
-    if (signal.aborted) { onAbort(); return; }
-    Promise.resolve(request).then((value) => finish(resolve, value), (error) => finish(reject, error));
+    // Attach the request outcome before the post-registration recheck so the
+    // recheck path can settle the waiter without leaving the request promise
+    // (or a later backend rejection) unobserved.
+    const outcome = Promise.resolve(request).then((value) => finish(resolve, value), (error) => finish(reject, error));
+    if (signal.aborted) { onAbort(); return outcome; }
+    return outcome;
   });
 }
 
@@ -120,6 +124,10 @@ function createTask(app, epoch, { onProgress, priority, budget } = {}) {
     if (!entry.result) map.delete(epoch);
     throw error;
   });
+  // Waiters may detach through an abort path before they observe the task
+  // outcome; keep the shared task rejection observed so it can never surface
+  // as an unhandled rejection while waiters are still attaching.
+  entry.promise.catch(() => {});
   map.set(epoch, entry);
   return entry;
 }
@@ -150,8 +158,12 @@ export function recoverSchemasForUi(app, { signal = null, onProgress = null, pri
     };
     if (signal?.aborted) { onAbort(); return; }
     signal?.addEventListener?.('abort', onAbort, { once:true });
-    if (signal?.aborted) { onAbort(); return; }
-    entry.promise.then((value) => finish(resolve, value), (error) => finish(reject, error));
+    // Attach the shared task outcome before the post-registration recheck so
+    // the recheck path can settle this waiter without leaving the task promise
+    // unobserved for the remaining lifecycle of the entry.
+    const outcome = entry.promise.then((value) => finish(resolve, value), (error) => finish(reject, error));
+    if (signal?.aborted) { onAbort(); return outcome; }
+    return outcome;
   });
 }
 
