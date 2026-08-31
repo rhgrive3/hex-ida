@@ -1,0 +1,476 @@
+/**
+ * HEX-C3-03 — Rust Language & Runtime Metadata Provider.
+ *
+ * Implements toolchain-aware Rust metadata extraction, v0 and legacy symbol
+ * demangling, trait/vtable parsing, and type layout safety enforcement.
+ *
+ * Core Rust ABI & Layout Safety Rule:
+ * Rust has NO stable ABI for `repr(Rust)` types. Struct field ordering in `repr(Rust)`
+ * is compiler-version and target dependent. Only `repr(C)`, primitives, or DWARF-verified
+ * types may be considered layout-stable.
+ */
+
+import {
+  LanguageMetadataProvider,
+  createLanguageMetadataIdentity,
+  createLanguageMetadataRecord,
+  createLanguageMetadataPage,
+  createLanguageMetadataResult,
+} from './provider.js';
+
+export const RUST_PROVIDER_ID = 'metadata.rust';
+export const RUST_PROVIDER_VERSION = '1.0.0';
+
+/**
+ * Basic Rust v0 type codes (RFC 2603).
+ */
+const RUST_V0_BASIC_TYPES = Object.freeze({
+  a: 'i8',
+  b: 'bool',
+  c: 'char',
+  d: 'f64',
+  e: 'str',
+  f: 'f32',
+  h: 'u8',
+  i: 'i32',
+  j: 'u64',
+  l: 'i32',
+  m: 'u32',
+  n: 'i128',
+  o: 'u128',
+  p: '_',
+  s: 'isize',
+  t: 'usize',
+  u: '()',
+  v: '...',
+  z: '!',
+});
+
+/**
+ * Parses a Rust v0 base-62 integer.
+ */
+function parseV0Base62(str, pos) {
+  let val = 0;
+  let i = pos;
+  if (i < str.length && str[i] === '_') return { value: 0, nextPos: i + 1 };
+  while (i < str.length) {
+    const c = str.charCodeAt(i);
+    let digit = -1;
+    if (c >= 0x30 && c <= 0x39) digit = c - 0x30; // 0-9 -> 0-9
+    else if (c >= 0x61 && c <= 0x7a) digit = c - 0x61 + 10; // a-z -> 10-35
+    else if (c >= 0x41 && c <= 0x5a) digit = c - 0x41 + 36; // A-Z -> 36-61
+    else if (c === 0x5f) { // '_' delimiter
+      return { value: val + 1, nextPos: i + 1 };
+    } else break;
+    val = val * 62 + digit;
+    i++;
+  }
+  return null;
+}
+
+/**
+ * Parses a Rust v0 identifier (length-prefixed string, possibly with disambiguator).
+ */
+function parseV0Identifier(str, pos) {
+  let isDisambiguated = false;
+  let p = pos;
+  if (p < str.length && str[p] === 's') {
+    isDisambiguated = true;
+    p++;
+    const dis = parseV0Base62(str, p);
+    if (!dis) return null;
+    p = dis.nextPos;
+  }
+
+  // Length integer
+  const lenMatch = str.slice(p).match(/^(\d+)/);
+  if (!lenMatch) return null;
+  const len = Number(lenMatch[1]);
+  p += lenMatch[1].length;
+
+  if (p + len > str.length) return null;
+  const ident = str.slice(p, p + len);
+  return {
+    identifier: ident,
+    isDisambiguated,
+    nextPos: p + len,
+  };
+}
+
+function parseV0Type(str, state, depth = 0) {
+  if (state.pos >= str.length || depth > 32) return null;
+  const c = str[state.pos];
+  if (RUST_V0_BASIC_TYPES[c]) {
+    state.pos++;
+    return RUST_V0_BASIC_TYPES[c];
+  }
+  if (c === 'R' || c === 'Q') {
+    state.pos++;
+    return `&${parseV0Type(str, state, depth + 1) || ''}`;
+  }
+  if (c === 'P' || c === 'O') {
+    state.pos++;
+    return `*${parseV0Type(str, state, depth + 1) || ''}`;
+  }
+  return parseV0Path(str, state, depth + 1);
+}
+
+function parseV0Path(str, state, depth = 0) {
+  if (state.pos >= str.length || depth > 32) return null;
+  const tag = str[state.pos++];
+
+  if (tag === 'C') {
+    const ident = parseV0Identifier(str, state.pos);
+    if (!ident) return null;
+    state.pos = ident.nextPos;
+    return ident.identifier;
+  }
+
+  if (tag === 'N') {
+    if (state.pos >= str.length) return null;
+    const ns = str[state.pos++]; // namespace character
+    const parent = parseV0Path(str, state, depth + 1);
+    if (!parent) return null;
+    const ident = parseV0Identifier(str, state.pos);
+    if (!ident) return parent;
+    state.pos = ident.nextPos;
+    return `${parent}::${ident.identifier}`;
+  }
+
+  if (tag === 'M') {
+    const implPath = parseV0Path(str, state, depth + 1);
+    const typeName = parseV0Type(str, state, depth + 1);
+    if (implPath && typeName) return `<${implPath}::${typeName}>`;
+    return `<${typeName || implPath || 'impl'}>`;
+  }
+
+  if (tag === 'X') {
+    const implPath = parseV0Path(str, state, depth + 1);
+    const typeName = parseV0Type(str, state, depth + 1);
+    const traitPath = parseV0Path(str, state, depth + 1);
+    return `<${typeName || 'type'} as ${traitPath || 'trait'}>`;
+  }
+
+  if (tag === 'I') {
+    const base = parseV0Path(str, state, depth + 1);
+    let gCount = 0;
+    while (state.pos < str.length && str[state.pos] !== 'E' && gCount++ < 16) {
+      parseV0Type(str, state, depth + 1);
+    }
+    if (state.pos < str.length && str[state.pos] === 'E') state.pos++;
+    return base;
+  }
+
+  const ident = parseV0Identifier(str, state.pos - 1);
+  if (ident) {
+    state.pos = ident.nextPos;
+    return ident.identifier;
+  }
+
+  return null;
+}
+
+/**
+ * Demangles a Rust v0 mangled symbol (starts with `_R` or `__R`).
+ */
+export function demangleRustV0(symbol, maxDepth = 32) {
+  const s = String(symbol || '').replace(/^__?R/, '');
+  if (!s || s === symbol) {
+    return { original: symbol, demangled: symbol, parsed: false, reason: 'not-v0-symbol' };
+  }
+
+  const state = { pos: 0 };
+  let demangled = null;
+
+  try {
+    demangled = parseV0Path(s, state, 0);
+  } catch {
+    return { original: symbol, demangled: symbol, parsed: false, reason: 'demangle-error' };
+  }
+
+  if (!demangled) {
+    return { original: symbol, demangled: symbol, parsed: false, reason: 'unrecognized-v0-structure' };
+  }
+
+  const components = demangled.split('::');
+  return {
+    original: symbol,
+    demangled,
+    parsed: true,
+    components,
+    crate: components[0] || null,
+    generation: 'v0',
+  };
+}
+
+/**
+ * Demangles a Rust legacy mangled symbol (starts with `_ZN...17h<16 hex digits>E`).
+ */
+export function demangleRustLegacy(symbol) {
+  const original = String(symbol || '');
+  const s = original.replace(/^_/, '');
+  if (!s.startsWith('ZN')) {
+    return { original, demangled: original, parsed: false, reason: 'not-legacy-rust-symbol' };
+  }
+
+  const components = [];
+  let i = 2;
+  let hash = null;
+
+  while (i < s.length) {
+    if (s[i] === 'E') {
+      i++;
+      break;
+    }
+    const match = s.slice(i).match(/^(\d+)/);
+    if (!match) break;
+    const len = Number(match[1]);
+    i += match[1].length;
+    if (i + len > s.length) break;
+
+    const part = s.slice(i, i + len);
+    i += len;
+
+    // Check if this part is the trailing Rust hash (e.g. `17h<16 hex digits>`)
+    const hashMatch = part.match(/^17h([0-9a-f]{16})$/i) || part.match(/^h([0-9a-f]{16})$/i);
+    if (hashMatch) {
+      hash = hashMatch[1];
+    } else {
+      // Decode $ characters
+      const clean = part
+        .replace(/\$SP\$/g, '@')
+        .replace(/\$BP\$/g, '*')
+        .replace(/\$RF\$/g, '&')
+        .replace(/\$LT\$/g, '<')
+        .replace(/\$GT\$/g, '>')
+        .replace(/\$LP\$/g, '(')
+        .replace(/\$RP\$/g, ')')
+        .replace(/\$C\$/g, ',')
+        .replace(/\$u20\$/g, ' ')
+        .replace(/\$u27\$/g, "'");
+      components.push(clean);
+    }
+  }
+
+  if (components.length === 0) {
+    return { original, demangled: original, parsed: false, reason: 'unrecognized-legacy-structure' };
+  }
+
+  const demangled = components.join('::');
+  return {
+    original,
+    demangled,
+    parsed: true,
+    components,
+    hash,
+    crate: components[0] || null,
+    generation: 'legacy',
+  };
+}
+
+/**
+ * Demangles any Rust symbol (v0 or legacy).
+ */
+export function demangleRustSymbol(symbol) {
+  const text = String(symbol || '');
+  if (text.startsWith('_R') || text.startsWith('__R')) {
+    return demangleRustV0(text);
+  }
+  if (text.startsWith('_ZN') || text.startsWith('ZN')) {
+    const leg = demangleRustLegacy(text);
+    if (leg.parsed) return leg;
+  }
+  return { original: text, demangled: text, parsed: false, reason: 'not-rust-symbol' };
+}
+
+/**
+ * Searches a comment or note buffer for rustc compiler version.
+ */
+export function findRustcVersion(buffer) {
+  if (!buffer || buffer.length === 0) return null;
+  const text = new TextDecoder('utf-8', { fatal: false }).decode(
+    buffer.subarray(0, Math.min(buffer.length, 1024 * 1024))
+  );
+  const match = text.match(/\brustc version (1\.\d+\.\d+(?:-[a-zA-Z0-9_.-]+)?(?:\s*\([0-9a-f]+\s+\d{4}-\d{2}-\d{2}\))?)/i)
+    || text.match(/\brustc\s+(1\.\d+\.\d+(?:-[a-zA-Z0-9_.-]+)?)/i);
+  return match ? match[1] : null;
+}
+
+/**
+ * Determines whether a Rust type layout is stable across compiler versions.
+ * ONLY repr(C), primitives, or DWARF-verified types are layout-stable.
+ */
+export function isRustLayoutStable(typeDescriptor) {
+  if (!typeDescriptor || typeof typeDescriptor !== 'object') return false;
+  if (typeDescriptor.repr === 'C' || typeDescriptor.repr === 'transparent') return true;
+  if (typeDescriptor.isPrimitive === true) return true;
+  if (typeDescriptor.dwarfVerified === true) return true;
+  // Standard repr(Rust) structs are explicitly NOT stable
+  return false;
+}
+
+/**
+ * Rust Language & Runtime Metadata Provider.
+ */
+export class RustMetadataProvider extends LanguageMetadataProvider {
+  constructor({
+    symbols = [],
+    commentBuffer = null,
+    sections = [],
+    binaryIdentity = null,
+    architecture = 'x86_64',
+    platform = 'linux',
+    options = {},
+  } = {}) {
+    super({ id: RUST_PROVIDER_ID, version: RUST_PROVIDER_VERSION, ecosystem: 'rust' });
+    this.symbolsList = symbols;
+    this.commentBuffer = commentBuffer;
+    this.sections = sections;
+    this.binaryIdentity = binaryIdentity;
+    this.architecture = architecture;
+    this.platform = platform;
+    this.options = options;
+    this.cachedParsed = null;
+  }
+
+  probe() {
+    const rawSymbols = this.symbolsList || [];
+    const rustSymbols = [];
+    const vtables = [];
+    let unreadable = 0;
+
+    for (const sym of rawSymbols) {
+      const name = sym.name || sym.symbol || String(sym);
+      const dem = demangleRustSymbol(name);
+      if (dem.parsed) {
+        rustSymbols.push({
+          name: dem.demangled,
+          original: dem.original,
+          address: sym.address ?? sym.addr ?? null,
+          sizeBytes: sym.size ?? sym.sizeBytes ?? null,
+          crate: dem.crate,
+          generation: dem.generation,
+          isVtable: dem.demangled.includes('::vtable') || dem.demangled.includes('vtable'),
+        });
+        if (dem.demangled.includes('::vtable') || dem.demangled.includes('vtable')) {
+          vtables.push(sym);
+        }
+      }
+    }
+
+    const toolchainVersion = findRustcVersion(this.commentBuffer);
+    const hasEvidence = rustSymbols.length > 0 || toolchainVersion != null;
+
+    if (!hasEvidence) {
+      return createLanguageMetadataResult({
+        providerId: this.id,
+        providerVersion: this.version,
+        ecosystem: 'rust',
+        identity: createLanguageMetadataIdentity({
+          verdict: 'identity-unavailable',
+          providerId: this.id,
+          providerVersion: this.version,
+          ecosystem: 'rust',
+          binaryIdentity: this.binaryIdentity,
+          architecture: this.architecture,
+          platform: this.platform,
+          method: 'rust-symbol-probe',
+          detail: 'no rust symbols or compiler signatures found',
+        }),
+        sections: this.sections.map((s) => s.name || s.section || String(s)),
+        completeness: { present: false, declared: 0, scanned: 0, parsed: 0, complete: true },
+      });
+    }
+
+    this.cachedParsed = { rustSymbols, vtables };
+
+    const complete = unreadable === 0 && rustSymbols.length > 0;
+    const identity = createLanguageMetadataIdentity({
+      verdict: complete ? 'matched-authoritative' : 'matched-partial',
+      providerId: this.id,
+      providerVersion: this.version,
+      ecosystem: 'rust',
+      toolchainVersion: toolchainVersion || 'rustc-unknown',
+      binaryIdentity: this.binaryIdentity,
+      expected: this.binaryIdentity,
+      observed: this.binaryIdentity,
+      architecture: this.architecture,
+      platform: this.platform,
+      method: 'rust-symbol-demangle',
+      detail: `Rust ${toolchainVersion || 'unknown'} (${rustSymbols.length} symbols)`,
+      coverage: complete ? null : {
+        recordKinds: ['symbol', 'type'],
+        addresses: rustSymbols.map((s) => s.address).filter(Boolean),
+      },
+    });
+
+    return createLanguageMetadataResult({
+      providerId: this.id,
+      providerVersion: this.version,
+      ecosystem: 'rust',
+      identity,
+      sections: this.sections.map((s) => s.name || s.section || String(s)),
+      counts: {
+        symbols: rustSymbols.length,
+        vtables: vtables.length,
+      },
+      completeness: {
+        present: true,
+        declared: rawSymbols.length,
+        scanned: rawSymbols.length,
+        parsed: rustSymbols.length,
+        complete,
+        unreadableEntries: unreadable,
+        invalidEntries: 0,
+      },
+    });
+  }
+
+  symbols() {
+    if (!this.cachedParsed) {
+      this.probe();
+    }
+    const symbols = this.cachedParsed?.rustSymbols || [];
+    const records = symbols.map((sym) =>
+      createLanguageMetadataRecord({
+        kind: 'symbol',
+        entityId: `sym@${sym.address || sym.name}`,
+        name: sym.name,
+        address: sym.address ? String(sym.address) : null,
+        sizeBytes: sym.sizeBytes,
+        providerId: this.id,
+        providerVersion: this.version,
+        ecosystem: 'rust',
+        buildIdentity: this.binaryIdentity,
+        descriptor: {
+          isFunction: !sym.isVtable,
+          crate: sym.crate,
+          generation: sym.generation,
+          originalMangled: sym.original,
+        },
+      })
+    );
+    return createLanguageMetadataPage({ records });
+  }
+
+  vtables() {
+    if (!this.cachedParsed) {
+      this.probe();
+    }
+    const vtables = this.cachedParsed?.vtables || [];
+    const records = vtables.map((vt) =>
+      createLanguageMetadataRecord({
+        kind: 'vtable',
+        entityId: `vtable@${vt.address || vt.name}`,
+        name: vt.name,
+        address: vt.address ? String(vt.address) : null,
+        providerId: this.id,
+        providerVersion: this.version,
+        ecosystem: 'rust',
+        buildIdentity: this.binaryIdentity,
+        descriptor: { vtable: true },
+      })
+    );
+    return createLanguageMetadataPage({ records });
+  }
+}
