@@ -315,11 +315,54 @@ test('HEX-C1-02 matrix axis 9: unknown provenance kind stays unresolved', () => 
   assertUnresolvedCall(fixture);
 });
 
-// Axis 12 — self-recursive callee: its own summary must not loop or guess.
-// The summary contract freezes summary objects and has no 'callees' field, so
-// recursion is represented the way production sees it: the callee's own
-// provenance derives from its entry argument, which the caller forwards.
-test('HEX-C1-02 matrix axis 12: recursive callee summary stays unresolved', () => {
+// Axis 12 — recursive callee through the real interprocedural fixed point.
+// A self-recursive component must converge (least fixed point, monotone
+// transfers) and the caller consuming the recursive callee's return provenance
+// must never see a silently guessed precise set: the composed summary carries
+// the recursion's own conservative state, and the points-to call transfer
+// re-derives its result from that composed summary, not the optimistic one.
+test('HEX-C1-02 matrix axis 12: recursive callee summary stays unresolved', async () => {
+  const { solveInterproceduralSummaries } = await import('../../../js/analysis/summary/interprocedural.js');
+
+  // Local summaries: fn_callee returns its argument and calls itself;
+  // fn_caller calls fn_callee. This is the exact cycle shape the ledger
+  // warns about: recursion reaching a return-provenance summary.
+  // calleesOf reads directCalls/indirectCallSets, so the cycle is wired there.
+  const local = (functionId, calls, provenance) => createFunctionSummary({
+    functionId,
+    returnValues: ['ret'],
+    returnProvenance: provenance,
+    directCalls: calls.map((target) => ({
+      callSiteId: `call_${functionId}_${target}`,
+      targetEntityIds: [target],
+      effectSource: 'abi-rule',
+    })),
+    noreturn: false,
+    mayThrow: false,
+    status: completeStatus(),
+  });
+  const locals = new Map([
+    ['fn_callee', local('fn_callee', ['fn_callee'], [
+      { kind: 'arg', returnIndex: 0, argIndex: 0, offset: '0' },
+    ])],
+    ['fn_caller', local('fn_caller', ['fn_callee'], [])],
+  ]);
+
+  // The fixed point over the recursive component must terminate and publish
+  // only the converged summaries.
+  const solved = solveInterproceduralSummaries({
+    roots: ['fn_caller'],
+    localSummaries: locals,
+    snapshotId: 'snapshot-c1-02-matrix',
+  });
+  assert.ok(solved.summaries.has('fn_callee'), 'recursive callee must be solved, not skipped');
+  assert.ok(
+    solved.status.completeness === 'complete' || solved.status.stopReason != null,
+    'an unconverged recursive solve must carry an explicit stop reason',
+  );
+
+  // The caller consumes the composed recursive summary through the same
+  // points-to transfer the matrix exercises elsewhere.
   const fixture = callerFixture();
   const result = analyzeLocalPointsTo(fixture.ir, fixture.cfg, fixture.ssa, {
     snapshotId: 'snapshot-c1-02-matrix',
