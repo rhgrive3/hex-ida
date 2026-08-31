@@ -1,0 +1,27 @@
+name: One-shot pointsto local restack 3031 3032
+on:
+  push:
+    branches: [fix/pointsto-local-current-3031-3032-v2]
+permissions:
+  contents: write
+jobs:
+  materialize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply reviewed focused diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin fix/pointsto-local-strict-boundaries-3031-3032
+          base=$(git merge-base HEAD origin/fix/pointsto-local-strict-boundaries-3031-3032)
+          git diff "$base"..origin/fix/pointsto-local-strict-boundaries-3031-3032 -- js/analysis/pointsto/local.js tests/phase7/pointsto-local-strict-boundaries-3031-3032.test.mjs | git apply --3way
+          node tests/phase7/pointsto-local-strict-boundaries-3031-3032.test.mjs
+          npm run phase7:test
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add js/analysis/pointsto/local.js tests/phase7/pointsto-local-strict-boundaries-3031-3032.test.mjs
+          git diff --cached --quiet || git commit -m 'fix(pointsto): harden local proof input boundaries'
+          git push
