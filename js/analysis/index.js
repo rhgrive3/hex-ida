@@ -47,6 +47,7 @@ export function createAnalysisSurface({
   resolveRegion = null,
   options = {},
 } = {}) {
+  const memorySsaCompleteness = options.memorySsaBinding?.completeness ?? options.memorySsaCompleteness ?? 'complete';
   const solverOptions = {
     ...options,
     snapshotId,
@@ -61,7 +62,7 @@ export function createAnalysisSurface({
         functionId: ir?.functionId ?? null,
         semanticIrVersion: ir?.contractVersion ?? null,
         memorySsaBuildVersion: memorySsa.buildVersion ?? null,
-        completeness: options.memorySsaBinding?.completeness ?? options.memorySsaCompleteness ?? 'complete',
+        completeness: memorySsaCompleteness,
       },
     }),
   };
@@ -78,6 +79,11 @@ export function createAnalysisSurface({
     stopReason,
   });
 
+  const unavailableMemorySsaStatus = () => status(
+    'unsupported',
+    memorySsa == null ? 'dependency-missing' : 'dependency-mismatch',
+  );
+
   /** Alias relation with proof and completeness. */
   function alias(leftRegion, rightRegion, context = {}) {
     return solver.alias(leftRegion, rightRegion, context);
@@ -85,7 +91,9 @@ export function createAnalysisSurface({
 
   /** The reaching memory definition for one load, with its status. */
   function reachingMemoryDef(useOrId) {
-    if (!memorySsa) return { definition: null, status: status('unsupported', 'dependency-missing') };
+    if (!memorySsa || memorySsaCompleteness !== 'complete') {
+      return { definition: null, status: unavailableMemorySsaStatus() };
+    }
     const definition = reachingMemoryDefinition(memorySsa, useOrId);
     // A clobber is a real answer — it says the link is blocked — so it is
     // returned rather than treated as a failure.
@@ -98,7 +106,9 @@ export function createAnalysisSurface({
 
   /** The evidence path between a memory source and a sink. */
   function explainMemoryPath(useOrId, pathOptions = {}) {
-    if (!memorySsa) return { path: null, status: status('unsupported', 'dependency-missing') };
+    if (!memorySsa || memorySsaCompleteness !== 'complete') {
+      return { path: null, status: unavailableMemorySsaStatus() };
+    }
     return { path: explainMemoryPathQuery(memorySsa, useOrId, pathOptions), status: status('complete') };
   }
 
