@@ -169,7 +169,6 @@ class TestProvider extends LanguageMetadataProvider {
           providerId: 'go-metadata',
           providerVersion: '1.0.0',
           ecosystem: 'go',
-          buildIdentity: 'sha256:def',
           descriptor: { name: 'main.Config', byteSize: 32 },
         }),
       ],
