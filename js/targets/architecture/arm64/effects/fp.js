@@ -18,6 +18,8 @@ const FP_FINITE_SHAPE = new Set([
   ...FP_ENV_INTRINSICS,
   'fmov','fabs','fneg','fcsel','fcmp','fcmpe','fccmp','fccmpe',
 ]);
+const FP_CONDITIONS = new Set(['eq','ne','cs','hs','cc','lo','mi','pl','vs','vc','hi','ls','ge','lt','gt','le','al','nv']);
+const FP_FIXED_POINT = new Set(['scvtf','ucvtf','fcvtzs','fcvtzu']);
 
 function operandsOf(instruction) {
   if (Array.isArray(instruction?.ops)) return instruction.ops;
@@ -26,9 +28,42 @@ function operandsOf(instruction) {
   return [];
 }
 
+function invalidStructuredRegisterWidth(op) {
+  return op?.k === 'reg'
+    && (typeof op.bits !== 'number' || !Number.isSafeInteger(op.bits) || op.bits <= 0);
+}
+
+function invalidStructuredFpImmediate(op) {
+  return op?.k === 'imm' && op.float != null
+    && (typeof op.float !== 'number' || !Number.isFinite(op.float));
+}
+
+function invalidConditionalEvidence(mnemonic, ops) {
+  if (!['fcsel','fccmp','fccmpe'].includes(mnemonic)) return false;
+  const conditions = ops.filter((op) => op?.k === 'cond');
+  return conditions.length !== 1
+    || typeof conditions[0].text !== 'string'
+    || !FP_CONDITIONS.has(conditions[0].text.toLowerCase());
+}
+
+function invalidIntegerImmediateEvidence(mnemonic, ops) {
+  if (mnemonic === 'fccmp' || mnemonic === 'fccmpe') {
+    const immediate = ops[2];
+    return immediate?.k !== 'imm' || typeof immediate.value !== 'bigint';
+  }
+  if (FP_FIXED_POINT.has(mnemonic) && ops.length === 3 && ops[2]?.k === 'imm') {
+    return typeof ops[2].value !== 'bigint';
+  }
+  return false;
+}
+
 function invalidFiniteShape(mnemonic, ops) {
   if (!FP_FINITE_SHAPE.has(mnemonic)) return false;
   if (ops.some((op) => op?.shift != null || op?.extend != null)) return true;
+  if (ops.some(invalidStructuredRegisterWidth)) return true;
+  if (ops.some(invalidStructuredFpImmediate)) return true;
+  if (invalidConditionalEvidence(mnemonic, ops)) return true;
+  if (invalidIntegerImmediateEvidence(mnemonic, ops)) return true;
   if (ops.some((op) => op?.k === 'reg' && (!Number.isInteger(op.num) || op.num < 0 || op.num >= 32))) return true;
   if (ops.some((op) => op?.k === 'reg' && op.cls === 'zr' && op.num !== 31)) return true;
   if (['fmov','fabs','fneg'].includes(mnemonic)) return ops.length !== 2;
@@ -39,7 +74,7 @@ function invalidFiniteShape(mnemonic, ops) {
   const expectedSources = FP_TERNARY.has(mnemonic) ? 3 : FP_BINARY.has(mnemonic) ? 2 : 1;
   const ordinary = ops.length === expectedSources + 1
     && ops.slice(1).every((op) => op?.k === 'reg' || op?.k === 'imm');
-  const fixedPoint = ['scvtf','ucvtf','fcvtzs','fcvtzu'].includes(mnemonic)
+  const fixedPoint = FP_FIXED_POINT.has(mnemonic)
     && ops.length === 3 && ops[1]?.k === 'reg' && ops[2]?.k === 'imm';
   return !ordinary && !fixedPoint;
 }
