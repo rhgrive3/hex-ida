@@ -122,7 +122,7 @@ function isIndirectControlRegister(operand) {
 function directTargetOperandShapeValid(instruction, operand, kind = 'branch') {
   if (operand?.shift != null || operand?.extend != null) return false;
   if (operand?.k === 'imm' && operand.value != null) return true;
-  if (operand?.k === 'other' && /^#?(?:0x[0-9a-f]+|\d+)$/i.test(String(operand.text || '').trim())) return true;
+  if (operand?.k === 'other' && typeof operand.text === 'string' && /^#?(?:0x[0-9a-f]+|\d+)$/i.test(operand.text.trim())) return true;
   const explicit = kind === 'call' ? instruction?.callTarget : instruction?.branchTarget;
   return operand?.k === 'other' && explicit != null;
 }
