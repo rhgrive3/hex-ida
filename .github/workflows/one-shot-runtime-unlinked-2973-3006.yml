@@ -1,0 +1,31 @@
+name: One-shot runtime unlinked strict 2973 3006
+on:
+  push:
+    branches: [fix/runtime-unlinked-strict-current-2973-3006]
+permissions:
+  contents: write
+jobs:
+  materialize:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/runtime-unlinked-strict-current-2973-3006
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: python3 tools/one-shot-runtime-unlinked-2973-3006.py
+      - run: node --check js/runtime/authority.js && node --check js/runtime/evidence-bridge.js && node --check js/runtime/trace-provider.js && node --check js/runtime/debugger-provider.js
+      - run: node tests/phase10/runtime-unlinked-strict-2973-3006.test.mjs
+      - run: npm run runtime:test
+      - run: git diff --check
+      - name: Commit clean result
+        run: |
+          rm .github/workflows/one-shot-runtime-unlinked-2973-3006.yml tools/one-shot-runtime-unlinked-2973-3006.py
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m "fix(runtime): harden remaining authority boundaries"
+          git push
