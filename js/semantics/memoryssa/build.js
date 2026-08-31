@@ -14,6 +14,7 @@ import {
 } from '../cfg/index.js';
 import {
   MEMORY_SSA_ALIAS_RELATIONS,
+  MEMORY_SSA_CONTRACT_VERSION,
   MEMORY_SSA_DEFAULT_BUDGET,
   createMemoryRegionRef,
   createMemorySsaContract,
