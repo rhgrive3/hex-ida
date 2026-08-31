@@ -1,12 +1,15 @@
 import { buildObjcRuntimeIndex, classifyObjcRuntimeCall, objcMessage } from './objc-runtime.js';
 import { buildSelectorIndex, resolveSelectorStub } from './selector-stubs.js';
 import { buildSwiftRuntimeIndex, classifySwiftRuntimeCall, resolveSwiftDispatch, swiftCallingConvention, formatSwiftCall } from '../swift.js';
+import { classifyLanguageRuntimeCall } from '../metadata/index.js';
 import { canonicalAddress } from '../core/identity/index.js';
 
 export function runtimeOriginForSymbol(name) {
   const n = typeof name === 'string' ? name : '';
   if (/^_?\$[sS]/.test(n) || /^_?swift_/.test(n)) return 'swift';
   if (/^[+-]\[/.test(n) || /^_?objc_/.test(n) || /objc_msgSend/.test(n)) return 'objc';
+  if (/^runtime\./.test(n) || /^go:/.test(n)) return 'go';
+  if (/^core::/.test(n) || /^alloc::/.test(n) || /^std::/.test(n) || /^_?rust_/.test(n) || /^_R/.test(n) || /^_ZN.*17h[0-9a-f]{16}E/.test(n)) return 'rust';
   if (/^__?Z|^_Z/.test(n)) return 'cpp';
   return n ? 'c' : 'unknown';
 }
@@ -22,7 +25,10 @@ export function buildAppleRuntimeIndex({ objc = null, swift = null, selectorRefs
 
 export function classifyRuntimeCall(name) {
   const symbol = typeof name === 'string' ? name : '';
-  return classifyObjcRuntimeCall(symbol) || classifySwiftRuntimeCall(symbol) || { runtime: runtimeOriginForSymbol(symbol), noise: false, category: 'call', name: symbol };
+  return classifyObjcRuntimeCall(symbol)
+    || classifySwiftRuntimeCall(symbol)
+    || classifyLanguageRuntimeCall(symbol)
+    || { runtime: runtimeOriginForSymbol(symbol), noise: false, category: 'call', name: symbol };
 }
 
 /** Suppress only well-known compiler/runtime bookkeeping, retaining expert evidence. */

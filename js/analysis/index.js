@@ -200,4 +200,15 @@ export function functionCandidates({ input, architectureId = 'generic', producer
   return fuseFunctionCandidates(evidence, { architectureId, ...options });
 }
 
-export { isCompleteStatus, satisfiesRequirement, selectedTypeIfCertain };
+import {
+  applyLanguageMetadataTypesToGraph,
+  languageMetadataFunctionEvidence,
+} from '../metadata/index.js';
+
+export {
+  isCompleteStatus,
+  satisfiesRequirement,
+  selectedTypeIfCertain,
+  applyLanguageMetadataTypesToGraph,
+  languageMetadataFunctionEvidence,
+};
