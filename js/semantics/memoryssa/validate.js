@@ -60,7 +60,16 @@ export function validateMemorySsa(memorySsa, options = {}) {
       .map(([definitionId, ids]) => ({ definitionId, useIds: ids.sort() }))
       .sort((a, b) => a.definitionId.localeCompare(b.definitionId));
     const actual = memorySsa.defUseLinks
-      .map((link) => ({ definitionId: String(link.definitionId), useIds: [...link.useIds].map(String).sort() }))
+      .map((link) => {
+        if (!link || typeof link !== 'object' || typeof link.definitionId !== 'string' || !link.definitionId.trim() || !Array.isArray(link.useIds)) {
+          fail('memory-ssa-validate-invalid-def-use-index');
+        }
+        const useIds = link.useIds.map((id) => {
+          if (typeof id !== 'string' || !id.trim()) fail('memory-ssa-validate-invalid-def-use-index');
+          return id;
+        }).sort();
+        return { definitionId:link.definitionId, useIds };
+      })
       .sort((a, b) => a.definitionId.localeCompare(b.definitionId));
     if (stableStringify(actual) !== stableStringify(expectedArray)) fail('memory-ssa-validate-def-use-index-mismatch');
   }
@@ -71,12 +80,13 @@ export function validateMemorySsa(memorySsa, options = {}) {
     for (const item of memorySsa.accessMetadata) {
       assertNotAborted(options);
       if (!item || typeof item !== 'object') fail('memory-ssa-validate-invalid-access-metadata');
-      const id = String(item.memorySsaEntityId ?? '');
-      if (!id) fail('memory-ssa-validate-access-metadata-id-required');
+      if (typeof item.memorySsaEntityId !== 'string' || !item.memorySsaEntityId.trim()) fail('memory-ssa-validate-access-metadata-id-required');
+      if (typeof item.regionId !== 'string' || !item.regionId.trim()) fail('memory-ssa-validate-access-metadata-region-mismatch');
+      const id = item.memorySsaEntityId;
       if (metadataIds.has(`${id}\u0000${item.regionId}`)) fail('memory-ssa-validate-duplicate-access-metadata');
       metadataIds.add(`${id}\u0000${item.regionId}`);
       if (!definitionIds.has(id) && !useIds.has(id)) fail('memory-ssa-validate-dangling-access-metadata');
-      if (!regionIds.has(String(item.regionId))) fail('memory-ssa-validate-access-metadata-region-mismatch');
+      if (!regionIds.has(item.regionId)) fail('memory-ssa-validate-access-metadata-region-mismatch');
       if (item.entityKind === 'use' && !useIds.has(id)) fail('memory-ssa-validate-access-metadata-kind-mismatch');
       if (item.entityKind === 'definition' && !definitionIds.has(id)) fail('memory-ssa-validate-access-metadata-kind-mismatch');
 
