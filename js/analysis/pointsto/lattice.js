@@ -192,7 +192,7 @@ function rootKeyOf(target) {
 /** One (root, offset-range) member of a points-to set. */
 export function createPointsToTarget(input = {}) {
   const target = {
-    addressSpace: String(input.addressSpace ?? 'memory'),
+    addressSpace: input.addressSpace == null ? 'memory' : (typeof input.addressSpace === 'string' ? input.addressSpace : 'unknown'),
     rootKind: typeof input.rootKind === 'string' ? input.rootKind : 'unknown',
     rootIdentity: input.rootIdentity ?? null,
     rootEntityId: input.rootEntityId == null ? null : String(input.rootEntityId),
