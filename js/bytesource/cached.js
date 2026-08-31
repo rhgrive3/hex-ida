@@ -25,6 +25,7 @@ function waitForConsumer(promise, signal) {
     };
     const onAbort = () => finish(reject, new ByteSourceCancelledError());
     signal.addEventListener?.('abort', onAbort, { once: true });
+    if (signal.aborted) onAbort();
     promise.then((value) => finish(resolve, value), (error) => finish(reject, error));
   });
 }
