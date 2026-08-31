@@ -15,8 +15,8 @@ function strictSliceIndex(value) {
   return Number.isSafeInteger(index) ? index : -1;
 }
 function architectureEvidence(value) {
-  if (value == null) return null;
-  const text = String(value).trim();
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
   if (!text || text.toLowerCase() === 'unknown') return null;
   return text;
 }
@@ -43,7 +43,8 @@ function activeSliceIdentity(app) {
   return `slice:${index}:${uuid || '-'}:${arch}`;
 }
 function localSandboxSupportsArchitecture(architecture) {
-  const arch=String(architecture || '').trim().toLowerCase();
+  if (typeof architecture !== 'string') return false;
+  const arch=architecture.trim().toLowerCase();
   return arch === 'arm64' || arch === 'arm64e' || arch === 'aarch64';
 }
 function validContentHash(value) {
@@ -51,8 +52,10 @@ function validContentHash(value) {
 }
 async function binaryHashOf(app) {
   const info=currentFileToken(app);
-  const existing=info?.hash || info?.sha256 || app?.project?.binaryHash || app?.backend?.contentHash || null;
-  if(existing) return validContentHash(existing);
+  for (const candidate of [info?.hash, info?.sha256, app?.project?.binaryHash, app?.backend?.contentHash]) {
+    const existing=validContentHash(candidate);
+    if(existing) return existing;
+  }
   if(typeof app?.backend?.ensureContentHash === 'function') {
     try { return validContentHash(await app.backend.ensureContentHash()); } catch { return null; }
   }
