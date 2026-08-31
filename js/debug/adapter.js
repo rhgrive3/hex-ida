@@ -129,7 +129,13 @@ export function capabilityMethod(capability) {
 
 export class DebugAdapter {
   constructor({ id, kind = 'generic', capabilities = {} } = {}) {
-    this.id = String(id || `${kind}-adapter`);
+    if (typeof kind !== 'string' || !kind.trim()) {
+      throw new DebugAdapterError('invalid-adapter-kind', 'adapter kind must be a non-empty string');
+    }
+    if (id != null && (typeof id !== 'string' || !id.trim())) {
+      throw new DebugAdapterError('invalid-adapter-id', 'adapter id must be a non-empty string');
+    }
+    this.id = id == null ? `${kind}-adapter` : id;
     this.kind = kind;
     this.capabilities = normalizeCapabilities({ connect: true, disconnect: true, ...capabilities });
     this.connected = false;
