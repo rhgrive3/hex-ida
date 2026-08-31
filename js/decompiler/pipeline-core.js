@@ -44,9 +44,6 @@ function abiArgumentLocationsForState(state) {
         index:Number.isInteger(Number(location.index)) ? Number(location.index) : ordinal,
         reg:String(location.reg),
         abiClass:location.abiClass ?? null,
-        aggregate:location.aggregate === true,
-        pieceIndex:location.pieceIndex ?? null,
-        pieces:location.pieces ?? null,
       }));
     const registers = state.opts?.abiAdapter?.argumentRegisters?.({ functionPrototype });
     return Array.isArray(registers) ? registers.map((reg, index) => ({ index, reg:String(reg), abiClass:null })) : [];
@@ -287,13 +284,14 @@ function buildValue(v, state, flags = {}) {
       out = expr.variable(name ? safeIdent(name) : `global_${BigInt(address || 0).toString(16).toUpperCase()}`, 64, false, origin(d, v), { address });
     } else if (d.op === 'load') {
       const loc = memoryLocation(d, state);
+      // Only the canonical proof-bearing fact may produce a value. A
+      // structural reachingStore link is deliberately ignored here once the
+      // canonical MemorySSA boundary has published a result.
       if (isCanonicalExactMemoryForwarding(d.memoryForwarding,
         canonicalMemoryForwardingContextForLoad(d.memoryForwarding, d,
           d.memoryForwardingContext ?? d.extra?.memoryForwardingContext))
         && d.memoryForwarding.value != null) {
         out = constNode(v, d.memoryForwarding.value);
-      } else if (flags.forAddress && d.reachingStore && d.reachingStore !== d) {
-        out = buildArg(d.reachingStore.args?.[0], state, flags);
       } else {
         out = expr.load(loc, v.bits || Number((d.size || 8) * 8), origin(d, v), { signed: d.signed ?? signedFor(state, v), volatile: !!d.volatile });
       }
@@ -434,9 +432,7 @@ function isElidableReturnSpillStore(store, state) {
     (inst.op === 'load' || inst.op === 'store') && inst.loc?.key === store.loc.key);
   const storeDefinitionId = store.memDef?.definitionId ?? store.extra?.memoryDefinitionId ?? null;
   const loads = sameLocationMemory.filter((inst) => {
-    if (inst.op !== 'load') return false;
-    if (inst.reachingStore === store) return true;
-    if (!isCanonicalExactMemoryForwarding(inst.memoryForwarding,
+    if (inst.op !== 'load' || !isCanonicalExactMemoryForwarding(inst.memoryForwarding,
       canonicalMemoryForwardingContextForLoad(inst.memoryForwarding, inst,
         inst.memoryForwardingContext ?? inst.extra?.memoryForwardingContext))) return false;
     return storeDefinitionId != null
@@ -578,15 +574,13 @@ export function enhanceSemanticDecompilation(result, model, opts = {}) {
   // gets a budget sized for the work rather than an interactive allowance that
   // would make publication depend on how fast the machine is that day.
   const phase8Optimize = opts.phase8Optimize === true;
-  const phase8Budget = {
-    stages: phase8Optimize ? PHASE8_ALL_STAGES : PHASE8_INTERACTIVE_STAGES,
-    ...(opts.phase8TimeBudgetMs != null ? { timeBudgetMs: Number(opts.phase8TimeBudgetMs) } : {}),
-    ...(opts.phase8WorkBudget != null ? { maxWorkItems: opts.phase8WorkBudget } : {}),
-    shouldAbort: opts.shouldAbort,
-  };
   const phase8 = runPhase8Stage(
     { ir: state.ir, types: state.types, opts },
-    phase8Budget,
+    {
+      stages: phase8Optimize ? PHASE8_ALL_STAGES : PHASE8_INTERACTIVE_STAGES,
+      timeBudgetMs: Number(opts.phase8TimeBudgetMs ?? (phase8Optimize ? 250 : 15)),
+      shouldAbort: opts.shouldAbort,
+    },
   );
   state.phase8 = phase8.ledger;
   state.phase8Timings = phase8.timings;

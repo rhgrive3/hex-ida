@@ -80,69 +80,26 @@ function constrainSemanticValueWidths(result) {
   return result;
 }
 
-function canonicalScalarReturnRegister(result, opts = {}) {
-  const adapter = opts.abiAdapter || result?.abiAdapter || result?.ctx?.abiAdapter || null;
-  const returnType = opts.returnType
-    ?? opts.functionPrototype?.returnType
-    ?? opts.prototype?.returnType
-    ?? result?.prototype?.returnType
-    ?? result?.types?.ret?.type
-    ?? null;
-  const returnBits = opts.returnBits
-    ?? opts.functionPrototype?.returnBits
-    ?? opts.prototype?.returnBits
-    ?? result?.prototype?.returnBits
-    ?? result?.types?.ret?.bits
-    ?? null;
-  if (adapter?.supported === true) {
-    try {
-      const functionPrototype = {
-        ...(opts.functionPrototype || opts.prototype || result?.prototype || {}),
-        ...(returnType != null ? { returnType } : {}),
-        ...(returnBits != null ? { returnBits } : {}),
-        returnsValue:true,
-      };
-      const locations = adapter.returnLocations?.({ functionPrototype, returnType, returnBits });
-      if (Array.isArray(locations)) {
-        return locations.length === 1 && locations[0]?.kind === 'register'
-          && locations[0]?.aggregate !== true && typeof locations[0]?.reg === 'string'
-          ? locations[0].reg : null;
-      }
-    } catch { return null; }
-    return null;
-  }
-  if (adapter) return null;
-  // The old ARM64 facade predates the canonical ABI envelope. Preserve its
-  // presentation-only fallback, while a v2 IR without an adapter remains
-  // unknown rather than inheriting AAPCS64's x0 return register.
-  if (opts.legacyAArch64 === true || result?.ir?.compat?.projection !== 'semantic-ir-v2-to-v1') return 'x0';
-  return null;
-}
-
-function latestReturnStackLoad(ir, ret, returnRegister) {
+function latestReturnStackLoad(ir, ret) {
   const explicit = valueOf(ret?.args?.[0]);
   if (explicit?.def?.op === 'load' && explicit.def.loc?.kind === 'stack') return { value: explicit, load: explicit.def };
 
-  // For implicit ABI returns, only the actual latest reaching definition of the
-  // canonical return register may authorize a stack-load re-anchor. A
-  // historical stack load is not return truth when a later ADD/SUB/call/etc.
-  // redefines that register (#914). Never substitute AAPCS64's x0 here: on
-  // RISC-V it is the hardwired zero register.
-  if (!returnRegister) return null;
+  // For implicit ABI returns, only the actual latest reaching definition of x0
+  // may authorize a stack-load re-anchor. A historical stack load is not return
+  // truth when a later ADD/SUB/call/etc. redefines x0 (#914).
   let value = null, bestRow = -Infinity;
   for (const candidate of ir?.values || []) {
     const def = candidate?.def;
-    if (candidate?.reg !== returnRegister || !def || (ret?.row != null && def.row >= ret.row)) continue;
+    if (candidate?.reg !== 'x0' || !def || (ret?.row != null && def.row >= ret.row)) continue;
     if (def.row > bestRow) { value = candidate; bestRow = def.row; }
   }
   return value?.def?.op === 'load' && value.def.loc?.kind === 'stack' ? { value, load:value.def } : null;
 }
 
-function reanchorExactStackReturn(result, opts = {}) {
+function reanchorExactStackReturn(result) {
   if (!result?.semanticAst || !result?.ir) return result;
   const ret = [...(result.ir.instructions || [])].reverse().find((inst) => inst.op === 'ret');
-  const returnRegister = canonicalScalarReturnRegister(result, opts);
-  const found = ret ? latestReturnStackLoad(result.ir, ret, returnRegister) : null;
+  const found = ret ? latestReturnStackLoad(result.ir, ret) : null;
   if (!found?.load?.loc?.key) return result;
   const output = result.semanticAst.outputs?.find((x) => x.name === 'return');
   if (!output) return result;
@@ -173,26 +130,25 @@ function reanchorRecoveredReturnSource(result, opts = {}) {
     for (const inst of result.ir.instructions || []) {
       if (inst?.op !== 'load' || inst?.loc?.kind !== 'stack' || inst?.row == null || ret.row == null || inst.row >= ret.row) continue;
       if (!sourceRows.has(String(inst.row))) continue;
-      const fact = inst.memoryForwarding ?? inst.extra?.memoryForwarding ?? null;
-      const store = inst.reachingStore || ((fact && isCanonicalExactMemoryForwarding(fact,
+      const fact = inst.memoryForwarding;
+      if (!isCanonicalExactMemoryForwarding(fact,
         canonicalMemoryForwardingContextForLoad(fact, inst,
-          inst.memoryForwardingContext ?? inst.extra?.memoryForwardingContext)))
-        ? (result.ir.instructions || []).find((candidate) => {
-          const definitionId = candidate?.memDef?.definitionId ?? candidate?.extra?.memoryDefinitionId ?? null;
-          return candidate?.op === 'store'
-            && candidate?.loc?.kind === 'stack'
-            && candidate.loc.key === inst.loc.key
-            && candidate.row != null
-            && definitionId != null
-            && fact.contributingDefinitionIds?.includes(String(definitionId));
-        })
-        : null);
+          inst.memoryForwardingContext ?? inst.extra?.memoryForwardingContext))) continue;
+      const store = (result.ir.instructions || []).find((candidate) => {
+        const definitionId = candidate?.memDef?.definitionId ?? candidate?.extra?.memoryDefinitionId ?? null;
+        return candidate?.op === 'store'
+          && candidate?.loc?.kind === 'stack'
+          && candidate.loc.key === inst.loc.key
+          && candidate.row != null
+          && definitionId != null
+          && fact.contributingDefinitionIds.includes(String(definitionId));
+      });
       if (!store || store.row == null) continue;
       if (!sourceRows.has(String(store.row))) continue;
       if (!load || inst.row > load.row) load = inst;
     }
-    const spillFact = load?.memoryForwarding ?? load?.extra?.memoryForwarding ?? null;
-    const spill = load?.reachingStore || (isCanonicalExactMemoryForwarding(spillFact,
+    const spillFact = load?.memoryForwarding;
+    const spill = isCanonicalExactMemoryForwarding(spillFact,
       canonicalMemoryForwardingContextForLoad(spillFact, load,
         load?.memoryForwardingContext ?? load?.extra?.memoryForwardingContext))
       ? (result.ir.instructions || []).find((candidate) => {
@@ -204,7 +160,7 @@ function reanchorRecoveredReturnSource(result, opts = {}) {
           && definitionId != null
           && spillFact.contributingDefinitionIds.includes(String(definitionId));
       })
-      : null);
+      : null;
     if (!load || !spill) continue;
     const spillRow = String(spill.row);
     const alignedAddresses = current.addresses.length === current.rows.length;
@@ -241,8 +197,7 @@ function fullPhase8Projection(result, model, opts) {
     { ir:result.ir, types:result.types, opts },
     {
       stages:PHASE8_ALL_STAGES,
-      ...(opts.phase8TimeBudgetMs != null ? { timeBudgetMs:Number(opts.phase8TimeBudgetMs) } : {}),
-      ...(opts.phase8WorkBudget != null ? { maxWorkItems:opts.phase8WorkBudget } : {}),
+      timeBudgetMs:Number(opts.phase8TimeBudgetMs ?? 250),
       shouldAbort:opts.shouldAbort,
       budgetClass:'standard',
     },
@@ -279,6 +234,6 @@ export function enhanceSemanticDecompilation(result, model, opts = {}) {
     // twice and does not borrow the PassManager rewrite deadline.
     core = constrainSemanticValueWidths(enhanceCore(result, model, { ...opts, phase8Optimize:false }));
   } finally { restore(); }
-  const recovered = recoverExactStackReturn(reanchorExactStackReturn(core, opts), opts);
+  const recovered = recoverExactStackReturn(reanchorExactStackReturn(core), opts);
   return fullPhase8Projection(reanchorRecoveredReturnSource(recovered, opts), model, opts);
 }
