@@ -1,6 +1,6 @@
 const ARCHITECTURES = new Map();
 
-export function canonicalArchitectureId(value) { return String(value || '').trim().toLowerCase(); }
+export function canonicalArchitectureId(value) { return typeof value === 'string' ? value.trim().toLowerCase() : ''; }
 export function normalizeArchitecturePositiveInteger(value, name, { nullable = false } = {}) {
   if (nullable && value == null) return null;
   const n = Number(value);
