@@ -25,6 +25,8 @@ const DEFAULT_ALLOWED_PREFIXES = Object.freeze([
   'js/decompiler/phase8/sccp.js',
   'js/targets/architecture/x86_64/effects/common.js',
   'js/targets/architecture/x86_64/effects/flags.js',
+  'userscript/hex.user.template.js',
+  'userscript/release-version.json',
 ]);
 
 function fail(code, detail = null) {
