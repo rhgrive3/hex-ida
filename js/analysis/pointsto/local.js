@@ -61,7 +61,8 @@ function parseInteger(candidate) {
   try {
     if (typeof raw === 'bigint') return raw;
     if (typeof raw === 'number') return Number.isSafeInteger(raw) ? BigInt(raw) : null;
-    const text = String(raw).trim();
+    if (typeof raw !== 'string') return null;
+    const text = raw.trim();
     if (!/^[+-]?(0x[0-9a-fA-F]+|\d+)$/.test(text)) return null;
     return BigInt(text);
   } catch { return null; }
@@ -80,10 +81,10 @@ function constantOf(value, node) {
 }
 
 function widthOf(value, node) {
-  const fromValue = Number(value?.machineType?.widthBits);
-  if (Number.isSafeInteger(fromValue) && fromValue > 0) return fromValue;
-  const fromNode = Number(node?.attributes?.widthBits);
-  return Number.isSafeInteger(fromNode) && fromNode > 0 ? fromNode : null;
+  const fromValue = value?.machineType?.widthBits;
+  if (typeof fromValue === 'number' && Number.isSafeInteger(fromValue) && fromValue > 0) return fromValue;
+  const fromNode = node?.attributes?.widthBits;
+  return typeof fromNode === 'number' && Number.isSafeInteger(fromNode) && fromNode > 0 ? fromNode : null;
 }
 
 function pointerValue(value) {
@@ -91,8 +92,7 @@ function pointerValue(value) {
 }
 
 function finiteWidth(widthBits) {
-  const width = Number(widthBits);
-  return Number.isSafeInteger(width) && width > 0 && width % 8 === 0 ? width : null;
+  return typeof widthBits === 'number' && Number.isSafeInteger(widthBits) && widthBits > 0 && widthBits % 8 === 0 ? widthBits : null;
 }
 
 function ordinaryAccess(memory) {
@@ -191,13 +191,13 @@ function prepareMemoryBoundary(ir, nodes, values, options, budget) {
   if (!memorySsa || typeof memorySsa !== 'object' || Array.isArray(memorySsa)) {
     return failBoundary('unsupported', 'memoryssa-invalid');
   }
-  if (String(memorySsa.functionId ?? '') !== String(ir.functionId)) {
+  if (typeof memorySsa.functionId !== 'string' || typeof ir.functionId !== 'string' || memorySsa.functionId !== ir.functionId) {
     return failBoundary('stale', 'memoryssa-stale-function');
   }
-  if (binding.functionId != null && String(binding.functionId) !== String(ir.functionId)) {
+  if (binding.functionId != null && (typeof binding.functionId !== 'string' || typeof ir.functionId !== 'string' || binding.functionId !== ir.functionId)) {
     return failBoundary('stale', 'memoryssa-stale-function');
   }
-  if (memorySsa.snapshotId != null && String(memorySsa.snapshotId) !== String(options.snapshotId ?? 'snapshot-unbound')) {
+  if (memorySsa.snapshotId != null && (typeof memorySsa.snapshotId !== 'string' || typeof (options.snapshotId ?? 'snapshot-unbound') !== 'string' || memorySsa.snapshotId !== (options.snapshotId ?? 'snapshot-unbound'))) {
     return failBoundary('stale', 'memoryssa-stale-snapshot');
   }
   if (binding.snapshotId !== (options.snapshotId ?? 'snapshot-unbound')) {
@@ -209,10 +209,10 @@ function prepareMemoryBoundary(ir, nodes, values, options, budget) {
   if (memorySsa.buildVersion !== MEMORY_SSA_BUILD_VERSION) {
     return failBoundary('stale', 'memoryssa-build-mismatch');
   }
-  if (binding.memorySsaBuildVersion != null && String(binding.memorySsaBuildVersion) !== String(memorySsa.buildVersion)) {
+  if (binding.memorySsaBuildVersion != null && (typeof binding.memorySsaBuildVersion !== 'string' || typeof memorySsa.buildVersion !== 'string' || binding.memorySsaBuildVersion !== memorySsa.buildVersion)) {
     return failBoundary('stale', 'memoryssa-build-mismatch');
   }
-  if (binding.semanticIrVersion != null && String(binding.semanticIrVersion) !== String(ir.contractVersion)) {
+  if (binding.semanticIrVersion != null && (typeof binding.semanticIrVersion !== 'string' || typeof ir.contractVersion !== 'string' || binding.semanticIrVersion !== ir.contractVersion)) {
     return failBoundary('stale', 'semantic-ir-version-mismatch');
   }
   if (binding.completeness !== 'complete') {
