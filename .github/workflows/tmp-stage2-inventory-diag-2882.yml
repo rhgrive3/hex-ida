@@ -16,35 +16,46 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Baseline profile inventory check
+      - name: Capture exact Stage2 profile inventory drift
         shell: bash
         run: |
           set -uo pipefail
+          mkdir -p /tmp/stage2-diag
           set +e
-          node tests/stage2/profile-denominator-inventory.test.mjs > /tmp/profile-before.out 2> /tmp/profile-before.err
+          node tests/stage2/profile-denominator-inventory.test.mjs > /tmp/stage2-diag/test.stdout 2> /tmp/stage2-diag/test.stderr
           rc=$?
           set -e
-          echo "PROFILE_BEFORE_RC=$rc"
-          cat /tmp/profile-before.out
-          cat /tmp/profile-before.err
+          printf '%s\n' "$rc" > /tmp/stage2-diag/test.rc
           node --input-type=module <<'NODE'
           import fs from 'node:fs';
           import { buildStage2ProfileDenominatorInventory } from './tools/validation/stage2/build-profile-denominator-inventory.mjs';
-          import { STAGE2_PROFILE_EVIDENCE_IDS } from './tools/validation/stage2/profile-contract.mjs';
+          import { STAGE2_PROFILE_EVIDENCE_IDS } from './js/platform/stage2-profile-evidence.js';
           const tracked = JSON.parse(fs.readFileSync('./tools/validation/stage2/profile-denominator-inventory.json', 'utf8'));
           const generated = buildStage2ProfileDenominatorInventory();
-          console.log(`TRACKED_IDS=${JSON.stringify(Object.keys(tracked.items || {}).sort())}`);
-          console.log(`GENERATED_IDS=${JSON.stringify(Object.keys(generated.items || {}).sort())}`);
-          console.log(`CONTRACT_IDS=${JSON.stringify([...STAGE2_PROFILE_EVIDENCE_IDS].sort())}`);
-          console.log(`TOPLEVEL_EQUAL=${JSON.stringify(tracked) === JSON.stringify(generated)}`);
-          for (const id of [...new Set([...Object.keys(tracked.items || {}), ...Object.keys(generated.items || {})])].sort()) {
+          fs.writeFileSync('/tmp/stage2-diag/tracked.json', JSON.stringify(tracked, null, 2) + '\n');
+          fs.writeFileSync('/tmp/stage2-diag/generated.json', JSON.stringify(generated, null, 2) + '\n');
+          const lines = [];
+          lines.push(`TRACKED_IDS=${JSON.stringify(Object.keys(tracked.items || {}).sort())}`);
+          lines.push(`GENERATED_IDS=${JSON.stringify(Object.keys(generated.items || {}).sort())}`);
+          lines.push(`CONTRACT_IDS=${JSON.stringify([...STAGE2_PROFILE_EVIDENCE_IDS].sort())}`);
+          lines.push(`TOPLEVEL_EQUAL=${JSON.stringify(tracked) === JSON.stringify(generated)}`);
+          const keys = [...new Set([...Object.keys(tracked.items || {}), ...Object.keys(generated.items || {})])].sort();
+          for (const id of keys) {
             const a = JSON.stringify(tracked.items?.[id]);
             const b = JSON.stringify(generated.items?.[id]);
             if (a !== b) {
-              console.log(`DIFF_ITEM=${id}`);
-              console.log(`TRACKED=${a}`);
-              console.log(`GENERATED=${b}`);
+              lines.push(`DIFF_ITEM=${id}`);
+              lines.push(`TRACKED=${a}`);
+              lines.push(`GENERATED=${b}`);
             }
           }
+          fs.writeFileSync('/tmp/stage2-diag/diff.txt', lines.join('\n') + '\n');
+          console.log(lines.join('\n'));
           NODE
-          exit "$rc"
+      - name: Upload Stage2 diagnostic artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage2-inventory-diag-2882
+          path: /tmp/stage2-diag
+          if-no-files-found: error
