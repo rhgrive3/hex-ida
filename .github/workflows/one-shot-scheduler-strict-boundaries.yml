@@ -1,0 +1,32 @@
+name: One-shot scheduler strict boundaries
+on:
+  push:
+    branches: [fix/scheduler-strict-boundaries-current-2947-2948]
+permissions:
+  contents: write
+jobs:
+  materialize:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Materialize repair
+        run: python3 tools/tmp-scheduler-strict-boundaries.py
+      - name: Validate focused contracts
+        run: |
+          node --check js/core/scheduler/analysis-scheduler.js
+          node tests/phase4/scheduler/strict-authority-boundaries.test.mjs
+          node tools/validation/phase4-ownership.mjs --lane p4-2 --files js/core/scheduler/analysis-scheduler.js,tests/phase4/scheduler/strict-authority-boundaries.test.mjs
+      - name: Commit clean materialization
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm .github/workflows/one-shot-scheduler-strict-boundaries.yml tools/tmp-scheduler-strict-boundaries.py
+          git add js/core/scheduler/analysis-scheduler.js tests/phase4/scheduler/strict-authority-boundaries.test.mjs
+          git commit -m 'fix(scheduler): harden artifact IDs and cancellation'
+          git push
