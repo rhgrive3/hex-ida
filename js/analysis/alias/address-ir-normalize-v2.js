@@ -75,7 +75,7 @@ export function normalizeAddressProofIr(ir) {
   };
 
   for (const node of nodes) {
-    if (node?.kind !== 'intrinsic' || String(node.operator ?? '').toLowerCase() !== 'add-with-carry') continue;
+    if (node?.kind !== 'intrinsic' || typeof node.operator !== 'string' || node.operator.toLowerCase() !== 'add-with-carry') continue;
     if (!Array.isArray(node.inputs) || node.inputs.length !== 3) continue;
     if (!Array.isArray(node.outputs) || node.outputs.length < 1) continue;
     if (node.inputs.some((id) => canonicalId(id) == null) || node.outputs.some((id) => canonicalId(id) == null)) continue;
