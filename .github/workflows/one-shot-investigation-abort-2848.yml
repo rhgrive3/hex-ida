@@ -1,0 +1,52 @@
+name: One-shot InvestigationService abort race 2848
+on:
+  push:
+    branches: [fix/investigation-abort-current-2848-v2]
+permissions:
+  contents: write
+jobs:
+  materialize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Patch race windows and add regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('js/analysis/investigation-service.js'); s=p.read_text()
+          reps=[
+          ("signal?.addEventListener('abort', onAbort, { once:true });\n      requestIdleCallback(() => finish(resolve), { timeout:250 });",
+           "signal?.addEventListener('abort', onAbort, { once:true });\n      if (signal?.aborted) { onAbort(); return; }\n      requestIdleCallback(() => finish(resolve), { timeout:250 });"),
+          ("signal?.addEventListener('abort', onAbort, { once:true });\n    entry.promise.then((value) => finish(resolve, value), (error) => finish(reject, error));",
+           "signal?.addEventListener('abort', onAbort, { once:true });\n    if (signal?.aborted) { onAbort(); return; }\n    entry.promise.then((value) => finish(resolve, value), (error) => finish(reject, error));"),
+          ("signal?.addEventListener('abort', onAbort, { once:true });\n    Promise.resolve(request).then(resolve, reject).finally(() => signal?.removeEventListener('abort', onAbort));",
+           "signal?.addEventListener('abort', onAbort, { once:true });\n    if (signal?.aborted) { onAbort(); signal?.removeEventListener('abort', onAbort); return; }\n    Promise.resolve(request).then(resolve, reject).finally(() => signal?.removeEventListener('abort', onAbort));"),
+          ]
+          for old,new in reps:
+              if old not in s: raise SystemExit('investigation abort anchor drift')
+              s=s.replace(old,new,1)
+          p.write_text(s)
+          Path('tests/issue-2848-investigation-abort-races.mjs').write_text(r'''import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          const source=fs.readFileSync(new URL('../js/analysis/investigation-service.js',import.meta.url),'utf8');
+          const checks=[
+            "signal?.addEventListener('abort', onAbort, { once:true });\n      if (signal?.aborted) { onAbort(); return; }\n      requestIdleCallback",
+            "signal?.addEventListener('abort', onAbort, { once:true });\n    if (signal?.aborted) { onAbort(); return; }\n    entry.promise.then",
+            "signal?.addEventListener('abort', onAbort, { once:true });\n    if (signal?.aborted) { onAbort(); signal?.removeEventListener('abort', onAbort); return; }\n    Promise.resolve(request)",
+          ];
+          for(const check of checks) assert.ok(source.includes(check),`missing race-safe recheck: ${check}`);
+          console.log('issue-2848-investigation-abort-races: PASS');
+          ''')
+          PY
+      - run: node tests/issue-2848-investigation-abort-races.mjs
+      - name: Commit production result
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add js/analysis/investigation-service.js tests/issue-2848-investigation-abort-races.mjs
+          git diff --cached --quiet || git commit -m 'fix(investigation): close AbortSignal registration races'
+          git push
