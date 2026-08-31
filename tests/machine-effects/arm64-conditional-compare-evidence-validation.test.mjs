@@ -51,6 +51,19 @@ for (const mnemonic of ['ccmp','ccmn']) {
     );
   }
 
+  assertFailClosed(
+    lift(`${mnemonic}-condition-missing`, mnemonic, [gp(0), gp(1), imm(5n)]),
+    `${mnemonic}-condition-missing`,
+  );
+  assertFailClosed(
+    lift(`${mnemonic}-condition-duplicate`, mnemonic, [gp(0), gp(1), imm(5n), cond('eq'), cond('ne')]),
+    `${mnemonic}-condition-duplicate`,
+  );
+  assertFailClosed(
+    lift(`${mnemonic}-condition-modifier`, mnemonic, [gp(0), gp(1), imm(5n), { ...cond('eq'), shift:{ op:'lsl', amount:1 } }]),
+    `${mnemonic}-condition-modifier`,
+  );
+
   for (const [label, value] of [
     ['string', '5'],
     ['number', 5],
@@ -66,6 +79,11 @@ for (const mnemonic of ['ccmp','ccmn']) {
     );
   }
 
+  assertFailClosed(
+    lift(`${mnemonic}-fallback-modifier`, mnemonic, [gp(0), gp(1), { ...imm(5n), shift:{ op:'lsl', amount:1 } }, cond('eq')]),
+    `${mnemonic}-fallback-modifier`,
+  );
+
   for (const [label, value] of [
     ['string', '31'],
     ['number', 31],
@@ -80,6 +98,11 @@ for (const mnemonic of ['ccmp','ccmn']) {
       `${mnemonic}-comparison-${label}`,
     );
   }
+
+  assertFailClosed(
+    lift(`${mnemonic}-comparison-modifier`, mnemonic, [gp(0), { ...imm(5n), shift:{ op:'lsl', amount:1 } }, imm(5n), cond('eq')]),
+    `${mnemonic}-comparison-modifier`,
+  );
 }
 
 console.log('arm64 CCMP/CCMN structured evidence regression PASS');
