@@ -33,6 +33,20 @@ export const DISCOVERY_DEFAULT_BUDGET = Object.freeze({
   maxEvidencePerCandidate: 64,
 });
 
+function normalizeDiscoveryBudget(value) {
+  if (value == null) return DISCOVERY_DEFAULT_BUDGET;
+  if (typeof value !== 'object' || Array.isArray(value)) throw new TypeError('discovery-budget-invalid');
+  const out = { ...DISCOVERY_DEFAULT_BUDGET };
+  for (const key of ['maxCandidates', 'maxEvidencePerCandidate']) {
+    if (value[key] == null) continue;
+    if (typeof value[key] !== 'number' || !Number.isSafeInteger(value[key]) || value[key] < 1) {
+      throw new TypeError(`discovery-budget-${key}-invalid`);
+    }
+    out[key] = value[key];
+  }
+  return Object.freeze(out);
+}
+
 /**
  * A registry of evidence producers.
  *
@@ -47,9 +61,8 @@ export class DiscoveryProducerRegistry {
 
   register(producer) {
     if (typeof producer?.produce !== 'function') throw new TypeError('discovery-producer-must-implement-produce');
-    const id = String(producer.id ?? '');
-    if (!id) throw new TypeError('discovery-producer-id-required');
-    this.producers.set(id, producer);
+    if (typeof producer.id !== 'string' || !producer.id.trim()) throw new TypeError('discovery-producer-id-required');
+    this.producers.set(producer.id, producer);
     return this;
   }
 
@@ -193,7 +206,7 @@ function fuseExtent(evidence) {
  * caller that produces the same shape.
  */
 export function fuseFunctionCandidates(evidence, options = {}) {
-  const budget = { ...DISCOVERY_DEFAULT_BUDGET, ...(options.budget ?? {}) };
+  const budget = normalizeDiscoveryBudget(options.budget);
   const status = (completeness, stopReason) => createAnalysisStatus({
     snapshotId: options.snapshotId ?? 'snapshot-unbound',
     analyzerId: DISCOVERY_ANALYZER_ID,

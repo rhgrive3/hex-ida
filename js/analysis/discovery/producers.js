@@ -241,6 +241,32 @@ export function createDebugEvidenceProducer(debugEvidence) {
   });
 }
 
+function requiredPatternIdentity(value, code) {
+  if (typeof value !== 'string' || !value.trim()) throw new TypeError(code);
+  return value;
+}
+
+function optionalPatternArchitecture(value) {
+  if (value == null) return null;
+  return requiredPatternIdentity(value, 'discovery-pattern-invalid-architecture-id');
+}
+
+function patternIdentity(value) {
+  return value == null ? 'pattern' : requiredPatternIdentity(value, 'discovery-pattern-invalid-id');
+}
+
+function canonicalPatternBytes(value, code) {
+  if (value instanceof Uint8Array) {
+    if (value.length === 0) throw new TypeError(code);
+    return Uint8Array.from(value);
+  }
+  if (!Array.isArray(value) || value.length === 0) throw new TypeError(code);
+  for (const item of value) {
+    if (typeof item !== 'number' || !Number.isInteger(item) || item < 0 || item > 0xff) throw new TypeError(code);
+  }
+  return Uint8Array.from(value);
+}
+
 /**
  * A declarative byte-pattern producer.
  *
@@ -258,27 +284,29 @@ export function createPatternProducer({ id, architectureId, patterns, alignment 
   if (!Array.isArray(patterns)) {
     throw new TypeError('discovery-pattern-empty-patterns');
   }
+  const producerId = requiredPatternIdentity(id, 'discovery-pattern-producer-id-required');
+  const producerArchitectureId = optionalPatternArchitecture(architectureId);
   const compiled = patterns.map((pattern) => {
-    if (!pattern || (!Array.isArray(pattern.bytes) && !(pattern.bytes instanceof Uint8Array)) || pattern.bytes.length === 0) {
+    if (!pattern || typeof pattern !== 'object' || Array.isArray(pattern)) {
       throw new TypeError('discovery-pattern-invalid-bytes');
     }
-    const bytes = Uint8Array.from(pattern.bytes);
+    const bytes = canonicalPatternBytes(pattern.bytes, 'discovery-pattern-invalid-bytes');
     let mask = null;
-    if (pattern.mask) {
-      if (pattern.mask.length !== bytes.length) {
+    if (pattern.mask != null) {
+      mask = canonicalPatternBytes(pattern.mask, 'discovery-pattern-invalid-mask');
+      if (mask.length !== bytes.length) {
         throw new TypeError('discovery-pattern-mask-length-mismatch');
       }
-      mask = Uint8Array.from(pattern.mask);
     }
     return {
-      id: String(pattern.id ?? 'pattern'),
+      id: patternIdentity(pattern.id),
       bytes,
       mask,
     };
   });
   return Object.freeze({
-    id: String(id),
-    architectureId: architectureId == null ? null : String(architectureId),
+    id: producerId,
+    architectureId: producerArchitectureId,
     produce(input) {
       const bytes = input?.image?.code;
       const base = input?.image?.codeBaseAddress;
