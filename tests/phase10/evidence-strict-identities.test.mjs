@@ -8,14 +8,19 @@ const evidence = createEvidenceNode({
   targetEntityIds:[' fn:1 '],
   semanticKind:'runtime-observation',
   completeness:'complete',
-  confidence:'0.75',
+  confidence:0.75,
   deterministic:true,
   createdAt:'2026-08-31T00:00:00Z',
 });
 assert.equal(evidence.id, 'ev-1');
 assert.equal(evidence.family, 'RuntimeEvidence');
 assert.equal(evidence.completeness, 'complete');
-assert.equal(evidence.confidence, 0.75, 'numeric-string confidence compatibility is preserved');
+assert.equal(evidence.confidence, 0.75, 'finite numeric confidence is preserved');
+assert.throws(() => createEvidenceNode({
+  id:'ev-string-confidence',
+  family:'RuntimeEvidence',
+  confidence:'0.75',
+}), /evidence-invalid-confidence/, 'numeric-string confidence must fail closed');
 
 const malformedEvidence = [
   { id:['ev-1'], family:'RuntimeEvidence' },
