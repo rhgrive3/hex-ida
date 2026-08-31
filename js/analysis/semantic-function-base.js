@@ -35,6 +35,13 @@ function abortIfRequested(signal) {
   throw error;
 }
 
+function normalizedProtocolString(value, code, { allowEmpty = false } = {}) {
+  if (typeof value !== 'string') throw new TypeError(code);
+  const text = value.trim().toLowerCase();
+  if (!allowEmpty && !text) throw new TypeError(code);
+  return text;
+}
+
 function addressOf(instruction) { return BigInt(instruction.address); }
 function endOf(instruction) { return addressOf(instruction) + BigInt(instruction.length ?? instruction.size); }
 function keyOf(address) { return `block-${BigInt(address).toString(16)}`; }
@@ -334,22 +341,26 @@ export function analyzeDecodedSemanticFunction(input = {}, options = {}) {
   abortIfRequested(options.signal);
   if (!input || typeof input !== 'object') throw new TypeError('semantic-function-input-object-required');
   if (!Array.isArray(input.instructions)) throw new TypeError('semantic-function-decoded-instructions-required');
-  const architectureId = String(input.architecture || '').trim().toLowerCase();
+  const architectureId = normalizedProtocolString(input.architecture, 'semantic-function-architecture-required');
   const architecturePlugin = architecturePluginV2(architectureId);
   if (!architecturePlugin) throw new TypeError(`semantic-function-unsupported-architecture:${architectureId}`);
   const requestedInstructionEndianness = input.instructionEndianness ?? input.endianness ?? input.endian;
-  if (requestedInstructionEndianness != null && requestedInstructionEndianness !== 'unknown') {
-    const endian = String(requestedInstructionEndianness).trim().toLowerCase();
-    const supported = architecturePlugin.supportedInstructionEndianness ?? [];
-    if (supported.length && !supported.includes(endian))
-      throw new TypeError(`semantic-function-unsupported-instruction-endianness:${endian}`);
+  if (requestedInstructionEndianness != null) {
+    const endian = normalizedProtocolString(requestedInstructionEndianness, 'semantic-function-invalid-instruction-endianness');
+    if (endian !== 'unknown') {
+      const supported = architecturePlugin.supportedInstructionEndianness ?? [];
+      if (supported.length && !supported.includes(endian))
+        throw new TypeError(`semantic-function-unsupported-instruction-endianness:${endian}`);
+    }
   }
   const requestedMemoryEndianness = input.dataEndianness ?? input.endianness ?? input.endian;
-  if (requestedMemoryEndianness != null && requestedMemoryEndianness !== 'unknown') {
-    const endian = String(requestedMemoryEndianness).trim().toLowerCase();
-    const supported = architecturePlugin.supportedMemoryEndianness ?? [];
-    if (supported.length && !supported.includes(endian))
-      throw new TypeError(`semantic-function-unsupported-memory-endianness:${endian}`);
+  if (requestedMemoryEndianness != null) {
+    const endian = normalizedProtocolString(requestedMemoryEndianness, 'semantic-function-invalid-memory-endianness');
+    if (endian !== 'unknown') {
+      const supported = architecturePlugin.supportedMemoryEndianness ?? [];
+      if (supported.length && !supported.includes(endian))
+        throw new TypeError(`semantic-function-unsupported-memory-endianness:${endian}`);
+    }
   }
   const abiPlugin = resolveABIPlugin({ architecture:architectureId, platform:input.platform, abiId:input.abiId });
   if (!abiPlugin?.supported) throw new TypeError('semantic-function-supported-abi-required');
