@@ -1,10 +1,14 @@
 import { DebugAdapterError } from "../debug/adapter.js";
 
 export function hasProvenRuntimeStaticIdentity(module) {
+  const identityEvidenceIds = module?.identityEvidenceIds;
+  const hasCanonicalIdentityEvidence = Array.isArray(identityEvidenceIds) &&
+    identityEvidenceIds.length > 0 &&
+    identityEvidenceIds.every((id) => typeof id === "string" && id.trim().length > 0);
   return module?.binaryId != null && (
     module?.identityState === "exact" ||
     module?.identityState === "resolved" ||
-    (Array.isArray(module?.identityEvidenceIds) && module.identityEvidenceIds.length > 0)
+    hasCanonicalIdentityEvidence
   );
 }
 
