@@ -33,31 +33,51 @@ for (const [label, text] of [
   );
 }
 assertFailClosed(lift('arm64-fcsel-condition-missing', 'fcsel', [fp(0), fp(1), fp(2), { k:'other', text:'eq' }]), 'fcsel-missing');
-
-const validFccmp = lift('arm64-fccmp-nzcv-valid', 'fccmp', [fp(0), fp(1), { k:'imm', value:5n, text:'#5' }, { k:'cond', text:'eq' }]);
-assert.ok(validFccmp);
-assert.equal(validFccmp.completeness, 'exact-with-intrinsic');
-
-for (const [label, value] of [
-  ['string', '5'],
-  ['number', 5],
-  ['boolean', true],
-  ['array', [5]],
-  ['object', { valueOf() { return 5n; } }],
-]) {
-  assertFailClosed(
-    lift(`arm64-fccmp-nzcv-invalid-${label}`, 'fccmp', [fp(0), fp(1), { k:'imm', value, text:'#5' }, { k:'cond', text:'eq' }]),
-    `fccmp-${label}`,
-  );
-}
 assertFailClosed(
-  lift('arm64-fccmp-condition-object', 'fccmp', [fp(0), fp(1), { k:'imm', value:5n, text:'#5' }, { k:'cond', text:{ toString(){ return 'eq'; } } }]),
-  'fccmp-condition-object',
+  lift('arm64-fcsel-condition-duplicate', 'fcsel', [fp(0), fp(1), fp(2), { k:'cond', text:'eq' }, { k:'cond', text:'ne' }]),
+  'fcsel-duplicate',
 );
 
-const validFixed = lift('arm64-scvtf-scale-valid', 'scvtf', [fp(0), gp(1), { k:'imm', value:8n, text:'#8' }]);
-assert.ok(validFixed);
-assert.equal(validFixed.completeness, 'exact-with-intrinsic');
+for (const fallback of [0n, 15n]) {
+  for (const mnemonic of ['fccmp', 'fccmpe']) {
+    const valid = lift(`arm64-${mnemonic}-nzcv-valid-${fallback}`, mnemonic, [
+      fp(0), fp(1), { k:'imm', value:fallback, text:`#${fallback}` }, { k:'cond', text:'eq' },
+    ]);
+    assert.ok(valid, `${mnemonic}-${fallback}`);
+    assert.equal(valid.completeness, 'exact-with-intrinsic', `${mnemonic}-${fallback}`);
+  }
+}
+
+for (const mnemonic of ['fccmp', 'fccmpe']) {
+  for (const [label, value] of [
+    ['string', '5'],
+    ['number', 5],
+    ['boolean', true],
+    ['array', [5]],
+    ['object', { valueOf() { return 5n; } }],
+    ['negative', -1n],
+    ['high', 16n],
+  ]) {
+    assertFailClosed(
+      lift(`arm64-${mnemonic}-nzcv-invalid-${label}`, mnemonic, [fp(0), fp(1), { k:'imm', value, text:'#5' }, { k:'cond', text:'eq' }]),
+      `${mnemonic}-${label}`,
+    );
+  }
+  assertFailClosed(
+    lift(`arm64-${mnemonic}-condition-object`, mnemonic, [fp(0), fp(1), { k:'imm', value:5n, text:'#5' }, { k:'cond', text:{ toString(){ return 'eq'; } } }]),
+    `${mnemonic}-condition-object`,
+  );
+  assertFailClosed(
+    lift(`arm64-${mnemonic}-condition-missing`, mnemonic, [fp(0), fp(1), { k:'imm', value:5n, text:'#5' }, { k:'other', text:'eq' }]),
+    `${mnemonic}-condition-missing`,
+  );
+}
+
+for (const scale of [1n, 64n]) {
+  const valid = lift(`arm64-scvtf-scale-valid-${scale}`, 'scvtf', [fp(0), gp(1), { k:'imm', value:scale, text:`#${scale}` }]);
+  assert.ok(valid, `scvtf-${scale}`);
+  assert.equal(valid.completeness, 'exact-with-intrinsic', `scvtf-${scale}`);
+}
 
 for (const [label, value] of [
   ['string', '8'],
@@ -65,11 +85,21 @@ for (const [label, value] of [
   ['boolean', true],
   ['array', [8]],
   ['object', { valueOf() { return 8n; } }],
+  ['zero', 0n],
+  ['high', 65n],
 ]) {
   assertFailClosed(
     lift(`arm64-scvtf-scale-invalid-${label}`, 'scvtf', [fp(0), gp(1), { k:'imm', value, text:'#8' }]),
     `scvtf-${label}`,
   );
 }
+
+const validFloatToIntegerFixed = lift('arm64-fcvtzs-scale-valid', 'fcvtzs', [gp(0), fp(1), { k:'imm', value:8n, text:'#8' }]);
+assert.ok(validFloatToIntegerFixed);
+assert.equal(validFloatToIntegerFixed.completeness, 'exact-with-intrinsic');
+assertFailClosed(
+  lift('arm64-fcvtzs-scale-invalid-string', 'fcvtzs', [gp(0), fp(1), { k:'imm', value:'8', text:'#8' }]),
+  'fcvtzs-string',
+);
 
 console.log('arm64 scalar FP structured condition/integer immediate regression PASS');
