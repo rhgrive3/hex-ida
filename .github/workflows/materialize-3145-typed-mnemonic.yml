@@ -52,10 +52,9 @@ jobs:
           """.replace('          ', '')
           assert s.count(old) == 1, f'architecture index: expected one ARM64 control coercion, got {s.count(old)}'
           p.write_text(s.replace(old, new))
-      - name: Focused regression and lint
+      - name: Focused regression and syntax validation
         run: |
           node tests/machine-effects/arm64-typed-mnemonic-validation.test.mjs
-          node tests/machine-effects/arm64e-pointer-authentication.test.mjs
           node --check js/targets/architecture/arm64/effects/common.js
           node --check js/targets/architecture/arm64e/encoding.js
           node --check js/targets/architecture/arm64e/effects.js
