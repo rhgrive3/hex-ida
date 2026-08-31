@@ -22,7 +22,6 @@ jobs:
         shell: python
         run: |
           from pathlib import Path
-
           for filename in [
             'js/targets/architecture/arm64e/encoding.js',
             'js/targets/architecture/arm64e/effects.js',
@@ -40,7 +39,6 @@ jobs:
           """.replace('          ', '')
             assert s.count(old) == 1, f'{filename}: expected exactly one mnemonicOf coercion, got {s.count(old)}'
             p.write_text(s.replace(old, new))
-
           p = Path('js/targets/architecture/index.js')
           s = p.read_text()
           old = """function arm64ControlFlow(instruction) {
@@ -53,12 +51,29 @@ jobs:
           assert s.count(old) == 1, f'architecture index: expected one ARM64 control coercion, got {s.count(old)}'
           p.write_text(s.replace(old, new))
       - name: Focused regression and syntax validation
+        id: focused
+        shell: bash
         run: |
-          node tests/machine-effects/arm64-typed-mnemonic-validation.test.mjs
-          node --check js/targets/architecture/arm64/effects/common.js
-          node --check js/targets/architecture/arm64e/encoding.js
-          node --check js/targets/architecture/arm64e/effects.js
-          node --check js/targets/architecture/index.js
+          set +e
+          node tests/machine-effects/arm64-typed-mnemonic-validation.test.mjs > typed-mnemonic.log 2>&1
+          status=$?
+          node --check js/targets/architecture/arm64/effects/common.js >> typed-mnemonic.log 2>&1 || status=$?
+          node --check js/targets/architecture/arm64e/encoding.js >> typed-mnemonic.log 2>&1 || status=$?
+          node --check js/targets/architecture/arm64e/effects.js >> typed-mnemonic.log 2>&1 || status=$?
+          node --check js/targets/architecture/index.js >> typed-mnemonic.log 2>&1 || status=$?
+          cat typed-mnemonic.log
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          exit 0
+      - name: Upload focused diagnostic
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue-3145-focused-log
+          path: typed-mnemonic.log
+          if-no-files-found: error
+          retention-days: 1
+      - name: Require focused regression green
+        if: steps.focused.outputs.status != '0'
+        run: exit 1
       - name: Commit production repair
         run: |
           git config user.name github-actions[bot]
