@@ -3,9 +3,13 @@ function requireArray(value, code) {
   return value;
 }
 function nonEmpty(value, code) {
-  const text = String(value ?? '').trim();
+  if (typeof value !== 'string') throw new TypeError(code);
+  const text = value.trim();
   if (!text) throw new TypeError(code);
   return text;
+}
+function exactStringOrNull(value) {
+  return typeof value === 'string' ? value : null;
 }
 function definitions(ssa) { return requireArray(ssa?.definitions, 'semantic-ssa-query-invalid-definitions'); }
 function uses(ssa) { return requireArray(ssa?.uses, 'semantic-ssa-query-invalid-uses'); }
@@ -91,13 +95,27 @@ export function createSsaQueryIndex(ssa) {
     usesByValue.set(use.valueId, list);
   }
   return Object.freeze({
-    definition(valueId) { return definitionByValue.get(String(valueId)) ?? null; },
-    definitionById(definitionId) { return definitionById.get(String(definitionId)) ?? null; },
-    use(useId) { return useById.get(String(useId)) ?? null; },
+    definition(valueId) {
+      const id = exactStringOrNull(valueId);
+      return id == null ? null : definitionByValue.get(id) ?? null;
+    },
+    definitionById(definitionId) {
+      const id = exactStringOrNull(definitionId);
+      return id == null ? null : definitionById.get(id) ?? null;
+    },
+    use(useId) {
+      const id = exactStringOrNull(useId);
+      return id == null ? null : useById.get(id) ?? null;
+    },
     definitionForUse(useId) {
-      const use = useById.get(String(useId));
+      const id = exactStringOrNull(useId);
+      if (id == null) return null;
+      const use = useById.get(id);
       return use ? definitionByValue.get(use.valueId) ?? null : null;
     },
-    usesForValue(valueId) { return Object.freeze((usesByValue.get(String(valueId)) ?? []).slice().sort((a, b) => a.useId.localeCompare(b.useId))); },
+    usesForValue(valueId) {
+      const id = exactStringOrNull(valueId);
+      return Object.freeze((id == null ? [] : usesByValue.get(id) ?? []).slice().sort((a, b) => a.useId.localeCompare(b.useId)));
+    },
   });
 }

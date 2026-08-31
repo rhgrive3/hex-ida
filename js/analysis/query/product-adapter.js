@@ -116,7 +116,7 @@ async function canonicalIdentity(app, options = {}) {
   }
 
   return {
-    binaryId,
+    binaryId: binaryId.trim(),
     projectRevision: nonNegativeSafeInteger(
       project?.revision ?? app?.projectRevision ?? app?.workspace?.bindingRevision,
       0,
