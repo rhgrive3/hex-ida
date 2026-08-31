@@ -187,6 +187,7 @@ export class RuntimeProviderProtocolClient {
     const timeoutMs = boundedInteger(options.timeoutMs, this.timeoutMs, 10, 60000, 'timeoutMs');
     return new Promise((resolve, reject) => {
       const pending = { resolve, reject, signal: options.signal, abort: null, timer: null, epoch: this.epoch };
+      this.pending.set(id, pending);
       pending.timer = setTimeout(() => {
         this.#finish(id, pending, new DebugAdapterError('timeout', `provider request timed out: ${method}`));
         try { this.transport.send(validateProviderPacket({ protocol: RUNTIME_PROVIDER_PROTOCOL, version: 1, type: 'cancel', id, epoch: pending.epoch })); } catch {}
@@ -196,10 +197,13 @@ export class RuntimeProviderProtocolClient {
           this.#finish(id, pending, new DebugAdapterError('cancelled', `provider request cancelled: ${method}`));
           try { this.transport.send(validateProviderPacket({ protocol: RUNTIME_PROVIDER_PROTOCOL, version: 1, type: 'cancel', id, epoch: pending.epoch })); } catch {}
         };
-        if (options.signal.aborted) return pending.abort();
         options.signal.addEventListener('abort', pending.abort, { once: true });
+        if (options.signal.aborted) {
+          pending.abort();
+          return;
+        }
       }
-      this.pending.set(id, pending);
+      if (!this.pending.has(id)) return;
       try { this.transport.send(packet); }
       catch (error) { this.#finish(id, pending, error); }
     });
