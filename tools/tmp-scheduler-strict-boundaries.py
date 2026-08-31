@@ -21,12 +21,9 @@ new="""      for (const signal of active) {
         const listener=()=>finish(reject,abortError(signal),true);
         listeners.push([signal,listener]); signal.addEventListener('abort',listener,{once:true});
       }
+      task.promise.then((value)=>finish(resolve,value),(error)=>finish(reject,error));
       const abortedAfterRegistration=active.find((signal)=>signal.aborted);
-      if (abortedAfterRegistration) {
-        finish(reject,abortError(abortedAfterRegistration),true);
-        return;
-      }
-      task.promise.then((value)=>finish(resolve,value),(error)=>finish(reject,error));"""
+      if (abortedAfterRegistration) finish(reject,abortError(abortedAfterRegistration),true);"""
 if old in s: s=s.replace(old,new,1)
 elif new not in s: raise SystemExit('scheduler abort anchor drift')
 for needle in ["String(descriptor?.artifactId", "String(dependency.descriptor.artifactId)", "indices.get(String(artifactId))"]:
@@ -78,6 +75,7 @@ async function waitFor(predicate, message) {
     (error)=>error?.name==='AbortError',
   );
   assert.ok(checks >= 3);
+  await Promise.resolve();
 }
 
 console.log('phase4 scheduler strict authority boundaries: PASS');
