@@ -6,11 +6,9 @@ export * from './store.js';
 export const PAGED_ARTIFACT_QUERY_VERSION = 'hex-paged-artifact-query-v1';
 
 function nonNegativeSafeInteger(value, code) {
-  if (typeof value !== 'number' && typeof value !== 'string') throw new RangeError(code);
-  if (typeof value === 'string' && !value.trim()) throw new RangeError(code);
-  const number = Number(value);
-  if (!Number.isSafeInteger(number) || number < 0) throw new RangeError(code);
-  return number;
+  if (typeof value !== 'number') throw new RangeError(code);
+  if (!Number.isSafeInteger(value) || value < 0) throw new RangeError(code);
+  return value;
 }
 
 function nonNegativeOffset(value) {
