@@ -61,7 +61,7 @@ export function createAnalysisSurface({
         functionId: ir?.functionId ?? null,
         semanticIrVersion: ir?.contractVersion ?? null,
         memorySsaBuildVersion: memorySsa.buildVersion ?? null,
-        completeness: 'complete',
+        completeness: options.memorySsaBinding?.completeness ?? options.memorySsaCompleteness ?? 'complete',
       },
     }),
   };
