@@ -222,7 +222,10 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
       run.sandbox.emulator.stopped = 'cancelled';
       if (this.activeRun === run) this.cancelled = true;
     };
-    if (options.signal && !options.signal.aborted) options.signal.addEventListener('abort', onAbort, { once:true });
+    if (options.signal && !options.signal.aborted) {
+      options.signal.addEventListener('abort', onAbort, { once:true });
+      if (options.signal.aborted) onAbort();
+    }
     if (run.cancelled) sandbox.emulator.stopped = 'cancelled';
     this.running = true;
     try {

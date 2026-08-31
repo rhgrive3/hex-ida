@@ -1,3 +1,4 @@
+await import('./cancellation-races-2848-2962-2963.mjs');
 import assert from 'node:assert/strict';
 import { createInterventionRecord } from '../js/runtime/evidence-bridge.js';
 import { RuntimeEventNormalizer, createRuntimeEvent } from '../js/runtime/events.js';
