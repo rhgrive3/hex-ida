@@ -1,0 +1,10 @@
+=== scheduler syntax ===
+=== focused test ===
+file:///home/runner/work/hex-ida/hex-ida/tests/phase4/scheduler/strict-authority-boundaries.test.mjs:21
+  release();
+  ^
+
+TypeError: release is not a function
+    at file:///home/runner/work/hex-ida/hex-ida/tests/phase4/scheduler/strict-authority-boundaries.test.mjs:21:3
+
+Node.js v22.23.2
