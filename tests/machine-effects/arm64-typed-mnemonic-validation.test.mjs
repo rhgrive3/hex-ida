@@ -1,27 +1,31 @@
 import assert from 'node:assert/strict';
-import { parseOperands } from '../../js/arm64.js';
+import { parseOperands } from '../../js/targets/architecture/arm64/decoder.js';
 import { ARM64_ARCHITECTURE, ARM64E_ARCHITECTURE } from '../../js/targets/architecture/index.js';
 import { liftArm64MachineEffects } from '../../js/targets/architecture/arm64/effects/index.js';
 
 const origin = (id) => ({ instructionIds:[id] });
 
 function arm64(id, mnemonic) {
+  const operands = 'x0, x1, x2';
   return {
     instructionId:id,
     mnemonic,
+    operands,
     mode:'a64',
-    ops:parseOperands('x0, x1, x2'),
+    ops:parseOperands(operands),
     origin:origin(id),
   };
 }
 
 function arm64e(id, mnemonic, opcode = undefined) {
+  const operands = 'x0, x1';
   return {
     instructionId:id,
     mnemonic,
     ...(opcode === undefined ? {} : { opcode }),
+    operands,
     mode:'a64',
-    ops:parseOperands('x0, x1'),
+    ops:parseOperands(operands),
     origin:origin(id),
   };
 }
@@ -70,11 +74,13 @@ assert.equal(
 
 // Preserve the legacy adapter boundary where mnemonic is absent and a
 // canonical string opcode is the only identity supplied.
+const opcodeOperands = 'x0, x1';
 const opcodeOnly = ARM64E_ARCHITECTURE.liftExact({
   instructionId:'opcode-only-pacia',
   opcode:'PACIA',
+  operands:opcodeOperands,
   mode:'a64',
-  ops:parseOperands('x0, x1'),
+  ops:parseOperands(opcodeOperands),
   origin:origin('opcode-only-pacia'),
 });
 assert.ok(opcodeOnly, 'string opcode fallback must remain supported when mnemonic is absent');
