@@ -1,0 +1,32 @@
+name: One-shot ARM64 structured evidence 2807 2866
+on:
+  push:
+    branches: [fix/arm64-system-selectors-current-2809-2866]
+permissions:
+  contents: write
+jobs:
+  materialize:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/arm64-system-selectors-current-2809-2866
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: python3 tools/one-shot-arm64-structured-2807-2866.py
+      - run: node --check js/targets/architecture/arm64/effects/common.js && node --check js/targets/architecture/arm64/effects/addressing.js && node --check js/targets/architecture/arm64/effects/index.js && node --check js/targets/architecture/arm64/effects/integer.js && node --check js/targets/architecture/arm64/effects/system.js
+      - run: node tests/machine-effects/arm64-structured-shift-validation.test.mjs
+      - run: node tests/machine-effects/arm64-system-selector-strict-validation.test.mjs
+      - run: node tests/machine-effects/arm64-memory-register-identity.test.mjs
+      - run: git diff --check
+      - name: Commit clean result
+        run: |
+          rm .github/workflows/one-shot-arm64-structured-2807-2866.yml tools/one-shot-arm64-structured-2807-2866.py
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m "fix(arm64): harden structured shift and system selectors"
+          git push
