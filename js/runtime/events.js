@@ -29,12 +29,10 @@ function required(value, code, message) {
 
 function safeInteger(value, fallback, name, { min = 0 } = {}) {
   if (value == null) return fallback;
-  if (typeof value !== 'number' && !(typeof value === 'string' && value.trim() !== '')) {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < min) {
     throw new DebugAdapterError('runtime-invalid-event-integer', `${name} must be a safe integer >= ${min}`);
   }
-  const n = Number(value);
-  if (!Number.isSafeInteger(n) || n < min) throw new DebugAdapterError('runtime-invalid-event-integer', `${name} must be a safe integer >= ${min}`);
-  return n;
+  return value;
 }
 
 function optionalText(value) { return value == null ? null : String(value); }
@@ -55,8 +53,10 @@ function arrayOfStrings(value, name) {
 }
 
 function normalizeCompleteness(value, fallback = 'partial') {
-  const completeness = String(value ?? fallback);
-  if (!EVIDENCE_COMPLETENESS.includes(completeness)) throw new DebugAdapterError('runtime-invalid-completeness', `invalid runtime completeness: ${completeness}`);
+  const completeness = value ?? fallback;
+  if (typeof completeness !== 'string' || !EVIDENCE_COMPLETENESS.includes(completeness)) {
+    throw new DebugAdapterError('runtime-invalid-completeness', 'runtime completeness must be a supported string');
+  }
   return completeness;
 }
 
@@ -67,8 +67,10 @@ function normalizeKind(value) {
 }
 
 function normalizeMode(value) {
-  const mode = String(value ?? 'observed');
-  if (!RUNTIME_OBSERVATION_MODES.includes(mode)) throw new DebugAdapterError('runtime-invalid-observation-mode', `invalid runtime observation mode: ${mode}`);
+  const mode = value ?? 'observed';
+  if (typeof mode !== 'string' || !RUNTIME_OBSERVATION_MODES.includes(mode)) {
+    throw new DebugAdapterError('runtime-invalid-observation-mode', 'runtime observation mode must be a supported string');
+  }
   return mode;
 }
 
@@ -81,7 +83,8 @@ function dedupeIdentity(input) {
 export function createRuntimeEvent(input = {}) {
   const runtimeSessionId = required(input.runtimeSessionId, 'runtime-session-id-required', 'runtime event requires runtimeSessionId');
   const providerId = required(input.providerId, 'runtime-provider-required', 'runtime event requires providerId');
-  const providerVersion = String(input.providerVersion ?? '1');
+  const providerVersion = input.providerVersion ?? '1';
+  if (typeof providerVersion !== 'string') throw new DebugAdapterError('runtime-invalid-provider-version', 'providerVersion must be a string');
   const sessionEpoch = safeInteger(input.sessionEpoch, 1, 'sessionEpoch', { min: 1 });
   const sequence = input.sequence == null ? null : safeInteger(input.sequence, null, 'sequence');
   const moduleGeneration = input.moduleGeneration == null ? null : safeInteger(input.moduleGeneration, null, 'moduleGeneration', { min: 1 });
@@ -136,7 +139,8 @@ export function normalizeLegacyRuntimeEvent(input, context = {}) {
     ? (input.data && typeof input.data === 'object' && !Array.isArray(input.data) ? input.data : {})
     : (input && input.type === 'event' && input.event ? input.event : input);
   if (!source || typeof source !== 'object') throw new DebugAdapterError('runtime-invalid-event', 'legacy runtime event must be an object');
-  const legacyType = protocolEnvelope ? input.event : String(source.kind ?? source.type ?? 'trace-marker');
+  const rawLegacyType = protocolEnvelope ? input.event : (source.kind ?? source.type ?? 'trace-marker');
+  const legacyType = typeof rawLegacyType === 'string' ? rawLegacyType : 'trace-marker';
   const kindMap = {
     branch: 'basic-block',
     trace: 'trace-marker',

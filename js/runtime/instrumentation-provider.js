@@ -224,11 +224,23 @@ export class InstrumentationProvider {
     session.facets = Object.freeze({ instrumentation });
     session.setState('ready');
     this.activeSession = session;
+    let epochTransitionPending = false;
+    const commitEpoch = (reason) => {
+      const committed = session.newEpoch(reason);
+      normalizer.resetEpoch(committed);
+      return committed;
+    };
     session.newProviderEpoch = (reason = 'instrumentation-provider-epoch-changed') => {
-      const next = session.newEpoch(reason);
-      normalizer.resetEpoch(next);
-      if (typeof this.backend.setEpoch === 'function') this.backend.setEpoch(next);
-      return next;
+      if (session.closed) throw new DebugAdapterError('runtime-session-closed', 'runtime provider session is closed');
+      if (epochTransitionPending) throw new DebugAdapterError('runtime-epoch-transition-active', 'instrumentation provider epoch transition is already in progress');
+      const next = session.epoch + 1;
+      if (typeof this.backend.setEpoch !== 'function') return commitEpoch(reason);
+      const backendResult = this.backend.setEpoch(next);
+      if (!backendResult || typeof backendResult.then !== 'function') return commitEpoch(reason);
+      epochTransitionPending = true;
+      return Promise.resolve(backendResult)
+        .then(() => commitEpoch(reason))
+        .finally(() => { epochTransitionPending = false; });
     };
     return session;
   }

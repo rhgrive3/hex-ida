@@ -15,8 +15,8 @@ export class HypothesisStore {
   upsert(input = {}, authority = null) {
     const now = new Date().toISOString();
     let id;
-    if (input.id) {
-      id = String(input.id);
+    if (typeof input.id === 'string' && input.id) {
+      id = input.id;
     } else {
       // Explicit IDs restored from persistence may occupy generated sequence slots.
       do id = `hyp_${sequence++}`;
@@ -72,26 +72,27 @@ export class HypothesisStore {
   }
 
   reject(id, contradictionEvidenceIds = []) {
-    const current = this.records.get(String(id));
+    if (typeof id !== 'string') return null;
+    const current = this.records.get(id);
     if (!current) return null;
     return this.upsert({ ...current, status: 'rejected', contradictionEvidenceIds }, DETERMINISTIC_HYPOTHESIS);
   }
 
   verify(id, evidenceIds) {
-    const current = this.records.get(String(id));
+    if (typeof id !== 'string') return null;
+    const current = this.records.get(id);
     if (!current) return null;
     return this.upsert({ ...current, status: 'verified', supportEvidenceIds: evidenceIds }, DETERMINISTIC_HYPOTHESIS);
   }
 
-  get(id) { return this.records.get(String(id)) || null; }
+  get(id) { return typeof id === 'string' ? this.records.get(id) || null : null; }
   all() { return Array.from(this.records.values()); }
 }
 
 function knownIds(ids, store) {
-  return Array.from(new Set((Array.isArray(ids) ? ids : []).map(String).filter((id) => store && store.has(id))));
+  return Array.from(new Set((Array.isArray(ids) ? ids : []).filter((id) => typeof id === 'string' && store && store.has(id))));
 }
 
 function clamp(value) {
-  const n = Number(value);
-  return Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : 0.5;
+  return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0.5;
 }
