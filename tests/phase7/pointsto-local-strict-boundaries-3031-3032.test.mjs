@@ -58,4 +58,27 @@ for (const malformed of [
   assertNoExactOffset(analyzeStackDisjointWithConstant(malformed).pointsTo.get('p8'), 8n);
 }
 
+function analyzeSameWidthCast(widthBits) {
+  const built = buildFixture('provenance-loss');
+  const mutatedIr = structuredClone(built.ir);
+  const narrowed = mutatedIr.values.find((item) => item.id === 'narrowed');
+  narrowed.machineType.widthBits = widthBits;
+  return analyzeLocalPointsTo(mutatedIr, built.cfg, built.ssa);
+}
+
+// #3031: an explicit numeric same-width cast keeps provenance; non-number widths cannot imitate it.
+const validWidth = analyzeSameWidthCast(64).pointsTo.get('widened');
+assert.equal(validWidth.top, false, 'explicit numeric width must preserve existing same-width semantics');
+assert.ok(validWidth.targets.length > 0, 'valid same-width cast must retain pointer provenance');
+for (const malformedWidth of [
+  '64',
+  ['64'],
+  [64],
+  true,
+  { valueOf(){ return 64; } },
+]) {
+  const set = analyzeSameWidthCast(malformedWidth).pointsTo.get('widened');
+  assert.equal(set.top, true, 'non-number width must not preserve exact pointer provenance');
+}
+
 console.log('phase7 pointsto local strict boundaries: PASS');
