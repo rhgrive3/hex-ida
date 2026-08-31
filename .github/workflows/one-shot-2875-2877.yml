@@ -1,0 +1,39 @@
+name: One-shot Phase7 strict inputs 2875 2877
+on:
+  push:
+    branches: [fix/2875-2877-p7-strict-inputs]
+    paths: [.github/workflows/one-shot-2875-2877.yml]
+permissions:
+  contents: write
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/2875-2877-p7-strict-inputs
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - name: Apply repair
+        run: python3 tools/tmp-2875-2877.py
+      - name: Focused regression
+        run: |
+          node tests/phase7/issues-2875-2877-strict-inputs.mjs
+          npm run phase7:test
+      - name: Syntax check
+        run: |
+          node --check js/analysis/debug/provider.js
+          node --check js/analysis/query/product-surface.js
+      - name: Commit repair
+        shell: bash
+        run: |
+          rm -f tools/tmp-2875-2877.py .github/workflows/one-shot-2875-2877.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m 'fix(analysis): reject coerced authority and query inputs (#2875 #2877)'
+          git push origin HEAD:fix/2875-2877-p7-strict-inputs
