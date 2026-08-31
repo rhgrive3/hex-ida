@@ -155,7 +155,7 @@ for (const opt of opts) {
     try {
       const rowMap = new Map(model.instructions.map((x) => [x.address.toString(), x.row]));
       const returnType = fn === 'extract8' || fn === 'bool_i32' ? 'uint32' : 'int32';
-      const result = decompile(model, { name:fn, addr:model.instructions[0].address, rowOfAddress:(a)=>rowMap.get(a?.toString()) ?? null, returnType, abiAdapter:compilerTruthAbiAdapter, decompilerTimeBudgetMs:120 });
+      const result = decompile(model, { name:fn, addr:model.instructions[0].address, rowOfAddress:(a)=>rowMap.get(a?.toString()) ?? null, returnType, abiAdapter:compilerTruthAbiAdapter, decompilerTimeBudgetMs:120, deterministicTransforms:true });
       perFunction.push(checkExpected(fn, result, opt === '-O2' || opt === '-O3'));
     } catch (error) {
       perFunction.push({ function:fn, failure:error?.message || String(error) });
@@ -173,11 +173,22 @@ max_prebuilt:
 const prebuilt = parseFunction(prebuiltAsm, 'max_prebuilt', 0x200000n);
 assert.ok(prebuilt);
 const preMap = new Map(prebuilt.instructions.map((x) => [x.address.toString(), x.row]));
-const preResult = decompile(prebuilt, { name:'max_prebuilt', addr:0x200000n, returnType:'int32', rowOfAddress:(a)=>preMap.get(a?.toString()) ?? null, abiAdapter:compilerTruthAbiAdapter, decompilerTimeBudgetMs:120 });
+const preResult = decompile(prebuilt, { name:'max_prebuilt', addr:0x200000n, returnType:'int32', rowOfAddress:(a)=>preMap.get(a?.toString()) ?? null, abiAdapter:compilerTruthAbiAdapter, decompilerTimeBudgetMs:120, deterministicTransforms:true });
 assert.ok(preResult.semanticAst && preResult.cAst && preResult.sourceMap?.length, 'prebuilt compiler-truth pipeline missing AST/source map');
 assert.match(preResult.pseudocode, /max\(/, `prebuilt max recovery failed\n${preResult.pseudocode}`);
 const preTruth = semanticTruth('max_i32', preResult);
 assert.equal(preTruth.equivalent, true, JSON.stringify(preTruth));
+// The wall-clock rewrite valve is a production constraint, but it made the
+// rewrite fixed point depend on machine speed: the same csel rendered as
+// max(...) on a fast host and as a raw ternary under CI load. Compiler-truth
+// proof output must be a function of the input, so every decompile call in
+// these suites passes `deterministicTransforms: true`; the sweep below is the
+// regression that fails again if a call drops that flag.
+for (const timeBudgetMs of [120, 60, 30]) {
+  const swept = decompile(prebuilt, { name:'max_prebuilt', addr:0x200000n, returnType:'int32', rowOfAddress:(a)=>preMap.get(a?.toString()) ?? null, abiAdapter:compilerTruthAbiAdapter, decompilerTimeBudgetMs:timeBudgetMs, deterministicTransforms:true });
+  assert.equal(swept.pseudocode, preResult.pseudocode, `prebuilt output must not depend on the wall-clock rewrite valve (budget ${timeBudgetMs}ms)`);
+  assert.match(swept.pseudocode, /max\(/, `prebuilt max recovery failed under deterministic rewrite (budget ${timeBudgetMs}ms)\n${swept.pseudocode}`);
+}
 
 function ghidraFunction(functionsMap, name) {
   return functionsMap?.[name] || functionsMap?.['_' + name] || null;
