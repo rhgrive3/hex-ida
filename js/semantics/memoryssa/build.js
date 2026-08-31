@@ -121,7 +121,8 @@ function callResolver(resolver, memory, context, fallback) {
 }
 function normalizeAliasResult(raw) {
   const relation = typeof raw === 'string' ? raw : raw?.relation ?? raw?.aliasRelation;
-  const normalized = relation == null ? 'unknown' : String(relation);
+  if (relation != null && typeof relation !== 'string') fail('memory-ssa-build-invalid-alias-relation');
+  const normalized = relation ?? 'unknown';
   if (!ALIAS_RELATIONS.has(normalized)) fail('memory-ssa-build-invalid-alias-relation');
   const proof = raw && typeof raw === 'object' && !Array.isArray(raw)
     ? jsonSafe({
