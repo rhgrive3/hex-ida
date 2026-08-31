@@ -127,7 +127,9 @@ function canonicalLocationBase(value, active = new Set()) {
   const trace = exactViewTrace(value);
   let root = trace?.root ?? value;
   const def = root?.def;
-  if (def?.op === OP.PHI && Array.isArray(def.incoming) && def.incoming.length) {
+  if (def?.op === OP.LOAD && def.reachingStore?.args?.[0]?.value) {
+    root = canonicalLocationBase(def.reachingStore.args[0].value, active) ?? root;
+  } else if (def?.op === OP.PHI && Array.isArray(def.incoming) && def.incoming.length) {
     const roots = def.incoming.map((item) => canonicalLocationBase(item.value, new Set(active))).filter(Boolean);
     const first = roots[0] ?? null;
     if (first && roots.every((candidate) => candidate.id === first.id)) root = first;

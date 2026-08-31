@@ -277,9 +277,11 @@ export function attachMemorySsa(projected, memorySsa, valuesById, instructionByS
         // MemorySSA store may still be retained as legacy structural metadata
         // for compatibility.  All exact consumers independently reject this
         // pointer and require the branded forwarding fact.
-        if (!compatibilityStore) delete source.reachingStore;
-        source.memoryAliasRelation = 'unknown';
-        source.unknownAliasBarrier = source.unknownAliasBarrier ?? source.memUse ?? null;
+        if (!compatibilityStore) {
+          delete source.reachingStore;
+          source.memoryAliasRelation = 'unknown';
+          source.unknownAliasBarrier = source.unknownAliasBarrier ?? source.memUse ?? null;
+        }
       }
     }
     // A proof-bearing artifact with no canonical use for a projected load is a
