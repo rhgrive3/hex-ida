@@ -1,0 +1,74 @@
+name: Materialize 3145 typed mnemonic
+on:
+  push:
+    branches:
+      - fix/3145-arm64-typed-mnemonic
+permissions:
+  contents: write
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/3145-arm64-typed-mnemonic
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Apply focused typed-mnemonic changes
+        shell: python
+        run: |
+          from pathlib import Path
+
+          for filename in [
+            'js/targets/architecture/arm64e/encoding.js',
+            'js/targets/architecture/arm64e/effects.js',
+          ]:
+            p = Path(filename)
+            s = p.read_text()
+            old = """function mnemonicOf(decoded) {
+            return String(decoded?.mnemonic ?? decoded?.opcode ?? '').trim().toLowerCase();
+          }
+          """.replace('          ', '')
+            new = """function mnemonicOf(decoded) {
+            const raw = decoded?.mnemonic ?? decoded?.opcode;
+            return typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+          }
+          """.replace('          ', '')
+            assert s.count(old) == 1, f'{filename}: expected exactly one mnemonicOf coercion, got {s.count(old)}'
+            p.write_text(s.replace(old, new))
+
+          p = Path('js/targets/architecture/index.js')
+          s = p.read_text()
+          old = """function arm64ControlFlow(instruction) {
+            const op = String(instruction?.mnemonic || '').toLowerCase();
+          """.replace('          ', '')
+          new = """function arm64ControlFlow(instruction) {
+            const raw = instruction?.mnemonic;
+            const op = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+          """.replace('          ', '')
+          assert s.count(old) == 1, f'architecture index: expected one ARM64 control coercion, got {s.count(old)}'
+          p.write_text(s.replace(old, new))
+      - name: Focused regression and lint
+        run: |
+          node tests/machine-effects/arm64-typed-mnemonic-validation.test.mjs
+          node tests/machine-effects/arm64e-pointer-authentication.test.mjs
+          node --check js/targets/architecture/arm64/effects/common.js
+          node --check js/targets/architecture/arm64e/encoding.js
+          node --check js/targets/architecture/arm64e/effects.js
+          node --check js/targets/architecture/index.js
+      - name: Commit production repair
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add js/targets/architecture/arm64/effects/common.js \
+            js/targets/architecture/arm64e/encoding.js \
+            js/targets/architecture/arm64e/effects.js \
+            js/targets/architecture/index.js \
+            tests/machine-effects/arm64-typed-mnemonic-validation.test.mjs
+          git diff --cached --check
+          git commit -m 'fix(arm64e): require typed mnemonic identity (#3145)'
+          git push origin HEAD:fix/3145-arm64-typed-mnemonic
