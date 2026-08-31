@@ -14,7 +14,10 @@ const uxCss = read('css/ux.css');
 const shell = read('css/shell.css');
 const mobile = read('css/mobile.css');
 const components = read('css/components.css');
-const product = read('js/ui/product.js');
+// Product Results is now a bounded canonical-query migration wrapper around the
+// unchanged product shell. Keep the architecture assertions across both owned
+// modules rather than weakening them to match only the facade file.
+const product = read('js/ui/product.js') + '\n' + read('js/ui/product-base.js');
 const registry = read('js/ui/registry.js');
 let failures = 0;
 

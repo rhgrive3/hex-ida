@@ -82,7 +82,7 @@ function testCanonicalWiring() {
     'function search must not rebuild a frontend-private whole-function index');
   assert.match(explorer, /analysisQueries\.functions/, 'function search must use AnalysisQueryAPI');
 
-  const product = source('js/ui/product.js');
+  const product = source('js/ui/product.js') + '\n' + source('js/ui/product-base.js');
   assert.doesNotMatch(product, /function functionSource\(app\)/, 'Product Explorer must not keep a direct recognition/symbol function source');
   assert.match(product, /async function matchingFunctionItems[\s\S]*return queryFunctions\(app, q, options\);/,
     'empty and filtered Product function views must share the canonical query path');
