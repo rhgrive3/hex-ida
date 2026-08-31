@@ -1,0 +1,30 @@
+name: one-shot-2420-stage2-lock-run11
+on:
+  push:
+    branches: [fix/2420-stage2-p12-lock-run11]
+permissions:
+  contents: write
+jobs:
+  rebuild:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Rebuild canonical denominator lock
+        run: node tools/validation/stage2/build-profile-denominator-lock.mjs
+      - name: Verify focused inventory contract before commit
+        run: node tests/stage2/profile-denominator-inventory.test.mjs
+      - name: Commit canonical output and remove one-shot workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm .github/workflows/one-shot-2420-stage2-lock-run11.yml
+          git add tools/validation/stage2/profile-denominators.lock.json
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git commit -m "fix(stage2): refresh P12 denominator lock recurrence (#2420)"
+          git push origin HEAD:fix/2420-stage2-p12-lock-run11
