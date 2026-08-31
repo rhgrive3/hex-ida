@@ -59,6 +59,11 @@ function big(value) {
   catch { return null; }
 }
 
+/**
+ * A closed signed interval, or an unbounded end when a bound is `null`.
+ * `exact` records that the range is a single proven value, which is what
+ * `must` answers require.
+ */
 export function createOffsetRange(min, max) {
   const lo = big(min);
   const hi = big(max);
@@ -86,6 +91,11 @@ export function joinRange(a, b) {
   return createOffsetRange(min, max);
 }
 
+/**
+ * Widening: any end that moved outward since the previous iteration is thrown
+ * to infinity. This is what guarantees termination for loop-carried pointer
+ * phis, and it always loses precision in the safe direction.
+ */
 export function widenRange(previous, next) {
   if (previous == null) return next;
   let min = next.min;
@@ -95,6 +105,11 @@ export function widenRange(previous, next) {
   return createOffsetRange(min, max);
 }
 
+/**
+ * Signed bounds representable at `widthBits`. Used to detect the case where a
+ * machine-width add could have wrapped; a wrapped offset cannot be compared as
+ * an interval.
+ */
 function signedBounds(widthBits) {
   const bits = Number(widthBits);
   if (!Number.isSafeInteger(bits) || bits <= 1 || bits > 512) return null;
@@ -102,6 +117,13 @@ function signedBounds(widthBits) {
   return { min: -half, max: half - 1n };
 }
 
+/**
+ * Checked range addition.
+ *
+ * Returns `{ range, lost }`. `lost` is set when the result could have wrapped
+ * at the pointer width, in which case the range is unbounded and the caller
+ * must record provenance loss instead of silently keeping a small interval.
+ */
 export function addRange(range, delta, widthBits) {
   const d = big(delta);
   if (d == null) return { range: UNBOUNDED_RANGE, lost: 'non-linear-arithmetic' };
@@ -119,6 +141,7 @@ export function addRange(range, delta, widthBits) {
   return { range: createOffsetRange(min, max), lost: null };
 }
 
+/** Adds two ranges (pointer + ranged index). */
 export function addRanges(a, b, widthBits) {
   if (rangeIsUnbounded(a) || rangeIsUnbounded(b)) {
     return { range: UNBOUNDED_RANGE, lost: null };
@@ -132,6 +155,13 @@ export function addRanges(a, b, widthBits) {
   return { range: createOffsetRange(min, max), lost: null };
 }
 
+/**
+ * Interval relation between two accesses at the same root.
+ *
+ * `sizeA`/`sizeB` are access widths in bytes. Anything unbounded is `may`; an
+ * exact match of both position and width is `must`; provable non-overlap is
+ * `no`.
+ */
 export function rangeRelation(a, sizeA, b, sizeB) {
   const wa = big(sizeA);
   const wb = big(sizeB);
@@ -142,6 +172,7 @@ export function rangeRelation(a, sizeA, b, sizeB) {
     if (a.min + wa <= b.min || b.min + wb <= a.min) return 'no';
     return 'may';
   }
+  // Non-exact ranges: separation needs the whole spans to miss each other.
   if (a.max + wa <= b.min || b.max + wb <= a.min) return 'no';
   return 'may';
 }
@@ -158,6 +189,7 @@ function rootKeyOf(target) {
   });
 }
 
+/** One (root, offset-range) member of a points-to set. */
 export function createPointsToTarget(input = {}) {
   const target = {
     addressSpace: String(input.addressSpace ?? 'memory'),
@@ -175,10 +207,19 @@ export function createPointsToTarget(input = {}) {
   return deepFreeze(target);
 }
 
+/**
+ * A points-to set.
+ *
+ * `top` and an empty `targets` list are different things and must stay
+ * different: `top` means "anywhere", empty means "nothing has flowed here yet".
+ */
 export function createPointsToSet(input = {}) {
   const top = input.top === true;
   const targets = top ? [] : [...(input.targets ?? [])].sort((a, b) => a.rootKey.localeCompare(b.rootKey));
   const lossReasons = [...new Set(input.lossReasons ?? [])].sort();
+  // A loss reason outside the declared vocabulary would be an unexplainable
+  // imprecision: the alias layer maps these onto proof reasons, and a free-form
+  // string there becomes an answer nobody can account for.
   for (const reason of lossReasons) {
     if (!PROVENANCE_LOSS_REASONS.includes(reason)) fail(`points-to-unknown-loss-reason:${reason}`);
   }
@@ -198,6 +239,11 @@ export function pointsToIsBottom(set) {
   return !set.top && set.targets.length === 0;
 }
 
+/**
+ * Set join. Same-root targets merge their ranges; distinct roots accumulate
+ * until the target cap, at which point the set collapses to TOP rather than
+ * silently dropping a target (dropping one would falsely prove separation).
+ */
 export function joinPointsTo(a, b, budget = POINTS_TO_DEFAULT_BUDGET) {
   if (a.top || b.top) {
     return createPointsToSet({ top: true, lossReasons: [...a.lossReasons, ...b.lossReasons] });
@@ -222,6 +268,7 @@ export function joinPointsTo(a, b, budget = POINTS_TO_DEFAULT_BUDGET) {
   });
 }
 
+/** Widening applied at loop headers once the iteration threshold is passed. */
 export function widenPointsTo(previous, next, budget = POINTS_TO_DEFAULT_BUDGET) {
   if (next.top) return next;
   if (previous == null) return next;
@@ -232,6 +279,9 @@ export function widenPointsTo(previous, next, budget = POINTS_TO_DEFAULT_BUDGET)
     const prior = priorByRoot.get(target.rootKey);
     if (!prior) return target;
     const widenedRange = widenRange(prior.offsetRange, target.offsetRange);
+    // Compare by value, not by object identity: widenRange always allocates,
+    // so an identity check would report every stable range as widened and the
+    // fixed point would never look converged.
     if (widenedRange.min !== target.offsetRange.min || widenedRange.max !== target.offsetRange.max) {
       anyWidened = true;
     }
@@ -246,6 +296,7 @@ export function widenPointsTo(previous, next, budget = POINTS_TO_DEFAULT_BUDGET)
   });
 }
 
+/** Structural equality, used as the fixed-point stop condition. */
 export function pointsToEqual(a, b) {
   if (a === b) return true;
   if (a == null || b == null) return false;
@@ -265,6 +316,10 @@ export function pointsToDigest(set) {
   });
 }
 
+/**
+ * Monotonicity check used by the property tests: a join must never be lower in
+ * the lattice than either input.
+ */
 export function pointsToLessOrEqual(a, b) {
   if (b.top) return true;
   if (a.top) return false;
