@@ -1,18 +1,25 @@
 import assert from 'node:assert/strict';
 import { ARM64E_ARCHITECTURE } from '../../js/targets/architecture/index.js';
+import { liftArm64eEffects } from '../../js/targets/architecture/arm64e/effects.js';
 
 let sequence = 0;
-function lift(mnemonic, ops) {
+function decoded(mnemonic, ops) {
   sequence += 1;
   const instructionId = `arm64e-register-identity-${sequence}`;
-  return ARM64E_ARCHITECTURE.liftExact({
+  return {
     instructionId,
     mnemonic,
     ops,
     mode:'arm64e',
     address:0x12000n + BigInt(sequence * 4),
     origin:{ instructionIds:[instructionId] },
-  });
+  };
+}
+function lift(mnemonic, ops) {
+  return ARM64E_ARCHITECTURE.liftExact(decoded(mnemonic, ops));
+}
+function liftDirect(mnemonic, ops) {
+  return liftArm64eEffects(decoded(mnemonic, ops));
 }
 
 function gp(num, text = `x${num}`) {
@@ -42,6 +49,14 @@ function assertIdentityContradictionFailClosed(mnemonic, ops) {
   assert.equal(bundle.metadata?.encodingValidation, 'operand-register-class', `${mnemonic}: contradiction is rejected by finite operand validation`);
   assert.equal(bundle.operations.length, 0, `${mnemonic}: contradiction produces no definite operations`);
   assert.match(bundle.unknownEffects?.reason || '', /^arm64e-.*-operand-register-class-invalid$/, `${mnemonic}: contradiction has explicit validation reason`);
+}
+
+function assertDirectWidthFailClosed(mnemonic, ops) {
+  const bundle = liftDirect(mnemonic, ops);
+  assert.ok(bundle, `${mnemonic}: direct ARM64e owner remains explicit`);
+  assert.equal(bundle.completeness, 'partial', `${mnemonic}: direct malformed width is partial`);
+  assert.ok(bundle.operations.length > 0, `${mnemonic}: direct owner reports unknown evidence`);
+  assert.ok(bundle.operations.every((operation) => operation.kind === 'unknown'), `${mnemonic}: direct malformed width emits no definite operation`);
 }
 
 // Canonical structured identity and presentation aliases that denote the same
@@ -92,6 +107,23 @@ assertIdentityContradictionFailClosed('pacia', [
   { k:'reg', cls:'zr', num:0, bits:64, text:'xzr' },
   sp(),
 ]);
+
+// Explicit canonical widths are typed decoder evidence. Never coerce malformed
+// structured values into the A64 X-register width accepted by the finite gate.
+for (const bits of ['64', [64], true, false, {}, 64.5, NaN, Infinity, -Infinity, 32, 128]) {
+  const paciaOps = [{ ...gp(0), bits }, gp(2)];
+  const braaOps = [{ ...gp(16), bits }, sp()];
+  assertIdentityContradictionFailClosed('pacia', paciaOps);
+  assertIdentityContradictionFailClosed('braa', braaOps);
+  assertDirectWidthFailClosed('pacia', paciaOps);
+  assertDirectWidthFailClosed('braa', braaOps);
+}
+const valueOfWidthOps = [{ ...gp(0), bits:{ valueOf(){ return 64; } } }, gp(2)];
+assertIdentityContradictionFailClosed('pacia', valueOfWidthOps);
+assertDirectWidthFailClosed('pacia', valueOfWidthOps);
+const redundantWidthOps = [gp(0), { ...gp(1), widthBits:'64' }, sp()];
+assertIdentityContradictionFailClosed('pacga', redundantWidthOps);
+assertDirectWidthFailClosed('pacga', redundantWidthOps);
 
 // effects.js prefers registerId/register/reg/name over text. Pin that exact
 // selection order too so a higher-priority conflicting identity cannot bypass
