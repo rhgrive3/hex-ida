@@ -12,6 +12,7 @@ function operationController(session, externalSignal) {
     else {
       listener = () => controller.abort(externalSignal.reason ?? 'cancelled');
       externalSignal.addEventListener('abort', listener, { once:true });
+      if (externalSignal.aborted) controller.abort(externalSignal.reason ?? 'cancelled');
     }
   }
   return {
