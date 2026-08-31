@@ -1,0 +1,59 @@
+name: One-shot ARM64 sysreg selector 2809 run11
+on:
+  push:
+    branches: [fix/2809-arm64-sysreg-current-run11]
+permissions:
+  contents: write
+jobs:
+  materialize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Apply focused sysreg text repair
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('js/targets/architecture/arm64/effects/system.js')
+          s=p.read_text()
+          old="""function sysRegText(op) {
+            if (!hasNoOperandModifier(op)) return null;
+            const text = String(op?.text || '').trim().toLowerCase();
+            return /^[a-z][a-z0-9_]*$/.test(text) ? text : null;
+          }"""
+          new="""function sysRegText(op) {
+            if (!hasNoOperandModifier(op) || typeof op?.text !== 'string') return null;
+            const text = op.text.trim().toLowerCase();
+            return /^[a-z][a-z0-9_]*$/.test(text) ? text : null;
+          }"""
+          if old not in s: raise SystemExit('sysRegText anchor drift')
+          p.write_text(s.replace(old,new,1))
+          Path('tests/machine-effects/arm64-system-register-text-validation.test.mjs').write_text(r'''import assert from 'node:assert/strict';
+          import { liftArm64MachineEffects } from '../../js/targets/architecture/arm64/effects/index.js';
+          let seq=0;
+          const gp=(num)=>({k:'reg',cls:'gp',num,bits:64,text:`x${num}`});
+          const sys=(text,extra={})=>({k:'sysreg',text,...extra});
+          function lift(mnemonic,ops){const instructionId=`sysreg:${++seq}`;return liftArm64MachineEffects({instructionId,mnemonic,mode:'a64',ops,origin:{instructionIds:[instructionId]}});}
+          function failClosed(bundle,label){assert.ok(bundle,label);assert.equal(bundle.completeness,'partial',label);assert.equal(bundle.operations.some(op=>['register-read','register-write','intrinsic'].includes(op.kind)),false,label);}
+          for(const [mnemonic,ops] of [['mrs',[gp(0),sys('nzcv')]],['msr',[sys('nzcv'),gp(0)]],['mrs',[gp(0),sys('fpcr')]],['mrs',[gp(0),sys('tpidr_el0')]],['mrs',[gp(0),sys('s3_0_c15_c0_0')]]]) { const r=lift(mnemonic,ops); assert.ok(r); assert.notEqual(r.completeness,'partial'); }
+          for(const bad of [{toString(){return 'nzcv';}},['nzcv'],true,1,null,'','   ','nzcv!']) { failClosed(lift('mrs',[gp(0),sys(bad)]),`MRS malformed ${String(bad)}`); failClosed(lift('msr',[sys(bad),gp(0)]),`MSR malformed ${String(bad)}`); }
+          failClosed(lift('mrs',[gp(0),sys('nzcv',{shift:{op:'lsl',amount:1}})]),'modified sysreg');
+          console.log('arm64 system register text #2809: PASS');
+          ''')
+          PY
+      - run: node --check js/targets/architecture/arm64/effects/system.js
+      - run: node tests/machine-effects/arm64-system-register-text-validation.test.mjs
+      - run: node tests/machine-effects/run.mjs
+      - run: git diff --check
+      - name: Commit production result
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git rm .github/workflows/one-shot-2809-sysreg-run11.yml
+          git add js/targets/architecture/arm64/effects/system.js tests/machine-effects/arm64-system-register-text-validation.test.mjs
+          git commit -m 'fix(arm64): require string system-register selectors (#2809)'
+          git push
