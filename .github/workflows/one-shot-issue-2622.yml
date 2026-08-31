@@ -1,0 +1,78 @@
+name: One-shot issue 2622 startup split
+on:
+  push:
+    branches: [fix/all-unlinked-issues-20260831]
+permissions:
+  contents: write
+jobs:
+  materialize:
+    if: github.actor == 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/all-unlinked-issues-20260831
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Require completed strict-boundary predecessor
+        shell: bash
+        run: |
+          test ! -e tools/one-shot-unlinked-strict-boundaries.py
+          test ! -e .github/workflows/one-shot-unlinked-strict-boundaries.yml
+          test -f tools/one-shot-issue-2622.py
+      - name: Materialize issue 2622 split
+        run: python3 tools/one-shot-issue-2622.py
+      - name: Syntax and deterministic startup graph
+        run: |
+          node --check js/app.js
+          node --check js/tools.js
+          node --check js/tools-base.js
+          node --check js/panels.js
+          node --check js/plugin-host.js
+          node --check js/plugins.js
+          node --check js/patch-set.js
+          node --check js/patch.js
+          node --check js/rtti-names.js
+          node --check js/rtti.js
+          node --check js/ui/panels/welcome.js
+          node --check tools/validation/startup-module-graph.mjs
+          node tests/issue-2622-startup-boundary.mjs
+          node tests/test-lazy-tools-panels-boundary.mjs
+          node tools/validation/startup-module-graph.mjs js/app.js
+      - name: UI, tools, module and plugin regressions
+        run: |
+          npm run ui:test
+          npm run module-boundaries:test
+          node tests/tools.mjs
+          node tests/plugin-platform.mjs
+          node tests/plugin-manifest-v2.mjs
+          git diff --check
+      - name: WebKit cold/action request evidence
+        run: |
+          npx playwright install --with-deps webkit
+          node tests/issue-2622-webkit-boundary.mjs
+      - name: Canonical userscript build
+        run: npm run userscript:build
+      - name: Commit production result
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git rm .github/workflows/one-shot-issue-2622.yml tools/one-shot-issue-2622.py
+          git add js/app.js js/tools.js js/tools-base.js js/panels.js \
+                  js/plugin-host.js js/plugins.js js/patch-set.js js/patch.js \
+                  js/rtti-names.js js/rtti.js js/ui/panels/welcome.js \
+                  tools/validation/startup-module-graph.mjs \
+                  tests/fixtures/issue-2622-startup-baseline.json \
+                  tests/issue-2622-startup-boundary.mjs \
+                  tests/issue-2622-webkit-boundary.mjs package.json \
+                  userscript/hex.user.template.js userscript/release-version.json \
+                  js/userscript/deployment-identity.generated.js
+          git diff --cached --check
+          git commit -m 'perf(ui): split optional startup analysis graph (#2622)'
+          git push origin HEAD:fix/all-unlinked-issues-20260831
