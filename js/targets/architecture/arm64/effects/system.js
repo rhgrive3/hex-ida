@@ -342,7 +342,7 @@ function bti(instruction, context, ops) {
   const operation = completeIntrinsic({
     id:'arm64.system.bti', inputs:[btype], outputs:[], registersRead:['pstate.btype'], registersWritten:[],
     memoryRead:{scope:'none'}, memoryWrite:{scope:'none'}, controlEffects:[], determinism:'input-dependent', symbolicDetail:'summary-only',
-    metadata:{ landingPadKind:String(ops[0]?.text || instruction?.operands || '').toLowerCase() || 'encoded' },
+    metadata:{ landingPadKind:(typeof ops[0]?.text === 'string' ? ops[0].text.toLowerCase() : (ops.length === 0 ? 'encoded' : 'unresolved')) },
   });
   operations.push(operation);
   return bundle(instruction, context, {
@@ -615,6 +615,7 @@ function operandShapeFailure(instruction, mnemonic, ops) {
   if (mnemonic === 'bti') {
     if (ops.length > 1) return { reason:'bti-operand-shape-invalid', categories:['faults','other'] };
     if (ops.length === 0) return null;
+    if (typeof ops[0]?.text !== 'string') return { reason:'bti-target-invalid', categories:['faults','other'] };
     const kind = textOperand(ops[0]);
     return kind != null && ['c','j','jc'].includes(kind) ? null : { reason:'bti-target-invalid', categories:['faults','other'] };
   }
