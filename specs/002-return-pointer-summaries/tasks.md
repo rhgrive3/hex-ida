@@ -2,15 +2,17 @@
 
 ## 1. Matrix lock tests (T001–T004)
 
-- [ ] T001 Create `tests/phase7/summary/c1-02-target-matrix.test.mjs` locking User Story 2
+- [x] T001 Create `tests/phase7/summary/c1-02-target-matrix.test.mjs` locking User Story 2
       axes 1–6 (missing summary, identity mismatch, incomplete status, unknown call
       effects, empty provenance, arg top/bottom) — each exactly one variation, each
       asserting `topPointsTo('unresolved-call')`.
-- [ ] T002 Extend the same file with axes 7–11 (absent argument, malformed offset,
+- [x] T002 Extend the same file with axes 7–11 (absent argument, malformed offset,
       target construction failure, top/bottom candidate, join-to-top budget).
-- [ ] T003 Add recursive-callee case (axis 12): self-recursion produces an explicit
+- [x] T003 Add recursive-callee case (axis 12): self-recursion produces an explicit
       conservative state or budget stop reason, and never a precise guessed set.
-- [ ] T004 Add User Story 1 positive case: complete, identity-matched, effect-free
+      Hardened to drive the real `solveInterproceduralSummaries` fixed point over a
+      self-recursive return-provenance cycle wired via `directCalls`.
+- [x] T004 Add User Story 1 positive case: complete, identity-matched, effect-free
       callee summary yields the exact joined target set with provenance preserved.
 
 ## 2. Production gaps (T005–T006)
