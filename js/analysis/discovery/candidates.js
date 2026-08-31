@@ -68,6 +68,12 @@ function producerId(value) {
   return value;
 }
 
+function optionalArchitectureId(value) {
+  if (value == null) return null;
+  if (typeof value !== 'string' || value.length === 0) fail('discovery-invalid-architecture-id');
+  return value;
+}
+
 /**
  * How much of a function's extent one piece of evidence describes.
  *
@@ -98,7 +104,7 @@ export function createDiscoveryEvidence(input = {}) {
     // Producer identity participates in corroboration. Pre-registry evidence
     // may omit it, but any explicit identity must already be canonical.
     producerId: producerId(input.producerId),
-    architectureId: input.architectureId == null ? null : String(input.architectureId),
+    architectureId: optionalArchitectureId(input.architectureId),
     name: input.name == null ? null : String(input.name),
     confidence: input.confidence == null ? null : String(input.confidence),
     evidenceIds: [...new Set(evidenceIds)].sort(),
@@ -158,7 +164,7 @@ export function createFunctionCandidate(input = {}) {
     startState,
     extentState,
     conflicts: deepFreeze([...(input.conflicts ?? [])]),
-    architectureId: input.architectureId == null ? null : String(input.architectureId),
+    architectureId: optionalArchitectureId(input.architectureId),
   };
   candidate.digest = stableDigest({
     start: candidate.start,
