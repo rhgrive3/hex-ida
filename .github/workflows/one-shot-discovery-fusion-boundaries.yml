@@ -1,0 +1,26 @@
+name: One-shot discovery fusion boundaries
+on:
+  push:
+    branches: [fix/discovery-fusion-boundaries-3052-3053]
+permissions:
+  contents: write
+jobs:
+  materialize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/discovery-fusion-boundaries-3052-3053
+          fetch-depth: 0
+      - run: python3 tools/one-shot-discovery-fusion-boundaries.py
+      - run: node --check js/analysis/discovery/fusion.js
+      - run: node tests/phase7/discovery/fusion-strict-boundaries-3052-3053.test.mjs
+      - run: node tests/phase7/run.mjs fusion-strict-boundaries-3052-3053.test.mjs
+      - name: Commit clean result
+        run: |
+          rm .github/workflows/one-shot-discovery-fusion-boundaries.yml tools/one-shot-discovery-fusion-boundaries.py
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m "fix(discovery): harden producer and budget boundaries"
+          git push
