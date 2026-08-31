@@ -56,10 +56,10 @@ function parseV0Base62(str, pos) {
   while (i < str.length) {
     const c = str.charCodeAt(i);
     let digit = -1;
-    if (c >= 0x30 && c <= 0x39) digit = c - 0x30;
-    else if (c >= 0x61 && c <= 0x7a) digit = c - 0x61 + 10;
-    else if (c >= 0x41 && c <= 0x5a) digit = c - 0x41 + 36;
-    else if (c === 0x5f) {
+    if (c >= 0x30 && c <= 0x39) digit = c - 0x30; // 0-9 -> 0-9
+    else if (c >= 0x61 && c <= 0x7a) digit = c - 0x61 + 10; // a-z -> 10-35
+    else if (c >= 0x41 && c <= 0x5a) digit = c - 0x41 + 36; // A-Z -> 36-61
+    else if (c === 0x5f) { // '_' delimiter
       return { value: val + 1, nextPos: i + 1 };
     } else break;
     val = val * 62 + digit;
@@ -82,6 +82,7 @@ function parseV0Identifier(str, pos) {
     p = dis.nextPos;
   }
 
+  // Length integer
   const lenMatch = str.slice(p).match(/^(\d+)/);
   if (!lenMatch) return null;
   const len = Number(lenMatch[1]);
@@ -127,7 +128,7 @@ function parseV0Path(str, state, depth = 0) {
 
   if (tag === 'N') {
     if (state.pos >= str.length) return null;
-    state.pos++;
+    const ns = str[state.pos++]; // namespace character
     const parent = parseV0Path(str, state, depth + 1);
     if (!parent) return null;
     const ident = parseV0Identifier(str, state.pos);
@@ -230,10 +231,12 @@ export function demangleRustLegacy(symbol) {
     const part = s.slice(i, i + len);
     i += len;
 
+    // Check if this part is the trailing Rust hash (e.g. `17h<16 hex digits>`)
     const hashMatch = part.match(/^17h([0-9a-f]{16})$/i) || part.match(/^h([0-9a-f]{16})$/i);
     if (hashMatch) {
       hash = hashMatch[1];
     } else {
+      // Decode $ characters
       const clean = part
         .replace(/\$SP\$/g, '@')
         .replace(/\$BP\$/g, '*')
@@ -302,6 +305,7 @@ export function isRustLayoutStable(typeDescriptor) {
   if (typeDescriptor.repr === 'C' || typeDescriptor.repr === 'transparent') return true;
   if (typeDescriptor.isPrimitive === true) return true;
   if (typeDescriptor.dwarfVerified === true) return true;
+  // Standard repr(Rust) structs are explicitly NOT stable
   return false;
 }
 
