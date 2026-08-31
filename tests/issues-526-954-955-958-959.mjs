@@ -42,7 +42,15 @@ import { resolveABIPlugin } from '../js/targets/abi/index.js';
 
 // #526: HFA dependencies remain explicit in the SIMD register use set.
 {
-  const result = classifyAAPCS64Arguments({ callPrototype:{ args:[{ type:'float4', hfa:true, members:4, bits:32 }] } });
+  const result = classifyAAPCS64Arguments({ callPrototype:{ args:[{
+    type:'float4', hfa:true, bits:128,
+    members:[
+      { type:'float', bits:32, byteOffset:0 },
+      { type:'float', bits:32, byteOffset:4 },
+      { type:'float', bits:32, byteOffset:8 },
+      { type:'float', bits:32, byteOffset:12 },
+    ],
+  }] } });
   assert.deepEqual(result.arguments[0].regs, ['v0','v1','v2','v3']);
   assert.deepEqual(result.srcs.map((source) => source.reg), ['v0','v1','v2','v3']);
 }

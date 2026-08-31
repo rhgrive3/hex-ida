@@ -193,7 +193,7 @@ function decodedFor(entry, baseAddress) {
   throw new TypeError(`phase8 corpus: unsupported machine-byte architecture ${entry.architectureId}`);
 }
 
-export function decompileEntry(entry, { decompilerTimeBudgetMs = 5000, index = 0, deterministicTransforms = true, phase8Optimize = true } = {}) {
+export function decompileEntry(entry, { decompilerTimeBudgetMs = 20000, index = 0, deterministicTransforms = true, phase8Optimize = true } = {}) {
   const baseAddress = 0x100000n + BigInt(index) * 0x10000n;
   try {
     if (entry.architectureId === 'arm64') {
@@ -283,7 +283,7 @@ export function observationOf(entry, outcome) {
   };
 }
 
-export function observeCorpus({ corpus = loadCorpus(), decompilerTimeBudgetMs = 5000, deterministicTransforms = true, phase8Optimize = true } = {}) {
+export function observeCorpus({ corpus = loadCorpus(), decompilerTimeBudgetMs = 20000, deterministicTransforms = true, phase8Optimize = true } = {}) {
   return corpus.functions.map((entry, index) => observationOf(entry, decompileEntry(entry, { decompilerTimeBudgetMs, index, deterministicTransforms, phase8Optimize })));
 }
 

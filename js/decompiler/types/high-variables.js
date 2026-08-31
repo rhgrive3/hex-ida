@@ -11,7 +11,7 @@ function compatibleType(a, b) {
 function canonicalArgumentIndex(v, opts = {}) {
   const adapter = opts.abiAdapter;
   if (!adapter || adapter.supported !== true || typeof adapter.classifyEntryRegister !== 'function') return null;
-  if (v?.def || !['arg', 'entry'].includes(v?.kind)) return null;
+  if (v?.def) return null;
   const reg = typeof v?.reg === 'string' ? v.reg : null;
   if (!reg) return null;
   try {
@@ -25,7 +25,9 @@ function canonicalArgumentIndex(v, opts = {}) {
 
 function legacyAArch64Path(ir, opts = {}) {
   return opts.legacyAArch64 === true
-    || (!opts.abiAdapter && ir?.compat?.projection !== 'semantic-ir-v2-to-v1');
+    || !opts.abiAdapter
+    || opts.abiAdapter?.id === 'aapcs64'
+    || opts.abiAdapter?.architectureId === 'arm64';
 }
 
 function argIndex(v, opts = {}) {
@@ -68,7 +70,9 @@ function candidateName(group, index, opts = {}) {
   // safe to use the physical register as HighVariable identity: the same xN may
   // later hold a call result or an unrelated temporary. This preserves `self`
   // readability without reintroducing the register-reuse coalescing bug.
-  const liveInIndex = !v?.def ? argIndex(v, opts) : null;
+  const liveInIndex = !v?.def
+    ? (canonicalArgumentIndex(v, opts) ?? (legacyAArch64Path(opts.ir, opts) && /^x([0-7])$/.test(v?.reg || '') ? Number(/^x([0-7])$/.exec(v.reg)[1]) : null))
+    : null;
   if (liveInIndex != null) {
     const n = liveInIndex;
     const explicit = opts.argNames?.[n] || null;

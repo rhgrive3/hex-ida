@@ -191,7 +191,7 @@ function reanchorRecoveredReturnSource(result, opts = {}) {
       if (!sourceRows.has(String(store.row))) continue;
       if (!load || inst.row > load.row) load = inst;
     }
-    const spillFact = load?.memoryForwarding;
+    const spillFact = load?.memoryForwarding ?? load?.extra?.memoryForwarding ?? null;
     const spill = load?.reachingStore || (isCanonicalExactMemoryForwarding(spillFact,
       canonicalMemoryForwardingContextForLoad(spillFact, load,
         load?.memoryForwardingContext ?? load?.extra?.memoryForwardingContext))

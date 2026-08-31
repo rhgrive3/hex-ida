@@ -44,11 +44,11 @@ export function classifyCallArguments(instruction = {}, options = {}) {
     platform:options.platform ?? source.platform ?? source.platformId,
     callPrototype:source.callPrototype ?? options.callPrototype,
   };
-  const adapter = canonicalCompatibilityAbiAdapter(target);
-  return adapter.classifyArguments({
+  const plugin = resolveABIPlugin(target, { legacyDefault:true });
+  return plugin.classifyArguments({
     callTarget:source.callTarget ?? source.target ?? null,
     callPrototype:target.callPrototype ?? null,
-  });
+  }, target);
 }
 
 let semanticMigrationMode = SEMANTIC_V2_MIGRATION_MODES.V2_COMPAT;
@@ -706,7 +706,6 @@ function buildV2CompatFromLegacyModel(model, opts = {}) {
   attachCanonicalCallArguments(result.legacyV1);
   attachCanonicalTypedCallResults(result.legacyV1, instructionByRow, abiAdapter, opts);
   invalidateEscapedStackForwarding(result.legacyV1);
-  restoreProvenNoEscapeStackForwarding(result.legacyV1);
   attachCanonicalFunctionReturns(result.legacyV1, abiAdapter, opts);
   if (process.env.HEX_DEBUG_C2_LEGACY === '1') {
     process.stderr.write(JSON.stringify(result.legacyV1.instructions.filter((item) => item.op === 'load').map((item) => ({

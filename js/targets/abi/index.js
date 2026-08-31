@@ -64,9 +64,7 @@ export function resolveABIPlugin(target = {}, { legacyDefault = false } = {}) {
     callingConvention,
   });
   if (found?.supported) return found;
-  // Compatibility only: pre-Phase-1 semantic callers often do not carry target
-  // metadata because the old IR core was ARM64-only. Keep that exact behavior
-  // until callers migrate, without placing AAPCS64 constants in generic IR code.
-  if (legacyDefault && !target?.architectureId && !target?.architecture && !target?.arch && !callingConvention) return AAPCS64_ABI;
+  const arch = String(target?.architectureId || target?.architecture || target?.arch || '').trim().toLowerCase();
+  if (legacyDefault && (!arch || arch === 'arm64') && !target?.platformId && !target?.platform && !target?.os && !callingConvention) return AAPCS64_ABI;
   return UNKNOWN_ABI;
 }
