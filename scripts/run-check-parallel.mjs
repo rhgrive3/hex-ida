@@ -18,7 +18,7 @@ import { fileURLToPath } from 'node:url';
 import { runQuietCommand } from './run-quiet-command.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const EXCLUSIVE_TAIL_PATTERN = /^npm run benchmark:baseline$/;
+const EXCLUSIVE_TAIL_PATTERN = /^(npm run benchmark:baseline|npm run phase7:test)$/;
 
 export function parseCheckSteps(checkScript) {
   return String(checkScript)

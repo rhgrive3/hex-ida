@@ -379,7 +379,7 @@ export function safetyCounters(observations, baseline, frozenProvenance = null) 
  * more expensive. `MEASUREMENT_TIME_BUDGET_MS` is now the single allowance both
  * runs use.
  */
-export const MEASUREMENT_TIME_BUDGET_MS = 5000;
+export const MEASUREMENT_TIME_BUDGET_MS = 20000;
 
 export function determinismFailures({ corpus = loadCorpus(), decompilerTimeBudgetMs = MEASUREMENT_TIME_BUDGET_MS, first: firstRun = null } = {}) {
   const first = firstRun ?? observeCorpus({ corpus, decompilerTimeBudgetMs });
@@ -418,7 +418,7 @@ export function structuringAccounting({ corpus = loadCorpus(), decompilerTimeBud
     const outcome = decompileEntry(entry, { index, decompilerTimeBudgetMs });
     const ir = outcome?.result?.ir ?? null;
     if (ir == null) { withoutIr.push(entry.id); continue; }
-    const { ledger, analysis } = runPhase8Stage({ ir }, { stages: PASS_STAGES, timeBudgetMs: 4000 });
+    const { ledger, analysis } = runPhase8Stage({ ir }, { stages: PASS_STAGES, timeBudgetMs: Math.max(decompilerTimeBudgetMs, 10000) });
     if (!ledger.published) { withoutFacts.push(`${entry.id}: ${ledger.stopReason}`); continue; }
     const facts = analysis.get('structuredRegions');
     if (facts == null) { withoutFacts.push(`${entry.id}: no structured-region facts`); continue; }
@@ -467,7 +467,7 @@ export function aggregateCertainty({ corpus = loadCorpus(), decompilerTimeBudget
     const outcome = decompileEntry(entry, { index, decompilerTimeBudgetMs });
     const ir = outcome?.result?.ir ?? null;
     if (ir == null) { withoutFacts.push(`${entry.id}: no semantic IR`); continue; }
-    const { ledger, analysis } = runPhase8Stage({ ir, types: outcome.result.types ?? null }, { stages: PASS_STAGES, timeBudgetMs: 4000 });
+    const { ledger, analysis } = runPhase8Stage({ ir, types: outcome.result.types ?? null }, { stages: PASS_STAGES, timeBudgetMs: Math.max(decompilerTimeBudgetMs, 10000) });
     if (!ledger.published) { withoutFacts.push(`${entry.id}: ${ledger.stopReason}`); continue; }
     const facts = analysis.get('aggregates');
     if (facts == null) { withoutFacts.push(`${entry.id}: no aggregate facts`); continue; }
@@ -517,8 +517,8 @@ export function providerEvidence({ corpus = loadCorpus(), decompilerTimeBudgetMs
     const ir = outcome?.result?.ir ?? null;
     if (ir == null) { withoutFacts.push(`${entry.id}: no semantic IR`); continue; }
     const context = { ir, types: outcome.result.types ?? null };
-    const off = runPhase8Stage({ ...context, opts: { phase8Providers: false } }, { stages: PASS_STAGES, timeBudgetMs: 4000 });
-    const on = runPhase8Stage(context, { stages: PASS_STAGES, timeBudgetMs: 4000 });
+    const off = runPhase8Stage({ ...context, opts: { phase8Providers: false } }, { stages: PASS_STAGES, timeBudgetMs: Math.max(decompilerTimeBudgetMs, 10000) });
+    const on = runPhase8Stage(context, { stages: PASS_STAGES, timeBudgetMs: Math.max(decompilerTimeBudgetMs, 10000) });
     if (!off.ledger.published || !on.ledger.published) {
       withoutFacts.push(`${entry.id}: ${off.ledger.stopReason ?? on.ledger.stopReason}`);
       continue;

@@ -131,6 +131,7 @@ class CanonicalMemoryForwardingFact {
   constructor(payload, binding) {
     for (const key of Object.keys(payload)) this[key] = payload[key];
     this.#binding = Object.freeze(binding);
+    Object.setPrototypeOf(this, Object.prototype);
   }
 
   static bindingFor(value) {
