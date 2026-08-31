@@ -40,8 +40,14 @@ import {
   exactRange,
 } from '../../../js/analysis/pointsto/lattice.js';
 import { pointsToAlias } from '../../../js/analysis/pointsto/alias.js';
+import { createAnalysisStatus } from '../../../js/analysis/status.js';
 
-const complete = Object.freeze({ completeness: 'complete' });
+const complete = createAnalysisStatus({
+  snapshotId:'pointsto-strict-boundaries',
+  analyzerId:'pointsto-test',
+  analyzerVersion:'1',
+  completeness:'complete',
+});
 
 function singleton(target) {
   return createPointsToSet({ targets: [target] });
