@@ -264,6 +264,11 @@ export function canonicalStoreValueProof({
   widthBits,
   identity,
   functionId,
+  resolvedSemanticValue = null,
+  resolvedValueId = null,
+  scalarSsaDefinitionId = null,
+  scalarSsaUseId = null,
+  scalarSsaDigest = null,
 }) {
   if (!semanticValue || valueId == null || sourceEntityId == null
       || !String(memorySsaEntityId ?? '').trim()
@@ -297,9 +302,11 @@ export function canonicalStoreValueProof({
     const signed = BigInt.asIntN(width, canonicalValue);
     if (canonicalValue !== unsigned && canonicalValue !== signed) return null;
     canonicalValue = unsigned;
-    const constant = weakObject(semanticValue.metadata?.constant);
+    const constantSource = resolvedSemanticValue ?? semanticValue;
+    const constant = weakObject(constantSource.metadata?.constant);
     if (!constant || constant.kind !== 'bitvector'
-        || Number(constant.widthBits) !== width || constant.value == null) return null;
+        || Number(constant.widthBits) !== Number(constantSource.machineType?.widthBits)
+        || constant.value == null) return null;
     let canonicalConstant;
     try {
       if (typeof constant.value === 'bigint') canonicalConstant = constant.value;
@@ -309,10 +316,16 @@ export function canonicalStoreValueProof({
     } catch {
       return null;
     }
-    const constantUnsigned = BigInt.asUintN(width, canonicalConstant);
-    const constantSigned = BigInt.asIntN(width, canonicalConstant);
+    const sourceWidth = Number(constantSource.machineType?.widthBits);
+    if (!Number.isSafeInteger(sourceWidth) || sourceWidth <= 0 || sourceWidth % 8 !== 0) return null;
+    const constantUnsigned = BigInt.asUintN(sourceWidth, canonicalConstant);
+    const constantSigned = BigInt.asIntN(sourceWidth, canonicalConstant);
     if ((canonicalConstant !== constantUnsigned && canonicalConstant !== constantSigned)
-        || constantUnsigned !== canonicalValue) return null;
+        || BigInt.asUintN(width, constantUnsigned) !== canonicalValue) return null;
+    if (resolvedSemanticValue != null) {
+      if (resolvedValueId == null || String(resolvedSemanticValue.id ?? '') !== String(resolvedValueId)
+          || String(resolvedValueId).trim() === '') return null;
+    }
   }
   const base = {
     kind: 'canonical-semantic-store-operand',
@@ -333,6 +346,14 @@ export function canonicalStoreValueProof({
     widthBits: width,
     valueKind,
     ...(valueKind === 'bitvector' ? { value: canonicalValue.toString() } : {}),
+    ...(resolvedSemanticValue == null ? {} : {
+      resolvedValueId: String(resolvedValueId ?? resolvedSemanticValue.id ?? ''),
+      resolvedSemanticValueDigest: stableDigest(resolvedSemanticValue),
+      resolvedWidthBits: Number(resolvedSemanticValue.machineType?.widthBits),
+      ...(scalarSsaDefinitionId == null ? {} : { scalarSsaDefinitionId: String(scalarSsaDefinitionId) }),
+      ...(scalarSsaUseId == null ? {} : { scalarSsaUseId: String(scalarSsaUseId) }),
+      ...(scalarSsaDigest == null ? {} : { scalarSsaDigest: String(scalarSsaDigest) }),
+    }),
   };
   return {
     ...base,

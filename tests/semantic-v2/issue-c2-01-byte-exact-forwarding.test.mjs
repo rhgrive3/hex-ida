@@ -551,14 +551,15 @@ assert.equal(canonicalStoreValueProof({
 // a shape-compatible forged/re-signed fact must not pass the direct downstream
 // gate, nor be folded by the decompiler consumer.
 const directContext = canonicalMemoryForwardingContext(direct, {
+  artifact: memorySsa,
   useId: direct.useId,
   sourceEntityId: 'n_load',
   nodeId: 'n_load',
   entityId: direct.loadEntityId,
   regionId: direct.loadRegionId,
   range: direct.loadRange,
-  artifactDigest: direct.artifactDigest,
-  snapshotId: direct.snapshotId,
+  artifactDigest: memorySsa.canonicalDigest,
+  snapshotId: memorySsa.snapshotId,
   consumerId: CANONICAL_MEMORY_FORWARDING_CONSUMER,
   purpose: CANONICAL_MEMORY_FORWARDING_PURPOSE,
 });

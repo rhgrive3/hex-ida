@@ -331,14 +331,14 @@ function prepareMemoryBoundary(ir, nodes, values, options, budget) {
     }
     if (!isCanonicalExactMemoryOperandForwarding(forwarding, canonicalMemoryForwardingContext(forwarding, {
       artifact: memorySsa,
-      artifactDigest: forwarding?.artifactDigest ?? memorySsa.canonicalDigest,
+      artifactDigest: memorySsa.canonicalDigest,
       snapshotId: binding.snapshotId,
       useId: use.id,
       sourceEntityId: node.id,
       nodeId: node.id,
-      entityId: use.id,
+      entityId: useMetadata.memorySsaEntityId,
       regionId: use.regionId,
-      range: forwarding?.loadRange ?? useMetadata.byteRange,
+      range: useMetadata.byteRange,
       consumerId: CANONICAL_MEMORY_FORWARDING_CONSUMER,
       purpose: CANONICAL_MEMORY_FORWARDING_PURPOSE,
     }))) {

@@ -20,7 +20,8 @@ import {
 
 function canonicalDefinitionIds(load) {
   if (!isCanonicalExactMemoryForwarding(load?.memoryForwarding,
-    canonicalMemoryForwardingContextForLoad(load?.memoryForwarding, load))) return new Set();
+    canonicalMemoryForwardingContextForLoad(load?.memoryForwarding, load,
+      load?.memoryForwardingContext ?? load?.extra?.memoryForwardingContext))) return new Set();
   return new Set((load.memoryForwarding.contributingDefinitionIds || []).map(String));
 }
 

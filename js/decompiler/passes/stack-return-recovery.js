@@ -273,7 +273,8 @@ function committedReturnValue(result, root, ret) {
   const load = reaching?.def;
   if (load?.op !== 'load' || load.loc?.key !== root.location.key) return null;
   if (!isCanonicalExactMemoryForwarding(load.memoryForwarding,
-    canonicalMemoryForwardingContextForLoad(load.memoryForwarding, load))) return null;
+    canonicalMemoryForwardingContextForLoad(load.memoryForwarding, load,
+      load.memoryForwardingContext ?? load.extra?.memoryForwardingContext))) return null;
   const definitionIds = new Set(load.memoryForwarding.contributingDefinitionIds.map(String));
   const stackStores = (result.ir.instructions || []).filter((candidate) => {
     const definitionId = candidate?.memDef?.definitionId ?? candidate?.extra?.memoryDefinitionId ?? null;
