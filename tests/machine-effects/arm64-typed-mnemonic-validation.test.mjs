@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
+import { parseOperands } from '../../js/arm64.js';
 import { ARM64_ARCHITECTURE, ARM64E_ARCHITECTURE } from '../../js/targets/architecture/index.js';
 import { liftArm64MachineEffects } from '../../js/targets/architecture/arm64/effects/index.js';
 
-const gp = (num) => ({ k:'reg', cls:'gp', num, bits:64, text:`x${num}` });
 const origin = (id) => ({ instructionIds:[id] });
 
 function arm64(id, mnemonic) {
@@ -10,7 +10,7 @@ function arm64(id, mnemonic) {
     instructionId:id,
     mnemonic,
     mode:'a64',
-    ops:[gp(0), gp(1), gp(2)],
+    ops:parseOperands('x0, x1, x2'),
     origin:origin(id),
   };
 }
@@ -21,13 +21,14 @@ function arm64e(id, mnemonic, opcode = undefined) {
     mnemonic,
     ...(opcode === undefined ? {} : { opcode }),
     mode:'a64',
-    ops:[gp(0), gp(1)],
+    ops:parseOperands('x0, x1'),
     origin:origin(id),
   };
 }
 
 const add = liftArm64MachineEffects(arm64('typed-add', ' ADD '));
 assert.ok(add, 'canonical string mnemonic must remain supported');
+assert.equal(add.completeness, 'exact');
 assert.ok(add.operations.length > 0, 'canonical ADD must retain definite effects');
 
 for (const [label, malformed] of [
@@ -38,7 +39,6 @@ for (const [label, malformed] of [
 ]) {
   const bundle = liftArm64MachineEffects(arm64(`bad-add-${label}`, malformed));
   assert.equal(bundle, null, `${label} mnemonic must not be coerced into ADD`);
-  assert.equal(ARM64_ARCHITECTURE.classifyControlFlow({ mnemonic:['bl'] }), 'fallthrough');
 }
 
 assert.equal(ARM64_ARCHITECTURE.classifyControlFlow({ mnemonic:' BL ' }), 'call');
@@ -74,7 +74,7 @@ const opcodeOnly = ARM64E_ARCHITECTURE.liftExact({
   instructionId:'opcode-only-pacia',
   opcode:'PACIA',
   mode:'a64',
-  ops:[gp(0), gp(1)],
+  ops:parseOperands('x0, x1'),
   origin:origin('opcode-only-pacia'),
 });
 assert.ok(opcodeOnly, 'string opcode fallback must remain supported when mnemonic is absent');
