@@ -19,7 +19,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ "$(git log -1 --pretty=%s)" != "ci: launch cache completeness restack" ]; then
+          if [ "$(git log -1 --pretty=%s)" != "ci: relaunch cache completeness restack without workflow mutation" ]; then
             echo "not launcher commit; no-op"
             exit 0
           fi
@@ -31,15 +31,6 @@ jobs:
             js/schema.js \
             tests/unlinked-cache-completeness-20260831.mjs > /tmp/cache.patch
           git apply --3way /tmp/cache.patch
-          python3 - <<'PY'
-          from pathlib import Path
-          p=Path('.github/workflows/phase7-ownership.yml')
-          s=p.read_text()
-          needle='[[ "$HEAD_REF" == "fix/unlinked-demand-analysis-2502-2518"'
-          if 'fix/unlinked-cache-completeness-current' not in s:
-              s=s.replace(needle, '[[ "$HEAD_REF" == "fix/unlinked-cache-completeness-current" || "$HEAD_REF" == "fix/unlinked-demand-analysis-2502-2518"')
-          p.write_text(s)
-          PY
           node tests/unlinked-cache-completeness-20260831.mjs
           node --check js/analysis/demand-driven-runtime.js
           node --check js/analysis/investigation-service.js
@@ -47,6 +38,6 @@ jobs:
           node --check js/schema.js
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add js/analysis/demand-driven-runtime.js js/analysis/investigation-service.js js/analysis/schema-recovery-task.js js/schema.js tests/unlinked-cache-completeness-20260831.mjs .github/workflows/phase7-ownership.yml
+          git add js/analysis/demand-driven-runtime.js js/analysis/investigation-service.js js/analysis/schema-recovery-task.js js/schema.js tests/unlinked-cache-completeness-20260831.mjs
           git commit -m "fix(analysis): make cache completeness and shared budgets sound"
           git push origin HEAD:fix/unlinked-cache-completeness-current
