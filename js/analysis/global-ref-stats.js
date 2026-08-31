@@ -1,6 +1,8 @@
 function abortError(signal) {
-  const error = signal?.reason instanceof Error ? signal.reason : new Error('Operation aborted');
-  if (!error.name || error.name === 'Error') error.name = 'AbortError';
+  const reason = signal?.reason;
+  if (reason instanceof Error && reason.name === 'AbortError') return reason;
+  const error = new Error(reason instanceof Error && reason.message ? reason.message : 'Operation aborted');
+  error.name = 'AbortError';
   return error;
 }
 
