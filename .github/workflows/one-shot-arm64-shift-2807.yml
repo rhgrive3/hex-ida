@@ -1,0 +1,137 @@
+name: One-shot ARM64 shift 2807
+on:
+  push:
+    branches: [fix/arm64-shift-current-2807-v2]
+permissions:
+  contents: write
+jobs:
+  materialize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Apply shift descriptor repair
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          def edit(path,repls):
+            p=Path(path); s=p.read_text()
+            for old,new,label in repls:
+              if old not in s: raise SystemExit(f'{path}: anchor drift: {label}')
+              s=s.replace(old,new,1)
+            p.write_text(s)
+
+          edit('js/targets/architecture/arm64/effects/common.js',[
+          ("""  function shiftImmediate(value, widthBits, kind, amount) {
+            const n = Number(amount);
+            if (!Number.isInteger(n) || n < 0 || n >= widthBits) return null;""",
+           """  function shiftImmediate(value, widthBits, kind, amount) {
+            const n = amount;
+            if (typeof n !== 'number' || !Number.isInteger(n) || n < 0 || n >= widthBits) return null;""",'shiftImmediate'),
+          ("""    const kind = String(modifier.op || '').toLowerCase();
+            const amount = modifier.amount == null ? 0 : Number(modifier.amount);""",
+           """    if (typeof modifier.op !== 'string') return null;
+            const kind = modifier.op.toLowerCase();
+            const amount = modifier.amount == null ? 0 : modifier.amount;
+            if (typeof amount !== 'number' || !Number.isInteger(amount)) return null;""",'applyModifier'),
+          ("""      const modifierKind = String(op.shift?.op || '').toLowerCase();""",
+           """      const modifierKind = typeof op.shift?.op === 'string' ? op.shift.op.toLowerCase() : '';""",'readOperand modifier')])
+
+          edit('js/targets/architecture/arm64/effects/index.js',[
+          ("""  return String(op.shift.op || '').toLowerCase() === 'lsl' && Number(op.shift.amount) === 12;""",
+           """  return typeof op.shift.op === 'string'
+            && op.shift.op.toLowerCase() === 'lsl'
+            && typeof op.shift.amount === 'number'
+            && Number.isInteger(op.shift.amount)
+            && op.shift.amount === 12;""",'imm12 shift'),
+          ("""  const kind = String(operand.shift.op || '').toLowerCase();
+            const amount = Number(operand.shift.amount ?? 0);
+            return ['lsl','lsr','asr','ror'].includes(kind) && Number.isInteger(amount) && amount >= 0 && amount < widthBits;""",
+           """  if (typeof operand.shift.op !== 'string') return false;
+            const kind = operand.shift.op.toLowerCase();
+            const amount = operand.shift.amount ?? 0;
+            return ['lsl','lsr','asr','ror'].includes(kind)
+              && typeof amount === 'number' && Number.isInteger(amount) && amount >= 0 && amount < widthBits;""",'logical shifted source')])
+
+          edit('js/targets/architecture/arm64/effects/integer.js',[
+          ("""  return String(op.shift.op || '').toLowerCase() === 'lsl' && Number(op.shift.amount) === 12;""",
+           """  return typeof op.shift.op === 'string'
+            && op.shift.op.toLowerCase() === 'lsl'
+            && typeof op.shift.amount === 'number'
+            && Number.isInteger(op.shift.amount)
+            && op.shift.amount === 12;""",'integer imm12'),
+          ("""  const kind = String(modifier.op || '').toLowerCase();
+            const amount = Number(modifier.amount ?? 0);
+            if (!Number.isInteger(amount) || amount < 0 || amount > 4) return false;""",
+           """  if (typeof modifier.op !== 'string') return false;
+            const kind = modifier.op.toLowerCase();
+            const amount = modifier.amount ?? 0;
+            if (typeof amount !== 'number' || !Number.isInteger(amount) || amount < 0 || amount > 4) return false;""",'extended source'),
+          ("""  const kind = String(modifier.op || '').toLowerCase();
+            const amount = Number(modifier.amount ?? 0);
+            return ['lsl','lsr','asr'].includes(kind)
+              && Number.isInteger(amount) && amount >= 0 && amount < targetBits;""",
+           """  if (typeof modifier.op !== 'string') return false;
+            const kind = modifier.op.toLowerCase();
+            const amount = modifier.amount ?? 0;
+            return ['lsl','lsr','asr'].includes(kind)
+              && typeof amount === 'number' && Number.isInteger(amount) && amount >= 0 && amount < targetBits;""",'shifted source'),
+          ("""  const explicitExtend = EXTEND_KINDS.has(String(modifier?.op || '').toLowerCase());""",
+           """  const explicitExtend = typeof modifier?.op === 'string' && EXTEND_KINDS.has(modifier.op.toLowerCase());""",'explicit extend'),
+          ("""  if (String(src.shift.op || '').toLowerCase() !== 'lsl') return false;
+            const amount = Number(src.shift.amount);
+            if (!Number.isInteger(amount)) return false;""",
+           """  if (typeof src.shift.op !== 'string' || src.shift.op.toLowerCase() !== 'lsl') return false;
+            const amount = src.shift.amount;
+            if (typeof amount !== 'number' || !Number.isInteger(amount)) return false;""",'move-wide shift')])
+
+          edit('js/targets/architecture/arm64/effects/addressing.js',[
+          ("""  const op = String(shift.op || '').toLowerCase();
+            const amount = shift.amount == null ? 0 : Number(shift.amount);
+            if (!Number.isInteger(amount) || amount < 0 || amount > 4) fail('arm64-invalid-register-offset-shift');""",
+           """  if (typeof shift.op !== 'string') fail('arm64-invalid-register-offset-shift');
+            const op = shift.op.toLowerCase();
+            const amount = shift.amount == null ? 0 : shift.amount;
+            if (typeof amount !== 'number' || !Number.isInteger(amount) || amount < 0 || amount > 4) fail('arm64-invalid-register-offset-shift');""",'address shift')])
+
+          Path('tests/machine-effects/arm64-structured-shift-validation.test.mjs').write_text(r'''import assert from 'node:assert/strict';
+          import { liftArm64MachineEffects } from '../../js/targets/architecture/arm64/effects/index.js';
+          let seq=0;
+          const gp=(num,bits=64,extra={})=>({k:'reg',cls:'gp',num,bits,text:`${bits===32?'w':'x'}${num}`,...extra});
+          const imm=(value,extra={})=>({k:'imm',value:BigInt(value),text:`#${value}`,...extra});
+          const mem=(shift)=>({k:'mem',base:gp(1),index:gp(2),mode:'offset',...(shift==null?{}:{shift})});
+          function lift(mnemonic,ops){const instructionId=`shift:${++seq}`;return liftArm64MachineEffects({instructionId,mnemonic,mode:'a64',ops,origin:{instructionIds:[instructionId]}});}
+          function semantic(r,label){assert.ok(r&&r.completeness!=='partial',label);assert.ok(r.operations.some(op=>op.kind!=='unknown'),label);}
+          function failClosed(r,label){assert.ok(r,label);assert.equal(r.completeness,'partial',label);assert.ok(r.operations.every(op=>op.kind==='unknown'),label);}
+          semantic(lift('add',[gp(0),gp(1),gp(2,64,{shift:{op:'lsl',amount:1}})]),'ADD lsl1');
+          for(const [label,shift] of [['string',{op:'lsl',amount:'1'}],['boolean',{op:'lsl',amount:true}],['object',{op:'lsl',amount:{valueOf(){return 1;}}}],['array',{op:'lsl',amount:[1]}],['fraction',{op:'lsl',amount:1.5}],['NaN',{op:'lsl',amount:NaN}],['Infinity',{op:'lsl',amount:Infinity}],['negative',{op:'lsl',amount:-1}],['width',{op:'lsl',amount:64}],['object-op',{op:{toString(){return 'lsl';}},amount:1}],['array-op',{op:['lsl'],amount:1}]]) failClosed(lift('add',[gp(0),gp(1),gp(2,64,{shift})]),label);
+          semantic(lift('add',[gp(0),gp(1),imm(1,{shift:{op:'lsl',amount:12}})]),'ADD imm lsl12');
+          failClosed(lift('add',[gp(0),gp(1),imm(1,{shift:{op:'lsl',amount:'12'}})]),'ADD imm string');
+          semantic(lift('movz',[gp(0),imm(1,{shift:{op:'lsl',amount:16}})]),'MOVZ 16');
+          failClosed(lift('movz',[gp(0),imm(1,{shift:{op:'lsl',amount:'16'}})]),'MOVZ string');
+          semantic(lift('ldr',[gp(0),mem({op:'lsl',amount:3})]),'LDR offset');
+          failClosed(lift('ldr',[gp(0),mem({op:'lsl',amount:'3'})]),'LDR string');
+          console.log('arm64-structured-shift-validation: PASS');
+          ''')
+          PY
+      - run: node --check js/targets/architecture/arm64/effects/common.js
+      - run: node --check js/targets/architecture/arm64/effects/index.js
+      - run: node --check js/targets/architecture/arm64/effects/integer.js
+      - run: node --check js/targets/architecture/arm64/effects/addressing.js
+      - run: node tests/machine-effects/arm64-structured-shift-validation.test.mjs
+      - run: node tests/machine-effects/run.mjs
+      - run: git diff --check
+      - name: Commit production result
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git rm .github/workflows/one-shot-arm64-shift-2807.yml
+          git add js/targets/architecture/arm64/effects/common.js js/targets/architecture/arm64/effects/index.js js/targets/architecture/arm64/effects/integer.js js/targets/architecture/arm64/effects/addressing.js tests/machine-effects/arm64-structured-shift-validation.test.mjs
+          git commit -m 'fix(arm64): reject coerced structured shifts'
+          git push
