@@ -1,22 +1,18 @@
 name: materialize-3118
 on:
   push:
-    branches: [fix/semantic-abi-argument-metadata-3118]
+    branches:
+      - fix/semantic-abi-argument-metadata-3118
 permissions:
   contents: write
 jobs:
   materialize:
-    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           ref: fix/semantic-abi-argument-metadata-3118
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - name: Apply minimal strict-boundary fix and regression
-        shell: bash
+      - name: Apply and verify
         run: |
           python3 - <<'PY'
           from pathlib import Path
@@ -67,9 +63,7 @@ jobs:
           if old_piece not in s:
               raise SystemExit('target pieceIndex block not found')
           p.write_text(s.replace(old_piece, new_piece, 1))
-
-          test = Path('tests/phase7/issue-3118-semantic-abi-argument-metadata.test.mjs')
-          test.write_text("""import assert from 'node:assert/strict';
+          Path('tests/phase7/issue-3118-semantic-abi-argument-metadata.test.mjs').write_text("""import assert from 'node:assert/strict';
 import { semanticAbiAdapter } from '../../js/analysis/semantic-function-base.js';
 import { ABIPlugin, registerABIPlugin } from '../../js/targets/abi/index.js';
 
@@ -80,26 +74,20 @@ const plugin = registerABIPlugin(new ABIPlugin({
 }));
 const adapter = semanticAbiAdapter(plugin);
 
-arguments_ = [
-  { location:'register', reg:'x0', index:0 },
-  { location:'register', regs:['x1','x2'] },
-];
+arguments_ = [{ location:'register', reg:'x0', index:0 }, { location:'register', regs:['x1','x2'] }];
 assert.deepEqual(adapter.argumentLocations().map(({ index, reg }) => ({ index, reg })), [
   { index:0, reg:'x0' }, { index:1, reg:'x1' }, { index:1, reg:'x2' },
 ]);
-
 for (const reg of [['x0'], { toString(){ return 'x0'; } }, true, 1]) {
   arguments_ = [{ location:'registers', regs:[reg], index:0 }];
-  assert.deepEqual(adapter.argumentLocations(), [], `malformed register must fail closed: ${typeof reg}`);
+  assert.deepEqual(adapter.argumentLocations(), []);
 }
 for (const index of [['0'], '0', { valueOf(){ return 0; } }, true, 0.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1]) {
   arguments_ = [{ location:'register', reg:'x0', index }];
-  assert.deepEqual(adapter.argumentLocations(), [], `malformed explicit index must fail closed: ${String(index)}`);
+  assert.deepEqual(adapter.argumentLocations(), []);
 }
-
 arguments_ = [{ location:'register', reg:'x0' }];
-assert.equal(adapter.argumentLocations()[0]?.index, 0, 'omitted index keeps positional fallback');
-
+assert.equal(adapter.argumentLocations()[0]?.index, 0);
 console.log('issue-3118-semantic-abi-argument-metadata: PASS');
 """)
           PY
@@ -107,11 +95,10 @@ console.log('issue-3118-semantic-abi-argument-metadata: PASS');
           node --check js/analysis/semantic-function-base.js
           node tests/phase7/issue-3118-semantic-abi-argument-metadata.test.mjs
           node tests/phase7/run.mjs
-      - name: Commit materialized change
-        shell: bash
+      - name: Commit
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add js/analysis/semantic-function-base.js tests/phase7/issue-3118-semantic-abi-argument-metadata.test.mjs .github/workflows/materialize-3118.yml
+          git add -A
           git commit -m 'fix: reject coerced ABI argument metadata (#3118)'
           git push origin HEAD:fix/semantic-abi-argument-metadata-3118
