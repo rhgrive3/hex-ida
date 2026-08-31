@@ -27,6 +27,7 @@ jobs:
           python3 tools/one-shot-unlinked-strict-boundaries.py
           python3 tools/one-shot-2866-atomic-extension.py
           python3 tools/one-shot-2588-scalar-extension.py
+          sed -i "s/assert\.ok(barrier\.operations\.some((op)=>op\.kind==='barrier');/assert.ok(barrier.operations.some((op)=>op.kind==='barrier'));/" tests/machine-effects/arm64-unlinked-strict-boundaries.test.mjs
       - name: Syntax and focused regression
         run: |
           node --check js/targets/architecture/arm64/effects/addressing.js
