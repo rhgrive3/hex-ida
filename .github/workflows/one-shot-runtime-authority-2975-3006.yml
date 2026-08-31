@@ -1,0 +1,143 @@
+name: One-shot runtime authority 2975 3006
+on:
+  push:
+    branches: [fix/runtime-authority-current-2975-3006]
+permissions:
+  contents: write
+jobs:
+  materialize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Apply focused strict-boundary repair
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p=Path('js/runtime/evidence-bridge.js'); s=p.read_text()
+          old="""function completeness(value, fallback = 'partial') {
+            const normalized = String(value ?? fallback);
+            if (!EVIDENCE_COMPLETENESS.includes(normalized)) throw new DebugAdapterError('runtime-invalid-completeness', `invalid evidence completeness: ${normalized}`);
+            return normalized;
+          }"""
+          new="""function completeness(value, fallback = 'partial') {
+            const normalized = value == null ? fallback : value;
+            if (typeof normalized !== 'string' || !EVIDENCE_COMPLETENESS.includes(normalized)) throw new DebugAdapterError('runtime-invalid-completeness', 'invalid evidence completeness');
+            return normalized;
+          }
+
+          function evidenceConfidence(value) {
+            if (value == null) return null;
+            if (typeof value !== 'number' || !Number.isFinite(value)) throw new DebugAdapterError('runtime-invalid-confidence', 'runtime evidence confidence must be a finite number');
+            return value;
+          }"""
+          if old not in s: raise SystemExit('evidence completeness anchor drift')
+          s=s.replace(old,new,1)
+          old="confidence: options.confidence == null ? null : Number(options.confidence),"
+          if old not in s: raise SystemExit('evidence confidence anchor drift')
+          s=s.replace(old,"confidence: evidenceConfidence(options.confidence),",1)
+          old="""  linkClaim(claimId, evidenceId, relation, resolution = null) {
+            const type = String(relation);
+            if (!RELATIONS.includes(type)) throw new DebugAdapterError('runtime-invalid-evidence-relation', `invalid runtime evidence relation: ${type}`);"""
+          new="""  linkClaim(claimId, evidenceId, relation, resolution = null) {
+            if (typeof relation !== 'string') throw new DebugAdapterError('runtime-invalid-evidence-relation', 'runtime evidence relation must be a string');
+            const type = relation;
+            if (!RELATIONS.includes(type)) throw new DebugAdapterError('runtime-invalid-evidence-relation', `invalid runtime evidence relation: ${type}`);"""
+          if old not in s: raise SystemExit('evidence relation anchor drift')
+          s=s.replace(old,new,1); p.write_text(s)
+
+          p=Path('js/runtime/authority.js'); s=p.read_text()
+          old="""function numericPrimitive(value, code) {
+            if (typeof value === 'number') return value;
+            if (typeof value === 'string' && value.trim() !== '') return Number(value);
+            throw new TypeError(code);
+          }"""
+          new="""function numericPrimitive(value, code) {
+            if (typeof value === 'number' && Number.isFinite(value)) return value;
+            throw new TypeError(code);
+          }"""
+          if old not in s: raise SystemExit('authority numeric anchor drift')
+          s=s.replace(old,new,1); p.write_text(s)
+
+          p=Path('js/runtime/debugger-provider.js'); s=p.read_text()
+          old="""function sameModuleBinding(current, next) {
+            if (!current || !next) return false;
+            const scalar = (value) => value == null ? null : String(value);
+            const currentEvidence = current.identityEvidenceIds ?? [];
+            const nextEvidence = next.identityEvidenceIds ?? [];
+            return scalar(current.runtimeBase) === scalar(next.runtimeBase)
+              && scalar(current.runtimeSize) === scalar(next.runtimeSize)
+              && scalar(current.staticBase) === scalar(next.staticBase)
+              && scalar(current.pathHint) === scalar(next.pathHint)
+              && scalar(current.binaryId) === scalar(next.binaryId)
+              && scalar(current.sliceId) === scalar(next.sliceId)
+              && scalar(current.imageId) === scalar(next.imageId)
+              && scalar(current.identityState) === scalar(next.identityState)"""
+          new="""function sameModuleBinding(current, next) {
+            if (!current || !next) return false;
+            const currentEvidence = current.identityEvidenceIds ?? [];
+            const nextEvidence = next.identityEvidenceIds ?? [];
+            return current.runtimeBase === next.runtimeBase
+              && current.runtimeSize === next.runtimeSize
+              && current.staticBase === next.staticBase
+              && current.pathHint === next.pathHint
+              && current.binaryId === next.binaryId
+              && current.sliceId === next.sliceId
+              && current.imageId === next.imageId
+              && current.identityState === next.identityState"""
+          if old not in s: raise SystemExit('debugger binding anchor drift')
+          s=s.replace(old,new,1); p.write_text(s)
+
+          Path('tests/phase10/runtime-authority-boundaries-2975-3006.test.mjs').write_text(r'''import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          import { RuntimeEvidenceBridge, conservativeCompleteness } from '../../js/runtime/evidence-bridge.js';
+          import { createRuntimeAuthorityBinding, createRuntimeObservation } from '../../js/runtime/authority.js';
+
+          assert.throws(() => conservativeCompleteness(['complete']), /runtime-invalid-completeness/);
+          const bridge = new RuntimeEvidenceBridge();
+          const event = {runtimeSessionId:'s',providerId:'p',providerVersion:'1',sessionEpoch:1,sequence:1,kind:'trace-marker',observationMode:'observed',completeness:'partial'};
+          assert.throws(() => bridge.eventToEvidence(event,null,{confidence:'0.9'}), /runtime-invalid-confidence/);
+          assert.throws(() => bridge.eventToEvidence(event,null,{confidence:true}), /runtime-invalid-confidence/);
+          assert.throws(() => bridge.linkClaim('c','e',['supports']), /runtime-invalid-evidence-relation/);
+
+          const input={providerIdentity:'p',runtimeInstanceIdentity:'r',targetIdentity:'t',binaryIdentity:'b',moduleIdentity:'m',loadMappingIdentity:'l',sessionIdentity:'s',capabilityVersion:'1',epoch:1};
+          const binding=createRuntimeAuthorityBinding(input);
+          assert.throws(() => createRuntimeAuthorityBinding({...input,epoch:'1'}), /runtime-epoch-invalid/);
+          assert.throws(() => createRuntimeAuthorityBinding({...input,epoch:['1']}), /runtime-epoch-invalid/);
+          assert.throws(() => createRuntimeObservation({binding,sequence:'1',observedAt:'now',kind:'trace-marker',payload:{},authority:{}}), /runtime-observation-sequence-invalid|runtime-sequence-invalid/);
+
+          const source=fs.readFileSync(new URL('../../js/runtime/debugger-provider.js', import.meta.url),'utf8');
+          const start=source.indexOf('function sameModuleBinding');
+          const end=source.indexOf('export class DebuggerProvider');
+          const body=source.slice(start,end);
+          assert.ok(start >= 0 && end > start);
+          assert.ok(!body.includes('String(value)'));
+          assert.ok(body.includes('current.binaryId === next.binaryId'));
+          assert.ok(body.includes('current.runtimeBase === next.runtimeBase'));
+          console.log('runtime authority boundaries 2975 3003 3006: PASS');
+          ''')
+          PY
+      - run: node --check js/runtime/evidence-bridge.js
+      - run: node --check js/runtime/authority.js
+      - run: node --check js/runtime/debugger-provider.js
+      - run: node tests/phase10/runtime-authority-boundaries-2975-3006.test.mjs
+      - run: npm run phase10:test
+      - run: git diff --check
+      - name: Commit production result
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git rm .github/workflows/one-shot-runtime-authority-2975-3006.yml
+          git add js/runtime/evidence-bridge.js js/runtime/authority.js js/runtime/debugger-provider.js tests/phase10/runtime-authority-boundaries-2975-3006.test.mjs
+          git commit -m 'fix(runtime): harden authority metadata boundaries'
+          git push
