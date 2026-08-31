@@ -32,7 +32,7 @@ export function rotateRight(value, amount, widthBits) {
 }
 
 export function instructionMnemonic(instruction) {
-  return String(instruction?.mnemonic || '').trim().toLowerCase();
+  return typeof instruction?.mnemonic === 'string' ? instruction.mnemonic.trim().toLowerCase() : '';
 }
 
 export function instructionBits(op, fallback = 64) {
