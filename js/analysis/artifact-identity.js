@@ -78,9 +78,8 @@ function sortedIds(values, code) {
 }
 
 export function dependencyClassFor(kind) {
-  const classes = PHASE7_DEPENDENCY_CLASSES[kind];
-  if (!classes) fail('phase7-artifact-unknown-kind');
-  return classes;
+  if (!KIND_SET.has(kind)) fail('phase7-artifact-unknown-kind');
+  return PHASE7_DEPENDENCY_CLASSES[kind];
 }
 
 /**
