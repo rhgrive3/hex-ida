@@ -25,6 +25,9 @@ export async function verifyPatchEquivalence({
   if (!originalTarget || !patchedTarget) {
     throw new TypeError('verifyPatchEquivalence: originalTarget and patchedTarget are required');
   }
+  if (typeof originalBinaryId !== 'string' || typeof patchedPatchSetId !== 'string') {
+    throw new TypeError('verifyPatchEquivalence: proof identities must be strings');
+  }
 
   const result = await verifyBoundedEquivalence({
     beforeIr: originalIr,
@@ -40,16 +43,16 @@ export async function verifyPatchEquivalence({
       ...options,
       proofScope: options.proofScope || {
         kind: 'patch-equivalence',
-        originalBinaryId: String(originalBinaryId),
-        patchedPatchSetId: String(patchedPatchSetId),
+        originalBinaryId,
+        patchedPatchSetId,
         memoryRegions,
       },
     },
   });
 
   return Object.freeze({
-    originalBinaryId: String(originalBinaryId),
-    patchedPatchSetId: String(patchedPatchSetId),
+    originalBinaryId,
+    patchedPatchSetId,
     ...result,
   });
 }
