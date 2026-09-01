@@ -365,6 +365,6 @@ export function enhanceSemanticDecompilation(result, model, opts = {}) {
   const reanchored = reanchorExactStackReturn(core, opts);
   const legacySpillsRecovered = recoverLegacySameBlockStackSpills(reanchored, opts);
   const stackPhiRecovered = recoverExactStackPhiExpressions(legacySpillsRecovered, opts);
-  const recovered = recoverExactStackReturn(stackPhiRecovered, opts);
+  const recovered = recoverExactStackReturn(reanchorExactStackReturn(stackPhiRecovered, opts), opts);
   return fullPhase8Projection(reanchorRecoveredReturnSource(recovered, opts), model, opts);
 }
