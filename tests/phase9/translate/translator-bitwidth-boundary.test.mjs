@@ -7,7 +7,7 @@ import { translateSemanticIR } from '../../../js/symbolic/translate/semantic-ir.
 const arg = { kind: VK.ARG, id: 'v0', reg: 'x0', origin: '0x1000' };
 
 function translatedWidth(bitWidth) {
-  return translateSemanticIR(arg, { bitWidth }).expression.bits;
+  return translateSemanticIR(arg, { bitWidth }).expression.sort.width;
 }
 
 test('translator accepts primitive numeric bitWidth without structured coercion', () => {
