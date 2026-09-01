@@ -193,11 +193,23 @@ function controlCondition(term, maps, engine, ir) {
     || maps.conditions.get(term.id), engine);
 }
 
-function exactStoreExpression(inst, key, maps, engine) {
+function exactStoreExpression(inst, key, maps, opts, engine, ir, active, depth) {
   if (inst?.op !== 'store' || inst.loc?.key !== key) return null;
   const value = valueOf(inst.args?.[0]);
   let expression = value ? maps.values.get(value.id) || null : null;
   if (!expression) return null;
+
+  // A store may itself consume a proven stack LOAD (the common clang -O0
+  // argument-spill -> branch-load -> result-spill shape). Resolve that source
+  // at its own program point through the same CFG/barrier proof rather than
+  // publishing a nested stack temporary as the recovered return expression.
+  const sourceLoad = value?.def;
+  if (expression.kind === 'load' && expression.location?.kind === 'stack'
+      && sourceLoad?.op === 'load' && sourceLoad.loc?.kind === 'stack'
+      && sourceLoad.loc.key === expression.location.key) {
+    expression = resolveStackBefore(ir, sourceLoad.block, sourceLoad.row, sourceLoad.loc.key,
+      maps, opts, engine, active, depth + 1) || expression;
+  }
 
   // A W-register store is an exact truncation boundary. Keep that width in the
   // recovered source value instead of leaking the 64-bit entry-register width
@@ -234,7 +246,7 @@ function resolveStackBefore(ir, blockIndex, beforeRow, key, maps, opts, engine, 
   active.add(visitKey);
   try {
     for (const inst of instructionsBefore(ir, blockIndex, beforeRow)) {
-      const stored = exactStoreExpression(inst, key, maps, engine);
+      const stored = exactStoreExpression(inst, key, maps, opts, engine, ir, active, depth);
       if (stored) return stored;
       if (hasUnsafeBarrier(inst, key)) return null;
     }
