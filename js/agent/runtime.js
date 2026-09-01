@@ -133,7 +133,7 @@ function budgetOf(opts) {
     maxFunctions: explicitLimit(opts && opts.maxFunctions, 48, 0),
     maxDisassembly: explicitLimit(opts && opts.maxDisassembly, 50000, 0),
     timeoutMs: explicitLimit(opts && opts.timeoutMs, 10000, 1),
-    isCancelled: opts && opts.isCancelled || (() => false),
+    isCancelled: typeof opts?.isCancelled === 'function' ? opts.isCancelled : (() => false),
   };
 }
 
