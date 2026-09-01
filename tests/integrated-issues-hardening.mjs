@@ -853,3 +853,24 @@ console.log('\nAll integrated issue tests PASS!');
 
   console.log('  ok #2167 ELF section-backed strings require a NUL terminator');
 }
+
+// Issue #2966: TraceRingBuffer.snapshot only accepts finite numbers as limits
+{
+  const ring = new TraceRingBuffer({ maxEvents: 24 });
+  for (let i = 0; i < 12; i++) ring.push({ kind: 'event', index: i });
+  // Non-number limits must not silently widen/narrow coverage: they fall back
+  // to the buffer default instead of Number()-coercing into a "valid" count.
+  assert.equal(ring.snapshot({ limit: [4] }).events.length, 12, 'array limit falls back to maxEvents');
+  assert.equal(ring.snapshot({ limit: { valueOf: () => 4 } }).events.length, 12, 'object limit falls back to maxEvents');
+  assert.equal(ring.snapshot({ limit: '4' }).events.length, 12, 'numeric string limit falls back to maxEvents');
+  assert.equal(ring.snapshot({ limit: true }).events.length, 12, 'boolean limit falls back to maxEvents');
+  assert.equal(ring.snapshot({ limit: null }).events.length, 12, 'null limit falls back to maxEvents');
+  assert.equal(ring.snapshot({ limit: NaN }).events.length, 12, 'NaN limit falls back to maxEvents');
+  assert.equal(ring.snapshot({ limit: Infinity }).events.length, 12, 'non-finite limit falls back to maxEvents');
+  // Finite numbers keep the existing floor/clamp semantics.
+  assert.equal(ring.snapshot({ limit: 4 }).events.length, 4);
+  assert.equal(ring.snapshot({ limit: 0 }).events.length, 0);
+  assert.equal(ring.snapshot({ limit: 99 }).events.length, 12);
+  assert.equal(ring.snapshot().events.length, 12);
+  console.log('  ok #2966 trace snapshot limit rejects non-number coercion');
+}
