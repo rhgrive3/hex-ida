@@ -35,7 +35,7 @@ export function computeStructuralHash(node) {
       break;
 
     case EXPR_KIND.FRESH_SYMBOL:
-      canonicalRep = `SYM:${sortStr}:${node.name}`;
+      canonicalRep = `SYM:${sortStr}:${node.symbolId}`;
       break;
 
     case EXPR_KIND.UNKNOWN_SEMANTIC:
@@ -96,7 +96,7 @@ export function structuralEquals(a, b) {
       return a.value === b.value;
 
     case EXPR_KIND.FRESH_SYMBOL:
-      return a.name === b.name;
+      return a.symbolId === b.symbolId;
 
     case EXPR_KIND.UNKNOWN_SEMANTIC:
       return a.reason === b.reason && JSON.stringify(a.detail) === JSON.stringify(b.detail);
