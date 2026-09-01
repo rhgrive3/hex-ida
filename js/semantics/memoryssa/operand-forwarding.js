@@ -178,6 +178,18 @@ function semanticBlockMayBeJoin(ir, blockId) {
   return predecessors.size > 0;
 }
 
+function semanticIntervalContainsCall(ir, storeNode, loadNode) {
+  if (!Array.isArray(ir?.nodes)) return true;
+  const storeIndex = ir.nodes.indexOf(storeNode);
+  const loadIndex = ir.nodes.indexOf(loadNode);
+  // Exact symbolic stack identity is only safe across an interval whose order
+  // is represented by the canonical Semantic IR. Calls are a publication
+  // boundary for compatibility projection: forwarding a pre-call synthetic PHI
+  // into a post-call LOAD can leak local_phi instead of the committed lvalue.
+  if (storeIndex < 0 || loadIndex <= storeIndex) return true;
+  return ir.nodes.slice(storeIndex + 1, loadIndex).some((node) => node?.kind === 'call');
+}
+
 export function forwardExactStackOperandIdentity(memorySsa, useOrId, ir) {
   if (!isCanonicalMemorySsaProducerArtifact(memorySsa)
       || !semanticIrMatches(memorySsa, ir)
@@ -269,6 +281,14 @@ export function forwardExactStackOperandIdentity(memorySsa, useOrId, ir) {
   // committed-field projection to recover the source-level lvalue. Stay
   // conservative at joins; the canonical MemorySSA/reachingStore remains intact.
   if (semanticBlockMayBeJoin(ir, storeNode.blockId)) return null;
+
+  // A call between an exact stack spill and its reload is a hard publication
+  // boundary: the interval may legally carry a pre-call synthetic PHI, and
+  // forwarding that value into the post-call LOAD re-mints local_phi_* in the
+  // published v1 pseudocode (the apply_damage regression). This is independent
+  // of the alias/proof policy above and remains required even when the other
+  // guards are relaxed for legitimate no-call O0 flows.
+  if (semanticIntervalContainsCall(ir, storeNode, loadNode)) return null;
 
   return Object.freeze({
     status: 'exact',
