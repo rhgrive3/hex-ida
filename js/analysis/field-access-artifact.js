@@ -21,7 +21,8 @@ function cacheFor(backend) {
 }
 
 function artifactKey(region, offset, size) {
-  return `${region.id}:${BigInt(offset)}:${Number(size || 0)}`;
+  const keySize = typeof size === 'bigint' ? `${size}n` : Number(size || 0);
+  return `${region.id}:${BigInt(offset)}:${keySize}`;
 }
 
 function validBackendResult(result) {
