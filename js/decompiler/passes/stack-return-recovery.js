@@ -196,15 +196,14 @@ function exactStackLoadSource(ir, value, node) {
   const direct = value?.def;
   if (direct?.op === 'load' && direct.loc?.kind === 'stack' && direct.loc.key === node.location.key) return direct;
 
-  // Compatibility may insert a physical-state MOV shadow between the semantic
-  // load and the STORE operand. In that case rely only on unique AST provenance
-  // that names one real stack LOAD for the exact same slot; ambiguous provenance
-  // remains unresolved.
-  const ids = [...new Set((node.source?.ir || []).map(String))];
-  if (ids.length !== 1) return null;
-  const candidate = (ir.instructions || []).find((inst) => String(inst.id) === ids[0]);
-  return candidate?.op === 'load' && candidate.loc?.kind === 'stack'
-    && candidate.loc.key === node.location.key ? candidate : null;
+  // Compatibility may add MOV/state-write provenance around the semantic load.
+  // Accept it only when the AST provenance still names exactly one real stack
+  // LOAD for this exact slot; unrelated provenance IDs do not create ambiguity.
+  const ids = new Set((node.source?.ir || []).map(String));
+  const candidates = (ir.instructions || []).filter((inst) =>
+    ids.has(String(inst.id)) && inst?.op === 'load' && inst.loc?.kind === 'stack'
+      && inst.loc.key === node.location.key);
+  return candidates.length === 1 ? candidates[0] : null;
 }
 
 function storeValue(inst, key, values, ir, opts, engine, active, depth) {
