@@ -12,7 +12,6 @@ import { registerArchitecturePlugin } from "../js/targets/architecture/index.js"
 
 console.log("Testing ArchitectureAdapter live view over ArchitecturePluginV2...");
 
-// Case 1 — built-ins are identical by ID
 for (const plugin of architecturePluginsV2()) {
   const adapter = architectureAdapter(plugin.id);
   assert.equal(adapter.id, plugin.id);
@@ -24,7 +23,6 @@ for (const plugin of architecturePluginsV2()) {
 }
 console.log("  ok Case 1 built-ins parity");
 
-// Case 2 — control-flow projection parity
 for (const plugin of architecturePluginsV2()) {
   const adapter = architectureAdapter(plugin.id);
   const fakeInsn = { mnemonic: "ret" };
@@ -32,7 +30,6 @@ for (const plugin of architecturePluginsV2()) {
 }
 console.log("  ok Case 2 control-flow projection parity");
 
-// Case 3 — callKind/returnKind compatibility
 {
   const arm = architectureAdapter("arm64");
   assert.equal(arm.callKind({ mnemonic: "bl" }), "call");
@@ -42,7 +39,6 @@ console.log("  ok Case 2 control-flow projection parity");
   console.log("  ok Case 3 callKind/returnKind");
 }
 
-// Case 4 — repeated lookup is stable
 {
   const a1 = architectureAdapter("arm64");
   const a2 = architectureAdapter("arm64");
@@ -50,7 +46,6 @@ console.log("  ok Case 2 control-flow projection parity");
   console.log("  ok Case 4 repeated lookup is strict equal");
 }
 
-// Case 5 — normalization is shared
 {
   const a1 = architectureAdapter("  ARM64  ");
   const a2 = architectureAdapter("arm64");
@@ -58,7 +53,6 @@ console.log("  ok Case 2 control-flow projection parity");
   console.log("  ok Case 5 shared normalization");
 }
 
-// Case 6 — unknown fallback parity
 {
   const unk = architectureAdapter("non-existent-arch");
   const unkPlugin = architecturePluginV2("unknown");
@@ -66,22 +60,15 @@ console.log("  ok Case 2 control-flow projection parity");
   console.log("  ok Case 6 unknown fallback parity");
 }
 
-// Case 7 — late canonical registration becomes immediately visible
 {
   const testId = "test-arch-live-" + Date.now();
-  registerArchitecturePlugin({
-    id: testId,
-    instructionAlignment: 4,
-    fixedInstructionSize: 4,
-    viewerCompatible: true,
-  });
+  registerArchitecturePlugin({ id: testId, instructionAlignment: 4, fixedInstructionSize: 4, viewerCompatible: true });
   const adapter = architectureAdapter(testId);
   assert.equal(adapter.id, testId);
   assert.equal(adapter.fixedInstructionSize, 4);
   console.log("  ok Case 7 late canonical registration immediately visible");
 }
 
-// Case 8 — canonical replacement invalidates projected identity
 {
   const testId = "test-replace-live-" + Date.now();
   registerArchitecturePlugin({ id: testId, instructionAlignment: 4, fixedInstructionSize: 4 });
@@ -90,12 +77,10 @@ console.log("  ok Case 2 control-flow projection parity");
   const a2 = architectureAdapter(testId);
   assert.notStrictEqual(a1, a2);
   assert.equal(a2.fixedInstructionSize, 2);
-  const a2_again = architectureAdapter(testId);
-  assert.strictEqual(a2, a2_again);
+  assert.strictEqual(a2, architectureAdapter(testId));
   console.log("  ok Case 8 canonical replacement invalidation");
 }
 
-// Case 9 — legacy registration writes canonical registry
 {
   const testId = "test-legacy-write-" + Date.now();
   registerArchitectureAdapter({ id: testId, instructionAlignment: 8, fixedInstructionSize: 8 });
@@ -106,7 +91,6 @@ console.log("  ok Case 2 control-flow projection parity");
   console.log("  ok Case 9 legacy registration writes canonical");
 }
 
-// Case 10 — legacy duplicate rejection
 {
   const testId = "test-legacy-dup-" + Date.now();
   registerArchitectureAdapter({ id: testId, instructionAlignment: 4 });
@@ -114,7 +98,6 @@ console.log("  ok Case 2 control-flow projection parity");
   console.log("  ok Case 10 legacy duplicate rejection");
 }
 
-// Case 11 — legacy replace updates canonical registry
 {
   const testId = "test-legacy-replace-" + Date.now();
   registerArchitectureAdapter({ id: testId, instructionAlignment: 4, fixedInstructionSize: 4 });
@@ -124,15 +107,12 @@ console.log("  ok Case 2 control-flow projection parity");
   console.log("  ok Case 11 legacy replace updates canonical");
 }
 
-// Case 12 — legacy direct construction still works
 {
   const custom = new ArchitectureAdapter({ id: "custom", fixedInstructionSize: 4, instructionAlignment: 4 });
-  const row = custom.rowForAddress({ vmAddr: 0x1000n, size: 0x100n }, 0x1004n);
-  assert.equal(row, 1);
+  assert.equal(custom.rowForAddress({ vmAddr: 0x1000n, size: 0x100n }, 0x1004n), 1);
   console.log("  ok Case 12 direct construction works");
 }
 
-// Case 13 — variable-width fallback remains unsupported for placement
 {
   const custom = new ArchitectureAdapter({ id: "custom-var", fixedInstructionSize: null });
   const res = custom.validateInstructionPlacement({ vmAddr: 0x1000n, size: 0x100n }, 0x1000n, 4);
@@ -141,7 +121,6 @@ console.log("  ok Case 2 control-flow projection parity");
   console.log("  ok Case 13 variable-width placement unsupported");
 }
 
-// Case 14 — no registry snapshot remains in js/architecture/index.js
 {
   const code = fs.readFileSync(new URL("../js/architecture/index.js", import.meta.url), "utf8");
   assert.ok(!code.includes("const BUILTINS = new Map"));
@@ -149,7 +128,6 @@ console.log("  ok Case 2 control-flow projection parity");
   console.log("  ok Case 14 no registry snapshot in source");
 }
 
-// Case 15 — default row mapping never rounds unsafe BigInt rows
 {
   const custom = new ArchitectureAdapter({ id: "custom-safe-row", fixedInstructionSize: 1, instructionAlignment: 1 });
   const maxSafe = BigInt(Number.MAX_SAFE_INTEGER);
@@ -160,15 +138,12 @@ console.log("  ok Case 2 control-flow projection parity");
   console.log("  ok Case 15 unsafe row numbers fail closed");
 }
 
-// Case 16 — placement inputs do not use JavaScript Number coercion
 {
   const arm = new ArchitectureAdapter({ id: "arm64-strict-placement", fixedInstructionSize: 4, instructionAlignment: 4 });
   const region = { vmAddr: 0x1000n, size: 0x100n };
   assert.equal(arm.addressForRow(region, 0), 0x1000n);
   assert.equal(arm.addressForRow(region, 3), 0x100cn);
-  for (const malformedRow of [[], [3], true, false, "3", { valueOf: () => 3 }]) {
-    assert.equal(arm.addressForRow(region, malformedRow), null);
-  }
+  for (const malformedRow of [[], [3], true, false, "3", { valueOf: () => 3 }]) assert.equal(arm.addressForRow(region, malformedRow), null);
   assert.deepEqual(arm.validateInstructionPlacement(region, 0x1000n, 4), { ok: true });
   for (const malformedLength of [[4], true, "4", { valueOf: () => 4 }]) {
     const result = arm.validateInstructionPlacement(region, 0x1000n, malformedLength);
@@ -178,7 +153,6 @@ console.log("  ok Case 2 control-flow projection parity");
   console.log("  ok Case 16 placement coercion fails closed");
 }
 
-// Case 17 — architecture metadata positive integers require primitive numbers (#3273)
 {
   const valid = new ArchitecturePluginV2({ id: "strict-metadata-valid", instructionAlignment: 1, fixedInstructionSize: 4 });
   assert.equal(valid.instructionAlignment, 1);
@@ -186,8 +160,8 @@ console.log("  ok Case 2 control-flow projection parity");
   const variable = new ArchitecturePluginV2({ id: "strict-metadata-variable", instructionAlignment: 4, fixedInstructionSize: null });
   assert.equal(variable.fixedInstructionSize, null);
   for (const malformed of ["4", [4], true, { valueOf: () => 4 }]) {
-    assert.throws(() => new ArchitecturePluginV2({ id: "strict-alignment", instructionAlignment: malformed, fixedInstructionSize: 4 }), /architecture-instructionAlignment-invalid/);
-    assert.throws(() => new ArchitecturePluginV2({ id: "strict-size", instructionAlignment: 4, fixedInstructionSize: malformed }), /architecture-fixedInstructionSize-invalid/);
+    assert.throws(() => new ArchitecturePluginV2({ id: "strict-alignment", instructionAlignment: malformed, fixedInstructionSize: 4 }), /instructionAlignment must be a finite positive integer/);
+    assert.throws(() => new ArchitecturePluginV2({ id: "strict-size", instructionAlignment: 4, fixedInstructionSize: malformed }), /fixedInstructionSize must be a finite positive integer/);
   }
   console.log("  ok Case 17 architecture metadata coercion fails closed");
 }
