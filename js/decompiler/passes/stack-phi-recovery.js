@@ -1,4 +1,4 @@
-import { expr, structuralKey } from '../ast/nodes.js';
+import { expr, mapChildren, structuralKey } from '../ast/nodes.js';
 import { RewriteEngine } from '../rewrite/engine.js';
 import { DEFAULT_RULES } from '../rewrite/rules.js';
 import { printExpression, printProgram } from '../pretty/c.js';
@@ -145,10 +145,29 @@ function repairedFlagComparison(flagsValue, cond, maps, ir) {
     }
   }
 
-  const left = expressionOfValue(leftValue, maps);
-  const right = expressionOfValue(rightValue, maps);
+  let left = expressionOfValue(leftValue, maps);
+  let right = expressionOfValue(rightValue, maps);
   if (!left || !right) return null;
-  const bits = Math.max(Number(cmp.bits || 0), Number(left.bits || 0), Number(right.bits || 0), 1);
+  const operandBits = [leftValue?.bits, rightValue?.bits]
+    .map(Number)
+    .filter((value) => Number.isInteger(value) && value > 0);
+  const exactOperandBits = operandBits.length === 2 && operandBits[0] === operandBits[1]
+    ? operandBits[0]
+    : 0;
+  const producerBits = Number(cmp.bits || producer?.bits || producer?.dst?.bits || exactOperandBits || 0);
+  const bits = producerBits > 0
+    ? producerBits
+    : Math.max(Number(left.bits || 0), Number(right.bits || 0), 1);
+  const fitOperand = (node) => Number(node.bits || bits) > bits
+    ? expr.unary('trunc', node, bits, node.signed ?? null, {
+      address: cmp.address,
+      row: cmp.row,
+      ir: cmp.id,
+      evidence: [{ reason: `exact ${bits}-bit NZCV producer width` }],
+    }, { fromBits: Number(node.bits || bits) })
+    : node;
+  left = fitOperand(left);
+  right = fitOperand(right);
   return buildNZCVConditionExpression(cmp.sub || 'sub', cond, left, right, bits, {
     address: cmp.address,
     row: cmp.row,
@@ -181,15 +200,66 @@ function materializedFlagCondition(term, maps, ir) {
   return kind === 'tbz' || kind === 'cbz' ? invertCondition(condition) : condition;
 }
 
-function controlCondition(term, maps, engine, ir) {
-  return simplify(materializedFlagCondition(term, maps, ir) || maps.conditions.get(term.id), engine);
+function directFlagCondition(term, maps, ir) {
+  const cond = term?.cond || term?.extra?.cond;
+  if (!cond) return null;
+  return repairedFlagComparison(valueOf(term.args?.at?.(-1)), cond, maps, ir);
 }
 
-function exactStoreExpression(inst, key, maps, engine) {
+function resolveConditionStackLoads(condition, maps, engine, ir, opts, active, depth = 0) {
+  const rewrite = (node, localDepth = depth) => {
+    if (!node || localDepth > 64) return node;
+    if (node.kind === 'load' && node.location?.kind === 'stack' && node.location?.key) {
+      const sourceLoad = exactStackLoadSource(ir, null, node);
+      if (!sourceLoad) return node;
+      return resolveStackBefore(ir, sourceLoad.block, sourceLoad.row, sourceLoad.loc.key,
+        maps, opts, engine, active, localDepth + 1) || node;
+    }
+    return mapChildren(node, (child) => rewrite(child, localDepth + 1));
+  };
+  return rewrite(condition);
+}
+
+function controlCondition(term, maps, engine, ir, opts, active, depth) {
+  const condition = materializedFlagCondition(term, maps, ir)
+    || directFlagCondition(term, maps, ir)
+    || maps.conditions.get(term.id);
+  if (!condition) return null;
+  return simplify(resolveConditionStackLoads(condition, maps, engine, ir, opts, active, depth), engine);
+}
+
+function exactStackLoadSource(ir, value, expression) {
+  if (expression?.kind !== 'load' || expression.location?.kind !== 'stack' || !expression.location?.key) return null;
+  const direct = value?.def;
+  if (direct?.op === 'load' && direct.loc?.kind === 'stack' && direct.loc.key === expression.location.key) return direct;
+
+  // Compatibility may wrap the semantic load with presentation/state provenance.
+  // Accept an indirect source only when that provenance identifies exactly one
+  // real LOAD for this exact stack slot.
+  const ids = new Set((expression.source?.ir || []).map(String));
+  const candidates = (ir?.instructions || []).filter((inst) =>
+    ids.has(String(inst.id)) && inst?.op === 'load' && inst.loc?.kind === 'stack'
+      && inst.loc.key === expression.location.key);
+  return candidates.length === 1 ? candidates[0] : null;
+}
+
+function exactStoreExpression(inst, key, maps, engine, ir, opts, active, depth) {
   if (inst?.op !== 'store' || inst.loc?.key !== key) return null;
   const value = valueOf(inst.args?.[0]);
   let expression = value ? maps.values.get(value.id) || null : null;
   if (!expression) return null;
+
+  // Clang -O0 often copies an argument spill into the branch-local return slot.
+  // Resolve that nested stack load at its own program point through the same
+  // CFG/barrier proof before publishing the outer join. If the source cannot be
+  // proven exactly, fail closed instead of emitting a select of unresolved loads.
+  if (expression.kind === 'load' && expression.location?.kind === 'stack') {
+    const sourceLoad = exactStackLoadSource(ir, value, expression);
+    if (!sourceLoad) return null;
+    expression = resolveStackBefore(ir, sourceLoad.block, sourceLoad.row, sourceLoad.loc.key,
+      maps, opts, engine, active, depth + 1);
+    if (!expression) return null;
+  }
 
   // A W-register store is an exact truncation boundary. Keep that width in the
   // recovered source value instead of leaking the 64-bit entry-register width
@@ -226,7 +296,7 @@ function resolveStackBefore(ir, blockIndex, beforeRow, key, maps, opts, engine, 
   active.add(visitKey);
   try {
     for (const inst of instructionsBefore(ir, blockIndex, beforeRow)) {
-      const stored = exactStoreExpression(inst, key, maps, engine);
+      const stored = exactStoreExpression(inst, key, maps, engine, ir, opts, active, depth);
       if (stored) return stored;
       if (hasUnsafeBarrier(inst, key)) return null;
     }
@@ -242,7 +312,7 @@ function resolveStackBefore(ir, blockIndex, beforeRow, key, maps, opts, engine, 
 
     const control = controllerForMerge(ir, blockIndex, predecessors, opts);
     if (!control) return null;
-    const condition = controlCondition(control.term, maps, engine, ir);
+    const condition = controlCondition(control.term, maps, engine, ir, opts, active, depth + 1);
     if (!condition) return null;
     const bits = incoming[0]?.bits || incoming[1]?.bits || 64;
     const signed = condition.compareSigned ?? incoming[0]?.signed ?? incoming[1]?.signed ?? null;
@@ -286,8 +356,8 @@ function returnSiteForNode(node, ir, allowSingleFallback = false) {
 
 function recoverReturnExpressionAt(result, node, maps, opts, engine, allowSingleFallback) {
   const output = result.semanticAst?.outputs?.find((x) => x.name === 'return');
-  const expression = node?.semantic?.expression || (allowSingleFallback ? output?.expression : null);
-  const key = stackReturnKey(expression);
+  const nodeKey = stackReturnKey(node?.semantic?.expression);
+  const key = nodeKey || (allowSingleFallback ? stackReturnKey(output?.expression) : null);
   if (!key) return null;
   const retInst = returnSiteForNode(node, result.ir, allowSingleFallback);
   if (!retInst) return null;
@@ -320,6 +390,7 @@ export function recoverExactStackPhiExpressions(result, opts = {}) {
     maxIterations: 10,
     nodeBudget: Math.min(2048, Number(opts.decompilerNodeBudget || 12000)),
     timeBudgetMs: Math.min(10, Math.max(3, Number(opts.decompilerTimeBudgetMs || 50) / 5)),
+    deterministic: opts.deterministicTransforms === true,
     maxApplications: 512,
   });
   const rewrite = rewriteReturnsInAst(result, maps, opts, engine);
