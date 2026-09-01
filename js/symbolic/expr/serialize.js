@@ -203,5 +203,8 @@ export function deserializeExprDag(jsonOrObject) {
   if (obj.schemaVersion !== EXPR_SCHEMA_VERSION) {
     throw new Error(`deserializeExprDag: incompatible schema version ${obj.schemaVersion}, expected ${EXPR_SCHEMA_VERSION}`);
   }
+  if (obj.expressionDagVersion !== EXPR_DAG_VERSION) {
+    throw new Error(`deserializeExprDag: incompatible expression DAG version ${obj.expressionDagVersion}, expected ${EXPR_DAG_VERSION}`);
+  }
   return plainToExpr(obj.root);
 }
