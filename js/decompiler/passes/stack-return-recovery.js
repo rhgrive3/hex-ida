@@ -297,6 +297,36 @@ function canonicalReturnRegister(result, root, opts = {}) {
   return null;
 }
 
+function committedReturnValue(result, root, ret, opts = {}) {
+  if (root?.kind !== 'load' || root.location?.kind !== 'stack' || !root.location?.key) return null;
+  const returnRegister = canonicalReturnRegister(result, root, opts);
+  if (!returnRegister) return null;
+  const reaching = reachingRegisterDefinition(result.ir, ret, returnRegister);
+  const load = reaching?.def;
+  if (load?.op !== 'load' || load.loc?.key !== root.location.key) return null;
+  if (!isCanonicalExactMemoryForwarding(load.memoryForwarding,
+    canonicalMemoryForwardingContextForLoad(load.memoryForwarding, load,
+      load.memoryForwardingContext ?? load.extra?.memoryForwardingContext))) return null;
+  const definitionIds = new Set(load.memoryForwarding.contributingDefinitionIds.map(String));
+  const stackStores = (result.ir.instructions || []).filter((candidate) => {
+    const definitionId = candidate?.memDef?.definitionId ?? candidate?.extra?.memoryDefinitionId ?? null;
+    return candidate?.op === 'store'
+      && candidate?.loc?.kind === 'stack'
+      && candidate.loc.key === root.location.key
+      && definitionId != null
+      && definitionIds.has(String(definitionId));
+  });
+  if (stackStores.length !== 1) return null;
+  const stackStore = stackStores[0];
+  const spilled = valueOf(stackStore?.args?.[0]);
+  const location = committedLocationForPhi(result, spilled);
+  if (!location) return null;
+  return expr.load(location, root.bits || 64, root.source, {
+    signed: root.signed ?? null,
+    proof: 'all SSA phi predecessors committed the exact spilled value to one lvalue',
+  });
+}
+
 function unsafeBarrier(inst, key) {
   if (inst?.op === 'clobber' || inst?.op === 'unknown') return true;
   if (inst?.op === 'call') {
@@ -306,60 +336,6 @@ function unsafeBarrier(inst, key) {
     return (inst.memKills || []).some((loc) => loc?.key === key);
   }
   return inst?.op === 'store' && inst.loc?.key !== key && (!inst.loc?.key || inst.loc?.kind === 'unknown');
-}
-
-function exactLegacyStackStoreForLoad(result, load, key) {
-  if (result?.ir?.compat?.projection === 'semantic-ir-v2-to-v1') return null;
-  const store = load?.reachingStore;
-  if (store?.op !== 'store' || store.loc?.kind !== 'stack' || store.loc.key !== key
-      || store.block !== load.block || store.row == null || load.row == null || store.row >= load.row) return null;
-  for (const inst of result.ir?.blocks?.[load.block]?.insts || []) {
-    if (inst === store || inst === load || inst?.row == null) continue;
-    if (inst.row <= store.row || inst.row >= load.row) continue;
-    if (unsafeBarrier(inst, key)) return null;
-  }
-  return store;
-}
-
-function committedReturnValue(result, root, ret, opts = {}) {
-  if (root?.kind !== 'load' || root.location?.kind !== 'stack' || !root.location?.key) return null;
-  const returnRegister = canonicalReturnRegister(result, root, opts);
-  if (!returnRegister) return null;
-  const reaching = reachingRegisterDefinition(result.ir, ret, returnRegister);
-  const load = reaching?.def;
-  if (load?.op !== 'load' || load.loc?.key !== root.location.key) return null;
-
-  let stackStore = null;
-  if (isCanonicalExactMemoryForwarding(load.memoryForwarding,
-    canonicalMemoryForwardingContextForLoad(load.memoryForwarding, load,
-      load.memoryForwardingContext ?? load.extra?.memoryForwardingContext))) {
-    const definitionIds = new Set(load.memoryForwarding.contributingDefinitionIds.map(String));
-    const stackStores = (result.ir.instructions || []).filter((candidate) => {
-      const definitionId = candidate?.memDef?.definitionId ?? candidate?.extra?.memoryDefinitionId ?? null;
-      return candidate?.op === 'store'
-        && candidate?.loc?.kind === 'stack'
-        && candidate.loc.key === root.location.key
-        && definitionId != null
-        && definitionIds.has(String(definitionId));
-    });
-    if (stackStores.length !== 1) return null;
-    stackStore = stackStores[0];
-  } else {
-    // The frozen legacy-v1 IR predates canonical forwarding certificates but
-    // still carries its historical `reachingStore` proof. Accept it only for a
-    // same-block exact stack slot and only when no existing memory-effect barrier
-    // lies between that store and the return reload.
-    stackStore = exactLegacyStackStoreForLoad(result, load, root.location.key);
-    if (!stackStore) return null;
-  }
-
-  const spilled = valueOf(stackStore?.args?.[0]);
-  const location = committedLocationForPhi(result, spilled);
-  if (!location) return null;
-  return expr.load(location, root.bits || 64, root.source, {
-    signed: root.signed ?? null,
-    proof: 'all SSA phi predecessors committed the exact spilled value to one lvalue',
-  });
 }
 
 function before(ir, block, row) {
@@ -444,7 +420,6 @@ export function recoverExactStackReturn(result, opts = {}) {
     nodeBudget:Math.min(2048, Number(opts.decompilerNodeBudget || 12000)),
     timeBudgetMs:Math.min(12, Math.max(4, Number(opts.decompilerTimeBudgetMs || 50) / 4)),
     maxApplications:512,
-    deterministic: opts.deterministicTransforms === true,
   });
   const committed = committedReturnValue(result, root, ret, opts);
   const recovered = committed || resolve(result.ir, ret.block, ret.row, root.location.key, values, opts, engine, new Set());
