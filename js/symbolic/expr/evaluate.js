@@ -91,7 +91,10 @@ export function evaluateExpr(expr, env = null) {
       }
       if (isBoolSort(expr.sort)) {
         const val = typeof bound === 'object' && bound !== null && 'value' in bound ? bound.value : bound;
-        return { status: EVAL_STATUS.VALUE, sort: expr.sort, value: Boolean(val) };
+        if (typeof val !== 'boolean') {
+          return { status: EVAL_STATUS.UNKNOWN, reason: 'invalid-boolean-binding', sort: expr.sort };
+        }
+        return { status: EVAL_STATUS.VALUE, sort: expr.sort, value: val };
       }
       if (isBvSort(expr.sort)) {
         const raw = typeof bound === 'object' && bound !== null && 'value' in bound ? bound.value : bound;
