@@ -297,6 +297,44 @@ function canonicalReturnRegister(result, root, opts = {}) {
   return null;
 }
 
+function exactStackReachingStore(result, load, key) {
+  const fact = load?.memoryForwarding ?? load?.extra?.memoryForwarding ?? null;
+  if (isCanonicalExactMemoryForwarding(fact,
+    canonicalMemoryForwardingContextForLoad(fact, load,
+      load?.memoryForwardingContext ?? load?.extra?.memoryForwardingContext))) {
+    const definitionIds = new Set((fact.contributingDefinitionIds || []).map(String));
+    const stores = (result.ir.instructions || []).filter((candidate) => {
+      const definitionId = candidate?.memDef?.definitionId ?? candidate?.extra?.memoryDefinitionId ?? null;
+      return candidate?.op === 'store'
+        && candidate?.loc?.kind === 'stack'
+        && candidate.loc.key === key
+        && definitionId != null
+        && definitionIds.has(String(definitionId));
+    });
+    return stores.length === 1 ? stores[0] : null;
+  }
+
+  // Value forwarding deliberately fails closed when the spilled scalar itself
+  // is a CFG-join PHI. Return recovery needs a weaker fact: which concrete
+  // stack definition reaches this load. attachMemorySsa publishes that relation
+  // as one shared canonical MemorySSA node. Require object identity on both
+  // sides, must-alias on the use and definition, and the exact stack slot. This
+  // never authorizes forwarding the PHI value itself; committedLocationForPhi
+  // still has to prove every predecessor committed that exact arm to one lvalue.
+  const reaching = load?.memUse ?? null;
+  const store = reaching?.inst ?? null;
+  if (reaching?.kind !== 'store'
+      || reaching?.aliasRelation !== 'must'
+      || load?.memoryAliasRelation !== 'must'
+      || store?.op !== 'store'
+      || store?.loc?.kind !== 'stack'
+      || store.loc.key !== key
+      || load?.loc?.kind !== 'stack'
+      || load.loc.key !== key
+      || store?.memDef !== reaching) return null;
+  return store;
+}
+
 function committedReturnValue(result, root, ret, opts = {}) {
   if (root?.kind !== 'load' || root.location?.kind !== 'stack' || !root.location?.key) return null;
   const returnRegister = canonicalReturnRegister(result, root, opts);
@@ -304,20 +342,8 @@ function committedReturnValue(result, root, ret, opts = {}) {
   const reaching = reachingRegisterDefinition(result.ir, ret, returnRegister);
   const load = reaching?.def;
   if (load?.op !== 'load' || load.loc?.key !== root.location.key) return null;
-  if (!isCanonicalExactMemoryForwarding(load.memoryForwarding,
-    canonicalMemoryForwardingContextForLoad(load.memoryForwarding, load,
-      load.memoryForwardingContext ?? load.extra?.memoryForwardingContext))) return null;
-  const definitionIds = new Set(load.memoryForwarding.contributingDefinitionIds.map(String));
-  const stackStores = (result.ir.instructions || []).filter((candidate) => {
-    const definitionId = candidate?.memDef?.definitionId ?? candidate?.extra?.memoryDefinitionId ?? null;
-    return candidate?.op === 'store'
-      && candidate?.loc?.kind === 'stack'
-      && candidate.loc.key === root.location.key
-      && definitionId != null
-      && definitionIds.has(String(definitionId));
-  });
-  if (stackStores.length !== 1) return null;
-  const stackStore = stackStores[0];
+  const stackStore = exactStackReachingStore(result, load, root.location.key);
+  if (!stackStore) return null;
   const spilled = valueOf(stackStore?.args?.[0]);
   const location = committedLocationForPhi(result, spilled);
   if (!location) return null;
