@@ -38,7 +38,9 @@ function required(value, code) {
 function optional(value) {
   if (value == null) return null;
   if (typeof value !== 'string') throw new ArtifactError('artifact-optional-id-invalid');
-  return value;
+  const text = value.trim();
+  if (!text) throw new ArtifactError('artifact-optional-id-invalid');
+  return text;
 }
 function version(value, relevant = true) { if (!relevant) return ARTIFACT_NOT_APPLICABLE_VERSION; return required(value, 'artifact-version-required'); }
 function sortedStrings(values, code) {
