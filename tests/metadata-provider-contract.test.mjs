@@ -86,6 +86,22 @@ partialCoverageSource.nested.values.push('still-mutable');
 assert.deepEqual(partialIdentity.coverage.entityIds, ['type@0x1000']);
 assert.deepEqual(partialIdentity.coverage.nested.values, ['caller-owned']);
 
+// Authority filtering uses a known-dimension coverage only. The immutability
+// identity above deliberately carries an unknown `nested` dimension, which the
+// fail-closed authority contract must never authorize (unknown stays explicit).
+const authorityIdentity = createLanguageMetadataIdentity({
+  verdict: 'matched-partial',
+  providerId: 'rust-metadata',
+  providerVersion: '1.0.0',
+  ecosystem: 'rust',
+  toolchainVersion: 'rustc-1.78.0',
+  binaryIdentity: 'sha256:def',
+  coverage: {
+    recordKinds: ['type'],
+    entityIds: ['type@0x1000'],
+  },
+});
+
 const coveredRecord = createLanguageMetadataRecord({
   kind: 'type',
   entityId: 'type@0x1000',
@@ -124,7 +140,7 @@ const symbolRecord = createLanguageMetadataRecord({
 // Partial identity can still authorize an explicitly covered record when the
 // result itself is structurally complete.
 const partialResult = createLanguageMetadataResult({
-  identity: partialIdentity,
+  identity: authorityIdentity,
   ecosystem: 'rust',
   sections: ['.comment', '.rodata'],
   completeness: { present: true, declared: 1, scanned: 1, parsed: 1, complete: true },

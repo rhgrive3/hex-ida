@@ -5,6 +5,7 @@ import {
   applyLanguageMetadataTypesToGraph,
   languageMetadataFunctionEvidence,
 } from '../js/metadata/index.js';
+import { createAnalysisStatus } from '../js/analysis/status.js';
 import { TypeConstraintGraph } from '../js/analysis/types/graph.js';
 import { classifyRuntimeCall, runtimeOriginForSymbol } from '../js/apple/runtime.js';
 
@@ -54,6 +55,15 @@ console.log('Testing Language Metadata Downstream Integration & Cross-Ecosystem 
       providerId: 'metadata.go',
       providerVersion: '1.0.0',
     },
+    completeness: { present: true, declared: 1, scanned: 1, parsed: 1, complete: true },
+    // #3260: a result without a proven-complete status can never mint hard
+    // constraints, so the fixture carries the canonical complete status.
+    status: createAnalysisStatus({
+      snapshotId: 'snap-integration',
+      analyzerId: 'metadata.go',
+      analyzerVersion: '1.0.0',
+      completeness: 'complete',
+    }),
   };
 
   const goTypePage = {
@@ -102,6 +112,13 @@ console.log('Testing Language Metadata Downstream Integration & Cross-Ecosystem 
   const rustResult = {
     ecosystem: 'rust',
     identity: { verdict: 'matched-authoritative' },
+    completeness: { present: true, declared: 1, scanned: 1, parsed: 1, complete: true },
+    status: createAnalysisStatus({
+      snapshotId: 'snap-integration',
+      analyzerId: 'metadata.rust',
+      analyzerVersion: '1.0.0',
+      completeness: 'complete',
+    }),
   };
 
   const rustPage = {
