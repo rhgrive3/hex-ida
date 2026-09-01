@@ -23,8 +23,14 @@ function exactJson(value) {
 function sortedStrings(value, code) {
   if (value == null) return [];
   if (!Array.isArray(value)) fail(code);
-  if (value.some((item) => typeof item !== 'string')) fail(code);
-  return [...new Set(value.filter(Boolean))].sort();
+  const out = [];
+  for (const item of value) {
+    if (typeof item !== 'string') fail(code);
+    const text = item.trim();
+    if (!text) fail(code);
+    out.push(text);
+  }
+  return [...new Set(out)].sort();
 }
 
 export function createDeterminismMetadata(input = {}) {
