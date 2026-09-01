@@ -99,7 +99,7 @@ export class ObjcMetadataProvider extends LanguageMetadataProvider {
     this.cachedModel = model;
     this.cachedIndex = buildObjcRuntimeIndex(model);
 
-    const isComplete = model.runtimeCompleteness?.complete === true || model.completeness?.complete === true;
+    const isComplete = model.runtimeCompleteness?.complete === true;
     const identity = createLanguageMetadataIdentity({
       verdict: isComplete ? 'matched-authoritative' : 'matched-partial',
       providerId: this.id,
