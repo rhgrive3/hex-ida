@@ -103,5 +103,28 @@ assert.equal(parsed.completeness.complete, true);
   assert.equal(partial.completeness.complete, false);
 }
 
+// #3178: structured class addresses must not become category identity keys.
+{
+  p32(0x1304, 1);
+  const structured = await parseObjcExtendedMetadata(read, sections, {
+    classes: [{ name: 'Fake', addr: ['8192'] }],
+  });
+  assert.equal(structured.categories[0].className, null);
+  assert.equal(structured.categories[0].methods[0].className, null);
+
+  const decimal = await parseObjcExtendedMetadata(read, sections, {
+    classes: [{ name: 'DecimalClass', addr: '8192' }],
+  });
+  assert.equal(decimal.categories[0].className, 'DecimalClass');
+
+  const hex = await parseObjcExtendedMetadata(read, sections, {
+    classes: [{ name: 'HexClass', addr: '0x2000' }],
+  });
+  assert.equal(hex.categories[0].className, 'HexClass');
+
+  const nonArray = await parseObjcExtendedMetadata(read, sections, { classes: { name: 'Fake', addr: 0x2000n } });
+  assert.equal(nonArray.categories[0].className, null);
+}
+
 console.log('objc-metadata: ok');
 // Keep completeness regressions on a user-authored head after generated sync updates.

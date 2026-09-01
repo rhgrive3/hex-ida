@@ -92,13 +92,16 @@ export function classifyLanguageRuntimeCall(name) {
  */
 export async function parseUnifiedLanguageMetadata(context = {}, options = {}) {
   const providers = [];
+  const sections = Array.isArray(context.sections)
+    ? context.sections
+    : Object.values(context.sections || {});
 
   // 1. Go
-  if (context.pclntabBuffer || (context.sections || []).some((s) => (s.name || s.section || '').includes('gopclntab'))) {
+  if (context.pclntabBuffer || sections.some((s) => (s.name || s.section || '').includes('gopclntab'))) {
     providers.push(new GoMetadataProvider({
       pclntabBuffer: context.pclntabBuffer,
       rodataBuffer: context.rodataBuffer,
-      sections: context.sections || [],
+      sections,
       binaryIdentity: context.binaryIdentity,
       architecture: context.architecture,
       platform: context.platform,
@@ -111,7 +114,7 @@ export async function parseUnifiedLanguageMetadata(context = {}, options = {}) {
     providers.push(new RustMetadataProvider({
       symbols: context.symbols || [],
       commentBuffer: context.commentBuffer,
-      sections: context.sections || [],
+      sections,
       binaryIdentity: context.binaryIdentity,
       architecture: context.architecture,
       platform: context.platform,
@@ -120,10 +123,10 @@ export async function parseUnifiedLanguageMetadata(context = {}, options = {}) {
   }
 
   // 3. Swift
-  if ((context.sections || []).some((s) => (s.name || s.section || '').includes('swift5') || (s.name || s.section || '').includes('sw5'))) {
+  if (sections.some((s) => (s.name || s.section || '').includes('swift5') || (s.name || s.section || '').includes('sw5'))) {
     providers.push(new SwiftMetadataProvider({
       readAt: context.readAt,
-      sections: context.sections || [],
+      sections,
       binaryIdentity: context.binaryIdentity,
       architecture: context.architecture,
       platform: context.platform,
@@ -132,10 +135,10 @@ export async function parseUnifiedLanguageMetadata(context = {}, options = {}) {
   }
 
   // 4. ObjC
-  if ((context.sections || []).some((s) => (s.name || s.section || '').includes('objc_') || (s.name || s.section || '').includes('__OBJC'))) {
+  if (sections.some((s) => (s.name || s.section || '').includes('objc_') || (s.name || s.section || '').includes('__OBJC'))) {
     providers.push(new ObjcMetadataProvider({
       readAt: context.readAt,
-      sections: context.sections || [],
+      sections,
       binaryIdentity: context.binaryIdentity,
       architecture: context.architecture,
       platform: context.platform,

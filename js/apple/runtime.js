@@ -77,8 +77,14 @@ export function resolveObjcIMP(objcIndex, address, { receiverType = null, select
 }
 
 export function resolveAppleCall(index, call = {}) {
-  const name = call.name || call.symbol || '';
-  let origin = call.runtime || runtimeOriginForSymbol(name);
+  const name = typeof call.name === 'string'
+    ? call.name
+    : typeof call.symbol === 'string'
+      ? call.symbol
+      : '';
+  let origin = typeof call.runtime === 'string' && call.runtime
+    ? call.runtime
+    : runtimeOriginForSymbol(name);
   const indirectTarget = call.impTarget ?? call.functionPointer ?? ((call.kind === 'imp' || call.kind === 'function-pointer') ? call.target : null);
   const imp = indirectTarget != null ? resolveObjcIMP(index?.objc, indirectTarget, { receiverType: call.receiverType, selector: call.selector }) : null;
   if (origin === 'unknown' && imp?.candidates?.length) origin = 'objc';

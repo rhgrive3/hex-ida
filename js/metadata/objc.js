@@ -99,7 +99,7 @@ export class ObjcMetadataProvider extends LanguageMetadataProvider {
     this.cachedModel = model;
     this.cachedIndex = buildObjcRuntimeIndex(model);
 
-    const isComplete = model.runtimeCompleteness?.complete === true || model.completeness?.complete === true;
+    const isComplete = model.runtimeCompleteness?.complete === true;
     const identity = createLanguageMetadataIdentity({
       verdict: isComplete ? 'matched-authoritative' : 'matched-partial',
       providerId: this.id,
@@ -115,7 +115,9 @@ export class ObjcMetadataProvider extends LanguageMetadataProvider {
       detail: `Objective-C 2.0 (${model.classes?.length || 0} classes, ${model.protocols?.length || 0} protocols)`,
       coverage: isComplete ? null : {
         recordKinds: ['type', 'method'],
-        addresses: (model.classes || []).map((c) => `0x${c.address?.toString(16)}`).filter(Boolean),
+        addresses: (model.classes || [])
+          .filter((c) => c.address != null)
+          .map((c) => `0x${c.address.toString(16)}`),
       },
     });
 
@@ -188,7 +190,8 @@ export class ObjcMetadataProvider extends LanguageMetadataProvider {
     for (const cls of model.classes) {
       const allMethods = [...(cls.methods || []), ...(cls.classMethods || [])];
       for (const m of allMethods) {
-        const addrStr = m.addr != null || m.imp != null ? `0x${(m.addr || m.imp).toString(16)}` : null;
+        const methodAddress = m.addr ?? m.imp;
+        const addrStr = methodAddress != null ? `0x${methodAddress.toString(16)}` : null;
         records.push(
           createLanguageMetadataRecord({
             kind: 'method',
