@@ -363,7 +363,8 @@ export function enhanceSemanticDecompilation(result, model, opts = {}) {
     core = constrainSemanticValueWidths(enhanceCore(result, model, { ...opts, phase8Optimize:false }));
   } finally { restore(); }
   const reanchored = reanchorExactStackReturn(core, opts);
-  const legacySpillsRecovered = recoverLegacySameBlockStackSpills(reanchored, opts);
+  const exactReturnRecovered = recoverExactStackReturn(reanchored, opts);
+  const legacySpillsRecovered = recoverLegacySameBlockStackSpills(exactReturnRecovered, opts);
   const stackPhiRecovered = recoverExactStackPhiExpressions(legacySpillsRecovered, opts);
   const recovered = recoverExactStackReturn(reanchorExactStackReturn(stackPhiRecovered, opts), opts);
   return fullPhase8Projection(reanchorRecoveredReturnSource(recovered, opts), model, opts);
