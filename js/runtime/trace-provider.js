@@ -129,8 +129,12 @@ export class TraceProvider {
       const module = this.recording.modules[i] || {};
       if (module.runtimeBase == null && module.base == null) continue;
       if (module.runtimeSize == null && module.size == null) continue;
-      const identityEvidenceIds = Array.isArray(module.identityEvidenceIds) ? module.identityEvidenceIds : [];
-      const hasProvenStaticIdentity = module.binaryId != null && (module.identityState === 'exact' || module.identityState === 'resolved' || identityEvidenceIds.length > 0);
+      const rawEvidenceIds = Array.isArray(module.identityEvidenceIds) ? module.identityEvidenceIds : [];
+      const identityEvidenceIds = rawEvidenceIds.every((id) => typeof id === 'string' && id.trim())
+        ? [...new Set(rawEvidenceIds.map((id) => id.trim()))]
+        : [];
+      const hasProvenStaticIdentity = module.binaryId != null
+        && (module.identityState === 'exact' || module.identityState === 'resolved');
       session.modules.load({
         bindingKey: module.bindingKey ?? module.moduleKey ?? module.id ?? module.uuid ?? module.name ?? `trace-module:${i}`,
         runtimeBase: module.runtimeBase ?? module.base,
@@ -141,7 +145,7 @@ export class TraceProvider {
         sliceId: hasProvenStaticIdentity ? (module.sliceId ?? null) : null,
         imageId: hasProvenStaticIdentity ? (module.imageId ?? null) : null,
         buildIdentity: module.buildIdentity ?? module.uuid ?? null,
-        identityState: hasProvenStaticIdentity ? (module.identityState ?? 'resolved') : 'unresolved',
+        identityState: hasProvenStaticIdentity ? module.identityState : 'unresolved',
         identityEvidenceIds,
         loadedSequence: module.loadedSequence,
       });
