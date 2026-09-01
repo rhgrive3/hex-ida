@@ -193,11 +193,38 @@ function controlCondition(term, maps, engine, ir) {
     || maps.conditions.get(term.id), engine);
 }
 
-function exactStoreExpression(inst, key, maps, engine) {
+function exactStackLoadSource(ir, value, expression) {
+  if (expression?.kind !== 'load' || expression.location?.kind !== 'stack' || !expression.location?.key) return null;
+  const direct = value?.def;
+  if (direct?.op === 'load' && direct.loc?.kind === 'stack' && direct.loc.key === expression.location.key) return direct;
+
+  // Compatibility may wrap the semantic load with presentation/state provenance.
+  // Accept an indirect source only when that provenance identifies exactly one
+  // real LOAD for this exact stack slot.
+  const ids = new Set((expression.source?.ir || []).map(String));
+  const candidates = (ir?.instructions || []).filter((inst) =>
+    ids.has(String(inst.id)) && inst?.op === 'load' && inst.loc?.kind === 'stack'
+      && inst.loc.key === expression.location.key);
+  return candidates.length === 1 ? candidates[0] : null;
+}
+
+function exactStoreExpression(inst, key, maps, engine, ir, opts, active, depth) {
   if (inst?.op !== 'store' || inst.loc?.key !== key) return null;
   const value = valueOf(inst.args?.[0]);
   let expression = value ? maps.values.get(value.id) || null : null;
   if (!expression) return null;
+
+  // Clang -O0 often copies an argument spill into the branch-local return slot.
+  // Resolve that nested stack load at its own program point through the same
+  // CFG/barrier proof before publishing the outer join. If the source cannot be
+  // proven exactly, fail closed instead of emitting a select of unresolved loads.
+  if (expression.kind === 'load' && expression.location?.kind === 'stack') {
+    const sourceLoad = exactStackLoadSource(ir, value, expression);
+    if (!sourceLoad) return null;
+    expression = resolveStackBefore(ir, sourceLoad.block, sourceLoad.row, sourceLoad.loc.key,
+      maps, opts, engine, active, depth + 1);
+    if (!expression) return null;
+  }
 
   // A W-register store is an exact truncation boundary. Keep that width in the
   // recovered source value instead of leaking the 64-bit entry-register width
@@ -234,7 +261,7 @@ function resolveStackBefore(ir, blockIndex, beforeRow, key, maps, opts, engine, 
   active.add(visitKey);
   try {
     for (const inst of instructionsBefore(ir, blockIndex, beforeRow)) {
-      const stored = exactStoreExpression(inst, key, maps, engine);
+      const stored = exactStoreExpression(inst, key, maps, engine, ir, opts, active, depth);
       if (stored) return stored;
       if (hasUnsafeBarrier(inst, key)) return null;
     }
