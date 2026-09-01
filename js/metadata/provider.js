@@ -11,7 +11,7 @@
  */
 
 import { deepFreeze, stableDigest } from '../core/identity/index.js';
-import { createAnalysisStatus } from '../analysis/status.js';
+import { createAnalysisStatus, isCompleteStatus } from '../analysis/status.js';
 
 export const METADATA_PROVIDER_CONTRACT_VERSION = '1.0.0';
 export const METADATA_PROVIDER_SCHEMA_VERSION = 1;
@@ -75,6 +75,12 @@ function optionalSizeBytes(value) {
   const size = Number(value);
   if (!Number.isSafeInteger(size) || size < 0) fail('metadata-record-invalid-size');
   return size;
+}
+
+function nonNegativeSafeInteger(value, code) {
+  if (value == null) return 0;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) fail(code);
+  return value;
 }
 
 /**
@@ -141,6 +147,7 @@ function coverageList(value) {
 export function isLanguageRecordAuthoritative(result, record) {
   const identity = result?.identity;
   if (!identity || !record) return false;
+  if (result?.completeness?.complete !== true || !isCompleteStatus(result?.status)) return false;
   if (identity.verdict === 'matched-authoritative') return true;
   if (identity.verdict !== 'matched-partial') return false;
 
@@ -256,12 +263,12 @@ export function createLanguageMetadataResult(input = {}) {
     counts: deepFreeze({ ...(input.counts ?? {}) }),
     completeness: deepFreeze({
       present: input.completeness?.present ?? (input.sections?.length > 0),
-      declared: Number(input.completeness?.declared ?? 0),
-      scanned: Number(input.completeness?.scanned ?? 0),
-      parsed: Number(input.completeness?.parsed ?? 0),
+      declared: nonNegativeSafeInteger(input.completeness?.declared, 'metadata-result-invalid-declared'),
+      scanned: nonNegativeSafeInteger(input.completeness?.scanned, 'metadata-result-invalid-scanned'),
+      parsed: nonNegativeSafeInteger(input.completeness?.parsed, 'metadata-result-invalid-parsed'),
       capped: input.completeness?.capped === true,
-      unreadableEntries: Number(input.completeness?.unreadableEntries ?? 0),
-      invalidEntries: Number(input.completeness?.invalidEntries ?? 0),
+      unreadableEntries: nonNegativeSafeInteger(input.completeness?.unreadableEntries, 'metadata-result-invalid-unreadable-entries'),
+      invalidEntries: nonNegativeSafeInteger(input.completeness?.invalidEntries, 'metadata-result-invalid-invalid-entries'),
       complete: input.completeness?.complete === true,
       reasons: deepFreeze([...(input.completeness?.reasons ?? [])].map(String)),
     }),
