@@ -270,13 +270,11 @@ test('C3-01 Negative: two equally valid soft structural candidates preserve ambi
 
 // 8. Negative: Cycle that does not converge within budget
 test('C3-01 Negative: cycle that does not converge publishes truncated status', () => {
-  // Configured with very low iteration limit (e.g. maxIterationsPerComponent: 1)
   const graph = new TypeConstraintGraph({
     snapshotId: 'snapshot_cycle_test',
     limits: { maxIterationsPerComponent: 1 },
   });
 
-  // Create a cyclic dependency where solving requires multi-iteration propagation
   graph.addHardConstraint({
     kind: 'debug-type',
     origin: 'debug-matched',
@@ -289,11 +287,8 @@ test('C3-01 Negative: cycle that does not converge publishes truncated status', 
   });
 
   const graphResult = graph.solveGraph({ maxIterationsPerComponent: 1 });
-  // If iteration budget is exceeded before convergence:
-  if (graphResult.status.stopReason === 'iteration-limit') {
-    assert.equal(graphResult.status.completeness, 'truncated');
-    assert.equal(graphResult.status.stopReason, 'iteration-limit');
-  }
+  assert.equal(graphResult.status.completeness, 'truncated');
+  assert.equal(graphResult.status.stopReason, 'iteration-limit');
 });
 
 // 9. Negative: Budget overflow fails closed
@@ -341,7 +336,7 @@ test('C3-01 Negative: unknown size or alignment is not guessed as 0 or pointer s
         descriptor: { offset: 0, sizeBytes: -4, memberType: { name: 'bad' } },
       },
     });
-  }, /size-invalid|sizeBytes/);
+  }, /structural-size-invalid/);
 
   assert.throws(() => {
     createHardConstraint({
@@ -353,7 +348,7 @@ test('C3-01 Negative: unknown size or alignment is not guessed as 0 or pointer s
         descriptor: { offset: -8, sizeBytes: 4, memberType: { name: 'bad' } },
       },
     });
-  }, /offset-invalid/);
+  }, /structural-offset-invalid/);
 });
 
 // 12. Negative: Unsupported ABI profile must not default to host ABI
@@ -365,7 +360,7 @@ test('C3-01 Negative: unsupported ABI profile does not fallback to host ABI', ()
       claim: abi('entity_abi_unsupported', 'custom-reg', 'unknown-class', { abiProfile: 'unsupported-foreign-abi-v99' }),
       abiProfile: 'unsupported-foreign-abi-v99',
     });
-  }, /abi-profile-unsupported|hard-constraint/);
+  }, /abi-profile-unsupported/);
 });
 
 // 13. Determinism: Repeated solves produce identical digests

@@ -69,6 +69,15 @@ function positiveLimit(value, fallback, code) {
   return number;
 }
 
+function defaultAlign(sizeBytes) {
+  const size = Number(sizeBytes ?? 0);
+  if (!Number.isSafeInteger(size) || size <= 0) return 1;
+  if (size >= 8) return 8;
+  if (size >= 4) return 4;
+  if (size >= 2) return 2;
+  return 1;
+}
+
 function mergedEvidenceIds(left, right) {
   return [...new Set([...(left ?? []), ...(right ?? [])])].sort();
 }
@@ -196,7 +205,7 @@ function mergeCompatibleHardClaims(entityId, layer, claims, sccContext = null) {
 
     let maxAlign = explicitAlign ?? 1;
     for (const m of updatedMembers) {
-      const mAlign = Number(m.alignBytes ?? (m.sizeBytes ? Math.min(8, m.sizeBytes) : 1));
+      const mAlign = Number(m.alignBytes ?? defaultAlign(m.sizeBytes));
       if (mAlign > maxAlign) maxAlign = mAlign;
     }
 
@@ -289,7 +298,7 @@ export class TypeConstraintGraph {
   }
 
   dependenciesOf(entityId) {
-    return this.dependencies.get(entityId) ?? new Set();
+    return new Set(this.dependencies.get(entityId) ?? []);
   }
 
   addHardConstraint(input) {
@@ -351,7 +360,6 @@ export class TypeConstraintGraph {
         });
       }
     }
-    this.#recordDependencies(evidence.claim);
     return evidence;
   }
 
@@ -421,7 +429,10 @@ export class TypeConstraintGraph {
       ? positiveLimit(maxIterationsPerComponent, this.limits.maxIterationsPerComponent, 'type-graph-invalid-iteration-limit')
       : this.limits.maxIterationsPerComponent;
 
-    const allEntities = roots ? [...new Set(roots)].sort() : this.entityIds();
+    const allEntities = (roots ? [...new Set(roots)] : this.entityIds())
+      .filter((id) => this.entities.has(id))
+      .sort();
+
     const {
       components,
       recursiveComponents,
@@ -494,6 +505,7 @@ export class TypeConstraintGraph {
         changed = false;
 
         for (const entityId of component) {
+          if (!this.entities.has(entityId)) continue;
           const solved = this.solveEntity(entityId, { signal, sccContext });
           const digest = stableDigest(solved);
           if (componentDigests.get(entityId) !== digest) {
@@ -511,7 +523,6 @@ export class TypeConstraintGraph {
           const truncatedResult = createTypeResult({
             entityId,
             layers: existing?.layers ?? {},
-            contradictions: existing?.contradictions ?? [],
             userConstrained: existing?.userConstrained ?? false,
             status: this.#status('truncated', 'iteration-limit'),
           });
@@ -677,10 +688,19 @@ export function createTypeResult(input = {}) {
 export function createTypeGraphResult(input = {}) {
   const status = input.status;
   if (!status) fail('type-graph-result-status-required');
-  return deepFreeze({
+  const rawMap = input.results instanceof Map ? input.results : new Map(Object.entries(input.results ?? {}));
+  const readOnlyMap = new Map();
+  for (const [key, value] of rawMap) {
+    readOnlyMap.set(key, value);
+  }
+  readOnlyMap.set = () => { throw new TypeError('TypeGraphResult.results is read-only'); };
+  readOnlyMap.delete = () => { throw new TypeError('TypeGraphResult.results is read-only'); };
+  readOnlyMap.clear = () => { throw new TypeError('TypeGraphResult.results is read-only'); };
+
+  return Object.freeze({
     schemaVersion: TYPE_GRAPH_RESULT_SCHEMA_VERSION,
     snapshotId: String(input.snapshotId ?? 'snapshot-unbound'),
-    results: input.results instanceof Map ? input.results : new Map(Object.entries(input.results ?? {})),
+    results: readOnlyMap,
     components: deepFreeze((input.components ?? []).map((c) => [...c].sort())),
     recursiveComponents: deepFreeze((input.recursiveComponents ?? []).map((c) => [...c].sort())),
     iterations: Number(input.iterations ?? 0),
@@ -726,7 +746,7 @@ export function reconstructStructuralType(graphOrResult, entityId, options = {})
   const members = (selected.members ?? []).map((m) => deepFreeze({
     offset: Number(m.offset ?? 0),
     sizeBytes: Number(m.sizeBytes ?? 0),
-    alignBytes: Number(m.alignBytes ?? (m.sizeBytes ? Math.min(8, Number(m.sizeBytes)) : 1)),
+    alignBytes: Number(m.alignBytes ?? defaultAlign(m.sizeBytes)),
     name: m.fieldName ?? m.name ?? null,
     type: deepFreeze(m.memberType ?? { kind: 'unknown' }),
   }));
