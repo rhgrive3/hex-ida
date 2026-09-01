@@ -21,9 +21,9 @@ lost/stale provenance, US3 transform ledger auditability).
 
 **Purpose**: Preflight evidence and runner/ownership invariants before production edits
 
-- [ ] T001 Record preflight in docs/analysis-improvement-finding-ledger.md: exact live-main base SHA, branch `feat/analysis-hex-c4-03-provenance`, concurrent-lane overlap check for owned paths (ME-01/C1-01/C2-01/C2-02 lanes), and first-divergence statement (rendered entities from many-to-one transforms lose reverse navigation)
-- [ ] T002 [P] Verify ownership baseline: run `node tools/validation/phase8-ownership.mjs --check-manifest` and confirm planned paths (js/decompiler/phase8/**, tests/phase8/**, tools/validation/phase8/**, ledger doc) fit the p8 lane + finding-lane exception for the ledger doc
-- [ ] T003 [P] Add runner-discovery sentinel test tests/phase8/provenance/discovery.test.mjs and confirm `npm run phase8:test` discovers the new subtree (EP-005 invariant)
+- [X] T001 Record preflight in docs/analysis-improvement-finding-ledger.md: exact live-main base SHA, branch `feat/analysis-hex-c4-03-provenance`, concurrent-lane overlap check for owned paths (ME-01/C1-01/C2-01/C2-02 lanes), and first-divergence statement (rendered entities from many-to-one transforms lose reverse navigation)
+- [X] T002 [P] Verify ownership baseline: run `node tools/validation/phase8-ownership.mjs --check-manifest` and confirm planned paths (js/decompiler/phase8/**, tests/phase8/**, tools/validation/phase8/**, ledger doc) fit the p8 lane + finding-lane exception for the ledger doc
+- [X] T003 [P] Add runner-discovery sentinel test tests/phase8/provenance/discovery.test.mjs and confirm `npm run phase8:test` discovers the new subtree (EP-005 invariant)
 
 **Checkpoint**: Preflight recorded; discovery and ownership green before production edits.
 
@@ -33,8 +33,8 @@ lost/stale provenance, US3 transform ledger auditability).
 
 **Purpose**: Module skeleton and fail-closed contract codes; blocks all user stories
 
-- [ ] T004 Create js/decompiler/phase8/render-provenance.js skeleton with fail-closed error codes (`phase8-render-provenance-input-required`, `-result-required`, `-snapshot-required`, `-entity-source-invalid`, `-record-invalid`) and input validation only (no behavior yet)
-- [ ] T005 [P] Add render-provenance record validation codes to js/decompiler/phase8/contract.js following the existing fail-closed helper style (kind/proof/targets/origin required)
+- [X] T004 Create js/decompiler/phase8/render-provenance.js skeleton with fail-closed error codes (`phase8-render-provenance-input-required`, `-result-required`, `-snapshot-required`, `-entity-source-invalid`, `-record-invalid`) and input validation only (no behavior yet)
+- [X] T005 [P] Add render-provenance record validation codes to js/decompiler/phase8/contract.js following the existing fail-closed helper style (kind/proof/targets/origin required)
 
 **Checkpoint**: Foundation ready — user story implementation can begin.
 
@@ -50,16 +50,16 @@ entity resolves to source rows/ir refs; two runs produce byte-identical maps.
 
 ### Tests for User Story 1 (write FIRST, must FAIL before implementation)
 
-- [ ] T006 [P] [US1] Positive test in tests/phase8/provenance/forward.test.mjs: raw pass-through line (no rewrite) resolves to its direct instruction rows without synthetic transform records
-- [ ] T007 [P] [US1] Positive test in tests/phase8/provenance/forward.test.mjs: induction-variable and exact-view-collapse entities resolve to canonical rows + ir/ssa refs through transform-record origins, including a multi-rewrite chain (transform on transform) reaching the original instruction rows (SC-004)
+- [X] T006 [P] [US1] Positive test in tests/phase8/provenance/forward.test.mjs: raw pass-through line (no rewrite) resolves to its direct instruction rows without synthetic transform records
+- [X] T007 [P] [US1] Positive test in tests/phase8/provenance/forward.test.mjs: induction-variable and exact-view-collapse entities resolve to canonical rows + ir/ssa refs through transform-record origins, including a multi-rewrite chain (transform on transform) reaching the original instruction rows (SC-004)
 
 ### Implementation for User Story 1
 
-- [ ] T008 [US1] Implement forward map (RenderedEntity → OriginReference[]) with deterministic entity keys in js/decompiler/phase8/render-provenance.js (depends on T004)
-- [ ] T009 [US1] Implement reverse index (origin key → entity keys) derived by sorting from the forward map, frozen output in js/decompiler/phase8/render-provenance.js (depends on T008)
-- [ ] T010 [US1] Implement chain resolution: union origin sets across all transform records feeding an entity so transform-on-transform rewrites reach original instruction rows in js/decompiler/phase8/render-provenance.js (depends on T008)
-- [ ] T011 [US1] Attach frozen additive `renderProvenance` field to the result in js/decompiler/phase8/projection.js `applyPhase8Projection` (existing fields unchanged; snapshotId passed via projection opts) (depends on T008–T010)
-- [ ] T012 [US1] Determinism test in tests/phase8/provenance/determinism.test.mjs: two identical runs produce byte-identical provenance maps, and every origin reference resolves to existing canonical rows/ir refs (no minted identities, FR-008) (depends on T011)
+- [X] T008 [US1] Implement forward map (RenderedEntity → OriginReference[]) with deterministic entity keys in js/decompiler/phase8/render-provenance.js (depends on T004)
+- [X] T009 [US1] Implement reverse index (origin key → entity keys) derived by sorting from the forward map, frozen output in js/decompiler/phase8/render-provenance.js (depends on T008)
+- [X] T010 [US1] Implement chain resolution: union origin sets across all transform records feeding an entity so transform-on-transform rewrites reach original instruction rows in js/decompiler/phase8/render-provenance.js (depends on T008)
+- [X] T011 [US1] Attach frozen additive `renderProvenance` field to the result in js/decompiler/phase8/projection.js `applyPhase8Projection` (existing fields unchanged; snapshotId passed via projection opts) (depends on T008–T010)
+- [X] T012 [US1] Determinism test in tests/phase8/provenance/determinism.test.mjs: two identical runs produce byte-identical provenance maps, and every origin reference resolves to existing canonical rows/ir refs (no minted identities, FR-008) (depends on T011)
 
 **Checkpoint**: User Story 1 independently functional — reverse navigation works and is deterministic.
 
@@ -76,16 +76,16 @@ conservative state and never passes silently.
 
 ### Tests for User Story 2 (write FIRST; T013 is the constitution-III counterexample)
 
-- [ ] T013 [P] [US2] Pre-fix counterexample test in tests/phase8/provenance/validation.test.mjs: a rendered entity whose origins are lost by a many-to-one transform must NOT be trusted — must FAIL against unmodified production code first, documenting the deterministic pre-fix divergence
-- [ ] T014 [P] [US2] Negative matrix tests in tests/phase8/provenance/validation.test.mjs: zero-origin entity → provenance-loss with entity keys; stale snapshot → stale-snapshot; missing identity → missing-snapshot; malformed transform record → record-invalid fail-closed
+- [X] T013 [P] [US2] Pre-fix counterexample test in tests/phase8/provenance/validation.test.mjs: a rendered entity whose origins are lost by a many-to-one transform must NOT be trusted — must FAIL against unmodified production code first, documenting the deterministic pre-fix divergence
+- [X] T014 [P] [US2] Negative matrix tests in tests/phase8/provenance/validation.test.mjs: zero-origin entity → provenance-loss with entity keys; stale snapshot → stale-snapshot; missing identity → missing-snapshot; malformed transform record → record-invalid fail-closed
 
 ### Implementation for User Story 2
 
-- [ ] T015 [US2] Implement validateRenderProvenance(provenanceMap, { snapshotId }) returning frozen `{ state, entityStates, reasons, counts }` with states complete/incomplete and reasons provenance-loss/stale-snapshot/missing-snapshot/truncated/cancelled in js/decompiler/phase8/render-provenance.js (depends on T013, T014)
-- [ ] T016 [US2] Implement budget caps maxEntities/maxOriginsPerEntity/maxTransformRecords with explicit truncated scopes and counts in js/decompiler/phase8/render-provenance.js (depends on T015)
-- [ ] T017 [US2] Wire renderProvenanceLossCount and renderProvenanceStaleCount into tools/validation/phase8/metrics.mjs safety counters with the same hard-zero gating as existing stale counters (depends on T015)
-- [ ] T018 [US2] Removals auditability: transforms that eliminate rendered entities record consumed evidence (removedRefs) so removal is auditable; test in tests/phase8/provenance/removal.test.mjs (depends on T015)
-- [ ] T019 [US2] Cancellation test in tests/phase8/provenance/cancellation.test.mjs: pathological fixture cancelled mid-validation returns explicit incomplete/cancelled and never completes silently (depends on T016)
+- [X] T015 [US2] Implement validateRenderProvenance(provenanceMap, { snapshotId }) returning frozen `{ state, entityStates, reasons, counts }` with states complete/incomplete and reasons provenance-loss/stale-snapshot/missing-snapshot/truncated/cancelled in js/decompiler/phase8/render-provenance.js (depends on T013, T014)
+- [X] T016 [US2] Implement budget caps maxEntities/maxOriginsPerEntity/maxTransformRecords with explicit truncated scopes and counts in js/decompiler/phase8/render-provenance.js (depends on T015)
+- [X] T017 [US2] Wire renderProvenanceLossCount and renderProvenanceStaleCount into tools/validation/phase8/metrics.mjs safety counters with the same hard-zero gating as existing stale counters (depends on T015)
+- [X] T018 [US2] Removals auditability: transforms that eliminate rendered entities record consumed evidence (removedRefs) so removal is auditable; test in tests/phase8/provenance/removal.test.mjs (depends on T015)
+- [X] T019 [US2] Cancellation test in tests/phase8/provenance/cancellation.test.mjs: pathological fixture cancelled mid-validation returns explicit incomplete/cancelled and never completes silently (depends on T016)
 
 **Checkpoint**: User Stories 1 AND 2 both work — navigation complete and fail-closed.
 
@@ -102,11 +102,11 @@ truncates explicitly.
 
 ### Tests for User Story 3 (write FIRST, must FAIL before implementation)
 
-- [ ] T020 [P] [US3] Ledger shape test in tests/phase8/provenance/ledger.test.mjs: records carry kind, proof, targets, originRefs, producedRefs, version; merged-expression record lists both consumed origins and one produced entity; budget overflow produces explicit truncation state (not silent drop)
+- [X] T020 [P] [US3] Ledger shape test in tests/phase8/provenance/ledger.test.mjs: records carry kind, proof, targets, originRefs, producedRefs, version; merged-expression record lists both consumed origins and one produced entity; budget overflow produces explicit truncation state (not silent drop)
 
 ### Implementation for User Story 3
 
-- [ ] T021 [US3] Enrich ledger records (producedRefs/removedRefs/version) via contract validation in js/decompiler/phase8/contract.js and render-provenance.js, bounded by the Phase 2 caps (depends on T020, T016)
+- [X] T021 [US3] Enrich ledger records (producedRefs/removedRefs/version) via contract validation in js/decompiler/phase8/contract.js and render-provenance.js, bounded by the Phase 2 caps (depends on T020, T016)
 
 **Checkpoint**: All user stories independently functional.
 
