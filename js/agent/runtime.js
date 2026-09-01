@@ -6,18 +6,25 @@ import { compileGoal } from '../goalc.js';
 import { createAgentTools } from './tools.js';
 import { planAnalysisGoal } from '../query/planner.js';
 
-function addressFromArgs(args) {
-  if (!args || !args.length) return null;
-  for (const v of args) {
-    if (typeof v === 'bigint') return v;
-    if (typeof v === 'string' && /^0x[0-9a-f]+$/i.test(v)) { try { return BigInt(v); } catch { /* ignore */ } }
-    if (v && typeof v === 'object') {
-      for (const k of ['functionAddress', 'address', 'addr']) {
-        if (v[k] != null) { try { return BigInt(v[k]); } catch { /* ignore */ } }
-      }
-    }
-  }
-  return null;
+function canonicalAddress(value) {
+  if (typeof value === 'bigint') return value >= 0n ? value : null;
+  if (typeof value === 'number') return Number.isSafeInteger(value) && value >= 0 ? BigInt(value) : null;
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  if (!/^(?:0[xX][0-9a-fA-F]+|[+]?\d+)$/.test(text)) return null;
+  try { return BigInt(text); } catch { return null; }
+}
+
+const FUNCTION_ADDRESS_FIRST_ARG_TOOLS = new Set([
+  'get_function', 'get_callers', 'get_callees', 'get_xrefs',
+  'slice_backward', 'slice_forward', 'find_field_writers', 'find_field_readers',
+  'find_thresholds', 'find_paths', 'get_semantic_facts', 'verify_field_update',
+  'symbolic_execute', 'decompile', 'emulate',
+]);
+
+function addressFromRequest(tool, args) {
+  if (!FUNCTION_ADDRESS_FIRST_ARG_TOOLS.has(tool) || !args || !args.length) return null;
+  return canonicalAddress(args[0]);
 }
 
 function evidenceFromObservation(obs, set) {
@@ -243,7 +250,7 @@ export async function runAgent(config) {
     if (!req || !Object.prototype.hasOwnProperty.call(tools, req.tool) || typeof tools[req.tool] !== 'function') {
       stopReason = 'invalid-tool-request'; break;
     }
-    const addr = addressFromArgs(req.args);
+    const addr = addressFromRequest(req.tool, req.args);
     if (addr != null) {
       functions.add(addr.toString());
       if (usedFunctionCount() > budget.maxFunctions) { stopReason = 'function-budget'; break; }
