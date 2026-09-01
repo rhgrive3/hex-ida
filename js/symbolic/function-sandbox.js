@@ -23,7 +23,7 @@ function boundedStepBudget(value) {
 
 function boundedObjectSize(value) {
   if (value == null) return 0x10000;
-  if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isSafeInteger(value)) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isSafeInteger(value) || value <= 0) {
     return 0x10000;
   }
   return Math.max(0x100, value);
