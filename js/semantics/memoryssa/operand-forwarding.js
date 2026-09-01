@@ -111,9 +111,7 @@ function uniqueBy(items, keyOf) {
 }
 
 function metadataFor(memorySsa, id) {
-  const rows = (memorySsa.accessMetadata ?? [])
-    .filter((item) => String(item?.memorySsaEntityId ?? '') === String(id));
-  return rows.length === 1 ? rows[0] : null;
+  return (memorySsa.accessMetadata ?? []).find((item) => String(item?.memorySsaEntityId ?? '') === String(id)) ?? null;
 }
 
 function coverageFor(memorySsa, use) {
@@ -160,17 +158,6 @@ function semanticValueUseCount(ir, valueId) {
   return count;
 }
 
-function semanticValueHasAddressRole(ir, valueId) {
-  const target = String(valueId ?? '');
-  if (!target) return true;
-  for (const node of ir.nodes ?? []) {
-    const inputs = Array.isArray(node?.inputs) ? node.inputs.map((input) => String(input ?? '')) : [];
-    if (node?.kind === 'address' && inputs.includes(target)) return true;
-    if ((node?.kind === 'load' || node?.kind === 'store') && inputs[0] === target) return true;
-  }
-  return false;
-}
-
 function semanticBlockMayBeJoin(ir, blockId) {
   const target = String(blockId ?? '');
   if (!target) return true;
@@ -189,40 +176,6 @@ function semanticBlockMayBeJoin(ir, blockId) {
   // closed.  A block with no explicit incoming edge can have at most the one
   // omitted layout fallthrough predecessor and is not a join on this evidence.
   return predecessors.size > 0;
-}
-
-function semanticIntervalCallState(ir, storeNode, loadNode) {
-  if (!Array.isArray(ir?.nodes)) return 'unknown';
-  const storeIndex = ir.nodes.indexOf(storeNode);
-  const loadIndex = ir.nodes.indexOf(loadNode);
-  // Node-array order is authoritative inside one block, but it is not a total
-  // execution order across blocks.  Preserve that distinction explicitly:
-  // callers may fail closed on an unknown same-block interval while a proven
-  // entry-store cross-block pair is rejected only when an actual ordered call
-  // is visible between the two nodes.
-  if (storeIndex < 0 || loadIndex < 0 || loadIndex <= storeIndex) return 'unknown';
-  return ir.nodes.slice(storeIndex + 1, loadIndex).some((node) => node?.kind === 'call') ? 'call' : 'clear';
-}
-
-function hasCompetingExactStackDefinition(memorySsa, chosenDefinitionId, regionId, byteRangeKey) {
-  const chosen = String(chosenDefinitionId ?? '');
-  const region = String(regionId ?? '');
-  if (!chosen || !region || !byteRangeKey) return true;
-  for (const definition of memorySsa.definitions ?? []) {
-    if (String(definition?.id ?? '') === chosen) continue;
-    if (definition?.kind !== 'memory-def'
-        || definition?.aliasRelation !== 'must'
-        || String(definition?.regionId ?? '') !== region) continue;
-    const metadata = metadataFor(memorySsa, definition.id);
-    if (!metadata
-        || metadata.entityKind !== 'definition'
-        || metadata.sourceKind !== 'store'
-        || metadata.role !== 'write'
-        || metadata.broad === true
-        || metadata.aliasRelation !== 'must') continue;
-    if (rangeKey(metadata.byteRange) === byteRangeKey) return true;
-  }
-  return false;
 }
 
 export function forwardExactStackOperandIdentity(memorySsa, useOrId, ir) {
@@ -288,26 +241,6 @@ export function forwardExactStackOperandIdentity(memorySsa, useOrId, ir) {
       || !metadataMatchesSemanticAccess(loadNode.memory, loadMetadata.memory)
       || !metadataMatchesSemanticAccess(storeNode.memory, storeMetadata.memory)) return null;
 
-  // Cross-block symbolic publication is safe only for a store in the canonical
-  // entry basic block. A complete entry-block store executes before control can
-  // leave that block and therefore dominates every reachable successor block.
-  // This recovers ordinary -O0 argument spills (needed by max/min compiler
-  // truth) without publishing branch-merged/result spills from later blocks.
-  const storeBlockId = String(storeNode.blockId ?? '');
-  const loadBlockId = String(loadNode.blockId ?? '');
-  const entryBlockId = String(ir.entryBlockId ?? '');
-  if (!storeBlockId || !loadBlockId || !entryBlockId
-      || (storeBlockId !== loadBlockId && storeBlockId !== entryBlockId)) return null;
-
-  // Entry dominance alone is insufficient when the same fixed stack bytes have
-  // another canonical store definition anywhere in the function. In that case
-  // the entry spill is not a unique source-level identity across blocks and the
-  // compatibility projection must preserve the MemorySSA/CFG merge instead of
-  // publishing the entry value directly. This deliberately ignores node order:
-  // any competing exact definition makes the shortcut ambiguous and fail-closed.
-  if (storeBlockId !== loadBlockId
-      && hasCompetingExactStackDefinition(memorySsa, definition.id, definition.regionId, storeRange)) return null;
-
   const loadAddressValueId = String(loadNode.memory?.addressExpr?.valueId ?? loadNode.memory?.addressValueId ?? '');
   const storeAddressValueId = String(storeNode.memory?.addressExpr?.valueId ?? storeNode.memory?.addressValueId ?? '');
   if (!loadAddressValueId || !storeAddressValueId
@@ -325,14 +258,6 @@ export function forwardExactStackOperandIdentity(memorySsa, useOrId, ir) {
       || Number(storedValue.machineType?.widthBits) !== widthBits
       || Number(outputValue.machineType?.widthBits) !== widthBits) return null;
 
-  // Entry-block scalar spills are useful to recover -O0 conditionals, but a
-  // cross-block reload that immediately regains an address role is pointer-like
-  // evidence. Publishing that identity into the legacy v1 projection can bypass
-  // its CFG variable recovery and expose a synthetic local_phi at a join. Keep
-  // the canonical MemorySSA proof intact, but fail closed on this compatibility
-  // identity shortcut until v1 can preserve pointer provenance across blocks.
-  if (storeBlockId !== loadBlockId && semanticValueHasAddressRole(ir, outputValueId)) return null;
-
   // Do not rewrite a dead compatibility LOAD merely because its value can be
   // proven. Public v1 callers still inspect structural reachingStore metadata,
   // while forwarding a value with no semantic consumer cannot improve truth.
@@ -344,16 +269,6 @@ export function forwardExactStackOperandIdentity(memorySsa, useOrId, ir) {
   // committed-field projection to recover the source-level lvalue. Stay
   // conservative at joins; the canonical MemorySSA/reachingStore remains intact.
   if (semanticBlockMayBeJoin(ir, storeNode.blockId)) return null;
-
-  // Calls are a publication boundary for this compatibility-only identity
-  // shortcut. Inside one block an unprovable interval is itself disqualifying;
-  // across blocks, global node-array order is not execution order, so only a
-  // positively observed ordered call may veto an otherwise proof-backed entry
-  // spill. This retains apply_damage's pre-call-PHI guard without rejecting
-  // ordinary O0 argument spills whose cross-block node order is reversed.
-  const callState = semanticIntervalCallState(ir, storeNode, loadNode);
-  if ((storeBlockId === loadBlockId && callState !== 'clear')
-      || (storeBlockId !== loadBlockId && callState === 'call')) return null;
 
   return Object.freeze({
     status: 'exact',
