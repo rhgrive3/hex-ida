@@ -1,4 +1,4 @@
-import { expr, structuralKey } from '../ast/nodes.js';
+import { expr, mapChildren, structuralKey } from '../ast/nodes.js';
 import { RewriteEngine } from '../rewrite/engine.js';
 import { DEFAULT_RULES } from '../rewrite/rules.js';
 import { printExpression, printProgram } from '../pretty/c.js';
@@ -206,10 +206,26 @@ function directFlagCondition(term, maps, ir) {
   return repairedFlagComparison(valueOf(term.args?.at?.(-1)), cond, maps, ir);
 }
 
-function controlCondition(term, maps, engine, ir) {
-  return simplify(materializedFlagCondition(term, maps, ir)
+function resolveConditionStackLoads(condition, maps, engine, ir, opts, active, depth = 0) {
+  const rewrite = (node, localDepth = depth) => {
+    if (!node || localDepth > 64) return node;
+    if (node.kind === 'load' && node.location?.kind === 'stack' && node.location?.key) {
+      const sourceLoad = exactStackLoadSource(ir, null, node);
+      if (!sourceLoad) return node;
+      return resolveStackBefore(ir, sourceLoad.block, sourceLoad.row, sourceLoad.loc.key,
+        maps, opts, engine, active, localDepth + 1) || node;
+    }
+    return mapChildren(node, (child) => rewrite(child, localDepth + 1));
+  };
+  return rewrite(condition);
+}
+
+function controlCondition(term, maps, engine, ir, opts, active, depth) {
+  const condition = materializedFlagCondition(term, maps, ir)
     || directFlagCondition(term, maps, ir)
-    || maps.conditions.get(term.id), engine);
+    || maps.conditions.get(term.id);
+  if (!condition) return null;
+  return simplify(resolveConditionStackLoads(condition, maps, engine, ir, opts, active, depth), engine);
 }
 
 function exactStackLoadSource(ir, value, expression) {
@@ -296,7 +312,7 @@ function resolveStackBefore(ir, blockIndex, beforeRow, key, maps, opts, engine, 
 
     const control = controllerForMerge(ir, blockIndex, predecessors, opts);
     if (!control) return null;
-    const condition = controlCondition(control.term, maps, engine, ir);
+    const condition = controlCondition(control.term, maps, engine, ir, opts, active, depth + 1);
     if (!condition) return null;
     const bits = incoming[0]?.bits || incoming[1]?.bits || 64;
     const signed = condition.compareSigned ?? incoming[0]?.signed ?? incoming[1]?.signed ?? null;
