@@ -29,6 +29,11 @@ import { SolverSession } from './session.js';
 export const EXHAUSTIVE_BACKEND_ID = 'hex-exhaustive-bv';
 export const EXHAUSTIVE_BACKEND_VERSION = '1.0.0';
 
+function positiveFiniteBudget(...values) {
+  const value = values.find((candidate) => typeof candidate === 'number' && Number.isFinite(candidate));
+  return Math.max(1, Math.floor(value));
+}
+
 function childExpressions(expr) {
   if (!expr || typeof expr !== 'object') return [];
   switch (expr.kind) {
@@ -195,8 +200,8 @@ class ExhaustiveSolverSession extends SolverSession {
 
     const constraints = Array.isArray(query.constraints) ? query.constraints : [];
     const expressions = [...constraints, ...(query.assertion ? [query.assertion] : [])];
-    const maxConstraints = Number(options.maxConstraints ?? this.options.maxConstraints ?? 4096);
-    const maxExprNodes = Number(options.maxExprNodes ?? this.options.maxExprNodes ?? 100000);
+    const maxConstraints = positiveFiniteBudget(options.maxConstraints, this.options.maxConstraints, 4096);
+    const maxExprNodes = positiveFiniteBudget(options.maxExprNodes, this.options.maxExprNodes, 100000);
     if (constraints.length > maxConstraints) {
       return createSolverResult({ status: SOLVER_STATUS.RESOURCE_LIMIT, reason: 'constraint-budget-exceeded', backend: this.backend.id, backendVersion: this.backend.version, queryHash: query.queryHash });
     }
@@ -213,7 +218,7 @@ class ExhaustiveSolverSession extends SolverSession {
       return createSolverResult({ status: SOLVER_STATUS.UNSUPPORTED, reason: 'non-boolean-query-predicate', backend: this.backend.id, backendVersion: this.backend.version, queryHash: query.queryHash });
     }
 
-    const maxBvWidth = Number(options.maxBvWidth ?? this.backend.capabilities().maxBvWidth);
+    const maxBvWidth = positiveFiniteBudget(options.maxBvWidth, this.backend.capabilities().maxBvWidth);
     if (collected.symbols.some((symbol) => symbol.sort.kind === SORT_KIND.BV && symbol.sort.width > maxBvWidth)) {
       return createSolverResult({ status: SOLVER_STATUS.UNSUPPORTED, reason: `bitvector-width-exceeds-${maxBvWidth}`, backend: this.backend.id, backendVersion: this.backend.version, queryHash: query.queryHash });
     }
@@ -225,7 +230,7 @@ class ExhaustiveSolverSession extends SolverSession {
 
     const assignments = new Map(derived.fixed);
     const freeSymbols = collected.symbols.filter((symbol) => !assignments.has(symbol.key));
-    const maxAssignments = BigInt(Math.max(1, Math.floor(Number(options.maxAssignments ?? this.options.maxAssignments ?? (1 << 20)))));
+    const maxAssignments = BigInt(positiveFiniteBudget(options.maxAssignments, this.options.maxAssignments, 1 << 20));
     let totalAssignments = 1n;
     for (const symbol of freeSymbols) {
       totalAssignments *= domainSize(symbol);
@@ -235,7 +240,7 @@ class ExhaustiveSolverSession extends SolverSession {
     }
 
     let nodesEvaluated = 0;
-    const yieldEvery = Math.max(1, Math.floor(Number(options.yieldEvery ?? 4096)));
+    const yieldEvery = positiveFiniteBudget(options.yieldEvery, 4096);
     let found = null;
     const visit = async (position) => {
       if (signal?.aborted) return 'cancelled';
@@ -279,10 +284,10 @@ export class ExhaustiveBvBackend extends SolverBackend {
     maxExprNodes = 100000,
   } = {}) {
     super({ id, version, proofAuthority: PROOF_AUTHORITY.EXACT, isRemote: false, isWasm: false });
-    this.maxBvWidth = Math.max(1, Math.floor(Number(maxBvWidth)));
-    this.maxAssignments = Math.max(1, Math.floor(Number(maxAssignments)));
-    this.maxConstraints = Math.max(1, Math.floor(Number(maxConstraints)));
-    this.maxExprNodes = Math.max(1, Math.floor(Number(maxExprNodes)));
+    this.maxBvWidth = positiveFiniteBudget(maxBvWidth, 8);
+    this.maxAssignments = positiveFiniteBudget(maxAssignments, 1 << 20);
+    this.maxConstraints = positiveFiniteBudget(maxConstraints, 4096);
+    this.maxExprNodes = positiveFiniteBudget(maxExprNodes, 100000);
   }
 
   baseCapabilities() {
