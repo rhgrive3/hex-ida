@@ -251,7 +251,7 @@ export function projectNode(node, context) {
   };
 
   const undefinedResult = attrs.machineEffects?.undefinedResult ?? null;
-  if (undefinedResult != null) {
+  if (undefinedResult != null && node.kind !== 'intrinsic') {
     const unknown = defaultUnknownInstruction(node, blockIndex, row, options, {
       reason: `architecturally-undefined-result:${undefinedResult.reason}`,
       unknownCategories: ['value'],
@@ -635,6 +635,7 @@ export function projectNode(node, context) {
   }
 
   const bundle = bundleMetadata(node);
+  if (undefinedResult != null) inst.extra = { ...(inst.extra || {}), undefinedResult };
   const conditionalCompare = conditionCode(node);
   if (conditionalCompare != null && bundle.fallbackNzcv != null) {
     for (const candidate of [inst, ...extraInstructions]) {

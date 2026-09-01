@@ -467,9 +467,13 @@ function lowerIntrinsic(bundle, operation, options) {
 
 function lowerOperation(bundle, operation, options) {
   if (operation.undefinedResult != null) {
+    if (operation.kind === 'intrinsic') {
+      const lowered = lowerIntrinsic(bundle, operation, options);
+      lowered[0].undefinedResult = operation.undefinedResult;
+      return lowered;
+    }
     const outputs = operation.kind === 'value' ? operation.outputs
-      : operation.kind === 'intrinsic' ? operation.effectSummary.outputs
-        : operation.kind === 'memory-read' ? [operation.value] : [];
+      : operation.kind === 'memory-read' ? [operation.value] : [];
     return [unknownInstruction(bundle, operation, options,
       `architecturally-undefined-result:${operation.undefinedResult.reason}`,
       ['flags', 'registers', 'other'], {

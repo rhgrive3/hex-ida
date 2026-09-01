@@ -32,7 +32,7 @@ test('real x86 DIV producer retains fully undefined flags through canonical and 
     const legacy = projectSemanticIrV2ToLegacyV1(semantic);
     const projectedMasks = legacy.instructions.filter((instruction) => instruction.extra?.undefinedResult);
     assert.equal(projectedMasks.length, 6);
-    assert.ok(projectedMasks.every((instruction) => instruction.op === 'unknown'));
+    assert.ok(projectedMasks.every((instruction) => instruction.op === 'clobber'));
   } finally {
     session.close();
   }
