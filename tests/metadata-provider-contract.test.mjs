@@ -52,6 +52,11 @@ const unauthIdentity = createLanguageMetadataIdentity({
 assert.equal(isAuthoritative(unauthIdentity), false);
 
 // 2. Partial identity & coverage filtering
+const partialCoverageSource = {
+  recordKinds: ['type'],
+  entityIds: ['type@0x1000'],
+  nested: { values: ['caller-owned'] },
+};
 const partialIdentity = createLanguageMetadataIdentity({
   verdict: 'matched-partial',
   providerId: 'rust-metadata',
@@ -59,11 +64,27 @@ const partialIdentity = createLanguageMetadataIdentity({
   ecosystem: 'rust',
   toolchainVersion: 'rustc-1.78.0',
   binaryIdentity: 'sha256:def',
-  coverage: {
-    recordKinds: ['type'],
-    entityIds: ['type@0x1000'],
-  },
+  coverage: partialCoverageSource,
 });
+
+// Coverage is immutable inside the identity without freezing or aliasing caller-owned values (#3146).
+assert.notStrictEqual(partialIdentity.coverage, partialCoverageSource);
+assert.notStrictEqual(partialIdentity.coverage.recordKinds, partialCoverageSource.recordKinds);
+assert.notStrictEqual(partialIdentity.coverage.entityIds, partialCoverageSource.entityIds);
+assert.notStrictEqual(partialIdentity.coverage.nested, partialCoverageSource.nested);
+assert.notStrictEqual(partialIdentity.coverage.nested.values, partialCoverageSource.nested.values);
+assert.equal(Object.isFrozen(partialIdentity.coverage), true);
+assert.equal(Object.isFrozen(partialIdentity.coverage.entityIds), true);
+assert.equal(Object.isFrozen(partialIdentity.coverage.nested), true);
+assert.equal(Object.isFrozen(partialIdentity.coverage.nested.values), true);
+assert.equal(Object.isFrozen(partialCoverageSource), false);
+assert.equal(Object.isFrozen(partialCoverageSource.entityIds), false);
+assert.equal(Object.isFrozen(partialCoverageSource.nested), false);
+assert.equal(Object.isFrozen(partialCoverageSource.nested.values), false);
+partialCoverageSource.entityIds.push('type@0x2000');
+partialCoverageSource.nested.values.push('still-mutable');
+assert.deepEqual(partialIdentity.coverage.entityIds, ['type@0x1000']);
+assert.deepEqual(partialIdentity.coverage.nested.values, ['caller-owned']);
 
 const coveredRecord = createLanguageMetadataRecord({
   kind: 'type',

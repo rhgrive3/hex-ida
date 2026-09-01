@@ -77,6 +77,14 @@ function optionalSizeBytes(value) {
   return size;
 }
 
+function cloneCoverage(value) {
+  if (Array.isArray(value)) return value.map(cloneCoverage);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, cloneCoverage(item)]));
+  }
+  return value;
+}
+
 /**
  * Creates a versioned language metadata identity.
  */
@@ -97,7 +105,7 @@ export function createLanguageMetadataIdentity(input = {}) {
     observed: input.observed == null ? null : strictNonEmptyString(input.observed, 'metadata-identity-invalid-observed'),
     method: nonEmpty(input.method ?? 'runtime-metadata', 'metadata-identity-method-required'),
     detail: input.detail == null ? null : String(input.detail),
-    coverage: input.coverage == null ? null : Object.freeze({ ...input.coverage }),
+    coverage: input.coverage == null ? null : cloneCoverage(input.coverage),
   };
 
   if (identity.method === 'filename') fail('metadata-identity-filename-is-not-authority');
