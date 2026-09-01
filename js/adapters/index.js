@@ -60,7 +60,8 @@ function initialMemoryValue(value) {
   if (value == null) return 0n;
   if (typeof value === 'bigint') return value;
   if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value);
-  if (typeof value === 'string' && /^-?(?:0x[0-9a-f]+|[0-9]+)$/i.test(value)) return BigInt(value);
+  if (typeof value === 'string' && /^-?[0-9]+$/.test(value)) return BigInt(value);
+  if (typeof value === 'string' && /^0x[0-9a-f]+$/i.test(value)) return BigInt(value);
   throw new DebugAdapterError('invalid-argument', 'initial memory value must be an integer scalar');
 }
 
