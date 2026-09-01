@@ -6,6 +6,29 @@ import { liftArm64MemoryEffects } from '../../js/targets/architecture/arm64/effe
 import { createMemoryAccess } from '../../js/semantics/effects/index.js';
 import { MEMORY_ORDERINGS } from '../../js/semantics/effects/index.js';
 import { SEMANTIC_MEMORY_ORDERINGS } from '../../js/semantics/ir/common.js';
+import {
+  ME01_CONTRACT_RECORDS,
+  ME01_ORDERING_RECORDS,
+  ME01_ORDERING_UNDEFINED_MATRIX,
+  ME01_UNDEFINED_OUTPUT_RECORDS,
+  validateOrderingUndefinedMatrix,
+} from '../../tools/validation/machine-effects/ordering-undefined-matrix.mjs';
+
+// The frozen matrix module stays internally consistent and complete.
+test('ME-01 frozen matrix module validates and covers every task record class', () => {
+  assert.equal(validateOrderingUndefinedMatrix(ME01_ORDERING_UNDEFINED_MATRIX), true);
+  assert.ok(ME01_ORDERING_RECORDS.every((record) => record.expectedClassification === 'defined'));
+  assert.ok(ME01_UNDEFINED_OUTPUT_RECORDS.length >= 2);
+  assert.ok(ME01_CONTRACT_RECORDS.every((record) => record.expectedClassification === 'rejected-at-contract'));
+  assert.match(
+    ME01_ORDERING_RECORDS.map((record) => record.id).join(','),
+    /ldar-acquire/,
+  );
+  // Ordering records must preserve or downgrade, never upgrade.
+  for (const record of ME01_ORDERING_RECORDS) {
+    assert.ok(record.mustForbid.includes('downgrade-to-stronger'));
+  }
+});
 
 const reg = (n, bits = 64) => ({ k: 'reg', text: `x${n}`, cls: 'gp', bits, num: n });
 const imm = (v) => ({ k: 'imm', text: `#${v}`, value: BigInt(v) });
