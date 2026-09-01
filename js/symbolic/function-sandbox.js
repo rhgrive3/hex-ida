@@ -14,8 +14,8 @@ function asBig(v) { return typeof v === 'bigint' ? v : BigInt(v || 0); }
 
 function boundedStepBudget(value) {
   if (value == null) return DEFAULT_SANDBOX_STEPS;
-  const n = Number(value);
-  if (!Number.isFinite(n) || !Number.isSafeInteger(n) || n < 1) {
+  const n = value;
+  if (typeof n !== 'number' || !Number.isFinite(n) || !Number.isSafeInteger(n) || n < 1) {
     throw new RangeError('maxSteps must be a positive finite safe integer');
   }
   return Math.min(n, MAX_SANDBOX_STEPS);
