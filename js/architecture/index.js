@@ -19,6 +19,10 @@ function normalizeArchitectureAddress(value) {
   try { return BigInt(text); } catch { return null; }
 }
 
+function hasEnabledOwnCapability(map, architecture) {
+  return map != null && Object.prototype.hasOwnProperty.call(map, architecture) && !!map[architecture];
+}
+
 export class ArchitectureAdapter {
   constructor(definition) {
     const id = canonicalArchitectureId(definition?.id);
@@ -149,11 +153,12 @@ export function architectureCapability(image, engine = {}) {
   const architecture = canonicalArchitectureId(image?.arch || 'unknown');
   const adapter = architectureAdapter(architecture);
   const target = architecturePluginV2(architecture);
-  const engineSupported = !!engine[architecture] || (architecture === 'arm64e' && !!engine.arm64);
+  const engineSupported = hasEnabledOwnCapability(engine, architecture)
+    || (architecture === 'arm64e' && hasEnabledOwnCapability(engine, 'arm64'));
   const legacyArm64Analysis = (architecture === 'arm64' || architecture === 'arm64e') && engineSupported;
   const semanticCapability = target?.capabilities?.semanticAnalysis || 'unsupported';
   const arm64Analysis = legacyArm64Analysis && semanticCapability !== 'unsupported';
-  const emulationSupported = !!engine.emulation?.[architecture];
+  const emulationSupported = hasEnabledOwnCapability(engine?.emulation, architecture);
   const analysisLevel = arm64Analysis ? (architecture === 'arm64e' ? 'partial' : 'full') : 'unsupported';
   return Object.freeze({
     format: image?.format || 'unknown', architecture, endianness: image?.endian || 'unknown', bits: Number(image?.bits || 0),
