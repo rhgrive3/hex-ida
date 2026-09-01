@@ -251,14 +251,30 @@ function locationIdentity(location) {
   return `${location.kind}:${location.key || location.text || location.name || ''}`;
 }
 
+function semanticLocationForProvenSnapshot(result, definition) {
+  const key = definition?.loc?.key;
+  if (!key) return null;
+  const rows = new Set((definition.extra?.committedStoreRows || [])
+    .map(Number).filter(Number.isFinite));
+  const locations = (result.ir?.instructions || [])
+    .filter((store) => store?.op === 'store'
+      && store.loc?.kind !== 'stack' && store.loc?.kind !== 'unknown'
+      && store.loc?.key === key
+      && (rows.size === 0 || rows.has(Number(store.row))))
+    .map((store) => semanticLocationForStore(result, store));
+  if (!locations.length || locations.some((location) => !location)) return null;
+  const identity = locationIdentity(locations[0]);
+  if (!identity || locations.some((location) => locationIdentity(location) !== identity)) return null;
+  return locations[0];
+}
+
 function committedLocationForPhi(result, value) {
   const definition = value?.def;
   if (definition?.op === 'load'
       && (definition.extra?.committedPhiSnapshot === true || definition.extra?.committedSnapshotView === true)
       && definition.loc?.kind !== 'stack' && definition.loc?.kind !== 'unknown') {
-    const projected = (result.semanticAst?.values || [])
-      .find((item) => String(item?.valueId ?? '') === String(value?.id ?? ''))?.expression ?? null;
-    if (projected?.kind === 'load' && projected.location?.kind !== 'stack') return projected.location;
+    const location = semanticLocationForProvenSnapshot(result, definition);
+    if (location) return location;
   }
 
   const phi = definition;
