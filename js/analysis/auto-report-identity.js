@@ -32,7 +32,7 @@ function sameIdentity(bound, live) {
   if (bound.analysisEpoch !== live.analysisEpoch) return false;
   if (bound.sliceIndex !== live.sliceIndex) return false;
   if (bound.projectRevision !== live.projectRevision) return false;
-  if (bound.binaryId && live.binaryId && bound.binaryId !== live.binaryId) return false;
+  if ((bound.binaryId || live.binaryId) && bound.binaryId !== live.binaryId) return false;
   // Once a current AnalysisSnapshot is known, a report without that exact
   // snapshot identity is historical evidence, never current Results authority.
   if (live.snapshotId && bound.snapshotId !== live.snapshotId) return false;
