@@ -52,9 +52,23 @@ function ownedClone(value) {
 }
 
 function completeness(value, fallback = 'partial') {
-  const normalized = String(value ?? fallback);
+  // Completeness is canonical evidence authority. A structured value must not
+  // launder into a ranking through String() coercion (String(['complete']).
+  const normalized = value ?? fallback;
+  if (typeof normalized !== 'string') {
+    throw new DebugAdapterError('runtime-invalid-completeness', `invalid evidence completeness: ${String(normalized)}`);
+  }
   if (!EVIDENCE_COMPLETENESS.includes(normalized)) throw new DebugAdapterError('runtime-invalid-completeness', `invalid evidence completeness: ${normalized}`);
   return normalized;
+}
+
+function canonicalConfidence(value) {
+  // Confidence is canonical evidence strength. Only a primitive finite number
+  // may define it; numeric strings, Arrays, booleans fail closed.
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new DebugAdapterError('runtime-invalid-confidence', 'evidence confidence must be a finite number');
+  }
+  return value;
 }
 
 export function conservativeCompleteness(...values) {
@@ -176,7 +190,7 @@ export class RuntimeEvidenceBridge {
       targetEntityIds,
       semanticKind: options.semanticKind ?? event.kind,
       completeness: conservativeCompleteness(event.completeness, resolutionCompleteness(resolution)),
-      confidence: options.confidence == null ? null : Number(options.confidence),
+      confidence: options.confidence == null ? null : canonicalConfidence(options.confidence),
       deterministic: false,
       origin: createOriginSet({ parentEntityIds: targetEntityIds }),
       payload: {
@@ -209,7 +223,10 @@ export class RuntimeEvidenceBridge {
   }
 
   linkClaim(claimId, evidenceId, relation, resolution = null) {
-    const type = String(relation);
+    // Relation edges decide EvidenceGraph semantics; a structured relation must
+    // not coerce into a canonical edge type via String().
+    if (typeof relation !== 'string') throw new DebugAdapterError('runtime-invalid-evidence-relation', `invalid runtime evidence relation: ${String(relation)}`);
+    const type = relation;
     if (!RELATIONS.includes(type)) throw new DebugAdapterError('runtime-invalid-evidence-relation', `invalid runtime evidence relation: ${type}`);
     if (!linkableResolution(resolution)) {
       return deepFreeze({ linked: false, reason: resolution?.state === 'mismatch' ? 'identity-mismatch' : 'static-resolution-required', claimId: String(claimId), evidenceId: String(evidenceId), relation: type });

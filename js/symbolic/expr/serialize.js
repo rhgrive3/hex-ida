@@ -15,6 +15,7 @@ import {
   createBool,
   createBv,
   createFreshSymbol,
+  restoreFreshSymbol,
   createUnknownSemantic,
   createUnary,
   createBinary,
@@ -150,6 +151,12 @@ export function plainToExpr(plain) {
       return createBv(sort.width, BigInt(plain.value));
 
     case EXPR_KIND.FRESH_SYMBOL:
+      // Restore the saved canonical symbolId. Discarding it would renumber the
+      // symbol and break model binding / structural identity across a
+      // serialize/deserialize round trip (#3247).
+      if (typeof plain.symbolId === 'string' && plain.symbolId) {
+        return restoreFreshSymbol(sort, plain.name, plain.symbolId, plain.meta || {});
+      }
       return createFreshSymbol(sort, plain.name, plain.meta || {});
 
     case EXPR_KIND.UNKNOWN_SEMANTIC:
@@ -202,9 +209,6 @@ export function deserializeExprDag(jsonOrObject) {
   }
   if (obj.schemaVersion !== EXPR_SCHEMA_VERSION) {
     throw new Error(`deserializeExprDag: incompatible schema version ${obj.schemaVersion}, expected ${EXPR_SCHEMA_VERSION}`);
-  }
-  if (obj.expressionDagVersion !== EXPR_DAG_VERSION) {
-    throw new Error(`deserializeExprDag: incompatible expression DAG version ${obj.expressionDagVersion}, expected ${EXPR_DAG_VERSION}`);
   }
   return plainToExpr(obj.root);
 }

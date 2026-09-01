@@ -47,8 +47,12 @@ export class DiscoveryProducerRegistry {
 
   register(producer) {
     if (typeof producer?.produce !== 'function') throw new TypeError('discovery-producer-must-implement-produce');
-    const id = String(producer.id ?? '');
-    if (!id) throw new TypeError('discovery-producer-id-required');
+    // Registry identity and evidence provenance must be the same canonical
+    // string authority. A structured id must not coerce into a real registry
+    // key (String(['p1']) === 'p1') while the raw value keeps flowing into
+    // evidence provenance.
+    if (typeof producer.id !== 'string' || !producer.id) throw new TypeError('discovery-producer-id-required');
+    const id = producer.id;
     this.producers.set(id, producer);
     return this;
   }
@@ -75,18 +79,6 @@ export class DiscoveryProducerRegistry {
 
 function authorityRank(authority) {
   return authority === 'authoritative' ? 2 : authority === 'corroborating' ? 1 : 0;
-}
-
-function primitiveInteger(value, code) {
-  const type = typeof value;
-  if (type !== 'bigint' && type !== 'string' && !(type === 'number' && Number.isSafeInteger(value))) {
-    throw new TypeError(code);
-  }
-  try {
-    return BigInt(value);
-  } catch {
-    throw new TypeError(code);
-  }
 }
 
 function regionSignature(item) {
@@ -205,7 +197,20 @@ function fuseExtent(evidence) {
  * caller that produces the same shape.
  */
 export function fuseFunctionCandidates(evidence, options = {}) {
-  const budget = { ...DISCOVERY_DEFAULT_BUDGET, ...(options.budget ?? {}) };
+  // Budget values are analysis-coverage authorities. Only primitive positive
+  // safe-integer numbers may define one; structured values must not coerce via
+  // the comparison operators' ToNumber (['1'] -> 1, true -> 1).
+  const rawBudget = options.budget ?? {};
+  if (rawBudget == null || typeof rawBudget !== 'object' || Array.isArray(rawBudget)) throw new TypeError('discovery-fusion-budget-invalid');
+  const budgetValue = (value, fallback, name) => {
+    if (value == null) return fallback;
+    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) throw new TypeError(`discovery-fusion-budget-${name}-invalid`);
+    return value;
+  };
+  const budget = {
+    maxCandidates: budgetValue(rawBudget.maxCandidates, DISCOVERY_DEFAULT_BUDGET.maxCandidates, 'maxCandidates'),
+    maxEvidencePerCandidate: budgetValue(rawBudget.maxEvidencePerCandidate, DISCOVERY_DEFAULT_BUDGET.maxEvidencePerCandidate, 'maxEvidencePerCandidate'),
+  };
   const status = (completeness, stopReason) => createAnalysisStatus({
     snapshotId: options.snapshotId ?? 'snapshot-unbound',
     analyzerId: DISCOVERY_ANALYZER_ID,
@@ -223,7 +228,7 @@ export function fuseFunctionCandidates(evidence, options = {}) {
   const orderedEvidence = [...evidence].sort(compareEvidence);
   for (const item of orderedEvidence) {
     if (item.start == null) continue;
-    const key = primitiveInteger(item.start, 'discovery-fusion-invalid-start').toString();
+    const key = BigInt(item.start).toString();
     if (!byStart.has(key)) byStart.set(key, { items: [], overflow: false });
     const entry = byStart.get(key);
     if (entry.items.length < budget.maxEvidencePerCandidate) entry.items.push(item);
@@ -394,8 +399,8 @@ function reconcileOverlaps(candidates, { signal = null } = {}) {
  * fusion never has to interpret a raw length.
  */
 export function regionFromSize(start, sizeBytes, ownership = 'exclusive') {
-  const begin = primitiveInteger(start, 'discovery-region-invalid-start');
-  const size = primitiveInteger(sizeBytes, 'discovery-region-invalid-size');
+  const begin = BigInt(start);
+  const size = BigInt(sizeBytes);
   if (size <= 0n) return null;
   return createRegion({ start: begin, end: begin + size, ownership });
 }

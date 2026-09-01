@@ -13,8 +13,25 @@ function abortIfRequested(signal) {
   throw error;
 }
 
-function addressOf(instruction) { return BigInt(instruction.address); }
-function endOf(instruction) { return addressOf(instruction) + BigInt(instruction.length ?? instruction.size); }
+// Shared strict geometry contract with semantic-function-base.js: structured
+// instruction address/length must not launder into CFG authority via BigInt().
+function canonicalInstructionAddress(value, code) {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return BigInt(value);
+  if (typeof value === 'string' && /^(?:0[xX][0-9a-fA-F]+|\d+)$/.test(value.trim())) {
+    const parsed = BigInt(value.trim());
+    if (parsed >= 0n) return parsed;
+  }
+  throw new TypeError(code);
+}
+
+function addressOf(instruction) {
+  return canonicalInstructionAddress(instruction.address, 'semantic-function-instruction-address-invalid');
+}
+function endOf(instruction) {
+  return addressOf(instruction)
+    + canonicalInstructionAddress(instruction.length ?? instruction.size, 'semantic-function-instruction-length-invalid');
+}
 function keyOf(address) { return `block-${BigInt(address).toString(16)}`; }
 
 function controlKind(plugin, instruction) {
@@ -195,29 +212,23 @@ export function assertRequiredString(value, label) {
   return value.trim();
 }
 
-function normalizedProtocolSelector(value, code) {
-  if (typeof value !== 'string') throw new TypeError(code);
-  const text = value.trim().toLowerCase();
-  if (!text) throw new TypeError(code);
-  return text;
-}
-
 export function analyzeSemanticFunction(input = {}, options = {}) {
   abortIfRequested(options.signal);
-  const architectureId = normalizedProtocolSelector(input.architecture, 'semantic-function-architecture-required');
+  const architectureId = String(input.architecture || '').toLowerCase();
+  if (!architectureId) throw new TypeError('semantic-function-architecture-required');
   const architecturePlugin = architecturePluginV2(architectureId);
   if (!architecturePlugin || architecturePlugin.id !== architectureId) throw new TypeError('semantic-function-architecture-not-registered');
   if (typeof architecturePlugin.liftExact !== 'function') throw new TypeError('semantic-function-architecture-lifter-required');
   const requestedInstructionEndianness = input.instructionEndianness ?? input.endianness ?? input.endian;
   if (requestedInstructionEndianness != null) {
-    const endian = normalizedProtocolSelector(requestedInstructionEndianness, 'semantic-function-invalid-instruction-endianness');
+    const endian = String(requestedInstructionEndianness).trim().toLowerCase();
     const supported = architecturePlugin.supportedInstructionEndianness ?? [];
     if (supported.length && !supported.includes(endian))
       throw new TypeError(`semantic-function-unsupported-instruction-endianness:${endian}`);
   }
   const requestedMemoryEndianness = input.dataEndianness ?? input.memoryEndianness ?? input.endian ?? null;
   if (requestedMemoryEndianness != null) {
-    const endian = normalizedProtocolSelector(requestedMemoryEndianness, 'semantic-function-invalid-memory-endianness');
+    const endian = String(requestedMemoryEndianness).trim().toLowerCase();
     const supported = architecturePlugin.supportedMemoryEndianness ?? [];
     if (supported.length && !supported.includes(endian)) throw new TypeError(`semantic-function-unsupported-memory-endianness:${endian}`);
   }

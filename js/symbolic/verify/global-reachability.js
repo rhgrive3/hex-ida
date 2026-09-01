@@ -92,6 +92,18 @@ export async function verifyGlobalEdgeReachability({
   if (!Array.isArray(globalScope.phiChoices) || globalScope.phiChoices.some((choice) => choice?.complete !== true)) {
     return unknown('incomplete-phi-choices', 'Global unreachability requires explicit PHI predecessor choices');
   }
+  // A PHI choice is proof evidence only when it names the PHI it resolves and
+  // the predecessor it selects. `{ complete: true }` alone is a placeholder and
+  // must not pass the gate. When the certificate declares PHIs present but
+  // enumerates no choices, that contradiction also fails closed.
+  if (globalScope.phiChoices.length === 0 && globalScope.phiInventory?.count > 0) {
+    return unknown('missing-phi-choices', 'Global path evidence declares PHIs but enumerates no PHI predecessor choices');
+  }
+  if (globalScope.phiChoices.some((choice) =>
+    choice?.phi == null && choice?.phiId == null ||
+    choice?.predecessor == null && choice?.fromBlock == null)) {
+    return unknown('incomplete-phi-choices', 'Each PHI choice must identify its PHI and its selected predecessor');
+  }
   if (!isExpr(targetEdge)) {
     return unknown('missing-target-edge-condition', 'Global unreachability requires a translated target-edge condition');
   }

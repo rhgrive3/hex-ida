@@ -32,7 +32,10 @@ export function rotateRight(value, amount, widthBits) {
 }
 
 export function instructionMnemonic(instruction) {
-  return String(instruction?.mnemonic || '').trim().toLowerCase();
+  // The mnemonic is the instruction-identity key for family dispatch. A
+  // structured value must not launder into a canonical instruction identity.
+  if (typeof instruction?.mnemonic !== 'string') return '';
+  return instruction.mnemonic.trim().toLowerCase();
 }
 
 export function instructionBits(op, fallback = 64) {
@@ -61,7 +64,9 @@ function decodedAbsoluteTargetOf(op) {
 
 export function conditionOf(instruction) {
   const operand = (instruction?.ops || []).find((op) => op?.k === 'cond');
-  if (operand?.text) return String(operand.text).toLowerCase();
+  // The condition code picks a canonical NZCV predicate: structured text must
+  // not coerce into a real condition identity.
+  if (typeof operand?.text === 'string') return operand.text.trim().toLowerCase() || null;
   const mnemonic = instructionMnemonic(instruction);
   if (mnemonic.startsWith('b.')) return mnemonic.slice(2);
   return null;

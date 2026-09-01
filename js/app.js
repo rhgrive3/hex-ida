@@ -95,6 +95,10 @@ function waitForAppProducer(entry, signal) {
       reject(appProducerAbortError(signal));
     };
     signal?.addEventListener('abort', onAbort, { once:true });
+    // The pre-check and this subscribe are not atomic. An abort that fires in
+    // between is never re-delivered to the late listener, so re-check here to
+    // collect it (onAbort's `done` guard keeps this idempotent).
+    if (signal?.aborted && !done) { onAbort(); return; }
     entry.promise.then((value) => finish(resolve, value), (error) => finish(reject, error));
   });
 }

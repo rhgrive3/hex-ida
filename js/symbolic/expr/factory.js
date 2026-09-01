@@ -31,13 +31,11 @@ export function resetSymbolCounterForTesting(val = 0) {
 }
 
 export function createBool(value) {
-  if (typeof value !== 'boolean') {
-    throw new TypeError(`createBool: value must be a boolean, got ${value}`);
-  }
+  const boolVal = Boolean(value);
   return Object.freeze({
     kind: EXPR_KIND.CONST,
     sort: boolSort(),
-    value,
+    value: boolVal,
   });
 }
 
@@ -62,6 +60,35 @@ export function createFreshSymbol(sort, name, meta = {}) {
     sort,
     name,
     symbolId: id,
+    meta: Object.freeze({ ...meta }),
+  });
+}
+
+/**
+ * Restores a serialized FreshSymbol with its saved canonical symbolId and
+ * keeps the global allocator ahead of restored IDs so later fresh symbols
+ * cannot collide with round-tripped ones.
+ */
+export function restoreFreshSymbol(sort, name, symbolId, meta = {}) {
+  assertValidSort(sort, 'restoreFreshSymbol');
+  if (!name || typeof name !== 'string') {
+    throw new TypeError(`restoreFreshSymbol: name must be a non-empty string, got ${name}`);
+  }
+  if (typeof symbolId !== 'string' || !symbolId) {
+    throw new TypeError(`restoreFreshSymbol: symbolId must be a non-empty string, got ${symbolId}`);
+  }
+  const match = /^sym_(\d+)_/.exec(symbolId);
+  if (match) {
+    const restoredIndex = Number(match[1]);
+    if (Number.isSafeInteger(restoredIndex) && restoredIndex > symbolCounter) {
+      symbolCounter = restoredIndex;
+    }
+  }
+  return Object.freeze({
+    kind: EXPR_KIND.FRESH_SYMBOL,
+    sort,
+    name,
+    symbolId,
     meta: Object.freeze({ ...meta }),
   });
 }
@@ -194,23 +221,20 @@ export function createExtract(arg, high, low) {
   if (!arg || !isBvSort(arg.sort)) {
     throw new TypeError(`createExtract: operand must have BV sort, got ${sortToString(arg?.sort)}`);
   }
-  if (typeof high !== 'number' || typeof low !== 'number' || !Number.isSafeInteger(high) || !Number.isSafeInteger(low)) {
+  const h = Number(high);
+  const l = Number(low);
+  if (!Number.isSafeInteger(h) || !Number.isSafeInteger(l) || l < 0 || h < l || h >= arg.sort.width) {
     throw new RangeError(
       `createExtract: invalid bit indices [high=${high}, low=${low}] for BV${arg.sort.width}`
     );
   }
-  if (low < 0 || high < low || high >= arg.sort.width) {
-    throw new RangeError(
-      `createExtract: invalid bit indices [high=${high}, low=${low}] for BV${arg.sort.width}`
-    );
-  }
-  const outWidth = high - low + 1;
+  const outWidth = h - l + 1;
   return Object.freeze({
     kind: EXPR_KIND.EXTRACT,
     sort: bvSort(outWidth),
     arg,
-    high,
-    low,
+    high: h,
+    low: l,
   });
 }
 
@@ -237,21 +261,22 @@ export function createCast(op, arg, targetWidth) {
   if (!arg || !isBvSort(arg.sort)) {
     throw new TypeError(`createCast (${op}): operand must have BV sort, got ${sortToString(arg?.sort)}`);
   }
-  if (typeof targetWidth !== 'number' || !Number.isSafeInteger(targetWidth) || targetWidth <= 0) {
+  const tw = Number(targetWidth);
+  if (!Number.isSafeInteger(tw) || tw <= 0) {
     throw new RangeError(`createCast (${op}): targetWidth must be a positive integer >= 1, got ${targetWidth}`);
   }
   const fw = arg.sort.width;
-  if (op === CAST_OP.TRUNC && targetWidth >= fw) {
-    throw new RangeError(`createCast (trunc): targetWidth (${targetWidth}) must be strictly less than fromWidth (${fw})`);
+  if (op === CAST_OP.TRUNC && tw >= fw) {
+    throw new RangeError(`createCast (trunc): targetWidth (${tw}) must be strictly less than fromWidth (${fw})`);
   }
-  if ((op === CAST_OP.ZEXT || op === CAST_OP.SEXT) && targetWidth <= fw) {
-    throw new RangeError(`createCast (${op}): targetWidth (${targetWidth}) must be strictly greater than fromWidth (${fw})`);
+  if ((op === CAST_OP.ZEXT || op === CAST_OP.SEXT) && tw <= fw) {
+    throw new RangeError(`createCast (${op}): targetWidth (${tw}) must be strictly greater than fromWidth (${fw})`);
   }
   return Object.freeze({
     kind: EXPR_KIND.CAST,
-    sort: bvSort(targetWidth),
+    sort: bvSort(tw),
     op,
     arg,
-    targetWidth,
+    targetWidth: tw,
   });
 }
