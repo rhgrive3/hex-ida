@@ -41,7 +41,9 @@ function canonicalStoreInstructions(load, ir) {
 
 export function backwardDependencySlice(target, options = {}) {
   const ir = options.ir || null;
-  const maxDepth = Number(options.maxDepth) || 64;
+  const maxDepth = typeof options.maxDepth === 'number' && Number.isFinite(options.maxDepth)
+    ? options.maxDepth
+    : 64;
   const fromBlock = options.fromBlock != null ? options.fromBlock : null;
 
   const reachedValues = new Set();
