@@ -9,6 +9,7 @@ import {
 } from '../../semantics/memoryssa/queries.js';
 
 const INVERSE = Object.freeze({ eq:'ne', ne:'eq', lt:'ge', le:'gt', gt:'le', ge:'lt' });
+const EXACT_VIEW_MOV_SUBS = new Set([null, 'copy', 'bitcast', 'trunc', 'zext']);
 
 function valueOf(a) { return a?.value || null; }
 
@@ -225,11 +226,45 @@ function reachingRegisterDefinition(ir, atInst, reg) {
   return best;
 }
 
+function exactViewTrace(value, active = new Set()) {
+  if (!value || active.has(value.id)) return null;
+  active.add(value.id);
+  let current = value;
+  const steps = [];
+  while (current?.def?.op === 'mov' && current.def.args?.length === 1) {
+    const def = current.def;
+    const sub = def.sub ?? null;
+    const exactIdentity = sub == null || sub === 'copy' || sub === 'bitcast'
+      || def.extra?.stateRead || def.extra?.stateWrite;
+    if (!exactIdentity && !EXACT_VIEW_MOV_SUBS.has(sub)) break;
+    const source = valueOf(def.args[0]);
+    if (!source || active.has(source.id)) break;
+    if (sub === 'trunc' || sub === 'zext') {
+      steps.push(`${sub}:${Number(source.bits || 0)}>${Number(current.bits || 0)}`);
+    }
+    active.add(source.id);
+    current = source;
+  }
+  return { root: current, bits:Number(value.bits || 0), steps };
+}
+
+function storedViewProjectsValue(stored, expected, store) {
+  if (!stored || !expected || !store) return false;
+  if (stored === expected || stored.id === expected.id) return true;
+  const a = exactViewTrace(stored), b = exactViewTrace(expected);
+  if (!a?.root || !b?.root || a.root.id !== b.root.id) return false;
+  const widthBits = Number((store.loc?.size ?? store.addr?.size ?? store.extra?.size ?? 0) * 8);
+  if (widthBits > 0 && Number(stored.bits || 0) !== widthBits) return false;
+  if (a.steps.length < b.steps.length) return false;
+  const suffix = a.steps.slice(a.steps.length - b.steps.length);
+  return suffix.every((step, index) => step === b.steps[index]);
+}
+
 function storeOfExactValue(ir, blockIndex, value) {
   let best = null;
   for (const inst of ir?.blocks?.[blockIndex]?.insts || []) {
     if (inst?.op !== 'store' || inst.loc?.kind === 'stack' || inst.loc?.kind === 'unknown') continue;
-    if (valueOf(inst.args?.[0])?.id !== value?.id) continue;
+    if (!storedViewProjectsValue(valueOf(inst.args?.[0]), value, inst)) continue;
     if (!best || (inst.row ?? -1) > (best.row ?? -1)) best = inst;
   }
   return best;
