@@ -148,7 +148,13 @@ function repairedFlagComparison(flagsValue, cond, maps, ir) {
   let left = expressionOfValue(leftValue, maps);
   let right = expressionOfValue(rightValue, maps);
   if (!left || !right) return null;
-  const producerBits = Number(cmp.bits || 0);
+  const operandBits = [leftValue?.bits, rightValue?.bits]
+    .map(Number)
+    .filter((value) => Number.isInteger(value) && value > 0);
+  const exactOperandBits = operandBits.length === 2 && operandBits[0] === operandBits[1]
+    ? operandBits[0]
+    : 0;
+  const producerBits = Number(cmp.bits || producer?.bits || producer?.dst?.bits || exactOperandBits || 0);
   const bits = producerBits > 0
     ? producerBits
     : Math.max(Number(left.bits || 0), Number(right.bits || 0), 1);
