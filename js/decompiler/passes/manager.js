@@ -12,9 +12,18 @@ export class PassManager {
     const state = initialState || {};
     state.passMetrics ||= [];
     state.warnings ||= [];
+    // `deterministicTransforms` is the documented measurement contract: output
+    // must be a function of the input and the rules, not of the host. The
+    // wall-clock valve stays a production constraint, but a measurement run
+    // that silently skipped optional passes under runner load published a
+    // degraded fallback (generic prototypes, raw slot names) while the same
+    // input on a fast host produced the full projection — measuring the host,
+    // not the decompiler. Disable only the deadline here; work bounds are
+    // untouched, exactly like the rewrite engine's contract.
+    const deterministic = state.opts?.deterministicTransforms === true;
     const totalStart = clock();
     const totalBudget = Math.max(0, Number(this.budget.timeBudgetMs ?? DEFAULT_PASS_BUDGET.timeBudgetMs));
-    const deadline = totalStart + totalBudget;
+    const deadline = deterministic ? Infinity : totalStart + totalBudget;
     let budgetWarned = false;
 
     for (const pass of this.passes) {
@@ -46,7 +55,8 @@ export class PassManager {
         passBudget.remainingTimeMs = passRemaining;
         passBudget.deadline = deadline;
         passBudget.degraded = !!state.degraded;
-        passBudget.shouldAbort = () => clock() >= deadline;
+        passBudget.deterministic = deterministic;
+        passBudget.shouldAbort = () => !deterministic && clock() >= deadline;
 
         const result = pass.run(state, passBudget);
         if (result && result !== state) Object.assign(state, result);
