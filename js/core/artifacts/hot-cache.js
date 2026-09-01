@@ -1,7 +1,7 @@
 export const ARTIFACT_HOT_CACHE_VERSION = 'hex-artifact-hot-cache-v1';
 
 function canonicalArtifactId(value) {
-  if (typeof value !== 'string' || value.length === 0) throw new TypeError('artifact-hot-cache-id-invalid');
+  if (typeof value !== 'string' || value.trim().length === 0) throw new TypeError('artifact-hot-cache-id-invalid');
   return value;
 }
 
