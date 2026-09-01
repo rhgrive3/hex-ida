@@ -88,7 +88,7 @@ export class HypothesisStore {
 }
 
 function knownIds(ids, store) {
-  return Array.from(new Set((Array.isArray(ids) ? ids : []).map(String).filter((id) => store && store.has(id))));
+  return Array.from(new Set((Array.isArray(ids) ? ids : []).filter((id) => typeof id === 'string' && store && store.has(id))));
 }
 
 function clamp(value) {
