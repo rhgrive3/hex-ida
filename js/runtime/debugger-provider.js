@@ -35,17 +35,16 @@ function sameStructuredIdentity(left, right) {
 
 function sameModuleBinding(current, next) {
   if (!current || !next) return false;
-  const scalar = (value) => value == null ? null : String(value);
   const currentEvidence = current.identityEvidenceIds ?? [];
   const nextEvidence = next.identityEvidenceIds ?? [];
-  return scalar(current.runtimeBase) === scalar(next.runtimeBase)
-    && scalar(current.runtimeSize) === scalar(next.runtimeSize)
-    && scalar(current.staticBase) === scalar(next.staticBase)
-    && scalar(current.pathHint) === scalar(next.pathHint)
-    && scalar(current.binaryId) === scalar(next.binaryId)
-    && scalar(current.sliceId) === scalar(next.sliceId)
-    && scalar(current.imageId) === scalar(next.imageId)
-    && scalar(current.identityState) === scalar(next.identityState)
+  return Object.is(current.runtimeBase, next.runtimeBase)
+    && Object.is(current.runtimeSize, next.runtimeSize)
+    && Object.is(current.staticBase, next.staticBase)
+    && Object.is(current.pathHint, next.pathHint)
+    && Object.is(current.binaryId, next.binaryId)
+    && Object.is(current.sliceId, next.sliceId)
+    && Object.is(current.imageId, next.imageId)
+    && Object.is(current.identityState, next.identityState)
     && sameStructuredIdentity(current.buildIdentity, next.buildIdentity)
     && currentEvidence.length === nextEvidence.length
     && currentEvidence.every((value, index) => value === nextEvidence[index]);
