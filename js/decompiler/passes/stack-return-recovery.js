@@ -252,7 +252,12 @@ function locationIdentity(location) {
 }
 
 function semanticLocationForProvenSnapshot(result, definition) {
-  const key = definition?.loc?.key;
+  const projected = (result.semanticAst?.values || []).find((item) =>
+    String(item?.valueId ?? '') === String(definition?.dst?.id ?? ''))?.expression ?? null;
+  if (projected?.kind === 'load'
+      && projected.location?.kind !== 'stack' && projected.location?.kind !== 'unknown') return projected.location;
+
+  const key = definition?.extra?.committedLocationKey ?? definition?.loc?.key;
   if (!key) return null;
   const rows = new Set((definition.extra?.committedStoreRows || [])
     .map(Number).filter(Number.isFinite));
