@@ -239,7 +239,7 @@ export function createLanguageMetadataResult(input = {}) {
     providerId: input.providerId,
     providerVersion: input.providerVersion,
     ecosystem: input.ecosystem,
-    verdict: input.verdict || 'identity-unavailable',
+    verdict: input.verdict ?? 'identity-unavailable',
   });
   const defaultCompleteness = input.completeness?.complete === true ? 'complete' : 'partial';
   const defaultStopReason = defaultCompleteness === 'complete' ? null : (input.completeness?.capped ? 'budget-exhausted' : 'evidence-missing');
