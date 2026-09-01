@@ -93,6 +93,7 @@ function make(lines, opts = {}) {
 
   const r = decompile(model, { abiAdapter:testAbiAdapter,
     addr: base, name: 'apply_damage', rowOfAddress, returnType: 'int32', receiverType: 'Unit', beginner: false,
+    deterministicTransforms: true,
     functionPrototype:{ returnType:'int32', parameters:[{ type:'Unit *' }, { type:'int32' }] },
     symbolFor: (addr) => BigInt(addr) === PUTS ? '_puts' : null,
     fieldFor: (_base, off) => off === 0x20n ? { name: 'hp', type: 'int32' }
