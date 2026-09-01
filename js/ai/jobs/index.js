@@ -12,7 +12,7 @@ export class AgentJobManager {
     const now = new Date().toISOString();
     const goal = String(input.goal || '');
     if (!goal) throw new TypeError('Agent job goal is required');
-    const explicitId = input.jobId ? String(input.jobId) : null;
+    const explicitId = input.jobId == null || input.jobId === '' ? null : requireIdentityString(input.jobId, 'Agent job id');
     let id = explicitId || autoJobId();
     while (true) {
       if (this.creatingIds.has(id)) {
@@ -97,7 +97,10 @@ export class AgentJobManager {
   }
 
   async resume(id, options = {}) { return this.runSlice(id, options); }
-  async get(id) { return this.jobs.get(String(id)) || await this.load(String(id)); }
+  async get(id) {
+    if (typeof id !== 'string') return null;
+    return this.jobs.get(id) || await this.load(id);
+  }
   list() { return [...this.jobs.values()].map(checkpoint); }
 
   async require(value) {
@@ -111,9 +114,9 @@ export class AgentJobManager {
 function mergeResult(job, result) {
   job.sessionId = result?.sessionId || job.sessionId;
   job.effectiveScope = result?.scope?.effective || job.effectiveScope;
-  job.evidenceIds = unique([...job.evidenceIds, ...(result?.evidence || []).map((item) => String(item.id)).filter(Boolean)]);
-  job.hypothesisIds = unique([...job.hypothesisIds, ...(result?.hypotheses || []).map((item) => String(item.id)).filter(Boolean)]);
-  job.completedTools = unique([...job.completedTools, ...(result?.activity || []).filter((item) => item.type === 'tool-result' || item.type === 'tool-start').map((item) => String(item.tool || item.label || '')).filter(Boolean)]);
+  job.evidenceIds = unique([...job.evidenceIds, ...(result?.evidence || []).map((item) => identityString(item?.id)).filter(Boolean)]);
+  job.hypothesisIds = unique([...job.hypothesisIds, ...(result?.hypotheses || []).map((item) => identityString(item?.id)).filter(Boolean)]);
+  job.completedTools = unique([...job.completedTools, ...(result?.activity || []).filter((item) => item.type === 'tool-result' || item.type === 'tool-start').map((item) => identityString(item?.tool) || identityString(item?.label)).filter(Boolean)]);
   job.continuationRefs = unique([...job.continuationRefs, ...collectRefs(result)]);
   job.unresolvedWork = unique([...(result?.followups || []), ...(result?.limits?.exhausted ? [`resume-after:${result.limits.reason || 'slice-budget'}`] : [])]).slice(-32);
   const usage = result?.usage || {};
@@ -123,8 +126,18 @@ function mergeResult(job, result) {
 }
 function collectRefs(result) {
   const refs = [];
-  for (const item of result?.evidence || []) for (const key of ['detailRef', 'continuationRef', 'cursor']) if (item?.[key]) refs.push(String(item[key]));
+  for (const item of result?.evidence || []) {
+    for (const key of ['detailRef', 'continuationRef', 'cursor']) {
+      const ref = identityString(item?.[key]);
+      if (ref) refs.push(ref);
+    }
+  }
   return refs;
+}
+function identityString(value) { return typeof value === 'string' && value ? value : null; }
+function requireIdentityString(value, label) {
+  if (typeof value !== 'string' || !value) throw new TypeError(`${label} must be a non-empty string`);
+  return value;
 }
 function hardLimit(job) { return job.budgetUsage.slices >= job.limits.maxSlices || job.budgetUsage.elapsedMs >= job.limits.maxElapsedMs; }
 function compactResult(result) { return { answer: result?.answer || '', confidence: result?.confidence ?? null, limits: result?.limits || { exhausted: false }, usage: result?.usage || {}, sessionId: result?.sessionId || null }; }
