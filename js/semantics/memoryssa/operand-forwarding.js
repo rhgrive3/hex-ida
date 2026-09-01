@@ -111,7 +111,9 @@ function uniqueBy(items, keyOf) {
 }
 
 function metadataFor(memorySsa, id) {
-  return (memorySsa.accessMetadata ?? []).find((item) => String(item?.memorySsaEntityId ?? '') === String(id)) ?? null;
+  const rows = (memorySsa.accessMetadata ?? [])
+    .filter((item) => String(item?.memorySsaEntityId ?? '') === String(id));
+  return rows.length === 1 ? rows[0] : null;
 }
 
 function coverageFor(memorySsa, use) {
