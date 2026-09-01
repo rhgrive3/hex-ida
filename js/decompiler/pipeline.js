@@ -1,4 +1,5 @@
 import { enhanceSemanticDecompilation as enhanceCore } from './pipeline-core.js';
+import { recoverExactStackPhiExpressions } from './passes/stack-phi-recovery.js';
 import { recoverExactStackReturn } from './passes/stack-return-recovery.js';
 import { expr, mapChildren, sourceOf } from './ast/nodes.js';
 import { printExpression, printProgram } from './pretty/c.js';
@@ -363,6 +364,7 @@ export function enhanceSemanticDecompilation(result, model, opts = {}) {
   } finally { restore(); }
   const reanchored = reanchorExactStackReturn(core, opts);
   const legacySpillsRecovered = recoverLegacySameBlockStackSpills(reanchored, opts);
-  const recovered = recoverExactStackReturn(legacySpillsRecovered, opts);
+  const stackPhiRecovered = recoverExactStackPhiExpressions(legacySpillsRecovered, opts);
+  const recovered = recoverExactStackReturn(stackPhiRecovered, opts);
   return fullPhase8Projection(reanchorRecoveredReturnSource(recovered, opts), model, opts);
 }
