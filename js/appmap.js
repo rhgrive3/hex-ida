@@ -219,6 +219,22 @@ function classifyClass(cls, ctx) {
   };
 }
 
+function appMapAddressKey(value) {
+  if (typeof value === 'bigint') return value >= 0n ? value.toString() : null;
+  if (typeof value === 'number') {
+    return Number.isSafeInteger(value) && value >= 0 ? BigInt(value).toString() : null;
+  }
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  if (!text) return null;
+  try {
+    const address = BigInt(text);
+    return address >= 0n ? address.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * 地図を作る。
  *
@@ -237,8 +253,14 @@ export function buildAppMap(opts) {
 
   // 文字列をアドレスから引けるようにする（参照先 → 文言）
   const textByAddr = new Map();
-  for (const s of o.strings || []) textByAddr.set(s.addr.toString(), s.text);
-  const textOf = (addr) => (addr == null ? null : textByAddr.get(addr.toString()) || null);
+  for (const s of o.strings || []) {
+    const key = appMapAddressKey(s.addr);
+    if (key != null) textByAddr.set(key, s.text);
+  }
+  const textOf = (addr) => {
+    const key = appMapAddressKey(addr);
+    return key == null ? null : textByAddr.get(key) || null;
+  };
   const ctx = { program, symbols, textOf, vendors: vendorsOf(fields) };
 
   const classes = [];
