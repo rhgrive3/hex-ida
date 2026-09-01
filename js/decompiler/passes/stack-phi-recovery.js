@@ -145,10 +145,23 @@ function repairedFlagComparison(flagsValue, cond, maps, ir) {
     }
   }
 
-  const left = expressionOfValue(leftValue, maps);
-  const right = expressionOfValue(rightValue, maps);
+  let left = expressionOfValue(leftValue, maps);
+  let right = expressionOfValue(rightValue, maps);
   if (!left || !right) return null;
-  const bits = Math.max(Number(cmp.bits || 0), Number(left.bits || 0), Number(right.bits || 0), 1);
+  const producerBits = Number(cmp.bits || 0);
+  const bits = producerBits > 0
+    ? producerBits
+    : Math.max(Number(left.bits || 0), Number(right.bits || 0), 1);
+  const fitOperand = (node) => Number(node.bits || bits) > bits
+    ? expr.unary('trunc', node, bits, node.signed ?? null, {
+      address: cmp.address,
+      row: cmp.row,
+      ir: cmp.id,
+      evidence: [{ reason: `exact ${bits}-bit NZCV producer width` }],
+    }, { fromBits: Number(node.bits || bits) })
+    : node;
+  left = fitOperand(left);
+  right = fitOperand(right);
   return buildNZCVConditionExpression(cmp.sub || 'sub', cond, left, right, bits, {
     address: cmp.address,
     row: cmp.row,
