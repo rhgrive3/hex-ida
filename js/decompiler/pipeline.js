@@ -193,6 +193,9 @@ function recoverLegacySameBlockStackSpills(result, opts = {}) {
       const store = exactLegacySameBlockStackStore(load, result.ir);
       const storedValue = store?.args?.[0]?.value;
       if (!storedValue) return node;
+      // A PHI is CFG evidence, not a same-block scalar copy. Preserve it so the
+      // bounded exact stack-PHI recovery below can prove all incoming paths.
+      if (storedValue.def?.op === 'phi') return node;
       const key = String(storedValue.id);
       if (active.has(key)) return node;
       const replacement = expressions.get(key);
