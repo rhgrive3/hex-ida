@@ -3,6 +3,8 @@ import { liftArm64MachineEffects } from '../../js/targets/architecture/arm64/eff
 
 const fp = (num) => ({ k:'reg', cls:'fp', num, bits:64, text:`d${num}` });
 const gp = (num) => ({ k:'reg', cls:'gp', num, bits:64, text:`x${num}` });
+const fp32 = (num) => ({ k:'reg', cls:'fp', num, bits:32, text:`s${num}` });
+const gp32 = (num) => ({ k:'reg', cls:'gp', num, bits:32, text:`w${num}` });
 function lift(id, mnemonic, ops) {
   return liftArm64MachineEffects({ instructionId:id, mnemonic, mode:'a64', ops, origin:{ instructionIds:[id] } });
 }
@@ -94,12 +96,32 @@ for (const [label, value] of [
   );
 }
 
+const validScvtf32 = lift('arm64-scvtf-scale-valid-32bit-boundary', 'scvtf', [
+  fp32(0), gp32(1), { k:'imm', value:32n, text:'#32' },
+]);
+assert.ok(validScvtf32);
+assert.equal(validScvtf32.completeness, 'exact-with-intrinsic');
+assertFailClosed(
+  lift('arm64-scvtf-scale-invalid-32bit-high', 'scvtf', [fp32(0), gp32(1), { k:'imm', value:33n, text:'#33' }]),
+  'scvtf-32bit-high',
+);
+
 const validFloatToIntegerFixed = lift('arm64-fcvtzs-scale-valid', 'fcvtzs', [gp(0), fp(1), { k:'imm', value:8n, text:'#8' }]);
 assert.ok(validFloatToIntegerFixed);
 assert.equal(validFloatToIntegerFixed.completeness, 'exact-with-intrinsic');
 assertFailClosed(
   lift('arm64-fcvtzs-scale-invalid-string', 'fcvtzs', [gp(0), fp(1), { k:'imm', value:'8', text:'#8' }]),
   'fcvtzs-string',
+);
+
+const validFcvtzs32 = lift('arm64-fcvtzs-scale-valid-32bit-boundary', 'fcvtzs', [
+  gp32(0), fp32(1), { k:'imm', value:32n, text:'#32' },
+]);
+assert.ok(validFcvtzs32);
+assert.equal(validFcvtzs32.completeness, 'exact-with-intrinsic');
+assertFailClosed(
+  lift('arm64-fcvtzs-scale-invalid-32bit-high', 'fcvtzs', [gp32(0), fp32(1), { k:'imm', value:33n, text:'#33' }]),
+  'fcvtzs-32bit-high',
 );
 
 console.log('arm64 scalar FP structured condition/integer immediate regression PASS');
