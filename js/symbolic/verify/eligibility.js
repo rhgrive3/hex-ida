@@ -78,7 +78,9 @@ export function checkProofEligibility({
   }
 
   // 5. Unsupported entities
-  if (Array.isArray(unsupportedEntities) && unsupportedEntities.length > 0) {
+  if (!Array.isArray(unsupportedEntities)) {
+    reasons.push('unsupported-entities-malformed');
+  } else if (unsupportedEntities.length > 0) {
     reasons.push(`unsupported-entities-present:${unsupportedEntities.length}`);
   }
 
