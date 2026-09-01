@@ -155,8 +155,8 @@ export class RuntimeProviderRegistry {
 
 function adapterFacetNames(adapter) {
   const facets = new Set(['debugger']);
-  if (adapter?.kind === 'frida' || adapter?.capabilities?.objcRuntime || adapter?.capabilities?.swiftRuntime) facets.add('instrumentation');
-  if (adapter?.kind === 'replay' || adapter?.capabilities?.replay || adapter?.capabilities?.traceFunction) facets.add('trace');
+  if (adapter?.kind === 'frida' || adapter?.capabilities?.objcRuntime === true || adapter?.capabilities?.swiftRuntime === true) facets.add('instrumentation');
+  if (adapter?.kind === 'replay' || adapter?.capabilities?.replay === true || adapter?.capabilities?.traceFunction === true) facets.add('trace');
   if (adapter?.kind === 'emulator' || adapter?.kind === 'local' || adapter?.kind === 'sandbox') facets.add('emulator');
   return [...facets];
 }

@@ -65,6 +65,7 @@ async function awaitAbortable(operation, signal) {
       finish(reject, abortError(signal));
     };
     signal.addEventListener('abort', onAbort, { once: true });
+    if (signal.aborted) onAbort();
     Promise.resolve(operation).then(
       (value) => finish(resolve, value),
       (error) => finish(reject, error),
@@ -363,6 +364,7 @@ function waitShared(map, key, entry, signal) {
     };
     onAbort = () => finish(reject, abortError(signal));
     if (signal) signal.addEventListener('abort', onAbort, { once: true });
+    if (signal?.aborted) onAbort();
     entry.promise.then(
       (value) => finish(resolve, value),
       (error) => finish(reject, error),
