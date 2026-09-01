@@ -16,8 +16,43 @@ import {
 import { runIndependentComparison } from '../../tools/validation/machine-effects/oracle-runner.mjs';
 import { sha256Digest } from '../../tools/validation/machine-effects/oracle-schema.mjs';
 import { INDEPENDENT_ORACLE_CASE_FIXTURES } from './fixtures/independent-oracle-cases.mjs';
-import { createArchitecturalEvidence } from '../../tools/validation/machine-effects/oracle-evidence-v2.mjs';
+import {
+  assessArchitecturalEvidence,
+  createArchitecturalEvidence,
+} from '../../tools/validation/machine-effects/oracle-evidence-v2.mjs';
 import { evidenceInputForOracleCase } from './fixtures/evidence-v2-cases.mjs';
+
+// This table is deliberately authored independently of the oracle fixture's
+// expectedState.  The report test must detect disagreement between the two.
+const INDEPENDENT_EXPECTED_OBSERVABLES = Object.freeze({
+  'arm64:a64': Object.freeze({
+    'flag:C': '0', 'flag:N': '1', 'flag:V': '1', 'flag:Z': '0',
+    'register:x0': '0x8000000000000000',
+    'register:x1': '0x7fffffffffffffff', 'register:x2': '0x0000000000000001',
+    'vector:v0': '0x00112233445566778899aabbccddeeff',
+  }),
+  'arm64e:a64+pac': Object.freeze({
+    'flag:C': '0', 'flag:N': '1', 'flag:V': '1', 'flag:Z': '0',
+    'register:x0': '0x8000000000000000',
+    'register:x1': '0x7fffffffffffffff', 'register:x2': '0x0000000000000001',
+    'vector:v0': '0x00112233445566778899aabbccddeeff',
+  }),
+  'x86_64:long-64': Object.freeze({
+    'flag:C': '0', 'flag:N': '1', 'flag:V': '1', 'flag:Z': '0',
+    'register:rax': '0x8000000000000000', 'register:rbx': '0x0000000000000001',
+  }),
+  'riscv64:rv64imc': Object.freeze({
+    'flag:C': '0', 'flag:N': '0', 'flag:V': '0', 'flag:Z': '0',
+    'register:x1': '0x7fffffffffffffff', 'register:x2': '0x0000000000000001',
+    'register:x5': '0x8000000000000000',
+  }),
+});
+
+function independentlyAuthoredExpectedObservables(profileId) {
+  const expected = INDEPENDENT_EXPECTED_OBSERVABLES[profileId];
+  assert.ok(expected, `missing independent evidence fixture for ${profileId}`);
+  return { ...expected };
+}
 
 assert.deepEqual(parseArgs(['--report', 'report.json', '--require-candidate-tree']), {
   report: 'report.json', requireCandidateTree: true,
@@ -46,6 +81,7 @@ const a2Before = createA2DenominatorSnapshot();
 const a2After = createA2DenominatorSnapshot();
 const architecturalEvidence = corpus.cases.map((caseValue) => {
   const input = evidenceInputForOracleCase(caseValue);
+  input.expectedObservables = independentlyAuthoredExpectedObservables(caseValue.profileId);
   if (!['arm64:a64', 'riscv64:rv64imc'].includes(input.profileId)) input.completeness = 'partial';
   return createArchitecturalEvidence(input);
 });
@@ -103,6 +139,21 @@ assert.throws(() => validateOracleReport({
   ...report,
   policy: { ...report.policy, networkAllowed: true },
 }), /report-authority-policy-invalid/);
+
+const mismatchedEvidenceInput = evidenceInputForOracleCase(corpus.cases[0]);
+mismatchedEvidenceInput.expectedObservables = {
+  ...independentlyAuthoredExpectedObservables(corpus.cases[0].profileId),
+  'register:x0': '0x0000000000000000',
+};
+const mismatchedEvidence = createArchitecturalEvidence(mismatchedEvidenceInput);
+assert.equal(assessArchitecturalEvidence({
+  evidence: mismatchedEvidence,
+  subject: {
+    profileId: corpus.cases[0].profileId,
+    effect: mismatchedEvidence.effect,
+    observables: independentlyAuthoredExpectedObservables(corpus.cases[0].profileId),
+  },
+}).status, 'mismatch');
 assert.throws(() => createOracleReport({
   productSha: currentHead,
   baseSha: assignedBase,
