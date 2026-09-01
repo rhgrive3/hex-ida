@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { ResourceBudget, BudgetExceededError, RESOURCE_BUDGET_CONTRACT_VERSION } from "../js/core/budgets/index.js";
+import { LRU } from "../js/lru.js";
 
 console.log("Testing ResourceBudget composable scopes...");
 
@@ -186,6 +187,30 @@ console.log("Testing ResourceBudget composable scopes...");
   const zeroBudget = new ResourceBudget({ workUnits: 0 });
   assert.equal(zeroBudget.limits.workUnits, 0);
   console.log("  ok #1176 ResourceBudget limits validation");
+}
+
+// LRU constructor limit validation and eviction semantics (#3295)
+{
+  for (const invalid of ["2", true, [3], 1.9, NaN, Infinity, -1, Number.MAX_SAFE_INTEGER + 1]) {
+    assert.throws(() => new LRU(invalid), RangeError, `invalid LRU limit must be rejected: ${String(invalid)}`);
+  }
+
+  const zero = new LRU(0);
+  zero.set("x", 1);
+  assert.equal(zero.size, 0, "zero-sized LRU must immediately evict inserted entries");
+
+  const cache = new LRU(2);
+  cache.set("a", 1);
+  cache.set("b", 2);
+  assert.equal(cache.get("a"), 1, "get must preserve existing recency behavior");
+  cache.set("c", 3);
+  assert.equal(cache.has("b"), false, "least-recently-used entry must be evicted");
+  assert.equal(cache.get("a"), 1);
+  assert.equal(cache.get("c"), 3);
+
+  const max = new LRU(Number.MAX_SAFE_INTEGER);
+  assert.equal(max.limit, Number.MAX_SAFE_INTEGER, "valid safe-integer limits remain authoritative");
+  console.log("  ok #3295 LRU strict limits and eviction semantics");
 }
 
 console.log("All core budget scope tests PASS!");
