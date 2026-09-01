@@ -201,8 +201,15 @@ function recoverLegacySameBlockStackSpills(result, opts = {}) {
       const replacement = expressions.get(key);
       if (!replacement) return node;
       active.add(key);
-      const resolved = rewrite(replacement, depth + 1);
+      let resolved = rewrite(replacement, depth + 1);
       active.delete(key);
+      const bytes = Number(store.size || store.loc?.size || store.addr?.size || 0);
+      const storeBits = bytes > 0 ? bytes * 8 : 0;
+      if (storeBits > 0 && Number(resolved.bits || storeBits) > storeBits) {
+        resolved = expr.unary('trunc', resolved, storeBits, resolved.signed ?? null, node.source, {
+          fromBits: Number(resolved.bits || storeBits),
+        });
+      }
       return resolved;
     }
     return mapChildren(node, (child) => rewrite(child, depth + 1));
