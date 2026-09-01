@@ -15,6 +15,7 @@ import {
   createBool,
   createBv,
   createFreshSymbol,
+  restoreFreshSymbol,
   createUnknownSemantic,
   createUnary,
   createBinary,
@@ -150,7 +151,7 @@ export function plainToExpr(plain) {
       return createBv(sort.width, BigInt(plain.value));
 
     case EXPR_KIND.FRESH_SYMBOL:
-      return createFreshSymbol(sort, plain.name, plain.meta || {});
+      return restoreFreshSymbol(sort, plain.name, plain.symbolId, plain.meta || {});
 
     case EXPR_KIND.UNKNOWN_SEMANTIC:
       return createUnknownSemantic(sort, plain.reason, plain.detail);
