@@ -49,19 +49,48 @@ export function createBv(width, value) {
   });
 }
 
+function freshSymbolNode(sort, name, symbolId, meta = {}) {
+  return Object.freeze({
+    kind: EXPR_KIND.FRESH_SYMBOL,
+    sort,
+    name,
+    symbolId,
+    meta: Object.freeze({ ...meta }),
+  });
+}
+
 export function createFreshSymbol(sort, name, meta = {}) {
   assertValidSort(sort, 'createFreshSymbol');
   if (!name || typeof name !== 'string') {
     throw new TypeError(`createFreshSymbol: name must be a non-empty string, got ${name}`);
   }
   const id = `sym_${++symbolCounter}_${name}`;
-  return Object.freeze({
-    kind: EXPR_KIND.FRESH_SYMBOL,
-    sort,
-    name,
-    symbolId: id,
-    meta: Object.freeze({ ...meta }),
-  });
+  return freshSymbolNode(sort, name, id, meta);
+}
+
+export function restoreFreshSymbol(sort, name, symbolId, meta = {}) {
+  assertValidSort(sort, 'restoreFreshSymbol');
+  if (!name || typeof name !== 'string') {
+    throw new TypeError(`restoreFreshSymbol: name must be a non-empty string, got ${name}`);
+  }
+  if (typeof symbolId !== 'string' || !symbolId) {
+    throw new TypeError('restoreFreshSymbol: symbolId must be a non-empty string');
+  }
+  const prefix = 'sym_';
+  const suffix = `_${name}`;
+  if (!symbolId.startsWith(prefix) || !symbolId.endsWith(suffix)) {
+    throw new TypeError('restoreFreshSymbol: invalid symbolId');
+  }
+  const counterText = symbolId.slice(prefix.length, symbolId.length - suffix.length);
+  if (!/^[1-9]\d*$/.test(counterText)) {
+    throw new TypeError('restoreFreshSymbol: invalid symbolId');
+  }
+  const counter = Number(counterText);
+  if (!Number.isSafeInteger(counter)) {
+    throw new TypeError('restoreFreshSymbol: invalid symbolId');
+  }
+  symbolCounter = Math.max(symbolCounter, counter);
+  return freshSymbolNode(sort, name, symbolId, meta);
 }
 
 export function createUnknownSemantic(sort, reason, detail = null) {
