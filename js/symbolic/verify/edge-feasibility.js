@@ -56,6 +56,12 @@ export async function verifyConditionalEdgeFeasibility({
     throw new TypeError('verifyConditionalEdgeFeasibility: a valid backend or session is required');
   }
 
+  // Keep the translator's bit-width normalization authoritative for every IR
+  // translation in this verification. This prevents coercible structured values
+  // (or numeric strings) from being encoded differently in query identity.
+  const translatedBitWidth = typeof options.bitWidth === 'number' ? (options.bitWidth || 64) : 64;
+  const translationOptions = { ...options, bitWidth: translatedBitWidth };
+
   // 1. Translate edge condition if not already an Expr DAG node
   let edgeExpr = null;
   let translationRes = null;
@@ -76,7 +82,7 @@ export async function verifyConditionalEdgeFeasibility({
     translationRes = translateSemanticIR(edgeCondition, {
       ir,
       fromBlock,
-      ...options,
+      ...translationOptions,
     });
     edgeExpr = translationRes.expression;
   }
@@ -104,7 +110,7 @@ export async function verifyConditionalEdgeFeasibility({
     } else if (preconditions.kind && preconditions.sort) {
       pExpr = preconditions;
     } else {
-      const pTrans = translateSemanticIR(preconditions, { ir, fromBlock, ...options });
+      const pTrans = translateSemanticIR(preconditions, { ir, fromBlock, ...translationOptions });
       pExpr = pTrans.expression;
       if (pTrans.assumptions?.length) {
         translationRes.assumptions = [...(translationRes.assumptions || []), ...pTrans.assumptions];
@@ -140,6 +146,9 @@ export async function verifyConditionalEdgeFeasibility({
   }
   queryConstraints.push(edgeExpr);
 
+  const queryBitWidth = typeof options.bitWidth === 'number'
+    ? translatedBitWidth
+    : edgeExpr.sort?.width ?? translatedBitWidth;
   const query = createVerificationQuery({
     kind: queryKind,
     claimKind,
@@ -151,7 +160,7 @@ export async function verifyConditionalEdgeFeasibility({
     semanticIrVersion: options.semanticIrVersion,
     translatorVersion: options.translatorVersion,
     architecture: options.architecture,
-    bitWidth: options.bitWidth ?? edgeExpr.sort?.width ?? null,
+    bitWidth: queryBitWidth,
     proofScope: options.proofScope || {
       kind: queryKind,
       fromBlock,
