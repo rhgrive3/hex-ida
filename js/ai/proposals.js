@@ -16,7 +16,7 @@ export class ProposalStore {
 
   create(input = {}) {
     if (!PROPOSAL_KINDS.has(input.kind)) throw new AIError('invalid_tool_call', `Unsupported proposal kind: ${input.kind}`);
-    const evidenceIds = Array.from(new Set((input.evidenceIds || []).map(String).filter((id) => this.evidenceStore?.has(id))));
+    const evidenceIds = Array.from(new Set((Array.isArray(input.evidenceIds) ? input.evidenceIds : []).map(String).filter((id) => this.evidenceStore?.has(id))));
     if (!evidenceIds.length) throw new AIError('invalid_tool_call', 'A proposal requires deterministic evidence.');
     let id;
     if (input.id) {
