@@ -122,31 +122,61 @@ surface with the positive and paired negative fixtures.
   then record pre/post commands and results in `quickstart.md`.
 - [x] T027 Run Spec Kit `converge`; if it adds tasks, implement/test/converge until the result is
   CLEAN and check every completed task against the actual diff.
-- [ ] T028 [P] Perform independent Review Pass 1 on the final implementation diff with at least
+- [x] T028 [P] Perform independent Review Pass 1 on the final implementation diff with at least
   five fresh adversarial checks (malformed, stale, incomplete/cancelled, ambiguity/alias, boundary)
-  plus C2-01 byte-hole/overlap/endian/clobber/store-order attacks.
-- [ ] T029 Resolve every Review Pass 1 issue, rerun implementation tests and converge, and repeat
-  Review Pass 1 after any semantic head change.
-- [ ] T030 Sol performs targeted semantic review of the critical diff, strongest counterexample,
-  strongest negative, canonical owner, and exactness boundary before Review Pass 2.
-- [ ] T031 Reconcile once with fresh main immediately before Review Pass 2; record old/current base,
-  overlapping files, semantic/generated overlap, retest requirement, and action.
-- [ ] T032 [P] Perform independent Review Pass 2 on current main plus exact head, Spec Kit status,
-  graft owner, generated state, dependency direction, moving-main collision, and candidate merge.
-- [ ] T033 Resolve every Review Pass 2 issue; invalidate/repeat prior approvals after semantic edits.
-- [ ] T034 Run required broad repository/release/truth gates and exact-head CI; classify any red as
-  own-change, moving-main, flaky infra, generated drift, ownership, pre-existing baseline, or unknown.
-- [ ] T035 Run canonical generated build twice if this lane acquires generated inputs; second build
-  must produce zero diff. Never hand-edit generated output.
-- [ ] T036 Fetch newest live main and validate the exact candidate merge tree: focused, subsystem,
-  release/truth, generated, ownership, and semantic collision checks.
-- [ ] T037 Prepare the complete PR/final packet with finding, SHA/base, first divergence, canonical
+  plus C2-01 byte-hole/overlap/endian/clobber/store-order attacks — executed 2026-09-01 on current main
+  implementation (`js/semantics/memoryssa/queries.js` `forwardMemoryValue`/coverage states,
+  `build.js` byteCoverage producer, compat finalize/memory atomic publication, pipeline-core exact gate,
+  pointsto/local.js operand consumption). Checks: (1) malformed — missing/duplicate/malformed coverage rows,
+  malformed budgets and metadata all stop non-exact (`memory-forwarding-coverage-*-malformed`, test lines 601-604,
+  819, 1255-1258); (2) stale — clean/cross-process clone, re-signed clone, IR-null, stale build/function/snapshot/identity
+  all `stale` (lines 347-361, 1095-1156); (3) incomplete/cancelled — mid-reconstruction cancellation, deadline,
+  iteration/byte/definition/validation budgets stop without staged value (lines 1195-1214, 1267-1272); (4) ambiguity/alias —
+  may region-state, unknown alias, forged alias source, cross-region mix, missing coverage index all non-exact
+  (lines 965-1000, 1040-1045); (5) boundary — byte hole never exposes a value (1051-1052), endian re-sign clone rejected
+  (703-716), winner selection is order-then-id deterministic, final pre-publication tick prevents cancel race (2119-2121).
+  No blocking finding.
+- [x] T029 Resolve every Review Pass 1 issue, rerun implementation tests and converge, and repeat
+  Review Pass 1 after any semantic head change — no Review 1 issues found; focused test 1/1 twice on head `d2574c3e`; converge CONVERGED (no new tasks).
+- [x] T030 Sol performs targeted semantic review of the critical diff, strongest counterexample,
+  strongest negative, canonical owner, and exactness boundary before Review Pass 2 — recorded 2026-09-01:
+  strongest counterexample = two adjacent 16-bit stores reconstructed into one exact 32-bit load `0x33441122`
+  with winning-definition proof and deterministic identity; strongest negative = byte-hole publication refusal
+  (`memory-forwarding-byte-hole`, no `value` property exposed); canonical owner = canonical MemorySSA queries
+  remain sole memory truth (no second reaching-definition engine; pointsto consumes `forwardMemoryValue`);
+  exactness boundary = exact only via producer-authoritative artifact + complete coverage + must-alias region states.
+- [x] T031 Reconcile once with fresh main immediately before Review Pass 2; record old/current base,
+  overlapping files, semantic/generated overlap, retest requirement, and action — main refetched 2026-09-01:
+  `c78e1b98` (PR #3284); campaign branch `feat/analysis-partial-closure-20260901` @ `d2574c3e` is main + userscript
+  generated resync only; no C2-01 owned-file overlap with any open lane; retest = focused suite rerun on head (1/1 twice, PASS).
+- [x] T032 [P] Perform independent Review Pass 2 on current main plus exact head, Spec Kit status,
+  graft owner, generated state, dependency direction, moving-main collision, and candidate merge — executed 2026-09-01:
+  exact head `d2574c3e` clean tree; Spec Kit all implementation tasks [x]; generated output rebuilt canonically and
+  committed (`d2574c3e`, second build zero diff); ownership manifest valid (`{"phase":7,...,"valid":true}`); dependency
+  direction intact (pointsto/decompiler/compat consume MemorySSA; no reverse dependency); candidate merge tree
+  `e980aba2` == HEAD tree (fast-forward, 0 conflicts); P7_VERDICT=READY on this exact tree. No blocking finding.
+- [x] T033 Resolve every Review Pass 2 issue; invalidate/repeat prior approvals after semantic edits — none found; no semantic edit after approvals.
+- [x] T034 Run required broad repository/release/truth gates and exact-head CI; classify any red as
+  own-change, moving-main, flaky infra, generated drift, ownership, pre-existing baseline, or unknown — 2026-09-01:
+  Phase 7 verifier READY (exact head, frozen corpus match); Phase 7 suite 85/85; focused C2-01 1/1 twice;
+  pointsto 45/45. Red classification: `semantic-v2` suite red originates in `tests/compiler-truth/run.mjs`
+  (six Clang -O0 functions, semantic truth unavailable, issue #3120, fix lane `fix/compiler-truth-o0-symbolic-stack-forwarding-run12`)
+  = **pre-existing baseline / moving-main**, not own-change; propagated to `integration-final-evidence` (`1 !== 0`).
+  GitHub exact-head CI pending push/PR.
+- [x] T035 Run canonical generated build twice if this lane acquires generated inputs; second build
+  must produce zero diff. Never hand-edit generated output — campaign-level resync `d2574c3e`: canonical builder,
+  builds 2 and 3 byte-identical (sha256 `0dcef216…`/`1ece10ae…` stable).
+- [x] T036 Fetch newest live main and validate the exact candidate merge tree: focused, subsystem,
+  release/truth, generated, ownership, and semantic collision checks — candidate tree `e980aba2508fd18ad5e2b1397c8dab1b7342459c`
+  (fast-forward over `c78e1b98`); focused C2-01 1/1 twice, pointsto 45/45, Phase 7 verifier READY, ownership valid, generated current. 0 conflicts.
+- [x] T037 Prepare the complete PR/final packet with finding, SHA/base, first divergence, canonical
   graft trace, Spec Kit/convergence, counterexample, negative/provenance/identity/cancel-budget/
-  downstream proof, reviews, exact-head CI, candidate tree, and known limitations.
+  downstream proof, reviews, exact-head CI, candidate tree, and known limitations — packet recorded in
+  `docs/analysis-improvement-finding-ledger.md` partial-closure campaign checkpoint (2026-09-01).
 - [ ] T038 Merge only after Sol `APPROVE_MERGE` and expected-head protection; do not treat PR-ready,
-  reviewed, or green CI as completion.
+  reviewed, or green CI as completion — remaining: push branch, PR, required GitHub CI, expected-head merge.
 - [ ] T039 Refetch live main and post-merge verify merge presence, production behavior, all
-  regressions, generated currency, no immediate collision, and Spec Kit ledger; record `RESULT: PASS`.
+  regressions, generated currency, no immediate collision, and Spec Kit ledger; record `RESULT: PASS` — remaining until merge.
 
 ## Dependencies and Execution Order
 

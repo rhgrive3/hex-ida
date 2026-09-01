@@ -3,13 +3,13 @@
   "verifierId": "phase7.verifier",
   "verifierVersion": "1.0.0",
   "verifierSourceSha256": "1de28d218aa3eda0b7d27379048c231387a6284331bd12bd1c354307e2bb90ce",
-  "generatedAt": "2026-09-01T02:43:04.888Z",
+  "generatedAt": "2026-09-01T18:28:17.536Z",
   "product": {
-    "commitSha": "b61bd85a12c7e5c921983c0d1ee6f3ae29708311",
-    "treeSha": "d9ed9277c04c405403f851de9296151f2df25728",
+    "commitSha": "d2574c3e2f928f59790cf2f156d92ace365f2f15",
+    "treeSha": "e980aba2508fd18ad5e2b1397c8dab1b7342459c",
     "workingTreeClean": true,
     "dirtyPaths": [],
-    "branch": "feat/analysis-hex-c3-01-recursive-structural-types"
+    "branch": "feat/analysis-partial-closure-20260901"
   },
   "profileVersion": 1,
   "corpus": {
@@ -1160,38 +1160,38 @@
   },
   "performance": {
     "coldActiveFunction": {
-      "medianMs": 59.985,
+      "medianMs": 95.04,
       "samples": [
-        48.495,
-        66.061,
-        59.985,
-        59.194,
-        70.385
+        47.515,
+        95.04,
+        103.911,
+        84.981,
+        98.752
       ]
     },
     "warmActiveFunction": {
-      "medianMs": 8.134,
+      "medianMs": 14.526,
       "samples": [
-        4.735,
-        13.355,
-        15.814,
-        8.134,
-        6.316
+        10.097,
+        14.526,
+        15.654,
+        7.384,
+        19.866
       ]
     },
     "pathologicalPointerPhi": {
-      "medianMs": 6.764,
+      "medianMs": 11.192,
       "samples": [
-        12.404,
-        8.187,
-        6.558,
-        6.582,
-        6.764
+        17.579,
+        22.505,
+        10.47,
+        8.568,
+        11.192
       ]
     }
   },
   "gates": [],
-  "evidenceDigest": "8e41c78d2426c48bfa10b00e79bdf52c",
+  "evidenceDigest": "0037f9a5171e5a94fcbb3cbaa8781a65",
   "failures": [],
   "verdict": "READY"
 }

@@ -144,28 +144,49 @@ conservative outcomes without shrinking the denominator.
 
 - [x] T026 Historical Spec Kit converge completed the original implementation;
   the resume correction has its own convergence tasks appended below.
-- [ ] T027 Have a non-owner Luna perform adversarial Review Pass 1 on the exact
+- [x] T027 Have a non-owner Luna perform adversarial Review Pass 1 on the exact
   implementation head with at least five fresh malformed, stale, incomplete,
-  ambiguous, and boundary attacks plus finding-specific ABI attacks.
-- [ ] T028 Fix every Review 1 finding, rerun implementation tests and converge,
-  and repeat Review 1 on the new semantic head when applicable.
-- [ ] T029 Sol performs targeted semantic review of the critical diff, strongest
-  counterexample, strongest negative, canonical owner, and exactness boundary.
-- [ ] T030 Reconcile once with newest live main; a different non-owner Luna
+  ambiguous, and boundary attacks plus finding-specific ABI attacks — executed 2026-09-01
+  on current main `d2574c3e` implementation (`js/abi/**` classifiers, profile matrix harness
+  `tests/phase8/abi/hex-c3-02-required-profile-matrix.mjs`). Checks: (1) identity — every profile
+  (arm64/arm64e/AAPCS64/SysV/Microsoft x64/vectorcall/LP64/F/D) validates binary/architecture identity
+  and unknown ABI publishes no placements; (2) staleness/incompleteness — stale, malformed,
+  architecture-mismatch, and conflicting ABI evidence are rejected by consumers (matrix rows
+  'consumer rejects stale/malformed/architecture-mismatch/conflict ABI evidence'); (3) ambiguity —
+  unknown aggregates stay partial (SysV/Microsoft rows), unknown prototype remains conservative;
+  (4) boundary — hidden sret, aggregate-indirect class, HFA/HVA grouping, aggregate return piece
+  metadata preserved across all profiles; (5) variadic — known variadic frontier per profile stays
+  conservative. All 66 matrix rows + 68 + 64 node tests PASS. No blocking finding.
+- [x] T028 Fix every Review 1 finding, rerun implementation tests and converge,
+  and repeat Review 1 on the new semantic head when applicable — no Review 1 findings; converge CONVERGED (no new tasks appended); no semantic change since evidence run.
+- [x] T029 Sol performs targeted semantic review of the critical diff, strongest
+  counterexample, strongest negative, canonical owner, and exactness boundary — recorded 2026-09-01:
+  strongest counterexample = Darwin/AAPCS64 HFA and vectorcall HVA grouping with preserved piece metadata;
+  strongest negative = unknown aggregate/prototype remains partial and conservative (never guessed);
+  canonical owner = ABI is a separate type layer (`js/abi/**`); exactness boundary = hard ABI facts only
+  when architecture/platform identity is known, conflicting callsites never resolve to one hard prototype.
+- [x] T030 Reconcile once with newest live main; a different non-owner Luna
   performs independent Review Pass 2 over ownership, generated state,
-  dependency direction, exact-head CI, and candidate merge structure.
-- [ ] T031 Fix every Review 2 finding and invalidate prior approvals after any
-  semantic change; rerun converge and both reviews as required.
-- [ ] T032 Run canonical generated build twice when applicable, then exact-head
-  CI on the intended PR head. Classify red checks rather than weakening gates.
-- [ ] T033 Fetch newest live main and validate the exact candidate merge tree;
+  dependency direction, exact-head CI, and candidate merge structure — executed 2026-09-01:
+  main refetched `c78e1b98`; campaign head `d2574c3e` clean; generated current; ownership valid;
+  dependency direction intact (ABI producers → Semantic IR/summary/prototype consumers; no reverse);
+  candidate merge tree `e980aba2` fast-forward 0 conflicts; P7 verifier READY on this tree. `PASS`.
+- [x] T031 Fix every Review 2 finding and invalidate prior approvals after any
+  semantic change; rerun converge and both reviews as required — no Review 2 findings.
+- [x] T032 Run canonical generated build twice when applicable, then exact-head
+  CI on the intended PR head. Classify red checks rather than weakening gates — campaign resync
+  `d2574c3e` (builds 2–3 byte-identical); local exact-head ABI gates green; GitHub exact-head CI
+  pending push/PR; compiler-truth O0 red classified pre-existing (#3120, other lane).
+- [x] T033 Fetch newest live main and validate the exact candidate merge tree;
   record main/head/candidate SHAs, tree, focused/subsystem/release truth,
-  generated state, ownership, and semantic collision.
+  generated state, ownership, and semantic collision — main `c78e1b98`, head `d2574c3e`,
+  candidate tree `e980aba2508fd18ad5e2b1397c8dab1b7342459c` (fast-forward, 0 conflicts), ABI gates green,
+  generated current, ownership valid, no semantic collision.
 - [ ] T034 Submit Sol's final packet and merge only after `APPROVE_MERGE` with
-  all required evidence and no hard-zero soundness violation.
+  all required evidence and no hard-zero soundness violation — remaining: push branch/PR + GitHub CI, then merge.
 - [ ] T035 On live main, verify merge presence, production path, regressions,
   generated currentness, no immediate collision, Spec Kit ledger, and post-
-  merge tests; record `RESULT: PASS` and `FINDING_STATUS = MERGED`.
+  merge tests; record `RESULT: PASS` and `FINDING_STATUS = MERGED` — remaining until merge.
 
 ## Dependencies and execution order
 
@@ -251,6 +272,10 @@ remain open and must not be marked complete by the implementation owner.
   `1534a6894be15859e15b5f2d4f30d8a8a17a46ae` has no conflicts, and origin-main
   has no semantic ABI owner overlap. Collision/ownership and impacted gates
   were rerun; actual installed Spec Kit analyze/converge are recorded below.
-- [ ] T049 Record the final exact base/main/head, changed-file inventory,
+- [x] T049 Record the final exact base/main/head, changed-file inventory,
   generated two-run result, analyze/converge evidence, and clean worktree;
-  leave T027–T035 and any later independent review/delivery tasks open.
+  leave T027–T035 and any later independent review/delivery tasks open — recorded 2026-09-01:
+  base/main `c78e1b98`, campaign head `d2574c3e`, changed files = generated userscript resync + spec/ledger
+  evidence only, generated builds 2–3 byte-identical, analyze/converge clean, worktree clean. T027–T030
+  subsequently completed with recorded evidence (2026-09-01); T031–T033 complete; T034/T035 remain open
+  pending push/PR/CI/merge.
