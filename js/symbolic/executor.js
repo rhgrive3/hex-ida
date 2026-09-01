@@ -9,7 +9,7 @@ import { valueBefore } from '../dataflow-semantic.js';
 
 export const SYM = Object.freeze({ CONST: 'const', SYMBOL: 'symbol', OP: 'op', ITE: 'ite', UNKNOWN: 'unknown' });
 
-export function symbolic(name, meta) { return { kind: SYM.SYMBOL, name: String(name), ...(meta || {}) }; }
+export function symbolic(name, meta) { return { ...(meta || {}), kind: SYM.SYMBOL, name: String(name) }; }
 export function symbolicArg(index, name) { return symbolic(name || 'arg' + index, { source: 'argument', index }); }
 export function symbolicField(location, name) {
   const key = location && (location.key || (location.disp != null ? String(location.disp) : null));
@@ -35,8 +35,13 @@ function op(name, ...args) {
   return { kind: SYM.OP, op: name, args };
 }
 
+function normalizeBitWidth(value, fallback = 64) {
+  const width = typeof value === 'number' && Number.isFinite(value) && Number.isSafeInteger(value) ? value : fallback;
+  return Math.max(1, Math.min(64, width));
+}
+
 function binOp(name, a, b, bits = 64) {
-  const width = Math.max(1, Math.min(64, Number(bits) || 64));
+  const width = normalizeBitWidth(bits);
   if (a && b && a.kind === SYM.CONST && b.kind === SYM.CONST) {
     const av = a.value, bv = b.value;
     try {
@@ -65,7 +70,7 @@ return { kind: SYM.OP, op: name, args: [a, b], bits:width };
 }
 
 function cmp(name, a, b, options = {}) {
-  const bits = Math.max(1, Math.min(64, Number(options.bits) || 64));
+  const bits = normalizeBitWidth(options.bits);
   const signed = options.signed === true ? true : options.signed === false ? false : null;
   if (a?.kind === SYM.CONST && b?.kind === SYM.CONST) {
     const au = BigInt.asUintN(bits, a.value), bu = BigInt.asUintN(bits, b.value);
@@ -111,8 +116,10 @@ export function expressionText(e) {
   if (e.op === 'not') body = 'not ' + expressionText(e.args[0]);
   else if (e.args.length === 1) body = e.op + '(' + expressionText(e.args[0]) + ')';
   else body = '(' + expressionText(e.args[0]) + ' ' + e.op + ' ' + expressionText(e.args[1]) + ')';
-  const bits = Number(e.bits);
-  return Number.isSafeInteger(bits) && bits > 0 ? `i${bits}${body}` : body;
+  const bits = typeof e.bits === 'number' && Number.isFinite(e.bits) && Number.isSafeInteger(e.bits) && e.bits > 0
+    ? Math.min(64, e.bits)
+    : null;
+  return bits != null ? `i${bits}${body}` : body;
 }
 
   return '?';
@@ -205,11 +212,12 @@ function evalValue(value, state, ir, opts, memo, active) {
         d.dst && d.dst.bits || value.bits || 64);
     } else if (d.op === OP.UN && d.args[0] && /^(sxt|uxt|fmov|neg)/.test(d.sub || '')) {
       const x = evalValue(d.args[0].value, state, ir, opts, memo, active);
-      const toBits = d.dst && d.dst.bits || value.bits || 64;
+      const toBits = normalizeBitWidth(d.dst?.bits ?? value.bits ?? 64);
       const m = /^(sxt|uxt)(8|16|32|64)?/.exec(d.sub || '');
       if (d.sub === 'neg') out = binOp('sub', c(0n), x, toBits);
       else if (m) {
-        const fromBits = Number(m[2] || d.args[0].bits || d.args[0].value?.bits || toBits);
+        const parsedFromBits = m[2] == null ? null : Number.parseInt(m[2], 10);
+        const fromBits = normalizeBitWidth(parsedFromBits ?? d.args[0].bits ?? d.args[0].value?.bits ?? toBits, toBits);
         if (x.kind === SYM.CONST) {
           const narrowed = m[1] === 'sxt' ? BigInt.asIntN(fromBits, x.value) : BigInt.asUintN(fromBits, x.value);
           out = c(BigInt.asUintN(toBits, narrowed));
@@ -239,7 +247,7 @@ function conditionFromCmp(cmpInst, condCode, state, ir, opts, memo, active) {
   if (!info || !info.op) return unknown('unsupported-condition', { condition: condCode });
   const a = evalValue(cmpInst.args[0].value, state, ir, opts, memo, active);
   const b = evalValue(cmpInst.args[1].value, state, ir, opts, memo, active);
-  const bits = Number(cmpInst.args[0]?.bits || cmpInst.args[0]?.value?.bits || cmpInst.args[1]?.bits || cmpInst.args[1]?.value?.bits || 64);
+  const bits = normalizeBitWidth(cmpInst.args[0]?.bits ?? cmpInst.args[0]?.value?.bits ?? cmpInst.args[1]?.bits ?? cmpInst.args[1]?.value?.bits ?? 64);
   return cmp(info.op, a, b, { bits, signed: info.signed });
 }
 
@@ -305,8 +313,8 @@ function stopResult(state, reason, inst) {
 }
 
 function executionBudget(value, fallback, min, max, name) {
-  const n = value == null ? fallback : Number(value);
-  if (!Number.isFinite(n) || !Number.isSafeInteger(n)) throw new TypeError(`${name} must be a finite safe integer`);
+  const n = value == null ? fallback : value;
+  if (typeof n !== 'number' || !Number.isFinite(n) || !Number.isSafeInteger(n)) throw new TypeError(`${name} must be a finite safe integer number`);
   if (n < min) return min;
   return Math.min(n, max);
 }
