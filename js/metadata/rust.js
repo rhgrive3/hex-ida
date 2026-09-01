@@ -354,7 +354,7 @@ export class RustMetadataProvider extends LanguageMetadataProvider {
           isVtable: dem.demangled.includes('::vtable') || dem.demangled.includes('vtable'),
         });
         if (dem.demangled.includes('::vtable') || dem.demangled.includes('vtable')) {
-          vtables.push(sym);
+          vtables.push(rustSymbols[rustSymbols.length - 1]);
         }
       }
     }
@@ -435,9 +435,9 @@ export class RustMetadataProvider extends LanguageMetadataProvider {
     const records = symbols.map((sym) =>
       createLanguageMetadataRecord({
         kind: 'symbol',
-        entityId: `sym@${sym.address || sym.name}`,
+        entityId: `sym@${sym.address ?? sym.name}`,
         name: sym.name,
-        address: sym.address ? String(sym.address) : null,
+        address: sym.address == null ? null : String(sym.address),
         sizeBytes: sym.sizeBytes,
         providerId: this.id,
         providerVersion: this.version,
@@ -462,9 +462,9 @@ export class RustMetadataProvider extends LanguageMetadataProvider {
     const records = vtables.map((vt) =>
       createLanguageMetadataRecord({
         kind: 'vtable',
-        entityId: `vtable@${vt.address || vt.name}`,
+        entityId: `vtable@${vt.address ?? vt.name}`,
         name: vt.name,
-        address: vt.address ? String(vt.address) : null,
+        address: vt.address == null ? null : String(vt.address),
         providerId: this.id,
         providerVersion: this.version,
         ecosystem: 'rust',
