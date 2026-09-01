@@ -406,6 +406,43 @@ function rewriteReturn(result, expression, opts) {
   return true;
 }
 
+function committedStackSpillOnExactReturnPath(result, root, ret) {
+  for (const inst of before(result.ir, ret.block, ret.row)) {
+    if (inst?.op === 'store' && inst.loc?.kind === 'stack' && inst.loc.key === root.location.key) {
+      const location = committedLocationForPhi(result, valueOf(inst.args?.[0]));
+      return location ? { stackStore:inst, location } : null;
+    }
+    if (unsafeBarrier(inst, root.location.key)) return null;
+  }
+  return null;
+}
+
+function removeProofOnlyStackSpill(result, stackStore, opts) {
+  const body = result.cAst?.body;
+  if (!Array.isArray(body) || !stackStore) return false;
+  const storeRow = Number(stackStore.row);
+  const storeId = String(stackStore.id);
+  const filtered = body.filter((node) => {
+    const text = String(node?.text || '');
+    if (!/^\s*local_[A-Za-z0-9_]+\s*=/.test(text)) return true;
+    const rows = node?.source?.rows || [];
+    const ir = node?.source?.ir || [];
+    const isSpill = rows.some((row) => Number(row) === storeRow) || ir.some((id) => String(id) === storeId);
+    return !isSpill;
+  });
+  if (filtered.length === body.length) return false;
+  result.cAst.body = filtered;
+  const printed = printProgram(result.cAst, { columnWidth:opts.columnWidth || opts.prettyColumnWidth || 88 });
+  result.pseudocode = printed.text;
+  result.sourceMap = printed.mapping;
+  result.lines = result.cAst.body.map((node) => ({
+    kind:node.kind, indent:node.indent, text:node.text,
+    row:node.source?.rows?.[0] ?? null, addr:node.source?.addresses?.[0] ?? null,
+    note:null, source:node.source,
+  }));
+  return true;
+}
+
 export function recoverExactStackReturn(result, opts = {}) {
   if (!result?.semantic || !result.ir || !result.semanticAst || !result.cAst) return result;
   const output = result.semanticAst.outputs?.find((x) => x.name === 'return');
@@ -421,11 +458,23 @@ export function recoverExactStackReturn(result, opts = {}) {
     timeBudgetMs:Math.min(12, Math.max(4, Number(opts.decompilerTimeBudgetMs || 50) / 4)),
     maxApplications:512,
   });
-  const committed = committedReturnValue(result, root, ret, opts);
+  let committed = committedReturnValue(result, root, ret, opts);
+  let committedSpill = null;
+  if (!committed) {
+    const proof = committedStackSpillOnExactReturnPath(result, root, ret);
+    if (proof) {
+      committedSpill = proof.stackStore;
+      committed = expr.load(proof.location, root.bits || 64, root.source, {
+        signed:root.signed ?? null,
+        proof:'exact return-path spill carries an SSA phi whose predecessors commit one lvalue',
+      });
+    }
+  }
   const recovered = committed || resolve(result.ir, ret.block, ret.row, root.location.key, values, opts, engine, new Set());
   // A stack load means no useful reconstruction happened. A committed non-stack
   // field/global load is an intentional high-level return and must be retained.
   if (!recovered || (recovered.kind === 'load' && recovered.location?.kind === 'stack') || !rewriteReturn(result, recovered, opts)) return result;
+  if (committedSpill) removeProofOnlyStackSpill(result, committedSpill, opts);
 
   result.rewriteProof = [...(result.rewriteProof || []), {
     rule:'exact-stack-return-recovery', phase:'memory-ssa',
