@@ -21,6 +21,14 @@ function boundedStepBudget(value) {
   return Math.min(n, MAX_SANDBOX_STEPS);
 }
 
+function boundedObjectSize(value) {
+  if (value == null) return 0x10000;
+  if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isSafeInteger(value) || value <= 0) {
+    return 0x10000;
+  }
+  return Math.max(0x100, value);
+}
+
 function normalizeWatch(watch, objectBase) {
   const out = [];
   const list = Array.isArray(watch) ? watch : [];
@@ -109,7 +117,7 @@ export class FunctionSandbox {
     this._initialHeapBase = this.emulator.heap;
     this._setupCount = 0;
     this.objectBase = opts && opts.objectBase != null ? asBig(opts.objectBase) : DEFAULT_OBJECT_BASE;
-    this.maxObjectSize = Math.max(0x100, Number(opts && opts.maxObjectSize || 0x10000));
+    this.maxObjectSize = boundedObjectSize(opts && opts.maxObjectSize);
     this.watch = [];
     this.before = [];
     this.beforeObjectBytes = new Map();

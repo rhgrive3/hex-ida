@@ -210,6 +210,16 @@ asyncTest('Function Sandbox records before/after memory and touched fields', asy
   ok(result.touchedFields.some((f) => f.name === 'counter' && f.before === 7n && f.after === 10n), 'field delta captured');
 });
 
+asyncTest('Function Sandbox maxObjectSize accepts only positive finite safe integers', () => {
+  const sizeOf = (value) => new FunctionSandbox({}, { maxObjectSize: value }).maxObjectSize;
+  for (const value of [{}, [], '512', NaN, Infinity, -Infinity, 1.5, 0, -1]) {
+    eq(sizeOf(value), 0x10000, 'invalid maxObjectSize must use the default');
+  }
+  eq(sizeOf(1), 0x100, 'positive values below the minimum retain the existing 0x100 clamp');
+  eq(sizeOf(0x100), 0x100, 'minimum valid maxObjectSize is preserved');
+  eq(sizeOf(0x10000), 0x10000, 'normal valid maxObjectSize is preserved');
+});
+
 asyncTest('Semantic and runtime evidence keep independent origins without duplicate IR inflation', () => {
   const facts = semanticFacts(irFor(modelOf([
     'ldr w8, [x0, #0x20]',
