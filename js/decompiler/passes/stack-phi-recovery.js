@@ -285,7 +285,11 @@ function instructionsBefore(ir, blockIndex, beforeRow) {
 }
 
 function hasUnsafeBarrier(inst, key) {
-  if (inst?.op === 'call' || inst?.op === 'clobber' || inst?.op === 'unknown') return true;
+  if (inst?.op === 'clobber' || inst?.op === 'unknown') return true;
+  if (inst?.op === 'call') {
+    const kills = inst.memKills instanceof Set ? inst.memKills : new Set(inst.memKills || []);
+    return !key || kills.has(key);
+  }
   return inst?.op === 'store' && inst.loc?.key !== key && (!inst.loc?.key || inst.loc?.kind === 'unknown');
 }
 
