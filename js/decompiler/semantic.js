@@ -236,6 +236,8 @@ function projectCommittedSnapshotViews(ir) {
       compatOriginalSub: 'trunc',
       committedSnapshotView: true,
       committedViewBits: viewBits,
+      committedStoreRows: [...(snapshot.extra?.committedStoreRows ?? [])],
+      committedLocationKey: snapshot.extra?.committedLocationKey ?? snapshot.loc?.key ?? null,
     };
   }
   return ir;
