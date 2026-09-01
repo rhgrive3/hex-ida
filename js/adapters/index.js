@@ -445,7 +445,7 @@ export class RemoteDebugAdapter extends DebugAdapter {
     if (wasConnected) this.nextEpoch();
     return { disconnected:true };
   }
-  setEpoch(epoch) { const next = Number(epoch); this.protocol.setEpoch(next); this.epoch = next; return this.epoch; }
+  setEpoch(epoch) { this.protocol.setEpoch(epoch); this.epoch = epoch; return this.epoch; }
   nextEpoch() { return this.setEpoch(this.epoch + 1); }
   onEvent(fn) { this.eventListeners.add(fn); return () => this.eventListeners.delete(fn); }
   call(method, params = {}, options = {}) {
