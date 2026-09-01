@@ -6,14 +6,14 @@ import { isCanonicalMemorySsaProducerArtifact } from './build.js';
  * represent: a non-constant scalar value spilled to one fixed stack slot and
  * loaded back from that exact slot.
  *
- * This remains a canonical MemorySSA query. It consumes only the branded,
+ * This remains a canonical MemorySSA query.  It consumes only the branded,
  * immutable builder artifact plus the exact Semantic IR object bound into that
- * artifact. It never walks projected v1 instructions and never treats the
+ * artifact.  It never walks projected v1 instructions and never treats the
  * legacy `reachingStore` compatibility pointer as proof.
  *
  * The query intentionally refuses memory-phi, partial overlap, cross-region
  * may/unknown aliases, volatile/atomic accesses, width/endian changes, and
- * stale Semantic IR. Those cases remain explicit unknowns.
+ * stale Semantic IR.  Those cases remain explicit unknowns.
  */
 
 function record(value) {
@@ -53,6 +53,12 @@ function producerNormalizedBooleanMatches(original, canonical) {
   return original === canonical || (original === 'unknown' && canonical === false);
 }
 
+/*
+ * The MemorySSA producer is allowed to close ordinary fixed-stack qualifiers
+ * from decoder-level `unknown` to canonical `false`.  That normalization must
+ * not be confused with a different access.  Everything that identifies the
+ * individual Semantic IR access remains exact, including its address expression.
+ */
 function metadataMatchesSemanticAccess(nodeMemory, metadataMemory) {
   if (!record(nodeMemory) || !record(metadataMemory)) return false;
   return nodeMemory.addressSpace === metadataMemory.addressSpace
@@ -66,6 +72,12 @@ function metadataMatchesSemanticAccess(nodeMemory, metadataMemory) {
     && normalizedUnknownOrdering(nodeMemory.ordering) === normalizedUnknownOrdering(metadataMemory.ordering);
 }
 
+/*
+ * Two accesses need not carry the same address-expression value id to denote the
+ * same bytes: an -O0 spill and reload normally recompute/read the stack address.
+ * Canonical region/range/coverage proofs establish address identity; here we
+ * compare only the byte interpretation that must be preserved by forwarding.
+ */
 function sameOrdinaryMemoryView(left, right) {
   return ordinaryMemory(left)
     && ordinaryMemory(right)
@@ -159,6 +171,12 @@ function semanticBlockMayBeJoin(ir, blockId) {
     }
   }
   predecessors.delete('');
+  // Semantic IR intentionally does not encode every fallthrough edge in
+  // node.targets.  Therefore even one explicit incoming edge cannot prove a
+  // single-predecessor block: the layout predecessor may also fall through.
+  // Without a complete predecessor relation, exact operand identity must fail
+  // closed.  A block with no explicit incoming edge can have at most the one
+  // omitted layout fallthrough predecessor and is not a join on this evidence.
   return predecessors.size > 0;
 }
 
@@ -169,18 +187,24 @@ function semanticIntervalContainsCall(ir, storeNode, loadNode) {
   if (!storeBlockId || !loadBlockId) return true;
 
   if (storeBlockId !== loadBlockId) {
-    // Cross-block publication is allowed only for a canonical entry-block spill.
-    // The entry block cannot be a CFG join, and the caller has already proven
-    // through MemorySSA that this exact store is the load's must-alias reaching
-    // definition with complete byte coverage. This is the ordinary clang -O0
-    // argument-spill pattern used by max/min. Every other cross-block case stays
-    // fail-closed and must use CFG-aware recovery instead.
+    // Cross-block identity publication is permitted only for a canonical entry
+    // spill. The entry block cannot be a CFG join, and all callers reaching this
+    // point have already established that this exact store is the load's
+    // must-alias reaching definition with complete byte coverage. This admits
+    // ordinary clang -O0 argument spills without admitting branch/join stores.
     return storeBlockId !== String(ir.entryBlockId ?? '');
   }
 
+  // If the same block contains no call at all, the spill→reload interval cannot
+  // cross a call publication boundary. Other cross-block flows were rejected
+  // above and must use CFG-aware recovery instead of serialized node order.
   if (!ir.nodes.some((node) => String(node?.blockId ?? '') === storeBlockId && node?.kind === 'call')) return false;
   const storeIndex = ir.nodes.indexOf(storeNode);
   const loadIndex = ir.nodes.indexOf(loadNode);
+  // Exact symbolic stack identity is only safe across an interval whose order
+  // is represented by the canonical Semantic IR. Calls are a publication
+  // boundary for compatibility projection: forwarding a pre-call synthetic PHI
+  // into a post-call LOAD can leak local_phi instead of the committed lvalue.
   if (storeIndex < 0 || loadIndex <= storeIndex) return true;
   return ir.nodes.slice(storeIndex + 1, loadIndex).some((node) =>
     String(node?.blockId ?? '') === storeBlockId && node?.kind === 'call');
@@ -266,8 +290,24 @@ export function forwardExactStackOperandIdentity(memorySsa, useOrId, ir) {
       || Number(storedValue.machineType?.widthBits) !== widthBits
       || Number(outputValue.machineType?.widthBits) !== widthBits) return null;
 
+  // Do not rewrite a dead compatibility LOAD merely because its value can be
+  // proven. Public v1 callers still inspect structural reachingStore metadata,
+  // while forwarding a value with no semantic consumer cannot improve truth.
   if (semanticValueUseCount(ir, outputValueId) === 0) return null;
+
+  // A spill emitted directly in a CFG join can carry a scalar-SSA PHI chosen by
+  // the compatibility projector. Replacing the later LOAD with that raw value
+  // too early exposes the synthetic local_phi instead of allowing the existing
+  // committed-field projection to recover the source-level lvalue. Stay
+  // conservative at joins; the canonical MemorySSA/reachingStore remains intact.
   if (semanticBlockMayBeJoin(ir, storeNode.blockId)) return null;
+
+  // A call between an exact stack spill and its reload is a hard publication
+  // boundary: the interval may legally carry a pre-call synthetic PHI, and
+  // forwarding that value into the post-call LOAD re-mints local_phi_* in the
+  // published v1 pseudocode (the apply_damage regression). This is independent
+  // of the alias/proof policy above and remains required even when the other
+  // guards are relaxed for legitimate no-call O0 flows.
   if (semanticIntervalContainsCall(ir, storeNode, loadNode)) return null;
 
   return Object.freeze({
