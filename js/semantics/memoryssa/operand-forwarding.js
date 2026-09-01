@@ -180,7 +180,7 @@ function semanticBlockMayBeJoin(ir, blockId) {
   return predecessors.size > 0;
 }
 
-function semanticIntervalContainsCall(ir, storeNode, loadNode) {
+function semanticPublicationHasCallRisk(ir, storeNode, loadNode) {
   if (!Array.isArray(ir?.nodes)) return true;
   const storeBlockId = String(storeNode?.blockId ?? '');
   const loadBlockId = String(loadNode?.blockId ?? '');
@@ -195,18 +195,12 @@ function semanticIntervalContainsCall(ir, storeNode, loadNode) {
     return storeBlockId !== String(ir.entryBlockId ?? '');
   }
 
-  // If the same block contains no call at all, the spill→reload interval cannot
-  // cross a call publication boundary. Other cross-block flows were rejected
-  // above and must use CFG-aware recovery instead of serialized node order.
-  if (!ir.nodes.some((node) => String(node?.blockId ?? '') === storeBlockId && node?.kind === 'call')) return false;
-  const storeIndex = ir.nodes.indexOf(storeNode);
-  const loadIndex = ir.nodes.indexOf(loadNode);
-  // Exact symbolic stack identity is only safe across an interval whose order
-  // is represented by the canonical Semantic IR. Calls are a publication
-  // boundary for compatibility projection: forwarding a pre-call synthetic PHI
-  // into a post-call LOAD can leak local_phi instead of the committed lvalue.
-  if (storeIndex < 0 || loadIndex <= storeIndex) return true;
-  return ir.nodes.slice(storeIndex + 1, loadIndex).some((node) =>
+  // Canonical Semantic IR node order is identity order, not execution order.
+  // Therefore the presence of any call in the same block is enough to make the
+  // spill/load publication interval unprovable here. Fail closed rather than
+  // infer an execution interval from array position; CFG-aware recovery owns
+  // any stronger proof.
+  return ir.nodes.some((node) =>
     String(node?.blockId ?? '') === storeBlockId && node?.kind === 'call');
 }
 
@@ -302,13 +296,10 @@ export function forwardExactStackOperandIdentity(memorySsa, useOrId, ir) {
   // conservative at joins; the canonical MemorySSA/reachingStore remains intact.
   if (semanticBlockMayBeJoin(ir, storeNode.blockId)) return null;
 
-  // A call between an exact stack spill and its reload is a hard publication
-  // boundary: the interval may legally carry a pre-call synthetic PHI, and
-  // forwarding that value into the post-call LOAD re-mints local_phi_* in the
-  // published v1 pseudocode (the apply_damage regression). This is independent
-  // of the alias/proof policy above and remains required even when the other
-  // guards are relaxed for legitimate no-call O0 flows.
-  if (semanticIntervalContainsCall(ir, storeNode, loadNode)) return null;
+  // Calls are publication boundaries. Without canonical in-block execution
+  // order, any same-block call makes the interval unprovable; cross-block
+  // forwarding is restricted above to exact canonical entry spills.
+  if (semanticPublicationHasCallRisk(ir, storeNode, loadNode)) return null;
 
   return Object.freeze({
     status: 'exact',
