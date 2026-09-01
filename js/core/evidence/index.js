@@ -222,8 +222,8 @@ export class EvidenceGraph {
     return edge;
   }
 
-  getNode(id) { return this.#nodes.get(String(id)) || null; }
-  hasNode(id) { return this.#nodes.has(String(id)); }
+  getNode(id) { return this.#nodes.get(required(id, 'evidence-id-required')) || null; }
+  hasNode(id) { return this.#nodes.has(required(id, 'evidence-id-required')); }
   allNodes() { return Array.from(this.#nodes.values()); }
   allEdges() { return this.#edges.slice(); }
 
@@ -243,9 +243,10 @@ export class EvidenceGraph {
   }
 
   evaluateClaim(id) {
-    const claim = this.getNode(id);
+    const claimId = required(id, 'evidence-id-required');
+    const claim = this.#nodes.get(claimId) || null;
     if (!claim || claim.family !== 'Claim') {
-      return deepFreeze({ verdict: 'unknown', claimId: String(id), supportingEvidenceIds: [], contradictingEvidenceIds: [], confirmedByEvidenceIds: [], missingEvidenceIds: [String(id)] });
+      return deepFreeze({ verdict: 'unknown', claimId, supportingEvidenceIds: [], contradictingEvidenceIds: [], confirmedByEvidenceIds: [], missingEvidenceIds: [claimId] });
     }
     const supporting = new Set(claim.supportingEvidenceIds);
     const contradicting = new Set(claim.contradictingEvidenceIds);
