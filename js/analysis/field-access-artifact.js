@@ -52,6 +52,7 @@ function entryFor(backend, region, offset, size) {
 
 export function fieldAccessRegion(backend, region, offset, size, { signal } = {}) {
   if (!backend || !region?.id) return Promise.resolve({ regionId:region?.id || null, results:[], complete:false, reason:'field-access-unavailable' });
+  if (signal?.aborted) return Promise.reject(abortError(signal));
   const entry = entryFor(backend, region, offset, size);
   if (entry.result) return Promise.resolve(entry.result);
   entry.waiters++;
