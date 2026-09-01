@@ -13,7 +13,7 @@ import { validateSatModel } from './validate-model.js';
 
 export async function checkPreconditionsConsistency(preconditionsExpr, session, options = {}) {
   // 1. Trivial satisfiability for empty/null preconditions
-  if (!preconditionsExpr) {
+  if (preconditionsExpr == null) {
     return Object.freeze({
       consistent: true,
       status: SOLVER_STATUS.SAT,
@@ -29,6 +29,11 @@ export async function checkPreconditionsConsistency(preconditionsExpr, session, 
       model: null,
       trivial: true,
     });
+  }
+
+  const constraints = Array.isArray(preconditionsExpr) ? preconditionsExpr : [preconditionsExpr];
+  if (constraints.some((expr) => !expr || typeof expr !== 'object' || Array.isArray(expr))) {
+    throw new TypeError('checkPreconditionsConsistency: preconditions must be expression objects');
   }
 
   // Check trivial constant boolean
@@ -59,7 +64,6 @@ export async function checkPreconditionsConsistency(preconditionsExpr, session, 
   }
 
   // 2. Build precondition query
-  const constraints = Array.isArray(preconditionsExpr) ? preconditionsExpr : [preconditionsExpr];
   const query = createVerificationQuery({
     kind: VERIFICATION_QUERY_KIND.CONDITIONAL_EDGE_FEASIBILITY,
     claimKind: CLAIM_KIND.EDGE_FEASIBLE,
