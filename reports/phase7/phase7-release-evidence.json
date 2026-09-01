@@ -2,14 +2,14 @@
   "schemaVersion": "phase7-release-evidence/v1",
   "verifierId": "phase7.verifier",
   "verifierVersion": "1.0.0",
-  "verifierSourceSha256": "49b9d618389b364be715adf9f4f44ef6e06963638f31487950805da5da78e20c",
-  "generatedAt": "2026-08-19T13:09:26.025Z",
+  "verifierSourceSha256": "1de28d218aa3eda0b7d27379048c231387a6284331bd12bd1c354307e2bb90ce",
+  "generatedAt": "2026-09-01T02:33:13.045Z",
   "product": {
-    "commitSha": "9f56a39a52015a8349c1f0e3629e05b7fd145d3a",
-    "treeSha": "aed92f8ff5f0f00e783d6ea2980d8d34e2b88492",
+    "commitSha": "364a74a765002c44ff02d2c42b6fbb2b8ab2e812",
+    "treeSha": "7e2af73a331b4a0aef4e3ff4fe94761bca03aa5b",
     "workingTreeClean": true,
     "dirtyPaths": [],
-    "branch": "phase7/static-analysis-depth"
+    "branch": "main"
   },
   "profileVersion": 1,
   "corpus": {
@@ -1160,38 +1160,38 @@
   },
   "performance": {
     "coldActiveFunction": {
-      "medianMs": 26.774,
+      "medianMs": 44.18,
       "samples": [
-        27.638,
-        24.98,
-        20.5,
-        26.774,
-        27.825
+        47.1,
+        44.354,
+        44.18,
+        41.078,
+        32.662
       ]
     },
     "warmActiveFunction": {
-      "medianMs": 3.272,
+      "medianMs": 4.934,
       "samples": [
-        3.429,
-        3.117,
-        3.272,
-        4.253,
-        3.074
+        4.483,
+        7.331,
+        4.687,
+        5.413,
+        4.934
       ]
     },
     "pathologicalPointerPhi": {
-      "medianMs": 4.176,
+      "medianMs": 10.109,
       "samples": [
-        4.176,
-        4.362,
-        4.479,
-        4.024,
-        3.262
+        7.177,
+        10.6,
+        19.806,
+        10.109,
+        8.24
       ]
     }
   },
   "gates": [],
-  "evidenceDigest": "8b25845e76e974ca7342d1e376413715",
+  "evidenceDigest": "b5d3c143c595b7655a1f22cd056c6cb6",
   "failures": [],
   "verdict": "READY"
 }

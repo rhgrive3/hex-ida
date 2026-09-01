@@ -1,7 +1,7 @@
 # Phase 7 release evidence — READY
 
-- product: `9f56a39a52015a8349c1f0e3629e05b7fd145d3a` (tree `aed92f8ff5f0f00e783d6ea2980d8d34e2b88492`, branch `phase7/static-analysis-depth`, clean: true)
-- verifier: phase7.verifier 1.0.0 (source sha256 `49b9d618389b364b`)
+- product: `364a74a765002c44ff02d2c42b6fbb2b8ab2e812` (tree `7e2af73a331b4a0aef4e3ff4fe94761bca03aa5b`, branch `main`, clean: true)
+- verifier: phase7.verifier 1.0.0 (source sha256 `1de28d218aa3eda0`)
 - profile version: 1
 - corpus: phase7-alias-memory-corpus v1, digest `519bd15f3a918dbc2b436aca4870455d`, frozen match: true
 - scoring: phase7.scoring 1.0.0; truth: phase7.corpus.declared-truth 1.0.0

@@ -20,7 +20,7 @@ import { buildLocalFunctionSummary } from './summary/local.js';
 import { solveInterproceduralSummaries } from './summary/interprocedural.js';
 import { analyzeEscape } from './summary/escape.js';
 import { summaryMayWriteRegion } from './summary/contract.js';
-import { TypeConstraintGraph, selectedTypeIfCertain } from './types/graph.js';
+import { TypeConstraintGraph, selectedTypeIfCertain, reconstructStructuralType } from './types/graph.js';
 import { DiscoveryProducerRegistry, fuseFunctionCandidates } from './discovery/fusion.js';
 import { GENERIC_PRODUCERS } from './discovery/producers.js';
 import {
@@ -206,9 +206,11 @@ import {
 } from '../metadata/index.js';
 
 export {
+  TypeConstraintGraph,
   isCompleteStatus,
   satisfiesRequirement,
   selectedTypeIfCertain,
+  reconstructStructuralType,
   applyLanguageMetadataTypesToGraph,
   languageMetadataFunctionEvidence,
 };

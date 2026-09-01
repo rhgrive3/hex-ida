@@ -43,6 +43,12 @@ export const HARD_CONSTRAINT_KINDS = Object.freeze([
   'pointer-stride',
   'call-prototype',
   'user-declared',
+  'structural-field',
+  'recursive-pointer',
+  'array-stride',
+  'nested-aggregate',
+  'call-return-type',
+  'abi-structural',
 ]);
 
 /** Soft evidence kinds. These rank candidates and nothing more. */
@@ -95,6 +101,42 @@ function idList(values, code) {
   return [...new Set(values.map((value) => nonEmpty(value, code)))].sort();
 }
 
+function toBigInt(val, fallback = 0n) {
+  if (val == null) return fallback;
+  if (typeof val === 'bigint') return val;
+  if (typeof val === 'number') {
+    if (!Number.isSafeInteger(val)) return null;
+    return BigInt(val);
+  }
+  try { return BigInt(val); } catch { return null; }
+}
+
+function validateDescriptor(layer, descriptor) {
+  if (descriptor == null || typeof descriptor !== 'object') fail('type-claim-descriptor-required');
+  if (layer === 'structural') {
+    if (descriptor.offset != null) {
+      const offset = toBigInt(descriptor.offset, null);
+      if (offset == null || offset < 0n) fail('structural-offset-invalid');
+    }
+    if (descriptor.sizeBytes != null) {
+      const size = toBigInt(descriptor.sizeBytes, null);
+      if (size == null || size <= 0n) fail('structural-size-invalid');
+    }
+    if (descriptor.alignBytes != null) {
+      const align = toBigInt(descriptor.alignBytes, null);
+      if (align == null || align <= 0n) fail('structural-align-invalid');
+    }
+    if (descriptor.strideBytes != null) {
+      const stride = toBigInt(descriptor.strideBytes, null);
+      if (stride == null || stride <= 0n) fail('structural-stride-invalid');
+    }
+    if (descriptor.length != null) {
+      const len = toBigInt(descriptor.length, null);
+      if (len == null || len < 0n) fail('structural-length-invalid');
+    }
+  }
+}
+
 /**
  * A type claim at one layer.
  *
@@ -111,6 +153,7 @@ export function createTypeClaim(input = {}) {
     descriptor: input.descriptor ?? null,
   };
   if (claim.descriptor == null) fail('type-claim-descriptor-required');
+  validateDescriptor(layer, claim.descriptor);
   claim.key = stableDigest({ layer: claim.layer, entityId: claim.entityId, descriptor: claim.descriptor });
   return deepFreeze(claim);
 }
@@ -123,6 +166,12 @@ export function createHardConstraint(input = {}) {
   // The structural guard against FM-7: a heuristic or an unmatched debug file
   // cannot state a hard fact no matter how confident it sounds.
   if (!HARD_ORIGINS.has(origin)) fail(`hard-constraint-origin-not-authoritative:${origin}`);
+
+  const abiProfile = input.abiProfile ?? input.claim?.descriptor?.abiProfile ?? null;
+  if (abiProfile != null && typeof abiProfile === 'string' && abiProfile.startsWith('unsupported')) {
+    fail(`abi-profile-unsupported:${abiProfile}`);
+  }
+
   return deepFreeze({
     kind,
     origin,
@@ -130,6 +179,7 @@ export function createHardConstraint(input = {}) {
     evidenceIds: idList(input.evidenceIds, 'hard-constraint-invalid-evidence-ids'),
     providerVersion: input.providerVersion == null ? null : String(input.providerVersion),
     buildIdentity: input.buildIdentity == null ? null : String(input.buildIdentity),
+    abiProfile: abiProfile == null ? null : String(abiProfile),
   });
 }
 
@@ -147,6 +197,47 @@ export function createSoftEvidence(input = {}) {
     weight,
     evidenceIds: idList(input.evidenceIds, 'soft-evidence-invalid-evidence-ids'),
   });
+}
+
+function intervalsOverlap(a, b) {
+  if (a.offset == null || b.offset == null || a.sizeBytes == null || b.sizeBytes == null) return true;
+  const aStart = toBigInt(a.offset, 0n);
+  const bStart = toBigInt(b.offset, 0n);
+  const aSize = toBigInt(a.sizeBytes, 0n);
+  const bSize = toBigInt(b.sizeBytes, 0n);
+  if (aStart == null || bStart == null || aSize == null || bSize == null || aSize <= 0n || bSize <= 0n) return true;
+  return aStart < bStart + bSize && bStart < aStart + aSize;
+}
+
+function memberTypesConflict(aType, bType) {
+  if (aType == null || bType == null) return false;
+  if (typeof aType !== 'object' || typeof bType !== 'object') {
+    return stableStringify(aType) !== stableStringify(bType);
+  }
+  const aKind = aType.kind ?? null;
+  const bKind = bType.kind ?? null;
+  if (aKind != null && bKind != null && aKind !== bKind) return true;
+
+  if (aKind === 'pointer' || bKind === 'pointer') {
+    const aTarget = aType.targetEntityId ?? null;
+    const bTarget = bType.targetEntityId ?? null;
+    if (aTarget != null && bTarget != null && aTarget !== bTarget) return true;
+    if (aType.pointeeType != null && bType.pointeeType != null && memberTypesConflict(aType.pointeeType, bType.pointeeType)) return true;
+    return false;
+  }
+
+  if (aKind === 'array' || bKind === 'array') {
+    if (aType.strideBytes != null && bType.strideBytes != null && aType.strideBytes !== bType.strideBytes) return true;
+    if (aType.length != null && bType.length != null && aType.length !== bType.length) return true;
+    if (aType.elementType != null && bType.elementType != null && memberTypesConflict(aType.elementType, bType.elementType)) return true;
+    return false;
+  }
+
+  if (aType.name != null && bType.name != null && aType.name !== bType.name) return true;
+  if (aType.widthBits != null && bType.widthBits != null && aType.widthBits !== bType.widthBits) return true;
+  if (aType.signed != null && bType.signed != null && aType.signed !== bType.signed) return true;
+
+  return stableStringify(aType) !== stableStringify(bType);
 }
 
 /**
@@ -178,14 +269,37 @@ export function claimsConflict(left, right) {
   if (left.layer === 'abi') {
     if (a.location != null && b.location != null && a.location !== b.location) return true;
     if (a.passingClass != null && b.passingClass != null && a.passingClass !== b.passingClass) return true;
+    if (a.abiProfile != null && b.abiProfile != null && a.abiProfile !== b.abiProfile) return true;
+    if (a.sizeBytes != null && b.sizeBytes != null && a.sizeBytes !== b.sizeBytes) return true;
+    if (a.alignBytes != null && b.alignBytes != null && a.alignBytes !== b.alignBytes) return true;
     return false;
   }
   if (left.layer === 'structural') {
+    // Check kind mismatch
+    const aKind = a.kind ?? (a.offset != null ? 'field' : null);
+    const bKind = b.kind ?? (b.offset != null ? 'field' : null);
+    if (aKind != null && bKind != null && aKind !== bKind && aKind !== 'field' && bKind !== 'field') {
+      return true;
+    }
+    // Check total size or alignment mismatch
+    if (a.sizeBytes != null && b.sizeBytes != null && a.offset == null && b.offset == null && a.sizeBytes !== b.sizeBytes) return true;
+    if (a.alignBytes != null && b.alignBytes != null && a.alignBytes !== b.alignBytes && a.offset == null && b.offset == null) return true;
+
     // Overlapping byte intervals with incompatible member types conflict;
     // disjoint intervals coexist happily in one aggregate.
     const overlap = intervalsOverlap(a, b);
     if (!overlap) return false;
-    if (a.memberType != null && b.memberType != null && stableStringify(a.memberType) !== stableStringify(b.memberType)) return true;
+
+    if (a.memberType != null && b.memberType != null) {
+      if (memberTypesConflict(a.memberType, b.memberType)) return true;
+      return false;
+    }
+    if (a.members != null && b.members != null) {
+      return stableStringify(a.members) !== stableStringify(b.members);
+    }
+    if (a.offset != null && b.offset != null && a.offset === b.offset) {
+      return stableStringify(a) !== stableStringify(b);
+    }
     return false;
   }
   // Nominal types: two different names for one entity is a conflict unless one
@@ -197,25 +311,6 @@ export function claimsConflict(left, right) {
     return !(aAliases.has(b.name) || bAliases.has(a.name));
   }
   return true;
-}
-
-function toBigInt(val, fallback = 0n) {
-  if (val == null) return fallback;
-  if (typeof val === 'bigint') return val;
-  if (typeof val === 'number') {
-    if (!Number.isSafeInteger(val)) return null;
-    return BigInt(val);
-  }
-  try { return BigInt(val); } catch { return null; }
-}
-
-function intervalsOverlap(a, b) {
-  const aStart = toBigInt(a.offset, 0n);
-  const bStart = toBigInt(b.offset, 0n);
-  const aSize = toBigInt(a.sizeBytes, 0n);
-  const bSize = toBigInt(b.sizeBytes, 0n);
-  if (aStart == null || bStart == null || aSize == null || bSize == null || aSize <= 0n || bSize <= 0n) return true;
-  return aStart < bStart + bSize && bStart < aStart + aSize;
 }
 
 /** A recorded contradiction. It is a first-class result, not an error. */
