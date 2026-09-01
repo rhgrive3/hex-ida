@@ -117,6 +117,43 @@ test('edge feasibility: translates and verifies Semantic IR instructions directl
   assert.ok(res.query.constraints.length > 0);
 });
 
+test('edge feasibility: query bitWidth follows translator normalization', async () => {
+  const arg0 = { kind: VK.ARG, id: 'v0', reg: 'x0', origin: '0x1000' };
+  const c0 = { const: 0n, id: 'v1', origin: '0x1004' };
+  const cmpInst = {
+    id: 'i_cmp_width',
+    op: OP.CMP,
+    cond: '==',
+    signed: false,
+    origin: '0x1008',
+    args: [{ value: arg0 }, { value: c0 }],
+  };
+  const backend = new FakeSolverBackend({
+    defaultStatus: SOLVER_STATUS.SAT,
+    defaultModel: { arg_x0: 0n },
+  });
+
+  for (const bitWidth of ['32', 0, ['32']]) {
+    const res = await verifyConditionalEdgeFeasibility({
+      fromBlock: 'entry',
+      toBlock: 'zero_handler',
+      edgeCondition: cmpInst,
+      backend,
+      options: { bitWidth },
+    });
+    assert.equal(res.query.bitWidth, 64, `bitWidth ${JSON.stringify(bitWidth)} must use translator fallback`);
+  }
+
+  const explicit = await verifyConditionalEdgeFeasibility({
+    fromBlock: 'entry',
+    toBlock: 'zero_handler',
+    edgeCondition: cmpInst,
+    backend,
+    options: { bitWidth: 32 },
+  });
+  assert.equal(explicit.query.bitWidth, 32);
+});
+
 test('edge feasibility: fails closed on unsupported operations or semantic unknowns', async () => {
   // Unknown load instruction produces UnknownSemantic
   const unkLoad = {
