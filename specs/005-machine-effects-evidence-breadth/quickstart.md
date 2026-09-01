@@ -5,7 +5,7 @@ node --test tests/machine-effects/evidence-breadth-counterexamples.test.mjs
 node --test tests/machine-effects/formal-architectural-evidence.test.mjs
 node --test tests/machine-effects/relaxed-memory-evidence.test.mjs
 node --test tests/semantic-v2/undefined-result-transport.test.mjs
-node --test tests/phase8/undefined-result-soundness.test.mjs
+node --test tests/phase8/scalar/undefined-result-soundness.test.mjs
 npm run effects:test
 npm run semantic-v2:test
 node scripts/run-quiet-command.mjs --label check -- npm run check

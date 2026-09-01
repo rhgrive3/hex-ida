@@ -37,11 +37,11 @@
 
 ## Phase 7: Verification and cutover
 
-- [ ] T018 Run focused and canonical MachineEffects/Semantic V2/Phase 8 tests
+- [x] T018 Run focused and canonical MachineEffects/Semantic V2/Phase 8 tests
 - [ ] T019 Run denominator, lint, generated-output, and full repository gates
-- [ ] T020 Perform three adversarial review passes and repair findings
-- [ ] T021 Reconcile current main and verify the candidate merge tree
-- [ ] T022 Update `docs/analysis-improvement-finding-ledger.md` with exact evidence and honest COMPLETE/PARTIAL state
+- [x] T020 Perform three adversarial review passes and repair findings
+- [x] T021 Reconcile current main and verify the candidate merge tree
+- [x] T022 Update `docs/analysis-improvement-finding-ledger.md` with exact evidence and honest COMPLETE/PARTIAL state
 - [ ] T023 Create one PR, verify exact-head CI/reviews, merge if all gates are green, and refetch live main
 
 ## Dependencies & Execution Order
