@@ -3,6 +3,7 @@ import { ScopeController } from '../js/ai/control/scope.js';
 import { createTurnSnapshot } from '../js/ai/control/snapshot.js';
 import { assertLiveBindingsUnchanged, memoryAnchor, sessionMatchesSnapshot } from '../js/ai/control/runtime-support.js';
 import { selectToolWindow } from '../js/ai/control/tool-window.js';
+import { aiBudget } from '../js/ai/schema.js';
 
 const snapshot = {
   binaryId: 'content:hash-a:0',
@@ -14,6 +15,18 @@ const snapshot = {
   currentFunction: { address: '0x1000', range: { start: '0x1000', end: '0x1100' } },
   selection: null,
 };
+
+// Budget overrides are an untrusted control boundary. Only finite primitive
+// numbers may narrow reviewed ceilings; structured/scalar coercion must not.
+const chatBudget = aiBudget('chat');
+assert.equal(aiBudget('chat', { maxToolCalls: [] }).maxToolCalls, chatBudget.maxToolCalls);
+assert.equal(aiBudget('chat', { maxModelCalls: true }).maxModelCalls, chatBudget.maxModelCalls);
+assert.equal(aiBudget('chat', { maxFunctions: ['3'] }).maxFunctions, chatBudget.maxFunctions);
+assert.equal(aiBudget('chat', { maxToolCalls: '2' }).maxToolCalls, chatBudget.maxToolCalls);
+assert.equal(aiBudget('chat', { maxToolCalls: Number.NaN }).maxToolCalls, chatBudget.maxToolCalls);
+assert.equal(aiBudget('chat', { maxToolCalls: Number.POSITIVE_INFINITY }).maxToolCalls, chatBudget.maxToolCalls);
+assert.equal(aiBudget('chat', { maxToolCalls: 2.9 }).maxToolCalls, Math.min(chatBudget.maxToolCalls, 2));
+assert.equal(aiBudget('chat', { timeoutMs: 0 }).timeoutMs, 1, 'existing positive minimum remains intact');
 
 // Control-layer address extraction must cover camelCase tool contracts, not
 // depend on ToolRegistry's separate address validation as a backstop.
