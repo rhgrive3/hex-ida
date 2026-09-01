@@ -12,6 +12,7 @@ import { liftArm64FlagEffects as liftArm64FlagEffectsCore } from './flags-core.j
 const STRICT_REGISTER_LHS = new Set(['cmp','cmn','ccmp','ccmn']);
 const SP_LHS_MNEMONICS = new Set(['cmp','cmn']);
 const EXTEND_KINDS = new Set(['uxtb','uxth','uxtw','uxtx','sxtb','sxth','sxtw','sxtx']);
+const CONDITION_CODES = new Set(['eq','ne','cs','hs','cc','lo','mi','pl','vs','vc','hi','ls','ge','lt','gt','le','al','nv']);
 
 function validRegisterLhs(mnemonic, op) {
   if (op?.k !== 'reg') return false;
@@ -67,14 +68,27 @@ function validTstRegisterClass(ops) {
 }
 
 function validConditionalCompareCondition(op) {
-  return op?.k === 'cond' && op.shift == null && op.extend == null;
+  return op?.k === 'cond'
+    && op.shift == null
+    && op.extend == null
+    && typeof op.text === 'string'
+    && CONDITION_CODES.has(op.text.toLowerCase());
+}
+
+function validCanonicalBigintImmediate(op, minimum, maximum) {
+  return op?.k === 'imm'
+    && op.shift == null
+    && op.extend == null
+    && typeof op.value === 'bigint'
+    && op.value >= minimum
+    && op.value <= maximum;
 }
 
 function validConditionalCompareImmediates(ops) {
   const comparison = ops[1];
   const fallback = ops[2];
-  if (comparison?.k === 'imm' && (comparison.shift != null || comparison.extend != null)) return false;
-  if (fallback?.k === 'imm' && (fallback.shift != null || fallback.extend != null)) return false;
+  if (comparison?.k === 'imm' && !validCanonicalBigintImmediate(comparison, 0n, 31n)) return false;
+  if (!validCanonicalBigintImmediate(fallback, 0n, 15n)) return false;
   return true;
 }
 

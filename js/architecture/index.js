@@ -10,6 +10,15 @@ import {
 const ADAPTER_CACHE = new WeakMap();
 const MAX_SAFE_ROW = BigInt(Number.MAX_SAFE_INTEGER);
 
+function normalizeArchitectureAddress(value) {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number') return Number.isSafeInteger(value) ? BigInt(value) : null;
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  if (!/^(?:[+-]?\d+|[+-]?0[xX][0-9a-fA-F]+)$/.test(text)) return null;
+  try { return BigInt(text); } catch { return null; }
+}
+
 export class ArchitectureAdapter {
   constructor(definition) {
     const id = canonicalArchitectureId(definition?.id);
@@ -25,7 +34,9 @@ export class ArchitectureAdapter {
     this.returnKind = definition.returnKind || (() => null);
     this.rowForAddress = definition.rowForAddress || ((region, address) => {
       if (this.fixedInstructionSize == null || !region) return null;
-      const rel = BigInt(address) - BigInt(region.vmAddr);
+      const normalizedAddress = normalizeArchitectureAddress(address);
+      if (normalizedAddress == null) return null;
+      const rel = normalizedAddress - BigInt(region.vmAddr);
       const size = BigInt(this.fixedInstructionSize);
       if (rel < 0n || rel + size > BigInt(region.size)) return null;
       if (rel % size !== 0n) return null;
@@ -44,7 +55,9 @@ export class ArchitectureAdapter {
     this.validateInstructionPlacement = definition.validateInstructionPlacement || ((region, address, length) => {
       if (this.fixedInstructionSize == null) return unsupportedArchitectureResult('assemble', this.id);
       if (!region) return { ok:false, code:'patch-range', error:'アドレスがコードのセクション範囲外です。' };
-      const rel = BigInt(address) - BigInt(region.vmAddr);
+      const normalizedAddress = normalizeArchitectureAddress(address);
+      if (normalizedAddress == null) return { ok:false, code:'patch-range', error:'アドレスがコードのセクション範囲外です。' };
+      const rel = normalizedAddress - BigInt(region.vmAddr);
       const size = BigInt(this.fixedInstructionSize);
       if (rel < 0n || rel + size > BigInt(region.size)) return { ok:false, code:'patch-range', error:'アドレスがコードのセクション範囲外です。' };
       if (rel % BigInt(this.instructionAlignment) !== 0n || !Number.isInteger(length) || length !== this.fixedInstructionSize) {

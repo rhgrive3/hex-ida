@@ -173,7 +173,7 @@ function sysRegId(name) {
 }
 function isPlainImmediate(op) {
   return op?.k === 'imm'
-    && op.value != null
+    && typeof op.value === 'bigint'
     && op.shift == null
     && op.extend == null;
 }
