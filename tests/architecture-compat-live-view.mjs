@@ -84,9 +84,9 @@ console.log("  ok Case 2 control-flow projection parity");
 // Case 8 — canonical replacement invalidates projected identity
 {
   const testId = "test-replace-live-" + Date.now();
-  const p1 = registerArchitecturePlugin({ id: testId, instructionAlignment: 4, fixedInstructionSize: 4 });
+  registerArchitecturePlugin({ id: testId, instructionAlignment: 4, fixedInstructionSize: 4 });
   const a1 = architectureAdapter(testId);
-  const p2 = registerArchitecturePlugin({ id: testId, instructionAlignment: 2, fixedInstructionSize: 2 }, { replace: true });
+  registerArchitecturePlugin({ id: testId, instructionAlignment: 2, fixedInstructionSize: 2 }, { replace: true });
   const a2 = architectureAdapter(testId);
   assert.notStrictEqual(a1, a2);
   assert.equal(a2.fixedInstructionSize, 2);
@@ -150,7 +150,6 @@ console.log("  ok Case 2 control-flow projection parity");
 }
 
 // Case 15 — default row mapping never rounds unsafe BigInt rows
-// Keep both sides of the Number.MAX_SAFE_INTEGER boundary explicit so this remains a fail-closed coordinate conversion contract.
 {
   const custom = new ArchitectureAdapter({ id: "custom-safe-row", fixedInstructionSize: 1, instructionAlignment: 1 });
   const maxSafe = BigInt(Number.MAX_SAFE_INTEGER);
@@ -177,6 +176,20 @@ console.log("  ok Case 2 control-flow projection parity");
     assert.equal(result.code, "instruction-placement");
   }
   console.log("  ok Case 16 placement coercion fails closed");
+}
+
+// Case 17 — architecture metadata positive integers require primitive numbers (#3273)
+{
+  const valid = new ArchitecturePluginV2({ id: "strict-metadata-valid", instructionAlignment: 1, fixedInstructionSize: 4 });
+  assert.equal(valid.instructionAlignment, 1);
+  assert.equal(valid.fixedInstructionSize, 4);
+  const variable = new ArchitecturePluginV2({ id: "strict-metadata-variable", instructionAlignment: 4, fixedInstructionSize: null });
+  assert.equal(variable.fixedInstructionSize, null);
+  for (const malformed of ["4", [4], true, { valueOf: () => 4 }]) {
+    assert.throws(() => new ArchitecturePluginV2({ id: "strict-alignment", instructionAlignment: malformed, fixedInstructionSize: 4 }), /architecture-instructionAlignment-invalid/);
+    assert.throws(() => new ArchitecturePluginV2({ id: "strict-size", instructionAlignment: 4, fixedInstructionSize: malformed }), /architecture-fixedInstructionSize-invalid/);
+  }
+  console.log("  ok Case 17 architecture metadata coercion fails closed");
 }
 
 console.log("All architecture live view tests PASS!");
