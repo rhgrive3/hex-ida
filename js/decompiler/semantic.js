@@ -385,9 +385,10 @@ export function recoverInductionVariables(ir, ctx = null) {
 }
 
 /**
- * Preserve the historical legacy decompiler construction exactly. Full ABI /
- * prototype context and the committed-snapshot compatibility projections are
- * enabled only for the explicit semantic-v2-to-v1 route.
+ * Preserve the historical legacy decompiler construction. Full ABI / prototype
+ * context remains exclusive to semantic-v2-to-v1. The committed-PHI snapshot
+ * projection is representation-only and is also safe for legacy output because
+ * it requires exact predecessor stores to one committed field with no barrier.
  */
 export function decompileSemantic(model, opts = {}) {
   const semanticOpts = canonicalRuntimeOptions(opts);
@@ -402,6 +403,8 @@ export function decompileSemantic(model, opts = {}) {
     ir = projectCommittedPhiSnapshots(ir);
     ir = projectCommittedSnapshotViews(ir);
     ir = projectDeclaredReturnView(ir, semanticOpts);
+  } else {
+    ir = projectCommittedPhiSnapshots(ir);
   }
   return decompileSemanticCore(model, { ...semanticOpts, ir });
 }
