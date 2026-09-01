@@ -17,6 +17,7 @@ export function resultWith(expression, { condition = null, sourcelessLine = fals
   }
   return {
     semantic:true,
+    ir:{ values:[], blocks:[] },
     semanticAst:{ values:[{ kind:'SemanticValue', valueId:99, expression, source:expression.source }], stores:[], calls:[], conditions, inputs:[], outputs:[{ name:'return', expression }] },
     cAst:{ kind:'CProgram', body, source:sourceOf() },
     metrics:{ rawAssemblyFallbacks:0, gotos:condition ? 1 : 0, temporaries:condition ? 1 : 0, redundantCasts:3, structured:true },

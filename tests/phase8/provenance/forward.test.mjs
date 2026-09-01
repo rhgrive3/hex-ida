@@ -19,8 +19,8 @@ test('P8-PROV a raw pass-through line resolves to its direct instruction rows', 
   const entity = entityForLine(provenance, 0);
   assert.ok(entity, 'the return line must be a rendered entity');
   assert.equal(entity.complete, true, 'raw pass-through must be provenance-complete without synthetic records');
-  assert.deepEqual(entity.origins.rows, [1]);
-  assert.deepEqual(entity.origins.addresses, String(0x1000n + 1n * 4n));
+  assert.deepEqual(entity.origins.rows, [1, 4], 'node location row plus expression origin row, no synthetic origins');
+  assert.deepEqual(entity.origins.addresses, ['4100', '4112'], String`rows 1 and 4 at 0x1000 + 4*row`);
   assert.deepEqual(entity.reasons, []);
   assert.deepEqual(entity.recordRefs, []);
   assert.equal(provenance.ledger.length, 0, 'no transform records may be invented for untouched lines');
@@ -28,17 +28,19 @@ test('P8-PROV a raw pass-through line resolves to its direct instruction rows', 
 });
 
 test('P8-PROV collapse and induction entities resolve through transform-record origins', () => {
-  const value = expr.variable('a1', 64, true, source(1));
-  const wide = expr.unary('trunc', value, 32, false, source(2));
-  const narrow = expr.unary('trunc', wide, 8, false, source(3));
-  const signed = expr.unary('sext', narrow, 32, true, source(4));
+  const value = expr.variable('a1', 64, true, source(1, 1));
+  const wide = expr.unary('trunc', value, 32, false, source(2, 2));
+  const narrow = expr.unary('trunc', wide, 8, false, source(3, 3));
+  const signed = expr.unary('sext', narrow, 32, true, source(4, 4));
   const temporary = expr.variable('v12', 64, false, source(12, 3));
   const condition = expr.compare('ne', temporary, expr.constant(0, 64, false, source(13, 3)), false, source(14, 3));
   const result = applyPhase8Projection(resultWith(signed, { condition }), analysis(inductionFact()));
 
   const provenance = result.renderProvenance;
-  const returnEntity = entityForLine(provenance, 0);
+  const returnEntity = entityForLine(provenance, 1);
+  const conditionEntity = entityForLine(provenance, 0);
   assert.ok(returnEntity, 'return line must map to an entity');
+  assert.ok(conditionEntity, 'condition line must map to an entity');
   assert.equal(returnEntity.complete, true);
   for (const row of [1, 2, 3, 4]) {
     assert.ok(returnEntity.origins.rows.includes(row), `collapse chain must retain original row ${row}`);
@@ -51,8 +53,6 @@ test('P8-PROV collapse and induction entities resolve through transform-record o
     assert.ok(record, 'record reference must resolve inside the ledger');
   }
 
-  const conditionEntity = entityForLine(provenance, 0) && entityForLine(provenance, 1);
-  assert.ok(conditionEntity, 'condition line must map to an entity');
   assert.ok(conditionEntity.origins.ssaRefs.includes('def:12'), 'induction entity must expose the SSA def origin');
   assert.ok(
     (provenance.reverse['ssa:def:12'] || []).includes(conditionEntity.entityKey),
@@ -65,10 +65,10 @@ test('P8-PROV collapse and induction entities resolve through transform-record o
 });
 
 test('P8-PROV a multi-rewrite chain reaches the original instruction rows', () => {
-  const value = expr.variable('a1', 64, true, source(1));
-  const first = expr.unary('trunc', value, 32, false, source(2));
-  const second = expr.unary('trunc', first, 8, false, source(3));
-  const third = expr.unary('trunc', second, 4, false, source(4));
+  const value = expr.variable('a1', 64, true, source(1, 1));
+  const first = expr.unary('trunc', value, 32, false, source(2, 2));
+  const second = expr.unary('trunc', first, 8, false, source(3, 3));
+  const third = expr.unary('trunc', second, 4, false, source(4, 4));
   const result = applyPhase8Projection(resultWith(third), analysis());
 
   const provenance = result.renderProvenance;
