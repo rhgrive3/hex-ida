@@ -199,7 +199,7 @@ export class ArtifactStore {
     const ctx = context || {
       activePath: new Set(),
       validated: new Set(),
-      maxNodes: Number.isSafeInteger(options.maxNodes) ? options.maxNodes : 10000,
+      maxNodes: Number.isSafeInteger(options.maxNodes) && options.maxNodes >= 0 ? options.maxNodes : 10000,
       nodesVisited: 0,
     };
     const currentId = requireArtifactId(record.artifactId);
