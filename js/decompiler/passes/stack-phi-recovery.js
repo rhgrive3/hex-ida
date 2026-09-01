@@ -181,8 +181,16 @@ function materializedFlagCondition(term, maps, ir) {
   return kind === 'tbz' || kind === 'cbz' ? invertCondition(condition) : condition;
 }
 
+function directFlagCondition(term, maps, ir) {
+  const cond = term?.cond || term?.extra?.cond;
+  if (!cond) return null;
+  return repairedFlagComparison(valueOf(term.args?.at?.(-1)), cond, maps, ir);
+}
+
 function controlCondition(term, maps, engine, ir) {
-  return simplify(materializedFlagCondition(term, maps, ir) || maps.conditions.get(term.id), engine);
+  return simplify(materializedFlagCondition(term, maps, ir)
+    || directFlagCondition(term, maps, ir)
+    || maps.conditions.get(term.id), engine);
 }
 
 function exactStoreExpression(inst, key, maps, engine) {
