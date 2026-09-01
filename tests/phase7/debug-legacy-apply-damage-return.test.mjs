@@ -67,50 +67,74 @@ const result = decompile(model, {
     : off === 0x24n ? { name: 'damageRate', type: 'uint32' } : null,
 });
 
-const blockId = (block) => block?.key ?? block?.id ?? block?.label ?? (typeof block === 'string' || typeof block === 'number' ? block : null);
+const scalar = (value) => {
+  if (typeof value === 'bigint') return value.toString();
+  return ['string', 'number', 'boolean'].includes(typeof value) ? value : null;
+};
+const blockId = (block) => scalar(block) ?? scalar(block?.key) ?? scalar(block?.id) ?? scalar(block?.label);
+const locShape = (loc) => {
+  if (!loc) return null;
+  if (scalar(loc) != null) return scalar(loc);
+  return {
+    kind: scalar(loc.kind),
+    base: scalar(loc.base) ?? scalar(loc.base?.id) ?? scalar(loc.base?.reg),
+    offset: scalar(loc.offset),
+    size: scalar(loc.size),
+  };
+};
+const instShape = (inst) => {
+  if (!inst) return null;
+  if (scalar(inst) != null) return scalar(inst);
+  return {
+    id: scalar(inst.id),
+    op: scalar(inst.op),
+    row: scalar(inst.row),
+    block: blockId(inst.block),
+  };
+};
 const arg = (entry) => ({
-  kind: entry?.kind ?? null,
-  bits: entry?.bits ?? null,
-  valueId: entry?.value?.id ?? null,
-  valueReg: entry?.value?.reg ?? null,
-  valueDefOp: entry?.value?.def?.op ?? null,
-  valueDefRow: entry?.value?.def?.row ?? null,
+  kind: scalar(entry?.kind),
+  bits: scalar(entry?.bits),
+  valueId: scalar(entry?.value?.id),
+  valueReg: scalar(entry?.value?.reg),
+  valueDefOp: scalar(entry?.value?.def?.op),
+  valueDefRow: scalar(entry?.value?.def?.row),
 });
 const values = (result.ir?.values || [])
   .filter((value) => value?.def?.op === 'phi' || value?.def?.op === 'load')
   .map((value) => ({
-    id: value.id,
-    reg: value.reg,
-    bits: value.bits,
+    id: scalar(value.id),
+    reg: scalar(value.reg),
+    bits: scalar(value.bits),
     def: {
-      id: value.def?.id ?? null,
-      op: value.def?.op ?? null,
-      row: value.def?.row ?? null,
+      id: scalar(value.def?.id),
+      op: scalar(value.def?.op),
+      row: scalar(value.def?.row),
       block: blockId(value.def?.block),
-      loc: value.def?.loc ?? null,
+      loc: locShape(value.def?.loc),
       args: (value.def?.args || []).map(arg),
       incoming: (value.def?.incoming || []).map((incoming) => ({
         from: blockId(incoming?.from),
-        valueId: incoming?.value?.id ?? null,
-        valueReg: incoming?.value?.reg ?? null,
-        valueBits: incoming?.value?.bits ?? null,
-        valueDefOp: incoming?.value?.def?.op ?? null,
-        valueDefRow: incoming?.value?.def?.row ?? null,
+        valueId: scalar(incoming?.value?.id),
+        valueReg: scalar(incoming?.value?.reg),
+        valueBits: scalar(incoming?.value?.bits),
+        valueDefOp: scalar(incoming?.value?.def?.op),
+        valueDefRow: scalar(incoming?.value?.def?.row),
       })),
     },
   }));
 const instructions = (result.ir?.instructions || [])
   .filter((inst) => ['store', 'load', 'call', 'phi'].includes(inst?.op))
   .map((inst) => ({
-    id: inst.id,
-    op: inst.op,
-    row: inst.row,
+    id: scalar(inst.id),
+    op: scalar(inst.op),
+    row: scalar(inst.row),
     block: blockId(inst.block),
-    loc: inst.loc ?? null,
+    loc: locShape(inst.loc),
     args: (inst.args || []).map(arg),
-    memDef: inst.memDef ?? null,
-    memKills: Array.from(inst.memKills || []).map((kill) => typeof kill === 'string' ? kill : ({ kind: kill?.kind ?? null, base: kill?.base ?? null, offset: kill?.offset?.toString?.() ?? kill?.offset ?? null, size: kill?.size ?? null })),
+    memDef: instShape(inst.memDef),
+    memKills: Array.from(inst.memKills || []).map(locShape),
   }));
 const diagnostic = { pseudocode: result.pseudocode, values, instructions };
-console.error('LEGACY_APPLY_DAMAGE_PROVENANCE ' + JSON.stringify(diagnostic, (_key, value) => typeof value === 'bigint' ? value.toString() : value, 2));
+console.error('LEGACY_APPLY_DAMAGE_PROVENANCE ' + JSON.stringify(diagnostic, null, 2));
 assert.fail('intentional legacy apply_damage provenance diagnostic');
