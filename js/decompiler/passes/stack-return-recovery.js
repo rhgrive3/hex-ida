@@ -420,7 +420,6 @@ export function recoverExactStackReturn(result, opts = {}) {
     nodeBudget:Math.min(2048, Number(opts.decompilerNodeBudget || 12000)),
     timeBudgetMs:Math.min(12, Math.max(4, Number(opts.decompilerTimeBudgetMs || 50) / 4)),
     maxApplications:512,
-    deterministic: opts.deterministicTransforms === true,
   });
   const committed = committedReturnValue(result, root, ret, opts);
   const recovered = committed || resolve(result.ir, ret.block, ret.row, root.location.key, values, opts, engine, new Set());

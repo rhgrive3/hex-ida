@@ -40,7 +40,7 @@ export class RewriteEngine {
      * an unbounded mode — it is the same engine bounded by work instead of by
      * clock. Production defaults are unchanged.
      */
-    const deterministic = context.deterministicTransforms === true || this.budget.deterministic === true;
+    const deterministic = context.deterministicTransforms === true;
     const localDeadline = deterministic ? Infinity : started + Math.max(0, Number(this.budget.timeBudgetMs));
     const contextDeadline = Number(context.deadline);
     const deadline = !deterministic && Number.isFinite(contextDeadline)

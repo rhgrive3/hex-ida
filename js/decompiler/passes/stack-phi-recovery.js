@@ -320,7 +320,6 @@ export function recoverExactStackPhiExpressions(result, opts = {}) {
     maxIterations: 10,
     nodeBudget: Math.min(2048, Number(opts.decompilerNodeBudget || 12000)),
     timeBudgetMs: Math.min(10, Math.max(3, Number(opts.decompilerTimeBudgetMs || 50) / 5)),
-    deterministic: opts.deterministicTransforms === true,
     maxApplications: 512,
   });
   const rewrite = rewriteReturnsInAst(result, maps, opts, engine);
