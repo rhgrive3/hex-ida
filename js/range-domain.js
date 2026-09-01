@@ -1,5 +1,5 @@
 function validBits(bits) {
-  const n = Number(bits || 64);
+  const n = typeof bits === 'number' ? bits : 64;
   return Number.isInteger(n) && n > 0 && n <= 64 ? n : 64;
 }
 
