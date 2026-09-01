@@ -73,6 +73,12 @@ for (const mnemonic of ['fccmp', 'fccmpe']) {
     lift(`arm64-${mnemonic}-condition-missing`, mnemonic, [fp(0), fp(1), { k:'imm', value:5n, text:'#5' }, { k:'other', text:'eq' }]),
     `${mnemonic}-condition-missing`,
   );
+  assertFailClosed(
+    lift(`arm64-${mnemonic}-condition-duplicate`, mnemonic, [
+      fp(0), fp(1), { k:'imm', value:5n, text:'#5' }, { k:'cond', text:'eq' }, { k:'cond', text:'ne' },
+    ]),
+    `${mnemonic}-condition-duplicate`,
+  );
 }
 
 for (const scale of [1n, 64n]) {
