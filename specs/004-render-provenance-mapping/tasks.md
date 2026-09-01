@@ -51,7 +51,7 @@ entity resolves to source rows/ir refs; two runs produce byte-identical maps.
 ### Tests for User Story 1 (write FIRST, must FAIL before implementation)
 
 - [ ] T006 [P] [US1] Positive test in tests/phase8/provenance/forward.test.mjs: raw pass-through line (no rewrite) resolves to its direct instruction rows without synthetic transform records
-- [ ] T007 [P] [US1] Positive test in tests/phase8/provenance/forward.test.mjs: induction-variable and exact-view-collapse entities resolve to canonical rows + ir/ssa refs through transform-record origins
+- [ ] T007 [P] [US1] Positive test in tests/phase8/provenance/forward.test.mjs: induction-variable and exact-view-collapse entities resolve to canonical rows + ir/ssa refs through transform-record origins, including a multi-rewrite chain (transform on transform) reaching the original instruction rows (SC-004)
 
 ### Implementation for User Story 1
 
@@ -59,7 +59,7 @@ entity resolves to source rows/ir refs; two runs produce byte-identical maps.
 - [ ] T009 [US1] Implement reverse index (origin key → entity keys) derived by sorting from the forward map, frozen output in js/decompiler/phase8/render-provenance.js (depends on T008)
 - [ ] T010 [US1] Implement chain resolution: union origin sets across all transform records feeding an entity so transform-on-transform rewrites reach original instruction rows in js/decompiler/phase8/render-provenance.js (depends on T008)
 - [ ] T011 [US1] Attach frozen additive `renderProvenance` field to the result in js/decompiler/phase8/projection.js `applyPhase8Projection` (existing fields unchanged; snapshotId passed via projection opts) (depends on T008–T010)
-- [ ] T012 [US1] Determinism test in tests/phase8/provenance/determinism.test.mjs: two identical runs produce byte-identical provenance maps (depends on T011)
+- [ ] T012 [US1] Determinism test in tests/phase8/provenance/determinism.test.mjs: two identical runs produce byte-identical provenance maps, and every origin reference resolves to existing canonical rows/ir refs (no minted identities, FR-008) (depends on T011)
 
 **Checkpoint**: User Story 1 independently functional — reverse navigation works and is deterministic.
 
