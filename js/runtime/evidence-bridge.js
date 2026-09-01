@@ -52,9 +52,19 @@ function ownedClone(value) {
 }
 
 function completeness(value, fallback = 'partial') {
-  const normalized = String(value ?? fallback);
-  if (!EVIDENCE_COMPLETENESS.includes(normalized)) throw new DebugAdapterError('runtime-invalid-completeness', `invalid evidence completeness: ${normalized}`);
+  const normalized = value == null ? fallback : value;
+  if (typeof normalized !== 'string' || !EVIDENCE_COMPLETENESS.includes(normalized)) {
+    throw new DebugAdapterError('runtime-invalid-completeness', 'invalid evidence completeness');
+  }
   return normalized;
+}
+
+function optionalConfidence(value) {
+  if (value == null) return null;
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new DebugAdapterError('runtime-invalid-confidence', 'runtime evidence confidence must be a finite number');
+  }
+  return value;
 }
 
 export function conservativeCompleteness(...values) {
@@ -176,7 +186,7 @@ export class RuntimeEvidenceBridge {
       targetEntityIds,
       semanticKind: options.semanticKind ?? event.kind,
       completeness: conservativeCompleteness(event.completeness, resolutionCompleteness(resolution)),
-      confidence: options.confidence == null ? null : Number(options.confidence),
+      confidence: optionalConfidence(options.confidence),
       deterministic: false,
       origin: createOriginSet({ parentEntityIds: targetEntityIds }),
       payload: {
@@ -209,8 +219,10 @@ export class RuntimeEvidenceBridge {
   }
 
   linkClaim(claimId, evidenceId, relation, resolution = null) {
-    const type = String(relation);
-    if (!RELATIONS.includes(type)) throw new DebugAdapterError('runtime-invalid-evidence-relation', `invalid runtime evidence relation: ${type}`);
+    if (typeof relation !== 'string' || !RELATIONS.includes(relation)) {
+      throw new DebugAdapterError('runtime-invalid-evidence-relation', 'invalid runtime evidence relation');
+    }
+    const type = relation;
     if (!linkableResolution(resolution)) {
       return deepFreeze({ linked: false, reason: resolution?.state === 'mismatch' ? 'identity-mismatch' : 'static-resolution-required', claimId: String(claimId), evidenceId: String(evidenceId), relation: type });
     }
