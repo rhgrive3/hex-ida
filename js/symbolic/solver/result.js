@@ -83,10 +83,10 @@ export function createSolverResult({
     model: normalizedModel,
     reason: reason ? String(reason) : null,
     stats: Object.freeze({
+      ...stats,
       solveTimeMs: Number(stats.solveTimeMs) || 0,
       nodesEvaluated: Number(stats.nodesEvaluated) || 0,
       memoryBytesDelta: Number(stats.memoryBytesDelta) || 0,
-      ...stats,
     }),
     backend: String(backend),
     backendVersion: String(backendVersion),
