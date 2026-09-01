@@ -12,7 +12,7 @@ function evidenceSource(source, reason) {
 }
 
 function recordViewCollapse(records, { proof, outerBits, innerBits, sourceBits, source, kind = 'exact-view-collapse' }) {
-  records.push(Object.freeze({
+  const record = Object.freeze({
     kind,
     proof,
     outerBits,
@@ -25,7 +25,28 @@ function recordViewCollapse(records, { proof, outerBits, innerBits, sourceBits, 
       ssaDefs:Object.freeze([...(source.ssaDefs || [])]),
       ssaUses:Object.freeze([...(source.ssaUses || [])]),
     }),
-  }));
+  });
+  records.push(record);
+  return record;
+}
+
+/**
+ * C4-03: a produced expression must retain every consumed origin id so a
+ * deleted/merged entity stays navigable from the rendered result. The record
+ * and the produced node can drift apart when only the record carries an id;
+ * this keeps both sides complete without minting new identities.
+ */
+function unionRecordOriginIntoSource(source, record) {
+  const current = sourceOf(source);
+  const origin = record?.origin;
+  if (!origin) return current;
+  const merged = { ...current };
+  for (const key of ['addresses', 'rows', 'ir', 'ssaDefs', 'ssaUses']) {
+    const extra = (origin[key] || [])
+      .filter((id) => !current[key].some((existing) => String(existing) === String(id)));
+    if (extra.length) merged[key] = [...current[key], ...extra];
+  }
+  return merged;
 }
 
 function collapseExactNestedTruncation(node, records) {
@@ -38,7 +59,7 @@ function collapseExactNestedTruncation(node, records) {
   if (outerBits == null || innerBits == null || sourceBits == null) return node;
   if (!(outerBits <= innerBits && innerBits <= sourceBits)) return node;
   const source = mergeSource(node.source, inner.source, inner.arg?.source);
-  recordViewCollapse(records, {
+  const record = recordViewCollapse(records, {
     proof:'trunc_N(trunc_M(x)) == trunc_N(x) for N <= M <= width(x)',
     outerBits,
     innerBits,
@@ -46,7 +67,7 @@ function collapseExactNestedTruncation(node, records) {
     source,
   });
   return expr.unary('trunc', inner.arg, outerBits, node.signed ?? false,
-    evidenceSource(source, 'Phase 8 exact nested-truncation proof'), {
+    unionRecordOriginIntoSource(evidenceSource(source, 'Phase 8 exact nested-truncation proof'), record), {
       fromBits:sourceBits,
       phase8Proof:'nested-truncation',
     });
@@ -78,7 +99,7 @@ function collapseExactExtensionUnderTruncation(node, records) {
 
   const source = mergeSource(node.source, inner.source, inner.arg?.source);
   if (outerBits <= sourceBits) {
-    recordViewCollapse(records, {
+    const record = recordViewCollapse(records, {
       proof:'trunc_N(ext_M(x:S)) == trunc_N(x) for N <= S <= M',
       outerBits,
       innerBits,
@@ -86,14 +107,14 @@ function collapseExactExtensionUnderTruncation(node, records) {
       source,
     });
     return expr.unary('trunc', inner.arg, outerBits, node.signed ?? false,
-      evidenceSource(source, 'Phase 8 exact extension-hidden-by-truncation proof'), {
+      unionRecordOriginIntoSource(evidenceSource(source, 'Phase 8 exact extension-hidden-by-truncation proof'), record), {
         fromBits:sourceBits,
         phase8Proof:'extension-hidden-by-truncation',
       });
   }
 
   if (inner.op !== 'zext') return node;
-  recordViewCollapse(records, {
+  const record = recordViewCollapse(records, {
     proof:'trunc_N(zext_M(x:S)) == zext_N(x) for S < N <= M',
     outerBits,
     innerBits,
@@ -101,7 +122,7 @@ function collapseExactExtensionUnderTruncation(node, records) {
     source,
   });
   return expr.unary('zext', inner.arg, outerBits, node.signed ?? false,
-    evidenceSource(source, 'Phase 8 exact zero-extension narrowing proof'), {
+    unionRecordOriginIntoSource(evidenceSource(source, 'Phase 8 exact zero-extension narrowing proof'), record), {
       fromBits:sourceBits,
       phase8Proof:'narrowed-zero-extension',
     });
@@ -117,7 +138,7 @@ function collapseExactRepeatedExtension(node, records) {
   if (outerBits == null || innerBits == null || sourceBits == null) return node;
   if (!(sourceBits <= innerBits && innerBits <= outerBits)) return node;
   const source = mergeSource(node.source, inner.source, inner.arg?.source);
-  recordViewCollapse(records, {
+  const record = recordViewCollapse(records, {
     proof:`${node.op}_N(${node.op}_M(x)) == ${node.op}_N(x) for width(x) <= M <= N`,
     outerBits,
     innerBits,
@@ -125,7 +146,7 @@ function collapseExactRepeatedExtension(node, records) {
     source,
   });
   return expr.unary(node.op, inner.arg, outerBits, node.signed ?? inner.signed ?? null,
-    evidenceSource(source, `Phase 8 exact repeated-${node.op} proof`), {
+    unionRecordOriginIntoSource(evidenceSource(source, `Phase 8 exact repeated-${node.op} proof`), record), {
       fromBits:sourceBits,
       phase8Proof:`repeated-${node.op}`,
     });
@@ -280,17 +301,94 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
     note:null,
     source:node.source,
   }));
+  const conditionOrigins = new Map();
+  for (const condition of result.semanticAst?.conditions || []) {
+    if (condition?.row == null) continue;
+    conditionOrigins.set(Number(condition.row), sourceOf(condition.expression?.source));
+  }
+  const projection = Object.freeze({
+    version:2,
+    transformCount:records.length,
+    transforms:Object.freeze(records),
+    inductionNames:Object.freeze(Object.fromEntries(names)),
+    lineProvenance:Object.freeze(buildLineProvenance(printed.mapping, conditionOrigins, records)),
+  });
   return {
     ...result,
     lines,
     pseudocode:printed.text,
     sourceMap:printed.mapping,
     metrics:refreshMetrics(result, result.semanticAst, printed, records),
-    phase8Projection:Object.freeze({
-      version:1,
-      transformCount:records.length,
-      transforms:Object.freeze(records),
-      inductionNames:Object.freeze(Object.fromEntries(names)),
-    }),
+    phase8Projection:projection,
   };
+}
+
+/**
+ * C4-03: per-output-line provenance resolved from the printed source map and
+ * the recorded transform origins. Derivable deterministically; no new semantic
+ * identity is minted — every id comes from an existing origin record.
+ */
+function originIdSet(origin) {
+  const out = new Map();
+  for (const key of ['addresses', 'rows', 'ir', 'ssaDefs', 'ssaUses']) {
+    for (const id of origin?.[key] || []) out.set(`${key}:${String(id)}`, key);
+  }
+  return out;
+}
+
+function buildLineProvenance(mapping, conditionOrigins, records) {
+  const transformOrigins = records.map((record) => ({ record, ids:originIdSet(record.origin) }));
+  return Object.freeze((mapping || []).map((entry) => {
+    const source = sourceOf(entry.source);
+    const ids = originIdSet(source);
+    const statementCondition = new Set((source.rows || []).map(Number));
+    for (const row of statementCondition) {
+      const conditionSource = conditionOrigins.get(row);
+      if (!conditionSource) continue;
+      for (const [id, key] of originIdSet(conditionSource)) if (!ids.has(id)) ids.set(id, key);
+    }
+    const intersecting = transformOrigins
+      .filter((item) => [...item.ids.keys()].some((id) => ids.has(id)))
+      .map((item) => item.record);
+    return Object.freeze({
+      outputStartLine:entry.outputStartLine,
+      outputEndLine:entry.outputEndLine,
+      kind:entry.kind ?? null,
+      origin:Object.freeze({
+        addresses:Object.freeze([...(source.addresses || [])]),
+        rows:Object.freeze([...(source.rows || [])]),
+        ir:Object.freeze([...(source.ir || [])]),
+        ssaDefs:Object.freeze([...(source.ssaDefs || [])]),
+        ssaUses:Object.freeze([...(source.ssaUses || [])]),
+      }),
+      evidence:Object.freeze((source.evidence || []).map((item) => Object.freeze({ ...item }))),
+      transforms:Object.freeze(intersecting),
+    });
+  }));
+}
+
+/**
+ * C4-03 fail-closed verifier: a line mapping is trustworthy only when every
+ * origin id it carries is derivable from the projection's own transform
+ * records or the printed source map. A forged or lossy mapping must be
+ * rejected, not trusted.
+ */
+export function verifyLineProvenance(result) {
+  const projection = result?.phase8Projection;
+  if (!projection || !Array.isArray(projection.transforms) || !Array.isArray(projection.lineProvenance)) {
+    throw new TypeError('phase8-provenance-mapping-missing');
+  }
+  const knownIds = new Set();
+  for (const record of projection.transforms) {
+    for (const [id] of originIdSet(record.origin)) knownIds.add(id);
+  }
+  for (const entry of result.sourceMap || []) {
+    for (const [id] of originIdSet(sourceOf(entry.source))) knownIds.add(id);
+  }
+  for (const entry of projection.lineProvenance) {
+    for (const [id] of originIdSet(entry.origin)) {
+      if (!knownIds.has(id)) throw new TypeError(`phase8-provenance-forged-id:${entry.outputStartLine}:${id}`);
+    }
+  }
+  return true;
 }
