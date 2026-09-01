@@ -9,13 +9,22 @@ function selectorFromSymbol(name) {
   return null;
 }
 
+function selectorAddressKey(address) {
+  if (typeof address === 'bigint') return address >= 0n ? address.toString() : null;
+  if (typeof address === 'number') return Number.isSafeInteger(address) && address >= 0 ? address.toString() : null;
+  if (typeof address !== 'string') return null;
+  const text = address.trim();
+  return /^(?:0x[0-9a-fA-F]+|[0-9]+)$/.test(text) ? BigInt(text).toString() : null;
+}
+
 export function buildSelectorIndex({ selectorRefs = [], stubs = [], fixups = [] } = {}) {
   const byAddress = new Map();
   const bySelector = new Map();
   const add = (addr, selector, source, extra = {}) => {
     if (addr == null || !selector) return;
+    const key = selectorAddressKey(addr);
+    if (key == null) return;
     const entry = { addr, selector, source, ...extra };
-    const key = addr.toString();
     let at = byAddress.get(key); if (!at) { at = []; byAddress.set(key, at); }
     if (!at.some((x) => x.selector === selector && x.source === source)) at.push(entry);
     let ss = bySelector.get(selector); if (!ss) { ss = []; bySelector.set(selector, ss); }
@@ -48,8 +57,9 @@ export function resolveSelectorStub({ address, symbol = null, symbolFor = null, 
   };
   const sym = symbol || (symbolFor && address != null ? symbolFor(address) : null);
   add(selectorFromSymbol(sym), 'stub symbol', 0.99);
-  if (selectorIndex && address != null) {
-    for (const e of selectorIndex.byAddress.get(address.toString()) || []) add(e.selector, e.source, e.source === 'message-stub' ? 0.96 : 0.9);
+  const addressKey = selectorAddressKey(address);
+  if (selectorIndex && addressKey != null) {
+    for (const e of selectorIndex.byAddress.get(addressKey) || []) add(e.selector, e.source, e.source === 'message-stub' ? 0.96 : 0.9);
   }
   if (selectorFor && address != null) add(selectorFor(address), 'selector resolver', 0.9);
   candidates.sort((a, b) => b.confidence - a.confidence || a.selector.localeCompare(b.selector));
