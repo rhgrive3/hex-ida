@@ -47,7 +47,7 @@ import {
 
 export function translateSemanticIR(target, options = {}) {
   const ir = options.ir || null;
-  const defaultWidth = Number(options.bitWidth) || 64;
+  const defaultWidth = typeof options.bitWidth === 'number' ? (options.bitWidth || 64) : 64;
   const fromBlock = options.fromBlock != null ? options.fromBlock : null;
   const configuredArgs = options.symbolicArgs || {};
 
