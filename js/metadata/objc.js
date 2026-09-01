@@ -207,7 +207,7 @@ export class ObjcMetadataProvider extends LanguageMetadataProvider {
               implementationProven: m.implementationProven === true,
             },
           })
-      );
+        );
       }
     }
 
