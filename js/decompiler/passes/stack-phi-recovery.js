@@ -193,23 +193,11 @@ function controlCondition(term, maps, engine, ir) {
     || maps.conditions.get(term.id), engine);
 }
 
-function exactStoreExpression(inst, key, maps, opts, engine, ir, active, depth) {
+function exactStoreExpression(inst, key, maps, engine) {
   if (inst?.op !== 'store' || inst.loc?.key !== key) return null;
   const value = valueOf(inst.args?.[0]);
   let expression = value ? maps.values.get(value.id) || null : null;
   if (!expression) return null;
-
-  // A store may itself consume a proven stack LOAD (the common clang -O0
-  // argument-spill -> branch-load -> result-spill shape). Resolve that source
-  // at its own program point through the same CFG/barrier proof rather than
-  // publishing a nested stack temporary as the recovered return expression.
-  const sourceLoad = value?.def;
-  if (expression.kind === 'load' && expression.location?.kind === 'stack'
-      && sourceLoad?.op === 'load' && sourceLoad.loc?.kind === 'stack'
-      && sourceLoad.loc.key === expression.location.key) {
-    expression = resolveStackBefore(ir, sourceLoad.block, sourceLoad.row, sourceLoad.loc.key,
-      maps, opts, engine, active, depth + 1) || expression;
-  }
 
   // A W-register store is an exact truncation boundary. Keep that width in the
   // recovered source value instead of leaking the 64-bit entry-register width
@@ -246,7 +234,7 @@ function resolveStackBefore(ir, blockIndex, beforeRow, key, maps, opts, engine, 
   active.add(visitKey);
   try {
     for (const inst of instructionsBefore(ir, blockIndex, beforeRow)) {
-      const stored = exactStoreExpression(inst, key, maps, opts, engine, ir, active, depth);
+      const stored = exactStoreExpression(inst, key, maps, engine);
       if (stored) return stored;
       if (hasUnsafeBarrier(inst, key)) return null;
     }
@@ -306,8 +294,8 @@ function returnSiteForNode(node, ir, allowSingleFallback = false) {
 
 function recoverReturnExpressionAt(result, node, maps, opts, engine, allowSingleFallback) {
   const output = result.semanticAst?.outputs?.find((x) => x.name === 'return');
-  const nodeKey = stackReturnKey(node?.semantic?.expression);
-  const key = nodeKey || (allowSingleFallback ? stackReturnKey(output?.expression) : null);
+  const expression = node?.semantic?.expression || (allowSingleFallback ? output?.expression : null);
+  const key = stackReturnKey(expression);
   if (!key) return null;
   const retInst = returnSiteForNode(node, result.ir, allowSingleFallback);
   if (!retInst) return null;

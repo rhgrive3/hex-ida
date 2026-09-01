@@ -59,7 +59,7 @@ function compareFromFlags(ir, flagsValue, cond, values) {
   const cmp = flagsValue?.def;
   if (cmp?.op !== 'cmp') return null;
 
-  // Flag-setting arithmetic is lifted as BIN then CMP on the same ARM64 row.
+  // Flag-setting ARM64 arithmetic is lifted as BIN then CMP on the same ARM64 row.
   // SSA renaming can make CMP read the just-written destination. The preceding
   // same-row BIN is an exact proof of the original flag-producing operands.
   const arithmetic = sameRowArithmetic(ir, cmp);
@@ -191,10 +191,24 @@ function controller(ir, merge, predecessors, opts) {
   return candidates[0];
 }
 
-function storeValue(inst, key, values) {
+function storeValue(inst, key, values, ir, opts, engine, active, depth) {
   if (inst?.op !== 'store' || inst.loc?.key !== key) return null;
-  let node = expressionOf(valueOf(inst.args?.[0]), values);
+  const value = valueOf(inst.args?.[0]);
+  let node = expressionOf(value, values);
   if (!node) return null;
+
+  // Clang -O0 commonly stores a value that was itself just reloaded from an
+  // argument spill. Resolve that source at its own program point through this
+  // same CFG/barrier proof; never treat a nested stack temporary as the final
+  // recovered return expression.
+  const sourceLoad = value?.def;
+  if (node.kind === 'load' && node.location?.kind === 'stack'
+      && sourceLoad?.op === 'load' && sourceLoad.loc?.kind === 'stack'
+      && sourceLoad.loc.key === node.location.key) {
+    node = resolve(ir, sourceLoad.block, sourceLoad.row, sourceLoad.loc.key,
+      values, opts, engine, active, depth + 1) || node;
+  }
+
   const bytes = Number(inst.size || inst.loc?.size || inst.addr?.size || 0);
   const bits = bytes > 0 ? bytes * 8 : 0;
   if (bits) node = fitWidth(node, bits, {
@@ -351,7 +365,7 @@ function resolve(ir, blockIndex, beforeRow, key, values, opts, engine, active, d
   active.add(token);
   try {
     for (const inst of before(ir, blockIndex, beforeRow)) {
-      const stored = storeValue(inst, key, values);
+      const stored = storeValue(inst, key, values, ir, opts, engine, active, depth);
       if (stored) return stored;
       if (unsafeBarrier(inst, key)) return null;
     }
