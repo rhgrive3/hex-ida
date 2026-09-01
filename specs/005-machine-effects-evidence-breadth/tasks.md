@@ -38,7 +38,7 @@
 ## Phase 7: Verification and cutover
 
 - [x] T018 Run focused and canonical MachineEffects/Semantic V2/Phase 8 tests
-- [ ] T019 Run denominator, lint, generated-output, and full repository gates
+- [x] T019 Run denominator, lint, generated-output, and full repository gates — executed 2026-09-01 on campaign head (post-merge `fb2fa341` + resync): A2 denominator invariants PASS, lint 1810 files ok, generated output rebuilt canonically (serial `2322242130`, second build zero diff), `npm run effects:test` PASS, `tests/machine-effects/` 163/163; full-repo red classification: `arm64-compiler-truth`/`semantic-v2` compiler-truth O0 = pre-existing baseline #3120 (other lane `fix/compiler-truth-o0-symbolic-stack-forwarding-run12`), not this lane
 - [x] T020 Perform three adversarial review passes and repair findings
 - [x] T021 Reconcile current main and verify the candidate merge tree
 - [x] T022 Update `docs/analysis-improvement-finding-ledger.md` with exact evidence and honest COMPLETE/PARTIAL state
