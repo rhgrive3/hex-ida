@@ -46,6 +46,16 @@ function invalidConditionalEvidence(mnemonic, ops) {
     || !FP_CONDITIONS.has(conditions[0].text.toLowerCase());
 }
 
+function fixedPointScaleWidth(mnemonic, ops) {
+  const register = mnemonic === 'scvtf' || mnemonic === 'ucvtf' ? ops[1] : ops[0];
+  if (register?.k !== 'reg'
+      || !['gp','zr'].includes(register.cls)
+      || typeof register.bits !== 'number'
+      || !Number.isSafeInteger(register.bits)
+      || ![32,64].includes(register.bits)) return null;
+  return register.bits;
+}
+
 function invalidIntegerImmediateEvidence(mnemonic, ops) {
   if (mnemonic === 'fccmp' || mnemonic === 'fccmpe') {
     const immediate = ops[2];
@@ -56,7 +66,11 @@ function invalidIntegerImmediateEvidence(mnemonic, ops) {
   }
   if (FP_FIXED_POINT.has(mnemonic) && ops.length === 3 && ops[2]?.k === 'imm') {
     const value = ops[2].value;
-    return typeof value !== 'bigint' || value < 1n || value > 64n;
+    const scaleWidth = fixedPointScaleWidth(mnemonic, ops);
+    return typeof value !== 'bigint'
+      || scaleWidth == null
+      || value < 1n
+      || value > BigInt(scaleWidth);
   }
   return false;
 }
