@@ -191,6 +191,22 @@ function controller(ir, merge, predecessors, opts) {
   return candidates[0];
 }
 
+function exactStackLoadSource(ir, value, node) {
+  if (node?.kind !== 'load' || node.location?.kind !== 'stack' || !node.location?.key) return null;
+  const direct = value?.def;
+  if (direct?.op === 'load' && direct.loc?.kind === 'stack' && direct.loc.key === node.location.key) return direct;
+
+  // Compatibility may insert a physical-state MOV shadow between the semantic
+  // load and the STORE operand. In that case rely only on unique AST provenance
+  // that names one real stack LOAD for the exact same slot; ambiguous provenance
+  // remains unresolved.
+  const ids = [...new Set((node.source?.ir || []).map(String))];
+  if (ids.length !== 1) return null;
+  const candidate = (ir.instructions || []).find((inst) => String(inst.id) === ids[0]);
+  return candidate?.op === 'load' && candidate.loc?.kind === 'stack'
+    && candidate.loc.key === node.location.key ? candidate : null;
+}
+
 function storeValue(inst, key, values, ir, opts, engine, active, depth) {
   if (inst?.op !== 'store' || inst.loc?.key !== key) return null;
   const value = valueOf(inst.args?.[0]);
@@ -201,10 +217,8 @@ function storeValue(inst, key, values, ir, opts, engine, active, depth) {
   // argument spill. Resolve that source at its own program point through this
   // same CFG/barrier proof; never treat a nested stack temporary as the final
   // recovered return expression.
-  const sourceLoad = value?.def;
-  if (node.kind === 'load' && node.location?.kind === 'stack'
-      && sourceLoad?.op === 'load' && sourceLoad.loc?.kind === 'stack'
-      && sourceLoad.loc.key === node.location.key) {
+  const sourceLoad = exactStackLoadSource(ir, value, node);
+  if (sourceLoad) {
     node = resolve(ir, sourceLoad.block, sourceLoad.row, sourceLoad.loc.key,
       values, opts, engine, active, depth + 1) || node;
   }
