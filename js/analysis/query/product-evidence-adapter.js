@@ -12,7 +12,10 @@ function addressOf(value) {
   if (typeof value !== 'string') return null;
   const text = value.trim().replace(/^(?:fn|function):/i, '');
   if (!text) return null;
-  try { return BigInt(text); } catch { return null; }
+  try {
+    const parsed = BigInt(text);
+    return parsed >= 0n ? parsed : null;
+  } catch { return null; }
 }
 
 function pageOf(page = {}) {
