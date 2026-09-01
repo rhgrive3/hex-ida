@@ -41,7 +41,12 @@ function sameIdentity(bound, live) {
 function bindValue(app, value, currentSnapshotId = null) {
   if (!value || typeof value !== 'object') return { value, identity:null };
   const report = value.report && typeof value.report === 'object' ? value.report : null;
-  const snapshotId = value.snapshotId ?? report?.snapshotId ?? null;
+  const wrapperSnapshotId = value.snapshotId ?? null;
+  const reportSnapshotId = report?.snapshotId ?? null;
+  if (wrapperSnapshotId != null && reportSnapshotId != null && wrapperSnapshotId !== reportSnapshotId) {
+    return { value, identity:null };
+  }
+  const snapshotId = wrapperSnapshotId ?? reportSnapshotId ?? null;
   const identity = liveIdentity(app, null);
   if (report && !report.snapshotId && snapshotId) {
     try { report.snapshotId = snapshotId; } catch { /* compatibility report may be frozen */ }
