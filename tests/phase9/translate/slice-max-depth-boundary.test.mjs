@@ -16,6 +16,11 @@ test('slice maxDepth accepts only primitive finite numeric authority', () => {
     true,
     'finite primitive number must retain its existing depth-bound behavior',
   );
+  assert.equal(
+    backwardDependencySlice(target, { maxDepth: 0 }).hitDepthLimit,
+    true,
+    'explicit zero must remain the strictest finite depth bound',
+  );
 
   for (const malformed of [['1'], '1', { valueOf: () => 1 }, Infinity, -Infinity, NaN]) {
     assert.equal(
