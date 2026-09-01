@@ -59,7 +59,7 @@ function compareFromFlags(ir, flagsValue, cond, values) {
   const cmp = flagsValue?.def;
   if (cmp?.op !== 'cmp') return null;
 
-  // Flag-setting ARM64 arithmetic is lifted as BIN then CMP on the same ARM64 row.
+  // Flag-setting arithmetic is lifted as BIN then CMP on the same ARM64 row.
   // SSA renaming can make CMP read the just-written destination. The preceding
   // same-row BIN is an exact proof of the original flag-producing operands.
   const arithmetic = sameRowArithmetic(ir, cmp);
@@ -191,37 +191,10 @@ function controller(ir, merge, predecessors, opts) {
   return candidates[0];
 }
 
-function exactStackLoadSource(ir, value, node) {
-  if (node?.kind !== 'load' || node.location?.kind !== 'stack' || !node.location?.key) return null;
-  const direct = value?.def;
-  if (direct?.op === 'load' && direct.loc?.kind === 'stack' && direct.loc.key === node.location.key) return direct;
-
-  // Compatibility may add MOV/state-write provenance around the semantic load.
-  // Accept it only when the AST provenance still names exactly one real stack
-  // LOAD for this exact slot; unrelated provenance IDs do not create ambiguity.
-  const ids = new Set((node.source?.ir || []).map(String));
-  const candidates = (ir.instructions || []).filter((inst) =>
-    ids.has(String(inst.id)) && inst?.op === 'load' && inst.loc?.kind === 'stack'
-      && inst.loc.key === node.location.key);
-  return candidates.length === 1 ? candidates[0] : null;
-}
-
-function storeValue(inst, key, values, ir, opts, engine, active, depth) {
+function storeValue(inst, key, values) {
   if (inst?.op !== 'store' || inst.loc?.key !== key) return null;
-  const value = valueOf(inst.args?.[0]);
-  let node = expressionOf(value, values);
+  let node = expressionOf(valueOf(inst.args?.[0]), values);
   if (!node) return null;
-
-  // Clang -O0 commonly stores a value that was itself just reloaded from an
-  // argument spill. Resolve that source at its own program point through this
-  // same CFG/barrier proof; never treat a nested stack temporary as the final
-  // recovered return expression.
-  const sourceLoad = exactStackLoadSource(ir, value, node);
-  if (sourceLoad) {
-    node = resolve(ir, sourceLoad.block, sourceLoad.row, sourceLoad.loc.key,
-      values, opts, engine, active, depth + 1) || node;
-  }
-
   const bytes = Number(inst.size || inst.loc?.size || inst.addr?.size || 0);
   const bits = bytes > 0 ? bytes * 8 : 0;
   if (bits) node = fitWidth(node, bits, {
@@ -378,7 +351,7 @@ function resolve(ir, blockIndex, beforeRow, key, values, opts, engine, active, d
   active.add(token);
   try {
     for (const inst of before(ir, blockIndex, beforeRow)) {
-      const stored = storeValue(inst, key, values, ir, opts, engine, active, depth);
+      const stored = storeValue(inst, key, values);
       if (stored) return stored;
       if (unsafeBarrier(inst, key)) return null;
     }
