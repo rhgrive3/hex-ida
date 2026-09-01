@@ -19,7 +19,9 @@ function stringList(values, code) {
 }
 function stringValue(value, code) {
   if (typeof value !== 'string') fail(code);
-  return value;
+  const text = value.trim();
+  if (!text) fail(code);
+  return text;
 }
 function requiredString(value, code) {
   if (typeof value !== 'string') fail(code);
