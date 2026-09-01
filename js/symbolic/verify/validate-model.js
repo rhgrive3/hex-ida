@@ -10,6 +10,9 @@ import { evaluateExpr, EVAL_STATUS } from '../expr/evaluate.js';
 import { SORT_KIND } from '../expr/kinds.js';
 
 export function validateSatModel(query, model) {
+  if (!query) {
+    return { valid: false, reason: 'missing-query', detail: { query } };
+  }
   if (!model || (typeof model !== 'object' && !(model instanceof Map))) {
     return { valid: false, reason: 'missing-model', detail: { model } };
   }
