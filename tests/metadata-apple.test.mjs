@@ -79,4 +79,24 @@ console.log('Testing Swift & Objective-C Metadata Providers...');
   assert.equal(probe.identity.verdict, 'identity-unavailable');
 }
 
+// 4. Objective-C Metadata Provider: incomplete protocol runtime metadata stays partial (#3270)
+{
+  const provider = new ObjcMetadataProvider({
+    sections: [
+      { name: '__objc_classlist', section: '__objc_classlist', size: 0n, vmAddr: 0x1000n },
+      { name: '__objc_protolist', section: '__objc_protolist', size: 9n, vmAddr: 0x2000n },
+    ],
+    readAt: async (_addr, len) => new Uint8Array(len),
+    binaryIdentity: 'sha256:objc-partial-protocols',
+  });
+
+  const probe = await provider.probe();
+  assert.equal(provider.cachedModel.runtimeCompleteness.classes.complete, true);
+  assert.equal(provider.cachedModel.runtimeCompleteness.protocols.complete, false);
+  assert.equal(provider.cachedModel.runtimeCompleteness.complete, false);
+  assert.equal(probe.authoritative, false);
+  assert.equal(probe.identity.verdict, 'matched-partial');
+  assert.equal(probe.completeness.complete, false);
+}
+
 console.log('Swift & Objective-C Metadata Provider tests passed.');
