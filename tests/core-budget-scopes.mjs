@@ -188,4 +188,42 @@ console.log("Testing ResourceBudget composable scopes...");
   console.log("  ok #1176 ResourceBudget limits validation");
 }
 
+// Worker hard-limit boundaries reject structured/non-number coercion (#3291).
+await import("../js/worker-budget.js");
+{
+  const api = globalThis.HexWorkerBudget;
+  assert.ok(api);
+  const budget = api.createSupplementalBudget();
+  for (const value of ["1", true, [1], NaN, Infinity, -1]) {
+    assert.equal(budget.takeRead(value), false);
+  }
+  assert.equal(budget.snapshot().read, 0);
+  assert.equal(budget.takeRead(0), true);
+  assert.equal(budget.takeRead(1), true);
+  assert.equal(budget.snapshot().read, 1);
+
+  const resident = api.createSupplementalBudget();
+  assert.equal(resident.takeResident(4), true);
+  for (const value of ["4", true, [4], NaN, Infinity, -1, 0]) resident.releaseResident(value);
+  assert.equal(resident.snapshot().resident, 4);
+  resident.releaseResident(2);
+  assert.equal(resident.snapshot().resident, 2);
+
+  for (const value of ["50000", true, [50_000], NaN, Infinity, -1, 0]) {
+    assert.equal(api.functionAuxLimit(value), 32_768);
+  }
+  assert.equal(api.functionAuxLimit(50_000), 100_000);
+  assert.equal(api.functionAuxLimit(50_000.9), 100_000);
+  assert.equal(api.functionAuxLimit(500_000), 800_000);
+
+  const MiB = 1024 * 1024;
+  for (const [current, temporary] of [["1", 1], [1, "1"], [[1], 1], [1, true], [NaN, 1], [1, Infinity], [-1, 1], [1, -1]]) {
+    assert.equal(api.withinProgramBudget(current, temporary), false);
+  }
+  assert.equal(api.withinProgramBudget(0, 0), true);
+  assert.equal(api.withinProgramBudget(95 * MiB, 1 * MiB), true);
+  assert.equal(api.withinProgramBudget(95 * MiB, 1 * MiB + 1), false);
+  console.log("  ok #3291 worker budget strict numeric boundary");
+}
+
 console.log("All core budget scope tests PASS!");
