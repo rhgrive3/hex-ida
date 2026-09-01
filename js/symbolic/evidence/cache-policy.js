@@ -75,6 +75,12 @@ export function computeVerifierFingerprint({
   if (proofAuthority === PROOF_AUTHORITY.EXACT && (!capabilityFingerprint || typeof capabilityFingerprint !== 'string')) {
     throw new TypeError('computeVerifierFingerprint: exact authority requires capabilityFingerprint');
   }
+  if (typeof architecture !== 'string' || architecture.trim() === '') {
+    throw new TypeError('computeVerifierFingerprint: architecture must be a non-empty string');
+  }
+  if (bitWidth != null && (!Number.isSafeInteger(bitWidth) || bitWidth <= 0)) {
+    throw new TypeError('computeVerifierFingerprint: bitWidth must be a positive safe integer or null');
+  }
 
   const payload = {
     backendId: String(backendId),
@@ -86,7 +92,7 @@ export function computeVerifierFingerprint({
     proofAuthority: String(proofAuthority),
     capabilityFingerprint: capabilityFingerprint == null ? null : String(capabilityFingerprint),
     architecture: String(architecture),
-    bitWidth: bitWidth == null ? null : Number(bitWidth),
+    bitWidth: bitWidth == null ? null : bitWidth,
     assumptionsFingerprint: assumptionsFingerprint == null ? null : String(assumptionsFingerprint),
     proofScope: proofScope ? canonicalizeValue(proofScope) : null,
     solverOptions: solverOptions ? canonicalizeValue(solverOptions) : null,
