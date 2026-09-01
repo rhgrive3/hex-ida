@@ -294,8 +294,8 @@ function returnSiteForNode(node, ir, allowSingleFallback = false) {
 
 function recoverReturnExpressionAt(result, node, maps, opts, engine, allowSingleFallback) {
   const output = result.semanticAst?.outputs?.find((x) => x.name === 'return');
-  const expression = node?.semantic?.expression || (allowSingleFallback ? output?.expression : null);
-  const key = stackReturnKey(expression);
+  const nodeKey = stackReturnKey(node?.semantic?.expression);
+  const key = nodeKey || (allowSingleFallback ? stackReturnKey(output?.expression) : null);
   if (!key) return null;
   const retInst = returnSiteForNode(node, result.ir, allowSingleFallback);
   if (!retInst) return null;
