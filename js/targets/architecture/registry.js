@@ -3,8 +3,8 @@ const ARCHITECTURES = new Map();
 export function canonicalArchitectureId(value) { return String(value || '').trim().toLowerCase(); }
 export function normalizeArchitecturePositiveInteger(value, name, { nullable = false } = {}) {
   if (nullable && value == null) return null;
-  const n = Number(value);
-  if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) throw new TypeError(`${name} must be a finite positive integer`);
+  const n = value;
+  if (typeof n !== 'number' || !Number.isFinite(n) || !Number.isInteger(n) || n <= 0) throw new TypeError(`${name} must be a finite positive integer`);
   return n;
 }
 
