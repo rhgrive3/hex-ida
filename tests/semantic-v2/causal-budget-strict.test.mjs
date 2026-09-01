@@ -82,11 +82,10 @@ function programFromEdges(edges) {
 }
 
 {
-  const edges = new Map();
-  for (let i = 1; i < 18; i++) edges.set(i, [i + 1]);
-  const program = programFromEdges(edges);
+  const firstLayer = Array.from({ length: 17 }, (_, index) => index + 2);
+  const program = programFromEdges(new Map([[1, firstLayer]]));
   assert.deepEqual(functionPaths(program, 1, 18, { maxVisited: 16 }).paths, [], 'numeric maxVisited remains authoritative');
-  assert.deepEqual(functionPaths(program, 1, 18, { maxVisited: ['16'] }).paths, [[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]], 'structured maxVisited must fall back');
+  assert.deepEqual(functionPaths(program, 1, 18, { maxVisited: ['16'] }).paths, [[1, 18]], 'structured maxVisited must fall back');
 }
 
 console.log('query causal strict budget regression (#3189): PASS');
