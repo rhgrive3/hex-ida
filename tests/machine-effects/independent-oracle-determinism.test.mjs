@@ -52,7 +52,11 @@ async function runOnce() {
     },
     a2Before: A2_SNAPSHOT,
     a2After: A2_SNAPSHOT,
-    architecturalEvidence: corpus.cases.map((caseValue) => createArchitecturalEvidence(evidenceInputForOracleCase(caseValue))),
+    architecturalEvidence: corpus.cases.map((caseValue) => {
+      const input = evidenceInputForOracleCase(caseValue);
+      if (!['arm64:a64', 'riscv64:rv64imc'].includes(input.profileId)) input.completeness = 'partial';
+      return createArchitecturalEvidence(input);
+    }),
   });
   return { corpus, results, report };
 }
