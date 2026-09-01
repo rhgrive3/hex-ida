@@ -72,9 +72,9 @@ function numericPrimitive(value, code) {
 }
 
 function uint(value, code) {
-  const n = numericPrimitive(value, code);
-  if (!Number.isSafeInteger(n) || n < 0) throw new TypeError(code);
-  return n;
+  if (typeof value !== 'number') throw new TypeError(code);
+  if (!Number.isSafeInteger(value) || value < 0) throw new TypeError(code);
+  return value;
 }
 
 function boundedCount(value, fallback, max, code) {
