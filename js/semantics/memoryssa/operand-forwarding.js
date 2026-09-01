@@ -182,11 +182,13 @@ function semanticBlockMayBeJoin(ir, blockId) {
 
 function semanticIntervalContainsCall(ir, storeNode, loadNode) {
   if (!Array.isArray(ir?.nodes)) return true;
-  // If the function contains no call at all, the spill→reload interval cannot
-  // cross a call publication boundary. This exact negative proof must win
-  // before consulting the serialized node order, which is not a CFG order for
-  // cross-block -O0 spill/reload pairs.
-  if (!ir.nodes.some((node) => node?.kind === 'call')) return false;
+  const storeBlockId = String(storeNode?.blockId ?? '');
+  const loadBlockId = String(loadNode?.blockId ?? '');
+  if (!storeBlockId || !loadBlockId || storeBlockId !== loadBlockId) return true;
+  // If the same block contains no call at all, the spill→reload interval cannot
+  // cross a call publication boundary. Cross-block flows are rejected above and
+  // must use CFG-aware recovery instead of serialized node order.
+  if (!ir.nodes.some((node) => String(node?.blockId ?? '') === storeBlockId && node?.kind === 'call')) return false;
   const storeIndex = ir.nodes.indexOf(storeNode);
   const loadIndex = ir.nodes.indexOf(loadNode);
   // Exact symbolic stack identity is only safe across an interval whose order
@@ -194,7 +196,8 @@ function semanticIntervalContainsCall(ir, storeNode, loadNode) {
   // boundary for compatibility projection: forwarding a pre-call synthetic PHI
   // into a post-call LOAD can leak local_phi instead of the committed lvalue.
   if (storeIndex < 0 || loadIndex <= storeIndex) return true;
-  return ir.nodes.slice(storeIndex + 1, loadIndex).some((node) => node?.kind === 'call');
+  return ir.nodes.slice(storeIndex + 1, loadIndex).some((node) =>
+    String(node?.blockId ?? '') === storeBlockId && node?.kind === 'call');
 }
 
 export function forwardExactStackOperandIdentity(memorySsa, useOrId, ir) {
