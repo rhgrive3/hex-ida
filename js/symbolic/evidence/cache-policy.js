@@ -135,16 +135,12 @@ export function isCacheableProof({
     return false;
   }
 
-  // 4. Incomplete or unsupported translation cannot be cached as proved/refuted
-  if (completeness) {
-    if (
-      completeness.translation === COMPLETENESS_STATUS.UNSUPPORTED ||
-      completeness.translation === 'unsupported' ||
-      completeness.translation === COMPLETENESS_STATUS.PARTIAL ||
-      completeness.translation === 'partial'
-    ) {
-      return false;
-    }
+  // 4. Every proof-completeness axis required by SymbolicEvidence must be
+  // present and explicitly complete. Missing/partial/unsupported/unknown
+  // completeness is not durable proof authority.
+  if (!completeness || typeof completeness !== 'object' || Array.isArray(completeness)) return false;
+  for (const axis of ['translation', 'controlFlow', 'memoryEffects', 'pathCoverage', 'queryScope']) {
+    if (completeness[axis] !== COMPLETENESS_STATUS.COMPLETE && completeness[axis] !== 'complete') return false;
   }
 
   // 5. Inconsistent or unknown preconditions cannot produce cacheable proofs
