@@ -77,6 +77,18 @@ function authorityRank(authority) {
   return authority === 'authoritative' ? 2 : authority === 'corroborating' ? 1 : 0;
 }
 
+function primitiveInteger(value, code) {
+  const type = typeof value;
+  if (type !== 'bigint' && type !== 'string' && !(type === 'number' && Number.isSafeInteger(value))) {
+    throw new TypeError(code);
+  }
+  try {
+    return BigInt(value);
+  } catch {
+    throw new TypeError(code);
+  }
+}
+
 function regionSignature(item) {
   return (item.regions ?? []).map((region) => `${region.start}-${region.end}-${region.ownership ?? ''}`).join(',');
 }
@@ -211,7 +223,7 @@ export function fuseFunctionCandidates(evidence, options = {}) {
   const orderedEvidence = [...evidence].sort(compareEvidence);
   for (const item of orderedEvidence) {
     if (item.start == null) continue;
-    const key = BigInt(item.start).toString();
+    const key = primitiveInteger(item.start, 'discovery-fusion-invalid-start').toString();
     if (!byStart.has(key)) byStart.set(key, { items: [], overflow: false });
     const entry = byStart.get(key);
     if (entry.items.length < budget.maxEvidencePerCandidate) entry.items.push(item);
@@ -382,8 +394,8 @@ function reconcileOverlaps(candidates, { signal = null } = {}) {
  * fusion never has to interpret a raw length.
  */
 export function regionFromSize(start, sizeBytes, ownership = 'exclusive') {
-  const begin = BigInt(start);
-  const size = BigInt(sizeBytes);
+  const begin = primitiveInteger(start, 'discovery-region-invalid-start');
+  const size = primitiveInteger(sizeBytes, 'discovery-region-invalid-size');
   if (size <= 0n) return null;
   return createRegion({ start: begin, end: begin + size, ownership });
 }

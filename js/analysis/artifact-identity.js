@@ -78,9 +78,8 @@ function sortedIds(values, code) {
 }
 
 export function dependencyClassFor(kind) {
-  const classes = PHASE7_DEPENDENCY_CLASSES[kind];
-  if (!classes) fail('phase7-artifact-unknown-kind');
-  return classes;
+  if (!KIND_SET.has(kind)) fail('phase7-artifact-unknown-kind');
+  return PHASE7_DEPENDENCY_CLASSES[kind];
 }
 
 /**
@@ -137,6 +136,12 @@ export function createPhase7ArtifactDescriptor(input = {}) {
   const classes = dependencyClassFor(kind);
 
   const budgetClass = optional(input.budgetClass, 'phase7-artifact-invalid-budget-class');
+  const architectureSemanticVersion = classes.includes('semantic')
+    ? nonEmpty(input.architectureSemanticVersion, 'phase7-artifact-architecture-semantic-version-required')
+    : optional(input.architectureSemanticVersion, 'phase7-artifact-invalid-architecture-semantic-version');
+  const abiSemanticVersion = classes.includes('abi')
+    ? nonEmpty(input.abiSemanticVersion, 'phase7-artifact-abi-semantic-version-required')
+    : optional(input.abiSemanticVersion, 'phase7-artifact-invalid-abi-semantic-version');
   // Budget class only belongs in the key when completeness can depend on it.
   // An artifact produced under an exhaustive budget is not interchangeable with
   // one truncated under an interactive budget.
@@ -180,14 +185,14 @@ export function createPhase7ArtifactDescriptor(input = {}) {
     producerVersion: nonEmpty(input.analyzerVersion, 'phase7-artifact-analyzer-version-required'),
     versions: {
       loader: input.loaderVersion ?? 'n/a',
-      architectureSemantic: input.architectureSemanticVersion ?? 'n/a',
-      abiSemantic: input.abiSemanticVersion ?? 'n/a',
+      architectureSemantic: architectureSemanticVersion ?? 'n/a',
+      abiSemantic: abiSemanticVersion ?? 'n/a',
       semanticSchema: nonEmpty(input.semanticSchemaVersion, 'phase7-artifact-semantic-schema-required'),
     },
     relevance: {
       loader: input.loaderVersion != null,
-      architectureSemantic: input.architectureSemanticVersion != null,
-      abiSemantic: input.abiSemanticVersion != null,
+      architectureSemantic: classes.includes('semantic') || architectureSemanticVersion != null,
+      abiSemantic: classes.includes('abi') || abiSemanticVersion != null,
       semanticSchema: true,
       provider: keyExtras.debugProviderVersion != null,
     },

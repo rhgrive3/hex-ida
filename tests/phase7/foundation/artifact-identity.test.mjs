@@ -20,6 +20,8 @@ const base = (overrides = {}) => ({
   cfgVersion: '2.0.0',
   ssaVersion: '2.0.0',
   memorySsaVersion: '2.0.0',
+  architectureSemanticVersion: '1',
+  abiSemanticVersion: '1',
   ...overrides,
 });
 

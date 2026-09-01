@@ -7,12 +7,15 @@ const CANONICAL_VERDICTS = new Set([
 const MAX_EVIDENCE_ROWS = 5_000;
 
 function addressOf(value) {
-  if (typeof value === 'bigint') return value;
+  if (typeof value === 'bigint') return value >= 0n ? value : null;
   if (typeof value === 'number') return Number.isSafeInteger(value) && value >= 0 ? BigInt(value) : null;
   if (typeof value !== 'string') return null;
   const text = value.trim().replace(/^(?:fn|function):/i, '');
   if (!text) return null;
-  try { return BigInt(text); } catch { return null; }
+  try {
+    const parsed = BigInt(text);
+    return parsed >= 0n ? parsed : null;
+  } catch { return null; }
 }
 
 function pageOf(page = {}) {

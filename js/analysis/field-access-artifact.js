@@ -21,7 +21,16 @@ function cacheFor(backend) {
 }
 
 function artifactKey(region, offset, size) {
-  return `${region.id}:${BigInt(offset)}:${Number(size || 0)}`;
+  const keySize = typeof size === 'bigint' ? `${size}n` : Number(size || 0);
+  return `${region.id}:${BigInt(offset)}:${keySize}`;
+}
+
+function validBackendResult(result) {
+  if (result == null || typeof result !== 'object' || Array.isArray(result)) return false;
+  if (!Array.isArray(result.results)) return false;
+  if (result.complete != null && typeof result.complete !== 'boolean') return false;
+  if (result.truncated != null && typeof result.truncated !== 'boolean') return false;
+  return true;
 }
 
 function entryFor(backend, region, offset, size) {
@@ -34,10 +43,11 @@ function entryFor(backend, region, offset, size) {
   entry = { request, waiters:0, result:null, promise:null };
   entry.promise = Promise.resolve(request)
     .then((result) => {
+      if (!validBackendResult(result)) throw new TypeError('field-access-invalid-result');
       const state = resultState(result);
       entry.result = Object.freeze({
         regionId:region.id,
-        results:Object.freeze((result?.results || []).map((row) => Object.freeze({ ...row, regionId:region.id }))),
+        results:Object.freeze(result.results.map((row) => Object.freeze({ ...row, regionId:region.id }))),
         ...state,
       });
       return entry.result;
@@ -52,6 +62,7 @@ function entryFor(backend, region, offset, size) {
 
 export function fieldAccessRegion(backend, region, offset, size, { signal } = {}) {
   if (!backend || !region?.id) return Promise.resolve({ regionId:region?.id || null, results:[], complete:false, reason:'field-access-unavailable' });
+  if (signal?.aborted) return Promise.reject(abortError(signal));
   const entry = entryFor(backend, region, offset, size);
   if (entry.result) return Promise.resolve(entry.result);
   entry.waiters++;
