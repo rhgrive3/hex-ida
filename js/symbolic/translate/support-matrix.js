@@ -76,7 +76,7 @@ export function classifyOpSupport(op, inst = null) {
 
     case OP.BIN: {
       const sub = inst?.subOp || inst?.name;
-      const supportedBin = ['add', 'sub', 'mul', 'and', 'or', 'orr', 'xor', 'eor', 'shl', 'lshr', 'ashr'];
+      const supportedBin = ['add', 'sub', 'mul', 'and', 'or', 'orr', 'xor', 'eor', 'shl', 'lshr', 'ashr', 'udiv', 'sdiv', 'urem', 'srem'];
       if (!sub || supportedBin.includes(sub)) {
         return TRANSLATION_STATUS.EXACT;
       }
