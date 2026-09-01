@@ -14,11 +14,19 @@ function asBig(v) { return typeof v === 'bigint' ? v : BigInt(v || 0); }
 
 function boundedStepBudget(value) {
   if (value == null) return DEFAULT_SANDBOX_STEPS;
-  const n = Number(value);
-  if (!Number.isFinite(n) || !Number.isSafeInteger(n) || n < 1) {
+  const n = value;
+  if (typeof n !== 'number' || !Number.isFinite(n) || !Number.isSafeInteger(n) || n < 1) {
     throw new RangeError('maxSteps must be a positive finite safe integer');
   }
   return Math.min(n, MAX_SANDBOX_STEPS);
+}
+
+function boundedObjectSize(value) {
+  if (value == null) return 0x10000;
+  if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isSafeInteger(value) || value <= 0) {
+    return 0x10000;
+  }
+  return Math.max(0x100, value);
 }
 
 function normalizeWatch(watch, objectBase) {
@@ -109,7 +117,7 @@ export class FunctionSandbox {
     this._initialHeapBase = this.emulator.heap;
     this._setupCount = 0;
     this.objectBase = opts && opts.objectBase != null ? asBig(opts.objectBase) : DEFAULT_OBJECT_BASE;
-    this.maxObjectSize = Math.max(0x100, Number(opts && opts.maxObjectSize || 0x10000));
+    this.maxObjectSize = boundedObjectSize(opts && opts.maxObjectSize);
     this.watch = [];
     this.before = [];
     this.beforeObjectBytes = new Map();

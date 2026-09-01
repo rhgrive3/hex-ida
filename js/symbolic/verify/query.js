@@ -40,6 +40,21 @@ function freezeDeep(value, seen = new WeakSet()) {
   return Object.freeze(value);
 }
 
+function requireIdentityString(value, name) {
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    throw new TypeError(`createVerificationQuery: ${name} must be a non-empty string`);
+  }
+  return value;
+}
+
+function normalizeBitWidth(value) {
+  if (value == null) return null;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) {
+    throw new TypeError('createVerificationQuery: bitWidth must be a positive safe integer or null');
+  }
+  return value;
+}
+
 export function isVerificationQuery(query) {
   return (
     !!query &&
@@ -74,6 +89,11 @@ export function createVerificationQuery({
     throw new TypeError(`createVerificationQuery: invalid claim kind '${claimKind}'`);
   }
 
+  const normalizedSemanticIrVersion = requireIdentityString(semanticIrVersion, 'semanticIrVersion');
+  const normalizedTranslatorVersion = requireIdentityString(translatorVersion, 'translatorVersion');
+  const normalizedArchitecture = requireIdentityString(architecture, 'architecture');
+  const normalizedBitWidth = normalizeBitWidth(bitWidth);
+
   let normalizedConstraints = [];
   if (Array.isArray(constraints)) {
     normalizedConstraints = [...constraints].filter(Boolean);
@@ -102,10 +122,10 @@ export function createVerificationQuery({
     assumptions: normalizedAssumptions,
     completeness: normalizedCompleteness,
     requestedOutputs: normalizedOutputs,
-    semanticIrVersion: String(semanticIrVersion),
-    translatorVersion: String(translatorVersion),
-    architecture: String(architecture),
-    bitWidth: bitWidth == null ? null : Number(bitWidth),
+    semanticIrVersion: normalizedSemanticIrVersion,
+    translatorVersion: normalizedTranslatorVersion,
+    architecture: normalizedArchitecture,
+    bitWidth: normalizedBitWidth,
     proofScope: proofScope || null,
   };
 
@@ -121,10 +141,10 @@ export function createVerificationQuery({
     assumptions: Object.freeze(normalizedAssumptions),
     completeness: normalizedCompleteness,
     requestedOutputs: Object.freeze(normalizedOutputs),
-    semanticIrVersion: String(semanticIrVersion),
-    translatorVersion: String(translatorVersion),
-    architecture: String(architecture),
-    bitWidth: bitWidth == null ? null : Number(bitWidth),
+    semanticIrVersion: normalizedSemanticIrVersion,
+    translatorVersion: normalizedTranslatorVersion,
+    architecture: normalizedArchitecture,
+    bitWidth: normalizedBitWidth,
     proofScope: proofScope || null,
     queryHash,
   });

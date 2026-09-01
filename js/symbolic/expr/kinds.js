@@ -15,11 +15,10 @@ export function boolSort() {
 }
 
 export function bvSort(width) {
-  const w = Number(width);
-  if (!Number.isSafeInteger(w) || w <= 0) {
+  if (typeof width !== 'number' || !Number.isSafeInteger(width) || width <= 0) {
     throw new TypeError(`bvSort: width must be a positive safe integer >= 1, got ${width}`);
   }
-  return Object.freeze({ kind: SORT_KIND.BV, width: w });
+  return Object.freeze({ kind: SORT_KIND.BV, width });
 }
 
 export function isBoolSort(sort) {

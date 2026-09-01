@@ -84,7 +84,15 @@ export class SolverSession {
     this._invalidatePreviousQueries();
     const token = ++this.currentQueryToken;
     const controller = makeAbortController();
-    const timeoutMs = options.timeoutMs ?? this.options.timeoutMs ?? 5000;
+    const sessionTimeoutMs = typeof this.options.timeoutMs === 'number' && Number.isFinite(this.options.timeoutMs)
+      ? this.options.timeoutMs
+      : 5000;
+    const requestedTimeoutMs = options.timeoutMs;
+    const timeoutMs = requestedTimeoutMs == null
+      ? sessionTimeoutMs
+      : typeof requestedTimeoutMs === 'number' && Number.isFinite(requestedTimeoutMs)
+        ? requestedTimeoutMs
+        : sessionTimeoutMs;
     const record = {
       token,
       controller,
@@ -154,7 +162,7 @@ export class SolverSession {
       record.removeExternalAbort = () => options.signal.removeEventListener?.('abort', onAbort);
     }
 
-    if (Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0) {
+    if (timeoutMs > 0) {
       record.timer = setTimeout(() => {
         if (record.settled) return;
         record.timedOut = true;
@@ -164,7 +172,7 @@ export class SolverSession {
         try { controller.abort(); } catch { /* best effort */ }
         Promise.resolve(this._onTimeout(token)).catch(() => {});
         settle(this._result(SOLVER_STATUS.TIMEOUT, `query execution timed out after ${timeoutMs}ms`, { timedOut: true }));
-      }, Number(timeoutMs));
+      }, timeoutMs);
     }
 
     Promise.resolve()

@@ -9,7 +9,7 @@
  */
 
 export function mask(width) {
-  const w = Number(width);
+  const w = width;
   if (!Number.isSafeInteger(w) || w <= 0) {
     throw new RangeError(`mask: width must be a positive safe integer >= 1, got ${width}`);
   }
@@ -17,7 +17,7 @@ export function mask(width) {
 }
 
 export function wrap(val, width) {
-  const w = Number(width);
+  const w = width;
   if (!Number.isSafeInteger(w) || w <= 0) {
     throw new RangeError(`wrap: width must be a positive safe integer >= 1, got ${width}`);
   }
@@ -30,7 +30,7 @@ export function toUnsigned(val, width) {
 }
 
 export function toSigned(val, width) {
-  const w = Number(width);
+  const w = width;
   if (!Number.isSafeInteger(w) || w <= 0) {
     throw new RangeError(`toSigned: width must be a positive safe integer >= 1, got ${width}`);
   }
@@ -78,7 +78,7 @@ export function bvSdiv(a, b, width) {
     return sa < 0n ? 1n : mask(width); // mask(width) represents -1 in two's complement unsigned
   }
   const sa = toSigned(a, width);
-  const minInt = -(1n << BigInt(Number(width) - 1));
+  const minInt = -(1n << BigInt(width - 1));
   // Two's-complement overflow: MIN_INT / -1 wraps around to MIN_INT
   if (sa === minInt && sb === -1n) {
     return wrap(minInt, width);
@@ -93,7 +93,7 @@ export function bvSrem(a, b, width) {
     return toUnsigned(a, width);
   }
   const sa = toSigned(a, width);
-  const minInt = -(1n << BigInt(Number(width) - 1));
+  const minInt = -(1n << BigInt(width - 1));
   if (sa === minInt && sb === -1n) {
     return 0n;
   }
@@ -121,7 +121,7 @@ export function bvNeg(a, width) {
 }
 
 export function bvShl(a, b, width) {
-  const w = Number(width);
+  const w = width;
   const amt = toUnsigned(b, w);
   if (amt >= BigInt(w)) {
     return 0n;
@@ -130,7 +130,7 @@ export function bvShl(a, b, width) {
 }
 
 export function bvLshr(a, b, width) {
-  const w = Number(width);
+  const w = width;
   const amt = toUnsigned(b, w);
   if (amt >= BigInt(w)) {
     return 0n;
@@ -139,7 +139,7 @@ export function bvLshr(a, b, width) {
 }
 
 export function bvAshr(a, b, width) {
-  const w = Number(width);
+  const w = width;
   const amt = toUnsigned(b, w);
   const sa = toSigned(a, w);
   if (amt >= BigInt(w)) {
@@ -189,8 +189,8 @@ export function bvSge(a, b, width) {
 }
 
 export function bvTrunc(val, fromWidth, toWidth) {
-  const fw = Number(fromWidth);
-  const tw = Number(toWidth);
+  const fw = fromWidth;
+  const tw = toWidth;
   if (!Number.isSafeInteger(fw) || fw <= 0 || !Number.isSafeInteger(tw) || tw <= 0) {
     throw new RangeError(`bvTrunc: widths must be positive safe integers (from=${fromWidth}, to=${toWidth})`);
   }
@@ -201,8 +201,8 @@ export function bvTrunc(val, fromWidth, toWidth) {
 }
 
 export function bvZext(val, fromWidth, toWidth) {
-  const fw = Number(fromWidth);
-  const tw = Number(toWidth);
+  const fw = fromWidth;
+  const tw = toWidth;
   if (!Number.isSafeInteger(fw) || fw <= 0 || !Number.isSafeInteger(tw) || tw <= 0) {
     throw new RangeError(`bvZext: widths must be positive safe integers (from=${fromWidth}, to=${toWidth})`);
   }
@@ -213,8 +213,8 @@ export function bvZext(val, fromWidth, toWidth) {
 }
 
 export function bvSext(val, fromWidth, toWidth) {
-  const fw = Number(fromWidth);
-  const tw = Number(toWidth);
+  const fw = fromWidth;
+  const tw = toWidth;
   if (!Number.isSafeInteger(fw) || fw <= 0 || !Number.isSafeInteger(tw) || tw <= 0) {
     throw new RangeError(`bvSext: widths must be positive safe integers (from=${fromWidth}, to=${toWidth})`);
   }
@@ -225,9 +225,9 @@ export function bvSext(val, fromWidth, toWidth) {
 }
 
 export function bvExtract(val, width, high, low) {
-  const w = Number(width);
-  const h = Number(high);
-  const l = Number(low);
+  const w = width;
+  const h = high;
+  const l = low;
   if (!Number.isSafeInteger(w) || w <= 0) {
     throw new RangeError(`bvExtract: width must be positive safe integer >= 1, got ${width}`);
   }
@@ -240,8 +240,8 @@ export function bvExtract(val, width, high, low) {
 }
 
 export function bvConcat(a, widthA, b, widthB) {
-  const wa = Number(widthA);
-  const wb = Number(widthB);
+  const wa = widthA;
+  const wb = widthB;
   if (!Number.isSafeInteger(wa) || wa <= 0 || !Number.isSafeInteger(wb) || wb <= 0) {
     throw new RangeError(`bvConcat: widths must be positive safe integers (wa=${wa}, wb=${wb})`);
   }

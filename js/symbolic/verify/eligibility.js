@@ -71,12 +71,16 @@ export function checkProofEligibility({
   }
 
   // 4. Semantic unknowns
-  if (Number(semanticUnknowns) > 0) {
+  if (typeof semanticUnknowns !== 'number' || !Number.isSafeInteger(semanticUnknowns) || semanticUnknowns < 0) {
+    reasons.push('invalid-semantic-unknown-count');
+  } else if (semanticUnknowns > 0) {
     reasons.push(`semantic-unknowns-present:${semanticUnknowns}`);
   }
 
   // 5. Unsupported entities
-  if (Array.isArray(unsupportedEntities) && unsupportedEntities.length > 0) {
+  if (!Array.isArray(unsupportedEntities)) {
+    reasons.push('unsupported-entities-malformed');
+  } else if (unsupportedEntities.length > 0) {
     reasons.push(`unsupported-entities-present:${unsupportedEntities.length}`);
   }
 

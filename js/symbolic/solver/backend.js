@@ -23,14 +23,14 @@ export class SolverBackend {
     isRemote = false,
     isWasm = false,
   }) {
-    if (!id || !version) {
-      throw new TypeError('SolverBackend: id and version are required');
+    if (typeof id !== 'string' || !id || typeof version !== 'string' || !version) {
+      throw new TypeError('SolverBackend: id and version must be non-empty strings');
     }
     if (!AUTHORITY_VALUES.has(proofAuthority)) {
       throw new TypeError(`SolverBackend: invalid proof authority '${proofAuthority}'`);
     }
-    this.id = String(id);
-    this.version = String(version);
+    this.id = id;
+    this.version = version;
     this.proofAuthority = proofAuthority;
     this.isRemote = Boolean(isRemote);
     this.isWasm = Boolean(isWasm);
