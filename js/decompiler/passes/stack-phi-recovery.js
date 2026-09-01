@@ -296,8 +296,9 @@ function resolveStackBefore(ir, blockIndex, beforeRow, key, maps, opts, engine, 
   active.add(visitKey);
   try {
     for (const inst of instructionsBefore(ir, blockIndex, beforeRow)) {
-      const stored = exactStoreExpression(inst, key, maps, engine, ir, opts, active, depth);
-      if (stored) return stored;
+      if (inst?.op === 'store' && inst.loc?.key === key) {
+        return exactStoreExpression(inst, key, maps, engine, ir, opts, active, depth);
+      }
       if (hasUnsafeBarrier(inst, key)) return null;
     }
 
