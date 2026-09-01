@@ -188,16 +188,16 @@ export function createSymbolicEvidence({
   }
 
   // Validate precondition status if specified
-  const normPreconditionStatus = preconditionStatus ? String(preconditionStatus) : PRECONDITION_STATUS.NONE;
-  if (!Object.values(PRECONDITION_STATUS).includes(normPreconditionStatus)) {
+  if (typeof preconditionStatus !== 'string' || !Object.values(PRECONDITION_STATUS).includes(preconditionStatus)) {
     throw new TypeError(`createSymbolicEvidence: invalid preconditionStatus '${preconditionStatus}'`);
   }
+  const normPreconditionStatus = preconditionStatus;
 
   // Validate validation status if specified
-  const normValidationStatus = validationStatus ? String(validationStatus) : VALIDATION_STATUS.NOT_APPLICABLE;
-  if (!Object.values(VALIDATION_STATUS).includes(normValidationStatus)) {
+  if (typeof validationStatus !== 'string' || !Object.values(VALIDATION_STATUS).includes(validationStatus)) {
     throw new TypeError(`createSymbolicEvidence: invalid validationStatus '${validationStatus}'`);
   }
+  const normValidationStatus = validationStatus;
 
   // Invariant 1: Inconsistent preconditions cannot mint confirmed proved evidence (prevent vacuous truth)
   if (verdict === EVIDENCE_VERDICT.PROVED && normPreconditionStatus === PRECONDITION_STATUS.INCONSISTENT) {
