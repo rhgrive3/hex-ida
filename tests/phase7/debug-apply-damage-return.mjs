@@ -1,3 +1,4 @@
+import { appendFileSync } from 'node:fs';
 import { buildSemanticModel, attachTexts } from '../../js/blocks.js';
 import { decompile } from '../../js/decompile.js';
 import { semanticAbiAdapter } from '../../js/analysis/semantic-function.js';
@@ -56,5 +57,7 @@ const stores = (r.ir?.instructions || []).filter((i) => i?.op === 'store')
   .map((i) => ({ id:i.id, row:i.row, block:i.block, loc:i.loc, valueId:i.args?.[0]?.value?.id, valueReg:i.args?.[0]?.value?.reg, memDef:i.memDef, extra:i.extra }));
 const astStores = (r.semanticAst?.stores || []).map((s) => ({ location:s.location, source:s.source, value:s.value }));
 const outputs = (r.semanticAst?.outputs || []).map((o) => ({ name:o.name, expression:o.expression }));
-console.error('APPLY_DAMAGE_DEBUG ' + JSON.stringify({ pseudocode:r.pseudocode, values, stores, astStores, outputs }, (_k, v) => typeof v === 'bigint' ? v.toString() : v, 2));
+const debug = JSON.stringify({ pseudocode:r.pseudocode, values, stores, astStores, outputs }, (_k, v) => typeof v === 'bigint' ? v.toString() : v, 2);
+console.error('APPLY_DAMAGE_DEBUG ' + debug);
+appendFileSync('reports/phase7/phase7-release-evidence.md', `\n\n## APPLY_DAMAGE_DEBUG\n\n\`\`\`json\n${debug}\n\`\`\`\n`);
 throw new Error('intentional apply_damage provenance diagnostic');
