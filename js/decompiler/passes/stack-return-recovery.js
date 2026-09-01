@@ -252,7 +252,16 @@ function locationIdentity(location) {
 }
 
 function committedLocationForPhi(result, value) {
-  const phi = value?.def;
+  const definition = value?.def;
+  if (definition?.op === 'load'
+      && (definition.extra?.committedPhiSnapshot === true || definition.extra?.committedSnapshotView === true)
+      && definition.loc?.kind !== 'stack' && definition.loc?.kind !== 'unknown') {
+    const projected = (result.semanticAst?.values || [])
+      .find((item) => String(item?.valueId ?? '') === String(value?.id ?? ''))?.expression ?? null;
+    if (projected?.kind === 'load' && projected.location?.kind !== 'stack') return projected.location;
+  }
+
+  const phi = definition;
   if (phi?.op !== 'phi' || !(phi.incoming || []).length) return null;
   const locations = [];
   for (const incoming of phi.incoming || []) {
