@@ -28,7 +28,7 @@ node tests/machine-effects/independent-oracle-counterexample.test.mjs --pre-fix
 
 Expected result: `FAIL` for the release-grade proof because independent expected state and a
 defined-state mask are not yet available. This failure is retained as the first deterministic
-divergence. Do not turn it into a pass by using production expected tables.
+divergence. Do not turn it into a pass by using production-derived expected tables.
 
 After implementation, run the same case without `--pre-fix` and require one accepted
 `exact/equivalent` result with a distinct oracle identity.

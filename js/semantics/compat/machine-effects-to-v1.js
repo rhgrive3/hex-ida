@@ -474,9 +474,12 @@ function lowerOperation(bundle, operation, options) {
     }
     const outputs = operation.kind === 'value' ? operation.outputs
       : operation.kind === 'memory-read' ? [operation.value] : [];
+    const categories = operation.kind === 'memory-read'
+      ? ['flags', 'registers', 'memory', 'other']
+      : ['flags', 'registers', 'other'];
     return [unknownInstruction(bundle, operation, options,
       `architecturally-undefined-result:${operation.undefinedResult.reason}`,
-      ['flags', 'registers', 'other'], {
+      categories, {
         ...writeFields(outputs),
         undefinedResult: operation.undefinedResult,
       })];

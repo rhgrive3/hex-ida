@@ -9,6 +9,7 @@ import {
   validateOracleReport,
 } from '../../tools/validation/machine-effects/oracle-report.mjs';
 import {
+  parseArgs,
   verifyCandidateMergeTree,
   verifyExactHead,
 } from '../../tools/validation/machine-effects/oracle-release-verify.mjs';
@@ -17,6 +18,10 @@ import { sha256Digest } from '../../tools/validation/machine-effects/oracle-sche
 import { INDEPENDENT_ORACLE_CASE_FIXTURES } from './fixtures/independent-oracle-cases.mjs';
 import { createArchitecturalEvidence } from '../../tools/validation/machine-effects/oracle-evidence-v2.mjs';
 import { evidenceInputForOracleCase } from './fixtures/evidence-v2-cases.mjs';
+
+assert.deepEqual(parseArgs(['--report', 'report.json', '--require-candidate-tree']), {
+  report: 'report.json', requireCandidateTree: true,
+});
 
 const currentHead = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
 const candidateTreeSha = spawnSync('git', ['merge-tree', '--write-tree', 'origin/main', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
@@ -39,7 +44,11 @@ for (const corpusCase of corpus.cases) {
 
 const a2Before = createA2DenominatorSnapshot();
 const a2After = createA2DenominatorSnapshot();
-const architecturalEvidence = corpus.cases.map((caseValue) => createArchitecturalEvidence(evidenceInputForOracleCase(caseValue)));
+const architecturalEvidence = corpus.cases.map((caseValue) => {
+  const input = evidenceInputForOracleCase(caseValue);
+  if (!['arm64:a64', 'riscv64:rv64imc'].includes(input.profileId)) input.completeness = 'partial';
+  return createArchitecturalEvidence(input);
+});
 const report = createOracleReport({
   productSha: currentHead,
   baseSha: assignedBase,

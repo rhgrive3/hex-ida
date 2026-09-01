@@ -20,7 +20,7 @@ test('pinned Isla and Sail artifacts authorize only their declared observables',
   assert.deepEqual(records.map((record) => record.profileId), ['arm64:a64', 'riscv64:rv64imc']);
   for (const record of records) {
     const evidence = createArchitecturalEvidenceFromArtifactRecord(record);
-    const result = assessArchitecturalEvidence({ evidence, subject: { profileId: record.profileId, observables: record.expectedObservables } });
+    const result = assessArchitecturalEvidence({ evidence, subject: { profileId: record.profileId, effect: record.effect, observables: record.expectedObservables } });
     assert.equal(result.status, 'exact/equivalent', record.id);
     assert.equal(result.exactAuthorized, true, record.id);
     assert.match(record.artifact.toolOutput, /QEMU-(AARCH64|RISCV64) exit-status:8/, record.id);
@@ -36,6 +36,7 @@ test('pinned herd artifacts classify five orderings without widening their litmu
       evidence,
       subject: {
         profileId: record.profileId,
+        effect: record.effect,
         observables: record.expectedObservables,
         ordering: record.memoryModel.ordering,
         ...record.memoryModel,

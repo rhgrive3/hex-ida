@@ -85,7 +85,7 @@ As a downstream analysis consumer, I need fully, conditionally, partially, and o
 
 ### Measurable Outcomes
 
-- **SC-001**: All eight required counterexample classes fail before implementation and pass only through fail-closed classification afterward.
+- **SC-001**: The validation test passes while all eight required counterexample classes remain rejected or blocking after fail-closed classification; each class fails before implementation and is handled conservatively afterward.
 - **SC-002**: All six ordering identities and all four undefined-result classes have deterministic positive and negative coverage.
 - **SC-003**: Undefined-mask transport loss is zero across every named pipeline boundary.
 - **SC-004**: False exact promotion count is zero for stale, partial, unsupported, malformed, and incomplete evidence.

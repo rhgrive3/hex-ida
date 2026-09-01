@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+
 import {
   BLOCKING_STATUSES,
   INDEPENDENT_GENERATOR_IDENTITY,
@@ -463,4 +465,3 @@ export function assertReleaseReady(report, {
   if (normalized.totalCount !== normalized.passCount + normalized.explicitGapCount + Object.entries(normalized.counts).filter(([status]) => !PASS_STATUSES.includes(status) && !['unsupported', 'unavailable'].includes(status)).reduce((sum, [, count]) => sum + count, 0)) fail('report-result-count-inconsistent');
   return true;
 }
-import fs from 'node:fs';

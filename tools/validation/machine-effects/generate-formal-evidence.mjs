@@ -105,6 +105,7 @@ function generate(options) {
   const riscvSource = sourceRecord('tests/machine-effects/fixtures/formal-source/rv64-add.S');
   const armSource = sourceRecord('tests/machine-effects/fixtures/formal-source/a64-adds.S');
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'hex-me01-formal-'));
+  try {
   const riscvObjectPath = path.join(temp, 'rv64-add.o');
   const riscvElfPath = path.join(temp, 'rv64-add.elf');
   run(options['riscv-as'], ['-march=rv64imc', '-mabi=lp64', path.join(ROOT, riscvSource.path), '-o', riscvObjectPath]);
@@ -176,7 +177,10 @@ function generate(options) {
     },
     records,
   };
-  return { ...body, manifestId: digest(body) };
+    return { ...body, manifestId: digest(body) };
+  } finally {
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
 }
 
 export function validateFormalEvidenceArtifacts(value) {

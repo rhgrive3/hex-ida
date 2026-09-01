@@ -5,7 +5,9 @@ import {
   createBitVectorValue,
   createMachineEffectBundle,
   createMachineOperation,
+  createMemoryAccess,
   createTemporaryValue,
+  MAX_UNDEFINED_RESULT_WIDTH_BITS,
   serializeMachineEffectBundle,
 } from '../../js/semantics/effects/index.js';
 import { lowerMachineEffectBundleToSemanticIr } from '../../js/semantics/ir/from-machine-effects.js';
@@ -51,6 +53,25 @@ test('undefined result descriptor rejects zero, out-of-width, and class-invalid 
   assert.throws(() => createMachineOperation({ ...base, undefinedResult: { widthBits: 8, mask: '0xff', class: 'partial', reason: 'bad' } }), /partial-undefined-result-mask-full/);
   assert.throws(() => createMachineOperation({ ...base, undefinedResult: { widthBits: 8, mask: '0x80', class: 'conditional', reason: 'bad' } }), /condition-required/);
   assert.throws(() => createMachineOperation({ ...base, undefinedResult: { widthBits: 16, mask: '0x00ff', class: 'partial', reason: 'bad-width' } }), /output-width-mismatch/);
+  assert.doesNotThrow(() => createMachineOperation({ ...base, outputs: [createTemporaryValue('tmp-max-width', { kind: 'bitvector', widthBits: MAX_UNDEFINED_RESULT_WIDTH_BITS })], undefinedResult: { widthBits: MAX_UNDEFINED_RESULT_WIDTH_BITS, mask: '0x1', class: 'partial', reason: 'max-width' } }));
+  assert.throws(() => createMachineOperation({ ...base, undefinedResult: { widthBits: MAX_UNDEFINED_RESULT_WIDTH_BITS + 1, mask: '0x1', class: 'partial', reason: 'too-wide' } }), /invalid-undefined-result-width/);
+});
+
+test('undefined memory reads retain their memory uncertainty category in legacy compatibility', () => {
+  const operation = createMachineOperation({
+    kind: 'memory-read', id: 'effect-memory-undefined',
+    access: createMemoryAccess({ space: 'memory', addressExpr: { kind: 'register', registerId: 'x0', widthBits: 64 }, widthBits: 8, endian: 'little' }),
+    value: createTemporaryValue('tmp-memory-undefined', { kind: 'bitvector', widthBits: 8 }),
+    undefinedResult: { widthBits: 8, mask: '0xff', class: 'fully', reason: 'memory-read-undefined' },
+  });
+  const bundle = createMachineEffectBundle({
+    instructionId: 'instruction-memory-undefined', architectureId: 'arm64', mode: 'a64', operations: [operation],
+    controlEffect: { kind: 'fallthrough' }, possibleFaults: [],
+    origin: createOriginSet({ source: 'test', instructionIds: ['instruction-memory-undefined'] }), completeness: 'exact',
+  });
+  const lowered = lowerMachineEffectsToLegacyV1(bundle, { registerUniverse: ['x0'] });
+  assert.equal(lowered[0].op, OP.UNKNOWN);
+  assert.ok(lowered[0].unknownCategories.includes('memory'));
 });
 
 test('legacy compatibility projections preserve uncertainty instead of materializing an exact value', () => {

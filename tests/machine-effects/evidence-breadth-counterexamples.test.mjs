@@ -17,7 +17,7 @@ async function api() {
 test('ME-01 Phase 2 counterexample: formal disagreement is blocking', async () => {
   const { assessArchitecturalEvidence, createArchitecturalEvidence } = await api();
   const evidence = createArchitecturalEvidence(architecturalInput());
-  const result = assessArchitecturalEvidence({ evidence, subject: { profileId: evidence.profileId, observables: { ...evidence.expectedObservables, 'register:x0': '0x2' } } });
+  const result = assessArchitecturalEvidence({ evidence, subject: { profileId: evidence.profileId, effect: evidence.effect, observables: { ...evidence.expectedObservables, 'register:x0': '0x2' } } });
   assert.equal(result.status, 'mismatch');
   assert.equal(result.exactAuthorized, false);
 });

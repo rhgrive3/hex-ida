@@ -150,7 +150,7 @@ changing forbidden production, workflow, C0-01, denominator, or generated files.
 - [X] T036 Review the actual changed-file inventory against the offline allowlist in `tests/machine-effects/independent-oracle-ownership.test.mjs`
 - [X] T037 Run the permanent exact-head verifier from `tools/validation/machine-effects/oracle-release-verify.mjs` against the frozen branch head and record verifier/corpus/oracle/toolchain identities
 - [X] T038 Build the actual candidate merge tree through the Sol integration lane, rerun applicable owned gates against that tree, and record its SHA in `specs/004-independent-machine-effects-oracle/quickstart.md`
-- [X] T039 Reconcile moving `main`, canonical generated output, required CI, and post-merge live-main verification through Sol; update only the durable feature evidence under `specs/004-independent-machine-effects-oracle/`
+- [ ] T039 Reconcile moving `main`, canonical generated output, required CI, and post-merge live-main verification through Sol; currently blocked by six known Clang O0 compiler-truth failures tracked in #3120. Completion requires current-main reconciliation, required CI green on the exact head, and post-merge live-main verification; update only the durable feature evidence under `specs/004-independent-machine-effects-oracle/`.
 
 ---
 
@@ -242,12 +242,10 @@ MachineEffects, C0-01, A2 denominator, workflows, or generated output.
 ## Phase 7: Convergence
 
 - [X] T040 [P] Bind every result envelope to its corpus case profile, oracle identity/version, and
-  complete defined mask so stale or denominator-shrunk results cannot pass per FR-005/FR-014
-  (partial)
+  complete defined mask so stale or denominator-shrunk results cannot pass per FR-005/FR-014.
 - [X] T041 [P] Reject production-derived or self-oracle corpus generator identities and add
-  regression coverage for generator authority separation per FR-003/FR-008 (missing)
+  regression coverage for generator authority separation per FR-003/FR-008.
 - [X] T042 Harden malformed oracle outcome, output, and diagnostic-budget handling so every
-  malformed or oversized artifact returns an explicit zero-pass result per FR-007/FR-013
-  (partial)
+  malformed or oversized artifact returns an explicit zero-pass result per FR-007/FR-013.
 - [X] T043 Enforce strict report count, profile, external-evidence, and policy envelope validation
-  with negative coverage per FR-014/FR-017 (partial)
+  with negative coverage per FR-014/FR-017.

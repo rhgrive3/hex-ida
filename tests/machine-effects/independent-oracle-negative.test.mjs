@@ -220,4 +220,4 @@ assert.throws(() => createOracleResult({
   diagnostics: Array.from({ length: 33 }, () => ({ code: 'too-many' })),
 }, corpusCase), /diagnostics-invalid-count/);
 
-console.log('machine-effects independent oracle negative matrix: PASS (26 rejection/blocking cases)');
+console.log('machine-effects independent oracle negative matrix: PASS (33 rejection/blocking cases)');

@@ -127,8 +127,8 @@ function compareMap(expected, observed, mask, section, mismatches, counts) {
       });
       continue;
     }
-    const expectedNumber = section === 'flags' ? BigInt(expectedValue) : BigInt(expectedValue);
-    const observedNumber = section === 'flags' ? BigInt(observedValue) : BigInt(observedValue);
+    const expectedNumber = BigInt(expectedValue);
+    const observedNumber = BigInt(observedValue);
     if ((expectedNumber ^ observedNumber) & maskNumber) {
       mismatches.push({
         observable: `${section}.${key}`,
@@ -632,11 +632,8 @@ export async function runCorpus(corpus, options = {}) {
   }
   const results = [];
   for (const caseValue of normalizedCorpus.cases) {
-    if (checkCancelled(options.signal)) {
-      results.push(await runIndependentComparison({ corpusCase: caseValue, ...options, budgets }));
-      break;
-    }
     results.push(await runIndependentComparison({ corpusCase: caseValue, ...options, budgets }));
+    if (checkCancelled(options.signal)) break;
   }
   const pass = results.filter((result) => PASS_STATUSES.includes(result.status)).length;
   const blocking = results.filter((result) => BLOCKING_STATUSES.includes(result.status)).length;

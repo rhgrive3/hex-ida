@@ -11,7 +11,6 @@ import {
 const DEFAULT_ALLOWED_PREFIXES = Object.freeze([
   'tools/validation/machine-effects/',
   'tests/machine-effects/',
-  'tools/validation/machine-effects/generated/',
   'specs/004-independent-machine-effects-oracle/',
   'specs/003-oracle-mask-matrix/',
   'specs/005-machine-effects-evidence-breadth/',
@@ -121,13 +120,15 @@ export function verifyCandidateMergeTree({
   return Object.freeze({ valid: true, candidateTreeSha: tree, baseSha: base });
 }
 
-function parseArgs(argv) {
+export function parseArgs(argv) {
   const args = {};
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index];
     if (!token.startsWith('--')) continue;
     const key = token.slice(2).replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
-    args[key] = argv[index + 1]?.startsWith('--') ? true : argv[++index];
+    const next = argv[index + 1];
+    if (next == null || next.startsWith('--')) args[key] = true;
+    else { args[key] = next; index += 1; }
   }
   return args;
 }

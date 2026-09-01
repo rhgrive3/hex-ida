@@ -118,6 +118,7 @@ function normalizeExpected(value, observables) {
   const keys = Object.keys(input).sort();
   if (keys.some((key) => !observables.known.includes(key))) fail('expected-observable-not-known');
   if (observables.known.some((key) => !Object.hasOwn(input, key))) fail('known-observable-value-missing');
+  if (keys.some((key) => input[key] == null)) fail('expected-observable-value-missing');
   return Object.freeze(Object.fromEntries(keys.map((key) => [key, String(input[key])])));
 }
 
@@ -148,6 +149,11 @@ function expectedArtifactFormat(profileId, kind) {
   if (profileId === 'arm64:a64') return kind === 'relaxed-memory-outcomes' ? 'herd7/v7.58' : 'isla-footprint/v0.2.0';
   if (profileId === 'riscv64:rv64imc' && kind === 'instruction-footprint') return 'sail-riscv/v0.13.1';
   return 'architectural-spec-extraction/v1';
+}
+
+function exactEvidenceAuthorized(profileId, kind) {
+  return (profileId === 'arm64:a64')
+    || (profileId === 'riscv64:rv64imc' && kind === 'instruction-footprint');
 }
 
 function normalizeMemory(value, completeness) {
@@ -191,6 +197,7 @@ function normalize(input, { requireIdentity = false } = {}) {
   if (freshness.generatedFrom !== source.modelCommit) fail('stale-source-identity');
   if (freshness.generatedBy !== artifact.format) fail('architectural-evidence-generator-artifact-mismatch');
   if (freshness.artifactDigest !== sha256(artifact)) fail('architectural-evidence-artifact-digest-mismatch');
+  if (raw.completeness === 'complete' && !exactEvidenceAuthorized(raw.profileId, kind)) fail('architectural-evidence-complete-not-authorized');
   if (raw.completeness === 'complete' && artifact.format !== expectedArtifactFormat(raw.profileId, kind)) fail('architectural-evidence-artifact-format-profile-mismatch');
   const payload = {
     schemaVersion: ARCHITECTURAL_EVIDENCE_SCHEMA_VERSION,
@@ -264,6 +271,14 @@ export function assessArchitecturalEvidence({ evidence, subject } = {}) {
   catch (error) { return assessment(/stale/.test(error.message) ? 'stale' : 'malformed', error.message); }
   if (normalized.completeness !== 'complete') return assessment('partial', 'evidence-incomplete');
   if (!subject || subject.profileId !== normalized.profileId) return assessment('mismatch', 'subject-profile-mismatch');
+  for (const key of EFFECT_KEYS) {
+    const expected = normalized.effect[key];
+    const actual = subject.effect?.[key];
+    const matches = key === 'requiredFeatures'
+      ? canonicalStringify(Array.isArray(actual) ? [...actual].map(String).sort() : null) === canonicalStringify(expected)
+      : actual === expected;
+    if (!matches) return assessment('mismatch', `effect-identity-disagreement:${key}`);
+  }
   if (normalized.kind === 'relaxed-memory-outcomes') {
     if (subject.ordering !== normalized.memoryModel.ordering) return assessment('mismatch', 'ordering-disagreement');
     if (subject.atomic !== normalized.memoryModel.atomic) return assessment('mismatch', 'atomicity-disagreement');
@@ -274,7 +289,8 @@ export function assessArchitecturalEvidence({ evidence, subject } = {}) {
     }
   }
   for (const [key, expected] of Object.entries(normalized.expectedObservables)) {
-    if (String(subject.observables?.[key]) !== expected) return assessment('mismatch', `observable-disagreement:${key}`);
+    if (!Object.hasOwn(subject.observables ?? {}, key)) return assessment('mismatch', `observable-missing:${key}`);
+    if (String(subject.observables[key]) !== expected) return assessment('mismatch', `observable-disagreement:${key}`);
   }
   return assessment('exact/equivalent', null);
 }

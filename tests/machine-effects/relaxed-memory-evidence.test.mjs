@@ -14,7 +14,7 @@ test('all six ordering identities have explicit outcome evidence boundaries', ()
     const evidence = createMemoryOutcomeEvidence(memoryInput(ordering));
     const result = assessArchitecturalEvidence({
       evidence,
-      subject: { profileId: evidence.profileId, ordering, observables: evidence.expectedObservables, ...evidence.memoryModel },
+      subject: { profileId: evidence.profileId, effect: evidence.effect, ordering, observables: evidence.expectedObservables, ...evidence.memoryModel },
     });
     assert.equal(result.status, ordering === 'unknown' ? 'partial' : 'exact/equivalent');
   }
@@ -23,13 +23,13 @@ test('all six ordering identities have explicit outcome evidence boundaries', ()
 test('ordering strengthening and weakening are mismatches', () => {
   const evidence = createMemoryOutcomeEvidence(memoryInput('acquire'));
   for (const ordering of ['relaxed', 'seq-cst', 'release']) {
-    assert.equal(assessArchitecturalEvidence({ evidence, subject: { profileId: evidence.profileId, ordering, observables: evidence.expectedObservables } }).status, 'mismatch');
+    assert.equal(assessArchitecturalEvidence({ evidence, subject: { profileId: evidence.profileId, effect: evidence.effect, ordering, observables: evidence.expectedObservables } }).status, 'mismatch');
   }
 });
 
 test('permitted/forbidden strengthening and weakening are mismatches', () => {
   const evidence = createMemoryOutcomeEvidence(memoryInput('seq-cst'));
-  const exactSubject = { profileId: evidence.profileId, ordering: evidence.memoryModel.ordering, observables: evidence.expectedObservables, ...evidence.memoryModel };
+  const exactSubject = { profileId: evidence.profileId, effect: evidence.effect, ordering: evidence.memoryModel.ordering, observables: evidence.expectedObservables, ...evidence.memoryModel };
   assert.equal(assessArchitecturalEvidence({ evidence, subject: exactSubject }).status, 'exact/equivalent');
   assert.equal(assessArchitecturalEvidence({ evidence, subject: { ...exactSubject, permittedOutcomes: evidence.memoryModel.outcomeUniverse, forbiddenOutcomes: [] } }).status, 'mismatch');
   assert.equal(assessArchitecturalEvidence({ evidence, subject: { ...exactSubject, permittedOutcomes: [], forbiddenOutcomes: evidence.memoryModel.outcomeUniverse } }).status, 'mismatch');

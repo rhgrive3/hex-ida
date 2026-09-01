@@ -78,6 +78,7 @@ export const INTRINSIC_DETERMINISM = Object.freeze(['deterministic', 'input-depe
 export const INTRINSIC_SYMBOLIC_DETAIL = Object.freeze(['available', 'summary-only', 'unavailable']);
 export const UNDEFINED_RESULT_CLASSES = Object.freeze(['fully', 'conditional', 'partial', 'operand-dependent']);
 export const UNDEFINED_RESULT_SCHEMA_VERSION = 'machine-effects-undefined-result/v1';
+export const MAX_UNDEFINED_RESULT_WIDTH_BITS = 4096;
 
 const SETS = Object.freeze({
   completeness: new Set(MACHINE_EFFECT_COMPLETENESS),
@@ -449,6 +450,7 @@ export function createUndefinedResultDescriptor(input) {
   assertAllowedKeys(input, ALLOWED_FIELDS.undefinedResult, 'machine-effects-unexpected-undefined-result-field');
   if (input.schemaVersion !== UNDEFINED_RESULT_SCHEMA_VERSION) fail('machine-effects-unsupported-undefined-result-schema');
   const widthBits = positiveInteger(input.widthBits, 'machine-effects-invalid-undefined-result-width');
+  if (widthBits > MAX_UNDEFINED_RESULT_WIDTH_BITS) fail('machine-effects-invalid-undefined-result-width');
   const resultClass = enumValue(input.class, SETS.undefinedResultClasses, 'machine-effects-invalid-undefined-result-class');
   let mask;
   try { mask = BigInt(input.mask); } catch { fail('machine-effects-invalid-undefined-result-mask'); }

@@ -39,6 +39,13 @@ independent oracle (compiler truth or spec text encoded as a frozen denominator)
 and the lowering preserves the ordering bit-exactly. `unknown` ordering must remain
 `unknown` end to end — never silently upgraded to `seq-cst` or `relaxed`.
 
+At the MachineEffects boundary, an access with no ordering field is a
+non-atomic or otherwise unspecified access. Semantic IR V2 is the single
+normalized projection and represents that omitted ordering as explicit
+`unknown`. The machine-level contract does not invent an `unknown` value or
+strengthen an omitted ordering; atomic accesses carry one of the five known
+orderings.
+
 ### User Story 2 — Architecturally undefined stays explicitly undefined (P1)
 
 An instruction whose result is architecturally undefined produces an explicit
