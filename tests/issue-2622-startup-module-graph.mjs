@@ -8,9 +8,9 @@ const ROOT = path.resolve(new URL('..', import.meta.url).pathname);
 function staticImports(rel) {
   const src = fs.readFileSync(path.join(ROOT, rel), 'utf8');
   const out = [];
-  const re = /import\s+[^;]*?from\s+['"](\.[^'"]+)['"]/g;
+  const from = /(?:import|export)\s+[^;]*?\bfrom\s+['"](\.[^'"]+)['"]/g;
   let m;
-  while ((m = re.exec(src))) out.push(m[1]);
+  while ((m = from.exec(src))) out.push(m[1]);
   const bare = /import\s+['"](\.[^'"]+)['"]/g;
   while ((m = bare.exec(src))) out.push(m[1]);
   return out;
@@ -18,17 +18,24 @@ function staticImports(rel) {
 
 function staticGraph(entry, banned = []) {
   const seen = new Set();
-  const walk = (rel, depth) => {
+  const walk = (rel) => {
     const resolved = path.resolve(ROOT, rel);
-    if (seen.has(resolved) || depth > 15 || banned.includes(path.relative(ROOT, resolved))) return;
+    if (seen.has(resolved) || banned.includes(path.relative(ROOT, resolved))) return;
     seen.add(resolved);
     for (const imp of staticImports(path.relative(ROOT, resolved))) {
-      walk(path.join(path.dirname(path.relative(ROOT, resolved)), imp), depth + 1);
+      walk(path.join(path.dirname(path.relative(ROOT, resolved)), imp));
     }
   };
-  walk(entry, 0);
+  walk(entry);
   return new Set([...seen].map((f) => path.relative(ROOT, f)));
 }
+
+test('#2622 static graph follows export-from edges without an arbitrary depth cutoff', () => {
+  const edges = staticImports('js/ir.js');
+  assert.ok(edges.includes('./ir-public-base.js'), 'export * from must count as a static startup edge');
+  const graph = staticGraph('js/ir.js');
+  assert.ok(graph.has('js/ir-public-base.js'));
+});
 
 test('#2622 app.js startup graph excludes optional script/sandbox/plugin feature modules', () => {
   const graph = staticGraph('js/app.js');
