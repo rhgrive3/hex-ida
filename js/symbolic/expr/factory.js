@@ -25,6 +25,7 @@ import {
 import { wrap } from './bitvector.js';
 
 let symbolCounter = 0;
+const MAX_FRESH_SYMBOL_INDEX = Number.MAX_SAFE_INTEGER - 1;
 
 export function resetSymbolCounterForTesting(val = 0) {
   symbolCounter = val;
@@ -55,6 +56,9 @@ export function createFreshSymbol(sort, name, meta = {}) {
   assertValidSort(sort, 'createFreshSymbol');
   if (!name || typeof name !== 'string') {
     throw new TypeError(`createFreshSymbol: name must be a non-empty string, got ${name}`);
+  }
+  if (!Number.isSafeInteger(symbolCounter) || symbolCounter < 0 || symbolCounter >= MAX_FRESH_SYMBOL_INDEX) {
+    throw new RangeError('createFreshSymbol: symbol id space exhausted');
   }
   const id = `sym_${++symbolCounter}_${name}`;
   return Object.freeze({
@@ -89,7 +93,7 @@ export function restoreFreshSymbol(sort, name, symbolId, meta = {}) {
     throw new TypeError(`restoreFreshSymbol: malformed symbolId ${symbolId}`);
   }
   const restoredIndex = Number(indexText);
-  if (!Number.isSafeInteger(restoredIndex)) {
+  if (!Number.isSafeInteger(restoredIndex) || restoredIndex > MAX_FRESH_SYMBOL_INDEX) {
     throw new TypeError(`restoreFreshSymbol: malformed symbolId ${symbolId}`);
   }
   if (restoredIndex > symbolCounter) symbolCounter = restoredIndex;
