@@ -73,6 +73,22 @@ test('#3247 restoreFreshSymbol rejects malformed ids and non-strings', () => {
   assert.throws(() => restoreFreshSymbol(boolSort(), '', 'sym_1_x'), /name must be a non-empty string/);
 });
 
+test('#3247 allocator fails closed at the safe-integer ceiling', () => {
+  resetSymbolCounterForTesting(0);
+  try {
+    assert.throws(
+      () => restoreFreshSymbol(boolSort(), 'x', `sym_${Number.MAX_SAFE_INTEGER}_x`),
+      /malformed symbolId/,
+    );
+    const lastReservable = Number.MAX_SAFE_INTEGER - 1;
+    const restored = restoreFreshSymbol(boolSort(), 'x', `sym_${lastReservable}_x`);
+    assert.equal(restored.symbolId, `sym_${lastReservable}_x`);
+    assert.throws(() => createFreshSymbol(boolSort(), 'next'), /symbol id space exhausted/);
+  } finally {
+    resetSymbolCounterForTesting(0);
+  }
+});
+
 test('#3247 plainToExpr rejects present non-string symbol ids', () => {
   const base = { kind: 'fresh_symbol', name: 'x', sort: { kind: 'bool' }, meta: {} };
   for (const symbolId of [42, null, { id: 'sym_1_x' }, ['sym_1_x']]) {
@@ -87,6 +103,20 @@ test('#3247 blank string symbol ids retain the legacy allocation path', () => {
   const whitespace = plainToExpr({ ...base, symbolId: '   ' });
   assert.equal(empty.symbolId, 'sym_1_legacy');
   assert.equal(whitespace.symbolId, 'sym_2_legacy');
+});
+
+test('#3247 legacy replacement ids cannot collide with later canonical ids', () => {
+  resetSymbolCounterForTesting(0);
+  const mixed = plainToExpr({
+    kind: 'binary',
+    sort: { kind: 'bv', width: 8 },
+    op: 'add',
+    left: { kind: 'fresh_symbol', sort: { kind: 'bv', width: 8 }, name: 'x', symbolId: '', meta: {} },
+    right: { kind: 'fresh_symbol', sort: { kind: 'bv', width: 8 }, name: 'x', symbolId: 'sym_1_x', meta: {} },
+  });
+  assert.equal(mixed.right.symbolId, 'sym_1_x', 'canonical payload identity must remain unchanged');
+  assert.equal(mixed.left.symbolId, 'sym_2_x', 'legacy replacement must allocate after reserved canonical ids');
+  assert.notEqual(mixed.left.symbolId, mixed.right.symbolId);
 });
 
 test('#3247 legacy serialized payloads without symbolId still re-allocate', () => {
