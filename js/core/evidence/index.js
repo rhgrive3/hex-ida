@@ -82,9 +82,9 @@ function numericPrimitive(value, code) {
 }
 function confidence(value) {
   if (value == null) return null;
-  const n = numericPrimitive(value, 'evidence-invalid-confidence');
-  if (n < 0 || n > 1) fail('evidence-invalid-confidence');
-  return n;
+  if (typeof value !== 'number' || !Number.isFinite(value)) fail('evidence-invalid-confidence');
+  if (value < 0 || value > 1) fail('evidence-invalid-confidence');
+  return value;
 }
 function enumValue(value, allowed, fallback, code) {
   if (value != null && typeof value !== 'string') fail(code);
@@ -92,6 +92,7 @@ function enumValue(value, allowed, fallback, code) {
   if (!allowed.includes(normalized)) fail(code);
   return normalized;
 }
+function lookupId(value) { return required(value, 'evidence-invalid-node-id'); }
 
 export function createEvidenceNode(input = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) fail('evidence-invalid-node');
@@ -222,8 +223,8 @@ export class EvidenceGraph {
     return edge;
   }
 
-  getNode(id) { return this.#nodes.get(String(id)) || null; }
-  hasNode(id) { return this.#nodes.has(String(id)); }
+  getNode(id) { return this.#nodes.get(lookupId(id)) || null; }
+  hasNode(id) { return this.#nodes.has(lookupId(id)); }
   allNodes() { return Array.from(this.#nodes.values()); }
   allEdges() { return this.#edges.slice(); }
 
@@ -243,9 +244,10 @@ export class EvidenceGraph {
   }
 
   evaluateClaim(id) {
-    const claim = this.getNode(id);
+    const claimId = lookupId(id);
+    const claim = this.#nodes.get(claimId) || null;
     if (!claim || claim.family !== 'Claim') {
-      return deepFreeze({ verdict: 'unknown', claimId: String(id), supportingEvidenceIds: [], contradictingEvidenceIds: [], confirmedByEvidenceIds: [], missingEvidenceIds: [String(id)] });
+      return deepFreeze({ verdict: 'unknown', claimId, supportingEvidenceIds: [], contradictingEvidenceIds: [], confirmedByEvidenceIds: [], missingEvidenceIds: [claimId] });
     }
     const supporting = new Set(claim.supportingEvidenceIds);
     const contradicting = new Set(claim.contradictingEvidenceIds);
