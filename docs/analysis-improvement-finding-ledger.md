@@ -47,7 +47,7 @@ verification. Denominators and tests may not be weakened.
 | HEX-C3-03 | COMPLETE | COMPLETE | Sol | `specs/003-versioned-language-metadata` | T001–T014 complete | `feat/analysis-hex-c3-03-versioned-language-metadata` | C3-02 | unified versioned metadata providers across Go (1.2, 1.16, 1.18, 1.20+), Rust (v0/legacy), Swift 5, and ObjC 2.0 with fail-closed verdicts and TypeConstraintGraph wiring | `js/metadata/**`, `js/analysis/index.js`, `js/apple/runtime.js` | 5 metadata suites (provider contract, Go, Rust, Apple, downstream integration), 37 assertions, broad regression PASS | analyze clean; converge PASS | exact head green | `f205d17b` | non-regression only | none (ME-01 isolated) |
 | HEX-C4-01 | COMPLETE_EXISTING | COMPLETE | existing/main | historical Phase 8 | historical | merged before run | C0-01 | transactional pass lifecycle, declared dependencies, invalidation and completeness are wired | Phase 8 transaction substrate | Phase 8 invalidation/cancellation/determinism gates | historical | main evidence retained | historical main | non-regression only | none |
 | HEX-C4-02 | REMAINING | PARTIAL | Sol | — | — | — | C4-01, C4-04 | edge-accounted structuring retains residual jumps; broader exception-aware proof is absent | Phase 8 structuring facts | pending irreducible/exception/refinement matrix | — | — | — | visual improvement must not change semantics | none |
-| HEX-C4-03 | REMAINING | PARTIAL | Sol | — | — | — | C4-01, C2-01 | transform origins and stale artifact rejection exist; full bidirectional mapping is unproven | partial Phase 8 provenance | pending every transform/rendered entity reverse mapping | — | — | — | deleted/merged entities may lose navigation | none |
+| HEX-C4-03 | IMPLEMENTED (pending integration proof) | PARTIAL | Sol | `specs/004-render-provenance-mapping` | T001–T025 (T001–T024 complete) | `feat/analysis-hex-c4-03-provenance` @ `5fe99248` | C4-01 (proven gate), C2-01 (published seams only) | pre-fix counterexample: sourceless rendered lines published with no provenance validation; reverse navigation absent | `js/decompiler/phase8/render-provenance.js`, `projection.js` (bidirectional map + fail-closed validation), `contract.js` (record codes), `semantic-core.js` (jump-target origins), metrics safety counters `renderProvenanceLossCount`/`renderProvenanceUnboundCount` | provenance matrix 18/18; corpus no-op equivalence 14/14 (zero loss across 125 functions); substrate/integration 69/69; memory/scalar/loops/structuring/aggregates/providers 243/243; perf/ownership 11/11; verifier exact-head 13/13 (branch solo run, matched origin/main baseline 13/13); lint 1796 files | pending | — | — | deleted/merged entities may lose navigation | none (parallel lanes own different files) |
 | HEX-C4-04 | REMAINING | PARTIAL | Sol | — | — | — | C4-03, SYM-01, ME-01 | bounded equivalence exists but is not a uniform pass-local adoption gate | symbolic verifier only | pending eligible/refuted/unknown/stale pass matrix | — | — | — | omitted observables can make proof vacuous | none |
 | HEX-C4-05 | REMAINING | MISSING | Sol | — | — | — | C2-02, C4-04, SYM-01 | no equality-saturation candidate layer found | none | pending bounded e-graph and independent-proof corpus | — | — | — | candidate generation is never authority | none |
 | HEX-SYM-01 | REMAINING | PARTIAL | Sol | — | — | — | ME-01 | registry selects worker/exhaustive backend; no measured optional 32/64-bit production tier | exact small-domain floor | pending physical WebKit/resource/cancel/model matrix | — | — | — | availability cannot imply proof capability | none |
@@ -95,3 +95,30 @@ verification. Denominators and tests may not be weakened.
   canonical points-to analysis and no second reaching-definition implementation. Lint validated
   1,505 files; changed-module syntax and `git diff --check` pass.
 - Next action: T017 Spec Kit convergence, candidate merge tree, and exact-product gates.
+
+## Active finding checkpoint: HEX-C4-03
+
+- Exact current-main implementation base: `c78e1b98` (origin/main at lane start).
+- Branch: `feat/analysis-hex-c4-03-provenance` (8+ commits through the ledger row above).
+- First deterministic divergence: rendered lines from many-to-one Phase 8 transforms carried no
+  reverse navigation, and validation was absent, so provenance loss was invisible to consumers.
+- Canonical owner: `js/decompiler/phase8/**` (p8 lane), consuming `js/decompiler/ast/nodes.js`
+  and `canonicalAnalysisIdentity` through existing production seams.
+- Forbidden architecture: a second provenance engine, new semantic identities, rendered-text
+  re-parsing, name-based origins, or any unrelated Issue fix.
+- Implementation: `renderProvenance` (forward map, sorted reverse index, bounded deterministic
+  ledger, snapshot binding, structural-role classification, budget/cancel states) published by
+  `applyPhase8Projection`; `validateRenderProvenance` fails closed on provenance loss,
+  stale/missing snapshot, truncation, cancellation.
+- Residualgoto/case rendered jumps now carry canonical `jumpTargetSource` origins
+  (`semantic-core.js`), removing the sourceless-claim class the counterexample exposed.
+- Verification evidence: provenance matrix 18/18 (counterexample-first), corpus no-op equivalence
+  14/14 with `renderProvenanceLossCount=0` across 125 functions, substrate/integration 69/69,
+  memory/scalar/loops/structuring/aggregates/providers 243/243, performance/ownership 11/11,
+  verifier exact-head 13/13 on this branch solo, matching an origin/main baseline run 13/13
+  (three earlier failures were reproduces only under concurrent load: budget-flake, not product).
+- Generated-output handoff (EP-003/EP-008): `npm run userscript:build` produces a changed
+  `userscript/hex.user.template.js` + `userscript/release-version.json` because protected runtime
+  source changed. Per the finding contract this lane MUST NOT commit them; the integration owner
+  must rebuild and commit at the next integration checkpoint.
+- Next action: T025 convergence, then candidate merge tree + exact-head CI + integration handoff.

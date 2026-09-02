@@ -150,6 +150,42 @@ function transformList(values) {
 }
 
 /**
+ * Validates one render-provenance ledger record (HEX-C4-03).
+ *
+ * These are the projection's rewrite records in their enriched, auditable
+ * form: a record without a kind, a proof, or a consumed-origin object cannot
+ * participate in bidirectional provenance, and a malformed one must fail at
+ * construction rather than silently narrowing what a rendered fragment can
+ * be traced back to.
+ */
+export function renderProvenanceRecord(item) {
+  if (!item || typeof item !== 'object' || Array.isArray(item)) fail('phase8-render-provenance-record-invalid');
+  const kind = nonEmptyString(item.kind, 'phase8-render-provenance-record-kind-required');
+  const proof = nonEmptyString(item.proof, 'phase8-render-provenance-record-proof-required');
+  const origin = item.origin;
+  if (!origin || typeof origin !== 'object' || Array.isArray(origin)) fail('phase8-render-provenance-record-origin-required');
+  for (const key of ['addresses', 'rows', 'ir', 'ssaDefs', 'ssaUses']) {
+    const value = origin[key];
+    if (value != null && !Array.isArray(value)) fail('phase8-render-provenance-record-origin-invalid');
+  }
+  const targets = item.targets ?? [];
+  if (!Array.isArray(targets)) fail('phase8-render-provenance-record-targets-invalid');
+  return Object.freeze({
+    ...item,
+    kind,
+    proof,
+    targets: Object.freeze([...targets]),
+    origin: Object.freeze({
+      addresses: Object.freeze([...(origin.addresses ?? [])]),
+      rows: Object.freeze([...(origin.rows ?? [])]),
+      ir: Object.freeze([...(origin.ir ?? [])]),
+      ssaDefs: Object.freeze([...(origin.ssaDefs ?? [])]),
+      ssaUses: Object.freeze([...(origin.ssaUses ?? [])]),
+    }),
+  });
+}
+
+/**
  * Declares one Phase 8 pass.
  *
  * `preserves` and `invalidates` must be disjoint: a pass that claims to both
