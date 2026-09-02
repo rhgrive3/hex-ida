@@ -95,6 +95,13 @@ function nonEmpty(value, code) {
   return text;
 }
 
+function strictNonEmpty(value, code) {
+  if (typeof value !== 'string') fail(code);
+  const text = value.trim();
+  if (!text) fail(code);
+  return text;
+}
+
 function idList(values, code) {
   if (values == null) return [];
   if (!Array.isArray(values)) fail(code);
@@ -145,7 +152,7 @@ function validateDescriptor(layer, descriptor) {
  * same object".
  */
 export function createTypeClaim(input = {}) {
-  const layer = nonEmpty(input.layer, 'type-claim-layer-required');
+  const layer = strictNonEmpty(input.layer, 'type-claim-layer-required');
   if (!LAYER_SET.has(layer)) fail('type-claim-invalid-layer');
   const claim = {
     layer,
@@ -159,9 +166,9 @@ export function createTypeClaim(input = {}) {
 }
 
 export function createHardConstraint(input = {}) {
-  const kind = nonEmpty(input.kind, 'hard-constraint-kind-required');
+  const kind = strictNonEmpty(input.kind, 'hard-constraint-kind-required');
   if (!HARD_SET.has(kind)) fail('hard-constraint-invalid-kind');
-  const origin = nonEmpty(input.origin, 'hard-constraint-origin-required');
+  const origin = strictNonEmpty(input.origin, 'hard-constraint-origin-required');
   if (!ORIGIN_SET.has(origin)) fail('hard-constraint-invalid-origin');
   // The structural guard against FM-7: a heuristic or an unmatched debug file
   // cannot state a hard fact no matter how confident it sounds.
@@ -184,9 +191,9 @@ export function createHardConstraint(input = {}) {
 }
 
 export function createSoftEvidence(input = {}) {
-  const kind = nonEmpty(input.kind, 'soft-evidence-kind-required');
+  const kind = strictNonEmpty(input.kind, 'soft-evidence-kind-required');
   if (!SOFT_SET.has(kind)) fail('soft-evidence-invalid-kind');
-  const origin = nonEmpty(input.origin ?? 'heuristic', 'soft-evidence-origin-required');
+  const origin = strictNonEmpty(input.origin ?? 'heuristic', 'soft-evidence-origin-required');
   if (!ORIGIN_SET.has(origin)) fail('soft-evidence-invalid-origin');
   const weight = Number(input.weight ?? 0.5);
   if (!Number.isFinite(weight) || weight < 0 || weight > 1) fail('soft-evidence-invalid-weight');
