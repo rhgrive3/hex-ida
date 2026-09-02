@@ -106,7 +106,7 @@ export function pointsToAlias(left, right, options = {}) {
 
         const aNonEscaping = nonEscaping.has(a.rootKey) || (a.rootEntityId && nonEscaping.has(a.rootEntityId));
         const bNonEscaping = nonEscaping.has(b.rootKey) || (b.rootEntityId && nonEscaping.has(b.rootEntityId));
-        if (aNonEscaping || bNonEscaping) {
+        if (aNonEscaping && bNonEscaping) {
           relations.push('no');
           reasonCodes.add('distinct-non-escaping-allocation');
           continue;
