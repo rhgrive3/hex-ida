@@ -70,7 +70,7 @@ jobs:
                 if (pr.state === 'open') resolved.set(pr.number, pr);
               }
 
-              if (!resolved.size && trigger.head_branch) {
+              if (!resolved.size && trigger.head_branch && trigger.head_repository?.full_name === sameRepo) {
                 const matches = await github.paginate(github.rest.pulls.list, {
                   owner,
                   repo,
