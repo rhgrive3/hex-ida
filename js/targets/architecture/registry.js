@@ -8,22 +8,28 @@ export function normalizeArchitecturePositiveInteger(value, name, { nullable = f
   return n;
 }
 
+function normalizeArchitectureHook(value, name, fallback = null) {
+  if (value == null) return fallback;
+  if (typeof value !== 'function') throw new TypeError(`${name} must be a function`);
+  return value;
+}
+
 export class ArchitecturePluginV2 {
   constructor(definition = {}) {
     const id = canonicalArchitectureId(definition.id);
     if (!id) throw new TypeError('architecture id is required');
     this.id = id;
     this.semanticVersion = String(definition.semanticVersion || '1');
-    this.modes = definition.modes || (() => Object.freeze([]));
-    this.registerFile = definition.registerFile || (() => Object.freeze([]));
-    this.physicalAddressSpaces = definition.physicalAddressSpaces || (() => Object.freeze(['register','memory','code','unique']));
-    this.decode = definition.decode || null;
+    this.modes = normalizeArchitectureHook(definition.modes, 'modes', () => Object.freeze([]));
+    this.registerFile = normalizeArchitectureHook(definition.registerFile, 'registerFile', () => Object.freeze([]));
+    this.physicalAddressSpaces = normalizeArchitectureHook(definition.physicalAddressSpaces, 'physicalAddressSpaces', () => Object.freeze(['register','memory','code','unique']));
+    this.decode = normalizeArchitectureHook(definition.decode, 'decode');
     this.decodeProvider = definition.decodeProvider || null;
-    this.liftExact = definition.liftExact || null;
-    this.classifyControlFlow = definition.classifyControlFlow || (() => null);
-    this.directControlTarget = definition.directControlTarget || (() => null);
-    this.assemble = definition.assemble || null;
-    this.validateEncoding = definition.validateEncoding || null;
+    this.liftExact = normalizeArchitectureHook(definition.liftExact, 'liftExact');
+    this.classifyControlFlow = normalizeArchitectureHook(definition.classifyControlFlow, 'classifyControlFlow', () => null);
+    this.directControlTarget = normalizeArchitectureHook(definition.directControlTarget, 'directControlTarget', () => null);
+    this.assemble = normalizeArchitectureHook(definition.assemble, 'assemble');
+    this.validateEncoding = normalizeArchitectureHook(definition.validateEncoding, 'validateEncoding');
     this.supportedMemoryEndianness = Object.freeze([...new Set(
       (Array.isArray(definition.supportedMemoryEndianness) ? definition.supportedMemoryEndianness : [])
         .map((value) => canonicalArchitectureId(value)).filter(Boolean)
