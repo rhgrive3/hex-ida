@@ -244,10 +244,12 @@ export function demangleRustLegacy(symbol) {
   const components = [];
   let i = 2;
   let hash = null;
+  let terminated = false;
 
   while (i < s.length) {
     if (s[i] === 'E') {
       i++;
+      terminated = true;
       break;
     }
     const match = s.slice(i).match(/^(\d+)/);
@@ -280,7 +282,7 @@ export function demangleRustLegacy(symbol) {
     }
   }
 
-  if (components.length === 0) {
+  if (!terminated || components.length === 0) {
     return { original, demangled: original, parsed: false, reason: 'unrecognized-legacy-structure' };
   }
 
