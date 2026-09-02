@@ -59,9 +59,17 @@ function runScript(script, env, verbose) {
 function defaultHeavyConcurrency(env = process.env, availableParallelism = os.availableParallelism()) {
   const available = Number.isSafeInteger(availableParallelism) && availableParallelism >= 1 ? availableParallelism : 1;
   // Hosted CI remains conservative. On a local >=8-core machine the two
-  // duplicate-heavy proof families can each occupy their existing ~4-core
+  // duplicate-heavy proof families can each occupy their existing bounded
   // internal budget without oversubscribing the host.
   return !env.GITHUB_ACTIONS && available >= 8 ? 2 : 1;
+}
+
+function heavyPoolEnvironment(env) {
+  if (!env?.GITHUB_ACTIONS) return env;
+  // A generic environment override must never accidentally turn hosted exact-head
+  // validation into a new contention experiment. Local callers retain the override;
+  // hosted CI is structurally pinned to one heavy family at a time.
+  return { ...env, HEX_PHASE3_HEAVY_CONCURRENCY: '1' };
 }
 
 async function runPool(scripts, env, {
@@ -95,6 +103,10 @@ assert.equal(defaultHeavyConcurrency({}, 4), 1);
 assert.equal(defaultHeavyConcurrency({}, 8), 2);
 assert.equal(defaultHeavyConcurrency({ GITHUB_ACTIONS: 'true' }, 16), 1,
   'hosted CI keeps duplicate-heavy proof families serial by default');
+assert.equal(heavyPoolEnvironment({ GITHUB_ACTIONS:'true', HEX_PHASE3_HEAVY_CONCURRENCY:'9' }).HEX_PHASE3_HEAVY_CONCURRENCY, '1',
+  'hosted CI must ignore leaked heavy-pool overrides');
+assert.equal(heavyPoolEnvironment({ HEX_PHASE3_HEAVY_CONCURRENCY:'3' }).HEX_PHASE3_HEAVY_CONCURRENCY, '3',
+  'local callers retain explicit heavy-pool overrides');
 
 if (!shouldRun) {
   console.log(`Phase 3 mandatory existing regression commands: delegated to Semantic IR v2 contracts workflow (current=${process.env.GITHUB_WORKFLOW ?? 'unknown'})`);
@@ -123,11 +135,15 @@ if (!shouldRun) {
     NODE_OPTIONS: '',
     HEX_SEMANTIC_TEST_CONCURRENCY: process.env.HEX_SEMANTIC_TEST_CONCURRENCY ?? '2',
     HEX_DECOMPILER_TEST_CONCURRENCY: process.env.HEX_DECOMPILER_TEST_CONCURRENCY ?? '2',
+    // compiler-truth is itself one heavy family in this outer pool. Keep its
+    // component-level local fanout disabled here; standalone runs may parallelize.
+    HEX_COMPILER_TRUTH_CONCURRENCY: '1',
   };
   const results = await runPool(lightScripts, childEnv);
-  const heavyResults = await runPool(heavyScripts, childEnv, {
+  const heavyEnv = heavyPoolEnvironment(childEnv);
+  const heavyResults = await runPool(heavyScripts, heavyEnv, {
     envName: 'HEX_PHASE3_HEAVY_CONCURRENCY',
-    maxDefault: defaultHeavyConcurrency(childEnv),
+    maxDefault: defaultHeavyConcurrency(heavyEnv),
   });
   results.push(...heavyResults);
   const verbose = ['verbose','full'].includes(String(childEnv.HEX_TEST_OUTPUT ?? '').toLowerCase());

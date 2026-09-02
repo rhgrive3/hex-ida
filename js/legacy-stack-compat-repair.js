@@ -58,6 +58,35 @@ function valueMayCarryStackAddress(value, stackPointerProvenanceOf, memo = new M
   return carries;
 }
 
+export function canonicalizeLegacyRootedFieldBases(projected) {
+  const roots = new Map();
+  for (const value of projected?.values ?? []) {
+    if (value?.semanticValueId == null) continue;
+    const id = String(value.semanticValueId);
+    if (!roots.has(id)) roots.set(id, value);
+  }
+  if (!roots.size) return projected;
+
+  const locations = new Set();
+  for (const loc of projected?.locations?.values?.() ?? []) locations.add(loc);
+  for (const inst of projected?.instructions ?? []) if (inst?.loc) locations.add(inst.loc);
+
+  for (const loc of locations) {
+    if (loc?.kind !== 'field' || loc.baseEntityId == null) continue;
+    const baseEntityId = String(loc.baseEntityId);
+    const root = roots.get(baseEntityId) ?? null;
+    if (!root) continue;
+    if (typeof loc.key !== 'string' || !loc.key.startsWith(`field:${baseEntityId}+`)) continue;
+    // A rooted-offset MemorySSA region already proves the canonical root
+    // entity. Keep the legacy projection attached to that root instead of an
+    // access-local reload of the same pointer. This is representation repair,
+    // not an alias inference: the region/key proof is unchanged and malformed
+    // or unrooted locations remain untouched.
+    loc.base = root;
+  }
+  return projected;
+}
+
 function stackAddressEscapesFunction(projected, stackPointerProvenanceOf) {
   const memo = new Map();
   for (const inst of projected?.instructions ?? []) {
@@ -71,7 +100,9 @@ function stackAddressEscapesFunction(projected, stackPointerProvenanceOf) {
 }
 
 export function restoreLegacyPrivateStackForwarding(projected, stackPointerProvenanceOf) {
-  if (!projected || stackAddressEscapesFunction(projected, stackPointerProvenanceOf)) return projected;
+  if (!projected) return projected;
+  canonicalizeLegacyRootedFieldBases(projected);
+  if (stackAddressEscapesFunction(projected, stackPointerProvenanceOf)) return projected;
 
   const repairedCalls = new Set();
   for (const inst of projected.instructions ?? []) {
