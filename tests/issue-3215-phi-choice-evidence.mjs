@@ -29,100 +29,86 @@ function baseScope() {
   };
 }
 
-async function verdict(scope, backend) {
+async function verdict(fixture, backend) {
   return verifyGlobalEdgeReachability({
     entryBlock: 0,
     targetBlock: 5,
-    targetEdge: baseScope().targetEdge,
+    targetEdge: fixture.targetEdge,
     pathCompleteness: 'complete',
     backend,
-    globalScope: scope,
+    globalScope: fixture.scope,
   });
 }
 
 test('#3215 { complete: true } phi placeholder is rejected as evidence', async () => {
-  const { scope } = baseScope();
-  scope.phiChoices = [{ complete: true }];
-  const res = await verdict(scope, new FakeSolverBackend());
+  const fixture = baseScope();
+  fixture.scope.phiChoices = [{ complete: true }];
+  const res = await verdict(fixture, new FakeSolverBackend());
   assert.equal(res.verdict, VERDICT.UNKNOWN);
   assert.equal(res.reasonCode, 'incomplete-phi-choices');
 });
 
 test('#3215 structured phi choices without predecessor/value identity are rejected', async () => {
-  const { scope } = baseScope();
-  scope.phiChoices = [{ complete: true, phiId: 'phi_1', block: 5 }];
-  const res = await verdict(scope, new FakeSolverBackend());
+  const fixture = baseScope();
+  fixture.scope.phiChoices = [{ complete: true, phiId: 'phi_1', block: 5 }];
+  const res = await verdict(fixture, new FakeSolverBackend());
   assert.equal(res.reasonCode, 'incomplete-phi-choices');
 });
 
 test('#3215 empty value identities are rejected', async () => {
   for (const valueId of ['', '   ']) {
-    const { scope } = baseScope();
-    scope.phiChoices = [{
+    const fixture = baseScope();
+    fixture.scope.phiChoices = [{
       complete: true, phiId: 'phi_1', block: 5, predecessorBlock: 0, valueId,
     }];
-    const res = await verdict(scope, new FakeSolverBackend());
+    const res = await verdict(fixture, new FakeSolverBackend());
     assert.equal(res.verdict, VERDICT.UNKNOWN);
     assert.equal(res.reasonCode, 'incomplete-phi-choices');
   }
 });
 
 test('#3215 phi choices must belong to the target block', async () => {
-  const { scope } = baseScope();
-  scope.phiChoices = [{
+  const fixture = baseScope();
+  fixture.scope.phiChoices = [{
     complete: true, phiId: 'phi_1', block: 2, predecessorBlock: 0, valueId: 'v1',
   }];
-  const res = await verdict(scope, new FakeSolverBackend());
+  const res = await verdict(fixture, new FakeSolverBackend());
   assert.equal(res.verdict, VERDICT.UNKNOWN);
   assert.equal(res.reasonCode, 'incomplete-phi-choices');
 });
 
 test('#3215 phi choices must reference an enumerated incoming path source', async () => {
-  const { scope } = baseScope();
-  scope.phiChoices = [{
+  const fixture = baseScope();
+  fixture.scope.phiChoices = [{
     complete: true, phiId: 'phi_1', block: 5, predecessorBlock: 9, valueId: 'v1',
   }];
-  const res = await verdict(scope, new FakeSolverBackend());
+  const res = await verdict(fixture, new FakeSolverBackend());
   assert.equal(res.reasonCode, 'incomplete-phi-choices');
 });
 
 test('#3215 empty phi choices require independent zero-count inventory evidence', async () => {
   for (const phiInventory of [undefined, { complete: true }, { complete: true, count: 1 }]) {
-    const { scope } = baseScope();
-    scope.phiInventory = phiInventory;
-    const res = await verdict(scope, new FakeSolverBackend());
+    const fixture = baseScope();
+    fixture.scope.phiInventory = phiInventory;
+    const res = await verdict(fixture, new FakeSolverBackend());
     assert.equal(res.verdict, VERDICT.UNKNOWN);
     assert.equal(res.reasonCode, 'incomplete-phi-choices');
   }
 });
 
 test('#3215 fully identified target-block phi choice is admissible evidence', async () => {
-  const { scope, targetEdge } = baseScope();
-  scope.phiChoices = [{
+  const fixture = baseScope();
+  fixture.scope.phiChoices = [{
     complete: true, phiId: 'phi_1', block: 5, predecessorBlock: 0, valueId: 'v1',
   }];
-  const res = await verifyGlobalEdgeReachability({
-    entryBlock: 0,
-    targetBlock: 5,
-    targetEdge,
-    pathCompleteness: 'complete',
-    backend: new ExhaustiveBvBackend(),
-    globalScope: scope,
-  });
+  const res = await verdict(fixture, new ExhaustiveBvBackend());
   assert.equal(res.verdict, VERDICT.PROVED);
   assert.equal(res.evidence.proofAuthority, 'exact');
 });
 
 test('#3215 phi-free certificate with inventory evidence still proves', async () => {
-  const { scope, targetEdge } = baseScope();
-  const res = await verifyGlobalEdgeReachability({
-    entryBlock: 0,
-    targetBlock: 5,
-    targetEdge,
-    pathCompleteness: 'complete',
-    backend: new ExhaustiveBvBackend(),
-    globalScope: scope,
-  });
+  const fixture = baseScope();
+  const res = await verdict(fixture, new ExhaustiveBvBackend());
   assert.equal(res.verdict, VERDICT.PROVED);
   assert.equal(res.evidence.proofAuthority, 'exact');
 });
