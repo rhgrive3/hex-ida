@@ -38,7 +38,9 @@ function required(value, code) {
 function optional(value) {
   if (value == null) return null;
   if (typeof value !== 'string') throw new ArtifactError('artifact-optional-id-invalid');
-  return value;
+  const text = value.trim();
+  if (!text) throw new ArtifactError('artifact-optional-id-invalid');
+  return text;
 }
 function version(value, relevant = true) { if (!relevant) return ARTIFACT_NOT_APPLICABLE_VERSION; return required(value, 'artifact-version-required'); }
 function sortedStrings(values, code) {
@@ -54,7 +56,6 @@ function sortedStrings(values, code) {
 }
 
 const RESERVED_TAGS = Object.freeze(['$map', '$set', '$bigint', '$date', '$bytes']);
-
 function escapeKey(key) { return key.startsWith('$') ? `$${key}` : key; }
 
 export function canonicalArtifactKeyValue(value, seen = new WeakSet()) {
@@ -192,9 +193,6 @@ function normalizeArtifactPayloadBytes(value, { allowMissing = false } = {}) {
 }
 
 export function createArtifactRecord(descriptor, payloadBytes, metadata = {}) {
-  // Artifact records carry producer authority (#3324): only descriptors minted
-  // by createArtifactDescriptor may produce records. A lookalike object must
-  // not forge canonical artifact identity.
   assertCanonicalArtifactDescriptor(descriptor);
   const bytes = normalizeArtifactPayloadBytes(payloadBytes);
   const completeness = metadata.completeness ?? 'complete';
