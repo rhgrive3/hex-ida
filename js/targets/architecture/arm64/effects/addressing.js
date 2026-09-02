@@ -98,12 +98,17 @@ export function arm64RegisterOperand(input) {
   }
   if (typeof input.physicalId === 'string' && typeof input.kind === 'string') {
     const parsed = arm64RegisterOperand(input.view || input.physicalId);
-    if (parsed) return { ...parsed, bits:Number(input.bits || parsed.bits), kind:input.kind, zero:!!input.zero };
+    if (!parsed || parsed.physicalId !== input.physicalId || parsed.kind !== input.kind) return null;
+    if (input.bits != null && (typeof input.bits !== 'number' || !Number.isInteger(input.bits) || input.bits !== parsed.bits)) return null;
+    if (input.zero != null && (typeof input.zero !== 'boolean' || input.zero !== parsed.zero)) return null;
+    return parsed;
   }
 
   if (typeof input.registerId === 'string') {
     const parsed = arm64RegisterOperand(input.view || input.registerId);
-    if (parsed) return { ...parsed, bits: Number(input.widthBits || parsed.bits) };
+    if (!parsed || parsed.physicalId !== input.registerId) return null;
+    if (input.widthBits != null && (typeof input.widthBits !== 'number' || !Number.isInteger(input.widthBits) || input.widthBits !== parsed.bits)) return null;
+    return parsed;
   }
   if (typeof input.text === 'string') return arm64RegisterOperand(input.text);
   return null;
@@ -236,14 +241,15 @@ function writebackDisplacement(mem, mode, addressDisp) {
 }
 
 function mnemonicEncoding(decoded, index) {
-  const mnemonic = String(decoded?.mnemonic || '').toLowerCase();
+  if (typeof decoded?.mnemonic !== 'string') fail('arm64-mnemonic-invalid');
+  const mnemonic = decoded.mnemonic.toLowerCase();
   if (/^(?:ldur|stur|ldtr|sttr)/.test(mnemonic)) return 'unscaled';
   if (index) return 'register-offset';
   return 'scaled-or-immediate';
 }
 
 function validatePrefetchAddressEncoding(decoded, index, addressDisp) {
-  const mnemonic = String(decoded?.mnemonic || '').trim().toLowerCase();
+  const mnemonic = typeof decoded?.mnemonic === 'string' ? decoded.mnemonic.trim().toLowerCase() : '';
   if (mnemonic !== 'prfm' && mnemonic !== 'prfum') return;
   const displacement = addressDisp ?? 0n;
   if (mnemonic === 'prfum') {
@@ -282,7 +288,7 @@ export function buildArm64EffectiveAddress(decoded, options = {}) {
     if (addressDisp && addressDisp !== 0n) fail('arm64-register-offset-cannot-have-immediate-displacement');
     const indexRead = createArm64RegisterRead(index, `${prefix}.index`, index.bits);
     readOperations.push(indexRead.operation);
-    const mnemonic = String(decoded?.mnemonic || '').trim().toLowerCase();
+    const mnemonic = typeof decoded?.mnemonic === 'string' ? decoded.mnemonic.trim().toLowerCase() : '';
     const accessWidthBits = options.accessWidthBits ?? (mnemonic === 'prfm' ? 64 : null);
     offsetExpr = extendIndex(arm64TemporaryExpr(`${prefix}.index`, index.bits), index, mem.shift || mem.extend || null, accessWidthBits);
     offsetKind = 'register';

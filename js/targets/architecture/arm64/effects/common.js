@@ -32,12 +32,16 @@ export function rotateRight(value, amount, widthBits) {
 }
 
 export function instructionMnemonic(instruction) {
-  return String(instruction?.mnemonic || '').trim().toLowerCase();
+  // The mnemonic is the instruction-identity key for family dispatch. A
+  // structured value must not launder into a canonical instruction identity.
+  if (typeof instruction?.mnemonic !== 'string') return '';
+  return instruction.mnemonic.trim().toLowerCase();
 }
 
 export function instructionBits(op, fallback = 64) {
-  const bits = Number(op?.bits ?? fallback);
-  return bits === 32 || bits === 64 ? bits : fallback;
+  const bits = op?.bits;
+  if (bits == null) return fallback === 32 || fallback === 64 ? fallback : 0;
+  return typeof bits === 'number' && Number.isInteger(bits) && (bits === 32 || bits === 64) ? bits : 0;
 }
 
 export function immediateOf(op) {
@@ -61,7 +65,9 @@ function decodedAbsoluteTargetOf(op) {
 
 export function conditionOf(instruction) {
   const operand = (instruction?.ops || []).find((op) => op?.k === 'cond');
-  if (operand?.text) return String(operand.text).toLowerCase();
+  // The condition code picks a canonical NZCV predicate: structured text must
+  // not coerce into a real condition identity.
+  if (typeof operand?.text === 'string') return operand.text.trim().toLowerCase() || null;
   const mnemonic = instructionMnemonic(instruction);
   if (mnemonic.startsWith('b.')) return mnemonic.slice(2);
   return null;
@@ -98,6 +104,7 @@ function originInput(instruction, instructionId, operationIds) {
 function registerDescriptor(op) {
   if (!op || op.k !== 'reg') return null;
   const bits = instructionBits(op);
+  if (bits !== 32 && bits !== 64) return null;
   const register31 = op.num == null || (Number.isInteger(op.num) && op.num === 31);
   if (op.cls === 'zr') return register31 ? { kind: 'zero', bits } : null;
   if (op.cls === 'sp') {

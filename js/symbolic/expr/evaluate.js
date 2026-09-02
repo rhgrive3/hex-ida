@@ -91,12 +91,11 @@ export function evaluateExpr(expr, env = null) {
       }
       if (isBoolSort(expr.sort)) {
         const val = typeof bound === 'object' && bound !== null && 'value' in bound ? bound.value : bound;
-        /* #3245: a BOOL binding must be a primitive boolean after unwrapping.
-           Truthiness coercion would promote 'false' / structured truthy
-           bindings into a valid witness at the independent model-validation
-           boundary, so anything else fails closed to UNKNOWN. */
+        // A BOOL model binding is a canonical witness only when it is a
+        // primitive boolean. Truthiness coercion (Boolean('false') === true)
+        // would let malformed solver/provider output validate as a witness.
         if (typeof val !== 'boolean') {
-          return { status: EVAL_STATUS.UNKNOWN, reason: 'non-boolean-model-binding', symbol: expr };
+          return { status: EVAL_STATUS.UNKNOWN, reason: 'malformed-boolean-binding', sort: expr.sort, symbol: expr };
         }
         return { status: EVAL_STATUS.VALUE, sort: expr.sort, value: val };
       }

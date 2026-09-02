@@ -89,8 +89,41 @@ export async function verifyGlobalEdgeReachability({
       (globalScope.pathCoverageEvidence.totalPaths != null && globalScope.pathCoverageEvidence.totalPaths !== globalScope.incomingPaths.length)) {
     return unknown('path-coverage-count-mismatch', 'Global path coverage count does not match the enumerated incoming CFG paths');
   }
-  if (!Array.isArray(globalScope.phiChoices) || globalScope.phiChoices.some((choice) => choice?.complete !== true)) {
+  if (!Array.isArray(globalScope.phiChoices)) {
     return unknown('incomplete-phi-choices', 'Global unreachability requires explicit PHI predecessor choices');
+  }
+  if (globalScope.phiChoices.length > 0) {
+    /* #3215: a bare { complete: true } placeholder is not PHI evidence. Every
+       choice must name its PHI and the chosen predecessor with
+       machine-checkable identity, and that predecessor must be one of the
+       enumerated incoming CFG path sources. */
+    const pathSources = new Set(globalScope.incomingPaths.map((path) => path.fromBlock));
+    const validChoice = (choice) => choice?.complete === true
+      && typeof choice.phiId === 'string' && choice.phiId.trim() !== ''
+      && Number.isInteger(choice.block)
+      && Number.isInteger(choice.predecessorBlock)
+      && pathSources.has(choice.predecessorBlock)
+      && (isExpr(choice.value) || typeof choice.valueId === 'string');
+    if (globalScope.phiChoices.some((choice) => !validChoice(choice))) {
+      return unknown('incomplete-phi-choices', 'Global unreachability requires explicit PHI predecessor choices');
+    }
+  } else if (globalScope.phiInventory?.complete !== true) {
+    /* An empty choice list may only witness a CFG with no PHIs, and that fact
+       needs its own machine-readable inventory evidence — an empty array alone
+       is not "no PHI" proof. */
+    return unknown('incomplete-phi-choices', 'Global unreachability requires explicit PHI predecessor choices');
+  }
+  // A PHI choice is proof evidence only when it names the PHI it resolves and
+  // the predecessor it selects. `{ complete: true }` alone is a placeholder and
+  // must not pass the gate. When the certificate declares PHIs present but
+  // enumerates no choices, that contradiction also fails closed.
+  if (globalScope.phiChoices.length === 0 && globalScope.phiInventory?.count > 0) {
+    return unknown('missing-phi-choices', 'Global path evidence declares PHIs but enumerates no PHI predecessor choices');
+  }
+  if (globalScope.phiChoices.some((choice) =>
+    choice?.phi == null && choice?.phiId == null ||
+    choice?.predecessor == null && choice?.fromBlock == null)) {
+    return unknown('incomplete-phi-choices', 'Each PHI choice must identify its PHI and its selected predecessor');
   }
   if (!isExpr(targetEdge)) {
     return unknown('missing-target-edge-condition', 'Global unreachability requires a translated target-edge condition');

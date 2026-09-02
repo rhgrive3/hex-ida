@@ -137,7 +137,8 @@ function fallbackFlags(ctx, immediate) {
 }
 
 export function liftArm64FlagEffects(instruction, options = {}) {
-  const mnemonic = String(instruction?.mnemonic || '').toLowerCase();
+  if (typeof instruction?.mnemonic !== 'string') return null;
+  const mnemonic = instruction.mnemonic.toLowerCase();
   if (!ARM64_FLAG_EFFECT_MNEMONICS.has(mnemonic)) return null;
   const ctx = createArm64EffectContext(instruction, options);
   const ops = instruction?.ops || [];
@@ -166,14 +167,29 @@ export function liftArm64FlagEffects(instruction, options = {}) {
   }
 
   const condition = conditionOf(instruction);
-  const fallback = immediateOf(ops[2]);
-  const lhs = ctx.readOperand(ops[0], widthBits);
-  const rhs = ctx.readOperand(ops[1], widthBits);
-  if (!lhs || !rhs || fallback == null || !condition || fallback < 0n || fallback > 15n) {
+  // Conditional-compare evidence is canonical architectural input. Every
+  // gate (canonical condition code, bigint immediates, ranges) must pass
+  // BEFORE any flag/register read or other definite-state operation.
+  const fallbackOperand = ops[2];
+  const fallback = fallbackOperand?.k === 'imm'
+    && typeof fallbackOperand.value === 'bigint'
+    && fallbackOperand.shift == null && fallbackOperand.extend == null
+    ? fallbackOperand.value
+    : null;
+  const comparisonOperand = ops[1];
+  const comparisonCanonical = comparisonOperand?.k !== 'imm'
+    || (typeof comparisonOperand.value === 'bigint'
+      && comparisonOperand.shift == null && comparisonOperand.extend == null);
+  if (!condition || !CONDITION_CODES.has(condition) || fallback == null || fallback < 0n || fallback > 15n || !comparisonCanonical) {
     return ctx.partial(`arm64-${mnemonic}-operands-unmodelled`, ['flags', 'other']);
   }
   const conditionValue = emitArm64Condition(ctx, condition);
   if (!conditionValue) return ctx.partial(`arm64-${mnemonic}-condition-unmodelled`, ['flags', 'other']);
+  const lhs = comparisonCanonical ? ctx.readOperand(ops[0], widthBits) : null;
+  const rhs = comparisonCanonical ? ctx.readOperand(ops[1], widthBits) : null;
+  if (!lhs || !rhs) {
+    return ctx.partial(`arm64-${mnemonic}-operands-unmodelled`, ['flags', 'other']);
+  }
   const candidate = emitArm64AddSub(ctx, lhs, rhs, widthBits, { subtract: mnemonic === 'ccmp' });
   const fallbackNzcv = fallbackFlags(ctx, fallback);
   const selected = {};

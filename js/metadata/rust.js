@@ -98,7 +98,7 @@ function parseV0Identifier(str, pos) {
 }
 
 function parseV0Type(str, state, depth = 0) {
-  if (state.pos >= str.length || depth > state.maxDepth) return null;
+  if (state.pos >= str.length || depth > 32) return null;
   const c = str[state.pos];
   if (RUST_V0_BASIC_TYPES[c]) {
     state.pos++;
@@ -116,7 +116,7 @@ function parseV0Type(str, state, depth = 0) {
 }
 
 function parseV0Path(str, state, depth = 0) {
-  if (state.pos >= str.length || depth > state.maxDepth) return null;
+  if (state.pos >= str.length || depth > 32) return null;
   const tag = str[state.pos++];
 
   if (tag === 'C') {
@@ -172,6 +172,11 @@ function parseV0Path(str, state, depth = 0) {
 
 /**
  * Demangles a Rust v0 mangled symbol (starts with `_R` or `__R`).
+ *
+ * A symbol is only `parsed: true` when the whole input is consumed by the v0
+ * grammar: the leading path plus an optional instantiating crate path and an
+ * optional vendor-specific suffix starting with `.` or `$`. Unrecognized
+ * trailing bytes leave the symbol unparsed instead of silently succeeding.
  */
 export function demangleRustV0(symbol, maxDepth = 32) {
   const s = String(symbol || '').replace(/^__?R/, '');
@@ -179,8 +184,7 @@ export function demangleRustV0(symbol, maxDepth = 32) {
     return { original: symbol, demangled: symbol, parsed: false, reason: 'not-v0-symbol' };
   }
 
-  const depthLimit = Number.isSafeInteger(maxDepth) && maxDepth >= 0 ? maxDepth : 32;
-  const state = { pos: 0, maxDepth: depthLimit };
+  const state = { pos: 0 };
   let demangled = null;
 
   try {
@@ -193,6 +197,10 @@ export function demangleRustV0(symbol, maxDepth = 32) {
     return { original: symbol, demangled: symbol, parsed: false, reason: 'unrecognized-v0-structure' };
   }
 
+  if (state.pos < s.length && !v0SuffixParses(s, state.pos)) {
+    return { original: symbol, demangled: symbol, parsed: false, reason: 'unconsumed-v0-trailing-bytes' };
+  }
+
   const components = demangled.split('::');
   return {
     original: symbol,
@@ -202,6 +210,25 @@ export function demangleRustV0(symbol, maxDepth = 32) {
     crate: components[0] || null,
     generation: 'v0',
   };
+}
+
+/**
+ * Checks the unconsumed remainder of a v0 symbol against the grammar suffix
+ * productions: an optional instantiating crate path followed by an optional
+ * vendor-specific suffix (`.` or `$...`). Anything else is not v0.
+ */
+function v0SuffixParses(s, pos) {
+  if (pos >= s.length) return true;
+  if (s[pos] === '.' || s[pos] === '$') return true;
+  const state = { pos };
+  try {
+    const crate = parseV0Path(s, state, 0);
+    if (!crate) return false;
+    if (state.pos >= s.length) return true;
+    return s[state.pos] === '.' || s[state.pos] === '$';
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -340,6 +367,10 @@ export class RustMetadataProvider extends LanguageMetadataProvider {
     const vtables = [];
     let unreadable = 0;
 
+    const isRustCandidateName = (name) =>
+      typeof name === 'string' &&
+      (name.startsWith('_R') || name.startsWith('__R') || name.startsWith('_ZN') || name.startsWith('ZN'));
+
     for (const sym of rawSymbols) {
       const name = sym.name || sym.symbol || String(sym);
       const dem = demangleRustSymbol(name);
@@ -354,8 +385,13 @@ export class RustMetadataProvider extends LanguageMetadataProvider {
           isVtable: dem.demangled.includes('::vtable') || dem.demangled.includes('vtable'),
         });
         if (dem.demangled.includes('::vtable') || dem.demangled.includes('vtable')) {
-          vtables.push(rustSymbols[rustSymbols.length - 1]);
+          vtables.push(sym);
         }
+      } else if (isRustCandidateName(dem.original)) {
+        // A symbol the Rust grammar itself claims (v0 / legacy candidate prefix)
+        // but the demangler cannot parse is an unreadable Rust record. Ordinary
+        // C/C++ symbols are not Rust candidates and never count here.
+        unreadable++;
       }
     }
 
@@ -435,9 +471,9 @@ export class RustMetadataProvider extends LanguageMetadataProvider {
     const records = symbols.map((sym) =>
       createLanguageMetadataRecord({
         kind: 'symbol',
-        entityId: `sym@${sym.address ?? sym.name}`,
+        entityId: `sym@${sym.address || sym.name}`,
         name: sym.name,
-        address: sym.address == null ? null : String(sym.address),
+        address: sym.address ? String(sym.address) : null,
         sizeBytes: sym.sizeBytes,
         providerId: this.id,
         providerVersion: this.version,
@@ -462,9 +498,9 @@ export class RustMetadataProvider extends LanguageMetadataProvider {
     const records = vtables.map((vt) =>
       createLanguageMetadataRecord({
         kind: 'vtable',
-        entityId: `vtable@${vt.address ?? vt.name}`,
+        entityId: `vtable@${vt.address || vt.name}`,
         name: vt.name,
-        address: vt.address == null ? null : String(vt.address),
+        address: vt.address ? String(vt.address) : null,
         providerId: this.id,
         providerVersion: this.version,
         ecosystem: 'rust',

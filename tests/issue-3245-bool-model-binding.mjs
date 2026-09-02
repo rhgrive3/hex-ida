@@ -12,7 +12,7 @@ test('#3245 BOOL bindings accept only primitive booleans', () => {
   assert.deepEqual(evaluateExpr(flag, { flag: true }), { status: EVAL_STATUS.VALUE, sort: flag.sort, value: true });
   assert.deepEqual(evaluateExpr(flag, { flag: false }), { status: EVAL_STATUS.VALUE, sort: flag.sort, value: false });
   assert.equal(evaluateExpr(flag, { flag: 'false' }).status, EVAL_STATUS.UNKNOWN);
-  assert.equal(evaluateExpr(flag, { flag: 'false' }).reason, 'non-boolean-model-binding');
+  assert.equal(evaluateExpr(flag, { flag: 'false' }).reason, 'malformed-boolean-binding');
   assert.equal(evaluateExpr(flag, { flag: 0 }).status, EVAL_STATUS.UNKNOWN);
   assert.equal(evaluateExpr(flag, { flag: 1 }).status, EVAL_STATUS.UNKNOWN);
   assert.equal(evaluateExpr(flag, { flag: {} }).status, EVAL_STATUS.UNKNOWN);

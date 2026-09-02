@@ -35,7 +35,10 @@ export function computeStructuralHash(node) {
       break;
 
     case EXPR_KIND.FRESH_SYMBOL:
-      canonicalRep = `SYM:${sortStr}:${node.name}`;
+      // Fresh symbols are independent variables even when they share a name;
+      // the solver binds them by symbolId, so structural identity must agree
+      // with solver binding identity (#3246).
+      canonicalRep = `SYM:${sortStr}:${node.symbolId ?? node.name}`;
       break;
 
     case EXPR_KIND.UNKNOWN_SEMANTIC:
@@ -96,6 +99,9 @@ export function structuralEquals(a, b) {
       return a.value === b.value;
 
     case EXPR_KIND.FRESH_SYMBOL:
+      // Structural identity equals solver binding identity: symbolId first,
+      // name-only comparison only for legacy nodes without a symbolId.
+      if (a.symbolId != null || b.symbolId != null) return a.symbolId === b.symbolId;
       return a.name === b.name;
 
     case EXPR_KIND.UNKNOWN_SEMANTIC:
