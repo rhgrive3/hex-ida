@@ -151,13 +151,20 @@ export function plainToExpr(plain) {
       return createBv(sort.width, BigInt(plain.value));
 
     case EXPR_KIND.FRESH_SYMBOL:
-      // Restore the saved canonical symbolId. Discarding it would renumber the
-      // symbol and break model binding / structural identity across a
-      // serialize/deserialize round trip (#3247).
-      if (typeof plain.symbolId === 'string' && plain.symbolId) {
-        return restoreFreshSymbol(sort, plain.name, plain.symbolId, plain.meta || {});
+      // Restore the saved canonical symbolId. Discarding a present malformed ID
+      // would silently rebind the serialized symbol to a fresh identity. Only
+      // legacy payloads where the ID is missing (or the historical empty-string
+      // placeholder) may allocate a replacement.
+      if (plain.symbolId == null && !Object.prototype.hasOwnProperty.call(plain, 'symbolId')) {
+        return createFreshSymbol(sort, plain.name, plain.meta || {});
       }
-      return createFreshSymbol(sort, plain.name, plain.meta || {});
+      if (plain.symbolId === '') {
+        return createFreshSymbol(sort, plain.name, plain.meta || {});
+      }
+      if (typeof plain.symbolId !== 'string') {
+        throw new TypeError('plainToExpr: fresh symbolId must be a string when present');
+      }
+      return restoreFreshSymbol(sort, plain.name, plain.symbolId, plain.meta || {});
 
     case EXPR_KIND.UNKNOWN_SEMANTIC:
       return createUnknownSemantic(sort, plain.reason, plain.detail);
