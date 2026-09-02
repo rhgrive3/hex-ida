@@ -150,6 +150,18 @@ assert.equal(isLanguageRecordAuthoritative(partialResult, coveredRecord), true);
 assert.equal(isLanguageRecordAuthoritative(partialResult, uncoveredRecord), false);
 assert.equal(isLanguageRecordAuthoritative(partialResult, symbolRecord), false);
 
+// #3423: schemaVersion is not a trust marker for caller-supplied status. A
+// partial status-shaped object must be revalidated by the canonical constructor.
+assert.throws(() => createLanguageMetadataResult({
+  identity: authIdentity,
+  status: { schemaVersion:1, completeness:'complete', stopReason:null },
+}));
+const statusRoundTrip = createLanguageMetadataResult({
+  identity: authIdentity,
+  status: partialResult.status,
+});
+assert.deepEqual(statusRoundTrip.status, partialResult.status);
+
 // #3265: canonical completeness metrics never coerce non-number or invalid
 // numeric values into the result contract.
 const metricFields = ['declared', 'scanned', 'parsed', 'unreadableEntries', 'invalidEntries'];
@@ -267,6 +279,11 @@ const incompleteGraph = new TypeConstraintGraph({ snapshotId: 'test-snap-incompl
 const incompleteApplied = applyLanguageMetadataTypesToGraph(incompleteGraph, incompleteAuthoritativeResult, typePage);
 assert.equal(incompleteApplied.hard, 0);
 assert.equal(incompleteApplied.soft, 1);
+
+// #3426: matched-authoritative identity cannot bypass canonical per-record
+// authority when the result/status itself is incomplete.
+const authoritativePage = provider.authoritativeRecords(incompleteAuthoritativeResult, provider.types, null);
+assert.deepEqual(authoritativePage.records, []);
 
 // 5. Function discovery evidence
 const symPage = provider.symbols();

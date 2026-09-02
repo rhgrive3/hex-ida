@@ -48,7 +48,7 @@ export class SwiftMetadataProvider extends LanguageMetadataProvider {
       return name.includes('swift5') || name.includes('sw5');
     });
 
-    if (!swiftSections.length || typeof this.readAt !== 'function') {
+    if (!swiftSections.length) {
       return createLanguageMetadataResult({
         providerId: this.id,
         providerVersion: this.version,
@@ -64,8 +64,38 @@ export class SwiftMetadataProvider extends LanguageMetadataProvider {
           method: 'swift-section-probe',
           detail: 'no swift metadata sections found',
         }),
-        sections: swiftSections.map((s) => s.section || s.name || String(s)),
+        sections: [],
         completeness: { present: false, declared: 0, scanned: 0, parsed: 0, complete: true },
+      });
+    }
+
+    if (typeof this.readAt !== 'function') {
+      const reason = 'swift metadata sections found but no reader is available';
+      return createLanguageMetadataResult({
+        providerId: this.id,
+        providerVersion: this.version,
+        ecosystem: 'swift',
+        identity: createLanguageMetadataIdentity({
+          verdict: 'identity-unavailable',
+          providerId: this.id,
+          providerVersion: this.version,
+          ecosystem: 'swift',
+          binaryIdentity: this.binaryIdentity,
+          architecture: this.architecture,
+          platform: this.platform,
+          method: 'swift-section-probe',
+          detail: reason,
+        }),
+        sections: swiftSections.map((s) => s.section || s.name || String(s)),
+        completeness: {
+          present: true,
+          declared: 0,
+          scanned: 0,
+          parsed: 0,
+          complete: false,
+          reasons: [reason],
+        },
+        diagnostics: [reason],
       });
     }
 

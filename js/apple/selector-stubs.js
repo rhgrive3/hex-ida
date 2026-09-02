@@ -14,7 +14,7 @@ function selectorAddressKey(address) {
   if (typeof address === 'number') return Number.isSafeInteger(address) && address >= 0 ? address.toString() : null;
   if (typeof address !== 'string') return null;
   const text = address.trim();
-  return /^(?:0x[0-9a-fA-F]+|[0-9]+)$/.test(text) ? text : null;
+  return /^(?:0x[0-9a-fA-F]+|[0-9]+)$/.test(text) ? BigInt(text).toString() : null;
 }
 
 export function buildSelectorIndex({ selectorRefs = [], stubs = [], fixups = [] } = {}) {

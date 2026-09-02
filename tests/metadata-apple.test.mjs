@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { SwiftMetadataProvider } from '../js/metadata/swift.js';
 import { ObjcMetadataProvider } from '../js/metadata/objc.js';
+import { buildSelectorIndex, resolveSelectorStub } from '../js/objc.js';
 
 console.log('Testing Swift & Objective-C Metadata Providers...');
 
@@ -77,6 +78,29 @@ console.log('Testing Swift & Objective-C Metadata Providers...');
   assert.equal(probe.authoritative, false);
   assert.equal(probe.completeness.present, false);
   assert.equal(probe.identity.verdict, 'identity-unavailable');
+}
+
+// 4. Objective-C selector addresses: equivalent numeric forms share one key.
+{
+  const forms = [16, 16n, '16', '0x10'];
+  for (const storedAddress of forms) {
+    const index = buildSelectorIndex({ stubs: [{ addr: storedAddress, selector: 'doThing:' }] });
+    for (const queryAddress of forms) {
+      const resolved = resolveSelectorStub({ address: queryAddress, selectorIndex: index });
+      assert.equal(
+        resolved.selector,
+        'doThing:',
+        `equivalent address forms must share one selector key: stored=${String(storedAddress)} query=${String(queryAddress)}`,
+      );
+      assert.equal(resolved.ambiguous, false);
+    }
+  }
+
+  for (const invalidAddress of [-1, -1n, '-1', '0x', 'xyz', [], {}, true]) {
+    const index = buildSelectorIndex({ stubs: [{ addr: invalidAddress, selector: 'bad:' }] });
+    const resolved = resolveSelectorStub({ address: 16, selectorIndex: index });
+    assert.equal(resolved.selector, null, `invalid address ${String(invalidAddress)} must not enter the selector index`);
+  }
 }
 
 console.log('Swift & Objective-C Metadata Provider tests passed.');
