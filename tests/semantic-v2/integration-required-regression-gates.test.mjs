@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import os from 'node:os';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -55,13 +56,26 @@ function runScript(script, env, verbose) {
   });
 }
 
-async function runPool(scripts, env) {
+function defaultHeavyConcurrency(env = process.env, availableParallelism = os.availableParallelism()) {
+  const available = Number.isSafeInteger(availableParallelism) && availableParallelism >= 1 ? availableParallelism : 1;
+  // Hosted CI remains conservative. On a local >=8-core machine the two
+  // duplicate-heavy proof families can each occupy their existing ~4-core
+  // internal budget without oversubscribing the host.
+  return !env.GITHUB_ACTIONS && available >= 8 ? 2 : 1;
+}
+
+async function runPool(scripts, env, {
+  envName = 'HEX_PHASE3_REQUIRED_CONCURRENCY',
+  maxDefault = 2,
+  availableParallelism = os.availableParallelism(),
+} = {}) {
   const mode = String(env.HEX_TEST_OUTPUT ?? '').trim().toLowerCase();
   const verbose = mode === 'verbose' || mode === 'full';
   const concurrency = verbose ? 1 : Math.min(scripts.length, resolveBoundedNodeConcurrency({
     env,
-    envName: 'HEX_PHASE3_REQUIRED_CONCURRENCY',
-    maxDefault: 2,
+    envName,
+    availableParallelism,
+    maxDefault,
     reserveCores: 0,
   }));
   const results = new Array(scripts.length);
@@ -77,6 +91,11 @@ async function runPool(scripts, env) {
   return results;
 }
 
+assert.equal(defaultHeavyConcurrency({}, 4), 1);
+assert.equal(defaultHeavyConcurrency({}, 8), 2);
+assert.equal(defaultHeavyConcurrency({ GITHUB_ACTIONS: 'true' }, 16), 1,
+  'hosted CI keeps duplicate-heavy proof families serial by default');
+
 if (!shouldRun) {
   console.log(`Phase 3 mandatory existing regression commands: delegated to Semantic IR v2 contracts workflow (current=${process.env.GITHUB_WORKFLOW ?? 'unknown'})`);
 } else {
@@ -90,11 +109,9 @@ if (!shouldRun) {
     'runtime:test',
     'ui:test',
   ];
-  // Preserve every historical command, but never overlap the duplicate-heavy
-  // proofs: invariants:test itself executes MachineEffects + compiler-truth,
-  // while decompiler:test itself executes compiler-truth. Running these commands
-  // against one another only duplicates CPU work and can make local wall time and
-  // timing-sensitive diagnostics worse.
+  // Preserve every historical command. On local >=8-core machines run two heavy
+  // families at a time; each family's own nested concurrency is capped below.
+  // Hosted CI and smaller hosts remain serial to avoid timing/CPU contention.
   const heavyScripts = [
     'effects:test',
     'invariants:test',
@@ -108,8 +125,12 @@ if (!shouldRun) {
     HEX_DECOMPILER_TEST_CONCURRENCY: process.env.HEX_DECOMPILER_TEST_CONCURRENCY ?? '2',
   };
   const results = await runPool(lightScripts, childEnv);
+  const heavyResults = await runPool(heavyScripts, childEnv, {
+    envName: 'HEX_PHASE3_HEAVY_CONCURRENCY',
+    maxDefault: defaultHeavyConcurrency(childEnv),
+  });
+  results.push(...heavyResults);
   const verbose = ['verbose','full'].includes(String(childEnv.HEX_TEST_OUTPUT ?? '').toLowerCase());
-  for (const script of heavyScripts) results.push(await runScript(script, childEnv, verbose));
   // Timing-sensitive baseline runs only after every CPU-heavy proof fully drains.
   results.push(await runScript('benchmark:baseline', childEnv, verbose));
   globalThis.__HEX_PHASE3_REQUIRED_REGRESSION_GATES__ = Object.freeze(results);
