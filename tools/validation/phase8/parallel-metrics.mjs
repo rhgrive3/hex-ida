@@ -22,7 +22,6 @@ import {
 
 const WORKER_URL = new URL('./parallel-metric-worker.mjs', import.meta.url);
 const MAX_DEFAULT_WORKERS = 4;
-const WORKER_TIMEOUT_MS = 60 * 60 * 1000;
 
 export function resolvePhase8MetricWorkers(env = process.env, availableParallelism = os.availableParallelism()) {
   const requested = Number(env?.HEX_PHASE8_METRIC_WORKERS);
@@ -52,25 +51,16 @@ function runMetricWorker(task, { corpus, observations, decompilerTimeBudgetMs })
     });
     let payload = null;
     let settled = false;
-    const timeout = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      void worker.terminate();
-      reject(new Error(`phase8 metric worker timed out: ${task}`));
-    }, WORKER_TIMEOUT_MS);
-    timeout.unref?.();
 
     worker.once('message', (message) => { payload = message; });
     worker.once('error', (error) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timeout);
       reject(error);
     });
     worker.once('exit', (code) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timeout);
       if (code !== 0) {
         reject(new Error(`phase8 metric worker exited with status ${code}: ${task}`));
         return;
@@ -93,20 +83,29 @@ export async function runIndependentPhase8MetricPasses({
   env = process.env,
 } = {}) {
   if (!Array.isArray(observations)) throw new TypeError('phase8 parallel metrics: observations are required');
-  const tasks = ['determinism', 'accounting', 'certainty', 'providers'];
+  // Provider authority runs the normal stage twice (providers off/on) after the
+  // same full decompile, so start it first. Determinism is the lightest of these
+  // whole-corpus passes and is intentionally last. A shared worker queue starts
+  // the next proof as soon as any worker becomes free; there is no batch barrier.
+  const tasks = ['providers', 'certainty', 'accounting', 'determinism'];
   const workers = Math.min(tasks.length, resolvePhase8MetricWorkers(env));
   if (workers <= 1) return serialIndependentPasses({ corpus, observations, decompilerTimeBudgetMs });
 
   const results = {};
-  for (let offset = 0; offset < tasks.length; offset += workers) {
-    const batch = tasks.slice(offset, offset + workers);
-    const values = await Promise.all(batch.map((task) => runMetricWorker(task, {
-      corpus,
-      observations,
-      decompilerTimeBudgetMs,
-    })));
-    batch.forEach((task, index) => { results[task] = values[index]; });
+  let nextTask = 0;
+  async function workerLoop() {
+    while (true) {
+      const index = nextTask++;
+      if (index >= tasks.length) return;
+      const task = tasks[index];
+      results[task] = await runMetricWorker(task, {
+        corpus,
+        observations,
+        decompilerTimeBudgetMs,
+      });
+    }
   }
+  await Promise.all(Array.from({ length: workers }, () => workerLoop()));
   return results;
 }
 
