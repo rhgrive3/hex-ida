@@ -58,7 +58,7 @@ function valueMayCarryStackAddress(value, stackPointerProvenanceOf, memo = new M
   return carries;
 }
 
-function canonicalizeRootedFieldBases(projected) {
+export function canonicalizeLegacyRootedFieldBases(projected) {
   const roots = new Map();
   for (const value of projected?.values ?? []) {
     if (value?.semanticValueId == null) continue;
@@ -101,7 +101,7 @@ function stackAddressEscapesFunction(projected, stackPointerProvenanceOf) {
 
 export function restoreLegacyPrivateStackForwarding(projected, stackPointerProvenanceOf) {
   if (!projected) return projected;
-  canonicalizeRootedFieldBases(projected);
+  canonicalizeLegacyRootedFieldBases(projected);
   if (stackAddressEscapesFunction(projected, stackPointerProvenanceOf)) return projected;
 
   const repairedCalls = new Set();
