@@ -116,10 +116,10 @@ truncates explicitly.
 
 **Purpose**: Evidence, gates, and convergence for the finding
 
-- [ ] T022 Run focused suite, ownership, and lint gates quiet: `node --test tests/phase8/provenance/`, `npm run phase8:test`, ownership manifest check, `node scripts/run-quiet-command.mjs --label check -- npm run check`; verify actual changed-file inventory against the ownership manifest
-- [ ] T023 Update docs/analysis-improvement-finding-ledger.md HEX-C4-03 row + checkpoint with implementation evidence, focused test results, exact head, and generated-output handoff (ephemeral `npm run userscript:build` check, nothing committed)
-- [ ] T024 Run quickstart.md validation end-to-end and record outcomes
-- [ ] T025 Spec Kit convergence: confirm all tasks complete, all FR-001–FR-010 covered by tests, denominators unweakened; record residual gaps explicitly (none expected)
+- [X] T022 Run focused suite, ownership, and lint gates quiet: `node --test tests/phase8/provenance/`, `npm run phase8:test`, ownership manifest check, `node scripts/run-quiet-command.mjs --label check -- npm run check`; verify actual changed-file inventory against the ownership manifest
+- [X] T023 Update docs/analysis-improvement-finding-ledger.md HEX-C4-03 row + checkpoint with implementation evidence, focused test results, exact head, and generated-output handoff (ephemeral `npm run userscript:build` check, nothing committed)
+- [X] T024 Run quickstart.md validation end-to-end and record outcomes
+- [X] T025 Spec Kit convergence: confirm all tasks complete, all FR-001–FR-010 covered by tests, denominators unweakened; record residual gaps explicitly (none expected)
 
 ---
 
