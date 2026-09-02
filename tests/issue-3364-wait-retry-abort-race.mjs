@@ -3,7 +3,8 @@ import { waitForRetry } from '../js/ai/provider/worker-transport.js';
 
 // Deterministically abort during listener registration without dispatching the
 // callback. The post-registration `signal.aborted` check is the only thing that
-// can observe this transition before the retry timer fires.
+// can observe this transition before the retry timer fires. Without the fix the
+// timer wins and this resolves true; with the fix the abort path resolves false.
 {
   let aborted = false;
   let addCalls = 0;
@@ -20,20 +21,17 @@ import { waitForRetry } from '../js/ai/provider/worker-transport.js';
       removeCalls += 1;
     },
   };
-  const started = Date.now();
-  const result = await waitForRetry(1, '0.2', signal);
-  const elapsed = Date.now() - started;
+  const result = await waitForRetry(1, '0.01', signal);
   assert.equal(result, false);
   assert.equal(addCalls, 1);
   assert.equal(removeCalls, 1);
-  assert.ok(elapsed < 150, `abort race must not wait for retry timer (${elapsed}ms)`);
 }
 
 // Already-aborted and normal retry behavior remain unchanged.
 {
   const controller = new AbortController();
   controller.abort('stop');
-  assert.equal(await waitForRetry(1, '0.2', controller.signal), false);
+  assert.equal(await waitForRetry(1, '0.01', controller.signal), false);
 }
 {
   const controller = new AbortController();
