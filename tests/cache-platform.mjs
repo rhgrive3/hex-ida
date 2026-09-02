@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
+import { Blob } from 'node:buffer';
 import { AnalysisCache } from '../js/cache/analysis-cache.js';
 import {
   awaitCancellableProducer,
   decodeWorkerAnalysisPayload,
   encodeWorkerAnalysisPayload,
 } from '../js/cache/artifact-orchestration.js';
+import { sha256BlobHex } from '../js/cache/content-identity.js';
 
 const memory = new Map();
 const cache = new AnalysisCache({ indexedDB: null, memory, schemaVersion: 2 });
@@ -75,5 +77,28 @@ for (const reason of [false, 0, '']) {
   assert.notEqual(observed, unset);
   assert.strictEqual(observed, reason);
 }
+
+// #3399: progress is advisory; non-callable option values must not affect hashing.
+const progressBlob = new Blob([Uint8Array.from([0, 1, 2, 3, 4])]);
+const progressBaseline = await sha256BlobHex(progressBlob, { chunkBytes:2 });
+for (const onProgress of [true, 1, 'progress', {}, []]) {
+  const result = await sha256BlobHex(progressBlob, { chunkBytes:2, onProgress });
+  assert.deepEqual(
+    result,
+    progressBaseline,
+    `non-function onProgress ${Object.prototype.toString.call(onProgress)} must behave like no callback`,
+  );
+}
+const progressEvents = [];
+const progressResult = await sha256BlobHex(progressBlob, {
+  chunkBytes:2,
+  onProgress:event => progressEvents.push(event),
+});
+assert.deepEqual(progressResult, progressBaseline, 'valid progress callback must not affect the digest result');
+assert.deepEqual(progressEvents, [
+  { bytesRead:2, totalBytes:5, reads:1 },
+  { bytesRead:4, totalBytes:5, reads:2 },
+  { bytesRead:5, totalBytes:5, reads:3 },
+]);
 
 console.log('cache-platform: PASS');
