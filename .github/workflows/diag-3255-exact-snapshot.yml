@@ -1,0 +1,33 @@
+name: Diagnose PR 3255 exact head
+
+on:
+  push:
+    branches:
+      - diag/3255-exact-head-snapshot-20260902
+
+permissions:
+  contents: read
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci --no-audit --no-fund
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pr3255-exact-head-snapshot
+          path: |
+            js
+            tests
+            tools
+            scripts
+            package.json
+            package-lock.json
+            node_modules
+          if-no-files-found: error
+          compression-level: 6
