@@ -96,6 +96,45 @@ check('every status the core can emit maps to a UI state with a word and a glyph
   assert.equal(normalizeStatus('verified', 0.2), STATUS.VERIFIED, 'verification requires explicit provenance/status');
 });
 
+check('structured status cannot launder into a strong UI verdict', () => {
+  assert.equal(normalizeStatus(['verified'], null), STATUS.UNKNOWN);
+  assert.equal(normalizeStatus(['supported'], null), STATUS.UNKNOWN);
+  assert.equal(normalizeStatus({ toString: () => 'verified' }, null), STATUS.UNKNOWN);
+  assert.equal(normalizeStatus(['verified'], 0.8), STATUS.SUPPORTED, 'non-string status may use the existing confidence fallback only');
+});
+
+check('structured evidence identities cannot alias canonical evidence', () => {
+  const model = normalizeResponse({
+    answer: 'x',
+    evidence: [
+      { id: 'ev1', kind: 'observation', status: 'verified', title: 'real evidence', sourceTool: 'test' },
+      { id: ['ev1'], kind: 'observation', status: 'verified', title: 'malformed evidence', sourceTool: 'test' },
+    ],
+    hypotheses: [{
+      id: 'hyp1', claim: 'claim', status: 'open', confidence: 0.5,
+      supportEvidenceIds: [['ev1'], 'ev1'],
+      contradictionEvidenceIds: [{ toString: () => 'ev1' }],
+      missingEvidence: [],
+    }],
+  });
+  assert.equal(model.evidence.length, 1, 'malformed explicit evidence IDs are dropped');
+  assert.equal(model.evidence[0].id, 'ev1');
+  assert.equal(model.evidence[0].title, 'real evidence');
+  assert.equal(model.hypotheses[0].id, 'hyp1');
+  assert.deepEqual(model.hypotheses[0].support.map((item) => item.title), ['real evidence']);
+  assert.deepEqual(model.hypotheses[0].contradictions, []);
+});
+
+check('malformed explicit hypothesis IDs are dropped rather than aliased', () => {
+  const model = normalizeResponse({ answer: 'x', hypotheses: [
+    { id: ['hyp1'], claim: 'malformed', status: 'open' },
+    { id: 'hyp1', claim: 'canonical', status: 'open' },
+  ] });
+  assert.equal(model.hypotheses.length, 1);
+  assert.equal(model.hypotheses[0].id, 'hyp1');
+  assert.equal(model.hypotheses[0].claim, 'canonical');
+});
+
 check('every action kind the core can emit is renderable', () => {
   for (const kind of AI_ACTION_KINDS) {
     const target = kind === 'run-agent' ? 'find the save path' : kind === 'review-proposal' ? 'proposal_1' : '0x1000';
