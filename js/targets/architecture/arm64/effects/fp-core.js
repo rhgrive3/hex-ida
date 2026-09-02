@@ -36,7 +36,8 @@ const FLOAT_FORMAT = Object.freeze({
 });
 
 function mnemonicOf(instruction) {
-  return String(instruction?.mnemonic || '').trim().toLowerCase();
+  if (typeof instruction?.mnemonic !== 'string') return '';
+  return instruction.mnemonic.trim().toLowerCase();
 }
 
 function operandsOf(instruction) {

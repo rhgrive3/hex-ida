@@ -32,7 +32,10 @@ export function rotateRight(value, amount, widthBits) {
 }
 
 export function instructionMnemonic(instruction) {
-  return String(instruction?.mnemonic || '').trim().toLowerCase();
+  // The mnemonic is the instruction-identity key for family dispatch. A
+  // structured value must not launder into a canonical instruction identity.
+  if (typeof instruction?.mnemonic !== 'string') return '';
+  return instruction.mnemonic.trim().toLowerCase();
 }
 
 export function instructionBits(op, fallback = 64) {

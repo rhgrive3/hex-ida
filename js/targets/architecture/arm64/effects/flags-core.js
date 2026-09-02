@@ -137,7 +137,8 @@ function fallbackFlags(ctx, immediate) {
 }
 
 export function liftArm64FlagEffects(instruction, options = {}) {
-  const mnemonic = String(instruction?.mnemonic || '').toLowerCase();
+  if (typeof instruction?.mnemonic !== 'string') return null;
+  const mnemonic = instruction.mnemonic.toLowerCase();
   if (!ARM64_FLAG_EFFECT_MNEMONICS.has(mnemonic)) return null;
   const ctx = createArm64EffectContext(instruction, options);
   const ops = instruction?.ops || [];

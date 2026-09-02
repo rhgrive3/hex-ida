@@ -16,7 +16,8 @@ const INDIRECT_JUMP = new Set(['br','braa','brab','braaz','brabz']);
 const INDIRECT_CALL = new Set(['blr','blraa','blrab','blraaz','blrabz']);
 
 function mnemonicOf(decoded) {
-  return String(decoded?.mnemonic ?? decoded?.opcode ?? '').trim().toLowerCase();
+  const raw = typeof decoded?.mnemonic === 'string' ? decoded.mnemonic : typeof decoded?.opcode === 'string' ? decoded.opcode : null;
+  return raw ? raw.trim().toLowerCase() : '';
 }
 
 function registerIdFromOperand(operand) {

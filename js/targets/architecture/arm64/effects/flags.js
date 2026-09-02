@@ -79,7 +79,8 @@ function validConditionalCompareImmediates(ops) {
 }
 
 export function liftArm64FlagEffects(instruction, options = {}) {
-  const mnemonic = String(instruction?.mnemonic || '').trim().toLowerCase();
+  if (typeof instruction?.mnemonic !== 'string') return null;
+  const mnemonic = instruction.mnemonic.trim().toLowerCase();
   const ops = Array.isArray(instruction?.ops) ? instruction.ops : [];
   if (STRICT_REGISTER_LHS.has(mnemonic) && !validRegisterLhs(mnemonic, ops[0])) {
     return liftArm64FlagEffectsCore({ ...instruction, ops: [] }, options);

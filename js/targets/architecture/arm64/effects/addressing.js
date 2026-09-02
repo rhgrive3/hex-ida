@@ -236,14 +236,15 @@ function writebackDisplacement(mem, mode, addressDisp) {
 }
 
 function mnemonicEncoding(decoded, index) {
-  const mnemonic = String(decoded?.mnemonic || '').toLowerCase();
+  if (typeof decoded?.mnemonic !== 'string') fail('arm64-mnemonic-invalid');
+  const mnemonic = decoded.mnemonic.toLowerCase();
   if (/^(?:ldur|stur|ldtr|sttr)/.test(mnemonic)) return 'unscaled';
   if (index) return 'register-offset';
   return 'scaled-or-immediate';
 }
 
 function validatePrefetchAddressEncoding(decoded, index, addressDisp) {
-  const mnemonic = String(decoded?.mnemonic || '').trim().toLowerCase();
+  const mnemonic = typeof decoded?.mnemonic === 'string' ? decoded.mnemonic.trim().toLowerCase() : '';
   if (mnemonic !== 'prfm' && mnemonic !== 'prfum') return;
   const displacement = addressDisp ?? 0n;
   if (mnemonic === 'prfum') {
@@ -282,7 +283,7 @@ export function buildArm64EffectiveAddress(decoded, options = {}) {
     if (addressDisp && addressDisp !== 0n) fail('arm64-register-offset-cannot-have-immediate-displacement');
     const indexRead = createArm64RegisterRead(index, `${prefix}.index`, index.bits);
     readOperations.push(indexRead.operation);
-    const mnemonic = String(decoded?.mnemonic || '').trim().toLowerCase();
+    const mnemonic = typeof decoded?.mnemonic === 'string' ? decoded.mnemonic.trim().toLowerCase() : '';
     const accessWidthBits = options.accessWidthBits ?? (mnemonic === 'prfm' ? 64 : null);
     offsetExpr = extendIndex(arm64TemporaryExpr(`${prefix}.index`, index.bits), index, mem.shift || mem.extend || null, accessWidthBits);
     offsetKind = 'register';

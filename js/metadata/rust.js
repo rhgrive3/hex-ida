@@ -172,6 +172,11 @@ function parseV0Path(str, state, depth = 0) {
 
 /**
  * Demangles a Rust v0 mangled symbol (starts with `_R` or `__R`).
+ *
+ * A symbol is only `parsed: true` when the whole input is consumed by the v0
+ * grammar: the leading path plus an optional instantiating crate path and an
+ * optional vendor-specific suffix starting with `.` or `$`. Unrecognized
+ * trailing bytes leave the symbol unparsed instead of silently succeeding.
  */
 export function demangleRustV0(symbol, maxDepth = 32) {
   const s = String(symbol || '').replace(/^__?R/, '');
@@ -192,6 +197,10 @@ export function demangleRustV0(symbol, maxDepth = 32) {
     return { original: symbol, demangled: symbol, parsed: false, reason: 'unrecognized-v0-structure' };
   }
 
+  if (state.pos < s.length && !v0SuffixParses(s, state.pos)) {
+    return { original: symbol, demangled: symbol, parsed: false, reason: 'unconsumed-v0-trailing-bytes' };
+  }
+
   const components = demangled.split('::');
   return {
     original: symbol,
@@ -201,6 +210,25 @@ export function demangleRustV0(symbol, maxDepth = 32) {
     crate: components[0] || null,
     generation: 'v0',
   };
+}
+
+/**
+ * Checks the unconsumed remainder of a v0 symbol against the grammar suffix
+ * productions: an optional instantiating crate path followed by an optional
+ * vendor-specific suffix (`.` or `$...`). Anything else is not v0.
+ */
+function v0SuffixParses(s, pos) {
+  if (pos >= s.length) return true;
+  if (s[pos] === '.' || s[pos] === '$') return true;
+  const state = { pos };
+  try {
+    const crate = parseV0Path(s, state, 0);
+    if (!crate) return false;
+    if (state.pos >= s.length) return true;
+    return s[state.pos] === '.' || s[state.pos] === '$';
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -339,6 +367,10 @@ export class RustMetadataProvider extends LanguageMetadataProvider {
     const vtables = [];
     let unreadable = 0;
 
+    const isRustCandidateName = (name) =>
+      typeof name === 'string' &&
+      (name.startsWith('_R') || name.startsWith('__R') || name.startsWith('_ZN') || name.startsWith('ZN'));
+
     for (const sym of rawSymbols) {
       const name = sym.name || sym.symbol || String(sym);
       const dem = demangleRustSymbol(name);
@@ -355,6 +387,11 @@ export class RustMetadataProvider extends LanguageMetadataProvider {
         if (dem.demangled.includes('::vtable') || dem.demangled.includes('vtable')) {
           vtables.push(sym);
         }
+      } else if (isRustCandidateName(dem.original)) {
+        // A symbol the Rust grammar itself claims (v0 / legacy candidate prefix)
+        // but the demangler cannot parse is an unreadable Rust record. Ordinary
+        // C/C++ symbols are not Rust candidates and never count here.
+        unreadable++;
       }
     }
 

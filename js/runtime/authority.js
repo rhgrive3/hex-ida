@@ -66,8 +66,10 @@ function identityAlias(input, primary, alias, code) {
 }
 
 function numericPrimitive(value, code) {
+  // Authority ordering fields (epoch/sequence) are canonical numbers. Numeric
+  // strings must not launder into authority identity; transport/UI boundaries
+  // that need them convert explicitly before calling these constructors.
   if (typeof value === 'number') return value;
-  if (typeof value === 'string' && value.trim() !== '') return Number(value);
   throw new TypeError(code);
 }
 

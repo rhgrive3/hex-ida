@@ -98,7 +98,8 @@ function invalidFiniteShape(mnemonic, ops) {
 }
 
 export function liftArm64FpEffects(instruction, context = {}) {
-  const mnemonic = String(instruction?.mnemonic || '').trim().toLowerCase();
+  if (typeof instruction?.mnemonic !== 'string') return null;
+  const mnemonic = instruction.mnemonic.trim().toLowerCase();
   const ops = operandsOf(instruction);
   if (invalidFiniteShape(mnemonic, ops)) {
     return liftArm64FpEffectsCore({ ...instruction, ops: [] }, context);
