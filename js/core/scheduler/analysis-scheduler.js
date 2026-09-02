@@ -97,8 +97,6 @@ export class AnalysisScheduler {
       const state = typeof taskOrArtifactId === 'object' && taskOrArtifactId?.state != null
         ? taskOrArtifactId.state
         : (this.states.get(artifactId) ?? null);
-      // Lifecycle contract (#1189 / #3312): every event carries the schema
-      // version and live scheduler gauges so observers never guess them.
       const event = Object.freeze({
         version: 1,
         seq: ++this.seq,
@@ -124,9 +122,6 @@ export class AnalysisScheduler {
     catch (error) { return Promise.reject(error); }
     this.metrics.requests++;
     const priority = priorityValue(request.priority);
-    // Lifecycle contract (#1189 / #3313): request.received fires exactly once
-    // per externally visible request() call. Dependency recursion re-enters
-    // this path internally and must not re-announce the request.
     if (options.external) {
       this.#emit('request.received', artifactId, {
         priority: priorityName(priority),
@@ -348,12 +343,13 @@ export class AnalysisScheduler {
   }
 
   cancel(artifactId, reason=new DOMException('Cancelled','AbortError')) {
-    const task=this.inflight.get(String(artifactId)); if (!task) return false;
+    const id = requireArtifactId(artifactId);
+    const task=this.inflight.get(id); if (!task) return false;
     if (!task.controller.signal.aborted) task.controller.abort(reason);
     return true;
   }
 
-  dependencyIds(artifactId) { return this.dag.get(String(artifactId))||Object.freeze([]); }
-  state(artifactId) { return this.states.get(String(artifactId))||'unknown'; }
+  dependencyIds(artifactId) { return this.dag.get(requireArtifactId(artifactId))||Object.freeze([]); }
+  state(artifactId) { return this.states.get(requireArtifactId(artifactId))||'unknown'; }
   stats() { return Object.freeze({ schedulerVersion:ANALYSIS_SCHEDULER_VERSION,starvationPolicy:'virtual-deadline-v1',starvationInterval:this.starvationInterval,running:this.running,queued:this.queue.size,inflight:this.inflight.size,activeConsumers:this.activeConsumers,dagNodes:this.dag.size,dagEdges:this.dagEdgeCount,queueComparisons:this.queue.comparisons,producerInvocationCount:this.metrics.producerInvocations,...this.metrics }); }
 }
