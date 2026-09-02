@@ -1,0 +1,24 @@
+name: Diagnose PR 3255 current exact head
+on:
+  push:
+    branches:
+      - diag/3255-current-snapshot-20260902
+permissions:
+  contents: read
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 175154586b55d30852f1e78c1f2b1c7572f8d5b1
+          fetch-depth: 0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pr3255-current-exact-head-snapshot
+          path: |
+            .
+            !.git
+            !node_modules
+          include-hidden-files: true
+          retention-days: 1
