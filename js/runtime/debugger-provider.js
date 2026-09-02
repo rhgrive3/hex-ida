@@ -35,13 +35,14 @@ function sameStructuredIdentity(left, right) {
 
 function sameModuleBinding(current, next) {
   if (!current || !next) return false;
-  // Module identity fields are authority-bearing scalars. A structured value
-  // must not compare equal to its primitive lookalike via String() coercion,
-  // or a malformed provider snapshot would keep the stale trusted binding
-  // without passing through load validation.
+  // Module identity fields are authority-bearing scalars. Structured values do
+  // not get a string sentinel: a legitimate provider string such as
+  // "malformed:object" must never compare equal to a malformed object. A fresh
+  // Symbol also ensures two malformed snapshots are never treated as stable
+  // trusted identity and will be revalidated by the load path.
   const scalar = (value) => {
     if (value == null) return null;
-    if (!['string', 'number', 'bigint'].includes(typeof value)) return `malformed:${typeof value}`;
+    if (!['string', 'number', 'bigint'].includes(typeof value)) return Symbol('malformed-module-binding');
     return String(value);
   };
   const currentEvidence = current.identityEvidenceIds ?? [];

@@ -43,7 +43,7 @@ function invalidConditionalEvidence(mnemonic, ops) {
   const conditions = ops.filter((op) => op?.k === 'cond');
   return conditions.length !== 1
     || typeof conditions[0].text !== 'string'
-    || !FP_CONDITIONS.has(conditions[0].text.toLowerCase());
+    || !FP_CONDITIONS.has(conditions[0].text.trim().toLowerCase());
 }
 
 function fixedPointScaleWidth(mnemonic, ops) {

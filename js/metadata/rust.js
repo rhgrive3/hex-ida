@@ -337,6 +337,26 @@ export function isRustLayoutStable(typeDescriptor) {
   return false;
 }
 
+function normalizeRustAddress(value) {
+  let parsed;
+  if (typeof value === 'bigint') {
+    if (value < 0n) throw new TypeError('rust-metadata-invalid-address');
+    parsed = value;
+  } else if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value) || value < 0) throw new TypeError('rust-metadata-invalid-address');
+    parsed = BigInt(value);
+  } else if (typeof value === 'string') {
+    const text = value.trim();
+    if (!/^(?:0[xX][0-9a-fA-F]+|\d+)$/.test(text)) throw new TypeError('rust-metadata-invalid-address');
+    try { parsed = BigInt(text); } catch { throw new TypeError('rust-metadata-invalid-address'); }
+  } else if (value == null) {
+    return null;
+  } else {
+    throw new TypeError('rust-metadata-invalid-address');
+  }
+  return `0x${parsed.toString(16)}`;
+}
+
 /**
  * Rust Language & Runtime Metadata Provider.
  */
@@ -366,6 +386,7 @@ export class RustMetadataProvider extends LanguageMetadataProvider {
     const rustSymbols = [];
     const vtables = [];
     let unreadable = 0;
+    let invalidEntries = 0;
 
     const isRustCandidateName = (name) =>
       typeof name === 'string' &&
@@ -375,18 +396,24 @@ export class RustMetadataProvider extends LanguageMetadataProvider {
       const name = sym.name || sym.symbol || String(sym);
       const dem = demangleRustSymbol(name);
       if (dem.parsed) {
-        rustSymbols.push({
+        let address;
+        try {
+          address = normalizeRustAddress(sym.address ?? sym.addr ?? null);
+        } catch {
+          invalidEntries++;
+          continue;
+        }
+        const normalized = {
           name: dem.demangled,
           original: dem.original,
-          address: sym.address ?? sym.addr ?? null,
+          address,
           sizeBytes: sym.size ?? sym.sizeBytes ?? null,
           crate: dem.crate,
           generation: dem.generation,
           isVtable: dem.demangled.includes('::vtable') || dem.demangled.includes('vtable'),
-        });
-        if (dem.demangled.includes('::vtable') || dem.demangled.includes('vtable')) {
-          vtables.push(sym);
-        }
+        };
+        rustSymbols.push(normalized);
+        if (normalized.isVtable) vtables.push(normalized);
       } else if (isRustCandidateName(dem.original)) {
         // A symbol the Rust grammar itself claims (v0 / legacy candidate prefix)
         // but the demangler cannot parse is an unreadable Rust record. Ordinary
@@ -396,7 +423,7 @@ export class RustMetadataProvider extends LanguageMetadataProvider {
     }
 
     const toolchainVersion = findRustcVersion(this.commentBuffer);
-    const hasEvidence = rustSymbols.length > 0 || toolchainVersion != null;
+    const hasEvidence = rustSymbols.length > 0 || toolchainVersion != null || unreadable > 0 || invalidEntries > 0;
 
     if (!hasEvidence) {
       return createLanguageMetadataResult({
@@ -421,7 +448,7 @@ export class RustMetadataProvider extends LanguageMetadataProvider {
 
     this.cachedParsed = { rustSymbols, vtables };
 
-    const complete = unreadable === 0 && rustSymbols.length > 0;
+    const complete = unreadable === 0 && invalidEntries === 0 && rustSymbols.length > 0;
     const identity = createLanguageMetadataIdentity({
       verdict: complete ? 'matched-authoritative' : 'matched-partial',
       providerId: this.id,
@@ -437,7 +464,7 @@ export class RustMetadataProvider extends LanguageMetadataProvider {
       detail: `Rust ${toolchainVersion || 'unknown'} (${rustSymbols.length} symbols)`,
       coverage: complete ? null : {
         recordKinds: ['symbol', 'type'],
-        addresses: rustSymbols.map((s) => s.address).filter(Boolean),
+        addresses: rustSymbols.map((s) => s.address).filter((value) => value != null),
       },
     });
 
@@ -458,7 +485,7 @@ export class RustMetadataProvider extends LanguageMetadataProvider {
         parsed: rustSymbols.length,
         complete,
         unreadableEntries: unreadable,
-        invalidEntries: 0,
+        invalidEntries,
       },
     });
   }
@@ -471,9 +498,9 @@ export class RustMetadataProvider extends LanguageMetadataProvider {
     const records = symbols.map((sym) =>
       createLanguageMetadataRecord({
         kind: 'symbol',
-        entityId: `sym@${sym.address || sym.name}`,
+        entityId: `sym@${sym.address ?? sym.name}`,
         name: sym.name,
-        address: sym.address ? String(sym.address) : null,
+        address: sym.address,
         sizeBytes: sym.sizeBytes,
         providerId: this.id,
         providerVersion: this.version,
@@ -498,9 +525,9 @@ export class RustMetadataProvider extends LanguageMetadataProvider {
     const records = vtables.map((vt) =>
       createLanguageMetadataRecord({
         kind: 'vtable',
-        entityId: `vtable@${vt.address || vt.name}`,
+        entityId: `vtable@${vt.address ?? vt.name}`,
         name: vt.name,
-        address: vt.address ? String(vt.address) : null,
+        address: vt.address,
         providerId: this.id,
         providerVersion: this.version,
         ecosystem: 'rust',

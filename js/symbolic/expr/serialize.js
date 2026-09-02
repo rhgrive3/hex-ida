@@ -139,9 +139,51 @@ export function exprToPlain(node) {
   }
 }
 
-export function plainToExpr(plain) {
+function sortFromPlain(plain) {
+  return plain.sort.kind === 'bool' ? boolSort() : bvSort(plain.sort.width);
+}
+
+/*
+ * A legacy blank/missing symbol id needs a new allocation, but a canonical id
+ * may appear later in the same serialized tree. Reserve every canonical id
+ * first so traversal order cannot mint a replacement that collides with an id
+ * already present in the payload.
+ */
+function reserveCanonicalFreshSymbolIds(plain) {
+  if (!plain || typeof plain !== 'object') return;
+  switch (plain.kind) {
+    case EXPR_KIND.FRESH_SYMBOL:
+      if (typeof plain.symbolId === 'string' && plain.symbolId.trim() !== '') {
+        restoreFreshSymbol(sortFromPlain(plain), plain.name, plain.symbolId, plain.meta || {});
+      }
+      return;
+    case EXPR_KIND.UNARY:
+    case EXPR_KIND.EXTRACT:
+    case EXPR_KIND.CAST:
+      reserveCanonicalFreshSymbolIds(plain.arg);
+      return;
+    case EXPR_KIND.BINARY:
+    case EXPR_KIND.COMPARE:
+    case EXPR_KIND.CONCAT:
+      reserveCanonicalFreshSymbolIds(plain.left);
+      reserveCanonicalFreshSymbolIds(plain.right);
+      return;
+    case EXPR_KIND.CONNECTIVE:
+      for (const arg of plain.args || []) reserveCanonicalFreshSymbolIds(arg);
+      return;
+    case EXPR_KIND.ITE:
+      reserveCanonicalFreshSymbolIds(plain.cond);
+      reserveCanonicalFreshSymbolIds(plain.thenExpr);
+      reserveCanonicalFreshSymbolIds(plain.elseExpr);
+      return;
+    default:
+      return;
+  }
+}
+
+function plainNodeToExpr(plain) {
   if (!plain) return null;
-  const sort = plain.sort.kind === 'bool' ? boolSort() : bvSort(plain.sort.width);
+  const sort = sortFromPlain(plain);
 
   switch (plain.kind) {
     case EXPR_KIND.CONST:
@@ -151,44 +193,56 @@ export function plainToExpr(plain) {
       return createBv(sort.width, BigInt(plain.value));
 
     case EXPR_KIND.FRESH_SYMBOL:
-      // Restore the saved canonical symbolId. Discarding it would renumber the
-      // symbol and break model binding / structural identity across a
-      // serialize/deserialize round trip (#3247).
-      if (typeof plain.symbolId === 'string' && plain.symbolId) {
-        return restoreFreshSymbol(sort, plain.name, plain.symbolId, plain.meta || {});
+      // Restore the saved canonical symbolId. Discarding a present malformed ID
+      // would silently rebind the serialized symbol to a fresh identity. Only
+      // legacy payloads where the ID is missing or a blank string may allocate
+      // a replacement.
+      if (plain.symbolId == null && !Object.prototype.hasOwnProperty.call(plain, 'symbolId')) {
+        return createFreshSymbol(sort, plain.name, plain.meta || {});
       }
-      return createFreshSymbol(sort, plain.name, plain.meta || {});
+      if (typeof plain.symbolId === 'string' && plain.symbolId.trim() === '') {
+        return createFreshSymbol(sort, plain.name, plain.meta || {});
+      }
+      if (typeof plain.symbolId !== 'string') {
+        throw new TypeError('plainToExpr: fresh symbolId must be a string when present');
+      }
+      return restoreFreshSymbol(sort, plain.name, plain.symbolId, plain.meta || {});
 
     case EXPR_KIND.UNKNOWN_SEMANTIC:
       return createUnknownSemantic(sort, plain.reason, plain.detail);
 
     case EXPR_KIND.UNARY:
-      return createUnary(plain.op, plainToExpr(plain.arg));
+      return createUnary(plain.op, plainNodeToExpr(plain.arg));
 
     case EXPR_KIND.BINARY:
-      return createBinary(plain.op, plainToExpr(plain.left), plainToExpr(plain.right));
+      return createBinary(plain.op, plainNodeToExpr(plain.left), plainNodeToExpr(plain.right));
 
     case EXPR_KIND.COMPARE:
-      return createCompare(plain.op, plainToExpr(plain.left), plainToExpr(plain.right));
+      return createCompare(plain.op, plainNodeToExpr(plain.left), plainNodeToExpr(plain.right));
 
     case EXPR_KIND.CONNECTIVE:
-      return createConnective(plain.op, ...plain.args.map(plainToExpr));
+      return createConnective(plain.op, ...plain.args.map(plainNodeToExpr));
 
     case EXPR_KIND.ITE:
-      return createIte(plainToExpr(plain.cond), plainToExpr(plain.thenExpr), plainToExpr(plain.elseExpr));
+      return createIte(plainNodeToExpr(plain.cond), plainNodeToExpr(plain.thenExpr), plainNodeToExpr(plain.elseExpr));
 
     case EXPR_KIND.EXTRACT:
-      return createExtract(plainToExpr(plain.arg), plain.high, plain.low);
+      return createExtract(plainNodeToExpr(plain.arg), plain.high, plain.low);
 
     case EXPR_KIND.CONCAT:
-      return createConcat(plainToExpr(plain.left), plainToExpr(plain.right));
+      return createConcat(plainNodeToExpr(plain.left), plainNodeToExpr(plain.right));
 
     case EXPR_KIND.CAST:
-      return createCast(plain.op, plainToExpr(plain.arg), plain.targetWidth);
+      return createCast(plain.op, plainNodeToExpr(plain.arg), plain.targetWidth);
 
     default:
       throw new TypeError(`plainToExpr: unknown plain node kind '${plain.kind}'`);
   }
+}
+
+export function plainToExpr(plain) {
+  reserveCanonicalFreshSymbolIds(plain);
+  return plainNodeToExpr(plain);
 }
 
 export function serializeExprDag(node, options = {}) {

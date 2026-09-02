@@ -128,7 +128,7 @@ function normalizedProtocolString(value, code, { allowEmpty = false } = {}) {
 // authority. Only primitive representations (bigint, safe integer number, or a
 // canonical integer string) may define it; structured values fail closed.
 function canonicalInstructionAddress(value, code) {
-  if (typeof value === 'bigint') return value;
+  if (typeof value === 'bigint' && value >= 0n) return value;
   if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return BigInt(value);
   if (typeof value === 'string' && /^(?:0[xX][0-9a-fA-F]+|\d+)$/.test(value.trim())) {
     const parsed = BigInt(value.trim());

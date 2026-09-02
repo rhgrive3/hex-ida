@@ -15,8 +15,20 @@ export function appProducerAbortError(signal, message = 'Analysis producer abort
   return error;
 }
 
+function abortProducerWithoutConsumers(entry) {
+  if (entry.settled || entry.waiters !== 0) return;
+  // A producer may reject synchronously in response to controller.abort(). Keep
+  // an explicit rejection observer attached before aborting so a consumer that
+  // was already gone cannot leave an unhandled producer rejection behind.
+  void Promise.resolve(entry.promise).catch(() => {});
+  entry.controller.abort('analysis-producer-no-consumers');
+}
+
 export function waitForAppProducer(entry, signal) {
-  if (signal?.aborted) return Promise.reject(appProducerAbortError(signal));
+  if (signal?.aborted) {
+    abortProducerWithoutConsumers(entry);
+    return Promise.reject(appProducerAbortError(signal));
+  }
   entry.waiters++;
   return new Promise((resolve, reject) => {
     let done = false;
@@ -32,15 +44,18 @@ export function waitForAppProducer(entry, signal) {
       done = true;
       signal?.removeEventListener('abort', onAbort);
       entry.waiters = Math.max(0, entry.waiters - 1);
-      if (!entry.settled && entry.waiters === 0) entry.controller.abort('analysis-producer-no-consumers');
+      abortProducerWithoutConsumers(entry);
       reject(appProducerAbortError(signal));
     };
     signal?.addEventListener('abort', onAbort, { once:true });
+    // Register the producer handlers before the post-subscription abort check.
+    // If that check aborts the final consumer, the producer can reject
+    // immediately and must already have a rejection observer attached.
+    entry.promise.then((value) => finish(resolve, value), (error) => finish(reject, error));
     /* #3195: an abort dispatched between the pre-check above and this
        subscription never re-fires for a later listener. Re-check after
        subscribing and route through onAbort so the consumer detaches
        immediately; the done guard keeps this a no-op when nothing raced. */
     if (signal?.aborted && !done) onAbort();
-    entry.promise.then((value) => finish(resolve, value), (error) => finish(reject, error));
   });
 }

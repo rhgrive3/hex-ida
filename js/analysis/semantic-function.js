@@ -16,7 +16,7 @@ function abortIfRequested(signal) {
 // Shared strict geometry contract with semantic-function-base.js: structured
 // instruction address/length must not launder into CFG authority via BigInt().
 function canonicalInstructionAddress(value, code) {
-  if (typeof value === 'bigint') return value;
+  if (typeof value === 'bigint' && value >= 0n) return value;
   if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return BigInt(value);
   if (typeof value === 'string' && /^(?:0[xX][0-9a-fA-F]+|\d+)$/.test(value.trim())) {
     const parsed = BigInt(value.trim());

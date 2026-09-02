@@ -45,5 +45,7 @@ test('#3245 BV bindings keep their existing wrap semantics', () => {
   const result = evaluateExpr(x, { x: 3 });
   assert.equal(result.status, EVAL_STATUS.VALUE);
   assert.equal(result.value.toBigInt?.() ?? result.value, 3n);
-  assert.ok(evaluateExpr(x, { x: createBv(8, 5n) }));
+  const wrapped = evaluateExpr(x, { x: createBv(8, 5n) });
+  assert.equal(wrapped.status, EVAL_STATUS.VALUE);
+  assert.equal(wrapped.value.toBigInt?.() ?? wrapped.value, 5n);
 });

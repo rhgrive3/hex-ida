@@ -3,25 +3,50 @@ import assert from 'node:assert/strict';
 
 import { appProducerAbortError, waitForAppProducer } from '../js/analysis/producer-wait.js';
 
-function entry(pending = true) {
+function entry(pending = true, { rejectOnAbort = false } = {}) {
   const controller = new AbortController();
+  let promise;
+  if (!pending) {
+    promise = Promise.resolve('done');
+  } else if (rejectOnAbort) {
+    promise = new Promise((_, reject) => {
+      controller.signal.addEventListener('abort', () => reject(new Error('producer aborted')), { once:true });
+    });
+  } else {
+    promise = new Promise(() => {});
+  }
   return {
     controller,
     settled: !pending,
     waiters: 0,
-    promise: pending ? new Promise(() => {}) : Promise.resolve('done'),
+    promise,
+  };
+}
+
+function signalThatAbortsDuringSubscription(controller) {
+  const signal = controller.signal;
+  return {
+    get aborted() { return signal.aborted; },
+    get reason() { return signal.reason; },
+    addEventListener(type, listener, options) {
+      if (type === 'abort' && !signal.aborted) controller.abort('raced-before-listener');
+      signal.addEventListener(type, listener, options);
+    },
+    removeEventListener(type, listener, options) {
+      signal.removeEventListener(type, listener, options);
+    },
   };
 }
 
 test('#3195 abort between pre-check and subscription detaches the consumer immediately', async () => {
-  const producer = entry();
+  const producer = entry(true, { rejectOnAbort: true });
   const controller = new AbortController();
-  const signal = controller.signal;
+  const signal = signalThatAbortsDuringSubscription(controller);
 
+  // The pre-check sees aborted=false. addEventListener then aborts before the
+  // listener is installed, so only the post-subscription re-check can collect
+  // the race.
   const waiting = waitForAppProducer(producer, signal);
-  // The race window: signal is not yet aborted when the pre-check ran, but is
-  // aborted before the listener could ever observe an event dispatch.
-  controller.abort('raced');
   await assert.rejects(waiting, (error) => error.name === 'AbortError');
   assert.equal(producer.waiters, 0, 'waiter count must drop');
   assert.equal(producer.controller.signal.aborted, true, 'last consumer aborts the producer');
@@ -73,12 +98,27 @@ test('#3195 settled producer resolves waiters without aborting anything', async 
   assert.equal(producer.controller.signal.aborted, false);
 });
 
-test('#3195 pre-aborted signal rejects before touching waiter state', async () => {
-  const producer = entry();
+test('#3195 pre-aborted initial consumer cancels an unobserved producer', async () => {
+  const producer = entry(true, { rejectOnAbort: true });
   const controller = new AbortController();
   controller.abort('already gone');
   await assert.rejects(waitForAppProducer(producer, controller.signal), (error) => error.name === 'AbortError');
   assert.equal(producer.waiters, 0);
+  assert.equal(producer.controller.signal.aborted, true);
+  assert.equal(producer.controller.signal.reason, 'analysis-producer-no-consumers');
+});
+
+test('#3195 pre-aborted extra consumer does not cancel a producer with surviving waiters', async () => {
+  const producer = entry();
+  const survivor = new AbortController();
+  const keep = waitForAppProducer(producer, survivor.signal);
+  const alreadyGone = new AbortController();
+  alreadyGone.abort('already gone');
+  await assert.rejects(waitForAppProducer(producer, alreadyGone.signal), (error) => error.name === 'AbortError');
+  assert.equal(producer.waiters, 1);
+  assert.equal(producer.controller.signal.aborted, false);
+  survivor.abort('done');
+  await assert.rejects(keep, (error) => error.name === 'AbortError');
 });
 
 test('#3195 abort reason preservation and error shaping', () => {

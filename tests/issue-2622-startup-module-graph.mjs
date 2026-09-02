@@ -4,31 +4,56 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const ROOT = path.resolve(new URL('..', import.meta.url).pathname);
+const readRepositorySource = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
 
-function staticImports(rel) {
-  const src = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+function staticImports(rel, readSource = readRepositorySource) {
+  const src = readSource(rel);
   const out = [];
-  const re = /import\s+[^;]*?from\s+['"](\.[^'"]+)['"]/g;
+  const from = /(?:import|export)\s+[^;]*?\bfrom\s+['"](\.[^'"]+)['"]/g;
   let m;
-  while ((m = re.exec(src))) out.push(m[1]);
+  while ((m = from.exec(src))) out.push(m[1]);
   const bare = /import\s+['"](\.[^'"]+)['"]/g;
   while ((m = bare.exec(src))) out.push(m[1]);
   return out;
 }
 
-function staticGraph(entry, banned = []) {
+function staticGraph(entry, banned = [], readSource = readRepositorySource) {
   const seen = new Set();
-  const walk = (rel, depth) => {
+  const walk = (rel) => {
     const resolved = path.resolve(ROOT, rel);
-    if (seen.has(resolved) || depth > 15 || banned.includes(path.relative(ROOT, resolved))) return;
+    const relative = path.relative(ROOT, resolved);
+    if (seen.has(resolved) || banned.includes(relative)) return;
     seen.add(resolved);
-    for (const imp of staticImports(path.relative(ROOT, resolved))) {
-      walk(path.join(path.dirname(path.relative(ROOT, resolved)), imp), depth + 1);
+    for (const imp of staticImports(relative, readSource)) {
+      walk(path.join(path.dirname(relative), imp));
     }
   };
-  walk(entry, 0);
+  walk(entry);
   return new Set([...seen].map((f) => path.relative(ROOT, f)));
 }
+
+test('#2622 static graph follows export-from edges without an arbitrary depth cutoff', () => {
+  const edges = staticImports('js/ir.js');
+  assert.ok(edges.includes('./ir-public-base.js'), 'export * from must count as a static startup edge');
+  const graph = staticGraph('js/ir.js');
+  assert.ok(graph.has('js/ir-public-base.js'));
+
+  // The old implementation stopped recursively after depth 15. Use an
+  // in-memory 18-module re-export chain so this regression fails if that
+  // arbitrary cutoff is restored, without adding fixture files to production.
+  const sources = new Map();
+  for (let index = 0; index < 17; index++) {
+    sources.set(`virtual/level-${index}.js`, `export { sentinel } from './level-${index + 1}.js';`);
+  }
+  sources.set('virtual/level-17.js', 'export const sentinel = true;');
+  const deepGraph = staticGraph(
+    'virtual/level-0.js',
+    [],
+    (rel) => sources.get(rel) ?? '',
+  );
+  assert.equal(deepGraph.size, 18, 'all modules beyond the historical depth-15 cutoff must be traversed');
+  assert.ok(deepGraph.has('virtual/level-17.js'), 'terminal dependency beyond depth 15 must be reachable');
+});
 
 test('#2622 app.js startup graph excludes optional script/sandbox/plugin feature modules', () => {
   const graph = staticGraph('js/app.js');
