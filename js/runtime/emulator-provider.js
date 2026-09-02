@@ -22,7 +22,9 @@ function ownedClone(value) {
 }
 
 function terminationOf(result = {}) {
-  const raw = String(result.termination ?? result.stop?.kind ?? result.status ?? 'paused').toLowerCase();
+  const candidate = result.termination ?? result.stop?.kind ?? result.status ?? 'paused';
+  if (typeof candidate !== 'string') return 'exception';
+  const raw = candidate.toLowerCase();
   if (TERMINATIONS.includes(raw)) return raw;
   if (/unsupported/.test(raw)) return 'unsupported';
   if (/timeout|limit/.test(raw)) return 'timeout';

@@ -38,7 +38,9 @@ function normalizeRecording(recording = {}, options = {}) {
   if (!recording || typeof recording !== 'object' || Array.isArray(recording)) throw new DebugAdapterError('trace-invalid-recording', 'trace recording must be an object');
   const maxEvents = boundedInteger(options.maxEvents, 100000, 1, 1000000, 'maxEvents');
   const maxBytes = boundedInteger(options.maxBytes, 64 * 1024 * 1024, 4096, 256 * 1024 * 1024, 'maxBytes');
-  const events = Array.isArray(recording.events) ? recording.events : Array.isArray(recording.trace?.events) ? recording.trace.events : [];
+  const eventSource = recording.events != null ? recording.events : recording.trace?.events;
+  const events = eventSource == null ? [] : eventSource;
+  if (!Array.isArray(events)) throw new DebugAdapterError('trace-invalid-recording', 'trace events must be an array');
   if (events.length > maxEvents) throw new DebugAdapterError('resource-limit', `trace recording exceeds event limit (${maxEvents})`);
   if (stableStringify(recording).length * 2 > maxBytes) throw new DebugAdapterError('resource-limit', `trace recording exceeds byte limit (${maxBytes})`);
   const dropped = droppedCount(recording.dropped ?? recording.trace?.dropped ?? 0);
