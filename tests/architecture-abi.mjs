@@ -4,6 +4,7 @@ import {
   architectureCapability,
   architecturePluginV2,
 } from '../js/architecture/index.js';
+import { ArchitecturePluginV2 } from '../js/targets/architecture/registry.js';
 import {
   AAPCS64_ABI,
   DARWIN_ARM64_ABI,
@@ -27,6 +28,40 @@ const region = { vmAddr:BASE, size:0x100n };
   assert.equal('classifyArguments' in arm64, false);
   assert.equal('callerSaved' in arm64, false);
   assert.equal(arm64.capabilities.semanticAnalysis, 'legacy-v1');
+}
+
+// #3368: plugin hooks are part of the registration contract. Malformed
+// truthy values must fail before a plugin can enter the architecture registry.
+{
+  const base = { id:'issue-3368' };
+  for (const name of [
+    'modes',
+    'registerFile',
+    'physicalAddressSpaces',
+    'decode',
+    'liftExact',
+    'classifyControlFlow',
+    'directControlTarget',
+    'assemble',
+    'validateEncoding',
+  ]) {
+    assert.throws(
+      () => new ArchitecturePluginV2({ ...base, [name]:[] }),
+      (error) => error instanceof TypeError && error.message === `${name} must be a function`,
+      `${name} must reject truthy non-functions at the constructor boundary`,
+    );
+  }
+
+  const defaults = new ArchitecturePluginV2(base);
+  assert.deepEqual(defaults.modes(), []);
+  assert.deepEqual(defaults.registerFile(), []);
+  assert.deepEqual(defaults.physicalAddressSpaces(), ['register','memory','code','unique']);
+  assert.equal(defaults.decode, null);
+  assert.equal(defaults.liftExact, null);
+  assert.equal(defaults.classifyControlFlow({}), null);
+  assert.equal(defaults.directControlTarget({}), null);
+  assert.equal(defaults.assemble, null);
+  assert.equal(defaults.validateEncoding, null);
 }
 
 // The v1 ArchitectureAdapter remains behavior-compatible.
