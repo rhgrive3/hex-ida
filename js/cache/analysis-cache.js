@@ -25,11 +25,11 @@ function canonicalArtifactId(options = {}) {
 }
 
 function canonicalBinaryHash(value, { required = false } = {}) {
-  if (value == null || value === '') {
+  if (value == null) {
     if (required) throw new TypeError('binary hash is required');
     return null;
   }
-  if (typeof value !== 'string') throw new TypeError('analysis-cache-binary-hash-invalid');
+  if (typeof value !== 'string' || value.length === 0) throw new TypeError('analysis-cache-binary-hash-invalid');
   return value;
 }
 
