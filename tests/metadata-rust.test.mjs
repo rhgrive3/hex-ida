@@ -103,7 +103,8 @@ console.log('Testing Rust Metadata Provider...');
     symbols: [
       { name: '_ZN6my_app4main17haabbccddeeff0011E', address: '0x1000', size: 32 },
       { name: '_RNvNtC4core3fmt3num', address: '0x2000', size: 64 },
-      { name: '_ZN6my_app13MyTraitvtable17h1122334455667788E', address: '0x3000', size: 16 },
+      // Exercise the documented symbol/addr aliases on the vtable path too.
+      { symbol: '_ZN6my_app13MyTraitvtable17h1122334455667788E', addr: '0x3000', size: 16 },
     ],
     commentBuffer: new TextEncoder().encode('rustc version 1.78.0'),
     binaryIdentity: 'sha256:rust-app',
@@ -122,9 +123,38 @@ console.log('Testing Rust Metadata Provider...');
 
   const vts = provider.vtables();
   assert.equal(vts.records.length, 1);
+  assert.equal(vts.records[0].name, 'my_app::MyTraitvtable');
+  assert.equal(vts.records[0].address, '0x3000');
+  assert.equal(vts.records[0].entityId, 'vtable@0x3000');
 }
 
-// 8. Stripped binary probe
+// 8. Falsy address zero is still exact identity evidence.
+{
+  const provider = new RustMetadataProvider({
+    symbols: [{ name: '_ZN6my_app4main17haabbccddeeff0011E', address: 0 }],
+    binaryIdentity: 'sha256:zero-address',
+  });
+  const probe = provider.probe();
+  assert.equal(probe.completeness.complete, true);
+  const record = provider.symbols().records[0];
+  assert.equal(record.address, '0');
+  assert.equal(record.entityId, 'sym@0');
+}
+
+// 9. Structured addresses fail closed instead of being String-coerced into identity.
+{
+  const provider = new RustMetadataProvider({
+    symbols: [{ name: '_ZN6my_app4main17haabbccddeeff0011E', address: { toString: () => '0x1000' } }],
+    commentBuffer: new TextEncoder().encode('rustc version 1.78.0'),
+    binaryIdentity: 'sha256:malformed-address',
+  });
+  const probe = provider.probe();
+  assert.equal(probe.authoritative, false);
+  assert.equal(probe.completeness.invalidEntries, 1);
+  assert.equal(provider.symbols().records.length, 0);
+}
+
+// 10. Stripped binary probe
 {
   const strippedProvider = new RustMetadataProvider({
     symbols: [],
