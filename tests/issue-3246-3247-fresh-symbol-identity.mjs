@@ -78,6 +78,15 @@ test('#3247 plainToExpr rejects present non-string symbol ids', () => {
   }
 });
 
+test('#3247 blank string symbol ids retain the legacy allocation path', () => {
+  resetSymbolCounterForTesting(0);
+  const base = { kind: 'fresh_symbol', name: 'legacy', sort: { kind: 'bool' }, meta: {} };
+  const empty = plainToExpr({ ...base, symbolId: '' });
+  const whitespace = plainToExpr({ ...base, symbolId: '   ' });
+  assert.equal(empty.symbolId, 'sym_1_legacy');
+  assert.equal(whitespace.symbolId, 'sym_2_legacy');
+});
+
 test('#3247 legacy serialized payloads without symbolId still re-allocate', () => {
   const plain = { kind: 'fresh_symbol', name: 'legacy', sort: { kind: 'bool' }, meta: {} };
   const node = plainToExpr(plain);
