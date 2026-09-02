@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 
@@ -8,6 +9,7 @@ import {
 import { phase3SchedulingPriority } from './semantic-corpus-manifest.mjs';
 
 const FAILURE_TAIL_CHARS = 3500;
+const inProcessRunCache = new Map();
 
 function appendTail(current, chunk) {
   const next = current + String(chunk);
@@ -56,7 +58,7 @@ function runOne({ suite, index, file, root, env, timeoutMs, verbose }) {
         process.stdout.write(`[phase3-${suite} ${index + 1}] ${state} ${display} (${(durationMs / 1000).toFixed(1)}s)\n`);
         if (!passed && combined) process.stderr.write(`${combined}\n`);
       }
-      resolve({
+      resolve(Object.freeze({
         command: display,
         status,
         signal: signal ?? null,
@@ -64,7 +66,7 @@ function runOne({ suite, index, file, root, env, timeoutMs, verbose }) {
         passed,
         durationMs,
         ...(passed ? {} : { failureTail: combined.slice(-FAILURE_TAIL_CHARS), error: error ? String(error.message || error) : null }),
-      });
+      }));
     };
 
     child.once('error', (error) => finish(null, null, error));
@@ -72,11 +74,58 @@ function runOne({ suite, index, file, root, env, timeoutMs, verbose }) {
   });
 }
 
+function digestEnvironment(env) {
+  const hash = createHash('sha256');
+  for (const [key, value] of Object.entries(env || {}).sort(([a], [b]) => a.localeCompare(b))) {
+    hash.update(key); hash.update('\0'); hash.update(String(value)); hash.update('\0');
+  }
+  return hash.digest('hex');
+}
+
+export function phase3CorpusReuseKey({ suite, files, root, env, timeoutMs, envName, concurrency } = {}) {
+  const token = String(env?.HEX_PHASE3_INPROCESS_REUSE_TOKEN ?? '').trim();
+  if (!token) return null;
+  const hash = createHash('sha256');
+  hash.update(token); hash.update('\0');
+  hash.update(String(suite)); hash.update('\0');
+  hash.update(path.resolve(root)); hash.update('\0');
+  hash.update(String(timeoutMs)); hash.update('\0');
+  hash.update(String(envName)); hash.update('\0');
+  hash.update(String(concurrency)); hash.update('\0');
+  hash.update(digestEnvironment(env)); hash.update('\0');
+  for (const file of files) { hash.update(String(file)); hash.update('\0'); }
+  return hash.digest('hex');
+}
+
+async function executePhase3Corpus({ suite, files, root, env, timeoutMs, concurrency, priorityForFile }) {
+  const outputMode = String(env.HEX_TEST_OUTPUT ?? '').trim().toLowerCase();
+  const verbose = outputMode === 'verbose' || outputMode === 'full';
+  const results = new Array(files.length);
+  const workItems = scheduleNodeTestFiles(files, verbose ? null : priorityForFile);
+  let nextWorkIndex = 0;
+
+  async function worker() {
+    while (true) {
+      const item = workItems[nextWorkIndex++];
+      if (!item) return;
+      results[item.index] = await runOne({ suite, index: item.index, file: item.file, root, env, timeoutMs, verbose });
+    }
+  }
+
+  await Promise.all(Array.from({ length: concurrency }, () => worker()));
+  return Object.freeze({ results: Object.freeze(results), concurrency });
+}
+
 /**
  * Run the locked Phase 3 unchanged-assertion corpus with bounded process
  * parallelism. Every command executes exactly once and result order remains the
  * canonical manifest order, so the v1/v2 differential denominator is unchanged.
  * Launch order is longest-first by non-authoritative hint to reduce pool tail.
+ *
+ * An explicit process-scoped reuse token enables single-flight/replay of an
+ * identical invocation only inside this Node process. The Semantic-v2 evidence
+ * chain uses it to prestart the independent legacy corpus beside the v2 corpus.
+ * Normal callers have no token and always execute fresh proof work.
  */
 export async function runPhase3Corpus({
   suite,
@@ -100,18 +149,14 @@ export async function runPhase3Corpus({
     maxDefault: 4,
     reserveCores: 0,
   }));
-  const results = new Array(files.length);
-  const workItems = scheduleNodeTestFiles(files, verbose ? null : priorityForFile);
-  let nextWorkIndex = 0;
 
-  async function worker() {
-    while (true) {
-      const item = workItems[nextWorkIndex++];
-      if (!item) return;
-      results[item.index] = await runOne({ suite, index: item.index, file: item.file, root, env, timeoutMs, verbose });
-    }
+  const reuseKey = phase3CorpusReuseKey({ suite, files, root, env, timeoutMs, envName, concurrency });
+  if (!reuseKey) return executePhase3Corpus({ suite, files, root, env, timeoutMs, concurrency, priorityForFile });
+
+  let cached = inProcessRunCache.get(reuseKey);
+  if (!cached) {
+    cached = executePhase3Corpus({ suite, files, root, env, timeoutMs, concurrency, priorityForFile });
+    inProcessRunCache.set(reuseKey, cached);
   }
-
-  await Promise.all(Array.from({ length: concurrency }, () => worker()));
-  return Object.freeze({ results: Object.freeze(results), concurrency });
+  return cached;
 }
