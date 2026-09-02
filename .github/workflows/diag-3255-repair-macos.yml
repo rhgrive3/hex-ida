@@ -1,0 +1,47 @@
+name: Repair PR 3382 and 3255 exact stack macOS
+on:
+  push:
+    branches:
+      - diag/3255-repair-runner-20260902
+permissions:
+  contents: write
+jobs:
+  repair:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Execute the reviewed repair body
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('.github/workflows/diag-3255-repair-runner.yml')
+          lines = p.read_text().splitlines()
+          marker = '      - name: Build and verify repaired stacked heads'
+          try:
+              start = lines.index(marker)
+          except ValueError:
+              raise SystemExit('repair step marker missing')
+          try:
+              run_line = next(i for i in range(start + 1, len(lines)) if lines[i] == '        run: |')
+          except StopIteration:
+              raise SystemExit('repair run body missing')
+          body = []
+          for line in lines[run_line + 1:]:
+              if line.startswith('      - name:') or line.startswith('      - uses:'):
+                  break
+              body.append(line[10:] if line.startswith('          ') else line)
+          if not body or not any('OLD_SEMANTIC=' in line for line in body):
+              raise SystemExit('repair body validation failed')
+          Path('/tmp/repair-3255.sh').write_text('\n'.join(body) + '\n')
+          PY
+          bash /tmp/repair-3255.sh
