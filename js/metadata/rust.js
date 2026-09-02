@@ -421,7 +421,7 @@ export class RustMetadataProvider extends LanguageMetadataProvider {
     }
 
     const toolchainVersion = findRustcVersion(this.commentBuffer);
-    const hasEvidence = rustSymbols.length > 0 || toolchainVersion != null || invalidEntries > 0;
+    const hasEvidence = rustSymbols.length > 0 || toolchainVersion != null || unreadable > 0 || invalidEntries > 0;
 
     if (!hasEvidence) {
       return createLanguageMetadataResult({
