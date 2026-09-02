@@ -254,14 +254,25 @@ export class EvidenceStore {
 
   ingestPlan(plan) {
     const out = [];
+    // Deterministic-verification authority (#3344): identity comparisons use
+    // exact typed equality. A structured value must not alias its primitive
+    // lookalike through String() coercion, or a different candidate could
+    // launder verified evidence authority.
+    const exactIdentity = (value) => {
+      if (value == null) return null;
+      if (typeof value === 'string' || typeof value === 'number' || typeof value === 'bigint') return `${typeof value}:${value}`;
+      return `structured:${typeof value}:${stableDigest(jsonSafe(value))}`;
+    };
     for (const candidate of plan && plan.candidates || []) {
-      const isVerifiedBest = !!(candidate.verification?.verified && plan.best && String(plan.best.address) === String(candidate.address));
+      const isVerifiedBest = !!(candidate.verification?.verified && plan.best
+        && exactIdentity(plan.best.address) !== null
+        && exactIdentity(plan.best.address) === exactIdentity(candidate.address));
       const explicitlyVerified = new Set([
         ...(candidate.verification?.evidenceIds || []),
         ...(candidate.verification?.verifiedEvidenceIds || []),
-      ].map(String));
+      ].map((id) => exactIdentity(id)).filter((id) => id !== null));
       for (const sourceId of candidate.evidence || []) {
-        const verified = isVerifiedBest && explicitlyVerified.has(String(sourceId));
+        const verified = isVerifiedBest && explicitlyVerified.has(exactIdentity(sourceId));
         out.push(this.add({
           sourceId, sourceTool: 'deterministic-goal-planner', kind: 'candidate-source', status: verified ? 'verified' : 'supported',
           functionAddress: candidate.address, functionName: candidate.name,

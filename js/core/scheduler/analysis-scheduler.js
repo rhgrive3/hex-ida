@@ -97,11 +97,16 @@ export class AnalysisScheduler {
       const state = typeof taskOrArtifactId === 'object' && taskOrArtifactId?.state != null
         ? taskOrArtifactId.state
         : (this.states.get(artifactId) ?? null);
+      // Lifecycle contract (#1189 / #3312): every event carries the schema
+      // version and live scheduler gauges so observers never guess them.
       const event = Object.freeze({
+        version: 1,
         seq: ++this.seq,
         type,
         artifactId,
         state,
+        running: this.running,
+        queued: this.queue.size,
         details: Object.freeze({ ...details }),
       });
       this.onEvent(event);
@@ -110,19 +115,24 @@ export class AnalysisScheduler {
     }
   }
 
-  request(request) { return this.#request(request,[],null); }
+  request(request) { return this.#request(request,[],null,{ external:true }); }
 
-  #request(request, ancestry, parentSignal) {
+  #request(request, ancestry, parentSignal, options = {}) {
     const descriptor=request?.descriptor;
     let artifactId;
     try { artifactId=requireArtifactId(descriptor?.artifactId,'artifact-request-descriptor-required'); }
     catch (error) { return Promise.reject(error); }
     this.metrics.requests++;
     const priority = priorityValue(request.priority);
-    this.#emit('request.received', artifactId, {
-      priority: priorityName(priority),
-      dependencyCount: (descriptor?.upstreamArtifactIds || []).length,
-    });
+    // Lifecycle contract (#1189 / #3313): request.received fires exactly once
+    // per externally visible request() call. Dependency recursion re-enters
+    // this path internally and must not re-announce the request.
+    if (options.external) {
+      this.#emit('request.received', artifactId, {
+        priority: priorityName(priority),
+        dependencyCount: (descriptor?.upstreamArtifactIds || []).length,
+      });
+    }
     const consumerSignals=uniqueSignals(request.signal,parentSignal);
     const alreadyAborted=consumerSignals.find((signal)=>signal.aborted);
     if (alreadyAborted) { this.metrics.cancelledConsumers++; return Promise.reject(abortError(alreadyAborted)); }

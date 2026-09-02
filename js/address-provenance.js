@@ -40,7 +40,16 @@
     const entryFallbackAt = new Int32Array(32);
     entryFallbackAt.fill(-1);
     // enter() advances monotonically, so normalize external boundaries once.
-    const functionStarts = Array.from(opts.functionStarts || [], asBigInt)
+    // Boundary inputs are address collections (#3339): a bare string is not an
+    // iterable of addresses and must not decompose into per-character garbage.
+    const addressCollection = (value) => {
+      if (value == null) return [];
+      if (typeof value === 'string') throw new TypeError('address-provenance-boundary-collection-required');
+      if (typeof value[Symbol.iterator] !== 'function') throw new TypeError('address-provenance-boundary-collection-required');
+      return [...value];
+    };
+    const functionStarts = addressCollection(opts.functionStarts)
+      .map(asBigInt)
       .filter((start) => start != null)
       .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
     const startCount = functionStarts.length;
@@ -57,7 +66,8 @@
 
     // Full branch entries are retained for the existing forward-target contract.
     const branchEntries = new Set(
-      Array.from(opts.branchEntries || [], asBigInt)
+      addressCollection(opts.branchEntries)
+        .map(asBigInt)
         .filter((target) => target != null && inRange(target)),
     );
 

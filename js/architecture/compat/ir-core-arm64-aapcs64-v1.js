@@ -209,8 +209,13 @@ function parameterAbiClass(param) {
   const hfa = param?.hfa === true || cls.includes('hfa') || cls.includes('homogeneous');
   const vector = cls.includes('vector') || /vector|simd/.test(type);
   const fp = hfa || vector || cls.includes('float') || cls.includes('fp') || /^(float|double|__fp16)/.test(type);
-  const members = Math.max(1, Math.min(4, Number(param?.members || param?.elements || param?.count || 1) || 1));
-  const bits = Math.max(8, Math.min(128, Number(param?.bits || param?.sizeBits || (fp ? 64 : 64)) || 64));
+  // AAPCS64 classification authorities (#3285): member counts and bit widths
+  // accept only primitive safe-integer numbers. Structured values fail closed
+  // to the defaults instead of laundering through Number().
+  const abiCount = (value, fallback) =>
+    typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : fallback;
+  const members = Math.max(1, Math.min(4, abiCount(param?.members ?? param?.elements ?? param?.count, 1)));
+  const bits = Math.max(8, Math.min(128, abiCount(param?.bits ?? param?.sizeBits, fp ? 64 : 64)));
   return { pointer, hfa, vector, fp, members, bits };
 }
 
@@ -238,6 +243,12 @@ export function classifyCallArguments(insn, opts = {}) {
       for(let n=0;n<regsNeeded;n++){const reg=`v${fp++}`;regs.push(reg);srcs.push({t:'reg',reg,bits:c.vector?128:c.bits});}
       arguments_.push({index,location:'register',regs,reg:regs[0],abiClass:c.hfa?'hfa':c.vector?'vector':'fp',pointer:c.pointer,bits:c.bits});
       return;
+    }
+    if (c.fp) {
+      // AAPCS64 Stage C rule C.3 (#3272): an HFA/HVA that does not fit in the
+      // remaining SIMD registers is assigned to the stack AND sets NSRN to 8,
+      // so every later FP argument is also assigned to the stack.
+      fp = 8;
     }
     if (!c.fp && gp < 8) {
       const reg=`x${gp++}`; srcs.push({t:'reg',reg,bits:64});

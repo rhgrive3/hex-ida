@@ -192,7 +192,10 @@ function normalizeArtifactPayloadBytes(value, { allowMissing = false } = {}) {
 }
 
 export function createArtifactRecord(descriptor, payloadBytes, metadata = {}) {
-  if (!descriptor?.artifactId) throw new ArtifactError('artifact-descriptor-required');
+  // Artifact records carry producer authority (#3324): only descriptors minted
+  // by createArtifactDescriptor may produce records. A lookalike object must
+  // not forge canonical artifact identity.
+  assertCanonicalArtifactDescriptor(descriptor);
   const bytes = normalizeArtifactPayloadBytes(payloadBytes);
   const completeness = metadata.completeness ?? 'complete';
   if (!COMPLETENESS.has(completeness)) throw new ArtifactError('artifact-completeness-invalid');
