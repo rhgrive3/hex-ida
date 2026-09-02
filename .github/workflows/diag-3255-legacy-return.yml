@@ -1,0 +1,33 @@
+name: Diagnose legacy return provenance
+
+on:
+  push:
+    branches:
+      - diag/3255-legacy-phi-provenance-20260902
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci --no-audit --no-fund
+      - name: Capture focused diagnostic
+        shell: bash
+        run: |
+          set +e
+          node tests/phase7/debug-legacy-apply-damage-return.test.mjs > legacy-return.log 2>&1
+          status=$?
+          echo "diagnostic_exit=$status" >> legacy-return.log
+          exit 0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: legacy-return-diagnostic
+          path: legacy-return.log
+          if-no-files-found: error
