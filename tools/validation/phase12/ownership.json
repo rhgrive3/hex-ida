@@ -94,7 +94,9 @@
       "js/targets/architecture/arm64e/encoding.js",
       "tests/issues-unlinked-batch-20260901.mjs",
       "tests/phase9/expr/hash-serialize.test.mjs",
-      ".github/workflows/phase7-ownership.yml"
+      ".github/workflows/phase7-ownership.yml",
+      "reports/phase11/**",
+      "tools/validation/phase11/**"
     ]
   },
   "contractPaths": [
