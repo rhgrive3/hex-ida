@@ -76,4 +76,33 @@ for (const reason of [false, 0, '']) {
   assert.strictEqual(observed, reason);
 }
 
+// #3404: binary hash identity is string-only and malformed lookups/writes/deletes
+// must never alias a canonical string key or destroy its valid entry.
+const strictHashMemory = new Map();
+const strictHashCache = new AnalysisCache({ indexedDB:null, memory:strictHashMemory, schemaVersion:2 });
+await strictHashCache.put('abc', { analysisSummaries:{ source:'valid' } });
+for (const malformed of [['abc'], { toString() { return 'abc'; } }, 123, true]) {
+  await assert.rejects(strictHashCache.get(malformed), /analysis-cache-binary-hash-invalid/);
+  assert.equal((await strictHashCache.get('abc')).analysisSummaries.source, 'valid');
+
+  await assert.rejects(
+    strictHashCache.put(malformed, { analysisSummaries:{ source:'malformed' } }),
+    /analysis-cache-binary-hash-invalid/,
+  );
+  assert.equal((await strictHashCache.get('abc')).analysisSummaries.source, 'valid');
+
+  await assert.rejects(strictHashCache.delete(malformed), /analysis-cache-binary-hash-invalid/);
+  assert.equal((await strictHashCache.get('abc')).analysisSummaries.source, 'valid');
+}
+assert.throws(() => strictHashCache.key(['abc']), /analysis-cache-binary-hash-invalid/);
+assert.throws(() => strictHashCache.legacyKey(['abc']), /analysis-cache-binary-hash-invalid/);
+
+// Canonical artifact-id reads intentionally allow the legacy binary hash to be omitted.
+const canonicalArtifactId = `artifact_${'a'.repeat(32)}`;
+await strictHashCache.put('artifact-source', { analysisSummaries:{ source:'artifact' } }, { artifactId:canonicalArtifactId });
+assert.equal(
+  (await strictHashCache.get(undefined, { artifactId:canonicalArtifactId })).analysisSummaries.source,
+  'artifact',
+);
+
 console.log('cache-platform: PASS');
