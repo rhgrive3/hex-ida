@@ -137,11 +137,43 @@ console.log('Testing Rust Metadata Provider...');
   const probe = provider.probe();
   assert.equal(probe.completeness.complete, true);
   const record = provider.symbols().records[0];
-  assert.equal(record.address, '0');
-  assert.equal(record.entityId, 'sym@0');
+  assert.equal(record.address, '0x0');
+  assert.equal(record.entityId, 'sym@0x0');
 }
 
-// 9. Structured addresses fail closed instead of being String-coerced into identity.
+// 9. Equivalent numeric/decimal/hex addresses share one canonical identity.
+{
+  const mainName = '_ZN6my_app4main17haabbccddeeff0011E';
+  const vtableName = '_ZN6my_app13MyTraitvtable17h1122334455667788E';
+  const numeric = new RustMetadataProvider({
+    symbols: [
+      { name: mainName, address: 4096 },
+      { name: vtableName, address: 8192n },
+    ],
+    binaryIdentity: 'sha256:canonical-address-numeric',
+  });
+  const textual = new RustMetadataProvider({
+    symbols: [
+      { name: mainName, address: '0x1000' },
+      { name: vtableName, address: '8192' },
+    ],
+    binaryIdentity: 'sha256:canonical-address-text',
+  });
+  numeric.probe();
+  textual.probe();
+  const numericSymbol = numeric.symbols().records[0];
+  const textualSymbol = textual.symbols().records[0];
+  assert.equal(numericSymbol.address, '0x1000');
+  assert.equal(textualSymbol.address, '0x1000');
+  assert.equal(numericSymbol.entityId, textualSymbol.entityId);
+  const numericVtable = numeric.vtables().records[0];
+  const textualVtable = textual.vtables().records[0];
+  assert.equal(numericVtable.address, '0x2000');
+  assert.equal(textualVtable.address, '0x2000');
+  assert.equal(numericVtable.entityId, textualVtable.entityId);
+}
+
+// 10. Structured addresses fail closed instead of being String-coerced into identity.
 {
   const provider = new RustMetadataProvider({
     symbols: [{ name: '_ZN6my_app4main17haabbccddeeff0011E', address: { toString: () => '0x1000' } }],
@@ -155,7 +187,7 @@ console.log('Testing Rust Metadata Provider...');
   assert.equal(provider.symbols().records.length, 0);
 }
 
-// 10. Invalid-only Rust candidates remain visible evidence without a compiler signature.
+// 11. Invalid-only Rust candidates remain visible evidence without a compiler signature.
 {
   const provider = new RustMetadataProvider({
     symbols: [{ name: '_ZN6my_app4main17haabbccddeeff0011E', address: { structured: true } }],
@@ -173,7 +205,7 @@ console.log('Testing Rust Metadata Provider...');
   assert.equal(provider.symbols().records.length, 0);
 }
 
-// 11. Unreadable-only Rust candidates remain partial evidence instead of disappearing.
+// 12. Unreadable-only Rust candidates remain partial evidence instead of disappearing.
 {
   const provider = new RustMetadataProvider({
     symbols: [{ name: '_RNv', address: '0x1000' }],
@@ -192,7 +224,7 @@ console.log('Testing Rust Metadata Provider...');
   assert.equal(provider.symbols().records.length, 0);
 }
 
-// 12. Stripped binary probe
+// 13. Stripped binary probe
 {
   const strippedProvider = new RustMetadataProvider({
     symbols: [],
