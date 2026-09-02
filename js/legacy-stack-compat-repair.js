@@ -133,13 +133,13 @@ export function restoreLegacyPrivateStackForwarding(projected, stackPointerProve
       .sort((a, b) => Number(b.row) - Number(a.row) || Number(b.id) - Number(a.id));
     let store = null;
     for (const inst of prior) {
-      if (inst?.op === 'store' && inst.loc?.key === load.loc.key
-          && exactAccessSize(inst) === loadSize) {
+      if (inst?.op === 'unknown') break;
+      if (inst?.op === 'store' && (!inst.loc?.key || inst.loc?.kind === 'unknown')) break;
+      if (inst?.op === 'store' && inst.loc?.kind === 'stack'
+          && inst.loc.key === load.loc.key && exactAccessSize(inst) === loadSize) {
         store = inst;
         break;
       }
-      if (inst?.op === 'unknown') break;
-      if (inst?.op === 'store' && (!inst.loc?.key || inst.loc?.kind === 'unknown')) break;
     }
     if (!store?.memDef) continue;
     load.reachingStore = store;

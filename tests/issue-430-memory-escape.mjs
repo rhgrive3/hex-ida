@@ -60,8 +60,10 @@ function callAt(ir, row) { return ir.instructions.find((i) => i.op === OP.CALL &
     'ldr w2, [sp, #0x18]',
     'ret',
   ], { semanticMigrationMode:'legacy-v1' });
-  assert.equal(loadAt(ir, 3)?.reachingStore, undefined);
-  assert.equal(loadAt(ir, 3)?.memUse?.kind, 'clobber');
+  const load = loadAt(ir, 3);
+  assert.ok(load, 'direct stack-escape fixture must still contain the projected load');
+  assert.equal(load.reachingStore, undefined);
+  assert.equal(load.memUse?.kind, 'clobber');
 }
 
 // Legacy-v1: spilling then reloading a stack pointer does not launder escape provenance.
@@ -75,24 +77,30 @@ function callAt(ir, row) { return ir.instructions.find((i) => i.op === OP.CALL &
     'ldr w2, [sp, #0x18]',
     'ret',
   ], { semanticMigrationMode:'legacy-v1' });
-  assert.equal(loadAt(ir, 5)?.reachingStore, undefined);
-  assert.equal(loadAt(ir, 5)?.memUse?.kind, 'clobber');
+  const load = loadAt(ir, 5);
+  assert.ok(load, 'reloaded stack-escape fixture must still contain the projected load');
+  assert.equal(load.reachingStore, undefined);
+  assert.equal(load.memUse?.kind, 'clobber');
 }
 
 // Direct AAPCS64 argument escape must be represented as a CALL SSA use.
 {
   const ir = irOf(['str w1, [sp, #0x18]','add x0, sp, #0x18','bl 0x100001000','ldr w2, [sp, #0x18]','ret']);
   const call = callAt(ir, 2);
+  const load = loadAt(ir, 3);
   assert.ok(call?.args?.some((a) => a.value?.reg === 'x0'));
-  assert.equal(loadAt(ir, 3)?.reachingStore, undefined);
-  assert.equal(loadAt(ir, 3)?.memUse?.kind, 'clobber');
+  assert.ok(load, 'AAPCS64 argument-escape fixture must still contain the projected load');
+  assert.equal(load.reachingStore, undefined);
+  assert.equal(load.memUse?.kind, 'clobber');
 }
 
 // MOV propagation must not hide the escape.
 {
   const ir = irOf(['str w1, [sp, #0x18]','add x9, sp, #0x18','mov x0, x9','bl 0x100001000','ldr w2, [sp, #0x18]','ret']);
-  assert.equal(loadAt(ir, 4)?.reachingStore, undefined);
-  assert.equal(loadAt(ir, 4)?.memUse?.kind, 'clobber');
+  const load = loadAt(ir, 4);
+  assert.ok(load, 'MOV stack-escape fixture must still contain the projected load');
+  assert.equal(load.reachingStore, undefined);
+  assert.equal(load.memUse?.kind, 'clobber');
 }
 
 // PHI provenance is tested independently of text-fixture CFG construction: a
@@ -144,6 +152,28 @@ function callAt(ir, row) { return ir.instructions.find((i) => i.op === OP.CALL &
   restoreLegacyPrivateStackForwarding(projected, stackPointerProvenanceOf);
   assert.equal(load.reachingStore, undefined, 'partial-width store cannot become the reaching store');
   assert.equal(load.memUse, clobber, 'mismatched-width load must retain the conservative clobber');
+}
+
+// An ambiguous store is a hard barrier even when an untrusted location reuses
+// the exact stack key and width. It must never become authoritative.
+{
+  const value = { id:920, kind:'arg', reg:'x4', def:null };
+  const loadLoc = { key:'stack:32', kind:'stack', size:8 };
+  const ambiguousLoc = { key:'stack:32', kind:'unknown', size:8 };
+  const memDef = { kind:'store', definitionId:'d920' };
+  const ambiguousStore = { id:921, op:'store', row:0, block:0, loc:ambiguousLoc, args:[{ value }], memDef };
+  const call = { id:922, op:'call', row:1, block:0, args:[], memKills:[loadLoc] };
+  const clobber = { kind:'clobber', inst:call };
+  const load = { id:923, op:'load', row:2, block:0, loc:loadLoc, args:[], memUse:clobber };
+  const projected = {
+    values:[value],
+    locations:new Map([[loadLoc.key, loadLoc]]),
+    instructions:[ambiguousStore, call, load],
+    blocks:[{ index:0, insts:[ambiguousStore, call, load] }],
+  };
+  restoreLegacyPrivateStackForwarding(projected, stackPointerProvenanceOf);
+  assert.equal(load.reachingStore, undefined, 'unknown-kind store cannot become the reaching store');
+  assert.equal(load.memUse, clobber, 'ambiguous store must preserve the conservative clobber');
 }
 
 console.log('issue #430 stack escape regressions passed');
