@@ -110,7 +110,10 @@ export async function parseUnifiedLanguageMetadata(context = {}, options = {}) {
   }
 
   // 2. Rust
-  if ((context.symbols || []).some((s) => (s.name || s.symbol || '').startsWith('_R') || (s.name || s.symbol || '').startsWith('_ZN')) || context.commentBuffer) {
+  if ((context.symbols || []).some((s) => {
+    const name = s.name || s.symbol || '';
+    return name.startsWith('_R') || name.startsWith('__R') || name.startsWith('_ZN') || name.startsWith('ZN');
+  }) || context.commentBuffer) {
     providers.push(new RustMetadataProvider({
       symbols: context.symbols || [],
       commentBuffer: context.commentBuffer,
