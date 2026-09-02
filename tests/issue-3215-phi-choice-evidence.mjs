@@ -55,6 +55,18 @@ test('#3215 structured phi choices without predecessor/value identity are reject
   assert.equal(res.reasonCode, 'incomplete-phi-choices');
 });
 
+test('#3215 empty value identities are rejected', async () => {
+  for (const valueId of ['', '   ']) {
+    const { scope } = baseScope();
+    scope.phiChoices = [{
+      complete: true, phiId: 'phi_1', block: 5, predecessorBlock: 0, valueId,
+    }];
+    const res = await verdict(scope, new FakeSolverBackend());
+    assert.equal(res.verdict, VERDICT.UNKNOWN);
+    assert.equal(res.reasonCode, 'incomplete-phi-choices');
+  }
+});
+
 test('#3215 phi choices must belong to the target block', async () => {
   const { scope } = baseScope();
   scope.phiChoices = [{
