@@ -224,11 +224,17 @@ export class InstrumentationProvider {
     session.facets = Object.freeze({ instrumentation });
     session.setState('ready');
     this.activeSession = session;
-    session.newProviderEpoch = (reason = 'instrumentation-provider-epoch-changed') => {
-      const next = session.newEpoch(reason);
-      normalizer.resetEpoch(next);
-      if (typeof this.backend.setEpoch === 'function') this.backend.setEpoch(next);
-      return next;
+    session.newProviderEpoch = async (reason = 'instrumentation-provider-epoch-changed') => {
+      if (session.closed) throw new DebugAdapterError('runtime-session-closed', 'runtime session is closed');
+      const current = session.epoch;
+      const next = current + 1;
+      if (typeof this.backend.setEpoch === 'function') await this.backend.setEpoch(next);
+      if (session.closed || session.epoch !== current) {
+        throw new DebugAdapterError('runtime-session-epoch-race', 'runtime session changed while provider epoch was being updated');
+      }
+      const committed = session.newEpoch(reason);
+      normalizer.resetEpoch(committed);
+      return committed;
     };
     return session;
   }
