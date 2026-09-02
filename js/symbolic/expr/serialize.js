@@ -15,6 +15,7 @@ import {
   createBool,
   createBv,
   createFreshSymbol,
+  restoreFreshSymbol,
   createUnknownSemantic,
   createUnary,
   createBinary,
@@ -149,8 +150,15 @@ export function plainToExpr(plain) {
       }
       return createBv(sort.width, BigInt(plain.value));
 
-    case EXPR_KIND.FRESH_SYMBOL:
+    case EXPR_KIND.FRESH_SYMBOL: {
+      /* #3247: restore the serialized canonical symbolId instead of minting a
+         new allocator id, so model bindings, proof identity, and structural
+         identity survive a round-trip. */
+      if (typeof plain.symbolId === 'string' && plain.symbolId.trim() !== '') {
+        return restoreFreshSymbol(sort, plain.name, plain.symbolId, plain.meta || {});
+      }
       return createFreshSymbol(sort, plain.name, plain.meta || {});
+    }
 
     case EXPR_KIND.UNKNOWN_SEMANTIC:
       return createUnknownSemantic(sort, plain.reason, plain.detail);

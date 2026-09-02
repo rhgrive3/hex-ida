@@ -66,6 +66,34 @@ export function createFreshSymbol(sort, name, meta = {}) {
   });
 }
 
+const RESTORED_SYMBOL_ID = /^sym_(\d+)_.+$/;
+
+/* #3247: deserialize must restore the serialized canonical symbolId instead of
+   re-allocating. The allocator counter advances past the restored number so
+   later fresh symbols can never mint the same id. */
+export function restoreFreshSymbol(sort, name, symbolId, meta = {}) {
+  assertValidSort(sort, 'restoreFreshSymbol');
+  if (!name || typeof name !== 'string') {
+    throw new TypeError(`restoreFreshSymbol: name must be a non-empty string, got ${name}`);
+  }
+  if (typeof symbolId !== 'string') {
+    throw new TypeError('restoreFreshSymbol: symbolId must be a string');
+  }
+  const match = RESTORED_SYMBOL_ID.exec(symbolId);
+  if (!match) {
+    throw new TypeError(`restoreFreshSymbol: malformed symbolId '${symbolId}'`);
+  }
+  const numeric = Number(match[1]);
+  if (Number.isSafeInteger(numeric) && numeric > symbolCounter) symbolCounter = numeric;
+  return Object.freeze({
+    kind: EXPR_KIND.FRESH_SYMBOL,
+    sort,
+    name,
+    symbolId,
+    meta: Object.freeze({ ...meta }),
+  });
+}
+
 export function createUnknownSemantic(sort, reason, detail = null) {
   assertValidSort(sort, 'createUnknownSemantic');
   if (!reason || typeof reason !== 'string') {

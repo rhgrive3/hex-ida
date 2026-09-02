@@ -29,7 +29,8 @@ import {
 
 test('structural hash is deterministic and invariant to metadata differences', () => {
   const sym1 = createFreshSymbol(bvSort(32), 'x', { origin: 'loc1', row: 10 });
-  const sym2 = createFreshSymbol(bvSort(32), 'x', { origin: 'loc2', row: 99 });
+  // Same symbol identity (id), different metadata: hash must not change.
+  const sym2 = { ...sym1, meta: Object.freeze({ origin: 'loc2', row: 99 }) };
 
   const c1 = createBv(32, 42);
   const expr1 = createBinary(BV_BINARY_OP.ADD, sym1, c1);
@@ -42,6 +43,15 @@ test('structural hash is deterministic and invariant to metadata differences', (
   assert.equal(hash1, hash2);
   assert.equal(typeof hash1, 'string');
   assert.equal(hash1.length, 32); // stableDigest hex
+
+  // #3246: independently allocated same-name symbols are distinct variables
+  // (the solver binds by symbolId), so their structural identity differs.
+  const sym3 = createFreshSymbol(bvSort(32), 'x', { origin: 'loc1', row: 10 });
+  assert.notEqual(
+    computeStructuralHash(createBinary(BV_BINARY_OP.ADD, sym1, c1)),
+    computeStructuralHash(createBinary(BV_BINARY_OP.ADD, sym3, c1)),
+  );
+  assert.equal(structuralEquals(sym1, sym3), false);
 });
 
 test('structural hash distinguishes different operations, sorts, and operands', () => {
