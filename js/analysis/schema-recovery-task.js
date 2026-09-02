@@ -1,6 +1,7 @@
 import { recoverSchemas } from '../schema.js';
 
 const TASKS = new WeakMap();
+const RESULT_META = new WeakMap();
 
 function abortError(signal, fallback = 'Schema recovery aborted') {
   const error = signal?.reason instanceof Error ? signal.reason : new Error(String(signal?.reason || fallback));
@@ -28,9 +29,6 @@ async function waitForOwnedRequest(request, signal) {
       finish(reject, abortError(signal));
     };
     signal.addEventListener('abort', onAbort, { once:true });
-    // Attach the request outcome before the post-registration recheck so the
-    // recheck path can settle the waiter without leaving the request promise
-    // (or a later backend rejection) unobserved.
     const outcome = Promise.resolve(request).then((value) => finish(resolve, value), (error) => finish(reject, error));
     if (signal.aborted) { onAbort(); return outcome; }
     return outcome;
@@ -41,6 +39,39 @@ function taskMap(app) {
   let map = TASKS.get(app);
   if (!map) { map = new Map(); TASKS.set(app, map); }
   return map;
+}
+
+function requestedMaxSchemas(budget) {
+  const value = budget?.maxSchemas;
+  if (value == null) return Infinity;
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : Infinity;
+}
+
+function taskKey(epoch, maxSchemas) {
+  return `${epoch}:${maxSchemas === Infinity ? 'unbounded' : maxSchemas}`;
+}
+
+function resultMeta(result) {
+  return result && typeof result === 'object' ? RESULT_META.get(result) || null : null;
+}
+
+function covers(meta, epoch, maxSchemas) {
+  return !!meta && meta.epoch === epoch && (meta.complete === true || meta.maxSchemas >= maxSchemas);
+}
+
+function rememberResult(result, epoch, maxSchemas) {
+  if (result && typeof result === 'object') {
+    RESULT_META.set(result, { epoch, maxSchemas, complete: result.complete === true });
+  }
+  return result;
+}
+
+function shouldPublish(current, nextMeta) {
+  const currentMeta = resultMeta(current);
+  if (!currentMeta || currentMeta.epoch !== nextMeta.epoch) return true;
+  if (nextMeta.complete === true) return currentMeta.complete !== true || nextMeta.maxSchemas >= currentMeta.maxSchemas;
+  if (currentMeta.complete === true) return false;
+  return nextMeta.maxSchemas >= currentMeta.maxSchemas;
 }
 
 function dependencyCompleteness(strings, program) {
@@ -68,16 +99,13 @@ function annotateSchemas(value, completeness) {
   return schemas;
 }
 
-function createTask(app, epoch, { onProgress, priority, budget } = {}) {
+function createTask(app, key, epoch, maxSchemas, { onProgress, priority, budget } = {}) {
   const controller = new AbortController();
   const signal = controller.signal;
   const map = taskMap(app);
-  const entry = { controller, waiters:0, result:null, promise:null, priority, budget };
+  const entry = { key, epoch, maxSchemas, controller, waiters:0, result:null, promise:null, priority, budget };
 
   entry.promise = (async () => {
-    // Both dependencies are reusable shared artifacts. Pass the schema consumer
-    // contract through so closing the sheet detaches this consumer end-to-end;
-    // shared producers remain alive only when another consumer is still attached.
     const dependencyOptions = {
       signal,
       priority,
@@ -94,7 +122,12 @@ function createTask(app, epoch, { onProgress, priority, budget } = {}) {
     const [strings, program] = await Promise.all([stringsPromise, programPromise]);
     throwIfAborted(signal);
     if (epoch !== app.backend?.gen) throw Object.assign(new Error('Schema recovery became stale.'), { name:'StaleRequestError', stale:true });
-    if (!program) return annotateSchemas([], dependencyCompleteness(strings, program));
+    if (!program) {
+      entry.result = rememberResult(annotateSchemas([], dependencyCompleteness(strings, program)), epoch, maxSchemas);
+      const meta = resultMeta(entry.result);
+      if (shouldPublish(app.schemas, meta)) app.schemas = entry.result;
+      return entry.result;
+    }
 
     const read = async (address, length) => {
       throwIfAborted(signal);
@@ -109,35 +142,44 @@ function createTask(app, epoch, { onProgress, priority, budget } = {}) {
       program,
       read,
       architecture,
-      limit:budget?.maxSchemas,
+      limit:maxSchemas === Infinity ? undefined : maxSchemas,
       onProgress:(progress) => onProgress?.({ phase:'recover', ...progress }),
       isCancelled:() => signal.aborted || epoch !== app.backend?.gen,
     });
     throwIfAborted(signal);
     if (epoch !== app.backend?.gen) throw Object.assign(new Error('Schema recovery became stale.'), { name:'StaleRequestError', stale:true });
-    entry.result = annotateSchemas(schemas, dependencyCompleteness(strings, program));
-    // Preserve the existing app-level cache contract, but only publish fresh,
-    // completed-or-explicitly-partial schema recovery—not an aborted/stale result.
-    app.schemas = entry.result;
+    entry.result = rememberResult(annotateSchemas(schemas, dependencyCompleteness(strings, program)), epoch, maxSchemas);
+    const meta = resultMeta(entry.result);
+    if (shouldPublish(app.schemas, meta)) app.schemas = entry.result;
     return entry.result;
   })().catch((error) => {
-    if (!entry.result) map.delete(epoch);
+    if (!entry.result) map.delete(key);
     throw error;
   });
-  // Waiters may detach through an abort path before they observe the task
-  // outcome; keep the shared task rejection observed so it can never surface
-  // as an unhandled rejection while waiters are still attaching.
   entry.promise.catch(() => {});
-  map.set(epoch, entry);
+  map.set(key, entry);
   return entry;
 }
 
+function coveringEntry(map, epoch, maxSchemas) {
+  const entries = [...map.values()].filter((entry) => entry.epoch === epoch && (entry.result?.complete === true || entry.maxSchemas >= maxSchemas));
+  entries.sort((a, b) => {
+    if ((a.result?.complete === true) !== (b.result?.complete === true)) return a.result?.complete === true ? -1 : 1;
+    return a.maxSchemas - b.maxSchemas;
+  });
+  return entries[0] || null;
+}
+
 export function recoverSchemasForUi(app, { signal = null, onProgress = null, priority = 'interactive', budget = null } = {}) {
-  if (app?.schemas) return Promise.resolve(app.schemas);
   const epoch = app?.backend?.gen ?? -1;
+  const maxSchemas = requestedMaxSchemas(budget);
+  if (app?.schemas && covers(resultMeta(app.schemas), epoch, maxSchemas)) return Promise.resolve(app.schemas);
   const map = taskMap(app);
-  let entry = map.get(epoch);
-  if (!entry) entry = createTask(app, epoch, { onProgress, priority, budget });
+  let entry = coveringEntry(map, epoch, maxSchemas);
+  if (!entry) {
+    const key = taskKey(epoch, maxSchemas);
+    entry = map.get(key) || createTask(app, key, epoch, maxSchemas, { onProgress, priority, budget });
+  }
   if (entry.result) return Promise.resolve(entry.result);
   entry.waiters++;
 
@@ -152,15 +194,10 @@ export function recoverSchemasForUi(app, { signal = null, onProgress = null, pri
     };
     const onAbort = () => {
       finish(reject, abortError(signal));
-      // The shared dependency producers own their own waiter counts. Aborting
-      // this task signal detaches only this schema consumer from those artifacts.
       if (entry.waiters === 0 && !entry.result) entry.controller.abort(signal?.reason ?? 'no-schema-consumers');
     };
     if (signal?.aborted) { onAbort(); return; }
     signal?.addEventListener?.('abort', onAbort, { once:true });
-    // Attach the shared task outcome before the post-registration recheck so
-    // the recheck path can settle this waiter without leaving the task promise
-    // unobserved for the remaining lifecycle of the entry.
     const outcome = entry.promise.then((value) => finish(resolve, value), (error) => finish(reject, error));
     if (signal?.aborted) { onAbort(); return outcome; }
     return outcome;
