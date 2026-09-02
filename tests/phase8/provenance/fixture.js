@@ -9,7 +9,7 @@ export function source(valueId, row = 3) {
 export function resultWith(expression, { condition = null, sourcelessLine = false } = {}) {
   const returnNode = { kind:'stmt', indent:1, text:'return old;', source:source(99, 4), semantic:{ op:'return', expression, ir:9 } };
   const body = [returnNode];
-  if (sourcelessLine) body.unshift({ kind:'label', indent:0, text:'loc_1000:', source:sourceOf(), semantic:null });
+  if (sourcelessLine) body.unshift({ kind:'stmt', indent:1, text:'broken();', source:sourceOf(), semantic:{ op:'call', expression:null, ir:null } });
   const conditions = [];
   if (condition) {
     body.unshift({ kind:'ctrl', indent:1, text:'if (v12 != 0) goto loc_2000;', source:source(12, 3), semantic:null });

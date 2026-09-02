@@ -17,7 +17,8 @@ test('P8-PROV counterexample: a rendered entity with lost origins is never trust
     && entity.origins.ir.length === 0
     && entity.origins.ssaRefs.length === 0);
   assert.ok(lost, 'the sourceless rendered entity must be present');
-  assert.equal(lost.complete, false, 'a zero-origin entity must never be marked complete');
+  assert.equal(lost.complete, false, 'a zero-origin semantic entity must never be marked complete');
+  assert.equal(lost.role, 'semantic', 'a semantic claim with no evidence is a loss, not scaffolding');
   assert.ok(lost.reasons.includes('provenance-loss'));
 
   const validation = validateRenderProvenance(provenance, { snapshotId:provenance.snapshotId });
