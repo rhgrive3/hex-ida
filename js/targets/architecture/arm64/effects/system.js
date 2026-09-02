@@ -130,15 +130,18 @@ function isSystemXt(op) {
   return op?.k === 'reg'
     && Number.isInteger(op.num)
     && ((op.cls === 'gp' && op.num >= 0 && op.num <= 30) || (op.cls === 'zr' && op.num === 31))
-    && Number(op.bits) === 64
+    && typeof op.bits === 'number'
+    && Number.isInteger(op.bits)
+    && op.bits === 64
     && op.shift == null
     && op.extend == null;
 }
 function gpRead(operations, op, id) {
-  if (op?.k === 'reg' && op.cls === 'zr') return createBitVectorValue(Number(op.bits || 64), 0n);
+  const width = op?.bits;
+  if (typeof width !== 'number' || !Number.isInteger(width) || width !== 64) return null;
+  if (op?.k === 'reg' && op.cls === 'zr') return createBitVectorValue(width, 0n);
   const regId = gpId(op);
   if (!regId) return null;
-  const width = Number(op.bits || 64);
   const value = temp(id, createBitVectorValue(width));
   operations.push(createMachineOperation({
     kind:'register-read',
@@ -148,10 +151,11 @@ function gpRead(operations, op, id) {
   return value;
 }
 function gpWrite(operations, op, value) {
+  const width = op?.bits;
+  if (typeof width !== 'number' || !Number.isInteger(width) || width !== 64) return false;
   if (op?.k === 'reg' && op.cls === 'zr') return true;
   const regId = gpId(op);
   if (!regId) return false;
-  const width = Number(op.bits || 64);
   operations.push(createMachineOperation({
     kind:'register-write',
     register:createRegisterValue(regId, width, { view:String(op.text || regId).toLowerCase() }),

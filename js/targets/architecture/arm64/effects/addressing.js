@@ -98,12 +98,17 @@ export function arm64RegisterOperand(input) {
   }
   if (typeof input.physicalId === 'string' && typeof input.kind === 'string') {
     const parsed = arm64RegisterOperand(input.view || input.physicalId);
-    if (parsed) return { ...parsed, bits:Number(input.bits || parsed.bits), kind:input.kind, zero:!!input.zero };
+    if (!parsed || parsed.physicalId !== input.physicalId || parsed.kind !== input.kind) return null;
+    if (input.bits != null && (typeof input.bits !== 'number' || !Number.isInteger(input.bits) || input.bits !== parsed.bits)) return null;
+    if (input.zero != null && (typeof input.zero !== 'boolean' || input.zero !== parsed.zero)) return null;
+    return parsed;
   }
 
   if (typeof input.registerId === 'string') {
     const parsed = arm64RegisterOperand(input.view || input.registerId);
-    if (parsed) return { ...parsed, bits: Number(input.widthBits || parsed.bits) };
+    if (!parsed || parsed.physicalId !== input.registerId) return null;
+    if (input.widthBits != null && (typeof input.widthBits !== 'number' || !Number.isInteger(input.widthBits) || input.widthBits !== parsed.bits)) return null;
+    return parsed;
   }
   if (typeof input.text === 'string') return arm64RegisterOperand(input.text);
   return null;

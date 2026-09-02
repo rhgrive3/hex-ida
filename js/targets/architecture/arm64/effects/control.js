@@ -114,7 +114,9 @@ function isIndirectControlRegister(operand) {
   return operand?.k === 'reg'
     && (operand.cls === 'gp' || operand.cls === 'zr')
     && hasValidControlRegisterNumber(operand)
-    && Number(operand.bits) === 64
+    && typeof operand.bits === 'number'
+    && Number.isInteger(operand.bits)
+    && operand.bits === 64
     && operand.shift == null
     && operand.extend == null;
 }
@@ -131,7 +133,9 @@ function isBranchTestRegister(operand) {
   return operand?.k === 'reg'
     && (operand.cls === 'gp' || operand.cls === 'zr')
     && hasValidControlRegisterNumber(operand)
-    && (Number(operand.bits) === 32 || Number(operand.bits) === 64)
+    && typeof operand.bits === 'number'
+    && Number.isInteger(operand.bits)
+    && (operand.bits === 32 || operand.bits === 64)
     && operand.shift == null
     && operand.extend == null;
 }
@@ -257,7 +261,6 @@ function liftArm64ControlEffectsCore(instruction, options = {}) {
   if (!encoding.valid) {
     return ctx.partial(encoding.reason, ['control'], undefined, { kind:'unknown', reason:encoding.reason });
   }
-
   if (COMPARE_BRANCH.has(mnemonic)) {
     const widthBits = instructionBits(ops[0]);
     const value = ctx.readOperand(ops[0], widthBits);
