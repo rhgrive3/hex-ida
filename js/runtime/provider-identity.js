@@ -232,7 +232,7 @@ export class RuntimeModuleBindingTable {
         targetEntityIds: match.targetEntityIds,
         state: matchedStaticAddress == null ? 'unresolved' : 'resolved',
         method: 'cross-version-match',
-        evidenceIds: [...binding.identityEvidenceIds, ...(match.evidenceIds || [])],
+        evidenceIds: [...binding.identityEvidenceIds, ...freezeEvidenceIds(match.evidenceIds)],
         functionMatchId: match.id ?? match.functionMatchId ?? null,
       });
     }

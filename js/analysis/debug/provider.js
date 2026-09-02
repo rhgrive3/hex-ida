@@ -229,7 +229,7 @@ export function createDebugPage(input = {}) {
  */
 export function createDebugProviderResult(input = {}) {
   const identity = createDebugIdentity(input.identity ?? {});
-  const status = input.status?.schemaVersion ? input.status : createAnalysisStatus(input.status ?? {});
+  const status = createAnalysisStatus(input.status ?? {});
   return deepFreeze({
     schemaVersion: DEBUG_PROVIDER_SCHEMA_VERSION,
     contractVersion: DEBUG_PROVIDER_CONTRACT_VERSION,

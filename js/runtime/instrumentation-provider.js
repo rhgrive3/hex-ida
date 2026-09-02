@@ -115,7 +115,8 @@ export class InstrumentationProvider {
       }
       if (typeof this.backend.getModules === 'function') {
         const modules = await this.backend.getModules();
-        for (let i = 0; i < (Array.isArray(modules) ? modules.length : 0); i++) {
+        if (!Array.isArray(modules)) throw new DebugAdapterError('runtime-invalid-modules', 'instrumentation backend getModules must return an array');
+        for (let i = 0; i < modules.length; i++) {
           const module = modules[i] || {};
           if ((module.runtimeBase ?? module.base) == null || (module.runtimeSize ?? module.size) == null) continue;
           const bindingKey = moduleKey(module, i);
