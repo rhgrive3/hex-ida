@@ -42,14 +42,18 @@ jobs:
           // Keep the slow, self-contained proof suites as their own jobs instead
           // of serializing them behind unrelated contracts. In particular,
           // invariants:test already owns the complete MachineEffects contract;
-          // adding effects:test here would execute the same 52-test denominator
-          // twice on every PR without adding any proof strength.
+          // adding effects:test here would execute the same denominator twice.
+          // Phase 7 and Phase 9 are also self-contained and each costs roughly
+          // ten seconds on current hosted runners, so running them beside the
+          // core contracts shortens the critical path without changing coverage.
           const isolated = new Map([
             ['npm run invariants:test', 'invariants'],
             ['npm run semantic-v2:test', 'semantic-v2'],
-            ['npm run phase8:test', 'phase8:test'],
-            ['npm test', 'test'],
             ['npm run phase6:test', 'phase6:test'],
+            ['npm run phase7:test', 'phase7:test'],
+            ['npm run phase8:test', 'phase8:test'],
+            ['npm run phase9:test', 'phase9:test'],
+            ['npm test', 'test'],
             ['npm run benchmark:baseline', 'benchmark:baseline'],
           ]);
           const contracts = parts.filter((command) => !isolated.has(command));
@@ -96,7 +100,7 @@ jobs:
     timeout-minutes: 45
     strategy:
       fail-fast: false
-      max-parallel: 8
+      max-parallel: 10
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
       - name: Checkout
