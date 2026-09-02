@@ -173,7 +173,26 @@ console.log('Testing Rust Metadata Provider...');
   assert.equal(provider.symbols().records.length, 0);
 }
 
-// 11. Stripped binary probe
+// 11. Unreadable-only Rust candidates remain partial evidence instead of disappearing.
+{
+  const provider = new RustMetadataProvider({
+    symbols: [{ name: '_RNv', address: '0x1000' }],
+    commentBuffer: null,
+    binaryIdentity: 'sha256:unreadable-only-rust',
+  });
+  const probe = provider.probe();
+  assert.equal(probe.identity.verdict, 'matched-partial');
+  assert.equal(probe.completeness.present, true);
+  assert.equal(probe.completeness.complete, false);
+  assert.equal(probe.completeness.declared, 1);
+  assert.equal(probe.completeness.scanned, 1);
+  assert.equal(probe.completeness.parsed, 0);
+  assert.equal(probe.completeness.unreadableEntries, 1);
+  assert.equal(probe.completeness.invalidEntries, 0);
+  assert.equal(provider.symbols().records.length, 0);
+}
+
+// 12. Stripped binary probe
 {
   const strippedProvider = new RustMetadataProvider({
     symbols: [],
