@@ -8,6 +8,7 @@ import { planAnalysisGoal } from '../js/query/planner.js';
 import { compileGoal } from '../js/goalc.js';
 import { symbolicExecute, expressionText } from '../js/symbolic/executor.js';
 import { findValueUpdates } from '../js/dataflow.js';
+import { buildValues, constOf } from '../js/expr.js';
 
 let rowSeq = 0;
 function I(mn, ops = '', addr = null) {
@@ -115,6 +116,67 @@ await test('function budget is strict and observable', async () => {
   const tools = createAgentTools({ analyze: async (address) => models.get(address.toString()), candidateFunctions:[a,b] }, {maxFunctions:1});
   await tools.get_function(a);
   await assert.rejects(() => tools.get_function(b), /function-budget/);
+});
+
+await test('#3375 NV condition is always true across legacy expression recovery', () => {
+  reset();
+  const csel = modelOf([
+    I('mov','x1, #1'),
+    I('mov','x2, #2'),
+    I('cmp','x1, x1'),
+    I('csel','x0, x1, x2, nv'),
+  ]);
+  assert.equal(constOf(buildValues(csel).defAt(3, 'x0')), 1n, 'CSEL nv must choose the then arm');
+
+  reset();
+  const cset = modelOf([
+    I('mov','x1, #1'),
+    I('cmp','x1, x1'),
+    I('cset','x0, nv'),
+  ]);
+  assert.equal(constOf(buildValues(cset).defAt(2, 'x0')), 1n, 'CSET nv must produce one');
+});
+
+await test('#3376 symbolic SEL uses the positional NZCV carrier, not a CMP-defined data arm', () => {
+  let id = 1;
+  const value = (reg, bits = 64, extra = {}) => ({ id:id++, reg, bits, def:null, uses:[], ...extra });
+  const arg0 = value('x0', 64, { kind:'arg' });
+  const arg1 = value('x1', 64, { kind:'arg' });
+  const arg2 = value('x2', 64, { kind:'arg' });
+  const arg3 = value('x3', 64, { kind:'arg' });
+
+  const dataCmpValue = value('cmp-data', 1);
+  const dataCmp = {
+    id:id++, op:OP.CMP, sub:'sub', row:0, address:0x1000n,
+    args:[{ value:arg0, bits:64 }, { value:arg1, bits:64 }], dst:dataCmpValue,
+  };
+  dataCmpValue.def = dataCmp;
+
+  const carrierValue = value('nzcv', 4);
+  const carrierCmp = {
+    id:id++, op:OP.CMP, sub:'sub', row:1, address:0x1004n,
+    args:[{ value:arg2, bits:64 }, { value:arg3, bits:64 }], dst:carrierValue,
+  };
+  carrierValue.def = carrierCmp;
+
+  const one = value(null, 64, { const:1n });
+  const selected = value('x4', 64);
+  const sel = {
+    id:id++, op:OP.SEL, sub:'sel', cond:'eq', row:2, address:0x1008n,
+    args:[{ value:dataCmpValue, bits:1 }, { value:one, bits:64 }, { value:carrierValue, bits:4 }], dst:selected,
+  };
+  selected.def = sel;
+  const ret = { id:id++, op:OP.RET, row:3, address:0x100cn, args:[{ value:selected, bits:64 }] };
+  const ir = {
+    entry:0,
+    blocks:[{ index:0, phis:[], insts:[dataCmp, carrierCmp, sel, ret], succ:[] }],
+    instructions:[dataCmp, carrierCmp, sel, ret],
+  };
+
+  const result = symbolicExecute(ir, { timeoutMs:1000 });
+  assert.equal(result.paths.length, 1);
+  assert.match(result.paths[0].returnText, /arg2 == arg3/, 'condition must come from args[2] carrier');
+  assert.doesNotMatch(result.paths[0].returnText, /arg0 == arg1/, 'CMP-defined data arm must not become condition carrier');
 });
 
 await test('symbolic executor proves simple branch relations and field updates', () => {
