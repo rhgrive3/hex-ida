@@ -106,10 +106,151 @@ function exactAccessSize(inst) {
   return Number.isSafeInteger(size) && size > 0 ? size : null;
 }
 
+const PURE_AFTER_STORE = new Set([
+  'const', 'mov', 'bin', 'un', 'mac', 'bfx', 'bfi', 'cmp', 'sel', 'load', 'addr', 'phi', 'br', 'cbr',
+]);
+
+function terminalCommittedFieldStore(projected, predecessor, incomingValue) {
+  const block = projected?.blocks?.[predecessor];
+  if (!block || !incomingValue) return null;
+  const insts = [...(block.insts ?? [])]
+    .sort((a, b) => Number(b.row) - Number(a.row) || Number(b.id) - Number(a.id));
+  for (const inst of insts) {
+    if (PURE_AFTER_STORE.has(inst?.op)) continue;
+    if (inst?.op !== 'store') return null;
+    if (inst.loc?.kind !== 'field' || typeof inst.loc?.key !== 'string' || !inst.loc.key) return null;
+    if (inst.args?.[0]?.shift != null || inst.args?.[0]?.value?.id !== incomingValue.id) return null;
+    return inst;
+  }
+  return null;
+}
+
+function exactFieldIdentity(store) {
+  const loc = store?.loc;
+  const size = exactAccessSize(store);
+  if (loc?.kind !== 'field' || typeof loc.key !== 'string' || !loc.key || !loc.base || size == null) return null;
+  return { key:loc.key, base:loc.base, disp:String(loc.disp ?? store?.addr?.disp ?? ''), size };
+}
+
+function sameFieldIdentity(left, right) {
+  return !!left && !!right && left.key === right.key && left.base === right.base
+    && left.disp === right.disp && left.size === right.size;
+}
+
+function nextNumericId(items) {
+  let max = -1;
+  for (const item of items ?? []) {
+    const id = Number(item?.id);
+    if (Number.isSafeInteger(id) && id > max) max = id;
+  }
+  return max + 1;
+}
+
+/*
+ * Legacy-v1 has no first-class way to say that a scalar PHI is also the exact
+ * current value of one memory field.  That matters for a common clang pattern:
+ * each branch commits its scalar result to the same field, the merge PHI is
+ * spilled to a private stack slot, and the slot is reloaded after an opaque
+ * call for the function return.
+ *
+ * Preserve the PHI itself as SSA truth.  Only rewrite the private stack STORE's
+ * operand to a synthetic field-load *view* when every predecessor proves that
+ * its exact incoming scalar is the terminal committed value of the exact same
+ * field, at the exact same width.  The synthetic view is deliberately not
+ * inserted into the physical instruction list; it exists only so legacy
+ * consumers can render the already-proven memory identity instead of inventing
+ * a local_phi temporary.  Any missing predecessor, different field/base/width,
+ * intervening call/unknown/store, or non-exact operand fails closed.
+ */
+function materializeExactPhiFieldSpills(projected) {
+  let nextValueId = nextNumericId(projected?.values);
+  let nextInstructionId = nextNumericId(projected?.instructions);
+  let nextVid = Math.max(0, ...(projected?.values ?? []).map((value) =>
+    Number.isSafeInteger(Number(value?.vid)) ? Number(value.vid) : 0)) + 1;
+
+  for (const stackStore of projected?.instructions ?? []) {
+    if (stackStore?.op !== 'store' || stackStore.loc?.kind !== 'stack') continue;
+    const stackSize = exactAccessSize(stackStore);
+    const operand = stackStore.args?.[0] ?? null;
+    const spilled = operand?.value ?? null;
+    const phi = spilled?.def;
+    if (stackSize == null || operand?.shift != null || phi?.op !== 'phi'
+        || phi.block !== stackStore.block || !Array.isArray(phi.incoming)) continue;
+
+    const merge = projected.blocks?.[stackStore.block];
+    const predecessors = [...(merge?.pred ?? [])];
+    if (predecessors.length < 2 || phi.incoming.length !== predecessors.length) continue;
+    const incomingByPred = new Map();
+    let malformed = false;
+    for (const incoming of phi.incoming) {
+      if (!Number.isInteger(incoming?.from) || !incoming?.value || incomingByPred.has(incoming.from)) {
+        malformed = true;
+        break;
+      }
+      incomingByPred.set(incoming.from, incoming.value);
+    }
+    if (malformed || predecessors.some((pred) => !incomingByPred.has(pred))) continue;
+
+    const fieldStores = [];
+    let identity = null;
+    for (const pred of predecessors) {
+      const store = terminalCommittedFieldStore(projected, pred, incomingByPred.get(pred));
+      const candidate = exactFieldIdentity(store);
+      if (!store || !candidate || (identity && !sameFieldIdentity(identity, candidate))) {
+        identity = null;
+        fieldStores.length = 0;
+        break;
+      }
+      identity ??= candidate;
+      fieldStores.push(store);
+    }
+    if (!identity || fieldStores.length !== predecessors.length || identity.size !== stackSize) continue;
+
+    const bits = Number(spilled.bits ?? stackSize * 8);
+    if (!Number.isSafeInteger(bits) || bits !== stackSize * 8) continue;
+    const fieldLoc = fieldStores[0].loc;
+    const templateAddr = fieldStores[0].addr ?? {};
+    const syntheticDef = {
+      id:nextInstructionId++,
+      op:'load', sub:'compat-phi-field-view', block:stackStore.block, row:stackStore.row,
+      address:stackStore.address ?? null, text:stackStore.text ?? null, args:[], dst:null,
+      loc:fieldLoc, size:identity.size,
+      addr:{ ...templateAddr, base:fieldLoc.base, disp:fieldLoc.disp ?? templateAddr.disp, size:identity.size },
+      extra:{
+        compatSyntheticView:true,
+        compatPhiFieldIdentity:identity.key,
+        compatPhiFieldEvidence:fieldStores.map((store) => store.id),
+      },
+    };
+    const syntheticValue = {
+      id:nextValueId++, vid:nextVid++, kind:'def', reg:null, stateKey:null, version:0,
+      bits, def:syntheticDef, uses:[stackStore], const:null, range:spilled.range ?? null,
+      signed:spilled.signed ?? null, nullable:spilled.nullable ?? null, type:spilled.type ?? null,
+      label:`compat_${identity.key}`, semanticValueId:null, semanticSsaValueId:null,
+      sourceSemanticValueId:null, sourceEntityId:null, machineType:spilled.machineType ?? null,
+      origin:phi.origin ?? stackStore.origin ?? null,
+    };
+    syntheticDef.dst = syntheticValue;
+
+    if (Array.isArray(spilled.uses)) spilled.uses = spilled.uses.filter((use) => use !== stackStore);
+    stackStore.args[0] = { ...operand, value:syntheticValue, bits };
+    stackStore.extra = {
+      ...(stackStore.extra ?? {}),
+      compatPhiFieldSpill:true,
+      compatPhiFieldIdentity:identity.key,
+      compatPhiFieldEvidence:fieldStores.map((store) => store.id),
+    };
+    projected.values.push(syntheticValue);
+  }
+  return projected;
+}
+
 export function restoreLegacyPrivateStackForwarding(projected, stackPointerProvenanceOf) {
   if (!projected) return projected;
   canonicalizeLegacyRootedFieldBases(projected);
   if (stackAddressEscapesFunction(projected, stackPointerProvenanceOf)) return projected;
+
+  materializeExactPhiFieldSpills(projected);
 
   const repairedCalls = new Set();
   for (const inst of projected.instructions ?? []) {

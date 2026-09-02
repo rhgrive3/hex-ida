@@ -176,4 +176,74 @@ function callAt(ir, row) { return ir.instructions.find((i) => i.op === OP.CALL &
   assert.equal(load.memUse, clobber, 'ambiguous store must preserve the conservative clobber');
 }
 
+function phiFieldSpillFixture(secondFieldKey = 'field:self+32') {
+  const root = { id:930, vid:1, kind:'arg', reg:'x0', semanticValueId:'self', def:null, uses:[], bits:64 };
+  const left = { id:931, vid:2, kind:'def', reg:'w8', def:null, uses:[], bits:32 };
+  const right = { id:932, vid:3, kind:'def', reg:'w8', def:null, uses:[], bits:32 };
+  const phi = { id:933, vid:4, kind:'phi', reg:'w8', def:null, uses:[], bits:32 };
+  const phiDef = {
+    id:934, op:OP.PHI, block:2, row:4, args:[], dst:phi,
+    incoming:[{ from:0, value:left }, { from:1, value:right }],
+  };
+  phi.def = phiDef;
+
+  const fieldA = { key:'field:self+32', kind:'field', baseEntityId:'self', base:root, disp:32n, size:4 };
+  const fieldB = { key:secondFieldKey, kind:'field', baseEntityId:'self', base:root,
+    disp:secondFieldKey === fieldA.key ? 32n : 36n, size:4 };
+  const stackLoc = { key:'stack:-20', kind:'stack', disp:-20n, size:4 };
+  const storeA = { id:935, op:'store', row:0, block:0, loc:fieldA,
+    addr:{ base:root, baseReg:'x0', disp:32n, size:4 }, args:[{ value:left, bits:32 }] };
+  const branchA = { id:936, op:'cbr', row:1, block:0, args:[] };
+  const storeB = { id:937, op:'store', row:2, block:1, loc:fieldB,
+    addr:{ base:root, baseReg:'x0', disp:fieldB.disp, size:4 }, args:[{ value:right, bits:32 }] };
+  const branchB = { id:938, op:'br', row:3, block:1, args:[] };
+  const memDef = { kind:'store', definitionId:'stack-phi-spill' };
+  const stackStore = { id:939, op:'store', row:4, block:2, loc:stackLoc,
+    addr:{ disp:-20n, size:4 }, args:[{ value:phi, bits:32 }], memDef };
+  const call = { id:940, op:'call', row:5, block:2, args:[], memKills:[stackLoc] };
+  const clobber = { kind:'clobber', inst:call };
+  const load = { id:941, op:'load', row:6, block:2, loc:stackLoc,
+    addr:{ disp:-20n, size:4 }, args:[], memUse:clobber, dst:null };
+  left.uses.push(storeA, phiDef);
+  right.uses.push(storeB, phiDef);
+  phi.uses.push(stackStore);
+
+  return {
+    root, phi, stackStore, load,
+    projected:{
+      values:[root, left, right, phi],
+      locations:new Map([[stackLoc.key, stackLoc]]),
+      instructions:[storeA, branchA, storeB, branchB, stackStore, call, load],
+      blocks:[
+        { index:0, pred:[], succ:[2], insts:[storeA, branchA] },
+        { index:1, pred:[], succ:[2], insts:[storeB, branchB] },
+        { index:2, pred:[0,1], succ:[], phis:[phiDef], insts:[stackStore, call, load] },
+      ],
+    },
+  };
+}
+
+// A CFG-merged scalar that every predecessor has already committed to the same
+// exact field may use that field identity for a private legacy return spill.
+{
+  const { root, phi, stackStore, load, projected } = phiFieldSpillFixture();
+  restoreLegacyPrivateStackForwarding(projected, stackPointerProvenanceOf);
+  const compatible = stackStore.args[0]?.value;
+  assert.notEqual(compatible?.id, phi.id, 'raw scalar PHI must not leak through the private spill');
+  assert.equal(compatible?.def?.op, OP.LOAD);
+  assert.equal(compatible?.def?.loc?.kind, 'field');
+  assert.equal(compatible?.def?.loc?.key, 'field:self+32');
+  assert.equal(compatible?.def?.loc?.base, root, 'field view must stay attached to the canonical root');
+  assert.equal(compatible?.bits, 32);
+  assert.equal(load.reachingStore, stackStore, 'post-call stack load keeps the exact private spill');
+}
+
+// Different predecessor fields are not one memory identity, even when their
+// scalar values feed the same PHI. The compatibility layer must fail closed.
+{
+  const { phi, stackStore, projected } = phiFieldSpillFixture('field:self+36');
+  restoreLegacyPrivateStackForwarding(projected, stackPointerProvenanceOf);
+  assert.equal(stackStore.args[0]?.value, phi, 'different committed fields must preserve the raw PHI spill');
+}
+
 console.log('issue #430 stack escape regressions passed');
