@@ -165,7 +165,8 @@ function hierarchy(index, receiverType, budget = 64) {
 }
 
 function protocolSet(index, chain, explicit) {
-  const out = new Set((explicit || []).map((p) => cleanClassName(p.name || p)).filter(Boolean));
+  const explicitProtocols = Array.isArray(explicit) ? explicit : [];
+  const out = new Set(explicitProtocols.map((p) => cleanClassName(p?.name || p)).filter(Boolean));
   for (const name of chain) {
     const c = index.classes.get(name);
     for (const p of (c && c.protocols) || []) {
@@ -277,28 +278,30 @@ export function resolveObjcDispatch(index, { receiverType = null, selector, clas
 }
 
 export function formatObjcMessage({ receiver = 'receiver', selector, args = [], style = 'objc' } = {}) {
-  if (typeof selector !== 'string' || !selector) return `unknown_call(${[receiver, ...args].join(', ')})`;
+  const safeArgs = Array.isArray(args) ? args : [];
+  if (typeof selector !== 'string' || !selector) return `unknown_call(${[receiver, ...safeArgs].join(', ')})`;
   if (style === 'dot') {
     const stem = selector.replace(/:/g, '_').replace(/_+$/, '');
-    return `${receiver}.${stem}(${args.join(', ')})`;
+    return `${receiver}.${stem}(${safeArgs.join(', ')})`;
   }
   const parts = String(selector).split(':');
   if (parts.length <= 1 || !selector.includes(':')) return `[${receiver} ${selector}]`;
   let body = '';
   for (let i = 0; i < parts.length - 1; i++) {
     if (i) body += ' ';
-    body += `${parts[i]}:${args[i] != null ? args[i] : `a${i + 1}`}`;
+    body += `${parts[i]}:${safeArgs[i] != null ? safeArgs[i] : `a${i + 1}`}`;
   }
   return `[${receiver} ${body}]`;
 }
 
 /** Convert objc_msgSend evidence into a semantic representation. */
 export function objcMessage(index, { receiver, receiverType, selector, args = [], classMethod = false, protocols = null, style = 'objc' } = {}) {
+  const safeArgs = Array.isArray(args) ? args : [];
   const dispatch = resolveObjcDispatch(index, { receiverType, selector, classMethod, protocols });
   return {
     runtime: 'objc', kind: 'message', receiver, receiverType: cleanClassName(receiverType), selector,
-    args: args.slice(), dispatch,
-    text: formatObjcMessage({ receiver: receiver || 'receiver', selector, args, style }),
+    args: safeArgs.slice(), dispatch,
+    text: formatObjcMessage({ receiver: receiver || 'receiver', selector, args: safeArgs, style }),
     ambiguous: !dispatch.resolved && dispatch.candidates.length > 1,
   };
 }
