@@ -19,6 +19,12 @@ function normalizeArchitectureAddress(value) {
   try { return BigInt(text); } catch { return null; }
 }
 
+function normalizeAdapterHook(value, name, fallback = null) {
+  if (value == null) return fallback;
+  if (typeof value !== 'function') throw new TypeError(`${name} must be a function`);
+  return value;
+}
+
 export class ArchitectureAdapter {
   constructor(definition) {
     const id = canonicalArchitectureId(definition?.id);
@@ -27,12 +33,12 @@ export class ArchitectureAdapter {
     this.instructionAlignment = normalizeArchitecturePositiveInteger(definition.instructionAlignment ?? 1, 'instructionAlignment');
     this.fixedInstructionSize = normalizeArchitecturePositiveInteger(definition.fixedInstructionSize, 'fixedInstructionSize', { nullable: true });
     this.viewerCompatible = !!definition.viewerCompatible;
-    this.decode = definition.decode || null;
-    this.assemble = definition.assemble || null;
-    this.controlFlow = definition.controlFlow || (() => null);
-    this.callKind = definition.callKind || (() => null);
-    this.returnKind = definition.returnKind || (() => null);
-    this.rowForAddress = definition.rowForAddress || ((region, address) => {
+    this.decode = normalizeAdapterHook(definition.decode, 'decode');
+    this.assemble = normalizeAdapterHook(definition.assemble, 'assemble');
+    this.controlFlow = normalizeAdapterHook(definition.controlFlow, 'controlFlow', () => null);
+    this.callKind = normalizeAdapterHook(definition.callKind, 'callKind', () => null);
+    this.returnKind = normalizeAdapterHook(definition.returnKind, 'returnKind', () => null);
+    this.rowForAddress = normalizeAdapterHook(definition.rowForAddress, 'rowForAddress', (region, address) => {
       if (this.fixedInstructionSize == null || !region) return null;
       const normalizedAddress = normalizeArchitectureAddress(address);
       if (normalizedAddress == null) return null;
@@ -44,7 +50,7 @@ export class ArchitectureAdapter {
       if (row > MAX_SAFE_ROW) return null;
       return Number(row);
     });
-    this.addressForRow = definition.addressForRow || ((region, row) => {
+    this.addressForRow = normalizeAdapterHook(definition.addressForRow, 'addressForRow', (region, row) => {
       if (this.fixedInstructionSize == null || !region) return null;
       const n = row;
       if (!Number.isSafeInteger(n) || n < 0) return null;
@@ -52,7 +58,7 @@ export class ArchitectureAdapter {
       const address = BigInt(region.vmAddr) + BigInt(n) * size;
       return address + size <= BigInt(region.vmAddr) + BigInt(region.size) ? address : null;
     });
-    this.validateInstructionPlacement = definition.validateInstructionPlacement || ((region, address, length) => {
+    this.validateInstructionPlacement = normalizeAdapterHook(definition.validateInstructionPlacement, 'validateInstructionPlacement', (region, address, length) => {
       if (this.fixedInstructionSize == null) return unsupportedArchitectureResult('assemble', this.id);
       if (!region) return { ok:false, code:'patch-range', error:'アドレスがコードのセクション範囲外です。' };
       const normalizedAddress = normalizeArchitectureAddress(address);
