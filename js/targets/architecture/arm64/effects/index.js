@@ -41,13 +41,32 @@ const ARM64_SHIFT_MNEMONICS = Object.freeze(new Set(['lsl','lslv','lsr','lsrv','
 const ARM64_VARIABLE_SHIFT_MNEMONICS = Object.freeze(new Set(['lslv','lsrv','asrv','rorv']));
 const ARM64_BITFIELD_MNEMONICS = Object.freeze(new Set(['ubfm','sbfm','bfm','ubfx','sbfx','ubfiz','sbfiz','bfxil','bfi','bfc']));
 
+function structuredOperandTypeFailure(instruction) {
+  const ops = Array.isArray(instruction?.ops)
+    ? instruction.ops
+    : Array.isArray(instruction?.operands) ? instruction.operands : [];
+  for (const operand of ops) {
+    if (!operand || typeof operand !== 'object' || Array.isArray(operand)) continue;
+    if (operand.text != null && typeof operand.text !== 'string') return 'arm64-structured-operand-text-invalid';
+    if (operand.shift != null) {
+      if (!operand.shift || typeof operand.shift !== 'object' || Array.isArray(operand.shift)) return 'arm64-structured-shift-invalid';
+      if (operand.shift.op != null && typeof operand.shift.op !== 'string') return 'arm64-structured-shift-op-invalid';
+      if (operand.shift.amount != null
+        && (typeof operand.shift.amount !== 'number' || !Number.isFinite(operand.shift.amount) || !Number.isInteger(operand.shift.amount))) {
+        return 'arm64-structured-shift-amount-invalid';
+      }
+    }
+  }
+  return null;
+}
+
 function validImm12WithOptionalLsl12(op) {
   if (op?.k !== 'imm') return true;
   if (op.extend != null) return false;
   const immediate = immediateOf(op);
   if (immediate == null || immediate < 0n || immediate > 0xfffn) return false;
   if (op.shift == null) return true;
-  return String(op.shift.op || '').toLowerCase() === 'lsl' && Number(op.shift.amount) === 12;
+  return (op.shift.op || '').toLowerCase() === 'lsl' && op.shift.amount === 12;
 }
 
 function rotateRightElement(value, amount, widthBits) {
@@ -138,8 +157,8 @@ function isGpSourceOfWidth(operand, widthBits) {
 function isLogicalShiftedGpSource(operand, widthBits) {
   if (!isGpOrZrRegister(operand) || structuredRegisterWidth(operand) !== widthBits || operand.extend != null) return false;
   if (operand.shift == null) return true;
-  const kind = String(operand.shift.op || '').toLowerCase();
-  const amount = Number(operand.shift.amount ?? 0);
+  const kind = (operand.shift.op || '').toLowerCase();
+  const amount = operand.shift.amount ?? 0;
   return ['lsl','lsr','asr','ror'].includes(kind) && Number.isInteger(amount) && amount >= 0 && amount < widthBits;
 }
 
@@ -164,7 +183,7 @@ function addSubImmediateEncodingFailure(instruction) {
     return `arm64-${mnemonic}-register-modifier-unencodable`;
   }
   if (lhs?.k === 'imm') return `arm64-${mnemonic}-lhs-immediate-unencodable`;
-  if (rhs?.k === 'reg' && String(rhs.shift?.op || '').toLowerCase() === 'ror') return `arm64-${mnemonic}-ror-shift-unencodable`;
+  if (rhs?.k === 'reg' && (rhs.shift?.op || '').toLowerCase() === 'ror') return `arm64-${mnemonic}-ror-shift-unencodable`;
   if (rhs?.k !== 'imm') return null;
   if (!validImm12WithOptionalLsl12(rhs)) {
     const immediate = immediateOf(rhs);
@@ -404,7 +423,8 @@ function addressImmediateEncodingFailure(instruction) {
 }
 
 function structuredEncodingFailure(instruction) {
-  return addressImmediateEncodingFailure(instruction)
+  return structuredOperandTypeFailure(instruction)
+    || addressImmediateEncodingFailure(instruction)
     || addSubImmediateEncodingFailure(instruction)
     || flagEncodingFailure(instruction)
     || logicalEncodingFailure(instruction)
