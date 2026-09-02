@@ -55,8 +55,10 @@ function arrayOfStrings(value, name) {
 }
 
 function normalizeCompleteness(value, fallback = 'partial') {
-  const completeness = String(value ?? fallback);
-  if (!EVIDENCE_COMPLETENESS.includes(completeness)) throw new DebugAdapterError('runtime-invalid-completeness', `invalid runtime completeness: ${completeness}`);
+  const completeness = value == null ? fallback : value;
+  if (typeof completeness !== 'string' || !EVIDENCE_COMPLETENESS.includes(completeness)) {
+    throw new DebugAdapterError('runtime-invalid-completeness', `invalid runtime completeness: ${String(completeness)}`);
+  }
   return completeness;
 }
 
@@ -67,8 +69,10 @@ function normalizeKind(value) {
 }
 
 function normalizeMode(value) {
-  const mode = String(value ?? 'observed');
-  if (!RUNTIME_OBSERVATION_MODES.includes(mode)) throw new DebugAdapterError('runtime-invalid-observation-mode', `invalid runtime observation mode: ${mode}`);
+  const mode = value == null ? 'observed' : value;
+  if (typeof mode !== 'string' || !RUNTIME_OBSERVATION_MODES.includes(mode)) {
+    throw new DebugAdapterError('runtime-invalid-observation-mode', `invalid runtime observation mode: ${String(mode)}`);
+  }
   return mode;
 }
 
