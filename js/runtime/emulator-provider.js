@@ -48,6 +48,11 @@ function engineText(value, fallback, code) {
   return resolved;
 }
 
+function deterministicCapability(engine, source, options) {
+  const value = options.deterministic ?? source.deterministic ?? engine?.deterministic;
+  return value == null ? true : value === true;
+}
+
 function normalizeEngineDescriptor(engine, options) {
   const source = typeof engine?.descriptor === 'function' ? engine.descriptor() : {};
   return deepFreeze({
@@ -55,7 +60,7 @@ function normalizeEngineDescriptor(engine, options) {
     version: engineText(options.engineVersion ?? source.version ?? engine?.version, 'unknown', 'emulator-engine-version-invalid'),
     architecture: options.architecture ?? source.architecture ?? null,
     environment: options.environment ?? source.environment ?? 'unknown',
-    deterministic: options.deterministic ?? source.deterministic ?? engine?.deterministic !== false,
+    deterministic: deterministicCapability(engine, source, options),
   });
 }
 
@@ -106,7 +111,10 @@ export class EmulatorProvider {
       if (runOptions.signal) {
         externalAbort = () => controller.abort(runOptions.signal.reason ?? 'cancelled');
         if (runOptions.signal.aborted) externalAbort();
-        else runOptions.signal.addEventListener('abort', externalAbort, { once: true });
+        else {
+          runOptions.signal.addEventListener('abort', externalAbort, { once: true });
+          if (runOptions.signal.aborted) externalAbort();
+        }
       }
       let timer = null;
       if (!controller.signal.aborted) timer = setTimeout(() => controller.abort('timeout'), timeoutMs);
@@ -184,7 +192,7 @@ export class EmulatorProvider {
       engine: this.engineDescriptor,
       run,
       replay: async (recording = null, replayOptions = {}) => {
-        if (!this.engineDescriptor.deterministic) throw new DebugAdapterError('unsupported', 'emulator engine does not advertise deterministic replay');
+        if (this.engineDescriptor.deterministic !== true) throw new DebugAdapterError('unsupported', 'emulator engine does not advertise deterministic replay');
         const source = recording ?? lastRun;
         if (!source) throw new DebugAdapterError('emulator-replay-missing', 'no emulator recording is available to replay');
         return run(source.input, { ...source.options, ...replayOptions });
