@@ -250,9 +250,9 @@ export function createLanguageMetadataResult(input = {}) {
   });
   const defaultCompleteness = input.completeness?.complete === true ? 'complete' : 'partial';
   const defaultStopReason = defaultCompleteness === 'complete' ? null : (input.completeness?.capped ? 'budget-exhausted' : 'evidence-missing');
-  const status = input.status?.schemaVersion
-    ? input.status
-    : createAnalysisStatus(input.status ?? {
+  const status = input.status != null
+    ? createAnalysisStatus(input.status)
+    : createAnalysisStatus({
       snapshotId: input.snapshotId ?? 'metadata-unbound',
       analyzerId: identity.providerId,
       analyzerVersion: identity.providerVersion,
@@ -307,7 +307,6 @@ export class LanguageMetadataProvider {
   authoritativeRecords(result, reader, scope, options = {}) {
     if (!result.authoritative) return createLanguageMetadataPage({ records: [], truncated: false });
     const page = reader.call(this, scope, options);
-    if (result.identity?.verdict !== 'matched-partial') return page;
     return createLanguageMetadataPage({
       records: (page.records ?? []).filter((record) => isLanguageRecordAuthoritative(result, record)),
       nextCursor: page.nextCursor,
