@@ -373,7 +373,14 @@ export function enhanceSemanticDecompilation(result, model, opts = {}) {
     core = constrainSemanticValueWidths(enhanceCore(result, model, { ...opts, phase8Optimize:false }));
   } finally { restore(); }
   const reanchored = reanchorExactStackReturn(core, opts);
-  const legacySpillsRecovered = recoverLegacySameBlockStackSpills(reanchored, opts);
+  // Legacy-v1 can carry a return-slot LOAD whose same-block spill forwarding
+  // would otherwise replace the return root before the stricter return proof
+  // gets a chance to reconstruct it. Run the existing proof-only return pass
+  // first on legacy input; canonical v2 keeps its established ordering.
+  const legacyReturnRecovered = reanchored?.ir?.compat?.projection === 'semantic-ir-v2-to-v1'
+    ? reanchored
+    : recoverExactStackReturn(reanchored, opts);
+  const legacySpillsRecovered = recoverLegacySameBlockStackSpills(legacyReturnRecovered, opts);
   const stackPhiRecovered = recoverExactStackPhiExpressions(legacySpillsRecovered, opts);
   const recovered = recoverExactStackReturn(reanchorExactStackReturn(stackPhiRecovered, opts), opts);
   return fullPhase8Projection(reanchorRecoveredReturnSource(recovered, opts), model, opts);
