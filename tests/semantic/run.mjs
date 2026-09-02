@@ -2,7 +2,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { runBoundedNodeSuite } from '../support/bounded-node-suite.mjs';
-import { SEMANTIC_ASSERTION_FILES } from '../support/semantic-corpus-manifest.mjs';
+import {
+  phase3SchedulingPriority,
+  SEMANTIC_ASSERTION_FILES,
+} from '../support/semantic-corpus-manifest.mjs';
 
 const DIRECTORY = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(DIRECTORY, '../..');
@@ -21,8 +24,11 @@ export async function runSemanticTests({ env = process.env } = {}) {
     cwd: ROOT,
     env,
     envName: 'HEX_SEMANTIC_TEST_CONCURRENCY',
-    maxDefault: 4,
+    // Direct local semantic:test has no nested suite fanout. Use up to six
+    // available cores; nested Phase 3 callers explicitly cap this to two.
+    maxDefault: 6,
     reserveCores: 0,
+    priorityForFile: phase3SchedulingPriority,
   });
 }
 

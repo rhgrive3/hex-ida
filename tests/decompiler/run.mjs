@@ -2,7 +2,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { runBoundedNodeSuite } from '../support/bounded-node-suite.mjs';
-import { DECOMPILER_ASSERTION_FILES } from '../support/semantic-corpus-manifest.mjs';
+import {
+  DECOMPILER_ASSERTION_FILES,
+  phase3SchedulingPriority,
+} from '../support/semantic-corpus-manifest.mjs';
 
 const DIRECTORY = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(DIRECTORY, '../..');
@@ -14,8 +17,12 @@ export async function runDecompilerTests({ env = process.env } = {}) {
     cwd: ROOT,
     env,
     envName: 'HEX_DECOMPILER_TEST_CONCURRENCY',
-    maxDefault: 4,
+    // Direct local decompiler:test has no parent pool. Six-way file fanout keeps
+    // compiler-truth on the critical path while overlapping the shorter leaves;
+    // nested Phase 3 callers explicitly cap this runner to two.
+    maxDefault: 6,
     reserveCores: 0,
+    priorityForFile: phase3SchedulingPriority,
   });
 }
 
