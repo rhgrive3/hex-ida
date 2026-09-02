@@ -212,23 +212,29 @@ export function assertRequiredString(value, label) {
   return value.trim();
 }
 
+function normalizedProtocolSelector(value, code) {
+  if (typeof value !== 'string') throw new TypeError(code);
+  const text = value.trim().toLowerCase();
+  if (!text) throw new TypeError(code);
+  return text;
+}
+
 export function analyzeSemanticFunction(input = {}, options = {}) {
   abortIfRequested(options.signal);
-  const architectureId = String(input.architecture || '').toLowerCase();
-  if (!architectureId) throw new TypeError('semantic-function-architecture-required');
+  const architectureId = normalizedProtocolSelector(input.architecture, 'semantic-function-architecture-required');
   const architecturePlugin = architecturePluginV2(architectureId);
   if (!architecturePlugin || architecturePlugin.id !== architectureId) throw new TypeError('semantic-function-architecture-not-registered');
   if (typeof architecturePlugin.liftExact !== 'function') throw new TypeError('semantic-function-architecture-lifter-required');
   const requestedInstructionEndianness = input.instructionEndianness ?? input.endianness ?? input.endian;
   if (requestedInstructionEndianness != null) {
-    const endian = String(requestedInstructionEndianness).trim().toLowerCase();
+    const endian = normalizedProtocolSelector(requestedInstructionEndianness, 'semantic-function-invalid-instruction-endianness');
     const supported = architecturePlugin.supportedInstructionEndianness ?? [];
     if (supported.length && !supported.includes(endian))
       throw new TypeError(`semantic-function-unsupported-instruction-endianness:${endian}`);
   }
   const requestedMemoryEndianness = input.dataEndianness ?? input.memoryEndianness ?? input.endian ?? null;
   if (requestedMemoryEndianness != null) {
-    const endian = String(requestedMemoryEndianness).trim().toLowerCase();
+    const endian = normalizedProtocolSelector(requestedMemoryEndianness, 'semantic-function-invalid-memory-endianness');
     const supported = architecturePlugin.supportedMemoryEndianness ?? [];
     if (supported.length && !supported.includes(endian)) throw new TypeError(`semantic-function-unsupported-memory-endianness:${endian}`);
   }
