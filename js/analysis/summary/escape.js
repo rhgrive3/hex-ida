@@ -58,8 +58,8 @@ const LOCALLY_CREATED = new Set(['local-frame', 'local-allocation']);
 function fail(code) { throw new TypeError(code); }
 
 export function createEscapeRecord(input = {}) {
-  const reason = String(input.reason ?? '');
-  const boundary = String(input.boundary ?? '');
+  const reason = typeof input.reason === 'string' ? input.reason : '';
+  const boundary = typeof input.boundary === 'string' ? input.boundary : '';
   if (!REASON_SET.has(reason)) fail('escape-invalid-reason');
   if (!BOUNDARY_SET.has(boundary)) fail('escape-invalid-boundary');
   return deepFreeze({
