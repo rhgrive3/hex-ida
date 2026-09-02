@@ -40,7 +40,11 @@ export class Store {
     }
     if (changed) for (const fn of this.listeners) fn(this.state, patch);
   }
-  subscribe(fn) { this.listeners.add(fn); return () => this.listeners.delete(fn); }
+  subscribe(fn) {
+    if (typeof fn !== 'function') throw new TypeError('state-listener-invalid');
+    this.listeners.add(fn);
+    return () => this.listeners.delete(fn);
+  }
   reset() { this.set(defaultState()); }
 }
 
