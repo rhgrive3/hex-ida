@@ -106,6 +106,21 @@ function dependencySource(value, ctx, seen = new Set(), depth = 0) {
   return mergeSource(...parts);
 }
 
+/**
+ * HEX-C4-03: a residual goto is a control-flow claim about the block it jumps
+ * into, so its provenance is the block's canonical instruction evidence. Blocks
+ * with a real terminator use it; otherwise the block's own instruction evidence
+ * (row/address/ir id of its last concrete instruction) is the honest bound.
+ */
+function jumpTargetSource(bi, ctx) {
+  const block = ctx?.ir?.blocks?.[bi];
+  if (!block) return sourceOf();
+  const term = blockTerm(block);
+  if (term) return controlSource(term, ctx);
+  const insts = block.insts || [];
+  return sourceForInst(insts[insts.length - 1] ?? null, 'residual jump target');
+}
+
 function controlSource(inst, ctx = null) {
   if (!inst) return sourceOf();
   const flags = valueOf(inst.args?.[inst.args.length - 1]);
@@ -810,7 +825,13 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null) {
   while (bi != null && bi !== stop && guard++ < MAX_BLOCKS) {
     if (allowed && !allowed.has(bi)) return;
     if (state.activeLoop && bi === state.loopHeader) return;
-    if (state.visited.has(bi)) { out.push(line('stmt', indent, `goto loc_${hex(ctx.blockAddress(bi))};`)); state.gotos++; return; }
+    if (state.visited.has(bi)) {
+      // HEX-C4-03: a residual goto is a control-flow claim, so it must carry
+      // the canonical origin of the block it jumps into. Emitting it
+      // sourceless made the claim unauditable from the rendered line.
+      out.push(line('stmt', indent, `goto loc_${hex(ctx.blockAddress(bi))};`, null, null, { source: jumpTargetSource(bi, ctx) }));
+      state.gotos++; return;
+    }
     state.visited.add(bi);
     const block = ctx.ir.blocks[bi];
     if (!block) return;
@@ -844,8 +865,12 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null) {
       if (sw) {
         const expr = sw.expr || renderValue(reachingRegisterValue(ctx.ir, term2, sw.reg || 'x0'), ctx);
         out.push(line('ctrl', indent, `switch (${expr}) {`, term2.row, term2.address, { source: controlSource(term2, ctx) }));
-        for (const c of sw.cases || []) out.push(line('ctrl', indent + 1, `case ${c.value}: goto loc_${hex(ctx.blockAddress(c.block))};`));
-        if (sw.defaultBlock != null) out.push(line('ctrl', indent + 1, `default: goto loc_${hex(ctx.blockAddress(sw.defaultBlock))};`));
+        for (const c of sw.cases || []) {
+          out.push(line('ctrl', indent + 1, `case ${c.value}: goto loc_${hex(ctx.blockAddress(c.block))};`, null, null, { source: jumpTargetSource(c.block, ctx) }));
+        }
+        if (sw.defaultBlock != null) {
+          out.push(line('ctrl', indent + 1, `default: goto loc_${hex(ctx.blockAddress(sw.defaultBlock))};`, null, null, { source: jumpTargetSource(sw.defaultBlock, ctx) }));
+        }
         out.push(line('ctrl', indent, '}')); state.gotos += (sw.cases || []).length + (sw.defaultBlock != null ? 1 : 0); return;
       }
       const { yes, no } = branchSucc(ctx.ir, block, term2, ctx);

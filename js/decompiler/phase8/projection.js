@@ -1,5 +1,7 @@
 import { expr, mapChildren, mergeSource, sourceOf } from '../ast/nodes.js';
 import { expressionReadability, printExpression, printProgram } from '../pretty/c.js';
+import { canonicalAnalysisIdentity } from './analysis-identity.js';
+import { buildRenderProvenance } from './render-provenance.js';
 
 function integer(value) {
   const number = Number(value);
@@ -15,6 +17,7 @@ function recordViewCollapse(records, { proof, outerBits, innerBits, sourceBits, 
   records.push(Object.freeze({
     kind,
     proof,
+    targets:Object.freeze(collectTargets(source, proof)),
     outerBits,
     innerBits,
     sourceBits,
@@ -26,6 +29,21 @@ function recordViewCollapse(records, { proof, outerBits, innerBits, sourceBits, 
       ssaUses:Object.freeze([...(source.ssaUses || [])]),
     }),
   }));
+}
+
+/**
+ * HEX-C4-03: every rewrite must say which canonical entities it rewrote. The
+ * merged source of a collapse carries the union of consumed rows/ir/ssa refs,
+ * so the target set is derived from the same evidence the proof consumed —
+ * never from rendered text.
+ */
+function collectTargets(source, proof) {
+  const targets = [];
+  for (const ref of source.ir || []) targets.push(`ir:${ref}`);
+  for (const def of source.ssaDefs || []) targets.push(`ssa:def:${def}`);
+  for (const row of source.rows || []) targets.push(`row:${row}`);
+  if (targets.length === 0) targets.push(`proof:${proof}`);
+  return targets;
 }
 
 function collapseExactNestedTruncation(node, records) {
@@ -175,6 +193,7 @@ function transformExpression(root, names, records, memo = new Map()) {
       valueId,
       name,
       proof:'upstream natural-loop induction fact has a proved fixed step',
+      targets:Object.freeze(collectTargets(source, 'induction-variable')),
       origin:Object.freeze({
         addresses:Object.freeze([...(source.addresses || [])]),
         rows:Object.freeze([...(source.rows || [])]),
@@ -271,16 +290,32 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
   }
 
   const printed = printProgram(result.cAst, { columnWidth:opts.columnWidth || opts.prettyColumnWidth || 88 });
-  const lines = (result.cAst.body || []).map((node) => ({
-    kind:node.kind,
-    indent:node.indent,
-    text:node.text,
-    row:node.source?.rows?.[0] ?? null,
-    addr:node.source?.addresses?.[0] ?? null,
-    note:null,
-    source:node.source,
-  }));
-  return {
+  const lines = (result.cAst.body || []).map((node) => {
+    // HEX-C4-03: a rendered line is produced by its own node location AND by
+    // the rewritten semantic expression that now renders into it. The merged
+    // expression source carries the union of every consumed origin across the
+    // rewrite chain, which is exactly what reverse navigation must reach.
+    const expressionSource = node?.semantic?.expression
+      ? sourceOf(node.semantic.expression.source)
+      : null;
+    const conditionSource = (() => {
+      const rows = sourceOf(node.source).rows.map(Number);
+      const candidates = [...new Set(rows.map((row) => conditions.get(row)).filter(Boolean))];
+      return candidates.length === 1 ? sourceOf(candidates[0].source) : null;
+    })();
+    const sources = [node?.source, expressionSource, conditionSource].filter(Boolean);
+    const source = sources.length === 1 ? sources[0] : mergeSource(...sources);
+    return {
+      kind:node.kind,
+      indent:node.indent,
+      text:node.text,
+      row:source.rows?.[0] ?? null,
+      addr:source.addresses?.[0] ?? null,
+      note:null,
+      source,
+    };
+  });
+  const withLines = {
     ...result,
     lines,
     pseudocode:printed.text,
@@ -292,5 +327,22 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
       transforms:Object.freeze(records),
       inductionNames:Object.freeze(Object.fromEntries(names)),
     }),
+  };
+  // HEX-C4-03: bidirectional render provenance. The snapshot identity is the
+  // same canonical analysis identity the scalar passes prove; when it cannot
+  // be resolved the map is published incomplete with `missing-snapshot` rather
+  // than silently binding to nothing. Budget and cancellation hooks come from
+  // the projection options so the map obeys the same bounds as the pass set.
+  const resolvedIdentity = opts.analysisIdentity
+    ?? canonicalAnalysisIdentity({ ir:result.ir, analysis });
+  const renderProvenance = buildRenderProvenance({
+    result:withLines,
+    snapshotId:resolvedIdentity?.identity?.snapshotId ?? null,
+    budget:opts.renderProvenanceBudget,
+    shouldAbort:opts.shouldAbort,
+  });
+  return {
+    ...withLines,
+    renderProvenance,
   };
 }
