@@ -40,13 +40,15 @@ function boundedCount(scan, countKey, ...arrays) {
 /** Merge independently scanned executable regions without losing provenance. */
 export function mergeProgramScans(scans = [], options = {}) {
   const limits = { ...PROGRAM_MERGE_LIMITS, ...(options.limits || {}) };
-  const ordered = (scans || []).filter((x) => x && !x.cancelled).slice().sort((a,b) => {
+  const inputScans = (scans || []).filter(Boolean);
+  const ordered = inputScans.filter((x) => !x.cancelled).slice().sort((a,b) => {
     const av=BigInt(a.vmAddr ?? 0), bv=BigInt(b.vmAddr ?? 0);
     return av < bv ? -1 : av > bv ? 1 : String(a.regionId||'').localeCompare(String(b.regionId||''));
   });
   const expectedRegionsSpecified = Array.isArray(options.regions);
   const expectedRegions = (expectedRegionsSpecified ? options.regions : []).map((r) => ({ id:r.id ?? null, vmAddr:BigInt(r.vmAddr ?? 0), size:BigInt(r.size ?? 0) }));
   const reasons = [...(options.reasons || [])];
+  for (const scan of inputScans) if (scan.cancelled) reasons.push(`${scan.regionId || 'region'}:cancelled`);
   const scannedIds = new Set(ordered.map((x) => x.regionId).filter((x) => x != null));
   for (const region of expectedRegions) if (region.id != null && !scannedIds.has(region.id)) reasons.push(`program-region-unscanned:${region.id}`);
   for (const scan of ordered) {
