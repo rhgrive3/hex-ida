@@ -15,10 +15,19 @@ if (dualMode.enabled) {
     // child processes. Start the independent legacy proof beside the v2 producer;
     // final evidence later reuses that exact in-process result via the explicit
     // token instead of launching a second legacy corpus.
-    await Promise.all([
+    //
+    // Drain both siblings before surfacing a failure. Promise.all() would reject
+    // early and leave the other child-process family running while the parent
+    // unwinds, which can create orphan/contending local proof processes.
+    const settled = await Promise.allSettled([
       import('./legacy-corpus-prewarm.mjs'),
       import('./integration-current-corpus.test.mjs'),
     ]);
+    const rejected = settled.filter((result) => result.status === 'rejected');
+    if (rejected.length) {
+      throw new AggregateError(rejected.map((result) => result.reason),
+        `Phase 3 dual-mode producer failure (${rejected.length}/2 proof families)`);
+    }
     await import('./integration-final-evidence.test.mjs');
   } finally {
     if (previousReuseToken == null) delete process.env.HEX_PHASE3_INPROCESS_REUSE_TOKEN;
