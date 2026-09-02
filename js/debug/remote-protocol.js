@@ -137,7 +137,6 @@ function validateValue(value, depth = 0) {
   if (value == null || typeof value === 'boolean') return;
   throw new DebugAdapterError('malformed-packet', 'remote packet contains a non-wire value');
 }
-
 function validateEpoch(packet) {
   if (packet.type === 'hello') return;
   if (!Number.isSafeInteger(packet.epoch) || packet.epoch < 0) throw new DebugAdapterError('malformed-packet', 'packet epoch must be a non-negative safe integer');
@@ -214,7 +213,11 @@ export class RemoteProtocolClient {
     if (typeof method !== 'string' || !method || method.length > 128) return Promise.reject(new DebugAdapterError('malformed-packet', 'request method must be a 1..128 character string'));
     if (BLOCKED_METHODS.test(method)) return Promise.reject(new DebugAdapterError('blocked-method', 'host command execution is prohibited'));
     if (this.pending.size >= this.maxPending) return Promise.reject(new DebugAdapterError('backpressure', 'too many pending remote requests'));
-    if (options.signal && options.signal.aborted) return Promise.reject(new DebugAdapterError('cancelled', String(options.signal.reason ?? 'cancelled')));
+    const signal = options.signal ?? null;
+    if (signal != null && (typeof signal.addEventListener !== 'function' || typeof signal.removeEventListener !== 'function')) {
+      return Promise.reject(new DebugAdapterError('invalid-argument', 'signal must be AbortSignal-compatible'));
+    }
+    if (signal?.aborted) return Promise.reject(new DebugAdapterError('cancelled', String(signal.reason ?? 'cancelled')));
     const id = this._allocateId();
     const epoch = options.epoch == null ? this.epoch : options.epoch;
     if (!Number.isSafeInteger(epoch) || epoch < 0) return Promise.reject(new DebugAdapterError('invalid-epoch', 'epoch must be a non-negative safe integer'));
@@ -223,7 +226,7 @@ export class RemoteProtocolClient {
     catch (error) { return Promise.reject(error); }
     const packet = { version:DEBUG_PROTOCOL_VERSION, type:'request', id, epoch, method, params };
     return new Promise((resolve,reject) => {
-      const pending = { resolve, reject, timer:null, epoch, method, signal:options.signal || null, abortHandler:null };
+      const pending = { resolve, reject, timer:null, epoch, method, signal, abortHandler:null };
       pending.timer = setTimeout(() => {
         if (!this.pending.has(id)) return;
         this._cleanupPending(id, pending);
