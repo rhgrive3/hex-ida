@@ -126,6 +126,10 @@ export class ChangeLog {
       this.operations.set(operation.operationId, operation);
       return { status: 'applied', operationId: operation.operationId, effect: 'resolution' };
     }
+    if (operation.action === 'resurrect') {
+      this.state.tombstones = this.state.tombstones.filter((item) => item.key !== key);
+      this.state.unresolved = this.state.unresolved.filter((item) => !(item.key === key && item.reason === 'tombstone-protects-state'));
+    }
     const candidate = { operationId: operation.operationId, value: clone(operation.payload), provenance: clone(operation.provenance), timestampHint: operation.timestampHint };
     const candidateDigest = payloadDigest(candidate.value);
     const previous = current?.values.find((item) => payloadDigest(item.value) === candidateDigest);
