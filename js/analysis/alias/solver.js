@@ -34,6 +34,13 @@ function contradicts(left, right) {
   return false;
 }
 
+function strictSnapshotId(value) {
+  if (typeof value !== 'string') throw new TypeError('phase7-alias-invalid-snapshot-id');
+  const text = value.trim();
+  if (!text) throw new TypeError('phase7-alias-invalid-snapshot-id');
+  return text;
+}
+
 /**
  * The status every answer from this solver starts from.
  *
@@ -91,7 +98,7 @@ export function createPhase7AliasSolver({ ir, cfg, ssa, options = {} } = {}) {
       memorySsa: options.memorySsaBinding?.memorySsa ?? options.memorySsa,
     };
     if (options.snapshotId == null && memoryBinding.snapshotId != null) {
-      effectiveSnapshotId = String(memoryBinding.snapshotId);
+      effectiveSnapshotId = strictSnapshotId(memoryBinding.snapshotId);
     }
   }
 
@@ -165,7 +172,7 @@ export function createPhase7AliasSolver({ ir, cfg, ssa, options = {} } = {}) {
       memorySsa,
     };
     if (options.snapshotId == null && memoryBinding.snapshotId != null) {
-      effectiveSnapshotId = String(memoryBinding.snapshotId);
+      effectiveSnapshotId = strictSnapshotId(memoryBinding.snapshotId);
     }
     refinedRun = null;
     // Preserve demand-driven construction when the solver has not been asked
