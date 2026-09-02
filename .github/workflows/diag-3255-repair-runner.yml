@@ -1,0 +1,267 @@
+name: Repair PR 3382 and 3255 exact stack
+on:
+  push:
+    branches:
+      - diag/3255-repair-runner-20260902
+permissions:
+  contents: write
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Build and verify repaired stacked heads
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin fix/3120-semantic-oracle-split fix/3120-phase8-legacy-oracle-split
+
+          OLD_SEMANTIC=d7cd6da4dbbaf78b30686924ed1232dc17b78df9
+          OLD_PHASE8=175154586b55d30852f1e78c1f2b1c7572f8d5b1
+          test "$(git rev-parse origin/fix/3120-semantic-oracle-split)" = "$OLD_SEMANTIC"
+          test "$(git rev-parse origin/fix/3120-phase8-legacy-oracle-split)" = "$OLD_PHASE8"
+
+          git checkout -B semantic-work "$OLD_SEMANTIC"
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              s = p.read_text()
+              n = s.count(old)
+              if n != 1:
+                  raise SystemExit(f'{path}: expected exactly one match, got {n}')
+              p.write_text(s.replace(old, new, 1))
+
+          ir = 'js/architecture/compat/ir-core-arm64-aapcs64-v1.js'
+          old = '''  const stackPointerMemo = new Map();
+            let stackEscaped = false;
+            for (const inst of ir.instructions) {
+              if (inst.op !== OP.CALL && inst.op !== OP.STORE && inst.op !== OP.UNKNOWN) continue;
+              if (inst.stackArgsMayContainPointers ||
+                  (inst.args || []).some((a) => stackPointerProvenanceOf(a?.value, stackPointerMemo))) {
+                stackEscaped = true;
+                break;
+              }
+            }
+          '''
+          new = '''  // Track stack-pointer values preserved in exact caller-local slots without
+            // confusing the normal FP/LR frame record with an external escape. Loads from
+            // those slots remain tainted, so reloading a saved frame pointer and passing
+            // it to a call still fails closed.
+            const stackPointerMemo = new Map();
+            const stackPointerSlots = new Set();
+            const mayCarryStackPointer = (value, memo = new Map(), active = new Set()) => {
+              if (!value) return false;
+              if (memo.has(value.id)) return memo.get(value.id);
+              if (active.has(value.id)) return false;
+              if (stackPointerProvenanceOf(value, stackPointerMemo)) {
+                memo.set(value.id, true);
+                return true;
+              }
+
+              active.add(value.id);
+              const def = value.def;
+              let out = false;
+              if (def?.op === OP.LOAD && def.loc?.kind === MK.STACK) {
+                out = stackPointerSlots.has(def.loc.key);
+              } else if (def?.op === OP.MOV && def.args?.[0]?.value) {
+                out = mayCarryStackPointer(def.args[0].value, memo, active);
+              } else if (def?.op === OP.PHI) {
+                out = (def.args || []).some((arg) => mayCarryStackPointer(arg?.value, memo, active));
+              } else if (def?.op === OP.BIN && (def.sub === 'add' || def.sub === 'sub') && def.args?.length >= 2) {
+                const left = def.args[0]?.value;
+                const right = def.args[1]?.value;
+                if (right?.const != null) out = mayCarryStackPointer(left, memo, active);
+                else if (def.sub === 'add' && left?.const != null) out = mayCarryStackPointer(right, memo, active);
+              }
+              active.delete(value.id);
+              memo.set(value.id, out);
+              return out;
+            };
+
+            let changed = true;
+            let propagationGuard = ir.instructions.length + 1;
+            while (changed && propagationGuard-- > 0) {
+              changed = false;
+              const memo = new Map();
+              for (const inst of ir.instructions) {
+                if (inst.op !== OP.STORE || inst.loc?.kind !== MK.STACK || !inst.loc.key) continue;
+                if (!(inst.args || []).some((arg) => mayCarryStackPointer(arg?.value, memo))) continue;
+                if (!stackPointerSlots.has(inst.loc.key)) {
+                  stackPointerSlots.add(inst.loc.key);
+                  changed = true;
+                }
+              }
+            }
+
+            const escapeMemo = new Map();
+            let stackEscaped = false;
+            for (const inst of ir.instructions) {
+              if (inst.op !== OP.CALL && inst.op !== OP.STORE && inst.op !== OP.UNKNOWN) continue;
+              if (inst.op === OP.STORE && inst.loc?.kind === MK.STACK) continue;
+              if (inst.stackArgsMayContainPointers ||
+                  (inst.args || []).some((arg) => mayCarryStackPointer(arg?.value, escapeMemo))) {
+                stackEscaped = true;
+                break;
+              }
+            }
+          '''
+          # Remove the YAML block indentation added to the embedded snippets.
+          old = '\n'.join(line[10:] if line.startswith('          ') else line for line in old.split('\n'))
+          new = '\n'.join(line[10:] if line.startswith('          ') else line for line in new.split('\n'))
+          replace_once(ir, old, new)
+
+          test = 'tests/issue-430-memory-escape.mjs'
+          anchor = '// Direct AAPCS64 argument escape must be represented as a CALL SSA use.\n'
+          insert = '''// A normal AAPCS64 frame-record save is private stack state, not an escape.
+          // An opaque call therefore cannot invalidate an unrelated local spill.
+          {
+            const ir = irOf([
+              'stp x29, x30, [sp, #-32]!',
+              'mov x29, sp',
+              'str w1, [sp, #0x0c]',
+              'bl 0x100001000',
+              'ldr w2, [sp, #0x0c]',
+              'ldp x29, x30, [sp], #32',
+              'ret',
+            ]);
+            assert.equal(loadAt(ir, 4)?.reachingStore?.row, 2);
+            assert.ok(!(callAt(ir, 3)?.memKills || []).some((loc) => loc?.kind === 'stack'));
+          }
+
+          // Reloading a locally saved stack pointer and passing it to a callee is an
+          // escape; local preservation must not erase the pointer provenance.
+          {
+            const ir = irOf([
+              'str w1, [sp, #0x18]',
+              'mov x9, sp',
+              'str x9, [sp, #0x10]',
+              'ldr x0, [sp, #0x10]',
+              'bl 0x100001000',
+              'ldr w2, [sp, #0x18]',
+              'ret',
+            ]);
+            assert.equal(loadAt(ir, 5)?.reachingStore, undefined);
+            assert.equal(loadAt(ir, 5)?.memUse?.kind, 'clobber');
+          }
+
+          // A stack pointer stored outside the caller-local frame is a real escape and
+          // keeps opaque calls conservative.
+          {
+            const ir = irOf([
+              'str w1, [sp, #0x18]',
+              'add x9, sp, #0x18',
+              'str x9, [x19]',
+              'bl 0x100001000',
+              'ldr w2, [sp, #0x18]',
+              'ret',
+            ]);
+            assert.equal(loadAt(ir, 4)?.reachingStore, undefined);
+            assert.equal(loadAt(ir, 4)?.memUse?.kind, 'clobber');
+          }
+
+          '''
+          insert = '\n'.join(line[10:] if line.startswith('          ') else line for line in insert.split('\n'))
+          p = Path(test)
+          s = p.read_text()
+          if s.count(anchor) != 1:
+              raise SystemExit(f'{test}: anchor mismatch')
+          p.write_text(s.replace(anchor, insert + anchor, 1))
+          PY
+          git add js/architecture/compat/ir-core-arm64-aapcs64-v1.js tests/issue-430-memory-escape.mjs
+          git commit -m "fix(memoryssa): distinguish local SP preservation from escape"
+          SEMANTIC_SHA=$(git rev-parse HEAD)
+
+          git checkout -B phase8-work "$SEMANTIC_SHA"
+          git cherry-pick "$OLD_PHASE8"
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('js/decompiler/passes/stack-return-recovery.js')
+          s = p.read_text()
+          old = '''function storeValue(inst, key, values) {
+            if (inst?.op !== 'store' || inst.loc?.key !== key) return null;
+            let node = expressionOf(valueOf(inst.args?.[0]), values);
+            if (!node) return null;
+            const bytes = Number(inst.size || inst.loc?.size || inst.addr?.size || 0);
+            const bits = bytes > 0 ? bytes * 8 : 0;
+            if (bits) node = fitWidth(node, bits, {
+              address:inst.address,
+              row:inst.row,
+              ir:inst.id,
+              evidence:[{ reason:`exact ${bits}-bit stack-store boundary` }],
+            });
+            return node;
+          }
+          '''
+          new = '''function exactStackLoadSource(ir, value, expression) {
+            if (expression?.kind !== 'load' || expression.location?.kind !== 'stack' || !expression.location?.key) return null;
+            const direct = value?.def;
+            if (direct?.op === 'load' && direct.loc?.kind === 'stack' && direct.loc.key === expression.location.key) return direct;
+            const ids = new Set((expression.source?.ir || []).map(String));
+            const candidates = (ir?.instructions || []).filter((inst) =>
+              ids.has(String(inst.id)) && inst?.op === 'load' && inst.loc?.kind === 'stack'
+                && inst.loc.key === expression.location.key);
+            return candidates.length === 1 ? candidates[0] : null;
+          }
+
+          function storeValue(inst, key, values, ir, opts, engine, active, depth) {
+            if (inst?.op !== 'store' || inst.loc?.key !== key) return null;
+            const value = valueOf(inst.args?.[0]);
+            let node = expressionOf(value, values);
+            if (!node) return null;
+
+            if (node.kind === 'load' && node.location?.kind === 'stack') {
+              const sourceLoad = exactStackLoadSource(ir, value, node);
+              if (!sourceLoad) return null;
+              node = resolve(ir, sourceLoad.block, sourceLoad.row, sourceLoad.loc.key,
+                values, opts, engine, active, depth + 1);
+              if (!node) return null;
+            }
+
+            const bytes = Number(inst.size || inst.loc?.size || inst.addr?.size || 0);
+            const bits = bytes > 0 ? bytes * 8 : 0;
+            if (bits) node = fitWidth(node, bits, {
+              address:inst.address,
+              row:inst.row,
+              ir:inst.id,
+              evidence:[{ reason:`exact ${bits}-bit stack-store boundary` }],
+            });
+            return node;
+          }
+          '''
+          old = '\n'.join(line[10:] if line.startswith('          ') else line for line in old.split('\n'))
+          new = '\n'.join(line[10:] if line.startswith('          ') else line for line in new.split('\n'))
+          if s.count(old) != 1:
+              raise SystemExit(f'storeValue exact match count={s.count(old)}')
+          s = s.replace(old, new, 1)
+          call_old = '      const stored = storeValue(inst, key, values);'
+          call_new = '      const stored = storeValue(inst, key, values, ir, opts, engine, active, depth);'
+          if s.count(call_old) != 1:
+              raise SystemExit(f'storeValue call exact match count={s.count(call_old)}')
+          p.write_text(s.replace(call_old, call_new, 1))
+          PY
+          git add js/decompiler/passes/stack-return-recovery.js
+          git commit --amend --no-edit
+          PHASE8_SHA=$(git rev-parse HEAD)
+
+          node tests/issue-430-memory-escape.mjs
+          node tests/decompiler-semantic.mjs
+          node --input-type=module -e "import {setSemanticMigrationMode} from './js/ir.js'; setSemanticMigrationMode('legacy-v1'); await import('./tests/decompiler-semantic.mjs');"
+          node tests/compiler-truth/run.mjs
+          node --input-type=module -e "import {setSemanticMigrationMode} from './js/ir.js'; setSemanticMigrationMode('legacy-v1'); await import('./tests/compiler-truth/run.mjs');"
+
+          git push origin "$SEMANTIC_SHA:refs/heads/fix/3120-semantic-oracle-split"
+          git push --force-with-lease=refs/heads/fix/3120-phase8-legacy-oracle-split:$OLD_PHASE8 origin "$PHASE8_SHA:refs/heads/fix/3120-phase8-legacy-oracle-split"
+          echo "SEMANTIC_SHA=$SEMANTIC_SHA"
+          echo "PHASE8_SHA=$PHASE8_SHA"
