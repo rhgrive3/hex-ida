@@ -196,6 +196,7 @@ for (const opt of optimizations) {
       returnType,
       abiAdapter:compilerTruthAbiAdapter,
       decompilerTimeBudgetMs: 180,
+      deterministicTransforms: true,
     });
     assert.ok(result?.semantic, `${opt} ${name}: semantic path fell back`);
     assert.ok(result.semanticAst && result.cAst, `${opt} ${name}: AST missing`);
