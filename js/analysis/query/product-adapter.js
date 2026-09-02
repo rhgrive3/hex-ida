@@ -1,4 +1,5 @@
 import { createAppAnalysisQueryAdapter as createBaseAdapter } from './app-adapter.js';
+import { stableDigest, jsonSafe } from '../../core/identity/index.js';
 
 const SAFE_ROUTE = Symbol('analysis-query-safe-ui-route');
 const SAFE_FUNCTION_DISCOVERY = Symbol('analysis-query-function-discovery-single-flight');
@@ -58,6 +59,20 @@ function isPlainObject(value) {
   return proto === Object.prototype || proto === null;
 }
 
+// Snapshot identity dimensions are authority-bearing scalars. A structured
+// value (Array/object) must never launder into the same string as a primitive
+// value, or distinct analysis states would share one artifactVersions identity.
+function canonicalIdentityDimension(value, fallback) {
+  if (value == null) return fallback;
+  if (typeof value === 'string') return value || fallback;
+  if (typeof value === 'number' || typeof value === 'bigint' || typeof value === 'boolean') return String(value);
+  try {
+    return `structured:${stableDigest(jsonSafe(value))}`;
+  } catch {
+    return `structured:opaque:${typeof value}`;
+  }
+}
+
 function artifactVersionsFor(app) {
   const direct = app?.analysisArtifactVersions ?? app?.artifactVersions ?? null;
   if (direct && isPlainObject(direct)) return { ...direct };
@@ -67,12 +82,12 @@ function artifactVersionsFor(app) {
   const capability = storeValue(app, 'capability') || {};
   return {
     queryContract: 'analysis-query-public-product/v2',
-    analysisRoute: String(route ?? 'unknown'),
-    architecture: String(storeValue(app, 'architecture') ?? capability.architecture ?? 'unknown'),
-    capabilityContract: String(capability.semanticVersion ?? capability.analysisVersion ?? capability.version ?? 'unspecified'),
-    instructionAlignment: String(storeValue(app, 'instructionAlignment') ?? capability.instructionAlignment ?? 'unknown'),
-    symbolsGeneration: String(app?.symbols?.gen ?? 0),
-    sliceIndex: String(storeValue(app, 'sliceIndex') ?? -1),
+    analysisRoute: canonicalIdentityDimension(route ?? 'unknown', 'unknown'),
+    architecture: canonicalIdentityDimension(storeValue(app, 'architecture') ?? capability.architecture ?? 'unknown', 'unknown'),
+    capabilityContract: canonicalIdentityDimension(capability.semanticVersion ?? capability.analysisVersion ?? capability.version ?? 'unspecified', 'unspecified'),
+    instructionAlignment: canonicalIdentityDimension(storeValue(app, 'instructionAlignment') ?? capability.instructionAlignment ?? 'unknown', 'unknown'),
+    symbolsGeneration: canonicalIdentityDimension(app?.symbols?.gen ?? 0, '0'),
+    sliceIndex: canonicalIdentityDimension(storeValue(app, 'sliceIndex') ?? -1, '-1'),
   };
 }
 

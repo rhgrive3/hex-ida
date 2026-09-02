@@ -75,7 +75,8 @@ export const ARM64_SYSTEM_EFFECT_MNEMONICS = Object.freeze(new Set([
 ]));
 
 function mnemonicOf(instruction) {
-  return String(instruction?.mnemonic || '').trim().toLowerCase();
+  if (typeof instruction?.mnemonic !== 'string') return '';
+  return instruction.mnemonic.trim().toLowerCase();
 }
 function operandsOf(instruction) {
   if (Array.isArray(instruction?.ops)) return instruction.ops;
@@ -172,6 +173,8 @@ function sysRegId(name) {
   return `sys:${name}`;
 }
 function isPlainImmediate(op) {
+  // Canonical system/trap immediates are bigint-encoded evidence. Numbers,
+  // strings, arrays, and coercion objects must not mint a definite immediate.
   return op?.k === 'imm'
     && typeof op.value === 'bigint'
     && op.shift == null

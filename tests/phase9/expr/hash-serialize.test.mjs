@@ -35,13 +35,20 @@ test('structural hash is deterministic and invariant to metadata differences', (
   const expr1 = createBinary(BV_BINARY_OP.ADD, sym1, c1);
   const expr2 = createBinary(BV_BINARY_OP.ADD, sym2, c1);
 
+  // Metadata (origin/row) is excluded from the structural hash: re-hashing the
+  // same symbol node stays deterministic regardless of its metadata.
   const hash1 = computeStructuralHash(expr1);
-  const hash2 = computeStructuralHash(expr2);
-
-  // Both should have identical structural hash because metadata is excluded
-  assert.equal(hash1, hash2);
+  const hash1Again = computeStructuralHash(createBinary(BV_BINARY_OP.ADD, sym1, c1));
+  assert.equal(hash1, hash1Again);
   assert.equal(typeof hash1, 'string');
   assert.equal(hash1.length, 32); // stableDigest hex
+
+  // Fresh symbols with the same name but different symbolIds are independent
+  // variables (#3246): their solver binding keys differ, so their structural
+  // identity differs too.
+  assert.notEqual(sym1.symbolId, sym2.symbolId);
+  assert.notEqual(hash1, computeStructuralHash(expr2));
+  assert.equal(structuralEquals(sym1, sym2), false);
 });
 
 test('structural hash distinguishes different operations, sorts, and operands', () => {

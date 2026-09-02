@@ -1,0 +1,16 @@
+{
+  "phase": 12,
+  "checkpoints": [
+    {
+      "id": "P12-LIVING",
+      "result": "accepted",
+      "integrationSha": "199a057a080862fadce92eea101ff03b9c064e78",
+      "integrationTreeSha": "3013909232490925f80a2230dd45932a4b16ab04",
+      "evidenceDigest": "ebe6f30788b9b4f2a40e4fb438667c76d96d440dece18998842dd1b53c1fe461",
+      "verifier": {
+        "id": "phase12.verifier",
+        "version": "1.0.0"
+      }
+    }
+  ]
+}
