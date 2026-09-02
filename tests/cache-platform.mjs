@@ -101,4 +101,59 @@ assert.deepEqual(progressEvents, [
   { bytesRead:5, totalBytes:5, reads:3 },
 ]);
 
+// #3401: an explicitly configured memory backend must satisfy the Map contract.
+const explicitMemory = new Map();
+const explicitMemoryCache = new AnalysisCache({ indexedDB:null, memory:explicitMemory });
+assert.strictEqual(explicitMemoryCache.memory, explicitMemory);
+for (const invalidMemory of [true, false, 1, 0, 'memory', '', {}, []]) {
+  assert.throws(
+    () => new AnalysisCache({ indexedDB:null, memory:invalidMemory }),
+    error => error instanceof TypeError && error.message === 'analysis-cache-memory-backend-invalid',
+    `explicit non-Map memory backend ${Object.prototype.toString.call(invalidMemory)} must fail at construction`,
+  );
+}
+for (const absentMemory of [undefined, null]) {
+  const fallbackCache = new AnalysisCache({ indexedDB:null, memory:absentMemory });
+  assert.ok(fallbackCache.memory instanceof Map, 'absent memory backend must preserve automatic memory fallback');
+}
+
+// #3404: binary hash identity is string-only and malformed lookups/writes/deletes
+// must never alias a canonical string key or destroy its valid entry.
+const strictHashMemory = new Map();
+const strictHashCache = new AnalysisCache({ indexedDB:null, memory:strictHashMemory, schemaVersion:2 });
+await strictHashCache.put('abc', { analysisSummaries:{ source:'valid' } });
+for (const malformed of [['abc'], { toString() { return 'abc'; } }, 123, true, '']) {
+  await assert.rejects(strictHashCache.get(malformed), /analysis-cache-binary-hash-invalid/);
+  assert.equal((await strictHashCache.get('abc')).analysisSummaries.source, 'valid');
+
+  await assert.rejects(
+    strictHashCache.put(malformed, { analysisSummaries:{ source:'malformed' } }),
+    /analysis-cache-binary-hash-invalid/,
+  );
+  assert.equal((await strictHashCache.get('abc')).analysisSummaries.source, 'valid');
+
+  await assert.rejects(strictHashCache.delete(malformed), /analysis-cache-binary-hash-invalid/);
+  assert.equal((await strictHashCache.get('abc')).analysisSummaries.source, 'valid');
+}
+assert.throws(() => strictHashCache.key(['abc']), /analysis-cache-binary-hash-invalid/);
+assert.throws(() => strictHashCache.legacyKey(['abc']), /analysis-cache-binary-hash-invalid/);
+assert.throws(() => strictHashCache.key(''), /analysis-cache-binary-hash-invalid/);
+assert.throws(() => strictHashCache.legacyKey(''), /analysis-cache-binary-hash-invalid/);
+
+// Canonical artifact-id reads intentionally allow the legacy binary hash to be omitted.
+const canonicalArtifactId = `artifact_${'a'.repeat(32)}`;
+await strictHashCache.put('artifact-source', { analysisSummaries:{ source:'artifact' } }, { artifactId:canonicalArtifactId });
+assert.equal(
+  (await strictHashCache.get(undefined, { artifactId:canonicalArtifactId })).analysisSummaries.source,
+  'artifact',
+);
+await assert.rejects(
+  strictHashCache.get('', { artifactId:canonicalArtifactId }),
+  /analysis-cache-binary-hash-invalid/,
+);
+await assert.rejects(
+  strictHashCache.delete('', { artifactId:canonicalArtifactId }),
+  /analysis-cache-binary-hash-invalid/,
+);
+
 console.log('cache-platform: PASS');
