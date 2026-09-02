@@ -42,7 +42,7 @@ export async function scanSourceStrings(image, input, opts = {}) {
       const keep = Math.min(overlapBytes, bytes.length);
       carry = bytes.slice(bytes.length - keep);
       offset += BigInt(block.length);
-      opts.onProgress?.({ done: offset - range.start, total: range.end - range.start, strings: out.length, section: range.section });
+      if (typeof opts.onProgress === 'function') opts.onProgress({ done: offset - range.start, total: range.end - range.start, strings: out.length, section: range.section });
       if (!block.length) break;
     }
     if (out.length >= limit) break;
