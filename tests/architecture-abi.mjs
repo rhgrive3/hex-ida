@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {
+  ArchitectureAdapter,
   architectureAdapter,
   architectureCapability,
   architecturePluginV2,
@@ -37,6 +38,37 @@ const region = { vmAddr:BASE, size:0x100n };
   assert.equal(arm64.addressForRow(region, 2), BASE + 8n);
   assert.equal(arm64.callKind({ mnemonic:'blr' }), 'call');
   assert.equal(arm64.returnKind({ mnemonic:'ret' }), 'return');
+}
+
+// #3370: optional ArchitectureAdapter hooks must fail at registration rather
+// than creating malformed adapters that throw only when the hook is invoked.
+{
+  const base = { id:'issue-3370', instructionAlignment:1, fixedInstructionSize:1 };
+  for (const name of [
+    'decode',
+    'assemble',
+    'controlFlow',
+    'callKind',
+    'returnKind',
+    'rowForAddress',
+    'addressForRow',
+    'validateInstructionPlacement',
+  ]) {
+    assert.throws(
+      () => new ArchitectureAdapter({ ...base, [name]:[] }),
+      (error) => error instanceof TypeError && error.message === `${name} must be a function`,
+      `${name} must reject truthy non-functions at the constructor boundary`,
+    );
+  }
+
+  const defaults = new ArchitectureAdapter(base);
+  assert.equal(defaults.decode, null);
+  assert.equal(defaults.assemble, null);
+  assert.equal(defaults.controlFlow({}), null);
+  assert.equal(defaults.callKind({}), null);
+  assert.equal(defaults.returnKind({}), null);
+  assert.equal(defaults.rowForAddress(region, BASE + 2n), 2);
+  assert.equal(defaults.addressForRow(region, 2), BASE + 2n);
 }
 
 // AAPCS64 owns call arguments, returns, saved registers, and stack rules.
