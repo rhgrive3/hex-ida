@@ -70,7 +70,7 @@ jobs:
                 if (pr.state === 'open') resolved.set(pr.number, pr);
               }
 
-              if (!resolved.size && trigger.head_branch) {
+              if (!resolved.size && trigger.head_branch && trigger.head_repository?.full_name === sameRepo) {
                 const matches = await github.paginate(github.rest.pulls.list, {
                   owner,
                   repo,
@@ -82,7 +82,7 @@ jobs:
               }
 
               if (!resolved.size) {
-                core.info(`workflow_run ${trigger.id || 'unknown'} has no open PR target; nothing to recover.`);
+                core.info(`workflow_run ${trigger.id || 'unknown'} has no open same-repository PR target; nothing to recover.`);
               }
               return [...resolved.values()];
             }
