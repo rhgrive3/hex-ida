@@ -67,7 +67,9 @@ test('#3247 externally restored ids advance the allocator', () => {
 
 test('#3247 restoreFreshSymbol rejects malformed ids and non-strings', () => {
   assert.throws(() => restoreFreshSymbol(boolSort(), 'x', 42), /symbolId must be a string/);
-  assert.throws(() => restoreFreshSymbol(boolSort(), 'x', 'totally-custom'), /malformed symbolId/);
+  for (const symbolId of ['totally-custom', 'sym_01_x', 'sym_0_x', 'sym_1_y', 'sym_9007199254740992_x']) {
+    assert.throws(() => restoreFreshSymbol(boolSort(), 'x', symbolId), /malformed symbolId/);
+  }
   assert.throws(() => restoreFreshSymbol(boolSort(), '', 'sym_1_x'), /name must be a non-empty string/);
 });
 
