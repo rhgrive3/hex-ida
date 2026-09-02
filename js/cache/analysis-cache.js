@@ -24,7 +24,11 @@ function canonicalArtifactId(options = {}) {
   return value.toLowerCase();
 }
 
-function canonicalBinaryHash(value) {
+function canonicalBinaryHash(value, { required = false } = {}) {
+  if (value == null) {
+    if (required) throw new TypeError('binary hash is required');
+    return null;
+  }
   if (typeof value !== 'string' || value.length === 0) throw new TypeError('analysis-cache-binary-hash-invalid');
   return value;
 }
@@ -42,7 +46,7 @@ export class AnalysisCache {
     this._idbFailed = false;
   }
 
-  legacyKey(hash) { return `${this.schemaVersion}:${this.analysisIdentity}:${canonicalBinaryHash(hash)}`; }
+  legacyKey(hash) { return `${this.schemaVersion}:${this.analysisIdentity}:${canonicalBinaryHash(hash, { required:true })}`; }
   canonicalKey(artifactId) {
     const id = canonicalArtifactId({ artifactId });
     if (!id) throw new TypeError('canonical artifact id is required');
@@ -50,7 +54,8 @@ export class AnalysisCache {
   }
   key(hash, options = {}) {
     const artifactId = canonicalArtifactId(options);
-    return artifactId ? this.canonicalKey(artifactId) : this.legacyKey(hash);
+    const binaryHash = canonicalBinaryHash(hash, { required:!artifactId });
+    return artifactId ? this.canonicalKey(artifactId) : this.legacyKey(binaryHash);
   }
 
   capabilities() {
@@ -87,8 +92,8 @@ export class AnalysisCache {
 
   async get(hash, options = {}) {
     const artifactId = canonicalArtifactId(options);
-    if ((hash == null || hash === '') && !artifactId) return null;
-    const binaryHash = hash == null || hash === '' ? null : canonicalBinaryHash(hash);
+    const binaryHash = canonicalBinaryHash(hash, { required:false });
+    if (!binaryHash && !artifactId) return null;
     const key = this.key(binaryHash, { artifactId });
     let record;
     if (this.memory) record = this.memory.get(key) || null;
@@ -105,8 +110,7 @@ export class AnalysisCache {
   }
 
   async put(hash, data = {}, options = {}) {
-    if (!hash) throw new TypeError('binary hash is required');
-    const binaryHash = canonicalBinaryHash(hash);
+    const binaryHash = canonicalBinaryHash(hash, { required:true });
     const artifactId = canonicalArtifactId(options);
     const clean = {};
     for (const [key, value] of Object.entries(data)) if (ALLOWED_FIELDS.has(key)) clean[key] = value;
@@ -130,7 +134,7 @@ export class AnalysisCache {
 
   async delete(hash, options = {}) {
     const artifactId = canonicalArtifactId(options);
-    const binaryHash = hash == null || hash === '' ? null : canonicalBinaryHash(hash);
+    const binaryHash = canonicalBinaryHash(hash, { required:!artifactId });
     const key = this.key(binaryHash, { artifactId });
     if (this.memory) { this.memory.delete(key); return; }
     try {
@@ -223,7 +227,7 @@ function fallbackClone(value, seen = new WeakMap()) {
   }
   if (value instanceof Map) { const out = new Map(); seen.set(value, out); for (const [k, v] of value) out.set(fallbackClone(k, seen), fallbackClone(v, seen)); return out; }
   if (value instanceof Set) { const out = new Set(); seen.set(value, out); for (const v of value) out.add(fallbackClone(v, seen)); return out; }
-  if (Array.isArray(value)) { const out = []; seen.set(value, out); for (const v of value) out.push(fallbackClone(v, seen)); return out; }
+  if (Array.isArray(value)) { const out = []; seen.set(value, out); for (const v of value) out.push(fallbackClone(v, seen), fallbackClone(v, seen)); return out; }
   const out = {}; seen.set(value, out); for (const [k, v] of Object.entries(value)) Object.defineProperty(out, k, { value:fallbackClone(v, seen), enumerable:true, configurable:true, writable:true }); return out;
 }
 
