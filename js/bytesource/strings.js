@@ -4,15 +4,22 @@ function printableAscii(c) {
   return c === 9 || (c >= 0x20 && c <= 0x7e);
 }
 
+function finiteNumber(value) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
 export async function scanSourceStrings(image, input, opts = {}) {
   const source = asByteSource(input);
-  const min = Math.max(2, Number(opts.minLength) || 4);
-  const max = Math.max(min, Math.min(64 * 1024, Number(opts.maxLength) || 4096));
-  const rawLimit = Number(opts.limit);
-  const limit = Math.max(1, Math.min(1_000_000, Number.isNaN(rawLimit) ? 200_000 : Math.floor(rawLimit)));
+  const rawMin = finiteNumber(opts.minLength);
+  const min = Math.max(2, rawMin || 4);
+  const rawMax = finiteNumber(opts.maxLength);
+  const max = Math.max(min, Math.min(64 * 1024, rawMax || 4096));
+  const rawLimit = finiteNumber(opts.limit);
+  const limit = Math.max(1, Math.min(1_000_000, rawLimit == null ? 200_000 : Math.floor(rawLimit)));
   const utf16Encodings = chooseUtf16Encodings(image, opts.utf16);
   const includeExecutable = !!opts.includeExecutable;
-  const chunkSize = Math.floor(Math.min(source.maxReadLength, Math.max(64 * 1024, Number(opts.chunkSize) || 256 * 1024)));
+  const rawChunkSize = finiteNumber(opts.chunkSize);
+  const chunkSize = Math.floor(Math.min(source.maxReadLength, Math.max(64 * 1024, rawChunkSize || 256 * 1024)));
   const ranges = mappedRanges(image, source.size, includeExecutable);
   const out = [];
   const seen = new Set();
