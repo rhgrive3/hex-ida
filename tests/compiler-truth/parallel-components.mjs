@@ -16,27 +16,34 @@ function runOne(file, { cwd, env }) {
     const stdout = [];
     const stderr = [];
     let settled = false;
-    let spawnError = null;
-    const child = spawn(process.execPath, [file], {
-      cwd,
-      env,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    child.stdout?.on('data', (chunk) => stdout.push(Buffer.from(chunk)));
-    child.stderr?.on('data', (chunk) => stderr.push(Buffer.from(chunk)));
-    child.once('error', (error) => { spawnError = error; });
-    child.once('close', (code, signal) => {
+    const finish = ({ code = null, signal = null, error = null } = {}) => {
       if (settled) return;
       settled = true;
       resolve(Object.freeze({
         file,
-        code: spawnError ? null : code,
-        signal: signal ?? null,
-        error: spawnError,
+        code,
+        signal,
+        error,
         stdout: Buffer.concat(stdout),
         stderr: Buffer.concat(stderr),
       }));
-    });
+    };
+
+    let child;
+    try {
+      child = spawn(process.execPath, [file], {
+        cwd,
+        env,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    } catch (error) {
+      finish({ error });
+      return;
+    }
+    child.stdout?.on('data', (chunk) => stdout.push(Buffer.from(chunk)));
+    child.stderr?.on('data', (chunk) => stderr.push(Buffer.from(chunk)));
+    child.once('error', (error) => finish({ error }));
+    child.once('close', (code, signal) => finish({ code, signal:signal ?? null }));
   });
 }
 
@@ -55,7 +62,8 @@ export async function runCompilerTruthComponents({
 } = {}) {
   if (!Array.isArray(files) || files.length === 0) throw new TypeError('compiler-truth components are required');
   if (!cwd) throw new TypeError('compiler-truth component cwd is required');
-  const width = Math.max(1, Math.min(files.length, concurrency));
+  if (!Number.isSafeInteger(concurrency) || concurrency < 1) throw new TypeError('compiler-truth component concurrency must be a positive safe integer');
+  const width = Math.min(files.length, concurrency);
   const results = new Array(files.length);
   let next = 0;
 
