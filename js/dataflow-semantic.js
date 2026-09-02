@@ -414,10 +414,14 @@ function propertyHelperUpdates(model, ir) {
   return out;
 }
 
-export function findIrSemanticUpdates(model, opts, rmwUpdates) {
-  const ir = irFor(model, opts && opts.ir);
+export function findIrSemanticUpdates(model, opts, rmwUpdates, precomputed = null) {
+  const ir = precomputed?.ir ?? irFor(model, opts && opts.ir);
   if (!ir) return [];
-  const facts = semanticFacts(ir);
+  const facts = semanticFacts(ir, {
+    readModifyWriteProofs: Array.isArray(precomputed?.readModifyWriteProofs)
+      ? precomputed.readModifyWriteProofs
+      : null,
+  });
   const rmwRows = new Set((rmwUpdates || []).filter((u) => u.store).map((u) => u.store.row));
   const out = [
     ...directWrites(ir, facts, rmwRows),
