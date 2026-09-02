@@ -12,6 +12,7 @@ import {
   createBool,
   createBv,
   createFreshSymbol,
+  restoreFreshSymbol,
   createBinary,
   createCompare,
   createConnective,
@@ -29,17 +30,25 @@ import {
 
 test('structural hash is deterministic and invariant to metadata differences', () => {
   const sym1 = createFreshSymbol(bvSort(32), 'x', { origin: 'loc1', row: 10 });
-  const sym2 = createFreshSymbol(bvSort(32), 'x', { origin: 'loc2', row: 99 });
+  const sameIdentityDifferentMeta = restoreFreshSymbol(
+    bvSort(32),
+    'x',
+    sym1.symbolId,
+    { origin: 'loc2', row: 99 },
+  );
+  const sym2 = createFreshSymbol(bvSort(32), 'x', { origin: 'loc3', row: 123 });
 
   const c1 = createBv(32, 42);
   const expr1 = createBinary(BV_BINARY_OP.ADD, sym1, c1);
+  const sameIdentityExpr = createBinary(BV_BINARY_OP.ADD, sameIdentityDifferentMeta, c1);
   const expr2 = createBinary(BV_BINARY_OP.ADD, sym2, c1);
 
-  // Metadata (origin/row) is excluded from the structural hash: re-hashing the
-  // same symbol node stays deterministic regardless of its metadata.
+  // Metadata (origin/row) is excluded from structural identity. The same
+  // canonical symbolId with different metadata must therefore hash and compare
+  // exactly the same.
   const hash1 = computeStructuralHash(expr1);
-  const hash1Again = computeStructuralHash(createBinary(BV_BINARY_OP.ADD, sym1, c1));
-  assert.equal(hash1, hash1Again);
+  assert.equal(hash1, computeStructuralHash(sameIdentityExpr));
+  assert.equal(structuralEquals(expr1, sameIdentityExpr), true);
   assert.equal(typeof hash1, 'string');
   assert.equal(hash1.length, 32); // stableDigest hex
 
