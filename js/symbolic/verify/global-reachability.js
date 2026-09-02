@@ -103,7 +103,8 @@ export async function verifyGlobalEdgeReachability({
       && Number.isInteger(choice.block) && choice.block === targetBlock
       && Number.isInteger(choice.predecessorBlock)
       && pathSources.has(choice.predecessorBlock)
-      && (isExpr(choice.value) || typeof choice.valueId === 'string');
+      && (isExpr(choice.value)
+        || (typeof choice.valueId === 'string' && choice.valueId.trim() !== ''));
     if (globalScope.phiChoices.some((choice) => !validChoice(choice))) {
       return unknown('incomplete-phi-choices', 'Global unreachability requires explicit PHI predecessor choices');
     }
