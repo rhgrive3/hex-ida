@@ -33,6 +33,33 @@ export const DECOMPILER_ASSERTION_FILES = Object.freeze([
   'tests/issues-471-472-legacy-types.mjs',
 ]);
 
+// Non-authoritative scheduling hints only. They change launch order, never the
+// assertion corpus, result order, denominator, timeout, or pass/fail semantics.
+// The long compiler/decompiler entrypoints are started first so a bounded pool
+// does not leave its longest task until the tail of the critical path.
+const PHASE3_SCHEDULING_PRIORITY = Object.freeze({
+  'tests/compiler-truth/run.mjs': 100,
+  'tests/decompiler-semantic.mjs': 45,
+  'tests/semantic-core.mjs': 40,
+  'tests/ir-comparisons.mjs': 35,
+  'tests/ir-pinpoint-location.mjs': 30,
+  'tests/ir-alias.mjs': 28,
+  'tests/ir-dataflow.mjs': 26,
+  'tests/decompiler-rewrite.mjs': 24,
+  'tests/decompile-cfg.mjs': 20,
+});
+
+function canonicalPhase3FileKey(file) {
+  const normalized = String(file ?? '').replaceAll('\\', '/');
+  if (normalized.startsWith('tests/')) return normalized;
+  const marker = normalized.lastIndexOf('/tests/');
+  return marker >= 0 ? normalized.slice(marker + 1) : normalized;
+}
+
+export function phase3SchedulingPriority(file) {
+  return PHASE3_SCHEDULING_PRIORITY[canonicalPhase3FileKey(file)] ?? 0;
+}
+
 export function nodeCommandsFor(files) {
   return Object.freeze(files.map((file) => `node ${file}`));
 }

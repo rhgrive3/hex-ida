@@ -1,7 +1,11 @@
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 
-import { resolveBoundedNodeConcurrency } from './bounded-node-suite.mjs';
+import {
+  resolveBoundedNodeConcurrency,
+  scheduleNodeTestFiles,
+} from './bounded-node-suite.mjs';
+import { phase3SchedulingPriority } from './semantic-corpus-manifest.mjs';
 
 const FAILURE_TAIL_CHARS = 3500;
 
@@ -72,6 +76,7 @@ function runOne({ suite, index, file, root, env, timeoutMs, verbose }) {
  * Run the locked Phase 3 unchanged-assertion corpus with bounded process
  * parallelism. Every command executes exactly once and result order remains the
  * canonical manifest order, so the v1/v2 differential denominator is unchanged.
+ * Launch order is longest-first by non-authoritative hint to reduce pool tail.
  */
 export async function runPhase3Corpus({
   suite,
@@ -81,6 +86,7 @@ export async function runPhase3Corpus({
   timeoutMs = 600_000,
   envName = 'HEX_PHASE3_CORPUS_CONCURRENCY',
   availableParallelism,
+  priorityForFile = phase3SchedulingPriority,
 } = {}) {
   if (!suite || !Array.isArray(files) || !files.length || !root) {
     throw new TypeError('phase3 corpus runner requires suite, files and root');
@@ -95,13 +101,14 @@ export async function runPhase3Corpus({
     reserveCores: 0,
   }));
   const results = new Array(files.length);
-  let next = 0;
+  const workItems = scheduleNodeTestFiles(files, verbose ? null : priorityForFile);
+  let nextWorkIndex = 0;
 
   async function worker() {
     while (true) {
-      const index = next++;
-      if (index >= files.length) return;
-      results[index] = await runOne({ suite, index, file: files[index], root, env, timeoutMs, verbose });
+      const item = workItems[nextWorkIndex++];
+      if (!item) return;
+      results[item.index] = await runOne({ suite, index: item.index, file: item.file, root, env, timeoutMs, verbose });
     }
   }
 

@@ -25,6 +25,24 @@ export function resolveBoundedNodeConcurrency({
 }
 
 /**
+ * Build a stable work queue while retaining each file's canonical result slot.
+ * A scheduling hint is deliberately non-authoritative: it may change launch
+ * order only. Evidence/result order remains the caller's original file order.
+ */
+export function scheduleNodeTestFiles(files, priorityForFile = null) {
+  if (!Array.isArray(files)) throw new TypeError('node test scheduler: files must be an array');
+  const work = files.map((file, index) => {
+    const rawPriority = typeof priorityForFile === 'function' ? priorityForFile(file, index) : 0;
+    const priority = typeof rawPriority === 'number' && Number.isFinite(rawPriority) ? rawPriority : 0;
+    return { file, index, priority };
+  });
+  if (typeof priorityForFile === 'function') {
+    work.sort((left, right) => right.priority - left.priority || left.index - right.index);
+  }
+  return work;
+}
+
+/**
  * Run independent Node test entrypoints in isolated child processes with bounded
  * parallelism. Every file still executes exactly once. Failures are collected
  * fail-closed after the pool drains, and runQuietCommand keeps success output
@@ -42,6 +60,7 @@ export async function runBoundedNodeSuite({
   stderr = process.stderr,
   runCommand = runQuietCommand,
   availableParallelism = os.availableParallelism(),
+  priorityForFile = null,
 } = {}) {
   if (!label) throw new TypeError('bounded node suite: label is required');
   if (!Array.isArray(files) || files.length === 0) throw new TypeError(`${label}: no test files supplied`);
@@ -59,16 +78,17 @@ export async function runBoundedNodeSuite({
       reserveCores,
     }));
   const results = new Array(files.length);
-  let nextIndex = 0;
+  const workItems = scheduleNodeTestFiles(files, verbose ? null : priorityForFile);
+  let nextWorkIndex = 0;
   const started = process.hrtime.bigint();
 
   stdout.write(`${label}: ${files.length} files, concurrency=${concurrency}${verbose ? ' (verbose serial)' : ''}\n`);
 
   async function worker() {
     while (true) {
-      const index = nextIndex++;
-      if (index >= files.length) return;
-      const file = files[index];
+      const item = workItems[nextWorkIndex++];
+      if (!item) return;
+      const { file, index } = item;
       try {
         results[index] = await runCommand({
           label: `${label}:${path.basename(file)}`,
