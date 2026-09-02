@@ -338,21 +338,23 @@ export function isRustLayoutStable(typeDescriptor) {
 }
 
 function normalizeRustAddress(value) {
-  if (value == null) return null;
+  let parsed;
   if (typeof value === 'bigint') {
     if (value < 0n) throw new TypeError('rust-metadata-invalid-address');
-    return value.toString();
-  }
-  if (typeof value === 'number') {
+    parsed = value;
+  } else if (typeof value === 'number') {
     if (!Number.isSafeInteger(value) || value < 0) throw new TypeError('rust-metadata-invalid-address');
-    return String(value);
-  }
-  if (typeof value === 'string') {
+    parsed = BigInt(value);
+  } else if (typeof value === 'string') {
     const text = value.trim();
     if (!/^(?:0[xX][0-9a-fA-F]+|\d+)$/.test(text)) throw new TypeError('rust-metadata-invalid-address');
-    return text;
+    try { parsed = BigInt(text); } catch { throw new TypeError('rust-metadata-invalid-address'); }
+  } else if (value == null) {
+    return null;
+  } else {
+    throw new TypeError('rust-metadata-invalid-address');
   }
-  throw new TypeError('rust-metadata-invalid-address');
+  return `0x${parsed.toString(16)}`;
 }
 
 /**
