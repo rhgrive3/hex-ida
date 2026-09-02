@@ -5,12 +5,6 @@
  * same thing on every architecture (loader tables, unwind entries, symbols,
  * exports, relocation targets, call edges in the semantic IR). None of them
  * decodes an instruction.
- *
- * Architecture-specific producers — prologue recognition above all — belong
- * behind the target boundary, which Phase 7 does not own. What Phase 7 supplies
- * is the contract they implement and, for the cases where a pattern really is
- * just data, a declarative byte-pattern producer that takes its patterns from
- * the caller instead of hard-coding any architecture's encoding.
  */
 
 import { EVIDENCE_AUTHORITY, createDiscoveryEvidence } from './candidates.js';
@@ -24,18 +18,27 @@ function toAddress(value) {
   catch { return null; }
 }
 
+function requiredText(value, code) {
+  if (typeof value !== 'string') throw new TypeError(code);
+  const text = value.trim();
+  if (!text) throw new TypeError(code);
+  return text;
+}
+
+function byteVector(value, code) {
+  if (!Array.isArray(value) && !(value instanceof Uint8Array)) throw new TypeError(code);
+  if (value.length === 0) throw new TypeError(code);
+  for (const item of value) {
+    if (typeof item !== 'number' || !Number.isInteger(item) || item < 0 || item > 0xff) throw new TypeError(code);
+  }
+  return Uint8Array.from(value);
+}
+
 function evidence(kind, input) {
   if (!EVIDENCE_AUTHORITY[kind]) throw new TypeError(`discovery-producer-unknown-kind:${kind}`);
   return createDiscoveryEvidence({ kind, ...input });
 }
 
-/**
- * Loader-supplied function starts and unwind entries.
- *
- * Loader-owned seeds live canonically in `image.functions`; the legacy
- * `image.functionStarts` projection is accepted only as a compatibility input.
- * Unwind ranges remain in `image.unwindEntries`.
- */
 function loaderFunctionStarts(image) {
   const out = [];
   const seen = new Set();
@@ -46,9 +49,6 @@ function loaderFunctionStarts(image) {
     out.push(start);
   };
 
-  // Canonical loader truth must win deduplication. The legacy projection is
-  // compatibility-only and may omit provenance/extent fields carried by the
-  // canonical BinaryImage.functions seed.
   for (const start of image?.functions ?? []) {
     const sources = new Set([start?.source, ...(start?.sources ?? [])].filter(Boolean));
     if (sources.has('function_starts')) add(start);
@@ -73,10 +73,6 @@ export const loaderProducer = Object.freeze({
         evidenceIds: [`loader:start:${address}`],
       }));
     }
-    // A function body can be split across several unwind entries; the loader
-    // marks the continuations and names the range they belong to. Those are
-    // *not* separate function starts, and treating them as such is a false
-    // split — so they contribute a partial extent to their owner instead.
     const unwindEntries = input?.image?.unwindEntries ?? [];
     const ownersWithContinuations = new Set(
       unwindEntries
@@ -104,7 +100,6 @@ export const loaderProducer = Object.freeze({
   },
 });
 
-/** Exports and the image entrypoint. */
 export const exportProducer = Object.freeze({
   id: 'discovery.exports',
   architectureId: null,
@@ -123,9 +118,6 @@ export const exportProducer = Object.freeze({
       if (explicitlyFunction) {
         out.push(evidence('export', { start: address, name: entry.name ?? null, evidenceIds: [`export:${address}`] }));
       } else if (!symbolsByAddress.has(address)) {
-        // Export visibility alone is not function-start proof. Keep an untyped
-        // export only as one corroborating name/address observation; a loader
-        // start, unwind record, debug symbol, etc. must supply the proof.
         out.push(evidence('symbol-table', { start: address, name: entry.name ?? null, evidenceIds: [`export:${address}`] }));
       }
     }
@@ -138,8 +130,6 @@ export const exportProducer = Object.freeze({
         const sources = new Set([seed?.source, ...(seed?.sources ?? [])].filter(Boolean));
         return sources.has('entrypoint');
       });
-      // An explicit loader rejection is authoritative negative truth. A stale or
-      // contradictory compatibility seed must never resurrect the entrypoint.
       const loaderValidated = !explicitlyRejected
         && (image?.metadata?.entrypointValid === true || entrypointSeedValidated);
       if (loaderValidated) {
@@ -150,13 +140,6 @@ export const exportProducer = Object.freeze({
   },
 });
 
-/**
- * Symbol-table entries.
- *
- * Corroborating rather than authoritative: a symbol table can carry labels that
- * are not function starts, and a stripped-then-partially-restored table is a
- * common source of plausible-looking wrong starts.
- */
 export const symbolTableProducer = Object.freeze({
   id: 'discovery.symbols',
   architectureId: null,
@@ -177,7 +160,6 @@ export const symbolTableProducer = Object.freeze({
   },
 });
 
-/** Relocation and vtable targets. */
 export const referenceProducer = Object.freeze({
   id: 'discovery.references',
   architectureId: null,
@@ -202,13 +184,6 @@ export const referenceProducer = Object.freeze({
   },
 });
 
-/**
- * Direct call targets taken from the semantic IR.
- *
- * This is generic despite being derived from code: the IR's `call` node and its
- * target entity are architecture-neutral by construction, so no instruction
- * text is read here.
- */
 export const callGraphProducer = Object.freeze({
   id: 'discovery.call-targets',
   architectureId: null,
@@ -227,7 +202,6 @@ export const callGraphProducer = Object.freeze({
   },
 });
 
-/** Debug-provider symbols, already gated by identity at the provider boundary. */
 export function createDebugEvidenceProducer(debugEvidence) {
   return Object.freeze({
     id: 'discovery.debug',
@@ -244,16 +218,6 @@ export function createDebugEvidenceProducer(debugEvidence) {
   });
 }
 
-/**
- * A declarative byte-pattern producer.
- *
- * The patterns are *data supplied by the caller*, not knowledge held here. An
- * architecture boundary that knows its own prologue encodings can register one
- * of these without Phase 7 learning anything about that architecture, which is
- * what keeps the generic solver honest (P7-INV-007, FM-9).
- *
- * Output is always `heuristic`: a byte pattern alone never establishes a start.
- */
 export function createPatternProducer({ id, architectureId, patterns, alignment = 1 }) {
   if (!Number.isSafeInteger(alignment) || alignment <= 0) {
     throw new TypeError('discovery-pattern-invalid-alignment');
@@ -261,27 +225,25 @@ export function createPatternProducer({ id, architectureId, patterns, alignment 
   if (!Array.isArray(patterns)) {
     throw new TypeError('discovery-pattern-empty-patterns');
   }
+  const producerId = requiredText(id, 'discovery-pattern-invalid-id');
+  const canonicalArchitectureId = architectureId == null ? null : requiredText(architectureId, 'discovery-pattern-invalid-architecture-id');
   const compiled = patterns.map((pattern) => {
-    if (!pattern || (!Array.isArray(pattern.bytes) && !(pattern.bytes instanceof Uint8Array)) || pattern.bytes.length === 0) {
-      throw new TypeError('discovery-pattern-invalid-bytes');
-    }
-    const bytes = Uint8Array.from(pattern.bytes);
+    if (!pattern || typeof pattern !== 'object' || Array.isArray(pattern)) throw new TypeError('discovery-pattern-invalid-bytes');
+    const bytes = byteVector(pattern.bytes, 'discovery-pattern-invalid-bytes');
     let mask = null;
-    if (pattern.mask) {
-      if (pattern.mask.length !== bytes.length) {
-        throw new TypeError('discovery-pattern-mask-length-mismatch');
-      }
-      mask = Uint8Array.from(pattern.mask);
+    if (pattern.mask != null) {
+      mask = byteVector(pattern.mask, 'discovery-pattern-invalid-mask');
+      if (mask.length !== bytes.length) throw new TypeError('discovery-pattern-mask-length-mismatch');
     }
     return {
-      id: String(pattern.id ?? 'pattern'),
+      id: pattern.id == null ? 'pattern' : requiredText(pattern.id, 'discovery-pattern-invalid-pattern-id'),
       bytes,
       mask,
     };
   });
   return Object.freeze({
-    id: String(id),
-    architectureId: architectureId == null ? null : String(architectureId),
+    id: producerId,
+    architectureId: canonicalArchitectureId,
     produce(input) {
       const bytes = input?.image?.code;
       const base = input?.image?.codeBaseAddress;
