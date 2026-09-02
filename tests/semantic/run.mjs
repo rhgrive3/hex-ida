@@ -24,7 +24,9 @@ export async function runSemanticTests({ env = process.env } = {}) {
     cwd: ROOT,
     env,
     envName: 'HEX_SEMANTIC_TEST_CONCURRENCY',
-    maxDefault: 4,
+    // Direct local semantic:test has no nested suite fanout. Use up to six
+    // available cores; nested Phase 3 callers explicitly cap this to two.
+    maxDefault: 6,
     reserveCores: 0,
     priorityForFile: phase3SchedulingPriority,
   });
