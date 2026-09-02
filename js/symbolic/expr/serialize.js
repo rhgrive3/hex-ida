@@ -153,12 +153,12 @@ export function plainToExpr(plain) {
     case EXPR_KIND.FRESH_SYMBOL:
       // Restore the saved canonical symbolId. Discarding a present malformed ID
       // would silently rebind the serialized symbol to a fresh identity. Only
-      // legacy payloads where the ID is missing (or the historical empty-string
-      // placeholder) may allocate a replacement.
+      // legacy payloads where the ID is missing or a blank string may allocate
+      // a replacement.
       if (plain.symbolId == null && !Object.prototype.hasOwnProperty.call(plain, 'symbolId')) {
         return createFreshSymbol(sort, plain.name, plain.meta || {});
       }
-      if (plain.symbolId === '') {
+      if (typeof plain.symbolId === 'string' && plain.symbolId.trim() === '') {
         return createFreshSymbol(sort, plain.name, plain.meta || {});
       }
       if (typeof plain.symbolId !== 'string') {
