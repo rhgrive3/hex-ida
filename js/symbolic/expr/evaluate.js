@@ -91,7 +91,14 @@ export function evaluateExpr(expr, env = null) {
       }
       if (isBoolSort(expr.sort)) {
         const val = typeof bound === 'object' && bound !== null && 'value' in bound ? bound.value : bound;
-        return { status: EVAL_STATUS.VALUE, sort: expr.sort, value: Boolean(val) };
+        /* #3245: a BOOL binding must be a primitive boolean after unwrapping.
+           Truthiness coercion would promote 'false' / structured truthy
+           bindings into a valid witness at the independent model-validation
+           boundary, so anything else fails closed to UNKNOWN. */
+        if (typeof val !== 'boolean') {
+          return { status: EVAL_STATUS.UNKNOWN, reason: 'non-boolean-model-binding', symbol: expr };
+        }
+        return { status: EVAL_STATUS.VALUE, sort: expr.sort, value: val };
       }
       if (isBvSort(expr.sort)) {
         const raw = typeof bound === 'object' && bound !== null && 'value' in bound ? bound.value : bound;
