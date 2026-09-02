@@ -68,6 +68,12 @@ function strictNonEmptyString(value, code) {
   return text;
 }
 
+function arrayField(value, code) {
+  if (value == null) return [];
+  if (!Array.isArray(value)) fail(code);
+  return value;
+}
+
 function optionalSizeBytes(value) {
   if (value == null) return null;
   if (typeof value !== 'number' && typeof value !== 'string') fail('metadata-record-invalid-size');
@@ -234,7 +240,7 @@ export function createLanguageMetadataRecord(input = {}) {
 /** One page of records. */
 export function createLanguageMetadataPage(input = {}) {
   return deepFreeze({
-    records: deepFreeze([...(input.records ?? [])]),
+    records: deepFreeze([...arrayField(input.records, 'metadata-page-records-must-be-array')]),
     nextCursor: input.nextCursor == null ? null : String(input.nextCursor),
     truncated: input.truncated === true,
   });
@@ -248,6 +254,9 @@ export function createLanguageMetadataResult(input = {}) {
     ecosystem: input.ecosystem,
     verdict: input.verdict ?? 'identity-unavailable',
   });
+  const sections = arrayField(input.sections, 'metadata-result-sections-must-be-array');
+  const reasons = arrayField(input.completeness?.reasons, 'metadata-result-reasons-must-be-array');
+  const diagnostics = arrayField(input.diagnostics, 'metadata-result-diagnostics-must-be-array');
   const defaultCompleteness = input.completeness?.complete === true ? 'complete' : 'partial';
   const defaultStopReason = defaultCompleteness === 'complete' ? null : (input.completeness?.capped ? 'budget-exhausted' : 'evidence-missing');
   const status = input.status != null
@@ -267,10 +276,10 @@ export function createLanguageMetadataResult(input = {}) {
     ecosystem: identity.ecosystem,
     identity,
     authoritative: isAuthoritative(identity),
-    sections: deepFreeze([...(input.sections ?? [])].map(String).sort()),
+    sections: deepFreeze([...sections].map(String).sort()),
     counts: deepFreeze({ ...(input.counts ?? {}) }),
     completeness: deepFreeze({
-      present: input.completeness?.present ?? (input.sections?.length > 0),
+      present: input.completeness?.present ?? (sections.length > 0),
       declared: nonNegativeSafeInteger(input.completeness?.declared, 'metadata-result-invalid-declared'),
       scanned: nonNegativeSafeInteger(input.completeness?.scanned, 'metadata-result-invalid-scanned'),
       parsed: nonNegativeSafeInteger(input.completeness?.parsed, 'metadata-result-invalid-parsed'),
@@ -278,9 +287,9 @@ export function createLanguageMetadataResult(input = {}) {
       unreadableEntries: nonNegativeSafeInteger(input.completeness?.unreadableEntries, 'metadata-result-invalid-unreadable-entries'),
       invalidEntries: nonNegativeSafeInteger(input.completeness?.invalidEntries, 'metadata-result-invalid-invalid-entries'),
       complete: input.completeness?.complete === true,
-      reasons: deepFreeze([...(input.completeness?.reasons ?? [])].map(String)),
+      reasons: deepFreeze([...reasons].map(String)),
     }),
-    diagnostics: deepFreeze([...(input.diagnostics ?? [])].map(String)),
+    diagnostics: deepFreeze([...diagnostics].map(String)),
     status,
   });
 }
