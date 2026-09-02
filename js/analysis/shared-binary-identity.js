@@ -30,6 +30,7 @@ function scheduleBackground(signal) {
     };
     const onAbort = () => finish(reject, abortError(signal));
     signal?.addEventListener('abort', onAbort, { once:true });
+    if (signal?.aborted) { onAbort(); return; }
     if (typeof requestIdleCallback === 'function') {
       requestIdleCallback(() => finish(resolve), { timeout:250 });
     } else {
@@ -59,6 +60,7 @@ function waitForEntry(entry, signal) {
       reject(abortError(signal));
     };
     signal?.addEventListener('abort', onAbort, { once:true });
+    if (signal?.aborted) { onAbort(); return; }
     entry.promise.then((value) => finish(resolve, value), (error) => finish(reject, error));
   });
 }
