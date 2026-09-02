@@ -128,6 +128,13 @@ function coverageList(value) {
   return new Set(value.map((item) => item.trim()));
 }
 
+function debugRecordMatchesIdentitySource(identity, record) {
+  if (!identity || !record) return false;
+  if (record.providerId !== identity.providerId || record.providerVersion !== identity.providerVersion) return false;
+  if (record.buildIdentity != null && record.buildIdentity !== identity.observed) return false;
+  return true;
+}
+
 /**
  * True only when one record is explicitly covered by a partial identity.
  *
@@ -138,7 +145,7 @@ function coverageList(value) {
  */
 export function isDebugRecordAuthoritative(result, record) {
   const identity = result?.identity;
-  if (!identity || !record) return false;
+  if (!identity || !record || !debugRecordMatchesIdentitySource(identity, record)) return false;
   if (identity.verdict === 'matched-authoritative') return true;
   if (identity.verdict !== 'matched-partial') return false;
 
@@ -278,7 +285,6 @@ export class DebugInfoProvider {
   authoritativeRecords(result, reader, scope, options = {}) {
     if (!result.authoritative) return createDebugPage({ records: [], truncated: false });
     const page = reader.call(this, scope, options);
-    if (result.identity?.verdict !== 'matched-partial') return page;
     return createDebugPage({
       records: (page.records ?? []).filter((record) => isDebugRecordAuthoritative(result, record)),
       nextCursor: page.nextCursor,
