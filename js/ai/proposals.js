@@ -16,11 +16,12 @@ export class ProposalStore {
 
   create(input = {}) {
     if (!PROPOSAL_KINDS.has(input.kind)) throw new AIError('invalid_tool_call', `Unsupported proposal kind: ${input.kind}`);
-    const evidenceIds = Array.from(new Set((input.evidenceIds || []).map(String).filter((id) => this.evidenceStore?.has(id))));
+    const evidenceIds = Array.from(new Set((Array.isArray(input.evidenceIds) ? input.evidenceIds : []).filter((id) => typeof id === 'string' && this.evidenceStore?.has(id))));
     if (!evidenceIds.length) throw new AIError('invalid_tool_call', 'A proposal requires deterministic evidence.');
     let id;
-    if (input.id) {
-      id = String(input.id);
+    if (Object.prototype.hasOwnProperty.call(input, 'id')) {
+      if (typeof input.id !== 'string' || !input.id) throw new AIError('invalid_tool_call', 'Proposal id must be a non-empty string.');
+      id = input.id;
       if (this.records.has(id)) throw new AIError('invalid_tool_call', `Proposal id already exists: ${id}`);
     } else {
       do id = `proposal_${proposalSequence++}`;
@@ -99,12 +100,13 @@ export class ProposalStore {
   }
 
   require(id) {
-    const value = this.records.get(String(id));
+    if (typeof id !== 'string' || !id) throw new AIError('invalid_tool_call', 'Unknown proposal.');
+    const value = this.records.get(id);
     if (!value) throw new AIError('invalid_tool_call', 'Unknown proposal.');
     return value;
   }
-  has(id) { return this.records.has(String(id)); }
-  get(id) { return this.records.get(String(id)) || null; }
+  has(id) { return typeof id === 'string' && !!id && this.records.has(id); }
+  get(id) { return typeof id === 'string' && !!id ? this.records.get(id) || null : null; }
   all() { return Array.from(this.records.values()); }
 }
 
