@@ -41,6 +41,7 @@ export class AnalysisCache {
     this.analysisIdentity = analysisIdentity(options);
     this.fallbackMode = options.fallbackMode ?? ANALYSIS_CACHE_FALLBACK.MEMORY;
     if (!Object.values(ANALYSIS_CACHE_FALLBACK).includes(this.fallbackMode)) throw new TypeError('analysis-cache-fallback-mode-invalid');
+    if (options.memory != null && !(options.memory instanceof Map)) throw new TypeError('analysis-cache-memory-backend-invalid');
     this.memory = options.memory || (!this.indexedDB && this.fallbackMode === ANALYSIS_CACHE_FALLBACK.MEMORY ? new Map() : null);
     this._db = null;
     this._idbFailed = false;
