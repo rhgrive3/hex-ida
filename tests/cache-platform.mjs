@@ -76,6 +76,22 @@ for (const reason of [false, 0, '']) {
   assert.strictEqual(observed, reason);
 }
 
+// #3401: an explicitly configured memory backend must satisfy the Map contract.
+const explicitMemory = new Map();
+const explicitMemoryCache = new AnalysisCache({ indexedDB:null, memory:explicitMemory });
+assert.strictEqual(explicitMemoryCache.memory, explicitMemory);
+for (const invalidMemory of [true, false, 1, 0, 'memory', '', {}, []]) {
+  assert.throws(
+    () => new AnalysisCache({ indexedDB:null, memory:invalidMemory }),
+    error => error instanceof TypeError && error.message === 'analysis-cache-memory-backend-invalid',
+    `explicit non-Map memory backend ${Object.prototype.toString.call(invalidMemory)} must fail at construction`,
+  );
+}
+for (const absentMemory of [undefined, null]) {
+  const fallbackCache = new AnalysisCache({ indexedDB:null, memory:absentMemory });
+  assert.ok(fallbackCache.memory instanceof Map, 'absent memory backend must preserve automatic memory fallback');
+}
+
 // #3404: binary hash identity is string-only and malformed lookups/writes/deletes
 // must never alias a canonical string key or destroy its valid entry.
 const strictHashMemory = new Map();
