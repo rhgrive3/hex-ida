@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
+import { Blob } from 'node:buffer';
 import { AnalysisCache } from '../js/cache/analysis-cache.js';
 import {
   awaitCancellableProducer,
   decodeWorkerAnalysisPayload,
   encodeWorkerAnalysisPayload,
 } from '../js/cache/artifact-orchestration.js';
+import { sha256BlobHex } from '../js/cache/content-identity.js';
 
 const memory = new Map();
 const cache = new AnalysisCache({ indexedDB: null, memory, schemaVersion: 2 });
@@ -75,5 +77,83 @@ for (const reason of [false, 0, '']) {
   assert.notEqual(observed, unset);
   assert.strictEqual(observed, reason);
 }
+
+// #3399: progress is advisory; non-callable option values must not affect hashing.
+const progressBlob = new Blob([Uint8Array.from([0, 1, 2, 3, 4])]);
+const progressBaseline = await sha256BlobHex(progressBlob, { chunkBytes:2 });
+for (const onProgress of [true, 1, 'progress', {}, []]) {
+  const result = await sha256BlobHex(progressBlob, { chunkBytes:2, onProgress });
+  assert.deepEqual(
+    result,
+    progressBaseline,
+    `non-function onProgress ${Object.prototype.toString.call(onProgress)} must behave like no callback`,
+  );
+}
+const progressEvents = [];
+const progressResult = await sha256BlobHex(progressBlob, {
+  chunkBytes:2,
+  onProgress:event => progressEvents.push(event),
+});
+assert.deepEqual(progressResult, progressBaseline, 'valid progress callback must not affect the digest result');
+assert.deepEqual(progressEvents, [
+  { bytesRead:2, totalBytes:5, reads:1 },
+  { bytesRead:4, totalBytes:5, reads:2 },
+  { bytesRead:5, totalBytes:5, reads:3 },
+]);
+
+// #3401: an explicitly configured memory backend must satisfy the Map contract.
+const explicitMemory = new Map();
+const explicitMemoryCache = new AnalysisCache({ indexedDB:null, memory:explicitMemory });
+assert.strictEqual(explicitMemoryCache.memory, explicitMemory);
+for (const invalidMemory of [true, false, 1, 0, 'memory', '', {}, []]) {
+  assert.throws(
+    () => new AnalysisCache({ indexedDB:null, memory:invalidMemory }),
+    error => error instanceof TypeError && error.message === 'analysis-cache-memory-backend-invalid',
+    `explicit non-Map memory backend ${Object.prototype.toString.call(invalidMemory)} must fail at construction`,
+  );
+}
+for (const absentMemory of [undefined, null]) {
+  const fallbackCache = new AnalysisCache({ indexedDB:null, memory:absentMemory });
+  assert.ok(fallbackCache.memory instanceof Map, 'absent memory backend must preserve automatic memory fallback');
+}
+
+// #3404: binary hash identity is string-only and malformed lookups/writes/deletes
+// must never alias a canonical string key or destroy its valid entry.
+const strictHashMemory = new Map();
+const strictHashCache = new AnalysisCache({ indexedDB:null, memory:strictHashMemory, schemaVersion:2 });
+await strictHashCache.put('abc', { analysisSummaries:{ source:'valid' } });
+for (const malformed of [['abc'], { toString() { return 'abc'; } }, 123, true, '']) {
+  await assert.rejects(strictHashCache.get(malformed), /analysis-cache-binary-hash-invalid/);
+  assert.equal((await strictHashCache.get('abc')).analysisSummaries.source, 'valid');
+
+  await assert.rejects(
+    strictHashCache.put(malformed, { analysisSummaries:{ source:'malformed' } }),
+    /analysis-cache-binary-hash-invalid/,
+  );
+  assert.equal((await strictHashCache.get('abc')).analysisSummaries.source, 'valid');
+
+  await assert.rejects(strictHashCache.delete(malformed), /analysis-cache-binary-hash-invalid/);
+  assert.equal((await strictHashCache.get('abc')).analysisSummaries.source, 'valid');
+}
+assert.throws(() => strictHashCache.key(['abc']), /analysis-cache-binary-hash-invalid/);
+assert.throws(() => strictHashCache.legacyKey(['abc']), /analysis-cache-binary-hash-invalid/);
+assert.throws(() => strictHashCache.key(''), /analysis-cache-binary-hash-invalid/);
+assert.throws(() => strictHashCache.legacyKey(''), /analysis-cache-binary-hash-invalid/);
+
+// Canonical artifact-id reads intentionally allow the legacy binary hash to be omitted.
+const canonicalArtifactId = `artifact_${'a'.repeat(32)}`;
+await strictHashCache.put('artifact-source', { analysisSummaries:{ source:'artifact' } }, { artifactId:canonicalArtifactId });
+assert.equal(
+  (await strictHashCache.get(undefined, { artifactId:canonicalArtifactId })).analysisSummaries.source,
+  'artifact',
+);
+await assert.rejects(
+  strictHashCache.get('', { artifactId:canonicalArtifactId }),
+  /analysis-cache-binary-hash-invalid/,
+);
+await assert.rejects(
+  strictHashCache.delete('', { artifactId:canonicalArtifactId }),
+  /analysis-cache-binary-hash-invalid/,
+);
 
 console.log('cache-platform: PASS');
