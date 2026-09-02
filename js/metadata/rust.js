@@ -384,7 +384,8 @@ export class RustMetadataProvider extends LanguageMetadataProvider {
   }
 
   probe() {
-    const rawSymbols = this.symbolsList || [];
+    const rawSymbols = this.symbolsList == null ? [] : this.symbolsList;
+    if (!Array.isArray(rawSymbols)) throw new TypeError('rust-metadata-symbols-must-be-array');
     const rustSymbols = [];
     const vtables = [];
     let unreadable = 0;
