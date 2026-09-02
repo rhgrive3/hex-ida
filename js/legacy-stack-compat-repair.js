@@ -16,8 +16,9 @@
 
 function directStackProof(value, stackPointerProvenanceOf) {
   try {
-    const proof = stackPointerProvenanceOf?.(value);
-    return proof?.must === true || proof?.may === true;
+    // Any non-null provenance means the value may carry a stack address.  The
+    // producer's `must:false` form is intentionally still an escape barrier.
+    return stackPointerProvenanceOf?.(value) != null;
   } catch {
     return false;
   }
@@ -99,6 +100,12 @@ function stackAddressEscapesFunction(projected, stackPointerProvenanceOf) {
   return false;
 }
 
+function exactAccessSize(inst) {
+  const raw = inst?.loc?.size ?? inst?.size ?? inst?.addr?.size ?? null;
+  const size = Number(raw);
+  return Number.isSafeInteger(size) && size > 0 ? size : null;
+}
+
 export function restoreLegacyPrivateStackForwarding(projected, stackPointerProvenanceOf) {
   if (!projected) return projected;
   canonicalizeLegacyRootedFieldBases(projected);
@@ -118,13 +125,16 @@ export function restoreLegacyPrivateStackForwarding(projected, stackPointerProve
     if (load.memUse?.kind !== 'clobber' || !repairedCalls.has(load.memUse?.inst)) continue;
     const block = projected.blocks?.[load.block];
     if (!block) continue;
+    const loadSize = exactAccessSize(load);
+    if (loadSize == null) continue;
 
     const prior = [...(block.insts ?? [])]
       .filter((inst) => Number(inst.row) < Number(load.row))
       .sort((a, b) => Number(b.row) - Number(a.row) || Number(b.id) - Number(a.id));
     let store = null;
     for (const inst of prior) {
-      if (inst?.op === 'store' && inst.loc?.key === load.loc.key) {
+      if (inst?.op === 'store' && inst.loc?.key === load.loc.key
+          && exactAccessSize(inst) === loadSize) {
         store = inst;
         break;
       }
