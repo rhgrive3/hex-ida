@@ -4,6 +4,7 @@ import { createOperationIdentity, assertIdentityMatch } from '../phase12/identit
 export const CHANGELOG_SCHEMA_VERSION = 'hex-project-operation-v1';
 export const CHECKPOINT_SCHEMA_VERSION = 'hex-project-checkpoint-v1';
 const MEANINGFUL_FACTS = new Set(['name', 'type', 'struct', 'confirmation', 'patch']);
+const OPERATION_ACTIONS = new Set(['set', 'remove', 'resolve', 'resurrect']);
 
 function required(value, code) { const text = String(value ?? '').trim(); if (!text) throw new TypeError(code); return text; }
 function clone(value) {
@@ -23,7 +24,10 @@ export function createProjectOperation(input = {}) {
   const projectIdentity = required(input.projectIdentity ?? input.projectId, 'operation-project-identity-required');
   const targetEntityId = required(input.targetEntityId ?? input.entityId, 'operation-target-entity-required');
   const factKind = required(input.factKind, 'operation-fact-kind-required');
-  const action = required(input.action || 'set', 'operation-action-required');
+  const actionInput = input.action ?? 'set';
+  if (typeof actionInput !== 'string') throw new TypeError('operation-action-required');
+  const action = required(actionInput, 'operation-action-required');
+  if (!OPERATION_ACTIONS.has(action)) throw new TypeError('operation-action-unsupported');
   const payload = clone(input.payload ?? input.value ?? null);
   const operationId = required(input.operationId || `op:${stableDigest({ projectIdentity, binaryIdentity: input.binaryIdentity || null, targetEntityId, factKind, action, payload, beforeFingerprint: input.beforeFingerprint || null, causalParents: list(input.causalParents) })}`, 'operation-id-required');
   const operation = {
