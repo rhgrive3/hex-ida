@@ -116,6 +116,7 @@ function verifyClamp(asm, fn, baseAddress) {
     returnType:'int32',
     abiAdapter:compilerTruthAbiAdapter,
     decompilerTimeBudgetMs:120,
+    deterministicTransforms:true,
   });
   assert.ok(result?.semantic, `${fn}: semantic decompiler fallback`);
   assert.ok(result.semanticAst && result.cAst && result.sourceMap?.length, `${fn}: AST/source map missing`);
