@@ -155,7 +155,25 @@ console.log('Testing Rust Metadata Provider...');
   assert.equal(provider.symbols().records.length, 0);
 }
 
-// 10. Stripped binary probe
+// 10. Invalid-only Rust candidates remain visible evidence without a compiler signature.
+{
+  const provider = new RustMetadataProvider({
+    symbols: [{ name: '_ZN6my_app4main17haabbccddeeff0011E', address: { structured: true } }],
+    commentBuffer: null,
+    binaryIdentity: 'sha256:invalid-only-rust',
+  });
+  const probe = provider.probe();
+  assert.equal(probe.identity.verdict, 'matched-partial');
+  assert.equal(probe.completeness.present, true);
+  assert.equal(probe.completeness.complete, false);
+  assert.equal(probe.completeness.declared, 1);
+  assert.equal(probe.completeness.scanned, 1);
+  assert.equal(probe.completeness.parsed, 0);
+  assert.equal(probe.completeness.invalidEntries, 1);
+  assert.equal(provider.symbols().records.length, 0);
+}
+
+// 11. Stripped binary probe
 {
   const strippedProvider = new RustMetadataProvider({
     symbols: [],
