@@ -20,8 +20,10 @@ function toAddress(value) {
   if (value == null) return null;
   const type = typeof value;
   if (type !== 'bigint' && type !== 'string' && !(type === 'number' && Number.isSafeInteger(value))) return null;
-  try { return BigInt(value).toString(); }
-  catch { return null; }
+  try {
+    const address = BigInt(value);
+    return address >= 0n ? address.toString() : null;
+  } catch { return null; }
 }
 
 function evidence(kind, input) {
