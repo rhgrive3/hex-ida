@@ -9,9 +9,10 @@ export function canonicalArchitectureId(value) {
 }
 export function normalizeArchitecturePositiveInteger(value, name, { nullable = false } = {}) {
   if (nullable && value == null) return null;
-  const n = Number(value);
-  if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) throw new TypeError(`${name} must be a finite positive integer`);
-  return n;
+  if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isInteger(value) || value <= 0) {
+    throw new TypeError(`${name} must be a finite positive integer`);
+  }
+  return value;
 }
 
 export class ArchitecturePluginV2 {
