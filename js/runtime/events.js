@@ -212,7 +212,8 @@ function estimatePayloadSize(value, maxBytes) {
 }
 
 export function createRuntimeEventBatch(input = {}) {
-  const rawEvents = Array.isArray(input.events) ? input.events : [];
+  const rawEvents = input.events == null ? [] : input.events;
+  if (!Array.isArray(rawEvents)) throw new DebugAdapterError('runtime-invalid-event-array', 'events must be an array');
   const events = rawEvents.map((event) => createRuntimeEvent(event));
   const dropped = safeInteger(input.dropped, 0, 'dropped');
   const runtimeSessionId = required(input.runtimeSessionId ?? events[0]?.runtimeSessionId, 'runtime-session-id-required', 'runtime event batch requires runtimeSessionId');
