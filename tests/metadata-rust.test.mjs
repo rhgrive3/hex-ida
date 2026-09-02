@@ -43,6 +43,15 @@ console.log('Testing Rust Metadata Provider...');
   const r2 = demangleRustLegacy('_ZN3std2io12$LT$impl$GT$17h1122334455667788E');
   assert.equal(r2.parsed, true);
   assert.equal(r2.demangled, 'std::io::<impl>');
+
+  // #3436: the nested-name terminator is part of the legacy grammar and must
+  // actually be consumed before any component can become authoritative.
+  const terminated = demangleRustLegacy('_ZN4coreE');
+  assert.equal(terminated.parsed, true);
+  assert.equal(terminated.demangled, 'core');
+  const unterminated = demangleRustLegacy('_ZN4core');
+  assert.equal(unterminated.parsed, false);
+  assert.equal(unterminated.demangled, '_ZN4core');
 }
 
 // 3. Demangle generic entrypoint
@@ -84,7 +93,7 @@ console.log('Testing Rust Metadata Provider...');
   assert.equal(isRustLayoutStable(dwarfType), true);
 }
 
-// 6. Negative & Fail-Closed: Malformed v0 symbols
+// 6. Negative & Fail-Closed: Malformed v0/legacy symbols
 {
   const malformed1 = demangleRustV0('_R99999999999999999999999');
   assert.equal(malformed1.parsed, false);
@@ -95,6 +104,8 @@ console.log('Testing Rust Metadata Provider...');
 
   const malformedLegacy = demangleRustLegacy('_ZN99999999');
   assert.equal(malformedLegacy.parsed, false);
+  assert.equal(demangleRustLegacy('_ZN4cor').parsed, false, 'truncated component remains fail-closed');
+  assert.equal(demangleRustLegacy('_ZNE').parsed, false, 'empty nested name remains fail-closed');
 }
 
 // 7. RustMetadataProvider probe and symbol generation
@@ -126,6 +137,20 @@ console.log('Testing Rust Metadata Provider...');
   assert.equal(vts.records[0].name, 'my_app::MyTraitvtable');
   assert.equal(vts.records[0].address, '0x3000');
   assert.equal(vts.records[0].entityId, 'vtable@0x3000');
+}
+
+// #3436: an unterminated legacy symbol must not become authoritative evidence.
+{
+  const provider = new RustMetadataProvider({
+    symbols: [{ name: '_ZN4core', address: '0x1000' }],
+    binaryIdentity: 'sha256:unterminated-legacy-rust',
+  });
+  const probe = provider.probe();
+  assert.equal(probe.authoritative, false);
+  assert.equal(probe.completeness.complete, false);
+  assert.equal(probe.completeness.parsed, 0);
+  assert.equal(probe.completeness.unreadableEntries, 1);
+  assert.equal(provider.symbols().records.length, 0);
 }
 
 // 8. Falsy address zero is still exact identity evidence.
