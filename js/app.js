@@ -35,6 +35,7 @@ import { STRING_SCAN_BUDGET, StringCollectionBudget } from './string-budget.js';
 import { productDescriptor } from './platform/product-descriptor.js';
 import { ProductWorkspace } from './workspace.js';
 import { AnalysisQueryAPI, createAppAnalysisQueryAdapter } from './analysis/query/index.js';
+import { appProducerAbortError, waitForAppProducer } from './analysis/producer-wait.js';
 
 
 let _panelsModulePromise = null;
@@ -67,37 +68,6 @@ const showAccuracyNotes = lazyPanel('showAccuracyNotes');
 const $ = (id) => document.getElementById(id);
 const FUNCTION_DISCOVERY_GLOBAL_CAP = 400_000;
 
-function appProducerAbortError(signal, message='Analysis producer aborted') {
-  if (signal?.reason instanceof Error) return signal.reason;
-  const error = new Error(signal?.reason == null ? message : String(signal.reason));
-  error.name = 'AbortError';
-  error.code = 'ABORT_ERR';
-  return error;
-}
-function waitForAppProducer(entry, signal) {
-  if (signal?.aborted) return Promise.reject(appProducerAbortError(signal));
-  entry.waiters++;
-  return new Promise((resolve, reject) => {
-    let done = false;
-    const finish = (fn, value) => {
-      if (done) return;
-      done = true;
-      signal?.removeEventListener('abort', onAbort);
-      entry.waiters = Math.max(0, entry.waiters - 1);
-      fn(value);
-    };
-    const onAbort = () => {
-      if (done) return;
-      done = true;
-      signal?.removeEventListener('abort', onAbort);
-      entry.waiters = Math.max(0, entry.waiters - 1);
-      if (!entry.settled && entry.waiters === 0) entry.controller.abort('analysis-producer-no-consumers');
-      reject(appProducerAbortError(signal));
-    };
-    signal?.addEventListener('abort', onAbort, { once:true });
-    entry.promise.then((value) => finish(resolve, value), (error) => finish(reject, error));
-  });
-}
 
 class App {
   get analysisEpoch() { return this.backend ? this.backend.analysisEpoch : -1; }
