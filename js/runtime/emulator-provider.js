@@ -132,8 +132,13 @@ export class EmulatorProvider {
 
       const termination = terminationOf(raw || {});
       const completeness = completenessFor(termination);
+      const eventSource = raw?.events != null ? raw.events : raw?.trace?.events;
+      if (eventSource != null && !Array.isArray(eventSource)) {
+        session.setState('degraded');
+        throw new DebugAdapterError('emulator-invalid-events', 'emulator engine events must be an array');
+      }
+      const sourceEvents = eventSource ?? [];
       session.setState(termination === 'paused' ? 'paused' : termination === 'exception' ? 'degraded' : 'ready');
-      const sourceEvents = Array.isArray(raw?.events) ? raw.events : Array.isArray(raw?.trace?.events) ? raw.trace.events : [];
       const events = sourceEvents.map((source, index) => createRuntimeEvent({
         runtimeSessionId: session.runtimeSessionId,
         providerId: session.providerId,
