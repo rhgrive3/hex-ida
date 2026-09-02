@@ -51,7 +51,7 @@ const WIDTH_OVERRIDE = Object.freeze({
   ldrsw:32, ldursw:32, ldpsw:32,
 });
 
-function mnemonicOf(decoded) { return String(decoded?.mnemonic || '').trim().toLowerCase(); }
+function mnemonicOf(decoded) { if (typeof decoded?.mnemonic !== 'string') return ''; return decoded.mnemonic.trim().toLowerCase(); }
 function contextOf(decoded, context = {}) {
   const instructionId = String(context.instructionId || decoded?.instructionId || '').trim();
   if (!instructionId) throw new TypeError('arm64-machine-effects-instruction-id-required');

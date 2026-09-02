@@ -141,19 +141,19 @@ export function isCacheableProof({
     return false;
   }
 
-  // 4. Proof cacheability requires a present completeness certificate whose
-  //    five SymbolicEvidence axes are all 'complete' (#3238). Missing,
-  //    partial, unsupported, or unknown axis values fail closed: cached
-  //    authority would otherwise carry into later analyses.
-  const REQUIRED_COMPLETENESS_AXES = [
-    'translation',
-    'controlFlow',
-    'memoryEffects',
-    'pathCoverage',
-    'queryScope',
-  ];
-  if (!completeness || typeof completeness !== 'object') return false;
-  if (!REQUIRED_COMPLETENESS_AXES.every((axis) => completeness[axis] === COMPLETENESS_STATUS.COMPLETE)) {
+  // 4. Cacheable proofs require complete five-axis completeness. The proof
+  // mint contract (createSymbolicEvidence) requires translation, controlFlow,
+  // memoryEffects, pathCoverage, and queryScope to all be complete; the cache
+  // gate must be at least as strong, and missing completeness fails closed.
+  if (
+    !completeness ||
+    typeof completeness !== 'object' ||
+    completeness.translation !== COMPLETENESS_STATUS.COMPLETE ||
+    completeness.controlFlow !== COMPLETENESS_STATUS.COMPLETE ||
+    completeness.memoryEffects !== COMPLETENESS_STATUS.COMPLETE ||
+    completeness.pathCoverage !== COMPLETENESS_STATUS.COMPLETE ||
+    completeness.queryScope !== COMPLETENESS_STATUS.COMPLETE
+  ) {
     return false;
   }
 

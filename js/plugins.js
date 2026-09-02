@@ -2,14 +2,26 @@
  * User-installed sandbox plugins plus the stable platform contribution API.
  * User plugins never receive core parser objects directly; platform plugins
  * use the isolated registry exported at the bottom of this module.
+ *
+ * #2622: script.js/sandbox.js are optional feature code. They must stay out of
+ * the startup module graph and load only when a plugin is actually installed
+ * or run, so the startup boundary below is dynamic-import only.
  */
-import { createApi } from './script.js';
-import { runInSandbox } from './sandbox.js';
-
 const STORE_KEY = 'hex.plugins';
 export const MAX_PLUGIN_SOURCE_BYTES = 512 * 1024;
 const sourceBytes = (source) => new TextEncoder().encode(String(source || '')).byteLength;
 let fallbackInstallSeq = 1;
+
+let scriptSandboxPromise = null;
+function loadScriptSandbox() {
+  if (!scriptSandboxPromise) {
+    scriptSandboxPromise = Promise.all([
+      import('./script.js'),
+      import('./sandbox.js'),
+    ]).then(([script, sandbox]) => ({ createApi: script.createApi, runInSandbox: sandbox.runInSandbox }));
+  }
+  return scriptSandboxPromise;
+}
 
 function newInstallId() {
   if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
@@ -152,6 +164,7 @@ export class PluginHost {
   async install(source, origin, opts = {}) {
     if (typeof source !== 'string' || !source.trim()) return { error: '中身が空です。' };
     if (sourceBytes(source) > MAX_PLUGIN_SOURCE_BYTES) return { error: 'プラグインが大きすぎます（512 KB まで）。' };
+    const { runInSandbox } = await loadScriptSandbox();
     const discovered = await runInSandbox({
       source, mode: 'discover', api: Object.create(null), out: () => {}, timeout: 10000,
     });
@@ -244,6 +257,7 @@ export class PluginHost {
     if (!p) return { error: 'そのプラグインが見つかりません。' };
     const signal = options?.signal ?? null;
     if (signal?.aborted) return { error:'キャンセルされました。', aborted:true };
+    const { createApi, runInSandbox } = await loadScriptSandbox();
     const { api, print } = createApi(this.app, out, options);
     return runInSandbox({ source: p.source, mode: 'plugin', index: p.index, api,
       out: (...args) => print(...args), signal });

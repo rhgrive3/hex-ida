@@ -14,7 +14,8 @@ const COMPARE_BRANCH = new Set(['cbz','cbnz']);
 const TEST_BRANCH = new Set(['tbz','tbnz']);
 
 export function isArm64ControlEffectMnemonic(mnemonic) {
-  const base = String(mnemonic || '').toLowerCase();
+  if (typeof mnemonic !== 'string') return false;
+  const base = mnemonic.toLowerCase();
   return DIRECT_BRANCH.has(base) || INDIRECT_BRANCH.has(base) || COMPARE_BRANCH.has(base)
     || TEST_BRANCH.has(base) || base === 'ret' || /^b\.(?:eq|ne|cs|hs|cc|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le|al|nv)$/.test(base);
 }
@@ -114,7 +115,9 @@ function isIndirectControlRegister(operand) {
   return operand?.k === 'reg'
     && (operand.cls === 'gp' || operand.cls === 'zr')
     && hasValidControlRegisterNumber(operand)
-    && Number(operand.bits) === 64
+    && typeof operand.bits === 'number'
+    && Number.isInteger(operand.bits)
+    && operand.bits === 64
     && operand.shift == null
     && operand.extend == null;
 }
@@ -131,7 +134,9 @@ function isBranchTestRegister(operand) {
   return operand?.k === 'reg'
     && (operand.cls === 'gp' || operand.cls === 'zr')
     && hasValidControlRegisterNumber(operand)
-    && (Number(operand.bits) === 32 || Number(operand.bits) === 64)
+    && typeof operand.bits === 'number'
+    && Number.isInteger(operand.bits)
+    && (operand.bits === 32 || operand.bits === 64)
     && operand.shift == null
     && operand.extend == null;
 }
@@ -159,7 +164,8 @@ function directBranchOperandShapeValid(instruction, mnemonic, ops) {
 }
 
 function liftArm64ControlEffectsCore(instruction, options = {}) {
-  const mnemonic = String(instruction?.mnemonic || '').toLowerCase();
+  if (typeof instruction?.mnemonic !== 'string') return null;
+  const mnemonic = instruction.mnemonic.toLowerCase();
   if (!isArm64ControlEffectMnemonic(mnemonic)) return null;
   const ctx = createArm64EffectContext(instruction, options);
   const ops = instruction?.ops || [];
@@ -257,7 +263,6 @@ function liftArm64ControlEffectsCore(instruction, options = {}) {
   if (!encoding.valid) {
     return ctx.partial(encoding.reason, ['control'], undefined, { kind:'unknown', reason:encoding.reason });
   }
-
   if (COMPARE_BRANCH.has(mnemonic)) {
     const widthBits = instructionBits(ops[0]);
     const value = ctx.readOperand(ops[0], widthBits);

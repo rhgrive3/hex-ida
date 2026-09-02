@@ -92,7 +92,10 @@ const EXTRA_API_TABLE = [
   { id:'libc_io_runtime', re:/^_?(?:perror|close\$NOCANCEL)$/, cat:'io', args:null, ret:null, effect:'io' },
   { id:'libc_posix_memalign', re:/^_?posix_memalign$/, cat:'memory', args:null, ret:null, effect:'write' },
   { id:'libc_difftime', re:/^_?difftime$/, cat:'runtime', args:null, ret:'number', effect:'pure' },
-  { id:'libc_runtime', re:/^_?(?:atexit|reallocf|dlerror)$/, cat:'runtime', args:null, ret:null, effect:'runtime' },
+  // reallocf allocates a new heap buffer and frees the original one on
+  // allocation failure, so it keeps the allocation contract with a heap return.
+  { id:'libc_reallocf', re:/^_?reallocf$/, cat:'memory', args:null, ret:'heap', effect:'alloc' },
+  { id:'libc_runtime', re:/^_?(?:atexit|dlerror)$/, cat:'runtime', args:null, ret:null, effect:'runtime' },
   { id:'os_log', re:/^_?__os_log_fault_impl$/, cat:'log', args:null, ret:null, effect:'log' },
 ];
 

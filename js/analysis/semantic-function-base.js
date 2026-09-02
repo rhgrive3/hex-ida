@@ -124,8 +124,26 @@ function normalizedProtocolString(value, code, { allowEmpty = false } = {}) {
   return text;
 }
 
-function addressOf(instruction) { return BigInt(instruction.address); }
-function endOf(instruction) { return addressOf(instruction) + BigInt(instruction.length ?? instruction.size); }
+// Instruction geometry decides block keys and fallthrough edges: it is CFG
+// authority. Only primitive representations (bigint, safe integer number, or a
+// canonical integer string) may define it; structured values fail closed.
+function canonicalInstructionAddress(value, code) {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return BigInt(value);
+  if (typeof value === 'string' && /^(?:0[xX][0-9a-fA-F]+|\d+)$/.test(value.trim())) {
+    const parsed = BigInt(value.trim());
+    if (parsed >= 0n) return parsed;
+  }
+  throw new TypeError(code);
+}
+
+function addressOf(instruction) {
+  return canonicalInstructionAddress(instruction.address, 'semantic-function-instruction-address-invalid');
+}
+function endOf(instruction) {
+  return addressOf(instruction)
+    + canonicalInstructionAddress(instruction.length ?? instruction.size, 'semantic-function-instruction-length-invalid');
+}
 function keyOf(address) { return `block-${BigInt(address).toString(16)}`; }
 
 function controlKind(plugin, instruction) {
@@ -670,15 +688,20 @@ export function semanticAbiAdapter(abiPlugin, options = {}) {
       const seen = new Set();
       for (const entry of classified?.arguments ?? []) {
         if (!entry || !['register','registers'].includes(entry.location)) continue;
-        const registers = Array.isArray(entry.regs) ? entry.regs : typeof entry.reg === 'string' ? [entry.reg] : [];
+        // ABI argument locations are canonical middle-end authority. Structured
+        // values must not launder into register identities or indices via
+        // String()/Number() coercion; malformed plugin output fails closed.
+        const registers = Array.isArray(entry.regs)
+          ? entry.regs.filter((reg) => typeof reg === 'string' && reg.trim() !== '')
+          : typeof entry.reg === 'string' && entry.reg.trim() !== '' ? [entry.reg] : [];
         for (const register of registers) {
-          const reg = String(register || '');
-          if (!reg) continue;
-          const key = String(entry.index ?? locations.length) + ':' + reg;
+          const reg = register;
+          const explicitIndex = typeof entry.index === 'number' && Number.isSafeInteger(entry.index) ? entry.index : null;
+          const key = String(explicitIndex ?? locations.length) + ':' + reg;
           if (seen.has(key)) continue;
           seen.add(key);
           locations.push(Object.freeze({
-            index:Number.isInteger(Number(entry.index)) ? Number(entry.index) : locations.length,
+            index: explicitIndex ?? locations.length,
             reg,
             abiClass:entry.abiClass ?? null,
             aggregate:entry.aggregate === true || Array.isArray(entry.pieces) || registers.length > 1,

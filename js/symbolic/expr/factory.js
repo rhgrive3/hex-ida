@@ -66,6 +66,35 @@ export function createFreshSymbol(sort, name, meta = {}) {
   });
 }
 
+/**
+ * Restores a serialized FreshSymbol with its saved canonical symbolId and
+ * keeps the global allocator ahead of restored IDs so later fresh symbols
+ * cannot collide with round-tripped ones.
+ */
+export function restoreFreshSymbol(sort, name, symbolId, meta = {}) {
+  assertValidSort(sort, 'restoreFreshSymbol');
+  if (!name || typeof name !== 'string') {
+    throw new TypeError(`restoreFreshSymbol: name must be a non-empty string, got ${name}`);
+  }
+  if (typeof symbolId !== 'string' || !symbolId) {
+    throw new TypeError(`restoreFreshSymbol: symbolId must be a non-empty string, got ${symbolId}`);
+  }
+  const match = /^sym_(\d+)_/.exec(symbolId);
+  if (match) {
+    const restoredIndex = Number(match[1]);
+    if (Number.isSafeInteger(restoredIndex) && restoredIndex > symbolCounter) {
+      symbolCounter = restoredIndex;
+    }
+  }
+  return Object.freeze({
+    kind: EXPR_KIND.FRESH_SYMBOL,
+    sort,
+    name,
+    symbolId,
+    meta: Object.freeze({ ...meta }),
+  });
+}
+
 export function createUnknownSemantic(sort, reason, detail = null) {
   assertValidSort(sort, 'createUnknownSemantic');
   if (!reason || typeof reason !== 'string') {

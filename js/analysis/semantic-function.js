@@ -13,8 +13,25 @@ function abortIfRequested(signal) {
   throw error;
 }
 
-function addressOf(instruction) { return BigInt(instruction.address); }
-function endOf(instruction) { return addressOf(instruction) + BigInt(instruction.length ?? instruction.size); }
+// Shared strict geometry contract with semantic-function-base.js: structured
+// instruction address/length must not launder into CFG authority via BigInt().
+function canonicalInstructionAddress(value, code) {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return BigInt(value);
+  if (typeof value === 'string' && /^(?:0[xX][0-9a-fA-F]+|\d+)$/.test(value.trim())) {
+    const parsed = BigInt(value.trim());
+    if (parsed >= 0n) return parsed;
+  }
+  throw new TypeError(code);
+}
+
+function addressOf(instruction) {
+  return canonicalInstructionAddress(instruction.address, 'semantic-function-instruction-address-invalid');
+}
+function endOf(instruction) {
+  return addressOf(instruction)
+    + canonicalInstructionAddress(instruction.length ?? instruction.size, 'semantic-function-instruction-length-invalid');
+}
 function keyOf(address) { return `block-${BigInt(address).toString(16)}`; }
 
 function controlKind(plugin, instruction) {
