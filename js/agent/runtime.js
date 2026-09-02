@@ -141,7 +141,7 @@ function normalizeToolRequest(step) {
   if (!step || typeof step !== 'object') return null;
   const tool = step.tool || step.name;
   if (typeof tool !== 'string' || !tool) return null;
-  let args = step.args || step.arguments || [];
+  let args = step.args ?? step.arguments ?? [];
   if (!Array.isArray(args)) args = [args];
   return { tool, args };
 }
