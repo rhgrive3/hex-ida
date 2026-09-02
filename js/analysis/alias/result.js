@@ -150,11 +150,11 @@ export function createAliasResult(input = {}) {
  * would let a candidate claim precision it does not have.
  */
 export function unknownAlias(status, reasonCodes = ['unresolved-root'], extra = {}) {
-  return createAliasResult({ relation: 'unknown', status, reasonCodes, ...extra });
+  return createAliasResult({ ...extra, relation: 'unknown', status, reasonCodes });
 }
 
 export function mayAlias(status, reasonCodes = ['overlapping-interval'], extra = {}) {
-  return createAliasResult({ relation: 'may', status, reasonCodes, ...extra });
+  return createAliasResult({ ...extra, relation: 'may', status, reasonCodes });
 }
 
 /**
