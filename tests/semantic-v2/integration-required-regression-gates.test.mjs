@@ -59,7 +59,7 @@ function runScript(script, env, verbose) {
 function defaultHeavyConcurrency(env = process.env, availableParallelism = os.availableParallelism()) {
   const available = Number.isSafeInteger(availableParallelism) && availableParallelism >= 1 ? availableParallelism : 1;
   // Hosted CI remains conservative. On a local >=8-core machine the two
-  // duplicate-heavy proof families can each occupy their existing ~4-core
+  // duplicate-heavy proof families can each occupy their existing bounded
   // internal budget without oversubscribing the host.
   return !env.GITHUB_ACTIONS && available >= 8 ? 2 : 1;
 }
@@ -135,6 +135,9 @@ if (!shouldRun) {
     NODE_OPTIONS: '',
     HEX_SEMANTIC_TEST_CONCURRENCY: process.env.HEX_SEMANTIC_TEST_CONCURRENCY ?? '2',
     HEX_DECOMPILER_TEST_CONCURRENCY: process.env.HEX_DECOMPILER_TEST_CONCURRENCY ?? '2',
+    // compiler-truth is itself one heavy family in this outer pool. Keep its
+    // component-level local fanout disabled here; standalone runs may parallelize.
+    HEX_COMPILER_TRUTH_CONCURRENCY: '1',
   };
   const results = await runPool(lightScripts, childEnv);
   const heavyEnv = heavyPoolEnvironment(childEnv);

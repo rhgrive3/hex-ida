@@ -100,6 +100,12 @@ export function phase3CorpusReuseKey({ suite, files, root, env, timeoutMs, envNa
 async function executePhase3Corpus({ suite, files, root, env, timeoutMs, concurrency, priorityForFile }) {
   const outputMode = String(env.HEX_TEST_OUTPUT ?? '').trim().toLowerCase();
   const verbose = outputMode === 'verbose' || outputMode === 'full';
+  // The 25-leaf corpus is already an outer process pool. compiler-truth is one
+  // leaf, so its standalone component fanout must be suppressed here to avoid
+  // nested N x 3 oversubscription. This changes scheduling only, not its proof.
+  const childEnv = concurrency > 1
+    ? { ...env, HEX_COMPILER_TRUTH_CONCURRENCY: '1' }
+    : env;
   const results = new Array(files.length);
   const workItems = scheduleNodeTestFiles(files, verbose ? null : priorityForFile);
   let nextWorkIndex = 0;
@@ -108,7 +114,7 @@ async function executePhase3Corpus({ suite, files, root, env, timeoutMs, concurr
     while (true) {
       const item = workItems[nextWorkIndex++];
       if (!item) return;
-      results[item.index] = await runOne({ suite, index: item.index, file: item.file, root, env, timeoutMs, verbose });
+      results[item.index] = await runOne({ suite, index: item.index, file: item.file, root, env:childEnv, timeoutMs, verbose });
     }
   }
 

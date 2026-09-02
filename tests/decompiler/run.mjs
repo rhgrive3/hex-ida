@@ -11,11 +11,15 @@ const DIRECTORY = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(DIRECTORY, '../..');
 
 export async function runDecompilerTests({ env = process.env } = {}) {
+  // compiler-truth is one leaf of this outer file pool. Keep its own component
+  // fanout at one here; standalone `npm run compiler-truth` may still use the
+  // local component-level parallel path.
+  const childEnv = { ...env, HEX_COMPILER_TRUTH_CONCURRENCY: '1' };
   return runBoundedNodeSuite({
     label: 'decompiler',
     files: DECOMPILER_ASSERTION_FILES.map((file) => path.join(ROOT, file)),
     cwd: ROOT,
-    env,
+    env: childEnv,
     envName: 'HEX_DECOMPILER_TEST_CONCURRENCY',
     // Direct local decompiler:test has no parent pool. Six-way file fanout keeps
     // compiler-truth on the critical path while overlapping the shorter leaves;

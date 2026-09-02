@@ -133,20 +133,46 @@ function deterministicDecompileCalls(source, label) {
 // budgets, so every decompile call in these suites has to opt into
 // `deterministicTransforms: true`. This gate fails the suite if a future call
 // drops that flag and reintroduces machine-speed-dependent expectations.
-{
-  const fs = await import('node:fs');
-  const path = await import('node:path');
-  const url = await import('node:url');
-  const here = path.dirname(url.fileURLToPath(import.meta.url));
-  const files = ['run-core.mjs', 'extended.mjs', 'language-matrix.mjs'];
-  for (const file of files) {
-    const source = fs.readFileSync(path.join(here, file), 'utf8');
-    const { calls, flagged } = deterministicDecompileCalls(source, file);
-    if (calls !== flagged || calls === 0) {
-      throw new Error(`compiler-truth determinism contract violated in ${file}: ${flagged}/${calls} decompile calls pass deterministicTransforms:true`);
-    }
+const fs = await import('node:fs');
+const path = await import('node:path');
+const url = await import('node:url');
+const here = path.dirname(url.fileURLToPath(import.meta.url));
+const componentNames = ['run-core.mjs', 'extended.mjs', 'language-matrix.mjs'];
+for (const file of componentNames) {
+  const source = fs.readFileSync(path.join(here, file), 'utf8');
+  const { calls, flagged } = deterministicDecompileCalls(source, file);
+  if (calls !== flagged || calls === 0) {
+    throw new Error(`compiler-truth determinism contract violated in ${file}: ${flagged}/${calls} decompile calls pass deterministicTransforms:true`);
   }
 }
-await import('./run-core.mjs');
-await import('./extended.mjs');
-await import('./language-matrix.mjs');
+
+const { ghidraAvailability } = await import('../../tools/decompiler/ghidra-diff.mjs');
+const {
+  resolveCompilerTruthConcurrency,
+  runCompilerTruthComponents,
+} = await import('./parallel-components.mjs');
+const ghidra = ghidraAvailability();
+const concurrency = ghidra.available
+  ? 1
+  : resolveCompilerTruthConcurrency({ env: process.env });
+
+if (concurrency <= 1) {
+  // Preserve the historical in-process path on hosted CI, nested callers that
+  // explicitly cap this suite, and hosts with an active Ghidra differential.
+  await import('./run-core.mjs');
+  await import('./extended.mjs');
+  await import('./language-matrix.mjs');
+} else {
+  const preludeUrl = new URL('./parallel-prelude.mjs', import.meta.url);
+  const inheritedNodeOptions = String(process.env.NODE_OPTIONS ?? '').trim();
+  const childEnv = {
+    ...process.env,
+    NODE_OPTIONS: [inheritedNodeOptions, `--import=${preludeUrl.href}`].filter(Boolean).join(' '),
+  };
+  await runCompilerTruthComponents({
+    files: componentNames.map((file) => path.join(here, file)),
+    cwd: path.resolve(here, '../..'),
+    env: childEnv,
+    concurrency,
+  });
+}
