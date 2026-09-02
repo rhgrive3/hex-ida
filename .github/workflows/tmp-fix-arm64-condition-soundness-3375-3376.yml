@@ -1,0 +1,48 @@
+name: Temporary ARM64 condition soundness fix
+
+on:
+  push:
+    branches:
+      - fix/arm64-condition-soundness-3375-3376
+    paths:
+      - tools/maintenance/fix-arm64-condition-soundness-3375-3376.mjs
+      - .github/workflows/tmp-fix-arm64-condition-soundness-3375-3376.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/arm64-condition-soundness-3375-3376
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+      - name: Apply guarded source patch
+        run: node tools/maintenance/fix-arm64-condition-soundness-3375-3376.mjs
+      - name: Syntax check touched JavaScript
+        run: |
+          node --check js/expr.js
+          node --check js/symbolic/executor.js
+          node --check tests/integration-review.mjs
+      - name: Targeted regression
+        run: node tests/integration-review.mjs
+      - name: Semantic regression suite
+        run: npm run semantic:test
+      - name: Commit verified patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add js/expr.js js/symbolic/executor.js tests/integration-review.mjs
+          git diff --cached --quiet && exit 0
+          git commit -m "fix: preserve ARM64 condition-code soundness (#3375 #3376)"
+          git push origin HEAD:fix/arm64-condition-soundness-3375-3376
