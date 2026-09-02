@@ -29,7 +29,7 @@ function utf16At(bytes,p,end){
   return {cp:u,bytes:2};
 }
 function finiteOption(value,fallback){
-  const candidate=value||fallback, n=Number(candidate);
+  const candidate=value===0?0:(value||fallback), n=Number(candidate);
   return Number.isFinite(n)?n:fallback;
 }
 
