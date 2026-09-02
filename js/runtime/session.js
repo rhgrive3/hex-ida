@@ -120,7 +120,8 @@ export class DebugSessionManager {
   create(adapter,options={}){
     if(this.sessions.size>=this.maxSessions)throw new DebugAdapterError('session-limit',`debug session limit reached (${this.maxSessions})`);
     for(const active of this.sessions.values())if(!active.closed&&active.adapter===adapter)throw new DebugAdapterError('adapter-in-use','a debug adapter cannot be shared by multiple live sessions');
-    const session=new DebugSession(adapter,{...options,onClosed:(closed)=>this._sessionClosed(closed)});
+    const callerOnClosed=typeof options.onClosed==='function'?options.onClosed:null;
+    const session=new DebugSession(adapter,{...options,onClosed:(closed)=>{this._sessionClosed(closed);if(callerOnClosed){try{callerOnClosed(closed);}catch{}}}});
     if(this.sessions.has(session.id)) throw new DebugAdapterError('duplicate-session-id',`debug session id already exists: ${session.id}`,{id:session.id});
     this.sessions.set(session.id,session);this.current=session;return session;
   }
