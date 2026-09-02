@@ -40,7 +40,7 @@ function regionForAddress(app, address) {
 }
 function progress(options, value) { try { options?.onProgress?.(value); } catch { /* observer only */ } }
 function priorityOf(options) {
-  const value = String(options?.priority || 'user-visible');
+  const value = typeof options?.priority === 'string' ? options.priority : 'user-visible';
   return SCHEDULER_PRIORITIES.has(value) ? value : 'user-visible';
 }
 function scheduleProducer(options, signal) {

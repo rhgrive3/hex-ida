@@ -125,7 +125,9 @@ export async function fieldAccessAcrossExecutableRegions(app, offset, size, {
 
   const parts = new Map();
   const completedIds = new Set();
-  const publish = () => onPartial?.(aggregate(parts, regions, completedIds));
+  const publish = () => {
+    if (typeof onPartial === 'function') onPartial(aggregate(parts, regions, completedIds));
+  };
   const runOne = async (region) => {
     if (signal?.aborted) throw abortError(signal);
     const part = await fieldAccessRegion(app.backend, region, offset, size, { signal });
