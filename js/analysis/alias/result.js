@@ -162,5 +162,10 @@ export function mayAlias(status, reasonCodes = ['overlapping-interval'], extra =
  * operations past each other. `may` and `unknown` are both refusals.
  */
 export function permitsSeparationTransform(result) {
-  return !!result && result.relation === 'no' && result.status.stopReason == null;
+  try {
+    const canonical = createAliasResult(result);
+    return canonical.relation === 'no' && canonical.status.stopReason == null;
+  } catch {
+    return false;
+  }
 }
