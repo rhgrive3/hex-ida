@@ -145,8 +145,55 @@ function transformList(values) {
       originRefs: Object.freeze([...new Set(
         (item.originRefs ?? []).map((ref) => nonEmptyString(ref, 'phase8-pass-transform-origin-invalid')),
       )].sort()),
+      // C4-04: an optional typed rewrite payload plus its pass-local
+      // validation record. The transaction enforces the adoption rules; the
+      // contract only enforces shape. A validation must name one of the
+      // closed statuses and, for `equivalent`, carry the recomputable proof
+      // id and the verifier that minted it.
+      ...(item.rewrite === undefined ? {} : { rewrite: Object.freeze(item.rewrite) }),
+      ...(item.unvalidatedReason === undefined ? {} : { unvalidatedReason: nonEmptyString(item.unvalidatedReason, 'phase8-pass-transform-unvalidated-reason-required') }),
+      ...(item.validation === undefined ? {} : { validation: validationRecord(item.validation) }),
     });
   }));
+}
+
+const REWRITE_VALIDATION_STATUSES = Object.freeze(['equivalent', 'refuted', 'unknown', 'unsupported']);
+
+function validationRecord(value) {
+  if (typeof value === 'string') {
+    if (!REWRITE_VALIDATION_STATUSES.includes(value)) fail(`phase8-pass-transform-validation-unknown:${value}`);
+    return Object.freeze({ validation: value });
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) fail('phase8-pass-transform-validation-invalid');
+  if (!REWRITE_VALIDATION_STATUSES.includes(value.validation)) fail(`phase8-pass-transform-validation-unknown:${String(value?.validation)}`);
+  if (value.validation === 'equivalent') {
+    if (typeof value.equivalenceProofId !== 'string' || !value.equivalenceProofId.length) {
+      fail('phase8-pass-transform-validation-proof-required');
+    }
+    if (typeof value.verifier !== 'string' || !value.verifier.length) {
+      fail('phase8-pass-transform-validation-verifier-required');
+    }
+    return Object.freeze({
+      validation: value.validation,
+      equivalenceProofId: value.equivalenceProofId,
+      verifier: value.verifier,
+      verdictSource: value.verdictSource == null ? null : nonEmptyString(value.verdictSource, 'phase8-pass-transform-validation-verdict-source-required'),
+      solverStatus: value.solverStatus == null ? null : String(value.solverStatus),
+      completeness: value.completeness == null ? null : value.completeness,
+      // The query hash is part of the proof-id material; a record that claims
+      // equivalence without it cannot be re-verified at commit time.
+      ...(value.queryHash == null
+        ? fail('phase8-pass-transform-validation-query-hash-required')
+        : { queryHash: String(value.queryHash) }),
+    });
+  }
+  return Object.freeze({
+    validation: value.validation,
+    reason: value.reason == null ? null : nonEmptyString(value.reason, 'phase8-pass-transform-validation-reason-required'),
+    verifier: value.verifier == null ? null : nonEmptyString(value.verifier, 'phase8-pass-transform-validation-verifier-required'),
+    solverStatus: value.solverStatus == null ? null : String(value.solverStatus),
+    counterexample: value.counterexample == null ? null : Object.freeze(value.counterexample),
+  });
 }
 
 /**
