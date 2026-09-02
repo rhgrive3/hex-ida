@@ -79,13 +79,20 @@ export function restoreFreshSymbol(sort, name, symbolId, meta = {}) {
   if (typeof symbolId !== 'string' || !symbolId) {
     throw new TypeError(`restoreFreshSymbol: symbolId must be a non-empty string, got ${symbolId}`);
   }
-  const match = /^sym_(\d+)_/.exec(symbolId);
-  if (match) {
-    const restoredIndex = Number(match[1]);
-    if (Number.isSafeInteger(restoredIndex) && restoredIndex > symbolCounter) {
-      symbolCounter = restoredIndex;
-    }
+  const prefix = 'sym_';
+  const separator = symbolId.indexOf('_', prefix.length);
+  const indexText = separator < 0 ? '' : symbolId.slice(prefix.length, separator);
+  const restoredName = separator < 0 ? '' : symbolId.slice(separator + 1);
+  if (!symbolId.startsWith(prefix)
+      || !/^[1-9]\d*$/.test(indexText)
+      || restoredName !== name) {
+    throw new TypeError(`restoreFreshSymbol: malformed symbolId ${symbolId}`);
   }
+  const restoredIndex = Number(indexText);
+  if (!Number.isSafeInteger(restoredIndex)) {
+    throw new TypeError(`restoreFreshSymbol: malformed symbolId ${symbolId}`);
+  }
+  if (restoredIndex > symbolCounter) symbolCounter = restoredIndex;
   return Object.freeze({
     kind: EXPR_KIND.FRESH_SYMBOL,
     sort,
