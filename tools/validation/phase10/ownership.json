@@ -143,7 +143,8 @@
     "tests/issue-3238-cache-policy-completeness.mjs",
     "tests/issue-3245-bool-model-binding.mjs",
     "tests/issues-unlinked-batch2-20260902.mjs",
-    "tests/phase9/verify/global-reachability.test.mjs"
+    "tests/phase9/verify/global-reachability.test.mjs",
+    "js/architecture/compat/ir-core-arm64-aapcs64-v1.js"
   ],
   "forbiddenPrefixes": [
     "js/semantics/",
