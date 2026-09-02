@@ -31,11 +31,13 @@ export function resetSymbolCounterForTesting(val = 0) {
 }
 
 export function createBool(value) {
-  const boolVal = Boolean(value);
+  if (typeof value !== 'boolean') {
+    throw new TypeError(`createBool: value must be a boolean, got ${value}`);
+  }
   return Object.freeze({
     kind: EXPR_KIND.CONST,
     sort: boolSort(),
-    value: boolVal,
+    value,
   });
 }
 
@@ -192,20 +194,23 @@ export function createExtract(arg, high, low) {
   if (!arg || !isBvSort(arg.sort)) {
     throw new TypeError(`createExtract: operand must have BV sort, got ${sortToString(arg?.sort)}`);
   }
-  const h = Number(high);
-  const l = Number(low);
-  if (!Number.isSafeInteger(h) || !Number.isSafeInteger(l) || l < 0 || h < l || h >= arg.sort.width) {
+  if (typeof high !== 'number' || typeof low !== 'number' || !Number.isSafeInteger(high) || !Number.isSafeInteger(low)) {
     throw new RangeError(
       `createExtract: invalid bit indices [high=${high}, low=${low}] for BV${arg.sort.width}`
     );
   }
-  const outWidth = h - l + 1;
+  if (low < 0 || high < low || high >= arg.sort.width) {
+    throw new RangeError(
+      `createExtract: invalid bit indices [high=${high}, low=${low}] for BV${arg.sort.width}`
+    );
+  }
+  const outWidth = high - low + 1;
   return Object.freeze({
     kind: EXPR_KIND.EXTRACT,
     sort: bvSort(outWidth),
     arg,
-    high: h,
-    low: l,
+    high,
+    low,
   });
 }
 
@@ -232,22 +237,21 @@ export function createCast(op, arg, targetWidth) {
   if (!arg || !isBvSort(arg.sort)) {
     throw new TypeError(`createCast (${op}): operand must have BV sort, got ${sortToString(arg?.sort)}`);
   }
-  const tw = Number(targetWidth);
-  if (!Number.isSafeInteger(tw) || tw <= 0) {
+  if (typeof targetWidth !== 'number' || !Number.isSafeInteger(targetWidth) || targetWidth <= 0) {
     throw new RangeError(`createCast (${op}): targetWidth must be a positive integer >= 1, got ${targetWidth}`);
   }
   const fw = arg.sort.width;
-  if (op === CAST_OP.TRUNC && tw >= fw) {
-    throw new RangeError(`createCast (trunc): targetWidth (${tw}) must be strictly less than fromWidth (${fw})`);
+  if (op === CAST_OP.TRUNC && targetWidth >= fw) {
+    throw new RangeError(`createCast (trunc): targetWidth (${targetWidth}) must be strictly less than fromWidth (${fw})`);
   }
-  if ((op === CAST_OP.ZEXT || op === CAST_OP.SEXT) && tw <= fw) {
-    throw new RangeError(`createCast (${op}): targetWidth (${tw}) must be strictly greater than fromWidth (${fw})`);
+  if ((op === CAST_OP.ZEXT || op === CAST_OP.SEXT) && targetWidth <= fw) {
+    throw new RangeError(`createCast (${op}): targetWidth (${targetWidth}) must be strictly greater than fromWidth (${fw})`);
   }
   return Object.freeze({
     kind: EXPR_KIND.CAST,
-    sort: bvSort(tw),
+    sort: bvSort(targetWidth),
     op,
     arg,
-    targetWidth: tw,
+    targetWidth,
   });
 }
