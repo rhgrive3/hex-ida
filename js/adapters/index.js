@@ -120,7 +120,7 @@ function remoteTrace(result) {
 
 export class LocalFunctionSandboxAdapter extends DebugAdapter {
   constructor(io, options = {}) {
-    super({ id:options.id || 'local-function-sandbox', kind:'local-sandbox', capabilities:{
+    super({ id:options.id ?? 'local-function-sandbox', kind:'local-sandbox', capabilities:{
       launch:true,pause:true,resume:true,stepInto:true,breakpointAddress:true,removeBreakpoint:true,listBreakpoints:true,readRegisters:true,writeRegister:true,
       readMemory:true,writeMemory:true,threads:true,modules:true,backtrace:true,evaluate:true,
       traceFunction:true,traceCall:true,traceReturn:true,traceBranch:true,traceMemoryWrite:true,cancel:true
@@ -404,11 +404,11 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
 }
 
 export class EmulatorAdapter extends LocalFunctionSandboxAdapter {
-  constructor(io, options = {}) { super(io,{ ...options,id:options.id || 'emulator' }); this.kind = 'emulator'; }
+  constructor(io, options = {}) { super(io,{ ...options,id:options.id ?? 'emulator' }); this.kind = 'emulator'; }
 }
 
 export class SymbolicAdapter extends DebugAdapter {
-  constructor(options = {}) { super({ id:options.id || 'symbolic', kind:'symbolic', capabilities:{ launch:true,evaluate:true } }); this.ir = null; this.options = options; this.result = null; }
+  constructor(options = {}) { super({ id:options.id ?? 'symbolic', kind:'symbolic', capabilities:{ launch:true,evaluate:true } }); this.ir = null; this.options = options; this.result = null; }
   async launch(spec = {}) {
     const ir = spec.ir;
     if (!ir) { this.ir = null; this.result = null; throw new DebugAdapterError('missing-ir','symbolic adapter requires Semantic IR'); }
@@ -422,7 +422,7 @@ export class SymbolicAdapter extends DebugAdapter {
 
 export class RemoteDebugAdapter extends DebugAdapter {
   constructor(transport, options = {}) {
-    super({ id:options.id || 'remote-debug', kind:options.kind || 'remote', capabilities:options.capabilities || {} });
+    super({ id:options.id ?? 'remote-debug', kind:options.kind ?? 'remote', capabilities:options.capabilities || {} });
     this.protocol = new RemoteProtocolClient(transport, options.protocol || {}); this.epoch = 0; this.eventListeners = new Set();
     this.allowedCapabilities = this.capabilities;
     this.protocol.onEvent((event) => {
@@ -463,7 +463,7 @@ export class RemoteDebugAdapter extends DebugAdapter {
   async readRegisters(threadId){return remoteRegisters(await this.call('readRegisters',{threadId}))}
   writeRegister(reg,value,threadId){return this.call('writeRegister',{reg:registerSelector(reg),value:String(value),threadId})}
   async readMemory(address,size){const n=memoryReadSize(size,1); if(n>256*1024) throw new DebugAdapterError('too-large','remote memory read exceeds 256 KiB'); return remoteBytes(await this.call('readMemory',{address:String(asAddress(address)),size:n}),n)}
-  async writeMemory(address,bytes){const data=bytes instanceof Uint8Array?[...bytes]:Array.from(bytes||[]); if(data.length>64*1024) throw new DebugAdapterError('too-large','remote memory write exceeds 64 KiB'); for(const b of data)if(!Number.isInteger(b)||b<0||b>255)throw new DebugAdapterError('invalid-byte','memory write contains a non-byte value'); const result=await this.call('writeMemory',{address:String(asAddress(address)),bytes:data}); if(result&&result.written!=null&&Number(result.written)!==data.length)throw new DebugAdapterError('short-write',`remote memory write wrote ${result.written} of ${data.length} bytes`); return result||{written:data.length}}
+  async writeMemory(address,bytes){const data=bytes instanceof Uint8Array?[...bytes]:Array.from(bytes||[]); if(data.length>64*1024) throw new DebugAdapterError('too-large','remote memory write exceeds 64 KiB'); for(const b of data)if(!Number.isInteger(b)||b<0||b>255)throw new DebugAdapterError('invalid-byte','memory write contains a non-byte value'); const result=await this.call('writeMemory',{address:String(asAddress(address)),bytes:data}); if(result&&result.written!=null){const written=result.written;if(typeof written!=='number'||!Number.isSafeInteger(written)||written<0)throw new DebugAdapterError('malformed-remote','remote writeMemory returned a malformed written count');if(written!==data.length)throw new DebugAdapterError('short-write',`remote memory write wrote ${written} of ${data.length} bytes`);} return result||{written:data.length}}
   async getThreads(){return remoteArray(await this.call('getThreads'),'threads',REMOTE_ARRAY_LIMITS.threads,'threads')}
   async getModules(){return remoteArray(await this.call('getModules'),'modules',REMOTE_ARRAY_LIMITS.modules,'modules')}
   async getBacktrace(threadId){return remoteArray(await this.call('getBacktrace',{threadId}),'frames',REMOTE_ARRAY_LIMITS.backtrace,'backtrace')}
@@ -485,7 +485,7 @@ export class ReplayAdapter extends DebugAdapter {
   constructor(recording = {}, options = {}) { super({ id:options.id||'replay',kind:'replay',capabilities:{ launch:true,readRegisters:true,readMemory:true,threads:true,modules:true,backtrace:true,traceFunction:true } }); this.recording=recording; }
   async launch(){return { replay:true, metadata:this.recording.metadata||null }}
   async readRegisters(){return remoteRegisters(this.recording.registers||{})}
-  async readMemory(address,size){const n=Number(size==null?1:size); if(!Number.isSafeInteger(n)||n<1) throw new DebugAdapterError('invalid-size','replay memory read size must be a positive safe integer'); if(n>1024*1024) throw new DebugAdapterError('too-large','replay memory read exceeds 1 MiB'); const key=String(asAddress(address)); const bytes=this.recording.memory&&this.recording.memory[key]; if(!bytes)throw new DebugAdapterError('replay-miss',`recording has no memory at ${key}`); return remoteBytes(bytes,n)}
+  async readMemory(address,size){const n=memoryReadSize(size,1); if(n>1024*1024) throw new DebugAdapterError('too-large','replay memory read exceeds 1 MiB'); const key=String(asAddress(address)); const bytes=this.recording.memory&&this.recording.memory[key]; if(!bytes)throw new DebugAdapterError('replay-miss',`recording has no memory at ${key}`); return remoteBytes(bytes,n)}
   async getThreads(){return remoteArray(this.recording.threads||[],'threads',REMOTE_ARRAY_LIMITS.threads,'threads')}
   async getModules(){return remoteArray(this.recording.modules||[],'modules',REMOTE_ARRAY_LIMITS.modules,'modules')}
   async getBacktrace(){return remoteArray(this.recording.backtrace||[],'frames',REMOTE_ARRAY_LIMITS.backtrace,'backtrace')}

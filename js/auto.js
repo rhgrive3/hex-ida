@@ -1,3 +1,4 @@
+import { stableDigest, jsonSafe } from './core/identity/index.js';
 /*
  * 自動解析 — 利用者が何も指示しなくても、分かることを全部やる。
  * 重い処理は索引 → 採点 → pinpoint → 深掘りの順で、失敗を隠さない。
@@ -145,8 +146,11 @@ export function findings(strings, program, symbols, limit = 40) {
 export async function autoAnalyze(opts) {
   const o = opts || {};
   const { strings = [], program = null, symbols = null, region = null } = o;
-  const progress = o.onProgress || (() => {});
-  const cancelled = o.isCancelled || (() => false);
+  // Progress/cancel callbacks are invocation authorities: only callable
+  // values may be invoked. Truthy non-functions must not raise TypeError
+  // mid-analysis (#3308).
+  const progress = typeof o.onProgress === 'function' ? o.onProgress : () => {};
+  const cancelled = typeof o.isCancelled === 'function' ? o.isCancelled : () => false;
   const deepLimit = o.deepLimit != null ? o.deepLimit : 12;
 
   const report = {
@@ -203,11 +207,16 @@ export async function autoAnalyze(opts) {
   }
   report.goals.sort((a, b) => b.best.score - a.best.score);
 
-  const startBudget = o.pinpointBudget != null ? o.pinpointBudget : 360;
-  const perGoal = o.pinpointPerGoal != null ? o.pinpointPerGoal : 24;
-  const fieldBudget = o.pinpointFieldBudget != null ? o.pinpointFieldBudget : 7;
-  const locationBudget = o.pinpointLocationBudget != null ? o.pinpointLocationBudget : 7;
-  const functionBudget = o.pinpointFunctionBudget != null ? o.pinpointFunctionBudget : 12;
+  // Pinpoint budgets are analysis-coverage authorities. Only primitive finite
+  // numbers may define one; structured values fall back to the defaults
+  // instead of coercing through Math.min/comparisons (#3286).
+  const budgetOption = (value, fallback) =>
+    typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback;
+  const startBudget = budgetOption(o.pinpointBudget, 360);
+  const perGoal = budgetOption(o.pinpointPerGoal, 24);
+  const fieldBudget = budgetOption(o.pinpointFieldBudget, 7);
+  const locationBudget = budgetOption(o.pinpointLocationBudget, 7);
+  const functionBudget = budgetOption(o.pinpointFunctionBudget, 12);
   const budget = { left: startBudget };
   const memo = o.analyze ? memoize(o.analyze) : null;
   const hasClasses = !!(fields && fields.classCount);
@@ -440,7 +449,15 @@ export function memoizeAnalysis(analyze) {
   const cache = new Map();
   return (addr, end, options = undefined) => {
     if (options?.signal) return Promise.resolve().then(() => analyze(addr, end, options));
-    const key = `${addr == null ? 'null' : addr.toString()}:${end == null ? 'null' : end.toString()}`;
+    // Cache identity is analysis authority (#3309): structured values must
+    // not collide with their primitive lookalikes through toString(), or a
+    // malformed address would reuse another address's cached analysis.
+    const keyPart = (value) => {
+      if (value == null) return 'null';
+      if (typeof value === 'string' || typeof value === 'number' || typeof value === 'bigint') return String(value);
+      try { return 'structured:' + stableDigest(jsonSafe(value)); } catch { return `structured:opaque:${typeof value}`; }
+    };
+    const key = `${keyPart(addr)}:${keyPart(end)}`;
     if (cache.has(key)) return cache.get(key);
     const p = Promise.resolve()
       .then(() => analyze(addr, end, options))
