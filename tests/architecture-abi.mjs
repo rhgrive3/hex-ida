@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {
+  ArchitectureAdapter,
   architectureAdapter,
   architectureCapability,
   architecturePluginV2,
@@ -37,6 +38,37 @@ const region = { vmAddr:BASE, size:0x100n };
   assert.equal(arm64.addressForRow(region, 2), BASE + 8n);
   assert.equal(arm64.callKind({ mnemonic:'blr' }), 'call');
   assert.equal(arm64.returnKind({ mnemonic:'ret' }), 'return');
+}
+
+// #3370: explicit callable hooks are validated at construction instead of
+// leaking delayed call-site TypeErrors. Omitted/null hooks keep legacy fallbacks.
+{
+  const base = { id:'hook-contract', instructionAlignment:1, fixedInstructionSize:1 };
+  for (const hook of [
+    'decode', 'assemble', 'controlFlow', 'callKind', 'returnKind',
+    'rowForAddress', 'addressForRow', 'validateInstructionPlacement',
+  ]) {
+    for (const invalid of [true, 1, 'hook', [], {}]) {
+      assert.throws(
+        () => new ArchitectureAdapter({ ...base, [hook]:invalid }),
+        new RegExp(`^TypeError: ${hook} must be a function$`),
+        `${hook} must reject explicit non-function values at construction`,
+      );
+    }
+  }
+
+  const omitted = new ArchitectureAdapter(base);
+  assert.equal(omitted.decode, null);
+  assert.equal(omitted.assemble, null);
+  assert.equal(omitted.controlFlow({ mnemonic:'ret' }), null);
+  assert.equal(omitted.rowForAddress({ vmAddr:0n, size:4n }, 2n), 2);
+  assert.equal(omitted.addressForRow({ vmAddr:0n, size:4n }, 2), 2n);
+
+  const callback = () => 'ok';
+  const explicit = new ArchitectureAdapter({ ...base, controlFlow:callback });
+  assert.equal(explicit.controlFlow, callback, 'valid hook identity must be preserved');
+  const nullHook = new ArchitectureAdapter({ ...base, controlFlow:null });
+  assert.equal(nullHook.controlFlow({}), null, 'null keeps the legacy fallback semantics');
 }
 
 // AAPCS64 owns call arguments, returns, saved registers, and stack rules.
