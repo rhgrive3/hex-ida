@@ -38,4 +38,31 @@ const missing = mergeProgramScans([scan], {
 assert.equal(missing.complete, false);
 assert.ok(missing.completeness.reasons.includes('program-region-unscanned:cold'));
 
-console.log('issue #2059 program merge completeness regressions passed');
+// #3416: a cancelled regional scan is evidence that the aggregate is
+// incomplete. It must not disappear just because cancelled scans contribute no
+// edges/kinds to the merged payload.
+const cancelledScan = {
+  ...scan,
+  regionId:'cold',
+  vmAddr:0x2000n,
+  cancelled:true,
+};
+const cancelled = mergeProgramScans([scan, cancelledScan]);
+assert.equal(cancelled.complete, false);
+assert.equal(cancelled.truncated, true);
+assert.ok(cancelled.completeness.reasons.includes('cold:cancelled'));
+assert.equal(cancelled.completeness.regionCount, 1, 'cancelled scan is not counted as successfully scanned');
+
+// The expected-region route remains fail-closed for the same cancellation and
+// retains the existing unscanned-region evidence in addition to cancellation.
+const cancelledExpected = mergeProgramScans([scan, cancelledScan], {
+  regions:[
+    { id:'text', vmAddr:0x1000n, size:4n },
+    { id:'cold', vmAddr:0x2000n, size:4n },
+  ],
+});
+assert.equal(cancelledExpected.complete, false);
+assert.ok(cancelledExpected.completeness.reasons.includes('cold:cancelled'));
+assert.ok(cancelledExpected.completeness.reasons.includes('program-region-unscanned:cold'));
+
+console.log('issue #2059/#3416 program merge completeness regressions passed');
