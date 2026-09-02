@@ -35,10 +35,14 @@ export function buildIR(model, options = {}) {
 }
 
 export function irFor(model, options = {}) {
-  if (isCanonicalV2CompatibilityProjection(model)) return canonicalizeLegacyRootedFieldBases(model);
+  const mode = options?.semanticMigrationMode ?? getSemanticMigrationMode();
+  if (isCanonicalV2CompatibilityProjection(model)) {
+    canonicalizeLegacyRootedFieldBases(model);
+    if (mode === 'legacy-v1') restoreLegacyPrivateStackForwarding(model, stackPointerProvenanceOf);
+    return model;
+  }
   const projected = baseIrFor(model, options);
   canonicalizeLegacyRootedFieldBases(projected);
-  const mode = options?.semanticMigrationMode ?? getSemanticMigrationMode();
   if (mode === 'legacy-v1') restoreLegacyPrivateStackForwarding(projected, stackPointerProvenanceOf);
   return projected;
 }
