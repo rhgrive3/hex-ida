@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { buildSemanticModel } from '../js/blocks.js';
 import { buildIR, OP } from '../js/ir.js';
 import { stackPointerProvenanceOf } from '../js/ir-core.js';
+import { restoreLegacyPrivateStackForwarding } from '../js/legacy-stack-compat-repair.js';
 
 const BASE = 0x100000000n;
 function modelOf(lines) {
@@ -110,6 +111,39 @@ function callAt(ir, row) { return ir.instructions.find((i) => i.op === OP.CALL &
   assert.equal(provenance?.via, 'phi');
   assert.equal(provenance?.must, false, 'one non-stack predecessor makes PHI provenance may-stack');
   assert.equal(provenance?.offset, 0x18n);
+
+  const stackLoc = { key:'stack:24', kind:'stack', size:4 };
+  const call = { id:906, op:'call', row:0, block:0, args:[{ value:merged }], memKills:[stackLoc] };
+  const projected = {
+    values:[sp, imm, derived, moved, unrelated, merged],
+    locations:new Map([[stackLoc.key, stackLoc]]),
+    instructions:[call],
+    blocks:[{ index:0, insts:[call] }],
+  };
+  restoreLegacyPrivateStackForwarding(projected, stackPointerProvenanceOf);
+  assert.deepEqual(call.memKills, [stackLoc], 'may-stack PHI passed to a call must remain an escape barrier');
+}
+
+// Legacy-v1 repair must never pair different-width accesses solely because
+// their stack offset key matches.
+{
+  const value = { id:910, kind:'arg', reg:'x3', def:null };
+  const storeLoc = { key:'stack:24', kind:'stack', size:4 };
+  const loadLoc = { key:'stack:24', kind:'stack', size:8 };
+  const memDef = { kind:'store', definitionId:'d910' };
+  const store = { id:911, op:'store', row:0, block:0, loc:storeLoc, args:[{ value }], memDef };
+  const call = { id:912, op:'call', row:1, block:0, args:[], memKills:[loadLoc] };
+  const clobber = { kind:'clobber', inst:call };
+  const load = { id:913, op:'load', row:2, block:0, loc:loadLoc, args:[], memUse:clobber };
+  const projected = {
+    values:[value],
+    locations:new Map([[loadLoc.key, loadLoc]]),
+    instructions:[store, call, load],
+    blocks:[{ index:0, insts:[store, call, load] }],
+  };
+  restoreLegacyPrivateStackForwarding(projected, stackPointerProvenanceOf);
+  assert.equal(load.reachingStore, undefined, 'partial-width store cannot become the reaching store');
+  assert.equal(load.memUse, clobber, 'mismatched-width load must retain the conservative clobber');
 }
 
 console.log('issue #430 stack escape regressions passed');
