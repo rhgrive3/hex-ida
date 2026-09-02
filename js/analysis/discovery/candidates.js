@@ -176,7 +176,7 @@ export function createFunctionCandidate(input = {}) {
  * A contradicted candidate is never exact, whatever its evidence count says.
  */
 export function hasExactStart(candidate) {
-  return candidate.startState === 'exact' && !candidate.conflicts.some((conflict) => conflict.kind === 'start');
+  return candidate.startState === 'exact' && !candidate.conflicts.some((conflict) => conflict?.kind === 'start');
 }
 
 export function hasKnownExtent(candidate) {
