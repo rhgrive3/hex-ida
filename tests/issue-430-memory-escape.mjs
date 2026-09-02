@@ -17,14 +17,14 @@ function modelOf(lines) {
   };
   return buildSemanticModel(rows, { startRow:0, endRow:rows.length - 1, rowOfAddress });
 }
-function irOf(lines) {
+function irOf(lines, options = {}) {
   const model = modelOf(lines);
   const rowOfAddress = (addr) => {
     const d = BigInt(addr) - BASE;
     if (d < 0n || d >= BigInt(lines.length * 4)) return null;
     return Number(d / 4n);
   };
-  return buildIR(model, { rowOfAddress });
+  return buildIR(model, { rowOfAddress, ...options });
 }
 function loadAt(ir, row) { return ir.instructions.find((i) => i.op === OP.LOAD && i.row === row); }
 function callAt(ir, row) { return ir.instructions.find((i) => i.op === OP.CALL && i.row === row); }
@@ -33,6 +33,49 @@ function callAt(ir, row) { return ir.instructions.find((i) => i.op === OP.CALL &
 {
   const ir = irOf(['str w1, [sp, #0x18]','add x9, sp, #0x18','mov x10, x9','ldr w2, [sp, #0x18]','ret']);
   assert.equal(loadAt(ir, 3)?.reachingStore?.row, 0);
+}
+
+// Legacy-v1: a normal frame-record save is private stack state, not an escape.
+{
+  const ir = irOf([
+    'stp x29, x30, [sp, #-32]!',
+    'mov x29, sp',
+    'str w1, [sp, #0x0c]',
+    'bl 0x100001000',
+    'ldr w2, [sp, #0x0c]',
+    'ldp x29, x30, [sp], #32',
+    'ret',
+  ], { semanticMigrationMode:'legacy-v1' });
+  assert.equal(loadAt(ir, 4)?.reachingStore?.row, 2);
+  assert.ok(!(callAt(ir, 3)?.memKills || []).some((loc) => loc?.kind === 'stack'));
+}
+
+// Legacy-v1: a direct stack-derived argument remains an escape.
+{
+  const ir = irOf([
+    'str w1, [sp, #0x18]',
+    'add x0, sp, #0x18',
+    'bl 0x100001000',
+    'ldr w2, [sp, #0x18]',
+    'ret',
+  ], { semanticMigrationMode:'legacy-v1' });
+  assert.equal(loadAt(ir, 3)?.reachingStore, undefined);
+  assert.equal(loadAt(ir, 3)?.memUse?.kind, 'clobber');
+}
+
+// Legacy-v1: spilling then reloading a stack pointer does not launder escape provenance.
+{
+  const ir = irOf([
+    'str w1, [sp, #0x18]',
+    'mov x9, sp',
+    'str x9, [sp, #0x10]',
+    'ldr x0, [sp, #0x10]',
+    'bl 0x100001000',
+    'ldr w2, [sp, #0x18]',
+    'ret',
+  ], { semanticMigrationMode:'legacy-v1' });
+  assert.equal(loadAt(ir, 5)?.reachingStore, undefined);
+  assert.equal(loadAt(ir, 5)?.memUse?.kind, 'clobber');
 }
 
 // Direct AAPCS64 argument escape must be represented as a CALL SSA use.

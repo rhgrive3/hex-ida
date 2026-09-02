@@ -156,10 +156,13 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
     backend: new ExhaustiveBvBackend(), globalScope: { ...scope, phiChoices: [], phiInventory: { count: 2, complete: true } },
   });
   assert.equal(countedButEmpty.verdict, 'unknown');
-  assert.equal(countedButEmpty.reasonCode, 'missing-phi-choices');
+  assert.equal(countedButEmpty.reasonCode, 'incomplete-phi-choices');
   const identified = await verifyGlobalEdgeReachability({
     entryBlock: 0, targetBlock: 5, targetEdge, pathCompleteness: 'complete',
-    backend: new ExhaustiveBvBackend(), globalScope: { ...scope, phiChoices: [{ complete: true, phi: 'p1', predecessor: 0 }] },
+    backend: new ExhaustiveBvBackend(), globalScope: {
+      ...scope,
+      phiChoices: [{ complete: true, phiId: 'p1', block: 5, predecessorBlock: 0, valueId: 'v1' }],
+    },
   });
   assert.equal(identified.verdict, 'proved');
 }
