@@ -143,15 +143,11 @@ jobs:
           p.write_text(s)
           PY
 
-          git rm -f js/decompiler/legacy-exact-return-repair.js
-
           node tests/decompiler-semantic.mjs
           node --input-type=module -e "import {setSemanticMigrationMode} from './js/ir.js'; setSemanticMigrationMode('legacy-v1'); await import('./tests/decompiler-semantic.mjs');"
           node tests/compiler-truth/run.mjs
           node --input-type=module -e "import {setSemanticMigrationMode} from './js/ir.js'; setSemanticMigrationMode('legacy-v1'); await import('./tests/compiler-truth/run.mjs');"
-          if test -f tests/semantic-v2/integration-final-evidence.test.mjs; then
-            node tests/semantic-v2/integration-final-evidence.test.mjs
-          fi
+          npm run semantic-v2:test
           node tests/phase8/run.mjs
 
           git add js/decompiler/passes/stack-return-recovery.js
