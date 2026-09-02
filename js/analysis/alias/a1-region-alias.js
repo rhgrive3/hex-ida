@@ -64,7 +64,7 @@ export function provenAddressSpace(region) {
   if (!region) return null;
   if (FLAT_MEMORY_KINDS.has(region.kind)) return FLAT_MEMORY_SPACE;
   if (EXPLICIT_SPACE_KINDS.has(region.kind)) {
-    const space = region.addressSpace == null ? null : String(region.addressSpace).trim();
+    const space = typeof region.addressSpace === 'string' ? region.addressSpace.trim() : null;
     return space || null;
   }
   return null;
