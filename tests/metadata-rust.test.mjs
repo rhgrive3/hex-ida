@@ -149,7 +149,8 @@ console.log('Testing Rust Metadata Provider...');
     binaryIdentity: 'sha256:malformed-address',
   });
   const probe = provider.probe();
-  assert.equal(probe.authoritative, false);
+  assert.equal(probe.identity.verdict, 'matched-partial');
+  assert.equal(probe.completeness.complete, false);
   assert.equal(probe.completeness.invalidEntries, 1);
   assert.equal(provider.symbols().records.length, 0);
 }
