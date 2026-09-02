@@ -53,6 +53,14 @@ function nonEmpty(value, code) {
   return text;
 }
 
+function canonicalEffectSource(value, fallback) {
+  const source = value ?? fallback;
+  if (typeof source !== 'string') fail('function-summary-invalid-effect-source');
+  const text = source.trim();
+  if (!text || !SOURCE_SET.has(text)) fail('function-summary-invalid-effect-source');
+  return text;
+}
+
 function optionalReturnIdentity(value) {
   if (value == null) return null;
   if (typeof value !== 'string') fail('function-summary-invalid-return-provenance-identity');
@@ -128,8 +136,7 @@ export function classifyCallTargetProof(call = {}) {
 
 /** One memory region a function reads or writes, with why we believe it. */
 export function createMemoryEffect(input = {}) {
-  const source = nonEmpty(input.source ?? 'proven-summary', 'function-summary-effect-source-required');
-  if (!SOURCE_SET.has(source)) fail('function-summary-invalid-effect-source');
+  const source = canonicalEffectSource(input.source, 'proven-summary');
   return deepFreeze({
     regionId: input.regionId == null ? null : nonEmpty(input.regionId, 'function-summary-invalid-region-id'),
     regionKind: nonEmpty(input.regionKind ?? 'unknown', 'function-summary-invalid-region-kind'),
@@ -160,11 +167,7 @@ export function createDirectCall(input = {}) {
     callSiteId: nonEmpty(input.callSiteId, 'function-summary-call-site-required'),
     targetEntityIds: sortedIds(input.targetEntityIds, 'function-summary-invalid-target-ids'),
     summaryId: input.summaryId == null ? null : nonEmpty(input.summaryId, 'function-summary-invalid-summary-id'),
-    effectSource: (() => {
-      const source = nonEmpty(input.effectSource ?? 'unknown-call-fallback', 'function-summary-effect-source-required');
-      if (!SOURCE_SET.has(source)) fail('function-summary-invalid-effect-source');
-      return source;
-    })(),
+    effectSource: canonicalEffectSource(input.effectSource, 'unknown-call-fallback'),
   });
 }
 
