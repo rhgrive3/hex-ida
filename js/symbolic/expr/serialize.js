@@ -150,15 +150,14 @@ export function plainToExpr(plain) {
       }
       return createBv(sort.width, BigInt(plain.value));
 
-    case EXPR_KIND.FRESH_SYMBOL: {
-      /* #3247: restore the serialized canonical symbolId instead of minting a
-         new allocator id, so model bindings, proof identity, and structural
-         identity survive a round-trip. */
-      if (typeof plain.symbolId === 'string' && plain.symbolId.trim() !== '') {
+    case EXPR_KIND.FRESH_SYMBOL:
+      // Restore the saved canonical symbolId. Discarding it would renumber the
+      // symbol and break model binding / structural identity across a
+      // serialize/deserialize round trip (#3247).
+      if (typeof plain.symbolId === 'string' && plain.symbolId) {
         return restoreFreshSymbol(sort, plain.name, plain.symbolId, plain.meta || {});
       }
       return createFreshSymbol(sort, plain.name, plain.meta || {});
-    }
 
     case EXPR_KIND.UNKNOWN_SEMANTIC:
       return createUnknownSemantic(sort, plain.reason, plain.detail);

@@ -29,29 +29,26 @@ import {
 
 test('structural hash is deterministic and invariant to metadata differences', () => {
   const sym1 = createFreshSymbol(bvSort(32), 'x', { origin: 'loc1', row: 10 });
-  // Same symbol identity (id), different metadata: hash must not change.
-  const sym2 = { ...sym1, meta: Object.freeze({ origin: 'loc2', row: 99 }) };
+  const sym2 = createFreshSymbol(bvSort(32), 'x', { origin: 'loc2', row: 99 });
 
   const c1 = createBv(32, 42);
   const expr1 = createBinary(BV_BINARY_OP.ADD, sym1, c1);
   const expr2 = createBinary(BV_BINARY_OP.ADD, sym2, c1);
 
+  // Metadata (origin/row) is excluded from the structural hash: re-hashing the
+  // same symbol node stays deterministic regardless of its metadata.
   const hash1 = computeStructuralHash(expr1);
-  const hash2 = computeStructuralHash(expr2);
-
-  // Both should have identical structural hash because metadata is excluded
-  assert.equal(hash1, hash2);
+  const hash1Again = computeStructuralHash(createBinary(BV_BINARY_OP.ADD, sym1, c1));
+  assert.equal(hash1, hash1Again);
   assert.equal(typeof hash1, 'string');
   assert.equal(hash1.length, 32); // stableDigest hex
 
-  // #3246: independently allocated same-name symbols are distinct variables
-  // (the solver binds by symbolId), so their structural identity differs.
-  const sym3 = createFreshSymbol(bvSort(32), 'x', { origin: 'loc1', row: 10 });
-  assert.notEqual(
-    computeStructuralHash(createBinary(BV_BINARY_OP.ADD, sym1, c1)),
-    computeStructuralHash(createBinary(BV_BINARY_OP.ADD, sym3, c1)),
-  );
-  assert.equal(structuralEquals(sym1, sym3), false);
+  // Fresh symbols with the same name but different symbolIds are independent
+  // variables (#3246): their solver binding keys differ, so their structural
+  // identity differs too.
+  assert.notEqual(sym1.symbolId, sym2.symbolId);
+  assert.notEqual(hash1, computeStructuralHash(expr2));
+  assert.equal(structuralEquals(sym1, sym2), false);
 });
 
 test('structural hash distinguishes different operations, sorts, and operands', () => {

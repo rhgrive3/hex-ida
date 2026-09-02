@@ -7,16 +7,24 @@ export {
   writeArm64NZCV,
   emitArm64Condition,
 } from './flags-core.js';
+import { createArm64EffectContext } from './common.js';
 import { liftArm64FlagEffects as liftArm64FlagEffectsCore } from './flags-core.js';
 
 const STRICT_REGISTER_LHS = new Set(['cmp','cmn','ccmp','ccmn']);
 const SP_LHS_MNEMONICS = new Set(['cmp','cmn']);
 const EXTEND_KINDS = new Set(['uxtb','uxth','uxtw','uxtx','sxtb','sxth','sxtw','sxtx']);
-const CONDITION_CODES = new Set(['eq','ne','cs','hs','cc','lo','mi','pl','vs','vc','hi','ls','ge','lt','gt','le','al','nv']);
+
+function registerClass(op) {
+  return op?.k === 'reg' && typeof op.cls === 'string' ? op.cls.toLowerCase() : '';
+}
+
+function registerWidth(op) {
+  const bits = op?.bits;
+  return typeof bits === 'number' && Number.isInteger(bits) && (bits === 32 || bits === 64) ? bits : 0;
+}
 
 function validRegisterLhs(mnemonic, op) {
-  if (op?.k !== 'reg') return false;
-  const cls = String(op.cls || '').toLowerCase();
+  const cls = registerClass(op);
   if (cls === 'gp' || cls === 'zr') return true;
   // ADD/SUB aliases CMP/CMN have architectural forms whose Rn=31 is SP
   // (notably immediate/extended-register encodings). Conditional compares do not.
@@ -35,9 +43,9 @@ function validSpImmediateRhs(op) {
 
 function validRegisterRhs(mnemonic, lhs, rhs) {
   if (rhs?.k !== 'reg') return true;
-  const lhsBits = Number(lhs?.bits || 0);
-  const rhsBits = Number(rhs?.bits || 0);
-  if (![32,64].includes(lhsBits) || !['gp','zr'].includes(String(rhs.cls || '').toLowerCase())) return false;
+  const lhsBits = registerWidth(lhs);
+  const rhsBits = registerWidth(rhs);
+  if (![32,64].includes(lhsBits) || !['gp','zr'].includes(registerClass(rhs))) return false;
   const modifier = rhs.shift || rhs.extend || null;
 
   // Conditional compare has only the plain Wn/Wm or Xn/Xm register form.
@@ -47,7 +55,7 @@ function validRegisterRhs(mnemonic, lhs, rhs) {
   const kind = String(modifier.op || '').toLowerCase();
   const amount = Number(modifier.amount ?? 0);
   if (!Number.isInteger(amount) || amount < 0) return false;
-  const lhsClass = String(lhs?.cls || '').toLowerCase();
+  const lhsClass = registerClass(lhs);
 
   // SUBS/ADDS shifted-register encodings allow LSL/LSR/ASR only. When Rn is
   // SP, assembler LSL is the preferred spelling of the extended-register UXTX
@@ -64,36 +72,28 @@ function validRegisterRhs(mnemonic, lhs, rhs) {
 }
 
 function validTstRegisterClass(ops) {
-  return !ops.some((op) => op?.k === 'reg' && String(op.cls || '').toLowerCase() === 'sp');
+  return !ops.some((op) => op?.k === 'reg' && registerClass(op) === 'sp');
 }
 
 function validConditionalCompareCondition(op) {
-  return op?.k === 'cond'
-    && op.shift == null
-    && op.extend == null
-    && typeof op.text === 'string'
-    && CONDITION_CODES.has(op.text.toLowerCase());
-}
-
-function validCanonicalBigintImmediate(op, minimum, maximum) {
-  return op?.k === 'imm'
-    && op.shift == null
-    && op.extend == null
-    && typeof op.value === 'bigint'
-    && op.value >= minimum
-    && op.value <= maximum;
+  return op?.k === 'cond' && op.shift == null && op.extend == null;
 }
 
 function validConditionalCompareImmediates(ops) {
   const comparison = ops[1];
   const fallback = ops[2];
-  if (comparison?.k === 'imm' && !validCanonicalBigintImmediate(comparison, 0n, 31n)) return false;
-  if (!validCanonicalBigintImmediate(fallback, 0n, 15n)) return false;
+  if (comparison?.k === 'imm' && (comparison.shift != null || comparison.extend != null)) return false;
+  if (fallback?.k === 'imm' && (fallback.shift != null || fallback.extend != null)) return false;
+  // Only the bigint immediate encoding is canonical evidence (#3145 family):
+  // coercible values must not reach the definite conditional-compare path.
+  if (comparison?.k === 'imm' && typeof comparison.value !== 'bigint') return false;
+  if (fallback?.k === 'imm' && typeof fallback.value !== 'bigint') return false;
   return true;
 }
 
 export function liftArm64FlagEffects(instruction, options = {}) {
-  const mnemonic = String(instruction?.mnemonic || '').trim().toLowerCase();
+  if (typeof instruction?.mnemonic !== 'string') return null;
+  const mnemonic = instruction.mnemonic.trim().toLowerCase();
   const ops = Array.isArray(instruction?.ops) ? instruction.ops : [];
   if (STRICT_REGISTER_LHS.has(mnemonic) && !validRegisterLhs(mnemonic, ops[0])) {
     return liftArm64FlagEffectsCore({ ...instruction, ops: [] }, options);
@@ -104,8 +104,13 @@ export function liftArm64FlagEffects(instruction, options = {}) {
   if (STRICT_REGISTER_LHS.has(mnemonic) && !validRegisterRhs(mnemonic, ops[0], ops[1])) {
     return liftArm64FlagEffectsCore({ ...instruction, ops: [] }, options);
   }
-  if ((mnemonic === 'ccmp' || mnemonic === 'ccmn') && (!validConditionalCompareCondition(ops[3]) || !validConditionalCompareImmediates(ops))) {
-    return liftArm64FlagEffectsCore({ ...instruction, ops: [] }, options);
+  if ((mnemonic === 'ccmp' || mnemonic === 'ccmn') && ops.length === 4
+    && (!validConditionalCompareCondition(ops[3]) || !validConditionalCompareImmediates(ops))) {
+    // Malformed conditional-compare evidence must not produce register reads
+    // or any definite state: return a bare partial with zero operations.
+    // (Arity failures keep the core's canonical operand-shape reason.)
+    const ctx = createArm64EffectContext(instruction, options);
+    return ctx.partial('arm64-conditional-compare-evidence-invalid', ['flags', 'other']);
   }
   if (mnemonic === 'tst' && !validTstRegisterClass(ops)) {
     return liftArm64FlagEffectsCore({ ...instruction, ops: [] }, options);

@@ -66,25 +66,26 @@ export function createFreshSymbol(sort, name, meta = {}) {
   });
 }
 
-const RESTORED_SYMBOL_ID = /^sym_(\d+)_.+$/;
-
-/* #3247: deserialize must restore the serialized canonical symbolId instead of
-   re-allocating. The allocator counter advances past the restored number so
-   later fresh symbols can never mint the same id. */
+/**
+ * Restores a serialized FreshSymbol with its saved canonical symbolId and
+ * keeps the global allocator ahead of restored IDs so later fresh symbols
+ * cannot collide with round-tripped ones.
+ */
 export function restoreFreshSymbol(sort, name, symbolId, meta = {}) {
   assertValidSort(sort, 'restoreFreshSymbol');
   if (!name || typeof name !== 'string') {
     throw new TypeError(`restoreFreshSymbol: name must be a non-empty string, got ${name}`);
   }
-  if (typeof symbolId !== 'string') {
-    throw new TypeError('restoreFreshSymbol: symbolId must be a string');
+  if (typeof symbolId !== 'string' || !symbolId) {
+    throw new TypeError(`restoreFreshSymbol: symbolId must be a non-empty string, got ${symbolId}`);
   }
-  const match = RESTORED_SYMBOL_ID.exec(symbolId);
-  if (!match) {
-    throw new TypeError(`restoreFreshSymbol: malformed symbolId '${symbolId}'`);
+  const match = /^sym_(\d+)_/.exec(symbolId);
+  if (match) {
+    const restoredIndex = Number(match[1]);
+    if (Number.isSafeInteger(restoredIndex) && restoredIndex > symbolCounter) {
+      symbolCounter = restoredIndex;
+    }
   }
-  const numeric = Number(match[1]);
-  if (Number.isSafeInteger(numeric) && numeric > symbolCounter) symbolCounter = numeric;
   return Object.freeze({
     kind: EXPR_KIND.FRESH_SYMBOL,
     sort,

@@ -115,23 +115,28 @@ function asBigIntOrNull(value) {
 }
 
 function isGpOrZrRegister(operand) {
-  return operand?.k === 'reg' && ['gp','zr'].includes(String(operand.cls || '').toLowerCase());
+  return operand?.k === 'reg' && typeof operand.cls === 'string' && ['gp','zr'].includes(operand.cls.toLowerCase());
 }
 
 function isPlainGpSource(operand) {
   return isGpOrZrRegister(operand) && operand.shift == null && operand.extend == null;
 }
 
+function structuredRegisterWidth(operand) {
+  const bits = operand?.bits;
+  return typeof bits === 'number' && Number.isInteger(bits) && (bits === 32 || bits === 64) ? bits : 0;
+}
+
 function isPlainGpSourceOfWidth(operand, widthBits) {
-  return isPlainGpSource(operand) && Number(operand.bits) === widthBits;
+  return isPlainGpSource(operand) && structuredRegisterWidth(operand) === widthBits;
 }
 
 function isGpSourceOfWidth(operand, widthBits) {
-  return isGpOrZrRegister(operand) && Number(operand.bits) === widthBits;
+  return isGpOrZrRegister(operand) && structuredRegisterWidth(operand) === widthBits;
 }
 
 function isLogicalShiftedGpSource(operand, widthBits) {
-  if (!isGpOrZrRegister(operand) || Number(operand.bits) !== widthBits || operand.extend != null) return false;
+  if (!isGpOrZrRegister(operand) || structuredRegisterWidth(operand) !== widthBits || operand.extend != null) return false;
   if (operand.shift == null) return true;
   const kind = String(operand.shift.op || '').toLowerCase();
   const amount = Number(operand.shift.amount ?? 0);
@@ -149,7 +154,7 @@ function addSubImmediateEncodingFailure(instruction) {
   const lhs = alias ? null : ops[1];
   const rhs = alias ? ops[1] : ops[2];
   if (rhs?.k === 'imm' && !ARM64_ADD_SUB_IMMEDIATE_MNEMONICS.has(mnemonic)) return `arm64-${mnemonic}-immediate-form-unencodable`;
-  const widthBits = Number(ops[0]?.bits || 0);
+  const widthBits = structuredRegisterWidth(ops[0]);
   if (['adc','adcs','sbc','sbcs'].includes(mnemonic)) {
     if (!isGpSourceOfWidth(lhs, widthBits) || !isGpSourceOfWidth(rhs, widthBits)) return `arm64-${mnemonic}-register-width-unencodable`;
     if (!isPlainGpSource(lhs) || !isPlainGpSource(rhs)) return `arm64-${mnemonic}-register-modifier-unencodable`;
@@ -205,7 +210,7 @@ function logicalEncodingFailure(instruction) {
     if (mnemonic === 'tst' && ops.length < expectedOperandCount) return 'arm64-tst-rhs-register-required';
     return `arm64-${mnemonic}-operand-shape-unencodable`;
   }
-  const widthBits = Number(ops[0]?.bits || 0);
+  const widthBits = structuredRegisterWidth(ops[0]);
   if (widthBits !== 32 && widthBits !== 64) return `arm64-${mnemonic}-width-unencodable`;
 
   if (mnemonic === 'mvn') {
@@ -230,7 +235,7 @@ function multiplyDivideEncodingFailure(instruction) {
   if (!isGpOrZrRegister(ops[0])) return null;
   const expectedOperandCount = ['madd','msub','smaddl','smsubl','umaddl','umsubl'].includes(mnemonic) ? 4 : 3;
   if (ops.length !== expectedOperandCount) return `arm64-${mnemonic}-operand-shape-unencodable`;
-  const destinationBits = Number(ops[0]?.bits || 0);
+  const destinationBits = structuredRegisterWidth(ops[0]);
   const required = [];
   if (['mul','mneg','sdiv','udiv','madd','msub'].includes(mnemonic)) {
     for (let index = 1; index < ops.length; index++) required.push([index, destinationBits]);
@@ -291,7 +296,7 @@ function registerOnlyIntegerEncodingFailure(instruction) {
   const bitfieldFailure = bitfieldRegisterShapeEncodingFailure(mnemonic, ops);
   if (bitfieldFailure) return bitfieldFailure;
   if (!isGpOrZrRegister(ops[0])) return null;
-  const widthBits = Number(ops[0]?.bits || 0);
+  const widthBits = structuredRegisterWidth(ops[0]);
   const widthSensitiveIndices = mnemonic === 'extr' ? [1,2]
     : ARM64_CONDITIONAL_TWO_SOURCE.has(mnemonic) ? [1,2]
       : ARM64_CONDITIONAL_ONE_SOURCE.has(mnemonic) ? [1]
@@ -316,7 +321,7 @@ function moveEncodingFailure(instruction) {
   if (!isGpOrZrRegister(ops[0])) return null;
   const source = ops[1];
   if (source?.k !== 'imm') return null;
-  const widthBits = Number(ops[0]?.bits || 0);
+  const widthBits = structuredRegisterWidth(ops[0]);
   return movImmediateEncodable(source, widthBits) ? null : 'arm64-mov-immediate-unencodable';
 }
 

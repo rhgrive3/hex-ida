@@ -141,16 +141,20 @@ export function isCacheableProof({
     return false;
   }
 
-  // 4. Incomplete or unsupported translation cannot be cached as proved/refuted
-  if (completeness) {
-    if (
-      completeness.translation === COMPLETENESS_STATUS.UNSUPPORTED ||
-      completeness.translation === 'unsupported' ||
-      completeness.translation === COMPLETENESS_STATUS.PARTIAL ||
-      completeness.translation === 'partial'
-    ) {
-      return false;
-    }
+  // 4. Cacheable proofs require complete five-axis completeness. The proof
+  // mint contract (createSymbolicEvidence) requires translation, controlFlow,
+  // memoryEffects, pathCoverage, and queryScope to all be complete; the cache
+  // gate must be at least as strong, and missing completeness fails closed.
+  if (
+    !completeness ||
+    typeof completeness !== 'object' ||
+    completeness.translation !== COMPLETENESS_STATUS.COMPLETE ||
+    completeness.controlFlow !== COMPLETENESS_STATUS.COMPLETE ||
+    completeness.memoryEffects !== COMPLETENESS_STATUS.COMPLETE ||
+    completeness.pathCoverage !== COMPLETENESS_STATUS.COMPLETE ||
+    completeness.queryScope !== COMPLETENESS_STATUS.COMPLETE
+  ) {
+    return false;
   }
 
   // 5. Inconsistent or unknown preconditions cannot produce cacheable proofs
