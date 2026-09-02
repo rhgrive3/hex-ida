@@ -277,7 +277,7 @@ export function resolveObjcDispatch(index, { receiverType = null, selector, clas
 }
 
 export function formatObjcMessage({ receiver = 'receiver', selector, args = [], style = 'objc' } = {}) {
-  if (!selector) return `unknown_call(${[receiver, ...args].join(', ')})`;
+  if (typeof selector !== 'string' || !selector) return `unknown_call(${[receiver, ...args].join(', ')})`;
   if (style === 'dot') {
     const stem = selector.replace(/:/g, '_').replace(/_+$/, '');
     return `${receiver}.${stem}(${args.join(', ')})`;
