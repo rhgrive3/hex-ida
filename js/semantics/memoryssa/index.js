@@ -25,15 +25,21 @@ export const MEMORY_SSA_UNKNOWN_PARTITION_VERSION = '1.0.0';
 
 function canonicalUnknownRegion(functionId) {
   return createMemoryRegionRef({
-    id: `memoryregion_${stableDigest({
-      version: MEMORY_SSA_BUILD_VERSION,
+    id: `memoryregion_unknown_partition_${stableDigest({
+      version: MEMORY_SSA_UNKNOWN_PARTITION_VERSION,
       functionId,
-      kind: 'default-unknown',
     })}`,
     kind: 'unknown',
     functionId,
-    uncertaintyIdentity: { source: 'generic-memoryssa-default' },
-    metadata: { precision: 'conservative-default' },
+    uncertaintyIdentity: {
+      source: 'memoryssa-facade-canonical-unknown-partition',
+      version: MEMORY_SSA_UNKNOWN_PARTITION_VERSION,
+      functionId,
+    },
+    metadata: {
+      precision: 'conservative-unknown-state-partition',
+      normalizationVersion: MEMORY_SSA_UNKNOWN_PARTITION_VERSION,
+    },
   });
 }
 
@@ -61,7 +67,12 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
   const resolveRegion = options.resolveRegion;
   if (typeof resolveRegion !== 'function') return buildMemorySsaRaw(irFunction, cfg, options);
 
-  const functionId = String(irFunction.functionId);
+  const rawFunctionId = irFunction?.functionId;
+  if (rawFunctionId == null || !String(rawFunctionId).trim()) {
+    // Preserve build.js as the authority for malformed-input error semantics.
+    return buildMemorySsaRaw(irFunction, cfg, options);
+  }
+  const functionId = String(rawFunctionId);
   const fallback = canonicalUnknownRegion(functionId);
   const identity = {
     ...(options.identity ?? {
