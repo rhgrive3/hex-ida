@@ -50,6 +50,7 @@ test('global reachability proves only from explicit complete incoming-path evide
       targetBlock: 5,
       incomingPaths: [{ id: 'entry-path', fromBlock: 0, toBlock: 5, complete: true, condition: incoming }],
       phiChoices: [],
+      phiInventory: { complete: true, count: 0 },
       loopBounds: { complete: true, bounds: [] },
       pathCoverageEvidence: { complete: true, coveredPaths: 1, totalPaths: 1 },
       entryPreconditions: [],
