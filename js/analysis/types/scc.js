@@ -86,6 +86,7 @@ export function condenseTypeGraph(entityIds, dependenciesOf, {
         try {
           succs = [...new Set(dependenciesOf(frame.node) ?? [])].sort();
         } catch {
+          truncated = true;
           succs = [];
         }
         frame.successors = succs;
@@ -152,6 +153,7 @@ export function condenseTypeGraph(entityIds, dependenciesOf, {
       try {
         succs = [...dependenciesOf(node) ?? []];
       } catch {
+        truncated = true;
         succs = [];
       }
       hasSelfEdge = succs.includes(node);
