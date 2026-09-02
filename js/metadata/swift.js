@@ -42,6 +42,9 @@ export class SwiftMetadataProvider extends LanguageMetadataProvider {
   }
 
   async probe() {
+    if (this.sections != null && !Array.isArray(this.sections) && typeof this.sections !== 'object') {
+      throw new TypeError('metadata-swift-sections-must-be-array-or-object');
+    }
     const sectionList = Array.isArray(this.sections) ? this.sections : Object.values(this.sections || {});
     const swiftSections = sectionList.filter((s) => {
       const name = s.section || s.name || s.sectname || '';
