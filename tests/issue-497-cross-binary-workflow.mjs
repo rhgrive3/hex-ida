@@ -3,167 +3,163 @@ import fs from 'node:fs';
 
 const workflow = fs.readFileSync('.github/workflows/cross-binary-accuracy.yml', 'utf8');
 const requirements = fs.readFileSync('tests/oracle-requirements.txt', 'utf8');
-const measure = workflow.slice(workflow.indexOf('\n  measure:'), workflow.indexOf('\n  accuracy:'));
-const aggregate = workflow.slice(workflow.indexOf('\n  accuracy:'));
 
-assert.ok(measure.length > 0, 'fixture measurement matrix must exist');
-assert.ok(aggregate.length > 0, 'final fail-closed accuracy aggregate must exist');
+function section(start, end) {
+  const a = workflow.indexOf(start);
+  assert.ok(a >= 0, `missing workflow section: ${start}`);
+  const b = end ? workflow.indexOf(end, a + start.length) : workflow.length;
+  assert.ok(!end || b > a, `missing workflow section terminator: ${end}`);
+  return workflow.slice(a, b);
+}
 
-const detect = measure.indexOf('name: Detect real fixture configuration');
-const requireAll = measure.indexOf('name: Require all real fixture URLs');
-assert.ok(detect >= 0, 'fixture detection step must exist in each target runner');
-assert.ok(requireAll > detect, 'fail-closed requirement must run after detection');
-const failClosedGate = measure.slice(requireAll, measure.indexOf('\n\n      - name: Build exact oracle cache key', requireAll));
-assert.match(failClosedGate, /if:\s*steps\.fixtures\.outputs\.enabled\s*!=\s*'true'/);
-assert.match(failClosedGate, /exit 1/);
-assert.doesNotMatch(failClosedGate, /continue-on-error:\s*true/);
+const preflight = section('\n  preflight:', '\n  prepare:');
+const prepare = section('\n  prepare:', '\n  measure:');
+const measure = section('\n  measure:', '\n  accuracy:');
+const aggregate = section('\n  accuracy:');
 
+// The gate remains required, pinned, and fail-closed.
+for (const fixture of ['battlecats', 'YWP', 'TsumTsum']) {
+  assert.ok(prepare.includes(`fixture: ${fixture}`), `${fixture} must participate in oracle/fixture preparation`);
+}
 for (const variable of [
   'HEX_FIXTURE_BATTLECATS_URL',
   'HEX_FIXTURE_TSUMTSUM_URL',
   'HEX_FIXTURE_YWP_URL',
 ]) assert.ok(workflow.includes(variable), `${variable} must participate in the required gate`);
+assert.match(preflight, /name:\s*Require all real fixture URLs[\s\S]*test -n "\$HEX_FIXTURE_BATTLECATS_URL"[\s\S]*test -n "\$HEX_FIXTURE_TSUMTSUM_URL"[\s\S]*test -n "\$HEX_FIXTURE_YWP_URL"/);
+assert.doesNotMatch(workflow, /continue-on-error:\s*true/,
+  'required real-binary validation must never be made advisory');
+assert.match(workflow, /push:\s*\n\s*branches:\s*\[[^\]]*\bmain\b[^\]]*\]/,
+  'main must continue seeding exact caches');
+assert.match(workflow, /cancel-in-progress:\s*true/,
+  'superseded PR revisions should stop wasting runners');
 
-for (const fixture of ['battlecats', 'YWP', 'TsumTsum']) {
-  assert.ok(measure.includes(`fixture: ${fixture}`), `${fixture} must participate in cross-binary accuracy`);
-}
-assert.match(measure, /max-parallel:\s*3/, 'the three real fixtures must be the only GitHub-job fanout');
-assert.doesNotMatch(workflow, /max-parallel:\s*(?:[4-9]|[1-9]\d+)/,
-  'cross-binary accuracy must never consume more than three concurrent matrix runners');
-assert.doesNotMatch(measure, /matrix\.partition|partition:\s*\n/,
-  'feature partitions must stay inside each fixture runner instead of consuming GitHub jobs');
-assert.doesNotMatch(workflow, /\n  oracle:\s*\n/,
-  'oracle generation must share the fixture runner rather than consume a separate matrix');
-assert.match(measure, /fail-fast:\s*false/,
-  'fixture runners must keep collecting diagnostics after one target fails');
-
+// Pinned oracle authority remains unchanged.
 assert.match(requirements, /^lief==1\.0\.0$/m, 'LIEF oracle version must remain pinned');
 assert.match(requirements, /^capstone==5\.0\.9$/m, 'Capstone oracle version must remain pinned');
 assert.match(workflow, /ORACLE_PYTHON_VERSION:\s*'3\.12\.13'/,
-  'Python oracle runtime must be exact, not a floating minor version');
-
-const oracleKey = measure.slice(
-  measure.indexOf('name: Build exact oracle cache key'),
-  measure.indexOf('name: Restore exact oracle cache'),
-);
+  'Python oracle runtime must remain exact');
+assert.match(workflow, /FIXTURE_SOURCE_REV:\s*bd7bd61d093592d07fdd9e9b14a859e19dd4c3a9/,
+  'real fixture source revision must remain pinned');
+assert.match(prepare, /max-parallel:\s*3/,
+  'fixture/oracle preparation should remain bounded to the three real fixtures');
 for (const input of [
   'tests/fixtures/real-binaries.json',
   'tests/oracle.py',
   'tests/oracle-cfg-normalize.py',
   'tests/oracle-requirements.txt',
-]) assert.ok(oracleKey.includes(input), `oracle cache key must include ${input}`);
-assert.match(oracleKey, /runner\.os/);
-assert.match(oracleKey, /runner\.arch/);
-assert.match(oracleKey, /ORACLE_PYTHON_VERSION/);
-assert.match(oracleKey, /matrix\.target\.fixture/,
-  'the oracle cache must stay target-specific inside the shared fixture job');
+]) assert.ok(prepare.includes(input), `oracle cache key must include ${input}`);
+assert.match(prepare, /cross-binary-oracle-v3-/);
+assert.match(prepare, /actions\/cache\/restore@v4/);
+assert.match(prepare, /actions\/cache\/save@v4/);
+assert.match(prepare, /python tests\/oracle\.py/);
+assert.match(prepare, /python tests\/oracle-cfg-normalize\.py/);
+assert.match(prepare, /name:\s*Publish exact oracle for this run[\s\S]*if-no-files-found:\s*error/,
+  'each target must publish a validated exact oracle');
 
-const restore = measure.slice(
-  measure.indexOf('name: Restore exact oracle cache'),
-  measure.indexOf('name: Validate cached oracle'),
-);
-assert.match(restore, /actions\/cache\/restore@v4/);
-assert.match(restore, /steps\.oracle-key\.outputs\.key/);
+// Fixture downloads are exact and reusable across independent measurement runners.
+assert.match(prepare, /cross-binary-fixture-v1-/);
+assert.match(prepare, /FIXTURE_SOURCE_REV/);
+assert.match(prepare, /node scripts\/fetch-real-fixtures\.mjs "\$\{\{ matrix\.target\.fixture \}\}" --check/);
+assert.match(measure, /name:\s*Restore prepared fixture cache/);
+assert.match(measure, /name:\s*Fetch pinned fixture if prepared cache is unavailable/,
+  'measurement must fail safely back to the pinned source if the prepared cache is unexpectedly absent');
+assert.doesNotMatch(measure, /restore-keys:/,
+  'approximate fixture/result cache fallback must not launder stale evidence');
 
-const generate = measure.slice(
-  measure.indexOf('name: Generate oracle on cache miss'),
-  measure.indexOf('name: Save exact oracle cache'),
-);
-assert.match(generate, /if:\s*steps\.oracle-cache\.outputs\.cache-hit\s*!=\s*'true'/,
-  'oracle generation must run only on an exact cache miss');
-assert.match(generate, /python tests\/oracle\.py/);
-assert.match(generate, /python tests\/oracle-cfg-normalize\.py/);
-assert.match(measure, /name:\s*Publish oracle for this run[\s\S]*actions\/upload-artifact@v4/,
-  'each fixture runner must still publish the exact oracle as evidence');
-assert.doesNotMatch(measure, /Download required oracle/,
-  'the fixture runner must consume its local oracle directly without an artifact round trip');
+// Scheduling topology: the two historical 4 GiB commands and canonical pseudoc
+// set are preserved, but independent work gets independent hosted runners.
+assert.match(measure, /max-parallel:\s*12/,
+  'measurement fanout must be bounded to twelve hosted runners');
+assert.doesNotMatch(measure, /max-parallel:\s*(?:1[3-9]|[2-9]\d|[1-9]\d{2,})/,
+  'cross-binary measurement must not starve the rest of repository CI');
+const targetOccurrences = (measure.match(/\n\s+- name:\s*(?:BattleCats|YWP|TsumTsum)\n\s+fixture:/g) || []).length;
+assert.equal(targetOccurrences, 3, 'measurement matrix must contain exactly three real targets');
 
-for (const partition of ['core', 'pinpoint', 'pseudoc']) {
-  assert.match(measure, new RegExp(`Restore exact ${partition} result cache`),
-    `${partition} result must retain an independent exact cache`);
+const nonPseudoc0 = 'sections,funcs,funcs-guess,disasm,kinds,calls,refs,imports,objc,selstub,pinpoint';
+const nonPseudoc1 = 'strings,xrefs,funcname,selffield,role,apimeaning,summary,expr,formula,pinpoint-partial';
+for (const [name, only] of [['nonpseudoc-0', nonPseudoc0], ['nonpseudoc-1', nonPseudoc1]]) {
+  assert.match(measure, new RegExp(`name: ${name}[\\s\\S]*?only: ${only}`),
+    `${name} must preserve the current feature set`);
 }
-assert.match(measure, /accuracy-result-v7-/,
-  'runner-local layout must use a fresh validated cache generation');
+for (let shard = 0; shard < 4; shard++) {
+  assert.match(measure, new RegExp(`name: pseudoc-${shard}[\\s\\S]*?shardIndex: ${shard}[\\s\\S]*?shardCount: 4`),
+    `pseudoc-${shard} must be one exact quarter of the canonical pseudoc sample set`);
+}
+assert.equal((measure.match(/\n\s+- name:\s+(?:nonpseudoc-[01]|pseudoc-[0-3])\n/g) || []).length, 6,
+  'each fixture must have exactly six raw measurement partitions');
 assert.match(workflow, /LOCAL_PSEUDOC_WORKERS:\s*2/,
-  'pseudocode must use the remaining two local CPU lanes');
-assert.match(measure, /accuracy-local-nonpseudoc-0\.json/);
-assert.match(measure, /accuracy-local-nonpseudoc-1\.json/);
-assert.match(measure, /node tests\/accuracy-pseudoc-parallel\.mjs/,
-  'pseudoc must retain persistent runner-local workers');
-assert.match(measure, /--workers="\$LOCAL_PSEUDOC_WORKERS"/,
-  'the persistent pseudoc pool size must remain explicitly bounded');
-
-const measureScript = measure.slice(
-  measure.indexOf('name: Measure missing accuracy partitions runner-locally'),
-  measure.indexOf('name: Save exact core result cache'),
-);
-const firstNonPseudoc = measureScript.indexOf("--only='sections,funcs,funcs-guess,disasm,kinds,calls,refs,imports,objc,selstub,pinpoint'");
-const secondNonPseudoc = measureScript.indexOf("--only='strings,xrefs,funcname,selffield,role,apimeaning,summary,expr,formula,pinpoint-partial'");
-const pseudoc = measureScript.indexOf('node tests/accuracy-pseudoc-parallel.mjs');
-assert.ok(firstNonPseudoc >= 0 && secondNonPseudoc > firstNonPseudoc,
-  'both non-pseudocode feature partitions must remain present in their original order');
-assert.ok(pseudoc > secondNonPseudoc,
-  'pseudocode workers must start only after both memory-heavy non-pseudocode partitions finish');
+  'each pseudocode shard must keep the audited two-worker memory envelope');
+assert.match(workflow, /PSEUDOC_SHARD_COUNT:\s*4/);
 assert.equal(
-  (measureScript.match(/if ! node --max-old-space-size=4096 tests\/accuracy\.mjs/g) || []).length,
-  2,
-  'each non-pseudocode partition must run as a directly joined fail-closed process',
+  (measure.match(/node --max-old-space-size=4096 tests\/accuracy\.mjs/g) || []).length,
+  1,
+  'one matrix step must launch exactly one 4 GiB non-pseudocode process per partition runner',
 );
-assert.doesNotMatch(measureScript, /accuracy-local-nonpseudoc-[01]\.log\s*&/,
-  'two 4 GiB non-pseudocode processes must never run concurrently on one hosted runner');
-assert.doesNotMatch(measureScript, /pids\+=\("\$!"\)|wait "\$\{pids/,
-  'non-pseudocode memory safety must not depend on background-process joining');
-assert.match(measureScript, /cat accuracy-local-nonpseudoc-0\.log[\s\S]*cat accuracy-local-nonpseudoc-1\.log/,
-  'both sequential partitions must retain failure diagnostics');
+assert.doesNotMatch(measure, /tests\/accuracy\.mjs[^\n]*&|pids\+=\("\$!"\)/,
+  '4 GiB accuracy processes must never overlap inside one runner');
+assert.match(measure, /node tests\/accuracy-pseudoc-parallel\.mjs/);
+assert.match(measure, /--workers="\$LOCAL_PSEUDOC_WORKERS"/);
+assert.match(measure, /--shard-index="\$\{\{ matrix\.partition\.shardIndex \}\}"/);
+assert.match(measure, /--shard-count="\$\{\{ matrix\.partition\.shardCount \}\}"/);
 
-for (const partition of ['core', 'pinpoint']) {
-  assert.match(measure, new RegExp(`accuracy-part-\\$\\{\\{ matrix\\.target\\.name \\}\\}-${partition}\\.json\\.tmp`),
-    `${partition} must build into a temporary result before publication`);
+// Exact caches are partition-scoped. Production changes are still conservatively
+// hashed across the real analysis graph; only proven scheduling/scorer domains
+// are separated. No broad restore key may reuse stale output.
+assert.match(measure, /accuracy-result-v8-/,
+  'optimized topology must use a fresh result-cache generation');
+assert.match(measure, /COMMON_HASH:\s*\$\{\{ hashFiles\('js\/\*\*'/,
+  'production JS changes must conservatively invalidate measured results');
+assert.match(measure, /NONPSEUDOC_HASH:/);
+assert.match(measure, /PSEUDOC_HASH:/);
+assert.match(measure, /CONTRACT="\$\{PARTITION_KIND\}:\$\{PARTITION_ONLY\}:heap=4096"/);
+assert.match(measure, /CONTRACT="\$\{PARTITION_KIND\}:\$\{SHARD_INDEX\}:\$\{SHARD_COUNT\}:workers=\$\{LOCAL_PSEUDOC_WORKERS\}"/);
+assert.match(measure, /matrix\.target\.name \}\}-\$\{\{ matrix\.partition\.name \}\}-\$\{DIGEST\}/,
+  'cache identity must include both target and raw partition');
+assert.doesNotMatch(measure, /\.github\/workflows\/cross-binary-accuracy\.yml[^\n]*\}\}/,
+  'pure workflow topology edits must not invalidate otherwise exact measurement results');
+assert.doesNotMatch(measure, /restore-keys:/,
+  'result caches must remain exact-only');
+
+// Every newly measured output is staged, validated, then atomically published.
+assert.match(measure, /tmp="\$\{output\}\.tmp"/);
+assert.match(measure, /accuracy-result-validate\.mjs "\$tmp" --expect=/);
+assert.match(measure, /mv "\$tmp" "\$output"/);
+assert.match(measure, /name:\s*Validate restored partition result[\s\S]*accuracy-result-validate\.mjs/,
+  'cache hits must be structurally revalidated before reuse');
+assert.match(measure, /name:\s*Save exact partition result cache[\s\S]*if:\s*success\(\)/,
+  'failed/partial output must never enter the exact cache');
+assert.match(measure, /name:\s*Upload validated partition result[\s\S]*if:\s*success\(\)[\s\S]*if-no-files-found:\s*error/,
+  'only validated complete partitions may be published');
+
+// The aggregate remains fail-closed and proves that sharding did not remove or
+// duplicate any feature before applying the exact same score/baseline gates.
+assert.match(aggregate, /if:\s*always\(\)/);
+assert.match(aggregate, /needs:\s*\[preflight, prepare, measure\]/);
+for (const dep of ['PREFLIGHT_RESULT', 'PREPARE_RESULT', 'MEASURE_RESULT']) {
+  assert.ok(aggregate.includes(dep), `${dep} must be inspected by the final fail-closed gate`);
 }
-assert.match(measure, /pseudoc_output="accuracy-part-\$\{\{ matrix\.target\.name \}\}-pseudoc\.json"/);
-assert.match(measure, /> "\$\{pseudoc_output\}\.tmp"/,
-  'pseudoc must build into a temporary result before publication');
-assert.match(measure, /accuracy-result-validate\.mjs "\$\{core_output\}\.tmp"/,
-  'new core output must be validated before publication');
-assert.match(measure, /accuracy-result-validate\.mjs "\$\{pinpoint_output\}\.tmp"/,
-  'new pinpoint output must be validated before publication');
-assert.match(measure, /accuracy-result-validate\.mjs "\$\{pseudoc_output\}\.tmp"/,
-  'new pseudoc output must be validated before publication');
-assert.match(measure, /mv "\$\{core_output\}\.tmp" "\$core_output"/);
-assert.match(measure, /mv "\$\{pinpoint_output\}\.tmp" "\$pinpoint_output"/);
-assert.match(measure, /mv "\$\{pseudoc_output\}\.tmp" "\$pseudoc_output"/);
-
-const targetUpload = measure.slice(measure.indexOf('name: Upload target accuracy partitions'));
-assert.match(targetUpload, /if:\s*success\(\)/,
-  'failed fixture measurements must never upload partial accuracy artifacts');
-assert.match(targetUpload, /accuracy-part-\$\{\{ matrix\.target\.name \}\}-\*\.json/,
-  'one target artifact must contain all three validated partition files');
-assert.match(targetUpload, /if-no-files-found:\s*error/,
-  'a missing target artifact must fail closed');
-
-assert.match(aggregate, /needs:\s*measure/,
-  'the final required gate must wait for the three fixture runners');
-assert.match(aggregate, /MEASURE_RESULT:\s*\$\{\{ needs\.measure\.result \}\}/,
-  'the final gate must inspect the complete fixture matrix result');
-assert.match(aggregate, /name:\s*Workflow contract regression[\s\S]*issue-497-cross-binary-workflow\.mjs/,
-  'workflow contract validation must still run in the required final job');
-assert.match(aggregate, /name:\s*Syntax lint[\s\S]*npm run lint/,
-  'repository syntax lint must remain in the required final job');
-assert.match(aggregate, /name:\s*Core tests for standalone manual validation[\s\S]*github\.event_name == 'workflow_dispatch'[\s\S]*npm test/,
-  'manual release validation must still include the broad core test suite');
-assert.match(aggregate, /name:\s*Validate downloaded accuracy partitions[\s\S]*accuracy-result-validate\.mjs/,
-  'the final merge must validate every downloaded partition first');
-assert.match(aggregate, /node tests\/accuracy-merge\.mjs accuracy-BattleCats\.json/);
-assert.match(aggregate, /node tests\/accuracy-merge\.mjs accuracy-YWP\.json/);
-assert.match(aggregate, /node tests\/accuracy-merge\.mjs accuracy-TsumTsum\.json/);
+assert.match(aggregate, /exit 1/);
+assert.match(aggregate, /pattern:\s*accuracy-part-\*/);
+assert.match(aggregate, /for target in BattleCats YWP TsumTsum/);
+assert.match(aggregate, /for shard in 0 1 2 3/);
+assert.equal((aggregate.match(/node tests\/accuracy-pseudoc-shard-merge\.mjs/g) || []).length, 3,
+  'one exact pseudoc reconstruction is required for each real target');
+assert.equal((aggregate.match(/node tests\/accuracy-merge\.mjs accuracy-(?:BattleCats|YWP|TsumTsum)\.json/g) || []).length, 3,
+  'each target must merge to the canonical complete feature ordering');
 assert.match(aggregate, /node tests\/accuracy-gate\.mjs/,
-  'the existing cross-binary score floors must remain the final accuracy gate');
-assert.match(aggregate, /name:\s*accuracy\s*\n\s*if:\s*always\(\)/,
-  'the final required accuracy job must remain a fail-closed aggregate');
+  'existing cross-binary score floors must remain authoritative');
+assert.match(aggregate, /node tools\/benchmark\/accuracy-report\.mjs --output=accuracy-baseline-report\.json/);
+assert.match(aggregate, /node tools\/benchmark\/compare\.mjs --accuracy=accuracy-baseline-report\.json/);
+assert.match(aggregate, /github\.event_name == 'workflow_dispatch'[\s\S]*npm test/,
+  'manual release validation must retain the broad core suite');
 
-assert.match(workflow, /push:\s*\n\s*branches:\s*\[[^\]]*\bmain\b[^\]]*\]/,
-  'main must seed exact oracle/result caches for later pull requests');
-assert.match(workflow, /cancel-in-progress:\s*true/,
-  'stale accuracy runs should be cancelled when a newer revision supersedes them');
+// Contract/self-tests run before expensive hosted-runner fanout.
+assert.match(preflight, /issue-497-cross-binary-workflow\.mjs/);
+assert.match(preflight, /accuracy-merge\.mjs --self-test/);
+assert.match(preflight, /accuracy-pseudoc-shard-merge\.mjs --self-test/);
+assert.match(preflight, /accuracy-pseudoc-shard\.test\.mjs/);
+assert.match(preflight, /accuracy-result-validate\.mjs --self-test/);
+assert.match(preflight, /npm run lint/);
 
-console.log('issue #497/#2484 cross-binary workflow gate regression passed');
+console.log('issue #497/#2484/#3123 cross-binary workflow gate regression passed');

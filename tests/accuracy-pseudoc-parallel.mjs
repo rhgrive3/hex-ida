@@ -3,7 +3,7 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import { fork } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { pseudocSamples } from './accuracy-pseudoc-shard-oracle.mjs';
+import { pseudocSamples, pseudocShardSamples } from './accuracy-pseudoc-shard-oracle.mjs';
 import { pseudocResult } from './accuracy-pseudoc-eval.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -16,16 +16,25 @@ const opt = (name, fallback) => {
 const target = opt('target', null);
 const oraclePath = opt('oracle', null);
 const workers = Math.max(1, Math.min(4, Number(opt('workers', '4')) || 4));
+const shardIndex = Number(opt('shard-index', '0'));
+const shardCount = Number(opt('shard-count', '1'));
 const json = argv.includes('--json');
 if (!target || !oraclePath) {
-  console.error('usage: node tests/accuracy-pseudoc-parallel.mjs --target=<binary> --oracle=<oracle.json.gz> [--workers=4] [--json]');
+  console.error('usage: node tests/accuracy-pseudoc-parallel.mjs --target=<binary> --oracle=<oracle.json.gz> [--workers=4] [--shard-index=0 --shard-count=1] [--json]');
+  process.exit(2);
+}
+if (!Number.isInteger(shardCount) || shardCount < 1 ||
+    !Number.isInteger(shardIndex) || shardIndex < 0 || shardIndex >= shardCount) {
+  console.error(`invalid pseudoc shard ${shardIndex}/${shardCount}`);
   process.exit(2);
 }
 
 const oracle = JSON.parse(zlib.gunzipSync(fs.readFileSync(oraclePath)).toString('utf8'));
 if (!Array.isArray(oracle.functionStarts)) throw new Error('oracle.functionStarts is required');
-const samples = pseudocSamples(oracle.functionStarts);
-if (samples.length !== 120) throw new Error(`expected the canonical 120 pseudoc samples, got ${samples.length}`);
+const canonicalSamples = pseudocSamples(oracle.functionStarts);
+if (canonicalSamples.length !== 120) throw new Error(`expected the canonical 120 pseudoc samples, got ${canonicalSamples.length}`);
+const samples = pseudocShardSamples(oracle.functionStarts, shardIndex, shardCount);
+if (samples.length === 0) throw new Error(`pseudoc shard ${shardIndex}/${shardCount} is empty`);
 
 let next = 0;
 let finished = 0;
@@ -76,7 +85,8 @@ const completion = new Promise((resolve, reject) => {
     reject(failed);
   };
 
-  for (let worker = 0; worker < workers; worker++) {
+  const workerCount = Math.min(workers, samples.length);
+  for (let worker = 0; worker < workerCount; worker++) {
     const child = fork(path.join(HERE, 'accuracy-pseudoc-worker.mjs'), [target], {
       stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
       execArgv: ['--max-old-space-size=2600'],
@@ -101,7 +111,7 @@ const completion = new Promise((resolve, reject) => {
       }
       if (message.type !== 'result') return;
       if (seen.has(message.index)) {
-        fail(new Error(`duplicate pseudoc result for sample ${message.index}`));
+        fail(new Error(`duplicate pseudoc result for shard-local sample ${message.index}`));
         return;
       }
       seen.add(message.index);
@@ -119,10 +129,6 @@ const completion = new Promise((resolve, reject) => {
       });
 
       if (finished === samples.length) {
-        // Workers that run out of queued tasks remain idle but connected until
-        // the last in-flight function completes. Disconnect once, here, rather
-        // than sending repeated stop messages to channels that may already be
-        // closing (the old scheme caused ERR_IPC_CHANNEL_CLOSED on YWP).
         disconnectAll();
         resolve();
       } else {
@@ -146,12 +152,12 @@ try {
   process.exit(1);
 }
 
-if (seen.size !== samples.length) throw new Error(`pseudoc coverage mismatch: ${seen.size}/${samples.length}`);
+if (seen.size !== samples.length) throw new Error(`pseudoc shard coverage mismatch: ${seen.size}/${samples.length}`);
 const elapsed = Date.now() - started;
 const slowest = timings.slice().sort((a, b) => b.elapsedMs - a.elapsedMs).slice(0, 8);
 for (const timing of slowest) {
   process.stderr.write(
-    `pseudoc sample ${timing.index} ${timing.addr} ${timing.bytes}B: ${timing.elapsedMs}ms ` +
+    `pseudoc shard ${shardIndex}/${shardCount} sample ${timing.index} ${timing.addr} ${timing.bytes}B: ${timing.elapsedMs}ms ` +
     `(analyze=${timing.analyzeMs}ms decompile=${timing.decompileMs}ms)\n`,
   );
 }

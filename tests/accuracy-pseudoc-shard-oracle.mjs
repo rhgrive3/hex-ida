@@ -20,3 +20,19 @@ export function pseudocSamples(functionStarts) {
   }
   return stride(cands, 120);
 }
+
+/**
+ * Deterministically partition the canonical sample set without changing it.
+ * Round-robin assignment spreads address-local hot spots while preserving
+ * disjoint/exhaustive coverage across shards.
+ */
+export function pseudocShardSamples(functionStarts, shardIndex = 0, shardCount = 1) {
+  const index = Number(shardIndex);
+  const count = Number(shardCount);
+  if (!Number.isInteger(count) || count < 1) throw new Error(`invalid pseudoc shard count: ${shardCount}`);
+  if (!Number.isInteger(index) || index < 0 || index >= count) {
+    throw new Error(`invalid pseudoc shard index: ${shardIndex}/${shardCount}`);
+  }
+  const all = pseudocSamples(functionStarts);
+  return all.filter((_, sampleIndex) => sampleIndex % count === index);
+}
