@@ -80,7 +80,10 @@ const SCALAR_FP_COMPARE = new Set(['fcmeq','fcmge','fcmgt','facge','facgt']);
 const SCALAR_NARROW = new Set(['sqxtn','uqxtn','sqxtun']);
 
 function mnemonicOf(instruction) {
-  return String(instruction?.mnemonic || '').trim().toLowerCase();
+  // Canonical mnemonic identity only; structured values must not coerce into
+  // a SIMD family instruction identity.
+  if (typeof instruction?.mnemonic !== 'string') return '';
+  return instruction.mnemonic.trim().toLowerCase();
 }
 function semanticMnemonic(mnemonic) {
   if (mnemonic === 'orr_v') return 'orr';
@@ -189,7 +192,10 @@ function valueWidth(value) {
 }
 function parseArrangement(op, elementKind = 'bitvector') {
   if (op?.k !== 'reg' || op.cls !== 'vec' || op.bits !== 128 || !validRegisterNumber(op)) return null;
-  const arr = String(op.arr || '').toLowerCase();
+  // The arrangement determines lane count/element width/type: it is canonical
+  // string evidence and must not be minted from structured values.
+  if (typeof op.arr !== 'string') return null;
+  const arr = op.arr.toLowerCase();
   const match = /^(\d+)([bhsd])$/.exec(arr);
   if (!match) return null;
   const laneCount = Number(match[1]);
@@ -213,7 +219,9 @@ function arrangement(op, allowed, elementKind = 'bitvector') {
 }
 function elementInfo(op, elementKind = 'bitvector') {
   if (op?.k !== 'elem' || !validRegisterNumber(op)) return null;
-  const size = String(op.size || '').toLowerCase();
+  // The element-size selector defines the lane type: canonical string only.
+  if (typeof op.size !== 'string') return null;
+  const size = op.size.toLowerCase();
   const elementBits = ELEMENT_BITS[size];
   if (!elementBits) return null;
   const laneCount = 128 / elementBits;
@@ -425,7 +433,10 @@ function immediateValue(op, widthBits = 64) {
 }
 function immediateFloatZero(op, widthBits) {
   if (op?.k !== 'imm') return null;
-  const zero = (op.float != null && Number(op.float) === 0) || op.value === 0n;
+  // The architectural zero immediate is canonical evidence: a finite number 0
+  // or the explicit 0n bit pattern. Structured/malformed float fields must not
+  // mint a zero bit pattern through Number() coercion.
+  const zero = (typeof op.float === 'number' && Number.isFinite(op.float) && op.float === 0) || op.value === 0n;
   if (!zero || op.shift || op.extend != null) return null;
   const format = FLOAT_FORMAT[widthBits];
   return format ? createFloatValue(widthBits, format, { bitPattern:0n }) : null;
