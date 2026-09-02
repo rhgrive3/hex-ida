@@ -200,7 +200,8 @@ function validConditionalOperand(mnemonic, ops) {
 }
 
 function validAddressEncoding(instruction, ops) {
-  const mnemonic = String(instruction?.mnemonic || '').toLowerCase();
+  if (typeof instruction?.mnemonic !== 'string') return null;
+  const mnemonic = instruction.mnemonic.toLowerCase();
   if (mnemonic !== 'adr' && mnemonic !== 'adrp') return true;
   if (ops.length !== 2) return false;
   const destination = ops[0];
@@ -253,7 +254,8 @@ function validScalarImmediateModifiers(mnemonic, ops) {
 }
 
 export function liftArm64IntegerEffects(instruction, options = {}) {
-  const mnemonic = String(instruction?.mnemonic || '').toLowerCase();
+  if (typeof instruction?.mnemonic !== 'string') return null;
+  const mnemonic = instruction.mnemonic.toLowerCase();
   const ops = Array.isArray(instruction?.ops) ? instruction.ops : [];
   const expected = expectedOperandCount(mnemonic);
   if (expected != null && ops.length !== expected) {

@@ -75,7 +75,8 @@ export const ARM64_SYSTEM_EFFECT_MNEMONICS = Object.freeze(new Set([
 ]));
 
 function mnemonicOf(instruction) {
-  return String(instruction?.mnemonic || '').trim().toLowerCase();
+  if (typeof instruction?.mnemonic !== 'string') return '';
+  return instruction.mnemonic.trim().toLowerCase();
 }
 function operandsOf(instruction) {
   if (Array.isArray(instruction?.ops)) return instruction.ops;

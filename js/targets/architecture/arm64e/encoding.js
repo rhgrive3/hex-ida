@@ -14,7 +14,10 @@ const AUTHENTICATED_BRANCH_TWO = new Set(['braa','brab','blraa','blrab']);
 const AUTHENTICATED_BRANCH_ONE = new Set(['braaz','brabz','blraaz','blrabz']);
 
 function mnemonicOf(decoded) {
-  return String(decoded?.mnemonic ?? decoded?.opcode ?? '').trim().toLowerCase();
+  // Canonical mnemonic identity only; structured values must not coerce into
+  // an authenticated-control instruction identity.
+  const raw = typeof decoded?.mnemonic === 'string' ? decoded.mnemonic : typeof decoded?.opcode === 'string' ? decoded.opcode : null;
+  return raw ? raw.trim().toLowerCase() : '';
 }
 
 function operandList(decoded) {
