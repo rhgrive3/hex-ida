@@ -215,7 +215,7 @@ function fallbackClone(value, seen = new WeakMap()) {
     return value.slice ? value.slice() : new value.constructor(value);
   }
   if (value instanceof Map) { const out = new Map(); seen.set(value, out); for (const [k, v] of value) out.set(fallbackClone(k, seen), fallbackClone(v, seen)); return out; }
-  if (value instanceof Set) { const out = new Set(); seen.set(value, out); for (const v of value) out.add(fallbackClone(v, seen), fallbackClone(v, seen)); return out; }
+  if (value instanceof Set) { const out = new Set(); seen.set(value, out); for (const v of value) out.add(fallbackClone(v, seen)); return out; }
   if (Array.isArray(value)) { const out = []; seen.set(value, out); for (const v of value) out.push(fallbackClone(v, seen)); return out; }
   const out = {}; seen.set(value, out); for (const [k, v] of Object.entries(value)) Object.defineProperty(out, k, { value:fallbackClone(v, seen), enumerable:true, configurable:true, writable:true }); return out;
 }
