@@ -152,7 +152,10 @@ export async function runPhase3Corpus({
     env,
     envName,
     availableParallelism,
-    maxDefault: 4,
+    // Standalone/current-corpus execution is an outer process pool with isolated
+    // leaves, so use up to six local CPUs. Dual-mode execution sets an explicit
+    // 2-4 worker override per corpus and therefore remains bounded separately.
+    maxDefault: 6,
     reserveCores: 0,
   }));
 
