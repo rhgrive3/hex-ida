@@ -9,7 +9,12 @@ import { valueBefore } from '../dataflow-semantic.js';
 
 export const SYM = Object.freeze({ CONST: 'const', SYMBOL: 'symbol', OP: 'op', ITE: 'ite', UNKNOWN: 'unknown' });
 
-export function symbolic(name, meta) { return { kind: SYM.SYMBOL, name: String(name), ...(meta || {}) }; }
+export function symbolic(name, meta) {
+  // Caller metadata cannot override the canonical fields that define a symbol
+  // expression's semantic identity. Auxiliary metadata (source/index/location)
+  // is preserved; `kind` and `name` stay constructor-owned.
+  return { ...(meta || {}), kind: SYM.SYMBOL, name: String(name) };
+}
 export function symbolicArg(index, name) { return symbolic(name || 'arg' + index, { source: 'argument', index }); }
 export function symbolicField(location, name) {
   const key = location && (location.key || (location.disp != null ? String(location.disp) : null));
@@ -17,6 +22,14 @@ export function symbolicField(location, name) {
 }
 
 function c(value) { return { kind: SYM.CONST, value: BigInt(value) }; }
+
+// Bit width is a semantic authority: only primitive finite safe-integer numbers
+// may define it. Structured values must not launder into a canonical width via
+// Number() coercion (e.g. Number(['8']) === 8).
+function widthOf(bits, fallback = 64) {
+  if (typeof bits !== 'number' || !Number.isSafeInteger(bits) || bits < 1) return fallback;
+  return Math.max(1, Math.min(64, bits));
+}
 function unknown(reason, detail) { return { kind: SYM.UNKNOWN, reason, detail: detail || null }; }
 function op(name, ...args) {
   if (args.every((a) => a && a.kind === SYM.CONST)) {
@@ -36,7 +49,7 @@ function op(name, ...args) {
 }
 
 function binOp(name, a, b, bits = 64) {
-  const width = Math.max(1, Math.min(64, Number(bits) || 64));
+  const width = widthOf(bits);
   if (a && b && a.kind === SYM.CONST && b.kind === SYM.CONST) {
     const av = a.value, bv = b.value;
     try {
@@ -65,7 +78,7 @@ return { kind: SYM.OP, op: name, args: [a, b], bits:width };
 }
 
 function cmp(name, a, b, options = {}) {
-  const bits = Math.max(1, Math.min(64, Number(options.bits) || 64));
+  const bits = widthOf(options.bits);
   const signed = options.signed === true ? true : options.signed === false ? false : null;
   if (a?.kind === SYM.CONST && b?.kind === SYM.CONST) {
     const au = BigInt.asUintN(bits, a.value), bu = BigInt.asUintN(bits, b.value);
@@ -111,7 +124,7 @@ export function expressionText(e) {
   if (e.op === 'not') body = 'not ' + expressionText(e.args[0]);
   else if (e.args.length === 1) body = e.op + '(' + expressionText(e.args[0]) + ')';
   else body = '(' + expressionText(e.args[0]) + ' ' + e.op + ' ' + expressionText(e.args[1]) + ')';
-  const bits = Number(e.bits);
+  const bits = typeof e.bits === 'number' ? e.bits : null;
   return Number.isSafeInteger(bits) && bits > 0 ? `i${bits}${body}` : body;
 }
 
@@ -202,14 +215,17 @@ function evalValue(value, state, ir, opts, memo, active) {
       out = binOp(d.sub,
         evalValue(d.args[0].value, state, ir, opts, memo, active),
         evalValue(d.args[1].value, state, ir, opts, memo, active),
-        d.dst && d.dst.bits || value.bits || 64);
+        widthOf(d.dst?.bits, widthOf(value?.bits, 64)));
     } else if (d.op === OP.UN && d.args[0] && /^(sxt|uxt|fmov|neg)/.test(d.sub || '')) {
       const x = evalValue(d.args[0].value, state, ir, opts, memo, active);
-      const toBits = d.dst && d.dst.bits || value.bits || 64;
+      const toBits = widthOf(d.dst?.bits, widthOf(value?.bits, 64));
       const m = /^(sxt|uxt)(8|16|32|64)?/.exec(d.sub || '');
       if (d.sub === 'neg') out = binOp('sub', c(0n), x, toBits);
       else if (m) {
-        const fromBits = Number(m[2] || d.args[0].bits || d.args[0].value?.bits || toBits);
+        // m[2] comes from the canonical op-name grammar, not decoder evidence.
+        const fromBits = m[2] != null
+          ? Number(m[2])
+          : widthOf(d.args[0].bits, widthOf(d.args[0].value?.bits, toBits));
         if (x.kind === SYM.CONST) {
           const narrowed = m[1] === 'sxt' ? BigInt.asIntN(fromBits, x.value) : BigInt.asUintN(fromBits, x.value);
           out = c(BigInt.asUintN(toBits, narrowed));
@@ -239,7 +255,11 @@ function conditionFromCmp(cmpInst, condCode, state, ir, opts, memo, active) {
   if (!info || !info.op) return unknown('unsupported-condition', { condition: condCode });
   const a = evalValue(cmpInst.args[0].value, state, ir, opts, memo, active);
   const b = evalValue(cmpInst.args[1].value, state, ir, opts, memo, active);
-  const bits = Number(cmpInst.args[0]?.bits || cmpInst.args[0]?.value?.bits || cmpInst.args[1]?.bits || cmpInst.args[1]?.value?.bits || 64);
+  const bits = widthOf(
+    cmpInst.args[0]?.bits,
+    widthOf(cmpInst.args[0]?.value?.bits,
+      widthOf(cmpInst.args[1]?.bits,
+        widthOf(cmpInst.args[1]?.value?.bits, 64))));
   return cmp(info.op, a, b, { bits, signed: info.signed });
 }
 
@@ -305,8 +325,13 @@ function stopResult(state, reason, inst) {
 }
 
 function executionBudget(value, fallback, min, max, name) {
-  const n = value == null ? fallback : Number(value);
-  if (!Number.isFinite(n) || !Number.isSafeInteger(n)) throw new TypeError(`${name} must be a finite safe integer`);
+  // Execution budgets are resource authorities. Only a primitive finite safe
+  // integer may define one; structured values must not coerce into a regular
+  // limit (Number(['1']) === 1). null/undefined still take the fallback.
+  const n = value == null ? fallback : value;
+  if (typeof n !== 'number' || !Number.isFinite(n) || !Number.isSafeInteger(n)) {
+    throw new TypeError(`${name} must be a finite safe integer`);
+  }
   if (n < min) return min;
   return Math.min(n, max);
 }

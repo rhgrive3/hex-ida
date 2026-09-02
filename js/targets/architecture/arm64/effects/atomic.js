@@ -44,7 +44,7 @@ export const ARM64_ATOMIC_INSTRUCTION_INVENTORY = Object.freeze({
   barriers:Object.freeze(['dmb','dsb','isb','ssbb','pssbb','dfb','clrex']),
 });
 
-function mnemonicOf(decoded) { return String(decoded?.mnemonic || '').trim().toLowerCase(); }
+function mnemonicOf(decoded) { if (typeof decoded?.mnemonic !== 'string') return ''; return decoded.mnemonic.trim().toLowerCase(); }
 function contextOf(decoded, context = {}) {
   const instructionId = String(context.instructionId || decoded?.instructionId || '').trim();
   if (!instructionId) throw new TypeError('arm64-machine-effects-instruction-id-required');

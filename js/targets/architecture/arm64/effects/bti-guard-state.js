@@ -13,7 +13,8 @@ const ARM64_BTYPE_REGISTER_ID = 'pstate.btype';
 const ARM64_BTYPE_PRODUCERS = new Set(['br','braa','brab','braaz','brabz','blr','blraa','blrab','blraaz','blrabz']);
 
 function mnemonicOf(instruction) {
-  return String(instruction?.mnemonic || '').trim().toLowerCase();
+  if (typeof instruction?.mnemonic !== 'string') return '';
+  return instruction.mnemonic.trim().toLowerCase();
 }
 
 function deepCopyEvidence(value) {

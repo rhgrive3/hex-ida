@@ -28,8 +28,11 @@ function expectedOperandCount(mnemonic) {
   return null;
 }
 
-function regClass(op) { return op?.k === 'reg' ? String(op.cls || '').toLowerCase() : ''; }
-function regBits(op) { return Number(op?.bits || 0); }
+function regClass(op) { return op?.k === 'reg' && typeof op.cls === 'string' ? op.cls.toLowerCase() : ''; }
+function regBits(op) {
+  const bits = op?.bits;
+  return typeof bits === 'number' && Number.isInteger(bits) && (bits === 32 || bits === 64) ? bits : 0;
+}
 function isGpOrZr(op) { return op?.k === 'reg' && ['gp','zr'].includes(regClass(op)); }
 function isGpOrSp(op) { return op?.k === 'reg' && ['gp','sp'].includes(regClass(op)); }
 
@@ -200,7 +203,8 @@ function validConditionalOperand(mnemonic, ops) {
 }
 
 function validAddressEncoding(instruction, ops) {
-  const mnemonic = String(instruction?.mnemonic || '').toLowerCase();
+  if (typeof instruction?.mnemonic !== 'string') return null;
+  const mnemonic = instruction.mnemonic.toLowerCase();
   if (mnemonic !== 'adr' && mnemonic !== 'adrp') return true;
   if (ops.length !== 2) return false;
   const destination = ops[0];
@@ -253,7 +257,8 @@ function validScalarImmediateModifiers(mnemonic, ops) {
 }
 
 export function liftArm64IntegerEffects(instruction, options = {}) {
-  const mnemonic = String(instruction?.mnemonic || '').toLowerCase();
+  if (typeof instruction?.mnemonic !== 'string') return null;
+  const mnemonic = instruction.mnemonic.toLowerCase();
   const ops = Array.isArray(instruction?.ops) ? instruction.ops : [];
   const expected = expectedOperandCount(mnemonic);
   if (expected != null && ops.length !== expected) {
