@@ -141,16 +141,20 @@ export function isCacheableProof({
     return false;
   }
 
-  // 4. Incomplete or unsupported translation cannot be cached as proved/refuted
-  if (completeness) {
-    if (
-      completeness.translation === COMPLETENESS_STATUS.UNSUPPORTED ||
-      completeness.translation === 'unsupported' ||
-      completeness.translation === COMPLETENESS_STATUS.PARTIAL ||
-      completeness.translation === 'partial'
-    ) {
-      return false;
-    }
+  // 4. Proof cacheability requires a present completeness certificate whose
+  //    five SymbolicEvidence axes are all 'complete' (#3238). Missing,
+  //    partial, unsupported, or unknown axis values fail closed: cached
+  //    authority would otherwise carry into later analyses.
+  const REQUIRED_COMPLETENESS_AXES = [
+    'translation',
+    'controlFlow',
+    'memoryEffects',
+    'pathCoverage',
+    'queryScope',
+  ];
+  if (!completeness || typeof completeness !== 'object') return false;
+  if (!REQUIRED_COMPLETENESS_AXES.every((axis) => completeness[axis] === COMPLETENESS_STATUS.COMPLETE)) {
+    return false;
   }
 
   // 5. Inconsistent or unknown preconditions cannot produce cacheable proofs
