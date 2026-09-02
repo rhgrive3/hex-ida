@@ -46,6 +46,14 @@ function invalidConditionalEvidence(mnemonic, ops) {
     || !FP_CONDITIONS.has(conditions[0].text.trim().toLowerCase());
 }
 
+function normalizedConditionalOperands(mnemonic, ops) {
+  if (!['fcsel','fccmp','fccmpe'].includes(mnemonic)) return ops;
+  const condition = ops.find((op) => op?.k === 'cond');
+  const normalized = condition.text.trim().toLowerCase();
+  if (normalized === condition.text) return ops;
+  return ops.map((op) => op === condition ? { ...op, text: normalized } : op);
+}
+
 function fixedPointScaleWidth(mnemonic, ops) {
   const register = mnemonic === 'scvtf' || mnemonic === 'ucvtf' ? ops[1] : ops[0];
   if (register?.k !== 'reg'
@@ -104,7 +112,11 @@ export function liftArm64FpEffects(instruction, context = {}) {
   if (invalidFiniteShape(mnemonic, ops)) {
     return liftArm64FpEffectsCore({ ...instruction, ops: [] }, context);
   }
-  return liftArm64FpEffectsCore(instruction, context);
+  const normalizedOps = normalizedConditionalOperands(mnemonic, ops);
+  return liftArm64FpEffectsCore(
+    normalizedOps === ops ? instruction : { ...instruction, ops: normalizedOps },
+    context,
+  );
 }
 
 export const arm64FpMachineEffects = liftArm64FpEffects;
