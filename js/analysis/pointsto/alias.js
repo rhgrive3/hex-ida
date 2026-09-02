@@ -24,6 +24,10 @@ function widthBytes(widthBits) {
   return BigInt(Math.ceil(bits / 8));
 }
 
+function isProvenAddressSpace(value) {
+  return typeof value === 'string' && value.length > 0 && value !== 'unknown';
+}
+
 /**
  * Alias relation between two points-to sets.
  *
@@ -68,7 +72,8 @@ export function pointsToAlias(left, right, options = {}) {
   for (const a of left.targets) {
     for (const b of right.targets) {
       if (a.rootKey !== b.rootKey) {
-        if (a.addressSpace !== b.addressSpace) {
+        if (isProvenAddressSpace(a.addressSpace) && isProvenAddressSpace(b.addressSpace)
+          && a.addressSpace !== b.addressSpace) {
           relations.push('no');
           reasonCodes.add('distinct-address-space');
           continue;

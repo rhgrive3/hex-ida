@@ -58,7 +58,8 @@ export class DebugSession {
     if (this.adapter.capabilities.modules) {
       try {
         const next=await this.adapter.getModules();
-        if (Array.isArray(next)) this.modules=next;
+        if (!Array.isArray(next)) throw new DebugAdapterError('refresh-failed','adapter getModules must return an array');
+        this.modules=next;
         this.refreshErrors.modules=null;
       } catch (error) {
         this.refreshErrors.modules={code:error?.code||'refresh-failed',message:String(error?.message||error)};
@@ -67,7 +68,8 @@ export class DebugSession {
     if (this.adapter.capabilities.threads) {
       try {
         const next=await this.adapter.getThreads();
-        if (Array.isArray(next)) this.threads=next;
+        if (!Array.isArray(next)) throw new DebugAdapterError('refresh-failed','adapter getThreads must return an array');
+        this.threads=next;
         this.refreshErrors.threads=null;
       } catch (error) {
         this.refreshErrors.threads={code:error?.code||'refresh-failed',message:String(error?.message||error)};
