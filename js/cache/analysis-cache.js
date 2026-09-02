@@ -24,6 +24,11 @@ function canonicalArtifactId(options = {}) {
   return value.toLowerCase();
 }
 
+function canonicalBinaryHash(value) {
+  if (typeof value !== 'string' || value.length === 0) throw new TypeError('analysis-cache-binary-hash-invalid');
+  return value;
+}
+
 export class AnalysisCache {
   constructor(options = {}) {
     this.schemaVersion = options.schemaVersion ?? ANALYSIS_CACHE_SCHEMA;
@@ -37,7 +42,7 @@ export class AnalysisCache {
     this._idbFailed = false;
   }
 
-  legacyKey(hash) { return `${this.schemaVersion}:${this.analysisIdentity}:${hash}`; }
+  legacyKey(hash) { return `${this.schemaVersion}:${this.analysisIdentity}:${canonicalBinaryHash(hash)}`; }
   canonicalKey(artifactId) {
     const id = canonicalArtifactId({ artifactId });
     if (!id) throw new TypeError('canonical artifact id is required');
@@ -82,8 +87,9 @@ export class AnalysisCache {
 
   async get(hash, options = {}) {
     const artifactId = canonicalArtifactId(options);
-    if (!hash && !artifactId) return null;
-    const key = this.key(hash, { artifactId });
+    if ((hash == null || hash === '') && !artifactId) return null;
+    const binaryHash = hash == null || hash === '' ? null : canonicalBinaryHash(hash);
+    const key = this.key(binaryHash, { artifactId });
     let record;
     if (this.memory) record = this.memory.get(key) || null;
     else {
@@ -91,8 +97,8 @@ export class AnalysisCache {
       catch (error) { const memory = this.#fallback(error); record = memory.get(key) || null; }
     }
     if (!record) return null;
-    if (!this.#validRecord(record, hash, artifactId)) {
-      await this.delete(hash, { artifactId });
+    if (!this.#validRecord(record, binaryHash, artifactId)) {
+      await this.delete(binaryHash, { artifactId });
       return null;
     }
     return structuredCloneSafe(record.data);
@@ -100,15 +106,16 @@ export class AnalysisCache {
 
   async put(hash, data = {}, options = {}) {
     if (!hash) throw new TypeError('binary hash is required');
+    const binaryHash = canonicalBinaryHash(hash);
     const artifactId = canonicalArtifactId(options);
     const clean = {};
     for (const [key, value] of Object.entries(data)) if (ALLOWED_FIELDS.has(key)) clean[key] = value;
     const snapshot = structuredCloneSafe(clean);
     const record = {
-      key:this.key(hash, { artifactId }),
+      key:this.key(binaryHash, { artifactId }),
       schemaVersion:this.schemaVersion,
       analysisIdentity:this.analysisIdentity,
-      binaryHash:hash,
+      binaryHash,
       canonicalArtifactId:artifactId,
       updatedAt:Date.now(),
       data:snapshot,
@@ -123,7 +130,8 @@ export class AnalysisCache {
 
   async delete(hash, options = {}) {
     const artifactId = canonicalArtifactId(options);
-    const key = this.key(hash, { artifactId });
+    const binaryHash = hash == null || hash === '' ? null : canonicalBinaryHash(hash);
+    const key = this.key(binaryHash, { artifactId });
     if (this.memory) { this.memory.delete(key); return; }
     try {
       const db = await this.#db();
