@@ -106,32 +106,36 @@ jobs:
               raise SystemExit(f'storeValue call exact match count={s.count(old_call)}')
           s = s.replace(old_call, new_call, 1)
 
-          old_committed = """  return expr.load(location, root.bits || 64, root.source, {
-            signed: root.signed ?? null,
-            proof: 'all SSA phi predecessors committed the exact spilled value to one lvalue',
-          });"""
-          old_committed = '\n'.join(line[10:] if line.startswith('          ') else line for line in old_committed.split('\n'))
-          new_committed = """  return {
-            expression: expr.load(location, root.bits || 64, root.source, {
-              signed: root.signed ?? null,
-              proof: 'all SSA phi predecessors committed the exact spilled value to one lvalue',
-            }),
-            stackStore,
-          };"""
-          new_committed = '\n'.join(line[10:] if line.startswith('          ') else line for line in new_committed.split('\n'))
+          old_committed = '\n'.join([
+              '  return expr.load(location, root.bits || 64, root.source, {',
+              '    signed: root.signed ?? null,',
+              "    proof: 'all SSA phi predecessors committed the exact spilled value to one lvalue',",
+              '  });',
+          ])
+          new_committed = '\n'.join([
+              '  return {',
+              '    expression: expr.load(location, root.bits || 64, root.source, {',
+              '      signed: root.signed ?? null,',
+              "      proof: 'all SSA phi predecessors committed the exact spilled value to one lvalue',",
+              '    }),',
+              '    stackStore,',
+              '  };',
+          ])
           if s.count(old_committed) != 1:
               raise SystemExit(f'committed return exact match count={s.count(old_committed)}')
           s = s.replace(old_committed, new_committed, 1)
 
-          old_recover = """  let committed = committedReturnValue(result, root, ret, opts);
-            let committedSpill = null;
-            if (!committed) {"""
-          old_recover = '\n'.join(line[10:] if line.startswith('          ') else line for line in old_recover.split('\n'))
-          new_recover = """  const committedProof = committedReturnValue(result, root, ret, opts);
-            let committed = committedProof?.expression ?? null;
-            let committedSpill = committedProof?.stackStore ?? null;
-            if (!committed) {"""
-          new_recover = '\n'.join(line[10:] if line.startswith('          ') else line for line in new_recover.split('\n'))
+          old_recover = '\n'.join([
+              '  let committed = committedReturnValue(result, root, ret, opts);',
+              '  let committedSpill = null;',
+              '  if (!committed) {',
+          ])
+          new_recover = '\n'.join([
+              '  const committedProof = committedReturnValue(result, root, ret, opts);',
+              '  let committed = committedProof?.expression ?? null;',
+              '  let committedSpill = committedProof?.stackStore ?? null;',
+              '  if (!committed) {',
+          ])
           if s.count(old_recover) != 1:
               raise SystemExit(f'recover committed exact match count={s.count(old_recover)}')
           s = s.replace(old_recover, new_recover, 1)
