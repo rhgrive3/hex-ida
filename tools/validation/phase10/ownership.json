@@ -144,7 +144,11 @@
     "tests/issue-3245-bool-model-binding.mjs",
     "tests/issues-unlinked-batch2-20260902.mjs",
     "tests/phase9/verify/global-reachability.test.mjs",
-    "js/architecture/compat/ir-core-arm64-aapcs64-v1.js"
+    "js/architecture/compat/ir-core-arm64-aapcs64-v1.js",
+    "tests/compiler-truth/extended.mjs",
+    "tests/compiler-truth/language-matrix.mjs",
+    "tests/compiler-truth/run-core.mjs",
+    "tests/compiler-truth/run.mjs"
   ],
   "forbiddenPrefixes": [
     "js/semantics/",

@@ -100,7 +100,11 @@
     "tests/phase9/verify/global-reachability.test.mjs",
     "js/architecture/compat/ir-core-arm64-aapcs64-v1.js",
     "tests/issues-unlinked-batch-20260901.mjs",
-    "tests/phase9/expr/hash-serialize.test.mjs"
+    "tests/phase9/expr/hash-serialize.test.mjs",
+    "tests/compiler-truth/extended.mjs",
+    "tests/compiler-truth/language-matrix.mjs",
+    "tests/compiler-truth/run-core.mjs",
+    "tests/compiler-truth/run.mjs"
   ],
   "forbiddenPrefixes": [
     "js/binary/",
