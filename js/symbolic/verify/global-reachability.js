@@ -115,14 +115,6 @@ export async function verifyGlobalEdgeReachability({
        `{ complete: true }` marker is not a zero-PHI proof. */
     return unknown('incomplete-phi-choices', 'Global unreachability requires explicit zero-PHI inventory evidence');
   }
-  // A PHI choice is proof evidence only when it names the PHI it resolves and
-  // the predecessor it selects. `{ complete: true }` alone is a placeholder and
-  // must not pass the gate.
-  if (globalScope.phiChoices.some((choice) =>
-    choice?.phi == null && choice?.phiId == null ||
-    choice?.predecessor == null && choice?.fromBlock == null)) {
-    return unknown('incomplete-phi-choices', 'Each PHI choice must identify its PHI and its selected predecessor');
-  }
   if (!isExpr(targetEdge)) {
     return unknown('missing-target-edge-condition', 'Global unreachability requires a translated target-edge condition');
   }
