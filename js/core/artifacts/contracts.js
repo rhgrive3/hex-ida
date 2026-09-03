@@ -55,8 +55,12 @@ function sortedStrings(values, code) {
   return [...new Set(normalized)].sort();
 }
 
-const RESERVED_TAGS = Object.freeze(['$map', '$set', '$bigint', '$date', '$bytes']);
+const RESERVED_TAGS = Object.freeze(['$map', '$set', '$bigint', '$date', '$bytes', '$typedBytes']);
 function escapeKey(key) { return key.startsWith('$') ? `$${key}` : key; }
+
+function compareCanonicalText(a, b) {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
 
 export function canonicalArtifactKeyValue(value, seen = new WeakSet()) {
   if (typeof value === 'bigint') return { $bigint: value.toString() };
@@ -68,7 +72,14 @@ export function canonicalArtifactKeyValue(value, seen = new WeakSet()) {
   if (typeof value === 'undefined' || typeof value === 'function' || typeof value === 'symbol') {
     throw new ArtifactError('artifact-key-invalid-type', `Artifact key values must be JSON-serializable, received ${typeof value}`);
   }
-  if (ArrayBuffer.isView(value)) return { $bytes: Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength)) };
+  if (ArrayBuffer.isView(value)) {
+    return {
+      $typedBytes: {
+        type: value.constructor.name,
+        bytes: Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength)),
+      },
+    };
+  }
   if (value instanceof ArrayBuffer) return { $bytes: Array.from(new Uint8Array(value)) };
   if (value instanceof Date) return { $date: value.toISOString() };
   if (typeof value !== 'object') return String(value);
@@ -77,15 +88,19 @@ export function canonicalArtifactKeyValue(value, seen = new WeakSet()) {
   let out;
   if (value instanceof Map) {
     out = [...value.entries()].map(([key, entryValue]) => [canonicalArtifactKeyValue(key, seen), canonicalArtifactKeyValue(entryValue, seen)]);
-    out.sort((a, b) => stableStringify(a[0]).localeCompare(stableStringify(b[0])) || stableStringify(a[1]).localeCompare(stableStringify(b[1])));
+    out.sort((a, b) => compareCanonicalText(stableStringify(a[0]), stableStringify(b[0])) || compareCanonicalText(stableStringify(a[1]), stableStringify(b[1])));
     out = { $map: out };
   } else if (value instanceof Set) {
     const values = [...value].map((entry) => canonicalArtifactKeyValue(entry, seen));
-    values.sort((a, b) => stableStringify(a).localeCompare(stableStringify(b)));
+    values.sort((a, b) => compareCanonicalText(stableStringify(a), stableStringify(b)));
     out = { $set: values };
   } else if (Array.isArray(value)) {
     out = value.map((entry) => canonicalArtifactKeyValue(entry, seen));
   } else {
+    const proto = Object.getPrototypeOf(value);
+    if (proto !== Object.prototype && proto !== null) {
+      throw new ArtifactError('artifact-key-unsupported-object');
+    }
     out = {};
     for (const key of Object.keys(value).sort()) {
       Object.defineProperty(out, escapeKey(key), {
