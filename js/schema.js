@@ -92,6 +92,11 @@ export function decodeSchema(words, base) {
       if (mw.d === 0) lastCall = -1;
       continue;
     }
+    // A write the constant trackers above do not model (mov xN,xM, arithmetic,
+    // logic, shift, csel, load...) kills the old constant provenance. Without
+    // this, a stale MOVZ value survives its own register overwrite and leaks
+    // into multiply scale evidence (see issue #6306).
+    if (written != null && written >= 0 && written < 31) { konst[written] = 0n; known[written] = 0; }
 
     const ci = W.compareImmediate(w);
     if (ci != null) { cmps.push({ reg: rn(w), value: Number(ci), row: i, loop: flow.loopOf[i] }); continue; }
