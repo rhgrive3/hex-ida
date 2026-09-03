@@ -82,9 +82,9 @@ function numericPrimitive(value, code) {
 }
 function confidence(value) {
   if (value == null) return null;
-  if (typeof value !== 'number' || !Number.isFinite(value)) fail('evidence-invalid-confidence');
-  if (value < 0 || value > 1) fail('evidence-invalid-confidence');
-  return value;
+  const n = numericPrimitive(value, 'evidence-invalid-confidence');
+  if (n < 0 || n > 1) fail('evidence-invalid-confidence');
+  return n;
 }
 function enumValue(value, allowed, fallback, code) {
   if (value != null && typeof value !== 'string') fail(code);
