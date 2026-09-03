@@ -52,7 +52,38 @@ export const ALIAS_PROOF_REASONS = Object.freeze([
   'budget-exhausted',
   'analysis-cancelled',
   'analysis-unsupported',
+  'timeout',
+  'memory-limit',
+  'iteration-limit',
+  'dependency-missing',
+  'dependency-mismatch',
+  'evidence-missing',
 ]);
+
+export function reasonCodeForStopReason(stopReason) {
+  switch (stopReason) {
+    case 'cancelled':
+      return 'analysis-cancelled';
+    case 'budget-exhausted':
+      return 'budget-exhausted';
+    case 'timeout':
+      return 'timeout';
+    case 'memory-limit':
+      return 'memory-limit';
+    case 'iteration-limit':
+      return 'iteration-limit';
+    case 'dependency-missing':
+      return 'dependency-missing';
+    case 'dependency-mismatch':
+      return 'dependency-mismatch';
+    case 'evidence-missing':
+      return 'evidence-missing';
+    case 'unsupported-input':
+      return 'analysis-unsupported';
+    default:
+      return 'unresolved-root';
+  }
+}
 
 const SEPARATION_PROOFS = new Set([
   'distinct-address-space',
