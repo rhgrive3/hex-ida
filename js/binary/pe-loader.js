@@ -366,11 +366,18 @@ function allowedBaseRelocationTypes(machine) {
 
 export function parseBaseRelocations(r, dir, image, machine = null, sharedBudget = null) {
   if(!dir||!dir.rva||dir.size<8)return; const budget=ensureBudget(image,sharedBudget);
+  if((dir.rva&3)!==0){budget.partial('relocations:directory-alignment',`PE base-relocation directory RVA 0x${dir.rva.toString(16)} must be 4-byte aligned`);return;}
   const span=mappedFileSpanForRva(image,dir.rva,dir.size);if(!span){budget.partial('relocations:directory-span','PE base-relocation directory crosses a mapped boundary');return;}
   let off=span.start;const end=span.spanEnd,allowed=allowedBaseRelocationTypes(machine);
+  if((off&3)!==0){budget.partial('relocations:directory-alignment',`PE base-relocation directory file offset 0x${off.toString(16)} must be 4-byte aligned`);return;}
   while(off+8<=end){
+    if((off&3)!==0){budget.partial('relocations:malformed-block',`Malformed PE base-relocation block at file offset 0x${off.toString(16)}`);break;}
     if(!budget.take({inputBytes:8,records:1,operations:1,estimatedHeapBytes:32},'relocation-block'))break;
-    const pageRva=r.u32(off),blockSize=r.u32(off+4);if(blockSize<8||(blockSize&1)!==0||off+blockSize>end){budget.partial('relocations:malformed-block',`Malformed PE base-relocation block at file offset 0x${off.toString(16)}`);break;}
+    const pageRva=r.u32(off),blockSize=r.u32(off+4);
+    if(blockSize<8||(blockSize&1)!==0||off+blockSize>end||(off+blockSize<end&&(blockSize&3)!==0)){
+      budget.partial('relocations:malformed-block',`Malformed PE base-relocation block at file offset 0x${off.toString(16)}`);
+      break;
+    }
     const count=(blockSize-8)/2;
     for(let i=0;i<count;i++){
       if(!budget.take({inputBytes:2,records:1,objects:1,operations:1,estimatedHeapBytes:112},'relocation-entry'))break;
