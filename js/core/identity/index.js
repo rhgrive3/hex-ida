@@ -45,7 +45,15 @@ export function jsonSafe(value, seen = new WeakSet()) {
   if (seen.has(value)) fail('identity-cyclic-value');
   seen.add(value);
   let out;
-  if (Array.isArray(value)) out = value.map((item) => jsonSafe(item, seen));
+  if (value instanceof Map) {
+    const entries = [...value.entries()].map(([k, v]) => [jsonSafe(k, seen), jsonSafe(v, seen)]);
+    entries.sort((a, b) => stableStringify(a[0]).localeCompare(stableStringify(b[0])) || stableStringify(a[1]).localeCompare(stableStringify(b[1])));
+    out = { $map: entries };
+  } else if (value instanceof Set) {
+    const values = [...value].map((v) => jsonSafe(v, seen));
+    values.sort((a, b) => stableStringify(a).localeCompare(stableStringify(b)));
+    out = { $set: values };
+  } else if (Array.isArray(value)) out = value.map((item) => jsonSafe(item, seen));
   else {
     out = {};
     for (const key of Object.keys(value).sort()) {
@@ -167,7 +175,18 @@ export function lossyTypeWitness(value, path = '', seen = new WeakSet(), out = [
   else if (value !== null && type === 'object') {
     if (seen.has(value)) return out.length ? out : null;
     seen.add(value);
-    if (ArrayBuffer.isView(value)) out.push([path, 'bytes']);
+    if (value instanceof Map) {
+      out.push([path, 'map']);
+      for (const [k, v] of value.entries()) {
+        lossyTypeWitness(k, `${path}.<key>`, seen, out);
+        lossyTypeWitness(v, `${path}.<val>`, seen, out);
+      }
+    } else if (value instanceof Set) {
+      out.push([path, 'set']);
+      for (const v of value.values()) {
+        lossyTypeWitness(v, `${path}[]`, seen, out);
+      }
+    } else if (ArrayBuffer.isView(value)) out.push([path, 'bytes']);
     else if (value instanceof ArrayBuffer) out.push([path, 'bytes']);
     else if (value instanceof Date) out.push([path, 'date']);
     else if (Array.isArray(value)) value.forEach((item, index) => lossyTypeWitness(item, `${path}[${index}]`, seen, out));
@@ -296,7 +315,16 @@ export function validateCanonicalIdentityNumbers(value, seen = new WeakSet()) {
   if (value == null || typeof value !== 'object' || ArrayBuffer.isView(value) || value instanceof ArrayBuffer || value instanceof Date) return;
   if (seen.has(value)) return;
   seen.add(value);
-  if (Array.isArray(value)) {
+  if (value instanceof Map) {
+    for (const [k, v] of value.entries()) {
+      validateCanonicalIdentityNumbers(k, seen);
+      validateCanonicalIdentityNumbers(v, seen);
+    }
+  } else if (value instanceof Set) {
+    for (const v of value.values()) {
+      validateCanonicalIdentityNumbers(v, seen);
+    }
+  } else if (Array.isArray(value)) {
     for (const item of value) validateCanonicalIdentityNumbers(item, seen);
   } else {
     for (const key of Object.keys(value)) validateCanonicalIdentityNumbers(value[key], seen);
@@ -309,7 +337,9 @@ function normalizeIdentity(value, code) {
   validateCanonicalIdentityNumbers(value);
   if (typeof value === 'bigint' || typeof value === 'number') return String(value);
   if (typeof value === 'string') return nonEmpty(value, code);
-  return jsonSafe(value);
+  const witness = lossyTypeWitness(value);
+  const normalized = jsonSafe(value);
+  return witness ? { identity: normalized, identityTypes: witness } : normalized;
 }
 
 export function deepFreeze(value, seen = new WeakSet()) {
