@@ -261,9 +261,6 @@ export function createDebugEvidenceProducer(debugEvidence) {
  * Output is always `heuristic`: a byte pattern alone never establishes a start.
  */
 export function createPatternProducer({ id, architectureId, patterns, alignment = 1 }) {
-  if (typeof id !== 'string' || !id) {
-    throw new TypeError('discovery-pattern-invalid-id');
-  }
   if (!Number.isSafeInteger(alignment) || alignment <= 0) {
     throw new TypeError('discovery-pattern-invalid-alignment');
   }
@@ -289,7 +286,7 @@ export function createPatternProducer({ id, architectureId, patterns, alignment 
     };
   });
   return Object.freeze({
-    id,
+    id: String(id),
     architectureId: architectureId == null ? null : String(architectureId),
     produce(input) {
       const bytes = input?.image?.code;
