@@ -178,46 +178,6 @@ export function parseImports(r, dir, image, sharedBudget = null) {
   if (!terminatedDescriptors && off + 20 > end) markImportPartial(image,'PE import descriptor table reached its mapped boundary without a zero descriptor');
 }
 
-export function parseExports(r, dir, image, sharedBudget = null) {
-  if (!dir || !dir.rva || dir.size < 40) return;
-  const budget=ensureBudget(image,sharedBudget);
-  const header=mappedFileSpanForRva(image,dir.rva,40);
-  if(!header){budget.partial('exports:unmapped-header','PE export directory header is not fully file-backed');return;}
-  const off=header.start;
-  const nameRva=r.u32(off+12),baseOrdinal=r.u32(off+16),numberOfFunctions=r.u32(off+20),numberOfNames=r.u32(off+24);
-  const addrFunctions=r.u32(off+28),addrNames=r.u32(off+32),addrOrdinals=r.u32(off+36);
-  const dllName=mappedCStringAtRva(r,image,nameRva,budget,'PE export DLL'); if(dllName)image.metadata.exportName=dllName;
-  const fBytes=numberOfFunctions*4,nBytes=numberOfNames*4,oBytes=numberOfNames*2;
-  if(!Number.isSafeInteger(fBytes)||!Number.isSafeInteger(nBytes)||!Number.isSafeInteger(oBytes)){budget.partial('exports:count-overflow','PE export table count overflows safe span arithmetic');return;}
-  const fr=numberOfFunctions?mappedFileSpanForRva(image,addrFunctions,fBytes):null;
-  const nr=numberOfNames?mappedFileSpanForRva(image,addrNames,nBytes):null;
-  const or=numberOfNames?mappedFileSpanForRva(image,addrOrdinals,oBytes):null;
-  if(numberOfFunctions&&!fr){budget.partial('exports:function-array-span','PE export function RVA array crosses a mapped boundary');return;}
-  if(numberOfNames&&(!nr||!or)){budget.partial('exports:name-array-span','PE export name/ordinal array crosses a mapped boundary');return;}
-  const names=new Map();
-  for(let i=0;i<numberOfNames;i++){
-    if(!budget.take({inputBytes:6,records:1,objects:1,operations:2,estimatedHeapBytes:96},'export-name-record'))break;
-    const nrva=r.u32(nr.start+i*4),ordIndex=r.u16(or.start+i*2);
-    const name=mappedCStringAtRva(r,image,nrva,budget,'PE export name'); if(name)names.set(ordIndex,name);
-  }
-  const dirStart=dir.rva,dirEnd=dir.rva+dir.size;
-  for(let i=0;i<numberOfFunctions;i++){
-    if(!budget.take({inputBytes:4,records:1,objects:2,operations:2,estimatedHeapBytes:256},'export-function-record'))break;
-    const frva=r.u32(fr.start+i*4); if(!frva)continue;
-    const name=names.get(i)||`#${baseOrdinal+i}`;
-    if(frva>=dirStart&&frva<dirEnd){
-      const forwarderRange=mappedFileRangeForRva(image,frva);
-      if(!forwarderRange){budget.partial('PE export forwarder:unmapped-string','Ignored PE export forwarder string outside a file-backed mapping');continue;}
-      const forwarderEnd=Math.min(forwarderRange.end,forwarderRange.start+(dirEnd-frva));
-      const forwarder=mappedCStringAtOffset(r,forwarderRange.start,forwarderEnd,budget,'PE export forwarder');
-      if(!forwarder)continue;
-      image.exports.push({name,address:0n,ordinal:baseOrdinal+i,kind:'forwarder',forwarder,source:'PE-export'});continue;
-    }
-    const address=image.imageBase+BigInt(frva); image.exports.push({name,address,ordinal:baseOrdinal+i,kind:'export',source:'PE-export'});
-    const sec=image.sectionAt(address); if(sec&&sec.perms.execute)image.functions.push(functionSeed(address,{name,source:'export',confidence:0.95}));
-  }
-}
-
 function executableRvaRange(image, beginRva, size = 1) {
   if (!Number.isInteger(beginRva) || beginRva <= 0 || !Number.isInteger(size) || size <= 0) return false;
   const begin = image.imageBase + BigInt(beginRva), end = begin + BigInt(size), sec = image.sectionAt(begin);

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { ByteView } from '../js/binary/reader.js';
+import * as peLoaderCore from '../js/binary/pe-loader-core.js';
 import { parseExports } from '../js/binary/pe-loader.js';
 import { parsePE } from '../js/binary/pe.js';
 
@@ -7,6 +8,8 @@ const IMAGE_BASE = 0x10000000n;
 const EXPORT_RVA = 0x1000;
 const EXPORT_SIZE = 0x200;
 const FILE_OFFSET = 0x100;
+
+assert.equal('parseExports' in peLoaderCore, false, 'PE export parsing must have one canonical exported authority');
 
 function writeCString(bytes, offset, value) {
   bytes.set(Buffer.from(`${value}\0`, 'ascii'), offset);
