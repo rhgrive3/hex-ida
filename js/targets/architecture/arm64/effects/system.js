@@ -283,7 +283,14 @@ function waitOrEvent(instruction, context, mnemonic) {
     symbolicDetail:'summary-only',
     metadata:{ architecturalEffect:mnemonic === 'sev' || mnemonic === 'sevl' ? 'event-signal' : mnemonic === 'yield' ? 'scheduling-hint' : 'wait' },
   });
-  return bundle(instruction, context, { operations:[operation], completeness:'exact-with-intrinsic' });
+  const possibleFaults = (mnemonic === 'wfi' || mnemonic === 'wfe')
+    ? [{ kind:'system-instruction-trap', condition:{ kind:'architectural-access-check', operation:mnemonic } }]
+    : [];
+  return bundle(instruction, context, {
+    operations:[operation],
+    possibleFaults,
+    completeness:'exact-with-intrinsic',
+  });
 }
 
 const EXCLUSIVE_MONITOR_STATE = Object.freeze([
