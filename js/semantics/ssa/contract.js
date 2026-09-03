@@ -54,6 +54,9 @@ function limit(options, key) {
   if (options?.budget?.[key] == null) return SEMANTIC_SSA_DEFAULT_BUDGET[key];
   return positiveInteger(options.budget[key], `semantic-ssa-invalid-budget-${key}`);
 }
+function compareText(a, b) {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
 
 function preflightLinkBudget(definitions, useCount, options) {
   const maximum = limit(options, 'maxLinks');
@@ -81,7 +84,7 @@ function normalizeIncoming(value, options) {
         valueId: nonEmpty(item.valueId, 'semantic-ssa-phi-value-required'),
       };
     })
-    .sort((a, b) => a.predecessorBlockId.localeCompare(b.predecessorBlockId) || a.valueId.localeCompare(b.valueId));
+    .sort((a, b) => compareText(a.predecessorBlockId, b.predecessorBlockId) || compareText(a.valueId, b.valueId));
 }
 
 function normalizeDefinition(input, options) {
@@ -147,13 +150,13 @@ export function createSemanticSsaContract(input, options = {}) {
       assertNotAborted(options);
       return normalizeDefinition(definition, options);
     })
-    .sort((a, b) => a.valueId.localeCompare(b.valueId) || a.definitionId.localeCompare(b.definitionId));
+    .sort((a, b) => compareText(a.valueId, b.valueId) || compareText(a.definitionId, b.definitionId));
   const uses = rawUses
     .map((use) => {
       assertNotAborted(options);
       return normalizeUse(use);
     })
-    .sort((a, b) => a.useId.localeCompare(b.useId));
+    .sort((a, b) => compareText(a.useId, b.useId));
 
   const definitionByValue = new Map();
   const definitionIds = new Set();
@@ -202,7 +205,7 @@ export function createSemanticSsaContract(input, options = {}) {
       valueId: use.valueId,
       definitionId: definitionByValue.get(use.valueId).definitionId,
     }))
-    .sort((a, b) => a.useId.localeCompare(b.useId));
+    .sort((a, b) => compareText(a.useId, b.useId));
 
   const usesByDefinition = new Map(definitions.map((definition) => [definition.definitionId, []]));
   for (const link of useDefLinks) usesByDefinition.get(link.definitionId).push(link.useId);
