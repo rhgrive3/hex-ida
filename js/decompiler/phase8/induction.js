@@ -806,7 +806,7 @@ export function runInductionPass(context = {}, budget = {}, area = null) {
     // A simplification candidate is only offered when the whole loop is proved:
     // one back edge, one exit, one counted variable with an exact trip count.
     const counted = inductions.filter((fact) => fact.tripCount.exact != null && fact.completeness === 'complete');
-    if (classification === 'natural' && latches.length === 1 && earlyExitEdges.length === 0 && counted.length === 1) {
+    if (loopCompleteness === 'complete' && classification === 'natural' && latches.length === 1 && earlyExitEdges.length === 0 && counted.length === 1) {
       simplificationCandidates.push(Object.freeze({
         kind: 'counted-loop',
         header,
