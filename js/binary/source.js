@@ -60,6 +60,9 @@ function asBytes(value, label = 'read result') {
 
 function effectiveMaxReadLength(requested, parentLimit = null) {
   if (requested == null) return parentLimit ?? DEFAULT_MAX_READ_LENGTH;
+  if (!Number.isSafeInteger(requested) || requested <= 0) {
+    throw new ByteSourceLimitError('maxReadLength must be a positive safe integer');
+  }
   if (parentLimit == null) return requested;
   return Math.min(requested, parentLimit);
 }
