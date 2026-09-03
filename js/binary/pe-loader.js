@@ -107,7 +107,7 @@ function mappedCStringAtRva(r, image, rva, budget, label) {
     return '';
   }
   const value = r.cstring(range.start, max);
-  const inputBytes = Math.min(max, value.length + 1);
+  const inputBytes = nulAt + 1;
   if (!budget.take({ inputBytes, stringBytes:value.length*2, operations:1, estimatedHeapBytes:value.length*2+32 }, `${label}-string`)) return '';
   return value;
 }
@@ -122,7 +122,8 @@ function mappedCStringAtOffset(r, start, end, budget, label) {
     return '';
   }
   const value = r.cstring(start,max);
-  if (!budget.take({ inputBytes:Math.min(max,value.length+1), stringBytes:value.length*2, operations:1, estimatedHeapBytes:value.length*2+32 }, `${label}-string`)) return '';
+  const inputBytes = nulAt + 1;
+  if (!budget.take({ inputBytes, stringBytes:value.length*2, operations:1, estimatedHeapBytes:value.length*2+32 }, `${label}-string`)) return '';
   return value;
 }
 
