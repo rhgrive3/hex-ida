@@ -118,6 +118,16 @@ function issue566SectionProvenanceRegression() {
   repairElfZeroAddressFunctionSeeds(image);
   assert.equal(image.functions.length, 0, 'runtime executable section without PT_LOAD ownership must fail closed');
 
+  image = makeImage({
+    section:{},
+    sectionIndex:2,
+    symbolSize:4n,
+    name:'partial-segment0',
+    segmentList:[{ address:0n, size:2n, perms:{ read:true, execute:true } }],
+  });
+  repairElfZeroAddressFunctionSeeds(image);
+  assert.equal(image.functions.length, 0, 'runtime PT_LOAD must contain the full symbol extent');
+
   image = makeImage({ section:{ address:1n }, sectionIndex:2, name:'outside-section0' });
   repairElfZeroAddressFunctionSeeds(image);
   assert.equal(image.functions.length, 0, 'explicit executable section that excludes address zero must not fall back to overlapping PT_LOAD');
