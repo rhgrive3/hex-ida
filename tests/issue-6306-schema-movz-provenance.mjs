@@ -61,3 +61,17 @@ test('#6306: call clobber continues to invalidate caller-saved constant provenan
   ]);
   assert.equal(factors.includes(3), false, 'call clobber must keep x2 unknown after a call');
 });
+
+test('#6306: multiply reads a live source before overwriting the same register', () => {
+  const result = decodeSchema(new Uint32Array([
+    0xd2800062, // movz x2,#3
+    0xf8617804, // ldr x4,[x0,x1,lsl #3]
+    0x9b027c82, // mul x2,x4,x2 -- source x2 is 3, then destination x2 is overwritten
+    0xf8217806, // str x6,[x0,x1,lsl #3]
+    0xf8617804, // ldr x4,[x0,x1,lsl #3]
+    0x9b027c85, // mul x5,x4,x2 -- x2 is no longer the old constant
+    0xf8217806, // str x6,[x0,x1,lsl #3]
+  ]), 0x1000n);
+  const factors = (result?.best?.scaled || []).map((scaled) => scaled.factor);
+  assert.deepEqual(factors, [3], 'current MUL must consume pre-write x2=3 exactly once; later instructions must not reuse it');
+});
