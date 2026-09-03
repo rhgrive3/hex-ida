@@ -2,11 +2,32 @@ name: Stage 2 non-physical closure proof
 
 on:
   pull_request:
+    # Mirror the fail-closed impact classifier below at trigger time so a PR
+    # that cannot affect Stage 2 does not reserve a runner merely to discover
+    # that it should skip. The in-job classifier remains as defense in depth
+    # and as the authority for manual exact-candidate dispatches.
     paths:
-      - 'js/**'
-      - 'tests/**'
-      - 'tools/**'
-      - 'userscript/**'
+      - 'js/targets/architecture/**'
+      - 'js/runtime/**'
+      - 'js/managed/**'
+      - 'js/rebuild/**'
+      - 'js/phase12/**'
+      - 'js/platform/stage2-*'
+      - 'js/platform/physical-ipad-evidence.js'
+      - 'js/knowledge/**'
+      - 'js/signature/**'
+      - 'js/pattern/**'
+      - 'js/collaboration/**'
+      - 'tests/machine-effects/**'
+      - 'tests/stage2/**'
+      - 'tests/phase12/**'
+      - 'tools/validation/machine-effects/**'
+      - 'tools/validation/stage2/**'
+      - 'tools/validation/phase6/**'
+      - 'tools/validation/phase10/**'
+      - 'tools/validation/phase11/**'
+      - 'tools/validation/phase12/**'
+      - 'tools/validation/rebuild-independent-oracle.mjs'
       - 'package.json'
       - 'package-lock.json'
       - '.github/workflows/stage2-nonphysical-closure.yml'
