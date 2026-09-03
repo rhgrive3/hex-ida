@@ -48,7 +48,11 @@ const WORKER_PRELUDE = String.raw`
       if (typeof x === 'object') {
         if (seen.has(x)) continue; seen.add(x);
         const keys=Object.keys(x); bytes += keys.length * 8;
-        for (let i=0;i<keys.length && i<2048;i++) { bytes += keys[i].length*2; stack.push(x[keys[i]]); }
+        // The key scan is capped for measurer work, but an uncapped tail must
+        // never look small: anything beyond the cap is unmeasurable, so the
+        // whole message fails closed instead of bypassing the byte budget.
+        if (keys.length > 2048) return OUTPUT_MAX_BYTES + 1;
+        for (let i=0;i<keys.length;i++) { bytes += keys[i].length*2; stack.push(x[keys[i]]); }
       } else bytes+=32;
     }
     return bytes;
