@@ -65,32 +65,32 @@ jobs:
           const include = [
             {
               name: 'phase8',
-              command: 'npm run phase8:test',
               commands: ['npm run phase8:test'],
+              runCommands: ['npm run phase8:test'],
               frozenToolchain: false,
               runsInvariant: false,
               prepareGenerated: false,
             },
             {
               name: 'phase45',
-              command: 'npm run phase4:test && npm run phase5:test',
               commands: ['npm run phase4:test', 'npm run phase5:test'],
+              runCommands: ['npm run phase4:test', 'npm run phase5:test'],
               frozenToolchain: true,
               runsInvariant: false,
               prepareGenerated: false,
             },
             {
               name: 'analysis-proof',
-              command: 'npm run semantic-v2:test && npm run benchmark:baseline',
               commands: ['npm run invariants:test', 'npm run semantic-v2:test', 'npm run benchmark:baseline'],
+              runCommands: ['npm run semantic-v2:test', 'npm run benchmark:baseline'],
               frozenToolchain: false,
               runsInvariant: true,
               prepareGenerated: true,
             },
             {
               name: 'repo-regression',
-              command: [...coreContracts, 'npm run phase6:test', 'npm test'].join(' && '),
               commands: [...coreContracts, 'npm run phase6:test', 'npm test'],
+              runCommands: [...coreContracts, 'npm run phase6:test', 'npm test'],
               frozenToolchain: false,
               runsInvariant: false,
               prepareGenerated: true,
@@ -138,6 +138,7 @@ jobs:
           cache: npm
 
       - name: Install dependencies
+        id: install
         run: npm ci --no-audit --no-fund
 
       # Phase 5's real-byte verification corpus is intentionally pinned to
@@ -174,9 +175,35 @@ jobs:
           HEX_INVARIANT_BASE_REF: refs/remotes/origin/main
         run: node tools/validation/invariant-pr-baseline.mjs
 
-      - name: Run remaining exact check commands
-        if: matrix.command != ''
-        run: ${{ matrix.command }}
+      - name: Run all remaining exact check commands and aggregate failures
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        env:
+          HEX_CHECK_COMMANDS_JSON: ${{ toJSON(matrix.runCommands) }}
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import { spawnSync } from 'node:child_process';
+
+          const commands = JSON.parse(process.env.HEX_CHECK_COMMANDS_JSON || '[]');
+          if (!Array.isArray(commands) || commands.length === 0) throw new Error('check-lane-empty');
+          const failures = [];
+          for (const command of commands) {
+            console.log(`::group::${command}`);
+            const result = spawnSync(command, {
+              shell: true,
+              stdio: 'inherit',
+              env: process.env,
+            });
+            console.log('::endgroup::');
+            if (result.error || result.status !== 0) {
+              failures.push({ command, status: result.status, error: result.error?.message ?? null });
+            }
+          }
+          if (failures.length) {
+            console.error(`Exact check lane failures: ${JSON.stringify(failures)}`);
+            process.exit(1);
+          }
+          NODE
 
   invariant-gates:
     name: invariant-gates
