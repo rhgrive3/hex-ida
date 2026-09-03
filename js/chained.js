@@ -64,7 +64,9 @@ async function sliceOffset(file, sliceIndex) {
   const head = await bytes(file, 0, 8);
   if (head.length < 4) return null;
   const dv = new DataView(head.buffer, head.byteOffset, head.byteLength);
-  if (dv.getUint32(0, true) === MH_MAGIC_64) return { base:0n, size:BigInt(file.size) };
+  if (dv.getUint32(0, true) === MH_MAGIC_64) {
+    return sliceIndex == null || sliceIndex === 0 ? { base:0n, size:BigInt(file.size) } : null;
+  }
   const be = dv.getUint32(0, false);
   if (be !== FAT_MAGIC && be !== FAT_MAGIC_64 || head.length < 8) return null;
   const n = u32be(dv, 4), idx = sliceIndex ?? 0;
