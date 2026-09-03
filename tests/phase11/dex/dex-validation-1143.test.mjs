@@ -67,6 +67,25 @@ function hasError(report, code) {
 }
 
 {
+  const { report } = await validate((bytes, view) => {
+    view.setUint32(0x14c, 7, true);
+    bytes.set([
+      0x28, 0x06, // pc0: goto pc6
+      0x18, 0x00, // pc1: const-wide (currently unsupported by the verifier scan)
+      0x00, 0x00,
+      0x00, 0x00,
+      0x00, 0x00,
+      0x00, 0x00,
+      0x0e, 0x00, // pc6: return-void, a real boundary beyond the scan stop
+    ], 0x150);
+  });
+  assert.equal(report.status, 'partial');
+  assert.equal(report.completeness.specValidation, 'partial');
+  assert.equal(hasError(report, 'dex-branch-target-not-instruction-boundary'), false);
+  assert.equal(hasError(report, 'dex-branch-target-out-of-range'), false);
+}
+
+{
   const { report } = await validate((bytes) => {
     bytes.set([0x0a, 0x00, 0x0e, 0x00], 0x150); // stray move-result v0
   });
@@ -126,6 +145,21 @@ function hasError(report, code) {
   });
   assert.equal(report.status, 'invalid');
   assert.ok(hasError(report, 'dex-invoke-argument-count-mismatch'));
+}
+
+{
+  const { report } = await validate((bytes, view) => {
+    view.setUint16(0x146, 1, true); // tries_size
+    view.setUint32(0x14c, 2, true); // throw; handler ignores caught exception and returns
+    bytes.set([0x27, 0x00, 0x0e, 0x00], 0x150);
+    view.setUint32(0x154, 0, true); // try start pc0
+    view.setUint16(0x158, 1, true); // one code unit
+    view.setUint16(0x15a, 1, true); // first handler starts one byte after list size
+    bytes.set([0x01, 0x01, 0x01, 0x01], 0x15c); // list=1, typed=1, type@1, handler pc1
+  });
+  assert.equal(report.status, 'partial');
+  assert.equal(report.completeness.specValidation, 'partial');
+  assert.equal(hasError(report, 'dex-catch-handler-missing-move-exception'), false);
 }
 
 {
