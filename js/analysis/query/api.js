@@ -4,7 +4,7 @@ import { assertAnalysisSnapshot, createAnalysisSnapshot, AnalysisSnapshotStaleEr
 const COMPLETENESS = new Set(["complete", "partial", "truncated", "unsupported"]);
 
 function artifactVersionsRecord(value) {
-  if (value == null) return {};
+  if (value === null || value === undefined) return {};
   if (typeof value !== "object" || Array.isArray(value)) return null;
   const prototype = Object.getPrototypeOf(value);
   return prototype === Object.prototype || prototype === null ? value : null;
