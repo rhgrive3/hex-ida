@@ -32,6 +32,12 @@ function evidence(kind, input) {
   return createDiscoveryEvidence({ kind, ...input });
 }
 
+function loaderStartArray(value, code) {
+  if (value == null) return [];
+  if (!Array.isArray(value)) throw new TypeError(code);
+  return value;
+}
+
 /**
  * Loader-supplied function starts and unwind entries.
  *
@@ -52,11 +58,11 @@ function loaderFunctionStarts(image) {
   // Canonical loader truth must win deduplication. The legacy projection is
   // compatibility-only and may omit provenance/extent fields carried by the
   // canonical BinaryImage.functions seed.
-  for (const start of image?.functions ?? []) {
+  for (const start of loaderStartArray(image?.functions, 'discovery-loader-invalid-functions')) {
     const sources = new Set([start?.source, ...(start?.sources ?? [])].filter(Boolean));
     if (sources.has('function_starts')) add(start);
   }
-  for (const start of image?.functionStarts ?? []) add(start);
+  for (const start of loaderStartArray(image?.functionStarts, 'discovery-loader-invalid-function-starts')) add(start);
   return out;
 }
 
