@@ -40,6 +40,28 @@ test('large values past the scan cap cannot hide behind short leading keys', () 
   assert.ok(outputSize({ t: 'print', args: [payload] }) > BUDGET);
 });
 
+test('Map and Set payloads fail closed instead of hiding structured-clone entries', () => {
+  const map = new Map([['hidden', 'm'.repeat(BUDGET)]]);
+  const set = new Set(['s'.repeat(BUDGET)]);
+  assert.ok(outputSize({ t: 'print', args: [map] }) > BUDGET, 'Map entries are not Object.keys and must not pass unmeasured');
+  assert.ok(outputSize({ t: 'print', args: [set] }) > BUDGET, 'Set entries are not Object.keys and must not pass unmeasured');
+});
+
+test('enumerable accessors fail closed without executing the getter', () => {
+  let getterReads = 0;
+  const payload = {};
+  Object.defineProperty(payload, 'dynamic', {
+    enumerable: true,
+    get() {
+      getterReads += 1;
+      return 'g'.repeat(BUDGET);
+    },
+  });
+  assert.ok(outputSize({ t: 'print', args: [payload] }) > BUDGET,
+    'an accessor can change between measurement and structured clone and must fail closed');
+  assert.equal(getterReads, 0, 'the meter must inspect the descriptor rather than invoke untrusted getter code');
+});
+
 test('small payloads still pass the budget', () => {
   assert.ok(outputSize({ t: 'print', args: [{ hello: 'world' }] }) < BUDGET);
   const boundary = {};
