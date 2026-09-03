@@ -33,6 +33,10 @@ function sortedStrings(value, code) {
   return [...new Set(out)].sort();
 }
 
+function compareCanonicalText(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 export function jsonSafe(value, seen = new WeakSet()) {
   if (typeof value === 'bigint') return value.toString();
   if (value == null || typeof value === 'string' || typeof value === 'boolean') return value;
@@ -47,11 +51,11 @@ export function jsonSafe(value, seen = new WeakSet()) {
   let out;
   if (value instanceof Map) {
     const entries = [...value.entries()].map(([k, v]) => [jsonSafe(k, seen), jsonSafe(v, seen)]);
-    entries.sort((a, b) => stableStringify(a[0]).localeCompare(stableStringify(b[0])) || stableStringify(a[1]).localeCompare(stableStringify(b[1])));
+    entries.sort((a, b) => compareCanonicalText(stableStringify(a[0]), stableStringify(b[0])) || compareCanonicalText(stableStringify(a[1]), stableStringify(b[1])));
     out = { $map: entries };
   } else if (value instanceof Set) {
     const values = [...value].map((v) => jsonSafe(v, seen));
-    values.sort((a, b) => stableStringify(a).localeCompare(stableStringify(b)));
+    values.sort((a, b) => compareCanonicalText(stableStringify(a), stableStringify(b)));
     out = { $set: values };
   } else if (Array.isArray(value)) out = value.map((item) => jsonSafe(item, seen));
   else {
