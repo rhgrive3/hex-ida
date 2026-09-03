@@ -1,6 +1,7 @@
 import { RuntimeAnalysisPlatform } from './index.js';
 
 const states = new WeakMap();
+const MACHO_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function currentFileToken(app) {
   return app?.store?.get?.('fileInfo') || null;
@@ -33,14 +34,19 @@ function activeArchitecture(app) {
     || architectureEvidence(detail.cpu)
     || 'unknown';
 }
+function canonicalSliceUuid(value) {
+  if (value == null) return null;
+  if (typeof value !== 'string' || !MACHO_UUID_PATTERN.test(value)) throw new TypeError('runtime-slice-uuid-invalid');
+  return value;
+}
 function activeSliceIdentity(app) {
   const info=currentFileToken(app);
   const index=strictSliceIndex(app?.store?.get?.('sliceIndex'));
   const slice=index>=0 ? info?.slices?.[index] : null;
   const detail=slice?.info || {};
   const arch=activeArchitecture(app);
-  const uuid=detail.uuid || null;
-  return `slice:${index}:${uuid || '-'}:${arch}`;
+  const uuid=canonicalSliceUuid(detail.uuid);
+  return `slice:${index}:${uuid ?? '-'}:${arch}`;
 }
 function localSandboxSupportsArchitecture(architecture) {
   if (typeof architecture !== 'string') return false;
