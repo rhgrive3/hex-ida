@@ -64,9 +64,8 @@ function fail(code) { throw new TypeError(code); }
 
 function positiveLimit(value, fallback, code) {
   if (value == null) return fallback;
-  const number = Number(value);
-  if (!Number.isSafeInteger(number) || number < 1) fail(code);
-  return number;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) fail(code);
+  return value;
 }
 
 function defaultAlign(sizeBytes) {
@@ -585,15 +584,16 @@ function solveLayer(entityId, layer, bucket, { signal, maxComparisons, maxContra
       for (let j = i + 1; j < bucket.hard.length; j += 1) {
         if (!canCompare()) break hardPairs;
         if (claimsConflict(bucket.hard[i].claim, bucket.hard[j].claim)) {
-          const pair = [bucket.hard[i], bucket.hard[j]].sort((left, right) => constraintOrderKey(left).localeCompare(constraintOrderKey(right)));
-          contradictions.push(createContradiction({
-            layer,
-            entityId,
-            left: pair[0],
-            right: pair[1],
-            detail: `hard constraints disagree: ${pair[0].kind} vs ${pair[1].kind}`,
-          }));
-          if (contradictions.length >= maxContradictions) {
+          if (contradictions.length < maxContradictions) {
+            const pair = [bucket.hard[i], bucket.hard[j]].sort((left, right) => constraintOrderKey(left).localeCompare(constraintOrderKey(right)));
+            contradictions.push(createContradiction({
+              layer,
+              entityId,
+              left: pair[0],
+              right: pair[1],
+              detail: `hard constraints disagree: ${pair[0].kind} vs ${pair[1].kind}`,
+            }));
+          } else {
             stopReason = 'budget-exhausted';
             break hardPairs;
           }
