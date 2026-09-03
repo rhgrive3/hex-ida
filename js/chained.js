@@ -118,8 +118,11 @@ async function parseImage(file, sliceIndex) {
         const offset = BigInt(dv.getUint32(q + 48, true));
         const flags = dv.getUint32(q + 64, true);
         const reserved2 = dv.getUint32(q + 72, true);
-        if ((flags & 0xff) === S_SYMBOL_STUBS && secSize > 0n) {
-          stubs.push({ section, addr, size: secSize, fileoff: offset, stubSize: reserved2 || 12, segIndex });
+        const stubSize = BigInt(reserved2);
+        if ((flags & 0xff) === S_SYMBOL_STUBS && secSize > 0n &&
+            reserved2 >= 8 && reserved2 % 4 === 0 &&
+            stubSize <= secSize && secSize % stubSize === 0n) {
+          stubs.push({ section, addr, size: secSize, fileoff: offset, stubSize: reserved2, segIndex });
         }
       }
     } else if (cmd === LC_DYLD_CHAINED_FIXUPS && size >= 16) {
