@@ -226,6 +226,7 @@ function parseMethodBody(bytes, view, offset) {
     checkedRange(bytes, offset + 1, codeSize, 'cil-tiny-method-body-truncated');
     return {
       headerOffset: offset,
+      codeOffset: offset + 1,
       isTiny: true,
       maxStack: 8,
       codeSize,
@@ -242,6 +243,11 @@ function parseMethodBody(bytes, view, offset) {
   const maxStack = readU16(view, offset + 2, 'cil-fat-method-header-truncated');
   const codeSize = readU32(view, offset + 4, 'cil-fat-method-header-truncated');
   const localVarSigTok = readU32(view, offset + 8, 'cil-fat-method-header-truncated');
+  // A non-zero LocalVarSigTok must name a StandAloneSig (0x11) local-variable
+  // signature (ECMA-335 §II.25.4.3); any other table kind is malformed (#5331).
+  // RID and signature-blob validation needs the StandAloneSig and Blob heaps,
+  // which the metadata parser does not connect yet, so 0x11 tokens travel as-is.
+  if (localVarSigTok !== 0 && (localVarSigTok >>> 24) !== 0x11) fail('cil-invalid-local-var-sig-token');
   const codeOffset = offset + headerSize;
   checkedRange(bytes, codeOffset, codeSize, 'cil-fat-method-body-truncated');
   const bytecode = bytes.subarray(codeOffset, codeOffset + codeSize);
@@ -289,6 +295,7 @@ function parseMethodBody(bytes, view, offset) {
 
   return {
     headerOffset: offset,
+    codeOffset,
     isTiny: false,
     maxStack,
     codeSize,
