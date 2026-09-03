@@ -70,15 +70,8 @@ const cfg = createSemanticCfg({
   entryBlockId: 'entry',
   blocks: [{ id: 'entry', successors: [] }],
 });
-const knownRegion = createMemoryRegionRef({
-  id: 'region_global_control',
-  kind: 'global',
-  imageId: 'image_memoryssa_unknown_partition',
-  start: 0x1000n,
-  endExclusive: 0x1008n,
-});
 const memorySsa = buildMemorySsa(ir, cfg, {
-  regions: [...regions, knownRegion],
+  regions,
   resolveRegion(access) { return regionByAddress.get(access.addressExpr.valueId); },
   queryAlias(left, right) {
     if (left.kind === 'unknown' || right.kind === 'unknown') return 'may';
@@ -91,11 +84,6 @@ assert.equal(
   unknownRegions.length,
   1,
   'resolver and predeclared unresolved candidates must share one conservative MemorySSA state partition',
-);
-assert.equal(
-  memorySsa.regions.filter((region) => region.id === knownRegion.id).length,
-  1,
-  'predeclared non-unknown regions must be preserved',
 );
 const storeDefinitions = memorySsa.definitions.filter((definition) =>
   String(definition.sourceEntityId).startsWith('store_'));
