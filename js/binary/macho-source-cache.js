@@ -40,10 +40,14 @@ function producerStringsOptions(value, signal) {
 
 function cacheKey(options = {}) {
   const ranges = options.ranges || {};
+  const source = options.source || {};
   const strings = cacheableStringsOptions(options.strings);
   return JSON.stringify({
     sliceIndex: normalizeScalar(options.sliceIndex),
     strings,
+    source: {
+      maxReadLength: normalizeScalar(source.maxReadLength),
+    },
     ranges: {
       pageSize: normalizeScalar(ranges.pageSize),
       maxPageSize: normalizeScalar(ranges.maxPageSize),
