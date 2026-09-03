@@ -25,9 +25,22 @@ function normalizeScalar(value) {
   return String(value);
 }
 
+function cacheableStringsOptions(value) {
+  if (value === true) return true;
+  if (!value || typeof value !== 'object') return false;
+  const semantic = { ...value };
+  delete semantic.signal;
+  return semantic;
+}
+
+function producerStringsOptions(value, signal) {
+  if (!value || typeof value !== 'object') return value;
+  return { ...value, signal };
+}
+
 function cacheKey(options = {}) {
   const ranges = options.ranges || {};
-  const strings = options.strings && typeof options.strings === 'object' ? options.strings : options.strings === true ? true : false;
+  const strings = cacheableStringsOptions(options.strings);
   return JSON.stringify({
     sliceIndex: normalizeScalar(options.sliceIndex),
     strings,
@@ -88,15 +101,22 @@ export function parseMachOSource(input, options = {}, prefix = null, rangeOption
   let entry = cache.get(key);
   if (!entry) {
     const controller = new AbortController();
-    const producerOptions = { ...options, signal:controller.signal };
+    const producerOptions = {
+      ...options,
+      signal:controller.signal,
+      strings:producerStringsOptions(options.strings, controller.signal),
+    };
     entry = { controller, waiters:0, settled:false, promise:null };
     entry.promise = parseMachOSourceRaw(input, producerOptions, null, rangeOptions)
       .then((image) => {
         entry.settled = true;
+        if (controller.signal.aborted || image?.metadata?.sourceStrings?.cancelled === true) {
+          if (cache.get(key) === entry) cache.delete(key);
+        }
         return image;
       })
       .catch((error) => {
-        cache.delete(key);
+        if (cache.get(key) === entry) cache.delete(key);
         throw error;
       });
     cache.set(key, entry);
