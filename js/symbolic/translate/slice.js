@@ -34,7 +34,7 @@ function canonicalStoreInstructions(load, ir) {
       candidate.memDef?.definitionId,
       ...(candidate.memDefs || []).map((item) => item?.definitionId),
       candidate.extra?.memoryDefinitionId,
-    ].filter((id) => id != null).map(String));
+    ].filter((id) => id != null).map(String);
     return ids.some((id) => definitionIds.has(id));
   });
 }
