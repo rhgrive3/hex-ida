@@ -262,8 +262,8 @@ function parseArm64XdataDescriptor(r, image, begin, xdataRva, budget) {
   if (!first || first.start + 4 > r.length) return invalidExceptionRecord(image, kind, budget, 'arm64-xdata-header', `Ignored ARM64 exception entry with unmapped/truncated .xdata RVA 0x${xdataRva.toString(16)}`);
   if (!budget.take({ inputBytes:4, operations:1, estimatedHeapBytes:32 }, 'arm64-xdata-header')) return null;
   const header = r.u32(first.start), functionLength = header & 0x3ffff, version = (header >>> 18) & 3;
-  const hasHandler = !!(header & (1 << 20)), packedEpilog = !!(header & (1 << 21)), fragment = !!(header & (1 << 22));
-  let epilogCount = (header >>> 23) & 0x1f, codeWords = (header >>> 28) & 0xf, headerBytes = 4;
+  const hasHandler = !!(header & (1 << 20)), packedEpilog = !!(header & (1 << 21));
+  let epilogCount = (header >>> 22) & 0x1f, codeWords = (header >>> 27) & 0x1f, headerBytes = 4;
   if (version !== 0 || functionLength === 0) return invalidExceptionRecord(image, kind, budget, 'arm64-xdata-fields', `Ignored invalid ARM64 .xdata header at RVA 0x${xdataRva.toString(16)}`);
   if (epilogCount === 0 && codeWords === 0) {
     const ext = mappedFileSpanForRva(image, xdataRva, 8);
@@ -275,7 +275,7 @@ function parseArm64XdataDescriptor(r, image, begin, xdataRva, budget) {
   if (!Number.isSafeInteger(recordBytes) || !mappedFileSpanForRva(image, xdataRva, recordBytes)) return invalidExceptionRecord(image, kind, budget, 'arm64-xdata-span', `Ignored ARM64 .xdata record that crosses its file-backed mapping at RVA 0x${xdataRva.toString(16)}`);
   const bytes = functionLength * 4;
   if (!executableRvaRange(image, begin, bytes)) return invalidExceptionRecord(image, kind, budget, 'arm64-xdata-range', `Ignored ARM64 .xdata range outside executable mapping at RVA 0x${begin.toString(16)}`);
-  return { size:bytes, fragment, xdataRva, version, hasHandler, packedEpilog, epilogCount, codeWords };
+  return { size:bytes, xdataRva, version, hasHandler, packedEpilog, epilogCount, codeWords };
 }
 
 export function parseExceptionFunctions(r, dir, image, machine, sharedBudget = null) {
