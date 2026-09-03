@@ -292,6 +292,14 @@ export function attachMemorySsa(projected, memorySsa, valuesById, instructionByS
     || memorySsa.buildVersion != null;
   if (forwardingEligible) {
     const queriedLoads = new Set();
+    const loadUseCounts = new Map();
+    const deferredStackOperandRewrites = new Map();
+    for (const use of memorySsa.uses) {
+      const source = instructionBySemanticId.get(use.sourceEntityId);
+      if (source?.op === V1_OP.LOAD) {
+        loadUseCounts.set(source, (loadUseCounts.get(source) ?? 0) + 1);
+      }
+    }
     for (const use of memorySsa.uses) {
       const source = instructionBySemanticId.get(use.sourceEntityId);
       if (!source || source.op !== V1_OP.LOAD) continue;
@@ -335,9 +343,15 @@ export function attachMemorySsa(projected, memorySsa, valuesById, instructionByS
         const preservesCompatibilityLoad = valueDependsOnProjectedPhi(forwardedValue)
           || storedValueComesFromCfgJoin(projected, operandProof, instructionBySemanticId)
           || !hasProjectedConsumerBeyondLoad(source);
-        if (forwardedValue && !preservesCompatibilityLoad
+        if (loadUseCounts.get(source) === 1
+            && forwardedValue && !preservesCompatibilityLoad
             && String(source.dst?.semanticValueId ?? source.dst?.sourceSemanticValueId ?? '') !== '') {
-          replaceLoadWithForwardedValue(source, forwardedValue, operandProof);
+          // Do not mutate the projected LOAD while MemorySSA uses are still
+          // being folded. Multiple region rows can share one sourceEntityId;
+          // changing the opcode here would make later rows disappear from the
+          // merged fact. A multi-use LOAD stays explicit because one legacy
+          // instruction cannot publish distinct per-region operand proofs.
+          deferredStackOperandRewrites.set(source, { forwardedValue, operandProof });
           forwardedStackOperand = true;
         }
       }
@@ -358,6 +372,12 @@ export function attachMemorySsa(projected, memorySsa, valuesById, instructionByS
           source.unknownAliasBarrier = source.unknownAliasBarrier ?? source.memUse ?? null;
         }
       }
+    }
+    for (const [source, { forwardedValue, operandProof }] of deferredStackOperandRewrites) {
+      // Deferral allowed the structural compatibility link to be populated in
+      // the loop. The MOV publishes only the canonical operand proof.
+      delete source.reachingStore;
+      replaceLoadWithForwardedValue(source, forwardedValue, operandProof);
     }
     // A proof-bearing artifact with no canonical use for a projected load is a
     // malformed/incomplete handoff, not permission to revive the old
