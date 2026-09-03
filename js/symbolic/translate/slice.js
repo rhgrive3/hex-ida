@@ -50,6 +50,7 @@ export function backwardDependencySlice(target, options = {}) {
   const assumptions = [];
   let hasCycle = false;
   let hitDepthLimit = false;
+  let missingPhiPredecessor = false;
 
   const activeValues = new Set();
   const activeInstructions = new Set();
@@ -122,6 +123,22 @@ export function backwardDependencySlice(target, options = {}) {
         const hit = inst.incoming.find((inc) => inc.from === fromBlock);
         if (hit && hit.value) {
           visitValue(hit.value, depth + 1);
+        } else {
+          // No incoming proves the value under the requested predecessor, so
+          // the slice cannot be complete for this control-flow edge. Record
+          // the gap explicitly instead of reporting zero dependencies as
+          // a complete slice.
+          missingPhiPredecessor = true;
+          assumptions.push(
+            createAssumption({
+              id: `missing_phi_predecessor_${instId || fromBlock}`,
+              kind: 'missing-phi-predecessor',
+              statement: `PHI ${instId || '(anonymous)'} has no incoming from predecessor ${String(fromBlock)}`,
+              source: 'slice',
+              originIds: inst.origin != null ? [String(inst.origin)] : [],
+              trust: ASSUMPTION_TRUST.QUERY_SCOPE,
+            })
+          );
         }
       } else {
         for (const inc of inst.incoming) {
@@ -166,7 +183,7 @@ export function backwardDependencySlice(target, options = {}) {
 
   const completeness = createCompleteness({
     translation: hitDepthLimit ? COMPLETENESS_STATUS.PARTIAL : COMPLETENESS_STATUS.COMPLETE,
-    controlFlow: hasCycle ? COMPLETENESS_STATUS.PARTIAL : COMPLETENESS_STATUS.COMPLETE,
+    controlFlow: hasCycle || missingPhiPredecessor ? COMPLETENESS_STATUS.PARTIAL : COMPLETENESS_STATUS.COMPLETE,
     memoryEffects: COMPLETENESS_STATUS.COMPLETE,
     pathCoverage: COMPLETENESS_STATUS.COMPLETE,
     queryScope: COMPLETENESS_STATUS.COMPLETE,
