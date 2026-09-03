@@ -45,6 +45,21 @@ test('#5470 maxAccesses truncation publishes partial aggregates', () => {
   assert.equal(whole.facts.completeness, 'complete');
 });
 
+test('#5470 maxAccesses exact-limit without another memory access stays complete', () => {
+  const cfg = { blocks: [
+    { insts: [
+      { id: 1, op: 'load', loc: { kind: 'stack', disp: 0n, size: 8 }, addr: {} },
+      { id: 2, op: 'mov' },
+    ] },
+  ] };
+  const { facts, result } = staged(runAggregatePass, aggregateContext(cfg),
+    { limits: { ...AGG_LIMITS, maxAccesses: 1 }, shouldAbort: () => false }, 'aggregates');
+  assert.equal(facts.completeness, 'complete');
+  assert.equal(result.completeness, 'complete');
+  assert.ok(!result.diagnostics.some((entry) => entry.code === 'phase8.aggregates.budget'),
+    'hitting the cap exactly is not truncation when no memory access remains');
+});
+
 test('#5470 maxAccesses cannot be overshot by a block-opening access', () => {
   const cfg = { blocks: [
     { insts: [{ id: 1, op: 'load', loc: { kind: 'stack', disp: 0n, size: 8 }, addr: {} }] },

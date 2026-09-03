@@ -382,11 +382,12 @@ export function runAggregatePass(context = {}, budget = {}, area = null) {
   let truncatedByLimit = false;
   for (const block of cfg?.blocks ?? []) {
     for (const instruction of block.insts ?? []) {
-      // The cap is checked before collecting: a block that opens on a memory
-      // access must not overshoot it, and accesses skipped past the cap are
-      // truncation rather than silently complete coverage (#5470).
+      const isMemoryAccess = instruction?.op === 'load' || instruction?.op === 'store';
+      if (!isMemoryAccess) continue;
+      // Reaching the cap is not itself truncation. It becomes partial only when
+      // another memory access exists beyond the cap (#5470 exact-limit case).
       if (instructions.length >= limits.maxAccesses) { truncatedByLimit = true; break; }
-      if (instruction?.op === 'load' || instruction?.op === 'store') instructions.push(instruction);
+      instructions.push(instruction);
     }
     if (truncatedByLimit) break;
   }
