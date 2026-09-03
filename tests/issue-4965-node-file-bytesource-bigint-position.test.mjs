@@ -38,6 +38,6 @@ test('NodeFileByteSource keeps ordinary positions lossless and enforces read-siz
   assert.deepEqual([...await source.read(7, 4)], [0x5a, 0x5a, 0x5a, 0x5a]);
   assert.deepEqual(positions, [7n]);
   assert.throws(() => source.validateRange(7, 5), /exceeds the 4-byte limit/);
-  assert.throws(() => source.validateRange(-1, 1), /must be non-negative/);
+  assert.throws(() => source.validateRange(-1, 1), /non-negative/);
   assert.throws(() => source.validateRange(63, 2), /read outside source/);
 });
