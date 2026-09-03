@@ -66,7 +66,12 @@ export function orderOperations(operations = [], existingIds = new Set()) {
   const unique = new Map();
   for (const input of operations) {
     const operation = input.schemaVersion === CHANGELOG_SCHEMA_VERSION ? input : createProjectOperation(input);
-    if (!unique.has(operation.operationId)) unique.set(operation.operationId, operation);
+    const existing = unique.get(operation.operationId);
+    if (existing) {
+      if (semanticDigest(existing) !== semanticDigest(operation)) throw new TypeError('operation-id-content-mismatch');
+      continue;
+    }
+    unique.set(operation.operationId, operation);
   }
   const remaining = new Map(unique);
   const seen = new Set(existingIds);
@@ -188,11 +193,28 @@ export class ChangeLog {
 
   applyOperation(input) {
     const operation = input?.schemaVersion === CHANGELOG_SCHEMA_VERSION ? input : createProjectOperation(input);
+    const existingPending = this.pending.get(operation.operationId);
+    if (existingPending && semanticDigest(existingPending) !== semanticDigest(operation)) {
+      return Object.freeze({
+        status: 'rejected',
+        reason: 'operation-id-content-mismatch',
+        operationId: operation.operationId,
+        stateDigest: this.digest(),
+      });
+    }
     const result = this.#applyOne(operation);
-    if (result.status === 'unresolved') this.pending.set(operation.operationId, operation);
-    else this.pending.delete(operation.operationId);
-    if (result.status !== 'rejected') this.#drainPending();
-    return Object.freeze({ ...result, operationId: operation.operationId, stateDigest: this.digest() });
+    if (result.status === 'unresolved') {
+      if (!existingPending) this.pending.set(operation.operationId, operation);
+    } else {
+      this.pending.delete(operation.operationId);
+    }
+    let surfaced = result;
+    if (result.status !== 'rejected') {
+      const drained = this.#drainPending();
+      const drainRejection = drained.find((entry) => entry.status === 'rejected');
+      if (drainRejection) surfaced = drainRejection;
+    }
+    return Object.freeze({ ...surfaced, operationId: surfaced.operationId ?? operation.operationId, stateDigest: this.digest() });
   }
 
   applyBatch(inputs = []) {
