@@ -41,7 +41,7 @@ export function matchRoute(routes, rawPath) {
 function queryOf(rawPath) { const i = String(rawPath || '').indexOf('?'); return new URLSearchParams(i >= 0 ? String(rawPath).slice(i + 1) : ''); }
 
 function ownedState(state) {
-  return !!state && state.hexUi === true && Number.isSafeInteger(state.hexDepth) && state.hexDepth >= 0;
+  return !!state && state.hexUi === true && Number.isSafeInteger(state.depth) && state.depth >= 0;
 }
 
 /* `srcdoc` documents inherit the embedding document's base URL for resolving
@@ -91,7 +91,7 @@ export class ProductRouter {
     this.routes = routes; this.defaultPath = normalize(defaultPath); this.onRoute = onRoute || (() => null); this.onState = onState || (() => {}); this.onError = onError || (() => {});
     this.current = null; this.view = null; this.serial = 0; this.started = false; this.renderGeneration = 0; this.depth = 0;
     this.routeController = null;
-    this.onPop = () => { const state = history.state?.hexUi ? history.state : null; if (state) this.depth = Math.max(0, Number(state.depth) || 0); this._render(this.locationPath(), { historyNavigation: true }); };
+    this.onPop = () => { const raw = history.state; const state = ownedState(raw) ? raw : null; if (state) this.depth = state.depth; this._render(this.locationPath(), { historyNavigation: true }); };
     this.onHash = () => { const path = this.locationPath(); if (this.current?.fullPath === path) return; this._render(path, { historyNavigation: true, hashNavigation: true }); };
   }
 
@@ -103,9 +103,10 @@ export class ProductRouter {
     window.addEventListener('popstate', this.onPop);
     window.addEventListener('hashchange', this.onHash);
     const path = this.locationPath();
-    const state = history.state && history.state.hexUi ? history.state : null;
+    const raw = history.state;
+    const state = raw && ownedState(raw) ? raw : null;
     if (!state) { this.depth = 0; history.replaceState({ hexUi: true, key: ++this.serial, depth: 0, viewState: null }, '', routeHistoryUrl(path, window.location)); }
-    else { this.serial = Math.max(this.serial, Number(state.key) || 0); this.depth = Math.max(0, Number(state.depth) || 0); }
+    else { this.serial = Math.max(this.serial, Number(state.key) || 0); this.depth = state.depth; }
     this._render(path, { replace: true, historyNavigation: true });
   }
 
