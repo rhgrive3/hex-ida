@@ -186,3 +186,50 @@ test('claims still serve a report whose identity matches the current snapshot', 
   assert.equal(result.value.length, 1);
   assert.equal(result.value[0].snapshotId, 'S1');
 });
+
+test('string query ignores a non-function progress observer instead of throwing', async () => {
+  const regions = [{ id:'r1', section:'__cstring', size:16n, cstrings:true }];
+  const seen = [];
+  const app = baseApp({
+    store:store({ sliceIndex:0, regions, currentRegion:regions[0], architecture:'arm64' }),
+    backend:{
+      gen:0,
+      strings(_request, onProgress) {
+        seen.push(typeof onProgress);
+        if (typeof onProgress === 'function') onProgress({ done:1, all:1 });
+        return Promise.resolve({ complete:true, scannedBytes:4, results:[{ addr:0n, text:'test' }] });
+      },
+    },
+  });
+  const query = createProductSurfaceQueries(app);
+  for (const observer of [true, {}, [], 'progress', 1]) {
+    const result = await query.strings(SNAPSHOT, {}, { offset:0, limit:20 }, { onProgress:observer });
+    assert.equal(result.value.length, 1, `observer ${String(observer)} must not fail the scan`);
+  }
+  assert.ok(seen.every((kind) => kind !== 'function'), 'no callback may be built from a non-function');
+  const fresh = baseApp({
+    store:store({ sliceIndex:0, regions, currentRegion:regions[0], architecture:'arm64' }),
+    backend:{
+      gen:0,
+      strings(_request, onProgress) {
+        seen.push(typeof onProgress);
+        if (typeof onProgress === 'function') onProgress({ done:1, all:1 });
+        return Promise.resolve({ complete:true, scannedBytes:4, results:[{ addr:0n, text:'test' }] });
+      },
+    },
+  });
+  const withFn = await createProductSurfaceQueries(fresh).strings(SNAPSHOT, {}, { offset:0, limit:20 }, { onProgress:() => {} });
+  assert.equal(withFn.value.length, 1);
+  assert.ok(seen.includes('function'), 'a real function observer is still wired through');
+});
+
+test('classification never joins a structured recognition address to a function', async () => {
+  const app = baseApp({
+    recognition:{ records:[{ address:['4096'], classification:'PURCHASE', confidence:1, evidence:['forged'] }] },
+    analyzeFunctionAt:async () => null,
+  });
+  const query = createProductSurfaceQueries(app);
+  const result = await query.classification(SNAPSHOT, 4096n);
+  assert.equal(result.value.base, null);
+  assert.equal(result.value.classification, 'UNKNOWN');
+});
