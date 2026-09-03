@@ -147,3 +147,42 @@ test('classification query joins global recognition with semantic refinement', a
   assert.ok(result.value.evidence.includes('state-writes'));
   assert.equal(result.value.refinement.from, 'UNKNOWN');
 });
+
+test('claims reject a never-bound stale report instead of rebinding it to the current snapshot', async () => {
+  const reportS1 = { snapshotId:'S1', findings:[{ id:'old', title:'S1 finding', verdict:'confirmed' }], truncated:false };
+  const app = baseApp({
+    analysisQueries:{ snapshot:async () => ({ snapshotId:'S2', analysisEpoch:2 }) },
+    autoReport:{ report:reportS1, snapshotId:'S1' },
+  });
+  const query = createProductSurfaceQueries(app);
+  const snapshotS2 = await query.snapshot();
+  const result = await query.claims(snapshotS2, {}, { offset:0, limit:20 });
+  assert.equal(result.completeness, 'unsupported');
+  assert.deepEqual(result.value, []);
+  assert.equal(result.status.reason, 'claim-report-snapshot-mismatch');
+});
+
+test('claims reject when only the wrapper snapshot identity disagrees', async () => {
+  const reportS1 = { snapshotId:'S1', findings:[{ id:'old', title:'S1 finding', verdict:'confirmed' }] };
+  const app = baseApp({
+    analysisQueries:{ snapshot:async () => ({ snapshotId:'S2', analysisEpoch:2 }) },
+    autoReport:{ report:{ findings:reportS1.findings }, snapshotId:'S1' },
+  });
+  const query = createProductSurfaceQueries(app);
+  const result = await query.claims(await query.snapshot(), {}, { offset:0, limit:20 });
+  assert.equal(result.completeness, 'unsupported');
+  assert.deepEqual(result.value, []);
+});
+
+test('claims still serve a report whose identity matches the current snapshot', async () => {
+  const reportS1 = { snapshotId:'S1', findings:[{ id:'old', title:'S1 finding', verdict:'confirmed' }] };
+  const app = baseApp({
+    analysisQueries:{ snapshot:async () => ({ snapshotId:'S1', analysisEpoch:1 }) },
+    autoReport:{ report:reportS1, snapshotId:'S1' },
+  });
+  const query = createProductSurfaceQueries(app);
+  const result = await query.claims(await query.snapshot(), {}, { offset:0, limit:20 });
+  assert.equal(result.completeness, 'complete');
+  assert.equal(result.value.length, 1);
+  assert.equal(result.value[0].snapshotId, 'S1');
+});
