@@ -38,7 +38,11 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}) {
     // and a class token only for catch clauses (ECMA-335 §II.25.4.6): mapping
     // it blindly to catchToken mislabels IL offsets and loses the filter
     // start (#5356).
-    ...(cl.kind === 'filter' ? { filterOffset: cl.classTokenOrFilter } : { catchToken: cl.classTokenOrFilter }),
+    ...(cl.kind === 'filter'
+      ? { filterOffset: cl.classTokenOrFilter }
+      : cl.kind === 'catch'
+        ? { catchToken: cl.classTokenOrFilter }
+        : {}),
   }));
 
   while (pc < bytecode.length) {

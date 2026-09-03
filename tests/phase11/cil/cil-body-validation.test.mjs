@@ -69,6 +69,8 @@ test('#5356 filter clauses publish filterOffset, not catchToken', () => {
     exceptionClauses: [
       { kind: 'filter', tryOffset: 0, tryLength: 4, handlerOffset: 20, handlerLength: 4, classTokenOrFilter: 8 },
       { kind: 'catch', tryOffset: 0, tryLength: 4, handlerOffset: 20, handlerLength: 4, classTokenOrFilter: 0x01000001 },
+      { kind: 'finally', tryOffset: 4, tryLength: 4, handlerOffset: 16, handlerLength: 4, classTokenOrFilter: 0xdeadbeef },
+      { kind: 'fault', tryOffset: 8, tryLength: 4, handlerOffset: 12, handlerLength: 4, classTokenOrFilter: 0xcafebabe },
     ],
   };
   const lifted = liftCilMethod(0, { moduleId: 'test', vmSpecEdition: 'v4.0.30319', methodBodies: [body] });
@@ -76,6 +78,12 @@ test('#5356 filter clauses publish filterOffset, not catchToken', () => {
   assert.ok(!('catchToken' in lifted.exceptionRegions[0]), 'filter regions must not carry a catch token');
   assert.equal(lifted.exceptionRegions[1].catchToken, 0x01000001);
   assert.ok(!('filterOffset' in lifted.exceptionRegions[1]), 'catch regions must not carry a filter offset');
+  for (const [index, kind] of [[2, 'finally'], [3, 'fault']]) {
+    const region = lifted.exceptionRegions[index];
+    assert.equal(region.handlerKind, kind);
+    assert.ok(!('catchToken' in region), `${kind} regions must not carry a catch token`);
+    assert.ok(!('filterOffset' in region), `${kind} regions must not carry a filter offset`);
+  }
 });
 
 test('#5396 operation provenance starts at the IL stream, not the header', () => {
