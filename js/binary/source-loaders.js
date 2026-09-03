@@ -111,8 +111,9 @@ function withSignal(options, signal) {
 }
 
 function withInitial(prefix, options) {
-  if (!prefix?.byteLength) return options;
-  return { ...options, initial: [{ offset: 0n, bytes: prefix }, ...(options.initial || [])] };
+  const { initial: _untrustedInitial, ...ranges } = options || {};
+  if (!prefix?.byteLength) return ranges;
+  return { ...ranges, initial: [{ offset: 0n, bytes: prefix }] };
 }
 
 async function readPrefix(source, signal) {
