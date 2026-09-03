@@ -177,7 +177,13 @@ export function captureDexValidationMetadata(methodIdx, image) {
   const facts = [];
   if (!structuralErrors.some((e) => e.code === 'dex-truncated-instructions')) {
     for (let pc = 0; pc < insnsSize;) {
-      const op = view.getUint8(insnsStart + pc * 2), w = width(op);
+      const op = view.getUint8(insnsStart + pc * 2);
+      const formatByte = view.getUint8(insnsStart + pc * 2 + 1);
+      if (op === 0x00 && formatByte !== 0x00) {
+        partialReasons.push(finding('dex-verifier-payload-unsupported', { offset: pc * 2, signature: formatByte }));
+        break;
+      }
+      const w = width(op);
       if (w == null) { partialReasons.push(finding('dex-verifier-opcode-unsupported', { offset: pc * 2, opcode: op })); break; }
       if (pc + w > insnsSize) { structuralErrors.push(finding('dex-instruction-crosses-insns-size', { offset: pc * 2, opcode: op })); break; }
       facts.push(instructionFact(view, insnsStart, pc, op, w, image));
