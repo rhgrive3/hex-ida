@@ -1,5 +1,5 @@
 import { AIError } from '../schema.js';
-import { canonicalBindingId, resolveBinaryIdentity } from './snapshot.js';
+import { canonicalBindingId, firstBinding, resolveBinaryIdentity } from './snapshot.js';
 
 export function requiredScopeForTool(tool) {
   if (['search_functions','search_strings','compare_functions','lookup_known_function'].includes(tool)) return 'binary';
@@ -14,7 +14,7 @@ export function memoryAnchor(snapshot, effectiveScope, liveContext = null) {
   let runtimeSessionId = snapshot.runtimeSessionIdentity || null;
   let runtimeSessionState = snapshot.runtimeSessionState || (runtimeSessionId != null ? 'bound' : 'unknown');
   if (runtimeSessionState === 'unknown' && liveContext?.runtimeSessionKnown === true) {
-    const observed = liveContext.runtimeSession?.id ?? liveContext.runtime?.sessionId ?? liveContext.runtimeSessionId ?? null;
+    const observed = firstBinding(liveContext.runtimeSession?.id, liveContext.runtime?.sessionId, liveContext.runtimeSessionId);
     runtimeSessionId = canonicalBindingId(observed);
     runtimeSessionState = observed == null ? 'none' : runtimeSessionId == null ? 'unknown' : 'bound';
   }
@@ -62,11 +62,11 @@ export function assertLiveBindingsUnchanged(local, snapshot) {
   const bothWeak = !strongIdentity(live, live.id) && !strongIdentity(snapshotIdentity, snapshot.binaryId);
   const same = sameId || (bothWeak && sameLegacy(live.legacyId, snapshot.legacyBinaryId));
   if (!same) throw new AIError('scope_violation', 'The binary changed while this AI turn was running; refusing to mix workbench states.');
-  const liveProject = local.projectId ?? local.project?.id ?? local.project?.binaryHash ?? null;
+  const liveProject = firstBinding(local.projectId, local.project?.id, local.project?.binaryHash);
   if (!sameNullableBinding(liveProject, snapshot.projectIdentity)) {
     throw new AIError('scope_violation', 'The project changed while this AI turn was running; refusing to mix workbench states.');
   }
-  const liveRuntime = local.runtimeSession?.id ?? local.runtime?.sessionId ?? local.runtimeSessionId ?? null;
+  const liveRuntime = firstBinding(local.runtimeSession?.id, local.runtime?.sessionId, local.runtimeSessionId);
   const liveRuntimeKnown = local.runtimeSessionKnown === true || liveRuntime != null;
   const liveRuntimeBinding = canonicalBindingId(liveRuntime);
   const liveRuntimeState = liveRuntimeKnown ? (liveRuntime == null ? 'none' : liveRuntimeBinding == null ? 'invalid' : 'bound') : 'unknown';
