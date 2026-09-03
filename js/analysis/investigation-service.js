@@ -401,8 +401,12 @@ export class InvestigationService {
       const sliceIndex = strictInteger(storeValue(this.app, 'sliceIndex'), -1);
       const work = [];
       const producerOptions = { signal, priority:priorityOf(options), budget:options.budget ?? null };
-      if (typeof this.app.ensureObjc === 'function' && sliceIndex != null && sliceIndex >= 0) work.push(this.app.ensureObjc(sliceIndex, producerOptions));
-      if (typeof this.app.ensureSwift === 'function') work.push(this.app.ensureSwift(producerOptions));
+      if (typeof this.app.ensureObjc === 'function' && sliceIndex != null && sliceIndex >= 0) {
+        work.push(Promise.resolve().then(() => this.app.ensureObjc(sliceIndex, producerOptions)));
+      }
+      if (typeof this.app.ensureSwift === 'function') {
+        work.push(Promise.resolve().then(() => this.app.ensureSwift(producerOptions)));
+      }
       const settled = await Promise.allSettled(work);
       abortIfNeeded(signal);
       if (epoch !== epochOf(this.app)) throw Object.assign(new Error('stale investigation metadata'), { stale:true });

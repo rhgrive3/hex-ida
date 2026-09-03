@@ -240,7 +240,7 @@ export function createAppAnalysisQueryAdapter(app) {
     const rawExplicit = descriptor.abi ?? metadata?.summary?.abi ?? metadata?.metadata?.abi ?? null;
     const explicit = typeof rawExplicit === 'string' && rawExplicit.trim() ? rawExplicit.trim() : null;
     const rawBits = descriptor.bits ?? metadata?.summary?.bits;
-    const bits = typeof rawBits === 'number' && Number.isSafeInteger(rawBits) && rawBits > 0 ? rawBits : 64;
+    const bits = rawBits == null ? 64 : (typeof rawBits === 'number' && Number.isSafeInteger(rawBits) && rawBits > 0 ? rawBits : null);
     let platform = normalizePlatform(descriptor.platform ?? metadata?.summary?.platform);
     if (architecture === 'riscv64') {
       if (rawExplicit != null && !explicit) return { supported:false, reason:'riscv-explicit-abi-invalid' };
@@ -248,6 +248,7 @@ export function createAppAnalysisQueryAdapter(app) {
         const plugin = resolveABIPlugin({ architecture, platform:platform ?? 'unix', abiId:explicit });
         return plugin?.supported ? { supported:true, abiId:plugin.id, platform:platform ?? 'unix', evidence:'explicit' } : { supported:false, reason:'riscv-explicit-abi-unsupported' };
       }
+      if (bits == null) return { supported:false, reason:'riscv-bits-invalid' };
       const flags = metadata?.metadata?.flags;
       if (flags == null) return { supported:false, reason:'riscv-elf-flags-unavailable' };
       const selected = riscvAbiFromElfFlags(flags, { bits });
@@ -385,7 +386,7 @@ export function createAppAnalysisQueryAdapter(app) {
       const needle = rawNeedle.trim().toLowerCase();
       const hasAddress = Object.prototype.hasOwnProperty.call(query, 'address') && query.address != null;
       const exactAddress = addressOf(query.address);
-      if (hasAddress && exactAddress == null) {
+      if (hasAddress && (exactAddress == null || exactAddress < 0n)) {
         return unsupported(null, 'function-query-address-invalid');
       }
       const { offset, limit } = pageOf(page);
