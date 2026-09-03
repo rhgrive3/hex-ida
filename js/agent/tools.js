@@ -121,6 +121,7 @@ class FunctionLoader {
     this.maxFunctions = explicitLimit(maxFunctions, 64);
     this.cache = new Map();
     this.analyzed = new Set();
+    this.attempted = new Set();
     this.inflight = new Map();
   }
   _put(key, value) {
@@ -136,9 +137,10 @@ class FunctionLoader {
       const hit = this.cache.get(key); this._put(key, hit); return hit;
     }
     if (this.inflight.has(key)) return this.inflight.get(key);
-    if (!this.analyzed.has(key) && this.analyzed.size + this.inflight.size >= this.maxFunctions) {
+    if (!this.attempted.has(key) && this.attempted.size >= this.maxFunctions) {
       throw new AgentToolError('function-budget', 'function-budget: function analysis budget exhausted', { maxFunctions: this.maxFunctions });
     }
+    this.attempted.add(key);
     const pending = (async () => {
       let range = null;
       if (this.ctx.program && typeof this.ctx.program.functionRange === 'function') {
@@ -154,7 +156,7 @@ class FunctionLoader {
     try { return await pending; }
     finally { this.inflight.delete(key); }
   }
-  analysisCount() { return this.analyzed.size; }
+  analysisCount() { return this.attempted.size; }
 }
 
 function nameFor(ctx, addr) {
