@@ -7,9 +7,21 @@
  * producer so cancelled work does not keep running underneath the UI.
  */
 
+function safeAbortReason(signal) {
+  let reason = null;
+  try { reason = signal?.reason; } catch { return null; }
+  try {
+    if (reason instanceof Error) return reason;
+    return reason == null ? null : String(reason);
+  } catch {
+    return null;
+  }
+}
+
 export function appProducerAbortError(signal, message = 'Analysis producer aborted') {
-  if (signal?.reason instanceof Error) return signal.reason;
-  const error = new Error(signal?.reason == null ? message : String(signal.reason));
+  const reason = safeAbortReason(signal);
+  if (reason instanceof Error) return reason;
+  const error = new Error(reason == null ? message : reason);
   error.name = 'AbortError';
   error.code = 'ABORT_ERR';
   return error;
@@ -36,7 +48,20 @@ export function analysisAbortSignalMethods(signal) {
   ) {
     throw new TypeError('analysis-invalid-abort-signal');
   }
-  return { signal, addEventListener, removeEventListener };
+  // Consumers must not be able to bypass waiter cleanup by throwing from a
+  // later `aborted`/`reason` read. Keep event methods bound to the original
+  // signal while exposing only fail-safe state to the shared-wait machinery.
+  const signalView = Object.freeze({
+    get aborted() {
+      try { return signal.aborted === true; } catch { return true; }
+    },
+    get reason() { return safeAbortReason(signal); },
+  });
+  return {
+    signal:signalView,
+    addEventListener:(...args) => addEventListener.call(signal, ...args),
+    removeEventListener:(...args) => removeEventListener.call(signal, ...args),
+  };
 }
 
 function abortProducerWithoutConsumers(entry) {
