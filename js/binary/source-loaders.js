@@ -111,7 +111,8 @@ function withSignal(options, signal) {
 }
 
 function withInitial(prefix, options) {
-  const { initial: _untrustedInitial, ...ranges } = options || {};
+  const ranges = { ...(options || {}) };
+  delete ranges.initial;
   if (!prefix?.byteLength) return ranges;
   return { ...ranges, initial: [{ offset: 0n, bytes: prefix }] };
 }
