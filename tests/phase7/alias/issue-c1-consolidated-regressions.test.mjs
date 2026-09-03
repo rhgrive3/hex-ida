@@ -4,8 +4,39 @@ import test from 'node:test';
 import { createPhase7AliasSolver } from '../../../js/analysis/alias/solver.js';
 import { a1RegionAlias } from '../../../js/analysis/alias/a1-region-alias.js';
 import { deriveMemoryRegion } from '../../../js/analysis/alias/regions-v2.js';
+import { createPointsToSet, createPointsToTarget, exactRange } from '../../../js/analysis/pointsto/lattice.js';
+import { pointsToAlias } from '../../../js/analysis/pointsto/alias.js';
 import { createEscapeRecord } from '../../../js/analysis/summary/escape.js';
 import { createAnalysisStatus } from '../../../js/analysis/status.js';
+
+test('#3041 unknown address spaces cannot mint distinct-address-space NoAlias authority', () => {
+  const setFor = (addressSpace, rootIdentity) => createPointsToSet({
+    targets: [createPointsToTarget({
+      addressSpace,
+      rootKind: 'heap',
+      rootIdentity,
+      offsetRange: exactRange(0n),
+    })],
+  });
+
+  const malformed = setFor({ structured: 'memory' }, 'malformed-root');
+  assert.equal(malformed.targets[0].addressSpace, 'unknown');
+  const canonicalRegister = setFor('register', 'register-root');
+  const failClosed = pointsToAlias(malformed, canonicalRegister, {
+    widthBitsLeft: 32,
+    widthBitsRight: 32,
+  });
+  assert.notEqual(failClosed.relation, 'no');
+  assert.equal(failClosed.reasonCodes.includes('distinct-address-space'), false);
+
+  const canonicalMemory = setFor('memory', 'memory-root');
+  const separated = pointsToAlias(canonicalMemory, canonicalRegister, {
+    widthBitsLeft: 32,
+    widthBitsRight: 32,
+  });
+  assert.equal(separated.relation, 'no');
+  assert.ok(separated.reasonCodes.includes('distinct-address-space'));
+});
 
 test('#4283 query context signal cannot uncancel solver-bound cancellation', () => {
   const solverAbort = new AbortController();
