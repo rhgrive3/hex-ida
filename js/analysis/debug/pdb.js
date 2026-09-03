@@ -376,6 +376,10 @@ export function parseTpiStream(bytes, budget = DEBUG_DEFAULT_BUDGET) {
       const numeric = readNumeric(view, bytes, sizeOffset, end);
       if (!numeric) break;
       const { value: sizeBytes, next } = numeric;
+      // Type names are NUL-terminated: a record that ends without one is
+      // truncated, not a complete type with a shorter name (#5265).
+      const nameEntry = cstringWithNext(bytes, next, end);
+      if (!nameEntry) break;
       const keyword = leaf === LF_UNION ? 'union' : leaf === LF_CLASS ? 'class' : 'struct';
       types.set(index, {
         leaf, kind: 'aggregate', keyword,
@@ -385,7 +389,7 @@ export function parseTpiStream(bytes, budget = DEBUG_DEFAULT_BUDGET) {
         memberCount: count,
         fieldList,
         sizeBytes,
-        name: cstring(bytes, next, end),
+        name: nameEntry.value,
       });
     } else if (leaf === LF_POINTER) {
       types.set(index, { leaf, kind: 'pointer', referent: view.getUint32(body, true), attributes: view.getUint32(body + 4, true) });
@@ -422,23 +426,49 @@ export function parseTpiStream(bytes, budget = DEBUG_DEFAULT_BUDGET) {
 /**
  * CodeView numeric leaves: a value below 0x8000 is the value itself; otherwise
  * the value's width is encoded in the leaf.
+ *
+ * Fixed-size leaves beyond 0x8004 (REAL32/64, QUADWORD/UQUADWORD, REAL80/128,
+ * REAL48) carry payloads that must be consumed; anything else has no known
+ * shape here and fails closed so the record desyncs loudly instead of
+ * decoding its payload as the next field (#5262).
  */
+const MAX_SAFE_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
+const MIN_SAFE_BIGINT = -MAX_SAFE_BIGINT;
+const NUMERIC_TAIL_BYTES = {
+  0x8005: 4, 0x8006: 8, 0x8007: 10, 0x8008: 16, 0x8009: 8, 0x800a: 8, 0x800b: 6,
+};
 function readNumeric(view, bytes, offset, end = bytes.length) {
   if (offset + 2 > end) return null;
   const raw = view.getUint16(offset, true);
   if (raw < 0x8000) return { value: raw, next: offset + 2 };
-  const requiredEnd = raw === 0x8000 ? offset + 3
-    : (raw === 0x8001 || raw === 0x8002) ? offset + 4
-      : (raw === 0x8003 || raw === 0x8004) ? offset + 6
-        : offset + 2;
-  if (requiredEnd > end) return null;
+  const tail = raw === 0x8000 ? 1
+    : (raw === 0x8001 || raw === 0x8002) ? 2
+      : (raw === 0x8003 || raw === 0x8004) ? 4
+        : NUMERIC_TAIL_BYTES[raw] ?? null;
+  if (tail == null) return null;
+  if (offset + 2 + tail > end) return null;
   switch (raw) {
     case 0x8000: return { value: view.getInt8(offset + 2), next: offset + 3 };
     case 0x8001: return { value: view.getInt16(offset + 2, true), next: offset + 4 };
     case 0x8002: return { value: view.getUint16(offset + 2, true), next: offset + 4 };
     case 0x8003: return { value: view.getInt32(offset + 2, true), next: offset + 6 };
     case 0x8004: return { value: view.getUint32(offset + 2, true), next: offset + 6 };
-    default: return { value: null, next: offset + 2 };
+    case 0x8005: return { value: view.getFloat32(offset + 2, true), next: offset + 6 };
+    case 0x8006: return { value: view.getFloat64(offset + 2, true), next: offset + 10 };
+    case 0x8009: {
+      const quad = view.getBigInt64(offset + 2, true);
+      return { value: quad >= MIN_SAFE_BIGINT && quad <= MAX_SAFE_BIGINT ? Number(quad) : null, next: offset + 10 };
+    }
+    case 0x800a: {
+      const uquad = view.getBigUint64(offset + 2, true);
+      return { value: uquad <= MAX_SAFE_BIGINT ? Number(uquad) : null, next: offset + 10 };
+    }
+    // REAL80/REAL128/REAL48 have no exact JS number: consume the payload so
+    // the record stays in sync, but report no value.
+    case 0x8007:
+    case 0x8008:
+    case 0x800b: return { value: null, next: offset + 2 + tail };
+    default: return null;
   }
 }
 
@@ -605,7 +635,11 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
         if (module.symbolByteSize > 4) symbols.complete = false;
         continue;
       }
-      const size = Math.min(module.symbolByteSize > 4 ? module.symbolByteSize : moduleBytes.length, moduleBytes.length);
+      // The module stream is [4-byte signature][symbols][C11][C13]... with the
+      // symbol range exactly [4, SymByteSize): SymByteSize == 4 is the valid
+      // boundary meaning zero symbol bytes, not a cue to scan line info as
+      // symbol records (#5276).
+      const size = Math.min(module.symbolByteSize >= 4 ? module.symbolByteSize : moduleBytes.length, moduleBytes.length);
       const moduleSymbols = parseSymbolRecords(moduleBytes.subarray(4, size), budget);
       symbols.complete = symbols.complete && moduleSymbols.complete;
       for (const symbol of moduleSymbols.symbols) {
