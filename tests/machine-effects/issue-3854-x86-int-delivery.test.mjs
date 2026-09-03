@@ -72,7 +72,7 @@ const instruction = intInstruction();
 assertEnvironmentFailClosed(liftX86ControlEffects(instruction), 'direct-control-lifter');
 assertEnvironmentFailClosed(liftX86MachineEffects(instruction), 'canonical-machine-effects');
 
-const malformed = liftX86MachineEffects(intInstruction(0x20, [0xcd, 0x21]));
+const malformed = liftX86ControlEffects(intInstruction(0x20, [0xcd, 0x21]));
 assert.ok(malformed, 'malformed-int-owned');
 assert.equal(malformed.completeness, 'partial');
 assert.equal(malformed.controlEffect.kind, 'unknown');
