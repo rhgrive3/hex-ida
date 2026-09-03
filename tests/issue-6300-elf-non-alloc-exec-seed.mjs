@@ -122,7 +122,8 @@ for (const type of [ET_EXEC, ET_DYN]) {
     'ET_REL keeps its synthetic section-relative exact seed contract');
 }
 
-// #6300 helper contract: relocatable images keep section-only validation.
+// #6300 helper contract: relocatable images keep section-only validation;
+// runtime image types require executable PT_LOAD ownership.
 {
   const relImage = { metadata: { type: ET_REL }, sections: [{ index: 1, address: 0x100000000n, size: 4n, perms: { read: false, write: false, execute: true } }], segments: [] };
   assert.ok(executableELFRange(relImage, 0x100000000n, 4n, 1));
@@ -130,18 +131,24 @@ for (const type of [ET_EXEC, ET_DYN]) {
   assert.ok(executableELFRange(execImage, 0x400000n, 4n, 1));
   const unmapped = { metadata: { type: ET_EXEC }, sections: [{ index: 1, address: 0x700000n, size: 4n, perms: { read: true, write: false, execute: true } }], segments: [{ address: 0x400000n, size: 0x1000n, perms: { read: true, write: false, execute: true } }] };
   assert.equal(executableELFRange(unmapped, 0x700000n, 4n, 1), null);
+  const noLoad = { metadata: { type: ET_EXEC }, sections: [{ index: 1, address: 0x400000n, size: 4n, perms: { read: true, write: false, execute: true } }], segments: [] };
+  assert.equal(executableELFRange(noLoad, 0x400000n, 4n, 1), null,
+    'ET_EXEC section evidence without PT_LOAD ownership must fail closed');
   const sectionless = { metadata: { type: ET_EXEC }, sections: [], segments: [{ address: 0x400000n, size: 0x1000n, perms: { read: true, write: false, execute: true } }] };
   assert.ok(executableELFRange(sectionless, 0x400000n, 4n, null), 'sectionless PT_DYNAMIC fallback still resolves through executable segments');
 }
 
-// #6300 case 9: existing section-provenance exact seeds without program
-// headers keep working (makeElf64Fixture is ET_DYN with no PT_LOAD; its
-// .text section is SHF_ALLOC|SHF_EXECINSTR, the pre-#6300 canonical path).
+// #6300 case 9: ET_DYN section evidence without any PT_LOAD must not mint an
+// exact STT_FUNC seed. Clear the fixture entrypoint so independent entrypoint
+// authority cannot mask the symbol-seed check.
 {
-  const baseline = parseELF(makeElf64Fixture());
-  const seed = baseline.functions.find((f) => f.address === 0x401000n && f.name === 'myfunc');
-  assert.ok(seed, 'existing section-provenance STT_FUNC seed is preserved');
-  assert.equal(seed.exactFunctionStart, true);
+  const bytes = makeElf64Fixture();
+  new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).setBigUint64(24, 0n, true);
+  const image = parseELF(bytes);
+  assert.ok(!image.functions.some((f) => f.address === 0x401000n && f.name === 'myfunc' && f.source === 'symbol'),
+    'ET_DYN STT_FUNC without executable PT_LOAD ownership must not seed an exact function');
+  assert.ok(image.warnings.some((w) => w.includes('myfunc') && w.includes('canonical executable extent')),
+    'rejected no-PT_LOAD symbol keeps an explicit provenance warning');
 }
 
 console.log('issue #6300 non-alloc executable section function-seed regressions: PASS');

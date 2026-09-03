@@ -67,7 +67,7 @@ export function executableELFRange(image, address, size = 0n, sectionIndex = nul
   };
   const inCanonicalExecutableSegment = () => {
     const segments = image.segments || [];
-    if (!segments.length) return true; // no program header table: section evidence stays canonical
+    if (!segments.length) return false;
     return segments.some((segment) => {
       if (!segment?.perms?.execute) return false;
       const lo = BigInt(segment.address ?? 0), hi = lo + BigInt(segment.size ?? 0);
