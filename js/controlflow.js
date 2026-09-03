@@ -195,11 +195,16 @@ function postDominatorsOf(succ, pred, reachable, components, componentOf) {
       if (ci !== cj) compOut[ci].add(cj);
     }
   }
+  const nonTerminatingSinks = new Set();
   const bad = new Set();
   const stack = [];
   for (let c = 0; c < components.length; c++) {
     if (compOut[c].size || compHasExit[c]) continue;
-    for (const i of components[c]) if (reachable.has(i)) { bad.add(i); stack.push(i); }
+    for (const i of components[c]) if (reachable.has(i)) {
+      nonTerminatingSinks.add(i);
+      bad.add(i);
+      stack.push(i);
+    }
   }
   while (stack.length) {
     const i = stack.pop();
@@ -209,11 +214,16 @@ function postDominatorsOf(succ, pred, reachable, components, componentOf) {
     }
   }
 
-  const eligible = new Set(Array.from(reachable).filter((i) => !bad.has(i)));
+  // Keep predecessors that can reach both a normal exit and a closed
+  // non-terminating SCC in the post-dominator problem.  Every node in such a
+  // bottom SCC receives a conservative synthetic edge to EXIT while its real
+  // cycle edges remain intact.  This represents every finite prefix of an
+  // infinite execution: it preserves common prefixes before the divergence,
+  // but cannot invent another SCC member as a mandatory post-dominator.
   const reverse = Array.from({ length: n + 1 }, () => []);
-  for (const i of eligible) {
-    const xs = succ[i].filter((j) => eligible.has(j));
-    if (!xs.length) reverse[EXIT].push(i);
+  for (const i of reachable) {
+    const xs = internal(i);
+    if (!xs.length || nonTerminatingSinks.has(i)) reverse[EXIT].push(i);
     for (const j of xs) reverse[j].push(i);
   }
   const reversePred = predecessorsOf(reverse);
@@ -221,7 +231,7 @@ function postDominatorsOf(succ, pred, reachable, components, componentOf) {
   const { idom: reverseIdom } = immediateDominatorsOf(reverse, reversePred, reverseReachable, EXIT);
   const views = dominanceViews(reverseIdom, reverseReachable, EXIT);
   const ipdom = new Array(n).fill(null);
-  for (const i of eligible) {
+  for (const i of reachable) {
     const d = reverseIdom[i];
     ipdom[i] = d >= 0 && d !== EXIT ? d : null;
   }
