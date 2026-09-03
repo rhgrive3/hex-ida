@@ -17,6 +17,21 @@ function clone(value) {
 function list(value) { return [...new Set((Array.isArray(value) ? value : []).map(String).filter(Boolean))].sort(); }
 function factKey(target, kind) { return `${target}\u0000${kind}`; }
 function payloadDigest(value) { return stableDigest(value); }
+// The identity an operationId is bound to: everything that decides state
+// semantics. Two operations sharing an ID must agree on all of it, otherwise
+// replicas silently fork under an identical ID set (#5397).
+function semanticDigest(operation) {
+  return payloadDigest({
+    projectIdentity: operation.projectIdentity,
+    binaryIdentity: operation.binaryIdentity ?? null,
+    targetEntityId: operation.targetEntityId,
+    factKind: operation.factKind,
+    action: operation.action,
+    payload: operation.payload ?? null,
+    beforeFingerprint: operation.beforeFingerprint ?? null,
+    causalParents: operation.causalParents ?? [],
+  });
+}
 
 export function createProjectOperation(input = {}) {
   if (input.schemaVersion != null && input.schemaVersion !== CHANGELOG_SCHEMA_VERSION) throw new TypeError('operation-schema-version-unsupported');
@@ -71,6 +86,10 @@ function emptyState(projectIdentity, binaryIdentity) {
 
 function cloneState(state) { return clone(state); }
 
+function permanentlyBlockedOp(log, operationId) {
+  return (log.state?.unresolved || []).some((item) => item?.operationId === operationId && item?.reason === 'tombstone-protects-state');
+}
+
 export class ChangeLog {
   constructor(options = {}) {
     this.projectIdentity = required(options.projectIdentity ?? options.projectId, 'changelog-project-identity-required');
@@ -97,7 +116,13 @@ export class ChangeLog {
   #applyOne(operation) {
     const validation = this.#validate(operation);
     if (validation) return validation;
-    if (this.operations.has(operation.operationId)) return { status: 'duplicate', operationId: operation.operationId };
+    if (this.operations.has(operation.operationId)) {
+      const existing = this.operations.get(operation.operationId);
+      if (semanticDigest(existing) !== semanticDigest(operation)) {
+        return { status: 'rejected', reason: 'operation-id-content-mismatch', operationId: operation.operationId };
+      }
+      return { status: 'duplicate', operationId: operation.operationId };
+    }
     const key = factKey(operation.targetEntityId, operation.factKind);
     const current = this.state.facts[key] || null;
     if (operation.action !== 'resolve' && operation.action !== 'remove' && this.state.tombstones.some((item) => item.key === key) && operation.action !== 'resurrect') {
@@ -136,11 +161,37 @@ export class ChangeLog {
     return { status: record.values.length > 1 && MEANINGFUL_FACTS.has(operation.factKind) ? 'conflict' : 'applied', operationId: operation.operationId, effect: record.values.length > 1 ? 'preserved-competing-value' : 'fact' };
   }
 
+  // Drain pending operations whose causal parents all arrived, to a fixed
+  // point in deterministic ID order. Tombstone-protected entries are never
+  // retried (that used to delete/requeue forever); a rejection stops the
+  // drain like the remote-delivery equivalent. Operates on #applyOne directly
+  // so draining never recurses through applyOperation (#5399).
+  #drainPending() {
+    const drained = [];
+    let progressed = true;
+    while (progressed) {
+      progressed = false;
+      for (const [operationId, operation] of [...this.pending.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+        if (!operation.causalParents.every((parent) => this.operations.has(parent))) continue;
+        if (permanentlyBlockedOp(this, operationId)) continue;
+        this.pending.delete(operationId);
+        const result = this.#applyOne(operation);
+        if (result.status === 'unresolved') this.pending.set(operation.operationId, operation);
+        else this.pending.delete(operation.operationId);
+        drained.push(Object.freeze({ ...result, operationId: operation.operationId }));
+        if (result.status === 'rejected') return drained;
+        if (result.status !== 'unresolved') progressed = true;
+      }
+    }
+    return drained;
+  }
+
   applyOperation(input) {
     const operation = input?.schemaVersion === CHANGELOG_SCHEMA_VERSION ? input : createProjectOperation(input);
     const result = this.#applyOne(operation);
     if (result.status === 'unresolved') this.pending.set(operation.operationId, operation);
     else this.pending.delete(operation.operationId);
+    if (result.status !== 'rejected') this.#drainPending();
     return Object.freeze({ ...result, operationId: operation.operationId, stateDigest: this.digest() });
   }
 
@@ -157,6 +208,13 @@ export class ChangeLog {
       if (result.status === 'unresolved') working.pending.set(operation.operationId, operation);
       else working.pending.delete(operation.operationId);
     }
+    // Newly arrived parents may unblock previously pending operations: drain
+    // them on the working copy before committing, so the batch converges.
+    // A drain rejection aborts without committing, like an ordered rejection.
+    const drained = working.#drainPending();
+    results.push(...drained);
+    const drainRejection = drained.find((entry) => entry.status === 'rejected');
+    if (drainRejection) return Object.freeze({ status: 'rejected', reason: drainRejection.reason, operationId: drainRejection.operationId, results, stateDigest: this.digest() });
     this.state = working.state;
     this.operations = working.operations;
     this.pending = working.pending;
@@ -186,15 +244,45 @@ export function restoreCheckpoint(checkpoint, options = {}) {
   if (!checkpoint || checkpoint.schemaVersion !== CHECKPOINT_SCHEMA_VERSION) throw new TypeError('checkpoint-schema-invalid');
   assertIdentityMatch(checkpoint.projectIdentity, options.projectIdentity, 'checkpoint-project-identity-mismatch');
   assertIdentityMatch(checkpoint.binaryIdentity || '', options.binaryIdentity || '', 'checkpoint-binary-identity-mismatch');
+  // The restored state itself must carry the same identity: a digest over a
+  // foreign state stays valid, so the digest alone cannot catch the swap (#5497).
+  assertIdentityMatch(checkpoint.state?.projectIdentity ?? '', options.projectIdentity, 'checkpoint-state-project-identity-mismatch');
+  assertIdentityMatch(checkpoint.state?.binaryIdentity || '', options.binaryIdentity || '', 'checkpoint-state-binary-identity-mismatch');
   const checkpointOperations = checkpoint.operationIds.map((operationId) => ({ operationId, schemaVersion: CHANGELOG_SCHEMA_VERSION, projectIdentity: options.projectIdentity, binaryIdentity: options.binaryIdentity || null, targetEntityId: 'checkpoint', factKind: 'checkpoint', action: 'set', payload: null, causalParents: [], provenance: { source: 'checkpoint' } }));
   const log = new ChangeLog({ projectIdentity: options.projectIdentity, binaryIdentity: options.binaryIdentity || null, state: checkpoint.state, operations: checkpointOperations });
-  for (const operation of options.operations || []) if (!checkpoint.operationIds.includes(operation.operationId)) log.applyOperation(operation);
+  const restoreResults = [];
+  for (const operation of options.operations || []) {
+    if (checkpoint.operationIds.includes(operation.operationId)) continue;
+    const result = log.applyOperation(operation);
+    restoreResults.push(result);
+    // A rejected incremental operation must reach the caller: returning the
+    // log alone would silently lose the change (#5467). Unresolved (pending),
+    // duplicate and conflict outcomes keep their existing semantics.
+    if (result.status === 'rejected') {
+      const error = new Error(`checkpoint-restore-operation-rejected:${result.reason}`);
+      error.code = 'CHECKPOINT_RESTORE_OPERATION_REJECTED';
+      error.reason = result.reason;
+      error.operationId = result.operationId;
+      error.results = Object.freeze(restoreResults);
+      error.log = log;
+      throw error;
+    }
+  }
   return log;
 }
 
 export function mergeOperations(left = [], right = []) {
   const map = new Map();
-  for (const input of [...left, ...right]) { const operation = input.schemaVersion === CHANGELOG_SCHEMA_VERSION ? input : createProjectOperation(input); if (!map.has(operation.operationId)) map.set(operation.operationId, operation); }
+  for (const input of [...left, ...right]) {
+    const operation = input.schemaVersion === CHANGELOG_SCHEMA_VERSION ? input : createProjectOperation(input);
+    const existing = map.get(operation.operationId);
+    if (existing) {
+      // Same ID pinning different content must not first-wins silently (#5397).
+      if (semanticDigest(existing) !== semanticDigest(operation)) throw new TypeError('operation-id-content-mismatch');
+      continue;
+    }
+    map.set(operation.operationId, operation);
+  }
   return Object.freeze([...map.values()].sort(compareOperations));
 }
 
