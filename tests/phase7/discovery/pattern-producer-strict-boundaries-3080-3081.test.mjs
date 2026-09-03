@@ -82,6 +82,30 @@ for (const badConflicts of [
     /discovery-candidate-invalid-conflict/,
   );
 }
+const typedConflict = new Uint8Array(1);
+typedConflict.kind = 'start';
+assert.throws(
+  () => createFunctionCandidate({ start:0n, startState:'exact', conflicts:[typedConflict] }),
+  /discovery-candidate-invalid-conflict/,
+);
+const inheritedKindPrototype = {};
+Object.defineProperty(inheritedKindPrototype, 'kind', {
+  get() { throw new Error('prototype kind getter must not be evaluated'); },
+});
+const inheritedKindConflict = Object.create(inheritedKindPrototype);
+assert.throws(
+  () => createFunctionCandidate({ start:0n, startState:'exact', conflicts:[inheritedKindConflict] }),
+  /discovery-candidate-invalid-conflict/,
+);
+const accessorKindConflict = {};
+Object.defineProperty(accessorKindConflict, 'kind', {
+  enumerable:true,
+  get() { throw new Error('own kind getter must not be evaluated'); },
+});
+assert.throws(
+  () => createFunctionCandidate({ start:0n, startState:'exact', conflicts:[accessorKindConflict] }),
+  /discovery-candidate-invalid-conflict-kind/,
+);
 const exactCandidate = createFunctionCandidate({ start:0n, startState:'exact' });
 assert.equal(hasExactStart(exactCandidate), true);
 const contradictedCandidate = createFunctionCandidate({
