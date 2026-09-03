@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {
   jsonSafe,
+  stableStringify,
   createEntityId,
   createEvidenceId,
   createFunctionId,
@@ -22,6 +23,12 @@ import { createAnalysisSnapshot } from '../js/core/identity/snapshot.js';
   const setBId = createEntityId({ binaryId: 'bin-1', kind: 'test', identity: new Set(['b']) });
   assert.notEqual(setAId, setBId, 'distinct Sets must produce distinct entity IDs');
   assert.notEqual(setAId, emptyObjId, 'Set must not alias empty object');
+
+  // Locale-sensitive comparators can order these differently. Canonical
+  // identity must use direct code-unit ordering: "z" (U+007A) before "ä".
+  assert.equal(stableStringify(new Set(['ä', 'z'])), '{"$set":["z","ä"]}');
+  assert.equal(stableStringify(new Map([['ä', 1], ['z', 2]])), '{"$map":[["z",2],["ä",1]]}');
+  assert.deepEqual(jsonSafe(new Set(['ä', 'z'])), { $set: ['z', 'ä'] });
 
   // AnalysisSnapshot artifactVersions with Map
   const common = {
