@@ -61,12 +61,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  head:
+  pr-proof:
+    name: head-and-candidate-merge-tree
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout exact PR head
+        uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
@@ -74,7 +76,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - name: Install active native proof providers
+      - name: Install active native proof providers once
         run: |
           sudo apt-get update
           sudo apt-get install -y clang-18 lld-18 llvm-18 lldb-18 qemu-user
@@ -83,27 +85,22 @@ jobs:
         env:
           VERIFY_SHA: ${{ github.event.pull_request.head.sha }}
         # Invariant Gates already runs the complete repository check for every
-        # pull request. Keep Stage 2 focused on its exact-head product here;
-        # manual/final validation below still requires --full.
+        # pull request. Keep Stage 2 focused on its exact product here.
         run: node tools/validation/stage2/verify.mjs --expect-sha "$VERIFY_SHA" || { cat reports/stage2/stage2-verdict.json; exit 1; }
 
-  candidate-merge-tree:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v4
+      # The exact head and GitHub's synthetic merge tree remain separate proof
+      # identities. They share only the hosted runner/provider installation;
+      # the merge tree is checked out exactly and receives its own npm ci.
+      - name: Checkout exact candidate merge tree
+        uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - name: Install active native proof providers
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y clang-18 lld-18 llvm-18 lldb-18 qemu-user
+          clean: true
+      - name: Assert exact merge-tree checkout
+        env:
+          VERIFY_SHA: ${{ github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$VERIFY_SHA"
       - run: npm ci --no-audit --no-fund
       - name: Verify exact candidate merge tree
         env:
