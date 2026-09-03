@@ -152,3 +152,65 @@ test('#5480 maxPhisPerLoop truncation publishes partial induction', () => {
   assert.equal(facts.loops[0].completeness, 'partial', 'the cut loop must not claim completeness alone');
   assert.match(facts.loops[0].completenessReason ?? '', /maxPhisPerLoop/);
 });
+
+function countedLoopContext({ extraLoopCarriedPhi = false } = {}) {
+  const induction = { id: 10, bits: 64 };
+  const init = { id: 11, bits: 64, const: 0 };
+  const one = { id: 12, bits: 64, const: 1 };
+  const update = {
+    id: 13,
+    bits: 64,
+    def: { op: 'bin', sub: 'add', args: [{ value: induction }, { value: one }] },
+  };
+  const bound = { id: 14, bits: 64, const: 4 };
+  const condition = {
+    id: 15,
+    bits: 1,
+    def: { op: 'bin', sub: 'ult', args: [{ value: induction }, { value: bound }] },
+  };
+  const phis = [{ dst: induction, incoming: [{ from: 0, value: init }, { from: 1, value: update }] }];
+  if (extraLoopCarriedPhi) {
+    const second = { id: 20, bits: 64 };
+    const secondInit = { id: 21, bits: 64, const: 7 };
+    const secondUpdate = {
+      id: 22,
+      bits: 64,
+      def: { op: 'bin', sub: 'add', args: [{ value: second }, { value: one }] },
+    };
+    phis.push({ dst: second, incoming: [{ from: 0, value: secondInit }, { from: 1, value: secondUpdate }] });
+  }
+  const cfg = { blocks: [
+    { index: 0, succ: [1], successorEdges: [{ to: 1, kind: 'branch' }], insts: [], phis: [] },
+    {
+      index: 1,
+      succ: [1, 2],
+      successorEdges: [{ to: 1, kind: 'conditional-true' }, { to: 2, kind: 'conditional-false' }],
+      insts: [{ id: 100, op: 'cbr', conditionValue: condition }],
+      phis,
+    },
+    { index: 2, succ: [], successorEdges: [], insts: [], phis: [] },
+  ] };
+  return inductionContext({
+    loops: [{ header: 1, latches: [1], nodes: [1], exits: [2], exitEdges: [], guardBlock: null, depth: 0, parentHeader: null }],
+    cfg,
+    dominators: { dominators: { 0: [0], 1: [0, 1], 2: [0, 1, 2] } },
+  });
+}
+
+test('#5480 maxPhisPerLoop truncation withholds counted-loop simplification authority', () => {
+  const limits = { maxLoops: 512, maxPhisPerLoop: 1, maxCopyChain: 8 };
+  const complete = staged(runInductionPass, countedLoopContext(),
+    { limits, shouldAbort: () => false }, 'induction');
+  assert.equal(complete.facts.loops[0].completeness, 'complete');
+  assert.equal(complete.facts.countedLoopCount, 1, 'a complete counted loop keeps its candidate');
+  assert.equal(complete.facts.simplificationCandidates.length, 1);
+
+  const truncated = staged(runInductionPass, countedLoopContext({ extraLoopCarriedPhi: true }),
+    { limits, shouldAbort: () => false }, 'induction');
+  assert.equal(truncated.facts.loops[0].completeness, 'partial');
+  assert.equal(truncated.facts.loops[0].inductions[0].tripCount.exact, 4n,
+    'the retained induction remains exact, so candidate suppression is a loop-completeness gate');
+  assert.equal(truncated.facts.countedLoopCount, 0,
+    'a phi-truncated loop must not publish exact simplification authority');
+  assert.deepEqual(truncated.facts.simplificationCandidates, []);
+});
