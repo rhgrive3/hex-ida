@@ -5,9 +5,13 @@ import { ByteView } from './reader.js';
 function executableOwnerForSymbol(image, symbol) {
   const start = BigInt(symbol.address);
   const extent = BigInt(symbol.size || 0n);
-  const exactSection = symbol.sectionIndex == null ? null : image.sections?.find((section) => section.index === symbol.sectionIndex) || null;
-  if (exactSection?.perms?.execute && start >= exactSection.address && start < exactSection.address + exactSection.size
-      && (extent === 0n || extent <= exactSection.address + exactSection.size - start)) return exactSection;
+  if (symbol.sectionIndex != null) {
+    const exactSection = image.sections?.find((section) => section.index === symbol.sectionIndex) || null;
+    if (!exactSection?.perms?.execute) return null;
+    if (start < exactSection.address || start >= exactSection.address + exactSection.size) return null;
+    if (extent !== 0n && extent > exactSection.address + exactSection.size - start) return null;
+    return exactSection;
+  }
   const section = typeof image.sectionAt === 'function' ? image.sectionAt(start) : null;
   if (section?.perms?.execute && (extent === 0n || extent <= section.address + section.size - start)) return section;
   const segment = typeof image.segmentAt === 'function' ? image.segmentAt(start) : null;
