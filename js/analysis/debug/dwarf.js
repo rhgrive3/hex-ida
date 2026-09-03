@@ -198,7 +198,16 @@ function parseAbbrev(bytes, tableOffset) {
  */
 function readForm(cursor, form, unit, sections, implicitConst) {
   switch (form) {
-    case DW_FORM.addr: return { value: unit.addressSize === 8 ? cursor.u64() : BigInt(cursor.u32()) };
+    case DW_FORM.addr: {
+      // DW_FORM_addr occupies exactly the CU's address size, which the DWARF
+      // spec does not restrict to 4/8: reading any other width desyncs every
+      // following attribute (#5305).
+      const width = unit.addressSize;
+      if (!Number.isSafeInteger(width) || width < 1 || width > 8) return { value: null, unsupported: true, fatal: true };
+      let value = 0n;
+      for (let index = 0; index < width; index++) value |= BigInt(cursor.u8()) << BigInt(8 * index);
+      return { value };
+    }
     case DW_FORM.data1: case DW_FORM.ref1: case DW_FORM.strx1: case DW_FORM.addrx1: case DW_FORM.flag:
       return { value: BigInt(cursor.u8()) };
     case DW_FORM.data2: case DW_FORM.ref2: case DW_FORM.strx2: case DW_FORM.addrx2:
@@ -282,6 +291,11 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET) {
   const diagnostics = [];
   const dies = new Map();
   if (!info) return { dies, units: [], diagnostics: ['missing .debug_info'], complete: false };
+  // A missing or malformed record budget must fall back to the default, never
+  // disable the cap: comparisons against undefined/NaN are always false (#5352).
+  const maxRecords = Number.isSafeInteger(budget?.maxRecords) && budget.maxRecords > 0
+    ? budget.maxRecords
+    : DEBUG_DEFAULT_BUDGET.maxRecords;
 
   const units = [];
   const cursor = new Cursor(info, 0);
@@ -341,7 +355,7 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET) {
     const stack = [];
     let unitComplete = true;
     while (cursor.offset < unitEnd) {
-      if (recordCount >= budget.maxRecords) {
+      if (recordCount >= maxRecords) {
         diagnostics.push('record budget exhausted');
         complete = false;
         unitComplete = false;
@@ -550,7 +564,13 @@ export function readBuildId(noteSection) {
     const descStart = nameStart + ((nameSize + 3) & ~3);
     const descEnd = descStart + descSize;
     if (descEnd > noteSection.length) return null;
-    const name = cstring(noteSection, nameStart);
+    // The owner name lives inside the declared nameSize: alignment padding
+    // past it must not serve as the terminator (#5301).
+    let nameEnd = nameStart;
+    while (nameEnd < nameStart + nameSize && nameEnd < noteSection.length && noteSection[nameEnd] !== 0) nameEnd += 1;
+    const name = nameEnd < nameStart + nameSize && nameEnd < noteSection.length
+      ? new TextDecoder('utf8').decode(noteSection.subarray(nameStart, nameEnd))
+      : null;
     // NT_GNU_BUILD_ID
     if (type === 3 && name === 'GNU') {
       return [...noteSection.subarray(descStart, descEnd)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
