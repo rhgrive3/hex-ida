@@ -290,7 +290,24 @@ function valueSize(value, seen = new Set(), limit = MAX_RPC_OUTPUT_BYTES + 1) {
   return n;
 }
 
+function isAbortSignalLike(signal) {
+  if (signal == null) return true;
+  const type = typeof signal;
+  if (type !== 'object' && type !== 'function') return false;
+  try {
+    return typeof signal.aborted === 'boolean'
+      && typeof signal.addEventListener === 'function'
+      && typeof signal.removeEventListener === 'function';
+  } catch {
+    return false;
+  }
+}
+
 export function runInSandbox({ source, mode = 'script', index = 0, api, out, timeout = 30000, signal }) {
+  if (!isAbortSignalLike(signal)) {
+    return Promise.resolve({ error: 'キャンセルシグナルが無効です。' });
+  }
+
   return new Promise((resolve) => {
     const frame = document.createElement('iframe');
     frame.hidden = true;
@@ -300,6 +317,7 @@ export function runInSandbox({ source, mode = 'script', index = 0, api, out, tim
     const runController = new AbortController();
     let settled = false;
     let timer = null;
+    let abortSubscribed = false;
     let rpcTotal = 0;
     let rpcConcurrent = 0;
     let rpcInputBytes = 0;
@@ -334,7 +352,10 @@ export function runInSandbox({ source, mode = 'script', index = 0, api, out, tim
       settled = true;
       runController.abort(value?.error || 'sandbox-finished');
       if (timer) clearTimeout(timer);
-      if (signal) signal.removeEventListener('abort', onAbort);
+      if (abortSubscribed) {
+        abortSubscribed = false;
+        try { signal.removeEventListener('abort', onAbort); } catch { /* cleanup must continue */ }
+      }
       window.removeEventListener('message', onFrameReady);
       window.removeEventListener('pagehide', onPageHide);
       terminate();
@@ -343,12 +364,22 @@ export function runInSandbox({ source, mode = 'script', index = 0, api, out, tim
       resolve(value);
     }
 
-    if (signal) {
-      if (signal.aborted) {
-        onAbort();
+    if (signal != null) {
+      try {
+        if (signal.aborted) {
+          onAbort();
+          return;
+        }
+        abortSubscribed = true;
+        signal.addEventListener('abort', onAbort, { once: true });
+        if (signal.aborted) {
+          onAbort();
+          return;
+        }
+      } catch {
+        finish({ error: 'キャンセルシグナルが無効です。' });
         return;
       }
-      signal.addEventListener('abort', onAbort, { once: true });
     }
 
     timer = setTimeout(
