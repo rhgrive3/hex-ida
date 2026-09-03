@@ -148,12 +148,21 @@ export function createFunctionCandidate(input = {}) {
     fail('discovery-candidate-unknown-extent-cannot-claim-regions');
   }
 
+  const startEvidence = deepFreeze((input.startEvidence ?? []).map((evidence) => createDiscoveryEvidence(evidence)));
+  // `exact` is derived authority, not a caller assertion: it requires at
+  // least one authoritative evidence item supporting this start. Anything
+  // weaker keeps whatever weaker state the caller declared.
+  if (startState === 'exact' && !startEvidence.some((evidence) =>
+      evidence.authority === 'authoritative' && (evidence.start == null || evidence.start === start.toString()))) {
+    fail('discovery-candidate-exact-start-requires-authoritative-evidence');
+  }
+
   const candidate = {
     schemaVersion: FUNCTION_CANDIDATE_SCHEMA_VERSION,
     start: start.toString(),
     name: input.name == null ? null : String(input.name),
     regions: deepFreeze(regions),
-    startEvidence: deepFreeze((input.startEvidence ?? []).map((evidence) => createDiscoveryEvidence(evidence))),
+    startEvidence,
     extentEvidence: deepFreeze((input.extentEvidence ?? []).map((evidence) => createDiscoveryEvidence(evidence))),
     startState,
     extentState,
