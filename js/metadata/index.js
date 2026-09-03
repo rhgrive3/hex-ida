@@ -87,6 +87,21 @@ export function classifyLanguageRuntimeCall(name) {
   return null;
 }
 
+function safeSectionName(s) {
+  if (!s || typeof s !== 'object') return '';
+  if (typeof s.name === 'string') return s.name;
+  if (typeof s.section === 'string') return s.section;
+  if (typeof s.sectname === 'string') return s.sectname;
+  return '';
+}
+
+function safeSymbolName(s) {
+  if (!s || typeof s !== 'object') return '';
+  if (typeof s.name === 'string') return s.name;
+  if (typeof s.symbol === 'string') return s.symbol;
+  return '';
+}
+
 /**
  * Parses and aggregates language metadata across all detected ecosystems.
  */
@@ -94,10 +109,11 @@ export async function parseUnifiedLanguageMetadata(context = {}, options = {}) {
   const providers = [];
   const sections = Array.isArray(context.sections)
     ? context.sections
-    : Object.values(context.sections || {});
+    : (context.sections && typeof context.sections === 'object' ? Object.values(context.sections) : []);
+  const symbols = Array.isArray(context.symbols) ? context.symbols : [];
 
   // 1. Go
-  if (context.pclntabBuffer || sections.some((s) => (s.name || s.section || '').includes('gopclntab'))) {
+  if (context.pclntabBuffer || sections.some((s) => safeSectionName(s).includes('gopclntab'))) {
     providers.push(new GoMetadataProvider({
       pclntabBuffer: context.pclntabBuffer,
       rodataBuffer: context.rodataBuffer,
@@ -109,13 +125,12 @@ export async function parseUnifiedLanguageMetadata(context = {}, options = {}) {
     }));
   }
 
-  // 2. Rust
-  if ((context.symbols || []).some((s) => {
-    const name = s.name || s.symbol || '';
-    return name.startsWith('_R') || name.startsWith('__R') || name.startsWith('_ZN') || name.startsWith('ZN');
+  if (symbols.some((s) => {
+    const n = safeSymbolName(s);
+    return n.startsWith('_R') || n.startsWith('__R') || n.startsWith('_ZN') || n.startsWith('ZN');
   }) || context.commentBuffer) {
     providers.push(new RustMetadataProvider({
-      symbols: context.symbols || [],
+      symbols,
       commentBuffer: context.commentBuffer,
       sections,
       binaryIdentity: context.binaryIdentity,
@@ -126,7 +141,7 @@ export async function parseUnifiedLanguageMetadata(context = {}, options = {}) {
   }
 
   // 3. Swift
-  if (sections.some((s) => (s.name || s.section || '').includes('swift5') || (s.name || s.section || '').includes('sw5'))) {
+  if (sections.some((s) => safeSectionName(s).includes('swift5') || safeSectionName(s).includes('sw5'))) {
     providers.push(new SwiftMetadataProvider({
       readAt: context.readAt,
       sections,
@@ -138,7 +153,7 @@ export async function parseUnifiedLanguageMetadata(context = {}, options = {}) {
   }
 
   // 4. ObjC
-  if (sections.some((s) => (s.name || s.section || '').includes('objc_') || (s.name || s.section || '').includes('__OBJC'))) {
+  if (sections.some((s) => safeSectionName(s).includes('objc_') || safeSectionName(s).includes('__OBJC'))) {
     providers.push(new ObjcMetadataProvider({
       readAt: context.readAt,
       sections,

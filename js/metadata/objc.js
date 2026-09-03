@@ -42,7 +42,7 @@ export class ObjcMetadataProvider extends LanguageMetadataProvider {
 
     const classList = sectionList.find((s) => (s.section || s.name || s.sectname || '').includes('objc_classlist'));
 
-    if (!objcSections.length || !classList || typeof this.readAt !== 'function') {
+    if (!objcSections.length) {
       return createLanguageMetadataResult({
         providerId: this.id,
         providerVersion: this.version,
@@ -58,8 +58,68 @@ export class ObjcMetadataProvider extends LanguageMetadataProvider {
           method: 'objc-section-probe',
           detail: 'no objc metadata sections found',
         }),
-        sections: objcSections.map((s) => s.section || s.name || String(s)),
+        sections: [],
         completeness: { present: false, declared: 0, scanned: 0, parsed: 0, complete: true },
+      });
+    }
+
+    if (typeof this.readAt !== 'function') {
+      const reason = 'objc metadata sections found but no reader is available';
+      return createLanguageMetadataResult({
+        providerId: this.id,
+        providerVersion: this.version,
+        ecosystem: 'objc',
+        identity: createLanguageMetadataIdentity({
+          verdict: 'identity-unavailable',
+          providerId: this.id,
+          providerVersion: this.version,
+          ecosystem: 'objc',
+          binaryIdentity: this.binaryIdentity,
+          architecture: this.architecture,
+          platform: this.platform,
+          method: 'objc-section-probe',
+          detail: reason,
+        }),
+        sections: objcSections.map((s) => s.section || s.name || String(s)),
+        completeness: {
+          present: true,
+          declared: 0,
+          scanned: 0,
+          parsed: 0,
+          complete: false,
+          reasons: [reason],
+        },
+        diagnostics: [reason],
+      });
+    }
+
+    if (!classList) {
+      const reason = 'objc metadata sections found but objc_classlist section is missing';
+      return createLanguageMetadataResult({
+        providerId: this.id,
+        providerVersion: this.version,
+        ecosystem: 'objc',
+        identity: createLanguageMetadataIdentity({
+          verdict: 'identity-unavailable',
+          providerId: this.id,
+          providerVersion: this.version,
+          ecosystem: 'objc',
+          binaryIdentity: this.binaryIdentity,
+          architecture: this.architecture,
+          platform: this.platform,
+          method: 'objc-section-probe',
+          detail: reason,
+        }),
+        sections: objcSections.map((s) => s.section || s.name || String(s)),
+        completeness: {
+          present: true,
+          declared: 0,
+          scanned: 0,
+          parsed: 0,
+          complete: false,
+          reasons: [reason],
+        },
+        diagnostics: [reason],
       });
     }
 
@@ -191,29 +251,36 @@ export class ObjcMetadataProvider extends LanguageMetadataProvider {
 
     const records = [];
     for (const cls of model.classes) {
-      const allMethods = [...(cls.methods || []), ...(cls.classMethods || [])];
-      for (const m of allMethods) {
+      const emitMethod = (m, isClassMethod) => {
         const methodAddress = m.addr ?? m.imp;
         const addrStr = methodAddress != null ? `0x${methodAddress.toString(16)}` : null;
+        const selector = m.sel || m.selector;
+        const classMethod = isClassMethod || m.kind === '+' || m.classMethod === true;
         records.push(
           createLanguageMetadataRecord({
             kind: 'method',
-            entityId: `method@${cls.name}:${m.sel}`,
-            name: m.name || `${m.classMethod ? '+' : '-'}[${cls.name} ${m.sel}]`,
+            entityId: `method@${cls.name}:${classMethod ? '+' : '-'}:${selector}`,
+            name: m.name || `${classMethod ? '+' : '-'}[${cls.name} ${selector}]`,
             address: addrStr,
             providerId: this.id,
             providerVersion: this.version,
             ecosystem: 'objc',
             buildIdentity: this.binaryIdentity,
             descriptor: {
-              selector: m.sel || m.selector,
+              selector,
               className: cls.name,
-              classMethod: !!m.classMethod,
+              classMethod,
               types: m.types || null,
               implementationProven: m.implementationProven === true,
             },
           })
         );
+      };
+      for (const m of cls.methods || []) {
+        emitMethod(m, false);
+      }
+      for (const m of cls.classMethods || []) {
+        emitMethod(m, true);
       }
     }
 
