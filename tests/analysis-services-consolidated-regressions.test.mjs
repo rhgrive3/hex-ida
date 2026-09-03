@@ -3,6 +3,7 @@ import { fieldAccessRegion, fieldAccessAcrossExecutableRegions } from '../js/ana
 import { InvestigationService, __investigationInternalsForTests } from '../js/analysis/investigation-service.js';
 import { STRING_SCAN_BUDGET } from '../js/string-budget.js';
 import { PROGRAM_MERGE_LIMITS } from '../js/program.js';
+import { createAppAnalysisQueryAdapter } from '../js/analysis/query/app-adapter.js';
 
 const { budgetConfig, captureAnalysisBinding, analysisBindingCurrent, completenessFor } = __investigationInternalsForTests;
 
@@ -232,6 +233,126 @@ const { budgetConfig, captureAnalysisBinding, analysisBindingCurrent, completene
 
   assert.equal(analysisBindingCurrent(app, binding), true, '#4363: restoring integer values returns true');
   console.log('✔ #4363 analysisBindingCurrent strict integer identity passed');
+}
+
+// --- Test 7: #6242 functions({ address: invalid }) fails closed ---
+{
+  const app = {
+    symbols: {
+      funcs: [0x1000n, 0x2000n],
+      functionStartsComplete: true,
+      nameAt(addr) { return `fn_${addr.toString(16)}`; },
+      functionAt(addr) { return { start: addr, end: addr + 0x20n }; },
+    },
+  };
+  const adapter = createAppAnalysisQueryAdapter(app);
+
+  // invalid address must fail closed with unsupported
+  const invalidRes = await adapter.functions(null, { address: 'not-an-address' });
+  assert.equal(invalidRes.status.completeness, 'unsupported');
+  assert.equal(invalidRes.status.reason, 'function-query-address-invalid');
+
+  const invalidObjRes = await adapter.functions(null, { address: { malformed: true } });
+  assert.equal(invalidObjRes.status.completeness, 'unsupported');
+  assert.equal(invalidObjRes.status.reason, 'function-query-address-invalid');
+
+  // valid address filters exact match
+  const validRes = await adapter.functions(null, { address: 0x1000n });
+  assert.equal(validRes.value.length, 1);
+  assert.equal(validRes.value[0].address, 0x1000n);
+
+  // no filter lists all
+  const allRes = await adapter.functions(null, {});
+  assert.equal(allRes.value.length, 2);
+  console.log('✔ #6242 functions({ address: invalid }) fail-closed passed');
+}
+
+// --- Test 8: #4012 abiFor rejects structured ABI metadata ---
+{
+  let request = null;
+  const region = { id: 'text', vmAddr: 0n, size: 0x100n, exec: true };
+  const appStructuredAbi = {
+    store: { architecture: 'x86_64' },
+    backend: {
+      gen: 0,
+      platformInfo: {
+        productDescriptor: {
+          formatMetadata: { abi: ['sysv-amd64'] },
+        },
+      },
+      async analyzeSemanticFunction(val) {
+        request = val;
+        return { completeness: 'complete' };
+      },
+    },
+    symbols: {
+      functionAt() { return { start: 0n, end: 4n }; },
+      nameAt() { return null; },
+    },
+    validatedFunctionRange() {
+      return {
+        ok: true, start: 0n, end: 4n, region,
+        function: { start: 0n, end: 4n },
+        complete: true, provenance: 'test',
+      };
+    },
+  };
+
+  const adapter = createAppAnalysisQueryAdapter(appStructuredAbi);
+  const res = await adapter.functionById(null, 0n, {});
+  assert.equal(res.status.completeness, 'unsupported');
+  assert.equal(res.status.reason, 'x86-64-explicit-abi-invalid');
+  assert.equal(request, null, 'request must not have been sent with structured ABI');
+  console.log('✔ #4012 abiFor structured ABI rejection passed');
+}
+
+// --- Test 9: #4015 sliceIndex strict integer validation ---
+{
+  const region = { id: 'text', vmAddr: 0n, size: 0x100n, exec: true };
+  let sentSliceIndex = null;
+  const appStructuredSlice = {
+    store: {
+      architecture: 'x86_64',
+      sliceIndex: ['1'],
+      fileInfo: {
+        formatId: 'elf',
+        slices: [{}, { capability: { architecture: 'x86_64' } }],
+      },
+    },
+    backend: {
+      gen: 0,
+      async analyzeSemanticFunction(val) {
+        sentSliceIndex = val.sliceIndex;
+        return { completeness: 'complete' };
+      },
+    },
+    symbols: {
+      functionAt() { return { start: 0n, end: 4n }; },
+      nameAt() { return null; },
+    },
+    validatedFunctionRange() {
+      return {
+        ok: true, start: 0n, end: 4n, region,
+        function: { start: 0n, end: 4n },
+        complete: true,
+      };
+    },
+  };
+
+  const adapter = createAppAnalysisQueryAdapter(appStructuredSlice);
+  const infoRes = await adapter.binaryInfo({ binaryId: 'bin-test' });
+  assert.equal(infoRes.value.sliceIndex, -1, 'structured sliceIndex must not coerce to 1');
+
+  const fnRes = await adapter.functionById(null, 0n, {});
+  assert.equal(fnRes.status.completeness, 'unsupported');
+  assert.equal(fnRes.status.reason, 'invalid-slice-index');
+  assert.equal(sentSliceIndex, null, 'backend must not receive coerced sliceIndex');
+
+  // Valid slice index
+  appStructuredSlice.store.sliceIndex = 1;
+  const validInfo = await adapter.binaryInfo({ binaryId: 'bin-test' });
+  assert.equal(validInfo.value.sliceIndex, 1);
+  console.log('✔ #4015 sliceIndex strict integer validation passed');
 }
 
 console.log('\nAll analysis-services consolidated regression tests PASSED!');
