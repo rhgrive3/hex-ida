@@ -23,10 +23,23 @@ function compile(pattern) {
 }
 
 function decodeSegment(value) { try { return decodeURIComponent(value || ''); } catch { return null; } }
+
+// Matcher cache lives in router-private state, never on the published route
+// objects: canonical registry entries are frozen, and a cached matcher must
+// not survive a definition change as a split-brain contradiction.
+const MATCHERS = new WeakMap();
+function matcherFor(route) {
+  let matcher = MATCHERS.get(route);
+  if (!matcher) {
+    matcher = compile(route.pattern);
+    MATCHERS.set(route, matcher);
+  }
+  return matcher;
+}
 export function matchRoute(routes, rawPath) {
   const path = normalize(rawPath).split('?')[0];
   for (const route of routes) {
-    const matcher = route._matcher || (route._matcher = compile(route.pattern));
+    const matcher = matcherFor(route);
     const hit = matcher.re.exec(path);
     if (!hit) continue;
     const params = {};
