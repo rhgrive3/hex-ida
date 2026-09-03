@@ -37,8 +37,12 @@ export function knownCallPrototype(name) {
 }
 
 function validArity(value) {
-  const n = Number(value);
-  return Number.isInteger(n) && n >= 0 && n <= 8 ? n : null;
+  return typeof value === 'number'
+    && Number.isInteger(value)
+    && value >= 0
+    && value <= 8
+      ? value
+      : null;
 }
 
 function range(n) {
