@@ -235,7 +235,7 @@ export function validateDexMethod(decoded) {
     if (fact.reference) { const size = tableSize(meta, fact.reference.kind); if (!Number.isSafeInteger(size) || fact.reference.index < 0 || fact.reference.index >= size) errors.push(finding('dex-reference-index-out-of-range', { offset: fact.offset, ...fact.reference, size })); }
     if (fact.branch != null && codeBytes != null) {
       if (!Number.isSafeInteger(fact.branch) || fact.branch < 0 || fact.branch >= codeBytes) errors.push(finding('dex-branch-target-out-of-range', { offset: fact.offset, targetOffset: fact.branch, codeBytes }));
-      else if (!boundaries.has(fact.branch)) errors.push(finding('dex-branch-target-not-instruction-boundary', { offset: fact.offset, targetOffset: fact.branch }));
+      else if (meta.scanComplete && !boundaries.has(fact.branch)) errors.push(finding('dex-branch-target-not-instruction-boundary', { offset: fact.offset, targetOffset: fact.branch }));
     }
     if (fact.invoke) {
       for (const r of fact.invoke.registers) if (!Number.isSafeInteger(r) || r < 0 || r >= meta.registersSize) errors.push(finding('dex-register-out-of-range', { offset: fact.offset, index: r, role: 'invoke-argument', registersSize: meta.registersSize }));
@@ -275,11 +275,7 @@ export function validateDexMethod(decoded) {
     if (handler.typeIndex != null && (handler.typeIndex < 0 || handler.typeIndex >= meta.tableSizes.types)) errors.push(finding('dex-catch-handler-type-index-out-of-range', { typeIndex: handler.typeIndex }));
     if (!Number.isSafeInteger(handler.target) || handler.target < 0 || handler.target >= codeBytes) errors.push(finding('dex-catch-handler-target-out-of-range', { targetOffset: handler.target }));
     else if (!boundaries.has(handler.target)) errors.push(finding('dex-catch-handler-target-not-instruction-boundary', { targetOffset: handler.target }));
-    else {
-      const first = facts.find((f) => f.offset === handler.target);
-      if (first?.opcode !== 0x0d) errors.push(finding('dex-catch-handler-missing-move-exception', { targetOffset: handler.target }));
-      if (branches.has(handler.target)) errors.push(finding('dex-move-exception-control-flow-entry-invalid', { targetOffset: handler.target }));
-    }
+    else if (branches.has(handler.target)) errors.push(finding('dex-move-exception-control-flow-entry-invalid', { targetOffset: handler.target }));
   }
   verifierFacts.push(finding('dex-independent-verifier-ran', { instructions: facts.length, registersSize: meta.registersSize, triesSize: meta.triesSize }));
   return { structuralErrors, errors, warnings, verifierFacts, partialReasons };
