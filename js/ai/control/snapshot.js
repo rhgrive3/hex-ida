@@ -8,12 +8,31 @@ export function canonicalBindingId(value) {
   return text || null;
 }
 
-function firstBinding(...values) {
+export function firstBinding(...values) {
   for (const value of values) {
     const id = canonicalBindingId(value);
     if (id != null) return id;
   }
   return null;
+}
+
+function canonicalSlice(value) {
+  if (typeof value === 'number') {
+    return Number.isSafeInteger(value) && value >= 0 ? String(value) : null;
+  }
+  if (typeof value === 'bigint') return value >= 0n ? value.toString() : null;
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  if (!/^\d+$/.test(text)) return null;
+  try { return BigInt(text).toString(); }
+  catch { return null; }
+}
+
+function selectedSlice(local) {
+  const raw = first(local.sliceIndex, local.slice, local.binary?.sliceIndex);
+  if (raw == null) return { value:null, invalid:false };
+  const value = canonicalSlice(raw);
+  return { value, invalid:value == null };
 }
 
 export function createTurnSnapshot(local = {}, request = {}) {
@@ -90,9 +109,9 @@ export function resolveBinaryIdentity(local = {}, request = {}) {
     local.project?.binaryHash,
   );
   const legacyId = firstBinding(request.binaryId, local.binaryId);
-  if (contentHash != null) {
-    const slice = first(local.sliceIndex, local.slice, local.binary?.sliceIndex);
-    const suffix = slice == null ? '' : `:${String(slice)}`;
+  const slice = selectedSlice(local);
+  if (contentHash != null && !slice.invalid) {
+    const suffix = slice.value == null ? '' : `:${slice.value}`;
     return {
       id: `content:${contentHash}${suffix}`,
       kind: 'content-derived',
@@ -104,8 +123,7 @@ export function resolveBinaryIdentity(local = {}, request = {}) {
     };
   }
   const name = typeof local.fileInfo?.name === 'string' ? local.fileInfo.name : typeof local.binary?.name === 'string' ? local.binary.name : null;
-  const slice = first(local.sliceIndex, local.slice, local.binary?.sliceIndex);
-  const fallback = legacyId != null ? legacyId : (name ? `${name}:${String(slice ?? 0)}` : null);
+  const fallback = legacyId != null ? legacyId : (!slice.invalid && name ? `${name}:${slice.value ?? '0'}` : null);
   return {
     id: fallback ? `fallback:${fallback}` : 'fallback:unbound',
     kind: 'fallback', confidence: fallback ? 'weak' : 'none', state: 'hash-unavailable',
