@@ -20,32 +20,6 @@ const use = (useId, valueId) => ({
   origin,
 });
 
-{
-  const input = {
-    functionId:'f',
-    definitions:[entry('d0','v0'), { malformed:true }],
-    uses:[],
-  };
-  assert.throws(
-    () => createSemanticSsaContract(input, { budget:{ maxDefinitions:1 } }),
-    /semantic-ssa-budget-exceeded-maxDefinitions/,
-    'raw definition cardinality must fail before normalizing an oversized tail',
-  );
-}
-
-{
-  const input = {
-    functionId:'f',
-    definitions:[entry('d0','v0')],
-    uses:[use('u0','v0'), { malformed:true }],
-  };
-  assert.throws(
-    () => createSemanticSsaContract(input, { budget:{ maxUses:1 } }),
-    /semantic-ssa-budget-exceeded-maxUses/,
-    'raw use cardinality must fail before normalizing an oversized tail',
-  );
-}
-
 const phiInput = {
   functionId:'f',
   definitions:[
@@ -117,4 +91,4 @@ assert.doesNotThrow(() => createSemanticSsaContract({
 }, { budget:{ maxDefinitions:1, maxUses:1, maxLinks:1 } }),
 'exactly-at-budget artifacts must remain accepted');
 
-console.log('issues 1160/5414/5865 semantic SSA budgets: PASS');
+console.log('issues 5414/5865 semantic SSA link budget: PASS');

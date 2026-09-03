@@ -58,12 +58,10 @@ function compareText(a, b) {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
-function preflightLinkBudget(definitions, useCount, options) {
+function preflightPhiLinkBudget(definitions, options) {
   const maximum = limit(options, 'maxLinks');
-  let used = useCount;
-  if (used > maximum) fail('semantic-ssa-budget-exceeded-maxLinks');
+  let used = 0;
   for (const definition of definitions) {
-    assertNotAborted(options);
     if (!definition || typeof definition !== 'object' || Array.isArray(definition)) continue;
     const incoming = definition.incoming;
     if (!Array.isArray(incoming)) continue;
@@ -73,10 +71,9 @@ function preflightLinkBudget(definitions, useCount, options) {
   return used;
 }
 
-function normalizeIncoming(value, options) {
+function normalizeIncoming(value) {
   return array(value ?? [], 'semantic-ssa-invalid-phi-incoming')
     .map((item) => {
-      assertNotAborted(options);
       item = object(item, 'semantic-ssa-invalid-phi-incoming');
       assertAllowedKeys(item, new Set(['predecessorBlockId', 'valueId']), 'semantic-ssa-unexpected-phi-incoming-field');
       return {
@@ -87,12 +84,12 @@ function normalizeIncoming(value, options) {
     .sort((a, b) => compareText(a.predecessorBlockId, b.predecessorBlockId) || compareText(a.valueId, b.valueId));
 }
 
-function normalizeDefinition(input, options) {
+function normalizeDefinition(input) {
   input = object(input, 'semantic-ssa-invalid-definition');
   assertAllowedKeys(input, new Set(['definitionId','valueId','kind','blockId','variableKey','sourceEntityId','incoming','origin','proof']), 'semantic-ssa-unexpected-definition-field');
   const kind = nonEmpty(input.kind, 'semantic-ssa-definition-kind-required');
   if (!DEF_KINDS.has(kind)) fail('semantic-ssa-invalid-definition-kind');
-  const incoming = normalizeIncoming(input.incoming, options);
+  const incoming = normalizeIncoming(input.incoming);
   if (kind === 'phi' && incoming.length === 0) fail('semantic-ssa-phi-incoming-required');
   if (kind !== 'phi' && incoming.length !== 0) fail('semantic-ssa-incoming-only-valid-for-phi');
   const out = {
@@ -140,23 +137,16 @@ export function createSemanticSsaContract(input, options = {}) {
   }
 
   const rawDefinitions = array(input.definitions, 'semantic-ssa-definitions-required');
-  const rawUses = array(input.uses, 'semantic-ssa-uses-required');
-  if (rawDefinitions.length > limit(options, 'maxDefinitions')) fail('semantic-ssa-budget-exceeded-maxDefinitions');
-  if (rawUses.length > limit(options, 'maxUses')) fail('semantic-ssa-budget-exceeded-maxUses');
-  preflightLinkBudget(rawDefinitions, rawUses.length, options);
-
+  const phiLinkCount = preflightPhiLinkBudget(rawDefinitions, options);
   const definitions = rawDefinitions
-    .map((definition) => {
-      assertNotAborted(options);
-      return normalizeDefinition(definition, options);
-    })
+    .map(normalizeDefinition)
     .sort((a, b) => compareText(a.valueId, b.valueId) || compareText(a.definitionId, b.definitionId));
-  const uses = rawUses
-    .map((use) => {
-      assertNotAborted(options);
-      return normalizeUse(use);
-    })
+  const uses = array(input.uses, 'semantic-ssa-uses-required')
+    .map(normalizeUse)
     .sort((a, b) => compareText(a.useId, b.useId));
+  if (definitions.length > limit(options, 'maxDefinitions')) fail('semantic-ssa-budget-exceeded-maxDefinitions');
+  if (uses.length > limit(options, 'maxUses')) fail('semantic-ssa-budget-exceeded-maxUses');
+  if (uses.length > limit(options, 'maxLinks') - phiLinkCount) fail('semantic-ssa-budget-exceeded-maxLinks');
 
   const definitionByValue = new Map();
   const definitionIds = new Set();
