@@ -552,10 +552,6 @@ export function createAppAnalysisQueryAdapter(app) {
     },
 
     async evidence(_snapshot, query = {}, page = {}, options = {}) {
-      if (typeof app?.getEvidence === 'function') {
-        const value = await app.getEvidence(query, options);
-        return value == null ? unsupported(query?.functionId ?? null, 'evidence-store-unavailable') : paged(Array.isArray(value) ? value : [value], page);
-      }
       const rawTarget = query?.functionId ?? query?.address ?? null;
       const targetAddress = addressOf(rawTarget);
       // Only a canonical address or an explicitly allowed string identity may
@@ -566,6 +562,14 @@ export function createAppAnalysisQueryAdapter(app) {
         : (typeof rawTarget === 'string' && rawTarget.trim() ? rawTarget.trim() : null);
       if (rawTarget != null && targetAddress == null && targetId == null) {
         return unsupported(rawTarget, 'evidence-target-invalid');
+      }
+      if (typeof app?.getEvidence === 'function') {
+        const providerQuery = { ...query };
+        delete providerQuery.functionId;
+        delete providerQuery.address;
+        if (targetId != null) providerQuery.functionId = targetId;
+        const value = await app.getEvidence(providerQuery, options);
+        return value == null ? unsupported(targetId, 'evidence-store-unavailable') : paged(Array.isArray(value) ? value : [value], page);
       }
 
       const rows = [];

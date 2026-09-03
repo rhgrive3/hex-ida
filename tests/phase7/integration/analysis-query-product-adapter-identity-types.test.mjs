@@ -20,9 +20,18 @@ test('primitive identity dimensions keep their types distinct', async () => {
   const asNumber = await sliceDimension(1);
   const asString = await sliceDimension('1');
   const asBigint = await sliceDimension(1n);
+  const asBoolean = await sliceDimension(true);
   assert.notEqual(asNumber, asString);
   assert.notEqual(asNumber, asBigint);
+  assert.notEqual(asNumber, asBoolean);
   assert.notEqual(asString, asBigint);
+  assert.notEqual(asString, asBoolean);
+});
+
+test('reserved-prefix strings cannot collide with typed primitive dimensions', async () => {
+  assert.notEqual(await sliceDimension('number:1'), await sliceDimension(1));
+  assert.notEqual(await sliceDimension('bigint:1'), await sliceDimension(1n));
+  assert.notEqual(await sliceDimension('boolean:true'), await sliceDimension(true));
 });
 
 test('identical primitive states keep identical dimensions', async () => {

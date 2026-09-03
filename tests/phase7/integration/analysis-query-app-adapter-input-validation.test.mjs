@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createAppAnalysisQueryAdapter } from '../../../js/analysis/query/app-adapter.js';
 
 let revision = ['7'];
-let epoch = true;
+let epoch = 3;
 const identityAdapter = createAppAnalysisQueryAdapter({
   store: {
     get(key) {
@@ -18,6 +18,8 @@ const identityAdapter = createAppAnalysisQueryAdapter({
 
 await assert.rejects(identityAdapter.currentIdentity(), (error) => error instanceof TypeError,
   'array revision must be rejected instead of collapsing into generation 0');
+revision = 7;
+epoch = true;
 await assert.rejects(identityAdapter.currentIdentity(), (error) => error instanceof TypeError,
   'boolean epoch must be rejected instead of collapsing into generation 0');
 
@@ -28,9 +30,11 @@ assert.equal(identity.projectRevision, 7);
 assert.equal(identity.analysisEpoch, 3);
 
 revision = -1;
-epoch = 1.5;
+epoch = 3;
 await assert.rejects(identityAdapter.currentIdentity(), (error) => error instanceof TypeError,
   'negative revision must fail closed');
+revision = 7;
+epoch = 1.5;
 await assert.rejects(identityAdapter.currentIdentity(), (error) => error instanceof TypeError,
   'fractional epoch must fail closed');
 
@@ -121,5 +125,24 @@ assert.ok(!(canonical.value || []).some((row) => row?.finding === 'structured-re
 const numeric = await evidenceAdapter.evidence(null, { functionId:0x1000 }, {}, {});
 assert.ok((numeric.value || []).some((row) => row?.finding === 'real-evidence'),
   'numeric address id keeps selecting its evidence');
+
+const providerQueries = [];
+const providerEvidenceAdapter = createAppAnalysisQueryAdapter({
+  async getEvidence(query) {
+    providerQueries.push(query);
+    return [{ finding:'provider-evidence' }];
+  },
+});
+
+const providerAliased = await providerEvidenceAdapter.evidence(null, { functionId:['0x1000'], kind:'trace' }, {}, {});
+assert.equal(providerAliased.status.completeness, 'unsupported');
+assert.equal(providerAliased.status.reason, 'evidence-target-invalid');
+assert.deepEqual(providerQueries, [], 'invalid structured target must not reach app.getEvidence');
+
+const providerCanonical = await providerEvidenceAdapter.evidence(null, { functionId:0x1000, kind:'trace' }, { limit:1 }, {});
+assert.equal(providerCanonical.status.completeness, 'complete');
+assert.equal(providerCanonical.page.returned, 1);
+assert.deepEqual(providerQueries, [{ functionId:'0x1000', kind:'trace' }],
+  'provider receives only the canonical target while preserving non-target query fields');
 
 console.log('phase7 AnalysisQuery app adapter strict input validation: PASS');
