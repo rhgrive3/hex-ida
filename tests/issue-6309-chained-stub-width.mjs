@@ -86,6 +86,10 @@ for (const fat of [false, true]) {
     `${fat ? 'FAT' : 'thin'} reserved2=0 fabricated a 12-byte stub symbol`);
 }
 
+const thinOutOfRange = fixture();
+assert.deepEqual(await chainedImportSymbols(thinOutOfRange.file, 3), [],
+  'thin Mach-O accepted a nonzero out-of-range slice index');
+
 for (const malformed of [
   { reserved2: 10, sectionSize: 20 }, // not instruction-aligned
   { reserved2: 16, sectionSize: 12 }, // entry exceeds section
