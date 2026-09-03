@@ -224,6 +224,17 @@ export class ChangeLog {
     const working = new ChangeLog({ projectIdentity: this.projectIdentity, binaryIdentity: this.binaryIdentity, state: this.state, operations: [...this.operations.values()], pending: [...this.pending.entries()], allowRemote: this.allowRemote, authorizedAuthors: [...this.authorizedAuthors] });
     const results = [];
     for (const operation of ordered.ordered) {
+      const existingPending = working.pending.get(operation.operationId);
+      if (existingPending) {
+        if (semanticDigest(existingPending) !== semanticDigest(operation)) {
+          return Object.freeze({ status: 'rejected', reason: 'operation-id-content-mismatch', operationId: operation.operationId, results, stateDigest: this.digest() });
+        }
+        // Keep the canonical pending copy intact. Once this batch supplies its
+        // missing parents, the normal fixed-point drain applies that stored
+        // operation rather than replacing it with the retry object.
+        results.push(Object.freeze({ status: 'duplicate', operationId: operation.operationId }));
+        continue;
+      }
       const result = working.#applyOne(operation);
       results.push(result);
       if (result.status === 'rejected') return Object.freeze({ status: 'rejected', reason: result.reason, operationId: operation.operationId, results, stateDigest: this.digest() });
