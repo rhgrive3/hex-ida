@@ -17,6 +17,16 @@ function expectInvalidLimit(makeSource, value) {
   );
 }
 
+function delegate(maxReadLength) {
+  return {
+    size: 4096n,
+    ...(maxReadLength === undefined ? {} : { maxReadLength }),
+    async read(_offset, length) {
+      return new Uint8Array(length);
+    },
+  };
+}
+
 test('SubrangeByteSource rejects maxReadLength values before parent-limit composition', () => {
   const parent = new MemoryByteSource(new Uint8Array(4096), { maxReadLength: 2048 });
   const makeSource = (maxReadLength) => new SubrangeByteSource(parent, 0, 4096, { maxReadLength });
@@ -43,14 +53,25 @@ test('asByteSource wrapping rejects structured or coercible maxReadLength values
     expectInvalidLimit((maxReadLength) => asByteSource(parent, { maxReadLength }), value);
   }
 
-  const delegate = {
-    size: 4096n,
-    maxReadLength: 2048,
-    async read(offset, length) {
-      return new Uint8Array(length);
-    },
-  };
-  expectInvalidLimit((maxReadLength) => asByteSource(delegate, { maxReadLength }), ['512']);
+  const parentDelegate = delegate(2048);
+  expectInvalidLimit((maxReadLength) => asByteSource(parentDelegate, { maxReadLength }), ['512']);
+});
+
+test('delegating sources reject malformed explicit parent limits instead of laundering them to absence', () => {
+  for (const value of [
+    '2048',
+    ['2048'],
+    true,
+    false,
+    { valueOf: () => 2048 },
+    1.5,
+    NaN,
+    Infinity,
+    0,
+    -1,
+  ]) {
+    expectInvalidLimit(() => asByteSource(delegate(value)), value);
+  }
 });
 
 test('valid numeric limits retain parent clamp and nullish inheritance', () => {
@@ -63,4 +84,9 @@ test('valid numeric limits retain parent clamp and nullish inheritance', () => {
   assert.equal(asByteSource(parent, { maxReadLength: 1024 }).maxReadLength, 1024);
   assert.equal(asByteSource(parent, { maxReadLength: 4096 }).maxReadLength, 2048);
   assert.equal(asByteSource(parent), parent);
+
+  assert.equal(asByteSource(delegate(2048), { maxReadLength: 4096 }).maxReadLength, 2048);
+  assert.equal(asByteSource(delegate(2048), { maxReadLength: 1024 }).maxReadLength, 1024);
+  assert.equal(asByteSource(delegate(null), { maxReadLength: 1024 }).maxReadLength, 1024);
+  assert.equal(asByteSource(delegate(undefined), { maxReadLength: 1024 }).maxReadLength, 1024);
 });

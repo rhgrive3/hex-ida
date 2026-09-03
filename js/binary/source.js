@@ -163,7 +163,9 @@ export class SubrangeByteSource extends ByteSource {
 
 class DelegatingByteSource extends ByteSource {
   constructor(source, options = {}) {
-    const parentLimit = Number.isSafeInteger(source.maxReadLength) && source.maxReadLength > 0 ? source.maxReadLength : null;
+    const parentLimit = source.maxReadLength == null
+      ? null
+      : effectiveMaxReadLength(source.maxReadLength);
     super(source.size, { maxReadLength: effectiveMaxReadLength(options.maxReadLength, parentLimit) });
     this.delegate = source;
   }
