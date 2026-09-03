@@ -374,7 +374,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     const allBranches = result.takenBranches || [];
     const branches = allBranches.slice(this.branchCursor); this.branchCursor = allBranches.length;
     for (const e of trace) {
-      if (e?.type === 'call') continue; // emitted below once, with resolved target
+      if (e?.type === 'call') continue;
       this.traceBuffer.push({ type:'instruction', address:e.addr, text:e.text });
     }
     for (const e of branches) this.traceBuffer.push({ type:'branch', ...e });
@@ -445,7 +445,12 @@ export class RemoteDebugAdapter extends DebugAdapter {
     if (wasConnected) this.nextEpoch();
     return { disconnected:true };
   }
-  setEpoch(epoch) { const next = Number(epoch); this.protocol.setEpoch(next); this.epoch = next; return this.epoch; }
+  setEpoch(epoch) {
+    if (typeof epoch !== 'number' || !Number.isSafeInteger(epoch) || epoch < 0) return this.epoch;
+    this.protocol.setEpoch(epoch);
+    this.epoch = epoch;
+    return this.epoch;
+  }
   nextEpoch() { return this.setEpoch(this.epoch + 1); }
   onEvent(fn) { this.eventListeners.add(fn); return () => this.eventListeners.delete(fn); }
   call(method, params = {}, options = {}) {
@@ -458,7 +463,8 @@ export class RemoteDebugAdapter extends DebugAdapter {
   resume(options={}){const {signal,...params}=options||{};return this.call('resume',params,{signal})}
   stepInto(options={}){return this.call('stepInto',{},options)} stepOver(options={}){return this.call('stepOver',{},options)} stepOut(options={}){return this.call('stepOut',{},options)}
   setBreakpoint(spec){const bp=normalizeBreakpoint(spec); const cap=bp.kind==='address'?'breakpointAddress':bp.kind==='function'?'breakpointFunction':bp.kind==='conditional'?'breakpointConditional':'watchpointMemory'; this.require(cap); return this.protocol.request('setBreakpoint',bp,{epoch:this.epoch})}
-  removeBreakpoint(id){return this.call('removeBreakpoint',{id:breakpointRemovalId(id)})}
+  removeBreakpoint(id){return this.call('removeBreakpoint',{id:breakpointRemovalId(id)})
+  }
   async listBreakpoints(){return remoteArray(await this.call('listBreakpoints'),'breakpoints',REMOTE_ARRAY_LIMITS.breakpoints,'breakpoints')}
   async readRegisters(threadId){return remoteRegisters(await this.call('readRegisters',{threadId}))}
   writeRegister(reg,value,threadId){return this.call('writeRegister',{reg:registerSelector(reg),value:String(value),threadId})}
