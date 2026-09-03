@@ -148,11 +148,7 @@
     "tests/compiler-truth/extended.mjs",
     "tests/compiler-truth/language-matrix.mjs",
     "tests/compiler-truth/run-core.mjs",
-    "tests/compiler-truth/run.mjs",
-    "js/binary/elf-mapping.js",
-    "js/trace/ring-buffer.js",
-    "tests/issue-6300-elf-non-alloc-exec-seed.mjs",
-    "tests/issue-6301-adapter-memory-run-boundary.mjs"
+    "tests/compiler-truth/run.mjs"
   ],
   "forbiddenPrefixes": [
     "js/semantics/",

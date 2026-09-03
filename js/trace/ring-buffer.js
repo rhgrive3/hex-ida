@@ -45,7 +45,7 @@ function cloneTraceValue(value, state = null, depth = 0) {
 
 function publicEvent(event) {
   const copy = cloneTraceValue(event);
-  if (copy && typeof copy === 'object') { delete copy.__bytes; delete copy.__aggregateKey; delete copy.__seen; }
+  if (copy && typeof copy === 'object') { delete copy.__bytes; delete copy.__aggregateKey; }
   return copy;
 }
 
@@ -67,8 +67,8 @@ export class TraceRingBuffer {
     if (next > 0) this.aggregates.set(type, next); else this.aggregates.delete(type);
   }
   push(event) {
-    const sequence = ++this.seen;
-    if (this.sampleRate > 1 && ((sequence - 1) % this.sampleRate)) { this.dropped++; return false; }
+    this.seen++;
+    if (this.sampleRate > 1 && ((this.seen - 1) % this.sampleRate)) { this.dropped++; return false; }
     if (this.filter && !this.filter(event)) { this.dropped++; return false; }
     let safe;
     try { safe = event && typeof event === 'object' ? cloneTraceValue(event) : { type:'event', value:event }; }
@@ -78,7 +78,6 @@ export class TraceRingBuffer {
     const aggregateKey = String(safe.type || 'event').slice(0,128);
     safe.__bytes = size;
     safe.__aggregateKey = aggregateKey;
-    safe.__seen = sequence;
     this.events.push(safe); this.bytes += size; this._increment(aggregateKey);
     while (this.events.length > this.maxEvents || this.bytes > this.maxBytes) {
       const old = this.events.shift(); this.bytes -= old.__bytes || 0; this._decrement(old.__aggregateKey || 'event'); this.dropped++;
