@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   createMachineOperation,
   createTemporaryValue,
+  createUndefinedResultDescriptor,
   serializeMachineEffectBundle,
 } from '../../js/semantics/effects/index.js';
 import { projectSemanticIrV2ToLegacyV1 } from '../../js/semantics/compat/semantic-ir-v2-to-v1.js';
@@ -35,6 +36,36 @@ test('real x86 DIV producer retains fully undefined flags through canonical and 
     assert.ok(projectedMasks.every((instruction) => instruction.op === 'clobber'));
   } finally {
     session.close();
+  }
+});
+
+test('undefined-result masks accept canonical primitives and reject coercible structured values', () => {
+  const descriptor = (mask) => createUndefinedResultDescriptor({
+    widthBits: 16,
+    mask,
+    class: 'partial',
+    reason: 'focused-mask-boundary',
+  });
+
+  assert.equal(descriptor('0x00ff').mask, '0x00ff');
+  assert.equal(descriptor(0xffn).mask, '0x00ff');
+  assert.equal(descriptor(255).mask, '0x00ff');
+  assert.equal(descriptor('255').mask, '0x00ff');
+
+  for (const mask of [
+    ['0x00ff'],
+    true,
+    false,
+    { toString: () => '0x00ff' },
+    ' 0x00ff',
+    '+255',
+    1.5,
+  ]) {
+    assert.throws(
+      () => descriptor(mask),
+      /machine-effects-invalid-undefined-result-mask/,
+      `coercible mask must be rejected: ${String(mask)}`,
+    );
   }
 });
 

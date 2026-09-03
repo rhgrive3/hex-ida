@@ -227,6 +227,20 @@ function bigintValue(value, code) {
   catch { fail(code); }
 }
 
+function undefinedResultMask(value) {
+  const code = 'machine-effects-invalid-undefined-result-mask';
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value)) fail(code);
+    return BigInt(value);
+  }
+  if (typeof value === 'string') {
+    if (!/^(?:0[xX][0-9a-fA-F]+|[0-9]+)$/.test(value)) fail(code);
+    try { return BigInt(value); } catch { fail(code); }
+  }
+  fail(code);
+}
+
 function normalizeBitvectorValue(input) {
   assertAllowedKeys(input, ALLOWED_FIELDS.bitvectorValue, 'machine-effects-unexpected-value-field');
   const widthBits = positiveInteger(input.widthBits, 'machine-effects-invalid-bitvector-width');
@@ -452,8 +466,7 @@ export function createUndefinedResultDescriptor(input) {
   const widthBits = positiveInteger(input.widthBits, 'machine-effects-invalid-undefined-result-width');
   if (widthBits > MAX_UNDEFINED_RESULT_WIDTH_BITS) fail('machine-effects-invalid-undefined-result-width');
   const resultClass = enumValue(input.class, SETS.undefinedResultClasses, 'machine-effects-invalid-undefined-result-class');
-  let mask;
-  try { mask = BigInt(input.mask); } catch { fail('machine-effects-invalid-undefined-result-mask'); }
+  const mask = undefinedResultMask(input.mask);
   const fullMask = (1n << BigInt(widthBits)) - 1n;
   if (mask <= 0n || mask > fullMask) fail('machine-effects-invalid-undefined-result-mask');
   if (resultClass === 'fully' && mask !== fullMask) fail('machine-effects-fully-undefined-result-mask-incomplete');
