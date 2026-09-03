@@ -81,11 +81,31 @@ jobs:
           cache: npm
       - run: npm ci --no-audit --no-fund
       - name: Verify capability and relocation contracts
+        id: contracts
+        continue-on-error: true
         run: node tests/capability-maturity.mjs && node tests/issue-495-elf-relocation-budget.mjs && node tests/issue-513-elf-symbol-budget.mjs
       - name: Verify universal binary behavior
+        id: binary
+        if: ${{ !cancelled() }}
+        continue-on-error: true
         run: npm run binary:test
       - name: Verify universal binary gate
+        id: binary_gate
+        if: ${{ !cancelled() }}
+        continue-on-error: true
         run: npm run binary:gate
+      - name: Require all universal verification suites
+        if: ${{ !cancelled() }}
+        env:
+          CONTRACTS: ${{ steps.contracts.outcome }}
+          BINARY: ${{ steps.binary.outcome }}
+          BINARY_GATE: ${{ steps.binary_gate.outcome }}
+        shell: bash
+        run: |
+          if [[ "$CONTRACTS" != "success" || "$BINARY" != "success" || "$BINARY_GATE" != "success" ]]; then
+            echo "::error::Universal validation failed (contracts=$CONTRACTS, binary=$BINARY, binary-gate=$BINARY_GATE)."
+            exit 1
+          fi
 
   manual-full-check:
     name: universal-manual-full-check
