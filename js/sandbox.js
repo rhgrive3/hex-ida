@@ -47,12 +47,24 @@ const WORKER_PRELUDE = String.raw`
       if (ArrayBuffer.isView(x)) { bytes+=x.byteLength; continue; }
       if (typeof x === 'object') {
         if (seen.has(x)) continue; seen.add(x);
+        // Map/Set entries are serialized by structured clone but are invisible
+        // to Object.keys(). Until the meter models those entries exactly, reject
+        // them instead of letting hidden payload bypass the output budget.
+        if (x instanceof Map || x instanceof Set) return OUTPUT_MAX_BYTES + 1;
         const keys=Object.keys(x); bytes += keys.length * 8;
         // The key scan is capped for measurer work, but an uncapped tail must
         // never look small: anything beyond the cap is unmeasurable, so the
         // whole message fails closed instead of bypassing the byte budget.
         if (keys.length > 2048) return OUTPUT_MAX_BYTES + 1;
-        for (let i=0;i<keys.length;i++) { bytes += keys[i].length*2; stack.push(x[keys[i]]); }
+        for (let i=0;i<keys.length;i++) {
+          const descriptor=Object.getOwnPropertyDescriptor(x,keys[i]);
+          // Structured clone reads enumerable properties. An accessor can return
+          // one value while measuring and a different value while cloning, so it
+          // cannot provide stable byte authority and must fail closed.
+          if (descriptor && (typeof descriptor.get === 'function' || typeof descriptor.set === 'function')) return OUTPUT_MAX_BYTES + 1;
+          bytes += keys[i].length*2;
+          stack.push(descriptor ? descriptor.value : undefined);
+        }
       } else bytes+=32;
     }
     return bytes;
