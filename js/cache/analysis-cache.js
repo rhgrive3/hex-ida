@@ -4,15 +4,23 @@ const ALLOWED_FIELDS = new Set(['formatMetadata', 'functionSeeds', 'stringsIndex
 const CANONICAL_ARTIFACT_ID = /^artifact_[0-9a-f]{32}$/i;
 
 function stableValue(value) {
-  if (value == null || typeof value !== 'object') return value;
+  if (value == null) return value;
+  if (typeof value === 'boolean' || typeof value === 'number' || typeof value === 'string') return value;
+  if (typeof value !== 'object') throw new TypeError('analysis-cache-settings-invalid');
   if (Array.isArray(value)) return value.map(stableValue);
+  const proto = Object.getPrototypeOf(value);
+  if (proto !== null && proto !== Object.prototype) throw new TypeError('analysis-cache-settings-invalid');
   const out = {};
   for (const key of Object.keys(value).sort()) Object.defineProperty(out, key, { value:stableValue(value[key]), enumerable:true, configurable:true, writable:true });
   return out;
 }
 
 function analysisIdentity(options = {}) {
-  const version = String(options.analyzerVersion ?? options.analysisVersion ?? options.buildVersion ?? 'unknown');
+  const candidate = options.analyzerVersion ?? options.analysisVersion ?? options.buildVersion;
+  if (candidate != null && (typeof candidate !== 'string' || candidate.length === 0)) {
+    throw new TypeError('analysis-cache-version-invalid');
+  }
+  const version = candidate ?? 'unknown';
   const settings = stableValue(options.semanticOptions ?? options.analysisSettings ?? options.settings ?? {});
   return `${version}:${JSON.stringify(settings)}`;
 }
@@ -91,6 +99,18 @@ export class AnalysisCache {
     return record.binaryHash === hash && record.analysisIdentity === this.analysisIdentity && !record.canonicalArtifactId;
   }
 
+  #isCorruptOrStale(record, artifactId) {
+    if (!record || typeof record !== 'object') return true;
+    if (record.schemaVersion !== this.schemaVersion) return true;
+    if (artifactId) {
+      if (record.canonicalArtifactId !== artifactId) return true;
+      if (!CANONICAL_ARTIFACT_ID.test(record.canonicalArtifactId)) return true;
+    } else {
+      if (!record.binaryHash || typeof record.binaryHash !== 'string') return true;
+    }
+    return false;
+  }
+
   async get(hash, options = {}) {
     const artifactId = canonicalArtifactId(options);
     const binaryHash = canonicalBinaryHash(hash, { required:false });
@@ -103,8 +123,11 @@ export class AnalysisCache {
       catch (error) { const memory = this.#fallback(error); record = memory.get(key) || null; }
     }
     if (!record) return null;
-    if (!this.#validRecord(record, binaryHash, artifactId)) {
+    if (this.#isCorruptOrStale(record, artifactId)) {
       await this.delete(binaryHash, { artifactId });
+      return null;
+    }
+    if (!this.#validRecord(record, binaryHash, artifactId)) {
       return null;
     }
     return structuredCloneSafe(record.data);

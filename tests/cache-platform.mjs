@@ -156,4 +156,61 @@ await assert.rejects(
   /analysis-cache-binary-hash-invalid/,
 );
 
+// #5528 & CodeRabbit: analysis identity mismatch and supplied hash mismatch must not delete valid canonical artifact entry
+const nonDestructiveMemory = new Map();
+const crossV2 = new AnalysisCache({ indexedDB: null, memory: nonDestructiveMemory, analyzerVersion: 'v2' });
+const crossV1 = new AnalysisCache({ indexedDB: null, memory: nonDestructiveMemory, analyzerVersion: 'v1' });
+const crossArtifactId = `artifact_${'b'.repeat(32)}`;
+
+await crossV2.put('hash-b', { analysisSummaries: { source: 'v2' } }, { artifactId: crossArtifactId });
+assert.equal((await crossV2.get(null, { artifactId: crossArtifactId }))?.analysisSummaries?.source, 'v2');
+
+// Different analyzerVersion get returns null (miss)
+assert.equal(await crossV1.get(null, { artifactId: crossArtifactId }), null);
+
+// v2 entry must still exist and be readable
+assert.equal((await crossV2.get(null, { artifactId: crossArtifactId }))?.analysisSummaries?.source, 'v2');
+
+// Mismatched hash with artifactId returns null without deleting the entry
+assert.equal(await crossV2.get('mismatched-hash', { artifactId: crossArtifactId }), null);
+assert.equal((await crossV2.get(null, { artifactId: crossArtifactId }))?.analysisSummaries?.source, 'v2');
+
+// #3626: analyzerVersion/analysisVersion/buildVersion must be non-empty string and not silently coerce structured values
+for (const malformedVersion of [['v1'], { toString() { return 'v1'; } }, 123, true, '']) {
+  assert.throws(
+    () => new AnalysisCache({ analyzerVersion: malformedVersion }),
+    error => error instanceof TypeError && error.message === 'analysis-cache-version-invalid',
+    `malformed analyzerVersion ${String(malformedVersion)} must throw`,
+  );
+  assert.throws(
+    () => new AnalysisCache({ analysisVersion: malformedVersion }),
+    error => error instanceof TypeError && error.message === 'analysis-cache-version-invalid',
+  );
+  assert.throws(
+    () => new AnalysisCache({ buildVersion: malformedVersion }),
+    error => error instanceof TypeError && error.message === 'analysis-cache-version-invalid',
+  );
+}
+
+// #4768: semanticOptions must reject non-plain/opaque objects (Map, Set, Date, RegExp, functions, symbols)
+for (const malformedSettings of [
+  { map: new Map([['a', 1]]) },
+  { set: new Set(['a']) },
+  { date: new Date() },
+  { reg: /pattern/ },
+  { fn: () => {} },
+  { sym: Symbol('s') },
+  { nested: { map: new Map() } },
+]) {
+  assert.throws(
+    () => new AnalysisCache({ semanticOptions: malformedSettings }),
+    error => error instanceof TypeError && error.message === 'analysis-cache-settings-invalid',
+    'malformed settings must throw analysis-cache-settings-invalid',
+  );
+}
+// plain object key ordering must remain canonical and deterministic
+const orderA = new AnalysisCache({ semanticOptions: { y: 2, x: 1 } });
+const orderB = new AnalysisCache({ semanticOptions: { x: 1, y: 2 } });
+assert.equal(orderA.analysisIdentity, orderB.analysisIdentity);
+
 console.log('cache-platform: PASS');
