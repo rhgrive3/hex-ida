@@ -214,7 +214,7 @@ export class RemoteProtocolClient {
     if (BLOCKED_METHODS.test(method)) return Promise.reject(new DebugAdapterError('blocked-method', 'host command execution is prohibited'));
     if (this.pending.size >= this.maxPending) return Promise.reject(new DebugAdapterError('backpressure', 'too many pending remote requests'));
     const signal = options.signal ?? null;
-    if (signal != null && (typeof signal.addEventListener !== 'function' || typeof signal.removeEventListener !== 'function')) {
+    if (signal != null && (typeof signal.aborted !== 'boolean' || typeof signal.addEventListener !== 'function' || typeof signal.removeEventListener !== 'function')) {
       return Promise.reject(new DebugAdapterError('invalid-argument', 'signal must be AbortSignal-compatible'));
     }
     if (signal?.aborted) return Promise.reject(new DebugAdapterError('cancelled', String(signal.reason ?? 'cancelled')));
