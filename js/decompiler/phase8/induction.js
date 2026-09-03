@@ -474,6 +474,9 @@ export function runInductionPass(context = {}, budget = {}, area = null) {
   // Nesting is read off the node sets that arrived, not rediscovered from the
   // CFG: the parent of a loop is the smallest other loop that contains all of
   // its blocks.
+  // Dropping whole loops to fit maxLoops leaves loop-carried values unanalysed,
+  // so the truncation marks the published facts partial rather than complete (#5480).
+  let truncatedByLimit = upstreamLoops.length > limits.maxLoops;
   const prepared = upstreamLoops.slice(0, limits.maxLoops).map((loop) => ({ loop, nodes: nodeSetOf(loop) }));
   const parentOf = new Map();
   for (const entry of prepared) {
@@ -500,7 +503,7 @@ export function runInductionPass(context = {}, budget = {}, area = null) {
   const loops = [];
   const refusals = [];
   const simplificationCandidates = [];
-  let budgetExhausted = false;
+  let budgetExhausted = truncatedByLimit;
 
   for (const { loop, nodes } of prepared) {
     if (abortedNow()) { budgetExhausted = true; break; }
@@ -590,7 +593,12 @@ export function runInductionPass(context = {}, budget = {}, area = null) {
     // consumer that cannot tell them apart will eventually treat one as the
     // other.
     const unresolved = [];
-    const phis = (headerBlock?.phis ?? []).slice(0, limits.maxPhisPerLoop);
+    const allPhis = headerBlock?.phis ?? [];
+    // Header phis dropped to fit maxPhisPerLoop are loop-carried values nobody
+    // looked at: the loop and the pass facts stay partial (#5480).
+    const phisTruncated = allPhis.length > limits.maxPhisPerLoop;
+    if (phisTruncated) { truncatedByLimit = true; budgetExhausted = true; }
+    const phis = allPhis.slice(0, limits.maxPhisPerLoop);
     for (const phi of phis) {
       if (abortedNow()) { budgetExhausted = true; break; }
       const target = phi?.dst ?? null;
@@ -762,9 +770,15 @@ export function runInductionPass(context = {}, budget = {}, area = null) {
 
     inductions.sort((left, right) => left.valueId - right.valueId);
     unresolved.sort((left, right) => left.valueId - right.valueId);
-    const loopCompleteness = inductions.length === 0
+    const loopCompleteness = inductions.length === 0 || phisTruncated
       ? 'partial'
       : weakest([...inductions.map((fact) => fact.completeness), unresolved.length > 0 ? 'partial' : 'complete']);
+    const loopReasonBase = inductions.length === 0
+      ? (unresolved[0]?.reason ?? 'no loop-carried value in this header resolved to an induction variable')
+      : (unresolved.length > 0 ? `${unresolved.length} loop-carried value(s) have no provable step` : null);
+    const loopReason = phisTruncated
+      ? [loopReasonBase, 'header phis were dropped to fit maxPhisPerLoop'].filter(Boolean).join('; ')
+      : loopReasonBase;
 
     loops.push(Object.freeze({
       header,
@@ -785,9 +799,7 @@ export function runInductionPass(context = {}, budget = {}, area = null) {
       inductions: Object.freeze(inductions),
       unresolvedLoopValues: Object.freeze(unresolved),
       completeness: loopCompleteness,
-      completenessReason: inductions.length === 0
-        ? (unresolved[0]?.reason ?? 'no loop-carried value in this header resolved to an induction variable')
-        : (unresolved.length > 0 ? `${unresolved.length} loop-carried value(s) have no provable step` : null),
+      completenessReason: loopReason,
       origin: Object.freeze({ instructionIds: Object.freeze([...provenance].sort()) }),
     }));
 
@@ -828,7 +840,9 @@ export function runInductionPass(context = {}, budget = {}, area = null) {
       severity: 'warning',
       code: 'phase8.induction.budget',
       message: 'Loop fact recovery stopped before every loop was analysed.',
-      reason: 'The pass was cancelled; the loops published are a subset of the loops present, which is the safe direction.',
+      reason: truncatedByLimit
+        ? 'A deterministic resource limit (maxLoops/maxPhisPerLoop) cut the input; the loops published are a subset of the loops present, which is the safe direction.'
+        : 'The pass was cancelled; the loops published are a subset of the loops present, which is the safe direction.',
     });
   }
   if (refusals.length > 0) {
