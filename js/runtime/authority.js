@@ -244,7 +244,7 @@ export function createRuntimeObservation(input = {}) {
     epoch: binding.epoch,
     sequence,
     observedAt,
-    kind: required(input.kind || 'observation', 'runtime-observation-kind-required'),
+    kind: required(input.kind ?? 'observation', 'runtime-observation-kind-required'),
     payload: clone(input.payload ?? null),
     authority: 'runtime-evidence',
   };
@@ -301,12 +301,16 @@ export class RuntimeAuthorityTracker {
     if (input.explicitApproval !== true) return Object.freeze({ status: 'rejected', reason: 'runtime-mutation-explicit-approval-required' });
     const actorIdentity = required(input.actorIdentity, 'runtime-mutation-actor-required');
     const operation = required(input.operation, 'runtime-mutation-operation-required');
+    const scope = input.scope ?? {};
+    if (!scope || typeof scope !== 'object' || Array.isArray(scope)) {
+      throw new TypeError('runtime-mutation-scope-invalid');
+    }
     const token = {
       schemaVersion: 'hex-runtime-mutation-authority/v1',
       bindingId,
       actorIdentity,
       operation,
-      scope: clone(input.scope || {}),
+      scope: clone(scope),
       issuedAt: required(input.issuedAt, 'runtime-mutation-issued-at-required'),
       authority: 'explicit-local-runtime-mutation',
     };
