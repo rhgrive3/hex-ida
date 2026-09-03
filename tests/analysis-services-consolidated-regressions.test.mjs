@@ -4,6 +4,7 @@ import { InvestigationService, __investigationInternalsForTests } from '../js/an
 import { STRING_SCAN_BUDGET } from '../js/string-budget.js';
 import { PROGRAM_MERGE_LIMITS } from '../js/program.js';
 import { createAppAnalysisQueryAdapter } from '../js/analysis/query/app-adapter.js';
+import { canonicalClaimVerdict, createProductSurfaceQueries } from '../js/analysis/query/product-surface.js';
 
 const { budgetConfig, captureAnalysisBinding, analysisBindingCurrent, completenessFor } = __investigationInternalsForTests;
 
@@ -353,6 +354,57 @@ const { budgetConfig, captureAnalysisBinding, analysisBindingCurrent, completene
   const validInfo = await adapter.binaryInfo({ binaryId: 'bin-test' });
   assert.equal(validInfo.value.sliceIndex, 1);
   console.log('✔ #4015 sliceIndex strict integer validation passed');
+}
+
+// --- Test 10: #6057 canonicalClaimVerdict whitespace trimming ---
+{
+  assert.equal(canonicalClaimVerdict({ verdict: ' confirmed ' }), 'confirmed');
+  assert.equal(canonicalClaimVerdict({ verdict: ' CONFIRMED ' }), 'confirmed');
+  assert.equal(canonicalClaimVerdict({ verdict: 'likely\n' }), 'likely');
+  assert.equal(canonicalClaimVerdict({ verdict: '   ' }), 'unverified');
+  assert.equal(canonicalClaimVerdict({ verdict: 'unknown-token' }), 'unverified');
+  assert.equal(canonicalClaimVerdict({ verdict: 'confirmed' }), 'confirmed');
+  console.log('✔ #6057 canonicalClaimVerdict whitespace trimming passed');
+}
+
+// --- Test 11: #4308 verdictFilter rejects unknown verdicts ---
+{
+  const snapshot = { snapshotId: 'snap-1', binaryId: 'bin-1' };
+  const app = {
+    analysisQueries: {
+      snapshot: () => snapshot,
+    },
+    autoReport: {
+      report: {
+        findings: [
+          { claimId: 'c1', verdict: 'confirmed', title: 'Finding 1' },
+        ],
+      },
+    },
+  };
+  const productQueries = createProductSurfaceQueries(app);
+
+  // ['confirmed'] works
+  const res1 = await productQueries.claims(snapshot, { verdict: ['confirmed'] });
+  assert.equal(Array.isArray(res1.value), true);
+  assert.equal(res1.value.length, 1);
+
+  // [' Confirmed '] works
+  const res2 = await productQueries.claims(snapshot, { verdict: [' Confirmed '] });
+  assert.equal(Array.isArray(res2.value), true);
+  assert.equal(res2.value.length, 1);
+
+  // ['confirmeed'] throws TypeError
+  await assert.rejects(async () => {
+    await productQueries.claims(snapshot, { verdict: ['confirmeed'] });
+  }, TypeError);
+
+  // Mixed canonical + invalid throws TypeError
+  await assert.rejects(async () => {
+    await productQueries.claims(snapshot, { verdict: ['confirmed', 'invalid-verdict'] });
+  }, TypeError);
+
+  console.log('✔ #4308 verdictFilter rejects unknown verdicts passed');
 }
 
 console.log('\nAll analysis-services consolidated regression tests PASSED!');
