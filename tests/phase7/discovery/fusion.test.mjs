@@ -209,6 +209,11 @@ test('exact start requires supporting authoritative evidence', () => {
     startEvidence: [{ kind: 'export', start: 0x2000n, producerId: 'p' }],
     extentState: 'unknown',
   }), /exact-start-requires-authoritative-evidence/, 'authoritative evidence for another start does not qualify');
+  assert.throws(() => createFunctionCandidate({
+    start: 0x1000n, startState: 'exact',
+    startEvidence: [{ kind: 'export', producerId: 'p' }],
+    extentState: 'unknown',
+  }), /exact-start-requires-authoritative-evidence/, 'authoritative evidence without an explicit matching start does not qualify');
   const exact = createFunctionCandidate({
     start: 0x1000n, startState: 'exact',
     startEvidence: [{ kind: 'export', start: 0x1000n, producerId: 'p' }],
