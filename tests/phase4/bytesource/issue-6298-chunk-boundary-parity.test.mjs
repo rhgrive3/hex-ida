@@ -85,17 +85,44 @@ test('#6298 UTF-16LE/BE preserve ordinary and delimiter-adjacent runs across a c
 });
 
 test('#6298 UTF-16LE/BE long runs spanning multiple chunks preserve segmentation', async () => {
+  const runLength = 70_000;
+  const maxLength = 4096;
+  const expected = Array.from({ length: Math.ceil(runLength / maxLength) }, (_, index) => {
+    const length = Math.min(maxLength, runLength - index * maxLength);
+    return [BigInt(index * maxLength * 2), length * 2, 'Q'.repeat(length)];
+  });
+
   for (const encoding of ['le', 'be']) {
-    const bytes = encodeUtf16('Q'.repeat(70_000), encoding);
+    const bytes = encodeUtf16('Q'.repeat(runLength), encoding);
     const result = await assertChunkParity(
       bytes,
-      { utf16: encoding, maxLength: 4096 },
+      { utf16: encoding, maxLength },
       `${encoding} multi-chunk long run must keep canonical segmentation`,
     );
-    assert.equal(result.results.length, Math.ceil(70_000 / 4096));
-    assert.equal(result.results[0].fileOffset, 0n);
-    assert.equal(result.results.at(-1).fileOffset, BigInt(17 * 4096 * 2));
+    assert.deepEqual(
+      result.results.map(({ fileOffset, byteLength, text }) => [fileOffset, byteLength, text]),
+      expected,
+    );
   }
+});
+
+test('#6298 ASCII long run spanning multiple chunks preserves canonical segmentation', async () => {
+  const runLength = 200_000;
+  const maxLength = 4093;
+  const bytes = new TextEncoder().encode('R'.repeat(runLength));
+  const result = await assertChunkParity(
+    bytes,
+    { utf16: false, minLength: 2, maxLength },
+    'ASCII multi-chunk long run must keep canonical segmentation',
+  );
+  const expected = Array.from({ length: Math.ceil(runLength / maxLength) }, (_, index) => {
+    const length = Math.min(maxLength, runLength - index * maxLength);
+    return [BigInt(index * maxLength), length, 'R'.repeat(length)];
+  });
+  assert.deepEqual(
+    result.results.map(({ fileOffset, byteLength, text }) => [fileOffset, byteLength, text]),
+    expected,
+  );
 });
 
 test('#6298 carry dedupe cannot consume a small result limit', async () => {
