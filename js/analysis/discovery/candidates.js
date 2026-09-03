@@ -150,10 +150,11 @@ export function createFunctionCandidate(input = {}) {
 
   const startEvidence = deepFreeze((input.startEvidence ?? []).map((evidence) => createDiscoveryEvidence(evidence)));
   // `exact` is derived authority, not a caller assertion: it requires at
-  // least one authoritative evidence item supporting this start. Anything
-  // weaker keeps whatever weaker state the caller declared.
+  // least one authoritative evidence item explicitly bound to this start.
+  // Start-less evidence can be authoritative for other facts, but cannot
+  // establish an exact function-start identity.
   if (startState === 'exact' && !startEvidence.some((evidence) =>
-      evidence.authority === 'authoritative' && (evidence.start == null || evidence.start === start.toString()))) {
+      evidence.authority === 'authoritative' && evidence.start === start.toString())) {
     fail('discovery-candidate-exact-start-requires-authoritative-evidence');
   }
 
