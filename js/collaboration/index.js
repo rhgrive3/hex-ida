@@ -4,6 +4,7 @@ import { createOperationIdentity, assertIdentityMatch } from '../phase12/identit
 export const CHANGELOG_SCHEMA_VERSION = 'hex-project-operation-v1';
 export const CHECKPOINT_SCHEMA_VERSION = 'hex-project-checkpoint-v1';
 const MEANINGFUL_FACTS = new Set(['name', 'type', 'struct', 'confirmation', 'patch']);
+const OPERATION_ACTIONS = new Set(['set', 'remove', 'resolve', 'resurrect']);
 
 function required(value, code) { const text = String(value ?? '').trim(); if (!text) throw new TypeError(code); return text; }
 function clone(value) {
@@ -38,7 +39,10 @@ export function createProjectOperation(input = {}) {
   const projectIdentity = required(input.projectIdentity ?? input.projectId, 'operation-project-identity-required');
   const targetEntityId = required(input.targetEntityId ?? input.entityId, 'operation-target-entity-required');
   const factKind = required(input.factKind, 'operation-fact-kind-required');
-  const action = required(input.action || 'set', 'operation-action-required');
+  const actionInput = input.action ?? 'set';
+  if (typeof actionInput !== 'string' || !actionInput.trim()) throw new TypeError('operation-action-required');
+  const action = actionInput;
+  if (!OPERATION_ACTIONS.has(action)) throw new TypeError('operation-action-unsupported');
   const payload = clone(input.payload ?? input.value ?? null);
   const operationId = required(input.operationId || `op:${stableDigest({ projectIdentity, binaryIdentity: input.binaryIdentity || null, targetEntityId, factKind, action, payload, beforeFingerprint: input.beforeFingerprint || null, causalParents: list(input.causalParents) })}`, 'operation-id-required');
   const operation = {
@@ -108,6 +112,8 @@ export class ChangeLog {
 
   #validate(operation) {
     if (operation.schemaVersion !== CHANGELOG_SCHEMA_VERSION) return { status: 'rejected', reason: 'schema-version-unsupported' };
+    if (typeof operation.action !== 'string') return { status: 'rejected', reason: 'operation-action-required' };
+    if (!OPERATION_ACTIONS.has(operation.action)) return { status: 'rejected', reason: 'operation-action-unsupported' };
     if (operation.projectIdentity !== this.projectIdentity) return { status: 'rejected', reason: 'wrong-project-identity' };
     if (this.binaryIdentity !== operation.binaryIdentity) return { status: 'rejected', reason: 'wrong-binary-identity' };
     if (operation.provenance?.transport === 'remote') {
@@ -151,6 +157,10 @@ export class ChangeLog {
       current.resolvedOperationId = operation.payload.operationId;
       this.operations.set(operation.operationId, operation);
       return { status: 'applied', operationId: operation.operationId, effect: 'resolution' };
+    }
+    if (operation.action === 'resurrect') {
+      this.state.tombstones = this.state.tombstones.filter((item) => item.key !== key);
+      this.state.unresolved = this.state.unresolved.filter((item) => !(item.key === key && item.reason === 'tombstone-protects-state'));
     }
     const candidate = { operationId: operation.operationId, value: clone(operation.payload), provenance: clone(operation.provenance), timestampHint: operation.timestampHint };
     const candidateDigest = payloadDigest(candidate.value);
