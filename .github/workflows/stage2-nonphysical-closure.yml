@@ -73,6 +73,7 @@ jobs:
               tools/validation/phase11/*|\
               tools/validation/phase12/*|\
               tools/validation/rebuild-independent-oracle.mjs|\
+              .github/workflows/stage2-nonphysical-closure.yml|\
               package.json|package-lock.json)
                 required=true
                 break
@@ -173,13 +174,11 @@ jobs:
               ;;
           esac
 
-      - name: Run canonical A2 machine-effects proof with visible diagnostics
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p reports/stage2
-          node tests/machine-effects/run.mjs 2>&1 | tee reports/stage2/machine-effects.log
-
+      # The profile evidence collector is the canonical A2 executor. It runs
+      # tests/machine-effects/run.mjs as a2-machine-effects and records the exact
+      # command, status, stdout, stderr, and duration. Running the same suite in
+      # a preceding step duplicated the complete denominator without adding
+      # proof strength and also bypassed the impact guard on unrelated PRs.
       - name: Collect exact non-physical Stage 2 profile evidence
         if: steps.impact.outputs.required == 'true'
         id: profile
