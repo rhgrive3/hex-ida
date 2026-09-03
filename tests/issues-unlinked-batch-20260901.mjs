@@ -169,15 +169,18 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 // #3195 — waitForAppProducer collects abort between pre-check and subscribe.
 {
-  // The helper is module-private and the module touches window at import, so
-  // the regression is a source-anchored guard: the post-subscribe re-check
-  // that collects an abort between the pre-check and listener registration
-  // must stay present.
+  // Keep this source-anchored guard on the dedicated producer-wait module: an
+  // abort that lands between the initial pre-check and listener subscription
+  // must still be collected by a post-subscribe re-check.
   const { readFileSync } = await import('node:fs');
-  const source = readFileSync(new URL('../js/app.js', import.meta.url), 'utf8');
-  const helper = source.slice(source.indexOf('function waitForAppProducer'), source.indexOf('class App'));
-  assert.match(helper, /addEventListener\('abort', onAbort/);
-  assert.match(helper, /signal\?\.aborted && !done/, 'post-subscribe re-check must collect the late abort');
+  const source = readFileSync(new URL('../js/analysis/producer-wait.js', import.meta.url), 'utf8');
+  const start = source.indexOf('export function waitForAppProducer');
+  assert.notEqual(start, -1, 'producer wait helper must remain exported');
+  const helper = source.slice(start);
+  const subscribe = helper.indexOf("addEventListener('abort', onAbort");
+  const recheck = helper.indexOf('if (signal?.aborted) onAbort();');
+  assert.notEqual(subscribe, -1, 'abort listener must be installed');
+  assert.ok(recheck > subscribe, 'post-subscribe re-check must collect the late abort');
 }
 
 // #3185 — agent tool field key is a strict non-empty primitive string.

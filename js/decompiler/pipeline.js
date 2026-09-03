@@ -156,9 +156,13 @@ function reanchorExactStackReturn(result, opts = {}) {
   return result;
 }
 
-function exactLegacySameBlockStackStore(load, ir) {
+export function exactLegacySameBlockStackStore(load, ir) {
   if (!load?.reachingStore || load.loc?.kind !== 'stack' || !load.loc?.key) return null;
   const store = load.reachingStore;
+  const loadSize = Number(load.loc?.size);
+  const storeSize = Number(store?.loc?.size);
+  if (!Number.isSafeInteger(loadSize) || loadSize <= 0
+      || !Number.isSafeInteger(storeSize) || storeSize !== loadSize) return null;
   if (store.op !== 'store' || store.block !== load.block || store.loc?.kind !== 'stack'
       || store.loc.key !== load.loc.key || store.row == null || load.row == null
       || Number(store.row) >= Number(load.row)) return null;
