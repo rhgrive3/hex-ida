@@ -138,6 +138,12 @@ export function createX86DecodedInstruction(input = {}) {
   const operands = rawOperands.map(normalizeOperand);
   const operandCount = integer(rawDetail.operandCount ?? input.operandCount ?? operands.length, 'x86-decoded-instruction-invalid-operand-count', { max:64 });
   if (operandCount !== operands.length) throw new TypeError('x86-decoded-instruction-operand-count-mismatch');
+  // `detailStatus` is the single authority for decoder-detail availability.
+  // A caller-provided `detailAvailable:true` must never override a
+  // non-complete status, or an unavailable/partial/malformed record could
+  // still open the exact effects gate.
+  const detailStatus = String(input.detailStatus ?? (input.detailAvailable === true ? 'complete' : 'unavailable'));
+  const rawBytes = bytesOf(input.rawBytes ?? input.bytes, length);
   const result = {
     ...input,
     contractVersion,
@@ -145,13 +151,16 @@ export function createX86DecodedInstruction(input = {}) {
     address:bigint(input.address, 'x86-decoded-instruction-address-required'),
     length,
     size:length,
-    rawBytes:bytesOf(input.rawBytes ?? input.bytes, length),
+    // The authoritative encoding must never share mutable storage with a
+    // caller: `Object.freeze` cannot seal typed-array elements, so every read
+    // publishes a fresh defensive copy.
+    get rawBytes() { return rawBytes.slice(); },
     mode,
     instructionId:input.instructionId,
     instructionCode:integer(input.instructionCode ?? input.id, 'x86-decoded-instruction-id-required', { min:1 }),
     instructionFamily:text(input.instructionFamily ?? input.family, 'x86-decoded-instruction-family-required'),
     decoderContractVersion:contractVersion,
-    detailStatus:String(input.detailStatus ?? (input.detailAvailable === true ? 'complete' : 'unavailable')),
+    detailStatus,
     detail:Object.freeze({
       ...rawDetail,
       prefixes:normalizePrefixState(rawDetail.prefixes ?? input.prefixes),
@@ -161,7 +170,7 @@ export function createX86DecodedInstruction(input = {}) {
       implicitWrites:Object.freeze((rawDetail.implicitWrites ?? input.implicitWrites ?? []).map((value, index) => registerOf(value, 'x86-decoded-instruction-unknown-implicit-write', { decoderRegisterCode:rawDetail.implicitWriteCodes?.[index] }))),
       conditionCode:(rawDetail.conditionCode ?? input.conditionCode) == null ? null : String(rawDetail.conditionCode ?? input.conditionCode).toLowerCase(),
     }),
-    detailAvailable:input.detailAvailable === true || input.detailStatus === 'complete',
+    detailAvailable:detailStatus === 'complete',
     mnemonic:String(input.mnemonic ?? ''),
     opStr:String(input.opStr ?? input.operandString ?? ''),
   };
