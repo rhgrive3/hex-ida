@@ -20,6 +20,7 @@ function toAddress(value) {
   if (value == null) return null;
   const type = typeof value;
   if (type !== 'bigint' && type !== 'string' && !(type === 'number' && Number.isSafeInteger(value))) return null;
+  if (type === 'string' && value.trim().length === 0) return null;
   try {
     const address = BigInt(value);
     return address >= 0n ? address.toString() : null;
@@ -288,7 +289,10 @@ export function createPatternProducer({ id, architectureId, patterns, alignment 
   if (!Array.isArray(patterns)) {
     throw new TypeError('discovery-pattern-empty-patterns');
   }
-  const compiled = patterns.map((pattern) => {
+  const compiled = [];
+  for (let patternIndex = 0; patternIndex < patterns.length; patternIndex += 1) {
+    if (!Object.hasOwn(patterns, patternIndex)) throw new TypeError('discovery-pattern-invalid-bytes');
+    const pattern = patterns[patternIndex];
     if (!pattern) throw new TypeError('discovery-pattern-invalid-bytes');
     const bytes = patternBytes(pattern.bytes, 'discovery-pattern-invalid-bytes');
     let mask = null;
@@ -298,12 +302,12 @@ export function createPatternProducer({ id, architectureId, patterns, alignment 
         throw new TypeError('discovery-pattern-mask-length-mismatch');
       }
     }
-    return {
+    compiled.push({
       id: pattern.id == null ? 'pattern' : requiredPatternId(pattern.id, 'discovery-pattern-invalid-id'),
       bytes,
       mask,
-    };
-  });
+    });
+  }
   return Object.freeze({
     id: producerId,
     architectureId: producerArchitectureId,
