@@ -48,6 +48,25 @@ assert.throws(
 assert.equal(createProjectOperation({ ...base, targetEntityId: 'hex-entity:default', factKind: 'name', payload: 'x' }).action, 'set');
 assert.equal(createProjectOperation({ ...base, targetEntityId: 'hex-entity:null', factKind: 'name', action: null, payload: 'x' }).action, 'set');
 
+const rawVersionedTemplate = createProjectOperation({ ...base, operationId: 'raw-template', targetEntityId: 'hex-entity:raw', factKind: 'name', action: 'set', payload: 'unexpected-write' });
+for (const [index, action] of ['remvoe', false, 0, '', ['set'], { action:'set' }].entries()) {
+  const raw = { ...rawVersionedTemplate, operationId:`raw-invalid-${index}`, action };
+  const expectedReason = typeof action === 'string' ? 'operation-action-unsupported' : 'operation-action-required';
+  const single = new ChangeLog(base);
+  const singleResult = single.applyOperation(raw);
+  assert.equal(singleResult.status, 'rejected', `versioned action ${String(action)} must not bypass applyOperation validation`);
+  assert.equal(singleResult.reason, expectedReason);
+  assert.deepEqual(single.snapshot().facts, {});
+
+  const batch = new ChangeLog(base);
+  const batchResult = batch.applyBatch([raw]);
+  assert.equal(batchResult.status, 'rejected', `versioned action ${String(action)} must not bypass applyBatch validation`);
+  assert.equal(batchResult.reason, expectedReason);
+  assert.deepEqual(batch.snapshot().facts, {});
+}
+const rawCanonical = { ...rawVersionedTemplate, operationId:'raw-canonical', action:'set' };
+assert.equal(new ChangeLog(base).applyOperation(rawCanonical).status, 'applied', 'valid schema-versioned operations remain applicable');
+
 const canonicalLog = new ChangeLog(base);
 const canonicalSet = createProjectOperation({ ...base, operationId: 'canonical-set', targetEntityId: 'hex-entity:canonical', factKind: 'name', action: 'set', payload: 'alpha' });
 const canonicalSet2 = createProjectOperation({ ...base, operationId: 'canonical-set-2', targetEntityId: 'hex-entity:canonical', factKind: 'name', action: 'set', payload: 'beta' });
