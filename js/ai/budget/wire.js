@@ -29,7 +29,7 @@ export function assertWireBudget(payload, capabilities = SAFE_PROVIDER_CAPABILIT
   const usage = measureWirePayload(payload);
   const maxBytes = positiveLimit(capabilities.maxRequestBytes, SAFE_PROVIDER_CAPABILITIES.maxRequestBytes);
   const contextTokens = positiveLimit(capabilities.contextTokens, SAFE_PROVIDER_CAPABILITIES.contextTokens);
-  const outputTokens = Math.max(0, finiteNumber(capabilities.maxOutputTokens, SAFE_PROVIDER_CAPABILITIES.maxOutputTokens));
+  const outputTokens = nonNegativeLimit(capabilities.maxOutputTokens, SAFE_PROVIDER_CAPABILITIES.maxOutputTokens);
   const maxTokens = Math.max(1, contextTokens - outputTokens);
   if (usage.wireBytes > maxBytes || usage.estimatedInputTokens > maxTokens) {
     throw new AIError('context_too_large', 'The complete provider payload exceeds the safe input budget.', { ...usage, maxBytes, maxTokens });
@@ -77,3 +77,12 @@ function bytes(value) {
 }
 function finiteNumber(value, fallback) { return typeof value === 'number' && Number.isFinite(value) ? value : fallback; }
 function positiveLimit(value, fallback) { return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback; }
+
+/*
+ * `maxOutputTokens` is a resource capability, so a malformed value must fall
+ * back to the safe default instead of being coerced into a valid policy.
+ * `Math.max(0, ...)` used to turn a negative finite number (e.g. -1) into an
+ * output reserve of 0, which raised the input token ceiling above the safe
+ * default (#6311). Unlike `positiveLimit`, 0 is a legitimate value here.
+ */
+function nonNegativeLimit(value, fallback) { return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : fallback; }
