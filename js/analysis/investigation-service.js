@@ -160,10 +160,8 @@ function completenessFor({ strings, program, shapes, metadata, goal }) {
   if (strings?.complete !== true) reasons.push(strings?.truncationReason || 'strings-partial');
   if (!programComplete(program)) reasons.push(program?.queryIncompleteReason || 'program-partial');
   if (shapes && shapes.complete !== true) reasons.push(shapes.incompleteReason || 'shapes-partial');
-  if (metadata && metadata.complete === false) {
-    if (needsShapeEvidence(goal) || metadata.reasons?.length) {
-      reasons.push(...(metadata.reasons?.length ? metadata.reasons : ['metadata-partial']));
-    }
+  if (metadata && metadata.complete === false && needsShapeEvidence(goal)) {
+    reasons.push(...(metadata.reasons?.length ? metadata.reasons : ['metadata-partial']));
   }
   return { complete:reasons.length === 0, reasons:[...new Set(reasons.filter(Boolean))] };
 }
