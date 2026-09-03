@@ -46,23 +46,41 @@ export function mappedELFFileSpanForVa(image, va, size) {
  * Validate a function extent inside one canonical executable mapping.
  * Sections are preferred when present because they provide the strongest ELF
  * provenance; sectionless images fall back to executable PT_LOAD segments.
+ *
+ * For runtime image types (ET_EXEC/ET_DYN) a section proves only that the
+ * symbol belongs to an executable-code section; the address/extent must also
+ * live inside a canonical executable PT_LOAD mapping (gABI: SHF_ALLOC marks a
+ * section as occupying process memory during execution, SHF_EXECINSTR alone
+ * does not). ET_REL keeps its section-relative synthetic contract.
  */
 export function executableELFRange(image, address, size = 0n, sectionIndex = null) {
   const start = strictELFInteger(address, 'address');
   const extent = strictELFInteger(size ?? 0n, 'size');
   if (extent < 0n) return null;
+  const relocatable = image?.metadata?.type === 1;
   const fits = (owner) => {
     if (!owner?.perms?.execute) return false;
+    if (!relocatable && !owner?.perms?.read) return false;
     const lo = BigInt(owner.address ?? 0), hi = lo + BigInt(owner.size ?? 0);
     if (start < lo || start >= hi) return false;
     return extent === 0n || (extent <= hi - start);
   };
+  const inCanonicalExecutableSegment = () => {
+    const segments = image.segments || [];
+    if (!segments.length) return true; // no program header table: section evidence stays canonical
+    return segments.some((segment) => {
+      if (!segment?.perms?.execute) return false;
+      const lo = BigInt(segment.address ?? 0), hi = lo + BigInt(segment.size ?? 0);
+      if (start < lo || start >= hi) return false;
+      return extent === 0n || (extent <= hi - start);
+    });
+  };
   if (Number.isInteger(sectionIndex)) {
     const section = (image.sections || []).find((s) => s.index === sectionIndex) || null;
-    if (fits(section)) return section;
+    if (fits(section) && (relocatable || inCanonicalExecutableSegment())) return section;
     return null;
   }
-  const section = (image.sections || []).find(fits) || null;
+  const section = (image.sections || []).find((s) => fits(s) && (relocatable || inCanonicalExecutableSegment())) || null;
   if (section) return section;
   return (image.segments || []).find(fits) || null;
 }
