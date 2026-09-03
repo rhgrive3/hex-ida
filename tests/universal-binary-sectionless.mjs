@@ -109,6 +109,10 @@ function issue566SectionProvenanceRegression() {
   repairElfZeroAddressFunctionSeeds(image);
   assert.equal(image.functions.length, 0, 'explicit non-executable section must not fall back to overlapping PT_LOAD');
 
+  image = makeImage({ section:{ address:1n }, sectionIndex:2, name:'outside-section0' });
+  repairElfZeroAddressFunctionSeeds(image);
+  assert.equal(image.functions.length, 0, 'explicit executable section that excludes address zero must not fall back to overlapping PT_LOAD');
+
   image = makeImage({ section:{ size:2n }, sectionIndex:2, symbolSize:4n, name:'oversized0' });
   repairElfZeroAddressFunctionSeeds(image);
   assert.equal(image.functions.length, 0, 'explicit section extent failure must not fall back to a broader PT_LOAD');
