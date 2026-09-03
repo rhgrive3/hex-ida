@@ -217,7 +217,7 @@ function validAddressEncoding(instruction, ops) {
   const targetOperand = ops[1];
   if (!isGpOrZr(destination) || regBits(destination) !== 64
     || destination.shift != null || destination.extend != null) return false;
-  if (!['imm','other'].includes(String(targetOperand?.k || ''))
+  if ((targetOperand?.k !== 'imm' && targetOperand?.k !== 'other')
     || targetOperand?.shift != null || targetOperand?.extend != null) return false;
   const rawAddress = instruction?.address;
   const rawTarget = instruction?.pcRelTarget ?? immediateOf(targetOperand);
