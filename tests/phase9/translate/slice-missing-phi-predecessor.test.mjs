@@ -54,3 +54,22 @@ test('slice with an unknown fromBlock on a single-incoming phi is not complete',
   assert.notEqual(slice.completeness.controlFlow, 'complete');
   assert.equal(slice.assumptions.some((item) => item?.kind === 'missing-phi-predecessor'), true);
 });
+
+test('slice with duplicate matching predecessors fails closed instead of selecting the first incoming', () => {
+  const duplicate = {
+    id: 'phi-duplicate',
+    op: OP.PHI,
+    incoming: [
+      { from: 'pred-A', value: valueA },
+      { from: 'pred-A', value: valueB },
+    ],
+  };
+  const slice = backwardDependencySlice(duplicate, { fromBlock: 'pred-A' });
+  assert.equal(slice.instructions.has('phi-duplicate'), true);
+  assert.equal(slice.values.size, 0);
+  assert.notEqual(slice.completeness.controlFlow, 'complete');
+  const reasons = slice.assumptions.filter((item) => item?.kind === 'ambiguous-phi-predecessor');
+  assert.equal(reasons.length, 1);
+  assert.match(String(reasons[0]?.statement || ''), /2 incoming values/);
+  assert.match(String(reasons[0]?.statement || ''), /pred-A/);
+});

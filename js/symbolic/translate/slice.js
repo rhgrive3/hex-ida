@@ -34,7 +34,7 @@ function canonicalStoreInstructions(load, ir) {
       candidate.memDef?.definitionId,
       ...(candidate.memDefs || []).map((item) => item?.definitionId),
       candidate.extra?.memoryDefinitionId,
-    ].filter((id) => id != null).map(String);
+    ].filter((id) => id != null).map(String));
     return ids.some((id) => definitionIds.has(id));
   });
 }
@@ -50,7 +50,7 @@ export function backwardDependencySlice(target, options = {}) {
   const assumptions = [];
   let hasCycle = false;
   let hitDepthLimit = false;
-  let missingPhiPredecessor = false;
+  let unresolvedPhiPredecessor = false;
 
   const activeValues = new Set();
   const activeInstructions = new Set();
@@ -120,20 +120,22 @@ export function backwardDependencySlice(target, options = {}) {
     // If PHI instruction and fromBlock is specified, filter incoming
     if (inst.op === OP.PHI && Array.isArray(inst.incoming)) {
       if (fromBlock != null) {
-        const hit = inst.incoming.find((inc) => inc.from === fromBlock);
-        if (hit && hit.value) {
-          visitValue(hit.value, depth + 1);
+        const matches = inst.incoming.filter((inc) => inc.from === fromBlock);
+        if (matches.length === 1 && matches[0]?.value) {
+          visitValue(matches[0].value, depth + 1);
         } else {
-          // No incoming proves the value under the requested predecessor, so
-          // the slice cannot be complete for this control-flow edge. Record
-          // the gap explicitly instead of reporting zero dependencies as
-          // a complete slice.
-          missingPhiPredecessor = true;
+          // A predecessor selection is exact only when exactly one usable
+          // incoming exists. Missing or duplicate predecessors are unresolved
+          // control-flow evidence and must fail closed.
+          unresolvedPhiPredecessor = true;
+          const duplicate = matches.length > 1;
           assumptions.push(
             createAssumption({
-              id: `missing_phi_predecessor_${instId || fromBlock}`,
-              kind: 'missing-phi-predecessor',
-              statement: `PHI ${instId || '(anonymous)'} has no incoming from predecessor ${String(fromBlock)}`,
+              id: `${duplicate ? 'ambiguous' : 'missing'}_phi_predecessor_${instId || fromBlock}`,
+              kind: duplicate ? 'ambiguous-phi-predecessor' : 'missing-phi-predecessor',
+              statement: duplicate
+                ? `PHI ${instId || '(anonymous)'} has ${matches.length} incoming values from predecessor ${String(fromBlock)}`
+                : `PHI ${instId || '(anonymous)'} has no usable incoming from predecessor ${String(fromBlock)}`,
               source: 'slice',
               originIds: inst.origin != null ? [String(inst.origin)] : [],
               trust: ASSUMPTION_TRUST.QUERY_SCOPE,
@@ -183,7 +185,7 @@ export function backwardDependencySlice(target, options = {}) {
 
   const completeness = createCompleteness({
     translation: hitDepthLimit ? COMPLETENESS_STATUS.PARTIAL : COMPLETENESS_STATUS.COMPLETE,
-    controlFlow: hasCycle || missingPhiPredecessor ? COMPLETENESS_STATUS.PARTIAL : COMPLETENESS_STATUS.COMPLETE,
+    controlFlow: hasCycle || unresolvedPhiPredecessor ? COMPLETENESS_STATUS.PARTIAL : COMPLETENESS_STATUS.COMPLETE,
     memoryEffects: COMPLETENESS_STATUS.COMPLETE,
     pathCoverage: COMPLETENESS_STATUS.COMPLETE,
     queryScope: COMPLETENESS_STATUS.COMPLETE,
