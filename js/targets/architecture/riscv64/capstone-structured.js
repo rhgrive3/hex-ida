@@ -57,13 +57,13 @@
     const major = M._malloc(4);
     const minor = M._malloc(4);
     try {
-      M.ccall('cs_version', 'number', ['pointer','pointer'], [major, minor]);
+      M.ccall('cs_version', 'number', ['pointer', 'pointer'], [major, minor]);
       const actualMajor = M.getValue(major, 'i32');
       const actualMinor = M.getValue(minor, 'i32');
       if (actualMajor !== ABI.capstoneMajor || actualMinor !== ABI.capstoneMinor) {
         throw new Error(`riscv64-capstone-detail-abi-version-mismatch:${actualMajor}.${actualMinor}`);
       }
-      return Object.freeze({ major:actualMajor, minor:actualMinor });
+      return Object.freeze({ major: actualMajor, minor: actualMinor });
     } finally {
       M._free(major);
       M._free(minor);
