@@ -5,11 +5,13 @@ const CANONICAL_ARTIFACT_ID = /^artifact_[0-9a-f]{32}$/i;
 
 function stableValue(value) {
   if (value == null) return value;
-  if (typeof value === 'boolean' || typeof value === 'number' || typeof value === 'string') return value;
+  if (typeof value === 'boolean' || typeof value === 'string') return value;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
   if (typeof value !== 'object') throw new TypeError('analysis-cache-settings-invalid');
   if (Array.isArray(value)) return value.map(stableValue);
   const proto = Object.getPrototypeOf(value);
   if (proto !== null && proto !== Object.prototype) throw new TypeError('analysis-cache-settings-invalid');
+  if (Object.getOwnPropertySymbols(value).length) throw new TypeError('analysis-cache-settings-invalid');
   const out = {};
   for (const key of Object.keys(value).sort()) Object.defineProperty(out, key, { value:stableValue(value[key]), enumerable:true, configurable:true, writable:true });
   return out;
@@ -108,6 +110,7 @@ export class AnalysisCache {
     if (artifactId) {
       if (record.canonicalArtifactId !== artifactId) return true;
       if (!CANONICAL_ARTIFACT_ID.test(record.canonicalArtifactId)) return true;
+      if (typeof record.binaryHash !== 'string' || record.binaryHash.length === 0) return true;
     } else {
       if (!record.binaryHash || typeof record.binaryHash !== 'string') return true;
     }
