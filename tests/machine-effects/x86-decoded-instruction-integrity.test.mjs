@@ -39,6 +39,30 @@ test('contradictory detail flags never open the exact effects gate', () => {
   }
 });
 
+test('detailStatus rejects coercible and unknown values without opening exact authority', () => {
+  const invalidStatuses = [
+    ['complete'],
+    { toString() { return 'complete'; } },
+    'unknown',
+    ' complete ',
+  ];
+  for (const detailStatus of invalidStatuses) {
+    assert.throws(
+      () => nop({ detailAvailable: false, detailStatus }),
+      /x86-decoded-instruction-invalid-detail-status/,
+    );
+  }
+
+  const legacyAvailable = nop({ detailAvailable: true, detailStatus: undefined });
+  assert.equal(legacyAvailable.detailStatus, 'complete');
+  assert.equal(legacyAvailable.detailAvailable, true);
+
+  const legacyUnavailable = nop({ detailAvailable: false, detailStatus: undefined });
+  assert.equal(legacyUnavailable.detailStatus, 'unavailable');
+  assert.equal(legacyUnavailable.detailAvailable, false);
+  assert.equal(dispatchX86MachineEffects(legacyUnavailable).ownerId, 'fallback');
+});
+
 test('consistent detail inputs keep their existing gate behavior', () => {
   const available = nop();
   assert.equal(available.detailAvailable, true);
