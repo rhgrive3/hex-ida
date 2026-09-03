@@ -206,6 +206,8 @@ export function validateRv64imcDecoderDenominator() {
     ['hint-both-zero-pred-zero', 0x0010000f, 'rv64i-fence-hint'],
     ['hint-both-zero-succ-zero', 0x0100000f, 'rv64i-fence-hint'],
     ['ordinary-fence-nonempty-sets', 0x0110000f, 'rv64i-fence'],
+    ['fence-tso-canonical', 0x8330000f, 'rv64i-fence-tso'],
+    ['reserved-fence-nonzero-mode', 0x1330000f, null],
     ['reserved-fence-nonzero-registers-pred-zero', 0x0011008f, null],
     ['reserved-fence-nonzero-registers-succ-zero', 0x0101008f, null],
   ];
