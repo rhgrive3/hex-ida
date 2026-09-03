@@ -22,7 +22,8 @@ const VARIADIC_MIN = new Map([
 ]);
 
 export function normalizeExternalSymbol(name) {
-  let s = String(name || '').trim();
+  if (typeof name !== 'string') return '';
+  let s = name.trim();
   s = s.replace(/^_+/, '').replace(/^(?:imp_|j_)/, '');
   const suffix = s.search(/(?:\$|@@?)/);
   if (suffix >= 0) s = s.slice(0, suffix);
