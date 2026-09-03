@@ -3,6 +3,7 @@ import { buildSelectorIndex, resolveSelectorStub } from '../js/apple/selector-st
 import { FieldIndex } from '../js/fields.js';
 import { formatObjcMessage, objcMessage } from '../js/apple/objc-runtime.js';
 import { demangleCxx, demangleSwift, readableName, shortName, isMangled } from '../js/rtti.js';
+import { parseUnifiedLanguageMetadata } from '../js/metadata/index.js';
 
 // --- Test 1: #3444 Objective-C selector index rejects non-string selector ---
 {
@@ -120,6 +121,36 @@ import { demangleCxx, demangleSwift, readableName, shortName, isMangled } from '
   assert.equal(demangleCxx('__ZN3Foo3barEi'), 'Foo::bar(int)');
   assert.equal(isMangled('__ZN3Foo3barEi'), true);
   console.log('✔ #6105 RTTI demangler non-string validation passed');
+}
+
+// --- Test 5: #6062 unified metadata dispatcher provider discovery parity ---
+{
+  // Rust discovery via __R and ZN
+  const rustV0 = await parseUnifiedLanguageMetadata({
+    symbols: [{ name: '__RNvNtCs1234_4core3fmt' }],
+  });
+  assert.ok(rustV0.ecosystems.includes('rust'), 'Rust provider must be discovered for __R symbol');
+
+  const rustZN = await parseUnifiedLanguageMetadata({
+    symbols: [{ name: 'ZN4core3fmtE' }],
+  });
+  assert.ok(rustZN.ecosystems.includes('rust'), 'Rust provider must be discovered for ZN symbol');
+
+  // Swift discovery via sectname
+  const swiftSect = await parseUnifiedLanguageMetadata({
+    sections: [{ sectname: '__swift5_types', addr: 0x1000n, size: 4 }],
+    readAt: async () => new Uint8Array(),
+  });
+  assert.ok(swiftSect.ecosystems.includes('swift'), 'Swift provider must be discovered for sectname');
+
+  // ObjC discovery via sectname
+  const objcSect = await parseUnifiedLanguageMetadata({
+    sections: [{ sectname: '__objc_classlist', addr: 0x1000n, size: 8 }],
+    readAt: async () => new Uint8Array(),
+  });
+  assert.ok(objcSect.ecosystems.includes('objc'), 'ObjC provider must be discovered for sectname');
+
+  console.log('✔ #6062 unified dispatcher provider discovery parity passed');
 }
 
 console.log('\nAll metadata-apple consolidated regression tests PASSED!');
