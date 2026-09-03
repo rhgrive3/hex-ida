@@ -59,6 +59,25 @@ function architecturalBaseHint(base, hintKind, detail = {}) {
   return { ...base, op: 'hint', architecturalNoOp: true, hint: true, hintKind, ...detail };
 }
 
+const BASE_INTEGER_HINT_OPS = Object.freeze([
+  'lui', 'auipc',
+  'addi', 'slti', 'sltiu', 'xori', 'ori', 'andi', 'slli', 'srli', 'srai',
+  'addiw', 'slliw', 'srliw', 'sraiw',
+  'add', 'sll', 'slt', 'sltu', 'xor', 'srl', 'or', 'and', 'sub', 'sra',
+  'addw', 'sllw', 'srlw', 'subw', 'sraw',
+]);
+
+function baseIntegerInstruction(base, op, detail = {}) {
+  const isNopEncoding = op === 'addi'
+    && detail.rd === 'x0'
+    && detail.rs1 === 'x0'
+    && detail.imm === 0n;
+  if (detail.rd === 'x0' && BASE_INTEGER_HINT_OPS.includes(op) && !isNopEncoding) {
+    return architecturalBaseHint(base, 'integer', { underlyingOp: op, ...detail });
+  }
+  return { ...base, op, ...detail };
+}
+
 // --------------------------------------------------------------------------
 // 32-bit (uncompressed) encodings
 // --------------------------------------------------------------------------
@@ -109,8 +128,8 @@ function decodeUncompressed(word) {
   const base = { compressed: false, sizeBytes: 4 };
 
   switch (opcode) {
-    case 0x37: return { ...base, op: 'lui', format: 'U', rd, imm: immediateU(word) };
-    case 0x17: return { ...base, op: 'auipc', format: 'U', rd, imm: immediateU(word) };
+    case 0x37: return baseIntegerInstruction(base, 'lui', { format: 'U', rd, imm: immediateU(word) });
+    case 0x17: return baseIntegerInstruction(base, 'auipc', { format: 'U', rd, imm: immediateU(word) });
     case 0x6f: return { ...base, op: 'jal', format: 'J', rd, imm: immediateJ(word) };
     case 0x67:
       if (funct3 !== 0) return unsupported('riscv64-reserved-jalr-funct3', { opcode, funct3 });
@@ -133,34 +152,34 @@ function decodeUncompressed(word) {
     case 0x13: {
       if (funct3 === 1) {
         if (bits(word, 31, 26) !== 0) return unsupported('riscv64-reserved-slli-encoding', { opcode, funct7 });
-        return { ...base, op: 'slli', format: 'I', rd, rs1, shamt: bits(word, 25, 20) };
+        return baseIntegerInstruction(base, 'slli', { format: 'I', rd, rs1, shamt: bits(word, 25, 20) });
       }
       if (funct3 === 5) {
         const arithmetic = bits(word, 30, 30) === 1;
         if ((bits(word, 31, 26) & 0b101111) !== 0) return unsupported('riscv64-reserved-srli-srai-encoding', { opcode, funct7 });
-        return { ...base, op: arithmetic ? 'srai' : 'srli', format: 'I', rd, rs1, shamt: bits(word, 25, 20) };
+        return baseIntegerInstruction(base, arithmetic ? 'srai' : 'srli', { format: 'I', rd, rs1, shamt: bits(word, 25, 20) });
       }
       const op = OPIMM_FUNCT3[funct3];
       if (!op) return unsupported('riscv64-reserved-op-imm-funct3', { opcode, funct3 });
-      return { ...base, op, format: 'I', rd, rs1, imm: immediateI(word) };
+      return baseIntegerInstruction(base, op, { format: 'I', rd, rs1, imm: immediateI(word) });
     }
     case 0x1b: {
-      if (funct3 === 0) return { ...base, op: 'addiw', format: 'I', rd, rs1, imm: immediateI(word), resultBits: 32 };
+      if (funct3 === 0) return baseIntegerInstruction(base, 'addiw', { format: 'I', rd, rs1, imm: immediateI(word), resultBits: 32 });
       if (funct3 === 1) {
         if (funct7 !== 0) return unsupported('riscv64-reserved-slliw-encoding', { opcode, funct7 });
-        return { ...base, op: 'slliw', format: 'I', rd, rs1, shamt: bits(word, 24, 20), resultBits: 32 };
+        return baseIntegerInstruction(base, 'slliw', { format: 'I', rd, rs1, shamt: bits(word, 24, 20), resultBits: 32 });
       }
       if (funct3 === 5) {
         if (funct7 !== 0 && funct7 !== 0x20) return unsupported('riscv64-reserved-srliw-sraiw-encoding', { opcode, funct7 });
-        return { ...base, op: funct7 === 0x20 ? 'sraiw' : 'srliw', format: 'I', rd, rs1, shamt: bits(word, 24, 20), resultBits: 32 };
+        return baseIntegerInstruction(base, funct7 === 0x20 ? 'sraiw' : 'srliw', { format: 'I', rd, rs1, shamt: bits(word, 24, 20), resultBits: 32 });
       }
       return unsupported('riscv64-reserved-op-imm-32-funct3', { opcode, funct3 });
     }
     case 0x33: {
       if (funct7 === 0x01) return { ...base, op: OP_M[funct3], format: 'R', rd, rs1, rs2, extension: 'M' };
-      if (funct7 === 0x00) return { ...base, op: OP_BASE[funct3], format: 'R', rd, rs1, rs2 };
-      if (funct7 === 0x20 && funct3 === 0) return { ...base, op: 'sub', format: 'R', rd, rs1, rs2 };
-      if (funct7 === 0x20 && funct3 === 5) return { ...base, op: 'sra', format: 'R', rd, rs1, rs2 };
+      if (funct7 === 0x00) return baseIntegerInstruction(base, OP_BASE[funct3], { format: 'R', rd, rs1, rs2 });
+      if (funct7 === 0x20 && funct3 === 0) return baseIntegerInstruction(base, 'sub', { format: 'R', rd, rs1, rs2 });
+      if (funct7 === 0x20 && funct3 === 5) return baseIntegerInstruction(base, 'sra', { format: 'R', rd, rs1, rs2 });
       return unsupported('riscv64-reserved-op-encoding', { opcode, funct3, funct7 });
     }
     case 0x3b: {
@@ -169,11 +188,11 @@ function decodeUncompressed(word) {
         if (!op) return unsupported('riscv64-reserved-op-32-m-funct3', { opcode, funct3 });
         return { ...base, op, format: 'R', rd, rs1, rs2, extension: 'M', resultBits: 32 };
       }
-      if (funct7 === 0x00 && funct3 === 0) return { ...base, op: 'addw', format: 'R', rd, rs1, rs2, resultBits: 32 };
-      if (funct7 === 0x00 && funct3 === 1) return { ...base, op: 'sllw', format: 'R', rd, rs1, rs2, resultBits: 32 };
-      if (funct7 === 0x00 && funct3 === 5) return { ...base, op: 'srlw', format: 'R', rd, rs1, rs2, resultBits: 32 };
-      if (funct7 === 0x20 && funct3 === 0) return { ...base, op: 'subw', format: 'R', rd, rs1, rs2, resultBits: 32 };
-      if (funct7 === 0x20 && funct3 === 5) return { ...base, op: 'sraw', format: 'R', rd, rs1, rs2, resultBits: 32 };
+      if (funct7 === 0x00 && funct3 === 0) return baseIntegerInstruction(base, 'addw', { format: 'R', rd, rs1, rs2, resultBits: 32 });
+      if (funct7 === 0x00 && funct3 === 1) return baseIntegerInstruction(base, 'sllw', { format: 'R', rd, rs1, rs2, resultBits: 32 });
+      if (funct7 === 0x00 && funct3 === 5) return baseIntegerInstruction(base, 'srlw', { format: 'R', rd, rs1, rs2, resultBits: 32 });
+      if (funct7 === 0x20 && funct3 === 0) return baseIntegerInstruction(base, 'subw', { format: 'R', rd, rs1, rs2, resultBits: 32 });
+      if (funct7 === 0x20 && funct3 === 5) return baseIntegerInstruction(base, 'sraw', { format: 'R', rd, rs1, rs2, resultBits: 32 });
       return unsupported('riscv64-reserved-op-32-encoding', { opcode, funct3, funct7 });
     }
     case 0x0f: {
