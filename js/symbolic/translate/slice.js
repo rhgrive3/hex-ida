@@ -188,7 +188,7 @@ export function backwardDependencySlice(target, options = {}) {
     controlFlow: hasCycle || unresolvedPhiPredecessor ? COMPLETENESS_STATUS.PARTIAL : COMPLETENESS_STATUS.COMPLETE,
     memoryEffects: COMPLETENESS_STATUS.COMPLETE,
     pathCoverage: COMPLETENESS_STATUS.COMPLETE,
-    queryScope: COMPLETENESS_STATUS.COMPLETE,
+    queryScope: unresolvedPhiPredecessor ? COMPLETENESS_STATUS.PARTIAL : COMPLETENESS_STATUS.COMPLETE,
   });
 
   return Object.freeze({

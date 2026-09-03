@@ -22,6 +22,7 @@ test('slice follows only the selected predecessor for a valid fromBlock', () => 
   assert.equal(slice.values.has('a'), true);
   assert.equal(slice.values.has('b'), false);
   assert.equal(slice.completeness.controlFlow, 'complete');
+  assert.equal(slice.completeness.queryScope, 'complete');
 });
 
 test('slice without fromBlock follows every incoming', () => {
@@ -29,6 +30,7 @@ test('slice without fromBlock follows every incoming', () => {
   assert.equal(slice.values.has('a'), true);
   assert.equal(slice.values.has('b'), true);
   assert.equal(slice.completeness.controlFlow, 'complete');
+  assert.equal(slice.completeness.queryScope, 'complete');
 });
 
 test('slice with an unknown fromBlock is not complete and records the gap', () => {
@@ -37,7 +39,8 @@ test('slice with an unknown fromBlock is not complete and records the gap', () =
   assert.equal(slice.values.size, 0);
   assert.equal(slice.hasCycle, false);
   assert.equal(slice.hitDepthLimit, false);
-  assert.notEqual(slice.completeness.controlFlow, 'complete');
+  assert.equal(slice.completeness.controlFlow, 'partial');
+  assert.equal(slice.completeness.queryScope, 'partial');
   const reasons = slice.assumptions.filter((item) => item?.kind === 'missing-phi-predecessor');
   assert.equal(reasons.length >= 1, true);
   assert.match(String(reasons[0]?.statement || ''), /C/);
@@ -51,7 +54,8 @@ test('slice with an unknown fromBlock on a single-incoming phi is not complete',
   };
   const slice = backwardDependencySlice(single, { fromBlock: 'pred-B' });
   assert.equal(slice.values.size, 0);
-  assert.notEqual(slice.completeness.controlFlow, 'complete');
+  assert.equal(slice.completeness.controlFlow, 'partial');
+  assert.equal(slice.completeness.queryScope, 'partial');
   assert.equal(slice.assumptions.some((item) => item?.kind === 'missing-phi-predecessor'), true);
 });
 
@@ -67,7 +71,8 @@ test('slice with duplicate matching predecessors fails closed instead of selecti
   const slice = backwardDependencySlice(duplicate, { fromBlock: 'pred-A' });
   assert.equal(slice.instructions.has('phi-duplicate'), true);
   assert.equal(slice.values.size, 0);
-  assert.notEqual(slice.completeness.controlFlow, 'complete');
+  assert.equal(slice.completeness.controlFlow, 'partial');
+  assert.equal(slice.completeness.queryScope, 'partial');
   const reasons = slice.assumptions.filter((item) => item?.kind === 'ambiguous-phi-predecessor');
   assert.equal(reasons.length, 1);
   assert.match(String(reasons[0]?.statement || ''), /2 incoming values/);
