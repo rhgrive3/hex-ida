@@ -30,6 +30,11 @@ assert.notEqual(
   __machoSourceCacheForTests.cacheKey({ sliceIndex:0, strings:{ minLength:5 }, ranges }),
   'semantic string scan options must remain part of the cache key',
 );
+assert.notEqual(
+  __machoSourceCacheForTests.cacheKey({ sliceIndex:0, source:{ maxReadLength:4096 }, ranges }),
+  __machoSourceCacheForTests.cacheKey({ sliceIndex:0, source:{ maxReadLength:1024 * 1024 }, ranges }),
+  'source maxReadLength must remain part of the cache identity',
+);
 
 try {
   const first = await parseMachOSource(source, {
@@ -53,6 +58,34 @@ try {
     false,
     'a stale nested signal must not poison the cache entry reused by a healthy caller',
   );
+
+  const loose = await parseMachOSource(source, {
+    sliceIndex:0,
+    source:{ maxReadLength:1024 * 1024 },
+    ranges,
+  });
+  const tight = await parseMachOSource(source, {
+    sliceIndex:0,
+    source:{ maxReadLength:4096 },
+    ranges,
+  });
+  assert.equal(loose.source?.maxReadLength, 1024 * 1024);
+  assert.equal(tight.source?.maxReadLength, 4096);
+
+  const tightFirst = await parseMachOSource(source, {
+    sliceIndex:0,
+    source:{ maxReadLength:4096 },
+    strings:{ minLength:5 },
+    ranges,
+  });
+  const looseSecond = await parseMachOSource(source, {
+    sliceIndex:0,
+    source:{ maxReadLength:1024 * 1024 },
+    strings:{ minLength:5 },
+    ranges,
+  });
+  assert.equal(tightFirst.source?.maxReadLength, 4096);
+  assert.equal(looseSecond.source?.maxReadLength, 1024 * 1024);
 } finally {
   clearMachOSourceCache(source);
 }
