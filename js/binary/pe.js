@@ -67,7 +67,8 @@ function reconcileExportFunctionEvidence(image) {
   const exportNames = new Map();
   for (const ex of image.exports || []) {
     if (!ex || ex.kind === 'forwarder' || ex.address == null || ex.address === 0n) continue;
-    exportNames.set(BigInt(ex.address).toString(), ex.name || null);
+    const key = BigInt(ex.address).toString();
+    if (!exportNames.has(key)) exportNames.set(key, ex.name || null);
   }
   let rejectedExportOnly = 0;
   image.functions = (image.functions || []).filter((f) => {

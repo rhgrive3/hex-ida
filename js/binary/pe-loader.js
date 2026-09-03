@@ -199,23 +199,37 @@ export function parseExports(r, dir, image, sharedBudget = null) {
   for(let i=0;i<numberOfNames;i++){
     if(!budget.take({inputBytes:6,records:1,objects:1,operations:2,estimatedHeapBytes:96},'export-name-record'))break;
     const nrva=r.u32(nr.start+i*4),ordIndex=r.u16(or.start+i*2);
-    const name=mappedCStringAtRva(r,image,nrva,budget,'PE export name'); if(name)names.set(ordIndex,name);
+    if(ordIndex>=numberOfFunctions)continue;
+    const name=mappedCStringAtRva(r,image,nrva,budget,'PE export name');
+    if(name){
+      let list=names.get(ordIndex);
+      if(!list){list=[];names.set(ordIndex,list);}
+      list.push(name);
+    }
   }
   const dirStart=dir.rva,dirEnd=dir.rva+dir.size;
   for(let i=0;i<numberOfFunctions;i++){
     if(!budget.take({inputBytes:4,records:1,objects:2,operations:2,estimatedHeapBytes:256},'export-function-record'))break;
     const frva=r.u32(fr.start+i*4); if(!frva)continue;
-    const name=names.get(i)||`#${baseOrdinal+i}`;
+    const slotNames=names.get(i);
+    const exportNamesForSlot=(slotNames&&slotNames.length)?slotNames:[`#${baseOrdinal+i}`];
     if(frva>=dirStart&&frva<dirEnd){
       const forwarderRange=mappedFileRangeForRva(image,frva);
       if(!forwarderRange){budget.partial('PE export forwarder:unmapped-string','Ignored PE export forwarder string outside a file-backed mapping');continue;}
       const forwarderEnd=Math.min(forwarderRange.end,forwarderRange.start+(dirEnd-frva));
       const forwarder=mappedCStringAtOffset(r,forwarderRange.start,forwarderEnd,budget,'PE export forwarder');
       if(!forwarder)continue;
-      image.exports.push({name,address:0n,ordinal:baseOrdinal+i,kind:'forwarder',forwarder,source:'PE-export'});continue;
+      for(const name of exportNamesForSlot){
+        image.exports.push({name,address:0n,ordinal:baseOrdinal+i,kind:'forwarder',forwarder,source:'PE-export'});
+      }
+      continue;
     }
-    const address=image.imageBase+BigInt(frva); image.exports.push({name,address,ordinal:baseOrdinal+i,kind:'export',source:'PE-export'});
-    const sec=image.sectionAt(address); if(sec&&sec.perms.execute)image.functions.push(functionSeed(address,{name,source:'export',confidence:0.95}));
+    const address=image.imageBase+BigInt(frva);
+    for(const name of exportNamesForSlot){
+      image.exports.push({name,address,ordinal:baseOrdinal+i,kind:'export',source:'PE-export'});
+    }
+    const sec=image.sectionAt(address);
+    if(sec&&sec.perms.execute)image.functions.push(functionSeed(address,{name:exportNamesForSlot[0],source:'export',confidence:0.95}));
   }
 }
 
