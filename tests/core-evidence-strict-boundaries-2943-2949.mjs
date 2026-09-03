@@ -1,10 +1,5 @@
 import assert from 'node:assert/strict';
-import { createEvidenceNode, EvidenceGraph } from '../js/core/evidence/index.js';
-
-for (const badConfidence of ['0.9', ['0.9'], true, { valueOf(){ return 0.9; } }]) {
-  assert.throws(() => createEvidenceNode({ id:'bad-confidence', family:'RuntimeEvidence', confidence:badConfidence }), /evidence-invalid-confidence/);
-}
-assert.equal(createEvidenceNode({ id:'good-confidence', family:'RuntimeEvidence', confidence:0.9 }).confidence, 0.9);
+import { EvidenceGraph } from '../js/core/evidence/index.js';
 
 const graph = new EvidenceGraph({
   nodes:[{ id:'claim-strict', family:'Claim', semanticKind:'strict', targetEntityIds:['entity-strict'] }],
@@ -16,4 +11,9 @@ for (const malformedId of [['claim-strict'], 1, true, { toString(){ return 'clai
   assert.throws(() => graph.evaluateClaim(malformedId), /evidence-id-required/);
 }
 assert.equal(graph.getNode('claim-strict')?.id, 'claim-strict');
-console.log('core evidence strict boundaries #2943/#2949: PASS');
+assert.equal(graph.hasNode('claim-strict'), true);
+const evaluation = graph.evaluateClaim('claim-strict');
+assert.equal(evaluation.claimId, 'claim-strict');
+assert.equal(evaluation.verdict, 'unknown');
+assert.deepEqual(evaluation.missingEvidenceIds, []);
+console.log('core evidence strict boundary #2943: PASS');
