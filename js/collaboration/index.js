@@ -88,6 +88,8 @@ export class ChangeLog {
 
   #validate(operation) {
     if (operation.schemaVersion !== CHANGELOG_SCHEMA_VERSION) return { status: 'rejected', reason: 'schema-version-unsupported' };
+    if (typeof operation.action !== 'string') return { status: 'rejected', reason: 'operation-action-required' };
+    if (!OPERATION_ACTIONS.has(operation.action)) return { status: 'rejected', reason: 'operation-action-unsupported' };
     if (operation.projectIdentity !== this.projectIdentity) return { status: 'rejected', reason: 'wrong-project-identity' };
     if (this.binaryIdentity !== operation.binaryIdentity) return { status: 'rejected', reason: 'wrong-binary-identity' };
     if (operation.provenance?.transport === 'remote') {
