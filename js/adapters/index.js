@@ -141,6 +141,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     this.activeRun = null;
     this.traceCursor = 0;
     this.branchCursor = 0;
+    this.memorySeenCursor = 0;
   }
   async launch(spec = {}) {
     this.require('launch');
@@ -193,7 +194,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     this.sandbox = sandbox;
     this.traceBuffer = traceBuffer;
     this.traceState = traceState;
-    this.cancelled = false; this.running = false; this.traceCursor = 0; this.branchCursor = 0; this.epoch++;
+    this.cancelled = false; this.running = false; this.traceCursor = 0; this.branchCursor = 0; this.memorySeenCursor = traceBuffer.seen; this.epoch++;
     this.initialRegisters = initialRegisters;
     this.lastResult = null;
     return { launched:true, address, epoch:this.epoch, memory:memoryMap.snapshot(), capabilities:this.capabilities };
@@ -207,7 +208,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
       this.activeRun = null;
     }
     this.cancelled = true; this.running = false; this.sandbox = null; this.memoryMap = null; this.initialRegisters = null; this.lastResult = null;
-    this.traceBuffer = new TraceRingBuffer(this.options.trace || {}); this.traceState = { suppressMemory:false }; this.traceCursor = 0; this.branchCursor = 0;
+    this.traceBuffer = new TraceRingBuffer(this.options.trace || {}); this.traceState = { suppressMemory:false }; this.traceCursor = 0; this.branchCursor = 0; this.memorySeenCursor = 0;
     return super.disconnect();
   }
   async pause() {
@@ -373,6 +374,18 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     const trace = fullTrace.slice(this.traceCursor); this.traceCursor = fullTrace.length;
     const allBranches = result.takenBranches || [];
     const branches = allBranches.slice(this.branchCursor); this.branchCursor = allBranches.length;
+    // Memory events have their own producer (the launch-scoped emulator load/store
+    // wrappers) and never appear in the emulator control trace, so control-flow
+    // cursors cannot express their run boundary. The ring buffer's monotonic `seen`
+    // counter survives eviction, so a run boundary recorded as a seen-count stays
+    // valid: only events pushed strictly after the boundary belong to this resume.
+    // Memory events are captured before any of this run's control events are pushed,
+    // so those pushes cannot evict or reclassify them.
+    const memoryRunBoundary = this.memorySeenCursor;
+    const memoryEvents = this.traceBuffer.events.filter((event) => Number(event.__seen ?? Number.MAX_SAFE_INTEGER) > memoryRunBoundary);
+    this.memorySeenCursor = this.traceBuffer.seen;
+    const loads = memoryEvents.filter((e) => e.type === 'memory-read');
+    const stores = memoryEvents.filter((e) => e.type === 'memory-write');
     for (const e of trace) {
       if (e?.type === 'call') continue; // emitted below once, with resolved target
       this.traceBuffer.push({ type:'instruction', address:e.addr, text:e.text });
@@ -385,8 +398,6 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     for (const e of returns) this.traceBuffer.push(e);
     const finalRegisters = cloneRegisters(this.sandbox.emulator);
     const traceSnapshot = this.traceBuffer.snapshot();
-    const loads = traceSnapshot.events.filter((e) => e.type === 'memory-read');
-    const stores = traceSnapshot.events.filter((e) => e.type === 'memory-write');
     const sourceTrace = result.traceMeta || {};
     const sourceDropped = Number.isSafeInteger(Number(sourceTrace.dropped)) && Number(sourceTrace.dropped) > 0 ? Number(sourceTrace.dropped) : 0;
     const sourceTruncated = sourceTrace.truncated === true || sourceDropped > 0;
