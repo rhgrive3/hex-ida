@@ -20,6 +20,9 @@ on:
       - '.github/workflows/ui-regression.yml'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
   group: ui-regression-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
@@ -34,11 +37,16 @@ jobs:
     timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
       - run: npm ci --no-audit --no-fund
+      - name: Verify playwright@1.55.0 dependency
+        shell: bash
+        run: test "$(node -p \"require('./node_modules/playwright/package.json').version\")" = "1.55.0"
       - name: Restore pinned Playwright Chromium cache
         uses: actions/cache@v4
         with:
@@ -62,6 +70,7 @@ jobs:
         run: |
           node --input-type=module <<'NODE'
           import fs from 'node:fs';
+          import path from 'node:path';
           import { spawnSync } from 'node:child_process';
 
           const suites = [
@@ -75,12 +84,29 @@ jobs:
           for (const [name, command] of suites) {
             const shots = `tests/ui-shots/chromium/${name}`;
             fs.mkdirSync(shots, { recursive: true });
+            const env = { ...process.env, CI: '1', UI_SHOTS: shots };
+            const legacyShots = path.join('tests', '.shots');
+            if (name === 'browser-regression') {
+              // tests/browser.mjs predates UI_SHOTS. Preserve its KEEP contract,
+              // then fold those screenshots into the canonical audit artifact.
+              env.KEEP = '1';
+              fs.rmSync(legacyShots, { recursive: true, force: true });
+            }
             console.log(`::group::${name}: ${command}`);
             const result = spawnSync(command, {
               shell: true,
               stdio: 'inherit',
-              env: { ...process.env, CI: '1', UI_SHOTS: shots },
+              env,
             });
+            if (name === 'browser-regression' && fs.existsSync(legacyShots)) {
+              for (const entry of fs.readdirSync(legacyShots)) {
+                fs.cpSync(
+                  path.join(legacyShots, entry),
+                  path.join(shots, entry),
+                  { recursive: true },
+                );
+              }
+            }
             console.log('::endgroup::');
             if (result.error || result.status !== 0) {
               failures.push({ name, command, status: result.status, error: result.error?.message ?? null });
@@ -111,6 +137,8 @@ jobs:
       options: --ipc=host
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
