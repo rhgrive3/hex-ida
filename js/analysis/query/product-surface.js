@@ -176,7 +176,12 @@ async function scanNextStringRegion(app, state, options = {}) {
     }
     const request = app.backend.strings(
       { regionId:item.region.id, min:4, maxBytes:item.bytes, limit:remaining },
-      options.onProgress && ((progress) => options.onProgress({ ...progress, phase:'strings', region:item.region.id })),
+      // Only a real function observes progress. A truthy non-function would
+      // build a callback that throws TypeError on first progress and fail an
+      // otherwise healthy scan, so malformed observers are ignored instead.
+      typeof options.onProgress === 'function'
+        ? (progress) => options.onProgress({ ...progress, phase:'strings', region:item.region.id })
+        : null,
     );
     const entry = { waiters:0, cancel:typeof request?.cancel === 'function' ? () => request.cancel() : null, promise:null };
     entry.promise = Promise.resolve(request).then((result) => {
@@ -233,7 +238,13 @@ function claimRows(report, snapshot) {
 function findRecognitionRecord(app, address) {
   const records = app?.recognition?.records || [];
   return records.find((row) => {
-    try { return BigInt(row.address) === BigInt(address); } catch { return false; }
+    // Recognition addresses use the same typed contract as query addresses.
+    // A bare BigInt() would stringify Array/object identities (e.g.
+    // BigInt(['4096']) === 4096n) and misjoin a malformed record to a real
+    // function, so anything outside the canonical form never matches.
+    let recordAddress = null;
+    try { recordAddress = functionAddress(row.address); } catch { return false; }
+    return recordAddress === address;
   }) || null;
 }
 
