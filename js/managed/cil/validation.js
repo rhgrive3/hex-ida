@@ -28,47 +28,105 @@ function mergeStacks(existing, incoming) {
   return { ok:true, stack:merged, imprecise };
 }
 
+function handlerEndOffset(region) {
+  if (region?.handlerEndOffset != null) {
+    return safeInteger(region.handlerEndOffset) ? region.handlerEndOffset : null;
+  }
+  if (region?.handlerLength != null && safeInteger(region?.handlerOffset) && safeInteger(region.handlerLength)) {
+    const end = region.handlerOffset + region.handlerLength;
+    return Number.isSafeInteger(end) ? end : null;
+  }
+  return null;
+}
+
 function regionMembership(regions, offset) {
-  return regions
-    .filter((region) => safeInteger(region.startOffset) && safeInteger(region.endOffset)
-      && offset >= region.startOffset && offset < region.endOffset)
-    .map((region) => region.id)
-    .sort();
+  const membership = [];
+  for (const region of regions) {
+    const id = region?.id ?? 'unknown-region';
+    if (safeInteger(region?.startOffset) && safeInteger(region?.endOffset)
+      && offset >= region.startOffset && offset < region.endOffset) {
+      membership.push(`${id}:try`);
+    }
+    const handlerEnd = handlerEndOffset(region);
+    if (safeInteger(region?.handlerOffset) && safeInteger(handlerEnd)
+      && offset >= region.handlerOffset && offset < handlerEnd) {
+      membership.push(`${id}:handler:${region?.handlerKind ?? 'unknown'}`);
+    }
+    if (region?.handlerKind === 'filter' && safeInteger(region?.filterOffset) && safeInteger(region?.handlerOffset)
+      && offset >= region.filterOffset && offset < region.handlerOffset) {
+      membership.push(`${id}:filter`);
+    }
+  }
+  return membership.sort();
 }
 
 function sameMembership(left, right) {
   return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
+function membershipSubset(subset, superset) {
+  const allowed = new Set(superset);
+  return subset.every((value) => allowed.has(value));
+}
+
+function leaveSourceForbidden(regions, offset) {
+  for (const region of regions) {
+    const handlerEnd = handlerEndOffset(region);
+    if (region?.handlerKind === 'filter' && safeInteger(region?.filterOffset) && safeInteger(region?.handlerOffset)
+      && offset >= region.filterOffset && offset < region.handlerOffset) {
+      return true;
+    }
+    if ((region?.handlerKind === 'finally' || region?.handlerKind === 'fault')
+      && safeInteger(region?.handlerOffset) && safeInteger(handlerEnd)
+      && offset >= region.handlerOffset && offset < handlerEnd) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function rangeInteger(value) {
+  if (safeInteger(value)) return value;
+  if (typeof value !== 'string' || !/^(0|[1-9][0-9]*)$/.test(value)) return null;
+  const parsed = BigInt(value);
+  return parsed <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(parsed) : null;
+}
+
 function instructionEndOffset(bundle) {
   const offset = bundle?.bytecodeOffset;
   if (!safeInteger(offset)) return null;
   const range = bundle?.origin?.byteRanges?.[0];
-  const start = range?.start;
-  const end = range?.end;
-  if (typeof start === 'number' && Number.isSafeInteger(start)
-    && typeof end === 'number' && Number.isSafeInteger(end) && end > start) {
-    return offset + (end - start);
-  }
+  const start = rangeInteger(range?.start);
+  const end = rangeInteger(range?.end);
+  if (start != null && end != null && end > start) return offset + (end - start);
   return offset + 1;
 }
 
-function branchTargets(bundle) {
-  const targets = [];
+function branchEdges(bundle) {
+  const edges = [];
   for (const effect of bundle.controlEffects || []) {
-    if ((effect?.kind === 'branch' || effect?.kind === 'conditional-branch') && safeInteger(effect.targetOffset)) {
-      targets.push(effect.targetOffset);
+    if (effect?.kind === 'branch' || effect?.kind === 'conditional-branch' || effect?.kind === 'leave') {
+      if (safeInteger(effect.targetOffset)) edges.push({ kind:effect.kind, targetOffset:effect.targetOffset });
+    } else if (effect?.kind === 'switch' && Array.isArray(effect.targetOffsets)) {
+      for (const targetOffset of effect.targetOffsets) {
+        if (safeInteger(targetOffset)) edges.push({ kind:'switch', targetOffset });
+      }
     }
   }
-  return targets;
+  return edges;
 }
 
 function isTerminal(bundle) {
-  return (bundle.controlEffects || []).some((effect) => effect?.kind === 'return' || effect?.kind === 'throw');
+  return (bundle.controlEffects || []).some((effect) =>
+    effect?.kind === 'return'
+    || effect?.kind === 'throw'
+    || effect?.kind === 'rethrow'
+    || effect?.kind === 'endfinally'
+    || effect?.kind === 'endfilter');
 }
 
-function hasUnconditionalBranch(bundle) {
-  return (bundle.controlEffects || []).some((effect) => effect?.kind === 'branch');
+function hasUnconditionalTransfer(bundle) {
+  return (bundle.controlEffects || []).some((effect) => effect?.kind === 'branch' || effect?.kind === 'leave');
 }
 
 function handlerEntryStack(region) {
@@ -102,11 +160,14 @@ export function validateCilEffectFunction(decoded, context = {}) {
   const regions = Array.isArray(decoded?.exceptionRegions) ? decoded.exceptionRegions : [];
   const validBoundary = (offset, allowEnd = false) => safeInteger(offset) && (offsets.has(offset) || (allowEnd && offset === endOffset));
   for (const region of regions) {
+    const handlerEnd = handlerEndOffset(region);
     if (!validBoundary(region?.startOffset) || !validBoundary(region?.endOffset, true)
-      || !validBoundary(region?.handlerOffset) || region.endOffset <= region.startOffset) {
+      || !validBoundary(region?.handlerOffset) || !validBoundary(handlerEnd, true)
+      || region.endOffset <= region.startOffset || handlerEnd <= region.handlerOffset) {
       errors.push({ code:'cil-invalid-exception-region-boundary', regionId:region?.id ?? null });
     }
-    if (region?.filterOffset != null && !validBoundary(region.filterOffset)) {
+    if (region?.filterOffset != null
+      && (!validBoundary(region.filterOffset) || !safeInteger(region?.handlerOffset) || region.filterOffset >= region.handlerOffset)) {
       errors.push({ code:'cil-invalid-filter-boundary', regionId:region?.id ?? null, offset:region.filterOffset });
     }
   }
@@ -144,9 +205,14 @@ export function validateCilEffectFunction(decoded, context = {}) {
     if (safeInteger(region?.filterOffset) && offsets.has(region.filterOffset)) enqueue(region.filterOffset, [{ bits:64 }], null);
   }
 
+  const needsReturnShape = bundles.some((bundle) =>
+    (bundle?.controlEffects || []).some((effect) => effect?.kind === 'return'));
   const returnStackSlots = context?.returnStackSlots;
-  const returnShapeKnown = safeInteger(returnStackSlots);
+  const returnShapeKnown = !needsReturnShape || safeInteger(returnStackSlots);
+  if (!returnShapeKnown) warnings.push({ code:'cil-return-stack-shape-unavailable' });
+
   const processed = new Set();
+  const unanalyzedAfterCall = new Set();
   while (queue.length) {
     const offset = queue.shift();
     const stateKey = `${offset}:${JSON.stringify(states.get(offset))}`;
@@ -178,38 +244,70 @@ export function validateCilEffectFunction(decoded, context = {}) {
         stackHeight:stack.length, maxStack });
     }
 
+    const controls = Array.isArray(bundle.controlEffects) ? bundle.controlEffects : [];
+    for (const effect of controls) {
+      if ((effect?.kind === 'branch' || effect?.kind === 'conditional-branch' || effect?.kind === 'leave')
+        && !safeInteger(effect.targetOffset)) {
+        errors.push({ code:'cil-invalid-branch-target', operationId:bundle.operationId ?? null,
+          sourceOffset:offset, targetOffset:effect?.targetOffset ?? null });
+      } else if (effect?.kind === 'switch') {
+        if (!Array.isArray(effect.targetOffsets)) {
+          errors.push({ code:'cil-invalid-branch-target', operationId:bundle.operationId ?? null,
+            sourceOffset:offset, targetOffset:null });
+        } else {
+          for (const targetOffset of effect.targetOffsets) {
+            if (!safeInteger(targetOffset)) {
+              errors.push({ code:'cil-invalid-branch-target', operationId:bundle.operationId ?? null,
+                sourceOffset:offset, targetOffset });
+            }
+          }
+        }
+      }
+    }
+
     if ((bundle.callEffects || []).length > 0) {
       warnings.push({ code:'cil-call-stack-effect-unresolved', operationId:bundle.operationId ?? null, bytecodeOffset:offset });
+      for (const edge of branchEdges(bundle)) unanalyzedAfterCall.add(edge.targetOffset);
+      if (!hasUnconditionalTransfer(bundle) && !isTerminal(bundle)) {
+        const next = bundles[index + 1]?.bytecodeOffset;
+        if (safeInteger(next)) unanalyzedAfterCall.add(next);
+      }
       continue;
     }
 
-    const controls = Array.isArray(bundle.controlEffects) ? bundle.controlEffects : [];
-    for (const effect of controls) {
-      if ((effect?.kind === 'branch' || effect?.kind === 'conditional-branch') && !safeInteger(effect.targetOffset)) {
-        errors.push({ code:'cil-invalid-branch-target', operationId:bundle.operationId ?? null,
-          sourceOffset:offset, targetOffset:effect?.targetOffset ?? null });
-      }
-    }
     if (controls.some((effect) => effect?.kind === 'return')) {
-      if (returnShapeKnown && stack.length !== returnStackSlots) {
+      if (safeInteger(returnStackSlots) && stack.length !== returnStackSlots) {
         errors.push({ code:'cil-return-stack-shape-invalid', operationId:bundle.operationId ?? null,
           bytecodeOffset:offset, stackHeight:stack.length, expected:returnStackSlots });
       }
       continue;
     }
-    if (controls.some((effect) => effect?.kind === 'throw')) continue;
-
-    for (const target of branchTargets(bundle)) {
-      const sourceMembership = regionMembership(regions, offset);
-      const targetMembership = regionMembership(regions, target);
-      if (!sameMembership(sourceMembership, targetMembership)) {
-        errors.push({ code:'cil-branch-crosses-protected-region', operationId:bundle.operationId ?? null,
-          sourceOffset:offset, targetOffset:target });
-      }
-      enqueue(target, stack, offset);
+    if (controls.some((effect) =>
+      effect?.kind === 'throw'
+      || effect?.kind === 'rethrow'
+      || effect?.kind === 'endfinally'
+      || effect?.kind === 'endfilter')) {
+      continue;
     }
 
-    if (!hasUnconditionalBranch(bundle) && !isTerminal(bundle)) {
+    for (const edge of branchEdges(bundle)) {
+      const sourceMembership = regionMembership(regions, offset);
+      const targetMembership = regionMembership(regions, edge.targetOffset);
+      let legal = sameMembership(sourceMembership, targetMembership);
+      if (edge.kind === 'leave') {
+        const exitsProtectedScope = sourceMembership.length === 0 || targetMembership.length < sourceMembership.length;
+        legal = !leaveSourceForbidden(regions, offset)
+          && exitsProtectedScope
+          && membershipSubset(targetMembership, sourceMembership);
+      }
+      if (!legal) {
+        errors.push({ code:'cil-branch-crosses-protected-region', operationId:bundle.operationId ?? null,
+          sourceOffset:offset, targetOffset:edge.targetOffset });
+      }
+      enqueue(edge.targetOffset, edge.kind === 'leave' ? [] : stack, offset);
+    }
+
+    if (!hasUnconditionalTransfer(bundle) && !isTerminal(bundle)) {
       const next = bundles[index + 1]?.bytecodeOffset;
       if (safeInteger(next)) enqueue(next, stack, offset);
     }
@@ -217,8 +315,15 @@ export function validateCilEffectFunction(decoded, context = {}) {
 
   const semanticPartial = bundles.some((bundle) => bundle?.completeness === 'unknown' || bundle?.completeness === 'partial');
   const resolutionPartial = warnings.some((warning) => warning.code === 'cil-call-stack-effect-unresolved');
-  const status = errors.length > 0 ? 'invalid' : semanticPartial || resolutionPartial ? 'partial' : 'valid';
-  verifierFacts.push({ code:'cil-stack-dataflow-validated', reachedBlocks:states.size, maxStack: maxStackKnown ? maxStack : null });
+  const authorityPartial = !maxStackKnown || !returnShapeKnown;
+  const status = errors.length > 0 ? 'invalid' : semanticPartial || resolutionPartial || authorityPartial ? 'partial' : 'valid';
+  verifierFacts.push({
+    code:'cil-stack-dataflow-validated',
+    reachedBlocks:states.size,
+    maxStack: maxStackKnown ? maxStack : null,
+    returnStackSlots: returnShapeKnown && needsReturnShape ? returnStackSlots : null,
+    unanalyzedAfterCall:[...unanalyzedAfterCall].sort((left, right) => left - right),
+  });
 
   return createManagedValidationReport({
     targetId:methodId,
@@ -229,7 +334,7 @@ export function validateCilEffectFunction(decoded, context = {}) {
     verifierFacts,
     completeness:{
       structural: errors.some((error) => error.code.includes('boundary') || error.code === 'cil-invalid-branch-target') ? 'partial' : 'complete',
-      specValidation: errors.length > 0 ? 'failed' : (resolutionPartial ? 'partial' : 'valid'),
+      specValidation: errors.length > 0 ? 'failed' : (resolutionPartial || authorityPartial ? 'partial' : 'valid'),
       semanticEffect: semanticPartial ? 'partial' : 'complete',
       resolution: resolutionPartial ? 'partial' : 'complete',
     },

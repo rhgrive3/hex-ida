@@ -12,7 +12,7 @@ function op(offset, { consumed=0, produced=0, controlEffects=[], callEffects=[],
     completeness,
   };
 }
-function validate(bundles, maxStack=8, context={}) {
+function validate(bundles, maxStack=8, context={ returnStackSlots:0 }) {
   return validateCilEffectFunction({ methodId:'managed-method:test:0x06000001', profileId:'ecma-335', bundles, entryState:{maxStack}, exceptionRegions:[] }, context);
 }
 
@@ -56,6 +56,7 @@ function validate(bundles, maxStack=8, context={}) {
   assert.equal(report.status,'partial');
   assert.equal(report.completeness.resolution,'partial');
   assert.ok(report.warnings.some((w)=>w.code==='cil-call-stack-effect-unresolved'));
+  assert.deepEqual(report.verifierFacts.find((fact)=>fact.code==='cil-stack-dataflow-validated')?.unanalyzedAfterCall, [1]);
 }
 
 console.log('issue-1142-cil-stack-validation: PASS');

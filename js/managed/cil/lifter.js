@@ -33,6 +33,8 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}) {
     startOffset: cl.tryOffset,
     endOffset: cl.tryOffset + cl.tryLength,
     handlerOffset: cl.handlerOffset,
+    handlerLength: cl.handlerLength,
+    handlerEndOffset: cl.handlerOffset + cl.handlerLength,
     handlerKind: cl.kind,
     // The trailing union field is the filter-code offset for filter clauses
     // and a class token only for catch clauses (ECMA-335 §II.25.4.6): mapping
@@ -141,7 +143,7 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}) {
             const locIdx = bytecode[pc++];
             mnemonic = 'stloc.s';
             locationWrites.push({ kind: 'local', index: locIdx, bits: 32 });
-            consumedValues.push({ id: `stack_top` });
+            consumedValues.push({ id: 'top' });
             currentStackHeight--;
           }
           break;
@@ -295,6 +297,25 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}) {
           }
           break;
 
+        case 0x45: // switch
+          {
+            need(4);
+            const count = view.getUint32(pc, true);
+            pc += 4;
+            if (count > Math.floor((bytecode.length - pc) / 4)) fail('cil-truncated-operand');
+            const deltas = [];
+            for (let index = 0; index < count; index++) {
+              deltas.push(view.getInt32(pc, true));
+              pc += 4;
+            }
+            const switchBase = pc;
+            mnemonic = 'switch';
+            consumedValues.push({ id: 'selector', bits: 32 });
+            currentStackHeight--;
+            controlEffects.push({ kind: 'switch', targetOffsets:deltas.map((delta) => switchBase + delta) });
+          }
+          break;
+
         // binops: add (0x58), sub (0x59), mul (0x5A), div (0x5B), rem (0x5D), and (0x5F), or (0x60), xor (0x61), shl (0x62), shr (0x63)
         case 0x58: case 0x59: case 0x5a: case 0x5b: case 0x5d: case 0x5f: case 0x60: case 0x61: case 0x62: case 0x63:
           {
@@ -380,6 +401,33 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}) {
           }
           break;
 
+        case 0xdc: // endfinally
+          mnemonic = 'endfinally';
+          controlEffects.push({ kind: 'endfinally' });
+          break;
+
+        case 0xdd: // leave
+          {
+            need(4);
+            const offset = view.getInt32(pc, true);
+            pc += 4;
+            mnemonic = 'leave';
+            controlEffects.push({ kind: 'leave', targetOffset:pc + offset });
+            currentStackHeight = 0;
+          }
+          break;
+
+        case 0xde: // leave.s
+          {
+            need(1);
+            let offset = bytecode[pc++];
+            if (offset >= 128) offset -= 256;
+            mnemonic = 'leave.s';
+            controlEffects.push({ kind: 'leave', targetOffset:pc + offset });
+            currentStackHeight = 0;
+          }
+          break;
+
         default:
           mnemonic = `cil_op_0x${opcode.toString(16)}`;
           completeness = 'partial';
@@ -433,6 +481,18 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}) {
             consumedValues.push({ id: 'top' });
             currentStackHeight--;
           }
+          break;
+
+        case 0x11: // endfilter
+          mnemonic = 'endfilter';
+          consumedValues.push({ id: 'filter-result', bits: 32 });
+          currentStackHeight--;
+          controlEffects.push({ kind: 'endfilter' });
+          break;
+
+        case 0x1a: // rethrow
+          mnemonic = 'rethrow';
+          controlEffects.push({ kind: 'rethrow' });
           break;
 
         case 0x16: // volatile.
