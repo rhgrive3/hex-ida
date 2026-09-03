@@ -74,6 +74,24 @@ function optionalArchitectureId(value) {
   return value;
 }
 
+function candidateConflicts(value) {
+  if (value == null) return [];
+  if (!Array.isArray(value)) fail('discovery-candidate-invalid-conflicts');
+  const out = [];
+  for (let index = 0; index < value.length; index += 1) {
+    if (!Object.hasOwn(value, index)) fail('discovery-candidate-invalid-conflict');
+    const conflict = value[index];
+    if (conflict == null || typeof conflict !== 'object' || Array.isArray(conflict)) {
+      fail('discovery-candidate-invalid-conflict');
+    }
+    if (typeof conflict.kind !== 'string' || conflict.kind.length === 0 || conflict.kind.trim() !== conflict.kind) {
+      fail('discovery-candidate-invalid-conflict-kind');
+    }
+    out.push(conflict);
+  }
+  return out;
+}
+
 /**
  * How much of a function's extent one piece of evidence describes.
  *
@@ -163,7 +181,7 @@ export function createFunctionCandidate(input = {}) {
     extentEvidence: deepFreeze((input.extentEvidence ?? []).map((evidence) => createDiscoveryEvidence(evidence))),
     startState,
     extentState,
-    conflicts: deepFreeze([...(input.conflicts ?? [])]),
+    conflicts: deepFreeze(candidateConflicts(input.conflicts)),
     architectureId: optionalArchitectureId(input.architectureId),
   };
   candidate.digest = stableDigest({
