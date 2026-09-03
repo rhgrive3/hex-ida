@@ -49,7 +49,10 @@ export class PassManager {
         // public result remains structurally valid.
         const passBudget = { ...this.budget, ...(pass.budget || {}) };
         const passRemaining = Math.max(0, deadline - clock());
-        passBudget.timeBudgetMs = Math.min(validTimeBudgetMs(passBudget.timeBudgetMs, passRemaining), passRemaining);
+        passBudget.timeBudgetMs = Math.min(
+          validTimeBudgetMs(passBudget.timeBudgetMs, DEFAULT_PASS_BUDGET.timeBudgetMs),
+          passRemaining,
+        );
         passBudget.remainingTimeMs = passRemaining;
         passBudget.deadline = deadline;
         passBudget.degraded = !!state.degraded;
