@@ -150,7 +150,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     const heapSize = boundedInteger(spec.heapSize, RUNTIME_HEAP_SIZE, 0x1000, 16 * 1024 * 1024, 'heapSize');
     const memoryMap = spec.memoryMap instanceof RuntimeMemoryMap ? spec.memoryMap : createSandboxMemoryMap({
       objectBase, objectSize:boundedInteger(spec.maxObjectSize, 0x10000, 0x100, 16 * 1024 * 1024, 'maxObjectSize'),
-      stackTop:STACK_TOP, heapBase, heapSize, globals:spec.globals || [], mappings:spec.memoryMappings || []
+      stackTop:STACK_TOP, heapBase, heapSize, globals:spec.globals ?? [], mappings:spec.memoryMappings ?? []
     });
     const launchGeneration = ++this.launchGeneration;
     const sandbox = createFunctionSandbox(this.io, { objectBase, maxObjectSize:spec.maxObjectSize });

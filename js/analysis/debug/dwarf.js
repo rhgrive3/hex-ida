@@ -561,9 +561,12 @@ export function readBuildId(noteSection) {
     const descSize = view.getUint32(offset + 4, true);
     const type = view.getUint32(offset + 8, true);
     const nameStart = offset + 12;
-    const descStart = nameStart + ((nameSize + 3) & ~3);
+    if (nameSize > noteSection.length - nameStart) return null;
+    const paddedNameSize = Math.ceil(nameSize / 4) * 4;
+    if (paddedNameSize > noteSection.length - nameStart) return null;
+    const descStart = nameStart + paddedNameSize;
+    if (descSize > noteSection.length - descStart) return null;
     const descEnd = descStart + descSize;
-    if (descEnd > noteSection.length) return null;
     // The owner name lives inside the declared nameSize: alignment padding
     // past it must not serve as the terminator (#5301).
     let nameEnd = nameStart;

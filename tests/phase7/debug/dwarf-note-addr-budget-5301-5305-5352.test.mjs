@@ -24,6 +24,16 @@ test('#5301 build-id names ignore padding past namesz', () => {
   assert.equal(readBuildId(good), 'deadbeef');
 });
 
+test('#5301 build-id rejects overflowing namesz before alignment', () => {
+  // namesz=0xfffffffd used to wrap the bitwise 4-byte alignment to zero,
+  // making the owner bytes double as the descriptor.
+  const wrapped = Uint8Array.from([
+    0xfd, 0xff, 0xff, 0xff, 0x04, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00,
+    0x47, 0x4e, 0x55, 0x00,
+  ]);
+  assert.equal(readBuildId(wrapped), null);
+});
+
 function unitWithDies(die, abbrev) {
   const unitLen = 2 + 4 + 1 + die.length;
   const info = new Uint8Array(4 + unitLen);

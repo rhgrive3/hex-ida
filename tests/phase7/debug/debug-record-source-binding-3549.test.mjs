@@ -21,6 +21,12 @@ function result(verdict = 'matched-authoritative', coverage = null) {
       method: 'build-id',
       ...(coverage == null ? {} : { coverage }),
     },
+    status: {
+      snapshotId: 'snapshot-A',
+      analyzerId: 'debug-source-binding-test',
+      analyzerVersion: '1',
+      completeness: 'complete',
+    },
   });
 }
 

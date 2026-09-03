@@ -626,21 +626,29 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
     // begins with a 4-byte signature before its symbol records.
     const modules = parseModuleInfo(dbiBytes, dbi);
     for (const module of modules) {
+      const declaredSize = module.symbolByteSize;
+      if (declaredSize < 4) {
+        symbols.complete = false;
+        continue;
+      }
       if (module.streamIndex < 0 || module.streamIndex >= msf.streams.length) {
-        if (module.symbolByteSize > 4) symbols.complete = false;
+        if (declaredSize > 4) symbols.complete = false;
         continue;
       }
       const moduleBytes = msf.streams[module.streamIndex].read();
-      if (!moduleBytes || moduleBytes.length <= 4) {
-        if (module.symbolByteSize > 4) symbols.complete = false;
+      if (!moduleBytes) {
+        if (declaredSize > 4) symbols.complete = false;
+        continue;
+      }
+      if (declaredSize > moduleBytes.length) {
+        symbols.complete = false;
         continue;
       }
       // The module stream is [4-byte signature][symbols][C11][C13]... with the
       // symbol range exactly [4, SymByteSize): SymByteSize == 4 is the valid
       // boundary meaning zero symbol bytes, not a cue to scan line info as
       // symbol records (#5276).
-      const size = Math.min(module.symbolByteSize >= 4 ? module.symbolByteSize : moduleBytes.length, moduleBytes.length);
-      const moduleSymbols = parseSymbolRecords(moduleBytes.subarray(4, size), budget);
+      const moduleSymbols = parseSymbolRecords(moduleBytes.subarray(4, declaredSize), budget);
       symbols.complete = symbols.complete && moduleSymbols.complete;
       for (const symbol of moduleSymbols.symbols) {
         if (symbol.kind !== 'procedure') continue;

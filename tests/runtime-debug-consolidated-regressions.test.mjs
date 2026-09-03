@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { LocalFunctionSandboxAdapter } from '../js/adapters/index.js';
+import { RemoteProtocolClient } from '../js/debug/remote-protocol.js';
 import { createRuntimeEvent, createRuntimeEventBatch } from '../js/runtime/events.js';
 import { createInstrumentationProvider } from '../js/runtime/instrumentation-provider.js';
 import { createRuntimeAddressResolution } from '../js/runtime/provider-identity.js';
@@ -226,6 +228,36 @@ import { createInterventionRecord } from '../js/runtime/evidence-bridge.js';
   });
   assert.deepEqual(validEmpty.events, []);
   console.log('✔ #3503 non-Array events fail-closed passed');
+}
+
+// --- Test 8: R1 - malformed AbortSignal-compatible objects fail closed ---
+{
+  let sends = 0;
+  const client = new RemoteProtocolClient({ send: async () => { sends += 1; } });
+  for (const signal of [
+    { addEventListener() {}, removeEventListener() {} },
+    { aborted: 'false', addEventListener() {}, removeEventListener() {} },
+  ]) {
+    await assert.rejects(
+      client.request('runtime.session.test', {}, { signal }),
+      (err) => err.code === 'invalid-argument' && err.name === 'DebugAdapterError'
+    );
+  }
+  assert.equal(sends, 0, 'malformed cancellation authority must not send a request');
+  client.close();
+  console.log('✔ R1 strict AbortSignal shape passed');
+}
+
+// --- Test 9: R1 - sandbox adapter preserves explicit falsy malformed collections ---
+{
+  for (const [key, value] of [['globals', false], ['memoryMappings', 0]]) {
+    const adapter = new LocalFunctionSandboxAdapter({});
+    await assert.rejects(
+      adapter.launch({ address: 0x1000n, [key]: value }),
+      (err) => err.code === 'invalid-argument' && err.name === 'MemoryAccessError'
+    );
+  }
+  console.log('✔ R1 sandbox collection validation passed');
 }
 
 console.log('\nAll runtime-debug consolidated regression tests PASSED!');

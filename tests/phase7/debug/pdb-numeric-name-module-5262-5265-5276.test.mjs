@@ -89,7 +89,7 @@ function modInfoEntryOffset(dbiBytes, dbi, streamIndex, symbolByteSize) {
   return -1;
 }
 
-test('#5276 SymByteSize 4 keeps line info out of symbol records', () => {
+test('#5276 SymByteSize bounds keep non-symbol bytes out of module records', () => {
   const variant = loadPdbFixtures().variants[0];
   const original = new Uint8Array(Buffer.from(variant.pdb, 'base64'));
   const msf = parseMsf(original);
@@ -131,10 +131,9 @@ test('#5276 SymByteSize 4 keeps line info out of symbol records', () => {
   const streamBase = firstBlockOf(module.streamIndex) * blockSize;
 
   const patched = original.slice();
-  const patchedView = new DataView(patched.buffer, patched.byteOffset, patched.byteLength);
   // Forged S_LPROC32 record right where line info would start: length 44 so
   // the NUL-terminated name "Evil" fits at record offset 39. It must never
-  // surface when the symbol range is the empty [4, 4).
+  // surface when the declared symbol range is empty or malformed.
   const forged = new Uint8Array(46);
   const forgedView = new DataView(forged.buffer);
   forgedView.setUint16(0, 44, true); // length
@@ -146,10 +145,23 @@ test('#5276 SymByteSize 4 keeps line info out of symbol records', () => {
   // Rewrite SymByteSize inside the DBI stream bytes (entry offsets are
   // stream-relative; the stream starts at its first physical block).
   const dbiBase = firstBlockOf(3) * blockSize;
-  patchedView.setUint32(dbiBase + entryOffset + 36, 4, true);
+  const probeWithSymbolByteSize = (symbolByteSize) => {
+    const candidate = patched.slice();
+    const candidateView = new DataView(candidate.buffer, candidate.byteOffset, candidate.byteLength);
+    candidateView.setUint32(dbiBase + entryOffset + 36, symbolByteSize, true);
+    return new PdbDebugInfoProvider().probe({ ...pdbImage(variant), pdbBytes: candidate });
+  };
 
-  const provider = new PdbDebugInfoProvider();
-  const result = provider.probe({ ...pdbImage(variant), pdbBytes: patched });
-  const evil = (result.parsed?.symbols?.symbols ?? []).filter((symbol) => symbol.name === 'Evil');
-  assert.equal(evil.length, 0, 'line-info bytes must not parse as symbol records at SymByteSize 4');
+  const empty = probeWithSymbolByteSize(4);
+  assert.equal((empty.parsed?.symbols?.symbols ?? []).some((symbol) => symbol.name === 'Evil'), false,
+    'line-info bytes must not parse as symbol records at SymByteSize 4');
+
+  const moduleLength = msf.streams[module.streamIndex].read().length;
+  for (const invalidSize of [3, moduleLength + 1]) {
+    const malformed = probeWithSymbolByteSize(invalidSize);
+    assert.equal(malformed.parsed?.symbols?.complete, false,
+      `malformed SymByteSize ${invalidSize} must make symbol evidence incomplete`);
+    assert.equal((malformed.parsed?.symbols?.symbols ?? []).some((symbol) => symbol.name === 'Evil'), false,
+      `malformed SymByteSize ${invalidSize} must not scan non-symbol bytes`);
+  }
 });
