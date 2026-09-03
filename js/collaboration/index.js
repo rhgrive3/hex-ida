@@ -25,8 +25,8 @@ export function createProjectOperation(input = {}) {
   const targetEntityId = required(input.targetEntityId ?? input.entityId, 'operation-target-entity-required');
   const factKind = required(input.factKind, 'operation-fact-kind-required');
   const actionInput = input.action ?? 'set';
-  if (typeof actionInput !== 'string') throw new TypeError('operation-action-required');
-  const action = required(actionInput, 'operation-action-required');
+  if (typeof actionInput !== 'string' || !actionInput.trim()) throw new TypeError('operation-action-required');
+  const action = actionInput;
   if (!OPERATION_ACTIONS.has(action)) throw new TypeError('operation-action-unsupported');
   const payload = clone(input.payload ?? input.value ?? null);
   const operationId = required(input.operationId || `op:${stableDigest({ projectIdentity, binaryIdentity: input.binaryIdentity || null, targetEntityId, factKind, action, payload, beforeFingerprint: input.beforeFingerprint || null, causalParents: list(input.causalParents) })}`, 'operation-id-required');
