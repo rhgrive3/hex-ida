@@ -2,10 +2,17 @@ function clock() { return globalThis.performance?.now ? globalThis.performance.n
 
 export const DEFAULT_PASS_BUDGET = Object.freeze({ timeBudgetMs: 40, nodeBudget: 12000, maxIterations: 16 });
 
+function validTimeBudgetMs(value, fallback) {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+    ? value
+    : fallback;
+}
+
 export class PassManager {
   constructor(passes = [], budget = {}) {
     this.passes = passes.slice();
     this.budget = { ...DEFAULT_PASS_BUDGET, ...budget };
+    this.budget.timeBudgetMs = validTimeBudgetMs(this.budget.timeBudgetMs, DEFAULT_PASS_BUDGET.timeBudgetMs);
   }
 
   run(initialState) {
@@ -13,7 +20,7 @@ export class PassManager {
     state.passMetrics ||= [];
     state.warnings ||= [];
     const totalStart = clock();
-    const totalBudget = Math.max(0, Number(this.budget.timeBudgetMs ?? DEFAULT_PASS_BUDGET.timeBudgetMs));
+    const totalBudget = this.budget.timeBudgetMs;
     const deadline = totalStart + totalBudget;
     let budgetWarned = false;
 
@@ -42,7 +49,7 @@ export class PassManager {
         // public result remains structurally valid.
         const passBudget = { ...this.budget, ...(pass.budget || {}) };
         const passRemaining = Math.max(0, deadline - clock());
-        passBudget.timeBudgetMs = Math.min(Math.max(0, Number(passBudget.timeBudgetMs ?? passRemaining)), passRemaining);
+        passBudget.timeBudgetMs = Math.min(validTimeBudgetMs(passBudget.timeBudgetMs, passRemaining), passRemaining);
         passBudget.remainingTimeMs = passRemaining;
         passBudget.deadline = deadline;
         passBudget.degraded = !!state.degraded;
