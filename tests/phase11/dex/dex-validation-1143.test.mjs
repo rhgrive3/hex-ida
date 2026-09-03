@@ -75,6 +75,14 @@ function hasError(report, code) {
 }
 
 {
+  const { report } = await validate((bytes) => {
+    bytes.set([0x00, 0x01, 0x0e, 0x00], 0x150); // packed-switch payload signature, not nop
+  });
+  assert.equal(report.status, 'partial');
+  assert.equal(report.completeness.specValidation, 'partial');
+}
+
+{
   const { report } = await validate((bytes, view) => {
     view.setUint32(0x14c, 1, true);
     bytes.set([0x13, 0x00], 0x150); // const/16 requires two code units
