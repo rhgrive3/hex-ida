@@ -81,7 +81,13 @@ export const RV64IMC_32BIT_ENCODING_FAMILIES = Object.freeze([
     .map(([funct3, op]) => opcodeFunct3Funct7(`rv64m-op-32-${op}`, 0x3b, funct3, 0x01, op)),
 
   // Base FENCE: fm=0000 and the reserved rd/rs1 fields are both zero.
+  // FENCE HINT code points are carved out by `matchingFamilies` below before
+  // this ordinary-barrier family is considered.
   entry('rv64i-fence', 0xf00fffff, 0x0000000f, 'fence'),
+  // The mask/match pair is a canonical representative (PAUSE). The complete
+  // FENCE-HINT allocation needs a small predicate because `rd != x0` / `rs1 !=
+  // x0` cannot be represented by a bitmask family without enumerating registers.
+  entry('rv64i-fence-hint', 0xffffffff, 0x0100000f, 'hint'),
   // Canonical FENCE.TSO tuple: fm=1000, predecessor=RW, successor=RW.
   entry('rv64i-fence-tso', 0xffffffff, 0x8330000f, 'fence'),
   entry('rv64i-ecall', 0xffffffff, 0x00000073, 'ecall', 'exact-with-intrinsic'),
@@ -125,11 +131,31 @@ export const RV64IMC_ALIAS_OR_HINT_VECTORS = Object.freeze([
   Object.freeze({ id:'not', word:0xfff5c513, operation:'xori' }),
   Object.freeze({ id:'neg', word:0x40b00533, operation:'sub' }),
   Object.freeze({ id:'ret', word:0x00008067, operation:'jalr' }),
+  Object.freeze({ id:'pause', word:0x0100000f, operation:'hint' }),
+  Object.freeze({ id:'fence-hint-rd-argument', word:0x0010008f, operation:'hint' }),
+  Object.freeze({ id:'fence-hint-rs1-argument', word:0x0010800f, operation:'hint' }),
 ]);
+
+function isFenceHintEncoding(value) {
+  if ((value & 0x0000707f) !== 0x0000000f) return false;
+  const rd = (value >>> 7) & 0x1f;
+  const rs1 = (value >>> 15) & 0x1f;
+  const successor = (value >>> 20) & 0x0f;
+  const predecessor = (value >>> 24) & 0x0f;
+  const fenceMode = (value >>> 28) & 0x0f;
+  return fenceMode === 0
+    && (predecessor === 0 || successor === 0)
+    && (rd === 0 || rs1 === 0);
+}
 
 function matchingFamilies(word) {
   const value = Number(word) >>> 0;
-  return RV64IMC_32BIT_ENCODING_FAMILIES.filter((family) => ((value & family.mask) >>> 0) === family.match);
+  const fenceHint = isFenceHintEncoding(value);
+  return RV64IMC_32BIT_ENCODING_FAMILIES.filter((family) => {
+    if (family.id === 'rv64i-fence-hint') return fenceHint;
+    if (family.id === 'rv64i-fence' && fenceHint) return false;
+    return ((value & family.mask) >>> 0) === family.match;
+  });
 }
 
 export function classifyRv64imc32Encoding(word) {
