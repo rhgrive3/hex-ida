@@ -100,6 +100,7 @@ export function serializeConversation(conversation) {
     createdAt: conversation.createdAt, updatedAt: conversation.updatedAt,
     mode: conversation.mode, style: conversation.style, scope: conversation.scope,
     provider: conversation.provider, model: conversation.model, reasoning: conversation.reasoning,
+    lastQuestion: conversation.lastQuestion || null,
     turns: conversation.turns.slice(-MAX_PERSISTED_TURNS).map(serializeTurn),
   };
 }
