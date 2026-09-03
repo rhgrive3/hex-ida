@@ -183,7 +183,11 @@ export function createSemanticSsaContract(input, options = {}) {
       fail('semantic-ssa-invalid-definition-block');
     }
     for (const incoming of definition.incoming) {
-      if (!definitionByValue.has(incoming.valueId)) fail('semantic-ssa-dangling-phi-value-id');
+      const prior = definitionByValue.get(incoming.valueId);
+      if (!prior) fail('semantic-ssa-dangling-phi-value-id');
+      if (definition.kind === 'phi' && definition.variableKey != null && prior.variableKey !== definition.variableKey) {
+        fail('semantic-ssa-phi-variable-key-mismatch');
+      }
     }
     if (definition.kind !== 'phi' || !cfgInfo) continue;
     if (definition.blockId == null) fail('semantic-ssa-phi-block-required');
