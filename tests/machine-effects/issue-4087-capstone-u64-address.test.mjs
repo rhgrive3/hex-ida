@@ -2,6 +2,11 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 
+import { createX86DecodedInstruction } from '../../js/targets/architecture/x86_64/decoded-instruction.js';
+import { liftX86MachineEffects } from '../../js/targets/architecture/x86_64/effects/index.js';
+import { createRiscv64DecodedInstruction } from '../../js/targets/architecture/riscv64/decoded-instruction.js';
+import { liftRiscv64MachineEffects } from '../../js/targets/architecture/riscv64/effects/index.js';
+
 const INSTRUCTION = 0x100;
 const DETAIL = 0x400;
 const HIGH_ADDRESSES = [
@@ -19,7 +24,7 @@ async function loadBridge(relativePath, exportName) {
   return context[exportName];
 }
 
-function makeModule({ architecture, address, operandKind = null }) {
+function makeModule({ architecture, address, operandKind = null, structured = false, instructionName = 'test' }) {
   const values = new Map();
   const set = (pointer, type, value) => values.set(`${pointer}:${type}`, value);
   const size = architecture === 'x86_64' ? 1 : 4;
@@ -29,9 +34,12 @@ function makeModule({ architecture, address, operandKind = null }) {
   set(INSTRUCTION + 16, 'i16', size);
   bytes.forEach((byte, index) => set(INSTRUCTION + 18 + index, 'i8', byte));
 
-  if (operandKind) {
+  if (operandKind || structured) {
     set(INSTRUCTION, 'i32', 1);
     set(INSTRUCTION + 236, 'i32', DETAIL);
+  }
+
+  if (operandKind) {
     if (architecture === 'x86_64') {
       const x86 = DETAIL + 96;
       const operand = x86 + 72;
@@ -54,7 +62,7 @@ function makeModule({ architecture, address, operandKind = null }) {
   return {
     getValue(pointer, type) { return values.get(`${pointer}:${type}`) ?? 0; },
     UTF8ToString() { return ''; },
-    ccall(functionName) { return functionName === 'cs_insn_name' ? 'test' : ''; },
+    ccall(functionName) { return functionName === 'cs_insn_name' ? instructionName : ''; },
   };
 }
 
@@ -111,5 +119,28 @@ const riscvMemory = riscv64.parseInstruction(
   { address: 0x1000n },
 );
 assert.equal(riscvMemory.capstoneOperands[0].displacement, -2n, 'riscv64 memory displacements must stay signed');
+
+const semanticAddress = 0xffff800000001000n;
+const x86Structured = x86.parseInstruction(
+  makeModule({ architecture: 'x86_64', address: semanticAddress, structured: true, instructionName: 'nop' }),
+  0,
+  INSTRUCTION,
+  { address: semanticAddress },
+);
+const x86Canonical = createX86DecodedInstruction(x86Structured);
+assert.equal(x86Canonical.address, semanticAddress, 'x86 canonical decoded instruction must preserve the high uint64 address');
+const x86Effects = liftX86MachineEffects({ ...x86Canonical, instructionId: 'issue-4087:x86-high-address-nop' });
+assert.ok(x86Effects, 'x86 high-address instruction must reach MachineEffects');
+
+const riscvStructured = riscv64.parseInstruction(
+  makeModule({ architecture: 'riscv64', address: semanticAddress, structured: true }),
+  0,
+  INSTRUCTION,
+  { address: semanticAddress },
+);
+const riscvCanonical = createRiscv64DecodedInstruction(riscvStructured);
+assert.equal(riscvCanonical.address, semanticAddress, 'riscv64 canonical decoded instruction must preserve the high uint64 address');
+const riscvEffects = liftRiscv64MachineEffects({ ...riscvCanonical, instructionId: 'issue-4087:riscv64-high-address-nop' });
+assert.ok(riscvEffects, 'riscv64 high-address instruction must reach MachineEffects');
 
 console.log('issue #4087 Capstone uint64 address boundary: PASS');
