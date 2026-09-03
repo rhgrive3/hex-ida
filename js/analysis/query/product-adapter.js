@@ -62,10 +62,15 @@ function isPlainObject(value) {
 // Snapshot identity dimensions are authority-bearing scalars. A structured
 // value (Array/object) must never launder into the same string as a primitive
 // value, or distinct analysis states would share one artifactVersions identity.
+// The same holds between primitive types: number 1, bigint 1n, string '1',
+// and boolean true must each keep a distinct dimension, or a malformed type
+// transition would compare identical and evade snapshot staleness checks.
 function canonicalIdentityDimension(value, fallback) {
   if (value == null) return fallback;
   if (typeof value === 'string') return value || fallback;
-  if (typeof value === 'number' || typeof value === 'bigint' || typeof value === 'boolean') return String(value);
+  if (typeof value === 'number') return `number:${String(value)}`;
+  if (typeof value === 'bigint') return `bigint:${String(value)}`;
+  if (typeof value === 'boolean') return `boolean:${String(value)}`;
   try {
     return `structured:${stableDigest(jsonSafe(value))}`;
   } catch {
