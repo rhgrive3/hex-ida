@@ -1,22 +1,10 @@
 import { parseELF as parseELFCore } from './elf-core.js';
+import { executableELFRange } from './elf-mapping.js';
 import { functionSeed, mergeFunctionSeeds } from './model.js';
 import { ByteView } from './reader.js';
 
 function executableOwnerForSymbol(image, symbol) {
-  const start = BigInt(symbol.address);
-  const extent = BigInt(symbol.size || 0n);
-  if (symbol.sectionIndex != null) {
-    const exactSection = image.sections?.find((section) => section.index === symbol.sectionIndex) || null;
-    if (!exactSection?.perms?.execute) return null;
-    if (start < exactSection.address || start >= exactSection.address + exactSection.size) return null;
-    if (extent !== 0n && extent > exactSection.address + exactSection.size - start) return null;
-    return exactSection;
-  }
-  const section = typeof image.sectionAt === 'function' ? image.sectionAt(start) : null;
-  if (section?.perms?.execute && (extent === 0n || extent <= section.address + section.size - start)) return section;
-  const segment = typeof image.segmentAt === 'function' ? image.segmentAt(start) : null;
-  if (segment?.perms?.execute && (extent === 0n || extent <= segment.address + segment.size - start)) return segment;
-  return null;
+  return executableELFRange(image, symbol.address, symbol.size || 0n, symbol.sectionIndex ?? null);
 }
 
 export function repairElfZeroAddressFunctionSeeds(image) {

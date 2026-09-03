@@ -88,10 +88,11 @@ function issues2095_2139_2163Regressions() {
 }
 
 function issue566SectionProvenanceRegression() {
-  const makeImage = ({ section = null, sectionIndex = null, symbolSize = 4n, kind = 'function', name = 'zero' } = {}) => {
+  const makeImage = ({ section = null, sectionIndex = null, symbolSize = 4n, kind = 'function', name = 'zero', type = 3, segmentList = null } = {}) => {
     const sections = section ? [{ index:2, address:0n, size:8n, perms:{ read:true, execute:true }, ...section }] : [];
-    const segments = [{ address:0n, size:0x100n, perms:{ read:true, execute:true } }];
+    const segments = segmentList ?? [{ address:0n, size:0x100n, perms:{ read:true, execute:true } }];
     return {
+      metadata:{ type },
       sections,
       segments,
       functions: [],
@@ -108,6 +109,14 @@ function issue566SectionProvenanceRegression() {
   let image = makeImage({ section:{ perms:{ read:true, execute:false } }, sectionIndex:2, name:'nonexec0' });
   repairElfZeroAddressFunctionSeeds(image);
   assert.equal(image.functions.length, 0, 'explicit non-executable section must not fall back to overlapping PT_LOAD');
+
+  image = makeImage({ section:{ perms:{ read:false, execute:true } }, sectionIndex:2, name:'nonalloc0' });
+  repairElfZeroAddressFunctionSeeds(image);
+  assert.equal(image.functions.length, 0, 'runtime non-ALLOC executable section must not seed through overlapping PT_LOAD');
+
+  image = makeImage({ section:{}, sectionIndex:2, name:'unmapped0', segmentList:[] });
+  repairElfZeroAddressFunctionSeeds(image);
+  assert.equal(image.functions.length, 0, 'runtime executable section without PT_LOAD ownership must fail closed');
 
   image = makeImage({ section:{ address:1n }, sectionIndex:2, name:'outside-section0' });
   repairElfZeroAddressFunctionSeeds(image);
@@ -132,6 +141,11 @@ function issue566SectionProvenanceRegression() {
   assert.equal(image.functions.length, 1);
   assert.equal(image.functions[0].name, 'resolver0$resolver');
   assert.equal(image.functions[0].source, 'ifunc-resolver');
+
+  image = makeImage({ section:{ perms:{ read:false, execute:true } }, sectionIndex:2, name:'reloc0', type:1, segmentList:[] });
+  repairElfZeroAddressFunctionSeeds(image);
+  assert.equal(image.functions.length, 1, 'ET_REL must retain section-relative executable authority without PT_LOAD');
+  assert.equal(image.functions[0].name, 'reloc0');
 
   image = makeImage({ sectionIndex:null, name:'sectionless0' });
   repairElfZeroAddressFunctionSeeds(image);
