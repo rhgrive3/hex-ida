@@ -85,6 +85,10 @@ assert.equal(
   1,
   'resolver and predeclared unresolved candidates must share one conservative MemorySSA state partition',
 );
+assert.ok(
+  memorySsa.regions.every((region) => region.kind !== 'unknown' || region.id === unknownRegions[0].id),
+  'all predeclared unknown resolver candidates must normalize to the same fallback partition',
+);
 const storeDefinitions = memorySsa.definitions.filter((definition) =>
   String(definition.sourceEntityId).startsWith('store_'));
 assert.equal(
