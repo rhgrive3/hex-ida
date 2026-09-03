@@ -78,14 +78,14 @@ for (const badConflicts of [
   [{ kind:' start' }],
 ]) {
   assert.throws(
-    () => createFunctionCandidate({ start:0n, startState:'exact', conflicts:badConflicts }),
+    () => createFunctionCandidate({ start:0n, startState:'probable', conflicts:badConflicts }),
     /discovery-candidate-invalid-conflict/,
   );
 }
 const typedConflict = new Uint8Array(1);
 typedConflict.kind = 'start';
 assert.throws(
-  () => createFunctionCandidate({ start:0n, startState:'exact', conflicts:[typedConflict] }),
+  () => createFunctionCandidate({ start:0n, startState:'probable', conflicts:[typedConflict] }),
   /discovery-candidate-invalid-conflict/,
 );
 const inheritedKindPrototype = {};
@@ -94,7 +94,7 @@ Object.defineProperty(inheritedKindPrototype, 'kind', {
 });
 const inheritedKindConflict = Object.create(inheritedKindPrototype);
 assert.throws(
-  () => createFunctionCandidate({ start:0n, startState:'exact', conflicts:[inheritedKindConflict] }),
+  () => createFunctionCandidate({ start:0n, startState:'probable', conflicts:[inheritedKindConflict] }),
   /discovery-candidate-invalid-conflict/,
 );
 const accessorKindConflict = {};
@@ -103,14 +103,19 @@ Object.defineProperty(accessorKindConflict, 'kind', {
   get() { throw new Error('own kind getter must not be evaluated'); },
 });
 assert.throws(
-  () => createFunctionCandidate({ start:0n, startState:'exact', conflicts:[accessorKindConflict] }),
+  () => createFunctionCandidate({ start:0n, startState:'probable', conflicts:[accessorKindConflict] }),
   /discovery-candidate-invalid-conflict-kind/,
 );
-const exactCandidate = createFunctionCandidate({ start:0n, startState:'exact' });
+const exactCandidate = createFunctionCandidate({
+  start:0n,
+  startState:'exact',
+  startEvidence:[{ kind:'loader-function-start', start:0n }],
+});
 assert.equal(hasExactStart(exactCandidate), true);
 const contradictedCandidate = createFunctionCandidate({
   start:0n,
   startState:'exact',
+  startEvidence:[{ kind:'loader-function-start', start:0n }],
   conflicts:[{ kind:'start' }],
 });
 assert.equal(hasExactStart(contradictedCandidate), false);
