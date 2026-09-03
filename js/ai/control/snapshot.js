@@ -2,13 +2,27 @@ import { addressText } from '../validation.js';
 
 let turnSequence = 1;
 
+export function canonicalBindingId(value) {
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  return text || null;
+}
+
+function firstBinding(...values) {
+  for (const value of values) {
+    const id = canonicalBindingId(value);
+    if (id != null) return id;
+  }
+  return null;
+}
+
 export function createTurnSnapshot(local = {}, request = {}) {
   const current = first(local.currentAddress, local.activeFunction?.address, local.currentFunction?.address);
   const range = resolveFunctionRange(local, current);
   const selection = snapshotSelection(local.selection);
   const identity = resolveBinaryIdentity(local, request);
-  const projectId = first(request.projectId, local.projectId, local.project?.id, local.project?.binaryHash);
-  const runtimeId = first(local.runtimeSession?.id, local.runtime?.sessionId, local.runtimeSessionId);
+  const projectId = firstBinding(request.projectId, local.projectId, local.project?.id, local.project?.binaryHash);
+  const runtimeId = firstBinding(local.runtimeSession?.id, local.runtime?.sessionId, local.runtimeSessionId);
   const runtimeKnown = local.runtimeSessionKnown === true || runtimeId != null;
   const requestedScope = String(request.scope || 'auto');
   return deepFreeze({
@@ -17,7 +31,7 @@ export function createTurnSnapshot(local = {}, request = {}) {
     binaryIdentity: identity,
     binaryId: identity.id,
     legacyBinaryId: identity.legacyId,
-    projectIdentity: projectId == null ? null : String(projectId),
+    projectIdentity: projectId,
     architecture: copyScalar(first(local.architecture, local.binary?.architecture, local.capability?.architecture)),
     slice: copyScalar(first(local.slice, local.sliceIndex, local.binary?.sliceIndex)),
     currentFunction: current == null ? null : {
@@ -26,7 +40,7 @@ export function createTurnSnapshot(local = {}, request = {}) {
       name: first(local.activeFunction?.name, local.currentFunction?.name, safeName(local, current)),
     },
     selection,
-    runtimeSessionIdentity: runtimeId == null ? null : String(runtimeId),
+    runtimeSessionIdentity: runtimeId,
     runtimeSessionState: runtimeKnown ? (runtimeId == null ? 'none' : 'bound') : 'unknown',
     requestedScope,
     capabilities: snapshotCapabilities(local),
@@ -67,7 +81,7 @@ export function createSnapshotContext(local = {}, snapshot, scopeController = nu
 export function resolveBinaryIdentity(local = {}, request = {}) {
   const explicit = normalizeIdentity(request.binaryIdentity ?? local.binaryIdentity);
   if (explicit) return explicit;
-  const contentHash = first(
+  const contentHash = firstBinding(
     request.binaryHash,
     local.binaryHash,
     local.binaryFingerprint?.hash,
@@ -75,23 +89,23 @@ export function resolveBinaryIdentity(local = {}, request = {}) {
     local.binary?.fingerprint?.hash,
     local.project?.binaryHash,
   );
-  const legacyId = first(request.binaryId, local.binaryId);
-  if (contentHash != null && String(contentHash)) {
+  const legacyId = firstBinding(request.binaryId, local.binaryId);
+  if (contentHash != null) {
     const slice = first(local.sliceIndex, local.slice, local.binary?.sliceIndex);
     const suffix = slice == null ? '' : `:${String(slice)}`;
     return {
-      id: `content:${String(contentHash)}${suffix}`,
+      id: `content:${contentHash}${suffix}`,
       kind: 'content-derived',
       confidence: 'strong',
       state: 'ready',
       algorithm: first(local.binaryFingerprint?.algorithm, local.fingerprint?.algorithm, 'existing-hash'),
-      hash: String(contentHash),
-      legacyId: legacyId == null ? null : String(legacyId),
+      hash: contentHash,
+      legacyId,
     };
   }
-  const name = first(local.fileInfo?.name, local.binary?.name);
+  const name = typeof local.fileInfo?.name === 'string' ? local.fileInfo.name : typeof local.binary?.name === 'string' ? local.binary.name : null;
   const slice = first(local.sliceIndex, local.slice, local.binary?.sliceIndex);
-  const fallback = legacyId != null ? String(legacyId) : (name ? `${name}:${String(slice ?? 0)}` : null);
+  const fallback = legacyId != null ? legacyId : (name ? `${name}:${String(slice ?? 0)}` : null);
   return {
     id: fallback ? `fallback:${fallback}` : 'fallback:unbound',
     kind: 'fallback', confidence: fallback ? 'weak' : 'none', state: 'hash-unavailable',
@@ -101,12 +115,21 @@ export function resolveBinaryIdentity(local = {}, request = {}) {
 
 function normalizeIdentity(value) {
   if (!value) return null;
-  if (typeof value === 'string') return { id: value, kind: 'external', confidence: 'strong', state: 'ready', algorithm: null, hash: null, legacyId: null };
-  if (typeof value !== 'object' || !value.id) return null;
+  if (typeof value === 'string') {
+    const id = canonicalBindingId(value);
+    return id ? { id, kind: 'external', confidence: 'strong', state: 'ready', algorithm: null, hash: null, legacyId: null } : null;
+  }
+  if (typeof value !== 'object' || Array.isArray(value)) return null;
+  const id = canonicalBindingId(value.id);
+  if (!id) return null;
   return {
-    id: String(value.id), kind: String(value.kind || 'external'), confidence: String(value.confidence || 'strong'),
-    state: String(value.state || 'ready'), algorithm: value.algorithm == null ? null : String(value.algorithm),
-    hash: value.hash == null ? null : String(value.hash), legacyId: value.legacyId == null ? null : String(value.legacyId),
+    id,
+    kind: typeof value.kind === 'string' && value.kind ? value.kind : 'external',
+    confidence: typeof value.confidence === 'string' && value.confidence ? value.confidence : 'strong',
+    state: typeof value.state === 'string' && value.state ? value.state : 'ready',
+    algorithm: value.algorithm == null ? null : canonicalBindingId(value.algorithm),
+    hash: value.hash == null ? null : canonicalBindingId(value.hash),
+    legacyId: value.legacyId == null ? null : canonicalBindingId(value.legacyId),
   };
 }
 
