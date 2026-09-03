@@ -153,8 +153,8 @@ export class AiSession {
       namespace: this.namespace,
     });
     this.conversations.push(conversation);
-    this.dropOverflow();
     this.current = conversation;
+    this.dropOverflow(conversation);
     if (!silent) this.emit({ type: 'conversation', conversation });
     return conversation;
   }
@@ -382,10 +382,10 @@ export class AiSession {
     this.scheduleSave();
   }
 
-  dropOverflow() {
+  dropOverflow(protect = null) {
     if (this.conversations.length <= MAX_RESTORED + 1) return;
     const oldest = this.conversations
-      .filter((item) => item !== this.current)
+      .filter((item) => item !== this.current && item !== protect)
       .sort((a, b) => (a.updatedAt || 0) - (b.updatedAt || 0))[0];
     if (oldest) {
       this.conversations.splice(this.conversations.indexOf(oldest), 1);
