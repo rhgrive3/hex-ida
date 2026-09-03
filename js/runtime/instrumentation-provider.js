@@ -4,6 +4,12 @@ import { RuntimeEventNormalizer } from './events.js';
 import { createInterventionRecord, InterventionLedger } from './evidence-bridge.js';
 import { normalizeRuntimeModuleBinding } from './module-binding.js';
 
+function moduleFields(event) {
+  const payload = event?.payload && typeof event.payload === 'object' ? event.payload : {};
+  const module = payload.module && typeof payload.module === 'object' ? payload.module : payload;
+  return module;
+}
+
 function requiredMethod(backend, method, capability) {
   if (typeof backend?.[method] !== 'function') throw new DebugAdapterError('unsupported', `instrumentation backend does not support ${capability || method}`);
   return backend[method].bind(backend);
@@ -101,9 +107,24 @@ export class InstrumentationProvider {
       if (typeof this.options.eventFilter === 'function' && this.options.eventFilter(raw) === false) return null;
       const handle = eventProbeHandle(raw);
       const interventionId = handle == null ? null : probes.get(handle) ?? null;
-      if (!interventionId) return normalizer.push(raw);
-      const existing = Array.isArray(raw?.interventionIds) ? raw.interventionIds : [];
-      return normalizer.push({ ...raw, interventionIds: [...new Set([...existing, interventionId])] });
+      const event = interventionId
+        ? normalizer.push({ ...raw, interventionIds: [...new Set([...(Array.isArray(raw?.interventionIds) ? raw.interventionIds : []), interventionId])] })
+        : normalizer.push(raw);
+      if (!event) return null;
+      const module = moduleFields(event);
+      if (event.kind === 'module-load' && (module.runtimeBase ?? module.base) != null && (module.runtimeSize ?? module.size) != null) {
+        const bindingKey = module.bindingKey ?? module.moduleKey ?? module.id ?? module.uuid ?? module.name;
+        if (bindingKey && !session.modules.get(bindingKey)) {
+          session.modules.load(normalizeRuntimeModuleBinding(module, {
+            bindingKey,
+            loadedSequence: event.sequence,
+          }));
+        }
+      } else if (event.kind === 'module-unload') {
+        const bindingKey = module.bindingKey ?? module.moduleKey ?? module.id ?? module.uuid ?? module.name;
+        if (bindingKey) session.modules.unload(bindingKey, event.sequence);
+      }
+      return event;
     };
 
     try {
