@@ -133,7 +133,7 @@ function validAddSubRegister31Encoding(mnemonic, ops) {
   const dstClass = regClass(dst);
   const lhsClass = regClass(lhs);
   const modifier = rhs.shift || rhs.extend || null;
-  const explicitExtend = EXTEND_KINDS.has(String(modifier?.op || '').toLowerCase());
+  const explicitExtend = typeof modifier?.op === 'string' && EXTEND_KINDS.has(modifier.op.toLowerCase());
   const usesExtendedEncoding = dstClass === 'sp' || lhsClass === 'sp' || explicitExtend;
 
   if (usesExtendedEncoding) {
