@@ -285,11 +285,18 @@ export function formatObjcMessage({ receiver = 'receiver', selector, args = [], 
     return `${receiver}.${stem}(${safeArgs.join(', ')})`;
   }
   const parts = String(selector).split(':');
-  if (parts.length <= 1 || !selector.includes(':')) return `[${receiver} ${selector}]`;
+  if (parts.length <= 1 || !selector.includes(':')) {
+    const extra = safeArgs.length > 0 ? `, ${safeArgs.join(', ')}` : '';
+    return `[${receiver} ${selector}${extra}]`;
+  }
   let body = '';
-  for (let i = 0; i < parts.length - 1; i++) {
+  const paramCount = parts.length - 1;
+  for (let i = 0; i < paramCount; i++) {
     if (i) body += ' ';
     body += `${parts[i]}:${safeArgs[i] != null ? safeArgs[i] : `a${i + 1}`}`;
+  }
+  if (safeArgs.length > paramCount) {
+    body += `, ${safeArgs.slice(paramCount).join(', ')}`;
   }
   return `[${receiver} ${body}]`;
 }

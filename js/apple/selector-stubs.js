@@ -21,7 +21,7 @@ export function buildSelectorIndex({ selectorRefs = [], stubs = [], fixups = [] 
   const byAddress = new Map();
   const bySelector = new Map();
   const add = (addr, selector, source, extra = {}) => {
-    if (addr == null || !selector) return;
+    if (addr == null || typeof selector !== 'string' || !selector) return;
     const key = selectorAddressKey(addr);
     if (key == null) return;
     const entry = { addr, selector, source, ...extra };
@@ -50,7 +50,7 @@ export function buildSelectorIndex({ selectorRefs = [], stubs = [], fixups = [] 
 export function resolveSelectorStub({ address, symbol = null, symbolFor = null, selectorIndex = null, selectorFor = null } = {}) {
   const candidates = [];
   const add = (selector, source, confidence) => {
-    if (!selector) return;
+    if (typeof selector !== 'string' || !selector) return;
     const old = candidates.find((c) => c.selector === selector);
     if (old) { old.confidence = Math.max(old.confidence, confidence); old.sources.push(source); }
     else candidates.push({ selector, confidence, sources: [source] });
