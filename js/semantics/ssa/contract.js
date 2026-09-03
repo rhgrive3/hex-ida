@@ -55,9 +55,25 @@ function limit(options, key) {
   return positiveInteger(options.budget[key], `semantic-ssa-invalid-budget-${key}`);
 }
 
-function normalizeIncoming(value) {
+function preflightLinkBudget(definitions, useCount, options) {
+  const maximum = limit(options, 'maxLinks');
+  let used = useCount;
+  if (used > maximum) fail('semantic-ssa-budget-exceeded-maxLinks');
+  for (const definition of definitions) {
+    assertNotAborted(options);
+    if (!definition || typeof definition !== 'object' || Array.isArray(definition)) continue;
+    const incoming = definition.incoming;
+    if (!Array.isArray(incoming)) continue;
+    if (incoming.length > maximum - used) fail('semantic-ssa-budget-exceeded-maxLinks');
+    used += incoming.length;
+  }
+  return used;
+}
+
+function normalizeIncoming(value, options) {
   return array(value ?? [], 'semantic-ssa-invalid-phi-incoming')
     .map((item) => {
+      assertNotAborted(options);
       item = object(item, 'semantic-ssa-invalid-phi-incoming');
       assertAllowedKeys(item, new Set(['predecessorBlockId', 'valueId']), 'semantic-ssa-unexpected-phi-incoming-field');
       return {
@@ -68,12 +84,12 @@ function normalizeIncoming(value) {
     .sort((a, b) => a.predecessorBlockId.localeCompare(b.predecessorBlockId) || a.valueId.localeCompare(b.valueId));
 }
 
-function normalizeDefinition(input) {
+function normalizeDefinition(input, options) {
   input = object(input, 'semantic-ssa-invalid-definition');
   assertAllowedKeys(input, new Set(['definitionId','valueId','kind','blockId','variableKey','sourceEntityId','incoming','origin','proof']), 'semantic-ssa-unexpected-definition-field');
   const kind = nonEmpty(input.kind, 'semantic-ssa-definition-kind-required');
   if (!DEF_KINDS.has(kind)) fail('semantic-ssa-invalid-definition-kind');
-  const incoming = normalizeIncoming(input.incoming);
+  const incoming = normalizeIncoming(input.incoming, options);
   if (kind === 'phi' && incoming.length === 0) fail('semantic-ssa-phi-incoming-required');
   if (kind !== 'phi' && incoming.length !== 0) fail('semantic-ssa-incoming-only-valid-for-phi');
   const out = {
@@ -120,14 +136,24 @@ export function createSemanticSsaContract(input, options = {}) {
     fail('semantic-ssa-contract-version-mismatch');
   }
 
-  const definitions = array(input.definitions, 'semantic-ssa-definitions-required')
-    .map(normalizeDefinition)
+  const rawDefinitions = array(input.definitions, 'semantic-ssa-definitions-required');
+  const rawUses = array(input.uses, 'semantic-ssa-uses-required');
+  if (rawDefinitions.length > limit(options, 'maxDefinitions')) fail('semantic-ssa-budget-exceeded-maxDefinitions');
+  if (rawUses.length > limit(options, 'maxUses')) fail('semantic-ssa-budget-exceeded-maxUses');
+  preflightLinkBudget(rawDefinitions, rawUses.length, options);
+
+  const definitions = rawDefinitions
+    .map((definition) => {
+      assertNotAborted(options);
+      return normalizeDefinition(definition, options);
+    })
     .sort((a, b) => a.valueId.localeCompare(b.valueId) || a.definitionId.localeCompare(b.definitionId));
-  const uses = array(input.uses, 'semantic-ssa-uses-required')
-    .map(normalizeUse)
+  const uses = rawUses
+    .map((use) => {
+      assertNotAborted(options);
+      return normalizeUse(use);
+    })
     .sort((a, b) => a.useId.localeCompare(b.useId));
-  if (definitions.length > limit(options, 'maxDefinitions')) fail('semantic-ssa-budget-exceeded-maxDefinitions');
-  if (uses.length > limit(options, 'maxUses')) fail('semantic-ssa-budget-exceeded-maxUses');
 
   const definitionByValue = new Map();
   const definitionIds = new Set();
@@ -177,7 +203,6 @@ export function createSemanticSsaContract(input, options = {}) {
       definitionId: definitionByValue.get(use.valueId).definitionId,
     }))
     .sort((a, b) => a.useId.localeCompare(b.useId));
-  if (useDefLinks.length > limit(options, 'maxLinks')) fail('semantic-ssa-budget-exceeded-maxLinks');
 
   const usesByDefinition = new Map(definitions.map((definition) => [definition.definitionId, []]));
   for (const link of useDefLinks) usesByDefinition.get(link.definitionId).push(link.useId);
