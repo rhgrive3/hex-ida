@@ -43,12 +43,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  head:
+  pr-proof:
+    name: head-and-candidate-merge-tree
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout exact PR head
+        uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
@@ -62,19 +64,19 @@ jobs:
           VERIFY_SHA: ${{ github.event.pull_request.head.sha }}
         run: node tools/validation/stage1/verify.mjs --expect-sha "$VERIFY_SHA"
 
-  candidate-merge-tree:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
+      # Head and synthetic merge-tree are independent proof identities, but they
+      # do not need independent hosted runners. Re-checkout the exact merge SHA,
+      # reinstall from that tree's lockfile, and verify it on the same runner.
+      - name: Checkout exact candidate merge tree
+        uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
+          clean: true
+      - name: Assert exact merge-tree checkout
+        env:
+          VERIFY_SHA: ${{ github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$VERIFY_SHA"
       - run: npm ci --no-audit --no-fund
       - name: Verify exact Stage 1 candidate merge tree
         env:
