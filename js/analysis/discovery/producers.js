@@ -252,13 +252,19 @@ function requiredPatternId(value, code) {
 }
 
 function patternBytes(value, code) {
-  if (!(Array.isArray(value) || value instanceof Uint8Array) || value.length === 0) {
-    throw new TypeError(code);
+  if (value instanceof Uint8Array) {
+    if (value.length === 0) throw new TypeError(code);
+    return new Uint8Array(value);
   }
-  if (Array.isArray(value) && value.some((byte) => !Number.isInteger(byte) || byte < 0 || byte > 0xff)) {
-    throw new TypeError(code);
+  if (!Array.isArray(value) || value.length === 0) throw new TypeError(code);
+  const bytes = new Uint8Array(value.length);
+  for (let index = 0; index < value.length; index += 1) {
+    if (!Object.hasOwn(value, index)) throw new TypeError(code);
+    const byte = value[index];
+    if (!Number.isInteger(byte) || byte < 0 || byte > 0xff) throw new TypeError(code);
+    bytes[index] = byte;
   }
-  return Uint8Array.from(value);
+  return bytes;
 }
 
 /**
