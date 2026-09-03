@@ -254,31 +254,44 @@ function installMultiRegionShapes(app) {
     if (!regions.length) return null;
     const key = `${epoch}:${regions.map((r) => r.id).join('|')}`;
     if (app.shapes && combinedKey === key) return app.shapes;
-    if (app.shapesBusy && app.shapesBusyEpoch === epoch) return app.shapesBusy;
+    if (app.shapesBusy && app.shapesBusyEpoch === epoch) return waitForShared(app.shapesBusy, signal);
     app.shapesBusyEpoch = epoch;
-    app.shapesBusy = (async () => {
+    const producerController = new AbortController();
+    const entry = {
+      request:{ cancel:() => { if (!producerController.signal.aborted) producerController.abort('shapes-no-consumers'); } },
+      promise:null, settled:false, waiters:0,
+    };
+    entry.promise = (async () => {
       const folded = []; const reasons = [];
       for (let index = 0; index < regions.length; index++) {
-        abortIfNeeded(signal); const region = regions[index]; const cacheKey = `${epoch}:${region.id}`; let value = regionCache.get(cacheKey);
+        abortIfNeeded(producerController.signal); const region = regions[index]; const cacheKey = `${epoch}:${region.id}`; let value = regionCache.get(cacheKey);
         if (!value) {
           const request = app.backend.valueShapes(region.id, (progress) => onProgress?.({ phase:'shapes', region:region.id, done:index + (progress?.all ? Math.min(1, progress.done / progress.all) : 0), all:regions.length }));
+          const onAbort = () => request.cancel?.();
+          producerController.signal.addEventListener('abort', onAbort, { once:true });
+          if (producerController.signal.aborted) request.cancel?.();
           try {
             value = await new Promise((resolve, reject) => {
-              const onAbort = () => { signal?.removeEventListener('abort', onAbort); request.cancel?.(); reject(abortError(signal)); };
-              signal?.addEventListener('abort', onAbort, { once:true });
-              if (signal?.aborted) { onAbort(); return; }
-              Promise.resolve(request).then(resolve, reject).finally(() => signal?.removeEventListener('abort', onAbort));
+              const onProducerAbort = () => { producerController.signal.removeEventListener('abort', onProducerAbort); reject(abortError(producerController.signal)); };
+              producerController.signal.addEventListener('abort', onProducerAbort, { once:true });
+              if (producerController.signal.aborted) { onProducerAbort(); return; }
+              Promise.resolve(request).then(
+                (result) => { producerController.signal.removeEventListener('abort', onProducerAbort); resolve(result); },
+                (error) => { producerController.signal.removeEventListener('abort', onProducerAbort); reject(error); },
+              );
             });
             if (value && !value.cancelled) regionCache.set(cacheKey, value);
-          } catch (error) { if (signal?.aborted || error?.name === 'AbortError') throw error; reasons.push(`${region.id}:shape-scan-failed`); continue; }
+          } catch (error) { if (producerController.signal.aborted || error?.name === 'AbortError') throw error; reasons.push(`${region.id}:shape-scan-failed`); continue; }
+          finally { producerController.signal.removeEventListener('abort', onAbort); }
         }
         if (!value || value.cancelled) { reasons.push(`${region.id}:shape-scan-cancelled`); continue; }
         folded.push(foldShapes(value));
       }
-      if (epoch !== app.backend.gen) return null;
+      if (epoch !== Number(app.backend.gen ?? app.analysisEpoch ?? 0)) return null;
       const merged = mergeShapeMaps(folded, reasons); app.shapes = merged; combinedKey = key; pruneCache(regionCache); return merged;
-    })().finally(() => { if (app.shapesBusyEpoch === epoch) { app.shapesBusy = null; app.shapesBusyEpoch = -1; } });
-    return app.shapesBusy;
+    })().then((value) => { entry.settled = true; return value; }).finally(() => { if (app.shapesBusyEpoch === epoch) { app.shapesBusy = null; app.shapesBusyEpoch = -1; } });
+    app.shapesBusy = entry;
+    return waitForShared(entry, signal);
   };
 }
 
