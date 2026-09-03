@@ -385,7 +385,7 @@ function addressImmediateEncodingFailure(instruction) {
     || destination.shift != null || destination.extend != null) {
     return `arm64-${mnemonic}-destination-unencodable`;
   }
-  if (!['imm','other'].includes(String(targetOperand?.k || ''))
+  if ((targetOperand?.k !== 'imm' && targetOperand?.k !== 'other')
     || targetOperand?.shift != null || targetOperand?.extend != null) {
     return `arm64-${mnemonic}-target-operand-unencodable`;
   }
