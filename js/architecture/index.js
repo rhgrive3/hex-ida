@@ -24,7 +24,7 @@ function ownTruthy(object, key) {
 }
 
 function normalizeAdapterHook(value, name, fallback = null) {
-  if (value == null) return fallback;
+  if (value === undefined) return fallback;
   if (typeof value !== 'function') throw new TypeError(`${name} must be a function`);
   return value;
 }
@@ -109,8 +109,8 @@ function legacyDefinition(plugin) {
     instructionAlignment: plugin.instructionAlignment,
     fixedInstructionSize: plugin.fixedInstructionSize,
     viewerCompatible: plugin.viewerCompatible,
-    decode: plugin.decode,
-    assemble: plugin.assemble,
+    decode: plugin.decode || undefined,
+    assemble: plugin.assemble || undefined,
     controlFlow,
     callKind(instruction) { return controlFlow(instruction) === 'call' ? 'call' : null; },
     returnKind(instruction) { return controlFlow(instruction) === 'return' ? 'return' : null; },
@@ -136,9 +136,9 @@ export function registerArchitectureAdapter(definition, { replace = false } = {}
     instructionAlignment: definition.instructionAlignment,
     fixedInstructionSize: definition.fixedInstructionSize,
     viewerCompatible: definition.viewerCompatible,
-    decode: definition.decode,
-    assemble: definition.assemble,
-    classifyControlFlow: definition.controlFlow || (() => null),
+    decode: normalizeAdapterHook(definition.decode, 'decode'),
+    assemble: normalizeAdapterHook(definition.assemble, 'assemble'),
+    classifyControlFlow: normalizeAdapterHook(definition.controlFlow, 'controlFlow', () => null),
     semanticVersion: 'legacy-adapter-v1',
     capabilities: {
       decode: definition.decode ? 'native' : 'unsupported',

@@ -4,6 +4,7 @@ import {
   architectureAdapter,
   architectureCapability,
   architecturePluginV2,
+  registerArchitectureAdapter,
 } from '../js/architecture/index.js';
 import {
   AAPCS64_ABI,
@@ -48,7 +49,7 @@ const region = { vmAddr:BASE, size:0x100n };
     'decode', 'assemble', 'controlFlow', 'callKind', 'returnKind',
     'rowForAddress', 'addressForRow', 'validateInstructionPlacement',
   ]) {
-    for (const invalid of [true, 1, 'hook', [], {}]) {
+    for (const invalid of [null, true, 1, 'hook', [], {}]) {
       assert.throws(
         () => new ArchitectureAdapter({ ...base, [hook]:invalid }),
         new RegExp(`^TypeError: ${hook} must be a function$`),
@@ -64,11 +65,20 @@ const region = { vmAddr:BASE, size:0x100n };
   assert.equal(omitted.rowForAddress({ vmAddr:0n, size:4n }, 2n), 2);
   assert.equal(omitted.addressForRow({ vmAddr:0n, size:4n }, 2), 2n);
 
+  const omittedUndefined = new ArchitectureAdapter({ ...base, controlFlow:undefined });
+  assert.equal(omittedUndefined.controlFlow({ mnemonic:'ret' }), null);
+
   const callback = () => 'ok';
   const explicit = new ArchitectureAdapter({ ...base, controlFlow:callback });
   assert.equal(explicit.controlFlow, callback, 'valid hook identity must be preserved');
-  const nullHook = new ArchitectureAdapter({ ...base, controlFlow:null });
-  assert.equal(nullHook.controlFlow({}), null, 'null keeps the legacy fallback semantics');
+  assert.throws(
+    () => new ArchitectureAdapter({ ...base, controlFlow:null }),
+    /^TypeError: controlFlow must be a function$/,
+  );
+  assert.throws(
+    () => registerArchitectureAdapter({ id:'custom-test-invalid', controlFlow:true }, { replace:true }),
+    /^TypeError: controlFlow must be a function$/,
+  );
 }
 
 // AAPCS64 owns call arguments, returns, saved registers, and stack rules.
