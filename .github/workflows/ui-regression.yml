@@ -45,8 +45,7 @@ jobs:
           cache: npm
       - run: npm ci --no-audit --no-fund
       - name: Verify playwright@1.55.0 dependency
-        shell: bash
-        run: test "$(node -p \"require('./node_modules/playwright/package.json').version\")" = "1.55.0"
+        run: node -e "const v=require('./node_modules/playwright/package.json').version; if(v!=='1.55.0'){console.error('unexpected Playwright '+v);process.exit(1)}"
       - name: Restore pinned Playwright Chromium cache
         uses: actions/cache@v4
         with:
