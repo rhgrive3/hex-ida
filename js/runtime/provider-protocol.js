@@ -17,12 +17,10 @@ function byteSize(value) {
 }
 
 function protocolInteger(value, name, min = 1) {
-  if (typeof value !== 'number' && !(typeof value === 'string' && value.trim() !== '')) {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < min) {
     throw new DebugAdapterError('malformed-provider-data', `${name} must be a positive safe integer`);
   }
-  const n = Number(value);
-  if (!Number.isSafeInteger(n) || n < min) throw new DebugAdapterError('malformed-provider-data', `${name} must be a positive safe integer`);
-  return n;
+  return value;
 }
 
 function positiveId(value, name = 'id') {

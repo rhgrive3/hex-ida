@@ -57,7 +57,7 @@ function ownedClone(value) {
 function freezeEvidenceIds(value) {
   if (value == null) return Object.freeze([]);
   if (!Array.isArray(value)) throw new DebugAdapterError('invalid-evidence-ids', 'evidence ids must be an array');
-  if (value.some((id) => typeof id !== 'string' || id.length === 0)) {
+  if (value.some((id) => typeof id !== 'string' || !id.trim())) {
     throw new DebugAdapterError('invalid-evidence-ids', 'evidence ids must contain only non-empty strings');
   }
   return Object.freeze([...new Set(value)].sort());
@@ -66,7 +66,7 @@ function freezeEvidenceIds(value) {
 function freezeEntityIds(value) {
   if (value == null) return Object.freeze([]);
   if (!Array.isArray(value)) throw new DebugAdapterError('invalid-target-entity-ids', 'target entity ids must be an array');
-  if (value.some((id) => typeof id !== 'string' || id.length === 0)) {
+  if (value.some((id) => typeof id !== 'string' || !id.trim())) {
     throw new DebugAdapterError('invalid-target-entity-ids', 'target entity ids must contain only non-empty strings');
   }
   return Object.freeze([...value]);

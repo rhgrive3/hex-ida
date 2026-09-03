@@ -39,7 +39,7 @@ function optionalText(value) { return value == null ? null : String(value); }
 
 function optionalIdentity(value, name) {
   if (value == null) return null;
-  if (typeof value !== 'string' || value.length === 0) throw new DebugAdapterError('runtime-invalid-event-identity', `${name} must be a non-empty string`);
+  if (typeof value !== 'string' || value.trim().length === 0) throw new DebugAdapterError('runtime-invalid-event-identity', `${name} must be a non-empty string`);
   return value;
 }
 
@@ -47,7 +47,7 @@ function arrayOfStrings(value, name) {
   if (value == null) return Object.freeze([]);
   if (!Array.isArray(value)) throw new DebugAdapterError('runtime-invalid-event-array', `${name} must be an array`);
   for (const item of value) {
-    if (typeof item !== 'string' || !item) throw new DebugAdapterError('runtime-invalid-event-array', `${name} must contain only non-empty strings`);
+    if (typeof item !== 'string' || item.trim().length === 0) throw new DebugAdapterError('runtime-invalid-event-array', `${name} must contain only non-empty strings`);
   }
   return Object.freeze([...new Set(value)]);
 }
@@ -55,7 +55,7 @@ function arrayOfStrings(value, name) {
 function normalizeCompleteness(value, fallback = 'partial') {
   const completeness = value == null ? fallback : value;
   if (typeof completeness !== 'string' || !EVIDENCE_COMPLETENESS.includes(completeness)) {
-    throw new DebugAdapterError('runtime-invalid-completeness', `invalid runtime completeness: ${String(completeness)}`);
+    throw new DebugAdapterError('runtime-invalid-completeness', `invalid runtime completeness type: ${typeof completeness}`);
   }
   return completeness;
 }
@@ -69,7 +69,7 @@ function normalizeKind(value) {
 function normalizeMode(value) {
   const mode = value == null ? 'observed' : value;
   if (typeof mode !== 'string' || !RUNTIME_OBSERVATION_MODES.includes(mode)) {
-    throw new DebugAdapterError('runtime-invalid-observation-mode', `invalid runtime observation mode: ${String(mode)}`);
+    throw new DebugAdapterError('runtime-invalid-observation-mode', `invalid runtime observation mode type: ${typeof mode}`);
   }
   return mode;
 }

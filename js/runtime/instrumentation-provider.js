@@ -236,9 +236,18 @@ export class InstrumentationProvider {
       if (epochTransitionPending) throw new DebugAdapterError('runtime-epoch-transition-active', 'instrumentation provider epoch transition is already in progress');
       const next = session.epoch + 1;
       if (typeof this.backend.setEpoch !== 'function') return commitEpoch(reason);
-      const backendResult = this.backend.setEpoch(next);
-      if (!backendResult || typeof backendResult.then !== 'function') return commitEpoch(reason);
       epochTransitionPending = true;
+      let backendResult;
+      try {
+        backendResult = this.backend.setEpoch(next);
+      } catch (err) {
+        epochTransitionPending = false;
+        throw err;
+      }
+      if (!backendResult || typeof backendResult.then !== 'function') {
+        epochTransitionPending = false;
+        return commitEpoch(reason);
+      }
       return Promise.resolve(backendResult)
         .then(() => commitEpoch(reason))
         .finally(() => { epochTransitionPending = false; });

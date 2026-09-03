@@ -18,22 +18,17 @@ function stringArray(value, name) {
   if (value == null) return Object.freeze([]);
   if (!Array.isArray(value)) throw new DebugAdapterError('runtime-invalid-array', `${name} must be an array`);
   for (const item of value) {
-    if (typeof item !== 'string' || !item) throw new DebugAdapterError('runtime-invalid-array', `${name} must contain only non-empty strings`);
+    if (typeof item !== 'string' || !item.trim()) throw new DebugAdapterError('runtime-invalid-array', `${name} must contain only non-empty strings`);
   }
   return Object.freeze([...new Set(value)].sort());
 }
 
 function optionalSequence(value) {
   if (value == null) return null;
-  const type = typeof value;
-  if ((type !== 'number' && type !== 'bigint' && type !== 'string') || (type === 'string' && !value.trim())) {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
     throw new DebugAdapterError('runtime-invalid-intervention-sequence', 'intervention sequence must be a non-negative safe integer');
   }
-  const sequence = Number(value);
-  if (!Number.isSafeInteger(sequence) || sequence < 0) {
-    throw new DebugAdapterError('runtime-invalid-intervention-sequence', 'intervention sequence must be a non-negative safe integer');
-  }
-  return sequence;
+  return value;
 }
 
 function ownedClone(value) {
