@@ -88,6 +88,17 @@ function localRegionPlan(app, address, kind) {
   return { allRegions, target, local, unscanned };
 }
 function pruneCache(cache) { while (cache.size > MAX_LOCAL_SCAN_CACHE) cache.delete(cache.keys().next().value); }
+// Region scans share in-flight producers by registry identity: evicting an
+// unsettled entry would orphan its backend request and let the next caller
+// for the same key start a duplicate scan, so only settled entries are
+// prunable and cleanup never removes a replacement entry (#5269).
+function pruneSettledCache(cache) {
+  for (const [cacheKey, cacheEntry] of cache) {
+    if (cache.size <= MAX_LOCAL_SCAN_CACHE) break;
+    if (cacheEntry?.settled !== true) continue;
+    cache.delete(cacheKey);
+  }
+}
 function waitForShared(entry, signal) {
   abortIfNeeded(signal); entry.waiters++;
   return new Promise((resolve, reject) => {
@@ -288,7 +299,13 @@ function installMultiRegionShapes(app) {
         folded.push(foldShapes(value));
       }
       if (epoch !== Number(app.backend.gen ?? app.analysisEpoch ?? 0)) return null;
-      const merged = mergeShapeMaps(folded, reasons); app.shapes = merged; combinedKey = key; pruneCache(regionCache); return merged;
+      const merged = mergeShapeMaps(folded, reasons);
+      // A partial merge still reaches this run's consumers, but pinning it as
+      // the canonical shapes would make one transient region failure sticky
+      // for the epoch: only complete merges become the cached shapes, failed
+      // regions stay out of regionCache and are rescanned next time (#5317).
+      if (merged.complete !== false) { app.shapes = merged; combinedKey = key; }
+      pruneCache(regionCache); return merged;
     })().then((value) => { entry.settled = true; return value; }).finally(() => { if (app.shapesBusyEpoch === epoch) { app.shapesBusy = null; app.shapesBusyEpoch = -1; } });
     app.shapesBusy = entry;
     return waitForShared(entry, signal);
@@ -394,8 +411,8 @@ function installDemandQueryAPI(app, recognitionVersion) {
     let entry = regionScans.get(key);
     if (!entry) {
       const request = app.backend.scanProgram(region.id, options.onProgress, { ...limits, analysisPriority:options.priority || 'interactive' }); entry = { request, promise:null, settled:false, waiters:0 };
-      entry.promise = Promise.resolve(request).then((scan) => { if (!scan || scan.cancelled) throw Object.assign(new Error('program scan cancelled'), { name:'AbortError' }); entry.settled = true; return scan; }).catch((error) => { regionScans.delete(key); throw error; });
-      regionScans.set(key, entry); pruneCache(regionScans);
+      entry.promise = Promise.resolve(request).then((scan) => { if (!scan || scan.cancelled) throw Object.assign(new Error('program scan cancelled'), { name:'AbortError' }); entry.settled = true; return scan; }).catch((error) => { if (regionScans.get(key) === entry) regionScans.delete(key); throw error; });
+      regionScans.set(key, entry); pruneSettledCache(regionScans);
     }
     return waitForShared(entry, options.signal ?? null);
   };
