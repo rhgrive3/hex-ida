@@ -55,6 +55,10 @@ function architecturalHint(base, expandedFrom, detail = {}) {
   return { ...architecturalNoOp(base, expandedFrom, detail), op: 'hint', hint: true };
 }
 
+function architecturalBaseHint(base, hintKind, detail = {}) {
+  return { ...base, op: 'hint', architecturalNoOp: true, hint: true, hintKind, ...detail };
+}
+
 // --------------------------------------------------------------------------
 // 32-bit (uncompressed) encodings
 // --------------------------------------------------------------------------
@@ -177,11 +181,26 @@ function decodeUncompressed(word) {
         const predecessor = bits(word, 27, 24);
         const successor = bits(word, 23, 20);
         const fenceMode = bits(word, 31, 28);
-        // FENCE's rd/rs1 fields are reserved and must be zero.  The only
-        // standard fm values in the frozen RV64IMC profile are the base
-        // FENCE (0000) and the canonical FENCE.TSO tuple (1000,RW,RW).
-        // Treating other bit patterns as an ordinary barrier would turn
-        // reserved encodings into falsely exact MachineEffects.
+        // RV64I allocates FENCE code points with fm=0 and an empty
+        // predecessor or successor set as architectural HINTs when at least
+        // one register field is x0.  Classify those before ordinary-FENCE
+        // reserved-field validation: PAUSE is the pred=W/succ=0/x0/x0 member
+        // and, like the other FENCE HINTs, mandates no memory ordering.
+        const fenceHint = fenceMode === 0
+          && (predecessor === 0 || successor === 0)
+          && (rd === 'x0' || rs1 === 'x0');
+        if (fenceHint) {
+          const hintKind = rd === 'x0' && rs1 === 'x0' && predecessor === 0b0001 && successor === 0
+            ? 'pause'
+            : 'fence';
+          return architecturalBaseHint(base, hintKind, {
+            format: 'I', rd, rs1, predecessor, successor, fenceMode,
+          });
+        }
+
+        // Ordinary FENCE still requires the frozen profile's canonical
+        // reserved fields.  Treat any remaining non-zero rd/rs1 pattern as
+        // unsupported rather than promoting it to an exact barrier.
         if (rd !== 'x0' || rs1 !== 'x0') {
           return unsupported('riscv64-reserved-fence-registers', {
             opcode, funct3, rd, rs1, predecessor, successor, fenceMode,
