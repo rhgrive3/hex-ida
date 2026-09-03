@@ -107,7 +107,8 @@ export function createDevWorkerResult(input = {}) {
 export function devTerminalReasonFrom({ runtimeReason = null, workerState = null } = {}) {
   const owned = terminalReason(runtimeReason);
   if (owned) return owned;
-  const state = String(workerState || '').toUpperCase();
+  if (typeof workerState !== 'string') return null;
+  const state = workerState.trim().toUpperCase();
   if (state === 'COMPLETED') return DEV_TERMINAL_REASON.COMPLETED;
   if (state === 'CANCELLED') return DEV_TERMINAL_REASON.CANCELLED;
   if (state === 'FAILED') return DEV_TERMINAL_REASON.WORKER_ERROR;
@@ -214,7 +215,8 @@ function budget(value) {
 }
 
 function terminalReason(value) {
-  const reason = String(value ?? '').trim();
+  if (typeof value !== 'string') return null;
+  const reason = value.trim();
   return DEV_TERMINAL_REASONS.includes(reason) ? reason : null;
 }
 function timestamp(value) {
