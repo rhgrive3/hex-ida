@@ -1,5 +1,14 @@
 import assert from 'node:assert/strict';
-import { createPatternProducer } from '../../../js/analysis/discovery/producers.js';
+import {
+  createFunctionCandidate,
+  hasExactStart,
+} from '../../../js/analysis/discovery/candidates.js';
+import {
+  createDebugEvidenceProducer,
+  createPatternProducer,
+  exportProducer,
+  loaderProducer,
+} from '../../../js/analysis/discovery/producers.js';
 
 function producer(overrides = {}) {
   return createPatternProducer({
@@ -52,6 +61,47 @@ assert.throws(
   () => producer({ patterns:[{ id:'p0', bytes:[0xaa, 0xbb], mask:[0xff] }] }),
   /discovery-pattern-mask-length-mismatch/,
 );
+
+const sparsePatterns = new Array(2);
+sparsePatterns[1] = { id:'p1', bytes:[0xaa] };
+assert.throws(
+  () => producer({ patterns:sparsePatterns }),
+  /discovery-pattern-invalid-bytes/,
+);
+
+for (const badConflicts of [
+  'start',
+  [null],
+  [[{ kind:'start' }]],
+  [{ kind:['start'] }],
+  [{ kind:'' }],
+  [{ kind:' start' }],
+]) {
+  assert.throws(
+    () => createFunctionCandidate({ start:0n, startState:'exact', conflicts:badConflicts }),
+    /discovery-candidate-invalid-conflict/,
+  );
+}
+const exactCandidate = createFunctionCandidate({ start:0n, startState:'exact' });
+assert.equal(hasExactStart(exactCandidate), true);
+const contradictedCandidate = createFunctionCandidate({
+  start:0n,
+  startState:'exact',
+  conflicts:[{ kind:'start' }],
+});
+assert.equal(hasExactStart(contradictedCandidate), false);
+
+for (const blank of ['', '   ']) {
+  assert.deepEqual(exportProducer.produce({
+    image:{ exports:[{ address:blank, isFunction:true, name:'bad' }], symbols:[] },
+  }), []);
+  assert.deepEqual(loaderProducer.produce({
+    image:{ functions:[], functionStarts:[blank], unwindEntries:[] },
+  }), []);
+  assert.deepEqual(createDebugEvidenceProducer([
+    { address:blank, name:'bad', evidenceIds:[] },
+  ]).produce(), []);
+}
 
 const ownedBytes = new Uint8Array([0xaa, 0xbb]);
 const typed = producer({ patterns:[{ id:'typed', bytes:ownedBytes }] });
