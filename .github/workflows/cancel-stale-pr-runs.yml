@@ -33,6 +33,8 @@ jobs:
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const sameRepo = `${owner}/${repo}`;
+            const repository = await github.rest.repos.get({ owner, repo });
+            const defaultBranch = repository.data.default_branch;
 
             const openPrs = await github.paginate(github.rest.pulls.list, {
               owner,
@@ -81,6 +83,15 @@ jobs:
               }
 
               const branch = run.head_branch || '';
+              // Fail closed on cancellation authority. The list endpoint's event
+              // filter is only a discovery hint; revalidate every candidate and
+              // never touch the repository's default branch.
+              if (run.event !== 'pull_request' || branch === defaultBranch) {
+                core.info(`KEEP protected ${run.id} ${branch} ${run.name} event=${run.event}`);
+                preserved++;
+                continue;
+              }
+
               let currentPr = null;
               for (const link of run.pull_requests || []) {
                 const candidate = openByNumber.get(link.number);
@@ -120,6 +131,6 @@ jobs:
               .addHeading('Stale PR workflow cleanup')
               .addRaw(`Cancelled closed/unlinked PR runs: ${cancelledClosed}\n`)
               .addRaw(`Cancelled obsolete-head runs: ${cancelledObsolete}\n`)
-              .addRaw(`Preserved current-head runs: ${preserved}\n`)
+              .addRaw(`Preserved current-head/protected runs: ${preserved}\n`)
               .addRaw(`Already terminal: ${alreadyTerminal}\n`)
               .write();
