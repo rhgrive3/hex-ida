@@ -82,10 +82,14 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
     }),
     unknownPartitionNormalizationVersion: MEMORY_SSA_UNKNOWN_PARTITION_VERSION,
   };
+  const normalizedRegions = Array.isArray(options.regions)
+    ? options.regions.map((region) => collapseUnknownResolution(region, fallback))
+    : options.regions;
 
   return buildMemorySsaRaw(irFunction, cfg, {
     ...options,
     identity,
+    ...(normalizedRegions === undefined ? {} : { regions: normalizedRegions }),
     resolveRegion(memory, context) {
       const resolved = resolveRegion(memory, context);
       // Preserve the existing fail-closed contract: build.js rejects async
