@@ -1,6 +1,8 @@
 name: Cancel stale PR workflow runs
 
 on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
   push:
     branches: [main]
     paths:
@@ -18,10 +20,13 @@ concurrency:
 
 jobs:
   cancel-stale:
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Cancel queued/in-progress runs for closed PR branches
+      - name: Cancel closed-PR and obsolete-head runs
         uses: actions/github-script@v7
         with:
           script: |
@@ -36,17 +41,16 @@ jobs:
               per_page: 100,
             });
 
-            const keepBranches = new Set(['main']);
-            const keepPrNumbers = new Set();
+            const openByNumber = new Map();
+            const openByBranch = new Map();
             for (const pr of openPrs) {
-              keepPrNumbers.add(pr.number);
+              openByNumber.set(pr.number, pr);
               if (pr.head.repo?.full_name === sameRepo && pr.head.ref) {
-                keepBranches.add(pr.head.ref);
+                openByBranch.set(pr.head.ref, pr);
               }
             }
 
-            core.info(`Open PRs: ${[...keepPrNumbers].join(', ') || '(none)'}`);
-            core.info(`Protected branches: ${[...keepBranches].join(', ')}`);
+            core.info(`Open PRs: ${[...openByNumber.keys()].join(', ') || '(none)'}`);
 
             const candidates = [];
             for (const status of ['queued', 'in_progress', 'waiting', 'pending']) {
@@ -65,7 +69,8 @@ jobs:
             }
 
             const byId = new Map(candidates.map((run) => [run.id, run]));
-            let cancelled = 0;
+            let cancelledClosed = 0;
+            let cancelledObsolete = 0;
             let preserved = 0;
             let alreadyTerminal = 0;
 
@@ -76,17 +81,31 @@ jobs:
               }
 
               const branch = run.head_branch || '';
-              const linkedOpenPr = (run.pull_requests || []).some((pr) => keepPrNumbers.has(pr.number));
-              if (keepBranches.has(branch) || linkedOpenPr) {
-                core.info(`KEEP ${run.id} ${branch} ${run.name}`);
+              let currentPr = null;
+              for (const link of run.pull_requests || []) {
+                const candidate = openByNumber.get(link.number);
+                if (candidate) {
+                  currentPr = candidate;
+                  break;
+                }
+              }
+              if (!currentPr) currentPr = openByBranch.get(branch) || null;
+
+              const currentHead = currentPr?.head?.sha || null;
+              if (currentHead && run.head_sha === currentHead) {
+                core.info(`KEEP current ${run.id} #${currentPr.number} ${branch} ${run.name}`);
                 preserved++;
                 continue;
               }
 
+              const reason = currentHead
+                ? `obsolete head ${run.head_sha} != ${currentHead}`
+                : 'no open PR owns this run';
               try {
                 await github.rest.actions.cancelWorkflowRun({ owner, repo, run_id: run.id });
-                core.info(`CANCEL ${run.id} ${branch} ${run.name}`);
-                cancelled++;
+                core.info(`CANCEL ${run.id} ${branch} ${run.name}: ${reason}`);
+                if (currentHead) cancelledObsolete++;
+                else cancelledClosed++;
               } catch (error) {
                 if (error.status === 409) {
                   alreadyTerminal++;
@@ -99,8 +118,8 @@ jobs:
 
             core.summary
               .addHeading('Stale PR workflow cleanup')
-              .addRaw(`Cancelled: ${cancelled}\n`)
-              .addRaw(`Preserved: ${preserved}\n`)
+              .addRaw(`Cancelled closed/unlinked PR runs: ${cancelledClosed}\n`)
+              .addRaw(`Cancelled obsolete-head runs: ${cancelledObsolete}\n`)
+              .addRaw(`Preserved current-head runs: ${preserved}\n`)
               .addRaw(`Already terminal: ${alreadyTerminal}\n`)
-              .addRaw(`Open PRs preserved: ${[...keepPrNumbers].join(', ') || '(none)'}\n`)
               .write();
