@@ -399,27 +399,18 @@ function localVarSignatureBlob(bytes, token, metadataInfo) {
   }
   checkedRange(bytes, blobStream.offset, blobStream.size, 'cil-metadata-blob-out-of-bounds');
   const heap = bytes.subarray(blobStream.offset, blobStream.offset + blobStream.size);
-  let pos = 1; // #Blob index 0 is the canonical null blob.
-  while (pos < heap.length) {
-    let lengthInfo;
-    try {
-      lengthInfo = readCompressedInt(heap, pos);
-    } catch {
-      fail('cil-local-var-sig-blob-invalid');
-    }
-    const { value:length, nextOffset } = lengthInfo;
-    if (!Number.isSafeInteger(length) || nextOffset > heap.length - length) {
-      fail('cil-local-var-sig-blob-invalid');
-    }
-    const end = nextOffset + length;
-    if (pos === blobIndex) {
-      if (length < 1) fail('cil-local-var-sig-blob-missing');
-      return heap.subarray(nextOffset, end);
-    }
-    if (end > blobIndex) break;
-    pos = end;
+  let lengthInfo;
+  try {
+    lengthInfo = readCompressedInt(heap, blobIndex);
+  } catch {
+    fail('cil-local-var-sig-blob-invalid');
   }
-  fail('cil-local-var-sig-blob-missing');
+  const { value:length, nextOffset } = lengthInfo;
+  if (!Number.isSafeInteger(length) || nextOffset > heap.length - length) {
+    fail('cil-local-var-sig-blob-invalid');
+  }
+  if (length < 1) fail('cil-local-var-sig-blob-missing');
+  return heap.subarray(nextOffset, nextOffset + length);
 }
 
 function parseMetadataRoot(bytes, view, metadataOffset, metadataSize) {

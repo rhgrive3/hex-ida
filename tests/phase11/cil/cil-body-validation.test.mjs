@@ -36,6 +36,7 @@ function buildLocalSigPeCli({
   includeBlobStream = true,
   signatureBlobIndex = 1,
   signatureBlob = Uint8Array.from([0x07, 0x01, 0x08]), // LOCAL_SIG, 1 local, I4
+  blobPrefixBytes = null,
 } = {}) {
   const buf = new Uint8Array(0x900);
   const view = new DataView(buf.buffer);
@@ -108,9 +109,10 @@ function buildLocalSigPeCli({
   if (includeBlobStream) {
     const blobOffset = metadataOffset + 0x100;
     buf[blobOffset] = 0; // canonical null blob
-    if (signatureBlobIndex === 1) {
-      buf[blobOffset + 1] = signatureBlob.length;
-      buf.set(signatureBlob, blobOffset + 2);
+    if (blobPrefixBytes) buf.set(blobPrefixBytes, blobOffset + 1);
+    if (signatureBlobIndex > 0 && signatureBlobIndex + 1 + signatureBlob.length <= 0x40) {
+      buf[blobOffset + signatureBlobIndex] = signatureBlob.length;
+      buf.set(signatureBlob, blobOffset + signatureBlobIndex + 1);
     }
   }
 
@@ -135,6 +137,14 @@ test('#5331 fat LocalVarSigTok resolves through StandAloneSig and #Blob authorit
   const valid = parseCil(buildLocalSigPeCli());
   assert.equal(valid.methodBodies.length, 1);
   assert.equal(valid.methodBodies[0].localVarSigTok, 0x11000001);
+
+  const padded = parseCil(buildLocalSigPeCli({
+    signatureBlobIndex: 8,
+    blobPrefixBytes: Uint8Array.from([0xff, 0xfe, 0xfd, 0xfc, 0xfb, 0xfa, 0xf9]),
+  }));
+  assert.equal(padded.methodBodies.length, 1);
+  assert.equal(padded.methodBodies[0].localVarSigTok, 0x11000001,
+    '#Blob indexes are direct byte offsets and must not depend on preceding heap bytes');
 
   assert.throws(
     () => parseCil(buildLocalSigPeCli({ localVarSigTok:0x01000001 })),
