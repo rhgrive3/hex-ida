@@ -270,15 +270,15 @@ export function summaryIdentityMatches(summary, {
     }
     return true;
   })) return false;
-  if (functionId != null && String(summary.functionId ?? '') !== String(functionId)) return false;
+  if (functionId != null && (typeof functionId !== 'string' || summary.functionId !== functionId)) return false;
   const status = summary.status;
   if (!status || typeof status !== 'object' || Array.isArray(status)) return false;
   if (typeof status.snapshotId !== 'string' || !status.snapshotId.trim()
     || typeof status.analyzerId !== 'string' || !status.analyzerId.trim()
     || typeof status.analyzerVersion !== 'string' || !status.analyzerVersion.trim()) return false;
-  if (snapshotId != null && status.snapshotId !== String(snapshotId)) return false;
-  if (analyzerId != null && status.analyzerId !== String(analyzerId)) return false;
-  if (analyzerVersion != null && status.analyzerVersion !== String(analyzerVersion)) return false;
+  if (snapshotId != null && (typeof snapshotId !== 'string' || status.snapshotId !== snapshotId)) return false;
+  if (analyzerId != null && (typeof analyzerId !== 'string' || status.analyzerId !== analyzerId)) return false;
+  if (analyzerVersion != null && (typeof analyzerVersion !== 'string' || status.analyzerVersion !== analyzerVersion)) return false;
   return true;
 }
 
