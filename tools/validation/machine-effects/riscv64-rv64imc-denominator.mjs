@@ -193,6 +193,35 @@ export function validateRv64imcDecoderDenominator() {
       }
     }
   }
+
+  // FENCE HINTs are allocated by register and predecessor/successor fields that
+  // are intentionally outside the generic discriminator sweep above. Exercise
+  // both zero-register axes and both empty-set axes here, then pin the adjacent
+  // ordinary/reserved boundaries so the custom predicate cannot silently drift.
+  const fenceBoundaryCases = [
+    ['hint-rd-zero-pred-zero', 0x0011000f, 'rv64i-fence-hint'],
+    ['hint-rd-zero-succ-zero', 0x0101000f, 'rv64i-fence-hint'],
+    ['hint-rs1-zero-pred-zero', 0x0010008f, 'rv64i-fence-hint'],
+    ['hint-rs1-zero-succ-zero', 0x0100008f, 'rv64i-fence-hint'],
+    ['hint-both-zero-pred-zero', 0x0010000f, 'rv64i-fence-hint'],
+    ['hint-both-zero-succ-zero', 0x0100000f, 'rv64i-fence-hint'],
+    ['ordinary-fence-nonempty-sets', 0x0110000f, 'rv64i-fence'],
+    ['reserved-fence-nonzero-registers-pred-zero', 0x0011008f, null],
+    ['reserved-fence-nonzero-registers-succ-zero', 0x0101008f, null],
+  ];
+  for (const [id, word, expectedFamily] of fenceBoundaryCases) {
+    const matches = matchingFamilies(word);
+    if (expectedFamily == null) {
+      if (matches.length !== 0) {
+        throw new Error(`rv64imc-denominator-fence-boundary:${id}:expected-reserved:${matches.map((item) => item.id).join(',')}`);
+      }
+      continue;
+    }
+    if (matches.length !== 1 || matches[0].id !== expectedFamily) {
+      throw new Error(`rv64imc-denominator-fence-boundary:${id}:expected-${expectedFamily}:${matches.map((item) => item.id).join(',') || 'none'}`);
+    }
+  }
+
   return Object.freeze({
     valid: true,
     schemaVersion: RV64IMC_DECODER_DENOMINATOR_SCHEMA,
