@@ -19,6 +19,25 @@ function sharedEntry(promise) {
   };
 }
 
+function poisonedReasonSignal(reasonFactory) {
+  let aborted = false;
+  let abortListener = null;
+  return {
+    get aborted() { return aborted; },
+    get reason() { return reasonFactory(); },
+    addEventListener(type, listener) {
+      if (type === 'abort') abortListener = listener;
+    },
+    removeEventListener(type, listener) {
+      if (type === 'abort' && abortListener === listener) abortListener = null;
+    },
+    abort() {
+      aborted = true;
+      abortListener?.();
+    },
+  };
+}
+
 test('#3646 malformed app-producer signal cannot leave a ghost waiter', async () => {
   const { promise } = pendingOperation();
   const entry = sharedEntry(promise);
@@ -57,6 +76,24 @@ test('#3646 null signal preserves the existing non-cancellable wait contract', a
   const entry = sharedEntry(Promise.resolve('ok'));
   assert.equal(await waitForAppProducer(entry, null), 'ok');
   assert.equal(entry.waiters, 0);
+});
+
+test('#3646 poisoned abort reason cannot bypass app-producer cleanup', async () => {
+  for (const [name, reasonFactory] of [
+    ['reason-getter', () => { throw new Error('poisoned-reason-getter'); }],
+    ['reason-stringification', () => ({ toString() { throw new Error('poisoned-reason-string'); } })],
+  ]) {
+    const { promise } = pendingOperation();
+    const entry = sharedEntry(promise);
+    const signal = poisonedReasonSignal(reasonFactory);
+    const wait = waitForAppProducer(entry, signal);
+
+    assert.equal(entry.waiters, 1, `${name}: waiter must attach before abort`);
+    signal.abort();
+    await assert.rejects(wait, (error) => error?.name === 'AbortError', name);
+    assert.equal(entry.waiters, 0, `${name}: abort must detach exactly once`);
+    assert.equal(entry.controller.signal.aborted, true, `${name}: final consumer must cancel producer`);
+  }
 });
 
 test('#3646 analyzeFunctionCached registration failure detaches only the malformed waiter', async () => {
@@ -100,4 +137,36 @@ test('#3646 analyzeFunctionCached registration failure detaches only the malform
   await Promise.resolve();
   assert.equal(cancelled, 1, 'producer must cancel when the final valid waiter leaves');
   clearAnalysisCache();
+});
+
+test('#3646 poisoned abort reason cannot bypass analyzeFunctionCached cleanup', async () => {
+  for (const [index, [name, reasonFactory]] of [
+    ['reason-getter', () => { throw new Error('poisoned-reason-getter'); }],
+    ['reason-stringification', () => ({ toString() { throw new Error('poisoned-reason-string'); } })],
+  ].entries()) {
+    clearAnalysisCache();
+    let started = 0;
+    let cancelled = 0;
+    const { promise: operation } = pendingOperation();
+    operation.cancel = () => { cancelled += 1; };
+    const backend = {
+      fetchChunk() {
+        started += 1;
+        return operation;
+      },
+    };
+    const region = { id:`issue-3646-poison-${index}`, vmAddr:0n, size:4n, revision:1 };
+    const signal = poisonedReasonSignal(reasonFactory);
+    const wait = analyzeFunctionCached(backend, region, 0, 0, null, null, {
+      signal,
+      texts:false,
+    });
+
+    assert.equal(started, 1, `${name}: producer must start once`);
+    signal.abort();
+    await assert.rejects(wait, (error) => error?.name === 'AbortError', name);
+    await Promise.resolve();
+    assert.equal(cancelled, 1, `${name}: final poisoned consumer must still cancel producer`);
+    clearAnalysisCache();
+  }
 });
