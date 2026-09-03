@@ -84,7 +84,16 @@ function candidateConflicts(value) {
     if (conflict == null || typeof conflict !== 'object' || Array.isArray(conflict)) {
       fail('discovery-candidate-invalid-conflict');
     }
-    if (typeof conflict.kind !== 'string' || conflict.kind.length === 0 || conflict.kind.trim() !== conflict.kind) {
+    const prototype = Object.getPrototypeOf(conflict);
+    if (prototype !== Object.prototype && prototype !== null) {
+      fail('discovery-candidate-invalid-conflict');
+    }
+    const kindDescriptor = Object.getOwnPropertyDescriptor(conflict, 'kind');
+    if (kindDescriptor == null || !Object.hasOwn(kindDescriptor, 'value')) {
+      fail('discovery-candidate-invalid-conflict-kind');
+    }
+    const kind = kindDescriptor.value;
+    if (typeof kind !== 'string' || kind.length === 0 || kind.trim() !== kind) {
       fail('discovery-candidate-invalid-conflict-kind');
     }
     out.push(conflict);
