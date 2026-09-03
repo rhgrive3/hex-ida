@@ -34,6 +34,15 @@ function nonNegativeSafeInteger(value, fallback = 0) {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : fallback;
 }
 
+// Snapshot identity generations are authority-bearing: an explicitly present
+// invalid value must never collapse into another valid generation (e.g. 0).
+// Only a missing value falls back to the default.
+function identityGeneration(value, code) {
+  if (value == null) return 0;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) throw new TypeError(code);
+  return value;
+}
+
 function positiveSafeIntegerScalar(value) {
   if (typeof value === 'number') return Number.isSafeInteger(value) && value > 0 ? value : null;
   if (typeof value === 'bigint') return value > 0n && value <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(value) : null;
@@ -343,7 +352,7 @@ export function createAppAnalysisQueryAdapter(app) {
       }
       const projectRevision = project?.revision ?? app?.projectRevision ?? app?.workspace?.bindingRevision ?? 0;
       const analysisEpoch = app?.backend?.gen ?? app?.analysisEpoch ?? 0;
-      return { binaryId:binaryId.trim(), projectRevision:nonNegativeSafeInteger(projectRevision, 0), artifactVersions:artifactVersions(app), analysisEpoch:nonNegativeSafeInteger(analysisEpoch, 0) };
+      return { binaryId:binaryId.trim(), projectRevision:identityGeneration(projectRevision, 'analysis-query-project-revision-invalid'), artifactVersions:artifactVersions(app), analysisEpoch:identityGeneration(analysisEpoch, 'analysis-query-epoch-invalid') };
     },
 
     async binaryInfo(snapshot) {
@@ -549,7 +558,15 @@ export function createAppAnalysisQueryAdapter(app) {
       }
       const rawTarget = query?.functionId ?? query?.address ?? null;
       const targetAddress = addressOf(rawTarget);
-      const targetId = targetAddress != null ? functionId(targetAddress) : (rawTarget != null ? String(rawTarget) : null);
+      // Only a canonical address or an explicitly allowed string identity may
+      // select evidence. A structured value must never coerce through String()
+      // into another function's id, and an explicitly invalid target fails
+      // closed instead of scanning unfiltered or loading garbage.
+      const targetId = targetAddress != null ? functionId(targetAddress)
+        : (typeof rawTarget === 'string' && rawTarget.trim() ? rawTarget.trim() : null);
+      if (rawTarget != null && targetAddress == null && targetId == null) {
+        return unsupported(rawTarget, 'evidence-target-invalid');
+      }
 
       const rows = [];
       const deep = app?.autoReport?.report?.deep || [];
@@ -558,7 +575,8 @@ export function createAppAnalysisQueryAdapter(app) {
       } else {
         for (const item of deep) {
           const itemAddr = addressOf(item?.functionId ?? item?.address ?? item?.addr ?? item?.startAddress);
-          const itemFnId = item?.functionId != null ? String(item.functionId) : (itemAddr != null ? functionId(itemAddr) : null);
+          const itemFnId = typeof item?.functionId === 'string' && item.functionId.trim() ? item.functionId.trim()
+            : (itemAddr != null ? functionId(itemAddr) : null);
           if ((targetAddress != null && itemAddr != null && itemAddr === targetAddress) ||
               (targetId != null && itemFnId === targetId)) {
             rows.push(item);
