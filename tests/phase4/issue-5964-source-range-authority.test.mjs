@@ -1,6 +1,18 @@
 import assert from 'node:assert/strict';
 import { openBinary, openBinarySource } from '../../js/binary/index.js';
-import { makeElf64Fixture } from '../universal-binary.mjs';
+
+function makeMinimalElf64(machine = 62) {
+  const bytes = new Uint8Array(64);
+  const view = new DataView(bytes.buffer);
+  bytes.set([0x7f, 0x45, 0x4c, 0x46, 2, 1, 1, 0, 0], 0);
+  view.setUint16(16, 3, true);
+  view.setUint16(18, machine, true);
+  view.setUint32(20, 1, true);
+  view.setUint16(52, 64, true);
+  view.setUint16(54, 56, true);
+  view.setUint16(58, 64, true);
+  return bytes;
+}
 
 class SpySource {
   constructor(bytes) {
@@ -16,7 +28,7 @@ class SpySource {
   }
 }
 
-const bytes = makeElf64Fixture();
+const bytes = makeMinimalElf64();
 const expected = openBinary(bytes);
 assert.equal(expected.arch, 'x86_64');
 
@@ -36,7 +48,7 @@ const actual = await openBinarySource(source, {
     initial: [{ offset: 16n, bytes: forgedHeaderTail }],
     pageSize: 64,
     maxPageSize: 64,
-    maxCachedBytes: 2 * 1024 * 1024,
+    maxCachedBytes: 1024,
   },
 });
 
