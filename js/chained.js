@@ -56,13 +56,18 @@ function u32be(dv, off) { return dv.getUint32(off, false); }
 
 /** Return the bounded active architecture slice. */
 async function sliceOffset(file, sliceIndex) {
+  if (sliceIndex != null) {
+    if (typeof sliceIndex !== 'number' || !Number.isSafeInteger(sliceIndex) || sliceIndex < 0) {
+      return null;
+    }
+  }
   const head = await bytes(file, 0, 8);
   if (head.length < 4) return null;
   const dv = new DataView(head.buffer, head.byteOffset, head.byteLength);
   if (dv.getUint32(0, true) === MH_MAGIC_64) return { base:0n, size:BigInt(file.size) };
   const be = dv.getUint32(0, false);
   if (be !== FAT_MAGIC && be !== FAT_MAGIC_64 || head.length < 8) return null;
-  const n = u32be(dv, 4), idx = Math.max(0, Number(sliceIndex) || 0);
+  const n = u32be(dv, 4), idx = sliceIndex ?? 0;
   if (idx >= n || n > 64) return null;
   const wide = be === FAT_MAGIC_64, entry = wide ? 32 : 20;
   const table = await bytes(file, 0, 8 + n * entry);
