@@ -98,6 +98,7 @@ function waitForShared(entry, signal) {
     const onAbort = () => {
       if (settled) return; settled = true; signal?.removeEventListener('abort', onAbort); entry.waiters = Math.max(0, entry.waiters - 1);
       if (!entry.settled && entry.waiters === 0) {
+        entry.cancelled = true;
         entry.cancel?.();
         entry.request?.cancel?.();
       }
@@ -254,12 +255,12 @@ function installMultiRegionShapes(app) {
     if (!regions.length) return null;
     const key = `${epoch}:${regions.map((r) => r.id).join('|')}`;
     if (app.shapes && combinedKey === key) return app.shapes;
-    if (app.shapesBusy && app.shapesBusyEpoch === epoch) return waitForShared(app.shapesBusy, signal);
+    if (app.shapesBusy && app.shapesBusyEpoch === epoch && !app.shapesBusy.cancelled) return waitForShared(app.shapesBusy, signal);
     app.shapesBusyEpoch = epoch;
     const producerController = new AbortController();
     const entry = {
       request:{ cancel:() => { if (!producerController.signal.aborted) producerController.abort('shapes-no-consumers'); } },
-      promise:null, settled:false, waiters:0,
+      promise:null, settled:false, cancelled:false, waiters:0,
     };
     entry.promise = (async () => {
       const folded = []; const reasons = [];
@@ -289,7 +290,7 @@ function installMultiRegionShapes(app) {
       }
       if (epoch !== Number(app.backend.gen ?? app.analysisEpoch ?? 0)) return null;
       const merged = mergeShapeMaps(folded, reasons); app.shapes = merged; combinedKey = key; pruneCache(regionCache); return merged;
-    })().then((value) => { entry.settled = true; return value; }).finally(() => { if (app.shapesBusyEpoch === epoch) { app.shapesBusy = null; app.shapesBusyEpoch = -1; } });
+    })().then((value) => { entry.settled = true; return value; }).finally(() => { if (app.shapesBusy === entry) { app.shapesBusy = null; app.shapesBusyEpoch = -1; } });
     app.shapesBusy = entry;
     return waitForShared(entry, signal);
   };
