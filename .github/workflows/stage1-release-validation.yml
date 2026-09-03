@@ -49,17 +49,39 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
+      # Every proof step records its own outcome so a broken head proof cannot
+      # suppress the independent synthetic merge-tree proof.
       - name: Checkout exact PR head
+        id: head_checkout
+        continue-on-error: true
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
-      - uses: actions/setup-node@v4
+      - name: Set up Node
+        id: node_setup
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-      - run: npm ci --no-audit --no-fund
+      - name: Install exact PR head dependencies
+        id: head_install
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: npm ci --no-audit --no-fund
+      - name: Assert exact PR head checkout
+        id: head_identity
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        env:
+          VERIFY_SHA: ${{ github.event.pull_request.head.sha }}
+        run: test "$(git rev-parse HEAD)" = "$VERIFY_SHA"
       - name: Verify exact Stage 1 candidate head
+        id: head_verify
+        if: ${{ !cancelled() }}
+        continue-on-error: true
         env:
           VERIFY_SHA: ${{ github.event.pull_request.head.sha }}
         run: node tools/validation/stage1/verify.mjs --expect-sha "$VERIFY_SHA"
@@ -68,20 +90,58 @@ jobs:
       # do not need independent hosted runners. Re-checkout the exact merge SHA,
       # reinstall from that tree's lockfile, and verify it on the same runner.
       - name: Checkout exact candidate merge tree
+        id: merge_checkout
+        if: ${{ !cancelled() }}
+        continue-on-error: true
         uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
           clean: true
       - name: Assert exact merge-tree checkout
+        id: merge_identity
+        if: ${{ !cancelled() }}
+        continue-on-error: true
         env:
           VERIFY_SHA: ${{ github.sha }}
         run: test "$(git rev-parse HEAD)" = "$VERIFY_SHA"
-      - run: npm ci --no-audit --no-fund
+      - name: Install exact candidate merge-tree dependencies
+        id: merge_install
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: npm ci --no-audit --no-fund
       - name: Verify exact Stage 1 candidate merge tree
+        id: merge_verify
+        if: ${{ !cancelled() }}
+        continue-on-error: true
         env:
           VERIFY_SHA: ${{ github.sha }}
         run: node tools/validation/stage1/verify.mjs --expect-sha "$VERIFY_SHA"
+
+      - name: Require both Stage 1 proof identities
+        if: ${{ !cancelled() }}
+        shell: bash
+        env:
+          HEAD_CHECKOUT: ${{ steps.head_checkout.outcome }}
+          NODE_SETUP: ${{ steps.node_setup.outcome }}
+          HEAD_INSTALL: ${{ steps.head_install.outcome }}
+          HEAD_IDENTITY: ${{ steps.head_identity.outcome }}
+          HEAD_VERIFY: ${{ steps.head_verify.outcome }}
+          MERGE_CHECKOUT: ${{ steps.merge_checkout.outcome }}
+          MERGE_IDENTITY: ${{ steps.merge_identity.outcome }}
+          MERGE_INSTALL: ${{ steps.merge_install.outcome }}
+          MERGE_VERIFY: ${{ steps.merge_verify.outcome }}
+        run: |
+          set -euo pipefail
+          failed=0
+          for name in HEAD_CHECKOUT NODE_SETUP HEAD_INSTALL HEAD_IDENTITY HEAD_VERIFY MERGE_CHECKOUT MERGE_IDENTITY MERGE_INSTALL MERGE_VERIFY; do
+            outcome="${!name}"
+            if [[ "$outcome" != "success" ]]; then
+              echo "$name=$outcome" >&2
+              failed=1
+            fi
+          done
+          exit "$failed"
 
   dispatch-exact-candidate:
     if: github.event_name == 'workflow_dispatch'
