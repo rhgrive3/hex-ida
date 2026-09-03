@@ -64,11 +64,11 @@ assert.ok(zeroReserveUsage.estimatedInputTokens > 1 && zeroReserveUsage.estimate
 for (const invalid of [-1, Number.NEGATIVE_INFINITY, Number.POSITIVE_INFINITY, Number.NaN, '-1', [], false]) {
   assert.throws(
     () => assertWireBudget(tokenPayload, {
-      contextTokens: 100,
+      contextTokens: 8192,
       maxOutputTokens: invalid,
-      maxRequestBytes: 1024 * 1024,
+      maxRequestBytes: 1,
     }),
-    (error) => error?.type === 'context_too_large' && error?.details?.maxTokens === 1,
+    (error) => error?.type === 'context_too_large' && error?.details?.maxTokens === 4096,
     `invalid maxOutputTokens ${String(invalid)} must use the safe 4096-token fallback`,
   );
 }
