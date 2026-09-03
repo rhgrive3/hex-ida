@@ -26,7 +26,10 @@ function analysisIdentity(options = {}) {
 }
 
 function canonicalArtifactId(options = {}) {
-  const value = options?.artifactId == null ? '' : String(options.artifactId).trim();
+  const raw = options?.artifactId;
+  if (raw == null) return null;
+  if (typeof raw !== 'string') throw new TypeError('analysis-cache-artifact-id-not-canonical');
+  const value = raw.trim();
   if (!value) return null;
   if (!CANONICAL_ARTIFACT_ID.test(value)) throw new TypeError('analysis-cache-artifact-id-not-canonical');
   return value.toLowerCase();
@@ -37,8 +40,8 @@ function canonicalBinaryHash(value, { required = false } = {}) {
     if (required) throw new TypeError('binary hash is required');
     return null;
   }
-  if (typeof value !== 'string' || value.length === 0) throw new TypeError('analysis-cache-binary-hash-invalid');
-  return value;
+  if (typeof value !== 'string' || value.trim().length === 0) throw new TypeError('analysis-cache-binary-hash-invalid');
+  return value.trim();
 }
 
 export class AnalysisCache {
