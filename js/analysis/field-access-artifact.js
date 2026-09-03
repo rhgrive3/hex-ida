@@ -7,10 +7,12 @@ function abortError(signal, fallback = 'Field-access search aborted') {
 }
 
 function resultState(result) {
-  const complete = result?.complete !== false && result?.truncated !== true;
+  const unsupported = result?.unsupported === true;
+  const complete = result?.complete === true && result?.truncated !== true && !unsupported;
   return {
     complete,
-    reason:complete ? null : (result?.reason || result?.incompleteReason || result?.truncationReason || 'field-access-incomplete'),
+    ...(unsupported ? { unsupported:true } : {}),
+    reason:complete ? null : (result?.reason || result?.incompleteReason || result?.truncationReason || (unsupported ? 'field-access-unsupported' : 'field-access-incomplete')),
   };
 }
 
@@ -30,6 +32,7 @@ function validBackendResult(result) {
   if (!Array.isArray(result.results)) return false;
   if (result.complete != null && typeof result.complete !== 'boolean') return false;
   if (result.truncated != null && typeof result.truncated !== 'boolean') return false;
+  if (result.unsupported != null && typeof result.unsupported !== 'boolean') return false;
   return true;
 }
 

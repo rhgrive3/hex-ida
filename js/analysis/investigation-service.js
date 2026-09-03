@@ -19,7 +19,15 @@ function abortError(signal, message = 'Investigation cancelled') {
   return error;
 }
 function abortIfNeeded(signal) { if (signal?.aborted) throw abortError(signal); }
-function epochOf(app) { return Number(app?.backend?.gen ?? app?.analysisEpoch ?? -1); }
+function strictInteger(value, fallback) {
+  if (value == null) return fallback;
+  if (typeof value === 'number' && Number.isSafeInteger(value)) return value;
+  return null;
+}
+function epochOf(app) {
+  const raw = app?.backend?.gen ?? app?.analysisEpoch;
+  return strictInteger(raw, -1);
+}
 function storeValue(app, key) {
   try { return app?.store?.get?.(key) ?? null; } catch { return null; }
 }
@@ -67,9 +75,8 @@ function scheduleProducer(options, signal) {
   return Promise.resolve();
 }
 function boundedBudget(value, fallback) {
-  const number = Number(value);
-  if (!Number.isFinite(number) || number < 0) return fallback;
-  return Math.min(fallback, Math.floor(number));
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return fallback;
+  return Math.min(fallback, Math.floor(value));
 }
 function budgetConfig(options, key, defaults) {
   const override = options?.budget?.[key];
@@ -83,7 +90,7 @@ function budgetProfileKey(config) {
   return Object.keys(config).sort().map((key) => `${key}:${config[key]}`).join('|');
 }
 
-function waitShared(entry, signal) {
+function waitShared(entry, signal, onLastWaiterAbort = null) {
   abortIfNeeded(signal);
   entry.waiters++;
   return new Promise((resolve, reject) => {
@@ -100,7 +107,10 @@ function waitShared(entry, signal) {
       done = true;
       signal?.removeEventListener('abort', onAbort);
       entry.waiters = Math.max(0, entry.waiters - 1);
-      if (!entry.settled && entry.waiters === 0) entry.controller.abort('investigation-no-consumers');
+      if (!entry.settled && entry.waiters === 0) {
+        onLastWaiterAbort?.();
+        entry.controller.abort('investigation-no-consumers');
+      }
       reject(abortError(signal));
     };
     signal?.addEventListener('abort', onAbort, { once:true });
@@ -145,11 +155,16 @@ function programComplete(program) {
   if (program.callsCapped || program.refsCapped || program.statsComplete === false) return false;
   return true;
 }
-function completenessFor({ strings, program, shapes }) {
+function completenessFor({ strings, program, shapes, metadata, goal }) {
   const reasons = [];
   if (strings?.complete !== true) reasons.push(strings?.truncationReason || 'strings-partial');
   if (!programComplete(program)) reasons.push(program?.queryIncompleteReason || 'program-partial');
   if (shapes && shapes.complete !== true) reasons.push(shapes.incompleteReason || 'shapes-partial');
+  if (metadata && metadata.complete === false) {
+    if (needsShapeEvidence(goal) || metadata.reasons?.length) {
+      reasons.push(...(metadata.reasons?.length ? metadata.reasons : ['metadata-partial']));
+    }
+  }
   return { complete:reasons.length === 0, reasons:[...new Set(reasons.filter(Boolean))] };
 }
 function needsShapeEvidence(goal) {
@@ -167,11 +182,14 @@ function beats(next, current) {
 function captureAnalysisBinding(app, resolved = {}) {
   const symbols = app?.symbols ?? null;
   const region = app?.codeRegion?.() || execRegions(app)[0] || null;
+  const epoch = epochOf(app);
+  const sliceIndex = strictInteger(storeValue(app, 'sliceIndex'), -1);
+  const symbolsGen = strictInteger(symbols?.gen, 0);
   return Object.freeze({
-    epoch:epochOf(app),
-    sliceIndex:Number(storeValue(app, 'sliceIndex') ?? -1),
+    epoch,
+    sliceIndex,
     symbols,
-    symbolsGen:Number(symbols?.gen || 0),
+    symbolsGen,
     fields:resolved.fields ?? app?.fields ?? null,
     program:resolved.program ?? app?.program ?? null,
     shapes:resolved.shapes ?? app?.shapes ?? null,
@@ -180,9 +198,14 @@ function captureAnalysisBinding(app, resolved = {}) {
   });
 }
 function analysisBindingCurrent(app, binding) {
-  if (!binding || epochOf(app) !== binding.epoch) return false;
-  if (Number(storeValue(app, 'sliceIndex') ?? -1) !== binding.sliceIndex) return false;
-  if (app?.symbols !== binding.symbols || Number(app?.symbols?.gen || 0) !== binding.symbolsGen) return false;
+  if (!binding) return false;
+  const currentEpoch = epochOf(app);
+  if (currentEpoch == null || currentEpoch !== binding.epoch) return false;
+  const currentSlice = strictInteger(storeValue(app, 'sliceIndex'), -1);
+  if (currentSlice == null || currentSlice !== binding.sliceIndex) return false;
+  if (app?.symbols !== binding.symbols) return false;
+  const currentSymbolsGen = strictInteger(app?.symbols?.gen, 0);
+  if (currentSymbolsGen == null || currentSymbolsGen !== binding.symbolsGen) return false;
   if ((binding.fields != null || app?.fields != null) && app?.fields !== binding.fields) return false;
   if (binding.program != null && app?.program !== binding.program) return false;
   if (binding.shapes != null && app?.shapes !== binding.shapes) return false;
@@ -222,17 +245,23 @@ export class InvestigationService {
   }
 
   #shared(key, producer, options = {}) {
+    abortIfNeeded(options.signal);
     let entry = this.shared.get(key);
-    if (!entry) {
+    if (!entry || entry.controller.signal.aborted) {
       const controller = new AbortController();
       entry = { controller, waiters:0, settled:false, promise:null };
       entry.promise = scheduleProducer(options, controller.signal)
         .then(() => producer(controller.signal))
         .then((value) => { entry.settled = true; return value; })
-        .catch((error) => { this.shared.delete(key); throw error; });
+        .catch((error) => {
+          if (this.shared.get(key) === entry) this.shared.delete(key);
+          throw error;
+        });
       this.shared.set(key, entry);
     }
-    return waitShared(entry, options.signal ?? null);
+    return waitShared(entry, options.signal ?? null, () => {
+      if (this.shared.get(key) === entry) this.shared.delete(key);
+    });
   }
 
   collectStrings(options = {}) {
@@ -293,12 +322,14 @@ export class InvestigationService {
     if (!symbols || symbols.functionStartsComplete === true || symbols.functionDiscovery?.complete === true) return symbols;
     if (typeof this.app.ensureFunctions !== 'function') return symbols;
     const region = this.app.codeRegion?.() || execRegions(this.app)[0] || null;
-    return this.app.ensureFunctions(region, {
+    const optionsObj = {
       signal:options.signal ?? null,
       onProgress:options.onProgress,
       priority:priorityOf(options),
       budget:options.budget ?? null,
-    });
+    };
+    const callableOptions = Object.assign((p) => progress(options, p), optionsObj);
+    return this.app.ensureFunctions(region, callableOptions);
   }
 
   buildProgram(options = {}) {
@@ -308,7 +339,7 @@ export class InvestigationService {
     const epoch = epochOf(app);
     const key = regions.map((r) => r.id).join('|');
     if (app.program && app.programKey === key && app.program.gen === app.symbols?.gen) return Promise.resolve(app.program);
-    return this.#shared(`program:${epoch}:${Number(app.symbols?.gen || 0)}:${key}`, async (signal) => {
+    return this.#shared(`program:${epoch}:${strictInteger(app.symbols?.gen, 0)}:${key}`, async (signal) => {
       await this.discoverFunctions({ ...options, signal });
       abortIfNeeded(signal);
       const scans = [], failures = [];
@@ -353,27 +384,39 @@ export class InvestigationService {
   collectShapes(options = {}) {
     const epoch = epochOf(this.app);
     if (this.app.shapes) return Promise.resolve(this.app.shapes);
-    return this.#shared(`shapes:${epoch}`, (signal) => this.app.ensureShapes({
-      signal,
-      onProgress:(p) => progress(options, p),
-      priority:priorityOf(options),
-      budget:options.budget ?? null,
-    }), options);
+    return this.#shared(`shapes:${epoch}`, (signal) => {
+      const optionsObj = {
+        signal,
+        onProgress:(p) => progress(options, p),
+        priority:priorityOf(options),
+        budget:options.budget ?? null,
+      };
+      const callableOptions = Object.assign((p) => progress(options, p), optionsObj);
+      return this.app.ensureShapes(callableOptions);
+    }, options);
   }
 
   ensureMetadata(options = {}) {
     const epoch = epochOf(this.app);
     return this.#shared(`metadata:${epoch}`, async (signal) => {
       abortIfNeeded(signal);
-      const sliceIndex = Number(storeValue(this.app, 'sliceIndex') ?? -1);
+      const sliceIndex = strictInteger(storeValue(this.app, 'sliceIndex'), -1);
       const work = [];
       const producerOptions = { signal, priority:priorityOf(options), budget:options.budget ?? null };
-      if (typeof this.app.ensureObjc === 'function' && sliceIndex >= 0) work.push(this.app.ensureObjc(sliceIndex, producerOptions));
+      if (typeof this.app.ensureObjc === 'function' && sliceIndex != null && sliceIndex >= 0) work.push(this.app.ensureObjc(sliceIndex, producerOptions));
       if (typeof this.app.ensureSwift === 'function') work.push(this.app.ensureSwift(producerOptions));
-      await Promise.allSettled(work);
+      const settled = await Promise.allSettled(work);
       abortIfNeeded(signal);
       if (epoch !== epochOf(this.app)) throw Object.assign(new Error('stale investigation metadata'), { stale:true });
-      return { fields:this.app.fields, objc:this.app.objcModel, swift:this.app.swiftModel };
+      const failures = settled.filter((s) => s.status === 'rejected');
+      const complete = failures.length === 0;
+      return {
+        fields:this.app.fields,
+        objc:this.app.objcModel,
+        swift:this.app.swiftModel,
+        complete,
+        reasons:failures.map((f) => f.reason?.message || 'metadata-producer-failure'),
+      };
     }, options);
   }
 
@@ -431,6 +474,8 @@ export class InvestigationService {
       symbols:binding.symbols,
       fields:binding.fields,
       region:binding.region,
+      metadata,
+      goal,
       binding,
     };
     context.completeness = completenessFor(context);
