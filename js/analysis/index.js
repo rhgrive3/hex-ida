@@ -61,10 +61,14 @@ export function createAnalysisSurface({
       memorySsaBinding: {
         ...(options.memorySsaBinding ?? {}),
         memorySsa,
-        snapshotId,
-        functionId: ir?.functionId ?? null,
-        semanticIrVersion: ir?.contractVersion ?? null,
-        memorySsaBuildVersion: memorySsa.buildVersion ?? null,
+        // Binding-declared identity is the authority; the current surface
+        // values are fallbacks only (same principle as `completeness` above).
+        // Overwriting a supplied stale identity here would launder it past
+        // `prepareMemoryBoundary()`'s fail-closed checks.
+        snapshotId: options.memorySsaBinding?.snapshotId ?? snapshotId,
+        functionId: options.memorySsaBinding?.functionId ?? (ir?.functionId ?? null),
+        semanticIrVersion: options.memorySsaBinding?.semanticIrVersion ?? (ir?.contractVersion ?? null),
+        memorySsaBuildVersion: options.memorySsaBinding?.memorySsaBuildVersion ?? (memorySsa.buildVersion ?? null),
         completeness: memorySsaCompleteness,
       },
     }),
