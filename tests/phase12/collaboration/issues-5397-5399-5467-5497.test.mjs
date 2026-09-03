@@ -60,6 +60,40 @@ test('#5397 same-ID different content rejects, identical content duplicates', ()
   assert.deepEqual(batch.appliedOperationIds(), []);
 });
 
+test('#5397 batch cannot replace a pre-existing pending operation ID', () => {
+  const log = new ChangeLog(base);
+  const pendingAlpha = op('op:pending-batch', 'alpha', { causalParents: ['parent-batch'] });
+  assert.equal(log.applyOperation(pendingAlpha).status, 'unresolved');
+  const beforeDigest = log.digest();
+  const beforeState = log.snapshot();
+
+  const mismatch = log.applyBatch([
+    op('parent-batch', 'parent', { targetEntityId: 'parent-batch' }),
+    op('op:pending-batch', 'beta', { causalParents: ['parent-batch'] }),
+  ]);
+  assert.equal(mismatch.status, 'rejected');
+  assert.equal(mismatch.reason, 'operation-id-content-mismatch');
+  assert.equal(mismatch.operationId, 'op:pending-batch');
+  assert.equal(log.digest(), beforeDigest, 'rejected batch must not commit the working parent or replacement');
+  assert.deepEqual(log.snapshot(), beforeState, 'rejected batch must leave state unchanged');
+  assert.equal(log.pending.get('op:pending-batch'), pendingAlpha, 'original pending alpha must remain authoritative');
+  assert.equal(log.operations.has('parent-batch'), false, 'working-copy parent must not leak into the original log');
+
+  const matching = new ChangeLog(base);
+  const canonicalPending = op('op:pending-retry', 'alpha', { causalParents: ['parent-retry'] });
+  const retry = op('op:pending-retry', 'alpha', { causalParents: ['parent-retry'] });
+  assert.notEqual(retry, canonicalPending, 'retry fixture must be a distinct object');
+  assert.equal(matching.applyOperation(canonicalPending).status, 'unresolved');
+  const accepted = matching.applyBatch([
+    op('parent-retry', 'parent', { targetEntityId: 'parent-retry' }),
+    retry,
+  ]);
+  assert.equal(accepted.status, 'applied');
+  assert.equal(matching.pending.has('op:pending-retry'), false);
+  assert.equal(matching.operations.get('op:pending-retry'), canonicalPending, 'the stored pending operation, not the retry object, is applied');
+  assert.equal(matching.snapshot().facts['e\x00name'].values[0].value, 'alpha');
+});
+
 test('#5399 ready pending drains automatically to a fixed point', () => {
   const log = new ChangeLog(base);
   assert.equal(log.applyOperation(op('child', 'child-value', { causalParents: ['parent'] })).status, 'unresolved');
