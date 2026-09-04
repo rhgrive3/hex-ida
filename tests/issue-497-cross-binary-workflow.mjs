@@ -78,6 +78,7 @@ assert.match(measure, /name:\s*Publish oracle for this run[\s\S]*actions\/upload
 assert.doesNotMatch(measure, /Download required oracle/,
   'the fixture runner must consume its local oracle directly without an artifact round trip');
 
+const resultCacheKeys = [];
 for (const partition of ['core', 'pinpoint', 'pseudoc']) {
   assert.match(measure, new RegExp(`Restore exact ${partition} result cache`),
     `${partition} result must retain an independent exact cache`);
@@ -85,9 +86,24 @@ for (const partition of ['core', 'pinpoint', 'pseudoc']) {
     `${partition} cached result must be validated before reuse`);
   assert.match(measure, new RegExp(`Save exact ${partition} result cache`),
     `${partition} result cache must only publish validated output`);
+
+  for (const operation of ['Restore', 'Save']) {
+    const stepName = `name: ${operation} exact ${partition} result cache`;
+    const start = measure.indexOf(stepName);
+    assert.ok(start >= 0, `${operation.toLowerCase()} ${partition} cache step must exist`);
+    const nextStep = measure.indexOf('\n      - name:', start + stepName.length);
+    const block = measure.slice(start, nextStep >= 0 ? nextStep : measure.length);
+    const keyMatch = block.match(/\n\s+key:\s*([^\n]+)/);
+    assert.ok(keyMatch, `${operation.toLowerCase()} ${partition} cache must declare an exact key`);
+    resultCacheKeys.push({ operation, partition, key: keyMatch[1].trim() });
+  }
 }
-assert.match(measure, /accuracy-result-v8-/,
-  'single-world layout must use the current validated cache generation');
+assert.equal(resultCacheKeys.length, 6,
+  'core, pinpoint, and pseudoc must each have restore and save result-cache keys');
+for (const { operation, partition, key } of resultCacheKeys) {
+  assert.match(key, /^accuracy-result-v8-/,
+    `${operation.toLowerCase()} ${partition} cache must use the v8 result generation`);
+}
 assert.doesNotMatch(measure, /accuracy-result-v7-/,
   'stale result-cache generations must not remain in the active workflow');
 
@@ -121,7 +137,7 @@ for (const conditional of [
 assert.match(measureScript, /if \[\[ -z "\$features" \]\][\s\S]*exit 1/,
   'single-world measurement must fail closed if invoked without a missing partition');
 assert.equal(
-  (measureScript.match(/if ! node --max-old-space-size=4096 tests\/accuracy\.mjs/g) || []).length,
+  (measureScript.match(/\btests\/accuracy\.mjs\b/g) || []).length,
   1,
   'all cache-missing features must share exactly one accuracy.mjs analysis world',
 );
@@ -161,10 +177,16 @@ for (const [variable, partition] of [
   ['pseudoc_output', 'pseudoc'],
 ]) {
   const staged = '"${' + variable + '}.tmp"';
-  assert.ok(measureScript.includes('accuracy-result-validate.mjs ' + staged),
+  const validateCommand = 'accuracy-result-validate.mjs ' + staged;
+  const publishCommand = 'mv ' + staged + ' "$' + variable + '"';
+  const validationIndex = measureScript.indexOf(validateCommand);
+  const publicationIndex = measureScript.indexOf(publishCommand);
+  assert.ok(validationIndex >= 0,
     `${partition} output must be validated before publication`);
-  assert.ok(measureScript.includes('mv ' + staged + ' "$' + variable + '"'),
+  assert.ok(publicationIndex >= 0,
     `${partition} output must publish atomically after validation`);
+  assert.ok(validationIndex < publicationIndex,
+    `${partition} validation must precede atomic publication`);
 }
 
 const targetUpload = measure.slice(measure.indexOf('name: Upload target accuracy partitions'));
