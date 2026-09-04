@@ -4,6 +4,8 @@ import { parseDynamicSymbolVersions } from '../../js/binary/elf-extended.js';
 const DT_VERSYM = 0x6ffffff0n;
 const DT_VERDEF = 0x6ffffffcn;
 const DT_VERDEFNUM = 0x6ffffffdn;
+const DT_VERNEED = 0x6ffffffen;
+const DT_VERNEEDNUM = 0x6fffffffn;
 const BASE = 0x1000n;
 const VERDEF_OFFSET = 16;
 
@@ -73,6 +75,29 @@ function parseVerdef({ cnt, aux, fileSize = 64, names = new Map([[1n, 'FAKE_VER'
   const { out, image } = parseVerdef({ cnt: 1, aux: 20 });
   assert.deepEqual(out.get(0), { index: 2, hidden: false, name: 'VER_OK', library: null, definition: true });
   assert.equal(image.metadata.programDynamicPartial, undefined);
+  assert.deepEqual(image.metadata.symbolVersions, { entries: 1, named: 1, complete: true });
+}
+
+{
+  const bytes = new Uint8Array(64);
+  writeU16(bytes, 0, 3); // DT_VERSYM[0] -> needed version index 3.
+  writeU16(bytes, VERDEF_OFFSET, 1); // vn_version
+  writeU16(bytes, VERDEF_OFFSET + 2, 1); // vn_cnt
+  writeU32(bytes, VERDEF_OFFSET + 4, 9); // vn_file
+  writeU32(bytes, VERDEF_OFFSET + 8, 16); // vn_aux
+  writeU32(bytes, VERDEF_OFFSET + 12, 0); // vn_next
+  writeU16(bytes, VERDEF_OFFSET + 16 + 6, 3); // vna_other
+  writeU32(bytes, VERDEF_OFFSET + 16 + 8, 11); // vna_name
+  writeU32(bytes, VERDEF_OFFSET + 16 + 12, 0); // vna_next
+  const image = { segments: [{ address: BASE, fileOffset: 0, fileSize: bytes.length }], metadata: {}, warnings: [] };
+  const tags = new Map([
+    [DT_VERSYM, [BASE]],
+    [DT_VERNEED, [BASE + BigInt(VERDEF_OFFSET)]],
+    [DT_VERNEEDNUM, [1n]],
+  ]);
+  const names = new Map([[9n, 'libneed.so'], [11n, 'NEED_VER']]);
+  const out = parseDynamicSymbolVersions(reader(bytes), tags, image, 1, (offset) => names.get(offset) ?? null);
+  assert.deepEqual(out.get(0), { index: 3, hidden: false, name: 'NEED_VER', library: 'libneed.so', definition: false });
   assert.deepEqual(image.metadata.symbolVersions, { entries: 1, named: 1, complete: true });
 }
 
