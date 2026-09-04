@@ -28,7 +28,9 @@ jobs:
           cache: npm
       - run: npm ci --no-audit --no-fund
       - name: Apply only verified current-code findings
-        run: node tools/validation/apply-review-6372-repairs.mjs
+        run: |
+          node tools/validation/apply-review-6372-repairs.mjs
+          node tools/validation/apply-audit-review-fixes.mjs
       - name: Verify focused regressions
         run: |
           node tests/process/merged-pr-review-audit.test.mjs
@@ -47,6 +49,6 @@ jobs:
           fi
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add js/binary/macho-dyld.js js/names.js package.json .github/workflows tests
+          git add js/binary/macho-dyld.js js/names.js package.json .github/workflows tests tools/validation
           git commit -m 'fix(review): apply ignored review repairs [audit-repair-applied]'
           git push origin HEAD:audit/2026-09-04-merged-pr-reviews
