@@ -155,7 +155,7 @@ export class DebuggerProvider extends DebugAdapterRuntimeProvider {
       refreshModules: async () => {
         if (!this.adapter.capabilities?.modules || typeof this.adapter.getModules !== 'function') return session.modules.active();
         const modules = await this.adapter.getModules();
-        if (!Array.isArray(modules)) return [];
+        if (!Array.isArray(modules)) throw new DebugAdapterError('runtime-invalid-modules', 'debugger adapter getModules must return an array');
 
         const next = new Map();
         for (let i = 0; i < modules.length; i++) {

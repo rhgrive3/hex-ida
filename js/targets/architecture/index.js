@@ -16,8 +16,9 @@ function arm64ControlFlow(instruction) {
   if (/^ret(?:aa|ab)?$/.test(op)) return 'return';
   if (/^(?:bl|blr|blraa|blrab|blraaz|blrabz)$/.test(op)) return 'call';
   if (/^(?:b|br|braa|brab|braaz|brabz)$/.test(op)) return 'branch';
+  if (op === 'b.al' || op === 'b.nv') return 'branch';
   if (op.startsWith('b.') || op === 'cbz' || op === 'cbnz' || op === 'tbz' || op === 'tbnz') return 'conditional-branch';
-  if (/^(?:eret|eretaa|eretab|brk|svc|hvc|smc)$/.test(op)) return 'unknown';
+  if (/^(?:eret|eretaa|eretab|brk|hlt|svc|hvc|smc)$/.test(op)) return 'unknown';
   return 'fallthrough';
 }
 
@@ -27,7 +28,9 @@ function x86ControlFlow(instruction) {
   if (op === 'call') return 'call';
   if (op === 'jmp') return 'branch';
   if (/^(?:loop|loope|loopz|loopne|loopnz)$/.test(op)) return 'conditional-branch';
-  if (op === 'ud2' || op === 'int3') return 'unknown';
+  if (/^(?:ud2|ud0|ud1|int3|int1|int)$/.test(op)) return 'unknown';
+  if (/^(?:syscall|sysret|sysretq)$/.test(op)) return 'branch';
+  if (/^(?:iret|iretd|iretq|ljmp|sysenter|sysexit|sysexitq)$/.test(op)) return 'unknown';
   if (/^j[^m]/.test(op)) return 'conditional-branch';
   return 'fallthrough';
 }

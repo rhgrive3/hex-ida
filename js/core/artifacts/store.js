@@ -9,6 +9,7 @@ import {
 import { ArtifactHotCache } from './hot-cache.js';
 import { createArtifactBackend } from './backends.js';
 import {
+  artifactHotEntrySize,
   canonicalStoredRecord,
   normalizeStoredPayloadBytes,
   validateStoredArtifact,
@@ -118,8 +119,6 @@ export class ArtifactStore {
     aborted(options.signal);
     this.metrics.requests++;
 
-    // Retrying on a local mutation epoch prevents a get/delete or get/publish
-    // race from repopulating the hot cache with an older state after mutation.
     for (;;) {
       await this.#waitForMutation(artifactId);
       aborted(options.signal);
@@ -129,8 +128,6 @@ export class ArtifactStore {
         try {
           const payloadBytes = normalizeStoredPayloadBytes(cached.payloadBytes);
           const record = canonicalStoredRecord(cached.record);
-          // Cached bytes are still validated on every hit. The cache is not a
-          // semantic authority and callers never receive the retained object.
           const validated = validateStoredArtifact({ record, payload:payloadBytes }, {
             artifactId,
             descriptor,
@@ -179,7 +176,7 @@ export class ArtifactStore {
         this.hotCache.put(
           artifactId,
           { record:validated.record, payloadBytes:validated.payloadBytes },
-          validated.payloadBytes.byteLength,
+          artifactHotEntrySize(validated.record, validated.payloadBytes),
         );
         if (source === 'persistent') this.metrics.persistentHits++;
         else this.metrics.memoryHits++;
@@ -199,7 +196,7 @@ export class ArtifactStore {
     const ctx = context || {
       activePath: new Set(),
       validated: new Set(),
-      maxNodes: Number.isSafeInteger(options.maxNodes) ? options.maxNodes : 10000,
+      maxNodes: Number.isSafeInteger(options.maxNodes) && options.maxNodes >= 0 ? options.maxNodes : 10000,
       nodesVisited: 0,
     };
     const currentId = requireArtifactId(record.artifactId);
@@ -243,9 +240,6 @@ export class ArtifactStore {
         if (record && payloadBytes != null && typeof this.backend.deleteIfMatches === 'function') {
           return await this.backend.deleteIfMatches(artifactId, record, payloadBytes);
         }
-        // Malformed rows without enough identity to compare are retained rather
-        // than risking deletion of a newer cross-context publication. They are
-        // still permanently fail-closed on reads.
         return false;
       } catch (error) {
         this.metrics.storageFailures++;
@@ -320,8 +314,6 @@ export class ArtifactStore {
       if (options.signal?.aborted) {
         this.metrics.cancelledPublishes++;
         this.hotCache.delete(artifactId);
-        // A duplicate means a complete artifact predated this cancelled
-        // publication. Never delete that pre-existing CAS entry.
         if (!writeResult?.duplicate) {
           try {
             if (typeof this.backend.deleteIfMatches === 'function') await this.backend.deleteIfMatches(artifactId, record, payloadBytes);
@@ -335,9 +327,6 @@ export class ArtifactStore {
       let canonicalPayloadBytes;
       let returnedPayload;
       try {
-        // On a duplicate publication the backend's existing immutable bytes are
-        // authoritative. This keeps hot results identical to close/reopen even
-        // when non-key creation metadata differs between producers.
         canonicalRecord = canonicalStoredRecord(writeResult?.record ?? record);
         canonicalPayloadBytes = normalizeStoredPayloadBytes(writeResult?.payload ?? payloadBytes);
         const storedView = { record:canonicalRecord, payload:canonicalPayloadBytes };
@@ -352,8 +341,6 @@ export class ArtifactStore {
         returnedPayload = validated.payload;
       } catch (error) {
         this.hotCache.delete(artifactId);
-        // No failed publication may survive as a future hit. Do not remove a
-        // pre-existing duplicate because this caller did not create it.
         if (!writeResult?.duplicate) {
           try {
             if (typeof this.backend.deleteIfMatches === 'function') await this.backend.deleteIfMatches(artifactId, record, payloadBytes);
@@ -363,12 +350,10 @@ export class ArtifactStore {
         throw error;
       }
 
-      // Do not cache the decoded payload object: callers may mutate return
-      // values, while retained CAS bytes must remain immutable.
       this.hotCache.put(
         artifactId,
         { record:canonicalRecord, payloadBytes:canonicalPayloadBytes },
-        canonicalPayloadBytes.byteLength,
+        artifactHotEntrySize(canonicalRecord, canonicalPayloadBytes),
       );
       this.metrics.publishes++;
       this.metrics.publishBytes += canonicalPayloadBytes.byteLength;

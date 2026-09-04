@@ -21,6 +21,7 @@ function verdictBadge(verdict) {
     case 'confirmed': return 'confirmed';
     case 'supported':
     case 'likely': return 'likely';
+    case 'contradicted': return 'contradicted';
     default: return 'unverified';
   }
 }
