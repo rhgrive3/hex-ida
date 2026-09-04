@@ -66,6 +66,18 @@ test('an exhaustive singleton direct target keeps the existing direct-call repre
   assert.deepEqual(summary.directCalls[0].targetEntityIds, ['A']);
 });
 
+test('a targetless complete call keeps the existing ABI-rule semantics', () => {
+  const proof = classifyCallTargetProof({ completeness: 'complete' });
+  assert.equal(proof.kind, 'unknown');
+  assert.equal(proof.exhaustive, false);
+
+  const summary = summaryFor({ completeness: 'complete' });
+  assert.equal(summary.status.completeness, 'complete');
+  assert.equal(summary.unknownCallEffects.length, 0);
+  assert.equal(summary.directCalls.length, 0);
+  assert.equal(summary.indirectCallSets.length, 0);
+});
+
 test('an exhaustive indirect candidate set keeps the existing finite-set representation', () => {
   const summary = summaryFor({
     targetValueIds: ['callee_pointer'],
