@@ -57,19 +57,24 @@ test('#5269 in-flight region scans survive cache pressure', async () => {
   assert.equal(calls.get('r0'), 1);
 });
 
-test('#5269 settled scan entries remain prunable', async () => {
-  const regions = Array.from({ length: 40 }, (_, index) => ({
+test('#5269 burst-settled entries converge to cache capacity without a later insert', async () => {
+  const count = 40;
+  const regions = Array.from({ length: count }, (_, index) => ({
     id: `s${index}`, exec: true, size: 0x100n,
     vmAddr: BigInt(0x20000 + index * 0x100), section: '__text',
   }));
   const calls = new Map();
+  const releases = new Map();
   const app = {
     backend: {
       gen: 0,
       binaryId: 'test-binary-5269b',
       scanProgram: (regionId) => {
         calls.set(regionId, (calls.get(regionId) || 0) + 1);
-        const request = Promise.resolve({ regionId });
+        let release;
+        const gate = new Promise((resolve) => { release = resolve; });
+        releases.set(regionId, release);
+        const request = gate.then(() => ({ regionId }));
         request.cancel = () => {};
         return request;
       },
@@ -79,13 +84,23 @@ test('#5269 settled scan entries remain prunable', async () => {
   };
   installDemandDrivenAnalysis(app);
   const snapshot = await app.analysisQueries.snapshot();
-  // Settle 40 scans sequentially, then re-request the oldest: settled entries
-  // past capacity are evicted, so the oldest rescans (no unbounded retention).
-  for (let index = 0; index < regions.length; index++) {
-    await app.analysisQueries.callers(snapshot, 0x20000n + BigInt(index * 0x100), {}, {});
-  }
-  await app.analysisQueries.callers(snapshot, 0x20000n, {}, {});
-  assert.equal(calls.get('s0'), 2, 'settled entries past capacity are evicted and rescanned on demand');
+  const addressOf = (index) => 0x20000n + BigInt(index * 0x100);
+
+  const pending = regions.map((region, index) => app.analysisQueries.callers(snapshot, addressOf(index), {}, {}));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(calls.size, count, 'all producers remain registered while unsettled even above cache capacity');
+
+  for (const release of releases.values()) release();
+  await Promise.all(pending);
+
+  // No scan was inserted after the burst settled. Settlement itself must have
+  // pruned the oldest completed entries; a lookup for s0 therefore starts a
+  // fresh scan instead of reusing an unbounded retained cache entry.
+  const retry = app.analysisQueries.callers(snapshot, addressOf(0), {}, {});
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(calls.get('s0'), 2, 'settlement-time pruning evicts oldest completed entries without waiting for another insertion');
+  releases.get('s0')();
+  await retry;
 });
 
 test('#5317 transient shape failures are retried and upgrade', async () => {
