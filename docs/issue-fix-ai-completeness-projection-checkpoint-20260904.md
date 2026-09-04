@@ -13,7 +13,7 @@ PR, or merge stage.
 - Regression owner: `tests/phase12/adversarial/issue-6156-completeness-projection.test.mjs`
 - Shared-board claim: lanes message #281
 - Branch: `fix/issues-ai-projection-completeness-6156`
-- Candidate base: `origin/main` at `61b30004d33abff219919ebce374f9d5c222e274`
+- Candidate base: `origin/main` at `ae488a720b4361978bbbe65cf0b6bd0956d65eee`
 - Implementation head: `86353bfdcda179718c72caa2c42cfac0b67ed9a0`
 
 ## Stages
