@@ -306,12 +306,23 @@ export async function verifyBoundedEquivalence({
     if (statuses.includes(COMPLETENESS_STATUS.PARTIAL)) return COMPLETENESS_STATUS.PARTIAL;
     return COMPLETENESS_STATUS.COMPLETE;
   };
+  const downgradeForUnmodeled = (status) =>
+    status === COMPLETENESS_STATUS.COMPLETE ? COMPLETENESS_STATUS.PARTIAL : status;
+  // Fail-closed: declared observable memoryRegions are recorded in proof scope
+  // but no canonical before/after memory-state comparison is encoded in the
+  // difference query (output-only diff). The memory/query-scope dimensions
+  // must therefore never report complete while regions are declared.
+  const hasDeclaredMemoryScope = Array.isArray(memoryRegions) && memoryRegions.length > 0;
   const completeness = createCompleteness({
     translation: allUnknowns > 0 || allUnsupported.length > 0 ? COMPLETENESS_STATUS.UNSUPPORTED : mergeCompleteness('translation'),
     controlFlow: mergeCompleteness('controlFlow'),
-    memoryEffects: mergeCompleteness('memoryEffects'),
+    memoryEffects: hasDeclaredMemoryScope
+      ? downgradeForUnmodeled(mergeCompleteness('memoryEffects'))
+      : mergeCompleteness('memoryEffects'),
     pathCoverage: mergeCompleteness('pathCoverage'),
-    queryScope: mergeCompleteness('queryScope'),
+    queryScope: hasDeclaredMemoryScope
+      ? downgradeForUnmodeled(mergeCompleteness('queryScope'))
+      : mergeCompleteness('queryScope'),
   });
 
   const query = createVerificationQuery({
