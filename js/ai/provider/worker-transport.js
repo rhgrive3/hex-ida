@@ -60,7 +60,14 @@ export async function acquireDistributedQuota(request, env, sessionId) {
   }
 }
 export async function releaseDistributedQuota(lease) { if (!lease?.stub || !lease.token) return; try { await lease.stub.release(lease.token); } catch (error) { console.error('[ai-quota] release failed', { message: error?.message || String(error) }); } }
-export async function readUpstreamFailure(response) { let code = null; try { const body = await response.json(); if (body?.error) code = typeof body.error.code === 'string' ? body.error.code : typeof body.error.status === 'string' ? body.error.status.toLowerCase() : null; } catch { try { await response.body?.cancel(); } catch {} } return { code: typeof code === 'string' ? code.slice(0, 80) : null }; }
+export async function readUpstreamFailure(response) {
+  let code = null;
+  try {
+    const body = JSON.parse(await readLimitedUpstreamText(response));
+    if (body?.error) code = typeof body.error.code === 'string' ? body.error.code : typeof body.error.status === 'string' ? body.error.status.toLowerCase() : null;
+  } catch { try { await response.body?.cancel(); } catch {} }
+  return { code: typeof code === 'string' ? code.slice(0, 80) : null };
+}
 /* Bounded upstream response reader. Enforces the byte ceiling before JSON
    parse: a trusted Content-Length over the limit rejects without reading the
    body, otherwise the stream is measured chunk by chunk and cancelled on
