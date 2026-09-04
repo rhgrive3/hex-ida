@@ -174,8 +174,12 @@ export function createArtifactId(input = {}) {
 export function lossyTypeWitness(value, path = '', seen = new WeakSet(), out = []) {
   const type = typeof value;
   if (type === 'bigint') out.push([path, 'bigint']);
-  else if (type === 'number') { if (!Number.isFinite(value)) out.push([path, 'non-finite-number']); }
-  else if (type === 'undefined') out.push([path, 'undefined']);
+  else if (type === 'number') {
+    if (Number.isNaN(value)) out.push([path, 'number:nan']);
+    else if (value === Infinity) out.push([path, 'number:+infinity']);
+    else if (value === -Infinity) out.push([path, 'number:-infinity']);
+    else if (Object.is(value, -0)) out.push([path, 'number:-0']);
+  } else if (type === 'undefined') out.push([path, 'undefined']);
   else if (type === 'function') out.push([path, 'function']);
   else if (type === 'symbol') out.push([path, 'symbol']);
   else if (value !== null && type === 'object') {
@@ -257,7 +261,6 @@ export function createValueId(input = {}) {
     canonicalDefinitionIdentity: normalizeIdentity(input.canonicalDefinitionIdentity, 'value-definition-identity-required'),
   });
 }
-
 export function createMemoryRegionId(input = {}) {
   const functionId = input.functionId == null ? null : nonEmpty(input.functionId, 'memory-region-function-id-required');
   const binaryId = input.binaryId == null ? null : nonEmpty(input.binaryId, 'memory-region-binary-id-required');
