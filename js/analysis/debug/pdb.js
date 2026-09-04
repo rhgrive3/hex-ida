@@ -498,7 +498,26 @@ export function describeTypeIndex(index, types, depth = 0) {
   }
   if (record.kind === 'pointer') {
     const target = describeTypeIndex(record.referent, types, depth + 1);
-    return { name: `${target.name} *`, widthBits: 64, class: 'pointer', complete: target.complete };
+    const attrs = typeof record.attributes === 'number' ? record.attributes : 0;
+    const sizeBytes = (attrs >> 13) & 0x3f;
+    const pointerKind = attrs & 0x1f;
+    let widthBits = sizeBytes > 0 ? sizeBytes * 8 : null;
+    if (widthBits == null) {
+      if (pointerKind === 0x0a || pointerKind === 0x0b) widthBits = 32;
+      else if (pointerKind === 0x0c) widthBits = 64;
+    }
+    const isContradictory = sizeBytes > 0 && (
+      ((pointerKind === 0x0a || pointerKind === 0x0b) && sizeBytes !== 4) ||
+      (pointerKind === 0x0c && sizeBytes !== 8)
+    );
+    const isMalformed = widthBits == null || widthBits === 0 || isContradictory;
+    const complete = !isMalformed && target.complete;
+    return {
+      name: `${target.name} *`,
+      widthBits: isMalformed ? (widthBits ?? null) : widthBits,
+      class: 'pointer',
+      complete,
+    };
   }
   if (record.kind === 'modifier') {
     const target = describeTypeIndex(record.underlying, types, depth + 1);
