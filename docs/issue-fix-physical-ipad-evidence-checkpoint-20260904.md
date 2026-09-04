@@ -14,7 +14,7 @@ Update it at every branch, PR, or merge stage.
 - Shared-board claim: lanes message #279
 - Branch: `fix/issues-physical-ipad-evidence-6120-6131`
 - Candidate base: `origin/main` at `9f9633f226307b81e8fc72c4a9d70a3b5a910200`
-- Implementation head: to be recorded after the implementation commit
+- Implementation head: `4ad75786177e11584a066a8acf4c380a4e64951d`
 
 ## Stages
 
@@ -22,7 +22,8 @@ Update it at every branch, PR, or merge stage.
 - [x] Traced final evidence creation/validation and compared it with scenario environment matching.
 - [x] Added exact expected runtime/device/iPadOS/WebKit matching and strict canonical profile collections.
 - [x] Added regressions for environment mismatches, non-array containers, structured elements, sorting, and duplicate removal.
-- [ ] Run focused regression, existing physical iPad evidence tests, lint, and applicable Stage 2 verification.
+- [x] Focused regression, existing physical iPad evidence tests, and lint passed.
+- [x] Stage 2 passed all lane tests; the five denominator-inventory-stale failures reproduce on pristine `origin/main`.
 - [ ] Create one owner PR for #6120/#6131 and record exact-head candidate evidence.
 - [ ] Merge only after exact-head evidence and required checks are green; otherwise record the blocker here and on the board.
 
