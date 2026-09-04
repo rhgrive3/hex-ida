@@ -238,7 +238,11 @@ export function parsePclntabHeader(buf) {
  * Parses Go pclntab function entries with bounds checking.
  */
 export function parseGoFunctions(buf, header, options = {}) {
-  const maxFuncs = Math.min(header.nfunc, options.maxRecords ?? 50000);
+  const maxRecords = options.maxRecords ?? 50000;
+  if (typeof maxRecords !== 'number' || !Number.isSafeInteger(maxRecords) || maxRecords < 0) {
+    throw new TypeError('go-metadata-invalid-max-records');
+  }
+  const maxFuncs = Math.min(header.nfunc, maxRecords);
   const functions = [];
   let unreadableEntries = 0;
   let invalidEntries = 0;

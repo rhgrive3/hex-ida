@@ -14,6 +14,17 @@ import {
 
 const MIN_MODEL_REPAIR_REMAINING_MS = 45000;
 
+function normalizeExternalSignal(value) {
+  if (value == null) return null;
+  if ((typeof value !== 'object' && typeof value !== 'function')
+      || typeof value.aborted !== 'boolean'
+      || typeof value.addEventListener !== 'function'
+      || typeof value.removeEventListener !== 'function') {
+    throw new AIError('invalid_model_output', 'AI turn signal must be AbortSignal-compatible.');
+  }
+  return value;
+}
+
 export async function executeTurn(input = {}, options = {}) {
     const request = normalizeTurnRequest(input);
     const budgetOverrides = { ...request.budget, ...options.budget };
@@ -30,7 +41,7 @@ export async function executeTurn(input = {}, options = {}) {
     const started = Date.now(), activity = [], observations = [];
     let modelCalls = 0, toolCalls = 0, contextBytes = 0, plan = null, decision = null, limitReason = null;
     let wireUsage = { semanticContextBytes: 0, toolSchemaBytes: 0, historyBytes: 0, wireBytes: 0, estimatedInputTokens: 0 };
-    const externalSignal = options.signal || request.signal;
+    const externalSignal = normalizeExternalSignal(options.signal ?? request.signal);
     if (externalSignal?.aborted) throw new AIError('cancelled', 'AI investigation was cancelled.');
     const turnController = new AbortController();
     const externalAbort = () => turnController.abort(externalSignal?.reason || 'cancelled');
@@ -45,8 +56,6 @@ export async function executeTurn(input = {}, options = {}) {
 
     try {
       ensureRunning(signal, started, turnTimeoutMs);
-      // Snapshot is intentionally first: all anchoring/scope decisions in this
-      // turn are derived from this immutable workbench state.
       const snapshot = createTurnSnapshot(this.localContext, request);
       const intent = request.intent || routeIntent(request.goal, snapshot);
       request.intent = intent;
@@ -58,8 +67,6 @@ export async function executeTurn(input = {}, options = {}) {
       let session = request.sessionId ? await this.sessionStore.get(request.sessionId) : null;
       ensureRunning(signal, started, turnTimeoutMs);
       if (session && !sessionMatchesSnapshot(session, snapshot)) {
-        // Never attach an old binary investigation to the newly visible binary.
-        // For an explicit session id this is a hard boundary rather than a silent reset.
         throw new AIError('scope_violation', 'The requested AI session belongs to a different binary or project.');
       }
       if (!session) {

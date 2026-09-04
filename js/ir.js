@@ -7,7 +7,16 @@
  */
 export * from './ir-public-base.js';
 
-import { irFor as baseIrFor } from './ir-public-base.js';
+import {
+  irFor as baseIrFor,
+  buildIR as baseBuildIR,
+  getSemanticMigrationMode,
+  stackPointerProvenanceOf,
+} from './ir-public-base.js';
+import {
+  canonicalizeLegacyRootedFieldBases,
+  restoreLegacyPrivateStackForwarding,
+} from './legacy-stack-compat-repair.js';
 
 function isCanonicalV2CompatibilityProjection(model) {
   return model?.compat?.projection === 'semantic-ir-v2-to-v1'
@@ -17,7 +26,23 @@ function isCanonicalV2CompatibilityProjection(model) {
     && typeof model?.defUse === 'function';
 }
 
-export function irFor(model, options) {
-  if (isCanonicalV2CompatibilityProjection(model)) return model;
-  return baseIrFor(model, options);
+export function buildIR(model, options = {}) {
+  const projected = baseBuildIR(model, options);
+  canonicalizeLegacyRootedFieldBases(projected);
+  const mode = options?.semanticMigrationMode ?? getSemanticMigrationMode();
+  if (mode === 'legacy-v1') restoreLegacyPrivateStackForwarding(projected, stackPointerProvenanceOf);
+  return projected;
+}
+
+export function irFor(model, options = {}) {
+  const mode = options?.semanticMigrationMode ?? getSemanticMigrationMode();
+  if (isCanonicalV2CompatibilityProjection(model)) {
+    canonicalizeLegacyRootedFieldBases(model);
+    if (mode === 'legacy-v1') restoreLegacyPrivateStackForwarding(model, stackPointerProvenanceOf);
+    return model;
+  }
+  const projected = baseIrFor(model, options);
+  canonicalizeLegacyRootedFieldBases(projected);
+  if (mode === 'legacy-v1') restoreLegacyPrivateStackForwarding(projected, stackPointerProvenanceOf);
+  return projected;
 }

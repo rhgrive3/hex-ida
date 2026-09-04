@@ -35,7 +35,12 @@ export async function handleAITurn(request, env) {
   const timeout = setTimeout(() => upstreamAbort.abort(new Error('AI turn timed out.')), REQUEST_TIMEOUT_MS);
   const abortOnDisconnect = () => upstreamAbort.abort(new Error('Client disconnected.'));
   request.signal.addEventListener('abort', abortOnDisconnect, { once: true });
+  if (request.signal.aborted) abortOnDisconnect();
   const cleanup = async () => { clearTimeout(timeout); request.signal.removeEventListener('abort', abortOnDisconnect); await releaseQuota(); };
+  if (upstreamAbort.signal.aborted) {
+    await cleanup();
+    return jsonError(499, 'client_cancelled', 'The client disconnected before the provider request started.');
+  }
 
   const prompt = composePrompt({
     mode: payload.mode, style: payload.style, scope: payload.effectiveScope,

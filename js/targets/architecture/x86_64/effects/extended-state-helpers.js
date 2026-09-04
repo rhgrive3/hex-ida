@@ -33,11 +33,11 @@ export function vectorIndex(operand){const match=VECTOR_REGISTER_NAME.exec(regis
 export function isVectorOperand(operand){return operand?.type==='register'&&vectorIndex(operand)!=null;}
 export function isMaskOperand(operand){return operand?.type==='register'&&MASK_REGISTER_NAME.test(registerName(operand));}
 export function vectorPrefixOffset(instruction,prefix){
-  const raw=instruction?.rawBytes||[],reported=Number(instruction?.detail?.prefixes?.vector?.offset);
-  if(Number.isSafeInteger(reported)&&reported>=0&&reported+prefix.length<=raw.length){let ok=true;for(let i=0;i<prefix.length;i+=1)if(raw[reported+i]!==prefix[i]){ok=false;break;}if(ok)return reported;}
+  const raw=instruction?.rawBytes||[],reportedValue=instruction?.detail?.prefixes?.vector?.offset,reported=reportedValue==null?null:Number(reportedValue);
   let cursor=0;
   while(cursor<raw.length&&LEGACY_PREFIX_BYTES.has(raw[cursor]))cursor+=1;
   if(cursor<raw.length&&raw[cursor]>=0x40&&raw[cursor]<=0x4f)cursor+=1;
+  if(reported!=null&&(!Number.isSafeInteger(reported)||reported!==cursor))return null;
   if(cursor+prefix.length>raw.length)return null;for(let i=0;i<prefix.length;i+=1)if(raw[cursor+i]!==prefix[i])return null;return cursor;
 }
 export function rawPrefixMatches(instruction,prefix){return vectorPrefixOffset(instruction,prefix)!=null;}

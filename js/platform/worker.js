@@ -28,6 +28,18 @@ let openChain = Promise.resolve();
 const active = new Map();
 
 function cooperativeYield() { return new Promise((resolve) => setTimeout(resolve, 0)); }
+
+function selectedFatSliceIndex(binaryImage) {
+  const fat = binaryImage?.metadata?.fat;
+  const selected = fat?.selected;
+  const slices = fat?.slices;
+  if (!selected || !Array.isArray(slices)) return -1;
+  return slices.findIndex((slice) =>
+    BigInt(slice.offset) === BigInt(selected.offset)
+    && BigInt(slice.size) === BigInt(selected.size)
+    && slice.cpu === selected.cpu
+    && slice.subtype === selected.subtype);
+}
 async function waitForForegroundDrain(epoch) {
   // Background metadata performs many small paged reads. Do not enqueue the
   // next page while any interactive request for the same binary epoch is live.
@@ -168,6 +180,12 @@ async function openFile(msg, signal) {
     descriptor = candidateDescriptor;
     regions = candidateRegions;
     pointerImages = new Map();
+    const selectedSliceIndex = selectedFatSliceIndex(candidateImage);
+    if (selectedSliceIndex >= 0) {
+      pointerImages.set(selectedSliceIndex, candidateImage);
+      candidateDescriptor.platform.selectedSliceIndex = selectedSliceIndex;
+      candidateDescriptor.platform.selectedSliceParseReused = true;
+    }
     if (previousSource && previousSource !== candidateSource) previousSource.clear?.();
     return candidateDescriptor;
   } catch (error) {
@@ -233,11 +251,8 @@ async function analyzeImage(msg, signal) {
   if (!image) return emptyAnalysis();
   let selected = image;
   if (image.metadata?.fat?.slices?.length && msg.sliceIndex != null) {
-    selected = await parseMachOSource(source, {
-      sliceIndex: msg.sliceIndex,
-      signal,
-      ranges: { pageSize: 64 * 1024, maxPageSize: 2 * 1024 * 1024, maxCachedBytes: 16 * 1024 * 1024, maxReads: 4096 },
-    });
+    selected = await pointerImageForSlice(msg.sliceIndex, signal);
+    if (!selected) return emptyAnalysis();
   }
   if (signal.aborted) throw new Error('Analysis cancelled');
   return analysisFromBinaryImage(selected);
