@@ -3,9 +3,12 @@ import assert from 'node:assert/strict';
 import { openBinary } from '../js/binary/index.js';
 import { MemoryByteSource } from '../js/binary/source.js';
 import { parseMachOSource } from '../js/binary/source-loaders.js';
+import { validateFatSlice } from '../js/binary/macho-fat.js';
 
 const CPU_X86_64 = 0x01000007;
+const CPU_ARM = 12;
 const CPU_ARM64 = 0x0100000c;
+const CPU_SUBTYPE_ARM_V7K = 12;
 
 function makeThinSlice({ cpu = CPU_ARM64, subtype = 0, filetype = 2, size = 64 } = {}) {
   const b = new Uint8Array(size);
@@ -75,6 +78,25 @@ test('#6316 accept arm64 final-image slice with 16KB alignment', () => {
   assert.ok(img);
   assert.equal(img.metadata.fat.selected.arch, 'arm64');
   assert.equal(img.metadata.fat.selected.offset, 0x4000n);
+});
+
+test('#6316 reject armv7k final image at 4KB-only alignment', () => {
+  assert.throws(
+    () => validateFatSlice(
+      { cpu: CPU_ARM, subtype: CPU_SUBTYPE_ARM_V7K, align: 12, offset: 0x1000n, size: 0x40n },
+      { cpu: CPU_ARM, subtype: CPU_SUBTYPE_ARM_V7K, filetype: 2 },
+      0x10000n,
+    ),
+    /Mach-O universal binary slice is not page aligned/,
+  );
+});
+
+test('#6316 accept armv7k final image at 16KB alignment', () => {
+  assert.doesNotThrow(() => validateFatSlice(
+    { cpu: CPU_ARM, subtype: CPU_SUBTYPE_ARM_V7K, align: 14, offset: 0x4000n, size: 0x40n },
+    { cpu: CPU_ARM, subtype: CPU_SUBTYPE_ARM_V7K, filetype: 2 },
+    0x10000n,
+  ));
 });
 
 test('#6316 reject x86_64 final-image slice with misaligned offset', () => {
