@@ -6,7 +6,8 @@ export function auditCapabilityParity(entries) {
   const failures = [];
   const ids = new Set();
   for (const entry of entries || []) {
-    const id = typeof entry?.id === 'string' ? entry.id.trim() : '';
+    const rawId = entry?.id;
+    const id = typeof rawId === 'string' ? rawId.trim() : '';
     if (!id) { failures.push({ id: null, reason: 'invalid-id' }); continue; }
     if (ids.has(id)) { failures.push({ id, reason: 'missing-or-duplicate-id' }); continue; }
     ids.add(id);

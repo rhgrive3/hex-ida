@@ -229,14 +229,26 @@ function normalizeCapabilityId(value) {
   return id || null;
 }
 
+function snapshotCapabilityEntry(entry, id) {
+  const snapshot = {};
+  for (const key of Reflect.ownKeys(entry)) {
+    if (key === 'id') continue;
+    const descriptor = Object.getOwnPropertyDescriptor(entry, key);
+    if (descriptor?.enumerable) snapshot[key] = entry[key];
+  }
+  snapshot.id = id;
+  return Object.freeze(snapshot);
+}
+
 export class CapabilityCatalog {
   constructor(entries = CATALOG) {
     const normalizedEntries = entries.map((entry) => {
-      const id = normalizeCapabilityId(entry?.id);
+      const rawId = entry?.id;
+      const id = normalizeCapabilityId(rawId);
       if (!id) throw new Error('invalid capability id');
-      return entry.id === id ? entry : Object.freeze({ ...entry, id });
+      return [id, snapshotCapabilityEntry(entry, id)];
     });
-    this.entries = new Map(normalizedEntries.map((entry) => [entry.id, entry]));
+    this.entries = new Map(normalizedEntries);
     if (this.entries.size !== normalizedEntries.length) throw new Error('duplicate capability id');
   }
   get(id) { const normalized = normalizeCapabilityId(id); return normalized ? this.entries.get(normalized) || null : null; }
