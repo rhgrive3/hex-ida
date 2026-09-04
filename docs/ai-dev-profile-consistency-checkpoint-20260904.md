@@ -28,6 +28,13 @@ The failure is the Dev scope chip projection, not the stored setting:
 - Cleanup disconnects the observer with the other control subscriptions.
 - The browser regression waits beyond the asynchronous capability repaint window before asserting the visible label.
 
+## PR handoff
+
+- Pull request: #6451 (`fix(ai): preserve Dev scope after async panel refresh`).
+- PR head at creation: `4ecc09da75689db5a982151f344f954e4e1a819c`.
+- The checkpoint update is pushed on the same owner branch; refresh the PR head before any merge decision.
+- Merge remains blocked until the PR's exact-head required checks are green and the repository-wide Decompiler #3255/#142 blocker is resolved through its owner lane.
+
 ## Evidence and resume procedure
 
 Before this repair: focused candidate AI tests, `ai:test`, and lint passed; Dev browser gate failed as recorded above.
