@@ -7,17 +7,17 @@ mode. It is a checkpoint, not a completion report.
 ## Checkpoint metadata
 
 - Repository: `rhgrive3/hex-ida`
-- Current remote `main`: `0971c491bde06b3c939f0e26f319bcd70d12b706`
+- Current remote `main`: `47f8a44469a5826b6199501a153a12439a280d13` (includes merged PR #3382)
 - Recovery handoff branch: `wip/recovery-handoff-20260904`
 - Run ID / supervisor session key / ChatGPT conversation ID: unavailable after Workspace reset
 - Expected build ID / extension version: not recorded
 - Decision policy: inspect production wiring first, then tests/verifier/CI, exact git history, PR diff, and specs/docs; do not declare done from CI alone. Merge only after the exact head is green and the acceptance criteria plus diff have been audited.
 - User's immediate request: persist the current work remotely and leave a handoff so the next Chat session can continue without the deleted Workspace.
 
-## Do not mutate these PR heads yet
+## Current PR state
 
-- [PR #3382](https://github.com/rhgrive3/hex-ida/pull/3382), `fix/3120-semantic-oracle-split`, current remote head `7481cb653da1e41316712d0dd7434f1059b71899`.
-- [PR #3255](https://github.com/rhgrive3/hex-ida/pull/3255), `fix/3120-phase8-legacy-oracle-split`, current remote head `e250c9fb45995ec924cf07e69dad863b732201d2`.
+- [PR #3382](https://github.com/rhgrive3/hex-ida/pull/3382) was merged at `47f8a44469a5826b6199501a153a12439a280d13`. Its original head remains `7481cb653da1e41316712d0dd7434f1059b71899`; the `wip/recovered-3382-20260904` ref contains additional local candidate work beyond that merged head and must not be force-pushed over the merged history.
+- [PR #3255](https://github.com/rhgrive3/hex-ida/pull/3255) is still open at `e250c9fb45995ec924cf07e69dad863b732201d2`, now based on `main` at `47f8a44469a5826b6199501a153a12439a280d13`. Restack/review it against this exact base before any mutation.
 
 The refs below are non-force-pushed recovery refs. They preserve candidate
 commits without changing `main` or either PR. Do not call any row complete
