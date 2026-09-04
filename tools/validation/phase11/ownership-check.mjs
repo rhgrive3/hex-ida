@@ -7,9 +7,59 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../.
 const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'tools/validation/phase11/ownership.json'), 'utf8'));
 const CROSS_LANE_LABEL = 'cross-lane-integration';
 
-function git(args) {
-  const result = spawnSync('git', args, { cwd: ROOT, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
+function git(args, root = ROOT) {
+  const result = spawnSync('git', args, { cwd: root, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
   return result.status === 0 ? String(result.stdout).trim() : null;
+}
+
+export function parsePhase11NameStatus(output) {
+  if (!Buffer.isBuffer(output)) throw new TypeError('phase11 ownership: git diff output must be bytes');
+  if (output.length === 0) return [];
+  const tokens = [];
+  let start = 0;
+  for (let index = 0; index < output.length; index += 1) {
+    if (output[index] !== 0) continue;
+    tokens.push(output.subarray(start, index));
+    start = index + 1;
+  }
+  if (start !== output.length) throw new Error('phase11 ownership: git diff output is not NUL terminated');
+  const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+  const decode = (token) => {
+    if (!Buffer.isBuffer(token)) throw new Error('phase11 ownership: incomplete git diff record');
+    let value;
+    try { value = decoder.decode(token); }
+    catch { throw new Error('phase11 ownership: git diff path is not UTF-8'); }
+    if (value.includes('\ufeff')) throw new Error('phase11 ownership: git diff path is not canonical');
+    return value;
+  };
+  const decodePath = (token) => {
+    const value = decode(token);
+    if (value === '' || value.includes('\\') || /[\u0000-\u001f\u007f]/u.test(value)
+      || value.startsWith('/') || value.split('/').some((part) => part === '.' || part === '..')) {
+      throw new Error('phase11 ownership: git diff path is not canonical');
+    }
+    return value;
+  };
+  const files = [];
+  for (let index = 0; index < tokens.length;) {
+    const status = decode(tokens[index++]);
+    if (!/^(?:[ACDMRTUXB]|[RC][0-9]{1,3})$/.test(status)) {
+      throw new Error(`phase11 ownership: invalid git diff status: ${status}`);
+    }
+    if (/^[RC]/.test(status)) files.push(decodePath(tokens[index++]), decodePath(tokens[index++]));
+    else files.push(decodePath(tokens[index++]));
+  }
+  return [...new Set(files)].sort((left, right) => Buffer.from(left).compare(Buffer.from(right)));
+}
+
+export function phase11InventoryFromGit(baseSha, headSha, root = ROOT) {
+  const result = spawnSync(
+    'git',
+    ['diff', '--name-status', '-z', '--find-renames', '--find-copies', baseSha, headSha],
+    { cwd: root, encoding: null, maxBuffer: 16 * 1024 * 1024 },
+  );
+  if (result.status !== 0) throw new Error('phase11 ownership: git diff failed');
+  return parsePhase11NameStatus(result.stdout);
 }
 
 export function githubEvent({
@@ -23,8 +73,19 @@ export function githubEvent({
 }
 
 export function phase11CrossLaneIntegration(event) {
-  const labels = event?.pull_request?.labels;
-  return Array.isArray(labels) && labels.some((label) => label?.name === CROSS_LANE_LABEL);
+  const pullRequest = event?.pull_request;
+  const labels = pullRequest?.labels;
+  const headRef = pullRequest?.head?.ref;
+  const baseRef = pullRequest?.base?.ref;
+  const integrationHead = /^(?:recovery|analysis)\/final-closure-[a-z0-9][a-z0-9._/-]*$/.test(
+    String(headRef || ''),
+  ) && !String(headRef).includes('..')
+    && !String(headRef).includes('@{')
+    && !String(headRef).endsWith('/');
+  return baseRef === 'main'
+    && integrationHead
+    && Array.isArray(labels)
+    && labels.some((label) => label?.name === CROSS_LANE_LABEL);
 }
 
 export function phase11OwnershipViolation(file, input = manifest, { allowUnowned = false } = {}) {
@@ -37,13 +98,12 @@ export function phase11OwnershipViolation(file, input = manifest, { allowUnowned
   return null;
 }
 
-export function checkPhase11Ownership({ event, env = process.env, readFile } = {}) {
-  const mainRef = git(['rev-parse', '--verify', 'origin/main']) ? 'origin/main' : null;
+export function checkPhase11Ownership({ event, env = process.env, readFile, root = ROOT } = {}) {
+  const mainRef = git(['rev-parse', '--verify', 'origin/main'], root) ? 'origin/main' : null;
   if (!mainRef) throw new Error('phase11 ownership: origin/main unavailable');
-  const base = git(['merge-base', 'HEAD', mainRef]);
+  const base = git(['merge-base', 'HEAD', mainRef], root);
   if (!base) throw new Error('phase11 ownership: merge-base unavailable');
-  const names = git(['diff', '--name-only', `${base}..HEAD`]) ?? '';
-  const files = names.split('\n').map((value) => value.trim()).filter(Boolean).sort();
+  const files = phase11InventoryFromGit(base, 'HEAD', root);
   const crossLaneIntegration = phase11CrossLaneIntegration(
     event === undefined ? githubEvent({ env, readFile }) : event,
   );
