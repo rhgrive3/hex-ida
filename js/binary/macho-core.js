@@ -80,7 +80,7 @@ function parseThin(bytes, opts) {
       filetype, flags, ncmds, sizeofcmds,
     },
   });
-  const metadataBudget = ensureMachOMetadataBudget(image, createMachOMetadataBudget(image, { signal: opts.signal }));
+  const metadataBudget = ensureMachOMetadataBudget(image, createMachOMetadataBudget(image, { signal: opts.signal, limits: opts.metadataLimits }));
 
   const commands = [];
   const segmentOrder = [];
