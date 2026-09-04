@@ -12,21 +12,24 @@ Module: `js/decompiler/phase8/render-provenance.js` (new), integrated by
 | Field | Type | Required | Notes |
 |---|---|---|---|
 | result | projection result | yes | post-rewrite result containing `lines`, `semanticAst`, `phase8Projection` |
-| snapshotId | string | yes | bound analysis snapshot identity (from Phase 8 artifact identity input) |
+| snapshotId | string \| null | no | bound analysis snapshot identity; absent/null is represented as incomplete `missing-snapshot`, never authoritative |
 | budget | object | no | `{ maxEntities, maxOriginsPerEntity, maxTransformRecords }` deterministic defaults when omitted |
 
 **Behavior**:
-1. Builds one `RenderedEntity` per entry in `result.lines`.
-2. Forward origins per entity = `line.source` rows/addresses/ir/ssa ∪ origins of
-   transform records feeding that entity (matched by produced refs/rows).
+1. Builds up to `maxEntities` `RenderedEntity` records from `result.lines`. Entries beyond the cap are omitted from `entities`, counted by `counts.entitiesTruncated`, and mark the `entities` budget scope plus `truncated` reason.
+2. Forward origins per entity = `line.source` rows/addresses/IR/SSA ∪ origins of
+   transform records feeding that entity, correlated across every canonical origin kind.
 3. Derives reverse index (origin key → entity keys), sorted.
 4. Enforces budgets; overflow marks `truncated` scopes explicitly.
 5. Returns frozen provenanceMap (see data-model.md).
 
 **Errors** (fail-closed codes, prefix `phase8-render-provenance-*`):
-- `input-required`, `result-required`, `snapshot-required`
-- `entity-source-invalid` (line without usable source object shape)
-- `record-invalid` (transform record missing kind/proof/targets/origin)
+- `result-required`
+- `snapshot-required` for a supplied non-null snapshot value that is not a non-empty string
+- `entity-source-invalid` (line without usable object shape)
+- `record-invalid` / record field errors (transform record missing or malformed kind/proof/targets/origin)
+
+A missing/null snapshot is not a construction exception: the map is retained for diagnostics and is marked incomplete with `missing-snapshot`.
 
 ## validateRenderProvenance(provenanceMap, expected) → validation
 
@@ -37,15 +40,15 @@ Module: `js/decompiler/phase8/render-provenance.js` (new), integrated by
 `provenance-loss`, `stale-snapshot`, `missing-snapshot`, `truncated`, `cancelled`.
 
 **Rules**:
-- Missing/mismatched snapshot ⇒ `stale-snapshot` / `missing-snapshot`; never silent pass.
-- Any zero-origin entity ⇒ `provenance-loss` with entity keys listed (bounded).
+- Missing/mismatched snapshot ⇒ `missing-snapshot` / `stale-snapshot`; never silent pass.
+- A zero-origin **semantic** entity ⇒ `provenance-loss`. Explicit structural scaffolding (`role: 'structural'`) is the only zero-origin completeness exception and does not mint a semantic claim.
 - Validation never mutates the map; deterministic for identical inputs.
 
 ## Projection integration
 
 `applyPhase8Projection` result gains frozen `renderProvenance` field:
 
-```
+```javascript
 renderProvenance = { version: 1, snapshotId, entities, reverse, ledger, budget, completeness, reasons }
 ```
 
@@ -53,10 +56,9 @@ renderProvenance = { version: 1, snapshotId, entities, reverse, ledger, budget, 
   the map is still built so diagnostics can list entities).
 - Existing result fields are unchanged; additive only. Consumers that ignore the field are
   unaffected.
-- The Phase 8 hard-zero gate `provenanceLossCount` counts `provenance-loss` states from
-  this validation; metrics wiring in `tools/validation/phase8/metrics.mjs` exposes
-  `renderProvenanceLossCount` and `renderProvenanceStaleCount` (fail on > 0 in the same
-  way existing stale counters are gated).
+- The Phase 8 hard-zero safety wiring counts both provenance loss and unbound evidence;
+  `tools/validation/phase8/metrics.mjs` exposes `renderProvenanceLossCount` and
+  `renderProvenanceUnboundCount`, including a missing provenance map for a semantic result.
 
 ## Versioning
 
