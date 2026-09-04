@@ -42,35 +42,15 @@ jobs:
           command: |
             set -euo pipefail
             git fetch --no-tags origin main:refs/remotes/origin/main
-            changed="$(git diff --name-only origin/main...HEAD || true)"
+            if [ "${CIRCLE_BRANCH:-}" = "main" ]; then
+              changed="$(git diff --name-only HEAD^..HEAD || true)"
+            else
+              changed="$(git diff --name-only origin/main...HEAD || true)"
+            fi
             if printf '%s\n' "$changed" | grep -Eq '^(js/userscript/dev/|tests/dev-agent/agent-loop-resilience\.mjs$|\.github/workflows/agent-loop-resilience\.yml$|\.circleci/config\.yml$)'; then
               node tests/dev-agent/agent-loop-resilience.mjs
             else
               echo 'No agent-loop inputs changed; skipping.'
-            fi
-
-  ai-eval-contract:
-    docker:
-      - image: cimg/node:20.19
-    resource_class: small
-    steps:
-      - checkout
-      - run:
-          name: Detect AI evaluation impact and run contract
-          command: |
-            set -euo pipefail
-            git fetch --no-tags origin main:refs/remotes/origin/main
-            changed="$(git diff --name-only origin/main...HEAD || true)"
-            if ! printf '%s\n' "$changed" | grep -Eq '^(js/(ai/|agent/|query/|gemini\.js$|goalc\.js$|semantic-evidence\.js$)|worker\.js$|tests/ai-eval/|docs/(ai-integration-contract\.md$|ai-quality-gate\.md$)|\.github/workflows/ai-eval-contract\.yml$|\.circleci/config\.yml$)'; then
-              echo 'No AI evaluation inputs changed; skipping.'
-              exit 0
-            fi
-            node tests/ai-eval/workflow-trigger.mjs
-            node tests/ai-eval/selftest.mjs
-            node tests/ai-eval/grade.mjs tests/ai-eval/results.example.jsonl /tmp/ai-eval-report.json
-            if node tests/ai-eval/grade.mjs tests/ai-eval/results.example.jsonl /tmp/ai-eval-partial.json --require-all; then
-              echo 'Expected --require-all to reject a one-case trace.' >&2
-              exit 1
             fi
 
   issue-2528-canonical-claims:
@@ -91,10 +71,60 @@ jobs:
               echo 'No canonical-claims inputs changed; skipping.'
             fi
 
+  generated-sync:
+    docker:
+      - image: cimg/node:22.23
+    resource_class: medium
+    steps:
+      - checkout
+      - run:
+          name: Detect generated-sync impact
+          command: |
+            set -euo pipefail
+            git fetch --no-tags origin main:refs/remotes/origin/main
+            if [ "${CIRCLE_BRANCH:-}" = "main" ]; then
+              changed="$(git diff --name-only HEAD^..HEAD || true)"
+            else
+              changed="$(git diff --name-only origin/main...HEAD || true)"
+            fi
+            if printf '%s\n' "$changed" | grep -Eq '^(index\.html$|css/|js/|capstone\.wasm$|scripts/(build-userscript\.mjs$|userscript-release-version\.mjs$)|userscript/(hex\.user\.template\.js$|release-version\.json$)|package\.json$|package-lock\.json$|\.github/workflows/generated-sync\.yml$|\.circleci/config\.yml$)'; then
+              echo 'export RUN_GENERATED_SYNC=true' >> "$BASH_ENV"
+            else
+              echo 'export RUN_GENERATED_SYNC=false' >> "$BASH_ENV"
+              echo 'No generated-sync inputs changed; skipping.'
+            fi
+      - run:
+          name: Install dependencies
+          command: |
+            if [ "$RUN_GENERATED_SYNC" != "true" ]; then exit 0; fi
+            npm ci
+      - run:
+          name: Rebuild canonical userscript outputs
+          command: |
+            if [ "$RUN_GENERATED_SYNC" != "true" ]; then exit 0; fi
+            npm run userscript:build
+      - run:
+          name: Enforce generated-output ownership policy
+          command: |
+            if [ "$RUN_GENERATED_SYNC" != "true" ]; then exit 0; fi
+            mode="$(node tools/validation/generated-output-policy.mjs)"
+            case "$mode" in
+              enforce)
+                git diff --exit-code -- userscript/hex.user.template.js userscript/release-version.json
+                ;;
+              ephemeral)
+                echo 'Component lane built generated output ephemerally; integration owns committed synchronization.'
+                ;;
+              *)
+                echo "Unknown generated-output policy mode: $mode" >&2
+                exit 1
+                ;;
+            esac
+
 workflows:
   ci:
     jobs:
       - migration-guardrails
       - agent-loop-resilience
-      - ai-eval-contract
       - issue-2528-canonical-claims
+      - generated-sync
