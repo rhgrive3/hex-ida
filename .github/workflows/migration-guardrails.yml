@@ -100,7 +100,7 @@ jobs:
           node-version: '22'
       - name: Verify audit classifier regressions
         run: node tests/process/merged-pr-review-audit.test.mjs
-      - name: Audit all PRs merged today in JST
+      - name: Audit all PRs merged on requested JST date
         env:
           GITHUB_TOKEN: ${{ github.token }}
         shell: bash
@@ -108,6 +108,7 @@ jobs:
           set -euo pipefail
           args=(
             --repo "$GITHUB_REPOSITORY"
+            --date 2026-09-04
             --timezone Asia/Tokyo
             --offset +09:00
           )
