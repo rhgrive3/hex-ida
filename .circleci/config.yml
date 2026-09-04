@@ -1,5 +1,20 @@
 version: 2.1
 
+commands:
+  setup-benchmark-target-check:
+    parameters:
+      target:
+        type: string
+      category:
+        type: string
+    steps:
+      - checkout
+      - attach_workspace:
+          at: .
+      - run:
+          name: Check << parameters.target >> << parameters.category >>
+          command: node scripts/ci/circleci-benchmark-target-probe.mjs << parameters.target >> << parameters.category >>
+
 jobs:
   universal-benchmark-generate:
     docker:
@@ -26,67 +41,55 @@ jobs:
           paths:
             - universal-platform-benchmark.json
 
-  benchmark-battlecats-identity:
-    docker:
-      - image: cimg/node:22.23
+  benchmark-battlecats-fixture:
+    docker: [{ image: cimg/node:22.23 }]
     resource_class: small
-    steps:
-      - checkout
-      - attach_workspace: { at: . }
-      - run: node scripts/ci/circleci-benchmark-target-probe.mjs battlecats identity
+    steps: [{ setup-benchmark-target-check: { target: battlecats, category: fixture } }]
+  benchmark-battlecats-source-audit:
+    docker: [{ image: cimg/node:22.23 }]
+    resource_class: small
+    steps: [{ setup-benchmark-target-check: { target: battlecats, category: source-audit } }]
+  benchmark-battlecats-parsed-identity:
+    docker: [{ image: cimg/node:22.23 }]
+    resource_class: small
+    steps: [{ setup-benchmark-target-check: { target: battlecats, category: parsed-identity } }]
 
-  benchmark-battlecats-work:
-    docker:
-      - image: cimg/node:22.23
+  benchmark-tsumtsum-fixture:
+    docker: [{ image: cimg/node:22.23 }]
     resource_class: small
-    steps:
-      - checkout
-      - attach_workspace: { at: . }
-      - run: node scripts/ci/circleci-benchmark-target-probe.mjs battlecats work
+    steps: [{ setup-benchmark-target-check: { target: TsumTsum, category: fixture } }]
+  benchmark-tsumtsum-source-audit:
+    docker: [{ image: cimg/node:22.23 }]
+    resource_class: small
+    steps: [{ setup-benchmark-target-check: { target: TsumTsum, category: source-audit } }]
+  benchmark-tsumtsum-parsed-identity:
+    docker: [{ image: cimg/node:22.23 }]
+    resource_class: small
+    steps: [{ setup-benchmark-target-check: { target: TsumTsum, category: parsed-identity } }]
 
-  benchmark-tsumtsum-identity:
-    docker:
-      - image: cimg/node:22.23
+  benchmark-ywp-fixture:
+    docker: [{ image: cimg/node:22.23 }]
     resource_class: small
-    steps:
-      - checkout
-      - attach_workspace: { at: . }
-      - run: node scripts/ci/circleci-benchmark-target-probe.mjs TsumTsum identity
-
-  benchmark-tsumtsum-work:
-    docker:
-      - image: cimg/node:22.23
+    steps: [{ setup-benchmark-target-check: { target: YWP, category: fixture } }]
+  benchmark-ywp-source-audit:
+    docker: [{ image: cimg/node:22.23 }]
     resource_class: small
-    steps:
-      - checkout
-      - attach_workspace: { at: . }
-      - run: node scripts/ci/circleci-benchmark-target-probe.mjs TsumTsum work
-
-  benchmark-ywp-identity:
-    docker:
-      - image: cimg/node:22.23
+    steps: [{ setup-benchmark-target-check: { target: YWP, category: source-audit } }]
+  benchmark-ywp-parsed-identity:
+    docker: [{ image: cimg/node:22.23 }]
     resource_class: small
-    steps:
-      - checkout
-      - attach_workspace: { at: . }
-      - run: node scripts/ci/circleci-benchmark-target-probe.mjs YWP identity
-
-  benchmark-ywp-work:
-    docker:
-      - image: cimg/node:22.23
-    resource_class: small
-    steps:
-      - checkout
-      - attach_workspace: { at: . }
-      - run: node scripts/ci/circleci-benchmark-target-probe.mjs YWP work
+    steps: [{ setup-benchmark-target-check: { target: YWP, category: parsed-identity } }]
 
 workflows:
   probe:
     jobs:
       - universal-benchmark-generate
-      - benchmark-battlecats-identity: { requires: [universal-benchmark-generate] }
-      - benchmark-battlecats-work: { requires: [universal-benchmark-generate] }
-      - benchmark-tsumtsum-identity: { requires: [universal-benchmark-generate] }
-      - benchmark-tsumtsum-work: { requires: [universal-benchmark-generate] }
-      - benchmark-ywp-identity: { requires: [universal-benchmark-generate] }
-      - benchmark-ywp-work: { requires: [universal-benchmark-generate] }
+      - benchmark-battlecats-fixture: { requires: [universal-benchmark-generate] }
+      - benchmark-battlecats-source-audit: { requires: [universal-benchmark-generate] }
+      - benchmark-battlecats-parsed-identity: { requires: [universal-benchmark-generate] }
+      - benchmark-tsumtsum-fixture: { requires: [universal-benchmark-generate] }
+      - benchmark-tsumtsum-source-audit: { requires: [universal-benchmark-generate] }
+      - benchmark-tsumtsum-parsed-identity: { requires: [universal-benchmark-generate] }
+      - benchmark-ywp-fixture: { requires: [universal-benchmark-generate] }
+      - benchmark-ywp-source-audit: { requires: [universal-benchmark-generate] }
+      - benchmark-ywp-parsed-identity: { requires: [universal-benchmark-generate] }
