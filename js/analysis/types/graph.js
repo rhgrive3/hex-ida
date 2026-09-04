@@ -276,7 +276,7 @@ function mergeCompatibleHardClaims(entityId, layer, claims, sccContext = null) {
       ...baseDescriptor,
       kind: 'struct',
       members: updatedMembers,
-      sizeBytes: baseDescriptor.sizeBytes ?? calculatedSizeWire,
+      sizeBytes: calculatedSizeWire,
       totalSizeBytes: calculatedSizeWire,
       alignBytes: maxAlignWire,
       isRecursive,
