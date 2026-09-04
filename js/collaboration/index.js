@@ -4,6 +4,7 @@ import { createOperationIdentity, assertIdentityMatch } from '../phase12/identit
 export const CHANGELOG_SCHEMA_VERSION = 'hex-project-operation-v1';
 export const CHECKPOINT_SCHEMA_VERSION = 'hex-project-checkpoint-v1';
 const MEANINGFUL_FACTS = new Set(['name', 'type', 'struct', 'confirmation', 'patch']);
+const CANONICAL_OPERATIONS = new WeakSet();
 
 function required(value, code) { const text = String(value ?? '').trim(); if (!text) throw new TypeError(code); return text; }
 function clone(value) {
@@ -14,9 +15,29 @@ function clone(value) {
   for (const [key, item] of Object.entries(value)) Object.defineProperty(out, key, { value: clone(item), enumerable: true, configurable: true, writable: true });
   return out;
 }
-function list(value) { return [...new Set((Array.isArray(value) ? value : []).map(String).filter(Boolean))].sort(); }
+function list(value) {
+  if (value == null) return [];
+  if (!Array.isArray(value)) throw new TypeError('operation-causal-parents-invalid');
+  return [...new Set(value.map(String).filter(Boolean))].sort();
+}
 function factKey(target, kind) { return `${target}\u0000${kind}`; }
 function payloadDigest(value) { return stableDigest(value); }
+
+function canonicalOperation(input) {
+  if (CANONICAL_OPERATIONS.has(input)) return input;
+  if (input != null && typeof input === 'object') {
+    try { return createProjectOperation(input); } catch (error) { return { normalized: false, input, error }; }
+  }
+  return { normalized: false, input, error: new TypeError('operation-input-invalid') };
+}
+
+export function canonicalizeProjectOperation(input) {
+  return canonicalOperation(input);
+}
+
+export function isCanonicalProjectOperation(value) {
+  return !!value && typeof value === 'object' && value.normalized !== false && CANONICAL_OPERATIONS.has(value);
+}
 
 export function createProjectOperation(input = {}) {
   if (input.schemaVersion != null && input.schemaVersion !== CHANGELOG_SCHEMA_VERSION) throw new TypeError('operation-schema-version-unsupported');
@@ -42,7 +63,13 @@ export function createProjectOperation(input = {}) {
     payload,
     provenance: clone(input.provenance || { source: 'local', actorIdentity: input.authorIdentity || null }),
   };
+  CANONICAL_OPERATIONS.add(operation);
   return deepFreeze(operation);
+}
+
+function registerCanonicalOperation(operation) {
+  CANONICAL_OPERATIONS.add(operation);
+  return operation;
 }
 
 function compareOperations(a, b) { return a.operationId.localeCompare(b.operationId); }
@@ -50,7 +77,7 @@ function compareOperations(a, b) { return a.operationId.localeCompare(b.operatio
 export function orderOperations(operations = [], existingIds = new Set()) {
   const unique = new Map();
   for (const input of operations) {
-    const operation = input.schemaVersion === CHANGELOG_SCHEMA_VERSION ? input : createProjectOperation(input);
+    const operation = canonicalOperation(input);
     if (!unique.has(operation.operationId)) unique.set(operation.operationId, operation);
   }
   const remaining = new Map(unique);
@@ -137,7 +164,12 @@ export class ChangeLog {
   }
 
   applyOperation(input) {
-    const operation = input?.schemaVersion === CHANGELOG_SCHEMA_VERSION ? input : createProjectOperation(input);
+    const operation = canonicalOperation(input);
+    if (operation.normalized === false) {
+      const reason = operation.error?.message || 'operation-input-invalid';
+      this.pending.delete(String(operation.input?.operationId ?? ''));
+      return Object.freeze({ status: 'rejected', reason, operationId: operation.input?.operationId ?? null, stateDigest: this.digest() });
+    }
     const result = this.#applyOne(operation);
     if (result.status === 'unresolved') this.pending.set(operation.operationId, operation);
     else this.pending.delete(operation.operationId);
@@ -145,7 +177,14 @@ export class ChangeLog {
   }
 
   applyBatch(inputs = []) {
-    const operations = inputs.map((input) => input?.schemaVersion === CHANGELOG_SCHEMA_VERSION ? input : createProjectOperation(input));
+    const operations = [];
+    for (const input of inputs) {
+      const operation = canonicalOperation(input);
+      if (operation.normalized === false) {
+        return Object.freeze({ status: 'rejected', reason: operation.error?.message || 'operation-input-invalid', operationId: operation.input?.operationId ?? null, stateDigest: this.digest() });
+      }
+      operations.push(operation);
+    }
     const ordered = orderOperations(operations, new Set(this.operations.keys()));
     if (ordered.unresolved.length) return Object.freeze({ status: 'unresolved', reason: 'missing-causal-parent', operationIds: ordered.unresolved.map((operation) => operation.operationId), stateDigest: this.digest() });
     const working = new ChangeLog({ projectIdentity: this.projectIdentity, binaryIdentity: this.binaryIdentity, state: this.state, operations: [...this.operations.values()], pending: [...this.pending.entries()], allowRemote: this.allowRemote, authorizedAuthors: [...this.authorizedAuthors] });
@@ -174,7 +213,7 @@ export class ChangeLog {
 }
 
 export function replayOperations({ projectIdentity, binaryIdentity = null, operations = [], checkpoint = null } = {}) {
-  const log = new ChangeLog({ projectIdentity, binaryIdentity, state: checkpoint?.state, operations: checkpoint ? checkpoint.operationIds.map((operationId) => ({ operationId, schemaVersion: CHANGELOG_SCHEMA_VERSION, projectIdentity, binaryIdentity, targetEntityId: 'checkpoint', factKind: 'checkpoint', action: 'set', payload: null, causalParents: [], provenance: { source: 'checkpoint' } })) : [] });
+  const log = new ChangeLog({ projectIdentity, binaryIdentity, state: checkpoint?.state, operations: checkpoint ? checkpoint.operationIds.map((operationId) => registerCanonicalOperation(createProjectOperation({ operationId, projectIdentity, binaryIdentity, targetEntityId: 'checkpoint', factKind: 'checkpoint', action: 'set', payload: null, causalParents: [], provenance: { source: 'checkpoint' } }))) : [] });
   const filtered = checkpoint ? operations.filter((operation) => !checkpoint.operationIds.includes(operation.operationId)) : operations;
   const result = log.applyBatch(filtered);
   return Object.freeze({ ...result, state: log.snapshot(), digest: log.digest(), unresolved: result.status === 'unresolved' ? result.operationIds : result.unresolvedOperationIds || [] });
@@ -186,7 +225,7 @@ export function restoreCheckpoint(checkpoint, options = {}) {
   if (!checkpoint || checkpoint.schemaVersion !== CHECKPOINT_SCHEMA_VERSION) throw new TypeError('checkpoint-schema-invalid');
   assertIdentityMatch(checkpoint.projectIdentity, options.projectIdentity, 'checkpoint-project-identity-mismatch');
   assertIdentityMatch(checkpoint.binaryIdentity || '', options.binaryIdentity || '', 'checkpoint-binary-identity-mismatch');
-  const checkpointOperations = checkpoint.operationIds.map((operationId) => ({ operationId, schemaVersion: CHANGELOG_SCHEMA_VERSION, projectIdentity: options.projectIdentity, binaryIdentity: options.binaryIdentity || null, targetEntityId: 'checkpoint', factKind: 'checkpoint', action: 'set', payload: null, causalParents: [], provenance: { source: 'checkpoint' } }));
+  const checkpointOperations = checkpoint.operationIds.map((operationId) => registerCanonicalOperation(createProjectOperation({ operationId, projectIdentity: options.projectIdentity, binaryIdentity: options.binaryIdentity || null, targetEntityId: 'checkpoint', factKind: 'checkpoint', action: 'set', payload: null, causalParents: [], provenance: { source: 'checkpoint' } })));
   const log = new ChangeLog({ projectIdentity: options.projectIdentity, binaryIdentity: options.binaryIdentity || null, state: checkpoint.state, operations: checkpointOperations });
   for (const operation of options.operations || []) if (!checkpoint.operationIds.includes(operation.operationId)) log.applyOperation(operation);
   return log;
@@ -194,7 +233,7 @@ export function restoreCheckpoint(checkpoint, options = {}) {
 
 export function mergeOperations(left = [], right = []) {
   const map = new Map();
-  for (const input of [...left, ...right]) { const operation = input.schemaVersion === CHANGELOG_SCHEMA_VERSION ? input : createProjectOperation(input); if (!map.has(operation.operationId)) map.set(operation.operationId, operation); }
+  for (const input of [...left, ...right]) { const operation = canonicalOperation(input); if (!map.has(operation.operationId)) map.set(operation.operationId, operation); }
   return Object.freeze([...map.values()].sort(compareOperations));
 }
 
