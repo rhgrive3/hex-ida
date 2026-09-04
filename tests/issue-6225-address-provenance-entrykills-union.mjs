@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-function loadProvenance() {
+function loadRuntimeContext() {
   const context = vm.createContext({
     console, TextDecoder, TextEncoder, Uint8Array, Uint8ClampedArray, Uint16Array,
     Uint32Array, Int32Array, BigUint64Array, BigInt64Array, DataView, ArrayBuffer,
@@ -18,7 +18,11 @@ function loadProvenance() {
   for (const file of ['js/words.js', 'js/address-provenance.js']) {
     vm.runInContext(fs.readFileSync(path.join(root, file), 'utf8'), context, { filename: file });
   }
-  return context.AddressProvenance;
+  return context;
+}
+
+function loadProvenance() {
+  return loadRuntimeContext().AddressProvenance;
 }
 
 const AddressProvenance = loadProvenance();
@@ -118,6 +122,68 @@ const AddressProvenance = loadProvenance();
 
   p.enter(16n);
   assert.equal(p.base(1, 2), null, 'r1 must be killed upon entering target 16n');
+}
+
+// 5. Exercise the actual worker composition path. The wrapped scan inherits an
+// x0 kill from the normal scanner while the backward-loop prepass contributes
+// x1 for the same target. AddressProvenance.create() must observe both records
+// and canonicalize them into one effective kill set.
+{
+  const context = loadRuntimeContext();
+  const bytes = new Uint8Array(12);
+  const view = new DataView(bytes.buffer);
+  const literalX1 = 0x58000001; // ldr x1, literal: writes x1 at pc=4
+  const backEqToZero = 0x54ffffc0; // b.eq from pc=8 to pc=0
+  view.setUint32(4, literalX1, true);
+  view.setUint32(8, backEqToZero, true);
+
+  assert.equal(context.Words.classifyWord(literalX1), context.Words.KIND.LITERAL,
+    'fixture must exercise the literal-write prepass path');
+  assert.equal(context.Words.classifyWord(backEqToZero), context.Words.KIND.CONDBR,
+    'fixture must exercise the conditional backward-edge path');
+  assert.equal(context.Words.condBranchTarget(backEqToZero, 8n), 0n,
+    'fixture branch must target the same entry as the inherited kill');
+
+  const region = { id: 'r', vmAddr: 0n, fileOffset: 0n, size: BigInt(bytes.length) };
+  context.regions = new Map([[region.id, region]]);
+  context.functionStartsForRegion = () => [];
+  context.cancelled = () => false;
+  context.yieldToQueue = async () => {};
+  context.readRange = async (offset, length) => {
+    const start = Number(offset - region.fileOffset);
+    return bytes.slice(start, start + length);
+  };
+  context.WRITES_LOW_REG = Object.create(null);
+  context.findXrefs = async () => ({ results: [], cancelled: false, capped: false });
+
+  context.scanProgram = () => {
+    const p = context.AddressProvenance.create({
+      range: [0n, 0x10000n],
+      entryKills: [[0n, [0]]],
+    });
+    p.note(0, 0x1000n, 0);
+    p.note(1, 0x2000n, 0);
+    p.note(2, 0x3000n, 0);
+    p.enter(0n);
+    return Promise.resolve({
+      pendingEntries: p.pendingEntries,
+      r0: p.base(0, 2),
+      r1: p.base(1, 2),
+      r2: p.base(2, 2),
+    });
+  };
+
+  vm.runInContext(
+    fs.readFileSync(path.join(root, 'js/worker-loop-provenance-fix.js'), 'utf8'),
+    context,
+    { filename: 'js/worker-loop-provenance-fix.js' },
+  );
+
+  const result = await context.scanProgram({ regionId: region.id, requestId: 'issue-6225' });
+  assert.equal(result.pendingEntries, 0, 'same-target inherited/prepass kills must collapse to one consumed entry');
+  assert.equal(result.r0, null, 'inherited x0 kill must survive worker composition');
+  assert.equal(result.r1, null, 'prepass x1 kill must survive same-target worker composition');
+  assert.equal(result.r2, 0x3000n, 'unrelated provenance must remain intact');
 }
 
 console.log('issue #6225 address-provenance entryKills union regressions PASS');
