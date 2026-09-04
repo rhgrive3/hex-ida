@@ -71,6 +71,17 @@ normalization forbidden, and T046–T048 have direct traceability entries.
 - Source identities: 5/5 referenced source hashes, 6/6 repository fixture
   size/hash records, and 3/3 external baseline/manifest identities match.
 
+### Denominator supersession
+
+The `48/48` task and ownership figures above are immutable historical evidence
+only for the exact `d7eb37dd3c5b4842f127a74183547e64bef2be9f` planning checkpoint,
+whose task universe ended at T048. They are superseded for every current
+admission, promotion, and ownership decision by the later T001–T057 convergence
+authority below. The historical figures MUST NOT be read as current coverage or
+silently relabeled `57/57` without a new exact-tree audit. Current machine
+admission requires exact task/ownership parity across T001–T057; T048 remains
+pending until its separate Stage B freeze is accepted.
+
 ## Exact reviewed blobs
 
 ```text
