@@ -146,6 +146,16 @@ function issue566SectionProvenanceRegression() {
   assert.equal(image.functions[0].name, 'good0');
   assert.equal(image.functions[0].exactFunctionStart, true);
 
+  image = makeImage({ section:{}, sectionIndex:2, name:'exec-good0', type:2 });
+  repairElfZeroAddressFunctionSeeds(image);
+  assert.equal(image.functions.length, 1, 'ET_EXEC allocated executable section inside PT_LOAD must retain exact seed authority');
+  assert.equal(image.functions[0].name, 'exec-good0');
+  assert.equal(image.functions[0].exactFunctionStart, true);
+
+  image = makeImage({ section:{ perms:{ read:false, execute:true } }, sectionIndex:2, name:'exec-nonalloc0', type:2 });
+  repairElfZeroAddressFunctionSeeds(image);
+  assert.equal(image.functions.length, 0, 'ET_EXEC non-ALLOC executable section must fail closed');
+
   image = makeImage({ section:{}, sectionIndex:2, kind:'indirect-function', name:'resolver0' });
   repairElfZeroAddressFunctionSeeds(image);
   assert.equal(image.functions.length, 1);
