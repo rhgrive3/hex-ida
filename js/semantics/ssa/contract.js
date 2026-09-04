@@ -157,22 +157,32 @@ export function createSemanticSsaContract(input, options = {}) {
   const maxDefinitions = limit(options, 'maxDefinitions');
   const maxUses = limit(options, 'maxUses');
   const maxLinks = limit(options, 'maxLinks');
-  if (rawDefinitions.length > maxDefinitions) fail('semantic-ssa-budget-exceeded-maxDefinitions');
-  if (rawUses.length > maxUses) fail('semantic-ssa-budget-exceeded-maxUses');
-  if (rawUses.length > maxLinks) fail('semantic-ssa-budget-exceeded-maxLinks');
+  const definitionCount = rawDefinitions.length;
+  const useCount = rawUses.length;
+  if (definitionCount > maxDefinitions) fail('semantic-ssa-budget-exceeded-maxDefinitions');
+  if (useCount > maxUses) fail('semantic-ssa-budget-exceeded-maxUses');
+  if (useCount > maxLinks) fail('semantic-ssa-budget-exceeded-maxLinks');
 
-  const { used: phiLinkCount, incomingSnapshots } = preflightPhiLinkBudget(rawDefinitions, maxLinks, options);
-  if (rawUses.length > maxLinks - phiLinkCount) fail('semantic-ssa-budget-exceeded-maxLinks');
+  // Freeze the charged root cardinalities before any caller-controlled item
+  // getter runs. Preflight and normalization consume only these private arrays,
+  // so post-check growth cannot escape maxDefinitions/maxUses/maxLinks.
+  const definitionInputs = new Array(definitionCount);
+  for (let index = 0; index < definitionCount; index++) definitionInputs[index] = rawDefinitions[index];
+  const useInputs = new Array(useCount);
+  for (let index = 0; index < useCount; index++) useInputs[index] = rawUses[index];
+
+  const { used: phiLinkCount, incomingSnapshots } = preflightPhiLinkBudget(definitionInputs, maxLinks, options);
+  if (useCount > maxLinks - phiLinkCount) fail('semantic-ssa-budget-exceeded-maxLinks');
 
   const definitions = [];
-  for (let index = 0; index < rawDefinitions.length; index++) {
+  for (let index = 0; index < definitionInputs.length; index++) {
     assertNotAborted(options);
-    definitions.push(normalizeDefinition(rawDefinitions[index], incomingSnapshots[index]));
+    definitions.push(normalizeDefinition(definitionInputs[index], incomingSnapshots[index]));
   }
   definitions.sort((a, b) => compareText(a.valueId, b.valueId) || compareText(a.definitionId, b.definitionId));
 
   const uses = [];
-  for (const use of rawUses) {
+  for (const use of useInputs) {
     assertNotAborted(options);
     uses.push(normalizeUse(use));
   }
