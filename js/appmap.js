@@ -41,29 +41,11 @@ const API_CATEGORY_TO_FEATURE = {
   ui: 'ui', log: 'error', error: 'error',
 };
 
-/*
- * blocks.js は命令を分類するための語彙を持っていて、地図の語彙とは別物。
- * そちらの名前をそのまま部品の名前にすると、地図に「❓ objc」「❓ runtime」
- * という、絵文字も日本語も付かない部品が出る（実際に出ていた）。
- *
- * 対応するものだけ翻訳し、objc / runtime / data は捨てる。
- * メモリ管理や Objective-C の土台はどのクラスにもあるので、
- * 「このアプリはこういう部品でできています」の答えにならない。
- */
 const BLOCK_FEATURE_TO_CATEGORY = {
   network: 'network', security: 'anticheat', storage: 'save',
   ui: 'ui', diagnostics: 'error',
 };
 
-/*
- * クラス名は、画面に出る文言とは語彙が違う。
- * 「ログインに失敗しました」ではなく LoginViewController、
- * 「購入を復元しています」ではなく ShopManager と書かれている。
- * だからクラス名専用の表を持つ。points が大きいほど、その名前らしさが強い。
- *
- * 並び順に意味はない（票を足して、いちばん多いものを採る）。
- * ただし ui と system は「どのクラスにも付きうる語」なので、わざと弱くしてある。
- */
 const CLASS_NAME_HINTS = [
   { id: 'battle', points: 3, re: /battle|combat|damage|attack|skill|buff|enemy|monster|boss|weapon|bullet|hitbox|\bhp\b/i },
   { id: 'character', points: 3, re: /character|chara|hero|avatar|actor|unit(?!test)|player(?!prefs)|party|team/i },
@@ -87,7 +69,6 @@ const CLASS_NAME_HINTS = [
   { id: 'system', points: 1, re: /manager$|helper|util|common|base$|core$|delegate|factory|builder|observer|handler|bridge|wrapper|adapter/i },
 ];
 
-/** クラス名だけから分類する。当たらなければ空。 */
 export function classifyClassName(name) {
   if (typeof name !== 'string') return [];
   const s = name;
@@ -98,37 +79,27 @@ export function classifyClassName(name) {
   return out;
 }
 
-const NAME_POINTS = 3;      // クラス名が当たった
-const STRING_POINTS = 2;    // 参照している文字列が当たった
-const API_POINTS = 2;       // 呼んでいる API の分類が当たった
-const VENDOR_POINTS = 6;    // 持ち主が分かっている（名前の語彙より強い）
+const NAME_POINTS = 3;
+const STRING_POINTS = 2;
+const API_POINTS = 2;
+const VENDOR_POINTS = 6;
 const MAX_METHODS_PER_CLASS = 60;
 
-/** SDK の役目 → 地図の部品。広告 SDK は広告のところに置く。 */
 const VENDOR_KIND_TO_CATEGORY = {
   ads: 'ads', analytics: 'system', marketing: 'system',
   support: 'system', library: 'system',
 };
 
-/*
- * features.js が持たない、地図だけの部品名。
- * ここに書いておかないと、画面に `🔧 system` という id がそのまま出る。
- */
 const EXTRA_LABEL = {
   system: { ja: '土台・組み込みライブラリ', en: 'Frameworks and libraries' },
   unknown: { ja: 'その他（分類できず）', en: 'Everything else' },
 };
 
-/** 部品の見出し。地図だけの部品は EXTRA_LABEL から、それ以外は features.js から。 */
 export function categoryLabel(id) {
   const extra = EXTRA_LABEL[id];
   return extra ? pick(extra.ja, extra.en) : featureLabelOf(id);
 }
 
-/**
- * クラス 1 つを分類する。
- * @returns {{category:string, score:number, why:Array}}
- */
 function classifyClass(cls, ctx) {
   const votes = new Map();
   const why = [];
@@ -138,21 +109,8 @@ function classifyClass(cls, ctx) {
     why.push({ code, id, points, detail: detail || null });
   };
 
-  /*
-   * 0. 持ち主が先。組み込んだ SDK のクラスに、ゲームの語彙を当ててはいけない。
-   *
-   * `ISBaseAdUnitManager` は `unit` に当たって「キャラクター・育成」になる。
-   * すると地図のいちばん上の部品が IronSource になり、
-   * 「このアプリはこういう部品でできています」が嘘になる。
-   * SDK だと分かっているなら、その SDK の役目のところに置く。
-   */
   const vendor = vendorOf(cls.name, ctx.vendors);
   if (vendor) {
-    /*
-     * 持ち主が分かったら、そこで決める。触っている文字列で上書きさせない。
-     * IronSource の広告クラスが「報酬」の文言をいくつも持っているのは当然で、
-     * それを票にすると、また「ガチャ・抽選・報酬 ＝ IronSource」に戻る。
-     */
     const where = VENDOR_KIND_TO_CATEGORY[vendor.kind] || 'system';
     return {
       category: where,
@@ -162,16 +120,13 @@ function classifyClass(cls, ctx) {
     };
   }
 
-  // 1. クラス名（クラス名専用の語彙で見る）
   for (const hit of classifyClassName(cls.name)) {
     add(hit.id, hit.points, 'class-name', { name: cls.name });
   }
-  // 文言としても当たるなら、それも 1 票（名前が日本語のこともある）
   for (const hit of classifyString(cls.name)) {
     add(hit.id, hit.weak ? 1 : NAME_POINTS - 1, 'class-name', { name: cls.name });
   }
 
-  // 2 と 3. メソッドが実際に触っているもの
   const methods = (cls.methods || []).slice(0, MAX_METHODS_PER_CLASS);
   let stringHits = 0;
   let apiHits = 0;
@@ -219,33 +174,41 @@ function classifyClass(cls, ctx) {
   };
 }
 
-/**
- * 地図を作る。
- *
- * @param {object} opts
- *   fields   FieldIndex（クラスとフィールド）
- *   program  ProgramIndex
- *   symbols  SymbolIndex
- *   strings  [{addr, text}]
- *   region   コードのセクション
- */
+function canonicalAddressKey(value) {
+  if (typeof value === 'bigint') return value >= 0n ? value.toString() : null;
+  if (typeof value === 'number') return Number.isSafeInteger(value) && value >= 0 ? BigInt(value).toString() : null;
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  if (!/^(?:\d+|0[xX][0-9a-fA-F]+)$/.test(text)) return null;
+  try {
+    const address = BigInt(text);
+    return address >= 0n ? address.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
 export function buildAppMap(opts) {
   const o = opts || {};
   const fields = o.fields;
   const program = o.program;
   const symbols = o.symbols;
 
-  // 文字列をアドレスから引けるようにする（参照先 → 文言）
   const textByAddr = new Map();
-  for (const s of o.strings || []) textByAddr.set(s.addr.toString(), s.text);
-  const textOf = (addr) => (addr == null ? null : textByAddr.get(addr.toString()) || null);
+  for (const s of o.strings || []) {
+    const key = canonicalAddressKey(s?.addr);
+    if (key != null) textByAddr.set(key, s.text);
+  }
+  const textOf = (addr) => {
+    const key = canonicalAddressKey(addr);
+    return key == null ? null : textByAddr.get(key) || null;
+  };
   const ctx = { program, symbols, textOf, vendors: vendorsOf(fields) };
 
   const classes = [];
   if (fields && fields.classCount) {
     for (const c of fields.classes.values()) {
       const hit = classifyClass(c, ctx);
-      // その部品がどれだけ「厚い」か。メソッド数とフィールド数は事実。
       const weight = (c.methods ? c.methods.length : 0) +
         (c.classMethods ? c.classMethods.length : 0);
       let calls = 0;
@@ -274,7 +237,6 @@ export function buildAppMap(opts) {
     }
   }
 
-  /* 部品ごとに束ねる。1 画面に出るのは常に十数個までにする。 */
   const groups = new Map();
   for (const c of classes) {
     const id = c.category || 'unknown';
@@ -290,7 +252,6 @@ export function buildAppMap(opts) {
   const subsystems = [];
   for (const g of groups.values()) {
     if (g.id === 'unknown') continue;
-    // 中の並びは「厚くて、よく呼ばれていて、分類の確からしいもの」から
     g.classes.sort((a, b) => (b.categoryScore + b.calls / 4 + b.methods / 8) -
       (a.categoryScore + a.calls / 4 + a.methods / 8));
     subsystems.push({
@@ -318,11 +279,6 @@ export function buildAppMap(opts) {
   };
 }
 
-/**
- * クラスがないバイナリ（Swift だけ・C++・難読化済み）向けの地図。
- * 関数を、参照している文字列の分類でまとめる。クラスほど正確ではないので、
- * UI 側で「粗い地図です」と伝えること。
- */
 export function buildStringMap(opts) {
   const o = opts || {};
   const program = o.program;
