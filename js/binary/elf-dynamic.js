@@ -211,11 +211,11 @@ function parseDynamicSymbols(r, image, bits, symtabVa, syment, count, stringAt, 
     out.push(sym);
     if (!name) continue;
     image.symbols.push(sym);
-    if (!defined && (bind === 1 || bind === 2)) {
+    if (defined === false && (bind === 1 || bind === 2)) {
       if (budget && !budget.claimOutput(1, 160, 'PT_DYNAMIC imports')) break;
       image.imports.push({ name, library: null, ordinal: null, weak: bind === 2, version: ver?.name ?? null, versionLibrary: ver?.library ?? null, versionIndex: ver?.index ?? null, symbolIndex: i, source: 'PT_DYNAMIC', sites: [] });
     }
-    if (defined && (bind === 1 || bind === 2) && (sym.visibility === 0 || sym.visibility === 3)) {
+    if (defined === true && (bind === 1 || bind === 2) && (sym.visibility === 0 || sym.visibility === 3)) {
       if (budget && !budget.claimOutput(1, 144, 'PT_DYNAMIC exports')) break;
       image.exports.push({ name, address: value, kind, version: ver?.name ?? null, versionIndex: ver?.index ?? null, symbolIndex: i, source: 'PT_DYNAMIC' });
     }
@@ -265,10 +265,10 @@ function applyVersionMetadata(image, versions, budget = null) {
     const ver = versions.get(sym.index);
     if (!ver) continue;
     sym.versionIndex = ver.index; sym.version = ver.name; sym.versionHidden = ver.hidden; sym.versionLibrary = ver.library;
-    if (!sym.defined && sym.name) {
+    if (sym.defined === false && sym.name) {
       const imp = importByIndex.get(sym.index);
       if (imp && imp.name === sym.name && imp.version == null) { imp.version = ver.name; imp.versionLibrary = ver.library; imp.versionIndex = ver.index; }
-    } else if (sym.defined && sym.name) {
+    } else if (sym.defined === true && sym.name) {
       const ex = exportByIndex.get(sym.index);
       if (ex && ex.name === sym.name && ex.address === sym.address && ex.version == null) { ex.version = ver.name; ex.versionIndex = ver.index; }
     }
@@ -338,7 +338,7 @@ function attachDynamicRelocations(image, relocs, symbols) {
       ...dynamicRelocationResolutionMetadata(image, rel, sym),
     };
     image.relocations.push(item);
-    if (sym && !sym.defined && sym.name) {
+    if (sym?.defined === false && sym.name) {
       const key = importKey(sym.name, sym.version, sym.versionLibrary);
       let imp = importByName.get(key);
       if (!imp) {
@@ -379,9 +379,9 @@ function symbolCountFromGnuHash(r, hashVa, image, bits) {
   if(hashVa==null)return 0;const range=mappedELFFileRangeForVa(image,hashVa);if(!range||range.start+16>range.end)return 0;const off=range.start;
   const nbuckets=r.u32(off),symOffset=r.u32(off+4),bloomSize=r.u32(off+8);if(!nbuckets||nbuckets>10_000_000||bloomSize>10_000_000)return 0;const word=bits===64?8:4;
   const bucketsOff=off+16+bloomSize*word,chainsOff=bucketsOff+nbuckets*4;if(!Number.isSafeInteger(bucketsOff)||!Number.isSafeInteger(chainsOff)||chainsOff>range.end){markDynamicPartial(image,'DT_GNU_HASH header/buckets cross a file-backed PT_LOAD boundary');return 0;}
-  let max=symOffset,remainingSteps=Math.min(10_000_000,Math.max(4096,nbuckets*64));
-  for(let i=0;i<nbuckets;i++){const bucket=r.u32(bucketsOff+i*4);if(!bucket||bucket<symOffset)continue;let idx=bucket,p=chainsOff+(idx-symOffset)*4;for(;p+4<=range.end;idx++,p+=4){if(--remainingSteps<0){markDynamicPartial(image,'GNU hash chain traversal exceeded the global budget');return 0;}const chain=r.u32(p);if(idx>max)max=idx;if(chain&1)break;}if(p+4>range.end){markDynamicPartial(image,'DT_GNU_HASH chain crosses a file-backed PT_LOAD boundary');return 0;}}
-  return max>=symOffset?max+1:0;
+  let max=null,remainingSteps=Math.min(10_000_000,Math.max(4096,nbuckets*64));
+  for(let i=0;i<nbuckets;i++){const bucket=r.u32(bucketsOff+i*4);if(!bucket||bucket<symOffset)continue;let idx=bucket,p=chainsOff+(idx-symOffset)*4;for(;p+4<=range.end;idx++,p+=4){if(--remainingSteps<0){markDynamicPartial(image,'GNU hash chain traversal exceeded the global budget');return 0;}const chain=r.u32(p);if(max==null||idx>max)max=idx;if(chain&1)break;}if(p+4>range.end){markDynamicPartial(image,'DT_GNU_HASH chain crosses a file-backed PT_LOAD boundary');return 0;}}
+  return max==null?symOffset:max+1;
 }
 
 export function dynamicSymbolKind(type) {

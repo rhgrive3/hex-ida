@@ -237,7 +237,17 @@ function transformOrigin(origin, { ruleId, consumedEntityIds, producedEntityIds,
 function functionAndCfgMatch(irFunction, cfg) {
   if (!irFunction || typeof irFunction !== 'object') fail('memory-ssa-build-ir-required');
   if (!cfg || typeof cfg !== 'object') fail('memory-ssa-build-cfg-required');
-  if (String(irFunction.functionId) !== String(cfg.functionId)) fail('memory-ssa-build-function-mismatch');
+  const irFunctionId = irFunction.functionId;
+  const cfgFunctionId = cfg.functionId;
+  if (typeof irFunctionId !== 'string'
+      || typeof cfgFunctionId !== 'string'
+      || irFunctionId.length === 0
+      || cfgFunctionId.length === 0
+      || irFunctionId.trim() !== irFunctionId
+      || cfgFunctionId.trim() !== cfgFunctionId
+      || irFunctionId !== cfgFunctionId) {
+    fail('memory-ssa-build-function-mismatch');
+  }
 }
 function nodeOrder(irFunction, cfg, options) {
   const nodeById = new Map(irFunction.nodes.map((node) => [node.id, node]));

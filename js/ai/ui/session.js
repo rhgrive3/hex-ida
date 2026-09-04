@@ -50,7 +50,14 @@ export class AiSession {
   set busy(value) { this.current.busy = !!value; }
   get controller() { return this.current.controller; }
   set controller(value) { this.current.controller = value; }
-  get lastQuestion() { return this.current.lastQuestion; }
+  get lastQuestion() {
+    if (this.current.lastQuestion) return this.current.lastQuestion;
+    const turns = this.current.turns || [];
+    for (let i = turns.length - 1; i >= 0; i--) {
+      if (turns[i].role === 'user' && turns[i].text) return turns[i].text;
+    }
+    return null;
+  }
   set lastQuestion(value) { this.current.lastQuestion = value; }
   get provider() { return this.current.provider; }
   get model() { return this.current.model; }
@@ -128,7 +135,8 @@ export class AiSession {
   }
 
   get(id) {
-    return this.conversations.find((item) => item.id === String(id)) || null;
+    const key = id && typeof id === 'object' && id.id ? id.id : id;
+    return this.conversations.find((item) => item.id === String(key)) || null;
   }
 
   /**
@@ -153,8 +161,8 @@ export class AiSession {
       namespace: this.namespace,
     });
     this.conversations.push(conversation);
-    this.dropOverflow();
     this.current = conversation;
+    this.dropOverflow(conversation);
     if (!silent) this.emit({ type: 'conversation', conversation });
     return conversation;
   }
@@ -263,13 +271,53 @@ export class AiSession {
   /* ── asking ─────────────────────────────────────────────── */
 
   /** Re-run the previous question with the current mode/style/scope. */
-  retry(context) {
-    if (!this.lastQuestion) return null;
+  retry(options = {}) {
+    const conversation = this.current;
+    const turns = conversation.turns;
+    if (!turns.length) return null;
+
+    const targetTurn = (options && options.role ? options : (options && options.targetTurn)) || null;
+    let targetIndex = -1;
+    if (targetTurn) {
+      targetIndex = turns.indexOf(targetTurn);
+      if (targetIndex === -1 && targetTurn.id) {
+        targetIndex = turns.findIndex((t) => t.id === targetTurn.id);
+      }
+    }
+
+    let userTurnIndex = -1;
+    if (targetIndex !== -1) {
+      for (let i = targetIndex - 1; i >= 0; i--) {
+        if (turns[i].role === 'user' && turns[i].text) {
+          userTurnIndex = i;
+          break;
+        }
+      }
+    } else {
+      for (let i = turns.length - 1; i >= 0; i--) {
+        if (turns[i].role === 'user' && turns[i].text) {
+          userTurnIndex = i;
+          break;
+        }
+      }
+    }
+
+    if (userTurnIndex === -1) return null;
+
+    const question = String(turns[userTurnIndex].text || '').trim();
+    if (!question) return null;
+
     // Drop the failed assistant turn and its question; the retry re-adds both.
-    const turns = this.current.turns;
-    while (turns.length && turns[turns.length - 1].role === 'assistant') turns.pop();
-    if (turns.length && turns[turns.length - 1].role === 'user') turns.pop();
-    return this.ask(this.lastQuestion, context);
+    if (targetIndex !== -1 && targetIndex >= userTurnIndex) {
+      turns.splice(userTurnIndex, targetIndex - userTurnIndex + 1);
+    } else {
+      while (turns.length && turns[turns.length - 1].role === 'assistant') turns.pop();
+      if (turns.length && turns[turns.length - 1].role === 'user') turns.pop();
+    }
+
+    conversation.lastQuestion = question;
+    const askOptions = (options && options.role) ? {} : options;
+    return this.ask(question, askOptions);
   }
 
   /**
@@ -382,10 +430,10 @@ export class AiSession {
     this.scheduleSave();
   }
 
-  dropOverflow() {
+  dropOverflow(protect = null) {
     if (this.conversations.length <= MAX_RESTORED + 1) return;
     const oldest = this.conversations
-      .filter((item) => item !== this.current)
+      .filter((item) => item !== this.current && item !== protect)
       .sort((a, b) => (a.updatedAt || 0) - (b.updatedAt || 0))[0];
     if (oldest) {
       this.conversations.splice(this.conversations.indexOf(oldest), 1);
