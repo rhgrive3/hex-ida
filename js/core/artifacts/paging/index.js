@@ -110,7 +110,15 @@ export class PagedArtifactReader {
 
     if (requestedPrefetch > 0) {
       const lastPage = (start + BigInt(size) - 1n) / BigInt(this.pageSize);
-      await this.prefetch(lastPage + 1n, { count:requestedPrefetch, signal, allowPastEnd:true });
+      try {
+        await this.prefetch(lastPage + 1n, { count:requestedPrefetch, signal, allowPastEnd:true });
+      } catch (error) {
+        if (error instanceof ByteSourceCancelledError) throw error;
+        if (error?.code === 'BYTE_SOURCE_CANCELLED') throw error;
+        if (error?.name === 'AbortError') throw error;
+        if (error?.name === 'ByteSourceCancelledError') throw error;
+        if (signal?.aborted) throw error;
+      }
     }
     return Object.freeze({ offset:start, length:out.byteLength, bytes:out, pageIds:Object.freeze(pageIds) });
   }
