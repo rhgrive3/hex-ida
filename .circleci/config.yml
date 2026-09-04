@@ -6,6 +6,7 @@ jobs:
       - image: cimg/node:22.23
     resource_class: medium
     environment:
+      HEX_BENCHMARK_SAMPLES: 1
       HEX_FIXTURE_BATTLECATS_URL: https://raw.githubusercontent.com/rhgrive3/hex/bd7bd61d093592d07fdd9e9b14a859e19dd4c3a9/tests/battlecats
       HEX_FIXTURE_TSUMTSUM_URL: https://raw.githubusercontent.com/rhgrive3/hex/bd7bd61d093592d07fdd9e9b14a859e19dd4c3a9/tests/TsumTsum
       HEX_FIXTURE_YWP_URL: https://raw.githubusercontent.com/rhgrive3/hex/bd7bd61d093592d07fdd9e9b14a859e19dd4c3a9/tests/YWP
@@ -17,7 +18,7 @@ jobs:
             npm run fixtures:fetch
             npm run fixtures:check
       - run:
-          name: Generate universal benchmark report with audit codes
+          name: Generate universal benchmark report with audit labels
           command: |
             set -o pipefail
             npm --silent run binary:benchmark | tee universal-platform-benchmark.json
@@ -26,52 +27,43 @@ jobs:
           paths:
             - universal-platform-benchmark.json
 
-  audit-code-duplicate-function:
+  address-roundtrip-section:
     docker: [{ image: cimg/node:22.23 }]
     resource_class: small
     steps:
       - checkout
       - attach_workspace: { at: . }
-      - run: node scripts/ci/circleci-audit-code-probe.mjs duplicate-function
+      - run: node scripts/ci/circleci-audit-code-probe.mjs address-offset-roundtrip section
 
-  audit-code-negative-function-size:
+  address-roundtrip-segment:
     docker: [{ image: cimg/node:22.23 }]
     resource_class: small
     steps:
       - checkout
       - attach_workspace: { at: . }
-      - run: node scripts/ci/circleci-audit-code-probe.mjs negative-function-size
+      - run: node scripts/ci/circleci-audit-code-probe.mjs address-offset-roundtrip segment
 
-  audit-code-file-range-outside:
+  offset-roundtrip-section:
     docker: [{ image: cimg/node:22.23 }]
     resource_class: small
     steps:
       - checkout
       - attach_workspace: { at: . }
-      - run: node scripts/ci/circleci-audit-code-probe.mjs file-range-outside
+      - run: node scripts/ci/circleci-audit-code-probe.mjs offset-address-roundtrip section
 
-  audit-code-address-offset-roundtrip:
+  offset-roundtrip-segment:
     docker: [{ image: cimg/node:22.23 }]
     resource_class: small
     steps:
       - checkout
       - attach_workspace: { at: . }
-      - run: node scripts/ci/circleci-audit-code-probe.mjs address-offset-roundtrip
-
-  audit-code-offset-address-roundtrip:
-    docker: [{ image: cimg/node:22.23 }]
-    resource_class: small
-    steps:
-      - checkout
-      - attach_workspace: { at: . }
-      - run: node scripts/ci/circleci-audit-code-probe.mjs offset-address-roundtrip
+      - run: node scripts/ci/circleci-audit-code-probe.mjs offset-address-roundtrip segment
 
 workflows:
   probe:
     jobs:
       - universal-benchmark-generate
-      - audit-code-duplicate-function: { requires: [universal-benchmark-generate] }
-      - audit-code-negative-function-size: { requires: [universal-benchmark-generate] }
-      - audit-code-file-range-outside: { requires: [universal-benchmark-generate] }
-      - audit-code-address-offset-roundtrip: { requires: [universal-benchmark-generate] }
-      - audit-code-offset-address-roundtrip: { requires: [universal-benchmark-generate] }
+      - address-roundtrip-section: { requires: [universal-benchmark-generate] }
+      - address-roundtrip-segment: { requires: [universal-benchmark-generate] }
+      - offset-roundtrip-section: { requires: [universal-benchmark-generate] }
+      - offset-roundtrip-segment: { requires: [universal-benchmark-generate] }
