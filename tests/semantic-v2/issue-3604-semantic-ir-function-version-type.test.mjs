@@ -58,4 +58,52 @@ assert.throws(
 );
 assert.equal(coercionCalls, 0);
 
+const withVersionGetter = (property, getter) => {
+  const input = { ...valid };
+  Object.defineProperty(input, property, {
+    enumerable: true,
+    configurable: true,
+    get: getter,
+  });
+  return input;
+};
+
+let schemaVersionReads = 0;
+const driftingSchemaVersion = withVersionGetter('schemaVersion', () => {
+  schemaVersionReads += 1;
+  return schemaVersionReads === 1 ? ['2'] : SEMANTIC_IR_SCHEMA_VERSION;
+});
+assert.throws(
+  () => createSemanticIrFunction(driftingSchemaVersion),
+  /semantic-ir-schema-version-mismatch/,
+);
+assert.equal(schemaVersionReads, 1);
+
+let canonicalSchemaVersionReads = 0;
+const canonicalSchemaVersion = withVersionGetter('schemaVersion', () => {
+  canonicalSchemaVersionReads += 1;
+  return SEMANTIC_IR_SCHEMA_VERSION;
+});
+assert.equal(
+  createSemanticIrFunction(canonicalSchemaVersion).schemaVersion,
+  SEMANTIC_IR_SCHEMA_VERSION,
+);
+assert.equal(canonicalSchemaVersionReads, 1);
+
+let contractVersionReads = 0;
+const driftingContractVersion = new Proxy({ ...valid, contractVersion: null }, {
+  get(target, property, receiver) {
+    if (property === 'contractVersion') {
+      contractVersionReads += 1;
+      return contractVersionReads === 1 ? ['2.0.0'] : SEMANTIC_IR_CONTRACT_VERSION;
+    }
+    return Reflect.get(target, property, receiver);
+  },
+});
+assert.throws(
+  () => createSemanticIrFunction(driftingContractVersion),
+  /semantic-ir-contract-version-mismatch/,
+);
+assert.equal(contractVersionReads, 1);
+
 console.log('issue 3604 semantic IR function version type boundary: PASS');
