@@ -87,7 +87,7 @@ function rawVectorPrefixPartial(instruction, ownerId, result, context) {
   });
 }
 
-const STRUCTURED_FAIL_CLOSED_REASON = /^(?:x86-cmpxchg-structured-implicit-accumulator-missing|x86-string-(?:prefix-state-unmodelled|f2-repeat-prefix-not-proven-for-this-family|implicit-state-unmodelled|address-size-unmodelled|operand-shape-unmodelled))$/;
+const STRUCTURED_FAIL_CLOSED_REASON = /^(?:x86-(?:fp-)?vector-prefix-metadata-malformed|x86-cmpxchg-structured-implicit-accumulator-missing|x86-string-(?:prefix-state-unmodelled|f2-repeat-prefix-not-proven-for-this-family|implicit-state-unmodelled|address-size-unmodelled|operand-shape-unmodelled))$/;
 
 function terminalize(instruction, ownerId, result, context) {
   // Structured vector-prefix metadata is semantic authority for VEX/EVEX

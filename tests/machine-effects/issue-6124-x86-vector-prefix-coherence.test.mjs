@@ -14,6 +14,7 @@ function decoded({
   vector = null,
   legacy = [],
   operands,
+  trusted = false,
 }) {
   return {
     address:0x1000n,
@@ -28,6 +29,7 @@ function decoded({
     detailStatus:'complete',
     detailAvailable:true,
     detail:{
+      ...(trusted ? { abiContractVersion:'capstone-5-wasm32-x86-detail/v1' } : {}),
       operandCount:operands.length,
       prefixes:{
         legacy:Uint8Array.from(legacy),
@@ -65,6 +67,19 @@ assertRawMismatch(liftX86MachineEffects(decoded({
   operands:moveOperands,
 })), 'legacy raw + forged VEX metadata');
 
+// A trusted decoder provenance token must not terminalize malformed structured
+// prefix metadata. The family validator owns this shape and must remain partial.
+const trustedMalformed = liftX86MachineEffects(decoded({
+  id:'trusted-malformed-vex',
+  family:'vmovups',
+  rawBytes:[0x0f,0x10,0xc1],
+  vector:{ kind:'vex2', bytes:[0xc5] },
+  operands:moveOperands,
+  trusted:true,
+}));
+assert.equal(trustedMalformed?.completeness, 'partial', 'trusted malformed VEX metadata must remain fail closed');
+assert.equal(trustedMalformed?.unknownEffects?.reason, 'x86-vector-prefix-metadata-malformed');
+
 const validVex = decoded({
   id:'valid-vmovups',
   family:'vmovups',
@@ -99,7 +114,8 @@ for (const [name,prefix] of [['address-size',0x67],['fs-segment',0x64],['gs-segm
   });
   assert.equal(vectorPrefixOffset(prefixed, Uint8Array.from(vex2Movups.bytes)), 1, `${name}: VEX prefix offset`);
   const effect = liftX86MachineEffects(prefixed);
-  assert.notEqual(effect?.unknownEffects?.reason, 'x86-vector-prefix-raw-mismatch', `${name}: legal prefix must not false-reject VEX`);
+  assert.equal(effect?.completeness, 'exact', `${name}: legal prefixed VEX remains exact`);
+  assert.equal(effect?.metadata?.upperLaneBehavior, 'zero-upper-128', `${name}: legal prefixed VEX preserves VEX upper-lane semantics`);
 }
 
 assertRawMismatch(liftX86MachineEffects(decoded({
