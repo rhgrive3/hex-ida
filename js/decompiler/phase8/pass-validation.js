@@ -7,6 +7,60 @@ export const REWRITE_VALIDATION_STATUSES = Object.freeze(['equivalent', 'refuted
 
 function fail(code) { throw new TypeError(code); }
 
+/**
+ * `stableDigest()` intentionally JSON-normalizes BigInt values, which is useful
+ * for project identity but too lossy for proof authority: `1n` and `'1'` must
+ * never bind the same staged symbolic rewrite. Build a typed, deterministic
+ * witness first, then feed that JSON-safe witness to the ordinary digest.
+ */
+function typedWitness(value, seen = new WeakSet()) {
+  if (value === null) return { type:'null' };
+  const kind = typeof value;
+  if (kind === 'string') return { type:'string', value };
+  if (kind === 'boolean') return { type:'boolean', value };
+  if (kind === 'bigint') return { type:'bigint', value:value.toString(10) };
+  if (kind === 'undefined') return { type:'undefined' };
+  if (kind === 'number') {
+    if (!Number.isFinite(value)) fail('phase8-rewrite-proof-binding-nonfinite-number');
+    return { type:'number', value:Object.is(value, -0) ? '-0' : String(value) };
+  }
+  if (kind !== 'object') fail('phase8-rewrite-proof-binding-unsupported-value');
+  if (seen.has(value)) fail('phase8-rewrite-proof-binding-cycle');
+  seen.add(value);
+  try {
+    if (Array.isArray(value)) {
+      const items = [];
+      for (let index = 0; index < value.length; index += 1) {
+        const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+        if (!descriptor || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+          fail('phase8-rewrite-proof-binding-noncanonical-array');
+        }
+        items.push(typedWitness(descriptor.value, seen));
+      }
+      return { type:'array', items };
+    }
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) {
+      fail('phase8-rewrite-proof-binding-noncanonical-object');
+    }
+    const entries = [];
+    for (const key of Object.keys(value).sort()) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+        fail('phase8-rewrite-proof-binding-noncanonical-object');
+      }
+      entries.push([key, typedWitness(descriptor.value, seen)]);
+    }
+    return { type:'object', entries };
+  } finally {
+    seen.delete(value);
+  }
+}
+
+function typePreservingDigest(value) {
+  return stableDigest({ schema:'phase8-rewrite-typed-witness/v1', value:typedWitness(value) });
+}
+
 function rewriteBinding(rewrite, { beforeTarget = undefined, afterTarget = undefined } = {}) {
   if (!rewrite || typeof rewrite !== 'object' || Array.isArray(rewrite)) {
     fail('phase8-rewrite-proof-binding-required');
@@ -14,18 +68,18 @@ function rewriteBinding(rewrite, { beforeTarget = undefined, afterTarget = undef
   if (!Object.hasOwn(rewrite, 'before') || !Object.hasOwn(rewrite, 'after')) {
     fail('phase8-rewrite-proof-binding-required');
   }
-  const beforeDigest = stableDigest(rewrite.before);
-  const afterDigest = stableDigest(rewrite.after);
-  if (beforeTarget !== undefined && beforeDigest !== stableDigest(beforeTarget)) {
+  const beforeDigest = typePreservingDigest(rewrite.before);
+  const afterDigest = typePreservingDigest(rewrite.after);
+  if (beforeTarget !== undefined && beforeDigest !== typePreservingDigest(beforeTarget)) {
     fail('phase8-rewrite-adoption-before-binding-mismatch');
   }
-  if (afterTarget !== undefined && afterDigest !== stableDigest(afterTarget)) {
+  if (afterTarget !== undefined && afterDigest !== typePreservingDigest(afterTarget)) {
     fail('phase8-rewrite-adoption-after-binding-mismatch');
   }
   return Object.freeze({
     beforeDigest,
     afterDigest,
-    rewriteDigest: stableDigest(rewrite),
+    rewriteDigest: typePreservingDigest(rewrite),
   });
 }
 
