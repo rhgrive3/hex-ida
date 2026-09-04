@@ -92,8 +92,8 @@ export function createRuntimeTargetBinding(input = {}) {
     processKey: optionalText(input.processKey),
     platform: optionalText(input.platform),
     architecture: optionalText(input.architecture),
-    primaryBinaryId: optionalText(input.primaryBinaryId ?? input.binaryId),
-    primarySliceId: optionalText(input.primarySliceId ?? input.sliceId),
+    primaryBinaryId: optionalIdentity(input.primaryBinaryId ?? input.binaryId, 'primaryBinaryId'),
+    primarySliceId: optionalIdentity(input.primarySliceId ?? input.sliceId, 'primarySliceId'),
     startedAt: input.startedAt == null ? null : String(input.startedAt),
     bindingEvidenceIds: freezeEvidenceIds(input.bindingEvidenceIds),
   });
