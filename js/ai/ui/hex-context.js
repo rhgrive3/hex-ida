@@ -124,6 +124,7 @@ export function createHexAIContext(app) {
         const regionCompleteness = completenessOf(result);
         if (regionCompleteness === 'unsupported') {
           exactTotalKnown = false;
+          complete = false;
           reason ||= reasonOf(result) || 'typed-search-producer-unavailable';
           continue;
         }
