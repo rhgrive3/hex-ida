@@ -585,6 +585,10 @@ function solveLayer(entityId, layer, bucket, { signal, maxComparisons, maxContra
       for (let j = i + 1; j < bucket.hard.length; j += 1) {
         if (!canCompare()) break hardPairs;
         if (claimsConflict(bucket.hard[i].claim, bucket.hard[j].claim)) {
+          if (contradictions.length >= maxContradictions) {
+            stopReason = 'budget-exhausted';
+            break hardPairs;
+          }
           const pair = [bucket.hard[i], bucket.hard[j]].sort((left, right) => constraintOrderKey(left).localeCompare(constraintOrderKey(right)));
           contradictions.push(createContradiction({
             layer,
@@ -593,10 +597,6 @@ function solveLayer(entityId, layer, bucket, { signal, maxComparisons, maxContra
             right: pair[1],
             detail: `hard constraints disagree: ${pair[0].kind} vs ${pair[1].kind}`,
           }));
-          if (contradictions.length >= maxContradictions) {
-            stopReason = 'budget-exhausted';
-            break hardPairs;
-          }
         }
       }
     }
