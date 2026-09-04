@@ -23,35 +23,48 @@ export async function openBinarySource(input, opts = {}) {
   const detected = detectBinary(prefix);
   const rangeOptions = withSignal(opts.ranges || {}, opts.signal);
 
-  if (detected.format === 'elf') return parseELFSource(source, opts, prefix, rangeOptions);
+  if (detected.format === 'elf') return parseELFSourceWithPrefix(source, opts, prefix, rangeOptions);
   // The source probe is intentionally small; parsePE performs bounded range reads for e_lfanew and PE\0\0.
   if (detected.format === 'pe' || (prefix.byteLength >= 2 && prefix[0] === 0x4d && prefix[1] === 0x5a)) {
-    return parsePESource(source, opts, prefix, rangeOptions);
+    return parsePESourceWithPrefix(source, opts, prefix, rangeOptions);
   }
-  if (detected.format === 'macho') return parseMachOSource(source, opts, prefix, rangeOptions);
+  if (detected.format === 'macho') return parseMachOSourceWithPrefix(source, opts, prefix, rangeOptions);
   throw new Error('対応していない実行ファイル形式です（Mach-O / ELF / PE を判定できませんでした）。');
 }
 
-export async function parseELFSource(input, opts = {}, prefix = null, rangeOptions = opts.ranges || {}) {
+export async function parseELFSource(input, opts = {}, _prefix = null, rangeOptions = opts.ranges || {}) {
   const source = asByteSource(input, opts.source || {});
+  const prefix = await readPrefix(source, opts.signal);
+  return parseELFSourceWithPrefix(source, opts, prefix, rangeOptions);
+}
+
+async function parseELFSourceWithPrefix(source, opts, prefix, rangeOptions) {
   const ranges = withSignal(rangeOptions, opts.signal);
-  const magic = prefix || await readPrefix(source, opts.signal);
-  const image = await parseSourceRanges(source, parseELF, opts, withInitial(magic, ranges));
+  const image = await parseSourceRanges(source, parseELF, opts, withInitial(prefix, ranges));
   return withStrings(image, source, opts);
 }
 
-export async function parsePESource(input, opts = {}, prefix = null, rangeOptions = opts.ranges || {}) {
+export async function parsePESource(input, opts = {}, _prefix = null, rangeOptions = opts.ranges || {}) {
   const source = asByteSource(input, opts.source || {});
+  const prefix = await readPrefix(source, opts.signal);
+  return parsePESourceWithPrefix(source, opts, prefix, rangeOptions);
+}
+
+async function parsePESourceWithPrefix(source, opts, prefix, rangeOptions) {
   const ranges = withSignal(rangeOptions, opts.signal);
-  const magic = prefix || await readPrefix(source, opts.signal);
-  const image = await parseSourceRanges(source, parsePE, opts, withInitial(magic, ranges));
+  const image = await parseSourceRanges(source, parsePE, opts, withInitial(prefix, ranges));
   return withStrings(image, source, opts);
 }
 
-export async function parseMachOSource(input, opts = {}, prefix = null, rangeOptions = opts.ranges || {}) {
+export async function parseMachOSource(input, opts = {}, _prefix = null, rangeOptions = opts.ranges || {}) {
   const source = asByteSource(input, opts.source || {});
+  const prefix = await readPrefix(source, opts.signal);
+  return parseMachOSourceWithPrefix(source, opts, prefix, rangeOptions);
+}
+
+async function parseMachOSourceWithPrefix(source, opts, prefix, rangeOptions) {
   const ranges = withSignal(rangeOptions, opts.signal);
-  const magic = prefix || await source.readExactly(0n, Number(source.size < 16n ? source.size : 16n), { signal: opts.signal });
+  const magic = prefix;
   const fat = fatKind(magic);
   if (!fat) {
     const image = await parseSourceRanges(source, parseMachO, opts, withInitial(magic, ranges));
@@ -134,8 +147,10 @@ function withSignal(options, signal) {
 }
 
 function withInitial(prefix, options) {
-  if (!prefix?.byteLength) return options;
-  return { ...options, initial: [{ offset: 0n, bytes: prefix }, ...(options.initial || [])] };
+  const ranges = { ...(options || {}) };
+  delete ranges.initial;
+  if (!prefix?.byteLength) return ranges;
+  return { ...ranges, initial: [{ offset: 0n, bytes: prefix }] };
 }
 
 async function readPrefix(source, signal) {
