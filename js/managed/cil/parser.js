@@ -466,6 +466,28 @@ function parseMetadataRoot(bytes, view, metadataOffset, metadataSize) {
   });
 }
 
+function validateExceptionClauseRange(clause, codeSize) {
+  const rangeInCode = (offset, length) => Number.isSafeInteger(offset)
+    && Number.isSafeInteger(length)
+    && offset >= 0
+    && length > 0
+    && offset < codeSize
+    && length <= codeSize - offset;
+
+  if (!rangeInCode(clause.tryOffset, clause.tryLength)
+      || !rangeInCode(clause.handlerOffset, clause.handlerLength)) {
+    fail('cil-invalid-exception-clause-range');
+  }
+
+  if (clause.kind === 'filter') {
+    const filterOffset = clause.classTokenOrFilter;
+    if (!Number.isSafeInteger(filterOffset) || filterOffset < 0 || filterOffset >= codeSize) {
+      fail('cil-invalid-exception-filter-offset');
+    }
+  }
+  return clause;
+}
+
 function parseMethodBody(bytes, view, offset, metadataInfo = null) {
   checkedRange(bytes, offset, 1, 'cil-method-body-unmapped');
   const headerByte = bytes[offset];
@@ -516,27 +538,29 @@ function parseMethodBody(bytes, view, offset, metadataInfo = null) {
       const clauseCount = (dataSize - 4) / clauseSize;
       for (let clause = 0; clause < clauseCount; clause++) {
         const clauseOffset = extraOffset + 4 + clause * clauseSize;
+        let parsedClause;
         if (clauseSize === 24) {
           const clauseFlags = readU32(view, clauseOffset, 'cil-fat-method-clause-truncated');
-          exceptionClauses.push({
+          parsedClause = {
             kind: clauseFlags === 1 ? 'filter' : clauseFlags === 2 ? 'finally' : clauseFlags === 4 ? 'fault' : 'catch',
             tryOffset: readU32(view, clauseOffset + 4, 'cil-fat-method-clause-truncated'),
             tryLength: readU32(view, clauseOffset + 8, 'cil-fat-method-clause-truncated'),
             handlerOffset: readU32(view, clauseOffset + 12, 'cil-fat-method-clause-truncated'),
             handlerLength: readU32(view, clauseOffset + 16, 'cil-fat-method-clause-truncated'),
             classTokenOrFilter: readU32(view, clauseOffset + 20, 'cil-fat-method-clause-truncated'),
-          });
+          };
         } else {
           const clauseFlags = readU16(view, clauseOffset, 'cil-small-method-clause-truncated');
-          exceptionClauses.push({
+          parsedClause = {
             kind: clauseFlags === 1 ? 'filter' : clauseFlags === 2 ? 'finally' : clauseFlags === 4 ? 'fault' : 'catch',
             tryOffset: readU16(view, clauseOffset + 2, 'cil-small-method-clause-truncated'),
             tryLength: bytes[clauseOffset + 4],
             handlerOffset: readU16(view, clauseOffset + 5, 'cil-small-method-clause-truncated'),
             handlerLength: bytes[clauseOffset + 7],
             classTokenOrFilter: readU32(view, clauseOffset + 8, 'cil-small-method-clause-truncated'),
-          });
+          };
         }
+        exceptionClauses.push(validateExceptionClauseRange(parsedClause, codeSize));
       }
     }
   }
