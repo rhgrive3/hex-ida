@@ -224,7 +224,9 @@ jobs:
             if [ "$RUN_UNIVERSAL_PLATFORM" != 'true' ]; then exit 0; fi
             set -uo pipefail
             failures=()
-            node tests/capability-maturity.mjs && node tests/issue-495-elf-relocation-budget.mjs && node tests/issue-513-elf-symbol-budget.mjs || failures+=(contracts)
+            node tests/capability-maturity.mjs || failures+=(capability-maturity)
+            node tests/issue-495-elf-relocation-budget.mjs || failures+=(elf-relocation-budget)
+            node tests/issue-513-elf-symbol-budget.mjs || failures+=(elf-symbol-budget)
             npm run binary:test || failures+=(binary)
             npm run binary:gate || failures+=(binary-gate)
             if [ "${#failures[@]}" -ne 0 ]; then
