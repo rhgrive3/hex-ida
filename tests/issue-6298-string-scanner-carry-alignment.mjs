@@ -142,4 +142,46 @@ function makeImage(bytes) {
   assert.equal(after.fileOffset, BigInt(boundary));
 }
 
+// 6. A terminated UTF-16 candidate must not skip a valid start on the opposite parity.
+{
+  const bytes = Uint8Array.of(0x41, 0, 0x42, 0, 0xff, 0x43, 0, 0x44, 0, 0xff);
+  const img = makeImage(bytes);
+  const sourceRes = await scanSourceStrings(img, bytes, {
+    minLength: 2,
+    maxLength: 4096,
+    utf16: 'le',
+  });
+
+  const utf16 = sourceRes.results.filter((r) => r.encoding === 'utf16le');
+  const ab = utf16.find((r) => r.text === 'AB');
+  const cd = utf16.find((r) => r.text === 'CD');
+  assert.ok(ab, 'must find AB on the original parity');
+  assert.equal(ab.fileOffset, 0n);
+  assert.ok(cd, 'must re-check q + 1 and find CD on the opposite parity');
+  assert.equal(cd.fileOffset, 5n);
+}
+
+// 7. Opposite-parity UTF-16 start in the last byte of a chunk must carry into the next chunk.
+{
+  const boundary = 64 * 1024;
+  const bytes = new Uint8Array(boundary + 8);
+  const start = boundary - 6;
+  bytes.set(Uint8Array.of(0x41, 0, 0x42, 0, 0xff, 0x43, 0, 0x44, 0, 0xff), start);
+
+  const img = makeImage(bytes);
+  const sourceRes = await scanSourceStrings(img, bytes, {
+    minLength: 2,
+    maxLength: 4096,
+    chunkSize: boundary,
+    utf16: 'le',
+  });
+
+  const utf16 = sourceRes.results.filter((r) => r.encoding === 'utf16le');
+  const ab = utf16.find((r) => r.text === 'AB' && r.fileOffset === BigInt(start));
+  const cd = utf16.find((r) => r.text === 'CD' && r.fileOffset === BigInt(boundary - 1));
+  assert.ok(ab, 'must find AB before the chunk boundary');
+  assert.ok(cd, 'must carry the last-byte opposite-parity start across the chunk boundary');
+  assert.equal(cd.byteLength, 4);
+}
+
 console.log('issue-6298 regression test: PASS');
