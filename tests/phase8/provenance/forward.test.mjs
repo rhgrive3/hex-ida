@@ -1,11 +1,22 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { buildRenderProvenance } from '../../../js/decompiler/phase8/render-provenance.js';
 import { applyPhase8Projection } from '../../../js/decompiler/phase8/projection.js';
-import { analysis, expr, inductionFact, resultWith, source } from './fixture.js';
+import { analysis, expr, inductionFact, resultWith, source, sourceOf } from './fixture.js';
 
 function entityForLine(renderProvenance, lineIndex) {
   return Object.values(renderProvenance.entities).find((entity) => entity.lineIndex === lineIndex) ?? null;
+}
+
+function ledgerOrigin(sourceValue, additions = {}) {
+  return {
+    addresses:[...sourceValue.addresses, ...(additions.addresses ?? [])],
+    rows:[...sourceValue.rows, ...(additions.rows ?? [])],
+    ir:[...sourceValue.ir, ...(additions.ir ?? [])],
+    ssaDefs:[...sourceValue.ssaDefs, ...(additions.ssaDefs ?? [])],
+    ssaUses:[...sourceValue.ssaUses, ...(additions.ssaUses ?? [])],
+  };
 }
 
 test('P8-PROV a raw pass-through line resolves to its direct instruction rows', () => {
@@ -78,4 +89,57 @@ test('P8-PROV a multi-rewrite chain reaches the original instruction rows', () =
   const entity = entityForLine(provenance, 0);
   assert.equal(entity.complete, true);
   assert.deepEqual(entity.origins.rows, [1, 2, 3, 4], 'final fragment must resolve through the whole chain to the original rows');
+});
+
+for (const [name, sourceValue] of [
+  ['address', sourceOf({ address:0x1234n })],
+  ['IR', sourceOf({ ir:'ir-only' })],
+  ['SSA def', sourceOf({ ssaDef:7 })],
+  ['SSA use', sourceOf({ ssaUse:8 })],
+]) {
+  test(`P8-PROV transform correlation accepts ${name}-only canonical origins`, () => {
+    const result = {
+      lines:[{ kind:'stmt', text:'x = y;', source:sourceValue }],
+      phase8Projection:{
+        version:1,
+        transformCount:1,
+        transforms:[{
+          kind:'rewrite',
+          proof:`${name} fixture`,
+          targets:['entity:x'],
+          origin:ledgerOrigin(sourceValue),
+        }],
+      },
+    };
+    const provenance = buildRenderProvenance({ result, snapshotId:'snapshot:origin-fixture' });
+    const entity = entityForLine(provenance, 0);
+    assert.deepEqual(entity.recordRefs, [0], `${name}-only origin must correlate the transform to the rendered entity`);
+    assert.equal(entity.complete, true);
+  });
+}
+
+test('P8-PROV chained SSA transforms retain earlier refs and feed later records', () => {
+  const initial = sourceOf({ ssaDef:1 });
+  const result = {
+    lines:[{ kind:'stmt', text:'x = y;', source:initial }],
+    phase8Projection:{
+      version:1,
+      transformCount:2,
+      transforms:[
+        {
+          kind:'first-rewrite', proof:'def1 produces use2', targets:['ssa:def:1'],
+          origin:ledgerOrigin(initial, { ssaUses:[2] }),
+        },
+        {
+          kind:'second-rewrite', proof:'use2 produces def3', targets:['ssa:use:2'],
+          origin:{ addresses:[], rows:[], ir:[], ssaDefs:[3], ssaUses:[2] },
+        },
+      ],
+    },
+  };
+  const provenance = buildRenderProvenance({ result, snapshotId:'snapshot:ssa-chain' });
+  const entity = entityForLine(provenance, 0);
+  assert.deepEqual(entity.recordRefs, [0, 1], 'the second transform must correlate through SSA evidence introduced by the first');
+  assert.deepEqual(entity.origins.ssaRefs, ['def:1', 'def:3', 'use:2'],
+    'later rewrites must accumulate rather than replace earlier SSA provenance');
 });
