@@ -220,6 +220,7 @@ function languageRecordMatchesIdentitySource(identity, record) {
 export function isLanguageRecordAuthoritative(result, record) {
   const identity = result?.identity;
   if (!identity || !record || !isCanonicalLanguageIdentity(identity)) return false;
+  if (!isCanonicalLanguageRecord(record)) return false;
   if (!languageRecordMatchesIdentitySource(identity, record)) return false;
   if (result?.completeness?.complete !== true || !isCompleteStatus(result?.status) || !isCanonicalAnalysisStatus(result?.status)) return false;
   if (identity.verdict === 'matched-authoritative') return true;
@@ -278,11 +279,29 @@ export function isLanguageRecordAuthoritative(result, record) {
   return constrained;
 }
 
+const CANONICAL_RECORDS = new WeakSet();
+
+export function isCanonicalLanguageRecord(record) {
+  if (!record || typeof record !== 'object') return false;
+  if (CANONICAL_RECORDS.has(record)) return true;
+  if (typeof record.kind !== 'string' || !KIND_SET.has(record.kind)) return false;
+  if (typeof record.entityId !== 'string' || !record.entityId.trim()) return false;
+  if (typeof record.providerId !== 'string' || !record.providerId.trim()) return false;
+  if (typeof record.providerVersion !== 'string' || !record.providerVersion.trim()) return false;
+  if (typeof record.ecosystem !== 'string' || !record.ecosystem.trim()) return false;
+  if (!Array.isArray(record.evidenceIds)) return false;
+  if (record.evidenceIds.some((id) => typeof id !== 'string' || !id.trim())) return false;
+  if (record.address != null && (typeof record.address !== 'string' || !record.address.trim())) return false;
+  if (record.buildIdentity != null && (typeof record.buildIdentity !== 'string' || !record.buildIdentity.trim())) return false;
+  if (record.sizeBytes != null && (!Number.isSafeInteger(record.sizeBytes) || record.sizeBytes < 0)) return false;
+  return true;
+}
+
 /** One record from a language metadata provider. */
 export function createLanguageMetadataRecord(input = {}) {
   const kind = nonEmpty(input.kind, 'metadata-record-kind-required');
   if (!KIND_SET.has(kind)) fail('metadata-record-invalid-kind');
-  return deepFreeze({
+  const record = deepFreeze({
     kind,
     entityId: strictNonEmptyString(input.entityId, 'metadata-record-entity-required'),
     name: input.name == null ? null : String(input.name),
@@ -295,6 +314,8 @@ export function createLanguageMetadataRecord(input = {}) {
     buildIdentity: input.buildIdentity == null ? null : strictNonEmptyString(input.buildIdentity, 'metadata-record-invalid-build-identity'),
     evidenceIds: [...new Set((input.evidenceIds ?? []).map((value) => strictNonEmptyString(value, 'metadata-record-invalid-evidence-id')))].sort(),
   });
+  CANONICAL_RECORDS.add(record);
+  return record;
 }
 
 /** One page of records. */
