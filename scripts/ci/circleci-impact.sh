@@ -29,7 +29,7 @@ head="$(git rev-parse HEAD)"
 # would leave A's delta unvalidated because B correctly inspects only B^..B.
 if [[ -n "$branch" && "$branch" != 'main' ]]; then
   git fetch --no-tags origin "$branch:refs/remotes/origin/$branch" >/dev/null 2>&1 || true
-  latest="$(git rev-parse "refs/remotes/origin/$branch" 2>/dev/null || true)"
+  latest="$(git rev-parse --verify "refs/remotes/origin/$branch" 2>/dev/null || true)"
   if [[ -n "$latest" && "$latest" != "$head" ]]; then
     echo "stale CircleCI head $head; latest $branch is $latest" >&2
     printf 'false\n'
@@ -43,13 +43,15 @@ if [[ "$branch" == 'main' ]]; then
     exit 0
   fi
 
-  # main-and-branch lanes mirror workflows that also run after merges.
-  # Each main pipeline validates its own first-parent delta, even if a newer
-  # main commit already exists remotely.
-  # Fail open if the parent is unexpectedly unavailable: correctness is more
-  # important than saving a runner minute.
-  git fetch --no-tags --depth=2 origin main:refs/remotes/origin/main >/dev/null 2>&1 || true
-  parent="$(git rev-parse HEAD^ 2>/dev/null || true)"
+  # A main pipeline validates the delta owned by its exact HEAD. Do not fetch a
+  # newer origin/main here: doing so can move a shallow boundary and make an
+  # older-but-still-required HEAD appear parentless. Resolve the local parent
+  # first, and only try to hydrate this exact commit if checkout was too shallow.
+  parent="$(git rev-parse --verify 'HEAD^' 2>/dev/null || true)"
+  if [[ -z "$parent" ]]; then
+    git fetch --no-tags --depth=2 origin "$head" >/dev/null 2>&1 || true
+    parent="$(git rev-parse --verify 'HEAD^' 2>/dev/null || true)"
+  fi
   if [[ -z "$parent" ]]; then
     echo 'could not resolve main parent; running lane conservatively' >&2
     printf 'true\n'
