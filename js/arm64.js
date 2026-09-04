@@ -172,7 +172,7 @@ export function categoryOf(mn) {
   const direct = CATEGORY.get(b);
   if (direct) return direct;
   if (ATOMIC_CATEGORY_RE.test(b)) return 'atomic';
-  if (/^b\./.test(b)) return 'flow';
+  if (/^(?:b|bc)\./.test(b)) return 'flow';
   if (/^f/.test(b)) return 'float';
   return '';
 }
@@ -1133,7 +1133,7 @@ HANDLERS.retaa = HANDLERS.ret;
 HANDLERS.retab = HANDLERS.ret;
 
 function condBranch(o, ops, base, addr, c) {
-  const cond = base.slice(2);
+  const cond = base.startsWith('bc.') ? base.slice(3) : base.slice(2);
   const ci = condInfo(cond);
   const at = ops[0] && ops[0].value;
   o.title = J('条件つきジャンプ', 'Conditional branch');
@@ -1604,7 +1604,7 @@ HANDLERS['.byte'] = (o, ops, base, addr, c) => {
 /* ── 名前で拾いきれないものを、接頭辞で拾う ─────────────── */
 
 function familyHandler(base) {
-  if (/^b\.[a-z]{2}$/.test(base)) return condBranch;
+  if (/^(?:b|bc)\.[a-z]{2}$/.test(base)) return condBranch;
   if (/^(braa|brab|braaz|brabz)$/.test(base)) return HANDLERS.br;
   if (/^(blraa|blrab|blraaz|blrabz)$/.test(base)) return HANDLERS.blr;
   if (/^ld/.test(base)) return loadStore(true);
