@@ -164,6 +164,17 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
   for (let index = 0; index < params.length; index++) {
     const param = params[index];
     const c = parameterClass(param);
+    // Apple arm64 places anonymous variadic arguments on the stack even when
+    // registers are free. Routing them through the register allocator would
+    // contradict the variadicTail contract with exact register placements.
+    const variadicProto = proto?.variadic === true || proto?.varargs === true;
+    const fixedCount = Number.isSafeInteger(proto?.fixedParameterCount) && proto.fixedParameterCount >= 0
+      ? proto.fixedParameterCount : null;
+    const anonymousVararg = variadicProto && (
+      param?.variadic === true || param?.unnamed === true || param?.named === false
+      || (fixedCount != null && index >= fixedCount)
+    );
+    const forceStack = anonymousVararg === true;
     if (c.aggregateMetadataInvalid) {
       aggregatePartial = true;
       arguments_.push({ index, location:'unknown', abiClass:'aggregate-metadata-unproven', aggregate:true,
@@ -191,7 +202,7 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
     }
     if (c.fp) {
       const regsNeeded = c.homogeneous ? c.members : 1;
-      if (fp + regsNeeded <= 8) {
+      if (fp + regsNeeded <= 8 && !forceStack) {
         const regs = [];
         for (let n = 0; n < regsNeeded; n++) {
           const reg = `v${fp++}`;
@@ -239,7 +250,7 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
           reason:'aggregate-physical-padding-register-layout-not-represented' });
         continue;
       }
-      if (gp + regsNeeded <= 8) {
+      if (gp + regsNeeded <= 8 && !forceStack) {
         const regs = [];
         for (let n = 0; n < regsNeeded; n++) {
           const reg = `x${gp++}`;
@@ -309,6 +320,7 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
       possible:false,
       mustUse:true,
       compactDarwinSlot:true,
+      ...(forceStack ? { variadicAnonymous:true } : {}),
     };
     stackArguments.push(entry);
     arguments_.push(entry);
