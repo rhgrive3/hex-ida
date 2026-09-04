@@ -125,6 +125,11 @@ function rewriteTaskBlock(source, taskId, mutator) {
 }
 
 function rewriteTaskStatus(source, taskId, status) {
+  const marker = `] ${taskId} `;
+  const block = fixtureTaskBlocks(source).find((candidate) => candidate.split('\n', 1)[0].includes(marker));
+  assert.ok(block, `task fixture must find ${taskId}`);
+  const expectedPrefix = `- [${status === 'DONE' ? 'x' : ' '}] ${taskId} `;
+  if (block.startsWith(expectedPrefix) && block.includes(`Status: ${status}.`)) return source;
   return rewriteTaskBlock(source, taskId, (block) => block
     .replace(new RegExp(`^- \\[[ x]\\] ${taskId} `), `- [${status === 'DONE' ? 'x' : ' '}] ${taskId} `)
     .replace(/Status: (?:PENDING|BLOCKED_BY_CONCURRENT_WORK|DONE)\./, `Status: ${status}.`));
@@ -291,6 +296,11 @@ assertIncludes(
 );
 
 const completedLaneText = rewriteTaskStatus(tasksText, 'T046', 'DONE');
+assert.equal(
+  rewriteTaskStatus(completedLaneText, 'T046', 'DONE'),
+  completedLaneText,
+  'the permanent preflight suite must remain runnable after the T046 DONE transition',
+);
 const completedLaneInventory = structuredClone(integrationInventory);
 completedLaneInventory.taskHandoffs.T046 = {
   headSha: 'd7eb37dd3c5b4842f127a74183547e64bef2be9f',

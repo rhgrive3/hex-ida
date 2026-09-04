@@ -13,7 +13,7 @@ candidate is commit `99c45ca70abed87f203b3428d40568c556d46616`, tree
 | Guardrails and prior evidence read | T001/T002 research and recovery handoff inventory | SATISFIED |
 | Machine-checkable exit contract | `spec.md`, `tasks.md`, closure/performance/platform contracts | SATISFIED |
 | Frozen/shared/generated/verifier/integration/component ownership | `contracts/task-ownership.json` plus exact integration inventory | SATISFIED |
-| Living integration branch/PR | `recovery/final-closure-20260904`, PR #6429 | SATISFIED |
+| Living integration branch/PR | `recovery/final-closure-v2-20260904`, replacement PR #6610 | SATISFIED |
 | Permanent exact-SHA invocation | `.github/workflows/final-closure-preflight.yml`, run `33903574803`, exact head/base above | SATISFIED |
 | Ownership/governance regressions | canonical recursive `tests/final-closure/run.mjs` on the exact head | SATISFIED |
 | Real production walking skeleton | unchanged `tests/phase4/walking-skeleton.test.mjs` on the exact head | SATISFIED |
@@ -178,6 +178,8 @@ any later applicability change.
   `99c45ca70abed87f203b3428d40568c556d46616`; `pull-request-authority` and
   `integration-pull-request-head` passed, while the dispatch/component jobs were
   correctly inapplicable and skipped.
-- CodeRabbit: exact-head check passed; all 18 review threads are resolved. The
+- CodeRabbit on predecessor PR #6429: exact-head check passed; all 18 review
+  threads are resolved. Replacement PR #6610 preserves that reviewed ancestry
+  and requires its own exact-head disposition before the T046 transition. The
   H9 collector finding is assigned to post-T048 T045, and the raw-observer
   counter finding was withdrawn after central-verifier rederivation was proven.
