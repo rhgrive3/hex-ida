@@ -12,8 +12,8 @@ strict AI AnalysisQuery address and paging metadata boundaries.
 - Regression owner: `tests/phase12/adversarial/issue-6157-6158-ai-query-boundaries.test.mjs`
 - Shared-board claim: lanes message #283
 - Branch: `fix/issues-ai-query-boundaries-6157-6158`
-- Candidate base: `origin/main` at `83ba6ab5fef8611639d483db4ea63cee063329d6`
-- Implementation head: `a780c70b90590587ce3d7c0f05ebb7d31c68853a`
+- Candidate base: `origin/main` at `b9d6cec838ad8f4ee0ecdf2af1fb87406f128195`
+- Implementation head: record after the final reconciliation commit
 
 ## Stages
 
