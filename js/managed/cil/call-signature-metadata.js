@@ -181,8 +181,9 @@ function readStreams(bytes, view, metadata) {
   }
   const tables = streams.find((stream) => stream.name === '#~' || stream.name === '#-');
   const blob = streams.find((stream) => stream.name === '#Blob');
-  if (!tables || !blob) fail('cil-call-signature-metadata-stream-missing');
-  return { tables, blob };
+  const strings = streams.find((stream) => stream.name === '#Strings');
+  if (!tables || !blob || !strings) fail('cil-call-signature-metadata-stream-missing');
+  return { tables, blob, strings };
 }
 
 export function buildCilCallMetadataIndex(bytes) {
@@ -191,6 +192,7 @@ export function buildCilCallMetadataIndex(bytes) {
   const streams = readStreams(bytes, view, readPeMetadataDirectory(bytes, view));
   checkedRange(bytes, streams.tables.offset, streams.tables.size, 'cil-call-signature-tables-out-of-bounds');
   checkedRange(bytes, streams.blob.offset, streams.blob.size, 'cil-call-signature-blob-out-of-bounds');
+  checkedRange(bytes, streams.strings.offset, streams.strings.size, 'cil-call-signature-strings-out-of-bounds');
   if (streams.tables.size < 24) fail('cil-call-signature-tables-truncated');
   const start = streams.tables.offset;
   const end = start + streams.tables.size;
@@ -221,14 +223,22 @@ export function buildCilCallMetadataIndex(bytes) {
     if (table === METHOD_DEF_TABLE) {
       const signatureOffset = 8 + stringIndexSize;
       for (let row = 0; row < rows; row++) {
-        methodDefs.push(readIndex(view, pos + row * rowSize + signatureOffset, blobIndexSize,
-          'cil-call-signature-methoddef-truncated'));
+        const rowPos = pos + row * rowSize;
+        methodDefs.push(Object.freeze({
+          nameIndex:readIndex(view, rowPos + 8, stringIndexSize, 'cil-call-signature-methoddef-truncated'),
+          signatureBlobIndex:readIndex(view, rowPos + signatureOffset, blobIndexSize,
+            'cil-call-signature-methoddef-truncated'),
+        }));
       }
     } else if (table === MEMBER_REF_TABLE) {
       const parentSize = codedIndexSize(rowCounts, [0x02, 0x01, 0x1a, 0x06, 0x1b], 3);
       for (let row = 0; row < rows; row++) {
-        memberRefs.push(readIndex(view, pos + row * rowSize + parentSize + stringIndexSize, blobIndexSize,
-          'cil-call-signature-memberref-truncated'));
+        const rowPos = pos + row * rowSize;
+        memberRefs.push(Object.freeze({
+          nameIndex:readIndex(view, rowPos + parentSize, stringIndexSize, 'cil-call-signature-memberref-truncated'),
+          signatureBlobIndex:readIndex(view, rowPos + parentSize + stringIndexSize, blobIndexSize,
+            'cil-call-signature-memberref-truncated'),
+        }));
       }
     } else if (table === METHOD_SPEC_TABLE) {
       const methodSize = codedIndexSize(rowCounts, [0x06, 0x0a], 1);
@@ -247,6 +257,7 @@ export function buildCilCallMetadataIndex(bytes) {
     memberRefs:Object.freeze(memberRefs),
     methodSpecs:Object.freeze(methodSpecs),
     blobHeap:bytes.subarray(streams.blob.offset, streams.blob.offset + streams.blob.size),
+    stringsHeap:bytes.subarray(streams.strings.offset, streams.strings.offset + streams.strings.size),
   });
 }
 
@@ -275,4 +286,16 @@ export function readCilMetadataBlob(heap, index, code) {
   const length = readCompressedLength(heap, index, code);
   if (length.value > heap.length - length.next) fail(code);
   return heap.subarray(length.next, length.next + length.value);
+}
+
+export function readCilMetadataString(heap, index, code) {
+  if (!(heap instanceof Uint8Array) || !Number.isSafeInteger(index) || index < 1 || index >= heap.length) fail(code);
+  let end = index;
+  while (end < heap.length && heap[end] !== 0) end++;
+  if (end >= heap.length || end === index) fail(code);
+  try {
+    return new TextDecoder('utf-8', { fatal:true }).decode(heap.subarray(index, end));
+  } catch {
+    fail(code);
+  }
 }

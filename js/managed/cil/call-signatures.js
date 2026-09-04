@@ -4,6 +4,7 @@ import {
   METHOD_DEF_TABLE,
   METHOD_SPEC_TABLE,
   readCilMetadataBlob,
+  readCilMetadataString,
 } from './call-signature-metadata.js';
 import {
   parseCilMethodSignature,
@@ -47,6 +48,7 @@ function resolveIndexed(index, token, depth = 0) {
           parameters:Object.freeze(parameters),
           returnValue,
         }),
+        methodName:base.methodName,
         provenance:Object.freeze({
           token,
           table:'MethodSpec',
@@ -55,24 +57,32 @@ function resolveIndexed(index, token, depth = 0) {
           resolvedToken:baseToken,
           resolvedTable:base.provenance.table,
           signatureBlobIndex:base.provenance.signatureBlobIndex,
+          nameStringIndex:base.provenance.nameStringIndex,
+          methodName:base.methodName,
         }),
       });
     }
 
     const rows = table === METHOD_DEF_TABLE ? index.methodDefs : index.memberRefs;
-    const blobIndex = rows[rid - 1];
-    if (!Number.isSafeInteger(blobIndex) || blobIndex < 1) fail('cil-call-signature-row-missing');
+    const row = rows[rid - 1];
+    const blobIndex = row?.signatureBlobIndex;
+    if (!row || !Number.isSafeInteger(blobIndex) || blobIndex < 1) fail('cil-call-signature-row-missing');
+    const methodName = readCilMetadataString(index.stringsHeap, row.nameIndex,
+      'cil-call-signature-method-name-invalid');
     const signature = parseCilMethodSignature(readCilMetadataBlob(index.blobHeap, blobIndex,
       'cil-call-signature-blob-invalid'));
     return Object.freeze({
       complete:true,
       signature,
+      methodName,
       provenance:Object.freeze({
         token,
         table:table === METHOD_DEF_TABLE ? 'MethodDef' : 'MemberRef',
         rid,
         resolvedToken:token,
         signatureBlobIndex:blobIndex,
+        nameStringIndex:row.nameIndex,
+        methodName,
       }),
     });
   } catch (error) {
@@ -111,6 +121,15 @@ export function createCilCallStackEffect(kind, resolution) {
     return Object.freeze({
       complete:false,
       reason:'cil-call-instance-signature-required',
+      consumedValues:Object.freeze([]),
+      producedValues:Object.freeze([]),
+      provenance:resolution.provenance,
+    });
+  }
+  if (kind === 'newobj' && resolution.methodName !== '.ctor') {
+    return Object.freeze({
+      complete:false,
+      reason:'cil-newobj-constructor-target-invalid',
       consumedValues:Object.freeze([]),
       producedValues:Object.freeze([]),
       provenance:resolution.provenance,

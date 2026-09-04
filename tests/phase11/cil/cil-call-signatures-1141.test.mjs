@@ -13,6 +13,16 @@ function addBlob(buf, offset, cursor, bytes) {
   return index;
 }
 
+function addString(buf, offset, cursor, value) {
+  const index = cursor.value;
+  const bytes = new TextEncoder().encode(value);
+  assert.ok(bytes.length > 0 && index + bytes.length < 0x80, 'focused fixture string heap budget exceeded');
+  buf.set(bytes, offset + index);
+  buf[offset + index + bytes.length] = 0;
+  cursor.value += bytes.length + 1;
+  return index;
+}
+
 function tokenBytes(token) {
   return [token & 0xff, (token >>> 8) & 0xff, (token >>> 16) & 0xff, token >>> 24];
 }
@@ -56,7 +66,7 @@ function buildCallPe({
   buf.set(version, metadataOffset + 16);
 
   const flagsOffset = (metadataOffset + 16 + version.length + 3) & ~3;
-  view.setUint16(flagsOffset + 2, 2, true);
+  view.setUint16(flagsOffset + 2, 3, true);
   let streamPos = flagsOffset + 4;
   const addStream = (relativeOffset, size, name) => {
     view.setUint32(streamPos, relativeOffset, true);
@@ -68,6 +78,7 @@ function buildCallPe({
   };
   addStream(0x100, 0x100, '#~');
   addStream(0x200, 0x100, '#Blob');
+  addStream(0x300, 0x80, '#Strings');
 
   const blobOffset = metadataOffset + 0x200;
   buf[blobOffset] = 0;
@@ -77,36 +88,51 @@ function buildCallPe({
     Uint8Array.from([0x10, 0x01, 0x01, 0x1e, 0x00, 0x1e, 0x00])); // static !!0(!!0)
   const callerSignatureIndex = addBlob(buf, blobOffset, cursor,
     Uint8Array.from([0x00, 0x00, 0x01])); // static void()
-  const memberRefSignatureIndex = addBlob(buf, blobOffset, cursor,
+  const constructorSignatureIndex = addBlob(buf, blobOffset, cursor,
     Uint8Array.from([0x20, 0x02, 0x01, 0x0a, 0x11, 0x04])); // instance void(int64, valuetype #1)
   const instantiationIndex = addBlob(buf, blobOffset, cursor,
     Uint8Array.from([0x0a, 0x01, 0x08])); // GENERICINST<int32>
+
+  const stringsOffset = metadataOffset + 0x300;
+  buf[stringsOffset] = 0;
+  const stringCursor = { value:1 };
+  const staticNameIndex = addString(buf, stringsOffset, stringCursor, 'StaticTarget');
+  const genericNameIndex = addString(buf, stringsOffset, stringCursor, 'GenericTarget');
+  const callerNameIndex = addString(buf, stringsOffset, stringCursor, 'Caller');
+  const constructorNameIndex = addString(buf, stringsOffset, stringCursor, '.ctor');
+  const nonConstructorNameIndex = addString(buf, stringsOffset, stringCursor, 'NotCtor');
 
   const tablesOffset = metadataOffset + 0x100;
   const valid = (1n << 6n) | (1n << 10n) | (1n << 43n);
   view.setUint32(tablesOffset + 8, Number(valid & 0xffffffffn), true);
   view.setUint32(tablesOffset + 12, Number(valid >> 32n), true);
   let tablePos = tablesOffset + 24;
-  view.setUint32(tablePos, 3, true); tablePos += 4; // MethodDef
-  view.setUint32(tablePos, 1, true); tablePos += 4; // MemberRef
+  view.setUint32(tablePos, 5, true); tablePos += 4; // MethodDef
+  view.setUint32(tablePos, 2, true); tablePos += 4; // MemberRef
   view.setUint32(tablePos, 1, true); tablePos += 4; // MethodSpec
 
-  const addMethodDef = (rva, signatureIndex) => {
+  const addMethodDef = (rva, nameIndex, signatureIndex) => {
     view.setUint32(tablePos, rva, true);
-    view.setUint16(tablePos + 8, 0, true); // Name
+    view.setUint16(tablePos + 8, nameIndex, true);
     view.setUint16(tablePos + 10, signatureIndex, true);
     view.setUint16(tablePos + 12, 0, true); // ParamList
     tablePos += 14;
   };
-  addMethodDef(0, staticSignatureIndex);
-  addMethodDef(0, genericSignatureIndex);
-  addMethodDef(0x2500, callerSignatureIndex);
+  addMethodDef(0, staticNameIndex, staticSignatureIndex);
+  addMethodDef(0, genericNameIndex, genericSignatureIndex);
+  addMethodDef(0x2500, callerNameIndex, callerSignatureIndex);
+  addMethodDef(0, constructorNameIndex, constructorSignatureIndex);
+  addMethodDef(0, nonConstructorNameIndex, constructorSignatureIndex);
 
-  // MemberRefParent = MethodDef RID 1, tag 3 => (1 << 3) | 3.
-  view.setUint16(tablePos, 11, true);
-  view.setUint16(tablePos + 2, 0, true);
-  view.setUint16(tablePos + 4, memberRefSignatureIndex, true);
-  tablePos += 6;
+  const addMemberRef = (nameIndex) => {
+    // MemberRefParent = MethodDef RID 1, tag 3 => (1 << 3) | 3.
+    view.setUint16(tablePos, 11, true);
+    view.setUint16(tablePos + 2, nameIndex, true);
+    view.setUint16(tablePos + 4, constructorSignatureIndex, true);
+    tablePos += 6;
+  };
+  addMemberRef(constructorNameIndex);
+  addMemberRef(nonConstructorNameIndex);
 
   // MethodSpec.Method = MethodDef RID 2, tag 0 => (2 << 1) | 0.
   view.setUint16(tablePos, 4, true);
@@ -134,6 +160,7 @@ test('#1141 MethodDef static call consumes parameters and produces non-void retu
   assert.deepEqual(call.producedValues.map((value) => value.stackType), ['int32']);
   assert.equal(call.callEffects[0].signatureResolved, true);
   assert.equal(call.callEffects[0].signatureProvenance.table, 'MethodDef');
+  assert.equal(call.callEffects[0].signatureProvenance.methodName, 'StaticTarget');
 });
 
 test('#1141 instance/constructor calls apply receiver, 64-bit, and value-type stack contracts', () => {
@@ -151,6 +178,23 @@ test('#1141 instance/constructor calls apply receiver, 64-bit, and value-type st
   assert.equal(newobj.consumedValues.length, 2, 'newobj consumes constructor args but not an existing receiver');
   assert.equal(newobj.producedValues.length, 1);
   assert.equal(newobj.producedValues[0].stackType, 'object-ref');
+  assert.equal(newobj.callEffects[0].signatureProvenance.methodName, '.ctor');
+
+  const methodDefCtor = lift([0x73, ...tokenBytes(0x06000004), 0x2a]).bundles[0];
+  assert.equal(methodDefCtor.completeness, 'exact');
+  assert.equal(methodDefCtor.callEffects[0].signatureProvenance.methodName, '.ctor');
+});
+
+test('#1141 newobj rejects non-constructor MemberRef and MethodDef targets', () => {
+  for (const token of [0x0a000002, 0x06000005]) {
+    const newobj = lift([0x73, ...tokenBytes(token), 0x2a]).bundles[0];
+    assert.equal(newobj.completeness, 'partial');
+    assert.equal(newobj.callEffects[0].signatureResolved, false);
+    assert.equal(newobj.callEffects[0].signatureReason, 'cil-newobj-constructor-target-invalid');
+    assert.equal(newobj.consumedValues.length, 0);
+    assert.equal(newobj.producedValues.length, 0, 'non-constructor target must not mint constructed-object');
+    assert.ok(newobj.unknownEffects.some((effect) => effect.category === 'stack'));
+  }
 });
 
 test('#1141 MethodSpec validates instantiation and substitutes method generic stack types', () => {
@@ -160,6 +204,7 @@ test('#1141 MethodSpec validates instantiation and substitutes method generic st
   assert.equal(call.producedValues[0].stackType, 'int32');
   assert.equal(call.callEffects[0].signatureProvenance.table, 'MethodSpec');
   assert.equal(call.callEffects[0].signatureProvenance.resolvedToken, 0x06000002);
+  assert.equal(call.callEffects[0].signatureProvenance.methodName, 'GenericTarget');
 });
 
 test('#1141 void calls produce nothing and invalid token/signature authority fails partial', () => {
