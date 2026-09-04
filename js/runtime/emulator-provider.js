@@ -22,7 +22,9 @@ function ownedClone(value) {
 }
 
 function terminationOf(result = {}) {
-  const raw = String(result.termination ?? result.stop?.kind ?? result.status ?? 'paused').toLowerCase();
+  const value = result.termination ?? result.stop?.kind ?? result.status ?? 'paused';
+  if (typeof value !== 'string') return 'exception';
+  const raw = value.toLowerCase();
   if (TERMINATIONS.includes(raw)) return raw;
   if (/unsupported/.test(raw)) return 'unsupported';
   if (/timeout|limit/.test(raw)) return 'timeout';
@@ -48,6 +50,12 @@ function engineText(value, fallback, code) {
   return resolved;
 }
 
+function deterministicFlag(value) {
+  if (value == null) return true;
+  if (typeof value !== 'boolean') throw new DebugAdapterError('emulator-deterministic-invalid', 'emulator deterministic flag must be a boolean');
+  return value;
+}
+
 function normalizeEngineDescriptor(engine, options) {
   const source = typeof engine?.descriptor === 'function' ? engine.descriptor() : {};
   return deepFreeze({
@@ -55,7 +63,7 @@ function normalizeEngineDescriptor(engine, options) {
     version: engineText(options.engineVersion ?? source.version ?? engine?.version, 'unknown', 'emulator-engine-version-invalid'),
     architecture: options.architecture ?? source.architecture ?? null,
     environment: options.environment ?? source.environment ?? 'unknown',
-    deterministic: options.deterministic ?? source.deterministic ?? engine?.deterministic !== false,
+    deterministic: deterministicFlag(options.deterministic ?? source.deterministic ?? engine?.deterministic),
   });
 }
 
@@ -106,7 +114,10 @@ export class EmulatorProvider {
       if (runOptions.signal) {
         externalAbort = () => controller.abort(runOptions.signal.reason ?? 'cancelled');
         if (runOptions.signal.aborted) externalAbort();
-        else runOptions.signal.addEventListener('abort', externalAbort, { once: true });
+        else {
+          runOptions.signal.addEventListener('abort', externalAbort, { once: true });
+          if (runOptions.signal.aborted) externalAbort();
+        }
       }
       let timer = null;
       if (!controller.signal.aborted) timer = setTimeout(() => controller.abort('timeout'), timeoutMs);
@@ -184,7 +195,7 @@ export class EmulatorProvider {
       engine: this.engineDescriptor,
       run,
       replay: async (recording = null, replayOptions = {}) => {
-        if (!this.engineDescriptor.deterministic) throw new DebugAdapterError('unsupported', 'emulator engine does not advertise deterministic replay');
+        if (this.engineDescriptor.deterministic !== true) throw new DebugAdapterError('unsupported', 'emulator engine does not advertise deterministic replay');
         const source = recording ?? lastRun;
         if (!source) throw new DebugAdapterError('emulator-replay-missing', 'no emulator recording is available to replay');
         return run(source.input, { ...source.options, ...replayOptions });
