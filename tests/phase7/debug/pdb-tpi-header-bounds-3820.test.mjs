@@ -29,6 +29,7 @@ test('TPI headerSize below the supported 56-byte header cannot expose header byt
   const parsed = parseTpiStream(bytes);
   assert.equal(parsed.complete, false);
   assert.equal(parsed.types.size, 0);
+  assert.equal(parsed.firstIndex, 0x1000);
 });
 
 test('the canonical 56-byte empty TPI header remains complete', () => {
