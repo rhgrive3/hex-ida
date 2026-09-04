@@ -82,7 +82,7 @@ jobs:
               }
 
               if (!resolved.size) {
-                core.info(`workflow_run ${trigger.id || 'unknown'} has no open PR target; nothing to recover.`);
+                core.info(`workflow_run ${trigger.id || 'unknown'} has no open same-repository PR target; nothing to recover.`);
               }
               return [...resolved.values()];
             }

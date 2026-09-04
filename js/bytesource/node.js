@@ -1,5 +1,5 @@
 import { open } from 'node:fs/promises';
-import { ByteSource, safeNumber } from '../binary/source.js';
+import { ByteSource } from '../binary/source.js';
 
 function throwIfAborted(signal) {
   if (!signal?.aborted) return;
@@ -31,9 +31,9 @@ export class NodeFileByteSource extends ByteSource {
     throwIfAborted(options.signal);
     const buffer = new Uint8Array(range.length);
     let done = 0;
-    const position = safeNumber(range.offset, 'file read offset');
+    const position = range.offset;
     while (done < range.length) {
-      const { bytesRead } = await this.handle.read(buffer, done, range.length - done, position + done);
+      const { bytesRead } = await this.handle.read(buffer, done, range.length - done, position + BigInt(done));
       throwIfAborted(options.signal);
       if (!bytesRead) break;
       done += bytesRead;

@@ -1,20 +1,9 @@
 import { Sheet, el, button, list, tapRow, toast, alertDialog, userError } from '../../ui.js';
 import { addrText, parseAddress, parseHexPattern } from '../../format.js';
+import { numberPattern } from '../numeric-pattern.js';
 import { t } from '../../i18n.js';
 
 const SEARCH_PAGE_LIMIT = 1000;
-function numberPattern(text) {
-  const t2 = text.trim().replace(/[_,]/g, ''); let value;
-  try {
-    if (/^-?0x[0-9a-f]+$/i.test(t2)) value = BigInt(t2.replace('-0x', '0x')) * (t2[0] === '-' ? -1n : 1n);
-    else if (/^-?\d+$/.test(t2)) value = BigInt(t2);
-    else return null;
-  } catch { return null; }
-  const wide = value < -0x80000000n || value > 0xFFFFFFFFn; const bytes = wide ? 8 : 4;
-  const unsigned = BigInt.asUintN(bytes * 8, value); const out = [];
-  for (let i = 0; i < bytes; i++) out.push(Number((unsigned >> BigInt(i * 8)) & 0xffn).toString(16).padStart(2, '0'));
-  return out.join(' ');
-}
 function isAbort(error) { return error?.name === 'AbortError' || error?.code === 'ABORT_ERR'; }
 
 export function showSearch(app) {
