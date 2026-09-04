@@ -27,8 +27,8 @@
       ],
       "minimumCaseCount": 1,
       "authorityArtifacts": [
-        {"role": "registry", "path": "tools/validation/final-closure/shadow/foundation/registry.json", "sha256": "bdddff253871c2ad6e26f2f24d97329624568077934a23fbfc708ebe107d3650"},
-        {"role": "contracts", "path": "tools/validation/final-closure/shadow/foundation/contracts.json", "sha256": "d091bc926e4b1400c65938539450d1a3868564bd5254fe08d77beb794320dc65"},
+        {"role": "registry", "path": "tools/validation/final-closure/shadow/foundation/registry.json", "sha256": "105ed35687d4b87347eed43f488a1ab7534607acb34036f3ef75922af49ae9d7"},
+        {"role": "contracts", "path": "tools/validation/final-closure/shadow/foundation/contracts.json", "sha256": "0812574f211de31e6d0e864376b409e3a07dd52f2398226b0c131495028f28c0"},
         {"role": "oracleProvider", "path": "tools/validation/final-closure/shadow/foundation/oracle-observer.mjs", "sha256": "2ea797c3947459e21466827239034d53ce25620c5d70f4609e188e5db083991a"},
         {"role": "productProvider", "path": "tools/validation/final-closure/shadow/foundation/product-observer.mjs", "sha256": "0b84d5b30681a5a6fd46e25c0cc743f20c5f32686862f85a0a3db63b229858cd"}
       ]
@@ -110,7 +110,9 @@
         ],
         "rolling": [
           {"id": "t017-effects-suite", "argv": ["npm", "run", "effects:test"]},
-          {"id": "t017-semantic-v2-suite", "argv": ["npm", "run", "semantic-v2:test"]}
+          {"id": "t017-semantic-v2-suite", "argv": ["npm", "run", "semantic-v2:test"]},
+          {"id": "t017-phase5-suite", "argv": ["npm", "run", "phase5:test"]},
+          {"id": "t017-phase6-suite", "argv": ["npm", "run", "phase6:test"]}
         ],
         "shadow": [
           {"id": "t017-independent-verifier", "argv": ["node", "tools/validation/final-closure/preflight.mjs", "--emit-shadow-evidence", "--task", "T017"]}
@@ -254,6 +256,92 @@
         ],
         "shadow": [
           {"id": "t045-final-platform-verifier", "argv": ["node", "tools/validation/final-closure/preflight.mjs", "--emit-shadow-evidence", "--task", "T045"]}
+        ]
+      },
+      "T051": {
+        "owned": [
+          {"id": "t051-owned-regressions", "argv": ["node", "tests/final-closure/run.mjs", "--group", "t051"]}
+        ],
+        "rolling": [
+          {"id": "t051-ai-release-session", "argv": ["node", "tests/phase12/adversarial/issue-3664-ai-runtime-release-session.test.mjs"]},
+          {"id": "t051-ai-binary-identity", "argv": ["node", "tests/phase12/adversarial/issue-6241-ai-snapshot-binary-identity.test.mjs"]}
+        ],
+        "shadow": [
+          {"id": "t051-independent-verifier", "argv": ["node", "tools/validation/final-closure/preflight.mjs", "--emit-shadow-evidence", "--task", "T051"]}
+        ]
+      },
+      "T052": {
+        "owned": [
+          {"id": "t052-owned-regressions", "argv": ["node", "tests/final-closure/run.mjs", "--group", "t052"]}
+        ],
+        "rolling": [
+          {"id": "t052-remote-authority", "argv": ["node", "tests/phase12/collaboration/remote-authority-identity-3619.test.mjs"]},
+          {"id": "t052-remote-integrity", "argv": ["node", "tests/phase12/collaboration/remote-integrity.test.mjs"]},
+          {"id": "t052-action-canonical", "argv": ["node", "tests/phase12/collaboration/action-canonical-3546.test.mjs"]},
+          {"id": "t052-pending-drain", "argv": ["node", "tests/phase12/collaboration/issues-5397-5399-5467-5497.test.mjs"]},
+          {"id": "t052-trust-boundary", "argv": ["node", "tests/phase12/adversarial/trust-boundaries.test.mjs"]},
+          {"id": "t052-facade", "argv": ["node", "tests/phase12/integration/facade.test.mjs"]}
+        ],
+        "shadow": [
+          {"id": "t052-independent-verifier", "argv": ["node", "tools/validation/final-closure/preflight.mjs", "--emit-shadow-evidence", "--task", "T052"]}
+        ]
+      },
+      "T053": {
+        "owned": [
+          {"id": "t053-owned-regressions", "argv": ["node", "tests/final-closure/run.mjs", "--group", "t053"]}
+        ],
+        "rolling": [
+          {"id": "t053-alias-completeness", "argv": ["node", "tests/phase7/alias/issue-c1-consolidated-regressions.test.mjs"]}
+        ],
+        "shadow": [
+          {"id": "t053-independent-verifier", "argv": ["node", "tools/validation/final-closure/preflight.mjs", "--emit-shadow-evidence", "--task", "T053"]}
+        ]
+      },
+      "T054": {
+        "owned": [
+          {"id": "t054-owned-regressions", "argv": ["node", "tests/final-closure/run.mjs", "--group", "t054"]}
+        ],
+        "rolling": [
+          {"id": "t054-debug-coverage", "argv": ["node", "tests/phase7/debug/partial-coverage-authority.test.mjs"]},
+          {"id": "t054-debug-response", "argv": ["node", "tests/phase7/debug/remote-response-schema-3603.test.mjs"]}
+        ],
+        "shadow": [
+          {"id": "t054-independent-verifier", "argv": ["node", "tools/validation/final-closure/preflight.mjs", "--emit-shadow-evidence", "--task", "T054"]}
+        ]
+      },
+      "T055": {
+        "owned": [
+          {"id": "t055-owned-regressions", "argv": ["node", "tests/final-closure/run.mjs", "--group", "t055"]}
+        ],
+        "rolling": [
+          {"id": "t055-type-bounds", "argv": ["node", "tests/phase7/types/constraint-graph-bounds.test.mjs"]},
+          {"id": "t055-type-graph", "argv": ["node", "tests/phase7/types/constraint-graph.test.mjs"]},
+          {"id": "t055-type-corpus", "argv": ["node", "tests/phase7/corpus/types.mjs"]}
+        ],
+        "shadow": [
+          {"id": "t055-independent-verifier", "argv": ["node", "tools/validation/final-closure/preflight.mjs", "--emit-shadow-evidence", "--task", "T055"]}
+        ]
+      },
+      "T056": {
+        "owned": [
+          {"id": "t056-owned-regressions", "argv": ["node", "tests/final-closure/run.mjs", "--group", "t056"]}
+        ],
+        "rolling": [
+          {"id": "t056-phase4-suite", "argv": ["npm", "run", "phase4:test"]}
+        ],
+        "shadow": [
+          {"id": "t056-independent-verifier", "argv": ["node", "tools/validation/final-closure/preflight.mjs", "--emit-shadow-evidence", "--task", "T056"]}
+        ]
+      },
+      "T057": {
+        "owned": [
+          {"id": "t057-owned-regressions", "argv": ["node", "tests/final-closure/run.mjs", "--group", "t057"]}
+        ],
+        "rolling": [
+          {"id": "t057-phase11-suite", "argv": ["npm", "run", "phase11:test"]}
+        ],
+        "shadow": [
+          {"id": "t057-independent-verifier", "argv": ["node", "tools/validation/final-closure/preflight.mjs", "--emit-shadow-evidence", "--task", "T057"]}
         ]
       }
     }
@@ -442,6 +530,15 @@
         "tools/validation/machine-effects/**",
         "tests/competitive/**",
         "tests/machine-effects/**",
+        "tests/phase5/effects/fp-simd/moves-fp.test.mjs",
+        "tests/phase5/effects/fp-simd/pandn.test.mjs",
+        "tests/phase5/effects/fp-simd/simd-integer.test.mjs",
+        "tests/phase5/effects/fp-simd/vector-state.test.mjs",
+        "tests/phase5/effects/int-control/control.test.mjs",
+        "tests/phase5/integration/p5i-shared-state.test.mjs",
+        "tests/phase6/effects/integer-reference.test.mjs",
+        "tests/phase6/generic-core/issues-889-897.test.mjs",
+        "tests/phase6/generic-core/issues-907-909-910-913.test.mjs",
         "js/semantics/effects/**",
         "js/targets/architecture/x86_64/effects/**",
         "js/semantics/compat/semantic-ir-v2-to-v1.js",
@@ -773,6 +870,8 @@
         "tools/validation/final-closure/shadow/foundation/**",
         "tests/final-closure/preflight.test.mjs",
         "tests/final-closure/run.mjs",
+        "tests/stage1/verifier-self-tests.test.mjs",
+        "tests/stage1/workflow-trigger-coverage.test.mjs",
         "package.json",
         "specs/005-analysis-final-closure/checklists/requirements.md",
         "specs/005-analysis-final-closure/contracts/closure-ledger.md",
@@ -791,7 +890,7 @@
       "forbiddenOverlap": [
         "all paths except the enumerated T046 governance paths, including .github/workflows/final-closure-preflight.yml, validator/test contracts, Spec Kit synchronization, the campaign PR, and pre-fanout evidence",
         "modification of the read-only tests/phase4/walking-skeleton.test.mjs production-chain gate",
-        "T011-T017 component feature implementation or component fanout before PREFLIGHT_GREEN",
+        "T011-T017/T051-T057 component feature implementation or component fanout before PREFLIGHT_GREEN",
         "component/final-closure-tNNN branches targeting anything except the current living integration branch or editing the cumulative integration inventory",
         "candidate merge or component promotion before PREFLIGHT_GREEN",
         "generated-output mutation",
@@ -821,7 +920,7 @@
       ],
       "forbiddenOverlap": [
         "all paths except tasks.md, stage-b-residual-coverage.md, task-ownership.json, and integration-inventory.json",
-        "T001-T050 ownership rows and the frozen initial candidate-gate rows are immutable; only contiguous T051+ task, owner, and gate rows may be appended",
+        "T001-T057 ownership rows and the frozen initial candidate-gate rows are immutable; only contiguous T058+ task, owner, and gate rows may be appended",
         "production/test/generated-output edits and Git ref/worktree mutation",
         "feature implementation before STAGE_B_FANOUT_GREEN",
         "forcing an uncovered residual into an unrelated task"
@@ -838,7 +937,7 @@
         "js/userscript/deployment-identity.generated.js"
       ],
       "forbiddenOverlap": [
-        "component production/test edits; defects return to T011-T017 owners",
+        "component production/test edits; defects return to T011-T017/T051-T057 owners",
         "generated-output commits by any owner other than SOL Ultra acting as living integration owner",
         "a second component merge before the prior exact checkpoint transaction is green",
         "manual generated hashes, stale handoff identities, or omitted cumulative inventory paths"
@@ -855,10 +954,98 @@
         "js/userscript/deployment-identity.generated.js"
       ],
       "forbiddenOverlap": [
-        "component production/test edits; defects return to T026-T036 or T051+ owners",
+        "component production/test edits; defects return to T026-T036 or T058+ owners",
         "generated-output commits by any owner other than SOL Ultra acting as living integration owner",
         "a second residual merge before the prior exact checkpoint transaction is green",
         "manual generated hashes, stale handoff identities, or omitted cumulative inventory paths"
+      ]
+    },
+    "T051": {
+      "allowedPaths": [
+        "js/ai/control/snapshot.js",
+        "tests/phase12/adversarial/issue-3664-ai-runtime-release-session.test.mjs",
+        "tests/phase12/adversarial/issue-6241-ai-snapshot-binary-identity.test.mjs",
+        "tests/final-closure/t051/**"
+      ],
+      "forbiddenOverlap": [
+        "all #6524 paths outside the explicit AI snapshot allowlist",
+        "weak textual binary identity promoted to strong authority",
+        "runtime-support or generated-output edits"
+      ]
+    },
+    "T052": {
+      "allowedPaths": [
+        "js/collaboration/index.js",
+        "tests/phase12/collaboration/remote-authority-identity-3619.test.mjs",
+        "tests/phase12/collaboration/remote-integrity.test.mjs",
+        "tests/phase12/adversarial/trust-boundaries.test.mjs",
+        "tests/phase12/integration/facade.test.mjs",
+        "tests/final-closure/t052/**"
+      ],
+      "forbiddenOverlap": [
+        "wholesale adoption of incomplete PR #6446 or unrelated collaboration files",
+        "operation-action allowlist relaxation or forgeable structural branding",
+        "remote-authority and generated-output edits without a separately proven boundary"
+      ]
+    },
+    "T053": {
+      "allowedPaths": [
+        "tests/phase7/alias/issue-c1-consolidated-regressions.test.mjs",
+        "tests/final-closure/t053/**"
+      ],
+      "forbiddenOverlap": [
+        "alias or points-to production-source changes",
+        "exact MustAlias/NoAlias without explicit complete authority",
+        "generated outputs"
+      ]
+    },
+    "T054": {
+      "allowedPaths": [
+        "tests/phase7/debug/partial-coverage-authority.test.mjs",
+        "tests/phase7/debug/remote-response-schema-3603.test.mjs",
+        "tests/final-closure/t054/**"
+      ],
+      "forbiddenOverlap": [
+        "debug/runtime production-source changes",
+        "message text or same-VA equality used as canonical authority",
+        "generated outputs"
+      ]
+    },
+    "T055": {
+      "allowedPaths": [
+        "js/analysis/types/graph.js",
+        "tests/phase7/types/constraint-graph-bounds.test.mjs",
+        "tests/phase7/types/constraint-graph.test.mjs",
+        "tests/phase7/corpus/types.mjs",
+        "tests/final-closure/t055/**"
+      ],
+      "forbiddenOverlap": [
+        "coercive numeric acceptance or soft-score suppression of hard contradictions",
+        "unrelated type-engine or corpus paths",
+        "generated outputs"
+      ]
+    },
+    "T056": {
+      "allowedPaths": [
+        "tests/phase4/foundation.test.mjs",
+        "tests/phase4/store/basic.test.mjs",
+        "tests/final-closure/t056/**"
+      ],
+      "forbiddenOverlap": [
+        "ByteSource, Mach-O cache, store, or scheduler production-source changes",
+        "reverting full retained-entry accounting to payload-only accounting",
+        "generated outputs"
+      ]
+    },
+    "T057": {
+      "allowedPaths": [
+        "tests/phase11/cil/cil-pipeline.test.mjs",
+        "tests/final-closure/t057/**"
+      ],
+      "forbiddenOverlap": [
+        "CIL parser, frontend, lifter, validator, or bridge production-source changes",
+        "missing return-shape authority promoted from partial to valid",
+        "generated outputs"
       ]
     }
   }

@@ -137,6 +137,19 @@ assert.equal(valid.integrationPathCount, integrationInventory.unionChangedPaths.
 assert.equal(valid.foundationOwnershipDigest, FROZEN_FOUNDATION_OWNERSHIP_DIGEST);
 assert.equal(computeFoundationOwnershipDigest(ownership), FROZEN_FOUNDATION_OWNERSHIP_DIGEST);
 assert.equal(EXPECTED_EP_IDS.length, 30);
+assert.deepEqual(
+  valid.checkpointResult.remainingComponentTaskIds,
+  [
+    'T011', 'T012', 'T013', 'T014', 'T015', 'T016', 'T017',
+    'T051', 'T052', 'T053', 'T054', 'T055', 'T056', 'T057',
+  ],
+  'T051-T057 are frozen Stage A components before any rolling checkpoint',
+);
+assert.deepEqual(
+  Object.keys(ownership.candidateGates.tasks.T051.shadow[0]).sort(),
+  ['argv', 'id'],
+  'a frozen T051 shadow gate must resolve central authority instead of carrying a dynamic inline contract',
+);
 
 const incompletePreMortem = preFanoutText.replace(/^\| EP-030 .*$/m, '');
 assertIncludes(
@@ -235,36 +248,40 @@ function passingShadowProviderResult(command, argv) {
   return { status: 0, stdout: `${JSON.stringify(shadowRawObservation(taskId, gateId))}\n` };
 }
 
-const extendedTasksText = `${tasksText}\n- [ ] T051 [CAMP] Dynamically materialized residual proof
+const extendedTasksText = `${tasksText}\n- [ ] T058 [CAMP] Dynamically materialized residual proof
   - **Contract** — Objective: prove dynamic task coverage. Current evidence: test fixture. Owner/model: SOL Ultra. Risk: MEDIUM. Dependencies: T048. Owned paths: evidence only. Delta: none. Negative counterexample: missing owner. Tests: focused. Integration test: preflight. Completion evidence: fixture. Status: PENDING.\n`;
 const extendedOwnership = structuredClone(ownership);
-extendedOwnership.tasks.T051 = {
+extendedOwnership.tasks.T058 = {
   allowedPaths: [
     'specs/005-analysis-final-closure/evidence/dynamic-residual.md',
-    'tests/final-closure/t051/**',
+    'tests/final-closure/t058/**',
   ],
   forbiddenOverlap: ['production, test, generated-output, and Git ref mutation'],
 };
-extendedOwnership.candidateGates.tasks.T051 = {
-  owned: [{ id: 't051-owned', argv: ['node', 'tests/final-closure/t051/owned.test.mjs'] }],
-  rolling: [{ id: 't051-rolling', argv: ['npm', 'run', 'phase8:test'] }],
-  shadow: [dynamicShadowGate('T051', 't051-shadow', 'tests/issue-914-stack-return-state.mjs')],
+extendedOwnership.candidateGates.tasks.T058 = {
+  owned: [{ id: 't058-owned', argv: ['node', 'tests/final-closure/t058/owned.test.mjs'] }],
+  rolling: [{ id: 't058-rolling', argv: ['npm', 'run', 'phase8:test'] }],
+  shadow: [dynamicShadowGate('T058', 't058-shadow', 'tests/issue-914-stack-return-state.mjs')],
 };
 const extended = validate({ tasksText: extendedTasksText, ownership: extendedOwnership });
 assert.equal(extended.ok, true, extended.errors.join('\n'));
-assert.equal(extended.taskIds.at(-1), 'T051', 'T048 may append a fully contracted T051+ task without weakening T001-T050 ownership');
+assert.equal(extended.taskIds.at(-1), 'T058', 'T048 may append a fully contracted T058+ task without weakening T001-T057 ownership');
+assert.ok(
+  Object.hasOwn(extendedOwnership.candidateGates.tasks.T058.shadow[0], 'contract'),
+  'T058+ is the first dynamic range and must carry a pinned inline shadow contract',
+);
 const inactiveDynamicOwnership = structuredClone(extendedOwnership);
-inactiveDynamicOwnership.candidateGates.tasks.T051.shadow = [
-  dynamicShadowGate('T051', 't051-shadow', 'tests/issue-914-stack-return-state.mjs', true),
+inactiveDynamicOwnership.candidateGates.tasks.T058.shadow = [
+  dynamicShadowGate('T058', 't058-shadow', 'tests/issue-914-stack-return-state.mjs', true),
 ];
 assertIncludes(
   validate({ tasksText: extendedTasksText, ownership: inactiveDynamicOwnership }).errors,
-  'candidate-shadow-contract-activation-required:T051',
-  'a T051+ row with no activated integration-owned semantic contract fails closed',
+  'candidate-shadow-contract-activation-required:T058',
+  'a T058+ row with no activated integration-owned semantic contract fails closed',
 );
 assertIncludes(
   validate({
-    tasksText: rewriteDependencies(extendedTasksText, 'T051', 'T046'),
+    tasksText: rewriteDependencies(extendedTasksText, 'T058', 'T046'),
     ownership: extendedOwnership,
   }).errors,
   'tasks-dynamic-t048-dependency-missing',
@@ -428,8 +445,11 @@ assertIncludes(
   'an unactivated task-specific contract must block admission',
 );
 const unmappedShadowContracts = structuredClone(shadowContracts);
-unmappedShadowContracts.contracts[shadowRegistry.tasks.T017.contractId]
-  .cases[0].failureCounterIds = ['semanticMismatch'];
+for (const contract of Object.values(unmappedShadowContracts.contracts)) {
+  for (const row of contract.cases) {
+    row.failureCounterIds = row.failureCounterIds.filter((id) => id !== 'falseExactIndirectTarget');
+  }
+}
 assertIncludes(
   validate({
     shadowAuthority: {
@@ -468,10 +488,10 @@ for (const side of ['oracle', 'product']) {
   assert.equal(/verdict|hash|counter/i.test(child.stdout), false, 'providers emit raw observations only');
 }
 const tamperedDynamicPin = structuredClone(extendedOwnership);
-tamperedDynamicPin.candidateGates.tasks.T051.shadow[0].contract.cases[0].projection.timeoutMs += 1;
+tamperedDynamicPin.candidateGates.tasks.T058.shadow[0].contract.cases[0].projection.timeoutMs += 1;
 assertIncludes(
   validate({ tasksText: extendedTasksText, ownership: tamperedDynamicPin }).errors,
-  'candidate-shadow-dynamic-pin-invalid:T051',
+  'candidate-shadow-dynamic-pin-invalid:T058',
   'a dynamic contract cannot change without its integration-owned content pin changing',
 );
 const injectedCandidateGate = structuredClone(ownership);
@@ -521,7 +541,7 @@ rewrittenFoundationOwner.tasks.T011.allowedPaths.push('js/decompiler/foundation-
 assertIncludes(
   validate({ ownership: rewrittenFoundationOwner }).errors,
   'ownership-foundation-digest-mismatch',
-  'later campaign tasks cannot rewrite an existing T001-T050 ownership row',
+  'later campaign tasks cannot rewrite an existing T001-T057 ownership row',
 );
 
 for (const invalidPattern of ['**', 'js/decompiler/**/semantic.js', 'js/decompiler/*']) {
@@ -559,21 +579,21 @@ assert.equal(
   'the explicit T009 dependency on T010 must authorize their ordered path reuse',
 );
 
-const dynamicPairTasksText = `${extendedTasksText}- [ ] T052 [US3] Dynamically materialized sibling implementation
+const dynamicPairTasksText = `${extendedTasksText}- [ ] T059 [US3] Dynamically materialized sibling implementation
   - **Contract** — Objective: prove future overlap coverage. Current evidence: test fixture. Owner/model: Sol. Risk: HIGH. Dependencies: T048. Owned paths: implementation fixture. Delta: none. Negative counterexample: sibling overlap. Tests: focused. Integration test: preflight. Completion evidence: fixture. Status: PENDING.\n`;
 const dynamicOverlapOwnership = structuredClone(extendedOwnership);
-dynamicOverlapOwnership.tasks.T051.allowedPaths = [
+dynamicOverlapOwnership.tasks.T058.allowedPaths = [
   'js/decompiler/future-shared.js',
-  'tests/final-closure/t051/**',
+  'tests/final-closure/t058/**',
 ];
-dynamicOverlapOwnership.tasks.T052 = {
-  allowedPaths: ['js/decompiler/future-shared.js', 'tests/final-closure/t052/**'],
+dynamicOverlapOwnership.tasks.T059 = {
+  allowedPaths: ['js/decompiler/future-shared.js', 'tests/final-closure/t059/**'],
   forbiddenOverlap: ['all sibling implementation lanes'],
 };
-dynamicOverlapOwnership.candidateGates.tasks.T052 = {
-  owned: [{ id: 't052-owned', argv: ['node', 'tests/final-closure/t052/owned.test.mjs'] }],
-  rolling: [{ id: 't052-rolling', argv: ['npm', 'run', 'phase8:test'] }],
-  shadow: [dynamicShadowGate('T052', 't052-shadow', 'tests/issue-429-exception-state.mjs')],
+dynamicOverlapOwnership.candidateGates.tasks.T059 = {
+  owned: [{ id: 't059-owned', argv: ['node', 'tests/final-closure/t059/owned.test.mjs'] }],
+  rolling: [{ id: 't059-rolling', argv: ['npm', 'run', 'phase8:test'] }],
+  shadow: [dynamicShadowGate('T059', 't059-shadow', 'tests/issue-429-exception-state.mjs')],
 };
 assertIncludes(
   validate({ tasksText: dynamicPairTasksText, ownership: dynamicOverlapOwnership }).errors,
@@ -1189,27 +1209,27 @@ function evidenceBlock(name, value) {
   dynamicCoverage.findings.find((row) => row.findingId === 'HEX-C1-01').durableDisposition = null;
   dynamicCoverage.source.matrixSha256 = createHash('sha256').update(dynamicMatrixText).digest('hex');
   dynamicCoverage.tasks.push({
-    taskId: 'T051',
+    taskId: 'T058',
     findingId: 'HEX-C1-01',
     implementationAction: 'IMPLEMENT',
   });
-  const dynamicTasksText = `${coverageTasksText}\n- [ ] T051 dynamic fixture\n  - **Contract** — Objective: fixture. Status: PENDING.\n`;
+  const dynamicTasksText = `${coverageTasksText}\n- [ ] T058 dynamic fixture\n  - **Contract** — Objective: fixture. Status: PENDING.\n`;
   const dynamicResult = validateCoverage({
     coverage: dynamicCoverage,
     fixtureTasksText: dynamicTasksText,
-    taskIds: [...EXPECTED_TASK_IDS, 'T051'],
+    taskIds: [...EXPECTED_TASK_IDS, 'T058'],
     matrixText: dynamicMatrixText,
   });
   assert.deepEqual(dynamicResult.errors, []);
-  assert.ok(dynamicResult.result.implementationTaskIds.includes('T051'));
+  assert.ok(dynamicResult.result.implementationTaskIds.includes('T058'));
 
   const duplicateOwnerCoverage = structuredClone(dynamicCoverage);
-  duplicateOwnerCoverage.tasks.find((row) => row.taskId === 'T051').findingId = 'HEX-C0-01';
+  duplicateOwnerCoverage.tasks.find((row) => row.taskId === 'T058').findingId = 'HEX-C0-01';
   assertIncludes(
     validateCoverage({
       coverage: duplicateOwnerCoverage,
       fixtureTasksText: dynamicTasksText,
-      taskIds: [...EXPECTED_TASK_IDS, 'T051'],
+      taskIds: [...EXPECTED_TASK_IDS, 'T058'],
       matrixText: dynamicMatrixText,
     }).errors,
     'stage-b-residual-coverage-finding-owner-duplicate',
@@ -1218,18 +1238,18 @@ function evidenceBlock(name, value) {
 
   const superfluousDynamicCoverage = structuredClone(terminalCoverage);
   superfluousDynamicCoverage.tasks.push({
-    taskId: 'T051',
+    taskId: 'T058',
     findingId: 'HEX-C1-01',
     implementationAction: 'NO_EDIT',
   });
   assertIncludes(
     validateCoverage({
       coverage: superfluousDynamicCoverage,
-      fixtureTasksText: rewriteTaskStatus(dynamicTasksText, 'T051', 'DONE'),
-      taskIds: [...EXPECTED_TASK_IDS, 'T051'],
+      fixtureTasksText: rewriteTaskStatus(dynamicTasksText, 'T058', 'DONE'),
+      taskIds: [...EXPECTED_TASK_IDS, 'T058'],
     }).errors,
     'stage-b-residual-coverage-superfluous-dynamic-no-edit',
-    'T048 cannot append a needless T051+ task for an already-terminal finding',
+    'T048 cannot append a needless T058+ task for an already-terminal finding',
   );
 
   const decoyT048Text = rewriteTaskBlock(tasksText, 'T048', (block) => block.replace(
@@ -1676,6 +1696,7 @@ function exerciseCheckpointRegressions() {
     assert.equal(valid.checkpointResult.checkpoint.sequence, 2);
     assert.deepEqual(valid.checkpointResult.remainingComponentTaskIds, [
       'T013', 'T014', 'T015', 'T016', 'T017',
+      'T051', 'T052', 'T053', 'T054', 'T055', 'T056', 'T057',
     ]);
     assert.deepEqual(
       secondComponent.ledger.checkpoints[1].rollingProductGates.taskIds,
@@ -2215,6 +2236,7 @@ function exerciseCheckpointRegressions() {
 
   const completeStage = createRollingCheckpointFixture([
     'T011', 'T012', 'T013', 'T014', 'T015', 'T016', 'T017',
+    'T051', 'T052', 'T053', 'T054', 'T055', 'T056', 'T057',
   ]);
   try {
     const terminalInventory = structuredClone(completeStage.inventory);

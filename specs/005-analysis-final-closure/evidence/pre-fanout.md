@@ -23,7 +23,7 @@ head and current `origin/main` base.
 The verifier fails closed on a dirty tree, moved head, advanced base, missing
 ancestry, a non-identical merge tree, changed paths outside the exact inventory
 or owner allowlist, mutable action dependencies, and any drift in the frozen H9
-denominator. Component tasks T011–T017 remain blocked while this file has any
+denominator. Component tasks T011–T017/T051–T057 remain blocked while this file has any
 pending row.
 
 ## Original workspace preservation lock

@@ -72,8 +72,8 @@ applicable `forbiddenOverlap` rule is violated. Sequential reuse of a path is al
 dependency owner has completed and handed off the exact tree identity.
 
 The same ownership contract contains the candidate-gate registry. Every frozen
-implementation component (`T011`–`T017`, `T026`–`T036`, and `T045`) and every
-applicable T051+ task has nonempty `owned`, `rolling`, and `shadow` command
+implementation component (`T011`–`T017`, `T051`–`T057`, `T026`–`T036`, and `T045`) and every
+applicable T058+ task has nonempty `owned`, `rolling`, and `shadow` command
 arrays. Commands are structured argv and execute directly without a shell on
 the detached synthetic candidate merge commit. The governing registry is read
 from the exact living-integration parent so a component cannot approve a weaker

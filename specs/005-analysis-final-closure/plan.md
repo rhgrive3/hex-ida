@@ -389,7 +389,7 @@ failing command and `HEX_TEST_OUTPUT=verbose` when supported.
   registry. Every applicable component has nonempty `owned`, `rolling`, and
   `shadow` argv arrays; the workflow executes them directly without a shell on
   the detached exact synthetic candidate merge commit. T048 may append only
-  fully contracted T051+ rows.
+  fully contracted T058+ rows.
 - `contracts/integration-inventory.json` MUST validate the exact actual
   base-to-candidate path set. Its expected, actual, union, and entry path sets
   are duplicate-free and exactly equal, and each actual path must be allowed by

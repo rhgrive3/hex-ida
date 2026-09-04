@@ -33,8 +33,14 @@ for (const trigger of requiredTriggers) {
   assert.ok(content.includes(trigger), `Workflow missing path trigger: ${trigger}`);
 }
 
-assert.ok(content.includes('candidate-merge-tree:'), 'Workflow missing candidate-merge-tree job');
-assert.ok(content.includes('head:'), 'Workflow missing head job');
+assert.ok(content.includes('pr-proof:'), 'Workflow missing combined PR proof job');
+assert.ok(content.includes('name: head-and-candidate-merge-tree'), 'Workflow missing stable dual-proof name');
+assert.ok(content.includes('ref: ${{ github.event.pull_request.head.sha }}'), 'Workflow missing exact PR-head checkout');
+assert.ok(content.includes('ref: ${{ github.sha }}'), 'Workflow missing exact candidate-merge checkout');
+assert.ok(content.includes('id: head_verify'), 'Workflow missing head verification outcome');
+assert.ok(content.includes('id: merge_verify'), 'Workflow missing merge-tree verification outcome');
+assert.ok(content.includes('HEAD_VERIFY: ${{ steps.head_verify.outcome }}'), 'Workflow aggregate omits head proof');
+assert.ok(content.includes('MERGE_VERIFY: ${{ steps.merge_verify.outcome }}'), 'Workflow aggregate omits merge-tree proof');
 
 // The Stage 1 completion branch is the aggregate integration lane. Component
 // ownership/release jobs must not run their own whole-diff ownership checks on

@@ -135,8 +135,8 @@ and blocks component admission; there is no static fallback after T048.
 
 `contracts/task-ownership.json#/candidateGates` is the integration-base
 authority for component validation. Every implementation component in the
-frozen set `T011`–`T017`, `T026`–`T036`, and `T045`, plus every applicable
-dynamic `T051+` task, has three nonempty gate arrays:
+frozen set `T011`–`T017`, `T051`–`T057`, `T026`–`T036`, and `T045`, plus every applicable
+dynamic `T058+` task, has three nonempty gate arrays:
 
 | Kind | Rule |
 |---|---|
@@ -149,7 +149,7 @@ a nonempty string array executed directly without a shell. Only allowlisted
 repository-relative Node entry points and declared `npm run` scripts are valid;
 redirection, interpolation, command separators, parent traversal, and implicit
 globs are rejected. The frozen initial-task registry has its own stable digest,
-while T048 may append fully contracted T051+ entries without rewriting that
+while T048 may append fully contracted T058+ entries without rewriting that
 initial digest. A component cannot edit its governing registry: the runner reads
 it from the exact living-integration parent, verifies the synthetic candidate
 parents/tree, then executes all three categories on that detached candidate.
@@ -201,8 +201,8 @@ manifest). `E_i` is the historical commit containing this row and MUST NOT be
 serialized inside itself. The verifier derives `E_i` from the row's checkpoint
 path and exact ancestry; the next row's `I_i` fixes the preceding `E_(i-1)`.
 The former single `integrationProduct` field is forbidden because it can conflate
-`M_i` and `G_i`. Stage A accepts only T011–T017 with T049-owned evidence; Stage B
-accepts T026–T036, T045, or materialized T051+ residuals with T050-owned evidence.
+`M_i` and `G_i`. Stage A accepts only T011–T017/T051–T057 with T049-owned evidence; Stage B
+accepts T026–T036, T045, or materialized T058+ residuals with T050-owned evidence.
 A later component is rejected until the immediately prior `E_i` is complete,
 identity-consistent, green, and is either the next `I` directly or the verified
 first parent of its exact moving-main reconciliation commit.

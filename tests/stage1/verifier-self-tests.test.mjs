@@ -150,9 +150,26 @@ const completeScorecard = await generateCompetitiveScorecard({ profile: competit
 {
   const workflowPath = path.join(ROOT, '.github/workflows/stage1-release-validation.yml');
   const workflowContent = fs.readFileSync(workflowPath, 'utf8');
-  assert.ok(
-    workflowContent.includes('candidate-merge-tree:'),
-    'Stage 1 workflow must contain candidate-merge-tree job'
+  const assertDualProofWorkflow = (content) => {
+    assert.ok(content.includes('pr-proof:'), 'Stage 1 workflow must define the combined PR proof job');
+    assert.ok(content.includes('name: head-and-candidate-merge-tree'), 'combined proof job must retain its stable semantic name');
+    assert.ok(content.includes('ref: ${{ github.event.pull_request.head.sha }}'), 'head proof must checkout the exact PR head');
+    assert.ok(content.includes('ref: ${{ github.sha }}'), 'merge proof must checkout the exact candidate merge SHA');
+    assert.ok(content.includes('id: head_verify'), 'head verifier outcome must be recorded');
+    assert.ok(content.includes('id: merge_verify'), 'merge-tree verifier outcome must be recorded');
+    assert.ok(content.includes('HEAD_VERIFY: ${{ steps.head_verify.outcome }}'), 'aggregate proof must consume the head verdict');
+    assert.ok(content.includes('MERGE_VERIFY: ${{ steps.merge_verify.outcome }}'), 'aggregate proof must consume the merge-tree verdict');
+  };
+  assertDualProofWorkflow(workflowContent);
+  assert.throws(
+    () => assertDualProofWorkflow(workflowContent.replace('id: merge_verify', 'id: removed_merge_verify')),
+    /merge-tree verifier outcome must be recorded/,
+    'dropping the independent merge-tree verdict must fail closed',
+  );
+  assert.throws(
+    () => assertDualProofWorkflow(workflowContent.replaceAll('ref: ${{ github.sha }}', 'ref: ${{ github.event.pull_request.head.sha }}')),
+    /merge proof must checkout the exact candidate merge SHA/,
+    'reusing the head identity as merge-tree proof must fail closed',
   );
   assert.ok(
     workflowContent.includes('js/analysis/alias/**'),

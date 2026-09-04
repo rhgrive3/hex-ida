@@ -88,16 +88,19 @@ const STAGE_B_INITIAL_INVENTORY_PATHS = Object.freeze([
 const RECOVERY_HANDOFF_CANONICAL_REMOTE_REF = 'refs/remotes/origin/wip/recovery-handoff-20260904';
 const RECOVERY_HANDOFF_SCRATCH_REMOTE_REF = 'refs/remotes/origin/__final_closure_recovery_handoff';
 const RECOVERY_HANDOFF_FETCH_REF = 'refs/heads/wip/recovery-handoff-20260904';
-const FOUNDATION_TASK_COUNT = 50;
+const FOUNDATION_TASK_COUNT = 57;
 const EXPECTED_WORKFLOW_SHA256 = 'c97e38e552f5b10bb2c7967697950cf7f4e2a93d0029ac47e790e43435c506d4';
-const INITIAL_COMPONENT_TASK_IDS = Object.freeze([
+const STAGE_A_COMPONENT_TASK_IDS = Object.freeze([
   'T011', 'T012', 'T013', 'T014', 'T015', 'T016', 'T017',
-  'T026', 'T027', 'T028', 'T029', 'T030', 'T031', 'T032', 'T033', 'T034', 'T035', 'T036',
-  'T045',
+  'T051', 'T052', 'T053', 'T054', 'T055', 'T056', 'T057',
 ]);
 const STAGE_B_FOUNDATION_COMPONENT_TASK_IDS = Object.freeze([
   'T026', 'T027', 'T028', 'T029', 'T030', 'T031',
   'T032', 'T033', 'T034', 'T035', 'T036', 'T045',
+]);
+const INITIAL_COMPONENT_TASK_IDS = Object.freeze([
+  ...STAGE_A_COMPONENT_TASK_IDS,
+  ...STAGE_B_FOUNDATION_COMPONENT_TASK_IDS,
 ]);
 export const STAGE_B_ROADMAP_IDS = Object.freeze([
   'HEX-C0-01', 'HEX-C1-01', 'HEX-C1-02', 'HEX-C1-03',
@@ -126,7 +129,7 @@ const STAGE_B_ROADMAP_STATUSES = Object.freeze([
 const STAGE_B_IMPLEMENTATION_ACTIONS = Object.freeze([
   'IMPLEMENT', 'NO_EDIT', 'NO_EDIT_EXTERNAL_BLOCK', 'RECONCILE_OWNER',
 ]);
-export const FROZEN_INITIAL_CANDIDATE_GATE_DIGEST = 'b59ca991fe4ea6c3ee31b5d9bdd3c9da';
+export const FROZEN_INITIAL_CANDIDATE_GATE_DIGEST = '62a32151412615f01552557f76c9c60b';
 
 export const EXPECTED_TASK_IDS = Object.freeze(
   Array.from({ length: FOUNDATION_TASK_COUNT }, (_, index) => `T${String(index + 1).padStart(3, '0')}`),
@@ -201,7 +204,7 @@ export const FROZEN_PERFORMANCE_IDENTITIES = Object.freeze({
   sources: '750b59ecc3d34d6d54e691d8f2396dde',
 });
 
-export const FROZEN_FOUNDATION_OWNERSHIP_DIGEST = 'c9d9b506bed51ced06476323bbc0bd1e';
+export const FROZEN_FOUNDATION_OWNERSHIP_DIGEST = '75fc4e2afc6661ff16e8b9ef807fcfb8';
 
 const REQUIRED_TASK_FIELDS = Object.freeze([
   'Objective:',
@@ -449,7 +452,7 @@ function dependencyErrors(blocks, taskIds) {
     state.set(taskId, 'done');
   };
   for (const taskId of taskIds) visit(taskId);
-  for (const taskId of taskIds.filter((candidate) => Number(candidate.slice(1)) >= 51)) {
+  for (const taskId of taskIds.filter((candidate) => Number(candidate.slice(1)) > FOUNDATION_TASK_COUNT)) {
     if (!transitivelyDepends(taskId, 'T048', dependencies)) {
       errors.push(`tasks-dynamic-t048-dependency-missing:${taskId}`);
     }
@@ -1059,7 +1062,7 @@ export function validateStageBApplicability({
 
   const componentTaskIds = taskIds.filter((taskId) => {
     const number = Number(taskId.slice(1));
-    return STAGE_B_FOUNDATION_COMPONENT_TASK_IDS.includes(taskId) || number >= 51;
+    return STAGE_B_FOUNDATION_COMPONENT_TASK_IDS.includes(taskId) || number > FOUNDATION_TASK_COUNT;
   });
   const tasks = Array.isArray(coverage.tasks) ? coverage.tasks : [];
   const coverageTaskIds = tasks.map((row) => row?.taskId);
@@ -1092,7 +1095,7 @@ export function validateStageBApplicability({
       actionsByTask.set(row.taskId, row.implementationAction);
       continue;
     }
-    if (Number(row.taskId.slice(1)) >= 51 && row.implementationAction === 'NO_EDIT') {
+    if (Number(row.taskId.slice(1)) > FOUNDATION_TASK_COUNT && row.implementationAction === 'NO_EDIT') {
       errors.push(`stage-b-residual-coverage-superfluous-dynamic-no-edit:${row.taskId}`);
     }
     if (!STAGE_B_ROADMAP_IDS.includes(row.findingId)) {
@@ -1362,10 +1365,7 @@ function validateStageBEvidence({
 
 function stageComponentTaskIds(campaignStage, taskIds, stageBApplicability = null) {
   if (campaignStage === 'STAGE_A') {
-    return taskIds.filter((taskId) => {
-      const number = Number(taskId.slice(1));
-      return number >= 11 && number <= 17;
-    });
+    return taskIds.filter((taskId) => STAGE_A_COMPONENT_TASK_IDS.includes(taskId));
   }
   if (campaignStage === 'STAGE_B') {
     if (stageBApplicability?.required === true) {
@@ -1375,7 +1375,7 @@ function stageComponentTaskIds(campaignStage, taskIds, stageBApplicability = nul
     }
     return taskIds.filter((taskId) => {
       const number = Number(taskId.slice(1));
-      return (number >= 26 && number <= 36) || number === 45 || number >= 51;
+      return (number >= 26 && number <= 36) || number === 45 || number > FOUNDATION_TASK_COUNT;
     });
   }
   return [];
@@ -1955,7 +1955,7 @@ function validateCandidateGateRegistry({ ownership, taskIds, packageJson, shadow
     errors.push('candidate-gate-registry-schema-invalid');
     return Object.freeze({ registry, initialDigest: null, componentTaskIds: [] });
   }
-  const dynamicTaskIds = taskIds.filter((taskId) => Number(taskId.slice(1)) >= 51);
+  const dynamicTaskIds = taskIds.filter((taskId) => Number(taskId.slice(1)) > FOUNDATION_TASK_COUNT);
   const componentTaskIds = [...INITIAL_COMPONENT_TASK_IDS, ...dynamicTaskIds];
   const shadowPolicy = registry?.shadowEvidence;
   validateShadowAuthorityDefinition({
@@ -2143,7 +2143,7 @@ export function validatePreflightContracts({
     errors,
   });
 
-  for (const taskId of ['T011', 'T012', 'T013', 'T014', 'T015', 'T016', 'T017']) {
+  for (const taskId of STAGE_A_COMPONENT_TASK_IDS) {
     const block = blocks.find((candidate) => new RegExp(`^- \\[[ x]\\] ${taskId}\\b`).test(candidate)) || '';
     if (!/Dependencies:[^.]*T046/.test(block)) errors.push(`prefanout-dependency-missing:${taskId}:T046`);
   }
@@ -2735,7 +2735,7 @@ function shadowEvidenceContract(ownership, taskId, gate, { blobEvidence, readJso
     || Array.isArray(contractsDocument.contracts)) {
     throw new Error('checkpoint-shadow-contracts-invalid');
   }
-  const dynamic = Number(taskId.slice(1)) >= 51;
+  const dynamic = Number(taskId.slice(1)) > FOUNDATION_TASK_COUNT;
   let contract;
   let contractId;
   if (dynamic) {

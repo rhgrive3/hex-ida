@@ -32,7 +32,7 @@ original workspace's untracked `transcripts/`.
 2. Before any Stage A component implementation, require T046 `PREFLIGHT_GREEN`:
    living PR, exact-SHA verifier, ownership regression, production walking
    skeleton, target proof, reconciliation owner, and invalidation evidence.
-3. For each T011–T017 component, target the living integration branch from a
+3. For each T011–T017/T051–T057 component, target the living integration branch from a
    `component/final-closure-tNNN-*` branch/worktree. The integration owner
    must test the exact component candidate merge tree before accepting it. T049
    requires the integration-base candidate-gate registry and executes every
