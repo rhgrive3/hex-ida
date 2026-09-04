@@ -5,8 +5,9 @@
  * canonicalIdentity() encoded both as `o{}` and an approved proposal passed
  * its stale-state guard against a completely different current state.
  *
- * Policy: RegExp gets explicit domain separation (source + flags); every other
- * non-plain object fails closed instead of being silently plain-objectified.
+ * Policy: RegExp gets explicit domain separation (source + flags + lastIndex);
+ * every other non-plain object fails closed instead of being silently
+ * plain-objectified.
  */
 import assert from 'node:assert/strict';
 import { EvidenceStore } from '../js/ai/evidence.js';
@@ -41,12 +42,22 @@ async function assertStale(before, currentState, label) {
 await assertStale(/alpha/g, /beta/i, 'RegExp source change');
 await assertStale(/alpha/g, /alpha/i, 'RegExp flags change');
 await assertStale({ pattern: /alpha/g }, { pattern: /beta/i }, 'nested RegExp source change');
+{
+  const before = /alpha/g;
+  const current = /alpha/g;
+  current.lastIndex = 3;
+  await assertStale(before, current, 'RegExp lastIndex change');
+}
 
 /* 2. identical RegExp state still applies (stable, deterministic match) */
 {
-  const { store, proposal, approvalToken } = proposalFor(/alpha/g);
+  const before = /alpha/g;
+  before.lastIndex = 2;
+  const current = /alpha/g;
+  current.lastIndex = 2;
+  const { store, proposal, approvalToken } = proposalFor(before);
   let applied = false;
-  await store.apply(proposal.id, { approvalToken, currentState: /alpha/g, apply: async () => { applied = true; } });
+  await store.apply(proposal.id, { approvalToken, currentState: current, apply: async () => { applied = true; } });
   assert.ok(applied, 'identical RegExp state must still apply');
   assert.equal(store.get(proposal.id).status, 'applied');
 }
@@ -61,7 +72,7 @@ await assertStale({ pattern: /alpha/g }, { pattern: /beta/i }, 'nested RegExp so
   assert.notEqual(a.revision, c.revision, 'RegExp must not fingerprint like its source string');
 }
 
-/* 4. unsupported non-plain objects fail closed instead of silently encoding */
+/* 4. unsupported non-plain objects and array subclasses fail closed */
 {
   class Custom { constructor() { this.value = 1; } }
   assert.throws(
@@ -74,6 +85,14 @@ await assertStale({ pattern: /alpha/g }, { pattern: /beta/i }, 'nested RegExp so
     () => storeWith().create({ kind: 'rename', target: {}, before: new String('secret'), after: 'x', evidenceIds: ['ev_6250'] }),
     /non-plain/,
     'boxed primitives must be rejected, never plain-objectified',
+  );
+  class TaggedArray extends Array {}
+  const tagged = new TaggedArray('value');
+  tagged.tag = 'hidden-authority';
+  assert.throws(
+    () => storeWith().create({ kind: 'rename', target: {}, before: tagged, after: 'x', evidenceIds: ['ev_6250'] }),
+    /non-plain/,
+    'array subclasses must be rejected instead of being fingerprinted as ordinary arrays',
   );
 }
 
