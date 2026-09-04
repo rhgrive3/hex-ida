@@ -33,14 +33,19 @@ function activeArchitecture(app) {
     || architectureEvidence(detail.cpu)
     || 'unknown';
 }
+function canonicalSliceUuid(value) {
+  if (value == null) return null;
+  if (typeof value !== 'string' || value.trim() === '') throw new TypeError('runtime-slice-uuid-invalid');
+  return value;
+}
 function activeSliceIdentity(app) {
   const info=currentFileToken(app);
   const index=strictSliceIndex(app?.store?.get?.('sliceIndex'));
   const slice=index>=0 ? info?.slices?.[index] : null;
   const detail=slice?.info || {};
   const arch=activeArchitecture(app);
-  const uuid=detail.uuid || null;
-  return `slice:${index}:${uuid || '-'}:${arch}`;
+  const uuid=canonicalSliceUuid(detail.uuid);
+  return `slice:${index}:${uuid ?? '-'}:${arch}`;
 }
 function localSandboxSupportsArchitecture(architecture) {
   if (typeof architecture !== 'string') return false;

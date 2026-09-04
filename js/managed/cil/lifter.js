@@ -11,6 +11,17 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}) {
   const methodId = createManagedMethodId(cilImage.moduleId, `0x0600000${(bodyIndex + 1).toString(16)}`);
   const bytecode = methodBody.bytecode;
   const view = new DataView(bytecode.buffer, bytecode.byteOffset, bytecode.byteLength);
+  // IL stream base for provenance ranges. The parser records the code start
+  // separately from the method header; bodies built before that field fall
+  // back to the header for compatibility (#5396).
+  const codeBase = methodBody.codeOffset ?? methodBody.headerOffset;
+
+  // Operand reads must stay inside the method bytecode. A truncated operand
+  // fails closed with a typed error instead of lifting an index-less exact
+  // effect or leaking a raw RangeError (#5350).
+  const need = (count) => {
+    if (pc + count > bytecode.length) fail('cil-truncated-operand');
+  };
 
   let pc = 0;
   let opSeq = 0;
@@ -22,8 +33,18 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}) {
     startOffset: cl.tryOffset,
     endOffset: cl.tryOffset + cl.tryLength,
     handlerOffset: cl.handlerOffset,
+    handlerLength: cl.handlerLength,
+    handlerEndOffset: cl.handlerOffset + cl.handlerLength,
     handlerKind: cl.kind,
-    catchToken: cl.classTokenOrFilter,
+    // The trailing union field is the filter-code offset for filter clauses
+    // and a class token only for catch clauses (ECMA-335 §II.25.4.6): mapping
+    // it blindly to catchToken mislabels IL offsets and loses the filter
+    // start (#5356).
+    ...(cl.kind === 'filter'
+      ? { filterOffset: cl.classTokenOrFilter }
+      : cl.kind === 'catch'
+        ? { catchToken: cl.classTokenOrFilter }
+        : {}),
   }));
 
   while (pc < bytecode.length) {
@@ -34,6 +55,7 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}) {
     let isPrefixFE = false;
     if (opcode === 0xfe) {
       isPrefixFE = true;
+      need(1);
       opcode = (0xfe << 8) | bytecode[pc++];
     }
 
@@ -95,6 +117,7 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}) {
 
         case 0x0e: // ldarg.s
           {
+            need(1);
             const argIdx = bytecode[pc++];
             mnemonic = 'ldarg.s';
             locationReads.push({ kind: 'argument', index: argIdx, bits: 32 });
@@ -105,6 +128,7 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}) {
 
         case 0x11: // ldloc.s
           {
+            need(1);
             const locIdx = bytecode[pc++];
             mnemonic = 'ldloc.s';
             locationReads.push({ kind: 'local', index: locIdx, bits: 32 });
@@ -115,10 +139,11 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}) {
 
         case 0x13: // stloc.s
           {
+            need(1);
             const locIdx = bytecode[pc++];
             mnemonic = 'stloc.s';
             locationWrites.push({ kind: 'local', index: locIdx, bits: 32 });
-            consumedValues.push({ id: `stack_top` });
+            consumedValues.push({ id: 'top' });
             currentStackHeight--;
           }
           break;
@@ -141,6 +166,7 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}) {
 
         case 0x1f: // ldc.i4.s
           {
+            need(1);
             let val = bytecode[pc++];
             if (val >= 128) val -= 256;
             mnemonic = 'ldc.i4.s';
@@ -151,6 +177,7 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}) {
 
         case 0x20: // ldc.i4
           {
+            need(4);
             const val = view.getInt32(pc, true);
             pc += 4;
             mnemonic = 'ldc.i4';
@@ -161,6 +188,7 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}) {
 
         case 0x21: // ldc.i8
           {
+            need(8);
             const val = view.getBigInt64(pc, true);
             pc += 8;
             mnemonic = 'ldc.i8';
@@ -186,6 +214,7 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}) {
         case 0x6f: // callvirt
         case 0x73: // newobj
           {
+            need(4);
             const token = view.getUint32(pc, true);
             pc += 4;
             const kind = opcode === 0x28 ? 'call' : opcode === 0x6f ? 'callvirt' : 'newobj';
@@ -212,6 +241,7 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}) {
         case 0x2b: case 0x2c: case 0x2d: case 0x2e: case 0x2f: case 0x30: case 0x31: case 0x32: case 0x33:
         case 0x34: case 0x35: case 0x36: case 0x37:
           {
+            need(1);
             let offset = bytecode[pc++];
             if (offset >= 128) offset -= 256;
             const targetOffset = pc + offset;
@@ -242,6 +272,7 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}) {
         case 0x38: case 0x39: case 0x3a: case 0x3b: case 0x3c: case 0x3d: case 0x3e: case 0x3f: case 0x40:
         case 0x41: case 0x42: case 0x43: case 0x44:
           {
+            need(4);
             const offset = view.getInt32(pc, true);
             pc += 4;
             const targetOffset = pc + offset;
@@ -263,6 +294,25 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}) {
               currentStackHeight -= 2;
               controlEffects.push({ kind: 'conditional-branch', targetOffset });
             }
+          }
+          break;
+
+        case 0x45: // switch
+          {
+            need(4);
+            const count = view.getUint32(pc, true);
+            pc += 4;
+            if (count > Math.floor((bytecode.length - pc) / 4)) fail('cil-truncated-operand');
+            const deltas = [];
+            for (let index = 0; index < count; index++) {
+              deltas.push(view.getInt32(pc, true));
+              pc += 4;
+            }
+            const switchBase = pc;
+            mnemonic = 'switch';
+            consumedValues.push({ id: 'selector', bits: 32 });
+            currentStackHeight--;
+            controlEffects.push({ kind: 'switch', targetOffsets:deltas.map((delta) => switchBase + delta) });
           }
           break;
 
@@ -289,6 +339,7 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}) {
 
         case 0x72: // ldstr
           {
+            need(4);
             const token = view.getUint32(pc, true);
             pc += 4;
             mnemonic = 'ldstr';
@@ -307,6 +358,7 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}) {
         case 0x7b: // ldfld
         case 0x7d: // stfld
           {
+            need(4);
             const token = view.getUint32(pc, true);
             pc += 4;
             const isWrite = opcode === 0x7d;
@@ -329,6 +381,7 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}) {
         case 0x7e: // ldsfld
         case 0x80: // stsfld
           {
+            need(4);
             const token = view.getUint32(pc, true);
             pc += 4;
             const isWrite = opcode === 0x80;
@@ -345,6 +398,33 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}) {
               token,
               isWrite,
             });
+          }
+          break;
+
+        case 0xdc: // endfinally
+          mnemonic = 'endfinally';
+          controlEffects.push({ kind: 'endfinally' });
+          break;
+
+        case 0xdd: // leave
+          {
+            need(4);
+            const offset = view.getInt32(pc, true);
+            pc += 4;
+            mnemonic = 'leave';
+            controlEffects.push({ kind: 'leave', targetOffset:pc + offset });
+            currentStackHeight = 0;
+          }
+          break;
+
+        case 0xde: // leave.s
+          {
+            need(1);
+            let offset = bytecode[pc++];
+            if (offset >= 128) offset -= 256;
+            mnemonic = 'leave.s';
+            controlEffects.push({ kind: 'leave', targetOffset:pc + offset });
+            currentStackHeight = 0;
           }
           break;
 
@@ -369,6 +449,7 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}) {
 
         case 0x09: // ldarg
           {
+            need(2);
             const argIdx = view.getUint16(pc, true);
             pc += 2;
             mnemonic = 'ldarg';
@@ -380,6 +461,7 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}) {
 
         case 0x0c: // ldloc
           {
+            need(2);
             const locIdx = view.getUint16(pc, true);
             pc += 2;
             mnemonic = 'ldloc';
@@ -391,6 +473,7 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}) {
 
         case 0x0e: // stloc
           {
+            need(2);
             const locIdx = view.getUint16(pc, true);
             pc += 2;
             mnemonic = 'stloc';
@@ -398,6 +481,18 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}) {
             consumedValues.push({ id: 'top' });
             currentStackHeight--;
           }
+          break;
+
+        case 0x11: // endfilter
+          mnemonic = 'endfilter';
+          consumedValues.push({ id: 'filter-result', bits: 32 });
+          currentStackHeight--;
+          controlEffects.push({ kind: 'endfilter' });
+          break;
+
+        case 0x1a: // rethrow
+          mnemonic = 'rethrow';
+          controlEffects.push({ kind: 'rethrow' });
           break;
 
         case 0x16: // volatile.
@@ -417,7 +512,7 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}) {
 
     const origin = createOriginSet({
       operationIds: [opId],
-      byteRanges: [{ start: methodBody.headerOffset + opOffset, end: methodBody.headerOffset + pc }],
+      byteRanges: [{ start: codeBase + opOffset, end: codeBase + pc }],
     });
 
     bundles.push(createVMEffectBundle({
