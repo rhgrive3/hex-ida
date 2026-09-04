@@ -94,10 +94,11 @@ function peUnwindFragmentRegressions() {
     view.setUint32(0x200,0x10|(1<<21)|(1<<28),true);view.setUint32(0x204,0,true);
     view.setUint32(0x210,0x08|(1<<21)|(1<<22)|(1<<28),true);view.setUint32(0x214,0,true);
     parseExceptionFunctions(new ByteView(bytes),{rva:0x5000,size:16},image,0xaa64);
-    assert.deepEqual(image.functions.map(f=>f.address),[0x10001000n]);
+    // ARM64 .xdata bit 22 is the low bit of Epilog Count, not a fragment flag.
+    assert.deepEqual(image.functions.map(f=>f.address),[0x10001000n,0x10002000n]);
     assert.equal(image.functions[0].size,64n);
-    assert.equal(image.metadata.exceptionDirectory.fragments[0].address,0x10002000n);
-    assert.equal(image.metadata.exceptionDirectory.fragments[0].size,32n);
+    assert.equal(image.functions[1].size,32n);
+    assert.deepEqual(image.metadata.exceptionDirectory.fragments,[]);
   }
   {
     const {bytes,view,image}=makeImage();
