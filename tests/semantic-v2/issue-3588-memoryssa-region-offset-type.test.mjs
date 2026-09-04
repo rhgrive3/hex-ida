@@ -44,7 +44,7 @@ for (const value of [
   true,
   false,
   new String('8'),
-  8n ? { nested: '8' } : null,
+  { nested: '8' },
   1.5,
   Number.NaN,
   Number.POSITIVE_INFINITY,
