@@ -1,141 +1,62 @@
 version: 2.1
 
 executors:
-  node22-medium:
-    docker:
-      - image: cimg/node:22.23
-    resource_class: medium
   node22-large:
     docker:
       - image: cimg/node:22.23
     resource_class: large
 
 commands:
-  prepare-node:
+  prepare-main:
     steps:
       - checkout
+      - run: |
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          git checkout --detach refs/remotes/origin/main
       - run: npm ci --no-audit --no-fund
-  install-frozen-toolchain:
-    steps:
-      - run:
-          name: Install Clang/LLD/LLVM 18
-          command: |
-            sudo apt-get update
-            sudo apt-get install -y clang-18 lld-18 llvm-18
 
 jobs:
-  probe-toolchain:
-    executor: node22-medium
-    steps:
-      - checkout
-      - install-frozen-toolchain
-
-  probe-phase8:
+  main-phase6:
     executor: node22-large
     steps:
-      - prepare-node
+      - prepare-main
       - run:
-          command: npm run phase8:test
+          command: npm run phase6:test
           no_output_timeout: 30m
-
-  probe-phase4:
+  main-phase11:
     executor: node22-large
     steps:
-      - prepare-node
-      - install-frozen-toolchain
+      - prepare-main
       - run:
-          command: npm run phase4:test
+          command: npm run phase11:test
           no_output_timeout: 30m
-
-  probe-phase5:
+  main-phase12:
     executor: node22-large
     steps:
-      - prepare-node
-      - install-frozen-toolchain
+      - prepare-main
       - run:
-          command: npm run phase5:test
+          command: npm run phase12:test
           no_output_timeout: 30m
-
-  probe-invariant-contract:
-    executor: node22-medium
-    steps:
-      - prepare-node
-      - run: node tests/invariant-pr-baseline.mjs
-
-  probe-invariant-baseline:
+  main-npm-test:
     executor: node22-large
     steps:
-      - prepare-node
-      - run: git fetch --no-tags origin main:refs/remotes/origin/main
+      - prepare-main
+      - run:
+          command: npm test
+          no_output_timeout: 30m
+  main-invariant-baseline:
+    executor: node22-large
+    steps:
+      - prepare-main
       - run:
           command: HEX_INVARIANT_BASE_REF=refs/remotes/origin/main node tools/validation/invariant-pr-baseline.mjs
           no_output_timeout: 30m
 
-  probe-semantic-v2:
-    executor: node22-medium
-    steps:
-      - prepare-node
-      - run: npm run semantic-v2:test
-
-  probe-benchmark:
-    executor: node22-medium
-    steps:
-      - prepare-node
-      - run: npm run benchmark:baseline
-
-  probe-lint:
-    executor: node22-medium
-    steps: [prepare-node, {run: "npm run lint"}]
-  probe-migration:
-    executor: node22-medium
-    steps: [prepare-node, {run: "npm run migration:test"}]
-  probe-module-boundaries:
-    executor: node22-medium
-    steps: [prepare-node, {run: "npm run module-boundaries:test"}]
-  probe-evidence-writers:
-    executor: node22-medium
-    steps: [prepare-node, {run: "npm run evidence-writers:test"}]
-  probe-phase7:
-    executor: node22-large
-    steps: [prepare-node, {run: {command: "npm run phase7:test", no_output_timeout: 30m}}]
-  probe-phase9:
-    executor: node22-large
-    steps: [prepare-node, {run: {command: "npm run phase9:test", no_output_timeout: 30m}}]
-  probe-phase10:
-    executor: node22-large
-    steps: [prepare-node, {run: {command: "npm run phase10:test", no_output_timeout: 30m}}]
-  probe-phase11:
-    executor: node22-large
-    steps: [prepare-node, {run: {command: "npm run phase11:test", no_output_timeout: 30m}}]
-  probe-phase12:
-    executor: node22-large
-    steps: [prepare-node, {run: {command: "npm run phase12:test", no_output_timeout: 30m}}]
-  probe-phase6:
-    executor: node22-large
-    steps: [prepare-node, {run: {command: "npm run phase6:test", no_output_timeout: 30m}}]
-  probe-npm-test:
-    executor: node22-large
-    steps: [prepare-node, {run: {command: "npm test", no_output_timeout: 30m}}]
-
 workflows:
-  invariant-probes:
+  pristine-main-comparison:
     jobs:
-      - probe-toolchain
-      - probe-phase8
-      - probe-phase4
-      - probe-phase5
-      - probe-invariant-contract
-      - probe-invariant-baseline
-      - probe-semantic-v2
-      - probe-benchmark
-      - probe-lint
-      - probe-migration
-      - probe-module-boundaries
-      - probe-evidence-writers
-      - probe-phase7
-      - probe-phase9
-      - probe-phase10
-      - probe-phase11
-      - probe-phase12
-      - probe-phase6
-      - probe-npm-test
+      - main-phase6
+      - main-phase11
+      - main-phase12
+      - main-npm-test
+      - main-invariant-baseline
