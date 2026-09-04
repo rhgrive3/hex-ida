@@ -38,6 +38,32 @@ export const EXTERNAL_ORACLE_POLICY = Object.freeze([
       'tests/capstone-capability.mjs',
     ]),
   }),
+  Object.freeze({
+    id: 'formal-architectural-models',
+    role: 'claim-local-symbolic-and-concrete-semantic-evidence',
+    semanticAuthority: 'complete-artifact-observable-partition-only',
+    defaultNetworkRequired: false,
+    requiredPaths: Object.freeze([
+      'tools/validation/machine-effects/oracle-evidence-v2.mjs',
+      'tools/validation/machine-effects/generate-formal-evidence.mjs',
+    ]),
+    checkedInEvidencePaths: Object.freeze([
+      'tools/validation/machine-effects/generated/formal-evidence-artifacts.json',
+    ]),
+  }),
+  Object.freeze({
+    id: 'herdtools7-aarch64-memory-model',
+    role: 'claim-local-permitted-and-forbidden-outcome-evidence',
+    semanticAuthority: 'declared-litmus-outcome-universe-only',
+    defaultNetworkRequired: false,
+    requiredPaths: Object.freeze([
+      'tests/machine-effects/fixtures/formal-source/aarch64-relaxed.litmus',
+      'tests/machine-effects/fixtures/formal-source/aarch64-acquire.litmus',
+      'tests/machine-effects/fixtures/formal-source/aarch64-release.litmus',
+      'tests/machine-effects/fixtures/formal-source/aarch64-acq-rel.litmus',
+      'tests/machine-effects/fixtures/formal-source/aarch64-seq-cst.litmus',
+    ]),
+  }),
 ]);
 
 export function inspectExternalOracleInfrastructure({ root = ROOT } = {}) {
@@ -46,10 +72,18 @@ export function inspectExternalOracleInfrastructure({ root = ROOT } = {}) {
       path: relativePath,
       present: fs.existsSync(path.join(root, relativePath)),
     }));
+    const checkedInEvidencePaths = (oracle.checkedInEvidencePaths ?? []).map((relativePath) => ({
+      path: relativePath,
+      present: fs.existsSync(path.join(root, relativePath)),
+    }));
     return Object.freeze({
       ...oracle,
       requiredPaths: paths,
+      checkedInEvidencePaths,
       available: paths.every((entry) => entry.present),
+      checkedInEvidenceAvailable: checkedInEvidencePaths.length > 0
+        && checkedInEvidencePaths.every((entry) => entry.present),
+      regenerationStatus: 'not-verified',
     });
   });
   return Object.freeze({
@@ -61,7 +95,7 @@ export function inspectExternalOracleInfrastructure({ root = ROOT } = {}) {
 
 export function assertExternalOraclePolicy(report = inspectExternalOracleInfrastructure()) {
   const byId = new Map(report.entries.map((entry) => [entry.id, entry]));
-  for (const id of ['compiler-truth', 'ghidra-differential', 'capstone']) {
+  for (const id of ['compiler-truth', 'ghidra-differential', 'capstone', 'formal-architectural-models', 'herdtools7-aarch64-memory-model']) {
     const entry = byId.get(id);
     if (!entry) throw new Error(`external-oracle-missing: ${id}`);
     if (!entry.available) {
@@ -76,6 +110,8 @@ export function assertExternalOraclePolicy(report = inspectExternalOracleInfrast
   if (byId.get('ghidra-differential').semanticAuthority === 'absolute-isa-truth') {
     throw new Error('ghidra-absolute-semantic-authority-forbidden');
   }
+  if (byId.get('formal-architectural-models').semanticAuthority !== 'complete-artifact-observable-partition-only') throw new Error('formal-model-authority-overbroad');
+  if (byId.get('herdtools7-aarch64-memory-model').semanticAuthority !== 'declared-litmus-outcome-universe-only') throw new Error('memory-model-authority-overbroad');
   return true;
 }
 
