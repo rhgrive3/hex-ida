@@ -241,11 +241,23 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
           composed.push({ kind: 'unknown', returnIndex: outerReturnIndex });
           continue;
         }
+        // Call arguments arrive either as raw value ids or as structured
+        // `{ valueId }` records (the same shape the escape analyzer unwraps).
+        // The value id — not the wrapper object — is the semantic identity; a
+        // malformed structured record must stay an explicit unknown rather
+        // than being stringified into a bogus formal lookup.
+        const argumentValueId = argumentId && typeof argumentId === 'object' && !Array.isArray(argumentId)
+          ? (typeof argumentId.valueId === 'string' && argumentId.valueId.trim() ? argumentId.valueId : null)
+          : argumentId;
+        if (argumentValueId == null) {
+          composed.push({ kind: 'unknown', returnIndex: outerReturnIndex });
+          continue;
+        }
         // Semantic IR v2 carries actual call argument values. Use the
         // explicit formal mapping (legacy `ir.inputs` or value metadata); an
         // ABI call ordinal alone is not proof that an internal value is a
         // current function argument.
-        const callerArgIndex = formalArgumentIndex(argumentId);
+        const callerArgIndex = formalArgumentIndex(argumentValueId);
         if (!Number.isSafeInteger(callerArgIndex) || callerArgIndex < 0) {
           composed.push({ kind: 'unknown', returnIndex: outerReturnIndex });
           continue;
