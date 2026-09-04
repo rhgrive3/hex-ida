@@ -128,6 +128,17 @@ function coverageList(value) {
   return new Set(value.map((item) => item.trim()));
 }
 
+export function isCanonicalDebugRecord(record) {
+  if (!record || typeof record !== 'object') return false;
+  if (typeof record.kind !== 'string' || !KIND_SET.has(record.kind)) return false;
+  if (typeof record.entityId !== 'string' || !record.entityId.trim()) return false;
+  if (typeof record.providerId !== 'string' || !record.providerId.trim()) return false;
+  if (typeof record.providerVersion !== 'string' || !record.providerVersion.trim()) return false;
+  if (!Array.isArray(record.evidenceIds)) return false;
+  if (record.buildIdentity !== null && record.buildIdentity !== undefined && (typeof record.buildIdentity !== 'string' || !record.buildIdentity.trim())) return false;
+  return true;
+}
+
 /**
  * True only when one record is explicitly covered by a partial identity.
  *
@@ -139,6 +150,8 @@ function coverageList(value) {
 export function isDebugRecordAuthoritative(result, record) {
   const identity = result?.identity;
   if (!identity || !record) return false;
+  if (!isCanonicalDebugRecord(record)) return false;
+  if (identity.providerId && record.providerId !== identity.providerId) return false;
   if (identity.verdict === 'matched-authoritative') return true;
   if (identity.verdict !== 'matched-partial') return false;
 
@@ -299,34 +312,48 @@ export function applyDebugTypesToGraph(graph, result, page) {
   const applied = { hard: 0, soft: 0, skipped: 0 };
   for (const record of page.records ?? []) {
     if (record.kind !== 'type') { applied.skipped += 1; continue; }
-    const claim = {
-      layer: record.descriptor?.layer ?? 'nominal',
-      entityId: record.entityId,
-      descriptor: record.descriptor?.claim ?? record.descriptor,
-    };
-    if (isDebugRecordAuthoritative(result, record)) {
-      graph.addHardConstraint({
-        kind: 'debug-type',
-        origin: 'debug-matched',
-        claim,
-        evidenceIds: record.evidenceIds,
-        providerVersion: record.providerVersion,
-        buildIdentity: record.buildIdentity,
+    const claims = [
+      {
+        layer: record.descriptor?.layer ?? 'nominal',
+        entityId: record.entityId,
+        descriptor: record.descriptor?.claim ?? record.descriptor,
+      },
+    ];
+    if (record.descriptor?.machine != null && typeof record.descriptor.machine === 'object') {
+      claims.push({
+        layer: 'machine',
+        entityId: record.entityId,
+        descriptor: record.descriptor.machine,
       });
-      applied.hard += 1;
+    }
+
+    if (isDebugRecordAuthoritative(result, record)) {
+      for (const claim of claims) {
+        graph.addHardConstraint({
+          kind: 'debug-type',
+          origin: 'debug-matched',
+          claim,
+          evidenceIds: record.evidenceIds,
+          providerVersion: record.providerVersion,
+          buildIdentity: record.buildIdentity,
+        });
+        applied.hard += 1;
+      }
       continue;
     }
     // Unmatched or uncovered debug data is still information — it just has no
     // authority. It enters as soft evidence so it can never overrule a hard
     // constraint or reach certainty on its own.
-    graph.addSoftEvidence({
-      kind: 'signature-candidate',
-      origin: 'debug-unmatched',
-      weight: 0.3,
-      claim,
-      evidenceIds: record.evidenceIds,
-    });
-    applied.soft += 1;
+    for (const claim of claims) {
+      graph.addSoftEvidence({
+        kind: 'signature-candidate',
+        origin: 'debug-unmatched',
+        weight: 0.3,
+        claim,
+        evidenceIds: record.evidenceIds,
+      });
+      applied.soft += 1;
+    }
   }
   return applied;
 }
