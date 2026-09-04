@@ -350,7 +350,8 @@ const ASCII_FORMAT = /%[-+ #0-9.]*[diufFgGeEsxX@]/;
 const ASCII_OP = /(?:^|[\s)\]])[*/]\s*\(?\s*\d/;
 
 export function formulaOf(text) {
-  const s = String(text == null ? '' : text);
+  if (typeof text !== 'string') return null;
+  const s = text;
   if (!s) return null;
   if (!FULLWIDTH_OP.test(s)) {
     if (!ASCII_FORMAT.test(s) || !ASCII_OP.test(s)) return null;

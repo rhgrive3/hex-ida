@@ -29,13 +29,13 @@ function utf16At(bytes,p,end){
   return {cp:u,bytes:2};
 }
 function finiteOption(value,fallback){
-  const candidate=value||fallback, n=Number(candidate);
+  const candidate=value===0?0:(value||fallback), n=Number(candidate);
   return Number.isFinite(n)?n:fallback;
 }
 
 export function scanStrings(image, opts = {}) {
   const min=Math.max(2,finiteOption(opts.minLength,4)), max=Math.max(min,finiteOption(opts.maxLength,4096));
-  const includeUtf16=opts.utf16!==false, includeExecutable=!!opts.includeExecutable;
+  const includeUtf16=opts.utf16!==false, includeExecutable=opts.includeExecutable===true;
   const bytes=image.bytes; if(!bytes) return [];
   const ranges=[];
   if(image.sections.length){ for(const x of image.sections){ if(!x.fileSize) continue; if(!includeExecutable&&x.perms&&x.perms.execute) continue; ranges.push({start:Number(x.fileOffset),size:Number(x.fileSize),section:x.name}); } }

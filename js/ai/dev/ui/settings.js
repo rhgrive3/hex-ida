@@ -35,7 +35,10 @@ export class DevAgentUiSettings {
     this.persist(); this.emit(); return true;
   }
   setAnalysisScope(initial) {
-    const normalized = String(initial || '').toLowerCase();
+    if (typeof initial !== 'string') {
+      throw new TypeError(`Analysis scope must be a string, got ${initial === null ? 'null' : typeof initial}`);
+    }
+    const normalized = initial.trim().toLowerCase();
     if (!ANALYSIS_SCOPE_INITIALS.includes(normalized)) throw new TypeError(`Unsupported analysis scope: ${initial}`);
     const next = createDevAnalysisScopeRequest(normalized);
     if (this.analysisScope.initial === next.initial) return false;
