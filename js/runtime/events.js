@@ -37,6 +37,18 @@ function safeInteger(value, fallback, name, { min = 0 } = {}) {
   return n;
 }
 
+function strictEventInteger(value, fallback, name, options = {}) {
+  if (value != null && typeof value !== 'number') {
+    throw new DebugAdapterError('runtime-invalid-event-integer', `${name} must be a safe integer >= ${options.min ?? 0}`);
+  }
+  return safeInteger(value, fallback, name, options);
+}
+
+function strictEventString(value, name, code) {
+  if (value != null && typeof value !== 'string') throw new DebugAdapterError(code, `${name} must be a string`);
+  return value;
+}
+
 function optionalText(value) { return value == null ? null : String(value); }
 
 function optionalIdentity(value, name) {
@@ -81,13 +93,13 @@ function dedupeIdentity(input) {
 export function createRuntimeEvent(input = {}) {
   const runtimeSessionId = required(input.runtimeSessionId, 'runtime-session-id-required', 'runtime event requires runtimeSessionId');
   const providerId = required(input.providerId, 'runtime-provider-required', 'runtime event requires providerId');
-  const providerVersion = String(input.providerVersion ?? '1');
-  const sessionEpoch = safeInteger(input.sessionEpoch, 1, 'sessionEpoch', { min: 1 });
-  const sequence = input.sequence == null ? null : safeInteger(input.sequence, null, 'sequence');
-  const moduleGeneration = input.moduleGeneration == null ? null : safeInteger(input.moduleGeneration, null, 'moduleGeneration', { min: 1 });
+  const providerVersion = strictEventString(input.providerVersion, 'providerVersion', 'runtime-invalid-provider-version') ?? '1';
+  const sessionEpoch = strictEventInteger(input.sessionEpoch, 1, 'sessionEpoch', { min: 1 });
+  const sequence = input.sequence == null ? null : strictEventInteger(input.sequence, null, 'sequence');
+  const moduleGeneration = input.moduleGeneration == null ? null : strictEventInteger(input.moduleGeneration, null, 'moduleGeneration', { min: 1 });
   const kind = normalizeKind(input.kind);
-  const observationMode = normalizeMode(input.observationMode);
-  const completeness = normalizeCompleteness(input.completeness, kind === 'gap' || kind === 'dropped-events' ? 'truncated' : 'partial');
+  const observationMode = normalizeMode(strictEventString(input.observationMode, 'observationMode', 'runtime-invalid-observation-mode'));
+  const completeness = normalizeCompleteness(strictEventString(input.completeness, 'completeness', 'runtime-invalid-completeness'), kind === 'gap' || kind === 'dropped-events' ? 'truncated' : 'partial');
   const payload = jsonSafe(input.payload ?? {});
   const identity = {
     runtimeSessionId,
