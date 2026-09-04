@@ -1,6 +1,6 @@
 import { deepFreeze, jsonSafe, stableDigest } from '../core/identity/index.js';
 import { isValidatedStage2CapabilityProof } from '../platform/stage2-profile-evidence.js';
-import { CHANGELOG_SCHEMA_VERSION, ChangeLog, createProjectOperation } from './index.js';
+import { CHANGELOG_SCHEMA_VERSION, ChangeLog, createProjectOperation, canonicalizeProjectOperation, isCanonicalProjectOperation } from './index.js';
 import { applyRemoteEnvelopeQueued } from './remote-delivery.js';
 
 export const REMOTE_COLLAB_SCHEMA = 'hex-remote-collaboration-envelope/v1';
@@ -8,11 +8,21 @@ export const REMOTE_GATE_SCHEMA = 'hex-remote-collaboration-gate/v1';
 export const REMOTE_SECURITY_PROFILE_ID = 'collaboration:remote-security-v1';
 const VALID_REMOTE_COLLABORATION_SUPPORT = new WeakSet();
 const VERIFIED_TRANSPORT_PROOFS = new WeakMap();
+const MAX_MESSAGE_ID_LENGTH = 512;
+
+function validMessageId(value) {
+  return typeof value === 'string' && value.length > 0 && value.length <= MAX_MESSAGE_ID_LENGTH && value.trim().length > 0;
+}
 
 function required(value, code) {
-  const text = String(value ?? '').trim();
+  if (typeof value !== 'string') throw new TypeError(code);
+  const text = value.trim();
   if (!text) throw new TypeError(code);
   return text;
+}
+
+function validRawIdentity(value) {
+  return typeof value === 'string' && value.trim().length > 0;
 }
 
 function positive(value, fallback, max, code) {
@@ -27,6 +37,11 @@ function validSequence(value) {
 
 function list(value) {
   return [...new Set((Array.isArray(value) ? value : []).map(String).filter(Boolean))].sort();
+}
+
+function identityList(value, code) {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.map((identity) => required(identity, code)))].sort();
 }
 
 function permissionList(value) {
@@ -47,9 +62,16 @@ function byteLength(value) {
 }
 
 function normalizePermissions(value) {
-  if (value instanceof Map) return Object.fromEntries([...value.entries()].map(([actor, permissions]) => [String(actor), permissionList(permissions)]));
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
-  return Object.fromEntries(Object.entries(value).map(([actor, permissions]) => [String(actor), permissionList(permissions)]));
+  const entries = value instanceof Map
+    ? [...value.entries()]
+    : (!value || typeof value !== 'object' || Array.isArray(value) ? [] : Object.entries(value));
+  const normalized = Object.create(null);
+  for (const [actor, permissions] of entries) {
+    const identity = required(actor, 'remote-gate-actor-identity-invalid');
+    if (Object.hasOwn(normalized, identity)) throw new TypeError('remote-gate-actor-identity-duplicate');
+    normalized[identity] = permissionList(permissions);
+  }
+  return normalized;
 }
 
 function authorized(permissions, operation) {
@@ -60,7 +82,7 @@ function authorized(permissions, operation) {
   return permissions.includes(combined) || (permissions.includes(fact) && permissions.includes(action));
 }
 
-function envelopeIdentity(envelope) {
+export function envelopeIdentity(envelope) {
   const { envelopeId, ...payload } = envelope;
   return `remote-envelope:${stableDigest(payload)}`;
 }
@@ -98,7 +120,9 @@ export function createRemoteCollaborationEnvelope(input = {}) {
       authenticated: input.transportProof?.authenticated === true,
       confidentiality: input.transportProof?.confidentiality === 'verified' ? 'verified' : 'unverified',
       integrity: input.transportProof?.integrity === 'verified' ? 'verified' : 'unverified',
-      proofIdentity: input.transportProof?.proofIdentity == null ? null : String(input.transportProof.proofIdentity),
+      proofIdentity: input.transportProof?.proofIdentity == null
+        ? null
+        : required(input.transportProof.proofIdentity, 'remote-transport-proof-identity-invalid'),
     },
     egress: {
       userAuthorized: input.egress?.userAuthorized === true,
@@ -116,7 +140,7 @@ export class RemoteCollaborationGate {
     this.binaryIdentity = input.binaryIdentity == null ? null : required(input.binaryIdentity, 'remote-gate-binary-invalid');
     this.sessionIdentity = required(input.sessionIdentity, 'remote-gate-session-required');
     this.allowedActors = normalizePermissions(input.allowedActors);
-    this.revokedActors = new Set(list(input.revokedActors));
+    this.revokedActors = new Set(identityList(input.revokedActors, 'remote-gate-revoked-actor-invalid'));
     this.supportedEnvelopeSchemas = new Set(list(input.supportedEnvelopeSchemas || [REMOTE_COLLAB_SCHEMA]));
     this.supportedOperationSchemas = new Set(list(input.supportedOperationSchemas || [CHANGELOG_SCHEMA_VERSION]));
     this.maxBatch = positive(input.maxBatch, 256, 4096, 'remote-gate-max-batch-invalid');
@@ -134,10 +158,20 @@ export class RemoteCollaborationGate {
     VERIFIED_TRANSPORT_PROOFS.delete(this);
     if (!envelope || !this.supportedEnvelopeSchemas.has(envelope.schemaVersion)) return { ok: false, reason: 'remote-envelope-schema-unsupported' };
     if (!this.supportedOperationSchemas.has(envelope.operationSchemaVersion)) return { ok: false, reason: 'remote-operation-schema-unsupported' };
+    if (!validRawIdentity(envelope.projectIdentity)) return { ok: false, reason: 'remote-project-identity-required' };
+    if (envelope.binaryIdentity != null && !validRawIdentity(envelope.binaryIdentity)) return { ok: false, reason: 'remote-binary-identity-invalid' };
+    if (!validRawIdentity(envelope.sessionIdentity)) return { ok: false, reason: 'remote-session-identity-required' };
+    if (!validRawIdentity(envelope.actorIdentity)) return { ok: false, reason: 'remote-actor-identity-required' };
+    if (!validRawIdentity(envelope.deviceIdentity)) return { ok: false, reason: 'remote-device-identity-required' };
+    if (!validRawIdentity(envelope.messageId)) return { ok: false, reason: 'remote-message-id-required' };
     if (envelope.projectIdentity !== this.projectIdentity) return { ok: false, reason: 'remote-wrong-project' };
     if ((envelope.binaryIdentity ?? null) !== this.binaryIdentity) return { ok: false, reason: 'remote-wrong-binary' };
     if (envelope.sessionIdentity !== this.sessionIdentity) return { ok: false, reason: 'remote-wrong-session' };
     if (!validSequence(envelope.sequence)) return { ok: false, reason: 'remote-sequence-invalid' };
+    // Replay authority rests on `messageId`, so untrusted ingress must verify
+    // its raw shape itself: a missing or structured value would otherwise be
+    // accepted as a Set key (compared by object identity) or skipped entirely.
+    if (!validMessageId(envelope.messageId)) return { ok: false, reason: 'remote-message-id-invalid' };
     if (typeof envelope.envelopeId !== 'string' || envelope.envelopeId !== envelopeIdentity(envelope)) return { ok: false, reason: 'remote-envelope-identity-mismatch' };
     if (this.revokedActors.has(envelope.actorIdentity)) return { ok: false, reason: 'remote-actor-revoked' };
     const permissions = Object.hasOwn(this.allowedActors, envelope.actorIdentity) ? this.allowedActors[envelope.actorIdentity] : null;
@@ -158,6 +192,7 @@ export class RemoteCollaborationGate {
     if (envelope.egress?.userAuthorized !== true) return { ok: false, reason: 'remote-egress-user-authorization-required' };
     if (envelope.egress?.rawBinaryBytes === true || envelope.egress?.derivedDataOnly !== true) return { ok: false, reason: 'remote-raw-binary-egress-forbidden' };
     for (const operation of envelope.operations) {
+      if (!isCanonicalProjectOperation(canonicalizeProjectOperation(operation))) return { ok: false, reason: 'remote-operation-shape-invalid' };
       if (operation.projectIdentity !== this.projectIdentity || (operation.binaryIdentity ?? null) !== this.binaryIdentity) return { ok: false, reason: 'remote-operation-scope-mismatch' };
       if (operation.authorIdentity !== envelope.actorIdentity || operation.deviceIdentity !== envelope.deviceIdentity) return { ok: false, reason: 'remote-operation-actor-binding-mismatch' };
       if (operation.provenance?.transport !== 'remote') return { ok: false, reason: 'remote-operation-provenance-invalid' };
