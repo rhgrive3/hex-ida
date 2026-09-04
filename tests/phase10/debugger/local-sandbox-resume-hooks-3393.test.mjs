@@ -45,6 +45,28 @@ for (const onProgress of [true, {}, [], 'progress', 1]) {
 
 {
   const { adapter, runCalls } = makeAdapter();
+  const result = await adapter.resume({ signal:null, onProgress:null, maxSteps:501 });
+  assert.deepEqual(result, { ok:true });
+  assert.equal(runCalls(), 1, 'nullish optional hooks must preserve normal execution');
+  assert.equal(adapter.activeRun, null);
+  assert.equal(adapter.running, false);
+}
+
+{
+  const { adapter, runCalls } = makeAdapter();
+  const controller = new AbortController();
+  controller.abort();
+  const result = await adapter.resume({ signal:controller.signal, maxSteps:501 });
+  assert.deepEqual(result, { ok:true });
+  assert.equal(runCalls(), 1);
+  assert.equal(adapter.cancelled, true, 'pre-aborted valid signals must preserve cancellation state');
+  assert.equal(adapter.sandbox.emulator.stopped, 'cancelled');
+  assert.equal(adapter.activeRun, null);
+  assert.equal(adapter.running, false);
+}
+
+{
+  const { adapter, runCalls } = makeAdapter();
   let added = 0;
   let removed = 0;
   let registered = null;
