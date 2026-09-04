@@ -1,3 +1,4 @@
+import { createMachineEffectBundle } from '../../../../semantics/effects/index.js';
 import { decorateArm64BtiGuardedPageEffects } from './bti-guard-state.js';
 import { liftArm64ControlEffects } from './control.js';
 import { createArm64EffectContext, directTargetOf, immediateOf, instructionMnemonic } from './common.js';
@@ -442,6 +443,45 @@ function normalizedContext(context = {}) {
   return { ...context, ...machineEffectsOptions, options: machineEffectsOptions, machineEffectsOptions };
 }
 
+function withFpAdvSimdAccessTrap(bundle, context) {
+  if (!bundle || !['exact','exact-with-intrinsic'].includes(bundle.completeness)) return bundle;
+  if (bundle.possibleFaults.some((fault) => fault.kind === 'fp-advsimd-access-trap')) return bundle;
+  return createMachineEffectBundle({
+    instructionId:bundle.instructionId,
+    architectureId:bundle.architectureId,
+    mode:bundle.mode,
+    operations:bundle.operations,
+    controlEffect:bundle.controlEffect,
+    possibleFaults:[
+      ...bundle.possibleFaults,
+      {
+        kind:'fp-advsimd-access-trap',
+        condition:{
+          kind:'architectural-access-check',
+          architecture:'arm64',
+          access:'fp-advsimd',
+          check:'CheckFPAdvSIMDEnabled',
+          controls:[
+            'PSTATE.EL',
+            'CPACR_EL1.FPEN',
+            'CPTR_EL2.FPEN',
+            'CPTR_EL2.TFP',
+            'CPTR_EL3.TFP',
+            'HCR_EL2.E2H',
+            'HCR_EL2.TGE',
+          ],
+        },
+        detail:{ target:'environment-dependent-exception-level' },
+      },
+    ],
+    origin:bundle.origin,
+    completeness:bundle.completeness,
+    ...(bundle.unknownEffects == null ? {} : { unknownEffects:bundle.unknownEffects }),
+    ...(bundle.statePreservation == null ? {} : { statePreservation:bundle.statePreservation }),
+    ...(bundle.metadata == null ? {} : { metadata:bundle.metadata }),
+  }, context?.machineEffectsOptions || {});
+}
+
 export function liftArm64MachineEffects(decoded, context = {}) {
   const instruction = normalizedInstruction(decoded, context);
   const familyContext = normalizedContext(context);
@@ -451,8 +491,10 @@ export function liftArm64MachineEffects(decoded, context = {}) {
     return decorateArm64BtiGuardedPageEffects(instruction, partial, familyContext);
   }
   for (const family of ARM64_EFFECT_FAMILIES) {
-    const result = family.lift(instruction, familyContext);
-    if (result != null) return decorateArm64BtiGuardedPageEffects(instruction, result, familyContext);
+    let result = family.lift(instruction, familyContext);
+    if (result == null) continue;
+    if (family.id === 'fp' || family.id === 'simd') result = withFpAdvSimdAccessTrap(result, familyContext);
+    return decorateArm64BtiGuardedPageEffects(instruction, result, familyContext);
   }
   return null;
 }
