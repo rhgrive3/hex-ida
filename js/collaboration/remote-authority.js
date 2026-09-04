@@ -34,15 +34,27 @@ function list(value) {
   return [...new Set((Array.isArray(value) ? value : []).map(String).filter(Boolean))].sort();
 }
 
+function identityList(value, code) {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.map((identity) => required(identity, code)))].sort();
+}
+
 function byteLength(value) {
   const text = JSON.stringify(jsonSafe(value));
   return typeof TextEncoder !== 'undefined' ? new TextEncoder().encode(text).length : text.length;
 }
 
 function normalizePermissions(value) {
-  if (value instanceof Map) return Object.fromEntries([...value.entries()].map(([actor, permissions]) => [String(actor), list(permissions)]));
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
-  return Object.fromEntries(Object.entries(value).map(([actor, permissions]) => [String(actor), list(permissions)]));
+  const entries = value instanceof Map
+    ? [...value.entries()]
+    : (!value || typeof value !== 'object' || Array.isArray(value) ? [] : Object.entries(value));
+  const normalized = Object.create(null);
+  for (const [actor, permissions] of entries) {
+    const identity = required(actor, 'remote-gate-actor-identity-invalid');
+    if (Object.hasOwn(normalized, identity)) throw new TypeError('remote-gate-actor-identity-duplicate');
+    normalized[identity] = list(permissions);
+  }
+  return normalized;
 }
 
 function authorized(permissions, operation) {
@@ -91,7 +103,9 @@ export function createRemoteCollaborationEnvelope(input = {}) {
       authenticated: input.transportProof?.authenticated === true,
       confidentiality: input.transportProof?.confidentiality === 'verified' ? 'verified' : 'unverified',
       integrity: input.transportProof?.integrity === 'verified' ? 'verified' : 'unverified',
-      proofIdentity: input.transportProof?.proofIdentity == null ? null : String(input.transportProof.proofIdentity),
+      proofIdentity: input.transportProof?.proofIdentity == null
+        ? null
+        : required(input.transportProof.proofIdentity, 'remote-transport-proof-identity-invalid'),
     },
     egress: {
       userAuthorized: input.egress?.userAuthorized === true,
@@ -109,7 +123,7 @@ export class RemoteCollaborationGate {
     this.binaryIdentity = input.binaryIdentity == null ? null : required(input.binaryIdentity, 'remote-gate-binary-invalid');
     this.sessionIdentity = required(input.sessionIdentity, 'remote-gate-session-required');
     this.allowedActors = normalizePermissions(input.allowedActors);
-    this.revokedActors = new Set(list(input.revokedActors));
+    this.revokedActors = new Set(identityList(input.revokedActors, 'remote-gate-revoked-actor-invalid'));
     this.supportedEnvelopeSchemas = new Set(list(input.supportedEnvelopeSchemas || [REMOTE_COLLAB_SCHEMA]));
     this.supportedOperationSchemas = new Set(list(input.supportedOperationSchemas || [CHANGELOG_SCHEMA_VERSION]));
     this.maxBatch = positive(input.maxBatch, 256, 4096, 'remote-gate-max-batch-invalid');
