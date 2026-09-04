@@ -1,181 +1,141 @@
 version: 2.1
 
-jobs:
-  migration-guardrails:
+executors:
+  node22-medium:
     docker:
       - image: cimg/node:22.23
     resource_class: medium
-    steps:
-      - checkout
-      - run:
-          name: Detect migration-guardrail impact
-          command: |
-            run_it="$(bash scripts/ci/circleci-impact.sh pr-only '^(js/(architecture/|ir\.js$|ir-core\.js$|dataflow[^/]*\.js$|decompiler/|binary/|bytesource/|platform/|project/|runtime/|runtime-evidence/|symbolic/|ai/|ui/|ui\.js$|ui-root\.js$|panels\.js$|app\.js$|backend\.js$|worker[^/]*\.js$)|worker-entry\.js$|package\.json$|package-lock\.json$|tests/(migration-guardrails\.mjs$|universal-binary-source\.mjs$|binary-platform\.mjs$)|docs/MIGRATION_GUARDRAILS\.md$|\.github/workflows/migration-guardrails\.yml$|\.circleci/config\.yml$|scripts/ci/circleci-impact\.sh$)')"
-            echo "export RUN_MIGRATION_GUARDRAILS=$run_it" >> "$BASH_ENV"
-      - run:
-          name: Install dependencies
-          command: |
-            if [ "$RUN_MIGRATION_GUARDRAILS" != 'true' ]; then exit 0; fi
-            npm ci --no-audit --no-fund
-      - run:
-          name: Run migration proofs
-          command: |
-            if [ "$RUN_MIGRATION_GUARDRAILS" != 'true' ]; then exit 0; fi
-            npm run migration:test
-            npm run binary:source-test
-
-  agent-loop-resilience:
-    docker:
-      - image: cimg/node:22.23
-    resource_class: medium
-    steps:
-      - checkout
-      - run:
-          name: Detect agent-loop impact
-          command: |
-            run_it="$(bash scripts/ci/circleci-impact.sh main-and-branch '^(js/userscript/dev/|tests/dev-agent/agent-loop-resilience\.mjs$|\.github/workflows/agent-loop-resilience\.yml$|\.circleci/config\.yml$|scripts/ci/circleci-impact\.sh$)')"
-            echo "export RUN_AGENT_LOOP_RESILIENCE=$run_it" >> "$BASH_ENV"
-      - run:
-          name: Run unattended agent loop regressions
-          command: |
-            if [ "$RUN_AGENT_LOOP_RESILIENCE" != 'true' ]; then exit 0; fi
-            node tests/dev-agent/agent-loop-resilience.mjs
-
-  issue-2528-canonical-claims:
-    docker:
-      - image: cimg/node:22.23
-    resource_class: medium
-    steps:
-      - checkout
-      - run:
-          name: Detect canonical-claims impact
-          command: |
-            run_it="$(bash scripts/ci/circleci-impact.sh pr-only '^(js/ui/product-hardened\.js$|js/analysis/query/product-surface\.js$|js/ux\.js$|tests/issue-2528-canonical-claims\.mjs$|\.github/workflows/issue-2528-canonical-claims\.yml$|\.circleci/config\.yml$|scripts/ci/circleci-impact\.sh$)')"
-            echo "export RUN_ISSUE_2528=$run_it" >> "$BASH_ENV"
-      - run:
-          name: Validate canonical claims authority
-          command: |
-            if [ "$RUN_ISSUE_2528" != 'true' ]; then exit 0; fi
-            node tests/issue-2528-canonical-claims.mjs
-
-  ai-eval-contract:
-    docker:
-      - image: cimg/node:20.19
-    resource_class: medium
-    steps:
-      - checkout
-      - run:
-          name: Detect AI evaluation impact
-          command: |
-            run_it="$(bash scripts/ci/circleci-impact.sh main-and-branch '^(js/ai/|js/agent/|js/query/|js/gemini\.js$|js/goalc\.js$|js/semantic-evidence\.js$|worker\.js$|tests/ai-eval/|docs/ai-integration-contract\.md$|docs/ai-quality-gate\.md$|\.github/workflows/ai-eval-contract\.yml$|\.circleci/config\.yml$|scripts/ci/circleci-impact\.sh$)')"
-            echo "export RUN_AI_EVAL=$run_it" >> "$BASH_ENV"
-      - run:
-          name: Validate workflow trigger coverage
-          command: |
-            if [ "$RUN_AI_EVAL" != 'true' ]; then exit 0; fi
-            node tests/ai-eval/workflow-trigger.mjs
-      - run:
-          name: Validate AI evaluation corpus
-          command: |
-            if [ "$RUN_AI_EVAL" != 'true' ]; then exit 0; fi
-            node tests/ai-eval/selftest.mjs
-      - run:
-          name: Exercise grader with example trace
-          command: |
-            if [ "$RUN_AI_EVAL" != 'true' ]; then exit 0; fi
-            node tests/ai-eval/grade.mjs tests/ai-eval/results.example.jsonl /tmp/ai-eval-report.json
-      - run:
-          name: Ensure release mode rejects an incomplete corpus
-          command: |
-            if [ "$RUN_AI_EVAL" != 'true' ]; then exit 0; fi
-            if node tests/ai-eval/grade.mjs tests/ai-eval/results.example.jsonl /tmp/ai-eval-partial.json --require-all; then
-              echo 'Expected --require-all to reject a one-case trace.' >&2
-              exit 1
-            fi
-
-  invariant-phase8:
+  node22-large:
     docker:
       - image: cimg/node:22.23
     resource_class: large
-    steps:
-      - checkout
-      - run: npm ci --no-audit --no-fund
-      - run:
-          name: Phase 8 exact checks
-          command: npm run phase8:test
-          no_output_timeout: 30m
 
-  invariant-phase45:
-    docker:
-      - image: cimg/node:22.23
-    resource_class: large
+commands:
+  prepare-node:
     steps:
       - checkout
       - run: npm ci --no-audit --no-fund
+  install-frozen-toolchain:
+    steps:
       - run:
-          name: Install frozen Phase 5 toolchain
+          name: Install Clang/LLD/LLVM 18
           command: |
             sudo apt-get update
             sudo apt-get install -y clang-18 lld-18 llvm-18
-      - run:
-          name: Phase 4 and 5 exact checks
-          command: |
-            npm run phase4:test
-            npm run phase5:test
-          no_output_timeout: 30m
 
-  invariant-analysis-proof:
-    docker:
-      - image: cimg/node:22.23
-    resource_class: large
+jobs:
+  probe-toolchain:
+    executor: node22-medium
     steps:
       - checkout
-      - run: git fetch --no-tags origin main:refs/remotes/origin/main
-      - run: npm ci --no-audit --no-fund
-      - run: node tests/invariant-pr-baseline.mjs
+      - install-frozen-toolchain
+
+  probe-phase8:
+    executor: node22-large
+    steps:
+      - prepare-node
       - run:
-          name: Exact invariant baseline proof
+          command: npm run phase8:test
+          no_output_timeout: 30m
+
+  probe-phase4:
+    executor: node22-large
+    steps:
+      - prepare-node
+      - install-frozen-toolchain
+      - run:
+          command: npm run phase4:test
+          no_output_timeout: 30m
+
+  probe-phase5:
+    executor: node22-large
+    steps:
+      - prepare-node
+      - install-frozen-toolchain
+      - run:
+          command: npm run phase5:test
+          no_output_timeout: 30m
+
+  probe-invariant-contract:
+    executor: node22-medium
+    steps:
+      - prepare-node
+      - run: node tests/invariant-pr-baseline.mjs
+
+  probe-invariant-baseline:
+    executor: node22-large
+    steps:
+      - prepare-node
+      - run: git fetch --no-tags origin main:refs/remotes/origin/main
+      - run:
           command: HEX_INVARIANT_BASE_REF=refs/remotes/origin/main node tools/validation/invariant-pr-baseline.mjs
           no_output_timeout: 30m
-      - run:
-          name: Remaining analysis proof commands
-          command: |
-            npm run semantic-v2:test
-            npm run benchmark:baseline
-          no_output_timeout: 30m
 
-  invariant-repo-regression:
-    docker:
-      - image: cimg/node:22.23
-    resource_class: large
+  probe-semantic-v2:
+    executor: node22-medium
     steps:
-      - checkout
-      - run: git fetch --no-tags origin main:refs/remotes/origin/main
-      - run: npm ci --no-audit --no-fund
-      - run:
-          name: Repository regression lane
-          command: |
-            npm run lint
-            npm run migration:test
-            npm run module-boundaries:test
-            npm run evidence-writers:test
-            npm run phase7:test
-            npm run phase9:test
-            npm run phase10:test
-            npm run phase11:test
-            npm run phase12:test
-            npm run phase6:test
-            npm test
-          no_output_timeout: 30m
+      - prepare-node
+      - run: npm run semantic-v2:test
+
+  probe-benchmark:
+    executor: node22-medium
+    steps:
+      - prepare-node
+      - run: npm run benchmark:baseline
+
+  probe-lint:
+    executor: node22-medium
+    steps: [prepare-node, {run: "npm run lint"}]
+  probe-migration:
+    executor: node22-medium
+    steps: [prepare-node, {run: "npm run migration:test"}]
+  probe-module-boundaries:
+    executor: node22-medium
+    steps: [prepare-node, {run: "npm run module-boundaries:test"}]
+  probe-evidence-writers:
+    executor: node22-medium
+    steps: [prepare-node, {run: "npm run evidence-writers:test"}]
+  probe-phase7:
+    executor: node22-large
+    steps: [prepare-node, {run: {command: "npm run phase7:test", no_output_timeout: 30m}}]
+  probe-phase9:
+    executor: node22-large
+    steps: [prepare-node, {run: {command: "npm run phase9:test", no_output_timeout: 30m}}]
+  probe-phase10:
+    executor: node22-large
+    steps: [prepare-node, {run: {command: "npm run phase10:test", no_output_timeout: 30m}}]
+  probe-phase11:
+    executor: node22-large
+    steps: [prepare-node, {run: {command: "npm run phase11:test", no_output_timeout: 30m}}]
+  probe-phase12:
+    executor: node22-large
+    steps: [prepare-node, {run: {command: "npm run phase12:test", no_output_timeout: 30m}}]
+  probe-phase6:
+    executor: node22-large
+    steps: [prepare-node, {run: {command: "npm run phase6:test", no_output_timeout: 30m}}]
+  probe-npm-test:
+    executor: node22-large
+    steps: [prepare-node, {run: {command: "npm test", no_output_timeout: 30m}}]
 
 workflows:
-  ci:
+  invariant-probes:
     jobs:
-      - migration-guardrails
-      - agent-loop-resilience
-      - issue-2528-canonical-claims
-      - ai-eval-contract
-      - invariant-phase8
-      - invariant-phase45
-      - invariant-analysis-proof
-      - invariant-repo-regression
+      - probe-toolchain
+      - probe-phase8
+      - probe-phase4
+      - probe-phase5
+      - probe-invariant-contract
+      - probe-invariant-baseline
+      - probe-semantic-v2
+      - probe-benchmark
+      - probe-lint
+      - probe-migration
+      - probe-module-boundaries
+      - probe-evidence-writers
+      - probe-phase7
+      - probe-phase9
+      - probe-phase10
+      - probe-phase11
+      - probe-phase12
+      - probe-phase6
+      - probe-npm-test
