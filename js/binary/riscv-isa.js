@@ -84,6 +84,7 @@ export function parseRiscvAttributes(input, options = {}) {
   if (!bytes.length || bytes.length > MAX_ATTRIBUTE_BYTES || bytes[0] !== 0x41) return null;
   const littleEndian = options.littleEndian !== false;
   let cursor = 1;
+  let found = null;
   while (cursor + 4 <= bytes.length) {
     const subsectionStart = cursor;
     const subsectionLength = readU32(bytes, cursor, littleEndian);
@@ -111,7 +112,7 @@ export function parseRiscvAttributes(input, options = {}) {
             const arch = readNtbs(bytes, attributeCursor, subsubEnd);
             if (!arch) return null;
             const normalized = normalizeRiscvIsaString(arch.value);
-            if (normalized) return Object.freeze({ ...normalized, evidence:'elf-attribute' });
+            if (normalized && !found) found = Object.freeze({ ...normalized, evidence:'elf-attribute' });
             attributeCursor = arch.next;
           } else if (!KNOWN_RISCV_ATTRIBUTE_TAGS.has(attr.value) && (attr.value % 128) < 64) {
             return null;
@@ -130,7 +131,7 @@ export function parseRiscvAttributes(input, options = {}) {
     }
     cursor = subsectionEnd;
   }
-  return null;
+  return found;
 }
 
 export function parseRiscvMappingSymbol(name) {
