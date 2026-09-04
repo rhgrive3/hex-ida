@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { deflateSync } from 'node:zlib';
-import { chainedImportSymbols } from '../js/chained.js';
+import { chainedImportSymbols } from '../../js/chained.js';
 
 function fixture({ symbolsFormat = 0, symbolPool = new TextEncoder().encode('_target\0') } = {}) {
   const thin = new Uint8Array(0x600);
