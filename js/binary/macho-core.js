@@ -484,7 +484,10 @@ function selectFatSlice(bytes, kind, preferredArch, opts = {}) {
   // #6316: validate each slice
   for (const s of all) {
     const start = Number(s.offset);
-    const headerBytes = (start >= 0 && start + 32 <= bytes.length) ? bytes.subarray(start, start + 32) : null;
+    const headerLength = Math.min(32, Number(s.size));
+    const headerBytes = (start >= 0 && headerLength >= 28 && start + headerLength <= bytes.length)
+      ? bytes.subarray(start, start + headerLength)
+      : null;
     const inner = parseInnerMachOHeader(headerBytes);
     validateFatSlice(s, inner, bytes.length, opts);
   }

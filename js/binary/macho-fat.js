@@ -121,12 +121,17 @@ export function validateFatContainer(all) {
   }
 }
 
+function isCompatArm64Subtype(subtype) {
+  const base = subtypeBase(subtype);
+  return base === 0 || base === 1;
+}
+
 function checkCompatArm64Basic(cpu, subtype, offset, size, align, count, totalBytes, existingSlices) {
-  if ((cpu >>> 0) !== CPU_TYPE_ARM64 || subtypeBase(subtype) !== 0) return false;
+  if ((cpu >>> 0) !== CPU_TYPE_ARM64 || !isCompatArm64Subtype(subtype)) return false;
   const total = BigInt(totalBytes);
   if (offset < 8n + BigInt((count + 1) * 20) || size <= 0n || offset + size > total) return false;
   if (align >= 32 || (offset % (1n << BigInt(align))) !== 0n) return false;
-  const dup = existingSlices.some((s) => (s.cpu >>> 0) === CPU_TYPE_ARM64 && subtypeBase(s.subtype) === 0);
+  const dup = existingSlices.some((s) => (s.cpu >>> 0) === CPU_TYPE_ARM64 && isCompatArm64Subtype(s.subtype));
   if (dup) return false;
   const overlap = existingSlices.some((s) => offset < s.offset + s.size && s.offset < offset + size);
   if (overlap) return false;
@@ -150,7 +155,7 @@ export function probePastEndArm64SliceSync(r, count, totalBytes, readHeaderBytes
     return null;
   }
   const inner = parseInnerMachOHeader(headerBytes);
-  if (!inner || inner.cpu !== cpu || subtypeBase(inner.subtype) !== 0) return null;
+  if (!inner || inner.cpu !== cpu || !isCompatArm64Subtype(inner.subtype)) return null;
   const isObject = inner.filetype === 1 || inner.filetype === 10;
   if (!isObject && (offset & 0x3fffn) !== 0n) return null;
   return { cpu, subtype, offset, size, align };
@@ -173,7 +178,7 @@ export async function probePastEndArm64SliceAsync(r, count, totalBytes, readHead
     return null;
   }
   const inner = parseInnerMachOHeader(headerBytes);
-  if (!inner || inner.cpu !== cpu || subtypeBase(inner.subtype) !== 0) return null;
+  if (!inner || inner.cpu !== cpu || !isCompatArm64Subtype(inner.subtype)) return null;
   const isObject = inner.filetype === 1 || inner.filetype === 10;
   if (!isObject && (offset & 0x3fffn) !== 0n) return null;
   return { cpu, subtype, offset, size, align };

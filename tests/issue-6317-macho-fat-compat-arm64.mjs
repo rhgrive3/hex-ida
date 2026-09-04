@@ -21,13 +21,13 @@ function makeThinSlice({ cpu = CPU_ARM64, subtype = 0, filetype = 2, size = 64 }
   return b;
 }
 
-function makeFatWithHiddenArm64({ corruptCandidate = false, isFat64 = false } = {}) {
+function makeFatWithHiddenArm64({ corruptCandidate = false, isFat64 = false, candidateSubtype = 0 } = {}) {
   const size = 0x10000;
   const b = new Uint8Array(size);
   const v = new DataView(b.buffer);
 
   const x86Data = makeThinSlice({ cpu: CPU_X86_64, subtype: 3, filetype: 2, size: 64 });
-  const armData = makeThinSlice({ cpu: CPU_ARM64, subtype: 0, filetype: 2, size: 64 });
+  const armData = makeThinSlice({ cpu: CPU_ARM64, subtype: candidateSubtype, filetype: 2, size: 64 });
   b.set(x86Data, 0x1000);
   b.set(armData, 0x4000);
 
@@ -42,7 +42,7 @@ function makeFatWithHiddenArm64({ corruptCandidate = false, isFat64 = false } = 
     v.setUint32(32, 12, false);
     // past-end entry at 8 + 32 = 40
     v.setInt32(40, CPU_ARM64, false);
-    v.setInt32(44, 0, false);
+    v.setInt32(44, candidateSubtype, false);
     v.setBigUint64(48, 0x4000n, false);
     v.setBigUint64(56, 64n, false);
     v.setUint32(64, 14, false);
@@ -58,7 +58,7 @@ function makeFatWithHiddenArm64({ corruptCandidate = false, isFat64 = false } = 
 
     // past-end entry at 8 + 20 = 28
     v.setInt32(28, corruptCandidate ? 0x1234 : CPU_ARM64, false);
-    v.setInt32(32, 0, false);
+    v.setInt32(32, candidateSubtype, false);
     v.setUint32(36, corruptCandidate ? 0x20000 : 0x4000, false); // corrupt points outside file
     v.setUint32(40, 64, false);
     v.setUint32(44, 14, false);
@@ -75,6 +75,22 @@ test('#6317 discover past-end arm64 compatibility slice in FAT32 container', () 
   assert.equal(img.metadata.fat.slices.length, 2, 'both declared x86_64 and compat arm64 are listed');
   assert.equal(img.metadata.fat.selected.arch, 'arm64', 'arm64 is selected by default');
   assert.equal(img.metadata.fat.selected.offset, 0x4000n);
+});
+
+test('#6317 accept ARM64_V8 subtype 1 compatibility slice in resident and source-backed loaders', async () => {
+  const fat = makeFatWithHiddenArm64({ candidateSubtype: 1 });
+
+  const resident = openBinary(fat);
+  assert.equal(resident.metadata.fat.slices.length, 2);
+  assert.equal(resident.metadata.fat.selected.arch, 'arm64');
+  assert.equal(resident.metadata.fat.selected.subtype, 1);
+  assert.equal(resident.metadata.fat.selected.offset, 0x4000n);
+
+  const source = await parseMachOSource(new MemoryByteSource(fat));
+  assert.equal(source.metadata.fat.slices.length, 2);
+  assert.equal(source.metadata.fat.selected.arch, 'arm64');
+  assert.equal(source.metadata.fat.selected.subtype, 1);
+  assert.equal(source.metadata.fat.selected.offset, 0x4000n);
 });
 
 test('#6317 allow requesting declared slice or past-end arm64 slice by arch', () => {

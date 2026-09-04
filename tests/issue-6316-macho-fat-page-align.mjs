@@ -5,6 +5,7 @@ import { MemoryByteSource } from '../js/binary/source.js';
 import { parseMachOSource } from '../js/binary/source-loaders.js';
 import { validateFatSlice } from '../js/binary/macho-fat.js';
 
+const CPU_X86 = 7;
 const CPU_X86_64 = 0x01000007;
 const CPU_ARM = 12;
 const CPU_ARM64 = 0x0100000c;
@@ -21,6 +22,19 @@ function makeThinSlice({ cpu = CPU_ARM64, subtype = 0, filetype = 2, size = 64 }
   v.setUint32(20, 0, true);
   v.setUint32(24, 0, true);
   v.setUint32(28, 0, true);
+  return b;
+}
+
+function makeThin32Slice({ cpu = CPU_X86, subtype = 3, filetype = 1 } = {}) {
+  const b = new Uint8Array(28);
+  const v = new DataView(b.buffer);
+  v.setUint32(0, 0xfeedface, true); // MH_MAGIC LE
+  v.setInt32(4, cpu, true);
+  v.setInt32(8, subtype, true);
+  v.setUint32(12, filetype, true);
+  v.setUint32(16, 0, true); // ncmds
+  v.setUint32(20, 0, true); // sizeofcmds
+  v.setUint32(24, 0, true); // flags
   return b;
 }
 
@@ -78,6 +92,27 @@ test('#6316 accept arm64 final-image slice with 16KB alignment', () => {
   assert.ok(img);
   assert.equal(img.metadata.fat.selected.arch, 'arm64');
   assert.equal(img.metadata.fat.selected.offset, 0x4000n);
+});
+
+test('#6316 resident FAT accepts a complete 28-byte Mach-O 32-bit header at EOF', async () => {
+  const offset = 0x100;
+  const data = makeThin32Slice();
+  const fat = makeFatBinary(
+    [{ cpu: CPU_X86, subtype: 3, align: 2, offset, data }],
+    { totalSize: offset + data.length },
+  );
+
+  const resident = openBinary(fat);
+  assert.ok(resident);
+  assert.equal(resident.bits, 32);
+  assert.equal(resident.arch, 'x86');
+  assert.equal(resident.metadata.fat.selected.offset, BigInt(offset));
+
+  const source = await parseMachOSource(new MemoryByteSource(fat));
+  assert.ok(source);
+  assert.equal(source.bits, 32);
+  assert.equal(source.arch, 'x86');
+  assert.equal(source.metadata.fat.selected.offset, BigInt(offset));
 });
 
 test('#6316 reject armv7k final image at 4KB-only alignment', () => {
