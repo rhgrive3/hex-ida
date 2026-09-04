@@ -22,6 +22,8 @@ const DEFAULTS = {
   theme: 'system',       // 'system' | 'light' | 'dark'
 };
 
+const FORBIDDEN_STATE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
 function defaultState() {
   return { ...DEFAULTS, regions: [] };
 }
@@ -33,9 +35,13 @@ export class Store {
   }
   get(key) { return this.state[key]; }
   set(patch) {
+    const keys = Object.keys(patch);
+    for (const k of keys) {
+      if (FORBIDDEN_STATE_KEYS.has(k)) throw new TypeError('state-key-invalid');
+    }
     let changed = false;
     // Apply only properties explicitly provided by the patch.
-    for (const k of Object.keys(patch)) {
+    for (const k of keys) {
       if (this.state[k] !== patch[k]) { this.state[k] = patch[k]; changed = true; }
     }
     if (changed) for (const fn of this.listeners) fn(this.state, patch);

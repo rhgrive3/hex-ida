@@ -165,6 +165,12 @@ function queryLimit(value, fallback) {
   return Number.isSafeInteger(n) && n >= 0 ? n : fallback;
 }
 
+function transportCount(value, fallback, field) {
+  if (value == null) return fallback;
+  if (!Number.isSafeInteger(value) || value < 0) throw new TypeError(`${field}-invalid`);
+  return value;
+}
+
 export class ProgramIndex {
   constructor(scan, symbols, region) {
     const s = scan || {};
@@ -177,8 +183,8 @@ export class ProgramIndex {
     const rawRefFrom = s.refFrom || new BigUint64Array(0);
     const rawRefTo = s.refTo || new BigUint64Array(0);
     const rawRefKind = s.refKind || new Uint8Array(0);
-    const callCount = Math.min(Number.isSafeInteger(s.callCount) ? s.callCount : rawCallFrom.length, rawCallFrom.length, rawCallTo.length);
-    const refCount = Math.min(Number.isSafeInteger(s.refCount) ? s.refCount : rawRefFrom.length, rawRefFrom.length, rawRefTo.length, rawRefKind.length);
+    const callCount = Math.min(transportCount(s.callCount, rawCallFrom.length, 'program-call-count'), rawCallFrom.length, rawCallTo.length);
+    const refCount = Math.min(transportCount(s.refCount, rawRefFrom.length, 'program-ref-count'), rawRefFrom.length, rawRefTo.length, rawRefKind.length);
     this.callFrom = rawCallFrom.subarray(0, callCount);
     this.callTo = rawCallTo.subarray(0, callCount);
     this.refFrom = rawRefFrom.subarray(0, refCount);
