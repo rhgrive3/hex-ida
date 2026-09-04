@@ -51,6 +51,92 @@ export function normalizeAnalysisRoute(route) {
   throw new TypeError(`analysis-orchestration-route-invalid:${value || '<empty>'}`);
 }
 
+function invalidPayloadNode() {
+  throw new TypeError('analysis-artifact-payload-node-invalid');
+}
+
+function exactPayloadKeys(value, expected) {
+  let keys;
+  try { keys = Reflect.ownKeys(value); }
+  catch { invalidPayloadNode(); }
+  if (keys.length !== expected.length || expected.some((key) => !keys.includes(key))) invalidPayloadNode();
+}
+
+function wireArray(value, { dense = true } = {}) {
+  if (!Array.isArray(value)) invalidPayloadNode();
+  let keys;
+  try { keys = Reflect.ownKeys(value); }
+  catch { invalidPayloadNode(); }
+  for (const key of keys) {
+    if (key === 'length') continue;
+    if (typeof key !== 'string' || !/^(?:0|[1-9][0-9]*)$/.test(key)) invalidPayloadNode();
+    const index = Number(key);
+    if (!Number.isSafeInteger(index) || index >= value.length || String(index) !== key) invalidPayloadNode();
+  }
+  if (dense) {
+    for (let i = 0; i < value.length; i++) if (!Object.hasOwn(value, i)) invalidPayloadNode();
+  }
+  return value;
+}
+
+const CANONICAL_BIGINT = /^(?:0|[1-9][0-9]*|-[1-9][0-9]*)$/;
+function canonicalBigInt(value) {
+  if (typeof value !== 'string' || !CANONICAL_BIGINT.test(value)) invalidPayloadNode();
+  return BigInt(value);
+}
+
+function canonicalBytes(value) {
+  const entries = wireArray(value);
+  for (const entry of entries) {
+    if (typeof entry !== 'number' || !Number.isInteger(entry) || entry < 0 || entry > 255) invalidPayloadNode();
+  }
+  return Uint8Array.from(entries);
+}
+
+const INTEGER_TYPED_ARRAY_RANGES = new Map([
+  ['Int8Array', [-128, 127]],
+  ['Uint8Array', [0, 255]],
+  ['Uint8ClampedArray', [0, 255]],
+  ['Int16Array', [-32768, 32767]],
+  ['Uint16Array', [0, 65535]],
+  ['Int32Array', [-2147483648, 2147483647]],
+  ['Uint32Array', [0, 4294967295]],
+]);
+
+function canonicalTypedArrayValues(name, value) {
+  const entries = wireArray(value);
+  const integerRange = INTEGER_TYPED_ARRAY_RANGES.get(name);
+  if (integerRange) {
+    const [min, max] = integerRange;
+    for (const entry of entries) {
+      if (typeof entry !== 'number' || !Number.isInteger(entry) || entry < min || entry > max) invalidPayloadNode();
+    }
+    return entries;
+  }
+  if (name === 'Float32Array') {
+    for (const entry of entries) {
+      if (typeof entry !== 'number') invalidPayloadNode();
+      const canonical = new Float32Array([entry])[0];
+      if (!(Number.isNaN(entry) && Number.isNaN(canonical)) && !Object.is(entry, canonical)) invalidPayloadNode();
+    }
+    return entries;
+  }
+  if (name === 'Float64Array') {
+    for (const entry of entries) if (typeof entry !== 'number') invalidPayloadNode();
+    return entries;
+  }
+  if (name === 'BigInt64Array' || name === 'BigUint64Array') {
+    const min = name === 'BigInt64Array' ? -(1n << 63n) : 0n;
+    const max = name === 'BigInt64Array' ? (1n << 63n) - 1n : (1n << 64n) - 1n;
+    return entries.map((entry) => {
+      const parsed = canonicalBigInt(entry);
+      if (parsed < min || parsed > max) invalidPayloadNode();
+      return parsed;
+    });
+  }
+  invalidPayloadNode();
+}
+
 /**
  * Lossless transport codec for existing worker results. ArtifactStore v1 uses
  * canonical JSON, while current workers legitimately return BigInt and typed
@@ -106,44 +192,113 @@ export function encodeWorkerAnalysisPayload(value) {
 }
 
 export function decodeWorkerAnalysisPayload(payload) {
-  if (!payload || payload.codec !== WORKER_ANALYSIS_PAYLOAD_CODEC_VERSION || !payload.root) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    throw new TypeError('analysis-artifact-payload-codec-mismatch');
+  }
+  try { exactPayloadKeys(payload, ['codec', 'root']); }
+  catch { throw new TypeError('analysis-artifact-payload-codec-mismatch'); }
+  if (payload.codec !== WORKER_ANALYSIS_PAYLOAD_CODEC_VERSION || !payload.root) {
     throw new TypeError('analysis-artifact-payload-codec-mismatch');
   }
   const decode = (node) => {
-    if (!node || typeof node !== 'object') throw new TypeError('analysis-artifact-payload-node-invalid');
+    if (!node || typeof node !== 'object' || Array.isArray(node) || typeof node.t !== 'string') invalidPayloadNode();
     switch (node.t) {
-      case 'null': return null;
-      case 'undefined': return undefined;
-      case 'string': return String(node.v);
-      case 'boolean': return !!node.v;
-      case 'bigint': return BigInt(node.v);
+      case 'null':
+        exactPayloadKeys(node, ['t']);
+        return null;
+      case 'undefined':
+        exactPayloadKeys(node, ['t']);
+        return undefined;
+      case 'string':
+        exactPayloadKeys(node, ['t', 'v']);
+        if (typeof node.v !== 'string') invalidPayloadNode();
+        return node.v;
+      case 'boolean':
+        exactPayloadKeys(node, ['t', 'v']);
+        if (typeof node.v !== 'boolean') invalidPayloadNode();
+        return node.v;
+      case 'bigint':
+        exactPayloadKeys(node, ['t', 'v']);
+        return canonicalBigInt(node.v);
       case 'number':
-        if (node.v === 'nan') return NaN;
-        if (node.v === 'infinity') return Infinity;
-        if (node.v === '-infinity') return -Infinity;
-        if (node.v === '-0') return -0;
-        return Number(node.v);
-      case 'date': return new Date(node.v);
-      case 'array-buffer': return Uint8Array.from(node.v || []).buffer;
+        exactPayloadKeys(node, ['t', 'v']);
+        if (typeof node.v === 'string') {
+          if (node.v === 'nan') return NaN;
+          if (node.v === 'infinity') return Infinity;
+          if (node.v === '-infinity') return -Infinity;
+          if (node.v === '-0') return -0;
+          invalidPayloadNode();
+        }
+        if (typeof node.v !== 'number' || !Number.isFinite(node.v) || Object.is(node.v, -0)) invalidPayloadNode();
+        return node.v;
+      case 'date': {
+        exactPayloadKeys(node, ['t', 'v']);
+        if (typeof node.v !== 'string') invalidPayloadNode();
+        const date = new Date(node.v);
+        let iso;
+        try { iso = date.toISOString(); }
+        catch { invalidPayloadNode(); }
+        if (iso !== node.v) invalidPayloadNode();
+        return date;
+      }
+      case 'array-buffer':
+        exactPayloadKeys(node, ['t', 'v']);
+        return canonicalBytes(node.v).buffer;
       case 'data-view': {
-        const bytes = Uint8Array.from(node.v || []);
+        exactPayloadKeys(node, ['t', 'v']);
+        const bytes = canonicalBytes(node.v);
         return new DataView(bytes.buffer);
       }
       case 'typed-array': {
-        const ctor = TYPED_ARRAYS.get(String(node.c));
-        if (!ctor) throw new TypeError(`analysis-artifact-typed-array-unsupported:${String(node.c)}`);
-        const bigint = node.c === 'BigInt64Array' || node.c === 'BigUint64Array';
-        return new ctor((node.v || []).map((entry) => bigint ? BigInt(entry) : Number(entry)));
+        exactPayloadKeys(node, ['t', 'c', 'v']);
+        if (typeof node.c !== 'string') invalidPayloadNode();
+        const ctor = TYPED_ARRAYS.get(node.c);
+        if (!ctor) throw new TypeError(`analysis-artifact-typed-array-unsupported:${node.c}`);
+        return new ctor(canonicalTypedArrayValues(node.c, node.v));
       }
-      case 'map': return new Map((node.v || []).map(([key, entry]) => [decode(key), decode(entry)]));
-      case 'set': return new Set((node.v || []).map(decode));
-      case 'array': return (node.v || []).map(decode);
-      case 'object': {
-        const out = node.n ? Object.create(null) : {};
-        for (const [key, entry] of node.v || []) Object.defineProperty(out, key, { value:decode(entry), enumerable:true, configurable:true, writable:true });
+      case 'map': {
+        exactPayloadKeys(node, ['t', 'v']);
+        const out = new Map();
+        for (const pair of wireArray(node.v)) {
+          const tuple = wireArray(pair);
+          if (tuple.length !== 2) invalidPayloadNode();
+          const key = decode(tuple[0]);
+          if (out.has(key)) invalidPayloadNode();
+          out.set(key, decode(tuple[1]));
+        }
         return out;
       }
-      default: throw new TypeError(`analysis-artifact-payload-node-unsupported:${String(node.t)}`);
+      case 'set': {
+        exactPayloadKeys(node, ['t', 'v']);
+        const out = new Set();
+        for (const entry of wireArray(node.v)) {
+          const value = decode(entry);
+          if (out.has(value)) invalidPayloadNode();
+          out.add(value);
+        }
+        return out;
+      }
+      case 'array':
+        exactPayloadKeys(node, ['t', 'v']);
+        return wireArray(node.v, { dense:false }).map(decode);
+      case 'object': {
+        exactPayloadKeys(node, ['t', 'n', 'v']);
+        if (typeof node.n !== 'boolean') invalidPayloadNode();
+        const out = node.n ? Object.create(null) : {};
+        let previous = null;
+        let index = 0;
+        for (const pair of wireArray(node.v)) {
+          const tuple = wireArray(pair);
+          if (tuple.length !== 2 || typeof tuple[0] !== 'string') invalidPayloadNode();
+          const [key, entry] = tuple;
+          if (index > 0 && previous >= key) invalidPayloadNode();
+          previous = key;
+          index++;
+          Object.defineProperty(out, key, { value:decode(entry), enumerable:true, configurable:true, writable:true });
+        }
+        return out;
+      }
+      default: throw new TypeError(`analysis-artifact-payload-node-unsupported:${node.t}`);
     }
   };
   return decode(payload.root);
