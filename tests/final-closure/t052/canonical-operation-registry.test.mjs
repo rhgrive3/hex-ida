@@ -139,3 +139,81 @@ test('T052 canonicalization preserves semantic collision and pending authority',
   assert.equal(log.operations.get('op:pending'), pending, 'the original pending operation remains authoritative');
   assert.deepEqual([...log.pending.keys()], []);
 });
+
+test('T052 constructor canonicalizes operations and pending hydration', () => {
+  const rawParent = rawOperation('op:hydrated-parent', {
+    targetEntityId: 'entity:hydrated-parent',
+    payload: 'parent',
+  });
+  const rawPending = rawOperation('op:hydrated-child', {
+    targetEntityId: 'entity:hydrated-child',
+    causalParents: ['op:hydrated-parent'],
+    payload: 'child',
+  });
+  const canonical = createProjectOperation({
+    ...base,
+    operationId: 'op:hydrated-canonical',
+    targetEntityId: 'entity:hydrated-canonical',
+  });
+  const log = new ChangeLog({
+    projectIdentity: base.projectIdentity,
+    operations: [rawParent, canonical],
+    pending: [['op:hydrated-child', rawPending]],
+  });
+
+  assert.equal(isCanonicalProjectOperation(rawParent), false);
+  assert.equal(isCanonicalProjectOperation(rawPending), false);
+  assert.notEqual(log.operations.get(rawParent.operationId), rawParent);
+  assert.notEqual(log.pending.get(rawPending.operationId), rawPending);
+  assert.equal(isCanonicalProjectOperation(log.operations.get(rawParent.operationId)), true);
+  assert.equal(isCanonicalProjectOperation(log.pending.get(rawPending.operationId)), true);
+  assert.equal(log.operations.get(canonical.operationId), canonical, 'already canonical hydration retains object identity');
+
+  const trigger = rawOperation('op:hydration-trigger', {
+    targetEntityId: 'entity:hydration-trigger',
+    payload: 'trigger',
+  });
+  assert.equal(log.applyOperation(trigger).status, 'applied');
+  assert.equal(log.pending.has(rawPending.operationId), false);
+  assert.equal(log.operations.has(rawPending.operationId), true);
+  assert.equal(log.snapshot().facts['entity:hydrated-child\u0000name'].values[0].value, 'child');
+});
+
+test('T052 constructor rejects malformed, colliding, and mismatched hydration', () => {
+  assert.throws(
+    () => new ChangeLog({
+      projectIdentity: base.projectIdentity,
+      operations: [rawOperation('op:hydrated-add', { action: 'add' })],
+    }),
+    (error) => error instanceof TypeError && error.message === 'operation-action-unsupported',
+  );
+
+  const malformedPending = rawOperation('op:hydrated-malformed');
+  delete malformedPending.targetEntityId;
+  assert.throws(
+    () => new ChangeLog({
+      projectIdentity: base.projectIdentity,
+      pending: [['op:hydrated-malformed', malformedPending]],
+    }),
+    (error) => error instanceof TypeError && error.message === 'operation-target-entity-required',
+  );
+
+  assert.throws(
+    () => new ChangeLog({
+      projectIdentity: base.projectIdentity,
+      pending: [['op:different-key', rawOperation('op:hydrated-key')]],
+    }),
+    (error) => error instanceof TypeError && error.message === 'operation-pending-id-mismatch',
+  );
+
+  assert.throws(
+    () => new ChangeLog({
+      projectIdentity: base.projectIdentity,
+      operations: [
+        rawOperation('op:hydrated-collision', { payload: 'alpha' }),
+        rawOperation('op:hydrated-collision', { payload: 'beta' }),
+      ],
+    }),
+    (error) => error instanceof TypeError && error.message === 'operation-id-content-mismatch',
+  );
+});

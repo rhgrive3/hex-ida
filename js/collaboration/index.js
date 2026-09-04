@@ -106,6 +106,31 @@ export function createProjectOperation(input = {}) {
 
 function compareOperations(a, b) { return a.operationId.localeCompare(b.operationId); }
 
+function addHydratedOperation(map, operation) {
+  const existing = map.get(operation.operationId);
+  if (existing) {
+    if (semanticDigest(existing) !== semanticDigest(operation)) throw new TypeError('operation-id-content-mismatch');
+    return;
+  }
+  map.set(operation.operationId, operation);
+}
+
+function hydrateOperations(inputs = []) {
+  const operations = new Map();
+  for (const input of inputs) addHydratedOperation(operations, requireCanonicalOperation(input));
+  return operations;
+}
+
+function hydratePending(entries = []) {
+  const pending = new Map();
+  for (const [operationId, input] of entries) {
+    const operation = requireCanonicalOperation(input);
+    if (operationId !== operation.operationId) throw new TypeError('operation-pending-id-mismatch');
+    addHydratedOperation(pending, operation);
+  }
+  return pending;
+}
+
 export function orderOperations(operations = [], existingIds = new Set()) {
   const unique = new Map();
   for (const input of operations) {
@@ -144,8 +169,8 @@ export class ChangeLog {
     this.projectIdentity = required(options.projectIdentity ?? options.projectId, 'changelog-project-identity-required');
     this.binaryIdentity = options.binaryIdentity == null ? null : required(options.binaryIdentity, 'changelog-binary-identity-invalid');
     this.state = cloneState(options.state || emptyState(this.projectIdentity, this.binaryIdentity));
-    this.operations = new Map((options.operations || []).map((operation) => [operation.operationId, operation]));
-    this.pending = new Map(options.pending || []);
+    this.operations = hydrateOperations(options.operations || []);
+    this.pending = hydratePending(options.pending || []);
     this.allowRemote = options.allowRemote === true;
     this.authorizedAuthors = new Set((options.authorizedAuthors || []).map(String));
   }
