@@ -122,8 +122,8 @@ export function validateFatContainer(all) {
 }
 
 function isCompatArm64Subtype(subtype) {
-  const base = subtypeBase(subtype);
-  return base === 0 || base === 1;
+  const value = subtype >>> 0;
+  return value === 0 || value === 1;
 }
 
 function checkCompatArm64Basic(cpu, subtype, offset, size, align, count, totalBytes, existingSlices) {
@@ -139,7 +139,7 @@ function checkCompatArm64Basic(cpu, subtype, offset, size, align, count, totalBy
 }
 
 export function probePastEndArm64SliceSync(r, count, totalBytes, readHeaderBytes, existingSlices, probeOffset = 8 + count * 20) {
-  if (8 + (count + 1) * 20 > totalBytes) return null;
+  if (8n + BigInt((count + 1) * 20) > BigInt(totalBytes)) return null;
   if (probeOffset + 20 > r.bytes.length) return null;
   const cpu = r.i32(probeOffset);
   const subtype = r.i32(probeOffset + 4);
@@ -162,7 +162,7 @@ export function probePastEndArm64SliceSync(r, count, totalBytes, readHeaderBytes
 }
 
 export async function probePastEndArm64SliceAsync(r, count, totalBytes, readHeaderBytesAsync, existingSlices, probeOffset = count * 20) {
-  if (8 + (count + 1) * 20 > totalBytes) return null;
+  if (8n + BigInt((count + 1) * 20) > BigInt(totalBytes)) return null;
   if (probeOffset + 20 > r.bytes.length) return null;
   const cpu = r.i32(probeOffset);
   const subtype = r.i32(probeOffset + 4);

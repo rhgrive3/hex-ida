@@ -80,7 +80,7 @@ export async function parseMachOSource(input, opts = {}, prefix = null, rangeOpt
 
   // #6317: probe past-end arm64 compatibility slice for FAT32
   if (fat.bits === 32 && extraSize === 20) {
-    const compat = await probePastEndArm64SliceAsync(r, count, Number(source.size), async (off, len) => {
+    const compat = await probePastEndArm64SliceAsync(r, count, source.size, async (off, len) => {
       return source.readExactly(off, len, { signal: opts.signal });
     }, all);
     if (compat) all.push(compat);
@@ -93,7 +93,7 @@ export async function parseMachOSource(input, opts = {}, prefix = null, rangeOpt
     }
     const headerBytes = await source.readExactly(slice.offset, Math.min(32, Number(slice.size)), { signal: opts.signal });
     const inner = parseInnerMachOHeader(headerBytes);
-    validateFatSlice(slice, inner, Number(source.size), opts);
+    validateFatSlice(slice, inner, source.size, opts);
   }
 
   // #6314: validate container (duplicate architectures and slice range overlap)
@@ -148,4 +148,3 @@ function fatKind(bytes) {
   for (let i = 0; i < 4; i++) magic += bytes[i].toString(16).padStart(2, '0');
   return FAT_KINDS.get(magic) || null;
 }
-
