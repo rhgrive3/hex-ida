@@ -14,7 +14,8 @@ debug capability negotiation issue. Update it at every branch, PR, or merge stag
 - Branch: `fix/issues-debug-adapter-boundary-6175`
 - Candidate base: `origin/main` at `f00154dcb9b2234cbacb4c6a3c2186d00c8a4b3a`
 - Implementation head: `e2ad29ca6697bac82fac5c9ec3b340617beccfce`
-- Pull request: pending
+- Current remote head: `origin/fix/issues-debug-adapter-boundary-6175` at `9c5fb5a20a358108d6cf0275d40503916a8a52f2`
+- Pull request: #6488 — https://github.com/rhgrive3/hex-ida/pull/6488
 
 ## Stages
 
@@ -23,8 +24,9 @@ debug capability negotiation issue. Update it at every branch, PR, or merge stag
 - [x] Reproduced `negotiate({ writeMemory: false })` re-enabling a supported capability on the candidate base.
 - [x] Implemented strict `requested[key] === true` handling for object-form requests while preserving Set/Array membership semantics.
 - [x] Focused regression and lint passed locally.
-- [ ] Phase 4 candidate proof.
-- [ ] Create one owner PR for #6175 and verify exact-head checks.
+- [x] Candidate tree `cf22830b6a0a24b0668f2ed969d78c531cefceca` passed focused regression and lint; Phase 4 reached 33-file PASS before the known pristine-main ownership-contract failure.
+- [x] Created one owner PR for #6175: #6488.
+- [ ] Re-run exact-head checks after this checkpoint update and inspect required PR checks.
 - [ ] Merge only after exact-head evidence is green; otherwise record the blocker here and on the board.
 
 ## Resume procedure
