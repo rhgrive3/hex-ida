@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 
-import { KIND, mergeProgramScans } from '../js/program.js';
+import { KIND, ProgramIndex, mergeProgramScans } from '../js/program.js';
 
 const scan = {
   regionId:'text',
@@ -109,4 +109,57 @@ const validLimits = mergeProgramScans([scanWithEdges], {
 assert.equal(validLimits.completeness.limits.calls, 5, '#4934: safe integer limits are respected');
 assert.equal(validLimits.completeness.limits.refs, 5, '#4934: safe integer limits are respected');
 
-console.log('issue #2059/#3416/#4546/#4934 program merge completeness regressions passed');
+// #3633: explicit transport counts must never flow into TypedArray.subarray
+// as negative end offsets. Invalid explicit counts fail closed before graph
+// cardinality can be silently rewritten while preserving complete:true.
+const indexedScan = {
+  callFrom: new BigUint64Array([0x1000n, 0x2000n, 0x3000n]),
+  callTo: new BigUint64Array([0x4000n, 0x5000n, 0x6000n]),
+  refFrom: new BigUint64Array([1n, 2n, 3n]),
+  refTo: new BigUint64Array([4n, 5n, 6n]),
+  refKind: new Uint8Array([1, 1, 1]),
+  completeness: { complete:true, reasons:[] },
+};
+assert.throws(
+  () => new ProgramIndex({ ...indexedScan, callCount:-1 }, null, null),
+  (error) => error instanceof TypeError && error.message === 'program-call-count-invalid',
+  '#3633: negative callCount must fail closed instead of becoming subarray(0, -1)',
+);
+assert.throws(
+  () => new ProgramIndex({ ...indexedScan, refCount:-1 }, null, null),
+  (error) => error instanceof TypeError && error.message === 'program-ref-count-invalid',
+  '#3633: negative refCount must fail closed instead of becoming subarray(0, -1)',
+);
+assert.throws(
+  () => new ProgramIndex({ ...indexedScan, callCount:'2' }, null, null),
+  TypeError,
+  '#3633: malformed explicit callCount must not be laundered into a complete graph',
+);
+
+const omittedCounts = new ProgramIndex(indexedScan, null, null);
+assert.equal(omittedCounts.callCount, 3, '#3633: omitted callCount retains raw-array inference');
+assert.equal(omittedCounts.refCount, 3, '#3633: omitted refCount retains raw-array inference');
+
+const zeroCounts = new ProgramIndex({ ...indexedScan, callCount:0, refCount:0 }, null, null);
+assert.equal(zeroCounts.callCount, 0, '#3633: explicit zero callCount remains valid');
+assert.equal(zeroCounts.refCount, 0, '#3633: explicit zero refCount remains valid');
+
+const positiveCounts = new ProgramIndex({ ...indexedScan, callCount:2, refCount:2 }, null, null);
+assert.equal(positiveCounts.callCount, 2, '#3633: positive safe integer callCount remains valid');
+assert.equal(positiveCounts.refCount, 2, '#3633: positive safe integer refCount remains valid');
+
+const oversizedCounts = new ProgramIndex({ ...indexedScan, callCount:99, refCount:99 }, null, null);
+assert.equal(oversizedCounts.callCount, 3, '#3633: callCount above raw cardinality preserves existing clamp semantics');
+assert.equal(oversizedCounts.refCount, 3, '#3633: refCount above raw cardinality preserves existing clamp semantics');
+
+const cardinalityMismatch = new ProgramIndex({
+  ...indexedScan,
+  callCount:3,
+  callTo:new BigUint64Array([0x4000n, 0x5000n]),
+  refCount:3,
+  refKind:new Uint8Array([1]),
+}, null, null);
+assert.equal(cardinalityMismatch.callCount, 2, '#3633: call graph clamps to the shortest owned array');
+assert.equal(cardinalityMismatch.refCount, 1, '#3633: ref graph clamps to the shortest owned array');
+
+console.log('issue #2059/#3416/#3633/#4546/#4934 program merge/index regressions passed');
