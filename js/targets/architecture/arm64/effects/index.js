@@ -350,8 +350,10 @@ function literalMemoryEncodingFailure(instruction) {
   const ops = Array.isArray(instruction?.ops) ? instruction.ops : [];
   if (ops.some((op) => op?.k === 'mem' || op?.kind === 'memory')) return null;
   const immediate = ops.find((op) => op?.k === 'imm' || op?.kind === 'immediate');
-  const target = asBigIntOrNull(instruction?.pcRelTarget ?? instruction?.literalTarget ?? immediateOf(immediate));
+  const immediateValue = immediate == null ? null : immediateOf(immediate);
+  const target = asBigIntOrNull(instruction?.pcRelTarget ?? instruction?.literalTarget ?? immediateValue);
   if (target == null) return null;
+  if (immediateValue != null && immediateValue !== target) return `arm64-${mnemonic}-literal-target-evidence-mismatch`;
   const address = asBigIntOrNull(instruction?.address);
   if (address == null) return `arm64-${mnemonic}-literal-address-unavailable-for-encoding`;
   if ((target & 3n) !== 0n) return `arm64-${mnemonic}-literal-target-misaligned-encoding`;
