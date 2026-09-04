@@ -123,7 +123,22 @@ import { parseUnifiedLanguageMetadata } from '../js/metadata/index.js';
   console.log('✔ #6105 RTTI demangler non-string validation passed');
 }
 
-// --- Test 5: #6062 unified metadata dispatcher provider discovery parity ---
+// --- Test 5: #3608 Swift 4 legacy prefix survives Darwin normalization ---
+{
+  assert.equal(demangleSwift('_T04Test3Foo'), 'Test.Foo');
+  assert.equal(demangleSwift('_T4Test3Foo'), 'Test.Foo');
+  assert.equal(readableName('_T04Test3Foo'), 'Test.Foo');
+
+  // Existing modern Swift spellings keep their accepted normalization.
+  assert.equal(demangleSwift('_$s4Test3Foo'), 'Test.Foo');
+  assert.equal(demangleSwift('$s4Test3Foo'), 'Test.Foo');
+  assert.equal(demangleSwift('_$S4Test3Foo'), 'Test.Foo');
+  assert.equal(demangleSwift('$S4Test3Foo'), 'Test.Foo');
+  assert.equal(demangleSwift('_foo'), null);
+  console.log('✔ #3608 Swift legacy prefix normalization passed');
+}
+
+// --- Test 6: #6062 unified metadata dispatcher provider discovery parity ---
 {
   // Rust discovery via __R and ZN
   const rustV0 = await parseUnifiedLanguageMetadata({
