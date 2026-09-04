@@ -17,6 +17,14 @@ function targetAlignmentFault(instructionAlignment) {
   return { kind: 'pc-alignment-fault', condition: { kind: 'riscv64-target-misaligned', alignmentBytes }, detail: { architecture: 'riscv64', instructionAlignment: alignmentBytes } };
 }
 function targetAlignmentFaults(ctx) { const fault = targetAlignmentFault(ctx.instructionAlignment); return fault == null ? [] : [fault]; }
+// Direct targets are statically known: only a misaligned target can fault.
+// Indirect (jalr) targets are runtime values, so the conditional fault is kept.
+function directTargetAlignmentFaults(ctx, target) {
+  const alignmentBytes = Number(ctx.instructionAlignment);
+  if (alignmentBytes <= 2) return [];
+  if (typeof target === 'bigint' && target % BigInt(alignmentBytes) === 0n) return [];
+  return targetAlignmentFaults(ctx);
+}
 
 export function liftRiscv64ControlEffects(decoded, context = {}) {
   const ctx = createRiscv64EffectContext(decoded, context);
@@ -39,7 +47,7 @@ export function liftRiscv64ControlEffects(decoded, context = {}) {
     const target = address + BigInt(fields.imm);
     return ctx.finish({
       controlEffect: { kind: 'conditional-branch', target: addressRef(target), fallthrough: addressRef(next), condition },
-      possibleFaults: target === next ? [] : targetAlignmentFaults(ctx),
+      possibleFaults: target === next ? [] : directTargetAlignmentFaults(ctx, target),
       family: 'control',
       metadata: {
         operation: op,
@@ -57,7 +65,7 @@ export function liftRiscv64ControlEffects(decoded, context = {}) {
     const isCallHint = linked && RETURN_ADDRESS_HINT_REGISTERS.includes(fields.rd);
     return ctx.finish({
       controlEffect: isCallHint ? { kind: 'call', target: addressRef(target), fallthrough: addressRef(next) } : { kind: 'branch', target: addressRef(target) },
-      possibleFaults: targetAlignmentFaults(ctx),
+      possibleFaults: directTargetAlignmentFaults(ctx, target),
       family: 'control',
       metadata: { operation: op, direct: true, linkRegister: linked ? fields.rd : null, jumpWithLinkage: linked && !isCallHint, abiSemantics: false },
     });
