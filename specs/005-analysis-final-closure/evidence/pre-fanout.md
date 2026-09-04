@@ -4,8 +4,8 @@ Status: `PREFLIGHT_GREEN`
 
 This packet records the ten mandatory conditions in
 `docs/ENGINEERING_PROCESS_GUARDRAILS.md` §3.1. The certified pre-transition
-candidate is commit `99c45ca70abed87f203b3428d40568c556d46616`, tree
-`853fb1977f0772e71233b706b0faa82e02ed02fe`, on base
+candidate is commit `91eed68175aa1b965bca39d259ed836473361307`, tree
+`624a8765938f3b2fd26e0ba077dabeb699b8d55f`, on base
 `7012c4cc4f0d5c0d8a7ca44c6c5c1edcb080aba1`.
 
 | §3.1 condition | Current evidence | State |
@@ -14,7 +14,7 @@ candidate is commit `99c45ca70abed87f203b3428d40568c556d46616`, tree
 | Machine-checkable exit contract | `spec.md`, `tasks.md`, closure/performance/platform contracts | SATISFIED |
 | Frozen/shared/generated/verifier/integration/component ownership | `contracts/task-ownership.json` plus exact integration inventory | SATISFIED |
 | Living integration branch/PR | `recovery/final-closure-v2-20260904`, replacement PR #6610 | SATISFIED |
-| Permanent exact-SHA invocation | `.github/workflows/final-closure-preflight.yml`, run `33903574803`, exact head/base above | SATISFIED |
+| Permanent exact-SHA invocation | `.github/workflows/final-closure-preflight.yml`, run `33907896714`, exact head/base above | SATISFIED |
 | Ownership/governance regressions | canonical recursive `tests/final-closure/run.mjs` on the exact head | SATISFIED |
 | Real production walking skeleton | unchanged `tests/phase4/walking-skeleton.test.mjs` on the exact head | SATISFIED |
 | Target browser/device proof | frozen production-WebKit and physical-iPad ≤4 GiB classes in `contracts/final-platform-locks.json` | SATISFIED |
@@ -154,12 +154,13 @@ any later applicability change.
 ## Exact candidate evidence
 
 - Direct exact CLI: `PREFLIGHT_GREEN` for head
-  `99c45ca70abed87f203b3428d40568c556d46616`, tree/merge tree
-  `853fb1977f0772e71233b706b0faa82e02ed02fe`, and base/merge base
+  `91eed68175aa1b965bca39d259ed836473361307`, tree/merge tree
+  `624a8765938f3b2fd26e0ba077dabeb699b8d55f`, and base/merge base
   `7012c4cc4f0d5c0d8a7ca44c6c5c1edcb080aba1`; verifier SHA-256
   `d31c1df716fbe59701df6c16657d4e468b48c90b08b15af0ce1c2cf4abd7470c`.
 - Canonical recursive runner: `final-closure: PASS (2/2 discovered test files)`
-  on the exact committed head. It covers the fixed central shadow judges,
+  in 374.7 seconds on the exact committed head; the focused permanent preflight
+  regression also passed with all 27 nested discovery paths. It covers the fixed central shadow judges,
   denominator attacks, raw T025 binding, immutable task anchors, recovery-ref
   transactions, hostile path decoding, and ownership regressions.
 - Unchanged Phase 4 production walking skeleton: PASS on the exact committed
@@ -167,19 +168,23 @@ any later applicability change.
 - Expected/actual/union inventory: exact `32/32`, digest
   `f50d499c508ea7c2a4cee3d1c45ed4a1`; task and ownership denominators are
   `57/57`.
-- Independent Luna Max review: the executable/code surface was reviewed at
-  `1056677cf4a44dfb87a37e625e056356b17c38af`; every code, workflow, package,
-  test, and verifier blob is byte-identical at the certified head. A separate
-  Luna Max review inspected the four intervening Spec Kit/evidence blobs on
-  exact head `99c45ca70abed87f203b3428d40568c556d46616`; both reviews returned PASS,
-  and the supervisor independently verified the zero code diff and 32-path
-  inventory.
-- Hosted exact-head/base workflow: run `33903574803` succeeded for exact head
-  `99c45ca70abed87f203b3428d40568c556d46616`; `pull-request-authority` and
+- Independent Luna Max review: the replacement lifecycle repair was reviewed
+  on exact head `91eed68175aa1b965bca39d259ed836473361307`; the reviewer verified the
+  integration ref, non-overclaiming evidence, missing-task rejection, and
+  already-`DONE` idempotence without weakening mutation negatives, and returned
+  PASS. The supervisor independently verified the exact three-path delta,
+  canonical runner, direct CLI, lint, and 32-path inventory.
+- Hosted exact-head/base workflow: run `33907896714` succeeded for exact head
+  `91eed68175aa1b965bca39d259ed836473361307`; `pull-request-authority` and
   `integration-pull-request-head` passed, while the dispatch/component jobs were
   correctly inapplicable and skipped.
-- CodeRabbit on predecessor PR #6429: exact-head check passed; all 18 review
-  threads are resolved. Replacement PR #6610 preserves that reviewed ancestry
-  and requires its own exact-head disposition before the T046 transition. The
-  H9 collector finding is assigned to post-T048 T045, and the raw-observer
-  counter finding was withdrawn after central-verifier rederivation was proven.
+- CodeRabbit on predecessor PR #6429: exact-head check passed and all 18 review
+  threads are resolved. The two topology findings on replacement PR #6610 were
+  ACTIONABLE: they required one living authority and the promised repair plus
+  recreated transition. PR #6429 is now closed unmerged while its branch and
+  published commit remain preserved; exact head `91eed68175aa1b965bca39d259ed836473361307`
+  contains the permanent repair, and the following unique transition will
+  recreate the gate.
+  PR #6610 has zero inline review threads; its post-transition exact-head review
+  remains mandatory before any component is accepted into integration. The H9
+  collector finding remains assigned to post-T048 T045.
