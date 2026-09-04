@@ -27,6 +27,15 @@ Actual candidate file inventory:
 - `tests/issue-6266-compare-functions-fallback.mjs`
 - `docs/issue-fix-campaign-checkpoint-20260904.md`
 
+Exact candidate verification after the main rebase (`merge-base eac4b0609e8a6c4a78313f9d2a68e15ba235975b`, implementation candidate `6590bf9fa18aadea486e743f51aa56a334da53d5`):
+
+- `git diff --check` — PASS.
+- All four focused issue tests — PASS.
+- #6264 Playwright panel refresh regression — PASS.
+- `npm run lint` — PASS (`1815 files ok`).
+- `npm run ai:test` — PASS (`ai-test-final`).
+- `npm run check` — red only in existing Phase 3 semantic/decompiler evidence recorded above; the changed-file union is outside those failures.
+
 ## Completed implementation
 
 - #6259: reserve `search_functions` before continuity when `requestedScope=auto`, so a one-tool window retains its liveness escape without duplicating a previous escape tool.
