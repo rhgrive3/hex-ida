@@ -242,22 +242,27 @@ uses one registry-fixed central verifier and pinned foundation contracts outside
 component ownership. It executes an independent oracle projection and an
 exact-candidate product projection separately; providers emit only raw
 observations, and the central verifier derives the case relation, denominators,
-all seven hard-zero counters, verdict, and evidence identity. Each denominator
-counts only cases explicitly mapped to that counter, and terminal aggregate
-proof requires coverage of all seven. Candidate and authority identities are
-separate: the authority is the component candidate's exact first parent or
-`G_i`'s exact sole `M_i` parent, never the candidate itself; authority
+all seven hard-zero counters, verdict, and evidence identity. For each required
+counter, the foundation contract must contain an explicit non-empty case mapping;
+the derived denominator must be a positive safe integer; and the completed
+checkpoint must contain terminal shadow evidence for that counter with observed
+failures exactly zero. Aggregate `PASS` is invalid when any counter is missing,
+unmapped, non-terminal, zero-denominator, or nonzero. Candidate and authority
+identities are separate: the authority is the component candidate's exact first
+parent or `G_i`'s exact sole `M_i` parent, never the candidate itself; authority
 foundation/judge blobs must equal the candidate blobs. Exact-G lockfiles
 provision dependencies, whose installed tree is checked with typed,
 length-framed hashing. Process invariants cover all persistent refs and a fixed
 runtime-ephemeral allowlist.
 
 **Rationale**: A constructor that emits `PASS` without process observations, a
-component-selected verifier/oracle, or one task-owned process supplying both
-sides is self-certification. Bounded output identities preserve an audit trail
-without treating nondeterministic reporter timing as semantics.
+component-selected verifier/oracle, one task-owned process supplying both sides,
+or a vacuous zero-denominator counter is self-certification. Bounded output
+identities preserve an audit trail without treating nondeterministic reporter
+timing as semantics.
 
 **Rejected**: Truthy status fields, output text that merely says `PASS`,
-registry/argv substitution, missing counters, worktree-only providers,
-live-host dependency symlinks, unbounded output, undeclared runtime files, or
-mutations to stash, notes, and custom refs.
+registry/argv substitution, missing or zero-denominator counters, non-terminal
+counter records, worktree-only providers, live-host dependency symlinks,
+unbounded output, undeclared runtime files, or mutations to stash, notes, and
+custom refs.
