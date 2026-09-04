@@ -40,25 +40,43 @@ function normalizedSession(raw, windowStarted) {
 export function normalizeQuotaState(raw, now = Date.now(), config = AI_QUOTA) {
   const t = finiteInt(now);
   const windowMs = finiteInt(config.windowMs, AI_QUOTA.windowMs) || AI_QUOTA.windowMs;
+  const leaseMs = finiteInt(config.leaseMs, AI_QUOTA.leaseMs) || AI_QUOTA.leaseMs;
   let windowStarted = finiteInt(raw?.windowStarted, t);
   let count = finiteInt(raw?.count);
   let sessions = raw?.sessions && typeof raw.sessions === 'object'
     ? Object.fromEntries(Object.entries(raw.sessions))
     : {};
-  if (t < windowStarted || t - windowStarted >= windowMs) {
+  const hadPriorWindow = raw?.windowStarted != null;
+  const isRollback = hadPriorWindow && t < windowStarted;
+  if (t - windowStarted >= windowMs) {
     windowStarted = t;
     count = 0;
     sessions = {};
+  } else if (isRollback) {
+    // Clock rollback: keep the prior window/counters so a backward correction
+    // alone never re-grants rate budget. Leases are handled below against the
+    // same rollback anchor so both quotas share one correction policy.
+  } else if (!hadPriorWindow) {
+    windowStarted = t;
   }
 
+  // Effective clock for expiry decisions. On rollback the persisted
+  // windowStarted is the newest trustworthy timestamp, so leases expire
+  // against it instead of the rolled-back wall clock (which would extend
+  // their real lifetime). Survivor expiry is additionally capped at
+  // t + leaseMs so wall-clock lifetime never exceeds the configured lease.
+  const expiryThreshold = isRollback ? windowStarted : t;
+  const expiryCap = t + leaseMs;
   const leases = {};
   if (raw?.leases && typeof raw.leases === 'object') {
     for (const [token, lease] of Object.entries(raw.leases)) {
       const expiresAt = finiteInt(lease?.expiresAt);
-      if (!token || expiresAt <= t) continue;
+      if (!token || expiresAt <= expiryThreshold) continue;
+      const capped = Math.min(expiresAt, expiryCap);
+      if (capped <= expiryThreshold) continue;
       setOwn(leases, token, {
         sessionId: normalizeQuotaSessionId(lease?.sessionId),
-        expiresAt,
+        expiresAt: capped,
       });
     }
   }
@@ -93,9 +111,12 @@ export function acquireQuotaState(raw, request = {}, config = AI_QUOTA) {
   const leaseMs = finiteInt(config.leaseMs, AI_QUOTA.leaseMs) || AI_QUOTA.leaseMs;
   const active = Object.keys(state.leases).length;
   const sessionActive = activeForSession(state.leases, sessionId);
+  // On clock rollback the persisted windowStarted is newer than the wall
+  // clock; advisories must not include the rollback span.
+  const effectiveNow = state.windowStarted > now ? state.windowStarted : now;
 
   if (state.count >= ipRateLimit || session.count >= sessionRateLimit) {
-    const retryAfterMs = Math.max(1, state.windowStarted + windowMs - now);
+    const retryAfterMs = Math.max(1, state.windowStarted + windowMs - effectiveNow);
     return { state, result: { allowed: false, reason: 'rate', retryAfterMs, active, sessionActive } };
   }
   if (active >= ipConcurrencyLimit || sessionActive >= sessionConcurrencyLimit) {
@@ -107,7 +128,7 @@ export function acquireQuotaState(raw, request = {}, config = AI_QUOTA) {
       result: {
         allowed: false,
         reason: 'concurrency',
-        retryAfterMs: Math.max(1, (expiry ?? (now + leaseMs)) - now),
+        retryAfterMs: Math.max(1, (expiry ?? (effectiveNow + leaseMs)) - effectiveNow),
         active,
         sessionActive,
       },
@@ -123,7 +144,7 @@ export function acquireQuotaState(raw, request = {}, config = AI_QUOTA) {
       result: {
         allowed: false,
         reason: 'concurrency',
-        retryAfterMs: Math.max(1, existingLease.expiresAt - now),
+        retryAfterMs: Math.max(1, existingLease.expiresAt - effectiveNow),
         active,
         sessionActive,
       },
