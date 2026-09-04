@@ -28,6 +28,33 @@ test("FunctionLoader: throws in ctx.analyze() still consume budget against maxFu
   assert.equal(analyzeCalls, 1, "analyze must not be invoked after budget exhausted");
 });
 
+test("FunctionLoader: functionRange failure does not consume analysis budget", async () => {
+  let analyzeCalls = 0;
+  const ctx = {
+    program: {
+      functionRange(addr) {
+        if (addr === 0x1000n) throw new Error("range lookup failed");
+        return { start: addr, end: addr + 4n };
+      },
+    },
+    analyze: async (addr) => {
+      analyzeCalls++;
+      return { address: addr, instructions: [] };
+    },
+  };
+
+  const tools = createAgentTools(ctx, { maxFunctions: 1 });
+  await assert.rejects(() => tools.get_function(0x1000n), {
+    name: "AgentToolError",
+    code: "tool-failed",
+  });
+  assert.equal(analyzeCalls, 0, "functionRange failure must not start analysis");
+
+  const result = await tools.get_function(0x2000n);
+  assert.equal(result.address, 0x2000n);
+  assert.equal(analyzeCalls, 1, "functionRange failure must not consume analysis budget");
+});
+
 test("FunctionLoader: maxFunctions=0 rejects before calling ctx.analyze()", async () => {
   let analyzeCalls = 0;
   const ctx = {
