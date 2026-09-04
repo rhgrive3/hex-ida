@@ -8,7 +8,16 @@ function stableValue(value) {
   if (typeof value === 'boolean' || typeof value === 'string') return value;
   if (typeof value === 'number' && Number.isFinite(value)) return value;
   if (typeof value !== 'object') throw new TypeError('analysis-cache-settings-invalid');
-  if (Array.isArray(value)) return value.map(stableValue);
+  if (Array.isArray(value)) {
+    if (Object.getOwnPropertySymbols(value).length) throw new TypeError('analysis-cache-settings-invalid');
+    for (let i = 0; i < value.length; i++) {
+      if (!Object.hasOwn(value, i)) throw new TypeError('analysis-cache-settings-invalid');
+    }
+    if (Object.getOwnPropertyNames(value).length !== value.length + 1) {
+      throw new TypeError('analysis-cache-settings-invalid');
+    }
+    return value.map(stableValue);
+  }
   const proto = Object.getPrototypeOf(value);
   if (proto !== null && proto !== Object.prototype) throw new TypeError('analysis-cache-settings-invalid');
   if (Object.getOwnPropertySymbols(value).length) throw new TypeError('analysis-cache-settings-invalid');

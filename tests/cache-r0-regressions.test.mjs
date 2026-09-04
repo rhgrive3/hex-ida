@@ -31,6 +31,29 @@ test('cache semantic identity rejects own Symbol-keyed fields', () => {
   );
 });
 
+test('cache semantic identity rejects lossy array shapes', () => {
+  const sparse = new Array(1);
+  const withStringProperty = [];
+  withStringProperty.mode = 'strict';
+  const withSymbolProperty = [];
+  withSymbolProperty[Symbol('mode')] = 'strict';
+
+  for (const value of [sparse, withStringProperty, withSymbolProperty]) {
+    assert.throws(
+      () => memoryCache({ semanticOptions: { value } }),
+      /analysis-cache-settings-invalid/,
+    );
+  }
+
+  const denseA = memoryCache({
+    semanticOptions: { value: [null, 1, { y: 2, x: 1 }] },
+  });
+  const denseB = memoryCache({
+    semanticOptions: { value: [null, 1, { x: 1, y: 2 }] },
+  });
+  assert.equal(denseA.analysisIdentity, denseB.analysisIdentity);
+});
+
 test('artifact-id-only get rejects and removes canonical records without binaryHash', async () => {
   const cache = memoryCache();
   const key = cache.canonicalKey(ARTIFACT_ID);
