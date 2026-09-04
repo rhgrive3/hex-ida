@@ -159,12 +159,33 @@ export function createEvidenceEdge(input = {}) {
 
 function equalValue(a, b) { return stableStringify(a) === stableStringify(b); }
 
+export function isEvidenceApplicableToClaim(evidence, claim) {
+  if (!evidence || typeof evidence !== 'object') return false;
+  if (!claim || typeof claim !== 'object') return false;
+  // A binary-scoped proof must not cross into another binary's claim.
+  if (evidence.binaryId != null && claim.binaryId != null && evidence.binaryId !== claim.binaryId) return false;
+  const claimTargets = Array.isArray(claim.targetEntityIds) ? claim.targetEntityIds : [];
+  if (claimTargets.length) {
+    const evidenceTargets = Array.isArray(evidence.targetEntityIds) ? evidence.targetEntityIds : [];
+    // Generic evidence without its own targets stays applicable (existing
+    // contract); evidence pinned to other targets is not.
+    if (!evidenceTargets.length) return true;
+    return evidenceTargets.some((id) => claimTargets.includes(id));
+  }
+  // Scope-only claims carry no target list; binary identity above is the only
+  // structural check available. Evidence nodes have no scope field to compare.
+  return true;
+}
+
 export function canConfirmClaim(evidence, claim) {
   if (!evidence || typeof evidence !== 'object') return false;
   if (evidence.deterministic !== true) return false;
   if (evidence.completeness === 'unsupported' || evidence.completeness === 'truncated' || evidence.completeness === 'partial') {
     return false;
   }
+  // A deterministic, complete proof of something else must not confirm this
+  // claim (#6154).
+  if (!isEvidenceApplicableToClaim(evidence, claim)) return false;
   return true;
 }
 
