@@ -128,6 +128,34 @@ function assertNoPresentationState(config, seen = new WeakSet()) {
 }
 
 /**
+ * Option namespaces that map one-to-one onto option dependency classes.
+ *
+ * `input.options` historically carried every producer's tuning knobs as one
+ * flat bag, and the whole bag was hashed into the artifact id. That let an
+ * option belonging to a *different* analysis invalidate artifacts whose
+ * declared dependencies it cannot touch (FM-14): points-to tuning churned
+ * alias artifacts, alias tuning churned debug and discovery artifacts.
+ *
+ * The builder therefore keys an option namespace only when the artifact kind
+ * declares that option class, and keys no options at all for kinds that
+ * declare no option class. Unknown flat keys keep their legacy behavior for
+ * option-consuming kinds: silently dropping them would under-key producers
+ * that have no namespace yet (FM-15).
+ */
+const OPTION_CLASS_NAMESPACES = deepFreeze(['aliasOptions', 'pointsToOptions']);
+
+function projectOptionsForDependencyClasses(classes, options) {
+  if (!OPTION_CLASS_NAMESPACES.some((namespace) => classes.includes(namespace))) return {};
+  if (options == null || typeof options !== 'object' || Array.isArray(options)
+    || options instanceof Map || options instanceof Set) return options;
+  const projected = { ...options };
+  for (const namespace of OPTION_CLASS_NAMESPACES) {
+    if (!classes.includes(namespace)) delete projected[namespace];
+  }
+  return projected;
+}
+
+/**
  * Builds the canonical descriptor for one Phase 7 artifact.
  *
  * `upstreamArtifactIds` is the load-bearing field: the ArtifactStore refuses to
@@ -178,7 +206,7 @@ export function createPhase7ArtifactDescriptor(input = {}) {
     userConstraintDigest: classes.includes('userConstraints') ? optional(input.userConstraintDigest, 'phase7-artifact-invalid-user-constraint-digest') : null,
   };
 
-  const options = input.options ?? {};
+  const options = projectOptionsForDependencyClasses(classes, input.options ?? {});
   assertNoPresentationState(options);
 
   return createArtifactDescriptor({
