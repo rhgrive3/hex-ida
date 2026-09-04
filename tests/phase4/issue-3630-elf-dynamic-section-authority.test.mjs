@@ -7,6 +7,7 @@ const DYNAMIC_OFFSET = 0x100;
 const SYMTAB_OFFSET = 0x200;
 const STRTAB_OFFSET = 0x300;
 const RELA_OFFSET = 0x400;
+const SHNDX_OFFSET = 0x480;
 const RELOCATION_OFFSET = 0x500;
 const SHN_UNDEF = 0;
 const SHN_XINDEX = 0xffff;
@@ -37,7 +38,7 @@ function putDynamic(view, index, tag, value) {
   view.setBigUint64(off + 8, BigInt(value), true);
 }
 
-function fixture(sectionIndex) {
+function fixture(sectionIndex, companion = null) {
   const bytes = new Uint8Array(0x800);
   const view = new DataView(bytes.buffer);
   const strtabVa = BASE + BigInt(STRTAB_OFFSET);
@@ -52,7 +53,19 @@ function fixture(sectionIndex) {
   putDynamic(view, 5, 7, relaVa);          // DT_RELA
   putDynamic(view, 6, 8, 24);             // DT_RELASZ
   putDynamic(view, 7, 9, 24);             // DT_RELAENT
-  putDynamic(view, 8, 0, 0);              // DT_NULL
+
+  let dynamicEntries = 9;
+  if (companion) {
+    const shndxVa = companion === 'truncated'
+      ? BASE + 0x7fen
+      : BASE + BigInt(SHNDX_OFFSET);
+    putDynamic(view, 8, 34, shndxVa);      // DT_SYMTAB_SHNDX
+    putDynamic(view, 9, 0, 0);             // DT_NULL
+    dynamicEntries = 10;
+    if (companion !== 'truncated') view.setUint32(SHNDX_OFFSET, companion, true);
+  } else {
+    putDynamic(view, 8, 0, 0);             // DT_NULL
+  }
 
   bytes.set([0, ...new TextEncoder().encode('mystery'), 0], STRTAB_OFFSET);
 
@@ -98,7 +111,7 @@ function fixture(sectionIndex) {
 
   const result = parseProgramDynamic(
     reader(bytes),
-    [{ type: 2, offset: BigInt(DYNAMIC_OFFSET), filesz: 9n * 16n }],
+    [{ type: 2, offset: BigInt(DYNAMIC_OFFSET), filesz: BigInt(dynamicEntries * 16) }],
     image,
     64,
   );
@@ -108,21 +121,27 @@ function fixture(sectionIndex) {
   return image;
 }
 
-test('PT_DYNAMIC SHN_XINDEX without companion remains unknown, not an import', () => {
-  const image = fixture(SHN_XINDEX);
+function assertUnknown(image, reason) {
   const [symbol] = image.symbols;
-
   assert.equal(symbol.defined, null);
   assert.equal(symbol.sectionIndex, null);
   assert.equal(image.imports.length, 0);
   assert.equal(image.exports.length, 0);
   assert.equal(image.relocations[0].symbol, 'mystery');
-  assert.ok(image.warnings.some((warning) => warning.includes('missing-companion')));
+  assert.ok(image.warnings.some((warning) => warning.includes(reason)));
+}
+
+test('PT_DYNAMIC SHN_XINDEX without companion remains unknown, not an import', () => {
+  assertUnknown(fixture(SHN_XINDEX), 'missing-companion');
+});
+
+test('PT_DYNAMIC SHN_XINDEX with truncated or invalid companion remains unknown', () => {
+  assertUnknown(fixture(SHN_XINDEX, 'truncated'), 'truncated-companion');
+  assertUnknown(fixture(SHN_XINDEX, 0xff10), 'invalid-extended-index');
 });
 
 test('PT_DYNAMIC SHN_UNDEF remains a definite import with relocation site', () => {
   const image = fixture(SHN_UNDEF);
-
   assert.equal(image.symbols[0].defined, false);
   assert.equal(image.imports.length, 1);
   assert.equal(image.imports[0].name, 'mystery');
@@ -130,11 +149,21 @@ test('PT_DYNAMIC SHN_UNDEF remains a definite import with relocation site', () =
   assert.equal(image.exports.length, 0);
 });
 
-test('PT_DYNAMIC known section index remains a definite export', () => {
-  const image = fixture(1);
+test('PT_DYNAMIC SHN_XINDEX companion resolving to SHN_UNDEF remains an import', () => {
+  const image = fixture(SHN_XINDEX, SHN_UNDEF);
+  assert.equal(image.symbols[0].defined, false);
+  assert.equal(image.symbols[0].sectionIndex, SHN_UNDEF);
+  assert.equal(image.imports.length, 1);
+  assert.equal(image.imports[0].sites.length, 1);
+  assert.equal(image.exports.length, 0);
+});
 
-  assert.equal(image.symbols[0].defined, true);
-  assert.equal(image.imports.length, 0);
-  assert.equal(image.exports.length, 1);
-  assert.equal(image.exports[0].name, 'mystery');
+test('PT_DYNAMIC known section identity remains a definite export', () => {
+  for (const image of [fixture(1), fixture(SHN_XINDEX, 1)]) {
+    assert.equal(image.symbols[0].defined, true);
+    assert.equal(image.symbols[0].sectionIndex, 1);
+    assert.equal(image.imports.length, 0);
+    assert.equal(image.exports.length, 1);
+    assert.equal(image.exports[0].name, 'mystery');
+  }
 });
