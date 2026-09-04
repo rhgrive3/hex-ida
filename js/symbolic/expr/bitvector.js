@@ -29,8 +29,10 @@ function toValidBigInt(val, name = 'value') {
   }
   if (typeof val === 'string') {
     const trimmed = val.trim();
-    if (/^[+-]?(?:0x[0-9a-fA-F]+|\d+)$/.test(trimmed)) {
-      return BigInt(trimmed);
+    const match = /^([+-]?)(0x[0-9a-fA-F]+|\d+)$/.exec(trimmed);
+    if (match) {
+      const magnitude = BigInt(match[2]);
+      return match[1] === '-' ? -magnitude : magnitude;
     }
     throw new TypeError(`${name} must be a valid integer string, got "${val}"`);
   }

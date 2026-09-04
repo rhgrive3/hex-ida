@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { boolSort, bvSort } from '../js/symbolic/expr/kinds.js';
-import { createUnknownSemantic, createBv } from '../js/symbolic/expr/factory.js';
-import { computeStructuralHash, structuralEquals } from '../js/symbolic/expr/hash.js';
-import { serializeExprDag, deserializeExprDag } from '../js/symbolic/expr/serialize.js';
+import { boolSort, bvSort } from '../../../js/symbolic/expr/kinds.js';
+import { createUnknownSemantic, createBv } from '../../../js/symbolic/expr/factory.js';
+import { computeStructuralHash, structuralEquals } from '../../../js/symbolic/expr/hash.js';
+import { serializeExprDag, deserializeExprDag } from '../../../js/symbolic/expr/serialize.js';
 
 test('issue #5035: object key order in detail does not affect structural hash or equality', () => {
   const node1 = createUnknownSemantic(boolSort(), 'unsupported_op', { a: 1, b: 2 });
@@ -49,4 +49,17 @@ test('issue #5035: different values or different array orders remain structurall
   const nodeArr2 = createUnknownSemantic(boolSort(), 'test', { list: [2, 1] });
   assert.notEqual(computeStructuralHash(nodeArr1), computeStructuralHash(nodeArr2));
   assert.equal(structuralEquals(nodeArr1, nodeArr2), false);
+});
+
+test('issue #5035: own __proto__ detail keys remain data and stay distinct from an empty detail', () => {
+  const protoOnly = createUnknownSemantic(boolSort(), 'test', JSON.parse('{"__proto__":{"polluted":true}}'));
+  const empty = createUnknownSemantic(boolSort(), 'test', {});
+
+  assert.notEqual(computeStructuralHash(protoOnly), computeStructuralHash(empty));
+  assert.equal(structuralEquals(protoOnly, empty), false);
+
+  const wire = serializeExprDag(protoOnly);
+  assert.match(wire, /"__proto__"/);
+  const restored = deserializeExprDag(wire);
+  assert.deepEqual(Object.keys(restored.detail), ['__proto__']);
 });

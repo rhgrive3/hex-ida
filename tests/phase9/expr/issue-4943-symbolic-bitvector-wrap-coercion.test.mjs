@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createBv } from '../js/symbolic/expr/factory.js';
-import { wrap, toUnsigned, toSigned, bvAdd, bvUlt } from '../js/symbolic/expr/bitvector.js';
+import { createBv } from '../../../js/symbolic/expr/factory.js';
+import { wrap, toUnsigned, toSigned, bvAdd, bvUlt } from '../../../js/symbolic/expr/bitvector.js';
 
 test('issue #4943: createBv rejects structured values (Array, boolean, plain object)', () => {
   assert.throws(() => createBv(8, [1]), TypeError);
@@ -29,4 +29,12 @@ test('issue #4943: createBv and wrap preserve valid bigint, integer number, and 
   assert.equal(createBv(8, '255').value, 255n);
   assert.equal(createBv(8, 256n).value, 0n); // wraparound preserved
   assert.equal(createBv(8, -1n).value, 255n); // negative wrap preserved
+});
+
+test('issue #4943: signed hexadecimal integer strings preserve their sign before wrapping', () => {
+  assert.equal(wrap('-0x1', 8), 255n);
+  assert.equal(wrap('+0x1', 8), 1n);
+  assert.equal(toUnsigned('-0x80', 8), 128n);
+  assert.equal(toSigned('-0x1', 8), -1n);
+  assert.equal(createBv(8, '-0x1').value, 255n);
 });

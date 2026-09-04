@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { bvSort, MAX_BV_WIDTH, SORT_KIND } from '../js/symbolic/expr/kinds.js';
+import { bvSort, MAX_BV_WIDTH, SORT_KIND } from '../../../js/symbolic/expr/kinds.js';
 import {
   mask,
   wrap,
@@ -11,8 +11,8 @@ import {
   bvConcat,
   bvTrunc,
   bvZext,
-} from '../js/symbolic/expr/bitvector.js';
-import { deserializeExprDag } from '../js/symbolic/expr/serialize.js';
+} from '../../../js/symbolic/expr/bitvector.js';
+import { deserializeExprDag } from '../../../js/symbolic/expr/serialize.js';
 
 test('issue #6229: supported standard widths remain valid', () => {
   for (const w of [1, 8, 16, 32, 64, 128, 256, 512, 4096, MAX_BV_WIDTH]) {

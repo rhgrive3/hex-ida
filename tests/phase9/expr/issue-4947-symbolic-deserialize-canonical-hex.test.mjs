@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { deserializeExprDag, serializeExprDag } from '../js/symbolic/expr/serialize.js';
-import { createBv, createBool, createFreshSymbol } from '../js/symbolic/expr/factory.js';
-import { bvSort } from '../js/symbolic/expr/kinds.js';
+import { deserializeExprDag, serializeExprDag } from '../../../js/symbolic/expr/serialize.js';
+import { createBv, createBool, createFreshSymbol } from '../../../js/symbolic/expr/factory.js';
+import { bvSort } from '../../../js/symbolic/expr/kinds.js';
 
 test('issue #4947: canonical serializer output round-trips correctly', () => {
   const original = createBv(8, 0x42n);
@@ -22,6 +22,10 @@ test('issue #4947: non-canonical and structured BV const values are rejected wit
     '255', // decimal string
     '0x', // missing hex digits
     '0xGG', // invalid hex
+    '0xFF', // serializer emits lowercase
+    '0x00', // zero has one canonical digit
+    '0x0001', // leading zeroes are not canonical
+    '0x100', // out of range for BV8; must not silently wrap to 0x0
     null,
     undefined,
   ];
@@ -41,6 +45,17 @@ test('issue #4947: non-canonical and structured BV const values are rejected wit
       TypeError,
       `Expected TypeError for value: ${JSON.stringify(value)}`
     );
+  }
+});
+
+test('issue #4947: canonical BV boundary encodings remain accepted', () => {
+  for (const [value, expected] of [['0x0', 0n], ['0x1', 1n], ['0xff', 255n]]) {
+    const restored = deserializeExprDag({
+      schemaVersion: '1.0.0',
+      expressionDagVersion: '1.0.0',
+      root: { kind: 'const', sort: { kind: 'bv', width: 8 }, value },
+    });
+    assert.equal(restored.value, expected);
   }
 });
 
