@@ -154,12 +154,47 @@ export function createLanguageMetadataIdentity(input = {}) {
     expected: identity.expected,
   });
 
-  return deepFreeze(identity);
+  const frozen = deepFreeze(identity);
+  CANONICAL_IDENTITIES.add(frozen);
+  return frozen;
+}
+
+const CANONICAL_IDENTITIES = new WeakSet();
+
+export function isCanonicalLanguageIdentity(identity) {
+  if (!identity || typeof identity !== 'object') return false;
+  if (CANONICAL_IDENTITIES.has(identity)) return true;
+  if (typeof identity.verdict !== 'string' || !VERDICT_SET.has(identity.verdict)) return false;
+  if (typeof identity.providerId !== 'string' || !identity.providerId.trim()) return false;
+  if (typeof identity.providerVersion !== 'string' || !identity.providerVersion.trim()) return false;
+  if (typeof identity.ecosystem !== 'string' || !identity.ecosystem.trim()) return false;
+  if (typeof identity.method !== 'string' || !identity.method.trim() || identity.method === 'filename') return false;
+  if (identity.digest == null || typeof identity.digest !== 'string') return false;
+  const expectedDigest = stableDigest({
+    verdict: identity.verdict,
+    providerId: identity.providerId,
+    providerVersion: identity.providerVersion,
+    ecosystem: identity.ecosystem,
+    toolchainVersion: identity.toolchainVersion ?? null,
+    binaryIdentity: identity.binaryIdentity ?? null,
+    observed: identity.observed ?? null,
+    expected: identity.expected ?? null,
+  });
+  if (identity.digest !== expectedDigest) return false;
+  if (AUTHORITATIVE_VERDICTS.has(identity.verdict)) {
+    if (identity.observed == null && identity.expected == null && identity.toolchainVersion == null && identity.binaryIdentity == null) {
+      return false;
+    }
+    if (identity.verdict === 'matched-authoritative' && identity.expected != null && identity.observed != null && identity.expected !== identity.observed) {
+      return false;
+    }
+  }
+  return true;
 }
 
 /** True when this identity may create authoritative (hard) facts. */
 export function isAuthoritative(identity) {
-  return !!identity && AUTHORITATIVE_VERDICTS.has(identity.verdict);
+  return isCanonicalLanguageIdentity(identity) && AUTHORITATIVE_VERDICTS.has(identity.verdict);
 }
 
 function coverageList(value) {
@@ -175,7 +210,7 @@ function coverageList(value) {
  */
 export function isLanguageRecordAuthoritative(result, record) {
   const identity = result?.identity;
-  if (!identity || !record) return false;
+  if (!identity || !record || !isCanonicalLanguageIdentity(identity)) return false;
   if (result?.completeness?.complete !== true || !isCompleteStatus(result?.status) || !isCanonicalAnalysisStatus(result?.status)) return false;
   if (identity.verdict === 'matched-authoritative') return true;
   if (identity.verdict !== 'matched-partial') return false;
