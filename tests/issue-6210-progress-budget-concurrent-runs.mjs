@@ -58,12 +58,16 @@ function createEngine({ maxDecisions = 3, onRequest } = {}) {
   let unblockFirst;
   const firstGate = new Promise((resolve) => { unblockFirst = resolve; });
 
+  let requestCount = 0;
   let firstStarted = false;
   const engine = createEngine({
     maxDecisions: 4,
     async onRequest() {
-      firstStarted = true;
-      await firstGate;
+      requestCount += 1;
+      if (requestCount === 1) {
+        firstStarted = true;
+        await firstGate;
+      }
       return { text: JSON.stringify({ type: 'final', answer: 'first done', completedTasks: [], remaining: [] }) };
     },
   });
