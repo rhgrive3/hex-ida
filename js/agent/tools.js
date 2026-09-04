@@ -140,13 +140,13 @@ class FunctionLoader {
     if (!this.attempted.has(key) && this.attempted.size >= this.maxFunctions) {
       throw new AgentToolError('function-budget', 'function-budget: function analysis budget exhausted', { maxFunctions: this.maxFunctions });
     }
-    this.attempted.add(key);
     const pending = (async () => {
       let range = null;
       if (this.ctx.program && typeof this.ctx.program.functionRange === 'function') {
         try { range = this.ctx.program.functionRange(addr); }
         catch (error) { throw new AgentToolError('tool-failed', 'functionRange failed', { method: 'functionRange', cause: String(error && error.message || error) }); }
       }
+      this.attempted.add(key);
       const model = await this.ctx.analyze(addr, range && range.end);
       this.analyzed.add(key);
       this._put(key, model || null);
