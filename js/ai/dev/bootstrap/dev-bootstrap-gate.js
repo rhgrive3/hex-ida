@@ -65,8 +65,18 @@ function constantTimeTextEqual(left, right) { const a = String(left || ''), b = 
 function assertPlainObject(value, label) { if (!value || typeof value !== 'object' || Array.isArray(value) || (Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null)) throw new TypeError(`${label} must be a plain object.`); }
 function assertExactKeys(value, keys, label) { const actual = Object.keys(value).sort(), expected = [...keys].sort(); if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index])) throw new TypeError(`${label} has an invalid shape.`); }
 function nonEmpty(value, field) { const text = String(value || '').trim(); if (!text) throw new TypeError(`${field} is required.`); return text; }
-function assertCommit(value) { const text = nonEmpty(value, 'expectedCommit'); if (!/^[0-9a-f]{40}$/i.test(text)) throw new TypeError('expectedCommit must be a full Git commit SHA.'); return text.toLowerCase(); }
-function assertBuildId(value) { const text = nonEmpty(value, 'expectedBuildId'); if (!/^[0-9a-f]{24}$/i.test(text)) throw new TypeError('expectedBuildId must be a 24-character runtime build ID.'); return text.toLowerCase(); }
+function assertCommit(value) {
+  if (typeof value !== 'string') throw new TypeError('expectedCommit must be a string.');
+  const text = value.trim();
+  if (!/^[0-9a-f]{40}$/i.test(text)) throw new TypeError('expectedCommit must be a full Git commit SHA.');
+  return text.toLowerCase();
+}
+function assertBuildId(value) {
+  if (typeof value !== 'string') throw new TypeError('expectedBuildId must be a string.');
+  const text = value.trim();
+  if (!/^[0-9a-f]{24}$/i.test(text)) throw new TypeError('expectedBuildId must be a 24-character runtime build ID.');
+  return text.toLowerCase();
+}
 function assertIntegrity(value) { const text = nonEmpty(value, 'extension.integrity'); if (!/^sha256-[0-9a-f]{64}$/i.test(text)) throw new TypeError('extension.integrity must be a SHA-256 identity.'); return text.toLowerCase(); }
 function cloneJson(value, field) { if (value === undefined) throw new TypeError(`${field} must be JSON-safe.`); try { return JSON.parse(JSON.stringify(value)); } catch { throw new TypeError(`${field} must be JSON-safe.`); } }
 function deepFreeze(value) { if (value && typeof value === 'object' && !Object.isFrozen(value)) { for (const child of Object.values(value)) deepFreeze(child); Object.freeze(value); } return value; }

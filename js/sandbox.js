@@ -47,8 +47,24 @@ const WORKER_PRELUDE = String.raw`
       if (ArrayBuffer.isView(x)) { bytes+=x.byteLength; continue; }
       if (typeof x === 'object') {
         if (seen.has(x)) continue; seen.add(x);
+        // Map/Set entries are serialized by structured clone but are invisible
+        // to Object.keys(). Until the meter models those entries exactly, reject
+        // them instead of letting hidden payload bypass the output budget.
+        if (x instanceof Map || x instanceof Set) return OUTPUT_MAX_BYTES + 1;
         const keys=Object.keys(x); bytes += keys.length * 8;
-        for (let i=0;i<keys.length && i<2048;i++) { bytes += keys[i].length*2; stack.push(x[keys[i]]); }
+        // The key scan is capped for measurer work, but an uncapped tail must
+        // never look small: anything beyond the cap is unmeasurable, so the
+        // whole message fails closed instead of bypassing the byte budget.
+        if (keys.length > 2048) return OUTPUT_MAX_BYTES + 1;
+        for (let i=0;i<keys.length;i++) {
+          const descriptor=Object.getOwnPropertyDescriptor(x,keys[i]);
+          // Structured clone reads enumerable properties. An accessor can return
+          // one value while measuring and a different value while cloning, so it
+          // cannot provide stable byte authority and must fail closed.
+          if (descriptor && (typeof descriptor.get === 'function' || typeof descriptor.set === 'function')) return OUTPUT_MAX_BYTES + 1;
+          bytes += keys[i].length*2;
+          stack.push(descriptor ? descriptor.value : undefined);
+        }
       } else bytes+=32;
     }
     return bytes;
@@ -286,7 +302,24 @@ function valueSize(value, seen = new Set(), limit = MAX_RPC_OUTPUT_BYTES + 1) {
   return n;
 }
 
+function isAbortSignalLike(signal) {
+  if (signal == null) return true;
+  const type = typeof signal;
+  if (type !== 'object' && type !== 'function') return false;
+  try {
+    return typeof signal.aborted === 'boolean'
+      && typeof signal.addEventListener === 'function'
+      && typeof signal.removeEventListener === 'function';
+  } catch {
+    return false;
+  }
+}
+
 export function runInSandbox({ source, mode = 'script', index = 0, api, out, timeout = 30000, signal }) {
+  if (!isAbortSignalLike(signal)) {
+    return Promise.resolve({ error: 'キャンセルシグナルが無効です。' });
+  }
+
   return new Promise((resolve) => {
     const frame = document.createElement('iframe');
     frame.hidden = true;
@@ -296,6 +329,7 @@ export function runInSandbox({ source, mode = 'script', index = 0, api, out, tim
     const runController = new AbortController();
     let settled = false;
     let timer = null;
+    let abortSubscribed = false;
     let rpcTotal = 0;
     let rpcConcurrent = 0;
     let rpcInputBytes = 0;
@@ -330,7 +364,10 @@ export function runInSandbox({ source, mode = 'script', index = 0, api, out, tim
       settled = true;
       runController.abort(value?.error || 'sandbox-finished');
       if (timer) clearTimeout(timer);
-      if (signal) signal.removeEventListener('abort', onAbort);
+      if (abortSubscribed) {
+        abortSubscribed = false;
+        try { signal.removeEventListener('abort', onAbort); } catch { /* cleanup must continue */ }
+      }
       window.removeEventListener('message', onFrameReady);
       window.removeEventListener('pagehide', onPageHide);
       terminate();
@@ -339,12 +376,22 @@ export function runInSandbox({ source, mode = 'script', index = 0, api, out, tim
       resolve(value);
     }
 
-    if (signal) {
-      if (signal.aborted) {
-        onAbort();
+    if (signal != null) {
+      try {
+        if (signal.aborted) {
+          onAbort();
+          return;
+        }
+        abortSubscribed = true;
+        signal.addEventListener('abort', onAbort, { once: true });
+        if (signal.aborted) {
+          onAbort();
+          return;
+        }
+      } catch {
+        finish({ error: 'キャンセルシグナルが無効です。' });
         return;
       }
-      signal.addEventListener('abort', onAbort, { once: true });
     }
 
     timer = setTimeout(

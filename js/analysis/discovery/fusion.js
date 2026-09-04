@@ -209,6 +209,7 @@ function fuseExtent(evidence) {
  * caller that produces the same shape.
  */
 export function fuseFunctionCandidates(evidence, options = {}) {
+  if (!Array.isArray(evidence)) throw new TypeError('discovery-fusion-evidence-invalid');
   // Budget values are analysis-coverage authorities. Only primitive positive
   // safe-integer numbers may define one; structured values must not coerce via
   // the comparison operators' ToNumber (['1'] -> 1, true -> 1).

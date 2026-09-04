@@ -1,6 +1,9 @@
 /** Insertion-ordered LRU on top of Map. Bounded so memory cannot creep up. */
 export class LRU {
   constructor(limit) {
+    // Capacity is a resource authority: only a primitive non-negative safe
+    // integer may define it. Coercing strings/arrays/booleans or flooring
+    // fractions would silently redefine the bound the caller specified (#5363).
     if (typeof limit !== 'number' || !Number.isSafeInteger(limit) || limit < 0) {
       throw new RangeError('LRU limit must be a finite non-negative safe integer');
     }
