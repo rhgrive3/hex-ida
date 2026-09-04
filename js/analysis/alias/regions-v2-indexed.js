@@ -34,7 +34,8 @@ function memoryInteger(value) {
   try {
     if (typeof value === 'bigint') return value;
     if (typeof value === 'number') return Number.isSafeInteger(value) ? BigInt(value) : null;
-    const text = String(value).trim();
+    if (typeof value !== 'string') return null;
+    const text = value.trim();
     if (!/^[+-]?(?:0x[0-9a-f]+|[0-9]+)$/i.test(text)) return null;
     return BigInt(text);
   } catch {
