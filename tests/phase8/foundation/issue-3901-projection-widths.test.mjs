@@ -59,14 +59,24 @@ test('primitive numeric widths retain exact Phase 8 view collapses', () => {
 
 test('structured and coercible widths cannot authorize exact projection proofs', () => {
   const valueOfWidth = { valueOf() { return 32; } };
-  const toPrimitiveWidth = { [Symbol.toPrimitive]() { return 64; } };
+  const toPrimitiveWidth = { [Symbol.toPrimitive]() { return 32; } };
+  const malformedNested = [
+    unary('trunc', unary('trunc', variable(32), 16), '8'),
+    unary('trunc', unary('trunc', variable(32), '16'), 8),
+    unary('trunc', unary('trunc', variable('32'), 16), 8),
+    unary('trunc', unary('trunc', variable(32), 16), [8]),
+    unary('trunc', unary('trunc', variable(32), [16]), 8),
+    unary('trunc', unary('trunc', variable(valueOfWidth), 16), 8),
+    unary('trunc', unary('trunc', variable(toPrimitiveWidth), 16), 8),
+    unary('trunc', unary('trunc', variable(16), 8), true),
+  ];
+  for (const expression of malformedNested) {
+    const output = assertRefused(expression);
+    assert.equal(output.op, 'trunc');
+    assert.equal(output.arg.op, 'trunc');
+  }
 
-  const nested = assertRefused(unary('trunc', unary('trunc', variable(valueOfWidth), [16]), '8'));
-  assert.equal(nested.bits, '8');
-  assert.deepEqual(nested.arg.bits, [16]);
-  assert.equal(nested.arg.arg.bits, valueOfWidth);
-
-  const hiddenExtension = assertRefused(unary('trunc', unary('zext', variable(8), [32]), '16'));
+  const hiddenExtension = assertRefused(unary('trunc', unary('zext', variable(8), [32]), 16));
   assert.equal(hiddenExtension.op, 'trunc');
   assert.equal(hiddenExtension.arg.op, 'zext');
 
@@ -74,8 +84,6 @@ test('structured and coercible widths cannot authorize exact projection proofs',
   assert.equal(repeatedExtension.op, 'zext');
   assert.equal(repeatedExtension.arg.op, 'zext');
   assert.equal(repeatedExtension.bits, toPrimitiveWidth);
-
-  assertRefused(unary('trunc', unary('trunc', variable(16), 8), true));
 });
 
 test('noncanonical primitive numbers remain outside exact width authority', () => {
