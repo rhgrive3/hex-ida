@@ -1,6 +1,6 @@
 # Simple issue owner-lane checkpoint — comprehend formula boundaries
 
-Status: `IMPLEMENTATION_IN_PROGRESS`
+Status: `CHECKS_PENDING`
 
 This checkpoint records the resumable state for the `codex` owner lane for the
 formula evidence issue. Update it at every branch, PR, or merge stage.
@@ -13,6 +13,7 @@ formula evidence issue. Update it at every branch, PR, or merge stage.
 - Shared-board claim: lanes message #258
 - Branch: `fix/issues-comprehend-formula-6113`
 - Candidate base: `origin/main` at `f00154dcb9b2234cbacb4c6a3c2186d00c8a4b3a`
+- Implementation head: `fd9cc5025eb66445e90e23cf3b1167a7bd384f48`
 - Pull request: pending
 
 ## Stages
@@ -21,7 +22,8 @@ formula evidence issue. Update it at every branch, PR, or merge stage.
 - [x] Claimed `js/comprehend.js` and its focused regression path on the shared board (#258).
 - [x] Reproduced `formulaOf(['攻撃力×120÷100'])` coercion on the candidate base.
 - [x] Implemented primitive-string validation and a `matchFormulas()` regression.
-- [ ] Focused regression, lint, and Phase 4 candidate proof.
+- [x] Focused regression and lint passed locally.
+- [ ] Phase 4 candidate proof.
 - [ ] Create one owner PR for #6113 and verify exact-head checks.
 - [ ] Merge only after exact-head evidence is green; otherwise record the blocker here and on the board.
 
