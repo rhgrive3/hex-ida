@@ -314,7 +314,7 @@ export class RuntimeAuthorityTracker {
   }
 
   nextEpoch(bindingOverrides = {}) {
-    const nextBinding = createRuntimeAuthorityBinding({ ...this.binding, ...bindingOverrides, epoch: this.binding.epoch + 1, sessionIdentity: bindingOverrides.sessionIdentity || this.binding.sessionIdentity });
+    const nextBinding = createRuntimeAuthorityBinding({ ...this.binding, ...bindingOverrides, epoch: this.binding.epoch + 1, sessionIdentity: bindingOverrides.sessionIdentity ?? this.binding.sessionIdentity });
     this.closed = true;
     return nextBinding;
   }
