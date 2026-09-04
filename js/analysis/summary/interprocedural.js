@@ -25,6 +25,7 @@
 
 import { createAnalysisStatus, mergeAnalysisStatus, weakestCompleteness } from '../status.js';
 import {
+  EFFECT_SOURCES,
   createFunctionSummary,
   createMemoryEffect,
   createUnknownCallEffect,
@@ -126,6 +127,15 @@ function broadEffect(source, addressSpaces = ['memory']) {
   return createMemoryEffect({ regionKind: 'unknown', broad: true, addressSpaces, source });
 }
 
+/** Authority rank: lower wins, because proven evidence outranks a model. */
+const SOURCE_AUTHORITY_RANK = new Map(EFFECT_SOURCES.map((source, index) => [source, index]));
+
+function strongestSource(left, right) {
+  const leftRank = SOURCE_AUTHORITY_RANK.get(left) ?? SOURCE_AUTHORITY_RANK.size;
+  const rightRank = SOURCE_AUTHORITY_RANK.get(right) ?? SOURCE_AUTHORITY_RANK.size;
+  return leftRank <= rightRank ? left : right;
+}
+
 function mergeEffects(lists, cap) {
   const effectiveCap = Number.isSafeInteger(cap) && cap >= 1 ? cap : 1;
   const byKey = new Map();
@@ -139,7 +149,24 @@ function mergeEffects(lists, cap) {
       continue;
     }
     const key = `${effect.regionId}\u0000${effect.regionKind}`;
-    if (!byKey.has(key)) byKey.set(key, effect);
+    const prior = byKey.get(key);
+    if (!prior) {
+      byKey.set(key, effect);
+      continue;
+    }
+    // Same region and kind means one logical region effect: union its
+    // coverage and provenance instead of dropping every later observation.
+    // Address spaces add up (a region may be reached through more than one),
+    // evidence accumulates, and authority keeps the stronger of the two
+    // sources independently of input order.
+    byKey.set(key, createMemoryEffect({
+      regionId: effect.regionId,
+      regionKind: effect.regionKind,
+      broad: false,
+      addressSpaces: [...new Set([...prior.addressSpaces, ...effect.addressSpaces])].sort(),
+      source: strongestSource(prior.source, effect.source),
+      evidenceIds: [...new Set([...prior.evidenceIds, ...effect.evidenceIds])].sort(),
+    }));
   }
   const specific = [...byKey.values()];
   if (broad) {
