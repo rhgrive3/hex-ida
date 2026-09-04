@@ -34,16 +34,10 @@ concurrency:
 
 jobs:
   ownership:
-    # Stage/integration branches aggregate multiple independently owned lanes.
-    # Their whole-PR inventory is verified by the aggregate release/truth gates;
-    # running this component-lane gate over that aggregate diff would classify
-    # valid non-Phase-7 production paths as Phase 7 ownership violations.
-    # Keep the exception branch-specific: the manifest and component gate remain
-    # unchanged for ordinary Phase 7 PRs.
-    if: >-
-      ${{ github.event_name != 'pull_request' ||
-          (github.head_ref != 'completion/stage1-integration' &&
-           github.head_ref != 'integration/all-open-prs-20260829') }}
+    # PR execution is offloaded to the CircleCI `phase7-ownership` lane.
+    # Keep this GitHub workflow as an explicit manual fallback without consuming
+    # a GitHub-hosted runner for every matching pull request.
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
