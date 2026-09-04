@@ -56,7 +56,9 @@ function seedValidatedEntrypoint(image, entryRva, sizeOfImage, machine) {
   if (!segment.perms?.execute) { reject('section is not executable'); return; }
   const offset = address - segment.address;
   if (offset < 0n || offset >= segment.fileSize) { reject('entrypoint has no file-backed instruction byte'); return; }
-  const alignment = machine === 0xaa64 || machine === 0x01c0 || machine === 0x01c4 ? 4n : 1n;
+  const alignment = machine === 0xaa64 || machine === 0x01c0 ? 4n
+    : machine === 0x01c4 ? 2n
+    : 1n;
   if (address % alignment !== 0n) { reject(`address is not ${alignment}-byte aligned`); return; }
   image.metadata.entrypointValid = true;
   image.metadata.entrypointDiagnostic = null;
@@ -66,8 +68,10 @@ function seedValidatedEntrypoint(image, entryRva, sizeOfImage, machine) {
 function reconcileExportFunctionEvidence(image) {
   const exportNames = new Map();
   for (const ex of image.exports || []) {
-    if (!ex || ex.kind === 'forwarder' || ex.address == null || ex.address === 0n) continue;
-    exportNames.set(BigInt(ex.address).toString(), ex.name || null);
+    if (!ex || ex.kind === 'forwarder' || ex.address == null || ex.address === 0n || !ex.name) continue;
+    const address = BigInt(ex.address).toString();
+    const names = exportNames.get(address);
+    if (names) names.add(ex.name);else exportNames.set(address,new Set([ex.name]));
   }
   let rejectedExportOnly = 0;
   image.functions = (image.functions || []).filter((f) => {
@@ -78,7 +82,8 @@ function reconcileExportFunctionEvidence(image) {
   let corroborated = 0;
   for (const f of image.functions) {
     if (f?.address == null) continue;
-    const name = exportNames.get(BigInt(f.address).toString());
+    const names = exportNames.get(BigInt(f.address).toString());
+    const name = names?.values().next().value || null;
     if (!name) continue;
     corroborated++;
     if (!f.name) f.name = name;
