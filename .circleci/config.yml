@@ -21,21 +21,11 @@ jobs:
               echo 'No migration-guardrail inputs changed; expensive steps will be skipped.'
             fi
 
-      - restore_cache:
-          keys:
-            - npm-v1-{{ checksum "package-lock.json" }}
-            - npm-v1-
-
       - run:
           name: Install dependencies
           command: |
             if [ "$RUN_MIGRATION_GUARDRAILS" != "true" ]; then exit 0; fi
             npm ci --no-audit --no-fund
-
-      - save_cache:
-          key: npm-v1-{{ checksum "package-lock.json" }}
-          paths:
-            - ~/.npm
 
       - run:
           name: Run migration proofs
