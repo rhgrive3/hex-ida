@@ -1014,6 +1014,26 @@ function bindHandoffsToCommit(inventory, headSha, treeSha) {
   }
 }
 
+function seedPreTransitionHandoffFiles(root) {
+  for (const evidencePath of new Set(Object.values(integrationInventory.taskHandoffs)
+    .map((handoff) => handoff.evidencePath))) {
+    write(root, evidencePath, `foundation evidence for ${evidencePath}\n`);
+  }
+  const mutableCoordinationPaths = new Set([
+    'specs/005-analysis-final-closure/contracts/integration-inventory.json',
+    'specs/005-analysis-final-closure/tasks.md',
+  ]);
+  for (const entry of integrationInventory.entries) {
+    if (entry.ownerTaskId !== 'T046' || mutableCoordinationPaths.has(entry.path)) continue;
+    copySourcePath(root, entry.path);
+  }
+  write(
+    root,
+    'specs/005-analysis-final-closure/tasks.md',
+    rewriteTaskStatus(tasksText, 'T046', 'PENDING'),
+  );
+}
+
 function evidenceBlock(name, value) {
   return `# Fixture evidence\n\n\`\`\`json ${name}\n${JSON.stringify(value, null, 2)}\n\`\`\`\n`;
 }
@@ -2471,10 +2491,7 @@ function createOperationalFixture() {
   for (const contract of Object.values(shadowContracts.contracts)) {
     for (const row of contract.cases) copySourcePath(candidate, row.projection.argv[1]);
   }
-  for (const evidencePath of new Set(Object.values(integrationInventory.taskHandoffs)
-    .map((handoff) => handoff.evidencePath))) {
-    write(candidate, evidencePath, `foundation evidence for ${evidencePath}\n`);
-  }
+  seedPreTransitionHandoffFiles(candidate);
   const handoffSha = commitAll(candidate, 'foundation handoffs');
   const handoffTreeSha = git(candidate, ['rev-parse', 'HEAD^{tree}']);
   write(candidate, 'baseline.txt', 'baseline\n');
@@ -2525,10 +2542,7 @@ function createStageBOperationalFixture() {
   git(original, ['config', 'user.name', 'Hex Preflight Test']);
   git(original, ['config', 'user.email', 'preflight@example.invalid']);
   write(original, 'transcripts/original.txt', 'preserved original transcript\n');
-  for (const evidencePath of new Set(Object.values(integrationInventory.taskHandoffs)
-    .map((handoff) => handoff.evidencePath))) {
-    write(original, evidencePath, `foundation evidence for ${evidencePath}\n`);
-  }
+  seedPreTransitionHandoffFiles(original);
   const planningSha = commitAll(original, 'planning handoffs');
   const planningTreeSha = git(original, ['rev-parse', 'HEAD^{tree}']);
   write(original, 'stage-a-base.txt', 'stage A base\n');
@@ -3053,6 +3067,11 @@ try {
   assert.equal(report.baseSha, operational.baseSha);
   assert.equal(report.mergeBaseSha, operational.baseSha);
   assert.equal(report.mergeTreeSha, report.treeSha);
+  assert.equal(
+    report.taskHandoffIdentity.canonicalT046TransitionCommitSha,
+    operational.headSha,
+    'the operational fixture must preserve the immutable T046 seal after the source ledger is DONE',
+  );
   assert.match(report.verifierIdentity.sha256, /^[0-9a-f]{64}$/);
   assert.equal(report.corpusIdentity.denominatorStableDigest, FROZEN_PLATFORM_IDENTITIES.denominator);
   assert.equal(report.runtimeIdentity.requiredClassIds.length, 2);

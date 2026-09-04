@@ -1,7 +1,7 @@
 {
   "schemaVersion": "hex-final-closure-integration-inventory/v1",
   "campaignStage": "STAGE_A",
-  "integrationRef": "recovery/final-closure-v2-20260904",
+  "integrationRef": "recovery/final-closure-v3-20260904",
   "baseRef": "origin/main",
   "baseSha": "7012c4cc4f0d5c0d8a7ca44c6c5c1edcb080aba1",
   "candidateRef": "HEAD",
