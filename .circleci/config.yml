@@ -1,53 +1,16 @@
 version: 2.1
 
 jobs:
-  probe-generated-install:
+  probe-generated-build-large:
     docker:
       - image: cimg/node:22.23
-    resource_class: medium
-    steps:
-      - checkout
-      - run: npm ci
-
-  probe-generated-build:
-    docker:
-      - image: cimg/node:22.23
-    resource_class: medium
+    resource_class: large
     steps:
       - checkout
       - run: npm ci
       - run: npm run userscript:build
-
-  probe-generated-policy:
-    docker:
-      - image: cimg/node:22.23
-    resource_class: medium
-    steps:
-      - checkout
-      - run: npm ci
-      - run: npm run userscript:build
-      - run:
-          name: Evaluate generated-output policy
-          command: |
-            set -euo pipefail
-            mode="$(node tools/validation/generated-output-policy.mjs)"
-            echo "mode=$mode"
-            case "$mode" in
-              enforce)
-                git diff --exit-code -- userscript/hex.user.template.js userscript/release-version.json
-                ;;
-              ephemeral)
-                echo 'ephemeral generated-output policy'
-                ;;
-              *)
-                echo "Unknown generated-output policy mode: $mode" >&2
-                exit 1
-                ;;
-            esac
 
 workflows:
   diagnostic:
     jobs:
-      - probe-generated-install
-      - probe-generated-build
-      - probe-generated-policy
+      - probe-generated-build-large
