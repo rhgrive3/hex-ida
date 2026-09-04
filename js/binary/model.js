@@ -443,7 +443,7 @@ function dedupeImports(input) {
       m.set(key, { ...i, sites: i.sites ? [...i.sites] : [] });
       continue;
     }
-    if (!prev.address && i.address) prev.address = i.address;
+    if (prev.address == null && i.address != null) prev.address = i.address;
     if (!prev.source && i.source) prev.source = i.source;
     if (i.sites) prev.sites.push(...i.sites);
   }
