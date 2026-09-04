@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { VirtualList } from '../../js/ui/primitives.js';
+import { loadCanonicalClaims } from '../../js/ui/product-hardened.js';
 import { presentationBasicBlocks } from '../../js/ui/function-analysis-presentation.js';
 import { createAppRuntimeIO } from '../../js/runtime/app-runtime.js';
 
@@ -53,6 +54,67 @@ assert.equal(presentedBlock.endRow, 10);
 const source = { length: 293794, itemAt(index) { return { index }; } };
 assert.equal(source.length, 293794);
 assert.equal(source.itemAt(293793).index, 293793);
+
+// Issue #4864: Results must consume the complete canonical claims pagination contract.
+{
+  const makeQueries = (total, completeness = 'complete') => {
+    const rows = Array.from({ length:total }, (_, index) => ({ claimId:`c${index}`, title:`claim ${index}` }));
+    const calls = [];
+    return {
+      calls,
+      queries:{
+        async claims(_snapshot, query, page) {
+          calls.push({ query, page:{ ...page } });
+          const filtered = query.claimId == null ? rows : rows.filter((row) => row.claimId === query.claimId);
+          const value = filtered.slice(page.offset, page.offset + page.limit);
+          return {
+            value,
+            completeness,
+            page:{
+              offset:page.offset,
+              limit:page.limit,
+              returned:value.length,
+              total:completeness === 'complete' ? filtered.length : null,
+              next:page.offset + value.length < filtered.length ? page.offset + value.length : null,
+            },
+          };
+        },
+      },
+    };
+  };
+
+  for (const [total, offsets] of [[499, [0]], [500, [0]], [501, [0, 500]], [1201, [0, 500, 1000]]]) {
+    const fixture = makeQueries(total);
+    const result = await loadCanonicalClaims(fixture.queries, { snapshotId:'s' });
+    assert.equal(result.value.length, total, `${total} complete claims must all remain reachable`);
+    assert.equal(result.completeness, 'complete');
+    assert.deepEqual(fixture.calls.map((call) => call.page.offset), offsets, `${total} claims must follow page.next without gaps`);
+    assert.equal(new Set(result.value.map((row) => row.claimId)).size, total, `${total} claims must not duplicate across pages`);
+  }
+
+  const partial = makeQueries(501, 'partial');
+  const partialResult = await loadCanonicalClaims(partial.queries, { snapshotId:'s' });
+  assert.equal(partialResult.value.length, 501, 'partial sources still expose every reachable page');
+  assert.equal(partialResult.completeness, 'partial', 'source incompleteness must remain fail-closed after paging');
+
+  let malformedCalls = 0;
+  const malformed = await loadCanonicalClaims({
+    async claims() {
+      malformedCalls++;
+      return { value:[{ claimId:'a' }, { claimId:'b' }], completeness:'complete', page:{ next:7 } };
+    },
+  }, { snapshotId:'s' });
+  assert.equal(malformedCalls, 1, 'malformed continuation must not create an unbounded query loop');
+  assert.equal(malformed.value.length, 2);
+  assert.equal(malformed.completeness, 'partial', 'non-contiguous continuation must fail closed');
+
+  const detail = makeQueries(1201);
+  const detailResult = await loadCanonicalClaims(detail.queries, { snapshotId:'s' }, 'c777');
+  assert.equal(detailResult.value.length, 1, 'finding detail keeps the single-claim query path');
+  assert.equal(detailResult.value[0].claimId, 'c777');
+  assert.equal(detail.calls.length, 1);
+  assert.deepEqual(detail.calls[0].page, { offset:0, limit:1 });
+}
 
 // App runtime I/O must reject non-executable addresses without touching backend.
 let reads = 0;
@@ -133,7 +195,7 @@ assert.equal(typeof VirtualList, 'function');
         routeController.abort();
       }
     }
-    return { observation: { steps: stepCount, stop: { kind: aborted ? 'aborted' : 'return' } } };
+    return { observation: { steps: stepCount, stop: { kind: aborted ? 'aborted' : 'return' } };
   }
 
   const result = await mockTrace({ signal: routeController.signal, maxSteps: 12000 });
