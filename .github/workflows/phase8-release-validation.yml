@@ -145,18 +145,32 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    outputs:
+      cutover_requested: ${{ steps.cutover-request.outputs.requested }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.inputs.sha || github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
+      - name: Detect one-shot P8-I cutover request
+        id: cutover-request
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          if [ -f tools/validation/phase8/p8i-cutover-request.json ]; then
+            echo 'requested=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'requested=false' >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: npm
-      - run: npm ci
-      - name: Phase 8 contract tests
-        run: npm run phase8:test
+      - run: npm ci --no-audit --no-fund
+      # The permanent verifier owns the canonical Phase 8 gate set. Once P8-I
+      # is accepted it runs `npm run phase8:test` itself via profile.requiredGates;
+      # running the same full suite immediately before the verifier duplicated
+      # the ~8 minute denominator without adding an independent proof.
       - name: Verify the exact head
         env:
           DISPATCH_EXPECT_SHA: ${{ github.event.inputs.sha }}
@@ -169,20 +183,12 @@ jobs:
           shadow="${DISPATCH_SHADOW}"
           gates="${DISPATCH_GATES}"
           if [ "${{ github.event_name }}" = 'pull_request' ]; then
+            # Phase 8 is integrated on main. PR validation is therefore always
+            # fail-closed and self-contained; editing checkpoint metadata cannot
+            # downgrade a release run back into shadow mode.
             expect_sha="${PR_EXPECT_SHA}"
-            if node --input-type=module <<'NODE'
-          import fs from 'node:fs';
-          const ledger = JSON.parse(fs.readFileSync('reports/phase8/checkpoints.json', 'utf8'));
-          const entries = Array.isArray(ledger) ? ledger : (ledger.checkpoints || ledger.entries || []);
-          process.exit(entries.some((entry) => entry?.id === 'P8-I' && (entry?.result === 'accepted' || entry?.status === 'accepted')) ? 0 : 1);
-          NODE
-            then
-              shadow=false
-              gates=true
-            else
-              shadow=true
-              gates=false
-            fi
+            shadow=false
+            gates=true
           fi
           args=(--expect-sha "$expect_sha")
           if [ "$shadow" = true ]; then args+=(--shadow); fi
@@ -197,7 +203,9 @@ jobs:
           if-no-files-found: error
 
   finalize-p8i:
-    if: github.event_name == 'pull_request'
+    if: >-
+      github.event_name == 'pull_request' &&
+      needs.verify.outputs.cutover_requested == 'true'
     needs: verify
     permissions:
       contents: read
@@ -209,23 +217,12 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
-      - name: Detect one-shot P8-I cutover request
-        id: request
-        run: |
-          if [ -f tools/validation/phase8/p8i-cutover-request.json ]; then
-            echo 'requested=true' >> "$GITHUB_OUTPUT"
-          else
-            echo 'requested=false' >> "$GITHUB_OUTPUT"
-          fi
       - uses: actions/setup-node@v4
-        if: steps.request.outputs.requested == 'true'
         with:
           node-version: '22'
           cache: npm
-      - run: npm ci
-        if: steps.request.outputs.requested == 'true'
+      - run: npm ci --no-audit --no-fund
       - name: Wait for exact-head external evidence
-        if: steps.request.outputs.requested == 'true'
         env:
           GITHUB_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
@@ -285,13 +282,12 @@ jobs:
           if (branch.commit?.sha !== headSha) throw new Error(`branch head moved during P8-I evidence wait: ${headSha} -> ${branch.commit?.sha}`);
           NODE
       - name: Run transactional P8-I acceptance and permanent verifier
-        if: steps.request.outputs.requested == 'true'
         env:
           BASE_SHA: bd03d1a860863814dbdcc00559709794d460189d
           EXTERNAL_GATES: Generated userscript sync|Generated userscript autofix|Phase 8 ownership|Migration guardrails|Sandbox security|Ghidra decompiler differential|Phase 6 release validation|Universal binary platform|ChatGPT userscript host|Phase 7 release validation|Cross-binary accuracy|UI regression|Invariant Gates
         run: node tools/validation/phase8/finalize.mjs --base "$BASE_SHA" --external-gates "$EXTERNAL_GATES"
       - name: Publish P8-I cutover evidence for integration owner
-        if: steps.request.outputs.requested == 'true' && success()
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: phase8-p8i-cutover-${{ github.event.pull_request.head.sha }}

@@ -193,7 +193,7 @@ export class KnowledgeDB {
   }
 
   async page(options = {}) {
-    const limit = Math.min(500, Math.max(1, Number(options.limit) || 100));
+    const limit = Math.min(500, Math.max(1, Math.floor(Number(options.limit) || 100)));
     const after = options.after || null;
     if (this.memory) {
       const ids = [...this.memory.keys()].sort(); const found = after == null ? 0 : ids.findIndex((id) => id > after); const start = found < 0 ? ids.length : found;

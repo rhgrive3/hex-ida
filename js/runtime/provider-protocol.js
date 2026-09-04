@@ -17,12 +17,10 @@ function byteSize(value) {
 }
 
 function protocolInteger(value, name, min = 1) {
-  if (typeof value !== 'number' && !(typeof value === 'string' && value.trim() !== '')) {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < min) {
     throw new DebugAdapterError('malformed-provider-data', `${name} must be a positive safe integer`);
   }
-  const n = Number(value);
-  if (!Number.isSafeInteger(n) || n < min) throw new DebugAdapterError('malformed-provider-data', `${name} must be a positive safe integer`);
-  return n;
+  return value;
 }
 
 function positiveId(value, name = 'id') {
@@ -77,7 +75,7 @@ export function validateProviderPacket(input) {
   if (packet.type === 'hello' || packet.type === 'hello-ack') {
     if (typeof packet.providerId !== 'string' || !packet.providerId.trim()) throw new DebugAdapterError('malformed-provider-data', 'provider hello requires providerId');
     if (typeof packet.providerVersion !== 'string' || !packet.providerVersion.trim()) throw new DebugAdapterError('malformed-provider-data', 'provider hello requires providerVersion');
-    packet.facets = normalizeFacetList(packet.facets || []);
+    packet.facets = normalizeFacetList(packet.facets == null ? [] : packet.facets);
     return packet;
   }
 

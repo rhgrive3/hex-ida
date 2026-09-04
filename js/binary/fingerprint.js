@@ -103,6 +103,13 @@ async function sourceMappingChunk(image, mapping, offset, length) {
   return null;
 }
 
+function requireMappingChunk(bytes, expectedLength) {
+  if (!bytes || bytes.length !== expectedLength) {
+    throw new RangeError('binary-fingerprint-short-read');
+  }
+  return bytes;
+}
+
 function fingerprintRanges(image, executableOnly) {
   let ranges = image.sections.filter((x) => x.fileSize > 0n && (!executableOnly || x.perms.execute));
   if (!ranges.length) ranges = image.segments.filter((x) => x.fileSize > 0n && (!executableOnly || x.perms.execute));
@@ -134,8 +141,7 @@ export function fingerprintImage(image, opts = {}) {
       const size = BigInt(mapping.fileSize);
       for (let off = 0n; off < size;) {
         const take = Number(size - off < BigInt(chunkBytes) ? size - off : BigInt(chunkBytes));
-        const bytes = residentMappingChunk(image, mapping, off, take);
-        if (!bytes || bytes.length !== take) break;
+        const bytes = requireMappingChunk(residentMappingChunk(image, mapping, off, take), take);
         state = fnv1a64State(bytes, state);
         total += bytes.length;
         off += BigInt(bytes.length);
@@ -150,8 +156,7 @@ export function fingerprintImage(image, opts = {}) {
       const size = BigInt(mapping.fileSize);
       for (let off = 0n; off < size;) {
         const take = Number(size - off < BigInt(chunkBytes) ? size - off : BigInt(chunkBytes));
-        const bytes = await sourceMappingChunk(image, mapping, off, take);
-        if (!bytes || bytes.length !== take) break;
+        const bytes = requireMappingChunk(await sourceMappingChunk(image, mapping, off, take), take);
         state = fnv1a64State(bytes, state);
         total += bytes.length;
         off += BigInt(bytes.length);

@@ -184,7 +184,7 @@ function budgetState(opts) {
     reservedDisassembly: Math.max(0, requestedMaxDisassembly - maxDisassembly),
     maxSearchResults: explicitBudget(opts && opts.maxSearchResults, 40, 1),
     maxExpansions: explicitBudget(opts && opts.maxExpansions, 20, 0),
-    timeoutMs, started: Date.now(), isCancelled: opts && opts.isCancelled || (() => false),
+    timeoutMs, started: Date.now(), isCancelled: typeof opts?.isCancelled === 'function' ? opts.isCancelled : (() => false),
     analyzedInstructions: 0, disassemblyExhausted: false, functionExhausted: false,
     candidateTruncated: false, candidateCount: 0, unaccountedToolCost: false,
     analysisAccountedExternally: !!(opts && opts.tools),
