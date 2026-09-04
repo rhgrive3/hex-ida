@@ -540,9 +540,11 @@ function describeTypeIndex(index, types, depth = 0) {
 
 function expectedCodeViewIdentity(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  if (typeof value.guid !== 'string' || !value.guid.trim()) return null;
-  if (typeof value.age !== 'number' || !Number.isSafeInteger(value.age) || value.age < 0) return null;
-  return `${value.guid.trim().toUpperCase()}/${value.age}`;
+  const guid = value.guid;
+  const age = value.age;
+  if (typeof guid !== 'string' || !guid.trim()) return null;
+  if (typeof age !== 'number' || !Number.isSafeInteger(age) || age < 0) return null;
+  return `${guid.trim().toUpperCase()}/${age}`;
 }
 
 export class PdbDebugInfoProvider extends DebugInfoProvider {
