@@ -47,7 +47,14 @@ function frozenAbiRecord(value, seen = new WeakMap()) {
   return Object.freeze(copy);
 }
 
-function optionalIdentity(value) { return value == null ? null : String(value); }
+function optionalIdentity(value) {
+  return value == null ? null
+    : typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+function optionalIdentityValid(value) {
+  return value == null || (typeof value === 'string' && value.length > 0);
+}
 
 function abiEvidenceState(options = {}, call = null, adapter = null) {
   const optionState = abiResultInvalidState(options);
@@ -250,6 +257,9 @@ export function semanticAbiAdapter(abiPlugin, options = {}) {
   const binaryId = options?.binaryId ?? null;
   const sliceId = options?.sliceId ?? null;
   const functionId = options?.functionId ?? null;
+  const identityInputsValid = [
+    snapshotId, analyzerId, analyzerVersion, binaryId, sliceId, functionId,
+  ].every(optionalIdentityValid);
   const targetArchitectureText = targetArchitecture == null ? '' : String(targetArchitecture).trim().toLowerCase();
   const architectureMatches = !targetArchitectureText
     || targetArchitectureText === String(architectureId || '').trim().toLowerCase()
@@ -279,7 +289,8 @@ export function semanticAbiAdapter(abiPlugin, options = {}) {
   const supported = !!plugin && registryRegistered && !!registryDigest
     && plugin.supported !== false && pluginId !== 'unknown'
     && !!semanticVersion && !!semanticIdentity && !!architectureId
-    && architectureMatches && platformMatches && arm64eProfileMatches;
+    && architectureMatches && platformMatches && arm64eProfileMatches
+    && identityInputsValid;
   // A profile descriptor is an identity record, not a placement classifier.
   // Supplying it here makes every adapter carry an explicit canonical profile
   // even when a legacy caller omitted target metadata.  arm64e still requires
@@ -311,9 +322,9 @@ export function semanticAbiAdapter(abiPlugin, options = {}) {
     registryDigest,
     registryGeneration,
     schemaVersion:schemaVersion == null ? null : String(schemaVersion),
-    snapshotId:snapshotId == null ? null : String(snapshotId),
-    analyzerId:analyzerId == null ? null : String(analyzerId),
-    analyzerVersion:analyzerVersion == null ? null : String(analyzerVersion),
+    snapshotId:optionalIdentity(snapshotId),
+    analyzerId:optionalIdentity(analyzerId),
+    analyzerVersion:optionalIdentity(analyzerVersion),
     binaryId:optionalIdentity(binaryId),
     sliceId:optionalIdentity(sliceId),
     functionId:optionalIdentity(functionId),
@@ -447,7 +458,6 @@ export function semanticAbiAdapter(abiPlugin, options = {}) {
       return null;
     }
   }
-
   function classifyCanonicalArguments({ functionPrototype = null, call = null, resolvePrototype = true } = {}) {
     if (!registryRegistered || !plugin?.classifyArguments) return null;
     if (abiEvidenceState(options, call, plugin)) return null;
