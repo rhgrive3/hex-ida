@@ -95,7 +95,13 @@ try {
   const fakeBin = join(root, 'fake-bin');
   const fakeGit = join(fakeBin, 'git');
   mkdirSync(fakeBin, { recursive: true });
-  write(fakeGit, `#!/usr/bin/env bash\nif [[ "${1:-}" == 'diff' ]]; then exit 42; fi\nexec ${JSON.stringify(realGit)} "$@"\n`);
+  const fakeGitScript = [
+    '#!/usr/bin/env bash',
+    "if [[ \"${1:-}\" == 'diff' ]]; then exit 42; fi",
+    `exec ${JSON.stringify(realGit)} "$@"`,
+    '',
+  ].join('\n');
+  write(fakeGit, fakeGitScript);
   chmodSync(fakeGit, 0o755);
   assert.equal(
     route(commitD, 'feature', 'main-and-branch', '^js/ai/', {
