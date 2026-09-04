@@ -6,6 +6,8 @@ console.log('[phase11] running WASM typed operand-stack regression for #3884...'
 
 const I32 = 0x7f;
 const I64 = 0x7e;
+const FUNCREF = 0x70;
+const EXTERNREF = 0x6f;
 
 function moduleWith(bytecode, options = {}) {
   const types = options.types ?? [{ params: [], results: [] }];
@@ -93,6 +95,22 @@ assert.throws(
   () => liftWasmFunction(0, moduleWith([0x42, 0x00, 0x41, 0x00, 0x41, 0x01, 0x1b, 0x1a, 0x0b])),
   /wasm-stack-type-mismatch/,
   'select operands must agree on their value type',
+);
+
+for (const referenceType of [FUNCREF, EXTERNREF]) {
+  assert.throws(
+    () => liftWasmFunction(0, moduleWith(
+      [0x20, 0x00, 0x20, 0x01, 0x41, 0x00, 0x1b, 0x1a, 0x0b],
+      { locals: [referenceType, referenceType] },
+    )),
+    /wasm-invalid-select-type/,
+    'plain select must reject reference operands unless the typed-select form is decoded and validated',
+  );
+}
+
+assert.doesNotThrow(
+  () => liftWasmFunction(0, moduleWith([0x41, 0x00, 0x41, 0x01, 0x41, 0x00, 0x1b, 0x1a, 0x0b])),
+  'plain select must continue to accept matching numeric operands',
 );
 
 {

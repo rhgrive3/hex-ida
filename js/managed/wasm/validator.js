@@ -8,6 +8,7 @@ const F32 = 0x7d;
 const F64 = 0x7c;
 const UNKNOWN = Symbol('wasm-unknown-stack-type');
 const VALUE_TYPES = new Set([I32, I64, F32, F64, 0x7b, 0x70, 0x6f]);
+const PLAIN_SELECT_TYPES = new Set([I32, I64, F32, F64, 0x7b]);
 
 function checkpoint(options) {
   if (options?.signal?.aborted) {
@@ -204,7 +205,9 @@ export function validateWasmFunctionTypes(funcIndex, wasmModule, options = {}) {
         const rhs = pop(UNKNOWN, 'wasm-stack-underflow-select');
         const lhs = pop(UNKNOWN, 'wasm-stack-underflow-select');
         if (!matches(lhs, rhs)) fail('wasm-stack-type-mismatch');
-        stack.push(lhs === UNKNOWN ? rhs : lhs);
+        const resultType = lhs === UNKNOWN ? rhs : lhs;
+        if (resultType !== UNKNOWN && !PLAIN_SELECT_TYPES.has(resultType)) fail('wasm-invalid-select-type');
+        stack.push(resultType);
         break;
       }
       case 0x20: {
