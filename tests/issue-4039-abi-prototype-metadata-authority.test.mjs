@@ -121,4 +121,21 @@ const malformedConvention = MICROSOFT_X64_ABI.classifyArguments({
 });
 assertConservative(malformedConvention, 'xmm0', 'structured calling convention');
 
+const malformedInstructionConvention = RISCV_LP64D_ABI.classifyArguments({
+  callingConvention:['riscv-vector-variant'],
+  callPrototype: {
+    parameters: [{
+      type:'vector',
+      vector:true,
+      bits:128,
+      lmul:1,
+      tupleCount:1,
+    }],
+  },
+});
+assert.equal(malformedInstructionConvention?.partial, true,
+  'RISC-V structured instruction calling convention must fail closed');
+assert.equal(exactRegister(malformedInstructionConvention, 'v8'), false,
+  'RISC-V structured instruction calling convention must not select the vector ABI');
+
 console.log('issue-4039 ABI prototype metadata authority regression: ok');
