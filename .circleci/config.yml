@@ -26,43 +26,67 @@ jobs:
           paths:
             - universal-platform-benchmark.json
 
-  benchmark-battlecats:
+  benchmark-battlecats-identity:
     docker:
       - image: cimg/node:22.23
     resource_class: small
     steps:
       - checkout
-      - attach_workspace:
-          at: .
-      - run: node scripts/ci/circleci-benchmark-target-probe.mjs battlecats
+      - attach_workspace: { at: . }
+      - run: node scripts/ci/circleci-benchmark-target-probe.mjs battlecats identity
 
-  benchmark-tsumtsum:
+  benchmark-battlecats-work:
     docker:
       - image: cimg/node:22.23
     resource_class: small
     steps:
       - checkout
-      - attach_workspace:
-          at: .
-      - run: node scripts/ci/circleci-benchmark-target-probe.mjs TsumTsum
+      - attach_workspace: { at: . }
+      - run: node scripts/ci/circleci-benchmark-target-probe.mjs battlecats work
 
-  benchmark-ywp:
+  benchmark-tsumtsum-identity:
     docker:
       - image: cimg/node:22.23
     resource_class: small
     steps:
       - checkout
-      - attach_workspace:
-          at: .
-      - run: node scripts/ci/circleci-benchmark-target-probe.mjs YWP
+      - attach_workspace: { at: . }
+      - run: node scripts/ci/circleci-benchmark-target-probe.mjs TsumTsum identity
+
+  benchmark-tsumtsum-work:
+    docker:
+      - image: cimg/node:22.23
+    resource_class: small
+    steps:
+      - checkout
+      - attach_workspace: { at: . }
+      - run: node scripts/ci/circleci-benchmark-target-probe.mjs TsumTsum work
+
+  benchmark-ywp-identity:
+    docker:
+      - image: cimg/node:22.23
+    resource_class: small
+    steps:
+      - checkout
+      - attach_workspace: { at: . }
+      - run: node scripts/ci/circleci-benchmark-target-probe.mjs YWP identity
+
+  benchmark-ywp-work:
+    docker:
+      - image: cimg/node:22.23
+    resource_class: small
+    steps:
+      - checkout
+      - attach_workspace: { at: . }
+      - run: node scripts/ci/circleci-benchmark-target-probe.mjs YWP work
 
 workflows:
   probe:
     jobs:
       - universal-benchmark-generate
-      - benchmark-battlecats:
-          requires: [universal-benchmark-generate]
-      - benchmark-tsumtsum:
-          requires: [universal-benchmark-generate]
-      - benchmark-ywp:
-          requires: [universal-benchmark-generate]
+      - benchmark-battlecats-identity: { requires: [universal-benchmark-generate] }
+      - benchmark-battlecats-work: { requires: [universal-benchmark-generate] }
+      - benchmark-tsumtsum-identity: { requires: [universal-benchmark-generate] }
+      - benchmark-tsumtsum-work: { requires: [universal-benchmark-generate] }
+      - benchmark-ywp-identity: { requires: [universal-benchmark-generate] }
+      - benchmark-ywp-work: { requires: [universal-benchmark-generate] }
