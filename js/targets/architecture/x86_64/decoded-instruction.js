@@ -6,7 +6,7 @@ export const X86_DECODE_MODES = Object.freeze(['long-64']);
 
 const OPERAND_TYPES = new Set(['register','immediate','memory','invalid']);
 const ACCESS = new Set(['read','write','read-write','unknown']);
-const DETAIL_STATUSES = new Set(['complete','unavailable','partial','malformed']);
+const DETAIL_STATUSES = new Set(['complete','unavailable','partial','malformed','skipdata']);
 
 function integer(value, code, { min = 0, max = Number.MAX_SAFE_INTEGER } = {}) {
   const number = Number(value);
@@ -166,7 +166,13 @@ export function createX86DecodedInstruction(input = {}) {
     get rawBytes() { return rawBytes.slice(); },
     mode,
     instructionId:input.instructionId,
-    instructionCode:integer(input.instructionCode ?? input.id, 'x86-decoded-instruction-id-required', { min:1 }),
+    // Capstone SKIPDATA records carry instruction id 0 by contract
+    // (cs_insn.id is 0 in Skipdata mode). The zero code is admitted only
+    // for skipdata records and must be exactly 0; every other record keeps
+    // the historical min:1 domain.
+    instructionCode:detailStatus === 'skipdata'
+      ? integer(input.instructionCode ?? input.id, 'x86-decoded-instruction-id-required', { min:0, max:0 })
+      : integer(input.instructionCode ?? input.id, 'x86-decoded-instruction-id-required', { min:1 }),
     instructionFamily:text(input.instructionFamily ?? input.family, 'x86-decoded-instruction-family-required'),
     decoderContractVersion:contractVersion,
     detailStatus,
