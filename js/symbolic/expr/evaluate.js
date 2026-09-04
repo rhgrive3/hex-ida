@@ -101,7 +101,15 @@ export function evaluateExpr(expr, env = null) {
       }
       if (isBvSort(expr.sort)) {
         const raw = typeof bound === 'object' && bound !== null && 'value' in bound ? bound.value : bound;
-        const val = wrap(raw, expr.sort.width);
+        // A BV model binding is a canonical witness only when it converts to
+        // a bitvector. Raw SyntaxError/TypeError from BigInt() must not leak:
+        // malformed solver/provider output becomes a structured non-value.
+        let val;
+        try {
+          val = wrap(raw, expr.sort.width);
+        } catch {
+          return { status: EVAL_STATUS.UNKNOWN, reason: 'malformed-bitvector-binding', sort: expr.sort, symbol: expr };
+        }
         return { status: EVAL_STATUS.VALUE, sort: expr.sort, value: val };
       }
       return { status: EVAL_STATUS.UNKNOWN, reason: 'unsupported-symbol-sort' };
