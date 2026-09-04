@@ -13,7 +13,7 @@ strict AI AnalysisQuery address and paging metadata boundaries.
 - Shared-board claim: lanes message #283
 - Branch: `fix/issues-ai-query-boundaries-6157-6158`
 - Candidate base: `origin/main` at `b9d6cec838ad8f4ee0ecdf2af1fb87406f128195`
-- Implementation head: record after the final reconciliation commit
+- Implementation head: `484b8a5dd5e2fd3af3061842ad2c33849bcf7642`
 
 ## Stages
 
