@@ -79,6 +79,10 @@ try {
   assert.equal(route(commitC, 'feature', 'main-and-branch', '^js/ai/'), 'false');
   assert.equal(route(commitD, 'feature', 'main-and-branch', '^js/ai/'), 'true');
 
+  // A stale-head refresh failure must never turn into a false skip. With an
+  // unresolvable branch name, routing falls through to the merge-base diff.
+  assert.equal(route(commitC, 'missing-feature', 'main-and-branch', '^js/ai/'), 'true');
+
   console.log('circleci-impact routing: PASS');
 } finally {
   rmSync(root, { recursive: true, force: true });
