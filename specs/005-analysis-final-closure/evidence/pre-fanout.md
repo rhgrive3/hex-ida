@@ -28,12 +28,11 @@ pending row.
 
 ## Original workspace preservation lock
 
-The original workspace moved independently after the first prose-only snapshot,
-again during T046 remediation, and later gained the user-owned untracked
-`subagent.md`. The block below is the latest pre-commit content-addressed
-observation, captured without modifying that workspace. It protects against
-campaign-owned mutation; a later independent user-owned change must be
-re-observed explicitly rather than silently attributed to the campaign.
+The original workspace moved independently after the first prose-only snapshot
+and again during T046 remediation. The block below is the latest post-reconcile,
+content-addressed observation, captured without modifying that workspace. It
+protects against campaign-owned mutation; a later independent user-owned change
+must be re-observed explicitly rather than silently attributed to the campaign.
 
 ```json final-closure-original-workspace-lock
 {
@@ -41,12 +40,12 @@ re-observed explicitly rather than silently attributed to the campaign.
   "workspace": {
     "path": "/teamspace/studios/this_studio/ida-245",
     "gitDirPath": "/teamspace/studios/this_studio/ida-245/.git",
-    "headSha": "8e258d7ec98226229c2be378df17a37bef7f1ad4",
-    "branchRef": "fix/issues-metadata-provider-6220-4812-4343-4845",
-    "status": "?? tests/issue-4343-metadata-provider-ecosystem-match.mjs\u0000?? transcripts/latest.md\u0000",
-    "dirtyStateSha256": "62d12ec20f119fb10cbed2dd5f428c6b9bbbff64d1d990a07b6e7deed9a739c5",
-    "transcriptsSha256": "6b5fbefc00dea102493e0071c81bf471c6e39e777e302f5b00cc6b25b0bccba4",
-    "identity": "cd3620eec05708ec562d924cbf67b0fb6cff881bfd1f421d032adde22f8d2d76",
+    "headSha": "b66da5fc5150d5c36404c3e18f9a7815e9d0a355",
+    "branchRef": "fix/issues-platform-binary-mapping-fingerprint-6234-6230-6223-6159",
+    "status": "",
+    "dirtyStateSha256": "3adbe954d1b10c0b391c9903dbb789d8c10c415f09b61b9f95e8aaa30baa54b1",
+    "transcriptsSha256": "4a7c53f3367230bda019d519a87257a50aadf49293b6e671c785ef46015f7b01",
+    "identity": "a6634394717c77895efe57e11653d0287b31296cf3eeb3b3be4c08c0aa960532",
     "preserved": true
   }
 }

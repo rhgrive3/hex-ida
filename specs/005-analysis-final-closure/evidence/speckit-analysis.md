@@ -143,3 +143,46 @@ Because this evidence section is appended after the reviewed commit, the next
 authority is the committed evidence wrapper followed by one exact-head T046
 preflight run. Production component work remains blocked until that hosted
 head/base proof records `PREFLIGHT_GREEN`.
+
+## T046 hosted-CI convergence review
+
+**Observed date**: 2026-09-04
+
+**Reviewed identities**:
+
+- remediation commit: `a23471c866d1be483dccbd1b8f5e596a207d9c68`
+- post-reconcile integration parent: `edf17b7397f5612c79390a12e70c23ccfef6c5ba`
+- refetched current-main base: `7012c4cc4f0d5c0d8a7ca44c6c5c1edcb080aba1`
+- preserved recovery authority: `84d277a962515031c1bcc4eba0dca4c44c41f0b7`
+
+**Outcome**: `CLEAN_PENDING_EXACT_HEAD`. The Spec Kit prerequisite resolved the
+same `005-analysis-final-closure` campaign, both reviewer-owned checklists are
+fully checked, all 57 static tasks and ownership rows remain present, and the
+fixed 23-roadmap-item inventory is unchanged. Independent Sol review passed the
+terminal seven-counter rederivation, fixed-oracle binding, inner artifact
+identities, dispatch trust boundary, cross-lane ownership exception, and T051
+scope expansion. The current 32-path base-to-tree inventory is exact. No
+component implementation or task status was promoted by this review.
+
+The two intervening main commits touch only the Phase 7/8 ownership workflows
+and have no path overlap with T046. Their exact merge is represented by the
+post-reconcile integration parent above; the inventory base is the refetched
+main SHA, not the former `9d1f05ec` base. The final authority remains the next
+committed wrapper plus local and hosted exact-head verification.
+
+### Reviewed blobs and frozen identities
+
+```text
+spec.md                              9f5c6d082090c22c073029bdb9d136490935fc86
+plan.md                              05ac439a3f8c7e1e9043c924575ca0a4dbc28471
+tasks.md                             7e0f200db17f5fe34a4495e2824ab044b780a3f8
+contracts/closure-ledger.md          14f36f70218968cf890c89d4f8e6c35d0150e574
+contracts/task-ownership.json        a0d63da7ed194ce59f8c09fdea0ef9d33289306e
+workflow Git blob                    abeb09dda4b53e3b7f4a8a7b46ea5ad265353f55
+workflow SHA-256                     82b305894cd89c9f83f9f0ae274787b1662018dfcf69b872fcc7ffd9b2e22953
+validator Git blob                   c43f9d82cdde95d8395181df7fabd8b4317c8d28
+shadow contracts Git blob            37cd5d643820e1006921b0c7e8db80d098abc7cf
+shadow contracts SHA-256             0eec9ae4296d2371700dac92369d2ab54d27dea50fcb87cc14f850ae41092c3f
+foundation ownership digest          d80c91a8bee4f4141642151dda727edd
+initial candidate-gate digest        128a52dae6eab6f63831dc854c76b623
+```

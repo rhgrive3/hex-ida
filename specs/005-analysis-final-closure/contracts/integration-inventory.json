@@ -3,7 +3,7 @@
   "campaignStage": "STAGE_A",
   "integrationRef": "recovery/final-closure-20260904",
   "baseRef": "origin/main",
-  "baseSha": "9d1f05ec26e1cf5f8e05e971c5422f91a2d557ab",
+  "baseSha": "7012c4cc4f0d5c0d8a7ca44c6c5c1edcb080aba1",
   "candidateRef": "HEAD",
   "checkpoint": {
     "schemaVersion": "hex-final-closure-integration-checkpoint-state/v1",
