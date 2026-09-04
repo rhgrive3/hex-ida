@@ -181,18 +181,20 @@ function canonicalIdentity(value, stack = new Set()) {
     if (value instanceof Set) {
       return `e[${Array.from(value.values()).map((item) => canonicalIdentity(item, stack)).join(',')}]`;
     }
-    // RegExp state lives in the source/flags internal slots, which
-    // Object.keys() never sees: without this branch /alpha/g and /beta/i
-    // both encoded as `o{}` and the stale-state guard passed across
-    // completely different states (#6250).
+    // RegExp matching state includes source, flags, and lastIndex. The latter
+    // is non-enumerable but changes global/sticky matching behavior, so omitting
+    // it would let a changed approved state pass the stale-state guard (#6250).
     if (value instanceof RegExp) {
-      return `r${JSON.stringify(value.source)}:${JSON.stringify(value.flags)}`;
+      return `r${JSON.stringify(value.source)}:${JSON.stringify(value.flags)}:${canonicalIdentity(value.lastIndex, stack)}`;
     }
     // Fingerprinting decides whether the user-approved state is still the
     // state about to be written. A non-plain object (custom class, host
     // object, boxed primitive, ...) whose meaningful state sits in internal
     // slots cannot be encoded completely here, so it must fail closed
     // instead of collapsing to whatever own enumerable keys happen to show.
+    if (Array.isArray(value) && Object.getPrototypeOf(value) !== Array.prototype) {
+      throw new AIError('tool_failed', 'Proposal state contains an unsupported non-plain object and cannot be fingerprinted safely.');
+    }
     if (!Array.isArray(value)) {
       const proto = Object.getPrototypeOf(value);
       if (proto !== Object.prototype && proto !== null) {
