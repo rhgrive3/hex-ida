@@ -373,8 +373,11 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
       data = Uint8Array.from(source);
     }
     if (data.length > 256*1024) throw new DebugAdapterError('too-large','memory write exceeds 256 KiB');
+    // Validate the address before the empty-write fast path: a 0-byte write
+    // must not launder an invalid address into a success result.
+    const start = asAddress(address);
     if (!data.length) return { written:0 };
-    const start = asAddress(address); memoryMap.assert(start,data.length,'write'); const emu = sandbox.emulator;
+    memoryMap.assert(start,data.length,'write'); const emu = sandbox.emulator;
     traceState.suppressMemory = Number(traceState.suppressMemory || 0) + 1;
     try {
       for (let i=0;i<data.length;i+=8) {
