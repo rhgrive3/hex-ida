@@ -365,7 +365,7 @@ export function functionSeed(address, opts = {}) {
 }
 
 export function mergeFunctionSeeds(input, context = {}) {
-  const rank = { symbol: 5, exception: 4, unwind: 4, function_starts: 4, export: 3, entrypoint: 2, heuristic: 1 };
+  const rank = { symbol: 5, 'ifunc-resolver': 5, exception: 4, unwind: 4, function_starts: 4, export: 3, entrypoint: 2, heuristic: 1 };
   const m = new Map();
   for (const f0 of input || []) {
     if (f0 == null || f0.address == null) continue;
