@@ -7,6 +7,8 @@ import {
 } from '../../js/features.js';
 
 for (const text of [
+  null,
+  undefined,
   ['purchase payment'],
   { toString: () => 'purchase payment' },
   123,
@@ -26,6 +28,13 @@ assert.deepEqual(groupByFeature(malformed), [], 'groupByFeature must preserve th
 const asyncResult = await classifyFeaturesAndEngineAsync(malformed);
 assert.deepEqual(asyncResult.features, []);
 assert.equal(asyncResult.engine, null);
+
+const validAsync = await classifyFeaturesAndEngineAsync([
+  { addr: 3n, text: 'UnityEngine purchase payment' },
+]);
+assert.equal(validAsync.engine?.id, 'unity', 'async primitive engine evidence must retain matching');
+assert.ok(validAsync.features.some((feature) => feature.id === 'purchase'),
+  'async primitive feature evidence must retain matching');
 
 assert.ok(classifyString('purchase payment').some((hit) => hit.id === 'purchase'));
 assert.equal(detectEngine([{ addr: 3n, text: 'UnityEngine' }])?.id, 'unity');
