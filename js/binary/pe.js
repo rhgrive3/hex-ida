@@ -128,7 +128,13 @@ export function parsePE(input, options = {}) {
   const numberOfRvaAndSizes = r.u32(opt + (bits === 64 ? 108 : 92));
   const dirBase = opt + (bits === 64 ? 112 : 96);
   const directories = [];
-  const dirCount = Math.min(numberOfRvaAndSizes, 16, Math.max(0, Math.floor((opt + sizeOptional - dirBase) / 8)));
+  // Bounds safety (how many entries physically fit) and format validity (how
+  // many were declared) are separate questions (#6118): a declared count that
+  // the optional header cannot hold is truncation, not absence.
+  const availableEntries = Math.max(0, Math.floor((opt + sizeOptional - dirBase) / 8));
+  const requiredKnownEntries = Math.min(numberOfRvaAndSizes, 16);
+  const dirCount = Math.min(requiredKnownEntries, availableEntries);
+  const directoryShortfall = requiredKnownEntries - dirCount;
   for (let i = 0; i < dirCount; i++) directories.push({ rva: r.u32(dirBase + i * 8), size: r.u32(dirBase + i * 8 + 4) });
 
   const image = new BinaryImage(bytes, {
@@ -136,6 +142,11 @@ export function parsePE(input, options = {}) {
     imageBase, entrypoint: entryRva ? imageBase + BigInt(entryRva) : null,
     metadata: { machine, timestamp, characteristics, subsystem, sectionAlignment, fileAlignment, sizeOfImage, sizeOfHeaders, directories, peSectionRawMappings: [], peSectionRawSizes: [] },
   });
+  if (directoryShortfall > 0) {
+    image.metadata.peDataDirectoriesTruncated = true;
+    image.metadata.peDataDirectoryShortfall = directoryShortfall;
+    image.warnings.push(`PE optional header declares ${numberOfRvaAndSizes} data directories but SizeOfOptionalHeader ${sizeOptional} only holds ${dirCount}; ${directoryShortfall} declared entries are missing and the missing range is truncation, not a format fact`);
+  }
 
   image.addSegment({ name: 'headers', address: imageBase, size: BigInt(sizeOfHeaders), fileOffset: 0n, fileSize: BigInt(Math.min(sizeOfHeaders, bytes.length)), perms: { read: true, write: false, execute: false }, source: 'PE-headers' });
   const secBase = opt + sizeOptional;
