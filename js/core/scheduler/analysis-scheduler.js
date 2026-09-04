@@ -55,6 +55,12 @@ function uniqueSignals(...values) {
   for (const value of values.flat()) if (value && !out.includes(value)) out.push(value);
   return out;
 }
+function requestCompleteness(request) { return request?.completeness ?? 'complete'; }
+function inflightRequirementsCompatible(producerRequest, consumerRequest) {
+  // Only identical completeness requirements share a producer. In particular,
+  // bounded/truncated/unsupported are not treated as an ordered lattice.
+  return requestCompleteness(producerRequest) === requestCompleteness(consumerRequest);
+}
 function isStorageFailure(error) { return error?.name === 'ArtifactStorageError' || String(error?.code || '').startsWith('artifact-storage-'); }
 
 class IndexedMinHeap {
@@ -122,12 +128,13 @@ export class AnalysisScheduler {
     let artifactId;
     try { artifactId=requireArtifactId(descriptor?.artifactId,'artifact-request-descriptor-required'); }
     catch (error) { return Promise.reject(error); }
-    this.metrics.requests++;
+    const firstAttempt=options.retry!==true;
+    if (firstAttempt) this.metrics.requests++;
     const priority = priorityValue(request.priority);
     // Lifecycle contract (#1189 / #3313): request.received fires exactly once
     // per externally visible request() call. Dependency recursion re-enters
     // this path internally and must not re-announce the request.
-    if (options.external) {
+    if (options.external && firstAttempt) {
       this.#emit('request.received', artifactId, {
         priority: priorityName(priority),
         dependencyCount: (descriptor?.upstreamArtifactIds || []).length,
@@ -139,10 +146,18 @@ export class AnalysisScheduler {
     if (ancestry.includes(artifactId)) { this.metrics.cycleErrors++; return Promise.reject(new SchedulerCycleError([...ancestry,artifactId])); }
     const existing=this.inflight.get(artifactId);
     if (existing) {
-      this.metrics.coalescedRequests++;
-      const p = this.#attachConsumer(existing,consumerSignals);
-      this.#emit('request.coalesced', existing, { consumerCount: existing.consumerCount });
-      return p;
+      if (inflightRequirementsCompatible(existing.request,request)) {
+        this.metrics.coalescedRequests++;
+        const p = this.#attachConsumer(existing,consumerSignals);
+        this.#emit('request.coalesced', existing, { consumerCount: existing.consumerCount });
+        return p;
+      }
+      // A distinct completeness requirement cannot share this producer, while
+      // the scheduler's queue/DAG authority is intentionally unique per
+      // artifactId. Wait for the incumbent to settle, then re-enter through
+      // the normal cache/producers path instead of running two colliding tasks.
+      return this.#waitForInflightSlot(existing,consumerSignals)
+        .then(()=>this.#request(request,ancestry,parentSignal,{...options,retry:true}));
     }
 
     const controller=new AbortController();
@@ -183,6 +198,32 @@ export class AnalysisScheduler {
         listeners.push([signal,listener]); signal.addEventListener('abort',listener,{once:true});
       }
       task.promise.then((value)=>finish(resolve,value),(error)=>finish(reject,error));
+      const abortedAfterRegistration=active.find((signal)=>signal.aborted);
+      if (abortedAfterRegistration) finish(reject,abortError(abortedAfterRegistration),true);
+    });
+  }
+
+  #waitForInflightSlot(task, signals) {
+    const active=uniqueSignals(signals);
+    const aborted=active.find((signal)=>signal.aborted);
+    if (aborted) { this.metrics.cancelledConsumers++; return Promise.reject(abortError(aborted)); }
+    this.activeConsumers++;
+    return new Promise((resolve,reject)=>{
+      let settled=false;
+      const listeners=[];
+      const finish=(fn,value,cancelled=false)=>{
+        if (settled) return;
+        settled=true;
+        for (const [signal,listener] of listeners) signal.removeEventListener('abort',listener);
+        this.activeConsumers--;
+        if (cancelled) this.metrics.cancelledConsumers++;
+        fn(value);
+      };
+      for (const signal of active) {
+        const listener=()=>finish(reject,abortError(signal),true);
+        listeners.push([signal,listener]); signal.addEventListener('abort',listener,{once:true});
+      }
+      task.promise.then(()=>finish(resolve),()=>finish(resolve));
       const abortedAfterRegistration=active.find((signal)=>signal.aborted);
       if (abortedAfterRegistration) finish(reject,abortError(abortedAfterRegistration),true);
     });
