@@ -256,39 +256,58 @@ export function analyzeEscape(ir, cfg, ssa, pointsToRun, options = {}) {
   }
 
   // Transitive containment propagation: if a local container escaped, any root stored into it also escapes.
+  // Fixpoint over (root, canonical escape fact): a root is re-queued whenever
+  // it gains a new escape fact, so a stronger reason arriving late through an
+  // already-escaped intermediate root still reaches its children. Dedupe by
+  // canonical fact keeps identical records bounded on diamonds and cycles.
   const escapeRecordsByRoot = new Map();
+  const seenFactsByRoot = new Map();
+  const factKeyOf = (record) =>
+    `${record.reason}|${record.boundary}|${record.siteId ?? ''}|${(record.evidenceIds || []).join(',')}`;
   for (const esc of escapes) {
     if (!escapeRecordsByRoot.has(esc.rootKey)) escapeRecordsByRoot.set(esc.rootKey, []);
     escapeRecordsByRoot.get(esc.rootKey).push(esc);
+    if (!seenFactsByRoot.has(esc.rootKey)) seenFactsByRoot.set(esc.rootKey, new Set());
+    seenFactsByRoot.get(esc.rootKey).add(factKeyOf(esc));
   }
 
   const worklist = [...escapedRoots];
-  const visitedTransitive = new Set();
+  const queued = new Set(worklist);
   while (worklist.length) {
     const currentRoot = worklist.pop();
+    queued.delete(currentRoot);
     const children = containment.get(currentRoot);
     if (!children) continue;
     const parentEscapes = escapeRecordsByRoot.get(currentRoot) ?? [];
     for (const childRoot of children) {
-      const edgeKey = `${currentRoot}->${childRoot}`;
-      if (!visitedTransitive.has(edgeKey)) {
-        visitedTransitive.add(edgeKey);
-        const childOrigin = rootOrigins.get(childRoot) ?? 'unknown';
-        for (const parentEsc of parentEscapes) {
-          const childRecord = createEscapeRecord({
-            rootKey: childRoot,
-            rootOrigin: childOrigin,
-            reason: parentEsc.reason,
-            boundary: parentEsc.boundary,
-            siteId: parentEsc.siteId,
-            evidenceIds: parentEsc.evidenceIds,
-          });
-          escapes.push(childRecord);
-          if (!escapeRecordsByRoot.has(childRoot)) escapeRecordsByRoot.set(childRoot, []);
-          escapeRecordsByRoot.get(childRoot).push(childRecord);
-        }
-        if (!escapedRoots.has(childRoot)) {
-          escapedRoots.add(childRoot);
+      let childFacts = seenFactsByRoot.get(childRoot);
+      if (!childFacts) {
+        childFacts = new Set();
+        seenFactsByRoot.set(childRoot, childFacts);
+      }
+      const childOrigin = rootOrigins.get(childRoot) ?? 'unknown';
+      let added = false;
+      for (const parentEsc of parentEscapes) {
+        const childRecord = createEscapeRecord({
+          rootKey: childRoot,
+          rootOrigin: childOrigin,
+          reason: parentEsc.reason,
+          boundary: parentEsc.boundary,
+          siteId: parentEsc.siteId,
+          evidenceIds: parentEsc.evidenceIds,
+        });
+        const key = factKeyOf(childRecord);
+        if (childFacts.has(key)) continue;
+        childFacts.add(key);
+        escapes.push(childRecord);
+        if (!escapeRecordsByRoot.has(childRoot)) escapeRecordsByRoot.set(childRoot, []);
+        escapeRecordsByRoot.get(childRoot).push(childRecord);
+        added = true;
+      }
+      if (added) {
+        escapedRoots.add(childRoot);
+        if (!queued.has(childRoot)) {
+          queued.add(childRoot);
           worklist.push(childRoot);
         }
       }
