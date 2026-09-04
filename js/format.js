@@ -98,12 +98,18 @@ export function parseHexPattern(text) {
 const FLOW = new Set([
   'b', 'bl', 'blr', 'br', 'ret', 'cbz', 'cbnz', 'tbz', 'tbnz', 'braa', 'brab',
   'blraa', 'blrab', 'retaa', 'retab', 'svc', 'brk', 'hlt', 'eret', 'bti',
+  // x86_64 control-flow
+  'call', 'lcall', 'jmp', 'ljmp', 'retf', 'retn', 'iret', 'iretd', 'iretq',
+  'syscall', 'sysret', 'sysenter', 'sysexit', 'ud2',
+  'loop', 'loope', 'loopne', 'loopz', 'loopnz',
 ]);
 
 export function mnemonicClass(mn) {
   if (!mn) return '';
-  if (mn.charCodeAt(0) === 46) return 'data';           // ".byte" from SKIPDATA
+  const first = mn.charCodeAt(0);
+  if (first === 46) return 'data';           // ".byte" from SKIPDATA
   if (FLOW.has(mn)) return 'flow';
-  if (mn.charCodeAt(0) === 98 /* b */ && mn.length <= 4 && /^b\.?[a-z]{0,2}$/.test(mn)) return 'flow';
+  if (first === 98 /* b */ && mn.length <= 4 && /^b\.?[a-z]{0,2}$/.test(mn)) return 'flow';
+  if (first === 106 /* j */ && mn.length <= 6 && /^j[a-z]{1,5}$/.test(mn)) return 'flow';
   return '';
 }
