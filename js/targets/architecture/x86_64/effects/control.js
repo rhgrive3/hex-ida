@@ -210,6 +210,15 @@ export function liftX86ControlEffects(instruction, context = {}) {
     if (family === 'int') {
       const failure = intOperandFailure(ctx);
       if (failure) return ctx.partial(failure, ['control', 'faults', 'other'], { controlEffect:{ kind:'unknown', reason:failure } });
+    } else if (family === 'ud0' || family === 'ud1') {
+      // UD0/UD1 carry the ModR/M 2-operand form (r32, r/m32) and always
+      // raise #UD. The operands are never read as data accesses.
+      const operands = ctx.operands;
+      const [destination, source] = operands;
+      if (operands.length !== 2 || destination?.type !== 'register'
+        || (source?.type !== 'register' && source?.type !== 'memory')) {
+        return ctx.partial(`x86-${family}-operand-shape-unmodelled`, ['control','faults'], { controlEffect:{ kind:'unknown', reason:`x86-${family}-operand-shape-unmodelled` } });
+      }
     } else if (ctx.operands.length !== 0) {
       return ctx.partial(`x86-${family}-operand-shape-unmodelled`, ['control','faults'], { controlEffect:{ kind:'unknown', reason:`x86-${family}-operand-shape-unmodelled` } });
     }
