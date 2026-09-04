@@ -85,10 +85,6 @@ export function canonicalArtifactKeyValue(value, seen = new WeakSet()) {
   } else if (Array.isArray(value)) {
     out = value.map((entry) => canonicalArtifactKeyValue(entry, seen));
   } else {
-    const proto = Object.getPrototypeOf(value);
-    if (proto !== Object.prototype && proto !== null) {
-      throw new ArtifactError('artifact-key-unsupported-object', `Unsupported object type for artifact key: ${proto?.constructor?.name || typeof value}`);
-    }
     out = {};
     for (const key of Object.keys(value).sort()) {
       Object.defineProperty(out, escapeKey(key), {
