@@ -42,8 +42,14 @@ function normalizeFunctionUnknown(input) {
 }
 
 function assertVersion(input) {
-  if (input.schemaVersion != null && Number(input.schemaVersion) !== SEMANTIC_IR_SCHEMA_VERSION) fail('semantic-ir-schema-version-mismatch');
-  if (input.contractVersion != null && String(input.contractVersion) !== SEMANTIC_IR_CONTRACT_VERSION) fail('semantic-ir-contract-version-mismatch');
+  if (input.schemaVersion != null
+      && (typeof input.schemaVersion !== 'number' || input.schemaVersion !== SEMANTIC_IR_SCHEMA_VERSION)) {
+    fail('semantic-ir-schema-version-mismatch');
+  }
+  if (input.contractVersion != null
+      && (typeof input.contractVersion !== 'string' || input.contractVersion !== SEMANTIC_IR_CONTRACT_VERSION)) {
+    fail('semantic-ir-contract-version-mismatch');
+  }
 }
 
 function countReferences(nodes, values, blocks) {
