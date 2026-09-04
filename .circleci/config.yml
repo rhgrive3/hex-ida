@@ -1,36 +1,44 @@
 version: 2.1
 
 jobs:
-  build-medium-plus:
+  component-probe:
+    parameters:
+      component:
+        type: string
     docker:
       - image: cimg/node:22.23
-    resource_class: medium+
+    resource_class: medium
     steps:
       - checkout
       - run: npm ci --no-audit --no-fund
-      - run: npm run userscript:build
-
-  build-large:
-    docker:
-      - image: cimg/node:22.23
-    resource_class: large
-    steps:
-      - checkout
-      - run: npm ci --no-audit --no-fund
-      - run: npm run userscript:build
-
-  build-xlarge:
-    docker:
-      - image: cimg/node:22.23
-    resource_class: xlarge
-    steps:
-      - checkout
-      - run: npm ci --no-audit --no-fund
-      - run: npm run userscript:build
+      - run:
+          name: Probe << parameters.component >>
+          command: node scripts/ci/userscript-build-components-probe.mjs << parameters.component >>
 
 workflows:
   probe:
     jobs:
-      - build-medium-plus
-      - build-large
-      - build-xlarge
+      - component-probe:
+          name: probe-crypto
+          component: crypto
+      - component-probe:
+          name: probe-css
+          component: css
+      - component-probe:
+          name: probe-runtime
+          component: runtime
+      - component-probe:
+          name: probe-loader
+          component: loader
+      - component-probe:
+          name: probe-module-workers
+          component: module-workers
+      - component-probe:
+          name: probe-classic-workers
+          component: classic-workers
+      - component-probe:
+          name: probe-wasm
+          component: wasm
+      - component-probe:
+          name: probe-release-version
+          component: release-version
