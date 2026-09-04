@@ -29,11 +29,55 @@ function schema(extra = {}) {
   };
 }
 
+const RUNTIME_BINDING_PROPERTIES = Object.freeze({ runtimeSessionId: RUNTIME_SESSION_FIELD, binaryId: BINARY_ID_FIELD });
+function runtimeSchema(extra = {}) {
+  return schema({
+    ...extra,
+    properties: { ...RUNTIME_BINDING_PROPERTIES, ...(extra.properties || {}) },
+    required: Array.from(new Set(['runtimeSessionId', ...(extra.required || [])])),
+  });
+}
+
+const BREAKPOINT_FIELDS = Object.freeze({
+  kind: Object.freeze({ type: 'string', enum: ['address', 'function', 'conditional', 'memory'] }),
+  id: VALUE_FIELD,
+  address: ADDRESS_FIELD,
+  function: VALUE_FIELD,
+  condition: VALUE_FIELD,
+  size: Object.freeze({ type: 'integer', minimum: 1, maximum: 4096 }),
+  access: Object.freeze({ type: 'string', enum: ['read', 'write', 'readwrite'] }),
+  enabled: Object.freeze({ type: 'boolean' }),
+});
+const BREAKPOINT_SPEC_SCHEMA = Object.freeze({ anyOf: [
+  schema({ properties: { ...BREAKPOINT_FIELDS, kind: { const: 'address' } }, required: ['address'] }),
+  schema({ properties: { ...BREAKPOINT_FIELDS, kind: { const: 'function' } }, required: ['function'] }),
+  schema({ properties: { ...BREAKPOINT_FIELDS, kind: { const: 'conditional' } }, required: ['kind', 'address', 'condition'] }),
+  schema({ properties: { ...BREAKPOINT_FIELDS, kind: { const: 'memory' } }, required: ['kind', 'address'] }),
+] });
+const BREAKPOINT_CREATE_SCHEMA = Object.freeze({ anyOf: [
+  runtimeSchema({ properties: { breakpoint: BREAKPOINT_SPEC_SCHEMA }, required: ['breakpoint'] }),
+  runtimeSchema({ properties: { ...BREAKPOINT_FIELDS, kind: { const: 'address' } }, required: ['address'] }),
+  runtimeSchema({ properties: { ...BREAKPOINT_FIELDS, kind: { const: 'function' } }, required: ['function'] }),
+  runtimeSchema({ properties: { ...BREAKPOINT_FIELDS, kind: { const: 'conditional' } }, required: ['kind', 'address', 'condition'] }),
+  runtimeSchema({ properties: { ...BREAKPOINT_FIELDS, kind: { const: 'memory' } }, required: ['kind', 'address'] }),
+] });
+const WATCHPOINT_SPEC_SCHEMA = Object.freeze(schema({
+  properties: BREAKPOINT_FIELDS,
+  required: ['address'],
+}));
+const WATCHPOINT_CREATE_SCHEMA = Object.freeze({ anyOf: [
+  runtimeSchema({ properties: { watchpoint: WATCHPOINT_SPEC_SCHEMA }, required: ['watchpoint'] }),
+  runtimeSchema({ properties: BREAKPOINT_FIELDS, required: ['address'] }),
+] });
+const EXPERIMENT_SCHEMA = Object.freeze({
+  type: 'object', additionalProperties: true,
+  properties: { cases: { type: 'array' } },
+  required: ['cases'],
+});
+
 // Default runtime-mutation schema: the executor reads runtimeSessionId (and
 // optionally binaryId) for every runtime-bound mutation.
-const RUNTIME_SESSION_SCHEMA = Object.freeze(schema({
-  properties: { runtimeSessionId: RUNTIME_SESSION_FIELD, binaryId: BINARY_ID_FIELD },
-}));
+const RUNTIME_SESSION_SCHEMA = Object.freeze(runtimeSchema());
 
 function capability(id, category, description, extra = {}) {
   return Object.freeze({
@@ -117,24 +161,17 @@ const CATALOG = Object.freeze([
   capability('runtime.connect', 'runtime', 'Connect a known runtime adapter with an explicit binary binding.', { mutability: 'runtime-dangerous', risk: 'high', requiresApproval: true, scopeSupport: ['binary'], inputSchema: schema({
     properties: { adapter: VALUE_FIELD, binaryId: BINARY_ID_FIELD, trace: { type: 'object' } },
   }) }),
-  capability('runtime.attach', 'runtime', 'Attach the active runtime adapter to a target.', runtimeMutation('high', false, schema({
+  capability('runtime.attach', 'runtime', 'Attach the active runtime adapter to a target.', runtimeMutation('high', false, runtimeSchema({
     properties: { target: { type: 'object' } },
   }))),
-  capability('runtime.detach', 'runtime', 'Disconnect the bound runtime session.', runtimeMutation('medium', true, schema({
-    properties: { runtimeSessionId: RUNTIME_SESSION_FIELD },
-    required: ['runtimeSessionId'],
+  capability('runtime.detach', 'runtime', 'Disconnect the bound runtime session.', runtimeMutation('medium', true)),
+  capability('runtime.breakpoint-create', 'runtime', 'Create a bound runtime breakpoint.', runtimeMutation('medium', true, BREAKPOINT_CREATE_SCHEMA)),
+  capability('runtime.breakpoint-remove', 'runtime', 'Remove a bound runtime breakpoint.', runtimeMutation('medium', true, runtimeSchema({
+    properties: { id: ADDRESS_FIELD }, required: ['id'],
   }))),
-  capability('runtime.breakpoint-create', 'runtime', 'Create a bound runtime breakpoint.', runtimeMutation('medium', true, schema({
-    properties: { breakpoint: { type: 'object' }, runtimeSessionId: RUNTIME_SESSION_FIELD },
-  }))),
-  capability('runtime.breakpoint-remove', 'runtime', 'Remove a bound runtime breakpoint.', runtimeMutation('medium', true, schema({
-    properties: { id: ADDRESS_FIELD, runtimeSessionId: RUNTIME_SESSION_FIELD },
-  }))),
-  capability('runtime.watchpoint-create', 'runtime', 'Create a bound runtime memory watchpoint.', runtimeMutation('high', true, schema({
-    properties: { watchpoint: { type: 'object' }, runtimeSessionId: RUNTIME_SESSION_FIELD },
-  }))),
-  capability('runtime.watchpoint-remove', 'runtime', 'Remove a bound runtime watchpoint.', runtimeMutation('medium', true, schema({
-    properties: { id: ADDRESS_FIELD, runtimeSessionId: RUNTIME_SESSION_FIELD },
+  capability('runtime.watchpoint-create', 'runtime', 'Create a bound runtime memory watchpoint.', runtimeMutation('high', true, WATCHPOINT_CREATE_SCHEMA)),
+  capability('runtime.watchpoint-remove', 'runtime', 'Remove a bound runtime watchpoint.', runtimeMutation('medium', true, runtimeSchema({
+    properties: { id: ADDRESS_FIELD }, required: ['id'],
   }))),
   capability('runtime.continue', 'runtime', 'Continue the bound runtime session.', runtimeMutation('high')),
   capability('runtime.pause', 'runtime', 'Pause the bound runtime session.', runtimeMutation('medium', true)),
@@ -143,23 +180,23 @@ const CATALOG = Object.freeze([
   capability('runtime.step-out', 'runtime', 'Step out of the current frame in the bound runtime session.', runtimeMutation('medium')),
   capability('runtime.registers', 'runtime', 'Read registers from the bound runtime session.', {
     runtimeBound: true, scopeSupport: ['function', 'binary'],
-    inputSchema: schema({ properties: { threadId: ADDRESS_FIELD, runtimeSessionId: RUNTIME_SESSION_FIELD, binaryId: BINARY_ID_FIELD } }),
+    inputSchema: runtimeSchema({ properties: { threadId: ADDRESS_FIELD } }),
   }),
   capability('runtime.memory-read', 'runtime', 'Read a bounded memory range from the bound runtime session.', {
     runtimeBound: true, scopeSupport: ['function', 'binary'],
-    inputSchema: schema({
-      properties: { address: ADDRESS_FIELD, size: { type: 'integer', minimum: 1, maximum: 262144 }, runtimeSessionId: RUNTIME_SESSION_FIELD, binaryId: BINARY_ID_FIELD },
+    inputSchema: runtimeSchema({
+      properties: { address: ADDRESS_FIELD, size: { type: 'integer', minimum: 1, maximum: 262144 } },
       required: ['address'],
     }),
   }),
-  capability('runtime.memory-write', 'runtime', 'Write bounded runtime memory with expected-before and postcondition checks.', runtimeMutation('high', true, schema({
+  capability('runtime.memory-write', 'runtime', 'Write bounded runtime memory with expected-before and postcondition checks.', runtimeMutation('high', true, runtimeSchema({
     properties: {
-      address: ADDRESS_FIELD, bytes: BYTE_ARRAY_FIELD, expectedBefore: BYTE_ARRAY_FIELD, runtimeSessionId: RUNTIME_SESSION_FIELD, binaryId: BINARY_ID_FIELD,
+      address: ADDRESS_FIELD, bytes: BYTE_ARRAY_FIELD, expectedBefore: BYTE_ARRAY_FIELD,
     },
     required: ['address', 'bytes', 'expectedBefore'],
   }))),
-  capability('runtime.experiment', 'runtime', 'Run a deterministic runtime experiment and capture evidence.', runtimeMutation('high', false, schema({
-    properties: { experiment: { type: 'string' } },
+  capability('runtime.experiment', 'runtime', 'Run a deterministic runtime experiment and capture evidence.', runtimeMutation('high', false, runtimeSchema({
+    properties: { experiment: EXPERIMENT_SCHEMA },
     required: ['experiment'],
   }))),
   capability('project.save', 'project', 'Autosave the current bound Hex project.', { mutability: 'reversible', reversible: true, scopeSupport: ['project'] }),
