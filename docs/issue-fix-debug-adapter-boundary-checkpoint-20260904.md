@@ -1,6 +1,6 @@
 # Simple issue owner-lane checkpoint — debug capability negotiation boundaries
 
-Status: `IMPLEMENTATION_IN_PROGRESS`
+Status: `CHECKS_PENDING`
 
 This checkpoint records the resumable state for the `codex` owner lane for the
 debug capability negotiation issue. Update it at every branch, PR, or merge stage.
@@ -13,6 +13,7 @@ debug capability negotiation issue. Update it at every branch, PR, or merge stag
 - Shared-board claim: lanes message #261
 - Branch: `fix/issues-debug-adapter-boundary-6175`
 - Candidate base: `origin/main` at `f00154dcb9b2234cbacb4c6a3c2186d00c8a4b3a`
+- Implementation head: `e2ad29ca6697bac82fac5c9ec3b340617beccfce`
 - Pull request: pending
 
 ## Stages
@@ -21,7 +22,8 @@ debug capability negotiation issue. Update it at every branch, PR, or merge stag
 - [x] Claimed `js/debug/adapter.js` and its focused regression path on the shared board (#261).
 - [x] Reproduced `negotiate({ writeMemory: false })` re-enabling a supported capability on the candidate base.
 - [x] Implemented strict `requested[key] === true` handling for object-form requests while preserving Set/Array membership semantics.
-- [ ] Focused regression, lint, and Phase 4 candidate proof.
+- [x] Focused regression and lint passed locally.
+- [ ] Phase 4 candidate proof.
 - [ ] Create one owner PR for #6175 and verify exact-head checks.
 - [ ] Merge only after exact-head evidence is green; otherwise record the blocker here and on the board.
 
