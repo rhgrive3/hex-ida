@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
-import { expr } from '../../js/decompiler/ast/nodes.js';
-import { recoverExactStackPhiExpressions } from '../../js/decompiler/passes/stack-phi-recovery.js';
+import { expr } from '../../../js/decompiler/ast/nodes.js';
+import { recoverExactStackPhiExpressions } from '../../../js/decompiler/passes/stack-phi-recovery.js';
 
 function mismatchResult(storeBytes, loadBytes, suffix) {
   const key = `stack:width-${suffix}`;
