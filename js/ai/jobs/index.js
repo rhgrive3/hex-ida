@@ -104,8 +104,20 @@ export class AgentJobManager {
   list() { return [...this.jobs.values()].map(checkpoint); }
 
   async require(value) {
-    if (value && typeof value === 'object') return value;
-    const job = await this.get(value); if (!job) throw new Error(`Unknown agent job: ${value}`); return job;
+    let id;
+    if (value && typeof value === 'object') {
+      id = value.id;
+    } else {
+      id = value;
+    }
+    if (typeof id !== 'string' || !id) throw new Error(`Unknown agent job: ${value}`);
+    let job = await this.get(id);
+    if (!job && value && typeof value === 'object' && validateCheckpoint(value, id)) {
+      this.jobs.set(id, value);
+      job = value;
+    }
+    if (!job) throw new Error(`Unknown agent job: ${id}`);
+    return job;
   }
   async load(id) { const value = await this.persistence?.load?.(id); if (value?.version === CHECKPOINT_VERSION) { this.jobs.set(id, value); return value; } return null; }
   async save(job) { await this.persistence?.save?.(checkpoint(job)); }
@@ -144,6 +156,24 @@ function compactResult(result) { return { answer: result?.answer || '', confiden
 function checkpoint(job) { return JSON.parse(JSON.stringify(job)); }
 function unique(values) { return [...new Set(values)]; }
 function bounded(value, min, max) { const n = Number(value); return Number.isFinite(n) ? Math.max(min, Math.min(max, Math.floor(n))) : min; }
+const VALID_STATUSES = new Set(['ready', 'running', 'checkpointed', 'complete', 'failed', 'hard-limit']);
+function isValidNumber(n, min = 0) { return typeof n === 'number' && Number.isFinite(n) && n >= min; }
+function validateCheckpoint(value, expectedId = null) {
+  if (!value || typeof value !== 'object') return false;
+  if (value.version !== CHECKPOINT_VERSION) return false;
+  if (typeof value.id !== 'string' || !value.id) return false;
+  if (expectedId !== null && value.id !== expectedId) return false;
+  if (!VALID_STATUSES.has(value.status)) return false;
+  if (typeof value.goal !== 'string' || !value.goal) return false;
+  const bu = value.budgetUsage;
+  if (!bu || typeof bu !== 'object') return false;
+  if (!isValidNumber(bu.slices) || !isValidNumber(bu.modelCalls) || !isValidNumber(bu.toolCalls) || !isValidNumber(bu.elapsedMs) || !isValidNumber(bu.contextBytes)) return false;
+  const lim = value.limits;
+  if (!lim || typeof lim !== 'object') return false;
+  if (!isValidNumber(lim.maxSlices, 1) || !isValidNumber(lim.maxElapsedMs, 1000)) return false;
+  if (!Array.isArray(value.evidenceIds) || !Array.isArray(value.hypothesisIds) || !Array.isArray(value.completedTools) || !Array.isArray(value.continuationRefs) || !Array.isArray(value.unresolvedWork)) return false;
+  return true;
+}
 function autoJobId() { return `agent_job_${Date.now().toString(36)}_${randomId()}`; }
 function randomId() {
   const bytes = new Uint8Array(6);
