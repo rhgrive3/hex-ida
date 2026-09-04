@@ -12,6 +12,11 @@ export class ProposalStore {
     this.binding = typeof binding === 'function' ? binding : null;
     this.records = new Map();
     this.approvals = new Map();
+    // Tokens consumed by apply() but currently in-flight inside the apply
+    // callback. CapabilityExecutor verifies against both maps so the
+    // legitimate ProposalExecutor path (which calls back inside apply)
+    // still validates after the approval is consumed (#6221).
+    this.inflight = new Map();
     this.audit = [];
   }
 
@@ -66,6 +71,7 @@ export class ProposalStore {
     if (proposal.status !== 'pending' && proposal.status !== 'approved') return proposal;
     proposal.status = 'rejected';
     this.approvals.delete(proposal.id);
+    this.inflight.delete(proposal.id);
     this.audit.push({ type: 'proposal-rejected', proposalId: proposal.id, timestamp: new Date().toISOString() });
     return proposal;
   }
@@ -78,32 +84,37 @@ export class ProposalStore {
     // await. A second caller with the same token can no longer pass validation.
     proposal.status = 'applying';
     this.approvals.delete(proposal.id);
+    this.inflight.set(proposal.id, approvalToken);
     this.audit.push({ type: 'proposal-applying', proposalId: proposal.id, timestamp: new Date().toISOString() });
 
-    if (proposal.bindingRevision !== fingerprint(this.binding?.() || null)) {
-      proposal.status = 'failed';
-      this.audit.push({ type: 'proposal-binding-mismatch', proposalId: proposal.id, timestamp: new Date().toISOString() });
-      throw new AIError('scope_violation', 'The proposal belongs to a different binary, project, or runtime session.');
-    }
-
-    if (fingerprint(currentState) !== proposal.revision) {
-      proposal.status = 'failed';
-      this.audit.push({ type: 'proposal-stale', proposalId: proposal.id, timestamp: new Date().toISOString() });
-      throw new AIError('tool_failed', 'The proposal target changed after it was created.');
-    }
-    if (typeof apply !== 'function') {
-      proposal.status = 'failed';
-      throw new AIError('tool_failed', 'No mutation adapter is available.');
-    }
     try {
+      if (proposal.bindingRevision !== fingerprint(this.binding?.() || null)) {
+        proposal.status = 'failed';
+        this.audit.push({ type: 'proposal-binding-mismatch', proposalId: proposal.id, timestamp: new Date().toISOString() });
+        throw new AIError('scope_violation', 'The proposal belongs to a different binary, project, or runtime session.');
+      }
+
+      if (fingerprint(currentState) !== proposal.revision) {
+        proposal.status = 'failed';
+        this.audit.push({ type: 'proposal-stale', proposalId: proposal.id, timestamp: new Date().toISOString() });
+        throw new AIError('tool_failed', 'The proposal target changed after it was created.');
+      }
+      if (typeof apply !== 'function') {
+        proposal.status = 'failed';
+        throw new AIError('tool_failed', 'No mutation adapter is available.');
+      }
       await apply(proposalExecutionView(proposal));
       proposal.status = 'applied';
       this.audit.push({ type: 'proposal-applied', proposalId: proposal.id, timestamp: new Date().toISOString() });
       return proposal;
     } catch (error) {
-      proposal.status = 'failed';
-      this.audit.push({ type: 'proposal-failed', proposalId: proposal.id, timestamp: new Date().toISOString() });
+      if (proposal.status === 'applying') {
+        proposal.status = 'failed';
+        this.audit.push({ type: 'proposal-failed', proposalId: proposal.id, timestamp: new Date().toISOString() });
+      }
       throw error;
+    } finally {
+      this.inflight.delete(proposal.id);
     }
   }
 

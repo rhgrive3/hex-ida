@@ -3,9 +3,11 @@ import { assertSchema } from '../validation.js';
 import { validatePatchRange } from '../../patch.js';
 
 export class CapabilityExecutor {
-  constructor({ catalog, app = null, ui = null, actionRunner = null, toolRegistry = null, runtimePlatform = null, binaryId = null } = {}) {
+  constructor({ catalog, app = null, ui = null, actionRunner = null, toolRegistry = null, runtimePlatform = null, binaryId = null, proposalStore = null, approvalVerifier = null } = {}) {
     this.catalog = catalog; this.app = app; this.ui = ui; this.actionRunner = actionRunner;
     this.toolRegistry = toolRegistry; this.runtimePlatform = runtimePlatform; this.binaryId = binaryId;
+    this.proposalStore = proposalStore ?? null;
+    this.approvalVerifier = approvalVerifier ?? null;
     this.reverts = new Map();
   }
 
@@ -21,6 +23,7 @@ export class CapabilityExecutor {
     this.verifyBinding(entry, args, runtimePlatform);
     if (entry.requiresApproval && !validAuthorization(options.authorization)) throw new AIError('approval_required', `Capability ${id} requires a proposal approval token.`);
     this.verifyScope(entry, options);
+    if (entry.requiresApproval) await this.verifyApproval(entry, args, options.authorization);
     if (entry.agentTool) return this.executeTool(entry, args, options);
     if (entry.actionKind) return this.executeAction(entry, args);
     return this.executeBuiltIn(entry, args, options, runtimePlatform);
@@ -52,6 +55,68 @@ export class CapabilityExecutor {
     }
     if (!allowedScopes.includes(scope)) {
       throw new AIError('scope_violation', `${entry.id} does not support ${scope} scope.`);
+    }
+  }
+
+  async verifyApproval(entry, args, authorization) {
+    // A caller-controlled {kind,token} shape is not an authority. The token
+    // must be a live approval issued by the trusted ProposalStore for the
+    // matching proposal, capability kind, and binary binding (#6221).
+    if (typeof this.approvalVerifier === 'function') {
+      let ok = false;
+      try {
+        ok = await this.approvalVerifier({ capabilityId: entry.id, args, authorization, entry });
+      } catch (error) {
+        if (error?.type === 'scope_violation' || error?.type === 'approval_required') throw error;
+        throw new AIError('approval_required', `Capability ${entry.id} requires a proposal approval token.`);
+      }
+      if (ok !== true) throw new AIError('approval_required', `Capability ${entry.id} requires a proposal approval token.`);
+      return;
+    }
+    const rawStore = typeof this.proposalStore === 'function' ? this.proposalStore() : this.proposalStore;
+    const stores = Array.isArray(rawStore) ? rawStore : (rawStore instanceof Set ? [...rawStore] : (rawStore ? [rawStore] : []));
+    if (!stores.length) {
+      throw new AIError('approval_required', `Capability ${entry.id} requires a proposal approval token from a trusted approval authority.`);
+    }
+    const proposalId = authorization?.proposalId;
+    if (typeof proposalId !== 'string' || !proposalId) {
+      throw new AIError('approval_required', `Capability ${entry.id} requires a proposal approval token.`);
+    }
+    // A shared executor may trust several session stores; accept a live token
+    // from any of them, but still bind kind and binary per proposal (#6221).
+    let accepted = false;
+    let bindingMismatch = false;
+    for (const store of stores) {
+      let proposal = null;
+      try {
+        proposal = store.require?.(proposalId) ?? store.get?.(proposalId) ?? null;
+      } catch {
+        continue;
+      }
+      if (!proposal) continue;
+      const liveToken = store.approvals?.get?.(proposalId);
+      const inflightToken = store.inflight?.get?.(proposalId);
+      if (authorization.token !== liveToken && authorization.token !== inflightToken) continue;
+      // Kind binding: capabilities with a proposal-kind mapping require an
+      // exact kind match; unmapped capabilities (runtime.*, patch.apply,
+      // patch.revert, project.*) accept any live token from the trusted
+      // store, with binding still enforced below.
+      const kindsForCapability = CAPABILITY_KINDS[entry.id];
+      if (kindsForCapability != null && !kindsForCapability.includes(proposal.kind)) continue;
+      const proposalBinary = proposal.binding?.binaryId ?? null;
+      const currentBinary = this.currentBinaryId();
+      if (proposalBinary != null && currentBinary != null && String(proposalBinary) !== String(currentBinary)) {
+        bindingMismatch = true;
+        continue;
+      }
+      accepted = true;
+      break;
+    }
+    if (bindingMismatch && !accepted) {
+      throw new AIError('scope_violation', 'The proposal belongs to a different binary, project, or runtime session.');
+    }
+    if (!accepted) {
+      throw new AIError('approval_required', `Capability ${entry.id} requires a proposal approval token.`);
     }
   }
 
@@ -129,6 +194,27 @@ export class CapabilityExecutor {
 }
 
 function validAuthorization(value) { return value?.kind === 'proposal' && typeof value.token === 'string' && value.token.length >= 8; }
+// Proposal kind -> capability binding for approval verification. Capabilities
+// without a proposal kind (runtime.*, patch.apply/revert, project.*) accept
+// any live token from the trusted store; kind-mapped capabilities require an
+// exact match (#6221).
+const PROPOSAL_KIND_CAPABILITY = Object.freeze({
+  rename: 'annotation.rename',
+  comment: 'annotation.comment',
+  type: 'annotation.set-type',
+  'struct-field': 'annotation.struct-field',
+  patch: 'patch.create',
+  'project-annotation': 'annotation.project',
+});
+// Reverse index: capability -> proposal kinds that may authorize it.
+// Capabilities absent here (runtime.*, patch.apply/revert, project.*) accept
+// any live token from the trusted store.
+const CAPABILITY_KINDS = Object.freeze(
+  Object.entries(PROPOSAL_KIND_CAPABILITY).reduce((acc, [kind, capability]) => {
+    (acc[capability] ||= []).push(kind);
+    return acc;
+  }, {}),
+);
 function runtimeAdapter(platform) { const session = platform?.currentSession?.(); if (!session?.adapter) throw new AIError('tool_failed', 'Runtime adapter is unavailable.'); return session.adapter; }
 function runtimeStatus(platform) { const session = platform?.currentSession?.(false); return session ? { connected: !!session.adapter?.connected, sessionId: session.id, binaryId: session.binaryHash || null, backend: session.backend, capabilities: session.adapter?.capabilities || {} } : { connected: false, sessionId: null }; }
 
