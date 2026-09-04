@@ -13,7 +13,7 @@ PR, or merge stage.
 - Regression owner: `tests/phase9/evidence/issue-6153-observation-store-bounds.test.mjs`
 - Shared-board claim: lanes message #276
 - Branch: `fix/issues-observation-store-bounds-6153`
-- Candidate base: `origin/main` at `f00154dcb9b2234cbacb4c6a3c2186d00c8a4b3a`
+- Candidate base: `origin/main` at `d223788ef30665fab4201731e50fe5d37217d4f9`
 - Implementation head: `c55903c9a16ff37c9a04ea6a34280d5108bfe73f`
 
 ## Stages
