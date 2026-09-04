@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { EvidenceStore } from '../js/ai/evidence.js';
+import { EvidenceStore } from '../../js/ai/evidence.js';
 
 // Same ID upsert must not accumulate unreferenced payloads.
 {

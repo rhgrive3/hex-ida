@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { productDescriptor } from '../js/platform/product-descriptor.js';
+import { productDescriptor } from '../../js/platform/product-descriptor.js';
 
 // Normal array dependencies are preserved and deduped.
 {

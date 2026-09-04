@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { hashBytes } from '../js/platform/hash.js';
+import { hashBytes } from '../../js/platform/hash.js';
 
 // Existing valid hashes are preserved byte-for-byte.
 {

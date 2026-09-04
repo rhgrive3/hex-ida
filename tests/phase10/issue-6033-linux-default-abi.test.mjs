@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { LINUX_PLATFORM, DARWIN_PLATFORM, platformProfile } from '../js/targets/platform/index.js';
+import { LINUX_PLATFORM, DARWIN_PLATFORM, platformProfile } from '../../js/targets/platform/index.js';
 
 test('6033: linux does not default non-Apple arm64e to aapcs64', () => {
   assert.equal(LINUX_PLATFORM.defaultABI({ architecture: 'arm64e' }), null);

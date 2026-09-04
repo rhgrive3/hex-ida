@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { RemoteProtocolClient } from '../js/debug/remote-protocol.js';
-import { DEBUG_PROTOCOL_VERSION } from '../js/debug/adapter.js';
+import { RemoteProtocolClient } from '../../js/debug/remote-protocol.js';
+import { DEBUG_PROTOCOL_VERSION } from '../../js/debug/adapter.js';
 
 function clientAt(now, options = {}) {
   let current = now;

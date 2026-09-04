@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseTpiStream } from '../js/analysis/debug/pdb.js';
+import { parseTpiStream } from '../../js/analysis/debug/pdb.js';
 
 const LF_UNION = [0x06, 0x15];
 const LF_FIELDLIST = [0x03, 0x12];
