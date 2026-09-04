@@ -14,7 +14,7 @@ library recognition collection issue. Update it at every branch, PR, or merge st
 - Branch: `fix/issues-signature-boundary-6103`
 - Candidate base: `origin/main` at `f00154dcb9b2234cbacb4c6a3c2186d00c8a4b3a`
 - Implementation head: `58d88d03e76e7d940b231de5b3da6be573a23c2f`
-- Current remote head: `origin/fix/issues-signature-boundary-6103` at `2030daf4537014ef8da3e9b9b7adbf70080c4f96`
+- Current remote head: `origin/fix/issues-signature-boundary-6103` at `86766e754cdbfb14bedd579c5ffb3a0935ba1bdf`
 - Pull request: #6490 — https://github.com/rhgrive3/hex-ida/pull/6490
 
 ## Stages
@@ -25,9 +25,9 @@ library recognition collection issue. Update it at every branch, PR, or merge st
 - [x] Added fail-soft collection materialization while preserving Array and Set recognition.
 - [x] Added primitive-string validation for object `name`/`library`/`text` leaves.
 - [x] Focused regression and lint passed locally.
-- [x] Candidate tree `87e5aba4522baa8c1009e1652152d31e16feea00` passed focused regression and lint; Phase 4 reached 33-file PASS before the known pristine-main ownership-contract failure.
-- [x] Created one owner PR for #6103: #6490.
-- [ ] Re-run exact-head checks after this checkpoint update and inspect required PR checks.
+- [x] Candidate tree `9b924261e337eaa8127af02a0187af83ba8632ce` passed focused regression and lint; Phase 4 reached 33-file PASS before the known pristine-main ownership-contract failure.
+- [x] Created one owner PR for #6103 and #6050: #6490.
+- [x] Exact-head candidate evidence and required-check status were recorded in PR #6490; the common Phase 4 ownership-contract failure remains reproducible on pristine `origin/main`.
 - [ ] Merge only after exact-head evidence is green; otherwise record the blocker here and on the board.
 
 ## Resume procedure
