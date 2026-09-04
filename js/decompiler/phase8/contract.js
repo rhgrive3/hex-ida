@@ -184,7 +184,7 @@ function validationRecord(value) {
       // equivalence without it cannot be re-verified at commit time.
       ...(value.queryHash == null
         ? fail('phase8-pass-transform-validation-query-hash-required')
-        : { queryHash: String(value.queryHash) }),
+        : { queryHash: nonEmptyString(value.queryHash, 'phase8-pass-transform-validation-query-hash-required') }),
     });
   }
   return Object.freeze({

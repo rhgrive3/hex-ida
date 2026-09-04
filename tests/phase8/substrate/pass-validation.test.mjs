@@ -191,3 +191,44 @@ test('C4-04: digest recompute matches the minted proof id', async () => {
   assert.equal(recomputed, validation.equivalenceProofId);
   assert.equal(typeof rewriteProofDigest({ passId: 'p', passVersion: 'v', transformKind: 'k', targets: ['t'], verifierIdentity: 'x', verdict: 'proved', claimKind: 'equivalent' }), 'string');
 });
+
+test('C4-04: equivalent validation rejects coercible query hashes', () => {
+  const descriptor = createPassDescriptor(descriptorInput());
+  const equivalenceProofId = rewriteProofDigest({
+    passId: descriptor.id,
+    passVersion: descriptor.version,
+    transformKind: 'probe-algebraic',
+    targets: ['value_1'],
+    verifierIdentity: REWRITE_VALIDATION_VERIFIER,
+    verdict: 'proved',
+    claimKind: 'equivalent',
+    queryHash: 'qh',
+  });
+  const makeResult = (queryHash) => createPassResult({
+    descriptor,
+    status: 'changed',
+    changed: true,
+    transforms: [{
+      kind: 'probe-algebraic',
+      targets: ['value_1'],
+      proof: 'query hash contract probe',
+      validation: {
+        validation: 'equivalent',
+        equivalenceProofId,
+        verifier: REWRITE_VALIDATION_VERIFIER,
+        queryHash,
+      },
+    }],
+  });
+
+  const canonical = makeResult('qh');
+  assert.equal(canonical.transforms[0].validation.queryHash, 'qh');
+  assert.equal(canonical.transforms[0].validation.equivalenceProofId, equivalenceProofId);
+
+  for (const queryHash of [['qh'], { toString: () => 'qh' }, true, 1, '']) {
+    assert.throws(
+      () => makeResult(queryHash),
+      /phase8-pass-transform-validation-query-hash-required/,
+    );
+  }
+});
