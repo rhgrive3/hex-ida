@@ -66,12 +66,12 @@ const malformed = [
   statefulAccessor,
 ];
 
-for (const rawBytes of malformed) {
+for (const [caseIndex, rawBytes] of malformed.entries()) {
   assert.throws(
     () => decode(rawBytes),
     (error) => error instanceof TypeError
       && error.message === 'riscv64-decoded-instruction-invalid-raw-bytes',
-    `malformed rawBytes must fail closed before authoritative decode: ${String(rawBytes)}`,
+    `malformed rawBytes case ${caseIndex} must fail closed before authoritative decode`,
   );
 }
 assert.equal(statefulReads, 0, 'raw-byte authority must reject accessors without invoking them');
