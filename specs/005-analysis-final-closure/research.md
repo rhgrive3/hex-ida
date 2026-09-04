@@ -243,8 +243,10 @@ component ownership. It executes an independent oracle projection and an
 exact-candidate product projection separately; providers emit only raw
 observations, and the central verifier derives the case relation, denominators,
 all seven hard-zero counters, verdict, and evidence identity. Each denominator
-counts only cases explicitly mapped to that counter, and terminal aggregate
-proof requires coverage of all seven. Candidate and authority identities are
+counts only cases explicitly mapped to that counter. Terminal aggregate proof
+requires every counter to have a non-empty case mapping, a positive denominator,
+an observed terminal record, and a zero observed value; missing, nonterminal, or
+zero-denominator coverage cannot pass. Candidate and authority identities are
 separate: the authority is the component candidate's exact first parent or
 `G_i`'s exact sole `M_i` parent, never the candidate itself; authority
 foundation/judge blobs must equal the candidate blobs. Exact-G lockfiles

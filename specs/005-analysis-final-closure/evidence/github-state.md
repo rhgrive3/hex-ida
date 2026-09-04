@@ -7,16 +7,41 @@
 
 ## Primary pull requests
 
-| PR | State | Exact head / base | Merge/check state | Campaign decision |
-|---|---|---|---|---|
-| #3255 | open, non-draft | head `e250c9fb45995ec924cf07e69dad863b732201d2`; base live main | dirty, non-rebaseable; accuracy/invariant/check-test/verify failed; no pending runs | Historical consumer source only. Do not promote or overwrite. Use reviewed minimal local delta on a clean campaign branch. |
-| #3382 | merged | accepted main commit `47f8a444`; reviewed head `7481cb653da1e41316712d0dd7434f1059b71899`; base `60980a3c` | reviewed head had failed accuracy/invariants/check/semantic/exact/candidate gates | Preserve as merged production input. Repair remaining `apply_damage` and add a permanent process regression; do not claim the historical evidence was green. |
-| #3421 | open | head `0f4d1898bc530bb612d2eec84de618e2a480635d`; base is #3255 head | multiple failed accuracy/invariant/guardrail/exact/ownership checks | Stale/red C4-03 evidence source; reconcile selectively after Stage A. |
-| #3422 | open | head `5e95490977249730a8d38b35cf583b78b3823cdb`; base is C4-03 integration | multiple failed accuracy/invariant/semantic/ownership/exact/candidate checks | Stale/red C4-04 evidence source; depends on reconciled C4-03. |
-| #3425 | open | head `128542c7bd2a3c648eef01205709ce8c5a487e31`; old main base `835f5f03` | zero GitHub check runs | One active ME authority. Reconcile recovery evidence there/current main; absence of checks is not green. |
+| PR | State | Exact head / immutable base | Relationship at observation | Merge/check state | Campaign decision |
+|---|---|---|---|---|---|
+| #3255 | open, non-draft | head `e250c9fb45995ec924cf07e69dad863b732201d2`; base `47f8a44469a5826b6199501a153a12439a280d13` | PR to then-live `main` | dirty, non-rebaseable; accuracy/invariant/check-test/verify failed; no pending runs | Historical consumer source only. Do not promote or overwrite. Use reviewed minimal local delta on a clean campaign branch. |
+| #3382 | merged | accepted main commit `47f8a44469a5826b6199501a153a12439a280d13`; reviewed head `7481cb653da1e41316712d0dd7434f1059b71899`; base `60980a3c9312b1dda7619d5e88b4a97df1016276` | merged PR to `main` | reviewed head had failed accuracy/invariants/check/semantic/exact/candidate gates | Preserve as merged production input. Repair remaining `apply_damage` and add a permanent process regression; do not claim the historical evidence was green. |
+| #3421 | open | head `0f4d1898bc530bb612d2eec84de618e2a480635d`; base `e250c9fb45995ec924cf07e69dad863b732201d2` | PR based on #3255 head | multiple failed accuracy/invariant/guardrail/exact/ownership checks | Stale/red C4-03 evidence source; reconcile selectively after Stage A. |
+| #3422 | open | head `5e95490977249730a8d38b35cf583b78b3823cdb`; base `0f4d1898bc530bb612d2eec84de618e2a480635d` | PR based on C4-03 integration | multiple failed accuracy/invariant/semantic/ownership/exact/candidate checks | Stale/red C4-04 evidence source; depends on reconciled C4-03. |
+| #3425 | open | head `128542c7bd2a3c648eef01205709ce8c5a487e31`; base `835f5f03f6f5e1bca17270140b568b349e4061ae` | PR based on historical `main` | zero GitHub check runs | One active ME authority. Reconcile recovery evidence there/current main; absence of checks is not green. |
 
 All ten dated recovery heads have zero GitHub check runs. No open PR head equals
 a dated recovery head or any local Codex recovery head.
+
+The authoritative row-level recovery inventory is
+`evidence/recovery-matrix.md`: its ten `REC-*` rows bind each handoff ref to an
+exact commit/tree, current test result, PR association, disposition, and exit
+proof, and its local-ref section binds all six campaign-created Codex refs plus
+their registered recovery worktrees. This snapshot intentionally does not
+duplicate that list. The exact integration inventory assigns that authority to
+T004/T010/T046, and the T046 executable gate validates the real changed-path
+inventory and snapshots every persistent `refs/**` namespace around gate and
+fetch operations.
+
+## Post-snapshot branch-only overlap
+
+Remote branches are independent implementation sources even when no pull
+request points to them. The 2026-09-04 refresh found
+`review-fix/3421-20260904` at
+`4dad9e7f471ed9086ede6afc620ac9ec2f5cd41a` / tree
+`b86edb153519218e19863f1959f6fe311b2701a5`, two review-fix commits above PR
+#3421 head `0f4d1898bc530bb612d2eec84de618e2a480635d`. It has no associated PR or check
+run. Its two-file delta (`js/decompiler/phase8/contract.js` and
+`js/decompiler/phase8/projection.js`) is disjoint from T046, passes the 18
+Phase 8 provenance tests, and is reserved for selective reuse by post-Recovery
+HEX-C4-03/T028. It does not close the still-unimplemented non-row canonical
+origin matching requirement, and the stale #3421 stack remains ineligible for
+wholesale merge.
 
 ## CodeRabbit classification at the observed heads
 

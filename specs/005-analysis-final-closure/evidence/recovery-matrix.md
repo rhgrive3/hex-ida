@@ -23,10 +23,27 @@ candidate proof. The Supervisor must rerun affected evidence after integration.
 
 ## Local recovery references retained
 
-- `codex/pr3255-main-restack` at `e4736bf1102ee9ebfb5d5eee5d98fdbf41597fdd`
-  is the smallest useful 9-path basis.
-- `codex/pr3255-integration` at `853957b3270cc2b0c5068f3b50cf03b5f9bbc351`
-  and `codex/pr3382-recovered` at `86575a156807ab7b0d3ce6d33b9620a5c9077c50`
-  are diagnostic composites. Only reviewed authority hardening and regressions may
-  be selectively reused.
-- Other local recovery refs remain preserved until Stage A post-merge proof.
+This is the sole row-level inventory for campaign-created local recovery refs;
+`github-state.md` links here instead of copying a second mutable list. Every
+listed ref and worktree is read-only by campaign policy through Stage A
+post-merge verification.
+
+| Local ref | Exact commit / tree | Registered worktree | Recovery role |
+|---|---|---|---|
+| `codex/pr3255-main-restack` | `e4736bf1102ee9ebfb5d5eee5d98fdbf41597fdd` / `1edf4fc3b8f80752ec14aff76bd573887b9ab6da` | `/teamspace/studios/this_studio/ida-245-pr3255-main-candidate` | Smallest useful nine-path consumer basis; selective reuse only. |
+| `codex/pr3255-integration` | `853957b3270cc2b0c5068f3b50cf03b5f9bbc351` / `4548435a2aa06890855c3dc7302ca8db29a64453` | `/teamspace/studios/this_studio/ida-245-pr3255-integration` | Diagnostic composite; never merge wholesale. |
+| `codex/pr3382-upstream` | `1cc52b21174eb999a27d84465a1350ddd3bf9226` / `4dc62ecd9e10baaee65070c21fb4502fb1e54637` | `/teamspace/studios/this_studio/ida-245-pr3382-upstream` | Producer-authority diagnostic source. |
+| `codex/pr3382-operand-recover` | `687410847c26176ac48091149b73f8de770934a5` / `b538a1a02174f9206b38ecd24ccb9507a59e5fac` | `/teamspace/studios/this_studio/ida-245-pr3382-operand-recover` | Private operand-binding diagnostic source. |
+| `codex/pr3382-phase8-recover` | `b46f0ab1b2379d2439456ac34be00383835b1e43` / `2d8489bbf573350c0a9db2621b15175bbf226cbe` | `/teamspace/studios/this_studio/ida-245-pr3382-phase8-recover` | Phase 8 recovery diagnostic source. |
+| `codex/pr3382-recovered` | `86575a156807ab7b0d3ce6d33b9620a5c9077c50` / `75b18cb1f62a3d957af03aaf099ae8fff272f3b0` | `/teamspace/studios/this_studio/ida-245-pr3382-recovered` | Hardened diagnostic composite; selective authority/test reuse only. |
+
+The detached read-only sources are
+`/teamspace/studios/this_studio/ida-245-pr3255-readonly` at
+`e250c9fb45995ec924cf07e69dad863b732201d2` / tree
+`4fd7a41885edc6a69c3b8f4e96f5885c591d1dc6`, and
+`/teamspace/studios/this_studio/ida-245-pr3382-base` at
+`22c7df0c59c729f16837b9ae33fe1cfb95a9ecc7` / tree
+`3b5559b294cd1271c871675a49e9d32a7e7626ac`. The original user workspace is
+bound separately by the content-addressed lock in `pre-fanout.md`; the living
+integration worktree is deliberately moving and is bound by the exact-head
+gate rather than frozen in this historical source list.

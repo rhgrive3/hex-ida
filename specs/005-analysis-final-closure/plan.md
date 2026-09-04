@@ -373,11 +373,13 @@ failing command and `HEX_TEST_OUTPUT=verbose` when supported.
 
 - Supervisor/integration owner: SOL Ultra; owns contracts, candidate, conflict
   decisions, generated output, merge, post-merge proof, and final roadmap closure.
-- Sol implementation/review lanes: high-risk MachineEffects, alias/summary,
-  MemorySSA, type, decompiler, symbolic, native, runtime, and semantic review.
+- Sol implementation lanes: high-risk MachineEffects, alias/summary,
+  MemorySSA, type, decompiler, symbolic, native, and runtime changes.
 - Luna Max lanes: bounded archaeology, deterministic fixtures, mechanical
-  migration, test/benchmark harnesses, documentation synchronization, and
-  independent negative tests with fixed contracts.
+  migration, test/benchmark harnesses, documentation synchronization,
+  independent negative tests, and all independent campaign code reviews under
+  the current user-directed review policy. SOL Ultra retains final semantic and
+  merge authority.
 - Every delegated task records ID, owner/model, risk, dependencies, owned paths,
   nonempty `allowedPaths`, nonempty `forbiddenOverlap`, tests, evidence, and exit
   condition in `tasks.md`.

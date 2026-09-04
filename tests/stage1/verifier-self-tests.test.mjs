@@ -150,15 +150,23 @@ const completeScorecard = await generateCompetitiveScorecard({ profile: competit
 {
   const workflowPath = path.join(ROOT, '.github/workflows/stage1-release-validation.yml');
   const workflowContent = fs.readFileSync(workflowPath, 'utf8');
+  const workflowJob = (content, jobId) => {
+    const lines = content.split('\n');
+    const start = lines.findIndex((line) => line === `  ${jobId}:`);
+    assert.notEqual(start, -1, `Stage 1 workflow must define the ${jobId} job`);
+    const relativeEnd = lines.slice(start + 1).findIndex((line) => /^  [A-Za-z0-9_-]+:\s*$/.test(line));
+    const end = relativeEnd === -1 ? lines.length : start + 1 + relativeEnd;
+    return lines.slice(start, end).join('\n');
+  };
   const assertDualProofWorkflow = (content) => {
-    assert.ok(content.includes('pr-proof:'), 'Stage 1 workflow must define the combined PR proof job');
-    assert.ok(content.includes('name: head-and-candidate-merge-tree'), 'combined proof job must retain its stable semantic name');
-    assert.ok(content.includes('ref: ${{ github.event.pull_request.head.sha }}'), 'head proof must checkout the exact PR head');
-    assert.ok(content.includes('ref: ${{ github.sha }}'), 'merge proof must checkout the exact candidate merge SHA');
-    assert.ok(content.includes('id: head_verify'), 'head verifier outcome must be recorded');
-    assert.ok(content.includes('id: merge_verify'), 'merge-tree verifier outcome must be recorded');
-    assert.ok(content.includes('HEAD_VERIFY: ${{ steps.head_verify.outcome }}'), 'aggregate proof must consume the head verdict');
-    assert.ok(content.includes('MERGE_VERIFY: ${{ steps.merge_verify.outcome }}'), 'aggregate proof must consume the merge-tree verdict');
+    const prProof = workflowJob(content, 'pr-proof');
+    assert.ok(prProof.includes('name: head-and-candidate-merge-tree'), 'combined proof job must retain its stable semantic name');
+    assert.ok(prProof.includes('ref: ${{ github.event.pull_request.head.sha }}'), 'head proof must checkout the exact PR head');
+    assert.ok(prProof.includes('ref: ${{ github.sha }}'), 'merge proof must checkout the exact candidate merge SHA');
+    assert.ok(prProof.includes('id: head_verify'), 'head verifier outcome must be recorded');
+    assert.ok(prProof.includes('id: merge_verify'), 'merge-tree verifier outcome must be recorded');
+    assert.ok(prProof.includes('HEAD_VERIFY: ${{ steps.head_verify.outcome }}'), 'aggregate proof must consume the head verdict');
+    assert.ok(prProof.includes('MERGE_VERIFY: ${{ steps.merge_verify.outcome }}'), 'aggregate proof must consume the merge-tree verdict');
   };
   assertDualProofWorkflow(workflowContent);
   assert.throws(
@@ -167,7 +175,10 @@ const completeScorecard = await generateCompetitiveScorecard({ profile: competit
     'dropping the independent merge-tree verdict must fail closed',
   );
   assert.throws(
-    () => assertDualProofWorkflow(workflowContent.replaceAll('ref: ${{ github.sha }}', 'ref: ${{ github.event.pull_request.head.sha }}')),
+    () => assertDualProofWorkflow(
+      `${workflowContent.replace('ref: ${{ github.sha }}', 'ref: ${{ github.event.pull_request.head.sha }}')}\n`
+        + '# ref: ${{ github.sha }}',
+    ),
     /merge proof must checkout the exact candidate merge SHA/,
     'reusing the head identity as merge-tree proof must fail closed',
   );
