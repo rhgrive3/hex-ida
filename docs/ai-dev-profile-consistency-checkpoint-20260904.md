@@ -4,7 +4,7 @@ Status: ACTIVE — the Dev-owned scope projection is being repaired in one owner
 
 ## Scope and ownership
 
-- Base: `origin/main` at `f03ec64a20473025c550833ae3d58332ed0e9a4f`.
+- Base: `origin/main` at `3b37b0c957b761139dfa22f973d3c670ad41a24c`.
 - Branch: `fix/ai-dev-profile-consistency-20260904`.
 - Owner paths: `js/ai/dev/ui/controls.js`, `tests/ai-ui-dev-profile.mjs`, and this checkpoint.
 - Existing AI owner PR #6443 is not modified by this branch.
@@ -14,7 +14,8 @@ Status: ACTIVE — the Dev-owned scope projection is being repaired in one owner
 
 The failure is the Dev scope chip projection, not the stored setting:
 
-- Candidate tree: PR #6443 head `4e02f8f1` merged with current `main`; index tree `045888cf3151f62d63359715bbf01ac165e8a212`.
+- Reproducing candidate before main moved: PR #6443 head `4e02f8f1` over `f03ec64a`; index tree `045888cf3151f62d63359715bbf01ac165e8a212`.
+- Current candidate after reconciliation: `origin/main=3b37b0c9` + PR #6443 head `4e02f8f1` + this repair; index tree `deb351f41ccbc197540aa239fa83668638a49cdc`.
 - `document.getElementById('ai-panel').dataset.analysisScope` remains `none`.
 - The visible `.ai-scope-chip` is overwritten to `範囲: 自動` after a late asynchronous base-panel capability refresh.
 - `node tests/ai-ui-dev-profile.mjs` and `npm run ai:browser` both reproduced this on that candidate.
@@ -30,6 +31,8 @@ The failure is the Dev scope chip projection, not the stored setting:
 ## Evidence and resume procedure
 
 Before this repair: focused candidate AI tests, `ai:test`, and lint passed; Dev browser gate failed as recorded above.
+
+After this repair on the current candidate: `ai:browser` PASS (104.5s), `ai:test` PASS (44.5s), lint PASS (`1816 files ok`), and the Dev profile test passed in 8 repeated runs on the earlier candidate plus the full browser gate on the current candidate.
 
 After implementation, run in this exact worktree:
 
