@@ -177,8 +177,6 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
           controlEffects.push({ kind: 'return' });
         } else {
           currentStackHeight = frame.stackHeight + frame.results.length;
-          const parent = currentFrame();
-          if (parent?.polymorphic) parent.polymorphic = false;
         }
         break;
       }

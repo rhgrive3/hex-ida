@@ -118,11 +118,10 @@ export function validateWasmFunctionTypes(funcIndex, wasmModule, options = {}) {
         pos = blockType.nextOffset;
         const kind = opcode === 0x02 ? 'block' : opcode === 0x03 ? 'loop' : 'if';
         if (kind === 'if') pop(I32, 'wasm-stack-underflow-if-condition');
-        const inheritedPolymorphic = currentFrame().polymorphic && stack.length === currentFrame().height;
         popTypes(blockType.params, 'wasm-stack-underflow-block-params');
         const height = stack.length;
         pushTypes(blockType.params);
-        frames.push({ kind, height, params: blockType.params, results: blockType.results, polymorphic: inheritedPolymorphic, entryPolymorphic: inheritedPolymorphic, elseSeen: false });
+        frames.push({ kind, height, params: blockType.params, results: blockType.results, polymorphic: false, elseSeen: false });
         break;
       }
       case 0x05: {
@@ -130,7 +129,7 @@ export function validateWasmFunctionTypes(funcIndex, wasmModule, options = {}) {
         if (!frame || frame.kind !== 'if' || frame.elseSeen) fail('wasm-invalid-else');
         finishFrame(frame, 'wasm-invalid-if-then-stack');
         frame.elseSeen = true;
-        frame.polymorphic = frame.entryPolymorphic;
+        frame.polymorphic = false;
         pushTypes(frame.params);
         break;
       }

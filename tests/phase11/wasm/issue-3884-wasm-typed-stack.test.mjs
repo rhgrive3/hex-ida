@@ -78,9 +78,15 @@ assert.doesNotThrow(
   'unreachable code keeps the WASM polymorphic-bottom stack rule',
 );
 
-assert.doesNotThrow(
+assert.throws(
   () => liftWasmFunction(0, moduleWith([0x00, 0x04, 0x40, 0x7c, 0x1a, 0x05, 0x7c, 0x1a, 0x0b, 0x0b])),
-  'both arms of an if nested in unreachable code remain polymorphic',
+  /wasm-stack-underflow/,
+  'a nested control frame must start reachable even when its enclosing frame is polymorphic',
+);
+
+assert.doesNotThrow(
+  () => liftWasmFunction(0, moduleWith([0x00, 0x02, 0x40, 0x0b, 0x7c, 0x1a, 0x0b])),
+  'ending a nested block must not clear the enclosing polymorphic state',
 );
 
 assert.throws(
