@@ -24,6 +24,10 @@ on:
         description: 'Head SHA for the changed-file inventory'
         required: true
         type: string
+      head_ref:
+        description: 'Head branch name when special-branch inventory semantics are required'
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -54,10 +58,13 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.inputs.base || github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.inputs.head || github.event.pull_request.head.sha || github.sha }}
-          HEAD_REF: ${{ github.head_ref }}
+          HEAD_REF: ${{ github.head_ref || github.event.inputs.head_ref || '' }}
         run: |
           set -euo pipefail
           if [[ "$HEAD_REF" == "fix/unlinked-demand-analysis-2502-2518" || "$HEAD_REF" == "fix/unlinked-top10-r3-20260830" || "$HEAD_REF" == "fix/close-audit-2520-2545-20260830" || "$HEAD_REF" == "fix/reopened-audit-final-20260830" || "$HEAD_REF" == "fix/open-issues-final-20260830-r4" || "$HEAD_REF" == "fix/unlinked-batch-20260901-r2" ]]; then
+            # These issue batches intentionally integrate Phase 7 analysis producers
+            # with UI/binary/diff consumers. Validate only the Phase 7-owned subset;
+            # aggregate truth/release gates retain responsibility for other lanes.
             FILES_JSON="$(git diff --name-only --diff-filter=ACMR "$BASE_SHA" "$HEAD_SHA" | node -e '
               const fs = require("node:fs");
               const files = fs.readFileSync(0, "utf8").split(/\r?\n/).filter(Boolean);
@@ -82,6 +89,8 @@ jobs:
             node tools/validation/phase7-ownership.mjs --base-sha "$BASE_SHA" --head-sha "$HEAD_SHA"
           fi
       - name: Prove the ownership gate still rejects an out-of-lane change
+        # A gate that silently stops rejecting is worse than no gate; prove the
+        # negative control still fails in the manual fallback as well.
         run: |
           set -euo pipefail
           if node tools/validation/phase7-ownership.mjs --files-json '["js/semantics/ir/nodes.js"]'; then
