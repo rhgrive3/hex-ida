@@ -11,10 +11,25 @@
  */
 
 import { deepFreeze, stableDigest } from '../core/identity/index.js';
-import { createAnalysisStatus, isCompleteStatus } from '../analysis/status.js';
+import { createAnalysisStatus, isCompleteStatus, ANALYSIS_STATUS_SCHEMA_VERSION } from '../analysis/status.js';
 
 export const METADATA_PROVIDER_CONTRACT_VERSION = '1.0.0';
 export const METADATA_PROVIDER_SCHEMA_VERSION = 1;
+
+export function isCanonicalAnalysisStatus(status) {
+  if (!status || typeof status !== 'object') return false;
+  if (status.schemaVersion !== ANALYSIS_STATUS_SCHEMA_VERSION) return false;
+  if (typeof status.snapshotId !== 'string' || !status.snapshotId.trim()) return false;
+  if (typeof status.analyzerId !== 'string' || !status.analyzerId.trim()) return false;
+  if (typeof status.analyzerVersion !== 'string' || !status.analyzerVersion.trim()) return false;
+  if (typeof status.completeness !== 'string') return false;
+  if (status.completeness === 'complete') {
+    if (status.stopReason != null) return false;
+  } else {
+    if (status.stopReason == null) return false;
+  }
+  return true;
+}
 
 /**
  * Identity verdicts. Only `matched-authoritative` and covered `matched-partial`
@@ -161,7 +176,7 @@ function coverageList(value) {
 export function isLanguageRecordAuthoritative(result, record) {
   const identity = result?.identity;
   if (!identity || !record) return false;
-  if (result?.completeness?.complete !== true || !isCompleteStatus(result?.status)) return false;
+  if (result?.completeness?.complete !== true || !isCompleteStatus(result?.status) || !isCanonicalAnalysisStatus(result?.status)) return false;
   if (identity.verdict === 'matched-authoritative') return true;
   if (identity.verdict !== 'matched-partial') return false;
 
@@ -259,6 +274,9 @@ export function createLanguageMetadataResult(input = {}) {
   const diagnostics = arrayField(input.diagnostics, 'metadata-result-diagnostics-must-be-array');
   const defaultCompleteness = input.completeness?.complete === true ? 'complete' : 'partial';
   const defaultStopReason = defaultCompleteness === 'complete' ? null : (input.completeness?.capped ? 'budget-exhausted' : 'evidence-missing');
+  if (input.status != null && input.status.schemaVersion != null && input.status.schemaVersion !== ANALYSIS_STATUS_SCHEMA_VERSION) {
+    fail('metadata-result-invalid-status-schema');
+  }
   const status = input.status != null
     ? createAnalysisStatus(input.status)
     : createAnalysisStatus({
