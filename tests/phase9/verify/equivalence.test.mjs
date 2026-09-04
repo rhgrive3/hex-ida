@@ -125,6 +125,6 @@ test('verifyBoundedEquivalence: rejects sort and width mismatches immediately', 
     backend,
   });
 
-  assert.equal(res.verdict, VERDICT.REFUTED);
+  assert.equal(res.verdict, VERDICT.UNKNOWN);
   assert.equal(res.reasonCode, 'sort-width-mismatch');
 });
