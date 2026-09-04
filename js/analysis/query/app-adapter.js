@@ -17,12 +17,15 @@ function storeValue(app, key) {
 }
 
 function addressOf(value) {
-  if (typeof value === 'bigint') return value;
+  if (typeof value === 'bigint') return value >= 0n ? value : null;
   if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return BigInt(value);
   if (typeof value === 'string') {
     const text = value.trim().replace(/^(?:fn|function):/i, '');
     if (!text) return null;
-    try { return BigInt(text); } catch { return null; }
+    try {
+      const v = BigInt(text);
+      return v >= 0n ? v : null;
+    } catch { return null; }
   }
   if (value && typeof value === 'object') return addressOf(value.address ?? value.startAddress ?? value.startAddr ?? value.start ?? value.functionId ?? value.id);
   return null;
@@ -366,7 +369,9 @@ export function createAppAnalysisQueryAdapter(app) {
       const rawNeedle = query.text ?? query.name ?? '';
       if (typeof rawNeedle !== 'string') return unsupported(null, 'function-query-text-invalid');
       const needle = rawNeedle.trim().toLowerCase();
+      const hasAddress = Object.prototype.hasOwnProperty.call(query, 'address') && query.address != null;
       const exactAddress = addressOf(query.address);
+      if (hasAddress && exactAddress == null) return unsupported(null, 'function-query-address-invalid');
       const { offset, limit } = pageOf(page);
       const count = Math.min(symbols.funcs.length, MAX_FUNCTION_SCAN);
       const indexComplete = symbols.functionStartsComplete === true && count === symbols.funcs.length;
