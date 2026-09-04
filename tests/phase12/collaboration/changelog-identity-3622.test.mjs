@@ -1,5 +1,10 @@
 import assert from 'node:assert/strict';
-import { ChangeLog, createProjectOperation } from '../../../js/collaboration/index.js';
+import {
+  ChangeLog,
+  createProjectOperation,
+  mergeOperations,
+  orderOperations,
+} from '../../../js/collaboration/index.js';
 
 const base = {
   projectIdentity: 'hex-project:p',
@@ -57,6 +62,26 @@ assert.throws(
   /changelog-binary-identity-invalid/,
 );
 
+const rawSchemaTaggedStructured = {
+  ...base,
+  schemaVersion: 'hex-project-operation-v1',
+  operationId: 'op:raw-structured',
+  targetEntityId: ['hex-entity:e'],
+};
+const ingressCases = [
+  ['orderOperations', () => orderOperations([rawSchemaTaggedStructured])],
+  ['applyOperation', () => new ChangeLog({ projectIdentity: base.projectIdentity, binaryIdentity: base.binaryIdentity }).applyOperation(rawSchemaTaggedStructured)],
+  ['applyBatch', () => new ChangeLog({ projectIdentity: base.projectIdentity, binaryIdentity: base.binaryIdentity }).applyBatch([rawSchemaTaggedStructured])],
+  ['mergeOperations', () => mergeOperations([rawSchemaTaggedStructured], [])],
+];
+for (const [name, run] of ingressCases) {
+  assert.throws(
+    run,
+    /operation-target-entity-required/,
+    `${name} must not trust schemaVersion as proof of canonical identity validation`,
+  );
+}
+
 const normalized = createProjectOperation({
   ...base,
   projectIdentity: '  hex-project:p  ',
@@ -72,6 +97,18 @@ assert.equal(normalized.targetEntityId, 'hex-entity:e');
 assert.equal(normalized.authorIdentity, 'actor:a');
 assert.equal(normalized.deviceIdentity, 'device:a');
 assert.equal(normalized.operationId, 'op:a');
+
+const canonical = createProjectOperation({ ...base, operationId: 'op:canonical' });
+assert.equal(orderOperations([canonical]).ordered[0].operationId, 'op:canonical');
+assert.deepEqual(mergeOperations([canonical], []).map((operation) => operation.operationId), ['op:canonical']);
+assert.equal(
+  new ChangeLog({ projectIdentity: base.projectIdentity, binaryIdentity: base.binaryIdentity }).applyOperation(canonical).status,
+  'applied',
+);
+assert.equal(
+  new ChangeLog({ projectIdentity: base.projectIdentity, binaryIdentity: base.binaryIdentity }).applyBatch([canonical]).status,
+  'applied',
+);
 
 const log = new ChangeLog({ projectIdentity: 'hex-project:p' });
 const entityA = createProjectOperation({
@@ -95,6 +132,22 @@ assert.equal(log.applyOperation(entityB).status, 'applied');
 assert.deepEqual(
   Object.keys(log.snapshot().facts).sort(),
   ['entity:A\u0000name', 'entity:B\u0000name'],
+);
+
+const tombstoneLog = new ChangeLog({ projectIdentity: 'hex-project:p' });
+assert.equal(tombstoneLog.applyOperation(entityA).status, 'applied');
+const removeEntityA = createProjectOperation({
+  projectIdentity: 'hex-project:p',
+  operationId: 'op:entity-a-remove',
+  targetEntityId: 'entity:A',
+  factKind: 'name',
+  action: 'remove',
+});
+assert.equal(tombstoneLog.applyOperation(removeEntityA).status, 'applied');
+assert.equal(tombstoneLog.snapshot().facts['entity:A\u0000name'], undefined);
+assert.deepEqual(
+  tombstoneLog.snapshot().tombstones.map(({ key, targetEntityId, factKind }) => ({ key, targetEntityId, factKind })),
+  [{ key: 'entity:A\u0000name', targetEntityId: 'entity:A', factKind: 'name' }],
 );
 
 console.log('[phase12] ChangeLog strict identity regression #3622 passed');
