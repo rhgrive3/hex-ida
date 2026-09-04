@@ -6,7 +6,7 @@ import {
   createDebugPage,
   createDebugProviderResult,
   applyDebugTypesToGraph,
-} from '../js/analysis/debug/provider.js';
+} from '../../../js/analysis/debug/provider.js';
 
 function makeResult(identity) {
   return createDebugProviderResult({
@@ -144,5 +144,3 @@ test('issue #6190: unmatched debug result routes both claims to soft evidence', 
   assert.equal(soft.filter((s) => s.claim.layer === 'nominal').length, 1);
   assert.equal(soft.filter((s) => s.claim.layer === 'machine').length, 1);
 });
-
-console.log('issue #6190 test file loaded.');

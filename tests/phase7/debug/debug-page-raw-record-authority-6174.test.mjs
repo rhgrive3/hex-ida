@@ -7,7 +7,7 @@ import {
   createDebugProviderResult,
   applyDebugTypesToGraph,
   isDebugRecordAuthoritative,
-} from '../js/analysis/debug/provider.js';
+} from '../../../js/analysis/debug/provider.js';
 
 function makeResult(overrides = {}) {
   return createDebugProviderResult({
@@ -30,10 +30,21 @@ function makeResult(overrides = {}) {
   });
 }
 
+function canonicalRecord(overrides = {}) {
+  return createDebugRecord({
+    kind: 'type',
+    entityId: 'entity:record',
+    providerId: 'dwarf-provider',
+    providerVersion: '1.0.0',
+    buildIdentity: 'build-1',
+    evidenceIds: ['dwarf:record'],
+    descriptor: { layer: 'nominal', claim: { name: 'ValidType' } },
+    ...overrides,
+  });
+}
+
 test('issue #6174: raw record lacking provider provenance cannot gain hard authority', () => {
   const result = makeResult();
-
-  // Raw record missing providerId, providerVersion, buildIdentity
   const rawRecord = {
     kind: 'type',
     entityId: 'entity:1',
@@ -56,33 +67,20 @@ test('issue #6174: raw record lacking provider provenance cannot gain hard autho
   assert.equal(hard.length, 0);
 });
 
-test('issue #6174: record from foreign provider cannot gain hard authority', () => {
+test('issue #6174: provider id, version, and observed build must all match authority', () => {
   const result = makeResult();
 
-  const foreignRecord = createDebugRecord({
-    kind: 'type',
-    entityId: 'entity:2',
-    providerId: 'other-provider',
-    providerVersion: '1.0.0',
-    buildIdentity: 'build-1',
-    evidenceIds: ['e:1'],
-    descriptor: { layer: 'nominal', claim: { name: 'Foo' } },
-  });
-
-  assert.equal(isDebugRecordAuthoritative(result, foreignRecord), false, 'Record with foreign providerId must not be authoritative');
+  assert.equal(isDebugRecordAuthoritative(result, canonicalRecord({ providerId: 'other-provider' })), false);
+  assert.equal(isDebugRecordAuthoritative(result, canonicalRecord({ providerVersion: '2.0.0' })), false);
+  assert.equal(isDebugRecordAuthoritative(result, canonicalRecord({ buildIdentity: 'build-2' })), false);
+  assert.equal(isDebugRecordAuthoritative(result, canonicalRecord({ buildIdentity: null })), false);
 });
 
 test('issue #6174: canonical record with matching provenance remains authoritative', () => {
   const result = makeResult();
-
-  const validRecord = createDebugRecord({
-    kind: 'type',
+  const validRecord = canonicalRecord({
     entityId: 'entity:3',
-    providerId: 'dwarf-provider',
-    providerVersion: '1.0.0',
-    buildIdentity: 'build-1',
     evidenceIds: ['dwarf:1'],
-    descriptor: { layer: 'nominal', claim: { name: 'ValidType' } },
   });
 
   assert.equal(isDebugRecordAuthoritative(result, validRecord), true);
@@ -99,5 +97,3 @@ test('issue #6174: canonical record with matching provenance remains authoritati
   assert.equal(hard[0].providerVersion, '1.0.0');
   assert.equal(hard[0].buildIdentity, 'build-1');
 });
-
-console.log('issue #6174 test file loaded.');

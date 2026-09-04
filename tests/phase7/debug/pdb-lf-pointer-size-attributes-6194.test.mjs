@@ -1,12 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { describeTypeIndex } from '../js/analysis/debug/pdb.js';
+import { describeTypeIndex } from '../../../js/analysis/debug/pdb.js';
 
 test('issue #6194: LF_POINTER attributes Size and Kind determine pointer widthBits', () => {
   const types = new Map();
 
-  // 1. Size=4, Near32 (0x0a) pointer to int (0x0074)
-  // attributes: (4 << 13) | 0x0a = 0x800a
   types.set(0x1000, {
     kind: 'pointer',
     referent: 0x0074,
@@ -19,8 +17,6 @@ test('issue #6194: LF_POINTER attributes Size and Kind determine pointer widthBi
   assert.equal(ptr32.class, 'pointer');
   assert.equal(ptr32.complete, true);
 
-  // 2. Size=8, Near64 (0x0c) pointer to int (0x0074)
-  // attributes: (8 << 13) | 0x0c = 0x1000c
   types.set(0x1001, {
     kind: 'pointer',
     referent: 0x0074,
@@ -33,8 +29,6 @@ test('issue #6194: LF_POINTER attributes Size and Kind determine pointer widthBi
   assert.equal(ptr64.class, 'pointer');
   assert.equal(ptr64.complete, true);
 
-  // 3. Pointer-to-member with Size=12 (e.g. 12 bytes / 96 bits)
-  // attributes: (12 << 13) | (2 << 5) | 0x00
   types.set(0x1002, {
     kind: 'pointer',
     referent: 0x0074,
@@ -47,7 +41,6 @@ test('issue #6194: LF_POINTER attributes Size and Kind determine pointer widthBi
   assert.equal(ptrMember.class, 'pointer');
   assert.equal(ptrMember.complete, true);
 
-  // 4. Contradictory Size and Kind: Near32 (0x0a) declared with Size=8
   types.set(0x1003, {
     kind: 'pointer',
     referent: 0x0074,
@@ -56,8 +49,8 @@ test('issue #6194: LF_POINTER attributes Size and Kind determine pointer widthBi
 
   const contradictory = describeTypeIndex(0x1003, types);
   assert.equal(contradictory.complete, false, 'Contradictory size/kind must fail closed');
+  assert.equal(contradictory.widthBits, null, 'Malformed pointer attributes must not expose machine width authority');
 
-  // 5. Zero size with unknown kind
   types.set(0x1004, {
     kind: 'pointer',
     referent: 0x0074,
@@ -66,6 +59,5 @@ test('issue #6194: LF_POINTER attributes Size and Kind determine pointer widthBi
 
   const zeroSize = describeTypeIndex(0x1004, types);
   assert.equal(zeroSize.complete, false, 'Zero size with unknown kind must not complete');
+  assert.equal(zeroSize.widthBits, null, 'Unknown pointer width must remain unknown');
 });
-
-console.log('issue #6194 test file loaded.');

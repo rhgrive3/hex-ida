@@ -514,7 +514,7 @@ export function describeTypeIndex(index, types, depth = 0) {
     const complete = !isMalformed && target.complete;
     return {
       name: `${target.name} *`,
-      widthBits: isMalformed ? (widthBits ?? null) : widthBits,
+      widthBits: isMalformed ? null : widthBits,
       class: 'pointer',
       complete,
     };

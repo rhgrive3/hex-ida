@@ -151,7 +151,8 @@ export function isDebugRecordAuthoritative(result, record) {
   const identity = result?.identity;
   if (!identity || !record) return false;
   if (!isCanonicalDebugRecord(record)) return false;
-  if (identity.providerId && record.providerId !== identity.providerId) return false;
+  if (record.providerId !== identity.providerId || record.providerVersion !== identity.providerVersion) return false;
+  if (identity.observed != null && record.buildIdentity !== identity.observed) return false;
   if (identity.verdict === 'matched-authoritative') return true;
   if (identity.verdict !== 'matched-partial') return false;
 
