@@ -379,11 +379,17 @@ export function runAggregatePass(context = {}, budget = {}, area = null) {
   };
 
   const instructions = [];
+  let truncatedByLimit = false;
   for (const block of cfg?.blocks ?? []) {
     for (const instruction of block.insts ?? []) {
-      if (instruction?.op === 'load' || instruction?.op === 'store') instructions.push(instruction);
-      if (instructions.length >= limits.maxAccesses) break;
+      const isMemoryAccess = instruction?.op === 'load' || instruction?.op === 'store';
+      if (!isMemoryAccess) continue;
+      // Reaching the cap is not itself truncation. It becomes partial only when
+      // another memory access exists beyond the cap (#5470 exact-limit case).
+      if (instructions.length >= limits.maxAccesses) { truncatedByLimit = true; break; }
+      instructions.push(instruction);
     }
+    if (truncatedByLimit) break;
   }
 
   // Pointer strides proved by P8-4. Reading them here is the whole point of that
@@ -396,7 +402,7 @@ export function runAggregatePass(context = {}, budget = {}, area = null) {
   }
 
   const grouped = new Map();
-  let budgetExhausted = false;
+  let budgetExhausted = truncatedByLimit;
   for (const instruction of instructions) {
     if (abortedNow()) { budgetExhausted = true; break; }
     const identity = regionIdentityOf(instruction, limits);
@@ -416,7 +422,11 @@ export function runAggregatePass(context = {}, budget = {}, area = null) {
   }
 
   const regions = [];
-  for (const [regionKey, group] of [...grouped.entries()].sort((left, right) => left[0].localeCompare(right[0])).slice(0, limits.maxRegions)) {
+  const orderedGroups = [...grouped.entries()].sort((left, right) => left[0].localeCompare(right[0]));
+  // Dropping whole regions to fit maxRegions discards evidence, so it marks
+  // the published facts partial rather than complete (#5295).
+  if (orderedGroups.length > limits.maxRegions) { truncatedByLimit = true; budgetExhausted = true; }
+  for (const [regionKey, group] of orderedGroups.slice(0, limits.maxRegions)) {
     const accesses = group.accesses;
     const conflicts = [];
 
@@ -575,7 +585,9 @@ export function runAggregatePass(context = {}, budget = {}, area = null) {
       severity: 'warning',
       code: 'phase8.aggregates.budget',
       message: 'Aggregate recovery stopped before every access was grouped.',
-      reason: 'The pass was cancelled; the regions published are a subset and must not be read as the whole layout.',
+      reason: truncatedByLimit
+        ? 'A deterministic resource limit (maxAccesses/maxRegions) cut the input; the regions published are a subset and must not be read as the whole layout.'
+        : 'The pass was cancelled; the regions published are a subset and must not be read as the whole layout.',
     });
   }
   if (facts.conflictCount > 0) {
