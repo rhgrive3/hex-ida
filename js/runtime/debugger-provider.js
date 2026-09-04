@@ -2,6 +2,7 @@ import { DebugAdapterError } from '../debug/adapter.js';
 import { DebugAdapterRuntimeProvider } from './provider.js';
 import { RuntimeEventNormalizer } from './events.js';
 import { createInterventionRecord, InterventionLedger } from './evidence-bridge.js';
+import { RuntimeModuleBindingTable } from './provider-identity.js';
 import { normalizeRuntimeModuleBinding } from './module-binding.js';
 
 function moduleFields(event) {
@@ -166,10 +167,21 @@ export class DebuggerProvider extends DebugAdapterRuntimeProvider {
           next.set(normalized.bindingKey, normalized);
         }
 
+        // Transactional commit: the binding table's strict validation runs only
+        // when `load()` is called, so validating incrementally while mutating the
+        // active table would leave a partial refresh behind after a failure.
+        // Stage the whole snapshot through a scratch table first so any
+        // malformed binding rejects the refresh before the active table changes.
+        const scratch = new RuntimeModuleBindingTable(session.runtimeSessionId);
+        const staged = new Map();
+        for (const [bindingKey, normalized] of next) {
+          staged.set(bindingKey, scratch.load({ ...normalized, bindingKey }));
+        }
+
         for (const active of session.modules.active()) {
           if (!next.has(active.bindingKey)) session.modules.unload(active.bindingKey);
         }
-        for (const [bindingKey, normalized] of next) {
+        for (const [bindingKey, normalized] of staged) {
           const active = session.modules.get(bindingKey);
           if (active && sameModuleBinding(active, normalized)) continue;
           if (active) session.modules.unload(bindingKey);
