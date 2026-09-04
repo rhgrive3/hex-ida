@@ -49,6 +49,18 @@ try {
   git(repo, 'commit', '-m', 'B: docs only');
   const commitB = git(repo, 'rev-parse', 'HEAD');
 
+  git(repo, 'checkout', '-b', 'feature');
+  write(join(repo, 'js', 'ai', 'feature.js'), 'export const feature = true;\n');
+  git(repo, 'add', '.');
+  git(repo, 'commit', '-m', 'C: feature gated change');
+  const commitC = git(repo, 'rev-parse', 'HEAD');
+
+  write(join(repo, 'docs', 'feature-note.md'), 'feature docs only\n');
+  git(repo, 'add', '.');
+  git(repo, 'commit', '-m', 'D: feature docs only');
+  const commitD = git(repo, 'rev-parse', 'HEAD');
+
+  git(repo, 'checkout', 'main');
   execFileSync('git', ['clone', '--bare', repo, remote], { encoding: 'utf8' });
   git(repo, 'remote', 'add', 'origin', remote);
 
@@ -61,6 +73,11 @@ try {
 
   // PR-only lanes remain disabled on main regardless of the changed path.
   assert.equal(route(commitA, 'main', 'pr-only', '^js/ai/'), 'false');
+
+  // Non-main stale suppression is safe because the newest branch head validates
+  // the cumulative merge-base diff. C can skip once D exists; D still sees C.
+  assert.equal(route(commitC, 'feature', 'main-and-branch', '^js/ai/'), 'false');
+  assert.equal(route(commitD, 'feature', 'main-and-branch', '^js/ai/'), 'true');
 
   console.log('circleci-impact routing: PASS');
 } finally {
