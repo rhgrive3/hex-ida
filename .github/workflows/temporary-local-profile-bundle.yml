@@ -28,13 +28,13 @@ jobs:
           node scripts/fetch-real-fixtures.mjs battlecats
           node scripts/fetch-real-fixtures.mjs battlecats --check
           file tests/.real-fixtures/battlecats
-      - name: Package source and fixture
+      - name: Package complete source tree and fixture
         run: |
-          tar -czf local-profile-bundle.tgz \
-            package.json package-lock.json \
-            capstone.js capstone.wasm \
-            js scripts tests \
-            .github/workflows/cross-binary-accuracy.yml
+          tar \
+            --exclude=.git \
+            --exclude=node_modules \
+            --exclude=local-profile-bundle.tgz \
+            -czf local-profile-bundle.tgz .
       - name: Upload profile bundle
         uses: actions/upload-artifact@v4
         with:
