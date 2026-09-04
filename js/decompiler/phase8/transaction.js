@@ -221,6 +221,15 @@ export function runPassTransaction(state, pass, context = {}, budget = {}) {
     return Object.freeze({ committed: false, result: null, invalidated: Object.freeze([]), staged: Object.freeze([]), stopReason: 'cancelled-mid-pass' });
   }
 
+  // Validate untrusted pass output before any later contract check can
+  // dereference it. This must remain before descriptor-identity validation.
+  if (!isPassResultShapeUsable(result)) {
+    return Object.freeze({
+      committed: false, result: null, invalidated: Object.freeze([]), staged: Object.freeze([]),
+      stopReason: `malformed-result:${descriptor.id}`,
+    });
+  }
+
   const stagedWrites = take();
   const refuse = (stopReason) => Object.freeze({
     committed: false, result: null, invalidated: Object.freeze([]), staged: Object.freeze([]), stopReason,
@@ -229,7 +238,6 @@ export function runPassTransaction(state, pass, context = {}, budget = {}) {
   // commits and the caller gets a reason. Throwing here instead would turn a
   // withheld ledger into an uncaught exception at the vertical, which is a
   // worse failure mode for the same fault.
-  if (!isPassResultShapeUsable(result)) return refuse(`malformed-result:${descriptor.id}`);
   if (!result.changed && stagedWrites.size > 0) return refuse(`unchanged-with-staged-writes:${descriptor.id}`);
   // What the pass staged and what it declared it produced must agree, or the
   // ledger describes a different commit than the one that happened.
