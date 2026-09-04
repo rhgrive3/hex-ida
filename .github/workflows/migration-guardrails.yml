@@ -35,60 +35,46 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  targeted:
-    name: guardrail-${{ matrix.name }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      max-parallel: 2
-      matrix:
-        include:
-          - name: compatibility
-            command: npm run migration:test
-          - name: source-backed-loader
-            command: npm run binary:source-test
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: npm
-      - run: npm ci
-      - run: ${{ matrix.command }}
-
-  manual-full-check:
-    name: guardrail-manual-full-check
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: npm
-      - run: npm ci
-      - run: npm run check
-
   guardrails:
     name: guardrails
-    if: always()
-    needs: [targeted, manual-full-check]
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 45
     steps:
-      - name: Require migration-specific coverage
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Run all migration proofs and aggregate failures
         env:
-          TARGETED_RESULT: ${{ needs.targeted.result }}
-          FULL_RESULT: ${{ needs.manual-full-check.result }}
+          RUN_FULL_CHECK: ${{ github.event_name == 'workflow_dispatch' && 'true' || 'false' }}
         shell: bash
         run: |
-          if [[ "$TARGETED_RESULT" != "success" ]]; then
-            echo "::error::Migration-specific guardrail failed ($TARGETED_RESULT)."
-            exit 1
-          fi
-          if [[ "$FULL_RESULT" != "success" && "$FULL_RESULT" != "skipped" ]]; then
-            echo "::error::Manual full check failed ($FULL_RESULT)."
-            exit 1
-          fi
+          node --input-type=module <<'NODE'
+          import { spawnSync } from 'node:child_process';
+
+          const commands = [
+            'npm run migration:test',
+            'npm run binary:source-test',
+          ];
+          if (process.env.RUN_FULL_CHECK === 'true') commands.push('npm run check');
+
+          const failures = [];
+          for (const command of commands) {
+            console.log(`::group::${command}`);
+            const result = spawnSync(command, {
+              shell: true,
+              stdio: 'inherit',
+              env: process.env,
+            });
+            console.log('::endgroup::');
+            if (result.error || result.status !== 0) {
+              failures.push({ command, status: result.status, error: result.error?.message ?? null });
+            }
+          }
+          if (failures.length) {
+            console.error(`Migration guardrail failures: ${JSON.stringify(failures)}`);
+            process.exit(1);
+          }
+          NODE

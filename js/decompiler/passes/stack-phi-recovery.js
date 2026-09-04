@@ -210,9 +210,9 @@ function resolveConditionStackLoads(condition, maps, engine, ir, opts, active, d
   const rewrite = (node, localDepth = depth) => {
     if (!node || localDepth > 64) return node;
     if (node.kind === 'load' && node.location?.kind === 'stack' && node.location?.key) {
-      const sourceLoad = exactStackLoadSource(ir, null, node);
-      if (!sourceLoad) return node;
-      return resolveStackBefore(ir, sourceLoad.block, sourceLoad.row, sourceLoad.loc.key,
+      const slot = exactStackLoadSlot(ir, null, node);
+      if (!slot) return node;
+      return resolveStackBefore(ir, slot.load.block, slot.load.row, slot.key, slot.size,
         maps, opts, engine, active, localDepth + 1) || node;
     }
     return mapChildren(node, (child) => rewrite(child, localDepth + 1));
@@ -226,6 +226,10 @@ function controlCondition(term, maps, engine, ir, opts, active, depth) {
     || maps.conditions.get(term.id);
   if (!condition) return null;
   return simplify(resolveConditionStackLoads(condition, maps, engine, ir, opts, active, depth), engine);
+}
+
+function positiveAccessSize(value) {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : null;
 }
 
 function exactStackLoadSource(ir, value, expression) {
@@ -243,8 +247,15 @@ function exactStackLoadSource(ir, value, expression) {
   return candidates.length === 1 ? candidates[0] : null;
 }
 
-function exactStoreExpression(inst, key, maps, engine, ir, opts, active, depth) {
-  if (inst?.op !== 'store' || inst.loc?.key !== key) return null;
+function exactStackLoadSlot(ir, value, expression) {
+  const load = exactStackLoadSource(ir, value, expression);
+  const size = positiveAccessSize(load?.loc?.size);
+  return load && size != null ? { load, key:load.loc.key, size } : null;
+}
+
+function exactStoreExpression(inst, key, size, maps, engine, ir, opts, active, depth) {
+  if (inst?.op !== 'store' || inst.loc?.kind !== 'stack' || inst.loc?.key !== key
+      || positiveAccessSize(inst.loc?.size) !== size) return null;
   const value = valueOf(inst.args?.[0]);
   let expression = value ? maps.values.get(value.id) || null : null;
   if (!expression) return null;
@@ -254,10 +265,10 @@ function exactStoreExpression(inst, key, maps, engine, ir, opts, active, depth) 
   // CFG/barrier proof before publishing the outer join. If the source cannot be
   // proven exactly, fail closed instead of emitting a select of unresolved loads.
   if (expression.kind === 'load' && expression.location?.kind === 'stack') {
-    const sourceLoad = exactStackLoadSource(ir, value, expression);
-    if (!sourceLoad) return null;
-    expression = resolveStackBefore(ir, sourceLoad.block, sourceLoad.row, sourceLoad.loc.key,
-      maps, opts, engine, active, depth + 1);
+    const sourceSlot = exactStackLoadSlot(ir, value, expression);
+    if (!sourceSlot) return null;
+    expression = resolveStackBefore(ir, sourceSlot.load.block, sourceSlot.load.row,
+      sourceSlot.key, sourceSlot.size, maps, opts, engine, active, depth + 1);
     if (!expression) return null;
   }
 
@@ -265,8 +276,7 @@ function exactStoreExpression(inst, key, maps, engine, ir, opts, active, depth) 
   // recovered source value instead of leaking the 64-bit entry-register width
   // through an -O0 spill. This is essential for signed int32 comparisons such
   // as clamp(x,0) when x has bit 31 set.
-  const bytes = Number(inst.size || inst.loc?.size || inst.addr?.size || 0);
-  const storeBits = bytes > 0 ? bytes * 8 : 0;
+  const storeBits = size * 8;
   if (storeBits > 0 && Number(expression.bits || storeBits) > storeBits) {
     expression = simplify(expr.unary('trunc', expression, storeBits, expression.signed, {
       address: inst.address,
@@ -289,15 +299,15 @@ function hasUnsafeBarrier(inst, key) {
   return inst?.op === 'store' && inst.loc?.key !== key && (!inst.loc?.key || inst.loc?.kind === 'unknown');
 }
 
-function resolveStackBefore(ir, blockIndex, beforeRow, key, maps, opts, engine, active, depth = 0) {
-  if (blockIndex == null || depth > 64) return null;
-  const visitKey = `${blockIndex}:${beforeRow ?? 'end'}:${key}`;
+function resolveStackBefore(ir, blockIndex, beforeRow, key, size, maps, opts, engine, active, depth = 0) {
+  if (blockIndex == null || positiveAccessSize(size) == null || depth > 64) return null;
+  const visitKey = `${blockIndex}:${beforeRow ?? 'end'}:${key}:${size}`;
   if (active.has(visitKey)) return null;
   active.add(visitKey);
   try {
     for (const inst of instructionsBefore(ir, blockIndex, beforeRow)) {
       if (inst?.op === 'store' && inst.loc?.key === key) {
-        return exactStoreExpression(inst, key, maps, engine, ir, opts, active, depth);
+        return exactStoreExpression(inst, key, size, maps, engine, ir, opts, active, depth);
       }
       if (hasUnsafeBarrier(inst, key)) return null;
     }
@@ -305,7 +315,8 @@ function resolveStackBefore(ir, blockIndex, beforeRow, key, maps, opts, engine, 
     const block = ir.blocks?.[blockIndex];
     const predecessors = [...(block?.pred || [])];
     if (!predecessors.length) return null;
-    const incoming = predecessors.map((pred) => resolveStackBefore(ir, pred, null, key, maps, opts, engine, active, depth + 1));
+    const incoming = predecessors.map((pred) =>
+      resolveStackBefore(ir, pred, null, key, size, maps, opts, engine, active, depth + 1));
     if (incoming.some((x) => !x)) return null;
     const unique = new Map(incoming.map((x) => [structuralKey(x), x]));
     if (unique.size === 1) return incoming[0];
@@ -315,7 +326,7 @@ function resolveStackBefore(ir, blockIndex, beforeRow, key, maps, opts, engine, 
     if (!control) return null;
     const condition = controlCondition(control.term, maps, engine, ir, opts, active, depth + 1);
     if (!condition) return null;
-    const bits = incoming[0]?.bits || incoming[1]?.bits || 64;
+    const bits = size * 8;
     const signed = condition.compareSigned ?? incoming[0]?.signed ?? incoming[1]?.signed ?? null;
 
     // `yesIndex` is the machine branch target (condition true), `noIndex` is the
@@ -337,9 +348,8 @@ function isReturnNode(node) {
   return node?.semantic?.op === 'return' || /^return\b/.test(String(node?.text || '').trim());
 }
 
-function stackReturnKey(expression) {
-  return expression?.kind === 'load' && expression.location?.kind === 'stack' && expression.location?.key
-    ? expression.location.key : null;
+function stackReturnSlot(ir, expression) {
+  return exactStackLoadSlot(ir, null, expression);
 }
 
 function returnSiteForNode(node, ir, allowSingleFallback = false) {
@@ -357,12 +367,13 @@ function returnSiteForNode(node, ir, allowSingleFallback = false) {
 
 function recoverReturnExpressionAt(result, node, maps, opts, engine, allowSingleFallback) {
   const output = result.semanticAst?.outputs?.find((x) => x.name === 'return');
-  const nodeKey = stackReturnKey(node?.semantic?.expression);
-  const key = nodeKey || (allowSingleFallback ? stackReturnKey(output?.expression) : null);
-  if (!key) return null;
+  const nodeSlot = stackReturnSlot(result.ir, node?.semantic?.expression);
+  const slot = nodeSlot || (allowSingleFallback ? stackReturnSlot(result.ir, output?.expression) : null);
+  if (!slot) return null;
   const retInst = returnSiteForNode(node, result.ir, allowSingleFallback);
   if (!retInst) return null;
-  return resolveStackBefore(result.ir, retInst.block, retInst.row, key, maps, opts, engine, new Set());
+  return resolveStackBefore(result.ir, retInst.block, retInst.row, slot.key, slot.size,
+    maps, opts, engine, new Set());
 }
 
 function rewriteReturnsInAst(result, maps, opts, engine) {
