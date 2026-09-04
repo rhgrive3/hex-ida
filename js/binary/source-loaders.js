@@ -6,6 +6,7 @@ import { ByteView } from './reader.js';
 import { asByteSource } from './source.js';
 import { parseSourceRanges } from './source-reader.js';
 import { scanSourceStrings } from '../bytesource/strings.js';
+import { sliceArchName, validateFatSlice, validateFatContainer, probePastEndArm64SliceAsync, parseInnerMachOHeader } from './macho-fat.js';
 
 const FAT_KINDS = new Map([
   ['cafebabe', { bits: 32, littleEndian: false }],
@@ -64,27 +65,49 @@ export async function parseMachOSource(input, opts = {}, prefix = null, rangeOpt
   if (count > 128) throw new Error(`unreasonable Mach-O slice count ${count}`);
   const entrySize = fat.bits === 64 ? 32 : 20;
   const tableSize = count * entrySize;
+  const extraSize = (fat.bits === 32 && source.size >= 8n + BigInt(tableSize + 20)) ? 20 : 0;
   if (8n + BigInt(tableSize) > source.size) throw new Error('Mach-O universal slice table is truncated');
-  const table = await source.readExactly(8n, tableSize, { signal: opts.signal });
+  const table = await source.readExactly(8n, tableSize + extraSize, { signal: opts.signal });
   const r = new ByteView(table, { littleEndian: fat.littleEndian, base: 8 });
   const all = [];
   for (let i = 0, p = 0; i < count; i++, p += entrySize) {
     const cpu = r.i32(p), subtype = r.i32(p + 4);
     const offset = fat.bits === 64 ? r.u64(p + 8) : BigInt(r.u32(p + 8));
     const size = fat.bits === 64 ? r.u64(p + 16) : BigInt(r.u32(p + 12));
-    all.push({ cpu, subtype, offset, size });
+    const align = r.u32(p + (fat.bits === 64 ? 24 : 16));
+    all.push({ cpu, subtype, offset, size, align });
   }
-  const valid = all.filter((slice) => slice.size > 0n && slice.offset <= source.size && slice.size <= source.size - slice.offset);
+
+  // #6317: probe past-end arm64 compatibility slice for FAT32
+  if (fat.bits === 32 && extraSize === 20) {
+    const compat = await probePastEndArm64SliceAsync(r, count, source.size, async (off, len) => {
+      return source.readExactly(off, len, { signal: opts.signal });
+    }, all);
+    if (compat) all.push(compat);
+  }
+
+  // #6316: validate each slice
+  for (const slice of all) {
+    if (slice.offset < 0n || slice.size <= 0n || slice.offset + slice.size > source.size) {
+      throw new Error('Mach-O universal binary slice is outside file bounds');
+    }
+    const headerBytes = await source.readExactly(slice.offset, Math.min(32, Number(slice.size)), { signal: opts.signal });
+    const inner = parseInnerMachOHeader(headerBytes);
+    validateFatSlice(slice, inner, source.size, opts);
+  }
+
+  // #6314: validate container (duplicate architectures and slice range overlap)
+  validateFatContainer(all);
+
   const sliceIndex = opts.sliceIndex;
   const requestedIndex = sliceIndex == null ? null : ((typeof sliceIndex === 'number' || (typeof sliceIndex === 'string' && sliceIndex.trim() !== '')) ? Number(sliceIndex) : NaN);
   if (requestedIndex != null && (!Number.isSafeInteger(requestedIndex) || requestedIndex < 0 || requestedIndex >= all.length)) {
     throw new Error(`requested Mach-O slice index ${opts.sliceIndex} is not present in the universal binary`);
   }
   const indexed = requestedIndex == null ? null : all[requestedIndex];
-  if (indexed && !valid.includes(indexed)) throw new Error(`requested Mach-O slice index ${requestedIndex} is outside the active file`);
-  const requested = indexed || (opts.arch ? valid.find((slice) => sliceArchName(slice) === opts.arch) : null);
+  const requested = indexed || (opts.arch ? all.find((slice) => sliceArchName(slice) === opts.arch) : null);
   if (requestedIndex == null && opts.arch && !requested) throw new Error(`requested Mach-O architecture ${opts.arch} is not present in the universal binary`);
-  const selected = requested || valid.find((slice) => sliceArchName(slice) === 'arm64e') || valid.find((slice) => sliceArchName(slice) === 'arm64') || valid.find((slice) => sliceArchName(slice) === 'x86_64') || valid[0];
+  const selected = requested || all.find((slice) => sliceArchName(slice) === 'arm64e') || all.find((slice) => sliceArchName(slice) === 'arm64') || all.find((slice) => sliceArchName(slice) === 'x86_64') || all[0];
   if (!selected) throw new Error('Mach-O universal binary has no readable slice');
   const sliceSource = source.subrange(selected.offset, selected.size);
   const slicePrefix = await readPrefix(sliceSource, opts.signal);
@@ -125,10 +148,3 @@ function fatKind(bytes) {
   for (let i = 0; i < 4; i++) magic += bytes[i].toString(16).padStart(2, '0');
   return FAT_KINDS.get(magic) || null;
 }
-
-function cpuName(cpu) {
-  const value = cpu >>> 0;
-  return ({ 7: 'x86', 12: 'arm', 18: 'ppc', 0x01000007: 'x86_64', 0x0100000c: 'arm64', 0x0200000c: 'arm64_32' })[value] || `cpu-${value}`;
-}
-function subtypeBase(subtype) { return (subtype >>> 0) & 0x00ffffff; }
-function sliceArchName(slice) { return cpuName(slice.cpu) === 'arm64' && subtypeBase(slice.subtype) === 2 ? 'arm64e' : cpuName(slice.cpu); }
