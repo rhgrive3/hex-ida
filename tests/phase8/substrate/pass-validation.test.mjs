@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { stableDigest } from '../../../js/core/identity/index.js';
 import { createPassDescriptor, createPassResult } from '../../../js/decompiler/phase8/contract.js';
 import { createAnalysisState, runPassTransaction } from '../../../js/decompiler/phase8/transaction.js';
 import {
@@ -183,6 +184,42 @@ test('C4-04: a validated proof cannot be replayed onto a different staged rewrit
     targets: ['value_1'],
     proof: 'copied proof must not authorize another payload',
     rewrite: rewriteB,
+    validation,
+  }]);
+  const outcome = runPassTransaction(createAnalysisState(FULL_STATE), pass, {}, {});
+  assert.equal(outcome.committed, false);
+  assert.match(outcome.stopReason, /^rewrite-proof-id-mismatch:phase8\.probe-rewrite$/);
+});
+
+test('C4-04: lossy JSON BigInt/string collision cannot reuse a valid rewrite proof', async () => {
+  const x = createFreshSymbol(bvSort(4), 'x');
+  const before = createBinary(BV_BINARY_OP.ADD, x, x);
+  const after = createBinary(BV_BINARY_OP.SHL, x, createBv(4, 1));
+  const rewrite = Object.freeze({ before, after });
+  const validation = await validateRewriteAdoption({
+    passId: 'phase8.probe-rewrite',
+    passVersion: '1.0.0',
+    transformKind: 'probe-algebraic',
+    targets: ['value_1'],
+    beforeTarget: before,
+    afterTarget: after,
+    rewrite,
+    backend: new ExhaustiveBvBackend(),
+  });
+  assert.equal(validation.validation, 'equivalent');
+  assert.equal(typeof after.right.value, 'bigint');
+
+  const malformedConst = Object.freeze({ ...after.right, value: after.right.value.toString(10) });
+  const malformedAfter = Object.freeze({ ...after, right: malformedConst });
+  // Lock the historical counterexample: the generic identity digest is lossy
+  // for this type-only mutation, so the Phase 8 proof binder must be stronger.
+  assert.equal(stableDigest(after), stableDigest(malformedAfter));
+
+  const pass = passWithTransforms([{
+    kind: 'probe-algebraic',
+    targets: ['value_1'],
+    proof: 'a schema-invalid string constant must not reuse a BigInt proof',
+    rewrite: Object.freeze({ before, after: malformedAfter }),
     validation,
   }]);
   const outcome = runPassTransaction(createAnalysisState(FULL_STATE), pass, {}, {});
