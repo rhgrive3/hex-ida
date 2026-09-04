@@ -334,7 +334,13 @@ export function parseBaseRelocations(r, dir, image, machine = null, sharedBudget
     const count=(blockSize-8)/2;
     for(let i=0;i<count;i++){
       if(!budget.take({inputBytes:2,records:1,objects:1,operations:1,estimatedHeapBytes:112},'relocation-entry'))break;
-      const raw=r.u16(off+8+i*2),type=raw>>>12,within=raw&0xfff;if(!type)continue;if(!allowed.has(type)){image.warnings.push(`Ignored reserved/unsupported PE base relocation type ${type} at RVA 0x${(pageRva+within).toString(16)}`);continue;}
+      const raw=r.u16(off+8+i*2),type=raw>>>12,within=raw&0xfff;
+      if(type===4){
+        if(i+1>=count){budget.partial('relocations:truncated-highadj',`Truncated PE HIGHADJ base relocation at RVA 0x${(pageRva+within).toString(16)}`);break;}
+        if(!budget.take({inputBytes:2,operations:1},'relocation-highadj-adjustment'))break;
+        r.u16(off+8+(i+1)*2);i++;
+      }
+      if(!type)continue;if(!allowed.has(type)){image.warnings.push(`Ignored reserved/unsupported PE base relocation type ${type} at RVA 0x${(pageRva+within).toString(16)}`);continue;}
       const address=image.imageBase+BigInt(pageRva+within);image.relocations.push({address,fileOffset:image.addressToOffset(address),type,symbol:null,addend:null,section:null,source:'PE-base-reloc'});
     }
     off+=blockSize;
