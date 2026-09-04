@@ -71,7 +71,17 @@ for (const [reg, widthBits, expectedAlignment] of [[x(0),64,8],[fp('q', 0, 128),
   const bundle = lift('ldr', [reg, imm(0x1004n)], { literalTarget:0x1004n });
   assert.equal(bundle.completeness, 'exact');
   assert.equal(memoryOps(bundle)[0].access.widthBits, widthBits);
-  assert.equal(alignmentFaults(bundle)[0]?.condition?.alignment, expectedAlignment, 'literal access keeps natural-width alignment possibility');
+  assert.equal(alignmentFaults(bundle)[0]?.condition?.alignment, expectedAlignment, 'misaligned literal access keeps natural-width alignment possibility');
+  const abort = bundle.possibleFaults.find((fault) => fault.kind === 'data-abort');
+  assert.ok(abort?.detail?.causes?.includes('alignment'), 'misaligned literal Data Abort causes include alignment');
+}
+
+{
+  const bundle = lift('ldr', [x(0), imm(0x1000n)], { literalTarget:0x1000n });
+  assert.equal(bundle.completeness, 'exact');
+  assert.equal(alignmentFaults(bundle).length, 0, 'proven naturally aligned literal target has no alignment fault');
+  const abort = bundle.possibleFaults.find((fault) => fault.kind === 'data-abort');
+  assert.equal(abort?.detail?.causes?.includes('alignment'), false, 'proven aligned literal Data Abort omits alignment cause');
 }
 
 {

@@ -540,9 +540,11 @@ function literalLoad(decoded, context, mnemonic) {
     const write = loadedValueToRegister(reg, raw, widthBits, { signed, idPrefix:'load.literal' });
     operations.push(...write.operations);
   } catch (error) { return partial(decoded, context, error.message || 'unsupported literal load destination'); }
+  const naturalAlignment = faultAlignment(widthBits);
+  const runtimeAlignment = target % BigInt(naturalAlignment) === 0n ? null : naturalAlignment;
   return bundle(decoded, context, {
     operations,
-    possibleFaults:possibleFaults('read', { alignment:faultAlignment(widthBits), addressExpr, tagChecked:false }),
+    possibleFaults:possibleFaults('read', { alignment:runtimeAlignment, addressExpr, tagChecked:false }),
     metadata:{ family:'arm64-memory', mnemonic, transfer:'literal', widthBits, signed, target:target.toString() },
   });
 }
