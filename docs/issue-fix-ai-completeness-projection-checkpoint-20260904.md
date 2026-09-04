@@ -14,7 +14,7 @@ PR, or merge stage.
 - Shared-board claim: lanes message #281
 - Branch: `fix/issues-ai-projection-completeness-6156`
 - Candidate base: `origin/main` at `61b30004d33abff219919ebce374f9d5c222e274`
-- Implementation head: to be recorded after the implementation commit
+- Implementation head: `86353bfdcda179718c72caa2c42cfac0b67ed9a0`
 
 ## Stages
 
@@ -22,7 +22,8 @@ PR, or merge stage.
 - [x] Traced `completenessOf()` through `ToolRegistry.execute()` and model envelope projections.
 - [x] Added strict primitive boolean/count/coverage validation with fail-closed malformed metadata.
 - [x] Added regressions for canonical metadata, string/array/object/boolean/Infinity coercion, and malformed top-level flags.
-- [ ] Run focused regression, applicable AI tests, lint, and Phase 12 verification.
+- [x] Focused regression, AI data-plane tests, and lint passed.
+- [x] Phase 12 passed 27 tests; the known denominator failure reproduces on pristine main. The broader AI suite has the same pristine-main ProposalStore #6250 failure.
 - [ ] Create one owner PR for #6156 and record exact-head candidate evidence.
 - [ ] Merge only after exact-head evidence and required checks are green; otherwise record the blocker here and on the board.
 
