@@ -117,7 +117,7 @@ function normalizeOperand(input, index) {
         base,
         index:indexRegister,
         scale,
-        displacement:bigint(raw.displacement ?? raw.disp ?? 0, 'x86-decoded-instruction-invalid-displacement'),
+        displacement:bigint(raw.displacement ?? raw.disp ?? 0n, 'x86-decoded-instruction-invalid-displacement'),
         segment,
         addressSizeBits:integer(raw.addressSizeBits ?? 64, 'x86-decoded-instruction-invalid-address-size', { min:16, max:64 }),
       }),
