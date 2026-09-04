@@ -7,34 +7,99 @@ jobs:
     resource_class: medium
     steps:
       - checkout
-
+      - run:
+          name: Validate CircleCI impact router
+          command: node tests/ci/circleci-impact.test.mjs
       - run:
           name: Detect migration-guardrail impact
           command: |
-            set -euo pipefail
-            git fetch --no-tags origin main:refs/remotes/origin/main
-            changed="$(git diff --name-only origin/main...HEAD || true)"
-            if printf '%s\n' "$changed" | grep -Eq '^(js/(architecture/|ir\.js$|ir-core\.js$|dataflow[^/]*\.js$|decompiler/|binary/|bytesource/|platform/|project/|runtime/|runtime-evidence/|symbolic/|ai/|ui/|ui\.js$|ui-root\.js$|panels\.js$|app\.js$|backend\.js$|worker[^/]*\.js$)|worker-entry\.js$|package\.json$|package-lock\.json$|tests/(migration-guardrails\.mjs$|universal-binary-source\.mjs$|binary-platform\.mjs$)|docs/MIGRATION_GUARDRAILS\.md$|\.github/workflows/migration-guardrails\.yml$|\.circleci/config\.yml$)'; then
-              echo 'export RUN_MIGRATION_GUARDRAILS=true' >> "$BASH_ENV"
-            else
-              echo 'export RUN_MIGRATION_GUARDRAILS=false' >> "$BASH_ENV"
-              echo 'No migration-guardrail inputs changed; expensive steps will be skipped.'
-            fi
-
+            run_it="$(bash scripts/ci/circleci-impact.sh pr-only '^(js/(architecture/|ir\.js$|ir-core\.js$|dataflow[^/]*\.js$|decompiler/|binary/|bytesource/|platform/|project/|runtime/|runtime-evidence/|symbolic/|ai/|ui/|ui\.js$|ui-root\.js$|panels\.js$|app\.js$|backend\.js$|worker[^/]*\.js$)|worker-entry\.js$|package\.json$|package-lock\.json$|tests/(migration-guardrails\.mjs$|universal-binary-source\.mjs$|binary-platform\.mjs$)|docs/MIGRATION_GUARDRAILS\.md$|\.github/workflows/migration-guardrails\.yml$|\.circleci/config\.yml$|scripts/ci/circleci-impact\.sh$)')"
+            echo "export RUN_MIGRATION_GUARDRAILS=$run_it" >> "$BASH_ENV"
       - run:
           name: Install dependencies
           command: |
-            if [ "$RUN_MIGRATION_GUARDRAILS" != "true" ]; then exit 0; fi
+            if [ "$RUN_MIGRATION_GUARDRAILS" != 'true' ]; then exit 0; fi
             npm ci --no-audit --no-fund
-
       - run:
           name: Run migration proofs
           command: |
-            if [ "$RUN_MIGRATION_GUARDRAILS" != "true" ]; then exit 0; fi
+            if [ "$RUN_MIGRATION_GUARDRAILS" != 'true' ]; then exit 0; fi
             npm run migration:test
             npm run binary:source-test
+
+  agent-loop-resilience:
+    docker:
+      - image: cimg/node:22.23
+    resource_class: small
+    steps:
+      - checkout
+      - run:
+          name: Detect agent-loop impact
+          command: |
+            run_it="$(bash scripts/ci/circleci-impact.sh main-and-branch '^(js/userscript/dev/|tests/dev-agent/agent-loop-resilience\.mjs$|\.github/workflows/agent-loop-resilience\.yml$|\.circleci/config\.yml$|scripts/ci/circleci-impact\.sh$)')"
+            echo "export RUN_AGENT_LOOP_RESILIENCE=$run_it" >> "$BASH_ENV"
+      - run:
+          name: Run unattended agent loop regressions
+          command: |
+            if [ "$RUN_AGENT_LOOP_RESILIENCE" != 'true' ]; then exit 0; fi
+            node tests/dev-agent/agent-loop-resilience.mjs
+
+  issue-2528-canonical-claims:
+    docker:
+      - image: cimg/node:22.23
+    resource_class: small
+    steps:
+      - checkout
+      - run:
+          name: Detect canonical-claims impact
+          command: |
+            run_it="$(bash scripts/ci/circleci-impact.sh pr-only '^(js/ui/product-hardened\.js$|js/analysis/query/product-surface\.js$|js/ux\.js$|tests/issue-2528-canonical-claims\.mjs$|\.github/workflows/issue-2528-canonical-claims\.yml$|\.circleci/config\.yml$|scripts/ci/circleci-impact\.sh$)')"
+            echo "export RUN_ISSUE_2528=$run_it" >> "$BASH_ENV"
+      - run:
+          name: Validate canonical claims authority
+          command: |
+            if [ "$RUN_ISSUE_2528" != 'true' ]; then exit 0; fi
+            node tests/issue-2528-canonical-claims.mjs
+
+  ai-eval-contract:
+    docker:
+      - image: cimg/node:20.19
+    resource_class: small
+    steps:
+      - checkout
+      - run:
+          name: Detect AI evaluation impact
+          command: |
+            run_it="$(bash scripts/ci/circleci-impact.sh main-and-branch '^(js/ai/|js/agent/|js/query/|js/gemini\.js$|js/goalc\.js$|js/semantic-evidence\.js$|worker\.js$|tests/ai-eval/|docs/ai-integration-contract\.md$|docs/ai-quality-gate\.md$|\.github/workflows/ai-eval-contract\.yml$|\.circleci/config\.yml$|scripts/ci/circleci-impact\.sh$)')"
+            echo "export RUN_AI_EVAL=$run_it" >> "$BASH_ENV"
+      - run:
+          name: Validate workflow trigger coverage
+          command: |
+            if [ "$RUN_AI_EVAL" != 'true' ]; then exit 0; fi
+            node tests/ai-eval/workflow-trigger.mjs
+      - run:
+          name: Validate AI evaluation corpus
+          command: |
+            if [ "$RUN_AI_EVAL" != 'true' ]; then exit 0; fi
+            node tests/ai-eval/selftest.mjs
+      - run:
+          name: Exercise grader with example trace
+          command: |
+            if [ "$RUN_AI_EVAL" != 'true' ]; then exit 0; fi
+            node tests/ai-eval/grade.mjs tests/ai-eval/results.example.jsonl /tmp/ai-eval-report.json
+      - run:
+          name: Ensure release mode rejects an incomplete corpus
+          command: |
+            if [ "$RUN_AI_EVAL" != 'true' ]; then exit 0; fi
+            if node tests/ai-eval/grade.mjs tests/ai-eval/results.example.jsonl /tmp/ai-eval-partial.json --require-all; then
+              echo 'Expected --require-all to reject a one-case trace.' >&2
+              exit 1
+            fi
 
 workflows:
   ci:
     jobs:
       - migration-guardrails
+      - agent-loop-resilience
+      - issue-2528-canonical-claims
+      - ai-eval-contract
