@@ -186,3 +186,29 @@ shadow contracts SHA-256             0eec9ae4296d2371700dac92369d2ab54d27dea50fc
 foundation ownership digest          d80c91a8bee4f4141642151dda727edd
 initial candidate-gate digest        128a52dae6eab6f63831dc854c76b623
 ```
+
+## Pre-freeze lane-execution reconciliation
+
+The `b6308315` exact local preflight passed, but read-only execution of every
+registered Stage A rolling boundary found one ownership omission before hosted
+promotion: `decompiler:test` reaches the stale positive fixture
+`tests/issue-142-multi-return.mjs`, while T011 did not own that path. The same
+audit found five malformed-budget failures at the already T011-owned pass
+manager/rewrite boundary. T011 therefore gains exactly the issue-142 fixture
+and an explicit primitive-budget addendum; Phase 8 performance tests remain
+read-only T011 evidence and T013 ownership is unchanged.
+
+T012/T013 and T014–T017 audits found no additional path requirement. The
+T053/T054/T056/T057 first failures and their dedicated negative-test subtrees
+already fit their frozen owners. No component implementation or status
+transition occurred. This section supersedes only the earlier ownership digest
+and reviewed task/ownership/validator blobs; the workflow, shadow authority,
+23-row roadmap set, and candidate-gate digest remain unchanged.
+
+```text
+tasks.md                             d3a12f34426abe5ca82b3abffd2461fef862ab35
+contracts/task-ownership.json       108d6639626ba03530eee2fd0417c186b8b50985
+validator Git blob                  992a7d2d7a00b83551ffe897ab86cb252efbd95a
+foundation ownership digest         8f759c485f119ea0a5b0e57174c66ed7
+initial candidate-gate digest       128a52dae6eab6f63831dc854c76b623
+```

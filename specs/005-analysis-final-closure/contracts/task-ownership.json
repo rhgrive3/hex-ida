@@ -425,6 +425,7 @@
         "js/semantics/memoryssa/operand-forwarding.js",
         "js/semantics/compat/semantic-ir-v2-to-v1-memory.js",
         "tests/decompiler-semantic.mjs",
+        "tests/issue-142-multi-return.mjs",
         "tests/final-closure/t011/**"
       ],
       "forbiddenOverlap": [
