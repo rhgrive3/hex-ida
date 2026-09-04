@@ -109,6 +109,8 @@ export class EmulatorProvider {
     const run = async (input = {}, runOptions = {}) => {
       const maxSteps = boundedInteger(runOptions.maxSteps, 20000, 1, 1000000, 'maxSteps');
       const timeoutMs = boundedInteger(runOptions.timeoutMs, 2000, 10, 60000, 'timeoutMs');
+      const { signal: _nonReplayableSignal, ...replayableRunOptions } = runOptions;
+      const replayOptions = { ...replayableRunOptions, maxSteps, timeoutMs };
       const controller = session.controller();
       let externalAbort = null;
       if (runOptions.signal) {
@@ -125,10 +127,10 @@ export class EmulatorProvider {
       let raw;
       try {
         if (controller.signal.aborted) raw = { stop: { kind: String(controller.signal.reason || 'cancelled') } };
-        else if (typeof this.engine.execute === 'function') raw = await this.engine.execute(input, { ...runOptions, maxSteps, timeoutMs, signal: controller.signal });
+        else if (typeof this.engine.execute === 'function') raw = await this.engine.execute(input, { ...replayOptions, signal: controller.signal });
         else {
           await this.engine.launch(input, { signal: controller.signal });
-          raw = await this.engine.resume({ ...runOptions, maxSteps, timeoutMs, signal: controller.signal });
+          raw = await this.engine.resume({ ...replayOptions, signal: controller.signal });
         }
       } catch (error) {
         if (controller.signal.aborted) raw = { stop: { kind: String(controller.signal.reason || 'cancelled') }, error: String(error?.message || error) };
@@ -192,7 +194,7 @@ export class EmulatorProvider {
       const resolution = runOptions.resolution ?? null;
       const evidenceNodes = events.map((event) => evidence.eventToEvidence(event, resolution, { binaryId: request.binaryId ?? request.binaryHash ?? null, semanticKind: 'emulator-observation' }));
       const ownedRaw = ownedClone(raw ?? null);
-      lastRun = deepFreeze({ input: ownedClone(input), options: { maxSteps, timeoutMs }, termination, completeness, raw: ownedRaw, eventIds: events.map((event) => event.eventId) });
+      lastRun = deepFreeze({ input: ownedClone(input), options: ownedClone(replayOptions), termination, completeness, raw: ownedRaw, eventIds: events.map((event) => event.eventId) });
       return deepFreeze({ termination, completeness, raw: ownedClone(ownedRaw), batch, evidence: evidenceNodes, recording: lastRun });
     };
 
