@@ -20,6 +20,7 @@ export class CapabilityExecutor {
     const runtimePlatform = entry.category === 'runtime' ? await this.resolveRuntimePlatform() : null;
     this.verifyBinding(entry, args, runtimePlatform);
     if (entry.requiresApproval && !validAuthorization(options.authorization)) throw new AIError('approval_required', `Capability ${id} requires a proposal approval token.`);
+    this.verifyScope(entry, options);
     if (entry.agentTool) return this.executeTool(entry, args, options);
     if (entry.actionKind) return this.executeAction(entry, args);
     return this.executeBuiltIn(entry, args, options, runtimePlatform);
@@ -34,6 +35,24 @@ export class CapabilityExecutor {
     if (args.runtimeSessionId == null || String(args.runtimeSessionId) !== String(session.id)) throw new AIError('scope_violation', 'Runtime session identity does not match the requested action.');
     if (binaryId != null && session.binaryHash != null && String(binaryId) !== String(session.binaryHash)) throw new AIError('scope_violation', 'Runtime session is bound to a different binary.');
     if (args.binaryId != null && session.binaryHash && String(args.binaryId) !== String(session.binaryHash)) throw new AIError('scope_violation', 'Runtime action is bound to a different binary.');
+  }
+
+  verifyScope(entry, options = {}) {
+    // scopeSupport is a catalog contract, not a per-dispatch-branch check:
+    // enforce it here so agentTool, actionKind, and built-in paths share one
+    // policy (#6150).
+    const scope = options?.scope || 'auto';
+    if (scope === 'auto') return;
+    let allowedScopes;
+    if (entry.agentTool) {
+      const record = this.toolRegistry?.get?.(entry.agentTool);
+      allowedScopes = record?.scopeSupport || entry.scopeSupport || [];
+    } else {
+      allowedScopes = entry.scopeSupport || [];
+    }
+    if (!allowedScopes.includes(scope)) {
+      throw new AIError('scope_violation', `${entry.id} does not support ${scope} scope.`);
+    }
   }
 
   executeTool(entry, args, options) {
