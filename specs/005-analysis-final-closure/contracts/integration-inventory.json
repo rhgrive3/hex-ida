@@ -14,54 +14,59 @@
   },
   "taskHandoffs": {
     "T001": {
-      "headSha": "d7eb37dd3c5b4842f127a74183547e64bef2be9f",
-      "treeSha": "3233b538f984befbecf091aaf2eeb4dbcea10707",
+      "headSha": "148bb8a48d34507059b90a4202e3aa734f1fbc48",
+      "treeSha": "f433d3779be2c7079d45494a04901cb8b9d2faf7",
       "evidencePath": "specs/005-analysis-final-closure/research.md"
     },
     "T002": {
-      "headSha": "d7eb37dd3c5b4842f127a74183547e64bef2be9f",
-      "treeSha": "3233b538f984befbecf091aaf2eeb4dbcea10707",
+      "headSha": "148bb8a48d34507059b90a4202e3aa734f1fbc48",
+      "treeSha": "f433d3779be2c7079d45494a04901cb8b9d2faf7",
       "evidencePath": "specs/005-analysis-final-closure/research.md"
     },
     "T003": {
-      "headSha": "d7eb37dd3c5b4842f127a74183547e64bef2be9f",
-      "treeSha": "3233b538f984befbecf091aaf2eeb4dbcea10707",
+      "headSha": "148bb8a48d34507059b90a4202e3aa734f1fbc48",
+      "treeSha": "f433d3779be2c7079d45494a04901cb8b9d2faf7",
       "evidencePath": "specs/005-analysis-final-closure/spec.md"
     },
     "T004": {
-      "headSha": "d7eb37dd3c5b4842f127a74183547e64bef2be9f",
-      "treeSha": "3233b538f984befbecf091aaf2eeb4dbcea10707",
+      "headSha": "148bb8a48d34507059b90a4202e3aa734f1fbc48",
+      "treeSha": "f433d3779be2c7079d45494a04901cb8b9d2faf7",
       "evidencePath": "specs/005-analysis-final-closure/evidence/recovery-matrix.md"
     },
     "T005": {
-      "headSha": "d7eb37dd3c5b4842f127a74183547e64bef2be9f",
-      "treeSha": "3233b538f984befbecf091aaf2eeb4dbcea10707",
+      "headSha": "148bb8a48d34507059b90a4202e3aa734f1fbc48",
+      "treeSha": "f433d3779be2c7079d45494a04901cb8b9d2faf7",
       "evidencePath": "specs/005-analysis-final-closure/evidence/github-state.md"
     },
     "T006": {
-      "headSha": "d7eb37dd3c5b4842f127a74183547e64bef2be9f",
-      "treeSha": "3233b538f984befbecf091aaf2eeb4dbcea10707",
+      "headSha": "148bb8a48d34507059b90a4202e3aa734f1fbc48",
+      "treeSha": "f433d3779be2c7079d45494a04901cb8b9d2faf7",
       "evidencePath": "specs/005-analysis-final-closure/evidence/roadmap-matrix.md"
     },
     "T007": {
-      "headSha": "d7eb37dd3c5b4842f127a74183547e64bef2be9f",
-      "treeSha": "3233b538f984befbecf091aaf2eeb4dbcea10707",
+      "headSha": "148bb8a48d34507059b90a4202e3aa734f1fbc48",
+      "treeSha": "f433d3779be2c7079d45494a04901cb8b9d2faf7",
       "evidencePath": "specs/005-analysis-final-closure/checklists/release-evidence.md"
     },
     "T008": {
-      "headSha": "d7eb37dd3c5b4842f127a74183547e64bef2be9f",
-      "treeSha": "3233b538f984befbecf091aaf2eeb4dbcea10707",
+      "headSha": "148bb8a48d34507059b90a4202e3aa734f1fbc48",
+      "treeSha": "f433d3779be2c7079d45494a04901cb8b9d2faf7",
       "evidencePath": "specs/005-analysis-final-closure/evidence/speckit-analysis.md"
     },
     "T009": {
-      "headSha": "d7eb37dd3c5b4842f127a74183547e64bef2be9f",
-      "treeSha": "3233b538f984befbecf091aaf2eeb4dbcea10707",
+      "headSha": "148bb8a48d34507059b90a4202e3aa734f1fbc48",
+      "treeSha": "f433d3779be2c7079d45494a04901cb8b9d2faf7",
       "evidencePath": "specs/005-analysis-final-closure/tasks.md"
     },
     "T010": {
-      "headSha": "d7eb37dd3c5b4842f127a74183547e64bef2be9f",
-      "treeSha": "3233b538f984befbecf091aaf2eeb4dbcea10707",
+      "headSha": "148bb8a48d34507059b90a4202e3aa734f1fbc48",
+      "treeSha": "f433d3779be2c7079d45494a04901cb8b9d2faf7",
       "evidencePath": "specs/005-analysis-final-closure/evidence/recovery-matrix.md"
+    },
+    "T046": {
+      "headSha": "148bb8a48d34507059b90a4202e3aa734f1fbc48",
+      "treeSha": "f433d3779be2c7079d45494a04901cb8b9d2faf7",
+      "evidencePath": "specs/005-analysis-final-closure/evidence/pre-fanout.md"
     }
   },
   "pathPatternPolicy": "repo-relative exact paths; task allowedPaths may additionally use a terminal /** subtree glob",
@@ -175,39 +180,141 @@
     "tools/validation/phase12/ownership.mjs"
   ],
   "entries": [
-    { "path": ".github/workflows/final-closure-preflight.yml", "ownerTaskId": "T046" },
-    { "path": ".github/workflows/phase11-release-validation.yml", "ownerTaskId": "T046" },
-    { "path": ".github/workflows/phase12-release-validation.yml", "ownerTaskId": "T046" },
-    { "path": "package.json", "ownerTaskId": "T046" },
-    { "path": "specs/005-analysis-final-closure/checklists/release-evidence.md", "ownerTaskId": "T007" },
-    { "path": "specs/005-analysis-final-closure/checklists/requirements.md", "ownerTaskId": "T046" },
-    { "path": "specs/005-analysis-final-closure/contracts/closure-ledger.md", "ownerTaskId": "T046" },
-    { "path": "specs/005-analysis-final-closure/contracts/final-platform-locks.json", "ownerTaskId": "T003" },
-    { "path": "specs/005-analysis-final-closure/contracts/integration-inventory.json", "ownerTaskId": "T046" },
-    { "path": "specs/005-analysis-final-closure/contracts/performance-locks.json", "ownerTaskId": "T046" },
-    { "path": "specs/005-analysis-final-closure/contracts/task-ownership.json", "ownerTaskId": "T046" },
-    { "path": "specs/005-analysis-final-closure/data-model.md", "ownerTaskId": "T046" },
-    { "path": "specs/005-analysis-final-closure/evidence/github-state.md", "ownerTaskId": "T005" },
-    { "path": "specs/005-analysis-final-closure/evidence/pre-fanout.md", "ownerTaskId": "T046" },
-    { "path": "specs/005-analysis-final-closure/evidence/recovery-matrix.md", "ownerTaskId": "T046" },
-    { "path": "specs/005-analysis-final-closure/evidence/roadmap-matrix.md", "ownerTaskId": "T006" },
-    { "path": "specs/005-analysis-final-closure/evidence/speckit-analysis.md", "ownerTaskId": "T046" },
-    { "path": "specs/005-analysis-final-closure/plan.md", "ownerTaskId": "T046" },
-    { "path": "specs/005-analysis-final-closure/quickstart.md", "ownerTaskId": "T046" },
-    { "path": "specs/005-analysis-final-closure/research.md", "ownerTaskId": "T046" },
-    { "path": "specs/005-analysis-final-closure/spec.md", "ownerTaskId": "T003" },
-    { "path": "specs/005-analysis-final-closure/tasks.md", "ownerTaskId": "T046" },
-    { "path": "tests/final-closure/cross-lane-ownership.test.mjs", "ownerTaskId": "T046" },
-    { "path": "tests/final-closure/preflight.test.mjs", "ownerTaskId": "T046" },
-    { "path": "tests/final-closure/run.mjs", "ownerTaskId": "T046" },
-    { "path": "tests/stage1/verifier-self-tests.test.mjs", "ownerTaskId": "T046" },
-    { "path": "tests/stage1/workflow-trigger-coverage.test.mjs", "ownerTaskId": "T046" },
-    { "path": "tools/validation/final-closure/preflight.mjs", "ownerTaskId": "T046" },
-    { "path": "tools/validation/final-closure/shadow/foundation/contracts.json", "ownerTaskId": "T046" },
-    { "path": "tools/validation/final-closure/shadow/foundation/oracle-observer.mjs", "ownerTaskId": "T046" },
-    { "path": "tools/validation/final-closure/shadow/foundation/product-observer.mjs", "ownerTaskId": "T046" },
-    { "path": "tools/validation/final-closure/shadow/foundation/registry.json", "ownerTaskId": "T046" },
-    { "path": "tools/validation/phase11/ownership-check.mjs", "ownerTaskId": "T046" },
-    { "path": "tools/validation/phase12/ownership.mjs", "ownerTaskId": "T046" }
+    {
+      "path": ".github/workflows/final-closure-preflight.yml",
+      "ownerTaskId": "T046"
+    },
+    {
+      "path": ".github/workflows/phase11-release-validation.yml",
+      "ownerTaskId": "T046"
+    },
+    {
+      "path": ".github/workflows/phase12-release-validation.yml",
+      "ownerTaskId": "T046"
+    },
+    {
+      "path": "package.json",
+      "ownerTaskId": "T046"
+    },
+    {
+      "path": "specs/005-analysis-final-closure/checklists/release-evidence.md",
+      "ownerTaskId": "T007"
+    },
+    {
+      "path": "specs/005-analysis-final-closure/checklists/requirements.md",
+      "ownerTaskId": "T046"
+    },
+    {
+      "path": "specs/005-analysis-final-closure/contracts/closure-ledger.md",
+      "ownerTaskId": "T046"
+    },
+    {
+      "path": "specs/005-analysis-final-closure/contracts/final-platform-locks.json",
+      "ownerTaskId": "T003"
+    },
+    {
+      "path": "specs/005-analysis-final-closure/contracts/integration-inventory.json",
+      "ownerTaskId": "T046"
+    },
+    {
+      "path": "specs/005-analysis-final-closure/contracts/performance-locks.json",
+      "ownerTaskId": "T046"
+    },
+    {
+      "path": "specs/005-analysis-final-closure/contracts/task-ownership.json",
+      "ownerTaskId": "T046"
+    },
+    {
+      "path": "specs/005-analysis-final-closure/data-model.md",
+      "ownerTaskId": "T046"
+    },
+    {
+      "path": "specs/005-analysis-final-closure/evidence/github-state.md",
+      "ownerTaskId": "T005"
+    },
+    {
+      "path": "specs/005-analysis-final-closure/evidence/pre-fanout.md",
+      "ownerTaskId": "T046"
+    },
+    {
+      "path": "specs/005-analysis-final-closure/evidence/recovery-matrix.md",
+      "ownerTaskId": "T046"
+    },
+    {
+      "path": "specs/005-analysis-final-closure/evidence/roadmap-matrix.md",
+      "ownerTaskId": "T006"
+    },
+    {
+      "path": "specs/005-analysis-final-closure/evidence/speckit-analysis.md",
+      "ownerTaskId": "T046"
+    },
+    {
+      "path": "specs/005-analysis-final-closure/plan.md",
+      "ownerTaskId": "T046"
+    },
+    {
+      "path": "specs/005-analysis-final-closure/quickstart.md",
+      "ownerTaskId": "T046"
+    },
+    {
+      "path": "specs/005-analysis-final-closure/research.md",
+      "ownerTaskId": "T046"
+    },
+    {
+      "path": "specs/005-analysis-final-closure/spec.md",
+      "ownerTaskId": "T003"
+    },
+    {
+      "path": "specs/005-analysis-final-closure/tasks.md",
+      "ownerTaskId": "T046"
+    },
+    {
+      "path": "tests/final-closure/cross-lane-ownership.test.mjs",
+      "ownerTaskId": "T046"
+    },
+    {
+      "path": "tests/final-closure/preflight.test.mjs",
+      "ownerTaskId": "T046"
+    },
+    {
+      "path": "tests/final-closure/run.mjs",
+      "ownerTaskId": "T046"
+    },
+    {
+      "path": "tests/stage1/verifier-self-tests.test.mjs",
+      "ownerTaskId": "T046"
+    },
+    {
+      "path": "tests/stage1/workflow-trigger-coverage.test.mjs",
+      "ownerTaskId": "T046"
+    },
+    {
+      "path": "tools/validation/final-closure/preflight.mjs",
+      "ownerTaskId": "T046"
+    },
+    {
+      "path": "tools/validation/final-closure/shadow/foundation/contracts.json",
+      "ownerTaskId": "T046"
+    },
+    {
+      "path": "tools/validation/final-closure/shadow/foundation/oracle-observer.mjs",
+      "ownerTaskId": "T046"
+    },
+    {
+      "path": "tools/validation/final-closure/shadow/foundation/product-observer.mjs",
+      "ownerTaskId": "T046"
+    },
+    {
+      "path": "tools/validation/final-closure/shadow/foundation/registry.json",
+      "ownerTaskId": "T046"
+    },
+    {
+      "path": "tools/validation/phase11/ownership-check.mjs",
+      "ownerTaskId": "T046"
+    },
+    {
+      "path": "tools/validation/phase12/ownership.mjs",
+      "ownerTaskId": "T046"
+    }
   ]
 }
