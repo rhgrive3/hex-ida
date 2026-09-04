@@ -282,14 +282,27 @@ export class EvidenceGraph {
     for (const evidenceId of [...supporting, ...contradicting, ...confirmedBy]) {
       if (!this.#nodes.has(evidenceId)) missingEvidenceIds.add(evidenceId);
     }
-    const knownContradictions = [...contradicting].filter((evidenceId) => this.#nodes.has(evidenceId));
-    const knownSupport = [...supporting].filter((evidenceId) => this.#nodes.has(evidenceId));
+    const existingContradictionIds = [...contradicting].filter((evidenceId) => this.#nodes.has(evidenceId));
+    const knownContradictions = existingContradictionIds.filter((evidenceId) => {
+      const node = this.#nodes.get(evidenceId);
+      return node && isEvidenceApplicableToClaim(node, claim);
+    });
+    const knownSupport = [...supporting].filter((evidenceId) => {
+      const node = this.#nodes.get(evidenceId);
+      return node && isEvidenceApplicableToClaim(node, claim);
+    });
     const deterministicConfirmations = [...confirmedBy].filter((evidenceId) => {
       const node = this.#nodes.get(evidenceId);
       return canConfirmClaim(node, claim);
     });
     let verdict = claim.verdict;
-    if (knownContradictions.length || claim.verdict === 'contradicted') verdict = 'contradicted';
+    // A stored 'contradicted' verdict is derived from the creation-time ID
+    // lists, not an independent authority. When the referenced nodes exist but
+    // none applies to this claim's scope, the stale stored verdict must not
+    // keep the claim contradicted (#6168). All-missing references preserve the
+    // legacy stored verdict; existing-but-inapplicable ones do not.
+    if (knownContradictions.length) verdict = 'contradicted';
+    else if (claim.verdict === 'contradicted' && existingContradictionIds.length === 0) verdict = 'contradicted';
     else if (deterministicConfirmations.length) verdict = 'confirmed';
     else if (knownSupport.length) verdict = 'supported';
     else if (supporting.size || confirmedBy.size || claim.verdict === 'unverified') verdict = 'unverified';
