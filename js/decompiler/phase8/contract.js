@@ -168,7 +168,7 @@ export function renderProvenanceRecord(item) {
     const value = origin[key];
     if (value != null && !Array.isArray(value)) fail('phase8-render-provenance-record-origin-invalid');
   }
-  const targets = item.targets ?? [];
+  const targets = item.targets;
   if (!Array.isArray(targets)) fail('phase8-render-provenance-record-targets-invalid');
   return Object.freeze({
     ...item,
