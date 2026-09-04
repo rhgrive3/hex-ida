@@ -32,10 +32,11 @@ assert.deepEqual(
 for (const typed of [
   new Int8Array([-128, 0, 127]),
   new Uint32Array([0, 4294967295]),
-  new Float32Array([0.1, NaN, Infinity, -0]),
-  new Float64Array([0.1, NaN, Infinity, -0]),
+  new Float32Array([0.1, NaN, Infinity, -Infinity, -0]),
+  new Float64Array([0.1, NaN, Infinity, -Infinity, -0]),
 ]) {
-  const decoded = decodeWorkerAnalysisPayload(encodeWorkerAnalysisPayload(typed));
+  const persisted = JSON.parse(JSON.stringify(encodeWorkerAnalysisPayload(typed)));
+  const decoded = decodeWorkerAnalysisPayload(persisted);
   assert.equal(decoded.constructor, typed.constructor);
   assert.equal(decoded.length, typed.length);
   for (let i = 0; i < typed.length; i++) {
@@ -101,6 +102,10 @@ rejects({ t:'typed-array', c:['Int8Array'], v:[1] });
 rejects({ t:'typed-array', c:'Int8Array', v:['1'] });
 rejects({ t:'typed-array', c:'Int8Array', v:[128] });
 rejects({ t:'typed-array', c:'Float32Array', v:[0.1] });
+rejects({ t:'typed-array', c:'Float64Array', v:[NaN] });
+rejects({ t:'typed-array', c:'Float64Array', v:[Infinity] });
+rejects({ t:'typed-array', c:'Float64Array', v:[-0] });
+rejects({ t:'typed-array', c:'Float64Array', v:['NaN'] });
 if (typeof BigInt64Array === 'function') {
   rejects({ t:'typed-array', c:'BigInt64Array', v:['01'] });
   rejects({ t:'typed-array', c:'BigInt64Array', v:[(1n << 63n).toString()] });
