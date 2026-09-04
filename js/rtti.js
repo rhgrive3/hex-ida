@@ -4,7 +4,7 @@ const OPERATORS={nw:'operator new',na:'operator new[]',dl:'operator delete',da:'
 
 export function demangleCxx(name){
   if(typeof name !== 'string' || !name)return null;
-  const s=name.replace(/^_/,'');
+  const s=name.startsWith('__Z')?name.slice(1):name;
   if(!s.startsWith('_Z'))return null;
   const p={s,i:2,subs:[]};
   try{
@@ -117,6 +117,7 @@ export async function readVtable(read,vtableAddr,symbols,maxSlots=64,opts={}){
   const typeinfoResolved=await resolveVtablePointer(typeinfoRaw,BigInt(vtableAddr)+8n,opts||{});
   for(let i=2;i<slotLimit+2&&i*8+8<=bytes.length;i++){
     const raw=dv.getBigUint64(i*8,true);
+    if(i>2&&raw===0n&&!opts?.slotCount)break;
     const resolved=await resolveVtablePointer(raw,BigInt(vtableAddr)+BigInt(i*8),opts||{});
     const addr=resolved.addr;
     const name=addr!=null&&addr!==0n&&symbols?(symbols.nameAt(addr)||symbols.label(addr)):null;
