@@ -24,7 +24,10 @@ export function analysisBinding(context = {}, extra = {}) {
     extra.analysisRevision ?? context.analysisRevision ?? context.analysis?.revision ?? context.binary?.analysisRevision ?? context.binary?.revision ?? context.program?.analysisRevision ?? context.program?.revision ?? context.revision ?? context.project?.analysisRevision ?? 'analysis:0'
   ) || 'analysis:0';
   const sliceIdentity = textIdentity(extra.sliceIdentity ?? context.sliceIdentity ?? context.binary?.sliceIdentity ?? context.binary?.slice ?? 'slice:default') || 'slice:default';
-  const projectRevision = textIdentity(extra.projectRevision ?? context.projectRevision ?? context.project?.revision ?? context.project?.updatedAt ?? context.project?.modifiedAt ?? 'project:0') || 'project:0';
+  const projectRevision = textIdentity(
+    extra.projectRevision ?? context.projectRevision ?? context.project?.revision ?? context.project?.analysisRevision ??
+    context.project?.analysisSemanticRevision ?? context.project?.modifiedAt ?? 'project:0'
+  ) || 'project:0';
   const runtimeSession = textIdentity(extra.runtimeSession ?? context.runtimeSessionId ?? context.runtimeSession?.id ?? context.runtime?.sessionId ?? 'runtime:none') || 'runtime:none';
   const key = shortHash({ binaryIdentity, analysisRevision, sliceIdentity, projectRevision, runtimeSession });
   return { binaryIdentity, analysisRevision, sliceIdentity, projectRevision, runtimeSession, key };

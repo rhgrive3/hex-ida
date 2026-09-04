@@ -135,7 +135,11 @@ export function createProjectSessionPersistence(project, { onChange } = {}) {
       const safe = stripSecrets(session);
       const index = project.findings.investigationSessions.findIndex((item) => item && item.id === safe.id);
       if (index >= 0) project.findings.investigationSessions[index] = safe; else project.findings.investigationSessions.push(safe);
+      // AI session bookkeeping must not advance the semantic revision that
+      // ObservationStore binds tool results to; only meaningful project
+      // knowledge changes (annotations, names, comments, findings...) do.
       project.updatedAt = new Date().toISOString();
+      if (project.analysisSemanticRevision == null) project.analysisSemanticRevision = project.updatedAt;
       if (typeof onChange === 'function') onChange(project, safe);
     },
     async delete(id) {
@@ -144,6 +148,7 @@ export function createProjectSessionPersistence(project, { onChange } = {}) {
       if (index >= 0) {
         project.findings.investigationSessions.splice(index, 1);
         project.updatedAt = new Date().toISOString();
+        if (project.analysisSemanticRevision == null) project.analysisSemanticRevision = project.updatedAt;
         if (typeof onChange === 'function') onChange(project, null);
       }
     },
