@@ -48,6 +48,7 @@ async function sample(file) {
     const image = await openBinarySource(source, { ranges: { pageSize: 64 * 1024, maxPageSize: 2 * 1024 * 1024, maxCachedBytes: 16 * 1024 * 1024 } });
     const loaderMs = performance.now() - t0;
     const audit = auditBinary(image);
+    const auditErrors = audit.issues.filter((issue) => issue.level === 'error');
     const after = process.memoryUsage().heapUsed;
     const io = source.metrics();
     return {
@@ -71,7 +72,8 @@ async function sample(file) {
         exports: image.exports.length,
         auditErrors: audit.errors,
         auditWarnings: audit.warnings,
-        auditErrorCodes: [...new Set(audit.issues.filter((issue) => issue.level === 'error').map((issue) => issue.code))].sort(),
+        auditErrorCodes: [...new Set(auditErrors.map((issue) => issue.code))].sort(),
+        auditErrorDetails: auditErrors.map(({ code, message }) => ({ code, message })),
       },
     };
   } finally {
