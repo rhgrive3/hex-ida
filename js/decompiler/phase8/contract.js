@@ -153,10 +153,10 @@ function transformList(values) {
  * Validates one render-provenance ledger record (HEX-C4-03).
  *
  * These are the projection's rewrite records in their enriched, auditable
- * form: a record without a kind, a proof, or a consumed-origin object cannot
- * participate in bidirectional provenance, and a malformed one must fail at
- * construction rather than silently narrowing what a rendered fragment can
- * be traced back to.
+ * form: a record without a kind, a proof, targets, explicit removal state, or a
+ * consumed-origin object cannot participate in bidirectional provenance. A
+ * malformed record fails at construction rather than silently narrowing what a
+ * rendered fragment can be traced back to.
  */
 export function renderProvenanceRecord(item) {
   if (!item || typeof item !== 'object' || Array.isArray(item)) fail('phase8-render-provenance-record-invalid');
@@ -168,13 +168,16 @@ export function renderProvenanceRecord(item) {
     const value = origin[key];
     if (value != null && !Array.isArray(value)) fail('phase8-render-provenance-record-origin-invalid');
   }
-  const targets = item.targets ?? [];
-  if (!Array.isArray(targets)) fail('phase8-render-provenance-record-targets-invalid');
+  if (!Array.isArray(item.targets) || item.targets.length === 0) fail('phase8-render-provenance-record-targets-invalid');
+  if (!Array.isArray(item.removedRefs)) fail('phase8-render-provenance-record-removed-refs-invalid');
+  const targets = [...new Set(item.targets.map((target) => nonEmptyString(target, 'phase8-render-provenance-record-target-invalid')))].sort();
+  const removedRefs = [...new Set(item.removedRefs.map((ref) => nonEmptyString(ref, 'phase8-render-provenance-record-removed-ref-invalid')))].sort();
   return Object.freeze({
     ...item,
     kind,
     proof,
-    targets: Object.freeze([...targets]),
+    targets: Object.freeze(targets),
+    removedRefs: Object.freeze(removedRefs),
     origin: Object.freeze({
       addresses: Object.freeze([...(origin.addresses ?? [])]),
       rows: Object.freeze([...(origin.rows ?? [])]),
