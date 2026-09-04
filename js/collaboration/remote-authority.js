@@ -29,15 +29,27 @@ function list(value) {
   return [...new Set((Array.isArray(value) ? value : []).map(String).filter(Boolean))].sort();
 }
 
+function permissionList(value) {
+  if (!Array.isArray(value)) return [];
+  const permissions = [];
+  for (const permission of value) {
+    if (typeof permission !== 'string' || permission.length === 0) {
+      throw new TypeError('remote-gate-permission-invalid');
+    }
+    permissions.push(permission);
+  }
+  return [...new Set(permissions)].sort();
+}
+
 function byteLength(value) {
   const text = JSON.stringify(jsonSafe(value));
   return typeof TextEncoder !== 'undefined' ? new TextEncoder().encode(text).length : text.length;
 }
 
 function normalizePermissions(value) {
-  if (value instanceof Map) return Object.fromEntries([...value.entries()].map(([actor, permissions]) => [String(actor), list(permissions)]));
+  if (value instanceof Map) return Object.fromEntries([...value.entries()].map(([actor, permissions]) => [String(actor), permissionList(permissions)]));
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
-  return Object.fromEntries(Object.entries(value).map(([actor, permissions]) => [String(actor), list(permissions)]));
+  return Object.fromEntries(Object.entries(value).map(([actor, permissions]) => [String(actor), permissionList(permissions)]));
 }
 
 function authorized(permissions, operation) {
