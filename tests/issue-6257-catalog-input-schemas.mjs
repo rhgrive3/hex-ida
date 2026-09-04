@@ -21,9 +21,21 @@ const REQUIRED_FIELDS = Object.freeze({
   'patch.create': ['address', 'before', 'after'],
   'patch.preview': ['address', 'before', 'after'],
   'patch.revert': ['fileOffset'],
-  'runtime.memory-read': ['address'],
-  'runtime.memory-write': ['address', 'bytes', 'expectedBefore'],
-  'runtime.experiment': ['experiment'],
+  'runtime.attach': ['runtimeSessionId'],
+  'runtime.detach': ['runtimeSessionId'],
+  'runtime.breakpoint-create': ['runtimeSessionId'],
+  'runtime.breakpoint-remove': ['runtimeSessionId', 'id'],
+  'runtime.watchpoint-create': ['runtimeSessionId'],
+  'runtime.watchpoint-remove': ['runtimeSessionId', 'id'],
+  'runtime.continue': ['runtimeSessionId'],
+  'runtime.pause': ['runtimeSessionId'],
+  'runtime.step-in': ['runtimeSessionId'],
+  'runtime.step-over': ['runtimeSessionId'],
+  'runtime.step-out': ['runtimeSessionId'],
+  'runtime.registers': ['runtimeSessionId'],
+  'runtime.memory-read': ['runtimeSessionId', 'address'],
+  'runtime.memory-write': ['runtimeSessionId', 'address', 'bytes', 'expectedBefore'],
+  'runtime.experiment': ['runtimeSessionId', 'experiment'],
   'project.restore-known': ['project'],
 });
 
@@ -38,8 +50,7 @@ for (const [id, fields] of Object.entries(REQUIRED_FIELDS)) {
   const entry = byId.get(id);
   assert.ok(entry, `catalog entry ${id} must exist`);
   for (const field of fields) {
-    const args = {};
-    const checked = validateSchema(args, entry.inputSchema);
+    const checked = validateSchema({}, entry.inputSchema);
     assert.equal(checked.ok, false, `${id}: {} must be invalid when ${field} is required`);
     assert.ok(
       checked.errors.some((message) => message.includes(field) && message.includes('required')),
@@ -48,7 +59,45 @@ for (const [id, fields] of Object.entries(REQUIRED_FIELDS)) {
   }
 }
 
-/* 3. schema rejects the wrong primitive for known fields (no silent coercion) */
+/* 3. every runtime-bound schema rejects a missing runtime session identity */
+for (const entry of HEX_CAPABILITIES.filter((item) => item.runtimeBound)) {
+  const checked = validateSchema({}, entry.inputSchema);
+  assert.equal(checked.ok, false, `${entry.id}: runtime-bound capability must reject missing runtimeSessionId`);
+  assert.ok(
+    checked.errors.some((message) => message.includes('runtimeSessionId') && message.includes('required')),
+    `${entry.id}: missing session must be reported by schema, got ${JSON.stringify(checked.errors)}`,
+  );
+}
+
+/* 4. breakpoint/watchpoint schemas preserve the executor's nested and flat forms */
+{
+  const session = { runtimeSessionId: 'session-6257', binaryId: 'binary-A' };
+  const breakpoint = byId.get('runtime.breakpoint-create').inputSchema;
+  assert.equal(validateSchema({ ...session, breakpoint: { address: '4096' } }, breakpoint).ok, true);
+  assert.equal(validateSchema({ ...session, address: '4096', enabled: true }, breakpoint).ok, true);
+  assert.equal(validateSchema({ ...session, function: 'main' }, breakpoint).ok, true);
+  assert.equal(validateSchema({ ...session, kind: 'conditional', address: '4096', condition: 'x == 1' }, breakpoint).ok, true);
+  assert.equal(validateSchema({ ...session }, breakpoint).ok, false, 'breakpoint create needs an operation target');
+
+  const watchpoint = byId.get('runtime.watchpoint-create').inputSchema;
+  assert.equal(validateSchema({ ...session, watchpoint: { address: '8192', size: 4, access: 'write' } }, watchpoint).ok, true);
+  assert.equal(validateSchema({ ...session, address: '8192', size: 4, access: 'readwrite', enabled: true }, watchpoint).ok, true);
+  assert.equal(validateSchema({ ...session }, watchpoint).ok, false, 'watchpoint create needs an address');
+
+  assert.equal(validateSchema({ ...session, id: 'bp:1' }, byId.get('runtime.breakpoint-remove').inputSchema).ok, true);
+  assert.equal(validateSchema({ ...session }, byId.get('runtime.breakpoint-remove').inputSchema).ok, false);
+  assert.equal(validateSchema({ ...session, id: 'wp:1' }, byId.get('runtime.watchpoint-remove').inputSchema).ok, true);
+}
+
+/* 5. runtime experiment schema reflects runExperiment's object/cases precondition */
+{
+  const entry = byId.get('runtime.experiment');
+  assert.equal(validateSchema({ runtimeSessionId: 'session-6257', experiment: { cases: [] } }, entry.inputSchema).ok, true);
+  assert.equal(validateSchema({ runtimeSessionId: 'session-6257', experiment: 'cases' }, entry.inputSchema).ok, false);
+  assert.equal(validateSchema({ runtimeSessionId: 'session-6257', experiment: {} }, entry.inputSchema).ok, false);
+}
+
+/* 6. schema rejects the wrong primitive for known fields (no silent coercion) */
 {
   const checked = validateSchema({ address: true, value: 'x' }, byId.get('annotation.rename').inputSchema);
   assert.equal(checked.ok, false, 'boolean must not pass as an address');
@@ -56,7 +105,7 @@ for (const [id, fields] of Object.entries(REQUIRED_FIELDS)) {
   assert.equal(checked2.ok, false, 'number must not pass as a string value');
 }
 
-/* 4. valid inputs still reach the executor end-to-end */
+/* 7. valid inputs still reach the executor end-to-end */
 {
   const names = new Map();
   const app = {
@@ -70,7 +119,7 @@ for (const [id, fields] of Object.entries(REQUIRED_FIELDS)) {
   assert.equal(names.get('4096'), 'sym:renamed');
 }
 
-/* 5. executor turns missing args into invalid_tool_call, never native TypeError */
+/* 8. executor turns missing args into invalid_tool_call, never native TypeError */
 {
   const app = { notes: { setName() {} }, symbols: { rename() {} }, viewer: { setSymbols() {} }, updateChrome() {} };
   const executor = new CapabilityExecutor({ catalog: { get: (id) => byId.get(id) || null }, app });
