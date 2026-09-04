@@ -219,7 +219,16 @@ function memIndex(mem) {
 }
 
 function addressingMode(mem) {
-  const mode = String(mem?.mode || mem?.addressingMode || 'offset').toLowerCase();
+  const hasMode = own(mem, 'mode') && mem.mode != null;
+  const hasAddressingMode = own(mem, 'addressingMode') && mem.addressingMode != null;
+  if (hasMode && typeof mem.mode !== 'string') fail('arm64-unsupported-addressing-mode', { mode:mem.mode });
+  if (hasAddressingMode && typeof mem.addressingMode !== 'string') {
+    fail('arm64-unsupported-addressing-mode', { mode:mem.addressingMode });
+  }
+  const mode = (hasMode ? mem.mode : hasAddressingMode ? mem.addressingMode : 'offset').toLowerCase();
+  if (hasMode && hasAddressingMode && mem.addressingMode.toLowerCase() !== mode) {
+    fail('arm64-conflicting-addressing-mode', { mode, addressingMode:mem.addressingMode.toLowerCase() });
+  }
   if (!['offset', 'pre', 'post'].includes(mode)) fail('arm64-unsupported-addressing-mode', { mode });
   return mode;
 }
