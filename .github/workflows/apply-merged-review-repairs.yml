@@ -1,4 +1,4 @@
-name: Apply merged-review repairs
+name: Finalize merged-review remediation
 
 on:
   push:
@@ -9,46 +9,109 @@ permissions:
   contents: write
 
 concurrency:
-  group: apply-merged-review-repairs
+  group: finalize-merged-review-remediation
   cancel-in-progress: false
 
 jobs:
-  repair:
-    if: ${{ !contains(github.event.head_commit.message, '[audit-repair-applied]') }}
+  finalize:
+    if: ${{ !contains(github.event.head_commit.message, '[finalized-review-remediation]') }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@v4
         with:
           ref: audit/2026-09-04-merged-pr-reviews
           fetch-depth: 0
+          persist-credentials: false
+      - name: Reconcile current main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          git merge --no-edit origin/main
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: npm
       - run: npm ci --no-audit --no-fund
-      - name: Apply only verified current-code findings
-        run: |
-          node tools/validation/apply-review-6372-repairs.mjs
-          node tools/validation/apply-audit-review-fixes.mjs
-      - name: Verify focused regressions
-        run: |
-          node tests/process/merged-pr-review-audit.test.mjs
-          node tests/process/review-6372-unresolved-findings.test.mjs
-          node tests/phase7/issue-6302-memoryssa-binding-stale-identity.test.mjs
-          node tests/phase7/issue-6307-notestore-delta-resilience.test.mjs
-          node tests/issue-6303-classic-bind-symbol-budget.mjs
-          npm run userscript:build
-          git diff --check
-      - name: Commit exact repair set
+      - name: Apply verified review remediations
+        run: node tools/validation/finalize-merged-review-remediation.mjs
+      - name: Focused regression proof
         shell: bash
         run: |
-          if git diff --quiet; then
-            echo 'No repair diff remained.'
-            exit 0
-          fi
+          set -euo pipefail
+          node tests/process/merged-pr-review-audit.test.mjs
+          node tests/process/review-6372-unresolved-findings.test.mjs
+          node tests/issue-6302-memoryssa-binding-stale-identity.mjs
+          node tests/issue-6307-notestore-delta-resilience.mjs
+          node tests/issue-6303-classic-bind-symbol-budget.mjs
+          node tests/issue-6244-runtime-binary-binding.mjs
+          npm run phase7:test
+          npm run binary:test
+          npm run ai:test
+      - name: Rebuild committed userscript outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run userscript:build
+          node --check userscript/hex.user.template.js
+          node tests/userscript-release-version.mjs
+      - name: Remove one-shot remediation machinery
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f \
+            .github/workflows/apply-merged-review-repairs.yml \
+            artifacts/.audit-repair-trigger \
+            tools/validation/apply-audit-review-fixes.mjs \
+            tools/validation/apply-review-6372-repairs.mjs \
+            tools/validation/finalize-merged-review-remediation.mjs
+      - name: Validate exact change surface
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          mapfile -t changed < <(git diff --name-only HEAD)
+          printf '%s\n' "${changed[@]}"
+          unexpected=0
+          for path in "${changed[@]}"; do
+            case "$path" in
+              .github/workflows/migration-guardrails.yml|\
+              .github/workflows/apply-merged-review-repairs.yml|\
+              artifacts/.audit-repair-trigger|\
+              js/binary/macho-dyld.js|\
+              js/names.js|\
+              package.json|\
+              tests/process/merged-pr-review-audit.test.mjs|\
+              tests/process/review-6372-unresolved-findings.test.mjs|\
+              tools/validation/merged-pr-review-audit.mjs|\
+              tools/validation/apply-audit-review-fixes.mjs|\
+              tools/validation/apply-review-6372-repairs.mjs|\
+              tools/validation/finalize-merged-review-remediation.mjs|\
+              userscript/hex.user.template.js|\
+              userscript/release-version.json)
+                ;;
+              *)
+                echo "unexpected changed path: $path" >&2
+                unexpected=1
+                ;;
+            esac
+          done
+          test "$unexpected" -eq 0
+      - name: Commit and push verified remediation
+        if: success()
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add js/binary/macho-dyld.js js/names.js package.json .github/workflows tests tools/validation
-          git commit -m 'fix(review): apply ignored review repairs [audit-repair-applied]'
+          git add -A
+          if git diff --cached --quiet; then
+            echo 'No remediation diff remained.'
+            exit 0
+          fi
+          git commit -m 'fix(review): remediate ignored merged-review findings [finalized-review-remediation]'
+          git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git push origin HEAD:audit/2026-09-04-merged-pr-reviews
