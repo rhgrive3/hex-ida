@@ -79,7 +79,7 @@ export function installAssistant(app, ui) {
       ask(question);
       return true;
     },
-    onRetry() { session.retry({ context: workbenchContext(app) }); },
+    onRetry(turn) { session.retry({ context: workbenchContext(app), targetTurn: turn }); },
     onFollowup(text) { ask(text); },
     onTerm(id) { showTerm(app, id); },
     onAction(action) { runAction(action); },
