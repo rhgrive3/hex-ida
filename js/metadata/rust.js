@@ -69,6 +69,76 @@ function parseV0Base62(str, pos) {
 }
 
 /**
+ * Decodes a Punycode string (RFC 3492) as used in Rust v0 mangling.
+ * In Rust v0, the delimiter is '_' instead of '-'.
+ */
+function decodePunycode(input) {
+  const base = 36;
+  const tmin = 1;
+  const tmax = 26;
+  const skew = 38;
+  const damp = 700;
+  const initialBias = 72;
+  const initialN = 128;
+
+  function adapt(delta, numpoints, firsttime) {
+    let d = firsttime ? Math.floor(delta / damp) : Math.floor(delta / 2);
+    d += Math.floor(d / numpoints);
+    let k = 0;
+    while (d > Math.floor(((base - tmin) * tmax) / 2)) {
+      d = Math.floor(d / (base - tmin));
+      k += base;
+    }
+    return k + Math.floor(((base - tmin + 1) * d) / (d + skew));
+  }
+
+  const output = [];
+  let n = initialN;
+  let i = 0;
+  let bias = initialBias;
+
+  const delimIndex = input.lastIndexOf('_');
+  let pos = 0;
+  if (delimIndex !== -1) {
+    for (let j = 0; j < delimIndex; j++) {
+      const code = input.charCodeAt(j);
+      if (code >= 0x80) return null;
+      output.push(String.fromCharCode(code));
+    }
+    pos = delimIndex + 1;
+  }
+
+  while (pos < input.length) {
+    const oldi = i;
+    let w = 1;
+    let k = base;
+    while (true) {
+      if (pos >= input.length) return null;
+      const c = input.charCodeAt(pos++);
+      let digit = -1;
+      if (c >= 0x30 && c <= 0x39) digit = c - 0x30 + 26;
+      else if (c >= 0x61 && c <= 0x7a) digit = c - 0x61;
+      else if (c >= 0x41 && c <= 0x5a) digit = c - 0x41;
+      else return null;
+
+      i += digit * w;
+      const t = k <= bias ? tmin : k >= bias + tmax ? tmax : k - bias;
+      if (digit < t) break;
+      w *= (base - t);
+      k += base;
+    }
+    const outLen = output.length + 1;
+    bias = adapt(i - oldi, outLen, oldi === 0);
+    n += Math.floor(i / outLen);
+    if (n > 0x10ffff) return null;
+    i = i % outLen;
+    output.splice(i, 0, String.fromCodePoint(n));
+    i++;
+  }
+  return output.join('');
+}
+
+/**
  * Parses a Rust v0 identifier (length-prefixed string, possibly with disambiguator).
  */
 function parseV0Identifier(str, pos) {
@@ -82,16 +152,36 @@ function parseV0Identifier(str, pos) {
     p = dis.nextPos;
   }
 
+  let isUnicode = false;
+  if (p < str.length && str[p] === 'u') {
+    isUnicode = true;
+    p++;
+  }
+
   // Length integer
   const lenMatch = str.slice(p).match(/^(\d+)/);
   if (!lenMatch) return null;
   const len = Number(lenMatch[1]);
   p += lenMatch[1].length;
+  if (p < str.length && str[p] === '_') {
+    p++;
+  }
 
   if (p + len > str.length) return null;
-  const ident = str.slice(p, p + len);
+  const rawIdent = str.slice(p, p + len);
+  let identifier = rawIdent;
+  if (isUnicode) {
+    try {
+      const decoded = decodePunycode(rawIdent);
+      if (decoded === null) return null;
+      identifier = decoded;
+    } catch {
+      return null;
+    }
+  }
+
   return {
-    identifier: ident,
+    identifier,
     isDisambiguated,
     nextPos: p + len,
   };
