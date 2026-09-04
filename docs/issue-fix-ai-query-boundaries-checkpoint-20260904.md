@@ -11,6 +11,7 @@ strict AI AnalysisQuery address and paging metadata boundaries.
 - Source owner: `js/ai/tools/registry-query-base.js`
 - Regression owner: `tests/phase12/adversarial/issue-6157-6158-ai-query-boundaries.test.mjs`
 - Shared-board claim: lanes message #283
+- Owner PR: [#6508](https://github.com/rhgrive3/hex-ida/pull/6508)
 - Branch: `fix/issues-ai-query-boundaries-6157-6158`
 - Candidate base: `origin/main` at `b9d6cec838ad8f4ee0ecdf2af1fb87406f128195`
 - Implementation head: `484b8a5dd5e2fd3af3061842ad2c33849bcf7642`
@@ -23,7 +24,8 @@ strict AI AnalysisQuery address and paging metadata boundaries.
 - [x] Added regressions for numeric-string/array/boolean/object/negative/fractional paging metadata, malformed cursor offsets, and structured instruction addresses.
 - [x] Focused regression, QueryAPI authority regressions, lossless data-plane regressions, and lint passed.
 - [x] Compare the Phase 12 denominator failure against pristine `origin/main`; the same assertion fails on pristine main.
-- [ ] Create one owner PR for #6157/#6158 and record exact-head candidate evidence.
+- [x] Create one owner PR for #6157/#6158.
+- [ ] Record final exact-head candidate evidence on the PR and shared board.
 - [ ] Merge only after exact-head evidence and required checks are green; otherwise record the blocker here and on the board.
 
 ## Resume procedure
