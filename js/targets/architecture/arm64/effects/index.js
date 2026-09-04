@@ -40,6 +40,23 @@ const ARM64_UNARY_REGISTER_MNEMONICS = Object.freeze(new Set([
 const ARM64_SHIFT_MNEMONICS = Object.freeze(new Set(['lsl','lslv','lsr','lsrv','asr','asrv','ror','rorv']));
 const ARM64_VARIABLE_SHIFT_MNEMONICS = Object.freeze(new Set(['lslv','lsrv','asrv','rorv']));
 const ARM64_BITFIELD_MNEMONICS = Object.freeze(new Set(['ubfm','sbfm','bfm','ubfx','sbfx','ubfiz','sbfiz','bfxil','bfi','bfc']));
+const ARM64_SCALAR_IMMEDIATE_AUTHORITY_MNEMONICS = Object.freeze(new Set([
+  ...ARM64_ADD_SUB_IMMEDIATE_MNEMONICS,
+  'cmp','cmn',
+  ...ARM64_LOGICAL_IMMEDIATE_MNEMONICS,
+  'mov','movz','movn','movk',
+  'lsl','lsr','asr','ror','extr',
+  ...ARM64_BITFIELD_MNEMONICS,
+]));
+
+function scalarImmediateAuthorityEncodingFailure(instruction) {
+  const mnemonic = instructionMnemonic(instruction);
+  if (!ARM64_SCALAR_IMMEDIATE_AUTHORITY_MNEMONICS.has(mnemonic)) return null;
+  const ops = Array.isArray(instruction?.ops) ? instruction.ops : [];
+  return ops.some((op) => op?.k === 'imm' && op.value != null && typeof op.value !== 'bigint')
+    ? `arm64-${mnemonic}-immediate-value-unencodable`
+    : null;
+}
 
 function validImm12WithOptionalLsl12(op) {
   if (op?.k !== 'imm') return true;
@@ -410,7 +427,8 @@ function addressImmediateEncodingFailure(instruction) {
 }
 
 function structuredEncodingFailure(instruction) {
-  return addressImmediateEncodingFailure(instruction)
+  return scalarImmediateAuthorityEncodingFailure(instruction)
+    || addressImmediateEncodingFailure(instruction)
     || addSubImmediateEncodingFailure(instruction)
     || flagEncodingFailure(instruction)
     || logicalEncodingFailure(instruction)
