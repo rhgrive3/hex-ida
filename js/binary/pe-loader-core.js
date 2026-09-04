@@ -376,7 +376,10 @@ export function resolveCoffSectionName(r, inlineName, ptrSymbols, count) {
   const stringSize = r.u32(stringBase);
   const offset = Number(m[1]);
   if (!Number.isSafeInteger(offset) || offset < 4 || offset >= stringSize || stringBase + offset >= r.length) return raw;
-  return r.cstring(stringBase + offset, Math.min(stringSize - offset, r.length - stringBase - offset)) || raw;
+  const start = stringBase + offset;
+  const max = Math.min(stringSize - offset, r.length - start);
+  if (max <= 0 || r.slice(start, max).indexOf(0) < 0) return raw;
+  return r.cstring(start, max) || raw;
 }
 
 function rvaFromDelayField(value, attrs, image) {
