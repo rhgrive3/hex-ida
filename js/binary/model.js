@@ -13,8 +13,9 @@ function strictBigIntOrNull(value) {
 }
 
 function finiteConfidence(value, fallback = 0.5) {
-  const n = Number(value);
-  return Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : fallback;
+  return typeof value === 'number' && Number.isFinite(value)
+    ? Math.max(0, Math.min(1, value))
+    : fallback;
 }
 
 function normalizePerms(p) {
