@@ -8,6 +8,11 @@ export const REMOTE_GATE_SCHEMA = 'hex-remote-collaboration-gate/v1';
 export const REMOTE_SECURITY_PROFILE_ID = 'collaboration:remote-security-v1';
 const VALID_REMOTE_COLLABORATION_SUPPORT = new WeakSet();
 const VERIFIED_TRANSPORT_PROOFS = new WeakMap();
+const MAX_MESSAGE_ID_LENGTH = 512;
+
+function validMessageId(value) {
+  return typeof value === 'string' && value.length > 0 && value.length <= MAX_MESSAGE_ID_LENGTH && value.trim().length > 0;
+}
 
 function required(value, code) {
   const text = String(value ?? '').trim();
@@ -126,6 +131,10 @@ export class RemoteCollaborationGate {
     if ((envelope.binaryIdentity ?? null) !== this.binaryIdentity) return { ok: false, reason: 'remote-wrong-binary' };
     if (envelope.sessionIdentity !== this.sessionIdentity) return { ok: false, reason: 'remote-wrong-session' };
     if (!validSequence(envelope.sequence)) return { ok: false, reason: 'remote-sequence-invalid' };
+    // Replay authority rests on `messageId`, so untrusted ingress must verify
+    // its raw shape itself: a missing or structured value would otherwise be
+    // accepted as a Set key (compared by object identity) or skipped entirely.
+    if (!validMessageId(envelope.messageId)) return { ok: false, reason: 'remote-message-id-invalid' };
     if (typeof envelope.envelopeId !== 'string' || envelope.envelopeId !== envelopeIdentity(envelope)) return { ok: false, reason: 'remote-envelope-identity-mismatch' };
     if (this.revokedActors.has(envelope.actorIdentity)) return { ok: false, reason: 'remote-actor-revoked' };
     const permissions = Object.hasOwn(this.allowedActors, envelope.actorIdentity) ? this.allowedActors[envelope.actorIdentity] : null;
