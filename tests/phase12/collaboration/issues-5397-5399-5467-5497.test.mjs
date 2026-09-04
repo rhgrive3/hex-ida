@@ -120,10 +120,10 @@ test('#5399 unready and tombstone-blocked pending never loops', () => {
   assert.deepEqual([...log.pending.keys()], ['orphan'], 'missing parents stay pending');
   // Tombstone protection: queue, block, then deliver an unrelated parent.
   const guarded = new ChangeLog(base);
-  guarded.applyOperation(op('add', 'v', { targetEntityId: 't', factKind: 'bookmark', action: 'add', payload: true }));
+  guarded.applyOperation(op('add', 'v', { targetEntityId: 't', factKind: 'bookmark', action: 'set', payload: true }));
   guarded.applyOperation(createProjectOperation({ ...base, operationId: 'rm', targetEntityId: 't', factKind: 'bookmark', action: 'remove', payload: true }));
   guarded.applyOperation(createProjectOperation({
-    ...base, operationId: 're', targetEntityId: 't', factKind: 'bookmark', action: 'add', payload: true, causalParents: ['later'],
+    ...base, operationId: 're', targetEntityId: 't', factKind: 'bookmark', action: 'set', payload: true, causalParents: ['later'],
   }));
   guarded.applyOperation(op('later', 'l', { targetEntityId: 'other' }));
   assert.deepEqual([...guarded.pending.keys()], ['re'], 'tombstone-blocked operation stays pending without looping');
