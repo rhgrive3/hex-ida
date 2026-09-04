@@ -1,11 +1,17 @@
 # T046 pre-fanout evidence
 
-Status: `PREFLIGHT_GREEN`
+Status: `PREFLIGHT_GREEN` for the immutable code checkpoint below only.
+
+This is a historical, commit-addressed verification packet, not a claim about
+whatever commit is currently at the PR head. Its evidence-only publication and
+the subsequent T046 status transition must each pass the permanent exact-head
+verifier. Later promotion always resolves the live head; this packet cannot
+substitute for that proof or for final recovery/product CI.
 
 This packet records the ten mandatory conditions in
 `docs/ENGINEERING_PROCESS_GUARDRAILS.md` §3.1. The certified pre-transition
-candidate is commit `368137e4e913fef61d1f95eb66242d8c8c7ae0c9`, tree
-`a4e12f26160537424fddeae98a4d29a80882a969`, on base
+candidate is commit `40eebcb70e3952439d8534def7d9ef5848046506`, tree
+`b0c8fb4f8c7fe796c9e1d93ff0be2f99b45feb60`, on base
 `7012c4cc4f0d5c0d8a7ca44c6c5c1edcb080aba1`.
 
 | §3.1 condition | Current evidence | State |
@@ -14,7 +20,7 @@ candidate is commit `368137e4e913fef61d1f95eb66242d8c8c7ae0c9`, tree
 | Machine-checkable exit contract | `spec.md`, `tasks.md`, closure/performance/platform contracts | SATISFIED |
 | Frozen/shared/generated/verifier/integration/component ownership | `contracts/task-ownership.json` plus exact integration inventory | SATISFIED |
 | Living integration branch/PR | `recovery/final-closure-v3-20260904`, replacement PR #6611; #6429/#6610 closed unmerged and preserved | SATISFIED |
-| Permanent exact-SHA invocation | `.github/workflows/final-closure-preflight.yml`, run `33916765881`, exact head/base above | SATISFIED |
+| Permanent exact-SHA invocation | `.github/workflows/final-closure-preflight.yml`, run `33929135245`, exact head/base above | SATISFIED |
 | Ownership/governance regressions | canonical recursive `tests/final-closure/run.mjs` on the exact head | SATISFIED |
 | Real production walking skeleton | unchanged `tests/phase4/walking-skeleton.test.mjs` on the exact head | SATISFIED |
 | Target browser/device proof | frozen production-WebKit and physical-iPad ≤4 GiB classes in `contracts/final-platform-locks.json` | SATISFIED |
@@ -154,43 +160,46 @@ any later applicability change.
 ## Exact candidate evidence
 
 - Direct exact CLI: `PREFLIGHT_GREEN` for head
-  `368137e4e913fef61d1f95eb66242d8c8c7ae0c9`, tree/merge tree
-  `a4e12f26160537424fddeae98a4d29a80882a969`, and base/merge base
+  `40eebcb70e3952439d8534def7d9ef5848046506`, tree/merge tree
+  `b0c8fb4f8c7fe796c9e1d93ff0be2f99b45feb60`, and base/merge base
   `7012c4cc4f0d5c0d8a7ca44c6c5c1edcb080aba1`; verifier SHA-256
-  `abd746df9cd9144ec7291587292e9b53735c70532f949c9c85e4872018569d2a`.
-- Canonical recursive runner: `final-closure-contract: PASS`
-  in 297.3 seconds on the exact committed head; the focused permanent preflight
-  regression passed in 292.1 seconds on the identical committed tree with all 27 nested discovery paths. It covers the fixed central shadow judges,
-  denominator attacks, raw T025 binding, immutable task anchors, recovery-ref
-  transactions, hostile path decoding, derived-manifest ownership, selective
-  recovered-candidate allowlists, independent-shadow separation, and ownership
-  regressions.
-- Unchanged Phase 4 production walking skeleton: PASS on the exact committed
-  head. Repository lint: PASS on that head.
-- Expected/actual/union inventory: exact `32/32`, digest
-  `f50d499c508ea7c2a4cee3d1c45ed4a1`; task and ownership denominators are
-  `57/57`.
-- Independent Luna Max review: the sealed-handoff lifecycle repair and final
-  selective-ownership freeze were reviewed on exact head
-  `368137e4e913fef61d1f95eb66242d8c8c7ae0c9`, tree
-  `a4e12f26160537424fddeae98a4d29a80882a969`; the reviewer reconstructed the
-  operational 32/32-path and Stage-B 3/3-path inventories, the 11 handoffs, the
-  unique T046 transition, all 57 ownership rows, zero unordered overlaps, and
-  T016's independent-shadow separation, and returned PASS.
-  The supervisor independently verified the exact diff, canonical runner,
-  direct CLI, lint, walking skeleton, and 32-path inventory.
-- Hosted exact-head/base workflow: run `33916765881` succeeded for exact head
-  `368137e4e913fef61d1f95eb66242d8c8c7ae0c9`; `pull-request-authority` and
-  `integration-pull-request-head` passed, while the dispatch/component jobs were
-  correctly inapplicable and skipped.
-- CodeRabbit on predecessor PR #6429: exact-head check passed and all 18 review
-  threads are resolved. The two topology findings on replacement PR #6610 were
-  ACTIONABLE and #6610 is closed unmerged with its branch preserved. PR #6611's
-  exact-head R2 finding on `711041f4` was also ACTIONABLE: the synthetic handoff
-  was incorrectly placed before the fixture base, producing an incomplete
-  hosted diff. Exact head `d749785feb23bdc4458d8ee67b80f6366098546b`
-  repaired that lifecycle without weakening the validator; current code head
-  `368137e4e913fef61d1f95eb66242d8c8c7ae0c9` retains it and freezes selective
-  component ownership. A fresh post-evidence/current-head CodeRabbit disposition
-  remains mandatory before component acceptance. The H9 collector finding
-  remains assigned to post-T048 T045.
+  `6d99398782393d43d06966fe1c5ace186b62402a8185277e68b6b709abfa7472`.
+- Canonical recursive `node tests/final-closure/run.mjs`: PASS in 221.4 seconds
+  on that immutable committed head. The suite covers task-anchor lifecycle,
+  exact candidate inventory, shadow denominators, recovery-ref transactions,
+  hostile path decoding, selective ownership, repository-authority rejection,
+  label-change invalidation, and large-output observer exit preservation.
+- Unchanged Phase 4 walking skeleton: PASS. Repository syntax/lint: PASS
+  (2,077 files). Phase 11/12 ownership, reusable workflow, Stage1 trigger/verifier,
+  and Stage2 exact-ownership focused regressions: PASS.
+- Expected/actual/union inventory: exact `34/34`, digest
+  `952313161a6cd85df9bb5f71fa66723e`; task/ownership denominators `57/57`.
+- Independent Luna Max reviewed root-authored repository-authority and observer
+  repairs on exact head/tree above and reconstructed the 34-path inventory,
+  frozen workflow/foundation/candidate-gate digests, and unchanged 57-task
+  dependencies: PASS. The supervisor independently reviewed the Luna-authored
+  label workflow/predicate changes and their production-import regression tests.
+  Earlier independent lifecycle and selective-ownership reviews remain historical
+  supporting evidence, not substitutes for this exact-head verification.
+- Hosted exact-head/base workflow [run 33929135245](https://github.com/rhgrive3/hex-ida/actions/runs/33929135245):
+  SUCCESS on the exact code head above; authority and integration jobs passed.
+  Dispatch/component jobs were correctly inapplicable and skipped.
+- Frozen workflow SHA-256:
+  `18177a2e78bab81bf1aed9a681349235592bb0e52efedee292851717a485cfcd`;
+  foundation ownership digest `17c869290b57aef76a1ee1d68ea32338`;
+  candidate-gate digest `fe5daeb553fca7c47f4f229b24d064a1`.
+- CodeRabbit reviewed code head `40eebcb7`. The five prior corrective findings
+  (repository authority, stale PR metadata, pending reviewer assignments,
+  observer buffering, label-event freshness) are fixed in that head; the parser
+  consolidation suggestion is OUT_OF_SCOPE/nonblocking with both phase-specific
+  parsers covered by their shared negative corpus.
+  The new evidence/metadata findings are ACTIONABLE and addressed by this
+  publication's explicit immutable-checkpoint scope and refreshed evidence.
+  The claimed duplicate Phase 11 test predicate is FALSE_POSITIVE:
+  `tests/final-closure/cross-lane-ownership.test.mjs` imports the production
+  `phase11CrossLaneIntegration` at lines 8–14 and invokes it in the shared
+  production-predicate loop; there is no local reimplementation.
+- Prior PR #6429/#6610 findings and earlier #6611 lifecycle/authority reviews
+  are historical. They do not authorize this head. Product-wide required reds
+  remain assigned to their recovery components; T046 pre-fanout success is not
+  recovery merge approval. The H9 collector remains assigned to post-T048 T045.

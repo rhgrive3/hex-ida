@@ -93,8 +93,8 @@ No design-stage constitutional exception is present.
 | Handoff merge base | `0971c491bde06b3c939f0e26f319bcd70d12b706` | Recovery branch was 4 ahead and 1 behind at preflight. |
 | Original workspace | `main` with untracked `transcripts/` | Must remain untouched. |
 | Living integration workspace | `/teamspace/studios/this_studio/ida-245-recovery-final-v3` | Sole combined-tree and generated-output owner. |
-| Current campaign PR | `#6611` on `recovery/final-closure-v3-20260904` | Head observed before repository-identity remediation: `9e5392cec076102efa87b1683b595c1795330c5e`; promotion always resolves the live PR head. |
-| Current code-certification checkpoint | `368137e4e913fef61d1f95eb66242d8c8c7ae0c9` | Code certification evidence for the current campaign; it does not replace exact-head/base/candidate proof. |
+| Current campaign PR | `#6611` on `recovery/final-closure-v3-20260904` | Historical observed code checkpoint: `40eebcb70e3952439d8534def7d9ef5848046506`; promotion always resolves the live PR head. |
+| Immutable code-certification checkpoint | `40eebcb70e3952439d8534def7d9ef5848046506` | Commit-bound local suite, independent review, and hosted run `33929135245`; evidence publication/transition and later promotion require their own exact-head/base/candidate proof. |
 | Superseded campaign PRs | `#6429`, `#6610` | Historical/closed evidence only; neither is the current branch or review authority. |
 
 All values above are observations from 2026-09-04, not permanent release
