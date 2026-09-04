@@ -19,6 +19,9 @@ export const RUNTIME_EVENT_KINDS = Object.freeze([
 ]);
 
 const COMPLETENESS_RANK = Object.freeze({ unsupported: 0, truncated: 1, partial: 2, bounded: 3, complete: 4 });
+const UTF8_ENCODER = new TextEncoder();
+
+function encodedByteLength(value) { return UTF8_ENCODER.encode(value).byteLength; }
 
 function required(value, code, message) {
   if (typeof value !== 'string') throw new DebugAdapterError(code, message || code);
@@ -187,7 +190,7 @@ function estimatePayloadSize(value, maxBytes) {
     if (v == null) { size += 4; continue; }
     if (typeof v === 'boolean') { size += 5; continue; }
     if (typeof v === 'number') { size += 8; continue; }
-    if (typeof v === 'string') { size += v.length * 2 + 2; continue; }
+    if (typeof v === 'string') { size += encodedByteLength(JSON.stringify(v)); continue; }
     if (typeof v === 'bigint') { size += 16; continue; }
     if (ArrayBuffer.isView(v)) { size += v.byteLength * 4; continue; }
     if (v instanceof ArrayBuffer) { size += v.byteLength * 4; continue; }
@@ -197,12 +200,14 @@ function estimatePayloadSize(value, maxBytes) {
       stack.push({ value: v, exit: true });
       size += 2;
       if (Array.isArray(v)) {
+        size += Math.max(0, v.length - 1);
         for (let i = v.length - 1; i >= 0; i--) stack.push({ value: v[i], exit: false });
       } else {
         const keys = Object.keys(v);
+        size += Math.max(0, keys.length - 1);
         for (let i = keys.length - 1; i >= 0; i--) {
           const key = keys[i];
-          size += key.length * 2 + 4;
+          size += encodedByteLength(JSON.stringify(key)) + 1;
           stack.push({ value: v[key], exit: false });
         }
       }
@@ -274,7 +279,7 @@ export class RuntimeEventNormalizer {
     const dedupe = dedupeIdentity(event);
     const scoped = dedupe ? `${event.sessionEpoch}:${dedupe}` : null;
     if (scoped && this.#seen.has(scoped)) return null;
-    const bytes = stableStringify(event).length * 2;
+    const bytes = encodedByteLength(stableStringify(event));
     if (this.#queue.length >= this.maxEvents || this.queuedBytes + bytes > this.maxBytes) {
       this.#dropped++;
       return null;
