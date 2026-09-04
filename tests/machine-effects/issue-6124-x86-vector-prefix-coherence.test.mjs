@@ -37,6 +37,7 @@ function decoded({
         vector:vector == null ? null : {
           kind:vector.kind,
           bytes:Uint8Array.from(vector.bytes),
+          ...(vector.offset == null ? {} : { offset:vector.offset }),
         },
       },
       operands,
@@ -66,6 +67,23 @@ assertRawMismatch(liftX86MachineEffects(decoded({
   vector:vex2Movups,
   operands:moveOperands,
 })), 'legacy raw + forged VEX metadata');
+
+// A reported vector offset is not independent encoding authority. Matching
+// VEX-like bytes inside an instruction body must not override the canonical
+// cursor reached only through legal legacy/REX prefixes.
+const forgedBodyOffset = decoded({
+  id:'forged-vex-body-offset',
+  family:'vmovups',
+  rawBytes:[0x0f,0x10,0x85,0xc5,0xf8,0x00,0x00],
+  vector:{ ...vex2Movups, offset:3 },
+  operands:moveOperands,
+});
+assert.equal(
+  vectorPrefixOffset(forgedBodyOffset, Uint8Array.from(vex2Movups.bytes)),
+  null,
+  'reported vector offset inside instruction body must not override canonical prefix cursor',
+);
+assertRawMismatch(liftX86MachineEffects(forgedBodyOffset), 'forged vector offset inside instruction body');
 
 // A trusted decoder provenance token must not terminalize malformed structured
 // prefix metadata. The family validator owns this shape and must remain partial.
