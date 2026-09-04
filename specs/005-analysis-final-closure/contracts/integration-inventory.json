@@ -14,54 +14,59 @@
   },
   "taskHandoffs": {
     "T001": {
-      "headSha": "d7eb37dd3c5b4842f127a74183547e64bef2be9f",
-      "treeSha": "3233b538f984befbecf091aaf2eeb4dbcea10707",
+      "headSha": "066fee55e4552507bcc57414c1e11ef3b05d222d",
+      "treeSha": "8c31eae84aabc4631005d74c86b3f25b9ad988aa",
       "evidencePath": "specs/005-analysis-final-closure/research.md"
     },
     "T002": {
-      "headSha": "d7eb37dd3c5b4842f127a74183547e64bef2be9f",
-      "treeSha": "3233b538f984befbecf091aaf2eeb4dbcea10707",
+      "headSha": "066fee55e4552507bcc57414c1e11ef3b05d222d",
+      "treeSha": "8c31eae84aabc4631005d74c86b3f25b9ad988aa",
       "evidencePath": "specs/005-analysis-final-closure/research.md"
     },
     "T003": {
-      "headSha": "d7eb37dd3c5b4842f127a74183547e64bef2be9f",
-      "treeSha": "3233b538f984befbecf091aaf2eeb4dbcea10707",
+      "headSha": "066fee55e4552507bcc57414c1e11ef3b05d222d",
+      "treeSha": "8c31eae84aabc4631005d74c86b3f25b9ad988aa",
       "evidencePath": "specs/005-analysis-final-closure/spec.md"
     },
     "T004": {
-      "headSha": "d7eb37dd3c5b4842f127a74183547e64bef2be9f",
-      "treeSha": "3233b538f984befbecf091aaf2eeb4dbcea10707",
+      "headSha": "066fee55e4552507bcc57414c1e11ef3b05d222d",
+      "treeSha": "8c31eae84aabc4631005d74c86b3f25b9ad988aa",
       "evidencePath": "specs/005-analysis-final-closure/evidence/recovery-matrix.md"
     },
     "T005": {
-      "headSha": "d7eb37dd3c5b4842f127a74183547e64bef2be9f",
-      "treeSha": "3233b538f984befbecf091aaf2eeb4dbcea10707",
+      "headSha": "066fee55e4552507bcc57414c1e11ef3b05d222d",
+      "treeSha": "8c31eae84aabc4631005d74c86b3f25b9ad988aa",
       "evidencePath": "specs/005-analysis-final-closure/evidence/github-state.md"
     },
     "T006": {
-      "headSha": "d7eb37dd3c5b4842f127a74183547e64bef2be9f",
-      "treeSha": "3233b538f984befbecf091aaf2eeb4dbcea10707",
+      "headSha": "066fee55e4552507bcc57414c1e11ef3b05d222d",
+      "treeSha": "8c31eae84aabc4631005d74c86b3f25b9ad988aa",
       "evidencePath": "specs/005-analysis-final-closure/evidence/roadmap-matrix.md"
     },
     "T007": {
-      "headSha": "d7eb37dd3c5b4842f127a74183547e64bef2be9f",
-      "treeSha": "3233b538f984befbecf091aaf2eeb4dbcea10707",
+      "headSha": "066fee55e4552507bcc57414c1e11ef3b05d222d",
+      "treeSha": "8c31eae84aabc4631005d74c86b3f25b9ad988aa",
       "evidencePath": "specs/005-analysis-final-closure/checklists/release-evidence.md"
     },
     "T008": {
-      "headSha": "d7eb37dd3c5b4842f127a74183547e64bef2be9f",
-      "treeSha": "3233b538f984befbecf091aaf2eeb4dbcea10707",
+      "headSha": "066fee55e4552507bcc57414c1e11ef3b05d222d",
+      "treeSha": "8c31eae84aabc4631005d74c86b3f25b9ad988aa",
       "evidencePath": "specs/005-analysis-final-closure/evidence/speckit-analysis.md"
     },
     "T009": {
-      "headSha": "d7eb37dd3c5b4842f127a74183547e64bef2be9f",
-      "treeSha": "3233b538f984befbecf091aaf2eeb4dbcea10707",
+      "headSha": "066fee55e4552507bcc57414c1e11ef3b05d222d",
+      "treeSha": "8c31eae84aabc4631005d74c86b3f25b9ad988aa",
       "evidencePath": "specs/005-analysis-final-closure/tasks.md"
     },
     "T010": {
-      "headSha": "d7eb37dd3c5b4842f127a74183547e64bef2be9f",
-      "treeSha": "3233b538f984befbecf091aaf2eeb4dbcea10707",
+      "headSha": "066fee55e4552507bcc57414c1e11ef3b05d222d",
+      "treeSha": "8c31eae84aabc4631005d74c86b3f25b9ad988aa",
       "evidencePath": "specs/005-analysis-final-closure/evidence/recovery-matrix.md"
+    },
+    "T046": {
+      "headSha": "066fee55e4552507bcc57414c1e11ef3b05d222d",
+      "treeSha": "8c31eae84aabc4631005d74c86b3f25b9ad988aa",
+      "evidencePath": "specs/005-analysis-final-closure/evidence/pre-fanout.md"
     }
   },
   "pathPatternPolicy": "repo-relative exact paths; task allowedPaths may additionally use a terminal /** subtree glob",
