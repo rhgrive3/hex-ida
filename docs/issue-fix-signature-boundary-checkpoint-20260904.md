@@ -1,6 +1,6 @@
 # Simple issue owner-lane checkpoint — signature collection boundaries
 
-Status: `IMPLEMENTATION_IN_PROGRESS`
+Status: `CHECKS_PENDING`
 
 This checkpoint records the resumable state for the `codex` owner lane for the
 library recognition collection issue. Update it at every branch, PR, or merge stage.
@@ -13,6 +13,7 @@ library recognition collection issue. Update it at every branch, PR, or merge st
 - Shared-board claim: lanes message #262
 - Branch: `fix/issues-signature-boundary-6103`
 - Candidate base: `origin/main` at `f00154dcb9b2234cbacb4c6a3c2186d00c8a4b3a`
+- Implementation head: `54db2dd9a8c890ac4b97647f21296ed394350b77`
 - Pull request: pending
 
 ## Stages
@@ -21,7 +22,8 @@ library recognition collection issue. Update it at every branch, PR, or merge st
 - [x] Claimed `js/signature/index.js` and its focused regression path on the shared board (#262).
 - [x] Reproduced raw TypeErrors for non-array `symbols`, `imports`, `libraries`, and `strings` on the candidate base.
 - [x] Added fail-soft collection materialization while preserving Array and Set recognition.
-- [ ] Focused regression, lint, and Phase 4 candidate proof.
+- [x] Focused regression and lint passed locally.
+- [ ] Phase 4 candidate proof.
 - [ ] Create one owner PR for #6103 and verify exact-head checks.
 - [ ] Merge only after exact-head evidence is green; otherwise record the blocker here and on the board.
 
