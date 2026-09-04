@@ -76,6 +76,38 @@ test('issue #6174: provider id, version, and observed build must all match autho
   assert.equal(isDebugRecordAuthoritative(result, canonicalRecord({ buildIdentity: null })), false);
 });
 
+test('issue #6174: constructor-invalid raw records cannot reach hard authority', () => {
+  const result = makeResult();
+  const valid = canonicalRecord();
+  const malformed = [
+    { label: 'object evidence id', record: { ...valid, evidenceIds: [{}] } },
+    { label: 'blank evidence id', record: { ...valid, evidenceIds: [''] } },
+    { label: 'structured address', record: { ...valid, address: ['0x1000'] } },
+    { label: 'structured size', record: { ...valid, sizeBytes: { value: 8 } } },
+  ];
+
+  for (const { label, record } of malformed) {
+    assert.equal(isDebugRecordAuthoritative(result, record), false, `${label} must not be authoritative`);
+    const hard = [];
+    const graph = {
+      addHardConstraint(value) { hard.push(value); },
+      addSoftEvidence() {},
+    };
+    const applied = applyDebugTypesToGraph(graph, result, createDebugPage({ records: [record] }));
+    assert.equal(applied.hard, 0, `${label} must not create hard constraints`);
+    assert.equal(hard.length, 0, `${label} must not reach the hard-constraint sink`);
+  }
+});
+
+test('issue #6174: coercible but non-canonical record fields are not authority', () => {
+  const result = makeResult();
+  const valid = canonicalRecord();
+
+  assert.equal(isDebugRecordAuthoritative(result, { ...valid, sizeBytes: '8' }), false);
+  assert.equal(isDebugRecordAuthoritative(result, { ...valid, address: ' 0x1000 ' }), false);
+  assert.equal(isDebugRecordAuthoritative(result, { ...valid, evidenceIds: [' dwarf:record '] }), false);
+});
+
 test('issue #6174: canonical record with matching provenance remains authoritative', () => {
   const result = makeResult();
   const validRecord = canonicalRecord({
