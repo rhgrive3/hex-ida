@@ -189,6 +189,12 @@ export class RuntimeEvidenceBridge {
 
   eventToEvidence(eventInput, resolution = null, options = {}) {
     const event = createRuntimeEvent(eventInput);
+    if (resolution && resolution.runtimeSessionId !== event.runtimeSessionId) {
+      throw new DebugAdapterError(
+        'runtime-resolution-session-mismatch',
+        'runtime event and address resolution must belong to the same runtime session',
+      );
+    }
     const binaryId = resolution?.binaryId ?? options.binaryId ?? null;
     const targetEntityIds = linkableResolution(resolution) ? resolution.targetEntityIds : [];
     const interventionRecords = this.interventions.ancestry(event.interventionIds);
@@ -230,6 +236,7 @@ export class RuntimeEvidenceBridge {
         eventPayload: event.payload,
         interventionIds: interventionRecords.map((record) => record.interventionId),
         resolution: resolution ? {
+          runtimeSessionId: resolution.runtimeSessionId,
           state: resolution.state,
           method: resolution.method,
           staticAddress: resolution.staticAddress,
