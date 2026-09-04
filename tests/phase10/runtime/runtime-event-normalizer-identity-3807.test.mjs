@@ -54,7 +54,19 @@ test('P10 #3807 RuntimeEventNormalizer rejects foreign direct identities before 
   })), null);
   assert.equal(normalizer.queuedBytes, queuedBytes);
 
-  // The rejected foreign event must not reserve its providerEventId in #seen.
+  for (const runtimeSessionId of ['', null]) {
+    assert.throws(() => normalizer.push({
+      runtimeSessionId,
+      providerId: 'provider-B',
+      sessionEpoch: 1,
+      providerEventId: 'collision',
+      kind: 'trace-marker',
+      payload: { malformedDirectIdentity: true },
+    }), (error) => error?.code === 'runtime-session-id-required');
+    assert.equal(normalizer.queuedBytes, queuedBytes, 'malformed direct identity must not mutate queue bytes');
+  }
+
+  // Rejected or malformed foreign events must not reserve providerEventId in #seen.
   assert.ok(normalizer.push(runtimeEvent({ providerEventId: 'collision' })));
 
   const batch = normalizer.flush();

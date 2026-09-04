@@ -254,12 +254,14 @@ export class RuntimeEventNormalizer {
   }
 
   push(input) {
-    const rawPayload = input?.payload ?? (input && typeof input === 'object' && !input.runtimeSessionId ? input : null);
+    const hasDirectIdentity = input && typeof input === 'object'
+      && ['runtimeSessionId', 'providerId', 'sessionEpoch'].some((key) => Object.hasOwn(input, key));
+    const rawPayload = input?.payload ?? (input && typeof input === 'object' && !hasDirectIdentity ? input : null);
     if (rawPayload && estimatePayloadSize(rawPayload, this.maxBytes - this.queuedBytes) > this.maxBytes - this.queuedBytes) {
       this.#dropped++;
       return null;
     }
-    const event = input?.runtimeSessionId ? createRuntimeEvent(input) : normalizeLegacyRuntimeEvent(input, this.context);
+    const event = hasDirectIdentity ? createRuntimeEvent(input) : normalizeLegacyRuntimeEvent(input, this.context);
     const contextRuntimeSessionId = required(this.context.runtimeSessionId, 'runtime-session-id-required', 'runtime event batch requires runtimeSessionId');
     const contextProviderId = required(this.context.providerId, 'runtime-provider-required', 'runtime event batch requires providerId');
     const contextEpoch = safeInteger(this.context.sessionEpoch, event.sessionEpoch, 'sessionEpoch', { min: 1 });
