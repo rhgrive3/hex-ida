@@ -100,7 +100,7 @@ export function createEvidenceNode(input = {}) {
   const node = {
     id: required(input.id, 'evidence-id-required'),
     family,
-    binaryId: optionalString(input.binaryId, 'evidence-invalid-binary-id'),
+    binaryId: input.binaryId == null ? null : required(input.binaryId, 'evidence-invalid-binary-id'),
     targetEntityIds: stringArray(input.targetEntityIds, 'evidence-invalid-targets'),
     semanticKind: optionalString(input.semanticKind, 'evidence-invalid-semantic-kind'),
     completeness: enumValue(input.completeness, EVIDENCE_COMPLETENESS, 'partial', 'evidence-invalid-completeness'),
@@ -130,7 +130,7 @@ export function createClaimNode(input = {}) {
   return deepFreeze({
     id: required(input.id, 'evidence-id-required'),
     family: 'Claim',
-    binaryId: optionalString(input.binaryId, 'evidence-invalid-binary-id'),
+    binaryId: input.binaryId == null ? null : required(input.binaryId, 'evidence-invalid-binary-id'),
     targetEntityIds,
     scope,
     semanticKind,

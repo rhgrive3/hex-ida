@@ -211,7 +211,7 @@ export async function autoAnalyze(opts) {
   // numbers may define one; structured values fall back to the defaults
   // instead of coercing through Math.min/comparisons (#3286).
   const budgetOption = (value, fallback) =>
-    typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback;
+    typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : fallback;
   const startBudget = budgetOption(o.pinpointBudget, 360);
   const perGoal = budgetOption(o.pinpointPerGoal, 24);
   const fieldBudget = budgetOption(o.pinpointFieldBudget, 7);
