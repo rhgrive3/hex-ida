@@ -356,6 +356,22 @@ function reachingRegisterValue(ir, atInst, reg) {
 }
 
 function expressionFor(v, state) { return state.expressions?.get(v?.id) || walkIdiom(buildValue(v, state)); }
+// A read-modify-write claim is only sound when the store's own value provably
+// reads the same canonical memory location it overwrites. Anything else must
+// stay a plain store (fail-closed), mirroring the guard in knownStatementForLine().
+function readsSameLocation(node, location, key = location?.key) {
+  if (!node || key == null) return false;
+  if (node.kind === 'load') return node.location?.key === key;
+  if (node.kind === 'unary') return readsSameLocation(node.arg, location, key);
+  if (node.kind === 'binary' || node.kind === 'compare') return readsSameLocation(node.left, location, key) || readsSameLocation(node.right, location, key);
+  return false;
+}
+function sameLocationRmwOperand(expression, location, ops, side = 'any') {
+  if (side === 'left') return readsSameLocation(expression.left, location) ? expression.right : null;
+  if (readsSameLocation(expression.left, location)) return expression.right;
+  if (readsSameLocation(expression.right, location)) return expression.left;
+  return null;
+}
 function returnRegisterForState(state) {
   const type=String(state.opts?.returnType || state.opts?.functionPrototype?.returnType || state.opts?.prototype?.returnType || state.prototype?.returnType || '').toLowerCase();
   if (!type || type === 'void') return null;
@@ -383,9 +399,14 @@ function semanticFacts(state, result) {
     if (inst.op === 'store') {
       const location = memoryLocation(inst, state), value = valueOf(inst.args?.[0]), expression = expressionFor(value, state);
       const store = { location, lhsText: location.text, expression, source: origin(inst, inst.dst, 'Memory SSA store') };
-      if (expression?.kind === 'intrinsic' && expression.name === 'max' && expression.args?.[1]?.kind === 'const' && expression.args[1].value === 0n && expression.args[0]?.kind === 'binary' && expression.args[0].op === 'sub') {
-        store.readModifyWrite = { kind: 'clamp-zero-sub', operand: printExpression(expression.args[0].right) };
-      } else if (expression?.kind === 'binary' && expression.op === 'add') store.readModifyWrite = { kind: 'add', operand: printExpression(expression.right) };
+      const clampSub = expression?.kind === 'intrinsic' && expression.name === 'max' && expression.args?.[1]?.kind === 'const' && expression.args[1].value === 0n && expression.args[0]?.kind === 'binary' && expression.args[0].op === 'sub' ? expression.args[0] : null;
+      const clampOperand = clampSub && readsSameLocation(clampSub.left, location) ? clampSub.right : null;
+      if (clampOperand != null) {
+        store.readModifyWrite = { kind: 'clamp-zero-sub', operand: printExpression(clampOperand) };
+      } else if (expression?.kind === 'binary' && expression.op === 'add') {
+        const operand = sameLocationRmwOperand(expression, location, ['add']);
+        if (operand != null) store.readModifyWrite = { kind: 'add', operand: printExpression(operand) };
+      }
       facts.stores.push(store); facts.outputs.push({ name: location.text, type: state.types?.locations?.get?.(inst.loc?.key) || null });
       facts.evidence.push({ row: inst.row, address: inst.address, ir: inst.id, reason: 'Memory SSA store' });
     } else if (inst.op === 'call') {
