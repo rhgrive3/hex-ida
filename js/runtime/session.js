@@ -40,7 +40,8 @@ export class DebugSession {
     try {
       result = await this.adapter.connect(options);
       if (typeof this.adapter.onEvent === 'function') {
-        const unsubscribe = this.adapter.onEvent((event)=>this.acceptEvent(event));
+        const subscriptionEpoch = this.epoch;
+        const unsubscribe = this.adapter.onEvent((event)=>this.acceptEvent(event,subscriptionEpoch));
         if (unsubscribe != null && typeof unsubscribe !== 'function') throw new DebugAdapterError('event-subscription','adapter onEvent must return an unsubscribe function');
         this._unsubscribe=unsubscribe || null;
       }
@@ -75,13 +76,13 @@ export class DebugSession {
     }
     return {modules:this.modules,threads:this.threads,errors:{...this.refreshErrors}};
   }
-  acceptEvent(event) {
+  acceptEvent(event, sourceEpoch = null) {
     if (this.closed) return false;
-    if (event && event.epoch != null) {
-      const epoch = eventEpoch(event.epoch);
+    if (event) {
+      const epoch = event.epoch != null ? eventEpoch(event.epoch) : eventEpoch(sourceEpoch);
       if (epoch == null || epoch !== this.epoch) return false;
+      this.traces.push(event);
     }
-    if (event) this.traces.push(event);
     return true;
   }
   newEpoch() {
