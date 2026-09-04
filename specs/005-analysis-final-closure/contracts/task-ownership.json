@@ -431,6 +431,7 @@
       "forbiddenOverlap": [
         "tests/phase8/performance/**",
         "T012 analysis-identity.js, valuenumber.js, and hostile-identity tests",
+        "T013 Phase 8 source and test paths present on composite recovery candidates",
         "T017 MachineEffects, competitive, and non-memory compatibility paths",
         "all generated outputs"
       ]
@@ -446,6 +447,7 @@
       "forbiddenOverlap": [
         "T011 decompiler stack-return and private memory-projection paths",
         "tests/phase8/performance/**",
+        "T013 Phase 8 source and test paths other than T012's exact allowlist",
         "T017 MachineEffects and competitive paths",
         "all generated outputs"
       ]
@@ -491,7 +493,9 @@
       ],
       "forbiddenOverlap": [
         "decompiler, MachineEffects, loader, and generated-output paths",
-        "canonical Phase 9 profile migration reserved to T032"
+        "canonical Phase 9 profile migration reserved to T032",
+        "candidate reports, historical Spec Kit directories, and AI integration tests outside the exact allowlist",
+        "unreconciled overlapping symbolic PR #6546"
       ]
     },
     "T015": {
@@ -502,11 +506,18 @@
         "js/binary/macho-dyld.js",
         "js/binary/macho-budget.js",
         "js/binary/macho-source-cache.js",
+        "js/metadata/objc.js",
+        "js/metadata/swift.js",
+        "tests/apple-knowledge-x02.test.mjs",
+        "tests/issue-569-chained-segment-bounds.mjs",
+        "tests/issue-570-macho-metadata-budget.mjs",
+        "tests/issue-572-bounded-leb.mjs",
         "tests/final-closure/t015/**"
       ],
       "forbiddenOverlap": [
         "T016 discovery artifact and rebuild-transaction ownership",
-        "unreconciled overlapping PR paths",
+        "unreconciled overlapping PR #6574, #6582, or #6583 paths outside the exact allowlist",
+        "candidate docs and historical Spec Kit directories outside the exact allowlist",
         "all generated outputs"
       ]
     },
@@ -517,10 +528,14 @@
         "js/rebuild/transaction-v2.js",
         "tests/phase7/discovery/**",
         "tests/phase12/rebuild/**",
+        "tests/stage2/rebuild-transaction.test.mjs",
+        "tools/validation/discovery/**",
         "tests/final-closure/t016/**"
       ],
       "forbiddenOverlap": [
         "T015 Apple knowledge and Mach-O metadata ownership",
+        "candidate js/ai/tools/registry-base.js and js/rebuild/format-safe.js paths",
+        "candidate docs and historical Spec Kit directories outside the exact allowlist",
         "unreconciled overlapping PR paths",
         "all generated outputs"
       ]
@@ -540,14 +555,20 @@
         "tests/phase6/effects/integer-reference.test.mjs",
         "tests/phase6/generic-core/issues-889-897.test.mjs",
         "tests/phase6/generic-core/issues-907-909-910-913.test.mjs",
+        "js/api-cross-binary-families.js",
         "js/semantics/effects/**",
         "js/targets/architecture/x86_64/effects/**",
+        "js/semantics/compat/machine-effects-to-v1.js",
         "js/semantics/compat/semantic-ir-v2-to-v1.js",
+        "js/semantics/compat/semantic-ir-v2-to-v1-nodes.js",
+        "js/semantics/ir/from-machine-effects.js",
         "tests/final-closure/t017/**"
       ],
       "forbiddenOverlap": [
         "T011 operand-forwarding.js and semantic-ir-v2-to-v1-memory.js private projection paths",
+        "T013-owned js/decompiler/phase8/sccp.js and Phase 8 source paths",
         "T014 symbolic solver paths",
+        "unreconciled #6462 API-family edits or generic allocator/log overmatching",
         "a second MachineEffects or oracle authority and any active ME branch other than reconciled #3425",
         "all generated outputs"
       ]
@@ -936,6 +957,7 @@
         "specs/005-analysis-final-closure/contracts/integration-inventory.json",
         "specs/005-analysis-final-closure/evidence/stage-a-checkpoints.md",
         "specs/005-analysis-final-closure/tasks.md",
+        "tests/phase7/corpus/manifest.json",
         "userscript/hex.user.template.js",
         "userscript/release-version.json",
         "js/userscript/deployment-identity.generated.js"
@@ -953,6 +975,7 @@
         "specs/005-analysis-final-closure/contracts/integration-inventory.json",
         "specs/005-analysis-final-closure/evidence/stage-b-checkpoints.md",
         "specs/005-analysis-final-closure/tasks.md",
+        "tests/phase7/corpus/manifest.json",
         "userscript/hex.user.template.js",
         "userscript/release-version.json",
         "js/userscript/deployment-identity.generated.js"

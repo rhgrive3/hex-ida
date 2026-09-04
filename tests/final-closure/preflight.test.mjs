@@ -668,6 +668,95 @@ const allowedLane = validateTaskInventory({
 });
 assert.equal(allowedLane.ok, true, allowedLane.errors.join('\n'));
 
+const derivedCorpusManifestPath = 'tests/phase7/corpus/manifest.json';
+for (const taskId of ['T049', 'T050']) {
+  const manifestOwner = validateTaskInventory({
+    taskId,
+    actualPaths: [derivedCorpusManifestPath],
+    ownership,
+  });
+  assert.equal(
+    manifestOwner.ok,
+    true,
+    `${taskId} must own canonical corpus-manifest regeneration: ${manifestOwner.errors.join('\n')}`,
+  );
+}
+assertIncludes(
+  validateTaskInventory({
+    taskId: 'T055',
+    actualPaths: [derivedCorpusManifestPath],
+    ownership,
+  }).errors,
+  'inventory-path-outside-allowlist',
+  'the type component must not commit its integration-generated corpus manifest',
+);
+assert.equal(
+  validateTaskInventory({
+    taskId: 'T017',
+    actualPaths: [
+      'js/api-cross-binary-families.js',
+      'tests/final-closure/t017/battlecats-api-coverage.test.mjs',
+    ],
+    ownership,
+  }).ok,
+  true,
+  'T017 must own its bounded cross-binary ground-truth table repair',
+);
+
+for (const [taskId, ownedPaths] of [
+  ['T015', [
+    'js/metadata/objc.js',
+    'js/metadata/swift.js',
+    'tests/apple-knowledge-x02.test.mjs',
+    'tests/issue-569-chained-segment-bounds.mjs',
+    'tests/issue-570-macho-metadata-budget.mjs',
+    'tests/issue-572-bounded-leb.mjs',
+  ]],
+  ['T016', [
+    'tests/stage2/rebuild-transaction.test.mjs',
+    'tools/validation/discovery/x03-ownership.mjs',
+    'tools/validation/discovery/x03-verify.mjs',
+  ]],
+  ['T017', [
+    'js/semantics/compat/machine-effects-to-v1.js',
+    'js/semantics/compat/semantic-ir-v2-to-v1-nodes.js',
+    'js/semantics/ir/from-machine-effects.js',
+  ]],
+  ['T013', ['js/decompiler/phase8/sccp.js']],
+]) {
+  const selectiveOwner = validateTaskInventory({
+    taskId,
+    actualPaths: ownedPaths,
+    ownership,
+  });
+  assert.equal(
+    selectiveOwner.ok,
+    true,
+    `${taskId} must own its selectively reconciled paths: ${selectiveOwner.errors.join('\n')}`,
+  );
+}
+
+for (const [taskId, rejectedPath] of [
+  ['T011', 'js/decompiler/phase8/sccp.js'],
+  ['T012', 'js/decompiler/phase8/sccp.js'],
+  ['T014', 'tools/validation/phase9/profile.json'],
+  ['T014', 'tests/phase9/integration/ai-tools.test.mjs'],
+  ['T015', 'docs/analysis-improvement-finding-ledger.md'],
+  ['T016', 'js/ai/tools/registry-base.js'],
+  ['T016', 'js/rebuild/format-safe.js'],
+  ['T017', 'js/decompiler/phase8/sccp.js'],
+]) {
+  assertIncludes(
+    validateTaskInventory({
+      taskId,
+      actualPaths: [rejectedPath],
+      ownership,
+    }).errors,
+    'inventory-path-outside-allowlist',
+    `${taskId} must reject composite-candidate path ${rejectedPath}`,
+  );
+}
+
 for (const repoPath of [
   'docs/README.md',
   'tools/validation/final-closure/preflight.mjs',
