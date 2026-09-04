@@ -138,8 +138,13 @@ export class AgentJobManager {
     if (typeof id !== 'string' || !id) return null;
     if (this.loadingPromises.has(id)) return this.loadingPromises.get(id);
     const promise = (async () => {
-      const value = await this.persistence?.load?.(id);
-      if (value?.version === CHECKPOINT_VERSION) {
+      let value;
+      try {
+        value = await this.persistence?.load?.(id);
+      } catch {
+        return null;
+      }
+      if (validateCheckpoint(value, id)) {
         this.jobs.set(id, value);
         return value;
       }
