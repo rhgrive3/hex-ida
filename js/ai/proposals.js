@@ -3,6 +3,7 @@ import { jsonSafe } from './validation.js';
 import { stableDigest } from '../core/identity/index.js';
 
 const PROPOSAL_KINDS = new Set(['rename', 'comment', 'type', 'struct-field', 'patch', 'project-annotation']);
+const EXECUTION_PAYLOADS = new WeakMap();
 let proposalSequence = 1;
 
 export class ProposalStore {
@@ -28,16 +29,23 @@ export class ProposalStore {
       while (this.records.has(id));
     }
     const binding = this.binding?.() || null;
+    const executionPayload = snapshotProposalPayload(input);
     const record = {
-      id, kind: input.kind, target: jsonSafe(input.target), before: jsonSafe(input.before), after: jsonSafe(input.after),
+      id, kind: input.kind,
+      // The public record stays bounded for display/wire consumers. Mutation
+      // authority is held separately in EXECUTION_PAYLOADS.
+      target: jsonSafe(executionPayload.target),
+      before: jsonSafe(executionPayload.before),
+      after: jsonSafe(executionPayload.after),
       reason: String(input.reason || '').slice(0, 2000), evidenceIds,
       createdAt: new Date().toISOString(), status: 'pending',
-      // Identity/staleness checks use the complete value, never jsonSafe's
-      // display-oriented depth/item truncation.
-      revision: fingerprint(input.before),
+      // Identity/staleness checks use the exact snapshotted value that will be
+      // executed, never jsonSafe's display-oriented depth/item truncation.
+      revision: fingerprint(executionPayload.before),
       binding: jsonSafe(binding),
       bindingRevision: fingerprint(binding),
     };
+    EXECUTION_PAYLOADS.set(record, executionPayload);
     this.records.set(id, record);
     this.audit.push({ type: 'proposal-created', proposalId: id, timestamp: record.createdAt });
     return record;
@@ -88,7 +96,7 @@ export class ProposalStore {
       throw new AIError('tool_failed', 'No mutation adapter is available.');
     }
     try {
-      await apply(proposal);
+      await apply(proposalExecutionView(proposal));
       proposal.status = 'applied';
       this.audit.push({ type: 'proposal-applied', proposalId: proposal.id, timestamp: new Date().toISOString() });
       return proposal;
@@ -108,6 +116,64 @@ export class ProposalStore {
   has(id) { return typeof id === 'string' && !!id && this.records.has(id); }
   get(id) { return typeof id === 'string' && !!id ? this.records.get(id) || null : null; }
   all() { return Array.from(this.records.values()); }
+  executionView(id) { return proposalExecutionView(this.require(id)); }
+}
+
+function proposalExecutionView(proposal) {
+  const payload = EXECUTION_PAYLOADS.get(proposal);
+  if (!payload) throw new AIError('tool_failed', 'Proposal execution payload is unavailable.');
+  return { ...proposal, ...snapshotProposalPayload(payload) };
+}
+
+function snapshotProposalPayload(value) {
+  const clone = globalThis.structuredClone;
+  if (typeof clone !== 'function') {
+    throw new AIError('tool_failed', 'Structured cloning is unavailable for proposal execution payloads.');
+  }
+  let payload;
+  try {
+    payload = {
+      target: clone(value.target),
+      before: clone(value.before),
+      after: clone(value.after),
+    };
+  } catch {
+    throw new AIError('invalid_tool_call', 'Proposal execution payload must be structured-cloneable.');
+  }
+  if (containsSharedMemory(payload)) {
+    throw new AIError('invalid_tool_call', 'Proposal execution payload must not contain shared memory.');
+  }
+  return payload;
+}
+
+function containsSharedMemory(value, seen = new WeakSet()) {
+  if (value === null || typeof value !== 'object') return false;
+  const SharedBuffer = globalThis.SharedArrayBuffer;
+  if (typeof SharedBuffer === 'function' && value instanceof SharedBuffer) return true;
+  if (ArrayBuffer.isView(value)) {
+    return typeof SharedBuffer === 'function' && value.buffer instanceof SharedBuffer;
+  }
+  if (value instanceof ArrayBuffer) return false;
+  if (seen.has(value)) return false;
+  seen.add(value);
+
+  if (value instanceof Map) {
+    for (const [key, item] of value) {
+      if (containsSharedMemory(key, seen) || containsSharedMemory(item, seen)) return true;
+    }
+    return false;
+  }
+  if (value instanceof Set) {
+    for (const item of value) {
+      if (containsSharedMemory(item, seen)) return true;
+    }
+    return false;
+  }
+
+  for (const descriptor of Object.values(Object.getOwnPropertyDescriptors(value))) {
+    if ('value' in descriptor && containsSharedMemory(descriptor.value, seen)) return true;
+  }
+  return false;
 }
 
 /**
@@ -182,6 +248,26 @@ function canonicalIdentity(value, stack = new Set()) {
     }
     if (value instanceof Set) {
       return `e[${Array.from(value.values()).map((item) => canonicalIdentity(item, stack)).join(',')}]`;
+    }
+    // RegExp matching state includes source, flags, and lastIndex. The latter
+    // is non-enumerable but changes global/sticky matching behavior, so omitting
+    // it would let a changed approved state pass the stale-state guard (#6250).
+    if (value instanceof RegExp) {
+      return `r${JSON.stringify(value.source)}:${JSON.stringify(value.flags)}:${canonicalIdentity(value.lastIndex, stack)}`;
+    }
+    // Fingerprinting decides whether the user-approved state is still the
+    // state about to be written. A non-plain object (custom class, host
+    // object, boxed primitive, ...) whose meaningful state sits in internal
+    // slots cannot be encoded completely here, so it must fail closed
+    // instead of collapsing to whatever own enumerable keys happen to show.
+    if (Array.isArray(value) && Object.getPrototypeOf(value) !== Array.prototype) {
+      throw new AIError('tool_failed', 'Proposal state contains an unsupported non-plain object and cannot be fingerprinted safely.');
+    }
+    if (!Array.isArray(value)) {
+      const proto = Object.getPrototypeOf(value);
+      if (proto !== Object.prototype && proto !== null) {
+        throw new AIError('tool_failed', 'Proposal state contains an unsupported non-plain object and cannot be fingerprinted safely.');
+      }
     }
     if (Array.isArray(value)) {
       // Preserve sparse holes explicitly so array length/state changes cannot alias.

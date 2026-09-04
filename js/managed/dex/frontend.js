@@ -3,6 +3,7 @@ import { createManagedMethodId, createManagedTypeId } from '../shared/identity.j
 import { createManagedValidationReport } from '../shared/validation.js';
 import { liftDexMethod } from './lifter.js';
 import { parseDex, probeDex } from './parser.js';
+import { captureDexValidationMetadata, validateDexMethod } from './validation.js';
 
 export class DexFrontend {
   constructor(options = {}) {
@@ -62,20 +63,35 @@ export class DexFrontend {
   async decodeMethod(method, context = {}) {
     const dexImage = context.image;
     if (!dexImage) throw new TypeError('dex-context-image-required');
-    return liftDexMethod(method.methodIdx, dexImage, context);
+    const decoded = liftDexMethod(method.methodIdx, dexImage, context);
+    const dexValidation = captureDexValidationMetadata(method.methodIdx, dexImage);
+    return deepFreeze({
+      ...decoded,
+      metadata: {
+        ...(decoded.metadata ?? {}),
+        dexValidation,
+      },
+    });
   }
 
   async validateMethod(decoded, context = {}) {
+    const verifier = validateDexMethod(decoded);
     const hasUnknowns = decoded.bundles.some((b) => b.completeness === 'unknown');
     const hasPartials = decoded.bundles.some((b) => b.completeness === 'partial');
-    const status = hasUnknowns ? 'partial' : hasPartials ? 'partial' : 'valid';
+    const semanticPartial = hasUnknowns || hasPartials;
+    const invalid = verifier.structuralErrors.length > 0 || verifier.errors.length > 0;
+    const verifierPartial = verifier.partialReasons.length > 0;
+    const status = invalid ? 'invalid' : (semanticPartial || verifierPartial) ? 'partial' : 'valid';
     return createManagedValidationReport({
       targetId: decoded.methodId,
       status,
+      errors: [...verifier.structuralErrors, ...verifier.errors],
+      warnings: [...verifier.warnings, ...verifier.partialReasons],
+      verifierFacts: verifier.verifierFacts,
       completeness: {
-        structural: 'complete',
-        specValidation: 'valid',
-        semanticEffect: status === 'valid' ? 'complete' : 'partial',
+        structural: verifier.structuralErrors.length > 0 ? 'failed' : 'complete',
+        specValidation: invalid ? 'failed' : verifierPartial || semanticPartial ? 'partial' : 'valid',
+        semanticEffect: semanticPartial ? 'partial' : 'complete',
       },
     });
   }

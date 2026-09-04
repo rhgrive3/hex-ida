@@ -218,6 +218,9 @@ asyncTest('Function Sandbox maxObjectSize accepts only positive finite safe inte
   eq(sizeOf(1), 0x100, 'positive values below the minimum retain the existing 0x100 clamp');
   eq(sizeOf(0x100), 0x100, 'minimum valid maxObjectSize is preserved');
   eq(sizeOf(0x10000), 0x10000, 'normal valid maxObjectSize is preserved');
+  eq(sizeOf(16 * 1024 * 1024), 16 * 1024 * 1024, 'documented 16 MiB maximum is preserved');
+  eq(sizeOf(17 * 1024 * 1024), 16 * 1024 * 1024, 'values above the maximum never reach the mapping loop');
+  eq(sizeOf(Number.MAX_SAFE_INTEGER), 16 * 1024 * 1024, 'extreme safe integers are capped, not mapped');
 });
 
 asyncTest('Semantic and runtime evidence keep independent origins without duplicate IR inflation', () => {

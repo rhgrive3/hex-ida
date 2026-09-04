@@ -154,8 +154,12 @@ function normalizeObservedIdentity(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw identityError('active Dev runtime identity must be an object.');
   }
-  const commit = String(value.commit ?? value.sourceCommit ?? '').trim().toLowerCase();
-  const buildId = String(value.buildId ?? '').trim().toLowerCase();
+  const commitRaw = value.commit ?? value.sourceCommit;
+  if (typeof commitRaw !== 'string') throw identityError('active runtime commit identity is unavailable.');
+  const commit = commitRaw.trim().toLowerCase();
+  const buildIdRaw = value.buildId;
+  if (typeof buildIdRaw !== 'string') throw identityError('active runtime build identity is unavailable.');
+  const buildId = buildIdRaw.trim().toLowerCase();
   if (!COMMIT.test(commit)) throw identityError('active runtime commit identity is unavailable.');
   if (!BUILD_ID.test(buildId)) throw identityError('active runtime build identity is unavailable.');
   const userscriptVersion = String(value.userscriptVersion ?? value.loaderVersion ?? value.version ?? '').trim();
@@ -179,13 +183,15 @@ function assertCapabilities(value) {
 }
 
 function assertCommit(value, field) {
-  const text = String(value || '').trim().toLowerCase();
+  if (typeof value !== 'string') throw new TypeError(`${field} must be a full Git commit SHA.`);
+  const text = value.trim().toLowerCase();
   if (!COMMIT.test(text)) throw new TypeError(`${field} must be a full Git commit SHA.`);
   return text;
 }
 
 function assertBuildId(value, field) {
-  const text = String(value || '').trim().toLowerCase();
+  if (typeof value !== 'string') throw new TypeError(`${field} must be a 24-character runtime build ID.`);
+  const text = value.trim().toLowerCase();
   if (!BUILD_ID.test(text)) throw new TypeError(`${field} must be a 24-character runtime build ID.`);
   return text;
 }
@@ -215,7 +221,19 @@ export function readDevRuntimeIdentityFromGlobals(globalObject = globalThis, ove
   });
 }
 
-export function normalizeCommitText(value) { const text = String(value ?? '').trim().toLowerCase(); return COMMIT.test(text) ? text : null; }
-export function normalizeBuildIdText(value) { const text = String(value ?? '').trim().toLowerCase(); return BUILD_ID.test(text) ? text : null; }
-export function normalizeVersionText(value) { const text = String(value ?? '').trim(); return text ? text.slice(0, 128) : null; }
+export function normalizeCommitText(value) {
+  if (typeof value !== 'string') return null;
+  const text = value.trim().toLowerCase();
+  return COMMIT.test(text) ? text : null;
+}
+export function normalizeBuildIdText(value) {
+  if (typeof value !== 'string') return null;
+  const text = value.trim().toLowerCase();
+  return BUILD_ID.test(text) ? text : null;
+}
+export function normalizeVersionText(value) {
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  return text ? text.slice(0, 128) : null;
+}
 function safeRead(value, key) { try { return value?.[key]; } catch { return null; } }

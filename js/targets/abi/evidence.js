@@ -63,7 +63,8 @@ function record(value) {
 
 function sameScalar(left, right) {
   if (left == null || right == null) return left == null && right == null;
-  return String(left) === String(right);
+  if (typeof left !== typeof right) return false;
+  return (typeof left === 'string' || typeof left === 'number') && left === right;
 }
 
 function sameProfile(left, right) {

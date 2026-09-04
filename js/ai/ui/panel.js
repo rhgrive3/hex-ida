@@ -194,7 +194,7 @@ export function createPanel({ session, handlers }) {
 
   function loadCapabilities() {
     if (capabilityRequest) return capabilityRequest;
-    capabilityRequest = (async () => {
+    const request = (async () => {
       const advertised = await callSafely(capabilityFns.capabilities);
       const status = await callSafely(capabilityFns.status);
       capabilities = applyStatus(normalizeCapabilities(advertised), status);
@@ -208,7 +208,14 @@ export function createPanel({ session, handlers }) {
       }
       update({ stick: false });
     })().catch(() => {});
-    return capabilityRequest;
+    capabilityRequest = request;
+    // Updates during a request must share it, while a later update must be
+    // allowed to observe provider reachability/model changes. Identity-check
+    // the cleanup so a stale request can never clear a newer one.
+    request.then(() => {
+      if (capabilityRequest === request) capabilityRequest = null;
+    });
+    return request;
   }
 
   /** A pick is conversation metadata first; the engine is told if it listens. */
