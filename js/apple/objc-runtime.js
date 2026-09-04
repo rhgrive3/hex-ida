@@ -28,6 +28,61 @@ function pushIndex(map, key, value) {
   list.push(value);
 }
 
+class ImmutableMap extends Map {
+  #sealed = false;
+
+  seal() {
+    this.#sealed = true;
+    return Object.freeze(this);
+  }
+
+  set(key, value) {
+    if (this.#sealed) throw new TypeError('objc runtime index is immutable');
+    return super.set(key, value);
+  }
+
+  delete(key) {
+    if (this.#sealed) throw new TypeError('objc runtime index is immutable');
+    return super.delete(key);
+  }
+
+  clear() {
+    if (this.#sealed) throw new TypeError('objc runtime index is immutable');
+    return super.clear();
+  }
+}
+
+function immutableMap(map) {
+  const copy = new ImmutableMap();
+  for (const [key, value] of map) Map.prototype.set.call(copy, key, value);
+  return copy.seal();
+}
+
+function shallowCloneArray(value) {
+  return Array.isArray(value)
+    ? value.map((item) => item && typeof item === 'object' ? { ...item } : item)
+    : value;
+}
+
+function freezeArray(value) {
+  if (!Array.isArray(value)) return value;
+  for (const item of value) {
+    if (item && typeof item === 'object') Object.freeze(item);
+  }
+  return Object.freeze(value);
+}
+
+function freezeMethodEntries(map) {
+  for (const entries of map.values()) {
+    for (const entry of entries) {
+      if (entry?.raw && typeof entry.raw === 'object') Object.freeze(entry.raw);
+      Object.freeze(entry);
+    }
+    Object.freeze(entries);
+  }
+  return immutableMap(map);
+}
+
 function normalizeMethod(m, owner, classMethod, source = 'class', proofRequired = false) {
   if (!m) return null;
   let selector = null;
@@ -47,7 +102,7 @@ function normalizeMethod(m, owner, classMethod, source = 'class', proofRequired 
     typeEncoding: m.types || m.type || m.typeEncoding || null,
     source,
     optional: !!m.optional,
-    raw: m,
+    raw: m && typeof m === 'object' ? { ...m } : m,
   };
 }
 
@@ -71,6 +126,8 @@ export function buildObjcRuntimeIndex(objcModel = {}) {
       superName: cleanClassName(c.superName),
       protocols: (c.protocols || []).map((p) => cleanClassName(p.name || p)).filter(Boolean),
     };
+    info.methods = shallowCloneArray(info.methods);
+    info.classMethods = shallowCloneArray(info.classMethods);
     classes.set(info.name, info);
     for (const m of info.methods || []) {
       const x = normalizeMethod(m, info.name, false, 'class', proofRequired);
@@ -92,7 +149,7 @@ export function buildObjcRuntimeIndex(objcModel = {}) {
     if (!p) continue;
     const name = cleanClassName(p.name);
     if (!name) continue;
-    const copy = { ...p, name };
+    const copy = { ...p, name, protocols: shallowCloneArray(p.protocols) };
     protocols.set(name, copy);
     for (const m of p.instanceMethods || p.methods || []) {
       const x = normalizeMethod({ ...m, optional: false }, name, false, 'protocol', proofRequired);
@@ -117,6 +174,9 @@ export function buildObjcRuntimeIndex(objcModel = {}) {
     const targetClass = cleanClassName(cat.className || cat.targetClass || cat.target);
     const name = cat.name || '(category)';
     const entry = { ...cat, name, targetClass };
+    for (const field of ['protocols', 'methods', 'instanceMethods', 'classMethods']) {
+      entry[field] = shallowCloneArray(entry[field]);
+    }
     categories.push(entry);
     const target = targetClass ? classes.get(targetClass) : null;
     if (target && Array.isArray(cat.protocols) && cat.protocols.length) {
@@ -142,9 +202,33 @@ export function buildObjcRuntimeIndex(objcModel = {}) {
     }
   }
 
+  for (const info of classes.values()) {
+    info.methods = freezeArray(info.methods);
+    info.classMethods = freezeArray(info.classMethods);
+    info.protocols = freezeArray(info.protocols);
+    Object.freeze(info);
+  }
+  for (const info of protocols.values()) {
+    info.protocols = freezeArray(info.protocols);
+    Object.freeze(info);
+  }
+  for (const entry of categories) {
+    for (const field of ['protocols', 'methods', 'instanceMethods', 'classMethods']) {
+      entry[field] = freezeArray(entry[field]);
+    }
+    Object.freeze(entry);
+  }
+
   const completeness = objcModel.runtimeCompleteness || null;
   return {
-    runtime: 'objc', classes, protocols, categories, methodsBySelector, protocolRequirementsBySelector, methodsByIMP, completeness,
+    runtime: 'objc',
+    classes: immutableMap(classes),
+    protocols: immutableMap(protocols),
+    categories: Object.freeze(categories),
+    methodsBySelector: freezeMethodEntries(methodsBySelector),
+    protocolRequirementsBySelector: freezeMethodEntries(protocolRequirementsBySelector),
+    methodsByIMP: freezeMethodEntries(methodsByIMP),
+    completeness,
     selectorCount: methodsBySelector.size,
     methodCount: [...methodsBySelector.values()].reduce((n, a) => n + a.length, 0),
     protocolRequirementCount: [...protocolRequirementsBySelector.values()].reduce((n, a) => n + a.length, 0),
