@@ -32,6 +32,7 @@ export class CapabilityExecutor {
     const session = runtimePlatform?.currentSession?.(false);
     if (!session) throw new AIError('tool_failed', 'No runtime session is available.');
     if (args.runtimeSessionId == null || String(args.runtimeSessionId) !== String(session.id)) throw new AIError('scope_violation', 'Runtime session identity does not match the requested action.');
+    if (binaryId != null && session.binaryHash != null && String(binaryId) !== String(session.binaryHash)) throw new AIError('scope_violation', 'Runtime session is bound to a different binary.');
     if (args.binaryId != null && session.binaryHash && String(args.binaryId) !== String(session.binaryHash)) throw new AIError('scope_violation', 'Runtime action is bound to a different binary.');
   }
 
