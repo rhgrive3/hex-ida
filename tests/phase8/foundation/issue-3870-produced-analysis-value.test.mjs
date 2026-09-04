@@ -1,23 +1,16 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { createPassDescriptor, createPassResult, unchangedResult } from '../../../js/decompiler/phase8/contract.js';
 import { createAnalysisState, runPassTransaction } from '../../../js/decompiler/phase8/transaction.js';
 
-const CONTRACT_VERSION = 6;
-
 function descriptor(produces = ['ranges'], consumes = []) {
-  return Object.freeze({
-    contractVersion: CONTRACT_VERSION,
+  return createPassDescriptor({
     id: 'issue-3870-produced-analysis-value',
     version: '1',
     stage: 'canonical-facts',
-    budgetClass: 'standard',
-    consumes: Object.freeze([...consumes]),
-    preserves: Object.freeze([]),
-    invalidates: Object.freeze([]),
-    produces: Object.freeze([...produces]),
-    required: false,
-    description: '',
+    consumes,
+    produces,
   });
 }
 
@@ -27,10 +20,11 @@ function producer(value) {
     descriptor: ownDescriptor,
     run(_context, _budget, staging) {
       staging.stage('ranges', value);
-      return Object.freeze({
-        changed: true,
+      return createPassResult({
+        descriptor: ownDescriptor,
+        status: 'changed',
         completeness: 'complete',
-        produced: Object.freeze(['ranges']),
+        produced: ['ranges'],
       });
     },
   };
@@ -62,10 +56,11 @@ test('a later nullish production aborts the whole staged transaction', () => {
     run(_context, _budget, staging) {
       staging.stage('ranges', Object.freeze({ min: 0, max: 1 }));
       staging.stage('dominators', null);
-      return Object.freeze({
-        changed: true,
+      return createPassResult({
+        descriptor: ownDescriptor,
+        status: 'changed',
         completeness: 'complete',
-        produced: Object.freeze(['dominators', 'ranges']),
+        produced: ['dominators', 'ranges'],
       });
     },
   };
@@ -84,11 +79,12 @@ test('downstream consumers still observe missing input after rejected production
   assert.equal(rejected.committed, false);
 
   let ran = false;
+  const ownDescriptor = descriptor([], ['ranges']);
   const consumer = {
-    descriptor: descriptor([], ['ranges']),
+    descriptor: ownDescriptor,
     run() {
       ran = true;
-      return Object.freeze({ changed: false, completeness: 'complete', produced: Object.freeze([]) });
+      return unchangedResult(ownDescriptor);
     },
   };
   const outcome = runPassTransaction(state, consumer);
