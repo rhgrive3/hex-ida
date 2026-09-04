@@ -58,8 +58,7 @@ function compareText(a, b) {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
-function preflightPhiLinkBudget(definitions, options) {
-  const maximum = limit(options, 'maxLinks');
+function preflightPhiLinkBudget(definitions, maximum) {
   let used = 0;
   const incomingSnapshots = new Array(definitions.length);
   for (let index = 0; index < definitions.length; index++) {
@@ -140,16 +139,30 @@ export function createSemanticSsaContract(input, options = {}) {
   }
 
   const rawDefinitions = array(input.definitions, 'semantic-ssa-definitions-required');
-  const { used: phiLinkCount, incomingSnapshots } = preflightPhiLinkBudget(rawDefinitions, options);
-  const definitions = rawDefinitions
-    .map((definition, index) => normalizeDefinition(definition, incomingSnapshots[index]))
-    .sort((a, b) => compareText(a.valueId, b.valueId) || compareText(a.definitionId, b.definitionId));
-  const uses = array(input.uses, 'semantic-ssa-uses-required')
-    .map(normalizeUse)
-    .sort((a, b) => compareText(a.useId, b.useId));
-  if (definitions.length > limit(options, 'maxDefinitions')) fail('semantic-ssa-budget-exceeded-maxDefinitions');
-  if (uses.length > limit(options, 'maxUses')) fail('semantic-ssa-budget-exceeded-maxUses');
-  if (uses.length > limit(options, 'maxLinks') - phiLinkCount) fail('semantic-ssa-budget-exceeded-maxLinks');
+  const rawUses = array(input.uses, 'semantic-ssa-uses-required');
+  const maxDefinitions = limit(options, 'maxDefinitions');
+  const maxUses = limit(options, 'maxUses');
+  const maxLinks = limit(options, 'maxLinks');
+  if (rawDefinitions.length > maxDefinitions) fail('semantic-ssa-budget-exceeded-maxDefinitions');
+  if (rawUses.length > maxUses) fail('semantic-ssa-budget-exceeded-maxUses');
+  if (rawUses.length > maxLinks) fail('semantic-ssa-budget-exceeded-maxLinks');
+
+  const { used: phiLinkCount, incomingSnapshots } = preflightPhiLinkBudget(rawDefinitions, maxLinks);
+  if (rawUses.length > maxLinks - phiLinkCount) fail('semantic-ssa-budget-exceeded-maxLinks');
+
+  const definitions = [];
+  for (let index = 0; index < rawDefinitions.length; index++) {
+    assertNotAborted(options);
+    definitions.push(normalizeDefinition(rawDefinitions[index], incomingSnapshots[index]));
+  }
+  definitions.sort((a, b) => compareText(a.valueId, b.valueId) || compareText(a.definitionId, b.definitionId));
+
+  const uses = [];
+  for (const use of rawUses) {
+    assertNotAborted(options);
+    uses.push(normalizeUse(use));
+  }
+  uses.sort((a, b) => compareText(a.useId, b.useId));
 
   const definitionByValue = new Map();
   const definitionIds = new Set();
@@ -172,10 +185,12 @@ export function createSemanticSsaContract(input, options = {}) {
   }
 
   for (const definition of definitions) {
+    assertNotAborted(options);
     if (cfgInfo && definition.blockId != null && !cfgInfo.blocks.has(definition.blockId)) {
       fail('semantic-ssa-invalid-definition-block');
     }
     for (const incoming of definition.incoming) {
+      assertNotAborted(options);
       const prior = definitionByValue.get(incoming.valueId);
       if (!prior) fail('semantic-ssa-dangling-phi-value-id');
       if (definition.kind === 'phi' && definition.variableKey != null && prior.variableKey !== definition.variableKey) {
