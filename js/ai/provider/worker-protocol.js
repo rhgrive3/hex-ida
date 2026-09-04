@@ -107,7 +107,12 @@ export function normalizeAIInteraction(value, allowedTools) {
 export function normalizeRequest(value) {
   if (!isObject(value)) throw new HttpError(400, 'invalid_request', 'The request body must be an object.');
   const question = boundedText(value.question, MAX_QUESTION_CHARS).trim(); if (!question) throw new HttpError(422, 'missing_question', 'A non-empty question is required.');
-  const thinkingLevel = value.thinkingLevel == null ? 'high' : String(value.thinkingLevel); if (!THINKING_LEVELS.has(thinkingLevel)) throw new HttpError(422, 'invalid_thinking_level', 'thinkingLevel must be minimal, low, medium, or high.');
+  // thinkingLevel drives provider generation_config. Only a primitive string
+  // may reach the enum check: String() would launder ['high'] into the
+  // canonical reasoning level (#6149). null/undefined keeps the 'high' default.
+  const rawThinkingLevel = value.thinkingLevel == null ? 'high' : value.thinkingLevel;
+  if (typeof rawThinkingLevel !== 'string' || !THINKING_LEVELS.has(rawThinkingLevel)) throw new HttpError(422, 'invalid_thinking_level', 'thinkingLevel must be minimal, low, medium, or high.');
+  const thinkingLevel = rawThinkingLevel;
   const currentFunction = normalizeCurrentFunction(value.currentFunction);
   const context = { question, currentFunction, xrefs: normalizeList(value.xrefs, 60), callers: normalizeList(value.callers, 60), callees: normalizeList(value.callees, 60), strings: normalizeList(value.strings, 60), globals: normalizeList(value.globals, 60) };
   if (JSON.stringify(context).length > MAX_CONTEXT_CHARS) throw new HttpError(413, 'request_too_large', 'The selected analysis context is too large.');
