@@ -3,7 +3,10 @@ export {
   decodeArm64BitMasks,
   evaluateArm64Bitfield,
 } from './integer-core.js';
-import { liftArm64IntegerEffects as liftArm64IntegerEffectsCore } from './integer-core.js';
+import {
+  ARM64_INTEGER_EFFECT_MNEMONICS as INTEGER_MNEMONICS,
+  liftArm64IntegerEffects as liftArm64IntegerEffectsCore,
+} from './integer-core.js';
 import { createArm64EffectContext, immediateOf } from './common.js';
 
 const ADD_SUB_BASE = new Set(['add','adds','sub','subs']);
@@ -252,6 +255,10 @@ function modifierFreeImmediate(op) {
   return op?.k === 'imm' && op.shift == null && op.extend == null;
 }
 
+function hasNonCanonicalImmediateValue(ops) {
+  return ops.some((op) => op?.k === 'imm' && op.value != null && typeof op.value !== 'bigint');
+}
+
 function validScalarImmediateModifiers(mnemonic, ops) {
   if (['lsl','lsr','asr','ror'].includes(mnemonic) && ops[2]?.k === 'imm') return modifierFreeImmediate(ops[2]);
   if (mnemonic === 'extr') return modifierFreeImmediate(ops[3]);
@@ -269,6 +276,10 @@ export function liftArm64IntegerEffects(instruction, options = {}) {
   const expected = expectedOperandCount(mnemonic);
   if (expected != null && ops.length !== expected) {
     return liftArm64IntegerEffectsCore({ ...instruction, ops: [] }, options);
+  }
+  if (INTEGER_MNEMONICS.has(mnemonic) && hasNonCanonicalImmediateValue(ops)) {
+    return createArm64EffectContext(instruction, options).partial(
+      `arm64-${mnemonic}-immediate-value-unencodable`, ['registers','flags','other']);
   }
   if (!validAddressEncoding(instruction, ops)) {
     return createArm64EffectContext(instruction, options).partial(
