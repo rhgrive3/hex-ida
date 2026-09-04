@@ -1,40 +1,31 @@
+# Use the latest 2.1 version of CircleCI pipeline process engine.
+# See: https://circleci.com/docs/reference/configuration-reference/
 version: 2.1
 
+# Define a job to be invoked later in a workflow.
+# See: https://circleci.com/docs/guides/orchestrate/jobs-steps/#jobs-overview & https://circleci.com/docs/reference/configuration-reference/#jobs
 jobs:
-  migration-guardrails:
+  say-hello:
+    # Specify the execution environment. You can specify an image from Docker Hub or use one of our convenience images from CircleCI's Developer Hub.
+    # See: https://circleci.com/docs/guides/execution-managed/executor-intro/ & https://circleci.com/docs/reference/configuration-reference/#executor-job
     docker:
-      - image: cimg/node:22.23
-    resource_class: medium
+      # Specify the version you desire here
+      # See: https://circleci.com/developer/images/image/cimg/base
+      - image: cimg/base:current
+
+    # Add steps to the job
+    # See: https://circleci.com/docs/guides/orchestrate/jobs-steps/#steps-overview & https://circleci.com/docs/reference/configuration-reference/#steps
     steps:
+      # Checkout the code as the first step.
       - checkout
-
       - run:
-          name: Detect migration-guardrail impact
-          command: |
-            set -euo pipefail
-            git fetch --no-tags origin main:refs/remotes/origin/main
-            changed="$(git diff --name-only origin/main...HEAD || true)"
-            if printf '%s\n' "$changed" | grep -Eq '^(js/(architecture/|ir\.js$|ir-core\.js$|dataflow[^/]*\.js$|decompiler/|binary/|bytesource/|platform/|project/|runtime/|runtime-evidence/|symbolic/|ai/|ui/|ui\.js$|ui-root\.js$|panels\.js$|app\.js$|backend\.js$|worker[^/]*\.js$)|worker-entry\.js$|package\.json$|package-lock\.json$|tests/migration-guardrails\.mjs$|docs/MIGRATION_GUARDRAILS\.md$|\.github/workflows/migration-guardrails\.yml$|\.circleci/config\.yml$)'; then
-              echo 'export RUN_MIGRATION_GUARDRAILS=true' >> "$BASH_ENV"
-            else
-              echo 'export RUN_MIGRATION_GUARDRAILS=false' >> "$BASH_ENV"
-              echo 'No migration-guardrail inputs changed; expensive steps will be skipped.'
-            fi
+          name: "Say hello"
+          command: "echo Hello, World!"
 
-      - run:
-          name: Install dependencies
-          command: |
-            if [ "$RUN_MIGRATION_GUARDRAILS" != "true" ]; then exit 0; fi
-            npm ci --no-audit --no-fund
-
-      - run:
-          name: Run migration proofs
-          command: |
-            if [ "$RUN_MIGRATION_GUARDRAILS" != "true" ]; then exit 0; fi
-            npm run migration:test
-            npm run binary:source-test
-
+# Orchestrate jobs using workflows
+# See: https://circleci.com/docs/guides/orchestrate/workflows/ & https://circleci.com/docs/reference/configuration-reference/#workflows
 workflows:
-  ci:
+  say-hello-workflow: # This is the name of the workflow, feel free to change it to better match your workflow.
+    # Inside the workflow, you define the jobs you want to run.
     jobs:
-      - migration-guardrails
+      - say-hello
