@@ -14,7 +14,8 @@ library recognition collection issue. Update it at every branch, PR, or merge st
 - Branch: `fix/issues-signature-boundary-6103`
 - Candidate base: `origin/main` at `f00154dcb9b2234cbacb4c6a3c2186d00c8a4b3a`
 - Implementation head: `54db2dd9a8c890ac4b97647f21296ed394350b77`
-- Pull request: pending
+- Current remote head: `origin/fix/issues-signature-boundary-6103` at `2030daf4537014ef8da3e9b9b7adbf70080c4f96`
+- Pull request: #6490 — https://github.com/rhgrive3/hex-ida/pull/6490
 
 ## Stages
 
@@ -23,8 +24,9 @@ library recognition collection issue. Update it at every branch, PR, or merge st
 - [x] Reproduced raw TypeErrors for non-array `symbols`, `imports`, `libraries`, and `strings` on the candidate base.
 - [x] Added fail-soft collection materialization while preserving Array and Set recognition.
 - [x] Focused regression and lint passed locally.
-- [ ] Phase 4 candidate proof.
-- [ ] Create one owner PR for #6103 and verify exact-head checks.
+- [x] Candidate tree `87e5aba4522baa8c1009e1652152d31e16feea00` passed focused regression and lint; Phase 4 reached 33-file PASS before the known pristine-main ownership-contract failure.
+- [x] Created one owner PR for #6103: #6490.
+- [ ] Re-run exact-head checks after this checkpoint update and inspect required PR checks.
 - [ ] Merge only after exact-head evidence is green; otherwise record the blocker here and on the board.
 
 ## Resume procedure
