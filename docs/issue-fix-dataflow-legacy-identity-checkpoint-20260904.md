@@ -14,7 +14,7 @@ or merge stage.
 - Shared-board claim: lanes message #273
 - Branch: `fix/issues-dataflow-legacy-6116`
 - Candidate base: `origin/main` at `f00154dcb9b2234cbacb4c6a3c2186d00c8a4b3a`
-- Implementation head: to be recorded after the implementation commit
+- Implementation head: `6e2ead9741be06cbca7c4d1cf4867e5ae515e120`
 
 ## Stages
 
@@ -22,7 +22,8 @@ or merge stage.
 - [x] Traced `selfRegisters()` callers and the ARC identity-helper branch.
 - [x] Restricted identity-helper recognition to primitive string names.
 - [x] Added a regression for arrays, coercible objects, numbers, booleans, and unknown names.
-- [ ] Run focused regression, lint, and applicable Phase 4 verification.
+- [x] Focused regression, existing `ir-dataflow`, and lint passed.
+- [x] Phase 4 passed all 19 non-ownership tests and independent verification; the one ownership contract failure reproduces on pristine `origin/main`.
 - [ ] Create one owner PR for #6116 and record exact-head candidate evidence.
 - [ ] Merge only after exact-head evidence and required checks are green; otherwise record the blocker here and on the board.
 
