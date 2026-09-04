@@ -13,8 +13,9 @@ function strictBigIntOrNull(value) {
 }
 
 function finiteConfidence(value, fallback = 0.5) {
-  const n = Number(value);
-  return Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : fallback;
+  return typeof value === 'number' && Number.isFinite(value)
+    ? Math.max(0, Math.min(1, value))
+    : fallback;
 }
 
 function normalizePerms(p) {
@@ -365,7 +366,7 @@ export function functionSeed(address, opts = {}) {
 }
 
 export function mergeFunctionSeeds(input, context = {}) {
-  const rank = { symbol: 5, exception: 4, unwind: 4, function_starts: 4, export: 3, entrypoint: 2, heuristic: 1 };
+  const rank = { symbol: 5, 'ifunc-resolver': 5, exception: 4, unwind: 4, function_starts: 4, export: 3, entrypoint: 2, heuristic: 1 };
   const m = new Map();
   for (const f0 of input || []) {
     if (f0 == null || f0.address == null) continue;
@@ -443,7 +444,7 @@ function dedupeImports(input) {
       m.set(key, { ...i, sites: i.sites ? [...i.sites] : [] });
       continue;
     }
-    if (!prev.address && i.address) prev.address = i.address;
+    if (prev.address == null && i.address != null) prev.address = i.address;
     if (!prev.source && i.source) prev.source = i.source;
     if (i.sites) prev.sites.push(...i.sites);
   }

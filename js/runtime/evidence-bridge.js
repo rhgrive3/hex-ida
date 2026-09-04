@@ -1,5 +1,5 @@
 import { createEvidenceEdge, createEvidenceNode, EvidenceGraph, EVIDENCE_COMPLETENESS } from '../core/evidence/index.js';
-import { createEvidenceId, deepFreeze, stableDigest } from '../core/identity/index.js';
+import { createEvidenceId, deepFreeze, stableDigest, stableStringify } from '../core/identity/index.js';
 import { createOriginSet } from '../core/identity/origin.js';
 import { DebugAdapterError } from '../debug/adapter.js';
 import { createRuntimeEvent } from './events.js';
@@ -18,22 +18,17 @@ function stringArray(value, name) {
   if (value == null) return Object.freeze([]);
   if (!Array.isArray(value)) throw new DebugAdapterError('runtime-invalid-array', `${name} must be an array`);
   for (const item of value) {
-    if (typeof item !== 'string' || !item) throw new DebugAdapterError('runtime-invalid-array', `${name} must contain only non-empty strings`);
+    if (typeof item !== 'string' || !item.trim()) throw new DebugAdapterError('runtime-invalid-array', `${name} must contain only non-empty strings`);
   }
   return Object.freeze([...new Set(value)].sort());
 }
 
 function optionalSequence(value) {
   if (value == null) return null;
-  const type = typeof value;
-  if ((type !== 'number' && type !== 'bigint' && type !== 'string') || (type === 'string' && !value.trim())) {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
     throw new DebugAdapterError('runtime-invalid-intervention-sequence', 'intervention sequence must be a non-negative safe integer');
   }
-  const sequence = Number(value);
-  if (!Number.isSafeInteger(sequence) || sequence < 0) {
-    throw new DebugAdapterError('runtime-invalid-intervention-sequence', 'intervention sequence must be a non-negative safe integer');
-  }
-  return sequence;
+  return value;
 }
 
 function ownedClone(value) {
@@ -77,6 +72,24 @@ export function conservativeCompleteness(...values) {
   return normalized.reduce((worst, value) => COMPLETENESS_RANK[value] < COMPLETENESS_RANK[worst] ? value : worst, normalized[0]);
 }
 
+function interventionIdentityKey(record) {
+  return stableStringify({
+    runtimeSessionId: record.runtimeSessionId,
+    providerId: record.providerId,
+    kind: record.kind,
+    target: record.target,
+    requestedChange: record.requestedChange,
+    sequence: record.sequence,
+    parentInterventionIds: record.parentInterventionIds,
+  });
+}
+
+function assertInterventionParents(records, record) {
+  for (const parent of record.parentInterventionIds) {
+    if (!records.has(parent)) throw new DebugAdapterError('runtime-intervention-parent-missing', `intervention parent not found: ${parent}`);
+  }
+}
+
 export function createInterventionRecord(input = {}) {
   const runtimeSessionId = required(input.runtimeSessionId, 'runtime-session-id-required', 'intervention requires runtimeSessionId');
   const providerId = required(input.providerId, 'runtime-provider-required', 'intervention requires providerId');
@@ -117,16 +130,24 @@ export class InterventionLedger {
 
   validate(input) {
     const record = createInterventionRecord(input);
-    for (const parent of record.parentInterventionIds) {
-      if (!this.#records.has(parent)) throw new DebugAdapterError('runtime-intervention-parent-missing', `intervention parent not found: ${parent}`);
-    }
+    assertInterventionParents(this.#records, record);
     return record;
   }
 
   add(input) {
-    const record = this.validate(input);
+    const record = createInterventionRecord(input);
     const existing = this.#records.get(record.interventionId);
-    if (existing) return existing;
+    if (existing) {
+      if (interventionIdentityKey(existing) !== interventionIdentityKey(record)) {
+        throw new DebugAdapterError(
+          'runtime-intervention-id-collision',
+          `intervention id is already bound to different identity: ${record.interventionId}`,
+          { interventionId: record.interventionId },
+        );
+      }
+      return existing;
+    }
+    assertInterventionParents(this.#records, record);
     this.#records.set(record.interventionId, record);
     return record;
   }
