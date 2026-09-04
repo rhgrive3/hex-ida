@@ -80,10 +80,10 @@ function cancellationScopedBase(app, options = {}) {
   if (app?.backend && typeof app.backend === 'object') {
     const backend = Object.create(app.backend);
     if (typeof app.backend.search === 'function') {
-      backend.search = (query, onProgress) => waitForOwnedRequest(
-        app.backend.search(query, onProgress),
-        signal,
-      );
+      backend.search = (query, onProgress) => {
+        abortIfNeeded(signal);
+        return waitForOwnedRequest(app.backend.search(query, onProgress), signal);
+      };
     }
     scoped.backend = backend;
   }
