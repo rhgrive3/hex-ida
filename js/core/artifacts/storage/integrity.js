@@ -183,6 +183,26 @@ export function storageRecordIdentity(record) {
   catch { return null; }
 }
 
+function equalStringArrays(left, right) {
+  if (left === right) return true;
+  if (!Array.isArray(left) || !Array.isArray(right)) return false;
+  if (left.length !== right.length) return false;
+  for (let i = 0; i < left.length; i++) if (left[i] !== right[i]) return false;
+  return true;
+}
+
+function equalVersionMaps(left, right) {
+  if (left === right) return true;
+  if (!left || !right || typeof left !== 'object' || typeof right !== 'object') return false;
+  const leftKeys = Object.keys(left);
+  const rightKeys = Object.keys(right);
+  if (leftKeys.length !== rightKeys.length) return false;
+  for (const key of leftKeys) {
+    if (!Object.hasOwn(right, key) || left[key] !== right[key]) return false;
+  }
+  return true;
+}
+
 export function compatiblePublishedArtifact(existingRecord, newRecord, existingPayload, newPayload) {
   if (!existingRecord || !newRecord) return false;
   for (const key of [
@@ -197,6 +217,25 @@ export function compatiblePublishedArtifact(existingRecord, newRecord, existingP
   ]) {
     if (existingRecord[key] !== newRecord[key]) return false;
   }
+  // Record identity must also match; otherwise a corrupt row with the same
+  // payload checksum can permanently block the correct publication as a
+  // false duplicate (#6206). `creation` is intentionally excluded as
+  // non-identity metadata.
+  for (const key of [
+    'artifactKind',
+    'producerId',
+    'producerVersion',
+    'binaryId',
+    'sliceId',
+    'entityId',
+    'runtimeSnapshotId',
+    'canonicalConfigHash',
+  ]) {
+    if ((existingRecord[key] ?? null) !== (newRecord[key] ?? null)) return false;
+  }
+  if (!equalVersionMaps(existingRecord.versions, newRecord.versions)) return false;
+  if (!equalStringArrays(existingRecord.upstreamArtifactIds, newRecord.upstreamArtifactIds)) return false;
+  if (!equalStringArrays(existingRecord.originRefs, newRecord.originRefs)) return false;
   try { return equalBytes(existingPayload, newPayload); }
   catch { return false; }
 }
