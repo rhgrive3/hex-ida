@@ -158,24 +158,21 @@ export class DebuggerProvider extends DebugAdapterRuntimeProvider {
         const modules = await this.adapter.getModules();
         if (!Array.isArray(modules)) throw new DebugAdapterError('runtime-invalid-modules', 'debugger adapter getModules must return an array');
 
+        // Transactional commit: validate every canonical binding in a scratch
+        // table before mutating the active table. Loading before Map insertion
+        // is essential: duplicate normalized keys must reject rather than let a
+        // later entry overwrite the earlier authority in `next`.
         const next = new Map();
+        const scratch = new RuntimeModuleBindingTable(session.runtimeSessionId);
+        const staged = new Map();
         for (let i = 0; i < modules.length; i++) {
           const module = modules[i] || {};
           if ((module.runtimeBase ?? module.base) == null || (module.runtimeSize ?? module.size) == null) continue;
           const bindingKey = moduleBindingKey(module, i);
           const normalized = normalizeRuntimeModuleBinding(module, { bindingKey });
+          const validated = scratch.load({ ...normalized, bindingKey: normalized.bindingKey });
           next.set(normalized.bindingKey, normalized);
-        }
-
-        // Transactional commit: the binding table's strict validation runs only
-        // when `load()` is called, so validating incrementally while mutating the
-        // active table would leave a partial refresh behind after a failure.
-        // Stage the whole snapshot through a scratch table first so any
-        // malformed binding rejects the refresh before the active table changes.
-        const scratch = new RuntimeModuleBindingTable(session.runtimeSessionId);
-        const staged = new Map();
-        for (const [bindingKey, normalized] of next) {
-          staged.set(bindingKey, scratch.load({ ...normalized, bindingKey }));
+          staged.set(normalized.bindingKey, validated);
         }
 
         for (const active of session.modules.active()) {
