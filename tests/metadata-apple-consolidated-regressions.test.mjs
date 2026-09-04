@@ -138,7 +138,18 @@ import { parseUnifiedLanguageMetadata } from '../js/metadata/index.js';
   console.log('✔ #3608 Swift legacy prefix normalization passed');
 }
 
-// --- Test 6: #6062 unified metadata dispatcher provider discovery parity ---
+// --- Test 6: #3632 canonical Itanium prefix survives Darwin normalization ---
+{
+  assert.equal(isMangled('_Z3foov'), true);
+  assert.equal(demangleCxx('_Z3foov'), 'foo()');
+  assert.equal(demangleCxx('__Z3foov'), 'foo()');
+  assert.equal(readableName('_Z3foov'), 'foo()');
+  assert.equal(demangleCxx('_foo'), null);
+  assert.equal(demangleCxx('___Z3foov'), null);
+  console.log('✔ #3632 canonical Itanium prefix normalization passed');
+}
+
+// --- Test 7: #6062 unified metadata dispatcher provider discovery parity ---
 {
   // Rust discovery via __R and ZN
   const rustV0 = await parseUnifiedLanguageMetadata({
