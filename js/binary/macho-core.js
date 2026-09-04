@@ -1,7 +1,111 @@
 import { ByteView } from './reader.js';
 import { BinaryImage, functionSeed } from './model.js';
-import { parseChainedImports, parseChainedBindingSites, parseClassicBindings, parseExportTrie } from './macho-dyld.js';
-import { createMachOMetadataBudget, ensureMachOMetadataBudget, markMachOMetadataPartial } from './macho-budget.js';
+import { chainedPointerSites, parseChainedImports, parseChainedBindingSites, parseClassicBindings, parseExportTrie } from './macho-dyld.js';
+import { MACHO_METADATA_LIMITS, createMachOMetadataBudget, ensureMachOMetadataBudget, markMachOMetadataPartial } from './macho-budget.js';
+import { malformedAppleCodeSignature, parseAppleCodeSignature } from '../apple/knowledge.js';
+import { deepFreeze } from '../core/identity/index.js';
+import { IncrementalSha256 } from '../cache/content-identity.js';
+
+const ISSUED_MACHO_IMAGES = new WeakMap();
+const INTERNAL_RESIDENT_IDENTITY = Symbol('macho-resident-identity');
+const MAX_CANONICAL_METADATA_READ_BYTES = 1024 * 1024;
+
+/** Read-only issuance record; callers cannot attach one to another image. */
+export function machOImageAuthority(image) {
+  return image && typeof image === 'object' ? ISSUED_MACHO_IMAGES.get(image) ?? null : null;
+}
+
+function boundIdentity(value) {
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+function containerOffset(value) {
+  if (value == null) return 0n;
+  if (typeof value === 'bigint' && value >= 0n) return value;
+  if (Number.isSafeInteger(value) && value >= 0) return BigInt(value);
+  throw new TypeError('Mach-O container offset must be a non-negative safe integer or bigint');
+}
+
+function residentDigest(bytes) {
+  if (!(bytes instanceof Uint8Array) || bytes.byteLength > MACHO_METADATA_LIMITS.inputBytes) return null;
+  return `bin_sha256_${new IncrementalSha256().update(bytes).hexDigest()}`;
+}
+
+function sliceIdentity(binaryIdentity, bytes, offset, architecture) {
+  const digest = residentDigest(bytes);
+  if (!binaryIdentity || !digest) return null;
+  return `slice_macho_${architecture}_${offset.toString(16)}_${bytes.byteLength.toString(16)}_${digest.slice('bin_sha256_'.length)}`;
+}
+
+function strictUnsignedBigInt(value) {
+  if (typeof value === 'bigint') return value >= 0n ? value : null;
+  return Number.isSafeInteger(value) && value >= 0 ? BigInt(value) : null;
+}
+
+function metadataMappingSnapshot(mapping) {
+  return {
+    name: mapping.name,
+    address: mapping.address,
+    size: mapping.size,
+    fileOffset: mapping.fileOffset,
+    fileSize: mapping.fileSize,
+    perms: { ...mapping.perms },
+    flags: mapping.flags,
+    source: mapping.source,
+    ...(mapping.segment != null ? { segment: mapping.segment } : {}),
+    ...(mapping.index != null ? { index: mapping.index } : {}),
+  };
+}
+
+function canonicalResidentReader(bytes, sections, segments) {
+  if (!(bytes instanceof Uint8Array)) return null;
+  const mappings = [...sections, ...segments];
+  const mappingAt = (address) => {
+    let best = null;
+    for (const mapping of mappings) {
+      if (mapping.size > 0n && address >= mapping.address && address < mapping.address + mapping.size
+        && (!best || mapping.size < best.size)) best = mapping;
+    }
+    return best;
+  };
+  const nextBoundary = (current, owner) => {
+    const end = owner.address + owner.size;
+    let next = null;
+    for (const mapping of mappings) {
+      if (mapping === owner || mapping.size <= 0n || mapping.address <= current || mapping.address >= end || mapping.size >= owner.size) continue;
+      if (next === null || mapping.address < next) next = mapping.address;
+    }
+    return next;
+  };
+  return async (addressValue, sizeValue) => {
+    let address = strictUnsignedBigInt(addressValue);
+    let remaining = strictUnsignedBigInt(sizeValue);
+    if (address == null || remaining == null || remaining > BigInt(MAX_CANONICAL_METADATA_READ_BYTES)) return null;
+    const output = new Uint8Array(Number(remaining));
+    let cursor = 0;
+    while (remaining > 0n) {
+      const owner = mappingAt(address);
+      if (!owner) return null;
+      const delta = address - owner.address;
+      const vmAvailable = owner.size - delta;
+      const boundary = nextBoundary(address, owner);
+      const span = boundary == null || boundary - address > vmAvailable ? vmAvailable : boundary - address;
+      if (span <= 0n) return null;
+      const fileAvailable = delta < owner.fileSize && owner.fileSize - delta < span ? owner.fileSize - delta : delta < owner.fileSize ? span : 0n;
+      const length = (fileAvailable > 0n ? fileAvailable : span) < remaining ? (fileAvailable > 0n ? fileAvailable : span) : remaining;
+      if (length <= 0n || length > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+      if (fileAvailable > 0n) {
+        const offset = owner.fileOffset + delta;
+        if (offset < 0n || offset > BigInt(bytes.length) || length > BigInt(bytes.length) - offset) return null;
+        output.set(bytes.subarray(Number(offset), Number(offset + length)), cursor);
+      }
+      cursor += Number(length);
+      address += length;
+      remaining -= length;
+    }
+    return output;
+  };
+}
 
 const LC_SEGMENT = 0x1;
 const LC_SYMTAB = 0x2;
@@ -18,6 +122,7 @@ const LC_SEGMENT_64 = 0x19;
 const LC_DYLD_INFO = 0x22;
 const LC_DYLD_INFO_ONLY = 0x80000022;
 const LC_FUNCTION_STARTS = 0x26;
+const LC_CODE_SIGNATURE = 0x1d;
 const LC_VERSION_MIN_MACOSX = 0x24;
 const LC_VERSION_MIN_IPHONEOS = 0x25;
 const LC_MAIN = 0x80000028;
@@ -37,20 +142,36 @@ const DYLIB_COMMANDS = new Set([
 
 export function parseMachO(input, opts = {}) {
   const bytes = new ByteView(input).bytes;
+  const thinContainerOffset = containerOffset(opts.containerOffset);
+  const containerIdentity = residentDigest(bytes);
   const kind = machoKind(bytes);
   if (!kind) throw new Error('not a Mach-O file');
   if (kind.fat) {
     const selected = selectFatSlice(bytes, kind, opts.arch);
     if (!selected) throw new Error('Mach-O universal binary has no readable slice');
     const sub = bytes.subarray(Number(selected.offset), Number(selected.offset + selected.size));
-    const image = parseThin(sub, { ...opts, containerOffset: selected.offset });
+    const selectedArchitecture = sliceArchName(selected);
+    const image = parseThin(sub, {
+      ...opts,
+      containerOffset: selected.offset,
+      [INTERNAL_RESIDENT_IDENTITY]: {
+        binaryIdentity: containerIdentity,
+        sliceIdentity: sliceIdentity(containerIdentity, sub, selected.offset, selectedArchitecture),
+      },
+    });
     image.metadata.fat = {
       slices: selected.all.map((s) => ({ arch: sliceArchName(s), cpu: s.cpu, subtype: s.subtype, offset: s.offset, size: s.size })),
       selected: { arch: sliceArchName(selected), cpu: selected.cpu, subtype: selected.subtype, offset: selected.offset, size: selected.size },
     };
     return image;
   }
-  return parseThin(bytes, opts);
+  return parseThin(bytes, {
+    ...opts,
+    [INTERNAL_RESIDENT_IDENTITY]: {
+      binaryIdentity: containerIdentity,
+      sliceIdentity: sliceIdentity(containerIdentity, bytes, thinContainerOffset, sliceArchName({ cpu: new ByteView(bytes, { littleEndian: kind.littleEndian }).i32(4), subtype: new ByteView(bytes, { littleEndian: kind.littleEndian }).i32(8) })),
+    },
+  });
 }
 
 function parseThin(bytes, opts) {
@@ -69,15 +190,17 @@ function parseThin(bytes, opts) {
   const commandEnd = headerSize + sizeofcmds;
 
   const arch = cpuArchName(cpu, subtype);
+  const residentIdentity = opts[INTERNAL_RESIDENT_IDENTITY] ?? {};
   const image = new BinaryImage(bytes, {
     format: 'macho', arch, bits,
     endian: kind.littleEndian ? 'little' : 'big',
     platform: 'apple', imageBase: 0n,
-    fileOffset: opts.containerOffset || 0n,
+    fileOffset: containerOffset(opts.containerOffset),
     metadata: {
       cpu, subtype, cpuName: cpuName(cpu), subtypeBase: subtypeBase(subtype),
       subtypeName: arch === 'arm64e' ? 'arm64e' : String(subtypeBase(subtype)),
       filetype, flags, ncmds, sizeofcmds,
+      ...(opts.dyldCache ? { dyldCache: opts.dyldCache } : {}),
     },
   });
   const metadataBudget = ensureMachOMetadataBudget(image, createMachOMetadataBudget(image, { signal: opts.signal }));
@@ -88,17 +211,36 @@ function parseThin(bytes, opts) {
   const linkeditData = {};
   const dyldInfos = [];
   let p = headerSize;
+  let loadCommandScanComplete = true;
+  let processedLoadCommands = 0;
+  const poisonSignatureDiscovery = (reason, commandOffset = p) => {
+    loadCommandScanComplete = false;
+    if (!image.metadata.codeSignature && !linkeditData.codeSignature) {
+      image.metadata.codeSignature = malformedAppleCodeSignature('load-command-table-incomplete', {
+        provenance: {
+          commandOffset: BigInt(image.fileOffset) + BigInt(commandOffset),
+          dataOffset: null,
+          dataSize: null,
+        },
+      });
+    }
+    markMachOMetadataPartial(image, reason);
+  };
   for (let i = 0; i < ncmds; i++) {
-    if (p + 8 > commandEnd) { markMachOMetadataPartial(image, 'load-command-truncated'); image.warnings.push(`truncated load command ${i}`); break; }
+    if (p + 8 > commandEnd) { poisonSignatureDiscovery('load-command-truncated'); image.warnings.push(`truncated load command ${i}`); break; }
     const cmd = r.u32(p);
     const cmdsize = r.u32(p + 4);
     if (cmdsize < 8 || p + cmdsize > commandEnd) {
-      markMachOMetadataPartial(image, 'load-command-invalid-size');
+      poisonSignatureDiscovery('load-command-invalid-size');
       image.warnings.push(`invalid load command ${i} size ${cmdsize}`);
       break;
     }
-    if (!metadataBudget.take({ inputBytes:cmdsize, records:1, objects:1, operations:1, estimatedHeapBytes:64 }, 'load-command')) break;
+    if (!metadataBudget.take({ inputBytes:cmdsize, records:1, objects:1, operations:1, estimatedHeapBytes:64 }, 'load-command')) {
+      poisonSignatureDiscovery('load-command-budget-exhausted');
+      break;
+    }
     commands.push({ cmd, offset: p, size: cmdsize });
+    processedLoadCommands++;
     try {
       if (cmd === LC_SEGMENT_64 && bits === 64) parseSegment64(r, p, cmdsize, image, segmentOrder);
       else if (cmd === LC_SEGMENT && bits === 32) parseSegment32(r, p, cmdsize, image, segmentOrder);
@@ -120,6 +262,19 @@ function parseThin(bytes, opts) {
         parseLegacyVersionMin(r, p, cmd, image);
       }
       else if (cmd === LC_FUNCTION_STARTS && cmdsize >= 16) linkeditData.functionStarts = dataCommand(r, p);
+      else if (cmd === LC_CODE_SIGNATURE) {
+        if (cmdsize < 16) {
+          image.metadata.codeSignature = malformedAppleCodeSignature('load-command-size-invalid', {
+            provenance: {
+              commandOffset: BigInt(image.fileOffset) + BigInt(p),
+              dataOffset: null,
+              dataSize: null,
+            },
+          });
+          markMachOMetadataPartial(image, 'code-signature-command-malformed');
+          image.warnings.push(`invalid LC_CODE_SIGNATURE size ${cmdsize}; signature structure is malformed`);
+        } else linkeditData.codeSignature = { ...dataCommand(r, p), commandOffset: p };
+      }
       else if (cmd === LC_DYLD_CHAINED_FIXUPS && cmdsize >= 16) linkeditData.chainedFixups = dataCommand(r, p);
       else if (cmd === LC_DYLD_EXPORTS_TRIE && cmdsize >= 16) linkeditData.exportsTrie = dataCommand(r, p);
       else if ((cmd === LC_DYLD_INFO || cmd === LC_DYLD_INFO_ONLY) && cmdsize >= 48) dyldInfos.push(parseDyldInfo(r, p));
@@ -132,6 +287,12 @@ function parseThin(bytes, opts) {
     p += cmdsize;
   }
 
+  if (processedLoadCommands !== ncmds) loadCommandScanComplete = false;
+  if (processedLoadCommands === ncmds && p !== commandEnd) {
+    poisonSignatureDiscovery('load-command-table-size-mismatch', p);
+  }
+  image.metadata.codeSignatureCommandsComplete = loadCommandScanComplete;
+
   image.metadata.loadCommands = commands.length;
   image.metadata.segmentOrder = segmentOrder.map((s) => s.name);
   const text = image.segments.find((s) => s.name === '__TEXT') || image.segments.find((s) => s.perms.execute) || image.segments[0];
@@ -143,6 +304,19 @@ function parseThin(bytes, opts) {
   } else if (linkeditData.threadEntry != null) {
     image.entrypoint = linkeditData.threadEntry;
     image.metadata.entrypointSource = 'LC_UNIXTHREAD';
+  }
+
+  if (linkeditData.codeSignature) {
+    image.metadata.codeSignature = parseAppleCodeSignature(r.bytes, {
+      dataOffset: linkeditData.codeSignature.offset,
+      dataSize: linkeditData.codeSignature.size,
+      commandOffset: BigInt(image.fileOffset) + BigInt(linkeditData.codeSignature.commandOffset),
+      containerOffset: image.fileOffset,
+    });
+    if (image.metadata.codeSignature.status !== 'structurally-valid') {
+      markMachOMetadataPartial(image, 'code-signature-structure-incomplete');
+      image.warnings.push(`code signature structure is ${image.metadata.codeSignature.status}; validity remains unknown`);
+    }
   }
   if (image.entrypoint != null && image.entrypoint !== 0n) {
     const entrySegment = image.segmentAt(image.entrypoint);
@@ -190,7 +364,41 @@ function parseThin(bytes, opts) {
   }
 
   image.metadata.machoMetadata = metadataBudget.snapshot();
-  return image.finalize();
+  const issued = image.finalize();
+  const authoritySections = issued.sections.map(metadataMappingSnapshot);
+  const authoritySegments = issued.segments.map(metadataMappingSnapshot);
+  const residentBytes = issued.bytes instanceof Uint8Array ? issued.bytes : null;
+  const sourceDigest = residentDigest(residentBytes);
+  const contentMatches = () => sourceDigest !== null
+    && issued.bytes === residentBytes
+    && residentDigest(residentBytes) === sourceDigest;
+  const createMetadataSource = () => {
+    if (!contentMatches()) return null;
+    const snapshot = residentBytes.slice();
+    if (residentDigest(snapshot) !== sourceDigest) return null;
+    return deepFreeze({ readAt: canonicalResidentReader(snapshot, authoritySections, authoritySegments) });
+  };
+  ISSUED_MACHO_IMAGES.set(issued, deepFreeze({
+    binaryIdentity: boundIdentity(residentIdentity.binaryIdentity),
+    sliceIdentity: boundIdentity(residentIdentity.sliceIdentity),
+    architecture: issued.arch,
+    buildVersion: issued.metadata.buildVersion ?? null,
+    fileOffset: issued.fileOffset,
+    fileSize: issued.fileSize,
+    imageBase: issued.imageBase,
+    platform: issued.platform,
+    sections: authoritySections,
+    segments: authoritySegments,
+    createMetadataSource,
+    sourceComplete: sourceDigest !== null,
+    contentMatches,
+    machoMetadata: issued.metadata.machoMetadata,
+    codeSignatureCommandsComplete: issued.metadata.codeSignatureCommandsComplete === true,
+    codeSignature: issued.metadata.codeSignature ?? null,
+    chainedFixups: issued.metadata.chainedFixups ?? null,
+    chainedSites: chainedPointerSites(issued),
+  }));
+  return issued;
 }
 
 function validateMappedRange(label, address, size, fileOffset, fileSize, image) {

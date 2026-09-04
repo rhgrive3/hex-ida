@@ -1,0 +1,24 @@
+# Tasks: Versioned Apple Metadata and Fixup Knowledge (HEX-X-02)
+
+- [x] T001 Audit current main and stale branch `407c2411`; record reuse/supersession evidence.
+- [x] T002 Add the bounded Apple knowledge contract and deterministic serializer.
+- [x] T003 Parse dyld shared-cache v1 header/mappings with exact provenance and ambiguity retention.
+- [x] T004 Complete canonical chained formats 4/5 and publish separate bind/rebase/PAC site evidence.
+- [x] T005 Parse bounded Mach-O embedded-signature/SuperBlob/CodeDirectory structure without validity claims.
+- [x] T006 Wire `LC_CODE_SIGNATURE` provenance into the canonical Mach-O parser.
+- [x] T007 Assemble Swift/ObjC/dyld/chained/PAC/signing cells without authority promotion.
+- [x] T008 Add positive/negative/adversarial/boundary/regression focused tests.
+- [ ] T009 Run existing chained, language metadata, Mach-O, and writer-independent rebuild/reparse suites. Focused/internal reparse suites pass; the repository's required independent `llvm-readobj` oracle is unavailable in this environment.
+- [x] T010 Run syntax/module boundary, ownership inventory, `git diff --check`, and exact-head checks.
+- [x] T011 Update only the HEX-X-02 ledger row with exact evidence.
+- [x] T012 Add review regressions for malformed short signing commands, missing starts, and later-segment ownership after an early budget exit.
+- [x] T013 Parse exact source-backed signature ranges and retain thin/fat container provenance.
+- [x] T014 Honor nonzero CodeDirectory v2.3 `codeLimit64` for slot and mutation coverage.
+- [x] T015 Correct format 4 to cache-base-relative resolution and preserve unresolved offsets without a cache base.
+- [x] T016 Preserve storage width separately from stride and retain duplicate/conflicting site ambiguity.
+- [x] T017 Strip serialized completeness/authority, require module-issued serialization, and reject crafted authority cells.
+- [x] T018 Require byte-derived, parser-issued Mach-O/cache identities and exact built-in language-provider issuance; reject cloned/manual/caller-labelled authority.
+- [x] T019 Poison signature absence on every incomplete/inconsistent load-command scan and require exact chained page coverage before ordinary-pointer fallback is possible.
+- [x] T020 Validate CodeDirectory infinite-page semantics, supported hash widths, reserved fields, and every version-dependent offset range.
+- [x] T021 Derive Swift/Objective-C probes solely from parser-owned section and byte-reader evidence; reject caller provider state and copied/mutated sections.
+- [x] T022 Route canonical Swift/Objective-C probes through immutable lexical implementations; exported prototype/instance/subclass/proxy-result mutation cannot mint issuance.

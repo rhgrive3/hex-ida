@@ -49,7 +49,7 @@ function image() {
   assert.ok(img.warnings.length<8);
 }
 
-const macho=fs.readFileSync(new URL('../js/binary/macho.js',import.meta.url),'utf8');
+const macho=fs.readFileSync(new URL('../js/binary/macho-core.js',import.meta.url),'utf8');
 const dyld=fs.readFileSync(new URL('../js/binary/macho-dyld.js',import.meta.url),'utf8');
 assert.match(macho,/const metadataBudget = ensureMachOMetadataBudget/);
 for(const call of ['parseSymbolTable','parseFunctionStarts','parseChainedImports','parseChainedBindingSites','parseClassicBindings','parseExportTrie'])

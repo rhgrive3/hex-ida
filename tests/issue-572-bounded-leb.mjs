@@ -54,10 +54,10 @@ import { parseEhFrameHeader } from '../js/binary/elf-unwind.js';
   assert.ok(image.warnings.some((x) => /eh_frame_hdr/.test(x) && /bounded substream/.test(x)));
 }
 
-// LC_FUNCTION_STARTS is private to macho.js, so guard the product source path
+// LC_FUNCTION_STARTS is private to macho-core.js, so guard the product source path
 // in addition to exercising the shared decoder above.
 {
-  const macho = fs.readFileSync(new URL('../js/binary/macho.js', import.meta.url), 'utf8');
+  const macho = fs.readFileSync(new URL('../js/binary/macho-core.js', import.meta.url), 'utf8');
   assert.match(macho, /LC_FUNCTION_STARTS:[^\n]*\$\{e\.message\}/);
   assert.match(macho, /r\.uleb\(p,\s*10,\s*end\)/);
   const dyld = fs.readFileSync(new URL('../js/binary/macho-dyld.js', import.meta.url), 'utf8');
