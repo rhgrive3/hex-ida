@@ -12,8 +12,8 @@ strict AI AnalysisQuery address and paging metadata boundaries.
 - Regression owner: `tests/phase12/adversarial/issue-6157-6158-ai-query-boundaries.test.mjs`
 - Shared-board claim: lanes message #283
 - Branch: `fix/issues-ai-query-boundaries-6157-6158`
-- Candidate base: `origin/main` at `d85b70118035ee7b224452db50efec45ac0cf322`
-- Implementation head: record after the implementation commit
+- Candidate base: `origin/main` at `fd7ee4a695c23e725b97e660c73ed7f08cce4f3c`
+- Implementation head: `3ab41cb1779d92acfd0c19b5bc6b41801720da9e`
 
 ## Stages
 
@@ -22,7 +22,7 @@ strict AI AnalysisQuery address and paging metadata boundaries.
 - [x] Reused the strict AI address validator; rejected non-primitive page offsets/counts and advanced cursors by actual rows.
 - [x] Added regressions for numeric-string/array/boolean/object/negative/fractional paging metadata, malformed cursor offsets, and structured instruction addresses.
 - [x] Focused regression, QueryAPI authority regressions, lossless data-plane regressions, and lint passed.
-- [ ] Compare the Phase 12 denominator failure against pristine `origin/main` and record the result.
+- [x] Compare the Phase 12 denominator failure against pristine `origin/main`; the same assertion fails on pristine main.
 - [ ] Create one owner PR for #6157/#6158 and record exact-head candidate evidence.
 - [ ] Merge only after exact-head evidence and required checks are green; otherwise record the blocker here and on the board.
 
@@ -32,4 +32,3 @@ Fetch `origin/main`, verify the exact candidate base, read the shared board afte
 #283, then continue from the first unchecked stage. Repository-wide red gates
 must be compared with a pristine `origin/main` baseline before being treated as
 a lane regression.
-
