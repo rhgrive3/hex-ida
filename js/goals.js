@@ -639,6 +639,6 @@ export function matchText(goal, text) {
 
 /** 名前（シンボル・Objective-C メソッド）との当てはまり。 */
 export function matchName(goal, name) {
-  if (!goal || !name) return null;
-  return matchText(goal, String(name));
+  if (!goal || typeof name !== 'string') return null;
+  return matchText(goal, name);
 }

@@ -3,6 +3,7 @@ import {
   GOALS,
   goalFromPreset,
   matchField,
+  matchName,
   matchText,
   normalizeFieldName,
 } from '../../js/goals.js';
@@ -20,6 +21,7 @@ for (const value of [
 ]) {
   assert.equal(normalizeFieldName(value), '', 'structured field names must not be coerced');
   assert.equal(matchField(hp, value), null, 'structured field names must not create evidence');
+  assert.equal(matchName(hp, value), null, 'structured names must not create goal evidence');
 }
 
 for (const value of [
@@ -34,6 +36,7 @@ for (const value of [
 
 assert.equal(normalizeFieldName('_currentHP'), 'current hp');
 assert.ok(matchField(hp, '_hp'), 'primitive field names must retain matching');
+assert.ok(matchName(hp, 'hp'), 'primitive names must retain matching');
 assert.ok(matchText(purchase, 'purchase receipt'), 'primitive goal text must retain matching');
 
 // Keep the public goal collection part of the regression fixture: callers use
