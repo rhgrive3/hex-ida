@@ -45,13 +45,28 @@ export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
   const entSize = bits === 64 ? 16 : 8;
   const tags = new Map();
   const ordered = [];
-  for (let p = start, guard = 0; p + entSize <= start + size && guard < 1_000_000; p += entSize, guard++) {
+  const entrySpanRemainder = size % entSize;
+  let guard = 0;
+  let terminated = false;
+  for (let p = start; p + entSize <= start + size && guard < 1_000_000; p += entSize, guard++) {
     const tag = bits === 64 ? r.i64(p) : BigInt(r.i32(p));
     const value = bits === 64 ? r.u64(p + 8) : BigInt(r.u32(p + 4));
-    if (tag === DT_NULL) break;
+    if (tag === DT_NULL) {
+      terminated = true;
+      break;
+    }
     if (!tags.has(tag)) tags.set(tag, []);
     tags.get(tag).push(value);
     ordered.push({ tag, value });
+  }
+  if (entrySpanRemainder !== 0) {
+    markDynamicPartial(image, `PT_DYNAMIC size ${size} is not a multiple of entry size ${entSize}`);
+  }
+  if (!terminated) {
+    const reason = guard >= 1_000_000
+      ? 'PT_DYNAMIC entry scan exceeded parser guard before DT_NULL'
+      : 'PT_DYNAMIC is not DT_NULL-terminated within its declared file span';
+    markDynamicPartial(image, reason);
   }
 
   const one = (tag) => tags.get(tag)?.[0] ?? null;
@@ -159,6 +174,9 @@ export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
 
   image.metadata.programDynamic = {
     entries: ordered.length,
+    entrySize: entSize,
+    entrySpanAligned: entrySpanRemainder === 0,
+    terminated,
     symbols: symbols.length,
     symbolsExpected: symbolCount,
     symbolsDeclared: declaredSymbolCount,
