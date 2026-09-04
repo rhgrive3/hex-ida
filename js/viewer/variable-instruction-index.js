@@ -172,6 +172,7 @@ export class VariableInstructionIndex {
       if(!controller.signal.aborted){controller.abort(abortError(signal?.reason));this._metrics.cancelledRequests++;}
     };
     signal?.addEventListener?.('abort',relayAbort,{once:true});
+    if(signal?.aborted)relayAbort();
     const promise=(async()=>{
       try{
         const response=await this.disassembleAt(start,{architecture:this.architecture,length:requested,signal:controller.signal,priority});
@@ -189,13 +190,26 @@ export class VariableInstructionIndex {
       }
     })();
     this.inflight.set(key,{controller,promise,generation,start});
+    promise.catch(()=>{});
     return this._join(promise,signal);
   }
 
   async _join(promise,signal){
     if(!signal)return promise;
     if(signal.aborted)throw abortError(signal.reason);
-    return await Promise.race([promise,new Promise((_,reject)=>signal.addEventListener('abort',()=>reject(abortError(signal.reason)),{once:true}))]);
+    let onAbort=null;
+    try{
+      return await Promise.race([
+        promise,
+        new Promise((_,reject)=>{
+          onAbort=()=>reject(abortError(signal.reason));
+          signal.addEventListener('abort',onAbort,{once:true});
+          if(signal.aborted)onAbort();
+        }),
+      ]);
+    }finally{
+      if(onAbort)signal.removeEventListener?.('abort',onAbort);
+    }
   }
 
   _buildPage({start,requested,response,generation,region}){
