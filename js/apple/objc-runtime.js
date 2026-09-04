@@ -28,34 +28,87 @@ function pushIndex(map, key, value) {
   list.push(value);
 }
 
-class ImmutableMap extends Map {
-  #sealed = false;
+class ImmutableMap {
+  #map;
 
-  seal() {
-    this.#sealed = true;
-    return Object.freeze(this);
+  constructor(map) {
+    this.#map = new Map(map);
+    Object.freeze(this);
   }
 
-  set(key, value) {
-    if (this.#sealed) throw new TypeError('objc runtime index is immutable');
-    return super.set(key, value);
+  get size() {
+    return this.#map.size;
   }
 
-  delete(key) {
-    if (this.#sealed) throw new TypeError('objc runtime index is immutable');
-    return super.delete(key);
+  get(key) {
+    return this.#map.get(key);
+  }
+
+  has(key) {
+    return this.#map.has(key);
+  }
+
+  entries() {
+    return this.#map.entries();
+  }
+
+  keys() {
+    return this.#map.keys();
+  }
+
+  values() {
+    return this.#map.values();
+  }
+
+  [Symbol.iterator]() {
+    return this.#map[Symbol.iterator]();
+  }
+
+  forEach(callback, thisArg) {
+    if (typeof callback !== 'function') throw new TypeError('callback must be a function');
+    for (const [key, value] of this.#map) callback.call(thisArg, value, key, this);
+  }
+
+  set() {
+    throw new TypeError('objc runtime index is immutable');
+  }
+
+  delete() {
+    throw new TypeError('objc runtime index is immutable');
   }
 
   clear() {
-    if (this.#sealed) throw new TypeError('objc runtime index is immutable');
-    return super.clear();
+    throw new TypeError('objc runtime index is immutable');
   }
 }
 
+// Preserve the established Map-compatible public surface without giving callers
+// a real Map internal slot that intrinsic mutators can target.
+Object.setPrototypeOf(ImmutableMap.prototype, Map.prototype);
+Object.freeze(ImmutableMap.prototype);
+
 function immutableMap(map) {
-  const copy = new ImmutableMap();
-  for (const [key, value] of map) Map.prototype.set.call(copy, key, value);
-  return copy.seal();
+  return new ImmutableMap(map);
+}
+
+function immutableSnapshot(value, seen = new Map()) {
+  if (value == null || typeof value !== 'object') return value;
+  if (seen.has(value)) return seen.get(value);
+
+  const copy = Array.isArray(value) ? [] : {};
+  seen.set(value, copy);
+  for (const key of Reflect.ownKeys(value)) {
+    if (typeof key !== 'string') continue;
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor?.enumerable || !('value' in descriptor)) continue;
+    Object.defineProperty(copy, key, {
+      value: immutableSnapshot(descriptor.value, seen),
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+  }
+  return Object.freeze(copy);
 }
 
 function shallowCloneArray(value) {
@@ -219,7 +272,7 @@ export function buildObjcRuntimeIndex(objcModel = {}) {
     Object.freeze(entry);
   }
 
-  const completeness = objcModel.runtimeCompleteness || null;
+  const completeness = objcModel.runtimeCompleteness ? immutableSnapshot(objcModel.runtimeCompleteness) : null;
   return {
     runtime: 'objc',
     classes: immutableMap(classes),
