@@ -116,7 +116,8 @@ function scanUtf16(image, bytes, base, range, min, max, out, seen, limit, encodi
   const be = encoding === 'utf16be';
   const printableAt = (p) => p + 1 < bytes.length && (be ? bytes[p] === 0 && printableAscii(bytes[p + 1]) : printableAscii(bytes[p]) && bytes[p + 1] === 0);
   let uncompleted = 0;
-  for (let p = 0; p + 1 < bytes.length && !isCapped();) {
+  let p = 0;
+  for (; p + 1 < bytes.length && !isCapped();) {
     if (!printableAt(p)) { p++; continue; }
     const start = p;
     let q = p;
@@ -130,9 +131,9 @@ function scanUtf16(image, bytes, base, range, min, max, out, seen, limit, encodi
       emit(image, bytes, base, start, q - start, encoding, range, out, seen, limit, onCapped);
       if (isCapped()) break;
     }
-    p = chars >= max ? q : q + 2;
+    p = chars >= max ? q : q + 1;
   }
-  if (!isFinalBlock && uncompleted === 0 && (bytes.length & 1) !== 0) {
+  if (!isFinalBlock && uncompleted === 0 && p === bytes.length - 1) {
     uncompleted = 1;
   }
   return uncompleted;
