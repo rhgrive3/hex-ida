@@ -15,9 +15,9 @@ owner and must be updated when a branch, PR, or merge stage changes.
 - Branch: `fix/issues-api-boundaries-6130-6121`
 - Candidate base: `origin/main` at `f00154dcb9b2234cbacb4c6a3c2186d00c8a4b3a`
 - Implementation head: `170244a99f785867a9c5b82ea0c87854d38bc660`
-- Remote head after checkpoint update: `origin/fix/issues-api-boundaries-6130-6121`
+- Current remote head: `origin/fix/issues-api-boundaries-6130-6121` at `516c6b522a6fe11cd30d1fbd6ec89726fbb54381`
 - Pull request: #6480 — https://github.com/rhgrive3/hex-ida/pull/6480
-- Last verified candidate tree: `5742df1c162dade595b4d5ef257a8b79989d8fb6`
+- Last verified candidate tree before this checkpoint update: `e06344df31755e8cbb295446b9b000fa7f5ffc53`
 
 ## Completed stages
 
@@ -38,6 +38,7 @@ owner and must be updated when a branch, PR, or merge stage changes.
 - [x] Created one owner PR for both issues: #6480.
 - [x] Candidate merge was clean; tree `5742df1c162dade595b4d5ef257a8b79989d8fb6` contained exactly the three owned files.
 - [x] Candidate focused regression and lint passed; candidate Phase 4 reproduced only the pristine-main ownership-contract failure.
+- [x] Candidate proof includes the #6112 structured API-identity regression.
 - [ ] Re-run exact-head checks after this checkpoint update and inspect required PR checks.
 - [ ] Merge only after the exact PR head and required checks are verified; otherwise record the blocker here and on the board.
 
