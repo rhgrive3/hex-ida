@@ -508,14 +508,14 @@ export class RemoteDebugAdapter extends DebugAdapter {
 }
 
 export class LLDBCompatibleAdapter extends RemoteDebugAdapter {
-  constructor(transport, options = {}) { super(transport,{ ...options,id:options.id||'lldb-compatible',kind:'lldb-compatible',capabilities:{ attach:true,launch:true,pause:true,resume:true,stepInto:true,stepOver:true,stepOut:true,breakpointAddress:true,breakpointFunction:true,breakpointConditional:true,watchpointMemory:true,removeBreakpoint:true,listBreakpoints:true,readRegisters:true,writeRegister:true,readMemory:true,writeMemory:true,threads:true,modules:true,backtrace:true,evaluate:true,traceFunction:true,...options.capabilities,cancel:false } }); }
+  constructor(transport, options = {}) { super(transport,{ ...options,id:options.id??'lldb-compatible',kind:'lldb-compatible',capabilities:{ attach:true,launch:true,pause:true,resume:true,stepInto:true,stepOver:true,stepOut:true,breakpointAddress:true,breakpointFunction:true,breakpointConditional:true,watchpointMemory:true,removeBreakpoint:true,listBreakpoints:true,readRegisters:true,writeRegister:true,readMemory:true,writeMemory:true,threads:true,modules:true,backtrace:true,evaluate:true,traceFunction:true,...options.capabilities,cancel:false } }); }
 }
 export class FridaCompatibleAdapter extends RemoteDebugAdapter {
-  constructor(transport, options = {}) { super(transport,{ ...options,id:options.id||'frida-compatible',kind:'frida-compatible',capabilities:{ attach:true,launch:true,pause:true,resume:true,breakpointAddress:true,breakpointFunction:true,removeBreakpoint:true,listBreakpoints:true,readRegisters:true,readMemory:true,writeMemory:true,threads:true,modules:true,backtrace:true,evaluate:true,traceFunction:true,traceCall:true,traceReturn:true,traceBranch:true,traceMemoryWrite:true,traceMemoryRead:true,objcRuntime:true,swiftRuntime:true,...options.capabilities,cancel:false } }); }
+  constructor(transport, options = {}) { super(transport,{ ...options,id:options.id??'frida-compatible',kind:'frida-compatible',capabilities:{ attach:true,launch:true,pause:true,resume:true,breakpointAddress:true,breakpointFunction:true,removeBreakpoint:true,listBreakpoints:true,readRegisters:true,readMemory:true,writeMemory:true,threads:true,modules:true,backtrace:true,evaluate:true,traceFunction:true,traceCall:true,traceReturn:true,traceBranch:true,traceMemoryWrite:true,traceMemoryRead:true,objcRuntime:true,swiftRuntime:true,...options.capabilities,cancel:false } }); }
 }
 
 export class ReplayAdapter extends DebugAdapter {
-  constructor(recording = {}, options = {}) { super({ id:options.id||'replay',kind:'replay',capabilities:{ launch:true,readRegisters:true,readMemory:true,threads:true,modules:true,backtrace:true,traceFunction:true } }); this.recording=recording; }
+  constructor(recording = {}, options = {}) { super({ id:options.id??'replay',kind:'replay',capabilities:{ launch:true,readRegisters:true,readMemory:true,threads:true,modules:true,backtrace:true,traceFunction:true } }); this.recording=recording; }
   async launch(){return { replay:true, metadata:this.recording.metadata||null }}
   async readRegisters(){return remoteRegisters(this.recording.registers||{})}
   async readMemory(address,size){const n=memoryReadSize(size,1); if(n>1024*1024) throw new DebugAdapterError('too-large','replay memory read exceeds 1 MiB'); const key=String(asAddress(address)); const bytes=this.recording.memory&&this.recording.memory[key]; if(!bytes)throw new DebugAdapterError('replay-miss',`recording has no memory at ${key}`); return remoteBytes(bytes,n)}
