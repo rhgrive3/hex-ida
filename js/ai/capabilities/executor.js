@@ -60,7 +60,7 @@ export class CapabilityExecutor {
   async executeBuiltIn(entry, args, options, runtimePlatform = null) {
     const app = this.app;
     switch (entry.id) {
-      case 'annotation.rename': return setNote(app, 'name', args, () => app.symbols?.rename?.(BigInt(args.address), String(args.value)));
+      case 'annotation.rename': return renameSymbol(app, args);
       case 'annotation.comment': return setNote(app, 'comment', args);
       case 'annotation.set-type': return setType(app, args);
       case 'annotation.struct-field': return setStructField(app, args);
@@ -135,6 +135,30 @@ function setNote(app, kind, args, after = null) {
   const method = kind === 'name' ? 'setName' : 'setComment';
   if (typeof app?.notes?.[method] !== 'function') throw new AIError('tool_failed', `${kind} annotation adapter is unavailable.`);
   app.notes[method](address, value); after?.(); app.viewer?.setSymbols?.(app.symbols); app.updateChrome?.();
+  return { ok: true, address: address.toString(), value };
+}
+
+// annotation.rename commits two coupled mutations (notes.setName +
+// symbols.rename). A failure of the second must not leave the first applied:
+// restore the prior note state and only then surface the original error, so a
+// failed proposal never ends up partially written (#6255).
+function renameSymbol(app, args) {
+  const address = BigInt(args.address); const value = String(args.value ?? '');
+  if (typeof app?.notes?.setName !== 'function') throw new AIError('tool_failed', 'name annotation adapter is unavailable.');
+  const previousName = app.notes.nameOf?.(address);
+  app.notes.setName(address, value);
+  try {
+    app.symbols?.rename?.(address, value);
+  } catch (error) {
+    try {
+      app.notes.setName(address, previousName == null ? '' : previousName);
+    } catch (rollbackError) {
+      throw new AIError('tool_failed', `Rename failed and the note mutation could not be rolled back: ${rollbackError?.message || rollbackError}`, { cause: String(error?.message || error) });
+    }
+    app.viewer?.setSymbols?.(app.symbols); app.updateChrome?.();
+    throw error;
+  }
+  app.viewer?.setSymbols?.(app.symbols); app.updateChrome?.();
   return { ok: true, address: address.toString(), value };
 }
 
