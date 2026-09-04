@@ -72,7 +72,10 @@ const EXTRA_API_TABLE = [
   { id:'posix_process', re:/^_?(?:__darwin_check_fd_set_overflow|waitpid|sigsetjmp|setjmp|siglongjmp|__longjmp|__setjmp|sigaltstack|sigprocmask|raise|fork|execl|getuid|getgid|getegid|geteuid|getpwuid_r|tcsetattr|tcgetattr|syscall|sleep|getpagesize|setenv)$/, cat:'runtime', args:null, ret:null, effect:'runtime' },
 
   { id:'audio_file', re:/^_?AudioFile[A-Za-z0-9_]*$/, cat:'runtime', args:null, ret:null, effect:'runtime' },
-  { id:'apple_ui_media', re:/^_?(?:UIApplicationMain|UIRectFill|UIAccessibility[A-Za-z0-9_]*|CAFrameRateRange[A-Za-z0-9_]*|CMSampleBuffer[A-Za-z0-9_]*|CVOpenGLES[A-Za-z0-9_]*|vImage[A-Za-z0-9_]*|UTType[A-Za-z0-9_]*)$/, cat:'ui', args:null, ret:null, effect:'ui' },
+  { id:'apple_ui_media', re:/^_?(?:UIApplicationMain|UIRectFill|UIAccessibility[A-Za-z0-9_]*|CAFrameRateRange[A-Za-z0-9_]*|CMSampleBuffer[A-Za-z0-9_]*|CVOpenGLES[A-Za-z0-9_]*|UTType[A-Za-z0-9_]*)$/, cat:'ui', args:null, ret:null, effect:'ui' },
+
+  // Accelerate vImage image-processing framework transforms pixel buffer memory.
+  { id:'accelerate_vimage', re:/^_?vImage[A-Za-z0-9_]+$/, cat:'memory', args:null, ret:null, effect:'convert' },
 
   // GoogleUtilities logging exports.
   { id:'google_utilities_log', re:/^_?GUL(?:OSLog|SetLogger|IsLoggable)[A-Za-z0-9_]*$/, cat:'log', args:null, ret:null, effect:'log' },
