@@ -1,6 +1,10 @@
 import { expr, mapChildren, mergeSource, sourceOf } from '../ast/nodes.js';
 import { expressionReadability, printExpression, printProgram } from '../pretty/c.js';
-import { canonicalAnalysisIdentity } from './analysis-identity.js';
+import {
+  analysisIdentityMatches,
+  canonicalAnalysisIdentity,
+  isValidatedAnalysisIdentity,
+} from './analysis-identity.js';
 import { buildRenderProvenance } from './render-provenance.js';
 
 function integer(value) {
@@ -253,6 +257,14 @@ function refreshMetrics(result, semanticAst, printed, records) {
   };
 }
 
+function boundAnalysisIdentity(result, analysis, supplied) {
+  const canonical = canonicalAnalysisIdentity({ ir:result.ir, analysis });
+  if (supplied == null) return canonical;
+  if (supplied?.valid !== true || !isValidatedAnalysisIdentity(supplied.identity)) return canonical;
+  if (canonical?.valid !== true || !isValidatedAnalysisIdentity(canonical.identity)) return canonical;
+  return analysisIdentityMatches(supplied.identity, canonical.identity) ? supplied : canonical;
+}
+
 /**
  * Final Phase 8 product cutover.
  *
@@ -328,13 +340,12 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
       inductionNames:Object.freeze(Object.fromEntries(names)),
     }),
   };
-  // HEX-C4-03: bidirectional render provenance. The snapshot identity is the
-  // same canonical analysis identity the scalar passes prove; when it cannot
-  // be resolved the map is published incomplete with `missing-snapshot` rather
-  // than silently binding to nothing. Budget and cancellation hooks come from
-  // the projection options so the map obeys the same bounds as the pass set.
-  const resolvedIdentity = opts.analysisIdentity
-    ?? canonicalAnalysisIdentity({ ir:result.ir, analysis });
+  // HEX-C4-03: bidirectional render provenance. Caller-supplied identity may
+  // only be used when it is a validated wrapper that exactly matches the
+  // canonical identity derived from the current Semantic IR. Stale/plain
+  // overrides fall back to the canonical result instead of minting snapshot
+  // authority for a different IR.
+  const resolvedIdentity = boundAnalysisIdentity(result, analysis, opts.analysisIdentity);
   const renderProvenance = buildRenderProvenance({
     result:withLines,
     snapshotId:resolvedIdentity?.identity?.snapshotId ?? null,
