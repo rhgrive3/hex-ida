@@ -295,9 +295,18 @@ export class KnowledgeDB {
 
   async #negativeCandidates(name,identity) {
     const db=await this.#dbOpen(); const store=db.transaction('negative','readonly').objectStore('negative');
-    if (name && store.indexNames.contains('candidateName')) return requestPromise(store.index('candidateName').getAll(name,200));
-    if (identity && store.indexNames.contains('candidateIdentity')) return requestPromise(store.index('candidateIdentity').getAll(identity,200));
-    return [];
+    // Identity is the selective key: when both keys are present the old
+    // name-first early return shadowed identity-bound rejections behind the
+    // 200-row name cap. Union both indexes (bounded) so an identity record
+    // past the name page is still found without losing name-only fallbacks.
+    const out = new Map();
+    if (identity && store.indexNames.contains('candidateIdentity')) {
+      for (const record of await requestPromise(store.index('candidateIdentity').getAll(identity,200))) out.set(record.id, record);
+    }
+    if (name && store.indexNames.contains('candidateName')) {
+      for (const record of await requestPromise(store.index('candidateName').getAll(name,200))) out.set(record.id, record);
+    }
+    return [...out.values()];
   }
 }
 
