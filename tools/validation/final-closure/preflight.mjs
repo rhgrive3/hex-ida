@@ -206,7 +206,7 @@ export const FROZEN_PERFORMANCE_IDENTITIES = Object.freeze({
   sources: '750b59ecc3d34d6d54e691d8f2396dde',
 });
 
-export const FROZEN_FOUNDATION_OWNERSHIP_DIGEST = '924c7af2aa564d5e2dfa4eeff787eddd';
+export const FROZEN_FOUNDATION_OWNERSHIP_DIGEST = 'd32bee250ca67c9264599f7b9d6ec341';
 
 const REQUIRED_TASK_FIELDS = Object.freeze([
   'Objective:',

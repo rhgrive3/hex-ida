@@ -713,7 +713,6 @@ for (const [taskId, ownedPaths] of [
     'tests/issue-572-bounded-leb.mjs',
   ]],
   ['T016', [
-    'tests/stage2/rebuild-transaction.test.mjs',
     'tools/validation/discovery/x03-ownership.mjs',
     'tools/validation/discovery/x03-verify.mjs',
   ]],
@@ -744,6 +743,7 @@ for (const [taskId, rejectedPath] of [
   ['T015', 'docs/analysis-improvement-finding-ledger.md'],
   ['T016', 'js/ai/tools/registry-base.js'],
   ['T016', 'js/rebuild/format-safe.js'],
+  ['T016', 'tests/stage2/rebuild-transaction.test.mjs'],
   ['T017', 'js/decompiler/phase8/sccp.js'],
 ]) {
   assertIncludes(

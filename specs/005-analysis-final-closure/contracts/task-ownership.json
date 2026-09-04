@@ -528,13 +528,12 @@
         "js/rebuild/transaction-v2.js",
         "tests/phase7/discovery/**",
         "tests/phase12/rebuild/**",
-        "tests/stage2/rebuild-transaction.test.mjs",
         "tools/validation/discovery/**",
         "tests/final-closure/t016/**"
       ],
       "forbiddenOverlap": [
         "T015 Apple knowledge and Mach-O metadata ownership",
-        "candidate js/ai/tools/registry-base.js and js/rebuild/format-safe.js paths",
+        "candidate js/ai/tools/registry-base.js, js/rebuild/format-safe.js, and independent tests/stage2/rebuild-transaction.test.mjs paths",
         "candidate docs and historical Spec Kit directories outside the exact allowlist",
         "unreconciled overlapping PR paths",
         "all generated outputs"
