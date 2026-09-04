@@ -34,6 +34,14 @@ export class MemoryAccessError extends DebugAdapterError {
   constructor(code, message, details) { super(code, message, details); this.name = 'MemoryAccessError'; }
 }
 
+function regionCollection(value, name) {
+  if (value == null) return [];
+  if (typeof value[Symbol.iterator] !== 'function') {
+    throw new MemoryAccessError('invalid-argument', `${name} must be an iterable collection`, { name, value });
+  }
+  return value;
+}
+
 export class MemoryRegion {
   constructor(spec = {}) {
     this.start = asAddress(spec.start);
@@ -57,7 +65,7 @@ export class RuntimeMemoryMap {
   constructor(regions = [], options = {}) {
     this.maxTransfer = strictSize(options.maxTransfer, 1024 * 1024, MAX_TRANSFER, 'maxTransfer');
     this.regions = [];
-    for (const region of regions) this.map(region);
+    for (const region of regionCollection(regions, 'regions')) this.map(region);
   }
   map(spec) {
     const region = spec instanceof MemoryRegion ? spec : new MemoryRegion(spec);
@@ -96,7 +104,7 @@ export function createSandboxMemoryMap({ objectBase = 0x600000001000n, objectSiz
   map.map({ start:asAddress(objectBase,'objectBase'), size:objectSize, kind:'object', permissions:'rw', name:'fake-object' });
   map.map({ start:asAddress(heapBase,'heapBase'), size:heapSize, kind:'heap', permissions:'rw', name:'fake-heap' });
   map.map({ start:asAddress(stackTop,'stackTop') - BigInt(stackSize), size:stackSize, kind:'stack', permissions:'rw', name:'stack' });
-  for (const g of globals) map.map({ ...g, kind:g.kind == null ? 'global' : g.kind });
-  for (const m of mappings) map.map(m);
+  for (const g of regionCollection(globals, 'globals')) map.map({ ...g, kind:g.kind == null ? 'global' : g.kind });
+  for (const m of regionCollection(mappings, 'mappings')) map.map(m);
   return map;
 }

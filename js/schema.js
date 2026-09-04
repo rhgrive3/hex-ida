@@ -52,6 +52,14 @@ function writtenGpr(w) {
 const MAX_COLUMNS = 4096;
 const MAX_RECORD = 1 << 20;
 
+export const DEFAULT_SCHEMA_RECOVERY_LIMIT = 300;
+
+export function normalizeSchemaRecoveryLimit(value) {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : DEFAULT_SCHEMA_RECOVERY_LIMIT;
+}
+
 function writesRegister(w, reg) {
   const kind = W.classifyWord ? W.classifyWord(w) : null;
   // Stores, branches, compares, calls and returns do not write Rd as a normal
@@ -313,7 +321,7 @@ export async function recoverSchemas(opts) {
     incompleteReason: { value: unsupported ? 'unsupported-architecture' : (program?.incompleteReason || null), enumerable: false, configurable: true },
   });
   if (unsupported || !strings || !program || !read || program.unsupported) return out;
-  const limit = typeof o.limit === 'number' && Number.isSafeInteger(o.limit) && o.limit >= 0 ? o.limit : 300;
+  const limit = normalizeSchemaRecoveryLimit(o.limit);
   const cancelled = o.isCancelled || (() => false);
   const progress = o.onProgress || (() => {});
   const byFunction = new Map();

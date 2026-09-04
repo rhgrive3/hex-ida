@@ -27,7 +27,23 @@ const LIBRARIES = [
   { name:'SDWebImage', classification:'LIBRARY', kind:'library', libraries:[/SDWebImage/i], symbols:[/^_?SDWebImage/] },
 ];
 
-function textOf(value) { return typeof value === 'string' ? value : value?.name || value?.library || value?.text || ''; }
+function textOf(value) {
+  if (typeof value === 'string') return value;
+  if (!value || typeof value !== 'object') return '';
+  for (const key of ['name', 'library', 'text']) {
+    if (typeof value[key] === 'string') return value[key];
+  }
+  return '';
+}
+function collectionOf(value) {
+  if (value == null || typeof value === 'string') return [];
+  if (Array.isArray(value)) return value;
+  try {
+    return typeof value[Symbol.iterator] === 'function' ? Array.from(value) : [];
+  } catch {
+    return [];
+  }
+}
 function regexTest(rx, text) {
   if (!(rx instanceof RegExp)) return false;
   rx.lastIndex = 0;
@@ -41,7 +57,10 @@ function hits(values, regexes) {
   return [...new Set(out)].slice(0, 12);
 }
 export function recognizeLibraries(input = {}, signatures = LIBRARIES) {
-  const libraries = input.libraries || [], symbols = [...(input.symbols || []), ...(input.imports || [])], strings = input.strings || [];
+  const source = input && typeof input === 'object' ? input : {};
+  const libraries = collectionOf(source.libraries);
+  const symbols = [...collectionOf(source.symbols), ...collectionOf(source.imports)];
+  const strings = collectionOf(source.strings);
   const results = [];
   for (const sig of signatures) {
     const libraryHits = hits(libraries, sig.libraries), symbolHits = hits(symbols, sig.symbols), stringHits = hits(strings, sig.strings || []);
