@@ -143,6 +143,29 @@ function aborted(budget) {
   catch { return true; }
 }
 
+function isPassResultShapeUsable(result) {
+  try {
+    return result != null
+      && typeof result === 'object'
+      && !Array.isArray(result)
+      && result.contractVersion === PHASE8_CONTRACT_VERSION
+      && typeof result.passId === 'string'
+      && typeof result.passVersion === 'string'
+      && typeof result.stage === 'string'
+      && typeof result.status === 'string'
+      && typeof result.changed === 'boolean'
+      && typeof result.completeness === 'string'
+      && Array.isArray(result.transforms)
+      && Array.isArray(result.diagnostics)
+      && Array.isArray(result.invalidated)
+      && Array.isArray(result.produced)
+      && Array.isArray(result.preserved)
+      && (result.stopReason == null || typeof result.stopReason === 'string');
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Computes what a committed pass invalidates.
  *
@@ -206,6 +229,7 @@ export function runPassTransaction(state, pass, context = {}, budget = {}) {
   // commits and the caller gets a reason. Throwing here instead would turn a
   // withheld ledger into an uncaught exception at the vertical, which is a
   // worse failure mode for the same fault.
+  if (!isPassResultShapeUsable(result)) return refuse(`malformed-result:${descriptor.id}`);
   if (!result.changed && stagedWrites.size > 0) return refuse(`unchanged-with-staged-writes:${descriptor.id}`);
   // What the pass staged and what it declared it produced must agree, or the
   // ledger describes a different commit than the one that happened.
