@@ -60,6 +60,7 @@ export function parseInnerMachOHeader(bytes) {
   else if (s === 'feedface') { bits = 32; littleEndian = false; }
   else if (s === 'feedfacf') { bits = 64; littleEndian = false; }
   else return null;
+  if (bits === 64 && bytes.length < 32) return null;
 
   const r = new ByteView(bytes, { littleEndian });
   const cpu = r.i32(4);
