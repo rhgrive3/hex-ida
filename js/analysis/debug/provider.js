@@ -129,14 +129,28 @@ function coverageList(value) {
 }
 
 export function isCanonicalDebugRecord(record) {
-  if (!record || typeof record !== 'object') return false;
-  if (typeof record.kind !== 'string' || !KIND_SET.has(record.kind)) return false;
-  if (typeof record.entityId !== 'string' || !record.entityId.trim()) return false;
-  if (typeof record.providerId !== 'string' || !record.providerId.trim()) return false;
-  if (typeof record.providerVersion !== 'string' || !record.providerVersion.trim()) return false;
+  if (!record || typeof record !== 'object' || Array.isArray(record)) return false;
   if (!Array.isArray(record.evidenceIds)) return false;
-  if (record.buildIdentity !== null && record.buildIdentity !== undefined && (typeof record.buildIdentity !== 'string' || !record.buildIdentity.trim())) return false;
-  return true;
+
+  try {
+    // Reuse the constructor as the validation oracle so the authoritative path
+    // cannot drift into a weaker copy of the record contract. Then require the
+    // normalization-sensitive fields to already be in constructor output form;
+    // raw records that merely *can* be coerced are not canonical authority.
+    const canonical = createDebugRecord(record);
+    if (canonical.kind !== record.kind) return false;
+    if (canonical.entityId !== record.entityId) return false;
+    if (canonical.name !== (record.name ?? null)) return false;
+    if (canonical.address !== (record.address ?? null)) return false;
+    if (canonical.sizeBytes !== (record.sizeBytes ?? null)) return false;
+    if (canonical.providerId !== record.providerId) return false;
+    if (canonical.providerVersion !== record.providerVersion) return false;
+    if (canonical.buildIdentity !== (record.buildIdentity ?? null)) return false;
+    if (canonical.evidenceIds.length !== record.evidenceIds.length) return false;
+    return canonical.evidenceIds.every((value, index) => value === record.evidenceIds[index]);
+  } catch {
+    return false;
+  }
 }
 
 /**
