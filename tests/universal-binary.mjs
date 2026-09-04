@@ -52,11 +52,11 @@ export function makeMachO64Fixture() {
 
 export function makeFatMachOFixture() {
   const thin=makeMachO64Fixture();
-  const b=new Uint8Array(0x100+thin.length);
+  const b=new Uint8Array(0x4000+thin.length);
   const v=new DataView(b.buffer);
   v.setUint32(0,0xcafebabe,false); v.setUint32(4,1,false);
-  v.setUint32(8,0x0100000c,false); v.setUint32(12,0,false); v.setUint32(16,0x100,false); v.setUint32(20,thin.length,false); v.setUint32(24,2,false);
-  b.set(thin,0x100);
+  v.setUint32(8,0x0100000c,false); v.setUint32(12,0,false); v.setUint32(16,0x4000,false); v.setUint32(20,thin.length,false); v.setUint32(24,14,false);
+  b.set(thin,0x4000);
   return b;
 }
 
@@ -151,7 +151,7 @@ function testMachO() {
   assert.ok(image.functions[0].sources?.includes('entrypoint')); assert.ok(image.functions[0].sources?.includes('function_starts'));
   assert.equal(auditBinary(image).errors,0);
   const fat=openBinary(makeFatMachOFixture());
-  assert.equal(fat.arch,'arm64'); assert.equal(fat.metadata.fat.selected.offset,0x100n); assert.equal(fat.functions.length,2);
+  assert.equal(fat.arch,'arm64'); assert.equal(fat.metadata.fat.selected.offset,0x4000n); assert.equal(fat.functions.length,2);
 }
 
 export function makeElf64Fixture() {

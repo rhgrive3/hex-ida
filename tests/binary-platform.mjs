@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { BinaryImage, ByteView, auditBinary, openBinary, openBinarySource } from '../js/binary/index.js';
+import { functionSeed, mergeFunctionSeeds } from '../js/binary/model.js';
 import { makeElf64Fixture, makePe64Fixture } from './universal-binary.mjs';
 import { makeSectionlessElf64Fixture } from './universal-binary-sectionless.mjs';
 import { parseEhFrameHeader } from '../js/binary/elf-unwind.js';
@@ -46,6 +47,26 @@ function issue86To97Regressions(){
   const noEntry=makePe64Fixture(), nev=new DataView(noEntry.buffer); nev.setUint32(0x84+20+16,0,true); const nei=openBinary(noEntry); assert.equal(nei.entrypoint,null); assert.equal(nei.functions.some(f=>f.source==='entrypoint'),false);
 }
 
+function issue3598FunctionSeedConfidenceRegressions() {
+  for (const confidence of [['1'], true, false, '0.8', { valueOf() { return 1; } }]) {
+    assert.equal(functionSeed(0x1000n, { confidence }).confidence, 0.5);
+  }
+  assert.equal(functionSeed(0x1000n, { confidence: 0.8 }).confidence, 0.8);
+  assert.equal(functionSeed(0x1000n, { confidence: 2 }).confidence, 1);
+  assert.equal(functionSeed(0x1000n, { confidence: -1 }).confidence, 0);
+
+  const merged = mergeFunctionSeeds([
+    { address: 0x1000n, source: 'symbol', name: 'good', confidence: 0.9 },
+    { address: 0x1000n, source: 'symbol', name: 'malformed', confidence: ['1'] },
+  ]);
+  assert.equal(merged[0].name, 'good');
+  assert.equal(merged[0].confidence, 0.9);
+
+  const extent = functionSeed(0x2000n, {
+    source: 'symbol', confidence: 0.75, size: 4n, extentConfidence: ['1'],
+  });
+  assert.equal(extent.extentConfidence, 0.5);
+}
 
 function peUnwindFragmentRegressions() {
   const makeImage = () => {
@@ -109,4 +130,5 @@ function peUnwindFragmentRegressions() {
 }
 peUnwindFragmentRegressions();
 issue86To97Regressions();
+issue3598FunctionSeedConfidenceRegressions();
 console.log('binary-platform: PASS');

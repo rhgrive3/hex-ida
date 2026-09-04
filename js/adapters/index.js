@@ -131,7 +131,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     this.memoryMap = null;
     this.breakpoints = new Map();
     this.traceBuffer = new TraceRingBuffer(options.trace || {});
-    this.traceState = { suppressMemory:false };
+    this.traceState = { suppressMemory:false, runMemoryEvents:null };
     this.epoch = 0;
     this.launchGeneration = 0;
     this.initialRegisters = null;
@@ -150,12 +150,12 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     const heapSize = boundedInteger(spec.heapSize, RUNTIME_HEAP_SIZE, 0x1000, 16 * 1024 * 1024, 'heapSize');
     const memoryMap = spec.memoryMap instanceof RuntimeMemoryMap ? spec.memoryMap : createSandboxMemoryMap({
       objectBase, objectSize:boundedInteger(spec.maxObjectSize, 0x10000, 0x100, 16 * 1024 * 1024, 'maxObjectSize'),
-      stackTop:STACK_TOP, heapBase, heapSize, globals:spec.globals || [], mappings:spec.memoryMappings || []
+      stackTop:STACK_TOP, heapBase, heapSize, globals:spec.globals ?? [], mappings:spec.memoryMappings ?? []
     });
     const launchGeneration = ++this.launchGeneration;
     const sandbox = createFunctionSandbox(this.io, { objectBase, maxObjectSize:spec.maxObjectSize });
     const traceBuffer = new TraceRingBuffer(this.options.trace || {});
-    const traceState = { suppressMemory:false };
+    const traceState = { suppressMemory:false, runMemoryEvents:null };
     const emu = sandbox.emulator;
     emu.heap = heapBase;
     let initializing = true;
@@ -163,14 +163,22 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     emu.load = async (addr,size) => {
       const region = memoryMap.assert(addr,size,'read');
       const value = await rawLoad(addr,size);
-      if (!initializing && spec.traceMemoryReads && !traceState.suppressMemory) traceBuffer.push({ type:'memory-read', address:BigInt(addr), size, region:region.kind, value });
+      if (!initializing && spec.traceMemoryReads && !traceState.suppressMemory) {
+        const event = { type:'memory-read', address:BigInt(addr), size, region:region.kind, value };
+        const accepted = traceBuffer.push(event);
+        if (accepted && Array.isArray(traceState.runMemoryEvents)) traceState.runMemoryEvents.push(event);
+      }
       return value;
     };
     emu.store = async (addr,size,value) => {
       const region = memoryMap.assert(addr,size,'write');
       const before = await rawLoad(addr,size);
       await rawStore(addr,size,value);
-      if (!initializing && !traceState.suppressMemory) traceBuffer.push({ type:'memory-write', address:BigInt(addr), size, region:region.kind, before, after:BigInt.asUintN(size * 8, BigInt(value)) });
+      if (!initializing && !traceState.suppressMemory) {
+        const event = { type:'memory-write', address:BigInt(addr), size, region:region.kind, before, after:BigInt.asUintN(size * 8, BigInt(value)) };
+        const accepted = traceBuffer.push(event);
+        if (accepted && Array.isArray(traceState.runMemoryEvents)) traceState.runMemoryEvents.push(event);
+      }
     };
     await sandbox.setup(address, {
       args:spec.arguments || spec.args || [], registers:spec.registers || {}, objectBase, objectAsArg0:spec.objectAsArg0,
@@ -207,7 +215,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
       this.activeRun = null;
     }
     this.cancelled = true; this.running = false; this.sandbox = null; this.memoryMap = null; this.initialRegisters = null; this.lastResult = null;
-    this.traceBuffer = new TraceRingBuffer(this.options.trace || {}); this.traceState = { suppressMemory:false }; this.traceCursor = 0; this.branchCursor = 0;
+    this.traceBuffer = new TraceRingBuffer(this.options.trace || {}); this.traceState = { suppressMemory:false, runMemoryEvents:null }; this.traceCursor = 0; this.branchCursor = 0;
     return super.disconnect();
   }
   async pause() {
@@ -225,7 +233,9 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
   async resume(options = {}) {
     const sandbox = this.ensureSandbox();
     if (this.activeRun) throw new DebugAdapterError('already-running', 'local sandbox already has an active execution');
-    const run = { sandbox, epoch:this.epoch, cancelled:!!(options.signal && options.signal.aborted), paused:false, kind:'resume' };
+    const traceState = this.traceState;
+    const run = { sandbox, epoch:this.epoch, cancelled:!!(options.signal && options.signal.aborted), paused:false, kind:'resume', memoryEvents:[] };
+    traceState.runMemoryEvents = run.memoryEvents;
     this.activeRun = run;
     this.cancelled = run.cancelled;
     if (sandbox.emulator.stopped === 'paused') sandbox.emulator.stopped = null;
@@ -253,8 +263,9 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
       if (this.activeRun !== run || sandbox !== this.sandbox || run.epoch !== this.epoch) {
         throw new DebugAdapterError('stale-run', 'local sandbox run was invalidated by a newer launch or session change', { runEpoch:run.epoch, currentEpoch:this.epoch });
       }
-      this.lastResult = this._normalizeResult(result); return this.lastResult;
+      this.lastResult = this._normalizeResult(result, run.memoryEvents); return this.lastResult;
     } finally {
+      if (traceState.runMemoryEvents === run.memoryEvents) traceState.runMemoryEvents = null;
       if (this.activeRun === run) {
         this.activeRun = null;
         this.running = false;
@@ -368,13 +379,15 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
   }
   async trace(options = {}) { if (options.run) await this.resume(options); return this.traceBuffer.snapshot({ limit:options.limit ?? 4096 }); }
   async watchMemory(spec) { const bp = normalizeBreakpoint({ ...spec, kind:'memory' }); throw new DebugAdapterError('unsupported','hardware-style watchpoints are unavailable in local sandbox; use memory trace/watch fields', { breakpoint:bp }); }
-  _normalizeResult(result) {
+  _normalizeResult(result, memoryEvents = []) {
     const fullTrace = result.trace || [];
     const trace = fullTrace.slice(this.traceCursor); this.traceCursor = fullTrace.length;
     const allBranches = result.takenBranches || [];
     const branches = allBranches.slice(this.branchCursor); this.branchCursor = allBranches.length;
+    const loads = memoryEvents.filter((e) => e.type === 'memory-read');
+    const stores = memoryEvents.filter((e) => e.type === 'memory-write');
     for (const e of trace) {
-      if (e?.type === 'call') continue; // emitted below once, with resolved target
+      if (e?.type === 'call') continue;
       this.traceBuffer.push({ type:'instruction', address:e.addr, text:e.text });
     }
     for (const e of branches) this.traceBuffer.push({ type:'branch', ...e });
@@ -385,8 +398,6 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     for (const e of returns) this.traceBuffer.push(e);
     const finalRegisters = cloneRegisters(this.sandbox.emulator);
     const traceSnapshot = this.traceBuffer.snapshot();
-    const loads = traceSnapshot.events.filter((e) => e.type === 'memory-read');
-    const stores = traceSnapshot.events.filter((e) => e.type === 'memory-write');
     const sourceTrace = result.traceMeta || {};
     const sourceDropped = Number.isSafeInteger(Number(sourceTrace.dropped)) && Number(sourceTrace.dropped) > 0 ? Number(sourceTrace.dropped) : 0;
     const sourceTruncated = sourceTrace.truncated === true || sourceDropped > 0;
@@ -445,7 +456,12 @@ export class RemoteDebugAdapter extends DebugAdapter {
     if (wasConnected) this.nextEpoch();
     return { disconnected:true };
   }
-  setEpoch(epoch) { const next = Number(epoch); this.protocol.setEpoch(next); this.epoch = next; return this.epoch; }
+  setEpoch(epoch) {
+    if (typeof epoch !== 'number' || !Number.isSafeInteger(epoch) || epoch < 0) return this.epoch;
+    this.protocol.setEpoch(epoch);
+    this.epoch = epoch;
+    return this.epoch;
+  }
   nextEpoch() { return this.setEpoch(this.epoch + 1); }
   onEvent(fn) { this.eventListeners.add(fn); return () => this.eventListeners.delete(fn); }
   call(method, params = {}, options = {}) {
@@ -458,7 +474,8 @@ export class RemoteDebugAdapter extends DebugAdapter {
   resume(options={}){const {signal,...params}=options||{};return this.call('resume',params,{signal})}
   stepInto(options={}){return this.call('stepInto',{},options)} stepOver(options={}){return this.call('stepOver',{},options)} stepOut(options={}){return this.call('stepOut',{},options)}
   setBreakpoint(spec){const bp=normalizeBreakpoint(spec); const cap=bp.kind==='address'?'breakpointAddress':bp.kind==='function'?'breakpointFunction':bp.kind==='conditional'?'breakpointConditional':'watchpointMemory'; this.require(cap); return this.protocol.request('setBreakpoint',bp,{epoch:this.epoch})}
-  removeBreakpoint(id){return this.call('removeBreakpoint',{id:breakpointRemovalId(id)})}
+  removeBreakpoint(id){return this.call('removeBreakpoint',{id:breakpointRemovalId(id)})
+  }
   async listBreakpoints(){return remoteArray(await this.call('listBreakpoints'),'breakpoints',REMOTE_ARRAY_LIMITS.breakpoints,'breakpoints')}
   async readRegisters(threadId){return remoteRegisters(await this.call('readRegisters',{threadId}))}
   writeRegister(reg,value,threadId){return this.call('writeRegister',{reg:registerSelector(reg),value:String(value),threadId})}
