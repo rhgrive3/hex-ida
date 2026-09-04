@@ -35,6 +35,7 @@ import {
 import { createPassDescriptor, createPassResult } from './contract.js';
 import { stableDigest } from '../../core/identity/index.js';
 import { canonicalAnalysisIdentity } from './analysis-identity.js';
+import { semanticSnapshotForAnalysis } from './transaction.js';
 
 export const SCCP_PASS = createPassDescriptor({
   id: 'phase8.sccp',
@@ -272,7 +273,10 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
   const ssa = analysis?.get('ssa');
   const blocks = cfg?.blocks ?? [];
   const values = ssa?.values ?? [];
-  const resolvedIdentity = context.resolvedAnalysisIdentity ?? canonicalAnalysisIdentity(context);
+  const snapshotBound = semanticSnapshotForAnalysis(analysis) != null;
+  const resolvedIdentity = snapshotBound
+    ? (context.resolvedAnalysisIdentity ?? canonicalAnalysisIdentity(context))
+    : { valid:false, reason:'analysis state is not bound to an immutable Semantic IR snapshot' };
   if (!resolvedIdentity.valid) {
     return createPassResult({
       descriptor: SCCP_PASS,

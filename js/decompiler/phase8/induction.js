@@ -34,6 +34,7 @@
 import { maxSigned, maxUnsigned, minSigned, signedOf, unsignedOf } from './bitvector.js';
 import { createPassDescriptor, createPassResult } from './contract.js';
 import { analysisIdentityMatches, canonicalAnalysisIdentity, isValidatedAnalysisIdentity } from './analysis-identity.js';
+import { semanticSnapshotForAnalysis } from './transaction.js';
 
 export const INDUCTION_PASS = createPassDescriptor({
   id: 'phase8.induction',
@@ -441,7 +442,10 @@ export function runInductionPass(context = {}, budget = {}, area = null) {
   const ssa = analysis?.get('ssa');
   const loopFacts = analysis?.get('loops');
   const rangeFacts = analysis?.get('ranges');
-  const resolvedIdentity = context.resolvedAnalysisIdentity ?? canonicalAnalysisIdentity(context);
+  const snapshotBound = semanticSnapshotForAnalysis(analysis) != null;
+  const resolvedIdentity = snapshotBound
+    ? (context.resolvedAnalysisIdentity ?? canonicalAnalysisIdentity(context))
+    : { valid:false, reason:'analysis state is not bound to an immutable Semantic IR snapshot' };
   if (!resolvedIdentity.valid || !analysisIdentityMatches(rangeFacts?.identity, resolvedIdentity.identity)) {
     return createPassResult({
       descriptor: INDUCTION_PASS,

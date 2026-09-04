@@ -416,6 +416,38 @@ test('switch case labels, shared targets, and default remain conservative and de
   assert.deepEqual([...exact.unreachableBlockIndexes], [2, 3]);
 });
 
+test('switch case object aliases hidden from ownKeys remain SCCP inputs', () => {
+  for (const location of ['definition', 'extra']) {
+    const f = fixture(`switch-hidden-case-${location}`);
+    f.block(0);
+    const selector = f.constant(2, 8);
+    f.switchBranch(selector, [[2, 1]], 2);
+    f.block(1).ret();
+    f.block(2).ret();
+    const ir = f.build();
+    const terminator = ir.blocks[0].insts.at(-1);
+    const caseTarget = location === 'definition'
+      ? { value:2, to:1 }
+      : { constant:2, target:1 };
+    const hiddenCase = new Proxy(caseTarget, { ownKeys() { return []; } });
+    if (location === 'definition') terminator.cases = [hiddenCase];
+    else {
+      delete terminator.cases;
+      terminator.extra = { ...(terminator.extra ?? {}), cases:[hiddenCase] };
+    }
+
+    const before = canonicalAnalysisIdentity({ ir });
+    const { facts } = analyze(ir);
+    assert.deepEqual([...facts.executableEdges], ['0->1:switch-case'], location);
+    if (location === 'definition') caseTarget.value = 3;
+    else caseTarget.constant = 3;
+    const after = canonicalAnalysisIdentity({ ir });
+    assert.equal(before.valid, true);
+    assert.equal(after.valid, true);
+    assert.notEqual(before.identity.semanticIrId, after.identity.semanticIrId, location);
+  }
+});
+
 test('width-incompatible switch labels remain conservative', () => {
   const f = fixture('switch-width-mismatch');
   f.block(0);

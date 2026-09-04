@@ -3,7 +3,13 @@ import test from 'node:test';
 
 import { runPassTransaction, seedAnalysisState } from '../../../js/decompiler/phase8/transaction.js';
 import { SCCP_PASS, runSccpPass } from '../../../js/decompiler/phase8/sccp.js';
-import { GVN_PASS, loadIsReusable, runGvnPass } from '../../../js/decompiler/phase8/valuenumber.js';
+import {
+  GVN_PASS,
+  loadIsReusable,
+  memoryVersionKey,
+  runGvnPass,
+} from '../../../js/decompiler/phase8/valuenumber.js';
+import { canonicalAnalysisIdentity } from '../../../js/decompiler/phase8/analysis-identity.js';
 import { fixture } from '../helpers/ir-fixtures.mjs';
 
 /**
@@ -152,11 +158,97 @@ test('a changed memory version blocks load reuse', () => {
   assert.equal(congruent(facts, first, second), false);
 });
 
+test('memory-version collection framing distinguishes one delimited ID from two IDs', () => {
+  const f = fixture('load-version-list-framing');
+  f.block(0);
+  const first = f.load(32, { ...PROVED_LOAD, memDefs:['a|b'] });
+  const second = f.load(32, { ...PROVED_LOAD, memDefs:['a', 'b'] });
+  f.ret();
+
+  const { facts } = analyze(f.build());
+  assert.equal(congruent(facts, first, second), false,
+    'list boundaries must be part of the reaching-memory key');
+  assert.equal(memoryVersionKey({ memUse:{ memDefs:[{ id:'a' }, { id:'b' }] } }),
+    memoryVersionKey({ memUse:{ memDefs:[{ id:'b' }, { id:'a' }] } }),
+    'reaching definitions remain order-independent');
+  assert.equal(GVN_PASS.version, '1.0.1');
+});
+
+test('memory-version item framing distinguishes numeric and string IDs', () => {
+  const f = fixture('load-version-type-framing');
+  f.block(0);
+  const first = f.load(32, { ...PROVED_LOAD, memDefs:[1] });
+  const second = f.load(32, { ...PROVED_LOAD, memDefs:['1'] });
+  f.ret();
+
+  const { facts } = analyze(f.build());
+  assert.equal(congruent(facts, first, second), false,
+    'different primitive ID types must never share a load class');
+  assert.notEqual(
+    memoryVersionKey({ memUse:{ memDefs:[{ id:1 }] } }),
+    memoryVersionKey({ memUse:{ memDefs:[{ id:1n }] } }),
+    'number and bigint IDs have distinct frames',
+  );
+  for (const unsupported of [Number.NaN, Number.POSITIVE_INFINITY, 1.5]) {
+    assert.equal(memoryVersionKey({ memUse:{ memDefs:[{ id:unsupported }] } }), null);
+  }
+});
+
+test('structured memory-definition IDs remain singletons', () => {
+  const structuredId = { namespace:'store', value:1 };
+  assert.equal(memoryVersionKey({
+    memUse:{ memDefs:[{ inst:{ id:structuredId } }] },
+  }), null, 'GVN must not invent equality for structured IDs');
+  let coercions = 0;
+  const coercibleId = { toString() { coercions += 1; return 'store'; } };
+  assert.equal(memoryVersionKey({
+    memUse:{ memDefs:[{ inst:{ id:coercibleId } }] },
+  }), null);
+  assert.equal(coercions, 0, 'unsupported IDs are rejected without invoking coercion hooks');
+
+  const f = fixture('load-version-structured-id');
+  f.block(0);
+  const first = f.load(32, { ...PROVED_LOAD, memDefs:[structuredId] });
+  const second = f.load(32, { ...PROVED_LOAD, memDefs:[structuredId] });
+  f.ret();
+
+  const { facts } = analyze(f.build());
+  assert.equal(congruent(facts, first, second), false,
+    'unsupported memory IDs must conservatively block reuse');
+  assert.match(facts.singletonReasons.get(second.id) ?? '', /not determined/);
+});
+
+test('hidden memDefs cannot be replaced by the lower-priority reaching alias', () => {
+  const f = fixture('load-hidden-memory-version');
+  f.block(0);
+  const first = f.load(32, PROVED_LOAD);
+  const second = f.load(32, PROVED_LOAD);
+  f.ret();
+  const ir = f.build();
+  const target = {
+    memDefs:[{ inst:{ id:'store_B' } }],
+    reaching:[{ inst:{ id:'store_1' } }],
+  };
+  second.def.memUse = new Proxy(target, {
+    ownKeys(object) { return Reflect.ownKeys(object).filter((key) => key !== 'memDefs'); },
+  });
+
+  const before = canonicalAnalysisIdentity({ ir });
+  const { facts } = analyze(ir);
+  assert.equal(congruent(facts, first, second), false,
+    'the preferred hidden memDefs version must block reuse');
+  target.memDefs[0].inst.id = 'store_C';
+  const after = canonicalAnalysisIdentity({ ir });
+  assert.equal(before.valid, true);
+  assert.equal(after.valid, true);
+  assert.notEqual(before.identity.semanticIrId, after.identity.semanticIrId);
+});
+
 test('an unknown store between the loads blocks reuse', () => {
   const f = fixture('load-barrier');
   f.block(0);
   const first = f.load(32, PROVED_LOAD);
-  const second = f.load(32, { ...PROVED_LOAD, barrier: { op: 'store' } });
+  const second = f.load(32, { ...PROVED_LOAD, barrier: { id:'unknown-store', op:'store' } });
   f.ret();
   const { facts } = analyze(f.build());
   assert.equal(congruent(facts, first, second), false);

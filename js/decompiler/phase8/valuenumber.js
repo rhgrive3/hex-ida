@@ -21,10 +21,11 @@
 
 import { createPassDescriptor, createPassResult } from './contract.js';
 import { analysisIdentityMatches, canonicalAnalysisIdentity } from './analysis-identity.js';
+import { semanticSnapshotForAnalysis } from './transaction.js';
 
 export const GVN_PASS = createPassDescriptor({
   id: 'phase8.gvn',
-  version: '1.0.0',
+  version: '1.0.1',
   stage: 'memory-optimization',
   budgetClass: 'standard',
   // `ranges` is SCCP's output: two values that are the same constant are the
@@ -117,7 +118,32 @@ function memoryVersionKey(definition) {
   if (!Array.isArray(reaching)) return null;
   const ids = reaching.map((entry) => entry?.inst?.id ?? entry?.id ?? null);
   if (ids.some((id) => id == null)) return null;
-  return ids.map(String).sort().join('|');
+  const framed = [];
+  for (const id of ids) {
+    let type;
+    let text;
+    if (typeof id === 'string') {
+      type = 'string';
+      text = id;
+    } else if (typeof id === 'bigint') {
+      type = 'bigint';
+      text = String(id);
+    } else if (typeof id === 'number' && Number.isSafeInteger(id)) {
+      type = 'number';
+      text = Object.is(id, -0) ? '-0' : String(id);
+    } else {
+      // Structured handles and coercible objects have no producer-owned
+      // equality contract here. Treat them as unknown rather than deriving a
+      // key through String(), which can collapse unrelated definitions.
+      return null;
+    }
+    const item = `${type}:${text.length}:${text}`;
+    framed.push(`${item.length}:${item}`);
+  }
+  // Reaching definitions are an order-independent multiset. Frame both the
+  // item count and each typed item so collection boundaries cannot collide.
+  framed.sort();
+  return `memory-version:${framed.length}:${framed.join('')}`;
 }
 
 /**
@@ -173,7 +199,10 @@ export function runGvnPass(context = {}, budget = {}, area = null) {
   const blocks = cfg?.blocks ?? [];
   const values = ssa?.values ?? [];
   if (area == null) fail('phase8-gvn-requires-staging-area');
-  const resolvedIdentity = context.resolvedAnalysisIdentity ?? canonicalAnalysisIdentity(context);
+  const snapshotBound = semanticSnapshotForAnalysis(analysis) != null;
+  const resolvedIdentity = snapshotBound
+    ? (context.resolvedAnalysisIdentity ?? canonicalAnalysisIdentity(context))
+    : { valid:false, reason:'analysis state is not bound to an immutable Semantic IR snapshot' };
   if (!resolvedIdentity.valid || !analysisIdentityMatches(scalarFacts?.identity, resolvedIdentity.identity)) {
     return createPassResult({
       descriptor: GVN_PASS,

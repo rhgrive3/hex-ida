@@ -49,6 +49,18 @@ test('an if/else has two arms and a join, and every edge is named', () => {
   assert.deepEqual([...region.exits], [3]);
 });
 
+test('two terminal arms use the captured ipdom tree when executable views are absent', () => {
+  const f = fixture('terminal-if');
+  const condition = f.block(0, { succ:[1, 2] }).opaque(1);
+  f.conditionalBranch(condition, 1, 2);
+  f.block(1).ret();
+  f.block(2).ret();
+  const ir = f.build();
+  const { facts } = structuring(ir);
+  assert.deepEqual(accounting(facts), ['0->1:if-branch', '0->2:if-branch']);
+  assert.deepEqual(edgeAccountingFailures(ir, facts), []);
+});
+
 test('a switch names each case and its join', () => {
   const f = fixture('switch');
   const selector = f.block(0, { succ: [1, 2, 3] }).opaque(32);
@@ -320,6 +332,7 @@ test('the pass transforms nothing and publishes exactly one analysis', () => {
   assert.deepEqual([...result.invalidated], []);
   assert.equal(facts.summaryVersion, STRUCTURING_SUMMARY_VERSION);
   assert.equal(STRUCTURING_PASS.stage, 'structuring');
+  assert.equal(STRUCTURING_PASS.version, '1.0.1');
   assert.ok(STRUCTURING_PASS.consumes.includes('induction'), 'loop facts come from P8-4, not from a second detector');
 });
 

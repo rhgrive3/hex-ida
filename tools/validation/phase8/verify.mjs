@@ -208,10 +208,19 @@ export function verifyPhase8({ shadow = false, expectedSha = null, gates = false
   }
 
   // Performance budgets.
-  const coldMedian = metrics.performance?.coldActiveFunctionMs?.medianMs ?? null;
-  if (coldMedian != null && coldMedian > PROFILE.performance.budgetsMs.coldActiveFunction) {
-    blocking('performance', 'active-function latency budget exceeded',
-      `<= ${PROFILE.performance.budgetsMs.coldActiveFunction} ms`, `${coldMedian.toFixed(1)} ms`);
+  const performanceBudgets = [
+    ['coldActiveFunctionMs', 'coldActiveFunction', 'active-function latency'],
+    ['phase8InteractiveStageMs', 'phase8InteractiveStage', 'Phase 8 interactive stage latency'],
+    ['phase8OptimizeStageMs', 'phase8OptimizeStage', 'Phase 8 optimize stage latency'],
+  ];
+  for (const [metricKey, budgetKey, label] of performanceBudgets) {
+    const measured = metrics.performance?.[metricKey]?.medianMs;
+    const limit = PROFILE.performance.budgetsMs[budgetKey];
+    if (!Number.isFinite(measured)) {
+      blocking('performance', `${label} was not measured`, 'finite median measurement', measured ?? 'missing');
+    } else if (measured > limit) {
+      blocking('performance', `${label} budget exceeded`, `<= ${limit} ms`, `${measured.toFixed(1)} ms`);
+    }
   }
 
   const gateResults = gates ? PROFILE.requiredGates.map(runGate) : [];

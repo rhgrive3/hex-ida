@@ -24,7 +24,7 @@ import { providerAuthorityFailures, providerView } from '../../../js/decompiler/
 import { createPhase8ArtifactDescriptor } from '../../../js/decompiler/phase8/artifact-identity.js';
 
 import { loadCorpus } from './build-corpus.mjs';
-import { decompileEntry, observeCorpus } from './decompile-corpus.mjs';
+import { decompileEntry, observationOf, observeCorpus } from './decompile-corpus.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const FROZEN_BASELINE = path.join(ROOT, 'tests/phase8/corpus/pre-phase8-observations.json');
@@ -580,25 +580,88 @@ function median(values) {
  * checkpoint. `coldActiveFunction` is the median whole-corpus decompilation; the
  * Phase 8 stage cost is reported separately so a regression can be attributed.
  */
-export function performanceMetrics({ repetitions = 3, corpus = loadCorpus() } = {}) {
+export function performanceMetrics({
+  repetitions = 3,
+  corpus = loadCorpus(),
+  decompile = decompileEntry,
+  runStage = runPhase8Stage,
+  now = () => (globalThis.performance?.now ? globalThis.performance.now() : Date.now()),
+} = {}) {
   const perFunction = [];
-  const phase8PerFunction = [];
+  const interactiveStagePerFunction = [];
+  const optimizeStagePerFunction = [];
+  const publishedPerRun = [];
   const runs = [];
   for (let repetition = 0; repetition < repetitions; repetition += 1) {
-    const started = Date.now();
-    const observations = observeCorpus({ corpus, deterministicTransforms: false });
-    perFunction.push((Date.now() - started) / Math.max(1, observations.length));
-    // The Phase 8 stage reports its own elapsed time through the pipeline ctx;
-    // when no ledger is published there is nothing to attribute.
-    phase8PerFunction.push(observations.filter((observation) => observation.phase8?.published).length);
+    const observations = [];
+    const interactiveElapsed = [];
+    const optimizeElapsed = [];
+    let wholeFunctionElapsed = 0;
+    let published = 0;
+    let eligibleStages = 0;
+    let interactiveStagesComplete = true;
+    let optimizeStagesComplete = true;
+    for (const [index, entry] of corpus.functions.entries()) {
+      // This is the product's default active-function route. The full middle
+      // end is demand-driven and must not be smuggled into the cold UI metric
+      // by a corpus helper whose quality-measurement default is opt-in.
+      const started = now();
+      const outcome = decompile(entry, {
+        index,
+        deterministicTransforms:false,
+        phase8Optimize:false,
+      });
+      wholeFunctionElapsed += Math.max(0, now() - started);
+      observations.push(observationOf(entry, outcome));
+
+      const result = outcome?.result;
+      if (!result?.semantic || !result?.ir) continue;
+      eligibleStages += 1;
+      const interactiveMs = Number(result?.ctx?.decompilerPipeline?.phase8ElapsedMs);
+      if (result.phase8?.published === true && result.phase8?.completeness === 'complete'
+          && Number.isFinite(interactiveMs) && interactiveMs >= 0) {
+        interactiveElapsed.push(interactiveMs);
+        published += 1;
+      } else interactiveStagesComplete = false;
+
+      // Measure the opt-in optimizer as the stage it actually is. Reusing the
+      // already-lifted IR avoids charging another whole-function decompile to
+      // this stage while still executing the complete registered pass graph.
+      const optimized = runStage(
+        { ir:result.ir, types:result.types ?? null, opts:{ deterministicTransforms:false } },
+        { stages:PASS_STAGES, budgetClass:'standard' },
+      );
+      const optimizeMs = Number(optimized?.elapsedMs);
+      if (optimized?.ledger?.published === true && optimized.ledger?.completeness === 'complete'
+          && Number.isFinite(optimizeMs) && optimizeMs >= 0) optimizeElapsed.push(optimizeMs);
+      else optimizeStagesComplete = false;
+    }
+    perFunction.push(wholeFunctionElapsed / Math.max(1, observations.length));
+    interactiveStagePerFunction.push(eligibleStages > 0 && interactiveStagesComplete
+      && interactiveElapsed.length === eligibleStages ? Math.max(...interactiveElapsed) : null);
+    optimizeStagePerFunction.push(eligibleStages > 0 && optimizeStagesComplete
+      && optimizeElapsed.length === eligibleStages ? Math.max(...optimizeElapsed) : null);
+    publishedPerRun.push(published);
     runs.push(observations);
   }
+  const measuredMedian = (values) => {
+    const measured = values.filter((value) => Number.isFinite(value));
+    return measured.length === values.length && measured.length > 0 ? median(measured) : null;
+  };
   return {
     procedureVersion: 1,
     repetitions,
     aggregate: 'median',
     coldActiveFunctionMs: { medianMs: median(perFunction), samples: perFunction.map((value) => Number(value.toFixed(3))) },
-    publishedLedgers: median(phase8PerFunction),
+    phase8InteractiveStageMs: {
+      medianMs:measuredMedian(interactiveStagePerFunction),
+      samples:interactiveStagePerFunction.map((value) => value == null ? null : Number(value.toFixed(3))),
+    },
+    phase8OptimizeStageMs: {
+      medianMs:measuredMedian(optimizeStagePerFunction),
+      samples:optimizeStagePerFunction.map((value) => value == null ? null : Number(value.toFixed(3))),
+    },
+    publishedLedgers:median(publishedPerRun),
     runs,
   };
 }
