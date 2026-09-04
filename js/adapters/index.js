@@ -78,6 +78,20 @@ function initialMemoryValue(value) {
   if (typeof value === 'string' && /^0x[0-9a-f]+$/i.test(value)) return BigInt(value);
   throw new DebugAdapterError('invalid-argument', 'initial memory value must be an integer scalar');
 }
+function resumeSignal(value) {
+  if (value == null) return null;
+  if ((typeof value !== 'object' && typeof value !== 'function')
+    || typeof value.addEventListener !== 'function'
+    || typeof value.removeEventListener !== 'function') {
+    throw new DebugAdapterError('invalid-argument', 'signal must be AbortSignal-compatible');
+  }
+  return value;
+}
+function resumeProgressCallback(value) {
+  if (value == null) return null;
+  if (typeof value !== 'function') throw new DebugAdapterError('invalid-argument', 'onProgress must be a function');
+  return value;
+}
 
 function remoteArray(result, key, max, name) {
   const value = Array.isArray(result) ? result : result && Array.isArray(result[key]) ? result[key] : null;
@@ -233,8 +247,10 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
   async resume(options = {}) {
     const sandbox = this.ensureSandbox();
     if (this.activeRun) throw new DebugAdapterError('already-running', 'local sandbox already has an active execution');
+    const signal = resumeSignal(options.signal);
+    const onProgress = resumeProgressCallback(options.onProgress);
     const traceState = this.traceState;
-    const run = { sandbox, epoch:this.epoch, cancelled:!!(options.signal && options.signal.aborted), paused:false, kind:'resume', memoryEvents:[] };
+    const run = { sandbox, epoch:this.epoch, cancelled:!!(signal && signal.aborted), paused:false, kind:'resume', memoryEvents:[] };
     traceState.runMemoryEvents = run.memoryEvents;
     this.activeRun = run;
     this.cancelled = run.cancelled;
@@ -247,9 +263,9 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
       run.sandbox.emulator.stopped = 'cancelled';
       if (this.activeRun === run) this.cancelled = true;
     };
-    if (options.signal && !run.cancelled) {
-      options.signal.addEventListener('abort', onAbort, { once:true });
-      if (options.signal.aborted) onAbort();
+    if (signal && !run.cancelled) {
+      signal.addEventListener('abort', onAbort, { once:true });
+      if (signal.aborted) onAbort();
     }
     if (run.cancelled) sandbox.emulator.stopped = 'cancelled';
     this.running = true;
@@ -258,7 +274,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
         if (run.cancelled) sandbox.emulator.stopped = 'cancelled';
         else if (run.paused) sandbox.emulator.stopped = 'paused';
         else if (timeoutMs != null && Date.now() - started >= timeoutMs) sandbox.emulator.stopped = 'timeout';
-        if (options.onProgress) options.onProgress(n);
+        if (onProgress) onProgress(n);
       } });
       if (this.activeRun !== run || sandbox !== this.sandbox || run.epoch !== this.epoch) {
         throw new DebugAdapterError('stale-run', 'local sandbox run was invalidated by a newer launch or session change', { runEpoch:run.epoch, currentEpoch:this.epoch });
@@ -271,7 +287,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
         this.running = false;
         this.cancelled = run.cancelled;
       }
-      if (options.signal) options.signal.removeEventListener('abort', onAbort);
+      if (signal) signal.removeEventListener('abort', onAbort);
     }
   }
   async stepInto() {
