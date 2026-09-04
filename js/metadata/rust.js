@@ -235,7 +235,11 @@ function parseV0Const(str, state, depth = 0) {
 }
 
 function parseV0Type(str, state, depth = 0) {
-  if (state.pos >= str.length || depth > 32) return null;
+  if (state.pos >= str.length) return null;
+  if (depth > state.maxDepth) {
+    state.depthExceeded = true;
+    return null;
+  }
   const c = str[state.pos];
   if (RUST_V0_BASIC_TYPES[c]) {
     state.pos++;
@@ -280,7 +284,11 @@ function parseV0Type(str, state, depth = 0) {
 }
 
 function parseV0Path(str, state, depth = 0) {
-  if (state.pos >= str.length || depth > 32) return null;
+  if (state.pos >= str.length) return null;
+  if (depth > state.maxDepth) {
+    state.depthExceeded = true;
+    return null;
+  }
   const tag = str[state.pos++];
 
   if (tag === 'C') {
@@ -380,7 +388,8 @@ export function demangleRustV0(symbol, maxDepth = 32) {
     return { original: symbol, demangled: symbol, parsed: false, reason: 'not-v0-symbol' };
   }
 
-  const state = { pos: 0 };
+  const depthLimit = Number.isSafeInteger(maxDepth) && maxDepth >= 0 ? maxDepth : 32;
+  const state = { pos: 0, maxDepth: depthLimit, depthExceeded: false };
   let demangled = null;
 
   try {
@@ -389,11 +398,15 @@ export function demangleRustV0(symbol, maxDepth = 32) {
     return { original: symbol, demangled: symbol, parsed: false, reason: 'demangle-error' };
   }
 
+  if (state.depthExceeded) {
+    return { original: symbol, demangled: symbol, parsed: false, reason: 'v0-depth-limit-exceeded' };
+  }
+
   if (!demangled) {
     return { original: symbol, demangled: symbol, parsed: false, reason: 'unrecognized-v0-structure' };
   }
 
-  if (state.pos < s.length && !v0SuffixParses(s, state.pos)) {
+  if (state.pos < s.length && !v0SuffixParses(s, state.pos, depthLimit)) {
     return { original: symbol, demangled: symbol, parsed: false, reason: 'unconsumed-v0-trailing-bytes' };
   }
 
@@ -413,13 +426,13 @@ export function demangleRustV0(symbol, maxDepth = 32) {
  * productions: an optional instantiating crate path followed by an optional
  * vendor-specific suffix (`.` or `$...`). Anything else is not v0.
  */
-function v0SuffixParses(s, pos) {
+function v0SuffixParses(s, pos, maxDepth) {
   if (pos >= s.length) return true;
   if (s[pos] === '.' || s[pos] === '$') return true;
-  const state = { pos };
+  const state = { pos, maxDepth, depthExceeded: false };
   try {
     const crate = parseV0Path(s, state, 0);
-    if (!crate) return false;
+    if (!crate || state.depthExceeded) return false;
     if (state.pos >= s.length) return true;
     return s[state.pos] === '.' || s[state.pos] === '$';
   } catch {
@@ -440,10 +453,12 @@ export function demangleRustLegacy(symbol) {
   const components = [];
   let i = 2;
   let hash = null;
+  let terminated = false;
 
   while (i < s.length) {
     if (s[i] === 'E') {
       i++;
+      terminated = true;
       break;
     }
     const match = s.slice(i).match(/^(\d+)/);
@@ -476,7 +491,7 @@ export function demangleRustLegacy(symbol) {
     }
   }
 
-  if (components.length === 0) {
+  if (!terminated || components.length === 0) {
     return { original, demangled: original, parsed: false, reason: 'unrecognized-legacy-structure' };
   }
 
@@ -578,7 +593,8 @@ export class RustMetadataProvider extends LanguageMetadataProvider {
   }
 
   probe() {
-    const rawSymbols = this.symbolsList || [];
+    const rawSymbols = this.symbolsList == null ? [] : this.symbolsList;
+    if (!Array.isArray(rawSymbols)) throw new TypeError('rust-metadata-symbols-must-be-array');
     const rustSymbols = [];
     const vtables = [];
     let unreadable = 0;
