@@ -11,6 +11,7 @@ ELF GNU symbol-version record revision validation.
 - Source owner: `js/binary/elf-extended.js`
 - Regression owners: `tests/issue-6181-elf-symbol-version-revisions.mjs`, `tests/issue-6106-elf-symbol-version-pairs.mjs`
 - Shared-board claim: lanes message #295
+- Owner PR: #6516 (https://github.com/rhgrive3/hex-ida/pull/6516)
 - Branch: `fix/issues-elf-symbol-version-revisions-6181`
 - Candidate base: `origin/main` at `6774b1b6f3f2980ee1bef82aaf5ee0f165a0f03b`
 
@@ -22,8 +23,8 @@ ELF GNU symbol-version record revision validation.
 - [x] Updated the #6106 fixture to encode valid revision-one records.
 - [x] Added Verdef and Verneed regressions for valid, zero, and unknown revisions.
 - [x] Focused regressions and lint passed.
-- [ ] Complete the applicable ELF/Phase 4 verification and compare any unrelated red gate with pristine `origin/main`.
-- [ ] Create one owner PR for #6181 and record exact-head candidate evidence.
+- [x] Complete the applicable ELF/Phase 4 verification and compare any unrelated red gate with pristine `origin/main`.
+- [x] Create one owner PR for #6181 and record exact-head candidate evidence for PR head `605f0ee2b42b846818fcf1ab60d52316589ba074` (candidate merge tree `1e59478a60a9dfe656e2e1a1460b988eca4b24ef`; board evidence #296).
 - [ ] Merge only after exact-head evidence and required checks are green; otherwise record the blocker here and on the board.
 
 ## Resume procedure
