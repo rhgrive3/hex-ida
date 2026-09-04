@@ -30,12 +30,29 @@ function normalizedOrigin(...origins) {
 }
 
 function memoryInteger(value) {
-  if (typeof value === 'bigint') return value;
-  if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value);
-  if (typeof value === 'string' && /^[+-]?(?:0x[0-9a-fA-F]+|[0-9]+)$/.test(value.trim())) {
-    try { return BigInt(value.trim()); } catch {}
+  if (value == null) return null;
+  try {
+    if (typeof value === 'bigint') return value;
+    if (typeof value === 'number') return Number.isSafeInteger(value) ? BigInt(value) : null;
+    const text = String(value).trim();
+    if (!/^[+-]?(?:0x[0-9a-f]+|[0-9]+)$/i.test(text)) return null;
+    return BigInt(text);
+  } catch {
+    return null;
   }
-  return null;
+}
+
+function strictNonEmptyString(value) {
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  return text || null;
+}
+
+function optionalIdentityString(value, label) {
+  if (value == null) return null;
+  const text = strictNonEmptyString(value);
+  if (!text) throw new TypeError(`alias-region-invalid-${label}`);
+  return text;
 }
 
 function irDigest(ir) {
@@ -281,7 +298,7 @@ export function classifySemanticMemoryRegion(ir, nodeOrId, options = {}) {
     memory: node.memory,
     origin: normalizedOrigin(ir.origin),
     sourceEntityId: node.id,
-    addressValueId: node.memory.addressExpr?.valueId,
+    addressValueId: optionalIdentityString(node.memory.addressExpr?.valueId, 'address-value-id'),
     regionEvidence: descriptor,
   });
 }
