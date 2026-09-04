@@ -72,6 +72,11 @@ assert.doesNotThrow(
   'unreachable code keeps the WASM polymorphic-bottom stack rule',
 );
 
+assert.doesNotThrow(
+  () => liftWasmFunction(0, moduleWith([0x00, 0x04, 0x40, 0x7c, 0x1a, 0x05, 0x7c, 0x1a, 0x0b, 0x0b])),
+  'both arms of an if nested in unreachable code remain polymorphic',
+);
+
 assert.throws(
   () => liftWasmFunction(0, moduleWith([0x42, 0x00, 0x41, 0x00, 0x41, 0x01, 0x1b, 0x1a, 0x0b])),
   /wasm-stack-type-mismatch/,
@@ -84,6 +89,20 @@ assert.throws(
   assert.equal(partial.metadata.wasmSpecValidation, 'partial');
   const validation = await new WasmFrontend().validateMethod(partial);
   assert.equal(validation.completeness.specValidation, 'partial');
+  assert.equal(validation.completeness.semanticEffect, 'partial');
+}
+
+{
+  const imported = moduleWith([], {
+    imports: [{ module: 'env', field: 'host', desc: { kind: 0, typeIndex: 0 } }],
+    functions: [],
+    codeBodies: [],
+  });
+  const hostImport = liftWasmFunction(0, imported);
+  assert.equal(hostImport.aggregateCompleteness, 'partial');
+  assert.equal(hostImport.metadata.wasmSpecValidation, 'valid');
+  const validation = await new WasmFrontend().validateMethod(hostImport);
+  assert.equal(validation.completeness.specValidation, 'valid');
   assert.equal(validation.completeness.semanticEffect, 'partial');
 }
 
