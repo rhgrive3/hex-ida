@@ -12,7 +12,7 @@ jobs:
           name: Detect migration-guardrail impact
           command: |
             set -euo pipefail
-            git fetch --no-tags origin main
+            git fetch --no-tags origin main:refs/remotes/origin/main
             changed="$(git diff --name-only origin/main...HEAD || true)"
             if printf '%s\n' "$changed" | grep -Eq '^(js/(architecture/|ir\.js$|ir-core\.js$|dataflow[^/]*\.js$|decompiler/|binary/|bytesource/|platform/|project/|runtime/|runtime-evidence/|symbolic/|ai/|ui/|ui\.js$|ui-root\.js$|panels\.js$|app\.js$|backend\.js$|worker[^/]*\.js$)|worker-entry\.js$|package\.json$|package-lock\.json$|tests/migration-guardrails\.mjs$|docs/MIGRATION_GUARDRAILS\.md$|\.circleci/config\.yml$)'; then
               echo 'export RUN_MIGRATION_GUARDRAILS=true' >> "$BASH_ENV"
