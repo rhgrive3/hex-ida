@@ -7,14 +7,24 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const WORKFLOW_PATH = path.join(ROOT, '.github/workflows/stage1-release-validation.yml');
 
 const content = fs.readFileSync(WORKFLOW_PATH, 'utf8');
-const workflowJob = (workflow, jobId) => {
-  const lines = workflow.split('\n');
-  const start = lines.findIndex((line) => line === `  ${jobId}:`);
+function extractWorkflowJob(workflowContent, jobId) {
+  const lines = workflowContent.split(/\r?\n/);
+  const jobsIndex = lines.findIndex((line) => line === 'jobs:');
+  assert.notEqual(jobsIndex, -1, 'Workflow must define jobs');
+
+  const marker = `  ${jobId}:`;
+  const start = lines.findIndex((line, index) => index > jobsIndex && line === marker);
   assert.notEqual(start, -1, `Workflow missing ${jobId} job`);
-  const relativeEnd = lines.slice(start + 1).findIndex((line) => /^  [A-Za-z0-9_-]+:\s*$/.test(line));
-  const end = relativeEnd === -1 ? lines.length : start + 1 + relativeEnd;
+
+  let end = lines.length;
+  for (let index = start + 1; index < lines.length; index += 1) {
+    if (/^  [A-Za-z0-9_-]+:\s*$/.test(lines[index])) {
+      end = index;
+      break;
+    }
+  }
   return lines.slice(start, end).join('\n');
-};
+}
 
 const requiredTriggers = [
   'js/targets/architecture/**',
@@ -41,14 +51,14 @@ for (const trigger of requiredTriggers) {
   assert.ok(content.includes(trigger), `Workflow missing path trigger: ${trigger}`);
 }
 
-const prProof = workflowJob(content, 'pr-proof');
-assert.ok(prProof.includes('name: head-and-candidate-merge-tree'), 'Workflow missing stable dual-proof name');
-assert.ok(prProof.includes('ref: ${{ github.event.pull_request.head.sha }}'), 'Workflow missing exact PR-head checkout');
-assert.ok(prProof.includes('ref: ${{ github.sha }}'), 'Workflow missing exact candidate-merge checkout');
-assert.ok(prProof.includes('id: head_verify'), 'Workflow missing head verification outcome');
-assert.ok(prProof.includes('id: merge_verify'), 'Workflow missing merge-tree verification outcome');
-assert.ok(prProof.includes('HEAD_VERIFY: ${{ steps.head_verify.outcome }}'), 'Workflow aggregate omits head proof');
-assert.ok(prProof.includes('MERGE_VERIFY: ${{ steps.merge_verify.outcome }}'), 'Workflow aggregate omits merge-tree proof');
+const prProofJob = extractWorkflowJob(content, 'pr-proof');
+assert.ok(prProofJob.includes('name: head-and-candidate-merge-tree'), 'pr-proof missing stable dual-proof name');
+assert.ok(prProofJob.includes('ref: ${{ github.event.pull_request.head.sha }}'), 'pr-proof missing exact PR-head checkout');
+assert.ok(prProofJob.includes('ref: ${{ github.sha }}'), 'pr-proof missing exact candidate-merge checkout');
+assert.ok(prProofJob.includes('id: head_verify'), 'pr-proof missing head verification outcome');
+assert.ok(prProofJob.includes('id: merge_verify'), 'pr-proof missing merge-tree verification outcome');
+assert.ok(prProofJob.includes('HEAD_VERIFY: ${{ steps.head_verify.outcome }}'), 'pr-proof aggregate omits head proof');
+assert.ok(prProofJob.includes('MERGE_VERIFY: ${{ steps.merge_verify.outcome }}'), 'pr-proof aggregate omits merge-tree proof');
 
 // The Stage 1 completion branch is the aggregate integration lane. Component
 // ownership/release jobs must not run their own whole-diff ownership checks on

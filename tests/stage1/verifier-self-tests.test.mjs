@@ -27,6 +27,25 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const competitiveProfile = loadCompetitiveProfile();
 const completeScorecard = await generateCompetitiveScorecard({ profile: competitiveProfile });
 
+function extractWorkflowJob(content, jobId) {
+  const lines = content.split(/\r?\n/);
+  const jobsIndex = lines.findIndex((line) => line === 'jobs:');
+  assert.notEqual(jobsIndex, -1, 'Workflow must define jobs');
+
+  const marker = `  ${jobId}:`;
+  const start = lines.findIndex((line, index) => index > jobsIndex && line === marker);
+  assert.notEqual(start, -1, `Workflow missing ${jobId} job`);
+
+  let end = lines.length;
+  for (let index = start + 1; index < lines.length; index += 1) {
+    if (/^  [A-Za-z0-9_-]+:\s*$/.test(lines[index])) {
+      end = index;
+      break;
+    }
+  }
+  return lines.slice(start, end).join('\n');
+}
+
 // 1. Mutation: Corpus item deleted / missing fixture
 {
   assert.throws(
@@ -150,23 +169,15 @@ const completeScorecard = await generateCompetitiveScorecard({ profile: competit
 {
   const workflowPath = path.join(ROOT, '.github/workflows/stage1-release-validation.yml');
   const workflowContent = fs.readFileSync(workflowPath, 'utf8');
-  const workflowJob = (content, jobId) => {
-    const lines = content.split('\n');
-    const start = lines.findIndex((line) => line === `  ${jobId}:`);
-    assert.notEqual(start, -1, `Stage 1 workflow must define the ${jobId} job`);
-    const relativeEnd = lines.slice(start + 1).findIndex((line) => /^  [A-Za-z0-9_-]+:\s*$/.test(line));
-    const end = relativeEnd === -1 ? lines.length : start + 1 + relativeEnd;
-    return lines.slice(start, end).join('\n');
-  };
   const assertDualProofWorkflow = (content) => {
-    const prProof = workflowJob(content, 'pr-proof');
-    assert.ok(prProof.includes('name: head-and-candidate-merge-tree'), 'combined proof job must retain its stable semantic name');
-    assert.ok(prProof.includes('ref: ${{ github.event.pull_request.head.sha }}'), 'head proof must checkout the exact PR head');
-    assert.ok(prProof.includes('ref: ${{ github.sha }}'), 'merge proof must checkout the exact candidate merge SHA');
-    assert.ok(prProof.includes('id: head_verify'), 'head verifier outcome must be recorded');
-    assert.ok(prProof.includes('id: merge_verify'), 'merge-tree verifier outcome must be recorded');
-    assert.ok(prProof.includes('HEAD_VERIFY: ${{ steps.head_verify.outcome }}'), 'aggregate proof must consume the head verdict');
-    assert.ok(prProof.includes('MERGE_VERIFY: ${{ steps.merge_verify.outcome }}'), 'aggregate proof must consume the merge-tree verdict');
+    const prProofJob = extractWorkflowJob(content, 'pr-proof');
+    assert.ok(prProofJob.includes('name: head-and-candidate-merge-tree'), 'combined proof job must retain its stable semantic name');
+    assert.ok(prProofJob.includes('ref: ${{ github.event.pull_request.head.sha }}'), 'head proof must checkout the exact PR head');
+    assert.ok(prProofJob.includes('ref: ${{ github.sha }}'), 'merge proof must checkout the exact candidate merge SHA');
+    assert.ok(prProofJob.includes('id: head_verify'), 'head verifier outcome must be recorded');
+    assert.ok(prProofJob.includes('id: merge_verify'), 'merge-tree verifier outcome must be recorded');
+    assert.ok(prProofJob.includes('HEAD_VERIFY: ${{ steps.head_verify.outcome }}'), 'aggregate proof must consume the head verdict');
+    assert.ok(prProofJob.includes('MERGE_VERIFY: ${{ steps.merge_verify.outcome }}'), 'aggregate proof must consume the merge-tree verdict');
   };
   assertDualProofWorkflow(workflowContent);
   assert.throws(
@@ -174,14 +185,24 @@ const completeScorecard = await generateCompetitiveScorecard({ profile: competit
     /merge-tree verifier outcome must be recorded/,
     'dropping the independent merge-tree verdict must fail closed',
   );
-  assert.throws(
-    () => assertDualProofWorkflow(
-      `${workflowContent.replace('ref: ${{ github.sha }}', 'ref: ${{ github.event.pull_request.head.sha }}')}\n`
-        + '# ref: ${{ github.sha }}',
+
+  const decoyMergeRef = [
+    workflowContent.replace(
+      'ref: ${{ github.sha }}',
+      'ref: ${{ github.event.pull_request.head.sha }}',
     ),
+    '',
+    '  decoy-proof:',
+    '    steps:',
+    '      - with:',
+    '          ref: ${{ github.sha }}',
+  ].join('\n');
+  assert.throws(
+    () => assertDualProofWorkflow(decoyMergeRef),
     /merge proof must checkout the exact candidate merge SHA/,
-    'reusing the head identity as merge-tree proof must fail closed',
+    'a merge-SHA decoy outside pr-proof must not satisfy merge-tree proof',
   );
+
   assert.ok(
     workflowContent.includes('js/analysis/alias/**'),
     'Stage 1 workflow must trigger on alias analysis paths'
