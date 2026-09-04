@@ -182,6 +182,7 @@ export class PagedArtifactReader {
     }
 
     let entry = this.inflight.get(key);
+    if (entry?.discard || entry?.controller?.signal?.aborted) entry = null;
     if (entry) this.stats.pagesReused++;
     else entry = this.#startPage(key, pageIndex, prefetch);
     return this.#waitForPage(entry, signal);
