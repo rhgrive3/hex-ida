@@ -81,8 +81,6 @@ export function decodeSchema(words, base) {
   for (let i = 0; i < words.length; i++) {
     const w = words[i];
     const written = writtenGpr(w);
-    const writtenWasKnown = written != null && written >= 0 && written < 31 && known[written] !== 0;
-    const writtenConstant = writtenWasKnown ? konst[written] : null;
     if (written != null && written >= 0 && written < 31) baseGeneration[written]++;
     const mw = moveWide(w);
     if (mw) {
@@ -94,11 +92,6 @@ export function decodeSchema(words, base) {
       if (mw.d === 0) lastCall = -1;
       continue;
     }
-    // A write the constant trackers above do not model (mov xN,xM, arithmetic,
-    // logic, shift, csel, load...) kills the old constant provenance. Without
-    // this, a stale MOVZ value survives its own register overwrite and leaks
-    // into multiply scale evidence (see issue #6306).
-    if (written != null && written >= 0 && written < 31) { konst[written] = 0n; known[written] = 0; }
 
     const ci = W.compareImmediate(w);
     if (ci != null) { cmps.push({ reg: rn(w), value: Number(ci), row: i, loop: flow.loopOf[i] }); continue; }
@@ -149,9 +142,9 @@ export function decodeSchema(words, base) {
       const last = scales[scales.length - 1];
       if (last.mul == null && i - last.row <= 6 && last.block === flow.blockOf[i] && (rn(w) === last.loadedReg || rm(w) === last.loadedReg)) {
         const other = rn(w) === last.loadedReg ? rm(w) : rn(w);
-        const k = known[other] ? konst[other] : (other === written ? writtenConstant : null);
+        const k = known[other] ? konst[other] : null;
         const safeK = k != null && k <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(k) : null;
-        if (safeK) last.mul = safeK;
+          if (safeK) last.mul = safeK;
       }
       if (rd(w) === 0) lastCall = -1;
       continue;

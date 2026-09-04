@@ -16,11 +16,11 @@
  *   8. nested load dependency は outer RMW の direct operand proof にならない
  */
 import assert from 'node:assert/strict';
-import { buildSemanticModel } from '../js/blocks.js';
-import { decompile } from '../js/decompile.js';
-import { semanticAbiAdapter } from '../js/analysis/semantic-function.js';
-import { AAPCS64_ABI } from '../js/targets/abi/index.js';
-import { directSameLocationLoadForTesting } from '../js/decompiler/pipeline-core.js';
+import { buildSemanticModel } from '../../js/blocks.js';
+import { decompile } from '../../js/decompile.js';
+import { semanticAbiAdapter } from '../../js/analysis/semantic-function.js';
+import { AAPCS64_ABI } from '../../js/targets/abi/index.js';
+import { directSameLocationLoadForTesting } from '../../js/decompiler/pipeline-core.js';
 
 const BASE = 0x100000000n;
 const testAbiAdapter = semanticAbiAdapter(AAPCS64_ABI);
