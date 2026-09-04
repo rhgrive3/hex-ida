@@ -64,6 +64,7 @@ export function createDevContextPacket(input = {}) {
     requiredEvidence: list(input.requiredEvidence, (value) => text(value, MAX_TEXT)),
     forbiddenActions: list(input.forbiddenActions, (value) => text(value, MAX_TEXT)),
     stopConditions: list(input.stopConditions, (value) => text(value, MAX_TEXT)),
+    contextDelta: list(input.contextDelta, contextDeltaEntry),
     budget: budget(input.budget),
   });
 }
