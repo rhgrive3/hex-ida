@@ -14,7 +14,11 @@ const invalidIdentities = [
   { id: 'object' },
   ['array'],
   7,
+  0,
   true,
+  false,
+  '',
+  '   ',
 ];
 
 for (const value of invalidIdentities) {
