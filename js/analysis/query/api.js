@@ -3,9 +3,19 @@ import { assertAnalysisSnapshot, createAnalysisSnapshot, AnalysisSnapshotStaleEr
 
 const COMPLETENESS = new Set(["complete", "partial", "truncated", "unsupported"]);
 
-function artifactVersionsEqual(left = {}, right = {}) {
+function artifactVersionsRecord(value) {
+  if (value === null || value === undefined) return {};
+  if (typeof value !== "object" || Array.isArray(value)) return null;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null ? value : null;
+}
+
+function artifactVersionsEqual(left, right) {
   try {
-    return stableDigest(left || {}) === stableDigest(right || {});
+    const normalizedLeft = artifactVersionsRecord(left);
+    const normalizedRight = artifactVersionsRecord(right);
+    if (normalizedLeft == null || normalizedRight == null) return false;
+    return stableDigest(normalizedLeft) === stableDigest(normalizedRight);
   } catch {
     return false;
   }

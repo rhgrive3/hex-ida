@@ -43,6 +43,7 @@
   function u16(M, pointer) { return M.getValue(pointer, 'i16') & 0xffff; }
   function u32(M, pointer) { return M.getValue(pointer, 'i32') >>> 0; }
   function i64(M, pointer) { return BigInt(M.getValue(pointer, 'i64')); }
+  function u64FromI64(M, pointer) { return BigInt.asUintN(64, i64(M, pointer)); }
 
   function registerName(M, handle, id) {
     if (!id) return null;
@@ -99,8 +100,8 @@
   function parseInstruction(M, handle, instructionPointer, options = {}) {
     const size = u16(M, instructionPointer + ABI.size);
     if (size !== 2 && size !== 4) throw new Error(`riscv64-decoder-invalid-instruction-length:${size}`);
-    const address = i64(M, instructionPointer + 8);
-    const expected = BigInt(options.address);
+    const address = u64FromI64(M, instructionPointer + 8);
+    const expected = BigInt.asUintN(64, BigInt(options.address));
     if (address !== expected) throw new Error(`riscv64-decoder-address-mismatch:${address}:${expected}`);
     const rawBytes = Uint8Array.from({ length: size }, (_unused, index) => u8(M, instructionPointer + ABI.instructionBytes + index));
     return Object.freeze({

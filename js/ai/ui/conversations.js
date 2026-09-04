@@ -100,6 +100,7 @@ export function serializeConversation(conversation) {
     createdAt: conversation.createdAt, updatedAt: conversation.updatedAt,
     mode: conversation.mode, style: conversation.style, scope: conversation.scope,
     provider: conversation.provider, model: conversation.model, reasoning: conversation.reasoning,
+    lastQuestion: conversation.lastQuestion || null,
     turns: conversation.turns.slice(-MAX_PERSISTED_TURNS).map(serializeTurn),
   };
 }
@@ -134,12 +135,12 @@ export function createConversationStore({ namespace, storage, key = STORAGE_KEY 
 
   const readIndex = () => {
     const store = backing();
-    if (!store) return {};
+    if (!store) return nullIndex();
     try {
       const raw = store.getItem(key === STORAGE_KEY ? INDEX_KEY : `${key}.index`);
       const parsed = raw ? JSON.parse(raw) : null;
-      return parsed && typeof parsed === 'object' ? parsed : {};
-    } catch { return {}; }
+      return parsed && typeof parsed === 'object' ? toNullIndex(parsed) : nullIndex();
+    } catch { return nullIndex(); }
   };
 
   const writeIndex = (index) => {
@@ -149,6 +150,25 @@ export function createConversationStore({ namespace, storage, key = STORAGE_KEY 
       store.setItem(key === STORAGE_KEY ? INDEX_KEY : `${key}.index`, JSON.stringify(index));
       return true;
     } catch { return false; }
+  };
+
+  // Namespace strings are arbitrary, so the index must treat prototype
+  // sensitive keys (`__proto__`, `constructor`, `prototype`) as plain data.
+  // A prototypeful object would route `index['__proto__'] = ...` through the
+  // inherited setter and silently drop the entry, leaving the bucket outside
+  // clear()/eviction accounting. A null-prototype map keeps every namespace
+  // an own enumerable property while JSON round-trips stay compatible.
+  const nullIndex = () => Object.create(null);
+  const toNullIndex = (source) => {
+    const index = nullIndex();
+    for (const [name, value] of Object.entries(source)) index[name] = value;
+    return index;
+  };
+  const setEntry = (index, name, value) => {
+    Object.defineProperty(index, name, { value, enumerable: true, configurable: true, writable: true });
+  };
+  const dropEntry = (index, name) => {
+    if (Object.prototype.hasOwnProperty.call(index, name)) delete index[name];
   };
 
   const migrateLegacyIfNeeded = () => {
@@ -165,7 +185,7 @@ export function createConversationStore({ namespace, storage, key = STORAGE_KEY 
             const bk = bucketKey(sp);
             if (!store.getItem(bk)) {
               store.setItem(bk, JSON.stringify(list));
-              index[sp] = lastTouched(list);
+              setEntry(index, sp, lastTouched(list));
             }
           }
         }
@@ -215,10 +235,10 @@ export function createConversationStore({ namespace, storage, key = STORAGE_KEY 
       try {
         if (keep.length) {
           store.setItem(bk, JSON.stringify(keep));
-          index[space] = lastTouched(keep);
+          setEntry(index, space, lastTouched(keep));
         } else {
           store.removeItem(bk);
-          delete index[space];
+          dropEntry(index, space);
         }
       } catch { return false; }
 
@@ -228,7 +248,7 @@ export function createConversationStore({ namespace, storage, key = STORAGE_KEY 
           .filter((name) => name !== space)
           .sort((a, b) => (index[a] || 0) - (index[b] || 0));
         for (const name of ranked.slice(0, spaces.length - MAX_NAMESPACES)) {
-          delete index[name];
+          dropEntry(index, name);
           try { store.removeItem(bucketKey(name)); } catch { /* best effort */ }
         }
       }

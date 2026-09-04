@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { pathToFileURL } from 'node:url';
 import { openBinary, auditBinary, fingerprintImage } from '../js/binary/index.js';
+import { repairElfZeroAddressFunctionSeeds } from '../js/binary/elf.js';
 import { makeElf64Fixture } from './universal-binary.mjs';
 
 export function makeSectionlessElf64Fixture() {
@@ -86,6 +87,92 @@ function issues2095_2139_2163Regressions() {
   }
 }
 
+function issue566SectionProvenanceRegression() {
+  const makeImage = ({ section = null, sectionIndex = null, symbolSize = 4n, kind = 'function', name = 'zero', type = 3, segmentList = null } = {}) => {
+    const sections = section ? [{ index:2, address:0n, size:8n, perms:{ read:true, execute:true }, ...section }] : [];
+    const segments = segmentList ?? [{ address:0n, size:0x100n, perms:{ read:true, execute:true } }];
+    return {
+      metadata:{ type },
+      sections,
+      segments,
+      functions: [],
+      symbols: [{ defined:true, kind, name, address:0n, size:symbolSize, sectionIndex }],
+      sectionAt(address) {
+        return sections.find((candidate) => address >= candidate.address && address < candidate.address + candidate.size) || null;
+      },
+      segmentAt(address) {
+        return segments.find((candidate) => address >= candidate.address && address < candidate.address + candidate.size) || null;
+      },
+    };
+  };
+
+  let image = makeImage({ section:{ perms:{ read:true, execute:false } }, sectionIndex:2, name:'nonexec0' });
+  repairElfZeroAddressFunctionSeeds(image);
+  assert.equal(image.functions.length, 0, 'explicit non-executable section must not fall back to overlapping PT_LOAD');
+
+  image = makeImage({ section:{ perms:{ read:false, execute:true } }, sectionIndex:2, name:'nonalloc0' });
+  repairElfZeroAddressFunctionSeeds(image);
+  assert.equal(image.functions.length, 0, 'runtime non-ALLOC executable section must not seed through overlapping PT_LOAD');
+
+  image = makeImage({ section:{}, sectionIndex:2, name:'unmapped0', segmentList:[] });
+  repairElfZeroAddressFunctionSeeds(image);
+  assert.equal(image.functions.length, 0, 'runtime executable section without PT_LOAD ownership must fail closed');
+
+  image = makeImage({
+    section:{},
+    sectionIndex:2,
+    symbolSize:4n,
+    name:'partial-segment0',
+    segmentList:[{ address:0n, size:2n, perms:{ read:true, execute:true } }],
+  });
+  repairElfZeroAddressFunctionSeeds(image);
+  assert.equal(image.functions.length, 0, 'runtime PT_LOAD must contain the full symbol extent');
+
+  image = makeImage({ section:{ address:1n }, sectionIndex:2, name:'outside-section0' });
+  repairElfZeroAddressFunctionSeeds(image);
+  assert.equal(image.functions.length, 0, 'explicit executable section that excludes address zero must not fall back to overlapping PT_LOAD');
+
+  image = makeImage({ section:{ size:2n }, sectionIndex:2, symbolSize:4n, name:'oversized0' });
+  repairElfZeroAddressFunctionSeeds(image);
+  assert.equal(image.functions.length, 0, 'explicit section extent failure must not fall back to a broader PT_LOAD');
+
+  image = makeImage({ sectionIndex:9, name:'missing-section0' });
+  repairElfZeroAddressFunctionSeeds(image);
+  assert.equal(image.functions.length, 0, 'unresolved explicit section identity must fail closed');
+
+  image = makeImage({ section:{}, sectionIndex:2, name:'good0' });
+  repairElfZeroAddressFunctionSeeds(image);
+  assert.equal(image.functions.length, 1);
+  assert.equal(image.functions[0].name, 'good0');
+  assert.equal(image.functions[0].exactFunctionStart, true);
+
+  image = makeImage({ section:{}, sectionIndex:2, name:'exec-good0', type:2 });
+  repairElfZeroAddressFunctionSeeds(image);
+  assert.equal(image.functions.length, 1, 'ET_EXEC allocated executable section inside PT_LOAD must retain exact seed authority');
+  assert.equal(image.functions[0].name, 'exec-good0');
+  assert.equal(image.functions[0].exactFunctionStart, true);
+
+  image = makeImage({ section:{ perms:{ read:false, execute:true } }, sectionIndex:2, name:'exec-nonalloc0', type:2 });
+  repairElfZeroAddressFunctionSeeds(image);
+  assert.equal(image.functions.length, 0, 'ET_EXEC non-ALLOC executable section must fail closed');
+
+  image = makeImage({ section:{}, sectionIndex:2, kind:'indirect-function', name:'resolver0' });
+  repairElfZeroAddressFunctionSeeds(image);
+  assert.equal(image.functions.length, 1);
+  assert.equal(image.functions[0].name, 'resolver0$resolver');
+  assert.equal(image.functions[0].source, 'ifunc-resolver');
+
+  image = makeImage({ section:{ perms:{ read:false, execute:true } }, sectionIndex:2, name:'reloc0', type:1, segmentList:[] });
+  repairElfZeroAddressFunctionSeeds(image);
+  assert.equal(image.functions.length, 1, 'ET_REL must retain section-relative executable authority without PT_LOAD');
+  assert.equal(image.functions[0].name, 'reloc0');
+
+  image = makeImage({ sectionIndex:null, name:'sectionless0' });
+  repairElfZeroAddressFunctionSeeds(image);
+  assert.equal(image.functions.length, 1, 'sectionless symbol must retain executable segment fallback');
+  assert.equal(image.functions[0].name, 'sectionless0');
+}
+
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   const image=openBinary(makeSectionlessElf64Fixture());
   assert.equal(image.format,'elf');
@@ -103,5 +190,6 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   assert.ok(fingerprintImage(image).bytes>0);
   issue74To85Regressions();
   issues2095_2139_2163Regressions();
+  issue566SectionProvenanceRegression();
   console.log('universal-binary-sectionless: PASS');
 }

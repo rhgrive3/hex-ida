@@ -675,7 +675,9 @@ async function lookupSignature(context, args) {
 async function compareFunctions(context, legacy, leftAddress, rightAddress) {
   if (typeof context.compareFunctions === 'function') return context.compareFunctions(leftAddress, rightAddress);
   const [left, right] = await Promise.all([legacy.get_function(leftAddress), legacy.get_function(rightAddress)]);
-  return { left, right, sameInstructionCount: left.instructions === right.instructions, instructionSimilarity: left.instructions === right.instructions ? 1 : null, summaryChanged: JSON.stringify(jsonSafe(left.summary)) !== JSON.stringify(jsonSafe(right.summary)), semanticDifferences: [] };
+  const leftCount = Number.isSafeInteger(left?.instructions) ? left.instructions : null;
+  const rightCount = Number.isSafeInteger(right?.instructions) ? right.instructions : null;
+  return { left, right, sameInstructionCount: leftCount != null && leftCount === rightCount, instructionSimilarity: null, summaryChanged: JSON.stringify(jsonSafe(left?.summary)) !== JSON.stringify(jsonSafe(right?.summary)), semanticDifferences: [] };
 }
 function projectSearchLocal(project, query, limit, offset = 0, cursorFor = null) {
   const q = String(query).toLowerCase(), matches = [];

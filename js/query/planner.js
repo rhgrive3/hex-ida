@@ -154,10 +154,8 @@ function uniqueTerms(query) {
   return out.slice(0, 16);
 }
 function explicitBudget(value, fallback, minimum = 0) {
-  if (value == null) return fallback;
-  const n = Number(value);
-  if (!Number.isFinite(n)) return fallback;
-  return Math.max(minimum, Math.floor(n));
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.max(minimum, Math.floor(value));
 }
 function plannerShare(total, ratio = 0.4) {
   if (total <= 0) return 0;
@@ -174,8 +172,8 @@ function budgetState(opts) {
   const timeoutMs = explicitBudget(opts && opts.timeoutMs, 3000, 1);
   const requestedMaxFunctions = explicitBudget(opts && opts.maxFunctions, 48, 0);
   const requestedMaxDisassembly = explicitBudget(opts && opts.maxDisassembly, 50000, 0);
-  const ratioRaw = Number(opts?.plannerBudgetFraction);
-  const ratio = Number.isFinite(ratioRaw) ? Math.max(0.1, Math.min(0.8, ratioRaw)) : 0.4;
+  const ratioRaw = opts?.plannerBudgetFraction;
+  const ratio = typeof ratioRaw === 'number' && Number.isFinite(ratioRaw) ? Math.max(0.1, Math.min(0.8, ratioRaw)) : 0.4;
   const maxFunctions = plannerShare(requestedMaxFunctions, ratio);
   const maxDisassembly = plannerDisassemblyShare(requestedMaxDisassembly, ratio);
   const b = {
@@ -184,7 +182,7 @@ function budgetState(opts) {
     reservedDisassembly: Math.max(0, requestedMaxDisassembly - maxDisassembly),
     maxSearchResults: explicitBudget(opts && opts.maxSearchResults, 40, 1),
     maxExpansions: explicitBudget(opts && opts.maxExpansions, 20, 0),
-    timeoutMs, started: Date.now(), isCancelled: opts && opts.isCancelled || (() => false),
+    timeoutMs, started: Date.now(), isCancelled: typeof opts?.isCancelled === 'function' ? opts.isCancelled : (() => false),
     analyzedInstructions: 0, disassemblyExhausted: false, functionExhausted: false,
     candidateTruncated: false, candidateCount: 0, unaccountedToolCost: false,
     analysisAccountedExternally: !!(opts && opts.tools),

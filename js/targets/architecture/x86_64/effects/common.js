@@ -103,6 +103,7 @@ export function createX86EffectContext(decoded, context = {}) {
     addOperation({
       kind:'intrinsic',
       intrinsicId,
+      ...(config.undefinedResult == null ? {} : { undefinedResult:config.undefinedResult }),
       effectSummary:createIntrinsicEffectSummary({
         inputs:effectiveInputs,
         outputs,

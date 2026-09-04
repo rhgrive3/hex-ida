@@ -12,10 +12,14 @@ function arrayList(values, code) {
 function stringList(values, code) {
   if (values == null) return [];
   if (!Array.isArray(values)) fail(code);
+  const out = [];
   for (const value of values) {
     if (typeof value !== 'string') fail(code);
+    const text = value.trim();
+    if (!text) fail(code);
+    out.push(text);
   }
-  return values.filter(Boolean);
+  return out;
 }
 function stringValue(value, code) {
   if (typeof value !== 'string') fail(code);

@@ -64,20 +64,47 @@ function readSleb128(bytes, offset) {
 function decodeMutf8(bytes, offset) {
   const { value: utf16Size, nextOffset } = readUleb128(bytes, offset);
   let pos = nextOffset;
-  let chars = [];
+  const chars = [];
+  let decodedUnits = 0;
+  let terminated = false;
+
   while (pos < bytes.length) {
     const b1 = bytes[pos++];
-    if (b1 === 0) break;
-    if ((b1 & 0x80) === 0) chars.push(String.fromCharCode(b1));
-    else if ((b1 & 0xe0) === 0xc0) {
+    if (b1 === 0) {
+      terminated = true;
+      break;
+    }
+
+    let codeUnit;
+    if (b1 <= 0x7f) {
+      codeUnit = b1;
+    } else if ((b1 & 0xe0) === 0xc0) {
+      if (pos >= bytes.length) fail('dex-malformed-string-data');
       const b2 = bytes[pos++];
-      chars.push(String.fromCharCode(((b1 & 0x1f) << 6) | (b2 & 0x3f)));
+      if ((b2 & 0xc0) !== 0x80) fail('dex-malformed-string-data');
+      codeUnit = ((b1 & 0x1f) << 6) | (b2 & 0x3f);
+      if (codeUnit === 0) {
+        if (b1 !== 0xc0 || b2 !== 0x80) fail('dex-malformed-string-data');
+      } else if (codeUnit < 0x80) {
+        fail('dex-malformed-string-data');
+      }
     } else if ((b1 & 0xf0) === 0xe0) {
+      if (pos + 1 >= bytes.length) fail('dex-malformed-string-data');
       const b2 = bytes[pos++];
       const b3 = bytes[pos++];
-      chars.push(String.fromCharCode(((b1 & 0x0f) << 12) | ((b2 & 0x3f) << 6) | (b3 & 0x3f)));
+      if ((b2 & 0xc0) !== 0x80 || (b3 & 0xc0) !== 0x80) fail('dex-malformed-string-data');
+      codeUnit = ((b1 & 0x0f) << 12) | ((b2 & 0x3f) << 6) | (b3 & 0x3f);
+      if (codeUnit < 0x800) fail('dex-malformed-string-data');
+    } else {
+      fail('dex-malformed-string-data');
     }
+
+    chars.push(String.fromCharCode(codeUnit));
+    decodedUnits++;
+    if (decodedUnits > utf16Size) fail('dex-malformed-string-data');
   }
+
+  if (!terminated || decodedUnits !== utf16Size) fail('dex-malformed-string-data');
   return chars.join('');
 }
 

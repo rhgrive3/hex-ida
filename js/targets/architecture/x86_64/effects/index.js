@@ -17,8 +17,9 @@ import {
   liftX86ExtendedStateEffects,
   integrateX86ExtendedStateAliases,
 } from './extended-state.js';
+import { vectorPrefixOffset } from './extended-state-helpers.js';
 import { closeTrustedX86Partial } from './trusted-decoder-terminal.js';
-import { normalizeX86Instruction, X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION } from './common.js';
+import { createX86EffectContext, normalizeX86Instruction, X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION } from './common.js';
 
 function liftX86IntegerFamily(instruction, context) {
   return liftX86ImplicitSignExtensionEffects(instruction, context)
@@ -54,9 +55,48 @@ function invalidNonEvexExtendedVector(instruction) {
   return registers.some((register) => register?.evexOnly === true || /^(?:zmm(?:[0-9]|[12][0-9]|3[01])|(?:xmm|ymm)(?:1[6-9]|2[0-9]|3[01]))$/.test(String(register?.id || '').toLowerCase()));
 }
 
-const STRUCTURED_FAIL_CLOSED_REASON = /^(?:x86-cmpxchg-structured-implicit-accumulator-missing|x86-string-(?:prefix-state-unmodelled|f2-repeat-prefix-not-proven-for-this-family|implicit-state-unmodelled|address-size-unmodelled|operand-shape-unmodelled))$/;
+function vectorPrefixRawMismatch(instruction) {
+  const vector = instruction?.detail?.prefixes?.vector;
+  if (vector == null) return false;
+  const kind = String(vector.kind || '').toLowerCase();
+  const bytes = Uint8Array.from(vector.bytes || []);
+  if (kind === 'vex2') {
+    if (bytes.length !== 2 || bytes[0] !== 0xc5) return false;
+  } else if (kind === 'vex3') {
+    const map = bytes.length === 3 ? bytes[1] & 31 : null;
+    if (bytes.length !== 3 || bytes[0] !== 0xc4 || map < 1 || map > 3) return false;
+  } else if (kind === 'evex') {
+    if (bytes.length !== 4 || bytes[0] !== 0x62) return false;
+  } else return false;
+  return vectorPrefixOffset(instruction, bytes) == null;
+}
+
+function rawVectorPrefixPartial(instruction, ownerId, result, context) {
+  const vector = instruction.detail.prefixes.vector;
+  const ctx = createX86EffectContext(instruction, context);
+  return ctx.partial('x86-vector-prefix-raw-mismatch', ['registers','memory','flags','control','faults','other'], {
+    controlEffect:result?.controlEffect ?? { kind:'unknown', reason:'x86-vector-prefix-raw-mismatch' },
+    possibleFaults:result?.possibleFaults ?? [],
+    metadata:{
+      ownerId,
+      encodingValidated:false,
+      vectorPrefixKind:String(vector.kind || '').toLowerCase(),
+      structuredVectorPrefixBytes:Object.freeze([...Uint8Array.from(vector.bytes || [])]),
+      rawPrefixCoherence:'required-for-exact-semantics',
+    },
+  });
+}
+
+const STRUCTURED_FAIL_CLOSED_REASON = /^(?:x86-int-delivery-state-unmodelled|x86-(?:fp-)?vector-prefix-metadata-malformed|x86-cmpxchg-structured-implicit-accumulator-missing|x86-string-(?:prefix-state-unmodelled|f2-repeat-prefix-not-proven-for-this-family|implicit-state-unmodelled|address-size-unmodelled|operand-shape-unmodelled))$/;
 
 function terminalize(instruction, ownerId, result, context) {
+  // Structured vector-prefix metadata is semantic authority for VEX/EVEX
+  // register width, lane-zeroing, map and mandatory-prefix behavior. Exact
+  // semantics are valid only when those bytes exist at the legal raw prefix
+  // offset; otherwise a forged/stale structured record can change physical
+  // vector state while disagreeing with the instruction bytes.
+  if (vectorPrefixRawMismatch(instruction)) return rawVectorPrefixPartial(instruction, ownerId, result, context);
+
   // Decoder acceptance is not architectural validity. Family lifters mark
   // byte/family combinations that fail their architectural encoding policy
   // with encodingValidated:false; those records must remain fail-closed even
