@@ -734,6 +734,9 @@ function createClassifier(profile) {
         reason:`${profile.id}-aggregate-return-size-layout-unproven` };
     }
     if (aggregate && aggregateLayout?.bytes > Math.ceil(bits / 8)) {
+      // The psABI size threshold is the physical total size, matching the
+      // argument classifier: a padded aggregate over 2*XLEN is indirect.
+      if (aggregateLayout.bytes > 2 * XLEN / 8) return indirectResult();
       return { reg:null, bits, bytes:aggregateLayout.bytes, aggregate:true, partial:true, location:'unknown',
         reason:`${profile.id}-padded-aggregate-return-layout-not-represented` };
     }
