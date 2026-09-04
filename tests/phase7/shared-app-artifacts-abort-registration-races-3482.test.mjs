@@ -41,7 +41,7 @@ const signal = {
   addEventListener() { this.aborted = true; },
   removeEventListener() {},
 };
-const onAbort = () => { abortCalls++ ; };
+const onAbort = () => { abortCalls++; };
 signal.addEventListener('abort', onAbort, { once:true });
 if (signal.aborted) onAbort();
 assert.equal(abortCalls, 1);
