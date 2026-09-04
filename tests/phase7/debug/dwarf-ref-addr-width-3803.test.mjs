@@ -48,6 +48,16 @@ test('DWARF2 ref_addr consumes address_size bytes before the next attribute', ()
   assert.equal(die?.attributes.get(0x03)?.value, 'ok');
 });
 
+test('DWARF2 ref_addr honors a 2-byte address_size without consuming the next attribute', () => {
+  const result = parse(2, 2, [0x34, 0x12]);
+  const die = result.dies.get(11);
+
+  assert.equal(result.complete, true);
+  assert.deepEqual(result.diagnostics, []);
+  assert.equal(die?.attributes.get(0x49)?.value, 0x1234n);
+  assert.equal(die?.attributes.get(0x03)?.value, 'ok');
+});
+
 test('DWARF3 ref_addr keeps using the DWARF32 offset size even on a 64-bit target', () => {
   const result = parse(3, 8, [0x08, 0x00, 0x00, 0x00]);
   const die = result.dies.get(11);

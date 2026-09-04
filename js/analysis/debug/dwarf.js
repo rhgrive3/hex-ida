@@ -198,6 +198,16 @@ function parseAbbrev(bytes, tableOffset) {
   return table;
 }
 
+/** Reads a bounded little-endian unsigned integer of exactly `width` bytes. */
+function readUnsignedWidth(cursor, width) {
+  if (!Number.isInteger(width) || width < 1 || width > 8) throw new RangeError('dwarf-address-size-unsupported');
+  let value = 0n;
+  for (let index = 0; index < width; index += 1) {
+    value |= BigInt(cursor.u8()) << BigInt(index * 8);
+  }
+  return value;
+}
+
 /**
  * Reads one attribute value.
  *
@@ -246,7 +256,7 @@ function readForm(cursor, form, unit, sections, implicitConst) {
     }
     case DW_FORM.ref_addr:
       return { value: unit.version === 2
-        ? (unit.addressSize === 8 ? cursor.u64() : BigInt(cursor.u32()))
+        ? readUnsignedWidth(cursor, unit.addressSize)
         : (unit.offsetSize === 8 ? cursor.u64() : BigInt(cursor.u32())) };
     case DW_FORM.sec_offset: case DW_FORM.strp_sup:
       return { value: unit.offsetSize === 8 ? cursor.u64() : BigInt(cursor.u32()) };
