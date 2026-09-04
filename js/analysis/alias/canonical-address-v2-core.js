@@ -163,6 +163,11 @@ export function defaultRootEntityId(rootIdentity) {
   })}`;
 }
 
+function normalizeLinearOffsets(value) {
+  if (value == null) return true;
+  return typeof value === 'boolean' ? value : null;
+}
+
 function normalizeGenericDescriptor(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
   const kind = identityString(input.kind);
@@ -171,18 +176,20 @@ function normalizeGenericDescriptor(input) {
   if (input.addressSpace != null && addressSpace == null) return null;
   if (kind === 'stack-like') {
     const baseOffset = parseInteger(input.baseOffset ?? 0);
-    if (baseOffset == null) return null;
+    const linearOffsets = normalizeLinearOffsets(input.linearOffsets);
+    if (baseOffset == null || linearOffsets == null) return null;
     return deepFreeze({
       kind,
       baseOffset,
       addressSpace,
-      linearOffsets: input.linearOffsets !== false,
+      linearOffsets,
       ...(input.rootIdentity == null ? {} : { rootIdentity: jsonSafe(input.rootIdentity) }),
     });
   }
   if (kind === 'rooted-object' || kind === 'global-like' || kind === 'heap-like' || kind === 'tls-like') {
     const baseOffset = parseInteger(input.baseOffset ?? 0);
-    if (baseOffset == null) return null;
+    const linearOffsets = normalizeLinearOffsets(input.linearOffsets);
+    if (baseOffset == null || linearOffsets == null) return null;
     const rootEntityId = input.rootEntityId == null ? null : identityString(input.rootEntityId, { trim: true });
     if (input.rootEntityId != null && rootEntityId == null) return null;
     const resolvedSpace = addressSpace ?? (kind === 'tls-like' ? 'tls' : null);
@@ -190,7 +197,7 @@ function normalizeGenericDescriptor(input) {
       kind: 'rooted-object',
       baseOffset,
       addressSpace: resolvedSpace,
-      linearOffsets: input.linearOffsets !== false,
+      linearOffsets,
       ...(rootEntityId ? { rootEntityId } : {}),
       ...(input.rootIdentity == null ? {} : { rootIdentity: jsonSafe(input.rootIdentity) }),
     });
