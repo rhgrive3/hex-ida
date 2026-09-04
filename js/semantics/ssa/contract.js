@@ -61,14 +61,17 @@ function compareText(a, b) {
 function preflightPhiLinkBudget(definitions, options) {
   const maximum = limit(options, 'maxLinks');
   let used = 0;
-  for (const definition of definitions) {
+  const incomingSnapshots = new Array(definitions.length);
+  for (let index = 0; index < definitions.length; index++) {
+    const definition = definitions[index];
     if (!definition || typeof definition !== 'object' || Array.isArray(definition)) continue;
     const incoming = definition.incoming;
+    incomingSnapshots[index] = incoming;
     if (!Array.isArray(incoming)) continue;
     if (incoming.length > maximum - used) fail('semantic-ssa-budget-exceeded-maxLinks');
     used += incoming.length;
   }
-  return used;
+  return { used, incomingSnapshots };
 }
 
 function normalizeIncoming(value) {
@@ -84,12 +87,12 @@ function normalizeIncoming(value) {
     .sort((a, b) => compareText(a.predecessorBlockId, b.predecessorBlockId) || compareText(a.valueId, b.valueId));
 }
 
-function normalizeDefinition(input) {
+function normalizeDefinition(input, incomingSnapshot) {
   input = object(input, 'semantic-ssa-invalid-definition');
   assertAllowedKeys(input, new Set(['definitionId','valueId','kind','blockId','variableKey','sourceEntityId','incoming','origin','proof']), 'semantic-ssa-unexpected-definition-field');
   const kind = nonEmpty(input.kind, 'semantic-ssa-definition-kind-required');
   if (!DEF_KINDS.has(kind)) fail('semantic-ssa-invalid-definition-kind');
-  const incoming = normalizeIncoming(input.incoming);
+  const incoming = normalizeIncoming(incomingSnapshot);
   if (kind === 'phi' && incoming.length === 0) fail('semantic-ssa-phi-incoming-required');
   if (kind !== 'phi' && incoming.length !== 0) fail('semantic-ssa-incoming-only-valid-for-phi');
   const out = {
@@ -137,9 +140,9 @@ export function createSemanticSsaContract(input, options = {}) {
   }
 
   const rawDefinitions = array(input.definitions, 'semantic-ssa-definitions-required');
-  const phiLinkCount = preflightPhiLinkBudget(rawDefinitions, options);
+  const { used: phiLinkCount, incomingSnapshots } = preflightPhiLinkBudget(rawDefinitions, options);
   const definitions = rawDefinitions
-    .map(normalizeDefinition)
+    .map((definition, index) => normalizeDefinition(definition, incomingSnapshots[index]))
     .sort((a, b) => compareText(a.valueId, b.valueId) || compareText(a.definitionId, b.definitionId));
   const uses = array(input.uses, 'semantic-ssa-uses-required')
     .map(normalizeUse)
