@@ -1,91 +1,47 @@
 version: 2.1
 
 jobs:
-  invariant-plan-contract:
+  probe-invariant-classifier:
     docker:
       - image: cimg/node:22.23
-    resource_class: small
+    resource_class: medium
     steps:
       - checkout
-      - run:
-          name: Validate npm-check shard partition
-          command: node scripts/ci/invariant-circleci-diagnostic.mjs plan
+      - run: npm ci --no-audit --no-fund
+      - run: node tests/invariant-pr-baseline.mjs
 
-  invariant-phase8:
+  probe-invariant-baseline-proof:
     docker:
       - image: cimg/node:22.23
     resource_class: large
     steps:
       - checkout
-      - run:
-          name: Install dependencies
-          command: npm ci --no-audit --no-fund
-      - run:
-          name: Phase 8
-          command: npm run phase8:test
+      - run: git fetch --no-tags origin main:refs/remotes/origin/main
+      - run: npm ci --no-audit --no-fund
+      - run: HEX_INVARIANT_BASE_REF=refs/remotes/origin/main node tools/validation/invariant-pr-baseline.mjs
 
-  invariant-phase45:
+  probe-semantic-v2:
     docker:
       - image: cimg/node:22.23
     resource_class: large
     steps:
       - checkout
-      - run:
-          name: Install dependencies
-          command: npm ci --no-audit --no-fund
-      - run:
-          name: Install frozen Phase 5 toolchain
-          command: |
-            set -euo pipefail
-            sudo apt-get update
-            sudo apt-get install -y clang-18 lld-18 llvm-18
-      - run:
-          name: Phase 4 and 5
-          command: node scripts/ci/invariant-circleci-diagnostic.mjs phase45
+      - run: npm ci --no-audit --no-fund
+      - run: npm run semantic-v2:test
 
-  invariant-analysis-proof:
+  probe-benchmark-baseline:
     docker:
       - image: cimg/node:22.23
     resource_class: large
     steps:
       - checkout
-      - run:
-          name: Resolve current main
-          command: git fetch --no-tags origin main:refs/remotes/origin/main
-      - run:
-          name: Install dependencies
-          command: npm ci --no-audit --no-fund
-      - run:
-          name: Verify invariant baseline classifier contract
-          command: node tests/invariant-pr-baseline.mjs
-      - run:
-          name: Run exact invariant proof with current-main regression isolation
-          command: HEX_INVARIANT_BASE_REF=refs/remotes/origin/main node tools/validation/invariant-pr-baseline.mjs
-      - run:
-          name: Semantic V2 and benchmark baseline
-          command: node scripts/ci/invariant-circleci-diagnostic.mjs analysis-proof-tail
-
-  invariant-repo-regression:
-    docker:
-      - image: cimg/node:22.23
-    resource_class: large
-    steps:
-      - checkout
-      - run:
-          name: Resolve current main
-          command: git fetch --no-tags origin main:refs/remotes/origin/main
-      - run:
-          name: Install dependencies
-          command: npm ci --no-audit --no-fund
-      - run:
-          name: Run packed repository regression lane
-          command: node scripts/ci/invariant-circleci-diagnostic.mjs repo-regression
+      - run: npm ci --no-audit --no-fund
+      - run: npm run benchmark:baseline
 
 workflows:
-  invariant-diagnostic:
+  analysis-proof-diagnostic:
     jobs:
-      - invariant-plan-contract
-      - invariant-phase8
-      - invariant-phase45
-      - invariant-analysis-proof
-      - invariant-repo-regression
+      - probe-invariant-classifier
+      - probe-invariant-baseline-proof
+      - probe-semantic-v2
+      - probe-benchmark-baseline
