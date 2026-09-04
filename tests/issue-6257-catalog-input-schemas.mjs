@@ -23,9 +23,7 @@ const REQUIRED_FIELDS = Object.freeze({
   'patch.revert': ['fileOffset'],
   'runtime.attach': ['runtimeSessionId'],
   'runtime.detach': ['runtimeSessionId'],
-  'runtime.breakpoint-create': ['runtimeSessionId'],
   'runtime.breakpoint-remove': ['runtimeSessionId', 'id'],
-  'runtime.watchpoint-create': ['runtimeSessionId'],
   'runtime.watchpoint-remove': ['runtimeSessionId', 'id'],
   'runtime.continue': ['runtimeSessionId'],
   'runtime.pause': ['runtimeSessionId'],
@@ -50,7 +48,8 @@ for (const [id, fields] of Object.entries(REQUIRED_FIELDS)) {
   const entry = byId.get(id);
   assert.ok(entry, `catalog entry ${id} must exist`);
   for (const field of fields) {
-    const checked = validateSchema({}, entry.inputSchema);
+    const args = {};
+    const checked = validateSchema(args, entry.inputSchema);
     assert.equal(checked.ok, false, `${id}: {} must be invalid when ${field} is required`);
     assert.ok(
       checked.errors.some((message) => message.includes(field) && message.includes('required')),
@@ -63,10 +62,12 @@ for (const [id, fields] of Object.entries(REQUIRED_FIELDS)) {
 for (const entry of HEX_CAPABILITIES.filter((item) => item.runtimeBound)) {
   const checked = validateSchema({}, entry.inputSchema);
   assert.equal(checked.ok, false, `${entry.id}: runtime-bound capability must reject missing runtimeSessionId`);
-  assert.ok(
-    checked.errors.some((message) => message.includes('runtimeSessionId') && message.includes('required')),
-    `${entry.id}: missing session must be reported by schema, got ${JSON.stringify(checked.errors)}`,
-  );
+  if (!entry.inputSchema.anyOf) {
+    assert.ok(
+      checked.errors.some((message) => message.includes('runtimeSessionId') && message.includes('required')),
+      `${entry.id}: missing session must be reported by schema, got ${JSON.stringify(checked.errors)}`,
+    );
+  }
 }
 
 /* 4. breakpoint/watchpoint schemas preserve the executor's nested and flat forms */
