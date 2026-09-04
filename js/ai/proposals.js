@@ -3,6 +3,7 @@ import { jsonSafe } from './validation.js';
 import { stableDigest } from '../core/identity/index.js';
 
 const PROPOSAL_KINDS = new Set(['rename', 'comment', 'type', 'struct-field', 'patch', 'project-annotation']);
+const EXECUTION_PAYLOADS = new WeakMap();
 let proposalSequence = 1;
 
 export class ProposalStore {
@@ -27,16 +28,23 @@ export class ProposalStore {
       while (this.records.has(id));
     }
     const binding = this.binding?.() || null;
+    const executionPayload = snapshotProposalPayload(input);
     const record = {
-      id, kind: input.kind, target: jsonSafe(input.target), before: jsonSafe(input.before), after: jsonSafe(input.after),
+      id, kind: input.kind,
+      // The public record stays bounded for display/wire consumers. Mutation
+      // authority is held separately in EXECUTION_PAYLOADS.
+      target: jsonSafe(executionPayload.target),
+      before: jsonSafe(executionPayload.before),
+      after: jsonSafe(executionPayload.after),
       reason: String(input.reason || '').slice(0, 2000), evidenceIds,
       createdAt: new Date().toISOString(), status: 'pending',
-      // Identity/staleness checks use the complete value, never jsonSafe's
-      // display-oriented depth/item truncation.
-      revision: fingerprint(input.before),
+      // Identity/staleness checks use the exact snapshotted value that will be
+      // executed, never jsonSafe's display-oriented depth/item truncation.
+      revision: fingerprint(executionPayload.before),
       binding: jsonSafe(binding),
       bindingRevision: fingerprint(binding),
     };
+    EXECUTION_PAYLOADS.set(record, executionPayload);
     this.records.set(id, record);
     this.audit.push({ type: 'proposal-created', proposalId: id, timestamp: record.createdAt });
     return record;
@@ -87,7 +95,7 @@ export class ProposalStore {
       throw new AIError('tool_failed', 'No mutation adapter is available.');
     }
     try {
-      await apply(proposal);
+      await apply(proposalExecutionView(proposal));
       proposal.status = 'applied';
       this.audit.push({ type: 'proposal-applied', proposalId: proposal.id, timestamp: new Date().toISOString() });
       return proposal;
@@ -106,6 +114,29 @@ export class ProposalStore {
   has(id) { return this.records.has(String(id)); }
   get(id) { return this.records.get(String(id)) || null; }
   all() { return Array.from(this.records.values()); }
+  executionView(id) { return proposalExecutionView(this.require(id)); }
+}
+
+function proposalExecutionView(proposal) {
+  const payload = EXECUTION_PAYLOADS.get(proposal);
+  if (!payload) throw new AIError('tool_failed', 'Proposal execution payload is unavailable.');
+  return { ...proposal, ...snapshotProposalPayload(payload) };
+}
+
+function snapshotProposalPayload(value) {
+  const clone = globalThis.structuredClone;
+  if (typeof clone !== 'function') {
+    throw new AIError('tool_failed', 'Structured cloning is unavailable for proposal execution payloads.');
+  }
+  try {
+    return {
+      target: clone(value.target),
+      before: clone(value.before),
+      after: clone(value.after),
+    };
+  } catch {
+    throw new AIError('invalid_tool_call', 'Proposal execution payload must be structured-cloneable.');
+  }
 }
 
 /**
