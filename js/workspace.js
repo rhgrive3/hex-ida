@@ -9,6 +9,8 @@ const LOCAL_PREFIX='hex.project.v1.';
 const MAX_PROJECT_AI_TURNS=200;
 const MAX_PROJECT_FINDINGS=1000;
 const MAX_DIFF_FUNCTIONS=350000;
+const PROJECT_LANGUAGES=new Set(['ja','en']);
+const PROJECT_TEXT_SIZES=new Set(['s','m','l','xl']);
 
 function keyOf(value){return value==null?'':String(value);}
 function cleanName(name){return String(name||'analysis').replace(/[^a-z0-9._-]+/gi,'_').replace(/^_+|_+$/g,'').slice(0,120)||'analysis';}
@@ -20,6 +22,21 @@ function identityKey(identity){
 }
 function staleWorkspaceError(){const error=new Error('workspace-binding-changed');error.code='HEX_WORKSPACE_STALE';return error;}
 function throwIfAborted(signal){if(!signal?.aborted)return;if(signal.reason instanceof Error)throw signal.reason;const error=new Error(signal.reason==null?'Operation aborted':String(signal.reason));error.name='AbortError';error.code='ABORT_ERR';throw error;}
+function applyWorkspaceAnalysisSettings(app,settings){
+  if(!settings||typeof settings!=='object'||Array.isArray(settings))return;
+  if(PROJECT_LANGUAGES.has(settings.language)){
+    if(typeof app?.setLanguage==='function')app.setLanguage(settings.language);
+    else if(app?.prefs)app.prefs.lang=settings.language;
+  }
+  if(typeof settings.explain==='boolean'){
+    if(typeof app?.setExplain==='function')app.setExplain(settings.explain);
+    else if(app?.prefs)app.prefs.explain=settings.explain;
+  }
+  if(PROJECT_TEXT_SIZES.has(settings.textSize)){
+    if(typeof app?.setTextSize==='function')app.setTextSize(settings.textSize);
+    else if(app?.prefs)app.prefs.textSize=settings.textSize;
+  }
+}
 
 export function binaryIdentity(app, hash=null){
   const info=app?.store?.get?.('fileInfo')||null;
@@ -154,13 +171,6 @@ export function applyWorkspaceProject(app, project){
       }
     }
   }
-  // Restore analysis settings
-  if(project.analysis?.settings){
-    const s = project.analysis.settings;
-    if(s.language && app.prefs) app.prefs.lang = s.language;
-    if(s.explain != null && app.prefs) app.prefs.explain = s.explain;
-    if(s.textSize && app.prefs) app.prefs.textSize = s.textSize;
-  }
   // Restore last query
   if(project.navigation?.lastQuery){
     app.lastGoal = { text: project.navigation.lastQuery };
@@ -191,6 +201,8 @@ export function applyWorkspaceProject(app, project){
     if(app.navigation)app.navigation.bookmarks=bookmarks.slice(-500);
     if(app.bookmarks?.restore)app.bookmarks.restore(bookmarks);
   }
+  // Apply imported analysis settings only after the rest of the project restore succeeds.
+  applyWorkspaceAnalysisSettings(app,project.analysis?.settings);
   return true;
 }
 
