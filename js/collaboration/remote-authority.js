@@ -16,6 +16,10 @@ function required(value, code) {
   return text;
 }
 
+function validRawIdentity(value) {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
 function positive(value, fallback, max, code) {
   const n = value == null ? fallback : Number(value);
   if (!Number.isSafeInteger(n) || n < 1 || n > max) throw new TypeError(code);
@@ -123,6 +127,12 @@ export class RemoteCollaborationGate {
     VERIFIED_TRANSPORT_PROOFS.delete(this);
     if (!envelope || !this.supportedEnvelopeSchemas.has(envelope.schemaVersion)) return { ok: false, reason: 'remote-envelope-schema-unsupported' };
     if (!this.supportedOperationSchemas.has(envelope.operationSchemaVersion)) return { ok: false, reason: 'remote-operation-schema-unsupported' };
+    if (!validRawIdentity(envelope.projectIdentity)) return { ok: false, reason: 'remote-project-identity-required' };
+    if (envelope.binaryIdentity != null && !validRawIdentity(envelope.binaryIdentity)) return { ok: false, reason: 'remote-binary-identity-invalid' };
+    if (!validRawIdentity(envelope.sessionIdentity)) return { ok: false, reason: 'remote-session-identity-required' };
+    if (!validRawIdentity(envelope.actorIdentity)) return { ok: false, reason: 'remote-actor-identity-required' };
+    if (!validRawIdentity(envelope.deviceIdentity)) return { ok: false, reason: 'remote-device-identity-required' };
+    if (!validRawIdentity(envelope.messageId)) return { ok: false, reason: 'remote-message-id-required' };
     if (envelope.projectIdentity !== this.projectIdentity) return { ok: false, reason: 'remote-wrong-project' };
     if ((envelope.binaryIdentity ?? null) !== this.binaryIdentity) return { ok: false, reason: 'remote-wrong-binary' };
     if (envelope.sessionIdentity !== this.sessionIdentity) return { ok: false, reason: 'remote-wrong-session' };
