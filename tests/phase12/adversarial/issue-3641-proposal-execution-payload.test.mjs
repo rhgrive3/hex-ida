@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
-import { ProposalStore } from '../js/ai/proposals.js';
-import { ProposalExecutor } from '../js/ai/interaction/proposal-executor.js';
+import { ProposalStore } from '../../../js/ai/proposals.js';
+import { ProposalExecutor } from '../../../js/ai/interaction/proposal-executor.js';
 
 const evidenceStore = { has: (id) => id === 'verified-evidence' };
 
