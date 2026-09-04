@@ -50,6 +50,18 @@ for (const [field, code] of [
   );
 }
 
+for (const value of [...invalidIdentities, '   ']) {
+  assert.throws(
+    () => createRemoteCollaborationEnvelope({
+      ...envelopeBase,
+      transportProof: { proofIdentity:value },
+    }),
+    (error) => error instanceof TypeError
+      && error.message === 'remote-transport-proof-identity-invalid',
+    'transport proof identity must remain a primitive non-empty string',
+  );
+}
+
 const canonicalEnvelope = createRemoteCollaborationEnvelope({
   ...envelopeBase,
   projectIdentity: '  project:strict  ',
@@ -58,6 +70,7 @@ const canonicalEnvelope = createRemoteCollaborationEnvelope({
   actorIdentity: '  alice  ',
   deviceIdentity: '  device:alice  ',
   messageId: '  message:strict  ',
+  transportProof: { proofIdentity:'  proof:strict  ' },
 });
 assert.equal(canonicalEnvelope.projectIdentity, 'project:strict');
 assert.equal(canonicalEnvelope.binaryIdentity, 'binary:strict');
@@ -65,6 +78,7 @@ assert.equal(canonicalEnvelope.sessionIdentity, 'session:strict');
 assert.equal(canonicalEnvelope.actorIdentity, 'alice');
 assert.equal(canonicalEnvelope.deviceIdentity, 'device:alice');
 assert.equal(canonicalEnvelope.messageId, 'message:strict');
+assert.equal(canonicalEnvelope.transportProof.proofIdentity, 'proof:strict');
 assert.equal(canonicalEnvelope.operations[0].projectIdentity, 'project:strict');
 assert.equal(canonicalEnvelope.operations[0].binaryIdentity, 'binary:strict');
 assert.equal(canonicalEnvelope.operations[0].authorIdentity, 'alice');
@@ -99,17 +113,55 @@ for (const [field, code] of [
   );
 }
 
+for (const value of [...invalidIdentities, '   ']) {
+  assert.throws(
+    () => new RemoteCollaborationGate({
+      ...gateBase,
+      allowedActors:new Map([[value, ['*']]]),
+    }),
+    (error) => error instanceof TypeError
+      && error.message === 'remote-gate-actor-identity-invalid',
+    'permission-map actor keys must not acquire authority through String coercion',
+  );
+  assert.throws(
+    () => new RemoteCollaborationGate({
+      ...gateBase,
+      revokedActors:[value],
+    }),
+    (error) => error instanceof TypeError
+      && error.message === 'remote-gate-revoked-actor-invalid',
+    'initial revoked actors must not acquire authority through String coercion',
+  );
+}
+
+assert.throws(
+  () => new RemoteCollaborationGate({
+    ...gateBase,
+    allowedActors:new Map([
+      [' alice ', ['*']],
+      ['alice', ['fact:name']],
+    ]),
+  }),
+  (error) => error instanceof TypeError
+    && error.message === 'remote-gate-actor-identity-duplicate',
+  'distinct raw actor keys must not collapse onto one canonical permission identity',
+);
+
 const canonicalGate = new RemoteCollaborationGate({
   ...gateBase,
   projectIdentity: '  project:strict  ',
   binaryIdentity: '  binary:strict  ',
   sessionIdentity: '  session:strict  ',
   transportVerifierIdentity: '  transport:strict  ',
+  allowedActors:new Map([['  alice  ', ['*']]]),
+  revokedActors:['  bob  ', 'bob'],
 });
 assert.equal(canonicalGate.projectIdentity, 'project:strict');
 assert.equal(canonicalGate.binaryIdentity, 'binary:strict');
 assert.equal(canonicalGate.sessionIdentity, 'session:strict');
 assert.equal(canonicalGate.transportVerifierIdentity, 'transport:strict');
+assert.deepEqual(canonicalGate.snapshot().actors, ['alice']);
+assert.deepEqual(canonicalGate.snapshot().revokedActors, ['bob']);
 
 const secureEnvelope = createRemoteCollaborationEnvelope({
   ...envelopeBase,
@@ -167,7 +219,7 @@ assert.throws(
   () => canonicalGate.revoke(['alice']),
   (error) => error instanceof TypeError && error.message === 'remote-revoke-actor-required',
 );
-canonicalGate.revoke('  bob  ');
-assert.deepEqual(canonicalGate.snapshot().revokedActors, ['bob']);
+canonicalGate.revoke('  carol  ');
+assert.deepEqual(canonicalGate.snapshot().revokedActors, ['bob', 'carol']);
 
 console.log('[phase12] remote collaboration authority identity #3619 tests passed');
