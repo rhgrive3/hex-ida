@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { openBinary } from '../js/binary/index.js';
 import { MemoryByteSource } from '../js/binary/source.js';
 import { parseMachOSource } from '../js/binary/source-loaders.js';
+import { validateFatContainer, validateFatSlice } from '../js/binary/macho-fat.js';
 
 const CPU_X86_64 = 0x01000007;
 const CPU_ARM64 = 0x0100000c;
@@ -96,6 +97,37 @@ test('#6314 allow distinct arm64 and arm64e slices without duplicate error', () 
   assert.ok(img, 'successfully opens multi-arch binary with arm64 and arm64e');
   assert.equal(img.metadata.fat.slices.length, 2);
   assert.equal(img.metadata.fat.selected.arch, 'arm64e');
+});
+
+test('#6314 preserve arm64e ABI version in duplicate identity', () => {
+  const modern = { cpu: CPU_ARM64, subtype: 0x80000002, offset: 0x4000n, size: 0x1000n };
+  const abiV1 = { cpu: CPU_ARM64, subtype: 0x81000002, offset: 0x8000n, size: 0x1000n };
+  assert.doesNotThrow(() => validateFatContainer([modern, abiV1]));
+});
+
+test('#6314 canonicalize only historical arm64e_old to modern arm64e', () => {
+  const old = { cpu: CPU_ARM64, subtype: 2, offset: 0x4000n, size: 0x1000n };
+  const modern = { cpu: CPU_ARM64, subtype: 0x80000002, offset: 0x8000n, size: 0x1000n };
+  assert.throws(
+    () => validateFatContainer([old, modern]),
+    /Mach-O universal binary contains duplicate arm64e architecture/,
+  );
+  assert.doesNotThrow(() => validateFatSlice(
+    { cpu: CPU_ARM64, subtype: 2, align: 2, offset: 0x100n, size: 0x40n },
+    { cpu: CPU_ARM64, subtype: 0x80000002, filetype: 1 },
+    0x1000n,
+  ));
+});
+
+test('#6314 reject outer/inner arm64e ABI version mismatch', () => {
+  assert.throws(
+    () => validateFatSlice(
+      { cpu: CPU_ARM64, subtype: 0x80000002, align: 2, offset: 0x100n, size: 0x40n },
+      { cpu: CPU_ARM64, subtype: 0x81000002, filetype: 1 },
+      0x1000n,
+    ),
+    /Mach-O universal slice outer architecture does not match inner header/,
+  );
 });
 
 test('#6314 reject duplicate architecture in little-endian FAT container', () => {
