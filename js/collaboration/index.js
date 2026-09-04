@@ -17,6 +17,17 @@ function clone(value) {
 }
 function list(value) { return [...new Set((Array.isArray(value) ? value : []).map(String).filter(Boolean))].sort(); }
 function factKey(target, kind) { return `${target}\u0000${kind}`; }
+function compareTombstones(a, b) {
+  if (a.key < b.key) return -1;
+  if (a.key > b.key) return 1;
+  if (a.operationId < b.operationId) return -1;
+  if (a.operationId > b.operationId) return 1;
+  return 0;
+}
+function sortTombstones(state) {
+  if (Array.isArray(state?.tombstones)) state.tombstones.sort(compareTombstones);
+  return state;
+}
 function payloadDigest(value) { return stableDigest(value); }
 // The identity an operationId is bound to: everything that decides state
 // semantics. Two operations sharing an ID must agree on all of it, otherwise
@@ -103,7 +114,7 @@ export class ChangeLog {
   constructor(options = {}) {
     this.projectIdentity = required(options.projectIdentity ?? options.projectId, 'changelog-project-identity-required');
     this.binaryIdentity = options.binaryIdentity == null ? null : required(options.binaryIdentity, 'changelog-binary-identity-invalid');
-    this.state = cloneState(options.state || emptyState(this.projectIdentity, this.binaryIdentity));
+    this.state = sortTombstones(cloneState(options.state || emptyState(this.projectIdentity, this.binaryIdentity)));
     this.operations = new Map((options.operations || []).map((operation) => [operation.operationId, operation]));
     this.pending = new Map(options.pending || []);
     this.allowRemote = options.allowRemote === true;
@@ -148,7 +159,13 @@ export class ChangeLog {
     }
     if (operation.action === 'remove') {
       delete this.state.facts[key];
-      this.state.tombstones.push({ key, operationId: operation.operationId, targetEntityId: operation.targetEntityId, factKind: operation.factKind });
+      if (!this.state.tombstones.some((item) => item.operationId === operation.operationId)) {
+        this.state.tombstones.push({ key, operationId: operation.operationId, targetEntityId: operation.targetEntityId, factKind: operation.factKind });
+        // Tombstones are operation-set state, not arrival history: keep them in
+        // canonical (key, operationId) order so concurrent removes converge
+        // regardless of delivery order (#6232).
+        this.state.tombstones.sort(compareTombstones);
+      }
       this.operations.set(operation.operationId, operation);
       return { status: 'applied', operationId: operation.operationId, effect: 'tombstone' };
     }
