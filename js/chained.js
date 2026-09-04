@@ -75,7 +75,7 @@ async function sliceOffset(file, sliceIndex) {
   return { base, size };
 }
 
-async function parseImage(file, sliceIndex) {
+export async function parseImage(file, sliceIndex) {
   const slice = await sliceOffset(file, sliceIndex);
   if (slice == null) return null;
   const { base, size: sliceSize } = slice;
@@ -119,7 +119,8 @@ async function parseImage(file, sliceIndex) {
         const flags = dv.getUint32(q + 64, true);
         const reserved2 = dv.getUint32(q + 72, true);
         if ((flags & 0xff) === S_SYMBOL_STUBS && secSize > 0n) {
-          stubs.push({ section, addr, size: secSize, fileoff: offset, stubSize: reserved2 || 12, segIndex });
+          if (!reserved2 || reserved2 % 4 !== 0 || BigInt(reserved2) > secSize) continue;
+          stubs.push({ section, addr, size: secSize, fileoff: offset, stubSize: reserved2, segIndex });
         }
       }
     } else if (cmd === LC_DYLD_CHAINED_FIXUPS && size >= 16) {
@@ -271,6 +272,7 @@ export async function chainedImportSymbols(file, sliceIndex = 0) {
   let supplementalReadBytes = raw.length;
   let decodedStubs = 0;
   for (const sec of image.stubs) {
+    if (!sec.stubSize || sec.stubSize <= 0 || sec.stubSize % 4 !== 0 || BigInt(sec.stubSize) > sec.size) continue;
     if (sec.size > BigInt(MAX_STUB_BYTES) || sec.fileoff > image.sliceSize || sec.size > image.sliceSize - sec.fileoff) continue;
     const sectionBytes = Number(sec.size);
     if (supplementalReadBytes + sectionBytes > MAX_SUPPLEMENTAL_READ_BYTES) break;
