@@ -7,13 +7,45 @@ export const REWRITE_VALIDATION_STATUSES = Object.freeze(['equivalent', 'refuted
 
 function fail(code) { throw new TypeError(code); }
 
+function rewriteBinding(rewrite, { beforeTarget = undefined, afterTarget = undefined } = {}) {
+  if (!rewrite || typeof rewrite !== 'object' || Array.isArray(rewrite)) {
+    fail('phase8-rewrite-proof-binding-required');
+  }
+  if (!Object.hasOwn(rewrite, 'before') || !Object.hasOwn(rewrite, 'after')) {
+    fail('phase8-rewrite-proof-binding-required');
+  }
+  const beforeDigest = stableDigest(rewrite.before);
+  const afterDigest = stableDigest(rewrite.after);
+  if (beforeTarget !== undefined && beforeDigest !== stableDigest(beforeTarget)) {
+    fail('phase8-rewrite-adoption-before-binding-mismatch');
+  }
+  if (afterTarget !== undefined && afterDigest !== stableDigest(afterTarget)) {
+    fail('phase8-rewrite-adoption-after-binding-mismatch');
+  }
+  return Object.freeze({
+    beforeDigest,
+    afterDigest,
+    rewriteDigest: stableDigest(rewrite),
+  });
+}
+
 /**
  * C4-04: deterministic, recomputable identity for one validated rewrite
  * adoption. The digest covers everything the adoption decision depended on;
  * a commit-time recompute must reproduce it or the record is forged.
  */
 export function rewriteProofDigest(input = {}) {
-  const required = ['passId', 'passVersion', 'transformKind', 'targets', 'verdict', 'claimKind'];
+  const required = [
+    'passId',
+    'passVersion',
+    'transformKind',
+    'targets',
+    'beforeDigest',
+    'afterDigest',
+    'rewriteDigest',
+    'verdict',
+    'claimKind',
+  ];
   for (const key of required) {
     if (input?.[key] == null || input[key] === '') fail(`phase8-rewrite-proof-field-required:${key}`);
   }
@@ -21,13 +53,14 @@ export function rewriteProofDigest(input = {}) {
     fail('phase8-rewrite-proof-verifier-required');
   }
   return `p8rw_${stableDigest({
-    schema: 'phase8-rewrite-adoption/v1',
+    schema: 'phase8-rewrite-adoption/v2',
     passId: String(input.passId),
     passVersion: String(input.passVersion),
     transformKind: String(input.transformKind),
     targets: [...input.targets].map(String).sort(),
-    beforeDigest: input.beforeDigest ?? null,
-    afterDigest: input.afterDigest ?? null,
+    beforeDigest: input.beforeDigest,
+    afterDigest: input.afterDigest,
+    rewriteDigest: input.rewriteDigest,
     verifierIdentity: input.verifierIdentity,
     verdict: String(input.verdict),
     claimKind: String(input.claimKind),
@@ -49,6 +82,7 @@ export async function validateRewriteAdoption({
   targets,
   beforeTarget,
   afterTarget,
+  rewrite = null,
   beforeIr = null,
   afterIr = null,
   correspondence = {},
@@ -60,6 +94,13 @@ export async function validateRewriteAdoption({
   if (!passId || !passVersion || !transformKind) fail('phase8-rewrite-adoption-identity-required');
   if (!Array.isArray(targets) || targets.length === 0) fail('phase8-rewrite-adoption-targets-required');
   if (beforeTarget == null || afterTarget == null) fail('phase8-rewrite-adoption-targets-required');
+
+  // The verifier and the commit gate must talk about the same staged rewrite.
+  // When callers omit an explicit payload, the canonical payload is the exact
+  // before/after pair being sent to the verifier. Any later payload mutation
+  // changes the recomputed binding and therefore cannot reuse this proof id.
+  const rewritePayload = rewrite ?? Object.freeze({ before: beforeTarget, after: afterTarget });
+  const binding = rewriteBinding(rewritePayload, { beforeTarget, afterTarget });
 
   const outcome = await verifyBoundedEquivalence({
     beforeIr,
@@ -81,6 +122,7 @@ export async function validateRewriteAdoption({
       passVersion,
       transformKind,
       targets,
+      ...binding,
       verifierIdentity: REWRITE_VALIDATION_VERIFIER,
       verdict,
       claimKind,
@@ -117,16 +159,25 @@ export async function validateRewriteAdoption({
 
 /**
  * Recompute the proof id a transform's validation record must carry.
- * Used at commit time so a mutated record fails the transaction.
+ * Used at commit time so a mutated record fails the transaction. A malformed
+ * or missing staged rewrite returns null, which the caller treats as a proof
+ * mismatch rather than allowing an exception to bypass the fail-closed gate.
  */
 export function recomputeEquivalenceProofId(transform, descriptor) {
   const validation = transform?.validation;
   if (!validation || validation.validation !== 'equivalent') fail('phase8-rewrite-proof-not-equivalent');
+  let binding;
+  try {
+    binding = rewriteBinding(transform?.rewrite);
+  } catch {
+    return null;
+  }
   return rewriteProofDigest({
     passId: descriptor?.id,
     passVersion: descriptor?.version,
     transformKind: String(transform.kind ?? ''),
     targets: transform.targets ?? [],
+    ...binding,
     verifierIdentity: validation.verifier,
     verdict: 'proved',
     claimKind: CLAIM_KIND.EQUIVALENT,

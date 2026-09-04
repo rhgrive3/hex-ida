@@ -40,6 +40,7 @@ test('C4-04: an equivalent rewrite commits with a deterministic proof id', async
   const x = createFreshSymbol(bvSort(4), 'x');
   const before = createBinary(BV_BINARY_OP.ADD, x, x);
   const after = createBinary(BV_BINARY_OP.SHL, x, createBv(4, 1));
+  const rewrite = Object.freeze({ before, after });
   const backend = new ExhaustiveBvBackend();
 
   const validation = await validateRewriteAdoption({
@@ -49,6 +50,7 @@ test('C4-04: an equivalent rewrite commits with a deterministic proof id', async
     targets: ['value_1'],
     beforeTarget: before,
     afterTarget: after,
+    rewrite,
     backend,
   });
   assert.equal(validation.validation, 'equivalent');
@@ -62,12 +64,14 @@ test('C4-04: an equivalent rewrite commits with a deterministic proof id', async
     targets: ['value_1'],
     beforeTarget: before,
     afterTarget: after,
+    rewrite,
     backend,
   });
   assert.equal(replay.equivalenceProofId, validation.equivalenceProofId);
 
   const pass = passWithTransforms([{
     kind: 'probe-algebraic', targets: ['value_1'], proof: 'x+x == x<<1 for width 4',
+    rewrite,
     validation,
   }]);
   const outcome = runPassTransaction(createAnalysisState(FULL_STATE), pass, {}, {});
@@ -135,7 +139,83 @@ test('C4-04: a forged proof id refuses the transaction', async () => {
   const x = createFreshSymbol(bvSort(4), 'x');
   const before = createBinary(BV_BINARY_OP.ADD, x, x);
   const after = createBinary(BV_BINARY_OP.SHL, x, createBv(4, 1));
+  const rewrite = Object.freeze({ before, after });
   const genuine = await validateRewriteAdoption({
+    passId: 'phase8.probe-rewrite',
+    passVersion: '1.0.0',
+    transformKind: 'probe-algebraic',
+    targets: ['value_1'],
+    beforeTarget: before,
+    afterTarget: after,
+    rewrite,
+    backend: new ExhaustiveBvBackend(),
+  });
+  const forged = { ...genuine, equivalenceProofId: 'p8rw_forged' };
+  const pass = passWithTransforms([{
+    kind: 'probe-algebraic', targets: ['value_1'], proof: 'claimed', rewrite, validation: forged,
+  }]);
+  const outcome = runPassTransaction(createAnalysisState(FULL_STATE), pass, {}, {});
+  assert.equal(outcome.committed, false);
+  assert.match(outcome.stopReason, /^rewrite-proof-id-mismatch:phase8\.probe-rewrite$/);
+});
+
+test('C4-04: a validated proof cannot be replayed onto a different staged rewrite', async () => {
+  const x = createFreshSymbol(bvSort(4), 'x');
+  const before = createBinary(BV_BINARY_OP.ADD, x, x);
+  const after = createBinary(BV_BINARY_OP.SHL, x, createBv(4, 1));
+  const rewriteA = Object.freeze({ before, after });
+  const validation = await validateRewriteAdoption({
+    passId: 'phase8.probe-rewrite',
+    passVersion: '1.0.0',
+    transformKind: 'probe-algebraic',
+    targets: ['value_1'],
+    beforeTarget: before,
+    afterTarget: after,
+    rewrite: rewriteA,
+    backend: new ExhaustiveBvBackend(),
+  });
+  assert.equal(validation.validation, 'equivalent');
+
+  const differentAfter = createBinary(BV_BINARY_OP.ADD, x, createBv(4, 1));
+  const rewriteB = Object.freeze({ before, after: differentAfter });
+  const pass = passWithTransforms([{
+    kind: 'probe-algebraic',
+    targets: ['value_1'],
+    proof: 'copied proof must not authorize another payload',
+    rewrite: rewriteB,
+    validation,
+  }]);
+  const outcome = runPassTransaction(createAnalysisState(FULL_STATE), pass, {}, {});
+  assert.equal(outcome.committed, false);
+  assert.match(outcome.stopReason, /^rewrite-proof-id-mismatch:phase8\.probe-rewrite$/);
+});
+
+test('C4-04: validation refuses a rewrite payload that differs from the verifier targets', async () => {
+  const x = createFreshSymbol(bvSort(4), 'x');
+  const before = createBinary(BV_BINARY_OP.ADD, x, x);
+  const after = createBinary(BV_BINARY_OP.SHL, x, createBv(4, 1));
+  const differentAfter = createBinary(BV_BINARY_OP.ADD, x, createBv(4, 1));
+
+  await assert.rejects(
+    validateRewriteAdoption({
+      passId: 'phase8.probe-rewrite',
+      passVersion: '1.0.0',
+      transformKind: 'probe-algebraic',
+      targets: ['value_1'],
+      beforeTarget: before,
+      afterTarget: after,
+      rewrite: { before, after: differentAfter },
+      backend: new ExhaustiveBvBackend(),
+    }),
+    /phase8-rewrite-adoption-after-binding-mismatch/,
+  );
+});
+
+test('C4-04: an equivalent validation without its staged rewrite fails closed', async () => {
+  const x = createFreshSymbol(bvSort(4), 'x');
+  const before = createBinary(BV_BINARY_OP.ADD, x, x);
+  const after = createBinary(BV_BINARY_OP.SHL, x, createBv(4, 1));
+  const validation = await validateRewriteAdoption({
     passId: 'phase8.probe-rewrite',
     passVersion: '1.0.0',
     transformKind: 'probe-algebraic',
@@ -144,9 +224,12 @@ test('C4-04: a forged proof id refuses the transaction', async () => {
     afterTarget: after,
     backend: new ExhaustiveBvBackend(),
   });
-  const forged = { ...genuine, equivalenceProofId: 'p8rw_forged' };
+
   const pass = passWithTransforms([{
-    kind: 'probe-algebraic', targets: ['value_1'], proof: 'claimed', validation: forged,
+    kind: 'probe-algebraic',
+    targets: ['value_1'],
+    proof: 'validation without staged payload is not admissible',
+    validation,
   }]);
   const outcome = runPassTransaction(createAnalysisState(FULL_STATE), pass, {}, {});
   assert.equal(outcome.committed, false);
@@ -175,6 +258,7 @@ test('C4-04: digest recompute matches the minted proof id', async () => {
   const x = createFreshSymbol(bvSort(4), 'x');
   const before = createBinary(BV_BINARY_OP.ADD, x, x);
   const after = createBinary(BV_BINARY_OP.SHL, x, createBv(4, 1));
+  const rewrite = Object.freeze({ before, after });
   const validation = await validateRewriteAdoption({
     passId: 'phase8.probe-rewrite',
     passVersion: '1.0.0',
@@ -182,14 +266,26 @@ test('C4-04: digest recompute matches the minted proof id', async () => {
     targets: ['value_1'],
     beforeTarget: before,
     afterTarget: after,
+    rewrite,
     backend: new ExhaustiveBvBackend(),
   });
   const descriptor = createPassDescriptor(descriptorInput());
   const recomputed = recomputeEquivalenceProofId({
-    kind: 'probe-algebraic', targets: ['value_1'], validation,
+    kind: 'probe-algebraic', targets: ['value_1'], rewrite, validation,
   }, descriptor);
   assert.equal(recomputed, validation.equivalenceProofId);
-  assert.equal(typeof rewriteProofDigest({ passId: 'p', passVersion: 'v', transformKind: 'k', targets: ['t'], verifierIdentity: 'x', verdict: 'proved', claimKind: 'equivalent' }), 'string');
+  assert.equal(typeof rewriteProofDigest({
+    passId: 'p',
+    passVersion: 'v',
+    transformKind: 'k',
+    targets: ['t'],
+    beforeDigest: 'before',
+    afterDigest: 'after',
+    rewriteDigest: 'rewrite',
+    verifierIdentity: 'x',
+    verdict: 'proved',
+    claimKind: 'equivalent',
+  }), 'string');
 });
 
 test('C4-04: equivalent validation rejects coercible query hashes', () => {
@@ -199,6 +295,9 @@ test('C4-04: equivalent validation rejects coercible query hashes', () => {
     passVersion: descriptor.version,
     transformKind: 'probe-algebraic',
     targets: ['value_1'],
+    beforeDigest: 'before',
+    afterDigest: 'after',
+    rewriteDigest: 'rewrite',
     verifierIdentity: REWRITE_VALIDATION_VERIFIER,
     verdict: 'proved',
     claimKind: 'equivalent',
