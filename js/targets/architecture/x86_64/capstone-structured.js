@@ -14,6 +14,17 @@
     operandStride:48,
     encoding:456,
   });
+  const RUNTIME_PROVENANCE = new WeakSet();
+
+  function publishDecodedRow(row) {
+    RUNTIME_PROVENANCE.add(row);
+    return row;
+  }
+
+  function hasRuntimeProvenance(value) {
+    return value != null && (typeof value === 'object' || typeof value === 'function')
+      && RUNTIME_PROVENANCE.has(value);
+  }
 
   function u8(M, pointer) { return M.getValue(pointer, 'i8') & 0xff; }
   function u16(M, pointer) { return M.getValue(pointer, 'i16') & 0xffff; }
@@ -181,12 +192,12 @@
       opcodeName:opcodeName || null,
     };
     if (!opcodeId || !detailPointer) {
-      return Object.freeze({
+      return publishDecodedRow(Object.freeze({
         ...base,
         detailAvailable:false,
         detailStatus:opcodeId ? 'unavailable' : 'skipdata',
         detail:Object.freeze({ unavailableFacts:Object.freeze(['all-structured-x86-detail']) }),
-      });
+      }));
     }
 
     const x86 = detailPointer + ABI.x86Detail;
@@ -229,8 +240,8 @@
       }),
       unavailableFacts:Object.freeze(vectorPrefix(rawBytes)?.fieldsVerified === false ? ['decoded-vex-evex-bitfields'] : []),
     });
-    return Object.freeze({ ...base, detailAvailable:true, detailStatus:'complete', detail });
+    return publishDecodedRow(Object.freeze({ ...base, detailAvailable:true, detailStatus:'complete', detail }));
   }
 
-  root.HexX86CapstoneStructured = Object.freeze({ ABI, verifyVersion, parseInstruction });
+  root.HexX86CapstoneStructured = Object.freeze({ ABI, verifyVersion, parseInstruction, hasRuntimeProvenance });
 })(globalThis);
