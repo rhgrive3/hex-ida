@@ -78,9 +78,11 @@ test('P10 traceFunction accepts same-epoch untagged trace ingress (#3926)', asyn
   const platform = new RuntimeAnalysisPlatform({ symbolic:false });
   const session = await platform.startSession({ adapter, connect:false });
 
-  await platform.traceFunction(0x4000);
+  const result = await platform.traceFunction(0x4000);
 
   assert.deepEqual(session.traces.snapshot().events.map((event)=>event.address),['0x4000']);
+  assert.equal(result.evidence.length,1);
+  assert.equal(platform.evidence.length,1);
 });
 
 test('P10 traceFunction rejects untagged trace from a pre-cutover operation (#3926)', async () => {
@@ -100,7 +102,11 @@ test('P10 traceFunction rejects untagged trace from a pre-cutover operation (#39
   await traceStarted;
   assert.equal(session.newEpoch(),2);
   releaseTrace();
-  await pending;
+  await assert.rejects(pending, (error) => {
+    assert.equal(error?.code,'session-epoch-changed');
+    return true;
+  });
 
   assert.equal(session.traces.snapshot().events.length,0);
+  assert.equal(platform.evidence.length,0);
 });
