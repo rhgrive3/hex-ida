@@ -324,9 +324,14 @@ export function safetyCounters(observations, baseline, frozenProvenance = null) 
     const before = byId.get(observation.id);
     if (!before) { details.push({ id: observation.id, kind: 'unbaselined' }); continue; }
 
-    // HEX-C4-03: a published render must never carry provenance loss, and a
-    // projection without a resolvable snapshot identity is unbound evidence.
-    if (observation.renderProvenance) {
+    // HEX-C4-03: a semantic render without any provenance map is both lost and
+    // unbound. It must fail the hard-zero gate instead of disappearing behind a
+    // truthy check. Present maps retain the existing loss/snapshot accounting.
+    if (observation.semantic && !observation.renderProvenance) {
+      renderProvenanceLossCount += 1;
+      renderProvenanceUnboundCount += 1;
+      details.push({ id: observation.id, kind: 'render-provenance-missing' });
+    } else if (observation.renderProvenance) {
       if (Number(observation.renderProvenance.provenanceLoss ?? 0) > 0) {
         renderProvenanceLossCount += Number(observation.renderProvenance.provenanceLoss);
         details.push({ id: observation.id, kind: 'render-provenance-loss' });
