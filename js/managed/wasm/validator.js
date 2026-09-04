@@ -224,7 +224,10 @@ export function validateWasmFunctionTypes(funcIndex, wasmModule, options = {}) {
         const global = decodeUleb128(bytecode, pos); pos = global.nextOffset;
         if (global.value >= globals.length) fail('wasm-invalid-global-index');
         if (opcode === 0x23) stack.push(globals[global.value].valType);
-        else pop(globals[global.value].valType);
+        else {
+          if (globals[global.value].mutable !== true) fail('wasm-write-immutable-global');
+          pop(globals[global.value].valType);
+        }
         break;
       }
       case 0x28: case 0x29: case 0x2a: case 0x2b: case 0x2c: case 0x2d: case 0x2e: case 0x2f: {
