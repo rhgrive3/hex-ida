@@ -8,6 +8,9 @@ jobs:
     steps:
       - checkout
       - run:
+          name: Validate CircleCI impact router
+          command: node tests/ci/circleci-impact.test.mjs
+      - run:
           name: Detect migration-guardrail impact
           command: |
             run_it="$(bash scripts/ci/circleci-impact.sh pr-only '^(js/(architecture/|ir\.js$|ir-core\.js$|dataflow[^/]*\.js$|decompiler/|binary/|bytesource/|platform/|project/|runtime/|runtime-evidence/|symbolic/|ai/|ui/|ui\.js$|ui-root\.js$|panels\.js$|app\.js$|backend\.js$|worker[^/]*\.js$)|worker-entry\.js$|package\.json$|package-lock\.json$|tests/(migration-guardrails\.mjs$|universal-binary-source\.mjs$|binary-platform\.mjs$)|docs/MIGRATION_GUARDRAILS\.md$|\.github/workflows/migration-guardrails\.yml$|\.circleci/config\.yml$|scripts/ci/circleci-impact\.sh$)')"
