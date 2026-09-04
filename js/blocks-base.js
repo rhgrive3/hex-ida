@@ -167,7 +167,7 @@ const API_TABLE = [
     args: ['dst', 'src', 'size'], ret: null, effect: 'copy' },
   { id: 'memset', re: /^_?(memset|bzero|__memset_chk)$/i, cat: 'memory',
     args: ['dst', 'fill', 'size'], ret: null, effect: 'fill' },
-  { id: 'malloc', re: /^_?(?:malloc|calloc|valloc|_Znwm|_Znam|operator new)(?:$|[[(])/i, cat: 'memory',
+  { id: 'malloc', re: /^(?:_?(?:malloc|calloc|valloc)|_{1,2}Z(?:nw|na)m.*|_?operator new(?:\[\])?(?:\s*\(.*\))?)$/i, cat: 'memory',
     args: ['size'], ret: 'heap', effect: 'alloc' },
   { id: 'realloc', re: /^_?realloc$/i, cat: 'memory', args: ['ptr', 'size'], ret: 'heap', effect: 'alloc' },
   { id: 'free', re: /^_?(free|_ZdlPv|_ZdaPv|operator delete)/i, cat: 'memory',
@@ -197,7 +197,6 @@ const API_TABLE = [
   { id: 'objc_alloc', re: /^_?(objc_alloc|objc_allocWithZone|objc_opt_new)/i, cat: 'objc', args: ['class'], ret: 'object', effect: 'alloc' },
   { id: 'swift_object', re: /^_?swift_(retain|release|allocObject|bridgeObjectRetain|bridgeObjectRelease)/i,
     cat: 'objc', args: ['object'], ret: 'object', effect: 'refcount' },
-
   /* ── 言語のしくみが勝手に入れている処理 ─────────────────────
    *
    * ここを「知らない呼び出し」のままにしておくと、実際のアプリでは
@@ -1297,7 +1296,6 @@ function functionFacts(insns, flow, semantic, bbInfo, o) {
     evidence: [],
     leaf: flow.calls.length === 0,
   };
-
   // 戻り値: 最後の ret より前に x0 を作っているか
   const lastRet = [...insns].reverse().find((i) => i.isReturn);
   if (lastRet) {

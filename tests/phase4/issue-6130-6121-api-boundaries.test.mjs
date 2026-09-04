@@ -45,7 +45,13 @@ assert.deepEqual(apiInfo('printf'), {
 assert.deepEqual(apiInfo('fprintf').args, ['stream', 'format']);
 assert.equal(apiInfo('fprintf').formatArg, 1);
 
-for (const name of ['malloc', '_malloc', 'calloc', 'valloc', '_Znwm', '_Znam', 'operator new', 'operator new[]']) {
+for (const name of [
+  'malloc', '_malloc', 'calloc', 'valloc',
+  '_Znwm', '_Znam',
+  '_ZnwmSt11align_val_t', '_ZnamSt11align_val_t',
+  '_ZnwmSt11align_val_tRKSt9nothrow_t',
+  'operator new', 'operator new[]',
+]) {
   assert.equal(apiInfo(name)?.cat, 'memory', `${name} allocator contract regressed`);
   assert.equal(apiInfo(name)?.effect, 'alloc', `${name} allocator effect regressed`);
 }
