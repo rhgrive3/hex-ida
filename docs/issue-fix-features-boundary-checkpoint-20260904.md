@@ -1,6 +1,6 @@
 # Simple issue owner-lane checkpoint — feature and engine text boundaries
 
-Status: `IMPLEMENTATION_IN_PROGRESS`
+Status: `CHECKS_PENDING`
 
 This checkpoint records the resumable state for the `codex` owner lane for the
 feature and engine evidence issue. Update it at every branch, PR, or merge stage.
@@ -13,6 +13,7 @@ feature and engine evidence issue. Update it at every branch, PR, or merge stage
 - Shared-board claim: lanes message #260
 - Branch: `fix/issues-features-boundary-6114`
 - Candidate base: `origin/main` at `f00154dcb9b2234cbacb4c6a3c2186d00c8a4b3a`
+- Implementation head: `a9fc05888ea37ed9745b79e409228ecb9991642e`
 - Pull request: pending
 
 ## Stages
@@ -21,7 +22,8 @@ feature and engine evidence issue. Update it at every branch, PR, or merge stage
 - [x] Claimed `js/features.js` and its focused regression path on the shared board (#260).
 - [x] Reproduced structured feature and engine text coercion on the candidate base.
 - [x] Implemented primitive-string validation across synchronous, grouped, and asynchronous paths.
-- [ ] Focused regression, lint, and Phase 4 candidate proof.
+- [x] Focused regression and lint passed locally.
+- [ ] Phase 4 candidate proof.
 - [ ] Create one owner PR for #6114 and verify exact-head checks.
 - [ ] Merge only after exact-head evidence is green; otherwise record the blocker here and on the board.
 
