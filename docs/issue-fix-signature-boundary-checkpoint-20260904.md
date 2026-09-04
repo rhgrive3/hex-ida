@@ -13,7 +13,7 @@ library recognition collection issue. Update it at every branch, PR, or merge st
 - Shared-board claim: lanes message #262
 - Branch: `fix/issues-signature-boundary-6103`
 - Candidate base: `origin/main` at `f00154dcb9b2234cbacb4c6a3c2186d00c8a4b3a`
-- Implementation head: `54db2dd9a8c890ac4b97647f21296ed394350b77`
+- Implementation head: `58d88d03e76e7d940b231de5b3da6be573a23c2f`
 - Current remote head: `origin/fix/issues-signature-boundary-6103` at `2030daf4537014ef8da3e9b9b7adbf70080c4f96`
 - Pull request: #6490 — https://github.com/rhgrive3/hex-ida/pull/6490
 
