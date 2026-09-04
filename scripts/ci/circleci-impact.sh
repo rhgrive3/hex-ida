@@ -21,8 +21,13 @@ branch="${CIRCLE_BRANCH:-}"
 head="$(git rev-parse HEAD)"
 
 # CircleCI may still start an older pipeline after a newer commit has landed on
-# the same branch. Do not spend the expensive portion of a lane on stale heads.
-if [[ -n "$branch" ]]; then
+# the same non-main branch. Saving work there is safe because the newest branch
+# pipeline validates the cumulative branch diff against main.
+#
+# Never stale-suppress main: each main commit owns its own first-parent delta.
+# If A changes a gated path and docs-only B lands before A starts, dropping A
+# would leave A's delta unvalidated because B correctly inspects only B^..B.
+if [[ -n "$branch" && "$branch" != 'main' ]]; then
   git fetch --no-tags origin "$branch:refs/remotes/origin/$branch" >/dev/null 2>&1 || true
   latest="$(git rev-parse "refs/remotes/origin/$branch" 2>/dev/null || true)"
   if [[ -n "$latest" && "$latest" != "$head" ]]; then
@@ -38,7 +43,9 @@ if [[ "$branch" == 'main' ]]; then
     exit 0
   fi
 
-  # main-and-branch lanes mirror GitHub workflows that also ran after merges.
+  # main-and-branch lanes mirror workflows that also run after merges.
+  # Each main pipeline validates its own first-parent delta, even if a newer
+  # main commit already exists remotely.
   # Fail open if the parent is unexpectedly unavailable: correctness is more
   # important than saving a runner minute.
   git fetch --no-tags --depth=2 origin main:refs/remotes/origin/main >/dev/null 2>&1 || true
