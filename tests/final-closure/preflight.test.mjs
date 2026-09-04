@@ -1024,7 +1024,7 @@ function seedPreTransitionHandoffFiles(root) {
     'specs/005-analysis-final-closure/tasks.md',
   ]);
   for (const entry of integrationInventory.entries) {
-    if (entry.ownerTaskId !== 'T046' || mutableCoordinationPaths.has(entry.path)) continue;
+    if (mutableCoordinationPaths.has(entry.path)) continue;
     copySourcePath(root, entry.path);
   }
   write(
@@ -2491,23 +2491,34 @@ function createOperationalFixture() {
   for (const contract of Object.values(shadowContracts.contracts)) {
     for (const row of contract.cases) copySourcePath(candidate, row.projection.argv[1]);
   }
-  seedPreTransitionHandoffFiles(candidate);
-  const handoffSha = commitAll(candidate, 'foundation handoffs');
-  const handoffTreeSha = git(candidate, ['rev-parse', 'HEAD^{tree}']);
   write(candidate, 'baseline.txt', 'baseline\n');
-  commitAll(candidate, 'baseline');
+  const baseSha = commitAll(candidate, 'baseline');
   git(candidate, ['remote', 'add', 'origin', origin]);
   git(candidate, ['push', '-u', 'origin', 'main']);
   seedImmutablePerformanceSource(origin);
-  const baseSha = git(candidate, ['rev-parse', 'HEAD']);
   git(candidate, ['switch', '-c', integrationInventory.integrationRef]);
+  seedPreTransitionHandoffFiles(candidate);
+  const handoffSha = commitAll(candidate, 'foundation handoffs');
+  const handoffTreeSha = git(candidate, ['rev-parse', 'HEAD^{tree}']);
 
   const tempInventory = structuredClone(integrationInventory);
   tempInventory.baseSha = baseSha;
   bindHandoffsToCommit(tempInventory, handoffSha, handoffTreeSha);
+  tempInventory.taskHandoffs.T046 = {
+    headSha: handoffSha,
+    treeSha: handoffTreeSha,
+    evidencePath: 'specs/005-analysis-final-closure/evidence/pre-fanout.md',
+  };
+  write(
+    candidate,
+    'specs/005-analysis-final-closure/contracts/integration-inventory.json',
+    `${JSON.stringify(tempInventory, null, 2)}\n`,
+  );
+  commitAll(candidate, 'publish pending handoff inventory');
   for (const repoPath of tempInventory.unionChangedPaths) {
-    if (repoPath === 'specs/005-analysis-final-closure/contracts/integration-inventory.json') {
-      write(candidate, repoPath, `${JSON.stringify(tempInventory, null, 2)}\n`);
+    if (repoPath === 'specs/005-analysis-final-closure/contracts/integration-inventory.json') continue;
+    if (repoPath === 'specs/005-analysis-final-closure/tasks.md') {
+      write(candidate, repoPath, rewriteTaskStatus(tasksText, 'T046', 'DONE'));
       continue;
     }
     const sourcePath = path.join(SOURCE_ROOT, repoPath);
@@ -2542,26 +2553,41 @@ function createStageBOperationalFixture() {
   git(original, ['config', 'user.name', 'Hex Preflight Test']);
   git(original, ['config', 'user.email', 'preflight@example.invalid']);
   write(original, 'transcripts/original.txt', 'preserved original transcript\n');
-  seedPreTransitionHandoffFiles(original);
-  const planningSha = commitAll(original, 'planning handoffs');
-  const planningTreeSha = git(original, ['rev-parse', 'HEAD^{tree}']);
   write(original, 'stage-a-base.txt', 'stage A base\n');
   const stageACandidateBaseSha = commitAll(original, 'stage A base');
   git(original, ['remote', 'add', 'origin', origin]);
   git(original, ['push', '-u', 'origin', 'main']);
   seedImmutablePerformanceSource(origin);
+  git(original, ['switch', '-c', integrationInventory.integrationRef]);
+  seedPreTransitionHandoffFiles(original);
+  const planningSha = commitAll(original, 'planning handoffs');
+  const planningTreeSha = git(original, ['rev-parse', 'HEAD^{tree}']);
   git(original, ['push', 'origin', `${planningSha}:${RECOVERY_HANDOFF_REF}`]);
   git(original, [
     'fetch', '--quiet', '--no-tags', '--refmap=', 'origin',
     `+${RECOVERY_HANDOFF_REF}:refs/remotes/origin/wip/recovery-handoff-20260904`,
   ]);
 
-  git(original, ['switch', '-c', integrationInventory.integrationRef]);
   const stageAInventory = structuredClone(integrationInventory);
   stageAInventory.baseSha = stageACandidateBaseSha;
   bindHandoffsToCommit(stageAInventory, planningSha, planningTreeSha);
+  stageAInventory.taskHandoffs.T046 = {
+    headSha: planningSha,
+    treeSha: planningTreeSha,
+    evidencePath: 'specs/005-analysis-final-closure/evidence/pre-fanout.md',
+  };
+  write(
+    original,
+    'specs/005-analysis-final-closure/contracts/integration-inventory.json',
+    `${JSON.stringify(stageAInventory, null, 2)}\n`,
+  );
+  commitAll(original, 'publish pending Stage A handoff inventory');
   for (const repoPath of stageAInventory.unionChangedPaths) {
     if (repoPath === 'specs/005-analysis-final-closure/contracts/integration-inventory.json') continue;
+    if (repoPath === 'specs/005-analysis-final-closure/tasks.md') {
+      write(original, repoPath, rewriteTaskStatus(tasksText, 'T046', 'DONE'));
+      continue;
+    }
     copySourcePath(original, repoPath);
   }
   write(original, 'specs/005-analysis-final-closure/contracts/integration-inventory.json', `${JSON.stringify(stageAInventory, null, 2)}\n`);
@@ -2638,7 +2664,7 @@ function createStageBOperationalFixture() {
   const stageAPostEvidenceSha = commitAll(original, 'record Stage A post-merge evidence');
   const stageAPostEvidenceTreeSha = git(original, ['rev-parse', 'HEAD^{tree}']);
 
-  const stageBaseTasks = tasksText;
+  const stageBaseTasks = rewriteTaskStatus(tasksText, 'T046', 'DONE');
   const stageBaseInventory = structuredClone(stageAInventory);
   const baseSha = stageAPostEvidenceSha;
   git(original, ['push', 'origin', 'main']);
@@ -2896,24 +2922,7 @@ function createComponentFixture() {
   const fixture = createOperationalFixture();
   const integrationTasks = rewriteTaskStatus(tasksText, 'T046', 'DONE');
   const integrationInventoryFixture = structuredClone(fixture.inventory);
-  integrationInventoryFixture.taskHandoffs.T046 = {
-    headSha: fixture.headSha,
-    treeSha: git(fixture.candidate, ['rev-parse', `${fixture.headSha}^{tree}`]),
-    evidencePath: 'specs/005-analysis-final-closure/evidence/pre-fanout.md',
-  };
-  bindHandoffsToCommit(
-    integrationInventoryFixture,
-    fixture.headSha,
-    git(fixture.candidate, ['rev-parse', `${fixture.headSha}^{tree}`]),
-  );
-  write(fixture.candidate, 'specs/005-analysis-final-closure/tasks.md', integrationTasks);
-  write(
-    fixture.candidate,
-    'specs/005-analysis-final-closure/contracts/integration-inventory.json',
-    `${JSON.stringify(integrationInventoryFixture, null, 2)}\n`,
-  );
-  const integrationHeadSha = commitAll(fixture.candidate, 'activate component preflight');
-  git(fixture.candidate, ['push', 'origin', fixture.inventory.integrationRef]);
+  const integrationHeadSha = fixture.headSha;
 
   const componentRef = 'component/final-closure-t011-stack-return';
   git(fixture.candidate, ['switch', '-c', componentRef]);
@@ -3145,6 +3154,7 @@ try {
   git(operational.candidate, ['restore', '--staged', '--worktree', verifierPath]);
 
   const operationalContract = (inventoryOverride) => validate({
+    tasksText: rewriteTaskStatus(tasksText, 'T046', 'DONE'),
     integrationInventory: inventoryOverride,
     actualChangedPaths: inventoryOverride.unionChangedPaths,
     expectedBaseSha: operational.baseSha,
@@ -3153,7 +3163,7 @@ try {
   assert.equal(validHandoffs.ok, true, validHandoffs.errors.join('\n'));
   assert.equal(
     verifyTaskHandoffs(operational.candidate, validHandoffs, operational.headSha).taskCount,
-    10,
+    11,
   );
 
   const missingHandoffHeadInventory = structuredClone(operational.inventory);
