@@ -165,8 +165,8 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
       const value = await rawLoad(addr,size);
       if (!initializing && spec.traceMemoryReads && !traceState.suppressMemory) {
         const event = { type:'memory-read', address:BigInt(addr), size, region:region.kind, value };
-        traceBuffer.push(event);
-        if (Array.isArray(traceState.runMemoryEvents)) traceState.runMemoryEvents.push(event);
+        const accepted = traceBuffer.push(event);
+        if (accepted && Array.isArray(traceState.runMemoryEvents)) traceState.runMemoryEvents.push(event);
       }
       return value;
     };
@@ -176,8 +176,8 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
       await rawStore(addr,size,value);
       if (!initializing && !traceState.suppressMemory) {
         const event = { type:'memory-write', address:BigInt(addr), size, region:region.kind, before, after:BigInt.asUintN(size * 8, BigInt(value)) };
-        traceBuffer.push(event);
-        if (Array.isArray(traceState.runMemoryEvents)) traceState.runMemoryEvents.push(event);
+        const accepted = traceBuffer.push(event);
+        if (accepted && Array.isArray(traceState.runMemoryEvents)) traceState.runMemoryEvents.push(event);
       }
     };
     await sandbox.setup(address, {
