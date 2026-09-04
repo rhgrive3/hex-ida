@@ -28,11 +28,12 @@ pending row.
 
 ## Original workspace preservation lock
 
-The original workspace moved independently after the first prose-only snapshot
-and again during T046 remediation. The block below is the final pre-commit
-content-addressed observation, captured without modifying that workspace. It
-protects against campaign-owned mutation; a later independent user-owned change
-must be re-observed explicitly rather than silently attributed to the campaign.
+The original workspace moved independently after the first prose-only snapshot,
+again during T046 remediation, and later gained the user-owned untracked
+`subagent.md`. The block below is the latest pre-commit content-addressed
+observation, captured without modifying that workspace. It protects against
+campaign-owned mutation; a later independent user-owned change must be
+re-observed explicitly rather than silently attributed to the campaign.
 
 ```json final-closure-original-workspace-lock
 {
@@ -42,10 +43,10 @@ must be re-observed explicitly rather than silently attributed to the campaign.
     "gitDirPath": "/teamspace/studios/this_studio/ida-245/.git",
     "headSha": "3b37b0c957b761139dfa22f973d3c670ad41a24c",
     "branchRef": "main",
-    "status": "?? transcripts/ai-hub-2026-09-03T15-36-57.md\u0000?? transcripts/latest.md\u0000",
-    "dirtyStateSha256": "f298686e5fad537c22c400a2815cc72d5db3ac2523d26fe495e859273afaa65d",
+    "status": "?? subagent.md\u0000?? transcripts/ai-hub-2026-09-03T15-36-57.md\u0000?? transcripts/latest.md\u0000",
+    "dirtyStateSha256": "fa8f3e2fe972f08f3eebc2b1011d4fd83a14558c27db31822f80cd259e2b9631",
     "transcriptsSha256": "351d34a28108553b30a0c571320a903d7559f19bb85452a9377073cf5595c303",
-    "identity": "669a46a4bde476514e8360e2eea8be64cdd3cf189e7fc0a47d57e5974c26ee22",
+    "identity": "0245673ab2fc3e6f3c199673bee6ec2e090ae483c1154083a2341f9b983b0f84",
     "preserved": true
   }
 }
