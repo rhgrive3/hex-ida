@@ -139,17 +139,27 @@ async function testIssue48To60Regressions() {
   assert.equal((await openBinarySource(fat, { arch: 'arm64e', ranges: { pageSize: 128, maxCachedBytes: 2 * 1024 * 1024 } })).metadata.fat.selected.arch, 'arm64e');
   await assert.rejects(() => openBinarySource(fat, { arch: 'x86_64' }), /not present/);
 
-  let backendResolve; let backendReads = 0;
+  let backendResolve; let backendReads = 0; let backendSignal = null;
   const sharedSource = {
     size: 16n,
-    async read(_offset, length, options) { backendReads++; assert.equal(options?.signal, undefined); return new Promise((resolve) => { backendResolve = () => resolve(new Uint8Array(length).fill(7)); }); },
+    async read(_offset, length, options) {
+      backendReads++;
+      backendSignal = options?.signal ?? null;
+      return new Promise((resolve) => { backendResolve = () => resolve(new Uint8Array(length).fill(7)); });
+    },
   };
   const cached = new CachedByteSource(sharedSource, { pageSize: 16, maxCachedBytes: 16 });
   const a = new AbortController(), b = new AbortController();
   const first = cached.read(0n, 4, { signal: a.signal });
   const second = cached.read(0n, 4, { signal: b.signal });
+  assert.equal(backendReads, 1);
+  assert.equal(typeof backendResolve, 'function');
+  assert.ok(backendSignal && typeof backendSignal.aborted === 'boolean');
+  assert.notEqual(backendSignal, a.signal);
+  assert.notEqual(backendSignal, b.signal);
   a.abort();
   await assert.rejects(first, ByteSourceCancelledError);
+  assert.equal(backendSignal.aborted, false);
   backendResolve();
   assert.deepEqual([...await second], [7, 7, 7, 7]);
   assert.equal(backendReads, 1);
