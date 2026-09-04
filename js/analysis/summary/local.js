@@ -422,15 +422,18 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
     const source = complete ? 'abi-rule' : 'unknown-call-fallback';
     const readOk = applyScope({ node, scope: node.call?.memoryRead, resolveRegion, into: memoryReadRegions, source });
     const writeOk = applyScope({ node, scope: node.call?.memoryWrite, resolveRegion, into: memoryWriteRegions, source });
-    const nonExhaustiveIndirect = targetProof.kind === 'indirect' && !targetProof.exhaustive;
+    const nonExhaustiveTargets = !targetProof.exhaustive;
+    const nonExhaustiveIndirect = targetProof.kind === 'indirect' && nonExhaustiveTargets;
 
-    if (!complete || !readOk || !writeOk || nonExhaustiveIndirect) {
+    if (!complete || !readOk || !writeOk || nonExhaustiveTargets) {
       unknownCallEffects.push(createUnknownCallEffect({
         callSiteId: node.id,
         reason: identityMismatch
           ? 'summary-stale'
           : nonExhaustiveIndirect
           ? 'indirect-incomplete-target-set'
+          : nonExhaustiveTargets
+          ? 'unresolved-target'
           : targets.length ? 'summary-missing' : 'unresolved-target',
         targetEntityIds: targets,
         evidenceIds: evidenceOf(node),
@@ -451,7 +454,7 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
         exhaustive: targetProof.exhaustive,
         evidenceIds: evidenceOf(node),
       });
-    } else if (targets.length) {
+    } else if (targets.length && targetProof.exhaustive) {
       directCalls.push({
         callSiteId: node.id, targetEntityIds: targets,
         summaryId: null, effectSource: source,
