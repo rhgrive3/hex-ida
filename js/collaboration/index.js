@@ -46,7 +46,8 @@ export function createProjectOperation(input = {}) {
   const factKind = required(input.factKind, 'operation-fact-kind-required');
   const action = required(input.action || 'set', 'operation-action-required');
   const payload = clone(input.payload ?? input.value ?? null);
-  const operationId = required(input.operationId || `op:${stableDigest({ projectIdentity, binaryIdentity: input.binaryIdentity || null, targetEntityId, factKind, action, payload, beforeFingerprint: input.beforeFingerprint || null, causalParents: list(input.causalParents) })}`, 'operation-id-required');
+  const beforeFingerprint = canonicalBeforeFingerprint(input.beforeFingerprint);
+  const operationId = required(input.operationId || `op:${stableDigest({ projectIdentity, binaryIdentity: input.binaryIdentity || null, targetEntityId, factKind, action, payload, beforeFingerprint, causalParents: list(input.causalParents) })}`, 'operation-id-required');
   const operation = {
     schemaVersion: CHANGELOG_SCHEMA_VERSION,
     operationId,
@@ -59,12 +60,19 @@ export function createProjectOperation(input = {}) {
     targetEntityId,
     factKind,
     action,
-    beforeFingerprint: input.beforeFingerprint == null ? null : String(input.beforeFingerprint),
+    beforeFingerprint,
     payload,
     provenance: clone(input.provenance || { source: 'local', actorIdentity: input.authorIdentity || null }),
   };
   CANONICAL_OPERATIONS.add(operation);
   return deepFreeze(operation);
+}
+
+function canonicalBeforeFingerprint(value) {
+  if (value == null) return null;
+  if (typeof value !== 'string') throw new TypeError('operation-before-fingerprint-invalid');
+  if (!value || value.trim() !== value || !value.trim()) throw new TypeError('operation-before-fingerprint-invalid');
+  return value;
 }
 
 function registerCanonicalOperation(operation) {
