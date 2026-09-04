@@ -47,13 +47,13 @@ function requiredAddress(v, name = 'address') { return parseInteger(v, name, { n
 function textOf(v) { return String(v == null ? '' : v).toLowerCase(); }
 function explicitLimit(value, fallback) {
   if (value == null) return fallback;
-  const n = Number(value);
-  return Number.isFinite(n) ? Math.max(0, Math.floor(n)) : fallback;
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.max(0, Math.floor(value));
 }
 function bounded(value, fallback, min, max) {
-  const n = value == null ? fallback : Number(value);
-  if (!Number.isFinite(n)) return fallback;
-  return Math.max(min, Math.min(max, Math.floor(n)));
+  if (value == null) return fallback;
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.max(min, Math.min(max, Math.floor(value)));
 }
 function nonNegativeOffset(value) {
   if (value == null) return 0;
