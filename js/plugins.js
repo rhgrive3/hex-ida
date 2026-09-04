@@ -28,6 +28,33 @@ function newInstallId() {
   return `install_${Date.now().toString(36)}_${(fallbackInstallSeq++).toString(36)}_${Math.random().toString(36).slice(2)}`;
 }
 
+// Binds persisted display metadata to the source it was discovered from.
+// The digest is a self-consistency seal, not a MAC: any post-install drift
+// between source and definitions (corruption, legacy conversion, manual
+// edit) fails verification and the entry is re-derived from source truth
+// instead of executing a mismatched definition.
+function fnv1a64Hex(text) {
+  let hash = 0xcbf29ce484222325n;
+  const bytes = new TextEncoder().encode(text);
+  for (const byte of bytes) {
+    hash ^= BigInt(byte);
+    hash = (hash * 0x100000001b3n) & 0xffffffffffffffffn;
+  }
+  return hash.toString(16).padStart(16, '0');
+}
+
+export function pluginManifestDigest(source, definitions) {
+  const canonical = JSON.stringify({
+    source: String(source || ''),
+    definitions: (Array.isArray(definitions) ? definitions : []).map((def) => ({
+      index: Number(def?.index),
+      name: String(def?.name ?? ''),
+      description: String(def?.description ?? ''),
+    })),
+  });
+  return `plugin-manifest-v1:${fnv1a64Hex(canonical)}`;
+}
+
 async function boundedResponseText(res, maxBytes = MAX_PLUGIN_SOURCE_BYTES) {
   const rawLength = res.headers?.get?.('content-length');
   if (rawLength != null && rawLength !== '') {
@@ -82,9 +109,22 @@ export class PluginHost {
       const legacySeen = new Set();
       for (const p of list) {
         if (!p || typeof p.source !== 'string') continue;
-        // v3 manifest fast path: restore registry directly without sandbox execution
+        // v3 manifest fast path: restore registry directly without sandbox execution,
+        // but only when the persisted definitions still bind to their source.
         if (p.v === 3 && Array.isArray(p.definitions) && p.definitions.length > 0 && p.installationId) {
           const installationId = String(p.installationId);
+          if (p.digest !== pluginManifestDigest(p.source, p.definitions)) {
+            // Drifted or legacy manifest: never trust the display metadata.
+            // Re-derive the registry from source truth (or drop the entry).
+            try {
+              await this.install(p.source, p.origin || '保存されたもの', {
+                silent: true,
+                installationId,
+                enabledIndexes: Array.isArray(p.enabledIndexes) ? p.enabledIndexes : null,
+              });
+            } catch { /* corrupted plugin storage is isolated */ }
+            continue;
+          }
           const enabled = Array.isArray(p.enabledIndexes)
             ? new Set(p.enabledIndexes.map(Number).filter(Number.isInteger))
             : new Set(p.definitions.map((d) => d.index));
@@ -105,6 +145,7 @@ export class PluginHost {
             source: p.source,
             origin: p.origin || '保存されたもの',
             definitions: p.definitions,
+            digest: pluginManifestDigest(p.source, p.definitions),
             enabledIndexes: Array.from(enabled),
           });
           continue;
@@ -137,6 +178,7 @@ export class PluginHost {
         source: inst.source,
         origin: inst.origin,
         definitions: inst.definitions || [],
+        digest: inst.digest || pluginManifestDigest(inst.source, inst.definitions),
         enabledIndexes: activeIndexes,
       });
     }
@@ -144,12 +186,14 @@ export class PluginHost {
       if (seen.has(p.installationId)) continue;
       seen.add(p.installationId);
       const activePlugins = this.plugins.filter((x) => x.installationId === p.installationId);
+      const definitions = activePlugins.map((x) => ({ index: x.index, name: x.name, description: x.description }));
       list.push({
         v: 3,
         installationId: p.installationId,
         source: p.source,
         origin: p.origin,
-        definitions: activePlugins.map((x) => ({ index: x.index, name: x.name, description: x.description })),
+        definitions,
+        digest: pluginManifestDigest(p.source, definitions),
         enabledIndexes: activePlugins.map((x) => x.index),
       });
     }
@@ -200,6 +244,7 @@ export class PluginHost {
       source,
       origin: origin || '不明',
       definitions,
+      digest: pluginManifestDigest(source, definitions),
       enabledIndexes: added.map((p) => p.index),
     });
 
@@ -255,6 +300,16 @@ export class PluginHost {
   async run(id, out, options = {}) {
     const p = this.plugins.find((x) => x.id === id);
     if (!p) return { error: 'そのプラグインが見つかりません。' };
+    // Bind the displayed entry to the installation's canonical definitions:
+    // a drifted index/name pair must never select a different definition.
+    const inst = this.installations.get(p.installationId);
+    if (inst && Array.isArray(inst.definitions)) {
+      const bound = inst.definitions.find((def) => Number(def?.index) === Number(p.index));
+      if (!bound || String(bound.name ?? '') !== String(p.name ?? '')
+        || String(bound.description ?? '') !== String(p.description ?? '')) {
+        return { error: 'プラグイン定義が保存内容と一致しません。再読み込みしてください。' };
+      }
+    }
     const signal = options?.signal ?? null;
     if (signal?.aborted) return { error:'キャンセルされました。', aborted:true };
     const { createApi, runInSandbox } = await loadScriptSandbox();
