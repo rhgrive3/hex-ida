@@ -26,9 +26,17 @@ on:
       - 'worker-entry.js'
       - 'package.json'
       - 'tests/migration-guardrails.mjs'
+      - 'tests/process/merged-pr-review-audit.test.mjs'
+      - 'tools/validation/merged-pr-review-audit.mjs'
       - 'docs/MIGRATION_GUARDRAILS.md'
       - '.github/workflows/migration-guardrails.yml'
   workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  checks: read
+  pull-requests: read
 
 concurrency:
   group: migration-guardrails-${{ github.event.pull_request.number || github.ref }}
@@ -78,3 +86,33 @@ jobs:
             process.exit(1);
           }
           NODE
+
+  merged-pr-review-audit:
+    name: merged-pr-review-audit
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.head_ref, 'audit/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify audit classifier regressions
+        run: node tests/process/merged-pr-review-audit.test.mjs
+      - name: Audit all PRs merged today in JST
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >-
+          node tools/validation/merged-pr-review-audit.mjs
+          --repo "$GITHUB_REPOSITORY"
+          --timezone Asia/Tokyo
+          --offset +09:00
+          --strict
+      - name: Upload complete audit evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: merged-pr-review-audit-${{ github.run_id }}
+          path: artifacts/merged-pr-review-audit.*
+          if-no-files-found: error
+          retention-days: 30
