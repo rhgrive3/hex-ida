@@ -12,8 +12,8 @@ program-header dynamic-table framing and termination.
 - Regression owner: `tests/phase4/issue-6104-elf-dynamic-termination.test.mjs`
 - Shared-board claim: lanes message #285
 - Branch: `fix/issues-elf-dynamic-termination-6104`
-- Candidate base: `origin/main` at `895927979fa8936943171008ca965c60ee22e743`
-- Implementation head: `74e349af78bce68f60255648abafe62ef1a58b13`
+- Candidate base: `origin/main` at `57d7521f446f44a195de776324655ddaa2a934a5`
+- Implementation head: `b201a4297b7f76e5706ba76856198b80fc4b5381`
 
 ## Stages
 
