@@ -19,7 +19,8 @@ const MACHINE_VALUE_KINDS = new Set([
 
 function fail(code) { throw new TypeError(code); }
 function nonEmpty(value, code) {
-  const text = String(value ?? '').trim();
+  if (typeof value !== 'string') fail(code);
+  const text = value.trim();
   if (!text) fail(code);
   return text;
 }
@@ -45,9 +46,12 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
   assertNotAborted(options);
   const normalized = normalizeMachineEffectBundleForSemanticIr(input, options);
   const bundle = normalized.bundle;
-  const functionId = nonEmpty(context.functionId, 'semantic-ir-lowering-function-id-required');
-  const blockId = nonEmpty(context.blockId, 'semantic-ir-lowering-block-id-required');
-  const entryBlockId = context.entryBlockId == null ? blockId : nonEmpty(context.entryBlockId, 'semantic-ir-lowering-entry-block-id-required');
+  const rawFunctionId = context.functionId;
+  const rawBlockId = context.blockId;
+  const rawEntryBlockId = context.entryBlockId;
+  const functionId = nonEmpty(rawFunctionId, 'semantic-ir-lowering-function-id-required');
+  const blockId = nonEmpty(rawBlockId, 'semantic-ir-lowering-block-id-required');
+  const entryBlockId = rawEntryBlockId == null ? blockId : nonEmpty(rawEntryBlockId, 'semantic-ir-lowering-entry-block-id-required');
   if (entryBlockId !== blockId) fail('semantic-ir-lowering-single-bundle-entry-must-match-block');
 
   const nodes = [];
