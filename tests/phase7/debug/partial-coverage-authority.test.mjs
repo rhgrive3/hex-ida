@@ -32,7 +32,7 @@ function record(input = {}) {
     name: input.name ?? null,
     providerId: 'pdb',
     providerVersion: '1',
-    buildIdentity: 'build-A-partial',
+    buildIdentity: 'build-A',
     descriptor: input.descriptor ?? { claim: { kind: 'int' } },
   });
 }
@@ -40,7 +40,7 @@ function record(input = {}) {
 test('matched-partial coverage outside the record fails closed to soft evidence', () => {
   const identity = createDebugIdentity({
     verdict: 'matched-partial', providerId: 'pdb', providerVersion: '1',
-    expected: 'build-A', observed: 'build-A-partial', method: 'partial-id',
+    expected: 'build-A', observed: 'build-A', method: 'partial-id',
     coverage: { module: 'only-module-A' },
   });
   const result = resultFor(identity);
@@ -58,7 +58,7 @@ test('matched-partial coverage outside the record fails closed to soft evidence'
 test('matched-partial record explicitly covered by entity id may be authoritative', () => {
   const result = resultFor(createDebugIdentity({
     verdict: 'matched-partial', providerId: 'pdb', providerVersion: '1',
-    expected: 'build-A', observed: 'build-A-partial', method: 'partial-id',
+    expected: 'build-A', observed: 'build-A', method: 'partial-id',
     coverage: { entityIds: ['entity-A'] },
   }));
   const covered = record();
@@ -75,17 +75,17 @@ test('matched-partial record explicitly covered by entity id may be authoritativ
 test('non-string coverage selectors and record IDs cannot collide into authority', () => {
   const malformedCoverage = resultFor(createDebugIdentity({
     verdict: 'matched-partial', providerId: 'pdb', providerVersion: '1',
-    expected: 'build-A', observed: 'build-A-partial', method: 'partial-id',
+    expected: 'build-A', observed: 'build-A', method: 'partial-id',
     coverage: { entityIds: [{ source:'A' }] },
   }));
   assert.equal(isDebugRecordAuthoritative(malformedCoverage, {
-    kind:'type', entityId:'[object Object]', buildIdentity:'build-A-partial', descriptor:{},
+    kind:'type', entityId:'[object Object]', buildIdentity:'build-A', descriptor:{},
   }), false);
   assert.throws(() => record({ entityId:{ source:'B' } }), /debug-record-entity-required/);
 
   const malformedModule = resultFor(createDebugIdentity({
     verdict: 'matched-partial', providerId: 'pdb', providerVersion: '1',
-    expected: 'build-A', observed: 'build-A-partial', method: 'partial-id',
+    expected: 'build-A', observed: 'build-A', method: 'partial-id',
     coverage: { modules: [{ source:'A' }] },
   }));
   assert.equal(isDebugRecordAuthoritative(malformedModule, record({
@@ -102,7 +102,7 @@ test('matched-authoritative remains authoritative and symbol confidence is per-r
 
   const partial = resultFor(createDebugIdentity({
     verdict: 'matched-partial', providerId: 'pdb', providerVersion: '1',
-    expected: 'build-A', observed: 'build-A-partial', method: 'partial-id',
+    expected: 'build-A', observed: 'build-A', method: 'partial-id',
     coverage: { entityIds: ['covered-symbol'] },
   }));
   const page = createDebugPage({ records: [
