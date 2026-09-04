@@ -73,6 +73,12 @@ function parseVerneed({ declared, records }) {
   assert.equal(image.metadata.symbolVersions.complete, true);
 }
 {
+  const { image } = parseVerdef({ declared: 1, records: 2 });
+  assert.equal(image.metadata.programDynamicPartial, true);
+  assert.equal(image.metadata.symbolVersions.complete, false);
+  assert.ok(image.metadata.programDynamicDiagnostics.includes('DT_VERDEF chain continues past declared count 1'));
+}
+{
   const { image } = parseVerdef({ declared: 2, records: 2 });
   assert.equal(image.metadata.programDynamicPartial, undefined);
   assert.equal(image.metadata.symbolVersions.complete, true);
@@ -87,6 +93,12 @@ function parseVerneed({ declared, records }) {
   const { image } = parseVerneed({ declared: 1, records: 1 });
   assert.equal(image.metadata.programDynamicPartial, undefined);
   assert.equal(image.metadata.symbolVersions.complete, true);
+}
+{
+  const { image } = parseVerneed({ declared: 1, records: 2 });
+  assert.equal(image.metadata.programDynamicPartial, true);
+  assert.equal(image.metadata.symbolVersions.complete, false);
+  assert.ok(image.metadata.programDynamicDiagnostics.includes('DT_VERNEED chain continues past declared count 1'));
 }
 {
   const { image } = parseVerneed({ declared: 2, records: 2 });
