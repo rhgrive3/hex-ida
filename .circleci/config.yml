@@ -1,0 +1,40 @@
+version: 2.1
+
+jobs:
+  migration-guardrails:
+    docker:
+      - image: cimg/node:22.23
+    resource_class: medium
+    steps:
+      - checkout
+
+      - run:
+          name: Detect migration-guardrail impact
+          command: |
+            set -euo pipefail
+            git fetch --no-tags origin main:refs/remotes/origin/main
+            changed="$(git diff --name-only origin/main...HEAD || true)"
+            if printf '%s\n' "$changed" | grep -Eq '^(js/(architecture/|ir\.js$|ir-core\.js$|dataflow[^/]*\.js$|decompiler/|binary/|bytesource/|platform/|project/|runtime/|runtime-evidence/|symbolic/|ai/|ui/|ui\.js$|ui-root\.js$|panels\.js$|app\.js$|backend\.js$|worker[^/]*\.js$)|worker-entry\.js$|package\.json$|package-lock\.json$|tests/migration-guardrails\.mjs$|docs/MIGRATION_GUARDRAILS\.md$|\.github/workflows/migration-guardrails\.yml$|\.circleci/config\.yml$)'; then
+              echo 'export RUN_MIGRATION_GUARDRAILS=true' >> "$BASH_ENV"
+            else
+              echo 'export RUN_MIGRATION_GUARDRAILS=false' >> "$BASH_ENV"
+              echo 'No migration-guardrail inputs changed; expensive steps will be skipped.'
+            fi
+
+      - run:
+          name: Install dependencies
+          command: |
+            if [ "$RUN_MIGRATION_GUARDRAILS" != "true" ]; then exit 0; fi
+            npm ci --no-audit --no-fund
+
+      - run:
+          name: Run migration proofs
+          command: |
+            if [ "$RUN_MIGRATION_GUARDRAILS" != "true" ]; then exit 0; fi
+            npm run migration:test
+            npm run binary:source-test
+
+workflows:
+  ci:
+    jobs:
+      - migration-guardrails
