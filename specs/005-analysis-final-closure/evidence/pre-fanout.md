@@ -41,11 +41,11 @@ must be re-observed explicitly rather than silently attributed to the campaign.
     "path": "/teamspace/studios/this_studio/ida-245",
     "gitDirPath": "/teamspace/studios/this_studio/ida-245/.git",
     "headSha": "b66da5fc5150d5c36404c3e18f9a7815e9d0a355",
-    "branchRef": "fix/issues-platform-binary-mapping-fingerprint-6234-6230-6223-6159",
-    "status": "",
-    "dirtyStateSha256": "3adbe954d1b10c0b391c9903dbb789d8c10c415f09b61b9f95e8aaa30baa54b1",
+    "branchRef": "main",
+    "status": "?? subagent.md\u0000",
+    "dirtyStateSha256": "9807140241c6373515459545f0e66f5b47d167b4396840c0a836a7070f33b11c",
     "transcriptsSha256": "4a7c53f3367230bda019d519a87257a50aadf49293b6e671c785ef46015f7b01",
-    "identity": "a6634394717c77895efe57e11653d0287b31296cf3eeb3b3be4c08c0aa960532",
+    "identity": "85098f4763a3967523c66c24625a7c9b77c46acd9b68e99873349f4f52688e27",
     "preserved": true
   }
 }
