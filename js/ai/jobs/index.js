@@ -52,9 +52,6 @@ export class AgentJobManager {
 
   async runSlice(jobOrId, options = {}) {
     const job = await this.require(jobOrId);
-    if (job.savePending) {
-      await this.save(job);
-    }
     if (job.status === 'complete' || job.status === 'hard-limit') return checkpoint(job);
     if (job.status === 'running') throw new Error('Agent job already has an active slice');
     if (hardLimit(job)) {
@@ -77,13 +74,17 @@ export class AgentJobManager {
       job.status = prevStatus;
       throw saveError;
     }
-    let result;
     try {
-      result = await this.runtime.turn({
+      const result = await this.runtime.turn({
         ...job.request, goal: job.goal, mode: 'agent', scope: job.effectiveScope,
         sessionId: job.sessionId, conversationId: job.conversationId,
         provider: job.provider, model: job.model, reasoning: job.reasoning,
       }, options);
+      mergeResult(job, result);
+      if (!result?.limits?.exhausted) job.status = 'complete';
+      else if (hardLimit(job)) job.status = 'hard-limit';
+      else job.status = 'checkpointed';
+      job.updatedAt = new Date().toISOString(); await this.save(job); return checkpoint(job);
     } catch (error) {
       job.status = options.signal?.aborted ? 'checkpointed' : 'failed';
       job.unresolvedWork = unique([...job.unresolvedWork, String(error?.message || error)]).slice(-32);
@@ -93,18 +94,6 @@ export class AgentJobManager {
       } catch {}
       throw error;
     }
-    mergeResult(job, result);
-    if (!result?.limits?.exhausted) job.status = 'complete';
-    else if (hardLimit(job)) job.status = 'hard-limit';
-    else job.status = 'checkpointed';
-    job.updatedAt = new Date().toISOString();
-    try {
-      await this.save(job);
-    } catch (saveError) {
-      job.savePending = true;
-      throw saveError;
-    }
-    return checkpoint(job);
   }
 
   async resume(id, options = {}) { return this.runSlice(id, options); }
@@ -119,12 +108,7 @@ export class AgentJobManager {
     const job = await this.get(value); if (!job) throw new Error(`Unknown agent job: ${value}`); return job;
   }
   async load(id) { const value = await this.persistence?.load?.(id); if (value?.version === CHECKPOINT_VERSION) { this.jobs.set(id, value); return value; } return null; }
-  async save(jobOrId) {
-    const job = typeof jobOrId === 'string' ? await this.require(jobOrId) : jobOrId;
-    await this.persistence?.save?.(checkpoint(job));
-    delete job.savePending;
-    return checkpoint(job);
-  }
+  async save(job) { await this.persistence?.save?.(checkpoint(job)); }
 }
 
 function mergeResult(job, result) {
