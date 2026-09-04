@@ -1,6 +1,6 @@
 # Simple issue owner-lane checkpoint — API boundaries
 
-Status: `PR_PENDING`
+Status: `PR_OPEN`
 
 This checkpoint records the resumable state for the autonomous simple-issue
 cleanup lane owned by `codex`. It is intentionally scoped to the API knowledge
@@ -16,6 +16,7 @@ owner and must be updated when a branch, PR, or merge stage changes.
 - Candidate base: `origin/main` at `f00154dcb9b2234cbacb4c6a3c2186d00c8a4b3a`
 - Implementation head: `727124b8d03a8982148070f28180657f7e952af7`
 - Remote head after checkpoint update: `origin/fix/issues-api-boundaries-6130-6121`
+- Pull request: #6480 — https://github.com/rhgrive3/hex-ida/pull/6480
 
 ## Completed stages
 
@@ -32,7 +33,8 @@ owner and must be updated when a branch, PR, or merge stage changes.
 
 - [x] Run the applicable Phase 4 runner and lint, recording exact command results.
 - [x] Pushed the owner lane to `origin/fix/issues-api-boundaries-6130-6121`.
-- [ ] Create one PR for both issues and prove a current-main candidate tree.
+- [x] Created one owner PR for both issues: #6480.
+- [ ] Prove the exact current-main candidate tree and required PR checks.
 - [ ] Merge only after the exact PR head and required checks are verified; otherwise record the blocker here and on the board.
 
 ## Blockers and resume procedure
