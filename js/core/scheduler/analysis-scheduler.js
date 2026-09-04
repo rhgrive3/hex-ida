@@ -387,7 +387,7 @@ export class AnalysisScheduler {
       });
       return;
     }
-    if (task.controller.signal.aborted||error?.name==='AbortError') {
+    if (task.controller.signal.aborted) {
       this.metrics.cancelledJobs++;
       this.states.set(task.artifactId,'cancelled');
       const phase = task.phase === 'producer' ? 'running' : (task.state === 'ready' || task.phase === 'ready') ? 'queued' : 'waiting-dependency';
