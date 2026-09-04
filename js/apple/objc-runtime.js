@@ -28,6 +28,114 @@ function pushIndex(map, key, value) {
   list.push(value);
 }
 
+class ImmutableMap {
+  #map;
+
+  constructor(map) {
+    this.#map = new Map(map);
+    Object.freeze(this);
+  }
+
+  get size() {
+    return this.#map.size;
+  }
+
+  get(key) {
+    return this.#map.get(key);
+  }
+
+  has(key) {
+    return this.#map.has(key);
+  }
+
+  entries() {
+    return this.#map.entries();
+  }
+
+  keys() {
+    return this.#map.keys();
+  }
+
+  values() {
+    return this.#map.values();
+  }
+
+  [Symbol.iterator]() {
+    return this.#map[Symbol.iterator]();
+  }
+
+  forEach(callback, thisArg) {
+    if (typeof callback !== 'function') throw new TypeError('callback must be a function');
+    for (const [key, value] of this.#map) callback.call(thisArg, value, key, this);
+  }
+
+  set() {
+    throw new TypeError('objc runtime index is immutable');
+  }
+
+  delete() {
+    throw new TypeError('objc runtime index is immutable');
+  }
+
+  clear() {
+    throw new TypeError('objc runtime index is immutable');
+  }
+}
+
+// Preserve the established Map-compatible public surface without giving callers
+// a real Map internal slot that intrinsic mutators can target.
+Object.setPrototypeOf(ImmutableMap.prototype, Map.prototype);
+Object.freeze(ImmutableMap.prototype);
+
+function immutableMap(map) {
+  return new ImmutableMap(map);
+}
+
+function immutableSnapshot(value, seen = new Map()) {
+  if (value == null || typeof value !== 'object') return value;
+  if (seen.has(value)) return seen.get(value);
+
+  const copy = Array.isArray(value) ? [] : {};
+  seen.set(value, copy);
+  for (const key of Reflect.ownKeys(value)) {
+    if (typeof key !== 'string') continue;
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor?.enumerable || !('value' in descriptor)) continue;
+    Object.defineProperty(copy, key, {
+      value: immutableSnapshot(descriptor.value, seen),
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+  }
+  return Object.freeze(copy);
+}
+
+function shallowCloneArray(value) {
+  return Array.isArray(value)
+    ? value.map((item) => item && typeof item === 'object' ? { ...item } : item)
+    : value;
+}
+
+function freezeArray(value) {
+  if (!Array.isArray(value)) return value;
+  for (const item of value) {
+    if (item && typeof item === 'object') Object.freeze(item);
+  }
+  return Object.freeze(value);
+}
+
+function freezeMethodEntries(map) {
+  for (const entries of map.values()) {
+    for (const entry of entries) {
+      if (entry?.raw && typeof entry.raw === 'object') Object.freeze(entry.raw);
+      Object.freeze(entry);
+    }
+    Object.freeze(entries);
+  }
+  return immutableMap(map);
+}
+
 function normalizeMethod(m, owner, classMethod, source = 'class', proofRequired = false) {
   if (!m) return null;
   let selector = null;
@@ -47,7 +155,7 @@ function normalizeMethod(m, owner, classMethod, source = 'class', proofRequired 
     typeEncoding: m.types || m.type || m.typeEncoding || null,
     source,
     optional: !!m.optional,
-    raw: m,
+    raw: m && typeof m === 'object' ? { ...m } : m,
   };
 }
 
@@ -71,6 +179,8 @@ export function buildObjcRuntimeIndex(objcModel = {}) {
       superName: cleanClassName(c.superName),
       protocols: (c.protocols || []).map((p) => cleanClassName(p.name || p)).filter(Boolean),
     };
+    info.methods = shallowCloneArray(info.methods);
+    info.classMethods = shallowCloneArray(info.classMethods);
     classes.set(info.name, info);
     for (const m of info.methods || []) {
       const x = normalizeMethod(m, info.name, false, 'class', proofRequired);
@@ -92,7 +202,7 @@ export function buildObjcRuntimeIndex(objcModel = {}) {
     if (!p) continue;
     const name = cleanClassName(p.name);
     if (!name) continue;
-    const copy = { ...p, name };
+    const copy = { ...p, name, protocols: shallowCloneArray(p.protocols) };
     protocols.set(name, copy);
     for (const m of p.instanceMethods || p.methods || []) {
       const x = normalizeMethod({ ...m, optional: false }, name, false, 'protocol', proofRequired);
@@ -117,6 +227,9 @@ export function buildObjcRuntimeIndex(objcModel = {}) {
     const targetClass = cleanClassName(cat.className || cat.targetClass || cat.target);
     const name = cat.name || '(category)';
     const entry = { ...cat, name, targetClass };
+    for (const field of ['protocols', 'methods', 'instanceMethods', 'classMethods']) {
+      entry[field] = shallowCloneArray(entry[field]);
+    }
     categories.push(entry);
     const target = targetClass ? classes.get(targetClass) : null;
     if (target && Array.isArray(cat.protocols) && cat.protocols.length) {
@@ -142,9 +255,33 @@ export function buildObjcRuntimeIndex(objcModel = {}) {
     }
   }
 
-  const completeness = objcModel.runtimeCompleteness || null;
+  for (const info of classes.values()) {
+    info.methods = freezeArray(info.methods);
+    info.classMethods = freezeArray(info.classMethods);
+    info.protocols = freezeArray(info.protocols);
+    Object.freeze(info);
+  }
+  for (const info of protocols.values()) {
+    info.protocols = freezeArray(info.protocols);
+    Object.freeze(info);
+  }
+  for (const entry of categories) {
+    for (const field of ['protocols', 'methods', 'instanceMethods', 'classMethods']) {
+      entry[field] = freezeArray(entry[field]);
+    }
+    Object.freeze(entry);
+  }
+
+  const completeness = objcModel.runtimeCompleteness ? immutableSnapshot(objcModel.runtimeCompleteness) : null;
   return {
-    runtime: 'objc', classes, protocols, categories, methodsBySelector, protocolRequirementsBySelector, methodsByIMP, completeness,
+    runtime: 'objc',
+    classes: immutableMap(classes),
+    protocols: immutableMap(protocols),
+    categories: Object.freeze(categories),
+    methodsBySelector: freezeMethodEntries(methodsBySelector),
+    protocolRequirementsBySelector: freezeMethodEntries(protocolRequirementsBySelector),
+    methodsByIMP: freezeMethodEntries(methodsByIMP),
+    completeness,
     selectorCount: methodsBySelector.size,
     methodCount: [...methodsBySelector.values()].reduce((n, a) => n + a.length, 0),
     protocolRequirementCount: [...protocolRequirementsBySelector.values()].reduce((n, a) => n + a.length, 0),
