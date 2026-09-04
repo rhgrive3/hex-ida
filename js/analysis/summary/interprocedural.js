@@ -374,7 +374,25 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
     unknowns.push(createUnknownCallEffect({ callSiteId: functionId, reason: 'recursion-unconverged' }));
   }
 
-  const dedupedUnknowns = [...new Map(unknowns.map((unknown) => [`${unknown.callSiteId}\u0000${unknown.reason}`, unknown])).values()];
+  const unknownsByKey = new Map();
+  for (const unknown of unknowns) {
+    const key = `${unknown.callSiteId}\u0000${unknown.reason}`;
+    const prior = unknownsByKey.get(key);
+    if (!prior) {
+      unknownsByKey.set(key, unknown);
+      continue;
+    }
+    // Same call site and reason means one logical unresolved call; the target
+    // and evidence payloads must union rather than last-wins, or every
+    // candidate but the final one vanishes from the published provenance.
+    unknownsByKey.set(key, createUnknownCallEffect({
+      callSiteId: unknown.callSiteId,
+      reason: unknown.reason,
+      targetEntityIds: [...prior.targetEntityIds, ...unknown.targetEntityIds],
+      evidenceIds: [...prior.evidenceIds, ...unknown.evidenceIds],
+    }));
+  }
+  const dedupedUnknowns = [...unknownsByKey.values()];
   const hasUnknown = dedupedUnknowns.length > 0;
   const localStatus = status(
     hasUnknown ? (unconverged ? 'truncated' : 'partial') : 'complete',
