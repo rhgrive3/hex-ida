@@ -153,8 +153,19 @@ export function createX86DecodedInstruction(input = {}) {
   // Legacy detailAvailable-only callers still map to complete/unavailable.
   const detailStatus = detailStatusOf(input.detailStatus, input.detailAvailable);
   const rawBytes = bytesOf(input.rawBytes ?? input.bytes, length);
+  // This constructor only mints x86_64 records. A foreign architecture
+  // identity (or two disagreeing ones) is a contradictory record, not a
+  // defaultable field.
+  for (const key of ['architecture', 'architectureId']) {
+    const value = input[key];
+    if (value != null && String(value).trim().toLowerCase() !== 'x86_64') {
+      throw new TypeError('x86-decoded-instruction-architecture-mismatch');
+    }
+  }
   const result = {
     ...input,
+    architecture: 'x86_64',
+    architectureId: 'x86_64',
     contractVersion,
     decoderSemanticVersion:text(input.decoderSemanticVersion ?? X86_DECODER_SEMANTIC_VERSION, 'x86-decoder-semantic-version-required'),
     address:bigint(input.address, 'x86-decoded-instruction-address-required'),
