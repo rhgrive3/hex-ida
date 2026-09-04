@@ -121,5 +121,5 @@ jobs:
         with:
           name: merged-pr-review-audit-${{ github.run_id }}
           path: artifacts/merged-pr-review-audit.*
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 30

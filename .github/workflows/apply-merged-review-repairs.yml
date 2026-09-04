@@ -73,12 +73,16 @@ jobs:
         run: |
           set -euo pipefail
           git diff --check
-          mapfile -t changed < <(git diff --name-only HEAD)
+          mapfile -t changed < <(
+            {
+              git diff --name-only HEAD
+              git ls-files --others --exclude-standard
+            } | LC_ALL=C sort -u
+          )
           printf '%s\n' "${changed[@]}"
           unexpected=0
           for path in "${changed[@]}"; do
             case "$path" in
-              .github/workflows/migration-guardrails.yml|\
               .github/workflows/apply-merged-review-repairs.yml|\
               artifacts/.audit-repair-trigger|\
               js/binary/macho-dyld.js|\
