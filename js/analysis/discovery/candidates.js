@@ -11,6 +11,7 @@
  */
 
 import { deepFreeze, stableDigest } from '../../core/identity/index.js';
+import { canonicalTypedValue } from './canonical-value.js';
 
 export const FUNCTION_CANDIDATE_SCHEMA_VERSION = 1;
 
@@ -31,6 +32,7 @@ export const EVIDENCE_AUTHORITY = Object.freeze({
   'direct-call-target': 'corroborating',
   'relocation-target': 'corroborating',
   'vtable-entry': 'corroborating',
+  'jump-table-target': 'corroborating',
   'runtime-metadata': 'corroborating',
   'exception-metadata': 'corroborating',
   'runtime-observation': 'corroborating',
@@ -68,6 +70,103 @@ function producerId(value) {
   return value;
 }
 
+function optionalString(value, code) {
+  if (value == null) return null;
+  if (typeof value !== 'string' || value.length === 0) fail(code);
+  return value;
+}
+
+function ownData(value, key, code) {
+  let item;
+  try { item = Object.getOwnPropertyDescriptor(value, key); }
+  catch { fail(code); }
+  if (item == null) return undefined;
+  if (!Object.hasOwn(item, 'value')) fail(code);
+  return item.value;
+}
+
+function dataArray(value, code) {
+  if (!Array.isArray(value)) fail(code);
+  const result = [];
+  for (let index = 0; index < value.length; index += 1) {
+    const item = Object.getOwnPropertyDescriptor(value, String(index));
+    if (item == null || !Object.hasOwn(item, 'value')) fail(code);
+    result.push(item.value);
+  }
+  return result;
+}
+
+function evidenceInput(input, overrides = {}) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) fail('discovery-evidence-input-invalid');
+  if (!overrides || typeof overrides !== 'object' || Array.isArray(overrides)) fail('discovery-evidence-overrides-invalid');
+  const fields = [
+    'kind', 'extentRole', 'extentCoverageComplete', 'start', 'regions', 'producerId', 'producerVersion',
+    'architectureId', 'binaryId', 'sourceHash', 'snapshotId', 'referenceAddress',
+    'relocationId', 'symbolicExpression', 'name', 'confidence', 'evidenceIds',
+  ];
+  const result = {};
+  for (const key of fields) {
+    result[key] = ownData(input, key, `discovery-evidence-${key}-accessor-invalid`);
+    const override = ownData(overrides, key, `discovery-evidence-${key}-override-accessor-invalid`);
+    if (override !== undefined) result[key] = override;
+  }
+  return result;
+}
+
+function confidence(value) {
+  if (value == null) return null;
+  if (typeof value === 'string' && value.length > 0) return value;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  fail('discovery-evidence-invalid-confidence');
+  return null;
+}
+
+function plainObject(value, code) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) fail(code);
+  let prototype;
+  try { prototype = Object.getPrototypeOf(value); }
+  catch { fail(code); }
+  if (prototype !== Object.prototype && prototype !== null) fail(code);
+  return value;
+}
+
+function snapshotConflictValue(value, seen = new WeakSet()) {
+  if (value == null || ['string', 'boolean', 'bigint'].includes(typeof value)) return value;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value !== 'object' || seen.has(value)) fail('discovery-candidate-conflict-invalid');
+  seen.add(value);
+  let result;
+  if (Array.isArray(value)) {
+    result = dataArray(value, 'discovery-candidate-conflict-accessor-invalid')
+      .map((item) => snapshotConflictValue(item, seen));
+  } else {
+    plainObject(value, 'discovery-candidate-conflict-invalid');
+    result = {};
+    let keys;
+    try { keys = Object.keys(value).sort(); }
+    catch { fail('discovery-candidate-conflict-invalid'); }
+    for (const key of keys) {
+      result[key] = snapshotConflictValue(
+        ownData(value, key, 'discovery-candidate-conflict-accessor-invalid'), seen,
+      );
+    }
+  }
+  seen.delete(value);
+  return result;
+}
+
+function candidateInput(input) {
+  const value = plainObject(input, 'discovery-candidate-input-invalid');
+  const result = {};
+  for (const key of [
+    'start', 'name', 'regions', 'startEvidence', 'extentEvidence', 'startState',
+    'extentState', 'conflicts', 'architectureId', 'allowRegionsWithUnknownExtent',
+  ]) {
+    result[key] = ownData(value, key, `discovery-candidate-${key}-accessor-invalid`);
+  }
+  return result;
+}
+
 /**
  * How much of a function's extent one piece of evidence describes.
  *
@@ -79,37 +178,51 @@ function producerId(value) {
 export const EXTENT_ROLES = Object.freeze(['complete', 'partial']);
 
 /** One piece of evidence about a start or an extent. */
-export function createDiscoveryEvidence(input = {}) {
-  const kind = typeof input.kind === 'string' ? input.kind : '';
+export function createDiscoveryEvidence(input = {}, overrides = {}) {
+  const snapshot = evidenceInput(input, overrides);
+  const kind = typeof snapshot.kind === 'string' ? snapshot.kind : '';
   if (!KIND_SET.has(kind)) fail(`discovery-evidence-unknown-kind:${kind}`);
-  const extentRole = input.extentRole == null ? 'complete' : (typeof input.extentRole === 'string' ? input.extentRole : '');
+  const extentRole = snapshot.extentRole == null ? 'complete' : (typeof snapshot.extentRole === 'string' ? snapshot.extentRole : '');
   if (!EXTENT_ROLES.includes(extentRole)) fail('discovery-evidence-invalid-extent-role');
-  const evidenceIds = input.evidenceIds ?? [];
-  if (!Array.isArray(evidenceIds)
-      || evidenceIds.some((id) => typeof id !== 'string' || id.length === 0)) {
+  if (snapshot.extentCoverageComplete != null && typeof snapshot.extentCoverageComplete !== 'boolean') {
+    fail('discovery-evidence-invalid-extent-coverage');
+  }
+  const evidenceIds = dataArray(snapshot.evidenceIds ?? [], 'discovery-evidence-invalid-evidence-id');
+  if (evidenceIds.some((id) => typeof id !== 'string' || id.length === 0)) {
     fail('discovery-evidence-invalid-evidence-id');
   }
+  const regions = dataArray(snapshot.regions ?? [], 'discovery-evidence-invalid-regions');
   return deepFreeze({
     kind,
     authority: EVIDENCE_AUTHORITY[kind],
     extentRole,
-    start: input.start == null ? null : address(input.start, 'discovery-evidence-invalid-start').toString(),
-    regions: deepFreeze((input.regions ?? []).map((region) => createRegion(region))),
+    extentCoverageComplete: snapshot.extentCoverageComplete === true,
+    start: snapshot.start == null ? null : address(snapshot.start, 'discovery-evidence-invalid-start').toString(),
+    regions: deepFreeze(regions.map((region) => createRegion(region))),
     // Producer identity participates in corroboration. Pre-registry evidence
     // may omit it, but any explicit identity must already be canonical.
-    producerId: producerId(input.producerId),
-    architectureId: input.architectureId == null ? null : String(input.architectureId),
-    name: input.name == null ? null : String(input.name),
-    confidence: input.confidence == null ? null : String(input.confidence),
+    producerId: producerId(snapshot.producerId),
+    producerVersion: optionalString(snapshot.producerVersion, 'discovery-evidence-invalid-producer-version') ?? 'unknown',
+    architectureId: optionalString(snapshot.architectureId, 'discovery-evidence-invalid-architecture-id'),
+    binaryId: optionalString(snapshot.binaryId, 'discovery-evidence-invalid-binary-id'),
+    sourceHash: optionalString(snapshot.sourceHash, 'discovery-evidence-invalid-source-hash'),
+    snapshotId: optionalString(snapshot.snapshotId, 'discovery-evidence-invalid-snapshot-id'),
+    referenceAddress: snapshot.referenceAddress == null ? null : address(snapshot.referenceAddress, 'discovery-evidence-invalid-reference-address').toString(),
+    relocationId: optionalString(snapshot.relocationId, 'discovery-evidence-invalid-relocation-id'),
+    symbolicExpression: snapshot.symbolicExpression == null ? null : canonicalTypedValue(snapshot.symbolicExpression),
+    name: optionalString(snapshot.name, 'discovery-evidence-invalid-name'),
+    confidence: confidence(snapshot.confidence),
     evidenceIds: [...new Set(evidenceIds)].sort(),
   });
 }
 
 export function createRegion(input = {}) {
-  const start = address(input.start, 'discovery-region-invalid-start');
-  const end = address(input.end, 'discovery-region-invalid-end');
+  if (!input || typeof input !== 'object' || Array.isArray(input)) fail('discovery-region-invalid');
+  const start = address(ownData(input, 'start', 'discovery-region-start-accessor-invalid'), 'discovery-region-invalid-start');
+  const end = address(ownData(input, 'end', 'discovery-region-end-accessor-invalid'), 'discovery-region-invalid-end');
   if (end <= start) fail('discovery-region-empty');
-  const ownership = input.ownership == null ? 'exclusive' : (typeof input.ownership === 'string' ? input.ownership : '');
+  const rawOwnership = ownData(input, 'ownership', 'discovery-region-ownership-accessor-invalid');
+  const ownership = rawOwnership == null ? 'exclusive' : (typeof rawOwnership === 'string' ? rawOwnership : '');
   if (!OWNERSHIP_SET.has(ownership)) fail('discovery-region-invalid-ownership');
   return deepFreeze({ start: start.toString(), end: end.toString(), ownership });
 }
@@ -126,13 +239,14 @@ export function regionsOverlap(a, b) {
  * unknown extent must be cheap to report and impossible to forget.
  */
 export function createFunctionCandidate(input = {}) {
-  const start = address(input.start, 'discovery-candidate-invalid-start');
-  const startState = input.startState == null ? 'heuristic' : (typeof input.startState === 'string' ? input.startState : '');
+  const snapshot = candidateInput(input);
+  const start = address(snapshot.start, 'discovery-candidate-invalid-start');
+  const startState = snapshot.startState == null ? 'heuristic' : (typeof snapshot.startState === 'string' ? snapshot.startState : '');
   if (!CANDIDATE_STATES.includes(startState)) fail('discovery-candidate-invalid-start-state');
-  const extentState = input.extentState == null ? 'unknown' : (typeof input.extentState === 'string' ? input.extentState : '');
+  const extentState = snapshot.extentState == null ? 'unknown' : (typeof snapshot.extentState === 'string' ? snapshot.extentState : '');
   if (extentState !== 'unknown' && !CANDIDATE_STATES.includes(extentState)) fail('discovery-candidate-invalid-extent-state');
 
-  const regions = (input.regions ?? []).map((region) => createRegion(region));
+  const regions = dataArray(snapshot.regions ?? [], 'discovery-candidate-regions-invalid').map((region) => createRegion(region));
   regions.sort((left, right) => {
     const leftStart = BigInt(left.start);
     const rightStart = BigInt(right.start);
@@ -144,28 +258,39 @@ export function createFunctionCandidate(input = {}) {
     if (leftEnd > rightEnd) return 1;
     return left.ownership.localeCompare(right.ownership);
   });
-  if (extentState === 'unknown' && regions.length > 0 && input.allowRegionsWithUnknownExtent !== true) {
+  if (extentState === 'unknown' && regions.length > 0 && snapshot.allowRegionsWithUnknownExtent !== true) {
     fail('discovery-candidate-unknown-extent-cannot-claim-regions');
   }
+
+  const name = snapshot.name == null ? null : optionalString(snapshot.name, 'discovery-candidate-invalid-name');
+  const architectureId = snapshot.architectureId == null
+    ? null : optionalString(snapshot.architectureId, 'discovery-candidate-invalid-architecture-id');
 
   const candidate = {
     schemaVersion: FUNCTION_CANDIDATE_SCHEMA_VERSION,
     start: start.toString(),
-    name: input.name == null ? null : String(input.name),
+    name,
     regions: deepFreeze(regions),
-    startEvidence: deepFreeze((input.startEvidence ?? []).map((evidence) => createDiscoveryEvidence(evidence))),
-    extentEvidence: deepFreeze((input.extentEvidence ?? []).map((evidence) => createDiscoveryEvidence(evidence))),
+    startEvidence: deepFreeze(dataArray(snapshot.startEvidence ?? [], 'discovery-candidate-start-evidence-invalid')
+      .map((evidence) => createDiscoveryEvidence(evidence))),
+    extentEvidence: deepFreeze(dataArray(snapshot.extentEvidence ?? [], 'discovery-candidate-extent-evidence-invalid')
+      .map((evidence) => createDiscoveryEvidence(evidence))),
     startState,
     extentState,
-    conflicts: deepFreeze([...(input.conflicts ?? [])]),
-    architectureId: input.architectureId == null ? null : String(input.architectureId),
+    conflicts: deepFreeze(dataArray(snapshot.conflicts ?? [], 'discovery-candidate-conflicts-invalid')
+      .map((item) => snapshotConflictValue(item))),
+    architectureId,
   };
   candidate.digest = stableDigest({
     start: candidate.start,
+    name: candidate.name,
     regions: candidate.regions,
+    startEvidence: candidate.startEvidence,
+    extentEvidence: candidate.extentEvidence,
     startState: candidate.startState,
     extentState: candidate.extentState,
     conflicts: candidate.conflicts,
+    architectureId: candidate.architectureId,
   });
   return deepFreeze(candidate);
 }

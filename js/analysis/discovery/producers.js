@@ -14,7 +14,6 @@
  */
 
 import { EVIDENCE_AUTHORITY, createDiscoveryEvidence } from './candidates.js';
-import { regionFromSize } from './fusion.js';
 
 function toAddress(value) {
   if (value == null) return null;
@@ -22,6 +21,13 @@ function toAddress(value) {
   if (type !== 'bigint' && type !== 'string' && !(type === 'number' && Number.isSafeInteger(value))) return null;
   try { return BigInt(value).toString(); }
   catch { return null; }
+}
+
+function regionFromSize(start, sizeBytes, ownership = 'exclusive') {
+  const begin = toAddress(start);
+  const size = toAddress(sizeBytes);
+  if (begin == null || size == null || BigInt(size) <= 0n) return null;
+  return { start: begin, end: (BigInt(begin) + BigInt(size)).toString(), ownership };
 }
 
 function evidence(kind, input) {
@@ -59,6 +65,7 @@ function loaderFunctionStarts(image) {
 
 export const loaderProducer = Object.freeze({
   id: 'discovery.loader',
+  version: '1',
   architectureId: null,
   produce(input) {
     const out = [];
@@ -84,6 +91,10 @@ export const loaderProducer = Object.freeze({
         .map((entry) => toAddress(entry.ownerStart))
         .filter(Boolean),
     );
+    const primaryOwners = new Set(unwindEntries
+      .filter((entry) => entry.primary !== false)
+      .map((entry) => toAddress(entry.start ?? entry.address))
+      .filter(Boolean));
     for (const entry of unwindEntries) {
       const isContinuation = entry.primary === false && entry.ownerStart != null;
       const address = isContinuation ? toAddress(entry.ownerStart) : toAddress(entry.start ?? entry.address);
@@ -97,6 +108,7 @@ export const loaderProducer = Object.freeze({
         start: address,
         regions: region ? [region] : [],
         extentRole: isContinuation || ownersWithContinuations.has(address) ? 'partial' : 'complete',
+        extentCoverageComplete: ownersWithContinuations.has(address) && primaryOwners.has(address),
         evidenceIds: [`unwind:${rangeStart}`],
       }));
     }
@@ -107,6 +119,7 @@ export const loaderProducer = Object.freeze({
 /** Exports and the image entrypoint. */
 export const exportProducer = Object.freeze({
   id: 'discovery.exports',
+  version: '1',
   architectureId: null,
   produce(input) {
     const out = [];
@@ -159,6 +172,7 @@ export const exportProducer = Object.freeze({
  */
 export const symbolTableProducer = Object.freeze({
   id: 'discovery.symbols',
+  version: '1',
   architectureId: null,
   produce(input) {
     const out = [];
@@ -180,13 +194,21 @@ export const symbolTableProducer = Object.freeze({
 /** Relocation and vtable targets. */
 export const referenceProducer = Object.freeze({
   id: 'discovery.references',
+  version: '2',
   architectureId: null,
   produce(input) {
     const out = [];
     for (const target of input?.image?.relocationTargets ?? []) {
       const address = toAddress(target.address ?? target);
       if (address == null) continue;
-      out.push(evidence('relocation-target', { start: address, evidenceIds: [`reloc:${address}`] }));
+      const relocationId = typeof target?.id === 'string' && target.id ? target.id : `reloc:${address}`;
+      out.push(evidence('relocation-target', {
+        start: address,
+        referenceAddress: target?.sourceAddress ?? target?.addressOfReference ?? null,
+        relocationId,
+        symbolicExpression: target?.symbolicExpression ?? target?.expression ?? null,
+        evidenceIds: [relocationId],
+      }));
     }
     for (const target of input?.image?.vtableEntries ?? []) {
       const address = toAddress(target.address ?? target);
@@ -197,6 +219,15 @@ export const referenceProducer = Object.freeze({
       const address = toAddress(target.address ?? target);
       if (address == null) continue;
       out.push(evidence('exception-metadata', { start: address, evidenceIds: [`eh:${address}`] }));
+    }
+    for (const target of input?.image?.jumpTableTargets ?? []) {
+      const address = toAddress(target.address ?? target);
+      if (address == null) continue;
+      out.push(evidence('jump-table-target', {
+        start: address,
+        referenceAddress: target?.tableAddress ?? target?.sourceAddress ?? null,
+        evidenceIds: [`jump-table:${target?.tableId ?? 'unknown'}:${address}`],
+      }));
     }
     return out;
   },
@@ -211,6 +242,7 @@ export const referenceProducer = Object.freeze({
  */
 export const callGraphProducer = Object.freeze({
   id: 'discovery.call-targets',
+  version: '1',
   architectureId: null,
   produce(input) {
     const out = [];
@@ -231,6 +263,7 @@ export const callGraphProducer = Object.freeze({
 export function createDebugEvidenceProducer(debugEvidence) {
   return Object.freeze({
     id: 'discovery.debug',
+    version: '1',
     architectureId: null,
     produce() {
       return (debugEvidence ?? []).map((item) => evidence('debug-symbol', {
@@ -281,6 +314,7 @@ export function createPatternProducer({ id, architectureId, patterns, alignment 
   });
   return Object.freeze({
     id: String(id),
+    version: '1',
     architectureId: architectureId == null ? null : String(architectureId),
     produce(input) {
       const bytes = input?.image?.code;
@@ -318,3 +352,9 @@ export const GENERIC_PRODUCERS = Object.freeze([
   referenceProducer,
   callGraphProducer,
 ]);
+
+const CANONICAL_DISCOVERY_PRODUCERS = new WeakSet(GENERIC_PRODUCERS);
+
+export function isCanonicalDiscoveryProducer(producer) {
+  return !!producer && CANONICAL_DISCOVERY_PRODUCERS.has(producer);
+}

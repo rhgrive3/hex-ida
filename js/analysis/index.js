@@ -24,6 +24,15 @@ import { TypeConstraintGraph, selectedTypeIfCertain, reconstructStructuralType }
 import { DiscoveryProducerRegistry, fuseFunctionCandidates } from './discovery/fusion.js';
 import { GENERIC_PRODUCERS } from './discovery/producers.js';
 import {
+  attachDiscoveryArtifactToSearchResult,
+  createDiscoveryArtifact,
+  DISCOVERY_ARTIFACT_DEFAULT_BUDGET,
+  discoveryArtifactResourcePreflight,
+  discoveryArtifactForRebuild,
+  normalizeDiscoveryArtifactBudget,
+  verifyDiscoveryReparse,
+} from './discovery/artifact.js';
+import {
   explainMemoryPath as explainMemoryPathQuery,
   reachingMemoryDefinition,
 } from '../semantics/memoryssa/queries.js';
@@ -204,8 +213,28 @@ export function functionCandidates({ input, architectureId = 'generic', producer
   const registry = new DiscoveryProducerRegistry();
   for (const producer of GENERIC_PRODUCERS) registry.register(producer);
   for (const producer of producers) registry.register(producer);
-  const { evidence } = registry.collect(input, architectureId, options);
-  return fuseFunctionCandidates(evidence, { architectureId, ...options });
+  const byteIntervals = options.byteIntervals ?? input?.image?.byteIntervals ?? [];
+  const intervalCounts = new Map();
+  if (Array.isArray(byteIntervals)) {
+    for (const interval of byteIntervals) {
+      if (typeof interval?.producerId !== 'string') continue;
+      intervalCounts.set(interval.producerId, (intervalCounts.get(interval.producerId) ?? 0) + 1);
+    }
+  }
+  const { evidence, producerRuns, resourceLimitReason } = registry.collect(input, architectureId, options, intervalCounts);
+  const externalProducerIds = new Set(
+    producerRuns.filter((run) => run.authorityClass === 'external').map((run) => run.id),
+  );
+  if (evidence.some((item) => item.authority === 'authoritative' && externalProducerIds.has(item.producerId))) {
+    throw new TypeError('discovery-producer-authoritative-evidence-untrusted');
+  }
+  return fuseFunctionCandidates(evidence, {
+    architectureId,
+    ...options,
+    producerRuns,
+    byteIntervals,
+    artifactResourceLimitReason: resourceLimitReason,
+  });
 }
 
 import {
@@ -221,4 +250,11 @@ export {
   reconstructStructuralType,
   applyLanguageMetadataTypesToGraph,
   languageMetadataFunctionEvidence,
+  attachDiscoveryArtifactToSearchResult,
+  createDiscoveryArtifact,
+  DISCOVERY_ARTIFACT_DEFAULT_BUDGET,
+  discoveryArtifactResourcePreflight,
+  discoveryArtifactForRebuild,
+  normalizeDiscoveryArtifactBudget,
+  verifyDiscoveryReparse,
 };

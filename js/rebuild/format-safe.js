@@ -496,6 +496,7 @@ function elfNobitsLayoutPlan(source, image, mutation) {
       source: 'format-safe-rebuild-adapter',
       schema: FORMAT_SAFE_REBUILD_SCHEMA,
       mutationKind: mutation.kind,
+      discoveryDomain: 'data-only-metadata',
       section: name,
     },
   }));
@@ -548,6 +549,7 @@ function peSectionVirtualSizePlan(source, image, mutation) {
         source: 'format-safe-rebuild-adapter',
         schema: FORMAT_SAFE_REBUILD_SCHEMA,
         mutationKind: mutation.kind,
+        discoveryDomain: 'function-extent',
         section: sectionName,
         originalVirtualSize: target.virtualSize,
         virtualSize: requestedSize,
@@ -598,6 +600,7 @@ function machoSectionSizePlan(source, image, mutation) {
         source: 'format-safe-rebuild-adapter',
         schema: FORMAT_SAFE_REBUILD_SCHEMA,
         mutationKind: mutation.kind,
+        discoveryDomain: 'function-extent',
         segment: segmentName,
         section: sectionName,
         originalSize: target.size,
@@ -657,7 +660,7 @@ export function createFormatSafeRebuildTransaction(input = {}) {
     after.set(encoded);
     const before = image.target.data;
     if (!changed(before, after)) fail('format-safe-mutation-no-change');
-    operations = [{ id: 'format-safe:elf:.comment', offset: image.target.offset, before, after, provenance: { source: 'format-safe-rebuild-adapter', schema: FORMAT_SAFE_REBUILD_SCHEMA, mutationKind: mutation.kind, section: '.comment', tag } }];
+    operations = [{ id: 'format-safe:elf:.comment', offset: image.target.offset, before, after, provenance: { source: 'format-safe-rebuild-adapter', schema: FORMAT_SAFE_REBUILD_SCHEMA, mutationKind: mutation.kind, discoveryDomain: 'data-only-metadata', section: '.comment', tag } }];
     safeState = { schema: FORMAT_SAFE_REBUILD_SCHEMA, kind: mutation.kind, section: '.comment', offset: image.target.offset, size: image.target.size, replacementDigest: digestBytes(after), signaturePolicy:'unsigned-input-required' };
   } else if (mutation.kind === 'elf-add-nobits-section') {
     if (format !== 'elf') fail('format-safe-mutation-format-mismatch');
@@ -676,7 +679,7 @@ export function createFormatSafeRebuildTransaction(input = {}) {
     const after = new Uint8Array(4);
     new DataView(after.buffer).setUint32(0, version, true);
     if (!changed(before, after)) fail('format-safe-mutation-no-change');
-    operations = [{ id: 'format-safe:macho:min-version', offset: image.target.offset, before, after, provenance: { source: 'format-safe-rebuild-adapter', schema: FORMAT_SAFE_REBUILD_SCHEMA, mutationKind: mutation.kind, command: image.target.name, version } }];
+    operations = [{ id: 'format-safe:macho:min-version', offset: image.target.offset, before, after, provenance: { source: 'format-safe-rebuild-adapter', schema: FORMAT_SAFE_REBUILD_SCHEMA, mutationKind: mutation.kind, discoveryDomain: 'data-only-metadata', command: image.target.name, version } }];
     safeState = { schema: FORMAT_SAFE_REBUILD_SCHEMA, kind: mutation.kind, command: image.target.name, commandIndex: image.target.commandIndex, offset: image.target.offset, size: 4, originalVersion: image.target.originalVersion, replacementVersion: version, sdkVersion: image.target.sdkVersion, signaturePolicy:'unsigned-input-required' };
   } else if (mutation.kind === 'pe-timestamp') {
     if (format !== 'pe') fail('format-safe-mutation-format-mismatch');
@@ -686,19 +689,23 @@ export function createFormatSafeRebuildTransaction(input = {}) {
     const after = new Uint8Array(4);
     new DataView(after.buffer).setUint32(0, timestamp, true);
     if (!changed(before, after)) fail('format-safe-mutation-no-change');
-    operations = [{ id: 'format-safe:pe:timestamp', offset: image.target.offset, before, after, provenance: { source: 'format-safe-rebuild-adapter', schema: FORMAT_SAFE_REBUILD_SCHEMA, mutationKind: mutation.kind, field: 'COFF.TimeDateStamp', timestamp } }];
+    operations = [{ id: 'format-safe:pe:timestamp', offset: image.target.offset, before, after, provenance: { source: 'format-safe-rebuild-adapter', schema: FORMAT_SAFE_REBUILD_SCHEMA, mutationKind: mutation.kind, discoveryDomain: 'data-only-metadata', field: 'COFF.TimeDateStamp', timestamp } }];
     safeState = { schema: FORMAT_SAFE_REBUILD_SCHEMA, kind: mutation.kind, field: 'COFF.TimeDateStamp', offset: image.target.offset, size: 4, originalTimestamp: image.header.timestamp, replacementTimestamp: timestamp, signaturePolicy:'unsigned-input-required' };
   } else fail('format-safe-mutation-kind-unsupported');
   const sourceHash = input.sourceHash == null ? digestBytes(source) : String(input.sourceHash);
   if (sourceHash !== digestBytes(source)) fail('format-safe-source-hash-mismatch');
+  const layoutMoving = ['elf-add-nobits-section', 'pe-section-virtual-size', 'macho-section-size'].includes(mutation.kind);
+  const discoveryRequired = operations.some((operation) => operation.provenance.discoveryDomain !== 'data-only-metadata');
   return createRebuildTransaction({
     binaryId: input.binaryId,
     sourceHash,
     format,
     architecture,
     loaderVersion: input.loaderVersion,
+    discoveryArtifact: input.discoveryArtifact ?? null,
+    discoveryRequired: discoveryRequired || input.discoveryArtifact != null,
     operations,
-    impact: { layoutMoving: ['elf-add-nobits-section', 'pe-section-virtual-size', 'macho-section-size'].includes(mutation.kind), sections: [safeState.section || safeState.field], relocationBindings: [] },
+    impact: { layoutMoving, sections: [safeState.section || safeState.field], relocationBindings: [] },
     expectedOriginalState: { sourceHash, formatSafe: safeState },
     additionalValidators: ['format-invariants'],
     requireIndependentOracle: true,

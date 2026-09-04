@@ -1,15 +1,22 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { stableDigest } from '../../js/core/identity/index.js';
+import { functionCandidates } from '../../js/analysis/index.js';
 import {
   F6_REBUILD_UNITS,
   INDEPENDENT_ORACLE_RESULT_SCHEMA,
   createRebuildTransaction,
+  deriveCanonicalDiscoveryArtifact,
   evaluateF6RebuildDenominator,
   materializeRebuildTransaction,
   publishRebuildTransaction,
   rebuildProfileSupport,
   validateRebuildTransaction,
 } from '../../js/rebuild/transaction-v2.js';
+import {
+  createFormatSafeRebuildTransaction,
+  validateFormatSafeMutation,
+} from '../../js/rebuild/format-safe.js';
 import { validatedCapabilityProofFixture } from './helpers/profile-proof-fixture.mjs';
 
 const { proofs: profileProofs } = validatedCapabilityProofFixture();
@@ -256,7 +263,7 @@ assert.equal((await publishRebuildTransaction(materialized, validation)).reason,
 assert.equal((await publishRebuildTransaction(materialized, validation, { atomicPromote: async () => ({ atomic: true }) })).reason, 'rebuild-v2-publication-not-atomic');
 assert.equal((await publishRebuildTransaction(materialized, validation, { atomicPromote: async () => ({ atomic: true, committed: true, protocol: 'unsafe-copy', publicationIdentity: 'x' }) })).reason, 'rebuild-v2-publication-protocol-invalid');
 assert.equal((await publishRebuildTransaction(materialized, validation, { atomicPromote: async () => ({ atomic: true, committed: true, protocol: 'transactional-store' }) })).reason, 'rebuild-v2-publication-identity-required');
-const publication = await publishRebuildTransaction(materialized, validation, { atomicPromote: async (_bytes, { materialized: publishedMaterialized }) => ({
+const publication = await publishRebuildTransaction(materialized, validation, { atomicPromote: async (bytes, { materialized: publishedMaterialized }) => ({
   atomic: true,
   committed: true,
   protocol: 'transactional-store',
@@ -264,11 +271,76 @@ const publication = await publishRebuildTransaction(materialized, validation, { 
   transactionId: publishedMaterialized.transactionId,
   outputHash: publishedMaterialized.outputHash,
   outputIdentity: publishedMaterialized.outputIdentity,
+  committedBytes: Uint8Array.from(bytes),
 }) });
 assert.equal(publication.status, 'published');
 assert.equal(publication.atomic, true);
 assert.equal(publication.committed, true);
 assert.equal(publication.outputIdentity, materialized.outputIdentity);
+const mutatingPromotion = await publishRebuildTransaction(materialized, validation, {
+  atomicPromote: async (bytes, { materialized: publishedMaterialized }) => {
+    assert.equal(Object.isFrozen(bytes), true);
+    const committedBytes = Uint8Array.from(bytes);
+    committedBytes[0] = 0xff;
+    return {
+      atomic: true, committed: true, protocol: 'transactional-store', publicationIdentity: 'mutated',
+      transactionId: publishedMaterialized.transactionId, outputHash: publishedMaterialized.outputHash,
+      outputIdentity: publishedMaterialized.outputIdentity, committedBytes,
+    };
+  },
+});
+assert.notEqual(mutatingPromotion.status, 'published');
+assert.equal((await publishRebuildTransaction(materialized, validation, {
+  atomicPromote: async (_bytes, { materialized: publishedMaterialized }) => ({
+    atomic: true, committed: true, protocol: 'transactional-store', publicationIdentity: 'unverifiable',
+    transactionId: publishedMaterialized.transactionId, outputHash: publishedMaterialized.outputHash,
+    outputIdentity: publishedMaterialized.outputIdentity,
+  }),
+})).reason, 'rebuild-v2-publication-bytes-unverifiable');
+
+const promotionAbort = new AbortController();
+assert.equal((await publishRebuildTransaction(materialized, validation, {
+  signal: promotionAbort.signal,
+  atomicPromote: async (bytes, { materialized: publishedMaterialized }) => {
+    promotionAbort.abort();
+    return {
+      atomic: true, committed: true, protocol: 'transactional-store', publicationIdentity: 'late',
+      transactionId: publishedMaterialized.transactionId, outputHash: publishedMaterialized.outputHash,
+      outputIdentity: publishedMaterialized.outputIdentity, committedBytes: Uint8Array.from(bytes),
+    };
+  },
+})).status, 'cancelled');
+const promotionPreAbort = new AbortController();
+promotionPreAbort.abort();
+let preAbortedPromotions = 0;
+assert.equal((await publishRebuildTransaction(materialized, validation, {
+  signal: promotionPreAbort.signal,
+  atomicPromote: async () => { preAbortedPromotions += 1; return null; },
+})).status, 'cancelled');
+assert.equal(preAbortedPromotions, 0);
+assert.equal((await publishRebuildTransaction(materialized, validation, {
+  timeoutMs: 0,
+  atomicPromote: async () => { preAbortedPromotions += 1; return null; },
+})).reason, 'rebuild-v2-publication-deadline-exceeded');
+assert.equal(preAbortedPromotions, 0);
+let promotionDeadlineObserved = false;
+const deadlinePromotion = await publishRebuildTransaction(materialized, validation, {
+  timeoutMs: 20,
+  atomicPromote: (bytes, { materialized: publishedMaterialized, signal }) => new Promise((resolve) => {
+    const keepAlive = setTimeout(() => resolve({ ok: false }), 1000);
+    signal.addEventListener('abort', () => {
+      clearTimeout(keepAlive);
+      promotionDeadlineObserved = true;
+      resolve({
+        atomic: true, committed: true, protocol: 'transactional-store', publicationIdentity: 'deadline',
+        transactionId: publishedMaterialized.transactionId, outputHash: publishedMaterialized.outputHash,
+        outputIdentity: publishedMaterialized.outputIdentity, committedBytes: Uint8Array.from(bytes),
+      });
+    }, { once: true });
+  }),
+});
+assert.equal(deadlinePromotion.reason, 'rebuild-v2-publication-deadline-exceeded');
+assert.equal(promotionDeadlineObserved, true);
 assert.equal((await publishRebuildTransaction(materialized, { ...validation, transactionId: 'rebuild-transaction:stale' }, { atomicPromote: async () => ({ atomic: true, committed: true, protocol: 'transactional-store', publicationIdentity: 'x' }) })).reason, 'rebuild-v2-validation-transaction-mismatch');
 assert.equal((await publishRebuildTransaction(materialized, validation, { atomicPromote: async (_bytes, { materialized: publishedMaterialized }) => ({
   atomic: true,
@@ -359,4 +431,97 @@ for (const format of ['macho', 'elf', 'pe']) {
 
 const stale = await materializeRebuildTransaction(transaction, Uint8Array.from([1, 7, 3, 4]));
 assert.equal(stale.reason, 'rebuild-v2-source-identity-mismatch');
+
+// X-03 production path: the format-safe transaction factory binds discovery,
+// and the canonical transaction validator derives output discovery internally
+// without accepting a test-owned loader-reparse artifact.
+const formatSource = new Uint8Array(readFileSync(new URL('../phase5/corpus/fixtures/vertical-sysv-amd64.elf', import.meta.url)));
+const formatView = new DataView(formatSource.buffer, formatSource.byteOffset, formatSource.byteLength);
+// Repair the fixture's deliberately overdeclared GNU symbol count so this
+// positive lane is parser-complete; the unmodified fixture is the negative lane.
+formatView.setUint32(660, 0, true);
+const sourceFunctionSymbol = 12328 + 8 * 24;
+const overlappingFunctionSymbol = 12328 + 7 * 24;
+formatSource.copyWithin(overlappingFunctionSymbol, sourceFunctionSymbol, sourceFunctionSymbol + 24);
+formatView.setBigUint64(overlappingFunctionSymbol + 8, 0x401008n, true);
+formatView.setBigUint64(overlappingFunctionSymbol + 16, 8n, true);
+const formatSourceHash = `bytes:${stableDigest(Array.from(formatSource))}`;
+const sourceDiscoveryArtifact = deriveCanonicalDiscoveryArtifact({
+  source: formatSource,
+  binaryId: 'binary:format-safe:x03',
+  sourceHash: formatSourceHash,
+  snapshotId: 'snapshot:format-safe:source',
+  format: 'elf',
+  architecture: 'x86_64',
+});
+const formatTransaction = createFormatSafeRebuildTransaction({
+  binaryId: 'binary:format-safe:x03',
+  source: formatSource,
+  sourceHash: formatSourceHash,
+  format: 'elf',
+  architecture: 'x86_64',
+  loaderVersion: 'loader:format-safe:x03',
+  mutation: { kind: 'elf-add-nobits-section', name: '.bss', size: 16, alignment: 8 },
+  discoveryArtifact: sourceDiscoveryArtifact,
+});
+assert.equal(formatTransaction.expectedOriginalState.discoveryBinding.artifactId, sourceDiscoveryArtifact.artifactId);
+const formatMaterialized = await materializeRebuildTransaction(formatTransaction, formatSource);
+assert.equal(formatMaterialized.status, 'materialized');
+const formatLoaderResult = {
+  ok: true,
+  format: 'elf',
+  architecture: 'x86_64',
+  loaderVersion: 'loader:format-safe:x03',
+  sourceHash: formatSourceHash,
+  outputHash: formatMaterialized.outputHash,
+};
+const syntheticDiscoveryValidation = await validateRebuildTransaction(formatTransaction, formatMaterialized, {
+  original: formatSource,
+  loaderReparse: () => ({ ...formatLoaderResult, discoveryArtifact: functionCandidates({ input: { image: {} } }).artifact }),
+  validators: { layout: validateFormatSafeMutation, 'format-invariants': validateFormatSafeMutation },
+});
+assert.equal(
+  syntheticDiscoveryValidation.validators.find((item) => item.validator === 'loader-reparse').status,
+  'passed',
+  'callback-authored discovery fields are ignored in favor of canonical output parsing',
+);
+const formatValidation = await validateRebuildTransaction(formatTransaction, formatMaterialized, {
+  original: formatSource,
+  loaderReparse: ({ output }) => ({ ...formatLoaderResult, ok: output === formatMaterialized.bytes }),
+  validators: { layout: validateFormatSafeMutation, 'format-invariants': validateFormatSafeMutation },
+});
+assert.equal(formatValidation.validators.find((item) => item.validator === 'loader-reparse').status, 'passed');
+const formatMissingDiscovery = await validateRebuildTransaction(formatTransaction, formatMaterialized, {
+  original: formatSource,
+  loaderReparse: () => ({ ...formatLoaderResult, discoveryArtifact: null }),
+  validators: { layout: validateFormatSafeMutation, 'format-invariants': validateFormatSafeMutation },
+});
+assert.equal(formatMissingDiscovery.validators.find((item) => item.validator === 'loader-reparse').status, 'passed');
+
+const unprovenSource = new Uint8Array(readFileSync(new URL('../phase12/rebuild/fixtures/vertical-macho-x86_64.o', import.meta.url)));
+const unprovenSourceHash = `bytes:${stableDigest(Array.from(unprovenSource))}`;
+const unprovenLayoutTransaction = createFormatSafeRebuildTransaction({
+  binaryId: 'binary:format-safe:x03:unproven',
+  source: unprovenSource,
+  sourceHash: unprovenSourceHash,
+  format: 'macho',
+  architecture: 'x86_64',
+  loaderVersion: 'loader:format-safe:x03',
+  mutation: { kind: 'macho-section-size', segment: '__TEXT', section: '__text', size: 80 },
+});
+assert.equal(unprovenLayoutTransaction.expectedOriginalState.discoveryStatus, 'unproven');
+const unprovenLayoutMaterialized = await materializeRebuildTransaction(unprovenLayoutTransaction, unprovenSource);
+const unprovenLayoutValidation = await validateRebuildTransaction(unprovenLayoutTransaction, unprovenLayoutMaterialized, {
+  original: unprovenSource,
+  loaderReparse: ({ output }) => ({
+    ok: output.length === unprovenSource.length,
+    format: 'macho', architecture: 'x86_64', loaderVersion: 'loader:format-safe:x03',
+    sourceHash: unprovenSourceHash, outputHash: unprovenLayoutMaterialized.outputHash,
+  }),
+  validators: { layout: validateFormatSafeMutation, 'format-invariants': validateFormatSafeMutation },
+});
+assert.equal(
+  unprovenLayoutValidation.validators.find((item) => item.validator === 'loader-reparse').reason,
+  'discovery-source-unproven',
+);
 console.log('[stage2] validated size-changing rebuild tests passed');

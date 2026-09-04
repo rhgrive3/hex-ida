@@ -1,0 +1,34 @@
+# Soundness Checklist
+
+- [x] Existing fusion remains the only function-discovery engine.
+- [x] Reference-only candidates cannot become exact.
+- [x] Losing/overlapping intervals remain present in collision sets.
+- [x] Code/data overlap does not silently become code or data.
+- [x] Collision members retain evidence and producer identity.
+- [x] Symbolic relocation expression survives the artifact and rebuild binding.
+- [x] Artifact identity covers status, binding, alternatives, and provenance.
+- [x] Incomplete or stale artifacts cannot create rebuild evidence.
+- [x] Reparse cannot silently drop collisions or references.
+- [x] Reparse source hash must match the materialized output hash.
+- [x] Caller-mutated candidate digest/evidence/exactness cannot publish.
+- [x] Invented name/extent/ownership and removed overlap conflicts cannot publish.
+- [x] A self-hashed non-factory artifact cannot cross rebuild or reparse consumers.
+- [x] Producer evidence and supplied-interval counts are exact and architecture-bound.
+- [x] Resource exhaustion is checked before quadratic collision work and fails closed.
+- [x] Resource defaults are hard ceilings and preflight does not invoke accessors.
+- [x] Input permutations preserve the full result and artifact identity.
+- [x] Typed identities preserve bigint/string, negative-zero/zero, and hole/null.
+- [x] An inner start-only candidate collides with its containing outer extent.
+- [x] Evidence and producer-result accessors contribute zero reads/facts.
+- [x] Raw canonical-authority strings cannot mint a trusted producer run.
+- [x] Format-safe rebuild/reparse performs discovery verification in production.
+- [x] Invalid, absent, and unmatched ToolRegistry claims are scrubbed.
+- [x] Partial-only unwind ranges cannot claim exact/complete extent authority.
+- [x] Caller/duplicate interval IDs cannot collide with canonical claims.
+- [x] Callback-authored artifacts cannot attest discovery reparse.
+- [x] Discovery-free fact-affecting transactions remain unproven and invalid.
+- [x] Candidate, page-envelope, nested-record, and backend-row getter reads are zero.
+- [x] The real clamped ELF dynamic-symbol fixture cannot mint complete discovery.
+- [x] Proxy meta traps cannot fabricate a complete search page.
+- [x] Mutated or unreadable committed bytes cannot mint publication authority.
+- [x] Aborted, expired, or budget-stopped validation/publication cannot finish late.
