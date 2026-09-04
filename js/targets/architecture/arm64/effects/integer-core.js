@@ -386,7 +386,8 @@ function liftConditionalSelect(ctx, ops, mnemonic, instruction) {
 }
 
 export function liftArm64IntegerEffects(instruction, options = {}) {
-  const mnemonic = String(instruction?.mnemonic || '').toLowerCase();
+  if (typeof instruction?.mnemonic !== 'string') return null;
+  const mnemonic = instruction.mnemonic.toLowerCase();
   if (!ARM64_INTEGER_EFFECT_MNEMONICS.has(mnemonic)) return null;
   const ctx = createArm64EffectContext(instruction, options);
   const ops = instruction?.ops || [];

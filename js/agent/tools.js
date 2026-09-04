@@ -193,8 +193,12 @@ function normalizeLocationSpec(field) {
   if (typeof field === 'object') {
     const out = {};
     if (field.key != null) {
-      out.key = String(field.key).trim();
-      if (!out.key) throw new AgentToolError('invalid-argument', 'field key must not be empty');
+      // A field key selects a Semantic Fact deterministically; a structured
+      // selector must not launder into a real field via String() coercion.
+      if (typeof field.key !== 'string' || !field.key.trim()) {
+        throw new AgentToolError('invalid-argument', 'field key must be a non-empty string');
+      }
+      out.key = field.key.trim();
     }
     if (field.offset != null) out.offset = parseInteger(field.offset, 'field.offset');
     if (field.address != null) out.address = requiredAddress(field.address, 'field.address');

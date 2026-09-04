@@ -2,11 +2,26 @@
   "schemaVersion": "phase12-ownership/v1",
   "phase": 12,
   "lanes": {
-    "p12-k": ["js/knowledge/phase12-**", "js/signature/phase12-**", "tests/phase12/knowledge/**"],
-    "p12-c": ["js/collaboration/**", "tests/phase12/collaboration/**"],
-    "p12-p": ["js/pattern/**", "tests/phase12/pattern/**"],
-    "p12-r": ["js/rebuild/**", "tests/phase12/rebuild/**"],
-    "p12-reviewer": ["tests/phase12/adversarial/**"],
+    "p12-k": [
+      "js/knowledge/phase12-**",
+      "js/signature/phase12-**",
+      "tests/phase12/knowledge/**"
+    ],
+    "p12-c": [
+      "js/collaboration/**",
+      "tests/phase12/collaboration/**"
+    ],
+    "p12-p": [
+      "js/pattern/**",
+      "tests/phase12/pattern/**"
+    ],
+    "p12-r": [
+      "js/rebuild/**",
+      "tests/phase12/rebuild/**"
+    ],
+    "p12-reviewer": [
+      "tests/phase12/adversarial/**"
+    ],
     "p12-integration": [
       "js/phase12/**",
       "tools/validation/phase12/**",
@@ -55,7 +70,52 @@
       "js/ai/dev/**",
       "tests/dev-agent/**",
       "js/program.js",
-      "tests/issue-2059-program-merge.mjs"
+      "tests/issue-2059-program-merge.mjs",
+      "js/app.js",
+      "js/agent/tools.js",
+      "js/metadata/rust.js",
+      "js/analysis/discovery/fusion.js",
+      "js/analysis/query/product-adapter.js",
+      "js/analysis/semantic-function.js",
+      "js/analysis/semantic-function-base.js",
+      "js/runtime/debugger-provider.js",
+      "js/runtime/evidence-bridge.js",
+      "js/runtime/trace-provider.js",
+      "js/symbolic/executor.js",
+      "js/symbolic/evidence/cache-policy.js",
+      "js/symbolic/expr/evaluate.js",
+      "js/symbolic/expr/factory.js",
+      "js/symbolic/expr/hash.js",
+      "js/symbolic/expr/serialize.js",
+      "js/symbolic/verify/global-reachability.js",
+      "js/targets/architecture/index.js",
+      "js/targets/architecture/arm64/effects/**",
+      "js/targets/architecture/arm64e/effects.js",
+      "js/targets/architecture/arm64e/encoding.js",
+      "tests/issues-unlinked-batch-20260901.mjs",
+      "tests/phase9/expr/hash-serialize.test.mjs",
+      ".github/workflows/phase7-ownership.yml",
+      "reports/phase11/**",
+      "tools/validation/phase11/**",
+      "js/adapters/index.js",
+      "js/address-provenance.js",
+      "js/ai/evidence.js",
+      "js/analysis/producer-wait.js",
+      "js/analyze.js",
+      "js/auto.js",
+      "js/blocks-base.js",
+      "js/core/artifacts/contracts.js",
+      "js/core/scheduler/analysis-scheduler.js",
+      "tests/issue-3195-producer-wait-abort-race.mjs",
+      "tests/issue-3215-phi-choice-evidence.mjs",
+      "tests/issue-3238-cache-policy-completeness.mjs",
+      "tests/issue-3245-bool-model-binding.mjs",
+      "tests/issues-unlinked-batch2-20260902.mjs",
+      "tests/phase9/verify/global-reachability.test.mjs",
+      "tests/compiler-truth/extended.mjs",
+      "tests/compiler-truth/language-matrix.mjs",
+      "tests/compiler-truth/run-core.mjs",
+      "tests/compiler-truth/run.mjs"
     ]
   },
   "contractPaths": [
@@ -98,10 +158,31 @@
     "scripts/userscript-classic-imports.mjs",
     "tests/userscript-importscripts-literals.mjs"
   ],
-  "generatedPaths": ["reports/phase12/**", "userscript/hex.user.template.js", "userscript/release-version.json", "js/userscript/deployment-identity.generated.js"],
-  "releaseOnlyPaths": ["reports/phase12/**"],
-  "forbiddenPaths": ["js/binary/**", "js/architecture/**", "main"],
-  "generatedWriteOwners": ["p12-integration"],
-  "releaseWriteOwners": ["p12-integration"],
-  "componentLanes": ["p12-k", "p12-c", "p12-p", "p12-r", "p12-reviewer"]
+  "generatedPaths": [
+    "reports/phase12/**",
+    "userscript/hex.user.template.js",
+    "userscript/release-version.json",
+    "js/userscript/deployment-identity.generated.js"
+  ],
+  "releaseOnlyPaths": [
+    "reports/phase12/**"
+  ],
+  "forbiddenPaths": [
+    "js/binary/**",
+    "js/architecture/**",
+    "main"
+  ],
+  "generatedWriteOwners": [
+    "p12-integration"
+  ],
+  "releaseWriteOwners": [
+    "p12-integration"
+  ],
+  "componentLanes": [
+    "p12-k",
+    "p12-c",
+    "p12-p",
+    "p12-r",
+    "p12-reviewer"
+  ]
 }

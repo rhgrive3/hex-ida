@@ -36,7 +36,8 @@ const FLOAT_FORMAT = Object.freeze({
 });
 
 function mnemonicOf(instruction) {
-  return String(instruction?.mnemonic || '').trim().toLowerCase();
+  if (typeof instruction?.mnemonic !== 'string') return '';
+  return instruction.mnemonic.trim().toLowerCase();
 }
 
 function operandsOf(instruction) {
@@ -94,8 +95,8 @@ function partial(instruction, context, reason, categories = ['registers','flags'
 }
 
 function scalarWidth(op) {
-  const bits = Number(op?.bits || 0);
-  return Number.isSafeInteger(bits) && bits > 0 ? bits : null;
+  const bits = op?.bits;
+  return typeof bits === 'number' && Number.isSafeInteger(bits) && bits > 0 ? bits : null;
 }
 
 function floatType(bits) {

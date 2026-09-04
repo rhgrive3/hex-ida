@@ -10,10 +10,12 @@ function evidenceAt(facts, row) {
 }
 
 function boundedOption(value, fallback, min, max = Infinity) {
+  /* #3189: explicit budgets must be finite primitive numbers. Structured
+     values (arrays/objects) and numeric strings must not gain budget
+     authority through Number coercion; they fail closed to the fallback. */
   if (value == null || value === '' || value === false) return fallback;
-  const n = Number(value);
-  if (!Number.isFinite(n)) return fallback;
-  return Math.floor(Math.max(min, Math.min(max, n)));
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.floor(Math.max(min, Math.min(max, value)));
 }
 
 function nodeOf(step, index, ir, facts, fn) {

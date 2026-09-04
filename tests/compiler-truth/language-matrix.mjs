@@ -4,7 +4,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { parseOperands } from '../../js/arm64.js';
-import { decompile } from '../../js/decompile.js';
+import { decompile } from './deterministic-decompile.mjs';
 import { semanticAbiAdapter } from '../../js/analysis/semantic-function.js';
 import { AAPCS64_ABI } from '../../js/targets/abi/index.js';
 import { evaluateExpression } from '../../js/decompiler/verify/equivalence.js';
@@ -116,6 +116,7 @@ function verifyClamp(asm, fn, baseAddress) {
     returnType:'int32',
     abiAdapter:compilerTruthAbiAdapter,
     decompilerTimeBudgetMs:120,
+    deterministicTransforms:true,
   });
   assert.ok(result?.semantic, `${fn}: semantic decompiler fallback`);
   assert.ok(result.semanticAst && result.cAst && result.sourceMap?.length, `${fn}: AST/source map missing`);

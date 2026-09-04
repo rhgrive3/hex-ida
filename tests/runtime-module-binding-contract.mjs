@@ -266,6 +266,47 @@ console.log("Testing RuntimeModuleBinding contract and trust rules...");
   console.log("  ok 18 proven module parity");
 }
 
+// 19. malformed refresh identities cannot collide with a legitimate sentinel-like string
+{
+  let modules = [{
+    id: "mod-refresh",
+    base: 0x5000n,
+    size: 0x1000n,
+    pathHint: "malformed:object",
+    binaryId: "bin_refresh",
+    identityState: "exact",
+  }];
+  const fakeAdapter = {
+    id: "stub-refresh",
+    kind: "debugger",
+    capabilities: { modules: true },
+    connected: false,
+    async connect() { this.connected = true; },
+    async disconnect() { this.connected = false; },
+    async getModules() { return modules; },
+  };
+  const provider = new DebuggerProvider(fakeAdapter);
+  const session = await provider.openSession({ binaryId: "bin_test" });
+  const before = session.modules.get("mod-refresh");
+  assert.equal(before.generation, 1);
+  assert.equal(before.pathHint, "malformed:object");
+
+  modules = [{
+    id: "mod-refresh",
+    base: 0x5000n,
+    size: 0x1000n,
+    pathHint: { malformed: true },
+    binaryId: "bin_refresh",
+    identityState: "exact",
+  }];
+  await session.facets.debugger.refreshModules();
+  const after = session.modules.get("mod-refresh");
+  assert.equal(after.generation, 2, "malformed structured identity must force refresh/revalidation");
+  assert.equal(after.pathHint, "[object Object]");
+  await session.close();
+  console.log("  ok 19 malformed refresh identity cannot alias legitimate string");
+}
+
 // Static guard
 {
   const files = [

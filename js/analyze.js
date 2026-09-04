@@ -7,6 +7,7 @@
  * 判定はすべて命令の並びからの推測で、証明ではない。断定的な言い方は避ける。
  */
 import { CHUNK_ROWS } from './backend.js';
+import { stableDigest, jsonSafe } from './core/identity/index.js';
 import { parseOperands, isCall, isReturn, categoryOf, referenceTarget } from './arm64.js';
 import { arm64EncodingWord } from './targets/architecture/arm64/encoding-word.js';
 import { pick } from './i18n.js';
@@ -163,7 +164,7 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
     const base = c * CHUNK_ROWS;
     const from = Math.max(startRow, base);
     const to = Math.min(end, base + CHUNK_ROWS - 1);
-    if (onProgress) onProgress((c - first + 1) / (last - first + 1));
+    if (typeof onProgress === 'function') onProgress((c - first + 1) / (last - first + 1));
 
     for (let row = from; row <= to; row++) {
       if ((row & 127) === 0) throwIfAborted(signal);
@@ -322,7 +323,15 @@ const textInflight = new Map();
 function cacheKey(region, startRow, endRow, symbols, maxRows = MAX_INSTRUCTIONS) {
   const symbolGen = symbols && symbols.gen != null ? symbols.gen : 0;
   const regionRevision = region?.revision ?? region?.gen ?? region?.generation ?? 0;
-  return [symbolGen, region?.id, String(region?.vmAddr ?? ''), String(region?.size ?? ''), regionRevision, startRow, endRow, 'rows=' + maxRows].join(':');
+  // Region identity is cache authority (#3311): structured values must not
+  // collide with their primitive lookalikes through String() coercion, or a
+  // malformed region would reuse another region's cached analysis.
+  const identityPart = (value) => {
+    if (value == null) return '';
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'bigint') return String(value);
+    try { return 'structured:' + stableDigest(jsonSafe(value)); } catch { return 'structured:opaque'; }
+  };
+  return [symbolGen, identityPart(region?.id), identityPart(region?.vmAddr), identityPart(region?.size), identityPart(regionRevision), startRow, endRow, 'rows=' + maxRows].join(':');
 }
 
 function makeShared(map, key, producer) {
@@ -404,7 +413,7 @@ export async function analyzeFunctionCached(backend, region, startRow, endRow, s
   const wantTexts = opts.texts !== false;
   let res = cache.get(key);
   if (res) {
-    if (onProgress) onProgress(1);
+    if (typeof onProgress === 'function') onProgress(1);
   } else {
     let entry = analysisInflight.get(key);
     if (!entry) {

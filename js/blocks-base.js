@@ -134,8 +134,8 @@ const PRECISE_API_TABLE = [
   { id:'swift_allocObject', re:/^_?swift_allocObject$/i, cat:'runtime', args:['metadata','size','align_mask'], ret:'object', effect:'alloc' },
 
   // POSIX/stdio file calls.
-  { id:'open', re:/^_?open$/i, cat:'io', args:['path','flags','mode'], variadic:true, ret:'handle', effect:'io' },
-  { id:'openat', re:/^_?openat$/i, cat:'io', args:['dirfd','path','flags','mode'], variadic:true, ret:'handle', effect:'io' },
+  { id:'open', re:/^_?open$/i, cat:'io', args:['path','flags'], variadic:true, ret:'handle', effect:'io' },
+  { id:'openat', re:/^_?openat$/i, cat:'io', args:['dirfd','path','flags'], variadic:true, ret:'handle', effect:'io' },
   { id:'fopen', re:/^_?fopen$/i, cat:'io', args:['path','mode'], ret:'handle', effect:'io' },
   { id:'fread', re:/^_?fread$/i, cat:'io', args:['ptr','size','count','stream'], ret:'count', effect:'io' },
   { id:'fwrite', re:/^_?fwrite$/i, cat:'io', args:['ptr','size','count','stream'], ret:'count', effect:'io' },

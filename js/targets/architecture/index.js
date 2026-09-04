@@ -11,7 +11,8 @@ import { riscv64RegisterFile } from './riscv64/registers.js';
 import { ArchitecturePluginV2, registerArchitecturePlugin, architecturePluginV2, architecturePluginsV2, canonicalArchitectureId, normalizeArchitecturePositiveInteger } from './registry.js';
 
 function arm64ControlFlow(instruction) {
-  const op = String(instruction?.mnemonic || '').toLowerCase();
+  const rawMnemonic = instruction?.mnemonic;
+  const op = typeof rawMnemonic === 'string' ? rawMnemonic.toLowerCase() : '';
   if (/^ret(?:aa|ab)?$/.test(op)) return 'return';
   if (/^(?:bl|blr|blraa|blrab|blraaz|blrabz)$/.test(op)) return 'call';
   if (/^(?:b|br|braa|brab|braaz|brabz)$/.test(op)) return 'branch';

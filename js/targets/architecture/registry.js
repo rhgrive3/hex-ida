@@ -1,6 +1,12 @@
 const ARCHITECTURES = new Map();
 
-export function canonicalArchitectureId(value) { return String(value || '').trim().toLowerCase(); }
+export function canonicalArchitectureId(value) {
+  /* #2788: architecture identity selects decoder/effects capability. Only real
+     strings may become a canonical id; arrays/objects with toString() must not
+     collide with a registered plugin identity. */
+  if (typeof value !== 'string') return '';
+  return value.trim().toLowerCase();
+}
 export function normalizeArchitecturePositiveInteger(value, name, { nullable = false } = {}) {
   if (nullable && value == null) return null;
   const n = Number(value);
