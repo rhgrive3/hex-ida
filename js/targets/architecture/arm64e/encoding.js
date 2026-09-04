@@ -1,7 +1,7 @@
 import { createMachineEffectBundle } from '../../../semantics/effects/index.js';
 
 const ARITY = Object.freeze(Object.fromEntries([
-  ...['pacia','pacib','pacda','pacdb','autia','autib','autda','autdb','braa','brab','blraa','blrab'].map((mnemonic) => [mnemonic, 2]),
+  ...['pacia','pacib','pacda','pacdb','autia','autib','autda','autdb','braa','brab','blraa','blrab','ldraa','ldrab'].map((mnemonic) => [mnemonic, 2]),
   ...['paciza','pacizb','pacdza','pacdzb','autiza','autizb','autdza','autdzb','xpaci','xpacd','braaz','brabz','blraaz','blrabz'].map((mnemonic) => [mnemonic, 1]),
   ...['paciasp','pacibsp','pacia1716','pacib1716','paciaz','pacibz','autiaz','autibz','autiasp','autibsp','autia1716','autib1716','xpaclri','retaa','retab','eretaa','eretab'].map((mnemonic) => [mnemonic, 0]),
   ['pacga', 3],
@@ -12,6 +12,7 @@ const POINTER_TRANSFORM_TWO = new Set(['pacia','pacib','pacda','pacdb','autia','
 const POINTER_TRANSFORM_ONE = new Set(['paciza','pacizb','pacdza','pacdzb','autiza','autizb','autdza','autdzb','xpaci','xpacd']);
 const AUTHENTICATED_BRANCH_TWO = new Set(['braa','brab','blraa','blrab']);
 const AUTHENTICATED_BRANCH_ONE = new Set(['braaz','brabz','blraaz','blrabz']);
+const AUTHENTICATED_LOAD = new Set(['ldraa','ldrab']);
 
 function mnemonicOf(decoded) {
   const raw = typeof decoded?.mnemonic === 'string' ? decoded.mnemonic : typeof decoded?.opcode === 'string' ? decoded.opcode : null;
@@ -93,6 +94,7 @@ function expectedRegisterClasses(mnemonic) {
   if (POINTER_TRANSFORM_ONE.has(mnemonic)) return ['x-or-zr'];
   if (AUTHENTICATED_BRANCH_TWO.has(mnemonic)) return ['x-or-zr','x-or-sp'];
   if (AUTHENTICATED_BRANCH_ONE.has(mnemonic)) return ['x-or-zr'];
+  if (AUTHENTICATED_LOAD.has(mnemonic)) return ['x-or-zr'];
   if (mnemonic === 'pacga') return ['x-or-zr','x-or-zr','x-or-sp'];
   return [];
 }
