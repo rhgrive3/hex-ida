@@ -34,8 +34,7 @@ function project(root, descriptor) {
     shell: false,
     encoding: 'utf8',
     timeout: descriptor.timeoutMs,
-    maxBuffer: 64 * 1024,
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio: 'ignore',
   });
   return {
     state: 'OBSERVED',

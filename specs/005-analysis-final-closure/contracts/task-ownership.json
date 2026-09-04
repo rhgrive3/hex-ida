@@ -30,7 +30,7 @@
         {"role": "registry", "path": "tools/validation/final-closure/shadow/foundation/registry.json", "sha256": "105ed35687d4b87347eed43f488a1ab7534607acb34036f3ef75922af49ae9d7"},
         {"role": "contracts", "path": "tools/validation/final-closure/shadow/foundation/contracts.json", "sha256": "0eec9ae4296d2371700dac92369d2ab54d27dea50fcb87cc14f850ae41092c3f"},
         {"role": "oracleProvider", "path": "tools/validation/final-closure/shadow/foundation/oracle-observer.mjs", "sha256": "2ea797c3947459e21466827239034d53ce25620c5d70f4609e188e5db083991a"},
-        {"role": "productProvider", "path": "tools/validation/final-closure/shadow/foundation/product-observer.mjs", "sha256": "0b84d5b30681a5a6fd46e25c0cc743f20c5f32686862f85a0a3db63b229858cd"}
+        {"role": "productProvider", "path": "tools/validation/final-closure/shadow/foundation/product-observer.mjs", "sha256": "04d70f70b3db14d1eda1ba469429af35befd674fcd0a2255112f69931c8d48e2"}
       ]
     },
     "tasks": {
@@ -887,6 +887,8 @@
     "T046": {
       "allowedPaths": [
         ".github/workflows/final-closure-preflight.yml",
+        ".github/workflows/phase11-release-validation.yml",
+        ".github/workflows/phase12-release-validation.yml",
         "tools/validation/final-closure/preflight.mjs",
         "tools/validation/final-closure/shadow/foundation/**",
         "tools/validation/phase11/ownership-check.mjs",

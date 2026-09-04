@@ -30,7 +30,14 @@ jobs:
         env:
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
           BASE_REF: ${{ github.event.pull_request.base.ref }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          BASE_REPOSITORY: ${{ github.event.pull_request.base.repo.full_name }}
+          TRUSTED_REPOSITORY: ${{ github.repository }}
         run: |
+          if [[ -z "$TRUSTED_REPOSITORY" || "$HEAD_REPOSITORY" != "$TRUSTED_REPOSITORY" || "$BASE_REPOSITORY" != "$TRUSTED_REPOSITORY" ]]; then
+            echo "final-closure PR repository identity is not authorized" >&2
+            exit 1
+          fi
           if [[ "$BASE_REF" == main && ( "$HEAD_REF" == recovery/final-closure-* || "$HEAD_REF" == analysis/final-closure-* ) ]]; then
             exit 0
           fi
@@ -41,7 +48,7 @@ jobs:
           exit 1
 
   integration-pull-request-head:
-    if: github.event_name == 'pull_request' && github.base_ref == 'main' && (startsWith(github.head_ref, 'recovery/final-closure-') || startsWith(github.head_ref, 'analysis/final-closure-'))
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.base.repo.full_name == github.repository && github.base_ref == 'main' && (startsWith(github.head_ref, 'recovery/final-closure-') || startsWith(github.head_ref, 'analysis/final-closure-'))
     needs: pull-request-authority
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -69,7 +76,7 @@ jobs:
         run: node tools/validation/final-closure/preflight.mjs --run-checkpoint-verification
 
   component-candidate-merge-tree:
-    if: github.event_name == 'pull_request' && startsWith(github.head_ref, 'component/final-closure-t') && (startsWith(github.base_ref, 'recovery/final-closure-') || startsWith(github.base_ref, 'analysis/final-closure-'))
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.base.repo.full_name == github.repository && startsWith(github.head_ref, 'component/final-closure-t') && (startsWith(github.base_ref, 'recovery/final-closure-') || startsWith(github.base_ref, 'analysis/final-closure-'))
     needs: pull-request-authority
     runs-on: ubuntu-latest
     timeout-minutes: 45

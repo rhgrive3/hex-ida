@@ -1,6 +1,6 @@
 # Implementation Plan: Recovery and Analysis Final Closure
 
-**Branch**: `recovery/final-closure-20260904` | **Date**: 2026-09-04 | **Spec**: [spec.md](./spec.md)
+**Branch**: `recovery/final-closure-v3-20260904` (PR #6611) | **Date**: 2026-09-04 | **Spec**: [spec.md](./spec.md)
 
 **Input**: Feature specification from `/specs/005-analysis-final-closure/spec.md`
 
@@ -92,7 +92,10 @@ No design-stage constitutional exception is present.
 | Recovery handoff head | `84d277a962515031c1bcc4eba0dca4c44c41f0b7` | The handoff document at this commit is the recovery inventory source. |
 | Handoff merge base | `0971c491bde06b3c939f0e26f319bcd70d12b706` | Recovery branch was 4 ahead and 1 behind at preflight. |
 | Original workspace | `main` with untracked `transcripts/` | Must remain untouched. |
-| Living integration workspace | `/teamspace/studios/this_studio/ida-245-recovery-final` | Sole combined-tree and generated-output owner. |
+| Living integration workspace | `/teamspace/studios/this_studio/ida-245-recovery-final-v3` | Sole combined-tree and generated-output owner. |
+| Current campaign PR | `#6611` on `recovery/final-closure-v3-20260904` | Head observed before repository-identity remediation: `9e5392cec076102efa87b1683b595c1795330c5e`; promotion always resolves the live PR head. |
+| Current code-certification checkpoint | `368137e4e913fef61d1f95eb66242d8c8c7ae0c9` | Code certification evidence for the current campaign; it does not replace exact-head/base/candidate proof. |
+| Superseded campaign PRs | `#6429`, `#6610` | Historical/closed evidence only; neither is the current branch or review authority. |
 
 All values above are observations from 2026-09-04, not permanent release
 identities. Tasks must update the durable evidence when any live value changes.

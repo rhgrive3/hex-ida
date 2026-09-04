@@ -68,6 +68,8 @@
   "setPolicy": "expectedChangedPaths, actualChangedPaths, unionChangedPaths, and entries[].path must be duplicate-free exact-equal sets",
   "expectedChangedPaths": [
     ".github/workflows/final-closure-preflight.yml",
+    ".github/workflows/phase11-release-validation.yml",
+    ".github/workflows/phase12-release-validation.yml",
     "package.json",
     "specs/005-analysis-final-closure/checklists/release-evidence.md",
     "specs/005-analysis-final-closure/checklists/requirements.md",
@@ -102,6 +104,8 @@
   ],
   "actualChangedPaths": [
     ".github/workflows/final-closure-preflight.yml",
+    ".github/workflows/phase11-release-validation.yml",
+    ".github/workflows/phase12-release-validation.yml",
     "package.json",
     "specs/005-analysis-final-closure/checklists/release-evidence.md",
     "specs/005-analysis-final-closure/checklists/requirements.md",
@@ -136,6 +140,8 @@
   ],
   "unionChangedPaths": [
     ".github/workflows/final-closure-preflight.yml",
+    ".github/workflows/phase11-release-validation.yml",
+    ".github/workflows/phase12-release-validation.yml",
     "package.json",
     "specs/005-analysis-final-closure/checklists/release-evidence.md",
     "specs/005-analysis-final-closure/checklists/requirements.md",
@@ -170,6 +176,8 @@
   ],
   "entries": [
     { "path": ".github/workflows/final-closure-preflight.yml", "ownerTaskId": "T046" },
+    { "path": ".github/workflows/phase11-release-validation.yml", "ownerTaskId": "T046" },
+    { "path": ".github/workflows/phase12-release-validation.yml", "ownerTaskId": "T046" },
     { "path": "package.json", "ownerTaskId": "T046" },
     { "path": "specs/005-analysis-final-closure/checklists/release-evidence.md", "ownerTaskId": "T007" },
     { "path": "specs/005-analysis-final-closure/checklists/requirements.md", "ownerTaskId": "T046" },

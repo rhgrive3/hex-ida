@@ -21,7 +21,7 @@ on:
       - "userscript/release-version.json"
       - "package.json"
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
     paths:
       - "js/managed/**"
       - "js/platform/capability-maturity.js"

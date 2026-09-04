@@ -35,6 +35,7 @@ import {
   emitShadowGateEvidence,
   executeRollingProductGates,
   hashDirectoryTree,
+  githubInvocationAuthority,
   localWorkspaceIdentity,
   localStageWorktreeIdentity,
   persistentRefSnapshot,
@@ -869,6 +870,85 @@ assertIncludes(
   'workflow-pull-request-authority-gate-missing',
   'a wrong-named PR targeting living integration must run a rejecting check rather than skip every job',
 );
+
+// Exercise repository provenance without constructing or fetching a Git candidate.
+const repositoryFixture = fs.mkdtempSync(path.join(os.tmpdir(), 'hex-pr-repository-'));
+try {
+  const eventPath = path.join(repositoryFixture, 'event.json');
+  const trustedRepository = 'fixture/final-closure';
+  const environment = {
+    GITHUB_ACTIONS: 'true',
+    GITHUB_EVENT_NAME: 'pull_request',
+    GITHUB_EVENT_PATH: eventPath,
+    GITHUB_REPOSITORY: trustedRepository,
+  };
+  const authorityJob = workflowText.split('  pull-request-authority:\n')[1]
+    .split('\n  integration-pull-request-head:')[0];
+  const authorityScript = authorityJob.split('        run: |\n')[1]
+    .split('\n').map((line) => line.replace(/^          /, '')).join('\n');
+  for (const [headRef, baseRef, mode] of [
+    ['recovery/final-closure-fixture', 'main', 'integration'],
+    ['component/final-closure-t011-fixture', 'recovery/final-closure-fixture', 'component'],
+  ]) {
+    const event = {
+      number: 1,
+      repository: { full_name: trustedRepository },
+      pull_request: {
+        head: { sha: shaA, ref: headRef, repo: { full_name: trustedRepository } },
+        base: { sha: shaB, ref: baseRef, repo: { full_name: trustedRepository } },
+      },
+    };
+    fs.writeFileSync(eventPath, JSON.stringify(event));
+    assert.equal(githubInvocationAuthority(environment).mode, mode);
+    for (const [field, repository] of [['head', 'other/final-closure'], ['base', null]]) {
+      const invalid = structuredClone(event);
+      invalid.pull_request[field].repo = repository == null ? null : { full_name: repository };
+      fs.writeFileSync(eventPath, JSON.stringify(invalid));
+      assert.throws(() => githubInvocationAuthority(environment), /github-event-repository-not-authorized/);
+    }
+    fs.writeFileSync(eventPath, JSON.stringify({ ...event, repository: null }));
+    assert.throws(() => githubInvocationAuthority(environment), /github-event-repository-not-authorized/);
+    fs.writeFileSync(eventPath, JSON.stringify(event));
+    assert.throws(() => githubInvocationAuthority({ ...environment, GITHUB_REPOSITORY: '' }), /github-event-repository-not-authorized/);
+    for (const headRepository of [trustedRepository, 'other/final-closure', '']) {
+      const child = spawnSync('bash', ['-c', authorityScript], {
+        encoding: 'utf8', timeout: 5000,
+        env: { ...process.env, HEAD_REF: headRef, BASE_REF: baseRef,
+          HEAD_REPOSITORY: headRepository, BASE_REPOSITORY: trustedRepository,
+          TRUSTED_REPOSITORY: trustedRepository },
+      });
+      assert.equal(child.status, headRepository === trustedRepository ? 0 : 1, child.stderr);
+    }
+  }
+} finally {
+  fs.rmSync(repositoryFixture, { recursive: true, force: true });
+}
+
+const noisyProjectionRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hex-shadow-output-'));
+try {
+  fs.writeFileSync(path.join(noisyProjectionRoot, 'projection.mjs'),
+    'process.stdout.write("x".repeat(131072)); process.stderr.write("y".repeat(131072)); process.exitCode = Number(process.argv[2]);\n');
+  for (const exitCode of [0, 7]) {
+    const contract = {
+      schemaVersion: 'hex-final-closure-shadow-contract/v1',
+      taskId: 'T016', gateId: 't016-independent-verifier', activationRequired: false,
+      cases: [{ id: 'noisy-projection',
+        projection: { kind: 'process-exit-v1', argv: ['node', 'projection.mjs', String(exitCode)], timeoutMs: 5000 },
+        oracleObservation: { exitCode: 0, signal: null, errorCode: null },
+      }],
+    };
+    const child = spawnSync(process.execPath, [
+      path.resolve('tools/validation/final-closure/shadow/foundation/product-observer.mjs'),
+      '--task', 'T016', '--gate', 't016-independent-verifier',
+    ], { cwd: noisyProjectionRoot, input: JSON.stringify(contract), encoding: 'utf8', timeout: 10000 });
+    assert.equal(child.status, 0, child.stderr);
+    assert.deepEqual(JSON.parse(child.stdout).observations[0].value,
+      { exitCode, signal: null, errorCode: null },
+      'discarded projection output must not replace the actual exit verdict');
+  }
+} finally {
+  fs.rmSync(noisyProjectionRoot, { recursive: true, force: true });
+}
 
 const mutableActions = workflowText
   .replaceAll('actions/checkout@11d5960a326750d5838078e36cf38b85af677262', 'actions/checkout@v4')
@@ -3043,15 +3123,17 @@ function componentEnvironment(fixture, {
 } = {}) {
   fs.writeFileSync(fixture.eventPath, JSON.stringify({
     number,
+    repository: { full_name: 'fixture/final-closure' },
     pull_request: {
-      head: { sha: headSha, ref: headRef },
-      base: { sha: baseSha, ref: baseRef },
+      head: { sha: headSha, ref: headRef, repo: { full_name: 'fixture/final-closure' } },
+      base: { sha: baseSha, ref: baseRef, repo: { full_name: 'fixture/final-closure' } },
     },
   }));
   return {
     GITHUB_ACTIONS: 'true',
     GITHUB_EVENT_NAME: 'pull_request',
     GITHUB_EVENT_PATH: fixture.eventPath,
+    GITHUB_REPOSITORY: 'fixture/final-closure',
   };
 }
 
@@ -3179,15 +3261,17 @@ try {
   const eventPath = path.join(operational.sandbox, 'pull-request-event.json');
   fs.writeFileSync(eventPath, JSON.stringify({
     number: 7,
+    repository: { full_name: 'fixture/final-closure' },
     pull_request: {
-      head: { sha: operational.headSha, ref: operational.inventory.integrationRef },
-      base: { sha: operational.baseSha, ref: 'main' },
+      head: { sha: operational.headSha, ref: operational.inventory.integrationRef, repo: { full_name: 'fixture/final-closure' } },
+      base: { sha: operational.baseSha, ref: 'main', repo: { full_name: 'fixture/final-closure' } },
     },
   }));
   const githubEnvironment = {
     GITHUB_ACTIONS: 'true',
     GITHUB_EVENT_NAME: 'pull_request',
     GITHUB_EVENT_PATH: eventPath,
+    GITHUB_REPOSITORY: 'fixture/final-closure',
   };
   const eventReport = runPreflight({ root: operational.candidate, environment: githubEnvironment });
   assert.equal(eventReport.invocationIdentity.headSha, operational.headSha);

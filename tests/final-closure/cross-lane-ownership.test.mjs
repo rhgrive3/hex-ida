@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 import {
   githubEvent as phase11GithubEvent,
@@ -23,12 +24,51 @@ import {
   runOwnership,
 } from '../../tools/validation/phase12/ownership.mjs';
 
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+const CROSS_LANE_REPOSITORY = 'fixture/final-closure';
+
 const crossLaneEvent = {
+  repository: { full_name: CROSS_LANE_REPOSITORY },
   pull_request: {
-    head: { ref: 'recovery/final-closure-test' },
-    base: { ref: 'main' },
+    head: { ref: 'recovery/final-closure-test', repo: { full_name: CROSS_LANE_REPOSITORY } },
+    base: { ref: 'main', repo: { full_name: CROSS_LANE_REPOSITORY } },
     labels: [{ name: 'cross-lane-integration' }],
   },
+};
+const missingRepositoryEvent = {
+  pull_request: crossLaneEvent.pull_request,
+};
+const missingHeadRepositoryEvent = {
+  ...crossLaneEvent,
+  pull_request: {
+    ...crossLaneEvent.pull_request,
+    head: { ref: crossLaneEvent.pull_request.head.ref },
+  },
+};
+const missingBaseRepositoryEvent = {
+  ...crossLaneEvent,
+  pull_request: {
+    ...crossLaneEvent.pull_request,
+    base: { ref: crossLaneEvent.pull_request.base.ref },
+  },
+};
+const forkHeadEvent = {
+  ...crossLaneEvent,
+  pull_request: {
+    ...crossLaneEvent.pull_request,
+    head: { ...crossLaneEvent.pull_request.head, repo: { full_name: 'fork/final-closure' } },
+  },
+};
+const forkBaseEvent = {
+  ...crossLaneEvent,
+  pull_request: {
+    ...crossLaneEvent.pull_request,
+    base: { ...crossLaneEvent.pull_request.base, repo: { full_name: 'fork/final-closure' } },
+  },
+};
+const mismatchedRepositoryEvent = {
+  ...crossLaneEvent,
+  repository: { full_name: 'other/final-closure' },
 };
 const missingLabelEvent = { pull_request: {} };
 const wrongLabelEvent = { pull_request: { labels: [{ name: 'integration' }] } };
@@ -58,6 +98,24 @@ const wrongBaseEvent = {
 
 for (const predicate of [phase11CrossLaneIntegration, phase12CrossLaneIntegration]) {
   assert.equal(predicate(crossLaneEvent), true, 'the exact cross-lane label must opt in');
+  const removedLabel = {
+    ...crossLaneEvent,
+    pull_request: { ...crossLaneEvent.pull_request, labels: [] },
+  };
+  assert.equal(predicate(removedLabel), false, 'label removal must revoke a previously authorized repository and branch');
+  assert.equal(predicate({ ...removedLabel, pull_request: {
+    ...removedLabel.pull_request, labels: [{ name: 'cross-lane-integration' }],
+  } }), true, 'label addition must authorize the next event for the same repository and branch');
+  for (const [description, event] of [
+    ['missing event repository must not opt in', missingRepositoryEvent],
+    ['missing head repository must not opt in', missingHeadRepositoryEvent],
+    ['missing base repository must not opt in', missingBaseRepositoryEvent],
+    ['fork head repository must not opt in', forkHeadEvent],
+    ['fork base repository must not opt in', forkBaseEvent],
+    ['mismatched event repository must not opt in', mismatchedRepositoryEvent],
+  ]) {
+    assert.equal(predicate(event), false, description);
+  }
   assert.equal(predicate(missingLabelEvent), false, 'a missing label must not opt in');
   assert.equal(predicate(wrongLabelEvent), false, 'a different label must not opt in');
   assert.equal(predicate(malformedLabelEvent), false, 'malformed labels must fail closed');
@@ -66,6 +124,19 @@ for (const predicate of [phase11CrossLaneIntegration, phase12CrossLaneIntegratio
   assert.equal(predicate(componentBranchEvent), false, 'a component PR must retain its component ownership boundary');
   assert.equal(predicate(wrongBaseEvent), false, 'a final-closure head targeting a non-main base must fail closed');
   assert.equal(predicate(null), false, 'a missing event must fail closed');
+}
+
+for (const [phase, workflow, expectedTypes] of [
+  ['Phase 11', fs.readFileSync(path.join(ROOT, '.github/workflows/phase11-release-validation.yml'), 'utf8'), 'opened, synchronize, reopened, ready_for_review, labeled, unlabeled'],
+  ['Phase 12', fs.readFileSync(path.join(ROOT, '.github/workflows/phase12-release-validation.yml'), 'utf8'), 'opened, synchronize, reopened, labeled, unlabeled'],
+]) {
+  const pullRequestTrigger = workflow.slice(
+    workflow.indexOf('  pull_request:'),
+    workflow.indexOf('  workflow_dispatch:'),
+  );
+  assert.ok(pullRequestTrigger.includes(`types: [${expectedTypes}]`), `${phase} must rerun on label changes`);
+  assert.match(pullRequestTrigger, /paths:/, `${phase} must preserve its pull-request path filter`);
+  assert.match(workflow, /cancel-in-progress:\s*true/, `${phase} must cancel stale label-event runs`);
 }
 
 const validNameStatus = Buffer.from('M\0owned/file.js\0R100\0old/name.js\0new/name.js\0');

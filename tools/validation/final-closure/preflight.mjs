@@ -91,7 +91,7 @@ const RECOVERY_HANDOFF_CANONICAL_REMOTE_REF = 'refs/remotes/origin/wip/recovery-
 const RECOVERY_HANDOFF_SCRATCH_REMOTE_REF = 'refs/remotes/origin/__final_closure_recovery_handoff';
 const RECOVERY_HANDOFF_FETCH_REF = 'refs/heads/wip/recovery-handoff-20260904';
 const FOUNDATION_TASK_COUNT = 57;
-const EXPECTED_WORKFLOW_SHA256 = '82b305894cd89c9f83f9f0ae274787b1662018dfcf69b872fcc7ffd9b2e22953';
+const EXPECTED_WORKFLOW_SHA256 = '18177a2e78bab81bf1aed9a681349235592bb0e52efedee292851717a485cfcd';
 const STAGE_A_COMPONENT_TASK_IDS = Object.freeze([
   'T011', 'T012', 'T013', 'T014', 'T015', 'T016', 'T017',
   'T051', 'T052', 'T053', 'T054', 'T055', 'T056', 'T057',
@@ -131,7 +131,7 @@ const STAGE_B_ROADMAP_STATUSES = Object.freeze([
 const STAGE_B_IMPLEMENTATION_ACTIONS = Object.freeze([
   'IMPLEMENT', 'NO_EDIT', 'NO_EDIT_EXTERNAL_BLOCK', 'RECONCILE_OWNER',
 ]);
-export const FROZEN_INITIAL_CANDIDATE_GATE_DIGEST = '128a52dae6eab6f63831dc854c76b623';
+export const FROZEN_INITIAL_CANDIDATE_GATE_DIGEST = 'fe5daeb553fca7c47f4f229b24d064a1';
 
 export const EXPECTED_TASK_IDS = Object.freeze(
   Array.from({ length: FOUNDATION_TASK_COUNT }, (_, index) => `T${String(index + 1).padStart(3, '0')}`),
@@ -206,7 +206,7 @@ export const FROZEN_PERFORMANCE_IDENTITIES = Object.freeze({
   sources: '750b59ecc3d34d6d54e691d8f2396dde',
 });
 
-export const FROZEN_FOUNDATION_OWNERSHIP_DIGEST = 'd32bee250ca67c9264599f7b9d6ec341';
+export const FROZEN_FOUNDATION_OWNERSHIP_DIGEST = '17c869290b57aef76a1ee1d68ea32338';
 
 const REQUIRED_TASK_FIELDS = Object.freeze([
   'Objective:',
@@ -3296,7 +3296,7 @@ function componentTaskId(value) {
   return match ? match[1].toUpperCase() : null;
 }
 
-function githubInvocationAuthority(environment) {
+export function githubInvocationAuthority(environment) {
   if (environment?.GITHUB_ACTIONS !== 'true') return null;
   const eventName = environment.GITHUB_EVENT_NAME;
   const eventPath = environment.GITHUB_EVENT_PATH;
@@ -3309,6 +3309,14 @@ function githubInvocationAuthority(environment) {
   }
 
   if (eventName === 'pull_request') {
+    const repository = environment.GITHUB_REPOSITORY;
+    if (typeof repository !== 'string'
+      || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)
+      || event?.repository?.full_name !== repository
+      || event?.pull_request?.head?.repo?.full_name !== repository
+      || event?.pull_request?.base?.repo?.full_name !== repository) {
+      throw new Error('github-event-repository-not-authorized');
+    }
     const headSha = event?.pull_request?.head?.sha;
     const baseSha = event?.pull_request?.base?.sha;
     const headRef = event?.pull_request?.head?.ref;
@@ -3323,6 +3331,7 @@ function githubInvocationAuthority(environment) {
       return Object.freeze({
         eventName,
         mode: 'integration',
+        repository,
         headSha,
         baseSha,
         headRef,
@@ -3335,6 +3344,7 @@ function githubInvocationAuthority(environment) {
       return Object.freeze({
         eventName,
         mode: 'component',
+        repository,
         headSha,
         baseSha,
         headRef,

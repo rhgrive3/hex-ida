@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 export const MANIFEST_PATH = path.join(ROOT, 'tools/validation/phase12/ownership.json');
 const CROSS_LANE_LABEL = 'cross-lane-integration';
+const REPOSITORY_NAME = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 
 export function loadManifest(file = MANIFEST_PATH) {
   return JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -24,6 +25,7 @@ export function githubEvent({
 export function phase12CrossLaneIntegration(event) {
   const pullRequest = event?.pull_request;
   const labels = pullRequest?.labels;
+  const repository = event?.repository?.full_name;
   const headRef = pullRequest?.head?.ref;
   const baseRef = pullRequest?.base?.ref;
   const integrationHead = /^(?:recovery|analysis)\/final-closure-[a-z0-9][a-z0-9._/-]*$/.test(
@@ -33,6 +35,10 @@ export function phase12CrossLaneIntegration(event) {
     && !String(headRef).endsWith('/');
   return baseRef === 'main'
     && integrationHead
+    && typeof repository === 'string'
+    && REPOSITORY_NAME.test(repository)
+    && pullRequest?.head?.repo?.full_name === repository
+    && pullRequest?.base?.repo?.full_name === repository
     && Array.isArray(labels)
     && labels.some((label) => label?.name === CROSS_LANE_LABEL);
 }
