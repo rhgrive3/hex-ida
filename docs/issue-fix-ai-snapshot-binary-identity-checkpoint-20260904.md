@@ -24,7 +24,7 @@ merge stage.
 - [x] Added primitive non-empty hash validation and strict explicit identity field validation.
 - [x] Focused regression, `ai-control-plane`, `ai-scope-hardening`, and lint passed.
 - [x] `npm run ai:test` passed after installing the lockfile dependencies (`npm ci --no-audit --no-fund`).
-- [x] Phase 12 reached 21/22 existing tests plus the new regression before the known pristine-main denominator failure; the same failure reproduces on pristine `origin/main`.
+- [x] Phase 12 passed all non-denominator tests; the one denominator failure reproduces on pristine `origin/main` and is unrelated to this lane.
 - [ ] Create one owner PR for #6241 and record exact-head candidate evidence.
 - [ ] Merge only after exact-head evidence and required checks are green; otherwise record the blocker here and on the board.
 
