@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { stableDigest } from '../../../js/core/identity/index.js';
 import {
   RemoteCollaborationGate,
   createRemoteCollaborationEnvelope,
@@ -109,6 +110,58 @@ assert.equal(canonicalGate.projectIdentity, 'project:strict');
 assert.equal(canonicalGate.binaryIdentity, 'binary:strict');
 assert.equal(canonicalGate.sessionIdentity, 'session:strict');
 assert.equal(canonicalGate.transportVerifierIdentity, 'transport:strict');
+
+const secureEnvelope = createRemoteCollaborationEnvelope({
+  ...envelopeBase,
+  transportProof: {
+    authenticated: true,
+    confidentiality: 'verified',
+    integrity: 'verified',
+    proofIdentity: 'proof:strict',
+  },
+  egress: {
+    userAuthorized: true,
+    rawBinaryBytes: false,
+    derivedDataOnly: true,
+  },
+});
+
+function forgeRawIdentity(field, value) {
+  const operation = { ...secureEnvelope.operations[0] };
+  if (field === 'projectIdentity') operation.projectIdentity = value;
+  if (field === 'binaryIdentity') operation.binaryIdentity = value;
+  if (field === 'actorIdentity') operation.authorIdentity = value;
+  if (field === 'deviceIdentity') operation.deviceIdentity = value;
+  const raw = { ...secureEnvelope, [field]: value, operations: [operation] };
+  const { envelopeId: _discardedEnvelopeId, ...payload } = raw;
+  return { ...payload, envelopeId: `remote-envelope:${stableDigest(payload)}` };
+}
+
+const rawGate = new RemoteCollaborationGate(gateBase);
+for (const [field, value, reason] of [
+  ['projectIdentity', ['project:strict'], 'remote-project-identity-required'],
+  ['binaryIdentity', ['binary:strict'], 'remote-binary-identity-invalid'],
+  ['sessionIdentity', ['session:strict'], 'remote-session-identity-required'],
+  ['actorIdentity', ['alice'], 'remote-actor-identity-required'],
+  ['deviceIdentity', ['device:alice'], 'remote-device-identity-required'],
+  ['messageId', ['message:strict'], 'remote-message-id-required'],
+]) {
+  assert.deepEqual(
+    rawGate.validate(forgeRawIdentity(field, value)),
+    { ok: false, reason },
+    `${field} must reject structured raw authority identity before authorization`,
+  );
+  assert.deepEqual(
+    rawGate.validate(forgeRawIdentity(field, '   ')),
+    { ok: false, reason },
+    `${field} must reject blank raw authority identity`,
+  );
+}
+assert.deepEqual(
+  rawGate.validate(secureEnvelope),
+  { ok: true },
+  'canonical primitive-string envelope must remain valid',
+);
 
 assert.throws(
   () => canonicalGate.revoke(['alice']),
