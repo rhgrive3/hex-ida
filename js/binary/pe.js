@@ -161,6 +161,16 @@ export function parsePE(input, options = {}) {
     const flags = r.u32(p + 36);
     const address = imageBase + BigInt(virtualAddress);
     const virtualExtent = BigInt(virtualSize || sizeRaw);
+    // Section virtual ranges live inside the 32-bit RVA domain and inside the
+    // declared SizeOfImage; BigInt arithmetic would otherwise happily map a
+    // section past 2^32 that no PE image can express (#6097). Keep the raw
+    // header facts, but do not promote such a section to canonical mapping.
+    const startRva = BigInt(virtualAddress);
+    const endRva = startRva + virtualExtent;
+    const rvaLimit = 1n << 32n;
+    const beyondRvaDomain = endRva > rvaLimit;
+    const beyondSizeOfImage = endRva > BigInt(sizeOfImage);
+    const virtualRangeInvalid = beyondRvaDomain || beyondSizeOfImage;
     const rawMapping = windowsImageSectionRawMapping(ptrRaw);
     const rawSize = windowsImageSectionRawSize(sizeRaw, fileAlignment, sectionAlignment);
     const availableFileBytes = rawMapping.fileBacked ? Math.max(0, bytes.length - rawMapping.effectiveFileOffset) : 0;
@@ -202,6 +212,19 @@ export function parsePE(input, options = {}) {
       image.warnings.push(`PE section ${name || `#${i + 1}`} raw mapping is truncated: 0x${rawAvailableNumber.toString(16)} of 0x${rawSize.effectiveRawSize.toString(16)} bytes are available`);
     }
     const effectiveFileOffset = BigInt(rawMapping.effectiveFileOffset);
+    if (virtualRangeInvalid) {
+      const reason = beyondRvaDomain ? 'pe:section-virtual-range-rva-overflow' : 'pe:section-virtual-range-exceeds-size-of-image';
+      image.metadata.peMetadata ||= { complete: true, reasons: [] };
+      image.metadata.peMetadata.complete = false;
+      if (!image.metadata.peMetadata.reasons.includes(reason)) image.metadata.peMetadata.reasons.push(reason);
+      image.metadata.peSectionsWithInvalidVirtualRange ||= [];
+      image.metadata.peSectionsWithInvalidVirtualRange.push({
+        sectionIndex: i + 1, name, virtualAddress, virtualSize, sizeOfImage,
+        endRva: endRva.toString(), beyondRvaDomain, beyondSizeOfImage,
+      });
+      image.warnings.push(`PE section ${name || `#${i + 1}`} virtual range RVA 0x${virtualAddress.toString(16)}+0x${virtualExtent.toString(16)} exceeds ${beyondRvaDomain ? 'the 32-bit RVA domain' : `SizeOfImage 0x${sizeOfImage.toString(16)}`}; excluded from canonical mapping`);
+      continue;
+    }
     image.addSegment({ name, address, size: virtualExtent, fileOffset: effectiveFileOffset, fileSize: mappedFileSize, perms, flags, source: 'PE-section' });
     image.addSection({ name, address, size: virtualExtent, fileOffset: effectiveFileOffset, fileSize: mappedFileSize, perms, flags, type: null, index: i + 1, source: 'PE-section' });
   }
