@@ -422,7 +422,7 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
     const source = complete ? 'abi-rule' : 'unknown-call-fallback';
     const readOk = applyScope({ node, scope: node.call?.memoryRead, resolveRegion, into: memoryReadRegions, source });
     const writeOk = applyScope({ node, scope: node.call?.memoryWrite, resolveRegion, into: memoryWriteRegions, source });
-    const nonExhaustiveTargets = !targetProof.exhaustive;
+    const nonExhaustiveTargets = targetProof.kind !== 'unknown' && !targetProof.exhaustive;
     const nonExhaustiveIndirect = targetProof.kind === 'indirect' && nonExhaustiveTargets;
 
     if (!complete || !readOk || !writeOk || nonExhaustiveTargets) {
