@@ -25,9 +25,17 @@ function text(value, code, { empty = false } = {}) {
 }
 
 function detailStatusOf(value, detailAvailable) {
-  const status = value == null ? (detailAvailable === true ? 'complete' : 'unavailable') : value;
+  if (value == null) return detailAvailable === true ? 'complete' : 'unavailable';
+  const status = value;
   if (typeof status !== 'string' || !DETAIL_STATUSES.has(status)) {
     throw new TypeError('x86-decoded-instruction-invalid-detail-status');
+  }
+  // detailStatus is the single authority, but an explicitly passed boolean
+  // detailAvailable that contradicts it is malformed evidence, not a default
+  // to override: complete/true and unavailable/false are the only coherent
+  // pairs (non-complete statuses imply unavailable detail).
+  if (typeof detailAvailable === 'boolean' && (detailAvailable === true) !== (status === 'complete')) {
+    throw new TypeError('x86-decoded-instruction-detail-availability-contradiction');
   }
   return status;
 }
