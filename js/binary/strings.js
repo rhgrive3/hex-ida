@@ -32,6 +32,10 @@ function finiteOption(value,fallback){
   const candidate=value===0?0:(value||fallback), n=Number(candidate);
   return Number.isFinite(n)?n:fallback;
 }
+function resultLimitOption(value){
+  const raw=typeof value==='number'&&Number.isFinite(value)?value:200_000;
+  return Math.max(1,Math.min(1_000_000,Math.floor(raw)));
+}
 function chooseUtf16Encodings(image,option){
   if(option===false) return [];
   if(option==='be'||option==='utf16be'||option==='utf-16be') return ['utf16be'];
@@ -42,15 +46,16 @@ function chooseUtf16Encodings(image,option){
 
 export function scanStrings(image, opts = {}) {
   const min=Math.max(2,finiteOption(opts.minLength,4)), max=Math.max(min,finiteOption(opts.maxLength,4096));
-  const utf16Encodings=chooseUtf16Encodings(image,opts.utf16), includeExecutable=opts.includeExecutable===true;
+  const limit=resultLimitOption(opts.limit), utf16Encodings=chooseUtf16Encodings(image,opts.utf16), includeExecutable=opts.includeExecutable===true;
   const bytes=image.bytes; if(!bytes) return [];
   const ranges=[];
   if(image.sections.length){ for(const x of image.sections){ if(!x.fileSize) continue; if(!includeExecutable&&x.perms&&x.perms.execute) continue; ranges.push({start:Number(x.fileOffset),size:Number(x.fileSize),section:x.name}); } }
   else ranges.push({start:0,size:bytes.length,section:null});
   const out=[], seen=new Set();
   for(const range of ranges){
+    if(out.length>=limit) break;
     const start=Math.max(0,range.start), end=Math.min(bytes.length,start+Math.max(0,range.size));
-    for(let p=start;p<end;){
+    for(let p=start;p<end&&out.length<limit;){
       const first=utf8At(bytes,p,end); if(!first||!printableCodePoint(first.cp)){p++;continue;}
       const s=p; let q=p, chars=0;
       while(q<end&&chars<max){ const x=utf8At(bytes,q,end); if(!x||!printableCodePoint(x.cp)) break; q+=x.bytes; chars++; }
@@ -58,10 +63,11 @@ export function scanStrings(image, opts = {}) {
       p=Math.max(chars>=max?q:q+(q<end?1:0),p+1);
     }
     for(const encoding of utf16Encodings){
+      if(out.length>=limit) break;
       const be=encoding==='utf16be';
-      for(let parity=0;parity<2;parity++){
+      for(let parity=0;parity<2&&out.length<limit;parity++){
         let p=start + ((parity - (start & 1) + 2) & 1);
-        while(p+1<end){
+        while(p+1<end&&out.length<limit){
           const first=utf16At(bytes,p,end,be); if(!first||!printableCodePoint(first.cp)){p+=2;continue;}
           const s=p; let q=p, chars=0;
           while(q+1<end&&chars<max){ const x=utf16At(bytes,q,end,be); if(!x||!printableCodePoint(x.cp)) break; q+=x.bytes; chars++; }
