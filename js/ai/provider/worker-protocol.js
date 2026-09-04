@@ -119,9 +119,13 @@ export function normalizeCurrentFunction(value) {
   const address = boundedText(value.address, 80).trim(), assembly = boundedText(value.assembly, 120000).trim();
   if (!address || !assembly) throw new HttpError(422, 'missing_function', 'Current function address and assembly are required.');
   const rawMeta = isObject(value.assemblyMeta) ? value.assemblyMeta : {};
-  const nonNegativeInt = (v, fallback = 0) => { const n = Number(v); return Number.isFinite(n) && n >= 0 ? Math.floor(n) : fallback; };
+  // assemblyMeta counts are truncation/completeness evidence authority for the
+  // legacy system prompt. Only primitive safe non-negative integers may become
+  // canonical counts: Number() would launder ['100'] → 100, '100' → 100 and
+  // true/false → 1/0 into that authority (#6167).
+  const nonNegativeInt = (v, fallback = 0) => (typeof v === 'number' && Number.isSafeInteger(v) && v >= 0 ? v : fallback);
   const totalInstructions = nonNegativeInt(rawMeta.totalInstructions), includedInstructions = nonNegativeInt(rawMeta.includedInstructions);
-  return { address, name: boundedText(value.name, 500).trim() || null, assembly, assemblyMeta: { totalInstructions, includedInstructions, startRow: rawMeta.startRow == null ? null : nonNegativeInt(rawMeta.startRow), endRow: rawMeta.endRow == null ? null : nonNegativeInt(rawMeta.endRow), truncated: rawMeta.truncated === true || totalInstructions > includedInstructions, omittedInstructions: Math.max(0, nonNegativeInt(rawMeta.omittedInstructions, Math.max(0, totalInstructions - includedInstructions))), selection: boundedText(rawMeta.selection, 40).trim() || 'unknown' }, pseudocode: boundedText(value.pseudocode, 30000).trim() || null };
+  return { address, name: boundedText(value.name, 500).trim() || null, assembly, assemblyMeta: { totalInstructions, includedInstructions, startRow: typeof rawMeta.startRow === 'number' && Number.isSafeInteger(rawMeta.startRow) && rawMeta.startRow >= 0 ? rawMeta.startRow : null, endRow: typeof rawMeta.endRow === 'number' && Number.isSafeInteger(rawMeta.endRow) && rawMeta.endRow >= 0 ? rawMeta.endRow : null, truncated: rawMeta.truncated === true || totalInstructions > includedInstructions, omittedInstructions: Math.max(0, nonNegativeInt(rawMeta.omittedInstructions, Math.max(0, totalInstructions - includedInstructions))), selection: boundedText(rawMeta.selection, 40).trim() || 'unknown' }, pseudocode: boundedText(value.pseudocode, 30000).trim() || null };
 }
 
 export function promptWorkbench(context) {
