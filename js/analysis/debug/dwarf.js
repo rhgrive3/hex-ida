@@ -235,7 +235,11 @@ function readForm(cursor, form, unit, sections, implicitConst) {
       const text = sections.debug_line_str ? cstring(sections.debug_line_str, offset) : null;
       return { value: text, unsupported: !sections.debug_line_str || text == null };
     }
-    case DW_FORM.sec_offset: case DW_FORM.ref_addr: case DW_FORM.strp_sup:
+    case DW_FORM.ref_addr:
+      return { value: unit.version === 2
+        ? (unit.addressSize === 8 ? cursor.u64() : BigInt(cursor.u32()))
+        : (unit.offsetSize === 8 ? cursor.u64() : BigInt(cursor.u32())) };
+    case DW_FORM.sec_offset: case DW_FORM.strp_sup:
       return { value: unit.offsetSize === 8 ? cursor.u64() : BigInt(cursor.u32()) };
     case DW_FORM.exprloc: case DW_FORM.block: {
       const length = Number(cursor.uleb());
