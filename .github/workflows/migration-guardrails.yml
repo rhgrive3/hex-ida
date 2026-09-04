@@ -90,7 +90,7 @@ jobs:
 
   merged-pr-review-audit:
     name: merged-pr-review-audit
-    if: github.event_name == 'workflow_dispatch' || startsWith(github.head_ref, 'audit/')
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -106,16 +106,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          args=(
-            --repo "$GITHUB_REPOSITORY"
-            --date 2026-09-04
-            --timezone Asia/Tokyo
-            --offset +09:00
-          )
-          if [[ "${{ github.event_name }}" == 'workflow_dispatch' ]]; then
-            args+=(--strict)
-          fi
-          node tools/validation/merged-pr-review-audit.mjs "${args[@]}"
+          node tools/validation/merged-pr-review-audit.mjs \
+            --repo "$GITHUB_REPOSITORY" \
+            --date 2026-09-04 \
+            --timezone Asia/Tokyo \
+            --offset +09:00 \
+            --strict
       - name: Upload complete audit evidence
         if: always()
         uses: actions/upload-artifact@v4
