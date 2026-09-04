@@ -1,10 +1,13 @@
 export {
   REGION_ALIAS_FLOOR_VERSION,
-  classifySemanticMemoryRegion,
   deriveMemoryRegion,
   isPreciseMemoryRegion,
   sameMemoryRegionIdentity,
 } from './regions-v2.js';
+
+// The public classifier keeps the exact regions-v2 proof contract while
+// indexing the immutable second-pass MemorySSA lookup path.
+export { classifySemanticMemoryRegion } from './regions-v2-indexed.js';
 
 export {
   CANONICAL_ADDRESS_DERIVATION_VERSION,
