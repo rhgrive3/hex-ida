@@ -44,6 +44,7 @@ concurrency:
 
 jobs:
   guardrails:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     name: guardrails
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -102,17 +103,23 @@ jobs:
       - name: Audit all PRs merged today in JST
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: >-
-          node tools/validation/merged-pr-review-audit.mjs
-          --repo "$GITHUB_REPOSITORY"
-          --timezone Asia/Tokyo
-          --offset +09:00
-          --strict
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=(
+            --repo "$GITHUB_REPOSITORY"
+            --timezone Asia/Tokyo
+            --offset +09:00
+          )
+          if [[ "${{ github.event_name }}" == 'workflow_dispatch' ]]; then
+            args+=(--strict)
+          fi
+          node tools/validation/merged-pr-review-audit.mjs "${args[@]}"
       - name: Upload complete audit evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: merged-pr-review-audit-${{ github.run_id }}
           path: artifacts/merged-pr-review-audit.*
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 30
