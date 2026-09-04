@@ -344,13 +344,44 @@ function walkIdiom(n) {
   return recoverArm64ClangIdiom(mapped);
 }
 
+// Dominance walk shared by the reaching-definition queries. Prefer the
+// precomputed dominator sets, then fall back to walking immediate dominators.
+function defBlockDominates(ir, from, to) {
+  if (from === to) return true;
+  if (from == null || to == null) return false;
+  const dom = ir.dominators?.[to];
+  if (dom && typeof dom.has === 'function') return dom.has(from);
+  let cur = to, guard = 0;
+  while (cur != null && cur >= 0 && guard++ <= (ir.blocks?.length || 0) + 1) {
+    cur = ir.idom?.[cur] ?? ir.blocks?.[cur]?.idom ?? -1;
+    if (cur === from) return true;
+  }
+  return false;
+}
+
+// CFG-aware reaching definition for a physical register. Same-block defs must
+// precede the use; foreign-block defs qualify only when their block dominates
+// the use. When no def provably reaches (e.g. divergent merge without a PHI)
+// this stays fail-closed on the entry argument instead of guessing a winner.
 function reachingRegisterValue(ir, atInst, reg) {
   let best = ir.args?.get?.(reg) || null;
-  let bestRow = -Infinity;
+  let bestRank = -Infinity;
   for (const v of ir.values || []) {
     if (v.reg !== reg || !v.def || v.clobbered) continue;
     const d = v.def;
-    if (d.block === atInst.block && d.row < atInst.row && d.row > bestRow) { best = v; bestRow = d.row; }
+    if (d === atInst) continue;
+    if (d.block === atInst.block) {
+      if (d.row == null || atInst.row == null || d.row >= atInst.row) continue;
+      // Same-block defs strictly dominate anything arriving from a predecessor.
+      const rank = Number.MAX_SAFE_INTEGER - 1;
+      if (rank > bestRank) { best = v; bestRank = rank; }
+      continue;
+    }
+    if (!defBlockDominates(ir, d.block, atInst.block)) continue;
+    let depth = 0, cur = d.block, guard = 0;
+    while (cur != null && cur >= 0 && guard++ <= (ir.blocks?.length || 0) + 1) { depth++; cur = ir.idom?.[cur] ?? ir.blocks?.[cur]?.idom ?? -1; }
+    const rank = depth;
+    if (rank > bestRank) { best = v; bestRank = rank; }
   }
   return best;
 }
