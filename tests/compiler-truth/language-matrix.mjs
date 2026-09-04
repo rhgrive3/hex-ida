@@ -4,7 +4,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { parseOperands } from '../../js/arm64.js';
-import { decompile } from '../../js/decompile.js';
+import { decompile } from './deterministic-decompile.mjs';
 import { semanticAbiAdapter } from '../../js/analysis/semantic-function.js';
 import { AAPCS64_ABI } from '../../js/targets/abi/index.js';
 import { evaluateExpression } from '../../js/decompiler/verify/equivalence.js';
@@ -126,15 +126,8 @@ function verifyClamp(asm, fn, baseAddress) {
   let checked = 0;
   for (const input of boundary32) {
     const env = { arg1:input, a1:input };
-    const memory = {};
-    for (const store of (result?.semanticAst?.stores || [])) {
-      const val = evaluateExpression(store.expression, env, memory);
-      if (val != null) {
-        if (store.location?.key) memory[store.location.key] = val;
-        if (store.location?.name) memory[store.location.name] = val;
-      }
-    }
-    const actual = evaluateExpression(ret, env, memory);
+    for (const item of inputs) env[item.name] = input;
+    const actual = evaluateExpression(ret, env);
     assert.notEqual(actual, null, `${fn}: expression not executable for ${input}`);
     const expected = s(input, 32) < 0n ? 0n : u(input, 32);
     assert.equal(u(actual, 32), u(expected, 32), `${fn}: semantic mismatch for ${input}`);

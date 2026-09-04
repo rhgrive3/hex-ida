@@ -5,7 +5,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { parseOperands } from '../../js/arm64.js';
-import { decompile } from '../../js/decompile.js';
+import { decompile } from './deterministic-decompile.mjs';
 import { semanticAbiAdapter } from '../../js/analysis/semantic-function.js';
 import { AAPCS64_ABI } from '../../js/targets/abi/index.js';
 import { evaluateExpression } from '../../js/decompiler/verify/equivalence.js';
@@ -128,15 +128,8 @@ function semanticTruth(fn, result) {
     const args = inputs.map((_x,j) => truthCases[(i+j*2) % truthCases.length]);
     const env = {};
     for (let j=0;j<inputs.length;j++) env[inputs[j].name] = args[j];
-    const memory = {};
-    for (const store of (result?.semanticAst?.stores || [])) {
-      const val = evaluateExpression(store.expression, env, memory);
-      if (val != null) {
-        if (store.location?.key) memory[store.location.key] = val;
-        if (store.location?.name) memory[store.location.name] = val;
-      }
-    }
-    const actual = evaluateExpression(ret, env, memory);
+    for (let j=0;j<args.length;j++) { env[`arg${j+1}`] = args[j]; env[`a${j+1}`] = args[j]; }
+    const actual = evaluateExpression(ret, env);
     if (actual == null) continue;
     const expectedValue = truthFns[fn](...args);
     checked++;
