@@ -220,6 +220,7 @@ export class RuntimeProviderProtocolClient {
       }, timeoutMs);
       if (signal) {
         pending.abort = () => {
+          if (this.pending.get(id) !== pending) return;
           this.#finish(id, pending, new DebugAdapterError('cancelled', `provider request cancelled: ${method}`));
           try { this.transport.send(validateProviderPacket({ protocol: RUNTIME_PROVIDER_PROTOCOL, version: 1, type: 'cancel', id, epoch: pending.epoch })); } catch {}
         };
