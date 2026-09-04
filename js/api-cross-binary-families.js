@@ -16,9 +16,12 @@ const EXTRA_API_TABLE = [
   // nanopb public C API. These routines encode/decode protobuf wire data.
   { id:'nanopb', re:/^_?pb_[A-Za-z0-9_]+$/, cat:'runtime', args:null, ret:null, effect:'convert' },
 
-  // Security.framework public namespace not already covered by the precise
-  // SecKey/SecTrust/SecItem entries in blocks.js.
-  { id:'security_framework', re:/^_?Sec[A-Z][A-Za-z0-9_]*$/, cat:'crypto', args:null, ret:null, effect:'crypto' },
+  // Security.framework public namespace fallback for entries not covered by the
+  // precise SecKey/SecTrust entries in blocks-base.js or specific Security helpers.
+  // The broad Sec* namespace indicates the security subsystem, but does not prove
+  // cryptographic operations, so effect is kept null unless precisely known.
+  { id:'security_certificate_copy_data', re:/^_?SecCertificateCopyData$/, cat:'crypto', args:['certificate'], ret:'ptr', effect:'read' },
+  { id:'security_framework', re:/^_?Sec[A-Z][A-Za-z0-9_]*$/, cat:'crypto', args:null, ret:null, effect:null },
 
   // stdio routines with stable standard/POSIX meaning but heterogeneous ABI.
   { id:'stdio_runtime', re:/^_?(?:fflush|fileno|fputs|fgets|getc|fgetc|ferror|fputc|clearerr|flockfile|ungetc|funlockfile|setvbuf|fscanf|vfprintf|popen|tmpfile|pclose|freopen|setbuf|__srget|ftello)$/, cat:'io', args:null, ret:null, effect:'io' },
