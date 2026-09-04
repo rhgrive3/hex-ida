@@ -30,20 +30,22 @@ export function selectToolWindow(registry, { mode = 'agent', requestedScope = 'a
   const limit = Number.isFinite(requestedLimit) && requestedLimit > 0 ? Math.max(1, Math.floor(requestedLimit)) : 1;
   const selected = [];
 
-  // Reserve continuity before any phase/novel filling. A phase transition must
-  // not invalidate the immediately previous scope-valid tool; otherwise the
-  // runtime cannot reach its deterministic repeated-call guard and reports an
-  // artificial invalid_tool_call instead.
-  const previousTool = previousToolName(observations);
-  if (previousTool && byName.has(previousTool)) selected.push(byName.get(previousTool));
-
   // Auto escape is a control-plane liveness guarantee, not an ordinary phase
-  // preference. Reserve it before novel/filler slots so future-tool rotation
-  // can never push the only legal path to wider evidence out of the window.
+  // preference. Reserve it before continuity and novel/filler slots so a
+  // previous local tool or future-tool rotation can never push the only legal
+  // path to wider evidence out of the window.
   if (requestedScope === 'auto') {
     for (const name of AUTO_ESCAPE_TOOLS) {
       if (byName.has(name) && !selected.some((item) => item.name === name) && selected.length < limit) selected.push(byName.get(name));
     }
+  }
+
+  // Preserve continuity after the liveness reservation. A phase transition
+  // must not invalidate the immediately previous scope-valid tool, but it is
+  // lower priority than the auto escape when the window has only one slot.
+  const previousTool = previousToolName(observations);
+  if (previousTool && byName.has(previousTool) && !selected.some((item) => item.name === previousTool) && selected.length < limit) {
+    selected.push(byName.get(previousTool));
   }
 
   // ToolRegistry is allowed to grow independently of this control plane. Keep
