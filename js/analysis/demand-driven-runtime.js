@@ -491,8 +491,15 @@ function installDemandQueryAPI(app, recognitionVersion) {
       if (!query || typeof query !== 'object' || typeof app?.backend?.search !== 'function') return unsupported('typed-search-producer-unavailable');
       abortIfNeeded(options.signal); const request = app.backend.search(query, options.onProgress);
       const value = await new Promise((resolve, reject) => {
-        const onAbort = () => { request.cancel?.(); reject(abortError(options.signal, 'Search aborted')); };
+        let aborted = false;
+        const onAbort = () => {
+          if (aborted) return;
+          aborted = true;
+          request.cancel?.();
+          reject(abortError(options.signal, 'Search aborted'));
+        };
         options.signal?.addEventListener('abort', onAbort, { once:true });
+        if (options.signal?.aborted) onAbort();
         Promise.resolve(request).then(resolve, reject).finally(() => options.signal?.removeEventListener('abort', onAbort));
       });
       abortIfNeeded(options.signal); const completeness = value?.capped || value?.cancelled ? 'partial' : 'complete';
