@@ -79,7 +79,7 @@ export function installAssistant(app, ui) {
       ask(question);
       return true;
     },
-    onRetry() { session.retry({ context: workbenchContext(app) }); },
+    onRetry(turn) { session.retry({ context: workbenchContext(app), targetTurn: turn }); },
     onFollowup(text) { ask(text); },
     onTerm(id) { showTerm(app, id); },
     onAction(action) { runAction(action); },
@@ -238,6 +238,12 @@ export function installAssistant(app, ui) {
       contextFor: () => workbenchContext(app),
       refresh: () => { panel.setSuggestions(suggestionsFor(app)); panel.update({ stick: false }); },
       destroy() {
+        // A queued resize debounce must not fire after teardown, or
+        // applyLayout() would re-add `ai-docked` to the UI root for an
+        // assistant that no longer exists.
+        open = false;
+        clearTimeout(resizeTimer);
+        resizeTimer = 0;
         document.removeEventListener('keydown', onKey, true);
         window.removeEventListener('resize', onResize);
         window.removeEventListener('orientationchange', onResize);

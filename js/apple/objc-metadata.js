@@ -18,7 +18,7 @@ async function decodedPointer(get, raw, storageAddress = null) {
     try {
       const resolved = await get.resolvePointer(raw, { address: storageAddress, imageBase: get.base });
       if (resolved == null) return null;
-      return BigInt(resolved);
+      return pointerTableAddress(resolved);
     } catch { return null; }
   }
   return sanitizePointer(raw, get.base);

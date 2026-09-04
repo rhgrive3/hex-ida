@@ -4,24 +4,55 @@ const ALLOWED_FIELDS = new Set(['formatMetadata', 'functionSeeds', 'stringsIndex
 const CANONICAL_ARTIFACT_ID = /^artifact_[0-9a-f]{32}$/i;
 
 function stableValue(value) {
-  if (value == null || typeof value !== 'object') return value;
-  if (Array.isArray(value)) return value.map(stableValue);
+  if (value == null) return value;
+  if (typeof value === 'boolean' || typeof value === 'string') return value;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value !== 'object') throw new TypeError('analysis-cache-settings-invalid');
+  if (Array.isArray(value)) {
+    if (Object.getOwnPropertySymbols(value).length) throw new TypeError('analysis-cache-settings-invalid');
+    for (let i = 0; i < value.length; i++) {
+      if (!Object.hasOwn(value, i)) throw new TypeError('analysis-cache-settings-invalid');
+    }
+    if (Object.getOwnPropertyNames(value).length !== value.length + 1) {
+      throw new TypeError('analysis-cache-settings-invalid');
+    }
+    return value.map(stableValue);
+  }
+  const proto = Object.getPrototypeOf(value);
+  if (proto !== null && proto !== Object.prototype) throw new TypeError('analysis-cache-settings-invalid');
+  if (Object.getOwnPropertySymbols(value).length) throw new TypeError('analysis-cache-settings-invalid');
   const out = {};
   for (const key of Object.keys(value).sort()) Object.defineProperty(out, key, { value:stableValue(value[key]), enumerable:true, configurable:true, writable:true });
   return out;
 }
 
 function analysisIdentity(options = {}) {
-  const version = String(options.analyzerVersion ?? options.analysisVersion ?? options.buildVersion ?? 'unknown');
+  const candidate = options.analyzerVersion ?? options.analysisVersion ?? options.buildVersion;
+  if (candidate != null && (typeof candidate !== 'string' || candidate.length === 0)) {
+    throw new TypeError('analysis-cache-version-invalid');
+  }
+  const version = candidate ?? 'unknown';
   const settings = stableValue(options.semanticOptions ?? options.analysisSettings ?? options.settings ?? {});
   return `${version}:${JSON.stringify(settings)}`;
 }
 
 function canonicalArtifactId(options = {}) {
-  const value = options?.artifactId == null ? '' : String(options.artifactId).trim();
+  const raw = options?.artifactId;
+  if (raw == null) return null;
+  if (typeof raw !== 'string') throw new TypeError('analysis-cache-artifact-id-not-canonical');
+  const value = raw.trim();
   if (!value) return null;
   if (!CANONICAL_ARTIFACT_ID.test(value)) throw new TypeError('analysis-cache-artifact-id-not-canonical');
   return value.toLowerCase();
+}
+
+function canonicalBinaryHash(value, { required = false } = {}) {
+  if (value == null) {
+    if (required) throw new TypeError('binary hash is required');
+    return null;
+  }
+  if (typeof value !== 'string' || value.trim().length === 0) throw new TypeError('analysis-cache-binary-hash-invalid');
+  return value.trim();
 }
 
 export class AnalysisCache {
@@ -32,12 +63,13 @@ export class AnalysisCache {
     this.analysisIdentity = analysisIdentity(options);
     this.fallbackMode = options.fallbackMode ?? ANALYSIS_CACHE_FALLBACK.MEMORY;
     if (!Object.values(ANALYSIS_CACHE_FALLBACK).includes(this.fallbackMode)) throw new TypeError('analysis-cache-fallback-mode-invalid');
+    if (options.memory != null && !(options.memory instanceof Map)) throw new TypeError('analysis-cache-memory-backend-invalid');
     this.memory = options.memory || (!this.indexedDB && this.fallbackMode === ANALYSIS_CACHE_FALLBACK.MEMORY ? new Map() : null);
     this._db = null;
     this._idbFailed = false;
   }
 
-  legacyKey(hash) { return `${this.schemaVersion}:${this.analysisIdentity}:${hash}`; }
+  legacyKey(hash) { return `${this.schemaVersion}:${this.analysisIdentity}:${canonicalBinaryHash(hash, { required:true })}`; }
   canonicalKey(artifactId) {
     const id = canonicalArtifactId({ artifactId });
     if (!id) throw new TypeError('canonical artifact id is required');
@@ -45,7 +77,8 @@ export class AnalysisCache {
   }
   key(hash, options = {}) {
     const artifactId = canonicalArtifactId(options);
-    return artifactId ? this.canonicalKey(artifactId) : this.legacyKey(hash);
+    const binaryHash = canonicalBinaryHash(hash, { required:!artifactId });
+    return artifactId ? this.canonicalKey(artifactId) : this.legacyKey(binaryHash);
   }
 
   capabilities() {
@@ -80,10 +113,24 @@ export class AnalysisCache {
     return record.binaryHash === hash && record.analysisIdentity === this.analysisIdentity && !record.canonicalArtifactId;
   }
 
+  #isCorruptOrStale(record, artifactId) {
+    if (!record || typeof record !== 'object') return true;
+    if (record.schemaVersion !== this.schemaVersion) return true;
+    if (artifactId) {
+      if (record.canonicalArtifactId !== artifactId) return true;
+      if (!CANONICAL_ARTIFACT_ID.test(record.canonicalArtifactId)) return true;
+      if (typeof record.binaryHash !== 'string' || record.binaryHash.length === 0) return true;
+    } else {
+      if (!record.binaryHash || typeof record.binaryHash !== 'string') return true;
+    }
+    return false;
+  }
+
   async get(hash, options = {}) {
     const artifactId = canonicalArtifactId(options);
-    if (!hash && !artifactId) return null;
-    const key = this.key(hash, { artifactId });
+    const binaryHash = canonicalBinaryHash(hash, { required:false });
+    if (!binaryHash && !artifactId) return null;
+    const key = this.key(binaryHash, { artifactId });
     let record;
     if (this.memory) record = this.memory.get(key) || null;
     else {
@@ -91,24 +138,27 @@ export class AnalysisCache {
       catch (error) { const memory = this.#fallback(error); record = memory.get(key) || null; }
     }
     if (!record) return null;
-    if (!this.#validRecord(record, hash, artifactId)) {
-      await this.delete(hash, { artifactId });
+    if (this.#isCorruptOrStale(record, artifactId)) {
+      await this.delete(binaryHash, { artifactId });
+      return null;
+    }
+    if (!this.#validRecord(record, binaryHash, artifactId)) {
       return null;
     }
     return structuredCloneSafe(record.data);
   }
 
   async put(hash, data = {}, options = {}) {
-    if (!hash) throw new TypeError('binary hash is required');
+    const binaryHash = canonicalBinaryHash(hash, { required:true });
     const artifactId = canonicalArtifactId(options);
     const clean = {};
     for (const [key, value] of Object.entries(data)) if (ALLOWED_FIELDS.has(key)) clean[key] = value;
     const snapshot = structuredCloneSafe(clean);
     const record = {
-      key:this.key(hash, { artifactId }),
+      key:this.key(binaryHash, { artifactId }),
       schemaVersion:this.schemaVersion,
       analysisIdentity:this.analysisIdentity,
-      binaryHash:hash,
+      binaryHash,
       canonicalArtifactId:artifactId,
       updatedAt:Date.now(),
       data:snapshot,
@@ -123,7 +173,8 @@ export class AnalysisCache {
 
   async delete(hash, options = {}) {
     const artifactId = canonicalArtifactId(options);
-    const key = this.key(hash, { artifactId });
+    const binaryHash = canonicalBinaryHash(hash, { required:!artifactId });
+    const key = this.key(binaryHash, { artifactId });
     if (this.memory) { this.memory.delete(key); return; }
     try {
       const db = await this.#db();

@@ -48,8 +48,15 @@ function optionalIdentityString(value, label) {
 }
 
 function toBigIntString(value) {
-  try { return (typeof value === 'bigint' ? value : BigInt(value)).toString(); }
-  catch { return null; }
+  if (typeof value === 'bigint') return value.toString();
+  if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value).toString();
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (/^[+-]?(?:0x[0-9a-fA-F]+|[0-9]+)$/.test(trimmed)) {
+      try { return BigInt(trimmed).toString(); } catch {}
+    }
+  }
+  return null;
 }
 
 function memoryInteger(value) {

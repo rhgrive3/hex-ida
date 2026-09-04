@@ -106,8 +106,18 @@ function normalizePlanItem(item, index) {
     status: String(item.status || 'planned'),
   });
 }
-function requiredId(value, name) { const id = String(value || '').trim(); if (!id) throw new TypeError(`${name} is required.`); return id; }
-function nullableId(value) { return value == null || value === '' ? null : String(value); }
+function requiredId(value, name) {
+  if (typeof value !== 'string') throw new TypeError(`${name} must be a string.`);
+  const id = value.trim();
+  if (!id) throw new TypeError(`${name} is required.`);
+  return id;
+}
+function nullableId(value, name = 'id') {
+  if (value == null || value === '') return null;
+  if (typeof value !== 'string') throw new TypeError(`${name} must be a string.`);
+  const id = value.trim();
+  return id || null;
+}
 function normalizeTimestamp(value) { const text = String(value); if (!Number.isFinite(Date.parse(text))) throw new TypeError(`Invalid timestamp: ${value}`); return text; }
 function deepFreeze(value) {
   if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value;

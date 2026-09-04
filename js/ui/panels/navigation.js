@@ -1,5 +1,6 @@
 import { Sheet, el, button, list, groupRow, tapRow, toast, alertDialog, userError } from "../../ui.js";
 import { addrHex, addrText, parseAddress, parseHexPattern } from "../../format.js";
+import { numberPattern } from "../numeric-pattern.js";
 import { t } from "../../i18n.js";
 import { queryStrings } from "../explorer-index.js";
 
@@ -216,23 +217,6 @@ export function showSearch(app) {
     if (items.length) page();
   }
 }
-
-function numberPattern(text) {
-  const t2 = text.trim().replace(/[_,]/g, "");
-  let v;
-  try {
-    if (/^-?0x[0-9a-f]+$/i.test(t2)) v = BigInt(t2.replace("-0x", "0x")) * (t2[0] === "-" ? -1n : 1n);
-    else if (/^-?\d+$/.test(t2)) v = BigInt(t2);
-    else return null;
-  } catch { return null; }
-  const wide = v < -0x80000000n || v > 0xFFFFFFFFn;
-  const bytes = wide ? 8 : 4;
-  const u = BigInt.asUintN(bytes * 8, v);
-  const out = [];
-  for (let i = 0; i < bytes; i++) out.push(Number((u >> BigInt(i * 8)) & 0xffn).toString(16).padStart(2, "0"));
-  return out.join(" ");
-}
-
 
 function abortFailure(signal) {
   const reason = signal?.reason;

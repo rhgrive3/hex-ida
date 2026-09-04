@@ -52,7 +52,38 @@ export const ALIAS_PROOF_REASONS = Object.freeze([
   'budget-exhausted',
   'analysis-cancelled',
   'analysis-unsupported',
+  'timeout',
+  'memory-limit',
+  'iteration-limit',
+  'dependency-missing',
+  'dependency-mismatch',
+  'evidence-missing',
 ]);
+
+export function reasonCodeForStopReason(stopReason) {
+  switch (stopReason) {
+    case 'cancelled':
+      return 'analysis-cancelled';
+    case 'budget-exhausted':
+      return 'budget-exhausted';
+    case 'timeout':
+      return 'timeout';
+    case 'memory-limit':
+      return 'memory-limit';
+    case 'iteration-limit':
+      return 'iteration-limit';
+    case 'dependency-missing':
+      return 'dependency-missing';
+    case 'dependency-mismatch':
+      return 'dependency-mismatch';
+    case 'evidence-missing':
+      return 'evidence-missing';
+    case 'unsupported-input':
+      return 'analysis-unsupported';
+    default:
+      return 'unresolved-root';
+  }
+}
 
 const SEPARATION_PROOFS = new Set([
   'distinct-address-space',
@@ -150,11 +181,11 @@ export function createAliasResult(input = {}) {
  * would let a candidate claim precision it does not have.
  */
 export function unknownAlias(status, reasonCodes = ['unresolved-root'], extra = {}) {
-  return createAliasResult({ relation: 'unknown', status, reasonCodes, ...extra });
+  return createAliasResult({ ...extra, relation: 'unknown', status, reasonCodes });
 }
 
 export function mayAlias(status, reasonCodes = ['overlapping-interval'], extra = {}) {
-  return createAliasResult({ relation: 'may', status, reasonCodes, ...extra });
+  return createAliasResult({ ...extra, relation: 'may', status, reasonCodes });
 }
 
 /**
@@ -162,5 +193,10 @@ export function mayAlias(status, reasonCodes = ['overlapping-interval'], extra =
  * operations past each other. `may` and `unknown` are both refusals.
  */
 export function permitsSeparationTransform(result) {
-  return !!result && result.relation === 'no' && result.status.stopReason == null;
+  try {
+    const canonical = createAliasResult(result);
+    return canonical.relation === 'no' && canonical.status.stopReason == null;
+  } catch {
+    return false;
+  }
 }

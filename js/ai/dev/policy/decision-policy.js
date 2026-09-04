@@ -2,7 +2,10 @@ export const DEV_DECISION_POLICY = Object.freeze({ NORMAL: 'normal', YOLO: 'yolo
 export const DEV_DECISION_POLICIES = Object.freeze(Object.values(DEV_DECISION_POLICY));
 
 export function assertDevDecisionPolicy(value) {
-  const policy = String(value || '').toLowerCase();
+  if (typeof value !== 'string') {
+    throw new TypeError(`Dev decision policy must be a string, got ${value === null ? 'null' : typeof value}`);
+  }
+  const policy = value.trim().toLowerCase();
   if (!DEV_DECISION_POLICIES.includes(policy)) throw new TypeError(`Unsupported Dev decision policy: ${value}`);
   return policy;
 }

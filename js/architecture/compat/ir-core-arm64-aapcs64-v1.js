@@ -653,7 +653,7 @@ export function buildIR(model, opts) {
 
   const ir = {
     name: model.name || null,
-    startAddress: model.startAddress || null,
+    startAddress: model.startAddress ?? null,
     truncated: model.instructions.length > MAX_INSTRUCTIONS || !!model.truncated,
     values: [],
     instructions: [],

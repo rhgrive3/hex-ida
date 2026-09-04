@@ -126,4 +126,5 @@ await import('./issues-shapes-schema-2614-2618.mjs');
 await import('./issues-reopened-explorer-structure-findings-2570-2576.mjs');
 await import('./issues-2615-2616-2617-backend-sessions-program.mjs');
 await import('./issues-2613-2612-2609-ai-sessions-broker.mjs');
+await import('./issue-3413-state-listener-callability.mjs');
 await import('./issue-4183-viewer-hex-navigation.test.mjs');
