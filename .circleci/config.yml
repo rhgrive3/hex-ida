@@ -1,37 +1,54 @@
 version: 2.1
 
 jobs:
-  generated-sync-probe:
+  probe-install:
     docker:
       - image: cimg/node:22.23
     resource_class: medium
     steps:
       - checkout
+      - run: npm ci --no-audit --no-fund
+
+  probe-build:
+    docker:
+      - image: cimg/node:22.23
+    resource_class: medium
+    steps:
+      - checkout
+      - run: npm ci --no-audit --no-fund
+      - run: npm run userscript:build
+
+  probe-policy:
+    docker:
+      - image: cimg/node:22.23
+    resource_class: small
+    steps:
+      - checkout
       - run:
-          name: Install dependencies
-          command: npm ci --no-audit --no-fund
-      - run:
-          name: Rebuild canonical userscript outputs
-          command: npm run userscript:build
-      - run:
-          name: Resolve generated-output ownership policy
+          name: Validate generated-output policy
           command: |
             mode="$(node tools/validation/generated-output-policy.mjs)"
             case "$mode" in
-              enforce|ephemeral) ;;
+              enforce|ephemeral) echo "$mode" ;;
               *) echo "unknown generated-output policy mode: $mode" >&2; exit 1 ;;
             esac
-            echo "export GENERATED_MODE=$mode" >> "$BASH_ENV"
+
+  probe-generated-diff:
+    docker:
+      - image: cimg/node:22.23
+    resource_class: medium
+    steps:
+      - checkout
+      - run: npm ci --no-audit --no-fund
+      - run: npm run userscript:build
       - run:
-          name: Validate generated outputs
-          command: |
-            if [ "$GENERATED_MODE" = 'enforce' ]; then
-              git diff --exit-code -- userscript/hex.user.template.js userscript/release-version.json
-            else
-              echo 'Component lane built generated output ephemerally; integration owns committed synchronization.'
-            fi
+          name: Require canonical generated outputs
+          command: git diff --exit-code -- userscript/hex.user.template.js userscript/release-version.json
 
 workflows:
   probe:
     jobs:
-      - generated-sync-probe
+      - probe-install
+      - probe-build
+      - probe-policy
+      - probe-generated-diff
