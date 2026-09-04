@@ -4,8 +4,8 @@ Status: `PREFLIGHT_GREEN`
 
 This packet records the ten mandatory conditions in
 `docs/ENGINEERING_PROCESS_GUARDRAILS.md` §3.1. The certified pre-transition
-candidate is commit `91eed68175aa1b965bca39d259ed836473361307`, tree
-`624a8765938f3b2fd26e0ba077dabeb699b8d55f`, on base
+candidate is commit `d749785feb23bdc4458d8ee67b80f6366098546b`, tree
+`9c5599b9e284ad4b26783939db503e60cfc68a51`, on base
 `7012c4cc4f0d5c0d8a7ca44c6c5c1edcb080aba1`.
 
 | §3.1 condition | Current evidence | State |
@@ -13,8 +13,8 @@ candidate is commit `91eed68175aa1b965bca39d259ed836473361307`, tree
 | Guardrails and prior evidence read | T001/T002 research and recovery handoff inventory | SATISFIED |
 | Machine-checkable exit contract | `spec.md`, `tasks.md`, closure/performance/platform contracts | SATISFIED |
 | Frozen/shared/generated/verifier/integration/component ownership | `contracts/task-ownership.json` plus exact integration inventory | SATISFIED |
-| Living integration branch/PR | `recovery/final-closure-v2-20260904`, replacement PR #6610 | SATISFIED |
-| Permanent exact-SHA invocation | `.github/workflows/final-closure-preflight.yml`, run `33907896714`, exact head/base above | SATISFIED |
+| Living integration branch/PR | `recovery/final-closure-v3-20260904`, replacement PR #6611; #6429/#6610 closed unmerged and preserved | SATISFIED |
+| Permanent exact-SHA invocation | `.github/workflows/final-closure-preflight.yml`, run `33913158441`, exact head/base above | SATISFIED |
 | Ownership/governance regressions | canonical recursive `tests/final-closure/run.mjs` on the exact head | SATISFIED |
 | Real production walking skeleton | unchanged `tests/phase4/walking-skeleton.test.mjs` on the exact head | SATISFIED |
 | Target browser/device proof | frozen production-WebKit and physical-iPad ≤4 GiB classes in `contracts/final-platform-locks.json` | SATISFIED |
@@ -120,7 +120,7 @@ any later applicability change.
 
 | Failure | Applicability | Preventing gate or N/A rationale |
 |---|---|---|
-| EP-001 | APPLICABLE | PR #6429 is the living product; T046 precedes fanout and T018–T023 require rolling integration and shadow/candidate proof. |
+| EP-001 | APPLICABLE | PR #6611 is the sole living product; T046 precedes fanout and T018–T023 require rolling integration and shadow/candidate proof. |
 | EP-002 | APPLICABLE | `integration-inventory.json` is compared to the real base-to-head Git diff and every path has one allowlisted owner. |
 | EP-003 | APPLICABLE | Component rows forbid generated commits; only integration-owner T020/T041 may canonically regenerate and publish them. |
 | EP-004 | APPLICABLE | Exact per-task allowlists, one-owner inventory entries, forbidden-path attacks, and dependency-incomparable overlap checks block contradictory scope. |
@@ -154,13 +154,13 @@ any later applicability change.
 ## Exact candidate evidence
 
 - Direct exact CLI: `PREFLIGHT_GREEN` for head
-  `91eed68175aa1b965bca39d259ed836473361307`, tree/merge tree
-  `624a8765938f3b2fd26e0ba077dabeb699b8d55f`, and base/merge base
+  `d749785feb23bdc4458d8ee67b80f6366098546b`, tree/merge tree
+  `9c5599b9e284ad4b26783939db503e60cfc68a51`, and base/merge base
   `7012c4cc4f0d5c0d8a7ca44c6c5c1edcb080aba1`; verifier SHA-256
   `d31c1df716fbe59701df6c16657d4e468b48c90b08b15af0ce1c2cf4abd7470c`.
-- Canonical recursive runner: `final-closure: PASS (2/2 discovered test files)`
-  in 374.7 seconds on the exact committed head; the focused permanent preflight
-  regression also passed with all 27 nested discovery paths. It covers the fixed central shadow judges,
+- Canonical recursive runner: `final-closure-v3-d749785f: PASS`
+  in 354.6 seconds on the exact committed head; the focused permanent preflight
+  regression passed in 375.6 seconds with all 27 nested discovery paths. It covers the fixed central shadow judges,
   denominator attacks, raw T025 binding, immutable task anchors, recovery-ref
   transactions, hostile path decoding, and ownership regressions.
 - Unchanged Phase 4 production walking skeleton: PASS on the exact committed
@@ -168,23 +168,24 @@ any later applicability change.
 - Expected/actual/union inventory: exact `32/32`, digest
   `f50d499c508ea7c2a4cee3d1c45ed4a1`; task and ownership denominators are
   `57/57`.
-- Independent Luna Max review: the replacement lifecycle repair was reviewed
-  on exact head `91eed68175aa1b965bca39d259ed836473361307`; the reviewer verified the
-  integration ref, non-overclaiming evidence, missing-task rejection, and
-  already-`DONE` idempotence without weakening mutation negatives, and returned
-  PASS. The supervisor independently verified the exact three-path delta,
-  canonical runner, direct CLI, lint, and 32-path inventory.
-- Hosted exact-head/base workflow: run `33907896714` succeeded for exact head
-  `91eed68175aa1b965bca39d259ed836473361307`; `pull-request-authority` and
+- Independent Luna Max review: the sealed-handoff lifecycle repair was reviewed
+  on exact head `d749785feb23bdc4458d8ee67b80f6366098546b`, tree
+  `9c5599b9e284ad4b26783939db503e60cfc68a51`; the reviewer reconstructed the
+  operational 32/32-path and Stage-B 3/3-path inventories, the 11 handoffs, the
+  unique T046 transition, and the component-fixture reuse, and returned PASS.
+  The supervisor independently verified the exact diff, canonical runner,
+  direct CLI, lint, walking skeleton, and 32-path inventory.
+- Hosted exact-head/base workflow: run `33913158441` succeeded for exact head
+  `d749785feb23bdc4458d8ee67b80f6366098546b`; `pull-request-authority` and
   `integration-pull-request-head` passed, while the dispatch/component jobs were
   correctly inapplicable and skipped.
 - CodeRabbit on predecessor PR #6429: exact-head check passed and all 18 review
   threads are resolved. The two topology findings on replacement PR #6610 were
-  ACTIONABLE: they required one living authority and the promised repair plus
-  recreated transition. PR #6429 is now closed unmerged while its branch and
-  published commit remain preserved; exact head `91eed68175aa1b965bca39d259ed836473361307`
-  contains the permanent repair, and the following unique transition will
-  recreate the gate.
-  PR #6610 has zero inline review threads; its post-transition exact-head review
-  remains mandatory before any component is accepted into integration. The H9
-  collector finding remains assigned to post-T048 T045.
+  ACTIONABLE and #6610 is closed unmerged with its branch preserved. PR #6611's
+  exact-head R2 finding on `711041f4` was also ACTIONABLE: the synthetic handoff
+  was incorrectly placed before the fixture base, producing an incomplete
+  hosted diff. Exact head `d749785feb23bdc4458d8ee67b80f6366098546b`
+  repairs that lifecycle without weakening the validator and has zero inline
+  review threads; a fresh post-evidence/current-head CodeRabbit disposition
+  remains mandatory before component acceptance. The H9 collector finding
+  remains assigned to post-T048 T045.
