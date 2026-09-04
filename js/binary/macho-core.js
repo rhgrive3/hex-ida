@@ -81,7 +81,7 @@ function parseThin(bytes, opts) {
       filetype, flags, ncmds, sizeofcmds,
     },
   });
-  const metadataBudget = ensureMachOMetadataBudget(image, createMachOMetadataBudget(image, { signal: opts.signal }));
+  const metadataBudget = ensureMachOMetadataBudget(image, createMachOMetadataBudget(image, { signal: opts.signal, limits: opts.metadataLimits }));
 
   const commands = [];
   const segmentOrder = [];
@@ -424,7 +424,7 @@ function dylibForOrdinal(image, ordinal) {
   if (ordinal === 0) return null;
   if (ordinal === -1 || ordinal === 0xff) return '<main-executable>';
   if (ordinal === -2 || ordinal === 0xfe) return '<flat-lookup>';
-  if (ordinal === -3 || ordinal === 0xfd) return '<weak-lookup>';
+  if (ordinal === -3) return '<weak-lookup>';
   return ordinal > 0 ? image.libraries[ordinal - 1] || null : null;
 }
 function cpuName(cpu) {
