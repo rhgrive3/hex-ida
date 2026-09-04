@@ -322,8 +322,8 @@ const API_TABLE = [
 
 /** 名前 → API の知識。知らない名前なら null（知ったかぶりをしない）。 */
 export function apiInfo(name) {
-  if (!name) return null;
-  const clean = String(name).trim();
+  if (typeof name !== 'string') return null;
+  const clean = name.trim();
   for (const a of PRECISE_API_TABLE) {
     if (a.re.test(clean)) return a;
   }

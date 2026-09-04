@@ -8,7 +8,7 @@ owner and must be updated when a branch, PR, or merge stage changes.
 
 ## Scope and ownership
 
-- Issues: #6130 (`printf_l`/`fprintf_l` prefix overmatch), #6121 (`malloc_*` prefix overmatch)
+- Issues: #6130 (`printf_l`/`fprintf_l` prefix overmatch), #6121 (`malloc_*` prefix overmatch), #6112 (structured API-name coercion)
 - Source owner: `js/blocks-base.js`
 - Regression owner: `tests/phase4/issue-6130-6121-api-boundaries.test.mjs`
 - Shared-board claim: lanes message #255
@@ -24,7 +24,7 @@ owner and must be updated when a branch, PR, or merge stage changes.
 - [x] Read current shared-board lanes through message #254; no claim or open-PR file overlap found.
 - [x] Claimed the exact owner paths on the shared board (#255).
 - [x] Reproduced both false-positive classifications on the candidate base.
-- [x] Changed only the generic allocator/log boundaries and added Phase 4-discovered regressions.
+- [x] Changed only the API identity and generic allocator/log boundaries and added Phase 4-discovered regressions.
 - [x] Focused regression passed: `node tests/phase4/issue-6130-6121-api-boundaries.test.mjs`.
 - [x] Candidate Phase 4 runner reached all tests, including the new regression; 18/19 passed.
 - [x] The one Phase 4 ownership-contract failure reproduces on pristine `origin/main` and is unrelated to this lane.

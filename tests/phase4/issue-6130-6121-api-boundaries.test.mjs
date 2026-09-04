@@ -11,6 +11,18 @@ for (const name of ['printf_l', '_printf_l', 'fprintf_l', '_fprintf_l']) {
 }
 
 for (const name of [
+  ['memcpy'],
+  { toString: () => 'memcpy' },
+  123,
+  true,
+  new String('memcpy'),
+]) {
+  assert.equal(apiInfo(name), null, 'structured API identities must not be coerced');
+}
+
+assert.equal(apiInfo('memcpy')?.id, 'memcpy', 'primitive API identity must remain recognized');
+
+for (const name of [
   'malloc_zone_free', '_malloc_zone_free',
   'malloc_size', '_malloc_size',
   'malloc_good_size', '_malloc_good_size',
