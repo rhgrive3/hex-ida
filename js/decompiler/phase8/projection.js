@@ -1,6 +1,10 @@
 import { expr, mapChildren, mergeSource, sourceOf } from '../ast/nodes.js';
 import { expressionReadability, printExpression, printProgram } from '../pretty/c.js';
-import { canonicalAnalysisIdentity } from './analysis-identity.js';
+import {
+  analysisIdentityMatches,
+  canonicalAnalysisIdentity,
+  isValidatedAnalysisIdentity,
+} from './analysis-identity.js';
 import { buildRenderProvenance } from './render-provenance.js';
 
 function integer(value) {
@@ -18,6 +22,7 @@ function recordViewCollapse(records, { proof, outerBits, innerBits, sourceBits, 
     kind,
     proof,
     targets:Object.freeze(collectTargets(source, proof)),
+    removedRefs:Object.freeze([]),
     outerBits,
     innerBits,
     sourceBits,
@@ -194,6 +199,7 @@ function transformExpression(root, names, records, memo = new Map()) {
       name,
       proof:'upstream natural-loop induction fact has a proved fixed step',
       targets:Object.freeze(collectTargets(source, 'induction-variable')),
+      removedRefs:Object.freeze([]),
       origin:Object.freeze({
         addresses:Object.freeze([...(source.addresses || [])]),
         rows:Object.freeze([...(source.rows || [])]),
@@ -251,6 +257,15 @@ function refreshMetrics(result, semanticAst, printed, records) {
     sourceMappedNodes:printed.mapping.length,
     phase8ProjectionTransforms:records.length,
   };
+}
+
+function resolveRenderAnalysisIdentity(result, analysis, override) {
+  const canonical = canonicalAnalysisIdentity({ ir:result.ir, analysis });
+  if (!canonical?.valid || !isValidatedAnalysisIdentity(canonical.identity)) return canonical;
+  if (!override || typeof override !== 'object' || Array.isArray(override)) return canonical;
+  if (override.valid !== true || !isValidatedAnalysisIdentity(override.identity)) return canonical;
+  if (!analysisIdentityMatches(override.identity, canonical.identity)) return canonical;
+  return override;
 }
 
 /**
@@ -328,13 +343,11 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
       inductionNames:Object.freeze(Object.fromEntries(names)),
     }),
   };
-  // HEX-C4-03: bidirectional render provenance. The snapshot identity is the
-  // same canonical analysis identity the scalar passes prove; when it cannot
-  // be resolved the map is published incomplete with `missing-snapshot` rather
-  // than silently binding to nothing. Budget and cancellation hooks come from
-  // the projection options so the map obeys the same bounds as the pass set.
-  const resolvedIdentity = opts.analysisIdentity
-    ?? canonicalAnalysisIdentity({ ir:result.ir, analysis });
+  // HEX-C4-03: bind the map to the canonical current Semantic IR identity.
+  // Caller-supplied identity is only an optimization hint: it must be a
+  // validated wrapper and exactly match the identity recomputed from this IR.
+  // Plain, stale, or malformed overrides fall back to the canonical result.
+  const resolvedIdentity = resolveRenderAnalysisIdentity(result, analysis, opts.analysisIdentity);
   const renderProvenance = buildRenderProvenance({
     result:withLines,
     snapshotId:resolvedIdentity?.identity?.snapshotId ?? null,
