@@ -418,8 +418,10 @@ export function resolveCoffSectionName(r, inlineName, ptrSymbols, count) {
   if (!Number.isSafeInteger(offset) || offset < 4 || offset >= stringSize || stringBase + offset >= r.length) return raw;
   const start = stringBase + offset;
   const max = Math.min(stringSize - offset, r.length - start);
-  if (r.slice(start, max).indexOf(0) < 0) return raw;
-  return r.cstring(start, max) || raw;
+  for (let i = 0; i < max; i++) {
+    if (r.u8(start + i) === 0) return r.cstring(start, max) || raw;
+  }
+  return raw;
 }
 
 function rvaFromDelayField(value, attrs, image) {
