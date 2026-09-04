@@ -465,18 +465,26 @@ function parseFieldList(view, bytes, start, end) {
 }
 
 /** Renders a TPI type index as a nominal name plus machine facts. */
-function describeTypeIndex(index, types, depth = 0) {
+export function describeTypeIndex(index, types, depth = 0) {
   if (depth > 16) return { name: 'unknown', complete: false };
   if (index < 0x1000) {
     const primitive = PRIMITIVE_TYPES[index];
-    // The high nibble of a primitive index encodes an indirection mode; 0x0600
-    // is a 64-bit pointer to the base type in the low bits.
-    if (!primitive && (index & 0x0700) === 0x0600) {
+    if (primitive) return { ...primitive, complete: true };
+    // The high nibble of a primitive index encodes an indirection mode:
+    // 0x0400: NearPointer32, 0x0500: FarPointer32, 0x0600: NearPointer64, 0x0700: NearPointer128
+    const mode = index & 0x0700;
+    if (mode === 0x0400 || mode === 0x0500 || mode === 0x0600 || mode === 0x0700) {
+      const widthBits = (mode === 0x0400 || mode === 0x0500) ? 32 : (mode === 0x0600) ? 64 : 128;
       const target = describeTypeIndex(index & 0x00ff, types, depth + 1);
-      return { name: `${target.name} *`, widthBits: 64, class: 'pointer', complete: target.complete };
+      const isKnown = target.name !== 'unknown' && target.complete;
+      return {
+        name: isKnown ? `${target.name} *` : 'unknown *',
+        widthBits,
+        class: 'pointer',
+        complete: isKnown,
+      };
     }
-    if (!primitive) return { name: 'unknown', complete: false };
-    return { ...primitive, complete: true };
+    return { name: 'unknown', complete: false };
   }
   const record = types.get(index);
   if (!record) return { name: 'unknown', complete: false };
