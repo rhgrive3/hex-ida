@@ -14,7 +14,7 @@ owner and must be updated when a branch, PR, or merge stage changes.
 - Shared-board claim: lanes message #255
 - Branch: `fix/issues-api-boundaries-6130-6121`
 - Candidate base: `origin/main` at `f00154dcb9b2234cbacb4c6a3c2186d00c8a4b3a`
-- Implementation head: `727124b8d03a8982148070f28180657f7e952af7`
+- Implementation head: `170244a99f785867a9c5b82ea0c87854d38bc660`
 - Remote head after checkpoint update: `origin/fix/issues-api-boundaries-6130-6121`
 - Pull request: #6480 — https://github.com/rhgrive3/hex-ida/pull/6480
 - Last verified candidate tree: `5742df1c162dade595b4d5ef257a8b79989d8fb6`
@@ -24,6 +24,7 @@ owner and must be updated when a branch, PR, or merge stage changes.
 - [x] Read current shared-board lanes through message #254; no claim or open-PR file overlap found.
 - [x] Claimed the exact owner paths on the shared board (#255).
 - [x] Reproduced both false-positive classifications on the candidate base.
+- [x] Reproduced `apiInfo(['memcpy'])` structured-name coercion on the candidate base.
 - [x] Changed only the API identity and generic allocator/log boundaries and added Phase 4-discovered regressions.
 - [x] Focused regression passed: `node tests/phase4/issue-6130-6121-api-boundaries.test.mjs`.
 - [x] Candidate Phase 4 runner reached all tests, including the new regression; 18/19 passed.
