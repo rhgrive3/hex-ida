@@ -1,6 +1,6 @@
 # Simple issue owner-lane checkpoint — goal matching boundaries
 
-Status: `READY_TO_PUSH`
+Status: `PR_PENDING`
 
 This checkpoint records the resumable state for the `codex` owner lane for the
 goal semantic matching issues. Update it at every branch, PR, or merge stage.
@@ -13,6 +13,7 @@ goal semantic matching issues. Update it at every branch, PR, or merge stage.
 - Shared-board claim: lanes message #256
 - Branch: `fix/issues-goals-boundaries-6107-6119`
 - Candidate base: `origin/main` at `f00154dcb9b2234cbacb4c6a3c2186d00c8a4b3a`
+- Implementation head: `e8eb839d` (`fix(goals): reject structured matching inputs`)
 
 ## Stages
 
@@ -23,7 +24,8 @@ goal semantic matching issues. Update it at every branch, PR, or merge stage.
 - [x] Focused regression passed: `node tests/phase4/issue-6107-6119-goal-boundaries.test.mjs`.
 - [x] Lint passed: `node scripts/run-quiet-command.mjs --label lint-goals-boundaries -- npm run lint`.
 - [x] Phase 4 reached `phase4: PASS (33 test files + independent verification)` and then hit the known pristine-main `integration-contract-repair.test.mjs` 18/19 failure.
-- [ ] Commit/push, create one owner PR, and record exact head/files.
+- [x] Committed the three-file owner-lane delta at `e8eb839d` and pushed `origin/fix/issues-goals-boundaries-6107-6119`.
+- [ ] Create one owner PR and record exact head/files.
 - [ ] Prove the current-main candidate tree and required PR checks.
 - [ ] Merge only after exact-head evidence is green; otherwise record the blocker here and on the board.
 
