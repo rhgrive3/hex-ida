@@ -3,6 +3,8 @@ name: Phase 8 ownership
 # Ownership is checked from the actual changed-file inventory, never from PR
 # prose (EP-002). The manifest self-check runs too, so a contradictory manifest
 # is caught before it can approve a change it should have blocked (EP-004).
+# CircleCI parity marker: keep this workflow semantically unchanged while both
+# providers validate the exact same ownership-file diff before runner offload.
 on:
   pull_request:
     paths:
