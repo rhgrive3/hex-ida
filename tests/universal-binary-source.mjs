@@ -67,7 +67,7 @@ async function testRangeLoaders() {
   assert.equal(code?.length, 16);
 
   const fat = await assertRangeEquivalent(makeFatMachOFixture(), 'fat Mach-O');
-  assert.equal(fat.metadata.fat.selected.offset, 0x100n);
+  assert.equal(fat.metadata.fat.selected.offset, 0x4000n);
 
   const sectionless = await assertRangeEquivalent(makeSectionlessElf64Fixture(), 'sectionless ELF');
   assert.equal(sectionless.sections.length, 0);
@@ -127,12 +127,12 @@ async function testIssue48To60Regressions() {
   assert.ok(stringImage.strings.some((s) => s.text.includes('puts')));
 
   const thin = makeMachO64Fixture();
-  const fat = new Uint8Array(0x200 + thin.length * 2);
+  const fat = new Uint8Array(0x8000 + thin.length * 2);
   const fv = new DataView(fat.buffer);
   fv.setUint32(0, 0xcafebabe, false); fv.setUint32(4, 2, false);
-  const addSlice = (p, subtype, offset) => { fv.setUint32(p, 0x0100000c, false); fv.setUint32(p + 4, subtype, false); fv.setUint32(p + 8, offset, false); fv.setUint32(p + 12, thin.length, false); fv.setUint32(p + 16, 2, false); };
-  addSlice(8, 0, 0x100); addSlice(28, 2, 0x100 + thin.length);
-  fat.set(thin, 0x100); const arm64eThin = thin.slice(); new DataView(arm64eThin.buffer).setInt32(8, 2, true); fat.set(arm64eThin, 0x100 + thin.length);
+  const addSlice = (p, subtype, offset) => { fv.setUint32(p, 0x0100000c, false); fv.setUint32(p + 4, subtype, false); fv.setUint32(p + 8, offset, false); fv.setUint32(p + 12, thin.length, false); fv.setUint32(p + 16, 14, false); };
+  addSlice(8, 0, 0x4000); addSlice(28, 2, 0x8000);
+  fat.set(thin, 0x4000); const arm64eThin = thin.slice(); new DataView(arm64eThin.buffer).setInt32(8, 2, true); fat.set(arm64eThin, 0x8000);
   assert.equal(openBinary(fat).metadata.fat.selected.arch, 'arm64e');
   assert.equal(openBinary(fat, { arch: 'arm64' }).metadata.fat.selected.arch, 'arm64');
   assert.throws(() => openBinary(fat, { arch: 'x86_64' }), /not present/);

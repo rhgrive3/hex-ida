@@ -57,7 +57,7 @@ function ownedClone(value) {
 function freezeEvidenceIds(value) {
   if (value == null) return Object.freeze([]);
   if (!Array.isArray(value)) throw new DebugAdapterError('invalid-evidence-ids', 'evidence ids must be an array');
-  if (value.some((id) => typeof id !== 'string' || id.length === 0)) {
+  if (value.some((id) => typeof id !== 'string' || !id.trim())) {
     throw new DebugAdapterError('invalid-evidence-ids', 'evidence ids must contain only non-empty strings');
   }
   return Object.freeze([...new Set(value)].sort());
@@ -66,7 +66,7 @@ function freezeEvidenceIds(value) {
 function freezeEntityIds(value) {
   if (value == null) return Object.freeze([]);
   if (!Array.isArray(value)) throw new DebugAdapterError('invalid-target-entity-ids', 'target entity ids must be an array');
-  if (value.some((id) => typeof id !== 'string' || id.length === 0)) {
+  if (value.some((id) => typeof id !== 'string' || !id.trim())) {
     throw new DebugAdapterError('invalid-target-entity-ids', 'target entity ids must contain only non-empty strings');
   }
   return Object.freeze([...value]);
@@ -92,8 +92,8 @@ export function createRuntimeTargetBinding(input = {}) {
     processKey: optionalText(input.processKey),
     platform: optionalText(input.platform),
     architecture: optionalText(input.architecture),
-    primaryBinaryId: optionalText(input.primaryBinaryId ?? input.binaryId),
-    primarySliceId: optionalText(input.primarySliceId ?? input.sliceId),
+    primaryBinaryId: optionalIdentity(input.primaryBinaryId ?? input.binaryId, 'primaryBinaryId'),
+    primarySliceId: optionalIdentity(input.primarySliceId ?? input.sliceId, 'primarySliceId'),
     startedAt: input.startedAt == null ? null : String(input.startedAt),
     bindingEvidenceIds: freezeEvidenceIds(input.bindingEvidenceIds),
   });
@@ -232,7 +232,7 @@ export class RuntimeModuleBindingTable {
         targetEntityIds: match.targetEntityIds,
         state: matchedStaticAddress == null ? 'unresolved' : 'resolved',
         method: 'cross-version-match',
-        evidenceIds: [...binding.identityEvidenceIds, ...(match.evidenceIds || [])],
+        evidenceIds: [...binding.identityEvidenceIds, ...freezeEvidenceIds(match.evidenceIds)],
         functionMatchId: match.id ?? match.functionMatchId ?? null,
       });
     }
