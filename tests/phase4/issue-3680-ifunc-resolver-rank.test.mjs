@@ -44,11 +44,30 @@ const [equalRankTieBreak] = mergeFunctionSeeds([
 assert.equal(equalRankTieBreak.source, 'unwind');
 assert.equal(equalRankTieBreak.name, 'unwind');
 
-const [ifuncVsSymbol] = mergeFunctionSeeds([
-  { address: 0x4000n, source: 'ifunc-resolver', confidence: 0.7, name: 'resolver' },
-  { address: 0x4000n, source: 'symbol', confidence: 0.8, name: 'symbol' },
-]);
-assert.equal(ifuncVsSymbol.source, 'symbol');
-assert.equal(ifuncVsSymbol.name, 'symbol');
+const ifuncSeed = {
+  address: 0x4000n,
+  source: 'ifunc-resolver',
+  confidence: 0.8,
+  name: 'resolver',
+};
+const symbolSeed = {
+  address: 0x4000n,
+  source: 'symbol',
+  confidence: 0.7,
+  name: 'symbol',
+};
+for (const seeds of [
+  [ifuncSeed, symbolSeed],
+  [symbolSeed, ifuncSeed],
+]) {
+  const [ifuncVsSymbol] = mergeFunctionSeeds(seeds);
+  assert.equal(
+    ifuncVsSymbol.source,
+    'ifunc-resolver',
+    'IFUNC and symbol must share a rank so higher confidence decides in either input order',
+  );
+  assert.equal(ifuncVsSymbol.name, 'resolver');
+  assert.equal(ifuncVsSymbol.confidence, 0.8);
+}
 
 console.log('issue-3680-ifunc-resolver-rank: PASS');
