@@ -24,7 +24,10 @@ const EXTRA_API_TABLE = [
   { id:'stdio_runtime', re:/^_?(?:fflush|fileno|fputs|fgets|getc|fgetc|ferror|fputc|clearerr|flockfile|ungetc|funlockfile|setvbuf|fscanf|vfprintf|popen|tmpfile|pclose|freopen|setbuf|__srget|ftello)$/, cat:'io', args:null, ret:null, effect:'io' },
 
   // POSIX/Darwin descriptors, directories and filesystem operations.
-  { id:'posix_io', re:/^_?(?:fcntl|fstat|lstat|statfs|fstatfs|opendir|closedir|readdir|readdir_r|scandir|rename|pipe|socketpair|select|getsockname|getpeername|setsockopt|getsockopt|ioctl|kqueue|kevent|dup2|mkstemp|fsync|getcwd|dirfd|nftw|basename|if_nametoindex|gethostname|connectx|symlink|chmod|umask|ftruncate|open_dprotected_np|isatty)$/, cat:'io', args:null, ret:null, effect:'io' },
+  { id:'posix_io', re:/^_?(?:fcntl|fstat|lstat|statfs|fstatfs|opendir|closedir|readdir|readdir_r|scandir|rename|pipe|socketpair|select|getsockname|getpeername|setsockopt|getsockopt|ioctl|kqueue|kevent|dup2|mkstemp|fsync|getcwd|dirfd|nftw|if_nametoindex|gethostname|connectx|symlink|chmod|umask|ftruncate|open_dprotected_np|isatty)$/, cat:'io', args:null, ret:null, effect:'io' },
+
+  // basename returns a pointer to the basename component and may modify the input path.
+  { id:'libc_basename', re:/^_?basename$/, cat:'string', args:['path'], ret:'ptr', effect:'write' },
 
   // C string/search/conversion APIs missed by the existing narrower table.
   { id:'libc_string', re:/^_?(?:strspn|strcspn|strpbrk|strcoll|strnstr|strcasestr|memmem|atof|atoll|fnmatch)$/, cat:'string', args:null, ret:null, effect:'read' },
