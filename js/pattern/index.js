@@ -101,7 +101,15 @@ export function typeCheckPattern(parsed) {
   const input = parsed?.ast ? parsed : parsePattern(parsed);
   const ast = input.ast;
   const structs = ast.kind === 'module' ? list(ast.structs) : [ast];
-  const names = new Set(structs.filter((item) => item.kind === 'struct' && item.name).map((item) => item.name));
+  // Named types form one namespace: the evaluator resolves duplicates
+  // last-wins, so accepting them here would let definition order silently
+  // decide the canonical layout of a shared type name.
+  const names = new Set();
+  for (const item of structs) {
+    if (item.kind !== 'struct' || !item.name) continue;
+    if (names.has(item.name)) fail(`pattern-duplicate-struct:${item.name}`);
+    names.add(item.name);
+  }
   for (const item of structs) { if (item.kind !== 'struct') fail('pattern-root-must-be-struct'); validateType(item, 0, names); }
   if (ast.kind === 'module' && ast.root != null && !names.has(ast.root)) fail('pattern-module-root-unknown');
   return deepFreeze(input);
