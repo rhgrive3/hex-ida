@@ -32,17 +32,19 @@ const RUST_V0_BASIC_TYPES = Object.freeze({
   e: 'str',
   f: 'f32',
   h: 'u8',
-  i: 'i32',
-  j: 'u64',
+  i: 'isize',
+  j: 'usize',
   l: 'i32',
   m: 'u32',
   n: 'i128',
   o: 'u128',
   p: '_',
-  s: 'isize',
-  t: 'usize',
+  s: 'i16',
+  t: 'u16',
   u: '()',
   v: '...',
+  x: 'i64',
+  y: 'u64',
   z: '!',
 });
 
@@ -187,6 +189,46 @@ function parseV0Identifier(str, pos) {
   };
 }
 
+/**
+ * Parses a Rust v0 const value (<type> [ "p" ] <hex-integer> "_" | <backref>).
+ */
+function parseV0Const(str, state, depth = 0) {
+  if (state.pos >= str.length || depth > 32) return null;
+  if (str[state.pos] === 'B') {
+    state.pos++;
+    const br = parseV0Base62(str, state.pos);
+    if (!br) return null;
+    if (br.value < 0 || br.value >= state.pos - 1) return null;
+    state.pos = br.nextPos;
+    const refState = { pos: br.value };
+    return parseV0Const(str, refState, depth + 1);
+  }
+  const constType = parseV0Type(str, state, depth + 1);
+  if (!constType) return null;
+  let isNegative = false;
+  if (state.pos < str.length && str[state.pos] === 'p') {
+    isNegative = true;
+    state.pos++;
+  }
+  let hexStr = '';
+  while (state.pos < str.length && /[0-9a-fA-F]/.test(str[state.pos])) {
+    hexStr += str[state.pos++];
+  }
+  if (state.pos >= str.length || str[state.pos] !== '_') {
+    return null;
+  }
+  state.pos++; // consume '_'
+  if (hexStr === '') {
+    return '0';
+  }
+  try {
+    const val = BigInt('0x' + hexStr);
+    return isNegative ? `-${val.toString()}` : val.toString();
+  } catch {
+    return null;
+  }
+}
+
 function parseV0Type(str, state, depth = 0) {
   if (state.pos >= str.length || depth > 32) return null;
   const c = str[state.pos];
@@ -211,6 +253,14 @@ function parseV0Type(str, state, depth = 0) {
     const inner = parseV0Type(str, state, depth + 1);
     if (!inner) return null;
     return c === 'P' ? `*const ${inner}` : `*mut ${inner}`;
+  }
+  if (c === 'A') {
+    state.pos++;
+    const elemType = parseV0Type(str, state, depth + 1);
+    if (!elemType) return null;
+    const len = parseV0Const(str, state, depth + 1);
+    if (len === null) return null;
+    return `[${elemType}; ${len}]`;
   }
   return parseV0Path(str, state, depth + 1);
 }
@@ -253,12 +303,38 @@ function parseV0Path(str, state, depth = 0) {
 
   if (tag === 'I') {
     const base = parseV0Path(str, state, depth + 1);
+    if (!base) return null;
+    const args = [];
     let gCount = 0;
-    while (state.pos < str.length && str[state.pos] !== 'E' && gCount++ < 16) {
-      parseV0Type(str, state, depth + 1);
+    while (state.pos < str.length && str[state.pos] !== 'E' && gCount++ < 32) {
+      if (str[state.pos] === 'L') {
+        state.pos++;
+        const lt = parseV0Base62(str, state.pos);
+        if (!lt) return null;
+        state.pos = lt.nextPos;
+      } else if (str[state.pos] === 'K') {
+        state.pos++;
+        const c = parseV0Const(str, state, depth + 1);
+        if (c === null) return null;
+        args.push(c);
+      } else {
+        const t = parseV0Type(str, state, depth + 1);
+        if (!t) return null;
+        args.push(t);
+      }
     }
-    if (state.pos < str.length && str[state.pos] === 'E') state.pos++;
-    return base;
+    if (state.pos >= str.length || str[state.pos] !== 'E') return null;
+    state.pos++;
+    return args.length > 0 ? `${base}<${args.join(', ')}>` : base;
+  }
+
+  if (tag === 'B') {
+    const br = parseV0Base62(str, state.pos);
+    if (!br) return null;
+    if (br.value < 0 || br.value >= state.pos - 1) return null;
+    state.pos = br.nextPos;
+    const refState = { pos: br.value };
+    return parseV0Path(str, refState, depth + 1);
   }
 
   const ident = parseV0Identifier(str, state.pos - 1);
