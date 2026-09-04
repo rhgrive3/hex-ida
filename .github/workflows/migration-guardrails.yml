@@ -1,38 +1,12 @@
-name: Migration guardrails
+name: Migration guardrails (manual fallback)
 
+# Automatic PR execution is owned by .circleci/config.yml.
+# Keep this workflow as a manual GitHub-hosted rollback/fallback lane.
 on:
-  pull_request:
-    paths:
-      - 'js/architecture/**'
-      - 'js/ir.js'
-      - 'js/ir-core.js'
-      - 'js/dataflow*.js'
-      - 'js/decompiler/**'
-      - 'js/binary/**'
-      - 'js/bytesource/**'
-      - 'js/platform/**'
-      - 'js/project/**'
-      - 'js/runtime/**'
-      - 'js/runtime-evidence/**'
-      - 'js/symbolic/**'
-      - 'js/ai/**'
-      - 'js/ui/**'
-      - 'js/ui.js'
-      - 'js/ui-root.js'
-      - 'js/panels.js'
-      - 'js/app.js'
-      - 'js/backend.js'
-      - 'js/worker*.js'
-      - 'worker-entry.js'
-      - 'package.json'
-      - 'tests/migration-guardrails.mjs'
-      - 'docs/MIGRATION_GUARDRAILS.md'
-      - '.github/workflows/migration-guardrails.yml'
   workflow_dispatch:
 
-concurrency:
-  group: migration-guardrails-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+permissions:
+  contents: read
 
 jobs:
   guardrails:
@@ -48,7 +22,7 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - name: Run all migration proofs and aggregate failures
         env:
-          RUN_FULL_CHECK: ${{ github.event_name == 'workflow_dispatch' && 'true' || 'false' }}
+          RUN_FULL_CHECK: 'true'
         shell: bash
         run: |
           node --input-type=module <<'NODE'
@@ -57,8 +31,8 @@ jobs:
           const commands = [
             'npm run migration:test',
             'npm run binary:source-test',
+            'npm run check',
           ];
-          if (process.env.RUN_FULL_CHECK === 'true') commands.push('npm run check');
 
           const failures = [];
           for (const command of commands) {
