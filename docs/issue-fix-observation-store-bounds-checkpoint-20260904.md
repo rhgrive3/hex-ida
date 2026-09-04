@@ -14,7 +14,7 @@ PR, or merge stage.
 - Shared-board claim: lanes message #276
 - Branch: `fix/issues-observation-store-bounds-6153`
 - Candidate base: `origin/main` at `f00154dcb9b2234cbacb4c6a3c2186d00c8a4b3a`
-- Implementation head: to be recorded after the implementation commit
+- Implementation head: `c55903c9a16ff37c9a04ea6a34280d5108bfe73f`
 
 ## Stages
 
@@ -22,7 +22,8 @@ PR, or merge stage.
 - [x] Traced ObservationStore limit normalization, `evict()`, and default CursorCodec wiring.
 - [x] Rejected non-finite/zero configuration values from becoming unbounded limits and kept normalized limits finite safe integers.
 - [x] Added regressions for non-finite values, entry eviction, age eviction, and CursorCodec propagation.
-- [ ] Run focused regression, existing ObservationStore tests, lint, and applicable Phase 9 verification.
+- [x] Focused regression, existing ObservationStore tests, and lint passed.
+- [x] Phase 9 verification passed after installing lockfile dependencies.
 - [ ] Create one owner PR for #6153 and record exact-head candidate evidence.
 - [ ] Merge only after exact-head evidence and required checks are green; otherwise record the blocker here and on the board.
 
