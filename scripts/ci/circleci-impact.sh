@@ -28,12 +28,15 @@ head="$(git rev-parse HEAD)"
 # If A changes a gated path and docs-only B lands before A starts, dropping A
 # would leave A's delta unvalidated because B correctly inspects only B^..B.
 if [[ -n "$branch" && "$branch" != 'main' ]]; then
-  git fetch --no-tags origin "$branch:refs/remotes/origin/$branch" >/dev/null 2>&1 || true
-  latest="$(git rev-parse --verify "refs/remotes/origin/$branch" 2>/dev/null || true)"
-  if [[ -n "$latest" && "$latest" != "$head" ]]; then
-    echo "stale CircleCI head $head; latest $branch is $latest" >&2
-    printf 'false\n'
-    exit 0
+  if git fetch --no-tags origin "$branch:refs/remotes/origin/$branch" >/dev/null 2>&1; then
+    latest="$(git rev-parse --verify "refs/remotes/origin/$branch" 2>/dev/null || true)"
+    if [[ -n "$latest" && "$latest" != "$head" ]]; then
+      echo "stale CircleCI head $head; latest $branch is $latest" >&2
+      printf 'false\n'
+      exit 0
+    fi
+  else
+    echo "could not refresh remote head for $branch; not stale-suppressing" >&2
   fi
 fi
 
