@@ -15,6 +15,14 @@ function narrow() {
   return typeof window !== 'undefined' && window.innerWidth < 900;
 }
 
+export function addressesEqual(a, b) {
+  try {
+    return BigInt(a) === BigInt(b);
+  } catch {
+    return false;
+  }
+}
+
 function goToCode(app, ui, addr, { select = false } = {}) {
   if (addr == null) return false;
   const moved = app.goToAddress(addr, { announce: true });
@@ -88,7 +96,7 @@ export function createActionRunner(app, { ui, assistant } = {}) {
         const semantic = app.semantic;
         const region = app.store.get('currentRegion');
         const model = semantic && semantic.model;
-        const insn = model?.instructions?.find((i) => i.address === addr);
+        const insn = model?.instructions?.find((i) => i.address === addr || addressesEqual(i.address, addr));
         const row = insn?.row ?? (app.viewer?.rowOfAddress ? app.viewer.rowOfAddress(addr) : null);
         if (model && row != null && Number.isFinite(row)) showValueFlow(app, model, row, region);
         else if (ui && ui.router) ui.router.navigate('/function/' + addr.toString() + '/overview');
