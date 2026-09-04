@@ -85,7 +85,14 @@ export function normalizeAIInteraction(value, allowedTools) {
   if (Array.isArray(value?.response?.steps)) steps.push(...value.response.steps);
   const call = steps.find((step) => step && (step.type === 'function_call' || step.type === 'tool_call'));
   if (!call) throw new Error('The model did not return a complete function call.');
-  const name = String(call.name || call.function?.name || '');
+  // Model tool-call names are identity authority: only a primitive non-empty
+  // string may reach submit_hex_result/allowedTools dispatch. String() would
+  // launder structured values (e.g. ['submit_hex_result'] → 'submit_hex_result')
+  // past the schema boundary (#6165). `??` keeps explicit precedence so a
+  // type-violating call.name is never swapped for call.function?.name.
+  const rawName = call.name ?? call.function?.name ?? null;
+  if (typeof rawName !== 'string' || !rawName) throw new Error('The model returned an invalid function name.');
+  const name = rawName;
   let args = call.arguments ?? call.input ?? call.function?.arguments ?? {};
   if (typeof args === 'string') { try { args = JSON.parse(args); } catch { throw new Error('The model returned malformed function arguments.'); } }
   if (!isObject(args)) throw new Error('The model function arguments must be an object.');
