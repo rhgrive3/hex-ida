@@ -17,8 +17,28 @@ if [[ -z "$pattern" ]]; then
   exit 2
 fi
 
+# Validate the repository-owned regex once up front. A malformed pattern is a
+# configuration error and must fail visibly rather than silently acting as a
+# non-match.
+set +e
+printf '' | grep -Eq "$pattern" >/dev/null 2>&1
+grep_status=$?
+set -e
+if [[ "$grep_status" -gt 1 ]]; then
+  echo 'invalid CircleCI impact path pattern' >&2
+  exit 2
+fi
+
 branch="${CIRCLE_BRANCH:-}"
 head="$(git rev-parse HEAD)"
+
+# Missing provider branch metadata must never turn into a false skip. Running an
+# unnecessary lane is cheaper than accepting an unvalidated commit.
+if [[ -z "$branch" ]]; then
+  echo 'CIRCLE_BRANCH is unavailable; running lane conservatively' >&2
+  printf 'true\n'
+  exit 0
+fi
 
 # CircleCI may still start an older pipeline after a newer commit has landed on
 # the same non-main branch. Saving work there is safe because the newest branch
@@ -27,7 +47,7 @@ head="$(git rev-parse HEAD)"
 # Never stale-suppress main: each main commit owns its own first-parent delta.
 # If A changes a gated path and docs-only B lands before A starts, dropping A
 # would leave A's delta unvalidated because B correctly inspects only B^..B.
-if [[ -n "$branch" && "$branch" != 'main' ]]; then
+if [[ "$branch" != 'main' ]]; then
   if git fetch --no-tags origin "$branch:refs/remotes/origin/$branch" >/dev/null 2>&1; then
     latest="$(git rev-parse --verify "refs/remotes/origin/$branch" 2>/dev/null || true)"
     if [[ -n "$latest" && "$latest" != "$head" ]]; then
@@ -60,7 +80,11 @@ if [[ "$branch" == 'main' ]]; then
     printf 'true\n'
     exit 0
   fi
-  changed="$(git diff --name-only "$parent" HEAD || true)"
+  if ! changed="$(git diff --name-only "$parent" HEAD)"; then
+    echo 'could not diff main commit against its parent; running lane conservatively' >&2
+    printf 'true\n'
+    exit 0
+  fi
 else
   # Pull-request/branch pipelines are compared against the merge base with main.
   # If the comparison cannot be established, run rather than silently skip.
@@ -74,11 +98,22 @@ else
     printf 'true\n'
     exit 0
   fi
-  changed="$(git diff --name-only origin/main...HEAD || true)"
+  if ! changed="$(git diff --name-only origin/main...HEAD)"; then
+    echo 'could not diff branch against origin/main; running lane conservatively' >&2
+    printf 'true\n'
+    exit 0
+  fi
 fi
 
-if printf '%s\n' "$changed" | grep -Eq "$pattern"; then
-  printf 'true\n'
-else
-  printf 'false\n'
-fi
+set +e
+printf '%s\n' "$changed" | grep -Eq "$pattern"
+match_status=$?
+set -e
+case "$match_status" in
+  0) printf 'true\n' ;;
+  1) printf 'false\n' ;;
+  *)
+    echo 'impact path matching failed' >&2
+    exit 2
+    ;;
+esac

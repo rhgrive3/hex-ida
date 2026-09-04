@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -8,6 +8,7 @@ const router = resolve('scripts/ci/circleci-impact.sh');
 const root = mkdtempSync(join(tmpdir(), 'hex-circleci-impact-'));
 const repo = join(root, 'repo');
 const remote = join(root, 'remote.git');
+const realGit = execFileSync('which', ['git'], { encoding: 'utf8' }).trim();
 
 function git(cwd, ...args) {
   return execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
@@ -18,13 +19,17 @@ function write(path, value) {
   writeFileSync(path, value);
 }
 
-function route(head, branch, mode, pattern) {
+function routeResult(head, branch, mode, pattern, env = {}) {
   git(repo, 'checkout', '--detach', head);
-  const result = spawnSync('bash', [router, mode, pattern], {
+  return spawnSync('bash', [router, mode, pattern], {
     cwd: repo,
     encoding: 'utf8',
-    env: { ...process.env, CIRCLE_BRANCH: branch },
+    env: { ...process.env, CIRCLE_BRANCH: branch, ...env },
   });
+}
+
+function route(head, branch, mode, pattern, env = {}) {
+  const result = routeResult(head, branch, mode, pattern, env);
   assert.equal(result.status, 0, result.stderr || result.stdout);
   return result.stdout.trim();
 }
@@ -82,6 +87,27 @@ try {
   // A stale-head refresh failure must never turn into a false skip. With an
   // unresolvable branch name, routing falls through to the merge-base diff.
   assert.equal(route(commitC, 'missing-feature', 'main-and-branch', '^js/ai/'), 'true');
+
+  // Missing provider branch metadata is uncertain, so the router must fail open.
+  assert.equal(route(commitB, '', 'main-and-branch', '^js/ai/'), 'true');
+
+  // A failed git diff must also fail open instead of becoming an empty diff.
+  const fakeBin = join(root, 'fake-bin');
+  const fakeGit = join(fakeBin, 'git');
+  mkdirSync(fakeBin, { recursive: true });
+  write(fakeGit, `#!/usr/bin/env bash\nif [[ "${1:-}" == 'diff' ]]; then exit 42; fi\nexec ${JSON.stringify(realGit)} "$@"\n`);
+  chmodSync(fakeGit, 0o755);
+  assert.equal(
+    route(commitD, 'feature', 'main-and-branch', '^js/ai/', {
+      PATH: `${fakeBin}:${process.env.PATH || ''}`,
+    }),
+    'true',
+  );
+
+  // Malformed repository-owned regexes must fail visibly, never act as no-match.
+  const invalidPattern = routeResult(commitD, 'feature', 'main-and-branch', '[');
+  assert.notEqual(invalidPattern.status, 0);
+  assert.match(invalidPattern.stderr, /invalid CircleCI impact path pattern/);
 
   console.log('circleci-impact routing: PASS');
 } finally {
