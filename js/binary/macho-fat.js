@@ -1,5 +1,13 @@
 import { ByteView } from './reader.js';
 
+const CPU_TYPE_ARM = 12;
+const CPU_TYPE_ARM64 = 0x0100000c;
+const CPU_TYPE_ARM64_32 = 0x0200000c;
+const CPU_SUBTYPE_ARM_V7K = 12;
+const CPU_SUBTYPE_ARM64E = 2;
+const CPU_SUBTYPE_ARM64E_ABI_V0 = 0x80000002;
+const MH_KEXT_BUNDLE = 11;
+
 export function cpuName(cpu) {
   const value = cpu >>> 0;
   return ({ 7: 'x86', 12: 'arm', 18: 'ppc', 0x01000007: 'x86_64', 0x0100000c: 'arm64', 0x0200000c: 'arm64_32' })[value] || `cpu-${value}`;
@@ -7,6 +15,35 @@ export function cpuName(cpu) {
 
 export function subtypeBase(subtype) {
   return (subtype >>> 0) & 0x00ffffff;
+}
+
+function canonicalArchitectureSubtype(cpu, subtype) {
+  const type = cpu >>> 0;
+  const value = subtype >>> 0;
+  if (type === CPU_TYPE_ARM64) {
+    // dyld canonicalizes only the pre-versioned arm64e fat-header value to
+    // the current ABI-v0 identity. Other arm64 ABI/version bits are identity.
+    return value === CPU_SUBTYPE_ARM64E ? CPU_SUBTYPE_ARM64E_ABI_V0 : value;
+  }
+  return subtypeBase(value);
+}
+
+function sameArchitecture(cpuA, subtypeA, cpuB, subtypeB) {
+  const typeA = cpuA >>> 0;
+  const typeB = cpuB >>> 0;
+  return typeA === typeB
+    && canonicalArchitectureSubtype(typeA, subtypeA) === canonicalArchitectureSubtype(typeB, subtypeB);
+}
+
+function uses16KPages(inner) {
+  const cpu = inner.cpu >>> 0;
+  if (cpu === CPU_TYPE_ARM64 || cpu === CPU_TYPE_ARM64_32) return true;
+  if (cpu === CPU_TYPE_ARM && (inner.subtype >>> 0) === CPU_SUBTYPE_ARM_V7K) {
+    // Match UnsafeHeader::uses16KPages(): armv7k final images are 16K,
+    // while the historical kext exception remains 4K-aligned.
+    return inner.filetype !== MH_KEXT_BUNDLE;
+  }
+  return false;
 }
 
 export function sliceArchName(slice) {
@@ -49,15 +86,14 @@ export function validateFatSlice(slice, inner, totalBytes, opts = {}) {
   if (!inner) {
     throw new Error('Mach-O universal binary slice contains invalid thin header');
   }
-  if (inner.cpu !== slice.cpu || subtypeBase(inner.subtype) !== subtypeBase(slice.subtype)) {
+  if (!sameArchitecture(inner.cpu, inner.subtype, slice.cpu, slice.subtype)) {
     throw new Error('Mach-O universal slice outer architecture does not match inner header');
   }
   if (opts.strictPageAlignment !== false) {
     const isObjectFile = inner.filetype === 1;
     const isDSYM = inner.filetype === 10;
     if (!isObjectFile && !isDSYM) {
-      const uses16K = (slice.cpu >>> 0) === 0x0100000c || (slice.cpu >>> 0) === 0x0200000c;
-      const pageMask = uses16K ? 0x3fffn : 0xfffn;
+      const pageMask = uses16KPages(inner) ? 0x3fffn : 0xfffn;
       if ((slice.offset & pageMask) !== 0n) {
         throw new Error('Mach-O universal binary slice is not page aligned');
       }
@@ -68,7 +104,7 @@ export function validateFatSlice(slice, inner, totalBytes, opts = {}) {
 export function validateFatContainer(all) {
   const seen = new Set();
   for (const s of all) {
-    const key = `${s.cpu >>> 0}:${subtypeBase(s.subtype)}`;
+    const key = `${s.cpu >>> 0}:${canonicalArchitectureSubtype(s.cpu, s.subtype)}`;
     if (seen.has(key)) {
       throw new Error(`Mach-O universal binary contains duplicate ${sliceArchName(s)} architecture`);
     }
@@ -86,11 +122,11 @@ export function validateFatContainer(all) {
 }
 
 function checkCompatArm64Basic(cpu, subtype, offset, size, align, count, totalBytes, existingSlices) {
-  if ((cpu >>> 0) !== 0x0100000c || subtypeBase(subtype) !== 0) return false;
+  if ((cpu >>> 0) !== CPU_TYPE_ARM64 || subtypeBase(subtype) !== 0) return false;
   const total = BigInt(totalBytes);
   if (offset < 8n + BigInt((count + 1) * 20) || size <= 0n || offset + size > total) return false;
   if (align >= 32 || (offset % (1n << BigInt(align))) !== 0n) return false;
-  const dup = existingSlices.some((s) => (s.cpu >>> 0) === 0x0100000c && subtypeBase(s.subtype) === 0);
+  const dup = existingSlices.some((s) => (s.cpu >>> 0) === CPU_TYPE_ARM64 && subtypeBase(s.subtype) === 0);
   if (dup) return false;
   const overlap = existingSlices.some((s) => offset < s.offset + s.size && s.offset < offset + size);
   if (overlap) return false;
