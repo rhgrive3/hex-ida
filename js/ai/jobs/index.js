@@ -78,17 +78,13 @@ export class AgentJobManager {
         job.status = prevStatus;
         throw saveError;
       }
+      let result;
       try {
-        const result = await this.runtime.turn({
+        result = await this.runtime.turn({
           ...job.request, goal: job.goal, mode: 'agent', scope: job.effectiveScope,
           sessionId: job.sessionId, conversationId: job.conversationId,
           provider: job.provider, model: job.model, reasoning: job.reasoning,
         }, options);
-        mergeResult(job, result);
-        if (!result?.limits?.exhausted) job.status = 'complete';
-        else if (hardLimit(job)) job.status = 'hard-limit';
-        else job.status = 'checkpointed';
-        job.updatedAt = new Date().toISOString(); await this.save(job); return checkpoint(job);
       } catch (error) {
         job.status = options.signal?.aborted ? 'checkpointed' : 'failed';
         job.unresolvedWork = unique([...job.unresolvedWork, String(error?.message || error)]).slice(-32);
@@ -98,6 +94,18 @@ export class AgentJobManager {
         } catch {}
         throw error;
       }
+      mergeResult(job, result);
+      if (!result?.limits?.exhausted) job.status = 'complete';
+      else if (hardLimit(job)) job.status = 'hard-limit';
+      else job.status = 'checkpointed';
+      job.updatedAt = new Date().toISOString();
+      try {
+        await this.save(job);
+      } catch (saveError) {
+        job.unresolvedWork = unique([...job.unresolvedWork, `checkpoint-save-failed:${String(saveError?.message || saveError)}`]).slice(-32);
+        throw saveError;
+      }
+      return checkpoint(job);
     } finally {
       this.runningJobIds.delete(id);
     }
