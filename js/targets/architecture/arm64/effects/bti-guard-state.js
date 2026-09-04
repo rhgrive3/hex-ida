@@ -11,6 +11,7 @@ export const ARM64_BTI_PAGE_GUARD_STATE_ID = 'arm64.exec-page.guarded';
 
 const ARM64_BTYPE_REGISTER_ID = 'pstate.btype';
 const ARM64_BTYPE_PRODUCERS = new Set(['br','braa','brab','braaz','brabz','blr','blraa','blrab','blraaz','blrabz']);
+const ARM64_FP_ADVSIMD_EFFECT_FAMILIES = new Set(['arm64-fp','arm64-simd']);
 
 function mnemonicOf(instruction) {
   if (typeof instruction?.mnemonic !== 'string') return '';
@@ -154,6 +155,30 @@ function rebuiltBundle(bundle, { operations, possibleFaults, completeness, unkno
   });
 }
 
+function withFpAdvSimdAccessTrap(bundle) {
+  if (!ARM64_FP_ADVSIMD_EFFECT_FAMILIES.has(bundle?.metadata?.family)
+    || !['exact','exact-with-intrinsic'].includes(bundle?.completeness)) return bundle;
+  const possibleFaults = [
+    ...(bundle.possibleFaults || []),
+    {
+      kind:'system-instruction-trap',
+      condition:{ kind:'architectural-access-check', operation:'fp-advsimd' },
+      detail:{
+        architecturalCheck:'CheckFPAdvSIMDEnabled',
+        controls:['CPACR_EL1.FPEN','CPTR_EL2.FPEN','CPTR_EL2.TFP','CPTR_EL3.TFP'],
+      },
+    },
+  ];
+  return rebuiltBundle(bundle, {
+    operations:bundle.operations,
+    possibleFaults,
+    completeness:bundle.completeness,
+    unknownEffects:bundle.unknownEffects,
+    statePreservation:bundle.statePreservation,
+    metadata:{ fpAdvSimdAccessCheck:'environment-dependent' },
+  });
+}
+
 function guardFaultCondition(guardState, landing) {
   return {
     kind:'and',
@@ -222,7 +247,9 @@ function withArchitecturalBtypeReset(instruction, bundle) {
 
 export function decorateArm64BtiGuardedPageEffects(instruction, bundle, context = {}) {
   if (!bundle) return bundle;
-  if (mnemonicOf(instruction) !== 'bti') return withArchitecturalBtypeReset(instruction, bundle);
+  if (mnemonicOf(instruction) !== 'bti') {
+    return withArchitecturalBtypeReset(instruction, withFpAdvSimdAccessTrap(bundle));
+  }
   const guardState = normalizeArm64BtiGuardedPageState(
     context.btiGuardedPage ?? context.guardedPageState ?? context.pageGuardState ?? null,
   );
