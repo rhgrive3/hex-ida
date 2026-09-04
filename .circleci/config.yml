@@ -1,84 +1,86 @@
 version: 2.1
 
 jobs:
-  probe-llvm18-install:
-    docker:
-      - image: cimg/node:22.23
-    resource_class: large
-    steps:
-      - checkout
-      - run:
-          name: Install frozen Phase 5 toolchain
-          command: |
-            set -euo pipefail
-            sudo apt-get update
-            sudo apt-get install -y clang-18 lld-18 llvm-18
-
-  probe-phase4:
+  evidence-writers:
     docker:
       - image: cimg/node:22.23
     resource_class: large
     steps:
       - checkout
       - run: npm ci --no-audit --no-fund
-      - run: npm run phase4:test
+      - run: npm run evidence-writers:test
 
-  probe-phase5:
+  phase7:
     docker:
       - image: cimg/node:22.23
     resource_class: large
     steps:
       - checkout
       - run: npm ci --no-audit --no-fund
-      - run: npm run phase5:test
+      - run: npm run phase7:test
 
-  probe-repo-a:
+  phase9:
     docker:
       - image: cimg/node:22.23
     resource_class: large
     steps:
       - checkout
-      - run: git fetch --no-tags origin main:refs/remotes/origin/main
       - run: npm ci --no-audit --no-fund
-      - run: node scripts/ci/invariant-command-probe.mjs repo-a
+      - run: npm run phase9:test
 
-  probe-repo-b:
+  phase10:
     docker:
       - image: cimg/node:22.23
     resource_class: large
     steps:
       - checkout
-      - run: git fetch --no-tags origin main:refs/remotes/origin/main
       - run: npm ci --no-audit --no-fund
-      - run: node scripts/ci/invariant-command-probe.mjs repo-b
+      - run: npm run phase10:test
 
-  probe-repo-c:
+  phase11:
     docker:
       - image: cimg/node:22.23
     resource_class: large
     steps:
       - checkout
-      - run: git fetch --no-tags origin main:refs/remotes/origin/main
       - run: npm ci --no-audit --no-fund
-      - run: node scripts/ci/invariant-command-probe.mjs repo-c
+      - run: npm run phase11:test
 
-  probe-repo-d:
+  phase12:
     docker:
       - image: cimg/node:22.23
     resource_class: large
     steps:
       - checkout
-      - run: git fetch --no-tags origin main:refs/remotes/origin/main
       - run: npm ci --no-audit --no-fund
-      - run: node scripts/ci/invariant-command-probe.mjs repo-d
+      - run: npm run phase12:test
+
+  phase6:
+    docker:
+      - image: cimg/node:22.23
+    resource_class: large
+    steps:
+      - checkout
+      - run: npm ci --no-audit --no-fund
+      - run: npm run phase6:test
+
+  npm-test:
+    docker:
+      - image: cimg/node:22.23
+    resource_class: large
+    steps:
+      - checkout
+      - run: npm ci --no-audit --no-fund
+      - run: npm test
 
 workflows:
-  invariant-shard-diagnostic:
+  invariant-command-diagnostic:
     jobs:
-      - probe-llvm18-install
-      - probe-phase4
-      - probe-phase5
-      - probe-repo-a
-      - probe-repo-b
-      - probe-repo-c
-      - probe-repo-d
+      - evidence-writers
+      - phase7
+      - phase9
+      - phase10
+      - phase11
+      - phase12
+      - phase6
+      - npm-test
