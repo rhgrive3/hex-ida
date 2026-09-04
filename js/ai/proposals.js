@@ -233,13 +233,20 @@ function canonicalIdentity(value, stack = new Set()) {
   stack.add(value);
   try {
     if (value instanceof Date) return `t${JSON.stringify(Number.isNaN(value.getTime()) ? 'Invalid Date' : value.toISOString())}`;
-    if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) {
-      const bytes = value instanceof ArrayBuffer
-        ? new Uint8Array(value)
-        : new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+    if (value instanceof ArrayBuffer) {
+      let hexText = '';
+      for (const byte of new Uint8Array(value)) hexText += byte.toString(16).padStart(2, '0');
+      return `yArrayBuffer:${JSON.stringify(hexText)}`;
+    }
+    if (ArrayBuffer.isView(value)) {
+      // Typed-array/view kinds carry different element semantics over the same
+      // raw bytes (Uint8Array vs Uint32Array vs Float32Array vs DataView).
+      // The stale-state guard must not alias them to one revision (#6215).
+      const tag = value instanceof DataView ? 'DataView' : (value?.constructor?.name || 'UnknownView');
+      const bytes = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
       let hexText = '';
       for (const byte of bytes) hexText += byte.toString(16).padStart(2, '0');
-      return `y${JSON.stringify(hexText)}`;
+      return `y${tag}:${JSON.stringify(hexText)}:${value.byteLength}`;
     }
     // Map/Set entry order is part of the value, so it is preserved rather than
     // sorted: two maps built in a different order are different states.
