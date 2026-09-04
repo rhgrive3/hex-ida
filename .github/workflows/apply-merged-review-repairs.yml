@@ -1,0 +1,52 @@
+name: Apply merged-review repairs
+
+on:
+  push:
+    branches:
+      - audit/2026-09-04-merged-pr-reviews
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-merged-review-repairs
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    if: ${{ !contains(github.event.head_commit.message, '[audit-repair-applied]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: audit/2026-09-04-merged-pr-reviews
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Apply only verified current-code findings
+        run: node tools/validation/apply-review-6372-repairs.mjs
+      - name: Verify focused regressions
+        run: |
+          node tests/process/merged-pr-review-audit.test.mjs
+          node tests/process/review-6372-unresolved-findings.test.mjs
+          node tests/phase7/issue-6302-memoryssa-binding-stale-identity.test.mjs
+          node tests/phase7/issue-6307-notestore-delta-resilience.test.mjs
+          node tests/issue-6303-classic-bind-symbol-budget.mjs
+          npm run userscript:build
+          git diff --check
+      - name: Commit exact repair set
+        shell: bash
+        run: |
+          if git diff --quiet; then
+            echo 'No repair diff remained.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add js/binary/macho-dyld.js js/names.js package.json .github/workflows tests
+          git commit -m 'fix(review): apply ignored review repairs [audit-repair-applied]'
+          git push origin HEAD:audit/2026-09-04-merged-pr-reviews
