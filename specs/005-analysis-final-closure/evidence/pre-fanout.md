@@ -4,8 +4,8 @@ Status: `PREFLIGHT_GREEN`
 
 This packet records the ten mandatory conditions in
 `docs/ENGINEERING_PROCESS_GUARDRAILS.md` §3.1. The certified pre-transition
-candidate is commit `d749785feb23bdc4458d8ee67b80f6366098546b`, tree
-`9c5599b9e284ad4b26783939db503e60cfc68a51`, on base
+candidate is commit `368137e4e913fef61d1f95eb66242d8c8c7ae0c9`, tree
+`a4e12f26160537424fddeae98a4d29a80882a969`, on base
 `7012c4cc4f0d5c0d8a7ca44c6c5c1edcb080aba1`.
 
 | §3.1 condition | Current evidence | State |
@@ -14,7 +14,7 @@ candidate is commit `d749785feb23bdc4458d8ee67b80f6366098546b`, tree
 | Machine-checkable exit contract | `spec.md`, `tasks.md`, closure/performance/platform contracts | SATISFIED |
 | Frozen/shared/generated/verifier/integration/component ownership | `contracts/task-ownership.json` plus exact integration inventory | SATISFIED |
 | Living integration branch/PR | `recovery/final-closure-v3-20260904`, replacement PR #6611; #6429/#6610 closed unmerged and preserved | SATISFIED |
-| Permanent exact-SHA invocation | `.github/workflows/final-closure-preflight.yml`, run `33913158441`, exact head/base above | SATISFIED |
+| Permanent exact-SHA invocation | `.github/workflows/final-closure-preflight.yml`, run `33916765881`, exact head/base above | SATISFIED |
 | Ownership/governance regressions | canonical recursive `tests/final-closure/run.mjs` on the exact head | SATISFIED |
 | Real production walking skeleton | unchanged `tests/phase4/walking-skeleton.test.mjs` on the exact head | SATISFIED |
 | Target browser/device proof | frozen production-WebKit and physical-iPad ≤4 GiB classes in `contracts/final-platform-locks.json` | SATISFIED |
@@ -154,29 +154,33 @@ any later applicability change.
 ## Exact candidate evidence
 
 - Direct exact CLI: `PREFLIGHT_GREEN` for head
-  `d749785feb23bdc4458d8ee67b80f6366098546b`, tree/merge tree
-  `9c5599b9e284ad4b26783939db503e60cfc68a51`, and base/merge base
+  `368137e4e913fef61d1f95eb66242d8c8c7ae0c9`, tree/merge tree
+  `a4e12f26160537424fddeae98a4d29a80882a969`, and base/merge base
   `7012c4cc4f0d5c0d8a7ca44c6c5c1edcb080aba1`; verifier SHA-256
-  `d31c1df716fbe59701df6c16657d4e468b48c90b08b15af0ce1c2cf4abd7470c`.
-- Canonical recursive runner: `final-closure-v3-d749785f: PASS`
-  in 354.6 seconds on the exact committed head; the focused permanent preflight
-  regression passed in 375.6 seconds with all 27 nested discovery paths. It covers the fixed central shadow judges,
+  `abd746df9cd9144ec7291587292e9b53735c70532f949c9c85e4872018569d2a`.
+- Canonical recursive runner: `final-closure-contract: PASS`
+  in 297.3 seconds on the exact committed head; the focused permanent preflight
+  regression passed in 292.1 seconds on the identical committed tree with all 27 nested discovery paths. It covers the fixed central shadow judges,
   denominator attacks, raw T025 binding, immutable task anchors, recovery-ref
-  transactions, hostile path decoding, and ownership regressions.
+  transactions, hostile path decoding, derived-manifest ownership, selective
+  recovered-candidate allowlists, independent-shadow separation, and ownership
+  regressions.
 - Unchanged Phase 4 production walking skeleton: PASS on the exact committed
   head. Repository lint: PASS on that head.
 - Expected/actual/union inventory: exact `32/32`, digest
   `f50d499c508ea7c2a4cee3d1c45ed4a1`; task and ownership denominators are
   `57/57`.
-- Independent Luna Max review: the sealed-handoff lifecycle repair was reviewed
-  on exact head `d749785feb23bdc4458d8ee67b80f6366098546b`, tree
-  `9c5599b9e284ad4b26783939db503e60cfc68a51`; the reviewer reconstructed the
+- Independent Luna Max review: the sealed-handoff lifecycle repair and final
+  selective-ownership freeze were reviewed on exact head
+  `368137e4e913fef61d1f95eb66242d8c8c7ae0c9`, tree
+  `a4e12f26160537424fddeae98a4d29a80882a969`; the reviewer reconstructed the
   operational 32/32-path and Stage-B 3/3-path inventories, the 11 handoffs, the
-  unique T046 transition, and the component-fixture reuse, and returned PASS.
+  unique T046 transition, all 57 ownership rows, zero unordered overlaps, and
+  T016's independent-shadow separation, and returned PASS.
   The supervisor independently verified the exact diff, canonical runner,
   direct CLI, lint, walking skeleton, and 32-path inventory.
-- Hosted exact-head/base workflow: run `33913158441` succeeded for exact head
-  `d749785feb23bdc4458d8ee67b80f6366098546b`; `pull-request-authority` and
+- Hosted exact-head/base workflow: run `33916765881` succeeded for exact head
+  `368137e4e913fef61d1f95eb66242d8c8c7ae0c9`; `pull-request-authority` and
   `integration-pull-request-head` passed, while the dispatch/component jobs were
   correctly inapplicable and skipped.
 - CodeRabbit on predecessor PR #6429: exact-head check passed and all 18 review
@@ -185,7 +189,8 @@ any later applicability change.
   exact-head R2 finding on `711041f4` was also ACTIONABLE: the synthetic handoff
   was incorrectly placed before the fixture base, producing an incomplete
   hosted diff. Exact head `d749785feb23bdc4458d8ee67b80f6366098546b`
-  repairs that lifecycle without weakening the validator and has zero inline
-  review threads; a fresh post-evidence/current-head CodeRabbit disposition
+  repaired that lifecycle without weakening the validator; current code head
+  `368137e4e913fef61d1f95eb66242d8c8c7ae0c9` retains it and freezes selective
+  component ownership. A fresh post-evidence/current-head CodeRabbit disposition
   remains mandatory before component acceptance. The H9 collector finding
   remains assigned to post-T048 T045.
