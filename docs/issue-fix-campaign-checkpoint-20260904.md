@@ -8,10 +8,24 @@ Status: ACTIVE — AI owner lane implementation is complete locally; PR handoff 
 - Latest observed `origin/main` before handoff: `eac4b0609e8a6c4a78313f9d2a68e15ba235975b` (`#6363`, CI workflow-only; no changed-file overlap).
 - Worktree: `ida-245-ai-wave2`.
 - Branch: `fix/issues-ai-owner-6259-6266`.
+- Rebasing result: implementation commit `9a4c928f40440273b1c3674ed1af4792834bb3d4` is based on the latest observed main.
 - Owner lane: AI control/UI/tool behavior.
 - Claimed issues: #6259, #6264, #6265, #6266.
 - Explicitly unclaimed: #6299, because open PR #6360 already changes `js/symbolic/function-sandbox.js`.
 - Shared-board records: claim #121, scope update #126, implementation status #136, checkpoint ownership #140.
+
+Actual candidate file inventory:
+
+- `js/ai/control/tool-window.js`
+- `js/ai/tools/registry-base.js`
+- `js/ai/ui/model-picker.js`
+- `js/ai/ui/panel.js`
+- `js/ai/ui/session-menu.js`
+- `tests/issue-6259-tool-window-auto-escape.mjs`
+- `tests/issue-6264-ai-capability-refresh.mjs`
+- `tests/issue-6265-model-reasoning-selection.mjs`
+- `tests/issue-6266-compare-functions-fallback.mjs`
+- `docs/issue-fix-campaign-checkpoint-20260904.md`
 
 ## Completed implementation
 
