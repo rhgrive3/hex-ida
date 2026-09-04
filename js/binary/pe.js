@@ -56,7 +56,9 @@ function seedValidatedEntrypoint(image, entryRva, sizeOfImage, machine) {
   if (!segment.perms?.execute) { reject('section is not executable'); return; }
   const offset = address - segment.address;
   if (offset < 0n || offset >= segment.fileSize) { reject('entrypoint has no file-backed instruction byte'); return; }
-  const alignment = machine === 0xaa64 || machine === 0x01c0 || machine === 0x01c4 ? 4n : 1n;
+  const alignment = machine === 0xaa64 || machine === 0x01c0 ? 4n
+    : machine === 0x01c4 ? 2n
+    : 1n;
   if (address % alignment !== 0n) { reject(`address is not ${alignment}-byte aligned`); return; }
   image.metadata.entrypointValid = true;
   image.metadata.entrypointDiagnostic = null;
