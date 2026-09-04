@@ -58,10 +58,11 @@ function compareText(a, b) {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
-function preflightPhiLinkBudget(definitions, maximum) {
+function preflightPhiLinkBudget(definitions, maximum, options) {
   let used = 0;
   const incomingSnapshots = new Array(definitions.length);
   for (let index = 0; index < definitions.length; index++) {
+    assertNotAborted(options);
     const definition = definitions[index];
     if (!definition || typeof definition !== 'object' || Array.isArray(definition)) continue;
     const incoming = definition.incoming;
@@ -75,7 +76,12 @@ function preflightPhiLinkBudget(definitions, maximum) {
     // Snapshot exactly the bounded entry count charged above. Later getters on
     // the definition may mutate the caller-owned array, but normalization must
     // never observe more PHI links than maxLinks preflight accounted for.
-    incomingSnapshots[index] = Array.from({ length }, (_, itemIndex) => incoming[itemIndex]);
+    const snapshot = new Array(length);
+    for (let itemIndex = 0; itemIndex < length; itemIndex++) {
+      assertNotAborted(options);
+      snapshot[itemIndex] = incoming[itemIndex];
+    }
+    incomingSnapshots[index] = snapshot;
     used += length;
   }
   return { used, incomingSnapshots };
@@ -155,7 +161,7 @@ export function createSemanticSsaContract(input, options = {}) {
   if (rawUses.length > maxUses) fail('semantic-ssa-budget-exceeded-maxUses');
   if (rawUses.length > maxLinks) fail('semantic-ssa-budget-exceeded-maxLinks');
 
-  const { used: phiLinkCount, incomingSnapshots } = preflightPhiLinkBudget(rawDefinitions, maxLinks);
+  const { used: phiLinkCount, incomingSnapshots } = preflightPhiLinkBudget(rawDefinitions, maxLinks, options);
   if (rawUses.length > maxLinks - phiLinkCount) fail('semantic-ssa-budget-exceeded-maxLinks');
 
   const definitions = [];
