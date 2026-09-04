@@ -14,7 +14,7 @@ function descriptor(produces = ['ranges'], consumes = []) {
   });
 }
 
-function producer(value) {
+function producer(value, completeness = 'complete') {
   const ownDescriptor = descriptor();
   return {
     descriptor: ownDescriptor,
@@ -23,7 +23,7 @@ function producer(value) {
       return createPassResult({
         descriptor: ownDescriptor,
         status: 'changed',
-        completeness: 'complete',
+        completeness,
         produced: ['ranges'],
       });
     },
@@ -31,11 +31,16 @@ function producer(value) {
 }
 
 test('nullish produced analyses fail closed without publishing availability', async (t) => {
-  for (const [name, value] of [['undefined', undefined], ['null', null]]) {
+  for (const [name, value, completeness] of [
+    ['complete undefined', undefined, 'complete'],
+    ['complete null', null, 'complete'],
+    ['partial undefined', undefined, 'partial'],
+    ['partial null', null, 'partial'],
+  ]) {
     await t.test(name, () => {
       const state = createAnalysisState({});
       const before = state.snapshot();
-      const outcome = runPassTransaction(state, producer(value));
+      const outcome = runPassTransaction(state, producer(value, completeness));
 
       assert.equal(outcome.committed, false);
       assert.equal(outcome.stopReason, 'failed:phase8-pass-produced-analysis-value-required:ranges');
@@ -71,6 +76,40 @@ test('a later nullish production aborts the whole staged transaction', () => {
   assert.deepEqual(state.snapshot(), before);
   assert.equal(state.version('ranges'), 0);
   assert.equal(state.version('dominators'), 0);
+});
+
+test('cancellation after staging preserves every authoritative version atomically', async (t) => {
+  for (const { name, abortOnCheck, stopReason } of [
+    { name:'mid-pass cancellation', abortOnCheck:2, stopReason:'cancelled-mid-pass' },
+    { name:'pre-commit cancellation', abortOnCheck:3, stopReason:'cancelled-before-commit' },
+  ]) {
+    await t.test(name, () => {
+      const dominators = Object.freeze({ completeness:'complete', root:'entry' });
+      const state = createAnalysisState({ dominators });
+      const before = state.snapshot();
+      let checks = 0;
+      const budget = {
+        shouldAbort() {
+          checks += 1;
+          return checks >= abortOnCheck;
+        },
+      };
+
+      const value = Object.freeze({ min:0, max:1, completeness:'complete' });
+      const outcome = runPassTransaction(state, producer(value), {}, budget);
+
+      assert.equal(outcome.committed, false);
+      assert.equal(outcome.stopReason, stopReason);
+      assert.deepEqual(outcome.staged, []);
+      assert.deepEqual(outcome.invalidated, []);
+      assert.deepEqual(state.snapshot(), before);
+      assert.equal(state.version('ranges'), 0);
+      assert.equal(state.get('ranges'), null);
+      assert.equal(state.get('dominators'), dominators);
+      assert.deepEqual(state.available(), ['dominators']);
+      assert.equal(checks, abortOnCheck);
+    });
+  }
 });
 
 test('downstream consumers still observe missing input after rejected production', () => {
