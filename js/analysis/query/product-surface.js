@@ -213,26 +213,60 @@ export function canonicalClaimVerdict(item) {
   return normalized && CANONICAL_VERDICTS.has(normalized) ? normalized : 'unverified';
 }
 
+function canonicalClaimId(item, index) {
+  const raw = item?.claimId ?? item?.id ?? item?.key;
+  if (raw == null) return `claim-${index}`;
+  if (typeof raw !== 'string' || !raw.trim()) return null;
+  return raw.trim();
+}
+
+function canonicalClaimConfidence(value) {
+  if (value == null) return null;
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 1) return undefined;
+  return value;
+}
+
+function canonicalClaimEvidenceIds(value) {
+  if (value == null) return [];
+  if (!Array.isArray(value)) return null;
+  const ids = [];
+  for (const raw of value) {
+    if (typeof raw !== 'string' || !raw.trim()) return null;
+    ids.push(raw.trim());
+  }
+  return ids;
+}
+
 function claimRows(report, snapshot) {
   const source = report?.findings || report?.results || report?.goals || [];
-  if (!Array.isArray(source)) return [];
-  return source.map((item, index) => {
+  if (!Array.isArray(source)) return { rows:[], invalidCount:0 };
+  const rows = [];
+  let invalidCount = 0;
+  for (let index = 0; index < source.length; index++) {
+    const item = source[index];
     const address = item?.addr ?? item?.address ?? item?.functionAddr ?? item?.function ?? null;
-    const claimId = String(item?.claimId ?? item?.id ?? item?.key ?? `claim-${index}`);
-    return {
+    const claimId = canonicalClaimId(item, index);
+    const confidence = canonicalClaimConfidence(item?.confidence);
+    const evidenceIds = canonicalClaimEvidenceIds(item?.evidenceIds);
+    if (claimId == null || confidence === undefined || evidenceIds == null) {
+      invalidCount++;
+      continue;
+    }
+    rows.push({
       claimId,
       title:String(item?.title || item?.label || item?.goal?.text || item?.goal || 'Finding'),
       address,
       verdict:canonicalClaimVerdict(item),
-      confidence:Number.isFinite(Number(item?.confidence)) ? Number(item.confidence) : null,
-      evidenceIds:Array.isArray(item?.evidenceIds) ? item.evidenceIds.map(String) : [],
+      confidence,
+      evidenceIds,
       contradictions:Array.isArray(item?.contradictions) ? item.contradictions : [],
       assumptions:Array.isArray(item?.assumptions) ? item.assumptions : [],
       summary:item?.summary || item?.description || item?.detail || null,
       snapshotId:snapshot.snapshotId,
       source:item,
-    };
-  });
+    });
+  }
+  return { rows, invalidCount };
 }
 
 function findRecognitionRecord(app, address) {
@@ -326,18 +360,22 @@ export function createProductSurfaceQueries(app) {
         return queryEnvelope(snapshot, [], 'unsupported', { reason:'claim-report-snapshot-mismatch', producer:'canonical-claim-adapter/v1' }, null);
       }
       if (!bound) REPORT_BINDINGS.set(report, snapshot.snapshotId);
-      let rows = claimRows(report, snapshot);
+      const projected = claimRows(report, snapshot);
+      let rows = projected.rows;
       const claimId = claimIdFilter(query.claimId);
       if (claimId != null) rows = rows.filter((row) => row.claimId === claimId);
       const accepted = verdictFilter(query.verdict);
       if (accepted) rows = rows.filter((row) => accepted.has(row.verdict));
       const { offset, limit } = pageOf(page);
       const value = rows.slice(offset, offset + limit);
+      const sourceInvalid = projected.invalidCount > 0;
+      const reportIncomplete = report?.truncated === true;
+      const incomplete = sourceInvalid || reportIncomplete;
       await assertCurrentSnapshot(app, snapshot, options);
-      return queryEnvelope(snapshot, value, report?.truncated === true ? 'partial' : 'complete', {
-        reason:report?.truncated === true ? 'auto-report-incomplete' : null,
+      return queryEnvelope(snapshot, value, incomplete ? 'partial' : 'complete', {
+        reason:reportIncomplete ? 'auto-report-incomplete' : sourceInvalid ? 'claim-source-invalid' : null,
         producer:'canonical-claim-adapter/v1',
-      }, { offset, limit, returned:value.length, total:report?.truncated === true ? null : rows.length, next:offset + value.length < rows.length ? offset + value.length : null });
+      }, { offset, limit, returned:value.length, total:incomplete ? null : rows.length, next:offset + value.length < rows.length ? offset + value.length : null });
     },
 
     async classification(snapshot, functionId, options = {}) {
