@@ -371,7 +371,9 @@ export function parseTpiStream(bytes, budget = DEBUG_DEFAULT_BUDGET) {
     if (leaf === LF_STRUCTURE || leaf === LF_CLASS || leaf === LF_UNION) {
       const count = view.getUint16(body, true);
       const properties = view.getUint16(body + 2, true);
-      const fieldList = leaf === LF_UNION ? 0 : view.getUint32(body + 4, true);
+      // LF_UNION carries a FieldList like the other aggregates (LLVM
+      // UnionRecord: MemberCount, Options, FieldList, Size, Name).
+      const fieldList = view.getUint32(body + 4, true);
       const sizeOffset = leaf === LF_UNION ? body + 8 : body + 16;
       const numeric = readNumeric(view, bytes, sizeOffset, end);
       if (!numeric) break;
