@@ -146,10 +146,14 @@ export function fingerprintImage(image, opts = {}) {
 
   return (async () => {
     let state = { hi: FNV_OFFSET_HI, lo: FNV_OFFSET_LO }, total = 0;
+    const maxReadLength = Number.isSafeInteger(image.source?.maxReadLength) && image.source.maxReadLength > 0
+      ? image.source.maxReadLength
+      : chunkBytes;
+    const sourceChunkBytes = Math.min(chunkBytes, maxReadLength);
     for (const mapping of ranges) {
       const size = BigInt(mapping.fileSize);
       for (let off = 0n; off < size;) {
-        const take = Number(size - off < BigInt(chunkBytes) ? size - off : BigInt(chunkBytes));
+        const take = Number(size - off < BigInt(sourceChunkBytes) ? size - off : BigInt(sourceChunkBytes));
         const bytes = await sourceMappingChunk(image, mapping, off, take);
         if (!bytes || bytes.length !== take) break;
         state = fnv1a64State(bytes, state);
