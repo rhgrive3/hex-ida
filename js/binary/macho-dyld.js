@@ -428,7 +428,9 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
     const address = seg.address + segOffset;
     const imp = snapshotImport();
     imp.sites.push({ address, offset: image.addressToOffset(address), kind: source, type, addend, weak: imp.weak });
-    if(!budget.take({objects:2,operations:1,estimatedHeapBytes:320},'classic-bind-output')){fail('shared metadata budget exhausted while recording bind');return;}
+    // The retained import name is resident metadata: account its string bytes
+    // alongside the fixed object cost (issue #6303).
+    if(!budget.take({objects:2,operations:1,stringBytes:symbol.length*2,estimatedHeapBytes:320+symbol.length*2},'classic-bind-output')){fail('shared metadata budget exhausted while recording bind');return;}
     image.imports.push(imp); status.decodedBinds++;
   };
   const applyThreaded = () => {
@@ -470,7 +472,15 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
     } else if (op === 0x10) libOrdinal = imm;
     else if (op === 0x20) { const x = r.uleb(p, 10, end); p = x.next; libOrdinal = Number(x.value); }
     else if (op === 0x30) libOrdinal = imm === 0 ? 0 : signExtend(imm | 0xf0, 8);
-    else if (op === 0x40) { const x = rawCString(r, p, end); symbol = x.text; symbolFlags = imm; p = x.next; }
+    else if (op === 0x40) {
+      const x = rawCString(r, p, end);
+      // The symbol C-string is a variable-length cost: charge its raw bytes to
+      // inputBytes and the decoded string to the shared string budget before
+      // retaining it, otherwise a crafted stream routes unbounded metadata
+      // past the declared stringBytes ceiling (issue #6303).
+      if (!budget.take({ inputBytes:x.bytes, stringBytes:x.text.length*2, estimatedHeapBytes:x.text.length*2+32 }, 'classic-bind-symbol')) { fail('shared metadata budget exhausted while decoding bind symbol'); break; }
+      symbol = x.text; symbolFlags = imm; p = x.next;
+    }
     else if (op === 0x50) type = imm;
     else if (op === 0x60) { const x = r.sleb(p, 10, end); p = x.next; addend = x.value; }
     else if (op === 0x70) { segIndex = imm; const x = r.uleb(p, 10, end); p = x.next; segOffset = x.value; }
