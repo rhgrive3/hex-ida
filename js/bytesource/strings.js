@@ -16,12 +16,17 @@ export async function scanSourceStrings(image, input, opts = {}) {
   const ranges = mappedRanges(image, source.size, includeExecutable);
   const out = [];
   const seen = new Set();
-  const overlapBytes = Math.min(chunkSize, max * 2 + 2);
+  let capped = false;
+  const isCapped = () => capped;
+  const onCapped = () => { capped = true; };
 
   for (const range of ranges) {
     let offset = range.start;
-    let carry = new Uint8Array(0);
-    while (offset < range.end && out.length < limit) {
+    let carryAscii = new Uint8Array(0);
+    const carryUtf16 = {};
+    for (const enc of utf16Encodings) carryUtf16[enc] = new Uint8Array(0);
+
+    while (offset < range.end && !capped) {
       if (opts.signal?.aborted) return { results: out, cancelled: true, capped: false };
       const remaining = range.end - offset;
       const length = Number(remaining < BigInt(chunkSize) ? remaining : BigInt(chunkSize));
@@ -31,23 +36,31 @@ export async function scanSourceStrings(image, input, opts = {}) {
         if (opts.signal?.aborted || error?.name === 'AbortError' || error?.code === 'BYTE_SOURCE_CANCELLED') return { results: out, cancelled: true, capped: false };
         throw error;
       }
-      const bytes = carry.length ? concat(carry, block) : block;
-      const base = offset - BigInt(carry.length);
       const isFinalBlock = offset + BigInt(block.length) >= range.end || !block.length;
-      scanAscii(image, bytes, base, range, min, max, out, seen, limit, isFinalBlock);
+
+      // ASCII
+      const bytesAscii = carryAscii.length ? concat(carryAscii, block) : block;
+      const baseAscii = offset - BigInt(carryAscii.length);
+      const uncompletedAscii = scanAscii(image, bytesAscii, baseAscii, range, min, max, out, seen, limit, isFinalBlock, onCapped, isCapped);
+      carryAscii = uncompletedAscii > 0 ? bytesAscii.slice(bytesAscii.length - uncompletedAscii) : new Uint8Array(0);
+
+      // UTF-16
       for (const encoding of utf16Encodings) {
-        if (out.length >= limit) break;
-        scanUtf16(image, bytes, base, range, min, max, out, seen, limit, encoding, isFinalBlock);
+        if (capped) break;
+        const curCarry = carryUtf16[encoding];
+        const bytesUtf16 = curCarry.length ? concat(curCarry, block) : block;
+        const baseUtf16 = offset - BigInt(curCarry.length);
+        const uncompletedUtf16 = scanUtf16(image, bytesUtf16, baseUtf16, range, min, max, out, seen, limit, encoding, isFinalBlock, onCapped, isCapped);
+        carryUtf16[encoding] = uncompletedUtf16 > 0 ? bytesUtf16.slice(bytesUtf16.length - uncompletedUtf16) : new Uint8Array(0);
       }
-      const keep = Math.min(overlapBytes, bytes.length);
-      carry = bytes.slice(bytes.length - keep);
+
       offset += BigInt(block.length);
       opts.onProgress?.({ done: offset - range.start, total: range.end - range.start, strings: out.length, section: range.section });
-      if (!block.length) break;
+      if (!block.length || capped) break;
     }
-    if (out.length >= limit) break;
+    if (capped) break;
   }
-  return { results: out, cancelled: false, capped: out.length >= limit };
+  return { results: out, cancelled: false, capped };
 }
 
 function mappedRanges(image, sourceSize, includeExecutable) {
@@ -71,18 +84,24 @@ function mappedRanges(image, sourceSize, includeExecutable) {
   return ranges;
 }
 
-function scanAscii(image, bytes, base, range, min, max, out, seen, limit, isFinalBlock) {
-  for (let p = 0; p < bytes.length && out.length < limit;) {
+function scanAscii(image, bytes, base, range, min, max, out, seen, limit, isFinalBlock, onCapped, isCapped) {
+  let uncompleted = 0;
+  for (let p = 0; p < bytes.length && !isCapped();) {
     if (!printableAscii(bytes[p])) { p++; continue; }
     const start = p;
     let q = p;
     while (q < bytes.length && q - start < max && printableAscii(bytes[q])) q++;
     if (!isFinalBlock && q === bytes.length && q - start < max && base + BigInt(q) < range.end) {
+      uncompleted = bytes.length - start;
       break;
     }
-    if (q - start >= min) emit(image, bytes, base, start, q - start, 'utf8', range, out, seen);
-    p = q < bytes.length && printableAscii(bytes[q]) ? q : Math.max(q + 1, p + 1);
+    if (q - start >= min) {
+      emit(image, bytes, base, start, q - start, 'utf8', range, out, seen, limit, onCapped);
+      if (isCapped()) break;
+    }
+    p = q - start >= max ? q : q + 1;
   }
+  return uncompleted;
 }
 
 function chooseUtf16Encodings(image, option) {
@@ -93,29 +112,42 @@ function chooseUtf16Encodings(image, option) {
   return [image?.endian === 'big' ? 'utf16be' : 'utf16le'];
 }
 
-function scanUtf16(image, bytes, base, range, min, max, out, seen, limit, encoding, isFinalBlock) {
+function scanUtf16(image, bytes, base, range, min, max, out, seen, limit, encoding, isFinalBlock, onCapped, isCapped) {
   const be = encoding === 'utf16be';
   const printableAt = (p) => p + 1 < bytes.length && (be ? bytes[p] === 0 && printableAscii(bytes[p + 1]) : printableAscii(bytes[p]) && bytes[p + 1] === 0);
-  for (let p = 0; p + 1 < bytes.length && out.length < limit;) {
+  let uncompleted = 0;
+  for (let p = 0; p + 1 < bytes.length && !isCapped();) {
     if (!printableAt(p)) { p++; continue; }
     const start = p;
     let q = p;
     let chars = 0;
     while (q + 1 < bytes.length && chars < max && printableAt(q)) { chars++; q += 2; }
     if (!isFinalBlock && q + 1 >= bytes.length && chars < max && base + BigInt(q) < range.end) {
+      uncompleted = bytes.length - start;
       break;
     }
-    if (chars >= min) emit(image, bytes, base, start, q - start, encoding, range, out, seen);
-    p = chars === max && printableAt(q) ? q : Math.max(q + 1, p + 1);
+    if (chars >= min) {
+      emit(image, bytes, base, start, q - start, encoding, range, out, seen, limit, onCapped);
+      if (isCapped()) break;
+    }
+    p = chars >= max ? q : q + 2;
   }
+  if (!isFinalBlock && uncompleted === 0 && (bytes.length & 1) !== 0) {
+    uncompleted = 1;
+  }
+  return uncompleted;
 }
 
-function emit(image, bytes, base, localStart, byteLength, encoding, range, out, seen) {
+function emit(image, bytes, base, localStart, byteLength, encoding, range, out, seen, limit, onCapped) {
   const fileOffset = base + BigInt(localStart);
   if (fileOffset < range.start || fileOffset >= range.end) return;
   const key = `${fileOffset}:${encoding}`;
   if (seen.has(key)) return;
   seen.add(key);
+  if (out.length >= limit) {
+    onCapped();
+    return;
+  }
   const raw = bytes.subarray(localStart, localStart + byteLength);
   let text;
   try { text = new TextDecoder(encoding === 'utf16le' ? 'utf-16le' : encoding === 'utf16be' ? 'utf-16be' : 'utf-8').decode(raw); }
