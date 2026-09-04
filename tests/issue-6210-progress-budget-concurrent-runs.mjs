@@ -49,6 +49,8 @@ function createEngine({ maxDecisions = 3, onRequest } = {}) {
   const res = await engine.run({ goal: 'single run', conversationId: 'c1' });
   assert.equal(res.answer, 'ok');
   assert.equal(engine.progressRunActive, false);
+  assert.equal(engine.progressDecisionCount, 0);
+  assert.equal(engine.maxDecisions, 2);
 }
 
 // 2. Concurrent run is rejected and does not corrupt active run's state
@@ -97,14 +99,20 @@ function createEngine({ maxDecisions = 3, onRequest } = {}) {
   // After first run completes, another run can succeed cleanly
   const afterResult = await engine.run({ goal: 'run after', conversationId: 'c-after' });
   assert.equal(afterResult.answer, 'first done');
+  assert.equal(engine.progressRunActive, false);
+  assert.equal(engine.progressDecisionCount, 0);
+  assert.equal(engine.maxDecisions, 4);
 }
 
-// 3. Failed run clears lease in finally
+// 3. A failed run releases the same engine for a later successful run
 {
+  let requestCount = 0;
   const engine = createEngine({
     maxDecisions: 2,
     async onRequest() {
-      throw new Error('bridge boom');
+      requestCount += 1;
+      if (requestCount === 1) throw new Error('bridge boom');
+      return { text: JSON.stringify({ type: 'final', answer: 'recovered', completedTasks: [], remaining: [] }) };
     },
   });
 
@@ -116,11 +124,15 @@ function createEngine({ maxDecisions = 3, onRequest } = {}) {
   );
 
   assert.equal(engine.progressRunActive, false);
+  assert.equal(engine.progressDecisionCount, 0);
+  assert.equal(engine.maxDecisions, 2);
 
-  // Next run is not blocked
-  const engineNext = createEngine({ maxDecisions: 2 });
-  const ok = await engineNext.run({ goal: 'subsequent run', conversationId: 'c-ok' });
-  assert.equal(ok.answer, 'ok');
+  const recovered = await engine.run({ goal: 'subsequent run', conversationId: 'c-recovered' });
+  assert.equal(recovered.answer, 'recovered');
+  assert.equal(requestCount, 2);
+  assert.equal(engine.progressRunActive, false);
+  assert.equal(engine.progressDecisionCount, 0);
+  assert.equal(engine.maxDecisions, 2);
 }
 
 console.log('issue #6210 progress-budget concurrent runs regressions PASS');
