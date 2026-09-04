@@ -110,3 +110,20 @@ test('P10 traceFunction rejects untagged trace from a pre-cutover operation (#39
   assert.equal(session.traces.snapshot().events.length,0);
   assert.equal(platform.evidence.length,0);
 });
+
+test('P10 traceFunction rejects explicitly stale events before fact/evidence publication (#3926)', async () => {
+  const adapter = traceAdapterFixture(async () => ({
+    events:[{ type:'branch', epoch:1, address:'0x6000', next:'0xDEAD' }],
+  }));
+  const platform = new RuntimeAnalysisPlatform({ symbolic:false });
+  const session = await platform.startSession({ adapter, connect:false });
+
+  assert.equal(session.newEpoch(),2);
+  await assert.rejects(platform.traceFunction(0x6000), (error) => {
+    assert.equal(error?.code,'session-epoch-event-mismatch');
+    return true;
+  });
+
+  assert.equal(session.traces.snapshot().events.length,0);
+  assert.equal(platform.evidence.length,0);
+});
