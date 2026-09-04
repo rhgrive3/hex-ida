@@ -91,4 +91,38 @@ assert.doesNotThrow(() => createSemanticSsaContract({
 }, { budget:{ maxDefinitions:1, maxUses:1, maxLinks:1 } }),
 'exactly-at-budget artifacts must remain accepted');
 
+{
+  let incomingReads = 0;
+  const oneIncoming = [{ predecessorBlockId:'p0', valueId:'v0' }];
+  const overBudgetIncoming = [
+    { predecessorBlockId:'p0', valueId:'v0' },
+    { predecessorBlockId:'p1', valueId:'v0' },
+  ];
+  const phi = {
+    definitionId:'phi-snapshot',
+    valueId:'vp-snapshot',
+    kind:'phi',
+    blockId:'join',
+    variableKey:'state:v',
+    sourceEntityId:'join',
+    get incoming() {
+      incomingReads++;
+      return incomingReads === 1 ? oneIncoming : overBudgetIncoming;
+    },
+    origin,
+  };
+
+  const contract = createSemanticSsaContract({
+    functionId:'f-snapshot',
+    definitions:[entry('d0','v0'), phi],
+    uses:[],
+  }, { budget:{ maxLinks:1 } });
+
+  assert.equal(incomingReads, 1, 'PHI incoming accessor must not be re-read after maxLinks preflight');
+  const normalizedPhi = contract.definitions.find((definition) => definition.definitionId === 'phi-snapshot');
+  assert.ok(normalizedPhi);
+  assert.equal(normalizedPhi.incoming.length, 1, 'normalized PHI must use the exact incoming snapshot charged by preflight');
+  assert.equal(normalizedPhi.incoming[0].predecessorBlockId, 'p0');
+}
+
 console.log('issues 5414/5865 semantic SSA link budget: PASS');
