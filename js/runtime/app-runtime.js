@@ -1,7 +1,6 @@
 import { RuntimeAnalysisPlatform } from './index.js';
 
 const states = new WeakMap();
-const MACHO_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function currentFileToken(app) {
   return app?.store?.get?.('fileInfo') || null;
@@ -36,7 +35,7 @@ function activeArchitecture(app) {
 }
 function canonicalSliceUuid(value) {
   if (value == null) return null;
-  if (typeof value !== 'string' || !MACHO_UUID_PATTERN.test(value)) throw new TypeError('runtime-slice-uuid-invalid');
+  if (typeof value !== 'string' || value.trim() === '') throw new TypeError('runtime-slice-uuid-invalid');
   return value;
 }
 function activeSliceIdentity(app) {
