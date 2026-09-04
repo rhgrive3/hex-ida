@@ -61,10 +61,50 @@ A production delta may enter an integration candidate only when all are true:
    verification.
 
 `task-ownership.json` is the machine-readable authority for item 4. It contains
-exactly one nonempty `forbiddenOverlap` array for every task ID. Missing or
-duplicate IDs, an empty array, or a concurrent write matching a forbidden entry
-blocks implementation and promotion. Sequential reuse of a path is allowed only
-after its dependency owner has completed and handed off the exact tree identity.
+exactly one nonempty `allowedPaths` array and one nonempty `forbiddenOverlap`
+array for every task ID. Missing or duplicate IDs, either empty array, or a
+concurrent write matching a forbidden entry blocks implementation and promotion.
+The exact actual changed-path inventory in `integration-inventory.json` MUST be
+validated against the recorded base-to-candidate diff: its expected, actual, and
+union path sets and entry paths are duplicate-free and exactly equal, and every
+actual path matches its owner's `allowedPaths` and no owner's
+applicable `forbiddenOverlap` rule is violated. Sequential reuse of a path is allowed only after its
+dependency owner has completed and handed off the exact tree identity.
+
+The same ownership contract contains the candidate-gate registry. Every frozen
+implementation component (`T011`–`T017`, `T026`–`T036`, and `T045`) and every
+applicable T051+ task has nonempty `owned`, `rolling`, and `shadow` command
+arrays. Commands are structured argv and execute directly without a shell on
+the detached synthetic candidate merge commit. The governing registry is read
+from the exact living-integration parent so a component cannot approve a weaker
+gate set in its own change. A missing, unsafe, skipped, or red command blocks
+component acceptance.
+
+After T048 is `DONE`, Stage B component applicability comes only from the
+machine-readable residual-coverage packet bound to the current base, canonical
+T025 handoff, exact roadmap matrix, all 23 findings, and all candidate tasks.
+Packet statuses must equal the parsed statuses in the exact matrix bytes; a
+recomputed hash over contradictory packet claims is invalid. The verifier hashes
+the raw matrix blob at the T025 handoff commit as well as the current bytes, so a
+post-handoff replacement plus a recomputed packet is invalid. Until T048 reaches
+`DONE`, component admission is closed and the Stage B inventory remains the
+exact T047 three-path PREFANOUT set.
+T025's handoff is independently recovered from the unique full-reachable-DAG
+transition where T025 is `DONE` and no parent is `DONE`; all reachable
+descendants must retain `DONE`. Rewriting the mutable inventory to a later
+matrix-bearing ancestor, hiding the transition behind a reversed-parent merge,
+or creating a parallel transition is invalid even when all current byte hashes
+agree.
+`implementationAction: IMPLEMENT` and `RECONCILE_OWNER` enter the checkpoint
+set, but only `IMPLEMENT` may open a campaign-owned component lane. A valid
+`NO_EDIT`/`COMPLETE_EXISTING` task is DONE without an implementation handoff or
+checkpoint; an adopted concurrent-owner result still requires its exact handoff
+and checkpoint, while external-block dispositions remain non-admissible and
+must carry the exact external owner, repository limitation, attempted
+alternatives, evidence, and minimum unblock action.
+Missing, stale, duplicate, unknown, or status-inconsistent
+coverage blocks all component admission rather than reverting to the frozen
+task-number range.
 
 ## Candidate promotion
 
@@ -74,8 +114,11 @@ generated artifact identities. Required evidence for a different identity is
 invalid. Candidate promotion requires:
 
 - zero unexplained required failures;
-- zero false exact aliases, targets, types, semantic results, stale publications,
-  or accepted invalid writer outputs on locked corpora;
+- zero `falseExactNoAlias`, `falseExactMustAlias`,
+  `falseExactIndirectTarget`, `falseExactType`, `semanticMismatch`,
+  `stalePublicationAfterCancel`, and `invalidWriterOutputAccepted`; every
+  counter separately binds its producing command, locked corpus identity,
+  denominator, and exact candidate identity;
 - canonical generation followed by a second zero-diff generation;
 - all exact-head and candidate-merge-tree checks green;
 - every CodeRabbit comment classified, with actionable comments repaired and
@@ -83,6 +126,115 @@ invalid. Candidate promotion requires:
 - active-runtime and physical-device proof where the affected release contract
   requires them;
 - no unresolved ownership collision or merge conflict.
+
+### Integration checkpoint transaction (§3.4)
+
+Between component promotions, T049 (Stage A) or T050 (Stage B) MUST advance one
+and only one checkpoint transaction. The transaction is an append-only Git
+chain, not a claim assembled from unrelated commits:
+
+```text
+I_i -> M_i -> G_i -> E_i
+          ^       ^
+          |       |
+          C_i     evidence-only child
+```
+
+The roles and parent/tree rules are fixed:
+
+| Identity | Required role and proof |
+|---|---|
+| `I_i` | The exact living-integration head immediately before accepting the component. For the first checkpoint it is the unique full-DAG canonical T046 first-DONE transition. Thereafter it is either the previous `E_(i-1)` (`mainReconciliation.mode = NOOP`) or the exact two-parent reconciliation merge of that `E_(i-1)` with the refetched current main (`EXACT_MERGE`). No single-parent replay, cherry-pick, reversed parents, hidden conflict edit, or stale main identity is permitted. |
+| `C_i` | The immutable exact component head recorded by `taskHandoffs[acceptedTaskId]`. Its resolved commit and tree MUST equal that handoff's `headSha` and `treeSha`; it is never replaced by a mutable branch tip or a worker's prose. |
+| `M_i` | The exact candidate merge commit with exactly two parents, first `I_i` and second `C_i`. Its tree MUST equal the independently computed `candidateMergeTreeSha`; a component head or a hand-authored product commit cannot substitute for this merge. |
+| `G_i` | A single-parent child of `M_i` produced by the integration owner from the reconciled combined tree. Every non-generated `M_i -> G_i` path MUST appear exactly once in `integrationReconciliation.paths`, be owned by T049/T050, and exclude component/publication paths. Its tree includes the governed generated paths `js/userscript/deployment-identity.generated.js`, `userscript/hex.user.template.js`, and `userscript/release-version.json`. The canonical generator MUST run twice against this product and the second run MUST have zero tracked diff. |
+| `E_i` | A single-parent evidence-only child of `G_i`. Its parent MUST be `G_i`, and its diff MUST be limited to the exact stage allowlist: Stage A `contracts/integration-inventory.json`, `evidence/stage-a-checkpoints.md`, and `tasks.md`; Stage B uses the corresponding `stage-b-checkpoints.md` path. It MUST NOT alter source, tests, generated output, or the product tree. |
+
+Each row MUST record `integrationParentSha` (`I_i`), `componentHeadSha`
+(`C_i`), `candidateMergeTreeSha`, `acceptedMerge` (`M_i` commit/tree), and
+`checkpointProduct` (`G_i` commit/tree), in addition to the accepted task, gate,
+generation, verifier, and inventory evidence. `E_i` is deliberately not a row
+field: the row is published inside the evidence-only `E_i` commit, so recording
+that commit's own SHA in the row would be self-referential. The verifier derives
+the exact historical `E_i` from the checkpoint evidence path and commit ancestry;
+the next row's `integrationParentSha` fixes it as the next `I`. `acceptedMerge`
+and `checkpointProduct` are distinct identities; the old ambiguous notion of one
+`integrationProduct` MUST NOT conflate them.
+
+Every row MUST also carry `mainReconciliation` and
+`integrationReconciliation`. `mainReconciliation` records the prior immutable
+evidence SHA, exact refetched main, mode, `I_i` commit/tree, independently
+computed merge tree when applicable, and the exact allowlisted adjustment-path
+set. `integrationReconciliation` records `M_i`, `G_i`, its T049/T050 owner, and
+the exact non-generated path set/count/digest. Both manifests are recomputed
+from Git parents, trees, and diffs; their recorded values are not authority.
+
+Generation evidence MUST be content-derived from the exact `G_i` tree: record
+the canonical command, generator blob identity, generated-output blob identities,
+release/build identity, and both clean-run results. At runtime verification, the
+verifier MUST detach the exact `G_i` tree, install dependencies from that
+tree's exact lockfile, load the exact frozen gate registry, rerun the canonical
+generator twice with a zero tracked diff, and rerun every registered rolling
+and shadow argv for every task accepted through row `i` against that same
+`G_i` head/tree. Rolling
+evidence uses `hex-final-closure-checkpoint-rolling-evidence/v2` and MUST bind
+the exact registry Git blob, registered and executed argv, child exit/signal/
+spawn-error/output-limit state, and byte length plus SHA-256 of stdout and
+stderr for every gate. `PASS` is derived only from those captured observations.
+Each invocation retains its bounded output hashes as an audit receipt; replay
+compares the stable registry, argv, candidate, process, and status contract and
+does not mistake reporter timing bytes for semantics.
+Shadow evidence uses the registry-pinned central verifier and foundation
+contracts outside every component allowlist. The verifier executes an
+independently owned oracle projection and an exact-candidate product projection
+as separate bounded processes. Providers may emit canonical raw observations
+only; the central verifier derives observation hashes, dispositions,
+denominators, all seven counters, verdict, and evidence identity. A denominator
+counts only cases explicitly tagged for that counter, and terminal aggregate
+proof requires nonzero coverage for all seven. The evidence binds a distinct
+governing parent (the component candidate's first parent or `G_i`'s sole `M_i`
+parent), its foundation/judge blobs, and the candidate blobs; self-authority is
+invalid. A component
+cannot select or modify either provider, contract, comparison rule, proof
+schema, or denominator through its report. The verifier MUST recompute all
+identities from pinned Git blobs/content and exact command results; stored
+reports are not runtime proof. Arbitrary hash-shaped strings, copied identities,
+truthy status fields, two observations supplied by one task-owned process, or a
+verifier report that merely certifies its own input are invalid evidence.
+
+Process isolation is also part of the checkpoint. Ref snapshots cover every
+persistent `refs/**` namespace, including stash, notes, and custom refs. Runtime
+replay rejects tracked mutation and any untracked/ignored path outside the
+fixed ephemeral roots `.runtime-build`, `dist`, and `node_modules`; the allowed
+ephemeral manifest must remain identity-equal after it is established. The
+installed dependency tree is hashed with typed, length-framed records and MUST
+remain exact after every process; a live-host `node_modules` symlink is not
+historical checkpoint evidence.
+
+`E_i` is the durable publication point for the row. Historical rows MUST be
+replayed from their exact `M_i -> G_i -> E_i` ancestry; changing any identity or
+content invalidates that row and every dependent checkpoint. A second component
+merge is invalid while the prior `E_i` is absent, stale, incomplete, red, or
+not the next integration parent.
+
+### FR-013 hard-zero counters
+
+FR-013 MUST be recorded as seven separate counter records; an aggregate
+`FR-013 = 0` claim is insufficient. Every record below MUST carry its own
+observed value `0`, exact producing command, exact corpus identity, exact
+denominator, and exact `CandidateIdentity` binding (including the applicable
+head/tree/base/merge-tree identities). A value or binding inherited only by
+reference to another row is not valid.
+
+| Counter | Required value | Required per-counter binding |
+|---|---:|---|
+| `falseExactNoAlias` | `0` | exact command, corpus identity, denominator, and candidate identity |
+| `falseExactMustAlias` | `0` | exact command, corpus identity, denominator, and candidate identity |
+| `falseExactIndirectTarget` | `0` | exact command, corpus identity, denominator, and candidate identity |
+| `falseExactType` | `0` | exact command, corpus identity, denominator, and candidate identity |
+| `semanticMismatch` | `0` | exact command, corpus identity, denominator, and candidate identity |
+| `stalePublicationAfterCancel` | `0` | exact command, corpus identity, denominator, and candidate identity |
+| `invalidWriterOutputAccepted` | `0` | exact command, corpus identity, denominator, and candidate identity |
 
 Each CodeRabbit record contains its comment/thread ID, one of `ACTIONABLE`,
 `ALREADY_FIXED`, `FALSE_POSITIVE`, or `OUT_OF_SCOPE`, and technical evidence for

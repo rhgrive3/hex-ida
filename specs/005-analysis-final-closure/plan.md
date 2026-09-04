@@ -78,6 +78,7 @@ No constitutional exception is requested.
 | Can workers overlap or publish generated output? | PASS | Concurrent owned paths are disjoint and every task has an explicit machine-readable forbidden-overlap entry; sequential reuse is dependency-gated. Only the Supervisor/integration owner may regenerate or commit combined output. |
 | Is post-merge main a separate product state? | PASS | Stage B cannot start until Stage A ancestry and post-merge smoke proof are recorded. |
 | Are external target requirements weakened? | PASS | Missing physical iPad evidence remains `BLOCKED`; simulation cannot promote it. |
+| Can a checkpoint self-certify or conflate merge and product? | PASS | Every accepted component uses the four-commit `I_i -> M_i -> G_i -> E_i` transaction; gate identities and generated evidence are recomputed from exact `G_i` content, and arbitrary hash-shaped or self-certifying reports are invalid. |
 
 No design-stage constitutional exception is present.
 
@@ -147,6 +148,7 @@ specs/005-analysis-final-closure/
 ├── contracts/
 │   ├── closure-ledger.md
 │   ├── task-ownership.json
+│   ├── integration-inventory.json
 │   ├── performance-locks.json
 │   └── final-platform-locks.json
 ├── checklists/
@@ -158,8 +160,10 @@ specs/005-analysis-final-closure/
 │   ├── roadmap-matrix.md
 │   ├── speckit-analysis.md          # expected new before implementation
 │   ├── pre-fanout.md                 # expected before component implementation
+│   ├── stage-a-checkpoints.md        # one exact T049 record per accepted component
 │   ├── stage-a-*.md                 # expected new during Stage A integration
 │   ├── stage-b-preflight.md          # expected before roadmap reconciliation
+│   ├── stage-b-checkpoints.md        # one exact T050 record per accepted residual
 │   ├── stage-b-residual-coverage.md  # expected before Stage B fanout
 │   └── final-*.md                   # expected new during final promotion
 └── tasks.md
@@ -199,8 +203,20 @@ new engine, package, storage layer, or generated-output owner.
 
 Recovery refs and open-PR heads are historical/read-only sources, not expected
 new files. Any production or test path taken from them is first reduced to a
-reviewed minimal delta in the living integration worktree; only the evidence
-files shown above are unconditionally new campaign paths.
+reviewed minimal delta in the living integration worktree; only the explicitly
+listed coordination, contract, and evidence files shown above are
+unconditionally new campaign paths.
+
+`contracts/integration-inventory.json` follows a stage-scoped lifecycle. During
+Stage A it is cumulative for the living integration candidate: the recorded
+base-to-candidate `expectedChangedPaths`, `actualChangedPaths`,
+`unionChangedPaths`, and entry paths cover every accepted component and
+integration change, remain duplicate-free and exactly equal, and are refreshed
+when the integration owner reconciles a moving base. After the Stage-A
+post-merge proof is complete, T047 replaces (rather than appends to) those
+values for Stage B with the exact current `origin/main` base and the new
+Stage-B diff. Stage-A paths and identities are not silently carried into the
+Stage-B inventory.
 
 ## Stage Plan
 
@@ -217,30 +233,128 @@ files shown above are unconditionally new campaign paths.
    wholesale when it contains superseded or duplicate code.
 5. For each incomplete row, add the first deterministic failing counterexample,
    repair the canonical boundary, and run T0/T1/T2 evidence.
-6. Reconcile through the living integration owner with current main. Regenerate
-   combined artifacts only there.
-7. Prove the exact head and candidate merge tree, classify every CodeRabbit
+6. Every component branch/worktree is named
+   `component/final-closure-tNNN-*` and targets the living integration branch. Before it is
+   accepted, the integration owner tests its exact component candidate merge
+   tree with every safe-argv `owned`, `rolling`, and `shadow` command frozen for
+   that task in `contracts/task-ownership.json#/candidateGates`; the component
+   cannot edit the integration-base registry that governs it. T049 then executes
+   the §3.4 `I_i -> M_i -> G_i -> E_i` transaction: immutable component handoff
+   `C_i`, exact two-parent candidate merge `M_i`, integration-owned generated
+   product `G_i` with two-run zero diff, and evidence-only child `E_i` carrying
+   content-derived rolling/shadow proof before the next component merge.
+7. Prove the exact head and final candidate merge tree, classify every CodeRabbit
    finding, merge through protection, refetch main, and run post-merge smoke gates.
 
 ### Stage B: Analysis improvement
 
-1. T047 starts a new clean branch/worktree from the refetched and verified Stage A
-   `origin/main`, records the base identity and clean state, and preserves both the
-   original workspace and recovery ref read-only.
+1. T047 starts a new clean branch/worktree from the exact current `origin/main`
+   SHA obtained by refetch. That SHA MUST be proven by ancestry to contain the
+   accepted Stage-A merge commit and the complete machine-readable Stage-A
+   post-merge proof packet (four merge identities, smoke result, and document
+   updates). T047 records this current SHA as the Stage-B base and clean state,
+   then preserves both the original workspace and recovery ref read-only. This
+   is an ancestry/base relationship: the new Stage-B candidate and inventory are
+   not required to equal the Stage-A candidate or inventory.
 2. T025 reconciles all 23 roadmap findings with production source, wiring, tests,
    specifications, open work, and recent commits.
-3. T048 proves an exact bijection from every `PARTIAL`/`REMAINING` row to one fully
-   contracted task, appending missing tasks before any Stage B component fanout.
-4. Convert only `PARTIAL` and `REMAINING` rows into implementation tasks, ordered
-   by the roadmap dependency graph: ground truth; MachineEffects; IR/CFG/SSA/MSSA;
+3. T048 publishes a machine-readable residual-coverage packet bound to the
+   Stage B base, exact T025 handoff, roadmap-matrix bytes, all 23 finding IDs,
+   and every candidate task. It proves an exact bijection from every
+   `PARTIAL`/`REMAINING` row to one fully contracted task, appending missing
+   tasks before any Stage B component fanout. Missing or invalid coverage after
+   T048 fails closed with no static component-set fallback. The matrix identity
+   is derived independently from the raw T025 handoff commit blob; current-tree
+   bytes and a recomputed packet cannot replace that historical authority. The
+   verifier derives T025's canonical handoff from the unique first-DONE
+   transition across the full reachable Git DAG and rejects status regression,
+   so T048 cannot re-anchor it to a later substituted-matrix ancestor or hide it
+   behind a reversed-parent merge.
+4. Admit campaign-owned component work only for packet action `IMPLEMENT`;
+   `RECONCILE_OWNER` remains closed to duplicate implementation but an exactly
+   adopted concurrent-owner handoff still enters T050. `NO_EDIT` terminal rows
+   create neither an implementation handoff nor a checkpoint row. Order active
+   work by the roadmap dependency graph: ground truth; MachineEffects; IR/CFG/SSA/MSSA;
    alias/summaries; value precision; types; decompiler; symbolic; native rebuild;
    runtime; managed frontends; recognition/diff/capabilities; platform; browser UX.
 5. Integrate independent lanes continuously after their contracts stabilize.
+   T050 performs the Stage B §3.4 `I_i -> M_i -> G_i -> E_i` transaction after
+   each accepted residual: cumulative inventory refresh, shared reconciliation,
+   exact candidate merge, canonical generated output plus zero-diff second
+   generation, rolling product gates and independent verifier bound to `G_i`,
+   then the evidence-only publication before another merge.
 6. Run the applicable T3 denominator, independent verifier, benchmark, generated,
    runtime, browser, and target-device gates on the exact final candidate.
 7. Merge through protection, refetch, verify, and update the roadmap and finding
    ledger with final commit/evidence. Authoritative `PARTIAL`, `REMAINING`, and
    `BLOCKED` must all be zero.
+
+### Checkpoint transaction design
+
+The §3.4 checkpoint is a product transaction with an auditable commit chain.
+For checkpoint `i`, the integration owner constructs exactly:
+
+```text
+I_i -> M_i -> G_i -> E_i
+          ^
+          C_i
+```
+
+`I_i` is the prior living-integration head (`I_1` is the unique full-DAG
+canonical T046 first-DONE transition). Later inputs either equal the preceding `E` in `NOOP`
+mode or are its exact ordered two-parent merge with refetched current main in
+`EXACT_MERGE` mode; `C_i` is the immutable component handoff
+head/tree from the accepted task. `M_i` is a two-parent commit whose ordered
+parents are `I_i`, then `C_i`, and whose tree is the exact candidate merge tree.
+`G_i` is a one-parent child of `M_i`, made by the integration owner after
+reconciling and canonically generating all combined output. Every non-generated
+`M_i -> G_i` change is recorded in an exact T049/T050-owned reconciliation
+manifest and cannot overlap component or evidence-publication paths. Its
+canonical generated set includes
+`js/userscript/deployment-identity.generated.js`,
+`userscript/hex.user.template.js`, and `userscript/release-version.json`. The
+generator runs twice and the second tracked diff must be empty. `E_i` is a
+one-parent, evidence-only child of `G_i`; its changed paths are limited to the
+exact stage allowlist (`contracts/integration-inventory.json`, the matching
+stage checkpoint ledger, and `tasks.md`). The next component cannot be accepted
+until `E_i` is green and becomes the next `I` directly or the verified first
+parent of its moving-main reconciliation.
+
+The checkpoint row records the four serialized commit identities `I_i`, `C_i`,
+`M_i`, and `G_i`, plus the candidate-gate registry digest, content-derived
+generation evidence, rolling gate results, independent shadow results,
+`mainReconciliation`, `integrationReconciliation`, and cumulative inventory
+digest. `E_i` is not serialized inside the row: the row is
+contained by the evidence-only `E_i` commit, which the verifier derives from its
+historical checkpoint path and ancestry; the next row's `I_i` fixes the prior
+`E_(i-1)` without a self-referential field. Generation, rolling, and shadow
+evidence all bind the exact `G_i` head/tree and are recomputed from Git blobs and
+exact command output. Rolling schema v2 records the exact registry Git blob,
+the cumulative accepted-task set, registered/executed argv, child
+exit/signal/spawn/output-limit state, and per-invocation stdout/stderr byte
+length and SHA-256. Replay compares stable process semantics while preserving
+those output hashes as audit receipts, so nondeterministic reporter timings are
+not semantic authority. Shadow proof uses registry-pinned foundation contracts
+outside component ownership and two separately executed raw-observation
+providers: an independently owned oracle projection and an exact-candidate
+product projection. The central verifier alone derives comparisons,
+dispositions, denominators, all seven hard-zero counters, and the verdict.
+Denominators count only explicitly tagged cases, and final cumulative evidence
+must cover all seven counters. The report binds the governing parent separately
+from the candidate (the component candidate's first parent, or `G_i`'s sole
+`M_i` parent), including its foundation and judge blobs; self-authority is
+invalid.
+Runtime checkpoint verification MUST load the exact frozen gate registry,
+install dependencies from the exact `G_i` lockfile, detach `G_i`, rerun the
+canonical generator twice with a zero tracked diff, and rerun every rolling and
+shadow argv for all tasks accepted through row `i` against that exact `G_i`
+identity while protecting all persistent refs and rejecting undeclared runtime
+files outside the fixed ephemeral roots. Arbitrary hash-shaped values, copied
+identities, a truthy `PASS`, two sides supplied by one task-owned process, or a
+verifier certifying only its own report cannot satisfy the contract. A historical
+checkpoint is accepted only after replaying the exact `M_i -> G_i -> E_i`
+ancestry and evidence; any identity or content change invalidates dependent
+checkpoints.
 
 ## Validation Strategy
 
@@ -249,7 +363,7 @@ files shown above are unconditionally new campaign paths.
 | T0 | Each edit | syntax/static checks, ownership and schema invariants |
 | T1 | Each counterexample | smallest positive, negative, boundary, adversarial regression |
 | T2 | Each lane integration | subsystem runner plus affected producer/consumer boundary |
-| T3 | Stable candidate, exact PR head, merge tree, post-merge | canonical quiet `npm run check`, required verifiers/corpora, generated zero-diff, CI, review, runtime/browser/device evidence |
+| T3 | Stable candidate, exact PR head, merge tree, post-merge | canonical quiet `npm run check`, required verifiers/corpora, the exact `I_i -> M_i -> G_i -> E_i` checkpoint transaction with generated zero-diff and content-derived gate evidence, CI, review, runtime/browser/device evidence |
 
 Broad local gates use `node scripts/run-quiet-command.mjs` so output suppression
 does not change the canonical command. A failure is diagnosed with the smallest
@@ -265,10 +379,21 @@ failing command and `HEX_TEST_OUTPUT=verbose` when supported.
   migration, test/benchmark harnesses, documentation synchronization, and
   independent negative tests with fixed contracts.
 - Every delegated task records ID, owner/model, risk, dependencies, owned paths,
-  forbidden overlap, tests, evidence, and exit condition in `tasks.md`.
-- `contracts/task-ownership.json` is the machine-readable forbidden-overlap
-  authority. It MUST contain exactly one nonempty entry for every task ID; a
-  missing, duplicate, or concurrently violated entry blocks assignment and merge.
+  nonempty `allowedPaths`, nonempty `forbiddenOverlap`, tests, evidence, and exit
+  condition in `tasks.md`.
+- `contracts/task-ownership.json` is the machine-readable ownership authority.
+  It MUST contain exactly one nonempty `allowedPaths` array and one nonempty
+  `forbiddenOverlap` array for every task ID; a missing, duplicate, empty, or
+  concurrently violated entry blocks assignment and merge.
+- The same contract contains the frozen initial component candidate-gate
+  registry. Every applicable component has nonempty `owned`, `rolling`, and
+  `shadow` argv arrays; the workflow executes them directly without a shell on
+  the detached exact synthetic candidate merge commit. T048 may append only
+  fully contracted T051+ rows.
+- `contracts/integration-inventory.json` MUST validate the exact actual
+  base-to-candidate path set. Its expected, actual, union, and entry path sets
+  are duplicate-free and exactly equal, and each actual path must be allowed by
+  its owner without violating any applicable forbidden-overlap rule.
 - Workers do not spawn workers, merge current main independently, commit combined
   generated output, or treat their report as release authority.
 - All recovery refs, pull-request heads, and linked worktrees other than the living
@@ -283,8 +408,8 @@ failing command and `HEX_TEST_OUTPUT=verbose` when supported.
 |---|---|
 | Historical recovered work conflicts with newer main | Inspect minimal commit/tree diffs and current tests before selective reuse. |
 | A positive fixture hides false exactness | Require negative/unknown/adversarial counterexamples and locked denominator metrics. |
-| Main moves during proof | Invalidate affected evidence, rebuild the candidate merge tree once, and rerun the prescribed subset. |
-| Generated hashes disagree | Regenerate from the combined tree as integration owner, run a second generation, require zero diff. |
+| Main moves during proof | Invalidate the affected `I_i -> M_i -> G_i -> E_i` transaction, reconcile once through the living integration owner, rebuild the candidate merge tree, and rerun the prescribed subset. |
+| Generated hashes disagree | Do not copy or repair hashes in evidence; regenerate `G_i` from the combined tree as integration owner, run a second generation, require zero diff, and regenerate the content-derived gate evidence. |
 | Open PR overlaps campaign paths | Record ownership collision and reuse or wait; do not create a duplicate engine or mutate unrelated issue work. |
 | Required compiler/oracle is absent | Use committed readable-byte corpus where contract permits; otherwise record the exact external dependency without weakening the gate. |
 | Physical iPad proof is unavailable | Continue all repository-solvable work, retain the exact target-device requirement as blocking, and state the minimum authorized runner action. |

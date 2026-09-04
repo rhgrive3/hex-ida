@@ -2,9 +2,20 @@
 
 **Observed date**: 2026-09-04
 
-**Mode**: exact staged-tree, read-only independent review
+**Mode**: historical exact staged-tree, read-only independent review
 
-**Outcome**: `CLEAN`
+**Planning checkpoint**:
+
+- head: `d7eb37dd3c5b4842f127a74183547e64bef2be9f`
+- tree: `3233b538f984befbecf091aaf2eeb4dbcea10707`
+- base: `47f8a44469a5826b6199501a153a12439a280d13`
+
+**Outcome**: `CLEAN` (historical and scoped to the exact checkpoint above)
+
+This outcome is not a current re-audit. It applies only to the planning
+checkpoint head/tree/base listed above and cannot authorize production work or a
+changed T046 tree. The current worktree and any T046 candidate require a fresh
+exact-head/tree/base review.
 
 ## Prerequisite and review identities
 
@@ -20,9 +31,10 @@ The reviewers were read-only and did not stage, edit, commit, or delegate work.
 The Supervisor independently reran task-count, required-field, dependency,
 ownership-key, JSON-parse, roadmap-count, and diff checks.
 
-## Corrected findings
+## Historical corrected findings
 
-The analysis loop corrected and re-reviewed every earlier finding:
+At that historical checkpoint, the analysis loop corrected and re-reviewed every
+earlier finding:
 
 | ID | Final state | Durable correction |
 |---|---|---|
@@ -41,7 +53,7 @@ Two later requirements-review defects were also closed before final analysis:
 the fixed roadmap set now uses the 23 literal canonical `HEX-*` identifiers with
 normalization forbidden, and T046–T048 have direct traceability entries.
 
-## Final metrics
+## Historical final metrics
 
 - Functional requirements: 34/34 traced.
 - Success criteria: 8/8 traced.
@@ -70,7 +82,8 @@ contracts/performance-locks.json     f51dc17a2aa0c626234f04d9cde7f64750c3b8b1
 contracts/final-platform-locks.json  59acc002e87f07617806e0e02934cfe08307ab1e
 ```
 
-These are the Git blob identities reviewed before this evidence/status update.
-A final stability review of the bookkeeping-only update is required before T009
-commits the planning checkpoint. Production implementation remains prohibited
-until T009 and the separate T046 `PREFLIGHT_GREEN` gate complete.
+These are the Git blob identities reviewed for the historical planning
+checkpoint, not evidence for this changed worktree or a changed T046 tree. A
+fresh stability review of the bookkeeping update is required before any current
+checkpoint is accepted. Production implementation remains prohibited until the
+current T009 conditions and the separate T046 `PREFLIGHT_GREEN` gate complete.

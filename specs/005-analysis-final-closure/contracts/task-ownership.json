@@ -4,41 +4,341 @@
     "paths outside the task's Owned paths contract",
     "paths owned by a concurrently active task",
     "generated outputs unless the task explicitly names SOL Ultra as integration owner",
+    "component workers editing the cumulative integration inventory or testing only an unmerged component head instead of its candidate merge tree",
     "force updates or deletion of main, recovery, user, or unrelated refs",
     "mutation of the original workspace or unrelated dirty/untracked state"
   ],
+  "candidateGates": {
+    "schemaVersion": "hex-final-closure-candidate-gates/v1",
+    "shadowEvidence": {
+      "schemaVersion": "hex-final-closure-shadow-policy/v2",
+      "verifierPath": "tools/validation/final-closure/preflight.mjs",
+      "proofSchemaVersion": "hex-final-closure-shadow-proof/v2",
+      "rawObservationSchemaVersion": "hex-final-closure-shadow-raw-observation/v1",
+      "comparisonAlgorithm": "canonical-observation-equality-safe-unknown/v1",
+      "requiredCounterIds": [
+        "falseExactNoAlias",
+        "falseExactMustAlias",
+        "falseExactIndirectTarget",
+        "falseExactType",
+        "semanticMismatch",
+        "stalePublicationAfterCancel",
+        "invalidWriterOutputAccepted"
+      ],
+      "minimumCaseCount": 1,
+      "authorityArtifacts": [
+        {"role": "registry", "path": "tools/validation/final-closure/shadow/foundation/registry.json", "sha256": "bdddff253871c2ad6e26f2f24d97329624568077934a23fbfc708ebe107d3650"},
+        {"role": "contracts", "path": "tools/validation/final-closure/shadow/foundation/contracts.json", "sha256": "d091bc926e4b1400c65938539450d1a3868564bd5254fe08d77beb794320dc65"},
+        {"role": "oracleProvider", "path": "tools/validation/final-closure/shadow/foundation/oracle-observer.mjs", "sha256": "2ea797c3947459e21466827239034d53ce25620c5d70f4609e188e5db083991a"},
+        {"role": "productProvider", "path": "tools/validation/final-closure/shadow/foundation/product-observer.mjs", "sha256": "0b84d5b30681a5a6fd46e25c0cc743f20c5f32686862f85a0a3db63b229858cd"}
+      ]
+    },
+    "tasks": {
+      "T011": {
+        "owned": [
+          {"id": "t011-owned-regressions", "argv": ["node", "tests/final-closure/run.mjs", "--group", "t011"]}
+        ],
+        "rolling": [
+          {"id": "t011-decompiler-suite", "argv": ["npm", "run", "decompiler:test"]}
+        ],
+        "shadow": [
+          {"id": "t011-independent-verifier", "argv": ["node", "tools/validation/final-closure/preflight.mjs", "--emit-shadow-evidence", "--task", "T011"]}
+        ]
+      },
+      "T012": {
+        "owned": [
+          {"id": "t012-owned-regressions", "argv": ["node", "tests/final-closure/run.mjs", "--group", "t012"]}
+        ],
+        "rolling": [
+          {"id": "t012-phase8-memory", "argv": ["node", "tests/phase8/run.mjs", "--group", "memory"]},
+          {"id": "t012-phase8-scalar", "argv": ["node", "tests/phase8/run.mjs", "--group", "scalar"]},
+          {"id": "t012-phase8-foundation", "argv": ["node", "tests/phase8/run.mjs", "--group", "foundation"]}
+        ],
+        "shadow": [
+          {"id": "t012-independent-verifier", "argv": ["node", "tools/validation/final-closure/preflight.mjs", "--emit-shadow-evidence", "--task", "T012"]}
+        ]
+      },
+      "T013": {
+        "owned": [
+          {"id": "t013-owned-regressions", "argv": ["node", "tests/final-closure/run.mjs", "--group", "t013"]}
+        ],
+        "rolling": [
+          {"id": "t013-phase8-suite", "argv": ["npm", "run", "phase8:test"]}
+        ],
+        "shadow": [
+          {"id": "t013-independent-verifier", "argv": ["node", "tools/validation/final-closure/preflight.mjs", "--emit-shadow-evidence", "--task", "T013"]}
+        ]
+      },
+      "T014": {
+        "owned": [
+          {"id": "t014-owned-regressions", "argv": ["node", "tests/final-closure/run.mjs", "--group", "t014"]}
+        ],
+        "rolling": [
+          {"id": "t014-phase9-suite", "argv": ["npm", "run", "phase9:test"]}
+        ],
+        "shadow": [
+          {"id": "t014-independent-verifier", "argv": ["node", "tools/validation/final-closure/preflight.mjs", "--emit-shadow-evidence", "--task", "T014"]}
+        ]
+      },
+      "T015": {
+        "owned": [
+          {"id": "t015-owned-regressions", "argv": ["node", "tests/final-closure/run.mjs", "--group", "t015"]}
+        ],
+        "rolling": [
+          {"id": "t015-metadata-suite", "argv": ["npm", "run", "metadata:test"]},
+          {"id": "t015-binary-suite", "argv": ["npm", "run", "binary:test"]}
+        ],
+        "shadow": [
+          {"id": "t015-independent-verifier", "argv": ["node", "tools/validation/final-closure/preflight.mjs", "--emit-shadow-evidence", "--task", "T015"]}
+        ]
+      },
+      "T016": {
+        "owned": [
+          {"id": "t016-owned-regressions", "argv": ["node", "tests/final-closure/run.mjs", "--group", "t016"]}
+        ],
+        "rolling": [
+          {"id": "t016-phase7-suite", "argv": ["npm", "run", "phase7:test"]},
+          {"id": "t016-phase12-suite", "argv": ["npm", "run", "phase12:test"]}
+        ],
+        "shadow": [
+          {"id": "t016-independent-verifier", "argv": ["node", "tools/validation/final-closure/preflight.mjs", "--emit-shadow-evidence", "--task", "T016"]}
+        ]
+      },
+      "T017": {
+        "owned": [
+          {"id": "t017-owned-regressions", "argv": ["node", "tests/final-closure/run.mjs", "--group", "t017"]}
+        ],
+        "rolling": [
+          {"id": "t017-effects-suite", "argv": ["npm", "run", "effects:test"]},
+          {"id": "t017-semantic-v2-suite", "argv": ["npm", "run", "semantic-v2:test"]}
+        ],
+        "shadow": [
+          {"id": "t017-independent-verifier", "argv": ["node", "tools/validation/final-closure/preflight.mjs", "--emit-shadow-evidence", "--task", "T017"]}
+        ]
+      },
+      "T026": {
+        "owned": [
+          {"id": "t026-owned-regressions", "argv": ["node", "tests/final-closure/run.mjs", "--group", "t026"]}
+        ],
+        "rolling": [
+          {"id": "t026-competitive-suite", "argv": ["npm", "run", "competitive:test"]}
+        ],
+        "shadow": [
+          {"id": "t026-independent-verifier", "argv": ["node", "tools/validation/final-closure/preflight.mjs", "--emit-shadow-evidence", "--task", "T026"]}
+        ]
+      },
+      "T027": {
+        "owned": [
+          {"id": "t027-owned-regressions", "argv": ["node", "tests/final-closure/run.mjs", "--group", "t027"]}
+        ],
+        "rolling": [
+          {"id": "t027-effects-suite", "argv": ["npm", "run", "effects:test"]},
+          {"id": "t027-semantic-v2-suite", "argv": ["npm", "run", "semantic-v2:test"]}
+        ],
+        "shadow": [
+          {"id": "t027-independent-verifier", "argv": ["node", "tools/validation/final-closure/preflight.mjs", "--emit-shadow-evidence", "--task", "T027"]}
+        ]
+      },
+      "T028": {
+        "owned": [
+          {"id": "t028-owned-regressions", "argv": ["node", "tests/final-closure/run.mjs", "--group", "t028"]}
+        ],
+        "rolling": [
+          {"id": "t028-decompiler-suite", "argv": ["npm", "run", "decompiler:test"]},
+          {"id": "t028-phase8-suite", "argv": ["npm", "run", "phase8:test"]}
+        ],
+        "shadow": [
+          {"id": "t028-independent-verifier", "argv": ["node", "tools/validation/final-closure/preflight.mjs", "--emit-shadow-evidence", "--task", "T028"]}
+        ]
+      },
+      "T029": {
+        "owned": [
+          {"id": "t029-owned-regressions", "argv": ["node", "tests/final-closure/run.mjs", "--group", "t029"]}
+        ],
+        "rolling": [
+          {"id": "t029-phase9-suite", "argv": ["npm", "run", "phase9:test"]},
+          {"id": "t029-decompiler-suite", "argv": ["npm", "run", "decompiler:test"]}
+        ],
+        "shadow": [
+          {"id": "t029-independent-verifier", "argv": ["node", "tools/validation/final-closure/preflight.mjs", "--emit-shadow-evidence", "--task", "T029"]}
+        ]
+      },
+      "T030": {
+        "owned": [
+          {"id": "t030-owned-regressions", "argv": ["node", "tests/final-closure/run.mjs", "--group", "t030"]}
+        ],
+        "rolling": [
+          {"id": "t030-phase8-suite", "argv": ["npm", "run", "phase8:test"]}
+        ],
+        "shadow": [
+          {"id": "t030-independent-verifier", "argv": ["node", "tools/validation/final-closure/preflight.mjs", "--emit-shadow-evidence", "--task", "T030"]}
+        ]
+      },
+      "T031": {
+        "owned": [
+          {"id": "t031-owned-regressions", "argv": ["node", "tests/final-closure/run.mjs", "--group", "t031"]}
+        ],
+        "rolling": [
+          {"id": "t031-phase8-suite", "argv": ["npm", "run", "phase8:test"]}
+        ],
+        "shadow": [
+          {"id": "t031-independent-verifier", "argv": ["node", "tools/validation/final-closure/preflight.mjs", "--emit-shadow-evidence", "--task", "T031"]}
+        ]
+      },
+      "T032": {
+        "owned": [
+          {"id": "t032-owned-regressions", "argv": ["node", "tests/final-closure/run.mjs", "--group", "t032"]}
+        ],
+        "rolling": [
+          {"id": "t032-phase9-suite", "argv": ["npm", "run", "phase9:test"]}
+        ],
+        "shadow": [
+          {"id": "t032-independent-verifier", "argv": ["node", "tools/validation/final-closure/preflight.mjs", "--emit-shadow-evidence", "--task", "T032"]}
+        ]
+      },
+      "T033": {
+        "owned": [
+          {"id": "t033-owned-regressions", "argv": ["node", "tests/final-closure/run.mjs", "--group", "t033"]}
+        ],
+        "rolling": [
+          {"id": "t033-phase9-suite", "argv": ["npm", "run", "phase9:test"]},
+          {"id": "t033-semantic-v2-suite", "argv": ["npm", "run", "semantic-v2:test"]}
+        ],
+        "shadow": [
+          {"id": "t033-independent-verifier", "argv": ["node", "tools/validation/final-closure/preflight.mjs", "--emit-shadow-evidence", "--task", "T033"]}
+        ]
+      },
+      "T034": {
+        "owned": [
+          {"id": "t034-owned-regressions", "argv": ["node", "tests/final-closure/run.mjs", "--group", "t034"]}
+        ],
+        "rolling": [
+          {"id": "t034-phase9-suite", "argv": ["npm", "run", "phase9:test"]},
+          {"id": "t034-decompiler-suite", "argv": ["npm", "run", "decompiler:test"]}
+        ],
+        "shadow": [
+          {"id": "t034-independent-verifier", "argv": ["node", "tools/validation/final-closure/preflight.mjs", "--emit-shadow-evidence", "--task", "T034"]}
+        ]
+      },
+      "T035": {
+        "owned": [
+          {"id": "t035-owned-regressions", "argv": ["node", "tests/final-closure/run.mjs", "--group", "t035"]}
+        ],
+        "rolling": [
+          {"id": "t035-phase7-suite", "argv": ["npm", "run", "phase7:test"]},
+          {"id": "t035-phase12-suite", "argv": ["npm", "run", "phase12:test"]}
+        ],
+        "shadow": [
+          {"id": "t035-independent-verifier", "argv": ["node", "tools/validation/final-closure/preflight.mjs", "--emit-shadow-evidence", "--task", "T035"]}
+        ]
+      },
+      "T036": {
+        "owned": [
+          {"id": "t036-owned-regressions", "argv": ["node", "tests/final-closure/run.mjs", "--group", "t036"]}
+        ],
+        "rolling": [
+          {"id": "t036-binary-suite", "argv": ["npm", "run", "binary:test"]},
+          {"id": "t036-metadata-suite", "argv": ["npm", "run", "metadata:test"]},
+          {"id": "t036-phase12-suite", "argv": ["npm", "run", "phase12:test"]}
+        ],
+        "shadow": [
+          {"id": "t036-independent-verifier", "argv": ["node", "tools/validation/final-closure/preflight.mjs", "--emit-shadow-evidence", "--task", "T036"]}
+        ]
+      },
+      "T045": {
+        "owned": [
+          {"id": "t045-final-platform-tests", "argv": ["node", "tests/final-platform/run.mjs"]}
+        ],
+        "rolling": [
+          {"id": "t045-stage2-suite", "argv": ["npm", "run", "stage2:test"]}
+        ],
+        "shadow": [
+          {"id": "t045-final-platform-verifier", "argv": ["node", "tools/validation/final-closure/preflight.mjs", "--emit-shadow-evidence", "--task", "T045"]}
+        ]
+      }
+    }
+  },
   "tasks": {
     "T001": {
+      "allowedPaths": ["specs/005-analysis-final-closure/research.md"],
       "forbiddenOverlap": ["production, test, generated-output, and Git ref mutation"]
     },
     "T002": {
+      "allowedPaths": ["specs/005-analysis-final-closure/research.md"],
       "forbiddenOverlap": ["production, test, generated-output, and Git ref mutation"]
     },
     "T003": {
+      "allowedPaths": [
+        "specs/005-analysis-final-closure/spec.md",
+        "specs/005-analysis-final-closure/plan.md",
+        "specs/005-analysis-final-closure/research.md",
+        "specs/005-analysis-final-closure/data-model.md",
+        "specs/005-analysis-final-closure/quickstart.md",
+        "specs/005-analysis-final-closure/tasks.md",
+        "specs/005-analysis-final-closure/checklists/requirements.md",
+        "specs/005-analysis-final-closure/contracts/closure-ledger.md",
+        "specs/005-analysis-final-closure/contracts/performance-locks.json",
+        "specs/005-analysis-final-closure/contracts/final-platform-locks.json"
+      ],
       "forbiddenOverlap": ["production, test, generated-output, and Git ref mutation"]
     },
     "T004": {
+      "allowedPaths": ["specs/005-analysis-final-closure/evidence/recovery-matrix.md"],
       "forbiddenOverlap": ["production/test edits and mutation of recovery refs"]
     },
     "T005": {
+      "allowedPaths": ["specs/005-analysis-final-closure/evidence/github-state.md"],
       "forbiddenOverlap": ["source/test edits and lifecycle mutation of unrelated PRs or branches"]
     },
     "T006": {
+      "allowedPaths": ["specs/005-analysis-final-closure/evidence/roadmap-matrix.md"],
       "forbiddenOverlap": ["production/test edits and implementation inferred only from roadmap prose"]
     },
     "T007": {
+      "allowedPaths": ["specs/005-analysis-final-closure/checklists/release-evidence.md"],
       "forbiddenOverlap": ["production/test edits and self-approval of reviewer-owned checklist rows"]
     },
     "T008": {
+      "allowedPaths": [
+        "specs/005-analysis-final-closure/spec.md",
+        "specs/005-analysis-final-closure/plan.md",
+        "specs/005-analysis-final-closure/research.md",
+        "specs/005-analysis-final-closure/data-model.md",
+        "specs/005-analysis-final-closure/quickstart.md",
+        "specs/005-analysis-final-closure/tasks.md",
+        "specs/005-analysis-final-closure/checklists/requirements.md",
+        "specs/005-analysis-final-closure/checklists/release-evidence.md",
+        "specs/005-analysis-final-closure/contracts/closure-ledger.md",
+        "specs/005-analysis-final-closure/contracts/performance-locks.json",
+        "specs/005-analysis-final-closure/contracts/final-platform-locks.json",
+        "specs/005-analysis-final-closure/contracts/task-ownership.json",
+        "specs/005-analysis-final-closure/evidence/speckit-analysis.md"
+      ],
       "forbiddenOverlap": ["production/test/generated-output edits before a CLEAN consistency result"]
     },
     "T009": {
+      "allowedPaths": ["specs/005-analysis-final-closure/**"],
       "forbiddenOverlap": ["all paths outside specs/005-analysis-final-closure and any production delta"]
     },
     "T010": {
+      "allowedPaths": ["specs/005-analysis-final-closure/evidence/recovery-matrix.md"],
       "forbiddenOverlap": ["production/test edits and weakening the reproduced decompiler assertion"]
     },
     "T011": {
+      "allowedPaths": [
+        "js/decompiler/legacy-exact-return-repair.js",
+        "js/decompiler/passes/manager.js",
+        "js/decompiler/passes/stack-phi-recovery.js",
+        "js/decompiler/passes/stack-return-recovery.js",
+        "js/decompiler/pipeline.js",
+        "js/decompiler/rewrite/engine.js",
+        "js/decompiler/semantic-core.js",
+        "js/decompiler/semantic.js",
+        "js/semantics/memoryssa/operand-forwarding.js",
+        "js/semantics/compat/semantic-ir-v2-to-v1-memory.js",
+        "tests/decompiler-semantic.mjs",
+        "tests/final-closure/t011/**"
+      ],
       "forbiddenOverlap": [
         "tests/phase8/performance/**",
         "T012 analysis-identity.js, valuenumber.js, and hostile-identity tests",
@@ -47,6 +347,13 @@
       ]
     },
     "T012": {
+      "allowedPaths": [
+        "js/decompiler/phase8/analysis-identity.js",
+        "js/decompiler/phase8/valuenumber.js",
+        "tests/phase8/memory/gvn.test.mjs",
+        "tests/phase8/scalar/c2-02-adversarial-matrix.test.mjs",
+        "tests/final-closure/t012/**"
+      ],
       "forbiddenOverlap": [
         "T011 decompiler stack-return and private memory-projection paths",
         "tests/phase8/performance/**",
@@ -55,6 +362,24 @@
       ]
     },
     "T013": {
+      "allowedPaths": [
+        "js/decompiler/phase8/aggregates.js",
+        "js/decompiler/phase8/artifact-identity.js",
+        "js/decompiler/phase8/bitvector.js",
+        "js/decompiler/phase8/contract.js",
+        "js/decompiler/phase8/dce.js",
+        "js/decompiler/phase8/identity-pass.js",
+        "js/decompiler/phase8/index.js",
+        "js/decompiler/phase8/induction.js",
+        "js/decompiler/phase8/projection.js",
+        "js/decompiler/phase8/providers.js",
+        "js/decompiler/phase8/range.js",
+        "js/decompiler/phase8/sccp.js",
+        "js/decompiler/phase8/structuring.js",
+        "js/decompiler/phase8/transaction.js",
+        "tests/phase8/performance/**",
+        "tests/final-closure/t013/**"
+      ],
       "forbiddenOverlap": [
         "T011 stack-return and private memory-projection source ownership",
         "T012 hostile semantic-identity correctness ownership",
@@ -63,12 +388,33 @@
       ]
     },
     "T014": {
+      "allowedPaths": [
+        "js/symbolic/expr/**",
+        "js/symbolic/solver/**",
+        "js/symbolic/verify/**",
+        "tests/phase9/expr/**",
+        "tests/phase9/solver/**",
+        "tests/phase9/verify/**",
+        "tests/phase9/browser/**",
+        "tests/final-closure/t014/**",
+        "tools/validation/phase9/release-evidence.schema.json",
+        "tools/validation/phase9/verify.mjs"
+      ],
       "forbiddenOverlap": [
         "decompiler, MachineEffects, loader, and generated-output paths",
         "canonical Phase 9 profile migration reserved to T032"
       ]
     },
     "T015": {
+      "allowedPaths": [
+        "js/apple/**",
+        "js/binary/macho.js",
+        "js/binary/macho-core.js",
+        "js/binary/macho-dyld.js",
+        "js/binary/macho-budget.js",
+        "js/binary/macho-source-cache.js",
+        "tests/final-closure/t015/**"
+      ],
       "forbiddenOverlap": [
         "T016 discovery artifact and rebuild-transaction ownership",
         "unreconciled overlapping PR paths",
@@ -76,6 +422,14 @@
       ]
     },
     "T016": {
+      "allowedPaths": [
+        "js/analysis/discovery/**",
+        "js/analysis/index.js",
+        "js/rebuild/transaction-v2.js",
+        "tests/phase7/discovery/**",
+        "tests/phase12/rebuild/**",
+        "tests/final-closure/t016/**"
+      ],
       "forbiddenOverlap": [
         "T015 Apple knowledge and Mach-O metadata ownership",
         "unreconciled overlapping PR paths",
@@ -83,6 +437,16 @@
       ]
     },
     "T017": {
+      "allowedPaths": [
+        "tools/validation/competitive/**",
+        "tools/validation/machine-effects/**",
+        "tests/competitive/**",
+        "tests/machine-effects/**",
+        "js/semantics/effects/**",
+        "js/targets/architecture/x86_64/effects/**",
+        "js/semantics/compat/semantic-ir-v2-to-v1.js",
+        "tests/final-closure/t017/**"
+      ],
       "forbiddenOverlap": [
         "T011 operand-forwarding.js and semantic-ir-v2-to-v1-memory.js private projection paths",
         "T014 symbolic solver paths",
@@ -91,12 +455,26 @@
       ]
     },
     "T018": {
-      "forbiddenOverlap": ["production/test/generated-output edits; defects return to T011-T017 owners"]
+      "allowedPaths": [
+        "specs/005-analysis-final-closure/evidence/recovery-matrix.md",
+        "specs/005-analysis-final-closure/tasks.md"
+      ],
+      "forbiddenOverlap": [
+        "production/test/generated-output edits; defects return to T011-T017 owners",
+        "a terminal recovery status without its required T049 checkpoint"
+      ]
     },
     "T019": {
+      "allowedPaths": ["specs/005-analysis-final-closure/evidence/recovery-reviews.md"],
       "forbiddenOverlap": ["production/test/generated-output edits and reviewer self-approval"]
     },
     "T020": {
+      "allowedPaths": [
+        "userscript/hex.user.template.js",
+        "userscript/release-version.json",
+        "js/userscript/deployment-identity.generated.js",
+        "specs/005-analysis-final-closure/evidence/stage-a-candidate.md"
+      ],
       "forbiddenOverlap": [
         "manual edits to generated output",
         "generated-output commits by any owner other than SOL Ultra acting as integration owner",
@@ -104,19 +482,30 @@
       ]
     },
     "T021": {
+      "allowedPaths": ["specs/005-analysis-final-closure/evidence/stage-a-candidate.md"],
       "forbiddenOverlap": ["production/generated-output edits; failures return to their canonical owners"]
     },
     "T022": {
+      "allowedPaths": [
+        ".github/workflows/final-closure-preflight.yml",
+        "tests/final-closure/preflight.test.mjs",
+        "tests/final-closure/run.mjs",
+        "tests/phase-runner-contract.mjs",
+        "specs/005-analysis-final-closure/evidence/stage-a-github.md"
+      ],
       "forbiddenOverlap": [
+        "all workflow paths except .github/workflows/final-closure-preflight.yml; changing it invalidates T046 and requires independent review plus exact-head rerun",
         "unrelated PR or branch lifecycle mutation",
         "component feature implementation",
         "manual review dismissal without technical evidence"
       ]
     },
     "T023": {
+      "allowedPaths": ["specs/005-analysis-final-closure/evidence/stage-a-candidate.md"],
       "forbiddenOverlap": ["component feature implementation and reconciliation by any owner other than SOL Ultra"]
     },
     "T024": {
+      "allowedPaths": ["specs/005-analysis-final-closure/evidence/stage-a-post-merge.md"],
       "forbiddenOverlap": [
         "force push or direct unprotected main update",
         "recovery-ref deletion or rewrite",
@@ -124,9 +513,15 @@
       ]
     },
     "T025": {
+      "allowedPaths": ["specs/005-analysis-final-closure/evidence/roadmap-matrix.md"],
       "forbiddenOverlap": ["production/test edits and status copied from the preliminary roadmap inventory"]
     },
     "T026": {
+      "allowedPaths": [
+        "tools/validation/competitive/**",
+        "tests/competitive/**",
+        "tests/final-closure/t026/**"
+      ],
       "forbiddenOverlap": [
         "MachineEffects implementation owned by T027",
         "writer/rebuild or decompiler engines",
@@ -134,6 +529,12 @@
       ]
     },
     "T027": {
+      "allowedPaths": [
+        "js/semantics/effects/**",
+        "tools/validation/machine-effects/**",
+        "tests/machine-effects/**",
+        "tests/final-closure/t027/**"
+      ],
       "forbiddenOverlap": [
         "competitive fixture ownership retained by T026",
         "T011 private memory-projection paths",
@@ -141,6 +542,10 @@
       ]
     },
     "T028": {
+      "allowedPaths": [
+        "js/decompiler/provenance.js",
+        "tests/final-closure/t028/**"
+      ],
       "forbiddenOverlap": [
         "T011 stack-return implementation",
         "T029 equivalence authority and T030 structuring owner",
@@ -148,6 +553,12 @@
       ]
     },
     "T029": {
+      "allowedPaths": [
+        "js/symbolic/verify/equivalence.js",
+        "js/decompiler/passes/**",
+        "tests/phase9/verify/equivalence.test.mjs",
+        "tests/final-closure/t029/**"
+      ],
       "forbiddenOverlap": [
         "T028 provenance owner, T030 structuring owner, and T031 e-graph generator",
         "direct unproved transform publication",
@@ -155,6 +566,12 @@
       ]
     },
     "T030": {
+      "allowedPaths": [
+        "js/decompiler/phase8/structuring.js",
+        "js/decompiler/phase8/providers.js",
+        "tests/phase8/structuring/**",
+        "tests/final-closure/t030/**"
+      ],
       "forbiddenOverlap": [
         "T029 equivalence authority and T031 e-graph candidate generator",
         "symbolic solver ownership",
@@ -162,6 +579,12 @@
       ]
     },
     "T031": {
+      "allowedPaths": [
+        "js/decompiler/phase8/egraph.js",
+        "js/decompiler/phase8/index.js",
+        "tests/phase8/egraph/**",
+        "tests/final-closure/t031/**"
+      ],
       "forbiddenOverlap": [
         "T029 proof/adoption authority and direct rendered publication",
         "T013 Phase 8 performance ownership",
@@ -169,6 +592,16 @@
       ]
     },
     "T032": {
+      "allowedPaths": [
+        "js/symbolic/solver/**",
+        "tests/phase9/solver/**",
+        "tests/phase9/browser/**",
+        "tests/phase9/foundation/preflight.test.mjs",
+        "tests/phase9/release/**",
+        "tools/validation/phase9/profile.json",
+        "reports/phase9/**",
+        "tests/final-closure/t032/**"
+      ],
       "forbiddenOverlap": [
         "T033 symbolic memory and T034 taint ownership",
         "decompiler or MachineEffects paths",
@@ -176,6 +609,12 @@
       ]
     },
     "T033": {
+      "allowedPaths": [
+        "js/symbolic/executor.js",
+        "js/symbolic/translate/**",
+        "js/symbolic/memory/**",
+        "tests/final-closure/t033/**"
+      ],
       "forbiddenOverlap": [
         "canonical MemorySSA reimplementation",
         "T032 solver/profile and T034 taint ownership",
@@ -183,6 +622,13 @@
       ]
     },
     "T034": {
+      "allowedPaths": [
+        "js/symbolic/taint/**",
+        "js/symbolic/query/taint.js",
+        "js/symbolic/projection/taint.js",
+        "js/symbolic/index.js",
+        "tests/final-closure/t034/**"
+      ],
       "forbiddenOverlap": [
         "T032 solver and T033 symbolic-memory ownership",
         "T029 equivalence authority",
@@ -190,6 +636,13 @@
       ]
     },
     "T035": {
+      "allowedPaths": [
+        "js/analysis/discovery/**",
+        "js/rebuild/transaction-v2.js",
+        "tests/phase7/discovery/**",
+        "tests/phase12/rebuild/**",
+        "tests/final-closure/t035/**"
+      ],
       "forbiddenOverlap": [
         "T036 Apple/Mach-O implementation",
         "a second discovery or rebuild engine",
@@ -197,6 +650,11 @@
       ]
     },
     "T036": {
+      "allowedPaths": [
+        "js/binary/**",
+        "js/apple/**",
+        "tests/final-closure/t036/**"
+      ],
       "forbiddenOverlap": [
         "T035 discovery artifact ownership",
         "a second loader/writer engine",
@@ -204,15 +662,36 @@
       ]
     },
     "T037": {
-      "forbiddenOverlap": ["feature implementation; regressions return to the canonical component owner"]
+      "allowedPaths": ["specs/005-analysis-final-closure/evidence/roadmap-matrix.md"],
+      "forbiddenOverlap": [
+        "feature implementation; regressions return to the canonical component owner",
+        "a terminal revalidation without complete T050 checkpoint coverage"
+      ]
     },
     "T038": {
+      "allowedPaths": [
+        "docs/解析ツール改善.md.txt",
+        "docs/analysis-improvement-finding-ledger.md",
+        "specs/005-analysis-final-closure/evidence/roadmap-matrix.md",
+        "specs/005-analysis-final-closure/evidence/roadmap-closure.md"
+      ],
       "forbiddenOverlap": ["production/test/generated-output edits and unsupported roadmap completion claims"]
     },
     "T039": {
+      "allowedPaths": ["specs/005-analysis-final-closure/evidence/final-safety.md"],
       "forbiddenOverlap": ["feature implementation and reviewer self-approval; defects return to canonical owners"]
     },
     "T040": {
+      "allowedPaths": [
+        "specs/005-analysis-final-closure/evidence/final-platform.md",
+        "reports/phase6/**",
+        "reports/phase7/**",
+        "reports/phase8/**",
+        "reports/phase9/**",
+        "reports/phase10/**",
+        "reports/phase11/**",
+        "reports/final-platform/**"
+      ],
       "forbiddenOverlap": [
         "collector/schema implementation owned by T045",
         "threshold or denominator changes",
@@ -221,6 +700,12 @@
       ]
     },
     "T041": {
+      "allowedPaths": [
+        "userscript/hex.user.template.js",
+        "userscript/release-version.json",
+        "js/userscript/deployment-identity.generated.js",
+        "specs/005-analysis-final-closure/evidence/final-candidate.md"
+      ],
       "forbiddenOverlap": [
         "manual generated-output edits",
         "generated-output commits by any owner other than SOL Ultra acting as integration owner",
@@ -228,9 +713,25 @@
       ]
     },
     "T042": {
-      "forbiddenOverlap": ["silent feature implementation outside appended convergence tasks and generated-output edits"]
+      "allowedPaths": [
+        "specs/005-analysis-final-closure/spec.md",
+        "specs/005-analysis-final-closure/plan.md",
+        "specs/005-analysis-final-closure/tasks.md",
+        "specs/005-analysis-final-closure/checklists/requirements.md",
+        "specs/005-analysis-final-closure/checklists/release-evidence.md",
+        "specs/005-analysis-final-closure/contracts/closure-ledger.md",
+        "specs/005-analysis-final-closure/contracts/task-ownership.json",
+        "specs/005-analysis-final-closure/contracts/integration-inventory.json",
+        "specs/005-analysis-final-closure/evidence/speckit-analysis.md",
+        "specs/005-analysis-final-closure/evidence/final-candidate.md"
+      ],
+      "forbiddenOverlap": [
+        "frozen performance/platform lock edits; a reviewed owner task must change and invalidate those contracts",
+        "silent feature implementation outside appended convergence tasks and generated-output edits"
+      ]
     },
     "T043": {
+      "allowedPaths": ["specs/005-analysis-final-closure/evidence/final-github.md"],
       "forbiddenOverlap": [
         "unrelated PR or branch mutation",
         "review/check waiver without evidence",
@@ -238,6 +739,14 @@
       ]
     },
     "T044": {
+      "allowedPaths": [
+        "specs/005-analysis-final-closure/evidence/final-post-merge.md",
+        "specs/005-analysis-final-closure/evidence/roadmap-matrix.md",
+        "specs/005-analysis-final-closure/spec.md",
+        "specs/005-analysis-final-closure/tasks.md",
+        "docs/解析ツール改善.md.txt",
+        "docs/analysis-improvement-finding-ledger.md"
+      ],
       "forbiddenOverlap": [
         "force push or direct unprotected main update",
         "recovery-ref deletion or rewrite",
@@ -245,6 +754,12 @@
       ]
     },
     "T045": {
+      "allowedPaths": [
+        "specs/005-analysis-final-closure/contracts/final-platform-locks.json",
+        "tools/validation/final-platform/**",
+        "js/platform/physical-ipad-evidence.js",
+        "tests/final-platform/**"
+      ],
       "forbiddenOverlap": [
         "duplicate ByteSource, scheduler, renderer, or profiler engines",
         "T040 exact-final evidence execution ownership",
@@ -252,29 +767,98 @@
       ]
     },
     "T046": {
+      "allowedPaths": [
+        ".github/workflows/final-closure-preflight.yml",
+        "tools/validation/final-closure/preflight.mjs",
+        "tools/validation/final-closure/shadow/foundation/**",
+        "tests/final-closure/preflight.test.mjs",
+        "tests/final-closure/run.mjs",
+        "package.json",
+        "specs/005-analysis-final-closure/checklists/requirements.md",
+        "specs/005-analysis-final-closure/contracts/closure-ledger.md",
+        "specs/005-analysis-final-closure/contracts/performance-locks.json",
+        "specs/005-analysis-final-closure/contracts/task-ownership.json",
+        "specs/005-analysis-final-closure/contracts/integration-inventory.json",
+        "specs/005-analysis-final-closure/data-model.md",
+        "specs/005-analysis-final-closure/evidence/recovery-matrix.md",
+        "specs/005-analysis-final-closure/evidence/speckit-analysis.md",
+        "specs/005-analysis-final-closure/plan.md",
+        "specs/005-analysis-final-closure/quickstart.md",
+        "specs/005-analysis-final-closure/research.md",
+        "specs/005-analysis-final-closure/tasks.md",
+        "specs/005-analysis-final-closure/evidence/pre-fanout.md"
+      ],
       "forbiddenOverlap": [
-        "all paths except .github/workflows/final-closure-preflight.yml, tools/validation/final-closure/preflight.mjs, tests/final-closure/preflight.test.mjs, the campaign PR, and evidence/pre-fanout.md",
+        "all paths except the enumerated T046 governance paths, including .github/workflows/final-closure-preflight.yml, validator/test contracts, Spec Kit synchronization, the campaign PR, and pre-fanout evidence",
         "modification of the read-only tests/phase4/walking-skeleton.test.mjs production-chain gate",
         "T011-T017 component feature implementation or component fanout before PREFLIGHT_GREEN",
+        "component/final-closure-tNNN branches targeting anything except the current living integration branch or editing the cumulative integration inventory",
         "candidate merge or component promotion before PREFLIGHT_GREEN",
         "generated-output mutation",
         "unrelated PR or branch lifecycle mutation"
       ]
     },
     "T047": {
+      "allowedPaths": [
+        "specs/005-analysis-final-closure/evidence/stage-b-preflight.md",
+        "specs/005-analysis-final-closure/contracts/integration-inventory.json",
+        "specs/005-analysis-final-closure/tasks.md"
+      ],
       "forbiddenOverlap": [
-        "all actions except creating one new clean Stage B branch/worktree at the refetched post-Stage-A main and recording its evidence",
+        "all actions except creating one new clean Stage B branch/worktree at refetched post-Stage-A main, replacing the exact integration inventory base/path sets for that transition, and recording its evidence",
+        "task ownership, verifier, workflow, production, test, and generated-output mutation",
         "reuse of the Stage A campaign worktree, an old campaign branch, or a pre-merge main base",
         "production/test/generated-output edits",
         "mutation of the original workspace, recovery refs, merged Stage A worktree, or unrelated refs"
       ]
     },
     "T048": {
+      "allowedPaths": [
+        "specs/005-analysis-final-closure/tasks.md",
+        "specs/005-analysis-final-closure/evidence/stage-b-residual-coverage.md",
+        "specs/005-analysis-final-closure/contracts/task-ownership.json",
+        "specs/005-analysis-final-closure/contracts/integration-inventory.json"
+      ],
       "forbiddenOverlap": [
-        "all paths except specs/005-analysis-final-closure/tasks.md and evidence/stage-b-residual-coverage.md",
+        "all paths except tasks.md, stage-b-residual-coverage.md, task-ownership.json, and integration-inventory.json",
+        "T001-T050 ownership rows and the frozen initial candidate-gate rows are immutable; only contiguous T051+ task, owner, and gate rows may be appended",
         "production/test/generated-output edits and Git ref/worktree mutation",
         "feature implementation before STAGE_B_FANOUT_GREEN",
         "forcing an uncovered residual into an unrelated task"
+      ]
+    },
+    "T049": {
+      "allowedPaths": [
+        "specs/005-analysis-final-closure/contracts/closure-ledger.md",
+        "specs/005-analysis-final-closure/contracts/integration-inventory.json",
+        "specs/005-analysis-final-closure/evidence/stage-a-checkpoints.md",
+        "specs/005-analysis-final-closure/tasks.md",
+        "userscript/hex.user.template.js",
+        "userscript/release-version.json",
+        "js/userscript/deployment-identity.generated.js"
+      ],
+      "forbiddenOverlap": [
+        "component production/test edits; defects return to T011-T017 owners",
+        "generated-output commits by any owner other than SOL Ultra acting as living integration owner",
+        "a second component merge before the prior exact checkpoint transaction is green",
+        "manual generated hashes, stale handoff identities, or omitted cumulative inventory paths"
+      ]
+    },
+    "T050": {
+      "allowedPaths": [
+        "specs/005-analysis-final-closure/contracts/closure-ledger.md",
+        "specs/005-analysis-final-closure/contracts/integration-inventory.json",
+        "specs/005-analysis-final-closure/evidence/stage-b-checkpoints.md",
+        "specs/005-analysis-final-closure/tasks.md",
+        "userscript/hex.user.template.js",
+        "userscript/release-version.json",
+        "js/userscript/deployment-identity.generated.js"
+      ],
+      "forbiddenOverlap": [
+        "component production/test edits; defects return to T026-T036 or T051+ owners",
+        "generated-output commits by any owner other than SOL Ultra acting as living integration owner",
+        "a second residual merge before the prior exact checkpoint transaction is green",
+        "manual generated hashes, stale handoff identities, or omitted cumulative inventory paths"
       ]
     }
   }

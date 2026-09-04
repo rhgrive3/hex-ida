@@ -8,9 +8,9 @@
 
 ## Content Quality
 
-- [x] No implementation details (languages, frameworks, APIs)
+- [x] Implementation details are limited to explicit engineering/release exceptions required by the user and repository guardrails: canonical producer/consumer ownership, exact source/head/tree/verifier/corpus/toolchain/runtime/device identities, machine-readable allow/forbid inventories, frozen denominators, and generated-output/target-device gates
 - [x] Focused on user value and business needs
-- [x] Written for non-technical stakeholders
+- [x] Written for the engineering, release, and product stakeholders who must execute and audit this campaign; technical contract language is intentional and scoped
 - [x] All mandatory sections completed
 
 ## Requirement Completeness
@@ -29,8 +29,8 @@
 - [x] All functional requirements have clear acceptance criteria
 - [x] User scenarios cover primary flows
 - [x] Feature meets measurable outcomes defined in Success Criteria
-- [x] No implementation details leak into specification
+- [x] Implementation details appear only where required for canonical ownership, reproducibility, conservative correctness, and release proof; unrelated design detail does not leak into the specification
 
 ## Notes
 
-- Validation iteration 1 passed all items. The detailed implementation and evidence paths belong in the plan and tasks, not this specification.
+- Validation iteration 1 passed all applicable items for this engineering/release specification. Technical implementation and evidence details are intentionally present where exact-head, candidate-tree, verifier/corpus, ownership/inventory, generated-output, runtime, and target-device proof require them; the plan, tasks, and evidence artifacts provide the operational detail.

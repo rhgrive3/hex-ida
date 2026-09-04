@@ -1,0 +1,37 @@
+{
+  "schemaVersion": "hex-final-closure-shadow-authority-registry/v1",
+  "rawObservationSchemaVersion": "hex-final-closure-shadow-raw-observation/v1",
+  "comparisonAlgorithm": "canonical-observation-equality-safe-unknown/v1",
+  "contractPath": "tools/validation/final-closure/shadow/foundation/contracts.json",
+  "providers": {
+    "oracle": {
+      "path": "tools/validation/final-closure/shadow/foundation/oracle-observer.mjs",
+      "argv": ["node", "tools/validation/final-closure/shadow/foundation/oracle-observer.mjs"]
+    },
+    "product": {
+      "path": "tools/validation/final-closure/shadow/foundation/product-observer.mjs",
+      "argv": ["node", "tools/validation/final-closure/shadow/foundation/product-observer.mjs"]
+    }
+  },
+  "tasks": {
+    "T011": {"gateId": "t011-independent-verifier", "contractId": "t011-stack-return-regression-v1"},
+    "T012": {"gateId": "t012-independent-verifier", "contractId": "t012-value-numbering-regression-v1"},
+    "T013": {"gateId": "t013-independent-verifier", "contractId": "t013-scalar-pipeline-regression-v1"},
+    "T014": {"gateId": "t014-independent-verifier", "contractId": "t014-symbolic-equivalence-regression-v1"},
+    "T015": {"gateId": "t015-independent-verifier", "contractId": "t015-macho-source-regression-v1"},
+    "T016": {"gateId": "t016-independent-verifier", "contractId": "t016-discovery-rebuild-regression-v1"},
+    "T017": {"gateId": "t017-independent-verifier", "contractId": "t017-machine-effects-regression-v1"},
+    "T026": {"gateId": "t026-independent-verifier", "contractId": "t026-competitive-regression-v1"},
+    "T027": {"gateId": "t027-independent-verifier", "contractId": "t027-effects-regression-v1"},
+    "T028": {"gateId": "t028-independent-verifier", "contractId": "t028-provenance-regression-v1"},
+    "T029": {"gateId": "t029-independent-verifier", "contractId": "t029-proof-adoption-regression-v1"},
+    "T030": {"gateId": "t030-independent-verifier", "contractId": "t030-structuring-regression-v1"},
+    "T031": {"gateId": "t031-independent-verifier", "contractId": "t031-egraph-regression-v1"},
+    "T032": {"gateId": "t032-independent-verifier", "contractId": "t032-solver-regression-v1"},
+    "T033": {"gateId": "t033-independent-verifier", "contractId": "t033-symbolic-memory-regression-v1"},
+    "T034": {"gateId": "t034-independent-verifier", "contractId": "t034-taint-regression-v1"},
+    "T035": {"gateId": "t035-independent-verifier", "contractId": "t035-discovery-completeness-regression-v1"},
+    "T036": {"gateId": "t036-independent-verifier", "contractId": "t036-binary-source-regression-v1"},
+    "T045": {"gateId": "t045-final-platform-verifier", "contractId": "t045-browser-platform-regression-v1"}
+  }
+}

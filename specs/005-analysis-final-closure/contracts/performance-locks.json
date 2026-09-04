@@ -10,6 +10,34 @@
   "profiles": {
     "P-SYM01": {
       "schemaVersion": "hex-sym01-performance-lock/v1",
+      "sourceScope": {
+        "schemaVersion": "hex-sym01-immutable-source-scope/v1",
+        "commitSha": "0d23cbfa595ea1d8753d5249626695bd9bae5ef3",
+        "treeSha": "befa97dad1db41b10d671193f45e3137401ecc8a",
+        "fetchRef": "refs/heads/wip/recovered-sym01-20260904",
+        "paths": [
+          {
+            "path": "js/core/identity/index.js",
+            "gitBlobSha1": "588cd4ef371198daf4dd1eb8f5dc218fd26ba853",
+            "sha256": "d2e2a3e6b646bdb3f996fbfbae23e3735daba87186a1243c562a4e06e2b82b5a"
+          },
+          {
+            "path": "tests/phase9/solver/bitblast-full-differential.test.mjs",
+            "gitBlobSha1": "60eebc653e0a1899daf78ec29364bcc9d4703571",
+            "sha256": "d6a1f97c04904714c7f7881b5e5c73a0886a9d31094779e73b12f04567d46348"
+          },
+          {
+            "path": "tests/phase9/solver/tiered-performance.test.mjs",
+            "gitBlobSha1": "f8eb1f1d47fefa78a74b75efa1fa129a8d7dfbc4",
+            "sha256": "bcbbb21efc5f7e29ad7dc89bc89d25288866891b4f7240e82d6fd3583cb3ff08"
+          },
+          {
+            "path": "tools/validation/phase9/tiered-solver-metrics.mjs",
+            "gitBlobSha1": "2bef1d4008309f962b70f557a91ca80f4329c5f0",
+            "sha256": "f98c8b284deb625da6aa66f92f2bf04034d522a23bf4bf327c67f9a8577482a2"
+          }
+        ]
+      },
       "wideQueries": [
         {
           "descriptor": {

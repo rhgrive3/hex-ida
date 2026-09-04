@@ -88,13 +88,18 @@ cancellation behavior can differ on the declared product target.
 
 ## R-008 Graft applicability
 
-**Decision**: Do not invoke Graft in this campaign environment because
-`CODESPACES` is unset.
+**Decision**: Use the repository's prebuilt Graft graph as the first repository
+context source for this campaign after the user explicitly authorized it and the
+active runtime instructions identified this worktree as indexed. Do not install
+or upgrade Graft as part of the campaign.
 
-**Rationale**: `AGENTS.md` limits the Graft workflow to GitHub Codespaces even
-when an index or executable is present.
+**Rationale**: The later explicit authorization supersedes the earlier
+environment-default prohibition for this session. Graft remains an efficient
+context graph only; exact source, Git identities, tests, and independent
+verifiers retain semantic and release authority.
 
-**Rejected**: Installing, upgrading, or using Graft outside Codespaces.
+**Rejected**: Treating Graft summaries as implementation or release proof, or
+upgrading the globally installed tool during a live candidate campaign.
 
 ## R-009 Workspace and branch safety
 
@@ -157,3 +162,102 @@ reason to weaken the profile.
 **Rejected**: Treating `gate: none` as a waiver, inventing a measured historical
 baseline, using Chromium or a simulated user agent for iPad proof, or changing
 the target in the same change that attempts to satisfy it.
+
+## R-013 Rolling checkpoint publication lineage
+
+**Decision**: Treat each living-integration checkpoint as the immutable
+`I_i → M_i → G_i → E_i` transaction. `M_i` is the exact two-parent candidate
+merge of integration parent `I_i` and component handoff `C_i`; `G_i` is its
+single-parent generated/reconciled product child; `E_i` is the single-parent
+evidence-only publication child. Generation, rolling-gate, and shadow-verifier
+evidence must be recomputed from exact `G_i` Git blobs and exact command results.
+
+**Rationale**: A row assembled from separate merge, generated, and evidence
+commits can attest a product that never existed. The closure ledger already
+defines the four identities; T046 documentation must state the same invariant
+before component fanout.
+
+**Rejected**: Conflating `M_i` and `G_i` as one `integrationProduct`, accepting
+arbitrary hash-shaped evidence, or treating a verifier's self-report as an
+independent oracle.
+
+## R-014 Immutable task-handoff anchor
+
+**Decision**: Bind `acceptedTaskId` to the exact handoff head/tree and derive the
+canonical T046/T025 anchor from the unique transition in the full reachable Git
+DAG where the task is `DONE` and no parent is `DONE`. Every reachable descendant
+must remain `DONE`. The current mutable integration inventory is an observation
+to validate, not an authority that can rewrite the historical anchor.
+
+**Rationale**: Otherwise a compromised or later-edited inventory can relabel a
+component or rewrite the evidence source after the task was accepted.
+
+**Rejected**: Accepting the latest inventory entry, a mutable branch tip,
+first-parent-only history that can hide the real transition behind a reversed
+merge, or a worker's prose as the canonical handoff identity.
+
+## R-015 Recovery-fetch and path-decoding isolation
+
+**Decision**: Fetch recovery authority only into a dedicated scratch ref and
+protect the canonical recovery tracking ref and unrelated refs with a
+transaction snapshot. Git changed-path decoding is fail-closed: invalid UTF-8,
+leading BOM, and control-byte paths are rejected rather than normalized into an
+allowlist path.
+
+**Rationale**: A recovery fetch must not silently rewrite the evidence used to
+prove preservation, and byte-level path ambiguity can bypass ownership checks.
+
+**Rejected**: Force-updating `refs/remotes/origin/wip/recovery-handoff-20260904`,
+globally freezing or mutating unrelated refs, stripping a BOM, or replacing
+invalid bytes before ownership validation.
+
+## R-016 Moving-main and product reconciliation
+
+**Decision**: A later checkpoint input is either the preceding evidence commit
+unchanged (`mainReconciliation.mode = NOOP`) or an exact ordered two-parent merge
+of that commit with refetched current main (`EXACT_MERGE`). Conflict-free merge
+tree output is independently recomputed and any adjustment is restricted to its
+explicit allowlist. Separately, every non-generated `M_i -> G_i` edit is listed
+exactly in a T049/T050-owned `integrationReconciliation` manifest.
+
+**Rationale**: Requiring `I_i === E_(i-1)` forever deadlocks a correctly moving
+main, while allowing an opaque reconciliation commit lets source or evidence
+changes bypass the component and publication contracts. Distinct manifests
+keep main reconciliation, component acceptance, generation, and evidence
+publication independently auditable.
+
+**Rejected**: Stale-main reuse, reversed merge parents, a reconciliation
+cherry-pick, hidden conflict resolution, component paths in `G_i`, or shared
+contract edits smuggled into `E_i`.
+
+## R-017 Observed rolling and fixed shadow evidence
+
+**Decision**: Rolling evidence v2 is produced only by executing every registry
+argv for the cumulative accepted-task set and capturing the exact
+candidate/registry identity, exit status, signal, spawn error, output-limit
+state, and per-invocation stdout/stderr byte digests. Runtime verification
+repeats those commands on detached exact `G_i` and compares stable process
+semantics while retaining each output digest as an audit receipt. Shadow proof
+uses one registry-fixed central verifier and pinned foundation contracts outside
+component ownership. It executes an independent oracle projection and an
+exact-candidate product projection separately; providers emit only raw
+observations, and the central verifier derives the case relation, denominators,
+all seven hard-zero counters, verdict, and evidence identity. Each denominator
+counts only cases explicitly mapped to that counter, and terminal aggregate
+proof requires coverage of all seven. Candidate and authority identities are
+separate: the authority is the component candidate's exact first parent or
+`G_i`'s exact sole `M_i` parent, never the candidate itself; authority
+foundation/judge blobs must equal the candidate blobs. Exact-G lockfiles
+provision dependencies, whose installed tree is checked with typed,
+length-framed hashing. Process invariants cover all persistent refs and a fixed
+runtime-ephemeral allowlist.
+
+**Rationale**: A constructor that emits `PASS` without process observations, a
+component-selected verifier/oracle, or one task-owned process supplying both
+sides is self-certification. Bounded output identities preserve an audit trail
+without treating nondeterministic reporter timing as semantics.
+
+**Rejected**: Truthy status fields, output text that merely says `PASS`,
+registry/argv substitution, missing counters, worktree-only providers,
+live-host dependency symlinks, unbounded output, undeclared runtime files, or
+mutations to stash, notes, and custom refs.

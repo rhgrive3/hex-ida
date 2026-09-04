@@ -1,0 +1,125 @@
+name: Final closure preflight
+
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      expect_sha:
+        description: Exact candidate commit SHA to verify
+        required: true
+        type: string
+      expect_base_sha:
+        description: Exact candidate base commit SHA to verify
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: final-closure-preflight-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  pull-request-authority:
+    if: github.event_name == 'pull_request' && (startsWith(github.event.pull_request.base.ref, 'recovery/final-closure-') || startsWith(github.event.pull_request.base.ref, 'analysis/final-closure-') || startsWith(github.event.pull_request.head.ref, 'recovery/final-closure-') || startsWith(github.event.pull_request.head.ref, 'analysis/final-closure-') || startsWith(github.event.pull_request.head.ref, 'component/final-closure-t'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Reject unauthorized final-closure PR relationship
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          if [[ "$BASE_REF" == main && ( "$HEAD_REF" == recovery/final-closure-* || "$HEAD_REF" == analysis/final-closure-* ) ]]; then
+            exit 0
+          fi
+          if [[ ( "$BASE_REF" == recovery/final-closure-* || "$BASE_REF" == analysis/final-closure-* ) && "$HEAD_REF" == component/final-closure-t* ]]; then
+            exit 0
+          fi
+          echo "unauthorized final-closure PR relationship: $HEAD_REF -> $BASE_REF" >&2
+          exit 1
+
+  integration-pull-request-head:
+    if: github.event_name == 'pull_request' && github.base_ref == 'main' && (startsWith(github.head_ref, 'recovery/final-closure-') || startsWith(github.head_ref, 'analysis/final-closure-'))
+    needs: pull-request-authority
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+      - name: Install exact dependencies for checkpoint verification
+        run: npm ci --no-audit --no-fund
+      - name: Run permanent ownership and invalidation regressions
+        run: node tests/final-closure/run.mjs
+      - name: Run unchanged production walking skeleton
+        run: node tests/phase4/walking-skeleton.test.mjs
+      - name: Verify exact pull-request head
+        env:
+          EXPECT_SHA: ${{ github.event.pull_request.head.sha }}
+          EXPECT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: node tools/validation/final-closure/preflight.mjs --expect-sha "$EXPECT_SHA" --expect-base-sha "$EXPECT_BASE_SHA"
+      - name: Reproduce exact checkpoint product evidence
+        run: node tools/validation/final-closure/preflight.mjs --run-checkpoint-verification
+
+  component-candidate-merge-tree:
+    if: github.event_name == 'pull_request' && startsWith(github.head_ref, 'component/final-closure-t') && (startsWith(github.base_ref, 'recovery/final-closure-') || startsWith(github.base_ref, 'analysis/final-closure-'))
+    needs: pull-request-authority
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+      - name: Install exact dependencies for component gates
+        run: npm ci --no-audit --no-fund
+      - name: Construct and check out exact synthetic candidate merge commit
+        run: node tools/validation/final-closure/preflight.mjs --prepare-component-candidate
+      - name: Run permanent ownership and invalidation regressions on candidate tree
+        run: node tests/final-closure/run.mjs
+      - name: Run unchanged production walking skeleton on candidate tree
+        run: node tests/phase4/walking-skeleton.test.mjs
+      - name: Verify event-authorized component candidate tree
+        run: node tools/validation/final-closure/preflight.mjs
+      - name: Run task-owned, rolling, and shadow candidate gates
+        run: node tools/validation/final-closure/preflight.mjs --run-component-gates
+      - name: Reproduce inherited checkpoint product evidence
+        run: node tools/validation/final-closure/preflight.mjs --run-checkpoint-verification
+
+  dispatch-exact-head:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ inputs.expect_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+      - name: Install exact dependencies for checkpoint verification
+        run: npm ci --no-audit --no-fund
+      - name: Run permanent ownership and invalidation regressions
+        run: node tests/final-closure/run.mjs
+      - name: Run unchanged production walking skeleton
+        run: node tests/phase4/walking-skeleton.test.mjs
+      - name: Verify exact dispatched head
+        env:
+          EXPECT_SHA: ${{ inputs.expect_sha }}
+          EXPECT_BASE_SHA: ${{ inputs.expect_base_sha }}
+        run: node tools/validation/final-closure/preflight.mjs --expect-sha "$EXPECT_SHA" --expect-base-sha "$EXPECT_BASE_SHA"
+      - name: Reproduce exact checkpoint product evidence
+        run: node tools/validation/final-closure/preflight.mjs --run-checkpoint-verification
