@@ -1,213 +1,37 @@
 version: 2.1
 
 jobs:
-  migration-guardrails:
+  generated-sync-probe:
     docker:
       - image: cimg/node:22.23
     resource_class: medium
     steps:
       - checkout
       - run:
-          name: Validate CircleCI impact router
-          command: node tests/ci/circleci-impact.test.mjs
-      - run:
-          name: Detect migration-guardrail impact
-          command: |
-            run_it="$(bash scripts/ci/circleci-impact.sh pr-only '^(js/(architecture/|ir\.js$|ir-core\.js$|dataflow[^/]*\.js$|decompiler/|binary/|bytesource/|platform/|project/|runtime/|runtime-evidence/|symbolic/|ai/|ui/|ui\.js$|ui-root\.js$|panels\.js$|app\.js$|backend\.js$|worker[^/]*\.js$)|worker-entry\.js$|package\.json$|package-lock\.json$|tests/(migration-guardrails\.mjs$|universal-binary-source\.mjs$|binary-platform\.mjs$)|docs/MIGRATION_GUARDRAILS\.md$|\.github/workflows/migration-guardrails\.yml$|\.circleci/config\.yml$|scripts/ci/circleci-impact\.sh$)')"
-            echo "export RUN_MIGRATION_GUARDRAILS=$run_it" >> "$BASH_ENV"
-      - run:
           name: Install dependencies
-          command: |
-            if [ "$RUN_MIGRATION_GUARDRAILS" != 'true' ]; then exit 0; fi
-            npm ci --no-audit --no-fund
+          command: npm ci --no-audit --no-fund
       - run:
-          name: Run migration proofs
-          command: |
-            if [ "$RUN_MIGRATION_GUARDRAILS" != 'true' ]; then exit 0; fi
-            npm run migration:test
-            npm run binary:source-test
-
-  agent-loop-resilience:
-    docker:
-      - image: cimg/node:22.23
-    resource_class: small
-    steps:
-      - checkout
+          name: Rebuild canonical userscript outputs
+          command: npm run userscript:build
       - run:
-          name: Detect agent-loop impact
+          name: Resolve generated-output ownership policy
           command: |
-            run_it="$(bash scripts/ci/circleci-impact.sh main-and-branch '^(js/userscript/dev/|tests/dev-agent/agent-loop-resilience\.mjs$|\.github/workflows/agent-loop-resilience\.yml$|\.circleci/config\.yml$|scripts/ci/circleci-impact\.sh$)')"
-            echo "export RUN_AGENT_LOOP_RESILIENCE=$run_it" >> "$BASH_ENV"
-      - run:
-          name: Run unattended agent loop regressions
-          command: |
-            if [ "$RUN_AGENT_LOOP_RESILIENCE" != 'true' ]; then exit 0; fi
-            node tests/dev-agent/agent-loop-resilience.mjs
-
-  issue-2528-canonical-claims:
-    docker:
-      - image: cimg/node:22.23
-    resource_class: small
-    steps:
-      - checkout
-      - run:
-          name: Detect canonical-claims impact
-          command: |
-            run_it="$(bash scripts/ci/circleci-impact.sh pr-only '^(js/ui/product-hardened\.js$|js/analysis/query/product-surface\.js$|js/ux\.js$|tests/issue-2528-canonical-claims\.mjs$|\.github/workflows/issue-2528-canonical-claims\.yml$|\.circleci/config\.yml$|scripts/ci/circleci-impact\.sh$)')"
-            echo "export RUN_ISSUE_2528=$run_it" >> "$BASH_ENV"
-      - run:
-          name: Validate canonical claims authority
-          command: |
-            if [ "$RUN_ISSUE_2528" != 'true' ]; then exit 0; fi
-            node tests/issue-2528-canonical-claims.mjs
-
-  ai-eval-contract:
-    docker:
-      - image: cimg/node:20.19
-    resource_class: small
-    steps:
-      - checkout
-      - run:
-          name: Detect AI evaluation impact
-          command: |
-            run_it="$(bash scripts/ci/circleci-impact.sh main-and-branch '^(js/ai/|js/agent/|js/query/|js/gemini\.js$|js/goalc\.js$|js/semantic-evidence\.js$|worker\.js$|tests/ai-eval/|docs/ai-integration-contract\.md$|docs/ai-quality-gate\.md$|\.github/workflows/ai-eval-contract\.yml$|\.circleci/config\.yml$|scripts/ci/circleci-impact\.sh$)')"
-            echo "export RUN_AI_EVAL=$run_it" >> "$BASH_ENV"
-      - run:
-          name: Validate workflow trigger coverage
-          command: |
-            if [ "$RUN_AI_EVAL" != 'true' ]; then exit 0; fi
-            node tests/ai-eval/workflow-trigger.mjs
-      - run:
-          name: Validate AI evaluation corpus
-          command: |
-            if [ "$RUN_AI_EVAL" != 'true' ]; then exit 0; fi
-            node tests/ai-eval/selftest.mjs
-      - run:
-          name: Exercise grader with example trace
-          command: |
-            if [ "$RUN_AI_EVAL" != 'true' ]; then exit 0; fi
-            node tests/ai-eval/grade.mjs tests/ai-eval/results.example.jsonl /tmp/ai-eval-report.json
-      - run:
-          name: Ensure release mode rejects an incomplete corpus
-          command: |
-            if [ "$RUN_AI_EVAL" != 'true' ]; then exit 0; fi
-            if node tests/ai-eval/grade.mjs tests/ai-eval/results.example.jsonl /tmp/ai-eval-partial.json --require-all; then
-              echo 'Expected --require-all to reject a one-case trace.' >&2
-              exit 1
-            fi
-
-  phase7-ownership:
-    docker:
-      - image: cimg/node:22.23
-    resource_class: small
-    steps:
-      - checkout
-      - run:
-          name: Detect Phase 7 ownership impact
-          command: |
-            set -euo pipefail
-            case "${CIRCLE_BRANCH:-}" in
-              completion/stage1-integration|integration/all-open-prs-20260829)
-                run_it=false
-                ;;
-              *)
-                run_it="$(bash scripts/ci/circleci-impact.sh pr-only '^(js/analysis/|js/semantics/compat/index\.js$|tests/phase7/|tools/validation/phase7/|tools/validation/phase7-ownership\.mjs$|tools/validation/phase-ownership/phase7\.json$|reports/phase7/|\.github/workflows/phase7-ownership\.yml$)')"
-                ;;
+            mode="$(node tools/validation/generated-output-policy.mjs)"
+            case "$mode" in
+              enforce|ephemeral) ;;
+              *) echo "unknown generated-output policy mode: $mode" >&2; exit 1 ;;
             esac
-            echo "export RUN_PHASE7_OWNERSHIP=$run_it" >> "$BASH_ENV"
+            echo "export GENERATED_MODE=$mode" >> "$BASH_ENV"
       - run:
-          name: Prepare exact ownership inventory
+          name: Validate generated outputs
           command: |
-            if [ "$RUN_PHASE7_OWNERSHIP" != 'true' ]; then exit 0; fi
-            set -euo pipefail
-            if [ "$(git rev-parse --is-shallow-repository)" = 'true' ]; then
-              git fetch --no-tags --unshallow origin
-            fi
-            git fetch --no-tags origin main:refs/remotes/origin/main
-            echo "export OWNERSHIP_BASE_SHA=$(git rev-parse refs/remotes/origin/main)" >> "$BASH_ENV"
-            echo "export OWNERSHIP_HEAD_SHA=$(git rev-parse HEAD)" >> "$BASH_ENV"
-      - run:
-          name: Validate Phase 7 ownership
-          command: |
-            if [ "$RUN_PHASE7_OWNERSHIP" != 'true' ]; then exit 0; fi
-            set -euo pipefail
-            node tools/validation/phase7-ownership.mjs --check-manifest
-            case "${CIRCLE_BRANCH:-}" in
-              fix/unlinked-demand-analysis-2502-2518|fix/unlinked-top10-r3-20260830|fix/close-audit-2520-2545-20260830|fix/reopened-audit-final-20260830|fix/open-issues-final-20260830-r4|fix/unlinked-batch-20260901-r2)
-                FILES_JSON="$(git diff --name-only --diff-filter=ACMR "$OWNERSHIP_BASE_SHA...$OWNERSHIP_HEAD_SHA" | node -e '
-                  const fs = require("node:fs");
-                  const files = fs.readFileSync(0, "utf8").split(/\r?\n/).filter(Boolean);
-                  const ownedSurface = files.filter((file) =>
-                    file.startsWith("js/analysis/") ||
-                    file === "js/semantics/compat/index.js" ||
-                    file.startsWith("tests/phase7/") ||
-                    file.startsWith("tools/validation/phase7/") ||
-                    file === "tools/validation/phase7-ownership.mjs" ||
-                    file === "tools/validation/phase-ownership/phase7.json" ||
-                    file.startsWith("reports/phase7/") ||
-                    file === ".github/workflows/phase7-ownership.yml"
-                  );
-                  process.stdout.write(JSON.stringify(ownedSurface));
-                ')"
-                if [ "$FILES_JSON" = '[]' ]; then
-                  echo 'Phase 7 aggregate validation found no Phase 7-owned changes' >&2
-                  exit 1
-                fi
-                node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
-                ;;
-              *)
-                node tools/validation/phase7-ownership.mjs --base-sha "$OWNERSHIP_BASE_SHA" --head-sha "$OWNERSHIP_HEAD_SHA"
-                ;;
-            esac
-            if node tools/validation/phase7-ownership.mjs --files-json '["js/semantics/ir/nodes.js"]'; then
-              echo 'Phase 7 ownership gate accepted a forbidden path' >&2
-              exit 1
-            fi
-
-  phase8-ownership:
-    docker:
-      - image: cimg/node:22.23
-    resource_class: small
-    steps:
-      - checkout
-      - run:
-          name: Detect Phase 8 ownership impact
-          command: |
-            run_it="$(bash scripts/ci/circleci-impact.sh pr-only '^(js/decompiler/|tests/phase8/|tools/validation/phase8/|tools/validation/phase8-ownership\.mjs$|tools/validation/phase-ownership/phase8\.json$|reports/phase8/|docs/PHASE8_CHECKPOINT\.md$|docs/PHASE8_HANDOFF\.md$|\.github/workflows/phase8-ownership\.yml$|\.github/workflows/phase8-release-validation\.yml$)')"
-            echo "export RUN_PHASE8_OWNERSHIP=$run_it" >> "$BASH_ENV"
-      - run:
-          name: Prepare exact ownership inventory
-          command: |
-            if [ "$RUN_PHASE8_OWNERSHIP" != 'true' ]; then exit 0; fi
-            set -euo pipefail
-            if [ "$(git rev-parse --is-shallow-repository)" = 'true' ]; then
-              git fetch --no-tags --unshallow origin
-            fi
-            git fetch --no-tags origin main:refs/remotes/origin/main
-            echo "export OWNERSHIP_BASE_SHA=$(git rev-parse refs/remotes/origin/main)" >> "$BASH_ENV"
-            echo "export OWNERSHIP_HEAD_SHA=$(git rev-parse HEAD)" >> "$BASH_ENV"
-      - run:
-          name: Validate Phase 8 ownership
-          command: |
-            if [ "$RUN_PHASE8_OWNERSHIP" != 'true' ]; then exit 0; fi
-            set -euo pipefail
-            node tools/validation/phase8-ownership.mjs --check-manifest
-            node tools/validation/phase8-ownership.mjs --base-sha "$OWNERSHIP_BASE_SHA" --head-sha "$OWNERSHIP_HEAD_SHA"
-            if node tools/validation/phase8-ownership.mjs --files-json '["js/semantics/ssa/build.js"]'; then
-              echo 'Phase 8 ownership gate accepted a forbidden path' >&2
-              exit 1
-            fi
-            if node tools/validation/phase8-ownership.mjs --files-json '["js/ui/product.js"]'; then
-              echo 'Phase 8 ownership gate accepted an out-of-lane path' >&2
-              exit 1
+            if [ "$GENERATED_MODE" = 'enforce' ]; then
+              git diff --exit-code -- userscript/hex.user.template.js userscript/release-version.json
+            else
+              echo 'Component lane built generated output ephemerally; integration owns committed synchronization.'
             fi
 
 workflows:
-  ci:
+  probe:
     jobs:
-      - migration-guardrails
-      - agent-loop-resilience
-      - issue-2528-canonical-claims
-      - ai-eval-contract
-      - phase7-ownership
-      - phase8-ownership
+      - generated-sync-probe
