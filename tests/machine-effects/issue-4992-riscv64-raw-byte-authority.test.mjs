@@ -41,6 +41,17 @@ const coercibleObject = {
   length: 4,
 };
 
+let statefulReads = 0;
+const statefulAccessor = [0, 0, 0, 0];
+Object.defineProperty(statefulAccessor, 0, {
+  configurable: true,
+  enumerable: true,
+  get() {
+    statefulReads += 1;
+    return statefulReads === 1 ? 0x13 : '19';
+  },
+});
+
 const malformed = [
   ['19', 0, 0, 0],
   [275, 0, 0, 0],
@@ -52,6 +63,7 @@ const malformed = [
   sparse,
   coercibleObject,
   new Uint16Array([0x13, 0, 0, 0]),
+  statefulAccessor,
 ];
 
 for (const rawBytes of malformed) {
@@ -62,5 +74,6 @@ for (const rawBytes of malformed) {
     `malformed rawBytes must fail closed before authoritative decode: ${String(rawBytes)}`,
   );
 }
+assert.equal(statefulReads, 0, 'raw-byte authority must reject accessors without invoking them');
 
 console.log('issue-4992-riscv64-raw-byte-authority: ok');
