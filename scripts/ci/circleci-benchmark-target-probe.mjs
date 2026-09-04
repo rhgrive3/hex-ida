@@ -4,7 +4,7 @@ import fs from 'node:fs';
 const target = process.argv[2];
 const category = process.argv[3] || 'all';
 if (!target) throw new Error('target required');
-if (!['all', 'identity', 'work', 'fixture', 'source-audit', 'parsed-identity'].includes(category)) {
+if (!['all', 'identity', 'work', 'fixture', 'source-audit', 'source-backed', 'audit-errors', 'parsed-identity'].includes(category)) {
   throw new Error(`unknown category ${category}`);
 }
 const current = JSON.parse(fs.readFileSync('universal-platform-benchmark.json', 'utf8'));
@@ -18,10 +18,13 @@ const fixtureChecks = [
   ['fixture size', got.fixture?.size === fixture.size, `${got.fixture?.size} == ${fixture.size}`],
   ['fixture hash', got.fixture?.sha256 === fixture.sha256, `${got.fixture?.sha256} == ${fixture.sha256}`],
 ];
-const sourceAuditChecks = [
+const sourceBackedChecks = [
   ['source-backed', got.sourceBacked === true, String(got.sourceBacked)],
+];
+const auditErrorChecks = [
   ['audit errors', got.auditErrors === 0, String(got.auditErrors)],
 ];
+const sourceAuditChecks = [...sourceBackedChecks, ...auditErrorChecks];
 const parsedIdentityChecks = [
   ['identity bytes', got.bytes === expected.identity.bytes, `${got.bytes} == ${expected.identity.bytes}`],
   ['identity format', got.format === expected.identity.format, `${got.format} == ${expected.identity.format}`],
@@ -38,6 +41,8 @@ const groups = {
   work: workChecks,
   fixture: fixtureChecks,
   'source-audit': sourceAuditChecks,
+  'source-backed': sourceBackedChecks,
+  'audit-errors': auditErrorChecks,
   'parsed-identity': parsedIdentityChecks,
 };
 const checks = groups[category];
