@@ -12,6 +12,7 @@ branch, PR, or merge stage.
 - Source owner: `js/binary/elf-extended.js`
 - Regression owner: `tests/issue-6106-elf-symbol-version-pairs.mjs`
 - Shared-board claim: lanes message #287
+- Owner PR: #6510 (https://github.com/rhgrive3/hex-ida/pull/6510)
 - Branch: `fix/issues-elf-symbol-version-pairs-6106`
 - Candidate base: `origin/main` at `bdc25613749ebf7b930b17f1d33086730f5d6ddf`
 - Implementation head after reconciliation: `2ba445b80586e6a728e19b940247097a3fec4ebb`
@@ -25,7 +26,7 @@ branch, PR, or merge stage.
 - [x] Focused regressions and lint passed.
 - [x] Reconciled once with current `origin/main`; the component diff remains limited to the checkpoint, ELF source, and focused regression.
 - [x] Complete the required ELF/Phase 4 verification and compare any unrelated red gate with pristine `origin/main`.
-- [ ] Create one owner PR for #6106 and record exact-head candidate evidence.
+- [x] Create one owner PR for #6106 and record exact-head candidate evidence for PR head `38c78b56` (candidate merge tree `ba38f23ab4282297e8d34ebd3257d8f25bd8b913`; board evidence #289).
 - [ ] Merge only after exact-head evidence and required checks are green; otherwise record the blocker here and on the board.
 
 ## Resume procedure
