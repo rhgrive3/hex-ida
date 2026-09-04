@@ -38,7 +38,11 @@ function safeSnapshot(value) {
   return deepFreeze(clone);
 }
 
-function finitePositive(value, fallback) { const n = Number(value); return Number.isFinite(n) && n > 0 ? n : fallback; }
+function strictPositiveInteger(value, fallback) {
+  if (value == null) return fallback;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) return fallback;
+  return value;
+}
 function strictIntegerBigInt(value, message = 'integer value is invalid') {
   if (typeof value === 'bigint') return value;
   if (typeof value === 'number') {
@@ -75,13 +79,16 @@ function makeReadCapability(context, pluginScope = null, record = null) {
   const allowed = manifestPerm && (policy.binaryRead === true || policy.readBinary === true);
   const ranges = normalizeRanges(policy.readRanges || policy.ranges || context.binary?.readRanges);
   if (!allowed && !ranges.length) return async () => { throw new Error('plugin binary read permission denied'); };
-  const perCall = Math.floor(finitePositive(policy.maxReadBytes, DEFAULT_READ_CALL_BYTES));
-  const totalLimit = Math.floor(finitePositive(policy.maxTotalReadBytes, DEFAULT_READ_TOTAL_BYTES));
+  const perCall = strictPositiveInteger(policy.maxReadBytes, DEFAULT_READ_CALL_BYTES);
+  const totalLimit = strictPositiveInteger(policy.maxTotalReadBytes, DEFAULT_READ_TOTAL_BYTES);
   let total = 0;
   return async (address, length) => {
     const at = strictIntegerBigInt(address, 'plugin read address must be an integer');
-    const bytes = Number(length);
-    if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > perCall) throw new RangeError(`plugin read exceeds per-call limit (${perCall} bytes)`);
+    if (typeof length !== 'number' || !Number.isSafeInteger(length)) {
+      throw new TypeError('plugin read length must be an integer');
+    }
+    const bytes = length;
+    if (bytes < 0 || bytes > perCall) throw new RangeError(`plugin read exceeds per-call limit (${perCall} bytes)`);
     if (total + bytes > totalLimit) throw new RangeError(`plugin read exceeds total budget (${totalLimit} bytes)`);
     if (ranges.length && !ranges.some((r) => at >= r.start && at + BigInt(bytes) <= r.end)) throw new RangeError('plugin read is outside permitted ranges');
     if (pluginScope && typeof pluginScope.consume === 'function') {
@@ -117,7 +124,7 @@ export class PlatformPluginRegistry {
     this.entries = new Map([...TYPES].map((type) => [type, new Map()]));
     this.plugins = new Map();
     this.failures = [];
-    this.timeoutMs = finitePositive(options.timeoutMs, DEFAULT_TIMEOUT_MS);
+    this.timeoutMs = strictPositiveInteger(options.timeoutMs, DEFAULT_TIMEOUT_MS);
   }
 
   registerFormat(id, contribution) { return this.#register('format', id, contribution); }
@@ -236,7 +243,7 @@ export class PlatformPluginRegistry {
     const fn = record.contribution[method];
     if (typeof fn !== 'function') return { ok: false, error: `contribution ${type}:${id} has no ${method}()` };
     const rawOptions = args.at(-1) && typeof args.at(-1) === 'object' ? args.at(-1) : {};
-    const timeoutMs = finitePositive(rawOptions.timeoutMs, this.timeoutMs);
+    const timeoutMs = strictPositiveInteger(rawOptions.timeoutMs, this.timeoutMs);
     const signal = rawOptions.signal;
 
     let pluginScope = null;
