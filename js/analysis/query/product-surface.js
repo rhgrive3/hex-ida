@@ -40,7 +40,13 @@ function claimIdFilter(value) {
 function verdictFilter(values) {
   if (!Array.isArray(values) || !values.length) return null;
   if (values.some((value) => typeof value !== 'string' || !value.trim())) throw new TypeError('analysis-product-verdict-invalid');
-  return new Set(values.map((value) => value.trim().toLowerCase()));
+  const set = new Set();
+  for (const value of values) {
+    const norm = value.trim().toLowerCase();
+    if (!CANONICAL_VERDICTS.has(norm)) throw new TypeError('analysis-product-verdict-invalid');
+    set.add(norm);
+  }
+  return set;
 }
 function functionAddress(value) {
   if (typeof value === 'bigint') {
@@ -209,7 +215,7 @@ function matchingStrings(state, needle) {
 
 export function canonicalClaimVerdict(item) {
   const raw = item?.verdict ?? item?.evidenceVerdict ?? item?.proof?.verdict ?? item?.claim?.verdict ?? null;
-  const normalized = typeof raw === 'string' ? raw.toLowerCase() : null;
+  const normalized = typeof raw === 'string' ? raw.trim().toLowerCase() : null;
   return normalized && CANONICAL_VERDICTS.has(normalized) ? normalized : 'unverified';
 }
 

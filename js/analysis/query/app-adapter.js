@@ -99,9 +99,14 @@ function artifactVersions(app) {
 }
 
 function currentInfo(app) { return storeValue(app, 'fileInfo'); }
+function validSliceIndex(value) {
+  if (value === undefined || value === null) return null;
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return value;
+  return -1;
+}
 function currentSlice(app) {
-  const index = Number(storeValue(app, 'sliceIndex') ?? -1);
-  return index >= 0 ? currentInfo(app)?.slices?.[index] ?? null : null;
+  const index = validSliceIndex(storeValue(app, 'sliceIndex'));
+  return index !== null && index >= 0 ? currentInfo(app)?.slices?.[index] ?? null : null;
 }
 function architectureOf(app) {
   const value = storeValue(app, 'architecture') ?? storeValue(app, 'capability')?.architecture ?? currentSlice(app)?.capability?.architecture ?? '';
@@ -241,14 +246,18 @@ export function createAppAnalysisQueryAdapter(app) {
   const abiFor = async (architecture) => {
     const descriptor = descriptorMetadata(app);
     const metadata = await metadataSummary();
-    const explicit = descriptor.abi ?? metadata?.summary?.abi ?? metadata?.metadata?.abi ?? null;
-    const bits = Number(descriptor.bits ?? metadata?.summary?.bits ?? 64);
+    const rawExplicit = descriptor.abi ?? metadata?.summary?.abi ?? metadata?.metadata?.abi ?? null;
+    const explicit = typeof rawExplicit === 'string' && rawExplicit.trim() ? rawExplicit.trim() : null;
+    const rawBits = descriptor.bits ?? metadata?.summary?.bits;
+    const bits = rawBits == null ? 64 : (typeof rawBits === 'number' && Number.isSafeInteger(rawBits) && rawBits > 0 ? rawBits : null);
     let platform = normalizePlatform(descriptor.platform ?? metadata?.summary?.platform);
     if (architecture === 'riscv64') {
+      if (rawExplicit != null && !explicit) return { supported:false, reason:'riscv-explicit-abi-invalid' };
       if (explicit) {
-        const plugin = resolveABIPlugin({ architecture, platform:platform ?? 'unix', abiId:String(explicit) });
+        const plugin = resolveABIPlugin({ architecture, platform:platform ?? 'unix', abiId:explicit });
         return plugin?.supported ? { supported:true, abiId:plugin.id, platform:platform ?? 'unix', evidence:'explicit' } : { supported:false, reason:'riscv-explicit-abi-unsupported' };
       }
+      if (bits == null) return { supported:false, reason:'riscv-bits-invalid' };
       const flags = metadata?.metadata?.flags;
       if (flags == null) return { supported:false, reason:'riscv-elf-flags-unavailable' };
       const selected = riscvAbiFromElfFlags(flags, { bits });
@@ -257,8 +266,9 @@ export function createAppAnalysisQueryAdapter(app) {
         : { supported:false, reason:selected?.reason || 'riscv-abi-unproven' };
     }
     if (architecture === 'x86_64') {
+      if (rawExplicit != null && !explicit) return { supported:false, reason:'x86-64-explicit-abi-invalid' };
       platform ??= formatOf(app) === 'pe' ? 'windows' : formatOf(app) === 'elf' ? 'unix' : null;
-      const plugin = resolveABIPlugin({ architecture, platform, ...(explicit ? { abiId:String(explicit) } : {}) });
+      const plugin = resolveABIPlugin({ architecture, platform, ...(explicit ? { abiId:explicit } : {}) });
       return plugin?.supported ? { supported:true, abiId:plugin.id, platform:platform ?? 'unknown', evidence:explicit ? 'explicit' : 'format-platform' } : { supported:false, reason:'x86-64-abi-unproven' };
     }
     return { supported:false, reason:`semantic-function-unsupported-architecture:${architecture || 'unknown'}` };
@@ -298,7 +308,12 @@ export function createAppAnalysisQueryAdapter(app) {
     const length = Number(budgeted ? BigInt(X86_SEMANTIC_FUNCTION_MAX_DECODE_BYTES) : span);
     const abi = await abiFor(architecture);
     if (!abi.supported) return unsupported(id, abi.reason);
-    const sliceIndex = Math.max(0, Number(storeValue(app, 'sliceIndex') ?? 0));
+    const rawSliceIndex = storeValue(app, 'sliceIndex');
+    const validatedSlice = validSliceIndex(rawSliceIndex);
+    if (rawSliceIndex != null && (validatedSlice === null || validatedSlice < 0)) {
+      return unsupported(id, 'invalid-slice-index');
+    }
+    const sliceIndex = validatedSlice !== null && validatedSlice >= 0 ? validatedSlice : 0;
     const requestedCompleteness = budgeted || range.complete === false ? 'partial' : 'complete';
     const canonical = await app.backend.analyzeSemanticFunction({
       address:range.start, length, architecture, abiId:abi.abiId, platform:abi.platform, sliceIndex,
@@ -362,7 +377,10 @@ export function createAppAnalysisQueryAdapter(app) {
         binaryId:snapshot.binaryId, name:info?.name ?? storeValue(app, 'file')?.name ?? null,
         size:info?.size ?? storeValue(app, 'file')?.size ?? null,
         formatId:formatOf(app) || (info?.format ?? null), architecture:architectureOf(app) || null,
-        sliceIndex:Number(storeValue(app, 'sliceIndex') ?? -1),
+        sliceIndex:(() => {
+          const validatedSlice = validSliceIndex(storeValue(app, 'sliceIndex'));
+          return validatedSlice !== null && validatedSlice >= 0 ? validatedSlice : -1;
+        })(),
         capability:storeValue(app, 'capability') ?? slice?.capability ?? info?.capability ?? null,
         regions:(storeValue(app, 'regions') || []).map((r) => ({ id:r.id, name:r.name ?? null, section:r.section ?? null, vmAddr:r.vmAddr, size:r.size, exec:r.exec === true, read:r.read === true, write:r.write === true })),
       };
@@ -375,7 +393,11 @@ export function createAppAnalysisQueryAdapter(app) {
       const rawNeedle = query.text ?? query.name ?? '';
       if (typeof rawNeedle !== 'string') return unsupported(null, 'function-query-text-invalid');
       const needle = rawNeedle.trim().toLowerCase();
+      const hasAddress = Object.prototype.hasOwnProperty.call(query, 'address') && query.address != null;
       const exactAddress = addressOf(query.address);
+      if (hasAddress && (exactAddress == null || exactAddress < 0n)) {
+        return unsupported(null, 'function-query-address-invalid');
+      }
       const { offset, limit } = pageOf(page);
       const count = Math.min(symbols.funcs.length, MAX_FUNCTION_SCAN);
       const indexComplete = symbols.functionStartsComplete === true && count === symbols.funcs.length;

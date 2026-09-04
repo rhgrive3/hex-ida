@@ -40,6 +40,56 @@ function waitForProducer(promise, signal) {
   });
 }
 
+function waitForOwnedRequest(request, signal) {
+  abortIfNeeded(signal);
+  if (!signal) return Promise.resolve(request);
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener('abort', onAbort);
+      fn(value);
+    };
+    const onAbort = () => {
+      try { request?.cancel?.(); } catch { /* best effort; caller cancellation is authoritative */ }
+      try { abortIfNeeded(signal); }
+      catch (error) { finish(reject, error); }
+    };
+    Promise.resolve(request).then(
+      (value) => finish(resolve, value),
+      (error) => finish(reject, error),
+    );
+    signal.addEventListener('abort', onAbort, { once: true });
+    if (signal.aborted) onAbort();
+  });
+}
+
+function cancellationScopedBase(app, options = {}) {
+  const signal = options.signal ?? null;
+  const scoped = Object.create(app ?? null);
+  if (typeof app?.ensureProgram === 'function') {
+    scoped.ensureProgram = (rawOptions = {}) => {
+      const forwarded = typeof rawOptions === 'function'
+        ? { onProgress: rawOptions }
+        : (rawOptions && typeof rawOptions === 'object' ? { ...rawOptions } : {});
+      forwarded.signal = signal;
+      return app.ensureProgram(forwarded);
+    };
+  }
+  if (app?.backend && typeof app.backend === 'object') {
+    const backend = Object.create(app.backend);
+    if (typeof app.backend.search === 'function') {
+      backend.search = (query, onProgress) => {
+        abortIfNeeded(signal);
+        return waitForOwnedRequest(app.backend.search(query, onProgress), signal);
+      };
+    }
+    scoped.backend = backend;
+  }
+  return createBaseAdapter(scoped);
+}
+
 function storeValue(app, key) {
   try {
     if (typeof app?.store?.get === 'function') return app.store.get(key);
@@ -224,12 +274,26 @@ export function createAppAnalysisQueryAdapter(app) {
   settleFunctionDiscoveryRoute(app);
   const base = createBaseAdapter(app);
   settleUiRoute(app);
+  const scoped = (options = {}) => cancellationScopedBase(app, options);
   return {
     ...base,
     currentIdentity: (options = {}) => canonicalIdentity(app, options),
     async functions(snapshot, query = {}, page = {}, options = {}) {
       await ensureFunctionDiscovery(app, options);
       return base.functions(snapshot, query, page, options);
+    },
+    callers(snapshot, id, page = {}, options = {}) {
+      return scoped(options).callers(snapshot, id, page, options);
+    },
+    callees(snapshot, id, page = {}, options = {}) {
+      return scoped(options).callees(snapshot, id, page, options);
+    },
+    xrefs(snapshot, id, page = {}, options = {}) {
+      return scoped(options).xrefs(snapshot, id, page, options);
+    },
+    search(snapshot, query, page = {}, options = {}) {
+      if (typeof app?.querySearch === 'function') return base.search(snapshot, query, page, options);
+      return scoped(options).search(snapshot, query, page, options);
     },
   };
 }

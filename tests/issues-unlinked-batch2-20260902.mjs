@@ -243,4 +243,27 @@ import test from 'node:test';
   assert.match(openatEntry, /args:\['dirfd','path','flags'\]/);
 }
 
+// #3427 — InvestigationService scheduler priority is string-only authority.
+{
+  const { InvestigationService, __investigationInternalsForTests } = await import('../js/analysis/investigation-service.js');
+  const { priorityOf } = __investigationInternalsForTests;
+  for (const value of ['user-blocking', 'user-visible', 'background']) {
+    assert.equal(priorityOf({ priority:value }), value, `canonical priority ${value} must be preserved`);
+  }
+  for (const value of [['user-blocking'], ['background'], {}, 2, true, false, null, undefined, 'unknown']) {
+    assert.equal(priorityOf({ priority:value }), 'user-visible', `malformed priority ${String(value)} must use fallback`);
+  }
+
+  const observed = [];
+  const app = {
+    symbols: {},
+    codeRegion: () => ({ id:'text', vmAddr:0n, size:4n, exec:true }),
+    ensureFunctions: async (_region, options) => { observed.push(options.priority); return {}; },
+  };
+  const service = new InvestigationService(app);
+  await service.discoverFunctions({ priority:['user-blocking'] });
+  await service.discoverFunctions({ priority:'background' });
+  assert.deepEqual(observed, ['user-visible', 'background'], 'discoverFunctions must forward only canonical scheduler priorities');
+}
+
 console.log('unlinked batch2 regressions: PASS');
