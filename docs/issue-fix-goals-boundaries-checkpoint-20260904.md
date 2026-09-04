@@ -15,6 +15,7 @@ goal semantic matching issues. Update it at every branch, PR, or merge stage.
 - Candidate base: `origin/main` at `f00154dcb9b2234cbacb4c6a3c2186d00c8a4b3a`
 - Implementation head: `e8eb839d` (`fix(goals): reject structured matching inputs`)
 - Pull request: #6481 — https://github.com/rhgrive3/hex-ida/pull/6481
+- Last verified candidate tree: `44354c0ca590c9f2275943a3bb3adda940f83597`
 
 ## Stages
 
@@ -27,7 +28,9 @@ goal semantic matching issues. Update it at every branch, PR, or merge stage.
 - [x] Phase 4 reached `phase4: PASS (33 test files + independent verification)` and then hit the known pristine-main `integration-contract-repair.test.mjs` 18/19 failure.
 - [x] Committed the three-file owner-lane delta at `e8eb839d` and pushed `origin/fix/issues-goals-boundaries-6107-6119`.
 - [x] Created one owner PR for both issues: #6481.
-- [ ] Prove the exact current-main candidate tree and required PR checks.
+- [x] Candidate merge was clean; tree `44354c0ca590c9f2275943a3bb3adda940f83597` contained exactly the three owned files.
+- [x] Candidate focused regression and lint passed; candidate Phase 4 reproduced only the pristine-main ownership-contract failure.
+- [ ] Re-run exact-head checks after this checkpoint update and inspect required PR checks.
 - [ ] Merge only after exact-head evidence is green; otherwise record the blocker here and on the board.
 
 ## Resume procedure
