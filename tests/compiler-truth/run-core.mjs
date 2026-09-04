@@ -128,8 +128,15 @@ function semanticTruth(fn, result) {
     const args = inputs.map((_x,j) => truthCases[(i+j*2) % truthCases.length]);
     const env = {};
     for (let j=0;j<inputs.length;j++) env[inputs[j].name] = args[j];
-    for (let j=0;j<args.length;j++) { env[`arg${j+1}`] = args[j]; env[`a${j+1}`] = args[j]; }
-    const actual = evaluateExpression(ret, env);
+    const memory = {};
+    for (const store of (result?.semanticAst?.stores || [])) {
+      const val = evaluateExpression(store.expression, env, memory);
+      if (val != null) {
+        if (store.location?.key) memory[store.location.key] = val;
+        if (store.location?.name) memory[store.location.name] = val;
+      }
+    }
+    const actual = evaluateExpression(ret, env, memory);
     if (actual == null) continue;
     const expectedValue = truthFns[fn](...args);
     checked++;

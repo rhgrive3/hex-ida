@@ -126,8 +126,15 @@ function verifyClamp(asm, fn, baseAddress) {
   let checked = 0;
   for (const input of boundary32) {
     const env = { arg1:input, a1:input };
-    for (const item of inputs) env[item.name] = input;
-    const actual = evaluateExpression(ret, env);
+    const memory = {};
+    for (const store of (result?.semanticAst?.stores || [])) {
+      const val = evaluateExpression(store.expression, env, memory);
+      if (val != null) {
+        if (store.location?.key) memory[store.location.key] = val;
+        if (store.location?.name) memory[store.location.name] = val;
+      }
+    }
+    const actual = evaluateExpression(ret, env, memory);
     assert.notEqual(actual, null, `${fn}: expression not executable for ${input}`);
     const expected = s(input, 32) < 0n ? 0n : u(input, 32);
     assert.equal(u(actual, 32), u(expected, 32), `${fn}: semantic mismatch for ${input}`);

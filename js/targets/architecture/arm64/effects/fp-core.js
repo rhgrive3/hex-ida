@@ -428,7 +428,7 @@ function exactSelect(instruction, context, mnemonic, ops) {
   const condition = ops.find((op) => op?.k === 'cond')?.text;
   if (!type || dst?.cls !== 'fp' || a?.cls !== 'fp' || b?.cls !== 'fp'
     || scalarWidth(a) !== width || scalarWidth(b) !== width
-    || !/^(?:eq|ne|cs|hs|cc|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le|al|nv)$/.test(String(condition || '').toLowerCase())) {
+    || !/^(?:eq|ne|cs|hs|cc|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le|al|nv)$/.test(String(condition || '').trim().toLowerCase())) {
     return partial(instruction, context, 'fcsel-width-or-operands-unavailable', ['registers','flags','other']);
   }
   const operations = [];
@@ -467,7 +467,7 @@ function compare(instruction, context, mnemonic, ops) {
   const conditional = mnemonic.startsWith('fccmp');
   const rhsIsZero = rhs?.k === 'imm' && (Number(rhs.float) === 0 || rhs.bitPattern === 0n || rhs.bitPattern === '0');
   if ((!rhsIsZero && (rhs?.k !== 'reg' || scalarWidth(rhs) !== width))
-    || (conditional && (!/^(?:eq|ne|cs|hs|cc|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le|al|nv)$/.test(String(condition || '').toLowerCase())
+    || (conditional && (!/^(?:eq|ne|cs|hs|cc|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le|al|nv)$/.test(String(condition || '').trim().toLowerCase())
       || nzcv == null || nzcv < 0n || nzcv > 15n))) {
     return partial(instruction, context, `${mnemonic}-operand-shape-unavailable`, ['registers','flags','other']);
   }
