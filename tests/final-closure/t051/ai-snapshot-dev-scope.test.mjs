@@ -79,6 +79,58 @@ const validExplicit = resolveBinaryIdentity({
 assert.equal(validExplicit.id, 'content:validated');
 assert.equal(validExplicit.hash, 'sha256:validated');
 
+// The UI bridge constructs this structured identity with String(slice), while
+// exposing the raw slice separately. Snapshot creation must bind both fields
+// to one canonical slice before allowing a strong content identity through.
+function bridgeLocal(slice) {
+  const store = { sliceIndex: slice };
+  const local = {};
+  Object.defineProperties(local, {
+    binaryFingerprint: { enumerable: true, get: () => ({ algorithm: 'content-hash', hash: 'sha256:bridge' }) },
+    binaryHash: { enumerable: true, get: () => local.binaryFingerprint?.hash || null },
+    binaryIdentity: {
+      enumerable: true,
+      get: () => {
+        const fingerprint = local.binaryFingerprint;
+        if (!fingerprint?.hash) return null;
+        const rawSlice = store.sliceIndex;
+        const hash = String(fingerprint.hash);
+        return {
+          id: `content:${hash}${rawSlice == null ? '' : `:${String(rawSlice)}`}`,
+          kind: 'content-derived', confidence: 'strong', state: 'ready',
+          algorithm: String(fingerprint.algorithm || 'existing-hash'), hash,
+          legacyId: null,
+        };
+      },
+    },
+    sliceIndex: { enumerable: true, get: () => store.sliceIndex },
+  });
+  return { local, store };
+}
+
+const bridge = bridgeLocal(' 01 ');
+const bridgeSnapshot = createTurnSnapshot(bridge.local, {});
+assert.equal(bridgeSnapshot.binaryIdentity.id, 'content:sha256:bridge:1');
+assert.equal(bridgeSnapshot.slice, '1');
+assert.equal(bridgeSnapshot.binaryIdentity.confidence, 'strong');
+
+const reorderedBridge = createTurnSnapshot({
+  binaryHash: 'sha256:bridge',
+  binaryIdentity: {
+    id: 'content:sha256:bridge:2', kind: 'content-derived', confidence: 'strong', state: 'ready',
+    algorithm: 'content-hash', hash: 'sha256:bridge', legacyId: null,
+  },
+  sliceIndex: 1,
+}, {});
+assert.equal(reorderedBridge.binaryIdentity.id, 'content:sha256:bridge:1');
+assert.equal(reorderedBridge.slice, '1');
+
+bridge.store.sliceIndex = ['1'];
+const malformedBridge = createTurnSnapshot(bridge.local, {});
+assert.equal(malformedBridge.binaryIdentity.id, 'fallback:unbound');
+assert.equal(malformedBridge.binaryIdentity.confidence, 'none');
+assert.equal(malformedBridge.slice, null);
+
 const workflow = fs.readFileSync(new URL('../../../.github/workflows/ui-regression.yml', import.meta.url), 'utf8');
 for (const path of [
   'js/ai/control/snapshot.js',
