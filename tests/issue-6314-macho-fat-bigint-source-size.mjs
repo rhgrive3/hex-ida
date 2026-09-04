@@ -2,8 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { ByteSource } from '../js/binary/source.js';
+import { parseMachO } from '../js/binary/macho.js';
+import { parseInnerMachOHeader } from '../js/binary/macho-fat.js';
 import { parseMachOSource } from '../js/binary/source-loaders.js';
 
+const CPU_X86 = 7;
 const CPU_X86_64 = 0x01000007;
 
 class SparseByteSource extends ByteSource {
@@ -44,6 +47,35 @@ function makeThinObject() {
   return bytes;
 }
 
+function makeThin32Header() {
+  const bytes = new Uint8Array(28);
+  const view = new DataView(bytes.buffer);
+  view.setUint32(0, 0xfeedface, true); // MH_MAGIC LE
+  view.setInt32(4, CPU_X86, true);
+  view.setInt32(8, 3, true);
+  view.setUint32(12, 1, true);
+  view.setUint32(16, 0, true);
+  view.setUint32(20, 0, true);
+  view.setUint32(24, 0, true);
+  return bytes;
+}
+
+function makeFat64Container(thin) {
+  const sliceOffset = 0x1000;
+  const bytes = new Uint8Array(sliceOffset + thin.length);
+  const view = new DataView(bytes.buffer);
+  view.setUint32(0, 0xcafebabf, false); // FAT_MAGIC_64 BE
+  view.setUint32(4, 1, false);
+  view.setInt32(8, CPU_X86_64, false);
+  view.setInt32(12, 3, false);
+  view.setBigUint64(16, BigInt(sliceOffset), false);
+  view.setBigUint64(24, BigInt(thin.length), false);
+  view.setUint32(32, 12, false);
+  view.setUint32(36, 0, false);
+  bytes.set(thin, sliceOffset);
+  return bytes;
+}
+
 function makeHugeFat64Source() {
   const totalSize = 9007199254740993n; // Number.MAX_SAFE_INTEGER + 2
   const thin = makeThinObject();
@@ -76,4 +108,29 @@ test('#6314 source-backed FAT64 retains exact bounds above Number.MAX_SAFE_INTEG
   assert.equal(image.metadata.fat.selected.offset, sliceOffset);
   assert.equal(image.metadata.fat.selected.size, 64n);
   assert.equal(image.arch, 'x86_64');
+});
+
+test('shared FAT inner-header parser keeps 28-byte Mach-O32 but rejects truncated Mach-O64', () => {
+  const thin32 = parseInnerMachOHeader(makeThin32Header());
+  assert.equal(thin32?.bits, 32, 'complete 28-byte Mach-O32 header remains valid');
+
+  const truncated64 = makeThinObject().subarray(0, 28);
+  assert.equal(parseInnerMachOHeader(truncated64), null, 'Mach-O64 requires its 32-byte header including reserved');
+});
+
+test('resident FAT validation rejects a 28-byte truncated Mach-O64 slice', () => {
+  const bytes = makeFat64Container(makeThinObject().subarray(0, 28));
+  assert.throws(
+    () => parseMachO(bytes),
+    /universal binary slice contains invalid thin header/,
+  );
+});
+
+test('source-backed FAT validation rejects a 28-byte truncated Mach-O64 slice', async () => {
+  const bytes = makeFat64Container(makeThinObject().subarray(0, 28));
+  const source = new SparseByteSource(BigInt(bytes.length), [{ offset: 0n, data: bytes }]);
+  await assert.rejects(
+    parseMachOSource(source),
+    /universal binary slice contains invalid thin header/,
+  );
 });
