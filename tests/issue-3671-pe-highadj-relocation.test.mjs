@@ -34,6 +34,7 @@ function writeBlock(bytes, offset, pageRva, entries) {
 }
 
 const relocationWord = (type, offset) => ((type & 0xf) << 12) | (offset & 0xfff);
+const signed16 = (value) => BigInt((value << 16) >> 16);
 
 for (const payload of [0x0000, 0x3004, 0xa004, 0xf004]) {
   test(`#3671 HIGHADJ consumes payload word 0x${payload.toString(16)} without re-decoding it`, () => {
@@ -45,6 +46,7 @@ for (const payload of [0x0000, 0x3004, 0xa004, 0xf004]) {
     assert.equal(image.relocations.length, 1);
     assert.equal(image.relocations[0].type, 4);
     assert.equal(image.relocations[0].address, BASE + 0x1100n);
+    assert.equal(image.relocations[0].addend, signed16(payload), 'HIGHADJ preserves its signed 16-bit adjustment payload');
     assert.equal(image.warnings.length, 0, 'HIGHADJ payload is not an independent relocation header');
     assert.equal(image.metadata.peMetadata.complete, true);
     assert.equal(image.metadata.peMetadata.used.inputBytes, 12, 'both HIGHADJ slots remain budgeted');
@@ -75,5 +77,6 @@ test('#3671 ordinary one-slot HIGHLOW and DIR64 relocations remain unchanged', (
     [3, BASE + 0x1020n],
     [10, BASE + 0x1028n],
   ]);
+  assert.deepEqual(image.relocations.map((relocation) => relocation.addend), [null, null]);
   assert.equal(image.metadata.peMetadata.complete, true);
 });
