@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { ByteView } from '../js/binary/reader.js';
+import { parseMachO } from '../js/binary/macho-core.js';
 import { createMachOMetadataBudget } from '../js/binary/macho-budget.js';
 import { parseChainedImports, parseClassicBindings } from '../js/binary/macho-dyld.js';
 
@@ -11,6 +12,26 @@ function image() {
     sectionAt(a){a=BigInt(a);return a>=0x1000n&&a<0x2000n?{address:0x1000n,size:0x1000n,perms:{execute:true}}:null;},
     addressToOffset(a){a=BigInt(a);return a>=0x1000n&&a<0x2000n?a-0x1000n:null;},
   };
+}
+
+// Public Mach-O parser options must reach the shared metadata budget.
+{
+  const bytes = new Uint8Array(32);
+  const v = new DataView(bytes.buffer);
+  bytes.set([0xcf, 0xfa, 0xed, 0xfe], 0);
+  v.setInt32(4, 0x0100000c, true);
+  v.setInt32(8, 0, true);
+  v.setUint32(12, 2, true);
+  v.setUint32(16, 0, true);
+  v.setUint32(20, 0, true);
+  v.setUint32(24, 0, true);
+  v.setUint32(28, 0, true);
+
+  const defaults = parseMachO(bytes);
+  const bounded = parseMachO(bytes, { metadataLimits:{ records:1 } });
+  const malformed = parseMachO(bytes, { metadataLimits:{ records:NaN } });
+  assert.equal(bounded.metadata.machoMetadata.limits.records, 1);
+  assert.equal(malformed.metadata.machoMetadata.limits.records, defaults.metadata.machoMetadata.limits.records);
 }
 
 {
