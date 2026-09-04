@@ -88,6 +88,15 @@ const DW_FORM = Object.freeze({
   addrx1: 0x29, addrx2: 0x2a, addrx3: 0x2b, addrx4: 0x2c,
 });
 
+const DW_UT = Object.freeze({
+  compile: 0x01,
+  type: 0x02,
+  partial: 0x03,
+  skeleton: 0x04,
+  split_compile: 0x05,
+  split_type: 0x06,
+});
+
 /** DW_ATE base-type encodings, mapped to the machine layer's classes. */
 const ENCODING_CLASS = Object.freeze({
   0x02: 'boolean', 0x04: 'float', 0x05: 'integer', 0x06: 'integer',
@@ -189,6 +198,16 @@ function parseAbbrev(bytes, tableOffset) {
   return table;
 }
 
+/** Reads a bounded little-endian unsigned integer of exactly `width` bytes. */
+function readUnsignedWidth(cursor, width) {
+  if (!Number.isInteger(width) || width < 1 || width > 8) throw new RangeError('dwarf-address-size-unsupported');
+  let value = 0n;
+  for (let index = 0; index < width; index += 1) {
+    value |= BigInt(cursor.u8()) << BigInt(index * 8);
+  }
+  return value;
+}
+
 /**
  * Reads one attribute value.
  *
@@ -235,7 +254,11 @@ function readForm(cursor, form, unit, sections, implicitConst) {
       const text = sections.debug_line_str ? cstring(sections.debug_line_str, offset) : null;
       return { value: text, unsupported: !sections.debug_line_str || text == null };
     }
-    case DW_FORM.sec_offset: case DW_FORM.ref_addr: case DW_FORM.strp_sup:
+    case DW_FORM.ref_addr:
+      return { value: unit.version === 2
+        ? readUnsignedWidth(cursor, unit.addressSize)
+        : (unit.offsetSize === 8 ? cursor.u64() : BigInt(cursor.u32())) };
+    case DW_FORM.sec_offset: case DW_FORM.strp_sup:
       return { value: unit.offsetSize === 8 ? cursor.u64() : BigInt(cursor.u32()) };
     case DW_FORM.exprloc: case DW_FORM.block: {
       const length = Number(cursor.uleb());
@@ -326,6 +349,26 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET) {
       cursor.offset = unitEnd;
       cursor.limit = info.length;   // the unit-end advance itself is not unit-local
       continue;
+    }
+
+    // DWARF5 extends the common unit header according to unit_type. These bytes
+    // are metadata, not DIE abbreviation codes (#3810). Reads stay unit-local so
+    // truncated type signatures/type offsets/dwo_ids fail closed.
+    if (version === 5) {
+      try {
+        if (unitType === DW_UT.type || unitType === DW_UT.split_type) {
+          cursor.u64();
+          if (offsetSize === 8) cursor.u64(); else cursor.u32();
+        } else if (unitType === DW_UT.skeleton || unitType === DW_UT.split_compile) {
+          cursor.u64();
+        }
+      } catch (error) {
+        diagnostics.push(`truncated DWARF5 unit header at 0x${unitStart.toString(16)}`);
+        complete = false;
+        cursor.offset = unitEnd;
+        cursor.limit = info.length;
+        continue;
+      }
     }
 
     const unit = { start: unitStart, version, addressSize, offsetSize, abbrevOffset, unitType, strOffsetsBase: null };
