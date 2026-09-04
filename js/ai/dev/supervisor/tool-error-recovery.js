@@ -87,9 +87,23 @@ function sanitizeValue(value, depth) {
   const out = {};
   let count = 0;
   for (const [key, item] of Object.entries(value)) {
-    if (count >= MAX_KEYS) { out['[truncated]'] = true; break; }
+    if (count >= MAX_KEYS) {
+      Object.defineProperty(out, '[truncated]', {
+        value: true,
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
+      break;
+    }
     count += 1;
-    out[key] = SENSITIVE_KEY.test(key) ? REDACTED : sanitizeValue(item, depth + 1);
+    const sanitizedItem = SENSITIVE_KEY.test(key) ? REDACTED : sanitizeValue(item, depth + 1);
+    Object.defineProperty(out, key, {
+      value: sanitizedItem,
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
   }
   return out;
 }

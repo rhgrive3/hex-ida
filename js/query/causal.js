@@ -114,9 +114,17 @@ export function functionPaths(program, from, to, opts) {
       reasons.add('function-range-error');
       range = null;
     }
+    // Unknown end means "unknown body", never "from here to EOF" — the same
+    // contract rank.js applies. Callee evidence is valid only for an exact,
+    // bounded containing function; expanding an unbounded head would claim
+    // later functions' call sites as this function's callees (issue #6308).
+    if (!range || range.end == null) {
+      reasons.add('function-range-unknown');
+      continue;
+    }
     let callees = [];
     try {
-      callees = program.calleesOf(head, range && range.end, 201) || [];
+      callees = program.calleesOf(head, range.end, 201) || [];
     } catch {
       reasons.add('callee-query-error');
       callees = [];

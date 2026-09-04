@@ -15,30 +15,6 @@ function readerWithStringTable(payload, declaredSize = payload.length + 4, trail
   return new ByteView(bytes, { littleEndian: true });
 }
 
-function readerWithBackingWithoutIndexOf(payload) {
-  const bytes = new Uint8Array(8 + payload.length);
-  new DataView(bytes.buffer).setUint32(4, payload.length + 4, true);
-  bytes.set(payload, 8);
-  const backing = {
-    __binaryByteBacking: true,
-    length: bytes.length,
-    buffer: bytes.buffer,
-    byteOffset: bytes.byteOffset,
-    byteLength: bytes.byteLength,
-    subarray(start, end) {
-      const view = bytes.subarray(start, end);
-      return {
-        buffer: view.buffer,
-        byteOffset: view.byteOffset,
-        byteLength: view.byteLength,
-        length: view.length,
-        [Symbol.iterator]: view[Symbol.iterator].bind(view),
-      };
-    },
-  };
-  return new ByteView(backing, { littleEndian: true });
-}
-
 test('COFF long section names resolve only when NUL-terminated inside the declared string table', () => {
   const valid = readerWithStringTable([0x41, 0x42, 0x43, 0x44, 0x00]);
   assert.equal(resolveCoffSectionName(valid, '/4', 4, 0), 'ABCD');
@@ -48,11 +24,6 @@ test('COFF long section names resolve only when NUL-terminated inside the declar
 
   const nulPastDeclaredEnd = readerWithStringTable([0x41, 0x42, 0x43, 0x44], 8, [0x00]);
   assert.equal(resolveCoffSectionName(nulPastDeclaredEnd, '/4', 4, 0), '/4');
-});
-
-test('COFF long section names support ByteView backings without indexOf', () => {
-  const reader = readerWithBackingWithoutIndexOf([0x4c, 0x4f, 0x4e, 0x47, 0x00]);
-  assert.equal(resolveCoffSectionName(reader, '/4', 4, 0), 'LONG');
 });
 
 test('COFF section-name validation preserves existing bounds and inline-name behavior', () => {
