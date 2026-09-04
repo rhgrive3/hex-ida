@@ -13,23 +13,62 @@ function abortError(reason = null) {
   return Object.assign(new Error('aborted'), { name:'AbortError', code:'ABORT_ERR' });
 }
 function isAbort(error) { return error?.name === 'AbortError' || error?.code === 'ABORT_ERR'; }
-function toBigInt(value, code) { try { return BigInt(value); } catch { throw new TypeError(code); } }
+function toBigInt(value, code) {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value);
+  if (typeof value === 'string' && /^(?:0x[0-9a-fA-F]+|-?[0-9]+)$/.test(value.trim())) {
+    try { return BigInt(value.trim()); } catch { throw new TypeError(code); }
+  }
+  throw new TypeError(code);
+}
+function instructionAddress(value, code = 'variable-viewer-invalid-instruction-address') {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return BigInt(value);
+  throw new TypeError(code);
+}
 function int(value, code, min = 0, max = Number.MAX_SAFE_INTEGER) {
   const n = Number(value);
   if (!Number.isSafeInteger(n) || n < min || n > max) throw new TypeError(code);
   return n;
 }
+function instructionLength(value, code = 'variable-viewer-invalid-instruction-length', min = 1, max = X86_MAX_INSTRUCTION_BYTES) {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < min || value > max) {
+    throw new TypeError(code);
+  }
+  return value;
+}
 function bytesOf(instruction, length) {
   const raw = instruction?.rawBytes ?? instruction?.bytes;
-  const bytes = raw instanceof Uint8Array ? raw.slice() : Uint8Array.from(raw || []);
+  let bytes;
+  if (raw instanceof Uint8Array) {
+    bytes = raw.slice();
+  } else if (Array.isArray(raw)) {
+    for (let i = 0; i < raw.length; i++) {
+      const b = raw[i];
+      if (typeof b !== 'number' || !Number.isInteger(b) || b < 0 || b > 255) {
+        throw new TypeError('variable-viewer-invalid-instruction-bytes');
+      }
+    }
+    bytes = Uint8Array.from(raw);
+  } else {
+    throw new TypeError('variable-viewer-invalid-instruction-bytes');
+  }
   if (bytes.length !== length) throw new TypeError('variable-viewer-byte-length-mismatch');
   return bytes;
 }
 function freezeEntry(instruction, address, length) {
+  const rawMnemonic = instruction?.mnemonic;
+  if (rawMnemonic != null && typeof rawMnemonic !== 'string') {
+    throw new TypeError('variable-viewer-invalid-instruction-mnemonic');
+  }
+  const rawOpStr = instruction?.opStr ?? instruction?.operandString;
+  if (rawOpStr != null && typeof rawOpStr !== 'string') {
+    throw new TypeError('variable-viewer-invalid-instruction-operands');
+  }
   return Object.freeze({
     kind:'instruction', address, length, bytes:bytesOf(instruction, length),
-    mnemonic:String(instruction?.mnemonic ?? ''),
-    opStr:String(instruction?.opStr ?? instruction?.operandString ?? ''), decoded:instruction,
+    mnemonic:rawMnemonic ?? '',
+    opStr:rawOpStr ?? '', decoded:instruction,
   });
 }
 function freezeDecodeMarker(page) {
@@ -172,6 +211,7 @@ export class VariableInstructionIndex {
       if(!controller.signal.aborted){controller.abort(abortError(signal?.reason));this._metrics.cancelledRequests++;}
     };
     signal?.addEventListener?.('abort',relayAbort,{once:true});
+    if(signal?.aborted)relayAbort();
     const promise=(async()=>{
       try{
         const response=await this.disassembleAt(start,{architecture:this.architecture,length:requested,signal:controller.signal,priority});
@@ -189,13 +229,26 @@ export class VariableInstructionIndex {
       }
     })();
     this.inflight.set(key,{controller,promise,generation,start});
+    promise.catch(()=>{});
     return this._join(promise,signal);
   }
 
   async _join(promise,signal){
     if(!signal)return promise;
     if(signal.aborted)throw abortError(signal.reason);
-    return await Promise.race([promise,new Promise((_,reject)=>signal.addEventListener('abort',()=>reject(abortError(signal.reason)),{once:true}))]);
+    let onAbort=null;
+    try{
+      return await Promise.race([
+        promise,
+        new Promise((_,reject)=>{
+          onAbort=()=>reject(abortError(signal.reason));
+          signal.addEventListener('abort',onAbort,{once:true});
+          if(signal.aborted)onAbort();
+        }),
+      ]);
+    }finally{
+      if(onAbort)signal.removeEventListener?.('abort',onAbort);
+    }
   }
 
   _buildPage({start,requested,response,generation,region}){
@@ -206,8 +259,8 @@ export class VariableInstructionIndex {
 
     const entries=[]; let cursor=start;
     for(const instruction of instructions){
-      const address=toBigInt(instruction?.address,'variable-viewer-invalid-instruction-address');
-      const length=int(instruction?.length??instruction?.size,'variable-viewer-invalid-instruction-length',1,X86_MAX_INSTRUCTION_BYTES);
+      const address=instructionAddress(instruction?.address,'variable-viewer-invalid-instruction-address');
+      const length=instructionLength(instruction?.length??instruction?.size,'variable-viewer-invalid-instruction-length',1,X86_MAX_INSTRUCTION_BYTES);
       if(address!==cursor)throw new TypeError('variable-viewer-non-monotonic-decoder-output');
       const end=address+BigInt(length);
       if(address<start||address>=region.end||end>region.end)throw new RangeError('variable-viewer-decoder-output-outside-region');
@@ -318,11 +371,15 @@ export class VariableInstructionIndex {
       try{response=await this.disassembleAt(start,{architecture:this.architecture,length,signal,priority:'current'});}catch(error){if(isAbort(error))throw error;continue;}
       let cursor=start,predecessor=null,valid=true;
       for(const instruction of Array.isArray(response?.instructions)?response.instructions:[]){
-        let instructionAddress,size;
-        try{instructionAddress=BigInt(instruction.address);size=int(instruction.length??instruction.size,'variable-viewer-invalid-instruction-length',1,X86_MAX_INSTRUCTION_BYTES);bytesOf(instruction,size);}catch{valid=false;break;}
-        if(instructionAddress!==cursor){valid=false;break;}
-        const end=instructionAddress+BigInt(size); if(end>target){valid=false;break;}
-        predecessor=freezeEntry(instruction,instructionAddress,size); cursor=end;
+        let addr,size;
+        try{
+          addr=instructionAddress(instruction?.address,'variable-viewer-invalid-instruction-address');
+          size=instructionLength(instruction?.length??instruction?.size,'variable-viewer-invalid-instruction-length',1,X86_MAX_INSTRUCTION_BYTES);
+          freezeEntry(instruction,addr,size);
+        }catch{valid=false;break;}
+        if(addr!==cursor){valid=false;break;}
+        const end=addr+BigInt(size); if(end>target){valid=false;break;}
+        predecessor=freezeEntry(instruction,addr,size); cursor=end;
         if(cursor===target)break;
       }
       if(valid&&cursor===target&&predecessor&&predecessor.address<target)candidates.push(predecessor);
