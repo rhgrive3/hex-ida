@@ -167,9 +167,15 @@ export function createSemanticSsaContract(input, options = {}) {
   // getter runs. Preflight and normalization consume only these private arrays,
   // so post-check growth cannot escape maxDefinitions/maxUses/maxLinks.
   const definitionInputs = new Array(definitionCount);
-  for (let index = 0; index < definitionCount; index++) definitionInputs[index] = rawDefinitions[index];
+  for (let index = 0; index < definitionCount; index++) {
+    assertNotAborted(options);
+    definitionInputs[index] = rawDefinitions[index];
+  }
   const useInputs = new Array(useCount);
-  for (let index = 0; index < useCount; index++) useInputs[index] = rawUses[index];
+  for (let index = 0; index < useCount; index++) {
+    assertNotAborted(options);
+    useInputs[index] = rawUses[index];
+  }
 
   const { used: phiLinkCount, incomingSnapshots } = preflightPhiLinkBudget(definitionInputs, maxLinks, options);
   if (useCount > maxLinks - phiLinkCount) fail('semantic-ssa-budget-exceeded-maxLinks');
