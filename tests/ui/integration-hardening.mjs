@@ -195,7 +195,7 @@ assert.equal(typeof VirtualList, 'function');
         routeController.abort();
       }
     }
-    return { observation: { steps: stepCount, stop: { kind: aborted ? 'aborted' : 'return' } };
+    return { observation: { steps: stepCount, stop: { kind: aborted ? 'aborted' : 'return' } } };
   }
 
   const result = await mockTrace({ signal: routeController.signal, maxSteps: 12000 });
