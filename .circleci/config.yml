@@ -30,7 +30,7 @@ jobs:
   agent-loop-resilience:
     docker:
       - image: cimg/node:22.23
-    resource_class: medium
+    resource_class: small
     steps:
       - checkout
       - run:
@@ -47,7 +47,7 @@ jobs:
   issue-2528-canonical-claims:
     docker:
       - image: cimg/node:22.23
-    resource_class: medium
+    resource_class: small
     steps:
       - checkout
       - run:
@@ -64,7 +64,7 @@ jobs:
   ai-eval-contract:
     docker:
       - image: cimg/node:20.19
-    resource_class: medium
+    resource_class: small
     steps:
       - checkout
       - run:
