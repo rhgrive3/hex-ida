@@ -130,13 +130,16 @@ function repeatedStringEffects(ctx, spec, repeat, addressBits) {
 
   const inputs = [], registersRead = [], registersWritten = [], outputs = [], outputRoles = [];
   const addInput = (name,value) => { if (!value) return false; inputs.push(value); registersRead.push(name); return true; };
-  const addOutput = (role,widthBits,registerName) => { outputs.push(widthBits); outputRoles.push({role,registerName}); if (registerName) registersWritten.push(registerName); };
+  const addOutput = (role,widthBits,registerName) => { outputs.push(widthBits); outputRoles.push({role,registerName,widthBits}); if (registerName) registersWritten.push(registerName); };
+  const addressView = (value) => value && addressBits === 32 ? ctx.coerce(value,64,32,false) : value;
 
-  const count = readPhysicalRegister(ctx,'rcx');
+  const countPhysical = readPhysicalRegister(ctx,'rcx'), count = addressView(countPhysical);
   if (!addInput('rcx',count)) return ctx.partial('x86-repeated-string-count-unmodelled',['registers']);
   const df = ctx.readFlag('DF'); inputs.push(df); registersRead.push('rflags');
-  if (sourcePresent && !addInput('rsi',readPhysicalRegister(ctx,'rsi'))) return ctx.partial('x86-repeated-string-source-pointer-unmodelled',['registers']);
-  if (destinationPresent && !addInput('rdi',readPhysicalRegister(ctx,'rdi'))) return ctx.partial('x86-repeated-string-destination-pointer-unmodelled',['registers']);
+  const sourcePhysical = sourcePresent ? readPhysicalRegister(ctx,'rsi') : null, source = addressView(sourcePhysical);
+  if (sourcePresent && !addInput('rsi',source)) return ctx.partial('x86-repeated-string-source-pointer-unmodelled',['registers']);
+  const destinationPhysical = destinationPresent ? readPhysicalRegister(ctx,'rdi') : null, destination = addressView(destinationPhysical);
+  if (destinationPresent && !addInput('rdi',destination)) return ctx.partial('x86-repeated-string-destination-pointer-unmodelled',['registers']);
   if (spec.kind === 'stos' || spec.kind === 'scas') {
     const accumulator = x86RegisterOperand(accumulatorName(spec.widthBits)), value = accumulator ? ctx.readRegister(accumulator) : null;
     if (!addInput('rax',value)) return ctx.partial('x86-repeated-string-accumulator-unmodelled',['registers']);
@@ -147,9 +150,9 @@ function repeatedStringEffects(ctx, spec, repeat, addressBits) {
     registersRead.push('rflags');
   }
 
-  addOutput('count',64,'rcx');
-  if (sourcePresent) addOutput('source-pointer',64,'rsi');
-  if (destinationPresent) addOutput('destination-pointer',64,'rdi');
+  addOutput('count',addressBits,'rcx');
+  if (sourcePresent) addOutput('source-pointer',addressBits,'rsi');
+  if (destinationPresent) addOutput('destination-pointer',addressBits,'rdi');
   if (spec.kind === 'lods') addOutput('accumulator',64,'rax');
   if (spec.kind === 'cmps' || spec.kind === 'scas') for (const flag of COMPARE_FLAGS) addOutput(`flag-${flag}`,1,'rflags');
 
@@ -192,16 +195,32 @@ function repeatedStringEffects(ctx, spec, repeat, addressBits) {
     accumulator:spec.kind === 'lods' ? Object.freeze({ physicalRegister:'rax', view:accumulatorName(spec.widthBits), zeroCount:'full RAX preserved', nonzero:spec.widthBits === 8 ? 'final successful AL load replaces low 8 bits and preserves upper 56 bits of RAX' : spec.widthBits === 16 ? 'final successful AX load replaces low 16 bits and preserves upper 48 bits of RAX' : spec.widthBits === 32 ? 'final successful EAX load zero-extends into full RAX' : 'final successful RAX load replaces full RAX' }) : spec.kind === 'stos' || spec.kind === 'scas' ? Object.freeze({ physicalRegister:'rax', view:accumulatorName(spec.widthBits), access:'read-only', zeroCount:'no accumulator effect' }) : null,
     outputRoles:Object.freeze(outputRoles.map((entry) => Object.freeze(entry))),
   };
+  const entryCountNonzero = addressBits === 32
+    ? ctx.valueOp('icmp.ne',[count,ctx.constant(32,0n)],1,{ predicate:'ne', signed:false, widthBits:32, semantic:'entry ECX != 0', repeatedStringEntry:true })
+    : null;
   const intrinsicOutputs = ctx.intrinsic(`x86.${repeat}.${spec.kind}.${spec.widthBits}`, inputs, outputs, {
     registersRead:[...new Set(registersRead)], registersWritten:[...new Set(registersWritten)],
     memoryRead:repeatedMemoryScope(readsMemory ? readSpaces : [],iterationMemory), memoryWrite:repeatedMemoryScope(writeSpaces,iterationMemory),
     controlEffects:[], determinism:'input-dependent', symbolicDetail:'summary-only', metadata,
   });
+  const commitAddressState = (physicalName, entryPhysical, nextView, role) => {
+    const operand = x86RegisterOperand(physicalName);
+    if (!operand || !nextView) return false;
+    if (addressBits === 64) return ctx.writeRegister(operand,nextView);
+    if (!entryPhysical || !entryCountNonzero) return false;
+    const nonzeroPhysical = ctx.coerce(nextView,32,64,false);
+    const nextPhysical = ctx.valueOp('select',[entryCountNonzero,nonzeroPhysical,entryPhysical],64,{
+      semantic:'x86-repeated-string-address32-physical-commit', role, condition:'entry ECX != 0',
+      truePath:`zero-extend ${pointerName(role,32).toUpperCase()} after completed iteration`,
+      falsePath:`preserve full ${physicalName.toUpperCase()} when ECX == 0`,
+    });
+    return ctx.writeRegister(operand,nextPhysical);
+  };
   let cursor = 0;
   const nextCount = intrinsicOutputs[cursor++];
-  if (!ctx.writeRegister(x86RegisterOperand('rcx'),nextCount)) return ctx.partial('x86-repeated-string-count-write-unmodelled',['registers']);
-  if (sourcePresent && !ctx.writeRegister(x86RegisterOperand('rsi'),intrinsicOutputs[cursor++])) return ctx.partial('x86-repeated-string-source-pointer-write-unmodelled',['registers']);
-  if (destinationPresent && !ctx.writeRegister(x86RegisterOperand('rdi'),intrinsicOutputs[cursor++])) return ctx.partial('x86-repeated-string-destination-pointer-write-unmodelled',['registers']);
+  if (!commitAddressState('rcx',countPhysical,nextCount,'count')) return ctx.partial('x86-repeated-string-count-write-unmodelled',['registers']);
+  if (sourcePresent && !commitAddressState('rsi',sourcePhysical,intrinsicOutputs[cursor++],'source')) return ctx.partial('x86-repeated-string-source-pointer-write-unmodelled',['registers']);
+  if (destinationPresent && !commitAddressState('rdi',destinationPhysical,intrinsicOutputs[cursor++],'destination')) return ctx.partial('x86-repeated-string-destination-pointer-write-unmodelled',['registers']);
   if (spec.kind === 'lods' && !ctx.writeRegister(x86RegisterOperand('rax'),intrinsicOutputs[cursor++])) return ctx.partial('x86-repeated-string-accumulator-write-unmodelled',['registers']);
   if (spec.kind === 'cmps' || spec.kind === 'scas') for (const flag of COMPARE_FLAGS) ctx.writeFlag(flag,intrinsicOutputs[cursor++],{ operation:spec.kind, repeated:true, repeatKind:repeat, zeroCountPreserves:true, finalCompletedComparison:true });
 
