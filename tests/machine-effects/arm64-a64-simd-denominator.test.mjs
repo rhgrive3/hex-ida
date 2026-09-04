@@ -181,7 +181,10 @@ try {
     assert.ok(exact(effects), `${label}:not-exact:${raw.mnemonic} ${raw.opStr}:${effects.unknownEffects?.reason}`);
     assert.equal(effects.metadata.family, 'arm64-simd', `${label}:wrong-family`);
     assert.equal(effects.operations.some((operation) => operation.kind === 'unknown'), false, `${label}:unknown-effect`);
-    assert.deepEqual(effects.possibleFaults, [], `${label}:unexpected-fault`);
+    assert.deepEqual(effects.possibleFaults, [{
+      kind:'fp-advsimd-access-trap',
+      condition:{ kind:'architectural-access-check', access:'fp-advsimd', operation:raw.mnemonic },
+    }], `${label}:FP/AdvSIMD access-control fault provenance`);
     assert.equal(effects.controlEffect.kind, 'fallthrough', `${label}:control`);
     assert.doesNotThrow(() => validateMachineEffectBundle(effects), label);
     assertClosedDataflow(effects, label);

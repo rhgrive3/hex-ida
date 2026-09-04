@@ -3,6 +3,7 @@ export {
   decodeArm64FpImmediate,
   arm64FpImmediateBitPattern,
 } from './fp-core.js';
+import { decorateArm64FpAdvSimdAccessEffects } from './fp-advsimd-access.js';
 import { liftArm64FpEffects as liftArm64FpEffectsCore } from './fp-core.js';
 
 const FP_ENV_INTRINSICS = new Set([
@@ -109,10 +110,20 @@ export function liftArm64FpEffects(instruction, context = {}) {
   const mnemonic = instruction.mnemonic.trim().toLowerCase();
   const ops = operandsOf(instruction);
   if (invalidFiniteShape(mnemonic, ops)) {
-    return liftArm64FpEffectsCore({ ...instruction, ops: [] }, context);
+    const normalizedInstruction = { ...instruction, ops: [] };
+    return decorateArm64FpAdvSimdAccessEffects(
+      normalizedInstruction,
+      liftArm64FpEffectsCore(normalizedInstruction, context),
+      context,
+    );
   }
   const normalizedOps = normalizeConditionalEvidence(mnemonic, ops);
-  return liftArm64FpEffectsCore(normalizedOps === ops ? instruction : { ...instruction, ops: normalizedOps }, context);
+  const normalizedInstruction = normalizedOps === ops ? instruction : { ...instruction, ops: normalizedOps };
+  return decorateArm64FpAdvSimdAccessEffects(
+    normalizedInstruction,
+    liftArm64FpEffectsCore(normalizedInstruction, context),
+    context,
+  );
 }
 
 export const arm64FpMachineEffects = liftArm64FpEffects;
