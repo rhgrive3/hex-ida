@@ -1,0 +1,44 @@
+name: Codex reconciliation bundle
+
+on:
+  push:
+    branches:
+      - ops/codex-bundle-20260904
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout export branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch exact reconciliation refs
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin \
+            '+refs/heads/main:refs/remotes/origin/main' \
+            '+refs/heads/integration/c4-03-provenance-20260902-v2:refs/remotes/origin/c4-03' \
+            '+refs/heads/integration/c4-04-pass-validation-20260902:refs/remotes/origin/c4-04'
+          git bundle create repo.bundle \
+            refs/remotes/origin/main \
+            refs/remotes/origin/c4-03 \
+            refs/remotes/origin/c4-04
+          git bundle verify repo.bundle
+          sha256sum repo.bundle > repo.bundle.sha256
+
+      - name: Upload exact Git bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-reconciliation-bundle
+          path: |
+            repo.bundle
+            repo.bundle.sha256
+          if-no-files-found: error
+          retention-days: 1
