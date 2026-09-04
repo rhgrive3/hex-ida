@@ -235,7 +235,7 @@ export function createPassResult(input = {}) {
   if (changed && transforms.length === 0 && produced.length === 0) fail('phase8-pass-result-changed-without-transform-or-production');
   if (!changed && transforms.length > 0) fail('phase8-pass-result-transform-without-change');
   if (!changed && produced.length > 0) fail('phase8-pass-result-production-without-change');
-  if ((status === 'unchanged' || status === 'unsupported') && invalidated.length > 0) {
+  if (!changed && invalidated.length > 0) {
     fail(`phase8-pass-result-${status}-invalidates`);
   }
   if (status === 'unsupported' && completeness === 'complete') fail('phase8-pass-result-unsupported-claims-complete');

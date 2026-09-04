@@ -100,6 +100,16 @@ test('canonical unchanged/unsupported and degraded semantics remain available', 
   const degradedWithoutMutation = result({ status: 'degraded', changed: false, completeness: 'partial' });
   assert.equal(degradedWithoutMutation.changed, false);
 
+  assert.throws(
+    () => result({
+      status: 'degraded',
+      changed: false,
+      completeness: 'partial',
+      invalidated: ['cfg'],
+    }),
+    /phase8-pass-result-degraded-invalidates/,
+  );
+
   const degradedWithMutation = result({
     status: 'degraded',
     completeness: 'partial',
@@ -125,6 +135,35 @@ test('a rejected status contradiction cannot move authoritative state', () => {
 
   assert.equal(outcome.committed, false);
   assert.match(outcome.stopReason, /^failed:phase8-pass-result-unchanged-changed$/);
+  assert.deepEqual(state.snapshot(), before);
+  assert.deepEqual(state.get('cfg'), { blocks: [] });
+  assert.deepEqual(state.get('ssa'), { values: [] });
+});
+
+test('a non-mutating degraded result cannot publish an invalidation ledger', () => {
+  const state = createAnalysisState({
+    cfg: Object.freeze({ blocks: [] }),
+    ssa: Object.freeze({ values: [] }),
+  });
+  const before = state.snapshot();
+  const pass = {
+    descriptor,
+    run() {
+      return result({
+        status: 'degraded',
+        changed: false,
+        completeness: 'partial',
+        invalidated: ['cfg'],
+      });
+    },
+  };
+
+  const outcome = runPassTransaction(state, pass);
+
+  assert.equal(outcome.committed, false);
+  assert.equal(outcome.result, null);
+  assert.deepEqual(outcome.invalidated, []);
+  assert.match(outcome.stopReason, /^failed:phase8-pass-result-degraded-invalidates$/);
   assert.deepEqual(state.snapshot(), before);
   assert.deepEqual(state.get('cfg'), { blocks: [] });
   assert.deepEqual(state.get('ssa'), { values: [] });
