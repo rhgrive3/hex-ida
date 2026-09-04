@@ -102,9 +102,22 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
+      - name: Reject poisoned dispatch head before execution
+        env:
+          INPUT_SHA: "${{ inputs.expect_sha }}"
+          WORKFLOW_SHA: "${{ github.sha }}"
+        run: |
+          if [[ ! "$INPUT_SHA" =~ ^[0-9a-f]{40}$ || ! "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "workflow_dispatch head identity must be lowercase 40-hex" >&2
+            exit 1
+          fi
+          if [[ "$INPUT_SHA" != "$WORKFLOW_SHA" ]]; then
+            echo "workflow_dispatch input does not match the trusted workflow SHA" >&2
+            exit 1
+          fi
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: ${{ inputs.expect_sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
@@ -118,7 +131,7 @@ jobs:
         run: node tests/phase4/walking-skeleton.test.mjs
       - name: Verify exact dispatched head
         env:
-          EXPECT_SHA: ${{ inputs.expect_sha }}
+          EXPECT_SHA: ${{ github.sha }}
           EXPECT_BASE_SHA: ${{ inputs.expect_base_sha }}
         run: node tools/validation/final-closure/preflight.mjs --expect-sha "$EXPECT_SHA" --expect-base-sha "$EXPECT_BASE_SHA"
       - name: Reproduce exact checkpoint product evidence

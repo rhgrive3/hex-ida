@@ -23,6 +23,7 @@ import {
   FROZEN_PERFORMANCE_IDENTITIES,
   FROZEN_PLATFORM_IDENTITIES,
   assertExactHead,
+  assertTerminalShadowCounterEvidence,
   canonicalTaskHandoffAnchor,
   changedPaths,
   checkpointGenerationEvidence,
@@ -30,6 +31,7 @@ import {
   computeFoundationOwnershipDigest,
   computeInitialCandidateGateDigest,
   createShadowGateEvidence,
+  deriveShadowProof,
   emitShadowGateEvidence,
   executeRollingProductGates,
   hashDirectoryTree,
@@ -469,6 +471,21 @@ assert.equal(
   'the frozen T032 symbol-identity judge must be green on the authority baseline',
 );
 const liveT032Contract = shadowContracts.contracts[shadowRegistry.tasks.T032.contractId];
+const forgedOracle = structuredClone(shadowRawObservation('T032', liveT032Contract.gateId));
+forgedOracle.observations[0].value.exitCode = 1;
+const forgedProduct = structuredClone(forgedOracle);
+assert.equal(
+  deriveShadowProof({
+    oracleObservation: forgedOracle,
+    productObservation: forgedProduct,
+    contract: liveT032Contract,
+    policy: ownership.candidateGates.shadowEvidence,
+    contractIdentity: createHash('sha256')
+      .update(canonicalFixtureJson(liveT032Contract)).digest('hex'),
+  }).verdict,
+  'FAIL',
+  'matching forged observations cannot replace the pinned oracle observation',
+);
 for (const side of ['oracle', 'product']) {
   const provider = shadowRegistry.providers[side];
   const child = spawnSync(provider.argv[0], [
@@ -764,6 +781,60 @@ assertIncludes(
   validate({ workflowText: credentialedWorkflow }).errors,
   'workflow-checkout-credentials-persist',
   'PR-controlled verification must not retain checkout credentials',
+);
+
+const poisonableDispatchCheckout = workflowText.replace(
+  'ref: ${{ github.sha }}',
+  'ref: ${{ inputs.expect_sha }}',
+);
+assertIncludes(
+  validate({ workflowText: poisonableDispatchCheckout }).errors,
+  'workflow-dispatch-input-checkout-forbidden',
+  'workflow_dispatch must never execute source selected only by a string input',
+);
+
+const dispatchGuardBlock = `      - name: Reject poisoned dispatch head before execution
+        env:
+          INPUT_SHA: "\${{ inputs.expect_sha }}"
+          WORKFLOW_SHA: "\${{ github.sha }}"
+        run: |
+          if [[ ! "$INPUT_SHA" =~ ^[0-9a-f]{40}$ || ! "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "workflow_dispatch head identity must be lowercase 40-hex" >&2
+            exit 1
+          fi
+          if [[ "$INPUT_SHA" != "$WORKFLOW_SHA" ]]; then
+            echo "workflow_dispatch input does not match the trusted workflow SHA" >&2
+            exit 1
+          fi
+`;
+assert.ok(workflowText.includes(dispatchGuardBlock), 'dispatch guard fixture must match the workflow exactly');
+assertIncludes(
+  validate({ workflowText: workflowText.replace(dispatchGuardBlock, '') }).errors,
+  'workflow-dispatch-preexecution-guard-invalid',
+  'the dispatch equality guard cannot be removed before untrusted source executes',
+);
+const mismatchedDispatchGuard = workflowText.replace(
+  'WORKFLOW_SHA: "${{ github.sha }}"',
+  'WORKFLOW_SHA: "${{ inputs.expect_sha }}"',
+);
+assertIncludes(
+  validate({ workflowText: mismatchedDispatchGuard }).errors,
+  'workflow-dispatch-preexecution-guard-invalid',
+  'comparing the input to itself cannot establish trusted workflow identity',
+);
+const dispatchCheckoutBlock = `      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: \${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+`;
+const lateDispatchGuard = workflowText
+  .replace(dispatchGuardBlock, '')
+  .replace(dispatchCheckoutBlock, `${dispatchCheckoutBlock}${dispatchGuardBlock}`);
+assertIncludes(
+  validate({ workflowText: lateDispatchGuard }).errors,
+  'workflow-dispatch-preexecution-guard-order-invalid',
+  'the dispatch guard must run before checkout, setup, dependency install, or repository code',
 );
 
 const lexicalDecoyWorkflow = workflowText
@@ -1286,6 +1357,14 @@ function canonicalFixtureJson(value) {
   return JSON.stringify(value);
 }
 
+function resignShadowReportEvidence(report) {
+  const { evidenceIdentity: _discardedIdentity, ...unsigned } = report;
+  return {
+    ...unsigned,
+    evidenceIdentity: createHash('sha256').update(canonicalFixtureJson(unsigned)).digest('hex'),
+  };
+}
+
 function resignRollingEvidence(evidence) {
   for (const result of evidence.results) {
     const { identity: _identity, ...resultWithoutIdentity } = result;
@@ -1363,6 +1442,15 @@ function createRollingCheckpointFixture(acceptedTaskIds, {
   for (const contract of Object.values(shadowContracts.contracts)) {
     for (const row of contract.cases) {
       write(sandbox, row.projection.argv[1], '// pinned independent shadow regression fixture\n');
+    }
+  }
+  for (const taskId of acceptedTaskIds) {
+    for (const gate of ownership.candidateGates.tasks[taskId].rolling) {
+      if (gate.argv[0] !== 'node') continue;
+      const entryPath = gate.argv.find((entry) => /^tests\/.+\.mjs$/.test(entry));
+      if (entryPath) {
+        write(sandbox, entryPath, '// deterministic checkpoint rolling-gate pass fixture\n');
+      }
     }
   }
   write(sandbox, 'package-lock.json', `${JSON.stringify({
@@ -1708,6 +1796,11 @@ function exerciseCheckpointRegressions() {
         .map((report) => report.taskId))],
       ['T011', 'T012'],
       'each later checkpoint must record independent shadow proof for every accepted task',
+    );
+    assert.equal(
+      secondComponent.ledger.checkpoints[1].independentShadowVerifier.aggregate.status,
+      'PARTIAL_ZERO',
+      'an intermediate checkpoint may truthfully retain zero-valued counters with partial denominator coverage',
     );
     const exactCheckpoint = verifyCheckpointOperationalEvidence(
       secondComponent.sandbox,
@@ -2250,6 +2343,81 @@ function exerciseCheckpointRegressions() {
     const valid = validateRollingCheckpointFixture(completeStage, { inventory: terminalInventory });
     assert.equal(valid.ok, true, valid.errors.join('\n'));
     assert.deepEqual(valid.checkpointResult.remainingComponentTaskIds, []);
+    const terminalShadow = completeStage.ledger.checkpoints.at(-1).independentShadowVerifier;
+    assert.equal(terminalShadow.aggregate.status, 'COMPLETE_ZERO');
+    assert.deepEqual(
+      terminalShadow.aggregate.counters.map((row) => row.id),
+      [
+        'falseExactNoAlias',
+        'falseExactMustAlias',
+        'falseExactIndirectTarget',
+        'falseExactType',
+        'semanticMismatch',
+        'stalePublicationAfterCancel',
+        'invalidWriterOutputAccepted',
+      ],
+      'the terminal aggregate must retain one deterministic record for every hard counter',
+    );
+    for (const counterId of terminalShadow.aggregate.counters.map((row) => row.id)) {
+      const incompleteLedger = structuredClone(completeStage.ledger);
+      const latestShadow = incompleteLedger.checkpoints.at(-1).independentShadowVerifier;
+      latestShadow.reports = latestShadow.reports.map((report) => {
+        const mutated = structuredClone(report);
+        const counter = mutated.proof.counters.find((row) => row.id === counterId);
+        counter.denominator = 0;
+        counter.observed = 0;
+        return resignShadowReportEvidence(mutated);
+      });
+      incompleteLedger.checkpoints.at(-1).independentShadowVerifier = checkpointShadowGateEvidence(
+        latestShadow.candidateIdentity,
+        latestShadow.reports,
+      );
+      assert.throws(
+        () => assertTerminalShadowCounterEvidence(
+          incompleteLedger.checkpoints.at(-1).independentShadowVerifier,
+        ),
+        new RegExp(`checkpoint-shadow-terminal-counter-invalid:.*${counterId}`),
+        `terminal promotion must reject zero denominator coverage for ${counterId}`,
+      );
+    }
+    const pinnedShadowAuthority = {
+      ownership,
+      shadowAuthorityDefinition: { registry: shadowRegistry, contracts: shadowContracts },
+    };
+    const inflatedDenominator = structuredClone(terminalShadow.reports[0]);
+    inflatedDenominator.proof.counters[0].denominator += 1;
+    assert.throws(
+      () => checkpointShadowGateEvidence(
+        terminalShadow.candidateIdentity,
+        [resignShadowReportEvidence(inflatedDenominator), ...terminalShadow.reports.slice(1)],
+        pinnedShadowAuthority,
+      ),
+      /checkpoint-shadow-report-proof-mismatch/,
+      'a coordinated outer re-sign cannot inflate a denominator beyond its pinned contract cases',
+    );
+    for (const identityField of ['verifierIdentity', 'authorityIdentity', 'judgeIdentity']) {
+      const mutatedIdentity = structuredClone(terminalShadow.reports[0]);
+      mutatedIdentity[identityField] = '0'.repeat(64);
+      assert.throws(
+        () => checkpointShadowGateEvidence(
+          terminalShadow.candidateIdentity,
+          [resignShadowReportEvidence(mutatedIdentity), ...terminalShadow.reports.slice(1)],
+          pinnedShadowAuthority,
+        ),
+        /checkpoint-shadow-report-invalid/,
+        `a coordinated outer re-sign cannot detach ${identityField} from its inner artifact set`,
+      );
+    }
+    const divergentReport = structuredClone(terminalShadow.reports[0]);
+    divergentReport.proof.counters[0].observed = 1;
+    assert.throws(
+      () => checkpointShadowGateEvidence(
+        terminalShadow.candidateIdentity,
+        [resignShadowReportEvidence(divergentReport), ...terminalShadow.reports.slice(1)],
+      ),
+      /checkpoint-shadow-report-counter-nonzero/,
+      'a re-signed report with a nonzero hard counter cannot enter any checkpoint aggregate',
+    );
     const terminal = verifyCheckpointOperationalEvidence(
       completeStage.sandbox,
       valid,

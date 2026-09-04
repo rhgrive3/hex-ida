@@ -87,6 +87,7 @@
     "specs/005-analysis-final-closure/research.md",
     "specs/005-analysis-final-closure/spec.md",
     "specs/005-analysis-final-closure/tasks.md",
+    "tests/final-closure/cross-lane-ownership.test.mjs",
     "tests/final-closure/preflight.test.mjs",
     "tests/final-closure/run.mjs",
     "tests/stage1/verifier-self-tests.test.mjs",
@@ -95,7 +96,9 @@
     "tools/validation/final-closure/shadow/foundation/contracts.json",
     "tools/validation/final-closure/shadow/foundation/oracle-observer.mjs",
     "tools/validation/final-closure/shadow/foundation/product-observer.mjs",
-    "tools/validation/final-closure/shadow/foundation/registry.json"
+    "tools/validation/final-closure/shadow/foundation/registry.json",
+    "tools/validation/phase11/ownership-check.mjs",
+    "tools/validation/phase12/ownership.mjs"
   ],
   "actualChangedPaths": [
     ".github/workflows/final-closure-preflight.yml",
@@ -118,6 +121,7 @@
     "specs/005-analysis-final-closure/research.md",
     "specs/005-analysis-final-closure/spec.md",
     "specs/005-analysis-final-closure/tasks.md",
+    "tests/final-closure/cross-lane-ownership.test.mjs",
     "tests/final-closure/preflight.test.mjs",
     "tests/final-closure/run.mjs",
     "tests/stage1/verifier-self-tests.test.mjs",
@@ -126,7 +130,9 @@
     "tools/validation/final-closure/shadow/foundation/contracts.json",
     "tools/validation/final-closure/shadow/foundation/oracle-observer.mjs",
     "tools/validation/final-closure/shadow/foundation/product-observer.mjs",
-    "tools/validation/final-closure/shadow/foundation/registry.json"
+    "tools/validation/final-closure/shadow/foundation/registry.json",
+    "tools/validation/phase11/ownership-check.mjs",
+    "tools/validation/phase12/ownership.mjs"
   ],
   "unionChangedPaths": [
     ".github/workflows/final-closure-preflight.yml",
@@ -149,6 +155,7 @@
     "specs/005-analysis-final-closure/research.md",
     "specs/005-analysis-final-closure/spec.md",
     "specs/005-analysis-final-closure/tasks.md",
+    "tests/final-closure/cross-lane-ownership.test.mjs",
     "tests/final-closure/preflight.test.mjs",
     "tests/final-closure/run.mjs",
     "tests/stage1/verifier-self-tests.test.mjs",
@@ -157,7 +164,9 @@
     "tools/validation/final-closure/shadow/foundation/contracts.json",
     "tools/validation/final-closure/shadow/foundation/oracle-observer.mjs",
     "tools/validation/final-closure/shadow/foundation/product-observer.mjs",
-    "tools/validation/final-closure/shadow/foundation/registry.json"
+    "tools/validation/final-closure/shadow/foundation/registry.json",
+    "tools/validation/phase11/ownership-check.mjs",
+    "tools/validation/phase12/ownership.mjs"
   ],
   "entries": [
     { "path": ".github/workflows/final-closure-preflight.yml", "ownerTaskId": "T046" },
@@ -180,6 +189,7 @@
     { "path": "specs/005-analysis-final-closure/research.md", "ownerTaskId": "T046" },
     { "path": "specs/005-analysis-final-closure/spec.md", "ownerTaskId": "T003" },
     { "path": "specs/005-analysis-final-closure/tasks.md", "ownerTaskId": "T046" },
+    { "path": "tests/final-closure/cross-lane-ownership.test.mjs", "ownerTaskId": "T046" },
     { "path": "tests/final-closure/preflight.test.mjs", "ownerTaskId": "T046" },
     { "path": "tests/final-closure/run.mjs", "ownerTaskId": "T046" },
     { "path": "tests/stage1/verifier-self-tests.test.mjs", "ownerTaskId": "T046" },
@@ -188,6 +198,8 @@
     { "path": "tools/validation/final-closure/shadow/foundation/contracts.json", "ownerTaskId": "T046" },
     { "path": "tools/validation/final-closure/shadow/foundation/oracle-observer.mjs", "ownerTaskId": "T046" },
     { "path": "tools/validation/final-closure/shadow/foundation/product-observer.mjs", "ownerTaskId": "T046" },
-    { "path": "tools/validation/final-closure/shadow/foundation/registry.json", "ownerTaskId": "T046" }
+    { "path": "tools/validation/final-closure/shadow/foundation/registry.json", "ownerTaskId": "T046" },
+    { "path": "tools/validation/phase11/ownership-check.mjs", "ownerTaskId": "T046" },
+    { "path": "tools/validation/phase12/ownership.mjs", "ownerTaskId": "T046" }
   ]
 }

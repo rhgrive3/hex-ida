@@ -28,7 +28,7 @@
       "minimumCaseCount": 1,
       "authorityArtifacts": [
         {"role": "registry", "path": "tools/validation/final-closure/shadow/foundation/registry.json", "sha256": "105ed35687d4b87347eed43f488a1ab7534607acb34036f3ef75922af49ae9d7"},
-        {"role": "contracts", "path": "tools/validation/final-closure/shadow/foundation/contracts.json", "sha256": "0812574f211de31e6d0e864376b409e3a07dd52f2398226b0c131495028f28c0"},
+        {"role": "contracts", "path": "tools/validation/final-closure/shadow/foundation/contracts.json", "sha256": "0eec9ae4296d2371700dac92369d2ab54d27dea50fcb87cc14f850ae41092c3f"},
         {"role": "oracleProvider", "path": "tools/validation/final-closure/shadow/foundation/oracle-observer.mjs", "sha256": "2ea797c3947459e21466827239034d53ce25620c5d70f4609e188e5db083991a"},
         {"role": "productProvider", "path": "tools/validation/final-closure/shadow/foundation/product-observer.mjs", "sha256": "0b84d5b30681a5a6fd46e25c0cc743f20c5f32686862f85a0a3db63b229858cd"}
       ]
@@ -316,7 +316,7 @@
         "rolling": [
           {"id": "t055-type-bounds", "argv": ["node", "tests/phase7/types/constraint-graph-bounds.test.mjs"]},
           {"id": "t055-type-graph", "argv": ["node", "tests/phase7/types/constraint-graph.test.mjs"]},
-          {"id": "t055-type-corpus", "argv": ["node", "tests/phase7/corpus/types.mjs"]}
+          {"id": "t055-type-corpus", "argv": ["node", "tests/phase7/types/corpus-structural-oracle.test.mjs"]}
         ],
         "shadow": [
           {"id": "t055-independent-verifier", "argv": ["node", "tools/validation/final-closure/preflight.mjs", "--emit-shadow-evidence", "--task", "T055"]}
@@ -868,7 +868,10 @@
         ".github/workflows/final-closure-preflight.yml",
         "tools/validation/final-closure/preflight.mjs",
         "tools/validation/final-closure/shadow/foundation/**",
+        "tools/validation/phase11/ownership-check.mjs",
+        "tools/validation/phase12/ownership.mjs",
         "tests/final-closure/preflight.test.mjs",
+        "tests/final-closure/cross-lane-ownership.test.mjs",
         "tests/final-closure/run.mjs",
         "tests/stage1/verifier-self-tests.test.mjs",
         "tests/stage1/workflow-trigger-coverage.test.mjs",
@@ -963,6 +966,9 @@
     "T051": {
       "allowedPaths": [
         "js/ai/control/snapshot.js",
+        "js/ai/dev/ui/controls.js",
+        ".github/workflows/ui-regression.yml",
+        "tests/ai-ui-dev-profile.mjs",
         "tests/phase12/adversarial/issue-3664-ai-runtime-release-session.test.mjs",
         "tests/phase12/adversarial/issue-6241-ai-snapshot-binary-identity.test.mjs",
         "tests/final-closure/t051/**"
@@ -970,7 +976,8 @@
       "forbiddenOverlap": [
         "all #6524 paths outside the explicit AI snapshot allowlist",
         "weak textual binary identity promoted to strong authority",
-        "runtime-support or generated-output edits"
+        "runtime-support or generated-output edits",
+        "UI changes outside the Dev analysis-scope projection and its exact browser trigger"
       ]
     },
     "T052": {
@@ -1016,6 +1023,7 @@
         "js/analysis/types/graph.js",
         "tests/phase7/types/constraint-graph-bounds.test.mjs",
         "tests/phase7/types/constraint-graph.test.mjs",
+        "tests/phase7/types/corpus-structural-oracle.test.mjs",
         "tests/phase7/corpus/types.mjs",
         "tests/final-closure/t055/**"
       ],

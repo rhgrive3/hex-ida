@@ -5,9 +5,25 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 export const MANIFEST_PATH = path.join(ROOT, 'tools/validation/phase12/ownership.json');
+const CROSS_LANE_LABEL = 'cross-lane-integration';
 
 export function loadManifest(file = MANIFEST_PATH) {
   return JSON.parse(fs.readFileSync(file, 'utf8'));
+}
+
+export function githubEvent({
+  env = process.env,
+  readFile = (eventPath) => fs.readFileSync(eventPath, 'utf8'),
+} = {}) {
+  const eventPath = env?.GITHUB_EVENT_PATH;
+  if (!eventPath) return null;
+  try { return JSON.parse(readFile(eventPath)); }
+  catch { return null; }
+}
+
+export function phase12CrossLaneIntegration(event) {
+  const labels = event?.pull_request?.labels;
+  return Array.isArray(labels) && labels.some((label) => label?.name === CROSS_LANE_LABEL);
 }
 
 export function shouldSkipPhase12Ownership({
@@ -60,7 +76,7 @@ export function validateManifest(manifest = loadManifest()) {
   return errors;
 }
 
-export function validateFiles(files, lane, manifest = loadManifest()) {
+export function validateFiles(files, lane, manifest = loadManifest(), { allowUnowned = false } = {}) {
   const errors = validateManifest(manifest);
   const patterns = manifest.lanes?.[lane];
   if (!patterns) return { ok: false, lane, files: [...files], violations: [...errors, `unknown lane: ${lane}`] };
@@ -72,7 +88,9 @@ export function validateFiles(files, lane, manifest = loadManifest()) {
     if (forbidden) violations.push({ file, category: 'forbidden', detail: 'path is globally forbidden to Phase 12 lanes' });
     else if (generated && !manifest.generatedWriteOwners.includes(lane)) violations.push({ file, category: 'generated', detail: `${lane} may not publish generated output` });
     else if (releaseOnly && !manifest.releaseWriteOwners.includes(lane)) violations.push({ file, category: 'release', detail: `${lane} may not publish release evidence` });
-    else if (!patterns.some((pattern) => matches(file, pattern))) violations.push({ file, category: 'unowned', detail: `${lane} does not own this path` });
+    else if (!patterns.some((pattern) => matches(file, pattern)) && !allowUnowned) {
+      violations.push({ file, category: 'unowned', detail: `${lane} does not own this path` });
+    }
   }
   return { ok: errors.length === 0 && violations.length === 0, lane, files: [...files].map(normalize).filter(Boolean).sort(), violations, manifestErrors: errors };
 }
@@ -83,7 +101,7 @@ function declaredOwners(file, manifest) {
     .map(([lane]) => lane);
 }
 
-export function validateAggregateFiles(files, manifest = loadManifest()) {
+export function validateAggregateFiles(files, manifest = loadManifest(), { allowUnowned = false } = {}) {
   const errors = validateManifest(manifest);
   const violations = [];
   const normalizedFiles = [...new Set([...files].map(normalize).filter(Boolean))].sort();
@@ -98,7 +116,7 @@ export function validateAggregateFiles(files, manifest = loadManifest()) {
       violations.push({ file, category: 'generated', detail: 'no declared generated-output owner covers this path' });
     } else if (releaseOnly && !manifest.releaseWriteOwners.some((lane) => owners.includes(lane))) {
       violations.push({ file, category: 'release', detail: 'no declared release-evidence owner covers this path' });
-    } else if (owners.length === 0) {
+    } else if (owners.length === 0 && !allowUnowned) {
       violations.push({ file, category: 'unowned', detail: 'no declared Phase 12 lane owns this path' });
     }
   }
@@ -150,28 +168,51 @@ function awaitImportCrypto() {
 import crypto from 'node:crypto';
 const requireCrypto = crypto;
 
-export function runOwnership({ baseSha, headSha, lane, root = ROOT, manifest = loadManifest() }) {
+export function runOwnership({
+  baseSha,
+  headSha,
+  lane,
+  root = ROOT,
+  manifest = loadManifest(),
+  event,
+  env = process.env,
+  readFile,
+}) {
   const files = inventoryFromGit(baseSha, headSha, root);
-  const result = validateFiles(files, lane, manifest);
+  const crossLaneIntegration = phase12CrossLaneIntegration(
+    event === undefined ? githubEvent({ env, readFile }) : event,
+  );
+  const result = validateFiles(files, lane, manifest, { allowUnowned: crossLaneIntegration });
   if (!result.ok) {
     const error = new Error(`phase12 ownership violations: ${result.violations.map((item) => `${item.category}:${item.file}`).join(', ') || result.manifestErrors.join('; ')}`);
     error.ownershipViolation = true;
     error.result = result;
     throw error;
   }
-  return Object.freeze({ ...result, baseSha, headSha, inventoryDigest: inventoryDigest(files) });
+  return Object.freeze({ ...result, baseSha, headSha, crossLaneIntegration, inventoryDigest: inventoryDigest(files) });
 }
 
-export function runAggregateOwnership({ baseSha, headSha, root = ROOT, manifest = loadManifest() }) {
+export function runAggregateOwnership({
+  baseSha,
+  headSha,
+  root = ROOT,
+  manifest = loadManifest(),
+  event,
+  env = process.env,
+  readFile,
+}) {
   const files = inventoryFromGit(baseSha, headSha, root);
-  const result = validateAggregateFiles(files, manifest);
+  const crossLaneIntegration = phase12CrossLaneIntegration(
+    event === undefined ? githubEvent({ env, readFile }) : event,
+  );
+  const result = validateAggregateFiles(files, manifest, { allowUnowned: crossLaneIntegration });
   if (!result.ok) {
     const error = new Error(`phase12 aggregate ownership violations: ${result.violations.map((item) => `${item.category}:${item.file}`).join(', ') || result.manifestErrors.join('; ')}`);
     error.ownershipViolation = true;
     error.result = result;
     throw error;
   }
-  return Object.freeze({ ...result, baseSha, headSha, inventoryDigest: inventoryDigest(files) });
+  return Object.freeze({ ...result, baseSha, headSha, crossLaneIntegration, inventoryDigest: inventoryDigest(files) });
 }
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);

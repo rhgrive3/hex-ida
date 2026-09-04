@@ -191,7 +191,15 @@ as separate bounded processes. Providers may emit canonical raw observations
 only; the central verifier derives observation hashes, dispositions,
 denominators, all seven counters, verdict, and evidence identity. A denominator
 counts only cases explicitly tagged for that counter, and terminal aggregate
-proof requires nonzero coverage for all seven. The evidence binds a distinct
+proof requires nonzero coverage for all seven. Each checkpoint serializes a
+deterministic aggregate bound to the exact candidate and the validated evidence
+and proof identities of every unique task/gate report. Intermediate checkpoints
+may record `PARTIAL_ZERO`, but Stage A or Stage B terminal promotion requires
+`COMPLETE_ZERO`, with denominator greater than zero and observed value zero for
+each of the seven counters. Static admission revalidates each inner artifact-set
+identity and rederives observations, dispositions, proof, and denominators from
+the frozen foundation contract or the exact hash-pinned dynamic contract;
+re-signing a stored report cannot manufacture coverage. The evidence binds a distinct
 governing parent (the component candidate's first parent or `G_i`'s sole `M_i`
 parent), its foundation/judge blobs, and the candidate blobs; self-authority is
 invalid. A component

@@ -129,7 +129,7 @@ any later applicability change.
 | EP-009 | APPLICABLE | T018→T024 and T037→T044 are dependency-locked transactions; next promotion waits for regeneration, zero second diff, gates, verifier, and evidence. |
 | EP-010 | APPLICABLE | SOL Ultra alone owns the living integration branch and moving-main reconciliation; component owners retain frozen bases. |
 | EP-011 | APPLICABLE | Verifier/workflow/platform/ownership identities are frozen at preflight and any verifier acceptance change invalidates prior evidence. |
-| EP-012 | APPLICABLE | The pinned permanent workflow exposes both PR-head and `workflow_dispatch` exact head/base paths; throwaway validation PRs are unnecessary. |
+| EP-012 | APPLICABLE | The pinned permanent workflow exposes PR-head and `workflow_dispatch` paths; dispatch rejects non-40-hex or mismatched input before checkout/setup/install, then checks out and verifies only trusted `github.sha`, so a poisonable input cannot select executed repository code. |
 | EP-013 | APPLICABLE | One authoritative recovery PR remains in place; T022/T023 reconcile it rather than creating replacement-PR chains. |
 | EP-014 | APPLICABLE | Preflight uses one bounded job per event; T013/T040 require measured production and runner evidence before any CI fanout optimization. |
 | EP-015 | N/A | T046 publishes no downloadable artifact; later T020/T041/T043 require validated canonical output and fail-closed evidence before publication. |
@@ -164,7 +164,7 @@ pending until the repaired exact tree is rerun:
   committed-head rerun remains `PENDING`.
 - Expected/actual/union inventory: the historical pre-amendment recomputation
   was exact `27/27`, digest `6591da4cf78352128e02b1fe6990937d`.
-  The reconciled contract now freezes `29/29` paths; recompute it on the exact
+  The reconciled working tree now freezes `32/32` paths; recompute it on the exact
   committed head, and do not accept either historical observation as final
   proof.
 - Fixed central shadow judges: current working-tree diagnostic PASS (`19/19`;

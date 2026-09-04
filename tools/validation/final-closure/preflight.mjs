@@ -26,6 +26,8 @@ const CHECKPOINT_STATE_SCHEMA_VERSION = 'hex-final-closure-integration-checkpoin
 const MAIN_RECONCILIATION_SCHEMA_VERSION = 'hex-final-closure-main-reconciliation/v1';
 const PRODUCT_RECONCILIATION_SCHEMA_VERSION = 'hex-final-closure-product-reconciliation/v1';
 const SHADOW_GATE_EVIDENCE_SCHEMA_VERSION = 'hex-final-closure-shadow-gate-evidence/v1';
+const CHECKPOINT_SHADOW_EVIDENCE_SCHEMA_VERSION = 'hex-final-closure-checkpoint-shadow-evidence/v2';
+const CHECKPOINT_SHADOW_AGGREGATE_SCHEMA_VERSION = 'hex-final-closure-checkpoint-shadow-aggregate/v1';
 const SHADOW_POLICY_SCHEMA_VERSION = 'hex-final-closure-shadow-policy/v2';
 const SHADOW_PROOF_SCHEMA_VERSION = 'hex-final-closure-shadow-proof/v2';
 const SHADOW_RAW_OBSERVATION_SCHEMA_VERSION = 'hex-final-closure-shadow-raw-observation/v1';
@@ -89,7 +91,7 @@ const RECOVERY_HANDOFF_CANONICAL_REMOTE_REF = 'refs/remotes/origin/wip/recovery-
 const RECOVERY_HANDOFF_SCRATCH_REMOTE_REF = 'refs/remotes/origin/__final_closure_recovery_handoff';
 const RECOVERY_HANDOFF_FETCH_REF = 'refs/heads/wip/recovery-handoff-20260904';
 const FOUNDATION_TASK_COUNT = 57;
-const EXPECTED_WORKFLOW_SHA256 = 'c97e38e552f5b10bb2c7967697950cf7f4e2a93d0029ac47e790e43435c506d4';
+const EXPECTED_WORKFLOW_SHA256 = '82b305894cd89c9f83f9f0ae274787b1662018dfcf69b872fcc7ffd9b2e22953';
 const STAGE_A_COMPONENT_TASK_IDS = Object.freeze([
   'T011', 'T012', 'T013', 'T014', 'T015', 'T016', 'T017',
   'T051', 'T052', 'T053', 'T054', 'T055', 'T056', 'T057',
@@ -129,7 +131,7 @@ const STAGE_B_ROADMAP_STATUSES = Object.freeze([
 const STAGE_B_IMPLEMENTATION_ACTIONS = Object.freeze([
   'IMPLEMENT', 'NO_EDIT', 'NO_EDIT_EXTERNAL_BLOCK', 'RECONCILE_OWNER',
 ]);
-export const FROZEN_INITIAL_CANDIDATE_GATE_DIGEST = '62a32151412615f01552557f76c9c60b';
+export const FROZEN_INITIAL_CANDIDATE_GATE_DIGEST = '128a52dae6eab6f63831dc854c76b623';
 
 export const EXPECTED_TASK_IDS = Object.freeze(
   Array.from({ length: FOUNDATION_TASK_COUNT }, (_, index) => `T${String(index + 1).padStart(3, '0')}`),
@@ -204,7 +206,7 @@ export const FROZEN_PERFORMANCE_IDENTITIES = Object.freeze({
   sources: '750b59ecc3d34d6d54e691d8f2396dde',
 });
 
-export const FROZEN_FOUNDATION_OWNERSHIP_DIGEST = '75fc4e2afc6661ff16e8b9ef807fcfb8';
+export const FROZEN_FOUNDATION_OWNERSHIP_DIGEST = 'd80c91a8bee4f4141642151dda727edd';
 
 const REQUIRED_TASK_FIELDS = Object.freeze([
   'Objective:',
@@ -1381,7 +1383,7 @@ function stageComponentTaskIds(campaignStage, taskIds, stageBApplicability = nul
   return [];
 }
 
-function validCheckpointRow(row, expectedSequence, errors) {
+function validCheckpointRow(row, expectedSequence, errors, shadowValidation = null) {
   if (row?.sequence !== expectedSequence || !Number.isSafeInteger(row.sequence) || row.sequence <= 0) {
     errors.push(`checkpoint-ledger-sequence-invalid:${expectedSequence}:${String(row?.sequence)}`);
   }
@@ -1465,13 +1467,28 @@ function validCheckpointRow(row, expectedSequence, errors) {
     || !validSha256(row?.rollingProductGates?.identity)) {
     errors.push(`checkpoint-rolling-gates-invalid:${expectedSequence}`);
   }
-  if (row?.independentShadowVerifier?.schemaVersion !== 'hex-final-closure-checkpoint-shadow-evidence/v1'
-    || row?.independentShadowVerifier?.status !== 'PASS'
-    || row?.independentShadowVerifier?.candidateIdentity?.headSha !== productIdentity?.commitSha
-    || row?.independentShadowVerifier?.candidateIdentity?.treeSha !== productIdentity?.treeSha
-    || !Array.isArray(row?.independentShadowVerifier?.reports)
-    || row.independentShadowVerifier.reports.length === 0
-    || !validSha256(row?.independentShadowVerifier?.identity)) {
+  let shadowEnvelopeValid = row?.independentShadowVerifier?.schemaVersion
+    === CHECKPOINT_SHADOW_EVIDENCE_SCHEMA_VERSION
+    && row?.independentShadowVerifier?.status === 'PASS'
+    && row?.independentShadowVerifier?.candidateIdentity?.headSha === productIdentity?.commitSha
+    && row?.independentShadowVerifier?.candidateIdentity?.treeSha === productIdentity?.treeSha
+    && Array.isArray(row?.independentShadowVerifier?.reports)
+    && row.independentShadowVerifier.reports.length > 0
+    && validSha256(row?.independentShadowVerifier?.identity);
+  if (shadowEnvelopeValid) {
+    try {
+      const expectedShadow = checkpointShadowGateEvidence(
+        row.independentShadowVerifier.candidateIdentity,
+        row.independentShadowVerifier.reports,
+        shadowValidation || {},
+      );
+      shadowEnvelopeValid = canonicalJson(expectedShadow)
+        === canonicalJson(row.independentShadowVerifier);
+    } catch {
+      shadowEnvelopeValid = false;
+    }
+  }
+  if (!shadowEnvelopeValid) {
     errors.push(`checkpoint-shadow-verifier-invalid:${expectedSequence}`);
   }
   if (row?.initialCandidateGateDigest !== FROZEN_INITIAL_CANDIDATE_GATE_DIGEST) {
@@ -1492,6 +1509,8 @@ function validateCheckpointContract({
   taskIds,
   stageBApplicability,
   checkpointEvidenceText,
+  ownership,
+  shadowAuthorityDefinition,
   errors,
 }) {
   const campaignStage = integrationInventory?.campaignStage;
@@ -1559,7 +1578,10 @@ function validateCheckpointContract({
   const acceptedTaskIds = [];
   for (let index = 0; index < ledger.checkpoints.length; index += 1) {
     const row = ledger.checkpoints[index];
-    validCheckpointRow(row, index + 1, errors);
+    validCheckpointRow(row, index + 1, errors, {
+      ownership,
+      shadowAuthorityDefinition,
+    });
     if (row?.integrationReconciliation?.ownerTaskId !== checkpointOwnerTaskId) {
       errors.push(`checkpoint-product-reconciliation-owner-invalid:${index + 1}:${String(row?.integrationReconciliation?.ownerTaskId)}`);
     }
@@ -1591,6 +1613,13 @@ function validateCheckpointContract({
   }
   const remainingComponentTaskIds = componentTaskIds
     .filter((taskId) => !completedComponents.includes(taskId));
+  if (remainingComponentTaskIds.length === 0 && componentTaskIds.length > 0) {
+    try {
+      assertTerminalShadowCounterEvidence(latest?.independentShadowVerifier);
+    } catch (error) {
+      errors.push(error instanceof Error ? error.message : String(error));
+    }
+  }
   if (latest?.cumulativeInventory?.baseSha !== integrationInventory?.baseSha
     || (remainingComponentTaskIds.length > 0
       && (latest?.cumulativeInventory?.stableDigest !== inventoryResult.stableDigest
@@ -1953,12 +1982,17 @@ function validateCandidateGateRegistry({ ownership, taskIds, packageJson, shadow
   if (registry?.schemaVersion !== 'hex-final-closure-candidate-gates/v1'
     || !registry?.tasks || typeof registry.tasks !== 'object' || Array.isArray(registry.tasks)) {
     errors.push('candidate-gate-registry-schema-invalid');
-    return Object.freeze({ registry, initialDigest: null, componentTaskIds: [] });
+    return Object.freeze({
+      registry,
+      initialDigest: null,
+      componentTaskIds: [],
+      shadowAuthorityDefinition: null,
+    });
   }
   const dynamicTaskIds = taskIds.filter((taskId) => Number(taskId.slice(1)) > FOUNDATION_TASK_COUNT);
   const componentTaskIds = [...INITIAL_COMPONENT_TASK_IDS, ...dynamicTaskIds];
   const shadowPolicy = registry?.shadowEvidence;
-  validateShadowAuthorityDefinition({
+  const shadowAuthorityDefinition = validateShadowAuthorityDefinition({
     ownership,
     componentTaskIds,
     shadowPolicy,
@@ -2004,7 +2038,12 @@ function validateCandidateGateRegistry({ ownership, taskIds, packageJson, shadow
   if (initialDigest !== FROZEN_INITIAL_CANDIDATE_GATE_DIGEST) {
     errors.push('candidate-gate-initial-digest-mismatch');
   }
-  return Object.freeze({ registry, initialDigest, componentTaskIds });
+  return Object.freeze({
+    registry,
+    initialDigest,
+    componentTaskIds,
+    shadowAuthorityDefinition,
+  });
 }
 
 export function validatePreflightContracts({
@@ -2110,6 +2149,13 @@ export function validatePreflightContracts({
   });
   errors.push(...inventoryResult.errors);
   validateStageBInitialInventory(integrationInventory, blocks, errors);
+  const candidateGateResult = validateCandidateGateRegistry({
+    ownership,
+    taskIds,
+    packageJson,
+    shadowAuthority,
+    errors,
+  });
   const checkpointResult = validateCheckpointContract({
     integrationInventory,
     inventoryResult,
@@ -2117,6 +2163,8 @@ export function validatePreflightContracts({
     taskIds,
     stageBApplicability,
     checkpointEvidenceText,
+    ownership,
+    shadowAuthorityDefinition: candidateGateResult.shadowAuthorityDefinition,
     errors,
   });
   const taskHandoffResult = validateTaskHandoffContracts({
@@ -2125,13 +2173,6 @@ export function validatePreflightContracts({
     ownership,
     taskIds,
     stageBApplicability,
-    errors,
-  });
-  const candidateGateResult = validateCandidateGateRegistry({
-    ownership,
-    taskIds,
-    packageJson,
-    shadowAuthority,
     errors,
   });
   const originalWorkspaceLock = validateOriginalWorkspaceLock(preFanoutText, errors);
@@ -2181,6 +2222,35 @@ export function validatePreflightContracts({
     || !workflow.includes('expect_sha:')
     || !workflow.includes('expect_base_sha:')) {
     errors.push('workflow-manual-exact-sha-path-missing');
+  }
+  const dispatchJobStart = workflow.indexOf('\n  dispatch-exact-head:');
+  const dispatchJob = dispatchJobStart >= 0 ? workflow.slice(dispatchJobStart) : '';
+  const dispatchGuardIndex = dispatchJob.indexOf('Reject poisoned dispatch head before execution');
+  const dispatchCheckoutIndex = dispatchJob.indexOf('- uses: actions/checkout@');
+  const dispatchSetupIndex = dispatchJob.indexOf('- uses: actions/setup-node@');
+  const dispatchInstallIndex = dispatchJob.indexOf('run: npm ci --no-audit --no-fund');
+  if (dispatchJob.includes('ref: ${{ inputs.expect_sha }}')) {
+    errors.push('workflow-dispatch-input-checkout-forbidden');
+  }
+  if (!dispatchJob.includes('ref: ${{ github.sha }}')
+    || !dispatchJob.includes('EXPECT_SHA: ${{ github.sha }}')) {
+    errors.push('workflow-dispatch-trusted-sha-binding-missing');
+  }
+  if (dispatchGuardIndex < 0
+    || !dispatchJob.includes('INPUT_SHA: "${{ inputs.expect_sha }}"')
+    || !dispatchJob.includes('WORKFLOW_SHA: "${{ github.sha }}"')
+    || !dispatchJob.includes('[[ ! "$INPUT_SHA" =~ ^[0-9a-f]{40}$ || ! "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]')
+    || !dispatchJob.includes('[[ "$INPUT_SHA" != "$WORKFLOW_SHA" ]]')) {
+    errors.push('workflow-dispatch-preexecution-guard-invalid');
+  }
+  if (dispatchGuardIndex < 0
+    || dispatchCheckoutIndex < 0
+    || dispatchSetupIndex < 0
+    || dispatchInstallIndex < 0
+    || dispatchGuardIndex > dispatchCheckoutIndex
+    || dispatchGuardIndex > dispatchSetupIndex
+    || dispatchGuardIndex > dispatchInstallIndex) {
+    errors.push('workflow-dispatch-preexecution-guard-order-invalid');
   }
   if (!workflow.includes('pull-request-authority:')
     || !workflow.includes('Reject unauthorized final-closure PR relationship')
@@ -2614,23 +2684,202 @@ function rollingReplayContract(evidence) {
   });
 }
 
-export function checkpointShadowGateEvidence(candidateIdentity, reports) {
+function pinnedShadowProofAuthority(ownership, shadowAuthorityDefinition, report) {
+  const policy = ownership?.candidateGates?.shadowEvidence;
+  const gate = ownership?.candidateGates?.tasks?.[report.taskId]?.shadow
+    ?.find((candidate) => candidate?.id === report.gateId);
+  if (!policy || !gate) throw new Error('checkpoint-shadow-report-contract-missing');
+  let contract;
+  if (Number(report.taskId.slice(1)) > FOUNDATION_TASK_COUNT) {
+    if (!validSha256(gate.contractSha256)
+      || gate.contractSha256 !== sha256Text(canonicalJson(gate.contract))) {
+      throw new Error('checkpoint-shadow-report-contract-pin-invalid');
+    }
+    contract = gate.contract;
+  } else {
+    const binding = shadowAuthorityDefinition?.registry?.tasks?.[report.taskId];
+    if (!binding || binding.gateId !== report.gateId) {
+      throw new Error('checkpoint-shadow-report-contract-binding-invalid');
+    }
+    contract = shadowAuthorityDefinition?.contracts?.contracts?.[binding.contractId];
+  }
+  const validatedContract = validateRuntimeShadowContract(
+    contract, policy, report.taskId, report.gateId, ownership,
+  );
+  const contractIdentity = sha256Text(canonicalJson(validatedContract));
+  const oracleObservation = validateRawShadowObservation(
+    report.observations.oracle, report.taskId, report.gateId, validatedContract, policy,
+  );
+  const productObservation = validateRawShadowObservation(
+    report.observations.product, report.taskId, report.gateId, validatedContract, policy,
+  );
+  return deriveShadowProof({
+    oracleObservation,
+    productObservation,
+    contract: validatedContract,
+    policy,
+    contractIdentity,
+  });
+}
+
+export function checkpointShadowGateEvidence(candidateIdentity, reports, {
+  ownership = null,
+  shadowAuthorityDefinition = null,
+} = {}) {
   if (!validSha1(candidateIdentity?.headSha) || !validSha1(candidateIdentity?.treeSha)
     || !Array.isArray(reports) || reports.length === 0) {
     throw new Error('checkpoint-shadow-evidence-input-invalid');
   }
+  const reportReceipts = reports.map((report) => {
+    const expectedKeys = [
+      'schemaVersion', 'status', 'taskId', 'gateId', 'candidateIdentity',
+      'authorityCommitSha', 'authorityOwnershipArtifact', 'registryEntryDigest',
+      'verifierArtifact', 'verifierIdentity', 'authorityArtifacts', 'authorityIdentity',
+      'judgeArtifacts', 'judgeIdentity', 'observations', 'proof', 'evidenceIdentity',
+    ];
+    const proofKeys = [
+      'schemaVersion', 'verdict', 'comparisonAlgorithm', 'contractIdentity',
+      'caseCount', 'results', 'counters',
+    ];
+    if (!report
+      || !exactSet(Object.keys(report), expectedKeys)
+      || report.schemaVersion !== SHADOW_GATE_EVIDENCE_SCHEMA_VERSION
+      || report.status !== 'PASS'
+      || !/^T\d{3}$/.test(String(report.taskId || ''))
+      || !nonemptyBoundedString(report.gateId, 160)
+      || !exactSet(Object.keys(report.candidateIdentity || {}), ['headSha', 'treeSha'])
+      || report.candidateIdentity.headSha !== candidateIdentity.headSha
+      || report.candidateIdentity.treeSha !== candidateIdentity.treeSha
+      || !validSha1(report.authorityCommitSha)
+      || !validSha256(report.verifierIdentity)
+      || report.verifierIdentity !== report.verifierArtifact?.sha256
+      || !Array.isArray(report.authorityArtifacts)
+      || !validSha256(report.authorityIdentity)
+      || report.authorityIdentity !== sha256Text(canonicalJson(report.authorityArtifacts))
+      || !Array.isArray(report.judgeArtifacts)
+      || !validSha256(report.judgeIdentity)
+      || report.judgeIdentity !== sha256Text(canonicalJson(report.judgeArtifacts))
+      || !/^[0-9a-f]{32}$/.test(String(report.registryEntryDigest || ''))
+      || !report.observations
+      || !exactSet(Object.keys(report.observations), ['oracle', 'product'])
+      || !report.proof
+      || !exactSet(Object.keys(report.proof), proofKeys)
+      || report.proof.schemaVersion !== SHADOW_PROOF_SCHEMA_VERSION
+      || report.proof.verdict !== 'PASS'
+      || report.proof.comparisonAlgorithm !== SHADOW_COMPARISON_ALGORITHM
+      || !validSha256(report.proof.contractIdentity)
+      || !Number.isSafeInteger(report.proof.caseCount)
+      || report.proof.caseCount < 1
+      || !Array.isArray(report.proof.results)
+      || report.proof.results.length !== report.proof.caseCount
+      || !Array.isArray(report.proof.counters)
+      || report.proof.counters.length !== HARD_CORRECTNESS_COUNTER_IDS.length
+      || report.proof.counters.some((row, index) => !row
+        || !exactSet(Object.keys(row), ['id', 'observed', 'denominator'])
+        || row.id !== HARD_CORRECTNESS_COUNTER_IDS[index]
+        || !Number.isSafeInteger(row.observed)
+        || row.observed < 0
+        || !Number.isSafeInteger(row.denominator)
+        || row.denominator < 0)) {
+      throw new Error(`checkpoint-shadow-report-invalid:${String(report?.taskId || 'UNKNOWN')}:${String(report?.gateId || 'UNKNOWN')}`);
+    }
+    if (report.proof.counters.some((row) => row.observed !== 0)) {
+      throw new Error(`checkpoint-shadow-report-counter-nonzero:${report.taskId}:${report.gateId}`);
+    }
+    if ((ownership === null) !== (shadowAuthorityDefinition === null)) {
+      throw new Error('checkpoint-shadow-report-authority-input-incomplete');
+    }
+    if (ownership !== null) {
+      const expectedProof = pinnedShadowProofAuthority(
+        ownership, shadowAuthorityDefinition, report,
+      );
+      if (canonicalJson(expectedProof) !== canonicalJson(report.proof)) {
+        throw new Error(`checkpoint-shadow-report-proof-mismatch:${report.taskId}:${report.gateId}`);
+      }
+    }
+    const { evidenceIdentity, ...unsignedReport } = report;
+    if (!validSha256(evidenceIdentity)
+      || evidenceIdentity !== sha256Text(canonicalJson(unsignedReport))) {
+      throw new Error(`checkpoint-shadow-report-identity-invalid:${report.taskId}:${report.gateId}`);
+    }
+    return Object.freeze({
+      taskId: report.taskId,
+      gateId: report.gateId,
+      evidenceIdentity,
+      proofIdentity: sha256Text(canonicalJson(report.proof)),
+    });
+  }).sort((left, right) => Buffer.from(`${left.taskId}\0${left.gateId}`)
+    .compare(Buffer.from(`${right.taskId}\0${right.gateId}`)));
+  const reportKeys = reportReceipts.map((row) => `${row.taskId}\0${row.gateId}`);
+  if (new Set(reportKeys).size !== reportKeys.length) {
+    throw new Error('checkpoint-shadow-report-duplicate');
+  }
+  const counters = HARD_CORRECTNESS_COUNTER_IDS.map((id) => {
+    let observed = 0;
+    let denominator = 0;
+    for (const report of reports) {
+      const counter = report.proof.counters.find((row) => row.id === id);
+      observed += counter.observed;
+      denominator += counter.denominator;
+      if (!Number.isSafeInteger(observed) || !Number.isSafeInteger(denominator)) {
+        throw new Error(`checkpoint-shadow-counter-overflow:${id}`);
+      }
+    }
+    return Object.freeze({ id, observed, denominator });
+  });
+  const aggregateEnvelope = {
+    schemaVersion: CHECKPOINT_SHADOW_AGGREGATE_SCHEMA_VERSION,
+    status: counters.every((row) => row.denominator > 0) ? 'COMPLETE_ZERO' : 'PARTIAL_ZERO',
+    candidateIdentity: { ...candidateIdentity },
+    reportEvidenceIdentities: reportReceipts,
+    reportSetIdentity: sha256Text(canonicalJson(reportReceipts)),
+    counters,
+  };
+  const aggregate = Object.freeze({
+    ...aggregateEnvelope,
+    candidateIdentity: Object.freeze({ ...aggregateEnvelope.candidateIdentity }),
+    reportEvidenceIdentities: Object.freeze(reportReceipts),
+    counters: Object.freeze(counters),
+    identity: sha256Text(canonicalJson(aggregateEnvelope)),
+  });
   const envelope = {
-    schemaVersion: 'hex-final-closure-checkpoint-shadow-evidence/v1',
+    schemaVersion: CHECKPOINT_SHADOW_EVIDENCE_SCHEMA_VERSION,
     status: 'PASS',
     candidateIdentity: { ...candidateIdentity },
     reports,
+    aggregate,
   };
   return Object.freeze({
     ...envelope,
     candidateIdentity: Object.freeze({ ...envelope.candidateIdentity }),
     reports: Object.freeze(reports),
+    aggregate,
     identity: sha256Text(canonicalJson(envelope)),
   });
+}
+
+function terminalShadowCounterFailures(evidence) {
+  const aggregate = evidence?.aggregate;
+  if (!aggregate
+    || aggregate.schemaVersion !== CHECKPOINT_SHADOW_AGGREGATE_SCHEMA_VERSION
+    || aggregate.status !== 'COMPLETE_ZERO'
+    || !Array.isArray(aggregate.counters)
+    || aggregate.counters.length !== HARD_CORRECTNESS_COUNTER_IDS.length) {
+    return [...HARD_CORRECTNESS_COUNTER_IDS];
+  }
+  return HARD_CORRECTNESS_COUNTER_IDS.filter((id, index) => {
+    const row = aggregate.counters[index];
+    return row?.id !== id || !Number.isSafeInteger(row.denominator)
+      || row.denominator <= 0 || row.observed !== 0;
+  });
+}
+
+export function assertTerminalShadowCounterEvidence(evidence) {
+  const invalidCounters = terminalShadowCounterFailures(evidence);
+  if (invalidCounters.length > 0) {
+    throw new Error(`checkpoint-shadow-terminal-counter-invalid:${invalidCounters.join(',')}`);
+  }
+  return evidence.aggregate;
 }
 
 function validateRuntimeShadowContract(contract, policy, taskId, gateId, ownership) {
@@ -2839,6 +3088,7 @@ export function deriveShadowProof({
     const oracle = oracleObservation.observations.find((row) => row.caseId === contractCase.id);
     const product = productObservation.observations.find((row) => row.caseId === contractCase.id);
     const disposition = oracle.state !== 'OBSERVED'
+      || canonicalJson(oracle.value) !== canonicalJson(contractCase.oracleObservation)
       ? 'REJECTED'
       : product.state === 'UNKNOWN'
         ? 'SAFE_UNKNOWN'
@@ -3944,6 +4194,10 @@ export function verifyCheckpointOperationalEvidence(root, result, integrationHea
     if (canonicalJson(row.independentShadowVerifier) !== canonicalJson(expectedShadow)) {
       throw new Error(`checkpoint-shadow-evidence-mismatch:${row.sequence}`);
     }
+    if (rowIndex === ledger.checkpoints.length - 1
+      && (checkpointResult.remainingComponentTaskIds || []).length === 0) {
+      assertTerminalShadowCounterEvidence(expectedShadow);
+    }
   }
   const latest = ledger.checkpoints.at(-1);
   const evidenceCommitSha = evidenceCommitShas.at(-1);
@@ -4872,6 +5126,13 @@ export function verifyCheckpointRuntimeEvidence({
     const independentShadowVerifier = checkpointShadowGateEvidence(productIdentity, shadowReports);
     if (canonicalJson(independentShadowVerifier) !== canonicalJson(row.independentShadowVerifier)) {
       throw new Error(`checkpoint-runtime-shadow-evidence-mismatch:${row.sequence}`);
+    }
+    if ((result.checkpointResult.remainingComponentTaskIds || []).length === 0) {
+      try {
+        assertTerminalShadowCounterEvidence(independentShadowVerifier);
+      } catch (error) {
+        throw new Error(`checkpoint-runtime-shadow-terminal-counter-invalid:${row.sequence}:${error instanceof Error ? error.message : String(error)}`);
+      }
     }
     return Object.freeze({
       schemaVersion: 'hex-final-closure-checkpoint-runtime-report/v1',
