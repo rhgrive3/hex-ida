@@ -50,7 +50,7 @@ function compareOperations(a, b) { return a.operationId.localeCompare(b.operatio
 export function orderOperations(operations = [], existingIds = new Set()) {
   const unique = new Map();
   for (const input of operations) {
-    const operation = input.schemaVersion === CHANGELOG_SCHEMA_VERSION ? input : createProjectOperation(input);
+    const operation = createProjectOperation(input);
     if (!unique.has(operation.operationId)) unique.set(operation.operationId, operation);
   }
   const remaining = new Map(unique);
@@ -137,7 +137,7 @@ export class ChangeLog {
   }
 
   applyOperation(input) {
-    const operation = input?.schemaVersion === CHANGELOG_SCHEMA_VERSION ? input : createProjectOperation(input);
+    const operation = createProjectOperation(input);
     const result = this.#applyOne(operation);
     if (result.status === 'unresolved') this.pending.set(operation.operationId, operation);
     else this.pending.delete(operation.operationId);
@@ -145,7 +145,7 @@ export class ChangeLog {
   }
 
   applyBatch(inputs = []) {
-    const operations = inputs.map((input) => input?.schemaVersion === CHANGELOG_SCHEMA_VERSION ? input : createProjectOperation(input));
+    const operations = inputs.map((input) => createProjectOperation(input));
     const ordered = orderOperations(operations, new Set(this.operations.keys()));
     if (ordered.unresolved.length) return Object.freeze({ status: 'unresolved', reason: 'missing-causal-parent', operationIds: ordered.unresolved.map((operation) => operation.operationId), stateDigest: this.digest() });
     const working = new ChangeLog({ projectIdentity: this.projectIdentity, binaryIdentity: this.binaryIdentity, state: this.state, operations: [...this.operations.values()], pending: [...this.pending.entries()], allowRemote: this.allowRemote, authorizedAuthors: [...this.authorizedAuthors] });
@@ -194,7 +194,7 @@ export function restoreCheckpoint(checkpoint, options = {}) {
 
 export function mergeOperations(left = [], right = []) {
   const map = new Map();
-  for (const input of [...left, ...right]) { const operation = input.schemaVersion === CHANGELOG_SCHEMA_VERSION ? input : createProjectOperation(input); if (!map.has(operation.operationId)) map.set(operation.operationId, operation); }
+  for (const input of [...left, ...right]) { const operation = createProjectOperation(input); if (!map.has(operation.operationId)) map.set(operation.operationId, operation); }
   return Object.freeze([...map.values()].sort(compareOperations));
 }
 
