@@ -136,5 +136,9 @@ export function rejectBinaryPayload(value, depth = 0) { if (depth > 10 || !value
 export function normalizeList(value, maxItems) { return Array.isArray(value) ? value.slice(0, maxItems).map((item) => sanitizeValue(item, 0)).filter((item) => item != null) : []; }
 export function sanitizeValue(value, depth) { if (depth > 6) return null; if (typeof value === 'string') return boundedText(value, 6000); if (typeof value === 'number' || typeof value === 'boolean') return value; if (value == null) return null; if (Array.isArray(value)) return value.slice(0, 32).map((item) => sanitizeValue(item, depth + 1)).filter((item) => item != null); if (!isObject(value)) return null; const out = {}; for (const [key, item] of Object.entries(value).slice(0, 40)) { const clean = sanitizeValue(item, depth + 1); if (clean != null) defineOwn(out, boundedText(key, 80), clean); } return out; }
 export function stringList(value, max) { return Array.isArray(value) ? value.slice(0, max).map((item) => boundedText(item, 2000)).filter(Boolean) : []; }
-export function finiteConfidence(value) { const n = Number(value); return Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : undefined; }
+// Final-result confidence is model-output schema authority (finalResultTool
+// declares type:'number', 0..1). Only a primitive finite number may become
+// canonical confidence: Number() would launder '0.9', ['0.9'] and true into
+// calibrated confidence and hide the schema violation downstream (#6142).
+export function finiteConfidence(value) { return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : undefined; }
 export function isObject(value) { return value != null && typeof value === 'object' && !Array.isArray(value); }
