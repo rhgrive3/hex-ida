@@ -108,6 +108,12 @@ const EXTRA_API_TABLE = [
   { id:'os_log', re:/^_?__os_log_fault_impl$/, cat:'log', args:null, ret:null, effect:'log' },
 ];
 
+for (const entry of EXTRA_API_TABLE) {
+  if (entry.args) Object.freeze(entry.args);
+  Object.freeze(entry);
+}
+Object.freeze(EXTRA_API_TABLE);
+
 export function extraApiInfo(name) {
   if (typeof name !== 'string') return null;
   const clean = name.trim();
