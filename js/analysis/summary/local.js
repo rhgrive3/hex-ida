@@ -388,8 +388,12 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
       // A callee summary can be exact only after the call-site target universe
       // itself is proven. A non-exhaustive singleton must not take this branch.
       statuses.push(resolved.status);
-      memoryReadRegions.push(...resolved.memoryReadRegions.map((effect) => createMemoryEffect({ ...effect, source: 'proven-summary' })));
-      memoryWriteRegions.push(...resolved.memoryWriteRegions.map((effect) => createMemoryEffect({ ...effect, source: 'proven-summary' })));
+      // Consuming an identity-matched callee summary authorizes folding its
+      // effects in, not re-grading their authority: each effect keeps the
+      // source it was built with, so a library-model or abi-rule fact cannot
+      // be laundered into proven-summary by one composition step.
+      memoryReadRegions.push(...resolved.memoryReadRegions.map((effect) => createMemoryEffect({ ...effect })));
+      memoryWriteRegions.push(...resolved.memoryWriteRegions.map((effect) => createMemoryEffect({ ...effect })));
       for (const unknown of resolved.unknownCallEffects) {
         // Keep the originating call site. Composing a path prefix here would
         // make the effect set grow every time a summary is recomposed, which is
