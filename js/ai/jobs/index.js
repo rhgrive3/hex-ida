@@ -5,7 +5,7 @@ export class AgentJobManager {
   constructor({ runtime, persistence = null, maxSlices = 8, maxElapsedMs = 30 * 60 * 1000 } = {}) {
     if (!runtime || typeof runtime.turn !== 'function') throw new TypeError('AgentJobManager requires an AIRuntime');
     this.runtime = runtime; this.persistence = persistence; this.maxSlices = bounded(maxSlices, 1, 32); this.maxElapsedMs = bounded(maxElapsedMs, 1000, 4 * 60 * 60 * 1000);
-    this.jobs = new Map(); this.creatingIds = new Set();
+    this.jobs = new Map(); this.creatingIds = new Set(); this.runningJobIds = new Set(); this.loadingPromises = new Map();
   }
 
   async create(input = {}) {
@@ -52,47 +52,54 @@ export class AgentJobManager {
 
   async runSlice(jobOrId, options = {}) {
     const job = await this.require(jobOrId);
-    if (job.status === 'complete' || job.status === 'hard-limit') return checkpoint(job);
-    if (job.status === 'running') throw new Error('Agent job already has an active slice');
-    if (hardLimit(job)) {
+    const id = job.id;
+    if (this.runningJobIds.has(id)) throw new Error('Agent job already has an active slice');
+    this.runningJobIds.add(id);
+    try {
+      if (job.status === 'complete' || job.status === 'hard-limit') return checkpoint(job);
+      if (job.status === 'running') throw new Error('Agent job already has an active slice');
+      if (hardLimit(job)) {
+        const prevStatus = job.status;
+        job.status = 'hard-limit';
+        job.updatedAt = new Date().toISOString();
+        try {
+          await this.save(job);
+        } catch (saveError) {
+          job.status = prevStatus;
+          throw saveError;
+        }
+        return checkpoint(job);
+      }
       const prevStatus = job.status;
-      job.status = 'hard-limit';
-      job.updatedAt = new Date().toISOString();
+      job.status = 'running';
       try {
         await this.save(job);
       } catch (saveError) {
         job.status = prevStatus;
         throw saveError;
       }
-      return checkpoint(job);
-    }
-    const prevStatus = job.status;
-    job.status = 'running';
-    try {
-      await this.save(job);
-    } catch (saveError) {
-      job.status = prevStatus;
-      throw saveError;
-    }
-    try {
-      const result = await this.runtime.turn({
-        ...job.request, goal: job.goal, mode: 'agent', scope: job.effectiveScope,
-        sessionId: job.sessionId, conversationId: job.conversationId,
-        provider: job.provider, model: job.model, reasoning: job.reasoning,
-      }, options);
-      mergeResult(job, result);
-      if (!result?.limits?.exhausted) job.status = 'complete';
-      else if (hardLimit(job)) job.status = 'hard-limit';
-      else job.status = 'checkpointed';
-      job.updatedAt = new Date().toISOString(); await this.save(job); return checkpoint(job);
-    } catch (error) {
-      job.status = options.signal?.aborted ? 'checkpointed' : 'failed';
-      job.unresolvedWork = unique([...job.unresolvedWork, String(error?.message || error)]).slice(-32);
-      job.updatedAt = new Date().toISOString();
       try {
-        await this.save(job);
-      } catch {}
-      throw error;
+        const result = await this.runtime.turn({
+          ...job.request, goal: job.goal, mode: 'agent', scope: job.effectiveScope,
+          sessionId: job.sessionId, conversationId: job.conversationId,
+          provider: job.provider, model: job.model, reasoning: job.reasoning,
+        }, options);
+        mergeResult(job, result);
+        if (!result?.limits?.exhausted) job.status = 'complete';
+        else if (hardLimit(job)) job.status = 'hard-limit';
+        else job.status = 'checkpointed';
+        job.updatedAt = new Date().toISOString(); await this.save(job); return checkpoint(job);
+      } catch (error) {
+        job.status = options.signal?.aborted ? 'checkpointed' : 'failed';
+        job.unresolvedWork = unique([...job.unresolvedWork, String(error?.message || error)]).slice(-32);
+        job.updatedAt = new Date().toISOString();
+        try {
+          await this.save(job);
+        } catch {}
+        throw error;
+      }
+    } finally {
+      this.runningJobIds.delete(id);
     }
   }
 
@@ -119,7 +126,24 @@ export class AgentJobManager {
     if (!job) throw new Error(`Unknown agent job: ${id}`);
     return job;
   }
-  async load(id) { const value = await this.persistence?.load?.(id); if (value?.version === CHECKPOINT_VERSION) { this.jobs.set(id, value); return value; } return null; }
+  async load(id) {
+    if (typeof id !== 'string' || !id) return null;
+    if (this.loadingPromises.has(id)) return this.loadingPromises.get(id);
+    const promise = (async () => {
+      const value = await this.persistence?.load?.(id);
+      if (value?.version === CHECKPOINT_VERSION) {
+        this.jobs.set(id, value);
+        return value;
+      }
+      return null;
+    })();
+    this.loadingPromises.set(id, promise);
+    try {
+      return await promise;
+    } finally {
+      this.loadingPromises.delete(id);
+    }
+  }
   async save(job) { await this.persistence?.save?.(checkpoint(job)); }
 }
 
