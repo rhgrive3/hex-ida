@@ -55,7 +55,7 @@ function fixture(sectionIndex, companion = null) {
   putDynamic(view, 7, 9, 24);             // DT_RELAENT
 
   let dynamicEntries = 9;
-  if (companion) {
+  if (companion !== null) {
     const shndxVa = companion === 'truncated'
       ? BASE + 0x7fen
       : BASE + BigInt(SHNDX_OFFSET);
