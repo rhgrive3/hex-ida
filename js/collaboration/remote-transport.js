@@ -166,6 +166,9 @@ export class RemoteCanonicalHttpTransport {
     });
   }
 
+  // Verification-only: authorizes the envelope proof locally. Performs no
+  // delivery I/O and never reports `sent`. Callers must not treat the
+  // returned `verified-and-authorized-for-channel-send` as delivery success.
   async send(envelope) {
     if (!this.verifyTransportProof(envelope?.transportProof, envelope)) throw new Error('remote-transport-unverified-envelope');
     return Object.freeze({ status:'verified-and-authorized-for-channel-send', envelopeId:envelope.envelopeId });
