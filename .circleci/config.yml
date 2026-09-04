@@ -27,43 +27,60 @@ jobs:
           paths:
             - universal-platform-benchmark.json
 
-  address-roundtrip-section:
+  address-null:
     docker: [{ image: cimg/node:22.23 }]
     resource_class: small
     steps:
       - checkout
       - attach_workspace: { at: . }
-      - run: node scripts/ci/circleci-audit-code-probe.mjs address-offset-roundtrip section
-
-  address-roundtrip-segment:
+      - run: node scripts/ci/circleci-audit-code-probe.mjs address-offset-roundtrip null
+  address-nonnull:
     docker: [{ image: cimg/node:22.23 }]
     resource_class: small
     steps:
       - checkout
       - attach_workspace: { at: . }
-      - run: node scripts/ci/circleci-audit-code-probe.mjs address-offset-roundtrip segment
-
-  offset-roundtrip-section:
+      - run: node scripts/ci/circleci-audit-code-probe.mjs address-offset-roundtrip nonnull
+  offset-null:
     docker: [{ image: cimg/node:22.23 }]
     resource_class: small
     steps:
       - checkout
       - attach_workspace: { at: . }
-      - run: node scripts/ci/circleci-audit-code-probe.mjs offset-address-roundtrip section
-
-  offset-roundtrip-segment:
+      - run: node scripts/ci/circleci-audit-code-probe.mjs offset-address-roundtrip null
+  offset-nonnull:
     docker: [{ image: cimg/node:22.23 }]
     resource_class: small
     steps:
       - checkout
       - attach_workspace: { at: . }
-      - run: node scripts/ci/circleci-audit-code-probe.mjs offset-address-roundtrip segment
+      - run: node scripts/ci/circleci-audit-code-probe.mjs offset-address-roundtrip nonnull
+  roundtrip-start:
+    docker: [{ image: cimg/node:22.23 }]
+    resource_class: small
+    steps:
+      - checkout
+      - attach_workspace: { at: . }
+      - run: |
+          node scripts/ci/circleci-audit-code-probe.mjs address-offset-roundtrip start ||
+          node scripts/ci/circleci-audit-code-probe.mjs offset-address-roundtrip start
+  roundtrip-end:
+    docker: [{ image: cimg/node:22.23 }]
+    resource_class: small
+    steps:
+      - checkout
+      - attach_workspace: { at: . }
+      - run: |
+          node scripts/ci/circleci-audit-code-probe.mjs address-offset-roundtrip end ||
+          node scripts/ci/circleci-audit-code-probe.mjs offset-address-roundtrip end
 
 workflows:
   probe:
     jobs:
       - universal-benchmark-generate
-      - address-roundtrip-section: { requires: [universal-benchmark-generate] }
-      - address-roundtrip-segment: { requires: [universal-benchmark-generate] }
-      - offset-roundtrip-section: { requires: [universal-benchmark-generate] }
-      - offset-roundtrip-segment: { requires: [universal-benchmark-generate] }
+      - address-null: { requires: [universal-benchmark-generate] }
+      - address-nonnull: { requires: [universal-benchmark-generate] }
+      - offset-null: { requires: [universal-benchmark-generate] }
+      - offset-nonnull: { requires: [universal-benchmark-generate] }
+      - roundtrip-start: { requires: [universal-benchmark-generate] }
+      - roundtrip-end: { requires: [universal-benchmark-generate] }
