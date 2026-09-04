@@ -262,6 +262,15 @@ function parseV0Type(str, state, depth = 0) {
     if (len === null) return null;
     return `[${elemType}; ${len}]`;
   }
+  if (c === 'B') {
+    state.pos++;
+    const br = parseV0Base62(str, state.pos);
+    if (!br) return null;
+    if (br.value < 0 || br.value >= state.pos - 1) return null;
+    state.pos = br.nextPos;
+    const refState = { pos: br.value };
+    return parseV0Type(str, refState, depth + 1);
+  }
   return parseV0Path(str, state, depth + 1);
 }
 
@@ -284,14 +293,20 @@ function parseV0Path(str, state, depth = 0) {
     const ident = parseV0Identifier(str, state.pos);
     if (!ident) return parent;
     state.pos = ident.nextPos;
-    return `${parent}::${ident.identifier}`;
+    let name = ident.identifier;
+    if (!name) {
+      if (ns === 'C') name = '{closure}';
+      else if (ns === 'S') name = '{shim}';
+      else name = `{${ns}}`;
+    }
+    return `${parent}::${name}`;
   }
 
   if (tag === 'M') {
     const implPath = parseV0Path(str, state, depth + 1);
     const typeName = parseV0Type(str, state, depth + 1);
     if (implPath && typeName) return `<${implPath}::${typeName}>`;
-    return `<${typeName || implPath || 'impl'}>`;
+    return null;
   }
 
   if (tag === 'X') {
