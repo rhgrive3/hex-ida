@@ -299,34 +299,48 @@ export function applyDebugTypesToGraph(graph, result, page) {
   const applied = { hard: 0, soft: 0, skipped: 0 };
   for (const record of page.records ?? []) {
     if (record.kind !== 'type') { applied.skipped += 1; continue; }
-    const claim = {
-      layer: record.descriptor?.layer ?? 'nominal',
-      entityId: record.entityId,
-      descriptor: record.descriptor?.claim ?? record.descriptor,
-    };
-    if (isDebugRecordAuthoritative(result, record)) {
-      graph.addHardConstraint({
-        kind: 'debug-type',
-        origin: 'debug-matched',
-        claim,
-        evidenceIds: record.evidenceIds,
-        providerVersion: record.providerVersion,
-        buildIdentity: record.buildIdentity,
+    const claims = [
+      {
+        layer: record.descriptor?.layer ?? 'nominal',
+        entityId: record.entityId,
+        descriptor: record.descriptor?.claim ?? record.descriptor,
+      },
+    ];
+    if (record.descriptor?.machine != null && typeof record.descriptor.machine === 'object') {
+      claims.push({
+        layer: 'machine',
+        entityId: record.entityId,
+        descriptor: record.descriptor.machine,
       });
-      applied.hard += 1;
+    }
+
+    if (isDebugRecordAuthoritative(result, record)) {
+      for (const claim of claims) {
+        graph.addHardConstraint({
+          kind: 'debug-type',
+          origin: 'debug-matched',
+          claim,
+          evidenceIds: record.evidenceIds,
+          providerVersion: record.providerVersion,
+          buildIdentity: record.buildIdentity,
+        });
+        applied.hard += 1;
+      }
       continue;
     }
     // Unmatched or uncovered debug data is still information — it just has no
     // authority. It enters as soft evidence so it can never overrule a hard
     // constraint or reach certainty on its own.
-    graph.addSoftEvidence({
-      kind: 'signature-candidate',
-      origin: 'debug-unmatched',
-      weight: 0.3,
-      claim,
-      evidenceIds: record.evidenceIds,
-    });
-    applied.soft += 1;
+    for (const claim of claims) {
+      graph.addSoftEvidence({
+        kind: 'signature-candidate',
+        origin: 'debug-unmatched',
+        weight: 0.3,
+        claim,
+        evidenceIds: record.evidenceIds,
+      });
+      applied.soft += 1;
+    }
   }
   return applied;
 }
