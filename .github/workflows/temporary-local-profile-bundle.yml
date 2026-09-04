@@ -33,12 +33,11 @@ jobs:
           tar \
             --exclude=.git \
             --exclude=node_modules \
-            --exclude=local-profile-bundle.tgz \
-            -czf local-profile-bundle.tgz .
+            -czf "$RUNNER_TEMP/local-profile-bundle.tgz" .
       - name: Upload profile bundle
         uses: actions/upload-artifact@v4
         with:
           name: local-profile-bundle
-          path: local-profile-bundle.tgz
+          path: ${{ runner.temp }}/local-profile-bundle.tgz
           if-no-files-found: error
           retention-days: 1
