@@ -12,14 +12,14 @@ const ACCESS_CONTROLS = [
   'CPTR_EL3.TFP',
 ];
 
-function lift(mnemonic, operands, id, parse = parseArm64Operands) {
+function lift(mnemonic, operands, id, parse = parseArm64Operands, context = {}) {
   return liftArm64MachineEffects({
     instructionId:id,
     mnemonic,
     ops:parse(operands),
     mode:'a64',
     origin:{ instructionIds:[id] },
-  });
+  }, context);
 }
 
 function fpAdvSimdAccessFault(bundle) {
@@ -43,10 +43,40 @@ for (const [mnemonic, operands] of [
   assert.equal(bundle.metadata.family, 'arm64-fp', `${mnemonic}:wrong-family`);
   const fault = fpAdvSimdAccessFault(bundle);
   assert.ok(fault, `${mnemonic}:missing-FP-AdvSIMD-access-trap`);
+  assert.equal(fault.condition.resolution, 'unknown');
   assert.equal(fault.detail.architecturalCheck, 'CheckFPAdvSIMDEnabled');
   assert.deepEqual(fault.detail.controls, ACCESS_CONTROLS);
   assert.doesNotThrow(() => validateMachineEffectBundle(bundle), `${mnemonic}:invalid-bundle`);
 }
+
+const trapContext = {
+  fpAdvSimdAccess:{
+    state:'trap',
+    source:'arm64-access-control-proof',
+    evidence:{ currentEL:'EL0', CPACR_EL1:{ FPEN:0 } },
+  },
+};
+const trapped = lift('fadd', 's0, s1, s2', 'issue-4201-resolved-trap', parseArm64Operands, trapContext);
+const resolvedTrap = fpAdvSimdAccessFault(trapped);
+assert.ok(resolvedTrap, 'explicit trap authority must retain the access fault');
+assert.equal(resolvedTrap.condition.resolution, 'trap');
+assert.equal(resolvedTrap.condition.source, 'arm64-access-control-proof');
+assert.deepEqual(resolvedTrap.condition.evidence, trapContext.fpAdvSimdAccess.evidence);
+assert.equal(trapped.metadata.fpAdvSimdAccessCheck, 'trap-by-explicit-authority');
+assert.doesNotThrow(() => validateMachineEffectBundle(trapped));
+
+const allowed = lift('fadd', 's0, s1, s2', 'issue-4201-resolved-allowed', parseArm64Operands, {
+  fpAdvSimdAccess:{ state:'allowed', source:'arm64-access-control-proof', evidence:{ currentEL:'EL0', effectiveAccess:'enabled' } },
+});
+assert.equal(fpAdvSimdAccessFault(allowed), undefined, 'explicit allowed authority may remove the access trap');
+assert.equal(allowed.metadata.fpAdvSimdAccessCheck, 'allowed-by-explicit-authority');
+assert.doesNotThrow(() => validateMachineEffectBundle(allowed));
+
+const malformedAuthority = lift('fadd', 's0, s1, s2', 'issue-4201-malformed-authority', parseArm64Operands, {
+  fpAdvSimdAccess:'allowed',
+});
+assert.ok(fpAdvSimdAccessFault(malformedAuthority), 'non-structured authority must fail closed to an unresolved trap possibility');
+assert.equal(fpAdvSimdAccessFault(malformedAuthority).condition.resolution, 'unknown');
 
 const vector = lift('add', 'v0.4s, v1.4s, v2.4s', 'issue-4201-vector-add', parseSimdOperands);
 assert.ok(vector, 'vector-add:missing-bundle');
