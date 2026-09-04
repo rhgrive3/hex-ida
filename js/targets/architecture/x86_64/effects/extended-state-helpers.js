@@ -16,6 +16,18 @@ export const X87_FAMILIES = new Set([
   'fxsave','fxsave64','fxrstor','fxrstor64',
   'fninit','finit','fnclex','fclex','fnop','fdisi8087_nop','feni8087_nop','fsetpm',
 ]);
+export function isX87Instruction(instruction, family = null) {
+  if (instruction?.detail?.flagsKind === 'fpu-flags') return true;
+  const fam = String(family || instruction?.instructionFamily || instruction?.opcodeName || instruction?.mnemonic || '').toLowerCase();
+  if (X87_FAMILIES.has(fam)) return true;
+  const groups = instruction?.detail?.groups;
+  if (Array.isArray(groups)) {
+    for (const group of groups) {
+      if (String(group?.name || '').toLowerCase() === 'fpu') return true;
+    }
+  }
+  return false;
+}
 export const FP_EVEX_BASES = new Set(['movss','movsd','addss','addsd','subss','subsd','mulss','mulsd','divss','divsd','sqrtss','sqrtsd','ucomiss','ucomisd','comiss','comisd','addps','addpd','subps','subpd','mulps','mulpd','divps','divpd','cvtss2sd','cvtsd2ss','cvtsi2ss','cvtsi2sd','cvttss2si','cvttsd2si']);
 export const SIMD_EVEX_BASES = new Set(['movaps','movups','movapd','movupd','movdqa','movdqu','movd','movq','andps','andpd','pand','orps','orpd','por','xorps','xorpd','pxor','paddb','paddw','paddd','paddq','psubb','psubw','psubd','psubq','pcmpeqb','pcmpeqw','pcmpeqd','pcmpgtb','pcmpgtw','pcmpgtd','psllw','pslld','psllq','psrlw','psrld','psrlq','psraw','psrad','pshufd','punpckldq','pandn']);
 export const X87_STATE = Object.freeze(['x87-stack','fpcw','fpsw','fptw','fop','fip','fdp']);

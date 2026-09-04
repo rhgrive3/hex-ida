@@ -3,6 +3,7 @@ import {
   createMachineEffectBundle,
   createMachineOperation,
 } from '../../../../semantics/effects/index.js';
+import { isX87Instruction } from './extended-state-helpers.js';
 
 const CAPSTONE_ABI = 'capstone-5-wasm32-x86-detail/v1';
 const DECODER_SEMANTIC = 'capstone-5-x86-structured-v2';
@@ -39,7 +40,6 @@ const IO_WRITE = /^(?:out|outs|outsb|outsd|outsw)$/;
 const STACK_READ = new Map([['popf',16],['popfq',64]]);
 const STACK_WRITE = new Map([['pushf',16],['pushfq',64]]);
 const BIT_STRING = new Set(['bt','btc','btr','bts']);
-const X87_FAMILY = /^f(?!s|x)/;
 
 function bit(mask, position) {
   return position != null && (mask & (1n << position)) !== 0n;
@@ -82,7 +82,7 @@ function flagSets(instruction, family) {
   const raw = BigInt(instruction?.detail?.eflags ?? 0n);
   let nondeterministic = false;
 
-  if (X87_FAMILY.test(family)) {
+  if (isX87Instruction(instruction, family)) {
     for (const [name, modify, reset, set, undef, test] of FPU_FLAG_BITS) {
       if (bit(raw, test)) reads.add(`fpsw.${name.toLowerCase()}`);
       if (bit(raw, modify) || bit(raw, reset) || bit(raw, set) || bit(raw, undef)) writes.add(`fpsw.${name.toLowerCase()}`);
@@ -210,8 +210,8 @@ function memorySummary(accesses) {
   return accesses.length ? { scope:'accesses', accesses } : { scope:'none' };
 }
 
-function hiddenState(ownerId, family, registersRead, registersWritten) {
-  if (X87_FAMILY.test(family)) {
+function hiddenState(ownerId, family, registersRead, registersWritten, instruction) {
+  if (isX87Instruction(instruction, family)) {
     registersRead.add('x86.x87.environment');
     registersWritten.add('x86.x87.environment');
   }
@@ -274,9 +274,18 @@ export function closeTrustedX86Partial(instruction, ownerId, partial, context = 
 
   const registers = decoderRegisterSets(instruction);
   const flags = flagSets(instruction, family);
-  for (const value of flags.reads) registers.reads.add(value);
-  for (const value of flags.writes) registers.writes.add(value);
-  hiddenState(ownerId, family, registers.reads, registers.writes);
+  const isX87 = isX87Instruction(instruction, family);
+  for (const value of flags.reads) {
+    if (isX87 && value.startsWith('rflags.')) return partial;
+    if (!isX87 && value.startsWith('fpsw.')) return partial;
+    registers.reads.add(value);
+  }
+  for (const value of flags.writes) {
+    if (isX87 && value.startsWith('rflags.')) return partial;
+    if (!isX87 && value.startsWith('fpsw.')) return partial;
+    registers.writes.add(value);
+  }
+  hiddenState(ownerId, family, registers.reads, registers.writes, instruction);
 
   const determinism = NONDETERMINISTIC.has(family) || flags.nondeterministic ? 'nondeterministic' : 'input-dependent';
   const options = context.machineEffectsOptions ?? context.options ?? {};

@@ -200,6 +200,8 @@
     const encoding = x86 + ABI.encoding;
     const implicitReads = implicitRegisters(M, handle, detailPointer, 0, 40, 20);
     const implicitWrites = implicitRegisters(M, handle, detailPointer, 42, 82, 20);
+    const groupList = groups(M, handle, detailPointer);
+    const flagsKind = groupList.some((group) => String(group?.name || '').toLowerCase() === 'fpu') ? 'fpu-flags' : 'eflags';
     const detail = Object.freeze({
       abiContractVersion:ABI.contractVersion,
       prefixes:Object.freeze({ legacy:legacyPrefixes, rex:u8(M, x86 + 8) || null, vector:vectorPrefix(rawBytes) }),
@@ -212,13 +214,14 @@
       sibScale:i32(M, x86 + 28),
       sibBase:capstoneString(M, 'cs_reg_name', handle, u32(M, x86 + 32)),
       eflags:i64(M, x86 + 56),
+      flagsKind,
       operandCount,
       operands:Object.freeze(operands),
       implicitReads:implicitReads.names,
       implicitReadCodes:implicitReads.codes,
       implicitWrites:implicitWrites.names,
       implicitWriteCodes:implicitWrites.codes,
-      groups:Object.freeze(groups(M, handle, detailPointer)),
+      groups:Object.freeze(groupList),
       conditionCode:conditionCode(opcodeName),
       encodingOffsets:Object.freeze({
         modrmOffset:u8(M, encoding),
