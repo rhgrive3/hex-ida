@@ -2,6 +2,7 @@ import { ByteView } from './reader.js';
 import { BinaryImage, functionSeed } from './model.js';
 import { parseChainedImports, parseChainedBindingSites, parseClassicBindings, parseExportTrie } from './macho-dyld.js';
 import { createMachOMetadataBudget, ensureMachOMetadataBudget, markMachOMetadataPartial } from './macho-budget.js';
+import { validateFatSlice, validateFatContainer, probePastEndArm64SliceSync, parseInnerMachOHeader } from './macho-fat.js';
 
 const LC_SEGMENT = 0x1;
 const LC_SYMTAB = 0x2;
@@ -40,7 +41,7 @@ export function parseMachO(input, opts = {}) {
   const kind = machoKind(bytes);
   if (!kind) throw new Error('not a Mach-O file');
   if (kind.fat) {
-    const selected = selectFatSlice(bytes, kind, opts.arch);
+    const selected = selectFatSlice(bytes, kind, opts.arch, opts);
     if (!selected) throw new Error('Mach-O universal binary has no readable slice');
     const sub = bytes.subarray(Number(selected.offset), Number(selected.offset + selected.size));
     const image = parseThin(sub, { ...opts, containerOffset: selected.offset });
@@ -451,25 +452,49 @@ function machoKind(bytes) {
   return null;
 }
 
-function selectFatSlice(bytes, kind, preferredArch) {
+function selectFatSlice(bytes, kind, preferredArch, opts = {}) {
   const r = new ByteView(bytes, { littleEndian: kind.littleEndian });
   const n = r.u32(4);
   if (n > 128) throw new Error(`unreasonable Mach-O slice count ${n}`);
+  const entrySize = kind.bits === 64 ? 32 : 20;
+  const tableSize = n * entrySize;
+  if (8 + tableSize > bytes.length) throw new Error('Mach-O universal slice table is truncated');
   const all = [];
   let p = 8;
   for (let i = 0; i < n; i++) {
     if (kind.bits === 64) {
-      const cpu = r.i32(p), subtype = r.i32(p + 4), offset = r.u64(p + 8), size = r.u64(p + 16);
-      all.push({ cpu, subtype, offset, size }); p += 32;
+      const cpu = r.i32(p), subtype = r.i32(p + 4), offset = r.u64(p + 8), size = r.u64(p + 16), align = r.u32(p + 24);
+      all.push({ cpu, subtype, offset, size, align }); p += 32;
     } else {
-      const cpu = r.i32(p), subtype = r.i32(p + 4), offset = BigInt(r.u32(p + 8)), size = BigInt(r.u32(p + 12));
-      all.push({ cpu, subtype, offset, size }); p += 20;
+      const cpu = r.i32(p), subtype = r.i32(p + 4), offset = BigInt(r.u32(p + 8)), size = BigInt(r.u32(p + 12)), align = r.u32(p + 16);
+      all.push({ cpu, subtype, offset, size, align }); p += 20;
     }
   }
-  const valid = all.filter((s) => s.offset >= 0n && s.size > 0n && s.offset + s.size <= BigInt(bytes.length));
-  const want = preferredArch ? valid.find((s) => sliceArchName(s) === preferredArch) : null;
+
+  // #6317: probe past-end arm64 compatibility slice for FAT32
+  if (kind.bits === 32) {
+    const compat = probePastEndArm64SliceSync(r, n, bytes.length, (off, len) => {
+      const start = Number(off);
+      if (start < 0 || start + len > bytes.length) return null;
+      return bytes.subarray(start, start + len);
+    }, all);
+    if (compat) all.push(compat);
+  }
+
+  // #6316: validate each slice
+  for (const s of all) {
+    const start = Number(s.offset);
+    const headerBytes = (start >= 0 && start + 32 <= bytes.length) ? bytes.subarray(start, start + 32) : null;
+    const inner = parseInnerMachOHeader(headerBytes);
+    validateFatSlice(s, inner, bytes.length, opts);
+  }
+
+  // #6314: validate container (duplicate architectures and slice range overlap)
+  validateFatContainer(all);
+
+  const want = preferredArch ? all.find((s) => sliceArchName(s) === preferredArch) : null;
   if (preferredArch && !want) throw new Error(`requested Mach-O architecture ${preferredArch} is not present in the universal binary`);
-  const chosen = want || valid.find((s) => sliceArchName(s) === 'arm64e') || valid.find((s) => sliceArchName(s) === 'arm64') || valid.find((s) => sliceArchName(s) === 'x86_64') || valid[0];
+  const chosen = want || all.find((s) => sliceArchName(s) === 'arm64e') || all.find((s) => sliceArchName(s) === 'arm64') || all.find((s) => sliceArchName(s) === 'x86_64') || all[0];
   return chosen ? { ...chosen, all } : null;
 }
 
