@@ -538,6 +538,13 @@ function describeTypeIndex(index, types, depth = 0) {
   return { name: 'unknown', complete: false };
 }
 
+function expectedCodeViewIdentity(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  if (typeof value.guid !== 'string' || !value.guid.trim()) return null;
+  if (typeof value.age !== 'number' || !Number.isSafeInteger(value.age) || value.age < 0) return null;
+  return `${value.guid.trim().toUpperCase()}/${value.age}`;
+}
+
 export class PdbDebugInfoProvider extends DebugInfoProvider {
   constructor() {
     super({ id: PDB_PROVIDER_ID, version: PDB_PROVIDER_VERSION, ecosystem: 'pdb' });
@@ -575,7 +582,7 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
           verdict: 'companion-missing',
           providerId: this.id, providerVersion: this.version,
           method: 'codeview-guid-age',
-          expected: expectedCodeView ? `${expectedCodeView.guid}/${expectedCodeView.age}` : null,
+          expected: expectedCodeViewIdentity(expectedCodeView),
           observed: null,
           detail: expectedCodeView?.path
             ? `the binary references a PDB but its bytes were not supplied`
@@ -601,13 +608,17 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
 
     const info = parsePdbInfoStream(msf.streams[1].read());
     const observed = info ? `${info.guid}/${info.age}` : null;
-    const expected = expectedCodeView ? `${String(expectedCodeView.guid).toUpperCase()}/${expectedCodeView.age}` : null;
+    const expected = expectedCodeViewIdentity(expectedCodeView);
 
     let verdict;
     let detail = null;
     if (expected == null || observed == null) {
       verdict = 'identity-unavailable';
-      detail = expected == null ? 'the binary carries no CodeView debug directory entry' : 'the PDB has no info stream';
+      detail = expected == null
+        ? (expectedCodeView == null
+          ? 'the binary carries no CodeView debug directory entry'
+          : 'the binary CodeView GUID/age is malformed')
+        : 'the PDB has no info stream';
     } else if (expected === observed) {
       verdict = 'matched-authoritative';
     } else {
