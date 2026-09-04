@@ -14,7 +14,8 @@ formula evidence issue. Update it at every branch, PR, or merge stage.
 - Branch: `fix/issues-comprehend-formula-6113`
 - Candidate base: `origin/main` at `f00154dcb9b2234cbacb4c6a3c2186d00c8a4b3a`
 - Implementation head: `fd9cc5025eb66445e90e23cf3b1167a7bd384f48`
-- Pull request: pending
+- Current remote head: `origin/fix/issues-comprehend-formula-6113` at `2a731e15de0a9ddb8b5b865e814544b6aaea6f63`
+- Pull request: #6483 — https://github.com/rhgrive3/hex-ida/pull/6483
 
 ## Stages
 
@@ -23,8 +24,9 @@ formula evidence issue. Update it at every branch, PR, or merge stage.
 - [x] Reproduced `formulaOf(['攻撃力×120÷100'])` coercion on the candidate base.
 - [x] Implemented primitive-string validation and a `matchFormulas()` regression.
 - [x] Focused regression and lint passed locally.
-- [ ] Phase 4 candidate proof.
-- [ ] Create one owner PR for #6113 and verify exact-head checks.
+- [x] Candidate tree `65d63d8cbc4a2eb6e285c02ac68e30d574f90ebc` passed focused regression and lint; Phase 4 reached 33-file PASS before the known pristine-main ownership-contract failure.
+- [x] Created one owner PR for #6113: #6483.
+- [ ] Re-run exact-head checks after this checkpoint update and inspect required PR checks.
 - [ ] Merge only after exact-head evidence is green; otherwise record the blocker here and on the board.
 
 ## Resume procedure
