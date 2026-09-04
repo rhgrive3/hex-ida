@@ -65,10 +65,18 @@ function preflightPhiLinkBudget(definitions, maximum) {
     const definition = definitions[index];
     if (!definition || typeof definition !== 'object' || Array.isArray(definition)) continue;
     const incoming = definition.incoming;
-    incomingSnapshots[index] = incoming;
-    if (!Array.isArray(incoming)) continue;
-    if (incoming.length > maximum - used) fail('semantic-ssa-budget-exceeded-maxLinks');
-    used += incoming.length;
+    if (!Array.isArray(incoming)) {
+      incomingSnapshots[index] = incoming;
+      continue;
+    }
+    const length = incoming.length;
+    if (!Number.isSafeInteger(length) || length < 0) fail('semantic-ssa-invalid-phi-incoming');
+    if (length > maximum - used) fail('semantic-ssa-budget-exceeded-maxLinks');
+    // Snapshot exactly the bounded entry count charged above. Later getters on
+    // the definition may mutate the caller-owned array, but normalization must
+    // never observe more PHI links than maxLinks preflight accounted for.
+    incomingSnapshots[index] = Array.from({ length }, (_, itemIndex) => incoming[itemIndex]);
+    used += length;
   }
   return { used, incomingSnapshots };
 }
