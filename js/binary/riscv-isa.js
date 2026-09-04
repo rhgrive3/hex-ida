@@ -1,5 +1,10 @@
 const MAX_ATTRIBUTE_BYTES = 1024 * 1024;
 
+// Current public RISC-V attribute tags known to this parser (psABI §Attributes).
+// Unknown tags with (tag % 128) < 64 are mandatory and must fail the parse;
+// unknown tags with (tag % 128) >= 64 may be skipped by odd/even value shape.
+const KNOWN_RISCV_ATTRIBUTE_TAGS = new Set([4, 5, 6, 8, 10, 12, 14, 16]);
+
 function bytesOf(input) {
   if (input instanceof Uint8Array) return input;
   if (input instanceof ArrayBuffer) return new Uint8Array(input);
@@ -108,6 +113,8 @@ export function parseRiscvAttributes(input, options = {}) {
             const normalized = normalizeRiscvIsaString(arch.value);
             if (normalized) return Object.freeze({ ...normalized, evidence:'elf-attribute' });
             attributeCursor = arch.next;
+          } else if (!KNOWN_RISCV_ATTRIBUTE_TAGS.has(attr.value) && (attr.value % 128) < 64) {
+            return null;
           } else if ((attr.value & 1) === 1) {
             const stringValue = readNtbs(bytes, attributeCursor, subsubEnd);
             if (!stringValue) return null;
