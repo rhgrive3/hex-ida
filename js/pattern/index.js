@@ -77,10 +77,15 @@ function validateType(type, depth = 0, names = new Set()) {
   if (type.kind === 'named') { if (!names.has(type.name)) fail(`pattern-type-unknown:${type.name}`); return; }
   if (type.kind === 'struct') { const fields = list(type.fields); if (!fields.length || fields.length > 10_000) fail('pattern-struct-fields-invalid'); for (const field of fields) { if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(field.name)) fail('pattern-field-name-invalid'); validateType(field.type, depth + 1, names); if (field.when) validateExpression(field.when); } return; }
   if (type.kind === 'array') {
-    if (type.count == null || typeof type.count === 'boolean') fail('pattern-array-count-invalid');
-    if (typeof type.count === 'object') validateExpression(type.count);
-    if (typeof type.count === 'number' && (!Number.isSafeInteger(type.count) || type.count < 0)) fail('pattern-array-count-invalid');
-    if (typeof type.count === 'string' && !/^[A-Za-z_][A-Za-z0-9_.]*$/.test(type.count)) fail('pattern-array-count-ref-invalid');
+    if (typeof type.count === 'number') {
+      if (!Number.isSafeInteger(type.count) || type.count < 0) fail('pattern-array-count-invalid');
+    } else if (typeof type.count === 'string') {
+      if (!/^[A-Za-z_][A-Za-z0-9_.]*$/.test(type.count)) fail('pattern-array-count-ref-invalid');
+    } else if (type.count && typeof type.count === 'object' && !Array.isArray(type.count)) {
+      validateExpression(type.count);
+    } else {
+      fail('pattern-array-count-invalid');
+    }
     validateType(type.element, depth + 1, names); return;
   }
   if (type.kind === 'pointer' || type.kind === 'offset') { if (typeof type.space !== 'string' || !type.space) fail('pattern-address-space-required'); validateType(type.target, depth + 1, names); return; }
@@ -101,11 +106,37 @@ export function typeCheckPattern(parsed) {
   return deepFreeze(input);
 }
 
+const COMPILED_PATTERNS = new WeakSet();
+
+function validateCompiledPattern(pattern) {
+  if (pattern && typeof pattern === 'object' && COMPILED_PATTERNS.has(pattern)) return pattern;
+  if (!pattern || typeof pattern !== 'object' || !pattern.ast || !pattern.patternId) {
+    fail('pattern-compiled-invalid');
+  }
+  if (pattern.languageVersion !== PATTERN_LANGUAGE_VERSION) {
+    fail('pattern-compiled-language-version-unsupported');
+  }
+  typeCheckPattern({ ast: pattern.ast });
+  const sourceHash = stableDigest(pattern.ast);
+  if (pattern.sourceHash !== sourceHash) {
+    fail('pattern-compiled-source-hash-mismatch');
+  }
+  const compileOptions = pattern.compileOptions || {};
+  const expectedId = `pattern:${stableDigest({ sourceHash, compileOptions })}`;
+  if (pattern.patternId !== expectedId) {
+    fail('pattern-compiled-id-mismatch');
+  }
+  COMPILED_PATTERNS.add(pattern);
+  return pattern;
+}
+
 export function compilePattern(source, options = {}) {
   const parsed = typeCheckPattern(parsePattern(source));
   const sourceHash = stableDigest(parsed.ast);
   const compileOptions = { targetAddressSpace: options.targetAddressSpace || 'file', semanticVersion: PATTERN_LANGUAGE_VERSION, options: options.compileOptions || {} };
-  return deepFreeze({ languageVersion: PATTERN_LANGUAGE_VERSION, sourceHash, patternId: `pattern:${stableDigest({ sourceHash, compileOptions })}`, ast: parsed.ast, snapshotId: options.snapshotId || null, compileOptions });
+  const compiled = deepFreeze({ languageVersion: PATTERN_LANGUAGE_VERSION, sourceHash, patternId: `pattern:${stableDigest({ sourceHash, compileOptions })}`, ast: parsed.ast, snapshotId: options.snapshotId || null, compileOptions });
+  COMPILED_PATTERNS.add(compiled);
+  return compiled;
 }
 
 function toBytes(value) {
@@ -135,8 +166,13 @@ function evaluateExpression(expression, values) {
   if (expression.op === 'not') return !evaluateExpression(expression.arg, values);
   if (expression.op === 'and') return expression.args.every((item) => evaluateExpression(item, values));
   if (expression.op === 'or') return expression.args.some((item) => evaluateExpression(item, values));
-  const left = evaluateExpression(expression.left, values), right = evaluateExpression(expression.right, values);
-  if (expression.op === 'eq') return left === right; if (expression.op === 'ne') return left !== right; if (expression.op === 'lt') return left < right; if (expression.op === 'lte') return left <= right; if (expression.op === 'gt') return left > right; return left >= right;
+  if (expression.op === 'eq') return left === right;
+  if (expression.op === 'ne') return left !== right;
+  if (expression.op === 'lt') return left < right;
+  if (expression.op === 'lte') return left <= right;
+  if (expression.op === 'gt') return left > right;
+  if (expression.op === 'gte') return left >= right;
+  fail('pattern-expression-op-unsupported');
 }
 
 function staticSize(type, ctx, values = {}) {
@@ -198,7 +234,7 @@ function readType(type, offset, space, ctx, values, depth = 0) {
 }
 
 export function evaluatePattern(compiled, byteSource, options = {}) {
-  const pattern = compiled?.patternId ? compiled : compilePattern(compiled, options);
+  const pattern = compiled?.patternId ? validateCompiledPattern(compiled) : compilePattern(compiled, options);
   const source = createSource(byteSource, options);
   if (pattern.snapshotId && pattern.snapshotId !== source.snapshotId) throw new Error('pattern-source-snapshot-mismatch');
   const budget = options.budget || createResourceBudget({ maxBytes: options.maxBytes || 4 * 1024 * 1024, maxNodes: options.maxNodes || 50_000, maxEntries: options.maxEntries || 50_000, maxDepth: options.maxDepth || 64, signal: options.signal });
