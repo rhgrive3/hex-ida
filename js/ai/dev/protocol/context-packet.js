@@ -54,7 +54,7 @@ export function createDevContextPacket(input = {}) {
     role: text(input.role, MAX_SHORT) || null,
     objective,
     successCriteria: list(input.successCriteria, (value) => text(value, MAX_TEXT)),
-    scope: text(input.scope, MAX_TEXT) || null,
+    scope: normalizeScope(input.scope),
     constraints: list(input.constraints, (value) => text(value, MAX_TEXT)),
     authoritativeFacts: list(input.authoritativeFacts, authoritativeFact),
     dependencyResults: list(input.dependencyResults, dependencyResult),
@@ -228,6 +228,30 @@ function positiveInteger(value) {
   if (!Number.isFinite(number) || number < 0) return null;
   return Math.floor(number);
 }
+const ANALYSIS_SCOPE_INITIALS = Object.freeze(['none', 'selection', 'function', 'neighborhood', 'binary', 'project', 'runtime']);
+const ANALYSIS_SCOPE_EXPANSION_POLICIES = Object.freeze(['locked', 'auto', 'agent']);
+
+function normalizeScope(value) {
+  if (value == null) return null;
+  if (typeof value === 'object') {
+    if (!plainRecord(value)) throw new TypeError('ContextPacket scope object must be a plain object.');
+    const initial = String(value.initial || '').toLowerCase();
+    const expansionPolicy = String(value.expansionPolicy || '').toLowerCase();
+    if (!ANALYSIS_SCOPE_INITIALS.includes(initial)) {
+      throw new TypeError(`Unsupported analysis scope: ${value.initial}`);
+    }
+    if (!ANALYSIS_SCOPE_EXPANSION_POLICIES.includes(expansionPolicy)) {
+      throw new TypeError(`Unsupported analysis scope expansion policy: ${value.expansionPolicy}`);
+    }
+    return Object.freeze({ initial, expansionPolicy });
+  }
+  if (typeof value === 'string') {
+    const string = value.trim().slice(0, MAX_TEXT);
+    return string || null;
+  }
+  throw new TypeError('ContextPacket scope must be a string or an analysis scope object.');
+}
+
 function text(value, max) {
   if (value == null) return '';
   const string = typeof value === 'string' ? value : String(value);
@@ -251,6 +275,7 @@ function plainRecord(value) {
   return proto === Object.prototype || proto === null;
 }
 function freezeDeep(value) {
+  if (value && typeof value === 'object' && Object.isFrozen(value)) return value;
   if (Array.isArray(value)) return Object.freeze(value.map(freezeDeep));
   if (value && typeof value === 'object') {
     for (const key of Object.keys(value)) value[key] = freezeDeep(value[key]);
