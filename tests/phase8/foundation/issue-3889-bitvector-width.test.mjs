@@ -73,6 +73,14 @@ test('issue #3889: extension and field helpers do not launder malformed widths',
   assert.equal(insertField(value, { bits: '8', value: 1n }, 0), null);
   assert.equal(insertField({ bits: '8', value: 0n }, value, 0), null);
 
+  for (const bits of ['8', [8]]) {
+    const malformedSource = { bits, value: 0xffn };
+    assert.equal(truncate(malformedSource, 8), null);
+    assert.equal(zeroExtend(malformedSource, 16), null);
+    assert.equal(signExtend(malformedSource, 16), null);
+    assert.equal(extractField(malformedSource, 0, 8), null);
+  }
+
   assert.deepEqual(truncate(value, 8), value);
   assert.deepEqual(zeroExtend(value, 16), bitvector(0xffn, 16));
   assert.deepEqual(signExtend(value, 16), bitvector(0xffffn, 16));
