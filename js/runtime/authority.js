@@ -92,6 +92,41 @@ function clone(value) {
   return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, clone(item)]));
 }
 
+// Canonical observations must stay immutable through their public reference.
+// deepFreeze() intentionally skips ArrayBuffer/views (Object.freeze cannot
+// seal their elements), so binary payloads are normalized to frozen JSON-safe
+// byte arrays here. jsonSafe() already maps both representations to the same
+// digest input, so the observationId is stable across the conversion (#6214).
+function sealPayload(value, seen = new WeakSet()) {
+  if (value == null || typeof value !== 'object') return value;
+  if (value instanceof ArrayBuffer) return Object.freeze(Array.from(new Uint8Array(value)));
+  if (ArrayBuffer.isView(value)) {
+    return Object.freeze(Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength)));
+  }
+  if (seen.has(value)) return value;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    for (let index = 0; index < value.length; index++) value[index] = sealPayload(value[index], seen);
+    return value;
+  }
+  if (value instanceof Map) {
+    const sealed = new Map();
+    for (const [key, item] of value) sealed.set(sealPayload(key, seen), sealPayload(item, seen));
+    return sealed;
+  }
+  if (value instanceof Set) {
+    const sealed = new Set();
+    for (const item of value) sealed.add(sealPayload(item, seen));
+    return sealed;
+  }
+  const proto = Object.getPrototypeOf(value);
+  if (proto === Object.prototype || proto === null) {
+    for (const key of Object.keys(value)) value[key] = sealPayload(value[key], seen);
+    return value;
+  }
+  return value;
+}
+
 function capabilityList(value) {
   if (!Array.isArray(value)) return [];
   const normalized = value.map((capability) => {
@@ -222,6 +257,7 @@ export function createRuntimeObservation(input = {}) {
   const binding = canonicalBinding(input.binding || input);
   const sequence = uint(input.sequence, 'runtime-observation-sequence-invalid');
   const observedAt = required(input.observedAt ?? input.timestamp, 'runtime-observation-timestamp-required');
+  const sealedPayload = sealPayload(clone(input.payload ?? null));
   const observation = {
     schemaVersion: RUNTIME_OBSERVATION_SCHEMA,
     bindingId: binding.bindingId,
@@ -245,7 +281,7 @@ export function createRuntimeObservation(input = {}) {
     sequence,
     observedAt,
     kind: required(input.kind ?? 'observation', 'runtime-observation-kind-required'),
-    payload: clone(input.payload ?? null),
+    payload: sealedPayload,
     authority: 'runtime-evidence',
   };
   return deepFreeze({ ...observation, observationId: observationIdentity(observation) });
@@ -282,7 +318,16 @@ export class RuntimeAuthorityTracker {
     if (this.closed) return Object.freeze({ status: 'rejected', reason: 'runtime-tracker-closed' });
     let observation;
     try {
-      observation = input?.schemaVersion === RUNTIME_OBSERVATION_SCHEMA ? input : createRuntimeObservation({ ...input, binding: this.binding });
+      if (input?.schemaVersion === RUNTIME_OBSERVATION_SCHEMA) {
+        // Never retain a caller-owned reference: clone and seal binary payloads
+        // so later mutations through the submission reference cannot invalidate
+        // the ledger entry (#6214; cf. #5686/#4408 for the reference itself).
+        const sealed = clone(input);
+        sealed.payload = sealPayload(sealed.payload);
+        observation = deepFreeze(sealed);
+      } else {
+        observation = createRuntimeObservation({ ...input, binding: this.binding });
+      }
     } catch (error) {
       return Object.freeze({ status: 'rejected', reason: error?.message || 'runtime-observation-invalid' });
     }
@@ -310,7 +355,7 @@ export class RuntimeAuthorityTracker {
       bindingId,
       actorIdentity,
       operation,
-      scope: clone(scope),
+      scope: sealPayload(clone(scope)),
       issuedAt: required(input.issuedAt, 'runtime-mutation-issued-at-required'),
       authority: 'explicit-local-runtime-mutation',
     };
