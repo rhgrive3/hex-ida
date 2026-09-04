@@ -261,6 +261,7 @@ export function createValueId(input = {}) {
     canonicalDefinitionIdentity: normalizeIdentity(input.canonicalDefinitionIdentity, 'value-definition-identity-required'),
   });
 }
+
 export function createMemoryRegionId(input = {}) {
   const functionId = input.functionId == null ? null : nonEmpty(input.functionId, 'memory-region-function-id-required');
   const binaryId = input.binaryId == null ? null : nonEmpty(input.binaryId, 'memory-region-binary-id-required');
