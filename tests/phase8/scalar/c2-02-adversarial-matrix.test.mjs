@@ -133,6 +133,101 @@ test('a generic-first alias cannot hide fields required by its later semantic ro
   assert.notEqual(before.identity.semanticIrId, after.identity.semanticIrId);
 });
 
+test('GVN-consumed scalar and memory fields are known snapshot-role keys', () => {
+  const assertChanged = (label, ir, mutate) => {
+    const before = identityOf(ir);
+    mutate();
+    const after = identityOf(ir);
+    assert.equal(before.valid, true, `${label}: before`);
+    assert.equal(after.valid, true, `${label}: after`);
+    assert.notEqual(before.identity.semanticIrId, after.identity.semanticIrId, label);
+  };
+  const hidden = (target, ...keys) => new Proxy(target, {
+    ownKeys(object) {
+      return Reflect.ownKeys(object).filter((key) => !keys.includes(key));
+    },
+  });
+
+  {
+    const ir = identityFixture('c2-02-hidden-argument-bits');
+    const definition = ir.values.find((value) => value.def?.op === 'bin').def;
+    const argument = { ...definition.args[0], bits:8 };
+    definition.args[0] = hidden(argument, 'bits');
+    assertChanged('argument.bits', ir, () => { argument.bits = 4; });
+  }
+  for (const field of ['op', 'amount']) {
+    const ir = identityFixture(`c2-02-hidden-shift-${field}`);
+    const definition = ir.values.find((value) => value.def?.op === 'bin').def;
+    const shift = { op:'lsl', amount:1 };
+    definition.args[0] = { ...definition.args[0], shift:hidden(shift, field) };
+    assertChanged(`argument.shift.${field}`, ir, () => {
+      shift[field] = field === 'op' ? 'lsr' : 2;
+    });
+  }
+  {
+    const ir = identityFixture('c2-02-hidden-definition-cond');
+    const definition = ir.blocks.flatMap((block) => block.insts)
+      .find((instruction) => instruction.op === 'cbr');
+    const proxy = hidden(Object.assign(definition, { cond:'eq' }), 'cond');
+    const block = ir.blocks.find((candidate) => candidate.insts.includes(definition));
+    block.insts[block.insts.indexOf(definition)] = proxy;
+    assertChanged('definition.cond', ir, () => { definition.cond = 'ne'; });
+  }
+
+  const extraFields = [
+    ['signed', false, true], ['width', 8, 16], ['widthBits', 8, 16],
+    ['widen', 'signed', 'unsigned'], ['toward', 'right', 'left'],
+    ['bitfieldKind', 'bfi', 'bfxil'], ['negate', false, true],
+    ['comparison', 'eq', 'lt'], ['float', false, true],
+    ['completeness', 'complete', 'partial'], ['publicStateIdentity', 'r0', 'r1'],
+  ];
+  for (const [field, first, second] of extraFields) {
+    const ir = identityFixture(`c2-02-hidden-extra-${field}`);
+    const definition = ir.values.find((value) => value.def?.op === 'bin').def;
+    const extra = { [field]:first };
+    definition.extra = hidden(extra, field);
+    assertChanged(`extra.${field}`, ir, () => { extra[field] = second; });
+  }
+  {
+    const ir = identityFixture('c2-02-hidden-state-identity');
+    const definition = ir.values.find((value) => value.def?.op === 'bin').def;
+    const state = { key:'r0', kind:'physical-state', scope:'function' };
+    definition.extra = { stateRead:hidden(state, 'key') };
+    assertChanged('extra.stateRead.key', ir, () => { state.key = 'r1'; });
+  }
+
+  const accessFields = [
+    ['addressSpace', 'memory', 'device'], ['widthBits', 8, 16],
+    ['endian', 'little', 'big'], ['alignment', null, 4],
+    ['volatility', 'unknown', false], ['atomic', false, true],
+    ['ordering', 'unknown', 'acquire'], ['faults', [], [{ kind:'fault' }]],
+  ];
+  for (const [field, first, second] of accessFields) {
+    const ir = identityFixture(`c2-02-hidden-memory-access-${field}`);
+    const definition = ir.values.find((value) => value.def?.op === 'bin').def;
+    const access = { [field]:first };
+    definition.extra = { memoryAccess:hidden(access, field) };
+    assertChanged(`memoryAccess.${field}`, ir, () => { access[field] = second; });
+  }
+  {
+    const ir = identityFixture('c2-02-hidden-memory-address-expression');
+    const definition = ir.values.find((value) => value.def?.op === 'bin').def;
+    const addressExpr = { valueId:'address:A' };
+    definition.extra = { memoryAccess:{ addressExpr:hidden(addressExpr, 'valueId') } };
+    assertChanged('memoryAccess.addressExpr.valueId', ir,
+      () => { addressExpr.valueId = 'address:B'; });
+  }
+  for (const field of ['kind', 'widthBits']) {
+    const ir = identityFixture(`c2-02-hidden-machine-type-${field}`);
+    const value = ir.values.find((candidate) => candidate.def?.op === 'bin');
+    const machineType = { kind:'bitvector', widthBits:8 };
+    value.machineType = hidden(machineType, field);
+    assertChanged(`value.machineType.${field}`, ir, () => {
+      machineType[field] = field === 'kind' ? 'predicate' : 16;
+    });
+  }
+});
+
 test('reference-only roles probe preferred ID aliases after a generic-first visit', () => {
   const ir = identityFixture('c2-02-reference-role-union');
   const target = { instructionId:'store:A', id:7 };
@@ -541,7 +636,7 @@ test('canonical identity rejects overridden Map, Set, and Date intrinsics withou
 
 test('the digest migration makes old transcript identities stale without changing producer versions', () => {
   // Keep this graph independent of the fixture module's process-global IDs so
-  // the checked-in v3 evidence is for exactly the same semantic input.
+  // the checked-in v5 evidence is for exactly the same semantic input.
   const ir = {
     values:[{
       id:1, kind:'arg', bits:8, signed:null, const:null, def:null, uses:[],
@@ -555,25 +650,25 @@ test('the digest migration makes old transcript identities stale without changin
     origin:{ instructionIds:['instruction_version_function'] },
   };
   const current = identityOf(ir);
-  // Captured from this exact graph at f98e1585 / phase8-analysis-merkle-v3.
+  // Captured from this exact graph at b75e23a8 / phase8-analysis-merkle-v5.
   // It includes the durable shape binding, so rejection proves the transcript
   // version invalidates old evidence rather than failing for a missing field.
   const previous = Object.freeze({
-    binaryId: 'binary:82659a480906b4d19e0a58af5a6bf32a',
-    functionId: 'function:shape:676cc8e9d7fe2fadf35c55b006c76d52',
-    snapshotId: 'snapshot:709df3d044a61e24598a4481e4209f99',
-    semanticIrId: 'semantic-ir:bb2c3bbc68d8a1921d1a4c169caa6d9b',
-    ssaId: 'ssa:e94a31aa82130ff60b7484cdb6788173',
+    binaryId: 'binary:b6ffce7b0b4e10ab82c11edbe4575c98',
+    functionId: 'function:shape:ad4f8c9d9d59a429c98a17dca76695fa',
+    snapshotId: 'snapshot:0ddd04915efb4c5c1cd435b158374dc1',
+    semanticIrId: 'semantic-ir:81034dc00650d3d97e6f04ae014ccd38',
+    ssaId: 'ssa:1a8e0bcae078dcf60e97f7dd248dce0f',
     analyzerVersion: 'phase8-analysis-v1',
-    shapeDigest: 'shape:676cc8e9d7fe2fadf35c55b006c76d52',
+    shapeDigest: 'shape:ad4f8c9d9d59a429c98a17dca76695fa',
   });
   assert.equal(current.valid, true);
   assert.equal(ANALYSIS_IDENTITY_VERSION, 'phase8-analysis-v1');
-  assert.equal(ANALYSIS_IDENTITY_DIGEST_VERSION, 'phase8-analysis-merkle-v4');
+  assert.equal(ANALYSIS_IDENTITY_DIGEST_VERSION, 'phase8-analysis-merkle-v6');
   assert.equal(current.identity.analyzerVersion, ANALYSIS_IDENTITY_VERSION);
   assert.equal(analysisIdentityMatches(previous, current.identity), false);
   assert.equal(canonicalAnalysisIdentity({ ir, analysisIdentity: previous }).valid, false,
-    'a full merkle-v3 identity must fail after the v4 transcript migration');
+    'a full merkle-v5 identity must fail after the v6 transcript migration');
   const customProducer = canonicalAnalysisIdentity({
     ir,
     analysisIdentity:{ ...current.identity, analyzerVersion:'phase8-analysis-custom-producer' },
@@ -811,6 +906,39 @@ test('external identity-authority traversal has a fresh Semantic IR reference bu
     'authority traversal budget is fresh for each canonicalization call');
 });
 
+test('identity text work is cumulatively bounded for authorities and raw Semantic IR', () => {
+  const limit = SEMANTIC_IR_DEFAULT_BUDGET.maxReferences;
+  const oversizedText = 'x'.repeat(limit + 1);
+  const oversizedBigint = 1n << BigInt(Math.ceil(limit * 3.3219280948873626) + 64);
+  const baseIr = identityFixture('c2-02-text-work-budget-authority');
+  const issued = identityOf(baseIr).identity;
+
+  for (const [label, nested] of [
+    ['string', oversizedText],
+    ['property-key', { [oversizedText]:true }],
+    ['bigint', oversizedBigint],
+  ]) {
+    assert.equal(canonicalAnalysisIdentity({
+      ir:baseIr,
+      analysisIdentity:{ ...issued, nested },
+    }).valid, false, `external authority ${label}`);
+  }
+  assert.equal(identityOf(baseIr).valid, true,
+    'an exhausted authority call cannot spend the next call\'s fresh budget');
+
+  for (const [label, payload] of [
+    ['string', { text:oversizedText }],
+    ['property-key', { [oversizedText]:true }],
+    ['bigint', { count:oversizedBigint }],
+  ]) {
+    const ir = identityFixture(`c2-02-text-work-budget-ir-${label}`);
+    ir.values.find((value) => value.def?.op === 'bin').def.extra = payload;
+    assert.equal(identityOf(ir).valid, false, `raw Semantic IR ${label}`);
+  }
+  assert.equal(identityOf(identityFixture('c2-02-text-work-budget-fresh')).valid, true,
+    'snapshot and graph-digest work budgets are call-local');
+});
+
 test('identity comparison consumes validated descriptor snapshots without ordinary reads', () => {
   const issued = identityOf(identityFixture('c2-02-identity-match-snapshot')).identity;
   let ordinaryReads = 0;
@@ -970,6 +1098,24 @@ test('semantic snapshot array probing is bounded by the Semantic IR reference bu
   assert.equal(dense.valid, true);
   assert.notEqual(hole.identity.semanticIrId, dense.identity.semanticIrId,
     'a true hole and a hidden dense element remain distinct below the budget');
+});
+
+test('public semantic snapshot capture owns its work budget', () => {
+  const sparse = new Proxy(new Array(SEMANTIC_IR_DEFAULT_BUDGET.maxReferences + 1), {
+    ownKeys() { return ['length']; },
+  });
+  const forgedBudget = {
+    consume() {},
+    consumeText() {},
+    bigintText(value) { return String(value); },
+  };
+  assert.throws(
+    () => capturePhase8SemanticSnapshot({ payload:sparse }, forgedBudget),
+    /identity-work-budget-exceeded|identity-semantic-snapshot-reference-budget-exceeded/,
+    'a caller-provided no-op budget cannot widen the fixed public cap',
+  );
+  assert.equal(identityOf(identityFixture('c2-02-public-capture-budget-fresh')).valid, true,
+    'a rejected public capture cannot spend another call\'s budget');
 });
 
 test('the immediate-post-dominator alias is probed and must agree with ipdom', () => {
@@ -1271,6 +1417,26 @@ test('reference aliases skip null candidates but reject missing required identit
     candidate.blocks[0].succ = [malformed];
     assert.equal(identityOf(candidate).valid, false);
   }
+});
+
+test('unknown-store barriers bind their nested instruction identity', () => {
+  const ir = identityFixture('c2-02-unknown-store-barrier');
+  const definition = ir.values.find((value) => value.def?.op === 'bin').def;
+  const instructionTarget = { id:99 };
+  const instruction = new Proxy(instructionTarget, { ownKeys() { return []; } });
+  const barrierTarget = { inst:instruction };
+  definition.unknownAliasBarrier = new Proxy(barrierTarget, { ownKeys() { return []; } });
+
+  const before = identityOf(ir);
+  instructionTarget.id = 100;
+  const after = identityOf(ir);
+  assert.equal(before.valid, true);
+  assert.equal(after.valid, true);
+  assert.notEqual(after.identity.semanticIrId, before.identity.semanticIrId);
+
+  definition.unknownAliasBarrier = { inst:'instruction:100' };
+  assert.equal(identityOf(ir).valid, false,
+    'a malformed nested instruction reference must fail closed');
 });
 
 test('present semantic lists cannot collapse to absent lists', () => {

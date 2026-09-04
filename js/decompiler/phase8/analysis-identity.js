@@ -22,13 +22,47 @@ const REQUIRED_FIELDS = Object.freeze([
   'binaryId', 'functionId', 'snapshotId', 'semanticIrId', 'ssaId', 'analyzerVersion',
 ]);
 
+function createIdentityWorkBudget(limit = SEMANTIC_IR_DEFAULT_BUDGET.maxReferences) {
+  if (!Number.isSafeInteger(limit) || limit < 0) {
+    throw new TypeError('identity-invalid-work-budget');
+  }
+  let used = 0;
+  const consume = (amount) => {
+    if (!Number.isSafeInteger(amount) || amount < 0 || amount > limit - used) {
+      throw new TypeError('identity-work-budget-exceeded');
+    }
+    used += amount;
+  };
+  const consumeText = (text) => {
+    if (typeof text !== 'string') throw new TypeError('identity-invalid-text-work');
+    consume(text.length);
+  };
+  const bigintText = (value) => {
+    if (typeof value !== 'bigint') throw new TypeError('identity-invalid-bigint-work');
+    const remaining = limit - used;
+    // Decimal conversion itself is linear in magnitude. Bound the signed bit
+    // width first so a hostile million-digit BigInt is rejected before an
+    // unbounded decimal string is allocated. A value that passes this check can
+    // produce at most approximately `remaining + 1` decimal characters.
+    const maxBits = Math.max(1, Math.ceil(remaining * 3.3219280948873626) + 2);
+    if (BigInt.asIntN(maxBits, value) !== value) {
+      throw new TypeError('identity-work-budget-exceeded');
+    }
+    const text = String(value);
+    consumeText(text);
+    return text;
+  };
+  return Object.freeze({ consume, consumeText, bigintText, remaining:() => limit - used });
+}
+
 function token(value, digests = null) {
   if (typeof value === 'string') {
+    digests?.graphDigester?.consumeText?.(value);
     if (!value.trim()) throw new TypeError('identity-invalid-token');
     return `string:${value.length}:${value}`;
   }
   if (typeof value === 'bigint') {
-    const text = String(value);
+    const text = digests?.graphDigester?.bigintText?.(value) ?? String(value);
     return `bigint:${text.length}:${text}`;
   }
   if (typeof value === 'number') {
@@ -76,7 +110,7 @@ export const ANALYSIS_IDENTITY_VERSION = 'phase8-analysis-v1';
 // This seed frames every persistent semantic digest. Any transcript change
 // must advance it so evidence issued by the previous algorithm fails stale;
 // the public analyzer contract above remains independent.
-export const ANALYSIS_IDENTITY_DIGEST_VERSION = 'phase8-analysis-merkle-v4';
+export const ANALYSIS_IDENTITY_DIGEST_VERSION = 'phase8-analysis-merkle-v6';
 
 /* Semantic identity only accepts enumerable, own, data properties.  Reading a
  * getter while issuing an artifact ID would make identity depend on timing or
@@ -203,28 +237,37 @@ const DERIVED_IR_KEYS = new Set([
   'origin', ...IDENTITY_AUTHORITY_KEYS, ...IDENTITY_PUBLIC_KEYS,
   ...IDENTITY_BINDING_KEYS, ...NON_SEMANTIC_KEYS,
 ]);
-const ARGUMENT_KEYS = new Set(['value', 'origin', ...NON_SEMANTIC_KEYS]);
+const ARGUMENT_KEYS = new Set(['value', 'bits', 'shift', 'origin', ...NON_SEMANTIC_KEYS]);
 const INCOMING_KEYS = new Set(['value', 'origin', ...NON_SEMANTIC_KEYS]);
 const MEMORY_INCOMING_KEYS = new Set([
   'from', 'semanticPredecessorBlockId', 'node', 'definitionId',
 ]);
 const MEMORY_NODE_KEYS = new Set([
   'kind', 'key', 'definitionId', 'regionId', 'block', 'reason', 'unknownAlias', 'aliasRelation',
-  'inst', 'prev', 'previous', 'incoming', 'memDefs', 'reaching',
+  'clobber', 'inst', 'prev', 'previous', 'incoming', 'memDefs', 'reaching',
   'effectSummary', 'proof', 'origin',
 ]);
 const MEMORY_REACHING_ENTRY_KEYS = new Set(['inst', ...REFERENCE_TOKEN_KEYS]);
 const MEMORY_REACHING_INSTRUCTION_KEYS = new Set(['id']);
 const MEMORY_LOCATION_KEYS = new Set([
-  'key', 'kind', 'size', 'regionId', 'base', 'index', 'scale', 'address', 'disp',
-  'uncertaintyIdentity', 'origin',
+  'key', 'kind', 'size', 'regionId', 'base', 'baseEntityId', 'index', 'scale',
+  'address', 'disp', 'uncertaintyIdentity', 'addressMetadataSource', 'metadata', 'origin',
 ]);
 const DEFINITION_KEYS = new Set([
-  'args', 'incoming', 'addr', 'loc', 'conditionValue', 'selectorValue', 'extra', 'origin',
+  'args', 'incoming', 'addr', 'loc', 'conditionValue', 'selectorValue', 'cond', 'extra', 'origin',
   'memUse', 'memDef', 'memDefs', 'memKills', 'reachingStore', 'unknownAliasBarrier',
   ...NON_SEMANTIC_KEYS,
 ]);
-const VALUE_KEYS = new Set(['id', 'bits', 'kind', 'signed', 'const', 'origin', 'def', 'uses']);
+const VALUE_KEYS = new Set([
+  'id', 'bits', 'kind', 'signed', 'const', 'float', 'floatConst', 'constKind',
+  'machineType', 'origin', 'def', 'uses',
+]);
+const VALUE_SCHEMA_KEYS = new Set([
+  ...VALUE_KEYS,
+  'vid', 'reg', 'stateKey', 'version', 'range', 'nullable', 'type', 'label',
+  'semanticValueId', 'semanticSsaValueId', 'sourceSemanticValueId', 'sourceEntityId',
+  'unknown', 'undefined', 'clobbered', 'compatDerived',
+]);
 const BLOCK_KEYS = new Set([
   'insts', 'phis', 'memPhis', 'successorEdges', 'succ', 'pred', 'origin', ...NON_SEMANTIC_KEYS,
 ]);
@@ -240,7 +283,9 @@ const DEFINITION_SCHEMA_KEYS = new Set([
   ...REFERENCE_TOKEN_KEYS,
   'op', 'sub', 'block', 'row', 'target', 'trueTarget', 'falseTarget',
   'defaultTarget', 'targets', 'cases', 'casesComplete', 'value', 'bits',
-  'signed', 'kind', 'size', 'writesState',
+  'signed', 'kind', 'size', 'writesState', 'semanticNodeId', 'sourceEntityId',
+  'sourceEffectIds', 'sourceInstructionIds', 'address', 'text', 'memoryAliasRelation',
+  'memoryBarrier', 'clobbers',
 ]);
 const BLOCK_SCHEMA_KEYS = new Set([
   ...BLOCK_KEYS, 'index', 'id', 'isEntry', 'declaredEdges',
@@ -358,19 +403,41 @@ const SNAPSHOT_ORIGIN_KEYS = new Set([
   'bytecodeOperationIds', 'sourceLocations', 'parentEntityIds', 'transforms',
 ]);
 const SNAPSHOT_EXTRA_KEYS = new Set([
-  'value', 'lsb', 'low', 'offset', 'cases', 'casesComplete', 'memoryAccess',
-  'addressPrecise', 'faults', 'stateWrite',
+  'value', 'lsb', 'low', 'offset', 'width', 'widthBits', 'sourceBits', 'targetBits',
+  'cases', 'casesComplete', 'memoryAccess', 'addressPrecise', 'faults',
+  'signed', 'widen', 'toward', 'bitfieldKind', 'negate', 'comparison', 'float',
+  'conditional', 'cond', 'fallbackNzcv', 'completeness', 'castKind', 'compatSource',
+  'conditionValueId', 'conditionCarrierValueId', 'semanticComparisonCarrier',
+  'stateRead', 'stateWrite', 'publicStateIdentity', 'reachingStateSsaValueId',
+  'stateSsaUseId', 'stateSsaDefinitionId', 'stateReadProof', 'stateWriteProof',
+  'localPhysicalViewProjection', 'entryStateRead', 'attributes', 'semanticNodeId',
 ]);
 const SNAPSHOT_MEMORY_ACCESS_KEYS = new Set([
-  'addressSpace', 'widthBits', 'volatility', 'atomic', 'ordering', 'faults',
+  'addressSpace', 'addressExpr', 'addressValueId', 'widthBits', 'endian', 'alignment',
+  'volatility', 'atomic', 'ordering', 'faults',
+]);
+const SNAPSHOT_SHIFT_KEYS = new Set(['op', 'amount']);
+const SNAPSHOT_MACHINE_TYPE_KEYS = new Set([
+  'kind', 'widthBits', 'format', 'laneCount', 'elementType', 'addressSpace',
+]);
+const SNAPSHOT_ADDRESS_EXPRESSION_KEYS = new Set(['valueId']);
+const SNAPSHOT_STATE_IDENTITY_KEYS = new Set([
+  'key', 'kind', 'scope', 'physicalIdentity', 'metadata',
+]);
+const SNAPSHOT_PHYSICAL_IDENTITY_KEYS = new Set([
+  'kind', 'registerId', 'flagId', 'groupId', 'view', 'widthBits',
 ]);
 const SNAPSHOT_SWITCH_CASE_KEYS = new Set(['value', 'caseValue', 'constant', 'to', 'target']);
 const SNAPSHOT_FAULT_KEYS = new Set(['kind', 'condition', 'detail']);
-const SNAPSHOT_ADDRESS_KEYS = new Set([...ADDRESS_KEYS, 'disp', 'scale']);
+const SNAPSHOT_ADDRESS_KEYS = new Set([
+  ...ADDRESS_KEYS, 'baseReg', 'disp', 'scale', 'extend', 'size', 'widthBits',
+  'stack', 'addressSpace', 'rawAddressValueId', 'indexSignedness', 'indexWidthBits',
+  'addressWidthBits', 'precise', 'unknownReason', 'compatDisplacementEvidence', 'origin',
+]);
 const SNAPSHOT_ROLE_KEYS = new Map([
   ['ir', IR_SCHEMA_KEYS],
   ['block', BLOCK_SCHEMA_KEYS],
-  ['value', VALUE_KEYS],
+  ['value', VALUE_SCHEMA_KEYS],
   ['definition', DEFINITION_SCHEMA_KEYS],
   ['argument', ARGUMENT_SCHEMA_KEYS],
   ['incoming', INCOMING_SCHEMA_KEYS],
@@ -384,6 +451,11 @@ const SNAPSHOT_ROLE_KEYS = new Map([
   ['origin', SNAPSHOT_ORIGIN_KEYS],
   ['extra', SNAPSHOT_EXTRA_KEYS],
   ['memory-access', SNAPSHOT_MEMORY_ACCESS_KEYS],
+  ['shift', SNAPSHOT_SHIFT_KEYS],
+  ['machine-type', SNAPSHOT_MACHINE_TYPE_KEYS],
+  ['address-expression', SNAPSHOT_ADDRESS_EXPRESSION_KEYS],
+  ['state-identity', SNAPSHOT_STATE_IDENTITY_KEYS],
+  ['physical-identity', SNAPSHOT_PHYSICAL_IDENTITY_KEYS],
   ['memory-reaching', MEMORY_REACHING_ENTRY_KEYS],
   ['switch-case', SNAPSHOT_SWITCH_CASE_KEYS],
   ['fault', SNAPSHOT_FAULT_KEYS],
@@ -429,6 +501,7 @@ function snapshotChildRole(role, key) {
   if (role === 'value') {
     if (key === 'def') return 'definition';
     if (key === 'uses') return 'definition-list';
+    if (key === 'machineType') return 'machine-type';
   }
   if (role === 'definition') {
     if (key === 'args') return 'argument-list';
@@ -439,13 +512,14 @@ function snapshotChildRole(role, key) {
     if (key === 'memUse' || key === 'memDef') return 'memory-node';
     if (key === 'memDefs') return 'memory-node-list';
     if (key === 'memKills') return 'memory-location-list';
-    if (key === 'reachingStore' || key === 'unknownAliasBarrier') return 'reference';
+    if (key === 'reachingStore' || key === 'unknownAliasBarrier') return 'memory-reaching';
     if (key === 'cases') return 'switch-case-list';
     if (['target', 'trueTarget', 'falseTarget', 'defaultTarget'].includes(key)) return 'reference';
     if (key === 'targets') return 'reference-list';
   }
   if (role === 'argument' || role === 'incoming') {
     if (key === 'value') return 'value';
+    if (role === 'argument' && key === 'shift') return 'shift';
   }
   if (role === 'memory-node') {
     if (key === 'inst') return 'definition';
@@ -468,8 +542,14 @@ function snapshotChildRole(role, key) {
     if (key === 'memoryAccess') return 'memory-access';
     if (key === 'cases') return 'switch-case-list';
     if (key === 'faults') return 'fault-list';
+    if (key === 'stateRead' || key === 'stateWrite') return 'state-identity';
   }
-  if (role === 'memory-access' && key === 'faults') return 'fault-list';
+  if (role === 'memory-access') {
+    if (key === 'faults') return 'fault-list';
+    if (key === 'addressExpr') return 'address-expression';
+  }
+  if (role === 'machine-type' && key === 'elementType') return 'machine-type';
+  if (role === 'state-identity' && key === 'physicalIdentity') return 'physical-identity';
   if (role === 'switch-case' && (key === 'to' || key === 'target')) return 'reference';
   if (key === 'origin' || key === 'provenance') return 'origin';
   if (key === 'extra') return 'extra';
@@ -485,7 +565,7 @@ function snapshotChildRole(role, key) {
  * caller mutation. Canonical producer artifacts remain producer-owned leaves:
  * their private brand and deep freeze are the stronger ownership proof.
  */
-export function capturePhase8SemanticSnapshot(ir) {
+function capturePhase8SemanticSnapshotWithBudget(ir, workBudget) {
   if (PHASE8_SEMANTIC_SNAPSHOTS.has(ir)) return ir;
   if (ir == null || typeof ir !== 'object' || Array.isArray(ir)) {
     throw new TypeError('identity-invalid-semantic-ir');
@@ -493,21 +573,28 @@ export function capturePhase8SemanticSnapshot(ir) {
 
   const records = new WeakMap();
   const pendingFreeze = [];
-  let captureWork = 0;
-  const consumeCaptureWork = (amount) => {
-    const limit = SEMANTIC_IR_DEFAULT_BUDGET.maxReferences;
-    if (!Number.isSafeInteger(amount) || amount < 0 || amount > limit - captureWork) {
-      throw new TypeError('identity-semantic-snapshot-reference-budget-exceeded');
-    }
-    captureWork += amount;
-  };
+  const budget = workBudget;
+  const consumeCaptureWork = budget.consume;
+  const capturedStrings = new Set();
+  const capturedBigints = new Set();
   const capture = (value, role = 'generic') => {
     if (value === null) return null;
     switch (typeof value) {
       case 'undefined':
+        return value;
       case 'string':
+        if (!capturedStrings.has(value)) {
+          budget.consumeText(value);
+          capturedStrings.add(value);
+        }
+        return value;
       case 'boolean':
+        return value;
       case 'bigint':
+        if (!capturedBigints.has(value)) {
+          budget.bigintText(value);
+          capturedBigints.add(value);
+        }
         return value;
       case 'number':
         if (!Number.isFinite(value)) throw new TypeError('identity-non-finite-number');
@@ -556,9 +643,10 @@ export function capturePhase8SemanticSnapshot(ir) {
       }
 
       const reportedKeys = Reflect.ownKeys(value);
-      consumeCaptureWork(reportedKeys.length);
       for (const key of reportedKeys) {
         if (typeof key === 'symbol') throw new TypeError('identity-symbol-semantic-metadata');
+        consumeCaptureWork(1);
+        budget.consumeText(key);
       }
       record = {
         source:value,
@@ -568,6 +656,7 @@ export function capturePhase8SemanticSnapshot(ir) {
         reported:new Set(reportedKeys),
         reportedKeys,
         descriptors:new Map(),
+        chargedKeys:new Set(reportedKeys),
         defined:new Set(),
         roles:new Set(),
         length:null,
@@ -628,6 +717,10 @@ export function capturePhase8SemanticSnapshot(ir) {
       let descriptor;
       if (record.descriptors.has(key)) descriptor = record.descriptors.get(key);
       else {
+        if (!record.chargedKeys.has(key)) {
+          consumeCaptureWork(1);
+          record.chargedKeys.add(key);
+        }
         descriptor = Object.getOwnPropertyDescriptor(record.source, key) ?? null;
         record.descriptors.set(key, descriptor);
       }
@@ -713,11 +806,19 @@ export function capturePhase8SemanticSnapshot(ir) {
   return snapshot;
 }
 
+/** Public capture always owns the fixed Semantic IR work authority. */
+export function capturePhase8SemanticSnapshot(ir) {
+  return capturePhase8SemanticSnapshotWithBudget(ir, createIdentityWorkBudget());
+}
+
 export function isPhase8SemanticSnapshot(value) {
   return value != null && typeof value === 'object' && PHASE8_SEMANTIC_SNAPSHOTS.has(value);
 }
 
-function createFastJsonGraphDigester({ maxReferences = null } = {}) {
+function createFastJsonGraphDigester({
+  maxReferences = SEMANTIC_IR_DEFAULT_BUDGET.maxReferences,
+  workBudget = null,
+} = {}) {
   // The Semantic IR is a graph: the same definition and provenance object is
   // reachable from its value, block-local instruction and flat instruction
   // table. Serializing that graph as an expanded tree repeatedly walks and
@@ -738,19 +839,11 @@ function createFastJsonGraphDigester({ maxReferences = null } = {}) {
   const descriptorMemo = new WeakMap();
   const digestReferences = new WeakSet();
   const active = new WeakSet();
-  if (maxReferences != null
-      && (!Number.isSafeInteger(maxReferences) || maxReferences < 0)) {
+  if (!Number.isSafeInteger(maxReferences) || maxReferences < 0) {
     throw new TypeError('identity-invalid-reference-budget');
   }
-  let referenceWork = 0;
-  const consumeReferenceWork = (amount) => {
-    if (maxReferences == null) return;
-    if (!Number.isSafeInteger(amount) || amount < 0
-        || amount > maxReferences - referenceWork) {
-      throw new TypeError('identity-reference-budget-exceeded');
-    }
-    referenceWork += amount;
-  };
+  const budget = workBudget ?? createIdentityWorkBudget(maxReferences);
+  const consumeReferenceWork = budget.consume;
   const semanticDescriptor = (object, key) => {
     let descriptors = descriptorMemo.get(object);
     if (descriptors == null) {
@@ -792,6 +885,7 @@ function createFastJsonGraphDigester({ maxReferences = null } = {}) {
     hash[3] = Math.imul(hash[3] ^ code, primes[3]) >>> 0;
   };
   const writeText = (hash, text) => {
+    budget.consumeText(text);
     mix(hash, text.length);
     for (let index = 0; index < text.length; index += 1) mix(hash, text.charCodeAt(index));
   };
@@ -857,7 +951,17 @@ function createFastJsonGraphDigester({ maxReferences = null } = {}) {
         if (Object.is(item, -0)) return negativeZeroDigest;
         return primitiveDigest(numberMemo, item, TAG.NUMBER, String(item));
       }
-      case 'bigint': return primitiveDigest(bigintMemo, item, TAG.BIGINT, String(item));
+      case 'bigint': {
+        const cached = bigintMemo.get(item);
+        if (cached != null) return cached;
+        const text = budget.bigintText(item);
+        const digest = createHash(TAG.BIGINT);
+        // bigintText already charged the bounded conversion.
+        mix(digest, text.length);
+        for (let index = 0; index < text.length; index += 1) mix(digest, text.charCodeAt(index));
+        bigintMemo.set(item, digest);
+        return digest;
+      }
       default: break;
     }
 
@@ -891,6 +995,7 @@ function createFastJsonGraphDigester({ maxReferences = null } = {}) {
     try {
       const keys = semanticOwnKeys(item);
       consumeReferenceWork(keys.length);
+      for (const key of keys) budget.consumeText(key);
       const prototype = Object.getPrototypeOf(item);
       let digest;
       if (Array.isArray(item)) {
@@ -1014,6 +1119,7 @@ function createFastJsonGraphDigester({ maxReferences = null } = {}) {
       const reportedKeys = semanticOwnKeys(item);
       const reported = new Set(reportedKeys);
       const keys = [...reportedKeys];
+      for (const key of reportedKeys) budget.consumeText(key);
       for (const key of knownKeys) {
         if (!reported.has(key)) keys.push(key);
       }
@@ -1061,6 +1167,8 @@ function createFastJsonGraphDigester({ maxReferences = null } = {}) {
     }
   };
   const digest = (value) => digestText(visit(value));
+  digest.consumeText = budget.consumeText;
+  digest.bigintText = budget.bigintText;
   digest.reference = (value) => {
     const reference = visit(value);
     digestReferences.add(reference);
@@ -1080,7 +1188,7 @@ function createFastJsonGraphDigester({ maxReferences = null } = {}) {
     if (value == null || typeof value !== 'object') {
       throw new TypeError('identity-invalid-semantic-node');
     }
-    consumeReferenceWork(keys.length);
+    consumeReferenceWork(keys.size ?? keys.length);
     const fields = Object.create(null);
     for (const key of keys) {
       const descriptor = semanticDescriptor(value, key);
@@ -1159,6 +1267,8 @@ function argumentShape(argument, digests) {
   return digests.graphDigester.record('ARGUMENT', [
     projection.digest,
     valueToken,
+    values.bits ?? null,
+    semanticDigest(values.shift, digests),
     semanticDigest(values.origin, digests),
   ]);
 }
@@ -1209,7 +1319,10 @@ function memoryReachingEntryShape(entry, digests) {
   }
   const fields = digests.graphDigester.fields(entry, MEMORY_REACHING_ENTRY_KEYS);
   let instId = null;
-  if (fields.inst != null && typeof fields.inst === 'object') {
+  if (fields.inst != null) {
+    if (typeof fields.inst !== 'object') {
+      throw new TypeError('identity-invalid-semantic-node');
+    }
     const instFields = digests.graphDigester.fields(fields.inst, MEMORY_REACHING_INSTRUCTION_KEYS);
     if (Object.hasOwn(instFields, 'id') && instFields.id != null) {
       instId = requiredToken(instFields.id, digests);
@@ -1218,11 +1331,19 @@ function memoryReachingEntryShape(entry, digests) {
   // Bind the preferred `inst.id` and every direct alias separately. GVN uses
   // inst.id ?? id, but a lower-priority alias must not conceal a mutation of
   // the preferred source.
+  const directId = Object.hasOwn(fields, 'id') ? token(fields.id, digests) : null;
+  const instructionId = Object.hasOwn(fields, 'instructionId')
+    ? token(fields.instructionId, digests) : null;
+  const definitionId = Object.hasOwn(fields, 'definitionId')
+    ? token(fields.definitionId, digests) : null;
+  if (instId == null && directId == null && instructionId == null && definitionId == null) {
+    throw new TypeError('identity-required-reference-token');
+  }
   return digests.graphDigester.record('PRESENT', [
     instId,
-    Object.hasOwn(fields, 'id') ? token(fields.id, digests) : null,
-    Object.hasOwn(fields, 'instructionId') ? token(fields.instructionId, digests) : null,
-    Object.hasOwn(fields, 'definitionId') ? token(fields.definitionId, digests) : null,
+    directId,
+    instructionId,
+    definitionId,
   ]);
 }
 
@@ -1258,6 +1379,7 @@ function memoryNodeShape(node, digests, memoryCache) {
     incomingItems == null ? null : digests.graphDigester.list(incomingItems),
     memDefs == null ? null : digests.graphDigester.list(memDefs),
     reaching == null ? null : digests.graphDigester.list(reaching),
+    semanticDigest(values.clobber, digests),
     semanticDigest(values.effectSummary, digests),
     semanticDigest(values.proof, digests),
     semanticDigest(values.origin, digests),
@@ -1286,11 +1408,14 @@ function memoryLocationShape(location, digests, memoryCache) {
     values.size ?? null,
     token(values.regionId, digests),
     referenceOrSelfToken(values.base, digests, 'id'),
+    semanticDigest(values.baseEntityId, digests),
     referenceOrSelfToken(values.index, digests, 'id'),
     values.scale ?? null,
     semanticDigest(values.address, digests),
     semanticDigest(values.disp, digests),
     semanticDigest(values.uncertaintyIdentity, digests),
+    semanticDigest(values.addressMetadataSource, digests),
+    semanticDigest(values.metadata, digests),
     semanticDigest(values.origin, digests),
   ]);
   memoryCache?.locations.set(location, digest);
@@ -1336,6 +1461,7 @@ function definitionShape(definition, extraSkip = [], digests = null,
     referenceOrSelfToken(addressValues?.index, digests, 'id'),
     optionalReferenceToken(values.conditionValue, digests, 'id'),
     optionalReferenceToken(values.selectorValue, digests, 'id'),
+    values.cond ?? null,
     semanticDigest(values.extra, digests),
     semanticDigest(values.origin, digests),
     memoryLocationShape(values.loc, digests, memoryCache),
@@ -1343,8 +1469,9 @@ function definitionShape(definition, extraSkip = [], digests = null,
     memoryNodeShape(values.memDef, digests, memoryCache),
     memoryDefinitionItems == null ? null : digests.graphDigester.list(memoryDefinitionItems),
     memoryKillItems == null ? null : digests.graphDigester.list(memoryKillItems),
-    optionalReferenceToken(values.reachingStore, digests, 'instructionId', 'id', 'definitionId'),
-    optionalReferenceToken(values.unknownAliasBarrier, digests, 'instructionId', 'id', 'definitionId'),
+    values.reachingStore == null ? null : memoryReachingEntryShape(values.reachingStore, digests),
+    values.unknownAliasBarrier == null
+      ? null : memoryReachingEntryShape(values.unknownAliasBarrier, digests),
   ]);
   if (definitionCache != null) {
     const entries = definitionCache.get(definition) ?? new Map();
@@ -1383,7 +1510,7 @@ function definitionReferenceToken(definition, digests) {
 
 function valueShape(value, digests, definitionCache, memoryCache) {
   if (value == null || typeof value !== 'object') throw new TypeError('identity-invalid-semantic-node');
-  const projection = metadataProjection(value, VALUE_KEYS, digests);
+  const projection = metadataProjection(value, VALUE_KEYS, digests, VALUE_SCHEMA_KEYS);
   const values = projection.values;
   const id = requiredToken(values.id, digests);
   const uses = mappedSemanticPropertyList(values, 'uses',
@@ -1398,6 +1525,10 @@ function valueShape(value, digests, definitionCache, memoryCache) {
       values.kind ?? null,
       values.signed ?? null,
       values.const ?? null,
+      values.float ?? null,
+      values.floatConst ?? null,
+      values.constKind ?? null,
+      semanticDigest(values.machineType, digests),
       semanticDigest(values.origin, digests),
       definitionShape(values.def, [], digests, definitionCache, memoryCache),
       uses == null ? null : digests.graphDigester.list(uses),
@@ -1450,11 +1581,11 @@ function blockShape(block, digests, definitionCache, memoryCache) {
   };
 }
 
-function irShape(ir) {
+function irShape(ir, workBudget = null) {
   if (ir == null || typeof ir !== 'object') return null;
   try {
     const digests = new WeakMap();
-    digests.graphDigester = createFastJsonGraphDigester();
+    digests.graphDigester = createFastJsonGraphDigester({ workBudget:workBudget ?? createIdentityWorkBudget() });
     const definitionCache = new WeakMap();
     const memoryCache = { nodes: new WeakMap(), locations: new WeakMap() };
     const projection = semanticProjectionDigest(ir, DERIVED_IR_KEYS, digests, IR_SCHEMA_KEYS);
@@ -1553,8 +1684,10 @@ function irShapeDigest(shaped) {
 /** The durable binding for a captured Semantic IR graph. */
 export function phase8SemanticSnapshotShapeDigest(ir) {
   try {
-    const snapshot = isPhase8SemanticSnapshot(ir) ? ir : capturePhase8SemanticSnapshot(ir);
-    return irShapeDigest(irShape(snapshot));
+    const workBudget = createIdentityWorkBudget();
+    const snapshot = isPhase8SemanticSnapshot(ir)
+      ? ir : capturePhase8SemanticSnapshotWithBudget(ir, workBudget);
+    return irShapeDigest(irShape(snapshot, workBudget));
   } catch {
     return null;
   }
@@ -1609,7 +1742,7 @@ function identitySourceEntriesFromSnapshot(source, values) {
   }));
 }
 
-function identitySourceSnapshots(entries) {
+function identitySourceSnapshots(entries, workBudget = null) {
   if (entries.some((entry) => entry.malformed)) return null;
   // Authority objects are caller-controlled metadata, not part of the bounded
   // Semantic IR snapshot. Give their strict walk its own call-local hard cap so
@@ -1617,6 +1750,7 @@ function identitySourceSnapshots(entries) {
   // unbounded work.
   const digester = createFastJsonGraphDigester({
     maxReferences:SEMANTIC_IR_DEFAULT_BUDGET.maxReferences,
+    workBudget:workBudget ?? createIdentityWorkBudget(),
   });
   const snapshots = [];
   try {
@@ -1738,19 +1872,26 @@ function ssaIdentityDigest(semanticIrId, values, graphDigester = null) {
   catch { return null; }
 }
 
-function validatedIdentitySnapshot(identity) {
+function validatedIdentitySnapshot(identity, workBudget = null) {
   if (identity == null || typeof identity !== 'object' || Array.isArray(identity)) return null;
+  const budget = workBudget ?? createIdentityWorkBudget();
   const fields = [];
   for (const name of REQUIRED_FIELDS) {
+    budget.consume(1);
     const property = ownDataProperty(identity, name);
-    if (property.malformed || typeof property.value !== 'string' || !property.value.trim()) return null;
+    if (property.malformed || typeof property.value !== 'string') return null;
+    budget.consumeText(property.value);
+    if (!property.value.trim()) return null;
     fields.push(property.value);
   }
   let shapeDigest = null;
   for (const name of IDENTITY_BINDING_KEYS) {
+    budget.consume(1);
     const property = ownDataProperty(identity, name);
     if (!property.present) continue;
-    if (property.malformed || typeof property.value !== 'string' || !property.value.trim()) return null;
+    if (property.malformed || typeof property.value !== 'string') return null;
+    budget.consumeText(property.value);
+    if (!property.value.trim()) return null;
     if (shapeDigest != null && shapeDigest !== property.value) return null;
     shapeDigest = property.value;
   }
@@ -1758,15 +1899,21 @@ function validatedIdentitySnapshot(identity) {
 }
 
 export function isValidatedAnalysisIdentity(identity) {
-  return validatedIdentitySnapshot(identity) != null;
+  try { return validatedIdentitySnapshot(identity) != null; }
+  catch { return false; }
 }
 
 export function analysisIdentityMatches(observed, expected) {
-  const observedValues = validatedIdentitySnapshot(observed);
-  const expectedValues = validatedIdentitySnapshot(expected);
-  if (observedValues == null || expectedValues == null) return false;
-  return observedValues.shapeDigest === expectedValues.shapeDigest
-    && observedValues.fields.every((value, index) => value === expectedValues.fields[index]);
+  try {
+    const workBudget = createIdentityWorkBudget();
+    const observedValues = validatedIdentitySnapshot(observed, workBudget);
+    const expectedValues = validatedIdentitySnapshot(expected, workBudget);
+    if (observedValues == null || expectedValues == null) return false;
+    return observedValues.shapeDigest === expectedValues.shapeDigest
+      && observedValues.fields.every((value, index) => value === expectedValues.fields[index]);
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -1775,6 +1922,7 @@ export function analysisIdentityMatches(observed, expected) {
  * of the IR shape, never a wall-clock or architecture-name guess.
  */
 export function canonicalAnalysisIdentity(context = {}) {
+  const workBudget = createIdentityWorkBudget();
   const seededCfg = context?.analysis?.get?.('cfg') ?? null;
   const seededSsa = context?.analysis?.get?.('ssa') ?? null;
   const seededOrigins = context?.analysis?.get?.('origins') ?? null;
@@ -1786,24 +1934,25 @@ export function canonicalAnalysisIdentity(context = {}) {
   } : null);
   let ir;
   try {
-    ir = isPhase8SemanticSnapshot(rawIr) ? rawIr : capturePhase8SemanticSnapshot(rawIr);
+    ir = isPhase8SemanticSnapshot(rawIr)
+      ? rawIr : capturePhase8SemanticSnapshotWithBudget(rawIr, workBudget);
   } catch {
     return { identity: null, valid: false, reason: 'canonical Semantic IR snapshot is unavailable' };
   }
   const contextSourceEntries = identitySourceEntries(context);
   if (explicitlyMissingIdentity(contextSourceEntries)) return { identity: null, valid: false, reason: 'analysis identity is null' };
-  const contextIdentitySources = identitySourceSnapshots(contextSourceEntries);
+  const contextIdentitySources = identitySourceSnapshots(contextSourceEntries, workBudget);
   if (contextIdentitySources == null || contextIdentitySources.some(hasMalformedIdentityFields)) {
     return { identity: null, valid: false, reason: 'analysis identity is malformed' };
   }
-  const shaped = irShape(ir);
+  const shaped = irShape(ir, workBudget);
   if (shaped == null) return { identity: null, valid: false, reason: 'canonical Semantic IR identity is unavailable' };
   const {
     values, sourceValues, graphDigester,
   } = shaped;
   const rootSourceEntries = identitySourceEntriesFromSnapshot(ir, sourceValues);
   if (explicitlyMissingIdentity(rootSourceEntries)) return { identity: null, valid: false, reason: 'analysis identity is null' };
-  const rootIdentitySources = identitySourceSnapshots(rootSourceEntries);
+  const rootIdentitySources = identitySourceSnapshots(rootSourceEntries, workBudget);
   if (rootIdentitySources == null || rootIdentitySources.some(hasMalformedIdentityFields)) {
     return { identity: null, valid: false, reason: 'analysis identity is malformed' };
   }
