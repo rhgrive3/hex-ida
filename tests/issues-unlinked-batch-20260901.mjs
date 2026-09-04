@@ -156,25 +156,53 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
     backend: new ExhaustiveBvBackend(), globalScope: { ...scope, phiChoices: [], phiInventory: { count: 2, complete: true } },
   });
   assert.equal(countedButEmpty.verdict, 'unknown');
-  assert.equal(countedButEmpty.reasonCode, 'missing-phi-choices');
+  assert.equal(countedButEmpty.reasonCode, 'incomplete-phi-choices');
   const identified = await verifyGlobalEdgeReachability({
     entryBlock: 0, targetBlock: 5, targetEdge, pathCompleteness: 'complete',
-    backend: new ExhaustiveBvBackend(), globalScope: { ...scope, phiChoices: [{ complete: true, phi: 'p1', predecessor: 0 }] },
+    backend: new ExhaustiveBvBackend(), globalScope: {
+      ...scope,
+      phiChoices: [{ complete: true, phiId: 'p1', block: 5, predecessorBlock: 0, valueId: 'v1' }],
+    },
   });
   assert.equal(identified.verdict, 'proved');
 }
 
 // #3195 — waitForAppProducer collects abort between pre-check and subscribe.
 {
-  // The helper is module-private and the module touches window at import, so
-  // the regression is a source-anchored guard: the post-subscribe re-check
-  // that collects an abort between the pre-check and listener registration
-  // must stay present.
-  const { readFileSync } = await import('node:fs');
-  const source = readFileSync(new URL('../js/app.js', import.meta.url), 'utf8');
-  const helper = source.slice(source.indexOf('function waitForAppProducer'), source.indexOf('class App'));
-  assert.match(helper, /addEventListener\('abort', onAbort/);
-  assert.match(helper, /signal\?\.aborted && !done/, 'post-subscribe re-check must collect the late abort');
+  const { waitForAppProducer } = await import('../js/analysis/producer-wait.js');
+  let aborted = false;
+  let listenerRemoved = false;
+  let producerAbortReason = null;
+  const signal = {
+    get aborted() { return aborted; },
+    reason: 'late-consumer-abort',
+    addEventListener(type) {
+      assert.equal(type, 'abort');
+      // Model an abort that lands after waitForAppProducer's pre-check but
+      // before listener registration completes. AbortSignal does not replay
+      // that event to a listener which subscribed too late.
+      aborted = true;
+    },
+    removeEventListener(type) {
+      assert.equal(type, 'abort');
+      listenerRemoved = true;
+    },
+  };
+  const entry = {
+    settled: false,
+    waiters: 0,
+    promise: new Promise(() => {}),
+    controller: { abort(reason) { producerAbortReason = reason; } },
+  };
+  await assert.rejects(
+    waitForAppProducer(entry, signal),
+    (error) => error?.name === 'AbortError' && error?.code === 'ABORT_ERR',
+    'post-subscribe re-check must collect the late abort',
+  );
+  assert.equal(entry.waiters, 0, 'late-aborted consumer must detach exactly once');
+  assert.equal(listenerRemoved, true, 'late-aborted consumer must remove its listener');
+  assert.equal(producerAbortReason, 'analysis-producer-no-consumers',
+    'the last late-aborted consumer must cancel the producer');
 }
 
 // #3185 — agent tool field key is a strict non-empty primitive string.
@@ -294,9 +322,43 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 // #3006 — debugger module refresh treats malformed typed snapshots as changes.
 {
-  const { readFileSync } = await import('node:fs');
-  const source = readFileSync(new URL('../js/runtime/debugger-provider.js', import.meta.url), 'utf8');
-  assert.match(source, /malformed:\$\{typeof value\}/, 'sameModuleBinding must tag malformed scalar types');
+  const { DebuggerProvider } = await import('../js/runtime/debugger-provider.js');
+  let modules = [{
+    id: 'module:malformed-refresh',
+    base: 0x5000n,
+    size: 0x1000n,
+    pathHint: 'malformed:object',
+    binaryId: 'binary:refresh',
+    identityState: 'exact',
+  }];
+  const adapter = {
+    id: 'malformed-refresh',
+    kind: 'debugger',
+    capabilities: { modules: true },
+    connected: false,
+    async connect() { this.connected = true; },
+    async disconnect() { this.connected = false; },
+    async getModules() { return modules; },
+  };
+  const provider = new DebuggerProvider(adapter, { id: 'provider:malformed-refresh' });
+  const session = await provider.openSession({ binaryId: 'binary:refresh', sessionNonce: 'malformed-refresh' });
+  const before = session.modules.get('module:malformed-refresh');
+  assert.equal(before.generation, 1);
+  assert.equal(before.pathHint, 'malformed:object');
+
+  modules = [{
+    id: 'module:malformed-refresh',
+    base: 0x5000n,
+    size: 0x1000n,
+    pathHint: { malformed: true },
+    binaryId: 'binary:refresh',
+    identityState: 'exact',
+  }];
+  await session.facets.debugger.refreshModules();
+  const after = session.modules.get('module:malformed-refresh');
+  assert.equal(after.generation, 2, 'malformed structured identity must force refresh/revalidation');
+  assert.equal(after.pathHint, '[object Object]');
+  await session.close();
 }
 
 // #3003 — runtime authority epoch/sequence require primitive numbers.
