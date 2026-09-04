@@ -320,7 +320,7 @@ function allowedBaseRelocationTypes(machine) {
   if (machine === 0x014c) return new Set([1, 2, 3, 4]);
   if (machine === 0x8664) return new Set([1, 2, 3, 4, 10]);
   if (machine === 0x01c0 || machine === 0x01c4) return new Set([3, 5, 7]);
-  if (machine === 0xaa64 || machine === 0xa641) return new Set([4, 5, 6, 7, 8, 10]);
+  if (machine === 0xaa64 || machine === 0xa641) return new Set([4, 5, 7, 10]);
   return new Set([1, 2, 3, 4, 5, 6, 7, 8, 10]);
 }
 
