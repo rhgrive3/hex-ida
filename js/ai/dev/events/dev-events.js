@@ -88,9 +88,10 @@ export class DevRunEventHost {
 
 function normalizeEvent(event) {
   if (!event || typeof event !== 'object' || Array.isArray(event)) throw new TypeError('A structured Dev event is required.');
-  if (typeof event.type !== 'string' || !DEV_EVENT_TYPES.includes(event.type)) throw new TypeError(`Unsupported Dev event: ${event?.type}`);
+  const type = event.type;
+  if (typeof type !== 'string' || !DEV_EVENT_TYPES.includes(type)) throw new TypeError(`Unsupported Dev event: ${type}`);
   return deepFreeze({
-    type: event.type,
+    type,
     data: isPlainRecord(event.data) ? clonePlain(event.data) : {},
     observedAt: normalizeTimestamp(event.observedAt || new Date().toISOString()),
   });
