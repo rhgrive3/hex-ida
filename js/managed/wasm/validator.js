@@ -137,6 +137,9 @@ export function validateWasmFunctionTypes(funcIndex, wasmModule, options = {}) {
       case 0x0b: {
         const frame = currentFrame();
         if (!frame) fail('wasm-unmatched-end');
+        if (frame.kind === 'if' && !frame.elseSeen && !sameTypes(frame.params, frame.results)) {
+          fail('wasm-invalid-if-without-else-type');
+        }
         finishFrame(frame, 'wasm-invalid-block-result-stack');
         frames.pop();
         if (frame.kind === 'function') {

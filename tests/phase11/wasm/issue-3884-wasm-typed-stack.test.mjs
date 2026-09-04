@@ -62,6 +62,12 @@ assert.throws(
 );
 
 assert.throws(
+  () => liftWasmFunction(0, moduleWith([0x41, 0x00, 0x04, I32, 0x41, 0x01, 0x0b, 0x1a, 0x0b])),
+  /wasm-invalid-if-without-else-type/,
+  'an if without else must typecheck its implicit empty else branch',
+);
+
+assert.throws(
   () => liftWasmFunction(0, moduleWith([0x41, 0x00, 0x21, 0x00, 0x0b], { locals: [I64] })),
   /wasm-stack-type-mismatch/,
   'local.set must consume the declared local type',
