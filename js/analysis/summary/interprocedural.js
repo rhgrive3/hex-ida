@@ -214,6 +214,23 @@ export function solveInterproceduralSummaries({
   const models = libraryModels instanceof Map ? libraryModels : new Map(Object.entries(libraryModels ?? {}));
   if (!Array.isArray(roots) || roots.length === 0) fail('interprocedural-roots-required');
 
+  // Single identity boundary for the localSummaries input. The map key is the
+  // function the summary claims to describe; consuming a value whose own
+  // functionId contradicts its key would relabel another function's memory
+  // effects, escapes and return provenance as this function's facts
+  // (fail-closed rather than laundered through the output constructor).
+  // Validation happens when a summary is actually consumed, so identity is
+  // enforced on every solved path while unreachable entries stay inert
+  // (the solve remains demand-driven, P7-INV-009).
+  const localFor = (functionId) => {
+    const local = locals.get(functionId);
+    if (!local) fail('interprocedural-missing-local-summary');
+    if (typeof local.functionId !== 'string' || local.functionId !== functionId) {
+      fail('interprocedural-local-summary-identity-mismatch');
+    }
+    return local;
+  };
+
   const status = (completeness, stopReason) => createAnalysisStatus({
     snapshotId,
     analyzerId: INTERPROCEDURAL_ANALYZER_ID,
@@ -278,7 +295,7 @@ export function solveInterproceduralSummaries({
       totalIterations += 1;
       changed = false;
       for (const functionId of component) {
-        const next = composeSummary({ functionId, locals, models, solved, component, limits, status });
+        const next = composeSummary({ functionId, locals, models, solved, component, limits, status, localFor });
         const digest = functionSummaryDigest(next);
         if (componentDigests.get(functionId) !== digest) {
           componentDigests.set(functionId, digest);
@@ -296,7 +313,7 @@ export function solveInterproceduralSummaries({
       // result instead of a plausible-looking complete one (P7-INV-010).
       for (const functionId of component) {
         solved.set(functionId, composeSummary({
-          functionId, locals, models, solved, component, limits, status, unconverged: true,
+          functionId, locals, models, solved, component, limits, status, unconverged: true, localFor,
         }));
       }
       worstStopReason = 'iteration-limit';
@@ -319,9 +336,10 @@ export function solveInterproceduralSummaries({
   };
 }
 
-function composeSummary({ functionId, locals, models, solved, component, limits, status, unconverged = false }) {
-  const local = locals.get(functionId);
-  if (!local) fail('interprocedural-missing-local-summary');
+function composeSummary({ functionId, locals, models, solved, component, limits, status, unconverged = false, localFor }) {
+  const local = localFor
+    ? localFor(functionId)
+    : (locals.get(functionId) || fail('interprocedural-missing-local-summary'));
 
   const reads = [local.memoryReadRegions];
   const writes = [local.memoryWriteRegions];
