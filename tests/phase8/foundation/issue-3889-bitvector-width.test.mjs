@@ -6,7 +6,11 @@ import {
   bitvector,
   evaluateBinary,
   extractField,
+  insertField,
   isSupportedWidth,
+  maxSigned,
+  maxUnsigned,
+  minSigned,
   signExtend,
   truncate,
   unsignedOf,
@@ -44,6 +48,13 @@ test('issue #3889: exact bitvector widths require supported primitive integers',
   assert.throws(() => bitvector(1n, viaValueOf), TypeError);
   assert.throws(() => bitvector(1n, viaPrimitive), TypeError);
   assert.throws(() => unsignedOf(1n, '32'), TypeError);
+  assert.throws(() => maxUnsigned('8'), TypeError);
+  assert.throws(() => minSigned([8]), TypeError);
+  assert.throws(() => maxSigned(true), TypeError);
+
+  assert.equal(maxUnsigned(8), 0xffn);
+  assert.equal(minSigned(8), -0x80n);
+  assert.equal(maxSigned(8), 0x7fn);
 });
 
 test('issue #3889: valid arithmetic still wraps at the declared width', () => {
@@ -59,9 +70,12 @@ test('issue #3889: extension and field helpers do not launder malformed widths',
   assert.equal(signExtend(value, '32'), null);
   assert.equal(extractField(value, 0, '8'), null);
   assert.equal(extractField(value, 0, [8]), null);
+  assert.equal(insertField(value, { bits: '8', value: 1n }, 0), null);
+  assert.equal(insertField({ bits: '8', value: 0n }, value, 0), null);
 
   assert.deepEqual(truncate(value, 8), value);
   assert.deepEqual(zeroExtend(value, 16), bitvector(0xffn, 16));
   assert.deepEqual(signExtend(value, 16), bitvector(0xffffn, 16));
   assert.deepEqual(extractField(value, 0, 8), value);
+  assert.deepEqual(insertField(bitvector(0n, 8), bitvector(0xfn, 8), 0), bitvector(0xfn, 8));
 });
