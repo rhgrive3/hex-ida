@@ -60,4 +60,4 @@ test('P10 DebugSession binds untagged adapter callbacks to subscription epoch (#
   assert.deepEqual(session.traces.snapshot().events.map((event)=>event.pc),['0x3002']);
 
   await session.disconnect();
-}));
+});
