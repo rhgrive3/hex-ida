@@ -1,11 +1,12 @@
 # T046 pre-fanout evidence
 
-Status: `PREFLIGHT_PENDING_EXACT_HEAD`
+Status: `PREFLIGHT_GREEN`
 
 This packet records the ten mandatory conditions in
-`docs/ENGINEERING_PROCESS_GUARDRAILS.md` §3.1. It MUST NOT be promoted to
-`PREFLIGHT_GREEN` until the permanent workflow is green on the exact living PR
-head and current `origin/main` base.
+`docs/ENGINEERING_PROCESS_GUARDRAILS.md` §3.1. The certified pre-transition
+candidate is commit `99c45ca70abed87f203b3428d40568c556d46616`, tree
+`853fb1977f0772e71233b706b0faa82e02ed02fe`, on base
+`7012c4cc4f0d5c0d8a7ca44c6c5c1edcb080aba1`.
 
 | §3.1 condition | Current evidence | State |
 |---|---|---|
@@ -13,9 +14,9 @@ head and current `origin/main` base.
 | Machine-checkable exit contract | `spec.md`, `tasks.md`, closure/performance/platform contracts | SATISFIED |
 | Frozen/shared/generated/verifier/integration/component ownership | `contracts/task-ownership.json` plus exact integration inventory | SATISFIED |
 | Living integration branch/PR | `recovery/final-closure-20260904`, PR #6429 | SATISFIED |
-| Permanent exact-SHA invocation | `.github/workflows/final-closure-preflight.yml`, including exact head and live base | LOCAL_PASS_PENDING_HOSTED |
-| Ownership/governance regressions | canonical recursive `tests/final-closure/run.mjs` | LOCAL_PASS_PENDING_HOSTED |
-| Real production walking skeleton | unchanged `tests/phase4/walking-skeleton.test.mjs` | LOCAL_PASS_PENDING_HOSTED |
+| Permanent exact-SHA invocation | `.github/workflows/final-closure-preflight.yml`, run `33903574803`, exact head/base above | SATISFIED |
+| Ownership/governance regressions | canonical recursive `tests/final-closure/run.mjs` on the exact head | SATISFIED |
+| Real production walking skeleton | unchanged `tests/phase4/walking-skeleton.test.mjs` on the exact head | SATISFIED |
 | Target browser/device proof | frozen production-WebKit and physical-iPad ≤4 GiB classes in `contracts/final-platform-locks.json` | SATISFIED |
 | Moving-main reconciliation owner | SOL Ultra integration owner in `tasks.md` and ownership contract | SATISFIED |
 | Evidence invalidation set | head/tree/base/merge-tree/verifier/corpus/toolchain/runtime/deployment/generated identities | SATISFIED |
@@ -23,8 +24,10 @@ head and current `origin/main` base.
 The verifier fails closed on a dirty tree, moved head, advanced base, missing
 ancestry, a non-identical merge tree, changed paths outside the exact inventory
 or owner allowlist, mutable action dependencies, and any drift in the frozen H9
-denominator. Component tasks T011–T017/T051–T057 remain blocked while this file has any
-pending row.
+denominator. All ten pre-fanout rows are satisfied. Component implementation is
+authorized only after the unique T046 first-`DONE` transition records this
+pre-transition handoff; the broader repository reds remain owned by T051–T057
+and are not misclassified as T046 success.
 
 ## Original workspace preservation lock
 
@@ -51,10 +54,10 @@ must be re-observed explicitly rather than silently attributed to the campaign.
 }
 ```
 
-## T046 executable proof contract (pending)
+## T046 executable proof contract (satisfied)
 
-T046 remains `PREFLIGHT_PENDING_EXACT_HEAD` until the repaired executable
-contract has a fresh independent exact-tree review and hosted exact-head proof.
+The repaired executable contract has an independent exact-tree review and a
+hosted exact-head proof for the certified identity above.
 The rolling checkpoint is one immutable transaction, not a set of hashes
 assembled from unrelated commits:
 
@@ -148,35 +151,33 @@ any later applicability change.
 | EP-029 | APPLICABLE | T012 owns hostile Proxy/accessor/intrinsic and immutable-publication regressions before semantic identity can become exact. |
 | EP-030 | APPLICABLE | Spec Kit tasks, recovery/roadmap matrices, this preflight packet, and per-transition exact evidence form the durable resume checkpoint. |
 
-## Local candidate evidence before hosted promotion
+## Exact candidate evidence
 
-The following values are historical pre-remediation observations, not current
-promotion evidence. They are retained for auditability and deliberately remain
-pending until the repaired exact tree is rerun:
-
-- Canonical recursive runner: current working-tree diagnostic PASS (`20/20`
-  discovered test files; `final closure preflight regression: PASS`). Exact
-  committed-head rerun remains `PENDING`.
-- Unchanged Phase 4 production walking skeleton: current working-tree diagnostic
-  PASS. Exact committed-head rerun remains `PENDING`.
-- Repository lint: current working-tree diagnostic PASS (`1816` files). Exact
-  committed-head rerun remains `PENDING`.
-- Expected/actual/union inventory: the historical pre-amendment recomputation
-  was exact `27/27`, digest `6591da4cf78352128e02b1fe6990937d`.
-  The reconciled working tree now freezes `32/32` paths; recompute it on the exact
-  committed head, and do not accept either historical observation as final
-  proof.
-- Fixed central shadow judges: current working-tree diagnostic PASS (`19/19`;
-  38 separately spawned oracle/product provider invocations). Exact
-  committed-head replay remains `PENDING`.
-- Raw T025 binding and canonical-anchor attacks: current working-tree diagnostic
-  PASS for invalid-byte matrix substitution, coordinated current-handoff rewrite,
-  and reversed-parent merge re-anchoring. The anchor is recovered from the unique
-  full-DAG DONE transition.
-- Independent Sol adversarial review: two fresh read-only reviews PASS on the
-  repaired current tree, including proof that the reversed-parent regression
-  fails the former first-parent implementation. Exact committed-head review is
-  still `PENDING`.
-- Hosted exact-head/base workflow: `PENDING`. No component fanout is authorized
-  until the fresh review and hosted workflow are green on the final pushed T046
-  head.
+- Direct exact CLI: `PREFLIGHT_GREEN` for head
+  `99c45ca70abed87f203b3428d40568c556d46616`, tree/merge tree
+  `853fb1977f0772e71233b706b0faa82e02ed02fe`, and base/merge base
+  `7012c4cc4f0d5c0d8a7ca44c6c5c1edcb080aba1`; verifier SHA-256
+  `d31c1df716fbe59701df6c16657d4e468b48c90b08b15af0ce1c2cf4abd7470c`.
+- Canonical recursive runner: `final-closure: PASS (2/2 discovered test files)`
+  on the exact committed head. It covers the fixed central shadow judges,
+  denominator attacks, raw T025 binding, immutable task anchors, recovery-ref
+  transactions, hostile path decoding, and ownership regressions.
+- Unchanged Phase 4 production walking skeleton: PASS on the exact committed
+  head. Repository lint: PASS on that head.
+- Expected/actual/union inventory: exact `32/32`, digest
+  `f50d499c508ea7c2a4cee3d1c45ed4a1`; task and ownership denominators are
+  `57/57`.
+- Independent Luna Max review: the executable/code surface was reviewed at
+  `1056677cf4a44dfb87a37e625e056356b17c38af`; every code, workflow, package,
+  test, and verifier blob is byte-identical at the certified head. A separate
+  Luna Max review inspected the four intervening Spec Kit/evidence blobs on
+  exact head `99c45ca70abed87f203b3428d40568c556d46616`; both reviews returned PASS,
+  and the supervisor independently verified the zero code diff and 32-path
+  inventory.
+- Hosted exact-head/base workflow: run `33903574803` succeeded for exact head
+  `99c45ca70abed87f203b3428d40568c556d46616`; `pull-request-authority` and
+  `integration-pull-request-head` passed, while the dispatch/component jobs were
+  correctly inapplicable and skipped.
+- CodeRabbit: exact-head check passed; all 18 review threads are resolved. The
+  H9 collector finding is assigned to post-T048 T045, and the raw-observer
+  counter finding was withdrawn after central-verifier rederivation was proven.
