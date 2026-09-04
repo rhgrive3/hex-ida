@@ -1,0 +1,281 @@
+{
+  "schemaVersion": "hex-final-closure-task-ownership/v1",
+  "globalForbidden": [
+    "paths outside the task's Owned paths contract",
+    "paths owned by a concurrently active task",
+    "generated outputs unless the task explicitly names SOL Ultra as integration owner",
+    "force updates or deletion of main, recovery, user, or unrelated refs",
+    "mutation of the original workspace or unrelated dirty/untracked state"
+  ],
+  "tasks": {
+    "T001": {
+      "forbiddenOverlap": ["production, test, generated-output, and Git ref mutation"]
+    },
+    "T002": {
+      "forbiddenOverlap": ["production, test, generated-output, and Git ref mutation"]
+    },
+    "T003": {
+      "forbiddenOverlap": ["production, test, generated-output, and Git ref mutation"]
+    },
+    "T004": {
+      "forbiddenOverlap": ["production/test edits and mutation of recovery refs"]
+    },
+    "T005": {
+      "forbiddenOverlap": ["source/test edits and lifecycle mutation of unrelated PRs or branches"]
+    },
+    "T006": {
+      "forbiddenOverlap": ["production/test edits and implementation inferred only from roadmap prose"]
+    },
+    "T007": {
+      "forbiddenOverlap": ["production/test edits and self-approval of reviewer-owned checklist rows"]
+    },
+    "T008": {
+      "forbiddenOverlap": ["production/test/generated-output edits before a CLEAN consistency result"]
+    },
+    "T009": {
+      "forbiddenOverlap": ["all paths outside specs/005-analysis-final-closure and any production delta"]
+    },
+    "T010": {
+      "forbiddenOverlap": ["production/test edits and weakening the reproduced decompiler assertion"]
+    },
+    "T011": {
+      "forbiddenOverlap": [
+        "tests/phase8/performance/**",
+        "T012 analysis-identity.js, valuenumber.js, and hostile-identity tests",
+        "T017 MachineEffects, competitive, and non-memory compatibility paths",
+        "all generated outputs"
+      ]
+    },
+    "T012": {
+      "forbiddenOverlap": [
+        "T011 decompiler stack-return and private memory-projection paths",
+        "tests/phase8/performance/**",
+        "T017 MachineEffects and competitive paths",
+        "all generated outputs"
+      ]
+    },
+    "T013": {
+      "forbiddenOverlap": [
+        "T011 stack-return and private memory-projection source ownership",
+        "T012 hostile semantic-identity correctness ownership",
+        "performance threshold or denominator changes",
+        "all generated outputs"
+      ]
+    },
+    "T014": {
+      "forbiddenOverlap": [
+        "decompiler, MachineEffects, loader, and generated-output paths",
+        "canonical Phase 9 profile migration reserved to T032"
+      ]
+    },
+    "T015": {
+      "forbiddenOverlap": [
+        "T016 discovery artifact and rebuild-transaction ownership",
+        "unreconciled overlapping PR paths",
+        "all generated outputs"
+      ]
+    },
+    "T016": {
+      "forbiddenOverlap": [
+        "T015 Apple knowledge and Mach-O metadata ownership",
+        "unreconciled overlapping PR paths",
+        "all generated outputs"
+      ]
+    },
+    "T017": {
+      "forbiddenOverlap": [
+        "T011 operand-forwarding.js and semantic-ir-v2-to-v1-memory.js private projection paths",
+        "T014 symbolic solver paths",
+        "a second MachineEffects or oracle authority and any active ME branch other than reconciled #3425",
+        "all generated outputs"
+      ]
+    },
+    "T018": {
+      "forbiddenOverlap": ["production/test/generated-output edits; defects return to T011-T017 owners"]
+    },
+    "T019": {
+      "forbiddenOverlap": ["production/test/generated-output edits and reviewer self-approval"]
+    },
+    "T020": {
+      "forbiddenOverlap": [
+        "manual edits to generated output",
+        "generated-output commits by any owner other than SOL Ultra acting as integration owner",
+        "source changes outside the canonical generator"
+      ]
+    },
+    "T021": {
+      "forbiddenOverlap": ["production/generated-output edits; failures return to their canonical owners"]
+    },
+    "T022": {
+      "forbiddenOverlap": [
+        "unrelated PR or branch lifecycle mutation",
+        "component feature implementation",
+        "manual review dismissal without technical evidence"
+      ]
+    },
+    "T023": {
+      "forbiddenOverlap": ["component feature implementation and reconciliation by any owner other than SOL Ultra"]
+    },
+    "T024": {
+      "forbiddenOverlap": [
+        "force push or direct unprotected main update",
+        "recovery-ref deletion or rewrite",
+        "original-workspace mutation"
+      ]
+    },
+    "T025": {
+      "forbiddenOverlap": ["production/test edits and status copied from the preliminary roadmap inventory"]
+    },
+    "T026": {
+      "forbiddenOverlap": [
+        "MachineEffects implementation owned by T027",
+        "writer/rebuild or decompiler engines",
+        "all generated outputs"
+      ]
+    },
+    "T027": {
+      "forbiddenOverlap": [
+        "competitive fixture ownership retained by T026",
+        "T011 private memory-projection paths",
+        "all generated outputs"
+      ]
+    },
+    "T028": {
+      "forbiddenOverlap": [
+        "T011 stack-return implementation",
+        "T029 equivalence authority and T030 structuring owner",
+        "all generated outputs"
+      ]
+    },
+    "T029": {
+      "forbiddenOverlap": [
+        "T028 provenance owner, T030 structuring owner, and T031 e-graph generator",
+        "direct unproved transform publication",
+        "all generated outputs"
+      ]
+    },
+    "T030": {
+      "forbiddenOverlap": [
+        "T029 equivalence authority and T031 e-graph candidate generator",
+        "symbolic solver ownership",
+        "all generated outputs"
+      ]
+    },
+    "T031": {
+      "forbiddenOverlap": [
+        "T029 proof/adoption authority and direct rendered publication",
+        "T013 Phase 8 performance ownership",
+        "all generated outputs"
+      ]
+    },
+    "T032": {
+      "forbiddenOverlap": [
+        "T033 symbolic memory and T034 taint ownership",
+        "decompiler or MachineEffects paths",
+        "all generated outputs"
+      ]
+    },
+    "T033": {
+      "forbiddenOverlap": [
+        "canonical MemorySSA reimplementation",
+        "T032 solver/profile and T034 taint ownership",
+        "all generated outputs"
+      ]
+    },
+    "T034": {
+      "forbiddenOverlap": [
+        "T032 solver and T033 symbolic-memory ownership",
+        "T029 equivalence authority",
+        "all generated outputs"
+      ]
+    },
+    "T035": {
+      "forbiddenOverlap": [
+        "T036 Apple/Mach-O implementation",
+        "a second discovery or rebuild engine",
+        "all generated outputs"
+      ]
+    },
+    "T036": {
+      "forbiddenOverlap": [
+        "T035 discovery artifact ownership",
+        "a second loader/writer engine",
+        "all generated outputs"
+      ]
+    },
+    "T037": {
+      "forbiddenOverlap": ["feature implementation; regressions return to the canonical component owner"]
+    },
+    "T038": {
+      "forbiddenOverlap": ["production/test/generated-output edits and unsupported roadmap completion claims"]
+    },
+    "T039": {
+      "forbiddenOverlap": ["feature implementation and reviewer self-approval; defects return to canonical owners"]
+    },
+    "T040": {
+      "forbiddenOverlap": [
+        "collector/schema implementation owned by T045",
+        "threshold or denominator changes",
+        "simulated evidence substituted for physical-device proof",
+        "generated-output commits"
+      ]
+    },
+    "T041": {
+      "forbiddenOverlap": [
+        "manual generated-output edits",
+        "generated-output commits by any owner other than SOL Ultra acting as integration owner",
+        "production feature changes outside the canonical generator"
+      ]
+    },
+    "T042": {
+      "forbiddenOverlap": ["silent feature implementation outside appended convergence tasks and generated-output edits"]
+    },
+    "T043": {
+      "forbiddenOverlap": [
+        "unrelated PR or branch mutation",
+        "review/check waiver without evidence",
+        "component feature implementation"
+      ]
+    },
+    "T044": {
+      "forbiddenOverlap": [
+        "force push or direct unprotected main update",
+        "recovery-ref deletion or rewrite",
+        "original-workspace mutation"
+      ]
+    },
+    "T045": {
+      "forbiddenOverlap": [
+        "duplicate ByteSource, scheduler, renderer, or profiler engines",
+        "T040 exact-final evidence execution ownership",
+        "threshold relaxation and generated-output commits"
+      ]
+    },
+    "T046": {
+      "forbiddenOverlap": [
+        "all paths except .github/workflows/final-closure-preflight.yml, tools/validation/final-closure/preflight.mjs, tests/final-closure/preflight.test.mjs, the campaign PR, and evidence/pre-fanout.md",
+        "modification of the read-only tests/phase4/walking-skeleton.test.mjs production-chain gate",
+        "T011-T017 component feature implementation or component fanout before PREFLIGHT_GREEN",
+        "candidate merge or component promotion before PREFLIGHT_GREEN",
+        "generated-output mutation",
+        "unrelated PR or branch lifecycle mutation"
+      ]
+    },
+    "T047": {
+      "forbiddenOverlap": [
+        "all actions except creating one new clean Stage B branch/worktree at the refetched post-Stage-A main and recording its evidence",
+        "reuse of the Stage A campaign worktree, an old campaign branch, or a pre-merge main base",
+        "production/test/generated-output edits",
+        "mutation of the original workspace, recovery refs, merged Stage A worktree, or unrelated refs"
+      ]
+    },
+    "T048": {
+      "forbiddenOverlap": [
+        "all paths except specs/005-analysis-final-closure/tasks.md and evidence/stage-b-residual-coverage.md",
+        "production/test/generated-output edits and Git ref/worktree mutation",
+        "feature implementation before STAGE_B_FANOUT_GREEN",
+        "forcing an uncovered residual into an unrelated task"
+      ]
+    }
+  }
+}

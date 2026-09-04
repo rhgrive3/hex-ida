@@ -1,0 +1,215 @@
+{
+  "schemaVersion": "hex-final-closure-performance-locks/v1",
+  "frozenAtInitialMain": "47f8a44469a5826b6199501a153a12439a280d13",
+  "identityAlgorithm": {
+    "name": "stableDigest-fnv64x2-stable-json",
+    "sourcePath": "js/core/identity/index.js",
+    "sourceGitBlobSha1": "588cd4ef371198daf4dd1eb8f5dc218fd26ba853",
+    "sourceSha256": "d2e2a3e6b646bdb3f996fbfbae23e3735daba87186a1243c562a4e06e2b82b5a"
+  },
+  "profiles": {
+    "P-SYM01": {
+      "schemaVersion": "hex-sym01-performance-lock/v1",
+      "wideQueries": [
+        {
+          "descriptor": {
+            "schemaVersion": "hex-sym01-wide-query/v1",
+            "id": "sym01-wide-sat-add-wrap-bv32-v1",
+            "widthBits": 32,
+            "symbolName": "metrics_x_32",
+            "operation": "bvadd",
+            "addend": "1",
+            "comparison": "eq",
+            "rhs": "0",
+            "expectedStatus": "sat",
+            "timeoutMs": 5000
+          },
+          "stableDigest": "16f00218cb22e15b40a44d6c587c8822"
+        },
+        {
+          "descriptor": {
+            "schemaVersion": "hex-sym01-wide-query/v1",
+            "id": "sym01-wide-sat-add-wrap-bv64-v1",
+            "widthBits": 64,
+            "symbolName": "metrics_x_64",
+            "operation": "bvadd",
+            "addend": "1",
+            "comparison": "eq",
+            "rhs": "0",
+            "expectedStatus": "sat",
+            "timeoutMs": 5000
+          },
+          "stableDigest": "31283cdf6ccf49b4501adb7f633e2fb9"
+        }
+      ],
+      "wideQueryPair": {
+        "descriptor": {
+          "schemaVersion": "hex-sym01-wide-query-pair/v1",
+          "id": "sym01-wide-32-64-pair-v1",
+          "queryDigests": [
+            "16f00218cb22e15b40a44d6c587c8822",
+            "31283cdf6ccf49b4501adb7f633e2fb9"
+          ],
+          "queryCount": 2
+        },
+        "stableDigest": "3a8e14f866286d3d8e22c183339a4a3c"
+      },
+      "differentialGenerator": {
+        "descriptor": {
+          "schemaVersion": "hex-sym01-qfbv-differential/v1",
+          "id": "sym01-qfbv-1-8-complete-v1",
+          "sourcePath": "tests/phase9/solver/bitblast-full-differential.test.mjs",
+          "sourceGitBlobSha1": "60eebc653e0a1899daf78ec29364bcc9d4703571",
+          "sourceSha256": "d6a1f97c04904714c7f7881b5e5c73a0886a9d31094779e73b12f04567d46348",
+          "widths": [1, 2, 3, 4, 5, 6, 7, 8],
+          "corpusCardinalityByWidth": [2, 4, 6, 7, 7, 7, 7, 7],
+          "operatorCounts": {
+            "bitvectorBinary": 13,
+            "bitvectorCompare": 10,
+            "bitvectorUnary": 2,
+            "booleanConnective": 7
+          },
+          "seededPrng": {
+            "algorithm": "xorshift32",
+            "seedHex": "0x6d2b79f5",
+            "formulaCount": 96,
+            "contradictionCount": 96,
+            "maxDepth": 4
+          },
+          "deterministicQueryCount": 14430,
+          "seededQueryCount": 192,
+          "totalQueryCount": 14622,
+          "backendResultCount": 29244,
+          "oracleBackends": [
+            "BitBlastBvBackend",
+            "ExhaustiveBvBackend"
+          ]
+        },
+        "stableDigest": "c3c9fa9d9632c42bdcb15d4d352e5732"
+      },
+      "recoveryEvidenceSources": [
+        {
+          "path": "tests/phase9/solver/tiered-performance.test.mjs",
+          "gitBlobSha1": "f8eb1f1d47fefa78a74b75efa1fa129a8d7dfbc4",
+          "sha256": "bcbbb21efc5f7e29ad7dc89bc89d25288866891b4f7240e82d6fd3583cb3ff08"
+        },
+        {
+          "path": "tools/validation/phase9/tiered-solver-metrics.mjs",
+          "gitBlobSha1": "2bef1d4008309f962b70f557a91ca80f4329c5f0",
+          "sha256": "f98c8b284deb625da6aa66f92f2bf04034d522a23bf4bf327c67f9a8577482a2"
+        }
+      ],
+      "blockingThresholds": [
+        { "metric": "cnfVariables", "unit": "count", "operator": "<=", "threshold": 400000 },
+        { "metric": "cnfClauses", "unit": "count", "operator": "<=", "threshold": 1600000 },
+        { "metric": "decisions", "unit": "count", "operator": "<=", "threshold": 500000 },
+        { "metric": "propagations", "unit": "count", "operator": "<=", "threshold": 8000000 }
+      ],
+      "informationalMetrics": [
+        { "metric": "startupMilliseconds", "unit": "milliseconds", "operator": ">=", "threshold": 0 },
+        { "metric": "solveMilliseconds", "unit": "milliseconds", "operator": ">=", "threshold": 0 },
+        { "metric": "heapDeltaBytes", "unit": "bytes", "operator": ">=", "threshold": 0 },
+        { "metric": "rssDeltaBytes", "unit": "bytes", "operator": ">=", "threshold": 0 }
+      ]
+    },
+    "P-EGRAPH": {
+      "schemaVersion": "hex-egraph-performance-lock/v1",
+      "fixtureSet": {
+        "descriptor": {
+          "schemaVersion": "hex-egraph-fixture-set/v1",
+          "id": "egraph-pure-bv-rules-v1",
+          "cases": [
+            "bv8-add-zero",
+            "bv32-xor-self",
+            "bv64-and-all-ones",
+            "bv32-shift-boundary",
+            "bv16-ub-div-zero",
+            "bv32-memory-effect-barrier",
+            "bv32-width-mismatch",
+            "bv8-cancel-replay"
+          ],
+          "caseCount": 8
+        },
+        "stableDigest": "d26e97c37f47fb178466bc74be740558"
+      },
+      "blockingThresholds": [
+        { "metric": "inputNodes", "unit": "nodes", "operator": "<=", "threshold": 2048 },
+        { "metric": "eNodes", "unit": "nodes", "operator": "<=", "threshold": 4096 },
+        { "metric": "eClasses", "unit": "classes", "operator": "<=", "threshold": 2048 },
+        { "metric": "saturationIterations", "unit": "iterations", "operator": "<=", "threshold": 8 },
+        { "metric": "ruleApplications", "unit": "applications", "operator": "<=", "threshold": 8192 },
+        { "metric": "workItems", "unit": "items", "operator": "<=", "threshold": 50000 },
+        { "metric": "extractedCandidates", "unit": "candidates", "operator": "<=", "threshold": 32 },
+        { "metric": "phase8OptimizeStage", "unit": "milliseconds", "operator": "<=", "threshold": 120 }
+      ],
+      "budgetOutcome": "budget-or-cancellation returns no candidate and cannot publish a rewrite"
+    },
+    "P-SYMMEM": {
+      "schemaVersion": "hex-symbolic-memory-performance-lock/v1",
+      "fixtureSet": {
+        "descriptor": {
+          "schemaVersion": "hex-symbolic-memory-fixture-set/v1",
+          "id": "symbolic-byte-memory-v1",
+          "cases": [
+            "little-endian-full-load",
+            "big-endian-full-load",
+            "partial-overwrite",
+            "concrete-to-symbolic-escalation",
+            "may-alias-fork",
+            "unknown-clobber",
+            "volatile-barrier",
+            "atomic-barrier",
+            "cancel-replay"
+          ],
+          "caseCount": 9
+        },
+        "stableDigest": "d9f09ee18a64760b2b177646b4d6aee0"
+      },
+      "blockingThresholds": [
+        { "metric": "paths", "unit": "paths", "operator": "<=", "threshold": 16 },
+        { "metric": "stepsPerPath", "unit": "steps", "operator": "<=", "threshold": 2000 },
+        { "metric": "branches", "unit": "branches", "operator": "<=", "threshold": 32 },
+        { "metric": "blockVisitsPerBlock", "unit": "visits", "operator": "<=", "threshold": 3 },
+        { "metric": "concreteMemoryBytes", "unit": "bytes", "operator": "<=", "threshold": 65536 },
+        { "metric": "symbolicMemoryCells", "unit": "cells", "operator": "<=", "threshold": 4096 },
+        { "metric": "storeHistoryEntries", "unit": "entries", "operator": "<=", "threshold": 4096 },
+        { "metric": "aliasForks", "unit": "forks", "operator": "<=", "threshold": 16 },
+        { "metric": "wallClock", "unit": "milliseconds", "operator": "<=", "threshold": 250 }
+      ],
+      "budgetOutcome": "budget-or-cancellation preserves an explicit partial/unknown execution result"
+    },
+    "P-TAINT": {
+      "schemaVersion": "hex-taint-performance-lock/v1",
+      "fixtureSet": {
+        "descriptor": {
+          "schemaVersion": "hex-taint-fixture-set/v1",
+          "id": "symbolic-taint-proof-v1",
+          "cases": [
+            "explicit-data-flow",
+            "implicit-control-flow",
+            "byte-memory-flow",
+            "known-sanitizer",
+            "unknown-sanitizer",
+            "may-alias-store",
+            "proof-timeout",
+            "cancel-replay",
+            "proven-deobfuscation"
+          ],
+          "caseCount": 9
+        },
+        "stableDigest": "fcbc5318d9ece6eca31de1180edcb92d"
+      },
+      "blockingThresholds": [
+        { "metric": "latticeValues", "unit": "values", "operator": "<=", "threshold": 100000 },
+        { "metric": "flowEdges", "unit": "edges", "operator": "<=", "threshold": 200000 },
+        { "metric": "workItems", "unit": "items", "operator": "<=", "threshold": 1000000 },
+        { "metric": "updatesPerValue", "unit": "updates", "operator": "<=", "threshold": 8 },
+        { "metric": "sources", "unit": "sources", "operator": "<=", "threshold": 4096 },
+        { "metric": "sinks", "unit": "sinks", "operator": "<=", "threshold": 4096 },
+        { "metric": "emittedRecords", "unit": "records", "operator": "<=", "threshold": 100000 },
+        { "metric": "phase8OptimizeStage", "unit": "milliseconds", "operator": "<=", "threshold": 120 }
+      ],
+      "budgetOutcome": "budget, unknown sanitizer, incomplete aliasing, or missing equivalence proof withholds deobfuscation"
+    }
+  }
+}

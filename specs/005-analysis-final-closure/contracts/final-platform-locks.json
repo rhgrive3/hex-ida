@@ -1,0 +1,350 @@
+{
+  "schemaVersion": "hex-final-platform-performance-lock/v1",
+  "frozenAtInitialMain": "47f8a44469a5826b6199501a153a12439a280d13",
+  "sourceRequirement": {
+    "path": "docs/POST_PHASE_COMPLETION_100_PERCENT_HARDENING.md",
+    "section": "H9 — Performance and memory are release contracts"
+  },
+  "requiredRowPolicy": {
+    "missingCandidateRow": "BLOCK_RELEASE",
+    "candidateResultUnmeasured": "BLOCK_RELEASE",
+    "candidateIdentityInvalid": "BLOCK_RELEASE",
+    "missingNumericTarget": "BLOCK_RELEASE",
+    "thresholdMiss": "BLOCK_RELEASE",
+    "historicalBaselineUnmeasured": "ALLOWED_AS_FREEZE_RECORD_ONLY_AND_NEVER_SATISFIES_CANDIDATE_TARGET"
+  },
+  "identityRequirements": [
+    "candidateCommitSha",
+    "candidateTreeSha",
+    "buildIdentity",
+    "runtimeIdentity",
+    "fixtureSetDigest",
+    "exactFixtureSha256",
+    "runtimeClass",
+    "browserOrWebKitVersion",
+    "measurementHarnessDigest",
+    "rawSampleDigest"
+  ],
+  "runtimeClasses": [
+    {
+      "id": "production-faithful-webkit-v1",
+      "required": true,
+      "requirements": [
+        "actual WebKit engine",
+        "production origin and same-origin iframe topology",
+        "generated userscript/runtime activation identity",
+        "exact browser and operating-system versions"
+      ]
+    },
+    {
+      "id": "physical-ipad-supported-floor-v1",
+      "required": true,
+      "requirements": [
+        "physical iPad, not emulation or a user-agent override",
+        "an actively supported iPadOS release",
+        "device has no more than 4 GiB physical memory",
+        "exact model, chip, memory, iPadOS and WebKit versions",
+        "exact deployed build/runtime identity"
+      ]
+    }
+  ],
+  "measurementProtocol": {
+    "latencyClock": "monotonic Performance API timestamps captured by the production scenario",
+    "physicalPeakMemory": "maximum process footprint in bytes captured by an attached Apple Instruments memory trace; record Instruments/Xcode version and trace digest",
+    "retainedMemory": "application-owned retained-byte counters captured at scenario boundaries",
+    "readWork": "canonical ByteSource range-read and requested-byte counters",
+    "cancellation": "request-to-settlement monotonic duration plus zero late publication",
+    "sampleRetention": "retain every raw sample and its stable digest; summaries cannot replace samples"
+  },
+  "denominator": {
+    "schemaVersion": "hex-final-platform-denominator/v1",
+    "fixtureSet": {
+      "descriptor": {
+        "schemaVersion": "hex-final-platform-fixtures/v1",
+        "id": "final-platform-representative-fixtures-v1",
+        "fixtures": [
+          {
+            "id": "battlecats-heavy-macho",
+            "class": "heavyweight-macho",
+            "sizeBytes": 28153072,
+            "sha256": "567234909b2a33d62548257c4148290d9215d7edf414fa17c6b06fcf8c7cdf13"
+          },
+          {
+            "id": "tsumtsum-macho",
+            "class": "real-macho",
+            "sizeBytes": 45994784,
+            "sha256": "4f877bb1d4e1503b439ce07c601a1fddd6a38a6f32395bfd3071b056f77839b3"
+          },
+          {
+            "id": "ywp-macho",
+            "class": "real-macho-large",
+            "sizeBytes": 63455952,
+            "sha256": "cd1c72a30ba29f423a670f9e534c8865689ca09890769a95822869c162d240a6"
+          },
+          {
+            "id": "vertical-sysv-amd64",
+            "class": "elf",
+            "path": "tests/phase5/corpus/fixtures/vertical-sysv-amd64.elf",
+            "sizeBytes": 13576,
+            "sha256": "f15e43a89b3d4f8b97850ae4054383fe04fecdac80a4e3555c354b46ea1f4f06"
+          },
+          {
+            "id": "vertical-microsoft-x64",
+            "class": "pe",
+            "path": "tests/phase5/corpus/fixtures/vertical-microsoft-x64.exe",
+            "sizeBytes": 2560,
+            "sha256": "56d4a609ef0f5980742065866263b2784a5652d08898dd861310c5cb1732d071"
+          },
+          {
+            "id": "managed-wasm-real",
+            "class": "wasm",
+            "path": "tests/stage2/fixtures/managed-real/wasm/managed_fixture.wasm",
+            "sizeBytes": 80,
+            "sha256": "6f1b5f76fa61bf7429c8e2e83cdb9a7ec9bb182e679165522eaa7e644f72174c"
+          },
+          {
+            "id": "managed-dex-real",
+            "class": "dex",
+            "path": "tests/stage2/fixtures/managed-real/dex/ManagedFixture.dex",
+            "sizeBytes": 608,
+            "sha256": "746d83061f148e27da0c5ef0ebdde853386424a9239974e0bee989b6838b0cfb"
+          },
+          {
+            "id": "managed-cil-real",
+            "class": "cil",
+            "path": "tests/stage2/fixtures/managed-real/cil/ManagedFixture.dll",
+            "sizeBytes": 3584,
+            "sha256": "3d42c1689fc34179ebf1af9563a6157a21d8d0d92ee7b6362a518070ee5c9e3f"
+          },
+          {
+            "id": "managed-jvm-real",
+            "class": "jvm",
+            "path": "tests/stage2/fixtures/managed-real/jvm/ManagedFixture.class",
+            "sizeBytes": 173,
+            "sha256": "90ddd1d3fc2e7bcffdcd4a702ca9da6c0d6fa0a0ccd11818bd637785a6771e36"
+          },
+          {
+            "id": "virtual-2gib-demand",
+            "class": "large-logical-source",
+            "generatorPath": "tools/benchmarks/reopened-final-demand-paths.mjs",
+            "generatorGitBlobSha1": "c4daa452a22390f97a7d94908bf2ebb8c483c7e3",
+            "generatorSha256": "2920cbf686e712ac88415cdc322f9701988ec17b9b1299c8274057c5268e2b30",
+            "logicalSizeBytes": 2147483648,
+            "functionCount": 350000
+          }
+        ]
+      },
+      "stableDigest": "e067fd51b10aca57ae5bffa6c8ef75da"
+    },
+    "workloads": [
+      {
+        "id": "H9-INITIAL-OPEN-METADATA",
+        "required": true,
+        "fixtureIds": ["battlecats-heavy-macho", "vertical-sysv-amd64", "vertical-microsoft-x64", "managed-wasm-real", "managed-dex-real", "managed-cil-real", "managed-jvm-real"],
+        "runtimeClassIds": ["production-faithful-webkit-v1", "physical-ipad-supported-floor-v1"],
+        "cachePolicy": "cold process, cleared origin storage, cleared resource cache",
+        "repetitions": { "warmup": 0, "measured": 3, "latencyStatistic": "median", "memoryStatistic": "maximum" },
+        "baseline": { "status": "UNMEASURED_AT_FREEZE", "source": "tests/benchmark-baseline.json#/metrics/performance/coldOpen", "candidateMeasurementRequired": true },
+        "targets": [
+          { "metric": "metadataReadyLatency", "unit": "milliseconds", "operator": "<=", "threshold": 12000 },
+          { "metric": "processPeakFootprint", "unit": "bytes", "operator": "<=", "threshold": 805306368 },
+          { "metric": "requestedSourceBytesRatio", "unit": "ratio", "operator": "<=", "threshold": 0.12 }
+        ]
+      },
+      {
+        "id": "H9-PAGED-BYTE-ACCESS",
+        "required": true,
+        "fixtureIds": ["ywp-macho"],
+        "runtimeClassIds": ["production-faithful-webkit-v1", "physical-ipad-supported-floor-v1"],
+        "cachePolicy": "cold page followed by an independently recorded warm repeat",
+        "repetitions": { "warmup": 1, "measured": 20, "latencyStatistic": "p95", "memoryStatistic": "maximum" },
+        "baseline": { "status": "UNMEASURED_AT_FREEZE", "source": "tests/benchmark-baseline.json#/metrics/performance/activeFunctionAnalysis", "candidateMeasurementRequired": true },
+        "targets": [
+          { "metric": "pageReadyLatency", "unit": "milliseconds", "operator": "<=", "threshold": 250 },
+          { "metric": "requestedSourceBytes", "unit": "bytes", "operator": "<=", "threshold": 262144 },
+          { "metric": "rangeReads", "unit": "reads", "operator": "<=", "threshold": 2 },
+          { "metric": "retainedMemoryDelta", "unit": "bytes", "operator": "<=", "threshold": 33554432 }
+        ]
+      },
+      {
+        "id": "H9-FIRST-DECODE-WINDOW",
+        "required": true,
+        "fixtureIds": ["battlecats-heavy-macho", "vertical-sysv-amd64", "vertical-microsoft-x64"],
+        "runtimeClassIds": ["production-faithful-webkit-v1", "physical-ipad-supported-floor-v1"],
+        "cachePolicy": "metadata warm, decode window cold",
+        "repetitions": { "warmup": 1, "measured": 5, "latencyStatistic": "median", "memoryStatistic": "maximum" },
+        "baseline": { "status": "UNMEASURED_AT_FREEZE", "source": "tests/benchmark-baseline.json#/metrics/performance/activeFunctionAnalysis", "candidateMeasurementRequired": true },
+        "targets": [
+          { "metric": "decodeWindowLatency", "unit": "milliseconds", "operator": "<=", "threshold": 750 },
+          { "metric": "requestedSourceBytes", "unit": "bytes", "operator": "<=", "threshold": 524288 },
+          { "metric": "retainedMemoryDelta", "unit": "bytes", "operator": "<=", "threshold": 67108864 }
+        ]
+      },
+      {
+        "id": "H9-DISTANT-NAVIGATION",
+        "required": true,
+        "fixtureIds": ["ywp-macho"],
+        "runtimeClassIds": ["production-faithful-webkit-v1", "physical-ipad-supported-floor-v1"],
+        "cachePolicy": "origin warm, target address outside every retained source page",
+        "repetitions": { "warmup": 1, "measured": 5, "latencyStatistic": "median", "memoryStatistic": "maximum" },
+        "baseline": { "status": "UNMEASURED_AT_FREEZE", "source": "tests/benchmark-baseline.json#/metrics/performance/searchLatency", "candidateMeasurementRequired": true },
+        "targets": [
+          { "metric": "firstRenderedTargetLatency", "unit": "milliseconds", "operator": "<=", "threshold": 1000 },
+          { "metric": "requestedSourceBytes", "unit": "bytes", "operator": "<=", "threshold": 2097152 },
+          { "metric": "retainedMemoryDelta", "unit": "bytes", "operator": "<=", "threshold": 100663296 }
+        ]
+      },
+      {
+        "id": "H9-ACTIVE-FUNCTION-SEMANTIC-PIPELINE",
+        "required": true,
+        "fixtureIds": ["battlecats-heavy-macho", "vertical-sysv-amd64", "vertical-microsoft-x64"],
+        "runtimeClassIds": ["production-faithful-webkit-v1", "physical-ipad-supported-floor-v1"],
+        "cachePolicy": "metadata warm, semantic artifacts cold",
+        "repetitions": { "warmup": 1, "measured": 5, "latencyStatistic": "median", "memoryStatistic": "maximum" },
+        "baseline": { "status": "UNMEASURED_AT_FREEZE", "source": "tests/benchmark-baseline.json#/metrics/performance/activeFunctionAnalysis", "candidateMeasurementRequired": true },
+        "targets": [
+          { "metric": "semanticIrCfgSsaReadyLatency", "unit": "milliseconds", "operator": "<=", "threshold": 1000 },
+          { "metric": "retainedMemoryDelta", "unit": "bytes", "operator": "<=", "threshold": 134217728 },
+          { "metric": "cancellationSettlement", "unit": "milliseconds", "operator": "<=", "threshold": 250 }
+        ]
+      },
+      {
+        "id": "H9-FUNCTION-DISCOVERY-FIRST-USEFUL",
+        "required": true,
+        "fixtureIds": ["battlecats-heavy-macho", "ywp-macho"],
+        "runtimeClassIds": ["production-faithful-webkit-v1", "physical-ipad-supported-floor-v1"],
+        "cachePolicy": "cold discovery index with metadata available",
+        "repetitions": { "warmup": 0, "measured": 3, "latencyStatistic": "median", "memoryStatistic": "maximum" },
+        "baseline": { "status": "UNMEASURED_AT_FREEZE", "source": "tests/benchmark-baseline.json#/metrics/performance/ttfua", "candidateMeasurementRequired": true },
+        "targets": [
+          { "metric": "firstUsefulFunctionLatency", "unit": "milliseconds", "operator": "<=", "threshold": 2500 },
+          { "metric": "schedulerQuantum", "unit": "milliseconds", "operator": "<=", "threshold": 50 },
+          { "metric": "requestedSourceBytesRatio", "unit": "ratio", "operator": "<=", "threshold": 0.15 },
+          { "metric": "retainedMemoryDelta", "unit": "bytes", "operator": "<=", "threshold": 134217728 }
+        ]
+      },
+      {
+        "id": "H9-DECOMPILER-FIRST-USEFUL",
+        "required": true,
+        "fixtureIds": ["battlecats-heavy-macho", "vertical-sysv-amd64", "vertical-microsoft-x64"],
+        "runtimeClassIds": ["production-faithful-webkit-v1", "physical-ipad-supported-floor-v1"],
+        "cachePolicy": "semantic input warm, optimized/rendered artifact cold",
+        "repetitions": { "warmup": 1, "measured": 5, "latencyStatistic": "median", "memoryStatistic": "maximum" },
+        "baseline": { "status": "UNMEASURED_AT_FREEZE", "source": "tests/benchmark-baseline.json#/metrics/performance/decompilerLatency", "candidateMeasurementRequired": true },
+        "targets": [
+          { "metric": "firstUsefulPseudocodeLatency", "unit": "milliseconds", "operator": "<=", "threshold": 1500 },
+          { "metric": "phase8OptimizeStage", "unit": "milliseconds", "operator": "<=", "threshold": 120 },
+          { "metric": "retainedMemoryDelta", "unit": "bytes", "operator": "<=", "threshold": 134217728 },
+          { "metric": "cancellationSettlement", "unit": "milliseconds", "operator": "<=", "threshold": 250 }
+        ]
+      },
+      {
+        "id": "H9-END-TO-END-TTFUA",
+        "required": true,
+        "fixtureIds": ["battlecats-heavy-macho", "ywp-macho"],
+        "runtimeClassIds": ["production-faithful-webkit-v1", "physical-ipad-supported-floor-v1"],
+        "cachePolicy": "measure cold cleared-origin and warm artifact-reopen variants separately",
+        "repetitions": { "warmup": 0, "measured": 3, "latencyStatistic": "median", "memoryStatistic": "maximum" },
+        "baseline": { "status": "UNMEASURED_AT_FREEZE", "source": "tests/benchmark-baseline.json#/metrics/performance/ttfua", "candidateMeasurementRequired": true },
+        "targets": [
+          { "metric": "coldTimeToFirstUsefulAnswer", "unit": "milliseconds", "operator": "<=", "threshold": 15000 },
+          { "metric": "warmTimeToFirstUsefulAnswer", "unit": "milliseconds", "operator": "<=", "threshold": 3000 },
+          { "metric": "processPeakFootprint", "unit": "bytes", "operator": "<=", "threshold": 805306368 }
+        ]
+      },
+      {
+        "id": "H9-PROJECT-SAVE-WARM-REOPEN",
+        "required": true,
+        "fixtureIds": ["battlecats-heavy-macho", "managed-dex-real"],
+        "runtimeClassIds": ["production-faithful-webkit-v1", "physical-ipad-supported-floor-v1"],
+        "cachePolicy": "save once, close, then reopen the unchanged identity from durable origin storage",
+        "repetitions": { "warmup": 1, "measured": 5, "latencyStatistic": "median", "memoryStatistic": "maximum" },
+        "baseline": { "status": "UNMEASURED_AT_FREEZE", "source": "tests/benchmark-baseline.json#/metrics/performance/warmOpen", "candidateMeasurementRequired": true },
+        "targets": [
+          { "metric": "projectSaveLatency", "unit": "milliseconds", "operator": "<=", "threshold": 2000 },
+          { "metric": "warmReopenLatency", "unit": "milliseconds", "operator": "<=", "threshold": 1000 },
+          { "metric": "sourceRangeReads", "unit": "reads", "operator": "==", "threshold": 0 },
+          { "metric": "sourceRequestedBytes", "unit": "bytes", "operator": "==", "threshold": 0 },
+          { "metric": "retainedMemoryDelta", "unit": "bytes", "operator": "<=", "threshold": 67108864 }
+        ]
+      },
+      {
+        "id": "H9-WORKER-CANCELLATION-SETTLEMENT",
+        "required": true,
+        "fixtureIds": ["ywp-macho", "virtual-2gib-demand"],
+        "runtimeClassIds": ["production-faithful-webkit-v1", "physical-ipad-supported-floor-v1"],
+        "cachePolicy": "cancel during cold active work at deterministic progress checkpoints",
+        "repetitions": { "warmup": 1, "measured": 10, "latencyStatistic": "maximum", "memoryStatistic": "maximum" },
+        "baseline": { "status": "UNMEASURED_AT_FREEZE", "source": "tests/benchmark-baseline.json#/metrics/performance/cancellationLatency", "candidateMeasurementRequired": true },
+        "targets": [
+          { "metric": "cancellationSettlement", "unit": "milliseconds", "operator": "<=", "threshold": 250 },
+          { "metric": "stalePublications", "unit": "publications", "operator": "==", "threshold": 0 },
+          { "metric": "liveTasksAfterSettlement", "unit": "tasks", "operator": "==", "threshold": 0 }
+        ]
+      },
+      {
+        "id": "H9-LARGE-LOGICAL-SOURCE-NO-WHOLE-READ",
+        "required": true,
+        "fixtureIds": ["virtual-2gib-demand", "ywp-macho"],
+        "runtimeClassIds": ["production-faithful-webkit-v1", "physical-ipad-supported-floor-v1"],
+        "cachePolicy": "cold demand plan; no whole-source materialization is permitted",
+        "repetitions": { "warmup": 1, "measured": 5, "latencyStatistic": "median", "memoryStatistic": "maximum" },
+        "baseline": { "status": "PARTIALLY_MEASURED_AT_FREEZE", "source": "tools/benchmarks/reopened-final-demand-paths.mjs", "candidateMeasurementRequired": true },
+        "targets": [
+          { "metric": "demandPlanLatency", "unit": "milliseconds", "operator": "<=", "threshold": 250 },
+          { "metric": "sourceMaterializedBytes", "unit": "bytes", "operator": "<=", "threshold": 16777216 },
+          { "metric": "requestedSourceBytesRatio", "unit": "ratio", "operator": "<=", "threshold": 0.01 },
+          { "metric": "mainRealmFunctionObjectsAllocated", "unit": "objects", "operator": "==", "threshold": 0 },
+          { "metric": "retainedMemoryDelta", "unit": "bytes", "operator": "<=", "threshold": 134217728 }
+        ]
+      },
+      {
+        "id": "H9-PATTERN-RULE-EVALUATION",
+        "required": true,
+        "fixtureIds": ["battlecats-heavy-macho", "vertical-sysv-amd64"],
+        "runtimeClassIds": ["production-faithful-webkit-v1", "physical-ipad-supported-floor-v1"],
+        "cachePolicy": "active-function inputs warm, rule result cache cold",
+        "repetitions": { "warmup": 1, "measured": 5, "latencyStatistic": "median", "memoryStatistic": "maximum" },
+        "baseline": { "status": "UNMEASURED_AT_FREEZE", "source": "tests/benchmark-baseline.json", "candidateMeasurementRequired": true },
+        "targets": [
+          { "metric": "activeSliceEvaluationLatency", "unit": "milliseconds", "operator": "<=", "threshold": 500 },
+          { "metric": "workItems", "unit": "items", "operator": "<=", "threshold": 100000 },
+          { "metric": "retainedMemoryDelta", "unit": "bytes", "operator": "<=", "threshold": 67108864 },
+          { "metric": "cancellationSettlement", "unit": "milliseconds", "operator": "<=", "threshold": 250 }
+        ]
+      },
+      {
+        "id": "H9-REBUILD-VALIDATE-PUBLISH",
+        "required": true,
+        "fixtureIds": ["battlecats-heavy-macho", "vertical-sysv-amd64", "vertical-microsoft-x64"],
+        "runtimeClassIds": ["production-faithful-webkit-v1", "physical-ipad-supported-floor-v1"],
+        "cachePolicy": "source warm; rebuild plan, independent validation, and publication cold",
+        "repetitions": { "warmup": 1, "measured": 3, "latencyStatistic": "median", "memoryStatistic": "maximum" },
+        "baseline": { "status": "UNMEASURED_AT_FREEZE", "source": "tests/benchmark-baseline.json", "candidateMeasurementRequired": true },
+        "targets": [
+          { "metric": "validatedPublishLatency", "unit": "milliseconds", "operator": "<=", "threshold": 10000 },
+          { "metric": "processPeakFootprint", "unit": "bytes", "operator": "<=", "threshold": 805306368 },
+          { "metric": "bytesCopiedRatio", "unit": "ratio", "operator": "<=", "threshold": 1.05 },
+          { "metric": "cancellationSettlement", "unit": "milliseconds", "operator": "<=", "threshold": 250 },
+          { "metric": "invalidOutputsPublished", "unit": "outputs", "operator": "==", "threshold": 0 }
+        ]
+      },
+      {
+        "id": "H9-VIRTUALIZED-RENDERING",
+        "required": true,
+        "fixtureIds": ["ywp-macho", "virtual-2gib-demand"],
+        "runtimeClassIds": ["production-faithful-webkit-v1", "physical-ipad-supported-floor-v1"],
+        "cachePolicy": "warm metadata, cold distant viewport",
+        "repetitions": { "warmup": 1, "measured": 10, "latencyStatistic": "p95", "memoryStatistic": "maximum" },
+        "baseline": { "status": "UNMEASURED_AT_FREEZE", "source": "tests/benchmark-baseline.json", "candidateMeasurementRequired": true },
+        "targets": [
+          { "metric": "viewportUsefulPaintLatency", "unit": "milliseconds", "operator": "<=", "threshold": 500 },
+          { "metric": "renderedRows", "unit": "rows", "operator": "<=", "threshold": 500 },
+          { "metric": "liveDomNodes", "unit": "nodes", "operator": "<=", "threshold": 2500 },
+          { "metric": "retainedMemoryDelta", "unit": "bytes", "operator": "<=", "threshold": 67108864 }
+        ]
+      }
+    ]
+  },
+  "denominatorStableDigest": "5eb21622743caca345805e4c9f10bf64"
+}
