@@ -435,7 +435,7 @@ export function symbolCountFromSymtabSize(sizeValue, symtabVa, syment, image) {
 }
 
 function isIRelativeRelocation(machine, type) {
-  return (machine === 3 && type === 42) || (machine === 62 && type === 37) || (machine === 183 && type === 1032);
+  return (machine === 3 && type === 42) || (machine === 62 && type === 37) || (machine === 183 && type === 1032) || (machine === 243 && type === 58);
 }
 
 export function dynamicRelocationResolutionMetadata(image, rel, sym) {
