@@ -100,5 +100,12 @@ export function mergeRangeDomain(a, b, bits = null, signed = undefined) {
   const x = normalizeRangeDomain(a, width, targetSigned);
   const y = normalizeRangeDomain(b, width, targetSigned);
   if (!x || !y) return null;
-  return rangeWithDomain(x.min < y.min ? x.min : y.min, x.max > y.max ? x.max : y.max, width, targetSigned);
+  const min = x.min < y.min ? x.min : y.min;
+  const max = x.max > y.max ? x.max : y.max;
+  // Two individually coherent unknown-signedness ranges may require different
+  // interpretations. Their hull is publishable only if one coherent domain can
+  // represent the entire merged interval; otherwise the range lattice has no
+  // sound single-interval value for it.
+  if (!rangeFitsDomain(min, max, width, targetSigned)) return null;
+  return rangeWithDomain(min, max, width, targetSigned);
 }
