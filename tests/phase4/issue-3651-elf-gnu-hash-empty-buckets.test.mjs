@@ -35,7 +35,7 @@ function putDynamic(view, index, tag, value) {
   view.setBigUint64(off + 8, BigInt(value), true);
 }
 
-function fixture({ symOffset = 1, bucket = 0, chain = 1 } = {}) {
+function fixture({ symOffset = 1, bucket = 0, chain = 1, buckets = [bucket], chains = [chain] } = {}) {
   const bytes = new Uint8Array(0x700);
   const view = new DataView(bytes.buffer);
   const strtab = Uint8Array.from([0, ...new TextEncoder().encode('fake'), 0]);
@@ -55,14 +55,16 @@ function fixture({ symOffset = 1, bucket = 0, chain = 1 } = {}) {
   view.setUint8(fake + 4, 0x11);       // STB_GLOBAL | STT_OBJECT
   view.setUint16(fake + 6, 0, true);   // SHN_UNDEF
 
-  // GNU hash header: one bloom word, then one bucket and chain table.
-  view.setUint32(GNU_HASH_OFFSET, 1, true);       // nbuckets
+  // GNU hash header: one bloom word, then bucket and chain tables.
+  view.setUint32(GNU_HASH_OFFSET, buckets.length, true); // nbuckets
   view.setUint32(GNU_HASH_OFFSET + 4, symOffset, true);
-  view.setUint32(GNU_HASH_OFFSET + 8, 1, true);   // bloom_size
-  view.setUint32(GNU_HASH_OFFSET + 12, 0, true);  // bloom_shift
+  view.setUint32(GNU_HASH_OFFSET + 8, 1, true);          // bloom_size
+  view.setUint32(GNU_HASH_OFFSET + 12, 0, true);         // bloom_shift
   view.setBigUint64(GNU_HASH_OFFSET + 16, 0n, true);
-  view.setUint32(GNU_HASH_OFFSET + 24, bucket, true);
-  view.setUint32(GNU_HASH_OFFSET + 28, chain, true);
+  const bucketsOffset = GNU_HASH_OFFSET + 24;
+  for (let i = 0; i < buckets.length; i++) view.setUint32(bucketsOffset + i * 4, buckets[i], true);
+  const chainsOffset = bucketsOffset + buckets.length * 4;
+  for (let i = 0; i < chains.length; i++) view.setUint32(chainsOffset + i * 4, chains[i], true);
 
   const segment = {
     address: BASE,
@@ -121,4 +123,17 @@ test('non-empty GNU hash bucket still includes the observed hashed symbol', () =
   assert.equal(image.metadata.programDynamic.symbolsExpected, 2);
   assert.equal(image.symbols.some((symbol) => symbol.name === 'fake'), true);
   assert.equal(image.imports.some((imp) => imp.name === 'fake'), true);
+});
+
+test('multiple GNU hash buckets and chain entries use the greatest observed symbol index', () => {
+  // bucket 1 walks symbols 1 -> 2; bucket 3 walks symbols 3 -> 4.
+  // The exact GNU-hash count must therefore be max observed index 4 + 1.
+  const image = fixture({
+    symOffset: 1,
+    buckets: [1, 3],
+    chains: [0, 1, 0, 1],
+  });
+  assert.equal(image.metadata.programDynamic.symbolCountSource, 'gnu-hash');
+  assert.equal(image.metadata.programDynamic.symbolsDeclared, 5);
+  assert.equal(image.metadata.programDynamic.symbolsExpected, 5);
 });
