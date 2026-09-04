@@ -5,6 +5,21 @@ import {
 } from './semantic-ir-v2-to-v1-core.js';
 import { projectLegacyAddress } from './semantic-ir-v2-to-v1-address.js';
 
+const MALFORMED_UNDEFINED_RESULT = Object.freeze({
+  class:'malformed', mask:'unknown-mask', reason:'malformed-descriptor',
+});
+
+function undefinedResultAttribute(attributes) {
+  const machineEffects = attributes?.machineEffects;
+  if (machineEffects == null || typeof machineEffects !== 'object') return null;
+  let descriptor;
+  try { descriptor = Object.getOwnPropertyDescriptor(machineEffects, 'undefinedResult'); }
+  catch { return MALFORMED_UNDEFINED_RESULT; }
+  if (descriptor == null) return null;
+  if (!Object.hasOwn(descriptor, 'value') || descriptor.value == null) return MALFORMED_UNDEFINED_RESULT;
+  return descriptor.value;
+}
+
 function constantPayload(node) {
   const attrs = node?.attributes || {};
   const metadata = node?.metadata || {};
@@ -249,6 +264,32 @@ export function projectNode(node, context) {
     attachArgs(inst, args);
     inst.extra = { semanticNodeId: node.id, widthBits, attributes: attrs, completeness: node.completeness };
   };
+
+  const undefinedResult = undefinedResultAttribute(attrs);
+  if (undefinedResult != null && node.kind !== 'intrinsic') {
+    const isMemoryRead = node.kind === 'load';
+    const unknown = defaultUnknownInstruction(node, blockIndex, row, options, {
+      reason: `architecturally-undefined-result:${undefinedResult.reason ?? 'unspecified'}`,
+      unknownCategories: isMemoryRead ? ['memory', 'value'] : ['value'],
+      undefinedResult,
+    });
+    Object.assign(inst, unknown, {
+      semanticNodeId: node.id,
+      sourceEntityId: node.id,
+      sourceEffectIds: node.sourceEffectIds.slice(),
+      instructionId: sourceInstructionIds(node.origin)[0] ?? null,
+      sourceInstructionIds: sourceInstructionIds(node.origin),
+      origin: node.origin,
+    });
+    inst.dst = primaryOutput;
+    attachArgs(inst, inputValues);
+    if (isMemoryRead) {
+      inst.memoryAccess = node.memory;
+      inst.memoryBarrier = true;
+    }
+    if (primaryOutput && primaryOutput.def == null) primaryOutput.def = inst;
+    return [inst];
+  }
 
   switch (node.kind) {
     case 'const': {
@@ -614,6 +655,7 @@ export function projectNode(node, context) {
   }
 
   const bundle = bundleMetadata(node);
+  if (undefinedResult != null) inst.extra = { ...(inst.extra || {}), undefinedResult };
   const conditionalCompare = conditionCode(node);
   if (conditionalCompare != null && bundle.fallbackNzcv != null) {
     for (const candidate of [inst, ...extraInstructions]) {

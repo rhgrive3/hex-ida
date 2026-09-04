@@ -135,7 +135,7 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
     });
   }
 
-  function machineAttributes(effect, extra = {}) {
+  function machineAttributes(effect, extra = {}, includeUndefinedResult = false) {
     const operation = effect.operation ?? null;
     return {
       machineEffects: {
@@ -145,6 +145,8 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
         bundleCompleteness: bundle.completeness,
         sourceEffectId: effect.sourceEffectId,
         ...(operation == null ? {} : { operationKind: operation.kind }),
+        ...(!includeUndefinedResult || operation?.undefinedResult == null
+          ? {} : { undefinedResult: operation.undefinedResult }),
         ...(operation?.metadata == null ? {} : { operationMetadata: operation.metadata }),
         ...(bundle.metadata == null ? {} : { bundleMetadata: bundle.metadata }),
         ...(bundle.possibleFaults.length ? { possibleFaults: bundle.possibleFaults } : {}),
@@ -554,7 +556,7 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
           determinism: 'deterministic',
           symbolicDetail: 'summary-only',
         },
-        attributes: machineAttributes(effect, { machineValueOpcode: operation.opcode }),
+        attributes: machineAttributes(effect, { machineValueOpcode: operation.opcode }, true),
         sourceEffectIds: [effect.sourceEffectId],
         origin,
       });
@@ -567,7 +569,7 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
       inputs,
       outputs,
       operator: classification.operator,
-      attributes: machineAttributes(effect, { machineValueOpcode: operation.opcode }),
+      attributes: machineAttributes(effect, { machineValueOpcode: operation.opcode }, true),
       sourceEffectIds: [effect.sourceEffectId],
       origin,
     });
@@ -632,7 +634,7 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
           categories: ['memory', 'address'],
           knownParts: { access: operation.access, resultMachineValue: operation.value },
         },
-        attributes: machineAttributes(effect, { machineMemoryAccess: operation.access }),
+        attributes: machineAttributes(effect, { machineMemoryAccess: operation.access }, true),
         sourceEffectIds: [effect.sourceEffectId],
         origin,
       });
@@ -649,7 +651,7 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
       inputs: [memory.access.addressExpr?.valueId ?? memory.access.addressValueId].filter(Boolean),
       outputs: [output],
       memory: memory.access,
-      attributes: machineAttributes(effect),
+      attributes: machineAttributes(effect, {}, true),
       sourceEffectIds: [effect.sourceEffectId],
       origin,
     });
@@ -714,7 +716,7 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
         completeness: 'partial',
         unknown: { reason: 'intrinsic-summary-not-exactly-representable', categories: ['intrinsic'] },
       }),
-      attributes: machineAttributes(effect, { machineIntrinsicId: operation.intrinsicId }),
+      attributes: machineAttributes(effect, { machineIntrinsicId: operation.intrinsicId }, true),
       sourceEffectIds: [effect.sourceEffectId],
       origin,
     });

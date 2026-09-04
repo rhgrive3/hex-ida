@@ -76,6 +76,15 @@ export const UNKNOWN_EFFECT_CATEGORIES = Object.freeze([
 export const INTRINSIC_MEMORY_SCOPES = Object.freeze(['none', 'accesses', 'all', 'unknown']);
 export const INTRINSIC_DETERMINISM = Object.freeze(['deterministic', 'input-dependent', 'nondeterministic', 'unknown']);
 export const INTRINSIC_SYMBOLIC_DETAIL = Object.freeze(['available', 'summary-only', 'unavailable']);
+export const UNDEFINED_RESULT_CLASSES = Object.freeze(['fully', 'conditional', 'partial', 'operand-dependent']);
+export const UNDEFINED_RESULT_SCHEMA_VERSION = 'machine-effects-undefined-result/v1';
+export const UNDEFINED_RESULT_CONDITION_KINDS = Object.freeze([
+  'source-zero',
+  'divisor-zero',
+  'signed-overflow',
+  'count-at-least-width',
+]);
+export const MAX_UNDEFINED_RESULT_WIDTH_BITS = 4096;
 
 const SETS = Object.freeze({
   completeness: new Set(MACHINE_EFFECT_COMPLETENESS),
@@ -89,11 +98,63 @@ const SETS = Object.freeze({
   intrinsicMemoryScopes: new Set(INTRINSIC_MEMORY_SCOPES),
   intrinsicDeterminism: new Set(INTRINSIC_DETERMINISM),
   intrinsicSymbolicDetail: new Set(INTRINSIC_SYMBOLIC_DETAIL),
+  undefinedResultClasses: new Set(UNDEFINED_RESULT_CLASSES),
+  undefinedResultConditionKinds: new Set(UNDEFINED_RESULT_CONDITION_KINDS),
 });
 
 function fail(code) { throw new TypeError(code); }
 function assertAllowedKeys(input, allowed, code) {
   for (const key of Object.keys(input)) if (!allowed.has(key)) fail(`${code}:${key}`);
+}
+
+function snapshotOwnEnumerableData(input, allowed, label, unexpectedCode) {
+  if (input == null || typeof input !== 'object') fail(`machine-effects-${label}-required`);
+  let isArray;
+  try {
+    isArray = Array.isArray(input);
+  } catch { fail(`machine-effects-${label}-snapshot-failed`); }
+  if (isArray) fail(`machine-effects-${label}-required`);
+  let prototype;
+  let keys;
+  try {
+    prototype = Object.getPrototypeOf(input);
+    keys = Reflect.ownKeys(input);
+  } catch {
+    fail(`machine-effects-${label}-snapshot-failed`);
+  }
+  if (prototype !== Object.prototype && prototype !== null) {
+    fail(`machine-effects-${label}-invalid-prototype`);
+  }
+  const snapshot = Object.create(null);
+  for (const key of keys) {
+    if (typeof key !== 'string' || !allowed.has(key)) {
+      fail(`${unexpectedCode}:${typeof key === 'string' ? key : 'symbol'}`);
+    }
+    let descriptor;
+    try {
+      descriptor = Object.getOwnPropertyDescriptor(input, key);
+    } catch {
+      fail(`machine-effects-${label}-snapshot-failed`);
+    }
+    if (descriptor == null || descriptor.enumerable !== true
+      || !Object.hasOwn(descriptor, 'value')) {
+      fail(`machine-effects-${label}-requires-enumerable-data-property:${key}`);
+    }
+    snapshot[key] = descriptor.value;
+  }
+  return snapshot;
+}
+
+function ownDataProperty(input, key, code) {
+  let descriptor;
+  try {
+    descriptor = Object.getOwnPropertyDescriptor(input, key);
+  } catch {
+    fail(code);
+  }
+  if (descriptor == null) return { present:false, value:undefined };
+  if (descriptor.enumerable !== true || !Object.hasOwn(descriptor, 'value')) fail(code);
+  return { present:true, value:descriptor.value };
 }
 // Pre-built field whitelists. Same members as the per-call literal sets they
 // replace; hoisted so millions of normalize calls allocate no Set objects.
@@ -113,17 +174,19 @@ const ALLOWED_FIELDS = Object.freeze({
   intrinsicSummary: new Set(['inputs', 'outputs', 'registersRead', 'registersWritten', 'memoryRead', 'memoryWrite', 'controlEffects', 'determinism', 'symbolicDetail']),
   unknownEffects: new Set(['categories', 'reason', 'detail', 'preservation']),
   statePreservation: new Set(['proven', 'reason']),
+  undefinedResult: new Set(['schemaVersion', 'widthBits', 'mask', 'class', 'reason', 'condition']),
+  undefinedResultCondition: new Set(['kind', 'operandIndex']),
   bundle: new Set(['schemaVersion', 'contractVersion', 'instructionId', 'architectureId', 'mode', 'operations', 'controlEffect', 'possibleFaults', 'origin', 'completeness', 'unknownEffects', 'statePreservation', 'metadata']),
 });
 const OPERATION_FIELDS_BY_KIND = Object.freeze({
-  value: new Set(['kind', 'id', 'metadata', 'opcode', 'inputs', 'outputs']),
+  value: new Set(['kind', 'id', 'metadata', 'opcode', 'inputs', 'outputs', 'undefinedResult']),
   'register-read': new Set(['kind', 'id', 'metadata', 'register', 'value']),
   'register-write': new Set(['kind', 'id', 'metadata', 'register', 'value']),
   'flag-read': new Set(['kind', 'id', 'metadata', 'flag', 'value']),
   'flag-write': new Set(['kind', 'id', 'metadata', 'flag', 'value']),
-  'memory-read': new Set(['kind', 'id', 'metadata', 'access', 'value']),
+  'memory-read': new Set(['kind', 'id', 'metadata', 'access', 'value', 'undefinedResult']),
   'memory-write': new Set(['kind', 'id', 'metadata', 'access', 'value']),
-  intrinsic: new Set(['kind', 'id', 'metadata', 'intrinsicId', 'effectSummary']),
+  intrinsic: new Set(['kind', 'id', 'metadata', 'intrinsicId', 'effectSummary', 'undefinedResult']),
   barrier: new Set(['kind', 'id', 'metadata', 'scope']),
   unknown: new Set(['kind', 'id', 'metadata', 'reason', 'categories']),
 });
@@ -439,6 +502,63 @@ function intrinsicSummaryIsComplete(summary) {
   return summary.determinism !== 'unknown';
 }
 
+function normalizeUndefinedResultCondition(input) {
+  input = snapshotOwnEnumerableData(input, ALLOWED_FIELDS.undefinedResultCondition,
+    'undefined-result-condition', 'machine-effects-unexpected-undefined-result-condition-field');
+  const operandIndex = input.operandIndex;
+  if (!Number.isSafeInteger(operandIndex) || operandIndex < 0) {
+    fail('machine-effects-invalid-undefined-result-condition-operand');
+  }
+  return deepFreeze({
+    kind: enumValue(input.kind, SETS.undefinedResultConditionKinds, 'machine-effects-invalid-undefined-result-condition-kind'),
+    operandIndex,
+  });
+}
+
+export function createUndefinedResultDescriptor(input) {
+  input = snapshotOwnEnumerableData(input, ALLOWED_FIELDS.undefinedResult,
+    'undefined-result', 'machine-effects-unexpected-undefined-result-field');
+  const schemaVersion = Object.hasOwn(input, 'schemaVersion')
+    ? input.schemaVersion : UNDEFINED_RESULT_SCHEMA_VERSION;
+  if (schemaVersion !== UNDEFINED_RESULT_SCHEMA_VERSION) fail('machine-effects-unsupported-undefined-result-schema');
+  if (typeof input.widthBits !== 'number') fail('machine-effects-invalid-undefined-result-width');
+  const widthBits = positiveInteger(input.widthBits, 'machine-effects-invalid-undefined-result-width');
+  if (widthBits > MAX_UNDEFINED_RESULT_WIDTH_BITS) fail('machine-effects-invalid-undefined-result-width');
+  const resultClass = enumValue(input.class, SETS.undefinedResultClasses, 'machine-effects-invalid-undefined-result-class');
+  let mask;
+  if (typeof input.mask === 'bigint') mask = input.mask;
+  else if (typeof input.mask === 'string' && /^0x[0-9a-f]+$/i.test(input.mask)) mask = BigInt(input.mask);
+  else fail('machine-effects-invalid-undefined-result-mask');
+  const fullMask = (1n << BigInt(widthBits)) - 1n;
+  if (mask <= 0n || mask > fullMask) fail('machine-effects-invalid-undefined-result-mask');
+  if (resultClass === 'fully' && mask !== fullMask) fail('machine-effects-fully-undefined-result-mask-incomplete');
+  if (resultClass === 'partial' && mask === fullMask) fail('machine-effects-partial-undefined-result-mask-full');
+  const conditionRequired = resultClass === 'conditional' || resultClass === 'operand-dependent';
+  const conditionPresent = Object.hasOwn(input, 'condition');
+  if (conditionRequired !== conditionPresent || (conditionPresent && input.condition == null)) {
+    fail(conditionRequired
+      ? 'machine-effects-undefined-result-condition-required'
+      : 'machine-effects-undefined-result-condition-not-allowed');
+  }
+  return deepFreeze({
+    schemaVersion: UNDEFINED_RESULT_SCHEMA_VERSION,
+    widthBits,
+    mask: `0x${mask.toString(16).padStart(Math.ceil(widthBits / 4), '0')}`,
+    class: resultClass,
+    reason: nonEmpty(input.reason, 'machine-effects-undefined-result-reason-required'),
+    ...(conditionRequired ? { condition: normalizeUndefinedResultCondition(input.condition) } : {}),
+  });
+}
+
+function resultWidthBits(value) {
+  if (value?.kind === 'temporary') return resultWidthBits(value.valueType);
+  if (value?.kind === 'vector') {
+    const elementBits = resultWidthBits(value.elementType);
+    return elementBits == null ? null : elementBits * value.laneCount;
+  }
+  return Number.isSafeInteger(value?.widthBits) ? value.widthBits : null;
+}
+
 export function createMachineOperation(input, options = {}) {
   assertNotAborted(options);
   if (CANONICAL_OPERATIONS.has(input) && usesDefaultBudget(options)) return input;
@@ -447,6 +567,8 @@ export function createMachineOperation(input, options = {}) {
   const allowedFields = OPERATION_FIELDS_BY_KIND[kind];
   if (!allowedFields) fail('machine-effects-invalid-operation-kind');
   assertAllowedKeys(input, allowedFields, 'machine-effects-unexpected-operation-field');
+  const undefinedResultProperty = ownDataProperty(input, 'undefinedResult',
+    'machine-effects-undefined-result-requires-enumerable-data-property');
   const out = { kind };
   if (input.id != null) out.id = nonEmpty(input.id, 'machine-effects-invalid-operation-id');
 
@@ -477,6 +599,22 @@ export function createMachineOperation(input, options = {}) {
     if (out.categories.length === 0 || out.categories.some((category) => !SETS.unknownCategories.has(category))) {
       fail('machine-effects-invalid-unknown-operation-categories');
     }
+  }
+
+  if (undefinedResultProperty.present) {
+    const descriptor = createUndefinedResultDescriptor(undefinedResultProperty.value);
+    const results = kind === 'value' ? out.outputs
+      : kind === 'intrinsic' ? out.effectSummary.outputs
+        : kind === 'memory-read' ? [out.value] : [];
+    const inputs = kind === 'value' ? out.inputs
+      : kind === 'intrinsic' ? out.effectSummary.inputs : [];
+    if (results.length !== 1 || resultWidthBits(results[0]) !== descriptor.widthBits) {
+      fail('machine-effects-undefined-result-output-width-mismatch');
+    }
+    if (descriptor.condition != null && descriptor.condition.operandIndex >= inputs.length) {
+      fail('machine-effects-undefined-result-condition-operand-out-of-range');
+    }
+    out.undefinedResult = descriptor;
   }
 
   if (input.metadata != null) out.metadata = serializable(input.metadata, 'machine-effects-invalid-operation-metadata');

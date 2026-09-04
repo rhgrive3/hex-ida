@@ -149,6 +149,48 @@ function valueProvenance(value) {
   return provenance;
 }
 
+const MALFORMED_UNDEFINED_RESULT = Object.freeze({
+  class: 'malformed',
+  mask: 'unknown-mask',
+  reason: 'malformed-descriptor',
+});
+
+function undefinedResultOf(definition) {
+  if (definition == null || typeof definition !== 'object') return null;
+  function ownData(object, key) {
+    if (object == null || typeof object !== 'object') return { present:false, value:null };
+    let descriptor;
+    try { descriptor = Object.getOwnPropertyDescriptor(object, key); }
+    catch { return { present:true, value:MALFORMED_UNDEFINED_RESULT }; }
+    if (descriptor == null) return { present:false, value:null };
+    if (!Object.hasOwn(descriptor, 'value')) return { present:true, value:MALFORMED_UNDEFINED_RESULT };
+    return { present:true, value:descriptor.value };
+  }
+  const extra = ownData(definition, 'extra');
+  if (extra.present && extra.value === MALFORMED_UNDEFINED_RESULT) return extra.value;
+  const attributes = ownData(extra.value, 'attributes');
+  if (attributes.present && attributes.value === MALFORMED_UNDEFINED_RESULT) return attributes.value;
+  const machineEffects = ownData(attributes.value, 'machineEffects');
+  if (machineEffects.present && machineEffects.value === MALFORMED_UNDEFINED_RESULT) return machineEffects.value;
+  const semantic = ownData(machineEffects.value, 'undefinedResult');
+  if (semantic.present) return semantic.value == null ? MALFORMED_UNDEFINED_RESULT : semantic.value;
+  const compat = ownData(extra.value, 'undefinedResult');
+  if (compat.present) return compat.value == null ? MALFORMED_UNDEFINED_RESULT : compat.value;
+  const direct = ownData(definition, 'undefinedResult');
+  if (direct.present) return direct.value == null ? MALFORMED_UNDEFINED_RESULT : direct.value;
+  return null;
+}
+
+function undefinedResultText(undefinedResult, field, fallback) {
+  try {
+    const value = undefinedResult != null && typeof undefinedResult === 'object'
+      ? undefinedResult[field] : null;
+    return typeof value === 'string' && value.length > 0 ? value : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 // A frozen Map is still mutable through Map.prototype.set. Publication uses a
 // small read-only view backed by a private snapshot so consumers can inspect
 // facts without changing the digest-bearing artifact after the pass returns.
@@ -520,6 +562,22 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
     const definition = value.def;
     const bits = widthOf(value);
     if (bits == null) return { cell: overdefined(`unsupported width: ${value?.bits}`), range: null };
+    const undefinedResult = undefinedResultOf(definition);
+    if (undefinedResult != null) {
+      const reason = undefinedResultText(undefinedResult, 'reason', 'unspecified');
+      const resultClass = undefinedResultText(undefinedResult, 'class', 'unknown');
+      const mask = undefinedResultText(undefinedResult, 'mask', 'unknown-mask');
+      return {
+        cell: overdefined(`architecturally undefined result bits: ${reason}`),
+        range: fullRange(bits),
+        fact: fullFact(bits, {
+          valueId: value.id,
+          status: 'unknown',
+          reason: `undefined-result:${resultClass}:${mask}`,
+          provenance: valueProvenance(value),
+        }),
+      };
+    }
     if (value.kind === 'phi' || definition?.op === 'phi') return evaluatePhi(value);
     if (value.kind === 'arg' || value.kind === 'undef' || definition == null) {
       return { cell: overdefined(value.kind === 'arg' ? 'function argument' : 'value has no definition'), range: fullRange(bits) };
