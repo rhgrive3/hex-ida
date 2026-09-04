@@ -204,6 +204,15 @@ function coverageList(value) {
   return new Set(value.map((item) => item.trim()));
 }
 
+function languageRecordMatchesIdentitySource(identity, record) {
+  if (!identity || !record) return false;
+  if (record.providerId !== identity.providerId) return false;
+  if (record.providerVersion !== identity.providerVersion) return false;
+  if (record.ecosystem !== identity.ecosystem) return false;
+  if (record.buildIdentity != null && identity.observed != null && record.buildIdentity !== identity.observed) return false;
+  return true;
+}
+
 /**
  * True only when one record is explicitly covered by a partial identity.
  * Conjunctive and fail-closed: unverified selectors never become authority.
@@ -211,6 +220,7 @@ function coverageList(value) {
 export function isLanguageRecordAuthoritative(result, record) {
   const identity = result?.identity;
   if (!identity || !record || !isCanonicalLanguageIdentity(identity)) return false;
+  if (!languageRecordMatchesIdentitySource(identity, record)) return false;
   if (result?.completeness?.complete !== true || !isCompleteStatus(result?.status) || !isCanonicalAnalysisStatus(result?.status)) return false;
   if (identity.verdict === 'matched-authoritative') return true;
   if (identity.verdict !== 'matched-partial') return false;
