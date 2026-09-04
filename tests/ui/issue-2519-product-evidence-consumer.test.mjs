@@ -11,4 +11,23 @@ assert.doesNotMatch(evidenceUi, /app\?*\.symbols|app\?*\.autoReport|runtimeEvide
 assert.doesNotMatch(evidenceUi, /confidence\s*[><=]|proof.*confirmed|rewrite.*confirmed/i, 'Evidence UI must not manufacture verdicts from confidence or proof');
 assert.match(ux, /installCanonicalProductEvidence\(window\.__app, installProductUI\(window\.__app\)\)/, 'Production bootstrap must install the canonical Evidence route after the hardened Product UI');
 
+// #4863: the local render cap is not evidence that the producer is incomplete.
+assert.match(
+  evidenceUi,
+  /finalResult\?\.completeness !== 'complete' \|\| finalResult\?\.page\?\.next != null/,
+  'partial-note authority must come from producer completeness or continuation metadata',
+);
+assert.doesNotMatch(
+  evidenceUi,
+  /rows\.length\s*>=\s*MAX_RENDERED_EVIDENCE/,
+  'exactly filling the local render cap must not manufacture a partial result',
+);
+
+const producerSaysPartial = (result) => result?.completeness !== 'complete' || result?.page?.next != null;
+assert.equal(producerSaysPartial({ completeness:'complete', page:{ next:null }, rows:4999 }), false);
+assert.equal(producerSaysPartial({ completeness:'complete', page:{ next:null }, rows:5000 }), false);
+assert.equal(producerSaysPartial({ completeness:'complete', page:{ next:5000 }, rows:5000 }), true);
+assert.equal(producerSaysPartial({ completeness:'partial', page:{ next:null }, rows:100 }), true);
+assert.equal(producerSaysPartial({ completeness:'truncated', page:{ next:null }, rows:100 }), true);
+
 console.log('issue-2519-product-evidence-consumer: ok');
