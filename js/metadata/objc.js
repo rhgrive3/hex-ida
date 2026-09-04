@@ -188,24 +188,30 @@ export class ObjcMetadataProvider extends LanguageMetadataProvider {
 
     const records = [];
     for (const cls of model.classes) {
-      const allMethods = [...(cls.methods || []), ...(cls.classMethods || [])];
+      const allMethods = [
+        ...(cls.methods || []).map((m) => (m.classMethod !== undefined ? m : { ...m, classMethod: false })),
+        ...(cls.classMethods || []).map((m) => ({ ...m, classMethod: true })),
+      ];
       for (const m of allMethods) {
         const methodAddress = m.addr ?? m.imp;
         const addrStr = methodAddress != null ? `0x${methodAddress.toString(16)}` : null;
+        const sel = m.sel || m.selector;
+        const isClassMethod = !!m.classMethod;
+        const prefix = isClassMethod ? '+' : '-';
         records.push(
           createLanguageMetadataRecord({
             kind: 'method',
-            entityId: `method@${cls.name}:${m.sel}`,
-            name: m.name || `${m.classMethod ? '+' : '-'}[${cls.name} ${m.sel}]`,
+            entityId: `method@${cls.name}:${prefix}:${sel}`,
+            name: m.name || `${prefix}[${cls.name} ${sel}]`,
             address: addrStr,
             providerId: this.id,
             providerVersion: this.version,
             ecosystem: 'objc',
             buildIdentity: this.binaryIdentity,
             descriptor: {
-              selector: m.sel || m.selector,
+              selector: sel,
               className: cls.name,
-              classMethod: !!m.classMethod,
+              classMethod: isClassMethod,
               types: m.types || null,
               implementationProven: m.implementationProven === true,
             },
