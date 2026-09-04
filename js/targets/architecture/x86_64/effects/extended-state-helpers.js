@@ -48,7 +48,7 @@ export function vectorPrefixOffset(instruction,prefix){
   const raw=instruction?.rawBytes||[],reportedValue=instruction?.detail?.prefixes?.vector?.offset,reported=reportedValue==null?null:Number(reportedValue);
   let cursor=0;
   while(cursor<raw.length&&LEGACY_PREFIX_BYTES.has(raw[cursor]))cursor+=1;
-  if(cursor<raw.length&&raw[cursor]>=0x40&&raw[cursor]<=0x4f)cursor+=1;
+  if(cursor<raw.length&&raw[cursor]>=0x40&&raw[cursor]<=0x4f)return null;
   if(reported!=null&&(!Number.isSafeInteger(reported)||reported!==cursor))return null;
   if(cursor+prefix.length>raw.length)return null;for(let i=0;i<prefix.length;i+=1)if(raw[cursor+i]!==prefix[i])return null;return cursor;
 }

@@ -51,7 +51,7 @@
     let cursor = 0;
     const legacy = new Set([0xf0,0xf2,0xf3,0x2e,0x36,0x3e,0x26,0x64,0x65,0x66,0x67]);
     while (cursor < rawBytes.length && legacy.has(rawBytes[cursor])) cursor++;
-    if (cursor < rawBytes.length && rawBytes[cursor] >= 0x40 && rawBytes[cursor] <= 0x4f) cursor++;
+    if (cursor < rawBytes.length && rawBytes[cursor] >= 0x40 && rawBytes[cursor] <= 0x4f) return null;
     const lead = rawBytes[cursor];
     const width = lead === 0xc5 ? 2 : lead === 0xc4 ? 3 : lead === 0x62 ? 4 : 0;
     if (!width || cursor + width > rawBytes.length) return null;
