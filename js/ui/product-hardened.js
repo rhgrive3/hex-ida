@@ -40,8 +40,12 @@ export async function loadCanonicalClaims(queries, snapshot, detailId = null, op
     value.push(...rows);
     if (result?.completeness !== 'complete') completeness = 'partial';
     if (options.signal?.aborted) return { value, completeness:'partial' };
-    const next = result?.page?.next;
-    if (next == null) return { value, completeness };
+    const page = result?.page;
+    if (!page || !Object.hasOwn(page, 'next')) {
+      return { value, completeness:'partial' };
+    }
+    const next = page.next;
+    if (next === null) return { value, completeness };
     const expectedNext = offset + rows.length;
     if (!Number.isSafeInteger(next) || next <= offset || next !== expectedNext) {
       return { value, completeness:'partial' };

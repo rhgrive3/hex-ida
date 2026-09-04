@@ -108,6 +108,22 @@ assert.equal(source.itemAt(293793).index, 293793);
   assert.equal(malformed.value.length, 2);
   assert.equal(malformed.completeness, 'partial', 'non-contiguous continuation must fail closed');
 
+  for (const [label, response] of [
+    ['missing page', { value:[{ claimId:'a' }], completeness:'complete' }],
+    ['missing next', { value:[{ claimId:'a' }], completeness:'complete', page:{} }],
+  ]) {
+    let calls = 0;
+    const missingContinuation = await loadCanonicalClaims({
+      async claims() {
+        calls++;
+        return response;
+      },
+    }, { snapshotId:'s' });
+    assert.equal(calls, 1, `${label} must stop without retrying`);
+    assert.equal(missingContinuation.value.length, 1);
+    assert.equal(missingContinuation.completeness, 'partial', `${label} must not prove pagination exhaustion`);
+  }
+
   const detail = makeQueries(1201);
   const detailResult = await loadCanonicalClaims(detail.queries, { snapshotId:'s' }, 'c777');
   assert.equal(detailResult.value.length, 1, 'finding detail keeps the single-claim query path');
