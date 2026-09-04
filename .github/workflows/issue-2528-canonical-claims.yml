@@ -1,20 +1,12 @@
-name: Issue 2528 canonical claims authority
+name: Issue 2528 canonical claims authority (manual fallback)
 
+# Automatic PR execution is owned by .circleci/config.yml.
+# Keep this workflow as a manual GitHub-hosted rollback/fallback lane.
 on:
-  pull_request:
-    paths:
-      - 'js/ui/product-hardened.js'
-      - 'js/analysis/query/product-surface.js'
-      - 'js/ux.js'
-      - 'tests/issue-2528-canonical-claims.mjs'
-      - '.github/workflows/issue-2528-canonical-claims.yml'
+  workflow_dispatch:
 
 permissions:
   contents: read
-
-concurrency:
-  group: issue-2528-canonical-claims-${{ github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: true
 
 jobs:
   canonical-claims:
