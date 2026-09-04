@@ -87,6 +87,29 @@ test('#3433 malformed CodeView components cannot be laundered into an authoritat
   }
 });
 
+test('#3433 CodeView identity fields are snapshotted exactly once', () => {
+  const reads = { guid:0, age:0 };
+  const codeView = new Proxy({ path:'app.pdb' }, {
+    get(target, property, receiver) {
+      if (property === 'guid') {
+        reads.guid += 1;
+        return reads.guid === 1 ? GUID.toLowerCase() : [GUID];
+      }
+      if (property === 'age') {
+        reads.age += 1;
+        return reads.age === 1 ? 1 : [1];
+      }
+      return Reflect.get(target, property, receiver);
+    },
+  });
+
+  const result = probe(codeView);
+  assert.equal(result.identity.verdict, 'matched-authoritative');
+  assert.equal(result.identity.expected, `${GUID}/1`);
+  assert.deepEqual(reads, { guid:1, age:1 },
+    'validation and canonicalization must consume one stable snapshot of each identity field');
+});
+
 test('#3433 missing-PDB diagnostics use the same strict expected identity normalization', () => {
   const valid = probe({ guid: ` ${GUID.toLowerCase()} `, age: 1, path: 'app.pdb' }, { withPdb: false });
   assert.equal(valid.identity.expected, `${GUID}/1`);
