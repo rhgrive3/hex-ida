@@ -41,55 +41,40 @@ jobs:
           paths:
             - universal-platform-benchmark.json
 
-  benchmark-battlecats-fixture:
+  benchmark-battlecats-source-backed:
     docker: [{ image: cimg/node:22.23 }]
     resource_class: small
-    steps: [{ setup-benchmark-target-check: { target: battlecats, category: fixture } }]
-  benchmark-battlecats-source-audit:
+    steps: [{ setup-benchmark-target-check: { target: battlecats, category: source-backed } }]
+  benchmark-battlecats-audit-errors:
     docker: [{ image: cimg/node:22.23 }]
     resource_class: small
-    steps: [{ setup-benchmark-target-check: { target: battlecats, category: source-audit } }]
-  benchmark-battlecats-parsed-identity:
-    docker: [{ image: cimg/node:22.23 }]
-    resource_class: small
-    steps: [{ setup-benchmark-target-check: { target: battlecats, category: parsed-identity } }]
+    steps: [{ setup-benchmark-target-check: { target: battlecats, category: audit-errors } }]
 
-  benchmark-tsumtsum-fixture:
+  benchmark-tsumtsum-source-backed:
     docker: [{ image: cimg/node:22.23 }]
     resource_class: small
-    steps: [{ setup-benchmark-target-check: { target: TsumTsum, category: fixture } }]
-  benchmark-tsumtsum-source-audit:
+    steps: [{ setup-benchmark-target-check: { target: TsumTsum, category: source-backed } }]
+  benchmark-tsumtsum-audit-errors:
     docker: [{ image: cimg/node:22.23 }]
     resource_class: small
-    steps: [{ setup-benchmark-target-check: { target: TsumTsum, category: source-audit } }]
-  benchmark-tsumtsum-parsed-identity:
-    docker: [{ image: cimg/node:22.23 }]
-    resource_class: small
-    steps: [{ setup-benchmark-target-check: { target: TsumTsum, category: parsed-identity } }]
+    steps: [{ setup-benchmark-target-check: { target: TsumTsum, category: audit-errors } }]
 
-  benchmark-ywp-fixture:
+  benchmark-ywp-source-backed:
     docker: [{ image: cimg/node:22.23 }]
     resource_class: small
-    steps: [{ setup-benchmark-target-check: { target: YWP, category: fixture } }]
-  benchmark-ywp-source-audit:
+    steps: [{ setup-benchmark-target-check: { target: YWP, category: source-backed } }]
+  benchmark-ywp-audit-errors:
     docker: [{ image: cimg/node:22.23 }]
     resource_class: small
-    steps: [{ setup-benchmark-target-check: { target: YWP, category: source-audit } }]
-  benchmark-ywp-parsed-identity:
-    docker: [{ image: cimg/node:22.23 }]
-    resource_class: small
-    steps: [{ setup-benchmark-target-check: { target: YWP, category: parsed-identity } }]
+    steps: [{ setup-benchmark-target-check: { target: YWP, category: audit-errors } }]
 
 workflows:
   probe:
     jobs:
       - universal-benchmark-generate
-      - benchmark-battlecats-fixture: { requires: [universal-benchmark-generate] }
-      - benchmark-battlecats-source-audit: { requires: [universal-benchmark-generate] }
-      - benchmark-battlecats-parsed-identity: { requires: [universal-benchmark-generate] }
-      - benchmark-tsumtsum-fixture: { requires: [universal-benchmark-generate] }
-      - benchmark-tsumtsum-source-audit: { requires: [universal-benchmark-generate] }
-      - benchmark-tsumtsum-parsed-identity: { requires: [universal-benchmark-generate] }
-      - benchmark-ywp-fixture: { requires: [universal-benchmark-generate] }
-      - benchmark-ywp-source-audit: { requires: [universal-benchmark-generate] }
-      - benchmark-ywp-parsed-identity: { requires: [universal-benchmark-generate] }
+      - benchmark-battlecats-source-backed: { requires: [universal-benchmark-generate] }
+      - benchmark-battlecats-audit-errors: { requires: [universal-benchmark-generate] }
+      - benchmark-tsumtsum-source-backed: { requires: [universal-benchmark-generate] }
+      - benchmark-tsumtsum-audit-errors: { requires: [universal-benchmark-generate] }
+      - benchmark-ywp-source-backed: { requires: [universal-benchmark-generate] }
+      - benchmark-ywp-audit-errors: { requires: [universal-benchmark-generate] }
