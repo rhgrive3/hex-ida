@@ -21,6 +21,12 @@ function moduleKey(module, index) {
   return module?.bindingKey ?? module?.moduleKey ?? module?.id ?? module?.uuid ?? module?.name ?? `instrumentation-module:${index}`;
 }
 
+function moduleFields(event) {
+  const payload = event?.payload && typeof event.payload === 'object' ? event.payload : {};
+  const module = payload.module && typeof payload.module === 'object' ? payload.module : payload;
+  return module;
+}
+
 function normalizeProbeHandle(value) {
   if (value == null) return null;
   if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'bigint') {
@@ -101,9 +107,30 @@ export class InstrumentationProvider {
       if (typeof this.options.eventFilter === 'function' && this.options.eventFilter(raw) === false) return null;
       const handle = eventProbeHandle(raw);
       const interventionId = handle == null ? null : probes.get(handle) ?? null;
-      if (!interventionId) return normalizer.push(raw);
-      const existing = Array.isArray(raw?.interventionIds) ? raw.interventionIds : [];
-      return normalizer.push({ ...raw, interventionIds: [...new Set([...existing, interventionId])] });
+      const event = !interventionId
+        ? normalizer.push(raw)
+        : (() => {
+            const existing = Array.isArray(raw?.interventionIds) ? raw.interventionIds : [];
+            return normalizer.push({ ...raw, interventionIds: [...new Set([...existing, interventionId])] });
+          })();
+      if (!event) return null;
+      const module = moduleFields(event);
+      if (event.kind === 'module-load' && (module.runtimeBase ?? module.base) != null && (module.runtimeSize ?? module.size) != null) {
+        const bindingKey = module.bindingKey ?? module.moduleKey ?? module.id ?? module.uuid ?? module.name;
+        if (bindingKey) {
+          const existing = session.modules.get(bindingKey);
+          if (!existing) {
+            session.modules.load(normalizeRuntimeModuleBinding(module, {
+              bindingKey,
+              loadedSequence: event.sequence,
+            }));
+          }
+        }
+      } else if (event.kind === 'module-unload') {
+        const bindingKey = module.bindingKey ?? module.moduleKey ?? module.id ?? module.uuid ?? module.name;
+        if (bindingKey) session.modules.unload(bindingKey, event.sequence);
+      }
+      return event;
     };
 
     try {
