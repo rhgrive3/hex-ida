@@ -301,6 +301,20 @@ function hierarchy(index, receiverType, budget = 64) {
   return out;
 }
 
+// A hierarchy chain is a negative proof only when every link resolved to
+// indexed class metadata and the walk reached a real root. A receiver class
+// from a linked framework, bundle, or runtime registration is simply absent
+// from the current image index: filtering by that open chain would turn an
+// unobserved superclass into a proven contradiction.
+function hierarchyComplete(index, chain) {
+  if (!chain.length) return false;
+  for (const name of chain) {
+    if (!index.classes.has(name)) return false;
+  }
+  const last = index.classes.get(chain[chain.length - 1]);
+  return !cleanClassName(last?.superName);
+}
+
 function protocolSet(index, chain, explicit) {
   const explicitProtocols = Array.isArray(explicit) ? explicit : [];
   const out = new Set(explicitProtocols.map((p) => cleanClassName(p?.name || p)).filter(Boolean));
@@ -365,6 +379,19 @@ export function resolveObjcDispatch(index, { receiverType = null, selector, clas
   if (cleanReceiver) {
     const narrowed = candidates.filter((m) => ranks.has(m.className));
     if (!narrowed.length) {
+      if (!hierarchyComplete(index, chain)) {
+        return {
+          resolved: null,
+          candidates,
+          requirements,
+          confidence: 0,
+          receiverType: cleanReceiver,
+          selector,
+          classMethod: !!classMethod,
+          reason: 'receiver class hierarchy is unavailable or incomplete; selector candidates are inconclusive',
+          partial: true,
+        };
+      }
       return {
         resolved: null,
         candidates: [],
