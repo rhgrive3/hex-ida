@@ -34,9 +34,18 @@ export function signedOf(value, bits) {
   return BigInt.asIntN(bits, BigInt(value));
 }
 
-export function maxUnsigned(bits) { return (1n << BigInt(bits)) - 1n; }
-export function minSigned(bits) { return -(1n << BigInt(bits - 1)); }
-export function maxSigned(bits) { return (1n << BigInt(bits - 1)) - 1n; }
+export function maxUnsigned(bits) {
+  if (!isSupportedWidth(bits)) fail(`phase8-bitvector-unsupported-width:${bits}`);
+  return (1n << BigInt(bits)) - 1n;
+}
+export function minSigned(bits) {
+  if (!isSupportedWidth(bits)) fail(`phase8-bitvector-unsupported-width:${bits}`);
+  return -(1n << BigInt(bits - 1));
+}
+export function maxSigned(bits) {
+  if (!isSupportedWidth(bits)) fail(`phase8-bitvector-unsupported-width:${bits}`);
+  return (1n << BigInt(bits - 1)) - 1n;
+}
 
 /** A constant: raw unsigned bits plus the width they mean something at. */
 export function bitvector(value, bits) {
@@ -174,6 +183,7 @@ export function extractField(constant, lowBit, fieldBits) {
 
 /** Inserts a bit field into a value at `lowBit`. */
 export function insertField(target, field, lowBit) {
+  if (!isSupportedWidth(target?.bits) || !isSupportedWidth(field?.bits)) return null;
   const low = Number(lowBit);
   if (!Number.isInteger(low) || low < 0 || low + field.bits > target.bits) return null;
   const mask = maxUnsigned(field.bits) << BigInt(low);
