@@ -7,7 +7,7 @@ import {
   createTemporaryValue,
 } from '../../../semantics/effects/index.js';
 
-export const ARM64E_EFFECTS_SEMANTIC_VERSION = '2';
+export const ARM64E_EFFECTS_SEMANTIC_VERSION = '3';
 
 const POINTER_BITS = 64;
 const KEY_BITS = 128;
@@ -31,10 +31,10 @@ const SIGN = Object.freeze({
   pacizb: { key: 'ib', modifier: 'zero' },
   pacdza: { key: 'da', modifier: 'zero' },
   pacdzb: { key: 'db', modifier: 'zero' },
-  paciasp: { key: 'ia', destination: 'x30', modifier: 'sp' },
-  pacibsp: { key: 'ib', destination: 'x30', modifier: 'sp' },
-  pacia1716: { key: 'ia', destination: 'x17', modifier: 'x16' },
-  pacib1716: { key: 'ib', destination: 'x17', modifier: 'x16' },
+  paciasp: { key: 'ia', destination: 'x30', modifier: 'sp', secondModifier: 'pc' },
+  pacibsp: { key: 'ib', destination: 'x30', modifier: 'sp', secondModifier: 'pc' },
+  pacia1716: { key: 'ia', destination: 'x17', modifier: 'x16', secondModifier: 'x15' },
+  pacib1716: { key: 'ib', destination: 'x17', modifier: 'x16', secondModifier: 'x15' },
 });
 
 const AUTH = Object.freeze({
@@ -46,10 +46,10 @@ const AUTH = Object.freeze({
   autizb: { key: 'ib', modifier: 'zero' },
   autdza: { key: 'da', modifier: 'zero' },
   autdzb: { key: 'db', modifier: 'zero' },
-  autiasp: { key: 'ia', destination: 'x30', modifier: 'sp' },
-  autibsp: { key: 'ib', destination: 'x30', modifier: 'sp' },
-  autia1716: { key: 'ia', destination: 'x17', modifier: 'x16' },
-  autib1716: { key: 'ib', destination: 'x17', modifier: 'x16' },
+  autiasp: { key: 'ia', destination: 'x30', modifier: 'sp', secondModifier: 'x16' },
+  autibsp: { key: 'ib', destination: 'x30', modifier: 'sp', secondModifier: 'x16' },
+  autia1716: { key: 'ia', destination: 'x17', modifier: 'x16', secondModifier: 'x15' },
+  autib1716: { key: 'ib', destination: 'x17', modifier: 'x16', secondModifier: 'x15' },
 });
 
 const STRIP = Object.freeze({
@@ -73,8 +73,8 @@ const AUTH_CALL = Object.freeze({
 });
 
 const AUTH_RETURN = Object.freeze({
-  retaa: { key: 'ia' },
-  retab: { key: 'ib' },
+  retaa: { key: 'ia', secondModifier: 'x16' },
+  retab: { key: 'ib', secondModifier: 'x16' },
 });
 
 const AUTH_EXCEPTION_RETURN = Object.freeze({
@@ -256,6 +256,33 @@ function modifierInput(operations, descriptor, operands, operandIndex, prefix) {
   };
 }
 
+function pauthLrSecondModifierInput(operations, descriptor, prefix) {
+  const registerId = descriptor.secondModifier;
+  if (!registerId) return null;
+  const conditional = {
+    kind: 'arm64e-pauth-lr-pacm-active',
+    feature: 'FEAT_PAuth_LR',
+    pstateField: 'PACM',
+    equals: 1,
+    architectureStateInput: PAUTH_STATE_ID,
+  };
+  return {
+    value: readRegister(operations, registerId, `${prefix}.second-modifier`, POINTER_BITS, {
+      implicit: true,
+      stateKind: registerId === 'pc'
+        ? 'pointer-authentication-program-counter-second-modifier'
+        : 'pointer-authentication-second-modifier',
+      conditional,
+    }),
+    registerId,
+    metadata: {
+      kind: registerId === 'pc' ? 'program-counter' : 'register',
+      registerId,
+      conditional,
+    },
+  };
+}
+
 function intrinsicOperation({ intrinsicId, inputs, output, registersRead, metadata }) {
   return createMachineOperation({
     kind: 'intrinsic',
@@ -345,18 +372,26 @@ function transformPointer(decoded, context, instructionId, descriptor, transform
   });
   const modifier = modifierInput(operations, descriptor, operands, modifierIndex, instructionId);
   if (!modifier) return partialMissing(decoded, context, instructionId, `${transform}: modifier register is unavailable`);
+  const secondModifier = pauthLrSecondModifierInput(operations, descriptor, instructionId);
 
   const { keyId, keyValue, architectureState } = readPAuthState(operations, descriptor.key, instructionId);
   const result = tmp(`${instructionId}.${transform}.result`, POINTER_BITS);
   operations.push(intrinsicOperation({
     intrinsicId: `arm64e.pointer.${transform}`,
-    inputs: [pointer, modifier.value, keyValue, architectureState],
+    inputs: [pointer, modifier.value, ...(secondModifier ? [secondModifier.value] : []), keyValue, architectureState],
     output: result,
-    registersRead: [destination, ...(modifier.metadata.registerId ? [modifier.metadata.registerId] : []), keyId, PAUTH_STATE_ID].filter((id) => id !== 'xzr'),
+    registersRead: [
+      destination,
+      ...(modifier.metadata.registerId ? [modifier.metadata.registerId] : []),
+      ...(secondModifier ? [secondModifier.registerId] : []),
+      keyId,
+      PAUTH_STATE_ID,
+    ].filter((id) => id !== 'xzr'),
     metadata: {
       transform,
       keyIdentity: keyId,
       modifier: modifier.metadata,
+      ...(secondModifier ? { pauthLrSecondModifier: secondModifier.metadata } : {}),
       pointerRegister: destination,
       architectureStateInput: PAUTH_STATE_ID,
       cryptographicAlgorithm: 'not-modelled',
@@ -371,6 +406,7 @@ function transformPointer(decoded, context, instructionId, descriptor, transform
       destinationRegister: destination,
       keyIdentity: keyId,
       modifier: modifier.metadata,
+      ...(secondModifier ? { pauthLrSecondModifier: secondModifier.metadata } : {}),
       architectureStateInput: PAUTH_STATE_ID,
     },
   });
@@ -480,19 +516,27 @@ function authenticateControlTarget(decoded, context, instructionId, descriptor, 
   if (!modifier) {
     return partialMissing(decoded, context, instructionId, 'authenticated control modifier register is unavailable', { control: true, fault: true });
   }
+  const secondModifier = pauthLrSecondModifierInput(operations, effectiveDescriptor, instructionId);
 
   const { keyId, keyValue, architectureState } = readPAuthState(operations, descriptor.key, instructionId);
   const authenticatedTarget = tmp(`${instructionId}.authenticated-target`, POINTER_BITS);
   operations.push(intrinsicOperation({
     intrinsicId: 'arm64e.pointer.authenticate',
-    inputs: [target, modifier.value, keyValue, architectureState],
+    inputs: [target, modifier.value, ...(secondModifier ? [secondModifier.value] : []), keyValue, architectureState],
     output: authenticatedTarget,
-    registersRead: [targetRegister, ...(modifier.metadata.registerId ? [modifier.metadata.registerId] : []), keyId, PAUTH_STATE_ID].filter((id) => id !== 'xzr'),
+    registersRead: [
+      targetRegister,
+      ...(modifier.metadata.registerId ? [modifier.metadata.registerId] : []),
+      ...(secondModifier ? [secondModifier.registerId] : []),
+      keyId,
+      PAUTH_STATE_ID,
+    ].filter((id) => id !== 'xzr'),
     metadata: {
       transform: 'authenticate',
       use: 'control-target',
       keyIdentity: keyId,
       modifier: modifier.metadata,
+      ...(secondModifier ? { pauthLrSecondModifier: secondModifier.metadata } : {}),
       targetRegister,
       architectureStateInput: PAUTH_STATE_ID,
       cryptographicAlgorithm: 'not-modelled',
@@ -533,6 +577,7 @@ function authenticateControlTarget(decoded, context, instructionId, descriptor, 
       targetRegister,
       keyIdentity: keyId,
       modifier: modifier.metadata,
+      ...(secondModifier ? { pauthLrSecondModifier: secondModifier.metadata } : {}),
       architectureStateInput: PAUTH_STATE_ID,
     },
   });
