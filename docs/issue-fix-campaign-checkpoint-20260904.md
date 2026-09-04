@@ -1,6 +1,6 @@
 # Issue-fix campaign checkpoint — 2026-09-04
 
-Status: ACTIVE — AI owner lane implementation is complete locally; PR handoff is pending.
+Status: ACTIVE — AI owner lane PR is open; merge is intentionally pending candidate/CI proof.
 
 ## Exact scope
 
@@ -35,6 +35,13 @@ Exact candidate verification after the main rebase (`merge-base eac4b0609e8a6c4a
 - `npm run lint` — PASS (`1815 files ok`).
 - `npm run ai:test` — PASS (`ai-test-final`).
 - `npm run check` — red only in existing Phase 3 semantic/decompiler evidence recorded above; the changed-file union is outside those failures.
+
+## PR handoff
+
+- Pull request: #6443 (`fix(ai): close owner regressions #6259 #6264 #6265 #6266`).
+- Exact pushed PR head at creation: `da4035c3a14da9992feafc050849ffb1edf98cf1`.
+- The checkpoint update itself is docs-only; after pushing it, refresh the PR head SHA before any candidate-tree decision.
+- Merge was not attempted. Re-check current `main`, required CI, and the actual candidate file union before considering merge.
 
 ## Completed implementation
 
