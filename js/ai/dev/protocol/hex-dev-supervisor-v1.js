@@ -17,12 +17,15 @@ export function parseDevSupervisorDecision(text, options) {
 
 export function validateDevSupervisorDecision(value, { availableTools = null } = {}) {
   if (!isPlainObject(value)) throw new TypeError('Dev Supervisor decision must be an object.');
-  const type = String(value.type || '');
+  if (typeof value.type !== 'string') throw new TypeError('Dev Supervisor decision type must be a string.');
+  const type = value.type;
   if (!DEV_SUPERVISOR_DECISION_TYPES.includes(type)) throw new TypeError(`Unsupported Dev Supervisor decision type: ${type}`);
   assertExactKeys(value, SHAPES[type]);
 
   if (type === 'tool') {
-    const tool = nonEmpty(value.tool, 'tool');
+    if (typeof value.tool !== 'string') throw new TypeError('tool must be a string.');
+    const tool = value.tool.trim();
+    if (!tool || tool !== value.tool) throw new TypeError('tool must be a non-empty string without untrimmed whitespace.');
     if (!isPlainObject(value.arguments)) throw new TypeError('tool.arguments must be an object.');
     if (availableTools != null && !new Set(availableTools).has(tool)) throw new TypeError(`Unavailable Dev tool: ${tool}`);
     return freezeDecision({ type, tool, arguments: cloneJson(value.arguments), purpose: nonEmpty(value.purpose, 'purpose') });

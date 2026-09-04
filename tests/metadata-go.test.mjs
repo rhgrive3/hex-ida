@@ -105,6 +105,40 @@ function createPclntab120({ nfunc = 2, textStart = 0x400000n, functions = [] } =
   assert.equal(syms.records[1].address, '0x402000');
 }
 
+// #3432: maxRecords is coverage authority and must remain a typed, non-negative
+// safe-integer number rather than relying on Math.min() ToNumber coercion.
+{
+  const buf = createPclntab120({
+    nfunc: 2,
+    functions: [
+      { entryOff: 0x1000, name: 'main.one' },
+      { entryOff: 0x2000, name: 'main.two' },
+    ],
+  });
+  const header = parsePclntabHeader(buf);
+  assert.ok(header);
+
+  for (const maxRecords of ['1', true, false, [1], {}, NaN, Infinity, 1.5, -1]) {
+    assert.throws(
+      () => parseGoFunctions(buf, header, { maxRecords }),
+      /go-metadata-invalid-max-records/,
+      `maxRecords rejects ${String(maxRecords)}`,
+    );
+  }
+
+  const none = parseGoFunctions(buf, header, { maxRecords:0 });
+  assert.equal(none.completeness.scanned, 0);
+  assert.equal(none.functions.length, 0);
+
+  const one = parseGoFunctions(buf, header, { maxRecords:1 });
+  assert.equal(one.completeness.scanned, 1);
+  assert.equal(one.functions.length, 1);
+
+  const defaults = parseGoFunctions(buf, header);
+  assert.equal(defaults.completeness.scanned, 2);
+  assert.equal(defaults.functions.length, 2);
+}
+
 // 2. Negative: Unknown future Go magic (0xffffffef) -> Fail-closed
 {
   const buf = new Uint8Array(256);
