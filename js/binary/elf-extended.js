@@ -141,16 +141,34 @@ function symbolBudgetContext(image, context) {
   });
 }
 
+function symbolVersionPair(tags, addressTag, countTag, label, image) {
+  const address = one(tags, addressTag);
+  const rawCount = one(tags, countTag);
+  const hasAddress = address != null;
+  const hasCount = rawCount != null;
+  if (hasAddress !== hasCount) {
+    partial(image, `${label} address/count tag pair is incomplete`);
+    return { address, count: null, valid: false };
+  }
+  if (!hasAddress) return { address: null, count: null, valid: true };
+  const count = safe(rawCount);
+  if (count == null) {
+    partial(image, `${label} count is not a valid non-negative safe integer`);
+    return { address, count: null, valid: false };
+  }
+  return { address, count, valid: true };
+}
+
 export function parseDynamicSymbolVersions(r,tags,image,symbolCount,stringAt,context=null){
   const out=new Map(),versym=one(tags,DT_VERSYM);if(versym==null||symbolCount<=0)return out;const budget=symbolBudgetContext(image,context);const count=Math.min(symbolCount,budget.limits.maxSymbolRecords);if(symbolCount>count)partial(image,`DT_VERSYM symbol count ${symbolCount} exceeds record limit ${count}; clamped`);
   const vspan=mappedELFFileSpanForVa(image,versym,count*2);if(!vspan){partial(image,'DT_VERSYM table crosses a file-backed PT_LOAD boundary');return out;}const voff=vspan.start;if(!budget.claimInput(count*2,'DT_VERSYM'))return out;const names=new Map();
-  const verdef=one(tags,DT_VERDEF),verdefnum=safe(one(tags,DT_VERDEFNUM)??0n);
-  if(verdef!=null&&verdefnum){const range=mappedELFFileRangeForVa(image,verdef);let p=range?.start??null;for(let i=0;p!=null&&i<Math.min(verdefnum,65536)&&!budget.stopped;i++){
+  const verdefPair=symbolVersionPair(tags,DT_VERDEF,DT_VERDEFNUM,'DT_VERDEF/DT_VERDEFNUM',image),verdef=verdefPair.address,verdefnum=verdefPair.count;
+  if(verdefPair.valid&&verdef!=null&&verdefnum){const range=mappedELFFileRangeForVa(image,verdef);let p=range?.start??null;for(let i=0;p!=null&&i<Math.min(verdefnum,65536)&&!budget.stopped;i++){
     if(!budget.step(1,'DT_VERDEF decode'))break;if(p+20>range.end){partial(image,'DT_VERDEF crosses a file-backed PT_LOAD boundary');break;}if(!budget.claimInput(20,'DT_VERDEF'))break;const ndx=r.u16(p+4)&0x7fff,cnt=r.u16(p+6),aux=r.u32(p+12),next=r.u32(p+16),ap=p+aux;
     if(cnt<1||aux<20){partial(image,'DT_VERDEF has no valid first auxiliary entry');break;}if(ap<p||ap+8>range.end){partial(image,'DT_VERDEF auxiliary entry crosses a file-backed PT_LOAD boundary');break;}if(!budget.claimInput(8,'DT_VERDEF auxiliary'))break;const name=stringAt(BigInt(r.u32(ap)));if(name){if(!budget.claimOutput(1,96,'DT_VERDEF names'))break;names.set(ndx,{name,definition:true,library:null});}if(!next)break;if(next<20||p+next<=p||p+next>range.end){partial(image,'DT_VERDEF next pointer leaves its mapped table');break;}p+=next;
   }}
-  const verneed=one(tags,DT_VERNEED),verneednum=safe(one(tags,DT_VERNEEDNUM)??0n);
-  if(verneed!=null&&verneednum&&!budget.stopped){const range=mappedELFFileRangeForVa(image,verneed);let p=range?.start??null;for(let i=0;p!=null&&i<Math.min(verneednum,65536)&&!budget.stopped;i++){
+  const verneedPair=symbolVersionPair(tags,DT_VERNEED,DT_VERNEEDNUM,'DT_VERNEED/DT_VERNEEDNUM',image),verneed=verneedPair.address,verneednum=verneedPair.count;
+  if(verneedPair.valid&&verneed!=null&&verneednum&&!budget.stopped){const range=mappedELFFileRangeForVa(image,verneed);let p=range?.start??null;for(let i=0;p!=null&&i<Math.min(verneednum,65536)&&!budget.stopped;i++){
     if(!budget.step(1,'DT_VERNEED decode'))break;if(p+16>range.end){partial(image,'DT_VERNEED crosses a file-backed PT_LOAD boundary');break;}if(!budget.claimInput(16,'DT_VERNEED'))break;const cnt=r.u16(p+2),file=stringAt(BigInt(r.u32(p+4))),aux=r.u32(p+8),next=r.u32(p+12);let ap=p+aux;
     if(ap<p||ap>range.end){partial(image,'DT_VERNEED auxiliary pointer leaves its mapped table');break;}
     for(let j=0;j<cnt&&j<65536&&!budget.stopped;j++){
