@@ -71,7 +71,7 @@ test('#4268 listener setup failure rolls back pending state and timer', async ()
   client.close();
 });
 
-test('#4268 throwing listener cleanup cannot retain a completed request', async () => {
+test('#4268 throwing listener cleanup cannot retain or later cancel a completed request', async () => {
   const transport = new FakeTransport();
   const client = new RuntimeProviderProtocolClient(transport, { timeoutMs: 1000 });
   let listener = null;
@@ -88,6 +88,10 @@ test('#4268 throwing listener cleanup cannot retain a completed request', async 
   assert.equal(client.receive(packet('response', { id: request.id, epoch: request.epoch, result: 7 })), true);
   assert.equal(await pending, 7);
   assert.equal(client.pending.size, 0);
+
+  const sentAfterCompletion = transport.sent.length;
+  listener();
+  assert.equal(transport.sent.length, sentAfterCompletion, 'stale abort listener must not emit a cancel after completion');
   client.close();
 });
 
