@@ -287,7 +287,7 @@ export class RemoteProtocolClient {
     if (packet.type === 'event') {
       const now=Date.now();
       if (now-this.eventWindowStart >= 1000) { this.eventWindowStart=now; this.eventWindowCount=0; this.eventWindowBytes=0; this.droppedEvents=0; }
-      const bytes=jsonByteSize(packet);
+      const bytes=jsonByteSize(wire);
       if (this.eventWindowCount + 1 > this.maxEventsPerSecond || this.eventWindowBytes + bytes > this.maxEventBytesPerSecond) {
         this.droppedEvents++;
         if (this.droppedEvents === 1) {
