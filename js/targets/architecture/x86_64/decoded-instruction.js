@@ -9,13 +9,15 @@ const ACCESS = new Set(['read','write','read-write','unknown']);
 const DETAIL_STATUSES = new Set(['complete','unavailable','partial','malformed']);
 
 function integer(value, code, { min = 0, max = Number.MAX_SAFE_INTEGER } = {}) {
-  const number = Number(value);
-  if (!Number.isSafeInteger(number) || number < min || number > max) throw new TypeError(code);
-  return number;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < min || value > max) {
+    throw new TypeError(code);
+  }
+  return value;
 }
 
 function bigint(value, code) {
-  try { return BigInt(value); } catch { throw new TypeError(code); }
+  if (typeof value !== 'bigint') throw new TypeError(code);
+  return value;
 }
 
 function text(value, code, { empty = false } = {}) {
