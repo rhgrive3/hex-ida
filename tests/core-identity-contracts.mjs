@@ -4,7 +4,12 @@ import {
   createFunctionId, createInstructionId, createVmOperationId, createEvidenceId,
   createRuntimeSessionId, jsonSafe,
 } from '../js/core/identity/index.js';
-import { createOriginSet, mergeOriginSets, createTransformRecord } from '../js/core/identity/origin.js';
+import {
+  canonicalOriginSetDigest,
+  createOriginSet,
+  mergeOriginSets,
+  createTransformRecord,
+} from '../js/core/identity/origin.js';
 import { createAnalysisSnapshot, createDeterminismMetadata } from '../js/core/identity/snapshot.js';
 
 // Stable identity exactness regressions live in this contract suite.
@@ -154,6 +159,48 @@ assert.throws(
 const exactSourceLocation = createOriginSet({ sourceLocations: [{ file: 'a.c', line: 9007199254740993n }] });
 assert.deepEqual(exactSourceLocation.sourceLocations, [{ file: 'a.c', line: '9007199254740993' }],
   'source provenance must serialize exact bigint components without loss');
+const sparseLocation = [];
+sparseLocation.length = 1;
+assert.notEqual(
+  canonicalOriginSetDigest(createOriginSet({ sourceLocations:[sparseLocation] })),
+  canonicalOriginSetDigest(createOriginSet({ sourceLocations:[[null]] })),
+  'origin content digests must distinguish sparse evidence from an explicit null',
+);
+assert.notEqual(
+  canonicalOriginSetDigest(createOriginSet({ sourceLocations:[{ column:-0 }] })),
+  canonicalOriginSetDigest(createOriginSet({ sourceLocations:[{ column:0 }] })),
+  'origin content digests must retain typed negative-zero evidence',
+);
+const typedDistinctLocations = createOriginSet({
+  sourceLocations:[sparseLocation, [null], { column:-0 }, { column:0 }],
+});
+assert.equal(typedDistinctLocations.sourceLocations.length, 4,
+  'origin canonicalization must not discard typed-distinct source evidence before hashing');
+assert.ok(typedDistinctLocations.sourceLocations.some((location) => Array.isArray(location)
+  && location.length === 1 && !Object.hasOwn(location, 0)),
+  'origin canonicalization must retain sparse source evidence beside explicit null');
+assert.ok(typedDistinctLocations.sourceLocations.some((location) => Object.is(location?.column, -0))
+  && typedDistinctLocations.sourceLocations.some((location) => Object.is(location?.column, 0)),
+  'origin canonicalization must retain negative and positive zero as distinct evidence');
+const typedDistinctTransforms = createOriginSet({ transforms:[
+  createTransformRecord({
+    passId:'fold', passVersion:'1', ruleId:'typed-zero', proofKind:'range',
+    preconditions:[{ offset:-0 }],
+  }),
+  createTransformRecord({
+    passId:'fold', passVersion:'1', ruleId:'typed-zero', proofKind:'range',
+    preconditions:[{ offset:0 }],
+  }),
+] });
+assert.equal(typedDistinctTransforms.transforms.length, 2,
+  'transform canonicalization must retain typed-distinct proof preconditions');
+const canonicallyEquivalentUnicode = ['a\u0323\u0301', 'a\u0301\u0323', '\u212b', '\u00c5'];
+const unicodeForward = createOriginSet({ parentEntityIds:canonicallyEquivalentUnicode });
+const unicodeReverse = createOriginSet({ parentEntityIds:[...canonicallyEquivalentUnicode].reverse() });
+assert.deepEqual(unicodeForward.parentEntityIds, unicodeReverse.parentEntityIds,
+  'origin set order must use locale-independent code-unit ordering');
+assert.equal(canonicalOriginSetDigest(unicodeForward), canonicalOriginSetDigest(unicodeReverse),
+  'locale-equivalent but distinct Unicode members cannot make origin identity input-order dependent');
 
 const left = createOriginSet({
   byteRanges: [{ binaryId: binaryA, offset: 10n, length: 4n }],
@@ -169,6 +216,23 @@ assert.equal(merged.byteRanges.length, 2, 'origin merge must not drop byte range
 assert.deepEqual(merged.parentEntityIds, ['parent-a', 'parent-b']);
 assert.deepEqual(merged.operationIds, ['vm-op-1']);
 assert.equal(merged.transforms.length, 1);
+const leftDigest = canonicalOriginSetDigest(left);
+assert.match(leftDigest, /^[0-9a-f]{32}$/, 'canonical origins must expose a producer-owned 128-bit content digest');
+assert.equal(canonicalOriginSetDigest({ ...left }), null,
+  'a serialized or reconstructed wrapper cannot inherit the private producer identity');
+assert.equal(canonicalOriginSetDigest(createOriginSet({
+  parentEntityIds:['parent-a'],
+  transforms:[transform],
+  instructionIds:[instructionId],
+  virtualRanges:[{ length:4n, address:0x100001000n, imageId:image }],
+  byteRanges:[{ length:4n, offset:10n, binaryId:binaryA }],
+})), leftDigest, 'equivalent canonical origin content must reproduce the same digest');
+assert.notEqual(canonicalOriginSetDigest(merged), leftDigest,
+  'a semantic origin-set change must produce a different content digest');
+assert.equal(merged.transforms[0], transform,
+  'merging canonical origins must reuse immutable transform records');
+assert.equal(merged.byteRanges[0], left.byteRanges[0],
+  'merging canonical origins must reuse immutable byte-range records');
 assert.ok(Object.isFrozen(merged));
 assert.ok(Object.isFrozen(merged.byteRanges));
 assert.throws(() => merged.byteRanges.push({}), TypeError);
