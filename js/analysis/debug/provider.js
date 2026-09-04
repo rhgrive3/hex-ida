@@ -128,6 +128,17 @@ function coverageList(value) {
   return new Set(value.map((item) => item.trim()));
 }
 
+export function isCanonicalDebugRecord(record) {
+  if (!record || typeof record !== 'object') return false;
+  if (typeof record.kind !== 'string' || !KIND_SET.has(record.kind)) return false;
+  if (typeof record.entityId !== 'string' || !record.entityId.trim()) return false;
+  if (typeof record.providerId !== 'string' || !record.providerId.trim()) return false;
+  if (typeof record.providerVersion !== 'string' || !record.providerVersion.trim()) return false;
+  if (!Array.isArray(record.evidenceIds)) return false;
+  if (record.buildIdentity !== null && record.buildIdentity !== undefined && (typeof record.buildIdentity !== 'string' || !record.buildIdentity.trim())) return false;
+  return true;
+}
+
 /**
  * True only when one record is explicitly covered by a partial identity.
  *
@@ -139,6 +150,8 @@ function coverageList(value) {
 export function isDebugRecordAuthoritative(result, record) {
   const identity = result?.identity;
   if (!identity || !record) return false;
+  if (!isCanonicalDebugRecord(record)) return false;
+  if (identity.providerId && record.providerId !== identity.providerId) return false;
   if (identity.verdict === 'matched-authoritative') return true;
   if (identity.verdict !== 'matched-partial') return false;
 
