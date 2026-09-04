@@ -49,14 +49,15 @@
    npm run userscript:build
    git status --short userscript/
    ```
-   If userscript generated files changed, record them as an integration handoff in the
+   If userscript-generated files changed, record them as an integration handoff in the
    ledger; do not commit them (finding-ledger contract: generated-output owner is the
    integration lane).
 
 ## Expected outcomes
 
-- Every rendered entity in the corpus resolves to canonical origins or is explicitly
-  marked `provenance-loss`; zero silent losses (`provenanceLossCount` stays hard zero).
-- Stale snapshot mappings are rejected; no stale mapping served as current.
+- Every rendered semantic entity in the corpus resolves to canonical origins or is
+  explicitly marked `provenance-loss`; explicit structural scaffolding is the only
+  zero-origin completeness exception.
+- Missing/stale snapshot mappings are fail-closed; no unbound mapping is served as current.
 - Identical inputs produce identical provenance maps (determinism).
-- Pathological fixtures complete within budgets with explicit truncation states.
+- Pathological fixtures complete within budgets or cancellation with explicit conservative states.
