@@ -135,12 +135,14 @@ export async function createBinaryId(content) {
 export function createSliceId(input = {}) {
   const sourceRange = input.sourceRange == null ? null : input.sourceRange;
   if (sourceRange != null) validateCanonicalIdentityNumbers(sourceRange);
+  const sourceRangeTypes = sourceRange == null ? null : lossyTypeWitness(sourceRange);
   return typedId('slice', {
     binaryId: nonEmpty(input.binaryId, 'slice-binary-id-required'),
     containerId: input.containerId == null ? null : nonEmpty(input.containerId, 'slice-container-id-invalid'),
     index: nonNegativeInteger(input.index, 0, 'slice-index-invalid'),
     architecture: input.architecture == null ? null : nonEmpty(input.architecture, 'slice-architecture-invalid'),
     sourceRange: sourceRange == null ? null : jsonSafe(sourceRange),
+    ...(sourceRangeTypes ? { sourceRangeTypes } : {}),
   });
 }
 
