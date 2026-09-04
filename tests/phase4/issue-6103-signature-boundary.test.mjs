@@ -25,4 +25,25 @@ assert.equal(recognizeLibraries({ libraries: ['Foo'], symbols: ['bar'], strings:
 assert.equal(recognizeLibraries({ libraries: new Set(['Foo']), symbols: new Set(['bar']) }, signatures).length, 1);
 assert.equal(recognizeLibraries({ libraries: ['Foo'] }, signatures).length, 1);
 
+const leafSignatures = [{
+  name: 'SQLite',
+  classification: 'LIBRARY',
+  kind: 'library',
+  libraries: [/sqlite3/i],
+  symbols: [/^_?sqlite3_/],
+  strings: [],
+}];
+for (const input of [
+  { libraries: [{ name: ['sqlite3'] }] },
+  { symbols: [{ text: ['sqlite3_open'] }] },
+  { strings: [{ library: { toString: () => 'sqlite3' } }] },
+  { libraries: [{ name: true }] },
+]) {
+  assert.deepEqual(recognizeLibraries(input, leafSignatures), []);
+}
+assert.equal(recognizeLibraries({
+  libraries: [{ name: 'sqlite3' }],
+  symbols: [{ text: 'sqlite3_open' }],
+}, leafSignatures).length, 1);
+
 console.log('issue-6103-signature-boundary: ok');

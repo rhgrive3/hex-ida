@@ -7,7 +7,7 @@ library recognition collection issue. Update it at every branch, PR, or merge st
 
 ## Scope and ownership
 
-- Issue: #6103 (non-array library recognition collections leak TypeError)
+- Issues: #6103 (non-array library recognition collections leak TypeError), #6050 (structured leaf evidence coercion)
 - Source owner: `js/signature/index.js`
 - Regression owner: `tests/phase4/issue-6103-signature-boundary.test.mjs`
 - Shared-board claim: lanes message #262
@@ -23,6 +23,7 @@ library recognition collection issue. Update it at every branch, PR, or merge st
 - [x] Claimed `js/signature/index.js` and its focused regression path on the shared board (#262).
 - [x] Reproduced raw TypeErrors for non-array `symbols`, `imports`, `libraries`, and `strings` on the candidate base.
 - [x] Added fail-soft collection materialization while preserving Array and Set recognition.
+- [x] Added primitive-string validation for object `name`/`library`/`text` leaves.
 - [x] Focused regression and lint passed locally.
 - [x] Candidate tree `87e5aba4522baa8c1009e1652152d31e16feea00` passed focused regression and lint; Phase 4 reached 33-file PASS before the known pristine-main ownership-contract failure.
 - [x] Created one owner PR for #6103: #6490.

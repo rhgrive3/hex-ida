@@ -27,7 +27,14 @@ const LIBRARIES = [
   { name:'SDWebImage', classification:'LIBRARY', kind:'library', libraries:[/SDWebImage/i], symbols:[/^_?SDWebImage/] },
 ];
 
-function textOf(value) { return typeof value === 'string' ? value : value?.name || value?.library || value?.text || ''; }
+function textOf(value) {
+  if (typeof value === 'string') return value;
+  if (!value || typeof value !== 'object') return '';
+  for (const key of ['name', 'library', 'text']) {
+    if (typeof value[key] === 'string') return value[key];
+  }
+  return '';
+}
 function collectionOf(value) {
   if (value == null || typeof value === 'string') return [];
   if (Array.isArray(value)) return value;
