@@ -65,7 +65,6 @@ test('Issue #6157: malformed paging metadata cannot control continuation offsets
     'structured cursor offsets must not be coerced into paging authority',
   );
 });
-
 test('Issue #6158: structured instruction addresses remain invalid in AI projections', async () => {
   const cases = [
     ['bigint', 16n, '0x10'],
@@ -97,4 +96,3 @@ test('Issue #6158: structured instruction addresses remain invalid in AI project
     assert.equal(page.result.results[0].address, expected, `${label} must not be coerced into a canonical address`);
   }
 });
-
