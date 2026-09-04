@@ -64,3 +64,12 @@ test('mergeRangeDomain cannot reintroduce an out-of-domain source range', () => 
     false,
   ), null);
 });
+
+test('mergeRangeDomain fails closed when unknown-signedness hull has no coherent domain', () => {
+  assert.equal(mergeRangeDomain(
+    { min:-128n, max:-1n, bits:8, signed:null },
+    { min:128n, max:255n, bits:8, signed:null },
+    8,
+    null,
+  ), null);
+});
