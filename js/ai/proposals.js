@@ -128,8 +128,9 @@ function snapshotProposalPayload(value) {
   if (typeof clone !== 'function') {
     throw new AIError('tool_failed', 'Structured cloning is unavailable for proposal execution payloads.');
   }
+  let payload;
   try {
-    return {
+    payload = {
       target: clone(value.target),
       before: clone(value.before),
       after: clone(value.after),
@@ -137,6 +138,40 @@ function snapshotProposalPayload(value) {
   } catch {
     throw new AIError('invalid_tool_call', 'Proposal execution payload must be structured-cloneable.');
   }
+  if (containsSharedMemory(payload)) {
+    throw new AIError('invalid_tool_call', 'Proposal execution payload must not contain shared memory.');
+  }
+  return payload;
+}
+
+function containsSharedMemory(value, seen = new WeakSet()) {
+  if (value === null || typeof value !== 'object') return false;
+  const SharedBuffer = globalThis.SharedArrayBuffer;
+  if (typeof SharedBuffer === 'function' && value instanceof SharedBuffer) return true;
+  if (ArrayBuffer.isView(value)) {
+    return typeof SharedBuffer === 'function' && value.buffer instanceof SharedBuffer;
+  }
+  if (value instanceof ArrayBuffer) return false;
+  if (seen.has(value)) return false;
+  seen.add(value);
+
+  if (value instanceof Map) {
+    for (const [key, item] of value) {
+      if (containsSharedMemory(key, seen) || containsSharedMemory(item, seen)) return true;
+    }
+    return false;
+  }
+  if (value instanceof Set) {
+    for (const item of value) {
+      if (containsSharedMemory(item, seen)) return true;
+    }
+    return false;
+  }
+
+  for (const descriptor of Object.values(Object.getOwnPropertyDescriptors(value))) {
+    if ('value' in descriptor && containsSharedMemory(descriptor.value, seen)) return true;
+  }
+  return false;
 }
 
 /**

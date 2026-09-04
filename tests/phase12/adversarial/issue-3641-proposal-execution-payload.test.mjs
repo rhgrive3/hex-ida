@@ -50,4 +50,31 @@ let cursor = deepRun.applied;
 for (let depth = 0; depth < 12; depth++) cursor = cursor.next;
 assert.equal(cursor, 'leaf', 'execution preserves values beyond display depth limit');
 
+if (typeof SharedArrayBuffer === 'function') {
+  const directStore = new ProposalStore({ evidenceStore });
+  const directShared = new SharedArrayBuffer(1);
+  assert.throws(() => directStore.create({
+    kind: 'project-annotation',
+    target: { id: 'demo' },
+    before: null,
+    after: directShared,
+    evidenceIds: ['verified-evidence'],
+  }), /must not contain shared memory/);
+  assert.equal(directStore.all().length, 0, 'direct shared memory must fail before proposal publication');
+
+  const nestedStore = new ProposalStore({ evidenceStore });
+  const shared = new SharedArrayBuffer(1);
+  const view = new Uint8Array(shared);
+  view[0] = 1;
+  assert.throws(() => nestedStore.create({
+    kind: 'project-annotation',
+    target: { id: 'demo' },
+    before: null,
+    after: { nested: new Map([['bytes', view]]) },
+    evidenceIds: ['verified-evidence'],
+  }), /must not contain shared memory/);
+  view[0] = 2;
+  assert.equal(nestedStore.all().length, 0, 'shared-memory views must not leave mutable execution authority behind');
+}
+
 console.log('issue-3641 proposal execution payload regression: ok');
