@@ -156,25 +156,31 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
     backend: new ExhaustiveBvBackend(), globalScope: { ...scope, phiChoices: [], phiInventory: { count: 2, complete: true } },
   });
   assert.equal(countedButEmpty.verdict, 'unknown');
-  assert.equal(countedButEmpty.reasonCode, 'missing-phi-choices');
+  assert.equal(countedButEmpty.reasonCode, 'incomplete-phi-choices');
   const identified = await verifyGlobalEdgeReachability({
     entryBlock: 0, targetBlock: 5, targetEdge, pathCompleteness: 'complete',
-    backend: new ExhaustiveBvBackend(), globalScope: { ...scope, phiChoices: [{ complete: true, phi: 'p1', predecessor: 0 }] },
+    backend: new ExhaustiveBvBackend(), globalScope: {
+      ...scope,
+      phiChoices: [{ complete: true, phiId: 'p1', block: 5, predecessorBlock: 0, valueId: 'v1' }],
+    },
   });
   assert.equal(identified.verdict, 'proved');
 }
 
 // #3195 — waitForAppProducer collects abort between pre-check and subscribe.
 {
-  // The helper is module-private and the module touches window at import, so
-  // the regression is a source-anchored guard: the post-subscribe re-check
-  // that collects an abort between the pre-check and listener registration
-  // must stay present.
+  // Keep this source-anchored guard on the dedicated producer-wait module: an
+  // abort that lands between the initial pre-check and listener subscription
+  // must still be collected by a post-subscribe re-check.
   const { readFileSync } = await import('node:fs');
-  const source = readFileSync(new URL('../js/app.js', import.meta.url), 'utf8');
-  const helper = source.slice(source.indexOf('function waitForAppProducer'), source.indexOf('class App'));
-  assert.match(helper, /addEventListener\('abort', onAbort/);
-  assert.match(helper, /signal\?\.aborted && !done/, 'post-subscribe re-check must collect the late abort');
+  const source = readFileSync(new URL('../js/analysis/producer-wait.js', import.meta.url), 'utf8');
+  const start = source.indexOf('export function waitForAppProducer');
+  assert.notEqual(start, -1, 'producer wait helper must remain exported');
+  const helper = source.slice(start);
+  const subscribe = helper.indexOf("addEventListener('abort', onAbort");
+  const recheck = helper.indexOf('if (signal?.aborted) onAbort();');
+  assert.notEqual(subscribe, -1, 'abort listener must be installed');
+  assert.ok(recheck > subscribe, 'post-subscribe re-check must collect the late abort');
 }
 
 // #3185 — agent tool field key is a strict non-empty primitive string.

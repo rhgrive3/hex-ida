@@ -22,7 +22,14 @@ import { stableDigest } from '../../core/identity/index.js';
 import { PHASE8_CONTRACT_VERSION, PASS_STAGES, createPassResult } from './contract.js';
 import { canonicalAnalysisIdentity } from './analysis-identity.js';
 import { IDENTITY_PASS, identityPassObservation, runIdentityPass } from './identity-pass.js';
-import { commitAnalysisState, forkAnalysisState, runPassTransaction, seedAnalysisState } from './transaction.js';
+import {
+  analysisSemanticSnapshotIsCurrent,
+  commitAnalysisState,
+  forkAnalysisState,
+  runPassTransaction,
+  seedAnalysisState,
+  semanticSnapshotForAnalysis,
+} from './transaction.js';
 import { SCCP_PASS, runSccpPass } from './sccp.js';
 import { GVN_PASS, runGvnPass } from './valuenumber.js';
 import { DCE_PASS, runDcePass } from './dce.js';
@@ -34,7 +41,11 @@ import { PROVIDER_PASS, runProviderPass } from './providers.js';
 export { PHASE8_CONTRACT_VERSION, PASS_STAGES } from './contract.js';
 export { createPassDescriptor, createPassResult, unchangedResult, ANALYSIS_KEYS, PASS_STATUSES, COMPLETENESS, BUDGET_CLASSES } from './contract.js';
 export { createPhase8ArtifactDescriptor, PHASE8_ARTIFACT_KINDS, PHASE8_ARTIFACT_SCHEMA_VERSION } from './artifact-identity.js';
-export { commitAnalysisState, createAnalysisState, forkAnalysisState, invalidationFor, runPassTransaction, seedAnalysisState, transactionDigest } from './transaction.js';
+export {
+  analysisSemanticSnapshotIsCurrent, commitAnalysisState, createAnalysisState,
+  forkAnalysisState, invalidationFor, runPassTransaction, seedAnalysisState,
+  semanticSnapshotForAnalysis, transactionDigest,
+} from './transaction.js';
 export { SCCP_PASS, describeSccp, runSccpPass } from './sccp.js';
 export {
   cardinality, contains, describeRange, emptyFact, emptyRange, evaluateBinaryFact,
@@ -242,6 +253,19 @@ export function runPhase8Vertical(context = {}, budget = {}) {
     };
   }
   const before = authoritative.snapshot();
+  const semanticIr = semanticSnapshotForAnalysis(authoritative);
+  if (semanticIr == null) {
+    return {
+      ledger: withheldLedger('failed', 'analysis-snapshot-unavailable', [{
+        severity: 'error',
+        code: 'phase8.analysis.snapshot-unavailable',
+        message: 'Phase 8 requires one immutable Semantic IR snapshot for identity and execution.',
+        reason: 'The supplied analysis state was not seeded from a captured Semantic IR graph.',
+      }], registryDigest, before),
+      timings: Object.freeze([]),
+      analysis: authoritative,
+    };
+  }
 
   if (aborted(budget)) {
     return {
@@ -274,17 +298,18 @@ export function runPhase8Vertical(context = {}, budget = {}) {
       analysis: authoritative,
     };
   }
-  // Scalar passes share one identity proof for this isolated, non-mutating
-  // vertical. The identity module itself never caches by object; direct callers
-  // and later runs always re-derive it from the current IR.
-  const needsScalarIdentity = passes.some(({ descriptor }) =>
-    ['phase8.sccp', 'phase8.gvn', 'phase8.induction'].includes(descriptor.id));
-  const resolvedAnalysisIdentity = needsScalarIdentity
-    ? canonicalAnalysisIdentity({ ...context, analysis: authoritative }) : null;
+  // Every pass and the publication guard share one identity proof for the
+  // exact immutable graph they consume. Direct callers and later runs still
+  // capture and derive afresh; this is vertical-local, not an object cache.
+  const resolvedAnalysisIdentity = canonicalAnalysisIdentity({
+    ...context, analysis:authoritative, ir:semanticIr,
+  });
   const passContext = {
     ...context,
     analysis,
+    ir:semanticIr,
     resolvedAnalysisIdentity,
+    deferSemanticSnapshotPublicationCheck:true,
   };
   const results = [];
   const timings = [];
@@ -355,6 +380,22 @@ export function runPhase8Vertical(context = {}, budget = {}) {
     results.push(outcome.result);
     for (const key of outcome.invalidated) invalidated.add(key);
     if (typeof pass.observe === 'function') observations[pass.descriptor.id] = pass.observe(passContext);
+  }
+
+  // Re-capture the live producer graph once, after every pass but before the
+  // only vertical publication. This compares the complete authority-bound
+  // identity (including shapeDigest), not merely the semantic shape.
+  if (!analysisSemanticSnapshotIsCurrent(authoritative, passContext)) {
+    return {
+      ledger: withheldLedger('failed', 'semantic-snapshot-changed-before-publication', [{
+        severity: 'error',
+        code: 'phase8.analysis.snapshot-changed',
+        message: 'Phase 8 discarded results because the producer graph changed during analysis.',
+        reason: 'A fresh canonical identity did not match the immutable snapshot consumed by the passes.',
+      }], registryDigest, before),
+      timings: Object.freeze(timings),
+      analysis: authoritative,
+    };
   }
 
   if (!commitAnalysisState(authoritative, analysis, before)) {

@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import { runPassTransaction, seedAnalysisState } from '../../../js/decompiler/phase8/transaction.js';
 import { DCE_PASS, observableEffectReason, runDcePass } from '../../../js/decompiler/phase8/dce.js';
+import { canonicalAnalysisIdentity } from '../../../js/decompiler/phase8/analysis-identity.js';
 import { loadCorpus } from '../../../tools/validation/phase8/build-corpus.mjs';
 import { decompileEntry } from '../../../tools/validation/phase8/decompile-corpus.mjs';
 import { fixture } from '../helpers/ir-fixtures.mjs';
@@ -144,6 +145,67 @@ test('an operation writing untracked state is kept', () => {
   const { facts } = analyze(f.build());
   assert.equal(isCandidate(facts, written), false);
   assert.match(facts.keptReasons.get(written.id), /architectural state/);
+});
+
+test('writesState hidden from ownKeys remains a bound DCE input', () => {
+  const f = fixture('hidden-writes-state');
+  f.block(0);
+  const value = f.binary('add', f.opaque(32), f.opaque(32), 32);
+  f.ret();
+  const ir = f.build();
+  const definition = value.def;
+  definition.writesState = true;
+  const wrapped = new Proxy(definition, {
+    ownKeys(target) { return Reflect.ownKeys(target).filter((key) => key !== 'writesState'); },
+  });
+  value.def = wrapped;
+  for (const block of ir.blocks) {
+    block.insts = block.insts.map((instruction) => instruction === definition ? wrapped : instruction);
+  }
+
+  const before = canonicalAnalysisIdentity({ ir });
+  const { facts } = analyze(ir);
+  assert.equal(isCandidate(facts, value), false,
+    'a state-writing pure-looking operation cannot become a DCE candidate');
+  assert.match(facts.keptReasons.get(value.id), /architectural state/);
+  definition.writesState = false;
+  const after = canonicalAnalysisIdentity({ ir });
+  assert.equal(before.valid, true);
+  assert.equal(after.valid, true);
+  assert.notEqual(before.identity.semanticIrId, after.identity.semanticIrId);
+});
+
+test('fault records hidden from ownKeys retain exact diagnostics and identity', () => {
+  const faultTarget = { kind:'page-fault', condition:'mapped', detail:'read' };
+  const hiddenFault = new Proxy(faultTarget, { ownKeys() { return []; } });
+  const f = fixture('hidden-memory-fault');
+  f.block(0);
+  const loaded = f.load(32, { atomic:false, ordering:'unknown', faults:[hiddenFault] });
+  f.ret();
+  const ir = f.build();
+  const before = canonicalAnalysisIdentity({ ir });
+  const { facts } = analyze(ir);
+  assert.equal(isCandidate(facts, loaded), false);
+  assert.match(facts.keptReasons.get(loaded.id), /page-fault/);
+  faultTarget.kind = 'alignment-fault';
+  const after = canonicalAnalysisIdentity({ ir });
+  assert.equal(before.valid, true);
+  assert.equal(after.valid, true);
+  assert.notEqual(before.identity.semanticIrId, after.identity.semanticIrId);
+
+  const extraFaultTarget = { kind:'divide-by-zero', condition:'zero', detail:'divisor' };
+  const extraFault = new Proxy(extraFaultTarget, { ownKeys() { return []; } });
+  const g = fixture('hidden-extra-fault');
+  g.block(0);
+  g.divide(g.opaque(32), g.opaque(32), 32, { faults:[extraFault] });
+  g.ret();
+  const extraIr = g.build();
+  const beforeExtra = canonicalAnalysisIdentity({ ir:extraIr });
+  extraFaultTarget.detail = 'changed';
+  const afterExtra = canonicalAnalysisIdentity({ ir:extraIr });
+  assert.equal(beforeExtra.valid, true);
+  assert.equal(afterExtra.valid, true);
+  assert.notEqual(beforeExtra.identity.semanticIrId, afterExtra.identity.semanticIrId);
 });
 
 test('removal is transitive: an operand that only fed a dead operation is also dead', () => {

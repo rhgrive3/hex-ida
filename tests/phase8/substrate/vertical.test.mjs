@@ -1,8 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { createPassDescriptor } from '../../../js/decompiler/phase8/contract.js';
-import { INTERACTIVE_STAGES, PASS_STAGES, passRegistryDigest, phase8Passes, runPassTransaction, runPhase8Stage, runPhase8Vertical, seedAnalysisState } from '../../../js/decompiler/phase8/index.js';
+import { createPassDescriptor, createPassResult } from '../../../js/decompiler/phase8/contract.js';
+import {
+  INTERACTIVE_STAGES, PASS_STAGES, SCCP_PASS, createAnalysisState, passRegistryDigest,
+  phase8Passes, runPassTransaction, runPhase8Stage, runPhase8Vertical,
+  runSccpPass, seedAnalysisState, semanticSnapshotForAnalysis,
+} from '../../../js/decompiler/phase8/index.js';
+import { capturePhase8SemanticSnapshot } from '../../../js/decompiler/phase8/analysis-identity.js';
 
 /**
  * A minimal IR carrying exactly the canonical facts the identity pass declares
@@ -19,6 +24,194 @@ const CONTEXT = Object.freeze({
   },
   types: null,
   opts: {},
+});
+
+function noOpPass(id, run = null) {
+  const descriptor = createPassDescriptor({
+    id, version:'1.0.0', stage:'scalar-optimization', consumes:['ssa'], produces:[],
+  });
+  return {
+    descriptor,
+    run:run ?? (() => createPassResult({
+      descriptor, status:'unchanged', changed:false, completeness:'complete',
+    })),
+  };
+}
+
+test('seeded transactions expose only the captured graph to passes', () => {
+  const ir = {
+    values:[{ id:1, bits:8, origin:{ instructionIds:['instruction_snapshot_value'] } }],
+    blocks:[{ id:'entry' }], entry:'entry',
+    origin:{ instructionIds:['instruction_snapshot_function'] },
+  };
+  const state = seedAnalysisState(ir);
+  const snapshot = semanticSnapshotForAnalysis(state);
+  let observed = null;
+  const pass = noOpPass('phase8.snapshot-observer', (context) => {
+    observed = context.ir;
+    return createPassResult({
+      descriptor:pass.descriptor, status:'unchanged', changed:false, completeness:'complete',
+    });
+  });
+  const outcome = runPassTransaction(state, pass, { analysis:state, ir }, {});
+  assert.equal(outcome.committed, true);
+  assert.equal(observed, snapshot);
+  assert.notEqual(observed, ir);
+  assert.equal(state.get('ssa').values, snapshot.values);
+});
+
+test('direct scalar entry refuses an analysis state without a snapshot binding', () => {
+  const state = createAnalysisState({
+    cfg:{ blocks:[{ id:'entry' }], entry:'entry' },
+    ssa:{ values:[{ id:1, bits:8 }] },
+  });
+  const outcome = runSccpPass({
+    analysis:state,
+    resolvedAnalysisIdentity:{ valid:true, identity:{ arbitrary:true } },
+  });
+  assert.equal(outcome.status, 'unsupported');
+  assert.match(outcome.stopReason, /not bound to an immutable Semantic IR snapshot/);
+});
+
+test('transaction publication rejects authority changes outside the captured graph', () => {
+  const ir = {
+    values:[{ id:1, bits:8, origin:{ instructionIds:['instruction_authority_value'] } }],
+    blocks:[{ id:'entry' }], entry:'entry',
+    origin:{ instructionIds:['instruction_authority_function'] },
+  };
+  const state = seedAnalysisState(ir);
+  const pass = noOpPass('phase8.authority-mutator', () => {
+    ir.analysisIdentity = Object.freeze({
+      binaryId:'binary:changed', functionId:'function:changed', snapshotId:'snapshot:changed',
+      semanticIrId:'semantic-ir:changed', ssaId:'ssa:changed', analyzerVersion:'changed',
+      shapeDigest:'shape:changed',
+    });
+    return createPassResult({
+      descriptor:pass.descriptor, status:'unchanged', changed:false, completeness:'complete',
+    });
+  });
+  const outcome = runPassTransaction(state, pass, { analysis:state, ir }, {});
+  assert.equal(outcome.committed, false);
+  assert.equal(outcome.stopReason, 'semantic-snapshot-changed-before-commit');
+});
+
+test('snapshot Map and Set views expose no mutator or private target', () => {
+  const ir = {
+    values:[{ id:1, bits:8, origin:{ instructionIds:['instruction_map_value'] } }],
+    blocks:[{ id:'entry' }], entry:'entry',
+    semanticMetadata:new Map([['mode', 'raw']]), semanticSet:new Set(['raw']),
+    origin:{ instructionIds:['instruction_map_function'] },
+  };
+  const state = seedAnalysisState(ir);
+  const pass = noOpPass('phase8.snapshot-map-mutator', (context) => {
+    const map = context.ir.semanticMetadata;
+    const set = context.ir.semanticSet;
+    assert.equal(map instanceof Map, true);
+    assert.equal(set instanceof Set, true);
+    assert.equal(Object.isFrozen(map), true);
+    assert.equal(Object.isFrozen(set), true);
+    assert.equal(map.get('mode'), 'raw');
+    assert.equal(set.has('raw'), true);
+    for (const operation of [
+      () => map.set('mode', 'changed'), () => map.delete('mode'), () => map.clear(),
+      () => Map.prototype.set.call(map, 'mode', 'changed'),
+      () => set.add('changed'), () => set.delete('raw'), () => set.clear(),
+      () => Set.prototype.add.call(set, 'changed'),
+      () => Object.defineProperty(map, 'extra', { value:1 }),
+      () => Object.setPrototypeOf(set, null),
+    ]) assert.throws(operation);
+    let mapOwner = null;
+    let setOwner = null;
+    map.forEach((_value, _key, owner) => { mapOwner = owner; });
+    set.forEach((_value, _sameValue, owner) => { setOwner = owner; });
+    assert.equal(mapOwner, map, 'Map.forEach must not leak its private target');
+    assert.equal(setOwner, set, 'Set.forEach must not leak its private target');
+    assert.equal(map.valueOf(), map);
+    assert.equal(set.valueOf(), set);
+    return createPassResult({
+      descriptor:pass.descriptor, status:'unchanged', changed:false, completeness:'complete',
+    });
+  });
+  const outcome = runPassTransaction(state, pass, { analysis:state, ir }, {});
+  assert.equal(outcome.committed, true);
+  assert.equal(ir.semanticMetadata.get('mode'), 'raw');
+  assert.deepEqual([...ir.semanticSet], ['raw']);
+});
+
+test('snapshot collection domains are fixed before child capture can mutate their sources', () => {
+  const map = new Map();
+  const set = new Set();
+  let mapTriggered = false;
+  let setTriggered = false;
+  const mapKey = new Proxy({}, {
+    getPrototypeOf(target) {
+      if (!mapTriggered) {
+        mapTriggered = true;
+        for (let index = 0; index < 64; index += 1) map.set(`late-map-${index}`, index);
+      }
+      return Reflect.getPrototypeOf(target);
+    },
+  });
+  const setValue = new Proxy({}, {
+    getPrototypeOf(target) {
+      if (!setTriggered) {
+        setTriggered = true;
+        for (let index = 0; index < 64; index += 1) set.add(`late-set-${index}`);
+      }
+      return Reflect.getPrototypeOf(target);
+    },
+  });
+  map.set(mapKey, 'first');
+  set.add(setValue);
+
+  const snapshot = capturePhase8SemanticSnapshot({ map, set });
+  assert.equal(mapTriggered, true);
+  assert.equal(setTriggered, true);
+  assert.equal(map.size, 65);
+  assert.equal(set.size, 65);
+  assert.equal(snapshot.map.size, 1,
+    'a live Map iterator must not absorb entries appended by a child trap');
+  assert.equal(snapshot.set.size, 1,
+    'a live Set iterator must not absorb values appended by a child trap');
+});
+
+test('direct transaction pins its pre-pass identity before a post-pass raw mutation', () => {
+  const ir = {
+    values:[{
+      id:1, kind:'arg', bits:8, signed:null, const:null, def:null, uses:[],
+      origin:{ instructionIds:['instruction_direct_identity_value'] },
+    }],
+    blocks:[{ id:'entry', index:0, insts:[], phis:[], succ:[], pred:[] }],
+    entry:0, semanticMetadata:new Map([['mode', 'old']]),
+    origin:{ instructionIds:['instruction_direct_identity_function'] },
+  };
+  const state = seedAnalysisState(ir);
+  let checks = 0;
+  let pinnedIdentity = null;
+  const outcome = runPassTransaction(
+    state,
+    {
+      descriptor:SCCP_PASS,
+      run(context, budget, area) {
+        pinnedIdentity = context.resolvedAnalysisIdentity;
+        return runSccpPass(context, budget, area);
+      },
+    },
+    { analysis:state, ir },
+    {
+      shouldAbort() {
+        checks += 1;
+        if (checks === 2) {
+          ir.semanticMetadata.set('mode', 'new');
+        }
+        return false;
+      },
+    },
+  );
+  assert.equal(pinnedIdentity?.valid, true);
+  assert.equal(outcome.committed, false);
+  assert.equal(outcome.stopReason, 'semantic-snapshot-changed-before-commit');
+  assert.equal(state.get('ranges'), null);
 });
 
 test('the vertical publishes a frozen deterministic ledger', () => {
