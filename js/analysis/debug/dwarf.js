@@ -88,6 +88,15 @@ const DW_FORM = Object.freeze({
   addrx1: 0x29, addrx2: 0x2a, addrx3: 0x2b, addrx4: 0x2c,
 });
 
+const DW_UT = Object.freeze({
+  compile: 0x01,
+  type: 0x02,
+  partial: 0x03,
+  skeleton: 0x04,
+  split_compile: 0x05,
+  split_type: 0x06,
+});
+
 /** DW_ATE base-type encodings, mapped to the machine layer's classes. */
 const ENCODING_CLASS = Object.freeze({
   0x02: 'boolean', 0x04: 'float', 0x05: 'integer', 0x06: 'integer',
@@ -330,6 +339,26 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET) {
       cursor.offset = unitEnd;
       cursor.limit = info.length;   // the unit-end advance itself is not unit-local
       continue;
+    }
+
+    // DWARF5 extends the common unit header according to unit_type. These bytes
+    // are metadata, not DIE abbreviation codes (#3810). Reads stay unit-local so
+    // truncated type signatures/type offsets/dwo_ids fail closed.
+    if (version === 5) {
+      try {
+        if (unitType === DW_UT.type || unitType === DW_UT.split_type) {
+          cursor.u64();
+          if (offsetSize === 8) cursor.u64(); else cursor.u32();
+        } else if (unitType === DW_UT.skeleton || unitType === DW_UT.split_compile) {
+          cursor.u64();
+        }
+      } catch (error) {
+        diagnostics.push(`truncated DWARF5 unit header at 0x${unitStart.toString(16)}`);
+        complete = false;
+        cursor.offset = unitEnd;
+        cursor.limit = info.length;
+        continue;
+      }
     }
 
     const unit = { start: unitStart, version, addressSize, offsetSize, abbrevOffset, unitType, strOffsetsBase: null };
