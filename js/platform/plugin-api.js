@@ -105,6 +105,13 @@ function settleWithin(promise, timeoutMs, signal) {
   });
 }
 
+function validateContributionId(id) {
+  if (typeof id !== 'string' || !/^[a-z0-9][a-z0-9._-]{1,127}$/i.test(id)) {
+    throw new TypeError('plugin contribution id must be stable and non-empty');
+  }
+  return id;
+}
+
 export class PlatformPluginRegistry {
   constructor(options = {}) {
     this.entries = new Map([...TYPES].map((type) => [type, new Map()]));
@@ -118,10 +125,10 @@ export class PlatformPluginRegistry {
 
   registerAnalyzer(id, contribution) {
     if (!contribution || typeof contribution !== 'object') throw new TypeError('plugin contribution must be an object');
-    if (!/^[a-z0-9][a-z0-9._-]{1,127}$/i.test(String(id || ''))) throw new TypeError('plugin contribution id must be stable and non-empty');
+    const validId = validateContributionId(id);
     const legacyManifest = {
-      id: `legacy.analyzer.${id}`,
-      name: `Legacy analyzer ${id}`,
+      id: `legacy.analyzer.${validId}`,
+      name: `Legacy analyzer ${validId}`,
       version: '1.0.0',
       apiVersion: '2.0.0',
       isLegacy: true,
@@ -129,12 +136,12 @@ export class PlatformPluginRegistry {
       supportedTargets: ['*'],
       contributions: [{
         type: 'analyzer',
-        id: String(id),
+        id: validId,
         contractVersion: '1.0.0',
         capabilities: [],
       }],
     };
-    return this.registerPlugin(legacyManifest, { [id]: contribution });
+    return this.registerPlugin(legacyManifest, { [validId]: contribution });
   }
 
   registerKnowledgeProvider(id, contribution) { return this.#register('knowledgeProvider', id, contribution); }
@@ -212,9 +219,8 @@ export class PlatformPluginRegistry {
 
   #register(type, id, contribution) {
     if (!TYPES.has(type)) throw new Error(`unsupported plugin contribution type: ${type}`);
-    if (!/^[a-z0-9][a-z0-9._-]{1,127}$/i.test(String(id || ''))) throw new TypeError('plugin contribution id must be stable and non-empty');
+    const key = validateContributionId(id);
     if (!contribution || typeof contribution !== 'object') throw new TypeError('plugin contribution must be an object');
-    const key = String(id);
     const bucket = this.entries.get(type);
     if (bucket.has(key)) throw new Error(`plugin contribution already registered: ${type}:${key}`);
     const record = Object.freeze({ id: key, type, contribution: Object.freeze({ ...contribution }) });
