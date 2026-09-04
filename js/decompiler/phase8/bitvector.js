@@ -19,19 +19,19 @@ const SUPPORTED_WIDTHS = Object.freeze([1, 8, 16, 32, 64, 128]);
 const WIDTH_SET = new Set(SUPPORTED_WIDTHS);
 
 export function isSupportedWidth(bits) {
-  return WIDTH_SET.has(Number(bits));
+  return typeof bits === 'number' && Number.isInteger(bits) && WIDTH_SET.has(bits);
 }
 
 /** Normalizes a value into the unsigned representation of its width. */
 export function unsignedOf(value, bits) {
   if (!isSupportedWidth(bits)) fail(`phase8-bitvector-unsupported-width:${bits}`);
-  return BigInt.asUintN(Number(bits), BigInt(value));
+  return BigInt.asUintN(bits, BigInt(value));
 }
 
 /** The signed interpretation of the same bits. */
 export function signedOf(value, bits) {
   if (!isSupportedWidth(bits)) fail(`phase8-bitvector-unsupported-width:${bits}`);
-  return BigInt.asIntN(Number(bits), BigInt(value));
+  return BigInt.asIntN(bits, BigInt(value));
 }
 
 export function maxUnsigned(bits) { return (1n << BigInt(bits)) - 1n; }
@@ -40,7 +40,7 @@ export function maxSigned(bits) { return (1n << BigInt(bits - 1)) - 1n; }
 
 /** A constant: raw unsigned bits plus the width they mean something at. */
 export function bitvector(value, bits) {
-  return Object.freeze({ bits: Number(bits), value: unsignedOf(value, bits) });
+  return Object.freeze({ bits, value: unsignedOf(value, bits) });
 }
 
 export function sameBitvector(left, right) {
@@ -166,7 +166,7 @@ export function evaluateUnary(operator, operand) {
  */
 export function extractField(constant, lowBit, fieldBits) {
   const low = Number(lowBit);
-  const width = Number(fieldBits);
+  const width = fieldBits;
   if (!Number.isInteger(low) || low < 0 || !isSupportedWidth(width)) return null;
   if (low + width > constant.bits) return null;
   return bitvector((constant.value >> BigInt(low)) & maxUnsigned(width), width);
