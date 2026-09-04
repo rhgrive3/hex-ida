@@ -106,11 +106,21 @@ function parseV0Type(str, state, depth = 0) {
   }
   if (c === 'R' || c === 'Q') {
     state.pos++;
-    return `&${parseV0Type(str, state, depth + 1) || ''}`;
+    if (state.pos < str.length && str[state.pos] === 'L') {
+      state.pos++;
+      const lt = parseV0Base62(str, state.pos);
+      if (!lt) return null;
+      state.pos = lt.nextPos;
+    }
+    const inner = parseV0Type(str, state, depth + 1);
+    if (!inner) return null;
+    return c === 'R' ? `&${inner}` : `&mut ${inner}`;
   }
   if (c === 'P' || c === 'O') {
     state.pos++;
-    return `*${parseV0Type(str, state, depth + 1) || ''}`;
+    const inner = parseV0Type(str, state, depth + 1);
+    if (!inner) return null;
+    return c === 'P' ? `*const ${inner}` : `*mut ${inner}`;
   }
   return parseV0Path(str, state, depth + 1);
 }
