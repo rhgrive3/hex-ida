@@ -143,14 +143,23 @@ export function findLegacyV3NoteKey(file, fileInfo, sliceIndex, storage = global
   const identity = ['v3', p.sourceSize, p.uuid, p.cpu, p.cpuSub, p.sliceOffset, p.sliceSize].join('|');
   const prefix = PREFIX + identity + '|';
   try {
+    const matches = new Set();
     for (let i = 0; i < storage.length; i++) {
       const candidate = storage.key(i);
       if (typeof candidate !== 'string' || !candidate.startsWith(prefix)) continue;
       if (candidate.includes('.delta.', prefix.length)) continue;
-      return candidate.slice(PREFIX.length);
+      matches.add(candidate.slice(PREFIX.length));
     }
+    const cacheable = (typeof file === 'object' && file !== null) || typeof file === 'function';
+    const cachedKey = cacheable ? NOTE_KEY_CACHE.get(file)?.get(identity) : null;
+    if (cachedKey) {
+      return matches.has(cachedKey) ? cachedKey : null;
+    }
+    if (matches.size === 1) {
+      return matches.values().next().value;
+    }
+    return null;
   } catch { return null; }
-  return null;
 }
 
 export async function noteKeyFor(file, fileInfo, sliceIndex, options = {}) {
