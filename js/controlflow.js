@@ -4,9 +4,13 @@
  * optimized binaries routinely place cleanup/cold blocks before their callers.
  */
 
+function validNodeIndex(value, length) {
+  return Number.isInteger(value) && value >= 0 && value < length;
+}
+
 function normalizedSuccessors(successors) {
   const n = successors.length;
-  return successors.map((xs) => Array.from(new Set((xs || []).filter((x) => Number.isInteger(x) && x >= 0 && x < n))));
+  return successors.map((xs) => Array.from(new Set((xs || []).filter((x) => validNodeIndex(x, n)))));
 }
 
 function predecessorsOf(succ) {
@@ -17,7 +21,7 @@ function predecessorsOf(succ) {
 
 function reachableFrom(succ, entry) {
   const out = new Set();
-  if (!(entry >= 0 && entry < succ.length)) return out;
+  if (!validNodeIndex(entry, succ.length)) return out;
   const stack = [entry];
   while (stack.length) {
     const i = stack.pop();
@@ -29,7 +33,7 @@ function reachableFrom(succ, entry) {
 }
 
 function reversePostOrder(succ, entry, allowed = null) {
-  if (!(entry >= 0 && entry < succ.length) || (allowed && !allowed.has(entry))) return [];
+  if (!validNodeIndex(entry, succ.length) || (allowed && !allowed.has(entry))) return [];
   const seen = new Set([entry]);
   const post = [];
   const stack = [{ node: entry, next: 0 }];
@@ -248,9 +252,10 @@ function postDominatorsOf(succ, pred, reachable, components, componentOf) {
  */
 export function analyzeGraph(successors, entry = 0) {
   const succ = normalizedSuccessors(successors || []);
+  const canonicalEntry = validNodeIndex(entry, succ.length) ? entry : -1;
   const predecessors = predecessorsOf(succ);
-  const reachable = reachableFrom(succ, entry);
-  const { idom: immediateDominators } = immediateDominatorsOf(succ, predecessors, reachable, entry);
+  const reachable = reachableFrom(succ, canonicalEntry);
+  const { idom: immediateDominators } = immediateDominatorsOf(succ, predecessors, reachable, canonicalEntry);
   const dominators = dominanceViews(immediateDominators, reachable);
   const { components, componentOf } = strongComponents(succ, predecessors, reachable);
   const backEdges = [];
