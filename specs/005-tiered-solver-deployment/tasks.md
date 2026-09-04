@@ -1,0 +1,26 @@
+# Tasks: HEX-SYM-01
+
+- [x] T001 Create isolated worktree/branch at exact base and inspect Phase 9 production substrate.
+- [x] T002 Create repository-native specification, plan, research, data model, contract, quickstart, and checklists.
+- [x] T003 Implement exact QF_BV bit blasting with complete deterministic bounded DPLL.
+- [x] T004 Implement 32/64 arithmetic, compare, shifts, div/rem, ITE, extract, concat, and casts.
+- [x] T005 Implement explicit exhaustive-oracle/bitblast routing and exact nested capability binding.
+- [x] T006 Independently validate SAT models and fail closed on provider identity/model corruption.
+- [x] T007 Wire production registry and dedicated module Worker to the tiered backend.
+- [x] T008 Strengthen worker token/query/backend identity checks and task-queue cancellation.
+- [x] T009 Add 32/64 positive/negative/boundary/adversarial/regression and shared-width differential tests.
+- [x] T010 Recompute canonical query identity after structured clone at every exact boundary.
+- [x] T011 Bound expression traversal iteratively and reject malformed numeric authorities.
+- [x] T012 Expand differential proof to the full expression surface and seeded SAT/UNSAT formulas.
+- [x] T015 Add capability routing, model corruption, resource, timeout, cancellation, stale, and worker transport tests.
+- [x] T016 Add observational startup/solve/memory harness with deterministic resource ceilings.
+- [x] T017 Make result/model/evidence snapshots transitively immutable across direct and Worker boundaries.
+- [x] T018 Enforce constructor ceilings, identity edge/depth authority, expression depth, and internal enumeration deadlines.
+- [x] T019 Reject noncanonical BV constants and exact SAT witnesses before publication.
+- [x] T020 Add a physical-iPad evidence identity gate that keeps local evidence blocking.
+- [x] T021 Run focused, full Phase 9, Chromium, AI, lint, module-boundary, ownership, and diff gates; record exact outputs. Desktop WebKit remains externally blocked by missing host libraries.
+- [x] T013 Commit exact tested implementation and record commit inventory (`b7308906c9f214e3a0c5365a3aa9f6fe43a9a31d`).
+- [x] T022 Commit final independent-review hardening (`8e876210d4ad65d489f06108334b083974ebf0e9`).
+- [x] T023 Commit monotonic-deadline and evidence documentation (`895d87d4d24f7a2afaf9484319ccc3445fafdae7`).
+- [x] T024 Preserve Chromium PASS and desktop WebKit BLOCKED as separate evidence (`582340db1a2c747a6345c35447890b48ecb3415c`).
+- [ ] T014 Obtain physical-iPad Safari evidence; do not substitute desktop WebKit emulation.

@@ -4,18 +4,23 @@
     {
       "id": "P9-FINAL",
       "result": "blocking",
-      "integrationSha": "ccb472477322ff3447e78e637ec66a06636bd7e0",
-      "integrationTreeSha": "a32126138ce96557fc4dcf9a8e2167273c935bf9",
+      "integrationSha": "f4a03e52c064e4c434c4617da3ce61e734c313ce",
+      "integrationTreeSha": "dbc127e64d57940c1b9d908f3bb8b638f1c577e2",
       "verifierId": "phase9.verifier",
-      "verifierVersion": "2.0.0",
-      "backendId": "hex-exhaustive-bv",
+      "verifierVersion": "3.1.0",
+      "backendId": "hex-tiered-qfbv",
       "backendVersion": "1.0.0",
       "proofAuthority": "exact",
-      "capabilityFingerprint": "4ea05f339da8463fe444f472d8563dae",
-      "deterministicDigest": "94855d7a6678b5773976586030cfaf94",
-      "evidenceDigest": "a1c8805e106108f85b29b3fe9da53a27",
-      "gatesPassed": 6,
-      "testFiles": 25
+      "capabilityFingerprint": "4012b09280d2c063d929d960364304ba",
+      "deterministicDigest": "78a946d9738a363335521b1412231e10",
+      "evidenceDigest": "a0987c1cb70bf4b1a1310bd201dd4ede",
+      "gatesPassed": 7,
+      "testFiles": 43,
+      "browserEngines": [
+        "chromium",
+        "webkit"
+      ],
+      "physicalDeviceEvidenceState": "absent"
     }
   ]
 }

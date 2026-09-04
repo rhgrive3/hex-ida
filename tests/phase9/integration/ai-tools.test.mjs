@@ -3,9 +3,14 @@ import test from 'node:test';
 
 import { createHexToolRegistry } from '../../../js/ai/tools/registry.js';
 import { AI_TOOL_NAMES } from '../../../js/ai/tools/names.js';
+import { defaultSolverRegistry } from '../../../js/symbolic/solver/registry.js';
 
 test('AI ToolRegistry registers Phase 9 solver verification tools with safe cache options', () => {
   const registry = createHexToolRegistry({ binaryIdentity: 'test_bin', analysisRevision: 'rev1' });
+  const solver = defaultSolverRegistry.getDefaultBackend();
+  assert.equal(solver.id, 'hex-tiered-qfbv');
+  assert.equal(solver.capabilities().maxBvWidth, 64);
+  assert.equal(solver.capabilities().routingPolicy, 'exhaustive-oracle-then-bitblast-v1');
 
   assert.ok(registry.tools.has('verify_edge_feasibility'));
   assert.ok(registry.tools.has('verify_bounded_equivalence'));

@@ -8,6 +8,7 @@ import {
   SCHEMA_VERSION,
   VERIFIER_ID,
   VERIFIER_VERSION,
+  validateEvidence,
 } from '../../../tools/validation/phase9/verify.mjs';
 
 test('release verifier excludes only its exact canonical evidence files', () => {
@@ -64,4 +65,12 @@ test('release evidence deterministic payload is stable and binds exact authority
   assert.equal(first.backend.capabilityFingerprint, 'cap-v1');
   assert.equal(first.browserRuntime.allPassed, true);
   assert.deepEqual(first.browserRuntime.engines, args.browserExecution.engines);
+  assert.equal(first.physicalDeviceEvidence.state, 'absent');
+  const readyWithoutDevice = {
+    ...first,
+    verdict: 'READY',
+    deterministicDigest: 'digest',
+    evidenceDigest: 'evidence',
+  };
+  assert.match(validateEvidence(readyWithoutDevice).join('\n'), /physical iPad evidence is not verified/);
 });

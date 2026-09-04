@@ -11,13 +11,15 @@
     "backend",
     "testExecution",
     "browserRuntime",
+    "solverMetrics",
+    "physicalDeviceEvidence",
     "gates",
     "deterministicDigest",
     "capabilities",
     "evidenceDigest"
   ],
   "properties": {
-    "schemaVersion": { "type": "string", "const": "phase9-release-evidence/v2" },
+    "schemaVersion": { "type": "string", "const": "phase9-release-evidence/v4" },
     "phase": { "type": "integer", "const": 9 },
     "verdict": { "type": "string", "enum": ["READY", "BLOCKING", "NOT-INTEGRATED"] },
     "verifier": {
@@ -64,6 +66,21 @@
         "total": { "type": "integer", "minimum": 0 },
         "allPassed": { "type": "boolean" },
         "engines": { "type": "array", "items": { "type": "object" } }
+      }
+    },
+    "solverMetrics": { "type": ["object", "null"] },
+    "physicalDeviceEvidence": {
+      "type": "object",
+      "required": ["state", "verified", "deviceModel", "osVersion", "browserVersion", "commitSha", "treeSha", "checks"],
+      "properties": {
+        "state": { "type": "string", "enum": ["absent", "invalid", "verified"] },
+        "verified": { "type": "boolean" },
+        "deviceModel": { "type": ["string", "null"] },
+        "osVersion": { "type": ["string", "null"] },
+        "browserVersion": { "type": ["string", "null"] },
+        "commitSha": { "type": ["string", "null"] },
+        "treeSha": { "type": ["string", "null"] },
+        "checks": { "type": "object" }
       }
     },
     "gates": { "type": "array", "items": { "type": "object", "required": ["id", "status", "ok"] } },

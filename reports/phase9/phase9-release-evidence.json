@@ -1,72 +1,27 @@
 {
-  "schemaVersion": "phase9-release-evidence/v2",
+  "schemaVersion": "phase9-release-evidence/v4",
   "phase": 9,
   "verifier": {
     "id": "phase9.verifier",
-    "version": "2.0.0"
+    "version": "3.1.0"
   },
   "product": {
-    "commitSha": "ccb472477322ff3447e78e637ec66a06636bd7e0",
-    "treeSha": "a32126138ce96557fc4dcf9a8e2167273c935bf9",
-    "clean": false,
-    "dirtyFiles": [
-      "docs/PHASE9_SOLVER_BACKEND_ADR.md",
-      "docs/PHASE9_START_HERE.md",
-      "js/ai/tools/registry.js",
-      "js/symbolic/evidence/cache-policy.js",
-      "js/symbolic/evidence/symbolic-evidence.js",
-      "js/symbolic/solver/backend.js",
-      "js/symbolic/solver/fake-backend.js",
-      "js/symbolic/solver/index.js",
-      "js/symbolic/solver/registry.js",
-      "js/symbolic/solver/result.js",
-      "js/symbolic/solver/session.js",
-      "js/symbolic/translate/semantic-ir.js",
-      "js/symbolic/translate/support-matrix.js",
-      "js/symbolic/verify/edge-feasibility.js",
-      "js/symbolic/verify/eligibility.js",
-      "js/symbolic/verify/equivalence.js",
-      "js/symbolic/verify/global-reachability.js",
-      "js/symbolic/verify/patch.js",
-      "js/symbolic/verify/query.js",
-      "js/symbolic/verify/validate-model.js",
-      "scripts/build-userscript.mjs",
-      "tests/phase9/evidence/cache-policy.test.mjs",
-      "tests/phase9/evidence/symbolic-evidence.test.mjs",
-      "tests/phase9/solver/lifecycle.test.mjs",
-      "tests/phase9/translate/support-matrix.test.mjs",
-      "tests/phase9/verify/edge-feasibility.test.mjs",
-      "tests/phase9/verify/equivalence.test.mjs",
-      "tests/phase9/verify/global-reachability.test.mjs",
-      "tests/phase9/verify/patch.test.mjs",
-      "tests/phase9/verify/vacuous-proof.test.mjs",
-      "tools/validation/phase9/release-evidence.schema.json",
-      "tools/validation/phase9/verify.mjs",
-      "userscript/hex.user.template.js",
-      "userscript/release-version.json",
-      "js/symbolic/solver/exhaustive-backend.js",
-      "js/symbolic/solver/heuristic-backend.js",
-      "js/symbolic/solver/worker-backend.js",
-      "js/symbolic/solver/worker-entry.js",
-      "tests/phase9/integration/late-result-boundary.test.mjs",
-      "tests/phase9/release/release-evidence.test.mjs",
-      "tests/phase9/solver/proof-authority.test.mjs",
-      "tests/phase9/solver/real-backend.test.mjs",
-      "tests/phase9/solver/worker-lifecycle.test.mjs",
-      "tests/phase9/verify/lifecycle-proof-boundary.test.mjs"
-    ]
+    "commitSha": "f4a03e52c064e4c434c4617da3ce61e734c313ce",
+    "treeSha": "dbc127e64d57940c1b9d908f3bb8b638f1c577e2",
+    "clean": true,
+    "dirtyFiles": []
   },
   "backend": {
-    "id": "hex-exhaustive-bv",
+    "id": "hex-tiered-qfbv",
     "version": "1.0.0",
     "proofAuthority": "exact",
-    "capabilityFingerprint": "4ea05f339da8463fe444f472d8563dae",
+    "capabilityFingerprint": "4012b09280d2c063d929d960364304ba",
     "capabilities": {
       "supportedSorts": [
         "bool",
         "bv"
       ],
-      "maxBvWidth": 8,
+      "maxBvWidth": 64,
       "supportsQuantifiers": false,
       "supportsIncremental": false,
       "supportsCancellation": true,
@@ -77,17 +32,102 @@
       "memoryBudgetClass": "measured-only",
       "isRemote": false,
       "isWasm": false,
-      "maxAssignments": 1048576,
+      "supportedLogic": "QF_BV",
+      "routingPolicy": "exhaustive-oracle-then-bitblast-v1",
+      "exhaustiveMaxBvWidth": 8,
+      "exhaustiveMaxAssignments": 1048576,
       "maxConstraints": 4096,
       "maxExprNodes": 100000,
+      "maxExprDepth": 1024,
+      "yieldEvery": 4096,
+      "narrowBackendFingerprint": "e1857a2d0de88a176567cac46cb81966",
+      "wideBackendFingerprint": "771a4c8c2a2c03c8c55ff9d40c8f1b15",
       "proofAuthority": "exact",
-      "capabilityFingerprint": "4ea05f339da8463fe444f472d8563dae"
+      "capabilityFingerprint": "4012b09280d2c063d929d960364304ba"
     }
   },
   "testExecution": {
-    "selected": 25,
-    "total": 25,
+    "selected": 43,
+    "total": 43,
     "allPassed": true
+  },
+  "browserRuntime": {
+    "selected": 2,
+    "total": 2,
+    "allPassed": false,
+    "engines": [
+      {
+        "name": "chromium",
+        "status": "PASSED",
+        "result": {
+          "sat": "sat",
+          "satModel": "5",
+          "unsat": "unsat",
+          "satBackend": "hex-tiered-qfbv-worker",
+          "unsatBackend": "hex-tiered-qfbv-worker",
+          "wideSat": "sat",
+          "wideUnsat": "unsat",
+          "wideRoute": "bitblast-qfbv",
+          "forgedHost": "invalid-query",
+          "forgedHostHash": null,
+          "forgedWorker": "invalid-query",
+          "forgedWorkerHash": null,
+          "proofVerdict": "proved",
+          "proofBackend": "exact",
+          "proofAuthority": "exact",
+          "executionIsolation": "dedicated-worker",
+          "workerAvailable": true
+        },
+        "error": null
+      },
+      {
+        "name": "webkit",
+        "status": "FAILED",
+        "result": null,
+        "error": "browserType.launch: \n╔══════════════════════════════════════════════════════╗\n║ Host system is missing dependencies to run browsers. ║\n║ Missing libraries:                                   ║\n║     libgstreamer-1.0.so.0                            ║\n║     libgtk-4.so.1                                    ║\n║     libgraphene-1.0.so.0                             ║\n║     libwoff2dec.so.1.0.2                             ║\n║     libevent-2.1.so.7                                ║\n║     libgstallocators-1.0.so.0                        ║\n║     libgstapp-1.0.so.0                               ║\n║     libgstbase-1.0.so.0                              ║\n║     libgstpbutils-1.0.so.0                           ║\n║     libgstaudio-1.0.so.0                             ║\n║     libgsttag-1.0.so.0                               ║\n║     libgstvideo-1.0.so.0                             ║\n║     libgstgl-1.0.so.0                                ║\n║     libgstcodecparsers-1.0.so.0                      ║\n║     libgstfft-1.0.so.0                               ║\n║     libavif.so.16                                    ║\n║     libharfbuzz-icu.so.0                             ║\n║     libsecret-1.so.0                                 ║\n║     libhyphen.so.0                                   ║\n║     libwayland-server.so.0                           ║\n║     libmanette-0.2.so.0                              ║\n║     libGLESv2.so.2                                   ║\n╚══════════════════════════════════════════════════════╝"
+      }
+    ]
+  },
+  "solverMetrics": {
+    "schemaVersion": "hex-tiered-solver-metrics/v1",
+    "backend": {
+      "id": "hex-tiered-qfbv",
+      "version": "1.0.0",
+      "capabilityFingerprint": "4012b09280d2c063d929d960364304ba"
+    },
+    "solves": [
+      {
+        "width": 32,
+        "status": "sat",
+        "route": "bitblast-qfbv",
+        "cnfVariables": 126,
+        "cnfClauses": 312
+      },
+      {
+        "width": 64,
+        "status": "sat",
+        "route": "bitblast-qfbv",
+        "cnfVariables": 254,
+        "cnfClauses": 632
+      }
+    ],
+    "resourceCeilings": {
+      "maxVariables": 400000,
+      "maxClauses": 1600000,
+      "maxDecisions": 500000,
+      "maxPropagations": 8000000
+    }
+  },
+  "physicalDeviceEvidence": {
+    "state": "absent",
+    "verified": false,
+    "deviceModel": null,
+    "osVersion": null,
+    "browserVersion": null,
+    "commitSha": null,
+    "treeSha": null,
+    "checks": {},
+    "reason": "physical-ipad-evidence-not-supplied"
   },
   "capabilities": {
     "proofAuthorityContract": "verified",
@@ -110,7 +150,11 @@
     "boundedEquivalence": "verified",
     "patchVerification": "verified",
     "symbolicEvidenceSchema": "verified",
-    "versionSafeCachePolicy": "verified"
+    "versionSafeCachePolicy": "verified",
+    "browserWorkerRuntime": "blocked",
+    "tieredExactQfbv3264": "verified",
+    "explicitCapabilityRouting": "verified",
+    "boundedDeterministicCnfSearch": "verified"
   },
   "gates": [
     {
@@ -154,20 +198,92 @@
       "status": "PASSED",
       "ok": true,
       "reason": null
+    },
+    {
+      "id": "GATE-P9-BROWSER",
+      "description": "Chromium and WebKit iPad-viewport module Worker runtime smoke path",
+      "status": "FAILED",
+      "ok": false,
+      "reason": "browser-runtime-failed"
+    },
+    {
+      "id": "GATE-P9-TIERED-QFBV",
+      "description": "Exact tiered 32/64-bit QF_BV routing, differential soundness, and measured resource harness",
+      "status": "PASSED",
+      "ok": true,
+      "reason": null
     }
   ],
   "verdict": "BLOCKING",
-  "deterministicDigest": "94855d7a6678b5773976586030cfaf94",
-  "evidenceDigest": "a1c8805e106108f85b29b3fe9da53a27",
+  "deterministicDigest": "78a946d9738a363335521b1412231e10",
+  "evidenceDigest": "a0987c1cb70bf4b1a1310bd201dd4ede",
   "backendGate": {
     "ok": true,
     "checks": {
       "satStatus": "sat",
       "satModelValid": true,
       "unsatStatus": "unsat",
-      "exact": true
+      "exact": true,
+      "wideExact": true,
+      "wideChecks": [
+        {
+          "width": 32,
+          "satStatus": "sat",
+          "satModelValid": true,
+          "unsatStatus": "unsat",
+          "route": "bitblast-qfbv"
+        },
+        {
+          "width": 64,
+          "satStatus": "sat",
+          "satModelValid": true,
+          "unsatStatus": "unsat",
+          "route": "bitblast-qfbv"
+        }
+      ]
     },
     "reason": null
+  },
+  "browserGate": {
+    "ok": false,
+    "engines": [
+      {
+        "name": "chromium",
+        "status": "PASSED",
+        "result": {
+          "sat": "sat",
+          "satModel": "5",
+          "unsat": "unsat",
+          "satBackend": "hex-tiered-qfbv-worker",
+          "unsatBackend": "hex-tiered-qfbv-worker",
+          "wideSat": "sat",
+          "wideUnsat": "unsat",
+          "wideRoute": "bitblast-qfbv",
+          "forgedHost": "invalid-query",
+          "forgedHostHash": null,
+          "forgedWorker": "invalid-query",
+          "forgedWorkerHash": null,
+          "proofVerdict": "proved",
+          "proofBackend": "exact",
+          "proofAuthority": "exact",
+          "executionIsolation": "dedicated-worker",
+          "workerAvailable": true
+        },
+        "error": null
+      },
+      {
+        "name": "webkit",
+        "status": "FAILED",
+        "result": null,
+        "error": "browserType.launch: \n╔══════════════════════════════════════════════════════╗\n║ Host system is missing dependencies to run browsers. ║\n║ Missing libraries:                                   ║\n║     libgstreamer-1.0.so.0                            ║\n║     libgtk-4.so.1                                    ║\n║     libgraphene-1.0.so.0                             ║\n║     libwoff2dec.so.1.0.2                             ║\n║     libevent-2.1.so.7                                ║\n║     libgstallocators-1.0.so.0                        ║\n║     libgstapp-1.0.so.0                               ║\n║     libgstbase-1.0.so.0                              ║\n║     libgstpbutils-1.0.so.0                           ║\n║     libgstaudio-1.0.so.0                             ║\n║     libgsttag-1.0.so.0                               ║\n║     libgstvideo-1.0.so.0                             ║\n║     libgstgl-1.0.so.0                                ║\n║     libgstcodecparsers-1.0.so.0                      ║\n║     libgstfft-1.0.so.0                               ║\n║     libavif.so.16                                    ║\n║     libharfbuzz-icu.so.0                             ║\n║     libsecret-1.so.0                                 ║\n║     libhyphen.so.0                                   ║\n║     libwayland-server.so.0                           ║\n║     libmanette-0.2.so.0                              ║\n║     libGLESv2.so.2                                   ║\n╚══════════════════════════════════════════════════════╝"
+      }
+    ],
+    "error": "browserType.launch: \n╔══════════════════════════════════════════════════════╗\n║ Host system is missing dependencies to run browsers. ║\n║ Missing libraries:                                   ║\n║     libgstreamer-1.0.so.0                            ║\n║     libgtk-4.so.1                                    ║\n║     libgraphene-1.0.so.0                             ║\n║     libwoff2dec.so.1.0.2                             ║\n║     libevent-2.1.so.7                                ║\n║     libgstallocators-1.0.so.0                        ║\n║     libgstapp-1.0.so.0                               ║\n║     libgstbase-1.0.so.0                              ║\n║     libgstpbutils-1.0.so.0                           ║\n║     libgstaudio-1.0.so.0                             ║\n║     libgsttag-1.0.so.0                               ║\n║     libgstvideo-1.0.so.0                             ║\n║     libgstgl-1.0.so.0                                ║\n║     libgstcodecparsers-1.0.so.0                      ║\n║     libgstfft-1.0.so.0                               ║\n║     libavif.so.16                                    ║\n║     libharfbuzz-icu.so.0                             ║\n║     libsecret-1.so.0                                 ║\n║     libhyphen.so.0                                   ║\n║     libwayland-server.so.0                           ║\n║     libmanette-0.2.so.0                              ║\n║     libGLESv2.so.2                                   ║\n╚══════════════════════════════════════════════════════╝"
+  },
+  "physicalDeviceGate": {
+    "ok": false,
+    "state": "absent",
+    "reason": "physical-ipad-evidence-not-supplied"
   },
   "implementationGate": {
     "checks": {
@@ -179,5 +295,52 @@
       "queryIdentity": true
     },
     "ok": true
+  },
+  "metricsGate": {
+    "ok": true,
+    "reason": null
+  },
+  "solverMeasurements": {
+    "schemaVersion": "hex-tiered-solver-metrics/v1",
+    "backend": {
+      "id": "hex-tiered-qfbv",
+      "version": "1.0.0",
+      "capabilityFingerprint": "4012b09280d2c063d929d960364304ba"
+    },
+    "startup": {
+      "elapsedMs": 0.16099599999870406,
+      "heapDeltaBytes": 245592,
+      "rssDeltaBytes": 0
+    },
+    "solves": [
+      {
+        "width": 32,
+        "status": "sat",
+        "route": "bitblast-qfbv",
+        "elapsedMs": 1.4221290000059525,
+        "providerSolveTimeMs": 1,
+        "heapDeltaBytes": 1431184,
+        "rssDeltaBytes": 0,
+        "cnfVariables": 126,
+        "cnfClauses": 312
+      },
+      {
+        "width": 64,
+        "status": "sat",
+        "route": "bitblast-qfbv",
+        "elapsedMs": 2.1870429999980843,
+        "providerSolveTimeMs": 2,
+        "heapDeltaBytes": 0,
+        "rssDeltaBytes": 393216,
+        "cnfVariables": 254,
+        "cnfClauses": 632
+      }
+    ],
+    "resourceCeilings": {
+      "maxVariables": 400000,
+      "maxClauses": 1600000,
+      "maxDecisions": 500000,
+      "maxPropagations": 8000000
+    }
   }
 }

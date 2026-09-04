@@ -14,8 +14,8 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import { stableDigest } from '../../../js/core/identity/index.js';
-import { bvSort, BV_COMPARE_OP } from '../../../js/symbolic/expr/kinds.js';
-import { createBool, createBv, createCompare, createFreshSymbol } from '../../../js/symbolic/expr/factory.js';
+import { bvSort, BV_BINARY_OP, BV_COMPARE_OP } from '../../../js/symbolic/expr/kinds.js';
+import { createBinary, createBool, createBv, createCompare, createFreshSymbol } from '../../../js/symbolic/expr/factory.js';
 import { evaluateExpr, EVAL_STATUS } from '../../../js/symbolic/expr/evaluate.js';
 import { translateSemanticIR } from '../../../js/symbolic/translate/semantic-ir.js';
 import { TRANSLATION_STATUS } from '../../../js/symbolic/translate/support-matrix.js';
@@ -29,6 +29,7 @@ import { verifyConditionalEdgeFeasibility } from '../../../js/symbolic/verify/ed
 import { CLAIM_KIND, VERIFICATION_QUERY_KIND, VERDICT, createVerificationQuery } from '../../../js/symbolic/verify/query.js';
 import { runPhase9Tests, discoverPhase9Tests } from '../../../tests/phase9/run.mjs';
 import { runBrowserRuntime } from '../../../tests/phase9/browser/worker-runtime.mjs';
+import { measureTieredSolver } from './tiered-solver-metrics.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const PROFILE_PATH = path.join(ROOT, 'tools/validation/phase9/profile.json');
@@ -40,8 +41,34 @@ const CHECKPOINT_RELATIVE_PATH = 'reports/phase9/checkpoints.json';
 const VERIFIER_OWNED_PATHS = Object.freeze(new Set([REPORT_RELATIVE_PATH, CHECKPOINT_RELATIVE_PATH]));
 
 export const VERIFIER_ID = 'phase9.verifier';
-export const VERIFIER_VERSION = '2.0.0';
-export const SCHEMA_VERSION = 'phase9-release-evidence/v2';
+export const VERIFIER_VERSION = '3.1.0';
+export const SCHEMA_VERSION = 'phase9-release-evidence/v4';
+
+const ABSENT_DEVICE_EVIDENCE = Object.freeze({
+  state: 'absent', verified: false, deviceModel: null, osVersion: null, browserVersion: null,
+  commitSha: null, treeSha: null, checks: {}, reason: 'physical-ipad-evidence-not-supplied',
+});
+
+function loadPhysicalDeviceEvidence(product) {
+  const evidencePath = process.env.HEX_PHASE9_PHYSICAL_IPAD_EVIDENCE;
+  if (!evidencePath) return ABSENT_DEVICE_EVIDENCE;
+  try {
+    const raw = JSON.parse(fs.readFileSync(path.resolve(evidencePath), 'utf8'));
+    const checks = raw?.checks || {};
+    const identityMatches = raw?.commitSha === product.commitSha && raw?.treeSha === product.treeSha;
+    const completeChecks = ['sat32', 'unsat32', 'sat64', 'unsat64', 'cancellation', 'timeout', 'memoryPressure'].every((key) => checks[key] === true);
+    const identified = [raw?.deviceModel, raw?.osVersion, raw?.browserVersion].every((value) => typeof value === 'string' && value.trim());
+    const verified = raw?.state === 'verified' && identityMatches && completeChecks && identified;
+    return Object.freeze({
+      state: verified ? 'verified' : 'invalid', verified, deviceModel: raw?.deviceModel || null,
+      osVersion: raw?.osVersion || null, browserVersion: raw?.browserVersion || null,
+      commitSha: raw?.commitSha || null, treeSha: raw?.treeSha || null, checks,
+      reason: verified ? null : 'physical-ipad-evidence-invalid-or-identity-mismatched',
+    });
+  } catch (error) {
+    return Object.freeze({ ...ABSENT_DEVICE_EVIDENCE, state: 'invalid', reason: `physical-ipad-evidence-read-failed:${error?.message || 'invalid'}` });
+  }
+}
 
 function git(args) {
   const result = spawnSync('git', args, { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
@@ -109,9 +136,32 @@ async function runLiveBackendGate() {
     createCompare(BV_COMPARE_OP.EQ, x, createBv(3, 2n)),
   ]);
   const unsatResult = await backend.createSession().check(unsatQuery);
+  const wideChecks = [];
+  for (const width of [32, 64]) {
+    const wide = createFreshSymbol(bvSort(width), `release_wide_${width}`);
+    const wideSatQuery = query(createCompare(
+      BV_COMPARE_OP.EQ,
+      createBinary(BV_BINARY_OP.ADD, wide, createBv(width, 1n)),
+      createBv(width, 0n),
+    ));
+    const wideSat = await backend.createSession().check(wideSatQuery);
+    const wideUnsat = await backend.createSession().check(query(null, [
+      createCompare(BV_COMPARE_OP.EQ, wide, createBv(width, 1n)),
+      createCompare(BV_COMPARE_OP.EQ, wide, createBv(width, 2n)),
+    ]));
+    wideChecks.push({
+      width,
+      satStatus: wideSat.status,
+      satModelValid: wideSat.status === SOLVER_STATUS.SAT && validateSatModel(wideSatQuery, wideSat.model).valid,
+      unsatStatus: wideUnsat.status,
+      route: wideSat.stats.routingTier,
+    });
+  }
   const exact = backend.proofAuthority === PROOF_AUTHORITY.EXACT && backend.capabilities().exactProofs === true;
+  const wideExact = wideChecks.every((item) => item.satStatus === SOLVER_STATUS.SAT && item.satModelValid &&
+    item.unsatStatus === SOLVER_STATUS.UNSAT && item.route === 'bitblast-qfbv');
   return {
-    ok: exact && satModelValid && unsatResult.status === SOLVER_STATUS.UNSAT,
+    ok: exact && satModelValid && unsatResult.status === SOLVER_STATUS.UNSAT && wideExact,
     backend: {
       id: backend.id,
       version: backend.version,
@@ -124,8 +174,10 @@ async function runLiveBackendGate() {
       satModelValid,
       unsatStatus: unsatResult.status,
       exact,
+      wideExact,
+      wideChecks,
     },
-    reason: exact && satModelValid && unsatResult.status === SOLVER_STATUS.UNSAT
+    reason: exact && satModelValid && unsatResult.status === SOLVER_STATUS.UNSAT && wideExact
       ? null
       : 'live-production-backend-contract-failed',
   };
@@ -176,7 +228,7 @@ async function runLiveImplementationGates(backendGate) {
   return { checks, ok: Object.values(checks).every(Boolean) };
 }
 
-function capabilityStatuses(backendGate, implementationGate, testsOk, browserGate) {
+function capabilityStatuses(backendGate, implementationGate, testsOk, browserGate, metricsGate) {
   const all = testsOk && implementationGate.ok;
   return {
     proofAuthorityContract: backendGate.ok && testsOk ? 'verified' : 'blocked',
@@ -201,6 +253,9 @@ function capabilityStatuses(backendGate, implementationGate, testsOk, browserGat
     symbolicEvidenceSchema: testsOk ? 'verified' : 'blocked',
     versionSafeCachePolicy: testsOk ? 'verified' : 'blocked',
     browserWorkerRuntime: browserGate.ok ? 'verified' : 'blocked',
+    tieredExactQfbv3264: backendGate.checks?.wideExact && testsOk ? 'verified' : 'blocked',
+    explicitCapabilityRouting: backendGate.checks?.wideExact && testsOk ? 'verified' : 'blocked',
+    boundedDeterministicCnfSearch: metricsGate.ok && testsOk ? 'verified' : 'blocked',
   };
 }
 
@@ -209,6 +264,8 @@ export function buildDeterministicPayload({
   backend,
   testExecution,
   browserExecution = { selected: 0, total: 0, allPassed: false, engines: [] },
+  solverMetrics = null,
+  physicalDeviceEvidence = ABSENT_DEVICE_EVIDENCE,
   capabilities,
   gates,
 }) {
@@ -234,6 +291,8 @@ export function buildDeterministicPayload({
       allPassed: browserExecution.allPassed === true,
       engines: Array.isArray(browserExecution.engines) ? browserExecution.engines : [],
     },
+    solverMetrics,
+    physicalDeviceEvidence,
     capabilities,
     gates: gates.map((item) => ({
       id: item.id,
@@ -255,6 +314,11 @@ export function validateEvidence(report) {
   if (!Array.isArray(report.gates) || report.gates.some((item) => !['PASSED', 'FAILED'].includes(item.status))) errors.push('invalid gates');
   if (!report.browserRuntime) errors.push('missing browser runtime evidence');
   else if (report.verdict === 'READY' && report.browserRuntime.allPassed !== true) errors.push('browser runtime evidence is not green');
+  if (!Object.prototype.hasOwnProperty.call(report, 'solverMetrics')) errors.push('missing solver metrics evidence');
+  else if (report.verdict === 'READY' && !report.solverMetrics) errors.push('solver metrics evidence is not green');
+  if (!report.physicalDeviceEvidence || !['absent', 'invalid', 'verified'].includes(report.physicalDeviceEvidence.state)) errors.push('missing or invalid physical device evidence state');
+  else if (report.verdict === 'READY' && report.physicalDeviceEvidence.verified !== true) errors.push('physical iPad evidence is not verified');
+  else if (report.verdict === 'READY' && (report.physicalDeviceEvidence.commitSha !== report.product?.commitSha || report.physicalDeviceEvidence.treeSha !== report.product?.treeSha)) errors.push('physical iPad evidence identity mismatch');
   return errors;
 }
 
@@ -272,6 +336,7 @@ function publishJson(relativePath, value) {
 
 export async function verifyPhase9() {
   const product = getProductIdentity();
+  const physicalDeviceEvidence = loadPhysicalDeviceEvidence(product);
   const discovered = discoverPhase9Tests(path.join(ROOT, 'tests/phase9'));
   let testExecution = { selected: 0, total: discovered.length, allPassed: false, error: null };
   try {
@@ -284,10 +349,21 @@ export async function verifyPhase9() {
 
   const backendGate = await runLiveBackendGate();
   const implementationGate = await runLiveImplementationGates(backendGate);
+  let solverMeasurements = null;
+  let metricsGate = { ok: false, reason: 'solver-metrics-not-run' };
+  try {
+    solverMeasurements = await measureTieredSolver();
+    const ok = solverMeasurements.backend.id === 'hex-tiered-qfbv' &&
+      solverMeasurements.solves.length === 2 &&
+      solverMeasurements.solves.every((sample) => sample.status === SOLVER_STATUS.SAT && sample.route === 'bitblast-qfbv');
+    metricsGate = { ok, reason: ok ? null : 'solver-metrics-contract-failed' };
+  } catch (error) {
+    metricsGate = { ok: false, reason: String(error?.message || error) };
+  }
   let browserExecution = { selected: 2, total: 2, allPassed: false, engines: [], error: null };
   try {
     const engines = await runBrowserRuntime();
-    browserExecution = { selected: engines.length, total: 2, allPassed: engines.length === 2, engines, error: null };
+    browserExecution = { selected: engines.length, total: 2, allPassed: engines.length === 2 && engines.every((item) => item.status === 'PASSED'), engines, error: engines.find((item) => item.status !== 'PASSED')?.error || null };
   } catch (error) {
     browserExecution.error = String(error?.message || error);
     console.error('[phase9-verifier] Browser runtime FAILED:', browserExecution.error);
@@ -295,14 +371,16 @@ export async function verifyPhase9() {
   const testsOk = testExecution.allPassed === true;
   const gates = PROFILE.gates.map((profileGate) => {
     const baseOk = testsOk && implementationGate.ok && backendGate.ok;
-    const ok = profileGate.id === 'GATE-P9-BROWSER' ? baseOk && browserExecution.allPassed : baseOk;
+    const ok = profileGate.id === 'GATE-P9-BROWSER' ? baseOk && browserExecution.allPassed
+      : profileGate.id === 'GATE-P9-TIERED-QFBV' ? baseOk && metricsGate.ok
+        : baseOk;
     return gate(profileGate.id, profileGate.description, ok, {
-      reason: ok ? null : (!testsOk ? 'phase9-contract-tests-failed' : (!backendGate.ok ? backendGate.reason : (!implementationGate.ok ? 'live-implementation-gate-failed' : 'browser-runtime-failed'))),
+      reason: ok ? null : (!testsOk ? 'phase9-contract-tests-failed' : (!backendGate.ok ? backendGate.reason : (!implementationGate.ok ? 'live-implementation-gate-failed' : (profileGate.id === 'GATE-P9-TIERED-QFBV' ? metricsGate.reason : 'browser-runtime-failed')))),
     });
   });
-  const capabilities = capabilityStatuses(backendGate, implementationGate, testsOk, { ok: browserExecution.allPassed });
+  const capabilities = capabilityStatuses(backendGate, implementationGate, testsOk, { ok: browserExecution.allPassed }, metricsGate);
   const allGatesPass = gates.every((item) => item.ok);
-  const ready = product.clean && testsOk && allGatesPass;
+  const ready = product.clean && testsOk && allGatesPass && physicalDeviceEvidence.verified === true;
   const verdict = ready ? 'READY' : 'BLOCKING';
   const backend = backendGate.backend;
   const payload = buildDeterministicPayload({
@@ -310,6 +388,13 @@ export async function verifyPhase9() {
     backend,
     testExecution,
     browserExecution,
+    solverMetrics: solverMeasurements ? {
+      schemaVersion: solverMeasurements.schemaVersion,
+      backend: solverMeasurements.backend,
+      solves: solverMeasurements.solves.map(({ width, status, route, cnfVariables, cnfClauses }) => ({ width, status, route, cnfVariables, cnfClauses })),
+      resourceCeilings: solverMeasurements.resourceCeilings,
+    } : null,
+    physicalDeviceEvidence,
     capabilities,
     gates,
   });
@@ -329,7 +414,14 @@ export async function verifyPhase9() {
       engines: browserExecution.engines,
       error: browserExecution.error,
     },
+    physicalDeviceGate: {
+      ok: physicalDeviceEvidence.verified,
+      state: physicalDeviceEvidence.state,
+      reason: physicalDeviceEvidence.reason,
+    },
     implementationGate,
+    metricsGate,
+    solverMeasurements,
   };
   const errors = validateEvidence(finalReport);
   if (errors.length) throw new Error(`Phase 9 evidence failed its own schema: ${errors.join('; ')}`);
@@ -351,6 +443,7 @@ export async function verifyPhase9() {
     gatesPassed: gates.filter((item) => item.ok).length,
     testFiles: testExecution.total,
     browserEngines: browserExecution.engines.map((item) => item.name),
+    physicalDeviceEvidenceState: physicalDeviceEvidence.state,
   };
   let ledger = { phase: 9, checkpoints: [] };
   const ledgerPath = path.join(ROOT, CHECKPOINT_RELATIVE_PATH);

@@ -21,17 +21,18 @@ import {
   isBvSort,
 } from '../expr/kinds.js';
 import { evaluateExpr, EVAL_STATUS } from '../expr/evaluate.js';
-import { isVerificationQuery } from '../verify/query.js';
+import { validateVerificationQuery } from '../verify/query.js';
 import { PROOF_AUTHORITY, SolverBackend } from './backend.js';
+import { effectivePositiveSafeInteger, requirePositiveSafeInteger } from './limits.js';
+import { validateExactModelBindings } from './model-boundary.js';
 import { SOLVER_STATUS, createSolverResult } from './result.js';
 import { SolverSession } from './session.js';
 
 export const EXHAUSTIVE_BACKEND_ID = 'hex-exhaustive-bv';
 export const EXHAUSTIVE_BACKEND_VERSION = '1.0.0';
 
-function positiveFiniteBudget(...values) {
-  const value = values.find((candidate) => typeof candidate === 'number' && Number.isFinite(candidate));
-  return Math.max(1, Math.floor(value));
+function monotonicNow() {
+  return typeof globalThis.performance?.now === 'function' ? globalThis.performance.now() : Date.now();
 }
 
 function childExpressions(expr) {
@@ -59,7 +60,7 @@ function validateExprNode(expr) {
   switch (expr.kind) {
     case EXPR_KIND.CONST:
       if (isBoolSort(expr.sort) && typeof expr.value !== 'boolean') return 'invalid-bool-constant';
-      if (isBvSort(expr.sort) && typeof expr.value !== 'bigint') return 'invalid-bv-constant';
+      if (isBvSort(expr.sort) && (typeof expr.value !== 'bigint' || expr.value < 0n || expr.value >= (1n << BigInt(expr.sort.width)))) return 'noncanonical-bv-constant';
       return null;
     case EXPR_KIND.FRESH_SYMBOL:
       return typeof expr.name === 'string' && expr.name && typeof (expr.symbolId || expr.name) === 'string' ? null : 'malformed-symbol';
@@ -74,7 +75,7 @@ function validateExprNode(expr) {
       return Object.values(BV_COMPARE_OP).includes(expr.op) && isBoolSort(expr.sort) && sameBvSort(expr.left, expr.right)
         ? null : 'invalid-compare-expression';
     case EXPR_KIND.CONNECTIVE: {
-      if (!Object.values(BOOL_CONNECTIVE_OP).includes(expr.op) || !isBoolSort(expr.sort) || !Array.isArray(expr.args) || !expr.args.every((arg) => isBoolSort(arg?.sort))) return 'invalid-connective-expression';
+      if (!Object.values(BOOL_CONNECTIVE_OP).includes(expr.op) || !isBoolSort(expr.sort) || !Array.isArray(expr.args)) return 'invalid-connective-expression';
       if (expr.args.length === 0 || (expr.op === BOOL_CONNECTIVE_OP.NOT && expr.args.length !== 1) ||
           ([BOOL_CONNECTIVE_OP.IMPLIES, BOOL_CONNECTIVE_OP.EQ, BOOL_CONNECTIVE_OP.NE].includes(expr.op) && expr.args.length !== 2)) return 'invalid-connective-arity';
       return null;
@@ -102,35 +103,86 @@ function validateExprNode(expr) {
   }
 }
 
-function collectSymbols(expressions) {
+export function collectSymbols(expressions, { maxExprNodes = 100000, maxExprDepth = 1024 } = {}) {
+  requirePositiveSafeInteger(maxExprNodes, 'maxExprNodes');
+  requirePositiveSafeInteger(maxExprDepth, 'maxExprDepth');
   const symbols = new Map();
-  const visited = new Set();
+  const colors = new WeakMap();
+  const heights = new WeakMap();
   let nodeCount = 0;
+  let maxBvWidth = 0;
   let unsupportedReason = null;
-
-  function visit(expr) {
-    if (!expr || typeof expr !== 'object') {
-      unsupportedReason ||= 'malformed-expression-node';
-      return;
-    }
-    if (visited.has(expr)) return;
-    visited.add(expr);
-    nodeCount++;
-    unsupportedReason ||= validateExprNode(expr);
-    if (expr.kind === EXPR_KIND.FRESH_SYMBOL) {
-      const key = String(expr.symbolId || expr.name || '');
-      if (!key || !expr.name) unsupportedReason ||= 'malformed-symbol';
-      else {
-        const existing = symbols.get(key);
-        if (existing && stableDigest(existing.sort) !== stableDigest(expr.sort)) unsupportedReason ||= 'symbol-sort-conflict';
-        symbols.set(key, { key, name: String(expr.name), symbolId: String(expr.symbolId || key), sort: expr.sort });
+  let limitExceeded = false;
+  let depthExceeded = false;
+  let maxDepth = 0;
+  let traversalCount = 0;
+  for (const root of expressions) {
+    traversalCount++;
+    if (traversalCount > maxExprNodes) { limitExceeded = true; break; }
+    if (limitExceeded || depthExceeded || unsupportedReason) break;
+    if (!root || typeof root !== 'object') { unsupportedReason = 'malformed-expression-node'; break; }
+    if (colors.get(root) === 2) continue;
+    const stack = [{ expr: root, entered: false, children: null, index: 0, childHeight: 0 }];
+    while (stack.length > 0 && !limitExceeded && !depthExceeded && !unsupportedReason) {
+      const frame = stack[stack.length - 1];
+      if (!frame.entered) {
+        if (colors.get(frame.expr) === 1) { unsupportedReason = 'cyclic-expression-dag'; break; }
+        if (colors.get(frame.expr) === 2) { stack.pop(); continue; }
+        if (stack.length > maxExprDepth) { depthExceeded = true; break; }
+        colors.set(frame.expr, 1);
+        nodeCount++;
+        if (nodeCount > maxExprNodes) { limitExceeded = true; break; }
+        if (isBvSort(frame.expr.sort)) maxBvWidth = Math.max(maxBvWidth, frame.expr.sort.width);
+        unsupportedReason = validateExprNode(frame.expr);
+        if (unsupportedReason) break;
+        if (frame.expr.kind === EXPR_KIND.FRESH_SYMBOL) {
+          const key = String(frame.expr.symbolId || frame.expr.name || '');
+          if (!key || !frame.expr.name) unsupportedReason = 'malformed-symbol';
+          else {
+            const existing = symbols.get(key);
+            if (existing && stableDigest(existing.sort) !== stableDigest(frame.expr.sort)) unsupportedReason = 'symbol-sort-conflict';
+            else if (existing && existing.name !== String(frame.expr.name)) unsupportedReason = 'symbol-identity-conflict';
+            symbols.set(key, { key, name: String(frame.expr.name), symbolId: String(frame.expr.symbolId || key), sort: frame.expr.sort });
+          }
+        }
+        frame.children = childExpressions(frame.expr);
+        frame.entered = true;
       }
+      if (frame.index < frame.children.length) {
+        traversalCount++;
+        if (traversalCount > maxExprNodes) { limitExceeded = true; break; }
+        const child = frame.children[frame.index++];
+        if (!child || typeof child !== 'object') { unsupportedReason = 'malformed-expression-node'; break; }
+        if (frame.expr.kind === EXPR_KIND.CONNECTIVE && !isBoolSort(child.sort)) { unsupportedReason = 'invalid-connective-expression'; break; }
+        if (colors.get(child) === 1) { unsupportedReason = 'cyclic-expression-dag'; break; }
+        if (colors.get(child) === 2) {
+          const childHeight = heights.get(child) || 1;
+          const combinedDepth = stack.length + childHeight;
+          maxDepth = Math.max(maxDepth, combinedDepth);
+          if (combinedDepth > maxExprDepth) { depthExceeded = true; break; }
+          frame.childHeight = Math.max(frame.childHeight, childHeight);
+        } else stack.push({ expr: child, entered: false, children: null, index: 0, childHeight: 0 });
+        continue;
+      }
+      const height = frame.childHeight + 1;
+      heights.set(frame.expr, height);
+      maxDepth = Math.max(maxDepth, stack.length - 1 + height);
+      if (stack.length - 1 + height > maxExprDepth) { depthExceeded = true; break; }
+      colors.set(frame.expr, 2);
+      stack.pop();
+      if (stack.length > 0) stack[stack.length - 1].childHeight = Math.max(stack[stack.length - 1].childHeight, height);
     }
-    for (const child of childExpressions(expr)) visit(child);
   }
-
-  for (const expr of expressions) visit(expr);
-  return { symbols: [...symbols.values()].sort((a, b) => a.key.localeCompare(b.key)), nodeCount, unsupportedReason };
+  return {
+    symbols: [...symbols.values()].sort((a, b) => a.key.localeCompare(b.key)),
+    nodeCount,
+    maxBvWidth,
+    unsupportedReason,
+    limitExceeded,
+    depthExceeded,
+    maxDepth,
+    traversalCount,
+  };
 }
 
 function symbolConstantPair(left, right) {
@@ -188,27 +240,48 @@ function domainValue(symbol, index) {
 class ExhaustiveSolverSession extends SolverSession {
   async _executeCheck(query, options = {}, token, signal) {
     const startedAt = Date.now();
-    if (!isVerificationQuery(query)) {
+    const deadline = typeof options.timeoutMs === 'number' && options.timeoutMs > 0 ? monotonicNow() + options.timeoutMs : Infinity;
+    const guard = () => signal?.aborted ? 'cancelled' : monotonicNow() >= deadline ? 'timeout' : null;
+    let maxConstraints;
+    let maxExprNodes;
+    let maxExprDepth;
+    let maxBvWidth;
+    let maxAssignments;
+    let yieldEvery;
+    try {
+      maxConstraints = effectivePositiveSafeInteger(options, 'maxConstraints', this.options.maxConstraints, this.backend.maxConstraints);
+      maxExprNodes = effectivePositiveSafeInteger(options, 'maxExprNodes', this.options.maxExprNodes, this.backend.maxExprNodes);
+      maxExprDepth = effectivePositiveSafeInteger(options, 'maxExprDepth', this.options.maxExprDepth, this.backend.maxExprDepth);
+      maxBvWidth = effectivePositiveSafeInteger(options, 'maxBvWidth', this.options.maxBvWidth, this.backend.maxBvWidth);
+      maxAssignments = effectivePositiveSafeInteger(options, 'maxAssignments', this.options.maxAssignments, this.backend.maxAssignments);
+      yieldEvery = effectivePositiveSafeInteger(options, 'yieldEvery', this.options.yieldEvery, this.backend.yieldEvery);
+    } catch (error) {
+      return createSolverResult({ status: SOLVER_STATUS.INVALID_QUERY, reason: `invalid-budget:${error.message}`, backend: this.backend.id, backendVersion: this.backend.version, queryHash: null, lifecycle: { publishable: false } });
+    }
+    const queryValidation = validateVerificationQuery(query, { maxExprNodes });
+    if (!queryValidation.valid) {
       return createSolverResult({
-        status: SOLVER_STATUS.INVALID_QUERY,
-        reason: 'invalid-verification-query',
+        status: queryValidation.limitExceeded ? SOLVER_STATUS.RESOURCE_LIMIT : SOLVER_STATUS.INVALID_QUERY,
+        reason: queryValidation.reason,
         backend: this.backend.id,
         backendVersion: this.backend.version,
-        queryHash: query?.queryHash || null,
+        queryHash: null,
+        lifecycle: { budgetExceeded: queryValidation.limitExceeded === true, publishable: false },
       });
     }
 
     const constraints = Array.isArray(query.constraints) ? query.constraints : [];
     const expressions = [...constraints, ...(query.assertion ? [query.assertion] : [])];
-    const maxConstraints = positiveFiniteBudget(options.maxConstraints, this.options.maxConstraints, 4096);
-    const maxExprNodes = positiveFiniteBudget(options.maxExprNodes, this.options.maxExprNodes, 100000);
     if (constraints.length > maxConstraints) {
       return createSolverResult({ status: SOLVER_STATUS.RESOURCE_LIMIT, reason: 'constraint-budget-exceeded', backend: this.backend.id, backendVersion: this.backend.version, queryHash: query.queryHash });
     }
 
-    const collected = collectSymbols(expressions);
-    if (collected.nodeCount > maxExprNodes) {
+    const collected = collectSymbols(expressions, { maxExprNodes, maxExprDepth });
+    if (collected.limitExceeded) {
       return createSolverResult({ status: SOLVER_STATUS.RESOURCE_LIMIT, reason: 'expression-node-budget-exceeded', backend: this.backend.id, backendVersion: this.backend.version, queryHash: query.queryHash });
+    }
+    if (collected.depthExceeded) {
+      return createSolverResult({ status: SOLVER_STATUS.RESOURCE_LIMIT, reason: 'expression-depth-budget-exceeded', backend: this.backend.id, backendVersion: this.backend.version, queryHash: query.queryHash, lifecycle: { budgetExceeded: true, publishable: false } });
     }
     if (collected.unsupportedReason) {
       return createSolverResult({ status: SOLVER_STATUS.UNSUPPORTED, reason: collected.unsupportedReason, backend: this.backend.id, backendVersion: this.backend.version, queryHash: query.queryHash });
@@ -218,10 +291,13 @@ class ExhaustiveSolverSession extends SolverSession {
       return createSolverResult({ status: SOLVER_STATUS.UNSUPPORTED, reason: 'non-boolean-query-predicate', backend: this.backend.id, backendVersion: this.backend.version, queryHash: query.queryHash });
     }
 
-    const maxBvWidth = positiveFiniteBudget(options.maxBvWidth, this.backend.capabilities().maxBvWidth);
     if (collected.symbols.some((symbol) => symbol.sort.kind === SORT_KIND.BV && symbol.sort.width > maxBvWidth)) {
       return createSolverResult({ status: SOLVER_STATUS.UNSUPPORTED, reason: `bitvector-width-exceeds-${maxBvWidth}`, backend: this.backend.id, backendVersion: this.backend.version, queryHash: query.queryHash });
     }
+
+    const preEnumerationStop = guard();
+    if (preEnumerationStop === 'cancelled') return createSolverResult({ status: SOLVER_STATUS.CANCELLED, reason: 'provider-aborted', backend: this.backend.id, backendVersion: this.backend.version, queryHash: query.queryHash, lifecycle: { cancelled: true, publishable: false } });
+    if (preEnumerationStop === 'timeout') return createSolverResult({ status: SOLVER_STATUS.TIMEOUT, reason: 'enumeration-deadline-exceeded', backend: this.backend.id, backendVersion: this.backend.version, queryHash: query.queryHash, lifecycle: { timedOut: true, publishable: false } });
 
     const derived = deriveFixedBindings(constraints);
     if (derived.contradiction) {
@@ -230,35 +306,38 @@ class ExhaustiveSolverSession extends SolverSession {
 
     const assignments = new Map(derived.fixed);
     const freeSymbols = collected.symbols.filter((symbol) => !assignments.has(symbol.key));
-    const maxAssignments = BigInt(positiveFiniteBudget(options.maxAssignments, this.options.maxAssignments, 1 << 20));
+    const maxAssignmentsBigInt = BigInt(maxAssignments);
     let totalAssignments = 1n;
     for (const symbol of freeSymbols) {
       totalAssignments *= domainSize(symbol);
-      if (totalAssignments > maxAssignments) {
+      if (totalAssignments > maxAssignmentsBigInt) {
         return createSolverResult({ status: SOLVER_STATUS.RESOURCE_LIMIT, reason: 'assignment-budget-exceeded', stats: { solveTimeMs: Date.now() - startedAt, nodesEvaluated: 0 }, backend: this.backend.id, backendVersion: this.backend.version, queryHash: query.queryHash });
       }
     }
 
     let nodesEvaluated = 0;
-    const yieldEvery = positiveFiniteBudget(options.yieldEvery, 4096);
     let found = null;
     const visit = async (position) => {
-      if (signal?.aborted) return 'cancelled';
+      const stopped = guard();
+      if (stopped) return stopped;
       if (found) return 'found';
       if (position >= freeSymbols.length) {
         nodesEvaluated++;
         const model = assignmentModel(collected.symbols, assignments);
         if (evaluateAll(query, model)) found = model;
-        if (nodesEvaluated % yieldEvery === 0) await Promise.resolve();
+        // Yield to the task queue (not only the microtask queue) so browser
+        // cancellation and host timeouts can be observed during enumeration.
+        if (nodesEvaluated % yieldEvery === 0) await new Promise((resolve) => setTimeout(resolve, 0));
         return found ? 'found' : 'continue';
       }
       const symbol = freeSymbols[position];
       const size = domainSize(symbol);
       for (let index = 0n; index < size; index++) {
-        if (signal?.aborted) return 'cancelled';
+        const stopped = guard();
+        if (stopped) return stopped;
         assignments.set(symbol.key, domainValue(symbol, index));
         const outcome = await visit(position + 1);
-        if (outcome === 'cancelled' || outcome === 'found') return outcome;
+        if (outcome === 'cancelled' || outcome === 'timeout' || outcome === 'found') return outcome;
       }
       assignments.delete(symbol.key);
       return 'continue';
@@ -268,26 +347,31 @@ class ExhaustiveSolverSession extends SolverSession {
     if (outcome === 'cancelled') {
       return createSolverResult({ status: SOLVER_STATUS.CANCELLED, reason: 'provider-aborted', backend: this.backend.id, backendVersion: this.backend.version, queryHash: query.queryHash, lifecycle: { cancelled: true, publishable: false } });
     }
+    if (outcome === 'timeout') {
+      return createSolverResult({ status: SOLVER_STATUS.TIMEOUT, reason: 'enumeration-deadline-exceeded', backend: this.backend.id, backendVersion: this.backend.version, queryHash: query.queryHash, lifecycle: { timedOut: true, publishable: false } });
+    }
     const stats = { solveTimeMs: Date.now() - startedAt, nodesEvaluated };
-    if (found) return createSolverResult({ status: SOLVER_STATUS.SAT, model: found, stats, backend: this.backend.id, backendVersion: this.backend.version, queryHash: query.queryHash });
+    if (found) {
+      const bindingValidation = validateExactModelBindings(collected.symbols, found);
+      if (!bindingValidation.valid) return createSolverResult({ status: SOLVER_STATUS.PROVIDER_FAILURE, reason: bindingValidation.reason, stats, backend: this.backend.id, backendVersion: this.backend.version, queryHash: query.queryHash, lifecycle: { publishable: false } });
+      return createSolverResult({ status: SOLVER_STATUS.SAT, model: found, stats, backend: this.backend.id, backendVersion: this.backend.version, queryHash: query.queryHash });
+    }
     return createSolverResult({ status: SOLVER_STATUS.UNSAT, stats, backend: this.backend.id, backendVersion: this.backend.version, queryHash: query.queryHash });
   }
 }
 
 export class ExhaustiveBvBackend extends SolverBackend {
-  constructor({
-    id = EXHAUSTIVE_BACKEND_ID,
-    version = EXHAUSTIVE_BACKEND_VERSION,
-    maxBvWidth = 8,
-    maxAssignments = 1 << 20,
-    maxConstraints = 4096,
-    maxExprNodes = 100000,
-  } = {}) {
-    super({ id, version, proofAuthority: PROOF_AUTHORITY.EXACT, isRemote: false, isWasm: false });
-    this.maxBvWidth = positiveFiniteBudget(maxBvWidth, 8);
-    this.maxAssignments = positiveFiniteBudget(maxAssignments, 1 << 20);
-    this.maxConstraints = positiveFiniteBudget(maxConstraints, 4096);
-    this.maxExprNodes = positiveFiniteBudget(maxExprNodes, 100000);
+  constructor(options = {}) {
+    const id = options.id ?? EXHAUSTIVE_BACKEND_ID;
+    const version = options.version ?? EXHAUSTIVE_BACKEND_VERSION;
+    super({ id, version, proofAuthority: PROOF_AUTHORITY.EXACT, isRemote: false, isWasm: false, requiresCanonicalQueryIdentity: true });
+    const value = (name, fallback) => Object.prototype.hasOwnProperty.call(options, name) ? options[name] : fallback;
+    this.maxBvWidth = requirePositiveSafeInteger(value('maxBvWidth', 8), 'maxBvWidth');
+    this.maxAssignments = requirePositiveSafeInteger(value('maxAssignments', 1 << 20), 'maxAssignments');
+    this.maxConstraints = requirePositiveSafeInteger(value('maxConstraints', 4096), 'maxConstraints');
+    this.maxExprNodes = requirePositiveSafeInteger(value('maxExprNodes', 100000), 'maxExprNodes');
+    this.maxExprDepth = requirePositiveSafeInteger(value('maxExprDepth', 1024), 'maxExprDepth');
+    this.yieldEvery = requirePositiveSafeInteger(value('yieldEvery', 4096), 'yieldEvery');
   }
 
   baseCapabilities() {
@@ -305,6 +389,8 @@ export class ExhaustiveBvBackend extends SolverBackend {
       maxAssignments: this.maxAssignments,
       maxConstraints: this.maxConstraints,
       maxExprNodes: this.maxExprNodes,
+      maxExprDepth: this.maxExprDepth,
+      yieldEvery: this.yieldEvery,
     };
   }
 
@@ -314,6 +400,8 @@ export class ExhaustiveBvBackend extends SolverBackend {
       maxAssignments: this.maxAssignments,
       maxConstraints: this.maxConstraints,
       maxExprNodes: this.maxExprNodes,
+      maxExprDepth: this.maxExprDepth,
+      yieldEvery: this.yieldEvery,
       ...options,
     });
   }

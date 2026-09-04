@@ -17,7 +17,10 @@
     "bounded-equivalence",
     "patch-verification",
     "symbolic-evidence-schema",
-    "version-safe-cache-policy"
+    "version-safe-cache-policy",
+    "tiered-exact-qfbv-32-64",
+    "explicit-capability-routing",
+    "bounded-deterministic-cnf-search"
   ],
   "gates": [
     {
@@ -53,6 +56,11 @@
     {
       "id": "GATE-P9-BROWSER",
       "description": "Chromium and WebKit iPad-viewport module Worker runtime smoke path",
+      "mandatory": true
+    },
+    {
+      "id": "GATE-P9-TIERED-QFBV",
+      "description": "Exact tiered 32/64-bit QF_BV routing, differential soundness, and measured resource harness",
       "mandatory": true
     }
   ]
