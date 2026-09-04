@@ -41,12 +41,12 @@ re-observed explicitly rather than silently attributed to the campaign.
   "workspace": {
     "path": "/teamspace/studios/this_studio/ida-245",
     "gitDirPath": "/teamspace/studios/this_studio/ida-245/.git",
-    "headSha": "3b37b0c957b761139dfa22f973d3c670ad41a24c",
-    "branchRef": "main",
-    "status": "?? subagent.md\u0000?? transcripts/ai-hub-2026-09-03T15-36-57.md\u0000?? transcripts/latest.md\u0000",
-    "dirtyStateSha256": "fa8f3e2fe972f08f3eebc2b1011d4fd83a14558c27db31822f80cd259e2b9631",
-    "transcriptsSha256": "351d34a28108553b30a0c571320a903d7559f19bb85452a9377073cf5595c303",
-    "identity": "0245673ab2fc3e6f3c199673bee6ec2e090ae483c1154083a2341f9b983b0f84",
+    "headSha": "8e258d7ec98226229c2be378df17a37bef7f1ad4",
+    "branchRef": "fix/issues-metadata-provider-6220-4812-4343-4845",
+    "status": "?? tests/issue-4343-metadata-provider-ecosystem-match.mjs\u0000?? transcripts/latest.md\u0000",
+    "dirtyStateSha256": "62d12ec20f119fb10cbed2dd5f428c6b9bbbff64d1d990a07b6e7deed9a739c5",
+    "transcriptsSha256": "6b5fbefc00dea102493e0071c81bf471c6e39e777e302f5b00cc6b25b0bccba4",
+    "identity": "cd3620eec05708ec562d924cbf67b0fb6cff881bfd1f421d032adde22f8d2d76",
     "preserved": true
   }
 }
@@ -162,10 +162,11 @@ pending until the repaired exact tree is rerun:
   PASS. Exact committed-head rerun remains `PENDING`.
 - Repository lint: current working-tree diagnostic PASS (`1816` files). Exact
   committed-head rerun remains `PENDING`.
-- Expected/actual/union inventory: current base-to-working-tree recomputation is
-  exact `27/27`, digest `6591da4cf78352128e02b1fe6990937d`.
-  Recompute again after current-main reconciliation; no historical count is
-  accepted as final proof.
+- Expected/actual/union inventory: the historical pre-amendment recomputation
+  was exact `27/27`, digest `6591da4cf78352128e02b1fe6990937d`.
+  The reconciled contract now freezes `29/29` paths; recompute it on the exact
+  committed head, and do not accept either historical observation as final
+  proof.
 - Fixed central shadow judges: current working-tree diagnostic PASS (`19/19`;
   38 separately spawned oracle/product provider invocations). Exact
   committed-head replay remains `PENDING`.
