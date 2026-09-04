@@ -1,105 +1,169 @@
 version: 2.1
 
 jobs:
-  migration-guardrails:
+  invariant-plan-contract:
     docker:
       - image: cimg/node:22.23
-    resource_class: medium
+    resource_class: small
     steps:
       - checkout
       - run:
-          name: Validate CircleCI impact router
-          command: node tests/ci/circleci-impact.test.mjs
-      - run:
-          name: Detect migration-guardrail impact
+          name: Validate npm-check shard partition
           command: |
-            run_it="$(bash scripts/ci/circleci-impact.sh pr-only '^(js/(architecture/|ir\.js$|ir-core\.js$|dataflow[^/]*\.js$|decompiler/|binary/|bytesource/|platform/|project/|runtime/|runtime-evidence/|symbolic/|ai/|ui/|ui\.js$|ui-root\.js$|panels\.js$|app\.js$|backend\.js$|worker[^/]*\.js$)|worker-entry\.js$|package\.json$|package-lock\.json$|tests/(migration-guardrails\.mjs$|universal-binary-source\.mjs$|binary-platform\.mjs$)|docs/MIGRATION_GUARDRAILS\.md$|\.github/workflows/migration-guardrails\.yml$|\.circleci/config\.yml$|scripts/ci/circleci-impact\.sh$)')"
-            echo "export RUN_MIGRATION_GUARDRAILS=$run_it" >> "$BASH_ENV"
+            node --input-type=module <<'NODE'
+            import fs from 'node:fs';
+            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            const parts = String(pkg.scripts?.check || '')
+              .split(/\s+&&\s+/)
+              .map((command) => command.trim())
+              .filter(Boolean);
+            if (parts.length < 2) throw new Error('npm check must contain at least two independent top-level commands');
+            const required = [
+              'npm run invariants:test',
+              'npm run semantic-v2:test',
+              'npm run phase4:test',
+              'npm run phase5:test',
+              'npm run phase6:test',
+              'npm run phase8:test',
+              'npm test',
+              'npm run benchmark:baseline',
+            ];
+            for (const command of required) {
+              if (!parts.includes(command)) throw new Error(`npm check layout changed; missing ${command}`);
+            }
+            const reserved = new Set(required);
+            const coreContracts = parts.filter((command) => !reserved.has(command));
+            if (!coreContracts.length) throw new Error('npm check must contain core contract commands');
+            const lanes = [
+              ['npm run phase8:test'],
+              ['npm run phase4:test', 'npm run phase5:test'],
+              ['npm run invariants:test', 'npm run semantic-v2:test', 'npm run benchmark:baseline'],
+              [...coreContracts, 'npm run phase6:test', 'npm test'],
+            ];
+            const scheduled = lanes.flat();
+            const counts = new Map();
+            for (const command of scheduled) counts.set(command, (counts.get(command) || 0) + 1);
+            if (
+              scheduled.length !== parts.length ||
+              parts.some((command) => counts.get(command) !== 1) ||
+              scheduled.some((command) => !parts.includes(command))
+            ) {
+              throw new Error(`npm-check shard plan mismatch expected=${JSON.stringify(parts)} actual=${JSON.stringify(scheduled)}`);
+            }
+            console.log('invariant plan contract: PASS');
+            NODE
+
+  invariant-phase8:
+    docker:
+      - image: cimg/node:22.23
+    resource_class: large
+    steps:
+      - checkout
       - run:
           name: Install dependencies
-          command: |
-            if [ "$RUN_MIGRATION_GUARDRAILS" != 'true' ]; then exit 0; fi
-            npm ci --no-audit --no-fund
+          command: npm ci --no-audit --no-fund
       - run:
-          name: Run migration proofs
-          command: |
-            if [ "$RUN_MIGRATION_GUARDRAILS" != 'true' ]; then exit 0; fi
-            npm run migration:test
-            npm run binary:source-test
+          name: Phase 8
+          command: npm run phase8:test
 
-  agent-loop-resilience:
+  invariant-phase45:
     docker:
       - image: cimg/node:22.23
-    resource_class: small
+    resource_class: large
     steps:
       - checkout
       - run:
-          name: Detect agent-loop impact
-          command: |
-            run_it="$(bash scripts/ci/circleci-impact.sh main-and-branch '^(js/userscript/dev/|tests/dev-agent/agent-loop-resilience\.mjs$|\.github/workflows/agent-loop-resilience\.yml$|\.circleci/config\.yml$|scripts/ci/circleci-impact\.sh$)')"
-            echo "export RUN_AGENT_LOOP_RESILIENCE=$run_it" >> "$BASH_ENV"
+          name: Install dependencies
+          command: npm ci --no-audit --no-fund
       - run:
-          name: Run unattended agent loop regressions
+          name: Install frozen Phase 5 toolchain
           command: |
-            if [ "$RUN_AGENT_LOOP_RESILIENCE" != 'true' ]; then exit 0; fi
-            node tests/dev-agent/agent-loop-resilience.mjs
+            set -euo pipefail
+            sudo apt-get update
+            sudo apt-get install -y clang-18 lld-18 llvm-18
+      - run:
+          name: Phase 4 and 5
+          command: |
+            set +e
+            failures=0
+            npm run phase4:test || failures=1
+            npm run phase5:test || failures=1
+            exit "$failures"
 
-  issue-2528-canonical-claims:
+  invariant-analysis-proof:
     docker:
       - image: cimg/node:22.23
-    resource_class: small
+    resource_class: large
     steps:
       - checkout
       - run:
-          name: Detect canonical-claims impact
-          command: |
-            run_it="$(bash scripts/ci/circleci-impact.sh pr-only '^(js/ui/product-hardened\.js$|js/analysis/query/product-surface\.js$|js/ux\.js$|tests/issue-2528-canonical-claims\.mjs$|\.github/workflows/issue-2528-canonical-claims\.yml$|\.circleci/config\.yml$|scripts/ci/circleci-impact\.sh$)')"
-            echo "export RUN_ISSUE_2528=$run_it" >> "$BASH_ENV"
+          name: Resolve current main
+          command: git fetch --no-tags origin main:refs/remotes/origin/main
       - run:
-          name: Validate canonical claims authority
+          name: Install dependencies
+          command: npm ci --no-audit --no-fund
+      - run:
+          name: Verify invariant baseline classifier contract
+          command: node tests/invariant-pr-baseline.mjs
+      - run:
+          name: Run exact invariant proof with current-main regression isolation
+          command: HEX_INVARIANT_BASE_REF=refs/remotes/origin/main node tools/validation/invariant-pr-baseline.mjs
+      - run:
+          name: Semantic V2 and benchmark baseline
           command: |
-            if [ "$RUN_ISSUE_2528" != 'true' ]; then exit 0; fi
-            node tests/issue-2528-canonical-claims.mjs
+            set +e
+            failures=0
+            npm run semantic-v2:test || failures=1
+            npm run benchmark:baseline || failures=1
+            exit "$failures"
 
-  ai-eval-contract:
+  invariant-repo-regression:
     docker:
-      - image: cimg/node:20.19
-    resource_class: small
+      - image: cimg/node:22.23
+    resource_class: large
     steps:
       - checkout
       - run:
-          name: Detect AI evaluation impact
-          command: |
-            run_it="$(bash scripts/ci/circleci-impact.sh main-and-branch '^(js/ai/|js/agent/|js/query/|js/gemini\.js$|js/goalc\.js$|js/semantic-evidence\.js$|worker\.js$|tests/ai-eval/|docs/ai-integration-contract\.md$|docs/ai-quality-gate\.md$|\.github/workflows/ai-eval-contract\.yml$|\.circleci/config\.yml$|scripts/ci/circleci-impact\.sh$)')"
-            echo "export RUN_AI_EVAL=$run_it" >> "$BASH_ENV"
+          name: Resolve current main
+          command: git fetch --no-tags origin main:refs/remotes/origin/main
       - run:
-          name: Validate workflow trigger coverage
-          command: |
-            if [ "$RUN_AI_EVAL" != 'true' ]; then exit 0; fi
-            node tests/ai-eval/workflow-trigger.mjs
+          name: Install dependencies
+          command: npm ci --no-audit --no-fund
       - run:
-          name: Validate AI evaluation corpus
+          name: Run packed repository regression lane
           command: |
-            if [ "$RUN_AI_EVAL" != 'true' ]; then exit 0; fi
-            node tests/ai-eval/selftest.mjs
-      - run:
-          name: Exercise grader with example trace
-          command: |
-            if [ "$RUN_AI_EVAL" != 'true' ]; then exit 0; fi
-            node tests/ai-eval/grade.mjs tests/ai-eval/results.example.jsonl /tmp/ai-eval-report.json
-      - run:
-          name: Ensure release mode rejects an incomplete corpus
-          command: |
-            if [ "$RUN_AI_EVAL" != 'true' ]; then exit 0; fi
-            if node tests/ai-eval/grade.mjs tests/ai-eval/results.example.jsonl /tmp/ai-eval-partial.json --require-all; then
-              echo 'Expected --require-all to reject a one-case trace.' >&2
-              exit 1
-            fi
+            node --input-type=module <<'NODE'
+            import { spawnSync } from 'node:child_process';
+            const commands = [
+              'npm run lint',
+              'npm run migration:test',
+              'npm run module-boundaries:test',
+              'npm run evidence-writers:test',
+              'npm run phase7:test',
+              'npm run phase9:test',
+              'npm run phase10:test',
+              'npm run phase11:test',
+              'npm run phase12:test',
+              'npm run phase6:test',
+              'npm test',
+            ];
+            const failures = [];
+            for (const command of commands) {
+              console.log(`--- ${command}`);
+              const result = spawnSync(command, { shell: true, stdio: 'inherit', env: process.env });
+              if (result.error || result.status !== 0) failures.push({ command, status: result.status, error: result.error?.message ?? null });
+            }
+            if (failures.length) {
+              console.error(`Invariant diagnostic failures: ${JSON.stringify(failures)}`);
+              process.exit(1);
+            }
+            NODE
 
 workflows:
-  ci:
+  invariant-diagnostic:
     jobs:
-      - migration-guardrails
-      - agent-loop-resilience
-      - issue-2528-canonical-claims
-      - ai-eval-contract
+      - invariant-plan-contract
+      - invariant-phase8
+      - invariant-phase45
+      - invariant-analysis-proof
+      - invariant-repo-regression
