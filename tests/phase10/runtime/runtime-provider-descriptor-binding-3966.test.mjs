@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  DebugAdapterRuntimeProvider,
   RuntimeProviderRegistry,
   RuntimeProviderSession,
 } from '../../../js/runtime/provider.js';
@@ -79,25 +80,28 @@ test('RuntimeProviderRegistry rejects and closes sessions whose provider identit
   assert.deepEqual(registry.list().map(({ id, version }) => [id, version]), [['registered', 'v1']]);
 });
 
-test('RuntimeProviderRegistry preserves stable provider session identity', async () => {
-  const fixedDescriptor = descriptor('stable-provider', '7');
-  const provider = {
-    descriptor() { return fixedDescriptor; },
-    async openSession(request) {
-      return new RuntimeProviderSession({ provider: this, request });
-    },
+test('DebugAdapterRuntimeProvider keeps its fixed descriptor identity through the registry', async () => {
+  const adapter = {
+    id: 'fixed-3966',
+    kind: 'local',
+    capabilities: { modules: false },
+    connected: false,
+    epoch: 0,
+    setEpoch(epoch) { this.epoch = epoch; },
   };
+  const provider = new DebugAdapterRuntimeProvider(adapter, { version: '7' });
   const registry = new RuntimeProviderRegistry();
   registry.register(provider);
 
-  const session = await registry.openSession('stable-provider', {
+  const session = await registry.openSession('adapter:fixed-3966', {
     binaryId: 'binary-3966',
     sessionNonce: 'stable-3966',
-  });
+  }, { connect: false });
 
-  assert.equal(session.providerId, 'stable-provider');
+  assert.equal(session.providerId, 'adapter:fixed-3966');
   assert.equal(session.providerVersion, '7');
-  assert.equal(session.target.providerId, 'stable-provider');
+  assert.equal(session.target.providerId, 'adapter:fixed-3966');
   assert.equal(session.target.providerVersion, '7');
-  assert.deepEqual(registry.list().map(({ id, version }) => [id, version]), [['stable-provider', '7']]);
+  assert.deepEqual(registry.list().map(({ id, version }) => [id, version]), [['adapter:fixed-3966', '7']]);
+  await session.close();
 });
