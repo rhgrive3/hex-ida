@@ -1,7 +1,7 @@
 version: 2.1
 
 jobs:
-  universal-fixtures-probe:
+  universal-benchmark-core-probe:
     docker:
       - image: cimg/node:22.23
     resource_class: medium
@@ -12,13 +12,17 @@ jobs:
     steps:
       - checkout
       - run:
-          name: Fetch pinned real fixtures
-          command: npm run fixtures:fetch
+          name: Fetch and verify pinned real fixtures
+          command: |
+            npm run fixtures:fetch
+            npm run fixtures:check
       - run:
-          name: Verify pinned real fixtures
-          command: npm run fixtures:check
+          name: Generate universal benchmark report
+          command: |
+            set -o pipefail
+            npm --silent run binary:benchmark | tee universal-platform-benchmark.json
 
 workflows:
   probe:
     jobs:
-      - universal-fixtures-probe
+      - universal-benchmark-core-probe
