@@ -71,6 +71,7 @@ async function sample(file) {
         exports: image.exports.length,
         auditErrors: audit.errors,
         auditWarnings: audit.warnings,
+        auditErrorCodes: [...new Set(audit.issues.filter((issue) => issue.level === 'error').map((issue) => issue.code))].sort(),
       },
     };
   } finally {
