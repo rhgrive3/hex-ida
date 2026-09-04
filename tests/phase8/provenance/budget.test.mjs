@@ -30,18 +30,23 @@ test('P8-PROV the ledger budget truncates explicitly and never silently', () => 
   assert.ok(validation.reasons.includes('truncated'));
 });
 
-test('P8-PROV the per-entity origin budget truncates explicitly', () => {
+test('P8-PROV the per-entity origin budget truncates the rewritten entity explicitly', () => {
   const result = applyPhase8Projection(largeChainResult(24), analysis(), {
     renderProvenanceBudget:{ maxOriginsPerEntity:2 },
   });
   const provenance = result.renderProvenance;
   assert.equal(provenance.budget.truncated, true);
   assert.ok(provenance.budget.truncatedScopes.includes('origins'));
-  for (const entity of Object.values(provenance.entities)) {
-    assert.ok(entity.origins.rows.length <= 2, 'per-entity rows must respect the cap');
-    if (entity.origins.rows.length === 2) {
-      assert.equal(entity.complete, false, 'a truncated origin set must not claim completeness');
-      assert.ok(entity.reasons.includes('truncated'));
-    }
-  }
+
+  const rewritten = Object.values(provenance.entities)
+    .find((entity) => Array.isArray(entity.recordRefs) && entity.recordRefs.length > 0);
+  assert.ok(rewritten, 'fixture must exercise an entity fed by an actual projection transform');
+  const retainedOrigins = rewritten.origins.rows.length
+    + rewritten.origins.addresses.length
+    + rewritten.origins.ir.length
+    + rewritten.origins.ssaRefs.length;
+  assert.equal(retainedOrigins, 2, 'known rewritten entity must hit the configured origin cap exactly');
+  assert.equal(rewritten.complete, false, 'a truncated rewritten entity must not claim completeness');
+  assert.ok(rewritten.reasons.includes('truncated'));
+  assert.equal(provenance.completeness, 'incomplete');
 });
