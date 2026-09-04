@@ -139,6 +139,16 @@ function strictPrototype(value) {
   return value == null || strictPrototypeRecord(value);
 }
 
+function strictCallingConventionMetadata(value) {
+  if (value == null || (typeof value !== 'object' && typeof value !== 'function')) return true;
+  for (const key of ['callingConvention', 'convention', 'cc']) {
+    const entry = ownDataValue(value, key);
+    if (!entry.present) continue;
+    if (entry.accessor || (entry.value != null && typeof entry.value !== 'string')) return false;
+  }
+  return true;
+}
+
 function strictOptionsMetadata(options) {
   if (options == null) return true;
   if (typeof options !== 'object' && typeof options !== 'function') return false;
@@ -184,7 +194,7 @@ function guardedProviderOptions(options = {}, state) {
   return {
     ...options,
     callPrototypeFor(...args) {
-      const prototype = provider.apply(this, args);
+      const prototype = provider.apply(options, args);
       if (!strictPrototype(prototype)) {
         state.invalid = true;
         return null;
@@ -211,6 +221,7 @@ function guardArgumentClassifier(classifier) {
       ? ownDataValue(instruction, 'callPrototype')
       : { present:false, value:undefined };
     if ((explicitPrototype.present && (explicitPrototype.accessor || !strictPrototype(explicitPrototype.value)))
+      || !strictCallingConventionMetadata(instruction)
       || !strictOptionsMetadata(options)) {
       return classifier.call(this, withoutCallPrototype(instruction), sanitizedClassifierOptions(options));
     }
@@ -228,6 +239,7 @@ function guardCallReturnClassifier(classifier) {
       ? ownDataValue(instruction, 'callPrototype')
       : { present:false, value:undefined };
     if ((explicitPrototype.present && (explicitPrototype.accessor || !strictPrototype(explicitPrototype.value)))
+      || !strictCallingConventionMetadata(instruction)
       || !strictOptionsMetadata(options)) return invalidReturnClassification();
     const state = { invalid:false };
     const result = classifier.call(this, instruction, guardedProviderOptions(options, state));
