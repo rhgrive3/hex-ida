@@ -11,6 +11,7 @@ program-header dynamic-table framing and termination.
 - Source owner: `js/binary/elf-dynamic.js`
 - Regression owner: `tests/phase4/issue-6104-elf-dynamic-termination.test.mjs`
 - Shared-board claim: lanes message #285
+- Owner PR: [#6509](https://github.com/rhgrive3/hex-ida/pull/6509)
 - Branch: `fix/issues-elf-dynamic-termination-6104`
 - Candidate base: `origin/main` at `57d7521f446f44a195de776324655ddaa2a934a5`
 - Implementation head: `b201a4297b7f76e5706ba76856198b80fc4b5381`
@@ -24,7 +25,8 @@ program-header dynamic-table framing and termination.
 - [x] Focused regression, existing ELF dynamic regressions, ELF symbol-budget regression, and lint passed.
 - [x] Run the applicable Phase 4 gate and compare the red result with pristine `origin/main`; the same `strict-authority-boundaries` assertion fails on pristine main.
 - [x] Run the Phase 4 independent verifier directly; 18 cases and all raw failure counters passed.
-- [ ] Create one owner PR for #6104 and record exact-head candidate evidence.
+- [x] Create one owner PR for #6104.
+- [ ] Record final exact-head candidate evidence on the PR and shared board.
 - [ ] Merge only after exact-head evidence and required checks are green; otherwise record the blocker here and on the board.
 
 ## Resume procedure
