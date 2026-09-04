@@ -4,7 +4,7 @@ import { createOperationIdentity, assertIdentityMatch } from '../phase12/identit
 export const CHANGELOG_SCHEMA_VERSION = 'hex-project-operation-v1';
 export const CHECKPOINT_SCHEMA_VERSION = 'hex-project-checkpoint-v1';
 const MEANINGFUL_FACTS = new Set(['name', 'type', 'struct', 'confirmation', 'patch']);
-const CANONICAL_OPERATIONS = new WeakSet();
+const OPERATION_ACTIONS = new Set(['set', 'remove', 'resolve', 'resurrect']);
 
 function required(value, code) { const text = String(value ?? '').trim(); if (!text) throw new TypeError(code); return text; }
 function clone(value) {
@@ -15,11 +15,7 @@ function clone(value) {
   for (const [key, item] of Object.entries(value)) Object.defineProperty(out, key, { value: clone(item), enumerable: true, configurable: true, writable: true });
   return out;
 }
-function list(value) {
-  if (value == null) return [];
-  if (!Array.isArray(value)) throw new TypeError('operation-causal-parents-invalid');
-  return [...new Set(value.map(String).filter(Boolean))].sort();
-}
+function list(value) { return [...new Set((Array.isArray(value) ? value : []).map(String).filter(Boolean))].sort(); }
 function factKey(target, kind) { return `${target}\u0000${kind}`; }
 function payloadDigest(value) { return stableDigest(value); }
 // The identity an operationId is bound to: everything that decides state
@@ -38,31 +34,17 @@ function semanticDigest(operation) {
   });
 }
 
-function canonicalOperation(input) {
-  if (CANONICAL_OPERATIONS.has(input)) return input;
-  if (input != null && typeof input === 'object') {
-    try { return createProjectOperation(input); } catch (error) { return { normalized: false, input, error }; }
-  }
-  return { normalized: false, input, error: new TypeError('operation-input-invalid') };
-}
-
-export function canonicalizeProjectOperation(input) {
-  return canonicalOperation(input);
-}
-
-export function isCanonicalProjectOperation(value) {
-  return !!value && typeof value === 'object' && value.normalized !== false && CANONICAL_OPERATIONS.has(value);
-}
-
 export function createProjectOperation(input = {}) {
   if (input.schemaVersion != null && input.schemaVersion !== CHANGELOG_SCHEMA_VERSION) throw new TypeError('operation-schema-version-unsupported');
   const projectIdentity = required(input.projectIdentity ?? input.projectId, 'operation-project-identity-required');
   const targetEntityId = required(input.targetEntityId ?? input.entityId, 'operation-target-entity-required');
   const factKind = required(input.factKind, 'operation-fact-kind-required');
-  const action = required(input.action || 'set', 'operation-action-required');
+  const actionInput = input.action ?? 'set';
+  if (typeof actionInput !== 'string' || !actionInput.trim()) throw new TypeError('operation-action-required');
+  const action = actionInput;
+  if (!OPERATION_ACTIONS.has(action)) throw new TypeError('operation-action-unsupported');
   const payload = clone(input.payload ?? input.value ?? null);
-  const beforeFingerprint = canonicalBeforeFingerprint(input.beforeFingerprint);
-  const operationId = required(input.operationId || `op:${stableDigest({ projectIdentity, binaryIdentity: input.binaryIdentity || null, targetEntityId, factKind, action, payload, beforeFingerprint, causalParents: list(input.causalParents) })}`, 'operation-id-required');
+  const operationId = required(input.operationId || `op:${stableDigest({ projectIdentity, binaryIdentity: input.binaryIdentity || null, targetEntityId, factKind, action, payload, beforeFingerprint: input.beforeFingerprint || null, causalParents: list(input.causalParents) })}`, 'operation-id-required');
   const operation = {
     schemaVersion: CHANGELOG_SCHEMA_VERSION,
     operationId,
@@ -75,24 +57,11 @@ export function createProjectOperation(input = {}) {
     targetEntityId,
     factKind,
     action,
-    beforeFingerprint,
+    beforeFingerprint: input.beforeFingerprint == null ? null : String(input.beforeFingerprint),
     payload,
     provenance: clone(input.provenance || { source: 'local', actorIdentity: input.authorIdentity || null }),
   };
-  CANONICAL_OPERATIONS.add(operation);
   return deepFreeze(operation);
-}
-
-function canonicalBeforeFingerprint(value) {
-  if (value == null) return null;
-  if (typeof value !== 'string') throw new TypeError('operation-before-fingerprint-invalid');
-  if (!value || value.trim() !== value || !value.trim()) throw new TypeError('operation-before-fingerprint-invalid');
-  return value;
-}
-
-function registerCanonicalOperation(operation) {
-  CANONICAL_OPERATIONS.add(operation);
-  return operation;
 }
 
 function compareOperations(a, b) { return a.operationId.localeCompare(b.operationId); }
@@ -100,8 +69,13 @@ function compareOperations(a, b) { return a.operationId.localeCompare(b.operatio
 export function orderOperations(operations = [], existingIds = new Set()) {
   const unique = new Map();
   for (const input of operations) {
-    const operation = canonicalOperation(input);
-    if (!unique.has(operation.operationId)) unique.set(operation.operationId, operation);
+    const operation = input.schemaVersion === CHANGELOG_SCHEMA_VERSION ? input : createProjectOperation(input);
+    const existing = unique.get(operation.operationId);
+    if (existing) {
+      if (semanticDigest(existing) !== semanticDigest(operation)) throw new TypeError('operation-id-content-mismatch');
+      continue;
+    }
+    unique.set(operation.operationId, operation);
   }
   const remaining = new Map(unique);
   const seen = new Set(existingIds);
@@ -138,6 +112,8 @@ export class ChangeLog {
 
   #validate(operation) {
     if (operation.schemaVersion !== CHANGELOG_SCHEMA_VERSION) return { status: 'rejected', reason: 'schema-version-unsupported' };
+    if (typeof operation.action !== 'string') return { status: 'rejected', reason: 'operation-action-required' };
+    if (!OPERATION_ACTIONS.has(operation.action)) return { status: 'rejected', reason: 'operation-action-unsupported' };
     if (operation.projectIdentity !== this.projectIdentity) return { status: 'rejected', reason: 'wrong-project-identity' };
     if (this.binaryIdentity !== operation.binaryIdentity) return { status: 'rejected', reason: 'wrong-binary-identity' };
     if (operation.provenance?.transport === 'remote') {
@@ -182,6 +158,10 @@ export class ChangeLog {
       this.operations.set(operation.operationId, operation);
       return { status: 'applied', operationId: operation.operationId, effect: 'resolution' };
     }
+    if (operation.action === 'resurrect') {
+      this.state.tombstones = this.state.tombstones.filter((item) => item.key !== key);
+      this.state.unresolved = this.state.unresolved.filter((item) => !(item.key === key && item.reason === 'tombstone-protects-state'));
+    }
     const candidate = { operationId: operation.operationId, value: clone(operation.payload), provenance: clone(operation.provenance), timestampHint: operation.timestampHint };
     const candidateDigest = payloadDigest(candidate.value);
     const previous = current?.values.find((item) => payloadDigest(item.value) === candidateDigest);
@@ -222,33 +202,49 @@ export class ChangeLog {
   }
 
   applyOperation(input) {
-    const operation = canonicalOperation(input);
-    if (operation.normalized === false) {
-      const reason = operation.error?.message || 'operation-input-invalid';
-      this.pending.delete(String(operation.input?.operationId ?? ''));
-      return Object.freeze({ status: 'rejected', reason, operationId: operation.input?.operationId ?? null, stateDigest: this.digest() });
+    const operation = input?.schemaVersion === CHANGELOG_SCHEMA_VERSION ? input : createProjectOperation(input);
+    const existingPending = this.pending.get(operation.operationId);
+    if (existingPending && semanticDigest(existingPending) !== semanticDigest(operation)) {
+      return Object.freeze({
+        status: 'rejected',
+        reason: 'operation-id-content-mismatch',
+        operationId: operation.operationId,
+        stateDigest: this.digest(),
+      });
     }
     const result = this.#applyOne(operation);
-    if (result.status === 'unresolved') this.pending.set(operation.operationId, operation);
-    else this.pending.delete(operation.operationId);
-    if (result.status !== 'rejected') this.#drainPending();
-    return Object.freeze({ ...result, operationId: operation.operationId, stateDigest: this.digest() });
+    if (result.status === 'unresolved') {
+      if (!existingPending) this.pending.set(operation.operationId, operation);
+    } else {
+      this.pending.delete(operation.operationId);
+    }
+    let surfaced = result;
+    if (result.status !== 'rejected') {
+      const drained = this.#drainPending();
+      const drainRejection = drained.find((entry) => entry.status === 'rejected');
+      if (drainRejection) surfaced = drainRejection;
+    }
+    return Object.freeze({ ...surfaced, operationId: surfaced.operationId ?? operation.operationId, stateDigest: this.digest() });
   }
 
   applyBatch(inputs = []) {
-    const operations = [];
-    for (const input of inputs) {
-      const operation = canonicalOperation(input);
-      if (operation.normalized === false) {
-        return Object.freeze({ status: 'rejected', reason: operation.error?.message || 'operation-input-invalid', operationId: operation.input?.operationId ?? null, stateDigest: this.digest() });
-      }
-      operations.push(operation);
-    }
+    const operations = inputs.map((input) => input?.schemaVersion === CHANGELOG_SCHEMA_VERSION ? input : createProjectOperation(input));
     const ordered = orderOperations(operations, new Set(this.operations.keys()));
     if (ordered.unresolved.length) return Object.freeze({ status: 'unresolved', reason: 'missing-causal-parent', operationIds: ordered.unresolved.map((operation) => operation.operationId), stateDigest: this.digest() });
     const working = new ChangeLog({ projectIdentity: this.projectIdentity, binaryIdentity: this.binaryIdentity, state: this.state, operations: [...this.operations.values()], pending: [...this.pending.entries()], allowRemote: this.allowRemote, authorizedAuthors: [...this.authorizedAuthors] });
     const results = [];
     for (const operation of ordered.ordered) {
+      const existingPending = working.pending.get(operation.operationId);
+      if (existingPending) {
+        if (semanticDigest(existingPending) !== semanticDigest(operation)) {
+          return Object.freeze({ status: 'rejected', reason: 'operation-id-content-mismatch', operationId: operation.operationId, results, stateDigest: this.digest() });
+        }
+        // Keep the canonical pending copy intact. Once this batch supplies its
+        // missing parents, the normal fixed-point drain applies that stored
+        // operation rather than replacing it with the retry object.
+        results.push(Object.freeze({ status: 'duplicate', operationId: operation.operationId }));
+        continue;
+      }
       const result = working.#applyOne(operation);
       results.push(result);
       if (result.status === 'rejected') return Object.freeze({ status: 'rejected', reason: result.reason, operationId: operation.operationId, results, stateDigest: this.digest() });
@@ -279,7 +275,7 @@ export class ChangeLog {
 }
 
 export function replayOperations({ projectIdentity, binaryIdentity = null, operations = [], checkpoint = null } = {}) {
-  const log = new ChangeLog({ projectIdentity, binaryIdentity, state: checkpoint?.state, operations: checkpoint ? checkpoint.operationIds.map((operationId) => registerCanonicalOperation(createProjectOperation({ operationId, projectIdentity, binaryIdentity, targetEntityId: 'checkpoint', factKind: 'checkpoint', action: 'set', payload: null, causalParents: [], provenance: { source: 'checkpoint' } }))) : [] });
+  const log = new ChangeLog({ projectIdentity, binaryIdentity, state: checkpoint?.state, operations: checkpoint ? checkpoint.operationIds.map((operationId) => ({ operationId, schemaVersion: CHANGELOG_SCHEMA_VERSION, projectIdentity, binaryIdentity, targetEntityId: 'checkpoint', factKind: 'checkpoint', action: 'set', payload: null, causalParents: [], provenance: { source: 'checkpoint' } })) : [] });
   const filtered = checkpoint ? operations.filter((operation) => !checkpoint.operationIds.includes(operation.operationId)) : operations;
   const result = log.applyBatch(filtered);
   return Object.freeze({ ...result, state: log.snapshot(), digest: log.digest(), unresolved: result.status === 'unresolved' ? result.operationIds : result.unresolvedOperationIds || [] });
@@ -295,7 +291,7 @@ export function restoreCheckpoint(checkpoint, options = {}) {
   // foreign state stays valid, so the digest alone cannot catch the swap (#5497).
   assertIdentityMatch(checkpoint.state?.projectIdentity ?? '', options.projectIdentity, 'checkpoint-state-project-identity-mismatch');
   assertIdentityMatch(checkpoint.state?.binaryIdentity || '', options.binaryIdentity || '', 'checkpoint-state-binary-identity-mismatch');
-  const checkpointOperations = checkpoint.operationIds.map((operationId) => registerCanonicalOperation(createProjectOperation({ operationId, projectIdentity: options.projectIdentity, binaryIdentity: options.binaryIdentity || null, targetEntityId: 'checkpoint', factKind: 'checkpoint', action: 'set', payload: null, causalParents: [], provenance: { source: 'checkpoint' } })));
+  const checkpointOperations = checkpoint.operationIds.map((operationId) => ({ operationId, schemaVersion: CHANGELOG_SCHEMA_VERSION, projectIdentity: options.projectIdentity, binaryIdentity: options.binaryIdentity || null, targetEntityId: 'checkpoint', factKind: 'checkpoint', action: 'set', payload: null, causalParents: [], provenance: { source: 'checkpoint' } }));
   const log = new ChangeLog({ projectIdentity: options.projectIdentity, binaryIdentity: options.binaryIdentity || null, state: checkpoint.state, operations: checkpointOperations });
   const restoreResults = [];
   for (const operation of options.operations || []) {
