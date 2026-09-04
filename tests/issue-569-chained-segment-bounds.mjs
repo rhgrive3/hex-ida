@@ -128,7 +128,8 @@ function makeFixture({
   assert.equal(imports[0].sites.length, 0);
 }
 
-const macho = fs.readFileSync(new URL('../js/binary/macho.js', import.meta.url), 'utf8');
+const machoPath = fs.existsSync(new URL('../js/binary/macho-core.js', import.meta.url)) ? '../js/binary/macho-core.js' : '../js/binary/macho.js';
+const macho = fs.readFileSync(new URL(machoPath, import.meta.url), 'utf8');
 assert.match(macho, /parseChainedBindingSites\([^;]+segmentOrder(?:,\s*metadataBudget)?\)/);
 const dyld = fs.readFileSync(new URL('../js/binary/macho-dyld.js', import.meta.url), 'utf8');
 assert.match(dyld, /overflowBase = p \+ 22 \+ pageCount \* 2/);

@@ -48,7 +48,12 @@ function attachFactExtractionMetadata(facts, metadata) {
 }
 
 export function traceToSemanticFacts(trace, context = {}) {
-  const events = trace && Array.isArray(trace.events) ? trace.events : Array.isArray(trace) ? trace : [];
+  let events = [];
+  if (Array.isArray(trace)) events = trace;
+  else if (trace && typeof trace === 'object') {
+    if (trace.events != null && !Array.isArray(trace.events)) throw new TypeError('runtime trace events must be an array');
+    events = trace.events || [];
+  }
   const limit = boundedInteger(context.limit, 10000, 1, 50000, 'fact limit');
   const group = context.provenanceGroup || `trace:${idPart(context.sessionId || 'session')}:${idPart(context.traceId || 'trace')}`;
   const facts = [];

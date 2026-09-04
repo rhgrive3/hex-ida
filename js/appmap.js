@@ -250,7 +250,11 @@ export function buildAppMap(opts) {
         (c.classMethods ? c.classMethods.length : 0);
       let calls = 0;
       if (program) {
-        for (const m of (c.methods || []).slice(0, 20)) {
+        const methodsForCalls = [
+          ...(c.methods || []),
+          ...(c.classMethods || []),
+        ].slice(0, 20);
+        for (const m of methodsForCalls) {
           if (m.addr != null) calls += program.callCountOf(m.addr);
         }
       }

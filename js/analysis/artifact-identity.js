@@ -68,7 +68,8 @@ function optional(value, code = 'phase7-artifact-invalid-optional-id') {
   if (value == null) return null;
   if (typeof value !== 'string') fail(code);
   const text = value.trim();
-  return text.length ? text : null;
+  if (!text) fail(code);
+  return text;
 }
 
 function sortedIds(values, code) {
