@@ -377,7 +377,12 @@ export function deriveMemoryRegion(input = {}) {
   const origin = normalizedOrigin(input.origin);
   const functionId = optionalIdentityString(input.functionId, 'function-id');
   const binaryId = uniqueBinaryId(origin, input.binaryId);
-  const widthBits = Number(memory.widthBits ?? input.widthBits);
+  const rawWidthBits = memory.widthBits ?? input.widthBits;
+  const widthBits = typeof rawWidthBits === 'number'
+    && Number.isSafeInteger(rawWidthBits)
+    && rawWidthBits > 0
+    ? rawWidthBits
+    : null;
   const addressSpace = optionalIdentityString(memory.addressSpace ?? input.addressSpace, 'address-space');
   const addressValueId = optionalIdentityString(memory.addressExpr?.valueId ?? input.addressValueId, 'address-value-id');
   const descriptor = normalizeDescriptor(input.regionEvidence ?? input.provenance ?? input.metadata);
