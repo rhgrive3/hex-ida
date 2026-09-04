@@ -3,8 +3,8 @@
  *
  * semanticFacts() が STORE 右辺の形だけを見て readModifyWrite を付与していた
  * 問題を固定する。RMW の判定には「STORE 先と同一 canonical location の LOAD を
- * 右辺が読んでいる」ことの証明が必須で、証明が無ければ通常 STORE として
- * 説明されなければならない (fail-closed)。
+ * 右辺の対象演算子が直接読んでいる」ことの証明が必須で、証明が無ければ通常
+ * STORE として説明されなければならない (fail-closed)。
  *
  *   1. dst = load(dst) + x        -> readModifyWrite: add
  *   2. dst = a + b                -> RMW metadata 無し
@@ -13,12 +13,14 @@
  *   5. dst = max(a - x, 0)        -> clamp RMW metadata 無し
  *   6. dst = max(load(other)-x,0) -> clamp RMW metadata 無し
  *   7. summary の authority も compound assignment 判定と一致する
+ *   8. nested load dependency は outer RMW の direct operand proof にならない
  */
 import assert from 'node:assert/strict';
 import { buildSemanticModel } from '../js/blocks.js';
 import { decompile } from '../js/decompile.js';
 import { semanticAbiAdapter } from '../js/analysis/semantic-function.js';
 import { AAPCS64_ABI } from '../js/targets/abi/index.js';
+import { directSameLocationLoadForTesting } from '../js/decompiler/pipeline-core.js';
 
 const BASE = 0x100000000n;
 const testAbiAdapter = semanticAbiAdapter(AAPCS64_ABI);
@@ -155,6 +157,21 @@ function run(lines) {
   assert.doesNotMatch(r2.summary, /を加えて保存/, r2.summary);
   assert.equal(store2.readModifyWrite ?? null, null);
   console.log('  ok 7 summary authority matches compound-assignment rendering');
+}
+
+/* ── 8. direct-operand proof must not recurse through a nested expression ── */
+{
+  const location = { key: 'field:hp' };
+  const load = { kind: 'load', location };
+  const nested = {
+    kind: 'binary', op: 'add', left: load,
+    right: { kind: 'variable', name: 'y' },
+  };
+  assert.equal(directSameLocationLoadForTesting(load, location), true,
+    'the direct same-location load remains valid proof');
+  assert.equal(directSameLocationLoadForTesting(nested, location), false,
+    'a nested dependency must not authorize the outer RMW operator');
+  console.log('  ok 8 nested same-location dependency is not direct RMW proof');
 }
 
 console.log('issue-6315 RMW same-location guard PASS');

@@ -8,15 +8,16 @@
  *   1. predecessor で x0 = 42 → dedicated return block の ret は 42 を返す
  *   2. entry argument x0 があっても古い argument へ fallback しない
  *   3. same-block definition は従来どおり RET 直前の最新値を選ぶ
- *   4. x86-64 rax / RISC-V a0 の ABI adapter でも同型
- *   5. explicit ret.args[0] がある場合はその authority を維持する
- *   6. diamond merge で異なる値が流入し PHI 証明が無ければ勝手に選ばない
+ *   4. x86-64 rax / RISC-V a0 を synthetic IR で直接検証する
+ *   5. bare RET の implicit lookup は x0 の最新確定値を使う
+ *   6. divergent merge は branch-local write を無視して entry argument へ戻らない
  */
 import assert from 'node:assert/strict';
 import { buildSemanticModel } from '../js/blocks.js';
 import { decompile } from '../js/decompile.js';
 import { semanticAbiAdapter } from '../js/analysis/semantic-function.js';
-import { AAPCS64_ABI, SYSV_AMD64_ABI } from '../js/targets/abi/index.js';
+import { AAPCS64_ABI } from '../js/targets/abi/index.js';
+import { reachingRegisterValueForTesting } from '../js/decompiler/pipeline-core.js';
 
 const BASE = 0x100000000n;
 
@@ -34,7 +35,6 @@ function make(lines) {
 }
 
 const armAdapter = semanticAbiAdapter(AAPCS64_ABI);
-const x86Adapter = semanticAbiAdapter(SYSV_AMD64_ABI);
 
 function run(lines, opts = {}) {
   const { model, rowOfAddress } = make(lines);
@@ -44,6 +44,20 @@ function run(lines, opts = {}) {
     ...opts,
   });
   return r;
+}
+
+function syntheticIr({ reg, values, blocks, entryArg = null }) {
+  return {
+    values,
+    blocks: blocks.map((block) => ({ succ: block.succ || [], idom: block.idom ?? -1 })),
+    idom: blocks.map((block) => block.idom ?? -1),
+    dominators: blocks.map((block) => new Set(block.dominators || [])),
+    args: new Map(entryArg ? [[reg, entryArg]] : []),
+  };
+}
+
+function registerValue(id, reg, block, row, constant) {
+  return { id, reg, const: BigInt(constant), def: { block, row }, clobbered: false };
 }
 
 /* ── 1+2. predecessor で x0 を上書きし dedicated return block へ ── */
@@ -68,27 +82,36 @@ function run(lines, opts = {}) {
   ], { abiAdapter: armAdapter });
   assert.equal(r.semantic, true, r.warnings?.join('\n'));
   assert.match(r.pseudocode, /return\s+42/, r.pseudocode);
-  console.log('  ok 3 same-block latest definition still selected');
+
+  // ir.values の列挙順に依存せず、row が最大の definition を選ぶことも直接固定する。
+  const earlier = registerValue('early', 'rax', 0, 1, 7);
+  const latest = registerValue('late', 'rax', 0, 9, 42);
+  const ir = syntheticIr({
+    reg: 'rax', values: [earlier, latest],
+    blocks: [{ succ: [], idom: -1, dominators: [0] }],
+  });
+  assert.strictEqual(reachingRegisterValueForTesting(ir, { block: 0, row: 10 }, 'rax'), latest);
+  console.log('  ok 3 same-block latest definition selected by row, not values order');
 }
 
-/* ── 4. ABI adapter が違っても same-block / predecessor の順序規則は同型 ──
- * 注: このデコンパイル経路は ARM64 生アセンブリ専用 (lowerArm64RawAssembly)。
- * x86-64 rax / RISC-V a0 の adapter はレジスタ名の authority を持つが、
- * 入力アセンブリは ARM64 のまま adapter の returnRegister に委譲される。
- * ここでは SYSV adapter でも predecessor 定義が反映されることだけを確認する。 */
+/* ── 4. architecture-neutral register names: rax / a0 ───────── */
 {
-  const r86 = run([
-    'mov x0, #42',
-    'b #0x100000008',
-    'ret',
-  ], { abiAdapter: x86Adapter, returnType: 'int64' });
-  assert.equal(r86.semantic, true, r86.warnings?.join('\n'));
-  assert.doesNotMatch(r86.pseudocode, /return\s+a1\s*;/, r86.pseudocode);
-  console.log('  ok 4 x86-64 adapter does not regress the predecessor rule');
+  for (const reg of ['rax', 'a0']) {
+    const value = registerValue(`${reg}-42`, reg, 0, 1, 42);
+    const ir = syntheticIr({
+      reg, values: [value],
+      blocks: [
+        { succ: [1], idom: -1, dominators: [0] },
+        { succ: [], idom: 0, dominators: [0, 1] },
+      ],
+    });
+    assert.strictEqual(reachingRegisterValueForTesting(ir, { block: 1, row: 10 }, reg), value,
+      `${reg} predecessor definition must reach the dedicated return block`);
+  }
+  console.log('  ok 4 rax / a0 predecessor definitions are proven directly on synthetic IR');
 }
 
-/* ── 5. bare 'ret' の implicit lookup は x0 の最新確定値を使う ──
- * (ARM64 bare ret は x0 を返す。x1 の値は無関係なため、return 42 が正。) */
+/* ── 5. bare 'ret' の implicit lookup は x0 の最新確定値を使う ── */
 {
   const r = run([
     'mov x0, #42',
@@ -100,7 +123,7 @@ function run(lines, opts = {}) {
   console.log('  ok 5 bare ret uses latest x0 definition, unrelated x1 ignored');
 }
 
-/* ── 6. diamond merge: PHI 証明が無い値を勝手に選ばない ────── */
+/* ── 6. diamond merge: branch-local write invalidates stale entry fallback ── */
 {
   const r = run([
     'cbz w1, #0x10000000c',
@@ -112,11 +135,22 @@ function run(lines, opts = {}) {
   assert.equal(r.semantic, true, r.warnings?.join('\n'));
   const returnLine = (r.lines || []).find((l) => /return/.test(l.text || ''));
   assert.ok(returnLine, r.pseudocode);
-  // マージで複数の異なる値が到達する場合、どちらか一方を確定値としては提示しない。
-  // (パイプラインが安全側に落ちるなら argument でも unknown でもよいが、
-  //  分岐の片側だけを「確定」として選んではならない)
-  assert.ok(!/\breturn\s+42\s*;/.test(returnLine.text), returnLine.text);
-  console.log('  ok 6 divergent merge does not pick one side arbitrarily');
+  assert.ok(!/\breturn\s+(?:42|7)\s*;/.test(returnLine.text), returnLine.text);
+
+  const entry = { id: 'entry-rax', kind: 'arg', reg: 'rax' };
+  const branchWrite = registerValue('branch-rax', 'rax', 1, 2, 42);
+  const ir = syntheticIr({
+    reg: 'rax', values: [branchWrite], entryArg: entry,
+    blocks: [
+      { succ: [1, 2], idom: -1, dominators: [0] },
+      { succ: [3], idom: 0, dominators: [0, 1] },
+      { succ: [3], idom: 0, dominators: [0, 2] },
+      { succ: [], idom: 0, dominators: [0, 3] },
+    ],
+  });
+  assert.equal(reachingRegisterValueForTesting(ir, { block: 3, row: 10 }, 'rax'), null,
+    'a branch-local write reaching the merge must invalidate the stale entry argument fallback');
+  console.log('  ok 6 divergent merge stays unknown instead of silently falling back to entry argument');
 }
 
 console.log('issue-6313 CFG-aware implicit return lookup PASS');
