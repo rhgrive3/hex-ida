@@ -190,10 +190,15 @@ function parseV0Identifier(str, pos) {
 }
 
 /**
- * Parses a Rust v0 const value (<type> [ "p" ] <hex-integer> "_" | <backref>).
+ * Parses a Rust v0 const value (`<type> <const-data> | p | <backref>`), where
+ * `<const-data>` is `[n] <hex>* _` and `p` is a standalone placeholder.
  */
 function parseV0Const(str, state, depth = 0) {
   if (state.pos >= str.length || depth > 32) return null;
+  if (str[state.pos] === 'p') {
+    state.pos++;
+    return '_';
+  }
   if (str[state.pos] === 'B') {
     state.pos++;
     const br = parseV0Base62(str, state.pos);
@@ -206,7 +211,7 @@ function parseV0Const(str, state, depth = 0) {
   const constType = parseV0Type(str, state, depth + 1);
   if (!constType) return null;
   let isNegative = false;
-  if (state.pos < str.length && str[state.pos] === 'p') {
+  if (state.pos < str.length && str[state.pos] === 'n') {
     isNegative = true;
     state.pos++;
   }

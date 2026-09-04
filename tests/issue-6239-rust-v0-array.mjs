@@ -28,12 +28,25 @@ const zeroArray = demangleRustV0('_RINvC7mycrate7exampleAhj0_E');
 assert.equal(zeroArray.parsed, true);
 assert.equal(zeroArray.demangled, 'mycrate::example<[u8; 0]>');
 
-// 5. Const generic negative length fails or renders correctly
-const constNegative = demangleRustV0('_RINvC7mycrate7exampleAhjp1_E');
+// 5. RFC 2603 signed const-data uses `n` after the const type.
+const constNegative = demangleRustV0('_RINvC7mycrate7exampleAhjn1_E');
 assert.equal(constNegative.parsed, true);
 assert.equal(constNegative.demangled, 'mycrate::example<[u8; -1]>');
 
-// 6. Malformed & truncated arrays fail closed
+// 6. `p` is a standalone const placeholder, not a sign marker.
+const placeholderArray = demangleRustV0('_RINvC7mycrate7exampleAhpE');
+assert.equal(placeholderArray.parsed, true);
+assert.equal(placeholderArray.demangled, 'mycrate::example<[u8; _]>');
+
+const placeholderGeneric = demangleRustV0('_RINvC7mycrate7exampleKpE');
+assert.equal(placeholderGeneric.parsed, true);
+assert.equal(placeholderGeneric.demangled, 'mycrate::example<_>');
+
+// 7. The old `p`-as-negative spelling is malformed and must fail closed.
+const malformedPositiveMarker = demangleRustV0('_RINvC7mycrate7exampleAhjp1_E');
+assert.equal(malformedPositiveMarker.parsed, false);
+
+// 8. Malformed & truncated arrays fail closed
 const truncatedArray = demangleRustV0('_RINvC7mycrate7exampleAt');
 assert.equal(truncatedArray.parsed, false);
 
@@ -43,7 +56,7 @@ assert.equal(malformedConst.parsed, false);
 const missingTerminator = demangleRustV0('_RINvC7mycrate7exampleAhj8E');
 assert.equal(missingTerminator.parsed, false);
 
-// 7. RustMetadataProvider includes array symbol in records
+// 9. RustMetadataProvider includes array symbol in records
 const provider = new RustMetadataProvider({
   symbols: [
     { name: '_RINvCs7qp2U7fqm6G_7mycrate7exampleAtj8_EB2_', address: '0x1000' },
