@@ -1,6 +1,6 @@
 # Simple issue owner-lane checkpoint — API boundaries
 
-Status: `IMPLEMENTATION_IN_PROGRESS`
+Status: `READY_TO_PUSH`
 
 This checkpoint records the resumable state for the autonomous simple-issue
 cleanup lane owned by `codex`. It is intentionally scoped to the API knowledge
@@ -14,6 +14,7 @@ owner and must be updated when a branch, PR, or merge stage changes.
 - Shared-board claim: lanes message #255
 - Branch: `fix/issues-api-boundaries-6130-6121`
 - Candidate base: `origin/main` at `f00154dcb9b2234cbacb4c6a3c2186d00c8a4b3a`
+- Implementation head: `727124b8d03a8982148070f28180657f7e952af7`
 
 ## Completed stages
 
@@ -24,11 +25,12 @@ owner and must be updated when a branch, PR, or merge stage changes.
 - [x] Focused regression passed: `node tests/phase4/issue-6130-6121-api-boundaries.test.mjs`.
 - [x] Candidate Phase 4 runner reached all tests, including the new regression; 18/19 passed.
 - [x] The one Phase 4 ownership-contract failure reproduces on pristine `origin/main` and is unrelated to this lane.
+- [x] Committed the three-file owner-lane delta at `727124b8d03a8982148070f28180657f7e952af7`.
 
 ## Pending stages
 
 - [x] Run the applicable Phase 4 runner and lint, recording exact command results.
-- [ ] Commit and push this owner lane; record exact source head and changed-file inventory.
+- [ ] Push this owner lane and record the remote head and changed-file inventory.
 - [ ] Create one PR for both issues and prove a current-main candidate tree.
 - [ ] Merge only after the exact PR head and required checks are verified; otherwise record the blocker here and on the board.
 
