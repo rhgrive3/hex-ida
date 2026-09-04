@@ -231,13 +231,28 @@ function v0SuffixParses(s, pos) {
   }
 }
 
+export function stripLegacyRustPrefix(text) {
+  if (typeof text !== 'string') return null;
+  if (text.startsWith('__ZN') && !text.startsWith('___ZN')) return text.slice(2);
+  if (text.startsWith('_ZN') && !text.startsWith('__ZN')) return text.slice(1);
+  if (text.startsWith('ZN') && !text.startsWith('_ZN')) return text;
+  return null;
+}
+
+export function isRustCandidateSymbol(text) {
+  if (typeof text !== 'string') return false;
+  if (text.startsWith('__R') && !text.startsWith('___R')) return true;
+  if (text.startsWith('_R') && !text.startsWith('__R')) return true;
+  return stripLegacyRustPrefix(text) != null;
+}
+
 /**
- * Demangles a Rust legacy mangled symbol (starts with `_ZN...17h<16 hex digits>E`).
+ * Demangles a Rust legacy mangled symbol (starts with `_ZN...17h<16 hex digits>E` or `__ZN...` on macOS).
  */
 export function demangleRustLegacy(symbol) {
   const original = String(symbol || '');
-  const s = original.replace(/^_/, '');
-  if (!s.startsWith('ZN')) {
+  const s = stripLegacyRustPrefix(original);
+  if (!s || !s.startsWith('ZN')) {
     return { original, demangled: original, parsed: false, reason: 'not-legacy-rust-symbol' };
   }
 
@@ -301,10 +316,10 @@ export function demangleRustLegacy(symbol) {
  */
 export function demangleRustSymbol(symbol) {
   const text = String(symbol || '');
-  if (text.startsWith('_R') || text.startsWith('__R')) {
-    return demangleRustV0(text);
+  if (text.startsWith('__R') || text.startsWith('_R')) {
+    if (!text.startsWith('___R')) return demangleRustV0(text);
   }
-  if (text.startsWith('_ZN') || text.startsWith('ZN')) {
+  if (stripLegacyRustPrefix(text) != null) {
     const leg = demangleRustLegacy(text);
     if (leg.parsed) return leg;
   }
@@ -388,9 +403,7 @@ export class RustMetadataProvider extends LanguageMetadataProvider {
     let unreadable = 0;
     let invalidEntries = 0;
 
-    const isRustCandidateName = (name) =>
-      typeof name === 'string' &&
-      (name.startsWith('_R') || name.startsWith('__R') || name.startsWith('_ZN') || name.startsWith('ZN'));
+    const isRustCandidateName = (name) => isRustCandidateSymbol(name);
 
     for (const sym of rawSymbols) {
       const name = sym.name || sym.symbol || String(sym);
