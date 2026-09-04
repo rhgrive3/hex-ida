@@ -13,7 +13,7 @@ Update it at every branch, PR, or merge stage.
 - Regression owner: `tests/stage2/issue-6120-6131-physical-ipad-evidence.test.mjs`
 - Shared-board claim: lanes message #279
 - Branch: `fix/issues-physical-ipad-evidence-6120-6131`
-- Candidate base: `origin/main` at `9f9633f226307b81e8fc72c4a9d70a3b5a910200`
+- Candidate base: `origin/main` at `61b30004d33abff219919ebce374f9d5c222e274`
 - Implementation head: `4ad75786177e11584a066a8acf4c380a4e64951d`
 
 ## Stages
