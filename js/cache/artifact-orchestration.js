@@ -103,6 +103,26 @@ const INTEGER_TYPED_ARRAY_RANGES = new Map([
   ['Uint32Array', [0, 4294967295]],
 ]);
 
+function encodeFloatTypedArrayValue(value) {
+  if (Number.isNaN(value)) return 'nan';
+  if (value === Infinity) return 'infinity';
+  if (value === -Infinity) return '-infinity';
+  if (Object.is(value, -0)) return '-0';
+  return value;
+}
+
+function canonicalFloatTypedArrayValue(value) {
+  if (typeof value === 'string') {
+    if (value === 'nan') return NaN;
+    if (value === 'infinity') return Infinity;
+    if (value === '-infinity') return -Infinity;
+    if (value === '-0') return -0;
+    invalidPayloadNode();
+  }
+  if (typeof value !== 'number' || !Number.isFinite(value) || Object.is(value, -0)) invalidPayloadNode();
+  return value;
+}
+
 function canonicalTypedArrayValues(name, value) {
   const entries = wireArray(value);
   const integerRange = INTEGER_TYPED_ARRAY_RANGES.get(name);
@@ -114,17 +134,14 @@ function canonicalTypedArrayValues(name, value) {
     return entries;
   }
   if (name === 'Float32Array') {
-    for (const entry of entries) {
-      if (typeof entry !== 'number') invalidPayloadNode();
-      const canonical = new Float32Array([entry])[0];
-      if (!(Number.isNaN(entry) && Number.isNaN(canonical)) && !Object.is(entry, canonical)) invalidPayloadNode();
-    }
-    return entries;
+    return entries.map((entry) => {
+      const parsed = canonicalFloatTypedArrayValue(entry);
+      const canonical = new Float32Array([parsed])[0];
+      if (!(Number.isNaN(parsed) && Number.isNaN(canonical)) && !Object.is(parsed, canonical)) invalidPayloadNode();
+      return parsed;
+    });
   }
-  if (name === 'Float64Array') {
-    for (const entry of entries) if (typeof entry !== 'number') invalidPayloadNode();
-    return entries;
-  }
+  if (name === 'Float64Array') return entries.map(canonicalFloatTypedArrayValue);
   if (name === 'BigInt64Array' || name === 'BigUint64Array') {
     const min = name === 'BigInt64Array' ? -(1n << 63n) : 0n;
     const max = name === 'BigInt64Array' ? (1n << 63n) - 1n : (1n << 64n) - 1n;
@@ -170,7 +187,8 @@ export function encodeWorkerAnalysisPayload(value) {
         const name = input.constructor?.name;
         if (!TYPED_ARRAYS.has(name)) throw new TypeError(`analysis-artifact-typed-array-unsupported:${String(name)}`);
         const bigint = name === 'BigInt64Array' || name === 'BigUint64Array';
-        return { t:'typed-array', c:name, v:Array.from(input, (entry) => bigint ? entry.toString() : entry) };
+        const float = name === 'Float32Array' || name === 'Float64Array';
+        return { t:'typed-array', c:name, v:Array.from(input, (entry) => bigint ? entry.toString() : float ? encodeFloatTypedArrayValue(entry) : entry) };
       }
       if (input instanceof Map) {
         return { t:'map', v:[...input.entries()].map(([key, entry]) => [encode(key), encode(entry)]) };
