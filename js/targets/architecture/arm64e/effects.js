@@ -1,139 +1,675 @@
 import {
   createBitVectorValue,
+  createIntrinsicEffectSummary,
+  createMachineEffectBundle,
   createMachineOperation,
   createRegisterValue,
   createTemporaryValue,
 } from '../../../semantics/effects/index.js';
-import * as base from './effects-base.js';
-
-export * from './effects-base.js';
 
 export const ARM64E_EFFECTS_SEMANTIC_VERSION = '3';
 
 const POINTER_BITS = 64;
-const PAUTH_LR_SECOND_MODIFIER = Object.freeze({
-  pacia1716: 'x15',
-  pacib1716: 'x15',
-  paciasp: 'pc',
-  pacibsp: 'pc',
-  autia1716: 'x15',
-  autib1716: 'x15',
-  autiasp: 'x16',
-  autibsp: 'x16',
-  retaa: 'x16',
-  retab: 'x16',
+const KEY_BITS = 128;
+const PAUTH_STATE_BITS = 64;
+const PAUTH_STATE_ID = 'PAuthState';
+
+export const ARM64E_PAUTH_KEYS = Object.freeze({
+  ia: 'APIAKey',
+  ib: 'APIBKey',
+  da: 'APDAKey',
+  db: 'APDBKey',
+  ga: 'APGAKey',
 });
 
+const SIGN = Object.freeze({
+  pacia: { key: 'ia', modifier: 'operand' },
+  pacib: { key: 'ib', modifier: 'operand' },
+  pacda: { key: 'da', modifier: 'operand' },
+  pacdb: { key: 'db', modifier: 'operand' },
+  paciza: { key: 'ia', modifier: 'zero' },
+  pacizb: { key: 'ib', modifier: 'zero' },
+  pacdza: { key: 'da', modifier: 'zero' },
+  pacdzb: { key: 'db', modifier: 'zero' },
+  paciasp: { key: 'ia', destination: 'x30', modifier: 'sp', secondModifier: 'pc' },
+  pacibsp: { key: 'ib', destination: 'x30', modifier: 'sp', secondModifier: 'pc' },
+  pacia1716: { key: 'ia', destination: 'x17', modifier: 'x16', secondModifier: 'x15' },
+  pacib1716: { key: 'ib', destination: 'x17', modifier: 'x16', secondModifier: 'x15' },
+});
+
+const AUTH = Object.freeze({
+  autia: { key: 'ia', modifier: 'operand' },
+  autib: { key: 'ib', modifier: 'operand' },
+  autda: { key: 'da', modifier: 'operand' },
+  autdb: { key: 'db', modifier: 'operand' },
+  autiza: { key: 'ia', modifier: 'zero' },
+  autizb: { key: 'ib', modifier: 'zero' },
+  autdza: { key: 'da', modifier: 'zero' },
+  autdzb: { key: 'db', modifier: 'zero' },
+  autiasp: { key: 'ia', destination: 'x30', modifier: 'sp', secondModifier: 'x16' },
+  autibsp: { key: 'ib', destination: 'x30', modifier: 'sp', secondModifier: 'x16' },
+  autia1716: { key: 'ia', destination: 'x17', modifier: 'x16', secondModifier: 'x15' },
+  autib1716: { key: 'ib', destination: 'x17', modifier: 'x16', secondModifier: 'x15' },
+});
+
+const STRIP = Object.freeze({
+  xpaci: { kind: 'instruction', destination: 'operand' },
+  xpacd: { kind: 'data', destination: 'operand' },
+  xpaclri: { kind: 'instruction', destination: 'x30' },
+});
+
+const AUTH_BRANCH = Object.freeze({
+  braa: { key: 'ia', modifier: 'operand' },
+  brab: { key: 'ib', modifier: 'operand' },
+  braaz: { key: 'ia', modifier: 'zero' },
+  brabz: { key: 'ib', modifier: 'zero' },
+});
+
+const AUTH_CALL = Object.freeze({
+  blraa: { key: 'ia', modifier: 'operand' },
+  blrab: { key: 'ib', modifier: 'operand' },
+  blraaz: { key: 'ia', modifier: 'zero' },
+  blrabz: { key: 'ib', modifier: 'zero' },
+});
+
+const AUTH_RETURN = Object.freeze({
+  retaa: { key: 'ia', secondModifier: 'x16' },
+  retab: { key: 'ib', secondModifier: 'x16' },
+});
+
+const AUTH_EXCEPTION_RETURN = Object.freeze({
+  eretaa: { key: 'ia' },
+  eretab: { key: 'ib' },
+});
+
+// This is the production pointer-authentication family registry.  Keep the
+// list beside the dispatch tables so denominator/audit code cannot silently
+// omit a newly supported alias.
+const ARM64E_POINTER_AUTHENTICATION_MNEMONICS = Object.freeze([
+  ...Object.keys(SIGN),
+  ...Object.keys(AUTH),
+  ...Object.keys(STRIP),
+  'pacga',
+  ...Object.keys(AUTH_BRANCH),
+  ...Object.keys(AUTH_CALL),
+  ...Object.keys(AUTH_RETURN),
+  ...Object.keys(AUTH_EXCEPTION_RETURN),
+]);
+
 function mnemonicOf(decoded) {
-  const raw = typeof decoded?.mnemonic === 'string'
-    ? decoded.mnemonic
-    : typeof decoded?.opcode === 'string'
-      ? decoded.opcode
-      : '';
-  return raw.trim().toLowerCase();
+  const raw = typeof decoded?.mnemonic === 'string' ? decoded.mnemonic : typeof decoded?.opcode === 'string' ? decoded.opcode : null;
+  return raw ? raw.trim().toLowerCase() : '';
 }
 
-function conditionalSecondModifierRead(bundle, registerId) {
-  const temporary = createTemporaryValue(
-    `${bundle.instructionId}.pauth-lr.second-modifier`,
-    createBitVectorValue(POINTER_BITS),
-  );
-  const condition = Object.freeze({
+function splitOperands(text) {
+  return String(text || '').split(',').map((part) => part.trim()).filter(Boolean);
+}
+
+function operandList(decoded) {
+  // Structured ARM64 decoders use `operands` when they publish a canonical
+  // operand array, while the shared A64 path commonly carries the parsed
+  // representation in `ops`. Prefer a non-empty canonical array, but do not
+  // discard a structured `ops` array merely because an adapter supplied an
+  // empty `operands` placeholder.
+  if (Array.isArray(decoded?.operands) && decoded.operands.length > 0) return decoded.operands;
+  if (Array.isArray(decoded?.ops)) return decoded.ops;
+  if (Array.isArray(decoded?.operands)) return decoded.operands;
+  if (typeof decoded?.operands === 'string') return splitOperands(decoded.operands);
+  return splitOperands(decoded?.opStr ?? decoded?.op_str ?? decoded?.operandString ?? decoded?.args);
+}
+
+function operandRegisterId(operand) {
+  if (operand == null) return null;
+  const raw = typeof operand === 'string'
+    ? operand
+    : operand.registerId ?? operand.register ?? operand.reg ?? operand.name ?? operand.text ?? operand.value?.registerId ?? operand.value?.reg;
+  if (raw == null || (typeof raw !== 'string' && typeof raw !== 'number')) return null;
+  let id = String(raw).trim().toLowerCase().replace(/^%/, '');
+  if (id === 'lr') id = 'x30';
+  if (id === 'fp') id = 'x29';
+  if (/^x(?:[0-9]|[12][0-9]|30)$/.test(id) || id === 'sp' || id === 'xzr') return id;
+  return null;
+}
+
+// Pointer-authentication encodings operate on 64-bit X-register views.  A
+// structured decoder may retain a register identity while separately carrying
+// a W-register width; accepting that combination would create a false exact
+// PAC effect with 64-bit reads/writes.  Textual operands have already rejected
+// W-register spellings above, so an absent width remains compatible with the
+// Capstone operand-string adapter.
+function pointerRegisterId(operand) {
+  const registerId = operandRegisterId(operand);
+  if (!registerId) return null;
+  if (operand == null || typeof operand !== 'object' || Array.isArray(operand)) return registerId;
+  const explicitWidths = [
+    operand.bits,
+    operand.widthBits,
+    operand.value?.bits,
+    operand.value?.widthBits,
+  ].filter((value) => value != null);
+  if (explicitWidths.some((value) => typeof value !== 'number' || !Number.isInteger(value) || value !== POINTER_BITS)) return null;
+  return registerId;
+}
+
+function authenticatedControlTargetRegisterId(operand) {
+  const registerId = pointerRegisterId(operand);
+  return registerId && registerId !== 'sp' ? registerId : null;
+}
+
+function authenticatedControlModifierRegisterId(operand) {
+  const registerId = pointerRegisterId(operand);
+  return registerId && registerId !== 'xzr' ? registerId : null;
+}
+
+function authenticatedTargetAlignmentFault() {
+  return {
+    kind: 'pc-alignment-fault',
+    condition: { kind: 'target-misaligned', alignmentBytes: 4 },
+    detail: {
+      architecture: 'arm64',
+      instructionSet: 'a64',
+      targetSource: 'authenticated-target',
+    },
+  };
+}
+
+function instructionIdOf(decoded, context) {
+  const instructionId = String(context?.instructionId ?? decoded?.instructionId ?? '').trim();
+  if (!instructionId) throw new TypeError('arm64e-instruction-id-required');
+  return instructionId;
+}
+
+function originOf(decoded, context, instructionId) {
+  const origin = context?.origin ?? decoded?.origin;
+  if (origin != null) return origin;
+  return { instructionIds: [instructionId] };
+}
+
+function modeOf(decoded, context) {
+  return String(context?.mode ?? decoded?.mode ?? 'arm64e').trim() || 'arm64e';
+}
+
+function addressOf(decoded, context) {
+  const value = context?.address ?? decoded?.address ?? decoded?.virtualAddress;
+  if (value == null) return null;
+  try { return typeof value === 'bigint' ? value : BigInt(value); }
+  catch { return null; }
+}
+
+function reg(id, bits = POINTER_BITS) {
+  return createRegisterValue(id, bits);
+}
+
+function tmp(id, bits = POINTER_BITS) {
+  return createTemporaryValue(id, createBitVectorValue(bits));
+}
+
+function readRegister(operations, registerId, temporaryId, bits = POINTER_BITS, metadata) {
+  if (registerId === 'xzr') return createBitVectorValue(bits, 0n);
+  const value = tmp(temporaryId, bits);
+  operations.push(createMachineOperation({
+    kind: 'register-read',
+    register: reg(registerId, bits),
+    value,
+    ...(metadata == null ? {} : { metadata }),
+  }));
+  return value;
+}
+
+function writeRegister(operations, registerId, value, metadata) {
+  if (registerId === 'xzr') return;
+  operations.push(createMachineOperation({
+    kind: 'register-write',
+    register: reg(registerId, POINTER_BITS),
+    value,
+    ...(metadata == null ? {} : { metadata }),
+  }));
+}
+
+function readPAuthState(operations, keyCode, prefix) {
+  const keyId = ARM64E_PAUTH_KEYS[keyCode];
+  const keyValue = readRegister(operations, keyId, `${prefix}.key`, KEY_BITS, {
+    implicit: true,
+    stateKind: 'pointer-authentication-key',
+    keyIdentity: keyId,
+  });
+  const architectureState = readRegister(operations, PAUTH_STATE_ID, `${prefix}.state`, PAUTH_STATE_BITS, {
+    implicit: true,
+    stateKind: 'pointer-authentication-architecture-state',
+  });
+  return { keyId, keyValue, architectureState };
+}
+
+function modifierInput(operations, descriptor, operands, operandIndex, prefix) {
+  if (descriptor.modifier === 'zero') {
+    return { value: createBitVectorValue(POINTER_BITS, 0n), metadata: { kind: 'constant-zero' } };
+  }
+  const registerId = descriptor.modifier === 'operand'
+    ? pointerRegisterId(operands[operandIndex])
+    : descriptor.modifier;
+  if (!registerId) return null;
+  return {
+    value: readRegister(operations, registerId, `${prefix}.modifier`, POINTER_BITS, {
+      stateKind: 'pointer-authentication-modifier',
+    }),
+    metadata: { kind: 'register', registerId },
+  };
+}
+
+function pauthLrSecondModifierInput(operations, descriptor, prefix) {
+  const registerId = descriptor.secondModifier;
+  if (!registerId) return null;
+  const conditional = {
     kind: 'arm64e-pauth-lr-pacm-active',
     feature: 'FEAT_PAuth_LR',
     pstateField: 'PACM',
     equals: 1,
-    architectureStateInput: 'PAuthState',
-  });
-  const operation = createMachineOperation({
-    kind: 'register-read',
-    register: createRegisterValue(registerId, POINTER_BITS),
-    value: temporary,
-    metadata: {
+    architectureStateInput: PAUTH_STATE_ID,
+  };
+  return {
+    value: readRegister(operations, registerId, `${prefix}.second-modifier`, POINTER_BITS, {
       implicit: true,
       stateKind: registerId === 'pc'
         ? 'pointer-authentication-program-counter-second-modifier'
         : 'pointer-authentication-second-modifier',
-      conditional: condition,
+      conditional,
+    }),
+    registerId,
+    metadata: {
+      kind: registerId === 'pc' ? 'program-counter' : 'register',
+      registerId,
+      conditional,
+    },
+  };
+}
+
+function intrinsicOperation({ intrinsicId, inputs, output, registersRead, metadata }) {
+  return createMachineOperation({
+    kind: 'intrinsic',
+    intrinsicId,
+    effectSummary: createIntrinsicEffectSummary({
+      inputs,
+      outputs: [output],
+      registersRead,
+      registersWritten: [],
+      memoryRead: { scope: 'none' },
+      memoryWrite: { scope: 'none' },
+      controlEffects: [],
+      determinism: 'input-dependent',
+      symbolicDetail: 'summary-only',
+    }),
+    metadata,
+  });
+}
+
+function authFault(mnemonic, keyId, use) {
+  return {
+    kind: use === 'control-target' ? 'instruction-address-fault' : 'pointer-authentication-fault',
+    condition: {
+      kind: 'pointer-authentication-failed',
+      keyIdentity: keyId,
+      architectureStateInput: PAUTH_STATE_ID,
+      use,
+    },
+    detail: {
+      mnemonic,
+      behavior: use === 'control-target'
+        ? 'authenticated target is not a valid instruction address'
+        : 'immediate fault behavior depends on pointer-authentication architectural state',
+    },
+  };
+}
+
+function baseBundle(decoded, context, instructionId, operations, controlEffect, completeness, extra = {}) {
+  return createMachineEffectBundle({
+    instructionId,
+    architectureId: 'arm64e',
+    mode: modeOf(decoded, context),
+    operations,
+    controlEffect,
+    possibleFaults: extra.possibleFaults ?? [],
+    origin: originOf(decoded, context, instructionId),
+    completeness,
+    ...(extra.unknownEffects == null ? {} : { unknownEffects: extra.unknownEffects }),
+    metadata: {
+      semanticVersion: ARM64E_EFFECTS_SEMANTIC_VERSION,
+      family: 'arm64e-pointer-authentication',
+      mnemonic: mnemonicOf(decoded),
+      ...(extra.metadata ?? {}),
+    },
+  }, context?.machineEffectsOptions);
+}
+
+function partialMissing(decoded, context, instructionId, reason, { control = false, fault = false } = {}) {
+  const categories = control ? ['control', 'registers'] : ['registers'];
+  const operations = [createMachineOperation({ kind: 'unknown', reason, categories })];
+  return baseBundle(
+    decoded,
+    context,
+    instructionId,
+    operations,
+    control ? { kind: 'unknown', reason } : { kind: 'fallthrough' },
+    'partial',
+    {
+      possibleFaults: fault ? [{ kind: 'pointer-authentication-fault', condition: { kind: 'unresolved-arm64e-state' } }] : [],
+      unknownEffects: { categories, reason, detail: { mnemonic: mnemonicOf(decoded) } },
+      metadata: { unresolved: true },
+    },
+  );
+}
+
+function transformPointer(decoded, context, instructionId, descriptor, transform) {
+  const operands = operandList(decoded);
+  const destination = descriptor.destination && descriptor.destination !== 'operand'
+    ? descriptor.destination
+    : pointerRegisterId(operands[0]);
+  const modifierIndex = descriptor.destination && descriptor.destination !== 'operand' ? 0 : 1;
+  if (!destination) return partialMissing(decoded, context, instructionId, `${transform}: destination register is unavailable`);
+
+  const operations = [];
+  const pointer = readRegister(operations, destination, `${instructionId}.pointer`, POINTER_BITS, {
+    stateKind: 'pointer-authentication-pointer',
+  });
+  const modifier = modifierInput(operations, descriptor, operands, modifierIndex, instructionId);
+  if (!modifier) return partialMissing(decoded, context, instructionId, `${transform}: modifier register is unavailable`);
+  const secondModifier = pauthLrSecondModifierInput(operations, descriptor, instructionId);
+
+  const { keyId, keyValue, architectureState } = readPAuthState(operations, descriptor.key, instructionId);
+  const result = tmp(`${instructionId}.${transform}.result`, POINTER_BITS);
+  operations.push(intrinsicOperation({
+    intrinsicId: `arm64e.pointer.${transform}`,
+    inputs: [pointer, modifier.value, ...(secondModifier ? [secondModifier.value] : []), keyValue, architectureState],
+    output: result,
+    registersRead: [
+      destination,
+      ...(modifier.metadata.registerId ? [modifier.metadata.registerId] : []),
+      ...(secondModifier ? [secondModifier.registerId] : []),
+      keyId,
+      PAUTH_STATE_ID,
+    ].filter((id) => id !== 'xzr'),
+    metadata: {
+      transform,
+      keyIdentity: keyId,
+      modifier: modifier.metadata,
+      ...(secondModifier ? { pauthLrSecondModifier: secondModifier.metadata } : {}),
+      pointerRegister: destination,
+      architectureStateInput: PAUTH_STATE_ID,
+      cryptographicAlgorithm: 'not-modelled',
+    },
+  }));
+  writeRegister(operations, destination, result, { transform, keyIdentity: keyId });
+
+  return baseBundle(decoded, context, instructionId, operations, { kind: 'fallthrough' }, 'exact-with-intrinsic', {
+    possibleFaults: transform === 'authenticate' ? [authFault(mnemonicOf(decoded), keyId, 'data-result')] : [],
+    metadata: {
+      transform,
+      destinationRegister: destination,
+      keyIdentity: keyId,
+      modifier: modifier.metadata,
+      ...(secondModifier ? { pauthLrSecondModifier: secondModifier.metadata } : {}),
+      architectureStateInput: PAUTH_STATE_ID,
     },
   });
-  return { temporary, operation, condition };
 }
 
-function refinePAuthLrDependency(decoded, bundle) {
-  const secondRegister = PAUTH_LR_SECOND_MODIFIER[mnemonicOf(decoded)];
-  if (!bundle || !secondRegister) return bundle;
+function stripPointer(decoded, context, instructionId, descriptor) {
+  const operands = operandList(decoded);
+  const destination = descriptor.destination === 'operand' ? pointerRegisterId(operands[0]) : descriptor.destination;
+  if (!destination) return partialMissing(decoded, context, instructionId, 'strip: destination register is unavailable');
 
-  const second = conditionalSecondModifierRead(bundle, secondRegister);
-  let refinedIntrinsic = false;
   const operations = [];
+  const pointer = readRegister(operations, destination, `${instructionId}.pointer`, POINTER_BITS);
+  const architectureState = readRegister(operations, PAUTH_STATE_ID, `${instructionId}.state`, PAUTH_STATE_BITS, {
+    implicit: true,
+    stateKind: 'pointer-authentication-architecture-state',
+  });
+  const result = tmp(`${instructionId}.strip.result`, POINTER_BITS);
+  operations.push(intrinsicOperation({
+    intrinsicId: 'arm64e.pointer.strip',
+    inputs: [pointer, architectureState],
+    output: result,
+    registersRead: [destination, PAUTH_STATE_ID].filter((id) => id !== 'xzr'),
+    metadata: {
+      transform: 'strip',
+      pointerKind: descriptor.kind,
+      pointerRegister: destination,
+      architectureStateInput: PAUTH_STATE_ID,
+      authenticationPerformed: false,
+    },
+  }));
+  writeRegister(operations, destination, result, { transform: 'strip', pointerKind: descriptor.kind });
 
-  for (const operation of bundle.operations) {
-    if (!refinedIntrinsic && operation.kind === 'intrinsic' && (
-      operation.intrinsicId === 'arm64e.pointer.sign'
-      || operation.intrinsicId === 'arm64e.pointer.authenticate'
-    )) {
-      const inputs = [...operation.effectSummary.inputs];
-      const insertionIndex = Math.max(2, inputs.length - 2);
-      inputs.splice(insertionIndex, 0, second.temporary);
-      const registersRead = [...new Set([
-        ...operation.effectSummary.registersRead,
-        secondRegister,
-      ])];
+  return baseBundle(decoded, context, instructionId, operations, { kind: 'fallthrough' }, 'exact-with-intrinsic', {
+    metadata: {
+      transform: 'strip',
+      pointerKind: descriptor.kind,
+      destinationRegister: destination,
+      architectureStateInput: PAUTH_STATE_ID,
+    },
+  });
+}
 
-      operations.push(second.operation);
-      operations.push(createMachineOperation({
-        ...operation,
-        effectSummary: {
-          ...operation.effectSummary,
-          inputs,
-          registersRead,
-        },
-        metadata: {
-          ...(operation.metadata ?? {}),
-          pauthLrSecondModifier: {
-            kind: secondRegister === 'pc' ? 'program-counter' : 'register',
-            registerId: secondRegister,
-            conditional: second.condition,
-          },
-        },
-      }));
-      refinedIntrinsic = true;
-      continue;
-    }
-    operations.push(operation);
+function genericCode(decoded, context, instructionId) {
+  const operands = operandList(decoded);
+  const destination = pointerRegisterId(operands[0]);
+  const valueRegister = pointerRegisterId(operands[1]);
+  const modifierRegister = pointerRegisterId(operands[2]);
+  if (!destination || !valueRegister || !modifierRegister) {
+    return partialMissing(decoded, context, instructionId, 'pacga: destination, value, or modifier register is unavailable');
   }
 
-  if (!refinedIntrinsic) return bundle;
-  return Object.freeze({
-    ...bundle,
-    operations: Object.freeze(operations),
-    metadata: Object.freeze({
-      ...bundle.metadata,
-      semanticVersion: ARM64E_EFFECTS_SEMANTIC_VERSION,
-      pauthLrSecondModifier: Object.freeze({
-        kind: secondRegister === 'pc' ? 'program-counter' : 'register',
-        registerId: secondRegister,
-        conditional: second.condition,
-      }),
-    }),
+  const operations = [];
+  const value = readRegister(operations, valueRegister, `${instructionId}.value`, POINTER_BITS);
+  const modifier = readRegister(operations, modifierRegister, `${instructionId}.modifier`, POINTER_BITS);
+  const { keyId, keyValue, architectureState } = readPAuthState(operations, 'ga', instructionId);
+  const result = tmp(`${instructionId}.generic-code.result`, POINTER_BITS);
+  operations.push(intrinsicOperation({
+    intrinsicId: 'arm64e.pointer.generic-code',
+    inputs: [value, modifier, keyValue, architectureState],
+    output: result,
+    registersRead: [valueRegister, modifierRegister, keyId, PAUTH_STATE_ID].filter((id) => id !== 'xzr'),
+    metadata: {
+      transform: 'generic-code',
+      keyIdentity: keyId,
+      modifier: { kind: 'register', registerId: modifierRegister },
+      architectureStateInput: PAUTH_STATE_ID,
+      cryptographicAlgorithm: 'not-modelled',
+    },
+  }));
+  writeRegister(operations, destination, result, { transform: 'generic-code', keyIdentity: keyId });
+
+  return baseBundle(decoded, context, instructionId, operations, { kind: 'fallthrough' }, 'exact-with-intrinsic', {
+    metadata: {
+      transform: 'generic-code',
+      destinationRegister: destination,
+      keyIdentity: keyId,
+      modifier: { kind: 'register', registerId: modifierRegister },
+      architectureStateInput: PAUTH_STATE_ID,
+    },
   });
 }
 
-function normalizeSemanticVersion(bundle) {
-  if (!bundle || bundle.metadata?.semanticVersion === ARM64E_EFFECTS_SEMANTIC_VERSION) return bundle;
-  return Object.freeze({
-    ...bundle,
-    metadata: Object.freeze({
-      ...bundle.metadata,
-      semanticVersion: ARM64E_EFFECTS_SEMANTIC_VERSION,
-    }),
+function authenticateControlTarget(decoded, context, instructionId, descriptor, controlKind) {
+  const operands = operandList(decoded);
+  const isReturn = controlKind === 'return';
+  const hasZeroModifier = descriptor.modifier === 'zero';
+  const expectedOperandCount = isReturn ? 0 : hasZeroModifier ? 1 : 2;
+  if (operands.length !== expectedOperandCount) {
+    return partialMissing(decoded, context, instructionId, 'authenticated control operand shape is invalid', { control: true, fault: true });
+  }
+
+  const targetRegister = isReturn ? 'x30' : authenticatedControlTargetRegisterId(operands[0]);
+  if (!targetRegister) {
+    return partialMissing(decoded, context, instructionId, 'authenticated control target operand shape is invalid', { control: true, fault: true });
+  }
+  if (!isReturn && !hasZeroModifier && !authenticatedControlModifierRegisterId(operands[1])) {
+    return partialMissing(decoded, context, instructionId, 'authenticated control modifier operand shape is invalid', { control: true, fault: true });
+  }
+
+  const modifierIndex = isReturn ? 0 : 1;
+  const effectiveDescriptor = isReturn ? { ...descriptor, modifier: 'sp' } : descriptor;
+  const operations = [];
+  const target = readRegister(operations, targetRegister, `${instructionId}.target`, POINTER_BITS, {
+    stateKind: 'authenticated-control-target',
   });
+  const modifier = modifierInput(operations, effectiveDescriptor, operands, modifierIndex, instructionId);
+  if (!modifier) {
+    return partialMissing(decoded, context, instructionId, 'authenticated control modifier register is unavailable', { control: true, fault: true });
+  }
+  const secondModifier = pauthLrSecondModifierInput(operations, effectiveDescriptor, instructionId);
+
+  const { keyId, keyValue, architectureState } = readPAuthState(operations, descriptor.key, instructionId);
+  const authenticatedTarget = tmp(`${instructionId}.authenticated-target`, POINTER_BITS);
+  operations.push(intrinsicOperation({
+    intrinsicId: 'arm64e.pointer.authenticate',
+    inputs: [target, modifier.value, ...(secondModifier ? [secondModifier.value] : []), keyValue, architectureState],
+    output: authenticatedTarget,
+    registersRead: [
+      targetRegister,
+      ...(modifier.metadata.registerId ? [modifier.metadata.registerId] : []),
+      ...(secondModifier ? [secondModifier.registerId] : []),
+      keyId,
+      PAUTH_STATE_ID,
+    ].filter((id) => id !== 'xzr'),
+    metadata: {
+      transform: 'authenticate',
+      use: 'control-target',
+      keyIdentity: keyId,
+      modifier: modifier.metadata,
+      ...(secondModifier ? { pauthLrSecondModifier: secondModifier.metadata } : {}),
+      targetRegister,
+      architectureStateInput: PAUTH_STATE_ID,
+      cryptographicAlgorithm: 'not-modelled',
+    },
+  }));
+
+  let completeness = 'exact-with-intrinsic';
+  let unknownEffects;
+  if (controlKind === 'call') {
+    const address = addressOf(decoded, context);
+    if (address == null) {
+      const reason = 'authenticated call return address is unavailable';
+      operations.push(createMachineOperation({ kind: 'unknown', reason, categories: ['registers'] }));
+      completeness = 'partial';
+      unknownEffects = { categories: ['registers'], reason, detail: { registerId: 'x30' } };
+    } else {
+      writeRegister(operations, 'x30', createBitVectorValue(POINTER_BITS, address + 4n), {
+        stateKind: 'link-register',
+        source: 'next-instruction-address',
+      });
+    }
+  }
+
+  return baseBundle(decoded, context, instructionId, operations, {
+    kind: controlKind,
+    target: authenticatedTarget,
+  }, completeness, {
+    possibleFaults: [
+      authFault(mnemonicOf(decoded), keyId, 'control-target'),
+      authenticatedTargetAlignmentFault(),
+    ],
+    unknownEffects,
+    metadata: {
+      transform: 'authenticate',
+      authenticatedControlTransfer: true,
+      indirect: true,
+      controlKind,
+      targetRegister,
+      keyIdentity: keyId,
+      modifier: modifier.metadata,
+      ...(secondModifier ? { pauthLrSecondModifier: secondModifier.metadata } : {}),
+      architectureStateInput: PAUTH_STATE_ID,
+    },
+  });
+}
+
+function authenticateExceptionReturn(decoded, context, instructionId, descriptor) {
+  const operands = operandList(decoded);
+  if (operands.length !== 0) {
+    return partialMissing(decoded, context, instructionId, 'authenticated exception-return operand shape is invalid', { control: true, fault: true });
+  }
+
+  const operations = [];
+  const modifier = modifierInput(operations, { ...descriptor, modifier: 'sp' }, operands, 0, instructionId);
+  if (!modifier) {
+    return partialMissing(decoded, context, instructionId, 'authenticated exception-return SP modifier is unavailable', { control: true, fault: true });
+  }
+  const { keyId } = readPAuthState(operations, descriptor.key, instructionId);
+  const reason = 'authenticated exception-return environment restore is not fully represented';
+  const categories = ['control', 'registers', 'memory', 'faults', 'other'];
+  operations.push(createMachineOperation({
+    kind: 'unknown',
+    reason,
+    categories,
+  }));
+  const controlEffect = {
+    kind: 'indirect',
+    target: { kind: 'exception-return-address' },
+    reason: 'authenticated-exception-return',
+  };
+  return baseBundle(decoded, context, instructionId, operations, controlEffect, 'partial', {
+    possibleFaults: [
+      authFault(mnemonicOf(decoded), keyId, 'control-target'),
+      authenticatedTargetAlignmentFault(),
+      { kind: 'illegal-exception-return', condition: { kind: 'architectural-exception-return-check' } },
+    ],
+    unknownEffects: {
+      categories,
+      reason,
+      detail: {
+        keyIdentity: keyId,
+        modifier: 'sp',
+        targetSource: 'exception-return-address',
+        environmentRestore: true,
+      },
+    },
+    metadata: {
+      transform: 'authenticate',
+      authenticatedExceptionReturn: true,
+      exceptionReturn: true,
+      keyIdentity: keyId,
+      modifier: modifier.metadata,
+      architectureStateInput: PAUTH_STATE_ID,
+      environmentBoundary: true,
+      environmentFootprintComplete: false,
+    },
+  });
+}
+
+export function isArm64ePointerAuthenticationInstruction(decoded) {
+  const mnemonic = mnemonicOf(decoded);
+  return mnemonic === 'pacga'
+    || Object.hasOwn(SIGN, mnemonic)
+    || Object.hasOwn(AUTH, mnemonic)
+    || Object.hasOwn(STRIP, mnemonic)
+    || Object.hasOwn(AUTH_BRANCH, mnemonic)
+    || Object.hasOwn(AUTH_CALL, mnemonic)
+    || Object.hasOwn(AUTH_RETURN, mnemonic)
+    || Object.hasOwn(AUTH_EXCEPTION_RETURN, mnemonic);
+}
+
+export function arm64ePointerAuthenticationMnemonics() {
+  return ARM64E_POINTER_AUTHENTICATION_MNEMONICS;
+}
+
+export function arm64eMachineEffectFamilies() {
+  return Object.freeze(['pointer-authentication']);
 }
 
 export function liftArm64eEffects(decoded, context = {}) {
-  const bundle = base.liftArm64eEffects(decoded, context);
-  return normalizeSemanticVersion(refinePAuthLrDependency(decoded, bundle));
+  const mnemonic = mnemonicOf(decoded);
+  if (!isArm64ePointerAuthenticationInstruction(decoded)) return null;
+  const instructionId = instructionIdOf(decoded, context);
+
+  if (Object.hasOwn(SIGN, mnemonic)) return transformPointer(decoded, context, instructionId, SIGN[mnemonic], 'sign');
+  if (Object.hasOwn(AUTH, mnemonic)) return transformPointer(decoded, context, instructionId, AUTH[mnemonic], 'authenticate');
+  if (Object.hasOwn(STRIP, mnemonic)) return stripPointer(decoded, context, instructionId, STRIP[mnemonic]);
+  if (mnemonic === 'pacga') return genericCode(decoded, context, instructionId);
+  if (Object.hasOwn(AUTH_BRANCH, mnemonic)) return authenticateControlTarget(decoded, context, instructionId, AUTH_BRANCH[mnemonic], 'branch');
+  if (Object.hasOwn(AUTH_CALL, mnemonic)) return authenticateControlTarget(decoded, context, instructionId, AUTH_CALL[mnemonic], 'call');
+  if (Object.hasOwn(AUTH_RETURN, mnemonic)) return authenticateControlTarget(decoded, context, instructionId, AUTH_RETURN[mnemonic], 'return');
+  if (Object.hasOwn(AUTH_EXCEPTION_RETURN, mnemonic)) return authenticateExceptionReturn(decoded, context, instructionId, AUTH_EXCEPTION_RETURN[mnemonic]);
+  return null;
 }
 
 export function extendArm64WithArm64eEffects(baseLiftExact) {
@@ -151,7 +687,7 @@ export function createArm64eEffectsExtension(baseLiftExact = null) {
   return Object.freeze({
     architectureId: 'arm64e',
     semanticVersion: ARM64E_EFFECTS_SEMANTIC_VERSION,
-    canHandle: base.isArm64ePointerAuthenticationInstruction,
+    canHandle: isArm64ePointerAuthenticationInstruction,
     liftExact: extendArm64WithArm64eEffects(baseLiftExact),
   });
 }
