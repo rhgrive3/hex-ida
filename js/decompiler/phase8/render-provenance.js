@@ -94,6 +94,16 @@ function canonicalOrigins(raw) {
   };
 }
 
+function mergeOrigins(left, right) {
+  const rightCanonical = canonicalOrigins(right);
+  return {
+    rows:canonicalList([...left.rows, ...rightCanonical.rows], true),
+    addresses:canonicalList([...left.addresses, ...rightCanonical.addresses], false),
+    ir:canonicalList([...left.ir, ...rightCanonical.ir], false),
+    ssaRefs:canonicalList([...left.ssaRefs, ...rightCanonical.ssaRefs], false),
+  };
+}
+
 function originKey(kind, value) {
   return `${kind}:${String(value)}`;
 }
@@ -105,6 +115,16 @@ function entityOriginEntries(origins) {
     ...origins.ir.map((value) => ['ir', value]),
     ...origins.ssaRefs.map((value) => ['ssa', value]),
   ];
+}
+
+function originKeySet(origins) {
+  return new Set(entityOriginEntries(origins).map(([kind, value]) => originKey(kind, value)));
+}
+
+function recordFeedsEntity(record, entityOriginKeys) {
+  const recordOrigins = canonicalOrigins(record?.origin ?? {});
+  return entityOriginEntries(recordOrigins)
+    .some(([kind, value]) => entityOriginKeys.has(originKey(kind, value)));
 }
 
 function emptyOrigins() {
@@ -135,39 +155,31 @@ function freezeOrigins(origins) {
   });
 }
 
-function recordRows(record) {
-  return (record?.origin?.rows ?? []).map((value) => String(value));
-}
-
-function recordFeedsEntity(record, entityRowKeys) {
-  return recordRows(record).some((row) => entityRowKeys.has(row));
-}
-
 export function buildRenderProvenance({ result, snapshotId = null, budget = null, shouldAbort = null } = {}) {
   if (!result || typeof result !== 'object' || Array.isArray(result)) fail('phase8-render-provenance-result-required');
   if (!Array.isArray(result.lines)) fail('phase8-render-provenance-result-required');
   if (snapshotId != null && (typeof snapshotId !== 'string' || snapshotId.length === 0)) fail('phase8-render-provenance-snapshot-required');
   const resolvedBudget = validateBudget(budget);
+  if (typeof shouldAbort === 'function' && shouldAbort() === true) return cancelledMap(resolvedBudget);
 
-  const cancelled = typeof shouldAbort === 'function' && shouldAbort() === true;
   const reasons = new Set();
   const truncatedScopes = [];
   let entitiesTruncated = 0;
   let ledgerTruncated = 0;
 
   const rawRecords = Array.isArray(result.phase8Projection?.transforms) ? result.phase8Projection.transforms : [];
-  const validatedRecords = rawRecords.map((record) => renderProvenanceRecord(record));
-  const ledgerRecords = validatedRecords.slice(0, resolvedBudget.maxTransformRecords);
-  if (validatedRecords.length > ledgerRecords.length) {
-    ledgerTruncated = validatedRecords.length - ledgerRecords.length;
+  const rawRecordCount = rawRecords.length;
+  const retainedRawRecords = rawRecords.slice(0, resolvedBudget.maxTransformRecords);
+  const ledgerRecords = retainedRawRecords.map((record) => renderProvenanceRecord(record));
+  if (rawRecordCount > ledgerRecords.length) {
+    ledgerTruncated = rawRecordCount - ledgerRecords.length;
     truncatedScopes.push('ledger');
     reasons.add('truncated');
   }
 
   const entities = {};
   const reverse = new Map();
-  const entityRowKeysByRef = new Map();
-  const entityRefsByRecord = validatedRecords.map(() => new Set());
+  const entityRefsByRecord = ledgerRecords.map(() => new Set());
   const lineCount = Math.min(result.lines.length, resolvedBudget.maxEntities);
   if (result.lines.length > lineCount) {
     entitiesTruncated = result.lines.length - lineCount;
@@ -182,22 +194,16 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
     const entityKey = `L${index}:${line.kind ?? 'null'}`;
     const raw = sourceOf(line.source);
     let origins = canonicalOrigins(raw);
-    const entityRowKeys = new Set(origins.rows.map((value) => String(value)));
+    let entityOriginKeys = originKeySet(origins);
 
     const recordRefs = [];
     for (let recordIndex = 0; recordIndex < ledgerRecords.length; recordIndex += 1) {
       const record = ledgerRecords[recordIndex];
-      if (!recordFeedsEntity(record, entityRowKeys)) continue;
+      if (!recordFeedsEntity(record, entityOriginKeys)) continue;
       recordRefs.push(recordIndex);
       entityRefsByRecord[recordIndex].add(entityKey);
-      const merged = canonicalOrigins({
-        addresses:[...origins.addresses, ...(record.origin.addresses ?? [])],
-        rows:[...origins.rows, ...(record.origin.rows ?? [])],
-        ir:[...origins.ir, ...(record.origin.ir ?? [])],
-        ssaDefs:[...(raw.ssaDefs ?? []), ...(record.origin.ssaDefs ?? [])],
-        ssaUses:[...(raw.ssaUses ?? []), ...(record.origin.ssaUses ?? [])],
-      });
-      origins = merged;
+      origins = mergeOrigins(origins, record.origin);
+      entityOriginKeys = originKeySet(origins);
     }
 
     const entityReasons = [];
@@ -229,7 +235,6 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
       reasons:Object.freeze(entityReasons),
       recordRefs:Object.freeze(recordRefs),
     });
-    entityRowKeysByRef.set(entityKey, entityRowKeys);
     for (const [kind, value] of entityOriginEntries(origins)) {
       const key = originKey(kind, value);
       if (!reverse.has(key)) reverse.set(key, new Set());
@@ -270,7 +275,7 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
     entities:Object.freeze(entities),
     reverse:Object.freeze(reverseObject),
     ledger:Object.freeze(ledger),
-    transformCount:validatedRecords.length,
+    transformCount:rawRecordCount,
     budget:Object.freeze({
       ...resolvedBudget,
       truncated:truncatedScopes.length > 0,
@@ -281,7 +286,7 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
     counts:Object.freeze({
       entities:Object.keys(entities).length,
       entitiesTruncated,
-      transformRecords:validatedRecords.length,
+      transformRecords:rawRecordCount,
       ledgerTruncated,
       provenanceLoss,
       structuralEntities,
@@ -323,16 +328,24 @@ export function validateRenderProvenance(provenanceMap, { snapshotId = null, sho
     if (provenanceMap.snapshotId == null) reasons.add('missing-snapshot');
     else if (provenanceMap.snapshotId !== snapshotId) reasons.add('stale-snapshot');
   }
-  for (const entity of Object.values(provenanceMap.entities)) {
-    if (entity?.complete === false) {
-      reasons.add('provenance-loss');
-      for (const reason of entity.reasons ?? []) reasons.add(reason);
+  let validationCancelled = reasons.has('cancelled');
+  if (!validationCancelled) {
+    for (const entity of Object.values(provenanceMap.entities)) {
+      if (typeof shouldAbort === 'function' && shouldAbort() === true) {
+        reasons.add('cancelled');
+        validationCancelled = true;
+        break;
+      }
+      if (entity?.complete === false) {
+        reasons.add('provenance-loss');
+        for (const reason of entity.reasons ?? []) reasons.add(reason);
+      }
     }
   }
   if (provenanceMap.budget?.truncated === true) reasons.add('truncated');
 
   const entityEntries = Object.values(provenanceMap.entities);
-  const entityStates = entityEntries.slice(0, VALIDATION_ENTITY_STATES_LIMIT).map((entity) => Object.freeze({
+  const entityStates = validationCancelled ? [] : entityEntries.slice(0, VALIDATION_ENTITY_STATES_LIMIT).map((entity) => Object.freeze({
     entityKey:entity.entityKey,
     complete:entity.complete === true,
     reasons:Object.freeze([...(entity.reasons ?? [])]),
@@ -341,7 +354,7 @@ export function validateRenderProvenance(provenanceMap, { snapshotId = null, sho
   return Object.freeze({
     state:reasons.size === 0 ? 'complete' : 'incomplete',
     entityStates:Object.freeze(entityStates),
-    entityStatesTruncated:Math.max(entityEntries.length - entityStates.length, 0),
+    entityStatesTruncated:validationCancelled ? entityEntries.length : Math.max(entityEntries.length - entityStates.length, 0),
     reasons:Object.freeze([...reasons]),
     counts:Object.freeze({
       entities:entityEntries.length,
