@@ -3,6 +3,10 @@ import { DebugAdapterError, boundedInteger } from '../debug/adapter.js';
 import { RuntimeProviderSession, createRuntimeProviderDescriptor } from './provider.js';
 import { createRuntimeEvent, createRuntimeEventBatch } from './events.js';
 
+const UTF8_ENCODER = new TextEncoder();
+
+function encodedByteLength(value) { return UTF8_ENCODER.encode(value).byteLength; }
+
 function required(value, code, message) {
   if (typeof value !== 'string') throw new DebugAdapterError(code, message || code);
   const text = value.trim();
@@ -34,6 +38,26 @@ function droppedCount(value) {
   return n;
 }
 
+function droppedEventCount(value) {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw new DebugAdapterError('trace-invalid-dropped-count', 'dropped-events payload count must be a non-negative safe integer');
+  }
+  return value;
+}
+
+function sumDroppedEventCounts(events) {
+  let total = 0;
+  for (const event of events) {
+    if (event.kind !== 'dropped-events') continue;
+    const count = droppedEventCount(event.payload?.dropped);
+    if (count > Number.MAX_SAFE_INTEGER - total) {
+      throw new DebugAdapterError('trace-invalid-dropped-count', 'dropped-events payload counts exceed the safe integer range');
+    }
+    total += count;
+  }
+  return total;
+}
+
 function collectionField(value, field) {
   if (value == null) return [];
   if (!Array.isArray(value)) {
@@ -52,7 +76,7 @@ function normalizeRecording(recording = {}, options = {}) {
       ? collectionField(recording.trace.events, 'trace.events')
       : [];
   if (events.length > maxEvents) throw new DebugAdapterError('resource-limit', `trace recording exceeds event limit (${maxEvents})`);
-  if (stableStringify(recording).length * 2 > maxBytes) throw new DebugAdapterError('resource-limit', `trace recording exceeds byte limit (${maxBytes})`);
+  if (encodedByteLength(stableStringify(recording)) > maxBytes) throw new DebugAdapterError('resource-limit', `trace recording exceeds byte limit (${maxBytes})`);
   const dropped = droppedCount(recording.dropped ?? recording.trace?.dropped ?? 0);
   const truncated = recording.truncated === true || recording.trace?.truncated === true || dropped > 0;
   return deepFreeze({
@@ -81,6 +105,8 @@ function normalizedEventFromRecord(record, context, index) {
   const kindMap = { branch: 'basic-block', trace: 'trace-marker', 'stream-truncated': 'gap' };
   const known = new Set(['session-open','session-close','process-start','process-exit','thread-start','thread-exit','module-load','module-unload','paused','resumed','breakpoint-hit','watchpoint-hit','exception','signal','call','return','basic-block','memory-read','memory-write','register-snapshot','instrumentation-observation','instrumentation-intervention','emulator-checkpoint','trace-marker','gap','dropped-events','provider-warning','provider-error']);
   const kind = known.has(rawType) ? rawType : (kindMap[rawType] || 'trace-marker');
+  const payload = source?.payload ?? source ?? {};
+  if (kind === 'dropped-events') droppedEventCount(payload?.dropped);
   return createRuntimeEvent({
     ...context,
     eventId: source?.eventId,
@@ -93,7 +119,7 @@ function normalizedEventFromRecord(record, context, index) {
     moduleBindingKey: source?.moduleBindingKey,
     moduleGeneration: source?.moduleGeneration,
     kind,
-    payload: source?.payload ?? source ?? {},
+    payload,
     observationMode: source?.observationMode ?? 'observed',
     completeness: source?.completeness ?? (rawType === 'stream-truncated' || source?.truncated === true ? 'truncated' : context.sourceCompleteness),
     predecessorIds: source?.predecessorIds,
@@ -175,6 +201,7 @@ export class TraceProvider {
       sourceCompleteness: this.recording.completeness,
     };
     const normalized = this.recording.events.map((event, index) => normalizedEventFromRecord(event, context, index));
+    sumDroppedEventCounts(normalized);
     if (this.recording.dropped > 0 && !normalized.some((event) => event.kind === 'gap' || event.kind === 'dropped-events')) {
       normalized.unshift(createRuntimeEvent({
         ...context,
@@ -213,7 +240,7 @@ export class TraceProvider {
             sessionEpoch: session.epoch,
             events,
             completeness: loss ? 'truncated' : session.sourceCompleteness,
-            dropped: events.filter((event) => event.kind === 'dropped-events').reduce((sum, event) => sum + Number(event.payload?.dropped || 0), 0),
+            dropped: sumDroppedEventCounts(events),
           });
         }
       },
