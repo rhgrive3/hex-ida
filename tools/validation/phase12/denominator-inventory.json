@@ -826,6 +826,7 @@
               "remote-transport-proof-rejected",
               "remote-egress-user-authorization-required",
               "remote-raw-binary-egress-forbidden",
+              "remote-operation-shape-invalid",
               "remote-operation-scope-mismatch",
               "remote-operation-actor-binding-mismatch",
               "remote-operation-provenance-invalid",

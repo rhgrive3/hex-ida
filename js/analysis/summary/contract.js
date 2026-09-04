@@ -53,6 +53,14 @@ function nonEmpty(value, code) {
   return text;
 }
 
+function canonicalEffectSource(value, fallback) {
+  const source = value ?? fallback;
+  if (typeof source !== 'string') fail('function-summary-invalid-effect-source');
+  const text = source.trim();
+  if (!text || !SOURCE_SET.has(text)) fail('function-summary-invalid-effect-source');
+  return text;
+}
+
 function optionalReturnIdentity(value) {
   if (value == null) return null;
   if (typeof value !== 'string') fail('function-summary-invalid-return-provenance-identity');
@@ -128,8 +136,7 @@ export function classifyCallTargetProof(call = {}) {
 
 /** One memory region a function reads or writes, with why we believe it. */
 export function createMemoryEffect(input = {}) {
-  const source = nonEmpty(input.source ?? 'proven-summary', 'function-summary-effect-source-required');
-  if (!SOURCE_SET.has(source)) fail('function-summary-invalid-effect-source');
+  const source = canonicalEffectSource(input.source, 'proven-summary');
   return deepFreeze({
     regionId: input.regionId == null ? null : nonEmpty(input.regionId, 'function-summary-invalid-region-id'),
     regionKind: nonEmpty(input.regionKind ?? 'unknown', 'function-summary-invalid-region-kind'),
@@ -160,11 +167,7 @@ export function createDirectCall(input = {}) {
     callSiteId: nonEmpty(input.callSiteId, 'function-summary-call-site-required'),
     targetEntityIds: sortedIds(input.targetEntityIds, 'function-summary-invalid-target-ids'),
     summaryId: input.summaryId == null ? null : nonEmpty(input.summaryId, 'function-summary-invalid-summary-id'),
-    effectSource: (() => {
-      const source = nonEmpty(input.effectSource ?? 'unknown-call-fallback', 'function-summary-effect-source-required');
-      if (!SOURCE_SET.has(source)) fail('function-summary-invalid-effect-source');
-      return source;
-    })(),
+    effectSource: canonicalEffectSource(input.effectSource, 'unknown-call-fallback'),
   });
 }
 
@@ -267,15 +270,15 @@ export function summaryIdentityMatches(summary, {
     }
     return true;
   })) return false;
-  if (functionId != null && String(summary.functionId ?? '') !== String(functionId)) return false;
+  if (functionId != null && (typeof functionId !== 'string' || summary.functionId !== functionId)) return false;
   const status = summary.status;
   if (!status || typeof status !== 'object' || Array.isArray(status)) return false;
   if (typeof status.snapshotId !== 'string' || !status.snapshotId.trim()
     || typeof status.analyzerId !== 'string' || !status.analyzerId.trim()
     || typeof status.analyzerVersion !== 'string' || !status.analyzerVersion.trim()) return false;
-  if (snapshotId != null && status.snapshotId !== String(snapshotId)) return false;
-  if (analyzerId != null && status.analyzerId !== String(analyzerId)) return false;
-  if (analyzerVersion != null && status.analyzerVersion !== String(analyzerVersion)) return false;
+  if (snapshotId != null && (typeof snapshotId !== 'string' || status.snapshotId !== snapshotId)) return false;
+  if (analyzerId != null && (typeof analyzerId !== 'string' || status.analyzerId !== analyzerId)) return false;
+  if (analyzerVersion != null && (typeof analyzerVersion !== 'string' || status.analyzerVersion !== analyzerVersion)) return false;
   return true;
 }
 
