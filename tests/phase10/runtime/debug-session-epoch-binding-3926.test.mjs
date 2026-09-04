@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { RuntimeAnalysisPlatform } from '../../../js/runtime/index.js';
 import { DebugSession } from '../../../js/runtime/session.js';
 
 function adapterFixture() {
@@ -17,6 +18,16 @@ function adapterFixture() {
     onEvent(callback) { listener=callback; return () => { listener=null; }; },
     emit(event) { return listener?.(event); },
     async disconnect() { this.connected=false; },
+  };
+}
+
+function traceAdapterFixture(trace) {
+  return {
+    id:'trace-epoch-fixture',
+    kind:'fixture',
+    capabilities:{ modules:false, threads:false, launch:false, attach:false, resume:false, traceFunction:true, replay:false },
+    async trace(options) { return trace(options); },
+    async disconnect() {},
   };
 }
 
@@ -60,4 +71,36 @@ test('P10 DebugSession binds untagged adapter callbacks to subscription epoch (#
   assert.deepEqual(session.traces.snapshot().events.map((event)=>event.pc),['0x3002']);
 
   await session.disconnect();
+});
+
+test('P10 traceFunction accepts same-epoch untagged trace ingress (#3926)', async () => {
+  const adapter = traceAdapterFixture(async () => ({ events:[{ type:'branch', address:'0x4000', next:'0x4004' }] }));
+  const platform = new RuntimeAnalysisPlatform({ symbolic:false });
+  const session = await platform.startSession({ adapter, connect:false });
+
+  await platform.traceFunction(0x4000);
+
+  assert.deepEqual(session.traces.snapshot().events.map((event)=>event.address),['0x4000']);
+});
+
+test('P10 traceFunction rejects untagged trace from a pre-cutover operation (#3926)', async () => {
+  let releaseTrace;
+  let markTraceStarted;
+  const traceStarted = new Promise((resolve) => { markTraceStarted=resolve; });
+  const traceReady = new Promise((resolve) => { releaseTrace=resolve; });
+  const adapter = traceAdapterFixture(async () => {
+    markTraceStarted();
+    await traceReady;
+    return { events:[{ type:'branch', address:'0x5000', next:'0x5004' }] };
+  });
+  const platform = new RuntimeAnalysisPlatform({ symbolic:false });
+  const session = await platform.startSession({ adapter, connect:false });
+
+  const pending = platform.traceFunction(0x5000);
+  await traceStarted;
+  assert.equal(session.newEpoch(),2);
+  releaseTrace();
+  await pending;
+
+  assert.equal(session.traces.snapshot().events.length,0);
 });
