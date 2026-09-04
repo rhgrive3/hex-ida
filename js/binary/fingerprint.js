@@ -1,3 +1,5 @@
+import { sectionHasMappedAddress } from './audit.js';
+
 const FNV_OFFSET_HI = 0xcbf29ce4;
 const FNV_OFFSET_LO = 0x84222325;
 const FNV_PRIME_LO = 0x1b3;
@@ -110,9 +112,88 @@ function requireMappingChunk(bytes, expectedLength) {
   return bytes;
 }
 
+function mergeIntervals(intervals) {
+  if (intervals.length <= 1) return intervals;
+  intervals.sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : 0));
+  const merged = [];
+  for (const iv of intervals) {
+    if (!merged.length) {
+      merged.push({ start: iv.start, end: iv.end });
+    } else {
+      const last = merged[merged.length - 1];
+      if (iv.start <= last.end) {
+        if (iv.end > last.end) last.end = iv.end;
+      } else {
+        merged.push({ start: iv.start, end: iv.end });
+      }
+    }
+  }
+  return merged;
+}
+
+function subtractIntervals(start, end, covered) {
+  const result = [];
+  let cursor = start;
+  for (const iv of covered) {
+    if (iv.end <= cursor) continue;
+    if (iv.start >= end) break;
+    if (iv.start > cursor) {
+      result.push({ start: cursor, end: iv.start < end ? iv.start : end });
+    }
+    if (iv.end > cursor) {
+      cursor = iv.end;
+    }
+    if (cursor >= end) break;
+  }
+  if (cursor < end) {
+    result.push({ start: cursor, end });
+  }
+  return result;
+}
+
 function fingerprintRanges(image, executableOnly) {
-  let ranges = image.sections.filter((x) => x.fileSize > 0n && (!executableOnly || x.perms.execute));
-  if (!ranges.length) ranges = image.segments.filter((x) => x.fileSize > 0n && (!executableOnly || x.perms.execute));
+  const sections = (image.sections || []).filter((x) => BigInt(x.fileSize ?? 0) > 0n && (!executableOnly || x.perms?.execute));
+  const segments = (image.segments || []).filter((x) => BigInt(x.fileSize ?? 0) > 0n && (!executableOnly || x.perms?.execute));
+
+  if (!sections.length) return segments;
+  if (!segments.length) return sections;
+
+  const ranges = [...sections];
+  const coveredIntervals = [];
+  for (const sec of sections) {
+    if (sec.address != null && sectionHasMappedAddress(sec)) {
+      const start = BigInt(sec.address);
+      const size = BigInt(sec.fileSize ?? sec.size ?? 0);
+      if (size > 0n) coveredIntervals.push({ start, end: start + size });
+    }
+  }
+
+  let mergedCovered = mergeIntervals(coveredIntervals);
+
+  for (const seg of segments) {
+    if (seg.address == null) continue;
+    const segStart = BigInt(seg.address);
+    const segFileSize = BigInt(seg.fileSize ?? 0);
+    if (segFileSize <= 0n) continue;
+    const segEnd = segStart + segFileSize;
+
+    const uncovered = subtractIntervals(segStart, segEnd, mergedCovered);
+    for (const span of uncovered) {
+      const spanSize = span.end - span.start;
+      const offsetDelta = span.start - segStart;
+      const fileOffset = BigInt(seg.fileOffset ?? 0) + offsetDelta;
+      ranges.push({
+        name: seg.name,
+        address: span.start,
+        fileOffset,
+        fileSize: spanSize,
+        perms: seg.perms,
+      });
+      mergedCovered.push({ start: span.start, end: span.end });
+      mergedCovered = mergeIntervals(mergedCovered);
+    }
+  }
+
   return ranges;
 }
 
