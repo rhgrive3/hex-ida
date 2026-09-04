@@ -43,6 +43,16 @@ function base64ToBytes(text) {
   }
 }
 
+function rejectUnknownWireTag(value) {
+  if (
+    Object.prototype.hasOwnProperty.call(value, WIRE_TAG) &&
+    value[WIRE_TAG] !== BIGINT_TAG &&
+    value[WIRE_TAG] !== BYTES_TAG
+  ) {
+    throw new DebugAdapterError('malformed-packet', 'unknown remote wire value type');
+  }
+}
+
 export function encodeWireValue(value, depth = 0) {
   if (depth > 20) throw new DebugAdapterError('malformed-packet', 'remote packet nesting is too deep');
   if (value == null || typeof value === 'string' || typeof value === 'boolean') return value;
@@ -81,6 +91,7 @@ export function decodeWireValue(value, depth = 0) {
   if (depth > 20) throw new DebugAdapterError('malformed-packet', 'remote packet nesting is too deep');
   if (Array.isArray(value)) return value.map((v) => decodeWireValue(v, depth + 1));
   if (!value || typeof value !== 'object') return value;
+  rejectUnknownWireTag(value);
   if (value[WIRE_TAG] === BIGINT_TAG) {
     if (
       Object.keys(value).some((k) => ![WIRE_TAG, 'value'].includes(k)) ||
@@ -118,6 +129,7 @@ function validateValue(value, depth = 0) {
   if (value && typeof value === 'object') {
     const proto = Object.getPrototypeOf(value);
     if (proto !== Object.prototype && proto !== null) throw new DebugAdapterError('malformed-packet', 'remote packet objects must be plain data');
+    rejectUnknownWireTag(value);
     const keys = Object.keys(value);
     if (keys.length > 1024) throw new DebugAdapterError('malformed-packet', 'remote object has too many fields');
     for (const key of keys) {
