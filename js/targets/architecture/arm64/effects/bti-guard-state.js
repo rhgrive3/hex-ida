@@ -155,14 +155,46 @@ function rebuiltBundle(bundle, { operations, possibleFaults, completeness, unkno
   });
 }
 
-function withFpAdvSimdAccessTrap(bundle) {
+function fpAdvSimdAccessResolution(context) {
+  const authority = context?.fpAdvSimdAccess;
+  if (!authority || typeof authority !== 'object' || Array.isArray(authority)) {
+    return { state:'unknown', source:'not-observed', evidence:null };
+  }
+  const state = authority.state;
+  if (state !== 'allowed' && state !== 'trap') {
+    return { state:'unknown', source:'invalid-or-unresolved-authority', evidence:null };
+  }
+  const source = typeof authority.source === 'string' && authority.source.trim()
+    ? authority.source.trim()
+    : 'explicit-execution-context';
+  return { state, source, evidence:deepCopyEvidence(authority.evidence ?? null) };
+}
+
+function withFpAdvSimdAccessTrap(bundle, context) {
   if (!ARM64_FP_ADVSIMD_EFFECT_FAMILIES.has(bundle?.metadata?.family)
     || !['exact','exact-with-intrinsic'].includes(bundle?.completeness)) return bundle;
+  const access = fpAdvSimdAccessResolution(context);
+  if (access.state === 'allowed') {
+    return rebuiltBundle(bundle, {
+      operations:bundle.operations,
+      possibleFaults:bundle.possibleFaults,
+      completeness:bundle.completeness,
+      unknownEffects:bundle.unknownEffects,
+      statePreservation:bundle.statePreservation,
+      metadata:{ fpAdvSimdAccessCheck:'allowed-by-explicit-authority', fpAdvSimdAccessAuthority:access },
+    });
+  }
   const possibleFaults = [
     ...(bundle.possibleFaults || []),
     {
       kind:'system-instruction-trap',
-      condition:{ kind:'architectural-access-check', operation:'fp-advsimd' },
+      condition:{
+        kind:'architectural-access-check',
+        operation:'fp-advsimd',
+        resolution:access.state,
+        source:access.source,
+        evidence:access.evidence,
+      },
       detail:{
         architecturalCheck:'CheckFPAdvSIMDEnabled',
         controls:['CPACR_EL1.FPEN','CPTR_EL2.FPEN','CPTR_EL2.TFP','CPTR_EL3.TFP'],
@@ -175,7 +207,10 @@ function withFpAdvSimdAccessTrap(bundle) {
     completeness:bundle.completeness,
     unknownEffects:bundle.unknownEffects,
     statePreservation:bundle.statePreservation,
-    metadata:{ fpAdvSimdAccessCheck:'environment-dependent' },
+    metadata:{
+      fpAdvSimdAccessCheck:access.state === 'trap' ? 'trap-by-explicit-authority' : 'environment-dependent',
+      fpAdvSimdAccessAuthority:access,
+    },
   });
 }
 
@@ -248,7 +283,7 @@ function withArchitecturalBtypeReset(instruction, bundle) {
 export function decorateArm64BtiGuardedPageEffects(instruction, bundle, context = {}) {
   if (!bundle) return bundle;
   if (mnemonicOf(instruction) !== 'bti') {
-    return withArchitecturalBtypeReset(instruction, withFpAdvSimdAccessTrap(bundle));
+    return withArchitecturalBtypeReset(instruction, withFpAdvSimdAccessTrap(bundle, context));
   }
   const guardState = normalizeArm64BtiGuardedPageState(
     context.btiGuardedPage ?? context.guardedPageState ?? context.pageGuardState ?? null,
