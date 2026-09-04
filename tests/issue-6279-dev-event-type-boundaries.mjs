@@ -69,3 +69,37 @@ test("issue #6279 - structured or non-string event.type is rejected and does not
     assert.equal(supervisor.wasResumed, false);
   }
 });
+
+test("issue #6279 - event.type is read exactly once before validation and storage", () => {
+  const cases = [
+    {
+      name: "later structured value",
+      later() { return { bad: true }; },
+    },
+    {
+      name: "later throwing accessor",
+      later() { throw new Error("event.type read more than once"); },
+    },
+  ];
+
+  for (const { name, later } of cases) {
+    const supervisor = createMockSupervisor();
+    const host = new DevRunEventHost({ supervisor });
+    const run = { runId: `r-${name}` };
+    let reads = 0;
+    const event = {
+      get type() {
+        reads++;
+        return reads === 1 ? DEV_EVENT_TYPE.WORKER_COMPLETED : later();
+      },
+      data: {},
+    };
+
+    host.yieldDecision(run, { type: "wait", events: [DEV_EVENT_TYPE.WORKER_COMPLETED] });
+    const result = host.acceptEvent(run, event);
+
+    assert.equal(reads, 1, `${name}: type accessor must be read once`);
+    assert.equal(result.resumed, true, `${name}: validated event must resume`);
+    assert.equal(result.event.type, DEV_EVENT_TYPE.WORKER_COMPLETED, `${name}: stored type must be the validated primitive`);
+  }
+});
