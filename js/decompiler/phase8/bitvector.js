@@ -58,20 +58,20 @@ export function sameBitvector(left, right) {
 
 /** Truncation keeps the low bits. It is exact and always defined. */
 export function truncate(constant, toBits) {
-  if (!isSupportedWidth(toBits)) return null;
+  if (!isSupportedWidth(constant?.bits) || !isSupportedWidth(toBits)) return null;
   if (toBits > constant.bits) return null;
   return bitvector(constant.value, toBits);
 }
 
 /** Zero extension. Widening to a narrower width is a caller error, not a wrap. */
 export function zeroExtend(constant, toBits) {
-  if (!isSupportedWidth(toBits) || toBits < constant.bits) return null;
+  if (!isSupportedWidth(constant?.bits) || !isSupportedWidth(toBits) || toBits < constant.bits) return null;
   return bitvector(constant.value, toBits);
 }
 
 /** Sign extension reads the source as signed and re-encodes at the new width. */
 export function signExtend(constant, toBits) {
-  if (!isSupportedWidth(toBits) || toBits < constant.bits) return null;
+  if (!isSupportedWidth(constant?.bits) || !isSupportedWidth(toBits) || toBits < constant.bits) return null;
   return bitvector(signedOf(constant.value, constant.bits), toBits);
 }
 
@@ -132,7 +132,6 @@ export function evaluateBinary(operator, left, right) {
       if (right.value === 0n) return null;
       const a = signedOf(left.value, width);
       const b = signedOf(right.value, width);
-      // INT_MIN / -1 overflows the width; the result is not representable.
       if (a === minSigned(width) && b === -1n) return null;
       const quotient = a / b;
       return bitvector(quotient, width);
@@ -176,7 +175,7 @@ export function evaluateUnary(operator, operand) {
 export function extractField(constant, lowBit, fieldBits) {
   const low = Number(lowBit);
   const width = fieldBits;
-  if (!Number.isInteger(low) || low < 0 || !isSupportedWidth(width)) return null;
+  if (!isSupportedWidth(constant?.bits) || !Number.isInteger(low) || low < 0 || !isSupportedWidth(width)) return null;
   if (low + width > constant.bits) return null;
   return bitvector((constant.value >> BigInt(low)) & maxUnsigned(width), width);
 }
