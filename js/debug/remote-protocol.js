@@ -143,6 +143,20 @@ function validateEpoch(packet) {
   if (!Number.isSafeInteger(packet.epoch) || packet.epoch < 0) throw new DebugAdapterError('malformed-packet', 'packet epoch must be a non-negative safe integer');
 }
 
+function validateResponse(packet) {
+  if (packet.type !== 'response') return;
+  const hasResult = Object.prototype.hasOwnProperty.call(packet, 'result');
+  const hasError = Object.prototype.hasOwnProperty.call(packet, 'error');
+  if (hasResult === hasError) {
+    throw new DebugAdapterError('malformed-packet', 'response must contain exactly one of result or error');
+  }
+  if (!hasError) return;
+  const error = packet.error;
+  if (!error || typeof error !== 'object' || Array.isArray(error) || Object.prototype.hasOwnProperty.call(error, WIRE_TAG)) {
+    throw new DebugAdapterError('malformed-packet', 'response error must be a plain error object');
+  }
+}
+
 export function validateRemotePacket(packet) {
   if (!packet || typeof packet !== 'object' || Array.isArray(packet)) throw new DebugAdapterError('malformed-packet', 'remote packet must be an object');
   if (!ALLOWED_TYPES.has(packet.type)) throw new DebugAdapterError('malformed-packet', 'invalid remote packet type');
@@ -155,6 +169,7 @@ export function validateRemotePacket(packet) {
     if (typeof packet.method !== 'string' || !packet.method || packet.method.length > 128) throw new DebugAdapterError('malformed-packet', 'request method must be a 1..128 character string');
     if (BLOCKED_METHODS.test(packet.method)) throw new DebugAdapterError('blocked-method', 'host command execution is prohibited');
   }
+  validateResponse(packet);
   return packet;
 }
 
