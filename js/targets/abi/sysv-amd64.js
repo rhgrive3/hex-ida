@@ -77,7 +77,10 @@ function parameterClass(parameter) {
   const aggregateLayoutProven = !aggregate || !aggregateLayoutPresent || aggregateLayout != null;
   const declaredBits = aggregateLayout?.bits ?? parameter?.bits ?? parameter?.sizeBits;
   const rawBits = Number(declaredBits ?? (pointer ? 64 : typeBits(type, vector ? 128 : 64)));
-  const bits = Number.isSafeInteger(rawBits) && rawBits > 0 ? Math.min(512, rawBits) : 64;
+  // Declared widths are evidence and must survive classification: clamping a
+  // 1024-bit vector to 512 would mint an exact half-width placement. Widths
+  // beyond the modeled register views fail closed in the vector path below.
+  const bits = Number.isSafeInteger(rawBits) && rawBits > 0 ? rawBits : 64;
   const nonTrivialForCalls = parameter?.nonTrivialForCalls === true || parameter?.nonTrivial === true;
   const integerEightbytes = !pointer && !aggregate && !vector && !floating && !x87 && bits === 128 ? 2 : 1;
   return {
