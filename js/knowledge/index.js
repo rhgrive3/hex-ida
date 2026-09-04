@@ -30,9 +30,16 @@ function searchTermsOf(input = {}) {
 function addrText(value) {
   if (value == null) return 'unknown';
   const type = typeof value;
-  if (type !== 'number' && type !== 'bigint' && type !== 'string') throw new TypeError('address must be an integer primitive');
-  if (type === 'string' && !value.trim()) throw new TypeError('address must be a non-empty integer string');
-  return BigInt(value).toString(16);
+  if (type === 'number') {
+    if (!Number.isSafeInteger(value)) throw new TypeError('address number must be a safe integer');
+    return BigInt(value).toString(16);
+  }
+  if (type === 'bigint') return value.toString(16);
+  if (type === 'string') {
+    if (!value.trim()) throw new TypeError('address must be a non-empty integer string');
+    return BigInt(value).toString(16);
+  }
+  throw new TypeError('address must be an integer primitive');
 }
 function requestPromise(request) { return new Promise((resolve,reject) => { request.onsuccess=()=>resolve(request.result); request.onerror=()=>reject(request.error); }); }
 function candidateBatch(values, truncated = false) {
