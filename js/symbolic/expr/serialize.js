@@ -30,7 +30,7 @@ import {
 export const EXPR_SCHEMA_VERSION = '1.0.0';
 export const EXPR_DAG_VERSION = '1.0.0';
 
-function canonicalizeObject(obj) {
+export function canonicalizeObject(obj) {
   if (obj === null || typeof obj !== 'object') {
     return obj;
   }
@@ -188,7 +188,13 @@ function plainNodeToExpr(plain) {
   switch (plain.kind) {
     case EXPR_KIND.CONST:
       if (sort.kind === SORT_KIND.BOOL) {
+        if (typeof plain.value !== 'boolean') {
+          throw new TypeError(`deserializeExprDag: Bool const value must be a boolean, got ${typeof plain.value}`);
+        }
         return createBool(plain.value);
+      }
+      if (typeof plain.value !== 'string' || !/^0x[0-9a-fA-F]+$/.test(plain.value)) {
+        throw new TypeError(`deserializeExprDag: BV const value must be a canonical hex string starting with 0x, got ${JSON.stringify(plain.value)}`);
       }
       return createBv(sort.width, BigInt(plain.value));
 
