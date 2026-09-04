@@ -85,6 +85,9 @@ for (const [offset, returned] of [[0, 3], [2, 1], [3, 0], [10, 0]]) {
   const { app } = makeApp([{ completeness:'unsupported' }, { total:1 }]);
   const page = await createHexAIContext(app).searchStrings('x', { offset:0, limit:50 });
   assert.equal(page.total, null, 'unsupported regions must never contribute to an exact global total');
+  assert.equal(page.complete, false, 'skipping an unsupported region must make the global search incomplete');
+  assert.equal(page.truncated, true);
+  assert.equal(page.reason, 'unsupported-region');
 }
 
 console.log('issue-3687-ai-searchstrings-total: ok');
