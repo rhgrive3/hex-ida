@@ -171,6 +171,7 @@ export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
   applyVersionMetadata(image, versions, symbolBudget);
   image.metadata.programDynamicSymbolBudget = symbolBudget.snapshot();
   if (opts.relocations !== false) attachDynamicRelocations(image, relocs, symbols);
+  checkRiscvVariantCcTag(image, tags, relocs, symbols);
 
   image.metadata.programDynamic = {
     entries: ordered.length,
@@ -339,8 +340,20 @@ function collectDynamicRelocations(r, tags, image, bits, budget) {
   return out;
 }
 
-function attachDynamicRelocations(image, relocs, symbols) {
+const EM_RISCV = 243;
+const R_RISCV_JUMP_SLOT = 5;
+const DT_RISCV_VARIANT_CC = 0x70000001n;
+
+function checkRiscvVariantCcTag(image, tags, relocs, symbols) {
+  if (Number(image?.metadata?.machine) !== EM_RISCV) return;
+  if ((tags?.get(DT_RISCV_VARIANT_CC) || []).length > 0) return;
   const byIndex = new Map((symbols || []).map((s) => [s.index, s]));
+  const missing = (relocs || []).some((rel) =>
+    Number(rel?.type) === R_RISCV_JUMP_SLOT && byIndex.get(rel.symIndex)?.riscvVariantCc === true);
+  if (missing) markDynamicPartial(image, 'RISC-V variant-cc JUMP_SLOT requires DT_RISCV_VARIANT_CC');
+}
+
+function attachDynamicRelocations(image, relocs, symbols) {  const byIndex = new Map((symbols || []).map((s) => [s.index, s]));
   const importKey = (name, version, library) => [name || '', version || '', library || ''].join('\0');
   const importByName = new Map(image.imports.filter((x) => x.name).map((x) => [importKey(x.name, x.version, x.versionLibrary), x]));
   for (const rel of relocs) {
