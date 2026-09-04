@@ -96,16 +96,20 @@ function modifiedRanges(emu, objectBase, maxObjectSize, beforeBytes) {
   return ranges;
 }
 
-function branchTrace(trace) {
+function isConditionalBranchText(text) { return /^((b\.[a-z]+)|cbz|cbnz|tbz|tbnz)\b/i.test(text || ''); }
+
+function branchTrace(trace, finalPc = null) {
   const out = [];
-  for (let i = 0; i < (trace || []).length - 1; i++) {
-    const cur = trace[i], next = trace[i + 1];
-    if (!cur || !/^((b\.[a-z]+)|cbz|cbnz|tbz|tbnz)\b/i.test(cur.text || '')) continue;
+  for (let i = 0; i < (trace || []).length; i++) {
+    const cur = trace[i];
+    if (!cur || !isConditionalBranchText(cur.text)) continue;
+    const next = i + 1 < trace.length ? trace[i + 1].addr : finalPc;
+    if (next == null) continue;
     out.push({
       address: cur.addr,
       text: cur.text,
-      next: next.addr,
-      taken: next.addr !== cur.addr + 4n,
+      next,
+      taken: next !== cur.addr + 4n,
     });
   }
   return out;
@@ -207,6 +211,7 @@ export class FunctionSandbox {
       });
     }
     const traceMeta = this.emulator.traceSnapshot();
+    const branchFinalPc = result.hitBreakpoint === true ? result.finalPc : (result.steps > 0 && (traceMeta.events?.length || 0) > 0 ? this.emulator.pc : null);
     return {
       ...result,
       stopped: this.emulator.stopped,
@@ -215,7 +220,7 @@ export class FunctionSandbox {
       after,
       touchedFields,
       modifiedObjectRanges: modifiedRanges(this.emulator, this.objectBase, this.maxObjectSize, this.beforeObjectBytes),
-      takenBranches: branchTrace(traceMeta.events),
+      takenBranches: branchTrace(traceMeta.events, branchFinalPc),
       trace: traceMeta.events,
       traceMeta:{ truncated:traceMeta.truncated, dropped:traceMeta.dropped, limit:traceMeta.limit },
       log: (this.emulator.log || []).slice(),
