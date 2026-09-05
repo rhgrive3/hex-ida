@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { DEBUG_PROTOCOL_VERSION } from '../../../js/debug/adapter.js';
+import { DEBUG_PROTOCOL_VERSION, DebugAdapterError } from '../../../js/debug/adapter.js';
 import {
   BIGINT_TAG,
   RemoteProtocolClient,
@@ -28,10 +28,10 @@ test('response schema requires exactly one explicit result or plain error object
     response({ error: [1] }),
     response({ error: { [WIRE_TAG]: BIGINT_TAG, value: '1' } }),
   ]) {
-    assert.throws(() => validateRemotePacket(packet), (error) => {
-      assert.equal(error.code, 'malformed-packet');
-      return true;
-    });
+    assert.throws(
+      () => validateRemotePacket(packet),
+      (error) => error instanceof DebugAdapterError && error.code === 'malformed-packet',
+    );
   }
 
   assert.equal(validateRemotePacket(response({ result: null })).result, null);
