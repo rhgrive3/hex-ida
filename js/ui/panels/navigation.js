@@ -382,6 +382,7 @@ export function showXrefs(app, target) {
   let loaded = 0;
   let completeness = null;
   let exactTotal = null;
+  let totalTrusted = true;
   let loading = false;
   const more = tapRow(t('search.more'), { onTap:() => { void loadNext(); } });
   sheet.body.append(el('div', 'hint', `${addrHex(target)}\n${t('xref.hint')}`), status, results);
@@ -425,9 +426,21 @@ export function showXrefs(app, target) {
       completeness = 'partial';
     }
     exactTotal = null;
+    totalTrusted = false;
     nextOffset = null;
     more.remove();
     updateStatus();
+  };
+
+  const mergeCompleteness = (pageCompleteness) => {
+    if (completeness == null) {
+      completeness = pageCompleteness;
+      return;
+    }
+    if (pageCompleteness === 'complete') return;
+    if (completeness === 'complete' || completeness === 'unknown' || pageCompleteness === 'truncated') {
+      completeness = pageCompleteness;
+    }
   };
 
   async function loadNext() {
@@ -444,28 +457,36 @@ export function showXrefs(app, target) {
       );
       if (controller.signal.aborted || !sheet.root.isConnected) return;
 
-      const rows = Array.isArray(page?.value) ? page.value : [];
+      const rowsValid = Array.isArray(page?.value);
+      const rows = rowsValid ? page.value : [];
       const pageCompleteness = page?.completeness ?? page?.status?.completeness ?? 'unknown';
-      if (completeness == null || (completeness === 'complete' && pageCompleteness !== 'complete')) {
-        completeness = pageCompleteness;
+      mergeCompleteness(pageCompleteness);
+
+      const pageInfo = page?.page;
+      if (!rowsValid || !pageInfo || !Object.hasOwn(pageInfo, 'next')) {
+        markPaginationPartial();
+        return;
       }
 
-      const rawTotal = page?.page?.total;
-      if (pageCompleteness === 'complete' && rawTotal != null) {
-        const candidateTotal = Number(rawTotal);
-        if (Number.isSafeInteger(candidateTotal) && candidateTotal >= requestedOffset + rows.length) {
-          exactTotal = exactTotal == null || exactTotal === candidateTotal ? candidateTotal : null;
-        } else {
-          exactTotal = null;
-        }
-      } else if (pageCompleteness !== 'complete') {
+      const rawTotal = pageInfo.total;
+      if (pageCompleteness !== 'complete') {
         exactTotal = null;
+        totalTrusted = false;
+      } else if (totalTrusted && rawTotal != null) {
+        const candidateTotal = Number(rawTotal);
+        if (!Number.isSafeInteger(candidateTotal) || candidateTotal < requestedOffset + rows.length ||
+            (exactTotal != null && exactTotal !== candidateTotal)) {
+          exactTotal = null;
+          totalTrusted = false;
+        } else {
+          exactTotal = candidateTotal;
+        }
       }
 
       appendRows(rows);
       loaded += rows.length;
 
-      const rawNext = page?.page?.next;
+      const rawNext = pageInfo.next;
       if (rawNext == null) {
         nextOffset = null;
         updateStatus();
@@ -474,14 +495,16 @@ export function showXrefs(app, target) {
 
       const candidateNext = Number(rawNext);
       const expectedNext = requestedOffset + rows.length;
-      if (!Number.isSafeInteger(candidateNext) || candidateNext <= requestedOffset || candidateNext !== expectedNext) {
+      if (!Number.isSafeInteger(candidateNext) || candidateNext <= requestedOffset || candidateNext !== expectedNext ||
+          (exactTotal != null && candidateNext >= exactTotal)) {
         markPaginationPartial();
         return;
       }
 
       nextOffset = candidateNext;
+      const remaining = exactTotal == null ? pageSize : Math.min(pageSize, exactTotal - loaded);
       more.replaceChildren();
-      more.append(el('div', null, t('search.showMore', { n:pageSize })));
+      more.append(el('div', null, t('search.showMore', { n:remaining })));
       results.append(more);
       updateStatus();
     } catch (error) {
