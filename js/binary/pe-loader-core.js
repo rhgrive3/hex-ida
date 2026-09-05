@@ -337,7 +337,16 @@ export function parseBaseRelocations(r, dir, image, machine = null, sharedBudget
     for(let i=0;i<count;i++){
       if(!budget.take({inputBytes:2,records:1,objects:1,operations:1,estimatedHeapBytes:112},'relocation-entry'))break;
       const raw=r.u16(off+8+i*2),type=raw>>>12,within=raw&0xfff;if(!type)continue;if(!allowed.has(type)){image.warnings.push(`Ignored reserved/unsupported PE base relocation type ${type} at RVA 0x${(pageRva+within).toString(16)}`);continue;}
-      const address=image.imageBase+BigInt(pageRva+within);image.relocations.push({address,fileOffset:image.addressToOffset(address),type,symbol:null,addend:null,section:null,source:'PE-base-reloc'});
+      let addend=null;
+      if(type===4){
+        if(i+1>=count){budget.partial('relocations:highadj-payload',`Malformed PE HIGHADJ base relocation without its second adjustment slot at RVA 0x${(pageRva+within).toString(16)}`);break;}
+        // HIGHADJ occupies two 16-bit slots. Preserve the previous conservative
+        // budget charge for the payload slot even though it is not a record.
+        if(!budget.take({inputBytes:2,records:1,objects:1,operations:1,estimatedHeapBytes:112},'relocation-entry'))break;
+        addend=BigInt(r.i16(off+8+(i+1)*2));
+        i++;
+      }
+      const address=image.imageBase+BigInt(pageRva+within);image.relocations.push({address,fileOffset:image.addressToOffset(address),type,symbol:null,addend,section:null,source:'PE-base-reloc'});
     }
     off+=blockSize;
   }
