@@ -77,7 +77,7 @@ function buildEhPeCli({
     classTokenOrFilter: 0x01000001,
     ...clause,
   };
-  const clauseFlags = values.kind === 'filter' ? 1 : values.kind === 'finally' ? 2 : values.kind === 'fault' ? 4 : 0;
+  const clauseFlags = values.flags ?? (values.kind === 'filter' ? 1 : values.kind === 'finally' ? 2 : values.kind === 'fault' ? 4 : 0);
   const extraOffset = (codeOffset + codeSize + 3) & ~3;
   const clauseSize = fatClause ? 24 : 12;
   const dataSize = 4 + clauseSize;
@@ -163,4 +163,62 @@ test('#3885 filter offsets must identify code positions', () => {
     })),
     /cil-invalid-exception-filter-offset/,
   );
+});
+
+test('#3885 filters must form a non-empty range before their handler', () => {
+  for (const fatClause of [true, false]) {
+    for (const filterOffset of [8, 9, 15]) {
+      assert.throws(
+        () => parseCil(buildEhPeCli({
+          fatClause,
+          clause: { kind: 'filter', classTokenOrFilter: filterOffset },
+        })),
+        /cil-invalid-exception-filter-offset/,
+        `filter ${filterOffset} must precede handler 8 (${fatClause ? 'fat' : 'small'})`,
+      );
+    }
+  }
+});
+
+test('#3885 full-width fat EH offsets and lengths cannot wrap into code', () => {
+  for (const clause of [
+    { tryOffset: 0xffffffff, tryLength: 1 },
+    { tryOffset: 1, tryLength: 0xffffffff },
+    { handlerOffset: 0xffffffff, handlerLength: 1 },
+    { handlerOffset: 1, handlerLength: 0xffffffff },
+  ]) {
+    assert.throws(
+      () => parseCil(buildEhPeCli({ clause })),
+      /cil-invalid-exception-clause-range/,
+    );
+  }
+});
+
+
+test('#4844 malformed fat and small EH flags cannot become catch metadata', () => {
+  for (const fatClause of [true, false]) {
+    const invalidFlags = [3, 5, 6, 7, 8, 0x8000, 0xffff];
+    if (fatClause) invalidFlags.push(0x80000000, 0xffffffff);
+    for (const flags of invalidFlags) {
+      assert.throws(
+        () => parseCil(buildEhPeCli({ fatClause, clause: { flags } })),
+        /cil-invalid-exception-clause-flags/,
+        `flags ${flags} must not become catch (${fatClause ? 'fat' : 'small'})`,
+      );
+    }
+  }
+});
+
+test('#4844 every supported EH kind remains valid at the exact code-end boundary', () => {
+  for (const fatClause of [true, false]) {
+    for (const kind of ['catch', 'filter', 'finally', 'fault']) {
+      const image = parseCil(buildEhPeCli({
+        fatClause,
+        clause: { kind, handlerLength: 8, classTokenOrFilter: kind === 'filter' ? 4 : 0x01000001 },
+      }));
+      const clause = image.methodBodies[0].exceptionClauses[0];
+      assert.equal(clause.kind, kind);
+      assert.equal(clause.handlerOffset + clause.handlerLength, image.methodBodies[0].codeSize);
+    }
+  }
 });

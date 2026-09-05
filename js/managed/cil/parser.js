@@ -466,6 +466,16 @@ function parseMetadataRoot(bytes, view, metadataOffset, metadataSize) {
   });
 }
 
+function exceptionClauseKind(flags) {
+  switch (flags) {
+    case 0: return 'catch';
+    case 1: return 'filter';
+    case 2: return 'finally';
+    case 4: return 'fault';
+    default: fail('cil-invalid-exception-clause-flags');
+  }
+}
+
 function validateExceptionClauseRange(clause, codeSize) {
   const rangeInCode = (offset, length) => Number.isSafeInteger(offset)
     && Number.isSafeInteger(length)
@@ -481,7 +491,8 @@ function validateExceptionClauseRange(clause, codeSize) {
 
   if (clause.kind === 'filter') {
     const filterOffset = clause.classTokenOrFilter;
-    if (!Number.isSafeInteger(filterOffset) || filterOffset < 0 || filterOffset >= codeSize) {
+    // Match the canonical verifier: filter code is [filterOffset, handlerOffset).
+    if (!Number.isSafeInteger(filterOffset) || filterOffset < 0 || filterOffset >= clause.handlerOffset) {
       fail('cil-invalid-exception-filter-offset');
     }
   }
@@ -542,7 +553,7 @@ function parseMethodBody(bytes, view, offset, metadataInfo = null) {
         if (clauseSize === 24) {
           const clauseFlags = readU32(view, clauseOffset, 'cil-fat-method-clause-truncated');
           parsedClause = {
-            kind: clauseFlags === 1 ? 'filter' : clauseFlags === 2 ? 'finally' : clauseFlags === 4 ? 'fault' : 'catch',
+            kind: exceptionClauseKind(clauseFlags),
             tryOffset: readU32(view, clauseOffset + 4, 'cil-fat-method-clause-truncated'),
             tryLength: readU32(view, clauseOffset + 8, 'cil-fat-method-clause-truncated'),
             handlerOffset: readU32(view, clauseOffset + 12, 'cil-fat-method-clause-truncated'),
@@ -552,7 +563,7 @@ function parseMethodBody(bytes, view, offset, metadataInfo = null) {
         } else {
           const clauseFlags = readU16(view, clauseOffset, 'cil-small-method-clause-truncated');
           parsedClause = {
-            kind: clauseFlags === 1 ? 'filter' : clauseFlags === 2 ? 'finally' : clauseFlags === 4 ? 'fault' : 'catch',
+            kind: exceptionClauseKind(clauseFlags),
             tryOffset: readU16(view, clauseOffset + 2, 'cil-small-method-clause-truncated'),
             tryLength: bytes[clauseOffset + 4],
             handlerOffset: readU16(view, clauseOffset + 5, 'cil-small-method-clause-truncated'),
