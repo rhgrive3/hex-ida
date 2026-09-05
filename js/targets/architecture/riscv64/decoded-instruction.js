@@ -10,6 +10,14 @@ function text(value, code) {
   if (!out) throw new TypeError(code);
   return out;
 }
+// Semantic metadata must be a primitive token already: structured values
+// must never coerce into canonical mode/version authority.
+function strictToken(value, code) {
+  if (typeof value !== 'string') throw new TypeError(code);
+  const out = value.trim();
+  if (!out) throw new TypeError(code);
+  return out;
+}
 function bigint(value, code) {
   try { return BigInt(value); } catch { throw new TypeError(code); }
 }
@@ -33,7 +41,7 @@ export function createRiscv64DecodedInstruction(input = {}) {
   if (encodedLength !== size) throw new TypeError('riscv64-decoded-instruction-length-disagrees-with-encoding');
 
   const fields = decodeRiscv64InstructionWord(rawBytes);
-  const mode = text(input.mode ?? 'rv64imc', 'riscv64-decoded-instruction-mode-required');
+  const mode = strictToken(input.mode ?? 'rv64imc', 'riscv64-decoded-instruction-mode-required');
   if (!RISCV64_DECODE_MODES.includes(mode)) throw new TypeError('riscv64-decoded-instruction-unsupported-mode');
   if (mode === 'rv64im' && size === 2) throw new TypeError('riscv64-decoded-instruction-compressed-disabled');
   const instructionAlignment = Number(input.instructionAlignment ?? (mode === 'rv64im' ? 4 : 2));
@@ -63,7 +71,10 @@ export function createRiscv64DecodedInstruction(input = {}) {
     opStr: String(input.opStr ?? ''),
     contractVersion: RISCV64_DECODED_INSTRUCTION_CONTRACT_VERSION,
     decoderContractVersion: RISCV64_DECODED_INSTRUCTION_CONTRACT_VERSION,
-    decoderSemanticVersion: String(input.decoderSemanticVersion ?? RISCV64_DECODER_SEMANTIC_VERSION),
+    decoderSemanticVersion: strictToken(
+      input.decoderSemanticVersion ?? RISCV64_DECODER_SEMANTIC_VERSION,
+      'riscv64-decoded-instruction-invalid-decoder-semantic-version',
+    ),
     // Structured architectural truth.
     fields,
     // `instructionFamily` is the canonical architectural operation recovered

@@ -181,7 +181,7 @@ function parameterList(prototype) {
 function parameterClass(parameter) {
   const type = String(parameter?.type || parameter?.name || '').trim().toLowerCase();
   const abiClass = String(parameter?.abiClass || parameter?.class || parameter?.kind || '').trim().toLowerCase();
-  const pointer = parameter?.pointer === true || parameter?.isPointer === true || /\*|pointer|ptr|object/.test(`${type} ${abiClass}`);
+  const pointer = parameter?.pointer === true || parameter?.isPointer === true || /\*|pointer|\bptr\b|object/.test(`${type} ${abiClass}`);
   const aggregate = !pointer && (parameter?.aggregate === true || parameter?.isAggregate === true
     || aggregateLayoutDescriptorPresent(parameter) || /aggregate|struct|union|record|array/.test(`${type} ${abiClass}`));
   const vector = !aggregate ? vectorDescriptor(parameter) : null;
@@ -734,6 +734,9 @@ function createClassifier(profile) {
         reason:`${profile.id}-aggregate-return-size-layout-unproven` };
     }
     if (aggregate && aggregateLayout?.bytes > Math.ceil(bits / 8)) {
+      // The psABI size threshold is the physical total size, matching the
+      // argument classifier: a padded aggregate over 2*XLEN is indirect.
+      if (aggregateLayout.bytes > 2 * XLEN / 8) return indirectResult();
       return { reg:null, bits, bytes:aggregateLayout.bytes, aggregate:true, partial:true, location:'unknown',
         reason:`${profile.id}-padded-aggregate-return-layout-not-represented` };
     }
