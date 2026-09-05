@@ -101,9 +101,10 @@ ledger is bounded by a budget with deterministic content.
   silently.
 - What happens when the same origin feeds multiple rendered entities? Each rendered entity must
   independently carry the origin; loss of one projection must not corrupt the other.
-- What happens when a rendered entity is removed entirely (e.g., dead code eliminated)? Its
-  removal must be recorded as evidence of the transform rather than leaving a dangling or
-  silently-absent mapping.
+- What happens when a rendered entity is removed entirely (e.g., dead code eliminated)? The
+  transform's consumed canonical origins remain auditable, but C4-03 v1 does not yet bind a
+  canonical identity for the removed rendered entity itself. That residual gap must remain
+  explicit and must not be reported as completed removal-identity coverage.
 
 ## Requirements *(mandatory)*
 
@@ -130,8 +131,11 @@ ledger is bounded by a budget with deterministic content.
 - **FR-008**: The canonical semantic truth (semantic expressions, origin rows, MemorySSA, and
   existing transform provenance) MUST remain the sole authority; the mapping MUST NOT mint new
   semantic identities or alter canonical evidence.
-- **FR-009**: A rendered entity removed by a transform (e.g., eliminated dead code) MUST remain
-  represented in the transform ledger as consumed evidence, so removal is auditable.
+- **FR-009 — UNMET IN C4-03 v1**: A rendered entity removed by a transform (e.g., eliminated dead
+  code) SHOULD have a canonical removed-entity identity represented in the transform ledger so
+  removal can be navigated directly. The current v1 ledger preserves consumed canonical origins
+  but emits `removedRefs: []`; therefore this requirement is explicitly not satisfied and MUST NOT
+  be used as a closure claim until a canonical removed-entity identity producer is implemented.
 - **FR-010**: Validation MUST be cancellable and budgeted: provenance validation on a pathological
   function completes within deterministic bounds or returns an explicit incomplete state.
 
@@ -142,7 +146,8 @@ ledger is bounded by a budget with deterministic content.
 - **Origin reference**: a pointer to canonical pre-transform evidence — an instruction row and/or
   a canonical semantic expression reference — carrying the identity needed for reverse navigation.
 - **Transform record**: the bounded ledger entry describing one optimizing transform: kind,
-  version, consumed origins, produced entities, and (where applicable) removed entities.
+  version, consumed origins, produced entities, and, when a canonical removed-entity identity is
+  available, removed entities. C4-03 v1 currently does not produce that removed identity.
 - **Provenance map**: the versioned, snapshot-bound structure relating rendered entities to origin
   references, including its completeness state and budget metadata.
 
