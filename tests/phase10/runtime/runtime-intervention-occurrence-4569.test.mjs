@@ -107,6 +107,12 @@ test('InstrumentationProvider sequences every mutation occurrence per session', 
     records.slice(0, 2).map(({ intervention }) => intervention.acknowledgedResult.call),
     [1, 2],
   );
+  const correlated = facet.events.ingest({
+    kind: 'instrumentation-observation',
+    handle: 'probe-fixed',
+    sequence: 1,
+  });
+  assert.deepEqual(correlated.interventionIds, [records[1].intervention.interventionId]);
 
   records.push(await facet.intercept({ address: 0x3000n }));
   records.push(await facet.intercept({ address: 0x3000n }));
