@@ -1,0 +1,39 @@
+name: Temporary Stage2 denominator lock sync
+
+on:
+  push:
+    branches:
+      - fix/ci-stage2-denominator-lock-sync-20260905
+
+permissions:
+  contents: write
+
+jobs:
+  generate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Regenerate exact denominator lock
+        shell: bash
+        run: |
+          set -euo pipefail
+          node tools/validation/stage2/build-profile-denominator-inventory.mjs
+          git diff --exit-code -- tools/validation/stage2/profile-denominator-inventory.json
+          node tools/validation/stage2/build-profile-denominator-lock.mjs
+          mapfile -t changed < <(git status --porcelain --untracked-files=all | awk '{print $2}')
+          if [[ ${#changed[@]} -ne 1 || "${changed[0]}" != "tools/validation/stage2/profile-denominators.lock.json" ]]; then
+            printf 'unexpected generated changes:\n%s\n' "${changed[*]}" >&2
+            exit 1
+          fi
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add tools/validation/stage2/profile-denominators.lock.json
+          git commit -m 'fix(ci): regenerate Stage2 denominator lock'
+          git push origin "HEAD:${GITHUB_REF_NAME}"
