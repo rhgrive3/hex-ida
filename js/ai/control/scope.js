@@ -7,9 +7,9 @@ const FULL_FUNCTION_TOOLS = new Set(['get_function','get_current_function','get_
 const BINARY_TOOLS = new Set(['search_functions','search_strings','compare_functions','lookup_known_function']);
 const PROJECT_TOOLS = new Set(['project_search','get_binary_diff']);
 const RUNTIME_TOOLS = new Set(['get_runtime_observations','verify_runtime_hypothesis']);
-const TOOL_NON_ADDRESS_KEYS = Object.freeze({
-  inspect_function_region: new Set(['start']),
-});
+const TOOL_NON_ADDRESS_KEYS = new Map([
+  ['inspect_function_region', new Set(['start'])],
+]);
 
 export class ScopeController {
   constructor(snapshot, requestedScope = 'auto', { onExpand } = {}) {
@@ -105,7 +105,7 @@ export function scopeAllowsTool(snapshot, scope, tool, args) { return new ScopeC
 function atLeast(scope, minimum) { return (RANK[scope] ?? -1) >= RANK[minimum]; }
 function collectAddresses(value, key = '', tool = '') {
   const out = [];
-  if (TOOL_NON_ADDRESS_KEYS[tool]?.has(key)) return out;
+  if (TOOL_NON_ADDRESS_KEYS.get(tool)?.has(key)) return out;
   if (isAddressKey(key)) {
     if (value != null) out.push(value);
     return out;
