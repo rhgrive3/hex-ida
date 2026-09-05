@@ -160,4 +160,13 @@ try {
   assert.equal(tinyLimitResponse.status, 413);
   assert.equal(upstreamCalled, false);
 } finally { globalThis.fetch = originalFetch; }
+
+await import('./issue-6142-final-confidence-typed.mjs');
+await import('./issue-6149-thinking-level-typed.mjs');
+await import('./issue-6165-ai-tool-name-identity.mjs');
+await import('./issue-6167-assembly-meta-typed-counts.mjs');
+await import('./issue-6169-signed-hex-grammar.mjs');
+await import('./issue-6171-proposal-patch-bytes-strict.mjs');
+
 console.log('ai-worker: PASS');
+

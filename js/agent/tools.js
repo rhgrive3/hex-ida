@@ -30,7 +30,13 @@ function parseInteger(value, name = 'value', { nonNegative = false } = {}) {
     } else if (typeof value === 'string') {
       const text = value.trim();
       if (!text || !/^[+-]?(?:0[xX][0-9a-fA-F]+|\d+)$/.test(text)) throw new Error('invalid-string');
-      out = BigInt(text);
+      // BigInt(string) rejects signed prefixed hex ('+0x10'/'-0x10') even
+      // though this grammar accepts it, so the sign is applied separately
+      // after converting the unsigned literal (#6169).
+      const negative = text.startsWith('-');
+      const unsigned = /^[+-]/.test(text) ? text.slice(1) : text;
+      const parsed = BigInt(unsigned);
+      out = negative ? -parsed : parsed;
     } else throw new Error('invalid-type');
     if (nonNegative && out < 0n) throw new Error('negative');
     return out;
@@ -47,13 +53,13 @@ function requiredAddress(v, name = 'address') { return parseInteger(v, name, { n
 function textOf(v) { return String(v == null ? '' : v).toLowerCase(); }
 function explicitLimit(value, fallback) {
   if (value == null) return fallback;
-  const n = Number(value);
-  return Number.isFinite(n) ? Math.max(0, Math.floor(n)) : fallback;
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.max(0, Math.floor(value));
 }
 function bounded(value, fallback, min, max) {
-  const n = value == null ? fallback : Number(value);
-  if (!Number.isFinite(n)) return fallback;
-  return Math.max(min, Math.min(max, Math.floor(n)));
+  if (value == null) return fallback;
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.max(min, Math.min(max, Math.floor(value)));
 }
 function nonNegativeOffset(value) {
   if (value == null) return 0;
