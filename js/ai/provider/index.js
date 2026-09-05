@@ -28,7 +28,13 @@ export class WorkerAIProvider extends AIProvider {
     this.capabilitiesPromise = null;
     this.capabilitiesController = null;
     this.capabilitiesWaiters = 0;
+    // Server capability truth: /api/ai/capabilities answers { configured, capabilities }.
+    // null means the preflight has not succeeded yet; it must never be read as
+    // "configured". (#5086)
+    this.configured = null;
   }
+
+  isConfigured() { return this.configured; }
 
   async prepareCapabilities(options = {}) {
     if (this.capabilitiesPrepared) return this.getCapabilities();
@@ -99,6 +105,10 @@ export class WorkerAIProvider extends AIProvider {
       if (new TextEncoder().encode(text).byteLength > 64 * 1024) { this.capabilitiesPrepared = true; return this.getCapabilities(); }
       let payload = null;
       try { payload = JSON.parse(text); } catch { /* conservative fallback below */ }
+      // The top-level configured flag is server capability truth. Merge the
+      // budget envelope as before, but also retain configured so availability
+      // reporting stays consistent with the next-turn 503 contract. (#5086)
+      if (typeof payload?.configured === 'boolean') this.configured = payload.configured;
       if (payload?.capabilities && typeof payload.capabilities === 'object') this.capabilities = { ...this.capabilities, ...payload.capabilities };
       this.capabilitiesPrepared = true;
       return this.getCapabilities();

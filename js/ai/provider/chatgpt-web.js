@@ -85,6 +85,11 @@ export class UserscriptAIProvider extends AIProvider {
     timeoutMs = DEFAULT_WORKER_TIMEOUT_MS,
   } = {}) {
     super();
+    // AIProvider's constructor sets an instance `capabilities` data field which
+    // would shadow this class's `capabilities()` availability method (and makes
+    // js/ai/ui/bridge.js fall back to `{ providers: [] }`). This router owns no
+    // budget envelope of its own; it delegates to chatgpt/gemini. (#5086)
+    delete this.capabilities;
     this.chatgpt = new ChatGPTWebProvider({ bridge });
     this.gemini = new WorkerAIProvider({ endpoint: workerEndpoint, fetchImpl, timeoutMs });
   }
@@ -115,12 +120,32 @@ export class UserscriptAIProvider extends AIProvider {
 
   async capabilities(options = {}) {
     const chatgpt = this.bridgeCapabilities(options);
+    const gemini = await this.geminiAvailability(options);
     return {
       providers: [
         { id: 'chatgpt-web', displayName: 'ChatGPT Web', available: this.chatgpt.available(), ...(await chatgpt) },
-        { id: 'gemini', displayName: 'Gemini', available: true },
+        { id: 'gemini', displayName: 'Gemini', ...gemini },
       ],
     };
+  }
+
+  /*
+   * Gemini availability must agree with the Worker capability truth: an
+   * unconfigured worker answers the next turn with 503 service_not_configured,
+   * so it must not be listed as available. An unknown preflight result (fetch
+   * failure, oversize, unparseable) is fail-closed, never "configured". (#5086)
+   */
+  async geminiAvailability(options = {}) {
+    try {
+      await this.gemini.prepareCapabilities(
+        options.timeoutMs == null ? {} : { timeoutMs: options.timeoutMs },
+      );
+    } catch {
+      return { available: false, reason: 'capability-preflight-failed' };
+    }
+    if (this.gemini.isConfigured?.() === true) return { available: true };
+    if (this.gemini.isConfigured?.() === false) return { available: false, reason: 'service-not-configured' };
+    return { available: false, reason: 'capability-unknown' };
   }
 
   bridgeCapabilities(options = {}) {
@@ -132,7 +157,10 @@ export class UserscriptAIProvider extends AIProvider {
     const bridge = this.chatgpt.bridge;
     const chatgpt = bridge?.status?.() || { ready: false };
     const provider = globalThis.__HEX_AI_PROVIDER__ || 'chatgpt-web';
-    return { provider, ready: provider === 'gemini' ? true : !!chatgpt.ready, busy: !!chatgpt.busy, selection: chatgpt.selection || null, chatgpt };
+    // status() is synchronous and cannot preflight: report not-ready only when
+    // Gemini is known-unconfigured, never claim readiness from silence. (#5086)
+    const geminiReady = this.gemini.isConfigured?.() !== false;
+    return { provider, ready: provider === 'gemini' ? geminiReady : !!chatgpt.ready, busy: !!chatgpt.busy, selection: chatgpt.selection || null, chatgpt };
   }
 
   getSelection() {
