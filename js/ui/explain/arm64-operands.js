@@ -111,6 +111,11 @@ function isPostIndexRegister(op) {
     Number.isInteger(op.num) && op.num >= 0 && op.num <= 30;
 }
 
+function isStructureRegisterList(op) {
+  return op?.k === "list" && op.regs.length >= 1 && op.regs.length <= 4 &&
+    op.regs.every((reg) => reg.k === "reg" && reg.cls === "vec");
+}
+
 /**
  * Capstone の operand 文字列を配列にする。
  * 直前のオペランドに掛かる shift/extend は、そのオペランドの .shift に畳み込む。
@@ -166,9 +171,9 @@ export function parseOperands(str) {
       continue;
     }
     // parseOperands() has no mnemonic. Restrict register post-index folding to
-    // the AdvSIMD structure-list shape so unrelated "mem, reg" forms are not
-    // silently reinterpreted as writeback (#4105).
-    if (i > 0 && out[i - 1].k === "list" && isPostIndexRegister(next)) {
+    // the valid AdvSIMD structure-register-list shape so unrelated "mem, reg"
+    // forms and malformed brace lists remain fail-closed (#4105).
+    if (i > 0 && isStructureRegisterList(out[i - 1]) && isPostIndexRegister(next)) {
       mem.writebackReg = next;
       mem.addressDisp = null;
       mem.disp = null;
