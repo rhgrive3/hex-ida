@@ -176,8 +176,8 @@ function canonicalIdentity(value) {
   return typeof value === 'string' && value.length > 0 && value.trim() === value;
 }
 
-function resolutionFingerprint(resolution) {
-  return resolution == null ? null : stableDigest(resolution);
+function resolutionBindingKey(resolution) {
+  return resolution == null ? null : stableStringify(resolution);
 }
 
 function linkResolutionMatchesEvidence(evidence, resolution) {
@@ -186,9 +186,9 @@ function linkResolutionMatchesEvidence(evidence, resolution) {
   if (!resolution.targetEntityIds.every(canonicalIdentity)) return false;
 
   const stored = evidence?.payload?.resolution;
-  const storedFingerprint = evidence?.payload?.resolutionFingerprint;
-  if (!stored || typeof storedFingerprint !== 'string' || !storedFingerprint) return false;
-  if (resolutionFingerprint(resolution) !== storedFingerprint) return false;
+  const storedBinding = evidence?.payload?.resolutionBinding;
+  if (!stored || typeof storedBinding !== 'string' || !storedBinding) return false;
+  if (resolutionBindingKey(resolution) !== storedBinding) return false;
   if (resolution.runtimeSessionId !== evidence.payload.runtimeSessionId) return false;
   if (resolution.binaryId !== evidence.binaryId) return false;
   if (stored.runtimeSessionId !== resolution.runtimeSessionId || stored.state !== resolution.state) return false;
@@ -221,7 +221,7 @@ export class RuntimeEvidenceBridge {
         'runtime event and address resolution must belong to the same runtime session',
       );
     }
-    const resolutionBinding = resolutionFingerprint(resolution);
+    const resolutionBinding = resolutionBindingKey(resolution);
     const binaryId = resolution?.binaryId ?? options.binaryId ?? null;
     const targetEntityIds = linkableResolution(resolution) ? resolution.targetEntityIds : [];
     const interventionRecords = this.interventions.ancestry(event.interventionIds);
@@ -262,7 +262,7 @@ export class RuntimeEvidenceBridge {
         eventKind: event.kind,
         eventPayload: event.payload,
         interventionIds: interventionRecords.map((record) => record.interventionId),
-        resolutionFingerprint: resolutionBinding,
+        resolutionBinding,
         resolution: resolution ? {
           runtimeSessionId: resolution.runtimeSessionId,
           state: resolution.state,
