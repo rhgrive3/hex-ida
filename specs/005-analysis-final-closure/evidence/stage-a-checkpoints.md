@@ -959,7 +959,960 @@ Physical-device tests are SKIPPED_USER_WAIVER, never PASS; Stage B is unstarted.
         "stableDigest": "551499d607903c0215fd1fbaba5beb19",
         "pathCount": 47
       }
+    },
+    {
+      "sequence": 3,
+      "acceptedTaskId": "T052",
+      "integrationParentSha": "eb3f37b0cadaec5724688d109f336d29f6a06889",
+      "mainReconciliation": {
+        "schemaVersion": "hex-final-closure-main-reconciliation/v1",
+        "mode": "NOOP",
+        "previousEvidenceSha": "eb3f37b0cadaec5724688d109f336d29f6a06889",
+        "currentMainSha": "eef6223fc08d90ef3e86b5eb8e4a56c06f04af84",
+        "integrationHeadSha": "eb3f37b0cadaec5724688d109f336d29f6a06889",
+        "integrationHeadTreeSha": "b154700ce0f355b6d54767f1119495e6b96a92e6",
+        "autoMergeTreeSha": null,
+        "adjustmentPaths": [],
+        "adjustmentStableDigest": "09612b07b5ecb5a5359f19cb0456e970"
+      },
+      "componentHeadSha": "0a521b282c6aa93afc94e0dfbfe701e705ccdf2a",
+      "candidateMergeTreeSha": "deea1e4be6a26f69b669e9c15b6d15d49ad8586b",
+      "acceptedMerge": {
+        "commitSha": "6ee082bff33f162ea512267561c230a402e3382e",
+        "treeSha": "deea1e4be6a26f69b669e9c15b6d15d49ad8586b"
+      },
+      "checkpointProduct": {
+        "commitSha": "7d0b5c739cfc9d28443edd1af11105563e5b5ff6",
+        "treeSha": "deea1e4be6a26f69b669e9c15b6d15d49ad8586b"
+      },
+      "integrationReconciliation": {
+        "schemaVersion": "hex-final-closure-product-reconciliation/v1",
+        "ownerTaskId": "T049",
+        "mergeCommitSha": "6ee082bff33f162ea512267561c230a402e3382e",
+        "productCommitSha": "7d0b5c739cfc9d28443edd1af11105563e5b5ff6",
+        "paths": [],
+        "pathCount": 0,
+        "stableDigest": "09612b07b5ecb5a5359f19cb0456e970"
+      },
+      "generation": {
+        "schemaVersion": "hex-final-closure-checkpoint-generation-evidence/v1",
+        "command": "node scripts/build-userscript.mjs",
+        "firstRunDiffEmpty": true,
+        "secondRunDiffEmpty": true,
+        "candidateIdentity": {
+          "headSha": "7d0b5c739cfc9d28443edd1af11105563e5b5ff6",
+          "treeSha": "deea1e4be6a26f69b669e9c15b6d15d49ad8586b"
+        },
+        "generator": {
+          "path": "scripts/build-userscript.mjs",
+          "gitBlobSha1": "4a0babc9a05b68259ac1796b12e4e255e297bf0f",
+          "sha256": "710c1d19d1c6fe5c0e10fabdfb5439d1e3ec5d6236c424bac2609ebd5256b663"
+        },
+        "generatedBlobs": [
+          {
+            "path": "js/userscript/deployment-identity.generated.js",
+            "gitBlobSha1": "a9f51f223052c0ae67b174d52344afa773666a0a",
+            "sha256": "3887de01f4ab6c25d10339b6111a9c4d1b9b7be75f6b01fce5bdbed080d63252"
+          },
+          {
+            "path": "userscript/hex.user.template.js",
+            "gitBlobSha1": "2b79a3f1722f6c3f2ebce0b7115dbf7833b5073c",
+            "sha256": "2dba3ecbec974eada7b08a4c0f090b2da2a6112384d1f7c70396899ea0051783"
+          },
+          {
+            "path": "userscript/release-version.json",
+            "gitBlobSha1": "fa7099b7676a992855a74721daefc54042cc4750",
+            "sha256": "0b6155df2874c93a28fbfa836a46c9797384dde2d6a85560f4e6b53aaf8e01ed"
+          }
+        ],
+        "sourceIdentity": "917cf1a9c083139d07c54f8727a25bff8e95e0360855be34ca0057c2c557cb25",
+        "buildIdentity": "0b332a2b0822f723303a9c38df2155bdb4ce980d8db3c7d427fdf988c90528d0",
+        "artifactIdentity": "1eb910f2363784ad4633c4c1bc1a17aeaf43b895a03798d67b1a3f69cb925555",
+        "releaseIdentity": "041b7008efd4ef074f868c87f448aff1894d4f5a4db7394aaa46752d4124737a",
+        "buildId": "c66c0b76c27366ce34c113f9",
+        "releaseSerial": 2322242133
+      },
+      "rollingProductGates": {
+        "schemaVersion": "hex-final-closure-checkpoint-rolling-evidence/v2",
+        "taskIds": [
+          "T051",
+          "T059",
+          "T052"
+        ],
+        "status": "PASS",
+        "candidateIdentity": {
+          "headSha": "7d0b5c739cfc9d28443edd1af11105563e5b5ff6",
+          "treeSha": "deea1e4be6a26f69b669e9c15b6d15d49ad8586b"
+        },
+        "registry": {
+          "path": "specs/005-analysis-final-closure/contracts/task-ownership.json",
+          "sourceCommitSha": "7d0b5c739cfc9d28443edd1af11105563e5b5ff6",
+          "sourceTreeSha": "deea1e4be6a26f69b669e9c15b6d15d49ad8586b",
+          "gitBlobSha1": "599f4f441b23e521183f41c0860f3f2b8560b652",
+          "sha256": "ad3f075f12f54ae9babde16bc5a02a3ad86f16e9578bcab8ef84e96d05f0d80f",
+          "initialCandidateGateDigest": "63fb512b688c281f862740411f20df72",
+          "rollingSetDigest": "822d6d2dabb465505d67b8356e3cf975"
+        },
+        "results": [
+          {
+            "taskId": "T051",
+            "gateId": "t051-ai-release-session",
+            "registeredArgv": [
+              "node",
+              "tests/phase12/adversarial/issue-3664-ai-runtime-release-session.test.mjs"
+            ],
+            "registeredArgvDigest": "8a1737fec2e21babad13e736f8e1faa4",
+            "executedArgv": [
+              "node",
+              "tests/phase12/adversarial/issue-3664-ai-runtime-release-session.test.mjs"
+            ],
+            "executedArgvDigest": "8a1737fec2e21babad13e736f8e1faa4",
+            "candidateIdentity": {
+              "headSha": "7d0b5c739cfc9d28443edd1af11105563e5b5ff6",
+              "treeSha": "deea1e4be6a26f69b669e9c15b6d15d49ad8586b"
+            },
+            "process": {
+              "exitCode": 0,
+              "signal": null,
+              "spawnErrorCode": null,
+              "outputLimitExceeded": false
+            },
+            "stdout": {
+              "byteLength": 72,
+              "sha256": "06700e4d61092e39c75ed601ef3210358c3b6a97a26ed5da3ebe1543785b1a98"
+            },
+            "stderr": {
+              "byteLength": 0,
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "status": "PASS",
+            "identity": "e844d86a072b5ddf7b4b264c9fe5b26ea716d64fa74bfd7895af659789588352"
+          },
+          {
+            "taskId": "T051",
+            "gateId": "t051-ai-binary-identity",
+            "registeredArgv": [
+              "node",
+              "tests/phase12/adversarial/issue-6241-ai-snapshot-binary-identity.test.mjs"
+            ],
+            "registeredArgvDigest": "00f934e13d986dbb5aa0e7f4f52858d2",
+            "executedArgv": [
+              "node",
+              "tests/phase12/adversarial/issue-6241-ai-snapshot-binary-identity.test.mjs"
+            ],
+            "executedArgvDigest": "00f934e13d986dbb5aa0e7f4f52858d2",
+            "candidateIdentity": {
+              "headSha": "7d0b5c739cfc9d28443edd1af11105563e5b5ff6",
+              "treeSha": "deea1e4be6a26f69b669e9c15b6d15d49ad8586b"
+            },
+            "process": {
+              "exitCode": 0,
+              "signal": null,
+              "spawnErrorCode": null,
+              "outputLimitExceeded": false
+            },
+            "stdout": {
+              "byteLength": 43,
+              "sha256": "21405ece7b7ae267b0e6bd85c395a3b016eb30dd6c3feca7355c0f02b94f3c6d"
+            },
+            "stderr": {
+              "byteLength": 0,
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "status": "PASS",
+            "identity": "7b6d96cac230f1334bd0880cd22738a39f29625e2003a734a8de82c4ab13fb65"
+          },
+          {
+            "taskId": "T059",
+            "gateId": "t059-scheduler-dag",
+            "registeredArgv": [
+              "node",
+              "tests/phase4/scheduler/dag.test.mjs"
+            ],
+            "registeredArgvDigest": "0c5163143f7dc9c77fdd9ffbe8fd0766",
+            "executedArgv": [
+              "node",
+              "tests/phase4/scheduler/dag.test.mjs"
+            ],
+            "executedArgvDigest": "0c5163143f7dc9c77fdd9ffbe8fd0766",
+            "candidateIdentity": {
+              "headSha": "7d0b5c739cfc9d28443edd1af11105563e5b5ff6",
+              "treeSha": "deea1e4be6a26f69b669e9c15b6d15d49ad8586b"
+            },
+            "process": {
+              "exitCode": 0,
+              "signal": null,
+              "spawnErrorCode": null,
+              "outputLimitExceeded": false
+            },
+            "stdout": {
+              "byteLength": 27,
+              "sha256": "9444c500097baa475306ac92b07ae25a13397157307fcd30a6f29cdf766873c7"
+            },
+            "stderr": {
+              "byteLength": 0,
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "status": "PASS",
+            "identity": "fd50b6c486d5c9b8ddd79e8cfdb2717bc56574d9941fd8073669495e41b4f7f3"
+          },
+          {
+            "taskId": "T052",
+            "gateId": "t052-remote-authority",
+            "registeredArgv": [
+              "node",
+              "tests/phase12/collaboration/remote-authority-identity-3619.test.mjs"
+            ],
+            "registeredArgvDigest": "c2df6272b3793eb58623de807bb0c9f8",
+            "executedArgv": [
+              "node",
+              "tests/phase12/collaboration/remote-authority-identity-3619.test.mjs"
+            ],
+            "executedArgvDigest": "c2df6272b3793eb58623de807bb0c9f8",
+            "candidateIdentity": {
+              "headSha": "7d0b5c739cfc9d28443edd1af11105563e5b5ff6",
+              "treeSha": "deea1e4be6a26f69b669e9c15b6d15d49ad8586b"
+            },
+            "process": {
+              "exitCode": 0,
+              "signal": null,
+              "spawnErrorCode": null,
+              "outputLimitExceeded": false
+            },
+            "stdout": {
+              "byteLength": 69,
+              "sha256": "3887e3b173004cc7d01fa931a8ebe69f24848b070cc1ecceef889224ae6f5d93"
+            },
+            "stderr": {
+              "byteLength": 0,
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "status": "PASS",
+            "identity": "427777441a19bdf67d9a2af966bb6d4f74d38e9456bf514690d48cca796d2aea"
+          },
+          {
+            "taskId": "T052",
+            "gateId": "t052-remote-integrity",
+            "registeredArgv": [
+              "node",
+              "tests/phase12/collaboration/remote-integrity.test.mjs"
+            ],
+            "registeredArgvDigest": "3e6ffa211964817256b6a78f98bf81e7",
+            "executedArgv": [
+              "node",
+              "tests/phase12/collaboration/remote-integrity.test.mjs"
+            ],
+            "executedArgvDigest": "3e6ffa211964817256b6a78f98bf81e7",
+            "candidateIdentity": {
+              "headSha": "7d0b5c739cfc9d28443edd1af11105563e5b5ff6",
+              "treeSha": "deea1e4be6a26f69b669e9c15b6d15d49ad8586b"
+            },
+            "process": {
+              "exitCode": 0,
+              "signal": null,
+              "spawnErrorCode": null,
+              "outputLimitExceeded": false
+            },
+            "stdout": {
+              "byteLength": 58,
+              "sha256": "4a295d8789cd9ab854bb191ccdb2bcbf19276e1f1a2769c8b29a525fb2036165"
+            },
+            "stderr": {
+              "byteLength": 0,
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "status": "PASS",
+            "identity": "5f6600c7c32aeded876c22979031809def3c629b0b9c03d782f2b6e6defbdf1f"
+          },
+          {
+            "taskId": "T052",
+            "gateId": "t052-action-canonical",
+            "registeredArgv": [
+              "node",
+              "tests/phase12/collaboration/action-canonical-3546.test.mjs"
+            ],
+            "registeredArgvDigest": "f7aa1b0896aab33af5fd5072e093acb5",
+            "executedArgv": [
+              "node",
+              "tests/phase12/collaboration/action-canonical-3546.test.mjs"
+            ],
+            "executedArgvDigest": "f7aa1b0896aab33af5fd5072e093acb5",
+            "candidateIdentity": {
+              "headSha": "7d0b5c739cfc9d28443edd1af11105563e5b5ff6",
+              "treeSha": "deea1e4be6a26f69b669e9c15b6d15d49ad8586b"
+            },
+            "process": {
+              "exitCode": 0,
+              "signal": null,
+              "spawnErrorCode": null,
+              "outputLimitExceeded": false
+            },
+            "stdout": {
+              "byteLength": 52,
+              "sha256": "41763e7a9d10003b5eaa82c55ab24e721efdfd9d94a337d0969ce089c6a55bc0"
+            },
+            "stderr": {
+              "byteLength": 0,
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "status": "PASS",
+            "identity": "6f6cb8299038fd3685ff98ccedd58f5cf2e800903fec75a89ce7694f7197e2c0"
+          },
+          {
+            "taskId": "T052",
+            "gateId": "t052-pending-drain",
+            "registeredArgv": [
+              "node",
+              "tests/phase12/collaboration/issues-5397-5399-5467-5497.test.mjs"
+            ],
+            "registeredArgvDigest": "08a9dc17c58b27bd1cfdb3b9c5813830",
+            "executedArgv": [
+              "node",
+              "tests/phase12/collaboration/issues-5397-5399-5467-5497.test.mjs"
+            ],
+            "executedArgvDigest": "08a9dc17c58b27bd1cfdb3b9c5813830",
+            "candidateIdentity": {
+              "headSha": "7d0b5c739cfc9d28443edd1af11105563e5b5ff6",
+              "treeSha": "deea1e4be6a26f69b669e9c15b6d15d49ad8586b"
+            },
+            "process": {
+              "exitCode": 0,
+              "signal": null,
+              "spawnErrorCode": null,
+              "outputLimitExceeded": false
+            },
+            "stdout": {
+              "byteLength": 1513,
+              "sha256": "910a302ed27ff47f1c1ff01a9f293a2571b62609953c96761d0d8d8eeef9e45f"
+            },
+            "stderr": {
+              "byteLength": 0,
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "status": "PASS",
+            "identity": "61f674bbb34e94c9c4e0b41626469e12a6b66ce352937fdd025879555e2fcbaa"
+          },
+          {
+            "taskId": "T052",
+            "gateId": "t052-trust-boundary",
+            "registeredArgv": [
+              "node",
+              "tests/phase12/adversarial/trust-boundaries.test.mjs"
+            ],
+            "registeredArgvDigest": "b81b3098444b1e00516b15b1a158059d",
+            "executedArgv": [
+              "node",
+              "tests/phase12/adversarial/trust-boundaries.test.mjs"
+            ],
+            "executedArgvDigest": "b81b3098444b1e00516b15b1a158059d",
+            "candidateIdentity": {
+              "headSha": "7d0b5c739cfc9d28443edd1af11105563e5b5ff6",
+              "treeSha": "deea1e4be6a26f69b669e9c15b6d15d49ad8586b"
+            },
+            "process": {
+              "exitCode": 0,
+              "signal": null,
+              "spawnErrorCode": null,
+              "outputLimitExceeded": false
+            },
+            "stdout": {
+              "byteLength": 60,
+              "sha256": "597f6729a054df1813e18ad41cca8202c826cb548d61ba8886f3a9f39e7b266b"
+            },
+            "stderr": {
+              "byteLength": 0,
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "status": "PASS",
+            "identity": "9f631a2e8736f68347ba0b661b2ff6341e5fef2fcbfae97236a4316c8bc7568b"
+          },
+          {
+            "taskId": "T052",
+            "gateId": "t052-facade",
+            "registeredArgv": [
+              "node",
+              "tests/phase12/integration/facade.test.mjs"
+            ],
+            "registeredArgvDigest": "de6e7413b5112a7f0d6b1d00166c103e",
+            "executedArgv": [
+              "node",
+              "tests/phase12/integration/facade.test.mjs"
+            ],
+            "executedArgvDigest": "de6e7413b5112a7f0d6b1d00166c103e",
+            "candidateIdentity": {
+              "headSha": "7d0b5c739cfc9d28443edd1af11105563e5b5ff6",
+              "treeSha": "deea1e4be6a26f69b669e9c15b6d15d49ad8586b"
+            },
+            "process": {
+              "exitCode": 0,
+              "signal": null,
+              "spawnErrorCode": null,
+              "outputLimitExceeded": false
+            },
+            "stdout": {
+              "byteLength": 60,
+              "sha256": "c91c651e0512b51ac3c571b705a9958ed7b14abf0df021858d83259b9f6cf158"
+            },
+            "stderr": {
+              "byteLength": 0,
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "status": "PASS",
+            "identity": "259965803805a8814d8f8f4a786ded79c0dada9720659dae148aa7fb6c9d886c"
+          }
+        ],
+        "identity": "cee38f00ba330b79ea0d12c70862d9a40e63d7e86e937f010e955d1a49bfd116"
+      },
+      "independentShadowVerifier": {
+        "schemaVersion": "hex-final-closure-checkpoint-shadow-evidence/v2",
+        "status": "PASS",
+        "candidateIdentity": {
+          "headSha": "7d0b5c739cfc9d28443edd1af11105563e5b5ff6",
+          "treeSha": "deea1e4be6a26f69b669e9c15b6d15d49ad8586b"
+        },
+        "reports": [
+          {
+            "schemaVersion": "hex-final-closure-shadow-gate-evidence/v1",
+            "status": "PASS",
+            "taskId": "T051",
+            "gateId": "t051-independent-verifier",
+            "candidateIdentity": {
+              "headSha": "7d0b5c739cfc9d28443edd1af11105563e5b5ff6",
+              "treeSha": "deea1e4be6a26f69b669e9c15b6d15d49ad8586b"
+            },
+            "authorityCommitSha": "6ee082bff33f162ea512267561c230a402e3382e",
+            "authorityOwnershipArtifact": {
+              "path": "specs/005-analysis-final-closure/contracts/task-ownership.json",
+              "gitBlobSha1": "599f4f441b23e521183f41c0860f3f2b8560b652",
+              "sha256": "ad3f075f12f54ae9babde16bc5a02a3ad86f16e9578bcab8ef84e96d05f0d80f"
+            },
+            "registryEntryDigest": "f120c169be6ae3d781e7a2c0c33b3d28",
+            "verifierArtifact": {
+              "path": "tools/validation/final-closure/preflight.mjs",
+              "gitBlobSha1": "54737922f0298fae20188ee5715a76492f2123f9",
+              "sha256": "8cc6828d48f3650caf504eba44a1c47b697c17487b605da136cfa7347aa1c851"
+            },
+            "verifierIdentity": "8cc6828d48f3650caf504eba44a1c47b697c17487b605da136cfa7347aa1c851",
+            "authorityArtifacts": [
+              {
+                "role": "registry",
+                "path": "tools/validation/final-closure/shadow/foundation/registry.json",
+                "gitBlobSha1": "495099bd5db7a977abcf91fac0f045db419f09e1",
+                "sha256": "5ef70a1159d7fe8e0768cb3cd16958c8d96238c89ee9f0463d78e1555ef21b0e"
+              },
+              {
+                "role": "contracts",
+                "path": "tools/validation/final-closure/shadow/foundation/contracts.json",
+                "gitBlobSha1": "50e9f04bfd9af11d8288e5d8e0d8e61e346652a3",
+                "sha256": "ddff1dda2831e24aba7706699af20463752eafc0318378fdb1776e55a0bc451b"
+              },
+              {
+                "role": "oracleProvider",
+                "path": "tools/validation/final-closure/shadow/foundation/oracle-observer.mjs",
+                "gitBlobSha1": "9136f0a32790f1679e1ef9e5e5f972a5393c4d74",
+                "sha256": "2ea797c3947459e21466827239034d53ce25620c5d70f4609e188e5db083991a"
+              },
+              {
+                "role": "productProvider",
+                "path": "tools/validation/final-closure/shadow/foundation/product-observer.mjs",
+                "gitBlobSha1": "bd688116273a9235d7f63e49a8ff4ee6e7964392",
+                "sha256": "04d70f70b3db14d1eda1ba469429af35befd674fcd0a2255112f69931c8d48e2"
+              }
+            ],
+            "authorityIdentity": "11bfa71b9343ba71b4fc4b9121a4207339c593fcc1045701c407ef73330b3ef0",
+            "judgeArtifacts": [
+              {
+                "caseId": "ai-snapshot-binary-identity",
+                "path": "tests/ai-scope-hardening.mjs",
+                "gitBlobSha1": "4e6912d4e94b259f01b3367c7df8d359e2c08724",
+                "sha256": "1ec4b027893b217058eda1505183e9d70e58035a32050643a1fcd6aaae10c49f"
+              }
+            ],
+            "judgeIdentity": "5ef6c46abb516de3d8df77b5f1c020082b0091ecfee72f482fe7f885c0465cff",
+            "observations": {
+              "oracle": {
+                "schemaVersion": "hex-final-closure-shadow-raw-observation/v1",
+                "taskId": "T051",
+                "gateId": "t051-independent-verifier",
+                "observations": [
+                  {
+                    "caseId": "ai-snapshot-binary-identity",
+                    "state": "OBSERVED",
+                    "value": {
+                      "errorCode": null,
+                      "exitCode": 0,
+                      "signal": null
+                    }
+                  }
+                ]
+              },
+              "product": {
+                "schemaVersion": "hex-final-closure-shadow-raw-observation/v1",
+                "taskId": "T051",
+                "gateId": "t051-independent-verifier",
+                "observations": [
+                  {
+                    "caseId": "ai-snapshot-binary-identity",
+                    "state": "OBSERVED",
+                    "value": {
+                      "exitCode": 0,
+                      "signal": null,
+                      "errorCode": null
+                    }
+                  }
+                ]
+              }
+            },
+            "proof": {
+              "schemaVersion": "hex-final-closure-shadow-proof/v2",
+              "verdict": "PASS",
+              "comparisonAlgorithm": "canonical-observation-equality-safe-unknown/v1",
+              "contractIdentity": "8ed019f13666f1913ae77d906a840016b38d50afe5ee9a301eb4355dfbe573f1",
+              "caseCount": 1,
+              "results": [
+                {
+                  "caseId": "ai-snapshot-binary-identity",
+                  "disposition": "MATCH",
+                  "oracleObservationSha256": "d6afc80f95c68f389ce9a6dbcf5379503c547c299008dd093b767fb33cf628b2",
+                  "productObservationSha256": "d6afc80f95c68f389ce9a6dbcf5379503c547c299008dd093b767fb33cf628b2"
+                }
+              ],
+              "counters": [
+                {
+                  "id": "falseExactNoAlias",
+                  "observed": 0,
+                  "denominator": 0
+                },
+                {
+                  "id": "falseExactMustAlias",
+                  "observed": 0,
+                  "denominator": 0
+                },
+                {
+                  "id": "falseExactIndirectTarget",
+                  "observed": 0,
+                  "denominator": 0
+                },
+                {
+                  "id": "falseExactType",
+                  "observed": 0,
+                  "denominator": 0
+                },
+                {
+                  "id": "semanticMismatch",
+                  "observed": 0,
+                  "denominator": 1
+                },
+                {
+                  "id": "stalePublicationAfterCancel",
+                  "observed": 0,
+                  "denominator": 0
+                },
+                {
+                  "id": "invalidWriterOutputAccepted",
+                  "observed": 0,
+                  "denominator": 0
+                }
+              ]
+            },
+            "evidenceIdentity": "6509bf4ca1f005d8022e7efab5e1527d216570cd47b6c189061fdc923313e34c"
+          },
+          {
+            "schemaVersion": "hex-final-closure-shadow-gate-evidence/v1",
+            "status": "PASS",
+            "taskId": "T059",
+            "gateId": "t059-independent-verifier",
+            "candidateIdentity": {
+              "headSha": "7d0b5c739cfc9d28443edd1af11105563e5b5ff6",
+              "treeSha": "deea1e4be6a26f69b669e9c15b6d15d49ad8586b"
+            },
+            "authorityCommitSha": "6ee082bff33f162ea512267561c230a402e3382e",
+            "authorityOwnershipArtifact": {
+              "path": "specs/005-analysis-final-closure/contracts/task-ownership.json",
+              "gitBlobSha1": "599f4f441b23e521183f41c0860f3f2b8560b652",
+              "sha256": "ad3f075f12f54ae9babde16bc5a02a3ad86f16e9578bcab8ef84e96d05f0d80f"
+            },
+            "registryEntryDigest": "c809c95cf5c0dc4f1d2aa4d4340b4830",
+            "verifierArtifact": {
+              "path": "tools/validation/final-closure/preflight.mjs",
+              "gitBlobSha1": "54737922f0298fae20188ee5715a76492f2123f9",
+              "sha256": "8cc6828d48f3650caf504eba44a1c47b697c17487b605da136cfa7347aa1c851"
+            },
+            "verifierIdentity": "8cc6828d48f3650caf504eba44a1c47b697c17487b605da136cfa7347aa1c851",
+            "authorityArtifacts": [
+              {
+                "role": "registry",
+                "path": "tools/validation/final-closure/shadow/foundation/registry.json",
+                "gitBlobSha1": "495099bd5db7a977abcf91fac0f045db419f09e1",
+                "sha256": "5ef70a1159d7fe8e0768cb3cd16958c8d96238c89ee9f0463d78e1555ef21b0e"
+              },
+              {
+                "role": "contracts",
+                "path": "tools/validation/final-closure/shadow/foundation/contracts.json",
+                "gitBlobSha1": "50e9f04bfd9af11d8288e5d8e0d8e61e346652a3",
+                "sha256": "ddff1dda2831e24aba7706699af20463752eafc0318378fdb1776e55a0bc451b"
+              },
+              {
+                "role": "oracleProvider",
+                "path": "tools/validation/final-closure/shadow/foundation/oracle-observer.mjs",
+                "gitBlobSha1": "9136f0a32790f1679e1ef9e5e5f972a5393c4d74",
+                "sha256": "2ea797c3947459e21466827239034d53ce25620c5d70f4609e188e5db083991a"
+              },
+              {
+                "role": "productProvider",
+                "path": "tools/validation/final-closure/shadow/foundation/product-observer.mjs",
+                "gitBlobSha1": "bd688116273a9235d7f63e49a8ff4ee6e7964392",
+                "sha256": "04d70f70b3db14d1eda1ba469429af35befd674fcd0a2255112f69931c8d48e2"
+              }
+            ],
+            "authorityIdentity": "11bfa71b9343ba71b4fc4b9121a4207339c593fcc1045701c407ef73330b3ef0",
+            "judgeArtifacts": [
+              {
+                "caseId": "scheduler-id-authority",
+                "path": "tests/phase4/scheduler/strict-authority-boundaries.test.mjs",
+                "gitBlobSha1": "9247ac1793db1888f39f7a4a643623bb61e962d1",
+                "sha256": "a21eadd97295b3822adb9fd259b962caed25d2b3a50aa6b88363ab990a7bc2e6"
+              }
+            ],
+            "judgeIdentity": "a1e49d0ae7e8095e44178bb846ff2a071d74e134bdb412626996b9cd5ece7766",
+            "observations": {
+              "oracle": {
+                "schemaVersion": "hex-final-closure-shadow-raw-observation/v1",
+                "taskId": "T059",
+                "gateId": "t059-independent-verifier",
+                "observations": [
+                  {
+                    "caseId": "scheduler-id-authority",
+                    "state": "OBSERVED",
+                    "value": {
+                      "errorCode": null,
+                      "exitCode": 0,
+                      "signal": null
+                    }
+                  }
+                ]
+              },
+              "product": {
+                "schemaVersion": "hex-final-closure-shadow-raw-observation/v1",
+                "taskId": "T059",
+                "gateId": "t059-independent-verifier",
+                "observations": [
+                  {
+                    "caseId": "scheduler-id-authority",
+                    "state": "OBSERVED",
+                    "value": {
+                      "exitCode": 0,
+                      "signal": null,
+                      "errorCode": null
+                    }
+                  }
+                ]
+              }
+            },
+            "proof": {
+              "schemaVersion": "hex-final-closure-shadow-proof/v2",
+              "verdict": "PASS",
+              "comparisonAlgorithm": "canonical-observation-equality-safe-unknown/v1",
+              "contractIdentity": "ed970160e0a0e32a1efa4cc0eec22392b2fdda86693e142327bb0fdafd601a26",
+              "caseCount": 1,
+              "results": [
+                {
+                  "caseId": "scheduler-id-authority",
+                  "disposition": "MATCH",
+                  "oracleObservationSha256": "544b6f8c3645429cd9f23c0c6660d6f516bd16db21f1f4f0f4ee45d2a981a5e6",
+                  "productObservationSha256": "544b6f8c3645429cd9f23c0c6660d6f516bd16db21f1f4f0f4ee45d2a981a5e6"
+                }
+              ],
+              "counters": [
+                {
+                  "id": "falseExactNoAlias",
+                  "observed": 0,
+                  "denominator": 0
+                },
+                {
+                  "id": "falseExactMustAlias",
+                  "observed": 0,
+                  "denominator": 0
+                },
+                {
+                  "id": "falseExactIndirectTarget",
+                  "observed": 0,
+                  "denominator": 0
+                },
+                {
+                  "id": "falseExactType",
+                  "observed": 0,
+                  "denominator": 0
+                },
+                {
+                  "id": "semanticMismatch",
+                  "observed": 0,
+                  "denominator": 1
+                },
+                {
+                  "id": "stalePublicationAfterCancel",
+                  "observed": 0,
+                  "denominator": 1
+                },
+                {
+                  "id": "invalidWriterOutputAccepted",
+                  "observed": 0,
+                  "denominator": 0
+                }
+              ]
+            },
+            "evidenceIdentity": "adbb807c80aedc408ac8c7c4f2efaf1821914217543aed19f81d7b9500e73b9c"
+          },
+          {
+            "schemaVersion": "hex-final-closure-shadow-gate-evidence/v1",
+            "status": "PASS",
+            "taskId": "T052",
+            "gateId": "t052-independent-verifier",
+            "candidateIdentity": {
+              "headSha": "7d0b5c739cfc9d28443edd1af11105563e5b5ff6",
+              "treeSha": "deea1e4be6a26f69b669e9c15b6d15d49ad8586b"
+            },
+            "authorityCommitSha": "6ee082bff33f162ea512267561c230a402e3382e",
+            "authorityOwnershipArtifact": {
+              "path": "specs/005-analysis-final-closure/contracts/task-ownership.json",
+              "gitBlobSha1": "599f4f441b23e521183f41c0860f3f2b8560b652",
+              "sha256": "ad3f075f12f54ae9babde16bc5a02a3ad86f16e9578bcab8ef84e96d05f0d80f"
+            },
+            "registryEntryDigest": "870aa3ec026061dcc12c1ce2f5e041bb",
+            "verifierArtifact": {
+              "path": "tools/validation/final-closure/preflight.mjs",
+              "gitBlobSha1": "54737922f0298fae20188ee5715a76492f2123f9",
+              "sha256": "8cc6828d48f3650caf504eba44a1c47b697c17487b605da136cfa7347aa1c851"
+            },
+            "verifierIdentity": "8cc6828d48f3650caf504eba44a1c47b697c17487b605da136cfa7347aa1c851",
+            "authorityArtifacts": [
+              {
+                "role": "registry",
+                "path": "tools/validation/final-closure/shadow/foundation/registry.json",
+                "gitBlobSha1": "495099bd5db7a977abcf91fac0f045db419f09e1",
+                "sha256": "5ef70a1159d7fe8e0768cb3cd16958c8d96238c89ee9f0463d78e1555ef21b0e"
+              },
+              {
+                "role": "contracts",
+                "path": "tools/validation/final-closure/shadow/foundation/contracts.json",
+                "gitBlobSha1": "50e9f04bfd9af11d8288e5d8e0d8e61e346652a3",
+                "sha256": "ddff1dda2831e24aba7706699af20463752eafc0318378fdb1776e55a0bc451b"
+              },
+              {
+                "role": "oracleProvider",
+                "path": "tools/validation/final-closure/shadow/foundation/oracle-observer.mjs",
+                "gitBlobSha1": "9136f0a32790f1679e1ef9e5e5f972a5393c4d74",
+                "sha256": "2ea797c3947459e21466827239034d53ce25620c5d70f4609e188e5db083991a"
+              },
+              {
+                "role": "productProvider",
+                "path": "tools/validation/final-closure/shadow/foundation/product-observer.mjs",
+                "gitBlobSha1": "bd688116273a9235d7f63e49a8ff4ee6e7964392",
+                "sha256": "04d70f70b3db14d1eda1ba469429af35befd674fcd0a2255112f69931c8d48e2"
+              }
+            ],
+            "authorityIdentity": "11bfa71b9343ba71b4fc4b9121a4207339c593fcc1045701c407ef73330b3ef0",
+            "judgeArtifacts": [
+              {
+                "caseId": "collaboration-remote-authority-identity",
+                "path": "tests/phase12/collaboration/issues-5397-5399-5467-5497.test.mjs",
+                "gitBlobSha1": "55112274bf27b93e376390258e0b4bf934fb6db2",
+                "sha256": "3258d724db529650fa1b31b0e765353e39485a48ce8ba64cf2b32c90b8a93ac6"
+              }
+            ],
+            "judgeIdentity": "175a307b54cb82d037cd8ed40838f8ba6ac185812597797fbbbad763c59befa2",
+            "observations": {
+              "oracle": {
+                "schemaVersion": "hex-final-closure-shadow-raw-observation/v1",
+                "taskId": "T052",
+                "gateId": "t052-independent-verifier",
+                "observations": [
+                  {
+                    "caseId": "collaboration-remote-authority-identity",
+                    "state": "OBSERVED",
+                    "value": {
+                      "errorCode": null,
+                      "exitCode": 0,
+                      "signal": null
+                    }
+                  }
+                ]
+              },
+              "product": {
+                "schemaVersion": "hex-final-closure-shadow-raw-observation/v1",
+                "taskId": "T052",
+                "gateId": "t052-independent-verifier",
+                "observations": [
+                  {
+                    "caseId": "collaboration-remote-authority-identity",
+                    "state": "OBSERVED",
+                    "value": {
+                      "exitCode": 0,
+                      "signal": null,
+                      "errorCode": null
+                    }
+                  }
+                ]
+              }
+            },
+            "proof": {
+              "schemaVersion": "hex-final-closure-shadow-proof/v2",
+              "verdict": "PASS",
+              "comparisonAlgorithm": "canonical-observation-equality-safe-unknown/v1",
+              "contractIdentity": "085f65f4ee1c493efb736ec8680fef8b8cb3b80dfc1a34d37eacf97828d14c76",
+              "caseCount": 1,
+              "results": [
+                {
+                  "caseId": "collaboration-remote-authority-identity",
+                  "disposition": "MATCH",
+                  "oracleObservationSha256": "10c9b3a5de90d5cf7d01b78c5a627375cbdbce6dacfbc76cddc48e8c26c187b6",
+                  "productObservationSha256": "10c9b3a5de90d5cf7d01b78c5a627375cbdbce6dacfbc76cddc48e8c26c187b6"
+                }
+              ],
+              "counters": [
+                {
+                  "id": "falseExactNoAlias",
+                  "observed": 0,
+                  "denominator": 0
+                },
+                {
+                  "id": "falseExactMustAlias",
+                  "observed": 0,
+                  "denominator": 0
+                },
+                {
+                  "id": "falseExactIndirectTarget",
+                  "observed": 0,
+                  "denominator": 0
+                },
+                {
+                  "id": "falseExactType",
+                  "observed": 0,
+                  "denominator": 0
+                },
+                {
+                  "id": "semanticMismatch",
+                  "observed": 0,
+                  "denominator": 1
+                },
+                {
+                  "id": "stalePublicationAfterCancel",
+                  "observed": 0,
+                  "denominator": 0
+                },
+                {
+                  "id": "invalidWriterOutputAccepted",
+                  "observed": 0,
+                  "denominator": 0
+                }
+              ]
+            },
+            "evidenceIdentity": "7f1e621d88ddc5ce769102d142f99fa90e0c04d09ecac867e1bc33800f5317ee"
+          }
+        ],
+        "aggregate": {
+          "schemaVersion": "hex-final-closure-checkpoint-shadow-aggregate/v1",
+          "status": "PARTIAL_ZERO",
+          "candidateIdentity": {
+            "headSha": "7d0b5c739cfc9d28443edd1af11105563e5b5ff6",
+            "treeSha": "deea1e4be6a26f69b669e9c15b6d15d49ad8586b"
+          },
+          "reportEvidenceIdentities": [
+            {
+              "taskId": "T051",
+              "gateId": "t051-independent-verifier",
+              "evidenceIdentity": "6509bf4ca1f005d8022e7efab5e1527d216570cd47b6c189061fdc923313e34c",
+              "proofIdentity": "978a37ce9e7d6ea98d09248c8212b2d4f1b590b69e0ad8085d6936e06a762b7a"
+            },
+            {
+              "taskId": "T052",
+              "gateId": "t052-independent-verifier",
+              "evidenceIdentity": "7f1e621d88ddc5ce769102d142f99fa90e0c04d09ecac867e1bc33800f5317ee",
+              "proofIdentity": "49e9099d3a1ee867b6da983b77352450ecbea67155a40f855b3fda530e6ddd02"
+            },
+            {
+              "taskId": "T059",
+              "gateId": "t059-independent-verifier",
+              "evidenceIdentity": "adbb807c80aedc408ac8c7c4f2efaf1821914217543aed19f81d7b9500e73b9c",
+              "proofIdentity": "67bf8115ada1c236bb74c458e25ffd387cd240ab98c85fa954567d9c30269da4"
+            }
+          ],
+          "reportSetIdentity": "b615316e7a3a9f1da38a3414a4714e73a7bed377cc3d76b758568818dcdece3c",
+          "counters": [
+            {
+              "id": "falseExactNoAlias",
+              "observed": 0,
+              "denominator": 0
+            },
+            {
+              "id": "falseExactMustAlias",
+              "observed": 0,
+              "denominator": 0
+            },
+            {
+              "id": "falseExactIndirectTarget",
+              "observed": 0,
+              "denominator": 0
+            },
+            {
+              "id": "falseExactType",
+              "observed": 0,
+              "denominator": 0
+            },
+            {
+              "id": "semanticMismatch",
+              "observed": 0,
+              "denominator": 3
+            },
+            {
+              "id": "stalePublicationAfterCancel",
+              "observed": 0,
+              "denominator": 1
+            },
+            {
+              "id": "invalidWriterOutputAccepted",
+              "observed": 0,
+              "denominator": 0
+            }
+          ],
+          "identity": "598d7e8adcf041ebc4caf966398eab7a953a3096daf17679e725b0d7852f4733"
+        },
+        "identity": "ac942185fcc4ca45d44a5dcbcbfcbeef99bc30bf9c07dde2faa9e7c192eee63c"
+      },
+      "initialCandidateGateDigest": "63fb512b688c281f862740411f20df72",
+      "cumulativeInventory": {
+        "baseSha": "eef6223fc08d90ef3e86b5eb8e4a56c06f04af84",
+        "stableDigest": "ca0daf90dfde5d165352eeabe890dd23",
+        "pathCount": 53
+      }
     }
   ]
 }
 ```
+
+## Checkpoint 3 — T052, 2026-09-05
+
+PR #6669 merged into the living Recovery branch as
+`6ee082bff33f162ea512267561c230a402e3382e`, with ordered parents P2
+`eb3f37b0cadaec5724688d109f336d29f6a06889` and reviewed component
+`0a521b282c6aa93afc94e0dfbfe701e705ccdf2a`. Its actual tree is
+`deea1e4be6a26f69b669e9c15b6d15d49ad8586b`; only the four T052-owned
+source/test paths were added relative to P2. Original handoffs and both
+T060 receipts remain unchanged.
+
+- Exact P2 hosted preflight/runtime run `33961730358`: PASS.
+- Exact event-authorized T052 candidate run `33961805786`: PASS, including
+  canonical final-closure regressions, walking skeleton, owned/rolling/shadow
+  gates and inherited current-product runtime reproduction.
+- Exact G `7d0b5c739cfc9d28443edd1af11105563e5b5ff6`: canonical generation
+  repeated twice with zero diff; nine cumulative rolling gates and three
+  pinned independent shadow reports PASS. The T052 owned group also PASS.
+- Root inspected production/hydration/fixture diffs and candidate identity.
+  CodeRabbit had no review threads on PR #6669 at acceptance. Historical
+  review or this component checkpoint does not certify final Recovery CI.
+
+Recovery release-level failures remain assigned to their unfinished owners;
+full Phase 12, Stage 2, semantic corpus and final exact-head CI are not claimed
+green here. This checkpoint accepts the T052 boundary only. The new integration
+evidence HEAD still requires hosted verification. Physical device remains
+`SKIPPED_USER_WAIVER`. Stage B has not started.

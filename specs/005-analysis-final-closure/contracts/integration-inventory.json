@@ -597,9 +597,9 @@
   },
   "checkpoint": {
     "schemaVersion": "hex-final-closure-integration-checkpoint-state/v1",
-    "sequence": 2,
+    "sequence": 3,
     "state": "CHECKPOINT_GREEN",
-    "acceptedTaskId": "T059",
+    "acceptedTaskId": "T052",
     "evidencePath": "specs/005-analysis-final-closure/evidence/stage-a-checkpoints.md"
   },
   "taskHandoffs": {
@@ -677,6 +677,11 @@
       "headSha": "b03e967b4ad91a59b71f757a37565da94ba0ca1c",
       "treeSha": "0e72f2f3476c6577ed3157c34ffd4f8bf1672db3",
       "evidencePath": "specs/005-analysis-final-closure/evidence/moving-main-amendment.md"
+    },
+    "T052": {
+      "headSha": "0a521b282c6aa93afc94e0dfbfe701e705ccdf2a",
+      "treeSha": "deea1e4be6a26f69b669e9c15b6d15d49ad8586b",
+      "evidencePath": "tests/final-closure/t052/canonical-operation-registry.test.mjs"
     }
   },
   "pathPatternPolicy": "repo-relative exact paths; task allowedPaths may additionally use a terminal /** subtree glob",
@@ -688,6 +693,7 @@
     ".github/workflows/ui-regression.yml",
     "js/ai/control/snapshot.js",
     "js/ai/dev/ui/controls.js",
+    "js/collaboration/index.js",
     "js/core/scheduler/analysis-scheduler.js",
     "package.json",
     "specs/005-analysis-final-closure/checklists/release-evidence.md",
@@ -718,7 +724,10 @@
     "tests/final-closure/preflight.test.mjs",
     "tests/final-closure/run.mjs",
     "tests/final-closure/t051/ai-snapshot-dev-scope.test.mjs",
+    "tests/final-closure/t052/canonical-operation-registry.test.mjs",
     "tests/final-closure/t059/strict-artifact-id-authority.test.mjs",
+    "tests/phase12/adversarial/trust-boundaries.test.mjs",
+    "tests/phase12/integration/facade.test.mjs",
     "tests/phase4/ownership/integration-contract-repair.test.mjs",
     "tests/stage1/verifier-self-tests.test.mjs",
     "tests/stage1/workflow-trigger-coverage.test.mjs",
@@ -739,6 +748,7 @@
     ".github/workflows/ui-regression.yml",
     "js/ai/control/snapshot.js",
     "js/ai/dev/ui/controls.js",
+    "js/collaboration/index.js",
     "js/core/scheduler/analysis-scheduler.js",
     "package.json",
     "specs/005-analysis-final-closure/checklists/release-evidence.md",
@@ -769,7 +779,10 @@
     "tests/final-closure/preflight.test.mjs",
     "tests/final-closure/run.mjs",
     "tests/final-closure/t051/ai-snapshot-dev-scope.test.mjs",
+    "tests/final-closure/t052/canonical-operation-registry.test.mjs",
     "tests/final-closure/t059/strict-artifact-id-authority.test.mjs",
+    "tests/phase12/adversarial/trust-boundaries.test.mjs",
+    "tests/phase12/integration/facade.test.mjs",
     "tests/phase4/ownership/integration-contract-repair.test.mjs",
     "tests/stage1/verifier-self-tests.test.mjs",
     "tests/stage1/workflow-trigger-coverage.test.mjs",
@@ -790,6 +803,7 @@
     ".github/workflows/ui-regression.yml",
     "js/ai/control/snapshot.js",
     "js/ai/dev/ui/controls.js",
+    "js/collaboration/index.js",
     "js/core/scheduler/analysis-scheduler.js",
     "package.json",
     "specs/005-analysis-final-closure/checklists/release-evidence.md",
@@ -820,7 +834,10 @@
     "tests/final-closure/preflight.test.mjs",
     "tests/final-closure/run.mjs",
     "tests/final-closure/t051/ai-snapshot-dev-scope.test.mjs",
+    "tests/final-closure/t052/canonical-operation-registry.test.mjs",
     "tests/final-closure/t059/strict-artifact-id-authority.test.mjs",
+    "tests/phase12/adversarial/trust-boundaries.test.mjs",
+    "tests/phase12/integration/facade.test.mjs",
     "tests/phase4/ownership/integration-contract-repair.test.mjs",
     "tests/stage1/verifier-self-tests.test.mjs",
     "tests/stage1/workflow-trigger-coverage.test.mjs",
@@ -858,6 +875,10 @@
     {
       "path": "js/ai/dev/ui/controls.js",
       "ownerTaskId": "T051"
+    },
+    {
+      "path": "js/collaboration/index.js",
+      "ownerTaskId": "T052"
     },
     {
       "path": "js/core/scheduler/analysis-scheduler.js",
@@ -980,8 +1001,20 @@
       "ownerTaskId": "T051"
     },
     {
+      "path": "tests/final-closure/t052/canonical-operation-registry.test.mjs",
+      "ownerTaskId": "T052"
+    },
+    {
       "path": "tests/final-closure/t059/strict-artifact-id-authority.test.mjs",
       "ownerTaskId": "T059"
+    },
+    {
+      "path": "tests/phase12/adversarial/trust-boundaries.test.mjs",
+      "ownerTaskId": "T052"
+    },
+    {
+      "path": "tests/phase12/integration/facade.test.mjs",
+      "ownerTaskId": "T052"
     },
     {
       "path": "tests/phase4/ownership/integration-contract-repair.test.mjs",
