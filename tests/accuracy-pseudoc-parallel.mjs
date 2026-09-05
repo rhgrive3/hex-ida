@@ -176,7 +176,7 @@ async function run(argv) {
     };
 
     function spawnWorker() {
-      if (failed || children.size >= maxWorkers || next >= tasks.length) return false;
+      if (failed || children.size >= maxWorkers || next >= samples.length) return false;
       const worker = workerSequence++;
       let child;
       try {
@@ -260,7 +260,7 @@ async function run(argv) {
 
     function scaleIfReady() {
       if (failed || finished >= samples.length || !scaleFile || !fs.existsSync(scaleFile)) return;
-      while (children.size < maxWorkers && next < tasks.length) {
+      while (children.size < maxWorkers && next < samples.length) {
         if (!spawnWorker()) break;
       }
       if (children.size >= maxWorkers) clearScaleTimer();
