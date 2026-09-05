@@ -91,3 +91,15 @@ test('#6282 truncated and odd blocks keep their existing diagnostics', () => {
   parseBaseRelocations(t2.r, { rva: 0x2000, size: 16 }, t2.image, 0x8664);
   assert.ok(t2.image.warnings.some((w) => /Malformed PE base-relocation block/.test(w)), 'block exceeding directory bounds stays malformed');
 });
+
+test('#6282 misaligned initial directory or block RVA fails closed', () => {
+  const { bytes, r, image } = fixture();
+  // Relocation directory starting at unaligned RVA 0x2002 with otherwise-valid BlockSize = 8
+  writeBlock(bytes, 0x2002, 0x1000, 8, []);
+  parseBaseRelocations(r, { rva: 0x2002, size: 8 }, image, 0x8664);
+  assert.equal(image.metadata.peMetadata.complete, false, 'misaligned directory RVA must be marked incomplete');
+  assert.ok(image.metadata.peMetadata.reasons.includes('relocations:malformed-block'), image.metadata.peMetadata.reasons.join(','));
+  assert.ok(image.warnings.some((w) => /Malformed PE base-relocation block/.test(w)));
+  assert.equal(image.relocations.length, 0, 'no relocations published from misaligned directory');
+});
+
