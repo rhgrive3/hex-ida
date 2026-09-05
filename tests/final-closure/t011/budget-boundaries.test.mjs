@@ -266,6 +266,21 @@ test('T011 PHI recovery reads the slot at LOAD time, before a later writer', () 
   assert.equal(result.metrics.rewrittenExpressions, 1);
 });
 
+test('T011 PHI recovery does not infer missing or malformed STORE widths from a stack key', () => {
+  for (const storeSize of [undefined, null, '4', 4n, new Number(4), NaN, Infinity]) {
+    const result = stackReturnFixture({ storeSize });
+    result.ir.instructions[0].loc.size = storeSize;
+    recoverExactStackPhiExpressions(result, { deterministicTransforms:true });
+    assert.equal(result.cAst.body[0].text, 'return local_0;');
+    assert.equal(result.metrics.rewrittenExpressions, 0);
+  }
+  const instructionWidth = stackReturnFixture();
+  delete instructionWidth.ir.instructions[0].loc.size;
+  instructionWidth.ir.instructions[0].size = 4;
+  recoverExactStackPhiExpressions(instructionWidth, { deterministicTransforms:true });
+  assert.equal(instructionWidth.cAst.body[0].text, 'return 11;');
+});
+
 test('T011 return fallback rejects width, LOAD, and location-kind ambiguity', () => {
   for (const options of [
     { name:'wrong-width', options:{ storeSize:8 } },

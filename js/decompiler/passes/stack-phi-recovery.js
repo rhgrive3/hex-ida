@@ -254,10 +254,7 @@ function exactStackLoadSlot(ir, value, expression) {
 }
 
 function storeAccessSize(inst) {
-  const size = positiveAccessSize(inst?.loc?.size ?? inst?.size);
-  if (size != null) return size;
-  const match = String(inst?.loc?.key || '').match(/:s(\d+)$/);
-  return match ? positiveAccessSize(Number(match[1])) : null;
+  return positiveAccessSize(inst?.loc?.size ?? inst?.size);
 }
 
 function exactStoreExpression(inst, key, size, maps, engine, ir, opts, active, depth) {
