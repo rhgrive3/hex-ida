@@ -49,6 +49,19 @@ export function immediateOf(op) {
   try { return BigInt(op.value); } catch { return null; }
 }
 
+// Strict architectural address parser: only bigint, safe-integer numbers,
+// and canonical decimal/hex strings are address evidence. JavaScript
+// coercion (single-element arrays, booleans, objects) must never mint an
+// exact address.
+export function strictAddressInput(value) {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value);
+  if (typeof value === 'string' && /^-?(?:0x[0-9a-f]+|\d+)$/i.test(value.trim())) {
+    try { return BigInt(value.trim()); } catch { return null; }
+  }
+  return null;
+}
+
 function decodedAbsoluteTargetOf(op) {
   const immediate = immediateOf(op);
   if (immediate != null) return immediate;
