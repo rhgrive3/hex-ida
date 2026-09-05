@@ -84,6 +84,10 @@ async function withDiscoverySandbox(definitions, run) {
             const port = transfer?.[0];
             assert.ok(port, 'sandbox init must transfer a MessagePort');
             port.onmessage = (event) => {
+              if (event.data?.t === 'terminate') {
+                port.close();
+                return;
+              }
               if (event.data?.t === 'start') {
                 port.postMessage({ t:'done', value:definitions });
               }
