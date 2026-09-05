@@ -47,7 +47,7 @@ const neighborhoodScope = new ScopeController({
     address: '0x1000',
     range: { start: '0x1000', end: '0x1100' },
   },
-  neighborhood: [{ address: '0x2000' }],
+  neighborhood: ['0x2000'],
 }, 'neighborhood');
 assert.doesNotThrow(() => neighborhoodScope.assertToolCall('inspect_function_region', { ...regionArgs, functionAddress: '0x2000' }));
 
