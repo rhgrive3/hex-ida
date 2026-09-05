@@ -118,7 +118,12 @@ export function typeCheckPattern(parsed) {
 export function compilePattern(source, options = {}) {
   const parsed = typeCheckPattern(parsePattern(source));
   const sourceHash = stableDigest(parsed.ast);
-  const compileOptions = { targetAddressSpace: options.targetAddressSpace || 'file', semanticVersion: PATTERN_LANGUAGE_VERSION, options: options.compileOptions || {} };
+  let targetAddressSpace = 'file';
+  if (options.targetAddressSpace != null) {
+    if (typeof options.targetAddressSpace !== 'string' || !options.targetAddressSpace) fail('pattern-target-address-space-invalid');
+    targetAddressSpace = options.targetAddressSpace;
+  }
+  const compileOptions = { targetAddressSpace, semanticVersion: PATTERN_LANGUAGE_VERSION, options: options.compileOptions || {} };
   return deepFreeze({ languageVersion: PATTERN_LANGUAGE_VERSION, sourceHash, patternId: `pattern:${stableDigest({ sourceHash, compileOptions })}`, ast: parsed.ast, snapshotId: options.snapshotId || null, compileOptions });
 }
 
@@ -221,7 +226,12 @@ export function evaluatePattern(compiled, byteSource, options = {}) {
   const root = pattern.ast.kind === 'module' ? typeMap.get(pattern.ast.root || structs[0]?.name) : pattern.ast;
   const ctx = { patternId: pattern.patternId, source, budget, types: typeMap };
   const initialValues = pattern.ast.constants && typeof pattern.ast.constants === 'object' ? { constants: pattern.ast.constants } : {};
-  const result = readType(root, 0n, options.addressSpace || 'file', ctx, initialValues, 0);
+  // The compiled targetAddressSpace is the canonical root space: it is part
+  // of the patternId identity. A runtime space that is not in the identity
+  // must never silently change evaluation semantics.
+  const rootSpace = pattern.compileOptions?.targetAddressSpace || 'file';
+  if (options.addressSpace != null && options.addressSpace !== rootSpace) fail('pattern-address-space-mismatch');
+  const result = readType(root, 0n, rootSpace, ctx, initialValues, 0);
   if (result.status === 'partial' || budget.stopped) return { status: 'partial', reason: result.reason || budget.stopped.reason, patternId: pattern.patternId, snapshotId: source.snapshotId, value: null, budget: budget.snapshot() };
   return { status: 'complete', patternId: pattern.patternId, snapshotId: source.snapshotId, value: result, budget: budget.snapshot() };
 }
