@@ -28,7 +28,12 @@ test('#6138 validates dropped-event counts before opening and while aggregating 
   const valid = new TraceProvider(recording([{ kind:'dropped-events', payload:{ dropped:2 } }]));
   const session = await valid.openSession({ sessionNonce:'valid' });
   const batch = await session.facets.trace.events({ batchSize:1 }).next();
+  const replay = await session.facets.trace.replay();
+  assert.equal(session.sourceCompleteness, 'truncated');
   assert.equal(batch.value.dropped, 2);
+  assert.equal(batch.value.completeness, 'truncated');
+  assert.equal(replay.dropped, 2);
+  assert.equal(replay.completeness, 'truncated');
   await session.close();
 
   for (const dropped of ['2', true, {}, NaN, Infinity, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {

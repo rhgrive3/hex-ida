@@ -215,7 +215,7 @@ export class TraceProvider {
       }));
     }
     session.normalizedEvents = Object.freeze(normalized);
-    session.sourceCompleteness = this.recording.completeness;
+    session.sourceCompleteness = hasExplicitDrop ? 'truncated' : this.recording.completeness;
     session.facets = Object.freeze({ trace: this.#createTraceFacet(session) });
     session.setState('ready');
     this.activeSession = session;
