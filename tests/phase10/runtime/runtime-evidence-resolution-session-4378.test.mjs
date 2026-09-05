@@ -52,6 +52,36 @@ test('runtime evidence preserves same-session resolution provenance (#4378)', ()
   assert.equal(evidence.payload.resolution.state, 'exact');
 });
 
+test('runtime evidence snapshots caller-owned resolution before authority use (#4378)', () => {
+  const bridge = new RuntimeEvidenceBridge();
+  let runtimeSessionReads = 0;
+  const driftingResolution = {
+    get runtimeSessionId() {
+      runtimeSessionReads += 1;
+      return runtimeSessionReads === 1 ? 'session-A' : 'session-B';
+    },
+    binaryId: 'binary-session-A',
+    state: 'exact',
+    method: 'verified-module-offset',
+    staticAddress: 0x1000n,
+    functionMatchId: 'match-session-A',
+    targetEntityIds: ['function-session-A'],
+    evidenceIds: ['evidence-session-A'],
+  };
+
+  const evidence = bridge.eventToEvidence(event, driftingResolution);
+
+  assert.equal(runtimeSessionReads, 1, 'caller-owned session authority must be read once');
+  assert.equal(evidence.binaryId, 'binary-session-A');
+  assert.deepEqual(evidence.targetEntityIds, ['function-session-A']);
+  assert.equal(evidence.payload.resolution.runtimeSessionId, 'session-A');
+  assert.equal(evidence.payload.resolution.state, 'exact');
+  assert.equal(evidence.payload.resolution.method, 'verified-module-offset');
+  assert.equal(evidence.payload.resolution.staticAddress, 0x1000n);
+  assert.equal(evidence.payload.resolution.functionMatchId, 'match-session-A');
+  assert.deepEqual(evidence.payload.resolution.evidenceIds, ['evidence-session-A']);
+});
+
 test('runtime evidence without a resolution keeps the unresolved path (#4378)', () => {
   const bridge = new RuntimeEvidenceBridge();
   const evidence = bridge.eventToEvidence(event);

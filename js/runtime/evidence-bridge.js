@@ -189,6 +189,7 @@ export class RuntimeEvidenceBridge {
 
   eventToEvidence(eventInput, resolution = null, options = {}) {
     const event = createRuntimeEvent(eventInput);
+    resolution = resolution == null ? null : ownedClone(resolution);
     if (resolution && resolution.runtimeSessionId !== event.runtimeSessionId) {
       throw new DebugAdapterError(
         'runtime-resolution-session-mismatch',
