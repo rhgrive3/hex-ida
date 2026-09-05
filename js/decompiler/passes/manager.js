@@ -31,7 +31,7 @@ export class PassManager {
     // untouched, exactly like the rewrite engine's contract.
     const deterministic = state.opts?.deterministicTransforms === true;
     const totalStart = clock();
-    const totalBudget = Math.max(0, Number(this.budget.timeBudgetMs ?? DEFAULT_PASS_BUDGET.timeBudgetMs));
+    const totalBudget = this.budget.timeBudgetMs;
     const deadline = deterministic ? Infinity : totalStart + totalBudget;
     let budgetWarned = false;
 
@@ -84,7 +84,7 @@ export class PassManager {
     }
     materializeLegacyExactStackValues(state);
     state.passElapsedMs = clock() - totalStart;
-    state.passDeadlineExceeded = state.passElapsedMs > totalBudget;
+    state.passDeadlineExceeded = !deterministic && state.passElapsedMs > totalBudget;
     return state;
   }
 }

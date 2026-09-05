@@ -357,14 +357,11 @@ function isReturnNode(node) {
 
 function stackReturnSlot(ir, expression) {
   const slot = exactStackLoadSlot(ir, null, expression);
-  if (slot) return slot;
-  if (expression?.kind === 'load' && expression.location?.kind === 'stack' && expression.location?.key) {
-    const size = positiveAccessSize(expression.location?.size)
-      || (Number.isSafeInteger(expression.bits) && expression.bits > 0 && expression.bits % 8 === 0 ? expression.bits / 8 : null)
-      || positiveAccessSize(Number(String(expression.location.key).match(/:s(\d+)$/)?.[1]));
-    if (size != null) return { load: null, key: expression.location.key, size };
-  }
-  return null;
+  // A rendered stack key is not evidence that a physical read occurred.
+  if (!slot || !Number.isSafeInteger(expression.bits) || expression.bits <= 0
+      || slot.size > Math.floor(Number.MAX_SAFE_INTEGER / 8)
+      || slot.size * 8 !== expression.bits) return null;
+  return slot;
 }
 
 function returnSiteForNode(node, ir, allowSingleFallback = false) {
@@ -387,7 +384,17 @@ function recoverReturnExpressionAt(result, node, maps, opts, engine, allowSingle
   if (!slot) return null;
   const retInst = returnSiteForNode(node, result.ir, allowSingleFallback);
   if (!retInst) return null;
-  return resolveStackBefore(result.ir, retInst.block, retInst.row, slot.key, slot.size,
+  const load = slot.load;
+  if (!Number.isSafeInteger(load.row) || !Number.isSafeInteger(retInst.row)
+      || !Number.isSafeInteger(load.block) || load.block < 0
+      || !Number.isSafeInteger(retInst.block) || retInst.block < 0) return null;
+  if (load.block === retInst.block) {
+    if (load.row >= retInst.row) return null;
+  } else if (!dominates(result.ir, load.block, retInst.block)) {
+    return null;
+  }
+  // Stores after this read cannot change the value already consumed by RET.
+  return resolveStackBefore(result.ir, load.block, load.row, slot.key, slot.size,
     maps, opts, engine, new Set());
 }
 
