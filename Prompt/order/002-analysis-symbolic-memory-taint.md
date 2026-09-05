@@ -37,6 +37,12 @@ native rebuild、decompiler 全体の再設計は今回の作業ではありま�
   `js/symbolic/verify/equivalence.js` と memory-region/sort-mismatch 回帰を変更中でした。
   **そのファイルの修正は別担当に残す**こと。ネット接続がなくても作業を止めず、
   下記の読み取り専用境界を守ってください。PR title や old roadmap は実装証拠ではありません。
+- 追加の現行 OPEN overlap: #6546 (`fb805385989faa5b742bdf3f37b8069c36fd0312`)
+  は `translate/semantic-ir.js`、#3421 (`834d3da3a02f3a1dc879ca7cd004401cccaf9384`)
+  と #3422 (`a77177a9d9b0896ddbe654f2b4de67e762b144f5`) は
+  `function-sandbox.js` / `translate/slice.js`、#6450
+  (`d957b7fade9fd8b4bb25fb20010b37cdfd62b84c`) は Expr serialization/width を変更中です。
+  これらは本パッチでは読み取り専用。必要な接続差分は別 handoff に分離します。
 
 ## Spec Kit の簡易手順（ツールのインストールは不要）
 
@@ -76,6 +82,9 @@ roadmap の HEX-SYM-02/03 と C4-04、campaign の T033/T034・性能 lock、
 
 path や API 名は ZIP の実物で確認してください。既存 Expr と executor の互換表示が
 ある場合、見かけの同名 object を canonical Expr と混同せず、既存 translator を通します。
+現行 Expr の sort は Bool/BV であり、一般的な array sort/store/select backend はありません。
+まず既存 Bool/BV で証明可能な bounded byte-memory と production executor を完成させ、
+一般 array theory 対応とは区別してください。表現できない load を exact にしないこと。
 
 ## A. Byte-addressed symbolic memory
 
@@ -154,25 +163,29 @@ taint や候補スコアは意味保存の証明ではありません。候補�
 
 ## 編集範囲
 
-許可: `js/symbolic/executor.js`、`function-sandbox.js`、`index.js`、必要な
-`js/symbolic/memory/**` / `taint/**` 等の canonical module、`expr/**`、`translate/**`、
-`evidence/**`、既存 judge を呼ぶ小さい新規 proof consumer、関連する新規
+許可: `js/symbolic/executor.js`、`index.js`、必要な
+`js/symbolic/memory/**` / `taint/**`、`query/taint.js`、`projection/taint.js`、
+新規 `translate/memory.js` とその公開に必要な `translate/index.js` の最小変更、
+既存 judge を呼ぶ小さい新規 proof consumer、関連する新規
 `tests/phase9/**`、`tests/final-closure/t033/**` / `t034/**`。
 既存テストは維持し、新規回帰を加える。必要な変更は対応する契約変更を説明する。
 
 読み取り専用:
 
 - `js/symbolic/solver/**`（T014 候補）、`js/symbolic/verify/equivalence.js` と既存判定器。
+- `js/symbolic/expr/**`、`function-sandbox.js`、`translate/semantic-ir.js`、
+  `translate/slice.js`、既存 `evidence/**`（上記 concurrent PR と shared authority）。
 - `js/decompiler/**`（T011/T012/T013/T017）、ISA/ABI/effects/SSA/MemorySSA/alias/points-to。
 - native parser/Apple/discovery/rebuild、AI、runtime、collaboration、UI。
 - `tests/final-closure/t011/**`〜`t017/**`、他 lane の既存回帰／固定 oracle。
 - CI、package.json/lock、tools/validation、baseline/threshold/denominator、生成物。
 - canonical roadmap、campaign spec/tasks/ownership/checklists と旧 evidence。
 
-core Expr の schema 変更が必要なら factory/evaluate/hash/serialize/translator の
-全必須 consumer を一貫して扱い、version/invalidation と unknown fallback を試験する。
-solver の無断変更なしでは exact に扱えない範囲は能力として正直に区別する。
-範囲外変更を hidden dependency にせず、別担当向け最小 handoff として分離する。
+core Expr/schema/solver 拡張や shared translator の接続が必要な範囲は、本パッチに
+混ぜず、既存 consumer・必要な最小 API・反例・invalidation を別担当向け handoff にする。
+その依存なしに実行できる executor/memory/taint の本番経路を先に完成させる。
+新規 `translate/memory.js` を export しただけなら translator 全体の接続完了とはしない。
+一般 array theory や未接続 downstream を含めて T033/T034 全体を DONE と書かない。
 
 ## 性能・検証
 
