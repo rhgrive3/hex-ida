@@ -108,6 +108,16 @@ for (const malformed of [
 }
 
 {
+  const mismatch = classifyMachineEffectsCoverage(
+    pluginFor(bundle()),
+    { instructionId:'sample:1', architectureId:'x86_64' },
+    {},
+  );
+  assert.equal(mismatch.status, 'error');
+  assert.equal(mismatch.reason, 'machine-effects-input-architecture-mismatch');
+}
+
+{
   const delegated = classifyMachineEffectsCoverage(
     pluginFor(bundle('sample:1', 'exact', 'arm64'), 'arm64e'),
     { instructionId:'sample:1', architectureId:'arm64e' },
