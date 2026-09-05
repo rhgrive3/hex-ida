@@ -244,7 +244,9 @@ export function createMemorySsaContract(input, options = {}) {
   work();
   input = object(input, 'memory-ssa-invalid-contract');
   assertAllowedKeys(input, new Set(['contractVersion','functionId','regions','definitions','uses']), 'memory-ssa-unexpected-contract-field');
-  if (input.contractVersion != null && String(input.contractVersion) !== MEMORY_SSA_CONTRACT_VERSION) {
+  if (input.contractVersion != null
+      && (typeof input.contractVersion !== 'string'
+        || input.contractVersion !== MEMORY_SSA_CONTRACT_VERSION)) {
     fail('memory-ssa-contract-version-mismatch');
   }
 
