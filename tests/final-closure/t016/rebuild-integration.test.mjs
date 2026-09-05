@@ -134,6 +134,25 @@ test('T016 real ELF: source parse -> changed bytes -> fresh discovery -> rename 
 });
 
 const manifest = JSON.parse(fs.readFileSync(new URL('../../phase12/rebuild/fixtures/manifest.json', import.meta.url), 'utf8'));
+test('T016 discovery preservation composes with required LLVM proof and real committed readback', async (t) => {
+  const { createLlvmReadobjOracle } = await import('../../../tools/validation/rebuild-independent-oracle.mjs');
+  const tx = transaction({ requireIndependentOracle: true });
+  const materialized = await materializeRebuildTransaction(tx, source);
+  assert.equal(materialized.status, 'materialized');
+  const missingOracle = await validateRebuildTransaction(tx, materialized, validationOptions());
+  assert.equal(missingOracle.status, 'invalid', 'discovery proof must not replace the required independent oracle');
+  const validation = await validateRebuildTransaction(tx, materialized, {
+    ...validationOptions(), independentOracle: createLlvmReadobjOracle(),
+  });
+  assert.equal(validation.status, 'valid', JSON.stringify(validation));
+  assert.equal(validation.independentDifferential, 'executed');
+  assert.equal(validation.validators.find((row) => row.validator === 'discovery-preservation')?.status, 'passed');
+  const oracle = validation.validators.find((row) => row.validator === 'independent-differential');
+  assert.equal(oracle?.status, 'passed');
+  assert.equal(oracle.detail.outputDigest, materialized.outputHash);
+  await filePublication(t, materialized, validation);
+});
+
 for (const fixture of manifest.fixtures) {
   test(`T016 tracked ${fixture.profile} metadata roundtrip retains parser discovery`, async (t) => {
     const bytes = new Uint8Array(fs.readFileSync(new URL(`../../../${fixture.path}`, import.meta.url)));
