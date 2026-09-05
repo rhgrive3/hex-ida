@@ -67,6 +67,40 @@ assert.throws(
   /changelog-binary-identity-invalid/,
 );
 
+const validRestoredState = {
+  schemaVersion: 'hex-project-operation-v1',
+  projectIdentity: 'hex-project:p',
+  binaryIdentity: null,
+  facts: {},
+  conflicts: [],
+  tombstones: [],
+  unresolved: [],
+};
+assert.throws(
+  () => new ChangeLog({
+    projectIdentity: 'hex-project:p',
+    state: { ...validRestoredState, projectIdentity: 'hex-project:other' },
+  }),
+  /changelog-state-project-identity-mismatch/,
+  'restored state must belong to the ChangeLog project',
+);
+assert.throws(
+  () => new ChangeLog({
+    projectIdentity: 'hex-project:p',
+    binaryIdentity: 'hex-binary:p:b:macho:arm64',
+    state: { ...validRestoredState, binaryIdentity: 'hex-binary:p:other:macho:arm64' },
+  }),
+  /changelog-state-binary-identity-mismatch/,
+  'restored state must belong to the ChangeLog binary',
+);
+for (const state of [false, 0, '']) {
+  assert.throws(
+    () => new ChangeLog({ projectIdentity: 'hex-project:p', state }),
+    /changelog-state-invalid/,
+    'only nullish state may fall back to an empty ChangeLog state',
+  );
+}
+
 const legacyCollidingKey = 'a\u0000b\u0000c';
 assert.throws(
   () => new ChangeLog({
