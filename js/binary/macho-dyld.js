@@ -1,13 +1,52 @@
 import { ensureMachOMetadataBudget } from './macho-budget.js';
 import { functionSeed } from './model.js';
+import { authoritativeDyldSharedCacheBase } from '../apple/knowledge.js';
 
 const CHAINED_POINTER_SITES = new WeakMap();
 const CHAINED_POINTER_COVERAGE = new WeakMap();
 
-function rememberChainedPointerSite(image, address, raw, pointerFormat, decoded) {
+function rememberChainedPointerSite(image, address, fileOffset, raw, pointerFormat, decoded) {
   let sites = CHAINED_POINTER_SITES.get(image);
   if (!sites) { sites = new Map(); CHAINED_POINTER_SITES.set(image, sites); }
-  sites.set(BigInt(address), { raw: BigInt(raw), pointerFormat, decoded });
+  const key = BigInt(address);
+  const candidates = sites.get(key) ?? [];
+  candidates.push({
+    address: BigInt(address),
+    fileOffset: BigInt(image.fileOffset ?? 0) + BigInt(fileOffset),
+    sliceFileOffset: BigInt(fileOffset),
+    raw: BigInt(raw),
+    pointerFormat,
+    decoded: { ...decoded, authentication: decoded.authentication ? { ...decoded.authentication } : null },
+  });
+  sites.set(key, candidates);
+  return candidates.length > 1;
+}
+
+/** Return immutable-value snapshots of parser-issued chained sites. */
+export function chainedPointerSites(image) {
+  const sites = CHAINED_POINTER_SITES.get(image);
+  if (!sites) return [];
+  return [...sites.values()].flatMap((candidates) => candidates.map((site, candidateIndex) => ({ site, candidateIndex, candidateCount: candidates.length })))
+    .sort((a, b) => a.site.address < b.site.address ? -1 : a.site.address > b.site.address ? 1 : a.candidateIndex - b.candidateIndex)
+    .map(({ site, candidateIndex, candidateCount }) => ({
+      address: site.address,
+      fileOffset: site.fileOffset,
+      sliceFileOffset: site.sliceFileOffset,
+      raw: site.raw,
+      pointerFormat: site.pointerFormat,
+      semantics: site.decoded.bind ? 'bind' : 'rebase',
+      ordinal: site.decoded.bind ? site.decoded.ordinal : null,
+      addend: site.decoded.addend,
+      target: site.decoded.bind ? null : site.decoded.target,
+      next: site.decoded.next,
+      stride: site.decoded.stride,
+      storageWidth: site.decoded.storageWidth,
+      authenticated: site.decoded.authenticated === true,
+      authentication: site.decoded.authentication ? { ...site.decoded.authentication } : null,
+      ambiguous: candidateCount > 1,
+      candidateIndex,
+      candidateCount,
+    }));
 }
 
 function rememberChainedPointerCoverage(image, start, end) {
@@ -29,13 +68,13 @@ function markChainedPointerCoverageComplete(image, key) {
   if (range) range.complete = true;
 }
 
-function chainedPointerCoverageAt(image, address) {
+function chainedPointerCoverageIncompleteAt(image, address) {
   if (address == null) return null;
   const target = BigInt(address);
   for (const range of CHAINED_POINTER_COVERAGE.get(image)?.values() ?? []) {
-    if (target >= range.start && target < range.end) return range;
+    if (target >= range.start && target < range.end && !range.complete) return true;
   }
-  return null;
+  return false;
 }
 
 export function resolveMachOPointer(image, rawValue, options = {}) {
@@ -47,8 +86,10 @@ export function resolveMachOPointer(image, rawValue, options = {}) {
   } catch { return null; }
   if (raw <= 0n || raw > 0xffffffffffffffffn) return null;
 
-  const site = address == null ? null : CHAINED_POINTER_SITES.get(image)?.get(address);
-  if (site) {
+  const siteCandidates = address == null ? null : CHAINED_POINTER_SITES.get(image)?.get(address);
+  if (siteCandidates) {
+    if (siteCandidates.length !== 1) return null;
+    const site = siteCandidates[0];
     if (site.raw !== raw) return null;
     const decoded = site.decoded;
     if (!decoded || decoded.bind || decoded.target == null) return null;
@@ -61,8 +102,7 @@ export function resolveMachOPointer(image, rawValue, options = {}) {
   // from being recovered. In that state the encoded word must never be
   // reinterpreted as an ordinary absolute VA merely because its numeric value
   // happens to map into this image.
-  const coverage = chainedPointerCoverageAt(image, address);
-  if (coverage && !coverage.complete) return null;
+  if (chainedPointerCoverageIncompleteAt(image, address)) return null;
 
   // A metadata field that is defined by Swift as an absolute pointer may also
   // contain an ordinary materialized VA rather than a chained fixup. Accept it
@@ -136,6 +176,7 @@ export function parseChainedImports(r,dc,image,sharedBudget=null){
 }
 
 export function parseChainedBindingSites(r,dc,image,imports,segments=image.segments||[],sharedBudget=null){
+  const internalIdentity = sharedBudget?.__machoResidentIdentity ?? null;
   const budget=ensureMachOMetadataBudget(image,sharedBudget);
   const base = dc.offset;
   const payloadEnd = base + dc.size;
@@ -153,11 +194,20 @@ export function parseChainedBindingSites(r,dc,image,imports,segments=image.segme
     const warning = `chained-fixups: ${message}`;
     if (!image.warnings.includes(warning)) image.warnings.push(warning);
   };
+  const markSegmentsIncomplete = (items = segments) => {
+    for (const segment of items) {
+      if (!segment) continue;
+      const start = BigInt(segment.address ?? 0);
+      const size = BigInt(segment.size ?? 0);
+      if (size > 0n) rememberChainedPointerCoverage(image, start, start + size);
+    }
+  };
   if (status.importsComplete === false) {
     fail('chained import table is incomplete; binding-site coverage cannot be complete');
   }
   const startsOffset = r.u32(base + 4);
   if (!startsOffset || base + startsOffset + 4 > payloadEnd) {
+    markSegmentsIncomplete();
     fail('starts-in-image header is missing or truncated');
     status.bindingSites = decoded;
     return status;
@@ -165,30 +215,32 @@ export function parseChainedBindingSites(r,dc,image,imports,segments=image.segme
   const startsBase = base + startsOffset;
   const segCount = r.u32(startsBase);
   if (segCount > 4096 || startsBase + 4 + segCount * 4 > payloadEnd) {
+    markSegmentsIncomplete();
     fail('segment starts table is truncated or unreasonable');
     status.bindingSites = decoded;
     return status;
   }
   if (segCount !== segments.length) {
     fail(`segment count ${segCount} does not match Mach-O load-command segment count ${segments.length}`);
-    // If the starts table omits load-command segments, no page-level ownership
-    // proof exists for those omitted segments. Keep the uncertainty scoped to
-    // those segments instead of globally disabling ordinary pointer recovery.
-    for (let i = segCount; i < segments.length; i++) {
-      const missing = segments[i];
-      if (!missing) continue;
-      const start = BigInt(missing.address ?? 0);
-      const size = BigInt(missing.size ?? 0);
-      if (size > 0n) rememberChainedPointerCoverage(image, start, start + size);
-    }
   }
   const count = Math.min(segCount, segments.length);
+  // Establish ownership for every segment before decoding the first page.
+  const segmentCoverageKeys = new Map();
+  for (let segIndex = 0; segIndex < count; segIndex++) {
+    if (r.u32(startsBase + 4 + segIndex * 4) === 0) continue;
+    const segment = segments[segIndex];
+    const start = BigInt(segment?.address ?? 0);
+    const size = BigInt(segment?.size ?? 0);
+    if (segment && size > 0n) segmentCoverageKeys.set(segIndex, rememberChainedPointerCoverage(image, start, start + size));
+  }
+  if (count < segments.length) markSegmentsIncomplete(segments.slice(count));
   for (let segIndex = 0; segIndex < count; segIndex++) {
     const rel = r.u32(startsBase + 4 + segIndex * 4);
     if (!rel) continue;
     const seg = segments[segIndex];
     const segAddress = BigInt(seg?.address ?? 0);
     const segSize = BigInt(seg?.size ?? 0);
+    const segmentFailureEpoch = failureEpoch;
     const markSegmentIncomplete = () => {
       if (seg && segSize > 0n) rememberChainedPointerCoverage(image, segAddress, segAddress + segSize);
     };
@@ -215,8 +267,8 @@ export function parseChainedBindingSites(r,dc,image,imports,segments=image.segme
     }
     const pageSizeBig = BigInt(pageSize);
     const maxPages = segSize === 0n ? 0n : (segSize + pageSizeBig - 1n) / pageSizeBig;
-    if (BigInt(pageCount) > maxPages) {
-      markSegmentIncomplete(); fail(`segment ${segIndex} page_count exceeds segment VM range`); continue;
+    if (BigInt(pageCount) !== maxPages) {
+      markSegmentIncomplete(); fail(`segment ${segIndex} page_count does not exactly cover segment VM pages`); continue;
     }
     const structEnd = p + structSize;
     const overflowBase = p + 22 + pageCount * 2;
@@ -290,16 +342,37 @@ export function parseChainedBindingSites(r,dc,image,imports,segments=image.segme
             fail(`segment ${segIndex} page ${page} chain address is not backed by its owning segment`); break;
           }
           const raw = width === 4 ? BigInt(r.u32(Number(expectedOff))) : r.u64(Number(expectedOff));
-          const d = decodeChainedPointer(raw, pointerFormat, image.imageBase);
+          const d = decodeChainedPointer(raw, pointerFormat, image.imageBase, {
+            dyldCache: image.metadata?.dyldCache ?? null,
+            binaryIdentity: internalIdentity?.dyldCacheBinding?.binaryIdentity ?? null,
+            sliceIdentity: internalIdentity?.dyldCacheBinding?.sliceIdentity ?? null,
+            architecture: internalIdentity?.dyldCacheBinding?.architecture ?? null,
+          });
           if (!d) { markUnsupportedChainedFormat(image, pointerFormat); fail(`segment ${segIndex} pointer format ${pointerFormat} could not be decoded`); break; }
-          rememberChainedPointerSite(image, address, raw, pointerFormat, d);
+          if (rememberChainedPointerSite(image, address, expectedOff, raw, pointerFormat, d)) {
+            fail(`segment ${segIndex} page ${page} has duplicate or conflicting chained site 0x${address.toString(16)}`);
+          }
+          if (!d.bind && d.target == null) {
+            fail(`segment ${segIndex} pointer format ${pointerFormat} rebase target is unresolved without its authoritative base`);
+          }
           if (d.bind) {
             const imp = d.ordinal >= 0 && d.ordinal < imports.length ? imports[d.ordinal] : null;
             if (!imp) {
               fail(`invalid bind ordinal ${d.ordinal} does not reference a parsed chained import`);
             } else {
               if(!budget.take({objects:1,operations:1,estimatedHeapBytes:112},'chained-bind-site')){fail('shared metadata budget exhausted while recording bind site');status.bindingSites=decoded;return status;}
-              imp.sites.push({ address, offset: expectedOff, kind: 'chained-bind', pointerFormat, addend: d.addend });
+              imp.sites.push({
+                address,
+                offset: expectedOff,
+                sliceOffset: expectedOff,
+                containerOffset: BigInt(image.fileOffset ?? 0) + expectedOff,
+                kind: 'chained-bind',
+                pointerFormat,
+                storageWidth: d.storageWidth,
+                addend: d.addend,
+                authenticated: d.authenticated === true,
+                authentication: d.authentication ? { ...d.authentication } : null,
+              });
               decoded++;
             }
           }
@@ -315,6 +388,7 @@ export function parseChainedBindingSites(r,dc,image,imports,segments=image.segme
       }
       if (failureEpoch === pageFailureEpoch) markChainedPointerCoverageComplete(image, coverageKey);
     }
+    if (failureEpoch === segmentFailureEpoch) markChainedPointerCoverageComplete(image, segmentCoverageKeys.get(segIndex));
     void maxValidPointer; // value classification for 32-bit pointers, never an address-ownership bound
   }
   status.bindingSites = decoded;
@@ -333,15 +407,57 @@ function markUnsupportedChainedFormat(image, format) {
   const list = image.metadata.chainedFixups.unsupportedPointerFormats ||= [];
   if (!list.includes(format)) { list.push(format); image.warnings.push(`chained pointer format ${format} is not supported; binding sites are partial`); }
 }
-function decodeChainedPointer(raw, format, imageBase = null) {
-  const base = imageBase == null ? null : BigInt(imageBase);
+export function decodeChainedPointer(raw, format, imageBase = null, options = {}) {
+  if (!Number.isInteger(format)) return null;
+  const width = chainedPointerWidth(format);
+  if (!width) return null;
+  if (typeof raw === 'number') {
+    if (!Number.isSafeInteger(raw)) return null;
+    raw = BigInt(raw);
+  } else if (typeof raw !== 'bigint') return null;
+  if (raw < 0n || raw > (width === 4 ? 0xffffffffn : 0xffffffffffffffffn)) return null;
+  let base = null;
+  if (imageBase != null) {
+    if (typeof imageBase === 'number') {
+      if (!Number.isSafeInteger(imageBase)) return null;
+      base = BigInt(imageBase);
+    } else if (typeof imageBase === 'bigint') base = imageBase;
+    else return null;
+    if (base < 0n || base > 0xffffffffffffffffn) return null;
+  }
+  const hasInternalBinding = typeof options?.binaryIdentity === 'string'
+    && typeof options?.sliceIdentity === 'string'
+    && typeof options?.architecture === 'string';
+  const cacheBase = authoritativeDyldSharedCacheBase(
+    options?.dyldCache,
+    hasInternalBinding ? {
+      binaryIdentity: options.binaryIdentity,
+      sliceIdentity: options.sliceIdentity,
+      architecture: options.architecture,
+    } : null,
+  );
+  const offsetTarget = (offset) => {
+    if (base == null) return null;
+    const target = base + offset;
+    return target <= 0xffffffffffffffffn ? target : undefined;
+  };
   if (format === 3) {
     const bind = !!((raw >> 31n) & 1n);
     const next = Number((raw >> 26n) & 0x1fn);
-    if (!bind) return { bind: false, ordinal: -1, addend: 0n, next, stride: 4, target: null };
+    if (!bind) return { bind: false, ordinal: -1, addend: 0n, next, stride: 4, storageWidth: width, target: raw & 0x3ffffffn, authenticated: false, authentication: null };
     const ordinal = Number(raw & 0xfffffn);
     const addend = Number((raw >> 20n) & 0x3fn);
-    return { bind: true, ordinal, addend: BigInt(addend), next, stride: 4, target: null };
+    return { bind: true, ordinal, addend: BigInt(addend), next, stride: 4, storageWidth: width, target: null, authenticated: false, authentication: null };
+  }
+  if (format === 4) {
+    const next = Number((raw >> 30n) & 0x3n);
+    const cacheOffset = raw & 0x3fffffffn;
+    const target = cacheBase == null ? null : cacheBase + cacheOffset;
+    if (target != null && target > 0xffffffffffffffffn) return null;
+    return { bind: false, ordinal: -1, addend: 0n, next, stride: 4, storageWidth: width, target, targetOffset: cacheOffset, authenticated: false, authentication: null };
+  }
+  if (format === 5) {
+    return { bind: false, ordinal: -1, addend: 0n, next: Number((raw >> 26n) & 0x3fn), stride: 4, storageWidth: width, target: raw & 0x3ffffffn, authenticated: false, authentication: null };
   }
   if (format === 2 || format === 6) {
     const bind = !!(raw >> 63n);
@@ -350,12 +466,13 @@ function decodeChainedPointer(raw, format, imageBase = null) {
       const target = raw & 0xfffffffffn;
       const high8 = (raw >> 36n) & 0xffn;
       const reconstructed = target | (high8 << 56n);
-      const resolved = format === 6 ? (base == null ? null : base + reconstructed) : reconstructed;
-      return { bind: false, ordinal: -1, addend: 0n, next, stride: 4, target: resolved };
+      const resolved = format === 6 ? offsetTarget(reconstructed) : reconstructed;
+      if (resolved === undefined) return null;
+      return { bind: false, ordinal: -1, addend: 0n, next, stride: 4, storageWidth: width, target: resolved, authenticated: false, authentication: null };
     }
     const ordinal = Number(raw & 0xffffffn);
     const addend = Number((raw >> 24n) & 0xffn);
-    return { bind: true, ordinal, addend: BigInt(addend), next, stride: 4, target: null };
+    return { bind: true, ordinal, addend: BigInt(addend), next, stride: 4, storageWidth: width, target: null, authenticated: false, authentication: null };
   }
   if ([1, 7, 9, 10, 12].includes(format)) {
     const auth = !!((raw >> 63n) & 1n);
@@ -365,23 +482,30 @@ function decodeChainedPointer(raw, format, imageBase = null) {
     const ordinalMask = (1n << ordinalBits) - 1n;
     const ordinal = Number(raw & ordinalMask);
     let addend = 0n;
+    const authentication = auth ? {
+      diversity: Number((raw >> 32n) & 0xffffn),
+      addressDiversity: !!((raw >> 48n) & 1n),
+      key: ['IA', 'IB', 'DA', 'DB'][Number((raw >> 49n) & 0x3n)],
+    } : null;
     if (bind && !auth) {
       let a = Number((raw >> 32n) & 0x7ffffn);
       if (a & 0x40000) a -= 0x80000;
       addend = BigInt(a);
     }
     const stride = format === 7 || format === 10 ? 4 : 8;
-    if (bind) return { bind, ordinal, addend, next, stride, target: null, authenticated: auth };
+    if (bind) return { bind, ordinal, addend, next, stride, storageWidth: width, target: null, authenticated: auth, authentication };
     if (auth) {
-      const target = base == null ? null : base + (raw & 0xffffffffn);
-      return { bind, ordinal: -1, addend: 0n, next, stride, target, authenticated: true };
+      const target = offsetTarget(raw & 0xffffffffn);
+      if (target === undefined) return null;
+      return { bind, ordinal: -1, addend: 0n, next, stride, storageWidth: width, target, authenticated: true, authentication };
     }
     const target = raw & 0x7ffffffffffn;
     const high8 = (raw >> 43n) & 0xffn;
     const reconstructed = target | (high8 << 56n);
     const vmOffset = format === 7 || format === 9 || format === 12;
-    const resolved = vmOffset ? (base == null ? null : base + reconstructed) : reconstructed;
-    return { bind, ordinal: -1, addend: 0n, next, stride, target: resolved, authenticated: false };
+    const resolved = vmOffset ? offsetTarget(reconstructed) : reconstructed;
+    if (resolved === undefined) return null;
+    return { bind, ordinal: -1, addend: 0n, next, stride, storageWidth: width, target: resolved, authenticated: false, authentication: null };
   }
   return null;
 }
