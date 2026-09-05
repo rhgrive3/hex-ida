@@ -7,6 +7,9 @@ const FULL_FUNCTION_TOOLS = new Set(['get_function','get_current_function','get_
 const BINARY_TOOLS = new Set(['search_functions','search_strings','compare_functions','lookup_known_function']);
 const PROJECT_TOOLS = new Set(['project_search','get_binary_diff']);
 const RUNTIME_TOOLS = new Set(['get_runtime_observations','verify_runtime_hypothesis']);
+const TOOL_NON_ADDRESS_KEYS = Object.freeze({
+  inspect_function_region: new Set(['start']),
+});
 
 export class ScopeController {
   constructor(snapshot, requestedScope = 'auto', { onExpand } = {}) {
@@ -44,7 +47,7 @@ export class ScopeController {
     if (PROJECT_TOOLS.has(tool) && effective !== 'project') return false;
     if (RUNTIME_TOOLS.has(tool) && effective !== 'runtime') return false;
     if (effective === 'function' || effective === 'selection' || effective === 'neighborhood') {
-      for (const address of collectAddresses(args)) if (!this.scopeContainsAddress(effective, address)) return false;
+      for (const address of collectAddresses(args, '', tool)) if (!this.scopeContainsAddress(effective, address)) return false;
     }
     return true;
   }
@@ -73,7 +76,7 @@ export class ScopeController {
 
   assertToolCall(tool, args = {}) {
     if (!this.scopeAllowsTool(this.effectiveScope, tool, args)) throw new AIError('scope_violation', `${tool} is outside ${this.effectiveScope} scope.`);
-    for (const address of collectAddresses(args)) {
+    for (const address of collectAddresses(args, '', tool)) {
       if (!this.scopeContainsAddress(this.effectiveScope, address)) throw new AIError('scope_violation', `Address ${addressText(address)} is outside ${this.effectiveScope} scope.`);
     }
   }
@@ -100,15 +103,16 @@ export function scopeContainsFunction(snapshot, scope, address) { return new Sco
 export function scopeAllowsTool(snapshot, scope, tool, args) { return new ScopeController(snapshot, scope).scopeAllowsTool(scope, tool, args); }
 
 function atLeast(scope, minimum) { return (RANK[scope] ?? -1) >= RANK[minimum]; }
-function collectAddresses(value, key = '') {
+function collectAddresses(value, key = '', tool = '') {
   const out = [];
+  if (TOOL_NON_ADDRESS_KEYS[tool]?.has(key)) return out;
   if (isAddressKey(key)) {
     if (value != null) out.push(value);
     return out;
   }
-  if (Array.isArray(value)) { for (const item of value) out.push(...collectAddresses(item, key)); return out; }
+  if (Array.isArray(value)) { for (const item of value) out.push(...collectAddresses(item, key, tool)); return out; }
   if (!value || typeof value !== 'object') return out;
-  for (const [childKey, child] of Object.entries(value)) out.push(...collectAddresses(child, childKey));
+  for (const [childKey, child] of Object.entries(value)) out.push(...collectAddresses(child, childKey, tool));
   return out;
 }
 function isAddressKey(key) {
