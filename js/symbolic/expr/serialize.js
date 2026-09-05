@@ -149,10 +149,39 @@ function sortFromPlain(plain) {
  * first so traversal order cannot mint a replacement that collides with an id
  * already present in the payload.
  */
-function reserveCanonicalFreshSymbolIds(plain) {
+function sortKey(sort) {
+  return sort.kind === SORT_KIND.BOOL ? 'bool' : `bv:${sort.width}`;
+}
+
+/*
+ * Fresh symbols bind to solver environments by symbolId, so one deserialize
+ * operation must never produce two nodes sharing a symbolId with divergent
+ * declarations. The same id may legitimately reappear (DAG sharing), but only
+ * with an identical name and sort; anything else would split structural
+ * identity from binding identity and is rejected as malformed.
+ */
+function assertConsistentFreshSymbolDeclaration(seen, plain) {
+  const symbolId = typeof plain.symbolId === 'string' ? plain.symbolId : null;
+  if (symbolId == null || symbolId.trim() === '') return;
+  const declaration = { name: plain.name, sort: sortKey(sortFromPlain(plain)) };
+  const existing = seen.get(symbolId);
+  if (existing) {
+    if (existing.name !== declaration.name || existing.sort !== declaration.sort) {
+      throw new TypeError(
+        `plainToExpr: conflicting fresh symbol declaration for symbolId '${symbolId}'`
+        + ` (${existing.name}/${existing.sort} vs ${declaration.name}/${declaration.sort})`,
+      );
+    }
+    return;
+  }
+  seen.set(symbolId, declaration);
+}
+
+function reserveCanonicalFreshSymbolIds(plain, seen = new Map()) {
   if (!plain || typeof plain !== 'object') return;
   switch (plain.kind) {
     case EXPR_KIND.FRESH_SYMBOL:
+      assertConsistentFreshSymbolDeclaration(seen, plain);
       if (typeof plain.symbolId === 'string' && plain.symbolId.trim() !== '') {
         restoreFreshSymbol(sortFromPlain(plain), plain.name, plain.symbolId, plain.meta || {});
       }
@@ -160,21 +189,21 @@ function reserveCanonicalFreshSymbolIds(plain) {
     case EXPR_KIND.UNARY:
     case EXPR_KIND.EXTRACT:
     case EXPR_KIND.CAST:
-      reserveCanonicalFreshSymbolIds(plain.arg);
+      reserveCanonicalFreshSymbolIds(plain.arg, seen);
       return;
     case EXPR_KIND.BINARY:
     case EXPR_KIND.COMPARE:
     case EXPR_KIND.CONCAT:
-      reserveCanonicalFreshSymbolIds(plain.left);
-      reserveCanonicalFreshSymbolIds(plain.right);
+      reserveCanonicalFreshSymbolIds(plain.left, seen);
+      reserveCanonicalFreshSymbolIds(plain.right, seen);
       return;
     case EXPR_KIND.CONNECTIVE:
-      for (const arg of plain.args || []) reserveCanonicalFreshSymbolIds(arg);
+      for (const arg of plain.args || []) reserveCanonicalFreshSymbolIds(arg, seen);
       return;
     case EXPR_KIND.ITE:
-      reserveCanonicalFreshSymbolIds(plain.cond);
-      reserveCanonicalFreshSymbolIds(plain.thenExpr);
-      reserveCanonicalFreshSymbolIds(plain.elseExpr);
+      reserveCanonicalFreshSymbolIds(plain.cond, seen);
+      reserveCanonicalFreshSymbolIds(plain.thenExpr, seen);
+      reserveCanonicalFreshSymbolIds(plain.elseExpr, seen);
       return;
     default:
       return;

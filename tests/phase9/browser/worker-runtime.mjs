@@ -45,10 +45,10 @@ async function checkBrowser(name, browserType, baseUrl) {
         import('/js/symbolic/verify/query.js'),
         import('/js/symbolic/verify/edge-feasibility.js'),
       ]);
-      const { bvSort, BV_COMPARE_OP } = kinds;
-      const { createBv, createCompare, createFreshSymbol } = factory;
+      const { bvSort, BV_BINARY_OP, BV_COMPARE_OP } = kinds;
+      const { createBinary, createBv, createCompare, createFreshSymbol } = factory;
       const { CLAIM_KIND, VERIFICATION_QUERY_KIND, createVerificationQuery } = queryApi;
-      const backend = new WorkerSolverBackend({ maxBvWidth: 8, maxAssignments: 1 << 20 });
+      const backend = new WorkerSolverBackend({ maxBvWidth: 64, exhaustiveMaxAssignments: 1 << 20 });
       const x = createFreshSymbol(bvSort(3), 'browser_x');
       const makeQuery = (values) => createVerificationQuery({
         kind: VERIFICATION_QUERY_KIND.CONDITIONAL_EDGE_FEASIBILITY,
@@ -58,6 +58,46 @@ async function checkBrowser(name, browserType, baseUrl) {
       const session = backend.createSession({ timeoutMs: 2000 });
       const sat = await session.check(makeQuery([5]), { timeoutMs: 2000 });
       const unsat = await session.check(makeQuery([1, 2]), { timeoutMs: 2000 });
+      const wide = createFreshSymbol(bvSort(64), 'browser_wide');
+      const wideSatQuery = createVerificationQuery({
+        kind: VERIFICATION_QUERY_KIND.CONDITIONAL_EDGE_FEASIBILITY,
+        claimKind: CLAIM_KIND.EDGE_FEASIBLE,
+        constraints: [createCompare(
+          BV_COMPARE_OP.EQ,
+          createBinary(BV_BINARY_OP.ADD, wide, createBv(64, 1n)),
+          createBv(64, 0n),
+        )],
+      });
+      const wideSat = await session.check(wideSatQuery, { timeoutMs: 2000 });
+      const forgedWideQuery = structuredClone(wideSatQuery);
+      forgedWideQuery.constraints[0].right.value = 1n;
+      const forgedHostResult = await session.check(forgedWideQuery, { timeoutMs: 2000 });
+      const rawWorker = new Worker(new URL('/js/symbolic/solver/worker-entry.js', location.origin), { type: 'module' });
+      const forgedWorkerResult = await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('raw forged worker query timed out')), 2000);
+        rawWorker.addEventListener('message', (event) => {
+          if (event.data?.requestId !== 'forged-structured-clone') return;
+          clearTimeout(timer);
+          resolve(event.data.result);
+        });
+        rawWorker.addEventListener('error', reject, { once: true });
+        rawWorker.postMessage({
+          type: 'solver-check',
+          requestId: 'forged-structured-clone',
+          token: 77,
+          query: forgedWideQuery,
+          options: { timeoutMs: 0 },
+        });
+      });
+      rawWorker.terminate();
+      const wideUnsat = await session.check(createVerificationQuery({
+        kind: VERIFICATION_QUERY_KIND.CONDITIONAL_EDGE_FEASIBILITY,
+        claimKind: CLAIM_KIND.EDGE_INFEASIBLE,
+        constraints: [
+          createCompare(BV_COMPARE_OP.EQ, wide, createBv(64, 1n)),
+          createCompare(BV_COMPARE_OP.EQ, wide, createBv(64, 2n)),
+        ],
+      }), { timeoutMs: 2000 });
       const proof = await edgeVerifier.verifyConditionalEdgeFeasibility({
         fromBlock: 'browser-entry',
         toBlock: 'browser-dead',
@@ -72,6 +112,13 @@ async function checkBrowser(name, browserType, baseUrl) {
         unsat: unsat.status,
         satBackend: sat.backend,
         unsatBackend: unsat.backend,
+        wideSat: wideSat.status,
+        wideUnsat: wideUnsat.status,
+        wideRoute: wideSat.stats.routingTier,
+        forgedHost: forgedHostResult.status,
+        forgedHostHash: forgedHostResult.queryHash,
+        forgedWorker: forgedWorkerResult.status,
+        forgedWorkerHash: forgedWorkerResult.queryHash,
         proofVerdict: proof.verdict,
         proofBackend: proof.proofAuthority || null,
         proofAuthority: backend.proofAuthority,
@@ -82,7 +129,10 @@ async function checkBrowser(name, browserType, baseUrl) {
       return summary;
     });
     if (result.sat !== 'sat' || result.satModel !== '5' || result.unsat !== 'unsat' ||
-        result.satBackend !== 'hex-exhaustive-bv-worker' || result.unsatBackend !== 'hex-exhaustive-bv-worker' ||
+        result.satBackend !== 'hex-tiered-qfbv-worker' || result.unsatBackend !== 'hex-tiered-qfbv-worker' ||
+        result.wideSat !== 'sat' || result.wideUnsat !== 'unsat' || result.wideRoute !== 'bitblast-qfbv' ||
+        result.forgedHost !== 'invalid-query' || result.forgedHostHash !== null ||
+        result.forgedWorker !== 'invalid-query' || result.forgedWorkerHash !== null ||
         result.proofVerdict !== 'proved' || result.proofBackend !== 'exact' ||
         result.proofAuthority !== 'exact' || result.executionIsolation !== 'dedicated-worker' ||
         result.workerAvailable !== true) {
@@ -104,7 +154,11 @@ export async function runBrowserRuntime() {
   try {
     const baseUrl = `http://127.0.0.1:${port}/`;
     for (const [name, browserType] of [['chromium', chromium], ['webkit', webkit]]) {
-      outcomes.push({ name, status: 'PASSED', result: await checkBrowser(name, browserType, baseUrl) });
+      try {
+        outcomes.push({ name, status: 'PASSED', result: await checkBrowser(name, browserType, baseUrl), error: null });
+      } catch (error) {
+        outcomes.push({ name, status: 'FAILED', result: null, error: String(error?.message || error) });
+      }
     }
   } finally {
     await new Promise((resolve) => server.close(resolve));
@@ -113,7 +167,10 @@ export async function runBrowserRuntime() {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(import.meta.url).pathname)) {
-  runBrowserRuntime().catch((error) => {
+  runBrowserRuntime().then((outcomes) => {
+    const failed = outcomes.filter((item) => item.status !== 'PASSED');
+    if (failed.length) throw new Error(failed.map((item) => `${item.name}: ${item.error}`).join('\n'));
+  }).catch((error) => {
     console.error(error);
     process.exitCode = 1;
   });

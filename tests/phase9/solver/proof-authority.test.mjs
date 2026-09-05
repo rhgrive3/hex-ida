@@ -61,6 +61,21 @@ test('only an exact backend with a matching capability fingerprint is proof elig
   const fake = new FakeSolverBackend({ defaultStatus: SOLVER_STATUS.UNSAT });
   fake.proofAuthority = PROOF_AUTHORITY.EXACT;
   assert.equal(isExactProofBackend(fake), false, 'authority string alone cannot spoof exact capabilities');
+
+  const selfReported = {
+    id: 'self-reported-exact',
+    version: '1.0.0',
+    proofAuthority: PROOF_AUTHORITY.EXACT,
+    capabilityFingerprint: () => 'self-reported-capability',
+    capabilities: () => ({
+      proofAuthority: PROOF_AUTHORITY.EXACT,
+      exactProofs: true,
+      supportsModelExtraction: true,
+      capabilityFingerprint: 'self-reported-capability',
+    }),
+  };
+  assert.equal(isExactProofBackend(selfReported), false, 'unbranded self-reported authority is never exact proof authority');
+  assert.equal(isExactProofBackend(new Proxy(backend, {})), false, 'provider proxies cannot inherit exact proof authority');
 });
 
 test('production solver registry never silently selects FakeSolverBackend', () => {
